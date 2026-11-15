@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { describe, test } from "vitest";
 import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.js";
 import type { SqliteDatabase, SqliteRow } from "../../packages/coding-agent/src/core/storage/database.js";
-import { StorageError } from "../../packages/coding-agent/src/core/storage/errors.js";
+import { StorageError, StorageSchemaVersionError } from "../../packages/coding-agent/src/core/storage/errors.js";
+import { assertStorageSchemaVersion } from "../../packages/coding-agent/src/core/storage/schema.js";
 import {
 	SESSION_SUMMARY_TEXT_CHARS,
 	summarizeSession,
@@ -19,6 +20,7 @@ import {
 import { JOURNAL_READ_PAGE_CHARS } from "../../packages/workflows/src/durable/journal/internal.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import type { RunEvent } from "../../packages/workflows/src/durable/journal/types.js";
+import { withLibsqlDatabase } from "../helpers/libsql-database.js";
 import { rowLimitedDatabase } from "../helpers/row-limited-database.js";
 import { withNodeSqliteDatabase } from "../helpers/storage-database.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
@@ -311,6 +313,71 @@ describe("workflow journal reads under a libSQL server's size limits (#4954)", (
 			);
 			assert.deepEqual(limited.refused, []);
 			await journal.close();
+		});
+	});
+});
+
+describe("a database written with chunked entries is refused by older builds (#4954)", () => {
+	/**
+	 * What an older build checks when it opens the session tables of a SQLite or libSQL database: every row of the
+	 * sessions meta table must hold the one schema version it knows, 1. Postgres records the step in its migration
+	 * ledger, which older builds check instead.
+	 */
+	async function openAsOlderBuild(database: SqliteDatabase): Promise<void> {
+		const rows = await database.all<SqliteRow & { schema_version: number }>(
+			"SELECT schema_version FROM session_meta",
+		);
+		for (const row of rows) assertStorageSchemaVersion("sessions", row.schema_version, 1);
+	}
+
+	for (const [name, withDatabase] of [
+		["SQLite", withNodeSqliteDatabase],
+		["libSQL", withLibsqlDatabase],
+	] as const) {
+		test(`a 2 MB entry written to ${name} cannot be read by an older build as a stub (#4954)`, async () => {
+			await withDatabase(async ({ database, reopen }) => {
+				const store = await SqlSessionStore.open(database);
+				await store.create(header(), [message("big", null, "x".repeat(2 * MiB)), message("small", "big", "small")]);
+				const reopened = await reopen();
+				await assert.rejects(openAsOlderBuild(reopened), (error: unknown) => {
+					assert.ok(error instanceof StorageSchemaVersionError);
+					assert.deepEqual([error.domain, error.supported], ["sessions", 1]);
+					return true;
+				});
+				// This build reads it whole, and reopens it again.
+				const again = await SqlSessionStore.open(reopened);
+				assert.equal(
+					(await again.load("session")).entries[0] &&
+						JSON.stringify((await again.load("session")).entries[0]).length > 2 * MiB,
+					true,
+				);
+			});
+		});
+	}
+
+	test("a database with a schema newer than this build is refused (#4954)", async () => {
+		await withNodeSqliteDatabase(async ({ database }) => {
+			await SqlSessionStore.open(database);
+			await database.run("UPDATE session_meta SET schema_version = 3");
+			await assert.rejects(SqlSessionStore.open(database), (error: unknown) => {
+				assert.ok(error instanceof StorageSchemaVersionError);
+				assert.deepEqual([error.found, error.supported], [3, 2]);
+				return true;
+			});
+		});
+	});
+
+	test("a database an older build created is upgraded and keeps its sessions (#4954)", async () => {
+		await withNodeSqliteDatabase(async ({ database }) => {
+			await SqlSessionStore.open(database);
+			await database.exec("UPDATE session_meta SET schema_version = 1");
+			const store = await SqlSessionStore.open(database);
+			assert.deepEqual(
+				(await database.all("SELECT schema_version FROM session_meta")).map((row) => Number(row.schema_version)),
+				[2],
+			);
+			await store.create(header(), [message("m", null, "kept")]);
+			assert.equal((await store.load("session")).entries.length, 1);
 		});
 	});
 });

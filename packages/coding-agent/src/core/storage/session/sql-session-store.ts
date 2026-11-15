@@ -35,7 +35,14 @@ import type {
 } from "./types.js";
 import { validateSessionEntries, validateSessionHeader, validateSessionText } from "./validation.js";
 
-export const SESSION_SCHEMA_VERSION = 1;
+/**
+ * The sessions schema this build writes. Version 2 stores long entries in chunks (#4954), which a build that knows only
+ * version 1 would read as stubs, so opening a database upgrades its sessions meta to 2 and older builds refuse it with
+ * `StorageSchemaVersionError`. Postgres records the same step in its migration ledger, which older builds check there.
+ */
+export const SESSION_SCHEMA_VERSION = 2;
+/** The sessions schema older builds wrote; this build upgrades it when it opens the database. */
+const SESSION_SCHEMA_VERSION_UNCHUNKED = 1;
 /** The schema domain of the session tables in the prefix's migration ledger. */
 export const SESSION_DOMAIN = "sessions";
 /**
@@ -268,6 +275,7 @@ export class SqlSessionStore implements SessionStore {
 				await tx.run(`INSERT INTO ${tables.meta} VALUES (?)`, SESSION_SCHEMA_VERSION);
 			}
 			for (const version of versions) {
+				if (version.schema_version === SESSION_SCHEMA_VERSION_UNCHUNKED) continue;
 				assertStorageSchemaVersion("sessions", version.schema_version!, SESSION_SCHEMA_VERSION);
 			}
 			// The sessions table is ordered by insertion to notice changes, and entries for the snapshot reference index.
@@ -308,8 +316,9 @@ export class SqlSessionStore implements SessionStore {
 			}
 		};
 		/**
-		 * Long entries in chunks (#4954): the entry chunks table, and the entries table's `chunks` column, 0 for an entry
-		 * stored whole, as every entry written before it was. Idempotent, so SQLite runs it with every open.
+		 * Long entries in chunks (#4954): the entry chunks table, the entries table's `chunks` column, 0 for an entry
+		 * stored whole, as every entry written before it was, and the sessions meta at version 2. Idempotent, so SQLite
+		 * runs it with every open.
 		 */
 		const addEntryChunks = async (tx: SqliteExecutor, dialect: StorageDialect) => {
 			const { int, text, blob } = dialect.types;
@@ -323,6 +332,12 @@ export class SqlSessionStore implements SessionStore {
 			if ((await tx.get(probe.sql, ...probe.params)) === undefined) {
 				await tx.exec(`ALTER TABLE ${tables.entries} ADD COLUMN chunks ${int} NOT NULL DEFAULT 0`);
 			}
+			// One way: a build that knows only version 1 now refuses the database instead of reading stubs.
+			await tx.run(
+				`UPDATE ${tables.meta} SET schema_version = ? WHERE schema_version = ?`,
+				SESSION_SCHEMA_VERSION,
+				SESSION_SCHEMA_VERSION_UNCHUNKED,
+			);
 		};
 		await applyStorageMigrations(
 			database,

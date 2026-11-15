@@ -212,7 +212,11 @@ Atomic's stores keep every value well under the smallest of these limits, so ses
 - Session listings keep at most 64 KiB (65,536 UTF-16 code units) of each message: its first message and each message's share of the search text. A search therefore matches only the first 64 KiB of a longer message. Every store applies the same bound.
 - A worktree-snapshot patch or bundle over 1 MiB, such as the patch of a large untracked file, is stored as rows of at most 1 MiB in `snapshot_blob_chunks`, in one transaction. Session blobs (`session_blob_chunks`) are stored the same way.
 
-Blobs and entries written before this release stay in one row and are still read. A value that is still too large for the backend fails with `StoragePayloadTooLargeError`. It is never reported as `StorageUnavailableError`, because retrying cannot help. See [Storage errors](#storage-errors).
+Blobs and entries written before this release stay in one row and are still read.
+
+**This upgrade is one way.** When this release opens a database, it upgrades the session schema to version 2. On SQLite and libSQL it does this in the sessions meta table; on PostgreSQL the migration ledger records it. Older Atomic builds then refuse the database with `StorageSchemaVersionError` instead of reading a large entry as a stub. Upgrade every host that shares a store together, before any of them opens it with this release. An older build that reads a large worktree snapshot through a workflow journal, without opening the session store, reports the snapshot as corrupt (`WorkspaceRestoreError` `blob-corrupt`), because it cannot read the snapshot's chunks.
+
+A value that is still too large for the backend fails with `StoragePayloadTooLargeError`. It is never reported as `StorageUnavailableError`, because retrying cannot help. See [Storage errors](#storage-errors).
 
 Like any [adapter](#selecting-an-adapter), it runs with Atomic's privileges. To use a different driver, adapt it with [Bring your own driver](#bring-your-own-driver).
 

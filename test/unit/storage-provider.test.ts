@@ -148,7 +148,7 @@ test("caller-owned facade stays open after both domain stores close", async () =
 		await sessions.close();
 		await journal.close();
 		assert.equal((await database.get("SELECT schema_version FROM owned_wf_meta"))?.schema_version, 1);
-		assert.equal((await database.get("SELECT schema_version FROM owned_session_meta"))?.schema_version, 1);
+		assert.equal((await database.get("SELECT schema_version FROM owned_session_meta"))?.schema_version, 2);
 	} finally {
 		await database.close();
 		removeTempDirectory(root);
@@ -437,7 +437,8 @@ for (const domain of ["sessions", "journal"] as const) {
 					assert.ok(error instanceof StorageSchemaVersionError);
 					assert.equal(error.domain, domain);
 					assert.equal(error.found, 99);
-					assert.equal(error.supported, 1);
+					// Sessions are at version 2 since long entries are stored in chunks (#4954); the journal at 1.
+					assert.equal(error.supported, domain === "sessions" ? 2 : 1);
 					assert.ok(error.cleanupCause instanceof adapter.cleanupErrorType);
 					assert.equal(error.cleanupCause, adapter.cleanupFailure);
 					assert.ok(error.cleanupCause.cause instanceof Error);
