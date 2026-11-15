@@ -28,7 +28,11 @@ function session() {
 	return {
 		_bashAbortControllers: new Map(),
 		settingsManager: { getShellCommandPrefix: () => "prefix", getShellPath: () => "/custom/bash" },
-		sessionManager: { getCwd: () => process.cwd(), getSessionId: () => "interactive-shell-test" },
+		sessionManager: {
+			getCwd: () => process.cwd(),
+			getSessionId: () => "interactive-shell-test",
+			getWorktreeRootMappings: () => [],
+		},
 		_emit: vi.fn(),
 		recordBashResult: vi.fn(),
 	};
