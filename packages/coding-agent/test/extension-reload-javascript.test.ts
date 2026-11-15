@@ -169,7 +169,11 @@ export default function (pi) {
 }
 `,
 			);
-		writeFileSync(join(extensionDir, "lib", "helper.mjs"), esmHelper("h"));
+		// Top-level await in an imported module too.
+		writeFileSync(
+			join(extensionDir, "lib", "helper.mjs"),
+			`export const helperVersion = await Promise.resolve("h");\n`,
+		);
 		writeEntry("1");
 		const runtime = await startRuntime(cwd, agentDir);
 		const url = pathToFileURL(entry).href;
@@ -292,7 +296,12 @@ describe("what a reload of a JavaScript extension evaluates again", () => {
 				"node_modules/@scope/probe/lib/own.mjs": `export const own = "${version}";\n`,
 				"node_modules/@scope/other/other.mjs": `export const other = "${version}";\n`,
 				"node_modules/plain/plain.mjs": `export const plain = "${version}";\n`,
+				"node_modules/unscoped/lib/own.mjs": `export const own = "${version}";\n`,
 			});
+		writeFiles(extensionDir, {
+			"node_modules/unscoped/index.mjs": `import { own } from "./lib/own.mjs";\n${describeProbe("own")}`,
+		});
+		const unscoped = join(extensionDir, "node_modules", "unscoped", "index.mjs");
 		writeFiles(packageDir, {
 			"index.mjs": `import { own } from "./lib/own.mjs";
 import { other } from "../other/other.mjs";
@@ -301,9 +310,11 @@ ${describeProbe("[own, other, plain].join(' ')")}`,
 		});
 		write("1");
 		assert.equal(await reloadProbe(entry, cwd, agentDir), "1 1 1");
+		assert.equal(await reloadProbe(unscoped, cwd, agentDir), "1");
 
 		write("2");
 		assert.equal(await reloadProbe(entry, cwd, agentDir), "2 1 1");
+		assert.equal(await reloadProbe(unscoped, cwd, agentDir), "2");
 	});
 
 	test("a reload of an extension outside node_modules does not re-evaluate a package it imports by path (#4988)", async () => {
@@ -355,7 +366,7 @@ ${describeProbe("[own, other, plain].join(' ')")}`,
 		assert.equal(await reloadProbe(join(extensionDir, "cjs.cjs"), cwd, agentDir), "function");
 	});
 
-	test("TypeScript still imports a host package by name from the host when the extension has its own copy (#4988)", async () => {
+	test("JavaScript imports its own copy of a host package by name, and TypeScript still imports the host's (#4988)", async () => {
 		const { cwd, agentDir, extensionDir } = workspace("unused.mjs");
 		writeFiles(extensionDir, {
 			"node_modules/@earendil-works/pi-coding-agent/package.json": JSON.stringify({
@@ -365,32 +376,44 @@ ${describeProbe("[own, other, plain].join(' ')")}`,
 			}),
 			"node_modules/@earendil-works/pi-coding-agent/index.js": "export const physicalCopy = true;\n",
 			"index.ts": `import * as host from "@earendil-works/pi-coding-agent";\n${describeProbe("'physicalCopy' in host")}`,
+			"required.ts": `const host = require("@earendil-works/pi-coding-agent");\n${describeProbe("'physicalCopy' in host")}`,
+			"index.mjs": `import * as host from "@earendil-works/pi-coding-agent";\n${describeProbe("'physicalCopy' in host")}`,
+			"index.cjs": `const host = require("@earendil-works/pi-coding-agent");\n${describeProbeCjs("'physicalCopy' in host")}`,
 		});
-		assert.equal(await reloadProbe(join(extensionDir, "index.ts"), cwd, agentDir), "false");
+		const probe = (file: string) => reloadProbe(join(extensionDir, file), cwd, agentDir);
+		assert.equal(await probe("index.ts"), "false");
+		assert.equal(await probe("required.ts"), "false");
+		assert.equal(await probe("index.mjs"), "true");
+		assert.equal(await probe("index.cjs"), "true");
 	});
 
-	test("one load evaluates a JavaScript module that several modules import once, also under a TypeScript entry (#4988)", async () => {
+	test("one load evaluates each JavaScript module once, through cycles and under a TypeScript entry (#4988)", async () => {
 		const { cwd, agentDir, extensionDir } = workspace("unused.mjs");
-		const counter = globalThis as typeof globalThis & { __evaluations4988?: number };
+		const counters = globalThis as typeof globalThis & { __shared4988?: number; __entry4988?: number };
 		cleanups.push(() => {
-			delete counter.__evaluations4988;
+			delete counters.__shared4988;
+			delete counters.__entry4988;
 		});
 		writeFiles(extensionDir, {
-			"shared.mjs":
-				"globalThis.__evaluations4988 = (globalThis.__evaluations4988 ?? 0) + 1;\nexport const shared = {};\n",
-			"a.mjs": `import { shared } from "./shared.mjs";\nexport const a = shared;\n`,
-			"b.cjs": `module.exports = require("./shared.mjs");\n`,
-			"index.mjs": `import { a } from "./a.mjs";\nimport b from "./b.cjs";\n${describeProbe("a === b.shared")}`,
+			"shared.mjs": "globalThis.__shared4988 = (globalThis.__shared4988 ?? 0) + 1;\nexport const shared = {};\n",
+			"data.json": JSON.stringify({ fromJson: true }),
+			"sub/a.mjs": `import { shared } from "../shared.mjs";\nimport * as entry from "../index.mjs";\nexport const a = shared;\nexport const entryModule = entry;\n`,
+			"b.cjs": `module.exports = { ...require("./shared.mjs"), ...require("./data.json") };\n`,
+			"index.mjs": `import { a, entryModule } from "./sub/a.mjs";
+import b from "./b.cjs";
+globalThis.__entry4988 = (globalThis.__entry4988 ?? 0) + 1;
+${describeProbe("[a === b.shared, b.fromJson, typeof entryModule].join(' ')")}`,
 			"ts-a.ts": `export { shared as a } from "./shared.mjs";\n`,
 			"ts-b.ts": `export { shared as b } from "./shared.mjs";\n`,
 			"index.ts": `import { a } from "./ts-a.ts";\nimport { b } from "./ts-b.ts";\n${describeProbe("a === b")}`,
 		});
-		assert.equal(await reloadProbe(join(extensionDir, "index.mjs"), cwd, agentDir), "true");
-		assert.equal(counter.__evaluations4988, 1);
-		assert.equal(await reloadProbe(join(extensionDir, "index.mjs"), cwd, agentDir), "true");
-		assert.equal(counter.__evaluations4988, 2);
-		assert.equal(await reloadProbe(join(extensionDir, "index.ts"), cwd, agentDir), "true");
-		assert.equal(counter.__evaluations4988, 3);
+		const probe = (file: string) => reloadProbe(join(extensionDir, file), cwd, agentDir);
+		assert.equal(await probe("index.mjs"), "true true object");
+		assert.deepEqual([counters.__shared4988, counters.__entry4988], [1, 1]);
+		assert.equal(await probe("index.mjs"), "true true object");
+		assert.deepEqual([counters.__shared4988, counters.__entry4988], [2, 2]);
+		assert.equal(await probe("index.ts"), "true");
+		assert.equal(counters.__shared4988, 3);
 	});
 
 	test("a reload re-evaluates JavaScript imported by a file URL or an absolute path (#4988)", async () => {
@@ -420,19 +443,66 @@ ${describeProbe("[own, other, plain].join(' ')")}`,
 			"esm.mjs": describeProbe(thisIsUndefined),
 			"cjs.cjs": describeProbeCjs(thisIsUndefined),
 			"strict.cjs": `"use strict";\n${describeProbeCjs(thisIsUndefined)}`,
+			"spaced-strict.cjs": `\n  'use strict';\n${describeProbeCjs(thisIsUndefined)}`,
+			"late-strict.cjs": `const directive = "use strict";\n${describeProbeCjs(thisIsUndefined)}`,
 			"commonjs/index.js": describeProbeCjs(thisIsUndefined),
 			"esm-syntax/index.js": describeProbe(thisIsUndefined),
 			"typed/package.json": JSON.stringify({ type: "module" }),
 			// A module without ESM syntax is ESM too in a "type": "module" package.
-			"typed/helper.js": `globalThis.__typedStrict4988 = ${thisIsUndefined};\n`,
-			"typed/index.js": `import "./helper.js";\n${describeProbe("globalThis.__typedStrict4988")}`,
+			"typed/deep/helper.js": `globalThis.__typedStrict4988 = ${thisIsUndefined};\n`,
+			"broken/package.json": "{",
+			"broken/index.js": describeProbeCjs(thisIsUndefined),
+			"typed/index.js": `import "./deep/helper.js";\n${describeProbe("globalThis.__typedStrict4988")}`,
 		});
 		const probe = (file: string) => reloadProbe(join(extensionDir, file), cwd, agentDir);
 		assert.equal(await probe("esm.mjs"), "true");
 		assert.equal(await probe("cjs.cjs"), "false");
 		assert.equal(await probe("strict.cjs"), "true");
+		assert.equal(await probe("spaced-strict.cjs"), "true");
+		assert.equal(await probe("late-strict.cjs"), "false");
+		assert.equal(await probe("broken/index.js"), "false");
 		assert.equal(await probe("commonjs/index.js"), "false");
 		assert.equal(await probe("esm-syntax/index.js"), "true");
 		assert.equal(await probe("typed/index.js"), "true");
+	});
+
+	test('a .js file outside a "type": "module" package is strict ESM exactly when it has ESM syntax (#4988)', async () => {
+		const { cwd, agentDir, extensionDir } = workspace("unused.mjs");
+		const results = globalThis as typeof globalThis & { __strict4988?: Record<string, boolean> };
+		results.__strict4988 = {};
+		cleanups.push(() => {
+			delete results.__strict4988;
+		});
+		const record = (name: string) =>
+			`globalThis.__strict4988.${name} = (function () { return this === undefined; })()`;
+		const modules: Record<string, string> = {
+			sideEffect: `${record("sideEffect")};import"./noop.mjs";\n`,
+			exportList: `${record("exportList")};const x = 1;export{x};\n`,
+			exportStar: `${record("exportStar")};export*from"./noop.mjs";\n`,
+			importName: `${record("importName")}\nimport  noop from "./noop.mjs";\n`,
+			exportDefault: `${record("exportDefault")}\nexport  default 1;\n`,
+			importMeta: `${record("importMeta")};const url = import.meta.url;\n`,
+			commonJs: `${record("commonJs")};const important = 1, exported = 2;\nimport ("node:path").catch(() => {});\nmodule.exports = { important, exported };\n`,
+			plainMjs: `${record("plainMjs")};\n`,
+		};
+		writeFiles(extensionDir, {
+			"noop.mjs": "export default 1;\n",
+			...Object.fromEntries(
+				Object.entries(modules).map(([name, source]) => [`${name}.${name === "plainMjs" ? "mjs" : "js"}`, source]),
+			),
+			"index.mjs": `${Object.keys(modules)
+				.map((name) => `import "./${name}.${name === "plainMjs" ? "mjs" : "js"}";`)
+				.join("\n")}\n${describeProbe("JSON.stringify(globalThis.__strict4988)")}`,
+		});
+		assert.deepEqual(JSON.parse((await reloadProbe(join(extensionDir, "index.mjs"), cwd, agentDir)) ?? "{}"), {
+			sideEffect: true,
+			exportList: true,
+			exportStar: true,
+			importName: true,
+			exportDefault: true,
+			importMeta: true,
+			commonJs: false,
+			plainMjs: true,
+		});
 	});
 });

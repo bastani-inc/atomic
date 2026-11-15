@@ -641,8 +641,6 @@ export const extensionLoaderTestHooks = {
  * evaluation collectable instead of adding one registry entry per reload.
  */
 const nativelyImportedPaths = new Set<string>();
-/** Resolves a bare import of extension JavaScript the way the runtime would, without host aliases. */
-let runtimeResolver: ReturnType<typeof createJiti> | undefined;
 
 async function importExtensionModule(
 	extensionPath: string,
@@ -657,8 +655,7 @@ async function importExtensionModule(
 	// file; extensionPath stays the cache and graph key.
 	const importPath = canonicalizePath(extensionPath);
 	const transformSource = getTypeScriptSourceSpecifierTransform(createJitiImpl, cacheDir);
-	runtimeResolver ??= createJitiImpl(resolutionBaseUrl(import.meta.url), { moduleCache: false, fsCache: false });
-	installReloadableScripts(runtimeResolver);
+	installReloadableScripts((id) => createJitiImpl(id, { moduleCache: false, fsCache: false }));
 	const jiti = createJitiImpl(resolutionBaseUrl(import.meta.url), {
 		moduleCache: false,
 		fsCache: false,
