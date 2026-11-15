@@ -1,4 +1,4 @@
-import { redactUrlCredentials } from "../core/error-contract.js";
+import { redactUrlCredentials } from "../core/error-contract.ts";
 
 const PRIVATE_KEY_BLOCK =
 	/-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----[\s\S]*?(?:-----END (?:[A-Z]+ )?PRIVATE KEY-----|$)/gu;
