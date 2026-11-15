@@ -4,6 +4,10 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed requests failing when the conversation holds an image in a format providers do not accept inline, such as `image/svg+xml`: every provider now sends a text placeholder naming the type instead of the image, and Bedrock no longer throws "Unknown image type" ([#4908](https://github.com/bastani-inc/atomic/issues/4908)).
+
 ## [0.9.85] - 2026-11-13
 
 Dropped connections are retried automatically.
