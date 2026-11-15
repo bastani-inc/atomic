@@ -70,10 +70,8 @@ const MAX_ABANDONED_STREAM_CLOSES = 16;
  * sends once for a stream it gave up on, `{"baton":…,"requests":[{"type":"close"}]}`. `@libsql/client` speaks Hrana 2
  * over HTTP, whose bodies are JSON; any other body is never taken for a close.
  * @param {Uint8Array} body
- * @param {string | null} contentType
  */
-function closesStream(body, contentType) {
-	if (contentType !== "application/json") return false;
+function closesStream(body) {
 	try {
 		const { baton, requests } = JSON.parse(new TextDecoder().decode(body));
 		return typeof baton === "string" && Array.isArray(requests) && requests.length === 1 && requests[0]?.type === "close";
@@ -104,7 +102,7 @@ class AbandonedStreams {
 	 */
 	async failed(request) {
 		const body = await request.arrayBuffer();
-		if (this.closed || !closesStream(new Uint8Array(body), request.headers.get("content-type"))) return;
+		if (this.closed || !closesStream(new Uint8Array(body))) return;
 		this.pending.push({ url: request.url, headers: [...request.headers], body, since: Date.now() });
 		if (this.pending.length > MAX_ABANDONED_STREAM_CLOSES) this.pending.shift();
 		this.schedule();

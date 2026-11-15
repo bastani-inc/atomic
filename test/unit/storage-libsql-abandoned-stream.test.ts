@@ -257,3 +257,29 @@ test("closing the database while a resend is under way sends no further close (#
 	await sleep(4 * CLOSE_FIRST_WAIT_MS);
 	assert.equal(sent.length, start + 1, "the second close is not sent after the database closed");
 }, 30_000);
+
+test("a failed request that does more than close a stream is never sent again (#5114)", async () => {
+	const fake = await server();
+	const database = await open(fake.url);
+	await database.exec("CREATE TABLE events(n INTEGER NOT NULL)");
+	await database.transaction(async (tx) => {
+		await tx.run("INSERT INTO events VALUES (1)");
+	});
+	// The connection breaks after the server ran each request: a statement, then a transaction's first statement, whose
+	// outcome the adapter must never repeat.
+	fake.fail({ kind: "reset-after" });
+	await assert.rejects(database.run("INSERT INTO events VALUES (2)"), StorageTransientError);
+	fake.fail({ kind: "reset-after" });
+	await assert.rejects(
+		database.transaction(async (tx) => {
+			await tx.run("INSERT INTO events VALUES (3)");
+			await tx.run("INSERT INTO events VALUES (4)");
+		}),
+	);
+	// The client's own close of the transaction's stream follows the failure.
+	await sleep(CLOSE_FIRST_WAIT_MS / 2);
+	const received = fake.pipelines.length;
+	await sleep(8 * CLOSE_FIRST_WAIT_MS);
+	assert.equal(fake.pipelines.length, received, "nothing was sent again");
+	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events WHERE n = 2"), 1, "the statement ran once");
+});
