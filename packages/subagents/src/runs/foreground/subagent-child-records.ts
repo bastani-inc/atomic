@@ -162,6 +162,12 @@ export interface SubagentChildRecord {
 	/** The launch's own `modelConstraints`, which every model its child falls back to must satisfy (#4188). */
 	readonly modelConstraints?: ModelConstraints;
 	/**
+	 * The concurrency limit of the run that dispatched the child, as plain data: a woken or resumed child waits for a slot
+	 * under it when no sibling in this process still holds the run's scheduler (#4856). Absent for a launch outside a run
+	 * scheduler.
+	 */
+	readonly runConcurrency?: number;
+	/**
 	 * The detached tool calls a released child is waiting on (#4326): its run ended with them still running, and their
 	 * results wake it. Empty once nothing is outstanding.
 	 */

@@ -26,6 +26,7 @@ import { taskRecordModel } from "../../shared/model-info.js";
 import type { IntercomEventBus, RunSyncOptions, SingleResult, SubagentToolResult } from "../../shared/types.js";
 import { getSingleResultOutput } from "../../shared/utils.js";
 import { launchRequestedModel } from "../shared/model-fallback.js";
+import type { ExecutionScheduler } from "../shared/parallel-utils.js";
 import { scheduleReleasedReplyTimeouts } from "./released-child-replies.js";
 import { endedChildMark, markEndedChildren, reserveReleasedChildTargets } from "./released-child-reservations.js";
 import {
@@ -349,24 +350,47 @@ function taskTranscriptSource(
 	};
 }
 
-type ExecutionSchedule = (dispatch: () => Promise<void>) => void;
+type ExecutionSchedule = ExecutionScheduler;
 
-/** The scheduler each child's run dispatched it on, by child id, so a resumed child waits for a slot in that run. */
-const childSchedules = new Map<string, ExecutionSchedule>();
+/**
+ * The scheduler each child's run dispatched it on, by run and child index, so a resumed or woken child waits for a slot
+ * in that run. A released child keeps no entry (#4395); its run's scheduler is found through a sibling that does
+ * (#4856), and a run left with no entry has none here at all.
+ */
+const runSchedules = new Map<string, Map<number, ExecutionSchedule>>();
+let scheduleCount = 0;
 
 /** The scheduler the child's run dispatched it on, while this process has it and the child can still resume. */
 export function subagentChildSchedule(runId: string, index: number): ExecutionSchedule | undefined {
-	return childSchedules.get(`${runId}:${index}`);
+	return runSchedules.get(runId)?.get(index);
+}
+
+/** A scheduler a child of the run still holds in this process: a woken or resumed sibling waits for its slots (#4856). */
+export function subagentRunSchedule(runId: string): ExecutionSchedule | undefined {
+	return runSchedules.get(runId)?.values().next().value;
 }
 
 /** Remember the scheduler the child's run dispatched it on, so its resume waits for a slot in that run. */
 export function rememberSubagentChildSchedule(runId: string, index: number, schedule: ExecutionSchedule): void {
-	childSchedules.set(`${runId}:${index}`, schedule);
+	let members = runSchedules.get(runId);
+	if (members === undefined) {
+		members = new Map();
+		runSchedules.set(runId, members);
+	}
+	if (!members.has(index)) scheduleCount++;
+	members.set(index, schedule);
+}
+
+function forgetChildSchedule(runId: string, index: number): void {
+	const members = runSchedules.get(runId);
+	if (members?.delete(index) !== true) return;
+	scheduleCount--;
+	if (members.size === 0) runSchedules.delete(runId);
 }
 
 /** The child ended for good: nothing resumes it into its run's scheduler or worktrees any more. */
 export function forgetRunMembership(runId: string, index: number): void {
-	childSchedules.delete(`${runId}:${index}`);
+	forgetChildSchedule(runId, index);
 	unparkRunWorktree(runId, index);
 }
 
@@ -415,7 +439,7 @@ export async function runAgentTask(input: {
 	wait?: WaitPolicy;
 	runtime: SubagentExecutorRuntimeDeps;
 	onTerminal?: (result: SingleResult) => void;
-	schedule?: (dispatch: () => Promise<void>) => void;
+	schedule?: ExecutionScheduler;
 	outputText?: (result: SingleResult) => string;
 	recordChild?: SubagentChildRecordSink;
 	/** Whether the child was launched with `context: "fork"`; by default, whether `options` fork a session for it. */
@@ -481,6 +505,7 @@ export async function runAgentTask(input: {
 					: {}),
 			inherited: subagentChildInheritance(input.options),
 			...subagentChildModelChoice(input.options, agentConfig),
+			...(input.schedule?.limit === undefined ? {} : { runConcurrency: input.schedule.limit }),
 		};
 		input.recordChild?.record(record);
 		// #4639: once its session is gone, a send to the child is told why it ended and how to resume it.
@@ -700,7 +725,7 @@ export async function runAgentTask(input: {
 					// A child that stays restorable is marked stopped before its dispatch's hold is released.
 					if (released || stoppedByStagePause || (ownerClosed() && !endedForGood)) parkRunWorktree(runId, index);
 					if (endedForGood || child.status === "killed") forgetRunMembership(runId, index);
-					if (released) childSchedules.delete(childId);
+					if (released) forgetChildSchedule(runId, index);
 					if (released && child.released) {
 						// The record goes first: a result forwarded before it would find the child still recorded running.
 						recordChild(
@@ -863,5 +888,5 @@ export function subagentTaskRegistrySizes(): {
 	readonly schedules: number;
 	readonly closing: number;
 } {
-	return { queued: queuedChildren.size, schedules: childSchedules.size, closing: closingChildren.size };
+	return { queued: queuedChildren.size, schedules: scheduleCount, closing: closingChildren.size };
 }

@@ -41,6 +41,7 @@ import {
 } from "../../shared/types.js";
 import { inheritedIntercomGroup } from "../shared/intercom-group.js";
 import { currentModelFullId } from "../shared/model-fallback.js";
+import { createExecutionScheduler } from "../shared/parallel-utils.js";
 import { type OwnerlessChildLaunch, runOwnerlessChild, takeStoppedQueuedOwnerlessChild } from "./ownerless-children.js";
 import { formatReleasedReplyResults } from "./released-child-replies.js";
 import { pendingToolCalls, planReleasedChildWake } from "./released-children.js";
@@ -72,6 +73,7 @@ import {
 	runAgentTask,
 	subagentChildClosed,
 	subagentChildSchedule,
+	subagentRunSchedule,
 	takeStoppedQueuedSubagentChild,
 } from "./task-execution.js";
 
@@ -574,8 +576,13 @@ async function relaunchChild(
 	ctx.orchestrationContext?.messageAdmission?.boundary.registerOwnedSubagentRun(record.runId);
 	const recordChild = createSubagentChildRecordSink(deps.pi, ctx);
 	const runtime = resolveSubagentExecutorRuntimeDeps(deps.runtime);
-	// It waits for a slot in its run, as its original launch did.
-	const schedule = subagentChildSchedule(record.runId, record.index);
+	// It waits for a slot in its run, as its original launch did: its own scheduler, a sibling's (#4856), or, with no
+	// child of the run holding one here, a new one under the run's recorded limit. The relaunch registers what it uses
+	// before anything else runs, so a sibling woken after it shares that one.
+	const schedule =
+		subagentChildSchedule(record.runId, record.index) ??
+		subagentRunSchedule(record.runId) ??
+		(record.runConcurrency === undefined ? undefined : createExecutionScheduler(record.runConcurrency));
 	if (!host) {
 		// #3981: a queued child starts after its launch; by then model fallback can have retired the launching session, whose
 		// context throws on every read. The working directory is fixed at launch.

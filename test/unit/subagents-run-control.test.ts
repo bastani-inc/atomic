@@ -3762,6 +3762,89 @@ test("a child of the earlier process whose call result is already held is woken 
 	assert.equal(h.runs.filter((run) => run.task === lateToolResultMessage(green)).length, 1);
 });
 
+function wakeWith(h: Harness, dispatcher: AgentWakeDispatcher, childId: string, output: string): void {
+	void dispatcher
+		.deliver(subagentWakeKey(h.sessionManager.getSessionId(), childId), {
+			id: `tool-result:${childId}`,
+			kind: "tool-result",
+			toolResult: waitResult(output),
+		})
+		.catch((error) => dispatcher.reportUnobservedFailure(error));
+}
+
+async function releasedMember(
+	h: Harness,
+	runId: string,
+	index: number,
+	schedule: ReturnType<typeof createExecutionScheduler>,
+): Promise<SubagentChildRecord> {
+	h.releaseOriginal = true;
+	await settled(
+		h,
+		await h.admit(runId, schedule, { index, intercomSessionName: `subagent-worker-${runId}-${index}` }),
+	);
+	const released = await h.waitForLatest(
+		`${runId}:${index}`,
+		(record) => record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS,
+	);
+	h.releaseOriginal = false;
+	return released;
+}
+
+function wokenRuns(h: Harness, runId: string, index: number): Harness["runs"] {
+	return h.runs.filter(
+		(run) => run.options.runId === runId && (run.options.index ?? 0) === index && run.task !== ORIGINAL_TASK,
+	);
+}
+
+test("a released child woken while a sibling holds its run's only slot waits for that sibling to finish (#4856)", async () => {
+	const h = harness();
+	const dispatcher = bindProcessWakes(h);
+	const schedule = createExecutionScheduler(1);
+	const a = await releasedMember(h, "conc-live", 0, schedule);
+	const b = await h.admit("conc-live", schedule, { index: 1, intercomSessionName: "subagent-worker-conc-live-1" });
+	await h.waitForLatest("conc-live:1", (record) => record.launchLeafId !== undefined);
+
+	wakeWith(h, dispatcher, "conc-live:0", "CI green for A");
+	await sleep(150);
+	assert.deepEqual(wokenRuns(h, "conc-live", 0), [], "A waits while B holds the run's only slot");
+
+	await h.call({ action: "quit", id: "conc-live:1" });
+	await settled(h, b);
+	const woken = await h.waitForLatest("conc-live:0", (record) => record.taskId !== a.taskId && clearedOk(record));
+	assert.ok(woken.taskId);
+	assert.equal(wokenRuns(h, "conc-live", 0).length, 1, "A starts once B frees the slot");
+});
+
+test("released children of one run woken with no sibling running still take its concurrency limit's slots one at a time (#4856)", async () => {
+	const h = harness();
+	const dispatcher = bindProcessWakes(h);
+	const schedule = createExecutionScheduler(1);
+	await releasedMember(h, "conc-idle", 0, schedule);
+	await releasedMember(h, "conc-idle", 1, schedule);
+	const gates = [Promise.withResolvers<void>(), Promise.withResolvers<void>()] as const;
+	h.finishOn.set("CI green for 0", gates[0]);
+	h.finishOn.set("CI green for 1", gates[1]);
+
+	wakeWith(h, dispatcher, "conc-idle:0", "CI green for 0");
+	wakeWith(h, dispatcher, "conc-idle:1", "CI green for 1");
+	const started = () => [0, 1].filter((index) => wokenRuns(h, "conc-idle", index).length > 0);
+	const deadline = Date.now() + RECORD_WAIT_MS;
+	while (started().length === 0 && Date.now() < deadline) await sleep(10);
+	await sleep(150);
+	const [first] = started();
+	assert.equal(started().length, 1, "one woken child runs; the other waits for the run's only slot");
+	assert.ok(first !== undefined);
+
+	gates[first]?.resolve();
+	gates[1 - first]?.resolve();
+	for (const index of [0, 1])
+		await h.waitForLatest(
+			`conc-idle:${index}`,
+			(record) => wokenRuns(h, "conc-idle", index).length === 1 && clearedOk(record),
+		);
+});
+
 test("binding the owner again in the process that released its children starts nothing again (#4326)", async () => {
 	const h = harness();
 	const dispatcher = await releasedWithWakes(h, "samegen1");

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed a woken or resumed released subagent ignoring its run's concurrency limit: it now waits for a slot in its run, through a sibling's scheduler when one still runs or a limiter rebuilt from the run's recorded limit when none does, without keeping a scheduler per released subagent ([#4856](https://github.com/bastani-inc/atomic/issues/4856))
+
 ## [0.9.86] - 2026-11-14
 
 Subagents are easier to reach and to talk to.
