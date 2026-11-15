@@ -8,8 +8,14 @@ import type { SessionManager } from "./session-manager.ts";
 import { getBranchPath, getSessionLeafId } from "./session-manager-history.ts";
 import type { SessionEntry, WorktreeRestoreHostWarning } from "./session-manager-types.ts";
 import type { SessionStore } from "./storage/session/types.js";
-import { type BestWorktreeRestore, restoreBestWorktree, unrestoredRecord } from "./worktree-snapshot/best-restore.ts";
-import { snapshotBlobHashes } from "./worktree-snapshot/blob-store.ts";
+import {
+	type BestWorktreeRestore,
+	isRecoverableRestoreFailure,
+	type RestoreBestWorktreeOptions,
+	restoreBestWorktree,
+	unrestoredRecord,
+} from "./worktree-snapshot/best-restore.ts";
+import { DEGRADED_RESTORE_RETENTION_DAYS, snapshotBlobHashes } from "./worktree-snapshot/blob-store.ts";
 import {
 	captureWorktreeSnapshot,
 	locateCheckout,
@@ -17,12 +23,14 @@ import {
 	withScratchDirectory,
 	writeWorkingTree,
 } from "./worktree-snapshot/capture.ts";
+import { carryOverDegradedWork } from "./worktree-snapshot/degraded-work.ts";
 import { sha256Hex } from "./worktree-snapshot/env-hash.ts";
 import {
 	findWorkspaceError,
 	type GitUnavailableError,
 	isGitUnavailableError,
 	isWorkspaceDriftError,
+	isWorkspaceError,
 	isWorkspaceSnapshotError,
 	unreadablePathError,
 	WorkspaceDriftError,
@@ -38,6 +46,7 @@ import { loadSnapshotPathPolicy } from "./worktree-snapshot/policy.ts";
 import {
 	admitPooledWorktree,
 	claimIdleWorktree,
+	confirmPooledWorktreeLease,
 	discardPooledWorktree,
 	evictIdleWorktrees,
 	holdRestoredWorktree,
@@ -52,6 +61,7 @@ import {
 	defaultWorktreeSnapshotStoreDir,
 	removeRestoredWorktree,
 	restoreDegradedWorktreeAt,
+	restoreWorktree,
 	restoreWorktreeAt,
 	snapshotRestoreWarnings,
 	verifyWorktree,
@@ -62,6 +72,7 @@ import type {
 	SnapshotBlob,
 	SnapshotBlobStore,
 	WorktreeDegradedRestore,
+	WorktreeDegradedWork,
 	WorktreeRestoreWarning,
 	WorktreeRootMapping,
 	WorktreeSnapshot,
@@ -69,7 +80,7 @@ import type {
 	WorktreeUnrestored,
 } from "./worktree-snapshot/types.ts";
 
-export { isRecoverableRestoreFailure } from "./worktree-snapshot/best-restore.ts";
+export { isRecoverableRestoreFailure };
 
 /** Why a turn's snapshot could not be recorded: Git is unavailable, or a typed workspace failure. */
 export type WorktreeSnapshotUnavailable = WorkspaceError | GitUnavailableError;
@@ -163,7 +174,14 @@ export class SessionWorktreeSnapshotRecorder {
 			}
 		}
 		for (const root of roots) {
+			// A pooled worktree this session no longer holds may be another session's work: never recorded as its (#4830).
+			if (!(await holdsSessionWorktree(this.deps.sessionManager, root))) {
+				this.report(new WorkspaceSnapshotError("pooled-worktree-lost", root));
+				continue;
+			}
 			const previous = this.deps.sessionManager.getLatestWorktreeSnapshots().get(root);
+			// A capture in a partly restored worktree records it as derived from the snapshot it lacks (#4922).
+			const pin = degradedRestorePin(this.deps.sessionManager, root);
 			try {
 				const started = performance.now();
 				const result = await captureWorktreeSnapshot(root, { settings, previous, blobs });
@@ -177,6 +195,7 @@ export class SessionWorktreeSnapshotRecorder {
 						[],
 						undefined,
 						captureMs,
+						pin !== undefined && pin.snapshotId !== result.snapshot.id ? pin.snapshotId : undefined,
 					);
 					await keepLatestSnapshotCommit(this.deps.sessionManager, root, result.snapshot);
 				} else if (result.status === "unavailable") {
@@ -290,8 +309,57 @@ function holdFor(sessionManager: SessionManager, lease: WorktreeLease): void {
 }
 
 /**
- * Whether the worktree at `root` is a pooled slot that another session owns (#4748): this session must not continue
- * in it, and restores its checkout fresh as if the worktree were gone. Reads only; false for any unpooled path.
+ * The pooled worktrees, by canonical root, each session of this process holds no lease of though its record may still
+ * name it (#4830): its lease was lost to another holder, or holding it failed. The session no longer works in them.
+ */
+const forfeitedWorktrees = new Map<string, Set<string>>();
+
+function worktreeKey(root: string): string {
+	try {
+		return canonicalizeWorktreePath(root);
+	} catch {
+		return resolve(root);
+	}
+}
+
+function forfeit(sessionId: string, root: string): void {
+	const roots = forfeitedWorktrees.get(sessionId) ?? new Set();
+	roots.add(worktreeKey(root));
+	forfeitedWorktrees.set(sessionId, roots);
+}
+
+function forfeited(sessionId: string, root: string): boolean {
+	return forfeitedWorktrees.get(sessionId)?.has(worktreeKey(root)) === true;
+}
+
+/**
+ * Whether `lease`, held by `sessionManager`, still holds its slot (#4830). A lease whose slot another holder took is
+ * dropped, and its worktree forfeited: the session must not continue in it.
+ */
+async function keepsLease(sessionManager: SessionManager, lease: WorktreeLease): Promise<boolean> {
+	if (await confirmPooledWorktreeLease(lease)) return true;
+	const leases = sessionLeases.get(sessionManager) ?? [];
+	leases.splice(leases.indexOf(lease), 1);
+	forfeit(sessionManager.getSessionId(), lease.path);
+	reportDebug("storage", "worktree-pool-lease-lost", { path: lease.path });
+	return false;
+}
+
+/**
+ * Whether `sessionManager` may still work in the checkout at `root` (#4830): false for a pooled worktree whose lease it
+ * lost to another holder, or could not take, checked against the slot's record. True for any other checkout.
+ */
+async function holdsSessionWorktree(sessionManager: SessionManager, root: string): Promise<boolean> {
+	if (forfeited(sessionManager.getSessionId(), root)) return false;
+	const key = worktreeKey(root);
+	const lease = (sessionLeases.get(sessionManager) ?? []).find((held) => worktreeKey(held.path) === key);
+	return lease === undefined || (await keepsLease(sessionManager, lease));
+}
+
+/**
+ * Whether the worktree at `root` is a pooled slot that another session owns (#4748), or that session `sessionId`
+ * could not hold or lost while it was stalled (#4830): this session must not continue in it, and restores its checkout
+ * fresh as if the worktree were gone. Reads only; false for any unpooled path.
  */
 export async function pooledWorktreeOwnedElsewhere(
 	storeDir: string,
@@ -299,13 +367,16 @@ export async function pooledWorktreeOwnedElsewhere(
 	sessionId: string,
 ): Promise<boolean> {
 	const holder = await pooledWorktreeHolder(storeDir, root);
-	return holder !== "unpooled" && (holder.owner?.kind !== "session" || holder.owner.id !== sessionId);
+	if (holder === "unpooled") return false;
+	return holder.owner?.kind !== "session" || holder.owner.id !== sessionId || forfeited(sessionId, root);
 }
 
 /**
  * Makes `to`, the session a resume opened, hold every pooled worktree of its checkouts that it owns, then releases what
  * `from`, the session the resume restored on, held, when it is another object (#4748). A slot leased by a live process
- * of the same session stays with that process. Never throws: a resume continues without a lease.
+ * of the same session stays with that process. A lease `to` already holds is checked first: one whose slot another
+ * holder took is dropped (#4830). Never throws: a resume continues without a lease, and then treats each pooled
+ * worktree it could not hold as another session's, restoring it fresh instead of working in it unleased (#4830).
  */
 export async function holdSessionWorktrees(
 	from: SessionManager,
@@ -314,11 +385,22 @@ export async function holdSessionWorktrees(
 ): Promise<void> {
 	try {
 		const owner = sessionOwner(to);
-		const held = new Set((sessionLeases.get(to) ?? []).map((lease) => lease.path));
+		const held = new Set<string>();
+		for (const lease of [...(sessionLeases.get(to) ?? [])]) {
+			if (await keepsLease(to, lease)) held.add(lease.path);
+		}
 		for (const root of currentWorktreeSnapshots(to).keys()) {
 			if (held.has(root)) continue;
-			const lease = await holdRestoredWorktree(storeDir, root, owner);
-			if (lease !== undefined) holdFor(to, lease);
+			try {
+				const lease = await holdRestoredWorktree(storeDir, root, owner);
+				if (lease !== undefined) {
+					holdFor(to, lease);
+					forfeitedWorktrees.get(owner.id)?.delete(worktreeKey(root));
+				}
+			} catch (error) {
+				reportDebug("storage", "worktree-pool-hold-failed", { root, ...failureDebugFields(error) });
+				forfeit(owner.id, root);
+			}
 		}
 	} catch (error) {
 		reportDebug("storage", "worktree-pool-hold-failed", failureDebugFields(error));
@@ -376,16 +458,189 @@ function originalRoot(root: string, mappings: readonly WorktreeRootMapping[]): s
 	return current;
 }
 
-/** The id of the latest snapshot of each checkout on the active branch, keyed by the root it was first recorded under. */
+export { DEGRADED_RESTORE_RETENTION_DAYS };
+
+const DEGRADED_RESTORE_RETENTION_MS = DEGRADED_RESTORE_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+
+/**
+ * A checkout a resume restored with less than its snapshot (#4922): the snapshot stays the checkout's restore target
+ * while the session records the partly restored worktree as it is.
+ */
+export interface DegradedRestorePin {
+	/** The snapshot restored only partly. */
+	readonly snapshotId: string;
+	/** When the partial restore happened. */
+	readonly since: string;
+	/** What the partial restore put into the worktree, when the session recorded it: the base of the work done there. */
+	readonly base?: { readonly head: string; readonly tree: string };
+	/** Whether {@link DEGRADED_RESTORE_RETENTION_DAYS} have passed since the partial restore, which ends the pin. */
+	readonly lapsed: boolean;
+}
+
+/** What the active branch records of one checkout: its latest snapshot, and the pin of a partial restore, if any. */
+interface CheckoutRecord {
+	/** The latest snapshot recorded of the checkout: what its worktree holds. */
+	readonly latest: string;
+	readonly pin?: DegradedRestorePin;
+}
+
+function isLapsed(since: string, now: number): boolean {
+	const started = Date.parse(since);
+	// A time that cannot be read never ends the pin: keeping the snapshot is the safe side.
+	return Number.isFinite(started) && now - started > DEGRADED_RESTORE_RETENTION_MS;
+}
+
+/**
+ * What the active branch records of each checkout, keyed by the root it was first recorded under. A restore with less
+ * than its snapshot pins the snapshot (#4922); entries naming it in `degradedFrom` keep the pin, and any other entry
+ * of the checkout ends it.
+ */
+function checkoutRecords(
+	sessionManager: Pick<SessionManager, "getBranch">,
+	mappings: readonly WorktreeRootMapping[],
+	now = Date.now(),
+): Map<string, CheckoutRecord> {
+	const checkouts = new Map<string, CheckoutRecord>();
+	for (const entry of sessionManager.getBranch()) {
+		if (entry.type !== "worktree_snapshot") continue;
+		const original = originalRoot(entry.root, mappings);
+		const previous = checkouts.get(original)?.pin;
+		let pin: DegradedRestorePin | undefined;
+		if (entry.degradedFrom !== undefined) {
+			pin =
+				previous?.snapshotId === entry.degradedFrom
+					? previous
+					: { snapshotId: entry.degradedFrom, since: entry.timestamp, lapsed: isLapsed(entry.timestamp, now) };
+		} else if (entry.restore?.degraded) {
+			const { degraded, restoredAt } = entry.restore;
+			pin = {
+				snapshotId: entry.snapshotId,
+				since: restoredAt,
+				base: { head: degraded.head, tree: degraded.tree },
+				lapsed: isLapsed(restoredAt, now),
+			};
+		}
+		checkouts.set(original, { latest: entry.snapshotId, ...(pin === undefined ? {} : { pin }) });
+	}
+	return checkouts;
+}
+
+/** The snapshot a resume restores for `checkout`: the pinned one while its pin stands, else the latest (#4922). */
+function restoreTargetId(checkout: CheckoutRecord): string {
+	return checkout.pin !== undefined && !checkout.pin.lapsed ? checkout.pin.snapshotId : checkout.latest;
+}
+
+/**
+ * The pin of the checkout recorded at `root` while it stands (#4922): the snapshot a resume restored only partly, which
+ * stays the checkout's restore target. Undefined when the checkout holds what its latest snapshot records.
+ */
+export function degradedRestorePin(
+	sessionManager: Pick<SessionManager, "getBranch" | "getWorktreeRootMappings">,
+	root: string,
+): DegradedRestorePin | undefined {
+	const mappings = sessionManager.getWorktreeRootMappings();
+	const pin = checkoutRecords(sessionManager, mappings).get(originalRoot(root, mappings))?.pin;
+	return pin !== undefined && !pin.lapsed ? pin : undefined;
+}
+
+/**
+ * The id of the snapshot a resume restores for each checkout on the active branch, keyed by the root it was first
+ * recorded under: its latest, or the snapshot a resume restored only partly while that pin stands (#4922).
+ */
 function latestSnapshotIdsByCheckout(
 	sessionManager: Pick<SessionManager, "getBranch">,
 	mappings: readonly WorktreeRootMapping[],
 ): Map<string, string> {
 	const latestIds = new Map<string, string>();
-	for (const entry of sessionManager.getBranch()) {
-		if (entry.type === "worktree_snapshot") latestIds.set(originalRoot(entry.root, mappings), entry.snapshotId);
+	for (const [original, checkout] of checkoutRecords(sessionManager, mappings)) {
+		latestIds.set(original, restoreTargetId(checkout));
 	}
 	return latestIds;
+}
+
+/**
+ * The snapshot a resume restores for each root the active branch last recorded a snapshot under, keyed as
+ * `getLatestWorktreeSnapshots` keys them: the latest, or the snapshot a resume restored only partly while that pin
+ * stands (#4922). A pinned snapshot whose record is missing leaves the latest in its place.
+ */
+export function latestRestoreTargets(
+	sessionManager: Pick<
+		SessionManager,
+		"getBranch" | "getWorktreeRootMappings" | "getWorktreeSnapshotRecords" | "getLatestWorktreeSnapshots"
+	>,
+): Map<string, WorktreeSnapshot> {
+	const mappings = sessionManager.getWorktreeRootMappings();
+	const records = sessionManager.getWorktreeSnapshotRecords();
+	const checkouts = checkoutRecords(sessionManager, mappings);
+	const targets = new Map<string, WorktreeSnapshot>();
+	for (const [root, snapshot] of sessionManager.getLatestWorktreeSnapshots()) {
+		const checkout = checkouts.get(originalRoot(root, mappings));
+		const target = checkout === undefined ? undefined : records.get(restoreTargetId(checkout));
+		targets.set(root, target ?? snapshot);
+	}
+	return targets;
+}
+
+export interface DiscardDegradedRestoreOptions {
+	readonly settings: WorktreeSnapshotSettings;
+	/** The partly restored worktree to release, where the session works in it now. Default: every one the session has. */
+	readonly root?: string;
+	readonly signal?: AbortSignal;
+}
+
+/**
+ * Gives up on the snapshots a resume could restore only partly (#4922): records each partly restored worktree as it is
+ * now, as a turn's capture would, without naming the snapshot it lacks, so that worktree's state becomes the
+ * checkout's restore target and collection releases the snapshot it lacked. Resolves with the roots it recorded.
+ * Rejects with `blob-store-unsupported` when the session's storage holds no snapshot content, and with the reason a
+ * worktree could not be captured.
+ */
+export async function discardDegradedRestore(
+	sessionManager: SessionManager,
+	options: DiscardDegradedRestoreOptions,
+): Promise<string[]> {
+	const mappings = sessionManager.getWorktreeRootMappings();
+	const released: string[] = [];
+	for (const [original, checkout] of checkoutRecords(sessionManager, mappings)) {
+		if (checkout.pin === undefined) continue;
+		const root = mapRestoredPath(original, mappings);
+		if (options.root !== undefined && canonicalizeWorktreePath(root) !== canonicalizeWorktreePath(options.root))
+			continue;
+		const store = sessionManager.getSessionStore();
+		if (store.snapshotBlobs === undefined)
+			throw new WorkspaceSnapshotError("blob-store-unsupported", store.descriptor.adapter);
+		const result = await captureWorktreeSnapshot(root, {
+			settings: options.settings,
+			previous: sessionManager.getLatestWorktreeSnapshots().get(root),
+			blobs: store.snapshotBlobs,
+			signal: options.signal,
+		});
+		if (result.status === "unavailable") throw result.reason;
+		if (result.status === "disabled") continue;
+		await sessionManager.appendWorktreeSnapshot(
+			root,
+			result.snapshot.id,
+			result.status === "captured" ? result.snapshot : undefined,
+		);
+		released.push(root);
+	}
+	return released;
+}
+
+/**
+ * The checkouts whose partial restore has been pinned for longer than {@link DEGRADED_RESTORE_RETENTION_DAYS} and
+ * that the session has not recorded since (#4922), where they are now: their pinned snapshot is no longer the restore
+ * target, and collection no longer keeps it.
+ */
+export function lapsedDegradedRestores(
+	sessionManager: Pick<SessionManager, "getBranch" | "getWorktreeRootMappings">,
+): { readonly root: string; readonly pin: DegradedRestorePin; readonly latest: string }[] {
+	const mappings = sessionManager.getWorktreeRootMappings();
+	return [...checkoutRecords(sessionManager, mappings)].flatMap(([original, checkout]) =>
+		checkout.pin?.lapsed && checkout.pin.snapshotId !== checkout.latest
+			? [{ root: mapRestoredPath(original, mappings), pin: checkout.pin, latest: checkout.latest }]
+			: [],
+	);
 }
 
 /** The checkouts on the active branch whose latest snapshot the session holds no record of, where they are now (#4733). */
@@ -533,8 +788,18 @@ export async function resumeSessionWorktree(
 	const pending = options.pendingMappings ?? [];
 	const existing = [...sessionManager.getWorktreeRootMappings(), ...pending];
 	const records = sessionManager.getWorktreeSnapshotRecords();
+	const checkouts = checkoutRecords(sessionManager, existing);
 	const latestIds = latestSnapshotIdsByCheckout(sessionManager, existing);
 	const latest = new Map<string, WorktreeSnapshot>();
+	// The work done in a partly restored worktree of the pinned snapshot `snapshot`, which this resume restores when
+	// `snapshot` cannot be, and puts on top of it when it can (#4922).
+	const pinnedWork = (original: string, snapshot: WorktreeSnapshot) => {
+		const checkout = checkouts.get(original);
+		if (checkout?.pin === undefined || checkout.pin.snapshotId !== snapshot.id || checkout.latest === snapshot.id)
+			return undefined;
+		const work = records.get(checkout.latest);
+		return work === undefined ? undefined : { pin: checkout.pin, work };
+	};
 	const missingRecords: MissingSnapshotRecord[] = [];
 	for (const [root, snapshotId] of latestIds) {
 		const snapshot = records.get(snapshotId);
@@ -551,7 +816,8 @@ export async function resumeSessionWorktree(
 	const warnings: WorktreeRestoreWarning[] = [];
 	const hostWarnings = new Map<WorktreeRootMapping, WorktreeRestoreHostWarning[]>();
 	const reportedLeftovers = new Set<string>();
-	const left: { root: string; snapshot: WorktreeSnapshot; reason: Error }[] = [];
+	const left: { root: string; snapshot: WorktreeSnapshot; reason: Error; degradedFrom?: string }[] = [];
+	const pinnedTo = new Map<WorktreeRootMapping, string>();
 	const unrestored: UnrestoredWorktree[] = [];
 	let continuedIn: string;
 	let selected: { root: string; snapshot: WorktreeSnapshot } | undefined;
@@ -564,9 +830,17 @@ export async function resumeSessionWorktree(
 			const root = mapRestoredPath(original, existing);
 			if (isInside(root, cwd) && (!selected || root.length > selected.root.length)) selected = { root, snapshot };
 			if (options.keepInPlace?.has(root)) continue;
+			const pinned = pinnedWork(original, snapshot);
+			// A pinned checkout left unrestored keeps its pin and the work done in its partly restored worktree (#4922).
+			const leave = (reason: Error) =>
+				left.push(
+					pinned === undefined
+						? { root, snapshot, reason }
+						: { root, snapshot: pinned.work, reason, degradedFrom: snapshot.id },
+				);
 			const cannot = options.cannotRestore?.get(root);
 			if (cannot !== undefined) {
-				left.push({ root, snapshot, reason: cannot });
+				leave(cannot);
 				continue;
 			}
 			const gone = (cause?: Error) =>
@@ -618,9 +892,11 @@ export async function resumeSessionWorktree(
 			let lease: WorktreeLease | undefined;
 			let claimed = false;
 			let seeded = false;
+			// The snapshot the worktree holds: the one restored, or the work done since its partial restore (#4922).
+			let restoredFrom = snapshot;
 			// The exact state, else the best this host can restore, else continue without the checkout.
-			const restoreFresh = (slot: WorktreeLease | undefined) =>
-				restoreBestWorktree(snapshot, {
+			const restoreFresh = (slot: WorktreeLease | undefined) => {
+				const ladder: RestoreBestWorktreeOptions = {
 					blobs,
 					storeDir: options.storeDir,
 					signal: options.signal,
@@ -632,7 +908,12 @@ export async function resumeSessionWorktree(
 								restoreDegraded: (degraded, failure, restoreOptions) =>
 									restoreDegradedWorktreeAt(degraded, failure, slot.path, restoreOptions),
 							}),
+				};
+				if (pinned === undefined) return restoreBestWorktree(snapshot, ladder);
+				return restorePinnedWorktree(snapshot, pinned.work, ladder, (work) => {
+					restoredFrom = work;
 				});
+			};
 			try {
 				const best = await timeCheckoutRestore(
 					root,
@@ -670,7 +951,7 @@ export async function resumeSessionWorktree(
 				);
 				if (best.status === "unrestored") {
 					if (lease) await discardPooledWorktree(lease);
-					left.push({ root, snapshot, reason: best.reason });
+					leave(best.reason);
 					continue;
 				}
 				restored = best;
@@ -680,23 +961,40 @@ export async function resumeSessionWorktree(
 				if (!(error instanceof Error)) throw error;
 				throw refused(error);
 			}
+			// A full restore of a pinned snapshot carries the work done in its partly restored worktree over (#4922).
+			const degradedWork =
+				pinned !== undefined &&
+				restoredFrom === snapshot &&
+				restored.degraded === undefined &&
+				pinned.work.tree !== pinned.pin.base?.tree
+					? await carryOverDegradedWork({
+							worktree: restored.path,
+							work: pinned.work,
+							base: pinned.pin.base?.tree,
+							blobs,
+							storeDir,
+							signal: options.signal,
+						})
+					: undefined;
 			const mapping: WorktreeRootMapping = {
 				from: root,
 				to: restored.path,
-				snapshotId: snapshot.id,
-				tree: snapshot.tree,
+				snapshotId: restoredFrom.id,
+				tree: restoredFrom.tree,
 				restoredAt: new Date().toISOString(),
 				...(restored.degraded === undefined ? {} : { degraded: restored.degraded }),
+				...(degradedWork === undefined ? {} : { degradedWork }),
 			};
 			mappings.push(mapping);
+			if (restoredFrom !== snapshot) pinnedTo.set(mapping, snapshot.id);
 			if (lease) {
 				leases.set(mapping, lease);
 				admitted.add(lease.repository);
-				if (restored.degraded !== undefined) {
+				if (restored.degraded !== undefined || restoredFrom !== snapshot) {
 					await recordPooledWorktreeState(lease, {
-						snapshotId: snapshot.id,
-						head: restored.degraded.head,
-						tree: restored.degraded.tree,
+						snapshotId: restoredFrom.id,
+						head: restored.degraded?.head ?? restoredFrom.head,
+						tree: restored.degraded?.tree ?? restoredFrom.tree,
 					}).catch((error: unknown) =>
 						reportDebug("storage", "worktree-pool-state-failed", failureDebugFields(error)),
 					);
@@ -722,7 +1020,11 @@ export async function resumeSessionWorktree(
 				undefined,
 				mapping,
 				hostWarnings.get(mapping),
+				undefined,
+				undefined,
+				pinnedTo.get(mapping),
 			);
+			if (mapping.degradedWork?.outcome === "applied") await recordCarriedWork(sessionManager, mapping, options);
 		}
 		const continuing = mapRestoredPath(cwd, mappings);
 		const recordedHere = selected !== undefined && left.some((checkout) => checkout.root === selected!.root);
@@ -742,6 +1044,8 @@ export async function resumeSessionWorktree(
 				undefined,
 				[],
 				record,
+				undefined,
+				checkout.degradedFrom,
 			);
 			unrestored.push({ ...checkout, record });
 		}
@@ -779,6 +1083,65 @@ export async function resumeSessionWorktree(
 	return mappings.length === 0
 		? { status: "verified", snapshot, cwd: continuedIn, unrestored, ...missing }
 		: { status: "restored", snapshot, mappings, cwd: continuedIn, warnings, unrestored, ...missing };
+}
+
+/**
+ * Restores a pinned `snapshot` (#4922): exactly, else `work`, the latest snapshot of its partly restored worktree, as
+ * well as this host can, calling `restoredWork` when it does; else nothing, resolving `unrestored` with the exact
+ * restore's failure. `work` shares `snapshot`'s remotes, so a commit a degraded restore of `snapshot` could fall back to
+ * is one a degraded restore of `work` falls back to as well.
+ */
+async function restorePinnedWorktree(
+	snapshot: WorktreeSnapshot,
+	work: WorktreeSnapshot,
+	options: RestoreBestWorktreeOptions,
+	restoredWork: (work: WorktreeSnapshot) => void,
+): Promise<BestWorktreeRestore> {
+	const { restore = restoreWorktree, restoreDegraded: _degraded, candidates: _candidates, ...shared } = options;
+	try {
+		const exact = await restore(snapshot, shared);
+		return { status: "restored", path: exact.path, warnings: exact.warnings ?? [] };
+	} catch (error) {
+		if (options.signal?.aborted || !isRecoverableRestoreFailure(error)) throw error;
+		const best = await restoreBestWorktree(work, options);
+		if (best.status === "unrestored") return { status: "unrestored", reason: error };
+		restoredWork(work);
+		return best;
+	}
+}
+
+/**
+ * Records the restored worktree of `mapping` as it is once a restore carried the work of a partly restored worktree
+ * over (#4922), so the session holds that work without waiting for a turn. A capture that fails leaves it to the next
+ * turn's capture; the reason goes to the debug log.
+ */
+async function recordCarriedWork(
+	sessionManager: SessionManager,
+	mapping: WorktreeRootMapping,
+	options: Pick<ResumeSessionWorktreeOptions, "settings" | "signal">,
+): Promise<void> {
+	const blobs = sessionManager.getSessionStore().snapshotBlobs;
+	if (blobs === undefined) return;
+	try {
+		const result = await captureWorktreeSnapshot(mapping.to, {
+			settings: options.settings,
+			blobs,
+			signal: options.signal,
+		});
+		if (result.status === "captured" || result.status === "unchanged") {
+			await sessionManager.appendWorktreeSnapshot(
+				mapping.to,
+				result.snapshot.id,
+				result.status === "captured" ? result.snapshot : undefined,
+			);
+		} else if (result.status === "unavailable") {
+			reportDebug("storage", "degraded-work-capture-failed", failureDebugFields(result.reason));
+		}
+	} catch (error) {
+		options.signal?.throwIfAborted();
+		if (!isWorkspaceError(error) && !isGitUnavailableError(error)) throw error;
+		reportDebug("storage", "degraded-work-capture-failed", failureDebugFields(error));
+	}
 }
 
 /**
@@ -957,17 +1320,65 @@ function restoreNotices(
 		}
 		if (!entry.restore) return [];
 		const snapshot = records.get(entry.snapshotId);
+		const pinned =
+			entry.degradedFrom === undefined
+				? []
+				: [{ type: "warning" as const, message: formatPinnedRestoreNotice(entry.restore, entry.degradedFrom) }];
 		if (entry.restore.degraded) {
 			const message = formatDegradedRestoreNotice(entry.restore, snapshot, entry.restoreWarnings);
-			return [{ type: "warning" as const, message }];
+			return [{ type: "warning" as const, message }, ...pinned];
 		}
+		const work = entry.restore.degradedWork;
 		return [
 			{ type: "info" as const, message: formatWorktreeRestoreNotice(entry.restore) },
+			...pinned,
+			...(work === undefined
+				? []
+				: [
+						{
+							type: work.outcome === "applied" ? ("info" as const) : ("warning" as const),
+							message: formatDegradedWorkNotice(entry.restore, work),
+						},
+					]),
 			...[...(snapshot ? snapshotRestoreWarnings(snapshot) : []), ...(entry.restoreWarnings ?? [])].map(
 				(warning) => ({ type: "warning" as const, message: formatWorktreeRestoreWarning(warning) }),
 			),
 		];
 	});
+}
+
+/**
+ * The notice for a checkout restored from the work done in a partly restored worktree, because the snapshot that
+ * worktree lacks still cannot be restored here (#4922).
+ */
+export function formatPinnedRestoreNotice(mapping: WorktreeRootMapping, pinnedSnapshotId: string): string {
+	return `${mapping.to} holds snapshot ${short(mapping.snapshotId)}, the work recorded since snapshot ${short(pinnedSnapshotId)} of ${mapping.from} was restored only partly; snapshot ${short(pinnedSnapshotId)} itself still cannot be restored here. It stays this checkout's restore target and is kept for ${DEGRADED_RESTORE_RETENTION_DAYS} days after its partial restore, until a resume restores it fully or discardDegradedRestore releases it.`;
+}
+
+/** The notice for the work of a partly restored worktree that a full restore of its snapshot found (#4922). */
+export function formatDegradedWorkNotice(mapping: WorktreeRootMapping, work: WorktreeDegradedWork): string {
+	const files = work.paths.length === 0 ? "" : ` (${listed(work.paths)})`;
+	const done = `the work done in the partly restored worktree ${work.root}, snapshot ${short(work.snapshotId)}${files}`;
+	switch (work.outcome) {
+		case "applied":
+			return `Also applied ${done}, on top of snapshot ${short(mapping.snapshotId)} in ${mapping.to}.`;
+		case "kept":
+			return `Did not apply ${done}: it conflicts with snapshot ${short(mapping.snapshotId)}. Commit ${short(work.commit ?? "")} (ref ${work.ref}) holds it; run \`git diff ${work.base} ${work.commit} | git apply --3way\` in ${mapping.to} to apply it.`;
+		case "unavailable":
+			return `Could not read ${done} here (${work.reason}), so it is not in ${mapping.to}; it is still in that worktree on the machine where it was done.`;
+	}
+}
+
+/**
+ * The notice for a checkout whose partial restore was pinned for longer than {@link DEGRADED_RESTORE_RETENTION_DAYS}
+ * (#4922): the snapshot it lacked is no longer its restore target, and collection no longer keeps it.
+ */
+export function formatLapsedPinNotice(lapsed: {
+	readonly root: string;
+	readonly pin: DegradedRestorePin;
+	readonly latest: string;
+}): string {
+	return `Snapshot ${short(lapsed.pin.snapshotId)} of ${lapsed.root}, restored only partly on ${lapsed.pin.since.slice(0, 10)}, is no longer kept: ${DEGRADED_RESTORE_RETENTION_DAYS} days have passed. The checkout continues from snapshot ${short(lapsed.latest)}, the work recorded in its partly restored worktree.`;
 }
 
 /**
@@ -1177,8 +1588,14 @@ export function describeWorktreeRestoreStatus(
 				: undefined;
 		} else if (entry.unrestored && resolve(entry.root) === resolve(root)) {
 			status = { snapshotId: entry.snapshotId, message: formatUnrestoredNotice(entry.root, entry.unrestored) };
-		} else if (status && resolve(entry.root) === resolve(root) && entry.snapshotId !== status.snapshotId) {
-			// A later snapshot of the checkout records what it holds now, which replaces what the resume left out.
+		} else if (
+			status &&
+			resolve(entry.root) === resolve(root) &&
+			entry.snapshotId !== status.snapshotId &&
+			entry.degradedFrom !== status.snapshotId
+		) {
+			// A later snapshot of the checkout records what it holds now, which replaces what the resume left out, unless
+			// it records the partly restored worktree, whose snapshot stays its restore target (#4922).
 			status = undefined;
 		}
 	}

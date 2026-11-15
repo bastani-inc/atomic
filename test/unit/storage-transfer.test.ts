@@ -710,3 +710,46 @@ test("an exported session keeps the branch a /tree move without a summary select
 	);
 	assert.equal(viaImportFlag.getLeafId(), selectedId);
 });
+
+test("a session whose messages contain U+2028 and U+2029 exports and imports between SQLite and JSONL storage, and through --import (#4957)", async () => {
+	const text = "a\u2028b\u2029c";
+	const useJsonl = (agentDir: string) =>
+		writeFileSync(
+			join(agentDir, "settings.json"),
+			JSON.stringify({ sessions: { storage: { dir: "jsonl-sessions" } } }),
+		);
+	const userTexts = async (store: SessionStore, sessionId: string) =>
+		(await store.load(sessionId)).entries.flatMap((entry) =>
+			entry.type === "message" && entry.message.role === "user" ? [entry.message.content] : [],
+		);
+	for (const from of ["sqlite", "jsonl"] as const) {
+		const source = machine(`${from}-source`);
+		if (from === "jsonl") useJsonl(source);
+		const sourceStore = await sessionStore(source);
+		const manager = await SessionManager.create(sourceStore, project);
+		for (const content of [text, `${text}\u2028`])
+			await manager.appendMessage({ role: "user", content, timestamp: Date.now() });
+		const sessionId = manager.getSessionId();
+		await sourceStore.close();
+		const directory = join(root, `${from}-export`);
+		const exported = await storage(source, ["export", directory, "--sessions"]);
+		assert.equal(exported.code, 0, exported.err);
+		const file = join(directory, "sessions", `${sessionId}.jsonl`);
+		for (const to of ["sqlite", "jsonl"] as const) {
+			const target = machine(`${from}-to-${to}`);
+			if (to === "jsonl") useJsonl(target);
+			const imported = await storage(target, ["import", directory, "--sessions"]);
+			assert.equal(imported.code, 0, imported.err);
+			assert.deepEqual(await userTexts(await sessionStore(target), sessionId), [text, `${text}\u2028`]);
+			const again = join(root, `${from}-to-${to}-export`);
+			assert.equal((await storage(target, ["export", again, "--sessions"])).code, 0);
+			assert.equal(readFileSync(join(again, "sessions", `${sessionId}.jsonl`), "utf8"), readFileSync(file, "utf8"));
+
+			const flagTarget = machine(`${from}-flag-${to}`);
+			if (to === "jsonl") useJsonl(flagTarget);
+			const flagStore = await sessionStore(flagTarget);
+			const viaImportFlag = await SessionManager.importFromJsonl(file, project, flagStore);
+			assert.deepEqual(await userTexts(flagStore, viaImportFlag.getSessionId()), [text, `${text}\u2028`]);
+		}
+	}
+});

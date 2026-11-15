@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, type Stats } from "node:fs";
-import { lstat, mkdir, open, readdir, readFile, realpath, rm, rmdir, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, readFile, realpath, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import lockfile from "proper-lockfile";
 import { noteRestoreFetch, timeRestorePhase } from "../resume/timings.ts";
@@ -173,8 +174,8 @@ async function writing<T>(target: string, snapshotId: string | null, write: () =
 
 const repositoryLocks = new Map<string, Promise<void>>();
 
-/** Serializes work on one shared object store within this process; Git's own locks cover other processes. */
-async function withRepositoryLock<T>(store: string, action: () => Promise<T>): Promise<T> {
+/** Serializes work on one shared object store within this process, ahead of its cross-process lock. */
+async function withProcessRepositoryLock<T>(store: string, action: () => Promise<T>): Promise<T> {
 	const previous = repositoryLocks.get(store) ?? Promise.resolve();
 	let release!: () => void;
 	const current = new Promise<void>((resolveLock) => {
@@ -188,6 +189,61 @@ async function withRepositoryLock<T>(store: string, action: () => Promise<T>): P
 	} finally {
 		release();
 		if (repositoryLocks.get(store) === chained) repositoryLocks.delete(store);
+	}
+}
+
+/** The repository lock's constants: a stopped process loses it after 30 seconds; a held one is checked every 50 ms. */
+const REPOSITORY_LOCK_STALE_MS = 30_000;
+const REPOSITORY_LOCK_UPDATE_MS = 10_000;
+const REPOSITORY_LOCK_POLL_MS = 50;
+
+/**
+ * Serializes work on one shared object store, in this process and across processes (#4951): creating the store,
+ * configuring its remotes, fetching into it and updating its refs. Git's own locks fail rather than wait, so two
+ * processes doing either at once would fail one of them. Waiters in this process queue behind each other; across
+ * processes, the store's lock file `<store>.lock` is polled until it is free or its holder stopped refreshing it.
+ */
+function withRepositoryLock<T>(
+	store: string,
+	snapshotId: string | null,
+	signal: AbortSignal | undefined,
+	action: () => Promise<T>,
+): Promise<T> {
+	return withProcessRepositoryLock(store, async () => {
+		const unlock = await lockRepository(store, snapshotId, signal);
+		try {
+			return await action();
+		} finally {
+			// A release that fails leaves a lock file nothing refreshes, which the next waiter takes once it is stale.
+			await unlock().catch(() => {});
+		}
+	});
+}
+
+/** Takes the cross-process lock of `store`, waiting while another live process holds it. */
+async function lockRepository(
+	store: string,
+	snapshotId: string | null,
+	signal: AbortSignal | undefined,
+): Promise<() => Promise<void>> {
+	const repositories = dirname(store);
+	await writing(repositories, snapshotId, () => mkdir(repositories, { recursive: true }));
+	for (;;) {
+		signal?.throwIfAborted();
+		try {
+			return await lockfile.lock(store, {
+				realpath: false,
+				stale: REPOSITORY_LOCK_STALE_MS,
+				update: REPOSITORY_LOCK_UPDATE_MS,
+				retries: 0,
+				// A lost lock only lets another process into the store early, where Git's own locks still guard each write.
+				onCompromised: () => {},
+			});
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ELOCKED")
+				throw unwritablePathError(`${store}.lock`, snapshotId, error);
+		}
+		await sleep(REPOSITORY_LOCK_POLL_MS);
 	}
 }
 
@@ -340,7 +396,7 @@ async function sweepRestoreRecords(
 			const record: unknown = JSON.parse(await readFile(recordPath, "utf8"));
 			if (!isRestoreRecord(record, storeDir, match[1]!)) throw new Error("Invalid restore crash record");
 			warningPath = record.staging;
-			await withRepositoryLock(record.store, () => cleanRestoreRecord(record, signal));
+			await withRepositoryLock(record.store, null, signal, () => cleanRestoreRecord(record, signal));
 			if (compromised) throw compromised;
 			await rm(recordPath);
 		} catch (error) {
@@ -472,8 +528,8 @@ export async function storeCheckoutHead(
 ): Promise<void> {
 	const store = objectStorePath(resolve(storeDir), remotes);
 	const git: GitRunOptions = { cwd: checkout, signal, env: { GIT_DIR: store } };
-	await withRepositoryLock(store, async () => {
-		await ensureObjectStore(store, null, signal);
+	await withRepositoryLock(store, null, signal, async () => {
+		await ensureObjectStore(store, signal);
 		if (!(await hasObject(git, `${head}^{commit}`))) await runFetch(git, checkout, [head], ["--update-shallow"]);
 	});
 }
@@ -491,15 +547,26 @@ async function initializedStore(store: string): Promise<boolean> {
 }
 
 /**
- * Creates `store` unless it already has its configuration and HEAD. Callers hold its repository lock, so restores never
- * initialize one store at once, and an existing store is left alone: re-initializing rewrites its configuration, which
- * on Windows fails the other restores' Git processes that are reading it.
+ * Creates `store` unless it already has its configuration and HEAD. Callers hold its repository lock, so no two
+ * restores, in this process or others, initialize one store at once (#4951), and an existing store is left alone:
+ * re-initializing rewrites its configuration, which on Windows fails the other restores' Git processes that are
+ * reading it. The store is initialized beside its place and renamed into it, so a process stopped midway leaves no
+ * half-made store; a directory already there that is not one, as an older build may have left, is initialized in place.
  */
-async function ensureObjectStore(store: string, snapshotId: string | null, signal?: AbortSignal): Promise<void> {
+async function ensureObjectStore(store: string, signal?: AbortSignal): Promise<void> {
 	if (await initializedStore(store)) return;
 	const repositories = dirname(store);
-	await writing(repositories, snapshotId, () => mkdir(repositories, { recursive: true }));
-	await runGit(["init", "-q", "--bare", store], { cwd: repositories, signal });
+	const fresh = join(repositories, `.${basename(store)}.${process.pid}.init`);
+	try {
+		await runGit(["init", "-q", "--bare", fresh], { cwd: repositories, signal });
+		try {
+			await rename(fresh, store);
+		} catch {
+			await runGit(["init", "-q", "--bare", store], { cwd: repositories, signal });
+		}
+	} finally {
+		await rm(fresh, { recursive: true, force: true });
+	}
 }
 
 function bundlePrerequisites(bundle: Uint8Array): string[] {
@@ -653,7 +720,7 @@ export async function unshallowRestoredWorktree(
 	if (common.exitCode !== 0 || !SHARED_STORE.test(store)) return false;
 	const git: GitRunOptions = { cwd: dirname(store), signal, env: { GIT_DIR: store } };
 	// Sibling worktrees of one store are compared at once: one fetches its history, the others find it complete.
-	return withRepositoryLock(store, async () =>
+	return withRepositoryLock(store, null, signal, async () =>
 		(await historyFetchOptions(git)).length === 0
 			? true
 			: unshallowStore(git, await configuredRemoteUrls(git), commits),
@@ -1068,8 +1135,8 @@ async function storeSnapshotObjects(
 	blobs: SnapshotBlobStore | undefined,
 	scratch: string,
 ): Promise<void> {
-	await withRepositoryLock(store, async () => {
-		await ensureObjectStore(store, snapshot?.id ?? null, git.signal);
+	await withRepositoryLock(store, snapshot?.id ?? null, git.signal, async () => {
+		await ensureObjectStore(store, git.signal);
 		const fetched = await timeRestorePhase("fetch", () =>
 			ensureHead(
 				git,
@@ -1120,6 +1187,27 @@ function snapshotPatches(
 				: loadBlob(blobs, link.patch, { snapshotId: snapshot.id, role: "patch", deltaIndex }),
 		),
 	);
+}
+
+/**
+ * Makes `snapshot`'s commit and tree objects of this host's shared object store for its repository, as a restore does,
+ * without writing a worktree, and resolves with the store's path (#4922). Rejects with the restore's typed failures,
+ * such as `blob-missing` or `commits-unavailable`, and `invalid-snapshot` for a record that fails the security checks.
+ */
+export async function storeSnapshotTree(
+	snapshot: WorktreeSnapshot,
+	options: Pick<RestoreWorktreeSnapshotOptions, "blobs" | "storeDir" | "signal">,
+): Promise<string> {
+	const binding: WorkspaceBinding = { ...snapshot, remotes: [...snapshot.remotes] };
+	assertUsableSnapshotRecord(binding, snapshot);
+	const storeDir = resolve(options.storeDir ?? defaultWorktreeSnapshotStoreDir());
+	const patches = await snapshotPatches(snapshot, options.blobs);
+	return withScratchDirectory(async (scratch) => {
+		const store = objectStorePath(storeDir, snapshot.remotes);
+		const git: GitRunOptions = { cwd: scratch, signal: options.signal, env: { GIT_DIR: store } };
+		await storeSnapshotObjects(git, store, binding, snapshot, patches, options.blobs, scratch);
+		return store;
+	});
 }
 
 export interface ResetPooledWorktreeOptions {
@@ -1288,64 +1376,73 @@ async function restoreDegradedValidated(
 			...(failure.reason ? { causeReason: failure.reason } : {}),
 			hint: failure.hint,
 		};
-		const degraded = await withRepositoryLock(store, async (): Promise<WorktreeDegradedRestore> => {
-			await ensureObjectStore(store, snapshot.id, signal);
-			const configured = await configureRecordedRemotes(git, snapshot.remotes);
-			// The exact restore may have stopped before it reached the recorded commit: fetch it, or take it from the bundle.
-			const reached = await timeRestorePhase("fetch", () => ensureHead(git, snapshot, options.blobs, scratch)).then(
-				(fetched) => ({ fetched }),
-				(error: unknown) => {
-					if (isWorkspaceRestoreError(error)) return undefined;
-					throw error;
-				},
-			);
-			if (reached !== undefined) {
-				const partial = await timeRestorePhase("reconstruct", () =>
-					applicableChanges(git, snapshot, options.blobs, scratch),
+		const degraded = await withRepositoryLock(
+			store,
+			snapshot.id,
+			signal,
+			async (): Promise<WorktreeDegradedRestore> => {
+				await ensureObjectStore(store, signal);
+				const configured = await configureRecordedRemotes(git, snapshot.remotes);
+				// The exact restore may have stopped before it reached the recorded commit: fetch it, or take it from the bundle.
+				const reached = await timeRestorePhase("fetch", () =>
+					ensureHead(git, snapshot, options.blobs, scratch),
+				).then(
+					(fetched) => ({ fetched }),
+					(error: unknown) => {
+						if (isWorkspaceRestoreError(error)) return undefined;
+						throw error;
+					},
 				);
+				if (reached !== undefined) {
+					const partial = await timeRestorePhase("reconstruct", () =>
+						applicableChanges(git, snapshot, options.blobs, scratch),
+					);
+					await runGit(["update-ref", "--stdin"], {
+						...git,
+						input: [
+							`update refs/atomic/heads/${snapshot.head} ${snapshot.head}\n`,
+							...(configured && reached.fetched
+								? [`update ${PUSHED_REFS}${snapshot.head} ${snapshot.head}\n`]
+								: []),
+						].join(""),
+					});
+					return {
+						stage: "partial-changes",
+						head: snapshot.head,
+						tree: partial.tree,
+						missingLinks: partial.missingLinks,
+						missingPaths: partial.missingPaths,
+						missingCommits: [],
+						...cause,
+					};
+				}
+				const closest = await timeRestorePhase("fetch", () =>
+					closestCommit(git, snapshot, candidates, options.blobs),
+				);
+				if (closest === undefined) throw failure;
+				// Which unpushed commits the closest commit's history lacks is an ancestry question a shallow store cannot answer.
+				await unshallowStore(git, snapshot.remotes, [closest.commit]);
 				await runGit(["update-ref", "--stdin"], {
 					...git,
 					input: [
-						`update refs/atomic/heads/${snapshot.head} ${snapshot.head}\n`,
-						...(configured && reached.fetched
-							? [`update ${PUSHED_REFS}${snapshot.head} ${snapshot.head}\n`]
+						`update refs/atomic/heads/${closest.commit} ${closest.commit}\n`,
+						...(configured && closest.fromRemote
+							? [`update ${PUSHED_REFS}${closest.commit} ${closest.commit}\n`]
 							: []),
 					].join(""),
 				});
 				return {
-					stage: "partial-changes",
-					head: snapshot.head,
-					tree: partial.tree,
-					missingLinks: partial.missingLinks,
-					missingPaths: partial.missingPaths,
-					missingCommits: [],
+					stage: "closest-commit",
+					head: closest.commit,
+					tree: await gitText(["rev-parse", `${closest.commit}^{tree}`], git),
+					basis: closest.basis,
+					missingLinks: snapshot.chain.flatMap((link, index) => (link.patch === null ? [] : [index])),
+					missingPaths: [],
+					missingCommits: await notInHistory(git, unpushedCommits(snapshot), closest.commit),
 					...cause,
 				};
-			}
-			const closest = await timeRestorePhase("fetch", () => closestCommit(git, snapshot, candidates, options.blobs));
-			if (closest === undefined) throw failure;
-			// Which unpushed commits the closest commit's history lacks is an ancestry question a shallow store cannot answer.
-			await unshallowStore(git, snapshot.remotes, [closest.commit]);
-			await runGit(["update-ref", "--stdin"], {
-				...git,
-				input: [
-					`update refs/atomic/heads/${closest.commit} ${closest.commit}\n`,
-					...(configured && closest.fromRemote
-						? [`update ${PUSHED_REFS}${closest.commit} ${closest.commit}\n`]
-						: []),
-				].join(""),
-			});
-			return {
-				stage: "closest-commit",
-				head: closest.commit,
-				tree: await gitText(["rev-parse", `${closest.commit}^{tree}`], git),
-				basis: closest.basis,
-				missingLinks: snapshot.chain.flatMap((link, index) => (link.patch === null ? [] : [index])),
-				missingPaths: [],
-				missingCommits: await notInHistory(git, unpushedCommits(snapshot), closest.commit),
-				...cause,
-			};
-		});
+			},
+		);
 		const measured = await publishWorktree({
 			git,
 			store,
