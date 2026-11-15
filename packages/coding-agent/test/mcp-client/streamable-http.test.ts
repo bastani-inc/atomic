@@ -221,6 +221,124 @@ describe("consumeSseStream byte chunking", () => {
 		const events = await parseBytes([encoder.encode("data: x"), new Uint8Array([0xc3])]);
 		assert.deepEqual(events, [{ data: "x\uFFFD" }]);
 	});
+
+	it("parses a 15 MB data line split into 16 KB chunks in linear time (#4892)", async () => {
+		const payload = "x".repeat(15 * 1024 * 1024);
+		const bytes = encoder.encode(`id: big\r\ndata: ${payload}\r\n\r\n`);
+		const chunkBytes = 16 * 1024;
+		const chunks: Uint8Array[] = [];
+		for (let offset = 0; offset < bytes.length; offset += chunkBytes) {
+			chunks.push(bytes.subarray(offset, offset + chunkBytes));
+		}
+		const started = performance.now();
+		const events = await parseBytes(chunks);
+		const elapsedMs = performance.now() - started;
+		assert.equal(events.length, 1);
+		assert.equal(events[0]?.id, "big");
+		assert.equal(events[0]?.data === payload, true);
+		// The quadratic rescan took seconds; a linear scan takes tens of milliseconds.
+		assert.ok(elapsedMs < 1_000, `parsing took ${Math.round(elapsedMs)} ms`);
+	});
+
+	it("keeps line breaks, multi-line data, and multi-byte characters intact across chunk boundaries (#4892)", async () => {
+		const text = ": note\r\nevent: big\r\ndata: é€🌍 one\r\ndata: two\rid: 9\n\r\ndata: three\n\ndata: tail";
+		const bytes = encoder.encode(text);
+		const expected = [{ event: "big", data: "é€🌍 one\ntwo", id: "9" }, { data: "three" }, { data: "tail" }];
+		for (const size of [1, 2, 3, 5, 7, 11]) {
+			const chunks: Uint8Array[] = [];
+			for (let offset = 0; offset < bytes.length; offset += size) chunks.push(bytes.subarray(offset, offset + size));
+			assert.deepEqual(await parseBytes(chunks), expected, `chunk size ${size}`);
+		}
+	});
+
+	it("rejects an unterminated line once its chunks exceed the limit, before the stream ends (#4892)", async () => {
+		let sent = 0;
+		let cancelled = false;
+		const stream = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.enqueue(encoder.encode("data: "));
+			},
+			pull(controller) {
+				sent++;
+				controller.enqueue(encoder.encode("x".repeat(16)));
+			},
+			cancel() {
+				cancelled = true;
+			},
+		});
+		await assert.rejects(
+			consumeSseStream(stream, { maxEventBytes: 64, onEvent: () => {} }),
+			/MCP SSE event exceeds 64 bytes/,
+		);
+		// "data: " plus four 16-byte chunks is 70 bytes, the first total over 64.
+		assert.ok(sent >= 4 && sent < 8, `sent ${sent} chunks`);
+		assert.equal(cancelled, true);
+	});
+
+	it("stops on abort without dispatching the partial event, and cancels the stream (#4895)", async () => {
+		let cancelled = false;
+		let controller!: ReadableStreamDefaultController<Uint8Array>;
+		const stream = new ReadableStream<Uint8Array>({
+			start(c) {
+				controller = c;
+			},
+			cancel() {
+				cancelled = true;
+			},
+		});
+		const abort = new AbortController();
+		const events: SseEvent[] = [];
+		const consumed = consumeSseStream(stream, { signal: abort.signal, onEvent: (event) => events.push(event) });
+		controller.enqueue(encoder.encode("data: whole\n\ndata: partial\n"));
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		abort.abort();
+		await assert.rejects(consumed, { name: "AbortError" });
+		assert.deepEqual(events, [{ data: "whole" }]);
+		assert.equal(cancelled, true);
+	});
+
+	it("rejects on a signal aborted before the stream is read, without dispatching (#4895)", async () => {
+		const events: SseEvent[] = [];
+		await assert.rejects(
+			consumeSseStream(
+				new ReadableStream<Uint8Array>({
+					start(controller) {
+						controller.enqueue(encoder.encode("data: late\n\n"));
+						controller.close();
+					},
+				}),
+				{ signal: AbortSignal.abort(), onEvent: (event) => events.push(event) },
+			),
+			{ name: "AbortError" },
+		);
+		assert.deepEqual(events, []);
+	});
+
+	it("accepts a line of exactly the limit and counts multi-byte characters in bytes (#4892)", async () => {
+		const within = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.enqueue(encoder.encode("data: "));
+				controller.enqueue(encoder.encode("x".repeat(10)));
+				controller.enqueue(encoder.encode("\n\n"));
+				controller.close();
+			},
+		});
+		const events: SseEvent[] = [];
+		await consumeSseStream(within, { maxEventBytes: 16, onEvent: (event) => events.push(event) });
+		assert.deepEqual(events, [{ data: "x".repeat(10) }]);
+
+		// Six characters, but "data: " plus 2 bytes each for "é" is 18 bytes.
+		const wide = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.enqueue(encoder.encode("data: "));
+				controller.enqueue(encoder.encode("é".repeat(6)));
+			},
+		});
+		await assert.rejects(
+			consumeSseStream(wide, { maxEventBytes: 16, onEvent: () => {} }),
+			/MCP SSE event exceeds 16 bytes/,
+		);
+	});
 });
 
 describe("StreamableHttpTransport", () => {
@@ -247,6 +365,31 @@ describe("StreamableHttpTransport", () => {
 			requests.some((entry) => entry.method === "DELETE"),
 			true,
 		);
+	});
+
+	it("returns a 12 MB tool result streamed over SSE (#4892)", async () => {
+		const text = "y".repeat(12 * 1024 * 1024);
+		const { url } = await startServer(async (request, response, requests) => {
+			if (request.method !== "POST") return protocolHandler(request, response, requests);
+			const message = JSON.parse(await readBody(request)) as Record<string, unknown>;
+			if (message.method !== "tools/call") return protocolHandler(request, response, requests, message);
+			const body = Buffer.from(
+				`data: ${JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { content: [{ type: "text", text }] } })}\n\n`,
+			);
+			response.writeHead(200, { "content-type": "text/event-stream" });
+			for (let offset = 0; offset < body.length; offset += 16 * 1024) {
+				response.write(body.subarray(offset, offset + 16 * 1024));
+			}
+			response.end();
+		});
+		const client = new McpClient({ name: "http-test", version: "1.0.0" });
+		await client.connect(new StreamableHttpTransport({ url, openGetStream: false }));
+		const result = await client.callTool("big");
+		await client.close();
+		const content = result.content as { type: string; text: string }[];
+		assert.equal(content.length, 1);
+		assert.equal(content[0]?.type, "text");
+		assert.equal(content[0]?.text === text, true);
 	});
 
 	it("classifies authentication failures", async () => {
@@ -319,9 +462,11 @@ describe("StreamableHttpTransport", () => {
 
 	it("resumes a response stream the server closed before answering", async () => {
 		const resumeHeaders: (string | undefined)[] = [];
+		const resumeAccepts: (string | undefined)[] = [];
 		const { url } = await startServer(async (request, response, requests) => {
 			if (request.method === "GET" && request.headers["last-event-id"]) {
 				resumeHeaders.push(request.headers["last-event-id"] as string);
+				resumeAccepts.push(request.headers.accept);
 				response.writeHead(200, { "content-type": "text/event-stream" });
 				response.end(
 					`id: 2\ndata: ${JSON.stringify({ jsonrpc: "2.0", id: 2, result: { content: [{ type: "text", text: "resumed" }] } })}\n\n`,
@@ -341,6 +486,7 @@ describe("StreamableHttpTransport", () => {
 		await client.connect(new StreamableHttpTransport({ url, openGetStream: false }));
 		assert.deepEqual(await client.callTool("echo"), { content: [{ type: "text", text: "resumed" }] });
 		assert.deepEqual(resumeHeaders, ["1"]);
+		assert.deepEqual(resumeAccepts, ["text/event-stream"]);
 		assert.deepEqual(errors, []);
 		await client.close();
 	});
@@ -690,6 +836,131 @@ describe("StreamableHttpTransport", () => {
 		const client = new McpClient({ name: "http-test", version: "1.0.0" });
 		await client.connect(new StreamableHttpTransport({ url, openGetStream: false }));
 		await assert.rejects(client.listTools(), McpSessionExpiredError);
+		await client.close();
+	});
+});
+
+describe("StreamableHttpTransport request cancellation", () => {
+	/** A server whose tool calls answer with an SSE stream that primes resumption and then never ends. */
+	async function startHangingServer() {
+		const state = { open: 0, opened: 0, resumes: 0 };
+		const { url } = await startServer(async (request, response, requests) => {
+			if (request.method === "GET" && request.headers["last-event-id"]) state.resumes++;
+			if (request.method !== "POST") return protocolHandler(request, response, requests);
+			const message = JSON.parse(await readBody(request)) as Record<string, unknown>;
+			if (message.method !== "tools/call") return protocolHandler(request, response, requests, message);
+			state.open++;
+			state.opened++;
+			response.on("close", () => state.open--);
+			response.writeHead(200, { "content-type": "text/event-stream" });
+			response.write("id: primed\ndata:\n\n");
+		});
+		return { url, state };
+	}
+
+	async function waitUntil(condition: () => boolean, description: string): Promise<void> {
+		const deadline = Date.now() + 10_000;
+		while (!condition()) {
+			if (Date.now() > deadline) assert.fail(`timed out waiting until ${description}`);
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+	}
+
+	it("closes the response streams of aborted tool calls (#4895)", async () => {
+		const { url, state } = await startHangingServer();
+		const client = new McpClient({ name: "http-test", version: "1.0.0" });
+		await client.connect(new StreamableHttpTransport({ url, openGetStream: false }));
+		for (let call = 0; call < 21; call++) {
+			const controller = new AbortController();
+			const result = client.callTool("hang", {}, { signal: controller.signal });
+			await waitUntil(() => state.opened === call + 1, `call ${call} opened its stream`);
+			controller.abort();
+			await assert.rejects(result, { name: "AbortError" });
+		}
+		await waitUntil(() => state.open === 0, "every aborted stream closed");
+		assert.equal(state.resumes, 0);
+		await client.close();
+	});
+
+	it("closes the response stream of a timed-out tool call without resuming it (#4895)", async () => {
+		const { url, state } = await startHangingServer();
+		const client = new McpClient({ name: "http-test", version: "1.0.0" });
+		await client.connect(
+			new StreamableHttpTransport({ url, openGetStream: false, reconnect: { initialDelayMs: 1 } }),
+		);
+		await assert.rejects(client.callTool("hang", {}, { timeoutMs: 100 }), { name: "McpTimeoutError" });
+		await waitUntil(() => state.open === 0, "the timed-out stream closed");
+		// A resume would show up within a few reconnect delays.
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		assert.equal(state.resumes, 0);
+		await client.close();
+	});
+
+	it("closes the request of a call aborted before the server answers (#4895)", async () => {
+		let received = 0;
+		let closed = 0;
+		const { url } = await startServer(async (request, response, requests) => {
+			if (request.method !== "POST") return protocolHandler(request, response, requests);
+			const message = JSON.parse(await readBody(request)) as Record<string, unknown>;
+			if (message.method !== "tools/call") return protocolHandler(request, response, requests, message);
+			// Never answers, not even with headers.
+			received++;
+			response.on("close", () => closed++);
+		});
+		const client = new McpClient({ name: "http-test", version: "1.0.0" });
+		await client.connect(new StreamableHttpTransport({ url, openGetStream: false }));
+		const controller = new AbortController();
+		const result = client.callTool("hang", {}, { signal: controller.signal });
+		await waitUntil(() => received === 1, "the server received the call");
+		controller.abort();
+		await assert.rejects(result, { name: "AbortError" });
+		await waitUntil(() => closed === 1, "the aborted request closed");
+		await client.close();
+	});
+
+	it("does not resume the stream of a call aborted while waiting to reconnect (#4895)", async () => {
+		let resumes = 0;
+		let ended = 0;
+		const { url } = await startServer(async (request, response, requests) => {
+			if (request.method === "GET" && request.headers["last-event-id"]) resumes++;
+			if (request.method !== "POST") return protocolHandler(request, response, requests);
+			const message = JSON.parse(await readBody(request)) as Record<string, unknown>;
+			if (message.method !== "tools/call") return protocolHandler(request, response, requests, message);
+			// A resumable stream that the server drops before answering.
+			response.on("close", () => ended++);
+			response.writeHead(200, { "content-type": "text/event-stream" });
+			response.end("id: 1\nretry: 200\ndata:\n\n");
+		});
+		const client = new McpClient({ name: "http-test", version: "1.0.0" });
+		const errors: Error[] = [];
+		client.onError((error) => errors.push(error));
+		await client.connect(new StreamableHttpTransport({ url, openGetStream: false }));
+		const controller = new AbortController();
+		const result = client.callTool("hang", {}, { signal: controller.signal });
+		await waitUntil(() => ended === 1, "the server dropped the stream");
+		controller.abort();
+		await assert.rejects(result, { name: "AbortError" });
+		// Past the server's 200 ms retry delay, when a resume would have been sent.
+		await new Promise((resolve) => setTimeout(resolve, 400));
+		assert.equal(resumes, 0);
+		assert.deepEqual(errors, []);
+		await client.close();
+	});
+
+	it("cancels the response body of an aborted call even when fetch ignores the signal (#4895)", async () => {
+		const { url, state } = await startHangingServer();
+		const fetchIgnoringSignal: McpFetch = (input, init) => fetch(input, { ...init, signal: undefined });
+		const client = new McpClient({ name: "http-test", version: "1.0.0" });
+		await client.connect(new StreamableHttpTransport({ url, openGetStream: false, fetch: fetchIgnoringSignal }));
+		const controller = new AbortController();
+		const result = client.callTool("hang", {}, { signal: controller.signal });
+		await waitUntil(() => state.opened === 1, "the call opened its stream");
+		// Let the transport start reading the body before aborting.
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		controller.abort();
+		await assert.rejects(result, { name: "AbortError" });
+		await waitUntil(() => state.open === 0, "the aborted stream closed");
+		assert.equal(state.resumes, 0);
 		await client.close();
 	});
 });
