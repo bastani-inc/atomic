@@ -27,6 +27,15 @@ const sessions: SessionInfo[] = [
 	peer("c3d4e5f6-1111-4222-8333-000000000003", "reviewer", "/repo/api"),
 ];
 
+const WORKER_WEB = {
+	sessionId: "b2c3d4e5-1111-4222-8333-000000000002",
+	name: "worker-web",
+	cwd: "/repo/web",
+	state: "idle",
+	groups: ["default"],
+	self: false,
+};
+
 const harnesses: Harness[] = [];
 const roots: string[] = [];
 afterEach(async () => {
@@ -35,6 +44,7 @@ afterEach(async () => {
 });
 
 async function intercomHarness() {
+	const replyTracker = new ReplyTracker();
 	const sent: { to: string; text: string }[] = [];
 	const client = {
 		sessionId: SELF_ID,
@@ -62,7 +72,7 @@ async function intercomHarness() {
 						confirmSend: false,
 						beginReplyWait: (from: string, replyTo: string, signal?: AbortSignal) =>
 							waiters.begin(from, replyTo, signal),
-						replyTracker: new ReplyTracker(),
+						replyTracker,
 						homeGroup: () => "default",
 						setJoinedGroups() {},
 						clearJoinedGroups() {},
@@ -75,10 +85,10 @@ async function intercomHarness() {
 	markTrustedMandatoryRuntimeExtension(extensionsResult.extensions[1]!);
 	const harness = await createHarness({
 		resourceLoader: createTestResourceLoader({ extensionsResult }),
-		initialActiveToolNames: ["codemode", "intercom"],
+		initialActiveToolNames: ["read", "codemode", "intercom"],
 	});
 	harnesses.push(harness);
-	return { harness, sent };
+	return { harness, sent, replyTracker };
 }
 
 async function runScript(harness: Harness, code: string): Promise<{ isError: boolean; text: string }> {
@@ -100,10 +110,22 @@ test("a codemode script lists intercom sessions and filters them by cwd (#5087)"
 	const { harness } = await intercomHarness();
 	const result = await runScript(
 		harness,
-		'const listed = await tools.intercom({ action: "list" }); return listed.sessions.filter((session) => session.cwd === "/repo/api");',
+		'const listed = await tools.intercom({ action: "list" }); return [listed.action, listed.groups, listed.workflowStages, listed.sessions.find((session) => session.self), listed.sessions.filter((session) => session.cwd === "/repo/api")];',
 	);
 	assert.equal(result.isError, false, result.text);
-	assert.deepEqual(lastJson(result.text), [
+	const [action, groups, stages, self, filtered] = lastJson(result.text) as unknown[];
+	assert.equal(action, "list");
+	assert.deepEqual(groups, ["default"]);
+	assert.deepEqual(stages, []);
+	assert.deepEqual(self, {
+		sessionId: SELF_ID,
+		name: "orchestrator",
+		cwd: "/repo",
+		state: "idle",
+		groups: ["default"],
+		self: true,
+	});
+	assert.deepEqual(filtered, [
 		{
 			sessionId: "a1b2c3d4-1111-4222-8333-000000000001",
 			name: "worker-api",
@@ -125,17 +147,48 @@ test("a codemode script lists intercom sessions and filters them by cwd (#5087)"
 });
 
 test("a codemode script reads intercom status and pending asks as structured values (#5087)", async () => {
-	const { harness } = await intercomHarness();
+	const { harness, replyTracker } = await intercomHarness();
+	const empty = await runScript(harness, 'return await tools.intercom({ action: "pending" });');
+	assert.deepEqual(lastJson(empty.text), { action: "pending", inbound: [], outbound: [] });
+	replyTracker.recordIncomingMessage(
+		sessions[2]!,
+		{ id: "ask-1", timestamp: 1, expectsReply: true, content: { text: "Which branch?" } },
+		42,
+	);
 	const result = await runScript(
 		harness,
-		'const status = await tools.intercom({ action: "status" }); const pending = await tools.intercom({ action: "pending" }); return { id: status.sessionId, groups: status.groups, count: status.sessions.length, pending };',
+		'const status = await tools.intercom({ action: "status" }); const pending = await tools.intercom({ action: "pending" }); const peek = await tools.intercom({ action: "list", group: "team" }); return { status: [status.action, status.sessionId, status.groups, status.sessions[2], status.outboundAsks], pending, peek: [peek.action, peek.peekGroup, peek.groups, peek.sessions[3], peek.workflowStages] };',
 	);
 	assert.equal(result.isError, false, result.text);
 	assert.deepEqual(lastJson(result.text), {
-		id: SELF_ID,
-		groups: ["default"],
-		count: 4,
-		pending: { action: "pending", inbound: [], outbound: [] },
+		status: ["status", SELF_ID, ["default"], WORKER_WEB, 0],
+		pending: {
+			action: "pending",
+			inbound: [
+				{
+					messageId: "ask-1",
+					from: "worker-web",
+					fromSessionId: "b2c3d4e5-1111-4222-8333-000000000002",
+					receivedAt: 42,
+					text: "Which branch?",
+				},
+			],
+			outbound: [],
+		},
+		peek: [
+			"list",
+			"team",
+			["default"],
+			{
+				sessionId: "c3d4e5f6-1111-4222-8333-000000000003",
+				name: "reviewer",
+				cwd: "/repo/api",
+				state: "idle",
+				groups: ["default"],
+				self: false,
+			},
+			[],
+		],
 	});
 });
 
@@ -184,6 +237,23 @@ test("codemode refuses intercom ask, reply and join with a pointer to the direct
 	assert.match(errors[2] ?? "", /intercom "join" is model-only: call the intercom tool directly/);
 	assert.match(errors[3] ?? "", /replyTo answers an ask, which is model-only/);
 	assert.deepEqual(sent, []);
+});
+
+test("a codemode send without a target rejects instead of resolving an outcome (#5087)", async () => {
+	const { harness, sent } = await intercomHarness();
+	const result = await runScript(
+		harness,
+		'return await tools.intercom({ action: "send", message: "hi" }).then((value) => value, (error) => error.message);',
+	);
+	assert.equal(result.text.split("\n").at(-1), "Missing 'to' or 'message' parameter");
+	assert.deepEqual(sent, []);
+});
+
+test("codemode cannot call intercom while it is inactive (#5087)", async () => {
+	const { harness } = await intercomHarness();
+	harness.session.setActiveToolsByName(["read", "codemode"]);
+	const result = await runScript(harness, 'return "intercom" in tools;');
+	assert.equal(lastJson(result.text), false);
 });
 
 test("codemode describes the intercom script subset instead of a model-only hint (#5087)", async () => {
