@@ -1,3 +1,4 @@
+import { getAgentDir, ProjectTrustStore } from "@bastani/atomic";
 import type { DurableWorkflowBackend, DurableWorkflowCatalogEntries } from "../durable/backend.js";
 import { listOpenableCompletedWorkflows } from "../durable/completed-catalog.js";
 import {
@@ -118,6 +119,8 @@ export interface DurableResumeRuntimeDeps {
 	/** Reports a warning once; each shard of the journal store that cannot be opened is reported through it. */
 	readonly reportWarning?: (message: string) => void;
 	readonly getWorkflowHostModules?: import("./workflow-module-loader.js").WorkflowHostModuleProvider;
+	/** The project trust decision; an untrusted project's workflow modules are not discovered. */
+	readonly isProjectTrusted?: () => boolean;
 }
 
 export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): DurableResumeRuntime {
@@ -150,14 +153,22 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 		for (const id of ids) await (availableRunDurableBackend(deps.store, id) ?? backend).hydrateWorkflow(id);
 	};
 	let preparedCatalog: readonly ResumableWorkflowEntry[] = [];
+	// This session decides for its own project; another project's workflows need that project's saved decision.
+	const discoverDefinition = async (name: string, cwd: string | undefined) => {
+		const discoveryCwd = cwd ?? deps.runtimeCwd;
+		const projectTrusted =
+			discoveryCwd === deps.runtimeCwd
+				? deps.isProjectTrusted?.()
+				: new ProjectTrustStore(getAgentDir()).get(discoveryCwd) === true;
+		const discovered = await discoverWorkflows({
+			cwd: discoveryCwd,
+			getWorkflowHostModules: deps.getWorkflowHostModules,
+			projectTrusted,
+		});
+		return discovered.registry.get(name);
+	};
 	const resolveDefinition = async (name: string, cwd: string | undefined) =>
-		deps.registry.get(name) ??
-		(
-			await discoverWorkflows({
-				cwd: cwd ?? deps.runtimeCwd,
-				getWorkflowHostModules: deps.getWorkflowHostModules,
-			})
-		).registry.get(name);
+		deps.registry.get(name) ?? (await discoverDefinition(name, cwd));
 	const runtime: DurableResumeRuntime = {
 		durableBackend: selectedBackend,
 		async forkDurableWorkflow(sourceRunId, options) {
@@ -261,15 +272,7 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 						},
 						durableBackend: backend,
 						resolveDefinition:
-							options?.definition === undefined
-								? async (name, cwd) =>
-										(
-											await discoverWorkflows({
-												cwd: cwd ?? deps.runtimeCwd,
-												getWorkflowHostModules: deps.getWorkflowHostModules,
-											})
-										).registry.get(name)
-								: async () => options.definition,
+							options?.definition === undefined ? discoverDefinition : async () => options.definition,
 						...(deps.jobs !== undefined ? { jobs: deps.jobs } : {}),
 					};
 					return await resumeDurableWorkflowAdapter(workflowId, adapterDeps, preparedCatalog);

@@ -120,6 +120,8 @@ export interface LoadWorkflowConfigOpts {
 	 * configured agent directories, honoring ATOMIC_CODING_AGENT_DIR.
 	 */
 	readonly agentDirs?: readonly string[];
+	/** When false, the project-local config is not read: the project is not trusted. Default: true. */
+	readonly projectTrusted?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -398,16 +400,18 @@ export async function loadWorkflowConfig(opts: LoadWorkflowConfigOpts = {}): Pro
 		// "missing" → silently skip
 	}
 
-	// Load the current project-local config.
+	// Load the current project-local config, only for a trusted project.
 	let projectConfig: WorkflowExtensionConfig | null = null;
-	for (let i = projectCandidates.length - 1; i >= 0; i--) {
-		const candidatePath = projectCandidates[i]!;
-		const outcome = await loadConfigFile(candidatePath);
-		if (outcome.kind === "missing") continue;
-		if (outcome.kind === "error") {
-			diagnostics.push(outcome.diagnostic);
-		} else {
-			projectConfig = projectConfig ? mergeConfigs(projectConfig, outcome.parsed) : outcome.parsed;
+	if (opts.projectTrusted !== false) {
+		for (let i = projectCandidates.length - 1; i >= 0; i--) {
+			const candidatePath = projectCandidates[i]!;
+			const outcome = await loadConfigFile(candidatePath);
+			if (outcome.kind === "missing") continue;
+			if (outcome.kind === "error") {
+				diagnostics.push(outcome.diagnostic);
+			} else {
+				projectConfig = projectConfig ? mergeConfigs(projectConfig, outcome.parsed) : outcome.parsed;
+			}
 		}
 	}
 

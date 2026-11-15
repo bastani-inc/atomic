@@ -771,7 +771,11 @@ describe("graceful workflow quit of in-flight ctx.tool nodes", () => {
 		assert.equal(quitRunSnapshot?.toolNodes?.[0]?.status, "cancelled");
 		assert.equal(backend.getWorkflow(runId)?.status, "paused");
 		assert.equal(
-			backend.listCheckpoints(runId).some((entry) => entry.kind === "tool" && entry.name === "hang"),
+			backend
+				.listCheckpoints(runId)
+				.some(
+					(entry) => entry.kind === "tool" && entry.name === "hang" && entry.throwingFailureError === undefined,
+				),
 			false,
 			"a cancelled call must leave no replayable checkpoint",
 		);
