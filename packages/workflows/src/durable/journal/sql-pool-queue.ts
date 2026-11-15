@@ -549,14 +549,23 @@ export class SqlPoolQueue {
 		};
 	}
 	/**
-	 * A fence: the root's status still admits its attempts' writes, as {@link admitsAttemptWrites} decided. It locks the
-	 * root's run row: `update` for a write that appends to the run's events, which take its next sequence under it.
+	 * Fences: the root's status still admits its attempts' writes, as {@link admitsAttemptWrites} decided. The first locks
+	 * the root's run row, `update` for a write that appends to the run's events, which take its next sequence under it;
+	 * a status change, which updates that row, waits for the write. The second reads pool control, which a control
+	 * change writes under that row's lock: a statement of its own, so it reads what committed before the lock was taken
+	 * (a statement waiting for a row lock rechecks only that row, and keeps its earlier view of every other table).
 	 */
-	private admitsFence(lease: Lease, lock: "update" | "share"): SqliteStatement {
-		return {
-			sql: `SELECT 1 FROM ${this.journal.runs} r WHERE r.run_id = ? AND (r.status = 'running' OR (r.status = 'paused' AND EXISTS (SELECT 1 FROM ${this.roots}_control c WHERE c.root = r.run_id AND c.state = 'paused')))${this.dialect.lockClause(lock)}`,
-			params: [lease.runId],
-		};
+	private admitsFences(lease: Lease, lock: "update" | "share"): SqliteStatement[] {
+		return [
+			{
+				sql: `SELECT 1 FROM ${this.journal.runs} WHERE run_id = ? AND status IN ('running', 'paused')${this.dialect.lockClause(lock)}`,
+				params: [lease.runId],
+			},
+			{
+				sql: `SELECT 1 FROM ${this.journal.runs} r WHERE r.run_id = ? AND (r.status = 'running' OR (r.status = 'paused' AND EXISTS (SELECT 1 FROM ${this.roots}_control c WHERE c.root = r.run_id AND c.state = 'paused')))`,
+				params: [lease.runId],
+			},
+		];
 	}
 	/** A fence: the attempt has no result for `operationId` yet. */
 	private operationFence(token: WorkLease, operationId: string): SqliteStatement {
@@ -1041,10 +1050,15 @@ export class SqlPoolQueue {
 				return {
 					fences: [
 						this.rootFence(lease),
+						// The run row, shared: a status change, or a control change, which takes the row first, waits for the
+						// claim. Control is read in a statement of its own, after the lock: see `admitsFences`.
 						{
-							// Shared: a status or control change waits for the claim, and the claim sees the latest one.
-							sql: `SELECT 1 FROM ${this.journal.runs} WHERE run_id = ? AND status = 'running' AND NOT EXISTS (SELECT 1 FROM ${this.roots}_control WHERE root = ? AND state != 'running')${this.dialect.lockClause("share")}`,
-							params: [lease.runId, lease.runId],
+							sql: `SELECT 1 FROM ${this.journal.runs} WHERE run_id = ? AND status = 'running'${this.dialect.lockClause("share")}`,
+							params: [lease.runId],
+						},
+						{
+							sql: `SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM ${this.roots}_control WHERE root = ? AND state != 'running')`,
+							params: [lease.runId],
 						},
 					],
 					writes: [],
@@ -1258,7 +1272,7 @@ export class SqlPoolQueue {
 						this.rootFence(lease),
 						this.attemptFence(lease, token, true),
 						this.operationFence(token, operationId),
-						this.admitsFence(lease, mutation.kind === "session-append" ? "share" : "update"),
+						...this.admitsFences(lease, mutation.kind === "session-append" ? "share" : "update"),
 					],
 					writes: [],
 				};
@@ -1350,7 +1364,7 @@ export class SqlPoolQueue {
 				this.rootFence(lease),
 				this.attemptFence(lease, token, true),
 				this.operationFence(token, operationId),
-				this.admitsFence(lease, "update"),
+				...this.admitsFences(lease, "update"),
 			],
 			writes: [],
 		};
@@ -1811,7 +1825,7 @@ export class SqlPoolQueue {
 						fences: [
 							this.rootFence(lease),
 							this.attemptFence(lease, token, true),
-							this.admitsFence(lease, "share"),
+							...this.admitsFences(lease, "share"),
 						],
 						writes,
 						result: () => undefined,
@@ -1838,7 +1852,7 @@ export class SqlPoolQueue {
 					fences: [
 						this.rootFence(lease),
 						this.attemptFence(lease, token, true),
-						this.admitsFence(lease, "share"),
+						...this.admitsFences(lease, "share"),
 						...(this.remote
 							? [
 									{

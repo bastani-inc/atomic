@@ -15,27 +15,35 @@ export interface FencedPathAudit {
 const FENCED_PATHS = {
 	/** `SqlPoolQueue.claim`: one `UPDATE … WHERE id = (SELECT … FOR UPDATE SKIP LOCKED)`, so claimers never wait on one another. */
 	"pool-claim": {
-		fences: ["root lease row FOR SHARE", "root run row FOR SHARE", "ready work row FOR UPDATE SKIP LOCKED"],
+		fences: [
+			"root lease row FOR KEY SHARE",
+			"root run row FOR SHARE, then pool control",
+			"ready work row FOR UPDATE SKIP LOCKED",
+		],
 		conformance: "many hosts claim, commit and complete concurrently: no double claim, no lost settle (#5102)",
 	},
 	/** `SqlPoolQueue.renew`, `extend` and `heartbeat`: the attempt's lease, its claim confirmation and usage report. */
 	"pool-heartbeat": {
-		fences: ["root lease row FOR SHARE", "attempt's work row FOR UPDATE", "root usage totals row"],
+		fences: ["root lease row FOR KEY SHARE", "attempt's work row FOR UPDATE", "root usage totals row"],
 		conformance: "claim, commit, heartbeat, complete and takeover run concurrently without a deadlock (#5102)",
 	},
 	/** `SqlPoolQueue.commit` of a checkpoint or a session: the event takes the run's next sequence under its run row. */
 	"pool-commit": {
 		fences: [
-			"root lease row FOR SHARE",
+			"root lease row FOR KEY SHARE",
 			"attempt's work row FOR UPDATE",
-			"root run row FOR UPDATE (FOR SHARE without an event)",
+			"root run row FOR UPDATE (FOR SHARE without an event), then pool control",
 			"root usage totals row",
 		],
 		conformance: "32 concurrent writers commit one event per key with a dense sequence (#5102)",
 	},
 	/** `SqlPoolQueue.complete`: the result and the work row's final state. */
 	"pool-complete": {
-		fences: ["root lease row FOR SHARE", "attempt's work row FOR UPDATE", "root run row FOR SHARE"],
+		fences: [
+			"root lease row FOR KEY SHARE",
+			"attempt's work row FOR UPDATE",
+			"root run row FOR SHARE, then pool control",
+		],
 		conformance: "many hosts claim, commit and complete concurrently: no double claim, no lost settle (#5102)",
 	},
 } as const satisfies Readonly<Record<string, FencedPathAudit>>;

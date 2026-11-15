@@ -257,6 +257,40 @@ describe.skipIf(postgres.skipReason !== undefined)("the worker pool's fenced wri
 		assert.equal((await queued).state, "ready");
 	});
 
+	test("a claim waiting on a pause that is committing is refused once the pause commits (#5102)", async () => {
+		await pool.enqueue(lease, item.work, item.boundary);
+		const pause = await holding(other, async (tx) => {
+			await tx.all(`SELECT 1 FROM ${table("wf_runs")} WHERE run_id = 'root' FOR UPDATE`);
+			await tx.run(
+				`INSERT INTO ${table("wf_runs_pool_control")}(root, state, revision) VALUES ('root', 'paused', 1)`,
+			);
+		});
+		const claim = pool.claim(lease, "worker", [definition], 60_000);
+		const waited = await pendingAfter(claim);
+		pause.release();
+		await pause.done;
+		assert.equal(await claim, undefined, "no work is handed out once the pause committed");
+		assert.equal(waited, true, "the claim waited for the pause");
+		assert.equal((await pool.inspect("root"))[0]!.state, "ready");
+	});
+
+	test("a commit waiting on a control change that is committing sees it, and a paused root resumed elsewhere refuses it (#5102)", async () => {
+		await pool.enqueue(lease, item.work, item.boundary);
+		const attempt = (await pool.claim(lease, "worker", [definition], 60_000))!;
+		await pool.setControl(lease, "paused");
+		await other.run(`UPDATE ${table("wf_runs")} SET status = 'paused' WHERE run_id = 'root'`);
+		const resume = await holding(other, async (tx) => {
+			await tx.all(`SELECT 1 FROM ${table("wf_runs")} WHERE run_id = 'root' FOR UPDATE`);
+			await tx.run(`UPDATE ${table("wf_runs_pool_control")} SET state = 'running' WHERE root = 'root'`);
+		});
+		const commit = pool.commit(lease, attempt, "step", { kind: "checkpoint", checkpoint: toolCheckpoint(item, 0) });
+		const waited = await pendingAfter(commit);
+		resume.release();
+		await resume.done;
+		await assert.rejects(commit, /root-not-running/);
+		assert.equal(waited, true);
+	});
+
 	test("usage recorded while another write creates the root's totals row is kept in the total (#5102)", async () => {
 		await pool.enqueue(lease, item.work, item.boundary);
 		const attempt = (await pool.claim(lease, "worker", [definition], 60_000))!;
