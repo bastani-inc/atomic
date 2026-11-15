@@ -17,10 +17,10 @@
  */
 
 import { createHash } from "node:crypto";
-import { chmodSync, lstatSync, mkdirSync, realpathSync, rmSync, type Stats } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync, type Stats } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
-import { dirname, join, sep } from "node:path";
-import { APP_NAME } from "../../config.js";
+import { dirname, isAbsolute, join, sep } from "node:path";
+import { APP_NAME, getAgentDir } from "../../config.js";
 import { getErrnoCode } from "./errno.ts";
 import {
 	resetWindowsDirectorySecurityStateForTesting,
@@ -221,7 +221,7 @@ export class TempDirRefusedError extends Error {
  * accident, which is a different problem and is not a substitute for this
  * verification.
  */
-function verifyOwnedDirectory(path: string, known?: Stats): void {
+function verifyOwnedDirectory(path: string, known?: Stats, strict = false): void {
 	let stat = known ?? lstatSync(path);
 	if (stat.isSymbolicLink()) {
 		throw new TempDirRefusedError(path, "it is a symbolic link");
@@ -243,6 +243,11 @@ function verifyOwnedDirectory(path: string, known?: Stats): void {
 	if ((stat.mode & 0o777) === SESSION_TEMP_DIR_MODE) {
 		return;
 	}
+	if (strict && (stat.mode & 0o077) !== 0) {
+		// Someone else could already have written into it; repairing the mode
+		// would not undo that, so the directory is refused instead.
+		throw new TempDirRefusedError(path, "it is accessible to other accounts");
+	}
 	try {
 		chmodSync(path, SESSION_TEMP_DIR_MODE);
 		stat = lstatSync(path);
@@ -261,7 +266,7 @@ function verifyOwnedDirectory(path: string, known?: Stats): void {
  * on the way down, which is how a link planted at the predictable owner root
  * redirects every later write outside the tree.
  */
-function ensureOwnedDirectory(path: string): void {
+function ensureOwnedDirectory(path: string, strict = false): void {
 	let stat: Stats | undefined;
 	try {
 		stat = lstatSync(path);
@@ -277,10 +282,173 @@ function ensureOwnedDirectory(path: string): void {
 				throw new TempDirRefusedError(path, "it could not be created");
 			}
 		}
-		verifyOwnedDirectory(path);
+		verifyOwnedDirectory(path, undefined, strict);
 		return;
 	}
-	verifyOwnedDirectory(path, stat);
+	verifyOwnedDirectory(path, stat, strict);
+}
+
+/** Split caller segments into plain path components, refusing `.`, `..` and empty ones. */
+function privateSegmentParts(segments: readonly string[]): string[] {
+	const parts = segments.flatMap((segment) => segment.split(/[\\/]/));
+	for (const part of parts) {
+		if (part.length === 0 || part === "." || part === "..") {
+			throw new TempDirRefusedError(join(...segments), "it is not a plain relative path");
+		}
+	}
+	return parts;
+}
+
+/**
+ * True when `path` is a real directory this account owns that no other account
+ * can enter. Read-only: used for roots this module did not create, such as
+ * `$XDG_RUNTIME_DIR`, which must never be changed.
+ */
+function isUntouchablePrivateRoot(path: string): boolean {
+	try {
+		const stat = lstatSync(path);
+		if (stat.isSymbolicLink() || !stat.isDirectory()) return false;
+		const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
+		return (uid === undefined || stat.uid === uid) && (stat.mode & 0o077) === 0;
+	} catch {
+		return false;
+	}
+}
+
+/** Create or adopt each of `parts` below `checkedBase`, strictly; returns the path below `returnedBase`. */
+function ensurePrivateChain(checkedBase: string, returnedBase: string, parts: readonly string[]): string {
+	let current = checkedBase;
+	for (const part of parts) {
+		current = join(current, part);
+		ensureOwnedDirectory(current, true);
+	}
+	return join(returnedBase, ...parts);
+}
+
+let privateTempFallbackDir: string | undefined;
+
+/**
+ * Create or adopt a directory for state that must stay private to this account
+ * (temporary extension installs, the GitHub clone cache, subagent artifacts),
+ * and return its path. Use the returned path: which root it is under depends on
+ * what this account can trust.
+ *
+ * Roots are tried in order, preferring ones other accounts cannot create first:
+ *
+ * 1. `$XDG_RUNTIME_DIR/<APP_NAME>` (POSIX), when the runtime directory is itself
+ *    a real directory owned by this account with no group or other access;
+ * 2. `<agentDir>/cache/tmp`, inside this account's own Atomic directory;
+ * 3. `<tmpdir>/<APP_NAME>-<owner>`, the predictable per-user temp root;
+ * 4. a fresh owner-only `mkdtemp` directory, reused for the rest of the process.
+ *
+ * Below each root every component is created non-recursively with mode 0700,
+ * or — when it already exists — must be a real directory (not a symlink) owned
+ * by this account with no group or other access. Nothing found is repaired,
+ * replaced or followed: a path that fails the check is refused and the next
+ * root is tried, so a directory someone else planted is neither used nor able
+ * to block the caller. On Windows (no uid or POSIX mode) each component's owner
+ * SID and DACL are verified instead, and the runtime-directory root is skipped.
+ *
+ * Throws {@link TempDirRefusedError} only when the segments are not a plain
+ * relative path or not even a fresh temp directory can be created.
+ */
+export function ensurePrivateTempDir(...segments: string[]): string {
+	const parts = privateSegmentParts(segments);
+	const key = JSON.stringify([process.env.XDG_RUNTIME_DIR ?? "", getAgentDir(), tmpdir(), parts]);
+	const known = privateTempDirs.get(key);
+	if (known !== undefined && stillPrivate(known)) {
+		return known.path;
+	}
+	privateTempDirs.delete(key);
+	const path = choosePrivateTempDir(segments, parts);
+	try {
+		privateTempDirs.set(key, { path, birthtimeMs: lstatSync(path).birthtimeMs });
+	} catch {
+		// Not remembered; the next call checks it from scratch.
+	}
+	return path;
+}
+
+interface KnownPrivateTempDir {
+	path: string;
+	/** Creation time when it was verified: a directory recreated at the path carries a fresh one. */
+	birthtimeMs: number;
+}
+
+/** Directories {@link ensurePrivateTempDir} already created or verified in this process. */
+const privateTempDirs = new Map<string, KnownPrivateTempDir>();
+
+/**
+ * Re-check a directory verified earlier in this process without re-reading
+ * its whole chain. It must still be the same real directory (not a symlink, not
+ * recreated); on POSIX it must still be owned by this account with no group or
+ * other access. On Windows the owner and DACL were verified when it was chosen,
+ * and a directory this account owns cannot have its DACL changed by another
+ * (non-administrator) account, so the costly PowerShell read is not repeated
+ * every time a file is written below it.
+ */
+function stillPrivate(known: KnownPrivateTempDir): boolean {
+	try {
+		const stat = lstatSync(known.path);
+		if (stat.isSymbolicLink() || !stat.isDirectory() || stat.birthtimeMs !== known.birthtimeMs) return false;
+		if (process.platform === "win32") return true;
+		const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
+		return (uid === undefined || stat.uid === uid) && (stat.mode & 0o077) === 0;
+	} catch {
+		return false;
+	}
+}
+
+function choosePrivateTempDir(segments: readonly string[], parts: readonly string[]): string {
+	const attempts: Array<() => string> = [];
+	const runtimeDir = process.env.XDG_RUNTIME_DIR;
+	if (process.platform !== "win32" && runtimeDir && isAbsolute(runtimeDir)) {
+		attempts.push(() => {
+			if (!isUntouchablePrivateRoot(runtimeDir)) {
+				throw new TempDirRefusedError(runtimeDir, "it is not private to this account");
+			}
+			const app = sanitizeTempPathComponent(APP_NAME, "atomic");
+			return ensurePrivateChain(runtimeDir, runtimeDir, [app, ...parts]);
+		});
+	}
+	attempts.push(() => {
+		const cacheDir = join(getAgentDir(), "cache");
+		mkdirSync(cacheDir, { recursive: true, mode: SESSION_TEMP_DIR_MODE });
+		return ensurePrivateChain(cacheDir, cacheDir, ["tmp", ...parts]);
+	});
+	attempts.push(() => {
+		const base = baseTempDirs();
+		const rootName = getTempRootDir().slice(base.raw.length + sep.length);
+		return ensurePrivateChain(base.canonical, base.raw, [rootName, ...parts]);
+	});
+	for (const attempt of attempts) {
+		try {
+			return attempt();
+		} catch {
+			// Not trustworthy (or not creatable) for this account; try the next root.
+		}
+	}
+	try {
+		privateTempFallbackDir ??= mkdtempSync(join(tmpdir(), `${sanitizeTempPathComponent(APP_NAME, "atomic")}-`));
+		// mkdtemp created it 0700 under an unpredictable name, so nobody else can
+		// have placed anything inside it.
+		const dir = join(privateTempFallbackDir, ...parts);
+		mkdirSync(dir, { recursive: true, mode: SESSION_TEMP_DIR_MODE });
+		return dir;
+	} catch {
+		throw new TempDirRefusedError(
+			join(tmpdir(), ...segments),
+			"no directory private to this account could be created",
+		);
+	}
+}
+
+/**
+ * Throw {@link TempDirRefusedError} unless `path` is a real directory owned by
+ * this account with no group or other access. Nothing is created or changed.
+ */
+export function assertPrivateDirectory(path: string): void {
+	verifyOwnedDirectory(path, undefined, true);
 }
 
 /**
@@ -436,5 +604,7 @@ export function resetSessionTempDirStateForTesting(): void {
 	ensuredDirs.clear();
 	cachedOwnerComponent = undefined;
 	cachedBaseTempDirs = undefined;
+	privateTempFallbackDir = undefined;
+	privateTempDirs.clear();
 	resetWindowsDirectorySecurityStateForTesting();
 }
