@@ -52,11 +52,6 @@ export class PendingQuestionIndex {
     return this.away?.movable() ?? [];
   }
 
-  /** #4997: these kept asks are between two sessions that may each come back on another broker. */
-  markMovable(questions: readonly PendingQuestion[]): void {
-    if (questions.length > 0) this.away?.markMovable(questions);
-  }
-
   forgetLive(questions: readonly PendingQuestion[]): void {
     for (const question of questions) this.away?.forgetLive(question);
   }
@@ -94,11 +89,17 @@ export class PendingQuestionIndex {
    * Keep questions whose peer is away until it is back. #4950: without `senderReturnAddress` (their recipient is the one
    * away), each keeps its asker's return address now, so its failure reaches it even if this broker goes first.
    */
-  keepDormant(questions: readonly PendingQuestion[], senderReturnAddress?: string): void {
+  keepDormant(
+    questions: readonly PendingQuestion[],
+    senderReturnAddress?: string,
+    /** #4997: the questions that may follow their peers to another broker, published to the shared state. */
+    movable?: (question: PendingQuestion) => boolean,
+  ): void {
     if (questions.length === 0) return;
     this.awayAsks().keep(
       questions,
       senderReturnAddress ?? ((question) => this.returnAddressOf(question.senderSessionId)),
+      movable,
     );
   }
 
@@ -354,7 +355,11 @@ export class PendingQuestionIndex {
     this.takeForSender(senderSessionId);
   }
 
-  takeForSender(senderSessionId: string): PendingQuestion[] {
+  /**
+   * `keepLive`: the questions are about to be kept for an away peer (`keepDormant`), which removes their live routes in
+   * the same write, so a broker that stops in between still has them (#4997).
+   */
+  takeForSender(senderSessionId: string, options: { readonly keepLive?: boolean } = {}): PendingQuestion[] {
     const pending: PendingQuestion[] = [];
     for (const [messageId, routes] of this.questions) {
       const remaining = routes.filter((route) => {
@@ -374,13 +379,14 @@ export class PendingQuestionIndex {
       if (remaining.length === 0) this.parked.delete(key);
       else parked.questions = remaining;
     }
-    this.forgetLive(pending);
+    if (options.keepLive !== true) this.forgetLive(pending);
     return pending;
   }
 
-  takeForTarget(targetSessionId: string): PendingQuestion[] {
+  /** `keepLive`: as `takeForSender`'s (#4997). */
+  takeForTarget(targetSessionId: string, options: { readonly keepLive?: boolean } = {}): PendingQuestion[] {
     const pending = this.removeForTarget(targetSessionId);
-    this.forgetLive(pending);
+    if (options.keepLive !== true) this.forgetLive(pending);
     return pending;
   }
 

@@ -3299,19 +3299,20 @@ class IntercomBroker {
    * broker, so the asks between two top-level sessions also move to the shared state, which either broker answers.
    */
   private keepAwayRoutes(departed: ConnectedSession, questions: readonly PendingQuestion[], senderReturnAddress?: string): void {
-    this.pendingQuestions.keepDormant(questions, senderReturnAddress);
-    if (this.multiNode === undefined) return;
     // An ask whose other peer is away too, or is a subagent, stays this broker's alone, as before.
-    const movable = this.isTopLevel(departed)
-      ? questions.filter((question) =>
-          [question.senderSessionId, question.targetSessionId].every(
-            (id) => id === departed.info.id || this.isTopLevel(this.sessions.get(id)),
+    const movable = new Set(
+      this.multiNode === undefined || !this.isTopLevel(departed)
+        ? []
+        : questions.filter((question) =>
+            [question.senderSessionId, question.targetSessionId].every(
+              (id) => id === departed.info.id || this.isTopLevel(this.sessions.get(id)),
+            ),
           ),
-        )
-      : [];
-    // Marked first, so a crash before the shared write leaves them to move once this broker is back.
-    this.pendingQuestions.markMovable(movable);
-    void this.multiNode.publishAwayRoutes(movable);
+    );
+    // Kept, and marked movable, in the write that removes their live routes, so a crash before the shared write
+    // leaves them to move once this broker is back.
+    this.pendingQuestions.keepDormant(questions, senderReturnAddress, (question) => movable.has(question));
+    void this.multiNode?.publishAwayRoutes([...movable]);
   }
 
   /** `ended`: the session said goodbye, so it is not coming back; otherwise its connection only dropped. */
@@ -3347,8 +3348,10 @@ class IntercomBroker {
     this.failParkedQuestions(this.pendingQuestions.takeParkedForOwner(sessionId));
     this.failParkedKept(sessionId);
 
-    const unanswered = this.pendingQuestions.takeForSender(sessionId);
+    // #4997: their live routes stay until they are kept, in the same write, for an asker that is only away.
+    const unanswered = this.pendingQuestions.takeForSender(sessionId, { keepLive: true });
     if (departed.supervisorId !== undefined && departed.registrationName !== undefined) {
+      this.pendingQuestions.forgetLive(unanswered);
       // #4765: an ask kept while its recipient was away waits on the owner's route too, so the recipient's later end
       // fails it through the owner, which wakes the subagent. It stays kept under the subagent's own return address as
       // well, so a broker restart or a subagent back without its owner still gets the failure, held for it alone.
@@ -3367,6 +3370,8 @@ class IntercomBroker {
       // #4751: an ask has no expiry and survives its asker's restart or release: the route waits for the asker.
       this.keepAwayRoutes(departed, unanswered, departed.registrationReturnAddress);
       this.pendingQuestions.markAwayAsker(sessionId, departed.registrationReturnAddress);
+    } else {
+      this.pendingQuestions.forgetLive(unanswered);
     }
     this.releasedAskerReplies.dropOwner(sessionId);
     for (const [messageId, pending] of [...this.releasedReplyAcks]) {
@@ -3381,7 +3386,7 @@ class IntercomBroker {
       this.pendingQuestions.parkTarget(sessionId, childName, releasedOwner);
     } else if (!ended && departed.supervisorId === undefined && departed.hostedBy === undefined) {
       // #4751: a recipient whose connection dropped without ending its session may restart; its asks stay pending.
-      this.keepAwayRoutes(departed, this.pendingQuestions.takeForTarget(sessionId));
+      this.keepAwayRoutes(departed, this.pendingQuestions.takeForTarget(sessionId, { keepLive: true }));
     } else {
       if (ended) {
         // #4751: an away asker's ask to it fails with a message held until the asker is back; a session that ended

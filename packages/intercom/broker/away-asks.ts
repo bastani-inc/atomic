@@ -167,14 +167,6 @@ export class AwayAsks {
 		);
 	}
 
-	/** #4997: these kept questions are between two top-level sessions, so they may move to another broker with them. */
-	markMovable(questions: readonly PendingQuestion[]): void {
-		const mark = this.statement(
-			"UPDATE away_questions SET movable = 1 WHERE message_id = ? AND sender_session_id = ? AND target_session_id = ?",
-		);
-		for (const question of questions) mark.run(question.messageId, question.senderSessionId, question.targetSessionId);
-	}
-
 	/**
 	 * #4997: the kept asks between two top-level sessions, including those a broker that is gone left behind. Either
 	 * session may come back on another broker, so with multi-node routing they move to the shared state.
@@ -246,16 +238,38 @@ export class AwayAsks {
 	keep(
 		questions: readonly PendingQuestion[],
 		senderReturnAddress?: string | ((question: PendingQuestion) => string | undefined),
+		/** #4997: the questions that may follow their peers to another broker. */
+		movable: (question: PendingQuestion) => boolean = () => false,
 	): void {
 		if (questions.length === 0) return;
 		const insert = this.statement(
-			"INSERT OR REPLACE INTO away_questions (message_id, sender_session_id, target_session_id, sender_return_address, kept_at) VALUES (?, ?, ?, ?, ?)",
+			"INSERT OR REPLACE INTO away_questions (message_id, sender_session_id, target_session_id, sender_return_address, kept_at, movable) VALUES (?, ?, ?, ?, ?, ?)",
+		);
+		const dropLive = this.statement(
+			"DELETE FROM live_questions WHERE message_id = ? AND sender_session_id = ? AND target_session_id = ?",
 		);
 		const at = this.now();
-		for (const question of questions) {
-			const returnAddress =
-				typeof senderReturnAddress === "function" ? senderReturnAddress(question) : senderReturnAddress;
-			insert.run(question.messageId, question.senderSessionId, question.targetSessionId, returnAddress ?? "", at);
+		// #4997: a live route becomes a kept one in one transaction, so a broker that stops at any point has it as one or
+		// the other, never neither.
+		this.database.exec("BEGIN IMMEDIATE");
+		try {
+			for (const question of questions) {
+				const returnAddress =
+					typeof senderReturnAddress === "function" ? senderReturnAddress(question) : senderReturnAddress;
+				insert.run(
+					question.messageId,
+					question.senderSessionId,
+					question.targetSessionId,
+					returnAddress ?? "",
+					at,
+					movable(question) ? 1 : 0,
+				);
+				dropLive.run(question.messageId, question.senderSessionId, question.targetSessionId);
+			}
+			this.database.exec("COMMIT");
+		} catch (error) {
+			this.database.exec("ROLLBACK");
+			throw error;
 		}
 		this.purge();
 	}
