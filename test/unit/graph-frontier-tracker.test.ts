@@ -228,26 +228,36 @@ describe("GraphFrontierTracker — Phase C", () => {
 	});
 
 	describe("a replayed node whose recorded parent spawns after it (#4888)", () => {
-		/** A stage replays at creation with its recorded parent, a tool that replays after it; `finish` follows both. */
-		function replayStageBeforeItsTool(tracker: GraphFrontierTracker): { tool: string[]; finish: string[] } {
+		/**
+		 * After `prepare → setup`, two stages replay at creation with their recorded parents (`agent` after the tool
+		 * `start`, `review` after `agent`), before `start` replays; `finish` follows them.
+		 */
+		function replayStagesBeforeTheirTool(tracker: GraphFrontierTracker): { start: string[]; finish: string[] } {
+			tracker.onSpawn("prepare", "prepare");
+			tracker.onSettle("prepare");
+			tracker.onSpawn("setup", "setup");
+			tracker.onSettle("setup");
 			tracker.onSpawn("agent", "agent");
 			tracker.replaceParents("agent", ["tool:start"]);
 			tracker.onSettle("agent");
-			const tool = tracker.onSpawn("tool:start", "start");
+			tracker.onSpawn("review", "review");
+			tracker.replaceParents("review", ["agent"]);
+			tracker.onSettle("review");
+			const start = tracker.onSpawn("tool:start", "start");
 			tracker.onSettle("tool:start");
 			const finish = tracker.onSpawn("tool:finish", "finish");
-			return { tool, finish };
+			return { start, finish };
 		}
 
-		test("the parent does not take its replayed child as a parent, and never enters the frontier (#4888)", () => {
+		test("the parent takes only the nodes before it, and never enters the frontier (#4888)", () => {
 			const tracker = new GraphFrontierTracker();
-			assert.deepEqual(replayStageBeforeItsTool(tracker), { tool: [], finish: ["agent"] });
+			assert.deepEqual(replayStagesBeforeTheirTool(tracker), { start: ["setup"], finish: ["review"] });
 			assert.deepEqual(tracker.getParents("agent"), ["tool:start"]);
 		});
 
-		test("reset forgets parents that were consumed or awaited (#4888)", () => {
+		test("reset forgets the parents that were taken (#4888)", () => {
 			const tracker = new GraphFrontierTracker();
-			replayStageBeforeItsTool(tracker);
+			replayStagesBeforeTheirTool(tracker);
 			tracker.reset();
 			tracker.onSpawn("other", "other");
 			tracker.onSettle("other");

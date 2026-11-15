@@ -23,10 +23,8 @@ export class GraphFrontierTracker {
 	private stageParents: Map<string, string[]> = new Map();
 	private nodes: Map<string, StageNode> = new Map();
 	private detached: Set<string> = new Set();
-	/** Nodes a settled node already took as parents: settling later, they are not leaves. */
+	/** Nodes a settled node took as parents: settling later, they are not leaves. */
 	private consumed: Set<string> = new Set();
-	/** Parents a node was given before they spawned. */
-	private unspawnedParents: Set<string> = new Set();
 
 	/**
 	 * Call when ctx.stage(name) is invoked.
@@ -34,8 +32,8 @@ export class GraphFrontierTracker {
 	 */
 	onSpawn(stageId: string, stageName: string): string[] {
 		const parents = Array.from(this.frontier);
-		if (this.unspawnedParents.delete(stageId)) {
-			// Its recorded children replayed first: they come after it, so they are not its parents.
+		if (this.consumed.has(stageId) && !this.nodes.has(stageId)) {
+			// A node that settled before it spawned took it as a parent: that node and its descendants come after it.
 			return this.spawn(
 				stageId,
 				stageName,
@@ -81,7 +79,6 @@ export class GraphFrontierTracker {
 		const parents = Array.from(parentIds);
 		this.assertAcyclicParents(stageId, parents);
 		this.stageParents.set(stageId, parents);
-		for (const parentId of parents) if (!this.nodes.has(parentId)) this.unspawnedParents.add(parentId);
 		const node = this.nodes.get(stageId);
 		if (node !== undefined) {
 			this.nodes.set(stageId, {
@@ -159,6 +156,5 @@ export class GraphFrontierTracker {
 		this.nodes.clear();
 		this.detached.clear();
 		this.consumed.clear();
-		this.unspawnedParents.clear();
 	}
 }
