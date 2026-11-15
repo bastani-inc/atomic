@@ -22,6 +22,7 @@ import {
 	type IntercomBrokerStateOptions,
 	KNOWN_SESSION_RETENTION_MS,
 	OUTBOX_BACKUP_POLL_INTERVAL_MS,
+	OUTBOX_CLAIM_STALE_AFTER_MS,
 	OUTBOX_EXPIRED_REASON,
 	OUTBOX_TARGET_MAX_BYTES,
 	OUTBOX_TARGET_MAX_ROWS,
@@ -1991,6 +1992,88 @@ function failuresOf(session: BrokerConnectedSession, askId: string) {
 		(frame) => frame.type === "message" && frame.message.replyTo === askId && frame.message.replyError !== undefined,
 	);
 }
+
+/**
+ * #5145: asker on a, recipient on b. Broker b stops right after it queued the asker's failure for the ended recipient:
+ * it never clears the ask nor wakes the asker's broker, so the ask stays marked ended, as long ago as a stale claim.
+ * `beforeSweep` changes the queued row before the asker's broker sweeps the ask at its next backup poll, which also
+ * delivers a row still queued. Resolves to the ids of the failures the asker got.
+ */
+async function sweptAfterQueuedFailure(beforeSweep: (node: Node, askId: string) => Promise<void> = async () => {}) {
+	vi.useFakeTimers({ toFake: ["setInterval"] });
+	try {
+		const [a, b] = await cluster();
+		const asker = await a!.connect("asker");
+		const recipient = await b!.connect("recipient");
+		const ask = await savedAsk(a!, asker, b!, recipient);
+		const stopped = () => Promise.reject(new Error("broker b stopped"));
+		Object.assign(b!.opened.state.pendingAsks, { clearReply: stopped, unmarkEnded: stopped });
+		b!.leave(recipient);
+		const queued = await vi.waitFor(
+			async () => {
+				const read = await a!.opened.state.outbox.read(`ended:${ask.id}`);
+				assert.equal(read.status, "found", "the failure is not queued yet");
+				return read;
+			},
+			{ timeout: CROSS_NODE_WAIT_MS },
+		);
+		assert.ok(queued.status === "found" && queued.row.state === "queued");
+		const ended = async () => {
+			const listed = await a!.opened.state.pendingAsks.listEnded(0);
+			return listed.status === "listed" && listed.asks.some((pending) => pending.messageId === ask.id);
+		};
+		assert.equal(await ended(), true, "the ask is still marked ended");
+
+		await beforeSweep(a!, ask.id);
+		await a!.database.run(
+			"UPDATE mn_intercom_pending_asks SET ended_at = ended_at - ? WHERE message_id = ?",
+			OUTBOX_CLAIM_STALE_AFTER_MS + 60_000,
+			ask.id,
+		);
+		vi.advanceTimersByTime(OUTBOX_BACKUP_POLL_INTERVAL_MS);
+		await vi.waitFor(async () => assert.equal(await ended(), false, "the ended ask is not swept yet"), {
+			timeout: CROSS_NODE_WAIT_MS,
+		});
+		await waitFor(() => (failuresOf(asker, ask.id).length > 0 ? true : undefined));
+		vi.advanceTimersByTime(OUTBOX_BACKUP_POLL_INTERVAL_MS);
+		await new Promise((resolve) => setTimeout(resolve, 10 * BUS_POLL_INTERVAL_MS));
+		return {
+			askId: ask.id,
+			failures: failuresOf(asker, ask.id).map((frame) => (frame.type === "message" ? frame.message.id : undefined)),
+		};
+	} finally {
+		vi.useRealTimers();
+	}
+}
+
+test(
+	"an asker on another node is told once when the ended recipient's broker stops after queueing its failure and before clearing the ask (#5145)",
+	async () => {
+		const { askId, failures } = await sweptAfterQueuedFailure();
+		assert.deepEqual(failures, [`ended:${askId}`], "told once");
+	},
+	3 * CROSS_NODE_WAIT_MS,
+);
+
+test(
+	"an asker is still told its ask failed when the failure a stopped broker queued for it expired undelivered (#5145)",
+	async () => {
+		const { askId, failures } = await sweptAfterQueuedFailure(async (node, id) => {
+			const outbox = node.opened.state.outbox;
+			const queued = await outbox.read(`ended:${id}`);
+			assert.ok(queued.status === "found");
+			const claimed = await outbox.claim({
+				claimantId: "expiry",
+				targetIdentity: queued.row.targetIdentity,
+				staleAfterMs: OUTBOX_CLAIM_STALE_AFTER_MS,
+			});
+			assert.ok(claimed.status === "claimed" && claimed.rows.length === 1);
+			assert.equal((await outbox.markFailed(claimed.rows[0]!.claim, OUTBOX_EXPIRED_REASON)).status, "failed");
+		});
+		assert.deepEqual(failures, [`ended:${askId}`], "told once, by its own broker");
+	},
+	3 * CROSS_NODE_WAIT_MS,
+);
 
 /** Owner and its released subagent on b, asker on a: the asker's ask to the subagent is parked for the owner. */
 async function parkedAskScene() {
