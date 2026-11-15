@@ -6,10 +6,16 @@
  */
 
 import { type ChildProcess, spawn } from "node:child_process";
+import { configuredSecretRedactor } from "@bastani/atomic";
 import type { WorkerProvisionerErrorCode } from "./types.js";
 
 /** Most bytes of stdout a CLI may print: a scale set or a namespace of thousands of hosts fits. */
 const MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
+/**
+ * Most bytes of a CLI's stderr kept for redaction. Past it the last, cut line is dropped, so a secret the cut splits
+ * never reaches an error.
+ */
+const MAX_STDERR_BYTES = 1024 * 1024;
 /** Most characters of a CLI's stderr an error keeps. */
 const MAX_DETAIL_CHARS = 600;
 /** Names of environment variables and options whose values are treated as secrets. */
@@ -61,26 +67,31 @@ function secretArguments(args: readonly string[]): string[] {
 	return values;
 }
 
-/** `text` with each secret value of `args` and the environment, and any text that looks like a secret, redacted. */
+/**
+ * `text` with each secret value of `args` and the environment, and any text that looks like a secret, redacted. A
+ * value is matched as Atomic's configured-secret redactor matches it: trimmed, line by line, and encoded.
+ */
 export function redactSecrets(text: string, args: readonly string[], env: NodeJS.ProcessEnv): string {
 	const values = [
 		...secretArguments(args),
 		...Object.entries(env)
 			.filter(([name]) => SECRET_NAME.test(name))
 			.map(([, value]) => value ?? ""),
-	]
-		.filter((value) => value.length >= MIN_SECRET_LENGTH)
-		.toSorted((a, b) => b.length - a.length);
-	let redacted = text;
-	for (const value of values) redacted = redacted.replaceAll(value, "[redacted]");
+	];
+	let redacted = configuredSecretRedactor(values, { minLength: MIN_SECRET_LENGTH })(text);
 	for (const [pattern, replacement] of SECRET_TEXT) redacted = redacted.replace(pattern, replacement);
 	return redacted;
 }
 
-/** A CLI's stderr for an error message: its lines joined, redacted, and cut to {@link MAX_DETAIL_CHARS}. */
-function detail(stderr: string, call: CliCall, env: NodeJS.ProcessEnv): string {
+/**
+ * A CLI's stderr for an error message: redacted whole, so a secret that spans lines is still found, then its lines
+ * trimmed and joined, redacted again, and cut to {@link MAX_DETAIL_CHARS}. Stderr cut at {@link MAX_STDERR_BYTES}
+ * loses its last, partial line first.
+ */
+function detail(stderr: string, cut: boolean, call: CliCall, env: NodeJS.ProcessEnv): string {
+	const kept = cut ? stderr.slice(0, stderr.lastIndexOf("\n") + 1) : stderr;
 	const text = redactSecrets(
-		stderr
+		redactSecrets(kept, call.args, env)
 			.split(/\r?\n/)
 			.map((line) => line.trim())
 			.filter((line) => line !== "")
@@ -134,6 +145,8 @@ export function runCli(call: CliCall, signal: AbortSignal): Promise<string> {
 		});
 		const stdout: Buffer[] = [];
 		const stderr: Buffer[] = [];
+		let stderrBytes = 0;
+		let stderrCut = false;
 		let stdoutBytes = 0;
 		child.stdout.on("data", (chunk: Buffer) => {
 			stdoutBytes += chunk.length;
@@ -146,7 +159,12 @@ export function runCli(call: CliCall, signal: AbortSignal): Promise<string> {
 			else stdout.push(chunk);
 		});
 		child.stderr.on("data", (chunk: Buffer) => {
-			if (stderr.length < 64) stderr.push(chunk);
+			const room = MAX_STDERR_BYTES - stderrBytes;
+			if (chunk.length > room) stderrCut = true;
+			if (room <= 0) return;
+			const kept = chunk.subarray(0, room);
+			stderr.push(kept);
+			stderrBytes += kept.length;
 		});
 		child.on("error", (error: NodeJS.ErrnoException) =>
 			finish(() =>
@@ -164,7 +182,7 @@ export function runCli(call: CliCall, signal: AbortSignal): Promise<string> {
 			finish(() => {
 				if (exitCode === 0) return resolve(Buffer.concat(stdout).toString("utf8"));
 				const errorText = Buffer.concat(stderr).toString("utf8");
-				const text = detail(errorText, call, env);
+				const text = detail(errorText, stderrCut, call, env);
 				const auth = call.authFailure.test(errorText);
 				reject(
 					new WorkerProvisionerError(

@@ -58,8 +58,9 @@ export interface UrlCredentialRedactionOptions {
 /**
  * Remove the user info of every URL in `text`: everything from the scheme's `://` up to the last `@` of the
  * authority, which ends at `/`, `?`, `#` or (in text) whitespace, so a password or token that contains `@` is removed
- * whole. A URL's scheme is the run of scheme characters before `://`, from its first letter. The scan is linear in
- * the length of `text`.
+ * whole. User info that holds a raw `/`, `?` or `#` is removed too (`https://user:ab/cd@host`), and in text so is the
+ * user info of a percent-encoded URL (`https%3A%2F%2Fuser%3Apass%40host`). A URL's scheme is the run of scheme
+ * characters before `://`, from its first letter. The scan is linear in the length of `text`.
  */
 export function redactUrlCredentials(
 	text: string,
@@ -71,24 +72,25 @@ export function redactUrlCredentials(
 	let from = 0;
 	for (;;) {
 		const schemeEnd = text.indexOf("://", from);
-		if (schemeEnd === -1) return parts.join("") + text.slice(copiedThrough);
+		if (schemeEnd === -1) {
+			const redacted = parts.join("") + text.slice(copiedThrough);
+			return context === "text" ? redactEncodedUrlCredentials(redacted) : redacted;
+		}
 		let schemeStart = -1;
 		for (let index = schemeEnd - 1; index >= 0 && SCHEME_CHARACTER.test(text[index]!); index--) {
 			if (SCHEME_LETTER.test(text[index]!)) schemeStart = index;
 		}
 		const authorityStart = schemeEnd + 3;
+		const ends = (character: string) => context === "text" && WHITESPACE.test(character);
 		let lastAt = -1;
-		for (let index = authorityStart; index < text.length; index++) {
+		let index = authorityStart;
+		for (; index < text.length; index++) {
 			const character = text[index]!;
-			if (
-				character === "/" ||
-				character === "?" ||
-				character === "#" ||
-				(context === "text" && WHITESPACE.test(character))
-			) {
-				break;
-			}
+			if (character === "/" || character === "?" || character === "#" || ends(character)) break;
 			if (character === "@") lastAt = index;
+		}
+		if (lastAt === -1 && index < text.length && !ends(text[index]!)) {
+			lastAt = rawDelimiterUserInfoEnd(text, authorityStart, index, ends);
 		}
 		if (schemeStart !== -1 && lastAt !== -1) {
 			const user = keptUser(text, schemeStart, schemeEnd, lastAt, options);
@@ -98,6 +100,53 @@ export function redactUrlCredentials(
 		}
 		from = authorityStart;
 	}
+}
+
+/**
+ * The last `@` of user info that holds a raw `/`, `?` or `#` (`https://user:ab/cd@host`), or -1. It counts only when
+ * the authority up to `delimiter` is `user:password` with a password that is not a port number, and the `@` comes
+ * before the end of the URL in text and before the next `://`. The user info then runs, as usual, to the last `@`
+ * before the host's own `/`, `?` or `#`.
+ */
+function rawDelimiterUserInfoEnd(
+	text: string,
+	authorityStart: number,
+	delimiter: number,
+	ends: (character: string) => boolean,
+): number {
+	const authority = text.slice(authorityStart, delimiter);
+	const colon = authorityStart + authority.indexOf(":");
+	if (colon < authorityStart || authority.startsWith("[")) return -1;
+	if (/^\d*$/u.test(text.slice(colon + 1, delimiter))) return -1;
+	let lastAt = -1;
+	for (let index = delimiter; index < text.length; index++) {
+		const character = text[index]!;
+		if (ends(character) || text.startsWith("://", index)) break;
+		if (character === "@") lastAt = index;
+		else if (lastAt !== -1 && (character === "/" || character === "?" || character === "#")) break;
+	}
+	return lastAt;
+}
+
+/** A percent-encoded `://`, whose URL's user info ends at its last `%40` before an encoded or raw delimiter. */
+const ENCODED_SCHEME_SEPARATOR = /%3A%2F%2F/giu;
+const ENCODED_AUTHORITY_END = /%2F|%3F|%23|[/?#&\s]/giu;
+
+/** Remove the user info of every percent-encoded URL in `text`, as in `?next=https%3A%2F%2Fuser%3Apass%40host`. */
+function redactEncodedUrlCredentials(text: string): string {
+	let redacted = "";
+	let copied = 0;
+	for (const separator of text.matchAll(ENCODED_SCHEME_SEPARATOR)) {
+		const authorityStart = separator.index + separator[0].length;
+		if (authorityStart < copied) continue;
+		ENCODED_AUTHORITY_END.lastIndex = authorityStart;
+		const end = ENCODED_AUTHORITY_END.exec(text)?.index ?? text.length;
+		const lastAt = text.slice(authorityStart, end).toUpperCase().lastIndexOf("%40");
+		if (lastAt === -1) continue;
+		redacted += text.slice(copied, authorityStart);
+		copied = authorityStart + lastAt + 3;
+	}
+	return redacted + text.slice(copied);
 }
 
 /**

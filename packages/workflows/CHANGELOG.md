@@ -21,6 +21,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Credential redaction now covers more field names, encodings and multi-line values
 - Fixed a message sent to a stage on a local worker being dropped without telling its sender when the stage's worker attempt ended and the replacement finished the stage before the message was sent again. The parent session now gets a notice naming the message and the stage, and the stage chat shows the same notice, so you can send it to another stage ([#4884](https://github.com/bastani-inc/atomic/issues/4884))
 - Fixed a pooled child using up one of its attempts when a worker's claim of it was recorded but the answer never reached the worker, and that worker then died before running it. A worker now confirms its claim with a heartbeat before it runs the child, and only a confirmed claim counts as an attempt. A claim whose lease expires unconfirmed goes back to the queue as a handoff, which counts as none of the child's attempts, and a late confirmation from that claim is refused ([#5034](https://github.com/bastani-inc/atomic/issues/5034))
 - Fixed a workflow run that holds more than 10 MB of checkpoints not reading back from a libSQL server (sqld), which refuses a response over 10 MB. Resuming or inspecting the run failed. The journal now reads events in pages of about 1 MiB of payload ([#4954](https://github.com/bastani-inc/atomic/issues/4954))

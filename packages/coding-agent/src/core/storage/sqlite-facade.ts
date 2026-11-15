@@ -1,3 +1,4 @@
+import { configuredSecretRedactor } from "../../utils/credential-redaction.ts";
 import type {
 	SqliteBatchOptions,
 	SqliteDatabase,
@@ -147,33 +148,14 @@ interface Attempt {
 	transient?: StorageTransientError;
 }
 
-const REDACTED = "[redacted]";
-
 /**
- * A redactor that replaces every non-empty secret, and its URI-encoded and URI-decoded forms, with `[redacted]`.
- * It makes one pass over the text, matching longer secrets first, so a secret that contains another is removed whole
- * and no replacement is scanned again. A `[redacted]` marker already in the text is kept as it is, so redacting twice
- * changes nothing, even for a secret that is part of the marker.
+ * A redactor that replaces every non-empty secret, and its trimmed, per-line, URI-encoded, URI-decoded, JSON-escaped
+ * and base64 forms, with `[redacted]`. Occurrences that overlap are replaced together, so a secret that contains or
+ * shares characters with another is removed whole. A `[redacted]` marker already in the text is kept as it is, so
+ * redacting twice changes nothing, even for a secret that is part of the marker.
  */
 export function redactSecrets(secrets: Iterable<string>): (text: string) => string {
-	const variants = new Set<string>();
-	for (const secret of secrets) {
-		variants.add(secret);
-		try {
-			variants.add(encodeURIComponent(secret));
-		} catch {}
-		try {
-			variants.add(decodeURIComponent(secret));
-		} catch {}
-	}
-	const ordered = [...variants].filter(Boolean).sort((first, second) => second.length - first.length);
-	if (ordered.length === 0) return (text) => text;
-	const pattern = new RegExp(ordered.map((secret) => secret.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&")).join("|"), "g");
-	return (text) =>
-		text
-			.split(REDACTED)
-			.map((piece) => piece.replace(pattern, REDACTED))
-			.join(REDACTED);
+	return configuredSecretRedactor(secrets);
 }
 
 function redactCause(cause: StorageFailureCause, redact: (text: string) => string): StorageFailureCause {

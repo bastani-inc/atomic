@@ -3,7 +3,10 @@ import { performance } from "node:perf_hooks";
 import { describe, test } from "vitest";
 import { redactUrlCredentials } from "../../packages/coding-agent/src/core/error-contract.ts";
 import { redactCredentials } from "../../packages/coding-agent/src/core/workspace/redact.ts";
-import { redactCredentialShapes } from "../../packages/coding-agent/src/utils/credential-redaction.ts";
+import {
+	configuredSecretRedactor,
+	redactCredentialShapes,
+} from "../../packages/coding-agent/src/utils/credential-redaction.ts";
 import { redactSensitiveText } from "../../packages/workflows/src/shared/workflow-failures-signals.ts";
 
 /** A linear scan of this input takes milliseconds; a quadratic one takes minutes. */
@@ -235,6 +238,187 @@ describe("credential shape redaction (#4833)", () => {
 				redact(input);
 				const elapsed = performance.now() - started;
 				assert.ok(elapsed < LINEAR_REDACTION_BUDGET_MS, `${redact.name} took ${Math.round(elapsed)} ms`);
+			}
+		}
+	});
+});
+
+/** A value that matches no token shape, so only field, URL and configured-secret rules can remove it. */
+const PLAIN_SECRET = "Zq9vR2mXw7LpT4kN";
+
+describe("credential shape coverage", () => {
+	const redactors = [redactCredentialShapes, redactSensitiveText];
+
+	function assertGone(text: string): string {
+		for (const redact of redactors) {
+			const redacted = redact(text);
+			assert.equal(redacted.includes("Zq9v"), false, `${redact.name}: ${JSON.stringify(redacted)}`);
+		}
+		return redactCredentialShapes(text);
+	}
+
+	test("camelCase credential fields are redacted", () => {
+		assert.equal(assertGone(`{"authToken":"${PLAIN_SECRET}"}`), '{"authToken": [redacted]}');
+		assert.equal(
+			assertGone(`//registry.npmjs.org/:_authToken=${PLAIN_SECRET}`),
+			"//registry.npmjs.org/:_authToken= [redacted]",
+		);
+		assertGone(`dbPassword: ${PLAIN_SECRET}`);
+		assertGone(`apiToken=${PLAIN_SECRET}`);
+		assertGone(`clientSecret: "${PLAIN_SECRET}"`);
+		for (const kept of ["monkey: plain", "primaryKey: id", "tokenizer=bpe", "hotKey: ctrl"]) {
+			assert.equal(redactCredentialShapes(kept), kept);
+		}
+	});
+
+	test("credential fields inside an escaped JSON string are redacted", () => {
+		assert.equal(
+			assertGone(`{"body":"{\\"access_token\\":\\"${PLAIN_SECRET}\\",\\"user\\":\\"kept\\"}"}`),
+			'{"body":"{\\"access_token\\": [redacted],\\"user\\":\\"kept\\"}"}',
+		);
+		assertGone(`error: {\\"password\\":\\"${PLAIN_SECRET}\\"}`);
+	});
+
+	test("an unquoted password value is redacted to the end of its line", () => {
+		assert.equal(
+			assertGone(`password: correct horse ${PLAIN_SECRET}\nnext: kept`),
+			"password: [redacted]\nnext: kept",
+		);
+		assertGone(`PASSWORD=abc,${PLAIN_SECRET}`);
+		assertGone(`passwd=a;${PLAIN_SECRET}`);
+	});
+
+	test("a styled authorization scheme does not keep its token", () => {
+		assertGone(`Authorization: \u001b[1mBearer\u001b[0m ${PLAIN_SECRET}`);
+		assertGone(`sent \u001b[1mBearer\u001b[0m ${PLAIN_SECRET}`);
+		assertGone(`token=\u001b[31m${PLAIN_SECRET}\u001b[0m`);
+	});
+
+	test("PGP private key blocks are redacted", () => {
+		/** Built at run time, so secret scanners do not take the fixture for a real key. */
+		const label = ["PGP", "PRIVATE", "KEY", "BLOCK"].join(" ");
+		assert.equal(
+			assertGone(`a\n-----BEGIN ${label}-----\n\n${PLAIN_SECRET}\n-----END ${label}-----\nb`),
+			"a\n[redacted]\nb",
+		);
+	});
+
+	test("URL user info with a raw '/', '#' or '?' is removed", () => {
+		for (const separator of ["/", "#", "?"]) {
+			const text = `clone https://user:ab${separator}${PLAIN_SECRET}@example.com/repo.git failed`;
+			assert.equal(redactUrlCredentials(text), "clone https://example.com/repo.git failed");
+			assertGone(text);
+		}
+		for (const kept of [
+			"https://example.com:8443/a@b",
+			"https://example.com/path/user@example.org",
+			"see https://example.com/x and mail ops@example.com",
+		]) {
+			assert.equal(redactUrlCredentials(kept), kept);
+		}
+	});
+
+	test("percent-encoded nested URL user info is removed", () => {
+		const text = `https://a.example/cb?next=https%3A%2F%2Fuser%3A${PLAIN_SECRET}%40b.example%2Fpath&x=1`;
+		assert.equal(redactUrlCredentials(text), "https://a.example/cb?next=https%3A%2F%2Fb.example%2Fpath&x=1");
+		assertGone(text);
+		assert.equal(redactUrlCredentials("q=https%3A%2F%2Fb.example%2Fa%40b"), "q=https%3A%2F%2Fb.example%2Fa%40b");
+	});
+
+	test("credential coverage stays linear on adversarial input", () => {
+		for (const input of [
+			"%3A%2F%2F".repeat(ADVERSARIAL_LENGTH / 9),
+			`https://u:${"/".repeat(ADVERSARIAL_LENGTH)}`,
+			"https://u:x/".repeat(ADVERSARIAL_LENGTH / 12),
+			"\u001b[1m".repeat(ADVERSARIAL_LENGTH / 4),
+			`Bearer${"\u001b[0m".repeat(ADVERSARIAL_LENGTH / 4)}`,
+			"aT".repeat(ADVERSARIAL_LENGTH / 2),
+			"\\".repeat(ADVERSARIAL_LENGTH),
+		]) {
+			const started = performance.now();
+			redactCredentialShapes(input);
+			const elapsed = performance.now() - started;
+			assert.ok(elapsed < LINEAR_REDACTION_BUDGET_MS, `took ${Math.round(elapsed)} ms`);
+		}
+	});
+});
+
+describe("configured secret redaction", () => {
+	test("overlapping configured secrets are redacted whole", () => {
+		const redact = configuredSecretRedactor(["AAAA1111BBBB", "BBBB2222CCCC"]);
+		assert.equal(redact("x AAAA1111BBBB2222CCCC y"), "x [redacted] y");
+		assert.equal(redact("x AAAA1111BBBB y BBBB2222CCCC"), "x [redacted] y [redacted]");
+	});
+
+	test("encoded forms of configured secrets are redacted", () => {
+		const secret = `pa"ss\\/w0rd ${PLAIN_SECRET}`;
+		const redact = configuredSecretRedactor([secret]);
+		for (const form of [
+			JSON.stringify(secret).slice(1, -1),
+			encodeURIComponent(secret),
+			Buffer.from(secret).toString("base64"),
+			Buffer.from(secret).toString("base64url"),
+		]) {
+			const redacted = redact(`before ${form} after`);
+			assert.ok(redacted.startsWith("before "), redacted);
+			assert.ok(redacted.endsWith(" after"), redacted);
+			assert.equal(redacted.includes(form.slice(4, -4)), false, redacted);
+		}
+		const basic = Buffer.from(`user:${secret}`).toString("base64");
+		assert.equal(redact(`Basic ${basic}`).includes(basic.slice(8, -4)), false);
+	});
+
+	test("configured secrets with surrounding whitespace or several lines are redacted", () => {
+		assert.equal(
+			configuredSecretRedactor([`${PLAIN_SECRET}\r\n`])(`denied for ${PLAIN_SECRET}.`),
+			"denied for [redacted].",
+		);
+		const pem = `-----BEGIN KEY-----\n  ${PLAIN_SECRET}\nAbCdEfGhIjKl\n-----END KEY-----\n`;
+		assert.equal(
+			configuredSecretRedactor([pem])(`bad key: ${PLAIN_SECRET} AbCdEfGhIjKl`),
+			"bad key: [redacted] [redacted]",
+		);
+	});
+
+	test("no configured secret survives random placement and encodings, and other text is unchanged", () => {
+		const random = seededRandom(PROPERTY_SEED);
+		const secretAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ0123456789";
+		const textAlphabet = "abcdefghijklmnop .,:;=-\n";
+		const draw = (alphabet: string, min: number, spread: number) =>
+			Array.from({ length: min + Math.floor(random() * spread) }, () => pick(random, [...alphabet])).join("");
+		for (let round = 0; round < 1_000; round++) {
+			const secrets = Array.from({ length: 1 + Math.floor(random() * 3) }, () =>
+				Array.from({ length: 1 + Math.floor(random() * 2) }, () => draw(secretAlphabet, 6, 12)).join("\n"),
+			);
+			if (random() < 0.3) {
+				const [first] = secrets;
+				const tail = first!.slice(-4 - Math.floor(random() * 3));
+				secrets.push(`${tail}${draw(secretAlphabet, 6, 6)}`);
+			}
+			const configured = secrets.map((secret) => (random() < 0.3 ? `${secret}\n` : secret));
+			const pieces: string[] = [draw(textAlphabet, 0, 8)];
+			let text = pieces[0]!;
+			for (let index = 0; index < 1 + Math.floor(random() * 4); index++) {
+				const secret = pick(random, secrets);
+				const form = pick(random, [
+					secret,
+					secret.split("\n").join("\t"),
+					encodeURIComponent(secret),
+					JSON.stringify(secret).slice(1, -1),
+				]);
+				const between = draw(textAlphabet, 1, 8);
+				text += form + between;
+				pieces.push(between);
+			}
+			const redacted = configuredSecretRedactor(configured, { minLength: 4 })(text);
+			const context = JSON.stringify({ configured, text, redacted });
+			assert.equal(redacted.replace(/(?:\[redacted\]\t?)*\[redacted\]/gu, "|"), pieces.join("|"), context);
+			for (const secret of secrets) {
+				for (let start = 0; start + 4 <= secret.length; start++) {
+					const fragment = secret.slice(start, start + 4);
+					if (!fragment.includes("\n"))
+						assert.equal(redacted.includes(fragment), false, `${fragment}: ${context}`);
+				}
 			}
 		}
 	});

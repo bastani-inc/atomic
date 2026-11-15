@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, test } from "vitest";
-import { redactSecrets } from "../../packages/workflows/src/workers/provisioners/cli.js";
+import { redactSecrets, runCli } from "../../packages/workflows/src/workers/provisioners/cli.js";
 import {
 	type CommandProvisionerOptions,
 	createWorkerHostProvisioner,
@@ -703,5 +703,80 @@ describe("secret redaction (#4768)", () => {
 			["status=500 name=atomic", "status=500 name=atomic"],
 		];
 		for (const [text, redacted] of cases) assert.equal(redactSecrets(text, [], {}), redacted, text);
+	});
+});
+
+describe("configured secrets in a failing CLI's stderr", () => {
+	const SECRET = "Zq9vR2mXw7LpT4kNsecretvalue";
+
+	/** The message of the error a CLI that writes `chunks` to stderr, one write at a time, then fails, rejects with. */
+	async function failureMessage(chunks: readonly string[], env: Readonly<Record<string, string>>): Promise<string> {
+		const source = `const chunks = ${JSON.stringify(chunks)};
+const write = (text) => new Promise((done) => process.stderr.write(text, () => setTimeout(done, 1)));
+(async () => { for (const chunk of chunks) await write(chunk); process.exit(3); })();`;
+		const error = await rejection(
+			runCli(
+				{
+					label: "probe",
+					file: process.execPath,
+					args: ["-e", source],
+					timeoutMs: 20_000,
+					env,
+					authFailure: /never/u,
+				},
+				never(),
+			),
+		);
+		return error.message;
+	}
+
+	function assertNoFragment(message: string, secret: string): void {
+		for (let start = 0; start + 6 <= secret.length; start++) {
+			const fragment = secret.slice(start, start + 6);
+			if (!/\s/u.test(fragment)) assert.equal(message.includes(fragment), false, `${fragment} in ${message}`);
+		}
+	}
+
+	test("a configured secret split across many stderr writes is redacted", async () => {
+		const chunks = [
+			...Array.from({ length: 70 }, () => "."),
+			` denied for ${SECRET.slice(0, 14)}`,
+			`${SECRET.slice(14)}\n`,
+		];
+		const message = await failureMessage(chunks, { PROBE_TOKEN: SECRET });
+		assert.equal(message, `probe exited with code 3: ${".".repeat(70)} denied for [redacted]`);
+	});
+
+	test("a configured secret with a trailing newline is redacted where the CLI prints it trimmed", async () => {
+		const message = await failureMessage([`denied for ${SECRET} (exit)\n`], { PROBE_TOKEN: `${SECRET}\n` });
+		assert.equal(message, "probe exited with code 3: denied for [redacted] (exit)");
+	});
+
+	test("a configured multi-line secret is redacted before stderr lines are joined", async () => {
+		const second = [...SECRET].reverse().join("");
+		const key = `line1-${SECRET}\nline2-${second}`;
+		const message = await failureMessage([`bad key:\n${key}\n`], { PROBE_PRIVATE_KEY: key });
+		assert.equal(message, "probe exited with code 3: bad key: [redacted]");
+	});
+
+	test("no configured secret survives random stderr chunkings", async () => {
+		let state = 4868;
+		const random = (limit: number): number => {
+			state = (Math.imul(state, 1103515245) + 12345) >>> 0;
+			return (state >>> 8) % limit;
+		};
+		for (let round = 0; round < 8; round++) {
+			const filler = Array.from({ length: random(400) }, () => "abc ,.;\n"[random(8)]).join("");
+			const text = `${filler}token ${SECRET} and again ${SECRET}\n`;
+			const chunks: string[] = [];
+			for (let at = 0; at < text.length; ) {
+				const size = 1 + random(12);
+				chunks.push(text.slice(at, at + size));
+				at += size;
+			}
+			const message = await failureMessage(chunks, { PROBE_TOKEN: SECRET });
+			assertNoFragment(message, SECRET);
+			assert.ok(message.includes("token [redacted] and again [redacted]"), message);
+		}
 	});
 });
