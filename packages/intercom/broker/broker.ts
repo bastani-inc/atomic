@@ -177,13 +177,12 @@ function socketPathInode(): number | undefined {
 
 /** The socket lock, or undefined when a starting broker still holds it after `budgetMs`. */
 async function acquireSocketLockWithin(budgetMs: number): Promise<(() => void) | undefined> {
-  const acquiring = acquireSocketReplacementLock(SOCKET_REPLACEMENT_LOCK_PATH);
-  const release = await Promise.race([
-    acquiring,
+  // A lock taken after the budget is never released by hand: the broker exits at once, and a lock whose holder is dead
+  // is taken over.
+  return Promise.race([
+    acquireSocketReplacementLock(SOCKET_REPLACEMENT_LOCK_PATH),
     new Promise<undefined>((resolve) => setTimeout(resolve, budgetMs).unref()),
   ]);
-  if (release === undefined) void acquiring.then((late) => late());
-  return release;
 }
 
 function exitBecauseLiveBrokerOwnsSocket(): never {
@@ -501,6 +500,7 @@ class IntercomBroker {
     this.server.once("error", onError);
     this.server.listen(SOCKET_PATH, () => {
       this.server.off("error", onError);
+      // Stryker disable next-line ConditionalExpression,StringLiteral: a Windows pipe has no inode; equivalent off Windows.
       if (process.platform !== "win32") {
         const inode = socketPathInode();
         if (inode === undefined) {
@@ -3506,11 +3506,12 @@ class IntercomBroker {
     // Give this broker's leases up so other brokers see its sessions offline at once, within a bound.
     const leasesGivenUp = this.multiNode?.close().catch(() => {}) ?? Promise.resolve();
     const bound = new Promise<void>((resolve) => setTimeout(resolve, SHUTDOWN_CLOSE_BOUND_MS).unref());
-    void Promise.race([Promise.all([watchdogStopped, leasesGivenUp]), bound]).finally(() => void this.exitAfterShutdown());
+    void Promise.race([Promise.all([watchdogStopped, leasesGivenUp]), bound]).finally(() => this.exitAfterShutdown());
   }
 
   private async exitAfterShutdown(): Promise<never> {
     // Windows named pipes are not path-unlinked on close, so a successor's pipe is never at risk.
+    // Stryker disable next-line ConditionalExpression,StringLiteral,BlockStatement: Windows only; equivalent off Windows.
     if (process.platform === "win32") {
       this.unlinkRuntimeFilesIfOwned();
       this.server.close();

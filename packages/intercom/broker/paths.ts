@@ -115,15 +115,16 @@ function agentDirDigest(agentDir: string): string {
  * It is created owner-only, and used only while it is a real directory owned by this user that no one else can enter.
  */
 function privateSocketDirectory(): string {
+  // Only Unix sockets move here, and only Unix has uids.
   const uid = process.getuid?.();
-  const directory = join(process.env.XDG_RUNTIME_DIR || tmpdir(), `atomic-intercom-${uid ?? "user"}`);
+  const directory = join(process.env.XDG_RUNTIME_DIR || tmpdir(), `atomic-intercom-${uid}`);
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   const stats = lstatSync(directory);
   const problem = !stats.isDirectory()
     ? "it is not a directory (or is a symbolic link)"
-    : uid !== undefined && stats.uid !== uid
+    : stats.uid !== uid
       ? `it is owned by uid ${stats.uid}, not ${uid}`
-      : uid !== undefined && (stats.mode & 0o077) !== 0
+      : (stats.mode & 0o077) !== 0
         ? `its mode ${(stats.mode & 0o777).toString(8)} lets other users in (expected 700)`
         : undefined;
   if (problem !== undefined) {

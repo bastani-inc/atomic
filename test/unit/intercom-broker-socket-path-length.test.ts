@@ -1,13 +1,19 @@
 import assert from "node:assert/strict";
 // `lstatSync`, `chmodSync` and `symlinkSync` have no equivalent in test/helpers/runtime.ts: the socket directory's
 // owner, mode and kind are what these tests pin.
-import { chmodSync, existsSync, lstatSync, symlinkSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, chownSync, existsSync, lstatSync, symlinkSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, test } from "vitest";
 import { IntercomClient } from "../../packages/intercom/broker/client.js";
-import { getBrokerSocketPath, maxUnixSocketPathBytes } from "../../packages/intercom/broker/paths.js";
+import {
+	getBrokerPidPath,
+	getBrokerSocketPath,
+	getBrokerSocketReplacementLockPath,
+	maxUnixSocketPathBytes,
+} from "../../packages/intercom/broker/paths.js";
 import { isSocketAnswering } from "../../packages/intercom/broker/socket-liveness.js";
+import { acquireSocketReplacementLock } from "../../packages/intercom/broker/socket-replacement-lock.js";
 import { getJitiCliPath } from "../../packages/intercom/broker/spawn.js";
 import {
 	makeDirectorySync,
@@ -89,7 +95,7 @@ test("a broker socket path within the platform limit stays in the agent director
 	assert.equal(getBrokerSocketPath("darwin", darwinLimit), join(darwinLimit, "intercom", "broker.sock"));
 });
 
-test("a broker socket path past the platform limit moves to a private per-user directory (#5040)", () => {
+unixOnly("a broker socket path past the platform limit moves to a private per-user directory (#5040)", () => {
 	// 104 bytes: within Linux's limit, one byte past macOS's.
 	const agentDir = agentDirWithSocketPathBytes(maxUnixSocketPathBytes("darwin") + 1);
 	const otherAgentDir = agentDirWithSocketPathBytes(maxUnixSocketPathBytes("darwin") + 1, "b");
@@ -97,27 +103,66 @@ test("a broker socket path past the platform limit moves to a private per-user d
 	const darwinPath = getBrokerSocketPath("darwin", agentDir);
 
 	assert.equal(getBrokerSocketPath("linux", agentDir), join(agentDir, "intercom", "broker.sock"));
-	assert.ok(darwinPath.startsWith(join(runtimeDir, "atomic-intercom-")), darwinPath);
+	assert.equal(dirname(darwinPath), join(runtimeDir, `atomic-intercom-${process.getuid?.()}`));
+	assert.match(basename(darwinPath), /^[0-9a-f]{16}\.sock$/u);
 	assert.ok(Buffer.byteLength(darwinPath) <= maxUnixSocketPathBytes("darwin"), darwinPath);
 	assert.equal(getBrokerSocketPath("darwin", agentDir), darwinPath, "every caller must derive the same path");
 	assert.notEqual(getBrokerSocketPath("darwin", otherAgentDir), darwinPath);
-	if (process.platform !== "win32") {
-		const directory = lstatSync(join(darwinPath, ".."));
-		assert.deepEqual(
-			{ directory: directory.isDirectory(), uid: directory.uid, mode: directory.mode & 0o777 },
-			{ directory: true, uid: process.getuid?.(), mode: 0o700 },
-		);
-	}
+	const directory = lstatSync(dirname(darwinPath));
+	assert.deepEqual(
+		{ directory: directory.isDirectory(), uid: directory.uid, mode: directory.mode & 0o777 },
+		{ directory: true, uid: process.getuid?.(), mode: 0o700 },
+	);
 });
 
-test("the socket path limit counts bytes, not characters (#5040)", () => {
+unixOnly("the socket path limit counts bytes, not characters (#5040)", () => {
 	// Two bytes per character: 108 bytes in fewer than 107 characters.
 	const agentDir = agentDirWithSocketPathBytes(maxUnixSocketPathBytes("linux") + 1, "é");
 	assert.ok(join(agentDir, "intercom", "broker.sock").length <= maxUnixSocketPathBytes("linux"));
 
 	const socketPath = getBrokerSocketPath("linux", agentDir);
 
-	assert.ok(socketPath.startsWith(join(runtimeDir, "atomic-intercom-")), socketPath);
+	assert.equal(dirname(socketPath), join(runtimeDir, `atomic-intercom-${process.getuid?.()}`));
+});
+
+/** A runtime directory whose per-user socket path, for any agent directory, is exactly `socketPathBytes` long. */
+function runtimeDirWithSocketPathBytes(socketPathBytes: number): string {
+	const base = tempDir("5040-rt-");
+	const fixed = Buffer.byteLength(join(base, "r", `atomic-intercom-${process.getuid?.()}`, `${"0".repeat(16)}.sock`));
+	const remaining = socketPathBytes - fixed;
+	assert.ok(remaining >= 0, "the temp directory leaves no room for this length");
+	const dir = join(base, `r${"r".repeat(remaining)}`);
+	makeDirectorySync(dir, { recursive: true });
+	return dir;
+}
+
+unixOnly("a per-user socket path at the limit is used, and one past it is refused, naming both paths (#5040)", () => {
+	const agentDir = agentDirWithSocketPathBytes(maxUnixSocketPathBytes("linux") + 1);
+	process.env.XDG_RUNTIME_DIR = runtimeDirWithSocketPathBytes(maxUnixSocketPathBytes("linux"));
+	const atLimit = getBrokerSocketPath("linux", agentDir);
+	process.env.XDG_RUNTIME_DIR = runtimeDirWithSocketPathBytes(maxUnixSocketPathBytes("linux") + 1);
+
+	assert.equal(Buffer.byteLength(atLimit), maxUnixSocketPathBytes("linux"));
+	assert.throws(
+		() => getBrokerSocketPath("linux", agentDir),
+		(error: Error) =>
+			error.message.includes(join(agentDir, "intercom", "broker.sock")) &&
+			error.message.includes(process.env.XDG_RUNTIME_DIR ?? "") &&
+			error.message.includes("107 bytes"),
+	);
+});
+
+test("a Windows pipe name keeps the agent directory unless it is longer than 256 characters (#5040)", () => {
+	const fits = `C:\\${"a".repeat(256 - "\\\\.\\pipe\\pi-intercom-c-".length)}`;
+	const tooLong = `${fits}a`;
+
+	const fitting = getBrokerSocketPath("win32", fits);
+	const digested = getBrokerSocketPath("win32", tooLong);
+
+	assert.equal(fitting, `\\\\.\\pipe\\pi-intercom-c-${"a".repeat(256 - "\\\\.\\pipe\\pi-intercom-c-".length)}`);
+	assert.equal(fitting.length, 256);
+	assert.match(digested, /^\\\\\.\\pipe\\pi-intercom-[0-9a-f]{16}$/u);
+	assert.notEqual(getBrokerSocketPath("win32", `${tooLong}b`), digested);
 });
 
 unixOnly("a per-user socket directory another user could enter is refused, naming it (#5040)", () => {
@@ -128,7 +173,7 @@ unixOnly("a per-user socket directory another user could enter is refused, namin
 
 	assert.throws(
 		() => getBrokerSocketPath("linux", agentDir),
-		(error: Error) => error.message.includes(directory),
+		(error: Error) => error.message.includes(directory) && error.message.includes("mode 755"),
 	);
 });
 
@@ -141,7 +186,23 @@ unixOnly("a per-user socket directory that is a symbolic link is refused, naming
 
 	assert.throws(
 		() => getBrokerSocketPath("linux", agentDir),
-		(error: Error) => error.message.includes(directory),
+		(error: Error) => error.message.includes(directory) && error.message.includes("symbolic link"),
+	);
+});
+
+// Only root can give a directory to another user.
+const rootOnly = process.getuid?.() === 0 ? test : test.skip;
+
+rootOnly("a per-user socket directory another user owns is refused, naming it (#5040)", () => {
+	const agentDir = agentDirWithSocketPathBytes(maxUnixSocketPathBytes("linux") + 1);
+	const directory = join(runtimeDir, "atomic-intercom-0");
+	makeDirectorySync(directory, { recursive: true });
+	chmodSync(directory, 0o700);
+	chownSync(directory, 65534, 65534);
+
+	assert.throws(
+		() => getBrokerSocketPath("linux", agentDir),
+		(error: Error) => error.message.includes(directory) && error.message.includes("owned by uid 65534"),
 	);
 });
 
@@ -191,21 +252,19 @@ unixOnly(
 	},
 );
 
-unixOnly("a broker whose just-bound socket vanishes binds it again instead of exiting (#5040)", async () => {
-	const agentDir = tempDir("ic5040-vanish-");
-	const socketPath = getBrokerSocketPath(process.platform, agentDir);
-	const preload = join(agentDir, "unlink-bound-socket-once.mjs");
-	// The first stat of the socket path, the broker's check of what it just bound, finds the path already unlinked.
+/** A preload that unlinks the socket path just before the broker's stat of it, `times` times. */
+function unlinkBoundSocketPreload(agentDir: string, socketPath: string, times: number): string {
+	const preload = join(agentDir, "unlink-bound-socket.mjs");
 	writeTextSync(
 		preload,
 		[
 			'import fs from "node:fs";',
 			'import { syncBuiltinESMExports } from "node:module";',
 			"const statSync = fs.statSync;",
-			"let unlinked = false;",
+			"let unlinked = 0;",
 			"fs.statSync = function (path, ...rest) {",
-			`  if (!unlinked && path === ${JSON.stringify(socketPath)}) {`,
-			"    unlinked = true;",
+			`  if (unlinked < ${times} && path === ${JSON.stringify(socketPath)}) {`,
+			"    unlinked += 1;",
 			"    fs.unlinkSync(path);",
 			"  }",
 			"  return statSync.call(this, path, ...rest);",
@@ -214,13 +273,73 @@ unixOnly("a broker whose just-bound socket vanishes binds it again instead of ex
 			"",
 		].join("\n"),
 	);
-	const { broker, stderr } = spawnBroker(agentDir, preload);
+	return preload;
+}
+
+unixOnly("a broker whose just-bound socket vanishes binds it again instead of exiting (#5040)", async () => {
+	const agentDir = tempDir("ic5040-vanish-");
+	const socketPath = getBrokerSocketPath(process.platform, agentDir);
+	const { broker, stderr } = spawnBroker(agentDir, unlinkBoundSocketPreload(agentDir, socketPath, 1));
 
 	await waitUntilAnswering(broker, socketPath, stderr);
 	const client = await connectSession(socketPath, agentDir);
+	const connected = client.isConnected();
+	const runningAfterConnect = broker.exitCode === null;
+	broker.kill("SIGTERM");
+	await broker.exited;
 
-	assert.equal(client.isConnected(), true);
-	assert.equal(broker.exitCode, null, "the broker must stay up");
+	assert.deepEqual({ connected, runningAfterConnect }, { connected: true, runningAfterConnect: true });
+	assert.match(await stderr, /vanished after it was bound; binding it again/u);
+});
+
+unixOnly("a broker whose bound socket keeps vanishing gives up after its listen attempts (#5040)", async () => {
+	const agentDir = tempDir("ic5040-vanish-always-");
+	const socketPath = getBrokerSocketPath(process.platform, agentDir);
+	const { broker, stderr } = spawnBroker(agentDir, unlinkBoundSocketPreload(agentDir, socketPath, 1_000));
+
+	const exitCode = await Promise.race([broker.exited, sleep(BROKER_BUDGET_MS).then(() => "still running")]);
+	const output = await stderr;
+
+	assert.equal(exitCode, 1, output);
+	assert.equal(output.match(/binding it again/gu)?.length, 4, output);
+	assert.match(output, /could not listen on .*: the socket vanished after it was bound/u);
+	assert.deepEqual(
+		{
+			pidFile: existsSync(getBrokerPidPath(agentDir)),
+			lock: existsSync(getBrokerSocketReplacementLockPath(agentDir)),
+		},
+		{ pidFile: false, lock: false },
+	);
+});
+
+unixOnly("a retiring broker that cannot take the socket lock exits without unlinking the socket (#5040)", async () => {
+	const agentDir = tempDir("ic5040-locked-");
+	const socketPath = getBrokerSocketPath(process.platform, agentDir);
+	const { broker, stderr } = spawnBroker(agentDir);
+	await waitUntilAnswering(broker, socketPath, stderr);
+	const release = await acquireSocketReplacementLock(getBrokerSocketReplacementLockPath(agentDir));
+
+	try {
+		broker.kill("SIGTERM");
+		const exitCode = await Promise.race([broker.exited, sleep(BROKER_BUDGET_MS).then(() => "still running")]);
+
+		assert.deepEqual({ exitCode, socketLeft: existsSync(socketPath) }, { exitCode: 0, socketLeft: true });
+	} finally {
+		release();
+	}
+});
+
+unixOnly("a retiring broker whose pid file names another broker leaves the socket (#5040)", async () => {
+	const agentDir = tempDir("ic5040-not-owner-");
+	const socketPath = getBrokerSocketPath(process.platform, agentDir);
+	const { broker, stderr } = spawnBroker(agentDir);
+	await waitUntilAnswering(broker, socketPath, stderr);
+	writeTextSync(getBrokerPidPath(agentDir), String(process.pid));
+
+	broker.kill("SIGTERM");
+	const exitCode = await broker.exited;
+
+	assert.deepEqual({ exitCode, socketLeft: existsSync(socketPath) }, { exitCode: 0, socketLeft: true });
 });
 
 unixOnly("a retiring broker still removes the socket it owns (#5040)", async () => {
