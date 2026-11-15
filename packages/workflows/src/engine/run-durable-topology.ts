@@ -1,3 +1,4 @@
+import { attemptScopedHash } from "../durable/attempt-identity.js";
 import {
 	type DurableWorkflowBackend,
 	durableHash,
@@ -192,7 +193,7 @@ export async function recordDurableActiveStage(deps: DurableStageDeps, stage: St
 	await deps.backend.commitCheckpoint({
 		kind: "stage",
 		workflowId: deps.workflowId,
-		checkpointId: `stage-active-meta:${durableHash({ replayKey: stage.replayKey, stageId: stage.id })}`,
+		checkpointId: `stage-active-meta:${durableHash(attemptScopedHash(deps.backend, deps.workflowId, { replayKey: stage.replayKey, stageId: stage.id }))}`,
 		name: stage.name,
 		replayKey: stage.replayKey,
 		completedAt: Date.now(),
@@ -263,7 +264,8 @@ export function createDurableCachedStageRecorder(input: {
 					: {
 							kind: "stage",
 							workflowId: input.run.id,
-							checkpointId: `${STAGE_REPLAY_METADATA_CHECKPOINT_PREFIX}${durableHash({ replayKey, stageId: stage.id, parentIds: stage.parentIds })}`,
+							// One record per attempt that replays the stage, so each attempt's reach is recorded (#4874).
+							checkpointId: `${STAGE_REPLAY_METADATA_CHECKPOINT_PREFIX}${durableHash(attemptScopedHash(input.backend, input.run.id, { replayKey, stageId: stage.id, parentIds: stage.parentIds }))}`,
 							name,
 							replayKey,
 							completedAt: Date.now(),

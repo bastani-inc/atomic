@@ -176,6 +176,10 @@ export class ScopedDurableBackend implements DurableWorkflowBackend {
 		return await this.inner.commitAdditiveCheckpointBestEffort(this.remap(checkpoint));
 	}
 
+	workflowAttempt(_workflowId: string): number {
+		return this.inner.workflowAttempt?.(this.scope.rootWorkflowId) ?? 0;
+	}
+
 	workflowOwnership(_workflowId: string): ReturnType<DurableWorkflowBackend["workflowOwnership"]> {
 		return this.inner.workflowOwnership(this.scope.rootWorkflowId);
 	}
@@ -206,6 +210,8 @@ export class ScopedDurableBackend implements DurableWorkflowBackend {
 				startedAt?: number;
 				durationMs?: number;
 				routerSelection?: import("@bastani/atomic").ModelRouterOutput;
+				/** The attempt the session record was written in (#4874). */
+				attempt?: number;
 		  }
 		| undefined {
 		return this.inner.getStageSession(this.scope.rootWorkflowId, this.scopeKey(replayKey));
