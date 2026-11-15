@@ -5,6 +5,7 @@ import {
 	createAssistantMessageEventStream,
 	type Model,
 	registerApiProvider,
+	type ToolResultMessage,
 	unregisterApiProviders,
 } from "@bastani/pi-ai/compat";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
@@ -414,12 +415,12 @@ describe("summary input tool results (#4967)", () => {
 		};
 	}
 
-	function toolResult(id: string, text: string): AgentMessage {
+	function toolResult(id: string, content: ToolResultMessage["content"]): AgentMessage {
 		return {
 			role: "toolResult",
 			toolCallId: id,
 			toolName: "read",
-			content: [{ type: "text", text }],
+			content,
 			isError: false,
 			timestamp: Date.now(),
 		};
@@ -432,13 +433,18 @@ describe("summary input tool results (#4967)", () => {
 		"shows the real truncated result of a successful tool call in %s summaries (#4967)",
 		async (_label, summarize) => {
 			resetIds();
-			const output = `REAL_TOOL_OUTPUT ${"x".repeat(5000)} TAIL_SENTINEL`;
 			const capture = capturePrompt();
 			await summarize(
 				[
 					entry(user("read the app")),
 					entry(toolTurn("call-ok")),
-					entry(toolResult("call-ok", output)),
+					entry(
+						toolResult("call-ok", [
+							{ type: "image", data: "aW1hZ2U=", mimeType: "image/png" },
+							{ type: "text", text: "REAL_TOOL" },
+							{ type: "text", text: `_OUTPUT ${"x".repeat(5000)} TAIL_SENTINEL` },
+						]),
+					),
 					entry(user("thanks")),
 				],
 				{ model: nonCopilotModel(), signal: new AbortController().signal, streamFn: capture.streamFn },
@@ -449,6 +455,21 @@ describe("summary input tool results (#4967)", () => {
 			assert.ok(!/interrupted/i.test(prompt), prompt);
 		},
 	);
+
+	it("keeps a long tool result from crowding earlier conversation out of session summaries (#4967)", async () => {
+		resetIds();
+		const capture = capturePrompt();
+		await generateSessionSummary(
+			[
+				entry(user("EARLY_TASK_SENTINEL")),
+				entry(toolTurn("call-big")),
+				entry(toolResult("call-big", [{ type: "text", text: "y".repeat(40_000) }])),
+				entry(user("thanks")),
+			],
+			{ model: nonCopilotModel(), signal: new AbortController().signal, streamFn: capture.streamFn },
+		);
+		assert.ok(capture.prompt().includes("EARLY_TASK_SENTINEL"), capture.prompt());
+	});
 
 	it("still marks a genuinely interrupted tool call as interrupted (#4967)", async () => {
 		resetIds();
