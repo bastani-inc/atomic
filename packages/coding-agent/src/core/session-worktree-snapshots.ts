@@ -61,6 +61,7 @@ import {
 } from "./worktree-snapshot/pool.ts";
 import {
 	defaultWorktreeSnapshotStoreDir,
+	type RestoreWorktreeSnapshotOptions,
 	removeRestoredWorktree,
 	restoreDegradedWorktreeAt,
 	restoreWorktree,
@@ -819,6 +820,12 @@ export interface ResumeSessionWorktreeOptions {
 	 */
 	readonly beforeRecord?: (mappings: readonly WorktreeRootMapping[]) => Promise<void>;
 	/**
+	 * Where the exact fresh restore of a checkout hands its Git LFS download instead of running it (#5099); see
+	 * `RestoreWorktreeSnapshotOptions.deferLfs`. Its `lfs-objects-unavailable` warning is then not recorded with the
+	 * restore. A claimed or degraded restore, and one that carries over work, still downloads before it returns.
+	 */
+	readonly deferLfs?: RestoreWorktreeSnapshotOptions["deferLfs"];
+	/**
 	 * Mappings to checkouts already here that the session continues in, applied as if recorded while deciding what to
 	 * restore, and recorded first, with the restores, only once every checkout is restored and `beforeRecord` passed.
 	 */
@@ -1006,6 +1013,8 @@ export async function resumeSessionWorktree(
 					storeDir: options.storeDir,
 					signal: options.signal,
 					candidates: earlierSnapshotHeads(sessionManager, original, existing, snapshot),
+					// Carrying work over writes into the worktree, so a pinned restore downloads first.
+					...(pinned === undefined ? { deferLfs: options.deferLfs } : {}),
 					...(slot === undefined
 						? {}
 						: {
