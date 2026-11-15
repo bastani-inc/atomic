@@ -9,6 +9,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 - Codemode scripts can call `intercom` with `list`, `status`, `pending`, and `send`. `list` and `status` resolve to session entries (`sessionId`, `name`, `cwd`, `state`, `groups`, `replyCapability`), and each `send` to its delivery outcome. Scripts may send only to exact targets: globs, `*`, `subagents:` targets and workflow path patterns are refused, and `ask`, `reply`, `join`, `leave` and the other actions fail with a pointer to the direct tool ([#5087](https://github.com/bastani-inc/atomic/issues/5087))
 - On PostgreSQL, a broker learns at once that a message or an outcome is waiting for it, through `LISTEN`/`NOTIFY`, instead of at its next half-second check, which stays as the fallback ([#5103](https://github.com/bastani-inc/atomic/issues/5103))
 
+### Changed
+
+- An Intercom `send` to a session-name glob that matches more than one session, `*` alone included, now needs `broadcast: true`. Without it nothing is sent, and the error lists every match so you can send to one by its exact name. A glob that matches exactly one session still sends, and `subagents:*`, `subagents:<runId>/*` and `workflow:` paths still reach every match without the flag. Migration: add `broadcast: true` to sends meant for every match ([#5202](https://github.com/bastani-inc/atomic/issues/5202))
+
 ### Fixed
 
 - Fixed a subagent whose `contact_supervisor` question failed, for example with `Session "<name>" ended before replying` after its supervisor ended, being shown the failure as its supervisor's reply. The call now fails with `Failed: <reason>` instead, whether the subagent was waiting or was released and woken by the failure, and an `interview_request` no longer tries to read the failure as the supervisor's answers ([#5188](https://github.com/bastani-inc/atomic/issues/5188))

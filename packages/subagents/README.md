@@ -485,7 +485,7 @@ In a collected burst, a call's top-level `agent` task comes first, followed by i
 
 For a collected `worktree: true` burst, every call-level `cwd` must resolve to the same path. That common path becomes the shared worktree root; differing origins reject the burst before launch, and any task-level `cwd` must still resolve to that root. Each projected caller result keeps shared worktree diff text and terminal control guidance while its child results and standard child-output sections remain route-local.
 
-One parallel run also needs one value for each run-wide option. Sibling calls must agree on `concurrency`, `worktree`, `context`, `share`, `control`, `sessionDir`, `maxOutput`, `artifacts`, `includeProgress`, and `agentScope`. If any value differs, Atomic rejects the full burst before launch and names the field instead of mixing settings.
+One parallel run also needs one value for each run-wide option. Sibling calls must agree on `concurrency`, `worktree: true`, `context`, `share`, `control`, `sessionDir`, `maxOutput`, `artifacts`, `includeProgress`, and `agentScope`. If any value differs, Atomic rejects the full burst before launch and names the field instead of mixing settings.
 
 ### Management actions
 
@@ -541,9 +541,9 @@ Agent definitions are not loaded into context by default. Management actions let
 | `progress` | boolean | agent default | Enable or disable single-agent run-scoped `progress.md` tracking under isolated artifact storage. Omission inherits the agent default except for read-only tasks. This does not write `progress.md` into the child `cwd` and is independent of `includeProgress`; with `artifacts: false`, foreground storage is removed after the child exits. |
 | `skill` | `string \| string[] \| false` | agent default | Override skills or disable all. |
 | `model` | string | agent default | Override model. |
-| `tasks` | array | - | Top-level parallel tasks. Supports `agent`, `task`, `cwd`, `count`, `output`, `outputMode`, `reads`, `progress`, `skill`, and `model`. |
+| `tasks` | array | - | Top-level parallel tasks. Supports `agent`, `task`, `cwd`, `worktree` (named), `count`, `output`, `outputMode`, `reads`, `progress`, `skill`, and `model`. |
 | `concurrency` | number | config or `1000` | Top-level parallel concurrency. |
-| `worktree` | boolean | false | Create isolated git worktrees for parallel tasks. |
+| `worktree` | `boolean \| { branch, base?, path? }` | false | `true`: create isolated, temporary git worktrees for parallel tasks. `{ branch, base?, path? }`: run the single agent, or each task without its own, in that named worktree; see [Named worktrees](#named-worktrees). |
 | `context` | `fresh \| fork` | agent default or `fresh` | `fork` creates real branched sessions from the parent leaf. Packaged `worker` defaults to `fork`; every other builtin runs fresh. |
 | `agentScope` | `user \| project \| both` | `both` | Agent discovery scope. Project wins on collisions. |
 | `cwd` | string | runtime cwd | Override working directory. |
@@ -597,6 +597,10 @@ Requirements:
 - gitignored files matched by `.worktreeinclude` are copied into the worktree; when git cannot list them, the worktree is created without them and the output carries a warning that names the worktree and git's reason
 
 After a worktree parallel step reaches a terminal result, per-agent diff stats are appended to the output and full patch files are written to artifacts. Git writes each patch to its file directly, so a change of any size is saved in full. A worktree whose diff could not be captured is never removed: the output names it and the reason, and a later cleanup removes it only after a capture succeeds. Intercom observation yielding keeps live and queued children's worktrees intact. Cleanup removes worktrees and `worktree-*` branches only after their executions finish, following the existing brief Git lock-release wait. The same cleanup runs after post-creation setup failures.
+
+### Named worktrees
+
+`worktree: { branch, base?, path? }`, on a single call, a parallel call, or one task, runs the child in a worktree of that branch. Before the child starts, Atomic checks out `branch` at `path` (relative to the call's `cwd`; default `<main-root>/.atomic/worktrees/<branch>` with `/` flattened to `+`). A new branch starts at `base`, else the current branch's upstream, else `HEAD`; an existing branch is checked out as it is. When the branch is already checked out at that path, the worktree is reused. The call is refused before launch when the branch is checked out elsewhere or the path holds something else. A named worktree is the caller's: it and its branch are never removed, no patch is saved, and no files or `node_modules` link are set up in it. It is recorded with the child, so the restore notice names it and resume continues there. It cannot be combined with `worktree: true`, and sibling calls collected into one burst each keep their own.
 
 ## Configuration
 
