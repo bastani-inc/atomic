@@ -1,3 +1,4 @@
+import { describeStorageFailure } from "@bastani/atomic/storage";
 import type { SharedStoreWrites } from "./internal.js";
 import type { SharedStoreHealth } from "./shared-pool-types.js";
 
@@ -20,9 +21,12 @@ export class SharedStoreStatusTimeoutError extends Error {
 	}
 }
 
-/** `text` without the query, fragment or user info of any URL in it, where a credential could sit. */
+/**
+ * `text` without the query, fragment or user info of any URL in it, where a credential could sit. A colon that ends a
+ * URL, before what follows it, is kept.
+ */
 export function withoutUrlCredentials(text: string): string {
-	return text.replace(/\b([a-z][a-z0-9+.-]*:\/\/)(?:[^\s/@]*@)?([^\s?#]*)(?:[?#][^\s]*)?/gi, "$1$2");
+	return text.replace(/\b([a-z][a-z0-9+.-]*:\/\/)(?:[^\s/@]*@)?([^\s?#]*)(?:[?#][^\s]*?(?=:?(?:\s|$)))?/gi, "$1$2");
 }
 
 /**
@@ -89,18 +93,21 @@ export async function probeSharedStoreWrite(write: () => Promise<unknown>): Prom
  *   are registered, whose work it holds up, else `unknown`;
  * - the status read failed: `unknown`;
  * - else the libSQL adapter's own report, `degraded` after a stall it reported, or `ok`.
- * Every degraded or unknown store this function finds carries {@link SHARED_STORE_HINT}.
+ * A failure is shown with its cause. Every degraded or unknown store this function finds carries
+ * {@link SHARED_STORE_HINT}, except a PostgreSQL store's (`adapter` `"postgres"`), which is never sqld.
  */
 export function classifySharedStoreHealth(observed: {
 	readonly writes?: SharedStoreWrites;
 	readonly hostsRegistered: boolean;
 	readonly readFailure?: Error;
 	readonly probe?: SharedStoreProbe;
+	/** The store's adapter, as its descriptor names it, when known. */
+	readonly adapter?: string;
 }): SharedStoreHealth {
 	const found = (state: "degraded" | "unknown", message: string) => ({
 		state,
 		message: withoutUrlCredentials(message),
-		hint: SHARED_STORE_HINT,
+		...(observed.adapter === "postgres" ? {} : { hint: SHARED_STORE_HINT }),
 	});
 	const waitedMs = observed.writes?.oldestWaitingMs();
 	if (waitedMs !== undefined && waitedMs >= STORE_WRITE_STALL_MS)
@@ -116,15 +123,15 @@ export function classifySharedStoreHealth(observed: {
 	if (probe !== undefined && probe !== "committed")
 		return found(
 			observed.hostsRegistered ? "degraded" : "unknown",
-			`The shared store refused a write: ${probe.failure.message}`,
+			`The shared store refused a write: ${describeStorageFailure(probe.failure)}`,
 		);
 	const writes = observed.writes;
 	if (writes !== undefined && writes.failuresInRow >= STORE_WRITE_FAILURES)
 		return found(
 			observed.hostsRegistered ? "degraded" : "unknown",
-			`The shared store failed ${writes.failuresInRow} writes in a row: ${writes.lastFailure!.message}`,
+			`The shared store failed ${writes.failuresInRow} writes in a row: ${describeStorageFailure(writes.lastFailure!)}`,
 		);
-	if (observed.readFailure !== undefined) return found("unknown", observed.readFailure.message);
+	if (observed.readFailure !== undefined) return found("unknown", describeStorageFailure(observed.readFailure));
 	return sharedStoreHealth();
 }
 
