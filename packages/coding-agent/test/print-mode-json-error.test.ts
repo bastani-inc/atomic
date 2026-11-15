@@ -29,7 +29,7 @@ function createRuntimeHost(message: AssistantMessage) {
 		emit: vi.fn(async () => {}),
 	};
 	const session = {
-		sessionManager: { getHeader: () => undefined },
+		sessionManager: { getHeader: () => undefined, getSessionId: () => "json-error" },
 		agent: { waitForIdle: async () => {} },
 		state: { messages: [message] },
 		extensionRunner,

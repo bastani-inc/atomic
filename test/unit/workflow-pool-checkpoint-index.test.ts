@@ -192,7 +192,7 @@ async function journalFixture() {
 				(await tx.get(`SELECT COALESCE(MAX(seq), 0) AS seq FROM ${tables.events} WHERE run_id = 'root'`))!.seq,
 			) + 1;
 		await tx.run(
-			`INSERT OR IGNORE INTO ${tables.events} VALUES ('root', ?, 1, ?, ?, ?, ?)`,
+			`INSERT OR IGNORE INTO ${tables.events}(run_id, seq, epoch, key, type, payload, at) VALUES ('root', ?, 1, ?, ?, ?, ?)`,
 			seq,
 			key,
 			type,
