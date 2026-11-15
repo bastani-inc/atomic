@@ -17,6 +17,10 @@ import {
 	sqliteDialect,
 } from "@bastani/atomic/storage";
 import { afterEach, beforeEach, test } from "vitest";
+import {
+	SESSION_PRESENCE_DOMAIN,
+	SqlSessionStore,
+} from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 const { DatabaseSync: Database } = await import("node:sqlite");
@@ -84,6 +88,21 @@ async function tables(database: SqliteDatabase): Promise<string[]> {
 	);
 	return rows.map((row) => row.name);
 }
+
+test("a domain that accepts newer versions runs nothing on a newer recorded version and reports it (#5065)", async () => {
+	const database = createSqliteDatabase(recordingDriver(path, ledgerDialect, []));
+	try {
+		await applyStorageMigrations(database, "presence", [tableStep(1, "one"), tableStep(2, "two")]);
+		assert.deepEqual(
+			await applyStorageMigrations(database, "presence", [tableStep(1, "one")], { acceptNewer: true }),
+			{ applied: [], version: 2 },
+		);
+		const versions = await database.all("SELECT version FROM atomic_migrations ORDER BY version");
+		assert.deepEqual(versions, [{ version: 1 }, { version: 2 }]);
+	} finally {
+		await database.close();
+	}
+});
 
 test("a versioned store applies only missing steps, once each, and records them (#4793)", async () => {
 	const begun: SqliteDriverTransactionOptions[] = [];
@@ -309,5 +328,20 @@ test("concurrent SQLite migrators all finish with the schema made once (#4793)",
 		assert.deepEqual(await tables(databases[0]!), ["meta"]);
 	} finally {
 		await Promise.all(databases.map((database) => database.close()));
+	}
+});
+
+test("a newer build's session-presence version does not lock this build out of the sessions (#5065)", async () => {
+	const database = createSqliteDatabase(recordingDriver(path, ledgerDialect, []));
+	try {
+		await (await SqlSessionStore.open(database)).close();
+		// A newer build added a presence step this build does not know; presence is not needed to read or write sessions.
+		await database.run("INSERT INTO atomic_migrations VALUES (?, 3, 0)", SESSION_PRESENCE_DOMAIN);
+		const store = await SqlSessionStore.open(database);
+		await store.create({ id: "s", version: 4, createdAt: "2026-01-01T00:00:00.000Z", cwd: "/w" }, []);
+		assert.equal((await store.load("s")).lastSeq, 0);
+		await store.close();
+	} finally {
+		await database.close();
 	}
 });

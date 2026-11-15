@@ -321,7 +321,7 @@ describe.skipIf(postgresSkipReason !== undefined)("the reference index on Postgr
 			const { snapshot_index_sources: progress, ...rebuilt } = await referenceIndex(database);
 			const { snapshot_index_sources: _fresh, ...references } = expected;
 			assert.deepEqual(rebuilt, references);
-			const sessions = progress!.find((row) => row.includes("source=session-entries"))!;
+			const sessions = progress!.find((row) => row.includes("source=session-entries "))!;
 			assert.match(sessions, /^backfilled_through=(\d+) source=session-entries watermark=\1$/);
 		});
 	});
