@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, statSync } from "node:fs";
-import { basename, dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import {
 	type AgentSession,
 	type AgentSessionEvent,
@@ -17,6 +17,7 @@ import {
 	getAgentDir,
 	getBuiltinPackagePaths,
 	getSkillCatalog,
+	isPathInside,
 	isSessionStartTimeoutError,
 	type PackageSource,
 	SessionManager,
@@ -1027,14 +1028,14 @@ function trustedSessionRoot(parent: ParentContext, requestedRoot?: string): stri
 	validatePath(parent.path);
 	const root = resolve(requestedRoot ?? join(process.cwd(), ".atomic", "subagents"));
 	const child = resolve(root, ...parent.path.split("/"));
-	if (relative(root, child).startsWith("..")) throw new Error("subagent session root escapes trusted root");
+	if (!isPathInside(root, child)) throw new Error("subagent session root escapes trusted root");
 	return root;
 }
 
 function sessionDirectory(root: string, pathValue: string): string {
 	validatePath(pathValue);
 	const directory = resolve(root, ...pathValue.split("/"));
-	if (relative(root, directory).startsWith("..")) throw new Error("child session path escapes trusted root");
+	if (!isPathInside(root, directory)) throw new Error("child session path escapes trusted root");
 	return directory;
 }
 

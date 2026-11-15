@@ -21,6 +21,7 @@ import type { SpawnSyncReturns } from "child_process";
 import lockfile from "proper-lockfile";
 import { afterEach, beforeEach, describe, it, vi } from "vitest";
 import { ENV_AGENT_DIR, ENV_OFFLINE, VERSION } from "../src/config.js";
+import { isPathInside } from "../src/utils/path-inside.js";
 import { getPiUserAgent } from "../src/utils/pi-user-agent.js";
 
 type GitErrors = typeof import("../src/utils/git-errors.js");
@@ -775,7 +776,7 @@ describe("git resolution (#4322)", () => {
 
 		const git = tools.resolveGitSync();
 		assert.deepEqual([git.path, git.version], [selected, "2.56.0"]);
-		assert.equal(relative(dirname(dirname(selected)), git.env.GIT_EXEC_PATH ?? "").startsWith(".."), false);
+		assert.equal(isPathInside(dirname(dirname(selected)), git.env.GIT_EXEC_PATH ?? ""), true);
 		assert.equal(shellGit()?.pathEntry, dirname(selected));
 		assert.equal(shellGit()?.env.GIT_EXEC_PATH, git.env.GIT_EXEC_PATH);
 

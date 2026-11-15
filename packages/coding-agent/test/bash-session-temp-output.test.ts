@@ -17,7 +17,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative, sep } from "node:path";
+import { join, relative } from "node:path";
 import { afterAll, beforeAll, describe, it } from "vitest";
 import { executeBashWithOperations } from "../src/core/bash-executor.ts";
 import type { BashOperations } from "../src/core/tools/bash.ts";
@@ -29,6 +29,7 @@ import {
 	resolveSessionTempDirPath,
 } from "../src/core/tools/session-temp-dir.ts";
 import { DEFAULT_MAX_BYTES } from "../src/core/tools/truncate.ts";
+import { isPathInside } from "../src/utils/path-inside.js";
 
 /** Captured before the sandbox override below, so tests can reach the real temp directory. */
 const realTmpdir = tmpdir();
@@ -60,8 +61,7 @@ afterAll(() => {
 	rmSync(sandbox, { recursive: true, force: true });
 });
 function isInside(parent: string, child: string): boolean {
-	const rel = relative(parent, child);
-	return rel.length > 0 && !rel.startsWith("..") && !rel.startsWith(`${sep}..`);
+	return relative(parent, child).length > 0 && isPathInside(parent, child);
 }
 
 /** The overflow log is flushed asynchronously after `end()`; wait for it to land. */
