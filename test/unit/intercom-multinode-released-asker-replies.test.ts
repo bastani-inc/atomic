@@ -2154,6 +2154,48 @@ describe("a released asker's question lasts as long as the ask does (#4852)", ()
 		assert.deepEqual(sent.notFound, []);
 	});
 
+	test("a recipient released by its own owner keeps a released asker's question open (#4852)", async () => {
+		const { b, owner, replier, child, questionId } = await releasedLongAgo();
+		b.sessions.delete(replier.info.id);
+		b.router.sessionLeft(replier, { ownerSessionId: "replier-owner", childName: "replier" });
+		await flush();
+		await new Promise((resolveDelay) => setTimeout(resolveDelay, 200));
+		assert.deepEqual(handoffsTo(owner), []);
+		const kept = await b.state.releasedAsks.lookup({ questionId, replierSessionId: replier.info.id });
+		assert.equal(kept.status === "found" && kept.ask.state, "open");
+		assert.equal(kept.status === "found" && kept.ask.askerSessionId, child.info.id);
+	});
+
+	test("a failure that could not be queued for the owner leaves the released asker's question open (#4852)", async () => {
+		const errors: string[] = [];
+		const shared = await cluster();
+		const a = await startNode(shared);
+		const b = await startNode(shared, (state) => ({
+			...state,
+			outbox: {
+				...state.outbox,
+				enqueue: async (request) => {
+					if (request.frame.message.id.startsWith("ended:")) {
+						errors.push(request.frame.message.id);
+						throw new Error("outbox unavailable");
+					}
+					return state.outbox.enqueue(request);
+				},
+			},
+		}));
+		const owner = session("owner");
+		await register(a, owner);
+		const replier = session("replier");
+		await register(b, replier);
+		const { questionId } = await releaseChild(a, owner, "worker", replier);
+		await leave(b, replier);
+		// The failure was claimed for the question, then not queued.
+		await vi.waitFor(() => assert.ok(errors.length > 0));
+		const kept = await b.state.releasedAsks.lookup({ questionId, replierSessionId: replier.info.id });
+		assert.equal(kept.status === "found" && kept.ask.state, "open");
+		assert.deepEqual(handoffsTo(owner), []);
+	});
+
 	test("a recipient that ends long after the release fails the released asker's question once, through its owner (#4852)", async () => {
 		const { a, b, owner, replier, child, questionId } = await releasedLongAgo();
 		await leave(b, replier);
