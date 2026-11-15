@@ -41,7 +41,7 @@ export function applyTaskContext(prompt: string, previous: WorkflowTaskOptions["
 
 	const lastPrevious = contexts[contexts.length - 1]?.text ?? "";
 	const rendered = renderTaskContext(contexts);
-	let next = prompt.replace(/\{previous\}/g, lastPrevious);
+	let next = prompt.replace(/\{previous\}/g, () => lastPrevious);
 
 	if (next !== prompt) return next;
 	next += `\n\n---\nContext:\n${rendered}`;
@@ -130,7 +130,7 @@ export function taskOptionsFromStep(
 }
 
 export function replaceTaskPlaceholder(prompt: string, task: string): string {
-	return prompt.replace(/\{task\}/g, task);
+	return prompt.replace(/\{task\}/g, () => task);
 }
 
 export function chainStepPrompt(step: WorkflowTaskStep, index: number): string {
