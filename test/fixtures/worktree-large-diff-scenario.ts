@@ -35,6 +35,25 @@ export interface LargeDiffScenarioResult {
 export interface WorktreeIncludeScenarioResult {
 	readonly ignoredListingBytes: number;
 	readonly envCopied: boolean;
+	readonly includedFilesCopied: number;
+	readonly notIncludedCopied: boolean;
+}
+
+export interface ManyFilesScenarioResult {
+	readonly numstatBytes: number;
+	readonly summary: string;
+	readonly patchApplied: boolean;
+	readonly filesRestored: number;
+	readonly worktreeRemoved: boolean;
+}
+
+export interface NoisyHookScenarioResult {
+	readonly created: boolean;
+	readonly error: string | undefined;
+}
+
+export interface BrokenIncludeScenarioResult {
+	readonly error: string | undefined;
 }
 
 export interface FailedCaptureScenarioResult {
@@ -161,11 +180,15 @@ export function runFailedCaptureScenario(root: string, module: WorktreeModule): 
  */
 export function runWorktreeIncludeScenario(root: string, module: WorktreeModule): WorktreeIncludeScenarioResult {
 	const repo = createScenarioRepository(root);
-	writeFileSync(join(repo, ".gitignore"), "node_modules/\n.env\n");
-	writeFileSync(join(repo, ".worktreeinclude"), ".env\n");
+	writeFileSync(join(repo, ".gitignore"), "node_modules/\n.env\nconfig/\nbuild.log\n");
+	writeFileSync(join(repo, ".worktreeinclude"), ".env\nconfig/\n");
 	git(repo, ["add", ".gitignore", ".worktreeinclude"]);
 	git(repo, ["commit", "--no-gpg-sign", "-m", "ignore rules"]);
 	writeFileSync(join(repo, ".env"), "SECRET=1\n");
+	// More included files than one git call checks, and an ignored file .worktreeinclude does not name.
+	mkdirSync(join(repo, "config"));
+	for (let file = 0; file < 250; file++) writeFileSync(join(repo, "config", `local-${file}.json`), `${file}\n`);
+	writeFileSync(join(repo, "build.log"), "not included\n");
 	// Long package names make the listing large from few files: creating files is slow on Windows. Each path stays well
 	// under Windows' 260-character limit.
 	for (let pkg = 0; pkg < 40; pkg++) {
@@ -178,6 +201,71 @@ export function runWorktreeIncludeScenario(root: string, module: WorktreeModule)
 	const setup = api.create(repo, `include-${module}`, 1);
 	const envPath = join(setup.worktrees[0]!.path, ".env");
 	const envCopied = existsSync(envPath) && readFileSync(envPath, "utf-8") === "SECRET=1\n";
+	let includedFilesCopied = 0;
+	for (let file = 0; file < 250; file++) {
+		const copied = join(setup.worktrees[0]!.path, "config", `local-${file}.json`);
+		if (existsSync(copied) && readFileSync(copied, "utf-8") === `${file}\n`) includedFilesCopied++;
+	}
+	const notIncludedCopied = existsSync(join(setup.worktrees[0]!.path, "build.log"));
 	api.cleanup(setup);
-	return { ignoredListingBytes: Buffer.byteLength(listing), envCopied };
+	return { ignoredListingBytes: Buffer.byteLength(listing), envCopied, includedFilesCopied, notIncludedCopied };
+}
+
+/** A worktree change of 11,000 files, whose numstat and stat each list to over 1 MiB. */
+export function runManyFilesScenario(root: string, module: WorktreeModule): ManyFilesScenarioResult {
+	const repo = createScenarioRepository(root);
+	const api = modules(module);
+	const setup = api.create(repo, `many-${module}`, 1);
+	// A long directory name makes the listing large from fewer files; paths stay under Windows' 260 characters.
+	const directory = join(setup.worktrees[0]!.path, `generated-${"y".repeat(90)}`);
+	mkdirSync(directory);
+	for (let file = 0; file < 11_000; file++) writeFileSync(join(directory, `f-${file}.txt`), `${file}\n`);
+	git(setup.worktrees[0]!.path, ["add", "-A"]);
+	const numstat = git(setup.worktrees[0]!.path, ["diff", "--cached", "--numstat", "HEAD"]);
+	const diffs = api.diff(setup, ["many"], join(root, "diffs"));
+	api.cleanup(setup);
+	const clean = join(root, "clean");
+	git(repo, ["worktree", "add", "--detach", clean, "HEAD"]);
+	const applied = spawnSync("git", ["-C", clean, "apply", diffs[0]!.patchPath], { encoding: "utf-8" });
+	let filesRestored = 0;
+	for (let file = 0; file < 11_000; file++) {
+		const restored = join(clean, `generated-${"y".repeat(90)}`, `f-${file}.txt`);
+		if (existsSync(restored) && readFileSync(restored, "utf-8") === `${file}\n`) filesRestored++;
+	}
+	return {
+		numstatBytes: Buffer.byteLength(numstat),
+		summary: api.format(diffs),
+		patchApplied: applied.status === 0,
+		filesRestored,
+		worktreeRemoved: !existsSync(setup.worktrees[0]!.path),
+	};
+}
+
+/** A setup hook that logs over 1 MiB to stderr before printing its JSON result (POSIX shell). */
+export function runNoisyHookScenario(root: string, module: WorktreeModule): NoisyHookScenarioResult {
+	const repo = createScenarioRepository(root);
+	const hook = join(root, "noisy-hook.sh");
+	writeFileSync(hook, "#!/bin/sh\nhead -c 2000000 /dev/zero | tr '\\0' x >&2\necho '{}'\n", { mode: 0o755 });
+	const api = modules(module);
+	try {
+		const setup = api.create(repo, `hook-${module}`, 1, { setupHook: { hookPath: hook } });
+		const created = existsSync(setup.worktrees[0]!.path);
+		api.cleanup(setup);
+		return { created, error: undefined };
+	} catch (error) {
+		return { created: false, error: error instanceof Error ? error.message : String(error) };
+	}
+}
+
+/** A `.worktreeinclude` git cannot read (a directory): creating a worktree reports it instead of skipping it. */
+export function runBrokenIncludeScenario(root: string, module: WorktreeModule): BrokenIncludeScenarioResult {
+	const repo = createScenarioRepository(root);
+	mkdirSync(join(repo, ".worktreeinclude"));
+	const api = modules(module);
+	try {
+		api.cleanup(api.create(repo, `broken-${module}`, 1));
+		return { error: undefined };
+	} catch (error) {
+		return { error: error instanceof Error ? error.message : String(error) };
+	}
 }

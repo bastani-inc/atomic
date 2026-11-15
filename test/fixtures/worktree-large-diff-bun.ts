@@ -1,16 +1,22 @@
-/** Bun child for the #4876 suite: runs one worktree diff scenario and prints its result as JSON. */
+/** Bun child for the #4876 suite: runs one worktree scenario and prints its result as JSON. */
 import {
+	runBrokenIncludeScenario,
 	runFailedCaptureScenario,
 	runLargeDiffScenario,
+	runManyFilesScenario,
+	runNoisyHookScenario,
 	runWorktreeIncludeScenario,
 	type WorktreeModule,
 } from "./worktree-large-diff-scenario.ts";
 
-const [scenario, root, module] = process.argv.slice(2) as [string, string, WorktreeModule];
-const result =
-	scenario === "large"
-		? runLargeDiffScenario(root, module)
-		: scenario === "include"
-			? runWorktreeIncludeScenario(root, module)
-			: runFailedCaptureScenario(root, module);
-process.stdout.write(JSON.stringify(result));
+const scenarios = {
+	large: runLargeDiffScenario,
+	failed: runFailedCaptureScenario,
+	include: runWorktreeIncludeScenario,
+	many: runManyFilesScenario,
+	hook: runNoisyHookScenario,
+	broken: runBrokenIncludeScenario,
+} as const;
+
+const [scenario, root, module] = process.argv.slice(2) as [keyof typeof scenarios, string, WorktreeModule];
+process.stdout.write(JSON.stringify(scenarios[scenario](root, module)));

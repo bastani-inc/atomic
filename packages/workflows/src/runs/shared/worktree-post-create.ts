@@ -104,32 +104,18 @@ function symlinkConfiguredDirectories(
 	return synthetic;
 }
 
-const PATHSPEC_BATCH_CHARACTERS = 8_000;
+/** Paths per `git ls-files` call: 100 paths of up to 260 characters stay inside Windows' 32,767-character command line. */
+const PATHSPEC_BATCH_SIZE = 100;
 /**
  * The paths among `candidates` that git ignores by its standard rules. Only the candidates are listed, as literal
- * pathspecs in batches that fit any command line: listing every ignored file (an installed `node_modules`) can run to
- * many megabytes (#4876).
+ * pathspecs in batches: listing every ignored file (an installed `node_modules`) can run to many megabytes (#4876).
  */
 function ignoredAmong(mainRoot: string, candidates: readonly string[]): string[] {
 	const ignored: string[] = [];
-	for (let start = 0; start < candidates.length; ) {
-		const batch: string[] = [];
-		let characters = 0;
-		while (start < candidates.length && (batch.length === 0 || characters < PATHSPEC_BATCH_CHARACTERS)) {
-			const candidate = candidates[start++]!;
-			batch.push(candidate);
-			characters += candidate.length + 1;
-		}
-		const listed = runGit(mainRoot, [
-			"--literal-pathspecs",
-			"ls-files",
-			"-z",
-			"--others",
-			"--ignored",
-			"--exclude-standard",
-			"--",
-			...batch,
-		]);
+	for (let start = 0; start < candidates.length; start += PATHSPEC_BATCH_SIZE) {
+		const batch = candidates.slice(start, start + PATHSPEC_BATCH_SIZE);
+		const args = ["--literal-pathspecs", "ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--"];
+		const listed = runGit(mainRoot, [...args, ...batch]);
 		if (listed.status !== 0)
 			throw new Error(`could not list ignored .worktreeinclude files: ${listed.stderr.trim()}`);
 		ignored.push(...listed.stdout.split("\0").filter(Boolean));

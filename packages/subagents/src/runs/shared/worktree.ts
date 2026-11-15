@@ -90,7 +90,7 @@ function runGit(cwd: string, args: string[]): GitResult {
 	});
 	return {
 		stdout: result.stdout ?? "",
-		stderr: result.stderr || (result.error ? result.error.message : ""),
+		stderr: result.stderr ?? "",
 		// Output cut off at the buffer cap, or a git that could not run, is never a success.
 		status: result.error ? null : result.status,
 	};

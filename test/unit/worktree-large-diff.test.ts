@@ -4,10 +4,16 @@ import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, test } from "vitest";
 import {
+	type BrokenIncludeScenarioResult,
 	type FailedCaptureScenarioResult,
 	type LargeDiffScenarioResult,
+	type ManyFilesScenarioResult,
+	type NoisyHookScenarioResult,
+	runBrokenIncludeScenario,
 	runFailedCaptureScenario,
 	runLargeDiffScenario,
+	runManyFilesScenario,
+	runNoisyHookScenario,
 	runWorktreeIncludeScenario,
 	type WorktreeIncludeScenarioResult,
 	type WorktreeModule,
@@ -28,7 +34,11 @@ function tempRoot(): string {
 	return root;
 }
 
-function inBun<T>(scenario: "large" | "failed" | "include", root: string, module: WorktreeModule): T {
+function inBun<T>(
+	scenario: "large" | "failed" | "include" | "many" | "hook" | "broken",
+	root: string,
+	module: WorktreeModule,
+): T {
 	const result = spawnSync(
 		bunExecutable(),
 		[join(moduleDir(import.meta.url), "..", "fixtures", "worktree-large-diff-bun.ts"), scenario, root, module],
@@ -83,5 +93,41 @@ describe.each(cases)("$module worktrees under $runtime", ({ runtime, module }) =
 				: inBun<WorktreeIncludeScenarioResult>("include", root, module);
 		assert.ok(result.ignoredListingBytes > 1024 * 1024, "the ignored-file listing is over the 1 MiB output cap");
 		assert.equal(result.envCopied, true, ".env reaches the new worktree");
+		assert.equal(result.includedFilesCopied, 250, "every included file reaches the new worktree");
+		assert.equal(result.notIncludedCopied, false, "an ignored file .worktreeinclude does not name stays out");
 	});
+
+	test("a worktree change of so many files that its numstat is over 1 MiB is saved in full (#4876)", () => {
+		const root = tempRoot();
+		const result =
+			runtime === "Node" ? runManyFilesScenario(root, module) : inBun<ManyFilesScenarioResult>("many", root, module);
+		assert.ok(result.numstatBytes > 1024 * 1024, "the numstat is over the 1 MiB output cap");
+		assert.match(result.summary, /Task 1 \(many\): 11000 files changed, \+11000 -0/);
+		assert.equal(result.patchApplied, true, "the patch applies to a clean checkout");
+		assert.equal(result.filesRestored, 11_000, "the patch restores every file");
+		assert.equal(result.worktreeRemoved, true, "the captured worktree is removed");
+	});
+
+	test("a .worktreeinclude git cannot read fails worktree creation with git's reason (#4876)", () => {
+		const root = tempRoot();
+		const result =
+			runtime === "Node"
+				? runBrokenIncludeScenario(root, module)
+				: inBun<BrokenIncludeScenarioResult>("broken", root, module);
+		assert.match(result.error ?? "", /could not list \.worktreeinclude files: .*cannot use \.worktreeinclude/);
+	});
+
+	// The hook is a POSIX shell script; Windows runs hooks only as executables.
+	test.skipIf(process.platform === "win32")(
+		"a setup hook that logs over 1 MiB still sets up its worktree (#4876)",
+		() => {
+			const root = tempRoot();
+			const result =
+				runtime === "Node"
+					? runNoisyHookScenario(root, module)
+					: inBun<NoisyHookScenarioResult>("hook", root, module);
+			assert.equal(result.error, undefined);
+			assert.equal(result.created, true);
+		},
+	);
 });
