@@ -255,3 +255,28 @@ for (const themeName of ["dark", "light"] as const) {
 		}
 	});
 }
+
+test("a child released while it waits shows released on its launch card, not paused or stopped (#5031)", () => {
+	initTheme("dark");
+	const response = {
+		kind: "admitted" as const,
+		observation: {
+			kind: "settled" as const,
+			taskId: "task-released" as TaskId,
+			result: {
+				kind: "cancelled" as const,
+				cause: "pause" as const,
+				released: { waitingOn: [{ toolCallId: "wait-1", toolName: "bash" }] },
+			},
+		},
+	};
+	const card = createCard({ agent: "worker", task: "build" });
+	card.updateResult({
+		content: [{ type: "text" as const, text: JSON.stringify(response) }],
+		details: { mode: "single" as const, results: [], taskResponse: response },
+		isError: false,
+	});
+	const text = stripVTControlCharacters(card.render(120).join("\n"));
+	assert.match(text, /Released · waiting/);
+	assert.doesNotMatch(text, /Paused|awaiting resume|Stopped/);
+});
