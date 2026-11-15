@@ -29,6 +29,12 @@ useTemporaryAgentDir();
 const LOCAL_WORKER_PROCESS_TIMEOUT_MS = 180_000;
 /** How long the other children may take while the question waits, before the test answers it regardless. */
 const OTHERS_DEADLINE_MS = 60_000;
+/**
+ * How long the asking stage may take to publish its released wait once its question shows. The worker raises the
+ * question as the tool starts and releases the stage only after the turn ends, so a publication between the two shows
+ * the question on a stage still resident: awaiting input, with no wait yet.
+ */
+const RELEASE_DEADLINE_MS = 30_000;
 
 const childPath = fileURLToPath(new URL("../fixtures/pool-waiting-question-child.ts", import.meta.url));
 
@@ -75,8 +81,9 @@ test.skipIf(process.platform === "win32")(
 					async run(ctx) {
 						const question = ctx.workflow(questionChild, {});
 						const { runId, stageId } = await asked.promise;
-						const stage = store.run(runId)?.stages.find((candidate) => candidate.id === stageId);
-						seen.waitingStage = `${stage?.status}:${stage?.wait?.kind}`;
+						const stage = () => store.run(runId)?.stages.find((candidate) => candidate.id === stageId);
+						await until(() => stage()?.wait !== undefined, RELEASE_DEADLINE_MS);
+						seen.waitingStage = `${stage()?.status}:${stage()?.wait?.kind}`;
 						const others = [1, 2].map((index) => ctx.workflow(quickChild, { inputs: { index } }));
 						seen.othersFirst = await Promise.race([
 							Promise.all(others).then(() => true),

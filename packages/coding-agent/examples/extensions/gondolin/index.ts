@@ -34,6 +34,7 @@ import {
 	createWriteTool,
 	type EditOperations,
 	type FindOperations,
+	isPathInside,
 	type LsOperations,
 	type ReadOperations,
 	type WriteOperations,
@@ -52,8 +53,7 @@ function toPosix(value: string): string {
 }
 
 function isInsideHostPath(root: string, value: string): boolean {
-	const relativePath = path.relative(root, value);
-	return relativePath === "" || (!relativePath.startsWith("..") && !path.isAbsolute(relativePath));
+	return isPathInside(root, value);
 }
 
 function hostPathToGuest(localCwd: string, hostPath: string): string {

@@ -50,7 +50,7 @@ import { workflowPendingStageRouteReady } from "../shared/pending-stage-route-re
 import { createStore, type Store } from "../shared/store.js";
 import type { RunSnapshot, StageSnapshot, WorkflowWorktreeRestoreOutcome } from "../shared/store-types.js";
 import type { WorkflowSerializableObject } from "../shared/types.js";
-import { isStaleWorkLeaseError, PoolNotInitializedError } from "../shared/worker-pool-errors.js";
+import { isStaleWorkLeaseError, PoolNotInitializedError, StaleWorkLeaseError } from "../shared/worker-pool-errors.js";
 import {
 	failedOnPoolFault,
 	infrastructureFaultOf,
@@ -200,6 +200,15 @@ const WORKER_EXIT_CONFIRMATION_MS = 5_000;
 const WORKER_EXIT_POLL_MS = 50;
 /** Attempts one child may lose in a root incarnation before only that child fails (#3979). */
 const MAX_CHILD_ATTEMPTS = 3;
+/**
+ * How many times one child's attempts may be handed on uncounted because the shared store kept refusing them (#4768).
+ * Past it, a handoff counts as an attempt, so a child whose writes no host gets through ends after its attempt limit
+ * instead of moving between hosts for good.
+ */
+const MAX_CHILD_HANDOFFS = 20;
+/** The wait before a handed-on child is claimable again: it doubles with each handoff, up to the cap below. */
+const HANDOFF_DELAY_BASE_MS = 500;
+const HANDOFF_DELAY_MAX_MS = 30_000;
 /** Ready work a worker host reads at once to choose from by workspace affinity (shared placement). */
 const PLACEMENT_CANDIDATES = 32;
 /** How long a worker host trusts its own answer to whether it has a binding's tree warm. */
@@ -859,11 +868,21 @@ export class PoolCoordinator {
 			const batch = this.batches.get(notice.batch);
 			this.batches.delete(notice.batch);
 			const rejected = new Map(notice.rejected.map((entry) => [entry.workId, entry]));
-			for (const entry of rejected.values())
-				this.publicationFailures.set(entry.workId, {
-					generation: entry.generation,
-					error: rehydrateError(entry.error),
-				});
+			for (const entry of rejected.values()) {
+				const error = rehydrateError(entry.error);
+				// The root's store refused the publication only for a while (unreachable, or busy): it is not the attempt's
+				// failure. What the root last took of the attempt is forgotten and its refused activity goes out again, in
+				// full, unless newer activity already waits (#4768).
+				if (infrastructureFaultOf(error) === "storage_unavailable") {
+					this.sentRuns.forget(entry.workId);
+					const refused = batch?.entries.find((published) => published.work.id === entry.workId);
+					if (refused !== undefined && !this.pendingActivity.has(entry.workId))
+						this.pendingActivity.set(entry.workId, refused);
+					this.scheduleFlush();
+					continue;
+				}
+				this.publicationFailures.set(entry.workId, { generation: entry.generation, error });
+			}
 			this.routes?.accept(
 				(batch?.entries ?? []).filter((entry) => rejected.get(entry.work.id)?.generation !== entry.work.generation),
 			);
@@ -2186,6 +2205,7 @@ export class PoolCoordinator {
 						? {}
 						: { stageStartMaxLoadPerCpu: options.stageStartMaxLoadPerCpu }),
 					...(options.maxWorkerRssBytes === undefined ? {} : { maxRssBytes: options.maxWorkerRssBytes }),
+					...(options.outageHandoffMs === undefined ? {} : { outageHandoffMs: options.outageHandoffMs }),
 				}),
 			],
 			{
@@ -2339,7 +2359,9 @@ export class PoolCoordinator {
 						// running. Its work item ends failed in the same transaction, so no worker claims it again. A worker
 						// host never fails a child: it releases it, and the root's own pool counts its attempts.
 						const exhausted =
-							this.satellite === undefined && work !== undefined && this.attempts(work) >= MAX_CHILD_ATTEMPTS;
+							this.satellite === undefined &&
+							work !== undefined &&
+							this.attempts(await this.counted(work)) >= MAX_CHILD_ATTEMPTS;
 						const queue = this.queue!;
 						const lease = this.lease!;
 						const attempt = work;
@@ -2448,17 +2470,29 @@ export class PoolCoordinator {
 					if (message.kind === "control") return leased(() => queue.control(lease));
 					if (message.kind === "fenced") {
 						const fenced = slot.work;
-						slot.work = undefined;
-						slot.worktree = undefined;
-						this.places.end(slot);
+						// The slot keeps the attempt until its release below is recorded: a store that refuses it leaves the
+						// attempt held, renewed and the worker's, which sends its end again, instead of a row no worker holds and a
+						// handoff never recorded (#4768).
+						const end = () => {
+							if (slot.work !== fenced) return;
+							slot.work = undefined;
+							slot.worktree = undefined;
+							this.places.end(slot);
+						};
 						// Its current owner keeps superseded work. Work still leased to this attempt was refused by the root,
 						// or its run failed on a fault of the pool: it is released for replay and counts as a failed attempt,
 						// so refusals and faults stay bounded.
 						if (fenced && !(await this.superseded(fenced))) {
 							// Views of the attempt's stages end with it, so they reconnect to its replay.
 							this.fence(fenced);
+							const current = await this.counted(fenced);
+							const handoffs = this.handoffs(current);
+							// A handoff, which the store's refusals forced, goes back to the queue recorded as such, claimable
+							// after a growing wait: it counts as none of the child's attempts, up to MAX_CHILD_HANDOFFS (#4768).
+							if (message.handoff === true && handoffs < MAX_CHILD_HANDOFFS)
+								await leased(() => queue.releaseExited(lease, fenced, { delayMs: handoffDelayMs(handoffs) }));
 							// A worker host releases the attempt whatever its count: the root's own pool fails a child.
-							if (this.satellite !== undefined || this.attempts(fenced) < MAX_CHILD_ATTEMPTS)
+							else if (this.satellite !== undefined || this.attempts(current) < MAX_CHILD_ATTEMPTS)
 								await leased(() => queue.releaseExited(lease, fenced));
 							else if (await leased(() => queue.failExited(lease, fenced))) {
 								const fault = message.fault === undefined ? undefined : rehydrateError(message.fault);
@@ -2468,6 +2502,7 @@ export class PoolCoordinator {
 								);
 							}
 						}
+						end();
 						return;
 					}
 					if (message.kind === "controlled") {
@@ -2616,6 +2651,16 @@ export class PoolCoordinator {
 						}
 					}
 					if (message.kind === "commit") {
+						if (
+							message.attempt !== undefined &&
+							(message.attempt.id !== work.id || message.attempt.generation !== work.generation)
+						)
+							throw new StaleWorkLeaseError({
+								root,
+								workId: message.attempt.id,
+								generation: message.attempt.generation,
+								reason: "superseded",
+							});
 						const receipt = await leased(() => queue.commit(lease, work, message.operation, message.mutation));
 						// #3983: a session append bills no usage, so its receipt does not wait on another transaction.
 						if (message.mutation.kind !== "session-append") this.noteUsage(await this.usageLedger!.total(root));
@@ -2912,9 +2957,23 @@ export class PoolCoordinator {
 		}
 	}
 
-	/** Attempts of a work item in this root incarnation; earlier incarnations' attempts do not count (#3979). */
+	/**
+	 * Attempts of a work item in this root incarnation; earlier incarnations' attempts do not count (#3979), nor do its
+	 * attempts the shared store's refusals handed on (#4768). `work` as {@link counted} reads it carries those handoffs.
+	 */
 	private attempts(work: PoolWork): number {
-		return work.generation - (this.attemptBase.get(work.id) ?? 0);
+		return work.generation - (this.attemptBase.get(work.id) ?? 0) - this.handoffs(work);
+	}
+
+	/** The handoffs of `work` in this root incarnation: those of earlier generations than its base were theirs. */
+	private handoffs(work: PoolWork): number {
+		const base = this.attemptBase.get(work.id) ?? 0;
+		return (work.handoffs ?? []).filter((generation) => generation > base).length;
+	}
+
+	/** `work` as the queue holds it now, with its handoffs; `work` itself when the queue no longer has it. */
+	private async counted(work: PoolWork): Promise<PoolWork> {
+		return (await this.queue!.inspect(this.root!)).find((candidate) => candidate.id === work.id) ?? work;
 	}
 
 	/** Whether a newer attempt, or completion, replaced this one. */
@@ -2963,7 +3022,14 @@ export class PoolCoordinator {
 				}
 				const child = work.worker === null ? undefined : this.incarnations.get(work.worker);
 				if (child && work.worker !== null && this.isLive(work.worker, child)) {
-					await queue.extend(lease, work, leaseMs).catch(ignoreStaleWorkLease);
+					// A live worker keeps only an attempt it knows it holds. One whose claim committed while its answer was lost,
+					// or whose placement could not be put back, holds the row without knowing it: extended for as long as the
+					// worker lived, its child would never run. It goes back to the queue instead, and the worker, busy or idle, is
+					// left alone. No worker ever ran that generation, so it goes back as a handoff, which counts as none of the
+					// child's attempts (#4768).
+					if (this.slotHolds(work.worker, work))
+						await queue.extend(lease, work, leaseMs).catch(ignoreStaleWorkLease);
+					else await queue.releaseExited(lease, work, { delayMs: 0 });
 					continue;
 				}
 				// A worker that outlives SIGKILL is retired without waiting for its exit: its child replays on a replacement
@@ -3087,6 +3153,16 @@ export class PoolCoordinator {
 	 * Whether a worker still runs its attempt: it is running and connected, and it either waits for this coordinator's
 	 * answer or was heard within its work lease, not counting this process's own stalls.
 	 */
+	/** Whether `worker`'s slot holds `work`'s attempt: running it, or placing the claim that took it. */
+	private slotHolds(worker: string, work: PoolWork): boolean {
+		for (const slot of this.slots) {
+			if (slot.worker !== worker) continue;
+			const held = slot.work ?? slot.claimed;
+			return held !== undefined && held.id === work.id && held.generation === work.generation;
+		}
+		return false;
+	}
+
 	private isLive(worker: string, child: ChildProcess): boolean {
 		this.observeResponsiveness();
 		const heard = this.lastHeard.get(worker);
@@ -3302,4 +3378,9 @@ export function runPoolCoordinator(): PoolCoordinator {
 	// process ends at once, and its workers end when their own channels to it close.
 	port.onClose(() => process.exit(0));
 	return coordinator;
+}
+
+/** How long a child handed on for the `handoffs`-th time waits before it is claimable again: full jitter. */
+function handoffDelayMs(handoffs: number): number {
+	return Math.random() * Math.min(HANDOFF_DELAY_MAX_MS, HANDOFF_DELAY_BASE_MS * 2 ** Math.min(handoffs, 16));
 }

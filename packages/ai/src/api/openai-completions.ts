@@ -562,9 +562,16 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 			const ensureToolCallBlock = (toolCall: StreamingToolCallDelta) => {
 				const streamIndex = typeof toolCall.index === "number" ? toolCall.index : undefined;
 				const name = toolCall.function?.name ?? toolCall.custom?.name ?? "";
-				let block = streamIndex !== undefined ? toolCallBlocksByIndex.get(streamIndex) : undefined;
-				if (!block && toolCall.id) {
-					block = toolCallBlocksById.get(toolCall.id);
+				// Key by id when the delta carries one. Some OpenAI-compatible servers send index 0 for every
+				// parallel call, so a named delta with a new id at an occupied index starts a new call. Other
+				// servers change the id mid-call without a name; those deltas, and deltas without an id,
+				// append to the latest call at their index.
+				let block = toolCall.id ? toolCallBlocksById.get(toolCall.id) : undefined;
+				if (!block && streamIndex !== undefined) {
+					const indexedBlock = toolCallBlocksByIndex.get(streamIndex);
+					if (!toolCall.id || !name || !indexedBlock?.id) {
+						block = indexedBlock;
+					}
 				}
 				if (!block) {
 					// Note: the "input" fallback here should/must not be taken.  in case the LLM makes up
