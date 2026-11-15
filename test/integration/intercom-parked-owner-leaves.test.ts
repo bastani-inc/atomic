@@ -81,18 +81,20 @@ interface Identity {
 	readonly ownerToken?: string;
 	readonly preferredSessionId?: string;
 	readonly supervisor?: { capability: string; supervisorSessionId: string };
+	/** `legacy`: a client that never confirms saves; `unsaved`: one that confirms, but does not save this time. */
+	readonly saves?: "legacy" | "unsaved";
 }
 
 /** A real client that confirms each save, as a session does. */
 async function connect(identity: Identity): Promise<Session> {
 	const client = new IntercomClient(identity.returnAddress, {
-		acknowledgesReceipt: true,
+		...(identity.saves === "legacy" ? {} : { acknowledgesReceipt: true as const }),
 		...(identity.preferredSessionId === undefined ? {} : { preferredSessionId: identity.preferredSessionId }),
 	});
 	const failures: string[] = [];
 	client.on("message", (_from: object, message: Message) => {
 		if (message.replyTo !== undefined && message.replyError !== undefined) failures.push(message.replyTo);
-		client.acknowledgeReceived(message.id);
+		if (identity.saves === undefined) client.acknowledgeReceived(message.id);
 	});
 	client.on("peer_disconnected", (notice: { replyTo: string }) => failures.push(notice.replyTo));
 	client.on("error", () => {});
@@ -192,6 +194,25 @@ test(
 	},
 	REAL_BROKER_TEST_TIMEOUT_MS,
 );
+
+for (const saves of ["legacy", "unsaved"] as const) {
+	test(
+		`a connected asker of a released subagent that ${saves === "legacy" ? "never confirms saves" : "did not save its failure"} is told ${saves === "legacy" ? "once" : "again when it is back"} (#4992)`,
+		async () => {
+			const scene = await parkedAsk(`saves-${saves}-${randomUUID().slice(0, 6)}`, "before-release");
+			const asker = await connect({ ...scene.asker, saves });
+			await scene.ownerSession.client.disconnect();
+			await toldOnce(asker, scene.askId);
+			await asker.client.disconnect({ resumable: true });
+			const again = await connect(scene.asker);
+			if (saves === "legacy") {
+				await sleep(SETTLE_MS);
+				assert.deepEqual(again.failures, [], "a client that cannot confirm is not told twice");
+			} else await toldOnce(again, scene.askId);
+		},
+		REAL_BROKER_TEST_TIMEOUT_MS,
+	);
+}
 
 for (const askerAway of ["before-release", "after-release"] as const) {
 	test(
