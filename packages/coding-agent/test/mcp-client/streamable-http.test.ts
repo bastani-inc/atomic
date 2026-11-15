@@ -506,7 +506,11 @@ describe("StreamableHttpTransport", () => {
 			if (request.method !== "POST") return protocolHandler(request, response, requests);
 			const message = JSON.parse(await readBody(request)) as Record<string, unknown>;
 			if (message.method !== "tools/call") return protocolHandler(request, response, requests, message);
-			answer = JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { content: [{ type: "text", text: "answer" }] } });
+			answer = JSON.stringify({
+				jsonrpc: "2.0",
+				id: message.id,
+				result: { content: [{ type: "text", text: "answer" }] },
+			});
 			response.writeHead(200, { "content-type": "text/event-stream" });
 			// The priming event, then event 2's ID and half its data before the connection breaks.
 			response.write("id: 1\ndata:\n\n");
