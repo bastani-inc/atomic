@@ -39,6 +39,39 @@ export function meter_stages(tree: RunUsageTree): ReadonlyMap<string, UsageCount
 	visit(tree);
 	return stages;
 }
+/**
+ * Usage of every stage a running run replays, keyed by run and replay key. A replayed stage's spend was charged by the
+ * execution that ran it, as far as that execution's accounting recorded it (#5053). A run that ended, such as a
+ * completed child a resume replays whole, recorded all of its charges when it ended, so it is left out.
+ */
+export function meter_replayed_stages(tree: RunUsageTree): ReadonlyMap<string, UsageCounters> {
+	const stages = new Map<string, UsageCounters>();
+	const visit = (node: RunUsageTree): void => {
+		const run = "run" in node ? node.run : node;
+		for (const stage of run.status === "running" ? run.stages : [])
+			if (stage.replayed === true && stage.replayKey !== undefined)
+				stages.set(
+					`${run.id}\u0000${stage.replayKey}`,
+					fold_usage([{ stageName: stage.name, text: stage.result ?? "", modelAttempts: stage.modelAttempts }]),
+				);
+		for (const child of node.children ?? []) visit(child);
+	};
+	visit(tree);
+	return stages;
+}
+/** Run and replay key of every non-replayed stage in a run tree, by the key `meter_stages` reports it under. */
+export function stage_replay_keys(tree: RunUsageTree): ReadonlyMap<string, string> {
+	const keys = new Map<string, string>();
+	const visit = (node: RunUsageTree): void => {
+		const run = "run" in node ? node.run : node;
+		for (const stage of run.stages)
+			if (stage.replayed !== true && stage.replayKey !== undefined)
+				keys.set(`${run.id}\u0000${stage.id}`, `${run.id}\u0000${stage.replayKey}`);
+		for (const child of node.children ?? []) visit(child);
+	};
+	visit(tree);
+	return keys;
+}
 /** Measure one run scope without mutating it or charging a budget. */
 export function meter_run(tree: RunUsageTree, now: number): RunMeters {
 	const usage = foldTreeUsage(tree);

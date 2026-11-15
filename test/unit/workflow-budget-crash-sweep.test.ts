@@ -1,10 +1,8 @@
 /**
  * A crash after every journal write of a budgeted run whose child has its own token budget, then a resume in a new
- * process (#5053). Every resume that can reopen its sessions must finish and charge each paid prompt exactly once, to
- * the child and to the root, and the child never spends past its own cap. The fixture's sessions are mocks with no
- * session store: a resume that must reopen a stage's session interrupted mid-prompt ends with "Session not found",
- * which is the only failure the sweep allows.
- */
+ * process (#5053). Every resume must finish and charge each paid prompt exactly once, to the child and to the root,
+ * and the child never spends past its own cap. The fixture's sessions have no session to reopen, so a stage
+ * interrupted mid-prompt runs again on resume. */
 
 import assert from "node:assert/strict";
 import { copyFileSync, existsSync, mkdirSync } from "node:fs";
@@ -58,6 +56,9 @@ function spending(prompts: Prompts): AgentSessionAdapter {
 					);
 				},
 				getLastAssistantText: () => answer,
+				// No session to reopen: a stage interrupted mid-prompt runs again on resume.
+				sessionId: undefined as unknown as string,
+				sessionFile: undefined,
 			}).session;
 		},
 	};
@@ -185,10 +186,7 @@ async function sweep(childTokens: number): Promise<{ completed: number; midChild
 				},
 			);
 			const at = `crash after write ${index + 1}`;
-			if (result.status !== "completed") {
-				assert.match(String(result.error), /Session not found/, `${at}: ${result.status} ${result.error}`);
-				continue;
-			}
+			assert.equal(result.status, "completed", `${at}: ${result.error}`);
 			completed += 1;
 			const childPrompts = point.before.child + resumed.child;
 			const parentPrompts = point.before.parent + resumed.parent;
