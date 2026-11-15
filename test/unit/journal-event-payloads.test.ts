@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { afterEach, test } from "vitest";
 import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.js";
 import { StorageError } from "../../packages/coding-agent/src/core/storage/errors.js";
+import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import {
 	journalPayloadStub,
 	STORED_JSON_CHUNK_BYTES,
@@ -9,8 +10,7 @@ import {
 	storedJsonChunks,
 	withJournalPayloads,
 	writeJournalPayloadChunks,
-} from "../../packages/coding-agent/src/core/storage/journal-event-payloads.js";
-import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
+} from "../../packages/coding-agent/src/core/storage/run-journal.js";
 
 const opened: SqliteDatabase[] = [];
 afterEach(async () => {

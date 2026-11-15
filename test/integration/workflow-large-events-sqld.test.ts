@@ -3,7 +3,7 @@ import { afterEach, describe, test } from "vitest";
 import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.js";
 import { dialectOf } from "../../packages/coding-agent/src/core/storage/dialect.js";
 import { runJournalTables } from "../../packages/coding-agent/src/core/storage/journal-adoption.js";
-import { STORED_JSON_CHUNK_BYTES } from "../../packages/coding-agent/src/core/storage/journal-event-payloads.js";
+import { STORED_JSON_CHUNK_BYTES } from "../../packages/coding-agent/src/core/storage/run-journal.js";
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import { collectSnapshotGarbage } from "../../packages/coding-agent/src/core/worktree-snapshot/garbage.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";

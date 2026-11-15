@@ -20,9 +20,9 @@ import {
 	inspectJournalFile,
 } from "../../packages/coding-agent/src/core/storage/journal-adoption.js";
 import { JournalCatalog } from "../../packages/coding-agent/src/core/storage/journal-catalog.js";
-import { STORED_JSON_CHUNK_BYTES } from "../../packages/coding-agent/src/core/storage/journal-event-payloads.js";
 import { exportWorkflowRuns } from "../../packages/coding-agent/src/core/storage/journal-transfer.js";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
+import { STORED_JSON_CHUNK_BYTES } from "../../packages/coding-agent/src/core/storage/run-journal.js";
 import { sqlPoolStorage } from "../../packages/workflows/src/durable/journal/internal.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
