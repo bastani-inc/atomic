@@ -68,6 +68,8 @@ interface RunningBackgroundCompaction {
 export interface CommittedBackgroundCompaction {
 	readonly result: VerbatimCompactionResult;
 	readonly cacheMiss?: CompactionCacheMiss;
+	/** Set for a caller that joined another caller's in-flight commit; that caller announces it. */
+	readonly joined?: true;
 }
 
 /** A ready result a foreground compaction committed; `sufficient` when no further compaction is needed. */
@@ -577,7 +579,7 @@ export function _commitReadyBackgroundCompaction(
 ): Promise<CommittedBackgroundCompaction | undefined> {
 	const runtime = runtimeOf(this);
 	const inFlight = runtime.commitInFlight;
-	if (inFlight) return inFlight.then(() => undefined);
+	if (inFlight) return inFlight.then((committed) => committed && { ...committed, joined: true });
 	const flight = commitReady(this, options).finally(() => {
 		runtime.commitInFlight = undefined;
 	});
@@ -585,13 +587,17 @@ export function _commitReadyBackgroundCompaction(
 	return flight;
 }
 
-/** Turn-boundary step: commit a ready result and announce it. Returns true when a boundary was committed. */
+/**
+ * Turn-boundary step: commit a ready result and announce it. Returns true when a boundary was committed,
+ * including one this step joined; only the caller that started the commit announces it.
+ */
 export async function _runBackgroundCompactionBoundary(
 	this: AgentSession,
 	midTurn: boolean,
 	awaitPersistence = false,
 ): Promise<boolean> {
 	const committed = await this._commitReadyBackgroundCompaction({ awaitPersistence });
+	if (committed?.joined) return true;
 	if (committed) {
 		this._emit({
 			type: "compaction_end",

@@ -373,6 +373,28 @@ describe("InteractiveMode compaction events", () => {
 		});
 	}
 
+	it("shows one boundary and one set of notices when overflow recovery joins a turn-boundary commit (#4851)", async () => {
+		const { mode, chatContainer } = makeMode(persistedContextMessages, true);
+		const cacheMiss = { expectedMissedTokens: 41_000, expectedMissedCost: 0.1234, expectedRebilledCost: 0.1371 };
+		const committed = {
+			result: resultWithUsage,
+			aborted: false,
+			willRetry: false,
+			background: true as const,
+			cacheMiss,
+		};
+
+		await emit(mode, { type: "compaction_start", reason: "overflow" });
+		await emit(mode, { type: "compaction_end", reason: "threshold", midTurn: true, ...committed });
+		await emit(mode, { type: "compaction_end", reason: "overflow", ...committed });
+
+		const text = renderedText(chatContainer);
+		expect(visibleBoundaries(chatContainer)).toHaveLength(1);
+		expect(text.match(/✻ Context compacted/g)).toHaveLength(1);
+		expect(text.match(/Compaction: 1,234 tokens billed/g)).toHaveLength(1);
+		expect(text.match(/Prompt cache miss expected after background compaction/g)).toHaveLength(1);
+	});
+
 	it("renders billed compaction usage after the live boundary when notices are enabled", async () => {
 		const { mode, chatContainer } = makeMode(persistedContextMessages, true);
 
