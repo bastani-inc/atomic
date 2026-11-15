@@ -5,7 +5,6 @@ import { test } from "vitest";
 import {
 	assertPiRuntimeAssets,
 	expectedPiAiPackage,
-	expectedPiVersion,
 } from "../../packages/coding-agent/scripts/assert-pi-runtime-assets.js";
 import { moduleDir, readJson, readText } from "../helpers/runtime.js";
 
@@ -32,147 +31,84 @@ interface Lockfile {
 const root = join(moduleDir(import.meta.url), "../..");
 const distBuiltinDir = join(root, "packages/coding-agent/dist/builtin");
 const distAppPath = join(root, "packages/coding-agent/dist/app.js");
-/**
- * One constant drives the whole version contract: the runtime-asset assertion
- * (which reads the installed `@bastani/pi-ai`), the lockfile entries, and
- * the workspace manifest ranges below.
- */
-const piVersion = expectedPiVersion;
-const expectedArtifacts = new Map([
-	[
-		"@earendil-works/pi-agent-core",
-		{
-			version: "1.5.2",
-			integrity: "sha512-ie5mejS7mGfXt//9As7i3LfxVXdktZvF1JP4EQsUXTp4mU437h23MNGx7wXZ5VYs3YiG/Qnj3e7OZ2HC069OMw==",
-			resolved: "https://registry.npmjs.org/@earendil-works/pi-agent-core/-/pi-agent-core-1.5.2.tgz",
-		},
-	],
-	[
-		"@earendil-works/pi-ai",
-		{
-			version: "1.5.2",
-			integrity: "sha512-2tWPSnV3qzfiDIY3aWluBag3vC++Vs+VsXt/UquSU5onPMohPih72FUhIhaqmDdMYubOgB3Byl9uF4Vk40JLvQ==",
-			resolved: "https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-1.5.2.tgz",
-		},
-	],
-	[
-		"@earendil-works/pi-tui",
-		{
-			version: "1.5.2",
-			integrity: "sha512-WK8ih+c88GWizaB79y7Pq3PV7ySf5VI1pZ1i/6aBBjDOAiG2EE3ojKjl+pxQqLfyQGnzHYu4VfakOBJgumuoyw==",
-			resolved: "https://registry.npmjs.org/@earendil-works/pi-tui/-/pi-tui-1.5.2.tgz",
-		},
-	],
-	[
-		"@earendil-works/pi-telemetry",
-		{
-			version: "1.5.2",
-			integrity: "sha512-m+cumjIqNh1aMISi/9ttcG3ZOwIdriPbz/eMyWmRMJCGa/WcgY1RX4lrb7HvsHhSfI/JUeBESA4nOCr8C3y5ow==",
-			resolved: "https://registry.npmjs.org/@earendil-works/pi-telemetry/-/pi-telemetry-1.5.2.tgz",
-		},
-	],
-	[
-		"@earendil-works/pi-codemode",
-		{
-			version: "1.5.2",
-			integrity: "sha512-HoZQ40a9RgdZ1VgmrX6x8887cNXedaRJT1l+Ie5YRIMK4gY7v0EpsiNqf6dmixrKylZlTgUSyR+vE8xhjfkr+w==",
-			resolved: "https://registry.npmjs.org/@earendil-works/pi-codemode/-/pi-codemode-1.5.2.tgz",
-		},
-	],
-	[
-		"@earendil-works/pi-schema",
-		{
-			version: "1.5.2",
-			integrity: "sha512-hJoyCXWUhsSrXY5wJo2Q4kHXUsR51pNhkJHAMkWRwVMLDRtMDPkKNaa+JlVRVqTw1hjdSxcVVaFLSDbKlaTXEQ==",
-			resolved: "https://registry.npmjs.org/@earendil-works/pi-schema/-/pi-schema-1.5.2.tgz",
-		},
-	],
+
+/** Atomic's forks of pi's packages and the workspace directory each one lives in. */
+const forkedPackages = new Map([
+	["@bastani/atomic-agent-core", "packages/agent"],
+	["@bastani/atomic-ai", "packages/ai"],
+	["@bastani/atomic-codemode", "packages/codemode"],
+	["@bastani/atomic-schema", "packages/schema"],
+	["@bastani/atomic-telemetry", "packages/telemetry"],
+	["@bastani/atomic-tui", "packages/tui"],
 ]);
 
 const declarations = new Map([
 	[
 		"packages/coding-agent",
-		["@earendil-works/pi-agent-core", "@bastani/pi-ai", "@earendil-works/pi-codemode", "@earendil-works/pi-tui"],
+		["@bastani/atomic-agent-core", "@bastani/atomic-ai", "@bastani/atomic-codemode", "@bastani/atomic-tui"],
 	],
-	["packages/intercom", ["@earendil-works/pi-tui"]],
+	["packages/intercom", ["@bastani/atomic-tui"]],
 	["packages/mcp", []],
-	["packages/subagents", ["@earendil-works/pi-agent-core", "@bastani/pi-ai", "@earendil-works/pi-tui"]],
-	["packages/web-access", ["@earendil-works/pi-tui"]],
-	["packages/workflows", ["@earendil-works/pi-tui"]],
+	["packages/subagents", ["@bastani/atomic-agent-core", "@bastani/atomic-ai", "@bastani/atomic-tui"]],
+	["packages/web-access", ["@bastani/atomic-tui"]],
+	["packages/workflows", ["@bastani/atomic-tui"]],
 ]);
-const workspacePaths = [...declarations.keys(), "packages/natives"];
 
 const publishArtifactTest = existsSync(distBuiltinDir) ? test : test.skip;
 if (!existsSync(distBuiltinDir)) {
 	console.warn(
-		"[pi-0.82.1-artifacts] generated publish-artifact checks skipped: packages/coding-agent/dist/builtin is not built",
+		"[forked-packages-artifacts] generated publish-artifact checks skipped: packages/coding-agent/dist/builtin is not built",
 	);
 }
 
 const binaryAppTest = existsSync(distAppPath) ? test : test.skip;
 if (!existsSync(distAppPath)) {
 	console.warn(
-		"[pi-0.82.1-artifacts] standalone app marker check skipped: packages/coding-agent/dist/app.js is not built",
+		"[forked-packages-artifacts] standalone app marker check skipped: packages/coding-agent/dist/app.js is not built",
 	);
 }
 
-test("Pi v1.5.2 source declarations and lockfiles stay synchronized", async () => {
-	let declarationCount = 0;
-	let externalDeclarationCount = 0;
-	for (const [workspace, names] of declarations) {
+test("forked pi packages are versionless workspaces that Atomic depends on exactly (#5174)", async () => {
+	for (const [name, workspace] of forkedPackages) {
 		const manifest = await readJson<Manifest>(join(root, workspace, "package.json"));
-		assert.equal(manifest.version, "0.0.0");
-		for (const name of names) {
-			const range =
-				name === expectedPiAiPackage
-					? workspace === "packages/coding-agent"
-						? "0.0.0"
-						: "*"
-					: workspace === "packages/coding-agent"
-						? piVersion
-						: `^${piVersion}`;
-			assert.equal(manifest.dependencies?.[name] ?? manifest.peerDependencies?.[name], range);
-			declarationCount++;
-			if (name.startsWith("@earendil-works/pi-")) externalDeclarationCount++;
-		}
-	}
-	const piAiManifest = await readJson<Manifest>(join(root, "packages/ai/package.json"));
-	assert.equal(piAiManifest.dependencies?.["@earendil-works/pi-telemetry"], piVersion);
-	externalDeclarationCount++;
-	assert.equal(declarationCount, 10);
-	assert.equal(externalDeclarationCount, 9);
-	assert.equal(existsSync(join(root, "packages/cursor")), false, "removed Cursor workspace must not be recreated");
-	for (const workspace of [...workspacePaths, "packages/ai"]) {
-		const manifest = await readJson<Manifest>(join(root, workspace, "package.json"));
+		assert.equal(manifest.name, name, workspace);
 		assert.equal(manifest.version, "0.0.0", workspace);
 	}
-	assert.equal(piAiManifest.name, expectedPiAiPackage);
+	assert.equal((await readJson<Manifest>(join(root, "packages/ai/package.json"))).name, expectedPiAiPackage);
+	for (const [workspace, names] of declarations) {
+		const manifest = await readJson<Manifest>(join(root, workspace, "package.json"));
+		assert.equal(manifest.version, "0.0.0", workspace);
+		for (const name of names) {
+			// The published CLI pins each fork at its own release version; bundled extensions take the host's copy.
+			const range = workspace === "packages/coding-agent" ? manifest.version : "*";
+			assert.equal(
+				manifest.dependencies?.[name] ?? manifest.peerDependencies?.[name],
+				range,
+				`${workspace}: ${name}`,
+			);
+		}
+	}
+	assert.equal(existsSync(join(root, "packages/cursor")), false, "removed Cursor workspace must not be recreated");
 
-	// bun.lock was deleted when install moved to `npm ci`. package-lock.json is
-	// now the single verified lockfile: `npm ci` refuses to install when it and
-	// package.json disagree, which nothing enforced while two lockfiles coexisted.
 	const npmLock = await readJson<Lockfile>(join(root, "package-lock.json"));
 	const shrinkwrap = await readJson<Lockfile>(join(root, "packages/coding-agent/npm-shrinkwrap.json"));
-	for (const [name, artifact] of expectedArtifacts) {
-		for (const lock of [npmLock, shrinkwrap]) {
-			const entry = lock.packages[`node_modules/${name}`];
-			assert.equal(entry.version, artifact.version);
-			assert.equal(entry.resolved, artifact.resolved);
-			assert.equal(entry.integrity, artifact.integrity);
-		}
+	for (const [name, workspace] of forkedPackages) {
+		assert.equal(npmLock.packages[`node_modules/${name}`]?.resolved, workspace, name);
+		const published = shrinkwrap.packages[`node_modules/${name}`];
+		assert.equal(published?.version, "0.0.0", name);
+		assert.equal(published?.resolved, `https://registry.npmjs.org/${name}/-/${name.split("/")[1]}-0.0.0.tgz`, name);
 	}
 	for (const [lockPath, lock] of [
 		["package-lock.json", npmLock],
 		["packages/coding-agent/npm-shrinkwrap.json", shrinkwrap],
 	] as const) {
 		for (const [packagePath, entry] of Object.entries(lock.packages)) {
-			for (const [name, range] of Object.entries(entry.dependencies ?? {})) {
-				if (!name.startsWith("@earendil-works/pi-")) continue;
-				assert.match(range, /^\^?1\.5\.2$/, `${lockPath}: ${packagePath} -> ${name}`);
+			assert.equal(packagePath.includes("@earendil-works/"), false, `${lockPath}: ${packagePath}`);
+			for (const name of Object.keys(entry.dependencies ?? {})) {
+				assert.equal(name.startsWith("@earendil-works/"), false, `${lockPath}: ${packagePath} -> ${name}`);
 			}
 		}
 	}
-	assert.equal(npmLock.packages["node_modules/@bastani/pi-ai"]?.resolved, "packages/ai");
 });
 
 test("protobufjs 7.6.6 is pinned in source and every packaged lock", async () => {
@@ -237,7 +173,7 @@ test("binary pipelines require generated Pi model data and OAuth assets", async 
 	assert.ok(releaseBuilder.includes("assert-pi-runtime-assets.ts --node-modules"));
 });
 
-publishArtifactTest("Pi v1.5.2 generated publish artifacts match source declarations", async () => {
+publishArtifactTest("generated publish artifacts match source declarations", async () => {
 	for (const [workspace, names] of declarations) {
 		if (workspace === "packages/coding-agent") continue;
 		const source = await readJson<Manifest>(join(root, workspace, "package.json"));
@@ -253,6 +189,6 @@ publishArtifactTest("Pi v1.5.2 generated publish artifacts match source declarat
 	}
 });
 
-binaryAppTest("standalone app bundle embeds Pi v1.5.2 catalog and OAuth runtime markers", () => {
+binaryAppTest("standalone app bundle embeds the model catalog and OAuth runtime markers", () => {
 	assertPiRuntimeAssets({ nodeModulesRoot: join(root, "node_modules"), appBundlePath: distAppPath });
 });

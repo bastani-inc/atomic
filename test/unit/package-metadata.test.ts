@@ -89,7 +89,12 @@ const PUBLISHABLE_WORKSPACE_PACKAGES = new Set([
 	"@bastani/atomic-natives",
 	"@bastani/atomic-storage-libsql",
 	"@bastani/atomic-storage-postgres",
-	"@bastani/pi-ai",
+	"@bastani/atomic-ai",
+	"@bastani/atomic-agent-core",
+	"@bastani/atomic-codemode",
+	"@bastani/atomic-schema",
+	"@bastani/atomic-telemetry",
+	"@bastani/atomic-tui",
 ]);
 
 function markdownFiles(dir: string): string[] {
@@ -233,9 +238,7 @@ describe("package metadata", () => {
 				`${sectionName}.${dependencyName} must not use the workspace protocol in the published manifest`,
 			);
 			assert.ok(
-				!dependencyName.startsWith("@bastani/") ||
-					dependencyName === "@bastani/atomic-natives" ||
-					dependencyName === "@bastani/pi-ai",
+				!dependencyName.startsWith("@bastani/") || PUBLISHABLE_WORKSPACE_PACKAGES.has(dependencyName),
 				`${sectionName}.${dependencyName} must not point at a private bundled workspace package`,
 			);
 		}
