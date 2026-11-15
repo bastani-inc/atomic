@@ -1297,4 +1297,39 @@ describe("remaining leak and over-redaction cases (#5142)", () => {
 			assert.ok(redacted.includes("[redacted]"), text.slice(0, 20));
 		}
 	});
+	test("edges of placeholders, next-line values, prose and cookie contexts (#5142)", () => {
+		const header = ["-----BEGIN", "PRIVATE KEY-----"].join(" ");
+		const footer = ["-----END", "PRIVATE KEY-----"].join(" ");
+		const cases: readonly (readonly [string, string])[] = [
+			["password: hidden.", "password: hidden."],
+			[`  token:\r\n    ${S}`, "  token:\r\n    [redacted]"],
+			[`x:\n    token:\n  ${S}`, `x:\n    token:\n  ${S}`],
+			["  token:\n    abc def", "  token:\n    abc def"],
+			["  token:\n    abc:def", "  token:\n    abc:def"],
+			["  token:\n    :abc", "  token:\n    :abc"],
+			["password: must be eight characters", "password: must be eight characters"],
+			["password: must red green long.", "password: must red green long."],
+			["password:`abc`", "password: [redacted]"],
+			['password: "Abc. Def"', "password: [redacted]"],
+			['password: "must be at least eight"', "password: [redacted]"],
+			["password=must be at least eight characters", "password= [redacted]"],
+			["(e.g. Cookie: sid=abcdefghij)", "(e.g. Cookie: sid=abcdefghij)"],
+			["Cookie: a= value", "Cookie: a= value"],
+			['level=debug cookie="theme=dark"', 'level=debug cookie="theme=[redacted]"'],
+			[`${footer}\n${header}\nabc`, `${footer}\n[redacted]`],
+			["mysql -uroot\ngcc -pthread a.c", "mysql -uroot\ngcc -pthread a.c"],
+		];
+		for (const [input, expected] of cases)
+			assert.equal(redactCredentialShapes(input), expected, JSON.stringify(input));
+		assert.equal(redactCliSecrets("Bearer abc", [], {}), "Bearer [redacted]");
+		assert.equal(redactCliSecrets("Bearer\nabc", [], {}), "Bearer\nabc");
+	});
+
+	test("a line too long to read is redacted while the lines around it stay (#5142)", () => {
+		const text = `x\nPASSWORD=${"a ".repeat(4 * 1024 * 1024)}\ny`;
+		// Whether the regular expression stack runs out depends on the platform: either way the value is gone and the
+		// lines around it stay.
+		const redacted = redactCredentialShapes(text);
+		assert.ok(["x\n[redacted]\ny", "x\nPASSWORD= [redacted]\ny"].includes(redacted), redacted.slice(0, 40));
+	});
 });
