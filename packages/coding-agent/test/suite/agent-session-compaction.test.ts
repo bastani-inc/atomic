@@ -228,21 +228,22 @@ describe("session_compact_failed", () => {
 			});
 		}
 		harness.session.agent.state.messages = harness.sessionManager.buildSessionContext().messages;
-		vi.spyOn(harness.sessionManager, "writeBackupSnapshot").mockImplementation(() => {
-			throw new Error("backup failed");
+		// The backup is best effort (#4977); the boundary write is what persistence needs.
+		vi.spyOn(harness.sessionManager, "appendCompaction").mockImplementation(() => {
+			throw new Error("boundary write failed");
 		});
 
 		await expect(
 			harness.session._preflightPostToolContext([
 				{ role: "user", content: "x".repeat(500), timestamp: Date.now() + 100 },
 			]),
-		).rejects.toThrow("Post-tool context compaction failed before the next provider request: backup failed");
+		).rejects.toThrow("Post-tool context compaction failed before the next provider request: boundary write failed");
 
 		expect(failed.events).toEqual([
 			{
 				type: "session_compact_failed",
 				reason: "threshold",
-				errorMessage: "Post-tool context compaction failed before the next provider request: backup failed",
+				errorMessage: "Post-tool context compaction failed before the next provider request: boundary write failed",
 				aborted: false,
 				willRetry: false,
 				fromExtension: true,

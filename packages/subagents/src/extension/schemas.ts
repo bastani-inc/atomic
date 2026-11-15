@@ -72,7 +72,12 @@ const TaskItem = Type.Object({
 	output: Type.Optional(OutputOverride),
 	outputMode: Type.Optional(OutputModeOverride),
 	reads: Type.Optional(ReadsOverride),
-	progress: Type.Optional(Type.Boolean({ description: "Enable progress.md tracking for this task" })),
+	progress: Type.Optional(
+		Type.Boolean({
+			description:
+				"Enable tracking in the run's shared progress.md under isolated artifact storage, never in the task cwd",
+		}),
+	),
 	model: Type.Optional(
 		Type.String({
 			description: "Concrete model override, or 'auto' to select an available model and effort for this task.",

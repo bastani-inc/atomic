@@ -109,7 +109,7 @@ if (hasNewMarkers) {
 		console.error("could not place the remaining feature region before How Atomic works");
 		process.exit(1);
 	}
-	readme = readme.replace(howAtomicWorks, `\n${moreRegion}\n\n---\n\n## How Atomic works`);
+	readme = readme.replace(howAtomicWorks, () => `\n${moreRegion}\n\n---\n\n## How Atomic works`);
 } else {
 	console.error("could not find both feature-wall regions or the legacy feature-wall region");
 	process.exit(1);

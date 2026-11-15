@@ -31,6 +31,7 @@ import {
 	withRecalledContext,
 } from "./compaction/index.ts";
 import { resolveCompactionModel } from "./compaction/model-resolver.js";
+import { reportDebug } from "./debug.ts";
 import type {
 	SessionBeforeCompactEvent,
 	SessionBeforeCompactResult,
@@ -210,8 +211,10 @@ export async function planVerbatimCompaction(
 	if (!preparation) {
 		// Mid-turn threshold preflight needs the load-bearing planner fallback if
 		// a region exists, but a context that still fits is safe to send unchanged.
-		// True overflow and a hard-limit preflight have no such escape hatch.
-		const mustFreeContext = options.urgency === "load_bearing" && (options.reason === "overflow" || allowSmallRegion);
+		// A context known not to fit (overflow recovery, or a hard-limit preflight)
+		// has no such escape hatch; one that a committed background result already
+		// brought under the hard limit does (#4977).
+		const mustFreeContext = allowSmallRegion;
 		if (mustFreeContext) {
 			throw new Error(
 				"Context compaction found no compactable transcript entries; nothing more was safely deletable",
@@ -276,8 +279,8 @@ export async function planVerbatimCompaction(
 			options.abortController.abort();
 			throw new Error("Compaction cancelled");
 		}
-		if (hookResult?.compactedText !== undefined) {
-			if (hookResult.compactedText.trim().length === 0) throw new Error("No compacted text provided by extension");
+		// Empty or whitespace text is no override: the planner ladder compacts the region instead (#4977).
+		if (hookResult?.compactedText !== undefined && hookResult.compactedText.trim().length > 0) {
 			compacted = {
 				text: hookResult.compactedText,
 				stats: extensionStats(preparation, hookResult.compactedText),
@@ -393,18 +396,37 @@ export interface AppendedVerbatimBoundary {
 }
 
 /**
+ * Write the pre-compaction backup. The backup is best effort: a store that cannot write it (`ENOSPC`,
+ * `EACCES`) still takes the boundary, which then records no backup path (#4977).
+ */
+async function writeBestEffortBackup(this: AgentSession, label: string): Promise<string | undefined> {
+	try {
+		return await this.sessionManager.writeBackupSnapshot(label);
+	} catch (error) {
+		reportDebug("storage", "compaction-backup-unwritable", {
+			label,
+			code: (error as NodeJS.ErrnoException | undefined)?.code,
+			error: error instanceof Error ? error.message : String(error),
+		});
+		return undefined;
+	}
+}
+
+/**
  * Back up the session and append a planned compaction as one boundary. Nothing else changes, so a
  * failure here leaves history and the in-memory context as they were. `coveredThroughEntryId` marks a
  * background result whose later entries replay unchanged. `precondition` runs inside the append's queued mutation
- * and throws to refuse it.
+ * and throws to refuse it. `signal` is checked there too: the append is the commit point, so a cancel that
+ * arrives before it leaves the session unchanged.
  */
 export async function appendVerbatimBoundary(
 	this: AgentSession,
 	planned: PlannedVerbatimCompaction,
-	options: { backupLabel: string; coveredThroughEntryId?: string; precondition?: () => void },
+	options: { backupLabel: string; coveredThroughEntryId?: string; precondition?: () => void; signal?: AbortSignal },
 ): Promise<AppendedVerbatimBoundary> {
-	const backupPath = await this.sessionManager.writeBackupSnapshot(options.backupLabel);
+	const backupPath = await writeBestEffortBackup.call(this, options.backupLabel);
 	const details: VerbatimCompactionDetails = { ...planned.details, ...(backupPath ? { backupPath } : {}) };
+	const { signal, precondition } = options;
 	const entryId = await this.sessionManager.appendCompaction(
 		planned.text,
 		planned.firstKeptEntryId,
@@ -412,7 +434,12 @@ export async function appendVerbatimBoundary(
 		details,
 		planned.usage,
 		options.coveredThroughEntryId,
-		options.precondition,
+		signal
+			? () => {
+					if (signal.aborted) throw new Error("Compaction cancelled");
+					precondition?.();
+				}
+			: precondition,
 	);
 	return { entryId, details, backupPath };
 }
@@ -479,6 +506,7 @@ export async function _applyVerbatimCompaction(
 	if (!planned) return undefined;
 	const appended = await appendVerbatimBoundary.call(this, planned, {
 		backupLabel: options.backupLabel,
+		signal: options.abortController.signal,
 		...(waiting ? { coveredThroughEntryId: covered[covered.length - 1].id } : {}),
 	});
 	return finishVerbatimCommit.call(this, planned, appended, options.reason);
