@@ -43,10 +43,16 @@ export class PendingQuestionIndex {
     return this.away;
   }
 
-  /** Keep questions whose peer is away until it is back. */
+  /**
+   * Keep questions whose peer is away until it is back. #4950: without `senderReturnAddress` (their recipient is the one
+   * away), each keeps its asker's return address now, so its failure reaches it even if this broker goes first.
+   */
   keepDormant(questions: readonly PendingQuestion[], senderReturnAddress?: string): void {
     if (questions.length === 0) return;
-    this.awayAsks().keep(questions, senderReturnAddress);
+    this.awayAsks().keep(
+      questions,
+      senderReturnAddress ?? ((question) => this.returnAddressOf(question.senderSessionId)),
+    );
   }
 
   /** The asker is away now too: its questions kept for an away recipient wait for it under its return address (#4761). */
@@ -94,7 +100,23 @@ export class PendingQuestionIndex {
    * message held until it is back (#4751).
    */
   failDormantForTarget(target: SessionInfo, reason: string, idPrefix: string, targetReturnAddress?: string): void {
-    this.awayAsks().failForTarget(target, reason, idPrefix, this.failsThroughOwner, targetReturnAddress);
+    const { live } = this.awayAsks().failForTarget(
+      target,
+      reason,
+      idPrefix,
+      this.failsThroughOwner,
+      targetReturnAddress,
+      this.askerConnected,
+    );
+    // #4950: a connected asker's question routes again, so the recipient's end fails it on that route as it does today.
+    for (const question of live) this.record(question.senderSessionId, question.targetSessionId, question.messageId);
+  }
+
+  private askerConnected: (question: PendingQuestion, returnAddress: string) => boolean = () => false;
+
+  /** #4950: whether a kept question's asker is connected, so its failure is delivered rather than held. */
+  failToConnectedAskerWhen(check: (question: PendingQuestion, returnAddress: string) => boolean): void {
+    this.askerConnected = check;
   }
 
   private failsThroughOwner: (question: PendingQuestion) => boolean = () => false;

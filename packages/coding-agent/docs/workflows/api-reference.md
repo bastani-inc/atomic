@@ -1031,7 +1031,7 @@ Controls automatic session and worktree-diff artifact collection in task results
 readonly worktree?: boolean;
 ```
 
-Requests a runner-managed branch-backed temporary worktree for an authored `ctx.task(...)`. Atomic creates it at `<main-root>/.atomic/worktrees/<flattened-name>` on branch `worktree-<flattened-name>`, replacing `/` in generated names with `+`. Creation remains anchored at the canonical main root when invoked inside a linked worktree. The base ref resolves as explicit `baseBranch`, then `origin/<default-branch>` (fetched when absent), then `HEAD`. Atomic propagates local settings, configures the main repository's Husky or populated hooks directory through shared `core.hooksPath`, symlinks configured `worktree.symlinkDirectories`, and copies gitignored `.worktreeinclude` matches without overwriting tracked files. It is mutually exclusive with `gitWorktreeDir`; cleanup forcibly removes the worktree and deletes its branch even when startup fails before the callback.
+Requests a runner-managed branch-backed temporary worktree for an authored `ctx.task(...)`. Atomic creates it at `<main-root>/.atomic/worktrees/<flattened-name>` on branch `worktree-<flattened-name>`, replacing `/` in generated names with `+`. Creation remains anchored at the canonical main root when invoked inside a linked worktree. The base ref resolves as explicit `baseBranch`, then `origin/<default-branch>` (fetched when absent), then `HEAD`. Atomic propagates local settings, configures the main repository's Husky or populated hooks directory through shared `core.hooksPath`, symlinks configured `worktree.symlinkDirectories`, and copies gitignored `.worktreeinclude` matches without overwriting tracked files; when git cannot list them, the task runs without them and warns. It is mutually exclusive with `gitWorktreeDir`; cleanup forcibly removes the worktree and deletes its branch even when startup fails before the callback, except a worktree whose diff could not be captured, which is kept and named in the task's `warnings`.
 
 ### `gitWorktreeDir` / `baseBranch`
 
@@ -1526,10 +1526,13 @@ interface WorkflowArtifact extends WorkflowSerializableObject {
   readonly filesChanged?: number;
   readonly insertions?: number;
   readonly deletions?: number;
+  readonly captureError?: string;
+  readonly worktreePath?: string;
+  readonly setupWarnings?: readonly string[];
 }
 ```
 
-Describes a persisted output, session, diff, or patch and its optional task, branch, and diff statistics. `path` and `kind` are always present.
+Describes a persisted output, session, diff, or patch and its optional task, branch, and diff statistics. `path` and `kind` are always present. A `diff` artifact whose patch could not be captured has `captureError` and the kept worktree's `worktreePath`; `setupWarnings` lists worktree setup steps that could not be done, such as copying `.worktreeinclude` files.
 
 ### `RunResult`
 

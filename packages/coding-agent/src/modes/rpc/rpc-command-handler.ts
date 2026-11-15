@@ -8,6 +8,7 @@ import { KeybindingsManager } from "../../core/keybindings.ts";
 import { SessionManager } from "../../core/session-manager.ts";
 import { getSkillCatalog } from "../../core/skill-catalog.ts";
 import { RpcBashRequestOwners } from "./rpc-bash-request-owners.ts";
+import { outputExtensionLoadErrors } from "./rpc-extension-load-errors.ts";
 import type { RpcExtensionUICapabilities, RpcPendingExtensionRequests } from "./rpc-extension-ui.ts";
 import type { KeybindingsReloadCoordinator } from "./rpc-keybindings-reload.ts";
 import { createRpcModelCatalog } from "./rpc-model-catalog.ts";
@@ -241,6 +242,8 @@ export function createRpcCommandHandler({
 					queuedMessagesPaused: session.queuedMessagesPaused,
 					projectTrusted: session.settingsManager.isProjectTrusted?.() === true,
 					resourceOverlaps: extensionResult.overlaps ?? [],
+					resourceErrors: extensionResult.errors,
+					resourceWarnings: extensionResult.warnings ?? [],
 					resourceExtensions: extensionResult.extensions.map((extension) => ({
 						path: extension.path,
 						sourceInfo: extension.sourceInfo,
@@ -604,9 +607,16 @@ export function createRpcCommandHandler({
 			}
 
 			case "reload": {
+				// Retrying failed startup resources reports its load errors as the startup load does.
 				if (retryFailedResources && reloadResources) await reloadResources();
-				else if (reloadCoordinator) await reloadCoordinator.reload(session);
-				else await session.reload();
+				else {
+					try {
+						if (reloadCoordinator) await reloadCoordinator.reload(session);
+						else await session.reload();
+					} finally {
+						outputExtensionLoadErrors(session, "reload", output);
+					}
+				}
 				return createRpcSuccessResponse(id, "reload");
 			}
 

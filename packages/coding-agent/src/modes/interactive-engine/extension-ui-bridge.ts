@@ -10,7 +10,7 @@ import type { RpcAutocompleteItem, RpcResourceExtension, RpcSlashCommand } from 
 import type { ActivityWatchdogDiagnostic } from "./activity-watchdog.ts";
 import { EngineDialogHostController } from "./engine-dialog-host.ts";
 import { InputFormHostController } from "./input-form-host.ts";
-import { IsolatedInteractiveRuntime } from "./isolated-runtime.js";
+import { type EngineResourceIssues, IsolatedInteractiveRuntime } from "./isolated-runtime.js";
 import type { EngineExtensionShortcut, EngineKeybindingState, InteractiveEngineMessage } from "./protocol.ts";
 import { RemoteComponentController, type TuiRendererLifecycle } from "./remote-component.ts";
 import { registerRemoteProxyOwnership } from "./remote-input-ownership.ts";
@@ -217,6 +217,11 @@ export function getInteractiveEngineResourceOverlaps(runtime: AgentSessionRuntim
 
 export function getInteractiveEngineResourceExtensions(runtime: AgentSessionRuntime): readonly RpcResourceExtension[] {
 	return runtime instanceof IsolatedInteractiveRuntime ? runtime.getResourceExtensions() : [];
+}
+
+/** The interactive engine's extension load errors and warnings; empty for a session that runs in this process. */
+export function getInteractiveEngineResourceIssues(runtime: AgentSessionRuntime): EngineResourceIssues {
+	return runtime instanceof IsolatedInteractiveRuntime ? runtime.getResourceIssues() : { errors: [], warnings: [] };
 }
 
 export function onInteractiveEngineResourceExtensionsChanged(
