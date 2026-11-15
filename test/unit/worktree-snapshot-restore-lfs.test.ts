@@ -237,32 +237,59 @@ describe("restoring real Git LFS content (#4245)", () => {
 	});
 });
 
-/** A repository whose `data.bin` is stored in LFS and pushed, edited in the worktree with only the edit's object pushed. */
-async function lfsEditedSnapshot(
+/**
+ * A repository in `owner` whose `data.bin` is stored in LFS and pushed, edited in the worktree with only the edit's
+ * object pushed. `edited` is its snapshot; `withNeverPushed` adds `fresh.bin`, whose object is never pushed.
+ */
+async function lfsEditedSnapshots(
+	owner: GitSandbox,
 	extra: Record<string, string> = {},
 	pushed: readonly string[] = [],
 	prepare: (clone: string) => void = () => {},
 ) {
-	await sandbox.git(sandbox.root, "lfs", "install", "--skip-repo");
-	const { clone } = await sandbox.remoteWithClone("repo", {
+	await owner.git(owner.root, "lfs", "install", "--skip-repo");
+	const { clone } = await owner.remoteWithClone("repo", {
 		".gitattributes": "*.bin filter=lfs -text\n",
 		"data.bin": "ORIGINAL-CONTENT\n",
 	});
-	await sandbox.git(clone, "lfs", "push", "--all", "origin");
-	sandbox.write(join(clone, "data.bin"), "EDITED-CONTENT\n");
-	for (const [file, content] of Object.entries(extra)) sandbox.write(join(clone, file), content);
+	await owner.git(clone, "lfs", "push", "--all", "origin");
+	owner.write(join(clone, "data.bin"), "EDITED-CONTENT\n");
+	for (const [file, content] of Object.entries(extra)) owner.write(join(clone, file), content);
 	prepare(clone);
-	await sandbox.git(clone, "add", "-A");
+	await owner.git(clone, "add", "-A");
 	const objects = ["EDITED-CONTENT\n", ...pushed].map(sha256);
-	await sandbox.git(clone, "lfs", "push", "--object-id", "origin", ...objects);
-	await sandbox.git(clone, "reset", "-q");
+	await owner.git(clone, "lfs", "push", "--object-id", "origin", ...objects);
+	await owner.git(clone, "reset", "-q");
 	const blobs = new MemorySnapshotBlobStore();
-	return { blobs, snapshot: await capture(clone, blobs) };
+	const edited = await capture(clone, blobs);
+	const withNeverPushed = async () => {
+		owner.write(join(clone, "fresh.bin"), "NEVER-PUSHED\n");
+		return capture(clone, blobs);
+	};
+	return { blobs, edited, withNeverPushed };
 }
 
+/** Building the edited repository runs about a dozen git and git-lfs children, slow on a loaded Windows host. */
+const EDITED_REPOSITORY_TIMEOUT_MS = 90_000;
+
 describe("restoring LFS files that changed since HEAD (#4245)", () => {
+	let editedSandbox: GitSandbox;
+	let editedBlobs: MemorySnapshotBlobStore;
+	let edited: WorktreeSnapshot;
+	let neverPushed: WorktreeSnapshot;
+	beforeAll(async () => {
+		editedSandbox = new GitSandbox();
+		const built = await lfsEditedSnapshots(editedSandbox);
+		editedBlobs = built.blobs;
+		edited = built.edited;
+		neverPushed = await built.withNeverPushed();
+	}, EDITED_REPOSITORY_TIMEOUT_MS);
+	afterAll(() => editedSandbox.dispose());
+	/** The filters a restore in this test's sandbox needs. */
+	beforeEach(() => sandbox.git(sandbox.root, "lfs", "install", "--skip-repo"));
+
 	test("an edited LFS file whose new object is on the remote is restored with its content and no LFS warning", async () => {
-		const { blobs, snapshot } = await lfsEditedSnapshot();
+		const [blobs, snapshot] = [editedBlobs, edited];
 		const { restored, warnings } = await restoreCollectingWarnings(snapshot, blobs);
 		assert.equal(readFileSync(join(restored.path, "data.bin"), "utf8"), "EDITED-CONTENT\n");
 		assert.deepEqual(
@@ -281,8 +308,11 @@ describe("restoring LFS files that changed since HEAD (#4245)", () => {
 		"fetched content that only starts like a pointer is content, and a link named like an LFS file is left alone (symbolic links need a privilege on Windows)",
 		async () => {
 			const lookalike = `${LFS_POINTER_PREFIX}\n`.padEnd(1024, "x");
-			const { blobs, snapshot } = await lfsEditedSnapshot({ "lookalike.bin": lookalike }, [lookalike], (clone) =>
-				symlinkSync("missing-target", join(clone, "link.bin")),
+			const { blobs, edited: snapshot } = await lfsEditedSnapshots(
+				sandbox,
+				{ "lookalike.bin": lookalike },
+				[lookalike],
+				(clone) => symlinkSync("missing-target", join(clone, "link.bin")),
 			);
 			const { restored, warnings } = await restoreCollectingWarnings(snapshot, blobs);
 			assert.equal(readFileSync(join(restored.path, "lookalike.bin"), "utf8"), lookalike);
@@ -295,7 +325,7 @@ describe("restoring LFS files that changed since HEAD (#4245)", () => {
 	);
 
 	test("a new LFS file whose object was never pushed stays a pointer, and only it is reported", async () => {
-		const { blobs, snapshot } = await lfsEditedSnapshot({ "fresh.bin": "NEVER-PUSHED\n" });
+		const [blobs, snapshot] = [editedBlobs, neverPushed];
 		const { restored, warnings } = await restoreCollectingWarnings(snapshot, blobs);
 		assert.equal(readFileSync(join(restored.path, "data.bin"), "utf8"), "EDITED-CONTENT\n");
 		assert.ok(readFileSync(join(restored.path, "fresh.bin"), "utf8").startsWith(LFS_POINTER_PREFIX));
