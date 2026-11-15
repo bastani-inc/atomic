@@ -101,7 +101,7 @@ export async function guardedPoolWrite<T>(
 			return planned.result(rows);
 		});
 	const fence = poolFenceTable(storage.tables.runs);
-	const deadline = Date.now() + (JOURNAL_TRANSACTION.lockWaitMs ?? 0);
+	const deadline = performance.now() + (JOURNAL_TRANSACTION.lockWaitMs ?? 0);
 	let unknownOutcomes = 0;
 	let afterUnknown = false;
 	for (let attempt = 0; ; attempt++) {
@@ -126,7 +126,7 @@ export async function guardedPoolWrite<T>(
 				error instanceof StorageTransientError &&
 				error.outcome === "unknown" &&
 				++unknownOutcomes <= UNKNOWN_OUTCOME_REPLANS;
-			if (!(isFenceAbort(error) || unknown) || Date.now() >= deadline) throw error;
+			if (!(isFenceAbort(error) || unknown) || performance.now() >= deadline) throw error;
 			afterUnknown = unknown;
 		}
 		const bound = Math.min(FENCE_RETRY_MAX_MS, FENCE_RETRY_BASE_MS * 2 ** Math.min(attempt, 16));
