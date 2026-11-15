@@ -439,8 +439,8 @@ export class AwayAsks {
 			}
 			failed.push(question);
 			this.holdOne({ ...question, senderReturnAddress: returnAddress }, target, {
-				// Unguessable, so no other session can name it.
-				id: `${idPrefix}:${randomUUID()}`,
+				// #4996: one id per ask (#5004), so a failure decided again after a crash is saved once by the asker.
+				id: `${idPrefix}:${question.messageId}`,
 				timestamp: this.now(),
 				replyTo: question.messageId,
 				replyError: reason,
