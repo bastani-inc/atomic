@@ -5,6 +5,7 @@ import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { createRequire } from "module";
 import { isSocketAnswering } from "./socket-liveness.js";
+import { readFileOrUndefined, takeOverStaleLock } from "./stale-lock-file.js";
 import { BROKER_READY_TIMEOUT_MS } from "./startup-timeout.js";
 import {
   BROKER_ANNOUNCE_PATH_ENV,
@@ -744,29 +745,33 @@ function ownsSpawnLock(owner: string, lockPath: string = getBrokerSpawnLockPath(
 }
 
 /** Returns the header this spawner wrote, which proves ownership on release, or undefined when another spawner holds the lock. */
-function acquireSpawnLock(): string | undefined {
+export function acquireSpawnLock(lockPath: string = getBrokerSpawnLockPath()): string | undefined {
   const maxRetries = 5;
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     const owner = `${process.pid}\n${Date.now()}\n`;
     try {
-      writeFileSync(getBrokerSpawnLockPath(), owner, { flag: "wx" });
+      writeFileSync(lockPath, owner, { flag: "wx" });
       return owner;
     } catch (error) {
       if (!(error instanceof Error) || (error as NodeJS.ErrnoException).code !== "EEXIST") {
         throw error;
       }
-      if (isSpawnLockStale()) {
-        try {
-          unlinkSync(getBrokerSpawnLockPath());
-        } catch {
-          // If we can't delete the stale lock, retry a few times before giving up
-        }
-        continue;
-      }
-      return undefined;
+      const inspected = readFileOrUndefined(lockPath);
+      if (inspected === undefined) continue;
+      if (!isSpawnLockContentStale(inspected)) return undefined;
+      replaceStaleSpawnLock(inspected, lockPath);
     }
   }
   return undefined;
+}
+
+/**
+ * Removes the spawn lock a spawner read as `inspected` and judged stale, so the next `wx` attempt can take it. Two
+ * spawners that saw the same stale lock never both replace it: the lock is removed only while it is still the inspected
+ * one (#5132).
+ */
+export function replaceStaleSpawnLock(inspected: string, lockPath: string = getBrokerSpawnLockPath()): void {
+  takeOverStaleLock(lockPath, inspected, `${lockPath}.takeover`);
 }
 
 function isProcessAlive(pid: number): boolean {
@@ -786,20 +791,19 @@ export function isSpawnLockStale(lockPath: string = getBrokerSpawnLockPath(), no
   if (!existsSync(lockPath)) {
     return false;
   }
+  // Unreadable lock contents are treated as stale so a new broker can start.
+  return isSpawnLockContentStale(readFileOrUndefined(lockPath) ?? "", nowMs);
+}
 
-  try {
-    const [spawnerLine = "", createdAtLine = "", brokerLine = ""] = readFileSync(lockPath, "utf-8").trim().split("\n");
-    const spawnerPid = Number.parseInt(spawnerLine, 10);
-    const createdAt = Number.parseInt(createdAtLine, 10);
-    const brokerPid = Number.parseInt(brokerLine, 10);
+function isSpawnLockContentStale(content: string, nowMs: number = Date.now()): boolean {
+  const [spawnerLine = "", createdAtLine = "", brokerLine = ""] = content.trim().split("\n");
+  const spawnerPid = Number.parseInt(spawnerLine, 10);
+  const createdAt = Number.parseInt(createdAtLine, 10);
+  const brokerPid = Number.parseInt(brokerLine, 10);
 
-    if (!Number.isFinite(spawnerPid) || !Number.isFinite(createdAt)) return true;
-    if (nowMs - createdAt > BROKER_SPAWN_LOCK_MAX_AGE_MS) return true;
-    return !isProcessAlive(Number.isFinite(brokerPid) ? brokerPid : spawnerPid);
-  } catch {
-    // Unreadable lock contents are treated as stale so a new broker can start.
-    return true;
-  }
+  if (!Number.isFinite(spawnerPid) || !Number.isFinite(createdAt)) return true;
+  if (nowMs - createdAt > BROKER_SPAWN_LOCK_MAX_AGE_MS) return true;
+  return !isProcessAlive(Number.isFinite(brokerPid) ? brokerPid : spawnerPid);
 }
 
 /** Removes the lock only while it is still the one `owner` wrote; a spawner that replaced a stale lock keeps its own. */

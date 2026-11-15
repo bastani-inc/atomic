@@ -1,4 +1,5 @@
-import { readFileSync, statSync, unlinkSync, writeFileSync } from "fs";
+import { statSync, unlinkSync, writeFileSync } from "fs";
+import { readFileOrUndefined, takeOverStaleLock } from "./stale-lock-file.js";
 
 const SOCKET_REPLACEMENT_LOCK_POLL_MS = 20;
 /** Locks and tokens get their pid as they are created, so one still unreadable after this was left by a crash. */
@@ -18,23 +19,26 @@ function isProcessAlive(pid: number): boolean {
 }
 
 function holderPid(path: string): number | undefined {
-  try {
-    const pid = Number.parseInt(readFileSync(path, "utf-8").trim(), 10);
-    return Number.isFinite(pid) ? pid : undefined;
-  } catch {
-    return undefined;
-  }
+  return pidOf(readFileOrUndefined(path));
 }
 
-type Holder = { readonly kind: "live" } | { readonly kind: "abandoned"; readonly pid: number | undefined };
+function pidOf(content: string | undefined): number | undefined {
+  const pid = Number.parseInt(content?.trim() ?? "", 10);
+  return Number.isFinite(pid) ? pid : undefined;
+}
+
+type Holder =
+  | { readonly kind: "live" }
+  | { readonly kind: "abandoned"; readonly pid: number | undefined; readonly content: string | undefined };
 
 /** A file whose pid is dead, or that stayed unreadable past the grace period, was left by a crashed broker. */
 function holderOf(path: string): Holder | undefined {
-  const pid = holderPid(path);
-  if (pid !== undefined) return isProcessAlive(pid) ? { kind: "live" } : { kind: "abandoned", pid };
+  const content = readFileOrUndefined(path);
+  const pid = pidOf(content);
+  if (pid !== undefined) return isProcessAlive(pid) ? { kind: "live" } : { kind: "abandoned", pid, content };
   try {
     return Date.now() - statSync(path).mtimeMs >= UNREADABLE_FILE_GRACE_MS
-      ? { kind: "abandoned", pid: undefined }
+      ? { kind: "abandoned", pid: undefined, content }
       : { kind: "live" };
   } catch {
     return undefined;
@@ -60,24 +64,6 @@ function createExclusively(path: string): boolean {
 }
 
 /**
- * Removes an abandoned lock without ever touching a live one. Only the waiter that creates the takeover token for
- * that holder may remove its lock, and while that lock exists no newer lock can be created, so the lock it removes is
- * still the abandoned one. An abandoned token is removed so a later waiter can take over.
- */
-function takeOverAbandonedLock(lockPath: string, abandonedPid: number | undefined): void {
-  const token = `${lockPath}.takeover-${abandonedPid ?? "unreadable"}`;
-  if (!createExclusively(token)) {
-    if (holderOf(token)?.kind === "abandoned") removeFile(token);
-    return;
-  }
-  try {
-    if (holderPid(lockPath) === abandonedPid) removeFile(lockPath);
-  } finally {
-    removeFile(token);
-  }
-}
-
-/**
  * Serializes stale-socket replacement across brokers, so a broker that probed the socket as stale cannot unlink a
  * socket another broker bound in the meantime: the holder re-probes before it unlinks. A live holder's lock is never
  * taken; an abandoned one is. Resolves with the release function, which removes the lock only while this process
@@ -91,7 +77,9 @@ export async function acquireSocketReplacementLock(
   while (!createExclusively(lockPath)) {
     const holder = holderOf(lockPath);
     if (holder?.kind === "abandoned") {
-      takeOverAbandonedLock(lockPath, holder.pid);
+      // Only the waiter holding the takeover token for that holder removes its lock, and only while it is still
+      // the abandoned one, so a lock written since is never removed.
+      takeOverStaleLock(lockPath, holder.content, `${lockPath}.takeover-${holder.pid ?? "unreadable"}`);
     } else if (holder?.kind === "live" && !announcedWait) {
       announcedWait = true;
       onWait?.();
