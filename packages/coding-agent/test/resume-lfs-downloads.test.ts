@@ -45,6 +45,15 @@ describe("the LFS downloads of a resume (#5099)", () => {
 		late.finish();
 		await downloads.ready("/late");
 		assert.equal(late.started, true);
+		// Every place is free again once all ended.
+		const again = Array.from({ length: LFS_DOWNLOAD_CONCURRENCY }, controlledDownload);
+		for (const [index, download] of again.entries()) downloads.start(`/again${index}`, download.pull);
+		await settle();
+		assert.deepEqual(
+			again.map((download) => download.started),
+			again.map(() => true),
+		);
+		for (const download of again) download.finish();
 	});
 
 	test("ready settles once a worktree's download ended, however it ended, and at once for one without (#5099)", async () => {

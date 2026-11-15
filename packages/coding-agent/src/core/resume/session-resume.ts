@@ -39,6 +39,7 @@ import {
 import { sameRemote } from "../worktree-snapshot/repository-identity.ts";
 import {
 	defaultWorktreeSnapshotStoreDir,
+	pendingLfsDownload,
 	type VerifyWorktreeOptions,
 	verifyWorktree,
 } from "../worktree-snapshot/restore.ts";
@@ -537,9 +538,8 @@ async function prepareResume(
 	if (restoredNow.size > 0 && options.blueprints !== "skip" && options.waitForBlueprint === "tools") {
 		const building = setUpCheckoutBlueprints(opened.sessionManager, restoredNow, storeDir, options, lfs);
 		const report = building.then(async (blueprints) => {
-			const downloads = await lfs.notices(restoredNow);
 			await buildSettled(opened.sessionManager);
-			return blueprintBuildReport({ ...blueprints, notices: [...downloads, ...blueprints.notices] });
+			return blueprintBuildReport(blueprints);
 		});
 		holdToolsUntilBuilt(opened.sessionManager.getSessionId(), report);
 		await recordBlueprintContext(opened.sessionManager, BLUEPRINT_BUILDING_CONTEXT);
@@ -556,15 +556,13 @@ async function prepareResume(
 		options.onProgress?.("Setting up the blueprints of restored worktrees");
 	}
 	const blueprints = await setUpCheckoutBlueprints(opened.sessionManager, restoredNow, storeDir, options, lfs);
-	// The warnings of downloads that ended after their restores were recorded come with the build's.
-	const settled = [...(await lfs.notices(restoredNow)), ...blueprints.notices];
-	notices.push(...settled);
+	notices.push(...blueprints.notices);
 	await recordBlueprintContext(opened.sessionManager, blueprints.context);
 	return {
 		status: "ready",
 		sessionManager: opened.sessionManager,
 		notices,
-		blueprintNotices: settled,
+		blueprintNotices: blueprints.notices,
 		missingRecordNotices: resumed.missingNotices,
 		blueprintContext: blueprints.context,
 	};
@@ -1013,27 +1011,47 @@ async function setUpCheckoutBlueprints(
 	restoredNow: ReadonlySet<string>,
 	storeDir: string,
 	options: PrepareSessionResumeOptions,
-	lfs?: LfsDownloads,
+	lfs = new LfsDownloads(),
 ): Promise<ResumedBlueprints> {
-	if (options.blueprints === "skip") return SKIPPED_BLUEPRINTS;
+	// The warnings of LFS downloads that end after their restores were recorded come with the build's (#5099).
+	if (options.blueprints === "skip") return { ...SKIPPED_BLUEPRINTS, notices: await lfs.notices(restoredNow) };
 	const restoredHere: BlueprintCheckout[] = [];
 	const earlier: BlueprintCheckout[] = [];
 	const inPlace: BlueprintCheckout[] = [];
 	for (const [root, snapshot] of currentWorktreeSnapshots(sessionManager)) {
 		const checkout = checkoutOf(sessionManager, root, snapshot);
-		if (restoredNow.has(root))
-			restoredHere.push(lfs === undefined ? checkout : { ...checkout, ready: lfs.ready(root) });
-		else if (isInside(storeDir, root)) earlier.push(checkout);
-		else if (await isDirectory(root)) inPlace.push(checkout);
+		if (restoredNow.has(root)) restoredHere.push({ ...checkout, ready: lfs.ready(root) });
+		else if (isInside(storeDir, root)) {
+			await resumePendingLfs(lfs, root, options.signal);
+			earlier.push({ ...checkout, ready: lfs.ready(root) });
+		} else if (await isDirectory(root)) inPlace.push(checkout);
 	}
 	const retried = await checkoutsNeedingRebuild(earlier, storeDir);
-	return setUpResumedBlueprints({
+	const blueprints = await setUpResumedBlueprints({
 		restored: [...restoredHere, ...retried],
 		inPlace,
 		earlier: earlier.filter((checkout) => !retried.includes(checkout)),
 		config: { ...options.blueprint, storeDir },
 		signal: options.signal,
 	});
+	const downloads = await lfs.notices([...restoredHere, ...earlier].map((checkout) => checkout.root));
+	return { ...blueprints, notices: [...downloads, ...blueprints.notices] };
+}
+
+/**
+ * Starts the LFS download a resume interrupted in the restored worktree at `root`, if it left one pending (#5099), so
+ * its blueprint runs on the files' content. A worktree whose mark cannot be checked is left as it is.
+ */
+async function resumePendingLfs(lfs: LfsDownloads, root: string, signal: AbortSignal | undefined): Promise<void> {
+	let pull: (() => Promise<readonly string[]>) | undefined;
+	try {
+		pull = await pendingLfsDownload(root, { signal });
+	} catch (error) {
+		signal?.throwIfAborted();
+		reportDebug("storage", "pending-lfs-unreadable", failureDebugFields(error));
+		return;
+	}
+	if (pull !== undefined) lfs.start(root, pull);
 }
 
 /**

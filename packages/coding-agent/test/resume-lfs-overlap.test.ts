@@ -93,6 +93,35 @@ function slowLfsAfterBuildStarts(command: string, args: readonly string[]): Spaw
 	return { command: process.execPath, args: ["-e", script, markers(), gate(), command, ...args] };
 }
 
+/** A `git lfs pull` that runs the real pull {@link SLOW_LFS_MS} late, and notes when it ended. */
+function slowLfs(command: string, args: readonly string[]): SpawnFault {
+	const script = `
+		const fs = require("node:fs");
+		const { spawnSync } = require("node:child_process");
+		const [markers, command, ...args] = process.argv.slice(1);
+		setTimeout(() => {
+			const pulled = spawnSync(command, args, { stdio: "inherit" });
+			fs.appendFileSync(markers, "lfs-done\\n");
+			process.exit(pulled.status ?? 1);
+		}, ${SLOW_LFS_MS});
+	`;
+	return { command: process.execPath, args: ["-e", script, markers(), command, ...args] };
+}
+
+/** A `git lfs pull` that notes it started and then never ends, as a download cut off by the process exiting would. */
+function hangingLfs(): SpawnFault {
+	const script = `require("node:fs").appendFileSync(process.argv[1], "lfs-started\\n"); setTimeout(() => {}, 600000);`;
+	return { command: process.execPath, args: ["-e", script, markers()] };
+}
+
+async function until(condition: () => boolean, what: string): Promise<void> {
+	const deadline = Date.now() + BUILD_START_CAP_MS;
+	while (!condition()) {
+		if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+	}
+}
+
 async function sqlStore(): Promise<SqlSessionStore> {
 	const database = await openNodeSqliteDatabase(sandbox.path("sessions.sqlite"));
 	const store = await SqlSessionStore.open(database);
@@ -155,6 +184,20 @@ async function recordedTwoRepositories(): Promise<SessionManager> {
 	return manager;
 }
 
+/** {@link recordedTwoRepositories}, resumed until B's LFS download started and then interrupted. */
+async function interruptedDuringLfs(): Promise<SessionManager> {
+	const manager = await recordedTwoRepositories();
+	sandbox.write(gate(), "");
+	lfs.fault = hangingLfs;
+	const interrupt = new AbortController();
+	const interrupted = prepareSessionResume(manager, { ...options(), signal: interrupt.signal });
+	await until(() => ran().includes("lfs-started"), "the LFS download to start");
+	interrupt.abort(new Error("interrupted"));
+	await assert.rejects(interrupted, /interrupted/);
+	assert.ok(!ran().some((line) => line.startsWith("started-b")), "B was never built");
+	return manager;
+}
+
 function options(waitForBlueprint?: "prompt" | "tools"): PrepareSessionResumeOptions {
 	return {
 		entryPoint: "switch-session",
@@ -207,7 +250,9 @@ describe("a multi-repository resume overlaps one repository's LFS download with 
 		"a repository's blueprint starts only once its own LFS files are in place (#5099)",
 		async () => {
 			const manager = await recordedTwoRepositories();
-			lfs.fault = slowLfsAfterBuildStarts;
+			// A's build does not wait, so B's would start while the download still runs, unless it waits for it.
+			sandbox.write(gate(), "");
+			lfs.fault = slowLfs;
 			const prepared = ready(await prepareSessionResume(manager, options()));
 
 			const order = ran();
@@ -280,6 +325,39 @@ describe("a multi-repository resume overlaps one repository's LFS download with 
 			const report = await awaitBlueprintReady(prepared.sessionManager.getSessionId());
 			const warning = formatWorktreeRestoreWarning({ code: "lfs-objects-unavailable", paths: ["data.bin"] });
 			assert.ok(report?.includes(`- ${warning}`), String(report));
+		},
+		OVERLAPPED_RESUME_TIMEOUT_MS,
+	);
+
+	test(
+		"a resume interrupted during the LFS download leaves it pending, and the next resume finishes it before the blueprint runs (#5099)",
+		async () => {
+			const manager = await interruptedDuringLfs();
+			lfs.fault = undefined;
+			const prepared = ready(await prepareSessionResume(manager, options()));
+			assert.ok(
+				ran().includes(`started-b ${LFS_CONTENT}`),
+				`B's blueprint read the LFS content: ${ran().join(", ")}`,
+			);
+			assert.deepEqual(
+				prepared.notices.filter((notice) => /LFS/.test(notice.message) && notice.type === "warning"),
+				[],
+			);
+		},
+		OVERLAPPED_RESUME_TIMEOUT_MS,
+	);
+
+	test(
+		"the next resume warns when the LFS download an interrupted resume left pending still fails (#5099)",
+		async () => {
+			const manager = await interruptedDuringLfs();
+			lfs.fault = () => failingCommand(1, "batch request: missing protocol");
+			const prepared = ready(await prepareSessionResume(manager, options()));
+			const warning = formatWorktreeRestoreWarning({ code: "lfs-objects-unavailable", paths: ["data.bin"] });
+			assert.deepEqual(
+				prepared.notices.filter((notice) => notice.message === warning),
+				[{ type: "warning", message: warning }],
+			);
 		},
 		OVERLAPPED_RESUME_TIMEOUT_MS,
 	);

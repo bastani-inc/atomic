@@ -139,8 +139,10 @@ describe("resume timings recorder (#4748)", () => {
 		assert.deepEqual(Object.keys(beforeDownload.phases), ["verify"], "the download has not run yet");
 
 		assert.equal(await later(), "pulled");
+		// A second run, as of a second deferred phase, ends later still: the restore lasts until the last one ended.
+		assert.equal(await later(), "pulled");
 		const restore = recorder.finish().restores[0]!;
-		assert.ok(restore.phases.lfs! >= 4 * PHASE_SLEEP_MS - 1, `LFS ${restore.phases.lfs} ms`);
+		assert.ok(restore.phases.lfs! >= 8 * PHASE_SLEEP_MS - 2, `LFS ${restore.phases.lfs} ms`);
 		assert.ok(restore.ms >= restore.phases.lfs! + restore.phases.verify!, `restore ${restore.ms} ms`);
 		const outside = deferRestorePhase("lfs", async () => "ran");
 		assert.equal(await outside(), "ran", "outside a restore it only runs what it wraps");
