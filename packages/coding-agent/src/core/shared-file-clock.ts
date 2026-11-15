@@ -16,10 +16,6 @@ export function sharedFilesystemNow(directory: string): number {
 	} catch {
 		return Date.now();
 	} finally {
-		try {
-			rmSync(probe, { force: true });
-		} catch {
-			// A probe that cannot be removed is left behind; it is not a marker.
-		}
+		rmSync(probe, { force: true });
 	}
 }
