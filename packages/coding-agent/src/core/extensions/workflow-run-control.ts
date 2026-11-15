@@ -144,6 +144,25 @@ export interface WorkflowRunControlOutcome {
 	readonly failedRuns?: readonly WorkflowRunControlFailedRun[];
 }
 
+/** One top-level run as the agent panel and `/tasks` list it, read from the session's live run state. */
+export interface WorkflowPanelRun {
+	readonly runId: string;
+	readonly name: string;
+	readonly status: WorkflowRunStatus;
+	/** A stage or the run waits on a human-input prompt. */
+	readonly awaitingInput: boolean;
+	/** The question it waits on, when exactly one is known. */
+	readonly question?: string;
+	readonly elapsedMs: number;
+	readonly endedAt?: number;
+	readonly stagesDone: number;
+	readonly stagesTotal: number;
+	/** The running (or waiting) stage's name, when one is. */
+	readonly currentStage?: string;
+	/** A failed run's reason, shortened for one line. */
+	readonly reason?: string;
+}
+
 /** Typed run management for the workflow runs owned by one session, as registered by the workflows extension. */
 export interface WorkflowRunControl {
 	listRuns(filter?: WorkflowRunListFilter): Promise<readonly WorkflowRunSummary[]>;
@@ -167,6 +186,12 @@ export interface WorkflowRunControl {
 	 * It never times out; race it against your own deadline.
 	 */
 	waitForSettled(runId: string): Promise<void>;
+	/** The session's top-level runs for the agent panel, synchronously. Optional: a host without it shows no runs. */
+	panelRuns?(): readonly WorkflowPanelRun[];
+	/** Calls `listener` when {@link panelRuns} may have changed; returns the unsubscribe. */
+	subscribePanelRuns?(listener: () => void): () => void;
+	/** Opens a run's graph in the interactive UI, as Enter on its panel row does. */
+	openRun?(runId: string): void;
 }
 
 /** `session.workflows`: run management plus observation of the workflow runs owned by one session. */

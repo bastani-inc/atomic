@@ -10,7 +10,7 @@ import { deriveGraphTheme } from "../tui/graph-theme.js";
 import { registerInlineFormRenderer } from "../tui/inline-form-overlay.js";
 import type { GraphOverlayPort } from "../tui/overlay-adapter.js";
 import { buildGraphOverlayAdapter } from "../tui/overlay-adapter.js";
-import { installStoreWidget, installToolExecutionHooks, scrollStoreWidget } from "../tui/store-widget-installer.js";
+import { installToolExecutionHooks } from "../tui/tool-execution-hooks.js";
 import type { PostMortemHandleResolution } from "../tui/workflow-attach-pane-types.js";
 import { adoptWorkflowSessionRunState } from "./adopt-session-run-state.js";
 import { registerCompletedStageIntercomAskRouter } from "./completed-stage-intercom-ask.js";
@@ -71,18 +71,6 @@ function registerWorkflowShortcut(pi: ExtensionAPI, overlay: GraphOverlayPort, s
 	pi.registerShortcut("F2", {
 		description: "Open workflow orchestrator pane",
 		handler: openPane,
-	});
-	pi.registerShortcut("alt+pageUp", {
-		description: "Scroll background workflows up",
-		keybinding: "app.workflows.scrollUp",
-		preferEditor: true,
-		handler: () => scrollStoreWidget(store, -1),
-	});
-	pi.registerShortcut("alt+pageDown", {
-		description: "Scroll background workflows down",
-		keybinding: "app.workflows.scrollDown",
-		preferEditor: true,
-		handler: () => scrollStoreWidget(store, 1),
 	});
 }
 
@@ -181,7 +169,6 @@ function factory(pi: ExtensionAPI): void {
 	});
 	const overlay = buildWorkflowOverlay(pi, owner, postMortemHandleResolver, () => adapters.sessionStore);
 	const workflowCommands = new Map<string, WorkflowCommandHandler>();
-	const storeWidgetRef: { current: (() => void) | null } = { current: null };
 	const intercomControlRef: { current: (() => void) | null } = { current: null };
 	const executeWorkflowTool = makeExecuteWorkflowTool(
 		(ctx) => runtimeState.runtimeForContext(ctx),
@@ -207,6 +194,8 @@ function factory(pi: ExtensionAPI): void {
 				const runtime = runtimeState.runtimeForContext(sessionContext);
 				return (await runtime.prepareDurableCatalog?.()) ?? { resumable: [], completed: [] };
 			},
+			// Enter on a run's row in the agent panel or /tasks opens its graph.
+			openRun: (runId) => overlay.open(runId, overlaySurfaceFromContext(sessionContext)),
 		}),
 	);
 	const executeWorkflowToolWithAutoAttach: typeof executeWorkflowTool = async (args, ctx, signal, onRunAccepted) => {
@@ -245,13 +234,11 @@ function factory(pi: ExtensionAPI): void {
 	registerWorkflowMessageRenderers(pi);
 	registerWorkflowLifecycleHandlers(pi, {
 		runtimeState,
-		storeWidgetRef,
 		intercomControlRef,
 		disposeObservation,
 		runState,
 	});
 
-	storeWidgetRef.current = installStoreWidget(pi, store);
 	installToolExecutionHooks(pi, store);
 	registerWorkflowShortcut(pi, overlay, store);
 	registerIntercomControl(pi, intercomControlRef, store);

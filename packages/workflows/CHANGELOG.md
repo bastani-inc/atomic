@@ -24,6 +24,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - The `keepContext` helper documentation and the workflow tool's guidance now explain that protection has a budget: restating a constraint adds no protection, and old duplicate or over-budget spans can be released and compacted. Tag constraints, not material ([#4794](https://github.com/bastani-inc/atomic/issues/4794))
 - Worker pools on PostgreSQL no longer take turns across machines for their busiest writes. Claiming a child, heartbeats, checkpoints and completing a child lock only the rows they change, and a claim skips work another host is taking, so hosts claim and record in parallel. Every guarantee holds as before: a child is held by one worker at a time, a replaced worker's writes are refused, and each checkpoint is recorded once in order. With 32 hosts of 4 workers on one PostgreSQL 16 server, claims ran 8 to 13 times faster and checkpoint commits about 1.5 times faster, and the slowest claims and commits take a third to half as long. SQLite and libSQL pools are unchanged ([#5102](https://github.com/bastani-inc/atomic/issues/5102))
 - Ctrl+X no longer navigates workflow views, and Esc no longer closes an idle stage chat. In a stage chat, ← on an empty prompt returns to the graph (Esc on a choice or yes/no question); in the graph, which has no prompt, Esc pops one level: it closes the stage switcher or a tool detail, then returns to main chat, as ← does on a node with nothing to its left. In a stage chat Esc only interrupts. **Migration:** use ← in a stage chat and Esc in the graph where you used Ctrl+X ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- An attached stage chat's composer has heavy accent rules naming `stage · <name> · <state>` and a `Message <stage>…` placeholder (`Answer <stage>…` while it waits on a question), matching a subagent's chat ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 
 ### Fixed
 
@@ -93,6 +94,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Fixed the workflow session picker showing no selected row when the selected run left the list and the list got shorter. The selection now moves to the nearest remaining run, so Enter acts on it without first moving the cursor.
 - Fixed `/workflow` commands whose arguments start after a tab or on a new line not being run ([#5192](https://github.com/bastani-inc/atomic/issues/5192))
 
+
+### Removed
+
+- The below-editor `BACKGROUND` workflow list and its Alt+K/J scrolling. Each run now has a row in the main chat's agent panel with its stage progress, current stage and any waiting question; Enter on it opens the graph ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 
 ## [0.9.86] - 2026-11-14
 

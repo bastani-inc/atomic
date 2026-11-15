@@ -1,0 +1,290 @@
+import assert from "node:assert/strict";
+import { stripVTControlCharacters } from "node:util";
+import { matchesKey, visibleWidth } from "@bastani/atomic-tui";
+import { test } from "vitest";
+import type { WorkflowPanelRun } from "../../packages/coding-agent/src/core/extensions/workflow-run-control.js";
+import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
+import { bindOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
+import {
+	AGENT_PANEL_DROP_MS,
+	AGENT_PANEL_FADE_MS,
+	AGENT_PANEL_MAIN_ID,
+	AgentPanelFocus,
+	AgentPanelModel,
+	type AgentPanelRow,
+	type AgentPanelStyle,
+	formatPanelElapsed,
+	formatPanelTokens,
+	renderAgentPanelHint,
+	renderAgentPanelRows,
+} from "../../packages/coding-agent/src/modes/interactive/components/agent-panel.js";
+import { applyAttachedComposer } from "../../packages/coding-agent/src/modes/interactive/components/input-label.js";
+import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
+import { agentPanelRows, workflowPanelRow } from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.js";
+import { taskFixture } from "../helpers/task-projection.js";
+
+const plain: AgentPanelStyle = {
+	dim: (text) => text,
+	text: (text) => text,
+	muted: (text) => text,
+	border: (text) => text,
+	bold: (text) => text,
+	accent: (text) => text,
+	success: (text) => text,
+	error: (text) => text,
+	warning: (text) => text,
+};
+
+const ROWS: AgentPanelRow[] = [
+	{
+		id: "task:a",
+		kind: "agent",
+		state: "running",
+		name: "worker",
+		task: "fix shipping batches",
+		elapsedMs: 41 * 60_000,
+		tokens: 96_100,
+	},
+	{
+		id: "task:b",
+		kind: "agent",
+		state: "running",
+		name: "debugger",
+		task: "#5220 spawn lock",
+		elapsedMs: 18 * 60_000,
+		tokens: 87_400,
+	},
+	{
+		id: "run:r",
+		kind: "workflow",
+		state: "running",
+		name: "ralph",
+		task: "stage implement",
+		elapsedMs: 12 * 60_000,
+		progress: { done: 3, total: 5 },
+	},
+	{ id: "task:c", kind: "agent", state: "done", name: "worker", task: "picker clamp", elapsedMs: 6 * 60_000 },
+];
+
+test("panel rows show glyph, name, task, elapsed and tokens, right-aligned at 160 and 80 columns (#5224)", () => {
+	const wide = renderAgentPanelRows(ROWS, 160, plain);
+	assert.deepEqual(
+		wide.map((line) => line.replace(/ {2,}/g, "  ").trimEnd()),
+		[
+			"  ∀ worker  fix shipping batches  41m · ↓ 96.1k tokens",
+			"  ∀ debugger  #5220 spawn lock  18m · ↓ 87.4k tokens",
+			"  ∀ ralph  ▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱  3/5 stages · implement  12m",
+			"  ✓ worker  picker clamp  done · 6m",
+		],
+	);
+	for (const width of [160, 80]) {
+		const lines = renderAgentPanelRows(ROWS, width, plain);
+		assert.ok(lines.every((line) => visibleWidth(line) === width || line.endsWith("6m")));
+		assert.ok(lines.every((line) => visibleWidth(line) <= width));
+	}
+	const narrow = renderAgentPanelRows(ROWS, 56, plain);
+	assert.match(narrow[0]!, /41m$/, "narrow rows drop tokens");
+	assert.match(narrow[2]!, /stage implement/, "narrow rows drop the stage bar");
+	const tiny = renderAgentPanelRows(ROWS, 30, plain);
+	assert.deepEqual(tiny[0], "  ∀ worker", "very narrow rows keep the glyph and name");
+});
+
+test("the unfocused panel shows four rows and folds the rest; empty renders nothing (#5224)", () => {
+	const many = Array.from({ length: 6 }, (_, index) => ({ ...ROWS[0]!, id: `task:${index}` }));
+	const lines = renderAgentPanelRows(many, 100, plain);
+	assert.equal(lines.length, 5);
+	assert.equal(lines.at(-1), "  +2 more");
+	assert.deepEqual(renderAgentPanelRows([], 100, plain), []);
+});
+
+test("rows sort needing input, running, then finished; finished rows fade, then leave unless kept (#5224)", () => {
+	let now = 0;
+	const model = new AgentPanelModel(() => now);
+	const rows: AgentPanelRow[] = [
+		{ ...ROWS[3]! },
+		{ ...ROWS[0]! },
+		{ id: "run:q", kind: "workflow", state: "input", name: "ralph", task: "approve the plan?" },
+	];
+	assert.deepEqual(
+		model.rows(rows).map((row) => row.id),
+		["run:q", "task:a", "task:c"],
+	);
+	assert.equal(model.faded(rows[0]!), false);
+	now += AGENT_PANEL_FADE_MS;
+	assert.equal(model.faded(rows[0]!), true, "a finished row reads dim after a while");
+	now += AGENT_PANEL_DROP_MS;
+	assert.deepEqual(
+		model.rows(rows).map((row) => row.id),
+		["run:q", "task:a"],
+	);
+	const finishedRun: AgentPanelRow = { ...ROWS[2]!, id: "run:done", state: "done" };
+	model.rows([finishedRun]);
+	now += AGENT_PANEL_DROP_MS * 2;
+	assert.deepEqual(
+		model.rows([finishedRun], () => true).map((row) => row.id),
+		["run:done"],
+		"a finished run stays until it has been viewed",
+	);
+});
+
+function focusFixture(now: () => number = () => 0) {
+	const calls: string[] = [];
+	const focus = new AgentPanelFocus(
+		new KeybindingsManager(),
+		{
+			open: (row) => calls.push(`open ${row.id}`),
+			stop: (row) => calls.push(`stop ${row.id}`),
+			dismiss: (row) => calls.push(`dismiss ${row.id}`),
+			close: () => calls.push("close"),
+		},
+		now,
+	);
+	focus.update(ROWS);
+	focus.enter();
+	const press = (data: string) => focus.handleInput(data, (input, key) => matchesKey(input, key as "up"));
+	return { focus, calls, press };
+}
+
+test("the focused panel: ↑↓ select through main, enter or → opens, esc and ↑ past main return to the prompt (#5224)", () => {
+	const { focus, calls, press } = focusFixture();
+	assert.equal(focus.selectedId, "task:a", "focus starts on the first row below main");
+	press("\x1b[B");
+	assert.equal(focus.selectedId, "task:b");
+	press("\r");
+	press("\x1b[C");
+	assert.deepEqual(calls, ["open task:b", "open task:b"]);
+	press("\x1b[A");
+	press("\x1b[A");
+	assert.equal(focus.selectedId, AGENT_PANEL_MAIN_ID);
+	press("\r");
+	assert.equal(calls.at(-1), "close", "Enter on main returns to the prompt");
+	press("\x1b[A");
+	assert.equal(calls.at(-1), "close", "↑ past main returns to the prompt");
+	press("\x1b");
+	assert.equal(calls.at(-1), "close");
+	const lines = renderAgentPanelRows(ROWS, 80, plain, { selectedId: "task:b" }).map((line) =>
+		stripVTControlCharacters(line).trimEnd(),
+	);
+	assert.equal(lines[0], "  ● main");
+	assert.match(lines[2]!, /^❯ ∀ debugger/);
+});
+
+test("x stops a running row only on a second press within three seconds and dismisses a finished one (#5224)", () => {
+	let now = 0;
+	const { focus, calls, press } = focusFixture(() => now);
+	press("x");
+	assert.deepEqual(calls, []);
+	assert.equal(
+		stripVTControlCharacters(renderAgentPanelHint(focus, 80, plain, new KeybindingsManager())),
+		"  Press x again within 3s to stop worker",
+	);
+	now += 2000;
+	press("x");
+	assert.deepEqual(calls, ["stop task:a"]);
+	press("x");
+	now += 3500;
+	press("x");
+	assert.deepEqual(calls, ["stop task:a"], "a late second press arms again");
+	press("\x1b[B");
+	press("\x1b[B");
+	press("\x1b[B");
+	assert.equal(focus.selectedId, "task:c");
+	press("x");
+	assert.equal(calls.at(-1), "dismiss task:c");
+	assert.equal(
+		stripVTControlCharacters(renderAgentPanelHint(focus, 160, plain, new KeybindingsManager())),
+		"  ↑↓ select · enter/→ open · x dismiss · esc back to prompt · ? keys",
+	);
+	press("?");
+	assert.equal(focus.helpOpen, true);
+	press("x");
+	assert.equal(calls.at(-1), "dismiss task:c", "keys wait while the overlay is open");
+	press("\x1b");
+	assert.equal(focus.helpOpen, false);
+});
+
+test("panel time and token formats (#5224)", () => {
+	assert.equal(formatPanelElapsed(9_000), "9s");
+	assert.equal(formatPanelElapsed(41 * 60_000), "41m");
+	assert.equal(formatPanelElapsed(91 * 60_000), "1h 31m");
+	assert.equal(formatPanelTokens(812), "812");
+	assert.equal(formatPanelTokens(96_100), "96.1k");
+	assert.equal(formatPanelTokens(1_250_000), "1.3M");
+});
+
+const RUN: WorkflowPanelRun = {
+	runId: "r1",
+	name: "ralph",
+	status: "running",
+	awaitingInput: false,
+	elapsedMs: 720_000,
+	stagesDone: 3,
+	stagesTotal: 5,
+	currentStage: "implement",
+};
+
+test("workflow runs map to panel rows by state, question and progress (#5224)", () => {
+	assert.deepEqual(workflowPanelRow(RUN), {
+		id: "run:r1",
+		kind: "workflow",
+		state: "running",
+		name: "ralph",
+		task: "stage implement",
+		elapsedMs: 720_000,
+		progress: { done: 3, total: 5 },
+	});
+	assert.equal(
+		workflowPanelRow({ ...RUN, awaitingInput: true, question: "approve the plan?" }).task,
+		"approve the plan?",
+	);
+	assert.equal(workflowPanelRow({ ...RUN, awaitingInput: true }).state, "input");
+	assert.equal(
+		workflowPanelRow({ ...RUN, status: "failed", endedAt: 1, reason: "tests failed" }).task,
+		"tests failed",
+	);
+	assert.equal(workflowPanelRow({ ...RUN, status: "completed", endedAt: 1 }).state, "done");
+	assert.equal(workflowPanelRow({ ...RUN, status: "paused" }).state, "paused");
+	assert.equal(workflowPanelRow({ ...RUN, status: "cancelled", endedAt: 1 }).state, "stopped");
+});
+
+test("the panel lists a session's workflow runs and background tasks together, newest first (#5224)", async () => {
+	initTheme("dark");
+	const fixture = taskFixture();
+	try {
+		await fixture.start("first task");
+		await fixture.start("second task");
+		const session = {
+			workflows: {
+				panelRuns: () => [RUN],
+				subscribePanelRuns: () => () => {},
+				openRun: () => {},
+				quit: async () => ({ action: "quit" as const, runId: "r1", status: "ok" as const, message: "" }),
+			},
+		};
+		bindOwnerTaskStore(session, fixture.store);
+		assert.deepEqual(
+			agentPanelRows(session).map((row) => `${row.name}:${row.task}`),
+			["ralph:stage implement", "worker:second task", "worker:first task"],
+		);
+	} finally {
+		await fixture.dispose();
+	}
+});
+
+test("an attached composer has accent rules naming its target and a placeholder (#5224)", () => {
+	const style = { accent: (text: string) => text, text: (text: string) => text, dim: (text: string) => text };
+	const editor = ["─".repeat(80), `❯ ${" ".repeat(78)}`, "─".repeat(80)];
+	const lines = applyAttachedComposer(style, "debugger · #5220 spawn lock · 18m", "Message debugger…", editor).map(
+		(line) => stripVTControlCharacters(line),
+	);
+	assert.equal(
+		lines[0],
+		`${"━".repeat(80 - " debugger · #5220 spawn lock · 18m ".length - 1)} debugger · #5220 spawn lock · 18m ━`,
+	);
+	assert.equal(lines[1], "❯ Message debugger…");
+	assert.equal(lines[2], "━".repeat(80));
+	const typed = applyAttachedComposer(style, "x", "Message debugger…", ["─".repeat(80), "❯ hi", "─".repeat(80)]);
+	assert.equal(typed[1], "❯ hi", "typed text replaces the placeholder");
+	const narrow = applyAttachedComposer(style, "debugger", undefined, ["─".repeat(30), "❯", "─".repeat(30)]);
+	assert.equal(narrow[0], "━".repeat(30), "narrow terminals keep the rule without the label");
+});

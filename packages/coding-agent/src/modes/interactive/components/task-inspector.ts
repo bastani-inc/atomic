@@ -23,7 +23,8 @@ import {
 	taskDetailLabels,
 	taskDetailSummary,
 } from "./task-detail.js";
-import { dismissedTasks, type TaskListSection, taskListSections } from "./task-list.js";
+import { dismissedTasks } from "./task-dismissal.ts";
+import { type TaskListSection, taskListSections } from "./task-list.js";
 import { TaskNavigation } from "./task-navigation.js";
 import { taskDisplayText, taskLabel, taskMetricsText, taskModelText, taskStatusAppearance } from "./task-row.js";
 import {
@@ -175,6 +176,19 @@ export class TaskInspector implements Component {
 	private readonly close: () => void;
 	open(id?: TaskId): void {
 		this.navigation.open(id);
+	}
+	/** Opened from the agent panel straight into this task's chat: back leaves to where it was opened from. */
+	private chatOnly = false;
+	/**
+	 * Opens a task's chat directly, as Enter on its agent-panel row does. ← on its empty prompt closes the inspector,
+	 * one level back to the main chat, instead of showing the task's detail page.
+	 */
+	openChat(id: TaskId): void {
+		this.navigation.open(id);
+		if (this.navigation.selectedTaskId !== id) return;
+		this.chatOnly = true;
+		this.navigation.focus = { kind: "detail" };
+		this.openTranscript();
 	}
 	private orderedSections(): TaskListSection[] {
 		const dismissed = dismissedTasks(this.store);
@@ -388,6 +402,10 @@ export class TaskInspector implements Component {
 		if (transcript.handlesBack()) return transcript.handleInput(data);
 		const keys = getKeybindings();
 		if (keys.matches(data, "app.nav.back") && !transcript.hasDraft()) {
+			if (this.chatOnly) {
+				this.close();
+				return true;
+			}
 			this.closeTranscript();
 			this.detailGeneration++;
 			this.scroll = 0;
@@ -438,11 +456,15 @@ export class TaskInspector implements Component {
 	private renderTranscriptPage(width: number, budget: number, transcript: TaskTranscriptPage): string[] {
 		const task = this.selected();
 		const fitWidth = (line: string) => truncateToWidth(line, Math.max(1, width));
-		const header = [
-			theme.bold(`Transcript · ${task ? taskDisplayText(taskLabel(task)) : "Task"}`),
-			task ? taskDetailSummary(task) : "",
-			theme.fg("borderMuted", "─".repeat(Math.max(0, width))),
-		].map(fitWidth);
+		// Opened from the agent panel, a subagent's chat is named by its composer's rule; the page needs no title.
+		const header =
+			this.chatOnly && task?.kind === "agent"
+				? []
+				: [
+						theme.bold(`Transcript · ${task ? taskDisplayText(taskLabel(task)) : "Task"}`),
+						task ? taskDetailSummary(task) : "",
+						theme.fg("borderMuted", "─".repeat(Math.max(0, width))),
+					].map(fitWidth);
 		const notes = [transcript.status, this.status].filter(Boolean).join(" · ");
 		const style = themedNavKeyStyle();
 		if (this.helpOpen)
@@ -450,7 +472,12 @@ export class TaskInspector implements Component {
 				...header,
 				...renderNavKeyOverlay("keys · task chat", TASK_CHAT_OVERLAY_KEYS, width, style, getKeybindings()),
 			].slice(0, Math.max(1, budget));
-		const hint = renderNavHintLine(taskChatKeys("back", transcript.interruptible()), width, style, getKeybindings());
+		const hint = renderNavHintLine(
+			taskChatKeys(this.chatOnly ? "main chat" : "back", transcript.interruptible()),
+			width,
+			style,
+			getKeybindings(),
+		);
 		const footer = [...(notes ? [fitWidth(theme.fg("dim", notes))] : []), hint];
 		const failure = this.failureNotice ? [fitWidth(theme.fg("warning", this.failureNotice))] : [];
 		const statusRows = this.taskStatusRows(width);

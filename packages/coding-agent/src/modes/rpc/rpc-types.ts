@@ -116,6 +116,7 @@ export type RpcCommand =
 	| { id?: string; type: "get_workflow_run_summary"; runId: string }
 	| { id?: string; type: "open_task_inspector"; taskId?: string }
 	| { id?: string; type: "stop_all_background" }
+	| { id?: string; type: "open_agent_panel" }
 
 	// Model
 	| { id?: string; type: "set_model"; provider: string; modelId: string; persist?: boolean }
@@ -314,6 +315,7 @@ export type RpcResponse =
 	  }
 	| { id?: string; type: "response"; command: "get_workflow_run_summary"; success: true; data: WorkflowRunDetail }
 	| { id?: string; type: "response"; command: "open_task_inspector"; success: true }
+	| { id?: string; type: "response"; command: "open_agent_panel"; success: true }
 	| {
 			id?: string;
 			type: "response";

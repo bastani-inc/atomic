@@ -195,14 +195,6 @@
       "$ref": "#/$defs/KeybindingValue",
       "description": "Scroll viewport to bottom"
     },
-    "app.workflows.scrollUp": {
-      "$ref": "#/$defs/KeybindingValue",
-      "description": "Scroll workflows up"
-    },
-    "app.workflows.scrollDown": {
-      "$ref": "#/$defs/KeybindingValue",
-      "description": "Scroll workflows down"
-    },
     "app.interrupt": {
       "$ref": "#/$defs/KeybindingValue",
       "description": "Cancel or abort"
@@ -250,10 +242,6 @@
     "app.nav.back": {
       "$ref": "#/$defs/KeybindingValue",
       "description": "Go back one level from an empty prompt"
-    },
-    "app.nav.mainChat": {
-      "$ref": "#/$defs/KeybindingValue",
-      "description": "Return from the workflow graph to the main chat"
     },
     "app.list.open": {
       "$ref": "#/$defs/KeybindingValue",

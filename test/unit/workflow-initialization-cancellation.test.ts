@@ -13,7 +13,6 @@ import { runDetached } from "../../packages/workflows/src/runs/background/runner
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { renderStatusList } from "../../packages/workflows/src/tui/status-list.js";
-import { renderWidgetLines } from "../../packages/workflows/src/tui/widget.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
@@ -75,10 +74,6 @@ test("quit controls a node-less workflow await without inventing graph nodes or 
 	assert.deepEqual(store.runs()[0]?.stages, []);
 	assert.deepEqual(store.runs()[0]?.toolNodes, []);
 	assert.doesNotMatch(renderStatusList(store.runs()), /resumable via/);
-	assert.doesNotMatch(
-		renderWidgetLines({ runs: [...store.runs()], notices: [], version: 1 }).join("\n"),
-		/resumable via/,
-	);
 	assert.equal(store.runs()[0]?.status, "paused");
 });
 

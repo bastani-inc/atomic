@@ -299,3 +299,12 @@ export function atomicWorkingFrame(now = Date.now()): number {
 	if (process.env.ATOMIC_REDUCED_MOTION === "1") return 3;
 	return Math.floor(now / ATOMIC_WORKING_FRAME_MS) % ATOMIC_WORKING_FRAMES.length;
 }
+
+/** The working ∀ alone at `frame`, coloured as the working line colours it, for rows that show a running item. */
+export function atomicWorkingGlyph(frame = atomicWorkingFrame()): string {
+	const reducedMotion = process.env.ATOMIC_REDUCED_MOTION === "1";
+	const frameIndex = reducedMotion ? 3 : normalizedFrameIndex(frame);
+	const glyph = ATOMIC_WORKING_FRAMES[frameIndex];
+	const colored = colorizePhase(frameIndex, glyph);
+	return !reducedMotion && ATOMIC_WORKING_BOLD_PHASES[frameIndex] ? emphasize(colored) : colored;
+}

@@ -1132,6 +1132,7 @@ export {
 export {
 	ArminComponent,
 	AssistantMessageComponent,
+	applyAttachedComposer,
 	applyInputLabelToEditorTopRule,
 	BashExecutionComponent,
 	BorderedLoader,

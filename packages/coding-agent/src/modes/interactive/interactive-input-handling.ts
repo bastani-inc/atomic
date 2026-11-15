@@ -1,3 +1,4 @@
+import { isKeyRelease } from "@bastani/atomic-tui";
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { getOwnerTaskStore } from "../../core/tasks/owner-store.js";
 import { stopAllBackgroundWork } from "../../core/tasks/stop-all.ts";
@@ -13,6 +14,7 @@ import {
 	remoteEngineProxyOwner,
 	remoteProxyHandlesCtrlC,
 } from "../interactive-engine/remote-input-ownership.ts";
+import { agentPanelHasRows, showAgentPanel } from "../rpc/agent-panel-bridge.ts";
 import { isRpcRequestAcceptedFailure } from "../rpc/rpc-transport-error.ts";
 import { showTaskInspector } from "../rpc/task-ui-bridge.js";
 import { StartupIdentityComponent } from "./components/startup-identity.ts";
@@ -73,6 +75,27 @@ InteractiveModeBase.prototype.setupKeyHandlers = async function (this: Interacti
 			showWarning: (message) => this.showWarning(message),
 		}),
 	);
+	// ↓ on an empty prompt focuses the agent panel below it.
+	this.addTuiInputListener((data) => {
+		if (isKeyRelease(data) || !this.keybindings.matches(data, "app.agents.focus")) return undefined;
+		if (this.ui.hasOverlay() || !this.editorContainer.children.includes(this.editor)) return undefined;
+		if (this.editor.getText() !== "" || this.isBashMode) return undefined;
+		if (this.runtimeHost instanceof IsolatedInteractiveRuntime) {
+			void this.runtimeHost.openAgentPanel().catch((error: Error) => this.showWarning(error.message));
+			return { consume: true };
+		}
+		if (!agentPanelHasRows(this.session)) return undefined;
+		const ui = this.createExtensionUIContext();
+		void showAgentPanel(this.session, {
+			custom: (factory, options) => this.showExtensionCustom(factory, options),
+			getChatRenderSettings: ui.getChatRenderSettings,
+			getFooterDataProvider: ui.getFooterDataProvider,
+			getToolsExpanded: ui.getToolsExpanded,
+			setToolsExpanded: ui.setToolsExpanded,
+			notify: ui.notify,
+		}).catch((error: Error) => this.showWarning(error.message));
+		return { consume: true };
+	});
 	// Set up handlers on defaultEditor - they use this.editor for text access
 	// so they work correctly regardless of which editor is active
 	this.defaultEditor.onEscape = () => {

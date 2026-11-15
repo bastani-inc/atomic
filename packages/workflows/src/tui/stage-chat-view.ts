@@ -139,7 +139,12 @@ export class StageChatView implements Component, Focusable {
 		const usageLines = chatChromeHidden ? [] : this.chatHost.renderUsage(w);
 		const editorLines = chatChromeHidden
 			? []
-			: injectStageLabelIntoEditorTopRule(ctx, currentStage(ctx)?.name, this.chatHost.renderEditor(w));
+			: injectStageLabelIntoEditorTopRule(
+					ctx,
+					currentStage(ctx)?.name,
+					this.chatHost.renderEditor(w),
+					currentStage(ctx),
+				);
 		const footerLines = customUiActive
 			? []
 			: promptActive

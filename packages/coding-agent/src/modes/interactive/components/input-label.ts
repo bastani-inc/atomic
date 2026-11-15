@@ -115,3 +115,74 @@ export function applyInputLabelToEditorTopRule(
 	if (decorated !== undefined) lines[0] = decorated;
 	return lines;
 }
+
+/** Colours of an attached composer: its rules in the accent, its label bold, its placeholder dim. */
+export interface AttachedComposerStyle {
+	accent(text: string): string;
+	text(text: string): string;
+	dim(text: string): string;
+}
+
+const HEAVY_RULE = "━";
+const PROMPT_GLYPH = "❯";
+
+/**
+ * The composer of a chat attached to a subagent or a workflow stage, so it never reads as the main chat's: heavy accent
+ * rules above and below the prompt, the top one ending in `label` (`debugger · #5220 spawn lock · 18m`), and, while
+ * nothing is typed, `placeholder` (`Message debugger…`) after the cursor. Call it on the editor's rendered lines. A
+ * plain or scrolled rule is replaced; any other first or last line is left as it is. Terminals narrower than
+ * {@link INPUT_LABEL_MIN_COLUMNS} keep the heavy rules without the label.
+ */
+export function applyAttachedComposer(
+	style: AttachedComposerStyle,
+	label: string | undefined,
+	placeholder: string | undefined,
+	editorLines: readonly string[],
+): string[] {
+	const lines = [...editorLines];
+	const top = lines[0];
+	const isRule = (line: string) => {
+		const plain = stripAnsi(line);
+		return /^─+$/.test(plain) || EDITOR_OVERFLOW_RE.test(plain);
+	};
+	// The editor may render rows below its bottom rule (an autocomplete list); the bottom rule is the last rule.
+	let bottomIndex = lines.length - 1;
+	while (bottomIndex > 0 && !isRule(lines[bottomIndex]!)) bottomIndex--;
+	if (top === undefined || bottomIndex < 1) return lines;
+	const width = visibleWidth(stripAnsi(top));
+	if (isRule(top)) {
+		const overflow = EDITOR_OVERFLOW_RE.exec(stripAnsi(top))?.[2];
+		const shown =
+			label === undefined || width < INPUT_LABEL_MIN_COLUMNS
+				? undefined
+				: truncateToWidth(
+						label,
+						Math.max(1, width - (overflow === undefined ? 0 : visibleWidth(overflow)) - 6),
+						"…",
+					);
+		const tail = shown === undefined ? "" : ` ${shown} `;
+		const fill = Math.max(0, width - visibleWidth(tail) - 1 - (overflow === undefined ? 0 : visibleWidth(overflow)));
+		lines[0] =
+			style.accent(HEAVY_RULE.repeat(fill)) +
+			(overflow === undefined ? "" : style.dim(overflow)) +
+			(shown === undefined ? "" : `${BOLD}${style.text(tail)}${NORMAL_INTENSITY}`) +
+			style.accent(
+				HEAVY_RULE.repeat(
+					Math.max(0, width - fill - visibleWidth(tail) - (overflow === undefined ? 0 : visibleWidth(overflow))),
+				),
+			);
+	}
+	const bottom = lines[bottomIndex]!;
+	if (isRule(bottom)) lines[bottomIndex] = style.accent(HEAVY_RULE.repeat(visibleWidth(stripAnsi(bottom))));
+	if (placeholder !== undefined && bottomIndex === 2) {
+		const line = lines[1]!;
+		const plain = stripAnsi(line).trimEnd();
+		if (plain === PROMPT_GLYPH || plain === `${PROMPT_GLYPH} `) {
+			const room = Math.max(0, width - visibleWidth(stripAnsi(line).trimEnd()) - 2);
+			const text = truncateToWidth(placeholder, room, "…");
+			const trimmed = line.replace(/ +(\x1b\[[0-9;]*m)*$/, "$1");
+			lines[1] = `${trimmed} ${style.dim(text)}`;
+		}
+	}
+	return lines;
+}
