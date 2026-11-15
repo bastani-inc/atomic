@@ -118,6 +118,10 @@ export class ShipShard {
 		const database = await openNodeSqliteDatabase(path);
 		try {
 			await database.exec(SHIP_SHARD_SCHEMA);
+			// Checkpoints whose attempt's lease the journal no longer names can never ship: an attempt replaced here.
+			await database.run(
+				`DELETE FROM ship_events WHERE NOT EXISTS (SELECT 1 FROM ship_lease l WHERE l.work = ship_events.work AND l.generation = ship_events.generation)`,
+			);
 		} catch (error) {
 			await database.close();
 			throw error;
@@ -255,6 +259,24 @@ export class ShipShard {
 			lease.generation,
 		);
 		return Number(row?.n ?? 0);
+	}
+
+	/**
+	 * The attempts with checkpoints left to ship, with the work lease each was accepted under, as a host that stopped
+	 * left them: what it ships, or drops as fenced, when it starts again (#4768).
+	 */
+	async leftover(): Promise<{ readonly lease: AttemptLease; readonly pending: number }[]> {
+		const rows = await this.database.all<
+			SqliteRow & { work: string; generation: number; worker: string; epoch: number; pending: number }
+		>(
+			`SELECT l.work, l.generation, l.worker, l.epoch,
+				(SELECT COUNT(*) FROM ship_events e WHERE e.work = l.work AND e.generation = l.generation) AS pending
+			FROM ship_lease l WHERE EXISTS (SELECT 1 FROM ship_events e WHERE e.work = l.work AND e.generation = l.generation)`,
+		);
+		return rows.map((row) => ({
+			lease: { id: row.work, generation: Number(row.generation), worker: row.worker, epoch: Number(row.epoch) },
+			pending: Number(row.pending),
+		}));
 	}
 
 	/** Every attempt that has checkpoints left to ship, as the local journal holds them. */

@@ -4,6 +4,7 @@ import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "n
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { test } from "vitest";
+import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
 import { type BudgetedProcess, expectExitedCleanly, spawnWithinBudget } from "../helpers/budgeted-process.js";
 import { startFakeLibsqlServer } from "../helpers/fake-libsql-server.js";
 import { startOutageProxy } from "../helpers/outage-proxy.js";
@@ -309,6 +310,69 @@ test.skipIf(process.platform === "win32")(
 			nodeC.process.process.kill("SIGTERM");
 			await expectExitedCleanly(nodeC.process);
 			assert.equal(nodeC.stdout.at(-1)?.split(" ")[0], "drained");
+		} finally {
+			killGroup(nodeB?.process);
+			killGroup(nodeC?.process);
+			killGroup(root);
+			removeTempDirectory(s.directory);
+		}
+	},
+	TAKEOVER_BUDGET.timeoutMs,
+);
+
+test.skipIf(process.platform === "win32")(
+	"with checkpoint shipping, a node killed with SIGKILL mid-child is replaced from what it shipped: no step it shipped runs again and no checkpoint is recorded twice (#4768)",
+	async () => {
+		const s = scenario("worker-cli-shipping", TAKEOVER_BUDGET.waitMs);
+		let nodeB: Node | undefined;
+		let nodeC: Node | undefined;
+		let root: BudgetedProcess | undefined;
+		try {
+			nodeB = startNode(s, "B", 1, { SHARED_POOL_WORK_MARKERS: s.directory });
+			await until("node B to be ready", s, () => nodeB!.stdout.length > 0, [nodeB.process]);
+			// Shipping only when a child's stage commits or the child ends: what node B accepted after that is lost with it.
+			root = startRoot(s, 3, 20_000, {
+				SHARED_POOL_LEASE_MS: String(TAKEOVER_LEASE_MS),
+				SHARED_POOL_CHECKPOINT_SHIPPING: JSON.stringify({ intervalMs: 60_000, maxBatch: 1_000 }),
+			});
+			nodeC = startNode(s, "C", 2);
+			await until(
+				"node B to work on a child",
+				s,
+				() => readdirSync(s.directory).some((name) => name.startsWith("working-B-")),
+				[nodeB.process, nodeC.process, root],
+			);
+			killGroup(nodeB.process);
+			await nodeB.process.process.exited;
+			await expectExitedCleanly(root);
+			const outcome = await readJson<Outcome>(join(s.directory, "outcome-start.json"));
+			assert.equal(outcome.status, "completed", JSON.stringify(outcome));
+			for (const child of outcome.children) assert.equal(child.status, "completed", JSON.stringify(child));
+			// The child's first step ran on node B and was shipped before its stage: node C replayed it from the journal.
+			assert.ok(
+				outcome.children.some((child) => child.firstHost === "B" && child.finalHost !== "B"),
+				`a child node B started finished elsewhere from node B's shipped steps: ${JSON.stringify(outcome)}`,
+			);
+			const database = await openLibsqlDatabase({ url: s.url });
+			try {
+				assert.deepEqual(
+					await database.all(
+						`SELECT key FROM ${PREFIX}wf_events WHERE key IS NOT NULL GROUP BY run_id, key HAVING COUNT(*) > 1`,
+					),
+					[],
+				);
+				const shippedBy = await database.all<{ host: string }>(
+					`SELECT DISTINCT host FROM ${PREFIX}wf_runs_ship_batches`,
+				);
+				assert.ok(
+					shippedBy.some((row) => row.host === "B"),
+					`node B shipped batches before it died: ${JSON.stringify(shippedBy)}`,
+				);
+			} finally {
+				await database.close();
+			}
+			nodeC.process.process.kill("SIGTERM");
+			await expectExitedCleanly(nodeC.process);
 		} finally {
 			killGroup(nodeB?.process);
 			killGroup(nodeC?.process);

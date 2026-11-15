@@ -85,9 +85,14 @@ export class CheckpointShipping {
 		},
 	) {}
 
-	/** Ships every `intervalMs` until {@link close}. */
+	/**
+	 * Ships every `intervalMs` until {@link close}. What a stopped host of this journal left unshipped ships first,
+	 * under the work lease it was accepted under: the shared journal records it while that attempt still owns its work,
+	 * and refuses it, so it is dropped, once another does.
+	 */
 	start(): void {
 		if (this.timer !== undefined || this.closed) return;
+		void this.recover().catch(() => {});
 		this.timer = setInterval(() => void this.shipAll().catch(() => {}), this.options.intervalMs);
 		this.timer.unref?.();
 	}
@@ -210,6 +215,16 @@ export class CheckpointShipping {
 		this.attempts.clear();
 		this.syncOnly.clear();
 		await this.shard.close();
+	}
+
+	/** Takes up the attempts a stopped host left checkpoints of, so they ship (see {@link start}). */
+	async recover(): Promise<void> {
+		for (const { lease, pending } of await this.shard.leftover()) {
+			if (this.attempts.has(lease.id)) continue;
+			const now = this.now();
+			this.attempts.set(lease.id, { lease, accepted: Array(pending).fill(now), chain: Promise.resolve() });
+			await this.flush(lease).catch(() => {});
+		}
 	}
 
 	private async shipAll(): Promise<void> {

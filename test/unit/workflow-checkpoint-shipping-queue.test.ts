@@ -166,6 +166,31 @@ test("a shipped checkpoint whose key the root holds with another payload is an i
 	assert.deepEqual(await recorded(), [1]);
 });
 
+test("a host that starts again ships what it left while its attempt still owns the work, and drops it once another does (#4768)", async () => {
+	const { queue, lease, attempt, tool, recorded, work } = await claimedAttempt();
+	const path = join(directory, "restarted.sqlite");
+	// The host accepts two checkpoints and stops before it ships them.
+	const before = await hostShipping(queue, lease, { path, maxBatch: 10 });
+	await before.shipping.hold(attempt, LEASE_MS);
+	for (const index of [1, 2])
+		await before.shipping.commit(attempt, { kind: "checkpoint", checkpoint: tool(index) }, noShared);
+	await before.shipping.close();
+	const after = await hostShipping(queue, lease, { path, maxBatch: 10 });
+	await after.shipping.recover();
+	assert.deepEqual(await recorded(), [1, 2]);
+	assert.deepEqual(await after.shard.pending(attempt), []);
+	// Again, but the work passed to another attempt while the host was down.
+	await after.shipping.hold(attempt, LEASE_MS);
+	await after.shipping.commit(attempt, { kind: "checkpoint", checkpoint: tool(3) }, noShared);
+	await after.shipping.close();
+	await queue.releaseExited(lease, attempt);
+	assert.ok(await queue.claim(lease, "other", [work], LEASE_MS));
+	const replaced = await hostShipping(queue, lease, { path, maxBatch: 10 });
+	await replaced.shipping.recover();
+	assert.deepEqual(await recorded(), [1, 2], "the replaced attempt's checkpoint is never recorded");
+	assert.deepEqual(await replaced.shard.pending(attempt), [], "and the host drops it");
+});
+
 /** A small deterministic generator, so a failing seed reproduces. */
 function generator(seed: number): () => number {
 	let state = seed >>> 0;
