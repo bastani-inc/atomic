@@ -278,7 +278,7 @@ const CHANGES = [
 
 describe("a resume whose definition changed the tool a replayed stage follows (#4945)", () => {
 	test.each(
-		(["review", "finish"] as const).flatMap((failAt) =>
+		(["agent", "review", "finish"] as const).flatMap((failAt) =>
 			CHANGES.flatMap(([change, edit]) =>
 				(["same id", "continuation"] as const).map((resume) => [failAt, change, resume, edit] as const),
 			),
@@ -313,7 +313,7 @@ describe("a resume whose definition changed the tool a replayed stage follows (#
 	);
 
 	test.each(
-		(["review", "finish"] as const).flatMap((failAt) =>
+		(["agent", "review", "finish"] as const).flatMap((failAt) =>
 			CHANGES.map(([change, edit]) => [failAt, change, edit] as const),
 		),
 	)(

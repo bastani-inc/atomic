@@ -9,7 +9,7 @@ import {
 	withWorktreeRestoreNotices,
 	withWorktreeRootMappings,
 } from "@bastani/atomic";
-import { beginDurableWorkflowAttempt, forkCopiedNodeIds } from "../durable/attempt-identity.js";
+import { beginDurableWorkflowAttempt, forkCopiedNodes } from "../durable/attempt-identity.js";
 import { type DurableWorkflowBackend, pendingStageMessagesForDurableRun } from "../durable/backend.js";
 import type { DurableChildInvocation } from "../durable/boundary-topology.js";
 import { createDurableChildWorkflowPrimitive } from "../durable/child-primitive.js";
@@ -106,7 +106,7 @@ import { resolve_budget, type WorkflowBudget } from "../shared/budget.js";
 import type { RunUsageTree } from "../shared/budget-meter.js";
 import { appendRunStart } from "../shared/persistence-session-entries.js";
 import { coercePossibleStages } from "../shared/possible-stages.js";
-import { assertReplayedParentsMaterialised } from "../shared/replay-topology-failure.js";
+import { assertRecordedParentsMaterialised } from "../shared/replay-topology-failure.js";
 import { parseEvictWhenWaiting, type RunEvictionPolicy } from "../shared/run-eviction.js";
 import { RunEvictedError, RunEvictionConfigError, RunReplayError } from "../shared/run-eviction-errors.js";
 import { currentStageUiBroker } from "../shared/stage-ui-broker.js";
@@ -114,7 +114,7 @@ import { stageWaitToolResults } from "../shared/stage-wait.js";
 import { store as defaultStore } from "../shared/store.js";
 import { workflowObservationRuntime } from "../shared/store-factory.js";
 import { isTerminalRunStatus } from "../shared/store-internal.js";
-import type { RunSnapshot } from "../shared/store-types.js";
+import type { RunSnapshot, StageSnapshot, ToolNodeSnapshot } from "../shared/store-types.js";
 import type {
 	StageContext,
 	StageOptions,
@@ -578,8 +578,21 @@ async function executeRun(
 	const runPossibleStages =
 		persistedPossibleStages ?? coercePossibleStages(rootBackend.getWorkflow(runId)?.possibleStages) ?? [];
 	const forkedFrom = rootBackend.getWorkflow(runId)?.forkedFrom;
-	const forkCopiedNodes = forkCopiedNodeIds(rootBackend, runId);
-	const keepsForkCopiedParent = (parentId: string): boolean => forkCopiedNodes.has(parentId);
+	const copiedByFork = forkCopiedNodes(rootBackend, runId);
+	// A fork with replacement inputs keeps a copied parent the new inputs replaced: the run made the same call again.
+	const keepsForkCopiedParent = (parentId: string): boolean => {
+		const copied = copiedByFork.get(parentId);
+		if (copied === undefined) return false;
+		const replacements: readonly (StageSnapshot | ToolNodeSnapshot)[] =
+			copied.kind === "tool" ? runSnapshot.toolNodes : runSnapshot.stages;
+		return replacements.some(
+			(node) =>
+				node.id !== parentId &&
+				node.name === copied.name &&
+				node.replayed !== true &&
+				(copied.source === undefined || !("source" in node) || node.source === copied.source),
+		);
+	};
 	const runSnapshot: RunSnapshot = {
 		id: runId,
 		name: def.name,
@@ -783,7 +796,7 @@ async function executeRun(
 			if (cachedStageFailure !== undefined) throw cachedStageFailure;
 			assertFrontierConsumed();
 			replayIndex.assertProvisionalParentsAdmitted();
-			assertReplayedParentsMaterialised(runSnapshot, keepsForkCopiedParent);
+			assertRecordedParentsMaterialised(runSnapshot, keepsForkCopiedParent);
 		},
 		recordRefusedCompletion: async (error) => {
 			const frontier = unconsumedToolFrontier(
@@ -1656,7 +1669,7 @@ async function executeRun(
 		if (returned.status === "completed") {
 			assertFrontierConsumed();
 			replayIndex.assertProvisionalParentsAdmitted();
-			assertReplayedParentsMaterialised(runSnapshot, keepsForkCopiedParent);
+			assertRecordedParentsMaterialised(runSnapshot, keepsForkCopiedParent);
 		}
 		const recorded = activeStore.recordRunEnd(runId, returned.status, result, returned.error, returned.metadata);
 		// Durable identity must reach its terminal state even if the session journal fails.

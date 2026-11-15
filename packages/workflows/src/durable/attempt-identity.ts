@@ -22,6 +22,7 @@
 
 import type { WorkflowSerializableValue } from "../shared/types.js";
 import type { DurableWorkflowBackend } from "./backend.js";
+import { durableHash } from "./durable-hash.js";
 import type { DurableCheckpoint, DurableStageCheckpoint, DurableToolCheckpoint, DurableUiCheckpoint } from "./types.js";
 
 /** Prompt hash and checkpoint id prefix of an attempt record. */
@@ -252,7 +253,26 @@ export function attemptReachedCheckpoints(
 			);
 		}),
 	);
-	return checkpoints.filter((checkpoint) => !isGraphRecord(checkpoint) || kept.has(checkpoint));
+	// A kept parent may share its place in its run with the node that replaced it, such as a child the attempt invoked
+	// again with other inputs: it is shown just before that node.
+	const placed = new Set<string>();
+	for (const checkpoint of kept)
+		if (checkpoint.kind === "stage" && !parentReached.has(nodeKey(checkpoint)))
+			placed.add(JSON.stringify([ownerRunId(checkpoint, rootRunId), checkpoint.topology!.sourceOrder ?? null]));
+	return checkpoints.flatMap((checkpoint): DurableCheckpoint[] => {
+		if (!isGraphRecord(checkpoint)) return [checkpoint];
+		if (!kept.has(checkpoint)) return [];
+		if (
+			checkpoint.kind !== "stage" ||
+			checkpoint.topology!.sourceOrder === undefined ||
+			!parentReached.has(nodeKey(checkpoint)) ||
+			!placed.has(JSON.stringify([ownerRunId(checkpoint, rootRunId), checkpoint.topology!.sourceOrder]))
+		)
+			return [checkpoint];
+		return [
+			{ ...checkpoint, topology: { ...checkpoint.topology!, sourceOrder: checkpoint.topology!.sourceOrder - 0.5 } },
+		];
+	});
 }
 
 /** The node id a stage or tool record names: its stage id, or its tool node id. */
@@ -270,23 +290,42 @@ function stageNodeKey(checkpoint: DurableStageCheckpoint): string {
 	return JSON.stringify([checkpoint.replayKey, checkpoint.topology?.occurrenceKey ?? null]);
 }
 
+/** A node a fork copied from its source: the kind and name its replacement shares, and a tool's callback source. */
+export interface ForkCopiedNode {
+	readonly kind: "stage" | "tool";
+	readonly name: string;
+	readonly source?: string;
+}
+
 /**
- * The nodes a fork's first execution may keep as recorded parents without running them again (#4321): a fork with
- * replacement inputs replays every recorded stage, and a stage whose recorded parent is a tool the new inputs changed
- * keeps that tool, which the fork copied, as its parent. Its records still name a recorded node, so the fork stays
- * readable. Read before the execution registers: once any execution of the fork has recorded something, every record
- * is not the fork's copy, and a later execution of the fork, like any other run, keeps none (#4945).
+ * The nodes a fork's first execution may keep as recorded parents without running them again (#4321): a fork that only
+ * replaces its source's inputs replays every recorded stage, and a stage whose recorded parent is a call the new inputs
+ * changed keeps the copied call as its parent. Its records still name a recorded node, so the fork stays readable.
+ *
+ * None when the fork kept its source's inputs, or its source is not in this journal: a fork whose definition changed
+ * a call fails like a resume. Read before the execution registers: once any execution of the fork has recorded
+ * something, a later execution of the fork, like any other run, keeps none (#4945).
  */
-export function forkCopiedNodeIds(
+export function forkCopiedNodes(
 	backend: Pick<DurableWorkflowBackend, "getWorkflow" | "listCheckpoints">,
 	runId: string,
-): ReadonlySet<string> {
+): ReadonlyMap<string, ForkCopiedNode> {
 	const handle = backend.getWorkflow(runId);
-	if (handle?.forkedFrom === undefined) return new Set();
+	const source = handle?.forkedFrom === undefined ? undefined : backend.getWorkflow(handle.forkedFrom.runId);
+	if (handle === undefined || source === undefined) return new Map();
+	if (durableHash(handle.inputs) === durableHash(source.inputs)) return new Map();
 	const checkpoints = backend.listCheckpoints(runId);
 	// The fork registered when it copied the source; an execution re-registers it and records after that.
-	if (checkpoints.some((checkpoint) => checkpoint.completedAt >= handle.createdAt)) return new Set();
-	const copied = new Set<string>();
-	for (const checkpoint of checkpoints.filter(isGraphRecord)) copied.add(graphNodeId(checkpoint)!);
+	if (checkpoints.some((checkpoint) => checkpoint.completedAt >= handle.createdAt)) return new Map();
+	const copied = new Map<string, ForkCopiedNode>();
+	for (const checkpoint of checkpoints.filter(isGraphRecord)) {
+		// A child run's nodes are its own: a child whose inputs changed is invoked again as another child.
+		if (checkpoint.topology!.run !== undefined && checkpoint.topology!.run.runId !== runId) continue;
+		copied.set(graphNodeId(checkpoint)!, {
+			kind: checkpoint.kind,
+			name: checkpoint.name,
+			...(checkpoint.kind === "tool" && checkpoint.source !== undefined ? { source: checkpoint.source } : {}),
+		});
+	}
 	return copied;
 }

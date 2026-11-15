@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "vitest";
 import {
 	attemptReachedCheckpoints,
-	forkCopiedNodeIds,
+	forkCopiedNodes,
 	workflowAttemptCheckpoint,
 } from "../../packages/workflows/src/durable/attempt-identity.js";
 import {
@@ -13,7 +13,7 @@ import {
 	type DurableToolCheckpoint,
 	type DurableWorkflowHandle,
 } from "../../packages/workflows/src/durable/types.js";
-import { assertReplayedParentsMaterialised } from "../../packages/workflows/src/shared/replay-topology-failure.js";
+import { assertRecordedParentsMaterialised } from "../../packages/workflows/src/shared/replay-topology-failure.js";
 import type { StageSnapshot, ToolNodeSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 
 const ROOT = "root";
@@ -99,36 +99,51 @@ describe("the records of a run's latest attempt keep its replayed nodes' recorde
 	});
 });
 
-function forkBackend(checkpoints: readonly DurableCheckpoint[], handle: Partial<DurableWorkflowHandle>) {
-	return {
-		getWorkflow: (runId: string) =>
-			runId === "fork" ? ({ workflowId: "fork", createdAt: 100, ...handle } as DurableWorkflowHandle) : undefined,
-		listCheckpoints: () => [...checkpoints],
+function forkBackend(
+	checkpoints: readonly DurableCheckpoint[],
+	handle: Partial<DurableWorkflowHandle>,
+	sourceInputs: DurableWorkflowHandle["inputs"] = { tag: "v1" },
+) {
+	const handles: Record<string, DurableWorkflowHandle> = {
+		fork: { workflowId: "fork", createdAt: 100, inputs: { tag: "v2" }, ...handle } as DurableWorkflowHandle,
+		source: { workflowId: "source", createdAt: 1, inputs: sourceInputs } as DurableWorkflowHandle,
 	};
+	return { getWorkflow: (runId: string) => handles[runId], listCheckpoints: () => [...checkpoints] };
 }
 
 describe("the nodes a fork copied, which its first execution may keep as recorded parents (#4945)", () => {
+	const childTool: DurableToolCheckpoint = {
+		...tool("inner", 1, [], 55),
+		topology: { ...tool("inner", 1).topology!, run: { runId: "child", runName: "child", parentRunId: "fork" } },
+	};
 	const copied = [
-		tool("start", 1, [], 50),
+		{ ...tool("start", 1, [], 50), source: "async () => 1" },
 		stage("agent", 1, ["tool:start"], 60),
+		childTool,
 		workflowAttemptCheckpoint("fork", 1, 40),
 	];
+	const forked = { forkedFrom: { runId: "source" } };
 
-	test("a fork that has not run yet keeps every stage and tool it copied (#4945)", () => {
-		const ids = forkCopiedNodeIds(forkBackend(copied, { forkedFrom: { runId: "source" } }), "fork");
-		assert.deepEqual([...ids].sort(), ["agent", "tool:start"]);
+	test("a fork with replacement inputs that has not run yet keeps its own copied stages and tools (#4945)", () => {
+		const nodes = forkCopiedNodes(forkBackend(copied, forked), "fork");
+		assert.deepEqual(Object.fromEntries(nodes), {
+			"tool:start": { kind: "tool", name: "start", source: "async () => 1" },
+			agent: { kind: "stage", name: "agent" },
+		});
 	});
 
-	test("a run that is not a fork, or a fork that recorded anything since it was copied, keeps none (#4945)", () => {
-		assert.deepEqual([...forkCopiedNodeIds(forkBackend(copied, {}), "fork")], []);
-		assert.deepEqual([...forkCopiedNodeIds(forkBackend(copied, { forkedFrom: { runId: "source" } }), "missing")], []);
+	test("a run that is not a fork, a fork of its source's inputs or of a source elsewhere, keeps none (#4945)", () => {
+		assert.equal(forkCopiedNodes(forkBackend(copied, {}), "fork").size, 0);
+		assert.equal(forkCopiedNodes(forkBackend(copied, forked), "missing").size, 0);
+		assert.equal(forkCopiedNodes(forkBackend(copied, forked, { tag: "v2" }), "fork").size, 0);
+		assert.equal(forkCopiedNodes(forkBackend(copied, { forkedFrom: { runId: "elsewhere" } }), "fork").size, 0);
+	});
+
+	test("a fork that recorded anything since it was copied keeps none (#4945)", () => {
 		const ranAt = (completedAt: number) =>
-			forkCopiedNodeIds(
-				forkBackend([...copied, tool("again", 2, [], completedAt)], { forkedFrom: { runId: "source" } }),
-				"fork",
-			);
-		assert.deepEqual([...ranAt(100)], [], "a record from the moment the fork registered is the fork's own");
-		assert.deepEqual([...ranAt(99)].sort(), ["agent", "tool:again", "tool:start"]);
+			forkCopiedNodes(forkBackend([...copied, tool("again", 2, [], completedAt)], forked), "fork");
+		assert.equal(ranAt(100).size, 0, "a record from the moment the fork registered is the fork's own");
+		assert.deepEqual([...ranAt(99).keys()].sort(), ["agent", "tool:again", "tool:start"]);
 	});
 });
 
@@ -151,13 +166,13 @@ function replayedTool(id: string, parentIds: readonly string[]): ToolNodeSnapsho
 	return node;
 }
 
-describe("a run's replayed nodes name only parents the run ran again (#4945)", () => {
+describe("a run's nodes name only parents the run has (#4945)", () => {
 	const none = () => false;
 
 	test("a replayed stage or tool whose recorded parent is missing fails, naming it (#4945)", () => {
 		assert.throws(
 			() =>
-				assertReplayedParentsMaterialised(
+				assertRecordedParentsMaterialised(
 					{ id: "run", stages: [replayedStage("agent", ["tool:start"])], toolNodes: [] },
 					none,
 				),
@@ -165,7 +180,7 @@ describe("a run's replayed nodes name only parents the run ran again (#4945)", (
 		);
 		assert.throws(
 			() =>
-				assertReplayedParentsMaterialised(
+				assertRecordedParentsMaterialised(
 					{ id: "run", resumedFromRunId: "source", stages: [], toolNodes: [replayedTool("check", ["agent"])] },
 					none,
 				),
@@ -173,16 +188,27 @@ describe("a run's replayed nodes name only parents the run ran again (#4945)", (
 		);
 	});
 
-	test("present parents, live nodes and parents the run may keep pass (#4945)", () => {
-		assertReplayedParentsMaterialised(
+	test("a live stage that took recorded parents the run never had fails too (#4945)", () => {
+		assert.throws(
+			() =>
+				assertRecordedParentsMaterialised(
+					{ id: "run", stages: [replayedStage("live", ["tool:start"], false)], toolNodes: [] },
+					none,
+				),
+			/replay topology mismatch for stage "live" \(node "live"\) in source run run: its recorded parent "tool:start"/,
+		);
+	});
+
+	test("present parents and parents the run may keep pass (#4945)", () => {
+		assertRecordedParentsMaterialised(
 			{
 				id: "run",
-				stages: [replayedStage("agent", ["tool:start"]), replayedStage("live", ["elsewhere"], false)],
+				stages: [replayedStage("agent", ["tool:start"]), replayedStage("live", ["agent"], false)],
 				toolNodes: [replayedTool("tool:start", [])],
 			},
 			none,
 		);
-		assertReplayedParentsMaterialised(
+		assertRecordedParentsMaterialised(
 			{ id: "run", stages: [replayedStage("agent", ["tool:copied"])], toolNodes: [] },
 			(parentId) => parentId === "tool:copied",
 		);

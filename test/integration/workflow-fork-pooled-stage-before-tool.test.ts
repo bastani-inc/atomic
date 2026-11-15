@@ -227,3 +227,67 @@ test.skipIf(process.platform === "win32")(
 	},
 	poolTestBudgetMs(10).timeoutMs,
 );
+
+test.skipIf(process.platform === "win32")(
+	"a fork of a pooled run whose definition changed a tool a replayed stage follows fails loudly (#4945)",
+	async () => {
+		const directory = makeTempDirectory("fork-pooled-changed-tool-");
+		const path = join(directory, "journal.sqlite");
+		const backend = await JournalDurableBackend.open(await resolveRunJournal({ journal: { path } }));
+		const child = await loadWorkerWorkflow(childPath, "child");
+		const root = (startArgs: Record<string, string>): WorkflowDefinition =>
+			workflow({
+				name: "fork-pooled-changed-tool-root",
+				description: "",
+				inputs: {},
+				outputs: {},
+				async run(ctx) {
+					const agent = ctx.stage("agent");
+					await ctx.tool("start", startArgs, async () => "started");
+					await agent.prompt("agent");
+					const result = await ctx.workflow(child, { inputs: { directory, hold: "none", intercom: false } });
+					assert.equal(result.status, "completed");
+					return {};
+				},
+			}) as WorkflowDefinition;
+		const options = {
+			cwd: directory,
+			durableBackend: backend,
+			toolControlRegistry: createToolControlRegistry(),
+			adapters: { prompt: { prompt: async (text: string) => text } },
+			[hostWorkerBindings]: true,
+			localWorkers: { count: 2, definitions: [{ path: childPath, exportName: "child" }] },
+		} as const;
+		try {
+			const sourceId = testRunId("fork-pooled-changed-tool-source");
+			const source = await run(
+				root({}),
+				{},
+				{
+					...options,
+					runId: sourceId,
+					store: createStore(),
+					signal: AbortSignal.timeout(BUDGET.waitMs),
+				},
+			);
+			assert.equal(source.status, "completed", source.error);
+			const forked = await forkRun(sourceId, {
+				...options,
+				definition: root({ changed: "yes" }),
+				store: createStore(),
+				signal: AbortSignal.timeout(BUDGET.waitMs),
+			});
+			const result = await forked.result;
+			assert.equal(result.status, "failed");
+			assert.match(result.error ?? "", /insufficient_state: replay topology mismatch for stage "agent"/);
+			assert.ok(
+				(await recordedRuns(path, forked.runId)).some((snapshot) => snapshot.id === forked.runId),
+				"the fork's records rebuild it",
+			);
+		} finally {
+			await backend.close();
+			removeTempDirectory(directory);
+		}
+	},
+	BUDGET.timeoutMs,
+);

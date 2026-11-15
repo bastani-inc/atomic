@@ -8,6 +8,7 @@ import { afterEach, test, vi } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
+import { durableWorkflowRunSnapshots } from "../../packages/workflows/src/durable/completed-catalog.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import {
 	ForkClaimReleaseError,
@@ -1888,6 +1889,106 @@ test("a fork with replacement inputs keeps its copied tool parent only in its fi
 	);
 	assert.equal(resumed.status, "failed");
 	assert.match(resumed.error ?? "", /insufficient_state: replay topology mismatch for stage "build"/);
+});
+
+test.each([
+	["with its own inputs", undefined],
+	["with replacement inputs", { tag: "v2" }],
+] as const)(
+	"a fork whose definition changed a tool a replayed stage follows fails loudly, %s (#4945)",
+	async (_case, inputs) => {
+		const backend = await createMemoryTestBackend();
+		const state = { tag: "v1", fails: false };
+		const options = { durableBackend: backend, cwd: process.cwd(), adapters: complete([]) };
+		const runId = testRunId("fork-changed-tool");
+		assert.equal(
+			(await run(taggedBuild(state), { tag: "v1" }, { ...options, runId, store: createStore() })).status,
+			"completed",
+		);
+		// The definition now calls `tagged` with other arguments for the source's inputs: a changed definition, not new inputs.
+		state.tag = "changed";
+		const changed = taggedBuild(state);
+		const forked = await forkRun(runId, {
+			...options,
+			...(inputs === undefined ? {} : { inputs }),
+			definition: inputs === undefined ? changed : removedTagged(),
+			store: createStore(),
+		});
+		const result = await forked.result;
+		assert.equal(result.status, "failed");
+		assert.match(result.error ?? "", /insufficient_state: replay topology mismatch for stage "build"/);
+		const view = durableWorkflowRunSnapshots(backend, backend.getWorkflow(forked.runId)!);
+		assert.ok(
+			view.some((snapshot) => snapshot.id === forked.runId),
+			"the fork's records rebuild it",
+		);
+	},
+);
+
+/** {@link taggedBuild} without its `tagged` call: the stage it followed has no tool before it. */
+function removedTagged() {
+	return workflow({
+		name: "fork-tagged-build",
+		description: "",
+		inputs: { tag: Type.String({ default: "v1" }) },
+		outputs: {},
+		run: async (ctx) => {
+			await ctx.stage("build").complete("build tagged");
+			await ctx.tool("last", { tag: ctx.inputs.tag }, async () => "last");
+			return {};
+		},
+	});
+}
+
+test("a whole-run fork with replacement inputs that reach a child workflow completes and rebuilds from its records (#4945)", async () => {
+	const backend = await createMemoryTestBackend();
+	const child = workflow({
+		name: "fork-input-child",
+		description: "",
+		inputs: { tag: Type.String() },
+		outputs: {},
+		run: async (ctx) => {
+			const agent = ctx.stage("agent");
+			await ctx.tool("start", { tag: ctx.inputs.tag }, async () => "started");
+			await agent.complete("agent");
+			return {};
+		},
+	});
+	const parent = workflow({
+		name: "fork-input-parent",
+		description: "",
+		inputs: { tag: Type.String({ default: "v1" }) },
+		outputs: {},
+		run: async (ctx) => {
+			await ctx.stage("plan").complete("plan");
+			const result = await ctx.workflow(child, { inputs: { tag: ctx.inputs.tag } });
+			assert.equal(result.status, "completed");
+			// Replays after the child, which the new inputs invoke again: it keeps the copied child as its parent.
+			await ctx.stage("ship").complete("ship");
+			return {};
+		},
+	});
+	const completions: string[] = [];
+	const options = { durableBackend: backend, cwd: process.cwd(), adapters: complete(completions) };
+	const runId = testRunId("fork-input-child");
+	assert.equal((await run(parent, { tag: "v1" }, { ...options, runId, store: createStore() })).status, "completed");
+	const forked = await forkRun(runId, { ...options, inputs: { tag: "v2" }, definition: parent, store: createStore() });
+	const result = await forked.result;
+	assert.equal(result.status, "completed", result.error);
+	assert.deepEqual(completions, ["plan", "agent", "ship", "agent"], "only the child ran again");
+	const view = durableWorkflowRunSnapshots(backend, backend.getWorkflow(forked.runId)!);
+	const root = view.find((snapshot) => snapshot.id === forked.runId);
+	assert.ok(root, "the fork's records rebuild it");
+	const names = new Map(root.stages.map((stage) => [stage.id, stage.name]));
+	assert.deepEqual(
+		root.stages.map((stage) => `${stage.name} <- ${stage.parentIds.map((id) => names.get(id)).join("+")}`),
+		[
+			"plan <- ",
+			"workflow:fork-input-child <- plan",
+			"workflow:fork-input-child <- plan",
+			"ship <- workflow:fork-input-child",
+		],
+	);
 });
 
 test("a fork carries the source's workspace and snapshot bindings through its launch (#4321)", async () => {
