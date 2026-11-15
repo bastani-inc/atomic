@@ -928,3 +928,11 @@ test("atomic worker status of a PostgreSQL store it cannot open shows the failur
 		await server.close();
 	}
 });
+
+test("fleet status keeps the colon after a URL whose query it strips, and strips user info from a URL without a query (#5113)", () => {
+	assert.equal(
+		withoutUrlCredentials("postgresql://atomic@db/atomic?sslmode=disable: refused"),
+		"postgresql://db/atomic: refused",
+	);
+	assert.equal(withoutUrlCredentials("libsql://user@pool.example.com: refused"), "libsql://pool.example.com: refused");
+});

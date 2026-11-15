@@ -25,9 +25,7 @@ export async function sharedPoolStatus(
 			...(sqlPoolWrites(backend.journal) === undefined ? {} : { writes: sqlPoolWrites(backend.journal) }),
 			hostsRegistered: false,
 			readFailure: error as Error,
-			...(sqlPoolStorage(backend.journal) === undefined
-				? {}
-				: { adapter: sqlPoolStorage(backend.journal)!.adapter }),
+			adapter: sqlPoolStorage(backend.journal)?.adapter,
 		});
 		return {
 			sharedPoolUnavailable: {

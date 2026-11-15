@@ -235,8 +235,8 @@ export const sharedPoolProblems = {
 		};
 	},
 	/** The adapter `module` cannot be loaded; `url` is the database it was selected for, whose scheme names the package. */
-	adapterUnavailable(module: string, url?: string): SharedPoolSetupProblem {
-		const adapter = url !== undefined && isPostgresUrl(url) ? POSTGRES_ADAPTER_PACKAGE : LIBSQL_ADAPTER_PACKAGE;
+	adapterUnavailable(module: string, url = ""): SharedPoolSetupProblem {
+		const adapter = isPostgresUrl(url) ? POSTGRES_ADAPTER_PACKAGE : LIBSQL_ADAPTER_PACKAGE;
 		return {
 			code: "storage-adapter-unavailable",
 			subject: `the storage adapter ${module}, which cannot be loaded`,

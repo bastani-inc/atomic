@@ -20,7 +20,9 @@ import {
 	WorkspaceRestoreUnavailableError,
 	workspaceBindingIdentity,
 } from "../../packages/workflows/src/workers/placement-errors.js";
+import { sharedSelectionProblems } from "../../packages/workflows/src/workers/shared-setup.js";
 import type { WorkspaceBinding } from "../../packages/workflows/src/workers/workspace-binding.js";
+import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 /** A #3109 bound workspace carries more than the binding's identity: its branch, among others. */
 const binding: WorkspaceBinding & { readonly branch: string } = {
@@ -566,4 +568,25 @@ test("an unloadable adapter's install hint names the package for its database UR
 			`Install it with \`atomic install npm:${adapter}\`, or fix the adapter path.`,
 			url,
 		);
+});
+
+test("a shared journal's setup check names the adapter package for the selection's URL, and libSQL's without one (#5113)", async () => {
+	const agentDir = makeTempDirectory("placement-5113-");
+	try {
+		const hints = async (options?: { readonly url: string }) =>
+			(
+				await sharedSelectionProblems(
+					{ kind: "adapter", module: "./missing-adapter.js", ...(options === undefined ? {} : { options }) },
+					agentDir,
+				)
+			).map((problem) => problem.hint);
+		assert.deepEqual(await hints({ url: "postgresql://atomic@db.example.com/atomic" }), [
+			"Install it with `atomic install npm:@bastani/atomic-storage-postgres`, or fix the adapter path.",
+		]);
+		assert.deepEqual(await hints(), [
+			"Install it with `atomic install npm:@bastani/atomic-storage-libsql`, or fix the adapter path.",
+		]);
+	} finally {
+		removeTempDirectory(agentDir);
+	}
 });
