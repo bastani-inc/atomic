@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, test } from "vitest";
@@ -169,6 +169,18 @@ describe("the shared store's cross-process lock and initialisation (#4951)", () 
 		assert.deepEqual(readdirSync(dirname(store)), [basename(store)]);
 	});
 
+	test("a restore into an existing store leaves its configuration alone (#4951)", async () => {
+		const [first, second] = await snapshotsOfOneRepository(2);
+		const storeDir = sandbox.path("store");
+		await restoreWorktree(first!, { storeDir });
+		const config = join(objectStorePath(storeDir, first!.remotes), "config");
+		const past = new Date(Date.now() - 120_000);
+		utimesSync(config, past, past);
+		const { path } = await restoreWorktree(second!, { storeDir });
+		assert.equal(await headOf(path), second!.head);
+		assert.equal(statSync(config).mtimeMs, past.getTime());
+	});
+
 	test("a restore waits for another process's repository lock, then restores (#4951)", async () => {
 		const { snapshot, storeDir, store } = await oneSnapshot();
 		mkdirSync(`${store}.lock`, { recursive: true });
@@ -215,6 +227,7 @@ describe("the shared store's cross-process lock and initialisation (#4951)", () 
 					assert.ok(isWorkspaceRestoreError(error));
 					assert.equal(error.code, "unwritable-path");
 					assert.equal(error.target, `${store}.lock`);
+					assert.equal(error.snapshotId, snapshot.id);
 					return true;
 				});
 			} finally {

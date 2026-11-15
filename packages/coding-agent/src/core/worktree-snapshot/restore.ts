@@ -5,7 +5,6 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import lockfile from "proper-lockfile";
-import { failureDebugFields, reportDebug } from "../debug.ts";
 import { noteRestoreFetch, timeRestorePhase } from "../resume/timings.ts";
 import {
 	locateCheckout,
@@ -175,23 +174,8 @@ async function writing<T>(target: string, snapshotId: string | null, write: () =
 
 const repositoryLocks = new Map<string, Promise<void>>();
 
-/** The repository lock's constants: a stopped process loses it after 30 seconds; a held one is polled for at most 250 ms apart. */
-const REPOSITORY_LOCK_STALE_MS = 30_000;
-const REPOSITORY_LOCK_UPDATE_MS = 10_000;
-const REPOSITORY_LOCK_MAX_POLL_MS = 250;
-
-/**
- * Serializes work on one shared object store, in this process and across processes (#4951): creating the store,
- * configuring its remotes, fetching into it and updating its refs. Git's own locks fail rather than wait, so two
- * processes doing either at once would fail one of them. Waiters in this process queue behind each other; across
- * processes, the store's lock file `<store>.lock` is polled until it is free or its holder stopped refreshing it.
- */
-async function withRepositoryLock<T>(
-	store: string,
-	snapshotId: string | null,
-	signal: AbortSignal | undefined,
-	action: () => Promise<T>,
-): Promise<T> {
+/** Serializes work on one shared object store within this process, ahead of its cross-process lock. */
+async function withProcessRepositoryLock<T>(store: string, action: () => Promise<T>): Promise<T> {
 	const previous = repositoryLocks.get(store) ?? Promise.resolve();
 	let release!: () => void;
 	const current = new Promise<void>((resolveLock) => {
@@ -201,6 +185,31 @@ async function withRepositoryLock<T>(
 	repositoryLocks.set(store, chained);
 	await previous;
 	try {
+		return await action();
+	} finally {
+		release();
+		if (repositoryLocks.get(store) === chained) repositoryLocks.delete(store);
+	}
+}
+
+/** The repository lock's constants: a stopped process loses it after 30 seconds; a held one is checked every 50 ms. */
+const REPOSITORY_LOCK_STALE_MS = 30_000;
+const REPOSITORY_LOCK_UPDATE_MS = 10_000;
+const REPOSITORY_LOCK_POLL_MS = 50;
+
+/**
+ * Serializes work on one shared object store, in this process and across processes (#4951): creating the store,
+ * configuring its remotes, fetching into it and updating its refs. Git's own locks fail rather than wait, so two
+ * processes doing either at once would fail one of them. Waiters in this process queue behind each other; across
+ * processes, the store's lock file `<store>.lock` is polled until it is free or its holder stopped refreshing it.
+ */
+function withRepositoryLock<T>(
+	store: string,
+	snapshotId: string | null,
+	signal: AbortSignal | undefined,
+	action: () => Promise<T>,
+): Promise<T> {
+	return withProcessRepositoryLock(store, async () => {
 		const unlock = await lockRepository(store, snapshotId, signal);
 		try {
 			return await action();
@@ -208,10 +217,7 @@ async function withRepositoryLock<T>(
 			// A release that fails leaves a lock file nothing refreshes, which the next waiter takes once it is stale.
 			await unlock().catch(() => {});
 		}
-	} finally {
-		release();
-		if (repositoryLocks.get(store) === chained) repositoryLocks.delete(store);
-	}
+	});
 }
 
 /** Takes the cross-process lock of `store`, waiting while another live process holds it. */
@@ -222,7 +228,7 @@ async function lockRepository(
 ): Promise<() => Promise<void>> {
 	const repositories = dirname(store);
 	await writing(repositories, snapshotId, () => mkdir(repositories, { recursive: true }));
-	for (let wait = 10; ; wait = Math.min(wait * 2, REPOSITORY_LOCK_MAX_POLL_MS)) {
+	for (;;) {
 		signal?.throwIfAborted();
 		try {
 			return await lockfile.lock(store, {
@@ -231,14 +237,13 @@ async function lockRepository(
 				update: REPOSITORY_LOCK_UPDATE_MS,
 				retries: 0,
 				// A lost lock only lets another process into the store early, where Git's own locks still guard each write.
-				onCompromised: (error) =>
-					reportDebug("storage", "worktree-repository-lock-lost", { store, ...failureDebugFields(error) }),
+				onCompromised: () => {},
 			});
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "ELOCKED")
 				throw unwritablePathError(`${store}.lock`, snapshotId, error);
 		}
-		await sleep(wait, undefined, { signal }).catch(() => signal?.throwIfAborted());
+		await sleep(REPOSITORY_LOCK_POLL_MS);
 	}
 }
 
