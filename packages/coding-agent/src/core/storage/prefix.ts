@@ -26,7 +26,7 @@ export const POSTGRES_STORAGE_IDENTIFIER_SUFFIXES: readonly string[] = Object.fr
 	"intercom_restoring_reservations",
 	"intercom_restoring_reservations_active",
 	"intercom_restoring_reservations_child",
-	"intercom_restoring_reservations_wake_requested",
+	"intercom_restoring_reservations_wake",
 	"intercom_restoring_wake_claims",
 	"intercom_sent_messages",
 	"intercom_sent_messages_recorded",

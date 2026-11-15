@@ -46,6 +46,8 @@ test("storage prefixes preserve valid text and reject invalid or reserved names"
 test("a PostgreSQL prefix leaves room for the longest identifier Atomic creates (#5067)", () => {
 	const longest = Math.max(...POSTGRES_STORAGE_IDENTIFIER_SUFFIXES.map((suffix) => suffix.length));
 	assert.equal(POSTGRES_MAX_STORAGE_PREFIX_LENGTH, 63 - longest);
+	// Prefixes of up to 24 characters worked before #5067: a new name too long for them must be shorter instead.
+	assert.ok(POSTGRES_MAX_STORAGE_PREFIX_LENGTH >= 24, String(POSTGRES_MAX_STORAGE_PREFIX_LENGTH));
 	const allowed = "p".repeat(POSTGRES_MAX_STORAGE_PREFIX_LENGTH);
 	assert.equal(validateStoragePrefix(allowed, "postgres"), allowed);
 	for (const prefix of [`${allowed}x`, "p".repeat(24).concat("_"), "p".repeat(32).concat("_")]) {

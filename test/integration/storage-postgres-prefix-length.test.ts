@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { join } from "node:path";
 import { type SqliteDatabase, StoragePrefixError, StorageProvider } from "@bastani/atomic/storage";
 import { describe, test } from "vitest";
 import {
@@ -18,6 +19,18 @@ import { openSqlRestoringReservationStore } from "../../packages/intercom/broker
 import { openSqlSentMessageAuthority } from "../../packages/intercom/broker/sql-sent-message-authority.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import { type PostgresScope, postgresSkipReason, withPostgresDatabase } from "../helpers/postgres-database.js";
+import { moduleDir } from "../helpers/runtime.js";
+
+type OpenReservationStore = typeof openSqlRestoringReservationStore;
+/** The reservation store as it was before #5067, loaded by path so it is not type-checked against this version. */
+const earlierStore = join(
+	moduleDir(import.meta.url),
+	"../fixtures/intercom-0.9.88-pre-5067/broker/sql-restoring-reservation-store.ts",
+);
+const openEarlierReservationStore = async (...args: Parameters<OpenReservationStore>) =>
+	(
+		(await import(earlierStore)) as { openSqlRestoringReservationStore: OpenReservationStore }
+	).openSqlRestoringReservationStore(...args);
 
 /** Postgres's identifier limit in bytes; longer names are truncated. */
 const POSTGRES_IDENTIFIER_BYTES = 63;
@@ -90,6 +103,47 @@ describe.skipIf(postgresSkipReason !== undefined)("Postgres storage prefix lengt
 					tooLong(prefix),
 				);
 				assert.deepEqual(await createdIdentifiers(database), []);
+			});
+		});
+
+	for (const length of [18, 24])
+		test(`a store created before #5067 with a ${length}-character prefix opens, migrates and works (#5067)`, async () => {
+			await withPostgresDatabase(async (scope) => {
+				const database = await scope.open();
+				const prefix = prefixOfLength(length);
+				const table = `${prefix}intercom_restoring_reservations`;
+				const earlierIndex = `${table}_wake_requested`.slice(0, POSTGRES_IDENTIFIER_BYTES);
+				const earlier = await openEarlierReservationStore({ database, prefix });
+				const reserved = await earlier.reserve({
+					reservationKey: "reservation",
+					ownerSessionId: "owner",
+					ownerBrokerId: "broker",
+					childName: "child",
+					childTarget: "child",
+					aliases: [],
+					group: "group",
+					dormant: false,
+					wake: true,
+				});
+				assert.equal(reserved.status, "reserved");
+				assert.ok((await createdIdentifiers(database)).includes(earlierIndex));
+
+				await openEveryStore(scope, prefix);
+				const suffixes = async () =>
+					(await createdIdentifiers(database)).map((name) => name.slice(prefix.length)).sort();
+				assert.deepEqual(await suffixes(), [...POSTGRES_STORAGE_IDENTIFIER_SUFFIXES].sort());
+
+				// A broker of the earlier version recreates its index beside the renamed one; the next open drops it.
+				await openEarlierReservationStore({ database, prefix });
+				assert.ok((await createdIdentifiers(database)).includes(earlierIndex));
+				const store = await openSqlRestoringReservationStore({ database, prefix });
+				assert.deepEqual(await suffixes(), [...POSTGRES_STORAGE_IDENTIFIER_SUFFIXES].sort());
+
+				assert.deepEqual(await store.requestWake("reservation"), { status: "requested" });
+				assert.deepEqual(await store.takeWakeRequests("broker"), {
+					status: "taken",
+					requests: [{ reservationKey: "reservation", ownerSessionId: "owner", childName: "child" }],
+				});
 			});
 		});
 

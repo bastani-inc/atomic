@@ -84,7 +84,7 @@ CREATE DATABASE atomic OWNER atomic;
 
 On a managed service, run this as the administrator the service created, or create the database in the console. Every Atomic process keeps its own pool of up to 8 connections (`maxConnections`). When your machines need more connections than the server's `max_connections`, lower `maxConnections` or connect through a [connection pooler](#connection-poolers).
 
-Give each team or project its own `prefix`, or its own database. On PostgreSQL a prefix can be at most 17 characters, because PostgreSQL cuts table and index names off at 63 bytes. A longer prefix is refused with `StoragePrefixError` (reason `"too-long"`) before Atomic creates anything.
+Give each team or project its own `prefix`, or its own database. On PostgreSQL a prefix can be at most 24 characters, because PostgreSQL cuts table and index names off at 63 bytes. A longer prefix is refused with `StoragePrefixError` (reason `"too-long"`) before Atomic creates anything.
 
 ### Join a machine
 
@@ -754,7 +754,7 @@ Use error classes and their fields, not message matching. Configuration and faca
 | `StorageConfigError` | `code` `"invalid-config"`; `source`, `field`, `reason` identify an invalid selected option, and `hint`, when present, says what to pass instead. Correct that selection; Atomic does not try a lower-precedence store. |
 | `StorageAdapterLoadError` | `module`, `cause`. Check installation and the module's default export. |
 | `StorageUnavailableError` | `adapter`, `location`, `cause`. Restore access to the selected store before retrying. |
-| `StoragePrefixError` | `prefix`, `reason` (`"pattern"`, `"reserved"`, or `"too-long"` with `maxLength`). Use a valid non-reserved prefix, at most 17 characters on PostgreSQL. |
+| `StoragePrefixError` | `prefix`, `reason` (`"pattern"`, `"reserved"`, or `"too-long"` with `maxLength`). Use a valid non-reserved prefix, at most 24 characters on PostgreSQL. |
 | `StorageSchemaVersionError` | `domain`, `found`, `supported`. Use a supported database; Atomic does not migrate an unknown schema. |
 | `StoreClosedError` / `StorageTransactionClosedError` | The store is closing/closed, or the transaction callback has ended. Open a new store or use the live callback handle. |
 | `StorageRollbackError` | `cause`, `rollbackCause`. Do not assume the transaction rolled back. |
@@ -885,4 +885,4 @@ registerSqliteDatabaseConformance({ describe, it }, "my adapter", withSubject);
 
 For adapters supporting multiple connections to one database, also run `registerSqliteConnectionConformance({ describe, it }, "my adapter connections", withConnections)`. The fixture must open two facades on the same fresh database, pass both to the callback, and close both afterward. This checks concurrent transaction writes and event-loop responsiveness while one callback yields.
 
-`validateStoragePrefix(prefix)` accepts an empty prefix or ASCII letters/underscores followed by ASCII letters, digits, or underscores. It rejects names beginning with `sqlite_`, regardless of case. `validateStoragePrefix(prefix, "postgres")` also rejects a prefix longer than `POSTGRES_MAX_STORAGE_PREFIX_LENGTH` (17). Validate before opening files. `renderStorageIdentifiers(domain, names, prefix)` returns an immutable name map with `wf_` for `journal` or `session_` for `sessions`. `assertStorageSchemaVersion(domain, found, supported)` rejects a mismatched stored version without changing it.
+`validateStoragePrefix(prefix)` accepts an empty prefix or ASCII letters/underscores followed by ASCII letters, digits, or underscores. It rejects names beginning with `sqlite_`, regardless of case. `validateStoragePrefix(prefix, "postgres")` also rejects a prefix longer than `POSTGRES_MAX_STORAGE_PREFIX_LENGTH` (24). Validate before opening files. `renderStorageIdentifiers(domain, names, prefix)` returns an immutable name map with `wf_` for `journal` or `session_` for `sessions`. `assertStorageSchemaVersion(domain, found, supported)` rejects a mismatched stored version without changing it.

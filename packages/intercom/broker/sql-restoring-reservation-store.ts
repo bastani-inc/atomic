@@ -1,4 +1,10 @@
-import { dialectOf, type SqliteExecutor, type SqliteRow, validateStoragePrefix } from "@bastani/atomic/storage";
+import {
+	dialectOf,
+	type SqliteDatabase,
+	type SqliteExecutor,
+	type SqliteRow,
+	validateStoragePrefix,
+} from "@bastani/atomic/storage";
 import type {
 	IntercomBrokerStateOptions,
 	InvalidStateInput,
@@ -88,6 +94,28 @@ function invalidLease(lease: RestoringReservationLease): InvalidStateInput | und
 }
 
 /**
+ * The index of the reservations whose owner should wake its child, `<table>_wake`. It was `<table>_wake_requested`,
+ * which PostgreSQL cut short at 63 bytes under a prefix longer than 17 characters (#5067). A store an earlier version
+ * created converges here, whichever name it holds: PostgreSQL renames the index, SQLite (which cannot) rebuilds it,
+ * and an index an earlier broker recreated beside the new one is dropped.
+ */
+async function renameWakeIndex(database: SqliteDatabase, table: string): Promise<void> {
+	const dialect = dialectOf(database);
+	const index = `${table}_wake`;
+	const earlier = `${table}_wake_requested`.slice(0, dialect.name === "postgres" ? 63 : undefined);
+	await database.transaction(async (tx) => {
+		const probe = dialect.schemaObjects([earlier, index]);
+		const found = new Set((await tx.all(probe.sql, ...probe.params)).map((row) => row.name));
+		if (found.has(earlier)) {
+			if (dialect.name === "postgres" && !found.has(index))
+				await tx.exec(`ALTER INDEX IF EXISTS ${earlier} RENAME TO ${index}`);
+			else await tx.exec(`DROP INDEX IF EXISTS ${earlier}`);
+		}
+		await tx.exec(`CREATE INDEX IF NOT EXISTS ${index} ON ${table}(owner_broker_id) WHERE wake_requested = 1`);
+	});
+}
+
+/**
  * S3: `RestoringReservationStore` on the shared storage adapter's database, table
  * `<prefix>intercom_restoring_reservations`. Insertion order and fencing tokens come from
  * `<prefix>intercom_restoring_reservation_counters`, so both keep increasing after `prune` deletes rows.
@@ -140,9 +168,7 @@ export async function openSqlRestoringReservationStore({
 	await database.exec(
 		`CREATE INDEX IF NOT EXISTS ${table}_child ON ${table}(child_target) WHERE end_json IS NULL`,
 	);
-	await database.exec(
-		`CREATE INDEX IF NOT EXISTS ${table}_wake_requested ON ${table}(owner_broker_id) WHERE wake_requested = 1`,
-	);
+	await renameWakeIndex(database, table);
 	const columns = `reservation_key, owner_session_id, owner_broker_id, child_name AS child_name_json, child_target,
 		targets_json, "group" AS reservation_group, dormant, wake, wake_generation, fencing_token, "order" AS reservation_order,
 		gone AS gone_json, end_json,
