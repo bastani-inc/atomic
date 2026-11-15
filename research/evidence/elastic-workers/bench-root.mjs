@@ -2,8 +2,7 @@
 // writes one JSON result: wall time, every child's per-checkpoint latencies and host, and how many children failed.
 //   ELASTIC_DB_URL, [ELASTIC_TOKEN_FILE], ELASTIC_PREFIX, ATOMIC_CODING_AGENT_DIR, ELASTIC_CHILDREN, ELASTIC_STEPS,
 //   ELASTIC_LOCAL=1 runs the same fan-out on this machine's own default journal, without shared placement.
-//   ELASTIC_PAYLOAD_BYTES, ELASTIC_WORK_MS, ELASTIC_ROOT_WORKERS, ELASTIC_RESULT_FILE, ELASTIC_SESSIONS,
-//   ELASTIC_CHECKPOINT_SHIPPING (JSON), ELASTIC_LEASE_MS
+//   ELASTIC_PAYLOAD_BYTES, ELASTIC_WORK_MS, ELASTIC_ROOT_WORKERS, ELASTIC_RESULT_FILE, ELASTIC_SESSIONS
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { loadWorkerWorkflow, run, workflow } from "@bastani/atomic/workflows";
@@ -73,19 +72,9 @@ const result = await run(
 						prefix: env("ELASTIC_PREFIX", ""),
 						...(process.env.ELASTIC_TOKEN_FILE ? { secrets: { authToken: { file: process.env.ELASTIC_TOKEN_FILE } } } : {}),
 					},
-					workers: {
-						placement: "shared",
-						// ELASTIC_CHECKPOINT_SHIPPING: the root's `checkpointShipping`, as JSON (#4768).
-						...(process.env.ELASTIC_CHECKPOINT_SHIPPING
-							? { checkpointShipping: JSON.parse(process.env.ELASTIC_CHECKPOINT_SHIPPING) }
-							: {}),
-					},
+					workers: { placement: "shared" },
 				}),
-		localWorkers: {
-			count: Number(env("ELASTIC_ROOT_WORKERS", "1")),
-			definitions: [{ path: childPath, exportName: "benchChild" }],
-			...(process.env.ELASTIC_LEASE_MS ? { leaseMs: Number(process.env.ELASTIC_LEASE_MS) } : {}),
-		},
+		localWorkers: { count: Number(env("ELASTIC_ROOT_WORKERS", "1")), definitions: [{ path: childPath, exportName: "benchChild" }] },
 		admission: { limits: { session: Number(env("ELASTIC_SESSIONS", "64")) } },
 	},
 );
