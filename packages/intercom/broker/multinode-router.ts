@@ -34,6 +34,7 @@ import {
 	type OutboxClaim,
 	type OutboxRow,
 	type PendingAsk,
+	type BrokerMembershipSubject,
 	type RecipientPresenceSubject,
 	type ReleasedAskerReplyFrame,
 	type ReleasedAskRecord,
@@ -195,6 +196,11 @@ export interface MultiNodeRouterOptions {
 	readonly host: MultiNodeHost;
 	readonly brokerId?: string;
 	readonly nodeId?: string;
+	/**
+	 * #5038: what stays the same when this broker restarts (its socket path); with the node it names the previous
+	 * instance, whose leases this one retires as it starts.
+	 */
+	readonly instanceKey?: string;
 }
 
 interface Inflight {
@@ -352,6 +358,7 @@ export class MultiNodeRouter {
 	private readonly bus: WakeUpBus;
 	private readonly host: MultiNodeHost;
 	private readonly nodeId: string;
+	private readonly instanceKey: string | undefined;
 	private membership: Lease | undefined;
 	private subscription: WakeUpSubscription | undefined;
 	private readonly presence = new Map<BrokerConnectedSession, PresenceEntry>();
@@ -376,13 +383,15 @@ export class MultiNodeRouter {
 		this.host = options.host;
 		this.brokerId = options.brokerId ?? randomUUID();
 		this.nodeId = options.nodeId ?? hostname();
+		this.instanceKey = options.instanceKey === undefined ? undefined : `${this.nodeId}:${options.instanceKey}`;
 	}
 
 	/** Take the membership lease, subscribe to wake-ups and adopt the sessions already connected. */
 	static async start(options: MultiNodeRouterOptions): Promise<MultiNodeRouter> {
 		const router = new MultiNodeRouter(options);
+		await router.retirePreviousInstances();
 		const acquired = await router.state.leases.acquire(
-			{ kind: "broker", brokerId: router.brokerId, nodeId: router.nodeId, startedAt: Date.now() },
+			router.membershipSubject(),
 			router.brokerId,
 			BROKER_LEASE_STALE_AFTER_MS,
 		);
@@ -2123,6 +2132,29 @@ export class MultiNodeRouter {
 		}
 	}
 
+	private membershipSubject(): BrokerMembershipSubject {
+		return {
+			kind: "broker",
+			brokerId: this.brokerId,
+			nodeId: this.nodeId,
+			startedAt: Date.now(),
+			...(this.instanceKey === undefined ? {} : { instanceKey: this.instanceKey }),
+		};
+	}
+
+	/**
+	 * #5038: an instance of this broker that is still listed as live died without releasing its leases (only one
+	 * broker serves a socket). Its presence leases would keep other brokers routing to it, and keep sessions that
+	 * re-register here from taking their presence, until they go stale; retire them now.
+	 */
+	private async retirePreviousInstances(): Promise<void> {
+		if (this.instanceKey === undefined) return;
+		for (const lease of await this.state.leases.listLive("broker", BROKER_LEASE_STALE_AFTER_MS)) {
+			if (lease.holderId === this.brokerId || lease.subject.kind !== "broker") continue;
+			if (lease.subject.instanceKey === this.instanceKey) await this.state.leases.retireHolder(lease.holderId);
+		}
+	}
+
 	private async renew(): Promise<void> {
 		if (this.membership !== undefined) {
 			const renewed = await this.state.leases.renew(this.membership);
@@ -2130,7 +2162,7 @@ export class MultiNodeRouter {
 		}
 		if (this.membership === undefined) {
 			const acquired = await this.state.leases.acquire(
-				{ kind: "broker", brokerId: this.brokerId, nodeId: this.nodeId, startedAt: Date.now() },
+				this.membershipSubject(),
 				this.brokerId,
 				BROKER_LEASE_STALE_AFTER_MS,
 			);

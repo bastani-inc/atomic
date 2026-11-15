@@ -174,6 +174,15 @@ function leaseStore(records: Map<string, LeaseRecord>, nextOrder: { value: numbe
 						: [],
 				);
 		},
+		async retireHolder(holderId) {
+			let retired = 0;
+			for (const record of records.values()) {
+				if (holderId.length === 0 || record.holder?.holderId !== holderId) continue;
+				record.holder = undefined;
+				retired++;
+			}
+			return retired;
+		},
 	};
 }
 

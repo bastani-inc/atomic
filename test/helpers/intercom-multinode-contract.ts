@@ -308,6 +308,26 @@ export function registerBrokerLeaseStoreConformance(
 		assert.deepEqual(await targets(), ["target-2", "target-1"]);
 	});
 
+	check(
+		"retires every live lease of one holder at once, fencing it, and leaves other holders alone (#5038)",
+		async (connect) => {
+			const [a, b] = [await connect(), await connect()];
+			const member = await acquire(a, "broker-a", membership("broker-a"));
+			const hosted = await acquire(a, "broker-a");
+			const other = await acquire(b, "broker-b", presence(OTHER_RECIPIENT));
+			assert.equal(await b.retireHolder("broker-a"), 2);
+			assert.deepEqual(await b.read(member.key), { status: "missing" });
+			assert.deepEqual(await b.read(hosted.key), { status: "missing" });
+			assert.equal(expectStatus(await b.read(other.key), "found").lease.holderId, "broker-b");
+			const taken = await acquire(b, "broker-b");
+			assert.ok(taken.fencingToken > hosted.fencingToken);
+			assert.deepEqual(await a.renew(hosted), { status: "stale", currentFencingToken: taken.fencingToken });
+			assert.equal(await b.retireHolder("broker-a"), 0);
+			assert.equal(await b.retireHolder(""), 0);
+			assert.equal(expectStatus(await b.read(other.key), "found").lease.holderId, "broker-b");
+		},
+	);
+
 	check("rejects empty identifiers and a renewal subject for another key", async (connect) => {
 		const a = await connect();
 		const empty = (reason: string) => ({ status: "invalid", reason });

@@ -81,6 +81,11 @@ export interface BrokerMembershipSubject {
 	/** Host label for diagnostics and future direct forwarding; not used for routing. */
 	readonly nodeId: string;
 	readonly startedAt: number;
+	/**
+	 * #5038: the broker's stable identity across restarts (its host and socket path). A broker starting with the same
+	 * key supersedes the instance before it, which can no longer be running there, and retires that instance's leases.
+	 */
+	readonly instanceKey?: string;
 }
 
 /** Recipient presence: which broker currently hosts the recipient's socket. */
@@ -144,6 +149,11 @@ export interface BrokerLeaseStore {
 	read(key: LeaseKey): Promise<LeaseReadResult>;
 	/** Live leases of one kind, in the order their keys were first acquired. */
 	listLive(kind: LeaseKind, staleAfterMs: number): Promise<LeaseState[]>;
+	/**
+	 * #5038: give up every lease `holderId` holds, as its own `release` would, so their next acquisitions need not
+	 * wait for them to go stale. Resolves to the number of leases retired.
+	 */
+	retireHolder(holderId: string): Promise<number>;
 }
 
 export type OutboxRowState = "queued" | "claimed" | "delivered" | "failed";

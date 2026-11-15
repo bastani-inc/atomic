@@ -2955,6 +2955,8 @@ class IntercomBroker {
           try {
             this.multiNode = await MultiNodeRouter.start({
               ...opened,
+              // #5038: a restarted broker serves the same socket; its previous instance's leases are retired at start.
+              instanceKey: SOCKET_PATH,
               host: {
                 sessions: this.sessions,
                 write: writeMessageIfOpen,
