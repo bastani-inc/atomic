@@ -25,7 +25,11 @@ import {
 import { createAgentSessionFromServices, createAgentSessionServices } from "../src/core/agent-session-services.js";
 import { AuthStorage } from "../src/core/auth-storage.js";
 import { ModelRuntime } from "../src/core/model-runtime.js";
-import { blueprintBuildPending, blueprintBuildSettled } from "../src/core/resume/blueprint/barrier.js";
+import {
+	blueprintBuildPending,
+	blueprintBuildSettled,
+	blueprintBuildsRunning,
+} from "../src/core/resume/blueprint/barrier.js";
 import { RESUME_CATALOG_TIMEOUT_MS } from "../src/core/resume/not-found.js";
 import { sessionResumeOptions } from "../src/core/resume/session-resume.js";
 import type { CreateAgentSessionOptions } from "../src/core/sdk-types.js";
@@ -975,6 +979,31 @@ describe("AgentSessionRuntime.switchSession across nodes (#4329)", () => {
 		assert.equal(blueprintBuildPending(sessionId), true, "the build still runs and holds the session's tools");
 		writeFileSync(gate, "");
 		await blueprintBuildSettled(sessionId);
+	});
+
+	test("disposing a runtime during the build stops the build before it closes the session (#4748)", async () => {
+		const agentDir = sandbox.path("agent");
+		const gate = sandbox.path("gate");
+		const { sessionId } = await sessionRecordedElsewhere(sqliteSelection("shared"));
+		const { runtime } = await runtimeOn(
+			agentDir,
+			{
+				defaultProjectTrust: "always",
+				resume: {
+					setupCommand: nodeCommand(
+						`(function wait(){require('fs').existsSync('${shellPath(gate)}')||setTimeout(wait,20)})()`,
+					),
+				},
+			},
+			"unset",
+		);
+		assert.deepEqual(await runtime.switchSession(sessionId), { cancelled: false });
+		const session = runtime.session as unknown as { readonly _disposed: boolean };
+		assert.equal(blueprintBuildsRunning(), true);
+		await runtime.dispose();
+		assert.equal(blueprintBuildsRunning(), false, "the build was stopped");
+		assert.equal(session._disposed, true, "and the session closed after it");
+		writeFileSync(gate, "");
 	});
 
 	test("/resume with a failing initialize step still resumes in the restored worktree, hands its warning over once and gives the agent the failure (#4588)", async () => {

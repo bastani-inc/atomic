@@ -8,13 +8,20 @@ import { afterEach, beforeEach, describe, test } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
 import { parseArgs } from "../src/cli/args.ts";
+import { blueprintSubject } from "../src/core/agent-session-tool-hooks.ts";
 import type { ToolDefinition } from "../src/core/extensions/index.ts";
 import {
 	awaitBlueprintReady,
+	type BlueprintBuildFinished,
 	blueprintBuildPending,
 	blueprintBuildSettled,
+	blueprintBuildsRunning,
+	blueprintBuildsSettled,
 	holdToolsUntilBuilt,
 	holdToolsUntilOwnerBuilt,
+	onBlueprintBuildFinished,
+	shareBlueprintBuild,
+	stopBlueprintBuilds,
 } from "../src/core/resume/blueprint/barrier.ts";
 import type { BlueprintBuildOutcome } from "../src/core/resume/blueprint/build.ts";
 import { BLUEPRINT_BUILDING_CONTEXT, blueprintBuildReport } from "../src/core/resume/blueprint/resume.ts";
@@ -400,6 +407,35 @@ describe("resume.waitForBlueprint lets the first turn overlap the blueprint buil
 		assert.deepEqual(ran(), ["started", "built"]);
 	});
 
+	for (const how of ["the process ends", "the resume's signal aborts"] as const) {
+		test(`a build behind the first turn stops when ${how}: what ran is recorded and the user and agent are told (#4748)`, async () => {
+			const manager = await recordedProject();
+			const aborting = new AbortController();
+			const heard: BlueprintBuildFinished[] = [];
+			const unsubscribe = onBlueprintBuildFinished((finished) => heard.push(finished));
+			cleanups.push(unsubscribe);
+			const prepared = ready(await prepareSessionResume(manager, { ...options("tools"), signal: aborting.signal }));
+			await until(() => ran().includes("started"), "the build to start");
+			if (how === "the process ends") await stopBlueprintBuilds();
+			else {
+				aborting.abort(new Error("cancelled"));
+				await blueprintBuildsSettled();
+			}
+			writeFileSync(gate(), "");
+			await new Promise((resolve) => setTimeout(resolve, 300));
+			assert.deepEqual(ran(), ["started"], "the build's step was stopped");
+			const stopped =
+				/^Blueprint build stopped before it finished \(.+\); the next resume builds the restored worktree again\.$/;
+			const ours = heard.filter((finished) => finished.sessionId === prepared.sessionManager.getSessionId());
+			assert.equal(ours.length, 1);
+			assert.equal(ours[0]!.notices.length, 1);
+			assert.equal(ours[0]!.notices[0]!.type, "warning");
+			assert.match(ours[0]!.notices[0]!.message, stopped);
+			assert.match((await awaitBlueprintReady(prepared.sessionManager.getSessionId())) ?? "", stopped);
+			assert.notEqual(latestResumeTimings(prepared.sessionManager)?.blueprintReadyMs, undefined, "timings recorded");
+		});
+	}
+
 	test("an SDK session resumed without a UI is created during the build and holds its tools (#4748)", async () => {
 		const manager = await recordedProject();
 		const { createAgentSession } = await import("../src/core/sdk.ts");
@@ -495,10 +531,105 @@ describe("the blueprint barrier (#4748)", () => {
 		const first = Promise.withResolvers<string | undefined>();
 		holdToolsUntilBuilt("replaced-session", first.promise);
 		const waiting = awaitBlueprintReady("replaced-session");
-		holdToolsUntilBuilt("replaced-session", new Promise(() => {}));
+		const second = Promise.withResolvers<string | undefined>();
+		holdToolsUntilBuilt("replaced-session", second.promise);
 		first.resolve("first build");
 		assert.equal(await waiting, undefined);
 		assert.equal(blueprintBuildPending("replaced-session"), true);
+		second.resolve(undefined);
+	});
+
+	test("a build holds every session working in its worktree, and their reports are told once, together (#4748)", async () => {
+		const root = sandbox.path("worktrees", "repo-0");
+		holdToolsUntilBuilt("resumed", Promise.resolve({ report: "first build" }), { roots: [root] });
+		holdToolsUntilBuilt("other", Promise.resolve("second build"), { roots: [sandbox.path("worktrees", "repo-1")] });
+		const newSession = { sessionId: "new", roots: [join(root, "src")] };
+		assert.equal(blueprintBuildPending(newSession), true, "a session in the worktree waits");
+		assert.equal(blueprintBuildPending({ sessionId: "elsewhere", roots: [sandbox.path("elsewhere")] }), false);
+		const both = { sessionId: "other", roots: [root] };
+		assert.equal(await awaitBlueprintReady(both), "first build\nsecond build");
+		assert.equal(await awaitBlueprintReady(newSession), undefined, "each report is told once");
+	});
+
+	test("a session's subject names the worktrees its restores put its checkouts in (#4748)", () => {
+		const manager = {
+			getSessionId: () => "s",
+			getCwd: () => sandbox.path("launch"),
+			getWorktreeRootMappings: () => [{ from: "/recorded", to: sandbox.path("worktrees", "repo-0") }],
+		};
+		const subject = blueprintSubject({ sessionManager: manager } as unknown as Parameters<
+			typeof blueprintSubject
+		>[0]);
+		assert.deepEqual(subject, {
+			sessionId: "s",
+			roots: [sandbox.path("launch"), sandbox.path("worktrees", "repo-0")],
+		});
+	});
+
+	test("each finished build is told once to the listeners of its time, or to the next one (#4748)", async () => {
+		const heard: BlueprintBuildFinished[] = [];
+		const stop = onBlueprintBuildFinished((finished) => heard.push(finished));
+		const notices = [{ type: "warning" as const, message: "Partial build: x" }];
+		holdToolsUntilBuilt("told", Promise.resolve({ report: "r", notices }), { roots: [sandbox.path("w")] });
+		holdToolsUntilBuilt("untold", Promise.resolve("report only"));
+		await blueprintBuildsSettled();
+		const mine = (list: BlueprintBuildFinished[]) =>
+			list.filter((finished) => ["told", "untold", "later"].includes(finished.sessionId));
+		assert.deepEqual(mine(heard), [
+			{ type: "blueprint_build_finished", sessionId: "told", roots: [sandbox.path("w")], notices },
+		]);
+		stop();
+		holdToolsUntilBuilt("later", Promise.resolve({ notices: [] }));
+		await blueprintBuildsSettled();
+		assert.equal(mine(heard).length, 1, "an unsubscribed listener hears nothing more");
+		const next: BlueprintBuildFinished[] = [];
+		onBlueprintBuildFinished((finished) => next.push(finished))();
+		assert.deepEqual(
+			mine(next).map((finished) => finished.sessionId),
+			["later"],
+			"the next listener hears what nobody heard",
+		);
+	});
+
+	test("stopping the builds stops each that can be stopped and waits until all have settled (#4748)", async () => {
+		const stoppable = Promise.withResolvers<string | undefined>();
+		const reasons: Error[] = [];
+		holdToolsUntilBuilt("stoppable", stoppable.promise, {
+			stop: (reason) => {
+				reasons.push(reason);
+				stoppable.resolve("stopped");
+			},
+		});
+		const plain = Promise.withResolvers<string | undefined>();
+		holdToolsUntilBuilt("plain", plain.promise);
+		assert.equal(blueprintBuildsRunning(), true);
+		let stopped = false;
+		const stopping = stopBlueprintBuilds().then(() => {
+			stopped = true;
+		});
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		assert.equal(stopped, false, "a build without a stop is waited for");
+		plain.resolve(undefined);
+		await stopping;
+		assert.deepEqual(
+			reasons.map((reason) => reason.message),
+			["Atomic is exiting"],
+		);
+		assert.equal(blueprintBuildsRunning(), false);
+	});
+
+	test("the engine's sessions in the worktree a host shares the build of wait for it too (#4748)", async () => {
+		const root = sandbox.path("worktrees", "shared-0");
+		const build = Promise.withResolvers<string | undefined>();
+		const other = Promise.withResolvers<string | undefined>();
+		holdToolsUntilBuilt("someone-else", other.promise);
+		holdToolsUntilBuilt("shared-roots", build.promise, { roots: [root] });
+		await shareBlueprintBuild(sandbox.path("host"), "shared-roots");
+		holdToolsUntilOwnerBuilt(sandbox.path("host"), process.pid, "shared-roots");
+		assert.equal(blueprintBuildPending({ sessionId: "engine-new", roots: [root] }), true);
+		build.resolve("shared report");
+		assert.equal(await awaitBlueprintReady({ sessionId: "engine-new", roots: [root] }), "shared report");
+		other.resolve(undefined);
 	});
 
 	test("an engine whose host shared no build holds nothing (#4748)", () => {
