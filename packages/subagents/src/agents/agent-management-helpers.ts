@@ -2,7 +2,7 @@ import type { SkillCatalog } from "@bastani/atomic";
 import { parseModelConstraints } from "../shared/model-constraints.js";
 import type { SubagentToolResult } from "../shared/types.js";
 import type { ManagementContext, ManagementScope } from "./agent-management.js";
-import type { AgentConfig, AgentScope } from "./agents.js";
+import type { AgentConfig, AgentDiscoveryOptions, AgentScope } from "./agents.js";
 import { discoverAgentsAll, parsePackageName } from "./agents.js";
 import { discoverAvailableSkills, resolveSkillsFromCatalog } from "./skills.js";
 
@@ -68,13 +68,18 @@ export function allAgents(d: { builtin: AgentConfig[]; user: AgentConfig[]; proj
 	return [...d.builtin, ...d.user, ...d.project];
 }
 
-export function availableNames(cwd: string): string[] {
-	const d = discoverAgentsAll(cwd);
+export function availableNames(cwd: string, discovery: AgentDiscoveryOptions): string[] {
+	const d = discoverAgentsAll(cwd, discovery);
 	return [...new Set(allAgents(d).map((agent) => agent.name))].sort((a, b) => a.localeCompare(b));
 }
 
-export function findAgents(name: string, cwd: string, scope: AgentScope = "both"): AgentConfig[] {
-	const d = discoverAgentsAll(cwd);
+export function findAgents(
+	name: string,
+	cwd: string,
+	discovery: AgentDiscoveryOptions,
+	scope: AgentScope = "both",
+): AgentConfig[] {
+	const d = discoverAgentsAll(cwd, discovery);
 	const raw = name.trim();
 	const sanitized = sanitizeName(raw);
 	return allAgents(d)
@@ -82,8 +87,14 @@ export function findAgents(name: string, cwd: string, scope: AgentScope = "both"
 		.sort((a, b) => a.source.localeCompare(b.source));
 }
 
-export function nameExistsInScope(cwd: string, scope: ManagementScope, name: string, excludePath?: string): boolean {
-	const d = discoverAgentsAll(cwd);
+export function nameExistsInScope(
+	cwd: string,
+	discovery: AgentDiscoveryOptions,
+	scope: ManagementScope,
+	name: string,
+	excludePath?: string,
+): boolean {
+	const d = discoverAgentsAll(cwd, discovery);
 	return (scope === "user" ? d.user : d.project).some(
 		(agent) => agent.name === name && agent.filePath !== excludePath,
 	);

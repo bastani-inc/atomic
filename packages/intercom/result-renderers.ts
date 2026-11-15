@@ -1,5 +1,6 @@
 import type { ToolDefinition } from "@bastani/atomic";
 import { Text } from "@earendil-works/pi-tui";
+import { terminalSafeText } from "./ui/terminal-text.js";
 
 type ToolResultRenderer = NonNullable<ToolDefinition["renderResult"]>;
 type ToolRenderResultArgs = Parameters<ToolResultRenderer>;
@@ -24,7 +25,8 @@ function isTextContentBlock(block: RenderedResult["content"][number]): block is 
 }
 
 function firstTextContent(result: RenderedResult): string {
-	return result.content.find(isTextContentBlock)?.text.replace(/\*\*/g, "") ?? "";
+	// Results relay peer text (replies, session names); keep it inert for the terminal (#4889).
+	return terminalSafeText(result.content.find(isTextContentBlock)?.text.replace(/\*\*/g, "") ?? "");
 }
 
 export const renderContactSupervisorResult: ToolResultRenderer = (result, { isPartial }, theme, context) => {
@@ -34,7 +36,8 @@ export const renderContactSupervisorResult: ToolResultRenderer = (result, { isPa
 	const details = result.details as ContactSupervisorResultDetails | undefined;
 	const textContent = firstTextContent(result);
 	const failed = Boolean(context.isError || details?.error === true || details?.delivered === false);
-	const parseWarning = typeof details?.structuredReplyParseError === "string";
+	const parseError = details?.structuredReplyParseError;
+	const parseWarning = typeof parseError === "string";
 	let text = failed
 		? theme.fg("error", "✗ ")
 		: parseWarning
@@ -42,7 +45,7 @@ export const renderContactSupervisorResult: ToolResultRenderer = (result, { isPa
 			: theme.fg("success", "✓ ");
 	text += theme.fg(failed ? "error" : "text", textContent);
 	if (parseWarning) {
-		text += "\n" + theme.fg("warning", `Structured reply parse issue: ${details.structuredReplyParseError}`);
+		text += "\n" + theme.fg("warning", `Structured reply parse issue: ${terminalSafeText(parseError)}`);
 	}
 	return new Text(text, 0, 0);
 };
@@ -61,7 +64,7 @@ export const renderIntercomResult: ToolResultRenderer = (result, { isPartial }, 
 		text += theme.fg("dim", ` (${details.messageId})`);
 	}
 	if (details?.reason && context.expanded) {
-		text += "\n" + theme.fg("dim", `Reason: ${details.reason}`);
+		text += "\n" + theme.fg("dim", `Reason: ${terminalSafeText(details.reason)}`);
 	}
 	return new Text(text, 0, 0);
 };
