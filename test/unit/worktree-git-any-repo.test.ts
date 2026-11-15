@@ -274,7 +274,7 @@ describe("gitWorktreeDir creates worktrees in empty and non-empty directories", 
 			const worktreeRoot = createNonEmptyRoot(root);
 			const setup = setupGitWorktree({ cwd: dotted, gitWorktreeDir: worktreeRoot });
 			assert.equal(setup.cwd, join(setup.worktreeRoot, "..sub"));
-			assert.equal(readFileSync(join(setup.cwd, "file.txt"), "utf8"), "dotted\n");
+			assert.equal(readFileSync(join(setup.cwd, "file.txt"), "utf8").replaceAll("\r\n", "\n"), "dotted\n");
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}
