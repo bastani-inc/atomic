@@ -102,7 +102,7 @@ export async function guardedPoolWrite<T>(
 			return planned.result(rows);
 		});
 	const fence = poolFenceTable(storage.tables.runs);
-	const deadline = Date.now() + (JOURNAL_TRANSACTION.lockWaitMs ?? 0);
+	const deadline = performance.now() + (JOURNAL_TRANSACTION.lockWaitMs ?? 0);
 	let unknownOutcomes = 0;
 	let afterUnknown = false;
 	for (let attempt = 0; ; attempt++) {
@@ -127,7 +127,7 @@ export async function guardedPoolWrite<T>(
 				error instanceof StorageTransientError &&
 				error.outcome === "unknown" &&
 				++unknownOutcomes <= UNKNOWN_OUTCOME_REPLANS;
-			if (!(isFenceAbort(error) || unknown) || Date.now() >= deadline) throw error;
+			if (!(isFenceAbort(error) || unknown) || performance.now() >= deadline) throw error;
 			// An unknown outcome stays pending until a batch succeeds: a fence abort after it says nothing of whether the
 			// earlier request committed late, so every later plan still finds out first (#5126).
 			afterUnknown ||= unknown;

@@ -532,7 +532,7 @@ class DriverDatabase implements SqliteDatabase {
 		const lockWaitMs = passed?.lockWaitMs ?? 0;
 		const busy = this.driver.lockBusy?.bind(this.driver);
 		if (lockWaitMs <= 0 || busy === undefined) return send();
-		return this.whileBusy(send, busy, Date.now() + lockWaitMs);
+		return this.whileBusy(send, busy, performance.now() + lockWaitMs);
 	}
 
 	/**
@@ -550,10 +550,13 @@ class DriverDatabase implements SqliteDatabase {
 			try {
 				return await send();
 			} catch (failure) {
-				if (!busy(failure as StorageFailureCause) || Date.now() >= deadline || this.closePromise) throw failure;
+				if (!busy(failure as StorageFailureCause) || performance.now() >= deadline || this.closePromise)
+					throw failure;
 			}
 			const bound = Math.min(BUSY_RETRY_MAX_MS, BUSY_RETRY_BASE_MS * 2 ** Math.min(attempt, 16));
-			await new Promise((resolve) => setTimeout(resolve, Math.min(Math.random() * bound, deadline - Date.now())));
+			await new Promise((resolve) =>
+				setTimeout(resolve, Math.min(Math.random() * bound, deadline - performance.now())),
+			);
 			if (this.closePromise) return Promise.reject(new StoreClosedError(this.descriptor));
 		}
 	}

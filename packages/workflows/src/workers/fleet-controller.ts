@@ -134,7 +134,10 @@ export class FleetController implements WorkflowFleetController {
 	private ticking?: Promise<void>;
 	/** Aborted when the running tick must stop acting: the lease was lost or may have expired, or the controller stops. */
 	private tickAbort = new AbortController();
-	/** When the lease was last taken or renewed, read on both clocks before the request. */
+	/**
+	 * When the lease was last taken or renewed, measured before the request, on both clocks: neither a step back of the
+	 * wall clock nor a suspend of the system makes a controller that may have lost its lease act on (#5058).
+	 */
 	private renewedAt: Instant = { monotonic: 0, wall: 0 };
 	/** Listings in a row that omitted each drained instance, by the drained host id (#4828). */
 	private missed = new Map<string, number>();
@@ -163,7 +166,7 @@ export class FleetController implements WorkflowFleetController {
 		this.policy = checked.policy;
 		this.tickMs = checked.tickMs;
 		this.leaseMs = 3 * this.tickMs;
-		this.backoff = new HostPollBackoff(() => Date.now(), Math.random, {
+		this.backoff = new HostPollBackoff(() => performance.now(), Math.random, {
 			firstMs: this.tickMs,
 			maxMs: PROVIDER_BACKOFF_MAX_MS,
 		});
@@ -283,7 +286,7 @@ export class FleetController implements WorkflowFleetController {
 			await this.followDrains(fence, listed, snapshot);
 			const hosts = joinHosts(listed, snapshot);
 			const known = new Set(snapshot.hosts.map((host) => host.host));
-			const now = Date.now();
+			const now = performance.now();
 			const plan = planFleet(
 				this.policy,
 				{ now, roots: snapshot.roots, hosts: hosts.map((entry) => entry.view) },
@@ -383,7 +386,7 @@ export class FleetController implements WorkflowFleetController {
 		const hosts = joinHosts(listed, snapshot);
 		const plan = planFleet(
 			{ ...this.policy, idleDrainMs: 0 },
-			{ now: Date.now(), roots: snapshot.roots, hosts: hosts.map((entry) => entry.view) },
+			{ now: performance.now(), roots: snapshot.roots, hosts: hosts.map((entry) => entry.view) },
 			this.state,
 		);
 		for (const action of plan.actions)

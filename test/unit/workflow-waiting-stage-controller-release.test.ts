@@ -174,9 +174,12 @@ function storeUnavailable(): StorageUnavailableError {
 }
 
 describe("when a stage that holds its session may be released (#4309)", () => {
+	/** When each test starts, by the stage's idle clock, `performance.now()` (#5058). */
+	let start = 0;
 	beforeEach(() => {
-		vi.useFakeTimers({ toFake: ["Date"] });
+		vi.useFakeTimers({ toFake: ["Date", "performance"] });
 		vi.setSystemTime(T0);
+		start = performance.now();
 	});
 	afterEach(() => {
 		vi.useRealTimers();
@@ -190,11 +193,11 @@ describe("when a stage that holds its session may be released (#4309)", () => {
 
 		gate.resolve();
 		await rig.ctx.prompt("first");
-		assert.equal(rig.ctx.__idleSince?.(), T0);
+		assert.equal(rig.ctx.__idleSince?.(), start);
 
-		vi.setSystemTime(T0 + 1_000);
+		vi.advanceTimersByTime(1_000);
 		rig.sessions[0]?.emit({ type: "agent_start" });
-		assert.equal(rig.ctx.__idleSince?.(), T0 + 1_000);
+		assert.equal(rig.ctx.__idleSince?.(), start + 1_000);
 
 		await rig.ctx.release();
 		assert.equal(rig.ctx.__idleSince?.(), undefined);
@@ -232,10 +235,11 @@ describe("when a stage that holds its session may be released (#4309)", () => {
 		assert.equal(rig.ctx.__idleSince?.(), undefined);
 		assert.equal(await rig.ctx.__releaseIdle?.(), false);
 
-		vi.setSystemTime(T0 + 2_000);
+		vi.advanceTimersByTime(2_000);
+		const ended = performance.now();
 		gate.resolve();
 		await prompting;
-		assert.equal(rig.ctx.__idleSince?.(), T0 + 2_000);
+		assert.equal(rig.ctx.__idleSince?.(), ended);
 	});
 
 	test("an idle stage is released by the run's idle scan, once, with the wait kind that scan asks for (#4309)", async () => {
