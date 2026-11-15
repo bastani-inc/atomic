@@ -114,7 +114,7 @@ const PRESENCE_HANDOVER_RETRY_MS = 50;
  * #5138: how many times a registration's store steps (ending its reservations, rebinding its parked asks) are tried,
  * once at registration and then at each renewal, before a failure that keeps recurring is given up.
  */
-const REGISTRATION_STEP_ATTEMPTS = 30;
+export const REGISTRATION_STEP_ATTEMPTS = 30;
 /**
  * The longest a registration waits for its presence lease. A hung shared database must not hang registration (the
  * client gives up after 10 s); the lease is still written when the database answers.
@@ -301,8 +301,8 @@ interface PresenceEntry {
 interface UnfinishedRegistration {
 	consume?: ConsumedReservation;
 	/** The reservations' insertion mark read as the registration began, until `consume` takes it. */
-	mark?: Promise<number>;
-	rebind?: ReleasedRegistration;
+	mark?: Promise<number> | undefined;
+	rebind?: ReleasedRegistration | undefined;
 	attempts: number;
 }
 
@@ -524,8 +524,8 @@ export class MultiNodeRouter {
 						if (registration !== undefined && entry.lease === undefined) entry.rebind = registration;
 						entry.unfinished = {
 							consume: consumed,
-							...(insertedBy === undefined ? {} : { mark: insertedBy }),
-							...(registration === undefined ? {} : { rebind: registration }),
+							mark: insertedBy,
+							rebind: registration,
 							attempts: 0,
 						};
 						await this.finishRegistration(session, entry);
@@ -567,9 +567,8 @@ export class MultiNodeRouter {
 			}
 		}
 		const done = unfinished.consume === undefined && unfinished.rebind === undefined;
-		if ((done || unfinished.attempts >= REGISTRATION_STEP_ATTEMPTS) && entry.unfinished === unfinished) {
-			delete entry.unfinished;
-		}
+		// Steps run one at a time per session (`serial`), so `entry.unfinished` is still this record.
+		if (done || unfinished.attempts >= REGISTRATION_STEP_ATTEMPTS) delete entry.unfinished;
 		if (failures.length > 0) throw failures[0];
 	}
 

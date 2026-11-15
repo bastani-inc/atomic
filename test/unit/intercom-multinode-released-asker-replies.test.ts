@@ -6,7 +6,7 @@ import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 
 useTemporaryAgentDir();
 
-const { crossNodeDigest, LOCAL_RETRY_LOOKUP_BOUND_MS, MultiNodeRouter } = await import(
+const { crossNodeDigest, LOCAL_RETRY_LOOKUP_BOUND_MS, MultiNodeRouter, REGISTRATION_STEP_ATTEMPTS } = await import(
 	"../../packages/intercom/broker/multinode-router.js"
 );
 const { PendingQuestionIndex } = await import("../../packages/intercom/broker/pending-question-index.js");
@@ -2114,9 +2114,12 @@ describe("an ask to a subagent that is then released keeps waiting for it across
 					1,
 					"rebinds once",
 				);
-				assert.ok(
-					vi.mocked(console.error).mock.calls.some(([text]) => String(text).includes(`${call} failed`)),
-					"the failure is reported",
+				const reported = vi.mocked(console.error).mock.calls.map(([text]) => String(text));
+				assert.ok(reported.length > 0, "the failure is reported");
+				assert.deepEqual(
+					reported.filter((text) => !text.includes(`${call} failed`)),
+					[],
+					"nothing else fails",
 				);
 			} finally {
 				vi.useRealTimers();
@@ -2147,8 +2150,13 @@ describe("an ask to a subagent that is then released keeps waiting for it across
 				}
 			}
 			assert.equal(calls.count, previous, "the retries stop");
-			assert.ok(calls.count > 1, "the consume is retried");
-			assert.ok(vi.mocked(console.error).mock.calls.some(([text]) => String(text).includes("consume failed")));
+			assert.equal(calls.count, REGISTRATION_STEP_ATTEMPTS, "the consume is tried until it is given up");
+			const reported = vi.mocked(console.error).mock.calls.map(([text]) => String(text));
+			assert.ok(reported.length > 0);
+			assert.deepEqual(
+				reported.filter((text) => !text.includes("consume failed")),
+				[],
+			);
 			assert.equal(
 				framesOf(scene.localAsker).filter((frame) => frame.type === "peer_rebound").length,
 				1,
