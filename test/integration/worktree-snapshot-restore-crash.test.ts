@@ -175,7 +175,8 @@ test.skipIf(process.platform === "win32")(
 				const outcome = await result(killed);
 				assert.equal(killed.signalCode, "SIGKILL", `${phase}: ${outcome.stderr}`);
 				const worktrees = join(store, "worktrees");
-				if (existsSync(worktrees)) assert.ok(readdirSync(worktrees).every((name) => name.startsWith(".staging-")));
+				if (existsSync(worktrees))
+					assert.ok(readdirSync(worktrees).every((name) => /^\.s-[0-9a-f]{12}$/.test(name)));
 				ageLocks(store);
 				const path = await retry(f, store);
 				await assertHealthy(f, store, [path]);
@@ -191,9 +192,12 @@ test.skipIf(process.platform === "win32")(
 	RESTORE_CRASH_TIMEOUT_MS,
 );
 
-test.skipIf(process.platform === "win32")(
-	"a stale locked-initializing worktree is swept even when removal is the next operation (#4245)",
-	async () => {
+test.skipIf(process.platform === "win32").each([
+	["", (id: string) => `.s-${id.replaceAll("-", "").slice(0, 12)}`],
+	[" with an earlier version's long staging name (#5139)", (id: string) => `.staging-${id}`],
+])(
+	"a stale locked-initializing worktree is swept even when removal is the next operation (#4245)%s",
+	async (_name, stagingName) => {
 		const f = await fixture();
 		try {
 			const store = f.sandbox.path("host");
@@ -201,7 +205,7 @@ test.skipIf(process.platform === "win32")(
 			const repositories = join(store, "repositories");
 			const repo = join(repositories, readdirSync(repositories)[0]!);
 			const id = randomUUID();
-			const staging = join(store, "worktrees", `.staging-${id}`);
+			const staging = join(store, "worktrees", stagingName(id));
 			const target = join(store, "worktrees", `unused-${id}`);
 			await f.sandbox.git(
 				f.sandbox.root,

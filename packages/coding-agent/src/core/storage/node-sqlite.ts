@@ -13,7 +13,7 @@ import {
 } from "node:fs";
 import { mkdir, readdir, realpath, stat, unlink, utimes, writeFile } from "node:fs/promises";
 import { platform } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, win32 } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { promisify } from "node:util";
 import type {
@@ -1397,6 +1397,16 @@ function groupCommitHold(value: number | undefined): number {
 	return value;
 }
 
+/**
+ * The path SQLite opens `path` by. On Windows a file path takes the `\\?\` long-path form: SQLite's Windows file
+ * calls fail a path over 260 characters, `MAX_PATH`, with code 14 (#5139), and accept that form at any length. The
+ * in-memory and temporary databases, `:memory:` and the empty path, and every path elsewhere are passed unchanged.
+ */
+export function sqliteFilePath(path: string, platform: NodeJS.Platform = process.platform): string {
+	if (platform !== "win32" || path === "" || path === ":memory:" || path.startsWith("file:")) return path;
+	return win32.toNamespacedPath(path);
+}
+
 export async function openNodeSqliteDatabase(
 	path: string,
 	{
@@ -1429,7 +1439,7 @@ export async function openNodeSqliteDatabase(
 	let connection: DatabaseSync | undefined;
 	try {
 		if (!readOnly && path !== ":memory:") await mkdir(dirname(path), { recursive: true });
-		connection = new Database(path, { readOnly });
+		connection = new Database(sqliteFilePath(path), { readOnly });
 		connection.exec(`PRAGMA busy_timeout=${busyTimeoutMs}`);
 		if (!readOnly) {
 			const writable = connection;
