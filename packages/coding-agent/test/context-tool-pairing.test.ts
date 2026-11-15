@@ -222,4 +222,52 @@ describe("tool calls with an empty id (#5056)", () => {
 			["call_1_1", "second"],
 		]);
 	});
+
+	test("a tool call and result without any id are paired like empty ids (#5056)", () => {
+		const call = assistantWithToolCalls(["x"], 10);
+		const { id: _omitted, ...withoutId } = call.content[0] as { id: string };
+		const result = toolResult("x", "only");
+		const { toolCallId: _absent, ...resultWithoutId } = result;
+		const converted = convertToLlm([
+			{ ...call, content: [withoutId] },
+			resultWithoutId,
+			{ role: "user", content: "next", timestamp: 30 },
+		] as AgentMessage[]);
+
+		expect(toolCallIds(converted)).toEqual(["call_1"]);
+		expect(resultPairs(converted)).toEqual([["call_1", "only"]]);
+	});
+
+	test("a message delivered between an empty-id call and its result does not take the call's id (#5056)", () => {
+		const delivered = { role: "user", content: "delivered while running", timestamp: 15 } as AgentMessage;
+		const kept = toolResult("kept", "second");
+		const stray = toolResult("other", "stray");
+		const uniquified = uniquifyToolCallIds([
+			assistantWithToolCalls(["", "kept"], 10),
+			delivered,
+			toolResult("", "first"),
+			kept,
+			stray,
+		] as AgentMessage[]);
+
+		expect(uniquified[1]).toBe(delivered);
+		expect(resultPairs(uniquified)).toEqual([
+			["call_1", "first"],
+			["kept", "second"],
+			["other", "stray"],
+		]);
+		expect(uniquified[3]).toBe(kept);
+		expect(uniquified[4]).toBe(stray);
+	});
+
+	test("well-paired context with text beside its tool calls is returned unchanged (#5056)", () => {
+		const call = assistantWithToolCalls(["call-a"], 10);
+		const messages = [
+			{ ...call, content: [{ type: "text" as const, text: "reading" }, ...call.content] },
+			toolResult("call-a"),
+		] as AgentMessage[];
+
+		expect(uniquifyToolCallIds(messages)).toBe(messages);
+		expect(repairOrphanToolResults(messages)).toBe(messages);
+	});
 });
