@@ -108,11 +108,14 @@ function sqlite(path: string): DatabaseSync {
 	return new DatabaseSync(path, { readOnly: true });
 }
 
-/** Every table of the journal's database, and that none of them is the pool's. */
+/**
+ * Every table of the journal (its default `wf_` prefix), and that none of them is the pool's. A server the tests share
+ * also holds other tests' tables under prefixes of their own, such as a shared pool's, which are not this journal's.
+ */
 async function assertNoPoolTables(flavor: JournalFlavor): Promise<void> {
-	const tables = (await flavor.query("SELECT name FROM sqlite_master WHERE type = 'table'")).map((row) =>
-		String(row.name),
-	);
+	const tables = (
+		await flavor.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'wf\\_%' ESCAPE '\\'")
+	).map((row) => String(row.name));
 	assert.deepEqual(
 		tables.filter((name) => /_work|pool|resource/.test(name)),
 		[],

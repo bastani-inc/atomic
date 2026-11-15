@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { createChildProcessEnvironment, createGitEnvironment } from "@bastani/atomic";
+import { createChildProcessEnvironment, createGitEnvironment, isPathInside } from "@bastani/atomic";
 import { performPostCreationSetup } from "./worktree-post-create.js";
 import { findCanonicalGitRoot } from "./worktree-root.js";
 export interface WorktreeSetup {
@@ -351,8 +351,7 @@ type RemovableWorktree = Pick<WorktreeInfo, "path"> & { readonly syntheticPaths?
 function unlinkWorktreeLinks(worktree: RemovableWorktree): void {
 	for (const relativePath of new Set(["node_modules", ...(worktree.syntheticPaths ?? [])])) {
 		const linkPath = path.resolve(worktree.path, relativePath);
-		const relative = path.relative(worktree.path, linkPath);
-		if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) continue;
+		if (!path.relative(worktree.path, linkPath) || !isPathInside(worktree.path, linkPath)) continue;
 		try {
 			if (fs.lstatSync(linkPath).isSymbolicLink()) fs.unlinkSync(linkPath);
 		} catch {
