@@ -147,7 +147,7 @@ The compaction card shows the model that produced the result, such as `github-co
 If you see "This request was blocked as it seems to violate Anthropic's Terms of Service", or a refusal about reverse engineering or duplicating model outputs, the provider refused that compaction request. Atomic does not retry policy refusals as transient errors, and it handles two kinds differently.
 
 - **Refused before the model generated anything.** The provider rejected the request at once. For any chat compaction model, including `auto`, Atomic tries pi's summary compaction on the same model. That summary retries recoverable rate-limit, server, overload, and transport errors according to `settings.retry`, just like the planner. If the summary also fails or is refused, Atomic continues through `fallbackModels`.
-- **Refused partway through the model's output.** The refusal came after the model had billed output or reasoning tokens, which on a very large transcript can take minutes. Atomic retries the planner once. If the retry fails for another reason, Atomic goes to the summary as it does for an immediate refusal. If the retry is refused again, Atomic splits the compactable transcript at message boundaries and plans each half, then each quarter of a half that is refused, and merges the deletions into one verbatim result. A quarter that is still refused ends this step. Only then does Atomic fall back to the same-model summary and the `fallbackModels` as above.
+- **Refused partway through the model's output.** The refusal came after the model had billed output or reasoning tokens, which on a very large transcript can take minutes. Atomic retries the planner once. If the retry fails for another reason, Atomic goes to the summary as it does for an immediate refusal. If the retry is refused again, Atomic splits the compactable transcript at message boundaries and plans each half, then each quarter of a half that is refused, and merges the deletions into one verbatim result. A part that fails for another reason stays as it is, and the other parts keep their deletions. A quarter that is still refused, or a split in which no part deletes anything, ends this step. Only then does Atomic fall back to the same-model summary and the `fallbackModels` as above.
 
 Splitting costs extra planner requests, at most eight per planner model, each billed by your provider. Automatic compaction shares the [planning time limit](#planning-time-limit) across all of them, so a run that is still refusing after five minutes ends as timed out; raise `compaction.planningTimeoutMs` or run `/compact`, which has no limit, to give it longer.
 
@@ -173,7 +173,7 @@ Moved to [Compaction reference](/compaction/reference#per-model-budgets).
 - **Overflow:** an actual provider context overflow compacts and then retries the interrupted turn.
 - **Truncated response:** a `length` stop before the original requested output cap gets one compact-and-retry attempt, independent of reported context-window metadata. If no compactable region exists, Atomic makes at most one direct continuation under that same recovery budget; a later actual context overflow remains eligible for load-bearing recovery. A response that reached the cap keeps Atomic's bounded direct-continuation behavior.
 
-The recent tail counts messages, not whole turns. Queued input resumes when the active run becomes idle after automatic compaction. Escape cancels active compaction; you do not need to press it to release queued input. Atomic saves a backup before writing the compaction boundary.
+The recent tail counts messages, not whole turns. Queued input resumes when the active run becomes idle after automatic compaction. Escape cancels active compaction until the boundary is written; a cancel before then leaves the session unchanged. You do not need to press it to release queued input. Atomic saves a backup before writing the compaction boundary. The backup is best effort: if it cannot be written, for example on a full disk, the boundary is still written and records no `backupPath`.
 
 Automatic continuations belong to the original prompt, including repeated output-cap continuations. The prompt and `agent_settled` lifecycle finish only after the entire chain drains, so status integrations such as [Herdr](/herdr) stay working through quiet response waits and continuation gaps.
 
@@ -223,7 +223,11 @@ When every configured model is exhausted, what happens depends on how much the c
 
 Recoverable failure writes no boundary, schedules no continuation, and reports the cause through `compaction_end`. Manual calls cannot request destructive recovery. Overflow recovery and post-tool preflight can fall back to the fresh context window below.
 
-A successful compaction may delete less than requested, because the planner can list fewer deletions than the keep target allows, but it does not delete more than the keep target plus a small tolerance. The retry can still report a context overflow.
+Every failure other than your own cancellation moves to the next rung. A provider that ends a planner stream as aborted on its side counts as a failed request, not a cancellation. A fallback model whose lookup fails, for example on a corrupt credential store, is skipped.
+
+A successful compaction may delete less than requested, because the planner can list fewer deletions than the keep target allows, but it does not delete more than the keep target plus a small tolerance. For a manual, threshold or background compaction, the next request can therefore still overflow. Overflow recovery and post-tool preflight accept a result only when its estimated size fits the model's context window; otherwise they try the next model, and then the fresh context window.
+
+When a stored background result is applied first and does not free enough space, the foreground compaction that follows can still fail. The background boundary stays: `compaction_end` reports it as `result` together with the `errorMessage`, overflow recovery still retries the turn, and post-tool preflight sends the follow-up request if it fits.
 
 ### Planning time limit
 
@@ -231,7 +235,7 @@ Automatic compaction (threshold, overflow recovery and post-tool preflight) give
 
 ### The fresh context window rung
 
-If all configured planners fail during overflow recovery or post-tool preflight, Atomic can discard older compactable conversation and its prior summary. Explicit protected spans and the recent tail remain, unless the tail alone exceeds the provider's hard input limit. A region too small to plan is cleared only when known not to fit; a post-tool threshold crossing that still fits leaves it unchanged.
+If all configured planners fail during overflow recovery or post-tool preflight, Atomic can discard older compactable conversation and its prior summary. Explicit protected spans and the recent tail remain, unless the tail alone exceeds the provider's hard input limit. That check counts text outside ASCII, such as CJK, at a token per character, because the usual four-characters-per-token estimate undercounts it. A region too small to plan is cleared only when known not to fit, judged after any stored background result has been applied; a post-tool threshold crossing that still fits leaves it unchanged.
 
 The chat shows `✻ Context cleared (compaction degraded)` rather than `✻ Context compacted`, and results record `details.rung: "fresh"`. When planning failed first, `details.freshReason` names the cause, for example `Compaction planning timed out after 300000 ms` or the last planner's provider error. Check what context remains before continuing important work.
 
