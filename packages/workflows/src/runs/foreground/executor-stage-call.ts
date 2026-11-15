@@ -1,3 +1,4 @@
+import { modelCallUsage } from "@bastani/atomic";
 import { BUDGET_WRAP_UP_PROMPT, WorkflowBudgetExceededError } from "../../engine/run-budget.js";
 
 import { rebasedStageStartedAt } from "../../shared/timing.js";
@@ -37,19 +38,6 @@ import {
 import type { StageAdapters } from "./stage-runner.js";
 
 const BUDGET_TURN_STOP_REASON = "the workflow budget is exhausted";
-
-/** A session event that reports the usage of a model call (#5053). */
-function isUsageEvent(event: {
-	readonly type?: unknown;
-	readonly message?: unknown;
-	readonly entry?: unknown;
-}): boolean {
-	if (event.type === "message_end")
-		return (event.message as { readonly role?: unknown } | undefined)?.role === "assistant";
-	if (event.type === "entry_appended")
-		return (event.entry as { readonly type?: unknown } | undefined)?.type === "usage";
-	return event.type === "compaction_usage" || event.type === "child_session_usage";
-}
 
 export interface TrackedStageCallOptions {
 	readonly eagerSession?: boolean;
@@ -248,7 +236,7 @@ export function createTrackedStageCaller(input: {
 		let stopped = false;
 		let disposed = false;
 		const unsubscribe = runtime.innerCtx.subscribe((event) => {
-			if (stopped || !isUsageEvent(event)) return;
+			if (stopped || modelCallUsage(event) === undefined) return;
 			// The stage's own usage window hears this event after this listener; read it once both have run.
 			queueMicrotask(() => {
 				if (stopped || disposed) return;

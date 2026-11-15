@@ -560,6 +560,7 @@ export {
 	validateMcpServerConfig,
 } from "./core/mcp-servers.ts";
 export { convertToLlm } from "./core/messages.ts";
+export { modelCallUsage } from "./core/model-call-usage.ts";
 export type {
 	ModelFallbackFailureKind,
 	ModelFallbackFailureOptions,

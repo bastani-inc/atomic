@@ -302,7 +302,7 @@ class AgentSessionBase {
 	protected _turnStopReason: string | undefined = undefined;
 	/**
 	 * Stop starting model calls within a turn, or with `undefined` resume normally. While a reason is set, every tool
-	 * call is answered as cancelled with that reason without running and ends its batch, and a turn ends without
+	 * call is answered as cancelled with that reason without running, and a turn ends without
 	 * polling steering or follow-ups, so the current turn ends after the model call in flight. A new prompt still makes
 	 * its first model call. A workflow stage uses it to stop at its budget (#5053).
 	 */

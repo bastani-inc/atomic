@@ -13,6 +13,7 @@ import {
 	isTransientExtensionStartupFailure,
 	type ModelConstraints,
 	type ModelRoute,
+	modelCallUsage,
 	type PromptOptions,
 	parkWorkflowStageForRelease,
 	parseModelConstraints,
@@ -246,10 +247,8 @@ class AttemptUsageWindow {
 
 	constructor(session: StageSessionRuntime) {
 		this.unsubscribe = session.subscribe((event) => {
-			if (event.type === "message_end" && event.message.role === "assistant") this.add(event.message.usage, true);
-			else if (event.type === "compaction_usage" || event.type === "child_session_usage")
-				this.add(event.usage, false);
-			else if (event.type === "entry_appended" && event.entry.type === "usage") this.add(event.entry.usage, false);
+			const usage = modelCallUsage(event);
+			if (usage !== undefined) this.add(usage, event.type === "message_end");
 		});
 	}
 

@@ -45,6 +45,7 @@ import {
 	withMandatoryResourceLoader,
 } from "./mandatory-resource-loader.ts";
 import { convertToLlm, repairOrphanToolResults } from "./messages.ts";
+import { modelCallUsage } from "./model-call-usage.ts";
 import { formatModelLabel } from "./model-label.ts";
 import { findInitialModel, resolveRestoredModelReference, uncachedCopilotModelHint } from "./model-resolver.ts";
 import { ModelRuntime } from "./model-runtime.js";
@@ -974,8 +975,7 @@ async function constructAgentSession(
  */
 function forwardUsage(session: AgentSession, sink: (usage: Usage) => void): void {
 	session.subscribe((event) => {
-		if (event.type === "message_end" && event.message.role === "assistant") sink(event.message.usage);
-		else if (event.type === "compaction_usage" || event.type === "child_session_usage") sink(event.usage);
-		else if (event.type === "entry_appended" && event.entry.type === "usage") sink(event.entry.usage);
+		const usage = modelCallUsage(event);
+		if (usage !== undefined) sink(usage);
 	});
 }

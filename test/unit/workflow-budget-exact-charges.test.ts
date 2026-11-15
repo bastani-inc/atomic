@@ -137,4 +137,44 @@ describe("workflow budget charges (#5053)", () => {
 		]);
 		assert.equal(snapshot.budgetState?.accounting?.cost, 1);
 	});
+
+	test("pending usage exhausts a budget once it reaches the cap, its root's included (#5053)", () => {
+		const snapshot = (id: string): RunSnapshot => ({
+			id,
+			name: id,
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [pricedStage(`${id}-stage`, 0)],
+			startedAt: Date.now(),
+		});
+		const rootRun = snapshot("root");
+		const root = createRunBudgetController({
+			run: rootRun,
+			budget: resolve_budget({ run: { maxTokens: 10 } }),
+			usageTree: () => ({ run: rootRun }),
+		});
+		const childRun = snapshot("child");
+		const child = createRunBudgetController({
+			run: childRun,
+			budget: resolve_budget({ run: { maxTokens: 100 } }),
+			usageTree: () => ({ run: childRun }),
+			rootBudget: root,
+		});
+		const durationOnly = createRunBudgetController({
+			run: snapshot("timed"),
+			budget: resolve_budget({ run: { maxDurationMs: 60_000 } }),
+		});
+
+		// Each stage already holds 1 input token.
+		assert.equal(root.exhaustedWith({ input: 8 }), false, "9 of 10 tokens");
+		assert.equal(root.exhaustedWith({ input: 9 }), true, "10 of 10 tokens");
+		assert.equal(
+			child.exhaustedWith({ input: 9 }),
+			true,
+			"the child's own 100 tokens are left, but its root's are not",
+		);
+		assert.equal(child.exhaustedWith({ input: 8 }), false);
+		assert.equal(durationOnly.exhaustedWith({ input: 1_000_000, cost: 1_000 }), false, "no usage cap to reach");
+	});
 });
