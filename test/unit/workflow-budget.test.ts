@@ -17,6 +17,7 @@ import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
 import {
 	type EffectiveBudget,
 	enforceDurationBudget,
+	enforceUsageBudget,
 	resolve_budget,
 	validateWorkflowBudget,
 	type WorkflowBudget,
@@ -225,6 +226,73 @@ describe("duration budget enforcement", () => {
 		assert.deepEqual(enforceDurationBudget(10_000, unbudgeted), {
 			kind: "continue",
 			report: { dimension: "duration", reading: 10_000, ceiling: 0, percent: 0 },
+			warning: false,
+		});
+	});
+});
+
+describe("budget warning threshold is exact (#4850)", () => {
+	test("warns at exactly warnAtPercent for the readings the issue lists (#4850)", () => {
+		for (const [reading, ceiling, warnAtPercent] of [
+			[29, 100, 29],
+			[57, 100, 57],
+			[58, 100, 58],
+			[29, 50, 58],
+			[87, 150, 58],
+		] as const) {
+			const usage = enforceUsageBudget("tokens", reading, ceiling, warnAtPercent);
+			assert.deepEqual(usage, {
+				kind: "continue",
+				report: { dimension: "tokens", reading, ceiling, percent: (reading / ceiling) * 100 },
+				warning: true,
+			});
+		}
+	});
+
+	test("warns exactly when reading * 100 >= warnAtPercent * ceiling for every integer pair up to ceiling 200 (#4850)", () => {
+		for (let ceiling = 1; ceiling <= 200; ceiling++) {
+			for (let warnAtPercent = 1; warnAtPercent <= 100; warnAtPercent++) {
+				const budget = resolve_budget({ run: { maxDurationMs: ceiling, warnAtPercent } });
+				for (let reading = 0; reading < ceiling; reading++) {
+					const expected = reading * 100 >= warnAtPercent * ceiling;
+					const label = `${reading}/${ceiling} at ${warnAtPercent}%`;
+					const duration = enforceDurationBudget(reading, budget);
+					assert.equal(duration.kind === "continue" && duration.warning, expected, `duration ${label}`);
+					for (const dimension of ["tokens", "cost"] as const) {
+						const usage = enforceUsageBudget(dimension, reading, ceiling, warnAtPercent);
+						assert.equal(usage.kind === "continue" && usage.warning, expected, `${dimension} ${label}`);
+					}
+				}
+			}
+		}
+	});
+
+	test("reports the percent for display and never warns once already warned or when unbudgeted (#4850)", () => {
+		const budget = resolve_budget({ run: { maxDurationMs: 100, warnAtPercent: 29 } });
+		assert.deepEqual(enforceDurationBudget(29, budget), {
+			kind: "continue",
+			report: { dimension: "duration", reading: 29, ceiling: 100, percent: (29 / 100) * 100 },
+			warning: true,
+		});
+		assert.deepEqual(enforceUsageBudget("cost", 29, 100, 29, { warned: true }), {
+			kind: "continue",
+			report: { dimension: "cost", reading: 29, ceiling: 100, percent: (29 / 100) * 100 },
+			warning: false,
+		});
+		assert.deepEqual(enforceUsageBudget("tokens", 5, 0, 1), {
+			kind: "continue",
+			report: { dimension: "tokens", reading: 5, ceiling: 0, percent: 0 },
+			warning: false,
+		});
+		assert.deepEqual(enforceUsageBudget("tokens", 99, 100, 0), {
+			kind: "continue",
+			report: { dimension: "tokens", reading: 99, ceiling: 100, percent: 99 },
+			warning: false,
+		});
+		const unbudgeted = resolve_budget({ run: { warnAtPercent: 1 } });
+		assert.deepEqual(enforceDurationBudget(5, unbudgeted), {
+			kind: "continue",
+			report: { dimension: "duration", reading: 5, ceiling: 0, percent: 0 },
 			warning: false,
 		});
 	});
