@@ -9,6 +9,7 @@
 
 import type { Api, Model } from "@bastani/pi-ai/compat";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import { resolveModelReference } from "./model-resolver-patterns.ts";
 
 const THINKING_SUFFIXES = [
 	"off",
@@ -23,8 +24,7 @@ const THINKING_SUFFIX_SET: ReadonlySet<string> = new Set(THINKING_SUFFIXES);
 
 /** Minimal runtime surface needed to resolve a configured fallback entry. */
 export interface FallbackModelLookup {
-	getAvailableSnapshot(): readonly Model<Api>[];
-	getModel(provider: string, modelId: string): Model<Api> | undefined;
+	getModels(): readonly Model<Api>[];
 	hasConfiguredAuth(provider: string): boolean;
 }
 
@@ -45,31 +45,30 @@ export function splitFallbackModel(value: string): { modelId: string; thinkingLe
 }
 
 /**
- * Resolve one configured fallback entry against the model registry.
- *
- * Unqualified ids search the available (authenticated) models and prefer the
- * current/default provider when ambiguous; qualified ids require configured
- * auth. Unusable candidates resolve to `undefined`.
+ * Resolve one configured fallback entry against the model registry, with the same rules as `--model`: any letter case,
+ * an optional `:<thinking>` suffix, bare ids, and ids that contain `/` or `:` themselves (OpenRouter's
+ * `qwen/qwen3-coder:exacto`). A bare id that several authenticated providers serve prefers the current/default
+ * provider. A candidate whose provider has no configured auth is unusable and resolves to `undefined`.
  */
 export function resolveFallbackModel(
 	value: string,
 	lookup: FallbackModelLookup,
 	preferredProvider: string | undefined,
 ): FallbackModelCandidate | undefined {
-	const parsed = splitFallbackModel(value);
-	if (!parsed.modelId.includes("/")) {
-		const available = lookup.getAvailableSnapshot().filter((model) => model.id === parsed.modelId);
-		const model =
-			available.find((candidate) => candidate.provider === preferredProvider) ??
-			(available.length === 1 ? available[0] : undefined);
-		return model ? { model, thinkingLevel: parsed.thinkingLevel } : undefined;
-	}
-	const slash = parsed.modelId.indexOf("/");
-	const provider = parsed.modelId.slice(0, slash);
-	const modelId = parsed.modelId.slice(slash + 1);
-	const model = lookup.getModel(provider, modelId);
-	if (!model || !lookup.hasConfiguredAuth(model.provider)) return undefined;
-	return { model, thinkingLevel: parsed.thinkingLevel };
+	const usable = (provider: string) => lookup.hasConfiguredAuth(provider);
+	const result = resolveModelReference(
+		{ text: value, thinkingSuffix: "strict", fuzzy: true },
+		lookup.getModels(),
+		usable,
+	);
+	const model =
+		result.status === "resolved"
+			? result.model
+			: result.status === "ambiguous"
+				? result.candidates.find((candidate) => candidate.provider === preferredProvider)
+				: undefined;
+	if (!model || !usable(model.provider)) return undefined;
+	return { model, thinkingLevel: result.status === "not-found" ? undefined : result.thinkingLevel };
 }
 
 /** Stable `provider/model:level` identity for one attempted fallback candidate. */

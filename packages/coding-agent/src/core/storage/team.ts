@@ -203,7 +203,10 @@ function unreadableSettingsError(subject: string, cause: Error): TeamProfileErro
 
 function openGlobalSettings(cwd: string, agentDir: string): SettingsManager {
 	const manager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
-	const failure = manager.drainErrors().find(({ scope }) => scope === "global");
+	// A wrong-typed value is ignored and reported at startup; only an unreadable file stops a command.
+	const failure = manager
+		.drainErrors()
+		.find(({ scope, invalidKey }) => scope === "global" && invalidKey === undefined);
 	if (failure !== undefined) {
 		const settingsPath = failure.path ?? settingsPathOf(agentDir);
 		if (isLocked(failure.error)) throw lockedError(settingsPath, failure.error, "Nothing was changed.");
@@ -852,7 +855,7 @@ export function selectTeamProfile(options: TeamProfileOptions = {}): TeamProfile
 	const agentDir = resolve(options.agentDir ?? getAgentDir());
 	const cwd = resolve(options.cwd ?? process.cwd());
 	const manager = SettingsManager.create(cwd, agentDir, { projectTrusted: projectTrust(cwd, agentDir) });
-	const failure = manager.drainErrors()[0];
+	const failure = manager.drainErrors().find(({ invalidKey }) => invalidKey === undefined);
 	if (failure !== undefined) {
 		if (isLocked(failure.error)) throw lockedError(`${failure.scope} settings`, failure.error, "Nothing was read.");
 		throw new TeamProfileError("settings-unreadable", {

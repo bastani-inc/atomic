@@ -8,7 +8,7 @@ import { DecisionConfigError } from "./decision/errors.js";
 import { parseHttpIdleTimeoutMs } from "./http-dispatcher.ts";
 import { SETTINGS_DEFAULTS } from "./settings-defaults.ts";
 import { SettingsManager } from "./settings-manager-core.ts";
-import { settingsInternals } from "./settings-manager-internals.ts";
+import { settingsInternals, stringEntries } from "./settings-manager-internals.ts";
 import { resolveDefaultTools } from "./settings-merge.js";
 import type { Settings } from "./settings-schema.ts";
 import type {
@@ -509,8 +509,7 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 	},
 
 	getFallbackModels() {
-		return (settingsInternals(this).settings.fallbackModels ?? [])
-			.filter((model): model is string => typeof model === "string")
+		return stringEntries(settingsInternals(this).settings.fallbackModels)
 			.map((model) => model.trim())
 			.filter((model) => model.length > 0);
 	},
