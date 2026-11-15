@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, it, test } from "vitest";
-import { postgresDialect } from "../../packages/coding-agent/src/core/storage/dialect.js";
+import {
+	postgresDialect,
+	type StorageDialect,
+	type StorageTrigger,
+} from "../../packages/coding-agent/src/core/storage/dialect.js";
 import { sqlPoolStorage } from "../../packages/workflows/src/durable/journal/internal.js";
 import { SqlFleetStore } from "../../packages/workflows/src/durable/journal/sql-fleet.js";
 import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
@@ -81,6 +85,81 @@ describe.skipIf(postgres.skipReason !== undefined)("the worker pool's Postgres i
 			assert.deepEqual(await reader.all(probe.sql, ...probe.params), [{ name: trigger }]);
 		} finally {
 			await scope.close();
+		}
+	});
+
+	test("no two names the pool and the stores it carries ask for map to one Postgres identifier, under any sub-prefix", async () => {
+		// Every name the stores hand the dialect to render, probe or drop, whole, as the stores wrote it.
+		const asked = new Set<string>();
+		const recording: StorageDialect = Object.freeze({
+			...postgresDialect,
+			renderTrigger: (trigger: StorageTrigger) => {
+				asked.add(trigger.name).add(`${trigger.name}_fn`);
+				return postgresDialect.renderTrigger(trigger);
+			},
+			dropTrigger: (name: string, table: string) => {
+				asked.add(name);
+				return postgresDialect.dropTrigger(name, table);
+			},
+			schemaObjects: (names: readonly string[]) => {
+				for (const name of names) asked.add(name);
+				return postgresDialect.schemaObjects(names);
+			},
+			tableExists: (table: string) => {
+				asked.add(table);
+				return postgresDialect.tableExists(table);
+			},
+			columnExists: (table: string, column: string) => {
+				asked.add(table);
+				return postgresDialect.columnExists(table, column);
+			},
+		});
+		for (const prefix of ["", LONG_PREFIX]) {
+			const scope = await postgres.openScope();
+			try {
+				const opened = await scope.connect();
+				const database = interceptingDatabase(opened, {
+					exec: (sql, next) => {
+						for (const match of sql.matchAll(
+							/CREATE (?:UNIQUE INDEX|INDEX|TABLE)(?: IF NOT EXISTS)? ([A-Za-z0-9_]+)/g,
+						))
+							asked.add(match[1]!);
+						return next(sql);
+					},
+				});
+				const withDialect = new Proxy(database, {
+					get: (target, key) => (key === "dialect" ? recording : Reflect.get(target, key, target)),
+				});
+				const journal = await SqlRunJournal.open(withDialect, { prefix });
+				try {
+					const queue = await openSqlPoolQueue(journal);
+					await openSqlPoolUsage(journal);
+					await SqlSharedPool.open(journal, queue);
+					await SqlFleetStore.open(journal);
+					await SqlResourceAdmission.open(journal, { root: "root", holder: "holder" });
+					await (await openPoolSessions(sqlPoolStorage(journal)!)).close();
+				} finally {
+					await journal.close();
+				}
+				await (await SqlRunJournal.open(withDialect, { prefix })).close();
+			} finally {
+				await scope.close();
+			}
+		}
+		// The same names under the pool's other session sub-prefix, the one it uses where identifiers are unlimited.
+		const names = new Set(asked);
+		for (const name of asked) if (name.includes("wf_ps_")) names.add(name.replace("wf_ps_", "wf_runs_pool_"));
+		assert.ok(
+			[...names].some((name) => name.length > 63),
+			"some names were long enough to be hashed",
+		);
+		const byIdentifier = new Map<string, string>();
+		for (const name of names) {
+			const identifier = postgresDialect.identifier(name);
+			assert.ok(identifier.length <= 63, identifier);
+			const earlier = byIdentifier.get(identifier);
+			assert.equal(earlier, undefined, `${name} and ${earlier} both become ${identifier}`);
+			byIdentifier.set(identifier, name);
 		}
 	});
 });
