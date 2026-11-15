@@ -501,7 +501,6 @@ class IntercomBroker {
     this.server.once("error", onError);
     this.server.listen(SOCKET_PATH, () => {
       this.server.off("error", onError);
-      // Stryker disable next-line ConditionalExpression,StringLiteral: a Windows pipe has no inode; equivalent off Windows.
       if (process.platform !== "win32") {
         const inode = socketPathInode();
         if (inode === undefined) {
@@ -3523,7 +3522,6 @@ class IntercomBroker {
 
   private async exitAfterShutdown(): Promise<never> {
     // Windows named pipes are not path-unlinked on close, so a successor's pipe is never at risk.
-    // Stryker disable next-line ConditionalExpression,StringLiteral,BlockStatement: Windows only; equivalent off Windows.
     if (process.platform === "win32") {
       this.unlinkRuntimeFilesIfOwned();
       this.server.close();
