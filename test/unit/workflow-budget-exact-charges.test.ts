@@ -138,6 +138,26 @@ describe("workflow budget charges (#5053)", () => {
 		assert.equal(snapshot.budgetState?.accounting?.cost, 1);
 	});
 
+	test("a 0.29 stage reaches a 29% cost warning of a 1.00 cap (#5053)", () => {
+		const snapshot: RunSnapshot = {
+			id: "r",
+			name: "r",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [pricedStage("s1", 0.29)],
+			startedAt: Date.now(),
+		};
+		const controller = createRunBudgetController({
+			run: snapshot,
+			budget: resolve_budget({ run: { maxCost: 1, warnAtPercent: 29 } }),
+			usageTree: () => ({ run: snapshot }),
+		});
+
+		// 0.29 * 100 is 28.999999999999996 in floating point.
+		assert.equal(controller.checkpoint("s1").kind, "warn");
+	});
+
 	test("pending usage exhausts a budget once it reaches the cap, its root's included (#5053)", () => {
 		const snapshot = (id: string): RunSnapshot => ({
 			id,
