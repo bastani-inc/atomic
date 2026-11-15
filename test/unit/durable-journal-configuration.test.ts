@@ -49,7 +49,7 @@ test("caller-owned schema failures preserve the connection and typed version fie
 			(error: Error) => {
 				assert.ok(error instanceof JournalSchemaVersionError);
 				assert.equal(error.found, 42);
-				assert.equal(error.supported, 1);
+				assert.equal(error.supported, 2);
 				return true;
 			},
 		);
@@ -92,7 +92,7 @@ test("caller-owned temporary connections are accepted without taking ownership",
 		const journal = await openConnection(database);
 		assert.equal(journal.path, ":memory:");
 		await journal.close();
-		assert.equal(database.prepare("SELECT schema_version FROM wf_meta").get()?.schema_version, 1);
+		assert.equal(database.prepare("SELECT schema_version FROM wf_meta").get()?.schema_version, 2);
 	} finally {
 		database.close();
 	}

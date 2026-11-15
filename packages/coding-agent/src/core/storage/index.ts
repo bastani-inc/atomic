@@ -19,6 +19,7 @@ export * from "./errors.js";
 export * from "./fenced-paths.js";
 export * from "./journal-adoption.js";
 export * from "./journal-catalog.js";
+export * from "./journal-event-payloads.js";
 export * from "./migrations.js";
 export {
 	DEFAULT_GROUP_COMMIT_HOLD_MS,

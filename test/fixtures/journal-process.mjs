@@ -15,7 +15,7 @@ if (mode === "crash") {
 	const db = new JournalTestDatabase(path);
 	db.exec("BEGIN IMMEDIATE");
 	db.run(`UPDATE ${t.runs} SET ${c.status} = ? WHERE ${c.runId} = ?`, "partial", "run");
-	db.run(`INSERT INTO ${t.events} VALUES (?, ?, ?, ?, ?, ?, ?)`, "run", 2, 1, "partial", e.summaryRecorded, JSON.stringify(null), 0);
+	db.run(`INSERT INTO ${t.events}(run_id, seq, epoch, key, type, payload, at) VALUES (?, ?, ?, ?, ?, ?, ?)`, "run", 2, 1, "partial", e.summaryRecorded, JSON.stringify(null), 0);
 	process.stdout.write("transaction-open\n");
 	await new Promise(() => setInterval(() => {}, 1000));
 } else {

@@ -361,7 +361,7 @@ test("a commit planned without a read is refused when another writer recorded a 
 			f.hooks.beforeBatch = undefined;
 			connection
 				.prepare(
-					"INSERT INTO acme_wf_events SELECT 'root', MAX(seq) + 1, 1, ?, 'CheckpointRecorded', ?, 0 FROM acme_wf_events WHERE run_id = 'root'",
+					"INSERT INTO acme_wf_events(run_id, seq, epoch, key, type, payload, at) SELECT 'root', MAX(seq) + 1, 1, ?, 'CheckpointRecorded', ?, 0 FROM acme_wf_events WHERE run_id = 'root'",
 				)
 				.run(JSON.stringify(["CheckpointRecorded", "tool", foreign.checkpointId]), JSON.stringify(foreign));
 		};

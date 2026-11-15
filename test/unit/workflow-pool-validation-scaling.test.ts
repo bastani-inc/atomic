@@ -116,7 +116,7 @@ async function recordHistory(tx: SqliteExecutor, children: number, checkpoints: 
 	const insert = async (checkpoint: DurableCheckpoint) => {
 		const key = JSON.stringify([RUN_EVENT_TYPES.checkpointRecorded, checkpoint.kind, checkpoint.checkpointId]);
 		await tx.run(
-			"INSERT INTO wf_events VALUES ('root', ?, 1, ?, ?, ?, ?)",
+			"INSERT INTO wf_events(run_id, seq, epoch, key, type, payload, at) VALUES ('root', ?, 1, ?, ?, ?, ?)",
 			seq++,
 			key,
 			RUN_EVENT_TYPES.checkpointRecorded,
@@ -124,7 +124,7 @@ async function recordHistory(tx: SqliteExecutor, children: number, checkpoints: 
 			seq,
 		);
 		await tx.run(
-			"INSERT INTO wf_events VALUES ('root', ?, 1, NULL, ?, ?, ?)",
+			"INSERT INTO wf_events(run_id, seq, epoch, key, type, payload, at) VALUES ('root', ?, 1, NULL, ?, ?, ?)",
 			seq++,
 			RUN_EVENT_TYPES.messageDelivered,
 			JSON.stringify({ delivered: seq }),

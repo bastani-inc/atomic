@@ -175,7 +175,7 @@ test("inspection reads the schema version of a current or legacy journal and ref
 	raw(empty, "INSERT INTO wf_meta VALUES ('one')");
 	const text = await inspectJournalFile(empty).catch((error: Error) => error);
 	assert.ok(isJournalAdoptError(text));
-	assert.deepEqual([text.code, text.fields.found, text.fields.supported], ["schema-version", "one", 1]);
+	assert.deepEqual([text.code, text.fields.found, text.fields.supported], ["schema-version", "one", 2]);
 	raw(empty, "INSERT INTO wf_meta VALUES (1)");
 	const two = await inspectJournalFile(empty).catch((error: Error) => error);
 	assert.ok(isJournalAdoptError(two) && two.code === "schema-version");
@@ -656,7 +656,7 @@ test("consolidation into a new shard records its schema version once (#4325)", a
 				.prepare("SELECT schema_version FROM wf_meta")
 				.all()
 				.map((row) => row.schema_version),
-			[1],
+			[2],
 		);
 	} finally {
 		target.close();
@@ -1067,7 +1067,7 @@ test("a destination copy that holds the source's events and more, as after a res
 	copy.exec(`ATTACH DATABASE '${path}' AS source`);
 	for (const table of ["wf_runs", "wf_events"]) copy.exec(`INSERT INTO main.${table} SELECT * FROM source.${table}`);
 	copy.exec(
-		"INSERT INTO wf_events SELECT run_id, seq + 10, epoch, 'third', type, payload, at FROM wf_events WHERE key = 'second'",
+		"INSERT INTO wf_events(run_id, seq, epoch, key, type, payload, at) SELECT run_id, seq + 10, epoch, 'third', type, payload, at FROM wf_events WHERE key = 'second'",
 	);
 	copy.close();
 	const events = Number(scalar(target.path, "SELECT count(*) FROM wf_events WHERE run_id = 'copy'"));

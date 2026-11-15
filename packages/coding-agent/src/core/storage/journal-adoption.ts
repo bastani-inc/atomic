@@ -22,9 +22,10 @@ import {
 	type JournalShardRecord,
 	type JournalShardRegistration,
 } from "./journal-catalog.js";
+import { storedJournalPayload, withJournalPayloads, writeJournalPayloadChunks } from "./journal-event-payloads.js";
 import { openNodeSqliteDatabase } from "./node-sqlite.js";
 import { renderStorageIdentifiers } from "./prefix.js";
-import { RUN_JOURNAL_SCHEMA_VERSION } from "./run-journal.js";
+import { RUN_JOURNAL_SCHEMA_VERSION, RUN_JOURNAL_SCHEMA_VERSION_UNCHUNKED } from "./run-journal.js";
 
 /** The journal store's directory under an agent directory: `<agent dir's parent>/workflows/journal`. */
 export function defaultJournalStoreDirectory(agentDir: string): string {
@@ -40,7 +41,13 @@ export function legacyDefaultJournalPath(directory: string): string {
 }
 
 /** The tables of a SQL run journal, before the storage prefix and the `wf_` domain prefix. */
-export const RUN_JOURNAL_TABLE_NAMES = { meta: "meta", runs: "runs", events: "events", leases: "leases" } as const;
+export const RUN_JOURNAL_TABLE_NAMES = {
+	meta: "meta",
+	runs: "runs",
+	events: "events",
+	leases: "leases",
+	eventChunks: "event_chunks",
+} as const;
 
 /** A SQL run journal's table names under `prefix`. */
 export function runJournalTables(prefix = ""): Readonly<Record<keyof typeof RUN_JOURNAL_TABLE_NAMES, string>> {
@@ -48,13 +55,14 @@ export function runJournalTables(prefix = ""): Readonly<Record<keyof typeof RUN_
 }
 
 /**
- * `CREATE TABLE IF NOT EXISTS` statements for a SQL run journal's runs, events and leases tables, in `dialect`. The
- * runs and events tables carry the dialect's row order column, which the journal's change token and the snapshot
- * reference index read, and event keys compare by their UTF-8 bytes, as the journal's key range reads expect.
+ * `CREATE TABLE IF NOT EXISTS` statements for a SQL run journal's runs, events, leases and event chunks tables, in
+ * `dialect`. The runs and events tables carry the dialect's row order column, which the journal's change token and the
+ * snapshot reference index read, and event keys compare by their UTF-8 bytes, as the journal's key range reads expect.
+ * An event's `chunks` is how many rows of the event chunks table hold its payload, 0 when its row holds it (#4965).
  */
 export function runJournalTableDefinitions(prefix = "", dialect: StorageDialect = sqliteDialect): string {
 	const t = runJournalTables(prefix);
-	const { int } = dialect.types;
+	const { int, blob } = dialect.types;
 	return `
 		CREATE TABLE IF NOT EXISTS ${t.runs}(
 			run_id TEXT PRIMARY KEY, name TEXT NOT NULL, cwd TEXT NOT NULL,
@@ -64,18 +72,51 @@ export function runJournalTableDefinitions(prefix = "", dialect: StorageDialect 
 			run_id TEXT NOT NULL,
 			seq ${int} NOT NULL, epoch ${int} NOT NULL, key TEXT${dialect.byteOrderCollation},
 			type TEXT NOT NULL, payload TEXT NOT NULL, at ${int} NOT NULL${dialect.rowOrderColumn},
+			chunks ${int} NOT NULL DEFAULT 0,
 			PRIMARY KEY(run_id, seq), UNIQUE(run_id, key)
 		);
 		CREATE TABLE IF NOT EXISTS ${t.leases}(
 			run_id TEXT PRIMARY KEY,
 			holder_id TEXT, epoch ${int} NOT NULL, renewed_at ${int} NOT NULL
 		);
+		CREATE TABLE IF NOT EXISTS ${t.eventChunks}(
+			run_id TEXT NOT NULL, seq ${int} NOT NULL, idx ${int} NOT NULL, data ${blob} NOT NULL,
+			PRIMARY KEY(run_id, seq, idx)
+		)${dialect.tableOptions};
 	`;
 }
 
 /**
- * Creates a SQL run journal's metadata and tables inside the caller's transaction when they are missing, and checks
- * that an existing journal has the supported schema version. Throws `StorageSchemaVersionError` otherwise.
+ * Upgrades a run journal of schema version 1 to version 2 inside the caller's transaction (#4965): the events table's
+ * `chunks` column, 0 for every event written before it, the event chunks table, and the meta row at version 2. A
+ * build that knows only version 1 then refuses the journal instead of reading a large payload's stub. Idempotent.
+ */
+export async function upgradeRunJournalSchema(
+	tx: SqliteExecutor,
+	prefix = "",
+	dialect: StorageDialect = sqliteDialect,
+): Promise<void> {
+	const t = runJournalTables(prefix);
+	await tx.exec(runJournalTableDefinitions(prefix, dialect));
+	const probe = dialect.columnExists(t.events, "chunks");
+	if ((await tx.get(probe.sql, ...probe.params)) === undefined)
+		await tx.exec(`ALTER TABLE ${t.events} ADD COLUMN chunks ${dialect.types.int} NOT NULL DEFAULT 0`);
+	await tx.run(
+		`UPDATE ${t.meta} SET schema_version = ? WHERE schema_version = ?`,
+		RUN_JOURNAL_SCHEMA_VERSION,
+		RUN_JOURNAL_SCHEMA_VERSION_UNCHUNKED,
+	);
+}
+
+/** Whether a run journal of schema version `found` is one this build reads, after upgrading it when it is older. */
+export function isReadableRunJournalVersion(found: SqliteValue | undefined): boolean {
+	return found === RUN_JOURNAL_SCHEMA_VERSION || found === RUN_JOURNAL_SCHEMA_VERSION_UNCHUNKED;
+}
+
+/**
+ * Creates a SQL run journal's metadata and tables inside the caller's transaction when they are missing, upgrades a
+ * journal of the previous schema version, and checks that an existing journal has a supported schema version. Throws
+ * `StorageSchemaVersionError` otherwise.
  */
 export async function ensureRunJournalSchema(
 	tx: SqliteExecutor,
@@ -86,13 +127,13 @@ export async function ensureRunJournalSchema(
 	await tx.exec(`CREATE TABLE IF NOT EXISTS ${t.meta}(schema_version ${dialect.types.int} NOT NULL)`);
 	const versions = await tx.all<SqliteRow & { schema_version: SqliteValue }>(`SELECT schema_version FROM ${t.meta}`);
 	if (versions.length === 0) await tx.run(`INSERT INTO ${t.meta} VALUES (?)`, RUN_JOURNAL_SCHEMA_VERSION);
-	else if (versions.length > 1 || versions[0]!.schema_version !== RUN_JOURNAL_SCHEMA_VERSION)
+	else if (versions.length > 1 || !isReadableRunJournalVersion(versions[0]!.schema_version))
 		throw new StorageSchemaVersionError(
 			"journal",
 			versions.length > 1 ? `${versions.length} rows` : versions[0]!.schema_version,
 			RUN_JOURNAL_SCHEMA_VERSION,
 		);
-	await tx.exec(runJournalTableDefinitions(prefix, dialect));
+	await upgradeRunJournalSchema(tx, prefix, dialect);
 }
 
 /** Most journals one adoption follows through the run references it finds. */
@@ -101,7 +142,7 @@ export const JOURNAL_DISCOVERY_LIMIT = 64;
 export const JOURNAL_CONSOLIDATION_HOLDER_PREFIX = "atomic-storage-consolidate:";
 
 const SQLITE_HEADER = "SQLite format 3\u0000";
-const TABLES = renderStorageIdentifiers("journal", { meta: "meta", runs: "runs", events: "events", leases: "leases" });
+const TABLES = runJournalTables();
 const POOL_ROOTS = `${TABLES.runs}_pool_roots`;
 const LEGACY_RUNS = "runs";
 const LEGACY_DELETED = renderStorageIdentifiers("journal", { legacyDeleted: "legacy_deleted" }).legacyDeleted;
@@ -207,7 +248,10 @@ export async function inspectJournalFile(path: string): Promise<JournalFileInspe
 					`SELECT schema_version FROM ${current ? TABLES.meta : "meta"}`,
 				);
 				const found = versions[0]?.schema_version;
-				if (versions.length !== 1 || found !== RUN_JOURNAL_SCHEMA_VERSION)
+				const readable = current
+					? isReadableRunJournalVersion(found)
+					: found === RUN_JOURNAL_SCHEMA_VERSION_UNCHUNKED;
+				if (versions.length !== 1 || !readable)
 					throw new JournalAdoptError({
 						code: "schema-version",
 						path: file,
@@ -530,8 +574,21 @@ async function ensureJournalTables(source: SqliteExecutor, target: SqliteExecuto
 	);
 	for (const definition of definitions)
 		await target.exec(definition.sql.replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS "));
-	const meta = await target.all(`SELECT schema_version FROM ${TABLES.meta}`);
-	if (meta.length === 0) await target.run(`INSERT INTO ${TABLES.meta} VALUES (?)`, RUN_JOURNAL_SCHEMA_VERSION);
+	// A source of the previous schema version gives tables without event chunks: the target is upgraded either way.
+	await ensureRunJournalSchema(target);
+}
+
+/** A run's events in sequence order, each payload read whole, from its chunks when it is stored in chunks (#4965). */
+async function readEvents(executor: SqliteExecutor, runId: string): Promise<EventRow[]> {
+	const rows = await executor.all<EventRow>(`SELECT * FROM ${TABLES.events} WHERE run_id = ? ORDER BY seq`, runId);
+	return withJournalPayloads(executor, TABLES.eventChunks, rows);
+}
+
+/** Deletes a run's events and the chunks of their payloads, in a journal of either schema version. */
+async function deleteEvents(tx: SqliteExecutor, runId: string): Promise<void> {
+	if ((await tableNames(tx)).has(TABLES.eventChunks))
+		await tx.run(`DELETE FROM ${TABLES.eventChunks} WHERE run_id = ?`, runId);
+	await tx.run(`DELETE FROM ${TABLES.events} WHERE run_id = ?`, runId);
 }
 
 /**
@@ -565,7 +622,7 @@ async function fence(
 			holder,
 			epoch,
 		);
-		const events = await tx.all<EventRow>(`SELECT * FROM ${TABLES.events} WHERE run_id = ? ORDER BY seq`, runId);
+		const events = await readEvents(tx, runId);
 		const fenced = await tx.get<LeaseRow>(`SELECT * FROM ${TABLES.leases} WHERE run_id = ?`, runId);
 		return { run, events, lease: fenced! };
 	}, CONSOLIDATION_TRANSACTION);
@@ -676,7 +733,7 @@ async function readRun(database: SqliteExecutor, runId: string): Promise<RunSnap
 	if (run === undefined) return undefined;
 	return {
 		run,
-		events: await database.all<EventRow>(`SELECT * FROM ${TABLES.events} WHERE run_id = ? ORDER BY seq`, runId),
+		events: await readEvents(database, runId),
 	};
 }
 
@@ -701,7 +758,7 @@ async function copy(
 		if (existing !== undefined) {
 			if (holdsSnapshot(snapshot, existing)) return true;
 			if (!holdsSnapshot(existing, snapshot) || !(await staleFence(tx, run.run_id))) return false;
-			await tx.run(`DELETE FROM ${TABLES.events} WHERE run_id = ?`, run.run_id);
+			await deleteEvents(tx, run.run_id);
 			await tx.run(`DELETE FROM ${TABLES.runs} WHERE run_id = ?`, run.run_id);
 		}
 		await tx.run(
@@ -713,17 +770,21 @@ async function copy(
 			run.status,
 			run.header_json,
 		);
-		for (const event of snapshot.events)
+		for (const event of snapshot.events) {
+			const stored = storedJournalPayload(event.payload);
 			await tx.run(
-				`INSERT INTO ${TABLES.events}(run_id, seq, epoch, key, type, payload, at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO ${TABLES.events}(run_id, seq, epoch, key, type, payload, at, chunks) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 				event.run_id,
 				event.seq,
 				event.epoch,
 				event.key,
 				event.type,
-				event.payload,
+				stored.payload,
 				event.at,
+				stored.chunks.length,
 			);
+			await writeJournalPayloadChunks(tx, TABLES.eventChunks, event.run_id, event.seq, stored.chunks);
+		}
 		const kept = await tx.get<LeaseRow>(`SELECT * FROM ${TABLES.leases} WHERE run_id = ?`, run.run_id);
 		await tx.run(
 			`INSERT INTO ${TABLES.leases} VALUES (?, ?, ?, ${STORE_NOW}) ON CONFLICT(run_id) DO UPDATE SET holder_id = excluded.holder_id, epoch = excluded.epoch, renewed_at = excluded.renewed_at`,
@@ -740,7 +801,7 @@ async function removeRun(database: SqliteDatabase, runId: string, holder: string
 	return database.transaction(async (tx) => {
 		const lease = await tx.get<LeaseRow>(`SELECT * FROM ${TABLES.leases} WHERE run_id = ?`, runId);
 		if (lease?.holder_id !== holder) return false;
-		await tx.run(`DELETE FROM ${TABLES.events} WHERE run_id = ?`, runId);
+		await deleteEvents(tx, runId);
 		await tx.run(`DELETE FROM ${TABLES.runs} WHERE run_id = ?`, runId);
 		await tx.run(`DELETE FROM ${TABLES.leases} WHERE run_id = ?`, runId);
 		return true;
@@ -823,7 +884,7 @@ async function returnToSource(
 		);
 		if (kept === undefined) return false;
 		if (kept.holder_id?.startsWith(JOURNAL_CONSOLIDATION_HOLDER_PREFIX) && kept.holder_id !== holder) return true;
-		await tx.run(`DELETE FROM ${TABLES.events} WHERE run_id = ?`, runId);
+		await deleteEvents(tx, runId);
 		await tx.run(`DELETE FROM ${TABLES.runs} WHERE run_id = ?`, runId);
 		await tx.run(`DELETE FROM ${TABLES.leases} WHERE run_id = ?`, runId);
 		return true;

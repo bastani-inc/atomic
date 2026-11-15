@@ -2,8 +2,8 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import {
 	dialectOf,
 	openNodeSqliteDatabase,
+	RUN_JOURNAL_SCHEMA_VERSION_UNCHUNKED,
 	renderStorageIdentifiers,
-	runJournalTableDefinitions,
 	type SqliteDatabase,
 	type SqliteExecutor,
 	type SqliteRow,
@@ -14,6 +14,11 @@ import {
 	type StorageDialect,
 	type StorageFailureCause,
 	StorageUnavailableError,
+	type StoredJournalPayload,
+	storedJournalPayload,
+	upgradeRunJournalSchema,
+	withJournalPayloads,
+	writeJournalPayloadChunks,
 } from "@bastani/atomic/storage";
 import {
 	JOURNAL_READ_PAGE_CHARS,
@@ -92,6 +97,7 @@ function entryFromRow(row: EventRow): JournalEntry {
  */
 async function readSizedPage(
 	database: SqliteDatabase,
+	chunkTable: string,
 	pageRows: string,
 	order: string,
 	params: readonly SqliteValue[],
@@ -107,7 +113,8 @@ async function readSizedPage(
 	);
 	const fetched = Number(rows[0]?.fetched ?? 0);
 	return {
-		page: rows.map(entryFromRow),
+		// A payload stored in chunks has its stub's length in the page's size: its chunks are read one statement each.
+		page: (await withJournalPayloads(database, chunkTable, rows)).map(entryFromRow),
 		more: rows.length > 0 && (rows.length < fetched || fetched === JOURNAL_READ_PAGE_SIZE),
 	};
 }
@@ -232,12 +239,15 @@ export class SqlRunJournal implements RunJournal {
 		}
 		const versions = await database.all(`SELECT ${c.schemaVersion} FROM ${t.meta}`);
 		if (versions.length !== 1) return false;
+		// A journal of the previous version is upgraded under the write lock, once (#4965).
+		if (versions[0]![c.schemaVersion] === RUN_JOURNAL_SCHEMA_VERSION_UNCHUNKED) return false;
 		SqlRunJournal.assertSchemaVersion(versions[0]![c.schemaVersion]!);
 		return true;
 	}
 
-	private static assertSchemaVersion(found: SqliteValue): void {
-		if (found !== JOURNAL_SCHEMA_VERSION) throw new JournalSchemaVersionError(found);
+	private static assertSchemaVersion(found: SqliteValue, upgradable = false): void {
+		if (found === JOURNAL_SCHEMA_VERSION || (upgradable && found === RUN_JOURNAL_SCHEMA_VERSION_UNCHUNKED)) return;
+		throw new JournalSchemaVersionError(found);
 	}
 
 	private static async initialize(database: SqliteDatabase, t: Tables, prefix?: string): Promise<void> {
@@ -249,8 +259,9 @@ export class SqlRunJournal implements RunJournal {
 			if (versions.length > 1) throw new JournalMetaCorruptError(database.descriptor.location, versions.length);
 			if (versions.length === 0) {
 				await tx.run(`INSERT INTO ${t.meta} VALUES (?)`, JOURNAL_SCHEMA_VERSION);
-			} else SqlRunJournal.assertSchemaVersion(versions[0]![c.schemaVersion]!);
-			await tx.exec(runJournalTableDefinitions(prefix, dialect));
+			} else SqlRunJournal.assertSchemaVersion(versions[0]![c.schemaVersion]!, true);
+			// The tables, and a journal of the previous version upgraded to store large payloads in chunks (#4965).
+			await upgradeRunJournalSchema(tx, prefix, dialect);
 			// The snapshot blob table too, so a new journal takes the write lock once (#4325) and opens it lock-free.
 			await SqlSnapshotBlobStore.initialize(tx, prefix, dialect);
 		}, JOURNAL_WRITE_TRANSACTION);
@@ -359,7 +370,7 @@ export class SqlRunJournal implements RunJournal {
 			if (append.payload instanceof StorageUnavailableError) throw append.payload;
 			return { ...append, payload: append.payload };
 		});
-		const { runs, events: eventTable } = this.tables;
+		const { runs } = this.tables;
 		return this.operation(async () => {
 			if (await this.legacy?.find(this.database, header.runId)) return "exists";
 			return this.transaction(async (tx) => {
@@ -375,14 +386,14 @@ export class SqlRunJournal implements RunJournal {
 				if (created.changes !== 1) return "exists";
 				let status: string | undefined;
 				for (const [index, append] of prepared.entries()) {
-					await tx.run(
-						`INSERT INTO ${eventTable} VALUES (?, ?, ?, ?, ?, ?, ${this.dialect.nowMs})`,
+					await this.insertEvent(
+						tx,
 						header.runId,
 						index + 1,
 						JOURNAL_LEASE.absentEpoch,
-						append.key ?? null,
+						append.key,
 						append.type,
-						append.payload,
+						append.stored!,
 					);
 					status = append.status ?? status;
 				}
@@ -472,15 +483,18 @@ export class SqlRunJournal implements RunJournal {
 		this.assertOpen();
 		validateText("runId", runId);
 		return this.operation(async () => {
-			const events = (await this.isUnconvertedLegacyRun(runId)) ? JOURNAL_TABLES.events : this.tables.events;
+			const legacy = await this.isUnconvertedLegacyRun(runId);
+			const events = legacy ? JOURNAL_TABLES.events : this.tables.events;
+			// The legacy tables have no chunks column: every payload there is stored whole.
+			const chunks = legacy ? `0 AS ${c.chunks}` : c.chunks;
 			const later = `FROM ${events} AS later WHERE later.${c.runId} = snapshot.${c.runId} AND later.${c.seq} > snapshot.${c.seq} AND later.${c.type} = ?`;
 			const row = await this.database.get<SnapshotTailRow>(
-				`SELECT ${EVENT_COLUMNS.map((column) => `snapshot.${column}`).join(", ")},
+				`SELECT ${EVENT_COLUMNS.map((column) => `snapshot.${column}`).join(", ")}, snapshot.${c.chunks},
 					latest.${c.seq} AS latest_seq, latest.${c.at} AS latest_at,
 					(SELECT count(*) ${later}) AS later_checkpoints,
 					(SELECT ${this.dialect.jsonText(`later.${c.payload}`, "completedAt")} ${later} ORDER BY later.${c.seq} DESC LIMIT 1) AS last_checkpoint_at
 				FROM (SELECT ${c.seq}, ${c.at} FROM ${events} WHERE ${c.runId} = ? ORDER BY ${c.seq} DESC LIMIT 1) AS latest,
-					(SELECT ${EVENT_COLUMNS.join(", ")} FROM ${events} WHERE ${c.runId} = ? AND ${c.type} NOT IN (${NON_SNAPSHOT_EVENT_TYPES.map(() => "?").join(", ")}) ORDER BY ${c.seq} DESC LIMIT 1) AS snapshot`,
+					(SELECT ${EVENT_COLUMNS.join(", ")}, ${chunks} FROM ${events} WHERE ${c.runId} = ? AND ${c.type} NOT IN (${NON_SNAPSHOT_EVENT_TYPES.map(() => "?").join(", ")}) ORDER BY ${c.seq} DESC LIMIT 1) AS snapshot`,
 				RUN_EVENT_TYPES.checkpointRecorded,
 				RUN_EVENT_TYPES.checkpointRecorded,
 				runId,
@@ -488,9 +502,10 @@ export class SqlRunJournal implements RunJournal {
 				...NON_SNAPSHOT_EVENT_TYPES,
 			);
 			if (row === undefined) return undefined;
+			const [snapshot] = await withJournalPayloads(this.database, this.tables.eventChunks, [row]);
 			return {
 				version: { seq: journalCounter(runId, "seq", row.latest_seq), at: Number(row.latest_at) },
-				snapshot: entryFromRow(row),
+				snapshot: entryFromRow(snapshot!),
 				laterCheckpoints: Number(row.later_checkpoints),
 				...(row.last_checkpoint_at === null ? {} : { lastCheckpointAt: Number(row.last_checkpoint_at) }),
 			};
@@ -705,7 +720,12 @@ export class SqlRunJournal implements RunJournal {
 		if (
 			batch &&
 			prepared.every(
-				(append) => append instanceof Error || (append.guard === undefined && typeof append.payload === "string"),
+				(append) =>
+					append instanceof Error ||
+					(append.guard === undefined &&
+						typeof append.payload === "string" &&
+						append.stored !== undefined &&
+						append.stored.chunks.length === 0),
 			)
 		)
 			return this.operation(() => this.appendInOneRequest(batch, owned, prepared));
@@ -780,7 +800,7 @@ export class SqlRunJournal implements RunJournal {
 					params: [status, owned.runId, ...appendsParams],
 				});
 			const inserted = at({
-				sql: `INSERT INTO ${t.events}
+				sql: `INSERT INTO ${t.events} (${c.runId}, ${c.seq}, ${c.epoch}, ${c.key}, ${c.type}, ${c.payload}, ${c.at})
 					SELECT ?, current.latest + 1, ?, ?, ?, ?, ${this.dialect.nowMs}
 					${appends}
 					RETURNING 1 AS inserted`,
@@ -794,22 +814,32 @@ export class SqlRunJournal implements RunJournal {
 		const epoch = lease === undefined ? undefined : journalCounter(owned.runId, "epoch", lease[c.epoch]);
 		if (lease?.[c.holderId] !== owned.holderId || epoch !== owned.epoch)
 			throw new StaleLeaseError(owned.runId, owned.epoch, epoch ?? JOURNAL_LEASE.absentEpoch);
-		return plans.map((plan): PromiseSettledResult<AppendOutcome> => {
-			if (plan instanceof Error) return { status: "rejected", reason: plan };
+		const settled: PromiseSettledResult<AppendOutcome>[] = [];
+		for (const plan of plans) {
+			if (plan instanceof Error) {
+				settled.push({ status: "rejected", reason: plan });
+				continue;
+			}
 			try {
 				const existing =
 					plan.existing === undefined ? undefined : (rows[plan.existing]![0] as EventRow | undefined);
-				if (existing) return { status: "fulfilled", value: { status: "exists", entry: entryFromRow(existing) } };
+				if (existing) {
+					settled.push({ status: "fulfilled", value: { status: "exists", entry: await this.entryOf(existing) } });
+					continue;
+				}
 				const row = rows[plan.row]![0] as EventRow | undefined;
-				if (rows[plan.inserted]!.length === 1)
-					return { status: "fulfilled", value: { status: "appended", entry: entryFromRow(row!) } };
+				if (rows[plan.inserted]!.length === 1) {
+					settled.push({ status: "fulfilled", value: { status: "appended", entry: entryFromRow(row!) } });
+					continue;
+				}
 				const actual = journalCounter(owned.runId, "seq", row?.[c.seq] ?? 0);
 				journalCounter(owned.runId, "seq", actual + 1, "overflow");
 				throw new StorageUnavailableError(this.descriptor, new Error("The batched append was not written."));
 			} catch (error) {
-				return { status: "rejected", reason: error };
+				settled.push({ status: "rejected", reason: error });
 			}
-		});
+		}
+		return settled;
 	}
 
 	/** Validate an append outside any transaction; its payload error is raised where `append` always raised it. */
@@ -829,13 +859,45 @@ export class SqlRunJournal implements RunJournal {
 				: undefined;
 		if (type === RUN_EVENT_TYPES.statusChanged && !(payload instanceof StorageUnavailableError))
 			validateText("status", status!);
-		return { key, type, payload, guard, status };
+		// How the payload is stored: a large one as a stub in its row and its JSON in chunks (#4965).
+		const stored =
+			payload instanceof StorageUnavailableError ? undefined : storedJournalPayload(payload, event.payload);
+		return { key, type, payload, guard, status, stored };
+	}
+
+	/** Writes one event row and the chunks of its payload, if it has any, in the caller's transaction. */
+	private async insertEvent(
+		tx: SqliteExecutor,
+		runId: string,
+		seq: number,
+		epoch: number,
+		key: string | undefined,
+		type: string,
+		stored: StoredJournalPayload,
+	): Promise<void> {
+		await tx.run(
+			`INSERT INTO ${this.tables.events} (${c.runId}, ${c.seq}, ${c.epoch}, ${c.key}, ${c.type}, ${c.payload}, ${c.at}, ${c.chunks}) VALUES (?, ?, ?, ?, ?, ?, ${this.dialect.nowMs}, ?)`,
+			runId,
+			seq,
+			epoch,
+			key ?? null,
+			type,
+			stored.payload,
+			stored.chunks.length,
+		);
+		await writeJournalPayloadChunks(tx, this.tables.eventChunks, runId, seq, stored.chunks);
+	}
+
+	/** The entry of an events row, its payload read from its chunks when it is stored in them. */
+	private async entryOf(row: EventRow, executor: SqliteExecutor = this.database): Promise<JournalEntry> {
+		const [loaded] = await withJournalPayloads(executor, this.tables.eventChunks, [row]);
+		return entryFromRow(loaded!);
 	}
 
 	private async insert(
 		tx: SqliteExecutor,
 		owned: Lease,
-		{ key, type, payload, guard, status }: ReturnType<SqlRunJournal["prepare"]>,
+		{ key, type, payload, guard, status, stored }: ReturnType<SqlRunJournal["prepare"]>,
 		expected?: number,
 	): Promise<AppendOutcome> {
 		await guard?.(tx, owned.runId);
@@ -845,22 +907,14 @@ export class SqlRunJournal implements RunJournal {
 				owned.runId,
 				key,
 			);
-			if (row) return { status: "exists", entry: entryFromRow(row) };
+			if (row) return { status: "exists", entry: await this.entryOf(row, tx) };
 		}
 		const actual = await this.sequence(tx, owned.runId);
 		if (expected !== undefined && expected !== actual)
 			throw new JournalCasConflictError(owned.runId, expected, actual);
 		const seq = journalCounter(owned.runId, "seq", actual + 1, "overflow");
 		if (payload instanceof StorageUnavailableError) throw payload;
-		await tx.run(
-			`INSERT INTO ${this.tables.events} VALUES (?, ?, ?, ?, ?, ?, ${this.dialect.nowMs})`,
-			owned.runId,
-			seq,
-			owned.epoch,
-			key ?? null,
-			type,
-			payload,
-		);
+		await this.insertEvent(tx, owned.runId, seq, owned.epoch, key, type, stored!);
 		if (status !== undefined)
 			await tx.run(`UPDATE ${this.tables.runs} SET ${c.status} = ? WHERE ${c.runId} = ?`, status, owned.runId);
 		const row = await tx.get<EventRow>(
@@ -869,7 +923,8 @@ export class SqlRunJournal implements RunJournal {
 			seq,
 		);
 		await guard?.(tx, owned.runId);
-		return { status: "appended", entry: entryFromRow(row!) };
+		// The payload as appended, not its stub: the caller's own JSON, without reading its chunks back.
+		return { status: "appended", entry: entryFromRow({ ...row!, [c.payload]: payload, [c.chunks]: 0 }) };
 	}
 
 	async *read(runId: string, fromSeq = 1): AsyncIterable<JournalEntry> {
@@ -886,6 +941,7 @@ export class SqlRunJournal implements RunJournal {
 				}
 				return readSizedPage(
 					this.database,
+					this.tables.eventChunks,
 					`SELECT * FROM ${this.tables.events} WHERE ${c.runId} = ? AND ${c.seq} >= ? ORDER BY ${c.seq} LIMIT ?`,
 					c.seq,
 					[runId, nextSeq, JOURNAL_READ_PAGE_SIZE],
@@ -915,7 +971,7 @@ export class SqlRunJournal implements RunJournal {
 							runId,
 							key,
 						);
-			return row ? entryFromRow(row) : undefined;
+			return row ? this.entryOf(row) : undefined;
 		});
 	}
 
@@ -948,6 +1004,7 @@ export class SqlRunJournal implements RunJournal {
 			const { page, more } = await journal.operation(async () => {
 				return readSizedPage(
 					journal.database,
+					journal.tables.eventChunks,
 					`SELECT * FROM ${journal.tables.events} WHERE ${c.runId} = ? AND ${c.key} ${after === undefined ? ">=" : ">"} ? AND ${c.key} < ? ORDER BY ${c.key} LIMIT ?`,
 					c.key,
 					[runId, after ?? fromKey, toKey, JOURNAL_READ_PAGE_SIZE],
@@ -995,6 +1052,7 @@ export class SqlRunJournal implements RunJournal {
 			JOURNAL_LEASE.unheld,
 			runId,
 		);
+		await tx.run(`DELETE FROM ${this.tables.eventChunks} WHERE ${c.runId} = ?`, runId);
 		await tx.run(`DELETE FROM ${this.tables.events} WHERE ${c.runId} = ?`, runId);
 		await tx.run(`DELETE FROM ${this.tables.runs} WHERE ${c.runId} = ?`, runId);
 	}
