@@ -81,6 +81,11 @@ test("the broker bounds a restoring child's release reasons without splitting an
 		gone: "g".repeat(1_000),
 		refusal: "r".repeat(999),
 	});
+	// The first and last high surrogates: U+10000 and U+10FFFF.
+	assert.deepEqual(boundedReleaseReasons(`${"g".repeat(999)}\u{10000}`, `${"r".repeat(999)}\u{10FFFF}`), {
+		gone: "g".repeat(999),
+		refusal: "r".repeat(999),
+	});
 	assert.deepEqual(boundedReleaseReasons(`${"g".repeat(998)}${EMOJI}`, "r".repeat(1_000)), {
 		gone: `${"g".repeat(998)}${EMOJI}`,
 		refusal: "r".repeat(1_000),

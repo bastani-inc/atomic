@@ -8,6 +8,13 @@ import {
 } from "../../packages/subagents/src/runs/foreground/subagent-child-records.js";
 import { formatToolCall } from "../../packages/subagents/src/shared/formatters.js";
 import { detectSubagentError, extractToolArgsPreview } from "../../packages/subagents/src/shared/utils.js";
+import { renderSubagentResult } from "../../packages/subagents/src/tui/render.js";
+import {
+	type AgentToolResult,
+	type Details,
+	runningSingleResult,
+	theme,
+} from "./subagents-render-stability-helpers.js";
 
 const EMOJI = "😀";
 
@@ -90,4 +97,31 @@ test("a subagent error's details cut before a split emoji (#5097)", () => {
 		errorType: "bash",
 		details: `permission denied ${"o".repeat(181)}`,
 	});
+});
+
+/** The lines an expanded subagent result shows, wide enough that nothing wraps. */
+function expandedLines(result: AgentToolResult<Details>): string[] {
+	return renderSubagentResult(result, { expanded: true }, theme)
+		.render(5_000)
+		.map((line) => line.trimEnd());
+}
+
+test("an expanded subagent result shows each whole task and tool argument, emoji included (#5097)", () => {
+	const task = `${"t".repeat(300)}${EMOJI}`;
+	const args = `${"a".repeat(300)}${EMOJI}`;
+	const single = runningSingleResult();
+	const child = single.details.results[0]!;
+	child.task = task;
+	child.progress!.recentTools = [{ tool: "grep", args, endMs: 1 }];
+	const singleLines = expandedLines(single);
+	assert.ok(singleLines.includes(`Task: ${task}`), singleLines.join("\n"));
+	assert.ok(singleLines.includes(`grep: ${args}`), singleLines.join("\n"));
+
+	const parallel: AgentToolResult<Details> = {
+		content: [{ type: "text", text: "running" }],
+		details: { mode: "parallel", results: [structuredClone(child), structuredClone(child)], totalSteps: 2 },
+	};
+	const parallelLines = expandedLines(parallel);
+	assert.ok(parallelLines.includes(`    task: ${task}`), parallelLines.join("\n"));
+	assert.ok(parallelLines.includes(`      grep: ${args}`), parallelLines.join("\n"));
 });
