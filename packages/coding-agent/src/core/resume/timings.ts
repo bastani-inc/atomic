@@ -57,9 +57,20 @@ const PHASE_ORDER: readonly RestorePhase[] = [
 	"seed",
 ];
 
-interface CheckoutTimer {
+export interface CheckoutTimer {
 	fetch: RestoreFetchMode;
 	readonly phases: Map<RestorePhase, number>;
+	/** When the last phase that ran after the restore returned ended, as a deferred LFS download does (#5099). */
+	lateEnd?: number;
+}
+
+/** A restore the recorder holds: its timings are read when they are reported, so a deferred phase still counts. */
+export interface RecordedRestore {
+	readonly root: string;
+	readonly mode: CheckoutRestoreMode;
+	readonly timer: CheckoutTimer;
+	readonly started: number;
+	readonly returned: number;
 }
 
 const currentResume = asyncScope<ResumeTimingsRecorder>();
@@ -72,7 +83,7 @@ const currentCheckout = asyncScope<CheckoutTimer>();
  */
 export class ResumeTimingsRecorder {
 	private readonly origin: number;
-	private readonly restores: CheckoutRestoreTimings[] = [];
+	private readonly restores: RecordedRestore[] = [];
 	private readonly steps: BlueprintStepTiming[] = [];
 	private blueprintReady: number | undefined;
 
@@ -91,7 +102,7 @@ export class ResumeTimingsRecorder {
 		return this.restores.length > 0 || this.steps.length > 0;
 	}
 
-	addRestore(restore: CheckoutRestoreTimings): void {
+	addRestore(restore: RecordedRestore): void {
 		this.restores.push(restore);
 	}
 
@@ -107,12 +118,23 @@ export class ResumeTimingsRecorder {
 		return {
 			version: 1,
 			startedAt: new Date(performance.timeOrigin + this.origin).toISOString(),
-			restores: [...this.restores],
+			restores: this.restores.map(restoreTimings),
 			blueprint: [...this.steps],
 			firstPromptReadyMs: since(performance.now()),
 			blueprintReadyMs: this.blueprintReady === undefined ? null : since(this.blueprintReady),
 		};
 	}
+}
+
+/**
+ * `restore`'s timings as they stand: its phases so far, and its time from its start to the end of the restore or of a
+ * phase deferred past it, whichever is later.
+ */
+function restoreTimings({ root, mode, timer, started, returned }: RecordedRestore): CheckoutRestoreTimings {
+	const phases: Partial<Record<RestorePhase, number>> = {};
+	for (const [phase, ms] of timer.phases) phases[phase] = Math.floor(ms);
+	const ended = Math.max(returned, timer.lateEnd ?? returned);
+	return { root, mode, fetch: timer.fetch, ms: Math.floor(ended - started), phases };
 }
 
 /**
@@ -131,11 +153,7 @@ export async function timeCheckoutRestore<T>(
 	const started = performance.now();
 	const result = await currentCheckout.run(timer, restore);
 	const mode = modeOf(result);
-	if (mode !== undefined) {
-		const phases: Partial<Record<RestorePhase, number>> = {};
-		for (const [phase, ms] of timer.phases) phases[phase] = Math.floor(ms);
-		recorder.addRestore({ root, mode, fetch: timer.fetch, ms: Math.floor(performance.now() - started), phases });
-	}
+	if (mode !== undefined) recorder.addRestore({ root, mode, timer, started, returned: performance.now() });
 	return result;
 }
 
@@ -149,6 +167,25 @@ export async function timeRestorePhase<T>(phase: RestorePhase, action: () => Pro
 	} finally {
 		timer.phases.set(phase, (timer.phases.get(phase) ?? 0) + performance.now() - started);
 	}
+}
+
+/**
+ * `action` as `phase` of the checkout restore this is called in, to run after that restore returned (#5099): the phase
+ * and the restore's time then extend to when it ends. Outside a restore, the returned function only runs `action`.
+ */
+export function deferRestorePhase<T>(phase: RestorePhase, action: () => Promise<T>): () => Promise<T> {
+	const timer = currentCheckout.getStore();
+	if (timer === undefined) return action;
+	return async () => {
+		const started = performance.now();
+		try {
+			return await action();
+		} finally {
+			const ended = performance.now();
+			timer.phases.set(phase, (timer.phases.get(phase) ?? 0) + ended - started);
+			timer.lateEnd = Math.max(timer.lateEnd ?? ended, ended);
+		}
+	};
 }
 
 /** Records how the checkout restore this runs in got its commit. */
