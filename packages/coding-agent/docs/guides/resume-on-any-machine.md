@@ -39,6 +39,16 @@ An SDK `createAgentSession({ sessionManager })` call prepares a supplied session
 
 When the shared storage does not answer, `atomic --session`, `--resume`, `--continue` and `/resume` stop after 15 seconds with a retryable `ResumeCatalogTimeoutError` instead of waiting for the network to give up. Nothing was changed; resume again once `atomic storage status` reaches the database.
 
+### When the session is already open
+
+A session runs in one process at a time. `atomic --session`, `--resume` and `--continue` claim the session they open before they write to it or restore its checkouts. When another process on this machine still has the session open, the resume changes nothing and exits with code `75`:
+
+```text
+Error: Session <id> is already open in process <pid> on <host>. Nothing was changed. Close it there or wait for that process to exit, then resume again.
+```
+
+Interactive mode prints the same message before it starts. When several resumes of one session start at once, exactly one runs and the others exit this way. A claim left by a process that no longer runs, for example one killed with `SIGKILL`, is taken over by the next resume. The process is matched by its pid and, on Linux, by when it started, so a later process given the same pid does not count as the holder. Claims are files under `~/.atomic/agent/session-claims`, so they are seen by the processes that share that agent directory. If a process with another agent directory writes to the same session store at the same time, the run whose write conflicts stops with `Another process wrote to session <id> …` and exit code `1`; resume the session again to continue from what was saved.
+
 ## Wake a released subagent
 
 A background subagent that was released while it waited keeps its session in the shared storage when it was launched with `context: "fork"`, so it can be woken on another machine. The wake maps its recorded directory through the restores of the session that owns it. The subagent's own session is then prepared as a woken session is: each checkout it worked in on this machine stays as it is, and every other checkout is restored from its snapshots into a worktree on this machine, with its blueprints built. Its tools resolve the earlier machine's absolute paths there, and follow the restores of the session or run it was launched in. A subagent started without `context: "fork"` keeps a session file on the machine that launched it, which another machine cannot reopen; it is reported as unrestorable.

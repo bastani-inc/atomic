@@ -9,6 +9,7 @@
 terraform {
   required_providers {
     azurerm = { source = "hashicorp/azurerm", version = "~> 4.0" }
+    random  = { source = "hashicorp/random", version = "~> 3.6" }
   }
 }
 
@@ -19,8 +20,11 @@ provider "azurerm" {
 variable "resource_group" { default = "atomic-rg" }
 variable "location" { default = "eastus" }
 variable "subnet_id" {}
-variable "database" { default = "libsql://pool.example.turso.io" }
-variable "key_vault_id" { description = "The Key Vault (RBAC authorization) holding the database token" }
+variable "database" {
+  default     = "libsql://pool.example.turso.io"
+  description = "The shared database when `postgres` is false"
+}
+variable "key_vault_id" { description = "The Key Vault (RBAC authorization) holding the database token, or the PostgreSQL password postgres.tf writes" }
 variable "token_secret_name" { default = "atomic-db-token" }
 variable "token_command" {
   default     = null
@@ -79,8 +83,9 @@ resource "azurerm_linux_virtual_machine_scale_set" "workers" {
   }
   identity { type = "SystemAssigned" }
   custom_data = base64encode(templatefile("${path.module}/../cloud-init.yaml.tftpl", {
-    database = var.database
-    slots    = 4
+    database    = local.database
+    database_ca = ""
+    slots       = 4
     # The instance id: the end of the VM's name in a Uniform scale set.
     provider_id_command = "curl -s -H Metadata:true 'http://169.254.169.254/metadata/instance/compute/name?api-version=2021-02-01&format=text' | sed 's/.*_//'"
     token_command       = local.token_command
@@ -111,6 +116,8 @@ resource "azurerm_role_assignment" "workers_token" {
   scope                = "${var.key_vault_id}/secrets/${var.token_secret_name}"
   role_definition_name = "Key Vault Secrets User"
   principal_id         = azurerm_linux_virtual_machine_scale_set.workers.identity[0].principal_id
+  # With `postgres`, the secret is the password postgres.tf writes.
+  depends_on = [azurerm_key_vault_secret.postgres]
 }
 
 # The controller's managed identity: no secret to store or rotate.
