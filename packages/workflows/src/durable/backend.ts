@@ -1,10 +1,10 @@
 /** Durable workflow contract and private journal projection. */
+
 import { closeSync, openSync, readSync } from "node:fs";
 import type { JournalShardUnavailableError, RunJournal } from "@bastani/atomic/storage";
-
 import type { PendingStageMessage, PendingStageMessageDelivery } from "../shared/store-types.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
-import { stampCheckpointAttempt, workflowAttemptOf } from "./attempt-identity.js";
+import { completedRunAttempt, stampCheckpointAttempt, workflowAttemptOf } from "./attempt-identity.js";
 import type { PromptReservationToken } from "./prompt-reservation-state.js";
 import { isDurableWorkflowResumable } from "./resume-eligibility.js";
 import { durableStageGroupKey } from "./stage-topology-validation.js";
@@ -918,10 +918,14 @@ class JournalProjection {
 		if (!rec) return;
 		const checkpoint = this.index(rec, recorded);
 		if (checkpoint === undefined) return;
+		// A run still `running` that recorded its definition completed in its current attempt is completed: the store
+		// refused its terminal status write (#5133).
+		const completed = rec.handle.status === "running" && completedRunAttempt(checkpoint) === rec.attempt;
 		rec.handle = {
 			...rec.handle,
 			completedCheckpoints: rec.checkpoints.size + rec.released,
 			updatedAt: checkpoint.completedAt,
+			...(completed ? { status: "completed" as const } : {}),
 		};
 	}
 
@@ -935,10 +939,12 @@ class JournalProjection {
 		if (!rec) return;
 		rec.attempt = Math.max(rec.attempt, workflowAttemptOf(recorded) ?? 0);
 		rec.released++;
+		const completed = rec.handle.status === "running" && completedRunAttempt(recorded) === rec.attempt;
 		rec.handle = {
 			...rec.handle,
 			completedCheckpoints: rec.checkpoints.size + rec.released,
 			updatedAt: recorded.completedAt,
+			...(completed ? { status: "completed" as const } : {}),
 		};
 	}
 

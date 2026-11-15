@@ -15,6 +15,7 @@ import {
 	durableWorkflowAttempt,
 	forkCopiedNodes,
 	keepsForkCopiedParent,
+	recordRunCompletedCheckpointAsync,
 } from "../durable/attempt-identity.js";
 import { type DurableWorkflowBackend, pendingStageMessagesForDurableRun } from "../durable/backend.js";
 import type { DurableChildInvocation } from "../durable/boundary-topology.js";
@@ -1764,6 +1765,7 @@ async function executeRun(
 		if (opts.parentRun === undefined) {
 			await recordRunTimingCheckpointAsync(durableBackend, runSnapshot);
 			await recordRunResultCheckpointAsync(durableBackend, runSnapshot);
+			if (returned.status === "completed") await recordRunCompletedCheckpointAsync(durableBackend, runId);
 		}
 		await durableBackend.commitWorkflowStatus(runId, returned.status, undefined, returned.metadata?.resumable);
 		terminalStatusCommitted = true;
