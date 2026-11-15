@@ -24,7 +24,7 @@ import {
 import { ENV_CODEMODE_MAX_WORKERS, getCodemodeWorkerUrl, getEnvValue, getQuickJSWasmPath } from "../../config.js";
 import type { ExtensionToolContext } from "../../core/extensions/context-types.ts";
 import type { ToolNamespace } from "../../core/extensions/tool-types.ts";
-import { billedModelCost } from "../../core/model-routing-constraints.ts";
+import { billedModelCost } from "../../core/model-routing-constraints.js";
 import type { SessionEntry } from "../../core/session-manager.ts";
 import { formatSize, sliceHead, sliceTail } from "../../core/tools/truncate.ts";
 import { combineUsage } from "../../core/usage-totals.ts";
