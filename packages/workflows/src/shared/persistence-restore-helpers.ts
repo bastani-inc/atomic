@@ -412,6 +412,8 @@ export function findRunBlockedMetadata(
 ): RestoredRunBlockedMetadata | undefined {
 	let latest: RestoredRunBlockedMetadata | undefined;
 	for (const entry of entries) {
+		// A later attempt of the run starts with no blocked state of its own (#4874).
+		if (entry.type === "workflow.run.start" && entry.payload.runId === runId) latest = undefined;
 		if (entry.type !== "workflow.run.blocked" || entry.payload.runId !== runId) continue;
 		const failedStageId = entry.payload.failedStageId;
 		const error = entry.payload.error;
@@ -607,8 +609,11 @@ export function findRunStartMetadata(
 	readonly budget?: RunBudgetSnapshot;
 	readonly budgetState?: RunBudgetState;
 } {
-	for (const entry of entries) {
-		if (entry.type !== "workflow.run.start" || entry.payload.runId !== runId) continue;
+	// The latest attempt's start: a resumed attempt records its own resume source and prior duration (#4874).
+	const entry = entries.findLast(
+		(candidate) => candidate.type === "workflow.run.start" && candidate.payload.runId === runId,
+	);
+	if (entry !== undefined && entry.type === "workflow.run.start") {
 		const parentRunId = entry.payload.parentRunId;
 		const parentStageId = entry.payload.parentStageId;
 		const rootRunId = entry.payload.rootRunId;
