@@ -26,7 +26,7 @@ afterAll(() => {
 async function leaveStaleSocket(path: string): Promise<void> {
 	const holder = spawn(
 		process.execPath,
-		["-e", `require("net").createServer().listen(${JSON.stringify(path)}, () => process.stdout.write("up"))`],
+		["-e", 'require("net").createServer().listen(process.argv[1], () => process.stdout.write("up"))', path],
 		{ stdio: ["ignore", "pipe", "inherit"] },
 	);
 	await new Promise<void>((resolveUp) => holder.stdout!.once("data", () => resolveUp()));
