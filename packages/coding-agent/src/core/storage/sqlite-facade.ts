@@ -298,6 +298,8 @@ class LaneQueue {
 	private runningSince = 0;
 	private idle: (() => void)[] = [];
 	private watchdog?: ReturnType<typeof setTimeout>;
+	/** The bound the planned check enforces, or undefined when none is planned. */
+	private watchdogBound?: number;
 	private readonly stalled: (ranMs: number) => Error;
 
 	constructor(stalled: (ranMs: number) => Error) {
@@ -335,6 +337,7 @@ class LaneQueue {
 		void operation.run().finally(() => {
 			clearTimeout(this.watchdog);
 			this.watchdog = undefined;
+			this.watchdogBound = undefined;
 			this.running = false;
 			this.next();
 			this.watch();
@@ -347,11 +350,22 @@ class LaneQueue {
 	 * runs while nothing waits.
 	 */
 	private watch(): void {
-		if (this.watchdog !== undefined || this.priority.length + this.normal.length === 0) return;
-		const bound = this.priority.length > 0 ? STORAGE_PRIORITY_CALL_MAX_WAIT_MS : STORAGE_QUEUED_CALL_MAX_WAIT_MS;
+		const bound =
+			this.priority.length > 0
+				? STORAGE_PRIORITY_CALL_MAX_WAIT_MS
+				: this.normal.length > 0
+					? STORAGE_QUEUED_CALL_MAX_WAIT_MS
+					: undefined;
+		// A priority call queued behind ordinary ones brings the planned check forward to its own, shorter bound.
+		if (bound === this.watchdogBound) return;
+		clearTimeout(this.watchdog);
+		this.watchdog = undefined;
+		this.watchdogBound = bound;
+		if (bound === undefined) return;
 		this.watchdog = setTimeout(
 			() => {
 				this.watchdog = undefined;
+				this.watchdogBound = undefined;
 				const ran = Date.now() - this.runningSince;
 				const failing = this.priority.splice(0);
 				if (ran >= STORAGE_QUEUED_CALL_MAX_WAIT_MS) failing.push(...this.normal.splice(0));

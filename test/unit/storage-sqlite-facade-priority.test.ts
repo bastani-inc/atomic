@@ -308,3 +308,27 @@ test("a call queued after the running call has run a while fails once that call 
 		vi.useRealTimers();
 	}
 });
+
+test("a priority call queued behind ordinary calls that wait on a call that never settles still fails at STORAGE_PRIORITY_CALL_MAX_WAIT_MS (#5114)", async () => {
+	vi.useFakeTimers();
+	try {
+		const { database, settle } = stuckDriver();
+		const stuck = database.run("stuck");
+		const failed = new Map<string, unknown>();
+		void failure(database.run("write")).then((error) => failed.set("write", error));
+		await vi.advanceTimersByTimeAsync(1_000);
+		void failure(database.batch!([{ sql: "renewal", params: [] }], { priority: true })).then((error) =>
+			failed.set("renewal", error),
+		);
+		await vi.advanceTimersByTimeAsync(STORAGE_PRIORITY_CALL_MAX_WAIT_MS - 1_000);
+		assert.ok(failed.get("renewal") instanceof StorageUnavailableError, "the renewal failed while its lease holds");
+		assert.equal(failed.has("write"), false, "the ordinary call still waits");
+		await vi.advanceTimersByTimeAsync(STORAGE_QUEUED_CALL_MAX_WAIT_MS - STORAGE_PRIORITY_CALL_MAX_WAIT_MS);
+		assert.ok(failed.get("write") instanceof StorageUnavailableError);
+		settle();
+		await stuck;
+		await database.close();
+	} finally {
+		vi.useRealTimers();
+	}
+});

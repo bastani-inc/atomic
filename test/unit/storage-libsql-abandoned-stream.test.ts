@@ -195,3 +195,37 @@ await fake.close();
 	assert.equal(result.exitCode, 0, result.stderr.toString());
 	assert.ok(Date.now() - started < PROCESS_EXIT_BOUND_MS, `the process took ${Date.now() - started} ms to exit`);
 });
+
+test("closing the database while a resend is under way sends no further close (#5114)", async () => {
+	// Streams that expire soon, so a transaction can begin after the one before it left its stream holding the lock.
+	const fake = await server({ streamTtlMs: 500 });
+	const database = await openLibsqlDatabase({ url: fake.url });
+	await database.exec("CREATE TABLE events(n INTEGER NOT NULL)");
+	const real = globalThis.fetch;
+	const sent: string[] = [];
+	let answer!: (response: Response) => void;
+	let hold = false;
+	// Every close-only request fails, as in an outage; once `hold` is set, a resend waits for `answer`.
+	vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+		const request = new Request(input, init);
+		const body = await request.clone().text();
+		if (!/^\{"baton":"[^"]*","requests":\[\{"type":"close"\}\]\}$/.test(body)) return real(request);
+		sent.push(body);
+		if (!hold) throw Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNRESET" } });
+		return new Promise<Response>((resolve) => {
+			answer = resolve;
+		});
+	});
+	// Two transactions whose connection broke in turn leave two closes to send again.
+	for (let run = 0; run < 2; run++) await cutInTransaction(database, () => fake.fail({ kind: "reset-before" }));
+	// The client sends the second stream's close itself just after the transaction fails.
+	await sleep(50);
+	hold = true;
+	const before = sent.length;
+	await sleep(20 * CLOSE_FIRST_WAIT_MS);
+	assert.equal(sent.length, before + 1, "the first kept close is under way");
+	await database.close();
+	answer(new Response("{}", { status: 200 }));
+	await sleep(4 * CLOSE_FIRST_WAIT_MS);
+	assert.equal(sent.length, before + 1, "the second close is not sent after the database closed");
+}, 30_000);

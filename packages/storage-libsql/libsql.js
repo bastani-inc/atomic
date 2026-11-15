@@ -143,7 +143,7 @@ class AbandonedStreams {
 		this.sending ??= (async () => {
 			const oldest = Date.now() - ABANDONED_STREAM_CLOSE_MAX_AGE_MS;
 			this.pending = this.pending.filter((close) => close.since > oldest);
-			while (!this.closed && this.pending.length > 0) {
+			while (this.pending.length > 0) {
 				const [close] = this.pending;
 				try {
 					const response = await fetch(close.url, {
@@ -158,7 +158,7 @@ class AbandonedStreams {
 					return;
 				}
 				this.wait = ABANDONED_STREAM_CLOSE_FIRST_WAIT_MS;
-				if (this.pending[0] === close) this.pending.shift();
+				this.pending = this.pending.filter((kept) => kept !== close);
 			}
 		})().finally(() => {
 			this.sending = undefined;
@@ -166,7 +166,7 @@ class AbandonedStreams {
 		return this.sending;
 	}
 
-	/** Stops resending: the closes kept are given up. */
+	/** Stops resending: the closes kept are given up, and a resend under way sends no further close. */
 	close() {
 		this.closed = true;
 		clearTimeout(this.timer);
