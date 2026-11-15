@@ -233,7 +233,7 @@ const renderings: readonly (readonly [string, (dialect: StorageDialect) => strin
 			params: ["team_runs"],
 		}),
 		JSON.stringify({
-			sql: "SELECT table_name AS name FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = ?",
+			sql: "SELECT c.relname AS name FROM pg_catalog.pg_class c WHERE c.relnamespace = current_schema()::regnamespace AND c.relkind IN ('r', 'p', 'v', 'm', 'f') AND c.relname = ?",
 			params: ["team_runs"],
 		}),
 	],
