@@ -28,6 +28,8 @@ export function createToolNodeLifecycle(input: {
 	readonly sourceToContinuationNodeIds: Map<string, string>;
 	readonly resumeToolNode?: ToolNodeSnapshot;
 	readonly retryToolNodes?: readonly ToolNodeSnapshot[];
+	/** Confirms the node against a replayed stage's provisional tool parent (#4945). */
+	readonly admitToolNode?: (node: ToolNodeSnapshot) => void;
 }): ToolNodeLifecycle {
 	const { store, tracker, run, sourceToContinuationNodeIds } = input;
 	/**
@@ -81,6 +83,7 @@ export function createToolNodeLifecycle(input: {
 					`${REPLAY_TOPOLOGY_MISMATCH_MESSAGE} for tool "${node.name}" (node "${node.id}") in source run ${run.resumedFromRunId}`,
 				);
 			}
+			input.admitToolNode?.(node);
 			const parentIds = translated ?? inferredParents;
 			tracker.replaceParents(node.id, parentIds);
 			(node as ToolNodeSnapshot & { parentIds: readonly string[] }).parentIds = Object.freeze([...parentIds]);
@@ -163,6 +166,7 @@ export function createTrackedToolPrimitive(input: {
 	readonly sourceToContinuationNodeIds: Map<string, string>;
 	readonly resumeToolNode?: ToolNodeSnapshot;
 	readonly retryToolNodes?: readonly ToolNodeSnapshot[];
+	readonly admitToolNode?: (node: ToolNodeSnapshot) => void;
 	readonly toolControls: ToolControlRegistry;
 	readonly toolAdmission: ToolAdmissionBoundary;
 	readonly budget: RunBudgetController;

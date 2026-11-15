@@ -38,9 +38,11 @@ import {
 	getBrokerDeliveredMessagesPath,
 	getBrokerPidPath,
 	getBrokerWatchdogLogPath,
+	chooseBrokerSocketPath,
 	getBrokerSocketPath,
 	getBrokerSocketReplacementLockPath,
 	getIntercomDirPath,
+	recordBrokerSocketPath,
 } from "./paths.js";
 import { describeSharedStorage, sharedStorageDigest, sharedStorageSettingSource } from "./shared-storage-setting.js";
 import type {
@@ -148,7 +150,8 @@ import {
 } from "../live-route-refusal.js";
 
 const INTERCOM_DIR = getIntercomDirPath();
-const SOCKET_PATH = getBrokerSocketPath();
+/** The socket clients reach the running broker on, until this broker chooses its own under the startup lock (#5040). */
+let SOCKET_PATH = getBrokerSocketPath();
 const BROKER_IDLE_TIMEOUT_MS = 5_000;
 const UNCLASSIFIED_CONNECTION_RECHECK_MS = 100;
 const PID_PATH = getBrokerPidPath();
@@ -177,6 +180,24 @@ const MULTI_NODE_OFF_REASONS: Readonly<Record<string, string>> = {
   memory: "the shared storage selection is in memory",
   "domain-only-adapter": "the storage adapter has no openDatabase hook",
 };
+
+function socketPathInode(): number | undefined {
+  try {
+    return statSync(SOCKET_PATH).ino;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The socket lock, or undefined when a starting broker still holds it after `budgetMs`. */
+async function acquireSocketLockWithin(budgetMs: number): Promise<(() => void) | undefined> {
+  // A lock taken after the budget is never released by hand: the broker exits at once, and a lock whose holder is dead
+  // is taken over.
+  return Promise.race([
+    acquireSocketReplacementLock(SOCKET_REPLACEMENT_LOCK_PATH),
+    new Promise<undefined>((resolve) => setTimeout(resolve, budgetMs).unref()),
+  ]);
+}
 
 function exitBecauseLiveBrokerOwnsSocket(): never {
   console.error(`Intercom broker not started: a live broker already answers on ${SOCKET_PATH}`);
@@ -468,6 +489,11 @@ class IntercomBroker {
     if (process.platform !== "win32") chmodSync(INTERCOM_DIR, 0o700);
     this.server = net.createServer(this.handleConnection.bind(this));
     this.pendingQuestions.failThroughOwnerWhen((question) => this.releasedAskerReplies.hasOwnedRoute(question));
+    // #4992: a reply or failure held for a released subagent wakes it through its owner, also after a restart.
+    this.pendingQuestions.onHeldForReleasedAsker((ownerSessionId, childName) => {
+      if (this.restoringRecipients.releasedOwner(childName) === ownerSessionId)
+        this.afterDeparture(() => this.wakeRestoringRecipientOwner({ ownerSessionId, childName }));
+    });
     this.pendingQuestions.failToConnectedAskerWhen((question, returnAddress) =>
       this.isConnectedAs(question.senderSessionId, returnAddress),
     );
@@ -487,11 +513,15 @@ class IntercomBroker {
     this.releaseStartupLock = await acquireSocketReplacementLock(SOCKET_REPLACEMENT_LOCK_PATH, {
       onWait: () => console.error(`Intercom broker waiting for another broker starting on ${SOCKET_PATH}`),
     });
+    // Read again under the lock: a broker that started meanwhile may have recorded a socket of its own.
+    SOCKET_PATH = getBrokerSocketPath();
     if (await isSocketAnswering(SOCKET_PATH)) {
       this.releaseStartupLock();
       exitBecauseLiveBrokerOwnsSocket();
     }
+    SOCKET_PATH = chooseBrokerSocketPath();
     writeFileSync(PID_PATH, String(process.pid));
+    this.recordSocketPath();
     this.listen(1);
     if (this.sharedStorageSetting !== undefined) this.startMultiNode(this.sharedStorageSetting);
     else console.error(`Intercom multi-node routing is off: ${NO_SHARED_STORAGE_REASON}`);
@@ -506,7 +536,14 @@ class IntercomBroker {
     this.server.once("error", onError);
     this.server.listen(SOCKET_PATH, () => {
       this.server.off("error", onError);
-      if (process.platform !== "win32") this.boundSocketInode = statSync(SOCKET_PATH).ino;
+      if (process.platform !== "win32") {
+        const inode = socketPathInode();
+        if (inode === undefined) {
+          this.rebindVanishedSocket(attempt);
+          return;
+        }
+        this.boundSocketInode = inode;
+      }
       this.releaseStartupLock();
       // The pid file takes over from the start-up announcement the moment the broker answers.
       retractBrokerStartAnnouncement();
@@ -518,13 +555,24 @@ class IntercomBroker {
     });
   }
 
+  /**
+   * #5040: the path this broker just bound is gone. The startup lock is still held, so no broker that takes it can have
+   * bound the path since; the server is closed while nothing is there for its close to unlink, and bound again.
+   */
+  private rebindVanishedSocket(attempt: number): void {
+    this.server.close();
+    if (attempt >= LISTEN_ATTEMPTS) {
+      console.error(`Intercom broker could not listen on ${SOCKET_PATH}: the socket vanished after it was bound`);
+      this.abandonStart();
+      process.exit(1);
+    }
+    console.error(`Intercom broker socket ${SOCKET_PATH} vanished after it was bound; binding it again`);
+    this.listen(attempt + 1);
+  }
+
   private ownsSocketPath(): boolean {
     if (this.boundSocketInode === undefined) return process.platform === "win32";
-    try {
-      return statSync(SOCKET_PATH).ino === this.boundSocketInode;
-    } catch {
-      return false;
-    }
+    return socketPathInode() === this.boundSocketInode;
   }
 
   /**
@@ -564,6 +612,15 @@ class IntercomBroker {
       // A clean path has no stale socket to remove.
     }
     this.listen(attempt + 1);
+  }
+
+  /** Sessions whose runtime or temp directory differs from this broker's find its socket through the record (#5040). */
+  private recordSocketPath(): void {
+    try {
+      recordBrokerSocketPath(SOCKET_PATH);
+    } catch (error) {
+      console.error(`Intercom broker could not record its socket path ${SOCKET_PATH}:`, error);
+    }
   }
 
   /** A broker that does not start leaves no pid file of its own and lets the next starting broker go ahead. */
@@ -1900,6 +1957,7 @@ class IntercomBroker {
           // for it while it was being restored go out now, once each and in the order they arrived.
           const registered = info.name?.trim();
           if (registered !== undefined && supervisorId !== undefined) {
+            this.pendingQuestions.forgetReleasedAsker(rejoined?.registrationReturnAddress);
             // #4751: a released subagent back under its owner takes up the routes of its pending asks, including one
             // whose reply is held for it, so their replies reach it as a live asker.
             for (const question of this.pendingQuestions.takeParkedAskers(registered, supervisorId))
@@ -2304,7 +2362,11 @@ class IntercomBroker {
           this.reserveReleasedChild(currentId, owner.registrationGroup, child);
           this.releasedAskerReplies.attach(child.childName, currentId);
           // #4751: a failed ask kept for the child wakes it again, so it is delivered.
-          if (child.wake && this.pendingQuestions.hasHeldForReleasedChild(child.childName, currentId))
+          if (
+            child.wake &&
+            (this.pendingQuestions.hasHeldForReleasedChild(child.childName, currentId) ||
+              this.pendingQuestions.hasHeldForReleasedAsker(child.childName, currentId))
+          )
             this.wakeRestoringRecipientOwner({ ownerSessionId: currentId, childName: child.childName });
           this.dispatchHeldSends(this.departedChildren.supersede(currentId, child.childName));
         }
@@ -2358,6 +2420,7 @@ class IntercomBroker {
         for (const childName of childNames) {
           this.releaseReservation(releasedReservationKey(childName), currentId, clientMessage.gone, clientMessage.refusal);
           this.failParkedQuestions(this.pendingQuestions.takeParked(childName, currentId), childName);
+          this.failParkedKept(currentId, childName);
           this.releasedAskerReplies.dropChild(childName, currentId);
         }
         writeMessageIfOpen(socket, { type: "released_children_ack", requestId: clientMessage.requestId });
@@ -3340,6 +3403,23 @@ class IntercomBroker {
     }
   }
 
+  /**
+   * #4992: the asks to the owner's released subagents that wait kept (an away asker's, or any after a broker restart)
+   * end with the owner, or with `childName` when it is dropped: each asker gets one failed-ask message, held until it
+   * saves it, and written now when it is connected.
+   */
+  private failParkedKept(ownerSessionId: string, childName?: string): void {
+    for (const held of this.pendingQuestions.failParkedKept(ownerSessionId, childName)) {
+      const asker = [...this.sessions.values()].find(
+        (session) => session.registrationReturnAddress === held.askerReturnAddress,
+      );
+      if (asker === undefined) continue;
+      // #4996: told once the departure in progress, if any, is saved.
+      this.writeAfterDeparture(asker.socket, { type: "message", from: held.from, message: held.message });
+      if (!asker.acknowledgesReceipt) this.pendingQuestions.releaseHeld(held.message.id, held.askerReturnAddress);
+    }
+  }
+
   /** #4639: a session back after its connection closed takes over what its host session kept: released children and answers. */
   private adoptOrphans(ownerSessionId: string, owner: ConnectedSession): void {
     this.restoringRecipients.adoptOrphans(ownerSessionId, owner.registrationReturnAddress);
@@ -3410,6 +3490,7 @@ class IntercomBroker {
       ...this.departedChildren.dropOwner(sessionId, departed.registrationReturnAddress),
     ];
     this.failParkedQuestions(this.pendingQuestions.takeParkedForOwner(sessionId));
+    this.failParkedKept(sessionId);
 
     // Each ask keeps its live record until what replaces it is written, so a crash in between loses none.
     const unanswered = this.pendingQuestions.takeForSender(sessionId, { keepLiveRecords: true });
@@ -3424,6 +3505,11 @@ class IntercomBroker {
         this.restoringRecipients.releasedOwner(departed.registrationName),
       );
       this.pendingQuestions.markAwayAsker(sessionId, departed.registrationReturnAddress);
+      this.pendingQuestions.keepReleasedAsker(
+        departed.registrationReturnAddress,
+        this.restoringRecipients.releasedOwner(departed.registrationName) ?? departed.supervisorId,
+        departed.registrationName,
+      );
       // A kept route rewrote its ask's live record; one it did not keep has no record left to wait on.
       this.pendingQuestions.forgetLive(unanswered.filter((question) => !this.releasedAskerReplies.holds(question)));
     } else if (departed.supervisorId === undefined && !ended) {
@@ -3615,16 +3701,21 @@ class IntercomBroker {
     void Promise.race([Promise.all([watchdogStopped, leasesGivenUp]), bound]).finally(() => this.exitAfterShutdown());
   }
 
-  private exitAfterShutdown(): never {
+  private async exitAfterShutdown(): Promise<never> {
+    // Windows named pipes are not path-unlinked on close, so a successor's pipe is never at risk.
+    if (process.platform === "win32") {
+      this.unlinkRuntimeFilesIfOwned();
+      this.server.close();
+      process.exit(0);
+    }
+    // Node unlinks a Unix socket path on server.close() even after a successor rebound that path. The close happens
+    // only under the socket lock every starting broker holds until it listens, and only while the pid file and the
+    // socket inode are still this broker's (#5040); otherwise process.exit closes the fd without unlinking the path.
+    const release = await acquireSocketLockWithin(SHUTDOWN_CLOSE_BOUND_MS);
     const ownsRuntime = this.readPidFile() === process.pid;
     this.unlinkRuntimeFilesIfOwned();
-    // Node unlinks a Unix socket path on server.close() even after a successor
-    // rebound that path. Skip close when we no longer own the pid or the socket
-    // path; process.exit still closes our fd. Windows named pipes are not
-    // path-unlinked this way.
-    if (process.platform === "win32" || (ownsRuntime && this.ownsSocketPath())) {
-      this.server.close();
-    }
+    if (release !== undefined && ownsRuntime && this.ownsSocketPath()) this.server.close();
+    release?.();
     process.exit(0);
   }
 }
