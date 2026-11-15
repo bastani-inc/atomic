@@ -4,6 +4,12 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed Anthropic, Mistral, OpenAI Codex, and pi-messages streams failing or losing events when a CRLF line ending, a multibyte character, or a `data:` prefix is split across network chunks. Every stream now parses the same way however it is chunked, and the OpenAI Codex and pi-messages streams accept CRLF and CR line endings ([#4899](https://github.com/bastani-inc/atomic/issues/4899))
+- Fixed OpenAI-compatible streams merging parallel tool calls that a server sends with the same `index` into one call with malformed arguments; a named tool call delta with a new `id` now starts its own call ([#4899](https://github.com/bastani-inc/atomic/issues/4899))
+- Fixed Anthropic tool calls losing their input when a server sends it complete in `content_block_start` with no `input_json_delta` events; the call now keeps that input ([#4899](https://github.com/bastani-inc/atomic/issues/4899))
+
 ## [0.9.85] - 2026-11-13
 
 Dropped connections are retried automatically.
