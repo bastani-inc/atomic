@@ -31,6 +31,11 @@ export function resolveDefaultTools(entries: string[], inherited: readonly strin
 	return applyToolModifiers(plain.length > 0 || entries.length === 0 ? plain : inherited, entries);
 }
 
+/** Keys that reach an object's prototype; no settings name uses them, so settings code never reads or writes them. */
+export function isPrototypeKey(key: string): boolean {
+	return key === "__proto__" || key === "constructor" || key === "prototype";
+}
+
 function isMergeableObject(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -39,6 +44,7 @@ function deepMergeObjects(base: Record<string, unknown>, overrides: Record<strin
 	const result = { ...base };
 
 	for (const key of Object.keys(overrides)) {
+		if (isPrototypeKey(key)) continue;
 		const overrideValue = overrides[key];
 		if (overrideValue === undefined) {
 			continue;
