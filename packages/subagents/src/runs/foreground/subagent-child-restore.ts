@@ -45,15 +45,24 @@ import { currentModelFullId } from "../shared/model-fallback.js";
 import { createExecutionScheduler, type ExecutionScheduler } from "../shared/parallel-utils.js";
 import { type OwnerlessChildLaunch, runOwnerlessChild, takeStoppedQueuedOwnerlessChild } from "./ownerless-children.js";
 import { formatReleasedReplyResults } from "./released-child-replies.js";
-import { interruptedByRestart, pendingToolCalls, planReleasedChildWake } from "./released-children.js";
+import {
+	interruptedByRestart,
+	interruptedStillRunningResult,
+	pendingToolCalls,
+	planReleasedChildWake,
+	SUBAGENT_OWNER_GENERATION,
+	savedToolResultIds,
+} from "./released-children.js";
 import { resumeRunWorktree } from "./run-worktrees.js";
 import { indexSubagentChildOwner, subagentChildRecordOf } from "./subagent-child-card-state.js";
 import { type ChildTargetHold, childHoldKey, holdChildTargets, takeEarlyChildHold } from "./subagent-child-hold.js";
 import { describeLostSubagentChild } from "./subagent-child-lost.js";
 import {
+	clearSubagentChildHeldToolResults,
 	createSubagentChildRecordSink,
 	findSubagentChildRecord,
 	heldTaskExpands,
+	holdInterruptedStillRunningCalls,
 	isRestorableSubagentChild,
 	readSubagentChildRecords,
 	recordSubagentChildGone,
@@ -62,6 +71,7 @@ import {
 	type SubagentChildLaunch,
 	type SubagentChildRecord,
 	type SubagentChildRecordSink,
+	type SubagentChildStillRunningCall,
 	subagentChildOwner,
 	subagentChildRecordsAppended,
 } from "./subagent-child-records.js";
@@ -376,6 +386,29 @@ async function continueChildWhereItWorked(
 }
 
 /**
+ * The calls a woken child is told are still running once its wake is delivered (#5014): those it was told so before
+ * whose results it has not received, and each pending call this wake answers "still running".
+ */
+function stillRunningAfterWake(
+	record: SubagentChildRecord,
+	delivered: readonly DetachedToolResult[],
+	answers: readonly DetachedToolResult[],
+): SubagentChildStillRunningCall[] {
+	const answered = (toolCallId: string) => delivered.some((result) => result.toolCallId === toolCallId);
+	const kept = (record.stillRunning ?? []).filter(
+		(call) => !answered(call.toolCallId) && !answers.some((answer) => answer.toolCallId === call.toolCallId),
+	);
+	const told = answers
+		.filter((answer) => !answered(answer.toolCallId) && !answer.isError)
+		.map((answer) => ({
+			toolCallId: answer.toolCallId,
+			toolName: answer.toolName,
+			ownerGeneration: SUBAGENT_OWNER_GENERATION,
+		}));
+	return [...kept, ...told];
+}
+
+/**
  * The run's scheduler, for a wake that holds a dispatcher slot: a dispatch the run starts at once keeps that slot; one
  * queued behind the run's limit leaves it while it waits and takes it back, in turn, before it starts (#4856).
  */
@@ -518,6 +551,25 @@ async function relaunchChild(
 		return unrestorable(
 			`the model it inherited from its parent when it was launched, ${inherited.model}, is no longer available`,
 		);
+	// Calls an earlier owner process told it are still running died with that process: held as interrupted (#5014).
+	if (record.stillRunning?.some((call) => call.ownerGeneration !== SUBAGENT_OWNER_GENERATION))
+		await holdInterruptedStillRunningCalls(
+			deps.pi,
+			record.owner.sessionId,
+			record.childId,
+			SUBAGENT_OWNER_GENERATION,
+			interruptedStillRunningResult,
+		);
+	// Read again: the owner's wakes may have held them first, after `record` was read.
+	const latest = subagentChildRecordOf(record.owner.sessionId, record.childId) ?? record;
+	// What its transcript already holds was delivered: a run that saved it stopped before it reported it (#5012).
+	const saved =
+		sessionManager && !fresh
+			? savedToolResultIds(sessionManager, [...(latest.heldToolResults ?? []), ...(resume?.toolResults ?? [])])
+			: [];
+	await clearSubagentChildHeldToolResults(deps.pi, record.owner.sessionId, record.childId, saved);
+	const unsaved = (results: readonly DetachedToolResult[]) =>
+		results.filter((result) => !saved.includes(result.toolCallId));
 	const childOptions = ctx.getChildSessionOptions?.({ tools: agent.tools });
 	const redispatch = resume?.redispatch === true && !fresh && sessionManager !== undefined;
 	const supervisorAuthorization =
@@ -533,10 +585,12 @@ async function relaunchChild(
 	}
 	const intercomGroup = launchIntercomGroup(record, ctx);
 	// A released child, or one results are held for, continues the turn it was waiting in before anything else (#4326).
-	const kept = record.heldToolResults ?? [];
+	const kept = unsaved(latest.heldToolResults ?? []);
 	const heldResults = [
 		...kept,
-		...(resume?.toolResults ?? []).filter((result) => !kept.some((held) => held.toolCallId === result.toolCallId)),
+		...unsaved(resume?.toolResults ?? []).filter(
+			(result) => !kept.some((held) => held.toolCallId === result.toolCallId),
+		),
 	];
 	const toolResults = sessionManager
 		? formatReleasedReplyResults(sessionManager, heldResults, deps.pi.events)
@@ -588,6 +642,7 @@ async function relaunchChild(
 			? {
 					resumeToolResults: wakePlan.resumeToolResults,
 					wakeToolResultIds: toolResults.map((result) => result.toolCallId),
+					stillRunning: stillRunningAfterWake(latest, toolResults, wakePlan.resumeToolResults),
 				}
 			: {}),
 		...(wakePlan?.skipPrompt ? { skipTaskPrompt: true } : {}),

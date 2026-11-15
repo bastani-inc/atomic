@@ -174,6 +174,58 @@ test(
 );
 
 test(
+	"a woken child's results are reported saved before its continued turn runs, and once more only if a later run is handed them again (#5012)",
+	async () => {
+		const env = await liveChildEnvironment(cleanups);
+		const store = new MemorySessionStore();
+		const childSession = await SessionManager.create(store, env.root);
+		env.faux.setResponses([waitCall()]);
+		const released = await runSingleInProcess(env.root, agent, "watch CI", {
+			...env.options("release-early", {
+				sessionManager: childSession,
+				resumeSession: true,
+				releaseWhenWaiting: { afterMs: 0 },
+			}),
+		});
+		assert.ok(released.released);
+		const green: DetachedToolResult = {
+			toolCallId: "ci-1",
+			toolName: "wait_for_ci",
+			result: { content: [{ type: "text", text: "green" }], details: undefined },
+			isError: false,
+		};
+		const wake = async (saved: string[][]) =>
+			runSingleInProcess(env.root, agent, "watch CI", {
+				...env.options("release-early", {
+					sessionManager: await SessionManager.open(store, childSession.getSessionId()),
+					resumeSession: true,
+					resumeToolResults: [green],
+					skipTaskPrompt: true,
+					taskExecution: taskHooks({ toolResultsSaved: (ids) => void saved.push([...ids]) }),
+				}),
+			});
+		const first: string[][] = [];
+		let reportedWhenContinued: string[][] | undefined;
+		env.faux.setResponses([
+			() => {
+				reportedWhenContinued = first.map((ids) => [...ids]);
+				return fauxAssistantMessage("CI is green; done.");
+			},
+		]);
+		assert.equal((await wake(first)).status, "ok");
+		assert.deepEqual(reportedWhenContinued, [["ci-1"]], "reported before the model is asked to continue");
+		assert.deepEqual(first, [["ci-1"]]);
+
+		// Handed the same result again, which its transcript already holds: reported, so its holder lets it go.
+		const second: string[][] = [];
+		env.faux.setResponses([fauxAssistantMessage("still done.")]);
+		await wake(second);
+		assert.deepEqual(second, [["ci-1"]]);
+	},
+	LIVE_CHILD_TIMEOUT_MS,
+);
+
+test(
 	"a child reopened after its owner restarted starts its detached call again under the same id and is released again without a model request (#4326)",
 	async () => {
 		const env = await liveChildEnvironment(cleanups);
