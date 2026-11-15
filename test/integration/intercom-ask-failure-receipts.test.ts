@@ -361,3 +361,93 @@ test(
 	},
 	REAL_BROKER_TEST_TIMEOUT_MS,
 );
+
+/** The recipient answers `questionId` on the ask's own reply route, as the `reply` action does. */
+function replyTo(recipient: Session, askerId: string, questionId: string) {
+	return recipient.client.send(askerId, {
+		text: "port 8080",
+		replyTo: questionId,
+		requirePendingReply: true,
+		expectedRecipientId: askerId,
+	});
+}
+
+/** The replies to `questionId` that reached the session. */
+function repliesTo(session: Session, questionId: string): Message[] {
+	return session.received.filter((message) => message.replyTo === questionId && message.replyError === undefined);
+}
+
+/** How many times the recipient replies and ends at once: the race lost about half the time before the fix. */
+const REPLY_THEN_END_ITERATIONS = 30;
+
+test(
+	"an asker whose recipient replies and ends at once gets only the reply, every time (#5095)",
+	async () => {
+		const outcomes: string[] = [];
+		for (let iteration = 0; iteration < REPLY_THEN_END_ITERATIONS; iteration++) {
+			const label = `reply-then-end-${iteration}-5095`;
+			const asker = await connect(`asker-${label}`, { returnAddress: randomUUID() });
+			const askerId = idOf(asker.client);
+			const recipient = await connect(`recipient-${label}`, { returnAddress: randomUUID() });
+			const questionId = randomUUID();
+			const asked = await asker.client.send(`recipient-${label}`, {
+				messageId: questionId,
+				text: "which port?",
+				expectsReply: true,
+			});
+			assert.equal(asked.delivered, true, asked.reason);
+			await vi.waitFor(() => assert.ok(recipient.received.some((message) => message.id === questionId)), WAIT);
+
+			// The recipient replies and ends without waiting for the reply to be confirmed.
+			const replying = replyTo(recipient, askerId, questionId).catch(() => undefined);
+			void recipient.client.disconnect();
+			await replying;
+			await vi.waitFor(() => assert.equal(repliesTo(asker, questionId).length, 1), WAIT);
+			await sleep(SETTLE_MS);
+			outcomes.push(
+				`#${iteration}: replies=${repliesTo(asker, questionId).length} failures=${failuresOf(asker, questionId).length}`,
+			);
+			await asker.client.disconnect();
+		}
+		assert.deepEqual(
+			outcomes,
+			outcomes.map((_, iteration) => `#${iteration}: replies=1 failures=0`),
+			"each ask has exactly one outcome: its reply",
+		);
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS * 3,
+);
+
+test(
+	"a recipient that ends while its reply waits for the asker to save it fails only the ask it did not answer, once (#5095)",
+	async () => {
+		const label = "reply-unsaved-then-end-5095";
+		// The asker saves nothing yet, so the reply is still on its way when the recipient ends.
+		const asker = await connect(`asker-${label}`, { returnAddress: randomUUID(), confirms: false });
+		const askerId = idOf(asker.client);
+		const recipient = await connect(`recipient-${label}`, { returnAddress: randomUUID() });
+		const [answered, unanswered] = [randomUUID(), randomUUID()] as const;
+		for (const messageId of [answered, unanswered]) {
+			const asked = await asker.client.send(`recipient-${label}`, {
+				messageId,
+				text: "which port?",
+				expectsReply: true,
+			});
+			assert.equal(asked.delivered, true, asked.reason);
+		}
+		await vi.waitFor(() => assert.ok(recipient.received.some((message) => message.id === unanswered)), WAIT);
+
+		const replying = replyTo(recipient, askerId, answered).catch(() => undefined);
+		await vi.waitFor(() => assert.equal(repliesTo(asker, answered).length, 1), WAIT);
+		await recipient.client.disconnect();
+		await vi.waitFor(() => assert.equal(failuresOf(asker, unanswered).length, 1), WAIT);
+		for (const message of asker.received) asker.client.acknowledgeReceived(message.id);
+		await replying;
+		await sleep(SETTLE_MS);
+
+		assert.deepEqual(failuresOf(asker, answered), [], "an answered ask is not also failed");
+		assert.equal(repliesTo(asker, answered).length, 1);
+		assert.deepEqual(failuresOf(asker, unanswered), [`ended:${unanswered}`], "an unanswered ask still fails, once");
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
