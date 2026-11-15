@@ -183,8 +183,12 @@ test("an upgraded database gets the same session and snapshot index schema (#479
 		INSERT INTO snapshot_blobs (hash, bytes, data) VALUES ('legacy', 1, X'61');
 	`);
 	// A trigger an earlier build installed is replaced by the tree-aware one when restore links are added.
-	const entries = (GOLDEN.upgradedSchema as SqliteRow[]).find((row) => row.name === "session_entries")!;
-	await database.exec(String(entries.sql));
+	// The entries table as builds before long entries were chunked created it (#4954).
+	await database.exec(`
+		CREATE TABLE session_entries (
+			session_id TEXT NOT NULL, seq INTEGER NOT NULL, entry_id TEXT NOT NULL,
+			entry_json TEXT NOT NULL CHECK(json_valid(entry_json)), PRIMARY KEY(session_id, seq)
+		) STRICT`);
 	await database.exec(
 		"CREATE TRIGGER session_entries_snapshot_links AFTER INSERT ON session_entries BEGIN SELECT 1; END",
 	);
@@ -365,9 +369,11 @@ test("a store with a migration ledger records each step of the session and blob 
 	const store = await SqlSessionStore.open(database, { prefix: "team_" });
 	assert.deepEqual(await database.all("SELECT domain, version FROM team_atomic_migrations ORDER BY domain, version"), [
 		{ domain: "sessions", version: 1 },
+		{ domain: "sessions", version: 2 },
 		{ domain: "snapshot-blobs", version: 1 },
 		{ domain: "snapshot-blobs", version: 2 },
 		{ domain: "snapshot-blobs", version: 3 },
+		{ domain: "snapshot-blobs", version: 4 },
 	]);
 	await store.create(header("a"), [message("a1", null), message("a2", "a1")]);
 	const blob = await store.putBlob("a", new TextEncoder().encode("blob"));
@@ -375,6 +381,6 @@ test("a store with a migration ledger records each step of the session and blob 
 	const [listed] = await Array.fromAsync(store.list({}));
 	assert.equal(listed?.searchText, "a1 a2");
 	// A newer schema keeps every table this build knows, and is still refused.
-	await database.run("INSERT INTO team_atomic_migrations VALUES ('snapshot-blobs', 4, 0)");
+	await database.run("INSERT INTO team_atomic_migrations VALUES ('snapshot-blobs', 5, 0)");
 	await assert.rejects(SqlSessionStore.open(database, { prefix: "team_" }), StorageSchemaVersionError);
 });
