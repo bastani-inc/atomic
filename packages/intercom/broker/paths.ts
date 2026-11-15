@@ -1,7 +1,7 @@
 import { createHash } from "crypto";
 import { lstatSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "fs";
 import { homedir, tmpdir } from "os";
-import { basename, dirname, isAbsolute, join, resolve } from "path";
+import { basename, dirname, join, resolve } from "path";
 
 /**
  * The shared storage selection (`ATOMIC_STORAGE` JSON) the launching Atomic process hands its broker: its
@@ -159,10 +159,10 @@ function fitsUnixSocketPath(socketPath: string, platform: NodeJS.Platform): bool
 
 /**
  * The socket path a broker records, while it is one this user's broker for this agent directory could have chosen: an
- * absolute path `<runtime or temp directory>/atomic-intercom-<uid>/<digest>.sock` within the length limit, whose
- * directory is this user's alone and which is a socket this user owns. Anything else is ignored.
+ * absolute, normalized path `<runtime or temp directory>/atomic-intercom-<uid>/<digest>.sock` whose directory is this
+ * user's alone and which is a socket this user owns. Anything else is ignored.
  */
-function recordedSocketPath(platform: NodeJS.Platform, agentDir: string): string | undefined {
+function recordedSocketPath(agentDir: string): string | undefined {
   let recorded: string;
   try {
     recorded = readFileSync(getBrokerSocketPathRecordPath(agentDir), "utf-8").trim();
@@ -172,9 +172,7 @@ function recordedSocketPath(platform: NodeJS.Platform, agentDir: string): string
   const uid = process.getuid?.();
   const directory = dirname(recorded);
   const wellFormed =
-    isAbsolute(recorded) &&
     resolve(recorded) === recorded &&
-    fitsUnixSocketPath(recorded, platform) &&
     basename(recorded) === `${agentDirDigest(agentDir)}.sock` &&
     basename(directory) === `atomic-intercom-${uid}`;
   if (!wellFormed || privateDirectoryProblem(directory, uid) !== undefined) return undefined;
@@ -221,7 +219,7 @@ export function getBrokerSocketPath(
   agentDir: string = getAgentDir(),
 ): string {
   if (platform !== "win32" && !fitsUnixSocketPath(inDirectorySocketPath(agentDir), platform)) {
-    const recorded = recordedSocketPath(platform, agentDir);
+    const recorded = recordedSocketPath(agentDir);
     if (recorded !== undefined) return recorded;
   }
   return chooseBrokerSocketPath(platform, agentDir);

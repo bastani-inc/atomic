@@ -358,7 +358,10 @@ unixOnly("a retiring broker still removes the socket it owns (#5040)", async () 
 	broker.kill("SIGTERM");
 	const exitCode = await broker.exited;
 
-	assert.deepEqual({ exitCode, socketLeft: existsSync(socketPath) }, { exitCode: 0, socketLeft: false });
+	assert.deepEqual(
+		{ exitCode, socketLeft: existsSync(socketPath), record: existsSync(getBrokerSocketPathRecordPath(agentDir)) },
+		{ exitCode: 0, socketLeft: false, record: false },
+	);
 });
 
 unixOnly("every spelling of one long agent directory gets the same broker socket (#5040)", () => {
@@ -416,43 +419,57 @@ unixOnly(
 		const service = processDirectories(false);
 		const terminalSocket = withDirectories(terminal, () => chooseBrokerSocketPath(process.platform, agentDir));
 		const serviceSocket = withDirectories(service, () => chooseBrokerSocketPath(process.platform, agentDir));
-		const server = await listen(terminalSocket);
+		const terminalDirectory = dirname(terminalSocket);
+		const otherAgentSocket = join(terminalDirectory, `${"0".repeat(16)}.sock`);
+		const terminalServer = await listen(terminalSocket);
+		const otherAgentServer = await listen(otherAgentSocket);
 		const resolvedFromService = () => withDirectories(service, () => getBrokerSocketPath(process.platform, agentDir));
-		const record = (content: string) => writeTextSync(getBrokerSocketPathRecordPath(agentDir), content);
+		const recordPath = getBrokerSocketPathRecordPath(agentDir);
 
 		try {
 			const withoutRecord = resolvedFromService();
 			withDirectories(terminal, () => recordBrokerSocketPath(terminalSocket, agentDir));
+			const recordMode = lstatSync(recordPath).mode & 0o777;
 			const recorded = resolvedFromService();
-			const ignored: Record<string, string> = {};
-			const otherDigest = join(dirname(terminalSocket), `${"0".repeat(16)}.sock`);
+			// Each record below fails one check that every other check would let through.
 			const strangers = {
-				relative: basename(terminalSocket),
-				unnormalized: `${dirname(terminalSocket)}${sep}.${sep}${basename(terminalSocket)}`,
-				otherAgentDir: otherDigest,
-				notASocket: getBrokerSocketPathRecordPath(agentDir),
+				unnormalized: [terminalDirectory, "..", basename(terminalDirectory), basename(terminalSocket)].join(sep),
+				otherAgentDir: otherAgentSocket,
+				missingDirectory: join(
+					tempDir("5040-gone-"),
+					"gone",
+					basename(terminalDirectory),
+					basename(terminalSocket),
+				),
 			};
+			const ignored: Record<string, string> = {};
 			for (const [name, content] of Object.entries(strangers)) {
-				record(content);
+				writeTextSync(recordPath, content);
 				ignored[name] = resolvedFromService();
 			}
-			record(terminalSocket);
-			chmodSync(dirname(terminalSocket), 0o755);
+			writeTextSync(recordPath, terminalSocket);
+			chmodSync(terminalDirectory, 0o755);
 			ignored.openDirectory = resolvedFromService();
-			chmodSync(dirname(terminalSocket), 0o700);
+			chmodSync(terminalDirectory, 0o700);
+			await new Promise<void>((resolve) => terminalServer.close(() => resolve()));
+			writeTextSync(terminalSocket, "");
+			ignored.notASocket = resolvedFromService();
 
 			assert.notEqual(terminalSocket, serviceSocket);
-			assert.equal(withoutRecord, serviceSocket);
-			assert.equal(recorded, terminalSocket);
+			assert.deepEqual(
+				{ withoutRecord, recorded, recordMode },
+				{ withoutRecord: serviceSocket, recorded: terminalSocket, recordMode: 0o600 },
+			);
 			assert.deepEqual(ignored, {
-				relative: serviceSocket,
 				unnormalized: serviceSocket,
 				otherAgentDir: serviceSocket,
-				notASocket: serviceSocket,
+				missingDirectory: serviceSocket,
 				openDirectory: serviceSocket,
+				notASocket: serviceSocket,
 			});
 		} finally {
-			await new Promise<void>((resolve) => server.close(() => resolve()));
+			terminalServer.close();
+			otherAgentServer.close();
 		}
 	},
 );
@@ -532,3 +549,20 @@ unixOnly(
 		assert.equal(second.broker.exitCode, null);
 	},
 );
+
+unixOnly("a broker that cannot record its socket path still starts, and says why (#5040)", async () => {
+	const agentDir = agentDirWithSocketPathBytes(maxUnixSocketPathBytes(process.platform) + 20);
+	// A directory where the record goes makes writing it fail.
+	makeDirectorySync(getBrokerSocketPathRecordPath(agentDir), { recursive: true });
+	const { broker, stderr } = spawnBroker(agentDir);
+	const socketPath = chooseBrokerSocketPath(process.platform, agentDir);
+
+	await waitUntilAnswering(broker, socketPath, stderr);
+	const client = await connectSession(socketPath, agentDir);
+	const connected = client.isConnected();
+	broker.kill("SIGTERM");
+	await broker.exited;
+
+	assert.equal(connected, true);
+	assert.match(await stderr, new RegExp(`could not record its socket path ${socketPath}`, "u"));
+});
