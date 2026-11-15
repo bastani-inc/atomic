@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { MessageChannel } from "node:worker_threads";
 import type { SessionEntry } from "@bastani/atomic";
-import type { SqliteExecutor } from "@bastani/atomic/storage";
+import { type SqliteExecutor, sqliteDialect } from "@bastani/atomic/storage";
 import { test, vi } from "vitest";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
@@ -113,7 +113,7 @@ async function withPoolSessions<T>(
 	body: (sessions: Awaited<ReturnType<typeof poolTransactionSessionStore>>, tx: SqliteExecutor) => Promise<T>,
 ): Promise<T> {
 	return h.storage.transaction(async (tx) => {
-		const sessions = await poolTransactionSessionStore(tx, `${h.storage.tables.runs}_pool_`);
+		const sessions = await poolTransactionSessionStore(tx, sqliteDialect, `${h.storage.tables.runs}_pool_`);
 		try {
 			return await body(sessions, tx);
 		} finally {

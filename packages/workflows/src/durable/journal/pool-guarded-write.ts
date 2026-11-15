@@ -2,6 +2,7 @@ import {
 	type SqliteExecutor,
 	type SqliteRow,
 	type SqliteStatement,
+	type StorageDialect,
 	StorageTransientError,
 } from "@bastani/atomic/storage";
 import type { SqlPoolBatchOptions, SqlPoolStorage } from "./internal.js";
@@ -27,10 +28,10 @@ export function poolFenceTable(runs: string): string {
  * The table a pool batch's fences insert into when what the write decided on no longer holds: its trigger aborts the
  * batch, so nothing of the batch is written. It never holds a row.
  */
-export function poolFenceSchema(runs: string): string {
+export function poolFenceSchema(runs: string, dialect: StorageDialect): string {
 	const fence = poolFenceTable(runs);
 	return `CREATE TABLE IF NOT EXISTS ${fence}(reason TEXT);
-	CREATE TRIGGER IF NOT EXISTS ${fence}_abort BEFORE INSERT ON ${fence} BEGIN SELECT RAISE(ABORT, '${FENCE_MESSAGE}'); END;`;
+	${dialect.renderTrigger({ name: `${fence}_abort`, table: fence, timing: "BEFORE", event: "INSERT", statements: [dialect.abort(FENCE_MESSAGE)] })}`;
 }
 
 /** A pool write planned from what a read saw, sent to the database as one request. */
@@ -127,7 +128,9 @@ export async function guardedPoolWrite<T>(
 				error.outcome === "unknown" &&
 				++unknownOutcomes <= UNKNOWN_OUTCOME_REPLANS;
 			if (!(isFenceAbort(error) || unknown) || performance.now() >= deadline) throw error;
-			afterUnknown = unknown;
+			// An unknown outcome stays pending until a batch succeeds: a fence abort after it says nothing of whether the
+			// earlier request committed late, so every later plan still finds out first (#5126).
+			afterUnknown ||= unknown;
 		}
 		const bound = Math.min(FENCE_RETRY_MAX_MS, FENCE_RETRY_BASE_MS * 2 ** Math.min(attempt, 16));
 		await new Promise((resolve) => setTimeout(resolve, Math.random() * bound));

@@ -59,9 +59,12 @@ const exportName =
 		scale: "scaleChild",
 	}[scenario] ??
 	"sharedChild";
-// A journal whose server needs a token reads it from a file every host has (SHARED_POOL_TOKEN_FILE).
+// A journal whose server needs a token reads it from a file every host has (SHARED_POOL_TOKEN_FILE), as the adapter's
+// secret SHARED_POOL_TOKEN_SECRET (`authToken` for libSQL, `password` for PostgreSQL).
 const secrets =
-	process.env.SHARED_POOL_TOKEN_FILE === undefined ? {} : { secrets: { authToken: { file: process.env.SHARED_POOL_TOKEN_FILE } } };
+	process.env.SHARED_POOL_TOKEN_FILE === undefined
+		? {}
+		: { secrets: { [process.env.SHARED_POOL_TOKEN_SECRET ?? "authToken"]: { file: process.env.SHARED_POOL_TOKEN_FILE } } };
 const journal = await resolveRunJournal({
 	agentDir: process.env.SHARED_POOL_AGENT_DIR,
 	journal: {
@@ -287,17 +290,12 @@ try {
 		const operator = await operating;
 		record = { status: result.status, error: result.error ?? null, ...(operator === undefined ? {} : { operator }) };
 	} else {
-		// The dead host's root lease would expire on its own; the test does not wait for that.
-		const { openLibsqlDatabase } = await import("../../packages/storage-libsql/libsql.js");
-		const { readFileSync } = await import("node:fs");
-		const database = await openLibsqlDatabase({
-			url: process.env.SHARED_POOL_URL,
-			...(process.env.SHARED_POOL_TOKEN_FILE === undefined
-				? {}
-				: { authToken: readFileSync(process.env.SHARED_POOL_TOKEN_FILE, "utf8").trim() }),
-		});
-		await database.run(`UPDATE ${prefix}wf_leases SET renewed_at = 0 WHERE run_id = ?`, ROOT);
-		await database.close();
+		// The dead host's root lease would expire on its own; the test does not wait for that. Through the journal's own
+		// database, whatever its adapter.
+		const { sqlPoolStorage } = await load("../../packages/workflows/src/durable/journal/internal.ts");
+		await sqlPoolStorage(journal).transaction((tx) =>
+			tx.run(`UPDATE ${prefix}wf_leases SET renewed_at = 0 WHERE run_id = ?`, ROOT),
+		);
 		const jobs = createJobTracker();
 		let completion;
 		const resumed = await resumeDurableWorkflow(ROOT, {

@@ -13,6 +13,7 @@ import {
 	isTransientExtensionStartupFailure,
 	type ModelConstraints,
 	type ModelRoute,
+	modelCallUsage,
 	type PromptOptions,
 	parkWorkflowStageForRelease,
 	parseModelConstraints,
@@ -225,8 +226,10 @@ function hasMeaningfulUsage(
  * One attempt's usage, accrued from the session's provider usage events while
  * the attempt window is open (#5053). Every model call reports here exactly
  * once: each assistant response (`message_end`, including error responses a
- * retry later removes from the live transcript) and each compaction model
- * request (`compaction_usage`). Message-list projections such as compaction
+ * retry later removes from the live transcript), each compaction model
+ * request (`compaction_usage`), each call of a subagent child the stage
+ * launched (`child_session_usage`) and auxiliary usage such as cache warming
+ * (`usage` entries). Message-list projections such as compaction
  * never change what was charged, and resumed or replayed history emits no
  * events, so it is never charged again.
  */
@@ -244,8 +247,7 @@ class AttemptUsageWindow {
 
 	constructor(session: StageSessionRuntime) {
 		this.unsubscribe = session.subscribe((event) => {
-			if (event.type === "message_end" && event.message.role === "assistant") this.add(event.message.usage, true);
-			else if (event.type === "compaction_usage") this.add(event.usage, false);
+			this.add(modelCallUsage(event), event.type === "message_end");
 		});
 	}
 
@@ -260,10 +262,15 @@ class AttemptUsageWindow {
 		this.meaningful = true;
 	}
 
+	/** The usage seen so far, or undefined when nothing meaningful was seen. */
+	peek(): WorkflowModelUsage | undefined {
+		return this.meaningful ? { ...this.totals } : undefined;
+	}
+
 	/** Stop listening. Returns undefined when nothing meaningful was seen, so no `usage: undefined` enters the record. */
 	close(): WorkflowModelUsage | undefined {
 		this.unsubscribe();
-		return this.meaningful ? { ...this.totals } : undefined;
+		return this.peek();
 	}
 }
 
@@ -2218,6 +2225,16 @@ export class StageSessionController {
 		this.sessionInternalRetries = 0;
 		this.attemptUsage?.close();
 		this.attemptUsage = new AttemptUsageWindow(session);
+	}
+
+	/** Usage of the attempt in flight, before it is recorded in `modelAttempts`. */
+	inFlightAttemptUsage(): WorkflowModelUsage | undefined {
+		return this.attemptUsage?.peek();
+	}
+
+	/** Stop model calls within the current session's turns, or resume them with `undefined`. */
+	stopTurns(reason: string | undefined): void {
+		this.session?.stopTurns?.(reason);
 	}
 
 	/** Consume the current window exactly once; without an open window there is no usage to record. */

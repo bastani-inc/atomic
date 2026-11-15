@@ -67,7 +67,8 @@ function checksum(header: Buffer): { unsigned: number; signed: number } {
 
 /**
  * PAX records are `<length> <key>=<value>\n`. A record needs its separator and a non-empty `key=` after it, so a valid
- * one always ends past its length field and every iteration advances.
+ * one always ends past its length field and every iteration advances. A `size` must be plain decimal digits, as GNU tar
+ * requires. Any other empty value sets nothing, so the header's own field applies, as GNU tar reads it.
  */
 function parsePax(data: Buffer, label: string): Map<string, string> {
 	const records = new Map<string, string>();
@@ -79,7 +80,10 @@ function parsePax(data: Buffer, label: string): Map<string, string> {
 		const equals = record.indexOf(0x3d);
 		if (space < 0 || offset + length > data.length || equals < 1 || record.at(-1) !== 0x0a)
 			throw new Error(`Invalid PAX header in ${label}`);
-		records.set(record.subarray(0, equals).toString("utf8"), record.subarray(equals + 1, -1).toString("utf8"));
+		const key = record.subarray(0, equals).toString("utf8");
+		const value = record.subarray(equals + 1, -1).toString("utf8");
+		if (key === "size" && !/^[0-9]+$/.test(value)) throw new Error(`Invalid PAX header in ${label}`);
+		if (value !== "") records.set(key, value);
 		offset += length;
 	}
 	return records;
@@ -105,8 +109,7 @@ export function listTarMembers(buf: Buffer, label: string): TarListing {
 		const size = pax.has("size") ? Number(pax.get("size")) : octal(header.subarray(124, 136), "member size", label);
 		const dataStart = offset + BLOCK;
 		const end = dataStart + Math.ceil(size / BLOCK) * BLOCK;
-		if (!Number.isSafeInteger(size) || size < 0 || end > buf.length)
-			throw new Error(`Truncated tar archive: ${label}`);
+		if (!Number.isSafeInteger(size) || end > buf.length) throw new Error(`Truncated tar archive: ${label}`);
 		const data = buf.subarray(dataStart, dataStart + size);
 		start ??= offset;
 		if (type === "L") longName = cString(data);

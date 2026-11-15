@@ -33,6 +33,11 @@ export async function routeSubagentModel(input: {
 	);
 	const taskNeeds = parseTaskNeeds(input.taskNeeds);
 	const effortOverride = agent.source === "builtin" && agent.thinking !== "" ? agent.thinking : undefined;
+	// #5046: the call's own provider lists replace the settings lists in every routing step, so the
+	// restored selection and its fallback gate see the same providers the first route did.
+	const providerOverride = setsProviders(parseModelConstraints(input.modelConstraints))
+		? { overrideProviderSettings: true }
+		: {};
 	let route: ExecutionModelRoute;
 	try {
 		route = await routeExecutionModel({
@@ -43,7 +48,7 @@ export async function routeSubagentModel(input: {
 				effortOverride === undefined ? constraints : [...constraints, { allowedEfforts: [effortOverride] }],
 			signal: input.signal,
 			...(taskNeeds ? { taskNeeds } : {}),
-			...(setsProviders(parseModelConstraints(input.modelConstraints)) ? { overrideProviderSettings: true } : {}),
+			...providerOverride,
 		});
 	} catch (error) {
 		input.signal?.throwIfAborted();
@@ -69,6 +74,7 @@ export async function routeSubagentModel(input: {
 					constraints,
 					signal: input.signal,
 					selection: route.routerSelection,
+					...providerOverride,
 				});
 	// #3981: the route outlives the launching session. A background child checks candidates and its fallback gate after
 	// model fallback retired that session, whose context then throws on every read, so bind what it reads now.

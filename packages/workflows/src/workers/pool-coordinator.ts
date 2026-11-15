@@ -546,6 +546,8 @@ interface WorkerSlot {
  */
 export interface SatellitePlacement {
 	readonly host: string;
+	/** The id the host's provisioner knows its instance by: a drain of the instance stops its claims (#5072). */
+	readonly providerId?: string | undefined;
 	/** The host's warm worktrees: the path of one whose current tree is the binding's, or undefined. */
 	readonly prefer?: WorkspacePreference;
 	/** The host's restore port, present only when one is configured and git is available. */
@@ -2790,6 +2792,8 @@ export class PoolCoordinator {
 			kind: "work",
 			id: candidate.id,
 			generation: candidate.generation,
+			// A host asked to drain claims nothing more, though it reads the drain only at its next poll (#5072).
+			host: { id: satellite.host, providerId: satellite.providerId },
 		});
 		if (work === undefined) return undefined;
 		if (this.closed) {

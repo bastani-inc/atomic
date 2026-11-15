@@ -4,7 +4,7 @@ import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteTransactionOption
 import { dialectOf, type StorageDialect } from "../dialect.js";
 import { SessionBlobError, StorageError, StorageInvalidTextError } from "../errors.js";
 import { applyStorageMigrations } from "../migrations.js";
-import { renderStorageIdentifiers, storageMigrationTable } from "../prefix.js";
+import { renderStorageIdentifiers, storageMigrationTable, validateStoragePrefix } from "../prefix.js";
 import { assertStorageSchemaVersion } from "../schema.js";
 import { sha256Hex } from "./blob-hash.js";
 import {
@@ -271,6 +271,7 @@ export class SqlSessionStore implements SessionStore {
 		database: SqliteDatabase,
 		options: { readonly prefix?: string; readonly cwdMatcher?: SessionCwdMatcher } = {},
 	): Promise<SqlSessionStore> {
+		validateStoragePrefix(options.prefix, dialectOf(database).name);
 		const tables = renderStorageIdentifiers("sessions", SESSION_TABLES, options.prefix);
 		let legacyBlobData = false;
 		const createTables = async (tx: SqliteExecutor, dialect: StorageDialect) => {

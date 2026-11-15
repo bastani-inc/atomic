@@ -3,7 +3,12 @@ import { hostname } from "node:os";
 import { getAgentDir } from "@bastani/atomic";
 import type { StorageSelection } from "@bastani/atomic/storage";
 import { openSelectedRunJournal } from "../durable/journal/resolution.js";
-import { type FleetFence, type FleetSnapshot, SqlFleetStore } from "../durable/journal/sql-fleet.js";
+import {
+	FLEET_DRAIN_TIMEOUT_MS,
+	type FleetFence,
+	type FleetSnapshot,
+	SqlFleetStore,
+} from "../durable/journal/sql-fleet.js";
 import type { RunJournal } from "../durable/journal/types.js";
 import {
 	type FleetAction,
@@ -219,6 +224,11 @@ export class FleetController implements WorkflowFleetController {
 	 * abort stops the controller acting on the call; a request the provider already received may still complete.
 	 */
 	private call<T>(run: (signal: AbortSignal) => Promise<T>): Promise<T> {
+		// A timer aborts the tick once the lease may have lapsed, but a controller whose event loop was blocked, whose VM
+		// was paused or whose machine slept runs on before any timer fires: it checks the lease's age itself, right before
+		// the call, by the longer of the monotonic and wall clocks (#5072).
+		if (elapsedSince(this.renewedAt) >= this.leaseMs - this.tickMs)
+			this.tickAbort.abort(new Error("The fleet controller may have lost its lease"));
 		this.tickAbort.signal.throwIfAborted();
 		const signal = AbortSignal.any([
 			this.abort.signal,
@@ -275,6 +285,7 @@ export class FleetController implements WorkflowFleetController {
 			const snapshot = await store.snapshot();
 			await this.followDrains(fence, listed, snapshot);
 			const hosts = joinHosts(listed, snapshot);
+			const known = new Set(snapshot.hosts.map((host) => host.host));
 			const now = performance.now();
 			const plan = planFleet(
 				this.policy,
@@ -286,7 +297,7 @@ export class FleetController implements WorkflowFleetController {
 			const ready = snapshot.roots.reduce((total, root) => total + (root.blocked ? 0 : root.ready), 0);
 			for (const action of plan.actions) {
 				this.tickAbort.signal.throwIfAborted();
-				await this.act(action, fence, plan, hosts, ready);
+				await this.act(action, fence, plan, hosts, ready, known);
 			}
 			this.succeeded();
 		} catch (error) {
@@ -388,6 +399,8 @@ export class FleetController implements WorkflowFleetController {
 		plan: FleetPlan,
 		hosts: readonly JoinedHost[],
 		ready: number,
+		/** The registry hosts of the snapshot the plan was made from. */
+		known: ReadonlySet<string> = new Set(),
 	): Promise<void> {
 		const store = this.store!;
 		const joined = action.kind === "scale-up" ? undefined : hosts.find((entry) => entry.view.id === action.id);
@@ -415,6 +428,17 @@ export class FleetController implements WorkflowFleetController {
 				return;
 			}
 			case "remove":
+				if (action.reason === "boot-timeout") {
+					// The instance is drained before it is checked once more and removed, so a host that registers on it from
+					// now on claims nothing. One that registered since the snapshot, reports, or holds a child booted after
+					// all, and stays. One that already read the drain finishes it: the planner removes the instance once that
+					// host leaves (#5072).
+					const host = joined?.hostId ?? `boot-timeout:${action.id}`;
+					await store.carryDrain(fence, host, action.id);
+					const hold = await store.bootHold(action.id, joined?.hostId, known);
+					if (hold === "occupied") await store.clearDrain(fence, host);
+					if (hold !== "free") return;
+				}
 				// Its drains stay until the provider no longer lists it (#4803): a removal the provider accepted may take
 				// minutes, and a worker that restarts on the instance meanwhile must not take children.
 				await this.call((signal) => this.options.provisioner.drain(action.id, signal));
@@ -464,15 +488,20 @@ export interface JoinedHost {
  * reports (`ATOMIC_PROVIDER_ID`), or whose `hostId` the provider gives. A worker that restarted on the same instance
  * registered again under a new host id (#4803): the live one is its host, and the instance holds the children of all.
  * A worker without a provider id that restarted under a host id the provider does not list matches no instance
- * (#4828): its children count on every drained instance that has no live host, so none it may run on is removed.
+ * (#4828): its children count on every drained instance that has no live host, so none it may run on is removed. That
+ * holds however long ago it last reported (#5072): a host that stalled still holds its leases until they expire.
+ *
+ * A drained instance has `drained` once no host on it is in the registry, since a host leaves the registry when its
+ * drain ends, or {@link FLEET_DRAIN_TIMEOUT_MS} after its latest drain request: a host that only stopped reporting has
+ * not drained (#5072).
  */
 export function joinHosts(listed: readonly ProvisionedHost[], snapshot: FleetSnapshot): JoinedHost[] {
-	const unclaimed = snapshot.hosts
-		.filter(
-			(host) =>
-				host.live && host.providerId === undefined && !listed.some((provided) => provided.hostId === host.host),
-		)
-		.reduce((total, host) => total + (snapshot.leased.get(host.host) ?? 0), 0);
+	let unclaimed = 0;
+	for (const [holder, count] of snapshot.leased) {
+		const registered = snapshot.hosts.find((host) => host.host === holder);
+		if (registered?.providerId === undefined && !listed.some((provided) => provided.hostId === holder))
+			unclaimed += count;
+	}
 	return listed.map((provided) => {
 		const matching = snapshot.hosts.filter(
 			(host) => host.providerId === provided.id || (provided.hostId !== undefined && host.host === provided.hostId),
@@ -484,7 +513,10 @@ export function joinHosts(listed: readonly ProvisionedHost[], snapshot: FleetSna
 		const drainHosts = snapshot.drains
 			.filter((drain) => drain.providerId === provided.id || (hostId !== undefined && drain.host === hostId))
 			.map((drain) => drain.host);
+		const drains = snapshot.drains.filter((drain) => drainHosts.includes(drain.host));
 		const orphaned = drainHosts.length > 0 && registered?.live !== true ? unclaimed : 0;
+		const left = !snapshot.hosts.some((host) => holders.has(host.host));
+		const timedOut = drains.length > 0 && Math.min(...drains.map((drain) => drain.agoMs)) >= FLEET_DRAIN_TIMEOUT_MS;
 		const leased = [...holders].reduce((total, host) => total + (snapshot.leased.get(host) ?? 0), orphaned);
 		return {
 			view: {
@@ -494,6 +526,7 @@ export function joinHosts(listed: readonly ProvisionedHost[], snapshot: FleetSna
 				registered: registered?.live === true,
 				leased,
 				draining: drainHosts.length > 0,
+				drained: (drainHosts.length > 0 || provided.state === "draining") && (left || timedOut),
 			},
 			...(hostId === undefined ? {} : { hostId }),
 			drainHosts,

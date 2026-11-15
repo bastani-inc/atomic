@@ -35,7 +35,7 @@ export async function openSqlSentMessageAuthority({
 	database,
 	prefix,
 }: IntercomBrokerStateOptions): Promise<SentMessageAuthority> {
-	const table = `${validateStoragePrefix(prefix)}intercom_sent_messages`;
+	const table = `${validateStoragePrefix(prefix, dialectOf(database).name)}intercom_sent_messages`;
 	const { types, nowMs } = dialectOf(database);
 	await database.transaction((tx) =>
 		tx.exec(`

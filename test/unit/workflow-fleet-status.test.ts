@@ -45,6 +45,7 @@ import { sleep } from "../helpers/runtime.js";
 const PREFIX = "acme_";
 const HOSTS = `${PREFIX}wf_runs_pool_hosts`;
 const libsql = fileURLToPath(new URL("../../packages/storage-libsql/libsql.js", import.meta.url));
+const postgres = fileURLToPath(new URL("../../packages/storage-postgres/postgres.js", import.meta.url));
 const libsqlPackage = fileURLToPath(new URL("../../packages/storage-libsql", import.meta.url));
 const definition = { definition: "fixture/child", digest: "sha256:child" };
 /** A status read of a store that never answers ends at the status budget; this is the slack around it. */
@@ -881,3 +882,57 @@ test(
 	},
 	STALLED_STORE_TIMEOUT_MS,
 );
+
+/** A PostgreSQL server that refuses every connection's password, as SQLSTATE 28P01. */
+async function refusingPostgresServer(): Promise<{ url: string; close(): Promise<void> }> {
+	const sockets = new Set<Socket>();
+	const server = createServer((socket) => {
+		sockets.add(socket);
+		socket.on("error", () => {});
+		socket.once("data", () => {
+			const fields = Buffer.from(
+				'SFATAL\0VFATAL\0C28P01\0Mpassword authentication failed for user "atomic"\0\0',
+				"utf8",
+			);
+			const length = Buffer.alloc(4);
+			length.writeInt32BE(fields.length + 4);
+			socket.end(Buffer.concat([Buffer.from("E"), length, fields]));
+		});
+	});
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const address = server.address() as { port: number };
+	return {
+		url: `postgresql://atomic@127.0.0.1:${address.port}/atomic?sslmode=disable`,
+		close: () =>
+			new Promise<void>((resolve) => {
+				for (const socket of sockets) socket.destroy();
+				server.close(() => resolve());
+			}),
+	};
+}
+
+test("atomic worker status of a PostgreSQL store it cannot open shows the failure's cause and code, without the sqld hint (#5113)", async () => {
+	const server = await refusingPostgresServer();
+	try {
+		const fleet = await readWorkflowWorkerFleet({
+			journal: { adapter: postgres, options: { url: server.url } },
+			agentDir: join(directory, "agent"),
+		});
+		assert.equal(fleet.fleet.store.state, "unknown");
+		assert.match(
+			fleet.fleet.store.message ?? "",
+			/^Storage unavailable: postgres at postgresql:\/\/127\.0\.0\.1:\d+\/atomic: password authentication failed for user "atomic" \(28P01\)$/,
+		);
+		assert.equal(fleet.fleet.store.hint, undefined);
+	} finally {
+		await server.close();
+	}
+});
+
+test("fleet status keeps the colon after a URL whose query it strips, and strips user info from a URL without a query (#5113)", () => {
+	assert.equal(
+		withoutUrlCredentials("postgresql://atomic@db/atomic?sslmode=disable: refused"),
+		"postgresql://db/atomic: refused",
+	);
+	assert.equal(withoutUrlCredentials("libsql://user@pool.example.com: refused"), "libsql://pool.example.com: refused");
+});
