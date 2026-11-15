@@ -58,6 +58,16 @@ function withEnv<T>(updates: Record<string, string | undefined>, fn: () => T): T
 	}
 }
 
+/**
+ * The socket the active agent directory resolves to is the one derived from `agentDir`. The host's own kind of socket
+ * is asked for: a Unix socket path under a long temp directory moves to a per-user directory (#5040), and one
+ * a Windows host has no uid for.
+ */
+function assertSocketResolvesTo(unixPlatform: NodeJS.Platform, agentDir: string): void {
+	const platform = process.platform === "win32" ? "win32" : unixPlatform;
+	assert.equal(getBrokerSocketPath(platform), getBrokerSocketPath(platform, agentDir));
+}
+
 describe("intercom Atomic agent-dir paths", () => {
 	test("uses the default Atomic agent directory for broker runtime files", () => {
 		const home = tempDir("atomic-intercom-home-");
@@ -73,7 +83,7 @@ describe("intercom Atomic agent-dir paths", () => {
 			() => {
 				const agentDir = join(home, ".atomic", "agent");
 				assert.equal(getIntercomDirPath(), join(agentDir, "intercom"));
-				assert.equal(getBrokerSocketPath("darwin"), join(agentDir, "intercom", "broker.sock"));
+				assertSocketResolvesTo("darwin", agentDir);
 				assert.equal(getBrokerPidPath(), join(agentDir, "intercom", "broker.pid"));
 				assert.equal(getBrokerSpawnLockPath(), join(agentDir, "intercom", "broker.spawn.lock"));
 				assert.equal(getBrokerDeliveredMessagesPath(), join(agentDir, "intercom", "delivered-messages.sqlite"));
@@ -88,14 +98,14 @@ describe("intercom Atomic agent-dir paths", () => {
 		const piAgentDir = join(home, "custom-pi-agent");
 
 		withEnv({ HOME: home, ATOMIC_CODING_AGENT_DIR: atomicAgentDir, PI_CODING_AGENT_DIR: piAgentDir }, () => {
-			assert.equal(getBrokerSocketPath("linux"), join(atomicAgentDir, "intercom", "broker.sock"));
+			assertSocketResolvesTo("linux", atomicAgentDir);
 			assert.equal(getBrokerPidPath(), join(atomicAgentDir, "intercom", "broker.pid"));
 			assert.equal(getBrokerDeliveredMessagesPath(), join(atomicAgentDir, "intercom", "delivered-messages.sqlite"));
 			assert.equal(getBrokerDeliveredMessagesKeyPath(), join(atomicAgentDir, "intercom", "delivered-messages.key"));
 		});
 
 		withEnv({ HOME: home, ATOMIC_CODING_AGENT_DIR: undefined, PI_CODING_AGENT_DIR: piAgentDir }, () => {
-			assert.equal(getBrokerSocketPath("linux"), join(piAgentDir, "intercom", "broker.sock"));
+			assertSocketResolvesTo("linux", piAgentDir);
 			assert.equal(getBrokerPidPath(), join(piAgentDir, "intercom", "broker.pid"));
 			assert.equal(getBrokerDeliveredMessagesPath(), join(piAgentDir, "intercom", "delivered-messages.sqlite"));
 			assert.equal(getBrokerDeliveredMessagesKeyPath(), join(piAgentDir, "intercom", "delivered-messages.key"));
