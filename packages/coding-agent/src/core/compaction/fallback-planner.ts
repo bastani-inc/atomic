@@ -12,7 +12,7 @@
  * borrowing never touches the main chat's `_fallbackAttemptedKeys`.
  */
 
-import type { Api, Model } from "@bastani/pi-ai/compat";
+import { type Api, type Model, modelsAreEqual } from "@bastani/pi-ai/compat";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { type FallbackModelLookup, fallbackKey, resolveFallbackModel } from "../fallback-models.ts";
 import type { BorrowedPlanner, PlannerAuth } from "./compaction-types.js";
@@ -36,6 +36,8 @@ export interface FallbackPlannerContext {
 	/** Session level inherited when a candidate carries no `:level` suffix. */
 	readonly sessionThinkingLevel: ThinkingLevel | undefined;
 	readonly isFallbackModelAllowed?: (model: Model<Api>, effort: string | undefined) => boolean;
+	/** Models the main chat's fallback blocked earlier in this turn; borrowing skips them as main-chat fallback does. */
+	readonly blockedModels?: readonly Model<Api>[];
 	readonly selectedModelId?: string;
 }
 
@@ -117,6 +119,7 @@ async function borrowCandidate(
 	const candidate = resolveFallbackModel(entry, context.registry, context.preferredProvider);
 	if (!candidate) return undefined;
 	if (`${candidate.model.provider}/${candidate.model.id}` === context.selectedModelId) return undefined;
+	if (context.blockedModels?.some((blocked) => modelsAreEqual(blocked, candidate.model))) return undefined;
 	// Resolve the budget first: the identity depends on the effective
 	// reasoning level, which inheritance may supply.
 	const budget = resolvePlannerRequest(candidate.model, context.sessionThinkingLevel, candidate.thinkingLevel);
