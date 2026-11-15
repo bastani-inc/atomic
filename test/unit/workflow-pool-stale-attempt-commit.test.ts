@@ -80,13 +80,14 @@ test.skipIf(process.platform === "win32")(
 				: [];
 		try {
 			const deadline = performance.now() + STATE_DEADLINE_MS;
-			while (received().length < 4) {
+			while (received().length < 5) {
 				assert.ok(performance.now() < deadline, `timed out; replies ${JSON.stringify(received())}`);
 				await sleep(25);
 			}
 			assert.deepEqual(
 				received().map((reply) => [reply.label, reply.outcome, reply.reason]),
 				[
+					["fenced unheld", "answered", undefined],
 					["earlier", "refused", "superseded"],
 					["other work", "refused", "superseded"],
 					["held", "answered", undefined],

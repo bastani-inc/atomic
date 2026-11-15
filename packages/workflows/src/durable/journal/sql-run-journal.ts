@@ -21,6 +21,7 @@ import {
 	type StoredJournalPayload,
 	storedJournalPayload,
 	upgradeRunJournalSchema,
+	validateStoragePrefix,
 	withJournalPayloads,
 	writeJournalPayloadChunks,
 } from "@bastani/atomic/storage";
@@ -262,6 +263,7 @@ export class SqlRunJournal implements RunJournal {
 	}
 
 	static async open(database: SqliteDatabase, options: { readonly prefix?: string } = {}): Promise<SqlRunJournal> {
+		validateStoragePrefix(options.prefix, dialectOf(database).name);
 		const t = renderStorageIdentifiers("journal", JOURNAL_TABLES, options.prefix);
 		if (!(await SqlRunJournal.initialized(database, t))) await SqlRunJournal.initialize(database, t, options.prefix);
 		const readerFile = await sharedFile(database, database);
