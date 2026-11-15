@@ -13,6 +13,8 @@
 // Anthropic / `@google/genai` happy path where the SDK already folded the body
 // into the message, so providers can preserve it without double-printing.
 
+import type { AssistantMessage } from "../types.ts";
+import { appendAssistantMessageDiagnostic } from "./diagnostics.ts";
 import { ownedSlice } from "./text.ts";
 
 export const MAX_PROVIDER_ERROR_BODY_CHARS = 4000;
@@ -54,6 +56,26 @@ export function normalizeProviderError(error: unknown): NormalizedProviderError 
 		message,
 		messageCarriesBody,
 	} satisfies NormalizedProviderError;
+}
+
+/**
+ * Record a failed request's HTTP status, and the provider's own error status when given, as a
+ * `provider_response_failure` diagnostic, so retry and fallback decide on them rather than on the message text.
+ * Nothing is recorded for a failure with no HTTP status.
+ */
+export function appendProviderResponseFailureDiagnostic(
+	output: AssistantMessage,
+	error: unknown,
+	errorCode?: string,
+): void {
+	if (!(error instanceof Error)) return;
+	const status = extractStatus(error);
+	if (status === undefined) return;
+	appendAssistantMessageDiagnostic(output, {
+		type: "provider_response_failure",
+		timestamp: Date.now(),
+		details: errorCode === undefined ? { status } : { status, errorCode },
+	});
 }
 
 const MAX_CAUSE_DEPTH = 5;

@@ -571,6 +571,15 @@ export function mapStopReason(reason: FinishReason): StopReason {
 }
 
 /**
+ * The provider status of a failed Google request, such as `UNAVAILABLE` or `RESOURCE_EXHAUSTED`: the SDK's error
+ * message is the response's JSON error body, which carries it as `error.status`.
+ */
+export function googleErrorStatus(error: unknown): string | undefined {
+	if (!(error instanceof Error)) return undefined;
+	return /"status"\s*:\s*"([A-Z_]+)"/.exec(error.message)?.[1];
+}
+
+/**
  * Run a Google GenAI SDK request with the shared provider retry policy
  * (408/409/429/5xx with backoff, honoring retry-after), mirroring how the
  * Anthropic and OpenAI adapters wrap their initial request in
