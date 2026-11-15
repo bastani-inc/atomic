@@ -1,8 +1,13 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { readFileSync, readlinkSync } from "node:fs";
+import { uptime } from "node:os";
 import { afterEach, test } from "vitest";
-import { brokerHostIdentity, isProcessAlive } from "../../packages/intercom/broker/broker-instance.js";
+import {
+	brokerHostIdentity,
+	isProcessAlive,
+	readBrokerHostFacts,
+} from "../../packages/intercom/broker/broker-instance.js";
 import { MultiNodeRouter, type MultiNodeRouterOptions } from "../../packages/intercom/broker/multinode-router.js";
 import {
 	BROKER_LEASE_STALE_AFTER_MS,
@@ -205,13 +210,32 @@ test("a broker started again on the same socket supersedes the instance before i
 	assert.equal((await leases.read({ kind: "broker", brokerId: next.brokerId })).status, "found");
 });
 
-test("this host's identity is stable within a boot and names the boot and process namespace on Linux (#5038)", () => {
-	const identity = brokerHostIdentity();
-	assert.equal(brokerHostIdentity(), identity);
+test("this host's identity names its boot and process namespace, or its boot time without them (#5038)", () => {
+	assert.equal(brokerHostIdentity({ bootId: "boot", pidNamespace: "pid:[7]", bootTimeMs: 0 }), "boot/pid:[7]");
+	assert.equal(brokerHostIdentity({ bootId: "boot", bootTimeMs: 0 }), "boot");
+	// One boot read a few seconds apart agrees; another boot does not.
+	assert.equal(brokerHostIdentity({ bootTimeMs: 1_800_000 }), "boot-30");
+	assert.equal(brokerHostIdentity({ bootTimeMs: 1_805_000 }), "boot-30");
+	assert.equal(brokerHostIdentity({ bootTimeMs: 1_900_000 }), "boot-32");
+	assert.equal(brokerHostIdentity(), brokerHostIdentity());
+	const facts = readBrokerHostFacts();
+	assert.ok(Math.abs(facts.bootTimeMs - (Date.now() - uptime() * 1000)) < 5_000);
 	if (process.platform === "linux") {
-		const bootId = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
-		assert.equal(identity, `${bootId}/${readlinkSync("/proc/self/ns/pid")}`);
-	} else assert.match(identity, /^boot-\d+$/);
+		assert.equal(facts.bootId, readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim());
+		assert.equal(facts.pidNamespace, readlinkSync("/proc/self/ns/pid"));
+	}
+});
+
+test("a broker records its own process id, and a membership without one is never taken for a dead instance (#5038)", async () => {
+	const { start } = await crashedCluster();
+	const { leases, router } = await start({ instanceKey: SOCKET, isProcessAlive: () => false });
+	const own = await leases.read({ kind: "broker", brokerId: router.brokerId });
+	assert.equal(
+		own.status === "found" && own.lease.subject.kind === "broker" ? own.lease.subject.pid : undefined,
+		process.pid,
+	);
+	assert.equal(await holderOf(leases, "hosted-by-legacy"), "legacy");
+	assert.equal(await holderOf(leases, "hosted-by-crashed"), "missing");
 });
 
 test("a process counts as alive while it runs and dead once it exited (#5038)", async () => {
