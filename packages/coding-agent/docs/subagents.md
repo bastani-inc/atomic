@@ -279,7 +279,7 @@ An SDK session without a task host runs its subagents directly and records them 
 
 #### Released subagents
 
-A background subagent that waits more than a minute on a tool call marked `detachable` (extension tools opt in with `detachable: true`) is **released**: the call keeps running, but the child gives up its session, task and Intercom connection and holds nothing else while it waits. Its parent gets a resumable-stop notice whose result reads `Released while waiting on <tool> (<call id>)`, and `subagent({ action: "status" })` lists it as `released · waiting on <tool> (<call id>)`.
+A background subagent that waits more than a minute on a tool call marked `detachable` (extension tools opt in with `detachable: true`) is **released**: the call keeps running, but the child gives up its session, task and Intercom connection and holds nothing else while it waits. Nothing paused it, and it needs no `resume`: it wakes by itself when the call finishes. Its parent gets a notice that reads `Subagent <name> released while waiting on <tool> (<call id>)` and says it wakes by itself, `/tasks` shows it as `released · waiting on <tool> (<call id>)`, and `subagent({ action: "status" })` lists it as `released · waiting on <tool> (<call id>)` and says it is not paused. A child you pause or quit is still reported as `paused · awaiting resume`.
 
 - Only background subagents are released. A foreground subagent stays a live session for as long as it waits, because your turn is waiting for its result.
 - When the call finishes, the child wakes from its saved session and continues the turn with the call's result.

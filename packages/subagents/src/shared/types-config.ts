@@ -150,6 +150,8 @@ export interface RunSyncOptions {
 	/** A wake that only hands back tool results: the continued turn is the whole run and the task is not prompted. */
 	skipTaskPrompt?: boolean;
 	wakeToolResultIds?: readonly string[];
+	/** The calls the child is told are still running, recorded with every record its run writes (#5014). */
+	stillRunning?: readonly import("../runs/foreground/subagent-child-records.js").SubagentChildStillRunningCall[];
 	redispatchDetachedCalls?: boolean;
 	/** Told the child's own session once it is created, for a launch no task host records (an SDK session). */
 	onChildSession?: (session: { sessionId: string; sessionFile: string | undefined }) => void;

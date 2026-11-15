@@ -85,8 +85,14 @@ export function setWorktreeSnapshotGit(resolver: GitExecutableResolver): GitExec
 }
 
 const NULL_DEVICE = process.platform === "win32" ? "NUL" : "/dev/null";
-/** Settings that keep snapshot commands from running hooks, daemons, maintenance or signing in the user's repository. */
+/**
+ * Settings that keep snapshot commands from running hooks, daemons, maintenance or signing in the user's repository,
+ * and let Git for Windows write paths longer than 260 characters, which a restore under the store's long path can
+ * reach for a path that fits in the user's checkout (#4932); other platforms ignore `core.longpaths`.
+ */
 const BASE_CONFIG = [
+	"-c",
+	"core.longpaths=true",
 	"-c",
 	`core.hooksPath=${NULL_DEVICE}`,
 	"-c",

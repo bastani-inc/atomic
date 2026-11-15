@@ -70,6 +70,9 @@ export { INLINE_TASK_OUTPUT_MAX_BYTES } from "./task-output-retention.js";
 /** Project explicit user stops without changing the shared host cancellation record. */
 export function subagentTaskResultLabel(result: TaskResult): string {
 	if (result.kind === "cancelled" && result.cause === "user") return "killed (non-resumable)";
+	// A released child is not paused: it wakes by itself when what it waits on finishes (#5031).
+	if (result.kind === "cancelled" && result.released)
+		return `released · waiting on ${result.released.waitingOn.map((call) => `${call.toolName} (${call.toolCallId})`).join(", ")}`;
 	// A quit or paused child awaits resume, as a quit workflow run does.
 	if (result.kind === "cancelled" && (result.cause === "pause" || result.cause === "quit"))
 		return "paused · awaiting resume";
@@ -492,6 +495,7 @@ export async function runAgentTask(input: {
 			// Every record a run writes says what that run waits on, so a later run's record never keeps the detached calls
 			// an earlier released run waited on: records merge field by field (#4845).
 			waitingOn: waitingOn ?? [],
+			...(input.options.stillRunning === undefined ? {} : { stillRunning: input.options.stillRunning }),
 			...(releasedIntercomId === undefined ? {} : { releasedIntercomId }),
 			...(terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS ? { ownerGeneration: SUBAGENT_OWNER_GENERATION } : {}),
 			...(heldMessages?.messages.length ? { heldMessages: { taskId, ...heldMessages } } : {}),
@@ -636,6 +640,8 @@ export async function runAgentTask(input: {
 				);
 			const childId = subagentChildId(runId, index);
 			const wokenWith = input.options.wakeToolResultIds ?? [];
+			// Results answering no pending call reach it as follow-ups, which a stop keeps as its pending messages.
+			const answeredByTurn = new Set((input.options.resumeToolResults ?? []).map((result) => result.toolCallId));
 			const clearDelivered = (toolCallIds: readonly string[]) => {
 				const delivered = toolCallIds.filter((toolCallId) => wokenWith.includes(toolCallId));
 				return delivered.length === 0
@@ -686,6 +692,7 @@ export async function runAgentTask(input: {
 								};
 								recordChild("running");
 							},
+							// What its session saved is cleared at once; a stop leaves the rest held for its resume (#5012).
 							toolResultsSaved: (toolCallIds) => void clearDelivered(toolCallIds),
 							onExecution: (execution) => {
 								executionBound = true;
@@ -772,8 +779,9 @@ export async function runAgentTask(input: {
 					else if (child.pendingMessages?.length)
 						recordChild("running", undefined, pendingMessagesOfResult(child));
 					const settled = released || !ownerClosed();
-					if (settled && (released || child.status === "ok" || stoppedByControl || stoppedByStagePause))
-						void clearDelivered(wokenWith);
+					if (settled && (released || child.status === "ok")) void clearDelivered(wokenWith);
+					else if (settled && (stoppedByControl || stoppedByStagePause))
+						void clearDelivered(wokenWith.filter((toolCallId) => !answeredByTurn.has(toolCallId)));
 					input.onTerminal?.(child);
 					if (
 						ownerSessionId !== undefined &&
@@ -805,7 +813,19 @@ export async function runAgentTask(input: {
 					};
 					if (child.status === "killed") return { kind: "cancelled", cause: "user", output };
 					// The task host's resumable stop: the child is not running and not ended, and nothing of it stays live.
-					if (released) return { kind: "cancelled", cause: "pause", output };
+					// It was released, not paused: its parent is told what it waits on, and that it wakes by itself (#5031).
+					if (released)
+						return {
+							kind: "cancelled",
+							cause: "pause",
+							output,
+							released: {
+								waitingOn: (child.released?.waitingOn ?? []).map(({ toolCallId, toolName }) => ({
+									toolCallId,
+									toolName,
+								})),
+							},
+						};
 					if (child.interrupted)
 						return {
 							kind: "cancelled",
