@@ -13,6 +13,7 @@ import {
 } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, it } from "vitest";
 import { HOLDER_TEMP_STALE_MS } from "../src/core/lock-holder.ts";
 import {
@@ -31,6 +32,7 @@ import { FileSettingsStorage } from "../src/core/settings-storage.ts";
 import { ProjectTrustStore } from "../src/core/trust-manager.ts";
 
 const STALE_MS = 10_000;
+const LOCK_TAKEOVER_MODULE = fileURLToPath(new URL("../src/core/lock-takeover.ts", import.meta.url));
 
 let directory: string;
 let lockPath: string;
@@ -366,6 +368,54 @@ describe("the advisory takeover mutex (#5193)", () => {
 	});
 });
 
+/**
+ * Another process whose native module is `binding`, as Bun loads it in place of the real one (`undefined`: it fails to
+ * load), takes the takeover mutex twice and reports what it saw.
+ */
+function anotherProcessWithBinding(binding: string | undefined): { directory: boolean; warnings: number } {
+	const module =
+		binding === undefined
+			? `() => { throw new Error("no binding"); }`
+			: `() => ({ exports: ${binding}, loader: "object" })`;
+	const script = `
+		Bun.plugin({ setup(build) { build.module("@bastani/atomic-natives", ${module}); } });
+		let warnings = 0;
+		process.on("warning", (warning) => { if (warning.message.includes("#5193")) warnings++; });
+		const { existsSync } = await import("node:fs");
+		const { takeTakeoverMutex, takeoverMutexPath } = await import(${JSON.stringify(LOCK_TAKEOVER_MODULE)});
+		const lockPath = ${JSON.stringify(lockPath)};
+		const mutex = takeTakeoverMutex(lockPath);
+		const directory = existsSync(takeoverMutexPath(lockPath));
+		mutex?.release();
+		takeTakeoverMutex(lockPath)?.release();
+		setImmediate(() => console.log(JSON.stringify({ directory, warnings })));
+	`;
+	const result = spawnSync("bun", ["--eval", script], { encoding: "utf8" });
+	assert.equal(result.status, 0, result.stderr);
+	return JSON.parse(result.stdout.trim().split("\n").at(-1)!) as { directory: boolean; warnings: number };
+}
+
+describe("a native module without the advisory lock (#5193)", () => {
+	it("built before the lock, falls back to the directory mutex with one warning (#5193)", () => {
+		assert.deepEqual(anotherProcessWithBinding("{ processCreationTime: () => null }"), {
+			directory: true,
+			warnings: 1,
+		});
+	});
+
+	it("with only one of the lock's functions, falls back to the directory mutex (#5193)", () => {
+		const lock = "tryAdvisoryLock: () => ({ release() {} })";
+		const rename = "renameNoReplace: () => false";
+		assert.deepEqual(anotherProcessWithBinding(`{ ${lock} }`), { directory: true, warnings: 1 });
+		assert.deepEqual(anotherProcessWithBinding(`{ ${rename} }`), { directory: true, warnings: 1 });
+		assert.deepEqual(anotherProcessWithBinding(`{ ${lock}, ${rename} }`), { directory: false, warnings: 0 });
+	});
+
+	it("that fails to load, falls back to the directory mutex with one warning (#5193)", () => {
+		assert.deepEqual(anotherProcessWithBinding(undefined), { directory: true, warnings: 1 });
+	});
+});
+
 describe("putting back a moved item that is not the one judged (#5193)", () => {
 	it("links a file back only while nothing is at its path (#5193)", () => {
 		const path = join(directory, "claim.json");
@@ -391,6 +441,14 @@ describe("putting back a moved item that is not the one judged (#5193)", () => {
 		assert.equal(putBack(aside, lockPath), false, "an empty directory at the path is never replaced");
 		assert.equal(lockHolder(lockPath), moved);
 		assert.equal(existsSync(aside), true);
+	});
+
+	it("links a file back without the native module (#5193)", () => {
+		setNativeLocksForTesting(null);
+		const path = join(directory, "claim.json");
+		writeFileSync(`${path}.moved.dead`, "live");
+		assert.equal(putBack(`${path}.moved.dead`, path), true);
+		assert.equal(readFileSync(path, "utf8"), "live");
 	});
 
 	it("leaves a directory aside without the native rename (#5193)", () => {

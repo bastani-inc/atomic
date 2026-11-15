@@ -9,6 +9,7 @@ import {
 	rmdirSync,
 	rmSync,
 	statSync,
+	unlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { hostname } from "node:os";
@@ -210,8 +211,8 @@ export function takeTakeoverMutex(
 	return {
 		owned: () => held,
 		release: () => {
-			if (!held) return;
 			held = false;
+			// Releasing the native lock again does nothing.
 			lock.release();
 		},
 	};
@@ -229,7 +230,7 @@ export function putBack(aside: string, path: string): boolean {
 			return native?.renameNoReplace(aside, path) === true;
 		}
 		linkSync(aside, path);
-		rmSync(aside, { force: true });
+		unlinkSync(aside);
 		return true;
 	} catch {
 		return false;
