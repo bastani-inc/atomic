@@ -10,6 +10,9 @@ export const DEPARTURE_ASKS_TAKEN = "departure-asks-taken";
 /** A departing session's asks to it are off their live routes, and not yet kept for its return. */
 export const DEPARTURE_ASKS_TO_IT_TAKEN = "departure-asks-to-it-taken";
 
+/** #4996: a departing session that ended has failed the asks to it for their connected askers, before that is saved. */
+export const DEPARTURE_ASKS_TO_IT_FAILED = "departure-asks-to-it-failed";
+
 /** Crash here, as a kill would, when a test asked for `point`. */
 export function crashPoint(point: string): void {
 	if (process.env[BROKER_CRASH_AT_ENV] === point) process.kill(process.pid, "SIGKILL");

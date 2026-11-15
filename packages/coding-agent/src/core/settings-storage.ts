@@ -19,7 +19,7 @@ import { parseJsonFileContent } from "../utils/json.ts";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import { normalizeAzureSettings } from "./azure-provider-compat.js";
 import { deepMergeSettings } from "./settings-merge.js";
-import type { Settings, SettingsFieldOrigin, SettingsScope, SettingsStorage } from "./settings-types.ts";
+import type { Settings, SettingsFieldOrigin, SettingsLayer, SettingsScope, SettingsStorage } from "./settings-types.ts";
 
 /** Windows refuses to replace a file another process has open for a moment; rename again before giving up. */
 const RENAME_ATTEMPTS = 10;
@@ -209,6 +209,19 @@ export class FileSettingsStorage implements SettingsStorage {
 			}
 		}
 		return found ? JSON.stringify(merged, null, 2) : undefined;
+	}
+
+	readLayers(scope: SettingsScope): SettingsLayer[] {
+		const path = scope === "global" ? this.globalSettingsPath : this.projectSettingsPath;
+		const readPaths = scope === "global" ? this.globalReadPaths : this.projectReadPaths;
+		const release = existsSync(path) ? this.acquireLockSyncWithRetry(path) : undefined;
+		try {
+			return readPaths
+				.filter((readPath) => existsSync(readPath))
+				.map((readPath) => ({ path: readPath, content: readFileSync(readPath, "utf-8") }));
+		} finally {
+			release?.();
+		}
 	}
 
 	withLock(scope: SettingsScope, fn: (current: string | undefined) => string | undefined): void {
