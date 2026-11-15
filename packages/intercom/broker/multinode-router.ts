@@ -111,8 +111,8 @@ const HOLD_CHECK_GRACE_MS = 500;
 const PRESENCE_HANDOVER_ATTEMPTS = 4;
 const PRESENCE_HANDOVER_RETRY_MS = 50;
 /**
- * #5138: how many times a registration's store steps (ending its reservations, rebinding its parked asks) are tried,
- * once at registration and then at each renewal, before a failure that keeps recurring is given up.
+ * #5138: how many times a session's store steps (ending its reservations, rebinding its parked asks, failing a terminal
+ * session's asks) are tried, once when due and then at each renewal, before a failure that keeps recurring is given up.
  */
 export const REGISTRATION_STEP_ATTEMPTS = 30;
 /**
@@ -289,7 +289,7 @@ interface PresenceEntry {
 	terminal?: boolean;
 	/** #4386: a released subagent that registered before the broker it left gave up its presence rebinds once it has it. */
 	rebind?: ReleasedRegistration;
-	/** #5138: the registration's store steps not yet done, recorded before they run so a failed one is retried. */
+	/** #5138: the session's store steps not yet done, recorded before they run so a failed one is retried. */
 	unfinished?: UnfinishedRegistration;
 	/**
 	 * Its Intercom id is bound to another session's return address: it is never known, present or routed to under that
@@ -303,6 +303,8 @@ interface UnfinishedRegistration {
 	/** The reservations' insertion mark read as the registration began, until `consume` takes it. */
 	mark?: Promise<number> | undefined;
 	rebind?: ReleasedRegistration | undefined;
+	/** The session turned terminal: the asks delivered to it fail. */
+	failTerminal?: true;
 	attempts: number;
 }
 
@@ -540,7 +542,7 @@ export class MultiNodeRouter {
 	}
 
 	/**
-	 * #5138: run the registration's store steps not yet done. Each runs once more after a failure, at each renewal, until
+	 * #5138: run the session's store steps not yet done. Each runs once more after a failure, at each renewal, until
 	 * it succeeds or `REGISTRATION_STEP_ATTEMPTS` attempts failed; a failure is reported.
 	 */
 	private async finishRegistration(session: BrokerConnectedSession, entry: PresenceEntry): Promise<void> {
@@ -566,7 +568,16 @@ export class MultiNodeRouter {
 				failures.push(error);
 			}
 		}
-		const done = unfinished.consume === undefined && unfinished.rebind === undefined;
+		if (unfinished.failTerminal === true) {
+			try {
+				await this.failTerminalAsks(session);
+				delete unfinished.failTerminal;
+			} catch (error) {
+				failures.push(error);
+			}
+		}
+		const done =
+			unfinished.consume === undefined && unfinished.rebind === undefined && unfinished.failTerminal === undefined;
 		// Steps run one at a time per session (`serial`), so `entry.unfinished` is still this record.
 		if (done || unfinished.attempts >= REGISTRATION_STEP_ATTEMPTS) delete entry.unfinished;
 		if (failures.length > 0) throw failures[0];
@@ -609,11 +620,13 @@ export class MultiNodeRouter {
 		if (this.closed || entry === undefined) return;
 		this.serial(deliveryTargetIdentity(session), async () => {
 			if (entry.unbound === true) return;
-			await this.recordKnown(session, entry);
 			if (session.info.replyCapability === "terminal" && entry.terminal !== true) {
 				entry.terminal = true;
-				await this.failTerminalAsks(session);
+				// #5138: recorded before the store is asked, so a store error is retried at renewal, not lost.
+				entry.unfinished = { ...entry.unfinished, failTerminal: true, attempts: 0 };
 			}
+			await this.recordKnown(session, entry);
+			if (entry.unfinished?.failTerminal === true) await this.finishRegistration(session, entry);
 			if (entry.lease === undefined) return;
 			const renewed = await this.state.leases.renew(entry.lease, this.presenceSubject(session));
 			if (renewed.status !== "renewed") entry.lease = undefined;
