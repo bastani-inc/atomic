@@ -121,7 +121,7 @@ export function isValidGitHubRepo(repo: string): boolean {
 }
 
 export function isValidGitRef(ref: string): boolean {
-	if (ref.length === 0 || ref.length > MAX_REF_LENGTH || ref === "@") return false;
+	if (ref.length > MAX_REF_LENGTH || ref === "@") return false;
 	if (REF_FORBIDDEN_CHARACTERS.test(ref) || ref.includes("..") || ref.includes("@{")) return false;
 	if (ref.startsWith("-") || ref.endsWith(".")) return false;
 	return ref.split("/").every((part) => part.length > 0 && !part.startsWith(".") && !part.endsWith(".lock"));

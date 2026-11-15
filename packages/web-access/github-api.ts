@@ -30,25 +30,17 @@ export function showGhHint(): void {
 	}
 }
 
-/** The `gh api` path for a repository, or null when owner or repo is not a valid GitHub name. */
-function repoEndpoint(owner: string, repo: string): string | null {
-	if (!isValidGitHubOwner(owner) || !isValidGitHubRepo(repo)) return null;
-	return `repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
-}
-
-/** The `gh api` path below a repository at a ref, or null when any component is invalid. */
-function refEndpoint(owner: string, repo: string, ref: string): { base: string; ref: string } | null {
-	const base = repoEndpoint(owner, repo);
-	if (!base || !isValidGitRef(ref)) return null;
-	return { base, ref: encodeURIComponent(ref) };
+/** Owner and repo names GitHub allows are already safe `gh api` path components. */
+function isValidRepository(owner: string, repo: string): boolean {
+	return isValidGitHubOwner(owner) && isValidGitHubRepo(repo);
 }
 
 export async function checkRepoSize(owner: string, repo: string): Promise<number | null> {
-	const endpoint = repoEndpoint(owner, repo);
-	if (!endpoint || !(await checkGhAvailable())) return null;
+	if (!isValidRepository(owner, repo)) return null;
+	if (!(await checkGhAvailable())) return null;
 
 	return new Promise((resolve) => {
-		execFile("gh", ["api", endpoint, "--jq", ".size"], { timeout: 10000, env: createChildProcessEnvironment() }, (err, stdout) => {
+		execFile("gh", ["api", `repos/${owner}/${repo}`, "--jq", ".size"], { timeout: 10000, env: createChildProcessEnvironment() }, (err, stdout) => {
 			if (err) {
 				resolve(null);
 				return;
@@ -60,29 +52,27 @@ export async function checkRepoSize(owner: string, repo: string): Promise<number
 }
 
 async function getDefaultBranch(owner: string, repo: string): Promise<string | null> {
-	const endpoint = repoEndpoint(owner, repo);
-	if (!endpoint || !(await checkGhAvailable())) return null;
+	if (!(await checkGhAvailable())) return null;
 
 	return new Promise((resolve) => {
-		execFile("gh", ["api", endpoint, "--jq", ".default_branch"], { timeout: 10000, env: createChildProcessEnvironment() }, (err, stdout) => {
+		execFile("gh", ["api", `repos/${owner}/${repo}`, "--jq", ".default_branch"], { timeout: 10000, env: createChildProcessEnvironment() }, (err, stdout) => {
 			if (err) {
 				resolve(null);
 				return;
 			}
 			const branch = stdout.trim();
-			resolve(branch && isValidGitRef(branch) ? branch : null);
+			resolve(isValidGitRef(branch) ? branch : null);
 		});
 	});
 }
 
 async function fetchTreeViaApi(owner: string, repo: string, ref: string): Promise<string | null> {
-	const endpoint = refEndpoint(owner, repo, ref);
-	if (!endpoint || !(await checkGhAvailable())) return null;
+	if (!(await checkGhAvailable())) return null;
 
 	return new Promise((resolve) => {
 		execFile(
 			"gh",
-			["api", `${endpoint.base}/git/trees/${endpoint.ref}?recursive=1`, "--jq", ".tree[].path"],
+			["api", `repos/${owner}/${repo}/git/trees/${ref}?recursive=1`, "--jq", ".tree[].path"],
 			{ timeout: 15000, maxBuffer: 5 * 1024 * 1024, env: createChildProcessEnvironment() },
 			(err, stdout) => {
 				if (err) {
@@ -103,13 +93,12 @@ async function fetchTreeViaApi(owner: string, repo: string, ref: string): Promis
 }
 
 async function fetchReadmeViaApi(owner: string, repo: string, ref: string): Promise<string | null> {
-	const endpoint = refEndpoint(owner, repo, ref);
-	if (!endpoint || !(await checkGhAvailable())) return null;
+	if (!(await checkGhAvailable())) return null;
 
 	return new Promise((resolve) => {
 		execFile(
 			"gh",
-			["api", `${endpoint.base}/readme?ref=${endpoint.ref}`, "--jq", ".content"],
+			["api", `repos/${owner}/${repo}/readme?ref=${ref}`, "--jq", ".content"],
 			{ timeout: 10000, env: createChildProcessEnvironment() },
 			(err, stdout) => {
 				if (err) {
@@ -128,14 +117,12 @@ async function fetchReadmeViaApi(owner: string, repo: string, ref: string): Prom
 }
 
 async function fetchFileViaApi(owner: string, repo: string, path: string, ref: string): Promise<string | null> {
-	const endpoint = refEndpoint(owner, repo, ref);
-	if (!endpoint || !isValidRepoPath(path) || !(await checkGhAvailable())) return null;
-	const encodedPath = path.split("/").map(encodeURIComponent).join("/");
+	if (!(await checkGhAvailable())) return null;
 
 	return new Promise((resolve) => {
 		execFile(
 			"gh",
-			["api", `${endpoint.base}/contents/${encodedPath}?ref=${endpoint.ref}`, "--jq", ".content"],
+			["api", `repos/${owner}/${repo}/contents/${path}?ref=${ref}`, "--jq", ".content"],
 			{ timeout: 10000, maxBuffer: 2 * 1024 * 1024, env: createChildProcessEnvironment() },
 			(err, stdout) => {
 				if (err) {
@@ -159,8 +146,10 @@ export async function fetchViaApi(
 	info: GitHubUrlInfo,
 	sizeNote?: string,
 ): Promise<ExtractedContent | null> {
+	if (!isValidRepository(owner, repo)) return null;
 	const ref = info.ref || (await getDefaultBranch(owner, repo));
-	if (!ref) return null;
+	if (!ref || !isValidGitRef(ref) || !isValidRepoPath(info.path ?? "")) return null;
+	const apiRef = encodeURIComponent(ref);
 
 	const lines: string[] = [];
 	if (sizeNote) {
@@ -169,7 +158,8 @@ export async function fetchViaApi(
 	}
 
 	if (info.type === "blob" && info.path) {
-		const content = await fetchFileViaApi(owner, repo, info.path, ref);
+		const apiPath = info.path.split("/").map(encodeURIComponent).join("/");
+		const content = await fetchFileViaApi(owner, repo, apiPath, apiRef);
 		if (!content) return null;
 
 		lines.push(`## ${info.path}`);
@@ -189,8 +179,8 @@ export async function fetchViaApi(
 	}
 
 	const [tree, readme] = await Promise.all([
-		fetchTreeViaApi(owner, repo, ref),
-		fetchReadmeViaApi(owner, repo, ref),
+		fetchTreeViaApi(owner, repo, apiRef),
+		fetchReadmeViaApi(owner, repo, apiRef),
 	]);
 
 	if (!tree && !readme) return null;

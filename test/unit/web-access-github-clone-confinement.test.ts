@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { cpSync, existsSync, mkdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, realpathSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { afterAll, afterEach, beforeEach, test, vi } from "vitest";
 import { fileExists, makeTempDirectory, readText, removeTempDirectory } from "../helpers/runtime.js";
@@ -19,7 +19,9 @@ const boundary = vi.hoisted(() => ({
 	sandbox: "",
 	calls: [] as string[][],
 	files: {} as Record<string, string>,
-	apiOutput: null as string | null,
+	failClone: false,
+	/** `gh api` output keyed by `<endpoint> <jq filter>`; any other request fails. */
+	api: {} as Record<string, string>,
 }));
 
 vi.mock("node:child_process", () => ({
@@ -34,10 +36,10 @@ vi.mock("node:child_process", () => ({
 					mkdirSync(dirname(join(target, name)), { recursive: true });
 					writeFileSync(join(target, name), content);
 				}
-				return callback(null, "");
+				return callback(boundary.failClone ? new Error("clone failed") : null, "");
 			}
-			if (boundary.apiOutput !== null) return callback(null, boundary.apiOutput);
-			return callback(new Error("offline"), "");
+			const output = boundary.api[`${args[1]} ${args[3]}`];
+			return output === undefined ? callback(new Error("offline"), "") : callback(null, output);
 		});
 		return Object.assign(new EventEmitter(), { kill: () => true });
 	},
@@ -48,7 +50,7 @@ vi.mock("../../packages/web-access/config-paths.ts", () => ({ findReadableConfig
 const suiteDirectory = makeTempDirectory("web-gh-confine-suite-");
 boundary.configPath = join(suiteDirectory, "web-search.json");
 const { clearCloneCache, extractGitHub, parseGitHubUrl } = await import("../../packages/web-access/github-extract.js");
-const { fetchViaApi } = await import("../../packages/web-access/github-api.js");
+const { checkRepoSize, fetchViaApi } = await import("../../packages/web-access/github-api.js");
 const { loadGitHubConfig } = await import("../../packages/web-access/github-config.js");
 
 afterAll(() => removeTempDirectory(suiteDirectory));
@@ -67,7 +69,8 @@ beforeEach(() => {
 	boundary.sandbox = sandbox;
 	boundary.calls = [];
 	boundary.files = { "README.md": "Repository readme", "src/a.ts": "export const a = 1;\n" };
-	boundary.apiOutput = null;
+	boundary.failClone = false;
+	boundary.api = {};
 	writeFileSync(boundary.configPath, JSON.stringify({ githubClone: { clonePath } }));
 	clearCloneCache();
 	// Never run against the default clone directory.
@@ -326,8 +329,86 @@ test("GitHub API requests validate and encode owner, repo, ref and path", async 
 });
 
 test("a default branch the API returns is validated before use", async () => {
-	boundary.apiOutput = "../../escape";
+	boundary.api["repos/octo/widgets .default_branch"] = "../../escape";
 	const info = { owner: "octo", repo: "widgets", refIsFullSha: false, type: "root" as const };
 	assert.equal(await fetchViaApi("https://github.com/octo/widgets", "octo", "widgets", info), null);
 	assert.deepEqual(apiEndpoints(), ["repos/octo/widgets"]);
+});
+
+test("an oversized repository is shown through the GitHub API", async () => {
+	boundary.api = {
+		"repos/octo/widgets .size": "1048576",
+		"repos/octo/widgets .default_branch": "release/1.x",
+		"repos/octo/widgets/git/trees/release%2F1.x?recursive=1 .tree[].path": "README.md\nsrc/a.ts",
+		"repos/octo/widgets/readme?ref=release%2F1.x .content": Buffer.from("Readme via API").toString("base64"),
+	};
+	const result = await extractGitHub("https://github.com/octo/widgets");
+	assert.match(result!.content, /^Note: Repository is 1024MB/);
+	assert.match(result!.content, /## Structure\nREADME\.md\nsrc\/a\.ts\n\n## README\.md\nReadme via API/);
+	assert.deepEqual(cloneTargets(), []);
+});
+
+test("a file is read through the GitHub API with its path encoded", async () => {
+	boundary.api["repos/octo/widgets/contents/docs/a%20b%23c.md?ref=main .content"] =
+		Buffer.from("File via API").toString("base64");
+	const info = {
+		owner: "octo",
+		repo: "widgets",
+		ref: "main",
+		refIsFullSha: false,
+		type: "blob" as const,
+		path: "docs/a b#c.md",
+	};
+	const result = await fetchViaApi("https://github.com/octo/widgets", "octo", "widgets", info);
+	assert.equal(result?.content, "## docs/a b#c.md\nFile via API");
+});
+
+test("a repository size is only requested for valid owner and repo names", async () => {
+	boundary.api["repos/octo/widgets .size"] = "42";
+	assert.equal(await checkRepoSize("octo", "widgets"), 42);
+	boundary.calls = [];
+	assert.equal(await checkRepoSize("..", "widgets"), null);
+	assert.equal(await checkRepoSize("octo", ".."), null);
+	assert.deepEqual(apiEndpoints(), []);
+});
+
+test("a failed clone leaves nothing behind", async () => {
+	boundary.failClone = true;
+	assert.equal(await extractGitHub("https://github.com/octo/widgets", undefined, true), null);
+	const [target] = cloneTargets();
+	assert.ok(target);
+	assert.equal(existsSync(dirname(target)), false);
+	assert.equal(existsSync(join(clonePath, "octo")), true);
+});
+
+test("clearing the cache leaves a clone moved outside the clone directory alone", async () => {
+	await extractGitHub("https://github.com/octo/widgets", undefined, true);
+	const [target] = cloneTargets();
+	const outside = join(sandbox, "outside-owner");
+	renameSync(join(clonePath, "octo"), outside);
+	symlinkSync(outside, join(clonePath, "octo"), LINK_TYPE);
+	clearCloneCache();
+	assert.equal(
+		await readText(join(outside, relative(join(clonePath, "octo"), target!), "README.md")),
+		"Repository readme",
+	);
+});
+
+test("invalid GitHub URLs name the part that was rejected", () => {
+	assert.throws(
+		() => parseGitHubUrl("https://github.com/-octo/r"),
+		/^Error: Invalid GitHub URL: unsupported owner "-octo"$/,
+	);
+	assert.throws(
+		() => parseGitHubUrl("https://github.com/o/r%20x"),
+		/^Error: Invalid GitHub URL: unsupported repository "r x"$/,
+	);
+	assert.throws(
+		() => parseGitHubUrl("https://github.com/o/r/tree/a..b"),
+		/^Error: Invalid GitHub URL: unsupported ref "a..b"$/,
+	);
+	assert.throws(
+		() => parseGitHubUrl("https://github.com/o/r/blob/main/a%2F..%2Fb"),
+		/^Error: Invalid GitHub URL: unsupported path "a\/..\/b"$/,
+	);
 });

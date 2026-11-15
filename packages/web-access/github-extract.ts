@@ -2,7 +2,7 @@ import { existsSync, readFileSync, rmSync, statSync, readdirSync, openSync, read
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { createOwnerState } from "./owner-state.js";
-import { dirname, extname, join, relative, resolve as resolvePath, sep as pathSep } from "node:path";
+import { dirname, extname, isAbsolute, join, relative, resolve as resolvePath, sep as pathSep } from "node:path";
 import { createChildProcessEnvironment } from "@bastani/atomic";
 import { activityMonitor } from "./activity.js";
 import type { ExtractedContent } from "./extract.js";
@@ -40,17 +40,15 @@ function cacheKey(owner: string, repo: string, ref?: string): string {
 function clonePaths(config: GitHubCloneConfig, owner: string, repo: string, ref?: string): ClonePaths {
 	assertValidGitHubCoordinates(owner, repo, ref);
 	const root = resolvePath(config.clonePath);
-	// A ref may contain "/", so it never becomes a path component as is.
-	const refName = ref
-		? `@${ref.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 40)}-${createHash("sha256").update(ref).digest("hex").slice(0, 12)}`
-		: "";
+	// A ref may contain "/", so only its hash becomes part of the directory name.
+	const refName = ref ? `@${createHash("sha256").update(ref).digest("hex").slice(0, 16)}` : "";
 	const directory = join(root, owner, `${repo}${refName}`);
 	return { root, directory, checkout: join(directory, repo) };
 }
 
-function isStrictlyInside(root: string, candidate: string): boolean {
+function isInside(root: string, candidate: string): boolean {
 	const rel = relative(root, candidate);
-	return rel !== "" && rel !== ".." && !rel.startsWith(`..${pathSep}`) && resolvePath(root, rel) === candidate;
+	return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
 }
 
 function pathExists(path: string): boolean {
@@ -62,29 +60,21 @@ function pathExists(path: string): boolean {
 	}
 }
 
-/** True when `path` stays inside the clone root after resolving every symlink that exists along it. */
+/** True when `path` is strictly inside the clone root after resolving every symlink that exists along it. */
 function isConfined(root: string, path: string): boolean {
-	if (!isStrictlyInside(root, path)) return false;
-	const realRoot = realpathSync(root);
 	let existing = path;
 	while (!existsSync(existing)) existing = dirname(existing);
-	const realExisting = realpathSync(existing);
-	return existing === path ? isStrictlyInside(realRoot, realExisting) : realExisting === realRoot || isStrictlyInside(realRoot, realExisting);
+	const realPath = join(realpathSync(existing), relative(existing, path));
+	return isInside(realpathSync(root), realPath);
 }
 
-/** Removes a clone directory only when it is confined, is a real directory, and carries this tool's marker. */
+/** Removes a clone directory only when it is confined and carries this tool's marker. */
 function removeOwnedClone(paths: ClonePaths): boolean {
 	const { root, directory } = paths;
 	if (!pathExists(directory)) return true;
-	try {
-		if (!isConfined(root, directory)) return false;
-		if (!lstatSync(directory).isDirectory()) return false;
-		if (!lstatSync(join(directory, CLONE_MARKER)).isFile()) return false;
-		rmSync(directory, { recursive: true, force: true });
-		return true;
-	} catch {
-		return false;
-	}
+	if (!isConfined(root, directory) || !pathExists(join(directory, CLONE_MARKER))) return false;
+	rmSync(directory, { recursive: true, force: true });
+	return true;
 }
 
 /** Creates a fresh, marked clone directory inside the clone root, or refuses. */
@@ -93,11 +83,9 @@ function prepareCloneDirectory(paths: ClonePaths): boolean {
 	try {
 		mkdirSync(root, { recursive: true });
 		if (!isConfined(root, directory) || !removeOwnedClone(paths)) return false;
-		mkdirSync(dirname(directory), { recursive: true });
-		if (!isConfined(root, directory)) return false;
-		mkdirSync(directory);
+		mkdirSync(directory, { recursive: true });
 		writeFileSync(join(directory, CLONE_MARKER), "", { flag: "wx" });
-		return isConfined(root, directory);
+		return true;
 	} catch {
 		return false;
 	}
@@ -448,7 +436,7 @@ export async function extractGitHub(
 	try {
 		info = parseGitHubUrl(url);
 	} catch (err) {
-		return { url, title: "", content: "", error: err instanceof Error ? err.message : String(err) };
+		return { url, title: "", content: "", error: (err as Error).message };
 	}
 	if (!info) return null;
 
