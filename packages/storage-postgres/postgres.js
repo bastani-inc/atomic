@@ -40,8 +40,6 @@ const IDLE_TIMEOUT_MS = 10_000;
  * server or a network that stopped answering, and a statement that cannot run in a transaction block.
  */
 const CLIENT_TIMEOUT_GRACE_MS = 5_000;
-/** SQLSTATE active_sql_transaction: the statement, such as `VACUUM`, cannot run inside a transaction block. */
-const NOT_IN_TRANSACTION_BLOCK = "25001";
 /** The length and code of a protocol cancel request, which is sent on a connection of its own, without a startup. */
 const CANCEL_REQUEST_LENGTH = 16;
 const CANCEL_REQUEST_CODE = 80877102;
@@ -526,7 +524,8 @@ export async function openPostgresDatabase(options) {
 		try {
 			return await bounded();
 		} catch (error) {
-			if (!(error instanceof pg.DatabaseError) || error.code !== NOT_IN_TRANSACTION_BLOCK) throw error;
+			// SQLSTATE active_sql_transaction: the statement, such as `VACUUM`, cannot run inside a transaction block.
+			if (!(error instanceof pg.DatabaseError) || error.code !== "25001") throw error;
 			return unbounded();
 		}
 	};

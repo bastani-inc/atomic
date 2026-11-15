@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { connect, createServer, type Socket } from "node:net";
 import { join } from "node:path";
 import { inspect } from "node:util";
 import {
@@ -33,6 +34,47 @@ const AUTOCOMMIT_TIMEOUT_MS = 1000;
 const AUTOCOMMIT_RETRIES_BOUND_MS = 5 * (AUTOCOMMIT_TIMEOUT_MS + 1000) + 4500;
 /** How long a cancelled statement may take to leave pg_stat_activity. */
 const CANCEL_SETTLE_MS = 2000;
+/** A comment that makes `startStallingProxy` stop passing the server's answers on a connection. */
+const STALL_MARKER = "/* stall */";
+
+/**
+ * A TCP proxy to `target` that stops passing the server's answers to the client on a connection once the client sends
+ * a statement containing `marker` on its own (not after `SET LOCAL`), as a network that stopped answering would.
+ */
+async function startStallingProxy(target: URL, marker: string): Promise<{ port: number; close(): Promise<void> }> {
+	const sockets = new Set<Socket>();
+	const server = createServer((client) => {
+		const upstream = connect(Number(target.port || 5432), target.hostname);
+		let stalled = false;
+		for (const socket of [client, upstream]) {
+			sockets.add(socket);
+			socket.on("error", () => {});
+			socket.on("close", () => {
+				client.destroy();
+				upstream.destroy();
+			});
+		}
+		client.on("data", (chunk: Buffer) => {
+			const text = chunk.toString("latin1");
+			if (text.includes(marker) && !text.includes("SET LOCAL")) stalled = true;
+			upstream.write(chunk);
+		});
+		upstream.on("data", (chunk: Buffer) => {
+			if (!stalled) client.write(chunk);
+		});
+	});
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const address = server.address();
+	assert.ok(address !== null && typeof address === "object");
+	return {
+		port: address.port,
+		close: () =>
+			new Promise<void>((resolve) => {
+				for (const socket of sockets) socket.destroy();
+				server.close(() => resolve());
+			}),
+	};
+}
 
 function assertTransient(
 	error: unknown,
@@ -450,32 +492,62 @@ describe.skipIf(postgresSkipReason !== undefined)("Postgres storage adapter (#47
 	test(
 		"a statement the client gives up on is cancelled on the server, outcome unknown (#4901)",
 		async () => {
-			await withPostgresDatabase(async ({ open, admin, name }) => {
-				const holder = await open();
-				const database = await open({ statementTimeoutMs: 100 });
-				await holder.exec("CREATE TABLE items (id BIGINT)");
-				const running = async () =>
-					(
-						await admin.get<{ running: number }>(
-							"SELECT count(*) AS running FROM pg_stat_activity WHERE datname = ? AND state = 'active' AND query = 'VACUUM items'",
-							name,
-						)
-					)?.running;
-				await holder.transaction(async (tx) => {
-					// VACUUM cannot run in a transaction block, so only the client's timer bounds its wait for the lock.
-					await tx.exec("LOCK TABLE items IN ACCESS EXCLUSIVE MODE");
-					const error = await database.exec("VACUUM items").catch((caught) => caught);
-					assertTransient(error, "connection-lost", "unknown");
-					const deadline = performance.now() + CANCEL_SETTLE_MS;
-					while ((await running()) !== 0 && performance.now() < deadline)
-						await new Promise((resolve) => setTimeout(resolve, 50));
-					assert.equal(await running(), 0);
-				});
-				assert.deepEqual(await database.get("SELECT 1 AS one"), { one: 1 });
+			await withPostgresDatabase(async ({ open, admin, name, url }) => {
+				const proxy = await startStallingProxy(new URL(url), STALL_MARKER);
+				try {
+					const holder = await open();
+					const proxied = new URL(url);
+					proxied.host = `127.0.0.1:${proxy.port}`;
+					const database = await open({ url: proxied.href, statementTimeoutMs: 100, maxConnections: 1 });
+					await holder.exec("CREATE TABLE items (id BIGINT)");
+					const running = async () =>
+						(
+							await admin.get<{ running: number }>(
+								"SELECT count(*) AS running FROM pg_stat_activity WHERE datname = ? AND state = 'active' AND query LIKE 'VACUUM%'",
+								name,
+							)
+						)?.running;
+					await holder.transaction(async (tx) => {
+						// VACUUM cannot run in a transaction block, so it waits for the lock without a server timeout, and the
+						// proxy keeps the server's answers from the client: only the client's timer and cancel request end it.
+						await tx.exec("LOCK TABLE items IN ACCESS EXCLUSIVE MODE");
+						const error = await database.exec(`VACUUM ${STALL_MARKER} items`).catch((caught) => caught);
+						assertTransient(error, "connection-lost", "unknown");
+						assert.match(inspect(error), /did not answer within 5100 ms/);
+						const deadline = performance.now() + CANCEL_SETTLE_MS;
+						while ((await running()) !== 0 && performance.now() < deadline)
+							await new Promise((resolve) => setTimeout(resolve, 50));
+						assert.equal(await running(), 0);
+					});
+					// The only connection was closed rather than returned to the pool.
+					assert.deepEqual(await database.get("SELECT 1 AS one"), { one: 1 });
+				} finally {
+					await proxy.close();
+				}
 			});
 		},
 		TRANSIENT_RETRIES_TIMEOUT_MS,
 	);
+
+	test("a connection whose autocommit rollback failed is closed, not reused (#4901)", async () => {
+		await withPostgresDatabase(async ({ open }) => {
+			const database = await open({ maxConnections: 1 });
+			await database.exec("CREATE TABLE items (id BIGINT PRIMARY KEY)");
+			await database.run("INSERT INTO items(id) VALUES (?)", 1);
+			const query = pg.Client.prototype.query;
+			pg.Client.prototype.query = function (this: pg.Client, ...args: Parameters<pg.Client["query"]>) {
+				if (args[0] === "ROLLBACK") return Promise.reject(new Error("fixture rollback failure"));
+				return Reflect.apply(query, this, args);
+			} as pg.Client["query"];
+			try {
+				await assert.rejects(database.run("INSERT INTO items(id) VALUES (?)", 1));
+			} finally {
+				pg.Client.prototype.query = query;
+			}
+			// The only connection held the aborted transaction; a new one runs the next statement.
+			assert.deepEqual(await database.all("SELECT id FROM items"), [{ id: 1 }]);
+		});
+	});
 
 	test("a connection the server ends during a transaction is lost, then replaced (#4793)", async () => {
 		await withPostgresDatabase(async ({ open, admin, name }) => {
