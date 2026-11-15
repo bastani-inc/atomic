@@ -206,6 +206,32 @@ const ResumeSettingsSchema = Type.Object({
 				'When a resume restores a worktree, what waits for its blueprint build. "prompt" (default): the session opens once the build has finished. "tools": the session opens and the first request goes out while the build runs; tools that run project code or read the worktree wait for it.',
 		}),
 	),
+	cache: Type.Optional(
+		Type.Array(
+			Type.Object({
+				paths: Type.Array(Type.String(), {
+					description:
+						'Directories to cache. "store" paths are absolute or under ~ and outside the repository; "build" paths are relative to the repository root.',
+				}),
+				kind: Type.Optional(
+					Type.Union([Type.Literal("store"), Type.Literal("build")], {
+						description:
+							'"store" (default): a package store outside the worktree. "build": build output inside the worktree that a trusted prebuild parks for a cache save.',
+					}),
+				),
+				keyFiles: Type.Optional(
+					Type.Array(Type.String(), {
+						description:
+							"Files, relative to the repository root, whose content keys these paths. Default: the lockfiles and toolchain files.",
+					}),
+				),
+			}),
+			{
+				description:
+					"Extra cache paths for `atomic blueprint cache-key`, added to the package-manager stores it detects from the repository's lockfiles. Paths that could hold credentials are refused.",
+			},
+		),
+	),
 });
 
 const ProviderRetrySettingsSchema = Type.Object({

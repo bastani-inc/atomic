@@ -8,49 +8,64 @@ export interface LeadingCdSpawnContext {
 	env: NodeJS.ProcessEnv;
 }
 
-function isShellWhitespace(char: string | undefined): boolean {
-	return char === " " || char === "\t" || char === "\n" || char === "\r";
+// Bash splits words on blanks only; a newline ends the `cd` command itself.
+function isBlank(char: string | undefined): boolean {
+	return char === " " || char === "\t";
 }
-function requiresShellExpansion(pathValue: string): boolean {
-	return pathValue.includes("$") || pathValue.includes("`") || pathValue.includes("(");
+function isWordEnd(char: string | undefined): boolean {
+	return char === undefined || isBlank(char) || char === "&" || char === ";";
 }
-function expandHomePath(pathValue: string): string {
-	if (pathValue === "~") return homedir();
-	if (pathValue.startsWith("~/")) return resolvePath(homedir(), pathValue.slice(2));
-	return pathValue;
+// Characters bash takes literally in a word, quoted or not: no expansion, globbing, quoting, redirection or control operator.
+const PLAIN_PATH = /^[A-Za-z0-9._/+@%,:=\u0080-\uFFFF-]+$/;
+
+function isPlainPath(pathValue: string): boolean {
+	return PLAIN_PATH.test(pathValue) && !pathValue.startsWith("-");
+}
+// `cd` consults CDPATH for a relative directory unless it starts with `.` or `..`.
+function searchesCdPath(pathValue: string, env: NodeJS.ProcessEnv): boolean {
+	if (!env.CDPATH || pathValue.startsWith("/")) return false;
+	return !/^\.\.?(\/|$)/.test(pathValue);
 }
 
+/**
+ * Turn `cd <dir> && rest` or `cd <dir>; rest` into `rest` run in `<dir>`, when `<dir>` is one plain word that
+ * bash would take literally (optionally wrapped in quotes). Anything else returns undefined, so bash runs the
+ * command as written.
+ */
 export function stripLeadingCdCommand(command: string, cwd: string): LeadingCdSpawnContext | undefined {
 	let index = 0;
-	while (isShellWhitespace(command[index])) index++;
-	if (command.slice(index, index + 2) !== "cd" || !isShellWhitespace(command[index + 2])) return undefined;
+	while (isBlank(command[index])) index++;
+	if (command.slice(index, index + 2) !== "cd" || !isBlank(command[index + 2])) return undefined;
 	index += 2;
-	while (isShellWhitespace(command[index])) index++;
-	let rawPath = "";
+	while (isBlank(command[index])) index++;
+	let rawPath: string;
+	let expandsHome = false;
 	const quote = command[index];
 	if (quote === "'" || quote === '"') {
-		index++;
-		const pathStart = index;
-		while (index < command.length && command[index] !== quote) index++;
-		if (index >= command.length) return undefined;
+		const pathStart = index + 1;
+		index = command.indexOf(quote, pathStart);
+		if (index < 0) return undefined;
 		rawPath = command.slice(pathStart, index);
 		index++;
 	} else {
 		const pathStart = index;
-		while (index < command.length && command[index] !== "&" && command[index] !== ";") index++;
-		rawPath = command.slice(pathStart, index).trim();
+		while (!isWordEnd(command[index])) index++;
+		rawPath = command.slice(pathStart, index);
+		if (rawPath === "~" || rawPath.startsWith("~/")) {
+			expandsHome = true;
+			rawPath = rawPath.slice(1);
+		}
 	}
-	if (!rawPath) return undefined;
-	if (requiresShellExpansion(rawPath)) return undefined;
-	while (isShellWhitespace(command[index])) index++;
-	let separatorLength = 0;
-	if (command[index] === "&" && command[index + 1] === "&") separatorLength = 2;
-	else if (command[index] === ";") separatorLength = 1;
+	if (!isPlainPath(expandsHome ? `.${rawPath}` : rawPath)) return undefined;
+	while (isBlank(command[index])) index++;
+	if (command.startsWith("&&", index)) index += 2;
+	else if (command[index] === ";") index++;
 	else return undefined;
-	index += separatorLength;
-	while (isShellWhitespace(command[index])) index++;
+	while (isBlank(command[index]) || command[index] === "\n") index++;
 	const nextCommand = command.slice(index);
-	return nextCommand
-		? { command: nextCommand, cwd: resolvePath(cwd, expandHomePath(rawPath)), env: { ...getShellEnv() } }
-		: undefined;
+	if (!nextCommand || /^[;&|)]/.test(nextCommand)) return undefined;
+	const env = { ...getShellEnv() };
+	if (!expandsHome && searchesCdPath(rawPath, env)) return undefined;
+	const directory = expandsHome ? resolvePath(homedir(), `.${rawPath}`) : resolvePath(cwd, rawPath);
+	return { command: nextCommand, cwd: directory, env };
 }

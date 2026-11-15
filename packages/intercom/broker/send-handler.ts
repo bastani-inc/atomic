@@ -5,6 +5,7 @@ import {
 	legacyWorkflowStageTargetMigrationHint,
 	parseLegacyWorkflowStageTarget,
 	parseWorkflowStageTarget,
+	workflowStageTargetSizeError,
 } from "../workflow-stage-target.js";
 import { normalizeGroup, workflowInvocationRefusalFor } from "../group.js";
 import { isMessage } from "./client-message-validation.js";
@@ -282,6 +283,16 @@ export function handleBrokerSend(
     write(socket, { type: "delivery_failed", messageId: message.id, attemptId, reason: "Supervisor target does not match the authorized relationship" });
     return;
   }
+	const targetSizeError = workflowStageTargetSizeError(trimmedTo);
+	if (targetSizeError !== undefined) {
+		write(socket, {
+			type: "delivery_failed",
+			messageId: message.id,
+			...(attemptId ? { attemptId } : {}),
+			reason: targetSizeError,
+		});
+		return;
+	}
 	const replyTo = message.replyTo;
 	if (
 		!supervisorSend &&
