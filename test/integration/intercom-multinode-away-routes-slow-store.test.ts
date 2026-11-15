@@ -118,6 +118,7 @@ for (const leaver of ["asker", "recipient"] as const) {
 				await harness.startBroker("b");
 				const askerBack = await rejoin(asker, ids.asker, (client) => log.watch(client));
 				const recipientBack = await rejoin(recipient, ids.recipient);
+				assert.deepEqual({ asker: askerBack.sessionId, recipient: recipientBack.sessionId }, ids);
 
 				if (then === "reply") {
 					const replied = await reply(recipientBack, ids.asker, askId);
