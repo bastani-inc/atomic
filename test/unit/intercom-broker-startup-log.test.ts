@@ -601,6 +601,15 @@ describe("bounded broker log tail", () => {
 		assert.equal(spawnModule.readBrokerLogTail(noisy, 11), "TAIL-MARKER");
 	});
 
+	test("the log tail starts at a whole character, not inside one (#5097)", () => {
+		const split = join(agentDir, "intercom", "split.log");
+		writeFileSync(split, "x😀tail", "utf8");
+
+		// The last 6 bytes begin with the emoji's second byte.
+		assert.equal(spawnModule.readBrokerLogTail(split, 6), "tail");
+		assert.equal(spawnModule.readBrokerLogTail(split, 8), "😀tail");
+	});
+
 	test("missing and empty logs degrade to a path-only description", () => {
 		const absent = join(agentDir, "intercom", "absent.log");
 		assert.equal(spawnModule.readBrokerLogTail(absent), "");

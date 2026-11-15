@@ -350,7 +350,10 @@ export function readBrokerLogTail(logPath: string = getBrokerLogPath(), maxBytes
     if (length <= 0) return "";
     const buffer = Buffer.allocUnsafe(length);
     const read = readSync(fd, buffer, 0, length, size - length);
-    return buffer.subarray(0, read).toString("utf-8").trim();
+    // Skip the rest of a character the cut started inside (UTF-8 continuation bytes), so it shows no U+FFFD (#5097).
+    let start = 0;
+    while (start < read && (buffer[start]! & 0xc0) === 0x80) start++;
+    return buffer.subarray(start, read).toString("utf-8").trim();
   } catch {
     // A missing or unreadable log simply yields no diagnostic tail.
     return "";
