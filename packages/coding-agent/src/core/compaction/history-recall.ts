@@ -1,6 +1,6 @@
 import type { InternalResourceRouter, InternalSearchRequest } from "../tools/resource-selectors.ts";
 import { COMPACTION_AUTO_QUERY } from "./compaction-parameters.js";
-import { ROLE_HEADER_RE } from "./transcript-serialization.js";
+import { ROLE_HEADER_TEXT_RE } from "./transcript-serialization.js";
 
 /** Share of the kept context's tokens that recalled snippets may add. */
 export const COMPACTION_RECALL_TOKEN_FRACTION = 0.1;
@@ -147,7 +147,7 @@ function parseRows(output: string | undefined): SearchRow[] {
 
 function comparable(line: string): string {
 	const withoutQuote = line.startsWith(QUOTE_PREFIX) ? line.slice(QUOTE_PREFIX.length) : line;
-	return withoutQuote.replace(ROLE_HEADER_RE, "").replace(/\s+/g, " ").trim();
+	return withoutQuote.replace(ROLE_HEADER_TEXT_RE, "").replace(/\s+/g, " ").trim();
 }
 
 function isBlank(row: SearchRow): boolean {
