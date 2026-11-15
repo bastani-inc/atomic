@@ -108,6 +108,8 @@ export interface TwoBrokerHarnessOptions {
 	readonly parkableRegistrations?: true;
 	/** The nodes to run, each with its own broker over the one shared storage; default `BROKER_NODES`. */
 	readonly nodes?: readonly BrokerNode[];
+	/** Added to every broker's environment, as a shortened bound (`ATOMIC_INTERCOM_LOST_RECIPIENT_AFTER_MS`). */
+	readonly brokerEnv?: Readonly<Record<string, string>>;
 }
 
 /** Whether a gated broker's shared storage opening waits, fails, or proceeds. */
@@ -160,6 +162,7 @@ export class TwoBrokerHarness {
 	private readonly databases: SqliteDatabase[] = [];
 	private probeDatabase: SqliteDatabase | undefined;
 	private advertised = false;
+	private brokerEnv: Readonly<Record<string, string>> = {};
 
 	private constructor(
 		readonly root: string,
@@ -208,6 +211,7 @@ export class TwoBrokerHarness {
 			options.gatedStorageOpening,
 			BROKER_READY_TIMEOUT_MS + SHARED_STORAGE_OPENING_CALLS * (options.databaseCallDelayMs ?? 0),
 		);
+		harness.brokerEnv = options.brokerEnv ?? {};
 		try {
 			for (const node of harness.nodeNames) await harness.startBroker(node);
 			harness.advertised = await harness.probeMultiNodeRouting();
@@ -279,7 +283,7 @@ export class TwoBrokerHarness {
 	async startBroker(node: BrokerNode, env: Readonly<Record<string, string>> = {}): Promise<void> {
 		const state = this.node(node);
 		const broker = spawn(process.execPath, [getJitiCliPath(extensionDir), join(extensionDir, "broker/broker.ts")], {
-			env: { ...process.env, ...env, ATOMIC_CODING_AGENT_DIR: state.fixture.agentDir },
+			env: { ...process.env, ...this.brokerEnv, ...env, ATOMIC_CODING_AGENT_DIR: state.fixture.agentDir },
 			stdio: "ignore",
 		});
 		state.broker = broker;
