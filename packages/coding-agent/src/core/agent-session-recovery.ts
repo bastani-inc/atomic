@@ -5,7 +5,7 @@ import {
 	pendingProtectedStreamingCustomMessages,
 	recoverProtectedStreamingCustomMessages,
 } from "./agent-session-persistent-custom-messages.ts";
-import { isSubagentChildSession } from "./agent-session-tasks.ts";
+import { isSubagentChildSession } from "./agent-session-tasks.js";
 import type { SessionRecoveryReport } from "./agent-session-types.js";
 import type { SessionRecoveryReason } from "./extensions/index.js";
 import { assertSessionOpen, sessionGenerationClosing, trackSessionWork } from "./session-lifecycle-work.ts";
