@@ -53,7 +53,7 @@ function transcriptHooks(bound: TaskTranscriptSource[], cleanups: Array<Promise<
 }
 
 test(
-	"a released child keeps only its session id as its task transcript, and a settled one keeps its entries (#4326)",
+	"a released child keeps only its session id as its task transcript, and a settled one reads its entries from its store (#4326, #5186)",
 	async () => {
 		const env = await liveChildEnvironment(cleanups);
 		const releasedBound: TaskTranscriptSource[] = [];
@@ -85,8 +85,12 @@ test(
 		await Promise.all(settledCleanups);
 		const settledSource = settledBound.at(-1);
 		assert.ok(settledSource);
+		// A settled child keeps its history in its session store and reads it back when asked (#5186).
+		assert.deepEqual(settledSource.getEntries(), []);
 		assert.deepEqual(
-			settledSource.getEntries().flatMap((entry) => (entry.type === "message" ? [entry.message.role] : [])),
+			((await settledSource.loadEntries?.()) ?? []).flatMap((entry) =>
+				entry.type === "message" ? [entry.message.role] : [],
+			),
 			["system", "user", "assistant"],
 		);
 		assert.notEqual(settledSource, settledBound[0]);

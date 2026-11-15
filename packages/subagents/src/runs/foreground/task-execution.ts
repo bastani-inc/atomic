@@ -275,12 +275,12 @@ export function taskResponseRecords(
 
 /** The owner's current records of the tasks `ids` names. */
 function ownerTaskRecords(ids: ReadonlySet<TaskId>, host: AgentTaskHost | undefined): TaskRecord[] {
-	const watched = host?.watchOwnerTasks();
-	if (!watched?.ok) return [];
+	if (!host || ids.size === 0) return [];
 	try {
-		return watched.value.snapshot.tasks.filter((task) => ids.has(task.ref.taskId));
-	} finally {
-		watched.value.dispose();
+		return [...host.taskRecords(ids)];
+	} catch {
+		// An owner that closed has no records left to report.
+		return [];
 	}
 }
 
@@ -339,6 +339,7 @@ function taskTranscriptSource(
 	return {
 		getSessionId: () => session.getSessionId(),
 		getEntries: () => session.getEntries(),
+		...(session.loadEntries ? { loadEntries: session.loadEntries.bind(session) } : {}),
 		...(session.subscribe ? { subscribe: session.subscribe.bind(session) } : {}),
 		...(session.getStreamingMessage ? { getStreamingMessage: session.getStreamingMessage.bind(session) } : {}),
 		...(session.getCompactionReason ? { getCompactionReason: session.getCompactionReason.bind(session) } : {}),

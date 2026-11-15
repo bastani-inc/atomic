@@ -8,6 +8,7 @@ import type { OperationId, TaskId, TaskRecord } from "./contracts.js";
 import { TaskMessageError, TaskMessageTimeoutError } from "./message-error.js";
 import type { OwnerTaskStore, TaskActivity } from "./owner-store.js";
 import {
+	loadTaskOwnTranscriptEntries,
 	type TaskMessageDelivery,
 	type TaskTranscriptSource,
 	taskExtensionStatuses,
@@ -15,7 +16,7 @@ import {
 	taskTranscriptSource,
 	watchTaskExtensionStatuses,
 } from "./supervisor.js";
-import { readTaskTranscriptSnapshot } from "./transcript.js";
+import { taskTranscriptPage } from "./transcript.js";
 
 export type TaskViewResult<T> =
 	| { readonly ok: true; readonly value: T }
@@ -226,53 +227,21 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 		taskDetailText(id) {
 			const task = lease(id);
 			if (!task.ok) return {};
-			const entries = taskOwnTranscriptEntries(task.value);
-			if (entries === undefined) return {};
-			const messages = entries.flatMap((entry) => (entry.type === "message" ? [entry.message] : []));
-			const prompt = messages.find((message) => message.role === "user");
-			const response = messages
-				.slice()
-				.reverse()
-				.find((message) => message.role === "assistant");
-			const promptText = prompt === undefined ? undefined : messageText(prompt);
-			const outputText = response === undefined ? undefined : messageText(response);
-			return {
-				...(promptText === undefined ? {} : { prompt: promptText }),
-				...(outputText === undefined ? {} : { output: outputText }),
-			};
+			// A finished task keeps its history in its session store, not in memory (#5186).
+			if (taskTranscriptSourceLoads(task.value))
+				return loadTaskOwnTranscriptEntries(task.value).then((entries) => detailText(entries));
+			return detailText(taskOwnTranscriptEntries(task.value));
 		},
 		readTaskTranscript(id, cursor) {
 			const task = lease(id);
 			if (!task.ok) return { ok: false, error: { message: task.error.message } };
-			const page = readTaskTranscriptSnapshot(task.value, cursor);
 			const bound = taskTranscriptSource(task.value);
-			if (!bound.ok || (!page.ok && !bound.value.session.subscribe))
-				return { ok: false, error: { message: "Transcript unavailable" } };
-			const items = page.ok ? page.value.items : [];
-			const entryIds = new Set(items.map((item) => item.source.entryId));
-			const itemIds = new Set(items.map((item) => item.id));
-			const messages = bound.value.session.getEntries().flatMap<AgentMessage>((entry) => {
-				if (!entryIds.has(entry.id)) return [];
-				if (entry.type !== "message") return sessionEntryToContextMessages(entry);
-				const message = entry.message;
-				if (message.role === "assistant")
-					return [
-						{
-							...message,
-							content: message.content.filter((_, index) => itemIds.has(`${entry.id}:${index}`)),
-						},
-					];
-				return message.role === "user" || message.role === "toolResult" ? [message] : [];
-			});
-			const compactionReason = cursor === undefined ? bound.value.session.getCompactionReason?.() : undefined;
-			return {
-				ok: true,
-				value: {
-					messages,
-					...(page.ok && page.value.nextCursor !== undefined ? { nextCursor: page.value.nextCursor } : {}),
-					...(compactionReason === undefined ? {} : { compactionReason }),
-				},
-			};
+			if (!bound.ok) return { ok: false, error: { message: "Transcript unavailable" } };
+			const { session, taskId } = bound.value;
+			// A finished task keeps its history in its session store, not in memory (#5186).
+			if (session.loadEntries)
+				return session.loadEntries().then((entries) => transcriptView(session, taskId, entries, cursor));
+			return transcriptView(session, taskId, session.getEntries(), cursor);
 		},
 		followTaskTranscript(id) {
 			const task = lease(id);
@@ -338,4 +307,62 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 	};
 	sources.set(store, source);
 	return source;
+}
+
+function taskTranscriptSourceLoads(task: Parameters<typeof taskTranscriptSource>[0]): boolean {
+	const bound = taskTranscriptSource(task);
+	return bound.ok && bound.value.session.loadEntries !== undefined;
+}
+
+/** The prompt and the last response in a task's own history. */
+function detailText(entries: ReturnType<TaskTranscriptSource["getEntries"]> | undefined): TaskDetailText {
+	if (entries === undefined) return {};
+	const messages = entries.flatMap((entry) => (entry.type === "message" ? [entry.message] : []));
+	const prompt = messages.find((message) => message.role === "user");
+	const response = messages
+		.slice()
+		.reverse()
+		.find((message) => message.role === "assistant");
+	const promptText = prompt === undefined ? undefined : messageText(prompt);
+	const outputText = response === undefined ? undefined : messageText(response);
+	return {
+		...(promptText === undefined ? {} : { prompt: promptText }),
+		...(outputText === undefined ? {} : { output: outputText }),
+	};
+}
+
+/** The page of a task's transcript ending before `cursor`, read from `entries`, its session's history. */
+function transcriptView(
+	session: TaskTranscriptSource,
+	taskId: string,
+	entries: ReturnType<TaskTranscriptSource["getEntries"]>,
+	cursor: string | undefined,
+): TaskViewResult<TaskTranscriptView> {
+	const page = taskTranscriptPage(taskId, session.getSessionId(), entries, cursor);
+	if (!page.ok && !session.subscribe) return { ok: false, error: { message: "Transcript unavailable" } };
+	const items = page.ok ? page.value.items : [];
+	const entryIds = new Set(items.map((item) => item.source.entryId));
+	const itemIds = new Set(items.map((item) => item.id));
+	const messages = entries.flatMap<AgentMessage>((entry) => {
+		if (!entryIds.has(entry.id)) return [];
+		if (entry.type !== "message") return sessionEntryToContextMessages(entry);
+		const message = entry.message;
+		if (message.role === "assistant")
+			return [
+				{
+					...message,
+					content: message.content.filter((_, index) => itemIds.has(`${entry.id}:${index}`)),
+				},
+			];
+		return message.role === "user" || message.role === "toolResult" ? [message] : [];
+	});
+	const compactionReason = cursor === undefined ? session.getCompactionReason?.() : undefined;
+	return {
+		ok: true,
+		value: {
+			messages,
+			...(page.ok && page.value.nextCursor !== undefined ? { nextCursor: page.value.nextCursor } : {}),
+			...(compactionReason === undefined ? {} : { compactionReason }),
+		},
+	};
 }

@@ -117,11 +117,7 @@ export function childCommandRouteCount(host: AgentTaskHost): number {
  * subagent has none, since its owner accepts a task's children only while it runs.
  */
 function runningSubagentTask(host: AgentTaskHost, childId: string): TaskId | undefined {
-	const watched = host.watchOwnerTasks();
-	if (!watched.ok) return undefined;
-	const tasks = watched.value.snapshot.tasks;
-	watched.value.dispose();
-	return tasks.find((task) => {
+	return host.taskRecords().find((task) => {
 		if (task.execution.kind !== "running") return false;
 		const lease = host.resolveTask(task.ref.taskId);
 		const transcript = lease.ok ? taskTranscriptSource(lease.value) : lease;

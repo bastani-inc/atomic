@@ -76,7 +76,11 @@ test("a completed in-process child keeps its transcript but not its session (#36
 		assert.equal(result.status, "ok");
 		await cleanup;
 		assert.ok(session, "the child session was disposed");
-		const texts = retained?.getEntries().flatMap((entry) => (entry.type === "message" ? [entry.message.role] : []));
+		// The retained transcript keeps none of the history in memory; it reads it from the child's store (#5186).
+		assert.deepEqual(retained?.getEntries(), [], "the retained transcript keeps no history in memory");
+		const texts = (await retained?.loadEntries?.())?.flatMap((entry) =>
+			entry.type === "message" ? [entry.message.role] : [],
+		);
 		assert.deepEqual(texts, ["user", "assistant"], "the retained transcript still shows the whole conversation");
 		// A WeakRef target stays alive until the job that created the ref ends.
 		await new Promise<void>((resolve) => setTimeout(resolve, 0));

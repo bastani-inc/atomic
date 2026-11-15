@@ -829,7 +829,7 @@ test("a task-backed child's result does not wait for its held disposal, which re
 	assert.ok(settled);
 	assert.equal("subscribe" in settled, false, "the settled transcript keeps no reference to the disposed session");
 	assert.ok(settled.getSessionId().length > 0);
-	assert.ok(settled.getEntries().length > 0);
+	assert.ok(((await settled.loadEntries?.()) ?? []).length > 0, "the settled transcript reads its history back");
 });
 
 for (const [kind, thrown, message] of [
@@ -850,7 +850,7 @@ for (const [kind, thrown, message] of [
 		const settled = run.lastBound();
 		assert.ok(settled);
 		assert.equal("subscribe" in settled, false, "the settled transcript keeps no reference to the disposed session");
-		assert.ok(settled.getEntries().length > 0);
+		assert.ok(((await settled.loadEntries?.()) ?? []).length > 0, "the settled transcript reads its history back");
 	});
 }
 

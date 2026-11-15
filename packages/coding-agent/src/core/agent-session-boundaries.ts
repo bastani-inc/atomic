@@ -282,7 +282,12 @@ export async function _buildBoundaryContext(
 	drafts: SessionBoundaryDraft[],
 	boundary: BoundaryKind,
 ): Promise<BoundaryContextPreview> {
-	const projection = (await this._createBoundaryPreviewManager(drafts)).buildSessionProjection();
+	// With no drafts to preview the session is its own preview: copying its whole branch for every handler of every
+	// turn cost a supervisor time in proportion to all it had done, not to the turn (#5186).
+	const projection =
+		drafts.length === 0
+			? this.sessionManager.buildSessionProjection()
+			: (await this._createBoundaryPreviewManager(drafts)).buildSessionProjection();
 	const contextMessages = finalizeProjectedMessages(this, projection.messages);
 	const pendingMessages = this._getPendingBoundaryMessages();
 	const llmMessages = convertToLlm(contextMessages);
