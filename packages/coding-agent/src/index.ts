@@ -295,6 +295,7 @@ export {
 	type AgentWakeHandler,
 	type AgentWakeHandlerOptions,
 	type AgentWakeKind,
+	type AgentWakeSlot,
 	type AgentWakeTimer,
 	agentWakeDispatcher,
 	wakeKeyNamespace,

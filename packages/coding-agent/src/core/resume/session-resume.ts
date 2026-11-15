@@ -16,6 +16,7 @@ import {
 	missingSnapshotRecords,
 	openResumedSession,
 	pooledWorktreeOwnedElsewhere,
+	recordPendingCarriedWork,
 	releaseSessionWorktrees,
 	resumeSessionWorktree,
 } from "../session-worktree-snapshots.ts";
@@ -413,6 +414,8 @@ async function prepareResume(
 		const unchanged = await describeBlueprintsInPlace(sessionManager, storeDir, options);
 		return { status: "ready", sessionManager, notices: [], blueprintNotices: [], blueprintContext: unchanged };
 	}
+	// Work a full restore carried over but could not record is recorded now, where its worktree is here (#5009).
+	await recordPendingCarriedWork(sessionManager, { settings: options.settings, storeDir, signal: options.signal });
 	// A partial restore pinned for longer than its retention no longer holds its snapshot (#4922).
 	const notices: ResumeNotice[] = lapsedDegradedRestores(sessionManager).map((lapsed) => ({
 		type: "warning",
