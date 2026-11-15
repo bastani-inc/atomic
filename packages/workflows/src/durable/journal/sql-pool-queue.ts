@@ -176,7 +176,7 @@ export type PoolClaimPlacement =
 			 * The worker host claiming, and the provider instance it runs on: the claim takes nothing once a fleet controller
 			 * asked either to drain, though the host has not read the drain yet (#5072).
 			 */
-			readonly host?: { readonly id: string; readonly providerId?: string };
+			readonly host?: { readonly id: string; readonly providerId?: string | undefined };
 	  };
 /** A ready work item a worker host may choose, with the workspace binding its child carries, if any. */
 export interface PoolClaimCandidate {
@@ -954,17 +954,15 @@ export class SqlPoolQueue {
 				? { clause: "", args: [] }
 				: placement.kind === "unbound"
 					? { clause: `AND ${WORKSPACE_BINDING} IS NULL`, args: [] }
-					: placement.host === undefined
-						? { clause: "AND id = ? AND generation = ?", args: [placement.id, placement.generation] }
-						: {
-								clause: `AND id = ? AND generation = ? AND NOT EXISTS (SELECT 1 FROM ${this.journal.runs}_fleet_drains WHERE host = ? OR provider_id = ?)`,
-								args: [
-									placement.id,
-									placement.generation,
-									placement.host.id,
-									placement.host.providerId ?? null,
-								],
-							};
+					: {
+							clause: `AND id = ? AND generation = ? AND NOT EXISTS (SELECT 1 FROM ${this.journal.runs}_fleet_drains WHERE host = ? OR provider_id = ?)`,
+							args: [
+								placement.id,
+								placement.generation,
+								placement.host?.id ?? null,
+								placement.host?.providerId ?? null,
+							],
+						};
 		// The ready row is chosen and taken in one statement, so workers racing for the oldest one never conflict: each
 		// takes whichever ready row is oldest when its batch runs.
 		return guardedPoolWrite(this.storage, async (read, optimistic, afterUnknown) => {
