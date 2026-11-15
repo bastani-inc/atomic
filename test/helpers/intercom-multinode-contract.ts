@@ -1337,6 +1337,33 @@ export function registerPendingAskStoreConformance(
 		assert.deepEqual(await a.takeParked("owner", ""), empty("empty-reservation-key"));
 		assert.deepEqual(await a.takeParked("other-owner"), { status: "taken", asks: [ask("asker", "child-3", "q3")] });
 	});
+
+	check("keeps a replied ask's route for its reply but no longer lists it as unanswered (#4992)", async (connect) => {
+		const [a, b] = [await connect(), await connect()];
+		await a.record(ask("asker", "recipient", "q1"));
+		await a.record(ask("asker-2", "recipient", "q2"));
+		await a.record(ask("asker", "child", "q3"));
+		await a.parkForTarget("child", { ownerSessionId: "owner", reservationKey: "released:child" });
+		assert.deepEqual(await b.markReplied(reply("recipient", "asker", "q1")), { status: "marked" });
+		assert.deepEqual(await b.markReplied(reply("child", "asker", "q3")), { status: "marked" });
+		assert.deepEqual(await b.markReplied(reply("recipient", "asker", "q3")), { status: "no-match" });
+		assert.deepEqual(await a.markReplied(reply("", "asker", "q1")), {
+			status: "invalid",
+			reason: "empty-session-id",
+		});
+		assert.deepEqual(await a.listForTarget("recipient"), {
+			status: "listed",
+			asks: [ask("asker-2", "recipient", "q2")],
+		});
+		assert.deepEqual(await a.listParked("owner"), { status: "listed", asks: [] });
+		assert.deepEqual(
+			await a.matchesReply(reply("recipient", "asker", "q1")),
+			{ status: "match" },
+			"the reply is still authorized",
+		);
+		assert.deepEqual(await a.clearReply(reply("recipient", "asker", "q1")), { status: "cleared" });
+		assert.deepEqual(await a.takeParked("owner"), { status: "taken", asks: [ask("asker", "child", "q3")] });
+	});
 }
 
 export function registerReleasedAskStoreConformance(

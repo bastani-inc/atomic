@@ -627,6 +627,7 @@ interface PendingAskEntry {
 	targetSessionId: string;
 	readonly messageId: string;
 	park?: PendingAskPark;
+	replied?: true;
 }
 
 const plainAsk = (entry: PendingAskEntry): PendingAsk => ({
@@ -681,6 +682,14 @@ function pendingAskStore(asks: PendingAskEntry[]): PendingAskStore {
 			asks.splice(index, 1);
 			return { status: "cleared" };
 		},
+		async markReplied(route) {
+			const bad = invalidRoute(route);
+			if (bad !== undefined) return bad;
+			const index = reverseOf(route);
+			if (index < 0) return { status: "no-match" };
+			asks[index]!.replied = true;
+			return { status: "marked" };
+		},
 		async pruneSender(senderSessionId) {
 			if (senderSessionId.length === 0) return invalid("empty-session-id");
 			const before = asks.length;
@@ -705,7 +714,9 @@ function pendingAskStore(asks: PendingAskEntry[]): PendingAskStore {
 			if (targetSessionId.length === 0) return invalid("empty-session-id");
 			return {
 				status: "listed",
-				asks: asks.filter((ask) => ask.targetSessionId === targetSessionId).map(plainAsk),
+				asks: asks
+					.filter((ask) => ask.targetSessionId === targetSessionId && ask.replied === undefined)
+					.map(plainAsk),
 			};
 		},
 		async parkForTarget(targetSessionId, park) {
@@ -747,7 +758,11 @@ function pendingAskStore(asks: PendingAskEntry[]): PendingAskStore {
 		async listParked(ownerSessionId, reservationKey) {
 			if (ownerSessionId.length === 0) return invalid("empty-session-id");
 			if (reservationKey !== undefined && reservationKey.length === 0) return invalid("empty-reservation-key");
-			return { status: "listed", asks: asks.filter(parkedBy(ownerSessionId, reservationKey)).map(plainAsk) };
+			const parked = parkedBy(ownerSessionId, reservationKey);
+			return {
+				status: "listed",
+				asks: asks.filter((ask) => parked(ask) && ask.replied === undefined).map(plainAsk),
+			};
 		},
 	};
 }

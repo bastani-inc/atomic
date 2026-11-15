@@ -364,6 +364,8 @@ export class MultiNodeRouter {
 	private readonly scanning = new Map<string, { rescan: boolean }>();
 	private readonly serials = new Map<string, Promise<void>>();
 	private readonly settling = new Set<Promise<void>>();
+	/** #4992: replies each session sent that are still being routed; its departure waits for them. */
+	private readonly routingReplies = new Map<string, Set<Promise<void>>>();
 	private readonly timers: ReturnType<typeof setInterval>[] = [];
 	private checkingOutcomes: { again: boolean } | undefined;
 	private closed = false;
@@ -676,6 +678,8 @@ export class MultiNodeRouter {
 			// routes are the failures it already sent, so they are not sent again.
 			await (away ? Promise.resolve() : this.state.pendingAsks.pruneSender(sessionId).then(() => undefined))
 				.then(async () => {
+					// #4992: the replies it sent before it left are queued first, so the asks they answer do not fail.
+					await Promise.all([...(this.routingReplies.get(sessionId) ?? [])]);
 					// #4842: a terminal session's remaining routes are the failures it already sent; they are not sent again.
 					if (!away && session.info.replyCapability === "terminal" && released === undefined) {
 						await this.state.pendingAsks.takeForTarget(sessionId);
@@ -1057,7 +1061,18 @@ export class MultiNodeRouter {
 	routeSend(request: RemoteSendRequest): void {
 		// #4386: one sender's replies are routed in the order it sent them, so they reach an owner in that order.
 		if (isReleasedReplyCandidate(request)) this.serial(`reply:${request.from.info.id}`, () => this.routeSendSafely(request));
-		else void this.routeSendSafely(request);
+		else if (request.message.replyTo === undefined) void this.routeSendSafely(request);
+		else {
+			// #4992: a replier that ends right after replying has its asks failed only once this reply is queued.
+			const senderId = request.from.info.id;
+			const replies = this.routingReplies.get(senderId) ?? new Set<Promise<void>>();
+			this.routingReplies.set(senderId, replies);
+			const routing: Promise<void> = this.routeSendSafely(request).finally(() => {
+				replies.delete(routing);
+				if (replies.size === 0 && this.routingReplies.get(senderId) === replies) this.routingReplies.delete(senderId);
+			});
+			replies.add(routing);
+		}
 	}
 
 	private async routeSendSafely(request: RemoteSendRequest): Promise<void> {
@@ -1460,6 +1475,14 @@ export class MultiNodeRouter {
 			await this.state.sentMessages.forget({ messageId: message.id, digest });
 			this.fail(request, outboxFullReason(enqueued));
 			return;
+		}
+		// #4992: the ask is answered once its reply is queued: the replier ending before delivery does not also fail it.
+		if (correlatedReply) {
+			await this.state.pendingAsks.markReplied({
+				replySenderSessionId: from.info.id,
+				replyTargetSessionId: target.sessionId,
+				replyTo: message.replyTo!,
+			});
 		}
 		await this.answerExistingRow(request, target, digest, enqueued.row);
 	}

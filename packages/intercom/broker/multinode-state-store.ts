@@ -521,6 +521,7 @@ export type PendingAskClearResult =
 	| { readonly status: "cleared" }
 	| { readonly status: "no-match" }
 	| InvalidStateInput;
+export type PendingAskMarkResult = { readonly status: "marked" } | { readonly status: "no-match" } | InvalidStateInput;
 export type PendingAskPruneResult = { readonly status: "pruned"; readonly removed: number } | InvalidStateInput;
 export type PendingAskListResult = { readonly status: "listed"; readonly asks: PendingAsk[] } | InvalidStateInput;
 export type PendingAskTakeResult = { readonly status: "taken"; readonly asks: PendingAsk[] } | InvalidStateInput;
@@ -550,14 +551,19 @@ export interface PendingAskStore {
 	/** Only the exact reverse route of a recorded ask matches. */
 	matchesReply(route: ReplyRoute): Promise<PendingAskMatchResult>;
 	clearReply(route: ReplyRoute): Promise<PendingAskClearResult>;
+	/**
+	 * #4992: a reply to the ask is queued: its route stays, so the reply is still authorized when it is delivered, but
+	 * the ask is answered: `listForTarget` and `listParked` no longer return it, so it does not also fail.
+	 */
+	markReplied(route: ReplyRoute): Promise<PendingAskMarkResult>;
 	pruneSender(senderSessionId: string): Promise<PendingAskPruneResult>;
 	/** The sender's asks, in insertion order, without removing them. */
 	listForSender(senderSessionId: string): Promise<PendingAskListResult>;
 	/** Remove and return the asks addressed to this target, in insertion order. */
 	takeForTarget(targetSessionId: string): Promise<PendingAskTakeResult>;
 	/**
-	 * #4992: the asks addressed to this target, in insertion order, without removing them: each is removed with
-	 * `clearReply` only once its asker's failure is delivered or queued.
+	 * #4992: the unanswered asks addressed to this target, in insertion order, without removing them: each is removed
+	 * with `clearReply` only once its asker's failure is delivered or queued.
 	 */
 	listForTarget(targetSessionId: string): Promise<PendingAskListResult>;
 	/**
@@ -569,7 +575,7 @@ export interface PendingAskStore {
 	rebindParked(park: PendingAskPark, targetSessionId: string): Promise<PendingAskRebindResult>;
 	/** Remove and return the owner's parked asks, of every subagent or only of the one reserved under `reservationKey`. */
 	takeParked(ownerSessionId: string, reservationKey?: string): Promise<PendingAskTakeResult>;
-	/** #4992: the owner's parked asks, as `takeParked` selects them, without removing them. */
+	/** #4992: the owner's unanswered parked asks, as `takeParked` selects them, without removing them. */
 	listParked(ownerSessionId: string, reservationKey?: string): Promise<PendingAskListResult>;
 }
 

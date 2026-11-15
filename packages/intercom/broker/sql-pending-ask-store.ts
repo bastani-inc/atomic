@@ -5,6 +5,7 @@ import type {
 	PendingAsk,
 	PendingAskClearResult,
 	PendingAskListResult,
+	PendingAskMarkResult,
 	PendingAskMatchResult,
 	PendingAskPark,
 	PendingAskParkResult,
@@ -65,7 +66,8 @@ export async function openSqlPendingAskStore({
 		`),
 	);
 	// #4386: added later; a table from an older broker gets the columns, and an older broker ignores them.
-	await addMissingColumns(database, table, { park_owner: types.text, park_key: types.text });
+	// #4992: `replied` is set once a reply to the ask is queued; an older broker ignores it.
+	await addMissingColumns(database, table, { park_owner: types.text, park_key: types.text, replied: types.int });
 	const parkedBy = (ownerSessionId: string, reservationKey: string | undefined) =>
 		reservationKey === undefined
 			? { where: "park_owner = ?", params: [ownerSessionId] }
@@ -99,6 +101,15 @@ export async function openSqlPendingAskStore({
 			const { changes } = await database.run(`DELETE FROM ${table} WHERE ${reverseRoute}`, ...reverseParams(route));
 			return changes === 0 ? { status: "no-match" } : { status: "cleared" };
 		},
+		async markReplied(route): Promise<PendingAskMarkResult> {
+			const bad = invalidRoute(route);
+			if (bad !== undefined) return bad;
+			const { changes } = await database.run(
+				`UPDATE ${table} SET replied = 1 WHERE ${reverseRoute}`,
+				...reverseParams(route),
+			);
+			return changes === 0 ? { status: "no-match" } : { status: "marked" };
+		},
 		async pruneSender(senderSessionId): Promise<PendingAskPruneResult> {
 			if (senderSessionId.length === 0) return invalid("empty-session-id");
 			const { changes } = await database.run(`DELETE FROM ${table} WHERE sender_session_id = ?`, senderSessionId);
@@ -130,7 +141,7 @@ export async function openSqlPendingAskStore({
 			if (targetSessionId.length === 0) return invalid("empty-session-id");
 			const rows = await database.all<AskRow>(
 				`SELECT sender_session_id, target_session_id, message_id FROM ${table}
-				 WHERE target_session_id = ? ORDER BY "order"`,
+				 WHERE target_session_id = ? AND replied IS NULL ORDER BY "order"`,
 				targetSessionId,
 			);
 			return { status: "listed", asks: rows.map(toAsk) };
@@ -192,7 +203,8 @@ export async function openSqlPendingAskStore({
 			if (reservationKey !== undefined && reservationKey.length === 0) return invalid("empty-reservation-key");
 			const parked = parkedBy(ownerSessionId, reservationKey);
 			const rows = await database.all<AskRow>(
-				`SELECT sender_session_id, target_session_id, message_id FROM ${table} WHERE ${parked.where} ORDER BY "order"`,
+				`SELECT sender_session_id, target_session_id, message_id FROM ${table}
+				 WHERE ${parked.where} AND replied IS NULL ORDER BY "order"`,
 				...parked.params,
 			);
 			return { status: "listed", asks: rows.map(toAsk) };
