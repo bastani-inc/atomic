@@ -131,8 +131,8 @@ test("token and cost baselines survive durable budget-stop restore", async () =>
 	const sourceSnapshot = sourceStore.runs().find((candidate) => candidate.id === source.runId);
 	const blockedEntry = entries.find((entry) => entry.type === "workflow.run.blocked");
 	assert.equal((source.result as { readonly status?: string } | undefined)?.status, "budget_exceeded");
-	assert.equal(sourceSnapshot?.budgetState?.accounting?.tokens, 5);
-	assert.equal(sourceSnapshot?.budgetState?.accounting?.cost, 0.25);
+	assert.equal(sourceSnapshot?.budgetState?.accounting?.tokens, 10, "the progress turn and the wrap-up turn (#5053)");
+	assert.equal(sourceSnapshot?.budgetState?.accounting?.cost, 0.5);
 	assert.deepEqual(blockedEntry?.payload.budgetState, sourceSnapshot?.budgetState);
 
 	const restoredStore = createStore();
@@ -144,8 +144,8 @@ test("token and cost baselines survive durable budget-stop restore", async () =>
 	const restored = restoredStore.runs().find((candidate) => candidate.id === source.runId);
 	assert.equal(restored?.budget?.maxTokens, 1);
 	assert.equal(restored?.budget?.maxCost, 1);
-	assert.equal(restored?.budgetState?.accounting?.tokens, 5);
-	assert.equal(restored?.budgetState?.accounting?.cost, 0.25);
+	assert.equal(restored?.budgetState?.accounting?.tokens, 10);
+	assert.equal(restored?.budgetState?.accounting?.cost, 0.5);
 });
 
 test("budget restore rejects malformed accounting and model attempts", async () => {
