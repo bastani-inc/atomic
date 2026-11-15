@@ -1,7 +1,7 @@
 {
 	"name": "@bastani/atomic-schema",
 	"version": "0.0.0",
-	"description": "JSON Schema validation without eval: drafts 2020-12 and 7, compiled into plain closures",
+	"description": "Atomic's JSON Schema builders and validation without eval: drafts 2020-12 and 7, compiled into plain closures",
 	"type": "module",
 	"main": "./dist/index.js",
 	"types": "./dist/index.d.ts",
@@ -36,7 +36,8 @@
 		"json-schema",
 		"validation",
 		"validator",
-		"csp"
+		"csp",
+		"atomic"
 	],
 	"author": "Earendil Works",
 	"license": "MIT",
@@ -51,7 +52,7 @@
 		"url": "git+https://github.com/bastani-inc/atomic.git",
 		"directory": "packages/schema"
 	},
-	"homepage": "https://github.com/bastani-inc/atomic/tree/main/packages/schema#readme",
+	"homepage": "https://docs.bastani.ai/libraries/schema",
 	"bugs": {
 		"url": "https://github.com/bastani-inc/atomic/issues"
 	},

@@ -1,14 +1,14 @@
-# pi-codemode on Cloudflare
+# @bastani/atomic-codemode on Cloudflare
 
 This example has two Workers:
 
-- **`sandbox/`** deploys `CodemodeSandboxDurableObject` as its own Worker, `pi-codemode-sandbox`.
+- **`sandbox/`** deploys `CodemodeSandboxDurableObject` as its own Worker, `atomic-codemode-sandbox`.
   Scripts run there, in a separate isolate.
 - **`agent/`** has a `Session` Durable Object that owns the tools. It runs scripts through
   `RemoteCodemodeSandbox`, which keeps the tools and results in `Session` while the sandbox Worker
   runs the VM.
 
-The [README of the package](../../README.md#usage-on-cloudflare-workers) explains why the
+The [`@bastani/atomic-codemode` guide](https://docs.bastani.ai/libraries/codemode#usage-on-cloudflare-workers) explains why the
 sandbox must be a separate Worker, and which limits apply.
 
 ## Try it locally

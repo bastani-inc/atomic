@@ -1,7 +1,7 @@
 {
 	"name": "@bastani/atomic-agent-core",
 	"version": "0.0.0",
-	"description": "General-purpose agent with transport abstraction, state management, and attachment support",
+	"description": "Atomic's stateful agent loop with tool execution, event streaming, steering and follow-up messages",
 	"type": "module",
 	"main": "./dist/index.js",
 	"types": "./dist/index.d.ts",
@@ -33,7 +33,8 @@
 		"agent",
 		"llm",
 		"transport",
-		"state-management"
+		"state-management",
+		"atomic"
 	],
 	"author": "Mario Zechner",
 	"license": "MIT",
@@ -48,7 +49,7 @@
 		"url": "git+https://github.com/bastani-inc/atomic.git",
 		"directory": "packages/agent"
 	},
-	"homepage": "https://github.com/bastani-inc/atomic/tree/main/packages/agent#readme",
+	"homepage": "https://docs.bastani.ai/libraries/agent-core",
 	"bugs": {
 		"url": "https://github.com/bastani-inc/atomic/issues"
 	},

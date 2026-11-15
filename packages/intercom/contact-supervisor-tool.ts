@@ -296,6 +296,13 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
           });
           await prepareReleasedReplyWait(pi, wait, signal, { toolCallId, questionId, from: sendTo, retryCount: 0 }, () => deps.mayDetachReplyWait?.() === true);
           const replyMessage = await wait.promise;
+          // #5188: a failed ask is reported as a failure, never as the supervisor's reply or a parsed interview answer.
+          if (replyMessage.replyError !== undefined)
+            return {
+              content: [{ type: "text", text: `Failed: ${replyMessage.replyError}` }],
+              isError: true,
+              details: { error: true, replyTo: replyMessage.replyTo },
+            };
           const replyText = replyMessage.content.text;
           const replyAttachments = replyMessage.content.attachments?.length
             ? formatAttachments(replyMessage.content.attachments)
