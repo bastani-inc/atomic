@@ -8,6 +8,7 @@ import {
 import type { JournalCatalogError } from "@bastani/atomic/storage";
 import { raceAbort } from "../shared/abort.js";
 import { currentWorkflowStore } from "../shared/store-factory.js";
+import { WorkflowProjectNotTrustedError } from "./project-trust.js";
 /** Resume workflows from durable checkpoints without repeating completed work. */
 
 import { assertWaitingStageSessionsExist, type ResumeSessionStorage } from "../engine/run-resume-preflight.js";
@@ -279,10 +280,16 @@ async function resumeDurableWorkflowClaimed(
 		return { ok: false, reason: "owned_elsewhere", message: foreignInstanceMessage(backend, resolved.workflowId) };
 	}
 
-	const def =
-		handle.invocationCwd === undefined
-			? deps.registry.get(handle.name)
-			: ((await deps.resolveDefinition?.(handle.name, handle.invocationCwd)) ?? deps.registry.get(handle.name));
+	let def: WorkflowDefinition | undefined;
+	try {
+		def =
+			handle.invocationCwd === undefined
+				? deps.registry.get(handle.name)
+				: ((await deps.resolveDefinition?.(handle.name, handle.invocationCwd)) ?? deps.registry.get(handle.name));
+	} catch (error) {
+		if (!(error instanceof WorkflowProjectNotTrustedError)) throw error;
+		return { ok: false, reason: "workflow_not_found", message: error.message };
+	}
 	if (def === undefined) {
 		return { ok: false, reason: "workflow_not_found", message: `Workflow definition not found: ${handle.name}` };
 	}

@@ -142,6 +142,23 @@ test("ChatGPT refuses missing direct-use scope", async () => {
 	);
 });
 
+test("ChatGPT login still requires a refresh token and a positive expires_in (#4959)", async () => {
+	const cases: Array<[Record<string, unknown>, RegExp]> = [
+		[{ refresh_token: undefined }, /has invalid refresh_token$/],
+		[{ expires_in: undefined }, /has invalid expires_in$/],
+		[{ expires_in: Number.POSITIVE_INFINITY }, /has invalid expires_in$/],
+		[{ expires_in: 0 }, /has invalid expires_in$/],
+	];
+	for (const [override, message] of cases) {
+		vi.stubGlobal(
+			"fetch",
+			async () =>
+				new Response(JSON.stringify({ ...token, ...override }).replace('"expires_in":null', '"expires_in":1e999')),
+		);
+		await assert.rejects(openaiChatGPTOAuth.login(interaction("client"), { getDeviceId: () => DEVICE_ID }), message);
+	}
+});
+
 test("ChatGPT requires a stable installation UUID before authorization", async () => {
 	await assert.rejects(openaiChatGPTOAuth.login(interaction("client")), /requires a device ID/);
 	await assert.rejects(
@@ -150,7 +167,7 @@ test("ChatGPT requires a stable installation UUID before authorization", async (
 	);
 });
 
-test("ChatGPT refresh uses the issued client ID and requires token rotation", async () => {
+test("ChatGPT refresh uses the issued client ID and keeps the refresh token OpenAI does not rotate (#4959)", async () => {
 	const credential = { type: "oauth" as const, access: "old", refresh: "old-refresh", expires: 0, clientId: "issued" };
 	let body: URLSearchParams | undefined;
 	vi.stubGlobal("fetch", async (_url: string | URL | Request, init?: RequestInit) => {
@@ -163,5 +180,7 @@ test("ChatGPT refresh uses the issued client ID and requires token rotation", as
 	assert.equal(result.refresh, "refresh");
 	assert.equal(result.clientId, "issued");
 	vi.stubGlobal("fetch", async () => Response.json({ ...token, refresh_token: undefined }));
-	await assert.rejects(openaiChatGPTOAuth.refresh(credential, new AbortController().signal), /invalid refresh_token/);
+	const kept = await openaiChatGPTOAuth.refresh(credential, new AbortController().signal);
+	assert.equal(kept.refresh, "old-refresh");
+	assert.equal(kept.clientId, "issued");
 });
