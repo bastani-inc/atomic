@@ -9,7 +9,7 @@ import {
 	withWorktreeRestoreNotices,
 	withWorktreeRootMappings,
 } from "@bastani/atomic";
-import { beginDurableWorkflowAttempt } from "../durable/attempt-identity.js";
+import { beginDurableWorkflowAttempt, checkpointAttempt, durableWorkflowAttempt } from "../durable/attempt-identity.js";
 import { type DurableWorkflowBackend, pendingStageMessagesForDurableRun } from "../durable/backend.js";
 import type { DurableChildInvocation } from "../durable/boundary-topology.js";
 import { createDurableChildWorkflowPrimitive } from "../durable/child-primitive.js";
@@ -34,7 +34,7 @@ import {
 	latestStageSessionCheckpoints,
 } from "../durable/stage-primitive.js";
 import { availableStoreDurableBackendOverride, bindStoreDurableBackend } from "../durable/store-backend.js";
-import { recordUnconsumedToolFrontier } from "../durable/tool-failure-checkpoint.js";
+import { recordThrowingToolFailure, recordUnconsumedToolFrontier } from "../durable/tool-failure-checkpoint.js";
 import { createCheckpointIdGenerator } from "../durable/tool-primitive.js";
 import type { DurableStageCheckpoint } from "../durable/types.js";
 import { transitionDurableWorkflowStatus } from "../durable/workflow-status-transition.js";
@@ -814,24 +814,81 @@ async function executeRun(
 			return cwd === undefined ? [] : [cwd];
 		},
 	});
+	/**
+	 * The failed tool a run ends naming is the frontier its resume starts from, and only its failure record says so after
+	 * a restart. A record the store refused when the tool failed is written once more as the run ends (#5027).
+	 */
+	const recordRefusedToolFailureAgain = async (nodeId: string | undefined): Promise<void> => {
+		const node = runSnapshot.toolNodes.find((candidate) => candidate.id === nodeId);
+		if (node === undefined || node.status !== "failed") return;
+		const attempt = durableWorkflowAttempt(durableBackend, runId) ?? 0;
+		const recorded = durableBackend
+			.listCheckpoints(runId)
+			.some(
+				(checkpoint) =>
+					checkpoint.kind === "tool" &&
+					checkpoint.argsHash === node.argsHash &&
+					checkpointAttempt(checkpoint) === attempt,
+			);
+		if (recorded) return;
+		await recordThrowingToolFailure(
+			{
+				workflowId: runId,
+				backend: durableBackend,
+				nextCheckpointId: checkpointIdGenerator,
+				runTopology: durableRunTopology(runSnapshot),
+			},
+			node,
+			{
+				name: node.name,
+				...(node.args !== undefined ? { args: node.args } : {}),
+				...(node.source !== undefined ? { source: node.source } : {}),
+				argsHash: node.argsHash,
+				ordinal: node.ordinal,
+				startedAt: node.startedAt ?? Date.now(),
+			},
+			new Error(node.error ?? "ctx.tool failed"),
+			1,
+		);
+	};
 	/** Fail a stage the run counted as completed when the store refused its record (#5027). */
 	const failStageWithRefusedRecord = (stageRunId: string, stage: StageSnapshot, error: unknown): void => {
 		applyFailureToStage(stage, classifyExecutorFailure(error));
 		activeStore.recordStageEnd(stageRunId, stage);
 	};
-	const durableOnStageEnd = createDurableStageEndRecorder({
-		rootRunId: runId,
-		deps: durableStageDeps,
-		user: opts.onStageEnd,
-		failStage: failStageWithRefusedRecord,
-	});
-	const durableOnPromptNodeEnd = createDurableStageEndRecorder({
-		rootRunId: runId,
-		deps: durableStageDeps,
-		user: opts.onStageEnd,
-		metadataOnly: true,
-		failStage: failStageWithRefusedRecord,
-	});
+	/**
+	 * Stage end records still being written. A run that fails while a parallel stage it already shows completed is
+	 * still writing that stage's record waits for it before it ends, so a resume right after finds the record (#5027).
+	 */
+	const stageEndWrites = new Set<Promise<void>>();
+	const trackStageEnd =
+		<A extends unknown[]>(record: (...args: A) => Promise<void>) =>
+		(...args: A): Promise<void> => {
+			const write = record(...args);
+			stageEndWrites.add(write);
+			void write.then(
+				() => stageEndWrites.delete(write),
+				() => stageEndWrites.delete(write),
+			);
+			return write;
+		};
+	const durableOnStageEnd = trackStageEnd(
+		createDurableStageEndRecorder({
+			rootRunId: runId,
+			deps: durableStageDeps,
+			user: opts.onStageEnd,
+			failStage: failStageWithRefusedRecord,
+		}),
+	);
+	const durableOnPromptNodeEnd = trackStageEnd(
+		createDurableStageEndRecorder({
+			rootRunId: runId,
+			deps: durableStageDeps,
+			user: opts.onStageEnd,
+			metadataOnly: true,
+			failStage: failStageWithRefusedRecord,
+		}),
+	);
 	const durableOnStageSession = createDurableStageSessionRecorder({
 		runId,
 		deps: durableStageDeps,
@@ -1015,6 +1072,9 @@ async function executeRun(
 			beforeToolCall: drainCachedStagePersistence,
 			beforeCheckpoint: drainBeforeCheckpoint,
 			recordLiveCheckpoint,
+			recordReplayRefusal: (error) => {
+				cachedStageFailure ??= error instanceof Error ? error : new Error(String(error));
+			},
 		});
 	let selectedAdmittedToolFailure: ReturnType<typeof admittedTools.firstFailure>;
 	/**
@@ -1785,6 +1845,8 @@ async function executeRun(
 					: observedAdmittedToolFailure?.nodeId
 				: undefined);
 		const metadata = failedToolNodeId === undefined ? selectedMetadata : { ...selectedMetadata, failedToolNodeId };
+		await Promise.allSettled([...stageEndWrites]);
+		await recordRefusedToolFailureAgain(failedToolNodeId);
 
 		if (metadata.failureDisposition === "terminal_killed") {
 			for (const failedStageId of metadata.failedStageIds) scheduler.blockKnownNonTerminalDescendants(failedStageId);

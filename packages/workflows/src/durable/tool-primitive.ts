@@ -27,6 +27,7 @@ import type {
 	WorkflowToolPrimitive,
 } from "../shared/types.js";
 import { field, hasProcessFailureEvidence, normalizeCode } from "../shared/workflow-failures-signals.js";
+import { infrastructureFaultOf } from "../shared/workflow-infrastructure-error.js";
 
 export { sleepOrAbort } from "../runs/shared/retry.js";
 
@@ -86,6 +87,12 @@ export interface CreateToolPrimitiveInput {
 	readonly workflowId: string;
 	/** Source run whose completed checkpoints may be replayed into this workflow. */
 	readonly checkpointSourceWorkflowId?: string;
+	/**
+	 * Hand over the store's refusal of the record that this attempt reached a replayed tool (#5027). The tool's output
+	 * is in its own record, so the call returns it; the attempt fails with the refusal at its next boundary, as for a
+	 * replayed stage. Without it the call fails with the refusal.
+	 */
+	readonly recordReplayRefusal?: (error: unknown) => void;
 	readonly backend: DurableWorkflowBackend;
 	/** Monotonic checkpoint id counter source. */
 	readonly nextCheckpointId: () => string;
@@ -367,7 +374,16 @@ async function executeToolInvocation<T extends WorkflowSerializableValue>(
 		control.releaseAdmission();
 		const endedAt = cached.topology?.endedAt ?? cached.completedAt;
 		try {
-			await recordReplayedToolTopology(input, node, cached, argsHash, endedAt);
+			try {
+				await recordReplayedToolTopology(input, node, cached, argsHash, endedAt);
+			} catch (error) {
+				// The tool completed in an earlier attempt and its record holds its output: the store refusing the record
+				// that this attempt reached it fails the attempt, not the tool, so no finished tool becomes the resume
+				// frontier (#5027).
+				if (infrastructureFaultOf(error) !== "storage_unavailable" || input.recordReplayRefusal === undefined)
+					throw error;
+				input.recordReplayRefusal(error);
+			}
 			const returnedOutcome =
 				cached.outcomeKind === undefined ? undefined : workflowToolOutcomeFromValue<T>(cached.output);
 			if (cached.outcomeKind !== undefined && returnedOutcome === undefined) {

@@ -334,18 +334,16 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 			return { ok: true, stageId: stage.id };
 		}
 		if (source.failedToolNodeId !== undefined && source.failedStageId === undefined) {
-			const frontier = resolveToolResumeFrontier(source, backend);
-			// The run's records name a frontier its live view cannot: the store refused a record of this session's
-			// attempt. The run resumes from its records, as it would after a restart (#5027).
-			return frontier.ok ? frontier : { ok: true, fromRecords: true };
+			return resolveToolResumeFrontier(source, backend);
 		}
 		const failedStageId = source.failedStageId ?? source.stages.find((stage) => stage.status === "failed")?.id;
 		if (failedStageId !== undefined) return { ok: true, stageId: failedStageId };
 		if (budgetExceededSource && source.stages.length === 0) return { ok: true };
-		// Nothing the live run holds failed: plain workflow code threw after its tools, or the store refused a record the
-		// attempt wrote before it reached a node. The run resumes from its records, as it would after a restart (#5027).
-		if (source.toolNodes.length > 0 || source.failureCode === "storage_unavailable")
-			return { ok: true, fromRecords: true };
+		// No node of the run failed and each one completed with its record: plain workflow code threw after them, or the
+		// store refused a record the attempt wrote between nodes. The run resumes from its records, as it does after a
+		// restart (#5027).
+		if (completedFromRecords(source, backend)) return { ok: true, fromRecords: true };
+		if (source.toolNodes.length > 0) return resolveToolResumeFrontier(source, backend);
 		return { ok: false, message: `insufficient_state: failed run ${source.id} does not identify a failed stage` };
 	}
 
@@ -509,4 +507,25 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 			...(opts.reportWarning === undefined ? {} : { reportWarning: opts.reportWarning }),
 		}),
 	};
+}
+
+/**
+ * Whether no node of a failed run failed or stopped part-way: every stage completed (or a storage refusal kept it from
+ * starting), and every tool completed with its completion in the run's records (#5027).
+ */
+function completedFromRecords(source: RunSnapshot, backend: DurableWorkflowBackend): boolean {
+	return (
+		source.stages.length + source.toolNodes.length > 0 &&
+		// A stage a storage refusal kept from starting runs again as it would have.
+		source.stages.every(
+			(stage) =>
+				stage.status === "completed" ||
+				(stage.status === "pending" && source.failureCode === "storage_unavailable"),
+		) &&
+		source.toolNodes.every(
+			(tool) =>
+				(tool.status === "completed" || tool.status === "cached") &&
+				backend.getToolCheckpoint(source.id, tool.argsHash)?.topology?.nodeId === tool.id,
+		)
+	);
 }

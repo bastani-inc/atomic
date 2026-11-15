@@ -319,25 +319,18 @@ async function resumeDurableWorkflowClaimed(
 			/^atomic-workflows: ctx\.tool .* aborted by node abort$/s.test(handle.error ?? ""))
 	) {
 		const source = durableWorkflowRunSnapshots(backend, handle).find((run) => run.id === handle.workflowId);
-		// A failed tool the store refused the failure record of is not among the run's records: it has no checkpoint, so
-		// the run resumes from its records and runs it again (#5027).
-		const unrecorded =
-			handle.failedToolNodeId !== undefined &&
-			source !== undefined &&
-			!source.toolNodes.some((node) => node.id === handle.failedToolNodeId);
-		const frontier = source === undefined || unrecorded ? undefined : resolveToolResumeFrontier(source, backend);
-		if (!unrecorded && frontier?.ok !== true)
+		const frontier = source === undefined ? undefined : resolveToolResumeFrontier(source, backend);
+		if (frontier?.ok !== true)
 			return {
 				ok: false,
 				reason: "startup_failed",
 				message: frontier?.message ?? `insufficient_state: missing tool frontier in run ${handle.workflowId}`,
 			};
-		if (frontier?.ok === true)
-			toolContinuation = {
-				source: source!,
-				resumeFromToolNodeId: frontier.toolNodeId,
-				retryToolNodes: frontier.retryToolNodes,
-			};
+		toolContinuation = {
+			source: source!,
+			resumeFromToolNodeId: frontier.toolNodeId,
+			retryToolNodes: frontier.retryToolNodes,
+		};
 	}
 	deps.signal?.throwIfAborted();
 	// Before the claim writes anything: every stage the previous process left waiting must be able to reopen (#4309).
