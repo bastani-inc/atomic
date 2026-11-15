@@ -565,6 +565,8 @@ Register a custom tool callable by the LLM. See [Custom Tools](/extensions/autho
 
 `pi.registerTool()` works both during extension load and after startup. You can call it inside `session_start`, command handlers, or other event handlers. New tools are refreshed immediately in the same session, so they appear in `pi.getAllTools()` and are callable by the LLM without `/reload`.
 
+If an extension registers the same tool name more than once while it loads, the last registration is used and Atomic shows a warning under `[Extension issues]`.
+
 Use `pi.setActiveTools()` to enable or disable registered tools, including dynamically added tools and Intercom. Tools suppressed by a session allowlist or exclusions cannot be activated this way.
 
 Use `promptSnippet` to opt a custom tool into a one-line entry in `Available tools`, and `promptGuidelines` to append tool-specific bullets to the default `Guidelines` section when the tool is active.

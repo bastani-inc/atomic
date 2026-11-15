@@ -10,6 +10,7 @@ import type {
 	ToolCall,
 	ToolResultMessage,
 } from "../types.ts";
+import { toInlineImages } from "../utils/inline-images.ts";
 
 const NON_VISION_USER_IMAGE_PLACEHOLDER = "(image omitted: model does not support images)";
 const NON_VISION_TOOL_IMAGE_PLACEHOLDER = "(tool image omitted: model does not support images)";
@@ -119,9 +120,27 @@ function replaceImagesWithPlaceholder<TBlock extends { type: string }>(
 	return result;
 }
 
+/**
+ * Replace images whose format no provider accepts inline (an SVG from an MCP tool, say) with a
+ * placeholder. Such a block in history would otherwise fail every later request of the session (#4908).
+ */
+function replaceUnsupportedImageFormats(messages: Message[]): Message[] {
+	return messages.map((msg): Message => {
+		if (msg.role === "toolResult") {
+			const content = toInlineImages(msg.content);
+			return content === msg.content ? msg : { ...msg, content };
+		}
+		if (msg.role === "user" && Array.isArray(msg.content)) {
+			const content = toInlineImages(msg.content);
+			return content === msg.content ? msg : { ...msg, content };
+		}
+		return msg;
+	});
+}
+
 function downgradeUnsupportedImages<TApi extends Api>(messages: Message[], model: Model<TApi>): Message[] {
 	if (model.input.includes("image")) {
-		return messages;
+		return replaceUnsupportedImageFormats(messages);
 	}
 
 	return messages.map((msg): Message => {

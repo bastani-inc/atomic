@@ -251,3 +251,66 @@ test("a departed session's return address is known until its id is granted again
 	);
 	assert.equal(reclaim.retiredReturnAddress(id), undefined);
 });
+
+test("an ask kept while only its recipient is away keeps its live asker's return address, so its failure outlives a crash (#4950)", () => {
+	const path = fileIn();
+	const first = broker(path);
+	first.record("asker", "recipient", "q-1");
+	// The recipient goes away while the asker is live; the broker crashes before the asker's departure is handled.
+	first.keepDormant(first.takeForTarget("recipient"));
+
+	const restarted = broker(path);
+	restarted.failDormantForTarget(info("recipient"), "ended", "recipient-ended", ADDRESSES.recipient);
+	assert.deepEqual(
+		restarted.heldForAsker(ADDRESSES.asker).map(({ message }) => message.replyTo),
+		["q-1"],
+	);
+});
+
+test("a kept ask whose asker is connected when its recipient ends is failed on the asker's route, not held (#4950)", () => {
+	const index = broker(fileIn());
+	index.record("asker", "recipient", "q-1");
+	index.keepDormant(index.takeForTarget("recipient"));
+	index.failToConnectedAskerWhen((question, returnAddress) =>
+		connected("asker")(question.senderSessionId, returnAddress),
+	);
+
+	index.failDormantForTarget(info("recipient"), "ended", "recipient-ended", ADDRESSES.recipient);
+	assert.deepEqual(index.heldForAsker(ADDRESSES.asker), []);
+	// What the broker fails as `peer_disconnected` to a live asker when its recipient ends.
+	assert.deepEqual(index.takeForTarget("recipient"), [
+		{ senderSessionId: "asker", targetSessionId: "recipient", messageId: "q-1" },
+	]);
+});
+
+test("a kept ask whose asker can neither be told nor held for stays kept when its recipient ends (#4950)", () => {
+	const index = broker(fileIn());
+	index.record("unproven", "recipient", "q-1");
+	index.keepDormant(index.takeForTarget("recipient"));
+
+	index.failDormantForTarget(info("recipient"), "ended", "recipient-ended", ADDRESSES.recipient);
+	assert.equal(index.hasDormantReply("q-1", "recipient", ADDRESSES.recipient), true);
+});
+
+test("a recipient's end reports which kept asks it held for their askers and which return to a connected asker (#4950)", () => {
+	const store = new AwayAsks(fileIn());
+	const toRecipient = (senderSessionId: string, messageId: string) => ({
+		senderSessionId,
+		targetSessionId: "recipient",
+		messageId,
+	});
+	store.keep([toRecipient("asker", "q-held"), toRecipient("child", "q-live")], (question) =>
+		question.senderSessionId === "asker" ? ADDRESSES.asker : ADDRESSES.child,
+	);
+
+	const outcome = store.failForTarget(
+		info("recipient"),
+		"ended",
+		"recipient-ended",
+		() => false,
+		"",
+		(question, returnAddress) => connected("child")(question.senderSessionId, returnAddress),
+	);
+	assert.deepEqual(outcome, { failed: [toRecipient("asker", "q-held")], live: [toRecipient("child", "q-live")] });
+	assert.equal(store.question("q-live", "recipient"), undefined);
+});

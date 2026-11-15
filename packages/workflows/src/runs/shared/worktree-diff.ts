@@ -51,16 +51,18 @@ function removeSyntheticPathsBeforeDiff(worktree: WorktreeInfo): void {
 	}
 }
 
-function emptyDiff(index: number, agent: string, branch: string, patchPath: string): WorktreeDiff {
+function emptyDiff(index: number, agent: string, worktree: WorktreeInfo, patchPath: string): WorktreeDiff {
 	return {
 		index,
 		agent,
-		branch,
+		branch: worktree.branch,
 		diffStat: "",
 		filesChanged: 0,
 		insertions: 0,
 		deletions: 0,
 		patchPath,
+		worktreePath: worktree.path,
+		...(worktree.setupWarnings?.length ? { setupWarnings: [...worktree.setupWarnings] } : {}),
 	};
 }
 
@@ -87,23 +89,21 @@ function parseNumstat(numstat: string): { filesChanged: number; insertions: numb
 function captureWorktreeDiff(
 	setup: WorktreeSetup,
 	worktree: WorktreeInfo,
+	index: number,
 	agent: string,
 	patchPath: string,
 ): WorktreeDiff {
 	removeSyntheticPathsBeforeDiff(worktree);
 	runGitChecked(worktree.path, ["add", "-A"]);
 	const diffStat = runGitChecked(worktree.path, ["diff", "--cached", "--stat", setup.baseCommit]).trim();
-	const patch = runGitChecked(worktree.path, ["diff", "--cached", setup.baseCommit]);
 	const numstat = runGitChecked(worktree.path, ["diff", "--cached", "--numstat", setup.baseCommit]);
-	fs.writeFileSync(patchPath, patch, "utf-8");
-
-	if (!patch.trim()) {
-		return emptyDiff(worktree.index, agent, worktree.branch, patchPath);
-	}
+	writePatchFile(patchPath, (partialPath) =>
+		runGitChecked(worktree.path, ["diff", "--cached", "--binary", `--output=${partialPath}`, setup.baseCommit]),
+	);
 
 	const parsed = parseNumstat(numstat);
 	return {
-		index: worktree.index,
+		index,
 		agent,
 		branch: worktree.branch,
 		diffStat,
@@ -111,15 +111,31 @@ function captureWorktreeDiff(
 		insertions: parsed.insertions,
 		deletions: parsed.deletions,
 		patchPath,
+		worktreePath: worktree.path,
+		...(worktree.setupWarnings?.length ? { setupWarnings: [...worktree.setupWarnings] } : {}),
 	};
 }
 
-function writeEmptyPatch(patchPath: string): void {
+/**
+ * Have git write the patch to a file of its own, so no output buffer caps it, and put it at `patchPath` only once it
+ * is complete: a failed capture never leaves a partial patch there.
+ */
+function writePatchFile(patchPath: string, write: (partialPath: string) => void): void {
+	const partialPath = `${patchPath}.${process.pid}.partial`;
 	try {
-		fs.writeFileSync(patchPath, "", "utf-8");
-	} catch {
-		// Diff artifact writing is best-effort in error paths.
+		write(partialPath);
+		fs.renameSync(partialPath, patchPath);
+	} finally {
+		fs.rmSync(partialPath, { force: true });
 	}
+}
+
+/** Worktrees whose last diff capture failed: they hold work no patch has, so they are never removed (#4876). */
+const uncapturedWorktrees = new Set<string>();
+
+/** Whether the worktree's last diff capture failed, so removing it would lose its work. */
+export function worktreeDiffCaptureFailed(worktreePath: string): boolean {
+	return uncapturedWorktrees.has(worktreePath);
 }
 
 function hasWorktreeChanges(diff: WorktreeDiff): boolean {
@@ -127,36 +143,48 @@ function hasWorktreeChanges(diff: WorktreeDiff): boolean {
 }
 
 export function diffWorktrees(setup: WorktreeSetup, agents: string[], diffsDir: string): WorktreeDiff[] {
-	try {
-		fs.mkdirSync(diffsDir, { recursive: true });
-	} catch {
-		// Returning no diffs is safer than failing the whole command on artifact-dir issues.
-		return [];
-	}
-
 	const diffs: WorktreeDiff[] = [];
 	for (let index = 0; index < setup.worktrees.length; index++) {
 		const worktree = setup.worktrees[index]!;
 		const agent = agents[index] ?? `task-${index + 1}`;
 		const patchPath = path.join(diffsDir, `task-${index}-${safePatchAgentName(agent)}.patch`);
 		try {
-			diffs.push(captureWorktreeDiff(setup, worktree, agent, patchPath));
-		} catch {
-			// Preserve execution flow; failed diff capture maps to an empty per-task patch.
-			writeEmptyPatch(patchPath);
-			diffs.push(emptyDiff(index, agent, worktree.branch, patchPath));
+			fs.mkdirSync(diffsDir, { recursive: true });
+			diffs.push(captureWorktreeDiff(setup, worktree, index, agent, patchPath));
+			uncapturedWorktrees.delete(worktree.path);
+		} catch (error) {
+			// Execution goes on, but the worktree is kept: its work is in no patch.
+			uncapturedWorktrees.add(worktree.path);
+			const captureError = error instanceof Error ? error.message : String(error);
+			diffs.push({ ...emptyDiff(index, agent, worktree, patchPath), captureError });
 		}
 	}
 
 	return diffs;
 }
 
+/** A worktree's setup warnings, one line each, naming its task. */
+function setupWarningLines(diffs: WorktreeDiff[]): string[] {
+	return diffs.flatMap((diff) =>
+		(diff.setupWarnings ?? []).map((warning) => `Warning: Task ${diff.index + 1} (${diff.agent}): ${warning}`),
+	);
+}
+
 export function formatWorktreeDiffSummary(diffs: WorktreeDiff[]): string {
-	const changed = diffs.filter(hasWorktreeChanges);
-	if (changed.length === 0) return "";
+	const changed = diffs.filter((diff) => diff.captureError !== undefined || hasWorktreeChanges(diff));
+	const warnings = setupWarningLines(diffs);
+	if (changed.length === 0 && warnings.length === 0) return "";
 
 	const lines: string[] = ["=== Worktree Changes ===", ""];
 	for (const diff of changed) {
+		if (diff.captureError !== undefined) {
+			lines.push(
+				`--- Task ${diff.index + 1} (${diff.agent}): diff capture failed; worktree kept at ${diff.worktreePath} ---`,
+				diff.captureError,
+				"",
+			);
+			continue;
+		}
 		lines.push(
 			`--- Task ${diff.index + 1} (${diff.agent}): ${diff.filesChanged} files changed, +${diff.insertions} -${diff.deletions} ---`,
 		);
@@ -166,7 +194,7 @@ export function formatWorktreeDiffSummary(diffs: WorktreeDiff[]): string {
 		lines.push("");
 	}
 
-	const patchesDir = path.dirname(changed[0]!.patchPath);
-	lines.push(`Full patches: ${patchesDir}`);
+	if (changed.length > 0) lines.push(`Full patches: ${path.dirname(changed[0]!.patchPath)}`, "");
+	lines.push(...warnings);
 	return lines.join("\n").trimEnd();
 }
