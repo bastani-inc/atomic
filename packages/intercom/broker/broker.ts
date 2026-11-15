@@ -1966,9 +1966,11 @@ class IntercomBroker {
           // Multi-node S5: frames written while registration waited for the presence lease follow `registered`.
           flushHeldWrites(socket, held);
           // #4751: a session back under its id takes up the asks it sent or was sent before it went away.
-          this.pendingQuestions.restoreDormant(id, rejoined?.registrationReturnAddress, (sessionId, returnAddress) =>
+          const restored = this.pendingQuestions.restoreDormant(id, rejoined?.registrationReturnAddress, (sessionId, returnAddress) =>
             this.isConnectedAs(sessionId, returnAddress),
           );
+          // #4997: their shared routes, if they had moved there too, are settled: this broker answers them now.
+          this.multiNode?.settleRestoredRoutes(restored);
           // What was held for it while it was away (replies, failed asks) is delivered once: a recipient that confirms
           // saves releases each when saved, and its inbox shows a redelivered copy only once.
           const returnAddress = rejoined?.registrationReturnAddress;
@@ -3223,13 +3225,23 @@ class IntercomBroker {
   }
 
   /**
-   * #4997: with multi-node routing an away session may come back on another broker, so its routes are kept in the
-   * shared state, which either broker answers; otherwise, or what the shared state does not take, waits here.
+   * #4751: asks wait here for their away peer. #4997: with multi-node routing that peer may come back on another
+   * broker, so the asks between two top-level sessions also move to the shared state, which either broker answers.
    */
-  private keepAwayRoutes(questions: readonly PendingQuestion[], senderReturnAddress?: string): void {
-    const keepLocally = (kept: readonly PendingQuestion[]) => this.pendingQuestions.keepDormant(kept, senderReturnAddress);
-    if (this.multiNode !== undefined) this.multiNode.keepAwayRoutes(questions, keepLocally);
-    else keepLocally(questions);
+  private keepAwayRoutes(departed: ConnectedSession, questions: readonly PendingQuestion[], senderReturnAddress?: string): void {
+    this.pendingQuestions.keepDormant(questions, senderReturnAddress);
+    if (this.multiNode === undefined) return;
+    const topLevel = (session: ConnectedSession | undefined) =>
+      session !== undefined && session.supervisorId === undefined && session.hostedBy === undefined;
+    // An ask whose other peer is away too, or is a subagent, stays this broker's alone, as before.
+    const movable = topLevel(departed)
+      ? questions.filter((question) =>
+          [question.senderSessionId, question.targetSessionId].every(
+            (id) => id === departed.info.id || topLevel(this.sessions.get(id)),
+          ),
+        )
+      : [];
+    this.multiNode.publishAwayRoutes(movable, deliveryTargetIdentity(departed));
   }
 
   /** `ended`: the session said goodbye, so it is not coming back; otherwise its connection only dropped. */
@@ -3277,7 +3289,7 @@ class IntercomBroker {
       this.pendingQuestions.markAwayAsker(sessionId, departed.registrationReturnAddress);
     } else if (departed.supervisorId === undefined && !ended) {
       // #4751: an ask has no expiry and survives its asker's restart or release: the route waits for the asker.
-      this.keepAwayRoutes(unanswered, departed.registrationReturnAddress);
+      this.keepAwayRoutes(departed, unanswered, departed.registrationReturnAddress);
       this.pendingQuestions.markAwayAsker(sessionId, departed.registrationReturnAddress);
     }
     this.releasedAskerReplies.dropOwner(sessionId);
@@ -3293,7 +3305,7 @@ class IntercomBroker {
       this.pendingQuestions.parkTarget(sessionId, childName, releasedOwner);
     } else if (!ended && departed.supervisorId === undefined && departed.hostedBy === undefined) {
       // #4751: a recipient whose connection dropped without ending its session may restart; its asks stay pending.
-      this.keepAwayRoutes(this.pendingQuestions.takeForTarget(sessionId));
+      this.keepAwayRoutes(departed, this.pendingQuestions.takeForTarget(sessionId));
     } else {
       if (ended) {
         // #4751: an away asker's ask to it fails with a message held until the asker is back; a session that ended

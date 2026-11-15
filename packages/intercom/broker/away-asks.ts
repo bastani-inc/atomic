@@ -235,11 +235,21 @@ export class AwayAsks {
 			}));
 	}
 
-	/** The kept question was answered some other way: it no longer waits here. */
-	forget(question: PendingQuestion): void {
-		this.statement(
+	/** The kept question was answered some other way: it no longer waits here. Whether it was kept. */
+	forget(question: PendingQuestion): boolean {
+		const { changes } = this.statement(
 			"DELETE FROM away_questions WHERE message_id = ? AND sender_session_id = ? AND target_session_id = ?",
 		).run(question.messageId, question.senderSessionId, question.targetSessionId);
+		return Number(changes) > 0;
+	}
+
+	/** #4997: whether the question still waits here for an away peer. */
+	isKept(question: PendingQuestion): boolean {
+		return (
+			this.statement(
+				"SELECT 1 FROM away_questions WHERE message_id = ? AND sender_session_id = ? AND target_session_id = ?",
+			).get(question.messageId, question.senderSessionId, question.targetSessionId) !== undefined
+		);
 	}
 
 	/** The kept question `questionId` that `replierSessionId` answers, if its asker is away. */

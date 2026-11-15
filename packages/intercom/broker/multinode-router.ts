@@ -1111,40 +1111,96 @@ export class MultiNodeRouter {
 	 * its peers were on different brokers, or kept while one was away, has its route in the shared state. Both peers are
 	 * here now, so the route becomes this broker's own, and the shared one is settled, so the ask has one outcome.
 	 */
-	private async adoptSharedRoute(request: RemoteSendRequest, target: BrokerConnectedSession): Promise<void> {
+	private async adoptSharedRouteWithin(request: RemoteSendRequest, target: BrokerConnectedSession): Promise<void> {
+		const late = { abandoned: false };
+		const adopted = this.adoptSharedRoute(request, target, late);
+		// A reply that must answer an open ask can only be authorized by the shared state when this broker's routes do not
+		// authorize it, so it waits for that state longer than a send the local path delivers anyway.
+		const boundMs = request.requirePendingReply ? PRESENCE_REGISTRATION_BOUND_MS : LOCAL_RETRY_LOOKUP_BOUND_MS;
+		let bound: ReturnType<typeof setTimeout> | undefined;
+		const expired = new Promise<"expired">((resolve) => {
+			bound = setTimeout(() => resolve("expired"), boundMs);
+			bound.unref?.();
+		});
+		try {
+			if ((await Promise.race([adopted, expired])) === "expired") {
+				// The send takes the local path now: a route found later is left where it is, for a retry to find.
+				late.abandoned = true;
+				adopted.catch((error: Error) => this.report(error));
+			}
+		} catch (error) {
+			this.report(error);
+		} finally {
+			clearTimeout(bound);
+		}
+	}
+
+	private async adoptSharedRoute(
+		request: RemoteSendRequest,
+		target: BrokerConnectedSession,
+		late: { readonly abandoned: boolean },
+	): Promise<void> {
 		const replyTo = request.message.replyTo;
 		const replySenderSessionId = request.from.info.id;
 		if (replyTo === undefined) return;
 		if (this.host.pendingQuestions.matchesReply(replySenderSessionId, target.info.id, replyTo)) return;
+		// An ask whose route is still moving there from this broker is in the shared state once that move is done.
+		await Promise.all([...this.settling]);
+		if (this.host.pendingQuestions.matchesReply(replySenderSessionId, target.info.id, replyTo)) return;
 		const route = { replySenderSessionId, replyTargetSessionId: target.info.id, replyTo };
-		if ((await this.state.pendingAsks.matchesReply(route)).status !== "match") return;
+		if ((await this.state.pendingAsks.matchesReply(route)).status !== "match" || late.abandoned) return;
 		this.host.pendingQuestions.record(target.info.id, replySenderSessionId, replyTo);
 		await this.state.pendingAsks.clearReply(route);
 	}
 
 	/**
-	 * #4997: a session that left without ending may come back on another broker, so the routes of asks between it and a
-	 * session here are kept in the shared state, where either broker answers and settles them. `keepLocally`: the
-	 * routes the shared state did not take, which this broker keeps as a single-node broker does.
+	 * #4997: a session that left without ending may come back on another broker, so the asks between it and a session
+	 * here, kept on this broker (durably, before this is called), move to the shared state, where either broker answers
+	 * and settles them. Each stays kept here until its shared route is written, so neither a crash nor a reply in
+	 * between finds no route; one this broker took up meanwhile (its peer came back here, or it was answered or failed
+	 * here) is this broker's alone, and its shared route is settled. `identity`: the departing session's, so its moves
+	 * run in order.
 	 */
-	keepAwayRoutes(questions: readonly PendingQuestion[], keepLocally: (questions: readonly PendingQuestion[]) => void): void {
-		let kept = 0;
-		const keeping = (async () => {
-			for (const question of questions) {
-				const recorded = await this.state.pendingAsks.record({
-					senderSessionId: question.senderSessionId,
-					targetSessionId: question.targetSessionId,
-					messageId: question.messageId,
-				});
-				if (recorded.status === "invalid") throw new Error(`Shared ask route not kept: ${question.messageId}`);
-				kept += 1;
-			}
-		})().catch((error: Error) => {
-			this.report(error);
-			keepLocally(questions.slice(kept));
+	publishAwayRoutes(questions: readonly PendingQuestion[], identity: string): void {
+		if (questions.length === 0) return;
+		let finished!: () => void;
+		const publishing = new Promise<void>((resolve) => {
+			finished = resolve;
 		});
-		this.settling.add(keeping);
-		void keeping.finally(() => this.settling.delete(keeping));
+		this.settling.add(publishing);
+		void publishing.finally(() => this.settling.delete(publishing));
+		this.serial(`away-routes:${identity}`, async () => {
+			try {
+				for (const question of questions) {
+					if (!this.host.pendingQuestions.isDormant(question)) continue;
+					const ask = {
+						senderSessionId: question.senderSessionId,
+						targetSessionId: question.targetSessionId,
+						messageId: question.messageId,
+					};
+					const recorded = await this.state.pendingAsks.record(ask);
+					if (recorded.status === "invalid") continue;
+					if (!this.host.pendingQuestions.takeDormant(question)) await this.settleSharedRoute(ask);
+				}
+			} finally {
+				finished();
+			}
+		});
+	}
+
+	/** #4997: asks this broker took up again, as both of their peers are here: their shared routes, if any, are settled. */
+	settleRestoredRoutes(questions: readonly PendingQuestion[]): void {
+		for (const question of questions) {
+			void this.settleSharedRoute(question).catch((error: Error) => this.report(error));
+		}
+	}
+
+	private async settleSharedRoute(question: PendingQuestion): Promise<void> {
+		await this.state.pendingAsks.clearReply({
+			replySenderSessionId: question.targetSessionId,
+			replyTargetSessionId: question.senderSessionId,
+			replyTo: question.messageId,
+		});
 	}
 
 	/**
@@ -1285,6 +1341,7 @@ export class MultiNodeRouter {
 			const existing = await Promise.race([lookup, expired]);
 			if (existing === "expired") {
 				lookup.catch((error: Error) => this.report(error));
+				await this.adoptSharedRouteWithin(request, target);
 				request.notFound();
 				return;
 			}
@@ -1296,8 +1353,7 @@ export class MultiNodeRouter {
 			}
 			const moved = await Promise.race([released, expired]);
 			if (moved !== "expired" && moved !== undefined && (await this.routeReleasedReply(request, moved))) return;
-			const adopted = this.adoptSharedRoute(request, target);
-			if ((await Promise.race([adopted, expired])) === "expired") adopted.catch((error: Error) => this.report(error));
+			await this.adoptSharedRouteWithin(request, target);
 			request.notFound();
 		} finally {
 			clearTimeout(bound);

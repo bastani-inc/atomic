@@ -70,6 +70,16 @@ export class PendingQuestionIndex {
     this.away?.forget(question);
   }
 
+  /** #4997: whether the question still waits here for an away peer. */
+  isDormant(question: PendingQuestion): boolean {
+    return this.away?.isKept(question) === true;
+  }
+
+  /** #4997: the kept question no longer waits here, as another store took it. Whether it was still kept. */
+  takeDormant(question: PendingQuestion): boolean {
+    return this.away?.forget(question) === true;
+  }
+
   /** Whether `replierSessionId` answers the kept question `questionId`, whose asker is away (#4751). */
   hasDormantReply(questionId: string, replierSessionId: string, replierReturnAddress?: string): boolean {
     return this.awayAsks().question(questionId, replierSessionId, replierReturnAddress) !== undefined;

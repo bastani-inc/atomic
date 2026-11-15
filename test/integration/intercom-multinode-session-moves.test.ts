@@ -66,6 +66,7 @@ async function moveToOtherBroker(
 ): Promise<TwoBrokerClient> {
 	const sessionId = moving.sessionId;
 	await moving.client.disconnect({ resumable: true });
+	moving.disconnected = true;
 	const moved = await harness.connect(OTHER[moving.node], moving.name, {
 		group: moving.group,
 		returnAddress: moving.returnAddress,
