@@ -4,9 +4,9 @@
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { registerRunWorktrees } from "../../packages/subagents/src/runs/foreground/run-worktrees.js";
+import { holdRunWorktree, registerRunWorktrees } from "../../packages/subagents/src/runs/foreground/run-worktrees.js";
 import {
 	cleanupWorktrees as cleanupSubagentWorktrees,
 	createWorktrees as createSubagentWorktrees,
@@ -62,6 +62,8 @@ export interface FailedCaptureScenarioResult {
 	readonly worktreeKept: boolean;
 	readonly workKept: boolean;
 	readonly captureError: string | undefined;
+	/** Subagents only: whether a later sweep, once capture works again, saved the work and removed the worktree. */
+	readonly laterSweepSavedWork?: boolean;
 }
 
 function git(cwd: string, args: string[]): string {
@@ -116,11 +118,12 @@ function modules(module: WorktreeModule) {
 export function runLargeDiffScenario(root: string, module: WorktreeModule): LargeDiffScenarioResult {
 	const repo = createScenarioRepository(root);
 	const api = modules(module);
-	const setup = api.create(repo, `large-${module}`, 2);
+	// The third task changes nothing.
+	const setup = api.create(repo, `large-${module}`, 3);
 	const large = largeGeneratedFile();
 	writeFileSync(join(setup.worktrees[0]!.path, "generated.lock"), large);
 	writeFileSync(join(setup.worktrees[1]!.path, "small.txt"), "small change\n");
-	const diffs = api.diff(setup, ["large", "small"], join(root, "diffs"));
+	const diffs = api.diff(setup, ["large", "small", "unchanged"], join(root, "diffs"));
 	api.cleanup(setup);
 	const clean = join(root, "clean");
 	git(repo, ["worktree", "add", "--detach", clean, "HEAD"]);
@@ -165,19 +168,28 @@ export function runFailedCaptureScenario(root: string, module: WorktreeModule): 
 		api.cleanup(setup);
 	}
 	const diff = diffs[0] as { captureError?: string } | undefined;
-	return {
+	const result = {
 		summary: api.format(diffs),
 		worktreePath: worktree.path,
 		worktreeKept: existsSync(worktree.path),
 		workKept: existsSync(join(worktree.path, "work.txt")),
 		captureError: diff?.captureError,
 	};
+	if (module === "workflows") return result;
+	// The index unlocks; the next execution's release sweeps the run again.
+	rmSync(join(gitDir, "index.lock"));
+	holdRunWorktree(runId, 0)();
+	const patch = join(diffsDir, "task-0-worker.patch");
+	const laterSweepSavedWork =
+		!existsSync(worktree.path) && existsSync(patch) && readFileSync(patch, "utf-8").includes("the child's work");
+	return { ...result, laterSweepSavedWork };
 }
 
 /**
  * A repository whose ignored files list to well over 1 MiB (an installed `node_modules`), with `.env` named in
  * `.worktreeinclude`: a new worktree must still receive `.env`.
  */
+export const INCLUDED_CONFIG_FILES = 199;
 export function runWorktreeIncludeScenario(root: string, module: WorktreeModule): WorktreeIncludeScenarioResult {
 	const repo = createScenarioRepository(root);
 	writeFileSync(join(repo, ".gitignore"), "node_modules/\n.env\nconfig/\nbuild.log\n");
@@ -187,7 +199,9 @@ export function runWorktreeIncludeScenario(root: string, module: WorktreeModule)
 	writeFileSync(join(repo, ".env"), "SECRET=1\n");
 	// More included files than one git call checks, and an ignored file .worktreeinclude does not name.
 	mkdirSync(join(repo, "config"));
-	for (let file = 0; file < 250; file++) writeFileSync(join(repo, "config", `local-${file}.json`), `${file}\n`);
+	// With .env, the included files fill exactly two git calls.
+	for (let file = 0; file < INCLUDED_CONFIG_FILES; file++)
+		writeFileSync(join(repo, "config", `local-${file}.json`), `${file}\n`);
 	writeFileSync(join(repo, "build.log"), "not included\n");
 	// Long package names make the listing large from few files: creating files is slow on Windows. Each path stays well
 	// under Windows' 260-character limit.
@@ -202,7 +216,7 @@ export function runWorktreeIncludeScenario(root: string, module: WorktreeModule)
 	const envPath = join(setup.worktrees[0]!.path, ".env");
 	const envCopied = existsSync(envPath) && readFileSync(envPath, "utf-8") === "SECRET=1\n";
 	let includedFilesCopied = 0;
-	for (let file = 0; file < 250; file++) {
+	for (let file = 0; file < INCLUDED_CONFIG_FILES; file++) {
 		const copied = join(setup.worktrees[0]!.path, "config", `local-${file}.json`);
 		if (existsSync(copied) && readFileSync(copied, "utf-8") === `${file}\n`) includedFilesCopied++;
 	}

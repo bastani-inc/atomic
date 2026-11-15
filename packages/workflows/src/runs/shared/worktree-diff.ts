@@ -100,10 +100,6 @@ function captureWorktreeDiff(
 		runGitChecked(worktree.path, ["diff", "--cached", "--binary", `--output=${partialPath}`, setup.baseCommit]),
 	);
 
-	if (fs.statSync(patchPath).size === 0) {
-		return emptyDiff(index, agent, worktree, patchPath);
-	}
-
 	const parsed = parseNumstat(numstat);
 	return {
 		index,

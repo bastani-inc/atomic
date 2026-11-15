@@ -91,8 +91,7 @@ function runGit(cwd: string, args: string[]): GitResult {
 	return {
 		stdout: result.stdout ?? "",
 		stderr: result.stderr ?? "",
-		// Output cut off at the buffer cap, or a git that could not run, is never a success.
-		status: result.error ? null : result.status,
+		status: result.status,
 	};
 }
 function runGitChecked(cwd: string, args: string[]): string {
@@ -619,7 +618,6 @@ function captureWorktreeDiff(
 	writePatchFile(patchPath, (partialPath) =>
 		runGitChecked(worktree.path, ["diff", "--cached", "--binary", `--output=${partialPath}`, setup.baseCommit]),
 	);
-	if (fs.statSync(patchPath).size === 0) return emptyDiff(worktree, agent, patchPath);
 	const parsed = parseNumstat(numstat);
 	return {
 		index: worktree.index,

@@ -6,6 +6,7 @@ import { afterEach, describe, test } from "vitest";
 import {
 	type BrokenIncludeScenarioResult,
 	type FailedCaptureScenarioResult,
+	INCLUDED_CONFIG_FILES,
 	type LargeDiffScenarioResult,
 	MANY_FILES,
 	type NoisyHookScenarioResult,
@@ -69,6 +70,7 @@ describe.each(cases)("$module worktrees under $runtime", ({ runtime, module }) =
 		assert.equal(result.smallFileRestored, true, "applying the small patch restores the small file");
 		assert.match(result.summary, /Task 1 \(large\): 1 files changed, \+30000 -0/);
 		assert.match(result.summary, /Task 2 \(small\): 1 files changed, \+1 -0/);
+		assert.doesNotMatch(result.summary, /Task 3/, "a task without changes is not listed");
 		assert.equal(result.worktreesRemoved, true, "worktrees whose diffs were saved are removed");
 	});
 
@@ -83,6 +85,12 @@ describe.each(cases)("$module worktrees under $runtime", ({ runtime, module }) =
 		assert.ok(result.captureError, "the diff records the capture failure");
 		assert.ok(result.summary.includes(result.worktreePath), `the summary names the kept worktree: ${result.summary}`);
 		assert.match(result.summary, /Task 1 \(worker\): diff capture failed/);
+		if (module === "subagents")
+			assert.equal(
+				result.laterSweepSavedWork,
+				true,
+				"a later sweep saves the work once capture works, then removes it",
+			);
 	});
 
 	test("a .worktreeinclude file is copied into a new worktree when the ignored files list to over 1 MiB (#4876)", () => {
@@ -93,7 +101,7 @@ describe.each(cases)("$module worktrees under $runtime", ({ runtime, module }) =
 				: inBun<WorktreeIncludeScenarioResult>("include", root, module);
 		assert.ok(result.ignoredListingBytes > 1024 * 1024, "the ignored-file listing is over the 1 MiB output cap");
 		assert.equal(result.envCopied, true, ".env reaches the new worktree");
-		assert.equal(result.includedFilesCopied, 250, "every included file reaches the new worktree");
+		assert.equal(result.includedFilesCopied, INCLUDED_CONFIG_FILES, "every included file reaches the new worktree");
 		assert.equal(result.notIncludedCopied, false, "an ignored file .worktreeinclude does not name stays out");
 	});
 
@@ -121,6 +129,7 @@ describe.each(cases)("$module worktrees under $runtime", ({ runtime, module }) =
 					? runBrokenIncludeScenario(root, module)
 					: inBun<BrokenIncludeScenarioResult>("broken", root, module);
 			assert.match(result.error ?? "", /could not list \.worktreeinclude files: .*cannot use \.worktreeinclude/);
+			assert.doesNotMatch(result.error ?? "", /\s$/, "git's reason is trimmed");
 		},
 	);
 

@@ -25,7 +25,11 @@ function git(cwd: string, args: string[]): string {
 }
 
 /** Run one `ctx.task({ worktree: true })` whose agent edits its worktree with `edit`; returns the task's result. */
-async function runWorktreeTask(repo: string, edit: (cwd: string) => void): Promise<WorkflowTaskResult> {
+async function runWorktreeTask(
+	repo: string,
+	edit: (cwd: string) => void,
+	taskOptions: { artifacts?: boolean } = {},
+): Promise<WorkflowTaskResult> {
 	let task: WorkflowTaskResult | undefined;
 	const def = workflow({
 		name: "large-worktree-task",
@@ -33,7 +37,7 @@ async function runWorktreeTask(repo: string, edit: (cwd: string) => void): Promi
 		inputs: {},
 		outputs: { ok: Type.Optional(Type.Boolean()) },
 		run: async (ctx) => {
-			task = await ctx.task("edit", { prompt: "EDIT", worktree: true });
+			task = await ctx.task("edit", { prompt: "EDIT", worktree: true, ...taskOptions });
 			return { ok: true };
 		},
 	});
@@ -76,6 +80,8 @@ test("ctx.task with worktree: true saves a change over 1 MiB in full before remo
 	});
 	const artifact = diffArtifact(task);
 	assert.equal(artifact.captureError, undefined);
+	assert.equal("worktreePath" in artifact, false, "a captured diff names no kept worktree");
+	assert.equal(task.warnings, undefined, "a captured diff adds no warning");
 	assert.equal(artifact.filesChanged, 1);
 	assert.equal(existsSync(worktree), false, "the captured worktree is removed");
 	const clean = join(root, "clean");
@@ -98,8 +104,18 @@ test("ctx.task with worktree: true keeps a worktree whose diff capture failed an
 	assert.ok(artifact.captureError, "the diff artifact records the capture failure");
 	assert.equal(artifact.worktreePath, worktree);
 	assert.equal(readFileSync(join(worktree, "work.txt"), "utf-8"), "the task's work\n", "the work is kept");
-	assert.ok(
-		task.warnings?.some((warning) => warning.includes(worktree) && warning.includes("Diff capture failed")),
-		`the task's result names the kept worktree: ${JSON.stringify(task.warnings)}`,
-	);
+	assert.equal(task.warnings?.length, 1, `one warning: ${JSON.stringify(task.warnings)}`);
+	assert.match(task.warnings?.[0] ?? "", /^Diff capture failed for task edit; its worktree was kept at /);
+	assert.ok((task.warnings?.[0] ?? "").includes(worktree), "the warning names the kept worktree");
+});
+
+test("ctx.task with worktree: true and artifacts: false reports no artifacts (#4876)", async () => {
+	const root = makeTempDirectory("atomic-task-no-artifacts-");
+	roots.push(root);
+	const repo = createScenarioRepository(root);
+	const task = await runWorktreeTask(repo, (cwd) => writeFileSync(join(cwd, "work.txt"), "work\n"), {
+		artifacts: false,
+	});
+	assert.equal(task.artifacts, undefined);
+	assert.equal(task.warnings, undefined);
 });

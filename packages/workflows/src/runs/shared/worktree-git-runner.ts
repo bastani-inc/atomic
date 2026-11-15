@@ -52,8 +52,7 @@ function spawnGit(cwd: string, args: readonly string[], plain: boolean): GitResu
 	return {
 		stdout: result.stdout ?? "",
 		stderr: result.stderr ?? "",
-		// Output cut off at the buffer cap, or a git that could not run, is never a success.
-		status: result.error === undefined ? (result.status ?? null) : null,
+		status: result.status ?? null,
 		signal: result.signal ?? null,
 		elapsedMs: Math.max(0, Date.now() - startedAt),
 		...(result.error === undefined ? {} : { error: result.error }),
