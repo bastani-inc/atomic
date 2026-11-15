@@ -46,6 +46,7 @@
 - Fixed the grep tool hiding matches past the 512th character of a long line: a long matching line is now cut around its first match, with `...` on each cut side. Patterns anchored with `$` or `^` now match lines of files with CRLF line endings, as they do with LF endings ([#4903](https://github.com/bastani-inc/atomic/issues/4903))
 - Fixed large MCP results over Streamable HTTP stalling the session: a response streamed in many pieces is now read in time proportional to its size, so a 15 MB tool result takes milliseconds instead of seconds. The 16 MB message limit still applies ([#4892](https://github.com/bastani-inc/atomic/issues/4892))
 - Fixed a cancelled or timed-out MCP tool call over Streamable HTTP leaving its response stream open on the server until the client closed. Cancelling a call or letting it time out now closes its request and response stream, and a stream whose call already ended is never resumed ([#4895](https://github.com/bastani-inc/atomic/issues/4895))
+- Fixed session titles and `/tree` branch summaries telling the summarizing model that every tool call was interrupted: the summary input dropped tool results, so each call looked unanswered and was given an invented "interrupted" result. Summaries now see the start of each real tool result, up to 500 characters, and only a call that never returned is reported as interrupted. `prepareBranchEntries` in the SDK returns those shortened results too ([#4967](https://github.com/bastani-inc/atomic/issues/4967))
 
 ## [0.9.87] - 2026-11-14
 
