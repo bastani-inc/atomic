@@ -28,9 +28,10 @@ const DEFAULT_PORTS: Readonly<Record<string, string>> = {
 /** `[user@]host:path`, Git's scp-like syntax; a one-letter host is a Windows drive, not a host. */
 const SCP_LIKE = /^(?:([^@/\\]+)@)?([^@:/\\[\]]{2,}|\[[^\]]+\]):(?!\/\/|:)(.+)$/;
 const SCHEME = /^([A-Za-z][A-Za-z0-9+.-]*):\/\//;
-/** `<transport>::<address>`, a remote helper's address. */
-const TRANSPORT = /^[A-Za-z][A-Za-z0-9+.-]*::/;
-/** Git's scp-like syntax of any user: a colon before the first slash, unless it follows a one-letter Windows drive. */
+/**
+ * Git's scp-like syntax of any user, and a remote helper's `<transport>::<address>`: a colon before the first slash,
+ * unless it follows a one-letter Windows drive.
+ */
 const ANY_SCP_LIKE = /^(?![A-Za-z]:)[^/]*:/;
 
 /**
@@ -39,7 +40,7 @@ const ANY_SCP_LIKE = /^(?![A-Za-z]:)[^/]*:/;
  */
 function isRelativePath(remote: string): boolean {
 	const trimmed = remote.trim();
-	if (trimmed === "" || SCHEME.test(trimmed) || TRANSPORT.test(trimmed) || ANY_SCP_LIKE.test(trimmed)) return false;
+	if (trimmed === "" || SCHEME.test(trimmed) || ANY_SCP_LIKE.test(trimmed)) return false;
 	// A drive or UNC path is absolute on Windows, wherever the record is read.
 	return !isAbsolute(trimmed) && !/^(?:[A-Za-z]:)?[\\/]/.test(trimmed);
 }

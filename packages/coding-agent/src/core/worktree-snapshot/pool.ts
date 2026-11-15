@@ -609,14 +609,25 @@ export async function holdRestoredWorktree(
 		}
 		const record = await readRecord(file, storeDir, slot.repository, slot.slot).catch(() => undefined);
 		if (record === undefined || !sameOwner(record.holder, owner)) return undefined;
-		// A hold that lost the record lock, as while suspended, never writes back the record it read (#4991).
+		// The lease comes first, so a claim or an eviction from here on sees the slot held; the record is then written
+		// only in place of the one read, so a hold that lost the record lock while suspended, and a claimer took the slot
+		// meanwhile, takes nothing back: it gives up its lease and its session restores elsewhere (#4991).
 		if (!(await lock.held())) return undefined;
 		const taken = await takeSlot(file, owner, { ...record, releasedAt: null });
+		let put = false;
 		try {
-			await writeRecord(file, taken.record);
+			const read = await takeRecord(file, record);
+			if (read !== undefined) {
+				if (await lock.held()) put = await putRecord(file, read, taken.record);
+				else await giveBackRecord(file, read);
+			}
 		} catch (error) {
 			await taken.unlease().catch(() => {});
 			throw error;
+		}
+		if (!put) {
+			await taken.unlease().catch(() => {});
+			return undefined;
 		}
 		heldSlots.set(file, taken);
 		return newLease(taken.record, storeDir, taken);

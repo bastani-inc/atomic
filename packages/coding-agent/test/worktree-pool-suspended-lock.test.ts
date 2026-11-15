@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { chmodSync, existsSync, readdirSync, readFileSync, renameSync, utimesSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, test } from "vitest";
@@ -13,6 +14,7 @@ import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
 import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.js";
 import { captureWorktreeSnapshot } from "../src/core/worktree-snapshot/capture.js";
 import {
+	claimIdleWorktree,
 	holdRestoredWorktree,
 	type PoolSlotRecord,
 	pooledWorktreePath,
@@ -31,6 +33,7 @@ const settings = DEFAULT_WORKTREE_SNAPSHOT_SETTINGS;
 const LOCK_STALE_MS = 30_000;
 /** Bun children load the snapshot modules before they evict or claim. */
 const CHILD_PROCESS_TIMEOUT_MS = 90_000;
+const PROPER_LOCKFILE = createRequire(import.meta.url).resolve("proper-lockfile");
 const module = (path: string) => JSON.stringify(fileURLToPath(new URL(`../src/core/${path}`, import.meta.url)));
 
 let sandbox: GitSandbox;
@@ -156,6 +159,63 @@ return evictIdleWorktrees(${JSON.stringify(storeDir())}, ${JSON.stringify(reposi
 }
 
 describe.skipIf(process.platform === "win32")("a pool action suspended inside a slot's record lock (#4991)", () => {
+	test(
+		"a hold suspended between its lock check and its lease takes nothing back from a claim made meanwhile (#4991)",
+		async () => {
+			const { snapshot, root, pool } = await idleSlot();
+			const out = sandbox.path("hold.json");
+			const mark = sandbox.path("hold.stopped");
+			const script = sandbox.path("hold.ts");
+			// The owner's process stops as it takes its lease, once it checked the record and its lock.
+			writeFileSync(
+				script,
+				`import { writeFileSync } from "node:fs";
+import lockfile from ${JSON.stringify(PROPER_LOCKFILE)};
+const lock = lockfile.lock;
+let stopped = false;
+lockfile.lock = (path, options) => {
+	if (String(path).endsWith(".lease") && !stopped) {
+		stopped = true;
+		writeFileSync(${JSON.stringify(mark)}, "");
+		process.kill(process.pid, "SIGSTOP");
+	}
+	return lock(path, options);
+};
+const { holdRestoredWorktree } = await import(${module("worktree-snapshot/pool.ts")});
+const lease = await holdRestoredWorktree(${JSON.stringify(storeDir())}, ${JSON.stringify(root)}, ${JSON.stringify(owner)});
+writeFileSync(${JSON.stringify(out)}, JSON.stringify(lease ?? null));
+process.exit(0);
+`,
+			);
+			const child = spawn(bunExecutable(), [script], { stdio: ["ignore", "inherit", "inherit"] });
+			const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+			cleanups.push(async () => {
+				child.kill("SIGKILL");
+				await exited;
+			});
+			while (!existsSync(mark)) await sleep(20);
+			await sleep(300);
+			ageRecordLock(pool);
+
+			const claim = await claimIdleWorktree(snapshot, {
+				storeDir: storeDir(),
+				owner: { kind: "session", id: "session-claimer" },
+				settings,
+				blobs: store.snapshotBlobs,
+			});
+			assert.equal(claim.claimed, true);
+			if (claim.claimed) cleanups.push(async () => void (await releaseRestoredWorktree(claim.lease)));
+			const claimed = readFileSync(join(pool, "0.json"), "utf8");
+			child.kill("SIGCONT");
+			await exited;
+
+			assert.equal(readFileSync(out, "utf8"), "null");
+			assert.equal(readFileSync(join(pool, "0.json"), "utf8"), claimed);
+			assert.equal((JSON.parse(claimed) as PoolSlotRecord).holder.id, "session-claimer");
+		},
+		CHILD_PROCESS_TIMEOUT_MS,
+	);
+
 	test(
 		"an eviction suspended as it reads the worktree's store, its last step before removing, leaves a slot its owner held again (#4991)",
 		async () => {

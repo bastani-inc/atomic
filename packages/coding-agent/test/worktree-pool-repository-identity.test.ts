@@ -285,6 +285,8 @@ describe("the identity a repository's checkouts share (#4989)", () => {
 		assert.equal(normalizeRemoteUrl("../upstream", root), resolve("/work", "one", "upstream"));
 		assert.equal(normalizeRemoteUrl(" ./up\n", root), resolve(root, "up"));
 		assert.equal(normalizeRemoteUrl("./a:b", root), resolve(root, "a:b"));
+		// A drive-relative Windows path is a path, not a host named by one letter.
+		assert.equal(normalizeRemoteUrl("C:repo", root), resolve(root, "C:repo"));
 		assert.equal(normalizeRemoteUrl("../upstream"), "../upstream");
 		assert.equal(normalizeRemoteUrl("../upstream", "relative/root"), "../upstream");
 		assert.notEqual(repositoryIdOf(["../upstream"], root), repositoryIdOf(["../upstream"], other));
@@ -316,6 +318,7 @@ describe("the identity a repository's checkouts share (#4989)", () => {
 			);
 		}
 		assert.equal(normalizeRemoteUrl("", root), "");
+		assert.equal(normalizeRemoteUrl(" /srv/repo.git\n", root), " /srv/repo.git\n");
 	});
 
 	test("remotes that name no one repository have no shared identity (#4989)", () => {
