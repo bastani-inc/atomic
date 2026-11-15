@@ -1398,13 +1398,19 @@ function groupCommitHold(value: number | undefined): number {
 }
 
 /**
- * The path SQLite opens `path` by. On Windows a file path takes the `\\?\` long-path form: SQLite's Windows file
- * calls fail a path over 260 characters, `MAX_PATH`, with code 14 (#5139), and accept that form at any length. The
- * in-memory and temporary databases, `:memory:` and the empty path, and every path elsewhere are passed unchanged.
+ * Longest Windows database path SQLite opens as written. SQLite's Windows file calls fail a path, or the `-journal`,
+ * `-wal` or `-shm` file beside it, over 260 characters (`MAX_PATH`) with code 14 (#5139); this leaves room for those.
+ */
+const WINDOWS_SQLITE_PLAIN_PATH_LIMIT = 240;
+
+/**
+ * The path SQLite opens `path` by. On Windows a file path longer than SQLite can open as written takes the `\\?\`
+ * long-path form, which SQLite accepts at any length (#5139). Every other path, `:memory:`, `file:` URIs and every
+ * path on other platforms are passed unchanged, so the database's location reads as before wherever it fits.
  */
 export function sqliteFilePath(path: string, platform: NodeJS.Platform = process.platform): string {
 	if (platform !== "win32" || path === ":memory:" || path.startsWith("file:")) return path;
-	return win32.toNamespacedPath(path);
+	return win32.resolve(path).length > WINDOWS_SQLITE_PLAIN_PATH_LIMIT ? win32.toNamespacedPath(path) : path;
 }
 
 export async function openNodeSqliteDatabase(

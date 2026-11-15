@@ -193,13 +193,17 @@ test.runIf(process.platform !== "win32")(
 	},
 );
 
-test("SQLite opens Atomic's files on Windows through the long-path form, and every other path as given (#5139)", () => {
+test("SQLite opens a long Windows path through the long-path form, and every other path as given (#5139)", () => {
 	const file = `C:\\${"d".repeat(250)}\\atomic-writer-lease.sqlite`;
 	assert.equal(sqliteFilePath(file, "win32"), `\\\\?\\${file}`);
 	assert.equal(sqliteFilePath(`\\\\?\\${file}`, "win32"), `\\\\?\\${file}`);
-	for (const special of [":memory:", "", "file:journal.sqlite?mode=ro"])
+	// Up to 240 characters a path is opened as written, so its location reads as before.
+	const fits = `C:\\${"d".repeat(240 - 3)}`;
+	assert.equal(sqliteFilePath(fits, "win32"), fits);
+	assert.equal(sqliteFilePath(`${fits}d`, "win32"), `\\\\?\\${fits}d`);
+	for (const special of [":memory:", "file:journal.sqlite?mode=ro"])
 		assert.equal(sqliteFilePath(special, "win32"), special);
-	assert.equal(sqliteFilePath("/home/user/.atomic/agent/a.sqlite", "linux"), "/home/user/.atomic/agent/a.sqlite");
+	assert.equal(sqliteFilePath(`/${"d".repeat(300)}`, "linux"), `/${"d".repeat(300)}`);
 });
 
 test("staging worktrees take a 15-character name from the restore's id (#5139)", () => {
