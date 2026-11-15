@@ -464,19 +464,21 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 
 	setModelThinkingLevel(provider, modelId, level) {
 		const state = settingsInternals(this);
+		const key = `${normalizeProviderId(provider)}/${modelId}`;
 		state.globalSettings.modelThinkingLevels ??= {};
-		state.globalSettings.modelThinkingLevels[`${normalizeProviderId(provider)}/${modelId}`] = level;
-		state.markModified("modelThinkingLevels");
+		state.globalSettings.modelThinkingLevels[key] = level;
+		state.markModified("modelThinkingLevels", key);
 		state.save();
 	},
 
 	removeModelThinkingLevel(provider, modelId) {
 		const state = settingsInternals(this);
 		if (!state.globalSettings.modelThinkingLevels) return;
-		delete state.globalSettings.modelThinkingLevels[`${normalizeProviderId(provider)}/${modelId}`];
+		const key = `${normalizeProviderId(provider)}/${modelId}`;
+		delete state.globalSettings.modelThinkingLevels[key];
 		if (Object.keys(state.globalSettings.modelThinkingLevels).length === 0)
 			delete state.globalSettings.modelThinkingLevels;
-		state.markModified("modelThinkingLevels");
+		state.markModified("modelThinkingLevels", key);
 		state.save();
 	},
 

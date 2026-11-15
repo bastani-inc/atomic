@@ -75,7 +75,8 @@ export async function openSqlOutboxStore(options: IntercomBrokerStateOptions): P
 	const table = `${validateStoragePrefix(options.prefix)}intercom_outbox`;
 	const { types, nowMs, greatest } = dialectOf(database);
 	const ageSince = (column: string) => greatest("0", `${nowMs} - ${column}`);
-	await database.exec(`
+	// In a serial transaction, so brokers opening a new store at once take turns creating it (#5054).
+	const schema = `
 		CREATE TABLE IF NOT EXISTS ${table}(
 			sequence ${types.serialKey},
 			message_id TEXT NOT NULL UNIQUE,
@@ -92,7 +93,8 @@ export async function openSqlOutboxStore(options: IntercomBrokerStateOptions): P
 			settled_at ${types.int}
 		);
 		CREATE INDEX IF NOT EXISTS ${table}_target ON ${table}(target_identity, state, sequence);
-	`);
+	`;
+	await database.transaction((tx) => tx.exec(schema));
 	// #3983: added later; a table from an older broker gets the column, and an older broker ignores it.
 	await addMissingColumns(database, table, { saving_at: types.int });
 	// #4896: when the row was queued and the size of its frame; rows an older broker wrote have neither.
@@ -162,14 +164,18 @@ export async function openSqlOutboxStore(options: IntercomBrokerStateOptions): P
 						: ({ status: "conflict", messageId } as const);
 				}
 				const frameBytes = Buffer.byteLength(frameJson);
-				const queued = (await executor.get<{ row_count: SqliteValue; byte_count: SqliteValue }>(
-					`SELECT COUNT(*) AS row_count, COALESCE(SUM(COALESCE(frame_bytes, LENGTH(frame_json))), 0) AS byte_count
-					FROM ${table} WHERE target_identity = ? AND ${UNDELIVERED}`,
-					request.targetIdentity,
-				))!;
+				const queued =
+					request.owed === true
+						? undefined
+						: (await executor.get<{ row_count: SqliteValue; byte_count: SqliteValue }>(
+								`SELECT COUNT(*) AS row_count, COALESCE(SUM(COALESCE(frame_bytes, LENGTH(frame_json))), 0) AS byte_count
+								FROM ${table} WHERE target_identity = ? AND ${UNDELIVERED}`,
+								request.targetIdentity,
+							))!;
 				if (
-					Number(queued.row_count) >= OUTBOX_TARGET_MAX_ROWS ||
-					Number(queued.byte_count) + frameBytes > OUTBOX_TARGET_MAX_BYTES
+					queued !== undefined &&
+					(Number(queued.row_count) >= OUTBOX_TARGET_MAX_ROWS ||
+						Number(queued.byte_count) + frameBytes > OUTBOX_TARGET_MAX_BYTES)
 				) {
 					return { status: "full", limit: OUTBOX_TARGET_MAX_ROWS, byteLimit: OUTBOX_TARGET_MAX_BYTES } as const;
 				}

@@ -1,11 +1,11 @@
 import { access, readdir, readFile, stat } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
-import ignore from "ignore";
 import { CONFIG_DIR_NAME, getAgentDir } from "../config.js";
 import { yieldToEventLoopIfSlow } from "../utils/event-loop.ts";
 import { parseFrontmatter } from "../utils/frontmatter.ts";
 import { isPathWithin, resolvePath } from "../utils/paths.ts";
 import type { ResourceDiagnostic } from "./diagnostics.ts";
+import { NestedGitignore } from "./gitignore-rules.ts";
 import type { LoadSkillsOptions, LoadSkillsResult, Skill, SkillFrontmatter } from "./skills.ts";
 import { createSyntheticSourceInfo, getResourcePathKey, type SourceInfo } from "./source-info.ts";
 
@@ -13,7 +13,7 @@ const MAX_NAME_LENGTH = 64;
 const MAX_DESCRIPTION_LENGTH = 1024;
 const IGNORE_FILE_NAMES = [".gitignore", ".ignore", ".fdignore"];
 const YIELD_AFTER_MS = 8;
-type IgnoreMatcher = ReturnType<typeof ignore>;
+type IgnoreMatcher = NestedGitignore;
 
 async function exists(path: string): Promise<boolean> {
 	try {
@@ -28,36 +28,14 @@ function toPosixPath(path: string): string {
 	return path.split(sep).join("/");
 }
 
-function prefixIgnorePattern(line: string, prefix: string): string | null {
-	const trimmed = line.trim();
-	if (!trimmed || (trimmed.startsWith("#") && !trimmed.startsWith("\\#"))) return null;
-	let pattern = line;
-	let negated = false;
-	if (pattern.startsWith("!")) {
-		negated = true;
-		pattern = pattern.slice(1);
-	} else if (pattern.startsWith("\\!")) {
-		pattern = pattern.slice(1);
-	}
-	if (pattern.startsWith("/")) pattern = pattern.slice(1);
-	const prefixed = prefix ? `${prefix}${pattern}` : pattern;
-	return negated ? `!${prefixed}` : prefixed;
-}
-
-async function addIgnoreRules(ig: IgnoreMatcher, dir: string, rootDir: string): Promise<void> {
-	const relativeDir = relative(rootDir, dir);
-	const prefix = relativeDir ? `${toPosixPath(relativeDir)}/` : "";
+async function withIgnoreRules(rules: IgnoreMatcher, dir: string, rootDir: string): Promise<IgnoreMatcher> {
+	const contents: string[] = [];
 	for (const filename of IGNORE_FILE_NAMES) {
-		const ignorePath = join(dir, filename);
 		try {
-			const content = await readFile(ignorePath, "utf-8");
-			const patterns = content
-				.split(/\r?\n/)
-				.map((line) => prefixIgnorePattern(line, prefix))
-				.filter((line): line is string => Boolean(line));
-			if (patterns.length > 0) ig.add(patterns);
+			contents.push(await readFile(join(dir, filename), "utf-8"));
 		} catch {}
 	}
+	return rules.within(toPosixPath(relative(rootDir, dir)), contents);
 }
 
 function createSkillSourceInfo(filePath: string, baseDir: string, source: string): SourceInfo {
@@ -135,8 +113,7 @@ async function loadSkillsFromDirInternal(
 	if (!(await exists(dir))) return { skills, candidates: skills, diagnostics };
 	const startedAt = Date.now();
 	const root = rootDir ?? dir;
-	const ig = ignoreMatcher ?? ignore();
-	await addIgnoreRules(ig, dir, root);
+	const ig = await withIgnoreRules(ignoreMatcher ?? NestedGitignore.empty(), dir, root);
 	try {
 		const entries = await readdir(dir, { withFileTypes: true });
 		for (const entry of entries) {
