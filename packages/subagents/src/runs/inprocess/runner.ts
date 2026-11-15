@@ -851,20 +851,10 @@ function messagesSinceLaunch(manager: SessionManager, launchLeafId: string | nul
 }
 
 /**
- * #5210: final answers children's sessions could not save, by child session id, held until a resume of that session
- * saves them. Each child holds at most its one last answer; the oldest go first once too many are held.
+ * #5210: final answers children's sessions could not save, by child session id, held until the session is opened again
+ * to resume and saves them. Only a storage failure adds one, and each child holds at most its last.
  */
 const unsavedAnswers = new Map<string, AssistantMessage>();
-const MAX_UNSAVED_ANSWERS = 64;
-
-function holdUnsavedAnswer(sessionId: string, answer: AssistantMessage): void {
-	unsavedAnswers.delete(sessionId);
-	unsavedAnswers.set(sessionId, answer);
-	for (const oldest of unsavedAnswers.keys()) {
-		if (unsavedAnswers.size <= MAX_UNSAVED_ANSWERS) break;
-		unsavedAnswers.delete(oldest);
-	}
-}
 
 /**
  * Saves the final answer the session's last run could not, before the resumed child runs, so it continues after its
@@ -875,8 +865,8 @@ async function restoreUnsavedAnswer(manager: SessionManager): Promise<void> {
 	const answer = unsavedAnswers.get(sessionId);
 	if (answer === undefined) return;
 	const last = manager.getBranch().findLast((entry) => entry.type === "message");
-	const saved = last?.type === "message" && JSON.stringify(last.message) === JSON.stringify(answer);
-	if (!saved) await manager.appendMessage(answer);
+	if (last?.type !== "message" || JSON.stringify(last.message) !== JSON.stringify(answer))
+		await manager.appendMessage(answer);
 	unsavedAnswers.delete(sessionId);
 }
 
@@ -885,9 +875,7 @@ function finalAnswerOf(messages: readonly unknown[]): AssistantMessage | undefin
 	const last = (messages as readonly TranscriptMessage[]).findLast((message) => message.role === "assistant") as
 		| AssistantMessage
 		| undefined;
-	if (last === undefined || last.stopReason !== "stop") return undefined;
-	if (last.content.some((part) => part.type === "toolCall")) return undefined;
-	return outputFor([last]) === "" ? undefined : last;
+	return last?.stopReason === "stop" ? last : undefined;
 }
 
 /** Why a child whose session could not save its work failed, naming the storage error (#5210). */
@@ -1663,8 +1651,8 @@ export class SubagentControlRuntime {
 				}
 			}
 			const sessionManager = await beforeStartDeadline(opening);
-			// #5210: a resumed child continues after the final answer its last run could not save.
-			if (admitted.spec.resumeSession) await beforeStartDeadline(restoreUnsavedAnswer(sessionManager));
+			// #5210: a child resumed in this process continues after the final answer its last run could not save.
+			await beforeStartDeadline(restoreUnsavedAnswer(sessionManager));
 			transcriptManager = sessionManager;
 			taskHooks?.bindTranscript?.(sessionManager);
 			const childSession = {
@@ -1988,7 +1976,7 @@ export class SubagentControlRuntime {
 			// #5210: what the session could not save it still holds in memory; the child's answer is among it.
 			const unsaved = termination === undefined ? session.getPersistenceFailure() : undefined;
 			unsavedAnswer = unsaved === undefined ? undefined : finalAnswerOf(unsaved.unsavedMessages);
-			if (unsavedAnswer !== undefined) holdUnsavedAnswer(sessionManager.getSessionId(), unsavedAnswer);
+			if (unsavedAnswer !== undefined) unsavedAnswers.set(sessionManager.getSessionId(), unsavedAnswer);
 			const producedMessages = ownMessages();
 			const output = outputFor(
 				unsavedAnswer === undefined ? producedMessages : [...producedMessages, unsavedAnswer],

@@ -122,6 +122,41 @@ test(
 	CHILD_LOAD_TIMEOUT_MS,
 );
 
+test(
+	"a child whose tool call fails to save fails naming the storage error and resumes without it (#5210)",
+	async () => {
+		const env = await liveChildEnvironment(cleanups);
+		const store = new FullOnFinalAnswerStore();
+		store.rejects = `"id":"ci-1"`;
+		const manager = await SessionManager.create(store, env.root);
+		toolThenAnswer(env);
+		const result = await runSingleInProcess(env.root, agent, "check CI and answer", {
+			...env.options("tool-call-save", { sessionManager: manager }),
+		});
+		assert.equal(result.status, "error");
+		assert.match(result.error ?? "", /^The child's session could not save its work \(.*ENOSPC/);
+
+		store.full = false;
+		env.faux.setResponses([
+			{ role: "assistant", content: [{ type: "text", text: "starting over" }], stopReason: "stop" } as never,
+		]);
+		const resumed = await runSingleInProcess(env.root, agent, "try again", {
+			...env.options("tool-call-save-2", {
+				sessionManager: await SessionManager.open(store, manager.getSessionId()),
+				resumeSession: true,
+			}),
+		});
+		assert.equal(resumed.status, "ok");
+		const reopened = await SessionManager.open(store, manager.getSessionId());
+		const calls = reopened
+			.getBranch()
+			.flatMap((entry) => (entry.type === "message" && entry.message.role === "assistant" ? [entry.message] : []))
+			.filter((message) => message.content.some((part) => part.type === "toolCall"));
+		assert.deepEqual(calls, [], "the unsaved call is not saved by the resume");
+	},
+	CHILD_LOAD_TIMEOUT_MS,
+);
+
 async function resumeAfterFailedAnswer(landsAnyway: boolean): Promise<void> {
 	const env = await liveChildEnvironment(cleanups);
 	const store = new FullOnFinalAnswerStore();
