@@ -79,15 +79,16 @@ async function idleSlot(): Promise<{ snapshot: WorktreeSnapshot; root: string; p
 }
 
 /**
- * Runs `source` in a Bun child whose Git stops the child (SIGSTOP) as it lists the slot's ignored files, the last check
- * an eviction or a claim makes inside the slot's record lock before it acts. Resolves once the child is stopped.
+ * Runs `source` in a Bun child whose Git stops the child (SIGSTOP) the first time it is run with `argument`: by
+ * default as it lists the slot's ignored files, the last check an eviction or a claim makes of the slot's files.
+ * Resolves once the child is stopped.
  */
-async function stoppedChild(name: string, source: string) {
+async function stoppedChild(name: string, source: string, argument = "--directory") {
 	const mark = sandbox.path(`${name}.stopped`);
 	const git = sandbox.path(`${name}-git.sh`);
 	writeFileSync(
 		git,
-		`#!/bin/sh\nfor arg in "$@"; do\n\tif [ "$arg" = "--directory" ] && [ ! -e ${JSON.stringify(mark)} ]; then : > ${JSON.stringify(mark)}; kill -STOP $PPID; fi\ndone\nexec git "$@"\n`,
+		`#!/bin/sh\nfor arg in "$@"; do\n\tif [ "$arg" = ${JSON.stringify(argument)} ] && [ ! -e ${JSON.stringify(mark)} ]; then : > ${JSON.stringify(mark)}; kill -STOP $PPID; fi\ndone\nexec git "$@"\n`,
 	);
 	chmodSync(git, 0o755);
 	const script = sandbox.path(`${name}.ts`);
@@ -143,22 +144,70 @@ async function ownerHoldsAgain(root: string): Promise<WorktreeLease> {
 	return lease;
 }
 
+/** An eviction of every idle slot of `snapshot`'s repository, in a child stopped at `argument`. */
+function evictor(snapshot: WorktreeSnapshot, argument?: string) {
+	return stoppedChild(
+		"evictor",
+		`const { evictIdleWorktrees } = await import(${module("worktree-snapshot/pool.ts")});
+const { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } = await import(${module("worktree-snapshot/settings.ts")});
+return evictIdleWorktrees(${JSON.stringify(storeDir())}, ${JSON.stringify(repositoryIdOf(snapshot.remotes))}, { maxIdle: 0, settings: DEFAULT_WORKTREE_SNAPSHOT_SETTINGS });`,
+		argument,
+	);
+}
+
 describe.skipIf(process.platform === "win32")("a pool action suspended inside a slot's record lock (#4991)", () => {
+	test(
+		"an eviction suspended as it reads the worktree's store, its last step before removing, leaves a slot its owner held again (#4991)",
+		async () => {
+			const { snapshot, root, pool } = await idleSlot();
+			const evicting = await evictor(snapshot, "--git-common-dir");
+			ageRecordLock(pool);
+			const lease = await ownerHoldsAgain(root);
+			const held = readFileSync(join(pool, "0.json"), "utf8");
+
+			assert.deepEqual(JSON.parse(await evicting.resume()), []);
+
+			assert.equal(readFileSync(join(root, "new-work.txt"), "utf8"), "work done after resuming\n");
+			assert.equal(readFileSync(join(pool, "0.json"), "utf8"), held);
+			assert.equal(await releaseRestoredWorktree(lease), true);
+			assert.equal(existsSync(join(root, "new-work.txt")), true);
+		},
+		CHILD_PROCESS_TIMEOUT_MS,
+	);
+
+	test(
+		"an eviction suspended while it deletes a slot it took leaves nothing its owner can hold, and finishes (#4991)",
+		async () => {
+			const { snapshot, root, pool } = await idleSlot();
+			const evicting = await evictor(snapshot, "prune");
+			ageRecordLock(pool);
+
+			// The slot is already out of reach: its record is gone, so its owner restores elsewhere and loses nothing.
+			assert.equal(await holdRestoredWorktree(storeDir(), root, owner), undefined);
+			assert.equal(existsSync(root), false);
+
+			assert.deepEqual(JSON.parse(await evicting.resume()), [root]);
+			assert.equal(existsSync(join(pool, "0.json")), false);
+			assert.deepEqual(
+				readdirSync(join(storeDir(), "worktrees")).filter((name) =>
+					name.startsWith(`${repositoryIdOf(snapshot.remotes)}-0`),
+				),
+				[],
+			);
+		},
+		CHILD_PROCESS_TIMEOUT_MS,
+	);
+
 	test(
 		"an eviction suspended past the lock's stale time leaves a slot its owner held again meanwhile (#4991)",
 		async () => {
 			const { snapshot, root, pool } = await idleSlot();
-			const evictor = await stoppedChild(
-				"evictor",
-				`const { evictIdleWorktrees } = await import(${module("worktree-snapshot/pool.ts")});
-const { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } = await import(${module("worktree-snapshot/settings.ts")});
-return evictIdleWorktrees(${JSON.stringify(storeDir())}, ${JSON.stringify(repositoryIdOf(snapshot.remotes))}, { maxIdle: 0, settings: DEFAULT_WORKTREE_SNAPSHOT_SETTINGS });`,
-			);
+			const evicting = await evictor(snapshot);
 			ageRecordLock(pool);
 			await ownerHoldsAgain(root);
 			const held = readFileSync(join(pool, "0.json"), "utf8");
 
-			assert.deepEqual(JSON.parse(await evictor.resume()), []);
+			assert.deepEqual(JSON.parse(await evicting.resume()), []);
 
 			assert.equal(readFileSync(join(root, "new-work.txt"), "utf8"), "work done after resuming\n");
 			assert.equal(readFileSync(join(root, "file.txt"), "utf8"), "recorded\n");

@@ -47,8 +47,8 @@ import {
 	recordPooledWorktreeState,
 	releaseRestoredWorktree,
 	repositoryIdOf,
-	SAME_HOST_LEASE_LIMIT_MS,
 	type SlotNumber,
+	UNSTARTED_LEASE_LIMIT_MS,
 } from "../src/core/worktree-snapshot/pool.js";
 import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../src/core/worktree-snapshot/settings.js";
 import type { WorktreeSnapshot } from "../src/core/worktree-snapshot/types.js";
@@ -518,30 +518,22 @@ describe("checks of a pooled worktree's lease (#4830)", () => {
 		assert.deepEqual(await pooledWorktreeHolder(storeDir(), lease.path), { owner: null, held: false });
 	});
 
-	test("a leftover lease of this host not refreshed for an hour keeps nothing, though its process id runs (#4990)", async () => {
-		const lease = await admit();
-		await releaseRestoredWorktree(lease);
-		// Process 1 always runs: the holder crashed long ago and its id now names another process.
-		const lock = leaseOf(1, 60 * 60_000);
-		assert.deepEqual(await pooledWorktreeHolder(storeDir(), lease.path), { owner: x, held: false });
-		assert.deepEqual(await evictIdleWorktrees(storeDir(), repository, { maxIdle: 0, settings }), [lease.path]);
-		assert.equal(existsSync(lock), false);
-		assert.equal(existsSync(file()), false);
-	});
-
-	test("a lease of this host still keeps its slot while its process runs, up to the same-host limit (#4990)", async () => {
-		const lease = await admit();
-		await releaseRestoredWorktree(lease);
-		const lock = leaseOf(process.pid, SAME_HOST_LEASE_LIMIT_MS - 60_000);
-		assert.deepEqual(await pooledWorktreeHolder(storeDir(), lease.path), { owner: x, held: true });
-		assert.deepEqual(await evictIdleWorktrees(storeDir(), repository, { maxIdle: 0, settings }), []);
-		const past = new Date(Date.now() - SAME_HOST_LEASE_LIMIT_MS - 60_000);
-		utimesSync(lock, past, past);
-		assert.deepEqual(await pooledWorktreeHolder(storeDir(), lease.path), { owner: x, held: false });
-	});
+	test.skipIf(process.platform !== "linux")(
+		"a leftover lease of this host refreshed an hour ago keeps nothing once its process id names a later process (#4990)",
+		async () => {
+			const lease = await admit();
+			await releaseRestoredWorktree(lease);
+			// Process 1 always runs, yet it is not the process that took the lease: the holder crashed long ago.
+			const lock = leaseOf(1, 60 * 60_000, "000000000000");
+			assert.deepEqual(await pooledWorktreeHolder(storeDir(), lease.path), { owner: x, held: false });
+			assert.deepEqual(await evictIdleWorktrees(storeDir(), repository, { maxIdle: 0, settings }), [lease.path]);
+			assert.equal(existsSync(lock), false);
+			assert.equal(existsSync(file()), false);
+		},
+	);
 
 	test.skipIf(process.platform !== "linux")(
-		"a lease naming another start of its process id keeps nothing, and one naming this start keeps its slot (#4990)",
+		"a lease naming another start of its process id keeps nothing, and one naming this start keeps its slot however old (#4990)",
 		async () => {
 			const lease = await admit();
 			await releaseRestoredWorktree(lease);
@@ -551,14 +543,31 @@ describe("checks of a pooled worktree's lease (#4830)", () => {
 			rmSync(reused, { recursive: true });
 			const own = processStartToken(process.pid);
 			assert.match(own ?? "", /^[0-9a-f]{12}$/);
-			leaseOf(process.pid, LEASE_STALE_MS + LEASE_CLAIM_GRACE_MS / 2, own);
+			// A holder suspended for longer than any limit still runs: it keeps its slot.
+			leaseOf(process.pid, UNSTARTED_LEASE_LIMIT_MS + 60 * 60_000, own);
 			assert.deepEqual(await pooledWorktreeHolder(storeDir(), lease.path), { owner: x, held: true });
+			assert.deepEqual(await evictIdleWorktrees(storeDir(), repository, { maxIdle: 0, settings }), []);
 			assert.equal(processStartToken(2 ** 22 + 7), undefined);
 		},
 	);
 
+	test("a lease of this host naming no start keeps its slot while its process id runs, up to a day (#4990)", async () => {
+		const lease = await admit();
+		await releaseRestoredWorktree(lease);
+		const lock = leaseOf(process.pid, UNSTARTED_LEASE_LIMIT_MS - 60_000);
+		assert.deepEqual(await pooledWorktreeHolder(storeDir(), lease.path), { owner: x, held: true });
+		assert.deepEqual(await evictIdleWorktrees(storeDir(), repository, { maxIdle: 0, settings }), []);
+		const past = new Date(Date.now() - UNSTARTED_LEASE_LIMIT_MS - 60_000);
+		utimesSync(lock, past, past);
+		assert.deepEqual(await pooledWorktreeHolder(storeDir(), lease.path), { owner: x, held: false });
+		// A leftover lease of process 1, which always runs, keeps nothing past the limit either.
+		const leftover = leaseOf(1, UNSTARTED_LEASE_LIMIT_MS + 60_000);
+		assert.deepEqual(await evictIdleWorktrees(storeDir(), repository, { maxIdle: 0, settings }), [lease.path]);
+		assert.equal(existsSync(leftover), false);
+	});
+
 	test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
-		"a lease of a process on this host that cannot be signalled keeps the slot until the same-host limit (#4830)",
+		"a lease of a process on this host that cannot be signalled keeps the slot (#4830)",
 		async () => {
 			const lease = await admit();
 			await releaseRestoredWorktree(lease);
