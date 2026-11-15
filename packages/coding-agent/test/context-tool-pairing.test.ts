@@ -3,6 +3,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { describe, expect, test } from "vitest";
 import {
 	assertToolPairingInvariant,
+	assignMissingToolCallIds,
 	findDuplicateToolCallIds,
 	uniquifyToolCallIds,
 } from "../src/core/context-tool-pairing.ts";
@@ -269,5 +270,28 @@ describe("tool calls with an empty id (#5056)", () => {
 
 		expect(uniquifyToolCallIds(messages)).toBe(messages);
 		expect(repairOrphanToolResults(messages)).toBe(messages);
+	});
+
+	test("a turn's calls without an id get the ids its later requests derive, before they run (#5056)", () => {
+		const history = [assistantWithToolCalls(["a"], 10), toolResult("a")] as AgentMessage[];
+		const turn = assistantWithToolCalls(["a", "", ""], 20);
+		const { id: _omitted, ...withoutId } = turn.content[2] as { id: string };
+		const content = [{ type: "text" as const, text: "running" }, turn.content[0], turn.content[1], withoutId];
+		const message = { ...turn, content } as AgentMessage;
+		const expected = toolCallIds(uniquifyToolCallIds([...history, message]).slice(-1));
+
+		assignMissingToolCallIds(history, message);
+
+		expect(toolCallIds([message])).toEqual(["a", "call_2", "call_2_1"]);
+		expect(expected).toEqual(["a_2", "call_2", "call_2_1"]);
+	});
+
+	test("only an assistant turn's calls are given ids (#5056)", () => {
+		const call = { type: "toolCall", id: "", name: "read", arguments: {} };
+		const message = { role: "user", content: [call], timestamp: 1 } as unknown as AgentMessage;
+
+		assignMissingToolCallIds([], message);
+
+		expect(call.id).toBe("");
 	});
 });

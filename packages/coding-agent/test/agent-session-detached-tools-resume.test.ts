@@ -304,7 +304,7 @@ describe("a detached call whose provider gave it no id (#5056)", () => {
 		await first.session.prompt("watch ci");
 		const [detached] = first.session.takeDetachedToolCalls();
 		assert.ok(detached !== undefined);
-		assert.notEqual(detached.toolCallId, "");
+		assert.equal(detached.toolCallId, "call_1");
 		assert.deepEqual(
 			tool.calls.map((call) => call.id),
 			[detached.toolCallId],

@@ -124,11 +124,11 @@ export function _handleAgentEvent(this: AgentSession, received: AgentEvent): Pro
 	// #4226: a session that could not save a message stops the run that hit it; the next run tries again.
 	if (received.type === "agent_start") this._persistenceFailure = undefined;
 	if (consumePersistenceStopReply(this, received)) return;
-	if (received.type === "message_end" && received.message.role === "assistant") {
-		// Before the turn's calls run: they run, detach and are recorded under the id stored here (#5056).
+	if (received.type === "message_end") {
+		// Before the turn's calls run: they run, detach and are recorded under the id stored here (#5056). Agent-core
+		// appended the message to its transcript before notifying listeners.
 		const messages = this.agent.state.messages;
-		const index = messages.lastIndexOf(received.message);
-		assignMissingToolCallIds(index >= 0 ? messages.slice(0, index) : messages, received.message);
+		assignMissingToolCallIds(messages.slice(0, messages.lastIndexOf(received.message)), received.message);
 	}
 	let event = withoutDetachedPlaceholders(this, received);
 	if (event === undefined) return;
