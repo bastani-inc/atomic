@@ -3,7 +3,7 @@ import { dialectOf, type StorageDialect, type StorageJsonSource, type StorageTri
 import { StorageWriteLockTimeoutError } from "../storage/errors.js";
 import { applyStorageMigrations } from "../storage/migrations.js";
 import { renderStorageIdentifiers, storageMigrationTable, validateStoragePrefix } from "../storage/prefix.js";
-import type { WorkspaceCollectionError } from "./errors.ts";
+import { type WorkspaceCollectionError, WorkspaceSnapshotError } from "./errors.ts";
 import type { SnapshotBlob, SnapshotBlobStore, WorktreeSnapshot } from "./types.ts";
 
 /** Every blob hash a snapshot needs to be restored: its chain's patches and its bundle. */
@@ -993,6 +993,25 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	async listBlobHashes(): Promise<readonly string[]> {
 		const rows = await this.database.all<{ hash: string }>(`SELECT hash FROM ${this.table}`);
 		return rows.map((row) => row.hash);
+	}
+
+	/**
+	 * Rejects with a `blobs-collected` {@link WorkspaceSnapshotError} naming the first of `snapshots`' blobs this table
+	 * does not hold in full, a chunked blob's chunks included (#5077). Run in the write transaction that records the
+	 * snapshots, it keeps a collection that ran after their capture stored the blobs from leaving a recorded snapshot
+	 * that cannot be restored: the blobs it finds stay until that transaction ends, and the references it writes keep
+	 * them after.
+	 */
+	async assertStored(transaction: SqliteExecutor, snapshots: readonly WorktreeSnapshot[]): Promise<void> {
+		const hashes = [...new Set(snapshots.flatMap(snapshotBlobHashes))];
+		if (hashes.length === 0) return;
+		const rows = await transaction.all<SqliteRow & { hash: string }>(
+			`SELECT hash FROM ${this.table} AS b WHERE hash IN (SELECT value FROM ${this.dialect.jsonValues("?")}) AND (chunks = 0 OR chunks = (SELECT COUNT(*) FROM ${this.tables.blobChunks} AS c WHERE c.hash = b.hash))${this.dialect.lockClause("share")}`,
+			JSON.stringify(hashes),
+		);
+		const stored = new Set(rows.map((row) => row.hash));
+		const missing = hashes.find((hash) => !stored.has(hash));
+		if (missing !== undefined) throw new WorkspaceSnapshotError("blobs-collected", missing);
 	}
 
 	/**

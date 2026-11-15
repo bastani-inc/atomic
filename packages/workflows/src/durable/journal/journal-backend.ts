@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { setImmediate } from "node:timers";
+import { isWorkspaceSnapshotError } from "@bastani/atomic";
 import { type JournalShardUnavailableError, StorageError, type StorageFailureCause } from "@bastani/atomic/storage";
 import { STAGE_SESSION_HEARTBEAT_INTERVAL_MS } from "../../runs/foreground/stage-session-heartbeat.js";
 import type { PendingStageMessage, PendingStageMessageDelivery } from "../../shared/store-types.js";
@@ -258,6 +259,8 @@ function* invoke<T>(action: () => Promise<T>): Operation<T> {
 		return value!;
 	} catch (error) {
 		if (error instanceof JournalError || error instanceof StorageError) throw error;
+		// A checkpoint refused because a collection deleted its snapshot blobs (#5077) is the recorder's to handle.
+		if (isWorkspaceSnapshotError(error) && error.code === "blobs-collected") throw error;
 		throw customJournalUnavailable(error as StorageFailureCause);
 	}
 }

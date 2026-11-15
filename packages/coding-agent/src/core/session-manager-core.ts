@@ -94,7 +94,7 @@ import {
 import { JsonlSessionStore } from "./storage/session/jsonl-session-store.js";
 import { MemorySessionStore, markPrivateMemorySessionStore } from "./storage/session/memory-session-store.js";
 import type { SessionBlob, SessionRecordHeader, SessionSnapshot, SessionStore } from "./storage/session/types.js";
-import { WorkspaceConfigError } from "./worktree-snapshot/errors.ts";
+import { isWorkspaceSnapshotError, WorkspaceConfigError } from "./worktree-snapshot/errors.ts";
 import type { WorktreeRootMapping, WorktreeSnapshot, WorktreeUnrestored } from "./worktree-snapshot/types.ts";
 
 /**
@@ -107,6 +107,8 @@ function wroteNothing(error: unknown): boolean {
 		error instanceof SessionInvalidTextError ||
 		error instanceof SessionInvalidTimestampError ||
 		error instanceof StoragePayloadTooLargeError ||
+		// A snapshot record whose blobs a collection deleted is refused before anything is written (#5077).
+		(isWorkspaceSnapshotError(error) && error.code === "blobs-collected") ||
 		// The session store's and the database's closed-store errors.
 		(error instanceof Error && error.name === "StoreClosedError")
 	);

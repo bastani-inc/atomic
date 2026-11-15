@@ -399,6 +399,13 @@ export class SqlSessionStore implements SessionStore {
 		return this.database.transaction(async (tx) => {
 			const previous = await this.forWrite(tx, sessionId, options, true);
 			validateSessionEntries(entries);
+			// A new snapshot record is written only while every blob it references is still stored (#5077).
+			await this.snapshotBlobs.assertStored(
+				tx,
+				entries.flatMap((entry) =>
+					entry.type === "worktree_snapshot" && entry.snapshot !== undefined ? [entry.snapshot] : [],
+				),
+			);
 			const lastSeq = previous.last_seq + entries.length;
 			const texts = await this.saveSummary(
 				tx,
