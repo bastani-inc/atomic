@@ -8,6 +8,7 @@ import { noteRestoreFetch, timeRestorePhase } from "../resume/timings.ts";
 import {
 	locateCheckout,
 	readRepositoryConfig,
+	recordRestoredTree,
 	withScratchDirectory,
 	writeSnapshotCommit,
 	writeWorkingTree,
@@ -1038,6 +1039,7 @@ async function materialize(
 	await runGit(["-c", `core.attributesFile=${attributes}`, "read-tree", "--reset", "-u", tree], neutral);
 	await runGit(["read-tree", head], neutral);
 	await runGit(["update-index", "-q", "--refresh"], { ...neutral, allowExitCodes: [1] });
+	await recordRestoredTree(neutral, tree);
 }
 
 /** Removes the restored worktree at `target` from the store `git` points at, then prunes what its removal left. */
@@ -1296,6 +1298,7 @@ export async function resetPooledWorktree(
 			await runGit(["update-ref", "--no-deref", "HEAD", snapshot.head], neutral);
 			await runGit(["read-tree", "--reset", snapshot.head], neutral);
 			await runGit(["update-index", "-q", "--refresh"], { ...neutral, allowExitCodes: [1] });
+			await recordRestoredTree(neutral, snapshot.tree);
 		});
 		const warnings = snapshotRestoreWarnings(snapshot);
 		if (snapshot.filters?.drivers.includes("lfs")) {
@@ -1500,14 +1503,46 @@ async function restoreDegradedValidated(
 			// check its HEAD and keep the checkout, recording the tree it holds.
 			verify: "head",
 		});
-		if (measured === degraded.tree) return { path, degraded, warnings };
-		// This host's checkout filters changed files: record what the worktree holds, and which files differ.
+		// This host's checkout filters may have changed files, and a case-insensitive file system may hold one file for
+		// paths that differ only in case: record what the worktree holds, and which files differ.
 		const differing = nulFields(
 			(await runGit(["diff-tree", "-r", "-z", "--name-only", "--no-renames", degraded.tree, measured], git)).stdout,
 		);
-		const missingPaths = [...new Set([...degraded.missingPaths, ...differing])].sort();
+		const folded = await caseFoldedPaths(git, degraded.tree, path);
+		const missingPaths = [...new Set([...degraded.missingPaths, ...differing, ...folded])].sort();
 		return { path, degraded: { ...degraded, tree: measured, missingPaths }, warnings };
 	});
+}
+
+/**
+ * The paths of `tree` that differ from another only in case (`dir/b.txt` and `Dir/b.txt`) where the worktree at `root`
+ * lacks one of them under its own spelling: a case-insensitive file system holds one file for them all, so none can be
+ * relied on (#4932).
+ */
+async function caseFoldedPaths(git: GitRunOptions, tree: string, root: string): Promise<string[]> {
+	const groups = new Map<string, string[]>();
+	for (const path of nulFields((await runGit(["ls-tree", "-r", "-z", "--name-only", tree], git)).stdout)) {
+		const key = path.toLowerCase();
+		groups.set(key, [...(groups.get(key) ?? []), path]);
+	}
+	const spelledAsRecorded = async (path: string) => {
+		const parts = path.split("/");
+		for (let index = 0; index < parts.length; index++) {
+			const names: string[] = await readdir(join(root, ...parts.slice(0, index))).catch(() => []);
+			if (!names.includes(parts[index]!)) return false;
+		}
+		return true;
+	};
+	const folded: string[] = [];
+	for (const group of groups.values()) {
+		if (group.length < 2) continue;
+		for (const path of group) {
+			if (await spelledAsRecorded(path)) continue;
+			folded.push(...group);
+			break;
+		}
+	}
+	return folded;
 }
 
 /** The commits `snapshot` recorded as not pushed: its bundle's, else those its omissions name, else its `HEAD`. */

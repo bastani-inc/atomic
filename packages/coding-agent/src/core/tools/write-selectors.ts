@@ -1,6 +1,6 @@
 import { readFile as fsReadFile, writeFile as fsWriteFile } from "fs/promises";
 import type { ToolDefinition } from "../extensions/types.ts";
-import { type ConflictBlock, findConflictBlocks, reconcileConflictBlocks } from "./conflict-registry.ts";
+import { type ConflictBlock, conflictEntries, refreshConflictFile } from "./conflict-registry.ts";
 import { WriteSelectorError } from "./file-tool-errors.ts";
 import {
 	type InternalResourceContext,
@@ -32,24 +32,82 @@ type WriteSelectorResult = {
 	details: WriteSelectorDetails | undefined;
 };
 
-function conflictReplacement(content: string, block: ConflictBlock): string[] {
-	const token = content.trim();
-	if (token === "@ours") return block.ours;
-	if (token === "@theirs") return block.theirs;
-	if (token === "@base") return block.base;
-	const normalized = content.endsWith("\n") ? content.slice(0, -1) : content;
-	return normalized === "" ? [] : normalized.split("\n");
+const NEWLINE = 0x0a;
+
+/** A file's lines as bytes, split at `\n`; a line keeps its `\r`, so joining them with `\n` gives the bytes back. */
+function splitByteLines(bytes: Buffer): Buffer[] {
+	const lines: Buffer[] = [];
+	let from = 0;
+	for (let at = bytes.indexOf(NEWLINE); at !== -1; at = bytes.indexOf(NEWLINE, from)) {
+		lines.push(bytes.subarray(from, at));
+		from = at + 1;
+	}
+	lines.push(bytes.subarray(from));
+	return lines;
 }
 
-async function resolveConflictBlocks(blocks: ConflictBlock[], content: string): Promise<void> {
+/**
+ * The bytes that replace a region. `@ours`, `@theirs` and `@base` keep that side's bytes. Other content is written
+ * as UTF-8 with the region's line ending: CRLF when its start marker ends in CRLF, so a CRLF file (or a CRLF region
+ * of a mixed file) stays CRLF; the last line ends as the end marker did.
+ */
+function conflictReplacement(content: string, block: ConflictBlock, region: Buffer[]): Buffer[] {
+	const token = content.trim();
+	const side = (from: number, to: number) => region.slice(from - block.start, to - block.start);
+	if (token === "@ours") return side(block.start + 1, block.baseSep ?? block.sep);
+	if (token === "@theirs") return side(block.sep + 1, block.end);
+	if (token === "@base") return block.baseSep === undefined ? [] : side(block.baseSep + 1, block.sep);
+	const unified = content.replace(/\r\n/g, "\n");
+	const normalized = unified.endsWith("\n") ? unified.slice(0, -1) : unified;
+	if (normalized === "") return [];
+	const crlf = (block.lines[0] as string).endsWith("\r");
+	const lastEnding = (block.lines.at(-1) as string).endsWith("\r") ? "\r" : "";
+	const lines = normalized.split("\n");
+	return lines.map((line, index) =>
+		Buffer.from(`${line}${index === lines.length - 1 ? lastEnding : crlf ? "\r" : ""}`),
+	);
+}
+
+const utf8 = new TextDecoder("utf-8", { fatal: true });
+
+/**
+ * Splice each region's replacement into its file's bytes, leaving every other byte as it was. Every region's bytes
+ * must be UTF-8; they are checked before any file is written.
+ */
+async function resolveConflictBlocks(
+	blocks: ConflictBlock[],
+	content: string,
+	path: string,
+	cwd: string,
+): Promise<void> {
 	const byFile = new Map<string, ConflictBlock[]>();
 	for (const block of blocks) byFile.set(block.file, [...(byFile.get(block.file) ?? []), block]);
+	const updates: Array<{ file: string; bytes: Buffer }> = [];
 	for (const [file, fileBlocks] of byFile) {
-		const lines = (await fsReadFile(file, "utf8")).split("\n");
-		for (const block of fileBlocks.sort((a, b) => b.start - a.start))
-			lines.splice(block.start, block.end - block.start + 1, ...conflictReplacement(content, block));
-		await fsWriteFile(file, lines.join("\n"), "utf8");
+		const lines = splitByteLines(await fsReadFile(file));
+		for (const block of fileBlocks.sort((a, b) => b.start - a.start)) {
+			const region = lines.slice(block.start, block.end + 1);
+			try {
+				for (const line of region) utf8.decode(line);
+			} catch (error: unknown) {
+				throw new WriteSelectorError(
+					"conflict-not-utf8",
+					`Conflict in ${file} is not valid UTF-8 text, and resolving it would corrupt its bytes. The file was left unchanged.`,
+					{ path },
+					{ cause: error },
+				);
+			}
+			lines.splice(block.start, region.length, ...conflictReplacement(content, block, region));
+		}
+		updates.push({
+			file,
+			bytes: Buffer.concat(lines.flatMap((line, index) => (index ? [Buffer.of(NEWLINE), line] : [line]))),
+		});
+	}
+	for (const { file, bytes } of updates) {
+		await fsWriteFile(file, bytes);
 		invalidateNativeSearchCache(file);
+		await refreshConflictFile(cwd, file);
 	}
 }
 
@@ -66,28 +124,34 @@ async function writeConflictSelector(path: string, content: string, cwd: string)
 			"Scoped conflict resources are read-only; write conflict://<id> or conflict://*.",
 			{ path },
 		);
-	const liveBlocks = await findConflictBlocks(cwd);
-	if (liveBlocks.length === 0)
-		throw new WriteSelectorError("conflict-markers-not-found", "No conflict markers found.", { path });
-	const blocks = reconcileConflictBlocks(liveBlocks, cwd);
-	if (target === "*") {
-		await resolveConflictBlocks(blocks, content);
-		const text = `Resolved ${blocks.length} conflict${blocks.length === 1 ? "" : "s"}`;
-		return { content: [{ type: "text", text }], details: undefined };
-	}
-	if (!/^\d+$/.test(target))
+	if (target !== "*" && !/^\d+$/.test(target))
 		throw new WriteSelectorError(
 			"conflict-target-invalid",
 			"Conflict writes must target conflict://<id> or conflict://*.",
 			{ path, conflictId: target },
 		);
-	const block = blocks[Number.parseInt(target, 10) - 1];
-	if (!block)
+	const entries = await conflictEntries(cwd);
+	const entry = entries[Number(target) - 1];
+	if (entry?.stale)
+		throw new WriteSelectorError(
+			"conflict-stale",
+			`Conflict ${target} changed since it was read. No file was changed.`,
+			{ path, conflictId: target },
+		);
+	const blocks = entries.filter((candidate) => !candidate.stale).map((candidate) => candidate.block);
+	if (blocks.length === 0)
+		throw new WriteSelectorError("conflict-markers-not-found", "No conflict markers found.", { path });
+	if (target === "*") {
+		await resolveConflictBlocks(blocks, content, path, cwd);
+		const text = `Resolved ${blocks.length} conflict${blocks.length === 1 ? "" : "s"}`;
+		return { content: [{ type: "text", text }], details: undefined };
+	}
+	if (!entry)
 		throw new WriteSelectorError("conflict-id-not-found", `Conflict id not found: ${target}`, {
 			path,
 			conflictId: target,
 		});
-	await resolveConflictBlocks([block], content);
+	await resolveConflictBlocks([entry.block], content, path, cwd);
 	return { content: [{ type: "text", text: `Resolved conflict ${target}` }], details: undefined };
 }
 
