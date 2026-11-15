@@ -422,6 +422,45 @@ test.skipIf(process.platform === "win32")(
 	COORDINATOR_TEST_TIMEOUT_MS,
 );
 
+test.skipIf(process.platform === "win32")(
+	"a root whose binding snapshot lost blobs to a collection holds none, dispatches none, and says why (#5077)",
+	async () => {
+		const sandbox = new GitSandbox();
+		const { clone } = await sandbox.remoteWithClone("repo", { "a.txt": "committed\n" });
+		const placed = await recordedPlacement({
+			placement: "shared",
+			workspace: workspace({ repo: clone, branch: "main", base: "main", worktree: clone }),
+		});
+		const holds = vi.spyOn(SqlPoolQueue.prototype, "holdRootSnapshot");
+		const captures = vi
+			.spyOn(DispatchSnapshots.prototype, "capture")
+			.mockResolvedValue(carried("collected-root", ["p-collected"], "b-collected"));
+		const f = await fixture("shared-dispatch-snapshot-collected-root", {
+			workspace: placed.placement.workspace!,
+			workspaceWorktree: placed.worktree,
+		});
+		const { parent } = await fanOut(1)((await boundChild()) as never);
+		const store = createStore();
+		const execution = run(parent, {}, { runId: "root", cwd: f.directory, store, durableBackend: f.backend });
+		try {
+			while (holds.mock.calls.length === 0) await sleep(25);
+			assert.equal(holds.mock.calls[0]![1], undefined, "the root holds no snapshot whose blobs are gone");
+			assert.deepEqual(await recordedRootSnapshots(f), []);
+			const reason = store.run("root")?.snapshotUnavailable;
+			assert.ok(reason);
+			assert.equal((rehydrateWorkspaceError(reason) as Error & { code?: string }).code, "blobs-collected");
+		} finally {
+			captures.mockRestore();
+			holds.mockRestore();
+			await f.pool.close();
+			await execution.catch(() => {});
+			await f.close();
+			sandbox.dispose();
+		}
+	},
+	COORDINATOR_TEST_TIMEOUT_MS,
+);
+
 test.each([
 	{ name: "no bound worktree", options: {} },
 	{ name: "snapshots disabled", options: { workspaceWorktree: "/unused", snapshots: { enabled: false } } },
