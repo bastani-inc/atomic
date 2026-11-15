@@ -782,11 +782,11 @@ export class MultiNodeRouter {
 			const local = this.host.sessions.get(ask.senderSessionId);
 			if (local !== undefined) {
 				// #5145: a broker that stopped after queueing this failure, before it cleared the ask, left the failure to its
-				// row: it is delivered from there (or already was), and only the ask is settled here.
+				// row: this broker's outbox scans deliver it (at the asker's registration and every backup poll, which runs
+				// before this sweep), or already did, so only the ask is settled here. A row that expired was never delivered.
 				const queued = await this.state.outbox.read(frame.message.id);
 				if (queued.status === "found" && queued.row.state !== "failed") {
 					await settled();
-					if (queued.row.state !== "delivered") this.scanIdentity(queued.row.targetIdentity);
 					continue;
 				}
 				// #5004: held until the asker saved it, like a reply.

@@ -2098,9 +2098,9 @@ export class IntercomClient extends EventEmitter {
 		const heard = this.heardOutcomes.get(message.id);
 		if (heard === undefined) {
 			this.heardOutcomes.set(message.id, "heard");
-			if (this.heardOutcomes.size > HEARD_OUTCOMES_MAX) {
-				const oldest = this.heardOutcomes.keys().next().value;
-				if (oldest !== undefined) this.heardOutcomes.delete(oldest);
+			for (const oldest of this.heardOutcomes.keys()) {
+				if (this.heardOutcomes.size <= HEARD_OUTCOMES_MAX) break;
+				this.heardOutcomes.delete(oldest);
 			}
 			return false;
 		}
