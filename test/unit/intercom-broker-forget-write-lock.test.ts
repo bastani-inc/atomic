@@ -302,3 +302,65 @@ test("an acknowledgment timeout whose delete is locked does not end the broker (
 	releaseLock();
 	await assertBrokerAlive();
 }, 60_000);
+
+test("a retried forward to a receipt-confirming stage whose write fails keeps the earlier attempt's reservation (#5096)", async () => {
+	const runId = crypto.randomUUID();
+	const invocationGroup = `workflow:${runId}`;
+	const stageGroup = `${invocationGroup}/reviewers`;
+	const capability = "retry-fault-capability";
+	const target = `workflow:${runId}/reviewer`;
+	const owner = new IntercomClient("retry-fault-owner");
+	const stage = new IntercomClient("retry-fault-stage", { acknowledgesReceipt: true });
+	const sender = new IntercomClient("retry-fault-sender");
+	for (const client of [owner, stage, sender]) {
+		client.on("error", () => {});
+		clients.push(client);
+	}
+	const session = { cwd: "/tmp/retry-fault", model: "test", pid: process.pid, startedAt: 1, lastActivity: 1 };
+	await owner.connect({ ...session, name: "retry-fault-owner", group: invocationGroup });
+	// The fixture treats the socket that registered a name containing "forward-fault-target" as a faultable stage.
+	await stage.connect({ ...session, name: "forward-fault-target-receipts", group: stageGroup });
+	await sender.connect({ ...session, name: "retry-fault-sender", group: "default" });
+	await sender.joinGroup(invocationGroup);
+	owner.registerPendingStageRoute(runId, invocationGroup, capability, [
+		{
+			stageId: "reviewer",
+			stageName: "reviewer",
+			target,
+			lifecycle: "running",
+			routeEligible: true,
+			group: stageGroup,
+		},
+	]);
+	await owner.listSessions();
+	await stage.registerLiveWorkflowStageRoute(runId, ["reviewer"], capability);
+	owner.on("pending_stage_message", (request) => {
+		owner.respondPendingStageMessage(request.requestId, { outcome: "forward", target });
+	});
+	// The stage receives the message but never confirms it saved it, so the first attempt stays uncertain.
+	let received = 0;
+	stage.on("message", () => {
+		received += 1;
+	});
+
+	const messageId = "retry-fault-message";
+	const text = "RETRY-FORWARD-WRITE-FAULT: the retry's forward write fails";
+	const first = await sender
+		.send(target, { text, messageId })
+		.catch((error: Error) => ({ delivered: false, reason: error.message }));
+	assert.equal(first.delivered, false, "an unconfirmed save is not reported delivered");
+	assert.equal(received, 1, "the stage received the first attempt");
+	assert.equal(deliveredRecordExists(messageId), true, "the first attempt left its reservation");
+
+	const retried = await sender.send(target, { text, messageId });
+	assert.equal(retried.delivered, false);
+	assert.equal(retried.reason, "Session not found");
+	assert.match(brokerOutput, /forward write fault injected/);
+	// The broker writes the outcome before it would delete, so give a wrong delete time to land.
+	await new Promise((resolveDelay) => setTimeout(resolveDelay, 500));
+	assert.equal(
+		deliveredRecordExists(messageId),
+		true,
+		"a failed retry does not forget the reservation the earlier attempt may have delivered",
+	);
+}, 60_000);
