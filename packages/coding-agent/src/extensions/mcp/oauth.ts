@@ -522,9 +522,7 @@ export async function signInMcpServer(options: {
 		pending.save(next);
 	}
 	const complete = async () => {
-		const signedIn = pending.load();
-		if (!signedIn) throw new Error("OAuth sign-in did not produce tokens");
-		const { oauthState: _state, codeVerifier: _verifier, ...credentials } = signedIn;
+		const { oauthState: _state, codeVerifier: _verifier, ...credentials } = pending.load() ?? { serverUrl };
 		await store.save(credentials);
 	};
 	try {
