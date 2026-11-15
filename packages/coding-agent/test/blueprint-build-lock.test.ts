@@ -289,4 +289,85 @@ describe("blueprint build locks (#4748)", () => {
 		closeSync(fd);
 		assert.equal(existsSync(buildLockPath(dir, root())), true);
 	});
+
+	/**
+	 * A step process that started a child and then ended, as Git for Windows' `bash.exe` does when its host is killed:
+	 * the child keeps the ended step's id as its parent. Resolves the step as a lock records it, and the orphaned child.
+	 */
+	async function stepThatLeftAnOrphan(): Promise<{
+		step: { pid: number; start?: string; at: number };
+		orphan: number;
+	}> {
+		const at = Date.now();
+		const step = spawn(
+			process.execPath,
+			[
+				"-e",
+				"const c=require('child_process').spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:'ignore',windowsHide:true});c.unref();console.log(c.pid);process.stdin.once('data',()=>process.exit(0))",
+			],
+			{ stdio: ["pipe", "pipe", "ignore"] },
+		);
+		const orphan = await new Promise<number>((resolve) =>
+			step.stdout!.once("data", (data) => resolve(Number(String(data).trim()))),
+		);
+		const recorded = { pid: step.pid!, start: processStartToken(step.pid!), at };
+		step.stdin!.write("\n");
+		await exited(step);
+		return { step: recorded, orphan };
+	}
+
+	const runs = (pid: number) => {
+		try {
+			process.kill(pid, 0);
+			return true;
+		} catch {
+			return false;
+		}
+	};
+
+	test.skipIf(process.platform !== "win32" || processStartToken(process.pid) === undefined)(
+		"on Windows, the orphaned child of a dead build's ended step is stopped before the next build, and nothing else",
+		async () => {
+			const { step, orphan } = await stepThatLeftAnOrphan();
+			const bystander = sleeper();
+			try {
+				assert.equal(runs(orphan), true, "the step's child outlived it");
+				writeLock({ pid: await deadPid(), steps: [step] });
+				assert.deepEqual(await settleOtherBuilds(dir, [root()]), []);
+				assert.equal(runs(orphan), false, "the orphan had ended when the wait returned");
+				assert.equal(bystander.exitCode, null, "a process that is no child of the step still runs");
+			} finally {
+				if (runs(orphan)) process.kill(orphan);
+			}
+		},
+	);
+
+	test.skipIf(process.platform !== "win32")(
+		"on Windows, the orphaned child of a step recorded without its start is never stopped, and the build is reported",
+		async () => {
+			const { step, orphan } = await stepThatLeftAnOrphan();
+			try {
+				writeLock({ pid: await deadPid(), steps: [{ pid: step.pid, at: step.at }] });
+				const warnings = await settleOtherBuilds(dir, [root()], { waitMs: 300 });
+				assert.match(warnings[0] ?? "", /could not be identified/);
+				assert.equal(runs(orphan), true, "an orphan of an unproven step still runs");
+			} finally {
+				if (runs(orphan)) process.kill(orphan);
+			}
+		},
+	);
+
+	test.skipIf(process.platform !== "win32" || processStartToken(process.pid) === undefined)(
+		"on Windows, a child started more than a second before the step was recorded is no orphan of it",
+		async () => {
+			const { step, orphan } = await stepThatLeftAnOrphan();
+			try {
+				writeLock({ pid: await deadPid(), steps: [{ ...step, at: step.at + 60_000 }] });
+				await settleOtherBuilds(dir, [root()], { waitMs: 300 });
+				assert.equal(runs(orphan), true);
+			} finally {
+				if (runs(orphan)) process.kill(orphan);
+			}
+		},
+	);
 });
