@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { accessSync, constants, readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -9,6 +10,28 @@ import { type TaskLease, TaskSupervisor } from "../../packages/coding-agent/src/
 import { fileExists, readText, sleep } from "../helpers/runtime.js";
 
 const posix = process.platform !== "win32";
+const python = posix && spawnSync("python3", ["-c", ""]).status === 0;
+/** Whether commands run in a cgroup of their own: Linux, where this process's cgroup is writable by its user. */
+const delegatedCgroup = (() => {
+	if (process.platform !== "linux") return false;
+	try {
+		const own = readFileSync("/proc/self/cgroup", "utf8").match(/^0::(.*)$/mu)?.[1];
+		if (!own) return false;
+		const base = join("/sys/fs/cgroup", own);
+		accessSync(join(base, "cgroup.procs"), constants.W_OK);
+		return readFileSync(join(base, "cgroup.subtree_control"), "utf8").trim() === "";
+	} catch {
+		return false;
+	}
+})();
+function groupAlive(group: number) {
+	try {
+		process.kill(-group, 0);
+		return true;
+	} catch {
+		return false;
+	}
+}
 
 function value<T, E>(result: Result<T, E>): T {
 	assert.equal(result.ok, true, result.ok ? "accepted" : JSON.stringify(result.error));
@@ -142,8 +165,16 @@ test.runIf(posix)(
 );
 
 const hostDeaths = (["pipe", "pty"] as const).flatMap((terminal) =>
-	(["sigkill", "throw", "exit"] as const).map((how) => ({ terminal, how })),
+	(["sigkill", "throw", "exit", "guardian-first"] as const).map((how) => ({ terminal, how })),
 );
+/** The guardian a host started to end its shells when it dies: its child running the guardian script. */
+function guardianOf(host: number): number[] {
+	return execFileSync("ps", ["-eo", "pid=,ppid=,args="], { encoding: "utf8" })
+		.split("\n")
+		.map((line) => line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/u))
+		.filter((match) => match !== null && Number(match[2]) === host && match[3].includes("trap ''"))
+		.map((match) => Number(match?.[1]));
+}
 test.runIf(posix).each(hostDeaths)(
 	"a $terminal shell and its descendants end within their execution timeout when the host dies by $how (#5057)",
 	async ({ terminal, how }) => {
@@ -156,7 +187,15 @@ test.runIf(posix).each(hostDeaths)(
 		try {
 			const ready = await pidFrom(join(directory, "ready"), 15_000);
 			pids.push(await pidFrom(join(directory, "shell")), await pidFrom(join(directory, "inner")));
-			if (how === "sigkill") host.kill("SIGKILL");
+			if (how === "guardian-first") {
+				// A command that kills every `sh` it can, as `pkill sh` would, takes the guardian down first.
+				const [guardian] = guardianOf(host.pid ?? 0);
+				assert.ok(guardian, "no guardian found");
+				process.kill(guardian, "SIGKILL");
+				const deadline = Date.now() + 2000;
+				while (!guardianOf(host.pid ?? 0).some((pid) => pid !== guardian) && Date.now() < deadline) await sleep(10);
+			}
+			if (how === "sigkill" || how === "guardian-first") host.kill("SIGKILL");
 			await exited;
 			// The command was started with a 2 s execution timeout before `ready`; allow a second for the kernel.
 			const deadline = ready + 3000;
@@ -165,6 +204,73 @@ test.runIf(posix).each(hostDeaths)(
 		} finally {
 			host.kill("SIGKILL");
 			for (const pid of pids) if (alive(pid)) process.kill(pid, "SIGKILL");
+			await rm(directory, { recursive: true, force: true });
+		}
+	},
+	30_000,
+);
+
+const hoppers = [
+	{ name: "slow hopper", period: "0.01" },
+	{ name: "fast hopper", period: "0.0005" },
+];
+test.runIf(python).each(hoppers)(
+	"a $name that keeps forking a replacement in its own process group ends on cancel, and cleanup is reaped only once it is gone (#5057)",
+	async ({ period }) => {
+		const directory = await mkdtemp(join(tmpdir(), "task-hopper-5057-"));
+		const { supervisor, owner } = setup();
+		let group = 0;
+		try {
+			const task = value(
+				await supervisor.startCommandTask(
+					owner,
+					{
+						kind: "command",
+						command: `python3 '${resolve("test/fixtures/task-hopper.py")}' '${directory}/hop' ${period} >/dev/null 2>&1 & sleep 300`,
+						terminal: { kind: "pipe" },
+					},
+					"hopper" as OperationId,
+				),
+			);
+			group = await pidFrom(join(directory, "hop.pgid"));
+			assert.ok(groupAlive(group));
+			const cleanup = await finalCleanup(supervisor, task);
+			if (cleanup === "reaped")
+				assert.equal(groupAlive(group), false, "cleanup reported reaped while the hopper lives");
+			assert.equal(groupAlive(group), false, `the hopper outlived cleanup (${cleanup})`);
+		} finally {
+			if (group && groupAlive(group)) process.kill(-group, "SIGKILL");
+			await supervisor.closeTaskOwner(owner, "session-close");
+			await rm(directory, { recursive: true, force: true });
+		}
+	},
+	40_000,
+);
+
+// Without a delegated cgroup the guardian finds members by scanning processes, which a hopper can outrun; see
+// "Limits" in background-tasks.md.
+test.runIf(python && delegatedCgroup)(
+	"a hopper that keeps forking a replacement ends when the host dies by SIGKILL (#5057)",
+	async () => {
+		const directory = await mkdtemp(join(tmpdir(), "task-hopper-host-5057-"));
+		const host = spawn(
+			process.execPath,
+			[resolve("test/fixtures/task-host-death.mjs"), directory, "sigkill", "pipe", "hopper"],
+			{ stdio: "ignore" },
+		);
+		const exited = new Promise<void>((done) => host.once("exit", () => done()));
+		let group = 0;
+		try {
+			await pidFrom(join(directory, "ready"), 15_000);
+			group = await pidFrom(join(directory, "inner"));
+			host.kill("SIGKILL");
+			await exited;
+			const deadline = Date.now() + 3000;
+			while (groupAlive(group) && Date.now() < deadline) await sleep(20);
+			assert.equal(groupAlive(group), false, "the hopper outlived the host");
+		} finally {
+			host.kill("SIGKILL");
+			if (group && groupAlive(group)) process.kill(-group, "SIGKILL");
 			await rm(directory, { recursive: true, force: true });
 		}
 	},
