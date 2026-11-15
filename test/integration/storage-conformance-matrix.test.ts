@@ -29,14 +29,14 @@ import {
 } from "../helpers/intercom-multinode-contract.js";
 import { openMemoryOutboxFixture, openMemoryWakeUpBusFixture } from "../helpers/intercom-multinode-memory-reference.js";
 import { observeJournalRead } from "../helpers/journal-read-observation.js";
+import { registerPoolStoreConformance } from "../helpers/pool-store-conformance.js";
 import { databaseSubject, type StorageBackend, storageBackends } from "../helpers/storage-backends.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 
 /**
  * Every store's behavioural contract on every storage backend (#4793): the database facade, sessions, the workflow
- * run journal and Intercom's multi-node routing state, each on a SQLite file, a libSQL server and Postgres.
- * test/helpers/storage-backends.ts says how to point it at servers. The shared worker pool's stores are not here yet:
- * their SQL is SQLite's until P5 of #4793 makes it portable.
+ * run journal, Intercom's multi-node routing state and the worker pool's stores, each on a SQLite file, a libSQL server
+ * and Postgres. test/helpers/storage-backends.ts says how to point it at servers.
  */
 
 useTemporaryAgentDir();
@@ -152,6 +152,7 @@ for (const backend of storageBackends) {
 		openPendingAsks: scopeFixture(backend, openSqlPendingAskStore),
 		openBus: openMemoryWakeUpBusFixture,
 	});
+	registerPoolStoreConformance(run, `worker pool on ${name}`, () => backend.openScope());
 	registerCrossNodeHeldRoundTripConformance(run, intercom, {
 		openReservations: scopeFixture(backend, openSqlRestoringReservationStore),
 		openHeldSends: scopeFixture(backend, openSqlHeldSendStore),

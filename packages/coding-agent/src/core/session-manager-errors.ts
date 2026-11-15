@@ -66,3 +66,27 @@ export class SessionOpenElsewhereError extends Error {
 		this.host = holder.host;
 	}
 }
+
+/** The exit code of `atomic --session`, `--resume` or `--continue` refused with a {@link SessionAlreadyOpenError} (#5135). */
+export const SESSION_ALREADY_OPEN_EXIT_CODE = 75;
+
+/**
+ * Resuming a session another live process on this machine holds is refused before anything is written or restored
+ * (#5135). `pid` and `host` name the holder.
+ */
+export class SessionAlreadyOpenError extends Error {
+	readonly sessionId: string;
+	readonly pid: number;
+	readonly host: string;
+	readonly exitCode = SESSION_ALREADY_OPEN_EXIT_CODE;
+
+	constructor(sessionId: string, holder: { readonly pid: number; readonly host: string }) {
+		super(
+			`Session ${sessionId} is already open in process ${holder.pid} on ${holder.host}. Nothing was changed. Close it there or wait for that process to exit, then resume again.`,
+		);
+		this.name = "SessionAlreadyOpenError";
+		this.sessionId = sessionId;
+		this.pid = holder.pid;
+		this.host = holder.host;
+	}
+}
