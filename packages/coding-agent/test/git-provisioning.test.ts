@@ -1473,6 +1473,11 @@ describe("git resolution details (#4322)", () => {
 		assert.equal(shell?.env.GIT_CONFIG_KEY_0, undefined);
 		assert.equal(shell?.env.GIT_CONFIG_KEY_1, "core.longpaths");
 		assert.equal(shell?.env.GIT_CONFIG_VALUE_1, "true");
+		for (const unusable of ["-1", "none"]) {
+			const env = tools.getGitShellEnvironment({ Path: join(tempDir, "none"), GIT_CONFIG_COUNT: unusable })?.env;
+			assert.equal(env?.GIT_CONFIG_COUNT, "1");
+			assert.equal(env?.GIT_CONFIG_KEY_0, "core.longpaths");
+		}
 	});
 
 	it("finds git.exe on a Windows PATH without an executable bit", async () => {

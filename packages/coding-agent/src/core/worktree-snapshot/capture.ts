@@ -519,12 +519,11 @@ async function carryRecordedModes(git: GitRunOptions, recorded: string, omitted:
 	if (!trusted.get("core.filemode")) carried.add("100755");
 	if (!trusted.get("core.symlinks")) carried.add("120000");
 	if (carried.size === 0) return;
-	// A recorded tree this store no longer holds has no modes to give.
+	// A recorded tree this store no longer holds has no modes to give: Git fails, printing no entries.
 	const diff = await runGit(["diff-index", "--cached", "--raw", "-z", "--no-renames", recorded], {
 		...git,
 		allowExitCodes: [128],
 	});
-	if (diff.exitCode !== 0) return;
 	const fields = nulFields(diff.stdout);
 	const entries: string[] = [];
 	for (let index = 0; index + 1 < fields.length; index += 2) {
