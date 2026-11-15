@@ -259,7 +259,10 @@ unixOnly(
 	},
 );
 
-/** A preload that unlinks the socket path just before the broker's stat of it, `times` times. */
+/**
+ * A preload that unlinks the socket path just before the broker's stat of it, `times` times. The broker's next stat,
+ * of the socket it bound again, writes {@link reboundMarker}: the vanished socket is back and checked.
+ */
 function unlinkBoundSocketPreload(agentDir: string, socketPath: string, times: number): string {
 	const preload = join(agentDir, "unlink-bound-socket.mjs");
 	writeTextSync(
@@ -273,6 +276,9 @@ function unlinkBoundSocketPreload(agentDir: string, socketPath: string, times: n
 			`  if (unlinked < ${times} && path === ${JSON.stringify(socketPath)}) {`,
 			"    unlinked += 1;",
 			"    fs.unlinkSync(path);",
+			`  } else if (unlinked === ${times} && path === ${JSON.stringify(socketPath)}) {`,
+			"    unlinked += 1;",
+			`    fs.writeFileSync(${JSON.stringify(reboundMarker(agentDir))}, "");`,
 			"  }",
 			"  return statSync.call(this, path, ...rest);",
 			"};",
@@ -283,11 +289,23 @@ function unlinkBoundSocketPreload(agentDir: string, socketPath: string, times: n
 	return preload;
 }
 
+function reboundMarker(agentDir: string): string {
+	return join(agentDir, "socket-bound-again");
+}
+
 unixOnly("a broker whose just-bound socket vanishes binds it again instead of exiting (#5040)", async () => {
 	const agentDir = tempDir("ic5040-vanish-");
 	const socketPath = getBrokerSocketPath(process.platform, agentDir);
 	const { broker, stderr } = spawnBroker(agentDir, unlinkBoundSocketPreload(agentDir, socketPath, 1));
 
+	// The first bind answers too, until the preload unlinks it: a session connects only to the socket bound again.
+	const deadline = performance.now() + BROKER_BUDGET_MS;
+	while (broker.exitCode === null && !existsSync(reboundMarker(agentDir)) && performance.now() < deadline)
+		await sleep(POLL_INTERVAL_MS);
+	assert.ok(
+		existsSync(reboundMarker(agentDir)),
+		`the broker never bound its socket again:\n${broker.exitCode === null ? "" : await stderr}`,
+	);
 	await waitUntilAnswering(broker, socketPath, stderr);
 	const client = await connectSession(socketPath, agentDir);
 	const connected = client.isConnected();
