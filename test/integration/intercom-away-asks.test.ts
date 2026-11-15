@@ -364,7 +364,9 @@ test(
 			"INSERT INTO away_questions (message_id, sender_session_id, target_session_id, sender_return_address, kept_at) VALUES (?, ?, ?, ?, ?)",
 		);
 		for (let row = 0; row < AWAY_ASKS_PER_RECIPIENT_MAX; row++)
-			insert.run(randomUUID(), `other-asker-${row}`, recipientId, randomUUID(), Date.now());
+			// Their askers are connected elsewhere (no away asker to hold a failure for), so the recipient's end later holds
+			// nothing for them: a thousand held failures would stall this shared broker for the tests that follow.
+			insert.run(randomUUID(), `other-asker-${row}`, recipientId, "", Date.now());
 		database.exec("COMMIT");
 		database.close();
 
