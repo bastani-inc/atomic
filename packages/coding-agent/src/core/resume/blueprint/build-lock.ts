@@ -5,6 +5,7 @@
  * SIGKILL) left behind, so two builds never run in one worktree at once.
  */
 
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
@@ -18,6 +19,8 @@ interface LockedProcess {
 	readonly pid: number;
 	/** When it started, where that can be read, so a later process given the same id is told apart. */
 	readonly start?: string;
+	/** When this process saw it start, in milliseconds since the epoch. */
+	readonly at?: number;
 }
 
 interface BuildLock extends LockedProcess {
@@ -66,6 +69,49 @@ function runs(process_: LockedProcess): boolean {
 	}
 }
 
+/**
+ * On Windows, the processes left behind by `steps` whose step process itself has ended: Git for Windows' `bash.exe`
+ * starts the shell as a child and may end without it, and nothing then ties that shell to a process tree. They are
+ * found as processes of a step's id, started after it, and their own children.
+ */
+function orphanedChildren(steps: readonly LockedProcess[]): LockedProcess[] {
+	const script =
+		"Get-CimInstance Win32_Process | ForEach-Object { '{0} {1} {2}' -f $_.ProcessId, $_.ParentProcessId, ([DateTimeOffset]$_.CreationDate).ToUnixTimeMilliseconds() }";
+	const shell = join(
+		process.env.SystemRoot || "C:\\Windows",
+		"System32",
+		"WindowsPowerShell",
+		"v1.0",
+		"powershell.exe",
+	);
+	const listed = spawnSync(shell, ["-NoProfile", "-NonInteractive", "-Command", script], {
+		encoding: "utf8",
+		timeout: 30_000,
+		windowsHide: true,
+	});
+	if (listed.status !== 0 || typeof listed.stdout !== "string") return [];
+	const processes = listed.stdout
+		.split(/\r?\n/)
+		.map((line) => line.trim().split(/\s+/).map(Number))
+		.filter((fields) => fields.length === 3 && fields.every(Number.isFinite))
+		.map(([pid, parent, created]) => ({ pid: pid!, parent: parent!, created: created! }));
+	const found: LockedProcess[] = [];
+	let parents = steps.map((step) => ({ pid: step.pid, at: step.at ?? 0 }));
+	while (parents.length > 0) {
+		const children = processes.filter((candidate) =>
+			parents.some(
+				(parent) =>
+					candidate.parent === parent.pid &&
+					candidate.created >= parent.at - 1_000 &&
+					!found.some((known) => known.pid === candidate.pid),
+			),
+		);
+		found.push(...children.map((child) => ({ pid: child.pid })));
+		parents = children.map((child) => ({ pid: child.pid, at: child.created }));
+	}
+	return found;
+}
+
 function delay(ms: number, signal: AbortSignal | undefined): Promise<void> {
 	return new Promise((resolve, reject) => {
 		signal?.throwIfAborted();
@@ -93,7 +139,8 @@ async function settleOtherBuild(file: string, signal: AbortSignal | undefined): 
 			await delay(BUILD_LOCK_POLL_MS, signal);
 			continue;
 		}
-		const orphans = (lock.steps ?? []).filter(runs);
+		const steps = lock.steps ?? [];
+		const orphans = [...steps.filter(runs), ...(process.platform === "win32" ? orphanedChildren(steps) : [])];
 		for (const step of orphans) killProcessTree(step.pid);
 		for (let waited = 0; waited < 25 && orphans.some(runs); waited++) await delay(BUILD_LOCK_POLL_MS / 2, signal);
 		rmSync(file, { force: true });
@@ -140,7 +187,7 @@ export async function withBuildLocks<T>(
 	};
 	// Written once a step starts a process, so a build that runs nothing, as for an untrusted worktree, writes nothing.
 	const watch = (pid: number, running: boolean) => {
-		if (running) steps.set(pid, locked(pid));
+		if (running) steps.set(pid, { ...locked(pid), at: Date.now() });
 		else steps.delete(pid);
 		write();
 	};
