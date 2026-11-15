@@ -942,8 +942,14 @@ function recordWithoutContinuing(session: AgentSession, answers: readonly Answer
  * detachable turn whose every call has its result continues that turn (its process stopped before the model
  * answered), and a turn still waiting on a call is left as it is. Each result is finalized as an inline call's is:
  * extension `tool_result` handlers, image normalization and the oversized-output spill.
+ * `onRecorded` is told the ids of the results it recorded as soon as they are saved, before the turn continues, so a
+ * caller that holds them elsewhere can let them go even if the continued turn never ends.
  */
-export async function resumeDetachedTurn(this: AgentSession, results: readonly DetachedToolResult[]): Promise<void> {
+export async function resumeDetachedTurn(
+	this: AgentSession,
+	results: readonly DetachedToolResult[],
+	onRecorded?: (toolCallIds: readonly string[]) => void,
+): Promise<void> {
 	const sessionId = this.sessionManager.getSessionId();
 	// A closed session records nothing: the results stay with the caller for the session reopened from the store.
 	if (this._disposed || sessionGenerationClosing.has(this))
@@ -979,11 +985,16 @@ export async function resumeDetachedTurn(this: AgentSession, results: readonly D
 	if (pending.length === 0 && !(endsOnDetachableTurn && [...issued.keys()].every((id) => recorded.has(id)))) return;
 	for (const result of pending) detached?.delete(result.toolCallId);
 	// The turn continues only once every detachable call it issued has a result; until then the results wait for it.
+	const recordedIds = pending.map((result) => result.toolCallId);
 	if (calls.some(({ toolCall }) => !recorded.has(toolCall.id))) {
 		await recordWithoutContinuing(this, answers);
+		onRecorded?.(recordedIds);
 		return;
 	}
-	await this._runAgentContinuation(() => recordAnswers(this, answers));
+	await this._runAgentContinuation(async () => {
+		await recordAnswers(this, answers);
+		onRecorded?.(recordedIds);
+	});
 	deliverHeldTaskCompletions(this);
 }
 
