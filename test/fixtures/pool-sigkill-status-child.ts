@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { AuthStorage, ModelRuntime, SettingsManager } from "@bastani/atomic";
 import { workflow } from "@bastani/atomic/workflows";
-import { createAssistantMessageEventStream } from "@bastani/pi-ai";
+import { createAssistantMessageEventStream } from "@bastani/atomic-ai";
 import { Type } from "typebox";
 
 /**

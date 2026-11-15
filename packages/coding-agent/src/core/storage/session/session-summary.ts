@@ -1,4 +1,4 @@
-import type { AssistantMessage, TextContent, UserMessage } from "@bastani/pi-ai/compat";
+import type { AssistantMessage, TextContent, UserMessage } from "@bastani/atomic-ai/compat";
 import type { SessionEntry } from "../../session-manager-types.ts";
 import type { SessionRecordHeader, SessionSnapshot, SessionSummary } from "./types.js";
 

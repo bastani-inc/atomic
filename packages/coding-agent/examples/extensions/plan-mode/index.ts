@@ -13,9 +13,9 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@bastani/atomic";
-import type { AssistantMessage } from "@bastani/pi-ai/compat";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { Key } from "@earendil-works/pi-tui";
+import type { AgentMessage } from "@bastani/atomic-agent-core";
+import type { AssistantMessage } from "@bastani/atomic-ai/compat";
+import { Key } from "@bastani/atomic-tui";
 import { allStepsComplete, extractTodoItems, isSafeCommand, markCompletedSteps, type TodoItem } from "./utils.ts";
 
 // Tools

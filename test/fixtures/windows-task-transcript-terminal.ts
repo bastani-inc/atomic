@@ -1,10 +1,10 @@
 import { appendFileSync } from "node:fs";
 import { stripVTControlCharacters } from "node:util";
-import type { AssistantMessage } from "@bastani/pi-ai/compat";
+import type { AssistantMessage } from "@bastani/atomic-ai/compat";
 import type { AgentSessionEvent } from "../../packages/coding-agent/src/core/agent-session.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { ChatSessionHost } from "../../packages/coding-agent/src/modes/interactive/components/chat-session-host.js";
-import { Key, matchesKey, setKeybindings } from "@earendil-works/pi-tui";
+import { Key, matchesKey, setKeybindings } from "@bastani/atomic-tui";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import { bindOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
 import { createFullscreenTui } from "../../packages/coding-agent/src/modes/interactive/interactive-tui.js";

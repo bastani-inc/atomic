@@ -1,4 +1,4 @@
-import { wrapFetchPreservingAdmission } from "@bastani/pi-ai/utils/request-admission";
+import { wrapFetchPreservingAdmission } from "@bastani/atomic-ai/utils/request-admission";
 
 export const CODEX_FAST_ROUTE_ORIGINATOR = "codex_cli_rs";
 export const CODEX_FAST_ROUTE_HEADER = "x-codex-routing-hint";
@@ -74,7 +74,7 @@ export function forceCodexFastRouteOriginator(
 		headers.set("originator", CODEX_FAST_ROUTE_ORIGINATOR);
 	} else if (marker !== undefined) {
 		headers.delete(CODEX_FAST_ROUTE_HEADER);
-		if (headers.get("originator") === CODEX_FAST_ROUTE_ORIGINATOR) headers.set("originator", "pi");
+		if (headers.get("originator") === CODEX_FAST_ROUTE_ORIGINATOR) headers.set("originator", "atomic");
 	}
 	return headers;
 }

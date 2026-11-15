@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { fauxAssistantMessage, type TranscriptContext } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage, type TranscriptContext } from "@bastani/atomic-ai/compat";
 import { test } from "vitest";
 import { SessionManager } from "../src/core/session-manager.js";
 import { WorkflowStageAdmissionBoundary } from "../src/core/workflow-stage-admission.js";

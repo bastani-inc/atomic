@@ -1,4 +1,4 @@
-import { type KeyId, matchesKey } from "@earendil-works/pi-tui";
+import { type KeyId, matchesKey } from "@bastani/atomic-tui";
 import type { AgentSession, ClearedQueue } from "../../core/agent-session.js";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";

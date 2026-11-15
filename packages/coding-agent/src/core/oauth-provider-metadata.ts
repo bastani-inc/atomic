@@ -1,4 +1,4 @@
-import type { Provider } from "@bastani/pi-ai";
+import type { Provider } from "@bastani/atomic-ai";
 import type { OAuthProviderMetadata } from "./oauth-login.ts";
 import type { ProviderConfigInput } from "./provider-composer.ts";
 

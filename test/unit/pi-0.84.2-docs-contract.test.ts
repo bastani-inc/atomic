@@ -177,8 +177,9 @@ describe("pi 0.84.2 docs contract — every shipped door is documented", () => {
 		assert.match(keybindings, /`tui\.altScreen\.search\*`[^\n]+no default keys and do nothing/u);
 	});
 
-	test("environment-variables.md documents PI_TUI_ESC_TIMEOUT, the AI_AGENT marker, and the experimental gate", () => {
+	test("environment-variables.md documents ATOMIC_TUI_ESC_TIMEOUT (legacy PI_TUI_ESC_TIMEOUT), the AI_AGENT marker, and the experimental gate", () => {
 		const env = doc("environment-variables.md");
+		assert.match(env, /`ATOMIC_TUI_ESC_TIMEOUT`/u);
 		assert.match(env, /`PI_TUI_ESC_TIMEOUT`/u);
 		assert.match(env, /`100` over SSH and `10` otherwise/u);
 		assert.match(env, /`AI_AGENT=atomic`/u);

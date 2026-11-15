@@ -6,8 +6,8 @@ import {
 	InMemoryCredentialStore,
 	normalizeContext,
 	type Provider,
-} from "@bastani/pi-ai";
-import { openaiProvider } from "@bastani/pi-ai/providers/openai";
+} from "@bastani/atomic-ai";
+import { openaiProvider } from "@bastani/atomic-ai/providers/openai";
 import { test } from "vitest";
 import { CODEX_FAST_ROUTE_HEADER } from "../src/core/fast-model-routing-transport.js";
 import { ModelRuntime } from "../src/core/model-runtime.js";

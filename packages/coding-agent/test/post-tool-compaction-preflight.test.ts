@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { AgentTool } from "@earendil-works/pi-agent-core";
+import type { AgentTool } from "@bastani/atomic-agent-core";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it, test, vi } from "vitest";
 import type { ExtensionFactory } from "../src/core/extensions/index.ts";
@@ -513,9 +513,7 @@ describe("post-tool compaction preflight", () => {
 
 	it("checks stop before skipping preparation for a terminating tool batch", async () => {
 		const order: string[] = [];
-		let stopContext:
-			| Parameters<NonNullable<import("@earendil-works/pi-agent-core").Agent["finishTurn"]>>[0]
-			| undefined;
+		let stopContext: Parameters<NonNullable<import("@bastani/atomic-agent-core").Agent["finishTurn"]>>[0] | undefined;
 		const harness = await createHarnessWithExtensions({
 			responses: [{ toolCalls: [{ id: "call-terminate-order", name: "large_result", args: {} }] }],
 			baseToolsOverride: { large_result: terminatingLargeResultTool },
@@ -550,10 +548,10 @@ describe("post-tool compaction preflight", () => {
 	});
 
 	it("keeps the completed-turn stop result across an out-of-band stop call", async () => {
-		let agent!: import("@earendil-works/pi-agent-core").Agent;
+		let agent!: import("@bastani/atomic-agent-core").Agent;
 		let completedTurnStopCalls = 0;
 		let outOfBandStopCalls = 0;
-		let outOfBandResult: import("@earendil-works/pi-agent-core").AgentTurnDecision | undefined;
+		let outOfBandResult: import("@bastani/atomic-agent-core").AgentTurnDecision | undefined;
 		const harness = await createHarnessWithExtensions({
 			responses: [
 				{ toolCalls: [{ id: "call-out-of-band-stop", name: "large_result", args: {} }] },
@@ -577,7 +575,7 @@ describe("post-tool compaction preflight", () => {
 				};
 			},
 		});
-		let outOfBandContext: import("@earendil-works/pi-agent-core").AgentTurnContext | undefined;
+		let outOfBandContext: import("@bastani/atomic-agent-core").AgentTurnContext | undefined;
 		harnesses.push(harness);
 		await wireHarness(harness);
 
@@ -597,10 +595,10 @@ describe("post-tool compaction preflight", () => {
 		let toolTurnStopCalls = 0;
 		let finalTurnStopCalls = 0;
 		let prepareCalls = 0;
-		let completedTurnContext: import("@earendil-works/pi-agent-core").AgentContext | undefined;
+		let completedTurnContext: import("@bastani/atomic-agent-core").AgentContext | undefined;
 		let completedTurnSnapshot = "";
-		let callerInputContext: import("@earendil-works/pi-agent-core").AgentContext | undefined;
-		let callerOutputContext: import("@earendil-works/pi-agent-core").AgentContext | undefined;
+		let callerInputContext: import("@bastani/atomic-agent-core").AgentContext | undefined;
+		let callerOutputContext: import("@bastani/atomic-agent-core").AgentContext | undefined;
 		let compactionInput = "";
 		const harness = await createHarnessWithExtensions({
 			contextWindow: 1_000,
@@ -642,7 +640,7 @@ describe("post-tool compaction preflight", () => {
 					const compactedInput = JSON.stringify(context.context.messages);
 					expect(compactedInput).toContain("[User]: retained");
 					expect(compactedInput).not.toContain(preparedEarlierSentinel);
-					const preparedMessages: import("@earendil-works/pi-agent-core").AgentMessage[] = [
+					const preparedMessages: import("@bastani/atomic-agent-core").AgentMessage[] = [
 						{
 							role: "user",
 							content: [{ type: "text", text: preparedEarlierSentinel }],
@@ -669,9 +667,9 @@ describe("post-tool compaction preflight", () => {
 		});
 		const internal = harness.session as unknown as {
 			_preflightPostToolContext(
-				messages: import("@earendil-works/pi-agent-core").AgentMessage[],
+				messages: import("@bastani/atomic-agent-core").AgentMessage[],
 				signal?: AbortSignal,
-			): Promise<import("@earendil-works/pi-agent-core").AgentMessage[]>;
+			): Promise<import("@bastani/atomic-agent-core").AgentMessage[]>;
 		};
 		const originalPreflight = internal._preflightPostToolContext.bind(harness.session);
 		internal._preflightPostToolContext = async (messages, signal) => {
@@ -703,7 +701,7 @@ describe("post-tool compaction preflight", () => {
 	it("passes the compacted visible tool pair through caller preparation while excluding hidden additions", async () => {
 		const preparedVisibleSentinel = "[caller prepared visible message]";
 		const excludedTailSentinel = "[excluded prepared tail]";
-		let callerInputContext: import("@earendil-works/pi-agent-core").AgentContext | undefined;
+		let callerInputContext: import("@bastani/atomic-agent-core").AgentContext | undefined;
 		let compactionInput = "";
 		const harness = await createHarnessWithExtensions({
 			contextWindow: 1_000,
@@ -751,9 +749,9 @@ describe("post-tool compaction preflight", () => {
 		});
 		const internal = harness.session as unknown as {
 			_preflightPostToolContext(
-				messages: import("@earendil-works/pi-agent-core").AgentMessage[],
+				messages: import("@bastani/atomic-agent-core").AgentMessage[],
 				signal?: AbortSignal,
-			): Promise<import("@earendil-works/pi-agent-core").AgentMessage[]>;
+			): Promise<import("@bastani/atomic-agent-core").AgentMessage[]>;
 		};
 		const originalPreflight = internal._preflightPostToolContext.bind(harness.session);
 		internal._preflightPostToolContext = async (messages, signal) => {
@@ -875,7 +873,7 @@ describe("post-tool compaction preflight", () => {
 
 	it("consumes the completed-turn stop cache at the dependency handoff", async () => {
 		let stopCalls = 0;
-		let completedTurn: import("@earendil-works/pi-agent-core").AgentTurnContext | undefined;
+		let completedTurn: import("@bastani/atomic-agent-core").AgentTurnContext | undefined;
 		const harness = await createHarnessWithExtensions({
 			responses: ["finished"],
 			configureAgent: (agent) => {
@@ -901,7 +899,7 @@ describe("post-tool compaction preflight", () => {
 	it("clears the completed-turn stop cache when preparation rejects before dependency handoff", async () => {
 		let stopCalls = 0;
 		let prepareCalls = 0;
-		let completedTurn: import("@earendil-works/pi-agent-core").AgentTurnContext | undefined;
+		let completedTurn: import("@bastani/atomic-agent-core").AgentTurnContext | undefined;
 		const harness = await createHarnessWithExtensions({
 			responses: [
 				{ toolCalls: [{ id: "call-rejected-preparation", name: "large_result", args: {} }] },

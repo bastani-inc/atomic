@@ -1,5 +1,5 @@
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import { Text } from "@earendil-works/pi-tui";
+import type { AgentToolResult } from "@bastani/atomic-agent-core";
+import { Text } from "@bastani/atomic-tui";
 import { parenthesizedKeyHint } from "../../modes/interactive/components/keybinding-hints.js";
 import type { Theme } from "../../modes/interactive/theme/theme.js";
 import type { ToolRenderResultOptions } from "../extensions/types.ts";

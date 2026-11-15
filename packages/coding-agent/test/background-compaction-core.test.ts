@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { AssistantMessage, ToolResultMessage, Usage } from "@bastani/pi-ai/compat";
+import type { AssistantMessage, ToolResultMessage, Usage } from "@bastani/atomic-ai/compat";
 import { describe, test } from "vitest";
 import { estimateCompactionCacheMiss } from "../src/core/cache-stats.js";
 import {

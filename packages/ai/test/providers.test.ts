@@ -70,10 +70,8 @@ describe("builtin providers", () => {
 			expect(list.length).toBeGreaterThan(0);
 			expect(list.every((m) => m.provider === provider.id)).toBe(true);
 		}
-		expect(getBuiltinModel("radius", "balanced")).toMatchObject({
-			api: "pi-messages",
-			provider: "radius",
-		});
+		// The pi-operated Radius gateway was removed (#5174).
+		expect(providers.some((provider) => provider.id === "radius")).toBe(false);
 	});
 
 	it("registers an API implementation for every builtin model's api (#3630)", async () => {

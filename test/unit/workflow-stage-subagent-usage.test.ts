@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { type AssistantMessage, createAssistantMessageEventStream, type Message } from "@bastani/pi-ai/compat";
+import { type AssistantMessage, createAssistantMessageEventStream, type Message } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, test, vi } from "vitest";
 import { AuthStorage, ModelRuntime, SettingsManager } from "../../packages/coding-agent/src/index.js";
 import { run, workflow } from "../../packages/workflows/src/sdk-surface.js";

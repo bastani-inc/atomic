@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
-import { type Component, visibleWidth } from "@earendil-works/pi-tui";
+import { type Component, visibleWidth } from "@bastani/atomic-tui";
 import { afterEach, test } from "vitest";
 import { OVERLAY_ACTIVE_ROW_MARKER, stripOsc133Marks } from "../src/core/extensions/ui-types.ts";
 import { createFullscreenTui, createInteractiveTui } from "../src/modes/interactive/interactive-tui.ts";

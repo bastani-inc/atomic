@@ -1,1 +1,1 @@
-import "@earendil-works/pi-codemode/worker";
+import "@bastani/atomic-codemode/worker";

@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@bastani/atomic";
-import { getProviderEnvValue } from "@bastani/pi-ai/utils/provider-env";
+import { getProviderEnvValue } from "@bastani/atomic-ai/utils/provider-env";
 
 export default function providerEnvExtension(pi: ExtensionAPI): void {
 	pi.registerFlag("provider-env-process", {

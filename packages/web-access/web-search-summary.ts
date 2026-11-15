@@ -1,6 +1,6 @@
 import { reportOwnedWebDiagnostic } from "./diagnostics.js";
-import { getModel, type Model } from "@bastani/pi-ai/compat";
-import type { ProviderHeaders } from "@bastani/pi-ai";
+import { getModel, type Model } from "@bastani/atomic-ai/compat";
+import type { ProviderHeaders } from "@bastani/atomic-ai";
 import type { QueryResultData } from "./storage.js";
 import {
 	buildDeterministicSummary,

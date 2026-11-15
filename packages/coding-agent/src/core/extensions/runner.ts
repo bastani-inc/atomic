@@ -7,14 +7,15 @@ import type {
 } from "../cache-warmer.ts";
 import type { ExecuteToolOptions, ExtensionToolContext } from "./context-types.ts";
 import { snapshotEventHandlers } from "./runner-events.ts";
+
 /**
  * Extension runner - executes extensions and manages their lifecycle.
  */
 
-import type { Provider, ProviderHeaders } from "@bastani/pi-ai";
-import type { Api, ImageContent, Model } from "@bastani/pi-ai/compat";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { KeyId } from "@earendil-works/pi-tui";
+import type { AgentMessage } from "@bastani/atomic-agent-core";
+import type { Provider, ProviderHeaders } from "@bastani/atomic-ai";
+import type { Api, ImageContent, Model } from "@bastani/atomic-ai/compat";
+import type { KeyId } from "@bastani/atomic-tui";
 import type { ResourceDiagnostic } from "../diagnostics.ts";
 import type { KeybindingsConfig } from "../keybindings.ts";
 import type { ModelRegistry } from "../model-registry.ts";

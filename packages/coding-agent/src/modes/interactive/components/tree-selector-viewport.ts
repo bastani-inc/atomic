@@ -1,4 +1,4 @@
-import { sliceByColumn, truncateToWidth } from "@earendil-works/pi-tui";
+import { sliceByColumn, truncateToWidth } from "@bastani/atomic-tui";
 import {
 	type HorizontalViewportRow,
 	MAX_ANCHOR_CONTEXT_WIDTH,

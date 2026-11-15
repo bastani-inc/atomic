@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { APP_NAME } from "../config.js";
 import { stripBom } from "../utils/text.ts";
+import { FORKED_PACKAGE_NAMES } from "./extensions/forked-package-names.ts";
 import type { Extension, LoadExtensionsResult } from "./extensions/types.ts";
 import type { PackageInstallFailure, PathMetadata } from "./package-manager.ts";
 
@@ -9,15 +10,9 @@ export type ExtensionPackageWarning = { path: string; warning: string };
 
 const HOST_PROVIDED_EXTENSION_PACKAGES = new Set([
 	"@bastani/atomic",
-	"@bastani/pi-ai",
-	"@earendil-works/pi-agent-core",
-	"@earendil-works/pi-ai",
+	...FORKED_PACKAGE_NAMES,
 	"@earendil-works/pi-coding-agent",
-	"@earendil-works/pi-tui",
-	"@mariozechner/pi-agent-core",
-	"@mariozechner/pi-ai",
 	"@mariozechner/pi-coding-agent",
-	"@mariozechner/pi-tui",
 	"@sinclair/typebox",
 	"typebox",
 ]);

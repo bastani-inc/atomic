@@ -1,4 +1,4 @@
-import type { ClassifierContext, ClassifierResult, Usage } from "@bastani/pi-ai";
+import type { ClassifierContext, ClassifierResult, Usage } from "@bastani/atomic-ai";
 import type { LineRange, NumberedRegion, VerbatimCompactionParameters } from "./compaction-types.js";
 import { validateDeletedRanges } from "./deleted-ranges.js";
 import {

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { type Model, normalizeProviderId } from "@bastani/pi-ai";
+import { type Model, normalizeProviderId } from "@bastani/atomic-ai";
 import {
 	resolveBackgroundCompactionEnabled,
 	resolveBackgroundCompactionThresholdPercent,

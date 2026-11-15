@@ -1,7 +1,7 @@
 import { makeFakeKeybindings as s5aKeybindings } from "../support/fake-keybindings.js";
 // Run: bun test/fixtures/workflow-fallback-terminal.ts in a dedicated terminal.
 // Press f three times: B-fast/medium, B-fast/low, C:literal/off. Arrows navigate; q exits.
-import { ProcessTerminal, TuiMainScreen } from "@earendil-works/pi-tui";
+import { ProcessTerminal, TuiMainScreen } from "@bastani/atomic-tui";
 import { subscribeStoreInvalidation } from "../../packages/workflows/src/shared/store-observation.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";

@@ -1,4 +1,4 @@
-import type { WheelScrollLines } from "@earendil-works/pi-tui";
+import type { WheelScrollLines } from "@bastani/atomic-tui";
 
 const BURST_GAP_MS = 5;
 const GESTURE_GAP_MS = 200;

@@ -11,7 +11,7 @@
  */
 
 import { type ExtensionAPI, type ExtensionContext, StringEnum, type Theme } from "@bastani/atomic";
-import { matchesKey, Text, truncateToWidth } from "@earendil-works/pi-tui";
+import { matchesKey, Text, truncateToWidth } from "@bastani/atomic-tui";
 import { Type } from "typebox";
 
 interface Todo {

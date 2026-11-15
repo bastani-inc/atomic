@@ -10,6 +10,8 @@ Atomic accepts environment variables for configuration, provider credentials, an
 | `ATOMIC_CODING_AGENT_SESSION_DIR` | None | Non-empty value selects a JSONL session directory; `--session-dir` and `--no-session` take precedence. Without a selection, sessions use the shared local SQLite database. |
 | `ATOMIC_PACKAGE_DIR` | `PI_PACKAGE_DIR` | Package directory override |
 | `ATOMIC_OFFLINE` | `PI_OFFLINE` | Disable automatic network activity, including update checks, package updates, telemetry, model catalog refreshes, and downloads of `fd`, `rg`, and [git](/getting-started/installation#git) |
+| `ATOMIC_MODEL_CATALOG_URL` | `PI_MODEL_CATALOG_URL` | Base URL of the models.dev catalog that model refreshes read as `<url>/api.json`; default `https://models.dev`. Refreshes run at most every four hours per provider, or on `atomic update --models`, and the bundled catalog stays in use when the download fails |
+| `ATOMIC_SHARE_VIEWER_URL` | `PI_SHARE_VIEWER_URL` | Base URL of the viewer that `/share` links open; default `https://bastani.ai/session/`. The gist ID is appended after `#` |
 | `ATOMIC_SKIP_VERSION_CHECK` | `PI_SKIP_VERSION_CHECK` | Skip automatic startup version checks; explicit self-update still checks |
 | `ATOMIC_SELF_UPDATE_COMMAND` | `PI_SELF_UPDATE_COMMAND` | Command `atomic update` runs to update Atomic itself, split on whitespace, with `{packageName}`, `{version}`, and `{installSpec}` placeholders. Takes precedence over the `selfUpdateCommand` setting. See [Custom update command](/reference/cli#custom-update-command) |
 | `ATOMIC_TELEMETRY` | `PI_TELEMETRY` | Override version-adoption / first-interactive-launch pings (`1`/`true`/`yes` or `0`/`false`/`no`). Does not disable update checks. The Atomic-prefixed value wins when both are set |
@@ -34,11 +36,13 @@ Atomic accepts environment variables for configuration, provider credentials, an
 
 `VISUAL` and `EDITOR` select the Ctrl+G external editor when `externalEditor` is unset.
 
-`PI_TUI_ESC_TIMEOUT` sets how many milliseconds the renderer waits after a lone `ESC` before treating it as Escape. It belongs to the installed pi-tui renderer and keeps its upstream name. The default is `100` over SSH and `10` otherwise. Increase it if Alt-key input is misread as Escape.
+`ATOMIC_TUI_ESC_TIMEOUT` sets how many milliseconds the renderer waits after a lone `ESC` before treating it as Escape. The default is `100` over SSH and `10` otherwise. Increase it if Alt-key input is misread as Escape. The legacy name `PI_TUI_ESC_TIMEOUT` still works when the `ATOMIC_*` name is unset.
 
-The renderer also owns `PI_HYPERLINKS`, `PI_IMAGE_PROTOCOL`, and `PI_TRUE_COLOR`. `PI_HYPERLINKS=1|0|auto` and `PI_TRUE_COLOR=1|0|auto` override or preserve detection; `PI_IMAGE_PROTOCOL=kitty|iterm2|none|auto` selects, disables, or preserves image-protocol detection. Explicit JSON values under `terminal.hyperlinks`, `terminal.images`, and `terminal.trueColor` take precedence. These renderer-owned names intentionally have no `ATOMIC_*` aliases.
+`ATOMIC_HYPERLINKS=1|0|auto` and `ATOMIC_TRUE_COLOR=1|0|auto` override or preserve terminal detection; `ATOMIC_IMAGE_PROTOCOL=kitty|iterm2|none|auto` selects, disables, or preserves image-protocol detection. Explicit JSON values under `terminal.hyperlinks`, `terminal.images`, and `terminal.trueColor` take precedence. The legacy names `PI_HYPERLINKS`, `PI_TRUE_COLOR` and `PI_IMAGE_PROTOCOL` still work when the `ATOMIC_*` name is unset.
 
-`PI_PROGRAM_STATUS=1` forces OSC 7501 program-status reports; `0` disables them. Otherwise Atomic reports only after the terminal confirms support. This renderer-owned variable has no `ATOMIC_*` alias. See [Program status](/terminal-setup#program-status).
+`ATOMIC_TUI_WRITE_LOG` captures the raw output the renderer writes, and `ATOMIC_TUI_DEBUG=1` and `ATOMIC_TUI_DEBUG_REDRAW=1` write render diagnostics; see [Debug logging](/tui/reference#debug-logging). Their `PI_TUI_*` names are legacy aliases.
+
+`ATOMIC_PROGRAM_STATUS=1` forces OSC 7501 program-status reports; `0` disables them. Otherwise Atomic reports only after the terminal confirms support. `PI_PROGRAM_STATUS` is a legacy alias. See [Program status](/terminal-setup#program-status).
 
 ## Workflow journal
 
@@ -48,17 +52,17 @@ In `settings.json`, shared `storage` selects a database for both domains; `sessi
 
 ## Prompt-cache retention
 
-Atomic defaults to **long** prompt-cache retention in main chat, workflow stages, and subagents wherever the provider/model supports it. `PI_CACHE_RETENTION` intentionally has no `ATOMIC_*` alias. Set it before launching Atomic to choose `short`, `none`, or `long`:
+Atomic defaults to **long** prompt-cache retention in main chat, workflow stages, and subagents wherever the provider/model supports it. Set `ATOMIC_CACHE_RETENTION` before launching Atomic to choose `short`, `none`, or `long` (`PI_CACHE_RETENTION` is a legacy alias):
 
 ```bash
-PI_CACHE_RETENTION=short atomic
+ATOMIC_CACHE_RETENTION=short atomic
 ```
 
 Use `short` to opt back into shorter caching (five minutes on Anthropic), `none` to disable Atomic's optional cache controls where supported, or `long` to explicitly request extended retention (one hour on Anthropic). Providers can still perform automatic caching; supported durations and cache eligibility vary by provider/model.
 
 With retention unset, OpenAI models without a known extended-retention capability (including GPT-4o) use ordinary caching, and Bedrock Claude models without known one-hour support (including Claude 3.7) use five-minute caching. Supported OpenAI models and Bedrock Claude 4.5+ models keep extended caching. For Bedrock application inference profiles, give the profile an accurate model name in `models.json` so Atomic can recognize its capability. Explicit `long` remains an opt-in request, not a guarantee of provider support; check the [OpenAI](https://developers.openai.com/api/docs/guides/prompt-caching) or [Bedrock](https://docs.aws.amazon.com/bedrock/latest/userguide/prompt-caching.html) model limits before forcing it. Custom OpenAI-compatible models can declare `compat.supportsLongCacheRetention` in `models.json`.
 
-For SDK session requests, explicit `cacheRetention` takes precedence over `PI_CACHE_RETENTION`. Request-scoped `env` overrides credential-scoped environment, then the process environment is used. Requests that explicitly disable caching, such as compaction summaries, remain uncached by Atomic.
+For SDK session requests, explicit `cacheRetention` takes precedence over `ATOMIC_CACHE_RETENTION`. Request-scoped `env` overrides credential-scoped environment, then the process environment is used. Requests that explicitly disable caching, such as compaction summaries, remain uncached by Atomic.
 
 [Anthropic's prompt-caching pricing](https://platform.claude.com/docs/en/build-with-claude/prompt-caching#pricing) charges **2× base input price for one-hour writes**, versus **1.25× for five-minute writes**. Long retention can avoid rewrites when reusable prefixes are revisited after five minutes, but savings are not guaranteed. Short retention can be preferable when requests consistently reuse the cache within five minutes (hits refresh its lifetime without another write charge), or when prompts are unlikely to be reused. Compare your cache reads, writes, and billed usage before choosing.
 

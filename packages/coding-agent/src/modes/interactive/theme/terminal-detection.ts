@@ -1,4 +1,4 @@
-import type { RgbColor, TerminalColors } from "@earendil-works/pi-tui";
+import type { RgbColor, TerminalColors } from "@bastani/atomic-tui";
 import { terminalAppearance } from "./system-theme.js";
 import { detectColorFgBgTheme, detectTerminalTheme, getTerminalTheme } from "./terminal-colors.js";
 

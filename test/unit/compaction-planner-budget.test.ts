@@ -9,7 +9,7 @@
  */
 
 import assert from "node:assert/strict";
-import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { ThinkingLevel } from "@bastani/atomic-agent-core";
 import { test } from "vitest";
 import { generateBranchSummary } from "../../packages/coding-agent/src/core/compaction/branch-summarization.js";
 import type { PlannerBudget } from "../../packages/coding-agent/src/core/compaction/compaction-types.js";

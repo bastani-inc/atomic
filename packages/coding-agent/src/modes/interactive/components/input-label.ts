@@ -1,4 +1,4 @@
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import { stripAnsi } from "./chat-session-host-utils.ts";
 
 /** Supported terminal floor for naming the session in a chat input's top rule. */

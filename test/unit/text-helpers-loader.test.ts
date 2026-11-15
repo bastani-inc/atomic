@@ -35,7 +35,7 @@ export function visibleWidth(text) {
 		const jiti = createJiti(import.meta.url, {
 			moduleCache: false,
 			alias: {
-				"@earendil-works/pi-tui": piTuiShimPath,
+				"@bastani/atomic-tui": piTuiShimPath,
 			},
 		});
 

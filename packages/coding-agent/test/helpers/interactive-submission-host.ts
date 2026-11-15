@@ -1,4 +1,4 @@
-import { type Component, Container } from "@earendil-works/pi-tui";
+import { type Component, Container } from "@bastani/atomic-tui";
 import type { AgentSession } from "../../src/core/agent-session.ts";
 import { InteractiveMode } from "../../src/modes/interactive/interactive-mode.ts";
 import type { InteractiveSubmission } from "../../src/modes/interactive/interactive-submission.ts";

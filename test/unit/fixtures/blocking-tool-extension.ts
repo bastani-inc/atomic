@@ -1,8 +1,8 @@
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
-import type { AssistantMessage } from "@bastani/pi-ai/compat";
-import { createAssistantMessageEventStream } from "@bastani/pi-ai/compat";
+import type { AssistantMessage } from "@bastani/atomic-ai/compat";
+import { createAssistantMessageEventStream } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
-import { getKeybindings, Text } from "@earendil-works/pi-tui";
+import { getKeybindings, Text } from "@bastani/atomic-tui";
 import type { ExtensionAPI } from "../../../packages/coding-agent/src/core/extensions/types.js";
 import { formatKeyText, keyText } from "../../../packages/coding-agent/src/modes/interactive/components/keybinding-hints.js";
 import { trackDetachedChildPid } from "../../../packages/coding-agent/src/utils/shell.js";

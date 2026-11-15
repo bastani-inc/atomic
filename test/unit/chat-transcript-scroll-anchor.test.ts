@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { Component } from "@earendil-works/pi-tui";
+import type { Component } from "@bastani/atomic-tui";
 import { describe, test } from "vitest";
 import {
 	ChatTranscriptComponent,

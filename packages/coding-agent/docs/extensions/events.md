@@ -522,7 +522,7 @@ pi.on("context", async (event, ctx) => {
 Fired before each LLM call, after every `context` handler has run and Atomic has restored the prompt and tool state. `event.messages` is the full transcript, including the leading system message and any mid-conversation prompt or tool patches (see [Session Format](/session-format)). The returned messages are sent as they are: this hook owns the prompt and tool declarations for the request.
 
 ```typescript
-import { getCurrentSystemMessage } from "@bastani/pi-ai";
+import { getCurrentSystemMessage } from "@bastani/atomic-ai";
 
 pi.on("context_with_system", async (event, ctx) => {
   const cut = findCutIndex(event.messages);
@@ -532,7 +532,7 @@ pi.on("context_with_system", async (event, ctx) => {
 });
 ```
 
-Rules: keep a system message at index 0 (providers read the prompt and initial tool declarations there; Atomic reports an extension error if a handler drops it). Removing a system message removes the tool declarations and section patches it carries. Check your output with `getCurrentSystemPrompt()` and `getCurrentTools()` from `@bastani/pi-ai`. Handlers run in extension load order; a `systemPrompt` forced from `before_agent_start` is still projected onto the request afterwards.
+Rules: keep a system message at index 0 (providers read the prompt and initial tool declarations there; Atomic reports an extension error if a handler drops it). Removing a system message removes the tool declarations and section patches it carries. Check your output with `getCurrentSystemPrompt()` and `getCurrentTools()` from `@bastani/atomic-ai`. Handlers run in extension load order; a `systemPrompt` forced from `before_agent_start` is still projected onto the request afterwards.
 
 #### before_provider_headers
 

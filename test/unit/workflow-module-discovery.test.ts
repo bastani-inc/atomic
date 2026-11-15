@@ -76,13 +76,13 @@ test("executes current schema modules while discovering a production-only Git pa
 
 test("shares exact host exports across workflow files instead of evaluating project packages (#3454)", async () => {
 	const host = await extensionLoaderTestHooks.loadVirtualModules();
-	const providers = await import("@bastani/pi-ai/providers/all");
+	const providers = await import("@bastani/atomic-ai/providers/all");
 	const modules = await getWorkflowHostModules();
 	assert.equal(modules["@bastani/atomic"], host["@bastani/atomic"]);
-	assert.equal(modules["@bastani/pi-ai"], host["@bastani/pi-ai"]);
-	assert.equal(modules["@bastani/pi-ai/providers/all"], providers);
+	assert.equal(modules["@bastani/atomic-ai"], host["@bastani/atomic-ai"]);
+	assert.equal(modules["@bastani/atomic-ai/providers/all"], providers);
 	const project = tempDir("atomic-workflow-host-identity-");
-	for (const name of ["atomic", "pi-ai"]) {
+	for (const name of ["atomic", "atomic-ai"]) {
 		const dir = join(project, "node_modules/@bastani", name);
 		mkdirSync(dir, { recursive: true });
 		writeFileSync(join(dir, "package.json"), JSON.stringify({ name: `@bastani/${name}`, main: "index.js" }));
@@ -94,14 +94,14 @@ test("shares exact host exports across workflow files instead of evaluating proj
 			path,
 			[
 				'import { AuthStorage } from "@bastani/atomic";',
-				'import { createModels } from "@bastani/pi-ai";',
-				'import { builtinModels } from "@bastani/pi-ai/providers/all";',
+				'import { createModels } from "@bastani/atomic-ai";',
+				'import { builtinModels } from "@bastani/atomic-ai/providers/all";',
 				"export { AuthStorage, createModels, builtinModels };",
 			].join("\n"),
 		);
 		const loaded = loadWorkflowModule(path, modules);
 		assert.equal(loaded.AuthStorage, Reflect.get(modules["@bastani/atomic"], "AuthStorage"));
-		assert.equal(loaded.createModels, Reflect.get(modules["@bastani/pi-ai"], "createModels"));
+		assert.equal(loaded.createModels, Reflect.get(modules["@bastani/atomic-ai"], "createModels"));
 		assert.equal(loaded.builtinModels, providers.builtinModels);
 	}
 });
@@ -143,14 +143,14 @@ test("acquires host modules once per discovery and not for an empty project (#34
 
 test("unaliased deep imports still resolve from project packages (#3454)", async () => {
 	const project = tempDir("atomic-workflow-deep-import-");
-	const dir = join(project, "node_modules/@bastani/pi-ai");
+	const dir = join(project, "node_modules/@bastani/atomic-ai");
 	mkdirSync(dir, { recursive: true });
 	writeFileSync(
 		join(dir, "package.json"),
-		JSON.stringify({ name: "@bastani/pi-ai", exports: { "./custom": "./custom.js" } }),
+		JSON.stringify({ name: "@bastani/atomic-ai", exports: { "./custom": "./custom.js" } }),
 	);
 	writeFileSync(join(dir, "custom.js"), 'exports.value = "project-deep-export";');
 	const path = join(project, "deep.ts");
-	writeFileSync(path, 'export { value } from "@bastani/pi-ai/custom";');
+	writeFileSync(path, 'export { value } from "@bastani/atomic-ai/custom";');
 	assert.equal(loadWorkflowModule(path, await getWorkflowHostModules()).value, "project-deep-export");
 });

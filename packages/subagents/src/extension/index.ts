@@ -8,7 +8,7 @@ import {
 	type SessionEntry,
 	type ToolDefinition,
 } from "@bastani/atomic";
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import type { AgentToolResult } from "@bastani/atomic-agent-core";
 import {
 	Box,
 	type Component,
@@ -18,7 +18,7 @@ import {
 	truncateToWidth,
 	visibleWidth,
 	wrapTextWithAnsi,
-} from "@earendil-works/pi-tui";
+} from "@bastani/atomic-tui";
 import { discoverAgents } from "../agents/agents.js";
 import { answerIntercomChildrenRequests } from "../runs/foreground/intercom-children.js";
 import registerSubagentNotify, { type SubagentNotifyDetails } from "../runs/foreground/notify.js";

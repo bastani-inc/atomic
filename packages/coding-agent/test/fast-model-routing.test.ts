@@ -10,7 +10,7 @@ import {
 	type OpenAICodexResponsesOptions,
 	type OpenAIResponsesOptions,
 	type SimpleStreamOptions,
-} from "@bastani/pi-ai/compat";
+} from "@bastani/atomic-ai/compat";
 import { describe, expect, it, vi } from "vitest";
 import {
 	buildOpenAIResponsesFastRouteOptions,
@@ -389,12 +389,12 @@ describe("codex fast-route first-party transport", () => {
 		serviceTier: FAST_MODEL_SERVICE_TIER,
 	};
 	const priorityHeaders = {
-		originator: "pi",
+		originator: "atomic",
 		[CODEX_FAST_ROUTE_HEADER]: "model=gpt-5.6-sol;tier=priority",
 		"x-atomic-codex-fast-route": "priority",
 	};
 
-	it("repairs the HTTP originator pi-ai sets after its own header merge", async () => {
+	it("repairs the HTTP originator atomic-ai sets after its own header merge", async () => {
 		const captured: Array<string | null> = [];
 		const fastFetch = wrapCodexFastRouteFetch(
 			vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
@@ -406,11 +406,11 @@ describe("codex fast-route first-party transport", () => {
 		await fastFetch("https://chatgpt.com/backend-api/codex/responses", { headers: priorityHeaders });
 		await fastFetch("https://proxy.example/v1/responses", { headers: priorityHeaders });
 		await fastFetch("https://chatgpt.com/backend-api/codex/responses", {
-			headers: { originator: "pi", [CODEX_FAST_ROUTE_HEADER]: "model=stale;tier=priority" },
+			headers: { originator: "atomic", [CODEX_FAST_ROUTE_HEADER]: "model=stale;tier=priority" },
 		});
-		await fastFetch("https://chatgpt.com/backend-api/codex/responses", { headers: { originator: "pi" } });
+		await fastFetch("https://chatgpt.com/backend-api/codex/responses", { headers: { originator: "atomic" } });
 
-		expect(captured).toEqual([CODEX_FAST_ROUTE_ORIGINATOR, CODEX_FAST_ROUTE_ORIGINATOR, "pi", "pi"]);
+		expect(captured).toEqual([CODEX_FAST_ROUTE_ORIGINATOR, CODEX_FAST_ROUTE_ORIGINATOR, "atomic", "atomic"]);
 	});
 
 	it("repairs the WebSocket handshake originator and wraps each constructor once", () => {
@@ -427,10 +427,10 @@ describe("codex fast-route first-party transport", () => {
 		new FastWebSocket("wss://chatgpt.com/backend-api/codex/responses", { headers: priorityHeaders } as never);
 		new FastWebSocket("wss://proxy.example/v1/responses", { headers: priorityHeaders } as never);
 		new FastWebSocket("wss://chatgpt.com/backend-api/codex/responses", {
-			headers: { originator: "pi", [CODEX_FAST_ROUTE_HEADER]: "model=stale;tier=priority" },
+			headers: { originator: "atomic", [CODEX_FAST_ROUTE_HEADER]: "model=stale;tier=priority" },
 		} as never);
 
-		expect(captured).toEqual([CODEX_FAST_ROUTE_ORIGINATOR, CODEX_FAST_ROUTE_ORIGINATOR, "pi"]);
+		expect(captured).toEqual([CODEX_FAST_ROUTE_ORIGINATOR, CODEX_FAST_ROUTE_ORIGINATOR, "atomic"]);
 	});
 
 	it("repairs marked monitoring-proxy requests on HTTP retries and WebSocket reconnects", async () => {
@@ -541,7 +541,7 @@ describe("codex fast-route first-party transport", () => {
 
 	it("derives the Codex harness identity from the model route, not a caller-supplied tier", async () => {
 		const normalOptions = withChatGptCodexTransportRouting(codexModel, {
-			headers: { originator: "pi" },
+			headers: { originator: "atomic" },
 			onPayload: (payload) => ({
 				...(payload as Record<string, unknown>),
 				service_tier: FAST_MODEL_SERVICE_TIER,
@@ -554,7 +554,7 @@ describe("codex fast-route first-party transport", () => {
 		);
 
 		const fastModel = fullModel({ ...codexModel, id: "gpt-5.6-sol-fast", fastRoute: codexFastRoute });
-		const fastOptions = withChatGptCodexTransportRouting(fastModel, { headers: { originator: "pi" } });
+		const fastOptions = withChatGptCodexTransportRouting(fastModel, { headers: { originator: "atomic" } });
 		await fastOptions.onPayload?.(
 			{ model: codexFastRoute.upstreamModelId, service_tier: FAST_MODEL_SERVICE_TIER },
 			fastModel,
@@ -565,7 +565,7 @@ describe("codex fast-route first-party transport", () => {
 		);
 
 		expect(normalPayload).toMatchObject({ service_tier: FAST_MODEL_SERVICE_TIER });
-		expect(normalHeaders.get("originator")).toBe("pi");
+		expect(normalHeaders.get("originator")).toBe("atomic");
 		expect(normalHeaders.get(CODEX_FAST_ROUTE_HEADER)).toBeNull();
 		expect(fastHeaders.get("originator")).toBe(CODEX_FAST_ROUTE_ORIGINATOR);
 		expect(fastHeaders.get(CODEX_FAST_ROUTE_HEADER)).toBe(
@@ -673,7 +673,7 @@ describe("codex fast-route first-party transport", () => {
 		await stream.result();
 
 		expect(capturedUrl).toBe("https://monitor.example/backend-api/codex/responses");
-		expect(capturedHeaders?.get("originator")).toBe("pi");
+		expect(capturedHeaders?.get("originator")).toBe("atomic");
 		expect(capturedHeaders?.get(CODEX_FAST_ROUTE_HEADER)).toBeNull();
 		expect(capturedHeaders?.get("x-atomic-codex-fast-route")).toBeNull();
 	});
@@ -728,12 +728,12 @@ describe("codex fast-route first-party transport", () => {
 		await stream.result();
 
 		expect(capturedPayload?.service_tier).toBe("default");
-		expect(capturedHeaders?.get("originator")).toBe("pi");
+		expect(capturedHeaders?.get("originator")).toBe("atomic");
 		expect(capturedHeaders?.get(CODEX_FAST_ROUTE_HEADER)).toBeNull();
 		expect(capturedHeaders?.get("x-atomic-codex-fast-route")).toBeNull();
 	});
 
-	it("keeps pi's identity for a normal model on the Codex transport", async () => {
+	it("keeps Atomic's identity for a normal model on the Codex transport", async () => {
 		const tokenPayload = Buffer.from(
 			JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "account-test" } }),
 		).toString("base64url");
@@ -766,7 +766,7 @@ describe("codex fast-route first-party transport", () => {
 		});
 		await stream.result();
 
-		expect(capturedHeaders?.get("originator")).toBe("pi");
+		expect(capturedHeaders?.get("originator")).toBe("atomic");
 		expect(capturedHeaders?.get(CODEX_FAST_ROUTE_HEADER)).toBeNull();
 	});
 });

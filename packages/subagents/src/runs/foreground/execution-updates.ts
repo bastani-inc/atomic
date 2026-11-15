@@ -1,4 +1,4 @@
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import type { AgentToolResult } from "@bastani/atomic-agent-core";
 import type { Details } from "../../shared/types.js";
 import { isRetryableModelFailure } from "../shared/model-fallback.js";
 

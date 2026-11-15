@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import type { ThinkingLevel } from "@bastani/atomic-agent-core";
 import {
 	type Api,
 	type AssistantMessage,
@@ -6,8 +7,7 @@ import {
 	type ImageContent,
 	type Model,
 	type ToolResultMessage,
-} from "@bastani/pi-ai/compat";
-import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+} from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentSessionEvent, AgentSessionEventListener, ExtensionBindings } from "../src/core/agent-session.ts";

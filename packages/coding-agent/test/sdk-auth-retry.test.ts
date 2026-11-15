@@ -10,8 +10,8 @@ import type {
 	ModelFastRoute,
 	OAuthCredential,
 	Provider,
-} from "@bastani/pi-ai";
-import { createAssistantMessageEventStream } from "@bastani/pi-ai/compat";
+} from "@bastani/atomic-ai";
+import { createAssistantMessageEventStream } from "@bastani/atomic-ai/compat";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.js";
 import { FAST_MODEL_SERVICE_TIER } from "../src/core/fast-model-variants.js";

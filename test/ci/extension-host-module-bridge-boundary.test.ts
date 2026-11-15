@@ -44,13 +44,18 @@ test(
 				join(fixture, "extension-entry.ts"),
 				'import lockfile, { lock } from "proper-lockfile";\n' +
 					'import { createEventBus } from "@bastani/atomic";\n' +
+					'import { StringEnum as atomicStringEnum } from "@bastani/atomic-ai";\n' +
 					'import { StringEnum as bastaniStringEnum } from "@bastani/pi-ai";\n' +
 					'import { StringEnum as earendilStringEnum } from "@earendil-works/pi-ai";\n' +
+					'import { StringEnum as mariozechnerStringEnum } from "@mariozechner/pi-ai";\n' +
+					'import { Text as atomicText } from "@bastani/atomic-tui";\n' +
+					'import { Text as earendilText } from "@earendil-works/pi-tui";\n' +
+					'import { Text as mariozechnerText } from "@mariozechner/pi-tui";\n' +
 					'import chalk from "chalk";\n' +
 					"const importedDefault = lockfile;\n" +
 					"const importedNamed = lock;\n" +
 					"const importedCreateEventBus = createEventBus;\n" +
-					"const aliasesShareExport = Object.is(bastaniStringEnum, earendilStringEnum);\n" +
+					"const aliasesShareExport = [bastaniStringEnum, earendilStringEnum, mariozechnerStringEnum].every((value) => Object.is(value, atomicStringEnum)) && [earendilText, mariozechnerText].every((value) => Object.is(value, atomicText));\n" +
 					"const namedType = typeof lock;\n" +
 					'const styledThirdPartyValue = chalk.green("third-party-bundled");\n' +
 					'function readHostMutation(): string { return (lockfile as { bridgeMarker?: string }).bridgeMarker ?? ""; }\n' +
@@ -87,7 +92,7 @@ test(
 					'  if (!Object.is(first.importedDefault, host.default)) throw new Error("proper-lockfile default export identity changed");\n' +
 					'  if (!Object.is(first.importedNamed, host.lock)) throw new Error("proper-lockfile named export identity changed");\n' +
 					'  if (!Object.is(first.importedCreateEventBus, atomicHost.createEventBus)) throw new Error("@bastani/atomic named export identity changed");\n' +
-					'  if (!first.aliasesShareExport) throw new Error("pi-ai aliases duplicated host state");\n' +
+					'  if (!first.aliasesShareExport) throw new Error("legacy pi package names duplicated host state");\n' +
 					'  if (first.styledThirdPartyValue !== "third-party-bundled") throw new Error("bundled third-party dependency did not execute");\n' +
 					'  host.default.bridgeMarker = "host-mutated";\n' +
 					'  if (first.readHostMutation() !== "host-mutated") throw new Error("proper-lockfile host mutation was not shared");\n' +
@@ -119,8 +124,13 @@ test(
 				"--format=esm",
 				"--external=proper-lockfile",
 				"--external=@bastani/atomic",
+				"--external=@bastani/atomic-ai",
 				"--external=@bastani/pi-ai",
 				"--external=@earendil-works/pi-ai",
+				"--external=@mariozechner/pi-ai",
+				"--external=@bastani/atomic-tui",
+				"--external=@earendil-works/pi-tui",
+				"--external=@mariozechner/pi-tui",
 				join(fixture, "extension-entry.ts"),
 				"--outfile",
 				extensionPath,
@@ -129,8 +139,20 @@ test(
 			assert.equal(extensionBuild.exitCode, 0, extensionBuild.stderr.toString());
 			assert.match(readFileSync(extensionPath, "utf8"), /from\s+["']proper-lockfile["']/);
 			assert.match(readFileSync(extensionPath, "utf8"), /from\s+["']@bastani\/atomic["']/);
-			assert.match(readFileSync(extensionPath, "utf8"), /from\s+["']@bastani\/pi-ai["']/);
-			assert.match(readFileSync(extensionPath, "utf8"), /from\s+["']@earendil-works\/pi-ai["']/);
+			for (const name of [
+				"@bastani/atomic-ai",
+				"@bastani/pi-ai",
+				"@earendil-works/pi-ai",
+				"@mariozechner/pi-ai",
+				"@bastani/atomic-tui",
+				"@earendil-works/pi-tui",
+				"@mariozechner/pi-tui",
+			]) {
+				assert.ok(
+					readFileSync(extensionPath, "utf8").includes(`from "${name}"`),
+					`extension bundle imports ${name}`,
+				);
+			}
 			assert.doesNotMatch(readFileSync(extensionPath, "utf8"), /from\s+["']chalk["']/);
 
 			const nativeFiles = readdirSync(join(root, "packages/natives/native")).filter((name) =>
@@ -156,15 +178,15 @@ test(
 			const appBuild = spawnSyncCollect(appBuildCommand, { cwd: root });
 			assert.equal(appBuild.exitCode, 0, appBuild.stderr.toString());
 			copyFileSync(
-				join(root, "node_modules/@earendil-works/pi-tui/dist/native-modifiers.js"),
+				join(root, "node_modules/@bastani/atomic-tui/dist/native-modifiers.js"),
 				join(runtimeDir, "native-modifiers.js"),
 			);
 			copyFileSync(
-				join(root, "node_modules/@earendil-works/pi-tui/dist/native-module-path.js"),
+				join(root, "node_modules/@bastani/atomic-tui/dist/native-module-path.js"),
 				join(runtimeDir, "native-module-path.js"),
 			);
 			copyFileSync(
-				join(root, "node_modules/@earendil-works/pi-tui/dist/native-platform.js"),
+				join(root, "node_modules/@bastani/atomic-tui/dist/native-platform.js"),
 				join(runtimeDir, "native-platform.js"),
 			);
 

@@ -3,7 +3,7 @@
  */
 
 import { defineTool, type ExtensionAPI } from "@bastani/atomic";
-import { Type } from "@bastani/pi-ai/compat";
+import { Type } from "@bastani/atomic-ai/compat";
 
 const helloTool = defineTool({
 	name: "hello",

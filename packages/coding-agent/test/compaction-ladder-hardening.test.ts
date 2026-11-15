@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { Api, Model } from "@bastani/pi-ai/compat";
+import type { Api, Model } from "@bastani/atomic-ai/compat";
 import { afterEach, test } from "vitest";
 import { DEFAULT_COMPACTION_SETTINGS } from "../src/core/compaction/compaction.js";
 import { prepareCompactionBoundary } from "../src/core/compaction/compaction-boundary.js";

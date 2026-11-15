@@ -1,6 +1,6 @@
 import { isAbsolute, relative, resolve, sep } from "node:path";
-import type { Usage } from "@bastani/pi-ai/compat";
-import { type Component, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import type { Usage } from "@bastani/atomic-ai/compat";
+import { type Component, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import type { AgentSession } from "../../../core/agent-session.js";
 import type { SessionStats } from "../../../core/agent-session-types.js";
 import { isDebugEnabled } from "../../../core/debug.ts";

@@ -4,7 +4,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { getModel } from "@bastani/pi-ai/compat";
+import { getModel } from "@bastani/atomic-ai/compat";
 import { test, vi } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.js";
 import { withMandatoryResourceLoader } from "../src/core/mandatory-resource-loader.js";

@@ -1,7 +1,7 @@
-import type { ProviderHeaders } from "@bastani/pi-ai";
-import type { Api, Model } from "@bastani/pi-ai/compat";
-import { clampThinkingLevel, getSupportedThinkingLevels, modelsAreEqual } from "@bastani/pi-ai/compat";
-import type { StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { StreamFn, ThinkingLevel } from "@bastani/atomic-agent-core";
+import type { ProviderHeaders } from "@bastani/atomic-ai";
+import type { Api, Model } from "@bastani/atomic-ai/compat";
+import { clampThinkingLevel, getSupportedThinkingLevels, modelsAreEqual } from "@bastani/atomic-ai/compat";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { type ModelCycleResult, type ModelMutationOptions, THINKING_LEVELS } from "./agent-session-types.js";
 import { formatNoApiKeyFoundMessage } from "./auth-guidance.ts";

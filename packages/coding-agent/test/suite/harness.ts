@@ -5,16 +5,16 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { AgentMessage, AgentTool } from "@bastani/atomic-agent-core";
+import { Agent } from "@bastani/atomic-agent-core";
 import type {
 	FauxModelDefinition,
 	FauxProviderRegistration,
 	FauxResponseStep,
 	Model,
 	RegisterFauxProviderOptions,
-} from "@bastani/pi-ai/compat";
-import { registerFauxProvider, streamSimple } from "@bastani/pi-ai/compat";
-import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
-import { Agent } from "@earendil-works/pi-agent-core";
+} from "@bastani/atomic-ai/compat";
+import { registerFauxProvider, streamSimple } from "@bastani/atomic-ai/compat";
 import { AgentSession, type AgentSessionEvent } from "../../src/core/agent-session.ts";
 import { AuthStorage } from "../../src/core/auth-storage.ts";
 import type {

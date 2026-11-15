@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import type { Credential } from "@bastani/pi-ai";
-import type { Api, ImageContent, Model } from "@bastani/pi-ai/compat";
-import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { AgentMessage, ThinkingLevel } from "@bastani/atomic-agent-core";
+import type { Credential } from "@bastani/atomic-ai";
+import type { Api, ImageContent, Model } from "@bastani/atomic-ai/compat";
 import type {
 	ClearedQueue,
 	PromptDisposition,

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { fauxAssistantMessage, type TranscriptContext } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage, type TranscriptContext } from "@bastani/atomic-ai/compat";
 import { test } from "vitest";
 import { WorkflowStageAdmissionBoundary } from "../src/core/workflow-stage-admission.js";
 import { createHarness, getMessageText } from "./suite/harness.js";

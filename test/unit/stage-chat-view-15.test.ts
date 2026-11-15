@@ -1,6 +1,6 @@
 import type { AgentSession, AgentSessionEvent, ChatMessageEntry, ToolDefinition } from "@bastani/atomic";
-import type { JsonObject } from "@bastani/pi-ai";
-import { getKeybindings, setKeybindings } from "@earendil-works/pi-tui";
+import type { JsonObject } from "@bastani/atomic-ai";
+import { getKeybindings, setKeybindings } from "@bastani/atomic-tui";
 import type { TSchema } from "typebox";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";

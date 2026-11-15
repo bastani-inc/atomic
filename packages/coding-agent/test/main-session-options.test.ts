@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { Model } from "@bastani/pi-ai";
+import type { Model } from "@bastani/atomic-ai";
 import { describe, expect, it } from "vitest";
 import { parseArgs } from "../src/cli/args.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";

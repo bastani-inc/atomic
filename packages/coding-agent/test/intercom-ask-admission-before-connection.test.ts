@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { afterEach, test } from "vitest";
 import { registerContactSupervisorTool } from "../../intercom/contact-supervisor-tool.js";
 import { registerIntercomTool } from "../../intercom/intercom-tool.js";

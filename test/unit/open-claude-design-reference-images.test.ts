@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { AuthStorage } from "@bastani/atomic";
-import type { AssistantImages, ImagesContext, OpenAIImagesOptions } from "@bastani/pi-ai";
+import type { AssistantImages, ImagesContext, OpenAIImagesOptions } from "@bastani/atomic-ai";
 import { Value } from "typebox/value";
 import { afterEach, describe, test } from "vitest";
 import openClaudeDesign from "../../packages/workflows/builtin/open-claude-design.js";

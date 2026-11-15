@@ -9,7 +9,7 @@
  * handling, sleeping, and whether the chain may advance afterwards.
  */
 
-import { type AssistantMessage, failureRetryDelayMs } from "@bastani/pi-ai";
+import { type AssistantMessage, failureRetryDelayMs } from "@bastani/atomic-ai";
 import { streamCutDurationMs } from "./model-fallback-failures.ts";
 
 export interface RetryPolicySettings {

@@ -1,6 +1,6 @@
-import type { Api, AssistantMessage, Model } from "@bastani/pi-ai/compat";
-import { clampThinkingLevel, isContextOverflow, modelsAreEqual } from "@bastani/pi-ai/compat";
-import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { ThinkingLevel } from "@bastani/atomic-agent-core";
+import type { Api, AssistantMessage, Model } from "@bastani/atomic-ai/compat";
+import { clampThinkingLevel, isContextOverflow, modelsAreEqual } from "@bastani/atomic-ai/compat";
 import { sleep } from "../utils/sleep.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { isCodexTokenInvalidationError } from "./codex-errors.ts";

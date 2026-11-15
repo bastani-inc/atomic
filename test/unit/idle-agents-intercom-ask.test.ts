@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import type { ToolDefinition } from "@bastani/atomic";
-import { fauxAssistantMessage, fauxToolCall, registerSessionResourceCleanup } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage, fauxToolCall, registerSessionResourceCleanup } from "@bastani/atomic-ai/compat";
 import { afterEach, test } from "vitest";
 import { AgentWakeDispatcher } from "../../packages/coding-agent/src/core/agent-wake-dispatcher.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";

@@ -683,14 +683,14 @@ A `verified` result is cached durably, so a resumed run does not click again. A 
 
 ### Classifier and image models in `ctx.tool`
 
-Workflow stages run chat language models. For a schema-backed decision, use the stage's `schema` and `structured_output` tool; write only the task in the prompt, because Atomic ends every schema-backed prompt with the instruction to finish by calling the tool exactly once and, if the model skips the call, runs the same inference itself from the stage's final answer. It resolves an exact chat or registered classifier ID through the stage model registry and falls back on a classifier runtime failure. The direct `@bastani/pi-ai` examples below are for cases that need the classifier's probabilities or image generation from workflow TypeScript inside `ctx.tool(name, args, fn, { timeoutMs })`. Those calls are durable, replayable nodes. `model: "auto"` selects only chat language models for stage execution; `decisionModel` may select a classifier for routing, but a classifier never executes a chat stage.
+Workflow stages run chat language models. For a schema-backed decision, use the stage's `schema` and `structured_output` tool; write only the task in the prompt, because Atomic ends every schema-backed prompt with the instruction to finish by calling the tool exactly once and, if the model skips the call, runs the same inference itself from the stage's final answer. It resolves an exact chat or registered classifier ID through the stage model registry and falls back on a classifier runtime failure. The direct `@bastani/atomic-ai` examples below are for cases that need the classifier's probabilities or image generation from workflow TypeScript inside `ctx.tool(name, args, fn, { timeoutMs })`. Those calls are durable, replayable nodes. `model: "auto"` selects only chat language models for stage execution; `decisionModel` may select a classifier for routing, but a classifier never executes a chat stage.
 
-Atomic provides `@bastani/atomic/workflows`, `typebox`, and the exact imports `@bastani/atomic`, `@bastani/pi-ai`, and `@bastani/pi-ai/providers/all` to workflow files. The latter three use the running CLI's module instances and version, including `AuthStorage`. These examples need no project-local package installation, in npm or standalone-binary installs. A project copy does not override these host-provided imports.
+Atomic provides `@bastani/atomic/workflows`, `typebox`, and the exact imports `@bastani/atomic`, `@bastani/atomic-ai`, and `@bastani/atomic-ai/providers/all` to workflow files. The latter three use the running CLI's module instances and version, including `AuthStorage`. These examples need no project-local package installation, in npm or standalone-binary installs. A project copy does not override these host-provided imports.
 
 For editor type checking, install the packages as dev dependencies at the version `atomic --version` prints. Atomic still runs these imports from the CLI, not from the project copy:
 
 ```sh
-npm install --save-dev @bastani/atomic@"$(atomic --version)" @bastani/pi-ai@"$(atomic --version)"
+npm install --save-dev @bastani/atomic@"$(atomic --version)" @bastani/atomic-ai@"$(atomic --version)"
 ```
 
 Other imports, including unlisted deep package subpaths, still resolve from the owning project's `node_modules`. Install those dependencies next to the workflow. `/workflow reload` reloads workflow files and their relative imports, but does not replace the shared host modules; restart Atomic to use a different host version.
@@ -704,7 +704,7 @@ Use a classifier for a narrow, structured decision such as routing an incoming r
 ```ts
 import { AuthStorage } from "@bastani/atomic";
 import { workflow } from "@bastani/atomic/workflows";
-import { builtinModels } from "@bastani/pi-ai/providers/all";
+import { builtinModels } from "@bastani/atomic-ai/providers/all";
 import { Type } from "typebox";
 
 export default workflow({
@@ -761,7 +761,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { AuthStorage } from "@bastani/atomic";
 import { workflow } from "@bastani/atomic/workflows";
-import { builtinModels } from "@bastani/pi-ai/providers/all";
+import { builtinModels } from "@bastani/atomic-ai/providers/all";
 import { Type } from "typebox";
 
 export default workflow({
@@ -831,7 +831,7 @@ const assets = await ctx.tool("generate-svg-and-gif", { brief, outputDir }, asyn
 }, { timeoutMs: 300_000 });
 ```
 
-`builtinModels()` covers Atomic's built-in image providers. For another image backend, register its implementation for a new `api` ID with `registerImagesApiProvider({ api, generateImages })` from `@bastani/pi-ai/compat`, then call `generateImages(model, context, { apiKey, signal })` from the same entry point with a model whose `api` matches. That call dispatches on `model.api` and does not look up credentials, so take `apiKey` from your own configuration, such as an environment variable, and never put it in workflow state or outputs. `@bastani/pi-ai/compat` is not one of the host-provided imports, so install `@bastani/pi-ai` next to the workflow. To make an image backend available to codemode and extensions through the session's model registry instead, register a provider with `images`; see [Custom providers](/custom-provider#quick-reference).
+`builtinModels()` covers Atomic's built-in image providers. For another image backend, register its implementation for a new `api` ID with `registerImagesApiProvider({ api, generateImages })` from `@bastani/atomic-ai/compat`, then call `generateImages(model, context, { apiKey, signal })` from the same entry point with a model whose `api` matches. That call dispatches on `model.api` and does not look up credentials, so take `apiKey` from your own configuration, such as an environment variable, and never put it in workflow state or outputs. `@bastani/atomic-ai/compat` is not one of the host-provided imports, so install `@bastani/atomic-ai` next to the workflow. To make an image backend available to codemode and extensions through the session's model registry instead, register a provider with `images`; see [Custom providers](/custom-provider#quick-reference).
 
 ### Workflow Composition
 

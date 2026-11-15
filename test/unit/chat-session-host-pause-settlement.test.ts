@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { type FauxResponseFactory, fauxAssistantMessage } from "@bastani/pi-ai/compat";
-import type { EditorTheme } from "@earendil-works/pi-tui";
+import { type FauxResponseFactory, fauxAssistantMessage } from "@bastani/atomic-ai/compat";
+import type { EditorTheme } from "@bastani/atomic-tui";
 import { beforeAll, test } from "vitest";
 import { ChatSessionHost, type ChatSessionHostStyle } from "../../packages/coding-agent/src/index.ts";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";

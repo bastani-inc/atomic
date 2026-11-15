@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { Agent } from "@bastani/atomic-agent-core";
 import {
 	type AssistantMessage,
 	fauxAssistantMessage,
@@ -6,8 +7,7 @@ import {
 	streamSimple,
 	type ToolResultMessage,
 	type Usage,
-} from "@bastani/pi-ai/compat";
-import { Agent } from "@earendil-works/pi-agent-core";
+} from "@bastani/atomic-ai/compat";
 import { describe, expect, it } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
 import type { SessionStats } from "../src/core/agent-session-types.js";

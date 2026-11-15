@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { OAUTH_REFRESH_LOCK_HOLD_MS, type OAuthCredential } from "@bastani/pi-ai";
+import { OAUTH_REFRESH_LOCK_HOLD_MS, type OAuthCredential } from "@bastani/atomic-ai";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { sleep } from "../../../test/helpers/runtime.js";
 import { AuthStorage, FileAuthStorageBackend } from "../src/core/auth-storage.js";

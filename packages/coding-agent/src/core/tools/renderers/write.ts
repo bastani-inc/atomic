@@ -6,7 +6,7 @@
  * definition, so the tool's public shape is unchanged.
  */
 
-import { Container, Text } from "@earendil-works/pi-tui";
+import { Container, Text } from "@bastani/atomic-tui";
 import { parenthesizedKeyHint } from "../../../modes/interactive/components/keybinding-hints.js";
 import {
 	CodeHighlighter,

@@ -1,5 +1,5 @@
 import type { ExtensionContext } from "@bastani/atomic";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { visibleWidth } from "@bastani/atomic-tui";
 import type { AgentProgress } from "../shared/types.js";
 
 export type Theme = ExtensionContext["ui"]["theme"];

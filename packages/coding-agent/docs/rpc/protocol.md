@@ -1549,8 +1549,8 @@ A command rejected with a background compaction error, such as `set_background_c
 ## Types
 
 Source files and installed definitions:
-- `node_modules/@bastani/pi-ai/dist/types.d.ts` - `Model`, `UserMessage`, `AssistantMessage`, `ToolResultMessage`
-- `node_modules/@earendil-works/pi-agent-core/dist/types.d.ts` - `AgentMessage`, `AgentEvent`
+- `node_modules/@bastani/atomic-ai/dist/types.d.ts` - `Model`, `UserMessage`, `AssistantMessage`, `ToolResultMessage`
+- `node_modules/@bastani/atomic-agent-core/dist/types.d.ts` - `AgentMessage`, `AgentEvent`
 - [`src/core/messages.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/core/messages.ts) - `BashExecutionMessage`
 - [`src/modes/rpc/rpc-types.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/modes/rpc/rpc-types.ts) - RPC command/response types, extension UI request/response types
 

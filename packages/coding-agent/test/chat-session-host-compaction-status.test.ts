@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import type { EditorTheme } from "@earendil-works/pi-tui";
-import { type Component, Text } from "@earendil-works/pi-tui";
+import type { EditorTheme } from "@bastani/atomic-tui";
+import { type Component, Text } from "@bastani/atomic-tui";
 import { describe, expect, it, test } from "vitest";
 import type { CompactionReason } from "../src/core/agent-session.ts";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";

@@ -197,4 +197,4 @@ Atomic reports its state with the [Program Status Protocol (OSC 7501)](https://w
 
 After a workflow failure the status stays `error` until you send your next message, except while the chat agent replies to the run-end notice: it is `working` then, and returns to `error` when that reply finishes. While a workflow run is working or waiting for you, the chat agent finishing a turn does not report `done`.
 
-Reports never contain prompts or model output. Atomic sends them only after the terminal answers the protocol's support query; tmux and screen do not forward them. Set `PI_PROGRAM_STATUS=1` to send reports without asking, or `PI_PROGRAM_STATUS=0` to disable reports.
+Reports never contain prompts or model output. Atomic sends them only after the terminal answers the protocol's support query; tmux and screen do not forward them. Set `ATOMIC_PROGRAM_STATUS=1` to send reports without asking, or `ATOMIC_PROGRAM_STATUS=0` to disable reports (`PI_PROGRAM_STATUS` is a legacy alias).

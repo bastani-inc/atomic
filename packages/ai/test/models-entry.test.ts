@@ -14,12 +14,12 @@ const preload = `data:text/javascript,${encodeURIComponent(`
 	} });
 `)}`;
 
-for (const entry of [sourceEntry, "@bastani/pi-ai/models"]) {
+for (const entry of [sourceEntry, "@bastani/atomic-ai/models"]) {
 	test(`models entry completes a faux response without SDKs, TypeBox or catalogs: ${entry}`, () => {
 		const script = `
 			import assert from "node:assert/strict";
 			import { createModels, createProvider } from ${JSON.stringify(entry)};
-			import { fauxAssistantMessage, fauxProvider } from "@bastani/pi-ai/providers/faux";
+			import { fauxAssistantMessage, fauxProvider } from "@bastani/atomic-ai/providers/faux";
 			assert.equal(typeof createProvider, "function");
 			const models = createModels();
 			assert.deepEqual(models.getModels(), []);

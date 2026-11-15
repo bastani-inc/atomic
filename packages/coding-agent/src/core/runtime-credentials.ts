@@ -1,4 +1,4 @@
-import type { AuthOperationOptions, Credential, CredentialInfo, CredentialStore } from "@bastani/pi-ai";
+import type { AuthOperationOptions, Credential, CredentialInfo, CredentialStore } from "@bastani/atomic-ai";
 import { containsCredential, containsCredentialValue } from "./credential-screening.ts";
 
 interface ReloadableCredentialStore {

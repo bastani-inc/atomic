@@ -1,7 +1,7 @@
-import type { Provider } from "@bastani/pi-ai";
-import type { Api, ImageContent, Model, TextContent } from "@bastani/pi-ai/compat";
-import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { KeyId } from "@earendil-works/pi-tui";
+import type { ThinkingLevel } from "@bastani/atomic-agent-core";
+import type { Provider } from "@bastani/atomic-ai";
+import type { Api, ImageContent, Model, TextContent } from "@bastani/atomic-ai/compat";
+import type { KeyId } from "@bastani/atomic-tui";
 import type { ResourceOverlap } from "../diagnostics.ts";
 import type { CustomMessage } from "../messages.ts";
 import type { ScopedModel } from "../model-resolver.ts";
@@ -224,8 +224,8 @@ export interface ExtensionContextActions {
 		name: string,
 		args: unknown,
 		options: import("./context-types.ts").ExecuteToolOptions,
-	) => Promise<import("@earendil-works/pi-agent-core").AgentToolCallOutcome>;
-	getCallableTools?: () => readonly import("@earendil-works/pi-agent-core").AgentTool[];
+	) => Promise<import("@bastani/atomic-agent-core").AgentToolCallOutcome>;
+	getCallableTools?: () => readonly import("@bastani/atomic-agent-core").AgentTool[];
 	getSettings?: () => import("../settings-types.ts").Settings;
 }
 

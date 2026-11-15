@@ -8,8 +8,8 @@
  * request one explicit continuation.
  */
 
-import type { AssistantMessage, ToolResultMessage } from "@bastani/pi-ai/compat";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AgentMessage } from "@bastani/atomic-agent-core";
+import type { AssistantMessage, ToolResultMessage } from "@bastani/atomic-ai/compat";
 import { isDetachedToolCall } from "./agent-session-detached-tools.ts";
 import { persistenceStopError } from "./agent-session-events.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";

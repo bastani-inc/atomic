@@ -7,7 +7,7 @@ import {
 	setKeybindings,
 	setKittyProtocolActive,
 	Text,
-} from "@earendil-works/pi-tui";
+} from "@bastani/atomic-tui";
 import { test, vi } from "vitest";
 import { resolveExtensionShortcuts } from "../../packages/coding-agent/src/core/extensions/runner-shortcuts.js";
 import type { Extension } from "../../packages/coding-agent/src/core/extensions/types.js";

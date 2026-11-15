@@ -9,7 +9,7 @@ import {
 	setCapabilityOverrides,
 	type TuiInputListener,
 	type WheelScrollLines,
-} from "@earendil-works/pi-tui";
+} from "@bastani/atomic-tui";
 import type { AgentSessionQueuePauseControl } from "../../core/agent-session-methods.ts";
 import type { MarkdownTransformer } from "../../core/extensions/types.ts";
 import type { FullscreenExitOutput, MermaidRenderingMode } from "../../core/settings-manager.ts";

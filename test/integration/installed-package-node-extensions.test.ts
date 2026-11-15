@@ -6,7 +6,7 @@
  * Regression guard for #1600/#1609: the extension-loader alias fallback used
  * require.resolve("<pkg>/package.json"), which throws
  * ERR_PACKAGE_PATH_NOT_EXPORTED under Node for packages that do not export
- * "./package.json" (e.g. @bastani/pi-ai). Every builtin extension
+ * "./package.json" (e.g. @bastani/atomic-ai). Every builtin extension
  * failed to load for npm installs (bin runs under `#!/usr/bin/env node`),
  * while the compiled binary (virtualModules) and Bun-run dev/test paths
  * (lenient exports-map resolution) stayed green — so only a Node-runtime
@@ -117,14 +117,11 @@ function buildInstalledLayout(): string {
 		if (entry === ".bin" || entry === ".cache") continue;
 		const source = join(repoNodeModules, entry);
 		if (!fs.statSync(source).isDirectory()) continue;
-		if (entry === "@bastani" || entry === "@earendil-works") {
+		if (entry === "@bastani") {
 			const scopeDir = join(layoutNodeModules, entry);
 			fs.mkdirSync(scopeDir);
 			for (const scoped of fs.readdirSync(source)) {
 				if (entry === "@bastani" && scoped === "atomic") continue;
-				// The local build alias is not a dependency of the published package.
-				// Exclude it on every platform so it cannot hide undeclared imports.
-				if (entry === "@earendil-works" && scoped === "pi-ai") continue;
 				linkDir(join(source, scoped), join(scopeDir, scoped));
 			}
 			continue;
@@ -410,7 +407,12 @@ runTest(
 				npmCli,
 				"pack",
 				"--workspace=@bastani/atomic",
-				"--workspace=@bastani/pi-ai",
+				"--workspace=@bastani/atomic-ai",
+				"--workspace=@bastani/atomic-agent-core",
+				"--workspace=@bastani/atomic-codemode",
+				"--workspace=@bastani/atomic-schema",
+				"--workspace=@bastani/atomic-telemetry",
+				"--workspace=@bastani/atomic-tui",
 				"--workspace=@bastani/atomic-natives",
 				"--ignore-scripts",
 				"--pack-destination",
@@ -423,7 +425,7 @@ runTest(
 			.readdirSync(packedRoot)
 			.filter((name) => name.endsWith(".tgz"))
 			.map((name) => join(packedRoot!, name));
-		assert.equal(archives.length, 3);
+		assert.equal(archives.length, 8);
 		// Local tarball manifests lack the registry's _hasShrinkwrap marker. Seed
 		// npm's root lock so this consumer uses the published dependency pins too.
 		const publishedShrinkwrap = fs.readFileSync(join(packageDir, "npm-shrinkwrap.json"), "utf8");
@@ -444,7 +446,16 @@ runTest(
 			"install packed closure",
 		);
 		const installed = join(consumer, "node_modules", "@bastani");
-		for (const name of ["atomic", "pi-ai", "atomic-natives"]) {
+		for (const name of [
+			"atomic",
+			"atomic-ai",
+			"atomic-agent-core",
+			"atomic-codemode",
+			"atomic-schema",
+			"atomic-telemetry",
+			"atomic-tui",
+			"atomic-natives",
+		]) {
 			assert.ok(fs.realpathSync(join(installed, name)).startsWith(fs.realpathSync(consumer)));
 		}
 		const shrinkwrap = fs.readFileSync(join(installed, "atomic", "npm-shrinkwrap.json"), "utf8");

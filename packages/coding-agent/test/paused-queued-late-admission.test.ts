@@ -1,4 +1,4 @@
-import { fauxAssistantMessage } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, expect, test } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.ts";
 import { createHarness, getMessageText, type Harness } from "./suite/harness.ts";
