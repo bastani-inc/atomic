@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { StoragePrefixError, StorageSchemaVersionError } from "../../packages/coding-agent/src/core/storage/errors.js";
 import {
+	rehydrateStorageError,
+	StoragePrefixError,
+	StorageSchemaVersionError,
+	serializeStorageError,
+} from "../../packages/coding-agent/src/core/storage/errors.js";
+import {
+	POSTGRES_MAX_STORAGE_PREFIX_LENGTH,
+	POSTGRES_STORAGE_IDENTIFIER_SUFFIXES,
 	renderStorageIdentifiers,
 	validateStoragePrefix,
 } from "../../packages/coding-agent/src/core/storage/prefix.js";
@@ -34,6 +41,36 @@ test("storage prefixes preserve valid text and reject invalid or reserved names"
 			},
 		);
 	}
+});
+
+test("a PostgreSQL prefix leaves room for the longest identifier Atomic creates (#5067)", () => {
+	const longest = Math.max(...POSTGRES_STORAGE_IDENTIFIER_SUFFIXES.map((suffix) => suffix.length));
+	assert.equal(POSTGRES_MAX_STORAGE_PREFIX_LENGTH, 63 - longest);
+	const allowed = "p".repeat(POSTGRES_MAX_STORAGE_PREFIX_LENGTH);
+	assert.equal(validateStoragePrefix(allowed, "postgres"), allowed);
+	for (const prefix of [`${allowed}x`, "p".repeat(24).concat("_"), "p".repeat(32).concat("_")]) {
+		assert.throws(
+			() => validateStoragePrefix(prefix, "postgres"),
+			(error: Error) => {
+				assert.ok(error instanceof StoragePrefixError);
+				assert.equal(error.prefix, prefix);
+				assert.equal(error.reason, "too-long");
+				assert.equal(
+					error.message,
+					`Invalid storage prefix: too-long (PostgreSQL allows at most ${POSTGRES_MAX_STORAGE_PREFIX_LENGTH} characters)`,
+				);
+				const copy = rehydrateStorageError(serializeStorageError(error));
+				assert.ok(copy instanceof StoragePrefixError);
+				assert.equal(copy.reason, "too-long");
+				return true;
+			},
+		);
+		// SQLite and libSQL have no identifier limit.
+		assert.equal(validateStoragePrefix(prefix, "sqlite"), prefix);
+		assert.equal(validateStoragePrefix(prefix), prefix);
+	}
+	// The pattern is checked first, whatever the length.
+	assert.throws(() => validateStoragePrefix("1".repeat(40), "postgres"), { reason: "pattern" });
 });
 
 test("storage identifier rendering keeps fixed domains and immutable caller maps", () => {
