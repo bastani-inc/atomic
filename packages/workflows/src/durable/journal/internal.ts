@@ -117,6 +117,8 @@ export interface SqlPoolStorage {
 	}>;
 	/** Whether a process of an older build may be reading the journal now (#4965): see `olderBuildLive`. */
 	olderBuildLive(executor: SqliteExecutor): Promise<boolean>;
+	/** The database's adapter, as its descriptor names it, such as `"libsql"` or `"postgres"`. */
+	readonly adapter: string;
 }
 
 /** The storage errors that say the store did not take a write, rather than that the write itself was refused. */

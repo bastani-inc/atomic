@@ -186,6 +186,9 @@ function redactCause(cause: StorageFailureCause, redact: (text: string) => strin
 	if (message === cause.message && stack === cause.stack && safeCause === nested) return cause;
 	const safe = new StorageError(message, { cause: safeCause });
 	safe.stack = stack;
+	// The code names the failure, such as a TLS error's, and holds no credential.
+	const code = (cause as { readonly code?: string | number }).code;
+	if (typeof code === "string") Object.assign(safe, { code });
 	return safe;
 }
 

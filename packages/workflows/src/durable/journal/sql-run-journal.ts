@@ -256,6 +256,7 @@ export class SqlRunJournal implements RunJournal {
 			withAppendGuard: (guard, action) => this.appendGuard.run(guard, action),
 			tables: this.tables,
 			olderBuildLive: (executor) => olderBuildLive(executor, this.dialect, this.tables),
+			adapter: database.descriptor.adapter,
 		});
 		registerJournalKeyRangeRead(this, (runId, fromKey, toKey) =>
 			SqlRunJournal.readKeyRange(this, runId, fromKey, toKey),

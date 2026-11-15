@@ -332,17 +332,32 @@ export class SqlSharedPool {
 
 	/**
 	 * Whether a fleet controller asked `host` to drain (#4768), or the provider instance `providerId` it runs on (#4803): a
-	 * worker that restarts on a drained instance under a new host id stays drained until the instance is removed.
+	 * worker that restarts on a drained instance under a new host id stays drained until the instance is removed. A host
+	 * asked is marked draining in the registry in the same transaction that confirms the drain (#5072), before it acts
+	 * on it, so a controller deciding whether to keep its instance never takes it for a serving host. A poll that finds no
+	 * drain only reads: hosts take the write lock only when a drain names them.
 	 */
 	async drainRequested(host: string, providerId?: string): Promise<boolean> {
-		const row = await this.storage.read((executor) =>
-			executor.get(
-				`SELECT 1 AS asked FROM ${this.drains} WHERE host = ? OR provider_id = ? LIMIT 1`,
-				host,
-				providerId ?? null,
-			),
+		const asked = `EXISTS (SELECT 1 FROM ${this.drains} WHERE host = ? OR provider_id = ?)`;
+		const found = await this.storage.read((executor) =>
+			executor.get<SqliteRow & { asked: number }>(`SELECT ${asked} AS asked`, host, providerId ?? null),
 		);
-		return row !== undefined;
+		if (Number(found?.asked) !== 1) return false;
+		return guardedPoolWrite(
+			this.storage,
+			async () => ({
+				writes: [],
+				reads: [
+					{
+						sql: `UPDATE ${this.hosts} SET draining = 1 WHERE host = ? AND ${asked} RETURNING host`,
+						params: [host, host, providerId ?? null],
+					},
+					{ sql: `SELECT ${asked} AS asked`, params: [host, providerId ?? null] },
+				],
+				result: ([, rows]) => Number((rows![0] as { asked: number }).asked) === 1,
+			}),
+			{ priority: true },
+		);
 	}
 
 	/** Removes a stopped worker host from the registry, with the restore backoffs it recorded. */
@@ -982,6 +997,7 @@ async function fleetStatus(
 		store: classifySharedStoreHealth({
 			...(writes === undefined ? {} : { writes }),
 			hostsRegistered: Number(row.hosts) > 0,
+			adapter: storage.adapter,
 		}),
 		queue: { roots: Number(row.roots), ready: Number(row.ready), leased: Number(row.leased) },
 	};
@@ -1107,6 +1123,7 @@ export async function readSharedPoolFleet(
 			...(writes === undefined ? {} : { writes }),
 			hostsRegistered: hosts.length > 0,
 			probe,
+			adapter: storage.adapter,
 		}),
 	};
 	return { hosts, roots: roots.map((root) => ({ ...root, fleet })), fleet };
