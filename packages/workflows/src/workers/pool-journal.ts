@@ -210,18 +210,43 @@ export function poolJournalForRoot(journal: RunJournal, root: string): RunJourna
 	return sharedRoots.get(journal)?.has(root) === true ? journal : poolJournalFor(journal);
 }
 
+/** The trimmed contents of `file`, or undefined when it is missing or empty. */
+function readId(file: string): string | undefined {
+	try {
+		return readFileSync(file, "utf8").trim() || undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 /**
- * This machine's identity for pool state: a random id kept in the pool state directory. A root records it when it
- * first runs a pool against a journal in another database, so a resume elsewhere can say its pool state is not here.
+ * The id an earlier build kept for every agent directory under one parent, in the pool state directory they share, for
+ * the one agent directory that claims it (#5219): the first to start records itself beside it, and only the directory
+ * recorded there adopts it, again after a crash before it kept the id. The file stays for an older build.
+ */
+function adoptedHostId(agentDir: string): string | undefined {
+	const legacy = join(poolStateDirectory(agentDir), "host-id");
+	const id = readId(legacy);
+	if (id === undefined) return undefined;
+	const claim = `${legacy}.adopted-by`;
+	const self = resolve(agentDir);
+	try {
+		writeFileSync(claim, `${self}\n`, { flag: "wx" });
+	} catch {}
+	return readId(claim) === self ? id : undefined;
+}
+
+/**
+ * This agent directory's identity for pool state, as a worker host: a random id kept inside the agent directory, so two
+ * agent directories under one parent are two hosts (#5219). A root records it when it first runs a pool against a
+ * journal in another database, so a resume elsewhere can say its pool state is not here.
  */
 export function poolHostId(agentDir: string): string {
-	const file = join(poolStateDirectory(agentDir), "host-id");
-	try {
-		const existing = readFileSync(file, "utf8").trim();
-		if (existing !== "") return existing;
-	} catch {}
+	const file = join(agentDir, "pool-host-id");
+	const existing = readId(file);
+	if (existing !== undefined) return existing;
+	const id = adoptedHostId(agentDir) ?? randomUUID();
 	mkdirSync(dirname(file), { recursive: true });
-	const id = randomUUID();
 	try {
 		writeFileSync(file, `${id}\n`, { flag: "wx" });
 		return id;

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { inMemorySecret, type StorageSelection } from "@bastani/atomic/storage";
@@ -179,6 +179,41 @@ test("this machine's pool identity is made once and kept", () => {
 		assert.match(id, /^[0-9a-f-]{36}$/);
 		assert.equal(poolHostId(agentDir), id);
 		assert.notEqual(poolHostId(join(directory, "other", "agent")), id);
+	} finally {
+		removeTempDirectory(directory);
+	}
+});
+
+test("two agent directories under one parent each keep a pool identity of their own, inside the directory (#5219)", () => {
+	const directory = makeTempDirectory("pool-host-id-siblings-");
+	try {
+		const first = join(directory, "a1");
+		const second = join(directory, "a2");
+		const id = poolHostId(first);
+		assert.notEqual(poolHostId(second), id);
+		assert.equal(poolHostId(first), id);
+		for (const agentDir of [first, second]) {
+			const kept = readdirSync(agentDir, { recursive: true, withFileTypes: true })
+				.filter((entry) => entry.isFile())
+				.map((entry) => readFileSync(join(entry.parentPath, entry.name), "utf8").trim());
+			assert.ok(kept.includes(poolHostId(agentDir)), `${agentDir} keeps its identity`);
+		}
+	} finally {
+		removeTempDirectory(directory);
+	}
+});
+
+test("an identity an earlier build kept beside the agent directories is adopted by one of them only (#5219)", () => {
+	const directory = makeTempDirectory("pool-host-id-upgrade-");
+	try {
+		const legacy = "0b9f3c3e-6a8e-4f3c-9a4e-2f6d8c1b7a55";
+		mkdirSync(join(directory, "workflows", "pool"), { recursive: true });
+		writeFileSync(join(directory, "workflows", "pool", "host-id"), `${legacy}\n`);
+		const first = join(directory, "a1");
+		const second = join(directory, "a2");
+		assert.equal(poolHostId(first), legacy, "the first directory to start keeps the identity it had");
+		assert.notEqual(poolHostId(second), legacy, "its sibling does not adopt it too");
+		assert.equal(poolHostId(first), legacy);
 	} finally {
 		removeTempDirectory(directory);
 	}
