@@ -63,11 +63,11 @@ function runnerFor(backend: StorageBackend) {
 				}
 			});
 		},
-		it(name: string, body: () => Promise<void>) {
+		it(name: string, body: () => Promise<void>, timeoutMs?: number) {
 			const issue = KNOWN_FAILURES.get(`${suite} > ${name}`);
 			if (skipReason !== undefined) it.skip(name, body);
-			else if (issue !== undefined) it.fails(`${name} (known failure, ${issue})`, body);
-			else it(name, body);
+			else if (issue !== undefined) it.fails(`${name} (known failure, ${issue})`, body, timeoutMs);
+			else it(name, body, timeoutMs);
 		},
 	};
 }

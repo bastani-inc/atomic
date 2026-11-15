@@ -232,10 +232,14 @@ Response:
     "backgroundCompactionEnabled": true,
     "backgroundCompactionThresholdPercent": 75,
     "messageCount": 5,
-    "pendingMessageCount": 0
+    "pendingMessageCount": 0,
+    "resourceErrors": [{"path": "/path/to/extension.ts", "error": "Failed to load extension: ..."}],
+    "resourceWarnings": []
   }
 }
 ```
+
+`resourceErrors` lists the extensions that failed to load in the last startup or reload, and `resourceWarnings` lists their load warnings, such as an extension registering the same tool name twice.
 
 `compaction` is the [background compaction state](/compaction/reference#background-compaction-state): `state` is `idle`, `running`, `ready` or `failed`, and a failed state carries the serialized typed `error`.
 
@@ -1076,6 +1080,25 @@ Response:
 
 The current session name is available via `get_state` in the `sessionName` field. To set the initial name when starting RPC mode, pass `--name <name>` or `-n <name>` to the `atomic --mode rpc` process.
 
+#### reload
+
+Reload keybindings, extensions, skills, prompts and themes, as `/reload` does in interactive mode.
+
+```json
+{"type": "reload"}
+```
+
+Response:
+```json
+{
+  "type": "response",
+  "command": "reload",
+  "success": true
+}
+```
+
+Before the response, Atomic emits one [`extension_error`](#extension_error) event with `"event": "reload"` for each extension that failed to load. The extension stays out of the session until a later reload loads it.
+
 ### Commands
 
 #### get_commands
@@ -1430,7 +1453,7 @@ For branch summaries, `source` is `"branchSummary"` and no `reason` is present. 
 
 ### extension_error
 
-Emitted when an extension throws an error.
+Emitted when an extension throws an error. An extension that fails to load is reported with `"event": "startup"` after startup and with `"event": "reload"` after a [`reload`](#reload) command.
 
 ```json
 {

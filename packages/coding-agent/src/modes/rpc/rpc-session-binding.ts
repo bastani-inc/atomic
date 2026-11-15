@@ -12,6 +12,7 @@ import type { EngineSessionPickerService } from "../interactive-engine/engine-se
 import { forwardWorkflowActivity } from "../interactive-engine/engine-workflow-activity.ts";
 import { serializeInteractiveEngineMessage } from "../interactive-engine/protocol.ts";
 import { toJsonEvent } from "../json-event.ts";
+import { outputExtensionLoadErrors } from "./rpc-extension-load-errors.ts";
 import {
 	createRpcExtensionUIContext,
 	type RpcExtensionUICapabilities,
@@ -239,14 +240,7 @@ export class RpcSessionBinding {
 				await this.onStartupReload?.(session);
 			}
 		} finally {
-			for (const extensionError of session.resourceLoader.getExtensions().errors) {
-				this.output({
-					type: "extension_error",
-					extensionPath: extensionError.path,
-					event: "startup",
-					error: extensionError.error,
-				});
-			}
+			outputExtensionLoadErrors(session, "startup", this.output);
 		}
 		if (session !== this.session) return;
 		this.reloadCoordinator?.publishCurrentState(session);

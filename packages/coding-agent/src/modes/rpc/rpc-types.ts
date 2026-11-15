@@ -260,6 +260,10 @@ export interface RpcSessionState {
 	projectTrusted?: boolean;
 	resourceOverlaps?: ResourceOverlap[];
 	resourceExtensions?: RpcResourceExtension[];
+	/** Extensions that failed to load in the last (re)load; absent on older RPC peers. */
+	resourceErrors?: Array<{ path: string; error: string }>;
+	/** Extension load warnings of the last (re)load; absent on older RPC peers. */
+	resourceWarnings?: Array<{ path: string; warning: string }>;
 }
 
 export interface RpcLogoutProviderResult {
