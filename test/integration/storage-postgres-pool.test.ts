@@ -177,6 +177,57 @@ test("every unquoted identifier past 63 bytes, in DDL, DML and function bodies, 
 	assert.equal(physicalIdentifiers(`SELECT $1, ${short}`), `SELECT $1, ${short}`, "a mapped name maps to itself");
 });
 
+test("a long word in a nested block comment or in a dollar-quoted value is left as written (#4793)", () => {
+	const long = `t_${"a".repeat(62)}_tbl`;
+	const short = postgresDialect.identifier(long);
+	// Postgres nests block comments: the quote inside is commented out, so the name after the comment is SQL.
+	assert.equal(
+		physicalIdentifiers(`SELECT /* a /* b */ c ' */ 1 FROM ${long}`),
+		`SELECT /* a /* b */ c ' */ 1 FROM ${short}`,
+	);
+	assert.equal(
+		physicalIdentifiers(`SELECT /* a /* b */ ${long} */ '${long}' FROM ${long}`),
+		`SELECT /* a /* b */ ${long} */ '${long}' FROM ${short}`,
+	);
+	// A dollar-quoted string that is not a routine's body is a value.
+	for (const value of [`$$${long}$$`, `$q$${long}$q$`])
+		assert.equal(
+			physicalIdentifiers(`INSERT INTO ${long} (v) VALUES (${value})`),
+			`INSERT INTO ${short} (v) VALUES (${value})`,
+		);
+	assert.equal(
+		physicalIdentifiers(`SELECT 1 FROM ${long}; SELECT $$${long}$$ AS v`),
+		`SELECT 1 FROM ${short}; SELECT $$${long}$$ AS v`,
+		"a body ends with its statement",
+	);
+	// A routine's body is SQL: its names are mapped, its literals kept, after any comment in its header.
+	assert.equal(
+		physicalIdentifiers(`DO $$ BEGIN DELETE FROM ${long} WHERE k = '${long}'; END $$`),
+		`DO $$ BEGIN DELETE FROM ${short} WHERE k = '${long}'; END $$`,
+	);
+	assert.equal(
+		physicalIdentifiers(
+			`CREATE PROCEDURE p() /* a /* b */ c */ LANGUAGE plpgsql AS $b$ BEGIN DELETE FROM ${long}; END $b$`,
+		),
+		`CREATE PROCEDURE p() /* a /* b */ c */ LANGUAGE plpgsql AS $b$ BEGIN DELETE FROM ${short}; END $b$`,
+	);
+});
+
+describe.skipIf(postgres.skipReason !== undefined)("a dollar-quoted value reaches the server unchanged (#4793)", () => {
+	test("a value whose text is a long name is stored as written, after a nested comment", async () => {
+		const scope = await postgres.openScope();
+		try {
+			const database = await scope.connect();
+			const long = `t_${"a".repeat(62)}_tbl`;
+			await database.exec(`CREATE TABLE ${long} (v TEXT)`);
+			await database.run(`INSERT INTO ${long} (v) SELECT $$${long}$$ /* a /* b */ c ' */`);
+			assert.deepEqual(await database.all(`SELECT v FROM ${long}`), [{ v: long }]);
+		} finally {
+			await scope.close();
+		}
+	});
+});
+
 describe.skipIf(postgres.skipReason !== undefined)(
 	"every store's Postgres identifiers under long prefixes (#4793)",
 	() => {
