@@ -121,15 +121,41 @@ for (const { label, response, kind } of TRANSIENT_BEDROCK_FAILURES) {
 	});
 }
 
-test("a provider error code alone never reads as an unavailable model (#4918)", () => {
-	const failure = {
+test.each(["ServiceUnavailableException", "InternalServerException", "ModelNotReadyException"])(
+	"a Bedrock %s code alone is a transient provider failure (#4918)",
+	(errorCode) => {
+		const failure = {
+			role: "assistant",
+			stopReason: "error",
+			diagnostics: [{ type: "bedrock_response_failure", details: { errorCode } }],
+		};
+
+		assert.equal(normalizeModelFailureSignal(failure).kind, "provider_unavailable");
+		assert.equal(isRetryableSameModelFailure(failure), true);
+	},
+);
+
+test("the sentence describing a bare provider code is shown but never classified (#4918)", () => {
+	// Read as text, "Model request failed with code SomethingUnknownException" names a model and "unknown".
+	const failure = { code: "SomethingUnknownException" };
+	const signal = normalizeModelFailureSignal(failure);
+
+	assert.equal(signal.kind, "unknown");
+	assert.equal(signal.message, "Model request failed with code SomethingUnknownException");
+	assert.equal(isRetryableModelFailure(failure), false);
+
+	const diagnosed = {
 		role: "assistant",
 		stopReason: "error",
-		diagnostics: [{ type: "bedrock_response_failure", details: { errorCode: "ServiceUnavailableException" } }],
+		diagnostics: [{ type: "bedrock_response_failure", details: { errorCode: "SomethingUnknownException" } }],
 	};
+	assert.notEqual(normalizeModelFailureSignal(diagnosed).kind, "model_unavailable");
+});
 
-	assert.equal(normalizeModelFailureSignal(failure).kind, "provider_unavailable");
-	assert.equal(isRetryableSameModelFailure(failure), true);
+test("a diagnostic error given as text is still classified from that text (#4918)", () => {
+	const failure = { role: "assistant", stopReason: "error", diagnostics: [{ error: "rate limit exceeded" }] };
+
+	assert.equal(normalizeModelFailureSignal(failure).kind, "rate_limit");
 });
 
 test("message text does not condemn the model over a transient HTTP status (#4918)", () => {
@@ -137,6 +163,14 @@ test("message text does not condemn the model over a transient HTTP status (#491
 
 	assert.equal(normalizeModelFailureSignal(failure).kind, "provider_unavailable");
 	assert.equal(isRetryableSameModelFailure(failure), true);
+});
+
+test("message text still refines a transient status and decides over a permanent one (#4918)", () => {
+	assert.equal(normalizeModelFailureSignal({ status: 503, message: "rate limit exceeded" }).kind, "rate_limit");
+	assert.equal(
+		normalizeModelFailureSignal({ status: 404, message: "invalid api key" }).kind,
+		"auth_on_candidate_provider",
+	);
 });
 
 test.each([

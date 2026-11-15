@@ -765,8 +765,7 @@ export function errorMessage(error: unknown): string {
 
 /** The failure's own text, for text classification: never a sentence generated from its status or code. */
 function classifiableMessage(error: unknown): string | undefined {
-	const message = messageFromUnknown(error, new Set(), false);
-	return message !== undefined && message.trim().length > 0 ? message : undefined;
+	return messageFromUnknown(error, new Set(), false);
 }
 
 /** Alias used by the subagent package's older public helper name. */
