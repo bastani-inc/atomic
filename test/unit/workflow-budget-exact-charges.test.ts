@@ -206,4 +206,37 @@ describe("workflow budget charges (#5053)", () => {
 		assert.equal(costCapped.exhaustedWith({ cost: 0.9 }), false);
 		assert.equal(costCapped.exhaustedWith({ cost: 0.1 * 10 }), true, "pending cost reaches the cost cap");
 	});
+
+	test("a child's own exhaustion with no live stage stops the child, not its root (#5053)", async () => {
+		const snapshot = (id: string): RunSnapshot => ({
+			id,
+			name: id,
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [pricedStage(`${id}-stage`, 0)],
+			startedAt: Date.now(),
+		});
+		const rootRun = snapshot("root");
+		const root = createRunBudgetController({
+			run: rootRun,
+			budget: resolve_budget({ run: { maxTokens: 1_000 } }),
+			usageTree: () => ({ run: rootRun }),
+		});
+		const childRun = snapshot("child");
+		childRun.stages.push(pricedStage("child-spent", 0), {
+			...pricedStage("child-more", 0),
+			modelAttempts: [{ model: "m", success: true, usage: { input: 30 } }],
+		});
+		const child = createRunBudgetController({
+			run: childRun,
+			budget: resolve_budget({ run: { maxTokens: 22 } }),
+			usageTree: () => ({ run: childRun }),
+			rootBudget: root,
+		});
+
+		await assert.rejects(child.stopAtBoundaryAsync("c6"), /tokens budget exceeded/);
+		assert.equal(rootRun.budgetState?.systemOwnedStop, undefined, "the root was not stopped");
+		assert.doesNotThrow(() => root.rethrowIfSystemOwnedStop("p1"));
+	});
 });

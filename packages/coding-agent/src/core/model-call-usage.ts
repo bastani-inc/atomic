@@ -1,5 +1,5 @@
 import type { Usage } from "@bastani/pi-ai/compat";
-import type { AgentSessionEvent } from "./agent-session-types.ts";
+import type { AgentSessionEvent } from "./agent-session-types.js";
 
 /**
  * The usage of the one model call a session event reports, or undefined for any other event: an assistant

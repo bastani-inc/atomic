@@ -13,7 +13,7 @@
 
 import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { recordRunResultCheckpointAsync } from "../durable/run-result.js";
-import { recordRunTimingCheckpointAsync, recordRunUsageCheckpointAsync } from "../durable/run-timing.js";
+import { recordRunTimingCheckpointAsync } from "../durable/run-timing.js";
 import type { DurableWorkflowStatus } from "../durable/types.js";
 import { describeErrorWithCauses } from "../shared/error-with-causes.js";
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
@@ -32,6 +32,8 @@ export interface DurableTerminalFinalizeInput {
 	readonly terminalStatusCommitted?: boolean;
 	/** Where a failure to record the ending is reported, as a notice, before it is rethrown. */
 	readonly store?: Store;
+	/** A child run's durable budget accounting writer; see `recordChildRunUsageCheckpointAsync`. */
+	readonly recordUsage?: () => Promise<void>;
 }
 
 export async function finalizeDurableTerminalStatus(input: DurableTerminalFinalizeInput): Promise<void> {
@@ -45,8 +47,8 @@ export async function finalizeDurableTerminalStatus(input: DurableTerminalFinali
 
 async function commitDurableTerminalStatus(input: DurableTerminalFinalizeInput): Promise<void> {
 	if (!input.isRoot) {
-		// A child's own budget resumes from its durable accounting, so a resumed root cannot reset it (#5053).
-		await recordRunUsageCheckpointAsync(input.durableBackend, input.runSnapshot);
+		// The child's last charges, such as its wrap-up turn, reach its durable accounting before it ends (#5053).
+		await input.recordUsage?.();
 		return;
 	}
 	const status = effectiveRunStatus(input.runSnapshot);

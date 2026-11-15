@@ -51,7 +51,23 @@ export function priorRunAccounting(
 	backend: DurableWorkflowBackend,
 	workflowId: string,
 ): RunBudgetAccountingState | undefined {
-	const output = backend.getToolOutput(workflowId, RUN_USAGE_CHECKPOINT_NAME);
+	let latest = accountingOf(backend.getToolOutput(workflowId, RUN_USAGE_CHECKPOINT_NAME));
+	// A child records its root's accounting with its own, in one write, so a crash between them loses neither (#5053).
+	// Charges only grow, so the largest record is the latest.
+	for (const checkpoint of backend.listCheckpoints(workflowId)) {
+		if (checkpoint.kind !== "tool" || !isChildRunUsageCheckpointName(checkpoint.argsHash)) continue;
+		const output = checkpoint.output as { readonly rootAccounting?: unknown } | undefined;
+		const root = accountingOf({ accounting: output?.rootAccounting });
+		if (root !== undefined && (latest === undefined || chargedMore(root, latest))) latest = root;
+	}
+	return latest;
+}
+
+function chargedMore(left: RunBudgetAccountingState, right: RunBudgetAccountingState): boolean {
+	return left.tokens > right.tokens || (left.tokens === right.tokens && left.cost > right.cost);
+}
+
+function accountingOf(output: unknown): RunBudgetAccountingState | undefined {
 	if (typeof output !== "object" || output === null || Array.isArray(output)) return undefined;
 	return restoreBudgetState({ accounting: (output as Record<string, unknown>).accounting })?.accounting;
 }
@@ -74,13 +90,56 @@ export async function recordRunTimingCheckpointAsync(
 	return true;
 }
 
-/**
- * Record only the run's budget accounting durably. A child workflow keeps no timing record of its own, but
- * its own budget must resume from what it already charged (#5053).
- */
+/** Record only the run's budget accounting durably, when it changed. */
 export async function recordRunUsageCheckpointAsync(backend: DurableWorkflowBackend, run: RunSnapshot): Promise<void> {
 	const checkpoint = runUsageCheckpoint(backend, run);
 	if (checkpoint !== undefined) await backend.commitCheckpoint(checkpoint);
+}
+
+/** Prefix of the root-level record of one child workflow's own budget accounting (#5053). */
+const CHILD_RUN_USAGE_PREFIX = `${RUN_USAGE_CHECKPOINT_NAME}:child:`;
+
+/** Whether a reserved run-level tool checkpoint records a child workflow's accounting. */
+export function isChildRunUsageCheckpointName(name: string): boolean {
+	return name.startsWith(CHILD_RUN_USAGE_PREFIX);
+}
+
+/** A child workflow's own accounting, recorded on its root run, or undefined when absent/malformed. */
+export function priorChildRunAccounting(
+	rootBackend: DurableWorkflowBackend,
+	rootRunId: string,
+	childRunId: string,
+): RunBudgetAccountingState | undefined {
+	return accountingOf(rootBackend.getToolOutput(rootRunId, CHILD_RUN_USAGE_PREFIX + childRunId));
+}
+
+/**
+ * Record a child workflow's own budget accounting, and its root's, on the root run when either changed. The root
+ * records its own only at its own stages, so this keeps both durable while the child runs. The record lives in the root's
+ * scope as a run-level record, so the child's own checkpoints, and the completed subtree a resume replays, are
+ * unchanged by it; a resume after any crash continues the child's budget from it (#5053).
+ */
+export async function recordChildRunUsageCheckpointAsync(
+	rootBackend: DurableWorkflowBackend,
+	root: RunSnapshot,
+	child: RunSnapshot,
+): Promise<void> {
+	const accounting = child.budgetState?.accounting;
+	const rootRunId = root.id;
+	if (accounting === undefined || rootBackend.listCheckpoints(rootRunId).length === 0) return;
+	const rootAccounting = root.budgetState?.accounting;
+	const name = CHILD_RUN_USAGE_PREFIX + child.id;
+	const checkpointId = `run-usage:child:${durableHash({ child: child.id, accounting, rootAccounting: rootAccounting ?? null })}`;
+	if (rootBackend.getToolCheckpoint(rootRunId, name)?.checkpointId === checkpointId) return;
+	await rootBackend.commitCheckpoint({
+		kind: "tool",
+		workflowId: rootRunId,
+		checkpointId,
+		name,
+		argsHash: name,
+		output: rootAccounting === undefined ? { accounting } : { accounting, rootAccounting },
+		completedAt: Date.now(),
+	});
 }
 
 function runTimingCheckpoint(

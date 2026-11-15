@@ -23,7 +23,13 @@ import {
 	resumeLaunchCwd,
 } from "../durable/run-restore-preconditions.js";
 import { recordRunResultCheckpointAsync } from "../durable/run-result.js";
-import { inheritedRunElapsedMs, priorRunAccounting, recordRunTimingCheckpointAsync } from "../durable/run-timing.js";
+import {
+	inheritedRunElapsedMs,
+	priorChildRunAccounting,
+	priorRunAccounting,
+	recordChildRunUsageCheckpointAsync,
+	recordRunTimingCheckpointAsync,
+} from "../durable/run-timing.js";
 import { ScopedDurableBackend } from "../durable/scoped-backend.js";
 import {
 	createDurableStagePrimitive,
@@ -547,7 +553,9 @@ async function executeRun(
 			: undefined;
 	const durableAccounting =
 		hasBudgetDeclaration && opts.continuation === undefined && priorRun === undefined
-			? priorRunAccounting(durableBackend, runId)
+			? opts.parentRun === undefined
+				? priorRunAccounting(durableBackend, runId)
+				: priorChildRunAccounting(rootBackend, opts.parentRun.rootRunId, runId)
 			: undefined;
 	const continuedBudgetState =
 		opts.continuation?.source.budgetState ??
@@ -829,12 +837,26 @@ async function executeRun(
 		user: opts.onStageEnd,
 		metadataOnly: true,
 	});
+	/**
+	 * A budgeted child records its own accounting, and its root's, on the root run after each of its stage-session
+	 * checkpoints: the root records its own only at its own stages, so a crash inside the child would otherwise lose
+	 * both, and the stages a resume replays leave the meter (#5053).
+	 */
+	const childParent = opts.parentRun;
+	const recordChildUsage =
+		childParent === undefined || !hasBudgetDeclaration
+			? undefined
+			: async (): Promise<void> => {
+					const root = activeStore.run(childParent.rootRunId);
+					if (root !== undefined) await recordChildRunUsageCheckpointAsync(rootBackend, root, runSnapshot);
+				};
 	const durableOnStageSession = createDurableStageSessionRecorder({
 		runId,
 		deps: durableStageDeps,
 		onStageSession: opts.onStageSession,
 		...(opts.parentRun === undefined ? { runSnapshot } : {}),
 		heartbeatIntervalMinutes: def.heartbeatIntervalMinutes,
+		...(recordChildUsage === undefined ? {} : { recordUsage: recordChildUsage }),
 	});
 	const stageOptions: EngineStageRuntimeOptions = {
 		continuation: opts.continuation,
@@ -1846,6 +1868,7 @@ async function executeRun(
 					durableBackend,
 					terminalStatusCommitted,
 					store: activeStore,
+					...(recordChildUsage === undefined ? {} : { recordUsage: recordChildUsage }),
 				});
 			}
 		} finally {

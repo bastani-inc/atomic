@@ -330,7 +330,8 @@ export function createRunBudgetController(input: {
 			throw finishWrapUp(frontierStage, undefined, undefined, false);
 		const registration = handlers.findLast((entry) => entry.frontierStage === frontierStage) ?? handlers.at(-1);
 		if (registration === undefined) {
-			if (root !== undefined) return root.deliverWrapUp(frontierStage);
+			// This budget's own exhaustion with no live stage to wrap up stops here; the root's is the root's (#5053).
+			if (root !== undefined && !ownEnabled) return root.deliverWrapUp(frontierStage);
 			throw finishWrapUp(frontierStage, undefined, undefined, false);
 		}
 		wrapUpPromise = registration.handler();
