@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +8,13 @@ import { DefaultPackageManager } from "../src/core/package-manager.ts";
 import { installGit, removeGit } from "../src/core/package-manager-git.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { type GitSource, parseGitUrl } from "../src/utils/git.ts";
+import { createGitEnvironment } from "../src/utils/git-env.ts";
+
+function git(args: string[], cwd: string): string {
+	const result = spawnSync("git", args, { cwd, encoding: "utf-8", env: createGitEnvironment() });
+	if (result.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${result.stderr}`);
+	return result.stdout.trim();
+}
 
 const SLOT_COLLAPSING_SOURCES = [
 	"git:localhost/alice/.",
@@ -87,6 +95,28 @@ describe("git sources that do not name their own install directory (#5055)", () 
 			await assert.rejects(removeGit(context, source, "user"), /not the install directory/, `remove ${path}`);
 			assert.ok(existsSync(join(sibling, "package.json")), `${host}/${path} removed ${sibling}`);
 		}
+	});
+
+	it("leaves another repository's checkout alone when a differently cased source maps onto it (#5055)", async () => {
+		// On a case-insensitive filesystem, alice/TOOL opens the checkout of alice/tool.
+		const checkout = join(agentDir, "git", "localhost", "alice", "TOOL");
+		mkdirSync(checkout, { recursive: true });
+		git(["init"], checkout);
+		git(["remote", "add", "origin", "https://localhost/alice/tool"], checkout);
+		writeFileSync(join(checkout, "package.json"), "{}");
+		const source = "https://localhost/alice/TOOL";
+		const mismatch = /https:\/\/localhost\/alice\/tool.*https:\/\/localhost\/alice\/TOOL/;
+
+		const settingsManager = SettingsManager.inMemory();
+		settingsManager.setPackages([source]);
+		const manager = new DefaultPackageManager({ cwd, agentDir, settingsManager });
+
+		await assert.rejects(manager.install(source), mismatch);
+		await assert.rejects(manager.update(source), mismatch);
+		await assert.rejects(manager.remove(source), mismatch);
+
+		assert.ok(existsSync(join(checkout, "package.json")));
+		assert.equal(git(["remote", "get-url", "origin"], checkout), "https://localhost/alice/tool");
 	});
 
 	it("does not replace a directory that holds another package's checkout (#5055)", async () => {

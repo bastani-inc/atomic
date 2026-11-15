@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { APP_NAME, getProjectConfigDirs } from "../config.js";
-import type { GitSource } from "../utils/git.ts";
+import { type GitSource, parseGitUrl } from "../utils/git.ts";
 import { isGitProvisionError } from "../utils/git-errors.ts";
 import { stripBom } from "../utils/text.ts";
 import { getToolEnv, getToolPath } from "../utils/tools-manager.ts";
@@ -168,6 +168,7 @@ export async function installGit(context: PackageManagerContext, source: GitSour
 			await cloneGit(context, source, scope, targetDir, safeRef);
 			return;
 		}
+		await assertCheckoutOfSource(context, source, targetDir);
 		// Another process finished installing it while this one waited for the lock.
 		if (!installedBefore && (await isCompleteGitCheckout(context, targetDir))) return;
 		await updateGitCheckout(context, source, scope, targetDir, safeRef, "install");
@@ -277,6 +278,41 @@ function assertOwnGitInstallDir(source: GitSource, targetDir: string): void {
 	}
 }
 
+/**
+ * Throws when the checkout in `targetDir` was cloned from a repository whose path differs from `source`'s only in
+ * case: a case-insensitive filesystem maps both (`alice/TOOL` and `alice/tool`) onto one directory, and that is
+ * the only way another source's checkout can occupy this slot. An origin the user pointed elsewhere (a mirror, a
+ * local path) is left to the update as before.
+ */
+async function assertCheckoutOfSource(
+	context: PackageManagerContext,
+	source: GitSource,
+	targetDir: string,
+): Promise<void> {
+	if (!existsSync(join(targetDir, ".git"))) return;
+	let origin: string;
+	try {
+		origin = (
+			await captureGitProcess(context, ["config", "--get", "remote.origin.url"], {
+				cwd: targetDir,
+				timeoutMs: NETWORK_TIMEOUT_MS,
+			})
+		).trim();
+	} catch (error) {
+		rethrowGitProvisionError(error);
+		return;
+	}
+	if (!origin) return;
+	const installed = parseGitUrl(origin.startsWith("git@") ? `git:${origin}` : origin);
+	const sameSlot =
+		installed?.host.toLowerCase() === source.host.toLowerCase() &&
+		installed.path.toLowerCase() === source.path.toLowerCase();
+	if (!sameSlot || installed.path === source.path) return;
+	throw new Error(
+		`${targetDir} holds a checkout of ${origin}, not ${source.repo}; it was left in place. Remove ${origin} first to install ${source.repo}.`,
+	);
+}
+
 /** Staging directories are named after their target so a later install of the same package can sweep them. */
 function getGitStagingPrefix(targetDir: string): string {
 	return `.${basename(targetDir)}.${APP_NAME}-clone-`;
@@ -374,6 +410,7 @@ export async function updateGit(context: PackageManagerContext, source: GitSourc
 			await cloneGit(context, source, scope, targetDir, safeRef);
 			return;
 		}
+		await assertCheckoutOfSource(context, source, targetDir);
 		await updateGitCheckout(context, source, scope, targetDir, safeRef, "update");
 	});
 }
@@ -444,6 +481,7 @@ export async function removeGit(context: PackageManagerContext, source: GitSourc
 	if (!existsSync(dirname(targetDir))) return;
 	await withGitInstallLock(context, scope, targetDir, async () => {
 		assertOwnGitInstallDir(source, targetDir);
+		await assertCheckoutOfSource(context, source, targetDir);
 		rmSync(targetDir, { recursive: true, force: true });
 		rmSync(getGitUpdateMarkerPath(targetDir), { force: true });
 	});
