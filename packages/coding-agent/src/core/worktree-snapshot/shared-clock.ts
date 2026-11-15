@@ -9,28 +9,61 @@
  */
 import { randomBytes } from "node:crypto";
 import * as fs from "node:fs";
-import { open, stat, unlink } from "node:fs/promises";
+import { open, readdir, stat, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import lockfile, { type LockOptions } from "proper-lockfile";
+
+const PROBE_NAME = /^\.clock-[0-9a-f]{16}\.probe$/;
+
+/**
+ * How old, by the filesystem's clock, a probe file is when its process no longer has a use for it: one lives for a
+ * create and a stat, so one this old was left by a process that stopped between creating and removing it.
+ */
+export const LEFTOVER_PROBE_AGE_MS = 10 * 60_000;
+
+/** When each directory's leftover probes were last removed by this process, by this process's clock. */
+const sweptAt = new Map<string, number>();
+
+/** Removes the probes in `directory` older than {@link LEFTOVER_PROBE_AGE_MS}, at most once per that age. */
+async function removeLeftoverProbes(directory: string, offset: number): Promise<void> {
+	const last = sweptAt.get(directory);
+	if (last !== undefined && Date.now() - last < LEFTOVER_PROBE_AGE_MS) return;
+	sweptAt.set(directory, Date.now());
+	const now = Date.now() + offset;
+	for (const name of await readdir(directory).catch(() => [] as string[])) {
+		if (!PROBE_NAME.test(name)) continue;
+		const probe = join(directory, name);
+		const age = await stat(probe).then(
+			(stats) => now - stats.mtimeMs,
+			() => 0,
+		);
+		if (age > LEFTOVER_PROBE_AGE_MS) await unlink(probe).catch(() => {});
+	}
+}
 
 /**
  * How far the clock of the filesystem holding `directory` runs ahead of this process's clock, in milliseconds: the
  * mtime the filesystem stamps on a file created in `directory` now, less this process's time now. The probe file,
  * `.clock-<random hex>.probe`, is removed at once. 0, this process's own clock, when no file can be created there.
+ * Probes a process left when it stopped mid-probe are removed once they are {@link LEFTOVER_PROBE_AGE_MS} old by the
+ * filesystem's clock.
  */
 export async function sharedClockOffset(directory: string): Promise<number> {
 	// Random bytes, not a UUID: the probe's name never takes a UUID the caller's own records draw.
 	const probe = join(directory, `.clock-${randomBytes(8).toString("hex")}.probe`);
+	let offset = 0;
 	try {
 		const before = Date.now();
 		await (await open(probe, "w")).close();
 		const { mtimeMs } = await stat(probe);
-		return mtimeMs - (before + Date.now()) / 2;
+		offset = mtimeMs - (before + Date.now()) / 2;
 	} catch {
 		return 0;
 	} finally {
 		await unlink(probe).catch(() => {});
 	}
+	await removeLeftoverProbes(directory, offset);
+	return offset;
 }
 
 /** The time now by the clock of the filesystem holding `directory`, which every host sharing it reads alike. */

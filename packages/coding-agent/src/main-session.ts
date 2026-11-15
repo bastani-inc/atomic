@@ -21,6 +21,7 @@ import {
 	type ResumeNotice,
 	sessionResumeOptions,
 } from "./core/resume/session-resume.ts";
+import { claimSession } from "./core/session-claims.ts";
 import {
 	formatMissingSessionCwdPrompt,
 	getMissingSessionCwdOptions,
@@ -561,6 +562,11 @@ export interface OpenCliSessionOptions {
 	readonly progress?: StartupProgress;
 	/** Entries from which a history is announced before it loads. Default {@link EAGER_HISTORY_ENTRIES}. */
 	readonly eagerHistoryEntries?: number;
+	/**
+	 * Whether a resume claims its session before it writes or restores anything (#5135). Default true; false in the
+	 * interactive engine child, whose host claimed the session.
+	 */
+	readonly claim?: boolean;
 }
 
 export interface OpenedCliSession {
@@ -571,8 +577,10 @@ export interface OpenedCliSession {
 /**
  * Opens the session the CLI flags select and, for a resume, prepares its checkout on this machine. A resume
  * (`--session`, `--resume`, `--continue`) first checks its storage preconditions, and a lookup that cannot reach the
- * storage fails as {@link ResumeCatalogUnavailableError}. Returns "cancelled" when the user cancels at a prompt. When it
- * fails or is cancelled after opening the session store it selected, that store is closed again.
+ * storage fails as {@link ResumeCatalogUnavailableError}. A resume claims the session it opens before it writes to it
+ * or restores its checkouts, and fails as {@link SessionAlreadyOpenError}, having changed nothing, when another live
+ * process holds it (#5135). Returns "cancelled" when the user cancels at a prompt. When it fails or is cancelled after
+ * opening the session store it selected, that store is closed again, and the claim released.
  */
 export async function openCliSession(
 	parsed: Args,
@@ -613,8 +621,20 @@ export async function openCliSession(
 		})
 		.finally(() => stopObserving?.());
 	const owned = options.sessionStorage === undefined || !("load" in options.sessionStorage);
-	const release = (failure?: unknown) =>
-		owned ? closeStoreAfter(sessionManager.getSessionStore(), failure) : undefined;
+	let releaseClaim: (() => void) | undefined;
+	const release = (failure?: unknown) => {
+		releaseClaim?.();
+		return owned ? closeStoreAfter(sessionManager.getSessionStore(), failure) : undefined;
+	};
+	if (resuming && options.claim !== false && sessionManager.isPersisted()) {
+		try {
+			releaseClaim = claimSession(sessionManager.getSessionId(), { agentDir: options.agentDir });
+		} catch (error) {
+			options.progress?.done();
+			await release(error);
+			throw error;
+		}
+	}
 	const choose = options.chooseDirtyCheckout;
 	const prepared = await prepareSessionResume(sessionManager, {
 		...sessionResumeOptions("cli", cwd, options.agentDir, settingsManager, options.trusted, options.interactive),
