@@ -845,7 +845,7 @@ Child budgets meter only their subtree; the root meter also includes child spend
 
 ### Warnings and exhausted budgets
 
-A `budget_warning` notice is emitted once per run and dimension at `warnAtPercent`, default `80`. On exhaustion, an already-live frontier stage gets one current-turn wrap-up. Atomic then records a resumable `budget_exceeded` block with its reading, ceiling, frontier, wrap-up summary, and `wrapUpUsage` when model usage is available.
+A `budget_warning` notice is emitted once per run and dimension at `warnAtPercent`, default `80`. Token and cost budgets are checked after every model call, including the calls of a stage's subagents and compaction: once a call reaches the cap, the stage starts no further model call in its turn, and the tool calls it asked for are answered as cancelled. On exhaustion, an already-live frontier stage gets one current-turn wrap-up. Atomic then records a resumable `budget_exceeded` block with its reading, ceiling, frontier, wrap-up summary, and `wrapUpUsage` when model usage is available.
 
 Atomic never creates a stage just for wrap-up. If no stage turn is live at the boundary, the run stops without a wrap-up summary and leaves its once-per-run delivery allowance unused.
 
