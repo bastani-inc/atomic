@@ -417,16 +417,24 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 			let transaction = await waitForLock(begin);
 			// A server's transaction sends its `BEGIN IMMEDIATE` with its first statement. A server that answers that busy
 			// fails the statement and the client closes the transaction, having run nothing of it, so the statement runs
-			// again in a new transaction. A busy answer after the transaction began leaves it open and is not run again.
+			// again in a new transaction. A busy answer after the transaction began is not run again: a busy statement
+			// leaves the transaction open, and a busy answer that ends its stream also ends the statements it already ran.
+			// The transaction began once a statement in it settled and left it open: the server acknowledged its BEGIN.
+			let started = false;
 			/** @type {<T>(operation: () => Promise<T>) => Promise<T>} */
-			const inTransaction = (operation) =>
-				whileServerBusy(
-					() => watch(operation),
-					() => transaction.closed,
-					async () => {
-						transaction = await watch(begin);
-					},
-				);
+			const inTransaction = async (operation) => {
+				try {
+					return await whileServerBusy(
+						() => watch(operation),
+						() => !started && transaction.closed,
+						async () => {
+							transaction = await watch(begin);
+						},
+					);
+				} finally {
+					if (!transaction.closed) started = true;
+				}
+			};
 			return {
 				...statements(async () => transaction, inTransaction, inTransaction),
 				commit: () => watch(() => transaction.commit()),
