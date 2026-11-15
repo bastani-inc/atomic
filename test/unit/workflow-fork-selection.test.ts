@@ -236,6 +236,39 @@ test("a fork keeps the checkpoints that completed before the fork point and the 
 	assert.deepEqual(opened.stores, [], "no session store is opened when no session is copied");
 });
 
+test("a fork keeps the records of a prompt answered before the fork point, and not those of a stage that did not complete (#4879)", async () => {
+	const backend = await createMemoryTestBackend();
+	const sourceId = testRunId("select-prompt-records");
+	await register(backend, sourceId);
+	const topology = (stageId: string, status: "running" | "completed" | "failed") => ({
+		version: 1 as const,
+		stageId,
+		parentIds: [],
+		sourceOrder: 0,
+		status,
+		occurrenceKey: `${stageId}-occurrence`,
+	});
+	await commit(backend, [
+		stage(sourceId, "stage-active-meta:answered", "input", "prompt:input:answered", {
+			topology: topology("answered", "running"),
+		}),
+		stage(sourceId, "stage-meta:prompt:input:answered", "input", "prompt:input:answered", {
+			topology: topology("answered", "completed"),
+		}),
+		ui(sourceId, "ui:answered"),
+		stage(sourceId, "stage-active-meta:unanswered", "input", "prompt:input:unanswered", {
+			topology: topology("unanswered", "running"),
+		}),
+		stage(sourceId, "stage-meta:failed", "failed", "stage:failed:1", { topology: topology("failed", "failed") }),
+		stage(sourceId, "stage:a", "a", "stage:a:1", { output: "a" }),
+	]);
+	assert.deepEqual(await copiedIds(backend, sourceId, { fromStage: "a" }), [
+		"stage-active-meta:answered",
+		"stage-meta:prompt:input:answered",
+		"ui:answered",
+	]);
+});
+
 test("a fork from a nested workflow stage drops that workflow's start and remaps its recorded child result (#4321)", async () => {
 	const backend = await createMemoryTestBackend();
 	const sourceId = testRunId("select-boundary");
