@@ -3,6 +3,7 @@
  * to a stage and continues from there. The source run is never written; the fork is a new run, so the
  * run graph stays acyclic.
  */
+
 import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
@@ -64,6 +65,7 @@ import {
 	type RunJournalSeedEvent,
 	StaleLeaseError,
 } from "./journal/types.js";
+import { WorkflowProjectNotTrustedError } from "./project-trust.js";
 import { FOREIGN_LIVE_WORKFLOW_WINDOW_MS } from "./resume-eligibility.js";
 import { claimsOf, hasForkClaim, hasResumeClaim, pendingForks } from "./run-claims.js";
 import { RUN_RESULT_CHECKPOINT_NAME } from "./run-result.js";
@@ -716,7 +718,14 @@ async function resolveForkDefinition(
 			definition = await request.resolveDefinition?.(handle.name, handle.invocationCwd);
 		} catch (error) {
 			throw new ForkDefinitionMismatchError(
-				{ runId: handle.workflowId, workflow: handle.name, reason: "definition-unavailable" },
+				error instanceof WorkflowProjectNotTrustedError
+					? {
+							runId: handle.workflowId,
+							workflow: handle.name,
+							reason: "project-not-trusted",
+							projectDir: error.projectDir,
+						}
+					: { runId: handle.workflowId, workflow: handle.name, reason: "definition-unavailable" },
 				{ cause: error as Error },
 			);
 		}

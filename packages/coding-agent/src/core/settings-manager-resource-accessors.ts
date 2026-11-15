@@ -1,6 +1,6 @@
 import { SETTINGS_DEFAULTS } from "./settings-defaults.ts";
 import { SettingsManager } from "./settings-manager-core.ts";
-import { settingsInternals } from "./settings-manager-internals.ts";
+import { settingsInternals, stringEntries } from "./settings-manager-internals.ts";
 import type { Settings } from "./settings-schema.ts";
 import type { DefaultProjectTrust, PackageSource, QuietStartup, ThinkingBudgetsSettings } from "./settings-types.ts";
 
@@ -196,7 +196,14 @@ const resourceAccessors: SettingsManagerResourceAccessors = {
 	},
 
 	getPackages() {
-		return [...(settingsInternals(this).settings.packages ?? [])];
+		const packages = settingsInternals(this).settings.packages;
+		return Array.isArray(packages)
+			? packages.filter(
+					(source) =>
+						typeof source === "string" ||
+						(typeof source === "object" && source !== null && typeof source.source === "string"),
+				)
+			: [];
 	},
 
 	setPackages(packages) {
@@ -215,7 +222,7 @@ const resourceAccessors: SettingsManagerResourceAccessors = {
 	},
 
 	getExtensionPaths() {
-		return [...(settingsInternals(this).settings.extensions ?? [])];
+		return stringEntries(settingsInternals(this).settings.extensions);
 	},
 
 	setExtensionPaths(paths) {
@@ -234,7 +241,7 @@ const resourceAccessors: SettingsManagerResourceAccessors = {
 	},
 
 	getSkillPaths() {
-		return [...(settingsInternals(this).settings.skills ?? [])];
+		return stringEntries(settingsInternals(this).settings.skills);
 	},
 
 	setSkillPaths(paths) {
@@ -253,7 +260,7 @@ const resourceAccessors: SettingsManagerResourceAccessors = {
 	},
 
 	getPromptTemplatePaths() {
-		return [...(settingsInternals(this).settings.prompts ?? [])];
+		return stringEntries(settingsInternals(this).settings.prompts);
 	},
 
 	setPromptTemplatePaths(paths) {
@@ -272,7 +279,7 @@ const resourceAccessors: SettingsManagerResourceAccessors = {
 	},
 
 	getThemePaths() {
-		return [...(settingsInternals(this).settings.themes ?? [])];
+		return stringEntries(settingsInternals(this).settings.themes);
 	},
 
 	setThemePaths(paths) {

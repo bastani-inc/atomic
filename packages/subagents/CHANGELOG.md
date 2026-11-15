@@ -10,6 +10,7 @@
 - Fixed worktree cleanup leaving a setup hook's synthetic link whose name starts with two dots (for example `..cache`) in place before removing the worktree. On older Git for Windows, removal could then delete the main checkout's copy through the link ([#4836](https://github.com/bastani-inc/atomic/issues/4836))
 - Fixed a released subagent being told a detached tool call (such as a long `bash`) was "still running" after Atomic restarted, though the call died with the old process and its result never arrived: when a reply, deadline or resume wakes the subagent, that call is now reported interrupted so it can re-run it. An extension `/reload` in the same process is not a restart: a call still running then is neither reported interrupted nor started again ([#4848](https://github.com/bastani-inc/atomic/issues/4848))
 - Fixed a subagent launched with `heartbeatMs` (including `0`, which disables heartbeats) falling back to the 15-minute default after a wake, resume or restore: the cadence is now recorded with the subagent and applied on every relaunch ([#4856](https://github.com/bastani-inc/atomic/issues/4856))
+- Fixed truncated subagent output, partial findings after a cancellation, and the inline output preview splitting an emoji or other multibyte character at the cut, which showed up as `�` or a raw `\ud83d` escape; truncation now always ends on a whole character. The truncation note also reports the true number of lines shown instead of "1" when none are ([#4938](https://github.com/bastani-inc/atomic/issues/4938))
 
 ## [0.9.86] - 2026-11-14
 

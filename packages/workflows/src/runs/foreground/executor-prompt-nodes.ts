@@ -8,7 +8,12 @@ import type { StageUiBroker } from "../../shared/stage-ui-broker.js";
 import type { Store } from "../../shared/store.js";
 import type { RunSnapshot, StageSnapshot } from "../../shared/store-types.js";
 import { elapsedStageMs, stageTimingFields } from "../../shared/timing.js";
-import type { WorkflowCustomUiFactory, WorkflowCustomUiOptions, WorkflowUIContext } from "../../shared/types.js";
+import type {
+	WorkflowCustomUiFactory,
+	WorkflowCustomUiOptions,
+	WorkflowSerializableValue,
+	WorkflowUIContext,
+} from "../../shared/types.js";
 import type { WorkflowFailure } from "../../shared/workflow-failures.js";
 import type { ContinuationReplayIndex } from "./executor-continuation.js";
 import { getPromptAnswerState, sameStringSet } from "./executor-continuation.js";
@@ -25,6 +30,24 @@ import {
 import { announceSettledStageEdit, applyFailureToStage, stageReplayFields } from "./executor-lifecycle.js";
 import type { RunOpts, WorkflowExitCleanup } from "./executor-types.js";
 import type { StageControlRegistry } from "./stage-control-registry.js";
+
+/** A completed prompt node's answer as its completion record holds it; a custom prompt's `undefined` has none. */
+export interface PromptStageAnswer {
+	readonly response?: WorkflowSerializableValue;
+}
+
+/**
+ * What a run's journal holds for a prompt node recorded completed (#4941): the answer recorded with its completion,
+ * or none, as a record written before answers were recorded with it. `laterRecorded` tells whether anything of the run
+ * was recorded after that answerless record, which may have used the lost answer.
+ */
+export type DurablePromptStageAnswer =
+	| { readonly kind: "answered"; readonly answer: PromptStageAnswer }
+	| { readonly kind: "unanswered"; readonly laterRecorded: boolean };
+
+function promptStageAnswer(response: unknown): PromptStageAnswer {
+	return response === undefined ? {} : { response: response as WorkflowSerializableValue };
+}
 
 export interface PromptNodeUiAdapter extends WorkflowUIContext {
 	replayDurable(request: DurableUiReplayRequest): Promise<void>;
@@ -64,6 +87,17 @@ export function buildPromptNodeUiAdapter(input: {
 	readonly classifyExecutorFailure: (error: unknown) => WorkflowFailure;
 	readonly durableTopologyForReplayKey?: (replayKey: string) => DurableStageTopology | undefined;
 	readonly durableTimingForStageId?: (stageId: string) => ReturnType<typeof stageTimingFields> | undefined;
+	/** The answer the journal recorded with a completed prompt node's completion, if any (#4941). */
+	readonly durablePromptAnswerForStageId?: (stageId: string) => DurablePromptStageAnswer | undefined;
+	/**
+	 * Records a settled prompt node; a completed one's answer goes in the same record as its completion (#4941).
+	 * Without it, `opts.onStageEnd` records the stage.
+	 */
+	readonly recordPromptStageEnd?: (
+		runId: string,
+		snapshot: StageSnapshot,
+		answer: PromptStageAnswer | undefined,
+	) => Promise<void>;
 	/** Durably publish an unanswered prompt node before exposing its live wait. */
 	readonly onPendingStage?: (runId: string, snapshot: StageSnapshot) => Promise<void>;
 }): PromptNodeUiAdapter {
@@ -79,10 +113,23 @@ export function buildPromptNodeUiAdapter(input: {
 		const prompt = makePrompt(descriptor);
 		const replayKey = promptReplayKey(descriptor);
 		const durableTopology = input.durableTopologyForReplayKey?.(replayKey);
-		if (durableTopology?.status === "completed" && durableReplay === undefined) {
-			throw new Error(
-				`insufficient_state: missing durable UI answer for completed prompt ${durableTopology.stageId}`,
-			);
+		let durableAnswer: PromptStageAnswer | undefined =
+			durableReplay === undefined ? undefined : promptStageAnswer(durableReplay.response);
+		// A replayed completion is recorded again exactly as the journal holds it: with the answer it was recorded with,
+		// and without one when it was recorded before answers were recorded with completions (#4941).
+		let replayedRecordAnswer: PromptStageAnswer | undefined;
+		if (durableTopology?.status === "completed") {
+			const recorded = input.durablePromptAnswerForStageId?.(durableTopology.stageId);
+			if (recorded?.kind === "answered") {
+				replayedRecordAnswer = recorded.answer;
+				durableAnswer ??= recorded.answer;
+			}
+			// A record from before that, whose attempt ended right after it: nothing used the lost answer yet, so the
+			// prompt is asked again, as not completed. Its answer is then recorded with its completion.
+			else if (durableAnswer === undefined && (recorded?.kind !== "unanswered" || recorded.laterRecorded))
+				throw new Error(
+					`insufficient_state: missing durable UI answer for completed prompt ${durableTopology.stageId}`,
+				);
 		}
 		const stageId = durableTopology?.stageId ?? crypto.randomUUID();
 		const provisionalParentIds = input.tracker.onSpawn(stageId, descriptor.kind);
@@ -100,12 +147,12 @@ export function buildPromptNodeUiAdapter(input: {
 			replayDecision.kind === "replay"
 				? continuationPromptAnswer(input.activeStore, input.opts.continuation!.source, replayDecision.source)
 				: undefined;
-		const replayAnswer = durableReplay === undefined ? continuationAnswer : { value: durableReplay.response };
+		const replayAnswer = durableAnswer === undefined ? continuationAnswer : { value: durableAnswer.response };
 		const shouldReplay = replayAnswer !== undefined;
-		if (shouldReplay && durableReplay === undefined) input.replayIndex.markPromptAnswerReplayed(stageId);
+		if (shouldReplay && durableAnswer === undefined) input.replayIndex.markPromptAnswerReplayed(stageId);
 		const replaySourceId = replaySource?.id;
 		const promptAnswerStatus =
-			durableReplay === undefined
+			durableAnswer === undefined
 				? getPromptAnswerState(shouldReplay, replaySourceId, replayDecision.answerReplay)
 				: "available";
 		const stageSnapshot: StageSnapshot = {
@@ -115,7 +162,7 @@ export function buildPromptNodeUiAdapter(input: {
 			status: shouldReplay ? "completed" : "running",
 			parentIds: Object.freeze(parentIds),
 			...(shouldReplay
-				? stageTimingFields(durableReplay === undefined ? replaySource : input.durableTimingForStageId?.(stageId))
+				? stageTimingFields(durableAnswer === undefined ? replaySource : input.durableTimingForStageId?.(stageId))
 				: { startedAt: prompt.createdAt }),
 			promptFootprint: { ...prompt },
 			toolEvents: [],
@@ -142,7 +189,10 @@ export function buildPromptNodeUiAdapter(input: {
 		const waitForExplicitResume = async (): Promise<void> => {
 			if (pauseGate !== undefined) await pauseGate.promise;
 		};
-		const finalizePromptStage = async (status: "completed" | "failed" | "skipped"): Promise<void> => {
+		const finalizePromptStage = async (
+			status: "completed" | "failed" | "skipped",
+			answer?: PromptStageAnswer,
+		): Promise<void> => {
 			if (finalization !== undefined) return finalization;
 			finalization = (async (): Promise<void> => {
 				finalized = true;
@@ -158,7 +208,13 @@ export function buildPromptNodeUiAdapter(input: {
 				}
 				input.activeStore.recordStageAttachable(input.runId, stageId, false);
 				input.activeStore.recordStageEnd(input.runId, stageSnapshot);
-				await input.opts.onStageEnd?.(input.runId, stageSnapshot);
+				if (input.recordPromptStageEnd !== undefined)
+					await input.recordPromptStageEnd(
+						input.runId,
+						stageSnapshot,
+						status === "completed" ? answer : undefined,
+					);
+				else await input.opts.onStageEnd?.(input.runId, stageSnapshot);
 				announceSettledStageEdit(input.activeStore, input.runId, stageSnapshot);
 				if (input.opts.persistence) {
 					await appendStageEnd(input.opts.persistence, {
@@ -259,7 +315,10 @@ export function buildPromptNodeUiAdapter(input: {
 				await finalizePromptStage("failed");
 				throw err;
 			}
-			await finalizePromptStage("completed");
+			await finalizePromptStage(
+				"completed",
+				durableTopology?.status === "completed" ? replayedRecordAnswer : promptStageAnswer(response),
+			);
 			return response;
 		}
 
@@ -296,7 +355,7 @@ export function buildPromptNodeUiAdapter(input: {
 				input.activeStore.recordStagePromptAnswer(input.runId, stageId, prompt, response, {
 					answerSource: "workflow_ui",
 				});
-				await finalizePromptStage("completed");
+				await finalizePromptStage("completed", promptStageAnswer(response));
 				return response;
 			} catch (err) {
 				input.activeStore.recordStageAwaitingInput(input.runId, stageId, false);
@@ -357,7 +416,7 @@ export function buildPromptNodeUiAdapter(input: {
 			});
 			const normalizedResponse = requirePrimitivePromptAnswer(descriptor, response);
 			await waitForExplicitResume();
-			await finalizePromptStage("completed");
+			await finalizePromptStage("completed", promptStageAnswer(normalizedResponse));
 			return normalizedResponse;
 		} catch (err) {
 			if (input.signal.aborted) {

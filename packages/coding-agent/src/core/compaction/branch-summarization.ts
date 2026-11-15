@@ -13,7 +13,7 @@ import {
 	retryAssistantCall,
 	uuidv7,
 } from "@bastani/pi-ai";
-import type { Api, Model, SimpleStreamOptions, Usage } from "@bastani/pi-ai/compat";
+import type { Api, Model, SimpleStreamOptions, ToolResultMessage, Usage } from "@bastani/pi-ai/compat";
 import { completeSimple } from "@bastani/pi-ai/compat";
 import type { AgentMessage, StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { convertToLlm, createBranchSummaryMessage, createCustomMessage } from "../messages.ts";
@@ -30,6 +30,7 @@ import {
 	normalizeFileOpPath,
 	SUMMARIZATION_SYSTEM_PROMPT,
 	serializeConversation,
+	truncateForSummary,
 } from "./utils.ts";
 
 // ============================================================================
@@ -162,15 +163,31 @@ export function collectEntriesForBranchSummary(
  * Similar to getMessageFromEntry in compaction.ts, with legacy compaction entries kept inert.
  */
 function getMessageFromEntry(entry: SessionEntry, edit?: ContextEditEntry): AgentMessage | undefined {
-	const message = getRawMessageFromEntry(entry);
-	return message && edit ? applyContextEdit([message], edit)[0] : message;
+	const raw = getRawMessageFromEntry(entry);
+	const message = raw && edit ? applyContextEdit([raw], edit)[0] : raw;
+	return message?.role === "toolResult" ? shortenToolResult(message) : message;
+}
+
+/**
+ * Characters of each tool result kept in summary input. Results are kept so the summarizer
+ * sees what each call returned rather than an unanswered call, but only briefly: the tool
+ * call already names the action, and full outputs would crowd conversation text out of the
+ * token budget.
+ */
+const SUMMARY_TOOL_RESULT_MAX_CHARS = 500;
+
+/** Keep only the leading text of a tool result; summaries serialize text alone. */
+function shortenToolResult(message: ToolResultMessage): ToolResultMessage {
+	const text = message.content
+		.filter((block) => block.type === "text")
+		.map((block) => block.text)
+		.join("");
+	return { ...message, content: [{ type: "text", text: truncateForSummary(text, SUMMARY_TOOL_RESULT_MAX_CHARS) }] };
 }
 
 function getRawMessageFromEntry(entry: SessionEntry): AgentMessage | undefined {
 	switch (entry.type) {
 		case "message":
-			// Skip tool results - context is in assistant's tool call
-			if (entry.message.role === "toolResult") return undefined;
 			return entry.message;
 
 		case "custom_message":

@@ -1,8 +1,8 @@
 import type { Api, Model } from "@bastani/pi-ai/compat";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { isValidThinkingLevel } from "../cli/args.ts";
 import { normalizeModelReference } from "./azure-provider-compat.js";
 import { defaultModelPerProvider } from "./model-resolver-defaults.ts";
+import { isValidThinkingLevel } from "./thinking-levels.ts";
 
 /*
  * Model reference resolution. Candidates are collected before a provider is chosen, so catalog order
