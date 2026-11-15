@@ -173,6 +173,45 @@ test("parallel progress creates no progress.md in a project that has none (#4976
 	}
 });
 
+test("parallel run without progress creates no progress storage or instruction (#4976)", async () => {
+	const root = makeTempDirectory("atomic-parallel-progress-disabled-");
+	clearSubagentControls();
+	try {
+		const repo = gitRepository(root);
+		const sessionRoot = join(root, "session");
+		const seen: Array<{ task: string; progressPath?: string }> = [];
+		const result = await executor(root, async (_cwd, _agents, agent, task, options) => {
+			seen.push({ task, progressPath: options.progressPath });
+			return { agent, task, status: "ok", messages: [], usage, finalOutput: "done" };
+		}).execute(
+			"parallel-progress-disabled",
+			{
+				tasks: [
+					{ agent: "analysis", task: "inspect a", progress: false },
+					{ agent: "analysis", task: "inspect b", progress: false },
+				],
+			},
+			new AbortController().signal,
+			undefined,
+			context(repo, sessionRoot),
+		);
+		const runId = result.details?.runId;
+		assert.ok(runId);
+		assert.deepEqual(
+			seen.sort((left, right) => left.task.localeCompare(right.task)),
+			[
+				{ task: "inspect a", progressPath: undefined },
+				{ task: "inspect b", progressPath: undefined },
+			],
+		);
+		assert.equal(existsSync(join(sessionRoot, "subagent-artifacts", "progress", runId)), false);
+		assert.equal(existsSync(join(repo, "progress.md")), false);
+	} finally {
+		clearSubagentControls();
+		removeTempDirectory(root);
+	}
+});
+
 test("parallel cancellation recovers partial findings from run-scoped progress (#4976)", async () => {
 	const root = makeTempDirectory("atomic-parallel-progress-recovery-");
 	clearSubagentControls();
