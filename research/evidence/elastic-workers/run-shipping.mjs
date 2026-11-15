@@ -6,6 +6,12 @@
 // Per trial it records: completion, the children's acknowledged checkpoint latency (p50/p99), the rate at which the
 // root's journal recorded checkpoints, the shared store's CPU time, the shipping lag of each recorded checkpoint (when
 // the store recorded it after the step completed), and, with --kill-after-ms, the steps a replay ran again.
+// Across VMs (#4768): one VM runs the store, the root and some hosts with
+//   --listen <its private IP> --remote-hosts <how many hosts run elsewhere>
+// and every other VM runs
+//   --join <the first VM's private IP> --hosts <how many here> --id-base <first host number> --trials <trials>
+// The joining VMs start their hosts for each trial the first VM announces, report them ready, and stop them when it
+// ends. Hosts on other VMs record no step executions, so replays are only counted in one-VM runs.
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
@@ -35,6 +41,11 @@ const RUN_TIMEOUT_MS = Number(args["run-timeout-ms"] ?? 900_000);
 // --profile 1: what the store spent its time on, by statement (PostgreSQL's pg_stat_statements; for sqld, a proxy that
 // records every request).
 const profile = args.profile === "1";
+const listen = args.listen;
+const remoteHosts = Number(args["remote-hosts"] ?? 0);
+const join_ = args.join;
+/** The store's port when other VMs reach it. */
+const SHARED_PORT = store === "sqld" ? 18081 : 15432;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const adapters = {
 	sqld: fileURLToPath(new URL("../../../packages/storage-libsql/libsql.js", import.meta.url)),
@@ -77,7 +88,7 @@ async function waitFor(file, deadline, processes, log) {
 
 /** The shared store of one trial: its URL, its CPU time so far in milliseconds, and how to stop it. */
 async function openStore(work) {
-	const port = await freePort();
+	const port = listen === undefined ? await freePort() : SHARED_PORT;
 	const name = `ship-bench-${store}-${port}`;
 	// --native-sqld <binary>: the sqld binary run directly, as the first local runs did, instead of its Docker image.
 	const native =
@@ -90,17 +101,17 @@ async function openStore(work) {
 	if (native !== undefined) {
 	} else if (store === "sqld")
 		spawnSync("docker", [
-			"run", "-d", "--rm", "--name", name, "-e", "SQLD_CHECKPOINT_INTERVAL_S=60", "-p", `127.0.0.1:${port}:8080`,
+			"run", "-d", "--rm", "--name", name, "-e", "SQLD_CHECKPOINT_INTERVAL_S=60", "-p", `${listen ?? "127.0.0.1"}:${port}:8080`,
 			"ghcr.io/tursodatabase/libsql-server:v0.24.33",
 		]);
 	else
 		spawnSync("docker", [
-			"run", "-d", "--rm", "--name", name, "-p", `127.0.0.1:${port}:5432`, "-e", "POSTGRES_HOST_AUTH_METHOD=trust",
+			"run", "-d", "--rm", "--name", name, "-p", `${listen ?? "127.0.0.1"}:${port}:5432`, "-e", "POSTGRES_HOST_AUTH_METHOD=trust",
 			"postgres:16", "-c", "max_connections=1000",
 			...(profile ? ["-c", "shared_preload_libraries=pg_stat_statements", "-c", "pg_stat_statements.track=all"] : []),
 		]);
 	const url =
-		store === "sqld" ? `http://127.0.0.1:${port}` : `postgres://postgres@127.0.0.1:${port}/postgres`;
+		storeUrl(listen ?? "127.0.0.1", port);
 	const ready = () =>
 		store === "sqld"
 			? fetch(`${url}/health`).then((response) => response.ok, () => false)
@@ -174,6 +185,10 @@ async function openStore(work) {
 	};
 }
 
+function storeUrl(ip, port) {
+	return store === "sqld" ? `http://${ip}:${port}` : `postgres://postgres@${ip}:${port}/postgres`;
+}
+
 async function query(url, sql) {
 	if (store === "sqld") {
 		const { openLibsqlDatabase } = await import(adapters.sqld);
@@ -203,7 +218,7 @@ async function trial(hosts, shipping) {
 	const work = mkdtempSync(join(tmpdir(), `ship-bench-${hosts}-`));
 	const log = [];
 	const shared = await openStore(work);
-	const prefix = `s${hosts}_`;
+	const prefix = `s${hosts}_${shipping === "sync" ? "sync" : "ship"}_`;
 	const execLog = join(work, "executions");
 	writeFileSync(execLog, "");
 	const processes = [];
@@ -214,7 +229,7 @@ async function trial(hosts, shipping) {
 		ELASTIC_EXEC_LOG: execLog,
 	};
 	try {
-		for (let index = 0; index < hosts; index++) {
+		for (let index = 0; index < hosts - remoteHosts; index++) {
 			const agentDir = join(work, `host-${index}`, "agent");
 			processes.push(
 				start(process.execPath, [join(here, "bench-host.mjs")], {
@@ -230,7 +245,20 @@ async function trial(hosts, shipping) {
 			);
 		}
 		const deadline = Date.now() + 180_000;
-		for (let index = 0; index < hosts; index++) await waitFor(join(work, `ready-${index}`), deadline, processes, log);
+		for (let index = 0; index < hosts - remoteHosts; index++)
+			await waitFor(join(work, `ready-${index}`), deadline, processes, log);
+		if (remoteHosts > 0) {
+			// Announce the trial to the other VMs, and wait for their hosts.
+			await query(shared.url, "CREATE TABLE IF NOT EXISTS bench_ctl(prefix TEXT, phase TEXT)");
+			await query(shared.url, "CREATE TABLE IF NOT EXISTS bench_ready(host TEXT)");
+			await query(shared.url, `INSERT INTO bench_ctl VALUES ('${prefix}', 'start')`);
+			for (;;) {
+				const [row] = await query(shared.url, "SELECT COUNT(*) AS n FROM bench_ready");
+				if (Number(row.n) >= remoteHosts) break;
+				if (Date.now() > deadline + 300_000) throw new Error(`only ${row.n} of ${remoteHosts} remote hosts joined`);
+				await sleep(500);
+			}
+		}
 		const resultFile = join(work, "result.json");
 		shared.resetProfile();
 		const cpuBefore = shared.cpuMs();
@@ -329,6 +357,10 @@ async function trial(hosts, shipping) {
 			},
 		};
 	} finally {
+		if (remoteHosts > 0) {
+			await query(shared.url, `INSERT INTO bench_ctl VALUES ('${prefix}', 'done')`).catch(() => {});
+			await sleep(10_000);
+		}
 		for (const p of processes) killGroup(p, "SIGINT");
 		await sleep(3000);
 		for (const p of processes) killGroup(p, "SIGKILL");
@@ -336,6 +368,68 @@ async function trial(hosts, shipping) {
 		if (args.keep !== "1") rmSync(work, { recursive: true, force: true });
 	}
 }
+
+/** A joining VM: its hosts serve each trial the store's VM announces, until `--trials` trials ended. */
+async function joinTrials() {
+	const url = storeUrl(join_, SHARED_PORT);
+	const count = Number(args.hosts ?? 4);
+	const base = Number(args["id-base"] ?? 100);
+	const served = new Set();
+	const deadline = Date.now() + RUN_TIMEOUT_MS;
+	while (served.size < Number(args.trials ?? 2) && Date.now() < deadline) {
+		const rows = await query(url, "SELECT prefix, phase FROM bench_ctl").catch(() => []);
+		const started = rows.find((row) => row.phase === "start" && !served.has(row.prefix));
+		if (started === undefined) {
+			await sleep(1000);
+			continue;
+		}
+		const prefix = String(started.prefix);
+		served.add(prefix);
+		const work = mkdtempSync(join(tmpdir(), "ship-join-"));
+		const log = [];
+		const processes = [];
+		for (let index = 0; index < count; index++) {
+			const agentDir = join(work, `host-${index}`, "agent");
+			processes.push(
+				start(process.execPath, [join(here, "bench-host.mjs")], {
+					ELASTIC_ADAPTER: adapters[store],
+					ELASTIC_DB_URL: url,
+					ELASTIC_PREFIX: prefix,
+					ELASTIC_EXEC_LOG: join(work, "executions"),
+					HOME: join(work, `host-${index}`),
+					ATOMIC_CODING_AGENT_DIR: agentDir,
+					ELASTIC_AGENT_DIR: agentDir,
+					ELASTIC_HOST_ID: `h${base + index}`,
+					ELASTIC_BENCH_HOST: `h${base + index}`,
+					ELASTIC_SLOTS: String(slots),
+					ELASTIC_READY_FILE: join(work, `ready-${index}`),
+				}, log, work),
+			);
+		}
+		try {
+			for (let index = 0; index < count; index++) {
+				await waitFor(join(work, `ready-${index}`), Date.now() + 180_000, processes, log);
+				await query(url, `INSERT INTO bench_ready VALUES ('h${base + index}')`);
+			}
+			process.stderr.write(`joined ${prefix} with ${count} hosts\n`);
+			for (;;) {
+				const phases = await query(url, `SELECT phase FROM bench_ctl WHERE prefix = '${prefix}'`).catch(() => undefined);
+				if (phases === undefined || phases.some((row) => row.phase === "done")) break;
+				await sleep(1000);
+			}
+		} catch (error) {
+			process.stderr.write(`${error?.message ?? error}\n${log.join("").slice(-3000)}\n`);
+		} finally {
+			for (const p of processes) killGroup(p, "SIGINT");
+			await sleep(3000);
+			for (const p of processes) killGroup(p, "SIGKILL");
+			rmSync(work, { recursive: true, force: true });
+		}
+	}
+	process.stderr.write(`served ${served.size} trials\n`);
+	process.exit(0);
+}
+if (join_ !== undefined) await joinTrials();
 
 const trials = [];
 for (const hosts of hostCounts)
