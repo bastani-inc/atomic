@@ -271,7 +271,10 @@ export interface WorktreeSnapshotEntry extends SessionEntryBase {
 	/**
 	 * The snapshot a resume could restore only partly into this checkout (#4922): this entry records the partly restored
 	 * worktree as it is now, and `degradedFrom` stays the checkout's restore target, kept by collection, until a resume
-	 * restores it fully, `discardDegradedRestore` releases it, or 30 days have passed since the partial restore.
+	 * restores it fully, `discardDegradedRestore` releases it, or 30 days have passed since the partial restore. On the
+	 * entry of a full restore that carried that worktree's work over (`restore.degradedWork`), it names the snapshot of
+	 * that work, which collection keeps until the merged worktree is recorded or, when the work conflicted, until
+	 * `discardDegradedRestore` releases it (#5009).
 	 */
 	degradedFrom?: string;
 	/**
