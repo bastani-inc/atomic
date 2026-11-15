@@ -120,12 +120,6 @@ export interface PoolWork extends PoolWorkDescriptor {
 	 * when there are none.
 	 */
 	readonly handoffs?: readonly number[];
-	/**
-	 * Set on a leased attempt whose worker has not confirmed its claim yet (#5034): no heartbeat, commit or other
-	 * operation was recorded under its generation, so no worker is known to have run it. Read by
-	 * {@link SqlPoolQueue.inspect}; absent elsewhere, and once the claim is confirmed.
-	 */
-	readonly unconfirmed?: true;
 }
 type WorkRow = SqliteRow & {
 	id: string;
@@ -2057,21 +2051,31 @@ export class SqlPoolQueue {
 	async inspect(root: string): Promise<readonly PoolWork[]> {
 		return this.storage.read(async (executor) =>
 			(
-				await executor.all<WorkRow & { handoffs: string | null; confirmed: number | bigint }>(
-					`SELECT w.*, (SELECT json_group_array(o.generation) FROM ${this.operations} o WHERE o.work = w.id AND o.operation = ?) AS handoffs,
-					EXISTS (SELECT 1 FROM ${this.operations} o WHERE o.work = w.id AND o.generation = w.generation AND o.operation != ?) AS confirmed
+				await executor.all<WorkRow & { handoffs: string | null }>(
+					`SELECT w.*, (SELECT json_group_array(o.generation) FROM ${this.operations} o WHERE o.work = w.id AND o.operation = ?) AS handoffs
 					FROM ${this.work} w WHERE w.root = ? ORDER BY w.ready_at, w.rowid`,
-					HANDOFF_OPERATION,
 					HANDOFF_OPERATION,
 					root,
 				)
 			).map((row) => {
 				const handoffs = JSON.parse(row.handoffs ?? "[]") as number[];
-				const work = handoffs.length > 0 ? { ...fromRow(row), handoffs } : fromRow(row);
-				return row.state === "leased" && Number(row.confirmed) === 0
-					? { ...work, unconfirmed: true as const }
-					: work;
+				return handoffs.length > 0 ? { ...fromRow(row), handoffs } : fromRow(row);
 			}),
+		);
+	}
+	/**
+	 * Whether a worker confirmed the claim of `token`'s attempt (#5034): its heartbeat, a commit or any other operation
+	 * but a handoff was recorded under the attempt's generation. An unconfirmed attempt was never known to run.
+	 */
+	async confirmed(token: Pick<PoolWork, "id" | "generation">): Promise<boolean> {
+		return this.storage.read(
+			async (executor) =>
+				(await executor.get(
+					`SELECT 1 AS confirmed FROM ${this.operations} WHERE work = ? AND generation = ? AND operation != ? LIMIT 1`,
+					token.id,
+					token.generation,
+					HANDOFF_OPERATION,
+				)) !== undefined,
 		);
 	}
 }

@@ -424,20 +424,14 @@ for (const batched of [true, false])
 			// A claim whose worker never learned of it: no heartbeat, no commit under its generation.
 			const lost = await f.pool.claim(f.lease, "host/w1", [work], 60_000);
 			assert.ok(lost);
-			assert.deepEqual(
-				(await f.pool.inspect("root")).map((item) => [item.generation, item.unconfirmed]),
-				[[1, true]],
-			);
+			assert.equal(await f.pool.confirmed(lost), false);
+			// A lease that has not expired is left alone.
+			assert.equal(await f.pool.expire(f.lease, lost, { handOffUnconfirmed: true }), false);
 			f.connection.exec("UPDATE acme_wf_runs_work SET expires_at = 1");
 			assert.equal(await f.pool.expire(f.lease, lost, { handOffUnconfirmed: true }), true);
 			assert.deepEqual(
-				(await f.pool.inspect("root")).map((item) => [
-					item.state,
-					item.generation,
-					item.handoffs,
-					item.unconfirmed,
-				]),
-				[["ready", 1, [1], undefined]],
+				(await f.pool.inspect("root")).map((item) => [item.state, item.generation, item.handoffs]),
+				[["ready", 1, [1]]],
 			);
 			// The dead claim's confirmation arrives late: its generation no longer holds the work.
 			await assert.rejects(
@@ -446,17 +440,25 @@ for (const batched of [true, false])
 			);
 			// The next claim is confirmed by its worker's heartbeat: its expiry counts as an attempt.
 			const confirmed = await f.pool.claim(f.lease, "host/w2", [work], 60_000);
-			assert.equal(confirmed?.generation, 2);
+			assert.ok(confirmed);
+			assert.equal(confirmed.generation, 2);
 			await f.pool.heartbeat(f.lease, confirmed, 60_000, f.usage.recording(f.lease, confirmed, []));
-			assert.deepEqual(
-				(await f.pool.inspect("root")).map((item) => [item.generation, item.unconfirmed]),
-				[[2, undefined]],
-			);
+			assert.equal(await f.pool.confirmed(confirmed), true);
 			f.connection.exec("UPDATE acme_wf_runs_work SET expires_at = 1");
 			assert.equal(await f.pool.expire(f.lease, confirmed, { handOffUnconfirmed: true }), true);
 			assert.deepEqual(
 				(await f.pool.inspect("root")).map((item) => [item.state, item.generation, item.handoffs]),
 				[["ready", 2, [1]]],
+			);
+			// Past the handoff limit the caller asks for no handoff: an unconfirmed expiry then counts.
+			const past = await f.pool.claim(f.lease, "host/w3", [work], 60_000);
+			assert.ok(past);
+			assert.equal(past.generation, 3);
+			f.connection.exec("UPDATE acme_wf_runs_work SET expires_at = 1");
+			assert.equal(await f.pool.expire(f.lease, past), true);
+			assert.deepEqual(
+				(await f.pool.inspect("root")).map((item) => [item.state, item.generation, item.handoffs]),
+				[["ready", 3, [1]]],
 			);
 		} finally {
 			await f.close();

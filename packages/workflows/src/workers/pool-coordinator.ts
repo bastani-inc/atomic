@@ -2363,9 +2363,10 @@ export class PoolCoordinator {
 						const current = work === undefined ? undefined : await this.counted(work);
 						const unconfirmedClaim =
 							current !== undefined &&
+							current.state === "leased" &&
 							current.generation === work!.generation &&
-							current.unconfirmed === true &&
-							this.handoffs(current) < MAX_CHILD_HANDOFFS;
+							this.handoffs(current) < MAX_CHILD_HANDOFFS &&
+							!(await this.queue!.confirmed(current));
 						const exhausted =
 							this.satellite === undefined &&
 							current !== undefined &&
