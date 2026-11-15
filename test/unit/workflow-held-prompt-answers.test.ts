@@ -107,3 +107,34 @@ test("#4022: a form host failure refused before the replacement asked goes once 
 	ended.settle("run", stage(2, { status: "completed" }), 2);
 	assert.equal(ended.takeQuestion("run", "stage", question, 2), undefined, "an ended stage drops it");
 });
+
+function holdingDelivered(): HeldPromptAnswers {
+	const held = new HeldPromptAnswers();
+	held.hold("run", "stage", {
+		kind: "prompt",
+		generation: 1,
+		promptId: asked.id,
+		identity: promptIdentity(asked),
+		response: "taken-answer",
+		delivered: true,
+	});
+	return held;
+}
+
+test("an answer the attempt took stays held through that attempt's own publications, and answers its replacement's same prompt once (#4941)", () => {
+	const held = holdingDelivered();
+	// The attempt moved on and even shows the prompt completed before it committed that completion.
+	held.settle("run", stage(1, {}), 1);
+	held.settle("run", stage(1, { status: "completed" }), 1);
+	assert.equal(held.takePrompt("run", "stage", asked, 1), undefined, "never to the attempt that took it");
+	const again: PendingPrompt = { ...asked, id: "hil-again", createdAt: 2 };
+	held.settle("run", stage(2, { pendingPrompt: again }), 2);
+	assert.deepEqual(held.takePrompt("run", "stage", again, 2), { response: "taken-answer" });
+	assert.equal(held.takePrompt("run", "stage", again, 2), undefined, "handed out once");
+});
+
+test("an answer the attempt took is discarded once a later attempt shows the stage settled (#4941)", () => {
+	const held = holdingDelivered();
+	held.settle("run", stage(2, { status: "completed" }), 2);
+	assert.equal(held.takePrompt("run", "stage", { ...asked, id: "hil-again" }, 3), undefined);
+});

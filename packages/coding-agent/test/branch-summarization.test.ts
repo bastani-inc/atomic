@@ -5,6 +5,7 @@ import {
 	createAssistantMessageEventStream,
 	type Model,
 	registerApiProvider,
+	type ToolResultMessage,
 	unregisterApiProviders,
 } from "@bastani/pi-ai/compat";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
@@ -384,5 +385,100 @@ describe("branch summarization input", () => {
 		assert.ok(!serialized.includes("FAILED_ATTEMPT"));
 		assert.ok(!serialized.includes("ORIGINAL_TEXT"));
 		assert.ok(serialized.includes("REPLACED_TEXT"));
+	});
+});
+
+describe("summary input tool results (#4967)", () => {
+	function capturePrompt(): {
+		streamFn: NonNullable<Parameters<typeof generateBranchSummary>[1]["streamFn"]>;
+		prompt: () => string;
+	} {
+		let prompt = "";
+		return {
+			streamFn: async (requestModel, context) => {
+				const request = context.messages.find((message) => message.role === "user");
+				if (request && Array.isArray(request.content)) {
+					prompt = request.content.map((block) => (block.type === "text" ? block.text : "")).join("");
+				}
+				const stream = createAssistantMessageEventStream();
+				stream.end({ ...assistantBlocks([{ type: "text", text: "summary" }]), model: requestModel.id });
+				return stream;
+			},
+			prompt: () => prompt,
+		};
+	}
+
+	function toolTurn(id: string): AssistantMessage {
+		return {
+			...assistantBlocks([{ type: "toolCall", id, name: "read", arguments: { path: "src/app.ts" } }]),
+			stopReason: "toolUse",
+		};
+	}
+
+	function toolResult(id: string, content: ToolResultMessage["content"]): AgentMessage {
+		return {
+			role: "toolResult",
+			toolCallId: id,
+			toolName: "read",
+			content,
+			isError: false,
+			timestamp: Date.now(),
+		};
+	}
+
+	it.each([
+		["branch", generateBranchSummary],
+		["session", generateSessionSummary],
+	] as const)(
+		"shows the real truncated result of a successful tool call in %s summaries (#4967)",
+		async (_label, summarize) => {
+			resetIds();
+			const capture = capturePrompt();
+			await summarize(
+				[
+					entry(user("read the app")),
+					entry(toolTurn("call-ok")),
+					entry(
+						toolResult("call-ok", [
+							{ type: "image", data: "aW1hZ2U=", mimeType: "image/png" },
+							{ type: "text", text: "REAL_TOOL" },
+							{ type: "text", text: `_OUTPUT ${"x".repeat(5000)} TAIL_SENTINEL` },
+						]),
+					),
+					entry(user("thanks")),
+				],
+				{ model: nonCopilotModel(), signal: new AbortController().signal, streamFn: capture.streamFn },
+			);
+			const prompt = capture.prompt();
+			assert.ok(prompt.includes("[Tool result]: REAL_TOOL_OUTPUT"), prompt);
+			assert.ok(!prompt.includes("TAIL_SENTINEL"), "tool result should be truncated");
+			assert.ok(!/interrupted/i.test(prompt), prompt);
+		},
+	);
+
+	it("keeps a long tool result from crowding earlier conversation out of session summaries (#4967)", async () => {
+		resetIds();
+		const capture = capturePrompt();
+		await generateSessionSummary(
+			[
+				entry(user("EARLY_TASK_SENTINEL")),
+				entry(toolTurn("call-big")),
+				entry(toolResult("call-big", [{ type: "text", text: "y".repeat(40_000) }])),
+				entry(user("thanks")),
+			],
+			{ model: nonCopilotModel(), signal: new AbortController().signal, streamFn: capture.streamFn },
+		);
+		assert.ok(capture.prompt().includes("EARLY_TASK_SENTINEL"), capture.prompt());
+	});
+
+	it("still marks a genuinely interrupted tool call as interrupted (#4967)", async () => {
+		resetIds();
+		const capture = capturePrompt();
+		await generateBranchSummary([entry(user("read the app")), entry(toolTurn("call-lost")), entry(user("hello?"))], {
+			model: nonCopilotModel(),
+			signal: new AbortController().signal,
+			streamFn: capture.streamFn,
+		});
+		assert.ok(/Tool execution was interrupted/.test(capture.prompt()), capture.prompt());
 	});
 });

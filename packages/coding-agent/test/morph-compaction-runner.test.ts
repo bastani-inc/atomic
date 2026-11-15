@@ -91,7 +91,7 @@ test("Morph HTTP errors continue to configured chat fallback (#3470)", async () 
 		urgency: "recoverable",
 		fallback: {
 			fallbackModels: ["test/fallback"],
-			registry: { getAvailableSnapshot: () => [fallback], getModel: () => fallback, hasConfiguredAuth: () => true },
+			registry: { getModels: () => [fallback], hasConfiguredAuth: () => true },
 			preferredProvider: "test",
 			sessionThinkingLevel: "off",
 		},
@@ -117,8 +117,7 @@ test("Morph HTTP policy failures persist safe diagnostics before the ladder cont
 			fallback: {
 				fallbackModels: ["test/fallback"],
 				registry: {
-					getAvailableSnapshot: () => [fallback],
-					getModel: () => fallback,
+					getModels: () => [fallback],
 					hasConfiguredAuth: () => true,
 				},
 				preferredProvider: "test",

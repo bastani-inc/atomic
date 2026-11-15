@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { connect, createServer, type Socket } from "node:net";
 import { join } from "node:path";
 import { inspect } from "node:util";
 import {
@@ -24,6 +25,71 @@ import { makeTempDirectory, removeTempDirectory, writeTextSync } from "../helper
 
 /** A statement the facade gives up on only after its five runs and their backoff, about four seconds. */
 const TRANSIENT_RETRIES_TIMEOUT_MS = 20_000;
+/** The statement timeout of the autocommit timeout tests. */
+const AUTOCOMMIT_TIMEOUT_MS = 1000;
+/**
+ * The most five runs cancelled at `AUTOCOMMIT_TIMEOUT_MS`, and the facade's backoff between them (at most 4.5 s), may
+ * take; the client's own timer would end the first run only after `AUTOCOMMIT_TIMEOUT_MS` plus 5 s.
+ */
+const AUTOCOMMIT_RETRIES_BOUND_MS = 5 * (AUTOCOMMIT_TIMEOUT_MS + 1000) + 4500;
+/** How long a cancelled statement may take to leave pg_stat_activity. */
+const CANCEL_SETTLE_MS = 2000;
+/** A comment that marks the statement whose answers the stalling proxy drops. */
+const STALL_MARKER = "/* stall */";
+
+/** What a proxy does with the server's answers once the client sent a chunk. */
+type ProxyControl = "hold" | "release" | "stall" | undefined;
+
+/**
+ * A TCP proxy to `target` that passes each connection's traffic on, except as `control` decides from each chunk the
+ * client sends: `"hold"` keeps the server's answers back, `"release"` passes the held ones on and stops holding, and
+ * `"stall"` drops every later answer, as a network that stopped answering would.
+ */
+async function startProxy(
+	target: URL,
+	control: (clientText: string) => ProxyControl,
+): Promise<{ port: number; close(): Promise<void> }> {
+	const sockets = new Set<Socket>();
+	const server = createServer((client) => {
+		const upstream = connect(Number(target.port || 5432), target.hostname);
+		let stalled = false;
+		let held: Buffer[] | undefined;
+		for (const socket of [client, upstream]) {
+			sockets.add(socket);
+			socket.on("error", () => {});
+			socket.on("close", () => {
+				client.destroy();
+				upstream.destroy();
+			});
+		}
+		client.on("data", (chunk: Buffer) => {
+			const decision = control(chunk.toString("latin1"));
+			if (decision === "stall") stalled = true;
+			else if (decision === "hold") held ??= [];
+			else if (decision === "release" && held !== undefined) {
+				for (const answer of held) client.write(answer);
+				held = undefined;
+			}
+			upstream.write(chunk);
+		});
+		upstream.on("data", (chunk: Buffer) => {
+			if (stalled) return;
+			if (held !== undefined) held.push(chunk);
+			else client.write(chunk);
+		});
+	});
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const address = server.address();
+	assert.ok(address !== null && typeof address === "object");
+	return {
+		port: address.port,
+		close: () =>
+			new Promise<void>((resolve) => {
+				for (const socket of sockets) socket.destroy();
+				server.close(() => resolve());
+			}),
+	};
+}
 
 function assertTransient(
 	error: unknown,
@@ -383,12 +449,142 @@ describe.skipIf(postgresSkipReason !== undefined)("Postgres storage adapter (#47
 		});
 	});
 
-	test("gives up on a statement outside a transaction that outlives its timeout, outcome unknown (#4793)", async () => {
+	test(
+		"the server cancels an autocommit read or write at statementTimeoutMs, and the write never lands (#4901)",
+		async () => {
+			await withPostgresDatabase(async ({ open, admin, name }) => {
+				const database = await open({ statementTimeoutMs: AUTOCOMMIT_TIMEOUT_MS });
+				await database.exec("CREATE TABLE items (id BIGINT)");
+				for (const call of [
+					() => database.get("SELECT pg_sleep(8)"),
+					() => database.run("INSERT INTO items(id) SELECT ? FROM pg_sleep(8)", 1),
+					() => database.exec("INSERT INTO items(id) SELECT 2 FROM pg_sleep(8)"),
+				]) {
+					const started = performance.now();
+					const error = await call().catch((caught) => caught);
+					assertTransient(error, "transaction-timeout", "not-applied");
+					// Each run is cancelled by the server at the timeout; the facade runs a not-applied call five times.
+					assert.equal(error.attempts, 5);
+					assert.ok(performance.now() - started < AUTOCOMMIT_RETRIES_BOUND_MS, `${performance.now() - started}`);
+				}
+				// Nothing still runs on the server, so no write can land after the failure was reported.
+				assert.deepEqual(
+					await admin.get(
+						"SELECT count(*) AS running FROM pg_stat_activity WHERE datname = ? AND state = 'active' AND query LIKE '%pg_sleep(8)%'",
+						name,
+					),
+					{ running: 0 },
+				);
+				assert.deepEqual(await database.all("SELECT id FROM items"), []);
+				// Every autocommit statement runs with the timeout, and the connections stay usable after the cancellations.
+				assert.deepEqual(await database.get("SELECT current_setting('statement_timeout') AS timeout"), {
+					timeout: "1s",
+				});
+				await database.run("INSERT INTO items(id) SELECT ? FROM pg_sleep(0.1)", 3);
+				await database.exec("INSERT INTO items(id) VALUES (4); INSERT INTO items(id) VALUES (5)");
+				await database.transaction((tx) => tx.run("INSERT INTO items(id) SELECT ? FROM pg_sleep(0.1)", 6));
+				assert.deepEqual(await database.all("SELECT id FROM items ORDER BY id"), [
+					{ id: 3 },
+					{ id: 4 },
+					{ id: 5 },
+					{ id: 6 },
+				]);
+			});
+		},
+		AUTOCOMMIT_RETRIES_BOUND_MS * 4,
+	);
+
+	test("runs statements that cannot run in a transaction block outside one (#4901)", async () => {
 		await withPostgresDatabase(async ({ open }) => {
-			const database = await open({ statementTimeoutMs: 100 });
-			const error = await database.get("SELECT pg_sleep(30)").catch((caught) => caught);
-			assertTransient(error, "connection-lost", "unknown");
+			const database = await open();
+			await database.exec("CREATE TABLE items (id BIGINT)");
+			await database.exec("VACUUM items");
+			await database.run("VACUUM items");
 			assert.deepEqual(await database.get("SELECT 1 AS one"), { one: 1 });
+		});
+	});
+
+	test(
+		"a statement the client gives up on is cancelled on the server, outcome unknown (#4901)",
+		async () => {
+			await withPostgresDatabase(async ({ open, admin, name, url }) => {
+				// The marker on its own, not after `SET LOCAL`, is the attempt outside a transaction block.
+				const proxy = await startProxy(new URL(url), (text) =>
+					text.includes(STALL_MARKER) && !text.includes("SET LOCAL") ? "stall" : undefined,
+				);
+				try {
+					const holder = await open();
+					const proxied = new URL(url);
+					proxied.host = `127.0.0.1:${proxy.port}`;
+					const database = await open({ url: proxied.href, statementTimeoutMs: 100, maxConnections: 1 });
+					await holder.exec("CREATE TABLE items (id BIGINT)");
+					const running = async () =>
+						(
+							await admin.get<{ running: number }>(
+								"SELECT count(*) AS running FROM pg_stat_activity WHERE datname = ? AND state = 'active' AND query LIKE 'VACUUM%'",
+								name,
+							)
+						)?.running;
+					await holder.transaction(async (tx) => {
+						// VACUUM cannot run in a transaction block, so it waits for the lock without a server timeout, and the
+						// proxy keeps the server's answers from the client: only the client's timer and cancel request end it.
+						await tx.exec("LOCK TABLE items IN ACCESS EXCLUSIVE MODE");
+						const error = await database.exec(`VACUUM ${STALL_MARKER} items`).catch((caught) => caught);
+						assertTransient(error, "connection-lost", "unknown");
+						assert.match(inspect(error), /did not answer within 5100 ms/);
+						const deadline = performance.now() + CANCEL_SETTLE_MS;
+						while ((await running()) !== 0 && performance.now() < deadline)
+							await new Promise((resolve) => setTimeout(resolve, 50));
+						assert.equal(await running(), 0);
+					});
+					// The only connection was closed rather than returned to the pool.
+					assert.deepEqual(await database.get("SELECT 1 AS one"), { one: 1 });
+				} finally {
+					await proxy.close();
+				}
+			});
+		},
+		TRANSIENT_RETRIES_TIMEOUT_MS,
+	);
+
+	test("sends an autocommit statement with its BEGIN and COMMIT before any answer, in one round trip (#4901)", async () => {
+		await withPostgresDatabase(async ({ open, url }) => {
+			// The server's answers are held from the BEGIN until the COMMIT arrives, so a client that waited for the
+			// answer to its BEGIN before sending the rest would never get one.
+			const proxy = await startProxy(new URL(url), (text) =>
+				text.includes("COMMIT")
+					? "release"
+					: text.includes("BEGIN; SET LOCAL statement_timeout")
+						? "hold"
+						: undefined,
+			);
+			try {
+				const proxied = new URL(url);
+				proxied.host = `127.0.0.1:${proxy.port}`;
+				const database = await open({ url: proxied.href, statementTimeoutMs: 100 });
+				assert.deepEqual(await database.get("SELECT ?::int AS answer", 42), { answer: 42 });
+			} finally {
+				await proxy.close();
+			}
+		});
+	});
+
+	test("a failed autocommit statement leaves its connection outside a transaction (#4901)", async () => {
+		await withPostgresDatabase(async ({ open, admin, name }) => {
+			const database = await open({ maxConnections: 1 });
+			await database.exec("CREATE TABLE items (id BIGINT PRIMARY KEY)");
+			await database.run("INSERT INTO items(id) VALUES (?)", 1);
+			await assert.rejects(database.run("INSERT INTO items(id) VALUES (?)", 1));
+			// The only connection runs the next statement, which commits rather than fails in an aborted transaction.
+			await database.run("INSERT INTO items(id) VALUES (?)", 2);
+			assert.deepEqual(
+				await admin.get(
+					"SELECT count(*) AS open FROM pg_stat_activity WHERE datname = ? AND state LIKE 'idle in transaction%'",
+					name,
+				),
+				{ open: 0 },
+			);
+			assert.deepEqual(await database.all("SELECT id FROM items ORDER BY id"), [{ id: 1 }, { id: 2 }]);
 		});
 	});
 

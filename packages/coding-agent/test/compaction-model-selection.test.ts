@@ -59,11 +59,7 @@ test("selected compaction chat model is rung one and duplicate fallback is skipp
 			fallback: {
 				fallbackModels: ["test/selected:xhigh", "test/fallback"],
 				registry: {
-					getAvailableSnapshot: () => [model, selected, fallback],
-					getModel: (provider, id) =>
-						[model, selected, fallback].find(
-							(candidate) => candidate.provider === provider && candidate.id === id,
-						),
+					getModels: () => [model, selected, fallback],
 					hasConfiguredAuth: () => true,
 				},
 				preferredProvider: "test",
@@ -174,7 +170,7 @@ test("failed classifier falls through to a borrowed chat planner without partial
 		urgency: "recoverable",
 		fallback: {
 			fallbackModels: ["test/fallback"],
-			registry: { getAvailableSnapshot: () => [fallback], getModel: () => fallback, hasConfiguredAuth: () => true },
+			registry: { getModels: () => [fallback], hasConfiguredAuth: () => true },
 			preferredProvider: "test",
 			sessionThinkingLevel: "off",
 		},
