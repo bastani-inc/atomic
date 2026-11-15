@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { setTimeout as sleep } from "node:timers/promises";
 import { describe, test, vi } from "vitest";
 import {
+	deferRestorePhase,
 	formatResumeTimings,
 	latestResumeTimings,
 	noteRestoreFetch,
@@ -116,6 +117,35 @@ describe("resume timings recorder (#4748)", () => {
 		assert.ok(timings.blueprintReadyMs !== null && timings.blueprintReadyMs < timings.firstPromptReadyMs!);
 		assert.equal(timings.version, 1);
 		assert.ok(!Number.isNaN(Date.parse(timings.startedAt)));
+	});
+
+	test("a phase deferred past its restore adds to that restore's phase and time when it runs later (#5099)", async () => {
+		const recorder = new ResumeTimingsRecorder();
+		let later!: () => Promise<string>;
+		await recorder.run(() =>
+			timeCheckoutRestore(
+				"/lfs",
+				async () => {
+					await timeRestorePhase("verify", () => sleep(PHASE_SLEEP_MS));
+					later = deferRestorePhase("lfs", async () => {
+						await sleep(4 * PHASE_SLEEP_MS);
+						return "pulled";
+					});
+				},
+				() => "fresh",
+			),
+		);
+		const beforeDownload = recorder.finish().restores[0]!;
+		assert.deepEqual(Object.keys(beforeDownload.phases), ["verify"], "the download has not run yet");
+
+		assert.equal(await later(), "pulled");
+		// A second run, as of a second deferred phase, ends later still: the restore lasts until the last one ended.
+		assert.equal(await later(), "pulled");
+		const restore = recorder.finish().restores[0]!;
+		assert.ok(restore.phases.lfs! >= 8 * PHASE_SLEEP_MS - 2, `LFS ${restore.phases.lfs} ms`);
+		assert.ok(restore.ms >= restore.phases.lfs! + restore.phases.verify!, `restore ${restore.ms} ms`);
+		const outside = deferRestorePhase("lfs", async () => "ran");
+		assert.equal(await outside(), "ran", "outside a restore it only runs what it wraps");
 	});
 
 	test("an origin at process launch counts the time before the recorder was made (#4748)", async () => {
