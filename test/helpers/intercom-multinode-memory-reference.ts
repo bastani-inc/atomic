@@ -825,6 +825,19 @@ function pendingAskStore(asks: PendingAskEntry[], settled: Set<string>): Pending
 					.map(plainAsk),
 			};
 		},
+		async endLost(targetSessionId) {
+			if (targetSessionId.length === 0) return invalid("empty-session-id");
+			const now = Date.now();
+			const marked = asks.filter(
+				(ask) =>
+					ask.targetSessionId === targetSessionId &&
+					ask.park === undefined &&
+					ask.replied === undefined &&
+					ask.endedAt === undefined,
+			);
+			for (const ask of marked) ask.endedAt = now;
+			return { status: "listed", asks: marked.map(plainAsk) };
+		},
 		async unmarkEnded(route) {
 			const bad = invalidRoute(route);
 			if (bad !== undefined) return bad;
@@ -1024,6 +1037,8 @@ interface KnownRecord {
 	readonly session: KnownSession;
 	readonly order: number;
 	readonly recordedAt: number;
+	/** #5154: when its broker was retired before it recorded the session leaving. */
+	lostAt?: number;
 }
 
 interface BindingRecord {
@@ -1106,6 +1121,22 @@ function knownSessionStore(
 				}
 			}
 			return removed;
+		},
+		async markLost(targetIdentities) {
+			for (const identity of targetIdentities) {
+				const record = known.get(identity);
+				if (record !== undefined && record.lostAt === undefined) record.lostAt = Date.now();
+			}
+		},
+		async listLost(olderThanMs) {
+			return [...known.values()]
+				.filter((record) => record.lostAt !== undefined && ageOf(record.lostAt) >= olderThanMs)
+				.sort((left, right) => left.order - right.order)
+				.map((record) => ({
+					...structuredClone(record.session),
+					groups: [...record.session.groups],
+					ageMs: ageOf(record.recordedAt),
+				}));
 		},
 	};
 }

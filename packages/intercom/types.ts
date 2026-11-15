@@ -254,6 +254,8 @@ export interface Message {
   delivery?: IntercomDeliveryMode;
   /** Correlated delivery refusal: settles a waiting ask, otherwise surfaces as send feedback. */
   replyError?: string;
+  /** #5154: with `replyError`: the recipient may only be away, so asking again later may reach it. */
+  retryLater?: true;
   source?: {
     subagentRunId: string;
     subagentAgent?: string;

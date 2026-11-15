@@ -1511,6 +1511,41 @@ export function registerPendingAskStoreConformance(
 		},
 	);
 
+	check(
+		"ends a lost target's unanswered, unparked asks once, returning each only to the call that marked it (#5154)",
+		async (connect) => {
+			const [a, b] = [await connect(), await connect()];
+			await a.record(ask("asker", "lost", "q1"));
+			await a.record(ask("asker-2", "lost", "q2"));
+			await a.record(ask("asker", "lost", "q3"));
+			await a.record(ask("asker", "lost", "q4"));
+			await a.record(ask("asker", "other", "q5"));
+			await a.markReplied(reply("lost", "asker", "q3"));
+			await a.record(ask("asker", "child", "q6"));
+			await a.parkForTarget("child", { ownerSessionId: "owner", reservationKey: "released:child" });
+			await a.endForTarget("other");
+
+			assert.deepEqual(await a.endLost("lost"), {
+				status: "listed",
+				asks: [ask("asker", "lost", "q1"), ask("asker-2", "lost", "q2"), ask("asker", "lost", "q4")],
+			});
+			assert.deepEqual(
+				await b.endLost("lost"),
+				{ status: "listed", asks: [] },
+				"already marked: not returned again",
+			);
+			assert.deepEqual(await b.endLost("other"), { status: "listed", asks: [] }, "an ended target's ask is not");
+			assert.deepEqual(await b.endLost("child"), { status: "listed", asks: [] }, "a parked ask is kept");
+			const ended = await b.listEnded(0);
+			assert.deepEqual(
+				ended.status === "listed" ? ended.asks.map((ended) => ended.messageId).sort() : ended,
+				["q1", "q2", "q4", "q5"],
+				"marked ended, so a broker that stops before telling them leaves them to the ended sweep",
+			);
+			assert.deepEqual(await a.endLost(""), { status: "invalid", reason: "empty-session-id" });
+		},
+	);
+
 	check("keeps a replied ask's route for its reply but no longer lists it as unanswered (#4992)", async (connect) => {
 		const [a, b] = [await connect(), await connect()];
 		await a.record(ask("asker", "recipient", "q1"));
@@ -1916,6 +1951,28 @@ export function registerKnownSessionStoreConformance(
 		);
 		assert.deepEqual(await a.lookup("z-9", LIVE_MS), { status: "found", sessions: [] });
 	});
+
+	check(
+		"lists a session marked lost once it has been lost long enough, until it is recorded again (#5154)",
+		async (connect) => {
+			const [a, b] = [await connect(), await connect()];
+			await a.record(known());
+			await a.record(known({ targetIdentity: OTHER_RECIPIENT, intercomSessionId: "other-session" }));
+			assert.deepEqual(await b.listLost(0), [], "nothing lost yet");
+
+			await b.markLost([RECIPIENT, THIRD_RECIPIENT]);
+			assert.deepEqual(
+				withoutAge(await a.listLost(0)),
+				[{ ...known(), groups: ["team", "review crew"] }],
+				"only a recorded identity is marked",
+			);
+			assert.deepEqual(await a.listLost(LIVE_MS), [], "not lost long enough");
+			await a.markLost([]);
+
+			await a.record(known());
+			assert.deepEqual(await b.listLost(0), [], "recording it again clears the mark");
+		},
+	);
 
 	check("ignores records older than the retention and prunes them", async (connect) => {
 		const [a, b] = [await connect(), await connect()];
