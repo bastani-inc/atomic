@@ -3,7 +3,7 @@
  * finished a few. The main session is a real `createAgentSession` with the bundled subagents and Intercom extensions; it
  * launches background children in batches through the `subagent` tool on a scripted model, as a supervisor does, and
  * each child reads a file twice and answers. Between 50 and 200 finished children, the heap a finished child leaves
- * behind, the timers it leaves pending and the time a new child takes to start must not grow with them.
+ * behind, the timers it leaves pending and the work a new child's start takes must not grow with them.
  */
 import assert from "node:assert/strict";
 import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -49,19 +49,31 @@ const FILE_BYTES = 64 * 1024;
 const RETAINED_BYTES_PER_FINISHED_CHILD = 48 * 1024;
 /** Timers the 150 children finished between the two measurements may leave pending; before the fix, one each. */
 const PENDING_TIMERS_GROWTH = 16;
-/** How much slower a new child may start with 200 finished children than with 50. */
-const START_SLOWDOWN_FACTOR = 1.5;
-const START_SLOWDOWN_SLACK_MS = 250;
-const PROBES = 3;
+/**
+ * How much more work a new child's start may take with 200 finished children than with 50. A start is measured as the
+ * CPU time this process spends from its launch to its first model request, not as wall time: on a loaded machine wall
+ * time measures the machine, while the work a start does is what grows with every child the session launched.
+ */
+const START_WORK_GROWTH_FACTOR = 1.5;
+/** Absorbs the timer granularity of CPU accounting, about 16 ms on Windows, and the noise of a few probes. */
+const START_WORK_SLACK_MS = 100;
+/** New children launched, one at a time, at each measurement; the median of their start work is compared. */
+const PROBES = 5;
+/** Collections whose least heap in use is taken as the heap a measurement holds. */
+const HEAP_SAMPLES = 5;
 const RESUME_MESSAGE = "RESUMED-5186";
 
 interface Measurement {
 	readonly heapBytes: number;
 	readonly pendingTimers: number;
+	/** The median CPU time a new child's start took, from its launch to its first model request. */
+	readonly childStartCpuMs: number;
+	/** The median wall time of the same starts, reported but never asserted. */
 	readonly childStartMs: number;
 }
 
-const childStarts = new Map<string, number>();
+/** Each child's first model request: when it came and the CPU time this process had used by then. */
+const childStarts = new Map<string, { readonly at: number; readonly cpuMs: number }>();
 const childFinished = new Set<string>();
 const resumedRequests: string[] = [];
 /** Each launched child's id, as resume names it, and task id, by its task number. */
@@ -81,7 +93,7 @@ const respond: FauxResponseFactory = (context, _options, _state, model) => {
 			resumedRequests.push(text);
 			return fauxAssistantMessage(`resumed ${task}`);
 		}
-		if (!childStarts.has(task)) childStarts.set(task, performance.now());
+		if (!childStarts.has(task)) childStarts.set(task, { at: performance.now(), cpuMs: cpuMs() });
 		if (messages.filter((message) => message.role === "toolResult").length < 2)
 			return fauxAssistantMessage([fauxToolCall("read", { path: "fixture.txt" })], { stopReason: "toolUse" });
 		childFinished.add(task);
@@ -134,7 +146,7 @@ let cwd: string;
 let session: AgentSession;
 let unregister: () => void;
 let launched = 0;
-let lastLaunchAt = 0;
+let lastLaunch = { at: 0, cpuMs: 0 };
 const measured = new Map<number, Measurement>();
 
 async function supervisor(): Promise<AgentSession> {
@@ -175,7 +187,8 @@ async function supervisor(): Promise<AgentSession> {
 		builtins: { mcp: false, "web-access": false },
 	});
 	session.subscribe((event) => {
-		if (event.type === "tool_execution_start" && event.toolName === "subagent") lastLaunchAt = performance.now();
+		if (event.type === "tool_execution_start" && event.toolName === "subagent")
+			lastLaunch = { at: performance.now(), cpuMs: cpuMs() };
 		if (event.type !== "tool_execution_end" || event.toolName !== "subagent") return;
 		const details = (event.result as { details?: { taskRecords?: Array<Record<string, unknown>> } }).details;
 		for (const record of details?.taskRecords ?? []) {
@@ -201,27 +214,54 @@ async function launchAndFinish(count: number): Promise<void> {
 	);
 }
 
-/** How long a new child takes from its launch to its first model request, as the median of a few launches. */
-async function childStartMs(): Promise<number> {
-	const starts: number[] = [];
+/** The CPU time, user and system, this process has used so far. */
+function cpuMs(): number {
+	const { user, system } = process.cpuUsage();
+	return (user + system) / 1_000;
+}
+
+function median(values: readonly number[]): number {
+	return [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)]!;
+}
+
+/** The work and time a new child takes from its launch to its first model request, as medians of a few launches. */
+async function childStart(): Promise<{ readonly cpuMs: number; readonly ms: number }> {
+	const work: number[] = [];
+	const wall: number[] = [];
 	for (let probe = 0; probe < PROBES; probe++) {
 		const task = String(launched);
 		await launchAndFinish(1);
-		starts.push((childStarts.get(task) ?? Number.NaN) - lastLaunchAt);
+		const started = childStarts.get(task);
+		work.push(started === undefined ? Number.NaN : started.cpuMs - lastLaunch.cpuMs);
+		wall.push(started === undefined ? Number.NaN : started.at - lastLaunch.at);
 	}
-	return starts.sort((a, b) => a - b)[Math.floor(PROBES / 2)]!;
+	return { cpuMs: median(work), ms: median(wall) };
+}
+
+/**
+ * The heap in use once nothing is left to collect, as the least of a few collections apart: one collection can find
+ * work still settling, a completion delivery or a compilation, that the next one does not.
+ */
+async function settledHeapBytes(): Promise<number> {
+	const samples: number[] = [];
+	for (let sample = 0; sample < HEAP_SAMPLES; sample++) {
+		await new Promise((resolve) => setTimeout(resolve, 250));
+		collectGarbage();
+		collectGarbage();
+		samples.push(process.memoryUsage().heapUsed);
+	}
+	return Math.min(...samples);
 }
 
 async function measure(): Promise<Measurement> {
-	const start = await childStartMs();
+	const start = await childStart();
 	// Let the children's sessions finish closing and their completions reach the main session.
 	await new Promise((resolve) => setTimeout(resolve, 1_500));
-	collectGarbage();
-	collectGarbage();
 	return {
-		heapBytes: process.memoryUsage().heapUsed,
+		heapBytes: await settledHeapBytes(),
 		pendingTimers: v8.queryObjects(TimeoutClass, { format: "count" }) as number,
-		childStartMs: start,
+		childStartCpuMs: start.cpuMs,
+		childStartMs: start.ms,
 	};
 }
 
@@ -252,7 +292,7 @@ describe("a long supervising session as its children accumulate (#5186)", () => 
 		if (cwd) removeTempDirectory(cwd);
 	});
 
-	test("a finished child leaves no history, skill text or timer behind, and a new child starts as fast with 200 finished as with 50 (#5186)", () => {
+	test("a finished child leaves no history, skill text or timer behind, and a new child's start does no more work with 200 finished than with 50 (#5186)", () => {
 		const few = measured.get(FEW_FINISHED)!;
 		const many = measured.get(MANY_FINISHED)!;
 		const children = childFinished.size - FEW_FINISHED - PROBES;
@@ -261,8 +301,8 @@ describe("a long supervising session as its children accumulate (#5186)", () => 
 		assert.ok(retainedPerChild <= RETAINED_BYTES_PER_FINISHED_CHILD, `retained heap per finished child: ${report}`);
 		assert.ok(many.pendingTimers - few.pendingTimers <= PENDING_TIMERS_GROWTH, `pending timers: ${report}`);
 		assert.ok(
-			many.childStartMs <= few.childStartMs * START_SLOWDOWN_FACTOR + START_SLOWDOWN_SLACK_MS,
-			`new child start: ${report}`,
+			many.childStartCpuMs <= few.childStartCpuMs * START_WORK_GROWTH_FACTOR + START_WORK_SLACK_MS,
+			`new child start work: ${report}`,
 		);
 	});
 
