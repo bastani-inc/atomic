@@ -13,7 +13,7 @@ if (typeof process !== "undefined" && (process.versions?.node || process.version
 	});
 }
 
-import { getProviderEnvValue } from "../../utils/provider-env.ts";
+import { getAtomicEnvValue, getProviderEnvValue } from "../../utils/provider-env.ts";
 import { isPermanentRefreshRejection, OAuthRefreshRejectedError, parseOAuthErrorBody } from "../oauth-refresh-errors.ts";
 import type { LoginOptions, OAuthAuth, OAuthCredential, ProviderAuthInteraction } from "../types.js";
 import { startOAuthCallbackServer, waitForCallbackOrManualInput } from "./callback-server.ts";
@@ -40,7 +40,7 @@ type OAuthToken = { access: string; refresh: string; expires: number };
 type TokenOperation = "exchange" | "refresh";
 
 function getCallbackHost(): string {
-	return getProviderEnvValue("PI_OAUTH_CALLBACK_HOST") || "127.0.0.1";
+	return getAtomicEnvValue("OAUTH_CALLBACK_HOST") || "127.0.0.1";
 }
 
 type DeviceAuthInfo = {

@@ -21,6 +21,11 @@ describe("resolveEscapeTimeoutMs", () => {
 		assert.equal(resolveEscapeTimeoutMs({ PI_TUI_ESC_TIMEOUT: "" }), 10);
 	});
 
+	it("prefers ATOMIC_TUI_ESC_TIMEOUT over the legacy PI_TUI_ESC_TIMEOUT (#5174)", () => {
+		assert.equal(resolveEscapeTimeoutMs({ ATOMIC_TUI_ESC_TIMEOUT: "60" }), 60);
+		assert.equal(resolveEscapeTimeoutMs({ ATOMIC_TUI_ESC_TIMEOUT: "60", PI_TUI_ESC_TIMEOUT: "80" }), 60);
+	});
+
 	it("defaults to 100ms over SSH", () => {
 		assert.equal(resolveEscapeTimeoutMs({ SSH_CONNECTION: "10.0.0.1 22" }), 100);
 		assert.equal(resolveEscapeTimeoutMs({ SSH_TTY: "/dev/pts/1" }), 100);

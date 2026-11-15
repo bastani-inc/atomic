@@ -2,7 +2,7 @@
 import { randomBytes } from "node:crypto";
 import { createServer, type Server, type ServerResponse } from "node:http";
 import { oauthErrorHtml, oauthSuccessHtml } from "../../utils/oauth-page.ts";
-import { getProviderEnvValue } from "../../utils/provider-env.ts";
+import { getAtomicEnvValue, getProviderEnvValue } from "../../utils/provider-env.ts";
 import { isPermanentRefreshRejection, OAuthRefreshRejectedError, parseOAuthErrorBody } from "../oauth-refresh-errors.ts";
 import type { LoginOptions, OAuthAuth, OAuthCredential, ProviderAuthInteraction } from "../types.ts";
 import { generatePKCE } from "./pkce.ts";
@@ -14,7 +14,7 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 const AUTHORIZE_URL = "https://auth.openai.com/api/accounts/authorize";
 const TOKEN_URL = "https://auth.openai.com/api/accounts/oauth/token";
 const RESOURCE = "https://api.openai.com/v1";
-const CALLBACK_HOST = getProviderEnvValue("PI_OAUTH_CALLBACK_HOST") || "127.0.0.1";
+const CALLBACK_HOST = getAtomicEnvValue("OAUTH_CALLBACK_HOST") || "127.0.0.1";
 const CALLBACK_PORT = 1455;
 const CALLBACK_PATH = "/auth/callback";
 const REDIRECT_URI = `http://127.0.0.1:${CALLBACK_PORT}${CALLBACK_PATH}`;

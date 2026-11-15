@@ -249,10 +249,10 @@ This pattern is NOT needed when:
 
 ## Debug logging
 
-Set `PI_TUI_WRITE_LOG` to capture the raw ANSI stream written to stdout. A directory path writes one `tui-<timestamp>-<pid>.log` file per process. Review logs for sensitive content before sharing.
+Set `ATOMIC_TUI_WRITE_LOG` (legacy `PI_TUI_WRITE_LOG`) to capture the raw ANSI stream written to stdout. A directory path writes one `tui-<timestamp>-<pid>.log` file per process. Review logs for sensitive content before sharing.
 
 ```bash
-PI_TUI_WRITE_LOG=/tmp/tui-ansi.log atomic
+ATOMIC_TUI_WRITE_LOG=/tmp/tui-ansi.log atomic
 ```
 
 Use this capture when reporting a terminal-rendering problem.

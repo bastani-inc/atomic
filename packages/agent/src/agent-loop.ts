@@ -5,13 +5,13 @@
 
 import {
 	type AssistantMessage,
+	ATOMIC_ATTRIBUTION,
 	type ClientIdentity,
 	EventStream,
 	getCurrentTools,
 	getToolStateChanges,
 	mergeClientIdentity,
 	normalizeContext,
-	PI_ATTRIBUTION,
 	type SystemMessage,
 	type ToolResultMessage,
 	type ToolStateChanges,
@@ -35,10 +35,10 @@ import type {
 export type AgentEventSink = (event: AgentEvent) => Promise<void> | void;
 
 /**
- * Request identity of agent loops: pi-ai's defaults with provider attribution to pi. `AgentLoopConfig.identity`
+ * Request identity of agent loops: `@bastani/atomic-ai`'s defaults with provider attribution to Atomic. `AgentLoopConfig.identity`
  * overrides it field by field.
  */
-export const DEFAULT_AGENT_IDENTITY: ClientIdentity = { attribution: PI_ATTRIBUTION };
+export const DEFAULT_AGENT_IDENTITY: ClientIdentity = { attribution: ATOMIC_ATTRIBUTION };
 
 /**
  * Start an agent loop with a new prompt message.

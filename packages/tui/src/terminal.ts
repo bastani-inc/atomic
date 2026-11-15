@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { getTuiEnvValue } from "./env.ts";
 import { setKittyProtocolActive } from "./keys.ts";
 import { isNativeModifierPressed } from "./native-modifiers.ts";
 import { getNativePlatformHelper } from "./native-platform.ts";
@@ -148,7 +149,7 @@ const DEFAULT_SSH_ESCAPE_TIMEOUT_MS = 100;
  * another byte, so high-latency transports need a longer reassembly window.
  */
 export function resolveEscapeTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
-	const configured = Number(env.PI_TUI_ESC_TIMEOUT);
+	const configured = Number(getTuiEnvValue("TUI_ESC_TIMEOUT", env));
 	if (Number.isFinite(configured) && configured > 0) {
 		return configured;
 	}
@@ -177,12 +178,12 @@ export class ProcessTerminal implements Terminal {
 	private progressInterval?: ReturnType<typeof setInterval>;
 	/** Latest program status, kept across stop() so start() can report it again. */
 	private programStatus?: ProgramStatus;
-	/** Whether the terminal confirmed OSC 7501 support since the last start(), or `PI_PROGRAM_STATUS=1`. */
+	/** Whether the terminal confirmed OSC 7501 support since the last start(), or `ATOMIC_PROGRAM_STATUS=1` (legacy `PI_PROGRAM_STATUS=1`). */
 	private programStatusSupported = false;
 	/** The support query was sent and its DA1 sentinel has not arrived yet. */
 	private programStatusQueryPending = false;
 	private writeLogPath = (() => {
-		const env = process.env.PI_TUI_WRITE_LOG || "";
+		const env = getTuiEnvValue("TUI_WRITE_LOG") || "";
 		if (!env) return "";
 		try {
 			if (fs.statSync(env).isDirectory()) {
@@ -297,7 +298,7 @@ export class ProcessTerminal implements Terminal {
 	 * - 4 = report alternate keys (shifted key, base layout key)
 	 *
 	 * The OSC 7501 program status query shares the DA sentinel: a terminal that supports it replies
-	 * before DA. `PI_PROGRAM_STATUS=1` or `0` skips the query.
+	 * before DA. `ATOMIC_PROGRAM_STATUS` (legacy `PI_PROGRAM_STATUS`) set to `1` or `0` skips the query.
 	 */
 	private queryAndEnableKittyProtocol(): void {
 		this.setupStdinBuffer();
@@ -305,7 +306,7 @@ export class ProcessTerminal implements Terminal {
 		this.keyboardProtocolPushed = true;
 		this.pendingKeyboardProtocolDeviceAttributes += 1;
 		this.clearKeyboardProtocolNegotiationBuffer();
-		const programStatusOverride = process.env.PI_PROGRAM_STATUS;
+		const programStatusOverride = getTuiEnvValue("PROGRAM_STATUS");
 		this.programStatusSupported = programStatusOverride === "1";
 		this.programStatusQueryPending = programStatusOverride !== "1" && programStatusOverride !== "0";
 		const programStatusQuery = this.programStatusQueryPending ? PROGRAM_STATUS_QUERY : "";

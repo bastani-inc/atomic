@@ -5,7 +5,7 @@
  * It is only intended for CLI use, not browser environments.
  */
 
-import { getProviderEnvValue } from "../../utils/provider-env.ts";
+import { getAtomicEnvValue, getProviderEnvValue } from "../../utils/provider-env.ts";
 import { isPermanentRefreshRejection, OAuthRefreshRejectedError, parseOAuthErrorBody } from "../oauth-refresh-errors.ts";
 import type { OAuthAuth, OAuthCredential, ProviderAuthInteraction } from "../types.ts";
 import { startOAuthCallbackServer, waitForCallbackOrManualInput } from "./callback-server.ts";
@@ -16,7 +16,7 @@ const decode = (s: string) => atob(s);
 const CLIENT_ID = decode("OWQxYzI1MGEtZTYxYi00NGQ5LTg4ZWQtNTk0NGQxOTYyZjVl");
 const AUTHORIZE_URL = "https://claude.ai/oauth/authorize";
 const TOKEN_URL = "https://platform.claude.com/v1/oauth/token";
-const CALLBACK_HOST = getProviderEnvValue("PI_OAUTH_CALLBACK_HOST") || "127.0.0.1";
+const CALLBACK_HOST = getAtomicEnvValue("OAUTH_CALLBACK_HOST") || "127.0.0.1";
 const CALLBACK_PORT = 53692;
 const CALLBACK_PATH = "/callback";
 /** Login gives up on a stalled authorization-code exchange; a refresh exchange is never cut off (it may have rotated). */

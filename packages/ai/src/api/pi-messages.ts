@@ -28,7 +28,7 @@ import { appendAssistantMessageDiagnostic, createAssistantMessageDiagnostic } fr
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { headersToRecord, providerHeadersToRecord } from "../utils/headers.ts";
 import { getIdentityHeaders } from "../utils/identity.ts";
-import { getProviderEnvValue } from "../utils/provider-env.ts";
+import { getAtomicEnvValue, getProviderEnvValue } from "../utils/provider-env.ts";
 import { getRetryAfterMs } from "../utils/retry-hints.ts";
 import { ServerSentEventDecoder } from "../utils/sse.ts";
 import { createStreamDeadline, withStreamDeadline } from "../utils/stream-deadline.ts";
@@ -374,7 +374,7 @@ function resolveCacheRetention(cacheRetention?: CacheRetention, env?: ProviderEn
 		return cacheRetention;
 	}
 	// Backend defaults apply when unset; only the legacy env opt-in is mapped.
-	return getProviderEnvValue("PI_CACHE_RETENTION", env) === "long" ? "long" : undefined;
+	return getAtomicEnvValue("CACHE_RETENTION", env) === "long" ? "long" : undefined;
 }
 
 export const stream: StreamFunction<"pi-messages", PiMessagesOptions> = (

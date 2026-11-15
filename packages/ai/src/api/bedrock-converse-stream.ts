@@ -59,7 +59,7 @@ import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { providerHeadersToRecord } from "../utils/headers.ts";
 import { type ClientIdentity, getClientVersion } from "../utils/identity.ts";
 import { resolveHttpProxyUrlForTarget } from "../utils/node-http-proxy.ts";
-import { getProviderEnvValue } from "../utils/provider-env.ts";
+import { getAtomicEnvValue, getProviderEnvValue } from "../utils/provider-env.ts";
 import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
 import { createStreamDeadline, withStreamDeadline } from "../utils/stream-deadline.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
@@ -911,7 +911,7 @@ function resolveCacheRetention(cacheRetention?: CacheRetention, env?: ProviderEn
 	if (cacheRetention) {
 		return cacheRetention;
 	}
-	if (getProviderEnvValue("PI_CACHE_RETENTION", env) === "long") {
+	if (getAtomicEnvValue("CACHE_RETENTION", env) === "long") {
 		return "long";
 	}
 	return "short";

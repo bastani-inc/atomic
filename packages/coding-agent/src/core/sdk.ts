@@ -8,7 +8,7 @@ import {
 	streamSimple,
 	type Usage,
 } from "@bastani/atomic-ai/compat";
-import { getProviderEnvValue } from "@bastani/atomic-ai/utils/provider-env";
+import { getAtomicEnvValue } from "@bastani/atomic-ai/utils/provider-env";
 import { getAgentDir } from "../config.js";
 import { resolvePath } from "../utils/paths.ts";
 import { AgentSession } from "./agent-session.js";
@@ -687,7 +687,7 @@ async function constructAgentSession(
 					throw new Error(`No API key found for "${model.provider}"`);
 				}
 				const env = auth.env || streamOptions?.env ? { ...auth.env, ...streamOptions?.env } : undefined;
-				const cacheRetentionEnv = getProviderEnvValue("PI_CACHE_RETENTION", env);
+				const cacheRetentionEnv = getAtomicEnvValue("CACHE_RETENTION", env);
 				// Shared by main chat, workflow stages and subagents; provider capability gates still apply.
 				const cacheRetention =
 					streamOptions?.cacheRetention ??

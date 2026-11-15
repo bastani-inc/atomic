@@ -1,4 +1,4 @@
-import { type ClientIdentity, PI_ATTRIBUTION } from "@bastani/atomic-ai";
+import { ATOMIC_ATTRIBUTION, type ClientIdentity } from "@bastani/atomic-ai";
 import {
 	type AssistantMessage,
 	createAssistantMessageEventStream,
@@ -1221,9 +1221,9 @@ describe("Agent", () => {
 		await agent.prompt("and again");
 
 		expect(received).toEqual([
-			{ attribution: PI_ATTRIBUTION },
+			{ attribution: ATOMIC_ATTRIBUTION },
 			{ attribution: acme, userAgent: "short" },
-			{ attribution: PI_ATTRIBUTION, userAgent: "short" },
+			{ attribution: ATOMIC_ATTRIBUTION, userAgent: "short" },
 		]);
 	});
 });

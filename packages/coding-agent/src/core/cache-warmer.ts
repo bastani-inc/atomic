@@ -14,7 +14,7 @@ import {
 	type TranscriptContext,
 } from "@bastani/atomic-ai";
 import type { SimpleStreamOptions } from "@bastani/atomic-ai/compat";
-import { getProviderEnvValue } from "@bastani/atomic-ai/utils/provider-env";
+import { getAtomicEnvValue } from "@bastani/atomic-ai/utils/provider-env";
 import { getDefaultCacheRetention } from "./cache-retention.ts";
 import type { ModelRuntime } from "./model-runtime.js";
 import type { ModelRuntimeSimpleStreamOptions } from "./model-runtime-streaming.ts";
@@ -25,7 +25,7 @@ export type { CacheWarmingAction, CacheWarmingDecision };
 
 /** Resolves the retention the session would use, including model-specific defaults, before looking up the lifetime. */
 export function getPromptCacheTtlMs(model: Model<Api>, options: SimpleStreamOptions | undefined): number | undefined {
-	const configured = getProviderEnvValue("PI_CACHE_RETENTION", options?.env);
+	const configured = getAtomicEnvValue("CACHE_RETENTION", options?.env);
 	const retention =
 		options?.cacheRetention ??
 		(configured === "none"

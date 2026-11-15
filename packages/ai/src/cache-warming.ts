@@ -2,7 +2,7 @@
 // whether a refresh pays for itself. Hosts own the scheduling; this module owns the numbers.
 import { calculateCost } from "./models.ts";
 import type { Api, Model, SimpleStreamOptions, Usage } from "./types.ts";
-import { getProviderEnvValue } from "./utils/provider-env.ts";
+import { getAtomicEnvValue, getProviderEnvValue } from "./utils/provider-env.ts";
 
 /** Whether a refresh is sent ("warm") or warming ends until the next real request ("stop"). */
 export type CacheWarmingAction = "warm" | "stop";
@@ -55,7 +55,7 @@ export function getCacheWarmingDelayMs(ttlMs: number): number | undefined {
 export function getPromptCacheTtlMs(model: Model<Api>, options: SimpleStreamOptions | undefined): number | undefined {
 	const retention =
 		options?.cacheRetention ??
-		(getProviderEnvValue("PI_CACHE_RETENTION", options?.env) === "long" ? "long" : "short");
+		(getAtomicEnvValue("CACHE_RETENTION", options?.env) === "long" ? "long" : "short");
 	if (retention === "none") return undefined;
 	const seconds = model.promptCache?.[retention];
 	return seconds === undefined ? undefined : seconds * 1000;

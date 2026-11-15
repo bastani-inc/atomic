@@ -7,6 +7,7 @@ This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani
 ### Changed
 
 - Renamed the package from `@bastani/pi-ai` to `@bastani/atomic-ai`. It now depends on Atomic's forks `@bastani/atomic-schema` and `@bastani/atomic-telemetry` instead of pi's packages. Atomic's extension loader still resolves `@bastani/pi-ai`, `@earendil-works/pi-ai` and `@mariozechner/pi-ai` imports to it ([#5174](https://github.com/bastani-inc/atomic/issues/5174))
+- Requests now identify as Atomic by default: the default `User-Agent` is `atomic/<version>` (short form `atomic`), and the new `ATOMIC_ATTRIBUTION` attributes requests to Atomic for OpenRouter, NVIDIA and OpenCode. `PI_ATTRIBUTION` is deprecated and now equals `ATOMIC_ATTRIBUTION`. `ATOMIC_CACHE_RETENTION` and `ATOMIC_OAUTH_CALLBACK_HOST` replace `PI_CACHE_RETENTION` and `PI_OAUTH_CALLBACK_HOST`, which keep working as legacy names ([#5174](https://github.com/bastani-inc/atomic/issues/5174))
 
 ### Fixed
 

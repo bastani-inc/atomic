@@ -52,7 +52,7 @@ import {
 	isOpenRouterModel,
 	type OpenRouterUsageAccounting,
 } from "../utils/openrouter-cost.ts";
-import { getProviderEnvValue } from "../utils/provider-env.ts";
+import { getAtomicEnvValue, getProviderEnvValue } from "../utils/provider-env.ts";
 import { retryProviderRequest } from "../utils/provider-retry.ts";
 import { admitOpenAIRequests, getFetchAdmission } from "../utils/request-admission.js";
 import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
@@ -355,7 +355,7 @@ function resolveCacheRetention(cacheRetention?: CacheRetention, env?: ProviderEn
 	if (cacheRetention) {
 		return cacheRetention;
 	}
-	if (getProviderEnvValue("PI_CACHE_RETENTION", env) === "long") {
+	if (getAtomicEnvValue("CACHE_RETENTION", env) === "long") {
 		return "long";
 	}
 	return "short";

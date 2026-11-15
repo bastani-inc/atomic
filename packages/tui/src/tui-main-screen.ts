@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { getTuiEnvValue } from "./env.ts";
 import { deleteKittyImage, isImageLine } from "./terminal-image.ts";
 import { type TUI, TuiBase, type TuiStopOptions } from "./tui.ts";
 import { visibleWidth } from "./utils.ts";
@@ -323,7 +324,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 			this.previousHeight = height;
 		};
 
-		const redrawLogDirectory = process.env.PI_TUI_DEBUG_REDRAW === "1" ? this.logDirectory : undefined;
+		const redrawLogDirectory = getTuiEnvValue("TUI_DEBUG_REDRAW") === "1" ? this.logDirectory : undefined;
 		const logRedraw = (reason: string): void => {
 			if (redrawLogDirectory === undefined) return;
 			const logPath = path.join(redrawLogDirectory, "pi-tui-debug.log");
@@ -571,7 +572,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 
 		output.append("\x1b[?2026l"); // End synchronized output
 
-		if (process.env.PI_TUI_DEBUG === "1") {
+		if (getTuiEnvValue("TUI_DEBUG") === "1") {
 			const debugDir = "/tmp/tui";
 			fs.mkdirSync(debugDir, { recursive: true });
 			const debugPath = path.join(debugDir, `render-${Date.now()}-${Math.random().toString(36).slice(2)}.log`);
