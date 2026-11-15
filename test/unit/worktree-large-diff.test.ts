@@ -54,6 +54,11 @@ function inBun<T>(
  * on Windows with twenty suites running at once.
  */
 const MANY_FILES_SCENARIO_TIMEOUT_MS = 60_000;
+/**
+ * Copying 200 included files runs about 400 git children (each path component is checked against the index), which
+ * took up to 55 s on Windows with twenty suites running at once.
+ */
+const INCLUDE_SCENARIO_TIMEOUT_MS = 120_000;
 
 type Runtime = "Node" | "Bun";
 const cases: Array<{ runtime: Runtime; module: WorktreeModule }> = [
@@ -99,7 +104,9 @@ describe.each(cases)("$module worktrees under $runtime", ({ runtime, module }) =
 			);
 	});
 
-	test("a .worktreeinclude file is copied into a new worktree when the ignored files list to over 1 MiB (#4876)", () => {
+	test("a .worktreeinclude file is copied into a new worktree when the ignored files list to over 1 MiB (#4876)", {
+		timeout: INCLUDE_SCENARIO_TIMEOUT_MS,
+	}, () => {
 		const root = tempRoot();
 		const result =
 			runtime === "Node"
