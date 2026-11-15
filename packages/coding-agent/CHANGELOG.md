@@ -43,6 +43,7 @@
 
 ### Fixed
 
+- The fetch tool refuses more reserved and non-public address ranges.
 - Fixed `search` and `find` reading the wrong file for a path containing brackets, such as a Next.js or SvelteKit route `app/[id]/page.tsx`: the brackets were read as a glob, so the tools matched `app/i/page.tsx` or `app/d/page.tsx` instead. A path that exists exactly as written is now used as that path, and a backslash makes a glob character literal (`app/\[id\]/*.tsx`) outside Windows ([#5177](https://github.com/bastani-inc/atomic/issues/5177))
 - Fixed two processes resuming the same session when they took over a dead session claim at once. A takeover lock was broken by its age alone, so a process paused for 10 seconds or more lost its lock mid-takeover, and a second process could remove the claim the first had just taken; a third could fail with a raw `ENOENT` instead of "Session is already open". Takeovers of a dead claim now use the same takeover lock as settings and credential locks, which is broken only once the process holding it is dead. The dead claim is moved aside and removed only if it is still the dead one ([#5179](https://github.com/bastani-inc/atomic/issues/5179))
 - Temporary lock-holder files (`settings.json.lock.holder.*.tmp`) left by a process killed while taking the settings lock are now removed once a minute old when a later process removes that lock as stale, as they already were after a dead holder's lock was taken over ([#5161](https://github.com/bastani-inc/atomic/issues/5161))
