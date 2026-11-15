@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { Value } from "typebox/value";
 import { afterEach, test } from "vitest";
 import type { ExtensionContext } from "../../packages/coding-agent/src/index.js";
@@ -20,7 +21,7 @@ import type {
 	SubagentParamsLike,
 } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
 import type { SingleResult, SubagentToolResult } from "../../packages/subagents/src/shared/types.js";
-import { spawnSyncCollect } from "../helpers/runtime.js";
+import { bunExecutable, moduleDir, readStreamText, spawnProcess, spawnSyncCollect } from "../helpers/runtime.js";
 
 const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
 const cleanups: Array<() => void> = [];
@@ -403,3 +404,103 @@ test("resuming a child in a removed named worktree checks its branch out there a
 	release();
 	assert.ok(existsSync(path), "releasing the resume removes nothing");
 });
+
+test("a branch name that git expands, such as @{-1}, is refused before launch (#5202)", async () => {
+	const repo = makeRepo();
+	git(repo, "checkout", "-q", "-b", "previous");
+	git(repo, "checkout", "-q", "main");
+	const harness = makeHarness(repo);
+
+	for (const branch of ["@{-1}", "feat@{upstream}"]) {
+		const result = await harness.execute({ agent: "worker", task: "t", worktree: { branch } });
+		assert.equal(result.isError, true, branch);
+		assert.match(
+			text(result),
+			new RegExp(`worktree.branch "${branch.replace(/[{}@-]/g, "\\$&")}" is not a valid branch name`),
+		);
+	}
+	assert.equal(harness.launches.length, 0);
+	assert.equal(
+		git(repo, "worktree", "list", "--porcelain").match(/^worktree /gm)?.length,
+		1,
+		"no worktree was created",
+	);
+});
+
+/** Several processes, each checking out the same new branches at once; spawning a process is the structural cost. */
+const CONCURRENT_LAUNCHES_TIMEOUT_MS = 120_000;
+const RACE_ROUNDS = 8;
+const RACE_ROUND_GAP_MS = 400;
+
+test(
+	"concurrent launches of one new branch reuse the winner's worktree or get a clear refusal, never a raw git error (#5202)",
+	async () => {
+		const repo = makeRepo();
+		const modulePath = pathToFileURL(
+			join(moduleDir(import.meta.url), "../../packages/subagents/src/runs/shared/named-worktree.ts"),
+		).href;
+		const script = join(repo, "..", "race.ts");
+		writeFileSync(
+			script,
+			`const [modulePath, repo, rounds, startAt, gap] = process.argv.slice(2);
+const { ensureNamedWorktree } = await import(modulePath);
+const outcomes = [];
+for (let round = 0; round < Number(rounds); round++) {
+	const at = Number(startAt) + round * Number(gap);
+	while (Date.now() < at) {}
+	try {
+		outcomes.push({ ok: true, path: ensureNamedWorktree(repo, { branch: "feat/race-" + round }).path });
+	} catch (error) {
+		outcomes.push({ ok: false, message: error instanceof Error ? error.message : String(error) });
+	}
+}
+console.log(JSON.stringify(outcomes));
+`,
+		);
+		const startAt = Date.now() + 5_000;
+		const launches = [0, 1, 2].map(() =>
+			spawnProcess(
+				[
+					bunExecutable(),
+					script,
+					modulePath,
+					repo,
+					String(RACE_ROUNDS),
+					String(startAt),
+					String(RACE_ROUND_GAP_MS),
+				],
+				{ cwd: repo, stdout: "pipe", stderr: "pipe", env: createGitEnvironment() },
+			),
+		);
+		const outputs = await Promise.all(
+			launches.map(async (launch) => {
+				const [stdout, stderr, exitCode] = await Promise.all([
+					readStreamText(launch.stdout),
+					readStreamText(launch.stderr),
+					launch.exited,
+				]);
+				assert.equal(exitCode, 0, stderr);
+				return JSON.parse(stdout.trim().split("\n").at(-1)!) as Array<{
+					ok: boolean;
+					path?: string;
+					message?: string;
+				}>;
+			}),
+		);
+
+		for (let round = 0; round < RACE_ROUNDS; round++) {
+			const expected = join(repo, ".atomic", "worktrees", `feat+race-${round}`);
+			const outcomes = outputs.map((output) => output[round]!);
+			assert.ok(
+				outcomes.some((outcome) => outcome.ok),
+				`round ${round}: one launch gets the worktree`,
+			);
+			for (const outcome of outcomes) {
+				if (outcome.ok) assert.equal(outcome.path, expected, `round ${round}`);
+				else assert.match(outcome.message ?? "", /^worktree: /, `round ${round}: ${outcome.message}`);
+			}
+			assert.equal(git(expected, "rev-parse", "--abbrev-ref", "HEAD"), `feat/race-${round}`);
+		}
+	},
+	CONCURRENT_LAUNCHES_TIMEOUT_MS,
+);

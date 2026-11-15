@@ -72,7 +72,9 @@ function withAgentCwd(worktreePath: string, cwdRelative: string): string {
  */
 export function ensureNamedWorktree(cwd: string, request: NamedWorktreeRequest): NamedWorktree {
 	const branch = request.branch;
-	if (runGit(cwd, ["check-ref-format", "--branch", branch]).status !== 0)
+	// `--branch` expands names such as `@{-1}`: only a name that is its own branch name is accepted.
+	const formatted = runGit(cwd, ["check-ref-format", "--branch", branch]);
+	if (formatted.status !== 0 || formatted.stdout.trim() !== branch || branch.includes("@{"))
 		throw new Error(`worktree.branch "${request.branch}" is not a valid branch name.`);
 	const cwdRelative = resolveRepoCwdRelative(cwd);
 	const toplevel = path.resolve(runGitChecked(cwd, ["rev-parse", "--show-toplevel"]).trim());
@@ -82,13 +84,39 @@ export function ensureNamedWorktree(cwd: string, request: NamedWorktreeRequest):
 	const worktreePath = defaultPath
 		? path.join(repo, ".atomic", "worktrees", branch.replaceAll("/", "+"))
 		: path.resolve(cwd, request.path!);
+	const ready = (): NamedWorktree => ({
+		repo,
+		path: worktreePath,
+		agentCwd: withAgentCwd(worktreePath, cwdRelative),
+		branch,
+		baseCommit: runGitChecked(worktreePath, ["rev-parse", "HEAD"]).trim(),
+	});
+	if (existingWorktree(repo, branch, worktreePath)) return ready();
+	if (defaultPath) ensureWorktreeIgnore(repo);
+	const branchExists = runGit(repo, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]).status === 0;
+	const added = runGit(
+		repo,
+		branchExists
+			? ["worktree", "add", worktreePath, branch]
+			: ["worktree", "add", "--no-track", "-b", branch, worktreePath, request.base ?? defaultBase(cwd)],
+	);
+	// Another launch may have checked the branch out there meanwhile: decide again, once, before failing.
+	if (added.status !== 0 && !existingWorktree(repo, branch, worktreePath))
+		throw new Error(
+			`worktree: could not check out branch "${branch}" at ${worktreePath}: ${added.stderr.trim() || added.stdout.trim()}`,
+		);
+	return ready();
+}
+
+/**
+ * Whether `branch` is already checked out at `worktreePath`, to be reused. Throws when it is checked out elsewhere, or
+ * the path holds something else; false when the worktree is still to be created.
+ */
+function existingWorktree(repo: string, branch: string, worktreePath: string): boolean {
 	const target = comparablePath(worktreePath);
 	const worktrees = listWorktrees(repo);
 	const atPath = worktrees.find((worktree) => comparablePath(worktree.path) === target);
-	if (atPath?.branch === branch) {
-		const baseCommit = runGitChecked(worktreePath, ["rev-parse", "HEAD"]).trim();
-		return { repo, path: worktreePath, agentCwd: withAgentCwd(worktreePath, cwdRelative), branch, baseCommit };
-	}
+	if (atPath?.branch === branch) return true;
 	const elsewhere = worktrees.find((worktree) => worktree.branch === branch);
 	if (elsewhere)
 		throw new Error(
@@ -98,14 +126,5 @@ export function ensureNamedWorktree(cwd: string, request: NamedWorktreeRequest):
 		throw new Error(
 			`worktree: ${worktreePath} already exists and is not the worktree of branch "${branch}". Choose another worktree.path or branch.`,
 		);
-	if (defaultPath) ensureWorktreeIgnore(repo);
-	const branchExists = runGit(repo, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]).status === 0;
-	runGitChecked(
-		repo,
-		branchExists
-			? ["worktree", "add", worktreePath, branch]
-			: ["worktree", "add", "--no-track", "-b", branch, worktreePath, request.base ?? defaultBase(cwd)],
-	);
-	const baseCommit = runGitChecked(worktreePath, ["rev-parse", "HEAD"]).trim();
-	return { repo, path: worktreePath, agentCwd: withAgentCwd(worktreePath, cwdRelative), branch, baseCommit };
+	return false;
 }
