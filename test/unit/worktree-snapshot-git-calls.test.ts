@@ -231,7 +231,9 @@ describe("restore operation counts", () => {
 		const blobs = new MemorySnapshotBlobStore();
 		const snapshot = captured(await captureWorktreeSnapshot(clone, { blobs }));
 		const storeDir = sandbox.path("host");
-		const unreachable = [["ab"], ["a", "b"]];
+		// Absolute paths, which name one repository wherever the checkout is; a relative one names the path it resolves
+		// to from the checkout (#4989).
+		const unreachable = [[sandbox.path("ab")], [sandbox.path("a"), sandbox.path("b")]];
 		for (const remotes of unreachable) {
 			await assert.rejects(
 				restoreWorktreeSnapshot({ ...snapshot, remotes }, { blobs, storeDir }),
