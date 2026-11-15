@@ -6,8 +6,8 @@ import { DEFAULT_COMPACTION_SETTINGS } from "../src/core/compaction/compaction.j
 import { prepareCompactionBoundary } from "../src/core/compaction/compaction-boundary.js";
 import { preparePiSummaryCompaction, runVerbatimCompaction } from "../src/core/compaction/index.js";
 import { generateSessionSummary } from "../src/core/compaction/session-summarization.js";
-import { convertToLlm } from "../src/core/messages.js";
-import { buildSessionContext, type SessionEntry } from "../src/core/session-manager.js";
+import { convertToLlm, toolBatchCutStart } from "../src/core/messages.js";
+import { buildSessionContext, type SessionEntry, sessionEntryToContextMessages } from "../src/core/session-manager.js";
 import { createFauxStreamFn, fauxModel } from "./test-harness.js";
 
 const timestamp = new Date(0).toISOString();
@@ -234,4 +234,52 @@ test("an Intercom message admitted mid-batch leaves every real result in the sum
 	});
 	assert.equal(result.backend, "summary");
 	assertBothResults(JSON.stringify((state.contexts as Context[])[1].messages), "the summary fallback prompt");
+});
+
+/** Where a cut at entry `cut` of `turns` lands after the batch rule, as an entry index. */
+function cutOf(turns: Turn[], cut: number, floor?: number): number {
+	return toolBatchCutStart(session(turns), cut, sessionEntryToContextMessages, floor);
+}
+
+test("a cut keeps its place when no later message answers a call before it (#5062)", () => {
+	const answered: Turn[] = [
+		["calls", "c", ["a"]],
+		["result", "a", "A"],
+		["user", "next"],
+		["result", "x", "stray"],
+	];
+	assert.equal(cutOf(answered, 2), 2, "the batch was answered before the cut");
+	assert.equal(cutOf(answered, 3), 3, "a result for another call does not move it");
+	const unanswered: Turn[] = [
+		["calls", "c", ["a"]],
+		["user", "next"],
+		["assistant", "ok"],
+		["result", "a", "late"],
+	];
+	assert.equal(cutOf(unanswered, 1), 1, "a later assistant turn closes the batch");
+	assert.equal(
+		cutOf(
+			[
+				["user", "q"],
+				["result", "a", "A"],
+			],
+			1,
+		),
+		1,
+		"an orphan result has no call to move back to",
+	);
+});
+
+test("a cut moves back only to an admitted batch inside the floor (#5062)", () => {
+	const batch: Turn[] = [
+		["user", "q"],
+		["calls", "c", ["a", "b"]],
+		["result", "a", "A"],
+		["result", "b", "B"],
+	];
+	assert.equal(cutOf(batch, 3), 1);
+	assert.equal(cutOf(batch, 3, 2), 3, "the calls sit before the floor");
+	const errored = session(batch);
+	(errored[1] as { message: { stopReason: string } }).message.stopReason = "error";
+	assert.equal(toolBatchCutStart(errored, 3, sessionEntryToContextMessages), 3, "an errored turn admitted no call");
 });

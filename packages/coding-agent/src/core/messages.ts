@@ -365,27 +365,23 @@ export function toolBatchCutStart<TItem>(
 	messagesOf: (item: TItem) => readonly AgentMessage[],
 	floor = 0,
 ): number {
-	let owner: number | undefined;
-	let pending: string[] = [];
+	// The calls of the last assistant message before the cut; only a toolUse turn admitted any.
+	let owner = cut;
+	let calls = new Set<string | undefined>();
 	for (let index = floor; index < cut; index++) {
 		for (const message of messagesOf(items[index])) {
-			if (message.role === "assistant") {
-				const calls = message.stopReason === "toolUse" ? collectAssistantToolCalls(message) : [];
-				owner = calls.length > 0 ? index : undefined;
-				pending = calls.map((call) => call.id);
-				continue;
-			}
-			const toolCallId = getToolResultCallId(message);
-			const answered = toolCallId === undefined ? -1 : pending.indexOf(toolCallId);
-			if (answered >= 0) pending.splice(answered, 1);
+			if (message.role !== "assistant") continue;
+			owner = index;
+			calls = new Set(
+				message.stopReason === "toolUse" ? collectAssistantToolCalls(message).map((call) => call.id) : [],
+			);
 		}
 	}
-	if (owner === undefined || pending.length === 0) return cut;
+	// A result for one of those calls after the cut, before the next assistant message, belongs with them.
 	for (let index = cut; index < items.length; index++) {
 		for (const message of messagesOf(items[index])) {
 			if (message.role === "assistant") return cut;
-			const toolCallId = getToolResultCallId(message);
-			if (toolCallId !== undefined && pending.includes(toolCallId)) return owner;
+			if (calls.has(getToolResultCallId(message))) return owner;
 		}
 	}
 	return cut;
