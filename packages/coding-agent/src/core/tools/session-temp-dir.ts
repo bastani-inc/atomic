@@ -354,6 +354,52 @@ let privateTempFallbackDir: string | undefined;
  */
 export function ensurePrivateTempDir(...segments: string[]): string {
 	const parts = privateSegmentParts(segments);
+	const key = JSON.stringify([process.env.XDG_RUNTIME_DIR ?? "", getAgentDir(), tmpdir(), parts]);
+	const known = privateTempDirs.get(key);
+	if (known !== undefined && stillPrivate(known)) {
+		return known.path;
+	}
+	privateTempDirs.delete(key);
+	const path = choosePrivateTempDir(segments, parts);
+	try {
+		privateTempDirs.set(key, { path, birthtimeMs: lstatSync(path).birthtimeMs });
+	} catch {
+		// Not remembered; the next call checks it from scratch.
+	}
+	return path;
+}
+
+interface KnownPrivateTempDir {
+	path: string;
+	/** Creation time when it was verified: a directory recreated at the path carries a fresh one. */
+	birthtimeMs: number;
+}
+
+/** Directories {@link ensurePrivateTempDir} already created or verified in this process. */
+const privateTempDirs = new Map<string, KnownPrivateTempDir>();
+
+/**
+ * Re-check a directory verified earlier in this process without re-reading
+ * its whole chain. It must still be the same real directory (not a symlink, not
+ * recreated); on POSIX it must still be owned by this account with no group or
+ * other access. On Windows the owner and DACL were verified when it was chosen,
+ * and a directory this account owns cannot have its DACL changed by another
+ * (non-administrator) account, so the costly PowerShell read is not repeated
+ * every time a file is written below it.
+ */
+function stillPrivate(known: KnownPrivateTempDir): boolean {
+	try {
+		const stat = lstatSync(known.path);
+		if (stat.isSymbolicLink() || !stat.isDirectory() || stat.birthtimeMs !== known.birthtimeMs) return false;
+		if (process.platform === "win32") return true;
+		const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
+		return (uid === undefined || stat.uid === uid) && (stat.mode & 0o077) === 0;
+	} catch {
+		return false;
+	}
+}
+
+function choosePrivateTempDir(segments: readonly string[], parts: readonly string[]): string {
 	const attempts: Array<() => string> = [];
 	const runtimeDir = process.env.XDG_RUNTIME_DIR;
 	if (process.platform !== "win32" && runtimeDir && isAbsolute(runtimeDir)) {
@@ -559,5 +605,6 @@ export function resetSessionTempDirStateForTesting(): void {
 	cachedOwnerComponent = undefined;
 	cachedBaseTempDirs = undefined;
 	privateTempFallbackDir = undefined;
+	privateTempDirs.clear();
 	resetWindowsDirectorySecurityStateForTesting();
 }
