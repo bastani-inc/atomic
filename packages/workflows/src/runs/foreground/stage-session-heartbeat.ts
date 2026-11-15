@@ -20,7 +20,6 @@ export function createStageSessionHeartbeat(
 ): StageSessionHeartbeat {
 	let active = false;
 	let timer: ReturnType<typeof setTimeout> | undefined;
-	let generation = 0;
 	let nextDeadline = 0;
 	let failure: unknown;
 	let inFlight: Promise<void> | undefined;
@@ -33,7 +32,6 @@ export function createStageSessionHeartbeat(
 	void failureSignal.catch(() => undefined);
 	const stopScheduling = (): void => {
 		active = false;
-		generation += 1;
 		if (timer !== undefined) clearTimeout(timer);
 		timer = undefined;
 	};
@@ -44,21 +42,22 @@ export function createStageSessionHeartbeat(
 		rejectFailure(error);
 	};
 
-	const schedule = (scheduledGeneration: number): void => {
-		if (!active || failure !== undefined || scheduledGeneration !== generation) return;
+	// A restart while a checkpoint is still running waits for it: its settlement
+	// schedules the next one, so checkpoints never overlap across stop/start.
+	const schedule = (): void => {
+		if (!active || inFlight !== undefined) return;
 		const delayMs = Math.max(0, nextDeadline - Date.now());
 		timer = setTimeout(() => {
 			timer = undefined;
 			const startedAt = Date.now();
 			do nextDeadline += intervalMs;
 			while (nextDeadline <= startedAt);
-			const running = checkpoint()
+			inFlight = checkpoint()
 				.catch(fail)
 				.finally(() => {
-					if (inFlight === running) inFlight = undefined;
-					schedule(scheduledGeneration);
+					inFlight = undefined;
+					schedule();
 				});
-			inFlight = running;
 		}, delayMs);
 		(timer as { unref?: () => void }).unref?.();
 	};
@@ -73,9 +72,8 @@ export function createStageSessionHeartbeat(
 		start(): void {
 			if (active || failure !== undefined) return;
 			active = true;
-			generation += 1;
 			nextDeadline = Date.now() + intervalMs;
-			schedule(generation);
+			schedule();
 		},
 		stop: stopScheduling,
 		drain,

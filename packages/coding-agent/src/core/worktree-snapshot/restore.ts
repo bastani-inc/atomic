@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, type Stats } from "node:fs";
 import { lstat, mkdir, open, readdir, readFile, realpath, rm, rmdir, stat, writeFile } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import lockfile from "proper-lockfile";
 import { noteRestoreFetch, timeRestorePhase } from "../resume/timings.ts";
@@ -1720,7 +1720,8 @@ export async function removeRestoredWorktree(
 
 function isWithin(parent: string, child: string): boolean {
 	const path = relative(parent, child);
-	return path !== "" && !path.startsWith("..") && !isAbsolute(path);
+	// A child named like `..x` is inside; only `..` or `../…` leaves.
+	return path !== "" && path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path);
 }
 
 /**
