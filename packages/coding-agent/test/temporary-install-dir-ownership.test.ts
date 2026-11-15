@@ -17,6 +17,7 @@ import {
 	rmSync,
 	statSync,
 	symlinkSync,
+	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -24,7 +25,12 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, it, vi } from "vi
 import { ENV_AGENT_DIR } from "../src/config.ts";
 import { getGitInstallPath, getNpmInstallRoot } from "../src/core/package-manager-paths.ts";
 import type { PackageLocationContext } from "../src/core/package-manager-types.ts";
-import { getTempRootDir, resetSessionTempDirStateForTesting } from "../src/core/tools/session-temp-dir.ts";
+import {
+	assertPrivateDirectory,
+	ensurePrivateTempDir,
+	getTempRootDir,
+	resetSessionTempDirStateForTesting,
+} from "../src/core/tools/session-temp-dir.ts";
 import { isPathInside } from "../src/utils/path-inside.js";
 
 const isPosix = process.platform !== "win32";
@@ -101,7 +107,7 @@ describe("temporary extension install directories", () => {
 	it("without a runtime directory, temporary extension installs use the agent cache", () => {
 		const root = getNpmInstallRoot(context, "temporary", true);
 
-		assert.ok(isPathInside(agentDir, root), `${root} is inside the agent directory`);
+		assert.ok(isPathInside(join(agentDir, "cache", "tmp"), root), `${root} is inside the agent cache`);
 		assertPrivateChain(root, agentDir);
 	});
 
@@ -147,6 +153,9 @@ describe("temporary extension install directories", () => {
 		assert.ok(isPathInside(shared, root));
 		assert.ok(statSync(dirname(dirname(root))).isDirectory());
 		assert.deepEqual(readdirSync(planted), [], "nothing is created in it");
+		const nested = ensurePrivateTempDir("nested", "deeper");
+		assert.ok(statSync(nested).isDirectory(), "nested names work in the fallback directory too");
+		assert.ok(!isPathInside(planted, nested));
 	});
 
 	it.skipIf(!isPosix)("a symbolic link in place of the per-user directory is neither followed nor blocking", () => {
@@ -178,5 +187,63 @@ describe("temporary extension install directories", () => {
 		const root = getNpmInstallRoot(context, "temporary", true);
 		assert.ok(isPathInside(agentDir, root) || isPathInside(tmpdir(), root), root);
 		assert.ok(statSync(dirname(dirname(root))).isDirectory());
+	});
+
+	it.skipIf(!isPosix)("a runtime directory that is a link, a file or another account's is not used", () => {
+		const real = mkdtempSync(join(sandbox, "run-real-"));
+		const link = join(sandbox, `run-link-${Date.now()}`);
+		symlinkSync(real, link, "dir");
+		const file = join(sandbox, `run-file-${Date.now()}`);
+		writeFileSync(file, "");
+		for (const runtime of [link, file]) {
+			process.env.XDG_RUNTIME_DIR = runtime;
+			const root = getNpmInstallRoot(context, "temporary", true);
+			assert.ok(isPathInside(agentDir, root), `${runtime}: ${root} falls back to the agent cache`);
+		}
+		assert.deepEqual(readdirSync(real), [], "nothing is created through the linked runtime directory");
+
+		process.env.XDG_RUNTIME_DIR = real;
+		vi.spyOn(process, "getuid").mockReturnValue(process.getuid!() + 1);
+		resetSessionTempDirStateForTesting();
+		const root = getNpmInstallRoot(context, "temporary", true);
+		assert.ok(!isPathInside(real, root), `${root} avoids a runtime directory owned by another account`);
+		assert.deepEqual(readdirSync(real), []);
+	});
+
+	it("only plain relative names are accepted below the private directory", () => {
+		for (const segment of ["..", ".", "", "a//b", "a/../b"]) {
+			assert.throws(() => ensurePrivateTempDir(segment), /not a plain relative path/, JSON.stringify(segment));
+		}
+		assert.ok(ensurePrivateTempDir("a/b").endsWith(join("a", "b")));
+	});
+
+	it("reports clearly when no private directory can be created", () => {
+		const file = join(sandbox, `not-a-dir-${Date.now()}`);
+		writeFileSync(file, "");
+		for (const key of ["TMPDIR", "TEMP", "TMP"]) process.env[key] = join(file, "tmp");
+		process.env[ENV_AGENT_DIR] = join(file, "agent");
+		resetSessionTempDirStateForTesting();
+
+		assert.throws(() => ensurePrivateTempDir("extensions"), /no directory private to this account could be created/);
+	});
+
+	it.skipIf(!isPosix)("a directory is private only when it is this account's own real directory", () => {
+		const own = mkdtempSync(join(sandbox, "own-"));
+		assert.doesNotThrow(() => assertPrivateDirectory(own));
+
+		chmodSync(own, 0o500);
+		assert.doesNotThrow(() => assertPrivateDirectory(own), "an owner-only mode is accepted");
+		chmodSync(own, 0o700);
+
+		chmodSync(own, 0o750);
+		assert.throws(() => assertPrivateDirectory(own), /accessible to other accounts/);
+		chmodSync(own, 0o700);
+
+		const link = join(sandbox, `own-link-${Date.now()}`);
+		symlinkSync(own, link, "dir");
+		assert.throws(() => assertPrivateDirectory(link), /symbolic link/);
+
+		vi.spyOn(process, "getuid").mockReturnValue(process.getuid!() + 1);
+		assert.throws(() => assertPrivateDirectory(own), /owned by another account/);
 	});
 });
