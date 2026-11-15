@@ -76,11 +76,16 @@ export class StorageSchemaVersionError extends StorageError {
 
 export class StoragePrefixError extends StorageError {
 	readonly prefix: string;
-	readonly reason: "pattern" | "reserved";
-	constructor(prefix: string, reason: "pattern" | "reserved") {
-		super(`Invalid storage prefix: ${reason}`);
+	readonly reason: "pattern" | "reserved" | "too-long";
+	/** With `too-long`: the longest prefix the selected backend takes (#5067). */
+	declare readonly maxLength?: number;
+	constructor(prefix: string, reason: "pattern" | "reserved" | "too-long", maxLength?: number) {
+		super(
+			`Invalid storage prefix: ${reason}${maxLength === undefined ? "" : ` (PostgreSQL allows at most ${maxLength} characters)`}`,
+		);
 		this.prefix = prefix;
 		this.reason = reason;
+		if (maxLength !== undefined) this.maxLength = maxLength;
 	}
 }
 
@@ -1365,11 +1370,14 @@ function knownStorageError(
 				field<string>(serialized, "found", "string") ?? field<number>(serialized, "found", "number") ?? null,
 				field<number>(serialized, "supported", "number") ?? 0,
 			);
-		case "StoragePrefixError":
+		case "StoragePrefixError": {
+			const reason = field<string>(serialized, "reason", "string");
 			return new StoragePrefixError(
 				field<string>(serialized, "prefix", "string") ?? "",
-				field<string>(serialized, "reason", "string") === "reserved" ? "reserved" : "pattern",
+				reason === "reserved" || reason === "too-long" ? reason : "pattern",
+				field<number>(serialized, "maxLength", "number"),
 			);
+		}
 		case "StorageAdapterLoadError":
 			return new StorageAdapterLoadError(field<string>(serialized, "module", "string") ?? "", cause);
 		case "StorageOutcomeUnknownError":

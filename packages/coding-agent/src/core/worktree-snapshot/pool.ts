@@ -3,7 +3,6 @@ import { readFileSync } from "node:fs";
 import { link, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import lockfile from "proper-lockfile";
 import { failureDebugFields, reportDebug } from "../debug.ts";
 import { isWorkspaceRestoreError } from "./errors.ts";
 import { nulFields, runGit } from "./git.ts";
@@ -11,6 +10,7 @@ import { canonicalizeWorktreePath } from "./paths.ts";
 import { isDeniedSnapshotPath } from "./policy.ts";
 import { type RepositoryId, sharedRepositoryIdOf, sharedRepositoryIdsOf } from "./repository-identity.ts";
 import { pooledWorktreeStore, resetPooledWorktree, verifyWorktree } from "./restore.ts";
+import { lockShared, sharedClockNow } from "./shared-clock.ts";
 import type { SnapshotBlobStore, WorktreeRestoreWarning, WorktreeSnapshot, WorktreeSnapshotSettings } from "./types.ts";
 
 /**
@@ -227,7 +227,7 @@ async function exists(path: string): Promise<boolean> {
  * lock another process holds for a while, as when a slot's record is briefly being written.
  */
 function lockPath(path: string, wait: boolean, onLost?: () => void): Promise<() => Promise<void>> {
-	return lockfile.lock(path, {
+	return lockShared(path, {
 		realpath: false,
 		stale: LEASE_STALE_MS,
 		update: LEASE_UPDATE_MS,
@@ -392,12 +392,15 @@ async function otherLeases(file: string, grace: boolean): Promise<number> {
 	const prefix = `${basename(file)}.`;
 	const own = `${basename(file)}.${PROCESS_LEASE}.lease.lock`;
 	let live = 0;
+	// Ages are measured by the clock of the filesystem holding the leases, which their holders stamp refreshes in, so a
+	// holder on a host whose clock is off is judged by when it last refreshed its lease (#5050).
+	const now = await sharedClockNow(dirname(file));
 	for (const name of await readdir(dirname(file))) {
 		if (!name.startsWith(prefix) || !name.endsWith(".lease.lock") || name === own) continue;
 		const lock = join(dirname(file), name);
 		let age: number;
 		try {
-			age = Date.now() - (await stat(lock)).mtimeMs;
+			age = now - (await stat(lock)).mtimeMs;
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "ENOENT") live++;
 			continue;
@@ -507,7 +510,7 @@ export async function admitPooledWorktree(admission: PoolAdmission, owner: PoolO
 	}
 	const directory = join(storeDir, "pool", repository);
 	await mkdir(directory, { recursive: true });
-	const unlockRepository = await lockfile.lock(directory, {
+	const unlockRepository = await lockShared(directory, {
 		realpath: false,
 		stale: LEASE_STALE_MS,
 		update: LEASE_UPDATE_MS,
