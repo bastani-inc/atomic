@@ -24,6 +24,7 @@ export class PendingQuestionIndex {
    */
   useAwayStore(store: AwayAsks, returnAddressOf?: (sessionId: string) => string | undefined): void {
     this.away = store;
+    store.onHeldForReleasedAsker((owner, childName) => this.heldForReleasedAsker(owner, childName));
     if (returnAddressOf !== undefined) this.returnAddressOf = returnAddressOf;
   }
 
@@ -39,8 +40,32 @@ export class PendingQuestionIndex {
   }
 
   private awayAsks(): AwayAsks {
-    this.away ??= new AwayAsks();
+    if (this.away === undefined) {
+      this.away = new AwayAsks();
+      this.away.onHeldForReleasedAsker((owner, childName) => this.heldForReleasedAsker(owner, childName));
+    }
     return this.away;
+  }
+
+  private heldForReleasedAsker: (ownerSessionId: string, childName: string) => void = () => {};
+
+  /** #4992: told when a reply or failure is held for a released subagent, so its owner wakes it. */
+  onHeldForReleasedAsker(listener: (ownerSessionId: string, childName: string) => void): void {
+    this.heldForReleasedAsker = listener;
+  }
+
+  /** #4992: the released subagent proving itself by `returnAddress` is kept by its owner while it holds no session. */
+  keepReleasedAsker(returnAddress: string | undefined, ownerSessionId: string, childName: string): void {
+    if (returnAddress !== undefined) this.awayAsks().keepReleasedAsker(returnAddress, ownerSessionId, childName);
+  }
+
+  forgetReleasedAsker(returnAddress: string | undefined): void {
+    this.away?.forgetReleasedAsker(returnAddress);
+  }
+
+  /** #4992: whether a reply or failure is held, durably, for the released subagent the owner keeps as `childName`. */
+  hasHeldForReleasedAsker(childName: string, ownerSessionId: string): boolean {
+    return this.away?.hasHeldForReleasedAsker(ownerSessionId, childName) ?? false;
   }
 
   /** Keep questions whose peer is away until it is back. */

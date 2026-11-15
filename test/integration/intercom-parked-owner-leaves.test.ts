@@ -226,3 +226,91 @@ for (const how of ["restart", "crash"] as const) {
 		REAL_BROKER_TEST_TIMEOUT_MS,
 	);
 }
+
+/**
+ * Subagent C (owned by O) asks R and is released; the broker crashes; O reconnects and reserves C again. A reply from
+ * R held for C, before or after O is back, wakes C through O, and C gets it once.
+ */
+for (const replied of ["before-owner-back", "after-owner-back"] as const) {
+	test(
+		`a reply held for a released subagent after a broker crash wakes it through its owner, ${replied.replaceAll("-", " ")} (#4992)`,
+		async () => {
+			const label = `wake-${replied}-${randomUUID().slice(0, 6)}`;
+			const owner: Identity = { name: `owner-${label}`, returnAddress: randomUUID(), ownerToken: randomUUID() };
+			const ownerFirst = await connect(owner);
+			const ownerId = idOf(ownerFirst.client);
+			const childName = `child-${label}`;
+			const child: Identity = { name: childName, returnAddress: randomUUID() };
+			const childFirst = await connect({
+				...child,
+				supervisor: await ownerFirst.client.authorizeSupervisorChild(childName),
+			});
+			const childId = idOf(childFirst.client);
+			const recipient: Identity = { name: `recipient-${label}`, returnAddress: randomUUID() };
+			const recipientFirst = await connect(recipient);
+			const recipientId = idOf(recipientFirst.client);
+			const asked: string[] = [];
+			recipientFirst.client.on("message", (_from: object, message: Message) => asked.push(message.id));
+			const questionId = randomUUID();
+			const sent = await childFirst.client.send(recipient.name, {
+				messageId: questionId,
+				text: "q?",
+				expectsReply: true,
+			});
+			assert.equal(sent.delivered, true, sent.reason);
+			await vi.waitFor(() => assert.ok(asked.includes(questionId)), WAIT);
+			await ownerFirst.client.reserveReleasedChildren([{ childName, wake: true }]);
+			await childFirst.client.disconnect({ resumable: true });
+			await untilDeparted(ownerFirst.client, childId);
+			await restartBroker("crash");
+
+			const recipientBack = await connect({ ...recipient, preferredSessionId: recipientId });
+			const replyId = randomUUID();
+			const reply = () =>
+				recipientBack.client.send(childId, {
+					messageId: replyId,
+					text: "answer",
+					replyTo: questionId,
+					requirePendingReply: true,
+					expectedRecipientId: childId,
+				});
+			if (replied === "before-owner-back") assert.equal((await reply()).queued, true);
+			const wakes: string[] = [];
+			const ownerBack = await connect({ ...owner, preferredSessionId: ownerId });
+			ownerBack.client.on("restoring_recipient_wake", (notice: { childName: string }) =>
+				wakes.push(notice.childName),
+			);
+			await ownerBack.client.reserveReleasedChildren([{ childName, wake: true }]);
+			if (replied === "after-owner-back") assert.equal((await reply()).queued, true);
+			await vi.waitFor(() => assert.ok(wakes.includes(childName)), WAIT);
+
+			const replies: string[] = [];
+			const childBack = new IntercomClient(child.returnAddress, {
+				acknowledgesReceipt: true,
+				preferredSessionId: childId,
+			});
+			childBack.on("message", (_from: object, message: Message) => {
+				if (message.replyTo === questionId) replies.push(message.id);
+				childBack.acknowledgeReceived(message.id);
+			});
+			childBack.on("error", () => {});
+			await childBack.connect(
+				{
+					name: childName,
+					model: "test-model",
+					cwd: repoRoot,
+					pid: process.pid,
+					status: "idle",
+					startedAt: Date.now(),
+					lastActivity: Date.now(),
+				},
+				await ownerBack.client.authorizeSupervisorChild(childName),
+			);
+			brokerFixture.onCleanup(() => childBack.disconnect().catch(() => undefined));
+			await vi.waitFor(() => assert.deepEqual(replies, [replyId]), WAIT);
+			await sleep(SETTLE_MS);
+			assert.deepEqual(replies, [replyId], "delivered once");
+		},
+		REAL_BROKER_TEST_TIMEOUT_MS,
+	);
+}

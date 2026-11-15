@@ -444,6 +444,11 @@ class IntercomBroker {
     if (process.platform !== "win32") chmodSync(INTERCOM_DIR, 0o700);
     this.server = net.createServer(this.handleConnection.bind(this));
     this.pendingQuestions.failThroughOwnerWhen((question) => this.releasedAskerReplies.hasOwnedRoute(question));
+    // #4992: a reply or failure held for a released subagent wakes it through its owner, also after a restart.
+    this.pendingQuestions.onHeldForReleasedAsker((ownerSessionId, childName) => {
+      if (this.restoringRecipients.releasedOwner(childName) === ownerSessionId)
+        this.wakeRestoringRecipientOwner({ ownerSessionId, childName });
+    });
     // #4829: a released subagent's asks outlive this broker too; the next one keeps them for the subagent's return.
     this.releasedAskerReplies.persistWith({
       kept: (question) => this.pendingQuestions.writeLive(question),
@@ -1979,6 +1984,7 @@ class IntercomBroker {
           // for it while it was being restored go out now, once each and in the order they arrived.
           const registered = info.name?.trim();
           if (registered !== undefined && supervisorId !== undefined) {
+            this.pendingQuestions.forgetReleasedAsker(rejoined?.registrationReturnAddress);
             // #4751: a released subagent back under its owner takes up the routes of its pending asks, including one
             // whose reply is held for it, so their replies reach it as a live asker.
             for (const question of this.pendingQuestions.takeParkedAskers(registered, supervisorId))
@@ -2225,7 +2231,11 @@ class IntercomBroker {
           this.reserveReleasedChild(currentId, owner.registrationGroup, child);
           this.releasedAskerReplies.attach(child.childName, currentId);
           // #4751: a failed ask kept for the child wakes it again, so it is delivered.
-          if (child.wake && this.pendingQuestions.hasHeldForReleasedChild(child.childName, currentId))
+          if (
+            child.wake &&
+            (this.pendingQuestions.hasHeldForReleasedChild(child.childName, currentId) ||
+              this.pendingQuestions.hasHeldForReleasedAsker(child.childName, currentId))
+          )
             this.wakeRestoringRecipientOwner({ ownerSessionId: currentId, childName: child.childName });
           this.dispatchHeldSends(this.departedChildren.supersede(currentId, child.childName));
         }
@@ -3275,6 +3285,11 @@ class IntercomBroker {
         this.restoringRecipients.releasedOwner(departed.registrationName),
       );
       this.pendingQuestions.markAwayAsker(sessionId, departed.registrationReturnAddress);
+      this.pendingQuestions.keepReleasedAsker(
+        departed.registrationReturnAddress,
+        this.restoringRecipients.releasedOwner(departed.registrationName) ?? departed.supervisorId,
+        departed.registrationName,
+      );
     } else if (departed.supervisorId === undefined && !ended) {
       // #4751: an ask has no expiry and survives its asker's restart or release: the route waits for the asker.
       this.pendingQuestions.keepDormant(unanswered, departed.registrationReturnAddress);
