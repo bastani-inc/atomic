@@ -160,6 +160,8 @@ test("a child that lost its worker on every attempt fails with a retry limit nam
 		for (let attempt = 1; attempt <= MAX_CHILD_ATTEMPTS; attempt++) {
 			const claimed = (await worker.request({ kind: "claim" })).value as PoolWork;
 			assert.equal(claimed.generation, attempt);
+			// The worker confirms its claim, as a real worker's first heartbeat does: only then does losing it count (#5034).
+			await worker.request({ kind: "heartbeat", reports: [] });
 			const exited = forked.length;
 			worker.exit(1);
 			if (attempt < MAX_CHILD_ATTEMPTS) worker = await readyReplacement(exited);
@@ -648,6 +650,8 @@ test("a child that lost its worker on every attempt names the log that could not
 		await f.command({ kind: "enqueue", descriptor: f.descriptor, boundary: f.boundary });
 		for (let attempt = 1; attempt <= MAX_CHILD_ATTEMPTS; attempt++) {
 			await worker.request({ kind: "claim" });
+			// The worker confirms its claim, as a real worker's first heartbeat does: only then does losing it count (#5034).
+			await worker.request({ kind: "heartbeat", reports: [] });
 			const exited = forked.length;
 			worker.exit(1);
 			if (attempt < MAX_CHILD_ATTEMPTS) worker = await readyReplacement(exited);
@@ -843,6 +847,8 @@ test("workers lost while they held a child never count toward the pool's limit o
 		let worker = f.workers[0]!;
 		for (let attempt = 1; attempt <= MAX_CHILD_ATTEMPTS; attempt++) {
 			await worker.request({ kind: "claim" });
+			// The worker confirms its claim, as a real worker's first heartbeat does: only then does losing it count (#5034).
+			await worker.request({ kind: "heartbeat", reports: [] });
 			const exited = forked.length;
 			worker.exit(1);
 			worker = await readyReplacement(exited);
@@ -865,6 +871,8 @@ test("a child whose last worker left process groups running fails on losing it, 
 		let worker = f.workers[0]!;
 		for (let attempt = 1; attempt <= MAX_CHILD_ATTEMPTS; attempt++) {
 			await worker.request({ kind: "claim" });
+			// The worker confirms its claim, as a real worker's first heartbeat does: only then does losing it count (#5034).
+			await worker.request({ kind: "heartbeat", reports: [] });
 			const exited = forked.length;
 			worker.exit(1);
 			if (attempt < MAX_CHILD_ATTEMPTS) worker = await readyReplacement(exited);

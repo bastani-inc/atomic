@@ -176,9 +176,10 @@ test(
 				child: "pool-heartbeat-child",
 				heartbeatMs: 600_000,
 				released: true,
-				// The heartbeat sent while the stages close is refused: the attempt still completes, and says so once.
+				// The heartbeat sent while the stages close (after the one that confirms the claim and the final one) is
+				// refused: the attempt still completes, and says so once.
 				answer: async (request, requests) => {
-					if (request.kind !== "heartbeat" || requests.filter((sent) => sent.kind === "heartbeat").length !== 2)
+					if (request.kind !== "heartbeat" || requests.filter((sent) => sent.kind === "heartbeat").length !== 3)
 						return undefined;
 					await sleep(CLOSING_ANSWER_DELAY_MS);
 					return { error: serializeError(new Error("journal unavailable")) };
@@ -186,10 +187,15 @@ test(
 			},
 			async (f) => {
 				await f.until(() => f.count("complete") > 0, "the child completes");
-				assert.equal(f.count("heartbeat"), 2, "the final heartbeat, then one at once as the stages close");
+				assert.equal(
+					f.count("heartbeat"),
+					3,
+					"the heartbeat that confirms the claim (#5034), the final heartbeat, then one at once as the stages close",
+				);
 				const closing = f.requests.findIndex(
 					(request, index) =>
-						request.kind === "heartbeat" && f.requests.slice(0, index).some((sent) => sent.kind === "heartbeat"),
+						request.kind === "heartbeat" &&
+						f.requests.slice(0, index).filter((sent) => sent.kind === "heartbeat").length === 2,
 				);
 				assert.deepEqual(
 					f.requests.slice(closing).filter((request) => request.kind === "activity"),
