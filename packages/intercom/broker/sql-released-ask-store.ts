@@ -69,7 +69,7 @@ function toRecord(row: ReleasedAskRow): ReleasedAskRecord {
 
 /** S3 (#4386): `ReleasedAskStore` on the shared storage adapter's database, table `<prefix>intercom_released_asks`. */
 export async function openSqlReleasedAskStore({ database, prefix }: IntercomBrokerStateOptions): Promise<ReleasedAskStore> {
-	const table = `${validateStoragePrefix(prefix)}intercom_released_asks`;
+	const table = `${validateStoragePrefix(prefix, dialectOf(database).name)}intercom_released_asks`;
 	const { types, nowMs, greatest } = dialectOf(database);
 	await database.transaction((tx) =>
 		tx.exec(`

@@ -333,7 +333,7 @@ describe("tar archive listing (#4906)", () => {
 
 	it("refuses a negative PAX size (#4906)", () => {
 		const archive = Buffer.concat([paxMember(paxRecord("size", "-1"), { name: "a" }), EOF]);
-		assert.throws(() => listTarMembers(archive, "t.tar"), new Error("Truncated tar archive: t.tar"));
+		assert.throws(() => listTarMembers(archive, "t.tar"), new Error("Invalid PAX header in t.tar"));
 	});
 
 	it("uses a PAX size record for the member's data length (#4906)", () => {

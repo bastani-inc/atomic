@@ -29,7 +29,12 @@ import {
 import { isDurableWorkflowResumable } from "./resume-eligibility.js";
 import { resolveDurableEntry } from "./resume-runtime.js";
 import { durableRunResult, RUN_RESULT_CHECKPOINT_NAME } from "./run-result.js";
-import { priorRunElapsedMs, RUN_TIMING_CHECKPOINT_NAME, RUN_USAGE_CHECKPOINT_NAME } from "./run-timing.js";
+import {
+	isChildRunUsageCheckpointName,
+	priorRunElapsedMs,
+	RUN_TIMING_CHECKPOINT_NAME,
+	RUN_USAGE_CHECKPOINT_NAME,
+} from "./run-timing.js";
 import { FORK_POINT_CHECKPOINT_SUFFIX } from "./stage-topology.js";
 import { isSubscriptionCheckpointHash } from "./subscription-records.js";
 import { WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME } from "./workflow-heartbeat-anchor.js";
@@ -43,6 +48,7 @@ import { stageWorktreeSnapshot } from "./worktree-snapshots.js";
 function isReservedRunCheckpointHash(argsHash: string): boolean {
 	return (
 		[RUN_TIMING_CHECKPOINT_NAME, RUN_USAGE_CHECKPOINT_NAME, RUN_RESULT_CHECKPOINT_NAME].includes(argsHash) ||
+		isChildRunUsageCheckpointName(argsHash) ||
 		argsHash === WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME ||
 		argsHash.endsWith(FORK_POINT_CHECKPOINT_SUFFIX) ||
 		isSubscriptionCheckpointHash(argsHash)
@@ -705,7 +711,13 @@ function runSnapshotsFromCheckpoints(
 		);
 		const owner = runId === rootRunId ? undefined : boundaryOwners.get(runId);
 		const status = owner === undefined ? "completed" : childRunStatus(owner);
-		const terminal = status !== "running" && status !== "pending" && status !== "paused" && status !== "blocked";
+		const ownerChild = owner === undefined ? undefined : workflowChildFromDraft(owner);
+		// A child that soft-landed blocked, such as on its own budget, ended: its parent recorded the outcome (#5053).
+		const terminal =
+			status !== "running" &&
+			status !== "pending" &&
+			status !== "paused" &&
+			(status !== "blocked" || ownerChild?.exited === true);
 		const parentRunId = run?.parentRunId ?? rootRunId;
 		const boundarySourceId = boundarySourcesByParent.get(parentRunId)?.get(runId)?.topology?.stageId;
 		const declaredParentStageId =
@@ -713,7 +725,6 @@ function runSnapshotsFromCheckpoints(
 		const parentStageId =
 			declaredParentStageId ??
 			(boundarySourceId === undefined ? undefined : idMaps.get(parentRunId)?.get(boundarySourceId));
-		const ownerChild = owner === undefined ? undefined : workflowChildFromDraft(owner);
 		runs.push({
 			id: runId,
 			name: run?.runName ?? rootRunName,

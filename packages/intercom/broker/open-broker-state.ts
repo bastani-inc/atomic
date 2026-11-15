@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import {
 	adapterOpenContext,
+	dialectOf,
 	loadStorageAdapter,
 	openNodeSqliteDatabase,
 	resolveAdapterOptions,
@@ -121,6 +122,8 @@ export async function openIntercomBrokerState(
 ): Promise<OpenedBrokerState> {
 	const database = await source.openDatabase();
 	try {
+		// The backend is known once the database is open: refuse a prefix too long for it before creating anything (#5067).
+		validateStoragePrefix(source.prefix, dialectOf(database).name);
 		const options = { database, prefix: source.prefix ?? "" };
 		const leases = await openSqlBrokerLeaseStore(options);
 		const outbox = await openSqlOutboxStore(options);
