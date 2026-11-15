@@ -718,6 +718,8 @@ interface GitDistributionLayout {
 	readonly systemConfig?: string;
 	readonly caBundle?: string;
 	readonly shellPathEntry: string;
+	/** Git for Windows: its system configuration leaves `core.longpaths` off, which fails paths over 260 characters. */
+	readonly longPaths?: true;
 }
 
 function windowsGitSubfolder(architecture: string): string {
@@ -735,6 +737,7 @@ function gitLayout(root: string, plat: string, architecture: string): GitDistrib
 			templateDir: join(subfolder, "share", "git-core", "templates"),
 			caBundle: join(subfolder, "etc", "ssl", "certs", "ca-bundle.crt"),
 			shellPathEntry: join(root, "cmd"),
+			longPaths: true,
 		};
 	}
 	return {
@@ -754,12 +757,20 @@ function currentGitLayout(root = getGitInstallDir()): GitDistributionLayout {
 
 /**
  * The variables a portable git needs. Caller-provided `GIT_CONFIG_SYSTEM` and `GIT_SSL_CAINFO` win; a defaulted
- * `GIT_SSL_CAINFO` takes precedence over `http.sslCAInfo` in git configuration.
+ * `GIT_SSL_CAINFO` takes precedence over `http.sslCAInfo` in git configuration. On Windows `core.longpaths=true` is
+ * added after the caller's own `GIT_CONFIG_COUNT` entries, so paths over 260 characters work (#4932).
  */
 function portableGitEnv(layout: GitDistributionLayout, baseEnv: NodeJS.ProcessEnv): Record<string, string> {
 	const env: Record<string, string> = { GIT_EXEC_PATH: layout.execPath, GIT_TEMPLATE_DIR: layout.templateDir };
 	if (layout.systemConfig !== undefined && !baseEnv.GIT_CONFIG_SYSTEM) env.GIT_CONFIG_SYSTEM = layout.systemConfig;
 	if (layout.caBundle !== undefined && !baseEnv.GIT_SSL_CAINFO) env.GIT_SSL_CAINFO = layout.caBundle;
+	if (layout.longPaths) {
+		const count = Number.parseInt(baseEnv.GIT_CONFIG_COUNT ?? "", 10);
+		const index = Number.isInteger(count) && count > 0 ? count : 0;
+		env[`GIT_CONFIG_KEY_${index}`] = "core.longpaths";
+		env[`GIT_CONFIG_VALUE_${index}`] = "true";
+		env.GIT_CONFIG_COUNT = String(index + 1);
+	}
 	return env;
 }
 

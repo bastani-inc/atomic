@@ -21,7 +21,7 @@ import type {
 import { durableWorkflowAttempt } from "./attempt-identity.js";
 import type { DurableWorkflowBackend } from "./backend.js";
 import { durableHash } from "./backend.js";
-import { activeStageTopology, durableStageCheckpointMetadata } from "./stage-topology.js";
+import { activeStageTopology, durableStageCheckpointMetadata, forkPointStageTopology } from "./stage-topology.js";
 import { recordCheckpointDurably } from "./tool-primitive.js";
 import type { DurableReleasedStageResume, DurableStageCheckpoint, DurableStageRunTopology } from "./types.js";
 import { parseWorkflowChildResult } from "./workflow-child-result.js";
@@ -331,7 +331,9 @@ export function createDurableStagePrimitive(input: {
 		}
 		const session = input.backend.getStageSession(input.workflowId, replayKey);
 		const resumeSessionId = released?.sessionId ?? session?.sessionId;
-		const topology = activeStageTopology(input.backend, input.workflowId, replayKey);
+		const topology =
+			activeStageTopology(input.backend, input.workflowId, replayKey) ??
+			forkPointStageTopology(input.backend, input.workflowId, replayKey);
 		const durableStageId =
 			topology?.stageId ?? pendingStageIdForReplay(input.backend, input.workflowId, replayKey, name);
 		const durableIntercomGroup = topology?.intercomGroup ?? input.durableIntercomGroup?.(replayKey, durableStageId);
@@ -511,7 +513,9 @@ export function createDurableTaskPrimitive(input: {
 		const supersedesRecordedResult =
 			restartFromPrompt && input.backend.getStageOutput(input.workflowId, replayKey) !== undefined;
 		const session = restartFromPrompt ? undefined : input.backend.getStageSession(input.workflowId, replayKey);
-		const topology = activeStageTopology(input.backend, input.workflowId, replayKey);
+		const topology =
+			activeStageTopology(input.backend, input.workflowId, replayKey) ??
+			forkPointStageTopology(input.backend, input.workflowId, replayKey);
 		const durableIntercomGroup =
 			topology?.intercomGroup ?? input.durableIntercomGroup?.(replayKey, topology?.stageId);
 		const taskOptions: WorkflowTaskOptions = {
