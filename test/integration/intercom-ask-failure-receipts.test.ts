@@ -571,3 +571,53 @@ test(
 	},
 	REAL_BROKER_TEST_TIMEOUT_MS,
 );
+
+test(
+	"an asker back to a resent reply whose recipient ended meanwhile gets only that reply, then and later (#5095)",
+	async () => {
+		const label = "resent-reply-5095";
+		const askerAddress = { name: `asker-${label}`, returnAddress: randomUUID() };
+		// It gets the reply but crashes before saving it.
+		const first = await connect(askerAddress.name, { ...askerAddress, confirms: false });
+		const askerId = idOf(first.client);
+		const recipient = await connect(`recipient-${label}`, { returnAddress: randomUUID() });
+		const questionId = randomUUID();
+		const asked = await first.client.send(`recipient-${label}`, {
+			messageId: questionId,
+			text: "which port?",
+			expectsReply: true,
+		});
+		assert.equal(asked.delivered, true, asked.reason);
+		await vi.waitFor(() => assert.ok(recipient.received.some((message) => message.id === questionId)), WAIT);
+		const replying = replyTo(recipient, askerId, questionId).catch(() => undefined);
+		await vi.waitFor(() => assert.equal(repliesTo(first, questionId).length, 1), WAIT);
+		const [reply] = repliesTo(first, questionId);
+		await first.client.disconnect({ resumable: true });
+		await sleep(SETTLE_MS);
+		// The recipient ends while the asker is away, its reply still unsaved.
+		await recipient.client.disconnect();
+		await replying;
+		await sleep(SETTLE_MS);
+
+		const back = await connect(askerAddress.name, { ...askerAddress, preferredSessionId: askerId });
+		await vi.waitFor(
+			() =>
+				assert.deepEqual(
+					repliesTo(back, questionId).map((message) => message.id),
+					[reply?.id],
+				),
+			WAIT,
+		);
+		await sleep(SETTLE_MS);
+		assert.deepEqual(failuresOf(back, questionId), [], "the resent reply is the ask's one outcome");
+
+		// Saved now: coming back again brings neither the reply nor a failure.
+		await back.client.disconnect({ resumable: true });
+		await sleep(SETTLE_MS);
+		const again = await connect(askerAddress.name, { ...askerAddress, preferredSessionId: askerId });
+		await sleep(SETTLE_MS);
+		assert.deepEqual(failuresOf(again, questionId), []);
+		assert.deepEqual(repliesTo(again, questionId), []);
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);

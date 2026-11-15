@@ -237,3 +237,31 @@ test("progress reports never hold a sender past the save cap (#3983)", () => {
 		vi.useRealTimers();
 	}
 });
+
+test("a message forgotten unconfirmed after the retention runs its lapse once, and one without a lapse quietly (#5095)", async () => {
+	const receipts = new RecipientReceipts<BrokerConnectedSession>(10_000, SHORT_RECEIPT_WAIT_MS);
+	const lapsed: string[] = [];
+	const sender = { socket: {} as net.Socket };
+	const frame: BrokerMessage = { type: "delivered", messageId: "m" };
+	const awaited = (messageId: string, lapse?: () => void) => ({
+		messageId,
+		targetIdentity: "recipient",
+		frame,
+		complete: () => {},
+		expire: () => {},
+		...(lapse === undefined ? {} : { lapse }),
+	});
+	receipts.await(
+		awaited("with-lapse", () => lapsed.push("with-lapse")),
+		sender,
+	);
+	receipts.await(awaited("without-lapse"), sender);
+	receipts.await(
+		awaited("confirmed", () => lapsed.push("confirmed")),
+		sender,
+	);
+	assert.equal(receipts.settle("confirmed", "recipient", connected("recipient", true)), true);
+	await sleep(SHORT_RECEIPT_WAIT_MS * 5);
+	assert.deepEqual(lapsed, ["with-lapse"]);
+	assert.deepEqual(receipts.framesFor("recipient"), []);
+});

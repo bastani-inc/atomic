@@ -134,7 +134,7 @@ import { type PendingQuestion, PendingQuestionIndex } from "./pending-question-i
 import { AwayAsks, awayQueueFullReason } from "./away-asks.js";
 import { TERMINAL_CHILD_ASK_REFUSAL } from "../recipient-purpose.js";
 import { type ReceiptSender, RecipientReceipts, UNCERTAIN_RECEIPT_REASON } from "./recipient-receipts.js";
-import { deliverAskFailure, deliverHeldToAsker } from "./ask-failures.js";
+import { deliverAskFailure, deliverHeldToAsker, failLostReply } from "./ask-failures.js";
 import { matchStagePathSegments } from "../workflow-stage-path-matching.js";
 import { DELIVERED_MESSAGE_TTL_MS, RECIPIENT_RECEIPT_TIMEOUT_MS } from "../retry-policy.js";
 import { isAgentRecipient } from "../recipient-purpose.js";
@@ -490,29 +490,16 @@ class IntercomBroker {
     this.server = net.createServer(this.handleConnection.bind(this));
     this.pendingQuestions.failThroughOwnerWhen((question) => this.releasedAskerReplies.hasOwnedRoute(question));
     // #5095: a reply that never reached its asker after its recipient ended fails the ask then, once.
-    this.pendingQuestions.onReplyLost((question, held, askerReturnAddress) => {
-      const asker = this.sessions.get(question.senderSessionId);
-      if (asker !== undefined) {
-        deliverHeldToAsker(
-          {
-            asker,
-            question,
-            from: held.from,
-            pending: this.pendingQuestions,
-            write: this.writeAfterDeparture,
-            legacy: {
-              type: "peer_disconnected",
-              replyTo: question.messageId,
-              peerSessionId: question.targetSessionId,
-              ...(held.from.name === undefined ? {} : { peerName: held.from.name }),
-            },
-          },
-          held.message,
-        );
-      } else if (askerReturnAddress !== undefined && askerReturnAddress !== "") {
-        this.pendingQuestions.holdForAwayAsker({ ...question, senderReturnAddress: askerReturnAddress }, held.from, held.message);
-      }
-    });
+    this.pendingQuestions.onReplyLost((question, held, askerReturnAddress) =>
+      failLostReply({
+        question,
+        held,
+        askerReturnAddress,
+        asker: this.sessions.get(question.senderSessionId),
+        pending: this.pendingQuestions,
+        write: this.writeAfterDeparture,
+      }),
+    );
     // #4992: a reply or failure held for a released subagent wakes it through its owner, also after a restart.
     this.pendingQuestions.onHeldForReleasedAsker((ownerSessionId, childName) => {
       if (this.restoringRecipients.releasedOwner(childName) === ownerSessionId)
