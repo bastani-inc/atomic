@@ -229,16 +229,22 @@ export function runWorktreeIncludeScenario(root: string, module: WorktreeModule)
 	return { ignoredListingBytes: Buffer.byteLength(listing), envCopied, includedFilesCopied, notIncludedCopied };
 }
 
-/** A worktree change of 9,000 files, whose numstat and stat each list to over 1 MiB. */
-export const MANY_FILES = 9_000;
+/**
+ * A worktree change of 1,000 files whose numstat lists to over 1 MiB. Git quotes a non-ASCII path, writing each byte
+ * of it as a four-character octal escape, so a path of 100 CJK characters takes 1,200 bytes on its numstat line while
+ * counting only 100 characters toward Windows' 260-character path limit.
+ */
+export const MANY_FILES = 1_000;
 export function runManyFilesScenario(root: string, module: WorktreeModule): ManyFilesScenarioResult {
 	const repo = createScenarioRepository(root);
+	// Quoting is git's default; set it so a global `core.quotePath false` cannot shrink the listing under 1 MiB.
+	git(repo, ["config", "core.quotePath", "true"]);
 	const api = modules(module);
 	const setup = api.create(repo, `many-${module}`, 1);
-	// A long directory name makes the listing large from fewer files; paths stay under Windows' 260 characters.
-	const directoryName = `generated-${"y".repeat(100)}`;
+	// Two components of 50 characters: 150 UTF-8 bytes each, under the 255-byte file name limit of Linux filesystems.
+	const directoryName = join(`generated-${"語".repeat(50)}`, "語".repeat(50));
 	const directory = join(setup.worktrees[0]!.path, directoryName);
-	mkdirSync(directory);
+	mkdirSync(directory, { recursive: true });
 	for (let file = 0; file < MANY_FILES; file++) writeFileSync(join(directory, `f-${file}.txt`), `${file}\n`);
 	git(setup.worktrees[0]!.path, ["add", "-A"]);
 	const numstat = git(setup.worktrees[0]!.path, ["diff", "--cached", "--numstat", "HEAD"]);
