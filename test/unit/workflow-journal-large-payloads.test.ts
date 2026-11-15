@@ -23,6 +23,7 @@ import { JournalCatalog } from "../../packages/coding-agent/src/core/storage/jou
 import { STORED_JSON_CHUNK_BYTES } from "../../packages/coding-agent/src/core/storage/journal-event-payloads.js";
 import { exportWorkflowRuns } from "../../packages/coding-agent/src/core/storage/journal-transfer.js";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
+import { sqlPoolStorage } from "../../packages/workflows/src/durable/journal/internal.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
@@ -124,6 +125,30 @@ test("a batched appendMany stores a large event in chunks, not in one request's 
 		{ event: checkpoint("short", "y"), key: "short", context: (read) => read() },
 	]);
 	assert.deepEqual((await journal.readKey("run", "short"))?.event, checkpoint("short", "y"));
+});
+
+test("a batched appendMany still checks each pool append guard, so a guarded append never goes as one request (#4965)", async () => {
+	const database = await openNodeSqliteDatabase(join(root, "guarded.sqlite"));
+	closers.push(() => database.close());
+	const journal = await SqlRunJournal.open(batching(database));
+	closers.push(() => journal.close());
+	await journal.createRun({ runId: "run", name: "run", cwd: "/repo", createdAt: 1, status: "running" });
+	const acquired = await journal.acquire("run", "holder");
+	if (acquired.status !== "acquired") assert.fail("no lease");
+	const refused = new Error("the attempt no longer holds its work");
+	const settled = await sqlPoolStorage(journal)!.withAppendGuard(
+		async () => {
+			throw refused;
+		},
+		() =>
+			journal.appendMany(acquired.lease, [
+				{
+					event: { type: RUN_EVENT_TYPES.messageQueued, payload: { id: "m" } } as RunEvent,
+					context: (read) => read(),
+				},
+			]),
+	);
+	assert.deepEqual(settled, [{ status: "rejected", reason: refused }]);
 });
 
 test("a run journal's schema is created, upgraded from version 1, and refused when newer or ambiguous (#4965)", async () => {
