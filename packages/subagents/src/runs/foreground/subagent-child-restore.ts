@@ -42,7 +42,7 @@ import {
 } from "../../shared/types.js";
 import { inheritedIntercomGroup } from "../shared/intercom-group.js";
 import { currentModelFullId } from "../shared/model-fallback.js";
-import { createExecutionScheduler } from "../shared/parallel-utils.js";
+import { createExecutionScheduler, type ExecutionScheduler } from "../shared/parallel-utils.js";
 import { type OwnerlessChildLaunch, runOwnerlessChild, takeStoppedQueuedOwnerlessChild } from "./ownerless-children.js";
 import { formatReleasedReplyResults } from "./released-child-replies.js";
 import { interruptedByRestart, pendingToolCalls, planReleasedChildWake } from "./released-children.js";
@@ -138,6 +138,11 @@ export interface SubagentChildResumeRequest {
 	/** Only `toolResults` woke the child: nothing is prompted unless a result came too late for its call. */
 	readonly promptless?: boolean;
 	readonly redispatch?: true;
+	/**
+	 * Leave the wake's dispatcher slot while `wait` settles: a relaunch whose run has no free slot waits for one outside
+	 * it, so other runs' wakes are not held behind it (#4856).
+	 */
+	readonly outsideWakeSlot?: (wait: Promise<void>) => Promise<void>;
 }
 
 export type SubagentChildRestoreOutcome =
@@ -370,6 +375,30 @@ async function continueChildWhereItWorked(
 	});
 }
 
+/**
+ * The run's scheduler, for a wake that holds a dispatcher slot: a dispatch the run starts at once keeps that slot; one
+ * queued behind the run's limit leaves it while it waits and takes it back, in turn, before it starts (#4856).
+ */
+function waitingOutsideWakeSlot(
+	schedule: ExecutionScheduler,
+	outsideWakeSlot: (wait: Promise<void>) => Promise<void>,
+): ExecutionScheduler {
+	const gated = (dispatch: () => Promise<void>): void => {
+		const granted = Promise.withResolvers<void>();
+		let started = false;
+		let slotBack: Promise<void> | undefined;
+		schedule(async () => {
+			started = true;
+			granted.resolve();
+			if (slotBack !== undefined) await slotBack;
+			await dispatch();
+		});
+		// A run with a free slot started it synchronously, and the wake's slot stays with it.
+		if (!started) slotBack = outsideWakeSlot(granted.promise);
+	};
+	return schedule.limit === undefined ? gated : Object.assign(gated, { limit: schedule.limit });
+}
+
 async function relaunchChild(
 	deps: SubagentChildRestoreDeps,
 	ctx: ExtensionContext,
@@ -593,9 +622,13 @@ async function relaunchChild(
 	// It waits for a slot in its run, as its original launch did: its own scheduler, a sibling's (#4856), or, with no
 	// child of the run holding one here, a new one under the run's recorded limit. The relaunch registers what it uses
 	// before anything else runs, so a sibling woken after it shares that one.
-	const schedule =
+	const runSchedule =
 		subagentRunSchedule(record.runId) ??
 		(record.runConcurrency === undefined ? undefined : createExecutionScheduler(record.runConcurrency));
+	const schedule =
+		runSchedule && resume?.outsideWakeSlot
+			? waitingOutsideWakeSlot(runSchedule, resume.outsideWakeSlot)
+			: runSchedule;
 	if (!host) {
 		// #3981: a queued child starts after its launch; by then model fallback can have retired the launching session, whose
 		// context throws on every read. The working directory is fixed at launch.
