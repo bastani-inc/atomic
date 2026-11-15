@@ -142,6 +142,38 @@ describe("a resume whose snapshot cannot be fully restored still opens the sessi
 		assert.doesNotMatch(prepared.notices[0]!.message, /fail/i);
 	});
 
+	test("paths that differ only in case are named as missing where the file system folds them together (#4932)", async () => {
+		const { remote, clone } = await sandbox.remoteWithClone("repo", { "README.md": "hello\n" });
+		// Recorded through Git, as a checkout on a case-insensitive file system cannot hold both.
+		sandbox.write(sandbox.path("lower.txt"), "lower\n");
+		sandbox.write(sandbox.path("upper.txt"), "upper\n");
+		const lower = await sandbox.git(clone, "hash-object", "-w", sandbox.path("lower.txt"));
+		const upper = await sandbox.git(clone, "hash-object", "-w", sandbox.path("upper.txt"));
+		await sandbox.git(clone, "update-index", "--add", "--cacheinfo", `100644,${lower},dir/b.txt`);
+		await sandbox.git(clone, "update-index", "--add", "--cacheinfo", `100644,${upper},Dir/b.txt`);
+		await sandbox.git(clone, "commit", "-q", "-m", "case collision");
+		await sandbox.git(clone, "push", "-q", remote, "HEAD:main");
+		sandbox.write(join(clone, "committed.txt"), "unpushed\n");
+		await sandbox.git(clone, "add", "committed.txt");
+		await sandbox.git(clone, "commit", "-q", "-m", "unpushed commit");
+		const { manager, snapshot } = await recordSession(clone);
+		await loseSnapshotBlobs(manager.getSessionStore().snapshotBlobs as SqlSnapshotBlobStore, [snapshot.bundle!.blob]);
+		renameSync(clone, sandbox.path("machine-a-gone"));
+
+		const prepared = ready(await prepareSessionResume(manager, options()));
+
+		const restored = prepared.sessionManager.getWorktreeRootMappings().at(-1)!;
+		assert.equal(restored.degraded?.stage, "closest-commit");
+		sandbox.write(sandbox.path("Probe"), "");
+		if (existsSync(sandbox.path("probe"))) {
+			assert.deepEqual(restored.degraded?.missingPaths, ["Dir/b.txt", "dir/b.txt"]);
+		} else {
+			assert.equal(readFileSync(join(restored.to, "dir/b.txt"), "utf8"), "lower\n");
+			assert.equal(readFileSync(join(restored.to, "Dir/b.txt"), "utf8"), "upper\n");
+			assert.deepEqual(restored.degraded?.missingPaths, []);
+		}
+	});
+
 	test("a later capture in a partly restored worktree records what it holds, never the original tree (#4733)", async () => {
 		const { clone } = await editedClone();
 		const { manager, snapshot } = await recordSession(clone);
