@@ -2271,6 +2271,13 @@ describe("a released asker's question lasts as long as the ask does (#4852)", ()
 		assert.equal(only(handoffsTo(owner), "handoffs").replyTo, questionId);
 		const row = await b.state.outbox.read(`ended:${queued.questionId}`);
 		assert.equal(row.status === "found" && row.row.targetIdentity, deliveryTargetIdentity(offline));
+		// The queued failure holds its question until the offline owner takes it.
+		const held = await b.state.releasedAsks.lookup({
+			questionId: queued.questionId,
+			replierSessionId: replier.info.id,
+		});
+		assert.equal(held.status === "found" && held.ask.state, "claimed");
+		assert.equal(held.status === "found" && held.ask.replyMessageId, `ended:${queued.questionId}`);
 	});
 
 	test("a failure the outbox refuses leaves that released asker's question open and still tells the other owners (#4852)", async () => {
@@ -2310,8 +2317,6 @@ describe("a released asker's question lasts as long as the ask does (#4852)", ()
 		assert.equal(handoff.childName, "worker");
 		assert.equal(handoff.message.replyTo, questionId);
 		assert.equal(handoff.message.replyError, 'Session "replier" ended before replying');
-		// The queued failure holds the question until the owner confirms it.
-		assert.deepEqual(await b.state.releasedAsks.openForReplier(replier.info.id), { status: "listed", asks: [] });
 		assert.equal(a.router.releasedReplyAcknowledged(owner, handoff.message.id, handoff.handoffId, true), true);
 		await vi.waitFor(async () =>
 			assert.deepEqual(await a.state.releasedAsks.lookup({ questionId, replierSessionId: replier.info.id }), {
