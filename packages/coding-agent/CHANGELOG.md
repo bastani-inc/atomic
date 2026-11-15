@@ -24,6 +24,7 @@
 - Added `SqliteBatchOptions` to the storage SDK. `SqliteDatabase.batch(statements, { lockWaitMs, priority })` lets a batch wait out a busy write lock with randomized retries, and lets small writes such as lease renewals go ahead of the database's queued calls. Drivers given to `createSqliteDatabase` receive the options in their `batch` ([#4768](https://github.com/bastani-inc/atomic/issues/4768))
 - Added `isPathInside(parent, child)` to the SDK exports: it tells whether a path is its parent or inside it, and treats a child named like `..cache` as inside ([#4836](https://github.com/bastani-inc/atomic/issues/4836))
 - Added `boundOversizedText()` to the extension API: it bounds text an extension adds to the model's context the way oversized tool results are bounded, saving longer text to a session file and returning a short preview with its path ([#4907](https://github.com/bastani-inc/atomic/issues/4907))
+- Exported `sliceHead` and `sliceTail` from the SDK: they cut a string to at most a number of UTF-16 code units without splitting a surrogate pair ([#5097](https://github.com/bastani-inc/atomic/issues/5097))
 
 ### Changed
 

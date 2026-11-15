@@ -103,7 +103,7 @@ import {
 	releasedReservationKey,
 	validateReleasedChildFrame,
 } from "./released-children.js";
-import { type HeldSend, RestoringRecipients, type RestoringRecipientWake } from "./restoring-recipients.js";
+import { boundedReleaseReasons, type HeldSend, RestoringRecipients, type RestoringRecipientWake } from "./restoring-recipients.js";
 import { DepartedChildren, type HeldSendRefusal, validateEndedChildrenFrame } from "./departed-children.js";
 import { WorkflowStageAliases } from "./workflow-stage-aliases.js";
 import { type IntercomRecipientGoneError, serializeIntercomRecipientGoneError } from "./recipient-gone-errors.js";
@@ -301,7 +301,6 @@ function isSupervisorRegistration(value: unknown): value is SupervisorRegistrati
 }
 
 const RESTORING_RECIPIENT_ALIASES_MAX = 4;
-const RESTORING_RECIPIENT_GONE_REASON_MAX = 1_000;
 
 function isRestoringRecipientAliasList(value: unknown): value is string[] {
   return Array.isArray(value) && value.length <= RESTORING_RECIPIENT_ALIASES_MAX && value.every((alias) => typeof alias === "string");
@@ -3318,12 +3317,8 @@ class IntercomBroker {
   }
 
   private releaseReservation(key: string, ownerSessionId: string, gone: string | undefined, refusal: string | undefined): void {
-    const released = this.restoringRecipients.release(
-      key,
-      ownerSessionId,
-      gone === undefined ? undefined : gone.slice(0, RESTORING_RECIPIENT_GONE_REASON_MAX),
-      refusal !== undefined && refusal.trim() ? refusal.slice(0, RESTORING_RECIPIENT_GONE_REASON_MAX) : undefined,
-    );
+    const bounded = boundedReleaseReasons(gone, refusal);
+    const released = this.restoringRecipients.release(key, ownerSessionId, bounded.gone, bounded.refusal);
     if (released === undefined) return;
     this.multiNode?.restoringReleased(key, ownerSessionId, released.gone, released.refusal);
     for (const send of released.held) {

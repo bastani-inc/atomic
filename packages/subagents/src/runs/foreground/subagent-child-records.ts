@@ -6,6 +6,7 @@ import {
 	type SessionEntry,
 	SessionManager,
 	type SessionStore,
+	sliceHead,
 	type WorktreeRootMapping,
 } from "@bastani/atomic";
 import type { AgentSource } from "../../agents/agent-types.js";
@@ -259,7 +260,7 @@ export const TASK_SUMMARY_LIMIT = 300;
 /** A task on one line, cut at {@link TASK_SUMMARY_LIMIT} characters. */
 export function summarizeSubagentTask(task: string): string {
 	const line = task.replace(/\s+/g, " ").trim();
-	return line.length > TASK_SUMMARY_LIMIT ? `${line.slice(0, TASK_SUMMARY_LIMIT - 1)}…` : line;
+	return line.length > TASK_SUMMARY_LIMIT ? `${sliceHead(line, TASK_SUMMARY_LIMIT - 1)}…` : line;
 }
 
 /** The task a record keeps for a launch with these options; a resumed child keeps none, since its message is not a task. */
