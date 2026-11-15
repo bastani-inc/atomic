@@ -94,18 +94,24 @@ describe("the start of a process of this host (#5141)", () => {
 
 	test.skipIf(!windows)(
 		"without the native module, PowerShell that cannot be started is given up on (#5141)",
-		() => {
+		async () => {
 			setNativeProcessCreationTimeForTesting(null);
-			const path = process.env.PATH;
-			process.env.PATH = "";
+			const child = await runningChild();
 			try {
-				assert.equal(processStartToken(process.pid), undefined);
+				const path = process.env.PATH;
+				process.env.PATH = "";
+				try {
+					assert.equal(processStartToken(process.pid), undefined);
+				} finally {
+					process.env.PATH = path;
+				}
+				// Another process, whose start was never read, has none either: PowerShell is not tried again.
+				assert.equal(processStartToken(child.pid), undefined);
+				setNativeProcessCreationTimeForTesting(null);
+				assert.match(processStartToken(child.pid) ?? "", /^[0-9a-f]{12}$/);
 			} finally {
-				process.env.PATH = path;
+				await child.stop();
 			}
-			assert.equal(processStartToken(process.pid), undefined);
-			setNativeProcessCreationTimeForTesting(null);
-			assert.match(processStartToken(process.pid) ?? "", /^[0-9a-f]{12}$/);
 		},
 		60_000,
 	);
