@@ -5,6 +5,7 @@ import { formatToolCallWithArgs, getTextOutput } from "../src/core/tools/render-
 import { BashExecutionComponent } from "../src/modes/interactive/components/bash-execution.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { stripTerminalControls } from "../src/utils/ansi.ts";
+import { MAX_CONTROL_STRING_LENGTH, UNTERMINATED_CONTROL_SEQUENCE_MARKER } from "../src/utils/terminal-text.ts";
 
 // Neutral 8-bit sequences: a window title OSC, an OSC hyperlink, a CSI clear, a DCS query and an APC string.
 const EIGHT_BIT_SAMPLES: ReadonlyArray<readonly [string, string]> = [
@@ -113,7 +114,7 @@ describe("displayed output control sequences", () => {
 			["a\u001b]0;t\u0018b", "ab"],
 			["a\u001b]0;t\u001ab", "ab"],
 			["a\u001b]0;t\u001b[31mb", "ab"],
-			["a\u001b]0;never terminated", "a"],
+			["a\u001b]0;never terminated", "a[unterminated control sequence removed]"],
 			// interlinear annotation characters
 			["a\ufff9\ufffa\ufffbb\ufff8\ufffc", "ab\ufff8\ufffc"],
 		];
@@ -141,6 +142,55 @@ describe("displayed output control sequences", () => {
 		const view = new BashExecutionComponent("x", ui as never);
 		view.appendOutput("one\r\ntwo\rthree \u009d0;t\u009c\u202Eend");
 		assert.equal(view.getOutput(), "one\ntwo\nthree <U+202E>end");
+	});
+
+	test("a control string is removed up to the length limit and the text after it is shown again", async () => {
+		const marker = UNTERMINATED_CONTROL_SEQUENCE_MARKER;
+		const payload = (length: number) => "p".repeat(length);
+		const cases: ReadonlyArray<readonly [string, string]> = [
+			[`a\u001b]${payload(MAX_CONTROL_STRING_LENGTH - 1)}\u0007b`, "ab"],
+			[`a\u001b]${payload(MAX_CONTROL_STRING_LENGTH)}\u0007b`, "ab"],
+			[`a\u009d${payload(MAX_CONTROL_STRING_LENGTH)}\u009cb`, "ab"],
+			[`a\u001b]${payload(MAX_CONTROL_STRING_LENGTH)}xyz\u0007b`, `a${marker}xyzb`],
+			[`a\u0090${payload(MAX_CONTROL_STRING_LENGTH)}red\u001b[31m\nnext\u009cb`, `a${marker}red\nnextb`],
+			[`a\u001b]${payload(MAX_CONTROL_STRING_LENGTH)}x\u001b]0;t\u0007y`, `a${marker}xy`],
+		];
+		for (const [input, expected] of cases) {
+			assert.equal(stripTerminalControls(input), expected, `${input.length} characters`);
+			const bytes = Buffer.from(input, "utf8");
+			for (const point of [
+				1,
+				2,
+				3,
+				MAX_CONTROL_STRING_LENGTH,
+				MAX_CONTROL_STRING_LENGTH + 2,
+				MAX_CONTROL_STRING_LENGTH + 3,
+				bytes.length - 2,
+			]) {
+				const { output, streamed } = await runBash(splitAt(bytes, [point]));
+				assert.equal(output, expected, `${input.length} characters split at ${point}`);
+				assert.equal(streamed, expected, `${input.length} characters split at ${point}`);
+			}
+		}
+	});
+
+	test("a control string still open at the end of the output is shown as one marker", async () => {
+		const marker = UNTERMINATED_CONTROL_SEQUENCE_MARKER;
+		const cases: ReadonlyArray<readonly [string, string]> = [
+			["before \u001b]52;c;aGVsbG8=", `before ${marker}`],
+			["before \u009fGa=T\u001b", `before ${marker}`],
+			["before \u001bPq", `before ${marker}`],
+			["before \u001b[31", "before "],
+			["before \u001b", "before "],
+		];
+		for (const [input, expected] of cases) {
+			assert.equal(stripTerminalControls(input), expected, JSON.stringify(input));
+			const bytes = Buffer.from(input, "utf8");
+			for (let point = 1; point < bytes.length; point++) {
+				const { output } = await runBash(splitAt(bytes, [point]));
+				assert.equal(output, expected, `${JSON.stringify(input)} split at ${point}`);
+			}
+		}
 	});
 
 	test("bidirectional overrides are shown escaped in displayed text", () => {

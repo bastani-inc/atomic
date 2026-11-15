@@ -47,11 +47,24 @@ function isDroppedCharacter(code: number): boolean {
 }
 
 /**
- * Streaming sanitizer: feed chunks to {@link write}. A sequence still open when the stream ends is dropped, since its
- * remaining bytes never arrive.
+ * Longest control-string payload (OSC, DCS, SOS, PM, APC), in UTF-16 code units, that is removed while its terminator
+ * has not arrived. Past it, the string is treated as unterminated so a stray introducer (a binary dump, a cut log)
+ * cannot hide the rest of the output.
+ */
+export const MAX_CONTROL_STRING_LENGTH = 4096;
+
+/** Shown once in place of a control string that did not end within the limit or before the end of the text. */
+export const UNTERMINATED_CONTROL_SEQUENCE_MARKER = "[unterminated control sequence removed]";
+
+/**
+ * Streaming sanitizer: feed chunks to {@link write}, then call {@link end}. A control string with no terminator within
+ * {@link MAX_CONTROL_STRING_LENGTH} is replaced by {@link UNTERMINATED_CONTROL_SEQUENCE_MARKER} and the text after the
+ * limit is shown again. A control string still open at the end becomes the marker; any other open sequence is dropped.
  */
 export class TerminalTextSanitizer {
 	private state: State = State.Ground;
+	private controlStringLength = 0;
+	private unterminated = false;
 
 	write(chunk: string): string {
 		let output = "";
@@ -64,11 +77,13 @@ export class TerminalTextSanitizer {
 				runStart = index + 1;
 				if (code === ESC) this.state = State.Escape;
 				else if (code === 0x9b) this.state = State.Csi;
-				else if (isControlStringIntroducer8Bit(code)) this.state = State.ControlString;
+				else if (isControlStringIntroducer8Bit(code)) this.enterControlString();
 				continue;
 			}
 			runStart = index + 1;
 			if (!this.step(code)) {
+				if (this.unterminated) output += UNTERMINATED_CONTROL_SEQUENCE_MARKER;
+				this.unterminated = false;
 				// The sequence was cut short by this character: it starts over in the ground state.
 				this.state = State.Ground;
 				index--;
@@ -79,13 +94,25 @@ export class TerminalTextSanitizer {
 		return output + chunk.slice(runStart);
 	}
 
+	/** Finish the text: returns the marker when a control string is still open, and resets the sanitizer. */
+	end(): string {
+		const open = this.state === State.ControlString || this.state === State.ControlStringEscape;
+		this.state = State.Ground;
+		return open ? UNTERMINATED_CONTROL_SEQUENCE_MARKER : "";
+	}
+
+	private enterControlString(): void {
+		this.state = State.ControlString;
+		this.controlStringLength = 0;
+	}
+
 	/** Consume one character inside a sequence. Returns false when the character does not belong to it. */
 	private step(code: number): boolean {
 		switch (this.state) {
 			case State.Escape:
 				if (code === 0x5b) this.state = State.Csi;
 				else if (code === 0x5d || code === 0x50 || code === 0x58 || code === 0x5e || code === 0x5f)
-					this.state = State.ControlString;
+					this.enterControlString();
 				else if (code >= 0x20 && code <= 0x2f) this.state = State.EscapeIntermediate;
 				else if (isEscapeFinal(code)) this.state = State.Ground;
 				else return false;
@@ -107,6 +134,11 @@ export class TerminalTextSanitizer {
 			case State.ControlString:
 				if (code === BEL || code === ST || code === CAN || code === SUB) this.state = State.Ground;
 				else if (code === ESC) this.state = State.ControlStringEscape;
+				else if (this.controlStringLength === MAX_CONTROL_STRING_LENGTH) {
+					// No terminator within the limit: this character and the rest are text again.
+					this.unterminated = true;
+					return false;
+				} else this.controlStringLength++;
 				return true;
 			default:
 				// After ESC inside a control string: ESC \ ends it; any other ESC ends it and starts a new sequence.
@@ -122,7 +154,8 @@ export class TerminalTextSanitizer {
 
 /** Remove escape sequences and control characters other than tab and newline from complete text. */
 export function sanitizeTerminalText(text: string): string {
-	return new TerminalTextSanitizer().write(text);
+	const sanitizer = new TerminalTextSanitizer();
+	return sanitizer.write(text) + sanitizer.end();
 }
 
 const BIDI_CONTROLS = /[\u202a-\u202e\u2066-\u2069]/g;
