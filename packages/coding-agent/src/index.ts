@@ -1258,6 +1258,7 @@ export {
 	type ManagedToolTimeoutFields,
 } from "./utils/managed-tool-errors.ts";
 export { detectSupportedImageMimeTypeFromFile } from "./utils/mime.ts";
+export { isPathInside, type PathInsideApi } from "./utils/path-inside.ts";
 // Shell utilities
 export { getPowerShellConfig, getShellConfig } from "./utils/shell.ts";
 export {

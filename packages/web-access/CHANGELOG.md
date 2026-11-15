@@ -7,6 +7,8 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 
 - GitHub URLs are now validated, and clones are confined to the clone directory.
+- Fetching a PDF no longer overwrites existing files in `~/Downloads`. Each extraction is saved to a new file named after the document title, with `-2`, `-3`, and so on added when that name is taken, so PDFs fetched together never share a file. Titles in any script are kept in the file name instead of becoming `document`; only characters that are unsafe in file names are removed. The 5 MB page and 20 MB PDF size limits now apply while the response is downloaded, so a large response sent without a `Content-Length` header fails with `Response too large` instead of being read in full. When fetching a local, private, or intranet address (for example `localhost`, `127.0.0.1`, `10.x.x.x`, `*.local`, or a host name without a dot) or a URL with embedded credentials fails, the URL is no longer sent to the r.jina.ai or Gemini fallbacks; the original error is returned instead ([#4898](https://github.com/bastani-inc/atomic/issues/4898)).
+- Analysing a local video now reports why it failed. A Gemini API error, such as a 429 quota error, a rejected key or upload, or a file that failed or timed out in processing, is shown with its status and message (with the API key removed) instead of a request to set `GEMINI_API_KEY`. A video larger than `video.maxSizeMB` (50 MB by default) reports that limit, and a video path with `video.enabled` set to `false` says video extraction is disabled, instead of both failing with `Invalid URL` ([#4898](https://github.com/bastani-inc/atomic/issues/4898)).
 
 ## [0.9.58] - 2026-11-01
 
