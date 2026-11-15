@@ -1086,7 +1086,7 @@ export class MultiNodeRouter {
 			for (const targetIdentity of identities) {
 				const presence = await this.state.leases.read({ kind: "presence", targetIdentity });
 				if (presence.status === "found" && presence.lease.ageMs < BROKER_LEASE_STALE_AFTER_MS) continue;
-				const queued = await this.state.outbox.listUndelivered(targetIdentity);
+				const queued = await this.state.outbox.listUndelivered(targetIdentity, 1);
 				if (queued.status === "listed" && queued.rows.length > 0) return queued.rows[0].messageId;
 			}
 		}
@@ -1735,10 +1735,10 @@ export class MultiNodeRouter {
 		this.host.write(socket, queuedFrame(messageId, attemptId, await this.queuePosition(identity, messageId)));
 	}
 
+	/** #4896: counted, not listed: a send to a busy recipient never reads its whole queue to learn its place. */
 	private async queuePosition(identity: string, messageId: string): Promise<number> {
-		const listed = await this.state.outbox.listUndelivered(identity);
-		const index = listed.status === "listed" ? listed.rows.findIndex((entry) => entry.messageId === messageId) : -1;
-		return index + 1 || 1;
+		const counted = await this.state.outbox.undeliveredPosition(identity, messageId);
+		return counted.status === "positioned" ? counted.position : 1;
 	}
 
 	/**

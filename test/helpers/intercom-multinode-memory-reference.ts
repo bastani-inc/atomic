@@ -339,9 +339,15 @@ function outboxStore(shared: OutboxState): OutboxStore {
 			const record = shared.rows.get(messageId);
 			return record === undefined ? { status: "missing" } : { status: "found", row: row(record) };
 		},
-		async listUndelivered(targetIdentity) {
+		async listUndelivered(targetIdentity, limit) {
 			if (targetIdentity.length === 0) return invalid("empty-target-identity");
-			return { status: "listed", rows: undelivered(targetIdentity).map(row) };
+			return { status: "listed", rows: undelivered(targetIdentity).slice(0, limit).map(row) };
+		},
+		async undeliveredPosition(targetIdentity, messageId) {
+			if (targetIdentity.length === 0) return invalid("empty-target-identity");
+			if (messageId.length === 0) return invalid("empty-message-id");
+			const position = undelivered(targetIdentity).findIndex((record) => record.messageId === messageId) + 1;
+			return position === 0 ? { status: "missing" } : { status: "positioned", position };
 		},
 		async prune(settledOlderThanMs) {
 			let removed = 0;
