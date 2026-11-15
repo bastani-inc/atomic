@@ -381,6 +381,66 @@ describe("Anthropic raw SSE parsing", () => {
 		});
 	});
 
+	it("keeps tool input sent complete in content_block_start when no input_json_delta follows (#4899)", async () => {
+		const model = getModel("anthropic", "claude-haiku-4-5");
+		const context = normalizeContext({
+			messages: [{ role: "user", content: "Read a.txt.", timestamp: Date.now() }],
+			tools: [{ name: "read", description: "Read a file.", parameters: Type.Object({ path: Type.String() }) }],
+		});
+		const usage = { input_tokens: 12, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
+		const response = createSseResponse([
+			{ event: "message_start", data: JSON.stringify({ type: "message_start", message: { id: "msg_1", usage } }) },
+			{
+				event: "content_block_start",
+				data: JSON.stringify({
+					type: "content_block_start",
+					index: 0,
+					content_block: { type: "tool_use", id: "toolu_1", name: "read", input: { path: "a.txt" } },
+				}),
+			},
+			{ event: "content_block_stop", data: JSON.stringify({ type: "content_block_stop", index: 0 }) },
+			{
+				event: "content_block_start",
+				data: JSON.stringify({
+					type: "content_block_start",
+					index: 1,
+					content_block: { type: "tool_use", id: "toolu_2", name: "read", input: {} },
+				}),
+			},
+			{
+				event: "content_block_delta",
+				data: JSON.stringify({
+					type: "content_block_delta",
+					index: 1,
+					delta: { type: "input_json_delta", partial_json: '"not an object"' },
+				}),
+			},
+			{ event: "content_block_stop", data: JSON.stringify({ type: "content_block_stop", index: 1 }) },
+			{
+				event: "message_delta",
+				data: JSON.stringify({ type: "message_delta", delta: { stop_reason: "tool_use" }, usage }),
+			},
+			{ event: "message_stop", data: JSON.stringify({ type: "message_stop" }) },
+		]);
+
+		const result = await streamAnthropic(model, context, { client: createFakeAnthropicClient(response) }).result();
+
+		assert.equal(result.stopReason, "toolUse", result.errorMessage);
+		const toolCalls = result.content.filter((block): block is ToolCall => block.type === "toolCall");
+		const [complete, streamed] = toolCalls.map(({ id, name, arguments: args, argumentsError }) => ({
+			id,
+			name,
+			args,
+			argumentsError,
+		}));
+		assert.equal(toolCalls.length, 2);
+		assert.deepEqual(complete, { id: "toolu_1", name: "read", args: { path: "a.txt" }, argumentsError: undefined });
+		// Streamed input is still parsed from its deltas, which reports malformed arguments.
+		assert.equal(streamed?.id, "toolu_2");
+		assert.deepEqual(streamed?.args, {});
+		assert.match(streamed?.argumentsError ?? "", /Tool arguments must be a JSON object/);
+	});
+
 	it("preserves content from content_block_start events", async () => {
 		const model = getModel("anthropic", "claude-haiku-4-5");
 		const context = normalizeContext({

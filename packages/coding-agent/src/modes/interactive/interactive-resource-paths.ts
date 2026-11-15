@@ -1,4 +1,5 @@
 import { getBuiltinExtensionEntryLabel } from "../../core/extensions/builtin-extension-entry-labels.ts";
+import { isPathInside } from "../../utils/path-inside.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { parseGitUrl, path, type SourceInfo, theme } from "./interactive-mode-deps.ts";
 
@@ -16,13 +17,7 @@ InteractiveModeBase.prototype.getShortPath = function (
 			return path.posix.relative(normalizedBaseDir, normalizedFullPath);
 		}
 		const relativePath = path.relative(path.resolve(baseDir), path.resolve(fullPath));
-		if (
-			relativePath &&
-			relativePath !== "." &&
-			!relativePath.startsWith("..") &&
-			!relativePath.startsWith(`..${path.sep}`) &&
-			!path.isAbsolute(relativePath)
-		) {
+		if (relativePath && isPathInside(path.resolve(baseDir), path.resolve(fullPath))) {
 			return relativePath.replace(/\\/g, "/");
 		}
 	}
