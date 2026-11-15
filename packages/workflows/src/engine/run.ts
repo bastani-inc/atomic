@@ -144,6 +144,7 @@ import { durableRootRegistrationForRun, WorkflowRunControlError } from "./run-du
 import { createDurableStageSessionRecorder } from "./run-durable-stage-session.js";
 import {
 	createDurableCachedStageRecorder,
+	createDurablePromptAnswerResolver,
 	createDurableStageDeps,
 	createDurableStageEndRecorder,
 	createDurableStageTopologyResolver,
@@ -781,7 +782,16 @@ async function executeRun(
 	const checkpointIdGenerator = createCheckpointIdGenerator();
 	const stageReplayKeyGenerator = createStageReplayKeyGenerator(runId);
 	const completedStageReplayKeys = new Map<string, string>();
+	// Only this run's own stages: a resumed pooled root holds its children's checkpoints until it replays them (#4318).
+	// Listed once: a pooled child reads it before it runs, and every further listing costs it a read (#4440).
+	const priorCheckpoints = durableBackend.listCheckpoints(runId);
+	const priorPromptStageCheckpoints = priorCheckpoints.filter(
+		(checkpoint): checkpoint is DurableStageCheckpoint =>
+			checkpoint.kind === "stage" &&
+			(checkpoint.topology?.run === undefined || checkpoint.topology.run.runId === runId),
+	);
 	const durableStageDeps = createDurableStageDeps({
+		priorStageCheckpoints: priorPromptStageCheckpoints,
 		backend: durableBackend,
 		run: runSnapshot,
 		nextCheckpointId: checkpointIdGenerator,
@@ -1038,14 +1048,7 @@ async function executeRun(
 	};
 	// Prompt-node mode re-materializes metadata before returning a durable ctx.ui cache hit.
 	const resolvePromptNodeTopology = createDurableStageTopologyResolver(durableBackend, runId);
-	// Only this run's own stages: a resumed pooled root holds its children's checkpoints until it replays them (#4318).
-	const priorPromptStageCheckpoints = durableBackend
-		.listCheckpoints(runId)
-		.filter(
-			(checkpoint): checkpoint is DurableStageCheckpoint =>
-				checkpoint.kind === "stage" &&
-				(checkpoint.topology?.run === undefined || checkpoint.topology.run.runId === runId),
-		);
+	const durablePromptAnswerForStageId = createDurablePromptAnswerResolver(priorCheckpoints, runId);
 	let promptNodeUi: ReturnType<typeof buildPromptNodeUiAdapter> | undefined;
 	const getPromptNodeUi = (): ReturnType<typeof buildPromptNodeUiAdapter> => {
 		promptNodeUi ??= buildPromptNodeUiAdapter({
@@ -1063,6 +1066,8 @@ async function executeRun(
 			workflowExitSkippedReason: exit.workflowExitSkippedReason,
 			preserveWorkflowExitSkippedReason: exit.preserveWorkflowExitSkippedReason,
 			durableTopologyForReplayKey: resolvePromptNodeTopology,
+			durablePromptAnswerForStageId,
+			recordPromptStageEnd: durableOnPromptNodeEnd,
 			durableTimingForStageId: (stageId) =>
 				priorPromptStageCheckpoints.find(
 					(checkpoint) =>

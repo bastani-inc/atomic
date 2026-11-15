@@ -417,6 +417,31 @@ describe("claim candidates and failures (#4748)", () => {
 		assert.equal(readFileSync(join(slot(a, 2), "file.txt"), "utf8"), "A\n");
 	});
 
+	test("a claim whose slot another holder took while it reset records nothing and holds no slot (#4830)", async () => {
+		const { a, b, clone } = await twoSnapshots();
+		await idleSlotOfX(a, clone);
+		const z = { kind: "session" as const, id: "session-z" };
+		let taken = "";
+		// Another process takes the slot while the claim fetches the snapshot's content, as after a long stall.
+		const blobs = {
+			...store.snapshotBlobs,
+			getBlob: async (hash: string) => {
+				if (taken === "") {
+					writeFileSync(recordFile(a, 0), JSON.stringify({ ...recordOf(a, 0), holder: z, tenancy: "taken-by-z" }));
+					taken = readFileSync(recordFile(a, 0), "utf8");
+				}
+				return store.snapshotBlobs!.getBlob(hash);
+			},
+		};
+
+		const claim = await claimIdleWorktree(b, { ...claimOptions(), blobs });
+
+		assert.deepEqual(claim, { claimed: false, reason: "busy" });
+		assert.notEqual(taken, "");
+		assert.equal(readFileSync(recordFile(a, 0), "utf8"), taken);
+		assert.deepEqual(await pooledWorktreeHolder(storeDir(), slot(a, 0)), { owner: z, held: false });
+	});
+
 	test("a claim of a snapshot with Git LFS files downloads what it can and reports what it cannot (#4748)", async () => {
 		await sandbox.git(sandbox.root, "lfs", "install", "--skip-repo");
 		const { clone } = await sandbox.remoteWithClone("repo", {

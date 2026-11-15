@@ -7,6 +7,7 @@ import type { ExtensionContext, ToolDefinition } from "../extensions/types.ts";
 import {
 	applyEditsToNormalizedContent,
 	applyReplacementsToOriginal,
+	decodeUtf8ForEdit,
 	type Edit,
 	generateEditDiff,
 	normalizeToLF,
@@ -192,8 +193,8 @@ export function createEditToolDefinition(
 
 				// Read the file.
 				const buffer = await ops.readFile(absolutePath);
-				const rawContent = buffer.toString("utf-8");
 				throwIfAborted();
+				const rawContent = decodeUtf8ForEdit(buffer, path);
 
 				// Strip BOM before matching. The model will not include an invisible BOM in oldText.
 				const { bom, text: content } = splitBom(rawContent);

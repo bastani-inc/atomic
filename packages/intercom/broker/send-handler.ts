@@ -9,6 +9,7 @@ import {
 } from "../workflow-stage-target.js";
 import { normalizeGroup, workflowInvocationRefusalFor } from "../group.js";
 import { isMessage } from "./client-message-validation.js";
+import { intercomMessageSizeError } from "../message-size.js";
 import {
 	resolveSessionTarget,
 	resolveSessionTargetByHostSessionId,
@@ -229,6 +230,11 @@ export function handleBrokerSend(
   }
   if (typeof clientMessage.to !== "string" || !isMessage(message)) {
     write(socket, { type: "delivery_failed", messageId, attemptId, reason: "Invalid message format" });
+    return;
+  }
+  const sizeError = intercomMessageSizeError(message.content);
+  if (sizeError !== undefined) {
+    write(socket, { type: "delivery_failed", messageId, attemptId, reason: sizeError });
     return;
   }
   const hasRequirePendingReply = Object.prototype.hasOwnProperty.call(clientMessage, "requirePendingReply");

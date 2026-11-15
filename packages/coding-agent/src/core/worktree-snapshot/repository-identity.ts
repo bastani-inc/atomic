@@ -69,6 +69,11 @@ export function normalizeRemoteUrl(remote: string): string {
 	return `https://${host.toLowerCase()}${port}/${repository}`;
 }
 
+/** Whether remotes `a` and `b` name one repository, however each is spelled (#4913). */
+export function sameRemote(a: string, b: string): boolean {
+	return normalizeRemoteUrl(a) === normalizeRemoteUrl(b);
+}
+
 /** The identity of the repository `remotes` name, in their normalized form. */
 export function repositoryIdOf(remotes: readonly string[]): RepositoryId {
 	return sha256Hex(remotes.map(normalizeRemoteUrl).join("\n")).slice(0, 24) as RepositoryId;

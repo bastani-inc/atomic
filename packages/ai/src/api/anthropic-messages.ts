@@ -46,6 +46,7 @@ import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { shortHash } from "../utils/hash.ts";
 import { headersToRecord } from "../utils/headers.ts";
 import { type ClientIdentity, getIdentityHeaders } from "../utils/identity.ts";
+import { inlineImageMimeType, unsupportedImagePlaceholder } from "../utils/inline-images.ts";
 import { parseJsonWithRepair } from "../utils/json-parse.ts";
 import {
 	applyOpenRouterReportedCost,
@@ -166,14 +167,13 @@ const fromClaudeCodeName = (name: string, tools?: Tool[]) => {
 	return name;
 };
 
+/** An image block, or the placeholder text when Anthropic does not accept the image's media type. */
 function convertImageBlock(image: ImageContent) {
+	const media_type = inlineImageMimeType(image.mimeType);
+	if (!media_type) return { type: "text" as const, text: unsupportedImagePlaceholder(image.mimeType) };
 	return {
 		type: "image" as const,
-		source: {
-			type: "base64" as const,
-			media_type: image.mimeType as "image/jpeg" | "image/png" | "image/gif" | "image/webp",
-			data: image.data,
-		},
+		source: { type: "base64" as const, media_type, data: image.data },
 	};
 }
 
@@ -2049,14 +2049,7 @@ function convertMessages(
 							...(item.name ? { title: item.name } : {}),
 						};
 					}
-					return {
-						type: "image",
-						source: {
-							type: "base64",
-							media_type: item.mimeType as "image/jpeg" | "image/png" | "image/gif" | "image/webp",
-							data: item.data,
-						},
-					};
+					return convertImageBlock(item);
 				});
 				const filteredBlocks = blocks.filter((b) => {
 					if (b.type === "text") {

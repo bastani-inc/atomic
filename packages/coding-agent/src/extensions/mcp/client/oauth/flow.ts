@@ -18,6 +18,7 @@ import {
 	OAuthInsecureEndpointError,
 	OAuthIssuerMismatchError,
 	OAuthRegistrationError,
+	OAuthTemporarilyUnavailableError,
 } from "./errors.js";
 import {
 	type AuthorizationServerMetadata,
@@ -232,9 +233,11 @@ async function tokenRequest(
 			value.error,
 			typeof value.error_description === "string" ? value.error_description : value.error,
 			typeof value.error_uri === "string" ? value.error_uri : undefined,
+			response.status,
 		);
 	}
-	if (!response.ok) throw new OAuthError("server_error", `HTTP ${response.status}: ${text}`);
+	if (!response.ok)
+		throw new OAuthError("server_error", `HTTP ${response.status}: ${text}`, undefined, response.status);
 	return parseOAuthTokens(value);
 }
 
@@ -295,6 +298,27 @@ export async function refreshAuthorization(
 		new URLSearchParams({ grant_type: "refresh_token", refresh_token: options.refreshToken }),
 	);
 	return { refresh_token: options.refreshToken, ...tokens };
+}
+
+/** Errors with which the authorization server rejects the grant or the client: only a new sign-in helps. */
+const REAUTHORIZATION_ERRORS = new Set(["invalid_grant", "invalid_client", "unauthorized_client"]);
+
+/**
+ * Whether a failed token request may succeed when repeated: network errors, timeouts, overloaded or
+ * failing servers. A 4xx other than 408 and 429 is an answer, even when reported as `server_error`.
+ */
+function isTransientTokenFailure(error: unknown): boolean {
+	if (error instanceof OAuthError) {
+		if (REAUTHORIZATION_ERRORS.has(error.code)) return false;
+		const status = error.status ?? 0;
+		if (status === 408 || status === 429 || status >= 500) return true;
+		if (error.code === "temporarily_unavailable") return true;
+		return error.code === "server_error" && status < 400;
+	}
+	return (
+		error instanceof TypeError ||
+		(error instanceof DOMException && (error.name === "TimeoutError" || error.name === "AbortError"))
+	);
 }
 
 function withScope(tokens: OAuthTokens, scope: string | undefined): OAuthTokens {
@@ -408,6 +432,8 @@ async function runFlow(provider: OAuthClientProvider, options: OAuthFlowOptions)
 			return "AUTHORIZED";
 		} catch (error) {
 			if (options.signal?.aborted || error instanceof OAuthInsecureEndpointError) throw error;
+			// The grant may still be valid: keep it, and the pending PKCE state, for another attempt.
+			if (isTransientTokenFailure(error)) throw new OAuthTemporarilyUnavailableError(error);
 			if (error instanceof OAuthError && error.code !== "server_error") throw error;
 		}
 	}
@@ -426,15 +452,21 @@ async function runFlow(provider: OAuthClientProvider, options: OAuthFlowOptions)
 }
 
 export async function authorizeMcp(provider: OAuthClientProvider, options: OAuthFlowOptions): Promise<OAuthFlowResult> {
+	// A failed code exchange says nothing about the stored credentials, which may belong to another sign-in.
+	const refreshing = !options.authorizationCode && !options.skipRefresh;
+	const refreshToken = refreshing ? (await provider.tokens())?.refresh_token : undefined;
 	try {
 		return await runFlow(provider, options);
 	} catch (error) {
-		if (error instanceof OAuthError && ["invalid_client", "unauthorized_client"].includes(error.code)) {
+		if (!refreshing || !(error instanceof OAuthError)) throw error;
+		if (["invalid_client", "unauthorized_client"].includes(error.code)) {
 			await provider.invalidateCredentials?.("all");
 			return runFlow(provider, options);
 		}
-		if (error instanceof OAuthError && error.code === "invalid_grant") {
-			await provider.invalidateCredentials?.("tokens");
+		if (error.code === "invalid_grant") {
+			// Only the rejected grant is dropped: tokens saved meanwhile (another sign-in or refresh) are tried instead.
+			if ((await provider.tokens())?.refresh_token === refreshToken)
+				await provider.invalidateCredentials?.("tokens");
 			return runFlow(provider, options);
 		}
 		throw error;
