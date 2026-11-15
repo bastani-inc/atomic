@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
+import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
 import { SessionOpenElsewhereError } from "../src/core/session-manager-errors.js";
 import { assertSessionNotOpenElsewhere } from "../src/core/session-open-markers.js";
 import {
@@ -15,6 +16,8 @@ import {
 	repositoryIdOf,
 	UNSTARTED_LEASE_LIMIT_MS,
 } from "../src/core/worktree-snapshot/pool.js";
+import { thisProcess } from "../src/core/worktree-snapshot/process-holder.js";
+import { pendingLfsDownload } from "../src/core/worktree-snapshot/restore.js";
 import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../src/core/worktree-snapshot/settings.js";
 
 // No process's start can be read now, as when Windows' PowerShell fallback times out under load (#5141).
@@ -93,5 +96,41 @@ describe("a running holder whose start cannot be read now (#5141)", () => {
 
 		await assert.rejects(assertSessionNotOpenElsewhere(sessionId, { agentDir }), SessionOpenElsewhereError);
 		assert.equal(existsSync(mark), true);
+	});
+
+	test("keeps its Git LFS download: its locks stay and the download is waited for, not taken over (#5141)", async () => {
+		const sandbox = new GitSandbox();
+		try {
+			const { clone, remote } = await sandbox.remoteWithClone("repo", { "README.md": "hello\n" });
+			const gitPath = (name: string) =>
+				sandbox.git(clone, "rev-parse", "--path-format=absolute", "--git-path", name);
+			const head = await sandbox.git(clone, "rev-parse", "HEAD");
+			const tree = await sandbox.git(clone, "rev-parse", "HEAD^{tree}");
+			const mark = await gitPath("atomic-lfs-pending.json");
+			const locks = [await gitPath("HEAD.lock"), await gitPath("index.lock")];
+			const holder = { host: thisProcess().host, pid: await liveHolder(), start: RECORDED_START };
+			const pending = JSON.stringify({ head, tree, remotes: [remote], holder });
+			writeFileSync(mark, pending);
+			for (const lock of locks) writeFileSync(lock, "");
+			age(mark, DAY_AND_AN_HOUR_MS);
+
+			const waiting = new AbortController();
+			const pull = await pendingLfsDownload(clone, { signal: waiting.signal });
+			assert.ok(pull, "a download is pending");
+			const settled = pull().then(
+				() => "finished",
+				(error: unknown) => (waiting.signal.aborted ? "waiting" : `failed: ${String(error)}`),
+			);
+			// It waits for the running holder; stopped after a while, as a resume giving up would be.
+			setTimeout(() => waiting.abort(), 1_000);
+			assert.equal(await settled, "waiting");
+			assert.deepEqual(
+				locks.map((lock) => existsSync(lock)),
+				[true, true],
+			);
+			assert.equal(readFileSync(mark, "utf8"), pending);
+		} finally {
+			sandbox.dispose();
+		}
 	});
 });
