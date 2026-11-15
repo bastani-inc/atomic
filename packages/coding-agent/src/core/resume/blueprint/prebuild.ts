@@ -18,7 +18,7 @@ import {
 	type PoolOwner,
 	releaseRestoredWorktree,
 } from "../../worktree-snapshot/pool.ts";
-import { repositoryIdOf } from "../../worktree-snapshot/repository-identity.ts";
+import { type RepositoryId, sharedRepositoryIdOf } from "../../worktree-snapshot/repository-identity.ts";
 import { removeRestoredWorktree, restoreWorktreeAt, storeCheckoutHead } from "../../worktree-snapshot/restore.ts";
 import {
 	insideThroughDirectories,
@@ -102,10 +102,11 @@ export async function prebuildRepository(root: string, options: PrebuildReposito
 		);
 	}
 	const state = { snapshotId: snapshot.id, head: snapshot.head, tree: snapshot.tree };
+	const repository = prebuiltRepositoryOf(snapshot);
 	// The checkout has the commit, and the credentials to fetch it; the store takes it from there.
-	await storeCheckoutHead(storeDir, remotes, root, snapshot.head, signal);
+	await storeCheckoutHead(storeDir, remotes, snapshot.root, snapshot.head, signal);
 	const lease = await admitPooledWorktree(
-		{ storeDir, remotes, lastState: state, envHash: snapshot.envHash },
+		{ storeDir, remotes, root: snapshot.root, lastState: state, envHash: snapshot.envHash },
 		PREBUILD_OWNER,
 	);
 	return recorder.run(async () => {
@@ -138,7 +139,7 @@ export async function prebuildRepository(root: string, options: PrebuildReposito
 				const started = performance.now();
 				const keys = await blueprintCacheKeys(root, { agentDir: options.agentDir, storeDir });
 				outcome.warnings.push(...keys.warnings);
-				const seeds = seedDirectory(storeDir, repositoryIdOf(remotes));
+				const seeds = seedDirectory(storeDir, repository);
 				const declared = (keys.entries.find((entry) => entry.name === "build")?.paths ?? [])
 					.map((path) => relative(seeds, path).split(sep).join("/"))
 					.filter((path) => seedPathSegments(path) !== undefined);
@@ -159,6 +160,20 @@ export async function prebuildRepository(root: string, options: PrebuildReposito
 }
 
 /**
+ * The repository the prebuilt worktree and seed of the checkout `snapshot` recorded belong to: the one its remotes name,
+ * relative paths resolved against its root (#4989). Rejects when they name none.
+ */
+function prebuiltRepositoryOf(snapshot: Pick<WorktreeSnapshot, "remotes" | "root">): RepositoryId {
+	const repository = sharedRepositoryIdOf(snapshot.remotes, snapshot.root);
+	if (repository === undefined) {
+		throw new Error(
+			`${snapshot.root} has no Git remote that names its repository; a prebuilt worktree belongs to it`,
+		);
+	}
+	return repository;
+}
+
+/**
  * Moves the files Git does not track under each of `declared`, root-relative, from the worktree at `worktree` into a
  * new seed directory of the repository, which then replaces the earlier one under the seed lock, and writes its
  * manifest. Tracked files stay, so the worktree keeps the tree its pool record names and stays claimable (#4911); a
@@ -172,7 +187,7 @@ async function parkBuildOutput(
 	declared: readonly string[],
 	snapshot: WorktreeSnapshot,
 ): Promise<string[]> {
-	const repository = repositoryIdOf(snapshot.remotes);
+	const repository = prebuiltRepositoryOf(snapshot);
 	const target = seedDirectory(storeDir, repository);
 	const staging = join(dirname(target), `.parking-${randomUUID()}`);
 	const outermost = declared.filter(

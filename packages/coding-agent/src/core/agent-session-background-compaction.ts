@@ -75,6 +75,8 @@ export interface CommittedBackgroundCompaction {
 /** A ready result a foreground compaction committed; `sufficient` when no further compaction is needed. */
 export interface ForegroundBackgroundCompaction extends CommittedBackgroundCompaction {
 	readonly sufficient: boolean;
+	/** Estimated tokens of the context after the commit, for deciding whether it still exceeds the hard limit. */
+	readonly projectedTokens: number;
 }
 
 type TaskOutcome =
@@ -626,12 +628,13 @@ export async function _useReadyBackgroundCompaction(
 	const committed = await this._commitReadyBackgroundCompaction({ foreground: true });
 	this._abortBackgroundCompaction();
 	if (committed === undefined) return undefined;
+	const projectedTokens = estimateContextTokens(committedContextMessages(this)).tokens;
 	const sufficient = !shouldCompact(
-		estimateContextTokens(committedContextMessages(this)).tokens,
+		projectedTokens,
 		model.contextWindow,
 		this.settingsManager.getCompactionSettings(model),
 	);
-	return { ...committed, sufficient };
+	return { ...committed, sufficient, projectedTokens };
 }
 
 export function _abortBackgroundCompaction(this: AgentSession): void {

@@ -59,7 +59,8 @@ interface ForegroundParallelRunInput {
 	modelOverrides: (string | undefined)[];
 	modelRoutes?: (import("../shared/model-router.js").ModelRoute | undefined)[];
 	behaviors: ResolvedStepBehavior[];
-	firstProgressIndex: number;
+	/** Run-scoped directory holding the shared, precreated progress.md; set when any task tracks progress. */
+	progressDir?: string;
 	controlConfig: import("../../shared/types.js").ResolvedControlConfig;
 	onControlEvent?: (event: ControlEvent) => void;
 	childIntercomTarget?: (agent: string, index: number) => string | undefined;
@@ -160,13 +161,10 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 		const readInstructions = behavior
 			? buildTaskInstructions({ ...behavior, output: false, progress: false }, taskCwd, false)
 			: { prefix: "", suffix: "" };
-		const progressInstructions = behavior
-			? buildTaskInstructions(
-					{ ...behavior, output: false, reads: false },
-					input.paramsCwd,
-					index === input.firstProgressIndex,
-				)
-			: { prefix: "", suffix: "" };
+		const progressInstructions =
+			behavior && input.progressDir
+				? buildTaskInstructions({ ...behavior, output: false, reads: false }, input.progressDir, false)
+				: { prefix: "", suffix: "" };
 		const outputPath = resolveSingleOutputPath(behavior?.output, input.ctx.cwd, taskCwd);
 		const taskText = injectSingleOutputInstruction(
 			`${readInstructions.prefix}${input.taskTexts[index]!}${progressInstructions.suffix}`,
@@ -196,9 +194,10 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 		}
 		const agentConfig = input.agentConfigs?.[index] ?? input.agents.find((agent) => agent.name === task.agent);
 		const taskAgents = input.agentConfigs && agentConfig ? [agentConfig] : input.agents;
+		// Only the first progress-enabled child recovers the shared file on cancellation, so siblings do not repeat it.
 		const sharedProgress =
-			index === input.behaviors.findIndex((candidate) => candidate.progress)
-				? join(input.paramsCwd, "progress.md")
+			input.progressDir && index === input.behaviors.findIndex((candidate) => candidate.progress)
+				? join(input.progressDir, "progress.md")
 				: undefined;
 		const runOptions: RunSyncOptions = {
 			runningCapacity: input.runningCapacity,

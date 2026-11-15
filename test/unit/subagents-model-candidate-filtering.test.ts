@@ -108,7 +108,6 @@ describe("subagent pre-spawn model candidate filtering", () => {
 				resolveCandidateModel: () => undefined,
 				modelOverrides: ["provider-a/stalled"],
 				behaviors: [{ output: false, outputMode: "inline", reads: false, progress: false, skills: false }],
-				firstProgressIndex: -1,
 				controlConfig: {
 					enabled: false,
 					needsAttentionAfterMs: 1,
@@ -177,7 +176,6 @@ describe("subagent pre-spawn model candidate filtering", () => {
 					{ output: false, outputMode: "inline", reads: false, progress: false, skills: false },
 					{ output: false, outputMode: "inline", reads: false, progress: false, skills: false },
 				],
-				firstProgressIndex: -1,
 				controlConfig: {
 					enabled: false,
 					needsAttentionAfterMs: 1,
