@@ -60,14 +60,6 @@ async function restartBroker(signal: NodeJS.Signals = "SIGTERM"): Promise<void> 
 	await startBroker();
 }
 
-/** Wait until the broker has handled `sessionId`'s departure, as seen by `observer`. */
-async function untilDeparted(observer: Client, sessionId: string): Promise<void> {
-	await vi.waitFor(
-		async () => assert.ok(!(await observer.listSessions()).some((session) => session.id === sessionId)),
-		WAIT,
-	);
-}
-
 /** A real client that records what arrives and confirms each save, as a session does. */
 async function connect(
 	name: string,
