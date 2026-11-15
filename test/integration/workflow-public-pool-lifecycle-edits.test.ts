@@ -97,7 +97,7 @@ test.skipIf(process.platform === "win32")(
 					Number(
 						database
 							.query(
-								"SELECT COUNT(*) AS count FROM wf_events WHERE json_extract(payload, '$.name') = 'checkpoint'",
+								"SELECT COUNT(*) AS count FROM wf_events WHERE json_extract(payload, '$.name') = 'checkpoint' AND json_extract(payload, '$.checkpointId') NOT LIKE '%tool-replay-meta:%'",
 							)
 							.get()!.count,
 					),
