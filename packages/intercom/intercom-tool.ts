@@ -38,6 +38,7 @@ import { isRecoverableIntercomDisconnect } from "./recoverable-disconnect.js";
 import { RetryIdentityReservations, type RetryIdentityAttempt, RetryTokenError } from "./retry-identity.js";
 import { runIntercomOperation, type IntercomAttemptResult } from "./tool-retry.js";
 import { PendingSendTimeoutError } from "./broker/pending-send-registry.js";
+import { intercomMessageSizeError } from "./message-size.js";
 import {
   closeSessionNames,
   listIntercomChildren,
@@ -529,6 +530,12 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
       const { action, to, message, replyTo, group } = params;
       const deliveryOption = params.delivery === undefined || params.delivery === "steer" ? {} : { delivery: params.delivery };
       const attachments = params.attachments?.map((attachment) => ({ ...attachment }));
+      if ((action === "send" || action === "ask" || action === "reply") && typeof message === "string") {
+        const sizeError = intercomMessageSizeError({ text: message, ...(attachments === undefined ? {} : { attachments }) });
+        if (sizeError !== undefined) {
+          return { content: [{ type: "text", text: sizeError }], isError: true, details: { error: true } };
+        }
+      }
       // A pattern send (#4752) runs this once per recipient, as a direct send to `fanOutRecipient`.
       const executeAttempt = async (retryToken: string | undefined, _signal?: AbortSignal, retries = 0, fanOutRecipient?: string): Promise<IntercomAttemptResult> => {
       const to = fanOutRecipient ?? params.to;

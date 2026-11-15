@@ -172,7 +172,8 @@ export function stillRunningReceipt(taskId: string, timeoutSeconds: number): str
 function normalizeTimeoutSeconds(timeout: number | undefined): number {
 	if (timeout === undefined) return DEFAULT_TIMEOUT_SECONDS;
 	validateExplicitTimeoutSeconds(timeout);
-	return Math.max(1, Math.floor(timeout));
+	// The nearest whole millisecond, and at least one: fractional seconds are honoured, not floored.
+	return Math.max(1, Math.round(timeout * 1000)) / 1000;
 }
 export type BashOutputChannel = "stdout" | "stderr";
 export interface BashOperations {
