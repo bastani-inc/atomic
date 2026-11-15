@@ -395,6 +395,9 @@ export async function openPostgresDatabase(options) {
 		connectionTimeoutMillis: CONNECT_TIMEOUT_MS,
 		idleTimeoutMillis: IDLE_TIMEOUT_MS,
 		keepAlive: true,
+		// Queries are written without waiting for the answer to the one before, so a statement outside a transaction
+		// sends its `BEGIN` and `COMMIT` in the same round trip; each query still ends with its own sync.
+		pipeline: true,
 		application_name: "atomic",
 		types: sqliteTypes(pg.types),
 	});
@@ -474,17 +477,29 @@ export async function openPostgresDatabase(options) {
 	 * @param {PoolClient} client
 	 * @param {string} sql
 	 * @param {readonly SqliteValue[]} params
+	 */
+	const statement = (client, sql, params) =>
+		client.query({ text: numberPlaceholders(sql), values: [...params], rowMode: "array" });
+
+	/**
+	 * @param {import("pg").QueryResult<SqliteValue[]>} result
+	 * @returns {SqliteDriverResult}
+	 */
+	const driverResult = (result) => ({
+		columns: result.fields.map((field) => field.name),
+		rows: result.rows,
+		changes: result.rowCount ?? 0,
+	});
+
+	/**
+	 * @param {PoolClient} client
+	 * @param {string} sql
+	 * @param {readonly SqliteValue[]} params
 	 * @param {number} timeoutMs
 	 * @returns {Promise<SqliteDriverResult>}
 	 */
-	const execute = async (client, sql, params, timeoutMs) => {
-		const result = await watched(
-			client,
-			() => client.query({ text: numberPlaceholders(sql), values: [...params], rowMode: "array" }),
-			timeoutMs,
-		);
-		return { columns: result.fields.map((field) => field.name), rows: result.rows, changes: result.rowCount ?? 0 };
-	};
+	const execute = async (client, sql, params, timeoutMs) =>
+		driverResult(await watched(client, () => statement(client, sql, params), timeoutMs));
 
 	/**
 	 * @param {PoolClient} client
@@ -531,7 +546,9 @@ export async function openPostgresDatabase(options) {
 	};
 
 	/**
-	 * Runs one statement on `client` in a transaction of its own, which the server cancels at the statement timeout.
+	 * Runs one statement on `client` in a transaction of its own, which the server cancels at the statement timeout. The
+	 * pipelined connection writes the `BEGIN`, the statement and the `COMMIT` together, so this costs one round trip like
+	 * the statement alone. A statement that fails aborts the transaction, which the `COMMIT` then rolls back.
 	 * @param {PoolClient} client
 	 * @param {string} sql
 	 * @param {readonly SqliteValue[]} params
@@ -539,18 +556,21 @@ export async function openPostgresDatabase(options) {
 	const executeAutocommit = (client, sql, params) =>
 		withTimeout(
 			async () => {
-				await watched(client, () => client.query(`BEGIN; ${setTimeoutSql}`), clientTimeoutMs);
-				/** @type {SqliteDriverResult} */
-				let result;
-				try {
-					result = await execute(client, sql, params, clientTimeoutMs);
-				} catch (error) {
-					// A connection whose rollback failed may hold the transaction open, so it is closed rather than reused.
-					await watched(client, () => client.query("ROLLBACK"), clientTimeoutMs).catch(() => lost.add(client));
-					throw error;
-				}
-				await watched(client, () => client.query("COMMIT"), clientTimeoutMs);
-				return result;
+				const result = await watched(
+					client,
+					async () => {
+						// Every answer is awaited, so none is left to fail unheard; the first failure is the call's.
+						const answers = await Promise.allSettled([
+							client.query(`BEGIN; ${setTimeoutSql}`),
+							statement(client, sql, params),
+							client.query("COMMIT"),
+						]);
+						for (const answer of answers) if (answer.status === "rejected") throw answer.reason;
+						return /** @type {PromiseFulfilledResult<import("pg").QueryResult<SqliteValue[]>>} */ (answers[1]).value;
+					},
+					clientTimeoutMs,
+				);
+				return driverResult(result);
 			},
 			() => execute(client, sql, params, clientTimeoutMs),
 		);

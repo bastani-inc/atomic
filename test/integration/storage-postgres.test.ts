@@ -529,23 +529,22 @@ describe.skipIf(postgresSkipReason !== undefined)("Postgres storage adapter (#47
 		TRANSIENT_RETRIES_TIMEOUT_MS,
 	);
 
-	test("a connection whose autocommit rollback failed is closed, not reused (#4901)", async () => {
-		await withPostgresDatabase(async ({ open }) => {
+	test("a failed autocommit statement leaves its connection outside a transaction (#4901)", async () => {
+		await withPostgresDatabase(async ({ open, admin, name }) => {
 			const database = await open({ maxConnections: 1 });
 			await database.exec("CREATE TABLE items (id BIGINT PRIMARY KEY)");
 			await database.run("INSERT INTO items(id) VALUES (?)", 1);
-			const query = pg.Client.prototype.query;
-			pg.Client.prototype.query = function (this: pg.Client, ...args: Parameters<pg.Client["query"]>) {
-				if (args[0] === "ROLLBACK") return Promise.reject(new Error("fixture rollback failure"));
-				return Reflect.apply(query, this, args);
-			} as pg.Client["query"];
-			try {
-				await assert.rejects(database.run("INSERT INTO items(id) VALUES (?)", 1));
-			} finally {
-				pg.Client.prototype.query = query;
-			}
-			// The only connection held the aborted transaction; a new one runs the next statement.
-			assert.deepEqual(await database.all("SELECT id FROM items"), [{ id: 1 }]);
+			await assert.rejects(database.run("INSERT INTO items(id) VALUES (?)", 1));
+			// The only connection runs the next statement, which commits rather than fails in an aborted transaction.
+			await database.run("INSERT INTO items(id) VALUES (?)", 2);
+			assert.deepEqual(
+				await admin.get(
+					"SELECT count(*) AS open FROM pg_stat_activity WHERE datname = ? AND state LIKE 'idle in transaction%'",
+					name,
+				),
+				{ open: 0 },
+			);
+			assert.deepEqual(await database.all("SELECT id FROM items ORDER BY id"), [{ id: 1 }, { id: 2 }]);
 		});
 	});
 
