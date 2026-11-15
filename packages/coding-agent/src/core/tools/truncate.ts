@@ -263,16 +263,28 @@ function truncateStringToBytesFromEnd(str: string, maxBytes: number): string {
 
 /**
  * Truncate a single line to max characters, adding [truncated] suffix.
- * Used for grep match lines.
+ * Used for grep match lines. When a match range (UTF-16 offsets) ends past the limit, the kept window is
+ * moved to show the match, with "..." marking each cut side.
  */
 export function truncateLine(
 	line: string,
 	maxChars: number = GREP_MAX_LINE_LENGTH,
+	match?: { start: number; end: number },
 ): { text: string; wasTruncated: boolean } {
 	if (line.length <= maxChars) {
 		return { text: line, wasTruncated: false };
 	}
-	return { text: `${sliceHead(line, maxChars)}... [truncated]`, wasTruncated: true };
+	let start = 0;
+	if (match && match.end > maxChars) {
+		const matchLength = Math.min(match.end - match.start, maxChars);
+		start = Math.max(0, Math.min(match.start - Math.floor((maxChars - matchLength) / 2), line.length - maxChars));
+		// Do not start inside a surrogate pair.
+		if (isLowSurrogate(line.charCodeAt(start)) && isHighSurrogate(line.charCodeAt(start - 1))) start++;
+	}
+	const kept = sliceHead(line.slice(start), maxChars);
+	const prefix = start > 0 ? "..." : "";
+	const suffix = start + kept.length < line.length ? "..." : "";
+	return { text: `${prefix}${kept}${suffix} [truncated]`, wasTruncated: true };
 }
 
 /** Returns at most the first `maxUnits` UTF-16 code units of `text`, without splitting a surrogate pair. */

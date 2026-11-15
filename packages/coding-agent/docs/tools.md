@@ -93,9 +93,10 @@ Answers depend on DeepWiki's repository indexing and availability. Check the rep
 }
 ```
 
-- Every `oldText` must match exactly one region of the file as it is when the edit runs, including whitespace and newlines. Edits are matched against the original file, not one after another, and must not overlap. Merge changes to the same or nearby lines into one edit.
+- Every `oldText` must match exactly one region of the file as it is when the edit runs, including whitespace and newlines. Overlapping occurrences count: `}\n}` occurs twice in `}\n}\n}`. Edits are matched against the original file, not one after another, and must not overlap. Merge changes to the same or nearby lines into one edit.
 - `edit` does not depend on an earlier `read`. A file changed by `bash`, another tool, or another program is edited by its current text.
-- When no exact match exists, `edit` retries after normalizing trailing whitespace, Unicode quotes, dashes, and spaces, and leaves lines outside the replaced regions byte-for-byte unchanged.
+- When no exact match exists, `edit` retries after normalizing trailing whitespace, Unicode quotes, dashes, spaces, and compatibility forms such as full-width characters. The normalization only finds the region; `newText` replaces the file's original text there, and everything outside that region, including the rest of its lines, stays byte-for-byte unchanged. A single exact match is always used, even when the normalized text would match more than once.
+- `edit` only edits UTF-8 text. A file that is not valid UTF-8, such as a Latin-1 file, is refused with `target-not-utf8` and left unchanged.
 - A UTF-8 byte-order mark is kept, and every line outside the replaced text keeps its own line ending (LF, CRLF, or a lone CR). Line breaks in `newText` take the line ending of the line where the replaced text starts; a file that uses only lone CR line endings gets CR.
 - Either every edit applies or the file is left unchanged.
 - In the built-in tool, a notebook (`.ipynb`) is edited through the same `# %% [code] cell:N` text that `read` shows; cell metadata, outputs, and execution counts are kept.
@@ -121,6 +122,7 @@ The built-in `write` also accepts these targets, described under [Lines and loca
 | `EditMatchError` | `edits-overlap` | Two edits touch the same region | `path`, `editIndex`, `overlapsEditIndex`, `totalEdits` | Merge them into one edit. |
 | `EditMatchError` | `no-change` | The edits leave the file identical | `path`, `totalEdits` | Make `newText` differ from `oldText`. |
 | `EditTargetError` | `target-inaccessible` | The file cannot be read and written | `path`, `errnoCode` when the filesystem gave one; the filesystem error is `cause` | Check that the file exists and is writable. |
+| `EditTargetError` | `target-not-utf8` | The file is not valid UTF-8 text, so editing it would corrupt its other bytes; the file is left unchanged | `path` | Edit it with a tool that keeps its encoding, or convert it to UTF-8 first. |
 | `WriteSelectorError` | `sqlite-query-parameters` | A SQLite write selector has `?` query parameters | `path` | Write to a table or row selector. |
 | `WriteSelectorError` | `sqlite-not-found` | The SQLite selector's database does not exist or is not SQLite | `path` | Check the database path. |
 | `WriteSelectorError` | `conflict-target-required` | `conflict://` names no conflict | `path` | Write to `conflict://<id>` or `conflict://*`. |
@@ -139,7 +141,7 @@ A cancelled `edit` or `write` throws `FileToolAbortedError` (`name: "AbortError"
 The `bash` tool executes shell commands in the session workspace. It accepts `cwd`, `env`, `timeout`, `pty`, and `heartbeatMs`.
 
 - `cwd` and `env` set the working directory and environment for local execution.
-- `timeout` is in seconds and defaults to 300. Explicit values must be finite, greater than zero, and no more than 3600. Invalid values fail before execution. Fractions round down, with a one-second floor. The timeout keeps counting after a command continues in the background: the launch result names it, and a later `wait` on a command it stopped returns an error naming the timeout. See [Background shells](/background-tasks#background-shells).
+- `timeout` is in seconds and defaults to 300. Explicit values must be finite, greater than zero, and no more than 3600. Invalid values fail before execution. Fractional seconds are honoured to the nearest millisecond, with a one-millisecond minimum. The timeout keeps counting after a command continues in the background: the launch result names it, and a later `wait` on a command it stopped returns an error naming the timeout. See [Background shells](/background-tasks#background-shells).
 - `pty: true` uses the bundled native PTY session, falling back to pipes if unavailable. Set `PI_NO_PTY=1` or `ATOMIC_NO_PTY=1` to force pipes.
 - `heartbeatMs` sets how often a command that keeps running as a background task sends a [task heartbeat](/background-tasks#task-heartbeats). Omit it for the chat's default (15 minutes unless `tasks.heartbeatMs` changes it), use `0` to turn heartbeats off, or give at least `60000`.
 
@@ -212,7 +214,7 @@ These are the only internal URL schemes. `read`, `search`, `write`, `find` and `
 
 A cancelled `read` or `find` throws the same `FileToolAbortedError` as a cancelled `edit` or `write` (see [Edit and write errors](#edit-and-write-errors)). Filesystem failures such as `ENOENT` or `EACCES` are the filesystem's own errors.
 
-Workspace-scoped selectors reject lexical and symlink escapes outside the workspace or skill root. Existing non-SQLite `.db` and `.sqlite` files remain plain files. Archive writes reject directory targets ending in `/` and return the resolved archive path. SQLite writes return source-path metadata.
+Workspace-scoped selectors reject lexical and symlink escapes outside the workspace or skill root. Existing non-SQLite `.db` and `.sqlite` files remain plain files. Archive writes reject directory targets ending in `/` and return the resolved archive path. Writing a tar member leaves every other member exactly as it was and keeps the written member's mode; overwriting a link, a directory, a member stored more than once, or an archive with a damaged header is refused. SQLite writes return source-path metadata.
 
 ### SQLite limits and writes
 
@@ -221,10 +223,11 @@ Workspace-scoped selectors reject lexical and symlink escapes outside the worksp
 - Table lists cap at 500, excluding `sqlite_%` tables. Row counts probe at most 50,001 rows.
 - Table writes accept `{}` as `INSERT DEFAULT VALUES`. Row writes parse non-empty JSON5-style objects, including comments, and validate column names and scalar values before binding.
 - Empty SQLite row writes delete only when a row ID is present.
+- A row selector names one row by its primary key, as in `data.sqlite:users:42`. Tables without a primary key use `rowid`. For a composite primary key, give every key value as a JSON array in key order, such as `data.sqlite:members:["acme",2]`; a partial key is refused. A row update or delete that would change more than one row is refused and changes nothing.
 
 ### Conflict resolution and file writes
 
-`conflict://<id>` and `conflict://*` writes replace conflict marker regions and expand `@ours`, `@theirs`, and `@base`. Scoped sides such as `conflict://1/ours` are read-only. `read` and `search` accept the same URLs: `conflict://*` lists every conflict region under the working directory, `conflict://<id>` shows one with its ours, theirs and base sides, and `conflict://<id>/ours` (or `theirs`, `base`) returns just that side. The ids match the ones `write` resolves.
+`conflict://<id>` and `conflict://*` writes replace conflict marker regions and expand `@ours`, `@theirs`, and `@base`. Marker lines are matched as Git writes them: exactly seven `<`, `|`, `=` or `>` characters, alone or followed by a space and a label, in that order. Longer runs such as a markdown `==========` underline are content, and a region with an extra or out-of-order marker is left untouched. Scoped sides such as `conflict://1/ours` are read-only. `read` and `search` accept the same URLs: `conflict://*` lists every conflict region under the working directory, `conflict://<id>` shows one with its ours, theirs and base sides, and `conflict://<id>/ours` (or `theirs`, `base`) returns just that side. The ids match the ones `write` resolves.
 
 ### Documents and URLs
 

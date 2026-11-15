@@ -14,8 +14,15 @@ import type {
 	Store,
 	StoreInvalidationListener,
 } from "./store-public-types.js";
-import type { RunSnapshot, RunStatus, StoreSnapshot, WorkflowNotice } from "./store-types.js";
-import { accumulatePausedDurationMs, elapsedRunMs, nextControlTimestamp } from "./timing.js";
+import type {
+	RunSnapshot,
+	RunStatus,
+	StageSnapshot,
+	StageStatus,
+	StoreSnapshot,
+	WorkflowNotice,
+} from "./store-types.js";
+import { accumulatePausedDurationMs, elapsedRunMs, elapsedStageMs, nextControlTimestamp } from "./timing.js";
 import type { WorkflowOutputValues } from "./types.js";
 
 type RunStoreMethods = Pick<
@@ -157,17 +164,18 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 			const run = context.findRun(runId);
 			if (!run) return false;
 			if (TERMINAL_STATUSES.has(run.status)) return false;
+			const endedAt = Date.now();
 			run.status = status;
-			run.endedAt = Date.now();
+			run.endedAt = endedAt;
 			if (run.phase !== undefined) {
 				run.phase = "ended";
-				run.phaseStartedAt = run.endedAt;
+				run.phaseStartedAt = endedAt;
 			}
 			if (run.pausedAt !== undefined) {
-				run.pausedDurationMs = accumulatePausedDurationMs(run.pausedDurationMs, run.pausedAt, run.endedAt);
+				run.pausedDurationMs = accumulatePausedDurationMs(run.pausedDurationMs, run.pausedAt, endedAt);
 				run.pausedAt = undefined;
 			}
-			run.durationMs = elapsedRunMs(run, run.endedAt);
+			run.durationMs = elapsedRunMs(run, endedAt);
 			if (result !== undefined && shouldStoreRunResult(status)) run.result = result;
 			const wasBlocked = run.blockedAt !== undefined || run.failureDisposition === "active_blocked";
 			delete run.blockedAt;
@@ -196,7 +204,10 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 				context.rejectPrompt(pending.id, `atomic-workflows: run ${runId} ended before prompt resolved`);
 			}
 			context.rejectAllStagePrompts(runId, run, `atomic-workflows: run ${runId} ended before prompt resolved`);
-			context.bumpAndNotify({ runId });
+			context.batch(() => {
+				if (status === "killed" || status === "cancelled") endInFlightWork(context, run, status, endedAt, error);
+				context.bumpAndNotify({ runId });
+			});
 			return true;
 		},
 
@@ -398,6 +409,58 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 			return context.batch(update);
 		},
 	};
+}
+
+// A paused stage keeps showing that it was paused when its run ends (#2891).
+const IN_FLIGHT_STAGE_STATUSES: ReadonlySet<StageStatus> = new Set(["running", "awaiting_input", "suspended"]);
+
+/**
+ * Ends the work a killed or cancelled run still had in flight (#4875): its stages fail as killed or skip as
+ * cancelled, and its running tool calls are cancelled, so no surface shows a stopped run as still working. Finished,
+ * blocked, paused and never-started stages keep their state, and so does a workflow boundary: a nested child run
+ * ends its own work, and its boundary, when it ends.
+ */
+function endInFlightWork(
+	context: StoreContext,
+	run: RunSnapshot,
+	status: "killed" | "cancelled",
+	endedAt: number,
+	error?: string,
+): void {
+	for (const stage of run.stages) {
+		// A workflow boundary stays linked to its child run, which ends it when the child itself ends.
+		if (!IN_FLIGHT_STAGE_STATUSES.has(stage.status) || stage.workflowChildRun !== undefined) continue;
+		if (status === "killed") {
+			const message = error ?? "workflow killed";
+			Object.assign(stage, {
+				status: "failed",
+				error: message,
+				failureKind: "cancelled",
+				failureCode: "cancelled",
+				failureRecoverability: "non_recoverable",
+				failureDisposition: "terminal_killed",
+				failureMessage: message,
+			} satisfies Partial<StageSnapshot>);
+		} else {
+			stage.status = "skipped";
+			stage.skippedReason = run.exitReason ?? "cancelled";
+		}
+		if (stage.endedAt === undefined) {
+			stage.endedAt = endedAt;
+			stage.durationMs = elapsedStageMs(stage, endedAt);
+		}
+		delete stage.awaitingInputSince;
+		delete stage.inputRequest;
+		delete stage.wait;
+		context.bumpAndNotify({ runId: run.id, stageId: stage.id });
+	}
+	for (const node of run.toolNodes) {
+		if (node.status !== "running" && node.status !== "pending") continue;
+		node.status = "cancelled";
+		node.endedAt = endedAt;
+		if (node.startedAt !== undefined) node.durationMs = Math.max(0, endedAt - node.startedAt);
+		context.bumpAndNotify({ runId: run.id, toolNodeId: node.id });
+	}
 }
 
 function shouldStoreRunResult(status: RunStatus): boolean {

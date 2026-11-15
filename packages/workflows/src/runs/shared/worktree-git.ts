@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { isPathInside } from "@bastani/atomic";
 import {
 	allocateWorktreeCheckoutPath,
 	bindWorktreeOwner,
@@ -396,8 +397,7 @@ function cwdWithinGitRepository(cwd: string, repoRoot: string): { relativeCwd: s
 	const sourceCwd = fs.realpathSync.native(cwd);
 	const sourceRepoRoot = fs.realpathSync.native(repoRoot);
 	const relativeCwd = path.relative(sourceRepoRoot, sourceCwd);
-	const safeRelativeCwd =
-		relativeCwd === "" || relativeCwd.startsWith("..") || path.isAbsolute(relativeCwd) ? "" : relativeCwd;
+	const safeRelativeCwd = isPathInside(sourceRepoRoot, sourceCwd) ? relativeCwd : "";
 	const logicalCwd = canonicalizePreservingSymlinks(cwd);
 	return {
 		relativeCwd: safeRelativeCwd,

@@ -8,6 +8,7 @@ import {
 	getAgentDirs,
 	getBuiltinPackagePaths,
 	getProjectConfigDirs,
+	isPathInside,
 } from "@bastani/atomic";
 import type { SkillSource } from "./skills.js";
 
@@ -17,8 +18,7 @@ export interface SkillSearchPath {
 }
 
 function isWithinPath(filePath: string, dir: string): boolean {
-	const relative = path.relative(dir, filePath);
-	return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+	return isPathInside(dir, filePath);
 }
 
 function readOptionalJsonFile(filePath: string, label: string): unknown {

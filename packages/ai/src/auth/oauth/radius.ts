@@ -15,6 +15,7 @@ import type { OAuthAuth, OAuthCredential, ProviderAuthInteraction } from "../typ
 import { startOAuthCallbackServer } from "./callback-server.ts";
 import { pollOAuthDeviceCodeFlow } from "./device-code.ts";
 import { generatePKCE } from "./pkce.ts";
+import { refreshedOAuthCredential } from "./token-response.ts";
 import { trustedHttpUrl } from "./trusted-url.ts";
 
 const CALLBACK_HOST = "127.0.0.1";
@@ -105,10 +106,12 @@ async function readOAuthResponseError(response: Response, message: string): Prom
 	return new OAuthResponseError(response.status, oauthError, description, message, oauthDescription);
 }
 
+/** `presentedRefreshToken` is the token a refresh sends; the gateway may answer without a new one. */
 async function requestOAuthToken(
 	gateway: string,
 	body: URLSearchParams,
 	signal: AbortSignal,
+	presentedRefreshToken?: string,
 ): Promise<OAuthCredential> {
 	let response: Response;
 	try {
@@ -132,15 +135,17 @@ async function requestOAuthToken(
 	const data = (await response.json()) as {
 		access_token: string;
 		refresh_token: string;
-		expires_in: number;
+		expires_in?: number;
 		scope?: string;
 	};
 
 	return {
-		type: "oauth",
-		access: data.access_token,
-		refresh: data.refresh_token,
-		expires: Date.now() + data.expires_in * 1000 - TOKEN_EXPIRY_SKEW_MS,
+		...refreshedOAuthCredential(
+			data.access_token,
+			data,
+			presentedRefreshToken ?? data.refresh_token,
+			TOKEN_EXPIRY_SKEW_MS,
+		),
 		scope: data.scope,
 	};
 }
@@ -329,6 +334,7 @@ export function createRadiusOAuth(options: RadiusOAuthOptions): OAuthAuth {
 						refresh_token: credential.refresh,
 					}),
 					signal,
+					credential.refresh,
 				);
 			} catch (error) {
 				if (error instanceof OAuthResponseError) {
