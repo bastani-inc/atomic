@@ -1300,3 +1300,37 @@ describe("durable recovery omissions", () => {
 		expect(harness.sessionManager.getEntry(abortedId)).toBeDefined();
 	});
 });
+
+describe("tool calls with an empty id", () => {
+	const harnesses: Harness[] = [];
+
+	afterEach(() => {
+		while (harnesses.length > 0) harnesses.pop()?.cleanup();
+	});
+
+	it("sends the real result of an empty-id tool call on every later request (#5056)", async () => {
+		const requests: string[] = [];
+		const harness = await createHarness({ tools: [noopTool()] });
+		harnesses.push(harness);
+		const record = (reply: string) => (context: { messages: unknown[] }) => {
+			requests.push(JSON.stringify(context.messages));
+			return fauxAssistantMessage(reply);
+		};
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("noop", {}, { id: "" }), { stopReason: "toolUse" }),
+			record("listed"),
+			record("next answered"),
+			record("later answered"),
+		]);
+
+		await harness.session.prompt("list files");
+		await harness.session.prompt("next");
+		await harness.session.prompt("later");
+
+		expect(requests).toHaveLength(3);
+		for (const request of requests) {
+			expect(request).toContain('"text":"done"');
+			expect(request).not.toContain("Tool execution was interrupted");
+		}
+	});
+});
