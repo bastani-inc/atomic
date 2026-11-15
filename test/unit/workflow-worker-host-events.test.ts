@@ -44,6 +44,8 @@ const OUTAGE_TEST_TIMEOUT_MS = 60_000;
 const CUT_STREAM_TTL_MS = 60_000;
 /** How soon after the database is reachable again a host reports recovered: a poll's retry wait and a few calls. */
 const HOST_RECOVERY_BOUND_MS = 10_000;
+/** A stream lifetime like sqld's: about 5 s passes before sqld frees the lock of a stream its client lost. */
+const SQLD_STREAM_TTL_MS = 5_000;
 
 let directory: string;
 beforeEach(() => {
@@ -257,6 +259,64 @@ test.skipIf(process.platform === "win32")(
 			assert.ok(Date.now() - restoredAt <= HOST_RECOVERY_BOUND_MS + 100);
 			const rows = database.database.prepare("SELECT COUNT(*) AS count FROM child_steps").get() as { count: number };
 			assert.equal(Number(rows.count), 0, "the cut transaction rolled back");
+		} finally {
+			proxy.restore();
+			await other.close();
+			await host.stop();
+			await proxy.close();
+			await database.close();
+		}
+	},
+	OUTAGE_TEST_TIMEOUT_MS,
+);
+
+test.skipIf(process.platform === "win32")(
+	"a worker host recovers within the server's stream lifetime plus HOST_RECOVERY_BOUND_MS when the outage lost the answer to a write the server ran in a transaction (#5114)",
+	async () => {
+		const database = await startFakeLibsqlServer({ streamTtlMs: SQLD_STREAM_TTL_MS });
+		const proxy = await startOutageProxy(new URL(database.url));
+		const events: WorkflowWorkerHostEvent[] = [];
+		const host = await startWorkflowWorkerHost({
+			journal: journal(proxy.url),
+			agentDir: join(directory, "agent"),
+			maxWorkers: 1,
+			hostId: "host-lost-answer",
+			restore: false,
+			onEvent: (event) => events.push(event),
+		});
+		const other = await openLibsqlDatabase({ url: proxy.url });
+		try {
+			await until("the host to register", () => {
+				const row = database.database.prepare("SELECT COUNT(*) AS count FROM acme_wf_runs_pool_hosts").get() as
+					| { count: number }
+					| undefined;
+				return Number(row?.count ?? 0) === 1;
+			});
+			await other.exec("CREATE TABLE IF NOT EXISTS child_steps(n INTEGER NOT NULL)");
+			// The server runs the transaction's second statement, taking the stream's next baton, and the answer is lost:
+			// the client cannot close the stream, and the server keeps its lock until the stream expires.
+			let ran = 0;
+			database.onOpenTransaction(() => {
+				if (++ran === 2) proxy.cut();
+			});
+			await assert.rejects(
+				other.transaction(async (tx) => {
+					await tx.run("INSERT INTO child_steps VALUES (1)");
+					await tx.run("INSERT INTO child_steps VALUES (2)");
+				}),
+			);
+			database.onOpenTransaction(undefined);
+			await until("a degraded poll", () => events.some((event) => event.kind === "degraded"));
+			proxy.restore();
+			const restoredAt = Date.now();
+			await until(
+				"the host to recover",
+				() => events.some((event) => event.kind === "recovered"),
+				SQLD_STREAM_TTL_MS + HOST_RECOVERY_BOUND_MS,
+			);
+			assert.ok(Date.now() - restoredAt <= SQLD_STREAM_TTL_MS + HOST_RECOVERY_BOUND_MS + 100);
+			const rows = database.database.prepare("SELECT COUNT(*) AS count FROM child_steps").get() as { count: number };
+			assert.equal(Number(rows.count), 0, "the cut transaction rolled back when its stream expired");
 		} finally {
 			proxy.restore();
 			await other.close();

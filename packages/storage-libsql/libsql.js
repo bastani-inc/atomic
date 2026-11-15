@@ -47,13 +47,20 @@ function requestHeaders(url, namespace, headers) {
 const REQUEST_TIMEOUT_MS = 30_000;
 
 /**
- * How often the closes of streams abandoned in an outage are sent again until the server answers one (#5114). A stream
- * the server keeps holds its open transaction, and with it the database's write lock, until the server expires it,
- * which takes as long as the server's stream lifetime: every writer waits for the lock meanwhile, this process's and
- * every other's.
+ * The wait before the first resend of the close of a stream abandoned in an outage (#5114); each later wait doubles, up
+ * to `ABANDONED_STREAM_CLOSE_LAST_WAIT_MS`. A stream the server keeps holds its open transaction, and with it the
+ * database's write lock, until the server expires it: every writer waits for the lock meanwhile, this process's and
+ * every other's. A close the server answers, whatever the answer, is done.
  */
-const ABANDONED_STREAM_CLOSE_RETRY_MS = 250;
-/** How long one resend of an abandoned stream's close may go unanswered; the next resend tries again. */
+const ABANDONED_STREAM_CLOSE_FIRST_WAIT_MS = 250;
+/** The longest wait between two resends of abandoned stream closes. */
+const ABANDONED_STREAM_CLOSE_LAST_WAIT_MS = 8_000;
+/**
+ * How long one abandoned stream's close is sent again before it is given up. The client does not know the server's
+ * stream lifetime (10 s in sqld); a server keeps no stream this long, so the close no longer frees anything.
+ */
+const ABANDONED_STREAM_CLOSE_MAX_AGE_MS = 5 * 60_000;
+/** How long one resend of an abandoned stream's close may go unanswered; a later resend tries again. */
 const ABANDONED_STREAM_CLOSE_TIMEOUT_MS = 5_000;
 /** The most abandoned stream closes kept for resending; the oldest is dropped past it, its stream long expired. */
 const MAX_ABANDONED_STREAM_CLOSES = 64;
@@ -95,12 +102,14 @@ function closesStream(body, contentType) {
  * lifetime. Sending the close again as soon as the server is reachable ends the transaction there and frees the lock.
  */
 class AbandonedStreams {
-	/** @type {{ url: string, headers: [string, string][], body: ArrayBuffer }[]} */
+	/** @type {{ url: string, headers: [string, string][], body: ArrayBuffer, since: number }[]} */
 	pending = [];
 	/** @type {ReturnType<typeof setTimeout> | undefined} */
 	timer;
 	/** @type {Promise<void> | undefined} */
 	sending;
+	wait = ABANDONED_STREAM_CLOSE_FIRST_WAIT_MS;
+	closed = false;
 
 	/**
 	 * Keeps `request`'s close for resending when it only closes a stream.
@@ -108,26 +117,33 @@ class AbandonedStreams {
 	 */
 	async failed(request) {
 		const body = await request.arrayBuffer();
-		if (!closesStream(new Uint8Array(body), request.headers.get("content-type"))) return;
-		this.pending.push({ url: request.url, headers: [...request.headers], body });
+		if (this.closed || !closesStream(new Uint8Array(body), request.headers.get("content-type"))) return;
+		this.pending.push({ url: request.url, headers: [...request.headers], body, since: Date.now() });
 		if (this.pending.length > MAX_ABANDONED_STREAM_CLOSES) this.pending.shift();
 		this.schedule();
 	}
 
+	/** Sends the kept closes again after the current wait, unless a resend is already planned. */
 	schedule() {
-		if (this.timer !== undefined || this.pending.length === 0) return;
+		if (this.closed || this.timer !== undefined || this.pending.length === 0) return;
 		this.timer = setTimeout(() => {
 			this.timer = undefined;
 			void this.send().then(() => this.schedule());
-		}, ABANDONED_STREAM_CLOSE_RETRY_MS);
+		}, this.wait);
 		// A close waiting to be sent again never keeps the process alive.
-		this.timer.unref?.();
+		this.timer.unref();
 	}
 
-	/** Sends each kept close again, in order, until one goes unanswered; an answered close is done, whatever it says. */
+	/**
+	 * Sends each kept close again, in order, until one goes unanswered, which doubles the wait before the next round; an
+	 * answered close is done, whatever it says, and resets the wait. A close older than
+	 * `ABANDONED_STREAM_CLOSE_MAX_AGE_MS` is given up.
+	 */
 	send() {
 		this.sending ??= (async () => {
-			while (this.pending.length > 0) {
+			const oldest = Date.now() - ABANDONED_STREAM_CLOSE_MAX_AGE_MS;
+			this.pending = this.pending.filter((close) => close.since > oldest);
+			while (!this.closed && this.pending.length > 0) {
 				const [close] = this.pending;
 				try {
 					const response = await fetch(close.url, {
@@ -138,8 +154,10 @@ class AbandonedStreams {
 					});
 					await response.arrayBuffer().catch(() => {});
 				} catch {
+					this.wait = Math.min(this.wait * 2, ABANDONED_STREAM_CLOSE_LAST_WAIT_MS);
 					return;
 				}
+				this.wait = ABANDONED_STREAM_CLOSE_FIRST_WAIT_MS;
 				if (this.pending[0] === close) this.pending.shift();
 			}
 		})().finally(() => {
@@ -148,11 +166,11 @@ class AbandonedStreams {
 		return this.sending;
 	}
 
-	/** Stops resending, after one last try when closes are kept. */
-	async close() {
+	/** Stops resending: the closes kept are given up. */
+	close() {
+		this.closed = true;
 		clearTimeout(this.timer);
 		this.timer = undefined;
-		if (this.pending.length > 0) await this.send();
 		this.pending = [];
 	}
 }
@@ -737,7 +755,7 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 		async close() {
 			client?.close();
 			probe?.close();
-			await abandoned.close();
+			abandoned.close();
 			if (local) await releaseClosedConnections();
 		},
 	});

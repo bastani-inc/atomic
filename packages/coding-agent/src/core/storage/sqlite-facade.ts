@@ -136,13 +136,19 @@ const BUSY_RETRY_BASE_MS = 20;
 const BUSY_RETRY_MAX_MS = 1000;
 
 /**
- * How long queued calls wait while the call ahead of them does not settle before they fail without running (#5114). The facade
+ * How long the running call may run before the calls queued behind it fail without running (#5114). The facade
  * runs one call at a time, so a call that cannot complete, such as one waiting on a write lock a server keeps for a
  * stream an outage cut, would otherwise hold every call queued behind it, priority calls such as a worker host's
  * heartbeat included. A call queued behind it fails with `StorageUnavailableError` instead, having written nothing,
  * and its caller retries it as it retries any outage.
  */
 export const STORAGE_QUEUED_CALL_MAX_WAIT_MS = 60_000;
+/**
+ * The same bound for a priority call, such as a worker host's heartbeat or a work lease renewal: a third of the 30 s a
+ * host's or a work lease's last write keeps it live (`FLEET_HOST_LIVE_MS`), so a priority call stuck behind a call that
+ * cannot complete fails, and its caller tries it again, while the lease it renews still holds.
+ */
+export const STORAGE_PRIORITY_CALL_MAX_WAIT_MS = 10_000;
 
 /** How long the facade waits after the failed run `attempt` (1-based) before it runs the call again. */
 function transientRetryDelayMs(attempt: number): number {
@@ -278,20 +284,23 @@ interface QueuedCall {
 
 /**
  * Runs operations one at a time, in call order within each lane: an operation of the priority lane runs before every
- * waiting operation of the normal lane. A failed operation does not stop the ones queued after it. When the running
- * operation has not settled `STORAGE_QUEUED_CALL_MAX_WAIT_MS` after the first of the waiting ones was queued, or after
- * the operation before it settled, every waiting operation fails with `stalled()` without running.
+ * waiting operation of the normal lane. A failed operation does not stop the ones queued after it. Once the running
+ * operation has run `STORAGE_PRIORITY_CALL_MAX_WAIT_MS` without settling, every priority operation waiting behind it
+ * fails with `stalled()` without running, and once it has run `STORAGE_QUEUED_CALL_MAX_WAIT_MS`, every other one does;
+ * so does every one queued behind it after that. Each operation that starts gets full waits of its own, so a queue of
+ * operations that each settle in time never fails one.
  */
 class LaneQueue {
 	private readonly normal: QueuedCall[] = [];
 	private readonly priority: QueuedCall[] = [];
 	private running = false;
+	/** When the running operation started, as `Date.now()`. */
+	private runningSince = 0;
 	private idle: (() => void)[] = [];
 	private watchdog?: ReturnType<typeof setTimeout>;
+	private readonly stalled: (ranMs: number) => Error;
 
-	private readonly stalled: () => Error;
-
-	constructor(stalled: () => Error) {
+	constructor(stalled: (ranMs: number) => Error) {
 		this.stalled = stalled;
 	}
 
@@ -302,7 +311,7 @@ class LaneQueue {
 				fail: reject,
 			});
 			this.next();
-			if (this.priority.length + this.normal.length > 0) this.watch();
+			this.watch();
 		});
 	}
 
@@ -321,26 +330,38 @@ class LaneQueue {
 			return;
 		}
 		this.running = true;
+		this.runningSince = Date.now();
 		// Started on a later microtask, as a promise chain starts it, never inside the call that queued it.
 		void operation.run().finally(() => {
-			// The queue moved on: the operations still waiting get a full wait behind the next one.
 			clearTimeout(this.watchdog);
 			this.watchdog = undefined;
 			this.running = false;
 			this.next();
-			if (this.running && this.priority.length + this.normal.length > 0) this.watch();
+			this.watch();
 		});
 	}
 
-	/** Fails the waiting operations once the running one has not settled for a full wait since they began waiting. */
+	/**
+	 * While operations wait behind a running one, fails the priority ones once that one has run
+	 * `STORAGE_PRIORITY_CALL_MAX_WAIT_MS`, and the others once it has run `STORAGE_QUEUED_CALL_MAX_WAIT_MS`. No timer
+	 * runs while nothing waits.
+	 */
 	private watch(): void {
-		if (this.watchdog !== undefined) return;
-		this.watchdog = setTimeout(() => {
-			this.watchdog = undefined;
-			for (const waiting of this.priority.splice(0).concat(this.normal.splice(0))) waiting.fail(this.stalled());
-		}, STORAGE_QUEUED_CALL_MAX_WAIT_MS);
-		// A stuck call ahead of the queue never keeps the process alive on its own.
-		this.watchdog.unref?.();
+		if (this.watchdog !== undefined || this.priority.length + this.normal.length === 0) return;
+		const bound = this.priority.length > 0 ? STORAGE_PRIORITY_CALL_MAX_WAIT_MS : STORAGE_QUEUED_CALL_MAX_WAIT_MS;
+		this.watchdog = setTimeout(
+			() => {
+				this.watchdog = undefined;
+				const ran = Date.now() - this.runningSince;
+				const failing = this.priority.splice(0);
+				if (ran >= STORAGE_QUEUED_CALL_MAX_WAIT_MS) failing.push(...this.normal.splice(0));
+				for (const waiting of failing) waiting.fail(this.stalled(ran));
+				this.watch();
+			},
+			Math.max(0, this.runningSince + bound - Date.now()),
+		);
+		// A stuck operation ahead of the queue never keeps the process alive on its own.
+		this.watchdog.unref();
 	}
 }
 
@@ -352,11 +373,11 @@ class DriverDatabase implements SqliteDatabase {
 	private readonly concurrent = new Set<Promise<unknown>>();
 	private readonly redact: (text: string) => string;
 	private readonly queue = new LaneQueue(
-		() =>
+		(ranMs) =>
 			new StorageUnavailableError(
 				this.descriptor,
 				undefined,
-				`the call waited ${STORAGE_QUEUED_CALL_MAX_WAIT_MS / 1000} seconds behind an earlier call that has not settled, and did not run; nothing was written, retry it`,
+				`the call was queued behind an earlier call that ran ${Math.round(ranMs / 1000)} seconds without settling, and did not run; nothing was written, retry it`,
 			),
 	);
 	private closePromise?: Promise<void>;
