@@ -770,11 +770,11 @@ const write = (text) => new Promise((done) => process.stderr.write(text, () => s
 	test("stderr past 1 MiB loses its cut last line, so a secret the cut splits never shows", async () => {
 		const cap = 1024 * 1024;
 		const cut = await failureMessage(
-			[`\n`.repeat(cap - 12), `denied ${SECRET}\n`, "after the cap\n"],
+			[`\n`.repeat(cap - 20), "visible\n", `denied ${SECRET}\n`, "after the cap\n"],
 			{ PROBE_TOKEN: SECRET },
 			true,
 		);
-		assert.equal(cut, "probe exited with code 3");
+		assert.equal(cut, "probe exited with code 3: visible");
 		const exact = await failureMessage(["\n".repeat(cap - 5), "tail!"], {}, true);
 		assert.equal(exact, "probe exited with code 3: tail!");
 	});

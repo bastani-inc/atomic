@@ -323,6 +323,13 @@ describe("credential shape coverage", () => {
 		assert.equal(redactUrlCredentials("https://:ab/cd@host/x"), "https://host/x");
 		assert.equal(redactUrlCredentials("https://u:x/next://host@y"), "https://u:x/next://y");
 		assert.equal(redactUrlCredentials("http://[::1]:x/a@b"), "http://[::1]:x/a@b");
+		assert.equal(redactUrlCredentials("https://user:!!/cd@host/x"), "https://host/x");
+		assert.equal(redactUrlCredentials("https://user:12ab/cd@host/x"), "https://host/x");
+		assert.equal(redactUrlCredentials("https://example.com:8090/a@b"), "https://example.com:8090/a@b");
+		assert.equal(redactUrlCredentials("https://user:ab/cd@ef@host/x"), "https://host/x");
+		assert.equal(redactUrlCredentials("x=https%3A%2F%2Fu%3Ap%40q%40host%2Fy"), "x=https%3A%2F%2Fhost%2Fy");
+		assert.equal(redactUrlCredentials("x=https%3A%2F%2Fu%3Ap%40host y%40z"), "x=https%3A%2F%2Fhost y%40z");
+		assert.equal(redactUrlCredentials("x=https%3A%2F%2Fu&p%40host"), "x=https%3A%2F%2Fu&p%40host");
 	});
 
 	test("percent-encoded nested URL user info is removed", () => {
