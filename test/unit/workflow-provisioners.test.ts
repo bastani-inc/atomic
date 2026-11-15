@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, test } from "vitest";
-import { redactSecrets } from "../../packages/workflows/src/workers/provisioners/cli.js";
+import { redactSecrets, runCli } from "../../packages/workflows/src/workers/provisioners/cli.js";
 import {
 	type CommandProvisionerOptions,
 	createWorkerHostProvisioner,
@@ -684,6 +684,69 @@ describe("secret redaction (#4768)", () => {
 		assert.equal(redactSecrets("a=b x--token=abcdefg", ["x--token=abcdefg"], {}), "a=b x--token=[redacted]");
 	});
 
+	test("redacting a megabyte of adversarial CLI output stays linear", () => {
+		const env = { MY_TOKEN: "abcdefgh", OTHER_SECRET: "x".repeat(64) };
+		for (const input of [
+			"sk-".repeat(350_000),
+			"eyJ-".repeat(260_000),
+			"secret_".repeat(150_000),
+			"a".repeat(1_048_576),
+			"token-x ".repeat(130_000),
+		]) {
+			const started = performance.now();
+			redactSecrets(input, [], env);
+			const elapsed = performance.now() - started;
+			assert.ok(elapsed < 2_000, `took ${Math.round(elapsed)} ms`);
+		}
+	});
+
+	test("secret words match whole name segments in CLI output", () => {
+		assert.equal(
+			redactSecrets("signal=SIGTERM design=ok assignment=3 x-amz-signature=abc sig=s", [], {}),
+			"signal=SIGTERM design=ok assignment=3 x-amz-signature=[redacted] sig=[redacted]",
+		);
+	});
+
+	test("quoted and segment-named values are redacted exactly in CLI output", () => {
+		const cases: [string, string][] = [
+			['token: "abc', 'token: "[redacted]'],
+			["token='x'", "token='[redacted]'"],
+			['a_token: ""', 'a_token: "[redacted]"'],
+			["X_SIG=a", "X_SIG=[redacted]"],
+			["xSignature=a", "xSignature=[redacted]"],
+			["sigma=1 mysig=1", "sigma=1 mysig=1"],
+			["token: '", "token: '[redacted]"],
+			["token: 'a\" x", "token: '[redacted]"],
+			['token: ""', 'token: "[redacted]"'],
+			["token: abc'", "token: [redacted]'"],
+		];
+		for (const [text, redacted] of cases) assert.equal(redactSecrets(text, [], {}), redacted, text);
+	});
+
+	test("long names and quoted values with spaces are redacted in CLI output", () => {
+		const secret = "Zq9vR2mXw7LpT4kN";
+		assert.equal(redactSecrets(`${"X".repeat(130)}_TOKEN=${secret}`, [], {}), `${"X".repeat(130)}_TOKEN=[redacted]`);
+		assert.equal(redactSecrets(`api_key: "${secret} more" next`, [], {}), 'api_key: "[redacted]" next');
+	});
+
+	test("redacting a megabyte of repeated cookie, block and option text in CLI output stays linear", () => {
+		const repeat = (unit: string) => unit.repeat(Math.ceil(1_048_576 / unit.length)).slice(0, 1_048_576);
+		for (const input of [
+			repeat("Cookie: a=b "),
+			repeat("Set-Cookie: a=b, "),
+			repeat("password: |\n"),
+			repeat("--cookie a=b "),
+			repeat('token="'),
+			repeat("aSig="),
+			repeat("a=b "),
+		]) {
+			const started = performance.now();
+			redactSecrets(input, [], {});
+			const elapsed = performance.now() - started;
+			assert.ok(elapsed < 2_000, `took ${Math.round(elapsed)} ms`);
+		}
+	});
+
 	test("redacts tokens a CLI prints (#4768)", () => {
 		const cases: [string, string][] = [
 			["Authorization: Bearer abc.def-ghi, next", "Authorization: Bearer [redacted], next"],
@@ -703,5 +766,100 @@ describe("secret redaction (#4768)", () => {
 			["status=500 name=atomic", "status=500 name=atomic"],
 		];
 		for (const [text, redacted] of cases) assert.equal(redactSecrets(text, [], {}), redacted, text);
+	});
+});
+
+describe("configured secrets in a failing CLI's stderr", () => {
+	const SECRET = "Zq9vR2mXw7LpT4kNsecretvalue";
+
+	/** The message of the error a CLI that writes `chunks` to stderr, one write at a time, then fails, rejects with. */
+	async function failureMessage(
+		chunks: readonly string[],
+		env: Readonly<Record<string, string>>,
+		newlineRuns = false,
+	): Promise<string> {
+		/** Long runs of line breaks are rebuilt in the child: an argument list cannot hold a megabyte. */
+		const literal = newlineRuns
+			? `[${chunks.map((chunk) => (/^\n+$/u.test(chunk) ? `"\\n".repeat(${chunk.length})` : JSON.stringify(chunk))).join(", ")}]`
+			: JSON.stringify(chunks);
+		const source = `const chunks = ${literal};
+const write = (text) => new Promise((done) => process.stderr.write(text, () => setTimeout(done, 1)));
+(async () => { for (const chunk of chunks) await write(chunk); process.exit(3); })();`;
+		const error = await rejection(
+			runCli(
+				{
+					label: "probe",
+					file: process.execPath,
+					args: ["-e", source],
+					timeoutMs: 20_000,
+					env,
+					authFailure: /never/u,
+				},
+				never(),
+			),
+		);
+		return error.message;
+	}
+
+	function assertNoFragment(message: string, secret: string): void {
+		for (let start = 0; start + 6 <= secret.length; start++) {
+			const fragment = secret.slice(start, start + 6);
+			if (!/\s/u.test(fragment)) assert.equal(message.includes(fragment), false, `${fragment} in ${message}`);
+		}
+	}
+
+	test("a configured secret split across many stderr writes is redacted", async () => {
+		const chunks = [
+			...Array.from({ length: 70 }, () => "."),
+			` denied for ${SECRET.slice(0, 14)}`,
+			`${SECRET.slice(14)}\n`,
+		];
+		const message = await failureMessage(chunks, { PROBE_TOKEN: SECRET });
+		assert.equal(message, `probe exited with code 3: ${".".repeat(70)} denied for [redacted]`);
+	});
+
+	test("a configured secret with a trailing newline is redacted where the CLI prints it trimmed", async () => {
+		const message = await failureMessage([`denied for ${SECRET} (exit)\n`], { PROBE_TOKEN: `${SECRET}\n` });
+		assert.equal(message, "probe exited with code 3: denied for [redacted] (exit)");
+	});
+
+	test("a configured multi-line secret is redacted before stderr lines are joined", async () => {
+		const second = [...SECRET].reverse().join("");
+		const key = `line1-${SECRET}\nline2-${second}`;
+		const message = await failureMessage([`bad key:\n${key}\n`], { PROBE_PRIVATE_KEY: key });
+		assert.equal(message, "probe exited with code 3: bad key: [redacted]");
+	});
+
+	test("stderr past 1 MiB loses its cut last line, so a secret the cut splits never shows", async () => {
+		const cap = 1024 * 1024;
+		const cut = await failureMessage(
+			[`\n`.repeat(cap - 20), "visible\n", `denied ${SECRET}\n`, "after the cap\n"],
+			{ PROBE_TOKEN: SECRET },
+			true,
+		);
+		assert.equal(cut, "probe exited with code 3: visible");
+		const exact = await failureMessage(["\n".repeat(cap - 5), "tail!"], {}, true);
+		assert.equal(exact, "probe exited with code 3: tail!");
+	});
+
+	test("no configured secret survives random stderr chunkings", async () => {
+		let state = 4868;
+		const random = (limit: number): number => {
+			state = (Math.imul(state, 1103515245) + 12345) >>> 0;
+			return (state >>> 8) % limit;
+		};
+		for (let round = 0; round < 8; round++) {
+			const filler = Array.from({ length: random(400) }, () => "abc ,.;\n"[random(8)]).join("");
+			const text = `${filler}token ${SECRET} and again ${SECRET}\n`;
+			const chunks: string[] = [];
+			for (let at = 0; at < text.length; ) {
+				const size = 1 + random(12);
+				chunks.push(text.slice(at, at + size));
+				at += size;
+			}
+			const message = await failureMessage(chunks, { PROBE_TOKEN: SECRET });
+			assertNoFragment(message, SECRET);
+			assert.ok(message.includes("token [redacted] and again [redacted]"), message);
+		}
 	});
 });

@@ -77,7 +77,7 @@ const BUS_POLL_INTERVAL_MS = 20;
 const ATTACHMENTS = [{ type: "snippet" as const, name: " a.ts ", content: "const x = 1;\r\n", language: "ts" }];
 const VERBATIM = "  cross-node\tparity\u0000 ünïcödé ✓  \n";
 
-type FakeSocket = net.Socket & { frames: BrokerOutboundFrame[] };
+type FakeSocket = net.Socket & { frames: BrokerOutboundFrame[]; written?: () => void };
 
 function fakeSocket(): FakeSocket {
 	return { destroyed: false, writableEnded: false, frames: [] } as unknown as FakeSocket;
@@ -139,8 +139,10 @@ class Node {
 
 	write(socket: net.Socket, frame: BrokerOutboundFrame): boolean {
 		const fake = socket as Partial<FakeSocket>;
-		if (fake.frames !== undefined) fake.frames.push(frame);
-		else writeMessage(socket, frame);
+		if (fake.frames !== undefined) {
+			fake.frames.push(frame);
+			fake.written?.();
+		} else writeMessage(socket, frame);
 		return true;
 	}
 
@@ -1142,6 +1144,58 @@ test("an old connection of a session that reconnected to the same broker leaves 
 	);
 });
 
+test(
+	"a child that turns terminal while the shared store fails listing its asks once fails them once the store recovers (#5138)",
+	async () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+		const reported = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const [a, b] = await cluster();
+			const asker = await a!.connect("asker");
+			const child = await b!.connect("child");
+			const ask = message({ expectsReply: true });
+			a!.send(asker, "child", ask);
+			await waitFor(() => messageFrames(child, ask.id)[0]);
+			b!.router.received(child, ask.id);
+			assert.equal((await waitFor(() => outcomeOf(asker, ask.id))).type, "delivered");
+
+			const pendingAsks = b!.opened.state.pendingAsks;
+			const listForTarget = pendingAsks.listForTarget.bind(pendingAsks);
+			let failures = 0;
+			pendingAsks.listForTarget = async (targetSessionId) => {
+				if (failures++ === 0) throw new Error("listForTarget failed: shared database is busy");
+				return listForTarget(targetSessionId);
+			};
+			child.info.replyCapability = "terminal";
+			b!.router.sessionUpdated(child);
+			await vi.waitFor(() => assert.equal(failures, 1), { timeout: CROSS_NODE_WAIT_MS });
+			assert.ok(reported.mock.calls.some(([text]) => String(text).includes("listForTarget failed")));
+			assert.equal(
+				framesOf(asker).find((frame) => frame.type === "message" && frame.message.replyTo === ask.id),
+				undefined,
+				"nothing is failed while the store fails",
+			);
+
+			vi.advanceTimersByTime(BROKER_LEASE_RENEW_INTERVAL_MS);
+			const terminal = await waitFor(() =>
+				framesOf(asker).find((frame) => frame.type === "message" && frame.message.replyTo === ask.id),
+			);
+			assert.ok(terminal.type === "message");
+			assert.equal(terminal.message.replyError, TERMINAL_CHILD_ASK_REFUSAL);
+			assert.equal(terminal.message.id, `terminal:${ask.id}`);
+			const listed = failures;
+			vi.advanceTimersByTime(BROKER_LEASE_RENEW_INTERVAL_MS);
+			b!.router.sessionUpdated(child);
+			await new Promise((settle) => setTimeout(settle, 50));
+			assert.equal(failures, listed, "a terminal child's asks are failed once");
+		} finally {
+			vi.useRealTimers();
+			reported.mockRestore();
+		}
+	},
+	2 * CROSS_NODE_WAIT_MS,
+);
+
 test("a terminal child that then ends does not fail an ask from another node a second time (#4842)", async () => {
 	const [a, b] = await cluster();
 	const asker = await a!.connect("asker");
@@ -1750,6 +1804,9 @@ test("a hold check whose read answers after the save cap has passed ends the rem
 		if (!answerPastCap || result.status !== "found" || result.row.state !== "claimed") return result;
 		// The read answers once the cap has passed, before the cap's own timer has run: a fresh report cannot hold.
 		vi.setSystemTime(Date.now() + RECIPIENT_SAVE_MAX_WAIT_MS);
+		// The cap is timed on the monotonic clock (#5058).
+		const elapsed = performance.now.bind(performance);
+		vi.spyOn(performance, "now").mockImplementation(() => elapsed() + RECIPIENT_SAVE_MAX_WAIT_MS);
 		return { ...result, row: { ...result.row, savingAgeMs: 0 } };
 	});
 	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"], shouldAdvanceTime: true });
@@ -1763,14 +1820,35 @@ test("a hold check whose read answers after the save cap has passed ends the rem
 		assert.deepEqual(holdsOf(sender, sent.id), []);
 	} finally {
 		spy.mockRestore();
+		vi.restoreAllMocks();
 		vi.useRealTimers();
 	}
 });
 
-/** Send and wait for the sender's outcome of that send. */
+/**
+ * Send and wait for the sender's outcome of that send, as the broker writes it: a flood of sends each polled for its
+ * outcome took a timer tick apiece (about 16 ms on Windows) on top of the send itself.
+ */
 async function sendAndSettle(node: Node, from: BrokerConnectedSession, to: string, sent: Message) {
-	node.send(from, to, sent);
-	return waitFor(() => outcomeOf(from, sent.id));
+	const socket = from.socket as FakeSocket;
+	const { promise, resolve, reject } = Promise.withResolvers<BrokerOutboundFrame>();
+	const check = () => {
+		const outcome = outcomeOf(from, sent.id);
+		if (outcome !== undefined) resolve(outcome);
+	};
+	const timer = setTimeout(
+		() => reject(new Error(`no outcome for ${sent.id} within ${CROSS_NODE_WAIT_MS} ms`)),
+		CROSS_NODE_WAIT_MS,
+	);
+	socket.written = check;
+	try {
+		node.send(from, to, sent);
+		check();
+		return await promise;
+	} finally {
+		clearTimeout(timer);
+		socket.written = undefined;
+	}
 }
 
 test(

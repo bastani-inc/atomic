@@ -136,9 +136,11 @@ async function sweep(host: Host): Promise<WorktreeRestoreWarning[]> {
 	return warnings;
 }
 
-const defaultStaging = (host: Host, id: string) => join(host.storeDir, "worktrees", `.staging-${id}`);
+/** Staging worktrees take `.s-` and 12 hex digits of the restore's id (#5139). */
+const defaultStaging = (host: Host, id: string) =>
+	join(host.storeDir, "worktrees", `.s-${id.replaceAll("-", "").slice(0, 12)}`);
 const siblingStaging = (target: string, id: string) =>
-	join(dirname(target), `.${basename(target)}.atomic-restore-${id}`);
+	join(dirname(target), `.${basename(target)}.s-${id.replaceAll("-", "").slice(0, 12)}`);
 
 describe("sweeping the records an interrupted restore left", () => {
 	test("a default restore whose lock went stale is removed: staging, registration, record and lock, with nothing reported", async () => {

@@ -41,7 +41,7 @@ function isSqliteTruncateFailure(error: unknown): boolean {
  * SQLITE_IOERR_TRUNCATE once the shorter of `busyTimeoutMs` and `TRUNCATE_RETRY_MS` has.
  */
 function retryAfter(busyTimeoutMs: number): (error: unknown) => number {
-	const started = Date.now();
+	const started = performance.now();
 	let delay = RETRY_BASE_DELAY_MS;
 	return (error) => {
 		const limitMs = isSqliteBusy(error)
@@ -49,7 +49,7 @@ function retryAfter(busyTimeoutMs: number): (error: unknown) => number {
 			: isSqliteTruncateFailure(error)
 				? Math.min(busyTimeoutMs, TRUNCATE_RETRY_MS)
 				: 0;
-		const remaining = started + limitMs - Date.now();
+		const remaining = started + limitMs - performance.now();
 		if (remaining <= 0) throw error;
 		const wait = Math.min(delay, remaining);
 		delay = Math.min(delay * 2, RETRY_MAX_DELAY_MS);
