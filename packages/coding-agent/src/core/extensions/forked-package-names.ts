@@ -42,3 +42,51 @@ export function withLegacyPackageNames<T>(modules: Record<string, T>): Record<st
 	}
 	return result;
 }
+
+/** Workspace directory under `packages/` of each forked package. */
+export const FORKED_PACKAGE_WORKSPACE_DIRS: Readonly<Record<string, string>> = {
+	"@bastani/atomic-ai": "ai",
+	"@bastani/atomic-agent-core": "agent",
+	"@bastani/atomic-tui": "tui",
+	"@bastani/atomic-codemode": "codemode",
+	"@bastani/atomic-schema": "schema",
+	"@bastani/atomic-telemetry": "telemetry",
+};
+
+type ExportTarget = string | { import?: string; default?: string };
+
+/** The fields of a forked package's manifest that decide which files its specifiers load. */
+export interface ForkedPackageManifest {
+	main?: string;
+	exports?: Record<string, ExportTarget>;
+}
+
+/**
+ * File aliases for every specifier a forked package's manifest exposes, rooted at `packageRoot`. jiti matches aliases
+ * by prefix, so each subpath needs its own key: without one, `<name>/<subpath>` resolves below the root entry file.
+ * A wildcard export (`./api/*`) maps its directory, and a package without an exports map exposes its `dist` directory.
+ */
+export function forkedPackageExportAliases(
+	name: string,
+	packageRoot: string,
+	manifest: ForkedPackageManifest,
+	join: (...segments: string[]) => string,
+): Record<string, string> {
+	const aliases: Record<string, string> = {};
+	if (!manifest.exports) {
+		aliases[`${name}/dist`] = join(packageRoot, "dist");
+		if (manifest.main) aliases[name] = join(packageRoot, manifest.main);
+		return aliases;
+	}
+	for (const [key, value] of Object.entries(manifest.exports)) {
+		const target = typeof value === "string" ? value : (value.import ?? value.default);
+		if (!target) continue;
+		if (key.endsWith("/*")) {
+			const star = target.indexOf("*");
+			aliases[`${name}${key.slice(1, -2)}`] = join(packageRoot, target.slice(0, star).replace(/\/$/u, ""));
+			continue;
+		}
+		aliases[key === "." ? name : `${name}${key.slice(1)}`] = join(packageRoot, target);
+	}
+	return aliases;
+}

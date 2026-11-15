@@ -8,7 +8,12 @@ import { getAgentDir, getExtensionTranspileCacheDir, isBunBinary, isBundledBuild
 import { resolutionBaseUrl } from "../../utils/module-require.ts";
 import { canonicalizePath, pathsEqual, resolvePath } from "../../utils/paths.ts";
 import { moduleDirFromMetaUrl } from "../../utils/split-launcher.ts";
-import { withLegacyPackageNames } from "./forked-package-names.ts";
+import {
+	FORKED_PACKAGE_WORKSPACE_DIRS,
+	type ForkedPackageManifest,
+	forkedPackageExportAliases,
+	withLegacyPackageNames,
+} from "./forked-package-names.ts";
 import { installHostModuleBridge } from "./host-module-bridge.ts";
 import { getVirtualModules, loadVirtualModules } from "./loader-host-modules.js";
 import { isNativeBuiltinExtensionPath } from "./native-builtin-entries.ts";
@@ -550,13 +555,25 @@ function getAliases(): Record<string, string> {
 		"ai/dist/api/transform-messages.js",
 		"@bastani/atomic-ai",
 	);
-	const codemodeEntry = resolveWorkspaceOrImport("codemode/dist/index.js", "@bastani/atomic-codemode");
-	const schemaEntry = resolveWorkspaceOrImport("schema/dist/index.js", "@bastani/atomic-schema");
-	const schemaFormatsEntry = resolveWorkspaceOrImport("schema/dist/formats/index.js", "@bastani/atomic-schema");
-	const telemetryEntry = resolveWorkspaceOrImport("telemetry/dist/index.js", "@bastani/atomic-telemetry");
+	// Every specifier each forked package's manifest exposes, so no subpath resolves below a root entry file.
+	const forkedPackageAliases: Record<string, string> = {};
+	for (const [name, dir] of Object.entries(FORKED_PACKAGE_WORKSPACE_DIRS)) {
+		const workspaceRoot = path.join(packagesRoot, dir);
+		const workspaceManifest = path.join(workspaceRoot, "package.json");
+		const packageRoot =
+			fs.existsSync(workspaceManifest) &&
+			(JSON.parse(fs.readFileSync(workspaceManifest, "utf8")) as { name?: string }).name === name
+				? workspaceRoot
+				: findPackageRoot(name);
+		const manifest = JSON.parse(
+			fs.readFileSync(path.join(packageRoot, "package.json"), "utf8"),
+		) as ForkedPackageManifest;
+		Object.assign(forkedPackageAliases, forkedPackageExportAliases(name, packageRoot, manifest, path.join));
+	}
 
 	// Each forked package also answers to its legacy pi names (@earendil-works/pi-*, @mariozechner/pi-*).
 	_aliases = withLegacyPackageNames({
+		...forkedPackageAliases,
 		"@bastani/atomic/storage": path.resolve(__dirname, "../storage/index.js"),
 		"@bastani/atomic": piCodingAgentEntry,
 		"@earendil-works/pi-coding-agent": piCodingAgentEntry,
@@ -586,10 +603,6 @@ function getAliases(): Record<string, string> {
 		"@bastani/atomic-ai/api/anthropic-assistant-content": piAiAnthropicAssistantContentEntry,
 		"@bastani/atomic-ai/api/transform-messages": piAiTransformMessagesEntry,
 		"@bastani/atomic-ai": piAiEntry,
-		"@bastani/atomic-codemode": codemodeEntry,
-		"@bastani/atomic-schema/formats": schemaFormatsEntry,
-		"@bastani/atomic-schema": schemaEntry,
-		"@bastani/atomic-telemetry": telemetryEntry,
 		typebox: typeboxEntry,
 		"typebox/compile": typeboxCompileEntry,
 		"typebox/value": typeboxValueEntry,

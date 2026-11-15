@@ -3,6 +3,10 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
+import {
+	FORKED_PACKAGE_LEGACY_NAMES,
+	FORKED_PACKAGE_WORKSPACE_DIRS,
+} from "../src/core/extensions/forked-package-names.ts";
 import { extensionLoaderTestHooks } from "../src/core/extensions/loader-virtual-modules.ts";
 
 const REAL_EXTENSION_LOADER_TEST_TIMEOUT_MS = 120_000;
@@ -199,6 +203,68 @@ export default function extension() {}
 						assert.equal(modules[name], modules[probe.names[0]], `${name} is a host virtual module`);
 					}
 				}
+			} finally {
+				fs.rmSync(directory, { recursive: true, force: true });
+			}
+		},
+		REAL_EXTENSION_LOADER_TEST_TIMEOUT_MS,
+	);
+
+	it(
+		"resolves every exported subpath of every forked package, under each of its names, through jiti (#5174)",
+		async () => {
+			const packagesDir = path.resolve(import.meta.dirname, "../..");
+			// A wildcard export is checked through one real module below its directory.
+			const wildcardSamples: Record<string, string> = {
+				"@bastani/atomic-ai/providers/*": "@bastani/atomic-ai/providers/openrouter",
+				"@bastani/atomic-ai/api/*": "@bastani/atomic-ai/api/transform-messages",
+				"@bastani/atomic-ai/utils/*": "@bastani/atomic-ai/utils/provider-env",
+			};
+			// Not loadable in Node: the Cloudflare entry imports `cloudflare:workers`, and the worker entry
+			// installs a worker-thread message handler. Their aliases must still name the exported file.
+			const aliasOnly = new Set(["@bastani/atomic-codemode/cloudflare", "@bastani/atomic-codemode/worker"]);
+			const specifiers: string[] = [];
+			for (const [name, legacyNames] of Object.entries(FORKED_PACKAGE_LEGACY_NAMES)) {
+				const manifest = JSON.parse(
+					fs.readFileSync(path.join(packagesDir, FORKED_PACKAGE_WORKSPACE_DIRS[name]!, "package.json"), "utf8"),
+				) as { exports?: Record<string, object | string> };
+				const subpaths = manifest.exports ? Object.keys(manifest.exports) : [".", "./dist/layout.js"];
+				for (const subpath of subpaths) {
+					if (subpath === "./package.json") continue;
+					const declared = subpath === "." ? name : `${name}${subpath.slice(1)}`;
+					const specifier = wildcardSamples[declared] ?? declared;
+					assert.ok(!specifier.includes("*"), `${declared} needs a wildcard sample`);
+					for (const prefix of [name, ...legacyNames]) specifiers.push(`${prefix}${specifier.slice(name.length)}`);
+				}
+			}
+			const aliases = extensionLoaderTestHooks.getAliases();
+			const loadable = specifiers.filter((specifier) => {
+				const canonical = Object.entries(FORKED_PACKAGE_LEGACY_NAMES).reduce(
+					(value, [name, legacyNames]) =>
+						legacyNames.reduce(
+							(current, legacy) => current.replace(new RegExp(`^${legacy}(?=/|$)`), name),
+							value,
+						),
+					specifier,
+				);
+				if (!aliasOnly.has(canonical)) return true;
+				assert.ok(aliases[specifier], `${specifier} has a loader alias`);
+				assert.ok(fs.existsSync(aliases[specifier]!), `${specifier} aliases an existing file`);
+				return false;
+			});
+			const directory = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-forked-subpaths-extension-"));
+			try {
+				const extensionPath = path.join(directory, "extension.ts");
+				fs.writeFileSync(
+					extensionPath,
+					`${loadable.map((specifier, index) => `import * as m${index} from ${JSON.stringify(specifier)};`).join("\n")}
+// Some entries, such as \`@bastani/atomic-ai/oauth\`, export types only: loading each one is the check.
+export const loaded = [${loadable.map((_, index) => `m${index}`).join(", ")}];
+export default function extension() {}
+`,
+				);
+				const factory = await extensionLoaderTestHooks.loadExtensionModuleTransformed(extensionPath);
+				assert.equal(typeof factory, "function");
 			} finally {
 				fs.rmSync(directory, { recursive: true, force: true });
 			}
