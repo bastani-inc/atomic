@@ -10,14 +10,12 @@ import type { OAuthCredential } from "../types.ts";
 /** Lifetime assumed for an access token whose response states none and that is not a JWT with an `exp` claim. */
 export const DEFAULT_ACCESS_TOKEN_LIFETIME_MS = 60 * 60 * 1000;
 
-/** The `exp` claim of a JWT access token, in milliseconds, or undefined when the token is not such a JWT. */
+/** The `exp` claim of a JWT access token, in milliseconds, or undefined when the token carries no finite one. */
 function jwtExpiryMs(accessToken: string): number | undefined {
-	const payload = accessToken.split(".")[1];
-	if (accessToken.split(".").length !== 3 || !payload) return undefined;
+	const base64 = (accessToken.split(".")[1] ?? "").replace(/-/g, "+").replace(/_/g, "/");
 	try {
-		const base64 = payload.replace(/-/g, "+").replace(/_/g, "/");
-		const claims = JSON.parse(atob(base64.padEnd(Math.ceil(base64.length / 4) * 4, "="))) as { exp?: unknown };
-		return typeof claims.exp === "number" && Number.isFinite(claims.exp) ? claims.exp * 1000 : undefined;
+		const claims = JSON.parse(atob(base64.padEnd(Math.ceil(base64.length / 4) * 4, "="))) as { exp?: number };
+		return Number.isFinite(claims.exp) ? (claims.exp as number) * 1000 : undefined;
 	} catch {
 		return undefined;
 	}
@@ -28,7 +26,7 @@ function jwtExpiryMs(accessToken: string): number | undefined {
  * JWT `exp` claim of `accessToken`, else after {@link DEFAULT_ACCESS_TOKEN_LIFETIME_MS}. Always finite.
  */
 export function oauthTokenExpiry(accessToken: string, expiresIn: unknown, skewMs: number): number {
-	if (typeof expiresIn === "number" && Number.isFinite(expiresIn) && expiresIn > 0) {
+	if (typeof expiresIn === "number" && expiresIn > 0 && expiresIn < Number.POSITIVE_INFINITY) {
 		return Date.now() + expiresIn * 1000 - skewMs;
 	}
 	return (jwtExpiryMs(accessToken) ?? Date.now() + DEFAULT_ACCESS_TOKEN_LIFETIME_MS) - skewMs;

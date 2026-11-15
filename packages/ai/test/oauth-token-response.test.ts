@@ -9,10 +9,13 @@ import {
 const NOW = Date.parse("2026-11-15T00:00:00Z");
 const SKEW_MS = 5 * 60 * 1000;
 
-/** A JWT whose payload encodes `claims` as base64url without padding. */
+/** A JWT whose payload is `payload` (JSON text) encoded as base64url without padding. */
+function rawJwt(payload: string): string {
+	return `${Buffer.from('{"alg":"none"}').toString("base64url")}.${Buffer.from(payload).toString("base64url")}.signature`;
+}
+
 function jwt(claims: object): string {
-	const encode = (value: object) => Buffer.from(JSON.stringify(value)).toString("base64url");
-	return `${encode({ alg: "none" })}.${encode(claims)}.signature`;
+	return rawJwt(JSON.stringify(claims));
 }
 
 beforeEach(() => {
@@ -44,7 +47,7 @@ describe("refreshed OAuth credential", () => {
 
 	it("takes the expiry from a JWT access token's exp when expires_in is missing or unusable (#4959)", () => {
 		const exp = NOW / 1000 + 7200;
-		for (const expiresIn of [undefined, 0, -5, Number.NaN, Number.POSITIVE_INFINITY, "3600"]) {
+		for (const expiresIn of [undefined, null, 0, -5, Number.NaN, Number.POSITIVE_INFINITY, "3600"]) {
 			assert.equal(oauthTokenExpiry(jwt({ exp }), expiresIn, SKEW_MS), exp * 1000 - SKEW_MS);
 		}
 		// Payload bytes that encode to base64url-only characters ("-" and "_") and need padding.
@@ -65,6 +68,8 @@ describe("refreshed OAuth credential", () => {
 			jwt({ exp: "soon" }),
 			jwt({ exp: null }),
 			jwt({ sub: "x" }),
+			rawJwt('{"exp":1e999}'),
+			rawJwt("null"),
 		]) {
 			assert.equal(oauthTokenExpiry(access, undefined, SKEW_MS), fallback, access);
 		}
