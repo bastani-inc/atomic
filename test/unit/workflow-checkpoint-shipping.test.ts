@@ -94,9 +94,24 @@ test('checkpointShipping accepts "sync" and limits within range, and resolves th
 	] as const)
 		await assert.rejects(
 			activatePublicPool(backend, options(value)),
-			(error: unknown) => error instanceof WorkerPlacementConfigError && error.field === field,
+			(error: unknown) =>
+				error instanceof WorkerPlacementConfigError &&
+				error.field === field &&
+				error.source === "sdk" &&
+				error.code === "invalid-option" &&
+				error.detail !== undefined &&
+				error.detail.length > 0,
 			JSON.stringify(value),
 		);
+	await assert.rejects(activatePublicPool(backend, options({ maxBatch: 0 })), {
+		detail: "must be an integer from 1 to 1000",
+	});
+	await assert.rejects(activatePublicPool(backend, options({ every: 1 })), {
+		detail: "is not an option; use intervalMs, maxBatch or maxLagMs",
+	});
+	await assert.rejects(activatePublicPool(backend, options(7)), {
+		detail: 'must be "sync" or { intervalMs?, maxBatch?, maxLagMs? }',
+	});
 	// Valid values get past placement checks, to the shared journal check this backend fails.
 	for (const value of ["sync", { intervalMs: 100, maxBatch: 1_000, maxLagMs: 1_000 }])
 		await assert.rejects(
@@ -386,4 +401,67 @@ test("a checkpoint that bills model usage commits, so the root's budget sees it 
 		},
 	} as unknown as PoolMutation;
 	assert.equal(shippableCheckpoint(billed), false);
+});
+
+test("each root of each shared journal has a local journal of its own on the host (#4768)", () => {
+	const path = shipShardPath("/state", "journal", ROOT);
+	assert.equal(path, shipShardPath("/state", "journal", ROOT));
+	assert.match(path, /^\/state\/ship\/[0-9a-f]{24}\/[0-9a-f]{32}\.sqlite$/);
+	assert.notEqual(path, shipShardPath("/state", "journal", "other-root"));
+	assert.notEqual(path, shipShardPath("/state", "other-journal", ROOT));
+});
+
+test("a renewal under another worker or epoch replaces the held lease, and a fence of another generation keeps it (#4768)", async () => {
+	const { shard: local } = await shard();
+	await local.hold(LEASE, LEASE_MS);
+	await local.hold({ ...LEASE, worker: "host/2" }, LEASE_MS);
+	await refused(local.accept(ROOT, LEASE, "k1", "{}", 1), "worker-mismatch");
+	await local.hold({ ...LEASE, epoch: 9 }, LEASE_MS);
+	await refused(local.accept(ROOT, LEASE, "k1", "{}", 1), "epoch-mismatch");
+	await local.hold(LEASE, LEASE_MS);
+	await local.fence({ id: LEASE.id, generation: 7 });
+	assert.equal(
+		(await local.accept(ROOT, LEASE, "k1", "{}", 1)).accepted,
+		true,
+		"a fence of another generation leaves it",
+	);
+});
+
+test("a host closes its local journal once, and accepts nothing after (#4768)", async () => {
+	const { shard: local } = await shard();
+	await local.hold(LEASE, LEASE_MS);
+	await local.close();
+	await local.close();
+	await refused(local.accept(ROOT, LEASE, "k1", "{}", 1), "missing");
+});
+
+test("a host whose local journal cannot take an attempt's lease commits that attempt directly (#4768)", async () => {
+	const { shard: local } = await shard();
+	const fallbacks: ShippingFallback[] = [];
+	const shared = fakeShared();
+	const shipping = shippingOf(local, shared.deliver, { onFallback: (fallback) => fallbacks.push(fallback) });
+	const broken = new Error("disk I/O error");
+	local.hold = async () => {
+		throw broken;
+	};
+	await shipping.hold(LEASE, LEASE_MS);
+	assert.deepEqual(fallbacks, [{ workId: LEASE.id, error: broken }]);
+	const direct = sharedCommit();
+	await shipping.commit(LEASE, checkpoint("a"), direct.commit);
+	assert.equal(direct.calls.length, 1);
+	assert.deepEqual(await local.pending(LEASE), []);
+});
+
+test("a stage checkpoint with a session never ships (#4768)", async () => {
+	const { shard: local } = await shard();
+	const shipping = shippingOf(local, fakeShared().deliver);
+	await shipping.hold(LEASE, LEASE_MS);
+	const stage = {
+		kind: "checkpoint",
+		checkpoint: { ...toolCheckpoint("s"), kind: "stage", sessionId: "session" },
+	} as unknown as PoolMutation;
+	const direct = sharedCommit();
+	await shipping.commit(LEASE, stage, direct.commit);
+	assert.equal(direct.calls.length, 1);
+	assert.deepEqual(await local.pending(LEASE), []);
 });
