@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { getPackageDir, isBunBinary, isBundledBuild } from "../../config.js";
 import { createModuleRequire } from "../../utils/module-require.ts";
+import { withLegacyPackageNames } from "./forked-package-names.ts";
 
 let virtualModules: Record<string, object> | null = null;
 let virtualModulesPromise: Promise<Record<string, object>> | null = null;
@@ -34,37 +35,45 @@ export async function loadVirtualModules(): Promise<Record<string, object>> {
 		typebox,
 		typeboxCompile,
 		typeboxValue,
-		piAgentCore,
-		piTui,
-		piTuiLayout,
-		piTuiLayoutNode,
-		piAi,
-		piAiOauth,
-		piAiModels,
-		piAiProviders,
-		piAiCloudflareGatewayBinding,
-		piAiProviderEnv,
-		piAiOauthPage,
+		agentCore,
+		tui,
+		tuiLayout,
+		tuiLayoutNode,
+		ai,
+		aiOauth,
+		aiModels,
+		aiProviders,
+		aiCloudflareGatewayBinding,
+		aiProviderEnv,
+		aiOauthPage,
+		codemode,
+		schema,
+		schemaFormats,
+		telemetry,
 		properLockfile,
-		piCodingAgent,
+		codingAgent,
 		storage,
 	] = await Promise.all([
 		import("typebox"),
 		import("typebox/compile"),
 		import("typebox/value"),
-		import("@earendil-works/pi-agent-core"),
-		import("@earendil-works/pi-tui"),
-		import("@earendil-works/pi-tui/dist/layout.js"),
-		import("@earendil-works/pi-tui/dist/layout-node.js"),
+		import("@bastani/atomic-agent-core"),
+		import("@bastani/atomic-tui"),
+		import("@bastani/atomic-tui/dist/layout.js"),
+		import("@bastani/atomic-tui/dist/layout-node.js"),
 		// pi 0.80.2: the old global pi-ai API moved off the root entrypoint onto
 		// `/compat` (a strict superset). Extensions still use the root specifier.
-		import("@bastani/pi-ai/compat"),
-		import("@bastani/pi-ai/oauth"),
-		import("@bastani/pi-ai/models"),
-		import("@bastani/pi-ai/providers/all"),
-		import("@bastani/pi-ai/api/cloudflare-gateway-binding"),
-		import("@bastani/pi-ai/utils/provider-env"),
-		import("@bastani/pi-ai/utils/oauth-page"),
+		import("@bastani/atomic-ai/compat"),
+		import("@bastani/atomic-ai/oauth"),
+		import("@bastani/atomic-ai/models"),
+		import("@bastani/atomic-ai/providers/all"),
+		import("@bastani/atomic-ai/api/cloudflare-gateway-binding"),
+		import("@bastani/atomic-ai/utils/provider-env"),
+		import("@bastani/atomic-ai/utils/oauth-page"),
+		import("@bastani/atomic-codemode"),
+		import("@bastani/atomic-schema"),
+		import("@bastani/atomic-schema/formats"),
+		import("@bastani/atomic-telemetry"),
 		// Keep proper-lockfile in the compiled host so extensions share its live
 		// CommonJS module state instead of evaluating it through jiti.
 		import("proper-lockfile"),
@@ -73,45 +82,37 @@ export async function loadVirtualModules(): Promise<Record<string, object>> {
 		import("../storage/index.js"),
 	]);
 
-	return {
+	// Each forked package also answers to its legacy pi names (@earendil-works/pi-*, @mariozechner/pi-*).
+	return withLegacyPackageNames({
 		typebox,
 		"typebox/compile": typeboxCompile,
 		"typebox/value": typeboxValue,
 		"@sinclair/typebox": typebox,
 		"@sinclair/typebox/compile": typeboxCompile,
 		"@sinclair/typebox/value": typeboxValue,
-		"@earendil-works/pi-agent-core": piAgentCore,
-		"@earendil-works/pi-tui": piTui,
-		"@earendil-works/pi-tui/dist/layout.js": piTuiLayout,
-		"@earendil-works/pi-tui/dist/layout-node.js": piTuiLayoutNode,
-		"@bastani/pi-ai": piAi,
-		"@bastani/pi-ai/compat": piAi,
-		"@bastani/pi-ai/oauth": piAiOauth,
-		"@bastani/pi-ai/models": piAiModels,
-		"@bastani/pi-ai/providers/all": piAiProviders,
-		"@bastani/pi-ai/api/cloudflare-gateway-binding": piAiCloudflareGatewayBinding,
-		"@bastani/pi-ai/utils/provider-env": piAiProviderEnv,
-		"@bastani/pi-ai/utils/oauth-page": piAiOauthPage,
-		"@earendil-works/pi-ai": piAi,
-		"@earendil-works/pi-ai/compat": piAi,
-		"@earendil-works/pi-ai/oauth": piAiOauth,
-		"@earendil-works/pi-ai/models": piAiModels,
-		"@earendil-works/pi-ai/api/cloudflare-gateway-binding": piAiCloudflareGatewayBinding,
+		"@bastani/atomic-agent-core": agentCore,
+		"@bastani/atomic-tui": tui,
+		"@bastani/atomic-tui/dist/layout.js": tuiLayout,
+		"@bastani/atomic-tui/dist/layout-node.js": tuiLayoutNode,
+		"@bastani/atomic-ai": ai,
+		"@bastani/atomic-ai/compat": ai,
+		"@bastani/atomic-ai/oauth": aiOauth,
+		"@bastani/atomic-ai/models": aiModels,
+		"@bastani/atomic-ai/providers/all": aiProviders,
+		"@bastani/atomic-ai/api/cloudflare-gateway-binding": aiCloudflareGatewayBinding,
+		"@bastani/atomic-ai/utils/provider-env": aiProviderEnv,
+		"@bastani/atomic-ai/utils/oauth-page": aiOauthPage,
+		"@bastani/atomic-codemode": codemode,
+		"@bastani/atomic-schema": schema,
+		"@bastani/atomic-schema/formats": schemaFormats,
+		"@bastani/atomic-telemetry": telemetry,
 		"proper-lockfile": properLockfile,
 		...(atomicNatives ? { "@bastani/atomic-natives": atomicNatives } : {}),
-		"@bastani/atomic": piCodingAgent,
+		"@bastani/atomic": codingAgent,
 		"@bastani/atomic/storage": storage,
-		"@earendil-works/pi-coding-agent": piCodingAgent,
-		"@mariozechner/pi-coding-agent": piCodingAgent,
-		"@mariozechner/pi-agent-core": piAgentCore,
-		"@mariozechner/pi-tui": piTui,
-		"@mariozechner/pi-tui/dist/layout.js": piTuiLayout,
-		"@mariozechner/pi-ai": piAi,
-		"@mariozechner/pi-ai/compat": piAi,
-		"@mariozechner/pi-ai/oauth": piAiOauth,
-		"@mariozechner/pi-ai/models": piAiModels,
-		"@mariozechner/pi-ai/api/cloudflare-gateway-binding": piAiCloudflareGatewayBinding,
-	};
+		"@earendil-works/pi-coding-agent": codingAgent,
+		"@mariozechner/pi-coding-agent": codingAgent,
+	});
 }
 
 export const loaderHostModulesTestHooks = { loadOptionalAtomicNatives };
@@ -133,18 +134,28 @@ export async function getVirtualModules(): Promise<Record<string, object>> {
 }
 
 export async function getWorkflowHostModules(): Promise<
-	Record<"@bastani/atomic" | "@bastani/atomic/storage" | "@bastani/pi-ai" | "@bastani/pi-ai/providers/all", object>
+	Record<
+		| "@bastani/atomic"
+		| "@bastani/atomic/storage"
+		| "@bastani/atomic-ai"
+		| "@bastani/atomic-ai/providers/all"
+		| "@bastani/pi-ai"
+		| "@bastani/pi-ai/providers/all",
+		object
+	>
 > {
-	const [atomic, storage, piAi, providers] = await Promise.all([
+	const [atomic, storage, ai, providers] = await Promise.all([
 		import("../../index.ts"),
 		import("../storage/index.js"),
-		import("@bastani/pi-ai/compat"),
-		import("@bastani/pi-ai/providers/all"),
+		import("@bastani/atomic-ai/compat"),
+		import("@bastani/atomic-ai/providers/all"),
 	]);
 	return {
 		"@bastani/atomic": atomic,
 		"@bastani/atomic/storage": storage,
-		"@bastani/pi-ai": piAi,
+		"@bastani/atomic-ai": ai,
+		"@bastani/atomic-ai/providers/all": providers,
+		"@bastani/pi-ai": ai,
 		"@bastani/pi-ai/providers/all": providers,
 	};
 }

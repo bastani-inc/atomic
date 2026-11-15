@@ -27,11 +27,11 @@ describe("extension loader pi-ai compat aliases", () => {
 		async () => {
 			const modules = await extensionLoaderTestHooks.loadVirtualModules();
 
-			expect(modules["@bastani/pi-ai"]).toBe(modules["@bastani/pi-ai/compat"]);
+			expect(modules["@bastani/atomic-ai"]).toBe(modules["@bastani/atomic-ai/compat"]);
 			expect(modules["@mariozechner/pi-ai"]).toBe(modules["@mariozechner/pi-ai/compat"]);
-			expect(modules["@mariozechner/pi-ai"]).toBe(modules["@bastani/pi-ai/compat"]);
+			expect(modules["@mariozechner/pi-ai"]).toBe(modules["@bastani/atomic-ai/compat"]);
 
-			const compat = modules["@bastani/pi-ai/compat"] as PiAiExports;
+			const compat = modules["@bastani/atomic-ai/compat"] as PiAiExports;
 			expect(typeof compat.complete).toBe("function");
 			expect(typeof compat.getModel).toBe("function");
 			expect(typeof compat.StringEnum).toBe("function");
@@ -42,38 +42,38 @@ describe("extension loader pi-ai compat aliases", () => {
 	it("maps root and compat specifiers to the same jiti alias path", () => {
 		const aliases = extensionLoaderTestHooks.getAliases();
 
-		expect(aliases["@bastani/pi-ai"]).toBe(aliases["@bastani/pi-ai/compat"]);
+		expect(aliases["@bastani/atomic-ai"]).toBe(aliases["@bastani/atomic-ai/compat"]);
 		expect(aliases["@mariozechner/pi-ai"]).toBe(aliases["@mariozechner/pi-ai/compat"]);
-		expect(aliases["@mariozechner/pi-ai"]).toBe(aliases["@bastani/pi-ai/compat"]);
+		expect(aliases["@mariozechner/pi-ai"]).toBe(aliases["@bastani/atomic-ai/compat"]);
 	});
 
 	it("maps the Codex Responses API before the broad pi-ai compat alias", () => {
 		const aliases = extensionLoaderTestHooks.getAliases();
-		const target = aliases["@bastani/pi-ai/api/openai-codex-responses"];
+		const target = aliases["@bastani/atomic-ai/api/openai-codex-responses"];
 
 		expect(target).toMatch(/[\\/]dist[\\/]api[\\/]openai-codex-responses\.js$/);
 		expect(fs.existsSync(target!)).toBe(true);
-		expect(target).not.toBe(aliases["@bastani/pi-ai"]);
+		expect(target).not.toBe(aliases["@bastani/atomic-ai"]);
 	});
 
 	it("maps the llama.cpp classifier API before the broad pi-ai compat alias", () => {
 		// The llama.cpp provider imports this subpath, and jiti re-evaluates host sources when a
 		// workflow imports `@bastani/atomic`; without its own key it resolves as compat.js/api/...
 		const aliases = extensionLoaderTestHooks.getAliases();
-		const target = aliases["@bastani/pi-ai/api/llama-cpp-classify.lazy"];
+		const target = aliases["@bastani/atomic-ai/api/llama-cpp-classify.lazy"];
 
 		expect(target).toMatch(/[\\/]dist[\\/]api[\\/]llama-cpp-classify\.lazy\.js$/);
 		expect(fs.existsSync(target!)).toBe(true);
-		expect(target).not.toBe(aliases["@bastani/pi-ai"]);
+		expect(target).not.toBe(aliases["@bastani/atomic-ai"]);
 	});
 
 	it("shares the image provider catalog with binary extensions and workflow workers (#4590)", async () => {
 		const modules = await extensionLoaderTestHooks.loadVirtualModules();
-		const providers = await import("@bastani/pi-ai/providers/all");
+		const providers = await import("@bastani/atomic-ai/providers/all");
 		const { getWorkflowHostModules } = await import("../src/core/extensions/loader-host-modules.js");
 		const workflowModules = await getWorkflowHostModules();
-		assert.equal(modules["@bastani/pi-ai/providers/all"], providers);
-		assert.equal(workflowModules["@bastani/pi-ai/providers/all"], providers);
+		assert.equal(modules["@bastani/atomic-ai/providers/all"], providers);
+		assert.equal(workflowModules["@bastani/atomic-ai/providers/all"], providers);
 		const { createBrokerHostModulePlugin } = await import("../src/bun/internal-intercom-broker.js");
 		const { WORKER_HOST_MODULE_SPECIFIERS } = await import("../src/bun/internal-workflow-worker.js");
 		const registered = new Map<string, () => Promise<{ exports: object; loader: "object" }>>();
@@ -81,7 +81,7 @@ describe("extension loader pi-ai compat aliases", () => {
 			async () => ({ loadHostModule: async (specifier) => modules[specifier]! }),
 			WORKER_HOST_MODULE_SPECIFIERS,
 		).setup({ module: (specifier, callback) => registered.set(specifier, callback) });
-		const loadProviderCatalog = registered.get("@bastani/pi-ai/providers/all");
+		const loadProviderCatalog = registered.get("@bastani/atomic-ai/providers/all");
 		assert.ok(loadProviderCatalog);
 		assert.equal((await loadProviderCatalog()).exports, providers);
 	});
@@ -89,8 +89,8 @@ describe("extension loader pi-ai compat aliases", () => {
 	it("registers provider environment helpers for binary extension imports", async () => {
 		// #3129: binaries use virtual modules instead of the filesystem aliases.
 		const modules = await extensionLoaderTestHooks.loadVirtualModules();
-		const providerEnv = await import("@bastani/pi-ai/utils/provider-env");
-		assert.equal(modules["@bastani/pi-ai/utils/provider-env"], providerEnv);
+		const providerEnv = await import("@bastani/atomic-ai/utils/provider-env");
+		assert.equal(modules["@bastani/atomic-ai/utils/provider-env"], providerEnv);
 	});
 
 	it(
@@ -103,7 +103,7 @@ describe("extension loader pi-ai compat aliases", () => {
 				fs.writeFileSync(
 					extensionPath,
 					`
-import { getProviderEnvValue } from "@bastani/pi-ai/utils/provider-env";
+import { getProviderEnvValue } from "@bastani/atomic-ai/utils/provider-env";
 if (getProviderEnvValue("ATOMIC_ALIAS_PROBE", { ATOMIC_ALIAS_PROBE: "scoped" }) !== "scoped") {
   throw new Error("extension lost the scoped provider environment");
 }
@@ -125,6 +125,7 @@ export default function extension() {}
 			const directory = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-models-entry-extension-"));
 			try {
 				for (const [index, specifier] of [
+					"@bastani/atomic-ai/models",
 					"@bastani/pi-ai/models",
 					"@earendil-works/pi-ai/models",
 					"@mariozechner/pi-ai/models",
@@ -150,9 +151,69 @@ export default function extension() {}
 	);
 
 	it(
+		"shares every forked package's host instance with an extension importing its new and legacy names (#5174)",
+		async () => {
+			// One export per forked package, imported under Atomic's name and each legacy pi name.
+			const probes = [
+				{
+					export: "StringEnum",
+					names: ["@bastani/atomic-ai", "@bastani/pi-ai", "@earendil-works/pi-ai", "@mariozechner/pi-ai"],
+				},
+				{ export: "Text", names: ["@bastani/atomic-tui", "@earendil-works/pi-tui", "@mariozechner/pi-tui"] },
+				{
+					export: "Agent",
+					names: ["@bastani/atomic-agent-core", "@earendil-works/pi-agent-core", "@mariozechner/pi-agent-core"],
+				},
+				{ export: "toCodemodeIdentifier", names: ["@bastani/atomic-codemode", "@earendil-works/pi-codemode"] },
+				{ export: "compile", names: ["@bastani/atomic-schema", "@earendil-works/pi-schema"] },
+				{ export: "NOOP_TELEMETRY_CONTEXT", names: ["@bastani/atomic-telemetry", "@earendil-works/pi-telemetry"] },
+			] as const;
+			const imports = probes.flatMap((probe, probeIndex) =>
+				probe.names.map((name, nameIndex) => ({
+					local: `p${probeIndex}_${nameIndex}`,
+					statement: `import { ${probe.export} as p${probeIndex}_${nameIndex} } from ${JSON.stringify(name)};`,
+				})),
+			);
+			const directory = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-forked-names-extension-"));
+			try {
+				const extensionPath = path.join(directory, "extension.ts");
+				fs.writeFileSync(
+					extensionPath,
+					`${imports.map((entry) => entry.statement).join("\n")}
+(globalThis as { forkedNamesProbe?: object }).forkedNamesProbe = { ${imports.map((entry) => entry.local).join(", ")} };
+export default function extension() {}
+`,
+				);
+				const probeHolder = globalThis as { forkedNamesProbe?: Record<string, object> };
+				delete probeHolder.forkedNamesProbe;
+				const factory = await extensionLoaderTestHooks.loadExtensionModuleTransformed(extensionPath);
+				assert.equal(typeof factory, "function");
+				const imported = probeHolder.forkedNamesProbe;
+				assert.ok(imported, "extension module exposes its imports");
+				const modules = await extensionLoaderTestHooks.loadVirtualModules();
+				for (const [probeIndex, probe] of probes.entries()) {
+					const host = (modules[probe.names[0]] as Record<string, object>)[probe.export];
+					assert.ok(host, `${probe.names[0]} exports ${probe.export}`);
+					for (const [nameIndex, name] of probe.names.entries()) {
+						assert.equal(imported[`p${probeIndex}_${nameIndex}`], host, `${name} resolves to the host instance`);
+						assert.equal(modules[name], modules[probe.names[0]], `${name} is a host virtual module`);
+					}
+				}
+			} finally {
+				fs.rmSync(directory, { recursive: true, force: true });
+			}
+		},
+		REAL_EXTENSION_LOADER_TEST_TIMEOUT_MS,
+	);
+
+	it(
 		"maps pi-tui layout helpers through both loader resolution paths",
 		async () => {
-			const specifiers = ["@earendil-works/pi-tui/dist/layout.js", "@mariozechner/pi-tui/dist/layout.js"] as const;
+			const specifiers = [
+				"@bastani/atomic-tui/dist/layout.js",
+				"@earendil-works/pi-tui/dist/layout.js",
+				"@mariozechner/pi-tui/dist/layout.js",
+			] as const;
 			const aliases = extensionLoaderTestHooks.getAliases();
 			const modules = await extensionLoaderTestHooks.loadVirtualModules();
 			for (const specifier of specifiers) {
@@ -164,6 +225,7 @@ export default function extension() {}
 				expect(typeof layout.renderLayoutFrame).toBe("function");
 			}
 			expect(modules[specifiers[0]]).toBe(modules[specifiers[1]]);
+			expect(modules[specifiers[0]]).toBe(modules[specifiers[2]]);
 		},
 		REAL_EXTENSION_LOADER_TEST_TIMEOUT_MS,
 	);
@@ -173,7 +235,7 @@ export default function extension() {}
 		async () => {
 			// PR #3022: a root pi-tui alias must not turn this subpath into index.js/dist/...
 			const specifier = "@earendil-works/pi-tui/dist/layout-node.js";
-			const native = await import("@earendil-works/pi-tui/dist/layout-node.js");
+			const native = await import("@bastani/atomic-tui/dist/layout-node.js");
 			const aliases = extensionLoaderTestHooks.getAliases();
 			assert.match(aliases[specifier]!, /[\\/]dist[\\/]layout-node\.js$/);
 			assert.equal(fs.existsSync(aliases[specifier]!), true);
@@ -190,7 +252,7 @@ export default function extension() {}
 			// the host entry reach this specifier; without its own alias key it falls
 			// through to the compat/root prefix alias and fails to load.
 			const specifiers = [
-				"@bastani/pi-ai/api/cloudflare-gateway-binding",
+				"@bastani/atomic-ai/api/cloudflare-gateway-binding",
 				"@mariozechner/pi-ai/api/cloudflare-gateway-binding",
 			] as const;
 			const aliases = extensionLoaderTestHooks.getAliases();
@@ -207,8 +269,8 @@ export default function extension() {}
 	);
 
 	it("confirms compat is the legacy API surface while root stays core-only", async () => {
-		const root = (await import("@bastani/pi-ai")) as PiAiExports;
-		const compat = (await import("@bastani/pi-ai/compat")) as PiAiExports;
+		const root = (await import("@bastani/atomic-ai")) as PiAiExports;
+		const compat = (await import("@bastani/atomic-ai/compat")) as PiAiExports;
 
 		expect(root.complete).toBeUndefined();
 		expect(root.getModel).toBeUndefined();
@@ -249,7 +311,7 @@ describe("extension loader package-root resolution", () => {
 	});
 
 	it("resolves the real pi-ai package root from the loader's node_modules chain", () => {
-		const root = extensionLoaderTestHooks.findPackageRoot("@bastani/pi-ai");
+		const root = extensionLoaderTestHooks.findPackageRoot("@bastani/atomic-ai");
 
 		expect(fs.existsSync(path.join(root, "package.json"))).toBe(true);
 		expect(fs.existsSync(path.join(root, "dist", "compat.js"))).toBe(true);
