@@ -1,12 +1,12 @@
 import type { Stats } from "node:fs";
 import { lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import lockfile from "proper-lockfile";
 import { failureDebugFields, reportDebug } from "../debug.ts";
 import { timeRestorePhase } from "../resume/timings.ts";
 import { admitPooledWorktree, discardPooledWorktree, type PoolOwner, releaseRestoredWorktree } from "./pool.ts";
 import { type RepositoryId, sharedRepositoryIdOf } from "./repository-identity.ts";
 import { restoreWorktreeAt } from "./restore.ts";
+import { lockShared } from "./shared-clock.ts";
 import type { WorktreeSnapshot } from "./types.ts";
 
 /**
@@ -111,7 +111,7 @@ export async function withSeedLock<T>(
 ): Promise<T> {
 	const file = seedManifestPath(storeDir, repository);
 	await mkdir(dirname(file), { recursive: true });
-	const unlock = await lockfile.lock(file, {
+	const unlock = await lockShared(file, {
 		realpath: false,
 		stale: SEED_LOCK_STALE_MS,
 		update: SEED_LOCK_UPDATE_MS,

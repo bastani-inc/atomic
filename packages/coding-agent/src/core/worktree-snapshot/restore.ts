@@ -4,7 +4,6 @@ import { lstat, mkdir, open, readdir, readFile, realpath, rename, rm, rmdir, sta
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
-import lockfile from "proper-lockfile";
 import { noteRestoreFetch, timeRestorePhase } from "../resume/timings.ts";
 import {
 	locateCheckout,
@@ -43,6 +42,7 @@ import {
 	resolveWorktreeSnapshotSettings,
 	type WorktreeSnapshotSettingsInput,
 } from "./settings.ts";
+import { lockShared } from "./shared-clock.ts";
 import type {
 	SnapshotBlobStore,
 	WorkspaceBinding,
@@ -231,7 +231,7 @@ async function lockRepository(
 	for (;;) {
 		signal?.throwIfAborted();
 		try {
-			return await lockfile.lock(store, {
+			return await lockShared(store, {
 				realpath: false,
 				stale: REPOSITORY_LOCK_STALE_MS,
 				update: REPOSITORY_LOCK_UPDATE_MS,
@@ -384,7 +384,7 @@ async function sweepRestoreRecords(
 		let compromised: Error | undefined;
 		let warningPath = recordPath;
 		try {
-			release = await lockfile.lock(recordPath, {
+			release = await lockShared(recordPath, {
 				realpath: false,
 				stale: RESTORE_LOCK_STALE_MS,
 				update: RESTORE_LOCK_UPDATE_MS,
@@ -438,7 +438,7 @@ async function withRestoreRecord(
 	await writing(recordsDir, snapshotId, () => mkdir(recordsDir, { recursive: true }));
 	let compromised: Error | undefined;
 	const release = await writing(recordPath, snapshotId, () =>
-		lockfile.lock(recordPath, {
+		lockShared(recordPath, {
 			realpath: false,
 			stale: RESTORE_LOCK_STALE_MS,
 			update: RESTORE_LOCK_UPDATE_MS,
