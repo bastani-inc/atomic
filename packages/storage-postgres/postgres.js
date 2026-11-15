@@ -229,6 +229,114 @@ export function numberPlaceholders(sql) {
 	return numbered + sql.slice(copied);
 }
 
+/** The longest identifier Postgres keeps whole; it truncates a longer one. */
+const IDENTIFIER_BYTES = 63;
+
+/**
+ * `sql` with every unquoted identifier longer than Postgres keeps whole replaced by the name the storage dialect gives
+ * it (`postgresDialect.identifier`: its head and a hash of the whole name), in every statement, DDL and DML alike, and
+ * in the bodies of functions and `DO` blocks. Created objects, the statements that use them, and the dialect's catalog
+ * probes then always name one object by one identifier, whatever prefix a store was given, rather than Postgres
+ * truncating each occurrence on its own. Values are never changed: string literals, every other dollar-quoted string,
+ * quoted identifiers and comments (nested as Postgres nests them) are left as written.
+ * @param {string} sql
+ */
+export function physicalIdentifiers(sql) {
+	if (!/[A-Za-z0-9_$]{64}/.test(sql)) return sql;
+	let mapped = "";
+	let copied = 0;
+	let index = 0;
+	// Where the current statement starts, after the last `;` outside quotes and comments.
+	let statement = 0;
+	while (index < sql.length) {
+		const character = /** @type {string} */ (sql[index]);
+		if (/[A-Za-z_]/.test(character) && !isWordCharacter(sql[index - 1])) {
+			let end = index + 1;
+			while (end < sql.length && isWordCharacter(sql[end])) end++;
+			const word = sql.slice(index, end);
+			if (word.length > IDENTIFIER_BYTES && /^[A-Za-z0-9_]+$/.test(word)) {
+				mapped += `${sql.slice(copied, index)}${postgresDialect.identifier(word)}`;
+				copied = end;
+			}
+			index = end;
+		} else if (character === "'") {
+			const escapes = /[eE]/.test(sql[index - 1] ?? "") && !isWordCharacter(sql[index - 2]);
+			index++;
+			while (index < sql.length) {
+				if (escapes && sql[index] === "\\") index += 2;
+				else if (sql[index] !== "'") index++;
+				else if (sql[index + 1] === "'") index += 2;
+				else break;
+			}
+			index++;
+		} else if (character === '"') {
+			index = sql.indexOf('"', index + 1);
+			index = index === -1 ? sql.length : index + 1;
+		} else if (character === "-" && sql[index + 1] === "-") {
+			index = sql.indexOf("\n", index);
+			if (index === -1) index = sql.length;
+		} else if (character === "/" && sql[index + 1] === "*") {
+			index = blockCommentEnd(sql, index);
+		} else if (character === "$" && !isWordCharacter(sql[index - 1])) {
+			const tag = /^\$(?:[A-Za-z_\u0080-\uffff][A-Za-z0-9_\u0080-\uffff]*)?\$/.exec(sql.slice(index))?.[0];
+			if (tag === undefined) index++;
+			else {
+				const start = index + tag.length;
+				const close = sql.indexOf(tag, start);
+				const end = close === -1 ? sql.length : close;
+				// A function's or `DO` block's body is SQL: its identifiers are mapped, its literals kept. Any other
+				// dollar-quoted string is a value, kept as written.
+				if (isRoutineBody(sql.slice(statement, index))) {
+					mapped += `${sql.slice(copied, start)}${physicalIdentifiers(sql.slice(start, end))}`;
+					copied = end;
+				}
+				index = close === -1 ? sql.length : close + tag.length;
+			}
+		} else {
+			if (character === ";") statement = index + 1;
+			index++;
+		}
+	}
+	return mapped + sql.slice(copied);
+}
+
+/** The index after the block comment that opens at `index`, which nests as Postgres nests comments. */
+function blockCommentEnd(/** @type {string} */ sql, /** @type {number} */ index) {
+	let depth = 1;
+	let at = index + 2;
+	while (at < sql.length && depth > 0) {
+		if (sql.startsWith("/*", at)) {
+			depth++;
+			at += 2;
+		} else if (sql.startsWith("*/", at)) {
+			depth--;
+			at += 2;
+		} else at++;
+	}
+	return at;
+}
+
+/**
+ * Whether a dollar-quoted string after `before`, the text of its statement up to it, is the body of a routine: the
+ * string after `AS` in `CREATE [OR REPLACE] FUNCTION|PROCEDURE`, or after `DO [LANGUAGE …]`.
+ * @param {string} before
+ */
+function isRoutineBody(before) {
+	let text = "";
+	for (let at = 0; at < before.length; ) {
+		if (before.startsWith("/*", at)) {
+			at = blockCommentEnd(before, at);
+			text += " ";
+		} else if (before.startsWith("--", at)) {
+			const end = before.indexOf("\n", at);
+			at = end === -1 ? before.length : end;
+			text += " ";
+		} else text += before[at++];
+	}
+	if (/^\s*DO(?:\s+LANGUAGE\s+\w+)?\s*$/i.test(text)) return true;
+	return /^\s*CREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|PROCEDURE)\b[\s\S]*\bAS\s*$/i.test(text);
+}
+
 /** Whether `sql` is a single SQLite `PRAGMA` statement, which Postgres has no use for. */
 function isPragma(/** @type {string} */ sql) {
 	return /^\s*PRAGMA\b[^;]*;?\s*$/i.test(sql);
@@ -529,7 +637,7 @@ export async function openPostgresDatabase(options) {
 	 * @param {readonly SqliteValue[]} params
 	 */
 	const statement = (client, sql, params) =>
-		client.query({ text: numberPlaceholders(sql), values: [...params], rowMode: "array" });
+		client.query({ text: numberPlaceholders(physicalIdentifiers(sql)), values: [...params], rowMode: "array" });
 
 	/**
 	 * @param {import("pg").QueryResult<SqliteValue[]>} result
@@ -558,7 +666,7 @@ export async function openPostgresDatabase(options) {
 	 */
 	const executeMultiple = async (client, sql, timeoutMs) => {
 		if (isPragma(sql)) return;
-		await watched(client, () => client.query(sql), timeoutMs);
+		await watched(client, () => client.query(physicalIdentifiers(sql)), timeoutMs);
 	};
 
 	/**

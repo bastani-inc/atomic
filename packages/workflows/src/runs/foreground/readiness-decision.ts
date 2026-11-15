@@ -4,6 +4,7 @@ import {
 	type DecisionResult,
 	findDecisionError,
 	isDecisionModelUnavailableError,
+	sliceHead,
 } from "@bastani/atomic";
 
 /**
@@ -161,7 +162,7 @@ export function describeReadinessDecision(decision: StageReadinessDecision): str
 }
 
 function truncated(text: string): string {
-	return text.length <= READINESS_STATE_MAX_CHARS ? text : `${text.slice(0, READINESS_STATE_MAX_CHARS)}…`;
+	return text.length <= READINESS_STATE_MAX_CHARS ? text : `${sliceHead(text, READINESS_STATE_MAX_CHARS)}…`;
 }
 
 /** The state the decision model reads: the stage objective, the user's message and the stage's reply, truncated. */

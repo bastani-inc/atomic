@@ -54,8 +54,9 @@ function serverUrl(variable: string): { readonly url: string } | { readonly skip
 	return { skipReason: `${variable} is not set` };
 }
 
+/** Ten characters: the longest prefix PostgreSQL names every identifier of, worker pools included, under. */
 function scopePrefix(): string {
-	return `c${randomBytes(6).toString("hex")}_`;
+	return `c${randomBytes(4).toString("hex")}_`;
 }
 
 /** Opens connections through `open` and closes every one of them, whatever the suite left open. */
