@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolDefinition } from "@bastani/atomic";
@@ -6,12 +6,14 @@ import { getEnvNames } from "@bastani/atomic";
 import { registerFauxProvider } from "@bastani/pi-ai/compat";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
+import { onTestFinished } from "vitest";
 import { ENV_AGENT_DIR } from "../../packages/coding-agent/src/config.js";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
 import { resetSessionTempCleanupScheduleForTesting } from "../../packages/coding-agent/src/core/tools/session-temp-cleanup.js";
 import type { RunSyncOptions } from "../../packages/subagents/src/shared/types.ts";
 import { settle } from "../../scripts/perf/idle-agents/scripted-model.js";
+import { removeTempRootReleasingBroker } from "./detached-broker.js";
 
 export interface LiveChildOptions {
 	readonly models?: ReadonlyArray<{ readonly id: string; readonly reasoning?: boolean }>;
@@ -79,8 +81,10 @@ export async function liveChildEnvironment(cleanups: Array<() => void>, liveOpti
 			if (previous[name] === undefined) delete process.env[name];
 			else process.env[name] = previous[name];
 		}
-		rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 	});
+	// The child's Intercom spawns a detached broker for this agent dir that holds its SQLite files open, so Windows cannot
+	// delete them until it exits. This runs after the afterEach cleanups.
+	onTestFinished(() => removeTempRootReleasingBroker(root, agentDir));
 	const options = (runId: string, extra: Partial<RunSyncOptions> = {}): RunSyncOptions => ({
 		cwd: root,
 		runId,

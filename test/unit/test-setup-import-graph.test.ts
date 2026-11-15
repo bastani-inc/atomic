@@ -23,8 +23,9 @@ const SETUP_FILE = "test/setup-workflow-durability.ts";
 // module's leaf `write-ahead-log.ts`, which imports nothing, the snapshot blob tables (`worktree-snapshot/blob-store.ts`),
 // and the journal store's catalog and adoption modules, which the storage entry exports for SDK callers, with their
 // leaves `cleanup.ts` and `file-identity.ts` (#4325), and the SQL dialect, fenced-path registry and migration runner
-// the storage entry exports for adapters and stores (`dialect.ts`, `fenced-paths.ts`, `migrations.ts`; #4793).
-const MAX_REACHABLE_MODULES = 47;
+// the storage entry exports for adapters and stores (`dialect.ts`, `fenced-paths.ts`, `migrations.ts`; #4793), and the
+// durable backend's attempt identity leaf `attempt-identity.ts`, whose own imports are type-only (#4874).
+const MAX_REACHABLE_MODULES = 48;
 
 function runtimeImports(file: string, eagerOnly = false): string[] {
 	try {
