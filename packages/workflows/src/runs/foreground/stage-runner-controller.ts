@@ -225,8 +225,10 @@ function hasMeaningfulUsage(
  * One attempt's usage, accrued from the session's provider usage events while
  * the attempt window is open (#5053). Every model call reports here exactly
  * once: each assistant response (`message_end`, including error responses a
- * retry later removes from the live transcript) and each compaction model
- * request (`compaction_usage`). Message-list projections such as compaction
+ * retry later removes from the live transcript), each compaction model
+ * request (`compaction_usage`), each call of a subagent child the stage
+ * launched (`child_session_usage`) and auxiliary usage such as cache warming
+ * (`usage` entries). Message-list projections such as compaction
  * never change what was charged, and resumed or replayed history emits no
  * events, so it is never charged again.
  */
@@ -245,7 +247,9 @@ class AttemptUsageWindow {
 	constructor(session: StageSessionRuntime) {
 		this.unsubscribe = session.subscribe((event) => {
 			if (event.type === "message_end" && event.message.role === "assistant") this.add(event.message.usage, true);
-			else if (event.type === "compaction_usage") this.add(event.usage, false);
+			else if (event.type === "compaction_usage" || event.type === "child_session_usage")
+				this.add(event.usage, false);
+			else if (event.type === "entry_appended" && event.entry.type === "usage") this.add(event.entry.usage, false);
 		});
 	}
 
