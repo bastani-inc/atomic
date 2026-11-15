@@ -5,13 +5,18 @@ description: "Turn any Linux or macOS machine into a worker host for shared work
 
 # Running workers on many machines
 
-{/* Worker pools on PostgreSQL wait for #4793 P5. When they work, make this guide PostgreSQL-first: the recipes with managed PostgreSQL are on branch wip/postgres-fleet-recipes-p5-4793. */}
-
-A workflow root with shared placement keeps its work queue in a shared libSQL or Turso database. Any machine that has Atomic installed can run that root's pooled children: install Atomic, then run one command that names the database. The machines coordinate only through the database. There is no other service to run.
+A workflow root with shared placement keeps its work queue in a shared libSQL, Turso or PostgreSQL database. Any machine that has Atomic installed can run that root's pooled children: install Atomic, then run one command that names the database. The machines coordinate only through the database. There is no other service to run.
 
 If you host the database yourself with sqld rather than Turso, start sqld with `--checkpoint-interval-s 60` (or `SQLD_CHECKPOINT_INTERVAL_S=60`): sqld 0.24.33 can otherwise stop taking writes when many hosts write at once. See [Turso and libSQL](/storage#turso-and-libsql).
 
-Worker hosts need libSQL or Turso in this release. `atomic worker` accepts a `postgres://` URL, but the worker pool does not run on [PostgreSQL](/storage#postgresql) yet; support is coming in a later release. If you host the database yourself, run sqld with `--checkpoint-interval-s 60`, as [Scale the fleet automatically](#scale-the-fleet-automatically) explains.
+On [PostgreSQL](/storage#postgresql), install `@bastani/atomic-storage-postgres` instead and pass a `postgres://` URL with exactly one of `--password-file`, `--token-file` or `--auth azure|aws|gcp`:
+
+```bash
+atomic install npm:@bastani/atomic-storage-postgres
+atomic worker start --db postgresql://atomic@db.example.com:5432/atomic --password-file /etc/atomic/db-password
+```
+
+Every Atomic process, each of a host's workers included, keeps up to 8 connections to the server (`maxConnections`): size the server's `max_connections` for every host and its slots, or put a [connection pooler](/storage#connection-poolers) in front.
 
 ## Join a machine
 
