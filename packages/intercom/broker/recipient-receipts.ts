@@ -38,7 +38,7 @@ interface PendingReceipt<Recipient> extends AwaitedReceipt<Recipient> {
 	sender: ReceiptSender | undefined;
 	senderTimer: ReturnType<typeof setTimeout> | undefined;
 	retentionTimer: ReturnType<typeof setTimeout>;
-	/** When the sender started waiting; a save that keeps reporting progress still ends its wait after the cap. */
+	/** When, by `performance.now()`, the sender started waiting; a save that keeps reporting progress still ends its wait after the cap. */
 	readonly waitingSince: number;
 }
 
@@ -66,7 +66,7 @@ export class RecipientReceipts<Recipient> {
 				this.drop(receipt.messageId);
 				entry.lapse?.();
 			}, this.retentionMs),
-			waitingSince: Date.now(),
+			waitingSince: performance.now(),
 		};
 		entry.retentionTimer.unref?.();
 		this.armSenderWait(entry, this.senderTimeoutMs);
@@ -92,7 +92,7 @@ export class RecipientReceipts<Recipient> {
 	extend(messageId: string, targetIdentity: string): boolean {
 		const entry = this.pending.get(messageId);
 		if (entry === undefined || entry.targetIdentity !== targetIdentity || entry.sender === undefined) return false;
-		const remaining = entry.waitingSince + RECIPIENT_SAVE_MAX_WAIT_MS - Date.now();
+		const remaining = entry.waitingSince + RECIPIENT_SAVE_MAX_WAIT_MS - performance.now();
 		if (remaining <= 0) return false;
 		const timeoutMs = Math.min(this.senderTimeoutMs, remaining);
 		this.armSenderWait(entry, timeoutMs);

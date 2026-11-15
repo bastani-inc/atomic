@@ -13,7 +13,7 @@ import {
 } from "node:fs";
 import { mkdir, readdir, realpath, stat, unlink, utimes, writeFile } from "node:fs/promises";
 import { platform } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, win32 } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { promisify } from "node:util";
 import type {
@@ -1397,6 +1397,45 @@ function groupCommitHold(value: number | undefined): number {
 	return value;
 }
 
+/**
+ * Longest Windows database path SQLite opens as written. SQLite's Windows file calls fail a path, or the `-journal`,
+ * `-wal` or `-shm` file beside it, over 260 characters (`MAX_PATH`) with code 14 (#5139); this leaves room for those.
+ */
+const WINDOWS_SQLITE_PLAIN_PATH_LIMIT = 240;
+
+/**
+ * The path SQLite opens `path` by. On Windows a file path longer than SQLite can open as written takes the `\\?\`
+ * long-path form, which SQLite accepts at any length (#5139). Every other path, `:memory:`, `file:` URIs and every
+ * path on other platforms are passed unchanged, so the database's location reads as before wherever it fits.
+ */
+export function sqliteFilePath(path: string, platform: NodeJS.Platform = process.platform): string {
+	if (platform !== "win32" || path === ":memory:" || path.startsWith("file:")) return path;
+	return win32.resolve(path).length > WINDOWS_SQLITE_PLAIN_PATH_LIMIT ? win32.toNamespacedPath(path) : path;
+}
+
+/** `location` without the `\\?\` or `\\?\UNC\` prefix of the Windows long-path form: the path it names. */
+export function ordinarySqlitePath<T extends string | null>(location: T): T {
+	if (location === null) return location;
+	if (location.startsWith("\\\\?\\UNC\\")) return `\\\\${location.slice(8)}` as T;
+	if (location.startsWith("\\\\?\\")) return location.slice(4) as T;
+	return location;
+}
+
+/**
+ * Opens `path` with SQLite, through the long-path form when it needs it, and has the connection report its location as
+ * the ordinary path, so every reader of it (identity, error messages, callers comparing paths) sees the path it was
+ * given whatever its length (#5139).
+ */
+function openConnection(Database: typeof DatabaseSync, path: string, readOnly: boolean): DatabaseSync {
+	const opened = sqliteFilePath(path);
+	const connection = new Database(opened, { readOnly });
+	if (opened !== path) {
+		const location = connection.location.bind(connection);
+		connection.location = (name?: string) => ordinarySqlitePath(location(name));
+	}
+	return connection;
+}
+
 export async function openNodeSqliteDatabase(
 	path: string,
 	{
@@ -1429,7 +1468,7 @@ export async function openNodeSqliteDatabase(
 	let connection: DatabaseSync | undefined;
 	try {
 		if (!readOnly && path !== ":memory:") await mkdir(dirname(path), { recursive: true });
-		connection = new Database(path, { readOnly });
+		connection = openConnection(Database, path, readOnly);
 		connection.exec(`PRAGMA busy_timeout=${busyTimeoutMs}`);
 		if (!readOnly) {
 			const writable = connection;
@@ -1458,7 +1497,7 @@ const WRAPPED_BUSY_TIMEOUT_MS = 5000;
 export function wrapNodeSqliteDatabase(connection: DatabaseSync): SqliteDatabase {
 	const descriptor = { adapter: "node-sqlite", location: ":memory:" };
 	try {
-		descriptor.location = connection.location() || ":memory:";
+		descriptor.location = ordinarySqlitePath(connection.location()) || ":memory:";
 		connection.exec(`PRAGMA busy_timeout=${WRAPPED_BUSY_TIMEOUT_MS}`);
 		// SQLite does not wait for another process's lock while it changes the mode; the switch waits itself.
 		switchToWriteAheadLogSync((sql) => connection.exec(sql), WRAPPED_BUSY_TIMEOUT_MS);

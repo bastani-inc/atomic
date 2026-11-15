@@ -631,6 +631,11 @@ jobs:
           foreach ($path in @("app.js", "native-modifiers.js", "image-resize-worker.js", "builtin/workflows/package.json", "builtin/subagents/package.json", "builtin/mcp/package.json", "builtin/web-access/package.json", "builtin/intercom/package.json", "node_modules/@bastani/atomic-natives/package.json", "node_modules/@bastani/atomic-natives/native/atomic_natives.win32-x64-msvc.node", "native/win32/prebuilds/win32-x64/win32-platform.node", "node_modules/@modelcontextprotocol/ext-apps/package.json", "node_modules/@mozilla/readability/package.json", "node_modules/@bastani/pi-ai/dist/models.generated.js", "node_modules/@bastani/pi-ai/dist/providers/data/.manifest.json", "node_modules/@bastani/pi-ai/dist/providers/data/amazon-bedrock.json", "node_modules/@bastani/pi-ai/dist/providers/data/anthropic.json", "node_modules/@bastani/pi-ai/dist/providers/data/kimi-coding.json", "node_modules/@bastani/pi-ai/dist/providers/data/openrouter.json", "node_modules/@bastani/pi-ai/dist/auth/oauth/kimi-coding.js", "node_modules/@bastani/pi-ai/dist/auth/oauth/openrouter.js", "node_modules/@bastani/pi-ai/dist/bun-oauth.js")) {
             if (-not (Test-Path (Join-Path $smoke $path))) { throw "Missing release archive path: $path" }
           }
+          # #5141: pool and marker holders are told apart from a later process given their pid by the native
+          # process creation time; a binding without it falls back to a PowerShell query on every holder check.
+          $binding = (Join-Path $smoke "node_modules/@bastani/atomic-natives") -replace '\\', '/'
+          bun -e "const b = require('$binding'); const t = b.processCreationTime(process.pid); if (!/^\d+$/.test(t ?? '')) throw new Error('processCreationTime returned ' + t); if (b.processCreationTime(4194311) !== null) throw new Error('processCreationTime read a missing process'); console.log('native process creation time', t)"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $cwd = Join-Path $env:RUNNER_TEMP "atomic-windows-cwd"
           New-Item -ItemType Directory -Force -Path $cwd | Out-Null
           Push-Location $cwd
@@ -743,7 +748,7 @@ jobs:
           # paths, so starting is not proof the addon dlopen'd. Require it here.
           docker run --rm --platform "${{ matrix.docker_platform }}" -v "$smoke:/smoke:ro" node:22-alpine node -e '
             const binding = require("/smoke/atomic/node_modules/@bastani/atomic-natives");
-            for (const name of ["glob", "grep"]) {
+            for (const name of ["glob", "grep", "processCreationTime"]) {
               if (typeof binding[name] !== "function") throw new Error(`musl binding is missing ${name}()`);
             }
             console.log("musl native binding loaded:", Object.keys(binding).length, "exports");'

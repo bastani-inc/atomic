@@ -2,11 +2,24 @@ import {
 	captureWorktreeSnapshot,
 	isWorkspaceGitError,
 	type SnapshotBlobStore,
+	snapshotBlobHashes,
 	WorkspaceSnapshotError,
 	type WorktreeSnapshot,
 	type WorktreeSnapshotCapture,
 	type WorktreeSnapshotSettingsInput,
 } from "@bastani/atomic";
+
+/**
+ * The first blob of `snapshot` that `blobs` no longer holds, restarting the age of each one it checks as storing it
+ * again would; undefined when it holds them all (#5077).
+ */
+export async function missingSnapshotBlob(
+	blobs: SnapshotBlobStore,
+	snapshot: WorktreeSnapshot,
+): Promise<string | undefined> {
+	for (const hash of snapshotBlobHashes(snapshot)) if (!(await blobs.refreshBlobs([hash]))) return hash;
+	return undefined;
+}
 
 /** Worktrees whose last snapshot is kept as the base of their next capture, before all of them are forgotten. */
 const REMEMBERED_WORKTREES = 256;
@@ -72,6 +85,20 @@ export class DispatchSnapshots {
 			this.latest.set(worktree, capture.snapshot);
 			return capture.snapshot;
 		});
+	}
+
+	/**
+	 * `snapshot` while its blob store still holds every blob of it, whose age this restarts as storing it again would,
+	 * so a collection keeps them until the work that carries it is queued. Otherwise undefined, with a `blobs-collected`
+	 * reason to `unavailable` (#5077): the work is queued without a snapshot rather than with one that cannot be restored.
+	 */
+	async stored(snapshot: WorktreeSnapshot | undefined): Promise<WorktreeSnapshot | undefined> {
+		const blobs = this.options.blobs;
+		if (snapshot === undefined || blobs === undefined) return snapshot;
+		const missing = await missingSnapshotBlob(blobs, snapshot);
+		if (missing === undefined) return snapshot;
+		this.options.unavailable(new WorkspaceSnapshotError("blobs-collected", missing));
+		return undefined;
 	}
 
 	/** Runs `action` once every capture of `worktree` queued before it has settled. */

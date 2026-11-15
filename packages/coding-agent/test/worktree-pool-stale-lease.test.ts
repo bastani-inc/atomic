@@ -567,6 +567,68 @@ describe("checks of a pooled worktree's lease (#4830)", () => {
 		},
 	);
 
+	/** A process of this host that runs until the test ends, with its start as a lease would name it. */
+	const runningProcess = async () => {
+		const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+		const exited = new Promise((resolve) => child.once("exit", resolve));
+		const stop = async () => {
+			child.kill("SIGKILL");
+			await exited;
+		};
+		cleanups.push(stop);
+		await new Promise((resolve, reject) => child.once("spawn", resolve).once("error", reject));
+		const start = processStartToken(child.pid!);
+		assert.match(start ?? "", /^[0-9a-f]{12}$/, `the start of process ${child.pid} can be read`);
+		return { pid: child.pid!, start: start!, stop };
+	};
+	const startsSupported = process.platform === "linux" || process.platform === "win32";
+
+	test.skipIf(!startsSupported)("a lease this process takes names when it started (#5141)", async () => {
+		await admit();
+		const own = processStartToken(process.pid);
+		assert.match(own ?? "", /^[0-9a-f]{12}$/);
+		assert.equal(processStartToken(process.pid), own);
+		assert.deepEqual(
+			leases().filter((name) => name.endsWith(`-${own}.lease.lock`)),
+			leases(),
+		);
+		assert.equal(leases().length, 1);
+	});
+
+	test.skipIf(!startsSupported)(
+		"a dead holder's lease whose process id another process now runs frees its slot within the day (#5141)",
+		async () => {
+			const lease = await admit();
+			await releaseRestoredWorktree(lease);
+			const holder = await runningProcess();
+			await holder.stop();
+			// Linux counts starts in hundredths of a second: the next process starts in a later one.
+			await sleep(50);
+			// The holder crashed an hour ago and another process runs with its id now: its lease names the holder's start.
+			const reuser = await runningProcess();
+			assert.notEqual(reuser.start, holder.start);
+			const lock = leaseOf(reuser.pid, 60 * 60_000, holder.start);
+			assert.deepEqual(await pooledWorktreeHolder(storeDir(), lease.path), { owner: x, held: false });
+			assert.deepEqual(await evictIdleWorktrees(storeDir(), repository, { maxIdle: 0, settings }), [lease.path]);
+			assert.equal(existsSync(lock), false);
+		},
+		CHILD_PROCESS_TIMEOUT_MS,
+	);
+
+	test.skipIf(!startsSupported)(
+		"a live holder's lease naming its start keeps its slot past the day a lease naming no start is kept (#5141)",
+		async () => {
+			const lease = await admit();
+			await releaseRestoredWorktree(lease);
+			const holder = await runningProcess();
+			const lock = leaseOf(holder.pid, UNSTARTED_LEASE_LIMIT_MS + 60 * 60_000, holder.start);
+			assert.deepEqual(await pooledWorktreeHolder(storeDir(), lease.path), { owner: x, held: true });
+			assert.deepEqual(await evictIdleWorktrees(storeDir(), repository, { maxIdle: 0, settings }), []);
+			assert.equal(existsSync(lock), true);
+		},
+		CHILD_PROCESS_TIMEOUT_MS,
+	);
+
 	test("a lease of this host naming no start keeps its slot while its process id runs, up to a day (#4990)", async () => {
 		const lease = await admit();
 		await releaseRestoredWorktree(lease);

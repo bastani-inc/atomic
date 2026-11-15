@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID } from "node:crypto";
-import type { WorktreeSnapshot } from "@bastani/atomic";
+import type { SnapshotBlobStore, WorktreeSnapshot } from "@bastani/atomic";
 import {
 	assertStorageSchemaVersion,
 	renderStorageIdentifiers,
@@ -10,6 +10,7 @@ import {
 	type SqliteRow,
 	type SqliteStatement,
 	type SqliteValue,
+	type SqlSnapshotBlobStore,
 	type StorageDialect,
 	StorageError,
 	StorageProvider,
@@ -44,7 +45,12 @@ import {
 	poolTransactionSessionStore,
 	validatePoolMutation,
 } from "./pool-mutations.js";
-import { isRecordedCheckpointValue, isSameCheckpointValue, type PoolRemoteJournal } from "./pool-remote-journal.js";
+import {
+	isRecordedCheckpointValue,
+	isRecordedWithoutSnapshots,
+	isSameCheckpointValue,
+	type PoolRemoteJournal,
+} from "./pool-remote-journal.js";
 import { poolCheckpointUsage, poolUsageSchema, poolUsageUpsert, upsertPoolUsage } from "./pool-stage-usage.js";
 import { fleetDrainsSchema } from "./sql-fleet.js";
 import {
@@ -167,6 +173,50 @@ function withQueuedSnapshot(descriptor: PoolWorkDescriptor, queued: string): str
 		descriptor.execution.workspaceSnapshot ?? (JSON.parse(queued) as PoolWorkDescriptor).execution.workspaceSnapshot;
 	return serializeJson({ ...descriptor, execution: { ...descriptor.execution, workspaceSnapshot } });
 }
+/** A `blobs-collected` WorkspaceSnapshotError, told by name so this module does not load the snapshot code. */
+function isBlobsCollected(error: unknown): boolean {
+	return (
+		error instanceof Error &&
+		error.name === "WorkspaceSnapshotError" &&
+		(error as Error & { readonly code?: string }).code === "blobs-collected"
+	);
+}
+/**
+ * Rejects with a `blobs-collected` WorkspaceSnapshotError when `blobs` no longer hold a blob of `snapshots`, restarting
+ * the age of each it holds as storing it again would (#5077).
+ */
+async function assertSnapshotBlobsHeld(
+	blobs: SnapshotBlobStore | undefined,
+	snapshots: readonly WorktreeSnapshot[],
+): Promise<void> {
+	if (blobs === undefined || snapshots.length === 0) return;
+	const { snapshotBlobHashes, WorkspaceSnapshotError } = await import("@bastani/atomic");
+	for (const hash of [...new Set(snapshots.flatMap((snapshot) => wellFormed(snapshot, snapshotBlobHashes)))])
+		if (!(await blobs.refreshBlobs([hash]))) throw new WorkspaceSnapshotError("blobs-collected", hash);
+}
+/**
+ * Reports, as a process warning, a `blobs-collected` WorkspaceSnapshotError for a checkpoint the journal holds without
+ * `snapshots`, whose blobs were collected before it reached the journal (#5077).
+ */
+async function reportCollectedSnapshot(snapshots: readonly WorktreeSnapshot[]): Promise<void> {
+	const { snapshotBlobHashes, WorkspaceSnapshotError } = await import("@bastani/atomic");
+	const [hash] = snapshots.flatMap((snapshot) => wellFormed(snapshot, snapshotBlobHashes));
+	// A checkpoint that asked for no snapshot lost none.
+	if (hash !== undefined) process.emitWarning(new WorkspaceSnapshotError("blobs-collected", hash));
+}
+/** `snapshot`'s blob hashes, or none for a record that is not well formed. */
+function wellFormed(snapshot: WorktreeSnapshot, hashesOf: (snapshot: WorktreeSnapshot) => string[]): string[] {
+	try {
+		return hashesOf(snapshot);
+	} catch {
+		return [];
+	}
+}
+/** The worktree snapshots a checkpoint records, where it carries a well-formed list of them. */
+function carriedSnapshots(checkpoint: DurableCheckpoint): readonly WorktreeSnapshot[] {
+	const carried = (checkpoint as { readonly worktreeSnapshots?: unknown }).worktreeSnapshots;
+	return Array.isArray(carried) ? (carried as readonly WorktreeSnapshot[]) : [];
+}
 /**
  * Which ready work a claim may take (shared placement, #4310): only work without a workspace binding, as the root's
  * own workers take it, or exactly one ready item a worker host chose by its binding. Unset: any ready work.
@@ -280,6 +330,11 @@ export class SqlPoolQueue {
 	private readonly operations: string;
 	/** Checkpoint events a commit accepted that the durable journal has not recorded yet (remote journals only). */
 	private readonly outbox: string;
+	/**
+	 * The snapshot blobs of this database, when the root's journal is in it: work is queued with a snapshot, and a root
+	 * holds its binding's, only while every blob of it is stored (#5077).
+	 */
+	private readonly blobs?: SqlSnapshotBlobStore;
 	/** The snapshot each root's binding carries to its unbound children, while its pool is prepared (#4503). */
 	private readonly rootSnapshots: string;
 	private readonly transaction: Transaction;
@@ -315,6 +370,8 @@ export class SqlPoolQueue {
 		this.operations = `${journal.runs}_pool_operations`;
 		this.outbox = `${journal.runs}_pool_outbox`;
 		this.rootSnapshots = `${journal.runs}_pool_root_snapshot`;
+		// Only a journal in this database holds the blobs of the snapshots queued work carries (#5077).
+		this.blobs = remote === undefined ? storage.snapshotBlobs : undefined;
 	}
 	/**
 	 * `remote` is the root's durable journal when it lives in another database than `storage`, whose run and lease rows
@@ -582,15 +639,16 @@ export class SqlPoolQueue {
 	 * has queued nothing yet records it too, so only the root's lease is checked: one another holder or epoch took is a
 	 * {@link StaleLeaseError}.
 	 */
-	async holdRootSnapshot(lease: Lease, snapshot: WorktreeSnapshot | undefined): Promise<void> {
+	async holdRootSnapshot(lease: Lease, snapshot: WorktreeSnapshot | undefined): Promise<boolean> {
 		lease = snapshotLease(lease);
-		await this.transaction(async (tx) => {
+		return this.transaction(async (tx) => {
 			const row = await this.leaseRow(tx, lease);
 			if (row?.epoch !== lease.epoch || row.holder_id !== lease.holderId)
 				throw new StaleLeaseError(lease.runId, lease.epoch, Number(row?.epoch ?? 0));
-			if (snapshot === undefined) {
+			const held = snapshot !== undefined && (await this.blobs?.missingBlob(tx, [snapshot])) === undefined;
+			if (!held) {
 				await tx.run(`DELETE FROM ${this.rootSnapshots} WHERE root = ? AND epoch < ?`, lease.runId, lease.epoch);
-				return;
+				return snapshot === undefined;
 			}
 			await tx.run(
 				`INSERT INTO ${this.rootSnapshots}(root, epoch, snapshot) VALUES (?, ?, ?) ON CONFLICT(root) DO UPDATE SET epoch = excluded.epoch, snapshot = excluded.snapshot`,
@@ -598,6 +656,7 @@ export class SqlPoolQueue {
 				lease.epoch,
 				JSON.stringify(snapshot),
 			);
+			return true;
 		});
 	}
 	/** Lets go of the snapshot `lease`'s incarnation of the root recorded; one a later incarnation recorded stays. */
@@ -726,15 +785,18 @@ export class SqlPoolQueue {
 		assertWorkflowSerializableObject(descriptor.execution, "Pool execution");
 		assertWorkflowSerializableObject(boundary, "Pool boundary");
 		validateCheckpointInvocationFingerprint(boundary);
-		const json = serializeJson({ ...descriptor });
 		const payload = serializeJson(boundary);
-		const fingerprint = workFingerprint(JSON.parse(json), JSON.parse(payload));
+		const fingerprint = workFingerprint(JSON.parse(serializeJson({ ...descriptor })), JSON.parse(payload));
 		const key = JSON.stringify([RUN_EVENT_TYPES.checkpointRecorded, boundary.kind, boundary.checkpointId]);
 		// A journal in another database takes the boundary's start first, as its own idempotent write: a crash before the
 		// work row below leaves a start with no work, which the root's resume enqueues again and finds already recorded.
 		if (this.remote) await this.recordBoundaryStart(lease, key, boundary);
 		return this.transaction(async (tx) => {
 			const { now } = await this.authority(tx, lease);
+			// Work carries its root's snapshot only while every blob of it is stored (#5077): the child of work queued
+			// without one restores as for a capture that was unavailable, never from a snapshot it cannot restore.
+			const queued = await this.withStoredSnapshot(tx, descriptor);
+			const json = serializeJson({ ...queued });
 			const previous = await tx.get<WorkRow>(
 				`SELECT * FROM ${this.work} WHERE root = ? AND (boundary = ? OR ${this.dialect.jsonIndexText("descriptor", "scope")} = ? OR ${this.dialect.jsonIndexText("descriptor", "childRunId")} = ?)`,
 				lease.runId,
@@ -743,7 +805,7 @@ export class SqlPoolQueue {
 				childRunId,
 			);
 			if (previous) {
-				const requested = withQueuedSnapshot(descriptor, previous.descriptor);
+				const requested = withQueuedSnapshot(queued, previous.descriptor);
 				const row =
 					previous.fingerprint === fingerprint
 						? previous
@@ -806,6 +868,32 @@ export class SqlPoolQueue {
 			await this.notifyReady(tx, lease.runId);
 			return fromRow((await tx.get<WorkRow>(`SELECT * FROM ${this.work} WHERE id = ?`, id))!);
 		});
+	}
+	/**
+	 * `work` without the worktree snapshot it carries, which its row no longer carries either: for work a root queued in
+	 * this database whose snapshot's blobs, kept in the root's journal in another database, were collected (#5077).
+	 */
+	async dropWorkSnapshot(work: PoolWork): Promise<PoolWork> {
+		await this.transaction(async (tx) => {
+			const row = await tx.get<SqliteRow & { descriptor: string }>(
+				`SELECT descriptor FROM ${this.work} WHERE id = ?`,
+				work.id,
+			);
+			if (row === undefined) return;
+			const { workspaceSnapshot: _missing, ...execution } = (JSON.parse(row.descriptor) as PoolWorkDescriptor)
+				.execution;
+			const descriptor = { ...(JSON.parse(row.descriptor) as PoolWorkDescriptor), execution };
+			await tx.run(`UPDATE ${this.work} SET descriptor = ? WHERE id = ?`, serializeJson(descriptor), work.id);
+		});
+		const { workspaceSnapshot: _missing, ...execution } = work.execution;
+		return { ...work, execution };
+	}
+	/** `descriptor`, without the worktree snapshot it carries when this database no longer holds a blob of it. */
+	private async withStoredSnapshot(tx: SqliteExecutor, descriptor: PoolWorkDescriptor): Promise<PoolWorkDescriptor> {
+		const snapshot = descriptor.execution.workspaceSnapshot as unknown as WorktreeSnapshot | undefined;
+		if (snapshot === undefined || (await this.blobs?.missingBlob(tx, [snapshot])) === undefined) return descriptor;
+		const { workspaceSnapshot: _missing, ...execution } = descriptor.execution;
+		return { ...descriptor, execution };
 	}
 	/**
 	 * Makes `work` the owner of each claimed session, in the transaction that queues it. Only a session nobody owns is
@@ -1175,6 +1263,10 @@ export class SqlPoolQueue {
 		const sessions =
 			mutation.kind === "checkpoint" || this.storage.batch === undefined ? undefined : await this.poolSessions();
 		const checkpoints = this.checkpoints.begin(lease.runId);
+		// A checkpoint records its worktree snapshots only while every blob of them is stored (#5077): the plan that
+		// reads checks them, and a fence repeats the check in the request that writes it.
+		const snapshots = mutation.kind === "checkpoint" ? carriedSnapshots(mutation.checkpoint) : [];
+		const blobsFence = this.blobs?.storedFence(snapshots);
 		let recorded: { readonly seq: number; readonly key: string; readonly checkpoint: DurableCheckpoint } | undefined;
 		const receipt = await guardedPoolWrite<PoolCommitReceipt>(this.storage, async (read, optimistic) => {
 			recorded = undefined;
@@ -1183,6 +1275,7 @@ export class SqlPoolQueue {
 				: undefined;
 			if (fromCache !== undefined) {
 				const { write, receiptParts } = fromCache;
+				if (blobsFence !== undefined) write.fences.push(blobsFence);
 				const checkpoint = (mutation as PoolCheckpointMutation).checkpoint;
 				write.writes.push({
 					sql: `INSERT INTO ${this.operations} SELECT ?, ?, ?, ?, ${receiptParts.sql}`,
@@ -1221,12 +1314,14 @@ export class SqlPoolQueue {
 			if (row.expires_at < now) throw staleWork(lease, token, "expired");
 			if (status !== "running" && !(status === "paused" && state.control === "paused"))
 				throw staleWork(lease, token, "root-not-running");
+			await this.blobs?.assertStored(read, snapshots);
 			const write: CommitWrite = {
 				fences: [
 					this.rootFence(lease),
 					this.attemptFence(lease, token, true),
 					this.admitsFence(lease),
 					this.operationFence(token, operationId),
+					...(blobsFence === undefined ? [] : [blobsFence]),
 				],
 				writes: [],
 			};
@@ -1387,6 +1482,31 @@ export class SqlPoolQueue {
 		const remote = this.remote!;
 		await remote.fresh(lease);
 		const checkpoint = mutation.checkpoint;
+		// The journal holds the snapshot's blobs, which this database cannot check as it stages the checkpoint (#5077):
+		// they are checked here, and their age restarts, so collection keeps them while the checkpoint waits to be
+		// delivered for as long as the grace window. A checkpoint whose blobs are gone is refused before it is staged.
+		// A resend of an operation this pool took already is answered from what it took, whatever became of the blobs.
+		const known = await this.transaction(async (tx) => ({
+			previous: await tx.get<SqliteRow & { request: string; receipt: string }>(
+				`SELECT * FROM ${this.operations} WHERE work = ? AND generation = ? AND operation = ?`,
+				token.id,
+				token.generation,
+				operationId,
+			),
+			held: await tx.get<OutboxRow>(
+				`SELECT * FROM ${this.outbox} WHERE work = ? AND generation = ? AND operation = ?`,
+				token.id,
+				token.generation,
+				operationId,
+			),
+		}));
+		if (known.previous || known.held) {
+			if ((known.previous ?? known.held)!.request !== identity) throw new Error("Pool operation identity conflict");
+			if (known.previous) return JSON.parse(known.previous.receipt) as PoolCommitReceipt;
+			this.outboxPending = true;
+			return this.deliver(lease, known.held!);
+		}
+		await assertSnapshotBlobsHeld(remote.journal.snapshotBlobs, carriedSnapshots(checkpoint));
 		const key = JSON.stringify([RUN_EVENT_TYPES.checkpointRecorded, checkpoint.kind, checkpoint.checkpointId]);
 		const reads = this.checkpoints.begin(lease.runId);
 		const [existing, view] = await Promise.all([
@@ -1398,7 +1518,9 @@ export class SqlPoolQueue {
 		const source: PoolCheckpointSource = {
 			read: async () => view ?? Promise.reject(new Error("Pool checkpoint view is unavailable")),
 		};
+		let withoutSnapshots = false;
 		const staged = await this.transaction(async (tx) => {
+			withoutSnapshots = false;
 			const { now, status } = await this.authority(tx, lease);
 			const row = await this.current(tx, lease, token);
 			if (row.epoch !== lease.epoch) throw staleWork(lease, token, "epoch-mismatch");
@@ -1428,7 +1550,9 @@ export class SqlPoolQueue {
 			if (checkpoint.completedAt > Math.max(now, Date.now()) + MAX_WORKER_CLOCK_SKEW_MS)
 				throw new Error("Pool checkpoint timestamp is in the future");
 			assertWorkflowSerializableObject(checkpoint, "Pool checkpoint");
-			if (existing && !isRecordedCheckpointValue(existing.event.payload, checkpoint))
+			const strippedEarlier =
+				existing !== undefined && isRecordedWithoutSnapshots(existing.event.payload, checkpoint);
+			if (existing && !strippedEarlier && !isRecordedCheckpointValue(existing.event.payload, checkpoint))
 				throw new Error("Pool checkpoint identity conflict");
 			if (existing && mutation.kind !== "checkpoint") throw new Error("Pool session checkpoint identity conflict");
 			const lastSeq =
@@ -1447,6 +1571,9 @@ export class SqlPoolQueue {
 					billed.usage,
 				);
 			if (existing) {
+				// The checkpoint is recorded already, without the snapshot whose blobs were collected before it was (#5077):
+				// reported once the commit is answered.
+				if (strippedEarlier) withoutSnapshots = true;
 				const receipt: PoolCommitReceipt = { seq: existing.seq, at: existing.at };
 				await tx.run(
 					`INSERT INTO ${this.operations} VALUES (?, ?, ?, ?, ?)`,
@@ -1479,6 +1606,7 @@ export class SqlPoolQueue {
 			);
 			return { held: entry };
 		});
+		if (withoutSnapshots) await reportCollectedSnapshot(carriedSnapshots(checkpoint));
 		if (staged.receipt !== undefined) return staged.receipt;
 		this.outboxPending = true;
 		return this.deliver(lease, staged.held!);
@@ -1486,8 +1614,21 @@ export class SqlPoolQueue {
 	/** Steps 2 and 3 of {@link commitRemote} for one accepted event. */
 	private async deliver(lease: Lease, held: OutboxRow): Promise<PoolCommitReceipt> {
 		const remote = this.remote!;
-		const checkpoint = JSON.parse(held.payload) as DurableCheckpoint;
-		const outcome = await remote.append(lease, held.event_key, checkpoint);
+		let checkpoint = JSON.parse(held.payload) as DurableCheckpoint;
+		let outcome: Awaited<ReturnType<PoolRemoteJournal["append"]>>;
+		try {
+			outcome = await remote.append(lease, held.event_key, checkpoint);
+		} catch (error) {
+			if (!isBlobsCollected(error)) throw error;
+			// Its snapshot's blobs were collected while it waited (#5077): the checkpoint is recorded without the snapshot,
+			// so the work's progress is kept and nothing held back stops the queue.
+			const { worktreeSnapshots: _collected, ...rest } = checkpoint as DurableCheckpoint & {
+				readonly worktreeSnapshots?: unknown;
+			};
+			checkpoint = rest as DurableCheckpoint;
+			process.emitWarning(error as Error);
+			outcome = await remote.append(lease, held.event_key, checkpoint);
+		}
 		const forget = (tx: SqliteExecutor) =>
 			tx.run(
 				`DELETE FROM ${this.outbox} WHERE work = ? AND generation = ? AND operation = ?`,
@@ -1495,11 +1636,22 @@ export class SqlPoolQueue {
 				held.generation,
 				held.operation,
 			);
-		if (outcome.status === "exists" && !isRecordedCheckpointValue(outcome.entry.event.payload, checkpoint)) {
+		if (
+			outcome.status === "exists" &&
+			!isRecordedCheckpointValue(outcome.entry.event.payload, checkpoint) &&
+			!isRecordedWithoutSnapshots(outcome.entry.event.payload, checkpoint)
+		) {
 			// Another attempt recorded a different checkpoint under this key first; there is nothing left to record.
 			await this.transaction(forget);
 			throw new Error("Pool checkpoint identity conflict");
 		}
+		// Recorded already without the snapshot this one carries, whose blobs were collected before it was (#5077).
+		if (
+			outcome.status === "exists" &&
+			!isRecordedCheckpointValue(outcome.entry.event.payload, checkpoint) &&
+			isRecordedWithoutSnapshots(outcome.entry.event.payload, checkpoint)
+		)
+			await reportCollectedSnapshot(carriedSnapshots(checkpoint));
 		const receipt: PoolCommitReceipt = {
 			seq: outcome.entry.seq,
 			at: outcome.entry.at,

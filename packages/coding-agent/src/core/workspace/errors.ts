@@ -44,6 +44,7 @@ export type WorkspaceRestoreErrorCode =
 	| "tree-mismatch"
 	| "unsafe-target"
 	| "unwritable-path"
+	| "path-too-long"
 	| "invalid-snapshot"
 	| "restore-failed";
 export type WorkspaceDriftErrorCode = "tree-drift";
@@ -371,6 +372,10 @@ export interface WorkspaceRestoreErrorFields {
 	readonly detail?: string;
 	/** For `invalid-snapshot`: the record field that failed, such as `remotes[0]` or `chain[2].tree`. */
 	readonly field?: string;
+	/** For `path-too-long`: the longest path Windows and Git accept for `target`. */
+	readonly limit?: number;
+	/** For `path-too-long`: the directory whose depth puts `target` over `limit`, the agent directory by default. */
+	readonly agentDir?: string;
 }
 
 /** A recorded workspace binding that could not be restored on resume (#3109): why, and its facts. */
@@ -460,6 +465,11 @@ function snapshotRestoreMessage(
 						`Cannot restore into ${fields.target}: it is not an empty directory`,
 						"Choose a new or empty directory, or omit `into` to restore under Atomic home.",
 					];
+		case "path-too-long":
+			return [
+				`Cannot restore${fields.snapshotId === null ? "" : ` snapshot ${fields.snapshotId}`}: ${fields.target} would be ${fields.target?.length} characters, over the ${fields.limit} that Windows and Git allow for it`,
+				`Atomic keeps restored worktrees under ${fields.agentDir} (${fields.agentDir?.length} characters). Set ATOMIC_CODING_AGENT_DIR to a shorter directory, such as C:\\atomic, or restore with a shorter storeDir, then retry.`,
+			];
 		case "unwritable-path":
 			return [
 				`Cannot write ${fields.target}${fields.snapshotId === null ? "" : ` while restoring snapshot ${fields.snapshotId}`}`,
@@ -546,6 +556,8 @@ export class WorkspaceRestoreError extends WorkspaceError {
 	declare readonly target?: string;
 	declare readonly detail?: string;
 	declare readonly field?: string;
+	declare readonly limit?: number;
+	declare readonly agentDir?: string;
 
 	/** A recorded workspace binding (#3109). */
 	constructor(init: WorkspaceRestoreErrorInit);
@@ -981,6 +993,7 @@ const CODES: Readonly<Record<WorkspaceErrorName, readonly WorkspaceErrorCode[]>>
 		"tree-mismatch",
 		"unsafe-target",
 		"unwritable-path",
+		"path-too-long",
 		"invalid-snapshot",
 		"restore-failed",
 	],
