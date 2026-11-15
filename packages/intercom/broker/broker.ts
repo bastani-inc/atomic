@@ -1957,10 +1957,14 @@ class IntercomBroker {
           });
           if (isAgentRecipient(info)) this.broadcastToMemberships({ type: "session_joined", session: info }, sessionGroups(info), id);
           // #3761: messages written to this recipient's previous connection that it never confirmed saving go out again.
+          // #5095: the asks whose reply goes out again here are answered unless it lapses unsaved.
+          const replyingTo = new Set<string>();
           if (rejoined?.acknowledgesReceipt === true) {
             const heldFrames = new Set(held.map((write) => write.message));
             for (const frame of this.receipts.framesFor(deliveryTargetIdentity(rejoined))) {
               if (!heldFrames.has(frame)) writeMessageIfOpen(socket, frame);
+              if (frame.type === "message" && frame.message.replyTo !== undefined && frame.message.replyError === undefined)
+                replyingTo.add(JSON.stringify([frame.from.id, frame.message.replyTo]));
             }
           }
           // Multi-node S5: frames written while registration waited for the presence lease follow `registered`.
@@ -1973,6 +1977,9 @@ class IntercomBroker {
           // saves releases each when saved, and its inbox shows a redelivered copy only once.
           const returnAddress = rejoined?.registrationReturnAddress;
           for (const held of this.pendingQuestions.heldForAsker(returnAddress)) {
+            // #5095: a failure of an ask whose reply went out again stays held: saving the reply releases it.
+            if (held.message.replyError !== undefined && replyingTo.has(JSON.stringify([held.from.id, held.message.replyTo])))
+              continue;
             writeMessageIfOpen(socket, { type: "message", from: held.from, message: held.message });
             if (clientMessage.acknowledgesReceipt !== true)
               this.pendingQuestions.releaseHeld(held.message.id, returnAddress);

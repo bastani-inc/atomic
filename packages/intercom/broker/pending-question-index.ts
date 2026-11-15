@@ -189,6 +189,17 @@ export class PendingQuestionIndex {
     return this.awayAsks().held(askerReturnAddress);
   }
 
+  /**
+   * #5095: the asker saved `replierSessionId`'s reply to `questionId`, so the failures held for that ask (its recipient
+   * ended while the reply waited to be saved) are not delivered: the ask has one outcome, its reply.
+   */
+  releaseHeldFailures(questionId: string, replierSessionId: string, askerReturnAddress: string | undefined): void {
+    if (this.away === undefined) return;
+    for (const held of this.away.held(askerReturnAddress))
+      if (held.message.replyTo === questionId && held.message.replyError !== undefined && held.from.id === replierSessionId)
+        this.away.release(held.message.id, askerReturnAddress);
+  }
+
   /** The verified asker saved a held message. */
   releaseHeld(messageId: string, askerReturnAddress: string | undefined): void {
     this.away?.release(messageId, askerReturnAddress);

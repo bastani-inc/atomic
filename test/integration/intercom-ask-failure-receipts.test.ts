@@ -451,3 +451,68 @@ test(
 	},
 	REAL_BROKER_TEST_TIMEOUT_MS,
 );
+
+/** How the asker's connection dies around its recipient's reply. */
+const ASKER_DIES = ["before the reply", "just after the reply", "as the reply is sent"] as const;
+const ASKER_DIES_ITERATIONS = 30;
+/** How long the asker takes to come back. */
+const ASKER_RESTART_MS = 1_000;
+
+for (const [mode, when] of ASKER_DIES.entries()) {
+	test(
+		`an asker whose connection dies ${when} while its recipient ends gets one outcome once it is back, every time (#5095)`,
+		async () => {
+			const outcomes: string[] = [];
+			for (let iteration = 0; iteration < ASKER_DIES_ITERATIONS; iteration++) {
+				const label = `asker-dies-${mode}-${iteration}-5095`;
+				const askerAddress = { name: `asker-${label}`, returnAddress: randomUUID() };
+				const asker = await connect(askerAddress.name, askerAddress);
+				const askerId = idOf(asker.client);
+				const recipient = await connect(`recipient-${label}`, { returnAddress: randomUUID() });
+				const questionId = randomUUID();
+				const asked = await asker.client.send(`recipient-${label}`, {
+					messageId: questionId,
+					text: "which port?",
+					expectsReply: true,
+				});
+				assert.equal(asked.delivered, true, asked.reason);
+				await vi.waitFor(() => assert.ok(recipient.received.some((message) => message.id === questionId)), WAIT);
+
+				// The asker's connection dies around the reply, as a crashing process's does; the recipient ends at once.
+				const socket = (asker.client as unknown as { socket: net.Socket | null }).socket;
+				if (mode === 0) socket?.destroy();
+				const replying = replyTo(recipient, askerId, questionId).catch(() => undefined);
+				if (mode === 1) await sleep(1);
+				if (mode !== 0) socket?.destroy();
+				void recipient.client.disconnect().catch(() => undefined);
+				await replying;
+				// Its process restarts, as p28 does, after both departures were handled.
+				await sleep(ASKER_RESTART_MS);
+				const back = await connect(askerAddress.name, { ...askerAddress, preferredSessionId: askerId });
+				const seen = () =>
+					new Set(
+						[...asker.received, ...back.received]
+							.filter((message) => message.replyTo === questionId)
+							.map((message) => (message.replyError === undefined ? "reply" : "failure")),
+					);
+				await vi.waitFor(() => assert.ok(seen().size > 0, "the ask has an outcome"), WAIT).catch(() => undefined);
+				await sleep(SETTLE_MS);
+				const ids = new Set(
+					[...asker.received, ...back.received].filter((m) => m.replyTo === questionId).map((m) => m.id),
+				);
+				outcomes.push(
+					ids.size === 1
+						? `#${iteration}: outcomes=1`
+						: `#${iteration}: outcomes=${ids.size} before=${JSON.stringify(asker.received.filter((m) => m.replyTo === questionId).map((m) => m.id.slice(0, 12)))} back=${JSON.stringify(back.received.filter((m) => m.replyTo === questionId).map((m) => m.id.slice(0, 12)))}`,
+				);
+				await back.client.disconnect();
+			}
+			assert.deepEqual(
+				outcomes,
+				outcomes.map((_, iteration) => `#${iteration}: outcomes=1`),
+				"each ask has exactly one outcome, the reply or the failure",
+			);
+		},
+		REAL_BROKER_TEST_TIMEOUT_MS * 3,
+	);
+}

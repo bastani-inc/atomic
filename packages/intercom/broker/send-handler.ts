@@ -885,6 +885,8 @@ export function handleBrokerSend(
       if (message.replyTo !== undefined && pendingQuestions.clearReply(fromSession.info.id, recipient.info.id, message.replyTo)) {
         deliveredMessages.settleQuestion(message.replyTo);
       }
+      if (message.replyTo !== undefined)
+        pendingQuestions.releaseHeldFailures(message.replyTo, fromSession.info.id, recipient.registrationReturnAddress);
       if (supervisorSend) supervisorCache.record(message.id, fromSession.info.id, recipient.info.id);
       notify({ type: "delivered", messageId: message.id, attemptId: senderAttemptId });
     };
