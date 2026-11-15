@@ -16,6 +16,7 @@ import {
 export type EditToolErrorCode =
 	| "edits-empty"
 	| "old-text-empty"
+	| "text-splits-character"
 	| "text-not-found"
 	| "text-not-unique"
 	| "edits-overlap"
@@ -23,7 +24,7 @@ export type EditToolErrorCode =
 	| "target-inaccessible"
 	| "target-not-utf8";
 
-export type EditInputErrorCode = Extract<EditToolErrorCode, "edits-empty" | "old-text-empty">;
+export type EditInputErrorCode = Extract<EditToolErrorCode, "edits-empty" | "old-text-empty" | "text-splits-character">;
 export type EditMatchErrorCode = Extract<
 	EditToolErrorCode,
 	"text-not-found" | "text-not-unique" | "edits-overlap" | "no-change"
@@ -46,6 +47,8 @@ export type WriteSelectorErrorCode =
 const EDIT_TOOL_ERROR_HINTS: Readonly<Record<EditToolErrorCode, string>> = {
 	"edits-empty": "Pass at least one { oldText, newText } replacement in edits.",
 	"old-text-empty": "Give every oldText at least one character copied from the current file.",
+	"text-splits-character":
+		"Copy whole characters into oldText and newText; include both halves of every emoji or other surrogate pair.",
 	"text-not-found": "Read the file again and copy oldText exactly, including whitespace and newlines.",
 	"text-not-unique": "Add surrounding lines to oldText until it matches exactly one location.",
 	"edits-overlap": "Merge the overlapping edits into one edit, or target disjoint regions.",
@@ -67,7 +70,11 @@ const WRITE_SELECTOR_ERROR_HINTS: Readonly<Record<WriteSelectorErrorCode, string
 	"unsupported-scheme": "Write to a file path, an archive member, a SQLite selector, conflict:// or local://.",
 };
 
-const EDIT_INPUT_CODES: ReadonlySet<string> = new Set<EditInputErrorCode>(["edits-empty", "old-text-empty"]);
+const EDIT_INPUT_CODES: ReadonlySet<string> = new Set<EditInputErrorCode>([
+	"edits-empty",
+	"old-text-empty",
+	"text-splits-character",
+]);
 const EDIT_MATCH_CODES: ReadonlySet<string> = new Set<EditMatchErrorCode>([
 	"text-not-found",
 	"text-not-unique",
@@ -119,7 +126,10 @@ export class EditToolError extends Error {
 	}
 }
 
-/** The `edit` arguments cannot describe a replacement: no edits, or an empty `oldText`. */
+/**
+ * The `edit` arguments cannot describe a replacement: no edits, an empty `oldText`, or an `oldText` or `newText`
+ * holding half of a surrogate pair.
+ */
 export class EditInputError extends EditToolError {
 	override readonly name = "EditInputError";
 	declare readonly code: EditInputErrorCode;

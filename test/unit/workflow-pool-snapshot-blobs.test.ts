@@ -274,8 +274,11 @@ async function claimedAttempt(subject: (typeof commitSubjects)[number]) {
 		topology: { version: 1, nodeId: `tool-${index}`, parentIds: [], ordinal: index, order: index, run },
 		worktreeSnapshots: snapshots,
 	});
-	const commit = (index: number, snapshots: readonly WorktreeSnapshot[]) =>
-		queue.commit(lease, attempt, `op-${index}`, { kind: "checkpoint", checkpoint: tool(index, snapshots) });
+	const commit = (index: number, snapshots: readonly WorktreeSnapshot[], output?: string) =>
+		queue.commit(lease, attempt, `op-${index}`, {
+			kind: "checkpoint",
+			checkpoint: output === undefined ? tool(index, snapshots) : { ...tool(index, snapshots), output },
+		});
 	const keys = async () => {
 		const found: string[] = [];
 		for await (const entry of journal.read("root"))
@@ -294,6 +297,18 @@ for (const subject of commitSubjects) {
 		await commit(2, [stored]);
 		await commit(3, []);
 		assert.deepEqual(await keys(), ["2", "3"]);
+	});
+
+	test(`a pooled child's checkpoint commit on ${subject.name} stored in chunks checks its snapshot's blobs the same way (#4965, #5077)`, async () => {
+		const { commit, keys, stored } = await claimedAttempt(subject);
+		const large = "x".repeat(2 * 1024 * 1024);
+		const gone = syntheticSnapshot("gone", [textBlob("never stored").hash]);
+		await assert.rejects(commit(1, [stored, gone], large), {
+			name: "WorkspaceSnapshotError",
+			code: "blobs-collected",
+		});
+		await commit(2, [stored], large);
+		assert.deepEqual(await keys(), ["2"]);
 	});
 
 	test(`a pooled child's checkpoint commit on ${subject.name} whose blobs are collected after its plan read them writes nothing (#5077)`, async () => {

@@ -68,7 +68,7 @@ async function history(name: string, snapshots: number, events: number) {
 			await shared.journal.append(lease, checkpointEvent([syntheticSnapshot(blob.hash, [blob.hash])]));
 		await shared.database.run(
 			`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?)
-			INSERT INTO wf_events SELECT ?, (SELECT MAX(seq) FROM wf_events WHERE run_id = ?) + i, ?, NULL,
+			INSERT INTO wf_events(run_id, seq, epoch, key, type, payload, at) SELECT ?, (SELECT MAX(seq) FROM wf_events WHERE run_id = ?) + i, ?, NULL,
 				'CheckpointRecorded', json_object('kind', 'tool', 'checkpointId', 'padding-' || i), 0 FROM n`,
 			events / 2,
 			runId,
@@ -114,10 +114,10 @@ async function queryPlan(shared: SharedSnapshotDatabase, statement: CountedState
 
 /**
  * One check that the reference index is complete: which of the 3 referencing tables and 9 triggers exist (12 schema
- * rows) and how far each of the 3 sources is backfilled (3 rows). A collection makes one before it sweeps and one
- * inside each batch's own transaction.
+ * rows) and how far each of the 3 sources is backfilled (3 rows), with the row that says the session entries'
+ * triggers are this build's (#5065). A collection makes one before it sweeps and one inside each batch's own transaction.
  */
-const INDEX_CHECK = { statements: 2, rows: 15 } as const;
+const INDEX_CHECK = { statements: 2, rows: 16 } as const;
 /** One schema row for the age index, then an indexed probe for unknown legacy ages, once per collection. */
 const AGE_CHECK = { statements: 2, rows: 1 } as const;
 
@@ -141,9 +141,10 @@ describe("collection cost follows the number of snapshots, never the number of j
 		}
 		const [before, after] = measured as [(typeof measured)[0], (typeof measured)[0]];
 
-		// The full scan the reference index replaces reads every event and entry: 40,025 rows at 20,000 events.
-		assert.deepEqual(summary(before.fullScan), { statements: 7, rows: 425, transactions: 1 });
-		assert.deepEqual(summary(after.fullScan), { statements: 85, rows: 40_025, transactions: 1 });
+		// The full scan the reference index replaces reads every event and entry: 40,027 rows at 20,000 events, with
+		// the schema version rows the session listing and load check (#5065).
+		assert.deepEqual(summary(before.fullScan), { statements: 9, rows: 427, transactions: 1 });
+		assert.deepEqual(summary(after.fullScan), { statements: 87, rows: 40_027, transactions: 1 });
 		// Collection checks the index twice, pages through the 7 aged blobs nothing retains and deletes them, in one
 		// batch, at either length.
 		for (const { collection } of measured) {

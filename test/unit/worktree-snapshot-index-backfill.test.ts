@@ -160,7 +160,7 @@ describe("a database written before the reference index existed is indexed befor
 		await before.close();
 		await dropSnapshotIndex(database);
 		await database.run(
-			"INSERT INTO wf_events VALUES ('written-by-older-build', 2, ?, NULL, 'CheckpointRecorded', ?, 0)",
+			"INSERT INTO wf_events(run_id, seq, epoch, key, type, payload, at) VALUES ('written-by-older-build', 2, ?, NULL, 'CheckpointRecorded', ?, 0)",
 			lease.epoch,
 			JSON.stringify({
 				kind: "tool",
@@ -185,6 +185,8 @@ describe("a database written before the reference index existed is indexed befor
 			{ source: "journal-events", watermark: 0, backfilled_through: 0 },
 			{ source: "journal-runs", watermark: 0, backfilled_through: 0 },
 			{ source: "session-entries", watermark: 0, backfilled_through: 0 },
+			// The row that says the session entries' triggers are this build's (#5065).
+			{ source: "session-entries@degraded-pins", watermark: 0, backfilled_through: 0 },
 		]);
 	});
 
@@ -291,7 +293,7 @@ describe("a database written before the reference index existed is indexed befor
 		] as const) {
 			const lease = await startRun(before.journal, runId, status);
 			await database.run(
-				"INSERT INTO wf_events VALUES (?, 1, ?, NULL, 'CheckpointRecorded', ?, 0)",
+				"INSERT INTO wf_events(run_id, seq, epoch, key, type, payload, at) VALUES (?, 1, ?, NULL, 'CheckpointRecorded', ?, 0)",
 				runId,
 				lease.epoch,
 				JSON.stringify({
@@ -362,7 +364,7 @@ test("stores under a storage prefix index and collect their own tables only (#43
 		(await database.all<{ source: string }>("SELECT source FROM team_snapshot_index_sources ORDER BY source")).map(
 			(row) => row.source,
 		),
-		["journal-events", "journal-runs", "session-entries"],
+		["journal-events", "journal-runs", "session-entries", "session-entries@degraded-pins"],
 	);
 });
 
@@ -383,7 +385,7 @@ describe("the backfill works in short transactions that resume where they stoppe
 		);
 		await database.run(
 			`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?)
-			INSERT INTO wf_events SELECT 'big', 1 + i, ?, NULL, 'CheckpointRecorded',
+			INSERT INTO wf_events(run_id, seq, epoch, key, type, payload, at) SELECT 'big', 1 + i, ?, NULL, 'CheckpointRecorded',
 				json_object('kind', 'tool', 'checkpointId', 'c' || i, 'worktreeSnapshots',
 					json_array(json_object('chain', json_array(json_object('patch', 'padded-' || i))))), 0 FROM n`,
 			EVENTS,

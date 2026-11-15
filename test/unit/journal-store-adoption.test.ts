@@ -20,6 +20,7 @@ import {
 	consolidateJournalStore,
 	defaultJournalStoreDirectory,
 	discoverLegacyJournal,
+	ensureRunJournalSchema,
 	inspectJournalFile,
 	isJournalAdoptError,
 	isJournalShardUnavailableError,
@@ -30,6 +31,7 @@ import {
 	JournalCatalogError,
 	legacyDefaultJournalPath,
 	openNodeSqliteDatabase,
+	StorageSchemaVersionError,
 } from "@bastani/atomic/storage";
 import { afterEach, beforeEach, test } from "vitest";
 import { ShardedRunJournal } from "../../packages/workflows/src/durable/journal/sharded-run-journal.js";
@@ -154,6 +156,24 @@ test("inspection refuses a short file, an unreadable one and a corrupt one as no
 	}
 });
 
+test("a journal's schema is upgraded from version 1 and refused when newer or ambiguous (#5065)", async () => {
+	const database = await openNodeSqliteDatabase(join(root, "schema.sqlite"));
+	try {
+		const ensure = () => database.transaction((tx) => ensureRunJournalSchema(tx));
+		await ensure();
+		await database.run("UPDATE wf_meta SET schema_version = 1");
+		await ensure();
+		assert.deepEqual(await database.all("SELECT schema_version FROM wf_meta"), [{ schema_version: 2 }]);
+		await database.run("UPDATE wf_meta SET schema_version = 3");
+		await assert.rejects(ensure(), (error) => error instanceof StorageSchemaVersionError && error.found === 3);
+		await database.run("UPDATE wf_meta SET schema_version = 2");
+		await database.run("INSERT INTO wf_meta VALUES (2)");
+		await assert.rejects(ensure(), (error) => error instanceof StorageSchemaVersionError && error.found === "2 rows");
+	} finally {
+		await database.close();
+	}
+});
+
 test("inspection reads the schema version of a current or legacy journal and refuses others (#4325)", async () => {
 	const legacy = join(root, "legacy.sqlite");
 	raw(legacy, "CREATE TABLE meta(schema_version INTEGER NOT NULL)");
@@ -168,6 +188,11 @@ test("inspection reads the schema version of a current or legacy journal and ref
 		[],
 		"a pre-0.9.38 journal is adoptable; its runs are found later",
 	);
+	// Its tables are read and never written, so only version 1 is one (#5065).
+	raw(legacy, "UPDATE meta SET schema_version = 2");
+	const legacyNewer = await inspectJournalFile(legacy).catch((error: Error) => error);
+	assert.ok(isJournalAdoptError(legacyNewer));
+	assert.deepEqual([legacyNewer.code, legacyNewer.fields.found], ["schema-version", 2]);
 	const empty = await journal(join(root, "empty", "journal.sqlite"), []);
 	raw(empty, "DELETE FROM wf_meta");
 	const none = await inspectJournalFile(empty).catch((error: Error) => error);
@@ -176,7 +201,7 @@ test("inspection reads the schema version of a current or legacy journal and ref
 	raw(empty, "INSERT INTO wf_meta VALUES ('one')");
 	const text = await inspectJournalFile(empty).catch((error: Error) => error);
 	assert.ok(isJournalAdoptError(text));
-	assert.deepEqual([text.code, text.fields.found, text.fields.supported], ["schema-version", "one", 1]);
+	assert.deepEqual([text.code, text.fields.found, text.fields.supported], ["schema-version", "one", 2]);
 	raw(empty, "INSERT INTO wf_meta VALUES (1)");
 	const two = await inspectJournalFile(empty).catch((error: Error) => error);
 	assert.ok(isJournalAdoptError(two) && two.code === "schema-version");
@@ -657,7 +682,7 @@ test("consolidation into a new shard records its schema version once (#4325)", a
 				.prepare("SELECT schema_version FROM wf_meta")
 				.all()
 				.map((row) => row.schema_version),
-			[1],
+			[2],
 		);
 	} finally {
 		target.close();
@@ -1068,7 +1093,7 @@ test("a destination copy that holds the source's events and more, as after a res
 	copy.exec(`ATTACH DATABASE '${path}' AS source`);
 	for (const table of ["wf_runs", "wf_events"]) copy.exec(`INSERT INTO main.${table} SELECT * FROM source.${table}`);
 	copy.exec(
-		"INSERT INTO wf_events SELECT run_id, seq + 10, epoch, 'third', type, payload, at FROM wf_events WHERE key = 'second'",
+		"INSERT INTO wf_events(run_id, seq, epoch, key, type, payload, at) SELECT run_id, seq + 10, epoch, 'third', type, payload, at FROM wf_events WHERE key = 'second'",
 	);
 	copy.close();
 	const events = Number(scalar(target.path, "SELECT count(*) FROM wf_events WHERE run_id = 'copy'"));

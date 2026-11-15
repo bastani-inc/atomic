@@ -68,7 +68,7 @@ await reopened.close();
 const database = new DatabaseSync(join(root, "caller.sqlite"));
 const borrowed = await resolveRunJournal({ journal: { database: wrapNodeSqliteDatabase(database) } });
 await borrowed.close();
-assert.equal(database.prepare("SELECT schema_version FROM wf_meta").get().schema_version, 1);
+assert.equal(database.prepare("SELECT schema_version FROM wf_meta").get().schema_version, 2);
 database.exec("INSERT INTO wf_meta VALUES (1)");
 await assert.rejects(
 	async () => await openSqlRunJournal(database),

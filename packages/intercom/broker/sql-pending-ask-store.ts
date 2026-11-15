@@ -273,6 +273,27 @@ export async function openSqlPendingAskStore({
 			);
 			return { status: "listed", asks: rows.map(toAsk) };
 		},
+		async endLost(targetSessionId): Promise<PendingAskListResult> {
+			if (targetSessionId.length === 0) return invalid("empty-session-id");
+			const rows = await database.transaction(async (tx) => {
+				const open = await tx.all<AskRow & { order: number | bigint }>(
+					`SELECT "order", sender_session_id, target_session_id, message_id FROM ${table}
+					 WHERE target_session_id = ? AND park_owner IS NULL AND replied IS NULL AND ended_at IS NULL
+					 ORDER BY "order"`,
+					targetSessionId,
+				);
+				const marked: AskRow[] = [];
+				for (const row of open) {
+					const { changes } = await tx.run(
+						`UPDATE ${table} SET ended_at = ${nowMs} WHERE "order" = ? AND ended_at IS NULL AND replied IS NULL`,
+						row.order,
+					);
+					if (Number(changes) === 1) marked.push(row);
+				}
+				return marked;
+			});
+			return { status: "listed", asks: rows.map(toAsk) };
+		},
 		async unmarkEnded(route): Promise<PendingAskMarkResult> {
 			const bad = invalidRoute(route);
 			if (bad !== undefined) return bad;

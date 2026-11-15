@@ -106,7 +106,7 @@ describe("the pace of a background collection (#4355)", () => {
 		await other.journal.append(lease, statusEvent("run", { status: "running" }, "RunStarted"));
 		await other.database.run(
 			`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 1200)
-			INSERT INTO wf_events SELECT 'run', 1 + i, ?, NULL, 'CheckpointRecorded', json_object('kind', 'tool', 'checkpointId', 'c' || i), 0 FROM n`,
+			INSERT INTO wf_events(run_id, seq, epoch, key, type, payload, at) SELECT 'run', 1 + i, ?, NULL, 'CheckpointRecorded', json_object('kind', 'tool', 'checkpointId', 'c' || i), 0 FROM n`,
 			lease.epoch,
 		);
 		await other.journal.snapshotBlobs.putBlobs(

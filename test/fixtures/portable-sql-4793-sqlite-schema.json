@@ -189,7 +189,7 @@
 		"type": "table",
 		"name": "intercom_known_sessions",
 		"tbl_name": "intercom_known_sessions",
-		"sql": "CREATE TABLE intercom_known_sessions(\n\t\t\t\trecord_order INTEGER PRIMARY KEY AUTOINCREMENT,\n\t\t\t\ttarget_identity TEXT NOT NULL UNIQUE,\n\t\t\t\tintercom_session_id TEXT NOT NULL,\n\t\t\t\tname_json TEXT,\n\t\t\t\tname_key TEXT,\n\t\t\t\tatomic_session_id TEXT,\n\t\t\t\tgroup_name TEXT NOT NULL,\n\t\t\t\tgroups_json TEXT NOT NULL,\n\t\t\t\trecipient_purpose TEXT,\n\t\t\t\treply_capability TEXT,\n\t\t\t\trecorded_at INTEGER NOT NULL\n\t\t\t)"
+		"sql": "CREATE TABLE intercom_known_sessions(\n\t\t\t\trecord_order INTEGER PRIMARY KEY AUTOINCREMENT,\n\t\t\t\ttarget_identity TEXT NOT NULL UNIQUE,\n\t\t\t\tintercom_session_id TEXT NOT NULL,\n\t\t\t\tname_json TEXT,\n\t\t\t\tname_key TEXT,\n\t\t\t\tatomic_session_id TEXT,\n\t\t\t\tgroup_name TEXT NOT NULL,\n\t\t\t\tgroups_json TEXT NOT NULL,\n\t\t\t\trecipient_purpose TEXT,\n\t\t\t\treply_capability TEXT,\n\t\t\t\trecorded_at INTEGER NOT NULL\n\t\t\t, lost_at INTEGER)"
 	},
 	{
 		"type": "table",
@@ -267,7 +267,7 @@
 		"type": "table",
 		"name": "team_intercom_known_sessions",
 		"tbl_name": "team_intercom_known_sessions",
-		"sql": "CREATE TABLE team_intercom_known_sessions(\n\t\t\t\trecord_order INTEGER PRIMARY KEY AUTOINCREMENT,\n\t\t\t\ttarget_identity TEXT NOT NULL UNIQUE,\n\t\t\t\tintercom_session_id TEXT NOT NULL,\n\t\t\t\tname_json TEXT,\n\t\t\t\tname_key TEXT,\n\t\t\t\tatomic_session_id TEXT,\n\t\t\t\tgroup_name TEXT NOT NULL,\n\t\t\t\tgroups_json TEXT NOT NULL,\n\t\t\t\trecipient_purpose TEXT,\n\t\t\t\treply_capability TEXT,\n\t\t\t\trecorded_at INTEGER NOT NULL\n\t\t\t)"
+		"sql": "CREATE TABLE team_intercom_known_sessions(\n\t\t\t\trecord_order INTEGER PRIMARY KEY AUTOINCREMENT,\n\t\t\t\ttarget_identity TEXT NOT NULL UNIQUE,\n\t\t\t\tintercom_session_id TEXT NOT NULL,\n\t\t\t\tname_json TEXT,\n\t\t\t\tname_key TEXT,\n\t\t\t\tatomic_session_id TEXT,\n\t\t\t\tgroup_name TEXT NOT NULL,\n\t\t\t\tgroups_json TEXT NOT NULL,\n\t\t\t\trecipient_purpose TEXT,\n\t\t\t\treply_capability TEXT,\n\t\t\t\trecorded_at INTEGER NOT NULL\n\t\t\t, lost_at INTEGER)"
 	},
 	{
 		"type": "table",
@@ -337,9 +337,15 @@
 	},
 	{
 		"type": "table",
+		"name": "team_wf_event_chunks",
+		"tbl_name": "team_wf_event_chunks",
+		"sql": "CREATE TABLE team_wf_event_chunks(\n\t\t\trun_id TEXT NOT NULL, seq INTEGER NOT NULL, idx INTEGER NOT NULL, data BLOB NOT NULL,\n\t\t\tPRIMARY KEY(run_id, seq, idx)\n\t\t) STRICT"
+	},
+	{
+		"type": "table",
 		"name": "team_wf_events",
 		"tbl_name": "team_wf_events",
-		"sql": "CREATE TABLE team_wf_events(\n\t\t\trun_id TEXT NOT NULL,\n\t\t\tseq INTEGER NOT NULL, epoch INTEGER NOT NULL, key TEXT,\n\t\t\ttype TEXT NOT NULL, payload TEXT NOT NULL, at INTEGER NOT NULL,\n\t\t\tPRIMARY KEY(run_id, seq), UNIQUE(run_id, key)\n\t\t)"
+		"sql": "CREATE TABLE team_wf_events(\n\t\t\trun_id TEXT NOT NULL,\n\t\t\tseq INTEGER NOT NULL, epoch INTEGER NOT NULL, key TEXT,\n\t\t\ttype TEXT NOT NULL, payload TEXT NOT NULL, at INTEGER NOT NULL,\n\t\t\tchunks INTEGER NOT NULL DEFAULT 0,\n\t\t\tPRIMARY KEY(run_id, seq), UNIQUE(run_id, key)\n\t\t)"
 	},
 	{
 		"type": "table",
@@ -361,9 +367,15 @@
 	},
 	{
 		"type": "table",
+		"name": "wf_event_chunks",
+		"tbl_name": "wf_event_chunks",
+		"sql": "CREATE TABLE wf_event_chunks(\n\t\t\trun_id TEXT NOT NULL, seq INTEGER NOT NULL, idx INTEGER NOT NULL, data BLOB NOT NULL,\n\t\t\tPRIMARY KEY(run_id, seq, idx)\n\t\t) STRICT"
+	},
+	{
+		"type": "table",
 		"name": "wf_events",
 		"tbl_name": "wf_events",
-		"sql": "CREATE TABLE wf_events(\n\t\t\trun_id TEXT NOT NULL,\n\t\t\tseq INTEGER NOT NULL, epoch INTEGER NOT NULL, key TEXT,\n\t\t\ttype TEXT NOT NULL, payload TEXT NOT NULL, at INTEGER NOT NULL,\n\t\t\tPRIMARY KEY(run_id, seq), UNIQUE(run_id, key)\n\t\t)"
+		"sql": "CREATE TABLE wf_events(\n\t\t\trun_id TEXT NOT NULL,\n\t\t\tseq INTEGER NOT NULL, epoch INTEGER NOT NULL, key TEXT,\n\t\t\ttype TEXT NOT NULL, payload TEXT NOT NULL, at INTEGER NOT NULL,\n\t\t\tchunks INTEGER NOT NULL DEFAULT 0,\n\t\t\tPRIMARY KEY(run_id, seq), UNIQUE(run_id, key)\n\t\t)"
 	},
 	{
 		"type": "table",

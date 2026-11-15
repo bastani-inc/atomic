@@ -637,6 +637,12 @@ export interface PendingAskStore {
 	endParked(ownerSessionId: string, reservationKey?: string): Promise<PendingAskListResult>;
 	/** #4992: the unanswered asks marked ended more than `olderThanMs` ago, by store clock, oldest first. */
 	listEnded(olderThanMs: number): Promise<PendingAskListResult>;
+	/**
+	 * #5154: the target is lost: mark its unanswered, unparked asks ended, as `endForTarget` does, and return only those
+	 * this call marked, so of brokers that find it lost at once only one tells each asker. An ask marked earlier is
+	 * left to whoever marked it, or to `listEnded` once that broker stopped.
+	 */
+	endLost(targetSessionId: string): Promise<PendingAskListResult>;
 	/** #4992: the ended ask's failure is queued; its route stays only to authorize that failure when it is delivered. */
 	unmarkEnded(route: ReplyRoute): Promise<PendingAskMarkResult>;
 }
@@ -848,6 +854,13 @@ export interface KnownSessionStore {
 	binding(intercomSessionId: string, retentionMs: number): Promise<KnownSessionBindingResult>;
 	/** Delete records and bindings last recorded more than `olderThanMs` ago; returns the count of records. */
 	prune(olderThanMs: number): Promise<number>;
+	/**
+	 * #5154: these identities' sessions were present on a broker that stopped and was retired before it recorded them
+	 * leaving: mark them lost, keeping an earlier mark. `record` clears the mark.
+	 */
+	markLost(targetIdentities: readonly string[]): Promise<void>;
+	/** #5154: the records marked lost more than `olderThanMs` ago, by store clock. */
+	listLost(olderThanMs: number): Promise<KnownSessionState[]>;
 }
 
 /** The return address a delivery identity (`deliveryTargetIdentity`) names; none for a session that gave none. */
