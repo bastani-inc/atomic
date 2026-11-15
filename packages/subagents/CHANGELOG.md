@@ -23,6 +23,7 @@
 - Fixed subagent task summaries, tool-call and argument previews, error details and run history cutting an emoji or other character outside the Basic Multilingual Plane in half, which showed up as `�` or a raw `\ud83d` escape ([#5097](https://github.com/bastani-inc/atomic/issues/5097))
 - Fixed a builtin agent with a `thinking` override (for example `agentOverrides.worker.thinking`) ignoring a call's `modelConstraints.allowedProviders` or `excludedProviders` in favour of your `modelRouting` provider settings. The launch could fail with "Auto routing has no eligible model/effort pairs", or model fallback could pick from the settings' providers instead of the call's. The call's provider lists now apply to builtin agents just as they do to your own agents ([#5046](https://github.com/bastani-inc/atomic/issues/5046))
 - Fixed a subagent launch failing when it named its model in a different letter case, such as `Anthropic/claude-opus-4-8`, even though the same name works in `fallbackModels` and `--model`. Subagent model names now resolve the same way as those ([#5046](https://github.com/bastani-inc/atomic/issues/5046))
+- Fixed pausing or quitting a `worktree: true` subagent at the moment it finished on its own leaving its worktree on disk as if it were paused. Its edits are now saved as a patch and its worktree removed, as for any finished subagent ([#5172](https://github.com/bastani-inc/atomic/issues/5172))
 
 ## [0.9.86] - 2026-11-14
 

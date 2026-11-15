@@ -74,6 +74,7 @@ import {
 	SUBAGENT_CHILD_STAGE_PAUSED_STATUS,
 	type SubagentChildRecord,
 	subagentChildRecordsAppended,
+	takeSubagentChildStop,
 	WORKFLOW_STAGE_CLOSED_FOR_GOOD_STATE,
 	WORKFLOW_STAGE_END_CHILDREN_STATE,
 } from "../../packages/subagents/src/runs/foreground/subagent-child-records.js";
@@ -2503,6 +2504,59 @@ test("resuming a completed worktree child starts from its saved edits, and no ex
 	assert.match(latest, /edited by A/, "the resumed execution's patch keeps the earlier tracked edit");
 	assert.match(latest, /draft by A/, "the resumed execution's patch keeps the earlier draft");
 	assert.match(latest, /second pass by A/, "the resumed execution's patch has its own edits");
+});
+
+test("pausing a worktree child that finished on its own as the pause reached it leaves no park or stop behind: its edits are saved and its worktree removed (#5172)", async () => {
+	const h = harness();
+	initGitRepository(h.cwd);
+	h.finishOn.set("task-a-marker", Promise.withResolvers<void>());
+	const finisherDone = Promise.withResolvers<void>();
+	h.finishOn.set("task-b-marker", finisherDone);
+	const [childA, childB] = await launchWorktreeRun(h, ["task-a-marker", "task-b-marker"]);
+	assert.ok(childA && childB);
+	const diffsDir = childB.worktree?.diffsDir;
+	if (diffsDir) cleanups.push(async () => rmSync(diffsDir, { recursive: true, force: true }));
+	await h.waitForLatest(childA.childId, (candidate) => !!candidate.childSessionId);
+	await h.waitForLatest(childB.childId, (candidate) => !!candidate.childSessionId);
+	writeFileSync(join(childB.cwd, "draft.md"), "draft by B\n");
+	// While pause stops child A, child B finishes on its own, so the cancel pause sends it finds it already settled.
+	duringCancelOf(h, childA.taskId as string, async () => {
+		finisherDone.resolve();
+		await settled(h, childB.taskId as string);
+	});
+	const cancelTask = h.host.cancelTask.bind(h.host);
+	const decisions = new Map<string, string>();
+	h.host.cancelTask = (async (taskId: TaskId, cause: Parameters<typeof cancelTask>[1]) => {
+		const cancelled = await cancelTask(taskId, cause);
+		if (cancelled.ok) decisions.set(taskId, cancelled.value.decision);
+		return cancelled;
+	}) as typeof h.host.cancelTask;
+
+	const paused = await h.call({ action: "pause", all: true });
+	assert.equal(decisions.get(childB.taskId as string), "already-settled", "the race this covers happened");
+	assert.match(text(paused), /Paused worker \(\w+:0,/);
+	assert.match(text(paused), /completed \(ok\) before it could be paused/);
+	assert.equal(h.latest(childB.childId)?.terminalStatus, "ok");
+	assert.equal(takeSubagentChildStop(childB.taskId as string), undefined, "no stop request is left for it");
+	await waitUntilRemoved(childB.cwd);
+	assert.equal(existsSync(childB.cwd), false, "its worktree is removed as any finished child's is, not kept parked");
+	const [patch] = savedPatches(childB);
+	assert.ok(patch, "its edits were saved as a patch");
+	assert.match(readFileSync(patch, "utf8"), /draft by B/);
+});
+
+test("a pause its task host refuses leaves no stop request behind (#5172)", async () => {
+	const h = harness();
+	const { record, taskId } = await h.launch("refused1");
+	h.host.cancelTask = (async () => ({
+		ok: false,
+		error: { code: "UnknownTask", message: "the task host refused the cancel" },
+	})) as typeof h.host.cancelTask;
+
+	const paused = await h.call({ action: "pause", id: record.childId });
+	assert.equal(paused.isError, true, text(paused));
+	assert.match(text(paused), /Could not pause .*the task host refused the cancel/);
+	assert.equal(takeSubagentChildStop(taskId), undefined, "no stop request is left for it");
 });
 
 test("pause keeps the steering and follow-up messages a running child queued, and resume delivers them once, in order, before its message (#3784)", async () => {
