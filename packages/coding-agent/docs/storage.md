@@ -125,19 +125,20 @@ You can write this block by hand as well. `secrets.password` takes `{ "file": �
 | `maxConnections` | 8 | Connections each Atomic process may open |
 | `statementTimeoutMs` | 30000 | How long one statement may run before the server cancels it |
 
-`atomic team join` takes libSQL URLs only; use `atomic storage join` for PostgreSQL. SDK callers can import `openPostgresDatabase` from `@bastani/atomic-storage-postgres`.
+`atomic team join` takes libSQL URLs only; use `atomic storage join` for PostgreSQL. To run worker hosts and a fleet controller on a managed service, follow [Worker fleets on managed PostgreSQL](/guides/worker-fleets-postgres). SDK callers can import `openPostgresDatabase` from `@bastani/atomic-storage-postgres`.
 
 ### TLS
 
 Atomic connects with TLS to every host except the local machine, and checks the server's certificate and host name (`sslmode=verify-full`). Add `sslmode` to the URL to choose otherwise:
 
-- Azure Database for PostgreSQL, Neon, and Supabase use certificates that Node.js trusts: no option is needed.
+- Azure Database for PostgreSQL and Neon use certificates that Node.js trusts: no option is needed.
+- Supabase: download the project's CA certificate (**Project Settings → Database → SSL Configuration**) and add `?sslrootcert=/path/to/supabase-ca.pem`. Its certificates chain to Supabase's own CA.
 - Amazon RDS and Aurora: download your region's certificate bundle from `https://truststore.pki.rds.amazonaws.com/<region>/<region>-bundle.pem` and add `?sslrootcert=/path/to/bundle.pem`.
 - Google Cloud SQL: save the instance's server CA certificate (`gcloud sql instances describe <instance> --format='value(serverCaCert.cert)'`) and add `?sslmode=verify-ca&sslrootcert=/path/to/server-ca.pem` when you connect by private IP address, which is not among the certificate's names.
 
 ### Connection poolers
 
-Atomic works through transaction-mode poolers: PgBouncer, the PgBouncer built into Azure Database for PostgreSQL (port 6432), Supabase's Supavisor (port 6543), and Neon's pooled endpoint (the `-pooler` host name). Point the URL at the pooler. A pooler lets many machines share a small number of server connections.
+Atomic works through transaction-mode poolers: PgBouncer, the PgBouncer built into Azure Database for PostgreSQL (port 6432), Supabase's Supavisor (port 6543), and Neon's pooled endpoint (the `-pooler` host name). Point the URL at the pooler. A pooler lets many machines share a small number of server connections. Use transaction or session mode, not statement mode. For a worker fleet's connection count and pooler settings, see [Worker fleets on managed PostgreSQL](/guides/worker-fleets-postgres#connection-poolers).
 
 ### Cloud identities
 
@@ -175,7 +176,7 @@ The first machine to join also needs `CREATE` on the schema, to create the table
 
 ## Turso and libSQL
 
-`@bastani/atomic-storage-libsql` is the maintained adapter for Turso and other libSQL databases. It stores sessions, workflow runs, and Intercom's multi-node routing in the database. It is the lightweight shared store, one URL and a token, and in this release the store for [worker fleets](/guides/worker-hosts). See [Which store to choose](#which-store-to-choose). Install it once per machine, in user scope so Atomic can find it:
+`@bastani/atomic-storage-libsql` is the maintained adapter for Turso and other libSQL databases. It stores sessions, workflow runs, and Intercom's multi-node routing in the database. It is the lightweight shared store, one URL and a token, and holds [worker fleets](/guides/worker-hosts) as PostgreSQL does. See [Which store to choose](#which-store-to-choose). Install it once per machine, in user scope so Atomic can find it:
 
 ```bash
 atomic install npm:@bastani/atomic-storage-libsql
