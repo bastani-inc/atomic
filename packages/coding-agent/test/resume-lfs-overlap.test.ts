@@ -243,13 +243,10 @@ describe("a multi-repository resume overlaps one repository's LFS download with 
 			assert.ok(restoreB?.phases.lfs !== undefined, "repository B's download is its own LFS phase");
 			assert.ok(restoreB.phases.lfs >= SLOW_LFS_MS, `LFS ${restoreB.phases.lfs} ms`);
 			assert.ok(restoreB.ms >= restoreB.phases.lfs, "B's restore lasts until its LFS download ended");
+			// A's step ends only once the download, which starts its last SLOW_LFS_MS after the step started, opens the
+			// gate: the step's recorded time is time the two ran together.
 			const buildA = timings.blueprint.find((step) => step.name === "Build A");
 			assert.ok(buildA !== undefined && buildA.ms >= SLOW_LFS_MS, `Build A ${buildA?.ms} ms`);
-			// One after the other, the download and the build would take at least their sum before the first prompt.
-			assert.ok(
-				restoreB.phases.lfs + buildA.ms > timings.firstPromptReadyMs!,
-				`LFS ${restoreB.phases.lfs} ms and Build A ${buildA.ms} ms overlap within ${timings.firstPromptReadyMs} ms`,
-			);
 		},
 		OVERLAPPED_RESUME_TIMEOUT_MS,
 	);

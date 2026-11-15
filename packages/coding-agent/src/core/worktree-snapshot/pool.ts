@@ -177,8 +177,7 @@ const LEASE_NAME = /^([0-9a-f]{12})-(\d+)-[0-9a-f]{8}(?:-([0-9a-f]{12}))?\.lease
 function holderRuns(name: string, age: number): boolean {
 	const lease = LEASE_NAME.exec(name);
 	if (lease === null) return false;
-	const holder = { host: lease[1]!, pid: Number(lease[2]), ...(lease[3] === undefined ? {} : { start: lease[3] }) };
-	return processHolderRuns(holder, age, UNSTARTED_LEASE_LIMIT_MS);
+	return processHolderRuns({ host: lease[1]!, pid: Number(lease[2]), start: lease[3] }, age, UNSTARTED_LEASE_LIMIT_MS);
 }
 
 function sameOwner(a: PoolOwner, b: PoolOwner): boolean {

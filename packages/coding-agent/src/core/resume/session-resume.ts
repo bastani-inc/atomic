@@ -1021,10 +1021,9 @@ async function setUpCheckoutBlueprints(
 	for (const [root, snapshot] of currentWorktreeSnapshots(sessionManager)) {
 		const checkout = checkoutOf(sessionManager, root, snapshot);
 		if (restoredNow.has(root)) restoredHere.push({ ...checkout, ready: lfs.ready(root) });
-		else if (isInside(storeDir, root)) {
-			await resumePendingLfs(lfs, root, options.signal);
-			earlier.push({ ...checkout, ready: lfs.ready(root) });
-		} else if (await isDirectory(root)) inPlace.push(checkout);
+		else if (isInside(storeDir, root))
+			earlier.push({ ...checkout, ready: finishPendingLfs(lfs, root, options.signal) });
+		else if (await isDirectory(root)) inPlace.push(checkout);
 	}
 	const retried = await checkoutsNeedingRebuild(earlier, storeDir);
 	const blueprints = await setUpResumedBlueprints({
@@ -1039,19 +1038,12 @@ async function setUpCheckoutBlueprints(
 }
 
 /**
- * Starts the LFS download a resume interrupted in the restored worktree at `root`, if it left one pending (#5099), so
- * its blueprint runs on the files' content. A worktree whose mark cannot be checked is left as it is.
+ * Finishes the LFS download a resume interrupted, or another process still runs, in the restored worktree at `root`,
+ * if one is pending (#5099), so its blueprint runs on the files' content; settles once that is done.
  */
-async function resumePendingLfs(lfs: LfsDownloads, root: string, signal: AbortSignal | undefined): Promise<void> {
-	let pull: (() => Promise<readonly string[]>) | undefined;
-	try {
-		pull = await pendingLfsDownload(root, { signal });
-	} catch (error) {
-		signal?.throwIfAborted();
-		reportDebug("storage", "pending-lfs-unreadable", failureDebugFields(error));
-		return;
-	}
-	if (pull !== undefined) lfs.start(root, pull);
+function finishPendingLfs(lfs: LfsDownloads, root: string, signal: AbortSignal | undefined): Promise<void> {
+	lfs.start(root, async () => (await (await pendingLfsDownload(root, { signal }))?.()) ?? []);
+	return lfs.ready(root);
 }
 
 /**

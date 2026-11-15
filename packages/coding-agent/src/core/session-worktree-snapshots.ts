@@ -1000,7 +1000,7 @@ export async function resumeSessionWorktree(
 					signal: options.signal,
 					candidates: earlierSnapshotHeads(sessionManager, original, existing, snapshot),
 					// Carrying work over writes into the worktree, so a pinned restore downloads first.
-					...(pinned === undefined && options.deferLfs !== undefined ? { deferLfs: options.deferLfs } : {}),
+					...(pinned === undefined ? { deferLfs: options.deferLfs } : {}),
 					...(slot === undefined
 						? {}
 						: {

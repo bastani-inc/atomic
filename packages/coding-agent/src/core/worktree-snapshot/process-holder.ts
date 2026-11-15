@@ -27,7 +27,7 @@ export function processStartToken(pid: number): string | undefined {
 export interface ProcessHolder {
 	readonly host: string;
 	readonly pid: number;
-	readonly start?: string;
+	readonly start?: string | undefined;
 }
 
 const PROCESS_START = processStartToken(process.pid);
