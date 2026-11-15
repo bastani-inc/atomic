@@ -679,11 +679,10 @@ export function handleBrokerSend(
 		// #5101: a peer back on this broker whose routes it has not restored yet (its registration is still completing)
 		// may hold this reply's route. The reply waits for that restoration and is decided again; one still waiting when
 		// the bound passes is refused as retryable, never as unauthorized.
-		let decided = false;
+		let refused = false;
 		let bound: ReturnType<typeof setTimeout> | undefined;
 		const decideAgain = (): void => {
-			if (decided) return;
-			decided = true;
+			if (refused) return;
 			clearTimeout(bound);
 			handleBrokerSend(
 				socket,
@@ -713,8 +712,7 @@ export function handleBrokerSend(
 			pendingQuestions.whenRestored(fromSession.info.id, decideAgain)
 		) {
 			bound = setTimeout(() => {
-				if (decided) return;
-				decided = true;
+				refused = true;
 				write(socket, {
 					type: "delivery_failed",
 					messageId: message.id,
@@ -723,7 +721,7 @@ export function handleBrokerSend(
 					routeUnavailable: true,
 				});
 			}, ROUTE_RESTORATION_WAIT_MS);
-			bound.unref?.();
+			bound.unref();
 			return;
 		}
 		write(socket, {

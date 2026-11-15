@@ -136,6 +136,19 @@ test("a reply still waiting on a restoration when its bound passes is refused as
 	assert.deepEqual(delivered(), []);
 });
 
+test("ending a restoration that never began, or already ended, changes nothing (#5101)", () => {
+	const { asker, pending, reply, answers } = replyAfterRestart();
+	const restoring = pending.beginRestoring(asker.info.id);
+	pending.finishRestoring(asker.info.id, restoring);
+	pending.finishRestoring(asker.info.id, restoring);
+	pending.finishRestoring("never-restoring", {});
+
+	reply("reply-1");
+	assert.deepEqual(answers(), [
+		{ type: "delivery_failed", messageId: "reply-1", attemptId: undefined, reason: UNAUTHORIZED },
+	]);
+});
+
 test("a restoration that a newer one replaced does not release the replies waiting on the newer one (#5101)", () => {
 	const { asker, replier, pending, reply, answers } = replyAfterRestart();
 	const first = pending.beginRestoring(asker.info.id);
@@ -188,6 +201,13 @@ test("a client resolves a reply refused while its route is unavailable as route_
 		reason: ROUTE_UNAVAILABLE_REASON,
 		reasonCode: "route_unavailable",
 	});
+});
+
+test("a client resolves an ordinary refusal without a reason code (#5101)", async () => {
+	const { client, frames, receive } = connectedClient();
+	const sent = client.send("asker", { text: "port 8080", messageId: "reply-1", replyTo: "question" });
+	receive({ type: "delivery_failed", messageId: "reply-1", attemptId: frames[0]?.attemptId, reason: UNAUTHORIZED });
+	assert.equal((await sent).reasonCode, undefined);
 });
 
 test("a client keeps the wire reason code of a refusal that also says its route is unavailable (#5101)", async () => {
