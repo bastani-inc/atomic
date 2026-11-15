@@ -5,6 +5,7 @@
 
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
 	existsSync,
 	mkdirSync,
@@ -12,18 +13,19 @@ import {
 	readdirSync,
 	readFileSync,
 	rmSync,
+	statSync,
 	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, test } from "vitest";
+import { afterEach, beforeEach, describe, test, vi } from "vitest";
+import { processStartToken } from "../src/core/process-start-token.ts";
 import { attachSessionClaim, claimSession } from "../src/core/session-claims.ts";
 import { SESSION_ALREADY_OPEN_EXIT_CODE, SessionAlreadyOpenError } from "../src/core/session-manager-errors.ts";
 import { holdSessionOpenMarker } from "../src/core/session-open-markers.ts";
 
 let agentDir: string;
-let sessionCount = 0;
 const releases: (() => void)[] = [];
 const children: ChildProcess[] = [];
 
@@ -32,13 +34,14 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	vi.useRealTimers();
 	while (releases.length > 0) releases.pop()?.();
 	for (const child of children.splice(0)) child.kill("SIGKILL");
 	rmSync(agentDir, { recursive: true, force: true });
 });
 
 function newSessionId(): string {
-	return `claim-${process.pid}-${++sessionCount}`;
+	return `claim-${randomUUID()}`;
 }
 
 function claimFile(sessionId: string): string {
@@ -86,6 +89,8 @@ describe("session claims (#5135)", () => {
 		const sessionId = newSessionId();
 		const release = claim(sessionId);
 		assert.ok(claimedByThisProcess(sessionId));
+		// Where it can be read, when this process started, so a later process given its pid is told apart.
+		assert.equal(JSON.parse(readFileSync(claimFile(sessionId), "utf8")).started, processStartToken(process.pid));
 		release();
 		assert.equal(existsSync(claimFile(sessionId)), false);
 		assert.deepEqual(readdirSync(join(agentDir, "session-claims")), [], "no staging file is left behind");
@@ -112,6 +117,7 @@ describe("session claims (#5135)", () => {
 				assert.equal(error.host, hostname());
 				assert.equal(error.exitCode, SESSION_ALREADY_OPEN_EXIT_CODE);
 				assert.equal(error.exitCode, 75);
+				assert.equal(error.name, "SessionAlreadyOpenError");
 				assert.match(error.message, new RegExp(`^Session ${sessionId} is already open in process ${pid} on `));
 				return true;
 			},
@@ -138,6 +144,16 @@ describe("session claims (#5135)", () => {
 		}
 	});
 
+	test.skipIf(process.platform !== "linux")(
+		"a claim naming when its live holder started is refused (#5135)",
+		async () => {
+			const sessionId = newSessionId();
+			const pid = await liveProcess();
+			writeClaim(sessionId, { token: "live", pid, host: hostname(), started: processStartToken(pid) });
+			assert.throws(() => claim(sessionId), SessionAlreadyOpenError);
+		},
+	);
+
 	test("an earlier process given this process's pid does not hold the claim (#5135)", () => {
 		const sessionId = newSessionId();
 		writeClaim(sessionId, { token: "earlier", pid: process.pid, host: hostname() });
@@ -151,10 +167,64 @@ describe("session claims (#5135)", () => {
 		writeFileSync(claimFile(sessionId), "{not json");
 		claim(sessionId);
 		assert.ok(claimedByThisProcess(sessionId));
-		const otherId = newSessionId();
-		writeClaim(otherId, { token: 1, pid: "x", host: null });
-		claim(otherId);
-		assert.ok(claimedByThisProcess(otherId));
+	});
+
+	test("a claim record missing its token, pid or host is taken over, though a live process has that pid (#5135)", async () => {
+		const pid = await liveProcess();
+		for (const record of [
+			{ pid, host: hostname() },
+			{ token: "t", pid: String(pid), host: hostname() },
+			{ token: "t", pid },
+		]) {
+			const sessionId = newSessionId();
+			writeClaim(sessionId, record);
+			claim(sessionId);
+			assert.ok(claimedByThisProcess(sessionId), JSON.stringify(record));
+		}
+	});
+
+	test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+		"a holder this process may not signal still runs (#5135)",
+		() => {
+			const sessionId = newSessionId();
+			writeClaim(sessionId, { token: "init", pid: 1, host: hostname() });
+			assert.throws(() => claim(sessionId), SessionAlreadyOpenError);
+		},
+	);
+
+	test("a claim that cannot be read stops the claim with the read error (#5135)", () => {
+		const sessionId = newSessionId();
+		mkdirSync(claimFile(sessionId), { recursive: true });
+		assert.throws(
+			() => claim(sessionId),
+			(error: unknown) =>
+				!(error instanceof SessionAlreadyOpenError) && (error as NodeJS.ErrnoException).code !== undefined,
+		);
+	});
+
+	test("a held claim's heartbeat keeps it fresh until its last claim is released (#5135)", () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+		const sessionId = newSessionId();
+		const release = claim(sessionId);
+		const releaseOther = claim(newSessionId());
+		assert.equal(vi.getTimerCount(), 1, "one heartbeat serves every claim");
+		releaseOther();
+		assert.equal(vi.getTimerCount(), 1, "the heartbeat runs while a claim is held");
+		const old = new Date(Date.now() - 50_000);
+		utimesSync(claimFile(sessionId), old, old);
+		vi.advanceTimersByTime(15_000);
+		assert.ok(Date.now() - statSync(claimFile(sessionId)).mtimeMs < 10_000, "the heartbeat refreshed the claim");
+		release();
+		assert.equal(vi.getTimerCount(), 0, "no heartbeat runs without claims");
+	});
+
+	test("a release run again after the session was claimed anew leaves the new claim (#5135)", () => {
+		const sessionId = newSessionId();
+		const first = claim(sessionId);
+		first();
+		claim(sessionId);
+		first();
+		assert.ok(claimedByThisProcess(sessionId));
 	});
 
 	test("a claim of another host counts while its heartbeat runs and is taken over once it stopped (#5135)", () => {

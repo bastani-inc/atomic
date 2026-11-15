@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdirSync, renameSync, rmSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { hostname } from "node:os";
 import { join } from "node:path";
 import type { Terminal } from "@earendil-works/pi-tui";
 import { afterEach, beforeEach, test, vi } from "vitest";
@@ -94,7 +96,60 @@ test("atomic --session prints a resume failure with its fix once and exits 1 (#4
 	assert.equal(printed.length, 1);
 	assert.match(printed[0] ?? "", /Invalid snapshot record [0-9a-f]+: remotes\[0\] is not .*\(invalid-snapshot\)/);
 	assert.doesNotMatch(printed[0] ?? "", /token/);
+	assert.equal(
+		existsSync(sandbox.path("agent", "session-claims", `${sessionId}.json`)),
+		false,
+		"the failed resume released its claim of the session (#5135)",
+	);
 });
+
+// main() exits through the mocked process.exit; Windows cannot delete a SQLite file a test still has open.
+test.skipIf(process.platform === "win32")(
+	"atomic --session of a session another live process holds prints who holds it and exits 75, changing nothing (#5135)",
+	async () => {
+		const database = sandbox.path("sessions.sqlite");
+		const store = await resolveSessionStore(sandbox.root, {
+			agentDir: sandbox.path("node-a-agent"),
+			sessionStore: { kind: "sqlite", path: database },
+		});
+		// Recorded in the directory main() runs in, so it opens without offering a fork.
+		const manager = await SessionManager.create(store, process.cwd());
+		await manager.appendMessage({ role: "user", content: "hello", timestamp: Date.now() });
+		const sessionId = manager.getSessionId();
+		await store.close();
+		const holder = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+		cleanups.push(() => void holder.kill("SIGKILL"));
+		await new Promise<void>((resolve) => holder.once("spawn", () => resolve()));
+		const claim = sandbox.path("agent", "session-claims", `${sessionId}.json`);
+		mkdirSync(sandbox.path("agent", "session-claims"), { recursive: true });
+		writeFileSync(claim, JSON.stringify({ token: "holder", pid: holder.pid, host: hostname() }));
+		vi.stubEnv("ATOMIC_CODING_AGENT_DIR", sandbox.path("agent"));
+		const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+		vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+			throw new Error(`process.exit(${code})`);
+		}) as typeof process.exit);
+
+		await assert.rejects(
+			main(["--no-extensions", "--session-store", database, "--session", sessionId, "-p", "continue"]),
+			/^Error: process\.exit\(75\)$/,
+		);
+
+		const printed = errors.mock.calls.map(([message]) => String(message));
+		assert.equal(printed.length, 1, printed.join("\n"));
+		assert.ok(
+			printed[0]!.includes(`Error: Session ${sessionId} is already open in process ${holder.pid} on ${hostname()}.`),
+			printed[0],
+		);
+		assert.equal(JSON.parse(readFileSync(claim, "utf8")).pid, holder.pid, "the holder keeps its claim");
+		assert.equal((opening.calls.at(-1)?.[3] as { claim?: boolean } | undefined)?.claim, true);
+		const reopened = await resolveSessionStore(sandbox.root, {
+			agentDir: sandbox.path("node-a-agent"),
+			sessionStore: { kind: "sqlite", path: database },
+		});
+		cleanups.push(() => reopened.close());
+		assert.equal((await SessionManager.open(reopened, sessionId)).getEntries().length, 1, "nothing was written");
+	},
+);
 
 test("a failure that is not a resume failure is not printed as one: it propagates (#4329)", async () => {
 	vi.stubEnv("ATOMIC_CODING_AGENT_DIR", sandbox.path("agent"));

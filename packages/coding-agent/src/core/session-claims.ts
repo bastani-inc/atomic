@@ -73,24 +73,14 @@ function readClaim(path: string): { readonly record: ClaimRecord | undefined; re
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
 		throw error;
 	}
+	let parsed: Partial<ClaimRecord> | undefined;
 	try {
-		const parsed = JSON.parse(text) as Partial<ClaimRecord>;
-		if (typeof parsed.token !== "string" || typeof parsed.pid !== "number" || typeof parsed.host !== "string") {
-			return { record: undefined, ageMs };
-		}
-		return {
-			record: {
-				token: parsed.token,
-				pid: parsed.pid,
-				host: parsed.host,
-				started: typeof parsed.started === "string" ? parsed.started : undefined,
-			},
-			ageMs,
-		};
+		parsed = JSON.parse(text) as Partial<ClaimRecord>;
 	} catch {
 		// Never written by a claim, which is linked into place only once complete.
-		return { record: undefined, ageMs };
 	}
+	const valid = typeof parsed?.token === "string" && typeof parsed.pid === "number" && typeof parsed.host === "string";
+	return { record: valid ? (parsed as ClaimRecord) : undefined, ageMs };
 }
 
 /** Whether `pid` is a live process on this host; one this process may not signal (EPERM) still exists. */
@@ -106,7 +96,8 @@ function processAlive(pid: number): boolean {
 /** Whether the process that wrote `record` still runs, by its pid and when it started, as worktree leases are judged. */
 function holderRuns(record: ClaimRecord, ageMs: number): boolean {
 	if (record.host !== hostname()) return ageMs <= STALE_MS;
-	if (record.pid === process.pid) return record.token === PROCESS_TOKEN;
+	// This process's pid: an earlier process given it, or a claim of this process it no longer holds.
+	if (record.pid === process.pid) return false;
 	const started = record.started === undefined ? undefined : processStartToken(record.pid);
 	if (started !== undefined) return started === record.started;
 	return processAlive(record.pid);
@@ -129,7 +120,7 @@ function linkClaim(path: string, record: ClaimRecord): boolean {
 		if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
 		throw error;
 	} finally {
-		rmSync(staging, { force: true });
+		rmSync(staging);
 	}
 }
 
@@ -153,8 +144,7 @@ function removeDeadClaim(path: string, token: string | undefined): void {
 		return;
 	}
 	try {
-		const current = readClaim(path);
-		if (current !== undefined && current.record?.token === token) rmSync(path, { force: true });
+		if (readClaim(path)?.record?.token === token) rmSync(path, { force: true });
 	} finally {
 		rmdirSync(lock);
 	}
@@ -183,7 +173,7 @@ function dropClaim(sessionId: string, claim: HeldClaim): void {
 		heartbeat = undefined;
 	}
 	try {
-		if (ownClaim(claim.path)) rmSync(claim.path, { force: true });
+		if (ownClaim(claim.path)) rmSync(claim.path);
 	} catch {
 		// Gone already; a claim left behind is taken over once this process is gone.
 	}

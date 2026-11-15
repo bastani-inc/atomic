@@ -652,8 +652,6 @@ export async function openCliSession(
 		await release();
 		return "cancelled";
 	}
-	// A resume that continues in another session leaves the claim of the one it opened.
-	if (prepared.sessionManager.getSessionId() !== sessionManager.getSessionId()) releaseClaim?.();
 	return { sessionManager: prepared.sessionManager, notices: prepared.notices };
 }
 

@@ -7,15 +7,18 @@
 
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
-import { SessionManager } from "../src/core/session-manager.ts";
+import { parseArgs } from "../src/cli/args.ts";
+import { SessionAlreadyOpenError, SessionManager } from "../src/core/session-manager.ts";
+import { SettingsManager } from "../src/core/settings-manager.ts";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.ts";
 import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.ts";
+import { openCliSession } from "../src/main-session.ts";
 import { bunExecutable, cliPath } from "./cli-test-helpers.ts";
 
 /** Real Bun CLI processes transpile the CLI graph before they open the session; several start at once. */
@@ -320,4 +323,49 @@ describe("concurrent resumes of one session (#5135)", () => {
 		},
 		TEST_TIMEOUT_MS,
 	);
+});
+
+describe("the claim a CLI resume takes (#5135)", () => {
+	const claimFile = (sessionId: string) => join(agentDir, "session-claims", `${sessionId}.json`);
+	const open = (args: string[], claim?: boolean) =>
+		openCliSession(parseArgs(args), cwd, SettingsManager.inMemory(), {
+			agentDir,
+			sessionStorage: { kind: "sqlite", path: storePath },
+			trusted: () => false,
+			...(claim === undefined ? {} : { claim }),
+		});
+	const closeOpened = async (opened: Awaited<ReturnType<typeof open>>) => {
+		assert.notEqual(opened, "cancelled");
+		if (opened !== "cancelled") await opened.sessionManager.getSessionStore().close();
+	};
+
+	test("--session claims the session it resumes for this process (#5135)", async () => {
+		const sessionId = await recordedSession();
+		await closeOpened(await open(["--session", sessionId]));
+		assert.equal(JSON.parse(readFileSync(claimFile(sessionId), "utf8")).pid, process.pid);
+	});
+
+	test("a new session claims nothing (#5135)", async () => {
+		const opened = await open([]);
+		assert.notEqual(opened, "cancelled");
+		if (opened === "cancelled") return;
+		const sessionId = opened.sessionManager.getSessionId();
+		await closeOpened(opened);
+		assert.equal(existsSync(claimFile(sessionId)), false);
+	});
+
+	test("the interactive engine child, whose host claimed the session, resumes it without a claim (#5135)", async () => {
+		const sessionId = await recordedSession();
+		const host = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+		try {
+			await new Promise<void>((resolve) => host.once("spawn", () => resolve()));
+			mkdirSync(join(agentDir, "session-claims"), { recursive: true });
+			writeFileSync(claimFile(sessionId), JSON.stringify({ token: "host", pid: host.pid, host: hostname() }));
+			await assert.rejects(open(["--session", sessionId]), SessionAlreadyOpenError);
+			await closeOpened(await open(["--session", sessionId], false));
+			assert.equal(JSON.parse(readFileSync(claimFile(sessionId), "utf8")).pid, host.pid);
+		} finally {
+			host.kill("SIGKILL");
+		}
+	});
 });
