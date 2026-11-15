@@ -584,12 +584,12 @@ describe("ModelRuntime standalone Codex requests carry the first-party routing i
 		expect(captured.marker).toBeNull();
 	});
 
-	it("keeps pi's identity and sends no routing hint for the normal sibling", async () => {
+	it("keeps Atomic's identity and sends no routing hint for the normal sibling", async () => {
 		const captured = await captureCodex("gpt-5.6-sol");
 
 		expect(captured.model).toBe("gpt-5.6-sol");
 		expect(captured.serviceTier).toBeUndefined();
-		expect(captured.originator).toBe("pi");
+		expect(captured.originator).toBe("atomic");
 		expect(captured.routingHint).toBeNull();
 		expect(captured.marker).toBeNull();
 	});

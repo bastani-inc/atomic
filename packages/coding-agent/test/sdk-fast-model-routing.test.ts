@@ -867,7 +867,7 @@ describe("createAgentSession fast model routing", () => {
 			await stream.result();
 
 			expect(capturedUrl).toBe("https://monitor.example/backend-api/codex/responses");
-			expect(capturedHeaders?.get("originator")).toBe("pi");
+			expect(capturedHeaders?.get("originator")).toBe("atomic");
 			expect(capturedHeaders?.get(CODEX_FAST_ROUTE_HEADER)).toBeNull();
 			expect(capturedPayload).toMatchObject({ model: baseModelId, service_tier: FAST_MODEL_SERVICE_TIER });
 		} finally {
