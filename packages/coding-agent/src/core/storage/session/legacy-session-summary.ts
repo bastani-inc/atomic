@@ -22,9 +22,17 @@ interface Scan {
 	texts: string[];
 }
 
-function applyLine(scan: Scan, line: string): void {
+function applyLine(scan: Scan, line: string, unterminated = false): void {
 	if (!line.trim()) return;
-	const { state, texts } = applySessionSummaryEntries(scan.state, [JSON.parse(line) as SessionEntry]);
+	let entry: SessionEntry;
+	try {
+		entry = JSON.parse(line) as SessionEntry;
+	} catch (cause) {
+		// A last line with no newline after it that does not parse is a write that never finished (#4993).
+		if (unterminated) return;
+		throw cause;
+	}
+	const { state, texts } = applySessionSummaryEntries(scan.state, [entry]);
 	scan.state = state;
 	for (const { text } of texts) scan.texts.push(text);
 }
@@ -39,7 +47,7 @@ async function scanHead(handle: FileHandle, scan: Scan): Promise<{ end: number; 
 	while (offset < HEAD_SCAN_LIMIT_BYTES) {
 		const { bytesRead } = await handle.read(chunk, 0, chunk.length, offset);
 		if (bytesRead === 0) {
-			if (pending.length > 0) applyLine(scan, pending.toString("utf8"));
+			if (pending.length > 0) applyLine(scan, pending.toString("utf8"), true);
 			return { end: end + pending.length, complete: true };
 		}
 		offset += bytesRead;
@@ -85,7 +93,8 @@ async function scanTail(
 		from = newline + 1;
 	}
 	if (skipsMiddle) scan.state = { ...scan.state, latestMessageTime: null };
-	for (const line of bytes.subarray(from, filled).toString("utf8").split("\n")) applyLine(scan, line);
+	const lines = bytes.subarray(from, filled).toString("utf8").split("\n");
+	for (const [index, line] of lines.entries()) applyLine(scan, line, index === lines.length - 1);
 	return !skipsMiddle || scan.state.latestMessageTime !== null;
 }
 

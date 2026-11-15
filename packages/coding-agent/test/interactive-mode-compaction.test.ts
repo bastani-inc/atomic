@@ -586,25 +586,29 @@ describe("InteractiveMode compaction events", () => {
 		expect(state.autoCompactionLoader).toBeUndefined();
 	});
 
-	it("does not render a boundary for aborted or failed compaction", async () => {
-		for (const event of [
-			{ type: "compaction_end", reason: "manual", result, aborted: true, willRetry: false },
-			{
-				type: "compaction_end",
-				reason: "overflow",
-				result,
-				aborted: false,
-				willRetry: false,
-				errorMessage: "failed",
-			},
-		] satisfies CompactionEndEvent[]) {
-			const { mode, chatContainer } = makeMode([]);
+	it("does not render a boundary for aborted compaction", async () => {
+		const { mode, chatContainer } = makeMode([]);
 
-			await emit(mode, event);
-			expect(visibleBoundaries(chatContainer)).toHaveLength(0);
-			expect(mode.addCompactionBoundaryToChat).not.toHaveBeenCalled();
-			expect(renderedText(chatContainer)).not.toContain("✻ Context compacted");
-		}
+		await emit(mode, { type: "compaction_end", reason: "manual", result, aborted: true, willRetry: false });
+		expect(visibleBoundaries(chatContainer)).toHaveLength(0);
+		expect(mode.addCompactionBoundaryToChat).not.toHaveBeenCalled();
+		expect(renderedText(chatContainer)).not.toContain("✻ Context compacted");
+	});
+
+	it("renders a committed boundary together with a later failure (#4977)", async () => {
+		const { mode, chatContainer } = makeMode([]);
+
+		await emit(mode, {
+			type: "compaction_end",
+			reason: "overflow",
+			result,
+			aborted: false,
+			willRetry: true,
+			background: true,
+			errorMessage: "Context overflow recovery failed: boom",
+		});
+		expect(mode.addCompactionBoundaryToChat).toHaveBeenCalledWith(result);
+		expect(renderedText(chatContainer)).toContain("Context overflow recovery failed: boom");
 	});
 
 	it("releases queued input when mid-turn compaction ends", async () => {

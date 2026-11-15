@@ -1,6 +1,7 @@
 import { type Component, Container, type Focusable, getKeybindings, Input, Spacer, Text } from "@earendil-works/pi-tui";
 import { KeybindingsManager } from "../../../core/keybindings.ts";
 import type { SessionInfo, SessionListProgress } from "../../../core/session-manager.ts";
+import { assertSessionNotOpenElsewhere } from "../../../core/session-open-markers.ts";
 import { theme } from "../theme/theme.js";
 import { DynamicBorder } from "./dynamic-border.ts";
 import { keyText } from "./keybinding-hints.js";
@@ -183,7 +184,11 @@ export class SessionSelectorComponent extends Container implements Focusable {
 				if (options?.deleteSession) {
 					await options.deleteSession(session.id);
 					result = { ok: true, method: "store" };
-				} else result = await deleteSessionFile(sessionPath);
+				} else {
+					// #4971: the store delete above refuses this on its own; a file delete checks here.
+					await assertSessionNotOpenElsewhere(session.id);
+					result = await deleteSessionFile(sessionPath);
+				}
 			} catch (error) {
 				result = { ok: false, method: "store", error: error instanceof Error ? error.message : String(error) };
 			}
