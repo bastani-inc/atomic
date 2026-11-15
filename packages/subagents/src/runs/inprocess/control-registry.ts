@@ -36,8 +36,12 @@ export function unregisterSubagentControl(control: SubagentControlRuntime): void
 export function findSubagentControl(id: string): SubagentControlRuntime | undefined {
 	const direct = controls.get(id);
 	if (direct) return direct;
+	// Every run a session launched keeps its control: name a child by the ids each control holds first, and list a
+	// run's native children only for a path no control knows by id (#5186).
 	for (const control of controls.values()) {
-		if (control.pathOfChildId(id) !== undefined) return control;
+		if (control.pathOfChildId(id) !== undefined || control.childIdOf(id) !== undefined) return control;
+	}
+	for (const control of controls.values()) {
 		if (control.native.listChildren().some((child) => child.path === id)) return control;
 	}
 	return undefined;

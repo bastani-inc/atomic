@@ -146,6 +146,9 @@ const TRANSIENT_RELEASE_CODES = new Set(["EPERM", "EBUSY", "EACCES", "ENOTEMPTY"
 /** Waits between attempts to take or remove the lock directory, about 1.5 s in all, far inside the lock's 10 s stale window. */
 const LOCK_BACKOFF_MS = [10, 20, 50, 100, 200, 400, 700];
 
+/** The name a session's file is created with: its creation time, then its id or the key of its id. */
+const SESSION_FILE_NAME = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}(?:-\d+)?Z_(.+)\.jsonl$/;
+
 export class JsonlSessionStore implements SessionStore {
 	private queue: Promise<void> = Promise.resolve();
 	private closed = false;
@@ -210,8 +213,7 @@ export class JsonlSessionStore implements SessionStore {
 		return this.run(async () => {
 			validateSessionHeader(header);
 			validateSessionEntries(entries);
-			const existing = await this.locate(header.id);
-			if (existing) throw new SessionExistsError(header.id);
+			if (await this.claimed(header.id)) throw new SessionExistsError(header.id);
 			const payload = this.encode(header, entries);
 			const path = location === undefined ? this.locationFor(header) : resolve(location);
 			await mkdir(resolve(path, ".."), { recursive: true });
@@ -580,6 +582,24 @@ export class JsonlSessionStore implements SessionStore {
 		const named = paths.filter((path) => basename(path).endsWith(suffix));
 		const others = paths.filter((path) => !named.includes(path));
 		return (await this.scan(sessionId, named)) ?? (await this.scan(sessionId, others));
+	}
+
+	/**
+	 * Whether a file of this directory already holds `sessionId`, as {@link locate} finds it, without reading the files
+	 * named for other sessions. A session's file is named for it when it is created, by this store (the key of its id) or
+	 * by its session manager (its id), after its creation time; only a file named for `sessionId`, or one whose name says
+	 * nothing of its session, can hold it. Creating a session in a directory of N sessions, as a project's session directory
+	 * grows to, then reads no other session's file, where it read all N (#5186).
+	 */
+	private async claimed(sessionId: string): Promise<boolean> {
+		validateSessionText("sessionId", sessionId);
+		if (await this.locateKnown(sessionId)) return true;
+		const key = this.key(sessionId);
+		const candidates = (await this.paths()).filter((path) => {
+			const named = SESSION_FILE_NAME.exec(basename(path))?.[1];
+			return named === undefined || named === sessionId || named === key;
+		});
+		return (await this.scan(sessionId, candidates)) !== undefined;
 	}
 
 	private async scan(sessionId: string, paths: readonly string[]) {
