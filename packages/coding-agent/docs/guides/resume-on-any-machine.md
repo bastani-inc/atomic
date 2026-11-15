@@ -18,7 +18,7 @@ atomic storage join <url> --token-file <path>
 
 `atomic storage join` keeps sessions and workflow runs in the shared database, so both resume on any joined machine. `atomic team join` shares workflow runs and Intercom but keeps sessions on each machine, so with it only workflow runs resume elsewhere; to share sessions on a machine joined that way, run `atomic team leave` and then `atomic storage join`. See [Sharing storage across hosts](/storage#sharing-storage-across-hosts) for prefixes, tokens and `atomic storage status`.
 
-Keep snapshots on (`snapshots.enabled`, the default). A session records the state of each Git checkout it changes at the end of every turn that ran a file-writing tool, including uncommitted edits, untracked files and commits that were never pushed. That record lives in the shared storage, so a joined machine needs nothing else.
+Keep snapshots on (`snapshots.enabled`, the default). A session records the state of each Git checkout it changes at the end of every turn that ran a file-writing tool, including uncommitted edits, untracked files and commits that were never pushed. That record lives in the shared storage, so a joined machine needs nothing else. Work inside submodules and in untracked repositories nested in the checkout is not recorded. A resume names each such path in a warning (`nested-repository`, `submodule-changes`, `unpushed-submodule-commit`); commit and push that work to bring it along. See [What is left out](/worktree-snapshots#what-is-left-out).
 
 ## Resume a session
 
