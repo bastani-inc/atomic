@@ -10,7 +10,10 @@ export type TaskFocus =
 	| { kind: "detail" }
 	| { kind: "stdin"; taskId: TaskId };
 export type TaskNavigationActions = {
+	/** Space: the task's detail page, a peek at its status, prompt and result. */
 	inspect(task: TaskRecord): void;
+	/** Enter or →: the task's chat, or a shell's output, straight from the list. */
+	openChat(task: TaskRecord): void;
 	transcript(task: TaskRecord): void;
 	/** The first `x` on a running task: it asks for the second press that stops it. */
 	armStop(task: TaskRecord): void;
@@ -29,6 +32,11 @@ export class TaskNavigation {
 	private tasks: TaskRecord[] = [];
 	/** `x` stops a task only when pressed again on the same task within three seconds. */
 	readonly stopConfirm: TwoPressConfirm;
+	/**
+	 * A task that finished while its stop waited for the second `x`: the wait ends, and this names it until the next
+	 * key, so a second `x` never dismisses a row whose finished state the reader has not seen.
+	 */
+	finishedWhileArmed?: TaskRecord;
 
 	private keys: KeybindingsManager;
 	private actions: TaskNavigationActions;
@@ -45,6 +53,12 @@ export class TaskNavigation {
 		];
 		if (!this.tasks.some((task) => task.ref.taskId === this.selectedTaskId))
 			this.selectedTaskId = this.tasks[0]?.ref.taskId;
+		const armed = this.stopConfirm.pending();
+		const settled = this.tasks.find((task) => task.ref.taskId === armed && task.execution.kind === "settled");
+		if (settled !== undefined) {
+			this.stopConfirm.reset();
+			this.finishedWhileArmed = settled;
+		}
 	}
 
 	open(taskId?: TaskId): void {
@@ -85,11 +99,12 @@ export class TaskNavigation {
 			return true;
 		}
 		if (this.focus.kind === "stdin") return false;
-		if (this.keys.matches(data, "app.list.open")) {
+		if (this.keys.matches(data, "app.list.open") || this.keys.matches(data, "app.list.peek")) {
 			const task = this.tasks.find((task) => task.ref.taskId === this.selectedTaskId);
 			if (task) {
 				this.focus = { kind: "detail" };
-				this.actions.inspect(task);
+				if (this.keys.matches(data, "app.list.open")) this.actions.openChat(task);
+				else this.actions.inspect(task);
 			}
 			return true;
 		}

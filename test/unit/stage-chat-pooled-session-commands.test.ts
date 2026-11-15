@@ -176,7 +176,7 @@ test("a stop from a task's detail page that does not reach the worker says so, a
 	try {
 		submitStageChatText(view, "/tasks");
 		await vi.waitFor(() => assert.match(view.render(120).join("\n"), /npm run build/));
-		view.handleInput("\r");
+		view.handleInput(" ");
 		await vi.waitFor(() => assert.match(view.render(120).join("\n"), /Inspect transcript/));
 		view.handleInput("\r");
 		await vi.waitFor(() => assert.match(view.render(120).join("\n"), /Transcript ·/));

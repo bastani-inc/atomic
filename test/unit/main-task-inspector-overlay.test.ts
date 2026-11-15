@@ -299,7 +299,7 @@ for (const isolated of [false, true]) {
 				assert.doesNotMatch(stripVTControlCharacters(frame.join("\n")), /MAIN-CHAT/);
 				return stripVTControlCharacters(frame.join("\n"));
 			};
-			await host.input("\x05"); // configured inspect opens fullscreen detail
+			await host.input(" "); // Space peeks at the task: fullscreen detail (#5224)
 			assert.equal(host.tui.hasOverlay(), true);
 			assert.match(await assertFrame(), /Inspect transcript/);
 			const scrollTop = host.scroll.scrollTop;
@@ -370,7 +370,7 @@ for (const isolated of [false, true]) {
 			assert.equal(host.scroll.scrollTop, scrollTop);
 			// Restore the first detail action after the arrow-key checks.
 			await host.input("\x1b");
-			await host.input("\x05");
+			await host.input(" ");
 			await host.input("\x05");
 			assert.match(await assertFrame(), /^Transcript/);
 			assert.match(await assertFrame(), /CHILD-MESSAGE-49/, "the transcript opens at its latest message (#4521)");
@@ -543,7 +543,7 @@ for (const [isolated, completeOlderFirst] of [
 			adapter.close();
 			await flush();
 			assert.equal(host.statuses.get(key), undefined);
-			assert.match(stripVTControlCharacters((await host.input("\x05")).join("\n")), /Inspect transcript/);
+			assert.match(stripVTControlCharacters((await host.input(" ")).join("\n")), /Inspect transcript/);
 			await host.input("\x1b");
 			assert.match(host.frame(), /Background tasks/);
 			assert.equal(host.editor.getText(), "");
@@ -598,7 +598,7 @@ for (const isolated of [false, true]) {
 			await host.paint();
 			assert.match(host.frame(), /Background tasks/);
 			assert.equal(source.getHostCustomUiState().blockingInlineCustomUiNeedsInput, true);
-			assert.match(stripVTControlCharacters((await host.input("\x05")).join("\n")), /Inspect transcript/);
+			assert.match(stripVTControlCharacters((await host.input(" ")).join("\n")), /Inspect transcript/);
 			await host.input("\x1b");
 			assert.match(host.frame(), /Background tasks/);
 			await host.input("ordinary text");
@@ -826,7 +826,7 @@ for (const isolated of [false, true]) {
 						await flush();
 					}
 					if (transcript) {
-						await host.input("\x05");
+						await host.input(" ");
 						await host.input("\x05");
 					}
 					if (!questionFirst) await openQuestion();

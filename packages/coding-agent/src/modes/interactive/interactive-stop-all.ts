@@ -5,17 +5,18 @@ import { type NavKeybindings, navActionText, TwoPressConfirm } from "./component
 /** What the chord needs of the main chat. */
 export interface StopAllChordHost {
 	readonly keybindings: NavKeybindings;
-	/** Whether the main chat's prompt has the keyboard, so a dialog keeps its own Ctrl+X. */
-	editorOwnsInput(): boolean;
+	/** False while a dialog that binds the chord key itself (such as OAuth sign-in's copy) has the keyboard. */
+	chordAllowed(): boolean;
 	stopAll(): Promise<StopAllBackgroundOutcome>;
 	showStatus(message: string): void;
 	showWarning(message: string): void;
 }
 
 /**
- * Ctrl+X Ctrl+K in the main chat: the chord key, then the stop-all key, pressed twice within three seconds, stops every
- * background subagent and workflow run of the session. The chord key does nothing else; any other key after it ends
- * the chord and reaches the prompt as usual. Returns the input listener to register.
+ * Ctrl+X Ctrl+K anywhere: the chord key, then the stop-all key, pressed twice within three seconds, stops every
+ * background subagent, shell and workflow run of the session. The chord key itself still reaches whatever has the
+ * keyboard (nothing binds it by default); only the stop-all key right after it is taken. Any other key ends the chord.
+ * Returns the input listener to register.
  */
 export function createStopAllChord(
 	host: StopAllChordHost,
@@ -27,7 +28,7 @@ export function createStopAllChord(
 		`${navActionText(host.keybindings, "app.agents.chord")} ${navActionText(host.keybindings, "app.agents.stopAll")}`;
 	return (data) => {
 		if (isKeyRelease(data)) return undefined;
-		if (!host.editorOwnsInput()) {
+		if (!host.chordAllowed()) {
 			chordOpen = false;
 			return undefined;
 		}
@@ -35,7 +36,9 @@ export function createStopAllChord(
 			chordOpen = false;
 			if (!host.keybindings.matches(data, "app.agents.stopAll")) return undefined;
 			if (!confirm.press("stop-all")) {
-				host.showStatus(`Press ${chordText()} again within 3s to stop all background subagents and workflow runs`);
+				host.showStatus(
+					`Press ${chordText()} again within 3s to stop all background subagents, shells and workflow runs`,
+				);
 				return { consume: true };
 			}
 			void host.stopAll().then(
@@ -48,10 +51,7 @@ export function createStopAllChord(
 			);
 			return { consume: true };
 		}
-		if (host.keybindings.matches(data, "app.agents.chord")) {
-			chordOpen = true;
-			return { consume: true };
-		}
+		if (host.keybindings.matches(data, "app.agents.chord")) chordOpen = true;
 		return undefined;
 	};
 }

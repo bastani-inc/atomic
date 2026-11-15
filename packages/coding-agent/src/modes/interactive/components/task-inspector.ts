@@ -9,13 +9,20 @@ import {
 	visibleWidth,
 } from "@bastani/atomic-tui";
 import type { KeybindingsManager } from "../../../core/keybindings.ts";
-import type { PromptRoute, TaskId } from "../../../core/tasks/contracts.js";
+import type { PromptRoute, TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
 import { OwnerTaskStore } from "../../../core/tasks/owner-store.js";
 import { ownerTaskViewSource, type TaskViewSource } from "../../../core/tasks/task-view-source.js";
 import { theme } from "../theme/theme.js";
 import { parseWheelReport } from "./chat-transcript.js";
 import { renderExtensionStatusRow } from "./footer.ts";
-import { isNavHelpKey, type NavKey, renderNavHintLine, renderNavKeyOverlay } from "./nav-keys.ts";
+import {
+	isNavHelpKey,
+	NAV_CONFIRM_WINDOW_MS,
+	type NavKey,
+	navActionText,
+	renderNavHintLine,
+	renderNavKeyOverlay,
+} from "./nav-keys.ts";
 import {
 	TaskDetail,
 	type TaskDetailContent,
@@ -46,21 +53,31 @@ export function themedNavKeyStyle() {
 	};
 }
 
-const LIST_KEYS: readonly NavKey[] = [
-	{ keys: "↑↓", label: "select" },
-	{ action: "app.list.open", label: "open" },
-	{ action: "app.list.stop", label: "stop" },
-	{ keys: "esc", label: "close" },
-	{ action: "app.keys.help", label: "keys" },
-];
-const DETAIL_KEYS: readonly NavKey[] = [
-	{ keys: "↑↓", label: "actions" },
-	{ action: "app.list.open", label: "select" },
-	{ action: "app.list.stop", label: "stop" },
-	{ keys: "pgup/pgdn", label: "scroll" },
-	{ keys: "esc", label: "back to list" },
-	{ action: "app.keys.help", label: "keys" },
-];
+/** `esc/←`: Esc and the back key, which both leave the list or a detail page. */
+function escAndBack(): string {
+	const back = navActionText(getKeybindings(), "app.nav.back");
+	return back ? `esc/${back}` : "esc";
+}
+function listKeys(): NavKey[] {
+	return [
+		{ keys: "↑↓", label: "select" },
+		{ action: "app.list.open", label: "open" },
+		{ action: "app.list.peek", label: "peek" },
+		{ action: "app.list.stop", label: "stop" },
+		{ keys: escAndBack(), label: "close" },
+		{ action: "app.keys.help", label: "keys" },
+	];
+}
+function detailKeys(): NavKey[] {
+	return [
+		{ keys: "↑↓", label: "actions" },
+		{ action: "app.list.open", label: "select" },
+		{ action: "app.list.stop", label: "stop" },
+		{ keys: "pgup/pgdn", label: "scroll" },
+		{ keys: escAndBack(), label: "back to list" },
+		{ action: "app.keys.help", label: "keys" },
+	];
+}
 /** A task's chat: ← goes back one level, Esc only interrupts. */
 export function taskChatKeys(back: string, interruptible: boolean): NavKey[] {
 	return [
@@ -94,6 +111,14 @@ export class TaskInspector implements Component {
 	private actionIndex = 0;
 	/** The `?` overlay of the current page is open. */
 	private helpOpen = false;
+	/** Where ← from an open task chat goes: the list, the task's detail page, or out to whatever opened the inspector. */
+	private chatFrom: "list" | "detail" | "caller" = "detail";
+	/** What ← from a chat opened by the caller names, such as `main chat`. */
+	private callerLabel = "back";
+	/** Typed shell input per task, kept when the reader leaves the input and restored when they return. */
+	private readonly inputDrafts = new Map<TaskId, string>();
+	/** When each running task was first seen, so elapsed times advance between the task's own reports. */
+	private readonly liveSince = new Map<TaskId, number>();
 	/** The open transcript of the selected task, on the shared chat stack. */
 	private transcript?: TaskTranscriptPage;
 	private status = "";
@@ -127,12 +152,23 @@ export class TaskInspector implements Component {
 				this.scroll = 0;
 				void this.loadDetail();
 			},
+			openChat: () => {
+				this.chatFrom = "list";
+				this.detailGeneration++;
+				this.openTranscript();
+				// A task with no chat here (no transcript in this host) stays on its detail page.
+				if (this.transcript === undefined) void this.loadDetail();
+			},
 			transcript: () => {
+				this.chatFrom = "detail";
 				this.detailGeneration++;
 				this.openTranscript();
 			},
 			armStop: () => {
 				this.requestRender();
+				// The waiting notice leaves when its window closes, not on the next key.
+				const timer = setTimeout(() => this.requestRender(), NAV_CONFIRM_WINDOW_MS + 50);
+				timer.unref?.();
 			},
 			dismiss: (task) => {
 				dismissedTasks(this.store).add(task.ref.taskId);
@@ -148,8 +184,8 @@ export class TaskInspector implements Component {
 				});
 			},
 			stdinAvailable: (task) => this.store.stdinAvailable(task.ref.taskId),
-			input: () => {
-				this.input.setValue("");
+			input: (task) => {
+				this.input.setValue(this.inputDrafts.get(task.ref.taskId) ?? "");
 			},
 			openQuestion: (route) => {
 				if (openQuestion) {
@@ -175,6 +211,18 @@ export class TaskInspector implements Component {
 	private readonly close: () => void;
 	open(id?: TaskId): void {
 		this.navigation.open(id);
+	}
+	/**
+	 * Opens a task's chat directly, as Enter on its agent-panel row does: ← on its empty prompt closes the inspector,
+	 * one level back to `backLabel`, instead of showing the task's list or detail page.
+	 */
+	openChat(id: TaskId, backLabel = "main chat"): void {
+		this.navigation.open(id);
+		if (this.navigation.selectedTaskId !== id) return;
+		this.chatFrom = "caller";
+		this.callerLabel = backLabel;
+		this.navigation.focus = { kind: "detail" };
+		this.openTranscript();
 	}
 	private orderedSections(): TaskListSection[] {
 		const dismissed = dismissedTasks(this.store);
@@ -205,7 +253,10 @@ export class TaskInspector implements Component {
 		if (!task) return;
 		const result = await this.store.writeTaskInput(task.ref.taskId, text);
 		this.status = result.ok ? `Sent ${result.value.acceptedBytes} bytes` : result.error.message;
-		this.input.setValue("");
+		if (result.ok) {
+			this.input.setValue("");
+			this.inputDrafts.delete(task.ref.taskId);
+		}
 		this.requestRender();
 	}
 	private releaseStatusWatch(): void {
@@ -318,6 +369,7 @@ export class TaskInspector implements Component {
 	}
 	private route(data: string): boolean {
 		this.failureNotice = "";
+		this.navigation.finishedWhileArmed = undefined;
 		if (this.helpOpen) {
 			// The overlay is a dialog: Esc or `?` closes it, and other keys wait until it is closed.
 			if (matchesKey(data, "escape") || isNavHelpKey(getKeybindings(), data)) this.helpOpen = false;
@@ -341,17 +393,26 @@ export class TaskInspector implements Component {
 		}
 		// Mouse reports are never text input, including horizontal wheel/release.
 		if (/^\x1b\[<\d+;\d+;\d+[mM]$/.test(data) || data.startsWith("\x1b[M")) return true;
-		if (
-			matchesKey(data, "escape") ||
-			(matchesKey(data, "left") && this.navigation.focus.kind !== "stdin" && !this.configuredTaskKey(data))
-		) {
-			this.navigation.handleInput("\x1b", "tasks");
-			if (this.navigation.focus.kind === "composer") this.close();
+		const focus = this.navigation.focus;
+		if (focus.kind === "stdin") {
+			// Shell input is a prompt: Esc cancels nothing and keeps the text; ← on an empty input returns to the list.
+			if (matchesKey(data, "escape")) return true;
+			if (getKeybindings().matches(data, "app.nav.back") && this.input.getValue() === "") {
+				this.navigation.focus = { kind: "tasks" };
+				this.requestRender();
+				return true;
+			}
+			this.input.handleInput(data);
+			this.inputDrafts.set(focus.taskId, this.input.getValue());
 			this.requestRender();
 			return true;
 		}
-		if (this.navigation.focus.kind === "stdin") {
-			this.input.handleInput(data);
+		if (
+			matchesKey(data, "escape") ||
+			(getKeybindings().matches(data, "app.nav.back") && !this.configuredTaskKey(data))
+		) {
+			this.navigation.handleInput("\x1b", "tasks");
+			if (this.navigation.focus.kind === "composer") this.close();
 			this.requestRender();
 			return true;
 		}
@@ -387,11 +448,17 @@ export class TaskInspector implements Component {
 	private handleTranscriptInput(data: string, transcript: TaskTranscriptPage): boolean {
 		if (transcript.handlesBack()) return transcript.handleInput(data);
 		const keys = getKeybindings();
-		if (keys.matches(data, "app.nav.back") && !transcript.hasDraft()) {
+		// ← on an empty prompt, or at the start of a typed one (kept for the return), goes back one level.
+		if (keys.matches(data, "app.nav.back") && transcript.cursorAtStart()) {
+			if (this.chatFrom === "caller") {
+				this.close();
+				return true;
+			}
 			this.closeTranscript();
 			this.detailGeneration++;
 			this.scroll = 0;
-			void this.loadDetail();
+			if (this.chatFrom === "list") this.navigation.focus = { kind: "tasks" };
+			else void this.loadDetail();
 			this.requestRender();
 			return true;
 		}
@@ -422,7 +489,23 @@ export class TaskInspector implements Component {
 		return this.navigation.focus.kind === "detail" || this.navigation.focus.kind === "stdin";
 	}
 	/** The waiting first press of `x`, as the line under the list shows it. */
+	/** A running task's elapsed time advances between its own reports, from when this view first saw it running. */
+	private withLiveElapsed(task: TaskRecord): TaskRecord {
+		if (task.execution.kind !== "running") {
+			this.liveSince.delete(task.ref.taskId);
+			return task;
+		}
+		const now = Date.now();
+		const since = this.liveSince.get(task.ref.taskId) ?? now - (task.metrics?.elapsedMs ?? 0);
+		this.liveSince.set(task.ref.taskId, since);
+		return { ...task, metrics: { ...task.metrics, elapsedMs: Math.max(task.metrics?.elapsedMs ?? 0, now - since) } };
+	}
 	private stopNotice(): string {
+		const finished = this.navigation.finishedWhileArmed;
+		if (finished !== undefined) {
+			const key = getKeybindings().getKeys("app.list.stop")[0] ?? "x";
+			return `${taskDisplayText(finished.title || taskLabel(finished))} finished; press ${key} to dismiss`;
+		}
 		const pending = this.navigation.stopConfirm.pending();
 		if (pending === undefined) return "";
 		const task = this.store.backgroundTasks.find((candidate) => candidate.ref.taskId === pending);
@@ -450,7 +533,8 @@ export class TaskInspector implements Component {
 				...header,
 				...renderNavKeyOverlay("keys · task chat", TASK_CHAT_OVERLAY_KEYS, width, style, getKeybindings()),
 			].slice(0, Math.max(1, budget));
-		const hint = renderNavHintLine(taskChatKeys("back", transcript.interruptible()), width, style, getKeybindings());
+		const back = this.chatFrom === "caller" ? this.callerLabel : this.chatFrom === "list" ? "tasks" : "task";
+		const hint = renderNavHintLine(taskChatKeys(back, transcript.interruptible()), width, style, getKeybindings());
 		const footer = [...(notes ? [fitWidth(theme.fg("dim", notes))] : []), hint];
 		const failure = this.failureNotice ? [fitWidth(theme.fg("warning", this.failureNotice))] : [];
 		const statusRows = this.taskStatusRows(width);
@@ -473,7 +557,7 @@ export class TaskInspector implements Component {
 			const detailOpen = this.navigation.focus.kind === "detail";
 			return renderNavKeyOverlay(
 				detailOpen ? "keys · task" : "keys · tasks",
-				detailOpen ? DETAIL_KEYS : LIST_KEYS,
+				detailOpen ? detailKeys() : listKeys(),
 				width,
 				style,
 				getKeybindings(),
@@ -507,11 +591,14 @@ export class TaskInspector implements Component {
 			this.navigation.focus.kind === "stdin"
 				? [
 						{ keys: "enter", label: "send" },
-						{ keys: "esc", label: "back" },
+						{ action: "app.nav.back", label: "back to list" },
 					]
-				: (detail ? DETAIL_KEYS : LIST_KEYS)
+				: (detail ? detailKeys() : listKeys())
 						// An empty list has nothing to select, open or stop.
-						.filter((key) => current !== undefined || key.keys === "esc" || key.action === "app.keys.help")
+						.filter(
+							(key) =>
+								current !== undefined || key.keys?.startsWith("esc") === true || key.action === "app.keys.help",
+						)
 						.map((key) => (key.action === "app.list.stop" ? { ...key, label: stopLabel } : key));
 		const footer = renderNavHintLine(keys, width, style, getKeybindings());
 		const notice = this.failureNotice || this.stopNotice();
@@ -549,7 +636,7 @@ export class TaskInspector implements Component {
 	private renderAll(width: number): string[] {
 		const task = this.selected();
 		if (this.navigation.focus.kind === "stdin")
-			return [`Input to ${task?.title} · Escape: tasks`, ...this.input.render(width), this.status];
+			return [`Input to ${task?.title}`, ...this.input.render(width), this.status];
 		if (task && this.navigation.focus.kind === "detail") {
 			return [
 				...new TaskDetail(task, {
@@ -578,7 +665,7 @@ export class TaskInspector implements Component {
 				const metadata = [
 					...(width < 32 ? [state] : []),
 					taskLabel(item),
-					taskMetricsText(item),
+					taskMetricsText(this.withLiveElapsed(item)),
 					item.currentAction ? `${item.currentAction.tool} ${item.currentAction.text}` : "",
 				]
 					.filter(Boolean)

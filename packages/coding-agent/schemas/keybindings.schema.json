@@ -251,10 +251,6 @@
       "$ref": "#/$defs/KeybindingValue",
       "description": "Go back one level from an empty prompt"
     },
-    "app.nav.mainChat": {
-      "$ref": "#/$defs/KeybindingValue",
-      "description": "Return from the workflow graph to the main chat"
-    },
     "app.list.open": {
       "$ref": "#/$defs/KeybindingValue",
       "description": "Open the selected item"
@@ -285,7 +281,7 @@
     },
     "app.agents.stopAll": {
       "$ref": "#/$defs/KeybindingValue",
-      "description": "After the chord key: stop all background subagents and workflow runs (press twice to confirm)"
+      "description": "After the chord key: stop all background subagents, shells and workflow runs (press twice to confirm)"
     },
     "app.thinking.toggle": {
       "$ref": "#/$defs/KeybindingValue",

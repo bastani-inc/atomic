@@ -1262,7 +1262,7 @@ describe("tool graph inspection", () => {
 		const graphFooter = visibleText(view.render(120));
 		assert.ok(graphFooter.includes("↵"), "a focused tool node must offer an Enter affordance");
 		assert.match(graphFooter, /↵ open tool detail/);
-		assert.ok(graphFooter.includes("esc main chat"), "the way back to main chat stays first");
+		assert.ok(/esc(?:\/←)? main chat/.test(graphFooter), "the way back to main chat stays first");
 
 		// The compact fallback is width-driven and, at the budgets that select it,
 		// only its leading hierarchy chord fits — for a tool node exactly as for a
@@ -1271,7 +1271,7 @@ describe("tool graph inspection", () => {
 		const compactFooter = visibleText(
 			(view as unknown as { _renderStatusline: (width: number) => string[] })._renderStatusline(30),
 		);
-		assert.match(compactFooter, /esc main chat/);
+		assert.match(compactFooter, /esc(?:\/←)? main chat/);
 		assert.ok(!compactFooter.includes("open tool detail"), "the compact budget drops the trailing segment");
 
 		assert.equal(view.handleInput("\r"), true);

@@ -88,7 +88,8 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
 
 function isBackToGraphInput(ctx: StageChatViewContext, data: string): boolean {
 	const keybindings = isKeybindingsLike(ctx.piKeybindings) ? ctx.piKeybindings : undefined;
-	return matchesNavAction(keybindings, data, APP_ACTION.navBack) && !ctx.chatHost.hasInputText();
+	// At the start of a typed prompt, ← leaves too; the draft stays for the return.
+	return matchesNavAction(keybindings, data, APP_ACTION.navBack) && ctx.chatHost.inputCursorAtStart();
 }
 
 /**
@@ -101,9 +102,12 @@ function isPromptBackInput(ctx: StageChatViewContext, data: string): boolean {
 	const keybindings = isKeybindingsLike(ctx.piKeybindings) ? ctx.piKeybindings : undefined;
 	if (state.prompt.kind !== "input" && state.prompt.kind !== "editor") return matchesKey(data, Key.escape);
 	if (!matchesNavAction(keybindings, data, APP_ACTION.navBack)) return false;
-	const text =
-		ctx.promptEditor && ctx.promptEditorPromptId === state.prompt.id ? ctx.promptEditor.getText() : state.rawText;
-	return text.length === 0;
+	// At the start of a typed answer, ← leaves too; the answer stays for the return.
+	if (ctx.promptEditor && ctx.promptEditorPromptId === state.prompt.id) {
+		const cursor = (ctx.promptEditor as { getCursor?(): { line: number; col: number } }).getCursor?.();
+		return ctx.promptEditor.getText().length === 0 || (cursor?.line === 0 && cursor.col === 0);
+	}
+	return state.rawText.length === 0 || state.caret === 0;
 }
 
 /** Only the default physical Ctrl+T belongs to the host thinking action; a remap may reuse an editor key. */

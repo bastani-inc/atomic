@@ -59,7 +59,8 @@ const APP_KEYBINDINGS = {
 	"app.agents.chord": { defaultKeys: "ctrl+x", description: "Start a background-work chord" },
 	"app.agents.stopAll": {
 		defaultKeys: "ctrl+k",
-		description: "After the chord key: stop all background subagents and workflow runs (press twice to confirm)",
+		description:
+			"After the chord key: stop all background subagents, shells and workflow runs (press twice to confirm)",
 	},
 	"app.thinking.toggle": {
 		defaultKeys: "ctrl+t",

@@ -119,14 +119,14 @@ test("a second press confirms only on the same target within three seconds (#522
 	assert.equal(confirm.press("a"), false);
 });
 
-function chordHost(editorOwnsInput = true) {
+function chordHost(chordAllowed = true) {
 	const statuses: string[] = [];
 	const warnings: string[] = [];
 	let stops = 0;
-	let outcome: StopAllBackgroundOutcome = { agents: 2, workflowRuns: 1, failures: [] };
+	let outcome: StopAllBackgroundOutcome = { agents: 2, shells: 1, workflowRuns: 1, failures: [] };
 	const host = {
 		keybindings: new KeybindingsManager(),
-		editorOwnsInput: () => editorOwnsInput,
+		chordAllowed: () => chordAllowed,
 		stopAll: async () => {
 			stops++;
 			return outcome;
@@ -149,18 +149,18 @@ test("Ctrl+X Ctrl+K stops all background work only after a second press within t
 	let now = 0;
 	const h = chordHost();
 	const listener = createStopAllChord(h.host, () => now);
-	assert.deepEqual(listener(CTRL_X), { consume: true }, "Ctrl+X only starts the chord");
-	assert.deepEqual(listener(CTRL_K), { consume: true });
+	assert.equal(listener(CTRL_X), undefined, "Ctrl+X starts the chord and still reaches whatever has the keyboard");
+	assert.deepEqual(listener(CTRL_K), { consume: true }, "Ctrl+K right after it belongs to the chord");
 	assert.equal(h.stops(), 0);
 	assert.deepEqual(h.statuses, [
-		"Press ctrl+x ctrl+k again within 3s to stop all background subagents and workflow runs",
+		"Press ctrl+x ctrl+k again within 3s to stop all background subagents, shells and workflow runs",
 	]);
 	now += 2000;
 	listener(CTRL_X);
 	listener(CTRL_K);
 	await new Promise<void>((resolve) => setImmediate(resolve));
 	assert.equal(h.stops(), 1);
-	assert.equal(h.statuses.at(-1), "Stopped 2 subagents and 1 workflow run.");
+	assert.equal(h.statuses.at(-1), "Stopped 2 subagents, 1 shell and 1 workflow run.");
 	// A late second press arms again instead of stopping.
 	listener(CTRL_X);
 	listener(CTRL_K);
@@ -170,7 +170,7 @@ test("Ctrl+X Ctrl+K stops all background work only after a second press within t
 	assert.equal(h.stops(), 1);
 });
 
-test("Ctrl+X never navigates: any other key after it reaches the prompt, and dialogs keep their own Ctrl+X (#5224)", () => {
+test("the chord works in every view; any other key ends it, and a dialog that binds Ctrl+X keeps it (#5224)", () => {
 	const h = chordHost();
 	const listener = createStopAllChord(h.host);
 	listener(CTRL_X);
@@ -179,26 +179,31 @@ test("Ctrl+X never navigates: any other key after it reaches the prompt, and dia
 	const dialog = chordHost(false);
 	const dialogListener = createStopAllChord(dialog.host);
 	assert.equal(dialogListener(CTRL_X), undefined, "a dialog such as OAuth sign-in keeps Ctrl+X");
+	dialogListener(CTRL_K);
+	dialogListener(CTRL_X);
 	assert.equal(dialogListener(CTRL_K), undefined);
 	assert.equal(dialog.stops(), 0);
 });
 
 test("a stop-all that cannot stop everything says what is left (#5224)", () => {
 	assert.equal(
-		stopAllBackgroundMessage({ agents: 0, workflowRuns: 0, failures: [] }),
-		"No background subagents or workflow runs to stop.",
+		stopAllBackgroundMessage({ agents: 0, shells: 0, workflowRuns: 0, failures: [] }),
+		"No background work to stop.",
 	);
 	assert.equal(
-		stopAllBackgroundMessage({ agents: 1, workflowRuns: 0, failures: ["workflow abc: pause_failed"] }),
+		stopAllBackgroundMessage({ agents: 1, shells: 0, workflowRuns: 0, failures: ["workflow abc: pause_failed"] }),
 		"Stopped 1 subagent. Could not stop: workflow abc: pause_failed",
 	);
 });
 
-test("stop-all stops the session's background subagents and quits its workflow runs, leaving shells (#5224)", async () => {
+test("stop-all stops the session's background subagents and shells and quits its workflow runs (#5224)", async () => {
 	const fixture = taskFixture();
 	try {
 		await fixture.start("first agent");
 		await fixture.start("second agent");
+		await fixture.start("a shell");
+		// The fixture launches agents; one counts as the shell it stands in for.
+		(fixture.store.tasks[2] as { kind: string }).kind = "command";
 		const session = {};
 		bindOwnerTaskStore(session, fixture.store);
 		const quits: unknown[] = [];
@@ -226,7 +231,7 @@ test("stop-all stops the session's background subagents and quits its workflow r
 				},
 			}),
 		);
-		assert.deepEqual(outcome, { agents: 2, workflowRuns: 1, failures: [] });
+		assert.deepEqual(outcome, { agents: 2, shells: 1, workflowRuns: 1, failures: [] });
 		assert.deepEqual(quits, [{ all: true }]);
 		fixture.store.drain();
 		assert.ok(fixture.runners.every((runner) => runner.context.signal.aborted));
@@ -280,7 +285,7 @@ test("an empty task list offers only the keys that do something (#5224)", () => 
 	try {
 		for (const width of [160, 80]) {
 			const lines = inspector.renderViewport(width, 12).map((line) => stripVTControlCharacters(line));
-			assert.equal(lines.at(-1), "  esc close · ? keys");
+			assert.equal(lines.at(-1), "  esc/← close · ? keys");
 		}
 	} finally {
 		inspector.dispose();

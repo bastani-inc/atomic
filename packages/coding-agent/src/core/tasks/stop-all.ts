@@ -2,14 +2,15 @@ import type { WorkflowRunControl } from "../extensions/workflow-run-control.js";
 import { getOwnerTaskStore } from "./owner-store.js";
 import { ownerTaskViewSource } from "./task-view-source.js";
 
-/** What Ctrl+X Ctrl+K stopped: background subagents, workflow runs, and what could not be stopped. */
+/** What Ctrl+X Ctrl+K stopped: background subagents, shells, workflow runs, and what could not be stopped. */
 export interface StopAllBackgroundOutcome {
 	readonly agents: number;
+	readonly shells: number;
 	readonly workflowRuns: number;
 	readonly failures: readonly string[];
 }
 
-/** The session whose background subagents and workflow runs Ctrl+X Ctrl+K stops. */
+/** The session whose background subagents, shells and workflow runs Ctrl+X Ctrl+K stops. */
 export interface StopAllBackgroundSession {
 	readonly workflows?: Pick<WorkflowRunControl, "listRuns" | "quit">;
 }
@@ -17,22 +18,22 @@ export interface StopAllBackgroundSession {
 const ACTIVE_RUN_STATUSES = new Set(["pending", "running", "paused"]);
 
 /**
- * Stops every running or queued background subagent this session owns, and quits every workflow run it owns. Shells
- * keep running. A quit workflow run stays resumable; a stopped subagent's result says it was stopped.
+ * Stops every running or queued background subagent and shell this session owns, and quits every workflow run it owns.
+ * A quit workflow run stays resumable; a stopped task's result says it was stopped.
  */
 export async function stopAllBackgroundWork(session: StopAllBackgroundSession): Promise<StopAllBackgroundOutcome> {
 	const failures: string[] = [];
 	const store = getOwnerTaskStore(session);
 	const source = store === undefined ? undefined : ownerTaskViewSource(store);
-	const agents = (store?.backgroundTasks ?? []).filter(
-		(task) => task.kind === "agent" && task.execution.kind !== "settled",
+	const live = (store?.backgroundTasks ?? []).filter(
+		(task) => task.execution.kind !== "settled" && task.execution.kind !== "cancelling",
 	);
-	const stoppedAgents = await Promise.all(
-		agents.map(async (task) => {
+	const stopped = await Promise.all(
+		live.map(async (task) => {
 			const result = await source?.cancelTask(task.ref.taskId);
-			if (result?.ok) return 1;
+			if (result?.ok) return task.kind;
 			failures.push(`${task.agentName ?? task.title}: ${result?.error.message ?? "task owner unavailable"}`);
-			return 0;
+			return undefined;
 		}),
 	);
 	let workflowRuns = 0;
@@ -55,16 +56,22 @@ export async function stopAllBackgroundWork(session: StopAllBackgroundSession): 
 				failures.push(`workflows: ${error instanceof Error ? error.message : String(error)}`);
 		}
 	}
-	return { agents: stoppedAgents.reduce<number>((sum, value) => sum + value, 0), workflowRuns, failures };
+	return {
+		agents: stopped.filter((kind) => kind === "agent").length,
+		shells: stopped.filter((kind) => kind === "command").length,
+		workflowRuns,
+		failures,
+	};
 }
 
 /** The one-line notice a stop-all leaves in the chat. */
 export function stopAllBackgroundMessage(outcome: StopAllBackgroundOutcome): string {
 	const parts: string[] = [];
 	if (outcome.agents > 0) parts.push(`${outcome.agents} ${outcome.agents === 1 ? "subagent" : "subagents"}`);
+	if (outcome.shells > 0) parts.push(`${outcome.shells} ${outcome.shells === 1 ? "shell" : "shells"}`);
 	if (outcome.workflowRuns > 0)
 		parts.push(`${outcome.workflowRuns} workflow ${outcome.workflowRuns === 1 ? "run" : "runs"}`);
-	const stopped =
-		parts.length > 0 ? `Stopped ${parts.join(" and ")}.` : "No background subagents or workflow runs to stop.";
+	const list = parts.length > 1 ? `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}` : parts[0];
+	const stopped = list === undefined ? "No background work to stop." : `Stopped ${list}.`;
 	return outcome.failures.length > 0 ? `${stopped} Could not stop: ${outcome.failures.join("; ")}` : stopped;
 }

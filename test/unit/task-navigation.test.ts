@@ -12,6 +12,7 @@ function navigation(overrides: Partial<TaskNavigationActions> = {}, now: () => n
 		new KeybindingsManager(),
 		{
 			inspect() {},
+			openChat() {},
 			transcript() {},
 			armStop() {},
 			cancel() {},
@@ -45,9 +46,13 @@ test("task navigation preserves selection and admission order while yielding to 
 	const second = taskRecord("second");
 	const shell = taskRecord("shell", "command");
 	let inspected = "";
+	let opened = "";
 	const nav = navigation({
 		inspect(task) {
 			inspected = task.ref.taskId;
+		},
+		openChat(task) {
+			opened = task.ref.taskId;
 		},
 	});
 	nav.update([shell, first, second]);
@@ -60,7 +65,12 @@ test("task navigation preserves selection and admission order while yielding to 
 	second.execution = { kind: "settled", result: { kind: "failed", code: "fixture", message: "done" } };
 	nav.update([shell, first, second]);
 	assert.equal(nav.selectedTaskId, second.ref.taskId);
+	// Enter opens the chat; Space peeks at the detail page (#5224).
 	assert.equal(nav.handleInput("\r", "tasks"), true);
+	assert.equal(opened, second.ref.taskId);
+	assert.equal(inspected, "");
+	assert.equal(nav.handleInput("\x1b", "tasks"), true);
+	assert.equal(nav.handleInput(" ", "tasks"), true);
 	assert.equal(inspected, second.ref.taskId);
 	assert.equal(nav.focus.kind, "detail");
 	assert.equal(nav.handleInput("\x1b", "tasks"), true);
