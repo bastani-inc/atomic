@@ -1,9 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { link, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { failureDebugFields, reportDebug } from "../debug.ts";
+import { processStartToken } from "../process-start-token.ts";
 import { isWorkspaceRestoreError } from "./errors.ts";
 import { nulFields, runGit } from "./git.ts";
 import { canonicalizeWorktreePath } from "./paths.ts";
@@ -157,24 +157,6 @@ const leaseHolds = new WeakMap<WorktreeLease, HeldSlot>();
 const released = new WeakSet<WorktreeLease>();
 /** Names this host in lease names, so a process on the same host can tell whether a lease's holder still runs. */
 const HOST = createHash("sha256").update(hostname()).digest("hex").slice(0, 12);
-/**
- * When process `pid` of this host started, as `sha12` of the boot and the process's start time since boot, so a later
- * process given the same id is told apart (#4990); undefined where that cannot be read: without Linux's `/proc`, or
- * once the process is gone.
- */
-export function processStartToken(pid: number): string | undefined {
-	try {
-		const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-		// Fields after the command name, which may hold spaces and parentheses: the start time is the 22nd field.
-		const started = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
-		const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
-		if (started === undefined || !/^\d+$/.test(started) || boot === "") return undefined;
-		return createHash("sha256").update(`${boot}\n${started}`).digest("hex").slice(0, 12);
-	} catch {
-		return undefined;
-	}
-}
-
 const PROCESS_START = processStartToken(process.pid);
 /**
  * Names this process's leases: its host and pid, a random part, as the pid alone could be reused by a later process,
