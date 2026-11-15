@@ -1,9 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterAll, describe, it } from "vitest";
+import { describe, it } from "vitest";
 import { listTarMembers, writeTarMember } from "../src/core/tools/tar-archive.js";
 
 const BLOCK = 512;
@@ -56,15 +53,14 @@ const gnuTar = (() => {
 	const probe = spawnSync("tar", ["--version"], { encoding: "utf8" });
 	return probe.status === 0 && probe.stdout.includes("GNU tar");
 })();
-const scratch = mkdtempSync(join(tmpdir(), "tar-5120-"));
-afterAll(() => rmSync(scratch, { recursive: true, force: true }));
 
-/** GNU tar's member list for `archive`, or its error when it refuses it; undefined when GNU tar is not installed. */
+/**
+ * GNU tar's member list for `archive`, or its error when it refuses it; undefined when GNU tar is not installed. The
+ * archive goes through stdin, since GNU tar reads a Windows path such as `C:\...` as a remote `host:file`.
+ */
 function gnuList(archive: Buffer): { names: string[] } | { error: string } | undefined {
 	if (!gnuTar) return undefined;
-	const file = join(scratch, `${Math.random().toString(36).slice(2)}.tar`);
-	writeFileSync(file, archive);
-	const result = spawnSync("tar", ["-tf", file], { encoding: "utf8" });
+	const result = spawnSync("tar", ["-tf", "-"], { input: archive, encoding: "utf8" });
 	return result.status === 0 ? { names: result.stdout.split("\n").filter(Boolean) } : { error: result.stderr };
 }
 
