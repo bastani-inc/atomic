@@ -825,6 +825,12 @@ async function constructAgentSession(
 		workflows: () => session.extensionRunner.getProjectHistory().workflows(),
 	};
 	try {
+		// One sink per session, so every resolved child configuration carries the same callback identity.
+		const reportChildUsage = (usage: Usage): void =>
+			(session as unknown as import("./agent-session-methods.ts").AgentSessionInternalSurface)._emit({
+				type: "child_session_usage",
+				usage,
+			});
 		session = new AgentSession({
 			agent,
 			sessionManager,
@@ -862,11 +868,7 @@ async function constructAgentSession(
 						inheritedHistory: childHistory,
 						resourceAdmission: options.resourceAdmission,
 						workspace,
-						parentUsageSink: (usage) =>
-							(session as unknown as import("./agent-session-methods.ts").AgentSessionInternalSurface)._emit({
-								type: "child_session_usage",
-								usage,
-							}),
+						parentUsageSink: reportChildUsage,
 					},
 					child,
 					session.getAllTools().map((tool) => tool.name),

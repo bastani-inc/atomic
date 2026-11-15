@@ -176,5 +176,14 @@ describe("workflow budget charges (#5053)", () => {
 		);
 		assert.equal(child.exhaustedWith({ input: 8 }), false);
 		assert.equal(durationOnly.exhaustedWith({ input: 1_000_000, cost: 1_000 }), false, "no usage cap to reach");
+		const costRun = snapshot("priced");
+		const costCapped = createRunBudgetController({
+			run: costRun,
+			budget: resolve_budget({ run: { maxCost: 1, maxTokens: 1_000 } }),
+			usageTree: () => ({ run: costRun }),
+		});
+		assert.equal(root.exhaustedWith({ input: 4, output: 5 }), true, "output tokens count toward the cap");
+		assert.equal(costCapped.exhaustedWith({ cost: 0.9 }), false);
+		assert.equal(costCapped.exhaustedWith({ cost: 0.1 * 10 }), true, "pending cost reaches the cost cap");
 	});
 });
