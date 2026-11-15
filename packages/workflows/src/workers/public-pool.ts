@@ -13,6 +13,7 @@ import { admissionBootIdentity } from "./admission-host.js";
 import type { SharedPoolCoordination } from "./coordinator-protocol.js";
 import { definitionDigest, loadWorkerDefinition } from "./definitions.js";
 import { checkFleetOptions } from "./fleet-controller.js";
+import { fleetRateLimitsProblem } from "./fleet-rate-limits.js";
 import { hostWorkerBindings } from "./host-options.js";
 import { LocalWorkerPool } from "./local-pool.js";
 import {
@@ -89,7 +90,8 @@ function settingChanges(path: string, saved: unknown, current: unknown, changes:
 	changes.push({
 		path,
 		description: `${path} changed from ${shown(saved)} to ${shown(current)}`,
-		resumable: RESUMABLE_SETTINGS.has(path),
+		resumable:
+			RESUMABLE_SETTINGS.has(path) || path.startsWith("workers.rateLimits") || path === "workers.shareCooldowns",
 		option: path.startsWith("admission") ? "admission" : path.startsWith("workers") ? "workers" : "localWorkers",
 	});
 }
@@ -317,6 +319,11 @@ function sharedPlacement(options: RunOpts): WorkflowWorkerPlacementOptions | und
 			"must be a positive integer of milliseconds",
 		);
 	if (workers.provisioner !== undefined) checkFleetOptions(workers.provisioner);
+	const rateProblem = workers.rateLimits === undefined ? undefined : fleetRateLimitsProblem(workers.rateLimits);
+	if (rateProblem !== undefined)
+		throw new WorkerPlacementConfigError("sdk", "workers.rateLimits", "invalid-option", rateProblem);
+	if (workers.shareCooldowns !== undefined && typeof workers.shareCooldowns !== "boolean")
+		throw new WorkerPlacementConfigError("sdk", "workers.shareCooldowns", "invalid-option", "must be a boolean");
 	if (!options.localWorkers) throw new WorkerPlacementConfigError("sdk", "localWorkers", "requires-local-workers");
 	if (options.admission?.userLimits !== undefined)
 		throw new WorkerPlacementConfigError(
@@ -368,6 +375,8 @@ export function sharedPoolPlacement(
 			stateDirectory: poolStateDirectory(shared.agentDir),
 			host: poolHostId(shared.agentDir),
 			claimWindowMs: placement.claimWindowMs ?? DEFAULT_PLACEMENT_CLAIM_WINDOW_MS,
+			...(placement.rateLimits === undefined ? {} : { rateLimits: placement.rateLimits }),
+			...(placement.shareCooldowns === true ? { shareCooldowns: true } : {}),
 		},
 		...(placement.workspace === undefined ? {} : { workspace: placement.workspace }),
 		...(worktree === undefined ? {} : { workspaceWorktree: worktree }),

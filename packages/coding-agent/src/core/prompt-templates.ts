@@ -4,6 +4,7 @@ import { CONFIG_DIR_NAME } from "../config.js";
 import { parseFrontmatter } from "../utils/frontmatter.ts";
 import { isPathWithin, resolvePath } from "../utils/paths.ts";
 import type { ResourceDiagnostic } from "./diagnostics.ts";
+import { parseSlashCommand } from "./slash-commands.js";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
 
 /**
@@ -313,9 +314,7 @@ export function loadPromptTemplates(options: LoadPromptTemplatesOptions): LoadPr
 export function expandPromptTemplate(text: string, templates: PromptTemplate[]): string {
 	if (!text.startsWith("/")) return text;
 
-	const spaceIndex = text.indexOf(" ");
-	const templateName = spaceIndex === -1 ? text.slice(1) : text.slice(1, spaceIndex);
-	const argsString = spaceIndex === -1 ? "" : text.slice(spaceIndex + 1);
+	const { name: templateName, args: argsString } = parseSlashCommand(text);
 
 	const template = templates.find((t) => t.name === templateName);
 	if (template) {

@@ -1064,6 +1064,28 @@ Status never waits on a shared store that stops answering. A read that fails sho
 
 On a database server such as sqld or Turso, every write of the shared pool goes as one request that holds the server's write lock only for that request: a checkpoint, a heartbeat, a claim, a completion, a stage input and a host's report. Each process sends at most four writes at once. Lease renewals and host reports go first, so a busy host does not let its leases lapse. A write that finds the lock busy is sent again after a short random wait, for up to ten minutes. A request the server leaves unanswered for 30 seconds is abandoned and the write planned again, without being applied twice. A server under contention therefore makes children slower, not stuck. If the store keeps refusing a child's writes for two minutes, the child moves to another host without using one of its attempts. A write the store can never take, such as one past its response size limit, fails the child after its attempt limit with an error that names the refusal. If children stop making progress for minutes, check whether the server still takes a write from a new client, such as `CREATE TABLE IF NOT EXISTS probe(x)`. sqld 0.24 can stop taking writes from every client under heavy contention,; only a restart of the server clears that.
 
+#### Fleet-wide model rate limits
+
+Each host normally backs off from a provider on its own. To keep a whole fleet under one provider's rate limit, set `workers.rateLimits`, by provider id or `provider/model`:
+
+```ts
+workers: {
+  placement: "shared",
+  rateLimits: {
+    anthropic: { requestsPerMinute: 400 },
+    "openai/gpt-5": { requestsPerMinute: 60, burst: 10, prefetch: 2 },
+  },
+  shareCooldowns: true,
+}
+```
+
+- **`requestsPerMinute`** is the rate across every host, not per host. A call to a model counts against its provider's limit and its own when both are set.
+- **`burst`** is how many calls may start at once after a quiet spell. Default: ten seconds' worth of the rate, and at least one.
+- **`prefetch`** is how many calls' worth a host takes from the shared journal at a time. Default: half the root's workers on that host, rounded up. Higher values mean fewer journal writes but a less even split between hosts.
+- **`shareCooldowns: true`** sends every 429 cooldown a host records to the other hosts through the journal, so all of them hold that provider or model back until the cooldown ends. By default a cooldown holds back only the host that hit it.
+
+A call waits for its turn before it is sent; it never fails because of a fleet limit. If the shared journal does not answer within one second, the host meters that provider at its share of the rate (the rate divided by the live worker hosts) until the journal answers again, and `host.stats().rateLimit` and the pool's coordination stats show `"local-fallback"`. Both settings are saved with the root, and a resume may change them. Without `rateLimits` and `shareCooldowns`, nothing changes.
+
 What differs for a child that runs on another host:
 
 - Its stages show in the root's graph and status. Everything the root sends to one of its stages goes to that stage's queue of inputs in the shared journal: answers to its `ctx.ui` prompts and `ask_user_question` forms, text from its stage chat (messages, steers and follow-ups), and Intercom messages sent to it. The host running the stage takes them one at a time, in order, and records a receipt for each. Text a stage cannot take yet because it waits for an answer, as a replacement attempt that asks its question again does, waits until that answer has gone in. If that host dies, the next host to run the stage takes what it had not finished, and each input reaches the stage's session once.

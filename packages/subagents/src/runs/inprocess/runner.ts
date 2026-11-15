@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, statSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import {
 	type AgentSession,
@@ -20,10 +21,12 @@ import {
 	isPathInside,
 	isSessionStartTimeoutError,
 	type PackageSource,
+	type SessionEntry,
 	SessionManager,
 	type SessionStartError,
 	type SessionStats,
 	SettingsManager,
+	type Skill,
 	type SubagentIntercomIdentity,
 	sliceHead,
 } from "@bastani/atomic";
@@ -439,6 +442,9 @@ export interface ResultEnvelope {
 	readonly timestamp: number;
 }
 
+/** What a delivered child's result says once it was delivered: everything but its output. */
+export type DeliveredResult = Omit<ResultEnvelope, "envelope">;
+
 export interface DeliverChildResultOptions {
 	readonly artifactsDir?: string;
 	readonly artifactPaths?: ArtifactPaths;
@@ -756,16 +762,132 @@ function sessionCommands(session: AgentSession, cwd: string): TranscriptCommands
 }
 
 /**
- * What a settled child keeps for task inspection: its entries and the commands it had when it settled, with no
- * reference back to the disposed session. The task owner holds the last bound source for as long as the task exists.
+ * The entries of a child's own prompt and final answer, after the `inherited` entries its session opened with: what a
+ * task view still shows of a finished child whose saved history is gone.
  */
-function settledTranscript(manager: SessionManager, commands: TranscriptCommands | undefined): TranscriptSource {
+function promptAndAnswer(manager: SessionManager, inherited: number): SessionEntry[] {
+	const own = manager.getEntries().slice(inherited);
+	const prompt = own.find((entry) => entry.type === "message" && entry.message.role === "user");
+	const answer = own.findLast(
+		(entry) =>
+			entry.type === "message" &&
+			entry.message.role === "assistant" &&
+			entry.message.content.some((block) => block.type === "text" && block.text.trim()),
+	);
+	return [...(prompt ? [prompt] : []), ...(answer ? [answer] : [])];
+}
+
+/** Why a finished child's saved history could not be read, as a task view shows it. */
+function historyUnavailable(sessionFile: string | undefined, cause?: unknown): string {
+	if (sessionFile !== undefined && !existsSync(sessionFile))
+		return `History unavailable: the session file was moved or deleted (${sessionFile}).`;
+	return `History unavailable: ${cause instanceof Error ? cause.message : String(cause ?? "its session could not be read")}`;
+}
+
+/**
+ * The entries of the session file `file` holds for `sessionId`, read without a store: a store takes the lock of the
+ * file's directory, which every child of a run saving there shares, so a task view reading a finished child's history
+ * would make them wait. The file is append-only JSON lines; a last line its writer has not finished is left out.
+ */
+async function readSessionFileEntries(file: string, sessionId: string): Promise<SessionEntry[]> {
+	let text: string;
+	try {
+		text = await readFile(file, "utf8");
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new Error(historyUnavailable(file));
+		throw error;
+	}
+	const lines = text.split("\n");
+	const header = JSON.parse(lines[0] ?? "") as { type?: string; id?: string };
+	if (header.type !== "session" || header.id !== sessionId)
+		throw new Error(`History unavailable: its session file now belongs to another session (${file}).`);
+	const entries: SessionEntry[] = [];
+	for (const [index, line] of lines.slice(1).entries()) {
+		if (!line.trim()) continue;
+		try {
+			entries.push(JSON.parse(line) as SessionEntry);
+		} catch (error) {
+			// Only the last line can be one its writer is still writing.
+			if (index < lines.length - 2) throw error;
+		}
+	}
+	return entries;
+}
+
+/**
+ * What a settled child keeps for task inspection: its session id, its own prompt and answer, and the commands it had
+ * when it settled, with no reference back to the disposed session. The task owner holds the last bound source for as
+ * long as the task exists, and keeps up to its finished-task retention of them, so the source keeps none of the rest of
+ * the child's history: it reads it from the child's session when asked, and never writes to it (#5186).
+ */
+function settledTranscript(
+	manager: SessionManager,
+	commands: TranscriptCommands | undefined,
+	inherited: number,
+): TranscriptSource {
 	const sessionId = manager.getSessionId();
-	const entries = manager.getEntries();
+	const sessionFile = manager.getSessionFile();
+	const kept = promptAndAnswer(manager, inherited);
+	// A child's own session file is read through a store opened for the read, so a finished child keeps no store of its
+	// own in memory; a session in a shared store, as a forked or resumed child's, is read from that store.
+	const store = sessionFile === undefined ? manager.getSessionStore() : undefined;
+	const read = async (): Promise<SessionEntry[]> => {
+		if (store) return [...(await store.load(sessionId)).entries];
+		return readSessionFileEntries(sessionFile!, sessionId);
+	};
 	return {
 		getSessionId: () => sessionId,
-		getEntries: () => [...entries],
+		getEntries: () => [],
+		loadHistory: async () => {
+			try {
+				return { entries: await read() };
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				return {
+					entries: kept,
+					unavailable: message.startsWith("History unavailable:")
+						? message
+						: historyUnavailable(sessionFile, error),
+				};
+			}
+		},
 		...(commands === undefined ? {} : { commands: () => commands }),
+	};
+}
+
+/** One copy of each skill every settled child keeps, however many children loaded it. */
+const settledSkills = new Map<string, Skill>();
+
+/**
+ * A copy of `skill` no other string pins: a skill's name is a slice of its whole SKILL.md text, so keeping the skill a
+ * child loaded would keep the file. The copy is shared by every settled child that loaded the same skill.
+ */
+function settledSkill(skill: Skill): Skill {
+	const key = JSON.stringify(skill);
+	let kept = settledSkills.get(key);
+	if (kept === undefined) {
+		kept = JSON.parse(key) as Skill;
+		settledSkills.set(key, kept);
+	}
+	return kept;
+}
+
+/**
+ * The commands a settled child keeps: its skills' names, descriptions and sources, copied once for every child. A
+ * skill's name is a slice of its whole SKILL.md text, so keeping the catalog itself would keep every skill file the
+ * child loaded (#5186).
+ */
+function settledCommands(commands: TranscriptCommands): TranscriptCommands {
+	const winners = commands.skills.commands.flatMap((command) =>
+		command.name === command.skill.name ? [settledSkill(command.skill)] : [],
+	);
+	return {
+		cwd: commands.cwd,
+		skills: buildSkillCatalog(
+			commands.skills.candidates.map((candidate) => settledSkill(candidate.skill)),
+			winners,
+		),
+		skillCommandsEnabled: commands.skillCommandsEnabled,
 	};
 }
 
@@ -1179,7 +1301,8 @@ export class SubagentControlRuntime {
 	private readonly attemptTokens = new Map<string, number>();
 	private readonly attemptTerminators = new Map<string, (cause: TerminationCauseName) => Promise<void>>();
 	private readonly delivered = new Set<string>();
-	private readonly deliveredEnvelopes = new Map<string, ResultEnvelope>();
+	/** What each delivered child's result says, without its output: a finished run keeps no child's output (#5186). */
+	private readonly deliveredEnvelopes = new Map<string, DeliveredResult>();
 	private readonly killedChildren = new Set<string>();
 	/** The child id (`<runId>:<index>`) run control knows each admitted child path by. */
 	private readonly childIds = new Map<string, string>();
@@ -1332,6 +1455,8 @@ export class SubagentControlRuntime {
 		let effectiveModelId = candidateModelId;
 		let effectiveThinking = initialThinkingForAttempt(candidateModelId, configuredThinking);
 		let transcriptManager: SessionManager | undefined;
+		// How many entries the child's session held when it opened: a forked child's inherited history, not its own.
+		let openedEntryCount = 0;
 		let releasedAttempt = false;
 		// Open while this attempt's session lives: a status a disposed session writes late is not the task's.
 		let statusesOpen = true;
@@ -1597,6 +1722,7 @@ export class SubagentControlRuntime {
 			}
 			const sessionManager = await beforeStartDeadline(opening);
 			transcriptManager = sessionManager;
+			openedEntryCount = sessionManager.getEntries().length;
 			taskHooks?.bindTranscript?.(sessionManager);
 			const childSession = {
 				sessionId: sessionManager.getSessionId(),
@@ -2043,18 +2169,18 @@ export class SubagentControlRuntime {
 				// Listener teardown must not replace the attempt result.
 			}
 			// Read before the session is disposed: a settled chat keeps the cwd and skills its child had.
-			const settledCommands =
+			const keptCommands =
 				session === undefined || transcriptManager === undefined
 					? undefined
-					: sessionCommands(session, transcriptManager.getCwd());
+					: settledCommands(sessionCommands(session, transcriptManager.getCwd()));
 			const settleTranscript = (): void => {
 				statusesOpen = false;
 				taskHooks?.clearExtensionStatuses?.();
 				if (transcriptManager === undefined) return;
 				taskHooks?.bindTranscript?.(
 					releasedAttempt
-						? releasedTranscript(transcriptManager.getSessionId(), settledCommands)
-						: settledTranscript(transcriptManager, settledCommands),
+						? releasedTranscript(transcriptManager.getSessionId(), keptCommands)
+						: settledTranscript(transcriptManager, keptCommands, openedEntryCount),
 				);
 			};
 			const disposal = (async (): Promise<SessionDisposal> => {
@@ -2182,16 +2308,21 @@ export class SubagentControlRuntime {
 		await running.promise;
 	}
 
-	async deliverChildResult(envelope: ResultEnvelope, options?: DeliverChildResultOptions): Promise<void> {
-		if (this.delivered.has(envelope.path)) return;
+	/** Delivers a child's result once, resolving with its output as delivered: bounded, with where its full text is. */
+	async deliverChildResult(
+		envelope: ResultEnvelope,
+		options?: DeliverChildResultOptions,
+	): Promise<string | undefined> {
+		if (this.delivered.has(envelope.path)) return undefined;
 		this.delivered.add(envelope.path);
 		const artifactDir = options?.artifactsDir ?? envelope.artifactsDir;
 		const paths =
 			options?.artifactPaths ?? (artifactDir ? canonicalArtifactPaths(artifactDir, envelope.path) : undefined);
 		const bounded = boundedEnvelope(envelope.envelope, paths?.outputPath, options?.maxOutput);
 		const deliveredEnvelope = { ...envelope, envelope: bounded };
-		this.deliveredEnvelopes.set(envelope.path, deliveredEnvelope);
-		if (options?.artifactsDisabled) return;
+		const { envelope: _output, ...delivered } = deliveredEnvelope;
+		this.deliveredEnvelopes.set(envelope.path, delivered);
+		if (options?.artifactsDisabled) return bounded;
 		if (!artifactDir || !paths)
 			throw new Error(`Artifact persistence paths are unresolved for child ${envelope.path}`);
 		ensureArtifactsDir(artifactDir);
@@ -2201,9 +2332,10 @@ export class SubagentControlRuntime {
 			outputPath: paths.outputPath,
 		});
 		appendFileSync(join(artifactDir, "run-history.jsonl"), `${JSON.stringify(deliveredEnvelope)}\n`, "utf8");
+		return bounded;
 	}
 
-	getDeliveredResult(pathValue: string): ResultEnvelope | undefined {
+	getDeliveredResult(pathValue: string): DeliveredResult | undefined {
 		return this.deliveredEnvelopes.get(pathValue);
 	}
 	findChild(pathValue: string): (Omit<ChildIdentity, "status"> & { status: ChildStatus }) | undefined {
@@ -2287,6 +2419,6 @@ export function deliver_child_result(
 	control: SubagentControlRuntime,
 	envelope: ResultEnvelope,
 	options?: DeliverChildResultOptions,
-): Promise<void> {
+): Promise<string | undefined> {
 	return control.deliverChildResult(envelope, options);
 }

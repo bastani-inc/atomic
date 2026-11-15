@@ -1,7 +1,7 @@
 {
 	"name": "@bastani/atomic-tui",
 	"version": "0.0.0",
-	"description": "Terminal User Interface library with differential rendering for efficient text-based applications",
+	"description": "Atomic's terminal UI framework with differential rendering for flicker-free interactive CLIs",
 	"type": "module",
 	"main": "dist/index.js",
 	"scripts": {
@@ -40,7 +40,8 @@
 		"text-editor",
 		"differential-rendering",
 		"typescript",
-		"cli"
+		"cli",
+		"atomic"
 	],
 	"author": "Mario Zechner",
 	"license": "MIT",
@@ -55,7 +56,7 @@
 		"url": "git+https://github.com/bastani-inc/atomic.git",
 		"directory": "packages/tui"
 	},
-	"homepage": "https://github.com/bastani-inc/atomic/tree/main/packages/tui#readme",
+	"homepage": "https://docs.bastani.ai/libraries/tui",
 	"bugs": {
 		"url": "https://github.com/bastani-inc/atomic/issues"
 	},

@@ -545,7 +545,7 @@ export async function runSingleInProcess(
 					artifactPaths,
 					requestedModel,
 				);
-				await control.deliverChildResult(
+				const deliveredOutput = await control.deliverChildResult(
 					{
 						path: continuedOutcome.path,
 						status: continuedOutcome.status,
@@ -564,10 +564,9 @@ export async function runSingleInProcess(
 					},
 					{ artifactsDir: options.artifactsDir, artifactPaths, artifactsDisabled, maxOutput: options.maxOutput },
 				);
-				const delivered = control.getDeliveredResult(continuedOutcome.path);
-				if (delivered) {
-					recovered.envelope = delivered.envelope;
-					recovered.finalOutput = delivered.envelope;
+				if (deliveredOutput !== undefined) {
+					recovered.envelope = deliveredOutput;
+					recovered.finalOutput = deliveredOutput;
 				}
 				forgetIfReleased(control, continuedOutcome);
 				persistRequestedOutput(recovered, options, outputSnapshot);
@@ -620,7 +619,7 @@ export async function runSingleInProcess(
 	if (options.modelRoute) result.routerSelection = options.modelRoute.routerSelection;
 	if (filteredCandidates.skippedAttempts.length)
 		result.modelAttempts = [...filteredCandidates.skippedAttempts, ...(result.modelAttempts ?? [])];
-	await control.deliverChildResult(
+	const deliveredOutput = await control.deliverChildResult(
 		{
 			path: outcome.path,
 			status: outcome.status,
@@ -638,10 +637,9 @@ export async function runSingleInProcess(
 		},
 		{ artifactsDir: options.artifactsDir, artifactPaths, artifactsDisabled, maxOutput: options.maxOutput },
 	);
-	const delivered = control.getDeliveredResult(outcome.path);
-	if (delivered) {
-		result.envelope = delivered.envelope;
-		result.finalOutput = delivered.envelope;
+	if (deliveredOutput !== undefined) {
+		result.envelope = deliveredOutput;
+		result.finalOutput = deliveredOutput;
 	}
 	forgetIfReleased(control, outcome);
 	persistRequestedOutput(result, options, outputSnapshot);
