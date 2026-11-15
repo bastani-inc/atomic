@@ -69,6 +69,9 @@ export { INLINE_TASK_OUTPUT_MAX_BYTES } from "./task-output-retention.js";
 /** Project explicit user stops without changing the shared host cancellation record. */
 export function subagentTaskResultLabel(result: TaskResult): string {
 	if (result.kind === "cancelled" && result.cause === "user") return "killed (non-resumable)";
+	// A released child is not paused: it wakes by itself when what it waits on finishes (#5031).
+	if (result.kind === "cancelled" && result.released)
+		return `released · waiting on ${result.released.waitingOn.map((call) => `${call.toolName} (${call.toolCallId})`).join(", ")}`;
 	// A quit or paused child awaits resume, as a quit workflow run does.
 	if (result.kind === "cancelled" && (result.cause === "pause" || result.cause === "quit"))
 		return "paused · awaiting resume";
@@ -782,7 +785,19 @@ export async function runAgentTask(input: {
 					};
 					if (child.status === "killed") return { kind: "cancelled", cause: "user", output };
 					// The task host's resumable stop: the child is not running and not ended, and nothing of it stays live.
-					if (released) return { kind: "cancelled", cause: "pause", output };
+					// It was released, not paused: its parent is told what it waits on, and that it wakes by itself (#5031).
+					if (released)
+						return {
+							kind: "cancelled",
+							cause: "pause",
+							output,
+							released: {
+								waitingOn: (child.released?.waitingOn ?? []).map(({ toolCallId, toolName }) => ({
+									toolCallId,
+									toolName,
+								})),
+							},
+						};
 					if (child.interrupted)
 						return {
 							kind: "cancelled",

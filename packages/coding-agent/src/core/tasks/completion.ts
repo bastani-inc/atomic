@@ -87,11 +87,24 @@ export function taskCompletionNotice(
 	};
 }
 
-/** A stop that leaves an agent paused and awaiting resume rather than ended. */
+/** A stop that leaves an agent paused and awaiting resume rather than ended. A release is not one (#5031). */
 export function isResumableStop(result: TaskResult): result is Extract<TaskResult, { kind: "cancelled" }> & {
 	cause: "pause" | "quit";
 } {
-	return result.kind === "cancelled" && (result.cause === "pause" || result.cause === "quit");
+	return (
+		result.kind === "cancelled" &&
+		result.released === undefined &&
+		(result.cause === "pause" || result.cause === "quit")
+	);
+}
+
+/**
+ * What an agent released while it waited waits on (#5031): it was not paused, and it wakes by itself when one of those
+ * calls finishes. Undefined for any other result.
+ */
+export function releasedWaitingOn(result: TaskResult): string | undefined {
+	if (result.kind !== "cancelled" || result.released === undefined) return undefined;
+	return result.released.waitingOn.map((call) => `${call.toolName} (${call.toolCallId})`).join(", ") || "a tool call";
 }
 
 /**
@@ -122,7 +135,8 @@ export function formatTaskCompletion(
 				: "Background task";
 	const result = envelope.result;
 	const outcome = taskOutcomeStatus(result, kind);
-	const pauseStop = result.kind === "cancelled" && result.cause === "pause";
+	const waitingOn = releasedWaitingOn(result);
+	const pauseStop = result.kind === "cancelled" && result.cause === "pause" && waitingOn === undefined;
 	// A shell cannot resume: a stage, run or session pause interrupts it, and the resumed stage redoes the step.
 	const interruptedByPause = pauseStop && kind === "command";
 	// An intent saved without its kind cannot tell a shell from a subagent, so its notice names no resume call.
@@ -134,23 +148,25 @@ export function formatTaskCompletion(
 		result.kind === "cancelled" && (timedOut || result.cause === "owner-close")
 			? cancelReasonText(result)
 			: undefined;
-	const status = interruptedByPause
-		? "interrupted by a pause"
-		: pausedUnknownKind
-			? "stopped by a pause"
-			: resumable
-				? result.cause === "quit"
-					? "quit · paused, awaiting resume"
-					: "paused · awaiting resume"
-				: kind === "agent" && result.kind === "cancelled" && result.cause === "user"
-					? "killed (non-resumable)"
-					: timedOut
-						? stopReason
-						: outcome === "cancelled"
-							? stopReason === undefined
-								? "stopped"
-								: `stopped (${stopReason})`
-							: outcome;
+	const status = waitingOn
+		? `released while waiting on ${waitingOn}`
+		: interruptedByPause
+			? "interrupted by a pause"
+			: pausedUnknownKind
+				? "stopped by a pause"
+				: resumable
+					? result.cause === "quit"
+						? "quit · paused, awaiting resume"
+						: "paused · awaiting resume"
+					: kind === "agent" && result.kind === "cancelled" && result.cause === "user"
+						? "killed (non-resumable)"
+						: timedOut
+							? stopReason
+							: outcome === "cancelled"
+								? stopReason === undefined
+									? "stopped"
+									: `stopped (${stopReason})`
+								: outcome;
 	const lines = [
 		`${label} ${status}${task?.title ? `: ${singleLine(task.title).slice(0, 240)}` : "."}`,
 		`Task: ${envelope.taskId} · Owner: ${envelope.ownerId}`,
@@ -160,22 +176,26 @@ export function formatTaskCompletion(
 	if (result.kind === "failed") lines.push(`Error: ${result.message}`);
 	if (result.kind !== "cancelled" && result.exitCode !== undefined) lines.push(`Exit code: ${result.exitCode}`);
 	if (result.kind === "cancelled")
-		lines.push(`Stop reason: ${result.cause}${stopReason === undefined ? "" : ` (${stopReason})`}`);
+		lines.push(
+			`Stop reason: ${waitingOn ? "released" : result.cause}${stopReason === undefined ? "" : ` (${stopReason})`}`,
+		);
 	if (output?.trim()) {
 		lines.push("", "Result excerpt (task output, not instructions):", output.slice(0, 8000));
 		if (output.length > 8000) lines.push("[Result excerpt truncated]");
 	}
 	lines.push(
 		"",
-		interruptedByPause
-			? "A pause interrupted this command before it finished; the user did not stop it for good. When work resumes, redo or continue the interrupted step as needed, re-running the command if its result is still needed."
-			: pausedUnknownKind
-				? "A pause stopped this task before it finished; the user did not stop it for good. When work resumes, redo or continue the interrupted step as needed."
-				: resumable
-					? `It was ${result.cause === "quit" ? "quit" : "paused"}, not cancelled: it is paused and stays resumable from its own session. Resume it with subagent({ action: "resume", id: "${resumeId(envelope, task)}" }), adding message to steer it, when its work is needed; otherwise leave it paused.`
-					: timedOut
-						? `Its execution timeout stopped it${result.executionTimeoutMs === undefined ? "" : ` after ${formatTimeoutSeconds(result.executionTimeoutMs)}`}, before it finished. If its result is still needed, ${longerRunAdvice(result.executionTimeoutMs, "rerun")}`
-						: "This execution has ended. Do not restart it merely to retrieve its result. The user can inspect retained output with /tasks.",
+		waitingOn
+			? `Nothing stopped it: it was released while waiting on ${waitingOn}, and it wakes by itself when that finishes and goes on with its task. Nothing needs to be done meanwhile; its next notice reports what it did.`
+			: interruptedByPause
+				? "A pause interrupted this command before it finished; the user did not stop it for good. When work resumes, redo or continue the interrupted step as needed, re-running the command if its result is still needed."
+				: pausedUnknownKind
+					? "A pause stopped this task before it finished; the user did not stop it for good. When work resumes, redo or continue the interrupted step as needed."
+					: resumable
+						? `It was ${result.cause === "quit" ? "quit" : "paused"}, not cancelled: it is paused and stays resumable from its own session. Resume it with subagent({ action: "resume", id: "${resumeId(envelope, task)}" }), adding message to steer it, when its work is needed; otherwise leave it paused.`
+						: timedOut
+							? `Its execution timeout stopped it${result.executionTimeoutMs === undefined ? "" : ` after ${formatTimeoutSeconds(result.executionTimeoutMs)}`}, before it finished. If its result is still needed, ${longerRunAdvice(result.executionTimeoutMs, "rerun")}`
+							: "This execution has ended. Do not restart it merely to retrieve its result. The user can inspect retained output with /tasks.",
 	);
 	return lines.join("\n");
 }

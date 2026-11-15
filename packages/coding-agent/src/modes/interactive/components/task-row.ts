@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { type Component, truncateToWidth } from "@earendil-works/pi-tui";
 import { formatModelLabel } from "../../../core/model-label.ts";
 import { taskOutcomeStatus } from "../../../core/tasks/command-output.js";
-import { isResumableStop } from "../../../core/tasks/completion.js";
+import { isResumableStop, releasedWaitingOn } from "../../../core/tasks/completion.js";
 import type { TaskRecord } from "../../../core/tasks/contracts.js";
 import type { TaskActivity } from "../../../core/tasks/owner-store.js";
 import { theme } from "../theme/theme.js";
@@ -20,6 +20,9 @@ export function taskState(task: TaskRecord): string {
 		task.execution.result.cause === "user"
 	)
 		return "killed";
+	// A released agent waits on a call and wakes by itself when it finishes; nothing paused it (#5031).
+	if (task.kind === "agent" && task.execution.kind === "settled" && releasedWaitingOn(task.execution.result))
+		return "released";
 	// A quit or paused agent awaits resume, as a quit workflow run does.
 	if (task.kind === "agent" && task.execution.kind === "settled" && isResumableStop(task.execution.result))
 		return "paused";
@@ -64,6 +67,8 @@ export function taskStatusAppearance(task: TaskRecord): {
 			return { label: "Killed (non-resumable)", icon: "■", color: "warning" };
 		case "paused":
 			return { label: "Paused · awaiting resume", icon: "‖", color: "warning" };
+		case "released":
+			return { label: "Released · waiting", icon: "∀", color: "muted" };
 		case "cancelled":
 			return { label: "Stopped", icon: "✗", color: "warning" };
 		case "cancelling":
@@ -116,7 +121,9 @@ export class TaskRow implements Component {
 				? "killed (non-resumable)"
 				: taskState(task) === "paused"
 					? "paused · awaiting resume"
-					: taskState(task);
+					: task.execution.kind === "settled" && releasedWaitingOn(task.execution.result)
+						? `released · waiting on ${releasedWaitingOn(task.execution.result)}`
+						: taskState(task);
 		const live = task.execution.kind === "running" || task.execution.kind === "queued";
 		const badge = live && task.observation.kind !== "none" ? ` · ${task.observation.kind}` : "";
 		const { icon: glyph, color } = taskStatusAppearance(task);

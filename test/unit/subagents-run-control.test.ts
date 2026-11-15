@@ -3121,6 +3121,7 @@ test(
 			requestedModels: processWide.requestedModels,
 			launchHeartbeats: processWide.launchHeartbeats,
 			executionTimeouts: processWide.executionTimeouts,
+			releases: processWide.releases,
 		});
 
 		const resumed = await h.call({ action: "resume", id: "retained0:0", message: "carry on" });
