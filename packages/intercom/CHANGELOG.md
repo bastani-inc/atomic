@@ -4,6 +4,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed a `workflow:` target with many `**` segments stalling the shared Intercom broker for every session on the machine: stage patterns now match in time proportional to pattern length times stage depth, and a `workflow:` target longer than 1024 characters or with more than 64 segments is refused with an error that states the limit ([#4843](https://github.com/bastani-inc/atomic/issues/4843))
+
 ## [0.9.87] - 2026-11-14
 
 Asks from released subagents no longer vanish when their recipient comes and goes.
