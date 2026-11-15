@@ -8,7 +8,7 @@ import { poolUsageTotalsSeed } from "../../packages/workflows/src/durable/journa
 import { openSqlPoolQueue, type SqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { openSqlPoolUsage } from "../../packages/workflows/src/durable/journal/sql-pool-usage.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
-import type { Lease } from "../../packages/workflows/src/durable/journal/types.js";
+import { isStaleLeaseError, type Lease } from "../../packages/workflows/src/durable/journal/types.js";
 import type { DurableToolCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
 import { type StorageBackendScope, storageBackends } from "../helpers/storage-backends.js";
@@ -280,6 +280,68 @@ describe.skipIf(postgres.skipReason !== undefined)("the worker pool's fenced wri
 		creator.release();
 		await creator.done;
 		assert.deepEqual(await total, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 });
+	});
+
+	test("a stage's usage committed while another write creates the root's totals row is kept in the total (#5102)", async () => {
+		await pool.enqueue(lease, item.work, item.boundary);
+		const attempt = (await pool.claim(lease, "worker", [definition], 60_000))!;
+		const ledger = await openSqlPoolUsage(journal);
+		const seed = poolUsageTotalsSeed(postgresDialect, table("wf_runs"), "root");
+		const creator = await holding(other, (tx) => tx.run(seed.sql, ...seed.params));
+		const { scope } = item.work;
+		const billed = {
+			kind: "stage" as const,
+			workflowId: "root",
+			checkpointId: `${scope}:session:billed`,
+			name: "stage",
+			replayKey: `${scope}:stage`,
+			completedAt: 1,
+			output: "done",
+			modelAttempts: [{ model: "fixture", success: true, usage }],
+			topology: {
+				version: 1 as const,
+				stageId: "stage",
+				parentIds: [],
+				sourceOrder: 0,
+				status: "completed" as const,
+				run: { ...item.boundary.topology!.boundary!.child },
+			},
+		};
+		const committed = pool.commit(lease, attempt, "billed", { kind: "checkpoint", checkpoint: billed });
+		const waited = await pendingAfter(committed);
+		creator.release();
+		await creator.done;
+		await committed;
+		assert.equal(waited, true, "the commit waits for the totals row");
+		assert.deepEqual(await ledger.total("root"), usage);
+	});
+
+	test("a completion is refused once the root's lease is taken over or the attempt's lease lapsed (#5102)", async () => {
+		const second = poolWorkFixture("second");
+		await pool.enqueue(lease, item.work, item.boundary);
+		await pool.enqueue(lease, second.work, second.boundary);
+		const first = (await pool.claim(lease, "first", [definition], 60_000))!;
+		const lapsed = (await pool.claim(lease, "second", [definition], 60_000))!;
+		await other.run(`UPDATE ${table("wf_runs_work")} SET expires_at = 0 WHERE id = ?`, lapsed.id);
+		await assert.rejects(pool.complete(lease, lapsed, { runId: lapsed.childRunId, status: "completed" }), /expired/);
+		const takeover = await journal.takeover("root", "replacement", backend.holderId);
+		assert.equal(takeover.status, "acquired");
+		await assert.rejects(
+			pool.complete(lease, first, { runId: first.childRunId, status: "completed" }),
+			(error: Error) => isStaleLeaseError(error),
+		);
+		assert.deepEqual(
+			(await pool.inspect("root")).map((work) => work.state),
+			["leased", "leased"],
+		);
+	});
+
+	test("another host completes an attempt it did not claim, under the same fences (#5102)", async () => {
+		await pool.enqueue(lease, item.work, item.boundary);
+		const attempt = (await pool.claim(lease, "worker", [definition], 60_000))!;
+		const peer = await openSqlPoolQueue(await SqlRunJournal.open(other, { prefix: scope.prefix }));
+		await peer.complete(lease, attempt, { runId: attempt.childRunId, status: "completed" });
+		assert.equal((await pool.inspect("root"))[0]!.state, "completed");
 	});
 
 	test("the pool's fenced writes are counted and watched like its other writes (#5102)", async () => {
