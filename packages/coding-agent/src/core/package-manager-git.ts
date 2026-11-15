@@ -184,7 +184,7 @@ async function withGitInstallLock(
 	try {
 		await withInstallLock(targetDir, operation);
 	} finally {
-		if (!existsSync(targetDir)) pruneEmptyGitParents(targetDir, getGitInstallRoot(context, scope));
+		pruneEmptyGitParents(targetDir, getGitInstallRoot(context, scope));
 	}
 }
 

@@ -181,6 +181,23 @@ describe("DefaultPackageManager", () => {
 			);
 		});
 
+		it.each([
+			[["bun"], "bun", ["uninstall", "@scope/pkg", "--cwd"]],
+			[["pnpm"], "pnpm", ["uninstall", "@scope/pkg", "--prefix"]],
+		])("uninstalls npm packages with %j in the real install root", async (npmCommand, command, args) => {
+			packageManager = new DefaultPackageManager({
+				cwd: tempDir,
+				agentDir,
+				settingsManager: SettingsManager.inMemory({ npmCommand }),
+			});
+			mkdirSync(join(agentDir, "npm"), { recursive: true });
+			const runCommandSpy = vi.spyOn(packageManager as any, "runCommand").mockResolvedValue(undefined);
+
+			await packageManager.remove("npm:@scope/pkg");
+
+			assertCalledWith(runCommandSpy, command, [...args, realpathSync(join(agentDir, "npm"))], undefined);
+		});
+
 		// Regression test for upstream #11358: npm writes nested package-lock.json entries for a symlinked --prefix.
 		it("should pass the real path as --prefix when the agent dir is a symlink", async () => {
 			const realAgentDir = join(tempDir, "dotfiles", "agent");
