@@ -13,6 +13,7 @@ import { mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, statSync, writ
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { getAgentDir } from "../config.js";
+import { processStartToken } from "./process-start-token.ts";
 import { attachSessionClaim } from "./session-claims.ts";
 import { SessionOpenElsewhereError } from "./session-manager-errors.js";
 import type {
@@ -21,7 +22,6 @@ import type {
 	SessionOpenMarkerStore,
 	SessionStore,
 } from "./storage/session/types.js";
-import { processStartToken } from "./worktree-snapshot/pool.ts";
 import { sharedClockNow } from "./worktree-snapshot/shared-clock.ts";
 
 /** How often a held marker's heartbeat is refreshed. */
