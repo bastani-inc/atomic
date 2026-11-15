@@ -100,23 +100,103 @@ describe("a session marked open by another process (#4971)", () => {
 	);
 
 	test.skipIf(process.platform === "win32")(
-		"a live process whose heartbeat stopped no longer protects the session (#4971)",
+		"a live holder suspended past its heartbeats still protects the session (#5058)",
 		async () => {
 			const { manager, sessionId } = await sessionToDelete();
 			holder = await holdInAnotherProcess(agentDir, sessionId);
+			// Stopped for a minute and more: its mark was last refreshed two minutes ago.
 			holder.kill("SIGSTOP");
 			const markers = join(agentDir, "open-sessions", sessionId);
-			const minuteAgo = new Date(Date.now() - 50_000);
-			for (const name of readdirSync(markers)) utimesSync(join(markers, name), minuteAgo, minuteAgo);
-			await assert.rejects(manager.deleteSession(sessionId), SessionOpenElsewhereError);
-
 			const twoMinutesAgo = new Date(Date.now() - 120_000);
 			for (const name of readdirSync(markers)) utimesSync(join(markers, name), twoMinutesAgo, twoMinutesAgo);
-			await manager.deleteSession(sessionId);
+			await assert.rejects(manager.deleteSession(sessionId), SessionOpenElsewhereError);
+			assert.equal(readdirSync(markers).length, 1, "the suspended holder's mark is kept");
 			holder.kill("SIGCONT");
 		},
 		PROCESS_TIMEOUT_MS,
 	);
+
+	test(
+		"a running holder on this host protects the session after this host's clock steps forward (#5058)",
+		async () => {
+			const { manager, sessionId } = await sessionToDelete();
+			holder = await holdInAnotherProcess(agentDir, sessionId);
+			const realNow = Date.now.bind(Date);
+			vi.spyOn(Date, "now").mockImplementation(() => realNow() + 10 * 60_000);
+			try {
+				await assert.rejects(manager.deleteSession(sessionId), SessionOpenElsewhereError);
+			} finally {
+				vi.restoreAllMocks();
+			}
+		},
+		PROCESS_TIMEOUT_MS,
+	);
+
+	test.skipIf(process.platform !== "linux")(
+		"a mark naming a running process that started after its holder does not protect the session (#5058)",
+		async () => {
+			const { manager, sessionId } = await sessionToDelete();
+			holder = await holdInAnotherProcess(agentDir, sessionId);
+			const markers = join(agentDir, "open-sessions", sessionId);
+			const [name] = readdirSync(markers);
+			assert.match(name!, /^\d+-[0-9a-f]{16}-[0-9a-f]{12}\.json$/, "the mark names when its holder started");
+			// The holder's pid, given to a process that started at another time.
+			rmSync(join(markers, name!));
+			const reused = `${holder.pid}-${"0".repeat(16)}-${"0".repeat(12)}.json`;
+			writeFileSync(join(markers, reused), JSON.stringify({ pid: holder.pid, host: hostname() }));
+
+			await manager.deleteSession(sessionId);
+			assert.equal(existsSync(join(markers, reused)), false);
+		},
+		PROCESS_TIMEOUT_MS,
+	);
+});
+
+describe("a session marked open on another host that shares the agent directory (#5058)", () => {
+	let dir: string;
+	let agentDir: string;
+
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "atomic-open-remote-"));
+		agentDir = join(dir, "agent");
+	});
+
+	afterEach(() => {
+		vi.restoreAllMocks();
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	/** A mark another host wrote `ageMs` ago, by the file system's clock. */
+	function remoteMark(sessionId: string, ageMs: number): string {
+		const markers = join(agentDir, "open-sessions", sessionId);
+		mkdirSync(markers, { recursive: true });
+		const path = join(markers, "remote.json");
+		writeFileSync(path, JSON.stringify({ pid: 999_999_999, host: "another-host" }));
+		const at = new Date(Date.now() - ageMs);
+		utimesSync(path, at, at);
+		return path;
+	}
+
+	/** This host's clock is `skewMs` off the clock that stamps the shared files. */
+	function skewClock(skewMs: number): void {
+		const realNow = Date.now.bind(Date);
+		vi.spyOn(Date, "now").mockImplementation(() => realNow() + skewMs);
+	}
+
+	for (const skewMs of [120_000, 10 * 60_000]) {
+		test(`a mark the other host refreshed counts when this host's clock is ${skewMs / 60_000} minutes ahead (#5058)`, async () => {
+			remoteMark("remote-session", 0);
+			skewClock(skewMs);
+			await assert.rejects(assertSessionNotOpenElsewhere("remote-session", { agentDir }), SessionOpenElsewhereError);
+		});
+	}
+
+	test("a mark the other host stopped refreshing is removed when this host's clock is two minutes behind (#5058)", async () => {
+		const path = remoteMark("remote-session", 120_000);
+		skewClock(-120_000);
+		await assertSessionNotOpenElsewhere("remote-session", { agentDir });
+		assert.equal(existsSync(path), false);
+	});
 });
 
 describe("a session open in this process (#4971)", () => {
@@ -272,6 +352,28 @@ describe("a session open in this process (#4971)", () => {
 			writeFileSync(join(markers, "init.json"), JSON.stringify({ pid: 1, host: hostname() }));
 
 			await assert.rejects(deleter.deleteSession(target.getSessionId()), SessionOpenElsewhereError);
+		},
+	);
+
+	test.skipIf(process.platform === "win32")(
+		"a mark that does not say when its running holder started counts for a day, and not after (#5058)",
+		async () => {
+			const target = await saved("target");
+			const deleter = await saved("deleter");
+			const markers = markersOf(target.getSessionId());
+			mkdirSync(markers, { recursive: true });
+			const mark = join(markers, "init.json");
+			writeFileSync(mark, JSON.stringify({ pid: 1, host: hostname() }));
+			const age = (ms: number) => {
+				const at = new Date(Date.now() - ms);
+				utimesSync(mark, at, at);
+			};
+
+			age(23 * 60 * 60_000);
+			await assert.rejects(deleter.deleteSession(target.getSessionId()), SessionOpenElsewhereError);
+			age(25 * 60 * 60_000);
+			await deleter.deleteSession(target.getSessionId());
+			assert.equal(existsSync(mark), false);
 		},
 	);
 

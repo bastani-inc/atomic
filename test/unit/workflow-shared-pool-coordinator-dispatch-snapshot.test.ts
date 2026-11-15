@@ -422,6 +422,73 @@ test.skipIf(process.platform === "win32")(
 	COORDINATOR_TEST_TIMEOUT_MS,
 );
 
+for (const race of [false, true])
+	test.skipIf(process.platform === "win32")(
+		race
+			? "a root whose snapshot's blobs a collection deletes after it checked them holds none, dispatches none, and says why (#5077)"
+			: "a root whose snapshot's blobs survive checks them once per write that carries the snapshot (#5077)",
+		async () => {
+			const sandbox = new GitSandbox();
+			const { clone } = await sandbox.remoteWithClone("repo", { "a.txt": "committed\n" });
+			const placed = await recordedPlacement({
+				placement: "shared",
+				workspace: workspace({ repo: clone, branch: "main", base: "main", worktree: clone }),
+			});
+			const [patch, bundle] = [textBlob("raced patch"), textBlob("raced bundle")];
+			const snapshot = carried("raced", [patch.hash], bundle.hash);
+			const holds = vi.spyOn(SqlPoolQueue.prototype, "holdRootSnapshot");
+			const enqueues = vi.spyOn(SqlPoolQueue.prototype, "enqueue");
+			const captures = vi.spyOn(DispatchSnapshots.prototype, "capture").mockResolvedValue(snapshot);
+			const stored = DispatchSnapshots.prototype.stored;
+			let checks = 0;
+			const f = await fixture(`shared-dispatch-snapshot-race-${race}`, {
+				workspace: placed.placement.workspace!,
+				workspaceWorktree: placed.worktree,
+			});
+			await rootBlobs(f).putBlobs([patch, bundle]);
+			// A collection with no grace window right after each check, before the write that carries the snapshot.
+			const checked = vi.spyOn(DispatchSnapshots.prototype, "stored").mockImplementation(async function (
+				this: DispatchSnapshots,
+				checking,
+			) {
+				checks++;
+				// The child's own dispatch finds them stored again, as a new capture would.
+				if (race && checks === 3) await rootBlobs(f).putBlobs([patch, bundle]);
+				const result = await stored.call(this, checking);
+				if (race) await collectSnapshotGarbage(rootBlobs(f), { graceSeconds: 0 });
+				return result;
+			});
+			const { parent } = await fanOut(1)((await boundChild()) as never);
+			const store = createStore();
+			const execution = run(parent, {}, { runId: "root", cwd: f.directory, store, durableBackend: f.backend });
+			try {
+				while (enqueues.mock.calls.length === 0) await sleep(25);
+				await enqueues.mock.results[0]!.value;
+				// The root checks again once its enqueue returns: wait for that, then for any check it should not make.
+				for (let waited = 0; checks < (race ? 4 : 2) && waited < 10_000; waited += 25) await sleep(25);
+				await sleep(250);
+				assert.equal(holds.mock.calls[0]![1], snapshot, "the snapshot passed the root's check");
+				assert.equal((await enqueues.mock.results[0]!.value).execution.workspaceSnapshot === undefined, race);
+				assert.deepEqual(await recordedRootSnapshots(f), race ? [] : ["root"]);
+				const reason = store.run("root")?.snapshotUnavailable;
+				if (race)
+					assert.equal((rehydrateWorkspaceError(reason!) as Error & { code?: string }).code, "blobs-collected");
+				else assert.equal(reason, undefined);
+				assert.equal(checks, race ? 4 : 2, "each write that dropped the snapshot is checked again, to say why");
+			} finally {
+				checked.mockRestore();
+				captures.mockRestore();
+				enqueues.mockRestore();
+				holds.mockRestore();
+				await f.pool.close();
+				await execution.catch(() => {});
+				await f.close();
+				sandbox.dispose();
+			}
+		},
+		COORDINATOR_TEST_TIMEOUT_MS,
+	);
+
 test.each([
 	{ name: "no bound worktree", options: {} },
 	{ name: "snapshots disabled", options: { workspaceWorktree: "/unused", snapshots: { enabled: false } } },

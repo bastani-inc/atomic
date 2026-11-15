@@ -262,7 +262,7 @@ interface Waiter {
 	/** Told `queued` already: `delivered` follows only while the sender is connected, and it never expires. */
 	readonly queued: boolean;
 	timer: ReturnType<typeof setTimeout> | undefined;
-	/** When the sender started waiting; a recipient's save reports never keep it waiting past the save cap (#3983). */
+	/** When, by `performance.now()`, the sender started waiting; a recipient's save reports never keep it waiting past the save cap (#3983). */
 	readonly waitingSince: number;
 	/** Ends the wait as uncertain at the save cap, whatever the store does (#3983). */
 	capTimer?: ReturnType<typeof setTimeout>;
@@ -1251,7 +1251,7 @@ export class MultiNodeRouter {
 			for (const targetIdentity of identities) {
 				const presence = await this.state.leases.read({ kind: "presence", targetIdentity });
 				if (presence.status === "found" && presence.lease.ageMs < BROKER_LEASE_STALE_AFTER_MS) continue;
-				const queued = await this.state.outbox.listUndelivered(targetIdentity);
+				const queued = await this.state.outbox.listUndelivered(targetIdentity, 1);
 				if (queued.status === "listed" && queued.rows.length > 0) return queued.rows[0].messageId;
 			}
 		}
@@ -2039,7 +2039,7 @@ export class MultiNodeRouter {
 			targetIdentity: target.identity,
 			queued: offline,
 			timer: undefined,
-			waitingSince: Date.now(),
+			waitingSince: performance.now(),
 		};
 		this.armWaiter(waiter, offline ? DELIVERED_MESSAGE_TTL_MS : RECIPIENT_RECEIPT_TIMEOUT_MS);
 		this.waiters.set(message.id, waiter);
@@ -2064,10 +2064,10 @@ export class MultiNodeRouter {
 		this.host.write(socket, queuedFrame(messageId, attemptId, await this.queuePosition(identity, messageId)));
 	}
 
+	/** #4896: counted, not listed: a send to a busy recipient never reads its whole queue to learn its place. */
 	private async queuePosition(identity: string, messageId: string): Promise<number> {
-		const listed = await this.state.outbox.listUndelivered(identity);
-		const index = listed.status === "listed" ? listed.rows.findIndex((entry) => entry.messageId === messageId) : -1;
-		return index + 1 || 1;
+		const counted = await this.state.outbox.undeliveredPosition(identity, messageId);
+		return counted.status === "positioned" ? counted.position : 1;
 	}
 
 	/**
@@ -2537,7 +2537,7 @@ export class MultiNodeRouter {
 		if (!waiter.queued && waiter.capTimer === undefined) {
 			waiter.capTimer = setTimeout(
 				() => this.expireUncertain(waiter),
-				Math.max(0, waiter.waitingSince + RECIPIENT_SAVE_MAX_WAIT_MS - Date.now()),
+				Math.max(0, waiter.waitingSince + RECIPIENT_SAVE_MAX_WAIT_MS - performance.now()),
 			);
 			waiter.capTimer.unref?.();
 		}
@@ -2545,7 +2545,7 @@ export class MultiNodeRouter {
 
 	/** The sender may wait this much longer under the save cap; 0 once the cap is reached. */
 	private capRemaining(waiter: Waiter): number {
-		return Math.max(0, waiter.waitingSince + RECIPIENT_SAVE_MAX_WAIT_MS - Date.now());
+		return Math.max(0, waiter.waitingSince + RECIPIENT_SAVE_MAX_WAIT_MS - performance.now());
 	}
 
 	/**

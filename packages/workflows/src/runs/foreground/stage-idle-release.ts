@@ -4,7 +4,7 @@ import type { StageWakeDispatcher } from "./stage-wake-dispatcher.js";
 export interface IdleStage {
 	/** The stage's `releaseWhenWaiting` threshold. */
 	readonly afterMs: number;
-	/** When the stage last became idle, or undefined while it is busy. */
+	/** When, by `performance.now()`, the stage last became idle, or undefined while it is busy. */
 	idleSince(): number | undefined;
 	/** Release the stage's session; called once the stage has been idle for its threshold. */
 	release(): Promise<void>;
@@ -19,7 +19,7 @@ interface Watched {
 }
 
 /**
- * One idle scan per run: a single timer releases resident stages the workflow holds without using — awaiting a child
+ * One idle scan per run, timed on the monotonic clock so a step of the wall clock never delays a release (#5058): a single timer releases resident stages the workflow holds without using — awaiting a child
  * workflow or a run-level prompt, say — once they have been idle longer than their threshold. No stage owns a timer
  * of its own. The timer runs only while some stage is watched, and never keeps the process alive by itself.
  */
@@ -37,7 +37,7 @@ export class StageIdleReleaser {
 	/** Watch a stage whose session is resident; it is released after `afterMs` without activity. */
 	watch(key: string, stage: IdleStage): void {
 		if (this.finished) return;
-		const deadline = Date.now() + stage.afterMs;
+		const deadline = performance.now() + stage.afterMs;
 		this.watched.set(key, { stage, deadline });
 		this.arm(deadline);
 	}
@@ -89,7 +89,7 @@ export class StageIdleReleaser {
 		if (this.timer !== undefined && this.timerAt <= deadline) return;
 		this.clearTimer();
 		this.timerAt = deadline;
-		this.timer = setTimeout(() => this.scan(), Math.max(0, deadline - Date.now()));
+		this.timer = setTimeout(() => this.scan(), Math.max(0, deadline - performance.now()));
 		this.timer.unref?.();
 	}
 
@@ -102,7 +102,7 @@ export class StageIdleReleaser {
 	private scan(): void {
 		this.timer = undefined;
 		this.timerAt = Number.POSITIVE_INFINITY;
-		const now = Date.now();
+		const now = performance.now();
 		let next = Number.POSITIVE_INFINITY;
 		for (const [key, watched] of [...this.watched]) {
 			if (watched.deadline > now) {

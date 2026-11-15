@@ -1,4 +1,11 @@
-import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteValue, StorageDescriptor } from "../storage/database.js";
+import type {
+	SqliteDatabase,
+	SqliteExecutor,
+	SqliteRow,
+	SqliteStatement,
+	SqliteValue,
+	StorageDescriptor,
+} from "../storage/database.js";
 import { dialectOf, type StorageDialect, type StorageJsonSource, type StorageTrigger } from "../storage/dialect.js";
 import { StorageWriteLockTimeoutError } from "../storage/errors.js";
 import { applyStorageMigrations } from "../storage/migrations.js";
@@ -1014,18 +1021,36 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 * them after.
 	 */
 	async assertStored(transaction: SqliteExecutor, snapshots: readonly WorktreeSnapshot[]): Promise<void> {
+		const missing = await this.missingBlob(transaction, snapshots);
+		if (missing === undefined) return;
+		// Loaded only when a write is refused, so the storage entry does not load the workspace error family.
+		const { WorkspaceSnapshotError } = await import("./errors.ts");
+		throw new WorkspaceSnapshotError("blobs-collected", missing);
+	}
+
+	/**
+	 * A query that returns a row only while this table holds every blob of `snapshots` in full, for a write planned
+	 * outside a transaction to check in the request that writes it (#5077); undefined when they name no blob.
+	 */
+	storedFence(snapshots: readonly WorktreeSnapshot[]): SqliteStatement | undefined {
 		const hashes = [...new Set(snapshots.flatMap(wellFormedBlobHashes))];
-		if (hashes.length === 0) return;
+		if (hashes.length === 0) return undefined;
+		return {
+			sql: `SELECT 1 AS stored WHERE (SELECT COUNT(*) FROM ${this.table} AS b WHERE hash IN (SELECT value FROM ${this.dialect.jsonValues("?")}) AND (chunks = 0 OR chunks = (SELECT COUNT(*) FROM ${this.tables.blobChunks} AS c WHERE c.hash = b.hash))) = ?`,
+			params: [JSON.stringify(hashes), hashes.length],
+		};
+	}
+
+	/** The first of `snapshots`' blobs this table does not hold in full, read in `transaction`; undefined when none. */
+	async missingBlob(transaction: SqliteExecutor, snapshots: readonly WorktreeSnapshot[]): Promise<string | undefined> {
+		const hashes = [...new Set(snapshots.flatMap(wellFormedBlobHashes))];
+		if (hashes.length === 0) return undefined;
 		const rows = await transaction.all<SqliteRow & { hash: string }>(
 			`SELECT hash FROM ${this.table} AS b WHERE hash IN (SELECT value FROM ${this.dialect.jsonValues("?")}) AND (chunks = 0 OR chunks = (SELECT COUNT(*) FROM ${this.tables.blobChunks} AS c WHERE c.hash = b.hash))${this.dialect.lockClause("share")}`,
 			JSON.stringify(hashes),
 		);
 		const stored = new Set(rows.map((row) => row.hash));
-		const missing = hashes.find((hash) => !stored.has(hash));
-		if (missing === undefined) return;
-		// Loaded only when a write is refused, so the storage entry does not load the workspace error family.
-		const { WorkspaceSnapshotError } = await import("./errors.ts");
-		throw new WorkspaceSnapshotError("blobs-collected", missing);
+		return hashes.find((hash) => !stored.has(hash));
 	}
 
 	/**

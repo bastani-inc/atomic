@@ -843,6 +843,10 @@ export {
 } from "./core/skills.ts";
 export { createSyntheticSourceInfo } from "./core/source-info.ts";
 export {
+	type ConfiguredSecretRedactorOptions,
+	configuredSecretRedactor,
+} from "./core/storage/sqlite-facade.js";
+export {
 	generateStructuredOutput,
 	type StructuredOutputRequest,
 	type StructuredOutputResult,
@@ -949,6 +953,8 @@ export {
 	type ShellToolPresentation,
 	searchToolSystemPromptContribution,
 	serializeFileToolError,
+	sliceHead,
+	sliceTail,
 	type ToolsOptions,
 	type TruncationOptions,
 	type TruncationResult,
