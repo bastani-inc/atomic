@@ -378,7 +378,12 @@ class IntercomBroker {
     // #4751: what waits for away sessions is kept with the same lifetime as the delivered-message authority.
     if (this.deliveredMessageCache === undefined) {
       try {
-        this.pendingQuestions.useAwayStore(new AwayAsks(getBrokerAwayAsksPath()));
+        // #4829: live asks are written to it too, with their peers' return addresses, so they outlive this broker.
+        this.pendingQuestions.useAwayStore(
+          new AwayAsks(getBrokerAwayAsksPath()),
+          (sessionId) =>
+            this.sessions.get(sessionId)?.registrationReturnAddress ?? this.sessionIdReclaim.retiredReturnAddress(sessionId),
+        );
       } catch (error) {
         console.error(`Intercom broker keeps away asks in memory only: ${error instanceof Error ? error.message : String(error)}`);
       }
@@ -439,6 +444,11 @@ class IntercomBroker {
     if (process.platform !== "win32") chmodSync(INTERCOM_DIR, 0o700);
     this.server = net.createServer(this.handleConnection.bind(this));
     this.pendingQuestions.failThroughOwnerWhen((question) => this.releasedAskerReplies.hasOwnedRoute(question));
+    // #4829: a released subagent's asks outlive this broker too; the next one keeps them for the subagent's return.
+    this.releasedAskerReplies.persistWith({
+      kept: (question) => this.pendingQuestions.writeLive(question),
+      removed: (question) => this.pendingQuestions.forgetLive([question]),
+    });
   }
 
   /**
@@ -1953,9 +1963,10 @@ class IntercomBroker {
           // Multi-node S5: frames written while registration waited for the presence lease follow `registered`.
           flushHeldWrites(socket, held);
           // #4751: a session back under its id takes up the asks it sent or was sent before it went away.
-          this.pendingQuestions.restoreDormant(id, rejoined?.registrationReturnAddress, (sessionId) =>
-            this.sessions.has(sessionId),
-          );
+          this.pendingQuestions.restoreDormant(id, rejoined?.registrationReturnAddress, (sessionId, returnAddress) => {
+            const session = this.sessions.get(sessionId);
+            return session !== undefined && (returnAddress === "" || session.registrationReturnAddress === returnAddress);
+          });
           // What was held for it while it was away (replies, failed asks) is delivered once: a recipient that confirms
           // saves releases each when saved, and its inbox shows a redelivered copy only once.
           const returnAddress = rejoined?.registrationReturnAddress;
@@ -3270,7 +3281,12 @@ class IntercomBroker {
         // #4751: an away asker's ask to it fails with a message held until the asker is back; a session that ended
         // for good is waited for by nothing.
         const reason = `Session "${departed.info.name ?? sessionId}" ended before replying`;
-        this.pendingQuestions.failDormantForTarget(departed.info, reason, "recipient-ended");
+        this.pendingQuestions.failDormantForTarget(
+          departed.info,
+          reason,
+          "recipient-ended",
+          departed.registrationReturnAddress,
+        );
         this.failReleasedAsksTo(departed.info, departed.socket, reason, "recipient-ended");
         if (departed.supervisorId === undefined)
           this.pendingQuestions.dropAway(departed.registrationReturnAddress);
