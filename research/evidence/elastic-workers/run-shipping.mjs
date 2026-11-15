@@ -317,7 +317,8 @@ async function trial(hosts, shipping) {
 			for (;;) {
 				const [row] = await query(shared.url, "SELECT COUNT(*) AS n FROM bench_ready");
 				if (Number(row.n) >= remoteHosts) break;
-				if (Date.now() > deadline + 300_000) throw new Error(`only ${row.n} of ${remoteHosts} remote hosts joined`);
+				// A pinned VM can wait a while for a free slot behind gate jobs.
+				if (Date.now() > deadline + 1_800_000) throw new Error(`only ${row.n} of ${remoteHosts} remote hosts joined`);
 				await sleep(500);
 			}
 		}
@@ -348,7 +349,9 @@ async function trial(hosts, shipping) {
 		const killer =
 			killAfter === undefined
 				? undefined
-				: setTimeout(() => {
+				: setTimeout(async () => {
+						// Once the children are under way (a quarter of their steps ran), so the kill lands mid-child.
+						while (readFileSync(execLog, "utf8").split("\n").length < (children * steps) / 4) await sleep(200);
 						killedAt = Date.now() - runStart;
 						killed = busiestHost(work, hosts - remoteHosts);
 						killTree(processes[killed].pid);
