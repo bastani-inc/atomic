@@ -182,7 +182,11 @@ describe("a stage's session that waits on a detached call's result (#4580)", () 
 	/** A stage whose reopened session is busy at the first hand-back, with the listeners the stage binds to it. */
 	function busyOnFirstHandBack(options: { readonly signal?: AbortSignal } = {}) {
 		const listeners = new Set<(event: StageSessionEvent) => void>();
-		const state = { handBacks: 0, listenersWhenBusy: 0 };
+		const state = {
+			handBacks: 0,
+			listenersWhenBusy: 0,
+			boundWhenBusy: new Set<(event: StageSessionEvent) => void>(),
+		};
 		const rig = makeRig({
 			detachOnPrompt: detachingOne(),
 			...(options.signal === undefined ? {} : { signal: options.signal }),
@@ -201,6 +205,7 @@ describe("a stage's session that waits on a detached call's result (#4580)", () 
 								log.push(`handBack#${state.handBacks}`);
 								if (state.handBacks > 1) return;
 								state.listenersWhenBusy = listeners.size;
+								state.boundWhenBusy = new Set(listeners);
 								throw new ToolDetachmentError("session-busy", { sessionId: "session-2" });
 							},
 						},
@@ -210,16 +215,18 @@ describe("a stage's session that waits on a detached call's result (#4580)", () 
 			rig.ci.finish("c1");
 			await until(() => listeners.size > state.listenersWhenBusy && state.handBacks === 1);
 		};
-		return { rig, listeners, state, waitingForTheRun };
+		/** The listeners the stage bound to wait for the run, after the hand-back found it running. */
+		const runWaitListeners = () => [...listeners].filter((listener) => !state.boundWhenBusy.has(listener));
+		return { rig, listeners, state, waitingForTheRun, runWaitListeners };
 	}
 
 	test("a hand-back that finds it running is tried again as soon as the run has settled (#4580)", async () => {
 		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-		const { rig, listeners, state, waitingForTheRun } = busyOnFirstHandBack();
+		const { rig, listeners, state, waitingForTheRun, runWaitListeners } = busyOnFirstHandBack();
 
 		const turn = rig.ctx.prompt("go");
 		await waitingForTheRun();
-		const listenersWhileWaiting = listeners.size;
+		const waitListeners = runWaitListeners();
 		assert.equal(state.handBacks, 1, "the hand-back waits for the run");
 		for (const listener of [...listeners]) listener({ type: "agent_start" });
 		await new Promise((resolve) => setImmediate(resolve));
@@ -229,8 +236,15 @@ describe("a stage's session that waits on a detached call's result (#4580)", () 
 
 		assert.equal(state.handBacks, 2);
 		assert.equal(vi.getTimerCount(), 0, "the moment's timer is not left behind");
-		assert.equal(listeners.size, listenersWhileWaiting - 1, "the stage stopped listening for the run");
+		assert.equal(waitListeners.length, 1);
+		assert.ok(!listeners.has(waitListeners[0]!), "the stage stopped listening for the run");
 		assert.deepEqual(names(rig.log, "prompt#2"), [], "the stage did not prompt the session it handed the results to");
+		await rig.ctx.__dispose();
+		assert.equal(
+			listeners.size,
+			0,
+			"the stage leaves no listener on the session, its attempt's usage window included",
+		);
 	});
 
 	test("a hand-back that finds it running looks again after a moment even when no settling is heard (#4580)", async () => {
@@ -249,7 +263,9 @@ describe("a stage's session that waits on a detached call's result (#4580)", () 
 
 	test("an abort of the run ends the wait for a running session with its reason (#4580)", async () => {
 		const abort = new AbortController();
-		const { rig, listeners, state, waitingForTheRun } = busyOnFirstHandBack({ signal: abort.signal });
+		const { rig, listeners, state, waitingForTheRun, runWaitListeners } = busyOnFirstHandBack({
+			signal: abort.signal,
+		});
 		const reason = new Error("the run was cancelled");
 
 		const turn = rig.ctx.prompt("go");
@@ -258,12 +274,19 @@ describe("a stage's session that waits on a detached call's result (#4580)", () 
 			(error: unknown) => error,
 		);
 		await waitingForTheRun();
-		const listenersWhileWaiting = listeners.size;
+		const waitListeners = runWaitListeners();
 		abort.abort(reason);
 
 		assert.equal(await failed, reason);
 		assert.equal(state.handBacks, 1, "the hand-back was not tried again");
-		assert.equal(listeners.size, listenersWhileWaiting - 1, "the stage stopped listening for the run");
+		assert.equal(waitListeners.length, 1);
+		assert.ok(!listeners.has(waitListeners[0]!), "the stage stopped listening for the run");
+		await rig.ctx.__dispose();
+		assert.equal(
+			listeners.size,
+			0,
+			"the stage leaves no listener on the session, its attempt's usage window included",
+		);
 	});
 
 	test("a hand-back refused for another reason still fails the turn (#4580)", async () => {
