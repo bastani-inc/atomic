@@ -1,7 +1,17 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	closeSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	openSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
@@ -77,6 +87,16 @@ describe("blueprint build locks (#4748)", () => {
 			await new Promise((resolve) => setTimeout(resolve, 200));
 			const lock = lockOf();
 			seen.push({ pid: lock.pid, steps: lock.steps.map((step) => step.pid) });
+			const [step] = lock.steps as { pid: number; start?: string; at?: number }[];
+			assert.equal(
+				step?.start,
+				processStartToken(step!.pid),
+				"a step records when it started, where that is readable",
+			);
+			assert.equal(typeof step?.at, "number", "and when this process saw it start");
+			if (process.platform !== "win32") {
+				assert.equal(statSync(buildLockPath(dir, root())).mode & 0o777, 0o600, "the lock is private");
+			}
 			assert.equal(
 				(JSON.parse(readFileSync(buildLockPath(dir, root()), "utf8")) as { host: string }).host,
 				THIS_HOST,
@@ -96,6 +116,7 @@ describe("blueprint build locks (#4748)", () => {
 			const orphan = sleeper();
 			writeLock({ pid: await deadPid(), steps: [{ pid: orphan.pid, start: processStartToken(orphan.pid!) }] });
 			assert.deepEqual(await settleOtherBuilds(dir, [root()]), []);
+			assert.throws(() => process.kill(orphan.pid!, 0), "the step had ended when the wait returned");
 			await exited(orphan);
 			assert.equal(existsSync(buildLockPath(dir, root())), false);
 		},
@@ -137,7 +158,10 @@ describe("blueprint build locks (#4748)", () => {
 		assert.notEqual(warnings, "wedged", "the wait is bounded");
 		assert.ok(Date.now() - started >= 600);
 		assert.equal((warnings as string[]).length, 1);
-		assert.match((warnings as string[])[0]!, /still seemed to build .* building it anyway/);
+		assert.match(
+			(warnings as string[])[0]!,
+			/^Another process \(pid \d+\) still seemed to build .* after 1 s; building it anyway\.$/,
+		);
 		assert.equal(waits.length, 1);
 		assert.match(waits[0]!, /^Waiting for another Atomic process's blueprint build of /);
 		assert.equal(holder.signalCode, null, "the holder is not stopped");
@@ -210,9 +234,59 @@ describe("blueprint build locks (#4748)", () => {
 			buildLockPath(dir, root()),
 			JSON.stringify({ host: "another-host", pid: sleeper().pid, steps: [] }),
 		);
-		await settleOtherBuilds(dir, [root()]);
+		assert.deepEqual(await settleOtherBuilds(dir, [root()]), []);
 		writeLock({ pid: process.pid, steps: [] });
-		await settleOtherBuilds(dir, [root()]);
+		assert.deepEqual(await settleOtherBuilds(dir, [root()]), []);
+		assert.equal(existsSync(buildLockPath(dir, root())), true);
+	});
+
+	for (const [what, content] of [
+		["valid JSON that is not a lock", "null"],
+		["a lock without its host", JSON.stringify({ pid: 1, steps: [] })],
+		["a lock whose pid is no process id", JSON.stringify({ host: THIS_HOST, pid: 1.5, steps: [] })],
+		["a lock whose start is not a string", JSON.stringify({ host: THIS_HOST, pid: 1, start: 7, steps: [] })],
+		["a lock whose steps are not a list", JSON.stringify({ host: THIS_HOST, pid: 1, steps: {} })],
+		["a lock with a malformed step", JSON.stringify({ host: THIS_HOST, pid: 1, steps: [{ pid: "1" }] })],
+	] as const) {
+		test(`${what} is a lock that cannot be read, reported once even for a worktree named twice`, async () => {
+			mkdirSync(join(dir, "blueprint-builds", "locks"), { recursive: true });
+			writeFileSync(buildLockPath(dir, root()), content);
+			const warnings = await settleOtherBuilds(dir, [root(), root()], { waitMs: 300 });
+			assert.equal(warnings.length, 1);
+			assert.match(warnings[0]!, /could not be read/);
+		});
+	}
+
+	test("a lock path that cannot be read as a file is a lock that cannot be read", async () => {
+		mkdirSync(buildLockPath(dir, root()), { recursive: true });
+		const warnings = await settleOtherBuilds(dir, [root()], { waitMs: 300 });
+		assert.match(warnings[0] ?? "", /could not be read/);
+	});
+
+	test("several unproven steps are named in the warning, after the wait for an earlier build is shown", async () => {
+		const first = sleeper();
+		const second = sleeper();
+		writeLock({ pid: await deadPid(), steps: [{ pid: first.pid }, { pid: second.pid }] });
+		const waits: string[] = [];
+		const warnings = await settleOtherBuilds(dir, [root()], {
+			waitMs: 300,
+			onWait: (_root, message) => waits.push(message),
+		});
+		assert.deepEqual(waits, [`Waiting for an earlier blueprint build of ${root()} to end`]);
+		assert.match(warnings[0]!, new RegExp(`\\(process ${first.pid}, ${second.pid}\\)`));
+	});
+
+	test("a build leaves a lock another process wrote meanwhile in place", async () => {
+		const fd = openSync(join(dir, "step.log"), "a");
+		await withBuildLocks(dir, [root()], async () => {
+			await runLoggedProcess(
+				{ command: process.execPath, args: ["-e", ""], cwd: dir, env: process.env },
+				{ fd, path: join(dir, "step.log") },
+				{ timeoutMs: 30_000 },
+			);
+			writeLock({ pid: 1, steps: [] });
+		});
+		closeSync(fd);
 		assert.equal(existsSync(buildLockPath(dir, root())), true);
 	});
 });

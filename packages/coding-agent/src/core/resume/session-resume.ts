@@ -1067,12 +1067,18 @@ async function setUpCheckoutBlueprints(
 		await Promise.all(joined.map((checkout) => buildInProgress(checkout.root)));
 		// Another process's build of one of them is waited for, or the steps of one whose process died are stopped,
 		// before the ledger says which need building.
+		// Settling another build never fails the resume: a failure to read or clean up its lock is a warning.
 		const lockWarnings = await settleOtherBuilds(storeDir, claimed, {
 			signal: options.signal,
 			onWait: (root, message) => {
 				options.onProgress?.(message);
 				announceBlueprintBuildWaiting(root, message);
 			},
+		}).catch((error: unknown) => {
+			if (options.signal?.aborted) throw error;
+			return [
+				`Could not check for an earlier blueprint build of these worktrees (${error instanceof Error ? describeFailure(error) : String(error)}); building them anyway.`,
+			];
 		});
 		const retried = await checkoutsNeedingRebuild(candidates, storeDir);
 		const restored = [...toBuild, ...retried];

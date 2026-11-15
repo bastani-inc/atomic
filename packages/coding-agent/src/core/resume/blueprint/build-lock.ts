@@ -81,6 +81,13 @@ function readLock(file: string): BuildLock | undefined {
 	return read.kind === "lock" ? read.lock : undefined;
 }
 
+/** Removes the lock at `file`; one that cannot be removed is left, since a lock never stops a build. */
+function removeLock(file: string): void {
+	try {
+		rmSync(file, { force: true });
+	} catch {}
+}
+
 function writeLock(file: string, lock: BuildLock): void {
 	mkdirSync(dirname(file), { recursive: true });
 	const temporary = `${file}.${process.pid}.tmp`;
@@ -219,7 +226,7 @@ async function settleOtherBuild(file: string, root: string, options: SettleOther
 		const read = readLockFile(file);
 		if (read.kind === "none") return [];
 		if (read.kind === "corrupt") {
-			rmSync(file, { force: true });
+			removeLock(file);
 			return [
 				`The build lock of ${root} could not be read; building it anyway. An earlier build may still be running there.`,
 			];
@@ -244,13 +251,13 @@ async function settleOtherBuild(file: string, root: string, options: SettleOther
 		const unproven = steps.filter((step) => identity(step) === "unknown");
 		if (unproven.length > 0) {
 			if (await wait("an earlier blueprint build")) continue;
-			rmSync(file, { force: true });
+			removeLock(file);
 			const pids = unproven.map((step) => step.pid).join(", ");
 			return [
 				`An earlier blueprint build of ${root} may still be running (process ${pids}), but it could not be confirmed as that build, so it was not stopped; building the worktree anyway.`,
 			];
 		}
-		rmSync(file, { force: true });
+		removeLock(file);
 		// A step recorded without its start cannot be told from what it left running (on Windows, Git's bash.exe ends
 		// before the shell it started), so the user hears that the earlier build may still run.
 		const unidentified = steps.filter((step) => step.start === undefined);
@@ -314,6 +321,6 @@ export async function withBuildLocks<T>(
 	try {
 		return await stepProcessWatcher.run(watch, build);
 	} finally {
-		for (const file of files) if (readLock(file)?.pid === process.pid) rmSync(file, { force: true });
+		for (const file of files) if (readLock(file)?.pid === process.pid) removeLock(file);
 	}
 }
