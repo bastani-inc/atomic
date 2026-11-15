@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { basename, join } from "node:path";
-import { getModel } from "@bastani/pi-ai/compat";
+import { getModel } from "@bastani/atomic-ai/compat";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { getBuiltinPackagePaths } from "../../packages/coding-agent/src/core/builtin-packages.js";
 import { DefaultResourceLoader } from "../../packages/coding-agent/src/core/resource-loader.js";

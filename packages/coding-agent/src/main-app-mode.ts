@@ -1,4 +1,4 @@
-import type { ImageContent } from "@bastani/pi-ai/compat";
+import type { ImageContent } from "@bastani/atomic-ai/compat";
 import type { Args, Mode } from "./cli/args.ts";
 import { processFileArguments } from "./cli/file-processor.ts";
 import { buildInitialMessage } from "./cli/initial-message.ts";

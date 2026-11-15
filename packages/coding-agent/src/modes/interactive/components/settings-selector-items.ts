@@ -1,6 +1,6 @@
-import { isModelType } from "@bastani/pi-ai";
-import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { getCapabilities, type SettingItem } from "@earendil-works/pi-tui";
+import type { ThinkingLevel } from "@bastani/atomic-agent-core";
+import { isModelType } from "@bastani/atomic-ai";
+import { getCapabilities, type SettingItem } from "@bastani/atomic-tui";
 import { formatHttpIdleTimeoutMs, HTTP_IDLE_TIMEOUT_CHOICES } from "../../../core/http-dispatcher.ts";
 import { formatModelLabel } from "../../../core/model-label.ts";
 import type { Settings } from "../../../core/settings-schema.ts";

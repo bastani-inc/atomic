@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { Container, Text, TuiMainScreen } from "@earendil-works/pi-tui";
+import { Container, Text, TuiMainScreen } from "@bastani/atomic-tui";
 import { test } from "vitest";
 import { RecordingTerminal } from "../../packages/coding-agent/test/helpers/interactive-fullscreen-layout.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";

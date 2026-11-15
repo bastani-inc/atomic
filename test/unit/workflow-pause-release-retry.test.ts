@@ -1,4 +1,4 @@
-import { fauxAssistantMessage } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
 import { createHarness, getMessageText } from "../../packages/coding-agent/test/suite/harness.ts";
 import type { StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 import { sleep } from "../helpers/runtime.js";

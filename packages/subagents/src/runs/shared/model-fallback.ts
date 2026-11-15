@@ -7,7 +7,7 @@ import {
 	normalizeModelFailureSignal,
 	ranOnModelLine,
 } from "@bastani/atomic";
-import { type Api, getSupportedThinkingLevels, type Model } from "@bastani/pi-ai/compat";
+import { type Api, getSupportedThinkingLevels, type Model } from "@bastani/atomic-ai/compat";
 import type { ModelConstraints } from "../../shared/model-constraints.js";
 import {
 	type ModelInfo as AvailableModelInfo,

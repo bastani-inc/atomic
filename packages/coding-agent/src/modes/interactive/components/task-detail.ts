@@ -1,5 +1,5 @@
 import { stripVTControlCharacters } from "node:util";
-import { type Component, Text, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { type Component, Text, truncateToWidth, wrapTextWithAnsi } from "@bastani/atomic-tui";
 import type { Attention, Execution, TaskRecord } from "../../../core/tasks/contracts.js";
 import { formatTaskHeartbeatDuration } from "../../../core/tasks/heartbeat-notice.js";
 import type { TaskActivity } from "../../../core/tasks/owner-store.js";

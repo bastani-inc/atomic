@@ -1,4 +1,5 @@
-import type { ProviderHeaders, ProviderId } from "@bastani/pi-ai";
+import type { AgentMessage, ThinkingLevel } from "@bastani/atomic-agent-core";
+import type { ProviderHeaders, ProviderId } from "@bastani/atomic-ai";
 import type {
 	Api,
 	AssistantMessageEvent,
@@ -8,8 +9,7 @@ import type {
 	TextContent,
 	ToolResultMessage,
 	Usage,
-} from "@bastani/pi-ai/compat";
-import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
+} from "@bastani/atomic-ai/compat";
 import type { ContextEditEntry, ProjectedSessionEntry } from "../session-manager-types.ts";
 import type { NormalizedBuildSystemPromptOptions } from "../system-prompt.ts";
 import type { ExtensionMode } from "./context-types.ts";

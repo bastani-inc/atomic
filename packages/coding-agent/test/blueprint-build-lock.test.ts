@@ -78,7 +78,8 @@ describe("blueprint build locks (#4748)", () => {
 				command: process.execPath,
 				args: [
 					"-e",
-					`const fs=require("fs");const t=setInterval(()=>{if(fs.existsSync(${JSON.stringify(gate)}))clearInterval(t)},20)`,
+					'const fs=require("fs");const t=setInterval(()=>{if(fs.existsSync(process.argv[1]))clearInterval(t)},20)',
+					gate,
 				],
 				cwd: dir,
 				env: process.env,

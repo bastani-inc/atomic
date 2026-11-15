@@ -8,8 +8,8 @@ import {
 	type Model,
 	normalizeContext,
 	type Provider,
-} from "@bastani/pi-ai";
-import { registerApiProvider, unregisterApiProviders } from "@bastani/pi-ai/compat";
+} from "@bastani/atomic-ai";
+import { registerApiProvider, unregisterApiProviders } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, expect, it } from "vitest";
 import { ModelConfig } from "../src/core/model-config.ts";
 import { composeModelProvider } from "../src/core/provider-composer.ts";

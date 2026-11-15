@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { sep } from "node:path";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { visibleWidth } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.js";
 import { setDebugSetting } from "../src/core/debug-setting.js";

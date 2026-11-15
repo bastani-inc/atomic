@@ -1,4 +1,4 @@
-import { resetCapabilitiesCache, setCapabilities } from "@earendil-works/pi-tui";
+import { resetCapabilitiesCache, setCapabilities } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	getLanguageFromPath,

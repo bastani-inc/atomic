@@ -1,4 +1,4 @@
-import { Box, Container, Markdown, type MarkdownTheme, MouseRegion, Spacer, Text } from "@earendil-works/pi-tui";
+import { Box, Container, Markdown, type MarkdownTheme, MouseRegion, Spacer, Text } from "@bastani/atomic-tui";
 import type { MarkdownTransformer } from "../../../core/extensions/types.ts";
 import type { BranchSummaryMessage } from "../../../core/messages.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.js";

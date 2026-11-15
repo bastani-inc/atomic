@@ -7,7 +7,7 @@
  * These tests count renders and frames; none of them measure time.
  */
 import assert from "node:assert/strict";
-import { type Component, resetCapabilitiesCache, setCapabilities, type Terminal } from "@earendil-works/pi-tui";
+import { type Component, resetCapabilitiesCache, setCapabilities, type Terminal } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, beforeEach, test, vi } from "vitest";
 import type { AgentSession } from "../../packages/coding-agent/src/core/agent-session.ts";
 import { setCallbackActivityReporter } from "../../packages/coding-agent/src/core/callback-activity.ts";

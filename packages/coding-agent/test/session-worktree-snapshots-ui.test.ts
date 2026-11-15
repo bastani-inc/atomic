@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { Container } from "@earendil-works/pi-tui";
+import { Container } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, beforeEach, describe, test } from "vitest";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
 import { recordResumeTimings } from "../src/core/resume/timings.js";

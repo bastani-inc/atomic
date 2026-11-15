@@ -12,14 +12,14 @@ async function registerIsolatedTests(): Promise<void> {
 	// Only ever reached inside the `bun test` child spawned below, where
 	// `bun:test`'s module registry is the real one. vitest has no equivalent.
 	const { mock } = await import("bun:test");
-	const { stripTerminalSequences } = await import("@earendil-works/pi-tui/dist/utils.js");
+	const { stripTerminalSequences } = await import("@bastani/atomic-tui/dist/utils.js");
 	class TestComponent {}
 	const [{ ScrollView }, { VStack }, { Input }] = await Promise.all([
-		import("@earendil-works/pi-tui/dist/components/scroll-view.js"),
-		import("@earendil-works/pi-tui/dist/components/v-stack.js"),
-		import("@earendil-works/pi-tui/dist/components/input.js"),
+		import("@bastani/atomic-tui/dist/components/scroll-view.js"),
+		import("@bastani/atomic-tui/dist/components/v-stack.js"),
+		import("@bastani/atomic-tui/dist/components/input.js"),
 	]);
-	mock.module("@earendil-works/pi-tui", () => ({
+	mock.module("@bastani/atomic-tui", () => ({
 		Box: TestComponent,
 		Editor: TestComponent,
 		// The stage-chat find box edits its query with pi-tui's own input.

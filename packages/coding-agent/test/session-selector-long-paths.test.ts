@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { setKeybindings, stripTerminalSequences } from "@earendil-works/pi-tui";
+import { setKeybindings, stripTerminalSequences } from "@bastani/atomic-tui";
 import { beforeAll, beforeEach, describe, test } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.js";
 import type { SessionInfo } from "../src/core/session-manager.js";

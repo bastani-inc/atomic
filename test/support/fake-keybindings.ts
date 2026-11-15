@@ -10,7 +10,7 @@
  * This module returns a small structural fake matching the
  * `KeybindingsLike` shape. The default action → key-sequence table is a
  * subset of pi-tui's `TUI_KEYBINDINGS` defaults (see
- * node_modules/@earendil-works/pi-tui/src/keybindings.ts) — exactly the actions
+ * node_modules/@bastani/atomic-tui/src/keybindings.ts) — exactly the actions
  * the workflow input surfaces consume. Use `makeFakeKeybindings()` to
  * accept defaults, or pass overrides for per-test remaps.
  */

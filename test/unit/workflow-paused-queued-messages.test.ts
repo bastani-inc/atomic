@@ -1,5 +1,5 @@
-import { fauxAssistantMessage } from "@bastani/pi-ai/compat";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AgentMessage } from "@bastani/atomic-agent-core";
+import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
 import { describe } from "vitest";
 import { createHarness, getMessageText, type Harness } from "../../packages/coding-agent/test/suite/harness.ts";
 import type { StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner.js";

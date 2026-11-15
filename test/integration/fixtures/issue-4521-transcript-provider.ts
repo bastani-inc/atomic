@@ -21,7 +21,7 @@ import {
 	createAssistantMessageEventStream,
 	getCurrentSystemPrompt,
 	type JsonObject,
-} from "@bastani/pi-ai/compat";
+} from "@bastani/atomic-ai/compat";
 
 const PING = "E2E-PING-4521";
 /** How long a held turn waits before its next `true` tool call. */

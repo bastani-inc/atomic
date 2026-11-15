@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
-import { Container } from "@earendil-works/pi-tui";
+import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
+import { Container } from "@bastani/atomic-tui";
 import { afterEach, describe, test, vi } from "vitest";
 import type { VerbatimCompactionResult } from "../src/core/compaction/index.js";
 import type { ExtensionFactory } from "../src/core/extensions/index.js";

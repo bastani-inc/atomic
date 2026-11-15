@@ -1,4 +1,4 @@
-import type { AnyModel, AuthResult } from "@bastani/pi-ai";
+import type { AnyModel, AuthResult } from "@bastani/atomic-ai";
 import type { ModelConfig } from "./model-config.ts";
 import { mergeHeaders } from "./model-runtime-streaming.ts";
 import type { ModelRuntimeAuthOverrides } from "./model-runtime-types.ts";

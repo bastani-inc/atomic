@@ -15,7 +15,7 @@ import {
 	getModel,
 	type Model,
 	type ThinkingLevel,
-} from "@bastani/pi-ai/compat";
+} from "@bastani/atomic-ai/compat";
 import { afterEach, test } from "vitest";
 import { createAgentSession, withResourceAdmission } from "../../packages/coding-agent/src/core/sdk.js";
 import type { ResourceAdmission } from "../../packages/coding-agent/src/core/sdk-types.js";

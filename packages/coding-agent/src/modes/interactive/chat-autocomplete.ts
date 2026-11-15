@@ -4,7 +4,7 @@ import {
 	type AutocompleteSuggestions,
 	CombinedAutocompleteProvider,
 	type SlashCommand,
-} from "@earendil-works/pi-tui";
+} from "@bastani/atomic-tui";
 
 const AT_MENTION_PATH_DELIMITERS = new Set([" ", "\t", '"', "'", "="]);
 

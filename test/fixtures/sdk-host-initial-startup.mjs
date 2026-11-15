@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setImmediate as tick } from "node:timers/promises";
-import { Agent } from "@earendil-works/pi-agent-core";
+import { Agent } from "@bastani/atomic-agent-core";
 import { AgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@bastani/atomic";
 
 // #3105: direct public construction must drain initial binding, not only SDK startup.

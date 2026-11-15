@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { Credential, ImagesContext } from "@bastani/pi-ai";
+import type { Credential, ImagesContext } from "@bastani/atomic-ai";
 import { afterEach, describe, it, vi } from "vitest";
 import { AuthStorage, InMemoryAuthStorageBackend } from "../src/core/auth-storage.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";

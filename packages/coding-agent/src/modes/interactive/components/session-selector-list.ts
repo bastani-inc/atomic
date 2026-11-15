@@ -6,7 +6,7 @@ import {
 	Input,
 	truncateToWidth,
 	visibleWidth,
-} from "@earendil-works/pi-tui";
+} from "@bastani/atomic-tui";
 import type { KeybindingsManager } from "../../../core/keybindings.ts";
 import type { SessionInfo } from "../../../core/session-manager.ts";
 import { theme } from "../theme/theme.js";

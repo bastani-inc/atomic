@@ -1,4 +1,4 @@
-import { type Component, Container, type Input, Spacer } from "@earendil-works/pi-tui";
+import { type Component, Container, type Input, Spacer } from "@bastani/atomic-tui";
 import { DynamicBorder } from "../../../../modes/interactive/components/index.ts";
 import type { Theme } from "../../../../modes/interactive/theme/theme.js";
 import type { QuestionnaireState } from "../state/state.ts";

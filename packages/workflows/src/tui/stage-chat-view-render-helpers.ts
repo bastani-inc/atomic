@@ -1,4 +1,4 @@
-import type { Component, EditorComponent, EditorTheme, Focusable } from "@earendil-works/pi-tui";
+import type { Component, EditorComponent, EditorTheme, Focusable } from "@bastani/atomic-tui";
 import type { PendingPrompt } from "../shared/store-types.js";
 import { BOLD, hexBg, hexToAnsi, lerpColor, RESET } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";

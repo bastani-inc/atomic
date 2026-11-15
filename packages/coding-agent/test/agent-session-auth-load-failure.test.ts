@@ -2,8 +2,8 @@
 import { mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getModel } from "@bastani/pi-ai/compat";
-import { Agent } from "@earendil-works/pi-agent-core";
+import { Agent } from "@bastani/atomic-agent-core";
+import { getModel } from "@bastani/atomic-ai/compat";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
 import { AuthStorage, type AuthStorageBackend } from "../src/core/auth-storage.ts";

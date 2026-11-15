@@ -3,7 +3,7 @@
  * typed failure they end with, and a model runtime with a scripted faux model.
  */
 import { join } from "node:path";
-import { registerFauxProvider } from "@bastani/pi-ai/compat";
+import { registerFauxProvider } from "@bastani/atomic-ai/compat";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.ts";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.ts";
 

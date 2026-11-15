@@ -10,10 +10,7 @@ import { migrateKeybindingsConfig } from "./core/keybindings.ts";
 import { migrateAzureProvider } from "./migrations-azure.js";
 import { stripBom } from "./utils/text.ts";
 
-const MIGRATION_GUIDE_URL =
-	"https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/CHANGELOG.md#extensions-migration";
-const EXTENSIONS_DOC_URL =
-	"https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/docs/extensions.md";
+const EXTENSIONS_DOC_URL = "https://docs.bastani.ai/extensions";
 
 /**
  * Migrate legacy oauth.json and settings.json apiKeys to auth.json.
@@ -313,7 +310,6 @@ export async function showDeprecationWarnings(warnings: string[]): Promise<void>
 		console.log(chalk.yellow(`Warning: ${warning}`));
 	}
 	console.log(chalk.yellow(`\nMove your extensions to the extensions/ directory.`));
-	console.log(chalk.yellow(`Migration guide: ${MIGRATION_GUIDE_URL}`));
 	console.log(chalk.yellow(`Documentation: ${EXTENSIONS_DOC_URL}`));
 	console.log(chalk.dim(`\nPress any key to continue...`));
 

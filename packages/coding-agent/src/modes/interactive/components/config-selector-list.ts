@@ -6,7 +6,7 @@ import {
 	Input,
 	matchesKey,
 	truncateToWidth,
-} from "@earendil-works/pi-tui";
+} from "@bastani/atomic-tui";
 import { CONFIG_DIR_NAME } from "../../../config.js";
 import type { PathMetadata, ResolvedPaths, ResolvedResource } from "../../../core/package-manager.ts";
 import type { PackageSource, SettingsManager } from "../../../core/settings-manager.ts";

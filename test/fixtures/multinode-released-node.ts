@@ -11,7 +11,7 @@
  */
 import { existsSync, realpathSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
-import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { getAgentDir } from "../../packages/coding-agent/src/config.ts";
 import {
 	createAgentSessionFromServices,

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { AgentTool } from "@earendil-works/pi-agent-core";
+import type { AgentTool } from "@bastani/atomic-agent-core";
 import { Type } from "typebox";
 import { afterEach, test } from "vitest";
 import { createHarness, type Harness } from "./test-harness.js";

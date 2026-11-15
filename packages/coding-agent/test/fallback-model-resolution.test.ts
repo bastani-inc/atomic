@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { Api, Model } from "@bastani/pi-ai/compat";
+import type { Api, Model } from "@bastani/atomic-ai/compat";
 import { describe, test } from "vitest";
 import { parseArgs } from "../src/cli/args.ts";
 import { resolveFallbackModel } from "../src/core/fallback-models.ts";

@@ -1,5 +1,5 @@
-import { type Api, clampThinkingLevel, type Model } from "@bastani/pi-ai/compat";
-import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { ThinkingLevel } from "@bastani/atomic-agent-core";
+import { type Api, clampThinkingLevel, type Model } from "@bastani/atomic-ai/compat";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 
 /** The settings a model switch reads its starting level from. */

@@ -1,4 +1,4 @@
-import type { Component, EditorComponent, MarkdownTheme, TUI } from "@earendil-works/pi-tui";
+import type { Component, EditorComponent, MarkdownTheme, TUI } from "@bastani/atomic-tui";
 import type { AgentSession } from "../../../core/agent-session.js";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
 import type { ChatBoxSession } from "../../../core/tasks/supervisor.js";

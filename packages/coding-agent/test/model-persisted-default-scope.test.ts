@@ -1,5 +1,5 @@
-import { getModel, streamSimple } from "@bastani/pi-ai/compat";
-import { Agent } from "@earendil-works/pi-agent-core";
+import { Agent } from "@bastani/atomic-agent-core";
+import { getModel, streamSimple } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, expect, test } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";

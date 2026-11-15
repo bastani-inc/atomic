@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
-import { type TUI, visibleWidth } from "@earendil-works/pi-tui";
+import { type TUI, visibleWidth } from "@bastani/atomic-tui";
 import { Terminal } from "@xterm/headless";
 import { test } from "vitest";
 import type { ToolDefinition } from "../../packages/coding-agent/src/core/extensions/types.js";

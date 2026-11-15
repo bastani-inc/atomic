@@ -1,4 +1,4 @@
-import type { ClassifierAnswer } from "@bastani/pi-ai";
+import type { ClassifierAnswer } from "@bastani/atomic-ai";
 import type { Static, TSchema } from "typebox";
 import type { StructuredChoiceQuestion } from "./types.js";
 

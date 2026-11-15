@@ -233,7 +233,7 @@ export interface Provider<TApi extends Api = Api> {
 	/**
 	 * What the network phase of `refreshModels` needs. "credential" (the default) receives the
 	 * effective credential, so an expired OAuth token is refreshed first. "configured" is for catalogs
-	 * served by a source other than the provider, such as pi.dev: the phase still runs only when the
+	 * served by a source other than the provider, such as models.dev: the phase still runs only when the
 	 * provider is configured, but OAuth is never refreshed for it and `context.credential` is undefined.
 	 */
 	readonly refreshModelsAuth?: "credential" | "configured";

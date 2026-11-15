@@ -1,5 +1,5 @@
-import type { ImageContent, TextContent } from "@bastani/pi-ai/compat";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AgentMessage } from "@bastani/atomic-agent-core";
+import type { ImageContent, TextContent } from "@bastani/atomic-ai/compat";
 import { processImage } from "../utils/image-process.ts";
 import { AgentSessionBusyError } from "./agent-session-busy-error.ts";
 import { resolveWorkflowStageDeliveryTarget } from "./agent-session-delivery-forwarding.ts";

@@ -7,8 +7,8 @@
  * `_trySwitchToFallbackModel`, which is main-chat turn machinery.
  */
 
-import type { Api, Model } from "@bastani/pi-ai/compat";
-import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { ThinkingLevel } from "@bastani/atomic-agent-core";
+import type { Api, Model } from "@bastani/atomic-ai/compat";
 import { resolveModelReference } from "./model-resolver-patterns.ts";
 import { isValidThinkingLevel } from "./thinking-levels.ts";
 

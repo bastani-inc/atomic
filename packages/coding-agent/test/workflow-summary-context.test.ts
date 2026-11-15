@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createAssistantMessageEventStream } from "@bastani/pi-ai";
+import { createAssistantMessageEventStream } from "@bastani/atomic-ai";
 import { afterEach, test, vi } from "vitest";
 import { createMemoryTestBackend as createInMemoryTestBackend } from "../../../test/helpers/workflow-journal.js";
 import { injectWorkflowResumeSummary } from "../../workflows/src/extension/workflow-resume-summary.js";

@@ -33,7 +33,7 @@ function writeProvider(root: string): string {
 		path,
 		`import { appendFileSync } from "node:fs";
 import type { ExtensionAPI } from "@bastani/atomic";
-import { createAssistantMessageEventStream } from "@bastani/pi-ai/compat";
+import { createAssistantMessageEventStream } from "@bastani/atomic-ai/compat";
 
 const log = ${JSON.stringify(join(root, "requests.log"))};
 let requests = 0;

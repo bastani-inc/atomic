@@ -1,4 +1,4 @@
-import type { Credential } from "@bastani/pi-ai";
+import type { Credential } from "@bastani/atomic-ai";
 import {
 	type Api,
 	getApiProvider,
@@ -6,7 +6,7 @@ import {
 	registerApiProvider,
 	streamSimple,
 	unregisterApiProviders,
-} from "@bastani/pi-ai/compat";
+} from "@bastani/atomic-ai/compat";
 import { describe, expect, test } from "vitest";
 import { describeModelRegistry } from "./model-registry-fixtures.ts";
 import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";

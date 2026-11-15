@@ -15,7 +15,7 @@
  */
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { type AssistantMessage, createAssistantMessageEventStream } from "@bastani/pi-ai/compat";
+import { type AssistantMessage, createAssistantMessageEventStream } from "@bastani/atomic-ai/compat";
 import { AuthStorage } from "../../../packages/coding-agent/src/core/auth-storage.js";
 import { createExtensionRuntime } from "../../../packages/coding-agent/src/core/extensions/loader-runtime.js";
 import { ModelRuntime } from "../../../packages/coding-agent/src/core/model-runtime.js";

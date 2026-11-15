@@ -2,11 +2,11 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getKeybindings, setKeybindings } from "@earendil-works/pi-tui";
+import { getKeybindings, setKeybindings } from "@bastani/atomic-tui";
 import { afterEach, describe, it, vi } from "vitest";
 
-vi.mock("@earendil-works/pi-tui", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("@earendil-works/pi-tui")>();
+vi.mock("@bastani/atomic-tui", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("@bastani/atomic-tui")>();
 	class FakeTui {
 		terminal = { rows: 24 };
 		addChild() {}

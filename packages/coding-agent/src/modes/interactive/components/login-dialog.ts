@@ -1,4 +1,4 @@
-import type { AuthInfoLink, OAuthDeviceCodeInfo } from "@bastani/pi-ai";
+import type { AuthInfoLink, OAuthDeviceCodeInfo } from "@bastani/atomic-ai";
 import {
 	Container,
 	type Focusable,
@@ -9,7 +9,7 @@ import {
 	Text,
 	TruncatedText,
 	type TUI,
-} from "@earendil-works/pi-tui";
+} from "@bastani/atomic-tui";
 import { copyToClipboard } from "../../../utils/clipboard.js";
 import { openBrowser } from "../../../utils/open-browser.ts";
 import { displayUrl, webUrl } from "../../../utils/web-url.js";

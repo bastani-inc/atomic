@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { Component, TUI } from "@earendil-works/pi-tui";
+import type { Component, TUI } from "@bastani/atomic-tui";
 import { test } from "vitest";
 import { InteractiveModeBase } from "../../packages/coding-agent/src/modes/interactive/interactive-mode-base.ts";
 import "../../packages/coding-agent/src/modes/interactive/interactive-extension-custom-ui.ts";

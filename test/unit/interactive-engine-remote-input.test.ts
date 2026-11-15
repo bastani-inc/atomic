@@ -18,7 +18,7 @@ import {
 	type TUI,
 	type TuiAltScreen,
 	VStack,
-} from "@earendil-works/pi-tui";
+} from "@bastani/atomic-tui";
 import { test } from "vitest";
 import type { ExtensionUIContext } from "../../packages/coding-agent/src/core/extensions/index.ts";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";

@@ -17,7 +17,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type AgentSession, type AgentSessionEvent, initTheme, SessionManager } from "@bastani/atomic";
-import { type Component, CURSOR_MARKER, type EditorComponent, type TUI } from "@earendil-works/pi-tui";
+import { type Component, CURSOR_MARKER, type EditorComponent, type TUI } from "@bastani/atomic-tui";
 import { beforeAll } from "vitest";
 import type { StageControlHandle } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import type { StageDeliveryActivityEvent } from "../../packages/workflows/src/runs/foreground/stage-delivery-activity.js";

@@ -1,6 +1,6 @@
-import type { JsonObject, JsonValue } from "@bastani/pi-ai";
-import type { AssistantMessage, TextContent } from "@bastani/pi-ai/compat";
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import type { AgentToolResult } from "@bastani/atomic-agent-core";
+import type { JsonObject, JsonValue } from "@bastani/atomic-ai";
+import type { AssistantMessage, TextContent } from "@bastani/atomic-ai/compat";
 import {
 	applyAssistantMessageDelta,
 	beginStreamingAssistantMessage,

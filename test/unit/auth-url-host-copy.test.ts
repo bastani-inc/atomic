@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { Component, TUI } from "@earendil-works/pi-tui";
+import type { Component, TUI } from "@bastani/atomic-tui";
 import { test } from "vitest";
 import type { ExtensionUIContext } from "../../packages/coding-agent/src/core/extensions/index.js";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";

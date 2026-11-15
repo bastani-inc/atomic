@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createSyntheticSourceInfo, type PromptTemplate } from "@bastani/atomic";
-import { fauxAssistantMessage } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
 import { test, vi } from "vitest";
 import type { StageControlHandle } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import {

@@ -12,7 +12,7 @@ import {
 	type GitHubCopilotError,
 	type GitHubCopilotErrorCode,
 	GitHubCopilotStreamEndedEarlyError,
-} from "@bastani/pi-ai";
+} from "@bastani/atomic-ai";
 import { isExtensionStartupFailure } from "./extension-startup-failure.ts";
 
 const RETRYABLE_MODEL_FAILURE_PATTERNS: readonly RegExp[] = [

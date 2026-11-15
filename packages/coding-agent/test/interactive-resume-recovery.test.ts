@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { Container } from "@earendil-works/pi-tui";
+import { Container } from "@bastani/atomic-tui";
 import { describe, it, vi } from "vitest";
 import type { SessionRecoveryReport } from "../src/core/agent-session-types.js";
 import type { SessionRecoveryReason } from "../src/core/extensions/types.js";

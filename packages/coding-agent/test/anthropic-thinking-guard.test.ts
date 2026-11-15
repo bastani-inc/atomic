@@ -1,5 +1,5 @@
-import { stream as streamAnthropicMessages } from "@bastani/pi-ai/api/anthropic-messages";
-import type { Api, AssistantMessage, Message, Model } from "@bastani/pi-ai/compat";
+import { stream as streamAnthropicMessages } from "@bastani/atomic-ai/api/anthropic-messages";
+import type { Api, AssistantMessage, Message, Model } from "@bastani/atomic-ai/compat";
 import { describe, expect, it, vi } from "vitest";
 import { restoreAnthropicReplayThinkingBlocks } from "../src/core/anthropic-thinking-guard.ts";
 import { convertToLlm } from "../src/core/messages.ts";
@@ -428,7 +428,7 @@ describe("restoreAnthropicReplayThinkingBlocks", () => {
 });
 
 /**
- * Two emission behaviors this branch added to `@bastani/pi-ai` that the ordinal model here has to
+ * Two emission behaviors this branch added to `@bastani/atomic-ai` that the ordinal model here has to
  * track: foreign signed thinking replayed unchanged when the target model delegates model binding,
  * and the server-side `fallback` marker serialized in place.
  *

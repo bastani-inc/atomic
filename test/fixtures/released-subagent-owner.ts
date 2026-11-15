@@ -19,7 +19,7 @@ import {
 	fauxToolCall,
 	registerFauxProvider,
 	type ToolResultMessage,
-} from "@bastani/pi-ai/compat";
+} from "@bastani/atomic-ai/compat";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";

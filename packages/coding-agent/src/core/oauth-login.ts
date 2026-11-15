@@ -1,4 +1,4 @@
-import type { AuthInfoLink, AuthInteraction, OAuthLoginCallbacks } from "@bastani/pi-ai";
+import type { AuthInfoLink, AuthInteraction, OAuthLoginCallbacks } from "@bastani/atomic-ai";
 import { CredentialSynchronizationError } from "./model-runtime.js";
 
 export interface AtomicOAuthLoginCallbacks extends OAuthLoginCallbacks {

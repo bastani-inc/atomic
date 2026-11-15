@@ -14,8 +14,8 @@ import {
 	type SimpleStreamOptions,
 	type StreamOptions,
 	type TranscriptContext,
-} from "@bastani/pi-ai";
-import { getApiProvider } from "@bastani/pi-ai/compat";
+} from "@bastani/atomic-ai";
+import { getApiProvider } from "@bastani/atomic-ai/compat";
 import type { ModelConfig, ModelsJsonProvider } from "./model-config.ts";
 import type { AuthStatus, ProviderConfigInput } from "./provider-composer-internal.ts";
 import {

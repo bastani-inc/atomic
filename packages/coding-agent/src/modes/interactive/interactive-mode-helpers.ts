@@ -1,4 +1,4 @@
-import { builtinProviders } from "@bastani/pi-ai/providers/all";
+import { builtinProviders } from "@bastani/atomic-ai/providers/all";
 import { sqliteSessionResumeArgs } from "../../core/session-resume-args.js";
 import { quoteForShell } from "./chat-input-actions.ts";
 import {

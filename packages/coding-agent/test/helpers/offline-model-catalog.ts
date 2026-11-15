@@ -6,7 +6,7 @@ import { ENV_OFFLINE } from "../../src/config.js";
  *
  * `ModelRuntime.create({ allowModelNetwork: false })` only keeps create()'s own refresh off the network. Every later
  * refresh (the /model selector's, `saveCredential`'s, a plain `runtime.refresh()`) follows the runtime's offline
- * switch, which the runtime reads when it is created. Left online, each of them fetches pi.dev's catalog for every
+ * switch, which the runtime reads when it is created. Left online, each of them fetches models.dev's catalog for every
  * provider that has a credential, so a slow or failed request turns the test into a flake: the selector ends on
  * "Could not refresh anthropic" and never on "Model catalogs refreshed.", and `saveCredential` rejects.
  *

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { fauxAssistantMessage } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
 import { afterEach, test, vi } from "vitest";
 import type { AgentSessionInternalSurface } from "../src/core/agent-session-methods.js";
 import type { WorkflowStageOrchestrationContext } from "../src/core/extensions/index.js";

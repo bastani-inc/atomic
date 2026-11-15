@@ -1,5 +1,5 @@
-import type { CredentialInfo } from "@bastani/pi-ai";
-import { replaceControlCharacters } from "@earendil-works/pi-tui";
+import type { CredentialInfo } from "@bastani/atomic-ai";
+import { replaceControlCharacters } from "@bastani/atomic-tui";
 import { APP_NAME } from "../config.js";
 import { CredentialSynchronizationError, type ModelRuntime } from "../core/model-runtime.js";
 import { resolveProviderReference } from "../core/provider-matching.js";

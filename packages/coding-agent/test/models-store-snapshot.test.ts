@@ -1,4 +1,4 @@
-import type { Api, Model } from "@bastani/pi-ai";
+import type { Api, Model } from "@bastani/atomic-ai";
 import { expect, test } from "vitest";
 import { InMemoryCodingAgentModelsStore } from "../src/core/models-store.ts";
 

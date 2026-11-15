@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { deflateSync } from "node:zlib";
-import type { ImageContent, TextContent } from "@bastani/pi-ai/compat";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AgentMessage } from "@bastani/atomic-agent-core";
+import type { ImageContent, TextContent } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, it } from "vitest";
 import type { AgentSessionInternalSurface } from "../src/core/agent-session-methods.js";
 import { markQueuedMessageImages, normalizeQueuedMessageImages } from "../src/core/agent-session-prompt.js";

@@ -11,13 +11,13 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { AgentMessage } from "@bastani/atomic-agent-core";
 import {
 	type AssistantMessage,
 	createAssistantMessageEventStream,
 	getModel,
 	type Message,
-} from "@bastani/pi-ai/compat";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+} from "@bastani/atomic-ai/compat";
 import { afterEach, test } from "vitest";
 import { createAgentSession } from "../../packages/coding-agent/src/core/sdk.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";

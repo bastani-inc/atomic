@@ -9,7 +9,6 @@ import { kimiCodingOAuth } from "../../ai/src/auth/oauth/kimi-coding.ts";
 import { metaOAuth } from "../../ai/src/auth/oauth/meta.ts";
 import { openaiChatGPTOAuth } from "../../ai/src/auth/oauth/openai-chatgpt.ts";
 import { openaiCodexOAuth } from "../../ai/src/auth/oauth/openai-codex.ts";
-import { createRadiusOAuth } from "../../ai/src/auth/oauth/radius.ts";
 import { xaiOAuth } from "../../ai/src/auth/oauth/xai.ts";
 import { refreshStoredOAuthCredential } from "../../ai/src/auth/resolve.ts";
 import type { OAuthAuth, OAuthCredential } from "../../ai/src/auth/types.ts";
@@ -52,11 +51,6 @@ const rows: Row[] = [
 	},
 	{ providerId: "xai", oauth: () => xaiOAuth, response: () => ({ access_token: "fake-access" }) },
 	{ providerId: "kimi-coding", oauth: () => kimiCodingOAuth, response: () => ({ access_token: "fake-access" }) },
-	{
-		providerId: "radius",
-		oauth: (origin) => createRadiusOAuth({ name: "Radius", gateway: origin }),
-		response: () => ({ access_token: "fake-access" }),
-	},
 	{
 		providerId: "github-copilot",
 		oauth: () => githubCopilotOAuth,
