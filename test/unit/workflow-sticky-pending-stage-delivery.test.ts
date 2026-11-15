@@ -2229,6 +2229,67 @@ describe("pending-stage bridge sticky delivery", () => {
 		assert.ok(afterNotified?.undeliverableNotifiedAt);
 	});
 
+	test("settles a sticky entry a stage's session holds as delivered when no drain recorded it, and one no stage holds as undeliverable (#5023)", async () => {
+		const store = createStore();
+		store.recordRunStart({
+			id: ROOT_RUN_ID,
+			name: "flow",
+			inputs: {},
+			status: "cancelled" as RunStatus,
+			toolNodes: [],
+			stages: [
+				{
+					...baseStage({ id: "boundary-id", name: "workflow:child", status: "running" }),
+					workflowChildRun: { alias: "child", workflow: "child", runId: CHILD_RUN_ID },
+				},
+			],
+			startedAt: 1,
+		});
+		// A pooled child whose stage's session took `sticky-received`: the root drain that would have recorded it was
+		// refused, and only the stage's own receipt shows it.
+		store.recordRunStart({
+			id: CHILD_RUN_ID,
+			name: "child",
+			inputs: {},
+			status: "completed" as RunStatus,
+			toolNodes: [],
+			stages: [
+				{
+					...baseStage({ id: "agent-id", name: "agent", status: "completed", sessionId: "agent-session" }),
+					intercomReceipts: { sessionId: "agent-session", messageIds: ["sticky-received"] },
+				},
+			],
+			startedAt: 2,
+			parentRunId: ROOT_RUN_ID,
+			parentStageId: "boundary-id",
+		});
+		const backend = await createMemoryTestBackend();
+		await backend.commitWorkflowRegistration({
+			workflowId: ROOT_RUN_ID,
+			name: "flow",
+			inputs: {},
+			status: "cancelled",
+			createdAt: 1,
+		});
+		bindStoreDurableBackend(store, backend);
+		for (const id of ["sticky-received", "sticky-missed"])
+			await store.queueStickyStageMessage(stickyInput(id, `workflow:${ROOT_RUN_ID}/**`), GROUP, GROUP, backend);
+
+		const notified: string[] = [];
+		const settled = await settleUndeliverablePendingStageMessages(store, async (entry) => {
+			notified.push(entry.id);
+			return true;
+		});
+		assert.equal(settled, 2);
+		const entries = store.run(ROOT_RUN_ID)?.pendingStageMessages ?? [];
+		const received = entries.find((entry) => entry.id === "sticky-received");
+		assert.equal(received?.status, "delivered", JSON.stringify(received));
+		assert.equal(received?.deliveryCount, 1);
+		assert.equal(received?.undeliverableNotificationId, undefined);
+		assert.equal(entries.find((entry) => entry.id === "sticky-missed")?.status, "undeliverable");
+		assert.deepEqual(notified, ["sticky-missed"], "only the message no stage received is reported to its sender");
+	});
+
 	test("exact-id pending-stage queueing still consumes the entry on first delivery", async () => {
 		const { store, backend } = await rootFixture();
 		const accepted = await store.queueStageMessage(

@@ -1217,6 +1217,34 @@ function pendingStageDestination(
 	return candidates.length === 1 ? candidates[0] : undefined;
 }
 
+/**
+ * The receipts the stages of root `rootRunId`'s runs keep for the sticky entry `entry` (#5023): each stage whose session
+ * recorded that it took the entry's message.
+ */
+function stickyStageReceipts(
+	activeStore: Store,
+	rootRunId: string,
+	entry: PendingStageMessage,
+): { runId: string; stageId: string; stageName: string; sessionId: string; admission: "context" }[] {
+	return activeStore.runs().flatMap((candidate) =>
+		durableRootRunIdForRun(activeStore, candidate.id) !== rootRunId
+			? []
+			: candidate.stages.flatMap(({ id, name, intercomReceipts }) =>
+					intercomReceipts?.messageIds.includes(entry.message.id) === true
+						? [
+								{
+									runId: candidate.id,
+									stageId: id,
+									stageName: name,
+									sessionId: intercomReceipts.sessionId,
+									admission: "context" as const,
+								},
+							]
+						: [],
+				),
+	);
+}
+
 function receivedByStageSession(run: ReturnType<Store["runs"]>[number], entry: PendingStageMessage): boolean {
 	return pendingStageDestination(run, entry)?.intercomReceipts?.messageIds.includes(entry.message.id) === true;
 }
@@ -1325,6 +1353,19 @@ async function settleRuns(
 		for (const snapshotEntry of run.pendingStageMessages ?? []) {
 			let entry = snapshotEntry;
 			if (entry.status === "queued" && entry.sticky === true && isTerminalRunStatus(run.status)) {
+				// A stage's own receipt counts as its delivery (#5023): its session took the message even when the drain
+				// that would have recorded it was refused.
+				if ((entry.deliveryCount ?? 0) === 0) {
+					const receipts = stickyStageReceipts(activeStore, run.id, entry);
+					if (receipts.length > 0)
+						await activeStore.recordPendingStageMessageDeliveries(
+							run.id,
+							entry.id,
+							receipts,
+							new Date().toISOString(),
+							backend,
+						);
+				}
 				if (
 					await activeStore.settleStickyPendingStageMessageDelivered(
 						run.id,
