@@ -135,7 +135,7 @@ import { type PendingQuestion, PendingQuestionIndex } from "./pending-question-i
 import { AwayAsks, awayQueueFullReason } from "./away-asks.js";
 import { TERMINAL_CHILD_ASK_REFUSAL } from "../recipient-purpose.js";
 import { type ReceiptSender, RecipientReceipts, UNCERTAIN_RECEIPT_REASON } from "./recipient-receipts.js";
-import { deliverAskFailure, deliverHeldToAsker } from "./ask-failures.js";
+import { deliverAskFailure, deliverHeldToAsker, failLostReply } from "./ask-failures.js";
 import { matchStagePathSegments } from "../workflow-stage-path-matching.js";
 import { DELIVERED_MESSAGE_TTL_MS, RECIPIENT_RECEIPT_TIMEOUT_MS } from "../retry-policy.js";
 import { isAgentRecipient } from "../recipient-purpose.js";
@@ -536,6 +536,17 @@ class IntercomBroker {
     if (process.platform !== "win32") chmodSync(INTERCOM_DIR, 0o700);
     this.server = net.createServer(this.handleConnection.bind(this));
     this.pendingQuestions.failThroughOwnerWhen((question) => this.releasedAskerReplies.hasOwnedRoute(question));
+    // #5095: a reply that never reached its asker after its recipient ended fails the ask then, once.
+    this.pendingQuestions.onReplyLost((question, held, askerReturnAddress) =>
+      failLostReply({
+        question,
+        held,
+        askerReturnAddress,
+        asker: this.sessions.get(question.senderSessionId),
+        pending: this.pendingQuestions,
+        write: this.writeAfterDeparture,
+      }),
+    );
     // #4997: an ask between two top-level sessions may follow either of them to another broker, even after a crash.
     this.pendingQuestions.movableWhen((question) =>
       [question.senderSessionId, question.targetSessionId].every((id) => this.isTopLevel(this.sessions.get(id))),
@@ -1986,10 +1997,14 @@ class IntercomBroker {
           });
           if (isAgentRecipient(info)) this.broadcastToMemberships({ type: "session_joined", session: info }, sessionGroups(info), id);
           // #3761: messages written to this recipient's previous connection that it never confirmed saving go out again.
+          // #5095: the asks whose reply goes out again here are answered unless it lapses unsaved.
+          const replyingTo = new Set<string>();
           if (rejoined?.acknowledgesReceipt === true) {
             const heldFrames = new Set(held.map((write) => write.message));
             for (const frame of this.receipts.framesFor(deliveryTargetIdentity(rejoined))) {
               if (!heldFrames.has(frame)) writeMessageIfOpen(socket, frame);
+              if (frame.type === "message" && frame.message.replyTo !== undefined && frame.message.replyError === undefined)
+                replyingTo.add(JSON.stringify([frame.from.id, frame.message.replyTo]));
             }
           }
           // Multi-node S5: frames written while registration waited for the presence lease follow `registered`.
@@ -2006,6 +2021,9 @@ class IntercomBroker {
           // saves releases each when saved, and its inbox shows a redelivered copy only once.
           const returnAddress = rejoined?.registrationReturnAddress;
           for (const held of this.pendingQuestions.heldForAsker(returnAddress)) {
+            // #5095: a failure of an ask whose reply went out again stays held: saving the reply releases it.
+            if (held.message.replyError !== undefined && replyingTo.has(JSON.stringify([held.from.id, held.message.replyTo])))
+              continue;
             writeMessageIfOpen(socket, { type: "message", from: held.from, message: held.message });
             if (clientMessage.acknowledgesReceipt !== true)
               this.pendingQuestions.releaseHeld(held.message.id, returnAddress);
@@ -3663,7 +3681,7 @@ class IntercomBroker {
         if (departed.supervisorId === undefined)
           this.pendingQuestions.dropAway(departed.registrationReturnAddress);
       }
-      this.failParkedQuestions(this.pendingQuestions.takeForTarget(sessionId), departed.info);
+      this.failParkedQuestions(this.pendingQuestions.takeForTarget(sessionId, { ended: departed.info }), departed.info);
       if (ended) crashPoint(DEPARTURE_ASKS_TO_IT_FAILED);
     }
     // #4639: a subagent that left without being released: hold sends to it until it is back or its owner says why. An

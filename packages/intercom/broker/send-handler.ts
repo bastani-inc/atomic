@@ -830,6 +830,8 @@ export function handleBrokerSend(
     const outbound = messageFrameFor(target, fromSession.info, message, supervisorSend ? "supervisor" : undefined);
     const failDelivery = (): void => {
 	  if (reservation === "recorded") deliveredMessages.forget(message.id, signature);
+	  // #5095: the reply was never written, so its ask is still unanswered.
+	  if (message.replyTo !== undefined) pendingQuestions.unmarkReplied(fromSession.info.id, target.info.id, message.replyTo);
       write(socket, {
         type: "delivery_failed",
         messageId: message.id,
@@ -938,10 +940,15 @@ export function handleBrokerSend(
       if (message.replyTo !== undefined && pendingQuestions.clearReply(fromSession.info.id, recipient.info.id, message.replyTo)) {
         deliveredMessages.settleQuestion(message.replyTo);
       }
+      if (message.replyTo !== undefined)
+        pendingQuestions.releaseHeldFailures(message.replyTo, fromSession.info.id, recipient.registrationReturnAddress);
       if (supervisorSend) supervisorCache.record(message.id, fromSession.info.id, recipient.info.id);
       notify({ type: "delivered", messageId: message.id, attemptId: senderAttemptId });
     };
     const senderWaiting: ReceiptSender = { socket, ...(attemptId === undefined ? {} : { attemptId }) };
+    // #5095: from here the reply is on its way: its ask is answered, so the replier ending before the asker saves the
+    // reply does not also fail it. The asker's save clears its route as before.
+    if (message.replyTo !== undefined) pendingQuestions.markReplied(fromSession.info.id, target.info.id, message.replyTo);
     if (confirmsSaves && receipts !== undefined) {
       receipts.await(
         {
@@ -955,6 +962,10 @@ export function handleBrokerSend(
           hold: (waiting, timeoutMs) => {
             write(waiting.socket, { type: "send_held", messageId: message.id, attemptId: waiting.attemptId, timeoutMs });
           },
+          // #5095: a reply its asker never saved did not answer the ask.
+          ...(message.replyTo === undefined
+            ? {}
+            : { lapse: () => pendingQuestions.unmarkReplied(fromSession.info.id, target.info.id, message.replyTo as string) }),
         },
         senderWaiting,
       );

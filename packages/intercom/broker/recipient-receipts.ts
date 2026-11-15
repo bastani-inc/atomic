@@ -30,6 +30,8 @@ export interface AwaitedReceipt<Recipient> {
 	 * for up to `timeoutMs` more (a `send_held` frame).
 	 */
 	readonly hold?: (sender: ReceiptSender, timeoutMs: number) => void;
+	/** #5095: runs when the message is forgotten unconfirmed, after the delivered-message retention. */
+	readonly lapse?: () => void;
 }
 
 interface PendingReceipt<Recipient> extends AwaitedReceipt<Recipient> {
@@ -60,7 +62,9 @@ export class RecipientReceipts<Recipient> {
 			sender,
 			senderTimer: undefined,
 			retentionTimer: setTimeout(() => {
-				if (this.pending.get(receipt.messageId) === entry) this.drop(receipt.messageId);
+				if (this.pending.get(receipt.messageId) !== entry) return;
+				this.drop(receipt.messageId);
+				entry.lapse?.();
 			}, this.retentionMs),
 			waitingSince: Date.now(),
 		};
