@@ -297,7 +297,8 @@ test(
 		env.faux.setResponses([
 			fauxAssistantMessage([], {
 				stopReason: "error",
-				errorMessage: "503 Service Unavailable: the model is overloaded",
+				// A missing model falls back at once; an overloaded one is retried on the same model first (#4994).
+				errorMessage: "404 Not Found: the model faux-1 is unavailable",
 			}),
 			waitCall(),
 		]);
