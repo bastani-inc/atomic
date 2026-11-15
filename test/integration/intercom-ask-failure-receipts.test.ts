@@ -516,3 +516,45 @@ for (const [mode, when] of ASKER_DIES.entries()) {
 		REAL_BROKER_TEST_TIMEOUT_MS * 3,
 	);
 }
+
+test(
+	"an ask answered while its recipient was away cannot be answered again when that recipient is back (#5095)",
+	async () => {
+		const label = "answered-while-away-5095";
+		const asker = await connect(`asker-${label}`, { returnAddress: randomUUID(), confirms: false });
+		const askerId = idOf(asker.client);
+		const recipientAddress = { name: `recipient-${label}`, returnAddress: randomUUID() };
+		const recipient = await connect(recipientAddress.name, recipientAddress);
+		const recipientId = idOf(recipient.client);
+		const questionId = randomUUID();
+		const asked = await asker.client.send(recipientAddress.name, {
+			messageId: questionId,
+			text: "which port?",
+			expectsReply: true,
+		});
+		assert.equal(asked.delivered, true, asked.reason);
+		await vi.waitFor(() => assert.ok(recipient.received.some((message) => message.id === questionId)), WAIT);
+
+		// The recipient replies and goes away before the asker saves the reply; the asker saves it then.
+		const replying = replyTo(recipient, askerId, questionId).catch(() => undefined);
+		await vi.waitFor(() => assert.equal(repliesTo(asker, questionId).length, 1), WAIT);
+		await recipient.client.disconnect({ resumable: true });
+		await sleep(SETTLE_MS);
+		asker.client.acknowledgeReceived(repliesTo(asker, questionId)[0]?.id ?? "");
+		await replying;
+		await sleep(SETTLE_MS);
+
+		const back = await connect(recipientAddress.name, { ...recipientAddress, preferredSessionId: recipientId });
+		assert.equal(idOf(back.client), recipientId);
+		const again = await replyTo(back, askerId, questionId).catch((error: Error) => ({
+			delivered: false,
+			reason: error.message,
+		}));
+		assert.equal(again.delivered, false, "an answered ask is not answered again");
+		await back.client.disconnect();
+		await sleep(SETTLE_MS);
+		assert.equal(repliesTo(asker, questionId).length, 1);
+		assert.deepEqual(failuresOf(asker, questionId), []);
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);

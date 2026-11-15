@@ -370,12 +370,15 @@ export class PendingQuestionIndex {
     this.replyLost(ended.question, ended.held, ended.askerReturnAddress);
   }
 
+  /**
+   * The asker saved `senderSessionId`'s reply to `replyTo`: the ask is answered, so it is forgotten wherever it waits
+   * (#5095: the live index, the away store while its recipient is away, or the failure held should its recipient end).
+   */
   clearReply(senderSessionId: string, targetSessionId: string, replyTo: string): boolean {
-    const routes = this.questions.get(replyTo);
-    const index = routes?.findIndex(
-      (route) => route.targetSessionId === senderSessionId && route.senderSessionId === targetSessionId,
-    ) ?? -1;
     const key = PendingQuestionIndex.replyKey(senderSessionId, targetSessionId, replyTo);
+    this.replied.delete(key);
+    // #4765: a released subagent's ask can be kept for its away recipient while it is live again; answered, it is not.
+    this.away?.forget({ messageId: replyTo, senderSessionId: targetSessionId, targetSessionId: senderSessionId });
     const ended = this.endedWhileReplying.get(key);
     if (ended !== undefined) {
       // #5095: the asker saved the reply of a recipient that has since ended: answered, its failure is not needed.
@@ -383,12 +386,13 @@ export class PendingQuestionIndex {
       this.away?.forgetLiveHeld(ended.held.message.id);
       return true;
     }
+    const routes = this.questions.get(replyTo);
+    const index = routes?.findIndex(
+      (route) => route.targetSessionId === senderSessionId && route.senderSessionId === targetSessionId,
+    ) ?? -1;
     if (!routes || index < 0) return false;
-    this.replied.delete(key);
     this.forgetLive(routes.splice(index, 1));
     if (routes.length === 0) this.questions.delete(replyTo);
-    // #4765: a released subagent's ask can be kept for its away recipient while it is live again; answered, it is not.
-    this.away?.forget({ messageId: replyTo, senderSessionId: targetSessionId, targetSessionId: senderSessionId });
     return true;
   }
 
