@@ -1,5 +1,6 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { hostname } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import lockfile from "proper-lockfile";
 import { failureDebugFields, reportDebug } from "../debug.ts";
@@ -139,8 +140,28 @@ const heldSlots = new Map<string, HeldSlot>();
 /** The hold each lease of this process shares. */
 const leaseHolds = new WeakMap<WorktreeLease, HeldSlot>();
 const released = new WeakSet<WorktreeLease>();
-/** Names this process's leases; the pid alone could be reused by a later process. */
-const PROCESS_LEASE = `${process.pid}-${randomUUID().slice(0, 8)}`;
+/** Names this host in lease names, so a process on the same host can tell whether a lease's holder still runs. */
+const HOST = createHash("sha256").update(hostname()).digest("hex").slice(0, 12);
+/** Names this process's leases: its host and pid, and a random part, as the pid alone could be reused by a later process. */
+const PROCESS_LEASE = `${HOST}-${process.pid}-${randomUUID().slice(0, 8)}`;
+/** A lease name after the record's: the holder's host and pid. Leases written before #4830 name no host. */
+const LEASE_NAME = /^([0-9a-f]{12})-(\d+)-[0-9a-f]{8}\.lease\.lock$/;
+
+/**
+ * Whether the lease named `name` belongs to a process of this host that still runs, however long ago it refreshed the
+ * lease (#4830): a holder stalled for minutes may still write to its slot. A process this one may not signal runs too.
+ * A lease of another host, or one naming no host, is judged by its age alone.
+ */
+function holderRuns(name: string): boolean {
+	const lease = LEASE_NAME.exec(name);
+	if (lease?.[1] !== HOST) return false;
+	try {
+		process.kill(Number(lease[2]), 0);
+		return true;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "EPERM";
+	}
+}
 
 function sameOwner(a: PoolOwner, b: PoolOwner): boolean {
 	return a.kind === b.kind && a.id === b.id;
@@ -209,8 +230,9 @@ async function takeSlot(file: string, owner: PoolOwner, record: PoolSlotRecord):
 
 /**
  * The leases other processes hold on the slot whose record is `file`, removing those last refreshed more than
- * {@link LEASE_CLAIM_GRACE_MS} after they went stale. A lease that cannot be read counts as held. With `grace`, as
- * before a claim or an eviction, a lease that went stale within the grace period counts as held too (#4830).
+ * {@link LEASE_CLAIM_GRACE_MS} after they went stale. A lease that cannot be read counts as held, and so does one whose
+ * holder still runs on this host, however stale. With `grace`, as before a claim or an eviction, a lease that went stale
+ * within the grace period counts as held too (#4830).
  */
 async function otherLeases(file: string, grace: boolean): Promise<number> {
 	const prefix = `${basename(file)}.`;
@@ -227,7 +249,7 @@ async function otherLeases(file: string, grace: boolean): Promise<number> {
 			continue;
 		}
 		const expired = age > LEASE_STALE_MS + LEASE_CLAIM_GRACE_MS;
-		if (age <= LEASE_STALE_MS || (grace && !expired)) live++;
+		if (age <= LEASE_STALE_MS || (grace && !expired) || holderRuns(name.slice(prefix.length))) live++;
 		else if (expired) await rm(lock, { recursive: true, force: true }).catch(() => {});
 	}
 	return live;
