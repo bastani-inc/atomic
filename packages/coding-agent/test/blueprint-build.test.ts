@@ -92,6 +92,15 @@ function config(overrides: Partial<BlueprintBuildConfig> = {}): BlueprintBuildCo
 	};
 }
 
+/** A config whose every read of the setup command throws `message`, crashing the build and its description. */
+function crashingConfig(message: string): BlueprintBuildConfig {
+	return Object.defineProperty({ ...config() }, "setupCommand", {
+		get(): string {
+			throw new Error(message);
+		},
+	});
+}
+
 function ran(): string[] {
 	return existsSync(markers()) ? readFileSync(markers(), "utf8").trim().split("\n").filter(Boolean) : [];
 }
@@ -789,6 +798,28 @@ describe("blueprint build: trust and the deprecated alias (#4588)", () => {
 				[false, "not-run"],
 			],
 		);
+	});
+
+	test("a trust check that fails leaves the repository untrusted instead of failing the build (#4952)", async () => {
+		const failing = repository("trust-unreadable");
+		const trusted = repository("trusted");
+		blueprint(failing.root, `maintenance: ${mark("unreadable")}\n`);
+		blueprint(trusted.root, `maintenance: ${mark("trusted")}\n`);
+		const outcome = await runBlueprintBuild(
+			[failing, trusted],
+			config({
+				trusted: (root) => {
+					if (root === failing.root) throw new Error("Lock file is already being held");
+					return true;
+				},
+			}),
+		);
+		assert.equal(outcome.status, "success");
+		assert.deepEqual(ran(), [`trusted ${shellPath(trusted.root)}`]);
+		assert.deepEqual(outcome.layers.find((layer) => layer.root === failing.root)?.state, {
+			kind: "not-run",
+			reason: "untrusted",
+		});
 	});
 
 	test("resume.setupCommand runs as one global maintenance step in each restored repository root (#4588)", async () => {
@@ -1534,14 +1565,7 @@ describe("blueprint build: reading blueprints and surviving crashes (#4588)", ()
 	test("a build whose blueprints cannot even be described reports the failure on a bare global layer (#4588)", async () => {
 		const repo = repository("crash-bare");
 		blueprint(repo.root, "maintenance: echo ok\n");
-		const outcome = await runBlueprintBuild(
-			[repo],
-			config({
-				trusted: () => {
-					throw new Error("trust lookup failed");
-				},
-			}),
-		);
+		const outcome = await runBlueprintBuild([repo], crashingConfig("setup command lookup failed"));
 		assert.equal(outcome.status, "failed");
 		assert.deepEqual(
 			outcome.layers.map((layer) => [layer.scope, layer.document, layer.state.kind]),
@@ -1646,11 +1670,7 @@ describe("blueprint build: reading blueprints and surviving crashes (#4588)", ()
 		blueprint(repo.root, "maintenance: echo ok\n");
 		const outcome = await runBlueprintBuild(
 			[repo],
-			config({
-				trusted: () => {
-					throw new Error(`trust lookup failed: ${"x".repeat(300)}`);
-				},
-			}),
+			crashingConfig(`setup command lookup failed: ${"x".repeat(300)}`),
 		);
 		assert.deepEqual(
 			[outcome.status, outcome.kind, outcome.warnings, outcome.removed],
