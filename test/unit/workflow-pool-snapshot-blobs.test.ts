@@ -1,15 +1,20 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { afterEach, beforeEach, test } from "vitest";
+import { pathToFileURL } from "node:url";
+import { afterEach, beforeEach, test, vi } from "vitest";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.ts";
 import { collectSnapshotGarbage } from "../../packages/coding-agent/src/core/worktree-snapshot/garbage.ts";
 import type { WorktreeSnapshot } from "../../packages/coding-agent/src/core/worktree-snapshot/types.ts";
+import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
 import { sqlPoolStorage } from "../../packages/workflows/src/durable/journal/internal.js";
+import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
 import { PoolRemoteJournal } from "../../packages/workflows/src/durable/journal/pool-remote-journal.js";
 import { openSqlPoolQueue, type PoolWork } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
+import { RUN_EVENT_TYPES } from "../../packages/workflows/src/durable/journal/types.js";
+import type { DurableToolCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import type { WorkflowSerializableObject } from "../../packages/workflows/src/shared/types.js";
 import { DispatchSnapshots } from "../../packages/workflows/src/workers/dispatch-snapshot.js";
 import { claimedWithStoredSnapshot } from "../../packages/workflows/src/workers/pool-coordinator.js";
@@ -23,6 +28,7 @@ beforeEach(() => {
 	directory = makeTempDirectory("pool-snapshot-blobs-");
 });
 afterEach(async () => {
+	vi.restoreAllMocks();
 	while (closers.length > 0) await closers.pop()?.();
 	removeTempDirectory(directory);
 });
@@ -216,3 +222,115 @@ test("a root that holds no snapshot holds nothing, and a claim checks only work 
 	const bare = { ...work, execution: {} } as PoolWork;
 	assert.equal(await claimedWithStoredSnapshot(queue, bare, rootJournal.snapshotBlobs), bare);
 });
+
+const commitSubjects = [
+	{ name: "SQLite", open: (path: string) => openNodeSqliteDatabase(`${path}.sqlite`), batches: false },
+	{
+		name: "libSQL",
+		open: (path: string) => openLibsqlDatabase({ url: pathToFileURL(`${path}.db`).href }),
+		batches: true,
+	},
+] as const;
+
+/** A root on `subject` that queued one child and claimed it: its attempt commits the checkpoints under test. */
+async function claimedAttempt(subject: (typeof commitSubjects)[number]) {
+	const database = await subject.open(join(directory, `commit-${subject.name}`));
+	const journal = await SqlRunJournal.open(database);
+	const backend = await JournalDurableBackend.open(journal, { ownsJournal: false });
+	closers.push(async () => {
+		await backend.close();
+		await journal.close();
+		await database.close();
+	});
+	await backend.commitWorkflowRegistration({
+		workflowId: "root",
+		name: "root",
+		inputs: {},
+		createdAt: 0,
+		status: "running",
+	});
+	const acquired = await journal.acquire("root", backend.holderId);
+	if (acquired.status !== "acquired") assert.fail("No root lease");
+	const { lease } = acquired;
+	const queue = await openSqlPoolQueue(journal);
+	await queue.initialize(lease, 60_000);
+	const { work, boundary } = poolWorkFixture();
+	await queue.enqueue(lease, work, boundary);
+	const attempt = (await queue.claim(lease, "worker", [work], 60_000)) as PoolWork;
+	assert.ok(attempt);
+	const run = { ...boundary.topology!.boundary!.child };
+	const blobs = journal.snapshotBlobs;
+	const kept = textBlob("committed patch");
+	await blobs.putBlobs([kept]);
+	const tool = (index: number, snapshots: readonly WorktreeSnapshot[]): DurableToolCheckpoint => ({
+		kind: "tool",
+		workflowId: "root",
+		checkpointId: `${work.scope}:tool:${index}`,
+		name: "tool",
+		argsHash: `${work.scope}:args:${index}`,
+		output: { saved: index },
+		completedAt: 1,
+		topology: { version: 1, nodeId: `tool-${index}`, parentIds: [], ordinal: index, order: index, run },
+		worktreeSnapshots: snapshots,
+	});
+	const commit = (index: number, snapshots: readonly WorktreeSnapshot[]) =>
+		queue.commit(lease, attempt, `op-${index}`, { kind: "checkpoint", checkpoint: tool(index, snapshots) });
+	const keys = async () => {
+		const found: string[] = [];
+		for await (const entry of journal.read("root"))
+			if (entry.event.type === RUN_EVENT_TYPES.checkpointRecorded && entry.event.payload.kind === "tool")
+				found.push(String(entry.event.payload.checkpointId).split(":").at(-1)!);
+		return found;
+	};
+	return { blobs, kept, commit, keys, stored: syntheticSnapshot("stored", [kept.hash]) };
+}
+
+for (const subject of commitSubjects) {
+	test(`a pooled child's checkpoint commit on ${subject.name} is refused while a blob of its snapshot is gone, and writes nothing (#5077)`, async () => {
+		const { commit, keys, stored } = await claimedAttempt(subject);
+		const gone = syntheticSnapshot("gone", [textBlob("never stored").hash]);
+		await assert.rejects(commit(1, [stored, gone]), { name: "WorkspaceSnapshotError", code: "blobs-collected" });
+		await commit(2, [stored]);
+		await commit(3, []);
+		assert.deepEqual(await keys(), ["2", "3"]);
+	});
+
+	test(`a pooled child's checkpoint commit on ${subject.name} whose blobs are collected after its plan read them writes nothing (#5077)`, async () => {
+		const { blobs, kept, commit, keys, stored } = await claimedAttempt(subject);
+		await commit(1, [stored]);
+		const assertStored = blobs.assertStored.bind(blobs);
+		const race = textBlob("raced patch");
+		let raced = false;
+		vi.spyOn(blobs, "assertStored").mockImplementation(async (transaction, snapshots) => {
+			// A database that takes batches plans outside any transaction: the blobs the plan's read finds stored may be
+			// collected before the request that writes the checkpoint.
+			if (subject.batches && !raced && snapshots.length > 0) {
+				raced = true;
+				await blobs.putBlobs([race]);
+				await assertStored(transaction, snapshots);
+				await collectSnapshotGarbage(blobs, { graceSeconds: 0 });
+				return;
+			}
+			await assertStored(transaction, snapshots);
+		});
+		await blobs.putBlobs([race]);
+		const racing = syntheticSnapshot("racing", [race.hash]);
+		// The blobs are gone before the write's first, read-less plan too, whose fence then sends it to the read.
+		if (subject.batches) await collectSnapshotGarbage(blobs, { graceSeconds: 0 });
+		if (subject.batches)
+			await assert.rejects(commit(2, [racing]), { name: "WorkspaceSnapshotError", code: "blobs-collected" });
+		else await commit(2, [racing]);
+		assert.deepEqual(await keys(), subject.batches ? ["1"] : ["1", "2"]);
+		vi.restoreAllMocks();
+		await blobs.putBlobs([kept]);
+	});
+
+	test(`a pooled child's first checkpoint commit on ${subject.name} after its claim is refused when a blob is gone (#5077)`, async () => {
+		const { blobs, kept, commit, keys, stored } = await claimedAttempt(subject);
+		await collectSnapshotGarbage(blobs, { graceSeconds: 0 });
+		await assert.rejects(commit(1, [stored]), { name: "WorkspaceSnapshotError", code: "blobs-collected" });
+		await blobs.putBlobs([kept]);
+		await commit(2, [stored]);
+		assert.deepEqual(await keys(), ["2"]);
+	});
+}
