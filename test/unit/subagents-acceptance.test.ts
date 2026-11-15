@@ -71,7 +71,8 @@ describe("subagent acceptance removal", () => {
 			});
 
 			assert.equal(result.status, "error");
-			assert.equal(result.error, `cwd does not exist: ${missing}`);
+			assert.ok(result.error?.startsWith(`cwd does not exist: ${missing}. `), result.error);
+			assert.match(result.error ?? "", /parallel tool call in this same turn/);
 			assert.doesNotMatch(result.error ?? "", /spawn .*ENOENT/i);
 		});
 	});
