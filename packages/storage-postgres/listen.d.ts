@@ -19,9 +19,12 @@ export interface ListenerOptions {
 	probeTimeoutMs?: number;
 	/** Default `LISTEN_RETRY`. */
 	retry?: { readonly firstMs: number; readonly maxMs: number };
+	/** Default `LISTEN_HEALTH_INTERVAL_MS`. */
+	healthIntervalMs?: number;
 }
 
 export const LISTEN_PROBE_TIMEOUT_MS: 2000;
 export const LISTEN_RETRY: { readonly firstMs: 1000; readonly maxMs: 30000 };
+export const LISTEN_HEALTH_INTERVAL_MS: 30000;
 
 export function createPostgresListener(options: ListenerOptions): StorageNotifications & { close(): Promise<void> };

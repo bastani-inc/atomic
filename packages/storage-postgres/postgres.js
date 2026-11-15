@@ -34,6 +34,8 @@ export const DEFAULT_MAX_CONNECTIONS = 8;
 export const DEFAULT_STATEMENT_TIMEOUT_MS = 30_000;
 /** How long opening a connection, or waiting for a free one, may take. */
 const CONNECT_TIMEOUT_MS = 10_000;
+/** How long the listening connection stays idle before TCP keepalive probes start. */
+const LISTEN_KEEPALIVE_IDLE_MS = 10_000;
 /** An idle connection is closed after this long. */
 const IDLE_TIMEOUT_MS = 10_000;
 /**
@@ -721,7 +723,10 @@ export async function openPostgresDatabase(options) {
 				...listenConnection,
 				...(listenPassword === undefined ? {} : { password: listenPassword }),
 				connectionTimeoutMillis: CONNECT_TIMEOUT_MS,
+				// A short keepalive notices a peer that vanished without a reset sooner than the system's two hours; the
+				// listener's own health probe catches the rest.
 				keepAlive: true,
+				keepAliveInitialDelayMillis: LISTEN_KEEPALIVE_IDLE_MS,
 				application_name: "atomic-listen",
 			});
 			// An error before the listener attaches its own handler must not end the process unheard.

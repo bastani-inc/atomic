@@ -142,7 +142,7 @@ A transaction-mode pooler does not pass on [wake-ups](#wake-ups). To keep them, 
 
 On PostgreSQL, worker hosts and Intercom brokers learn about new work at once through `LISTEN`/`NOTIFY`. A host's idle workers claim a queued child right away, the root sees a finished child right away, and an Intercom message reaches a broker on another machine without waiting for its next check. Each Atomic process holds one extra connection for this, outside `maxConnections`.
 
-Wake-ups only make Atomic faster. Hosts and brokers keep checking the database as often as they would without them, so no work is lost or delayed beyond that when wake-ups stop arriving. That happens when the connection drops or the URL goes through a transaction pooler. Atomic opens the connection again on its own.
+Wake-ups only make Atomic faster. Hosts and brokers keep checking the database as often as they would without them, so no work is lost or delayed beyond that when wake-ups stop arriving. That happens when the connection drops or the URL goes through a transaction pooler. Atomic checks the connection every 30 seconds and opens it again when it drops or stops delivering. When it finds a transaction pooler, it stops trying until the process restarts, so it leaves nothing behind on the pooler's server connections.
 
 `atomic storage status` shows whether wake-ups arrive:
 

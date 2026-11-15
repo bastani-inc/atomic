@@ -18,6 +18,7 @@ import { randomBytes } from "node:crypto";
  *   channelName: (channel: string) => string,
  *   probeTimeoutMs?: number,
  *   retry?: { readonly firstMs: number, readonly maxMs: number },
+ *   healthIntervalMs?: number,
  * }} ListenerOptions
  */
 
@@ -28,6 +29,12 @@ import { randomBytes } from "node:crypto";
 export const LISTEN_PROBE_TIMEOUT_MS = 2_000;
 /** The wait before the listening connection is opened again after it failed, and the longest such wait. */
 export const LISTEN_RETRY = /** @type {const} */ ({ firstMs: 1_000, maxMs: 30_000 });
+/**
+ * How often a listening connection sends itself a probe notification through the pool, which must arrive within
+ * `LISTEN_PROBE_TIMEOUT_MS`; otherwise the connection is taken for half-open (its peer gone without a reset) and
+ * replaced.
+ */
+export const LISTEN_HEALTH_INTERVAL_MS = 30_000;
 
 /** Quotes `name` as an SQL identifier. */
 function quoted(/** @type {string} */ name) {
@@ -36,15 +43,19 @@ function quoted(/** @type {string} */ name) {
 
 /**
  * Postgres `LISTEN`/`NOTIFY` wake-ups (#5103). Every channel shares one listening connection, opened on the first
- * `listen` or `state` call and again, with a growing wait, after it fails or breaks. Once connected it sends a probe
- * notification through the database's pool: when the probe never arrives, as through a transaction pooler, the
- * connection is closed and the state says `pooler`. Callers keep their polls; this only makes them find work sooner.
+ * `listen` or `state` call and again, with a growing wait, after it fails or breaks. Once connected it listens to a
+ * probe channel of its own and sends a probe notification through the database's pool. When the probe never arrives,
+ * as through a transaction pooler, it unlistens, closes the connection, and stays `pooler` for good: it listens to
+ * no other channel there, so no later notification reaches a pooled server connection. While listening it repeats
+ * the probe every `healthIntervalMs` and replaces a connection the probe no longer reaches. Callers keep their polls;
+ * this only makes them find work sooner.
  * @param {ListenerOptions} options
  * @returns {StorageNotifications & { close(): Promise<void> }}
  */
 export function createPostgresListener(options) {
 	const probeTimeoutMs = options.probeTimeoutMs ?? LISTEN_PROBE_TIMEOUT_MS;
 	const retry = options.retry ?? LISTEN_RETRY;
+	const healthIntervalMs = options.healthIntervalMs ?? LISTEN_HEALTH_INTERVAL_MS;
 	const probeChannel = `atomic_listen_probe_${randomBytes(6).toString("hex")}`;
 	/** @type {Map<string, Set<NotificationListener>>} */
 	const channels = new Map();
@@ -56,10 +67,13 @@ export function createPostgresListener(options) {
 	let firstAttempt;
 	/** @type {NodeJS.Timeout | undefined} */
 	let retryTimer;
+	/** @type {NodeJS.Timeout | undefined} */
+	let healthTimer;
 	let failures = 0;
 	let closed = false;
-	/** @type {((payload: string) => void) | undefined} */
-	let probeArrived;
+	/** The probes in flight, by nonce. */
+	/** @type {Map<string, () => void>} */
+	const probes = new Map();
 
 	/** @param {string} name @param {StorageNotificationEvent} event */
 	const dispatch = (name, event) => {
@@ -73,7 +87,8 @@ export function createPostgresListener(options) {
 	};
 
 	const scheduleRetry = () => {
-		if (closed || retryTimer !== undefined) return;
+		// A pooler stays one: probing it again would leave a LISTEN on another pooled server connection each time.
+		if (closed || retryTimer !== undefined || (state.status === "unavailable" && state.reason === "pooler")) return;
 		const delayMs = Math.min(retry.maxMs, retry.firstMs * 2 ** failures);
 		failures++;
 		retryTimer = setTimeout(() => {
@@ -87,9 +102,42 @@ export function createPostgresListener(options) {
 	const drop = (lost, reason) => {
 		if (client !== lost) return;
 		client = undefined;
+		clearTimeout(healthTimer);
 		state = { status: "unavailable", reason };
 		void lost.end().catch(() => {});
 		scheduleRetry();
+	};
+
+	/**
+	 * Sends a probe notification through the pool, and resolves with whether it reached the listening connection within
+	 * the probe timeout.
+	 * @returns {Promise<boolean>}
+	 */
+	const probe = async () => {
+		const nonce = randomBytes(8).toString("hex");
+		/** @type {NodeJS.Timeout | undefined} */
+		let timer;
+		const arrived = new Promise((resolve) => {
+			probes.set(nonce, () => resolve(true));
+			timer = setTimeout(() => resolve(false), probeTimeoutMs);
+		});
+		try {
+			await options.send(probeChannel, nonce);
+			return /** @type {boolean} */ (await arrived);
+		} finally {
+			clearTimeout(timer);
+			probes.delete(nonce);
+		}
+	};
+
+	/** @param {ListenClient} opened */
+	const scheduleHealth = (opened) => {
+		healthTimer = setTimeout(async () => {
+			if (client !== opened) return;
+			if (await probe().catch(() => false)) scheduleHealth(opened);
+			else drop(opened, "connection-failed");
+		}, healthIntervalMs);
+		healthTimer.unref?.();
 	};
 
 	const attempt = async () => {
@@ -112,36 +160,29 @@ export function createPostgresListener(options) {
 		opened.on("end", () => drop(opened, "connection-failed"));
 		opened.on("notification", (message) => {
 			const payload = message.payload ?? "";
-			if (message.channel === probeChannel) probeArrived?.(payload);
+			if (message.channel === probeChannel) probes.get(payload)?.();
 			else if (client === opened && state.status === "listening")
 				dispatch(message.channel, { kind: "notification", payload });
 		});
-		const nonce = randomBytes(8).toString("hex");
-		/** @type {NodeJS.Timeout | undefined} */
-		let probeTimer;
 		try {
-			for (const name of [probeChannel, ...channels.keys()]) await opened.query(`LISTEN ${quoted(name)}`);
-			const arrived = new Promise((resolve) => {
-				probeArrived = (payload) => {
-					if (payload === nonce) resolve(true);
-				};
-				probeTimer = setTimeout(() => resolve(false), probeTimeoutMs);
-			});
-			await options.send(probeChannel, nonce);
-			if (!(await arrived)) {
+			// Only the probe channel until the probe arrives: a pooler keeps a LISTEN on whichever server connection ran
+			// it, and that connection's later notifications would reach no client.
+			await opened.query(`LISTEN ${quoted(probeChannel)}`);
+			if (!(await probe())) {
+				await opened.query("UNLISTEN *").catch(() => {});
 				drop(opened, "pooler");
 				return;
 			}
+			// Channels added meanwhile are in the map, and the loop reaches them.
+			for (const name of channels.keys()) await opened.query(`LISTEN ${quoted(name)}`);
 		} catch {
 			drop(opened, "connection-failed");
 			return;
-		} finally {
-			clearTimeout(probeTimer);
-			probeArrived = undefined;
 		}
 		if (client !== opened) return;
 		failures = 0;
 		state = { status: "listening" };
+		scheduleHealth(opened);
 		for (const name of channels.keys()) dispatch(name, { kind: "listening" });
 	};
 
@@ -161,9 +202,9 @@ export function createPostgresListener(options) {
 				listeners = new Set();
 				channels.set(name, listeners);
 				const current = client;
-				// A channel added while a connection is open, listening or still probing, is listened to on it; a failure drops
-				// it, and the next one listens to every channel.
-				if (current !== undefined)
+				// A channel added while listening is listened to on that connection; a failure drops it, and the next one
+				// listens to every channel. One added while connecting is listened to once the probe arrives.
+				if (current !== undefined && state.status === "listening")
 					current.query(`LISTEN ${quoted(name)}`).catch(() => drop(current, "connection-failed"));
 			}
 			listeners.add(listener);
@@ -178,7 +219,7 @@ export function createPostgresListener(options) {
 					if (current?.size !== 0) return;
 					channels.delete(name);
 					const connected = client;
-					if (connected !== undefined)
+					if (connected !== undefined && state.status === "listening")
 						connected.query(`UNLISTEN ${quoted(name)}`).catch(() => drop(connected, "connection-failed"));
 				},
 			};
@@ -190,6 +231,7 @@ export function createPostgresListener(options) {
 		async close() {
 			closed = true;
 			clearTimeout(retryTimer);
+			clearTimeout(healthTimer);
 			retryTimer = undefined;
 			await firstAttempt;
 			const current = client;
