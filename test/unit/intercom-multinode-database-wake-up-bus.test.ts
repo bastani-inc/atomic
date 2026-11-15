@@ -14,7 +14,7 @@ import { removeFixtureTree } from "../helpers/fixture-removal.js";
 import { registerWakeUpBusConformance, type WakeUpBusFixture } from "../helpers/intercom-multinode-contract.js";
 import { makeTempDirectory } from "../helpers/runtime.js";
 
-/** Short enough to keep the conformance cases quick, far below the suite's 5 s delivery bound. */
+/** Short enough to keep the conformance cases quick, far below the suite's wake-up event limit. */
 const CONFORMANCE_POLL_INTERVAL_MS = 20;
 
 interface SqliteFile {
