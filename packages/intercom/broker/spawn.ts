@@ -10,7 +10,7 @@ import {
   createLockFile,
   readFileOrUndefined,
   takeOverStaleLock,
-  unreadableLongEnough,
+  unchangedThroughGrace,
 } from "./stale-lock-file.js";
 import { BROKER_READY_TIMEOUT_MS } from "./startup-timeout.js";
 import {
@@ -815,14 +815,14 @@ export function acquireSpawnLock(lockPath: string = getBrokerSpawnLockPath()): s
 
 /**
  * Whether the spawn lock read as `written` may be replaced: it is stale, and, when it records no spawner, it has been
- * so long enough that no process that created it before writing it, an earlier version or one on a file system without
- * hard links, is still writing it (#5220).
+ * so through a grace period, unchanged, so that no process that created it before writing it, an earlier version or
+ * one on a file system without hard links, is still writing it (#5220).
  */
 function isSpawnLockReplaceable(written: string | undefined, lockPath: string): boolean {
   // A last line not yet terminated is still being written, where the lock could not be linked into place whole.
   const content = completeLines(written) ?? "";
   if (!isSpawnLockContentStale(content)) return false;
-  return recordsSpawner(content) || unreadableLongEnough(lockPath);
+  return recordsSpawner(content) || unchangedThroughGrace(lockPath, written);
 }
 
 /**

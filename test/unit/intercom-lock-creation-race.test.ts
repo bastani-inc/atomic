@@ -7,18 +7,9 @@
  */
 
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 import { afterAll, afterEach, describe, test, vi } from "vitest";
-import {
-	makeTempDirectory,
-	moduleDir,
-	removeTempDirectory,
-	type SpawnedProcess,
-	spawnProcess,
-	writeTextSync,
-} from "../helpers/runtime.js";
+import { makeTempDirectory, removeTempDirectory, writeTextSync } from "../helpers/runtime.js";
 
 /** The lock being made, and what another process does while this one is paused making it (#5220). */
 const race = vi.hoisted(() => ({
@@ -65,11 +56,9 @@ const { existsSync, utimesSync } = await import("node:fs");
 
 const tempDir = makeTempDirectory("ic5220-");
 afterAll(() => removeTempDirectory(tempDir));
-const children: SpawnedProcess[] = [];
 afterEach(() => {
 	race.lockPath = undefined;
 	race.whileMaking = undefined;
-	for (const child of children.splice(0)) child.kill();
 });
 
 let lockCount = 0;
@@ -79,42 +68,6 @@ function staleSpawnLock(): string {
 	const path = join(tempDir, `broker.spawn.lock-${lockCount++}`);
 	writeTextSync(path, `2147483646\n${Date.now()}\n`);
 	return path;
-}
-
-/** No live process has a pid this large. */
-const DEAD_PID = 2147483646;
-
-/** How long another broker process may take to start: it loads the lock module through jiti. */
-const CHILD_START_MS = 60_000;
-
-/** How long this process stays paused once the other broker is trying, longer than many of its 20 ms polls. */
-const PAUSE_MS = 2_000;
-
-function sleepSync(ms: number): void {
-	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
-
-/**
- * Starts another broker process that takes the socket-replacement lock at `path`: it writes `ready` once it is about to
- * try, and `held` once it holds the lock, which it then keeps.
- */
-function anotherBrokerTakes(path: string, ready: string, held: string): void {
-	const lockModule = pathToFileURL(
-		join(moduleDir(import.meta.url), "../../packages/intercom/broker/socket-replacement-lock.ts"),
-	).href;
-	const jiti = pathToFileURL(createRequire(import.meta.url).resolve("jiti")).href;
-	const script = `
-import { writeFileSync } from "node:fs";
-const { createJiti } = await import(${JSON.stringify(jiti)});
-const { acquireSocketReplacementLock } = await createJiti(import.meta.url).import(${JSON.stringify(lockModule)});
-writeFileSync(${JSON.stringify(ready)}, "");
-await acquireSocketReplacementLock(${JSON.stringify(path)});
-writeFileSync(${JSON.stringify(held)}, "");
-setInterval(() => {}, 1000);
-`;
-	children.push(
-		spawnProcess([process.execPath, "--input-type=module", "-e", script], { stdout: "ignore", stderr: "ignore" }),
-	);
 }
 
 /** Longer than the grace an unreadable broker lock gets before it counts as left by a crashed process. */
@@ -178,35 +131,4 @@ describe("a lock is never taken from the process making it (#5220)", () => {
 		assert.equal(holders.size, 1, "the other broker takes the lock once it is released");
 		for (const release of releases) release();
 	});
-
-	test(
-		"a broker paused for seconds while making its takeover token keeps the takeover: another broker waits (#5220)",
-		async () => {
-			const path = join(tempDir, `broker.socket.lock-${lockCount++}`);
-			writeTextSync(path, `${DEAD_PID}\n`);
-			const ready = `${path}.ready`;
-			const held = `${path}.held`;
-			race.lockPath = `${path}.takeover-${DEAD_PID}`;
-			let otherTookItMeanwhile: boolean | undefined;
-			race.whileMaking = () => {
-				// The pause outlasts the grace an unreadable token gets, as a stalled process on a loaded runner can.
-				const paused = new Date(Date.now() - LONG_PAUSE_MS);
-				if (existsSync(race.lockPath as string)) utimesSync(race.lockPath as string, paused, paused);
-				anotherBrokerTakes(path, ready, held);
-				const started = Date.now();
-				while (!existsSync(ready) && Date.now() - started < CHILD_START_MS) sleepSync(20);
-				assert.ok(existsSync(ready), "the other broker started");
-				const trying = Date.now();
-				while (!existsSync(held) && Date.now() - trying < PAUSE_MS) sleepSync(20);
-				otherTookItMeanwhile = existsSync(held);
-			};
-
-			const acquiring = acquireSocketReplacementLock(path);
-			assert.equal(otherTookItMeanwhile, false, "no other broker takes the lock over while this one takes it over");
-			// Whichever broker took the lock once the takeover ended, this one gets it once the other is gone.
-			for (const child of children.splice(0)) child.kill();
-			(await acquiring)();
-		},
-		CHILD_START_MS + 2 * PAUSE_MS,
-	);
 });

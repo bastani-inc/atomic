@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-// `statSync` and `utimesSync` have no equivalent in test/helpers/runtime.ts: the socket file is read directly and abandoned lock files are backdated.
-import { statSync, utimesSync } from "node:fs";
+// `statSync` has no equivalent in test/helpers/runtime.ts: the socket file is read directly.
+import { statSync } from "node:fs";
 import net from "node:net";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -55,11 +55,8 @@ const YIELD_ATTEMPTS = 8;
 
 const POLL_INTERVAL_MS = 20;
 
-/** Older than the 1 s after which an unreadable lock or takeover token counts as left by a crashed broker. */
-const ABANDONED_FILE_AGE_MS = 10_000;
-
-/** Far longer than any test run, so a lock dated this far ahead is never older than the 1 s unreadable grace. */
-const UNREADABLE_LOCK_FRESH_FOR_MS = 60 * 60 * 1000;
+/** Well inside the 1 s grace in which a broker still writing its lock must change it. */
+const STILL_WRITING_MS = 300;
 
 /** Long enough for the lock's 20 ms poll to retry many times, while a live holder still holds it. */
 const LIVE_HOLDER_OBSERVATION_MS = 300;
@@ -568,10 +565,19 @@ describe("socket replacement lock (#3505)", () => {
 
 	test("a lock still unreadable only briefly is waited on, not taken over (#5132)", async () => {
 		const path = lockPath();
-		writeTextSync(path, "");
-		// Dated ahead, the lock stays inside the 1 s unreadable grace however long a loaded machine takes.
-		const writtenAt = new Date(Date.now() + UNREADABLE_LOCK_FRESH_FOR_MS);
-		utimesSync(path, writtenAt, writtenAt);
+		// A broker of an earlier version creates its lock and then writes it: empty for a moment, then naming it.
+		const writer = spawnProcess(
+			[
+				process.execPath,
+				"-e",
+				`const { writeFileSync } = require("node:fs");
+				writeFileSync(${JSON.stringify(path)}, "");
+				setTimeout(() => writeFileSync(${JSON.stringify(path)}, process.pid + "\\n"), ${STILL_WRITING_MS});
+				setInterval(() => {}, 1000);`,
+			],
+			{ stdout: "ignore" },
+		);
+		while (!fileExistsSync(path)) await sleep(POLL_INTERVAL_MS);
 		let waits = 0;
 		let noticed!: () => void;
 		const waitNoticed = new Promise<void>((resolve) => (noticed = resolve));
@@ -587,24 +593,21 @@ describe("socket replacement lock (#3505)", () => {
 		// The lock is polled again meanwhile; a slower machine polls it less often, which the assertions allow.
 		await sleep(LIVE_HOLDER_OBSERVATION_MS);
 		assert.equal(waits, 1, "the wait is announced once");
-		assert.equal(readTextSync(path, "utf8"), "");
+		assert.equal(Number.parseInt(readTextSync(path, "utf8"), 10), writer.pid, "the writer's lock is left in place");
 
-		removePathSync(path, { force: true });
-		(await acquiring)();
+		writer.kill();
+		await writer.exited;
+		const release = await acquiring;
+		assert.equal(Number.parseInt(readTextSync(path, "utf8"), 10), process.pid, "once the writer is gone it is taken");
+		release();
 	});
 
-	test("an unreadable lock and an unreadable takeover token left by crashed brokers are both recovered", async () => {
+	test("an unreadable lock left by a crashed broker is recovered (#5132)", async () => {
 		const path = lockPath();
-		const abandonedAt = new Date(Date.now() - ABANDONED_FILE_AGE_MS);
 		writeTextSync(path, "");
-		utimesSync(path, abandonedAt, abandonedAt);
-		const token = `${path}.takeover-unreadable`;
-		writeTextSync(token, "");
-		utimesSync(token, abandonedAt, abandonedAt);
 
 		const release = await acquireSocketReplacementLock(path);
 		assert.equal(Number.parseInt(readTextSync(path, "utf8"), 10), process.pid, "the lock names this broker");
-		assert.equal(fileExistsSync(token), false);
 		release();
 	});
 

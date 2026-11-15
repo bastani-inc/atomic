@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { linkSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "fs";
+import { linkSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "fs";
 import { basename, dirname, join } from "path";
 
 /** Locks and tokens get their pid as they are created, so one still unreadable after this was left by a crash. */
@@ -77,11 +77,15 @@ export function completeLines(content: string | undefined): string | undefined {
   return content.slice(0, content.lastIndexOf("\n") + 1);
 }
 
+const warnedParked = new Set<string>();
+
 /**
  * Removes `path` only while it is still exactly the file its caller read as `inspected` and judged stale (undefined
  * when that file was unreadable). The file is first renamed to a unique name, which is atomic on POSIX and Windows, so
- * the content checked is the content removed. A file that replaced the inspected one meanwhile is put back, unless
- * another file has taken the path since. Returns whether the inspected file was removed.
+ * the content checked is the content removed. A file that replaced the inspected one meanwhile is not this caller's to
+ * remove (#5220): it is put back only while nothing is in its place, and otherwise, or where it cannot be linked back
+ * (a file system without hard links), left parked beside the lock with a warning, never removed. Its holder finds its
+ * lock gone at its next check and stops acting as its holder. Returns whether the inspected file was removed.
  */
 export function removeFileIfUnchanged(path: string, inspected: string | undefined): boolean {
   const parked = `${path}.${Date.now()}.${randomUUID()}.stale`;
@@ -90,16 +94,23 @@ export function removeFileIfUnchanged(path: string, inspected: string | undefine
   } catch {
     return false;
   }
-  const removed = readFileOrUndefined(parked) === inspected;
-  if (!removed) {
-    try {
-      linkSync(parked, path);
-    } catch {
-      // A newer file holds the path, and only one file can.
+  const moved = readFileOrUndefined(parked);
+  if (moved === inspected) {
+    removeFile(parked);
+    return true;
+  }
+  try {
+    linkSync(parked, path);
+    removeFile(parked);
+  } catch {
+    if (!warnedParked.has(path)) {
+      warnedParked.add(path);
+      process.emitWarning(
+        `A lock that replaced the stale ${path} while it was being removed could not be put back and is left as ${parked} (#5220).`,
+      );
     }
   }
-  removeFile(parked);
-  return removed;
+  return false;
 }
 
 function isProcessAlive(pid: number): boolean {
@@ -155,26 +166,30 @@ export function isAbandoned(path: string, written: string | undefined): boolean 
     const started = processStart(pid);
     return started !== undefined && started !== recorded;
   }
-  return unreadableLongEnough(path);
+  return unchangedThroughGrace(path, written);
+}
+
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
 /**
- * Whether the lock at `path`, which records no holder, is old enough to have been left by a crash: a lock is made
- * complete (see {@link createLockFile}), but one written by an earlier version may still be being written.
+ * Whether the lock at `path`, read as `written` and recording no holder, was left by a process killed while writing it:
+ * it is still exactly `written` a grace period later (#5220). A lock is made complete where hard links can be made (see
+ * {@link createLockFile}); elsewhere, and from an earlier version, it is created and then written, and a writer that is
+ * still running finishes it well within the grace. Judged by content rather than age, since a file system such as FAT
+ * keeps modification times only to two seconds, which can make a file look older than the grace as it is created.
  */
-export function unreadableLongEnough(path: string): boolean {
-  try {
-    return Date.now() - statSync(path).mtimeMs >= UNREADABLE_FILE_GRACE_MS;
-  } catch {
-    return false;
-  }
+export function unchangedThroughGrace(path: string, written: string | undefined): boolean {
+  if (written === undefined) return false;
+  sleepSync(UNREADABLE_FILE_GRACE_MS);
+  return readFileOrUndefined(path) === written;
 }
 
 /**
  * Removes the files a crashed process parked beside `lockPath` while it removed that lock or its takeover token, or
- * left while making one: those whose content names a dead holder, and those parked longer than
- * {@link PARKED_FILE_MAX_AGE_MS}. A file another process parked or is making a moment ago for a live holder is left to
- * that process.
+ * left while making one: those whose content names a dead holder, and those that name none once parked longer than
+ * {@link PARKED_FILE_MAX_AGE_MS}. A file that names a live holder is left, however old (#5220).
  */
 function removeLeftoverParkedFiles(lockPath: string): void {
   const directory = dirname(lockPath);
@@ -184,8 +199,9 @@ function removeLeftoverParkedFiles(lockPath: string): void {
     if (parkedAt === undefined) continue;
     const path = join(directory, name);
     const pid = pidOf(readFileOrUndefined(path));
-    const holderDead = pid !== undefined && !isProcessAlive(pid);
-    if (holderDead || Date.now() - Number(parkedAt) > PARKED_FILE_MAX_AGE_MS) removeFile(path);
+    // A parked lock of a process that still runs is kept, however old: it is that process's, never another's to remove.
+    const leftover = pid === undefined ? Date.now() - Number(parkedAt) > PARKED_FILE_MAX_AGE_MS : !isProcessAlive(pid);
+    if (leftover) removeFile(path);
   }
 }
 
@@ -194,27 +210,6 @@ export interface LockTakeover {
   /** Whether this process still holds the takeover: checked just before the lock is moved. */
   owned(): boolean;
   release(): void;
-}
-
-/**
- * Takes the takeover of a lock through the file `token`: only the process that creates it holds the takeover, and a
- * token left by a crashed process is removed, so a later attempt can take over. Undefined while another process holds
- * it. For the broker, which cannot load the operating-system advisory lock of `@bastani/atomic` (#2208); a spawner
- * takes that one instead (#5220).
- */
-export function takeTokenTakeover(token: string): LockTakeover | undefined {
-  const content = holderRecord();
-  if (!createLockFile(token, content)) {
-    const holder = readFileOrUndefined(token);
-    if (isAbandoned(token, holder)) removeFileIfUnchanged(token, holder);
-    return undefined;
-  }
-  return {
-    owned: () => readFileOrUndefined(token) === content,
-    release: () => {
-      removeFileIfUnchanged(token, content);
-    },
-  };
 }
 
 /**
