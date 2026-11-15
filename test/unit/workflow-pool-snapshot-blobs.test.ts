@@ -453,12 +453,26 @@ for (const subject of commitSubjects)
 		});
 
 		await assert.rejects(commit("op-X"), /connection lost/);
+		const warnings = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+		const reported = () =>
+			warnings.mock.calls.map(([warning]) => [
+				(warning as Error).name,
+				(warning as Error & { code?: string }).code,
+				(warning as Error & { subject?: string }).subject,
+			]);
+		const collected = [["WorkspaceSnapshotError", "blobs-collected", patch.hash]];
 		await (await open()).drainOutbox(lease);
+		assert.deepEqual(reported(), collected, "the delivery that finds it recorded without the snapshot says so");
 		assert.equal(await (await open()).drainOutbox(lease), 0, "nothing is left to deliver");
+		warnings.mockClear();
 		await commit("op-X");
+		assert.deepEqual(reported(), [], "a resend is answered from its receipt");
 		await blobs.putBlobs([patch]);
 		await commit("op-Y");
+		assert.deepEqual(reported(), collected, "a retry whose snapshot is stored again is told it was not recorded");
+		warnings.mockClear();
 		await commit("op-Z", []);
+		assert.deepEqual(reported(), [], "a checkpoint that asks for no snapshot loses none");
 		assert.equal(await claimSibling(), sibling.work.childRunId);
 		const checkpoints = await recorded();
 		assert.equal(checkpoints.length, 1);

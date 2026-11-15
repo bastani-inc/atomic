@@ -193,11 +193,11 @@ async function assertSnapshotBlobsHeld(
  * Reports, as a process warning, a `blobs-collected` WorkspaceSnapshotError for a checkpoint the journal holds without
  * `snapshots`, whose blobs were collected before it reached the journal (#5077).
  */
-function reportCollectedSnapshot(snapshots: readonly WorktreeSnapshot[]): void {
-	void import("@bastani/atomic").then(({ snapshotBlobHashes, WorkspaceSnapshotError }) => {
-		const [hash] = snapshots.flatMap((snapshot) => wellFormed(snapshot, snapshotBlobHashes));
-		process.emitWarning(new WorkspaceSnapshotError("blobs-collected", hash ?? "unknown"));
-	});
+async function reportCollectedSnapshot(snapshots: readonly WorktreeSnapshot[]): Promise<void> {
+	const { snapshotBlobHashes, WorkspaceSnapshotError } = await import("@bastani/atomic");
+	const [hash] = snapshots.flatMap((snapshot) => wellFormed(snapshot, snapshotBlobHashes));
+	// A checkpoint that asked for no snapshot lost none.
+	if (hash !== undefined) process.emitWarning(new WorkspaceSnapshotError("blobs-collected", hash));
 }
 /** `snapshot`'s blob hashes, or none for a record that is not well formed. */
 function wellFormed(snapshot: WorktreeSnapshot, hashesOf: (snapshot: WorktreeSnapshot) => string[]): string[] {
@@ -1501,7 +1501,9 @@ export class SqlPoolQueue {
 		const source: PoolCheckpointSource = {
 			read: async () => view ?? Promise.reject(new Error("Pool checkpoint view is unavailable")),
 		};
+		let withoutSnapshots = false;
 		const staged = await this.transaction(async (tx) => {
+			withoutSnapshots = false;
 			const { now, status } = await this.authority(tx, lease);
 			const row = await this.current(tx, lease, token);
 			if (row.epoch !== lease.epoch) throw staleWork(lease, token, "epoch-mismatch");
@@ -1544,8 +1546,9 @@ export class SqlPoolQueue {
 			if (billed && !existing)
 				await upsertPoolUsage(tx, this.journal.runs, row.id, token.generation, billed.key, billed.usage);
 			if (existing) {
-				// The checkpoint is recorded already, without the snapshot whose blobs were collected before it was (#5077).
-				if (strippedEarlier) reportCollectedSnapshot(carriedSnapshots(checkpoint));
+				// The checkpoint is recorded already, without the snapshot whose blobs were collected before it was (#5077):
+				// reported once the commit is answered.
+				if (strippedEarlier) withoutSnapshots = true;
 				const receipt: PoolCommitReceipt = { seq: existing.seq, at: existing.at };
 				await tx.run(
 					`INSERT INTO ${this.operations} VALUES (?, ?, ?, ?, ?)`,
@@ -1578,6 +1581,7 @@ export class SqlPoolQueue {
 			);
 			return { held: entry };
 		});
+		if (withoutSnapshots) await reportCollectedSnapshot(carriedSnapshots(checkpoint));
 		if (staged.receipt !== undefined) return staged.receipt;
 		this.outboxPending = true;
 		return this.deliver(lease, staged.held!);
@@ -1616,6 +1620,13 @@ export class SqlPoolQueue {
 			await this.transaction(forget);
 			throw new Error("Pool checkpoint identity conflict");
 		}
+		// Recorded already without the snapshot this one carries, whose blobs were collected before it was (#5077).
+		if (
+			outcome.status === "exists" &&
+			!isRecordedCheckpointValue(outcome.entry.event.payload, checkpoint) &&
+			isRecordedWithoutSnapshots(outcome.entry.event.payload, checkpoint)
+		)
+			await reportCollectedSnapshot(carriedSnapshots(checkpoint));
 		const receipt: PoolCommitReceipt = {
 			seq: outcome.entry.seq,
 			at: outcome.entry.at,
