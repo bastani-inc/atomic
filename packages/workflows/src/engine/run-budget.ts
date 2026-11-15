@@ -4,7 +4,13 @@ import {
 	enforceDurationBudget,
 	enforceUsageBudget,
 } from "../shared/budget.js";
-import { meter_run, type RunMeters, type RunUsageTree } from "../shared/budget-meter.js";
+import {
+	meter_run,
+	meter_stages,
+	type RunMeters,
+	type RunUsageTree,
+	type UsageCounters,
+} from "../shared/budget-meter.js";
 import type {
 	RunBudgetAccountingState,
 	RunBudgetState,
@@ -104,7 +110,25 @@ export function createRunBudgetController(input: {
 	const enabled = ownEnabled || root !== undefined;
 	let state: RunBudgetState | undefined = run.budgetState === undefined ? undefined : { ...run.budgetState };
 	const previousAccounting = state?.accounting;
-	const initial = previousAccounting && usageEnabled ? meter_run(localUsageTree(), Date.now()) : undefined;
+	// #4859: charge each stage's growth, not the tree total. Replayed stages leave
+	// the meter on resume, so a total can fall below its baseline and hide new spend.
+	const stageMarks = new Map<string, UsageCounters>();
+	const stageGrowth = (tree: RunUsageTree): Record<(typeof usageFields)[number], number> => {
+		const growth = mapFields(usageFields);
+		for (const [key, usage] of meter_stages(tree)) {
+			const mark = stageMarks.get(key);
+			for (const field of usageFields) growth[field] += Math.max(0, usage[field] - (mark?.[field] ?? 0));
+			stageMarks.set(
+				key,
+				mark === undefined ? usage : mapFields(usageFields, (field) => Math.max(mark[field], usage[field])),
+			);
+		}
+		return growth;
+	};
+	const initialTree = previousAccounting && usageEnabled ? localUsageTree() : undefined;
+	// Stages already in the tree were charged by the execution being resumed.
+	if (initialTree !== undefined) stageGrowth(initialTree);
+	const initial = initialTree === undefined ? undefined : meter_run(initialTree, Date.now());
 	const initialAccounting = initial === undefined ? undefined : { ...initial.perCounter, cost: initial.cost };
 	let baseline = mapFields(usageFields, (field) => initialAccounting?.[field] ?? 0);
 	let externalBaseline: RunBudgetUsageBaseline = {
@@ -126,9 +150,10 @@ export function createRunBudgetController(input: {
 		state = { ...(state ?? {}), ...patch };
 		run.budgetState = state;
 	};
-	const accountUsage = (meters: RunMeters): RunMeters => {
+	const accountUsage = (tree: RunUsageTree): RunMeters => {
+		const meters = meter_run(tree, Date.now());
 		const current = { ...meters.perCounter, cost: meters.cost };
-		const delta = mapFields(usageFields, (field) => Math.max(0, current[field] - baseline[field]));
+		const delta = stageGrowth(tree);
 		baseline = mapFields(usageFields, (field) => Math.max(baseline[field], current[field]));
 		const external = input.externalUsage?.();
 		if (external !== undefined) {
@@ -149,7 +174,7 @@ export function createRunBudgetController(input: {
 	const measure = (): RunMeters => {
 		const durationMs = elapsedRunMs(run);
 		if (!usageEnabled) return { durationMs, tokens: 0, cost: 0, perCounter: mapFields(counterFields) };
-		return { ...accountUsage(meter_run(localUsageTree(), Date.now())), durationMs };
+		return { ...accountUsage(localUsageTree()), durationMs };
 	};
 	const warningWasSent = (report: BudgetReport): boolean =>
 		report.dimension === "duration" ? state?.warned === true : state?.warnings?.[report.dimension] !== undefined;
