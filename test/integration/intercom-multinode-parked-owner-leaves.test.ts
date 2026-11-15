@@ -132,7 +132,8 @@ test(
 		await leave(local.owner, { resumable: true });
 		await exactlyOneFailure(local);
 		await exactlyOneFailure(remote);
-		assert.deepEqual(local.failures, ["peer_disconnected"]);
+		// #5004: a client that confirms saves gets the failed-ask message on one broker too, so both read alike.
+		assert.match(local.failures[0]!, /^message:Session ".+" ended before replying$/);
 		assert.match(remote.failures[0]!, /^message:Session ".+" ended before replying$/);
 	},
 	REAL_BROKERS_TEST_TIMEOUT_MS,
@@ -144,7 +145,7 @@ test(
 		const scene = await parkedAsk("b");
 		await leave(scene.owner);
 		await exactlyOneFailure(scene);
-		assert.deepEqual(scene.failures, ["peer_disconnected"]);
+		assert.match(scene.failures[0]!, /^message:Session ".+" ended before replying$/);
 	},
 	REAL_BROKERS_TEST_TIMEOUT_MS,
 );
