@@ -455,6 +455,7 @@ export {
 } from "./core/extension-startup-failure.ts";
 // Run modes for programmatic SDK usage
 export { noOpUIContext } from "./core/extensions/runner-ui.ts";
+export { resolveFallbackModel } from "./core/fallback-models.ts";
 export {
 	getModelFastRoute,
 	resolveUpstreamModelId,
