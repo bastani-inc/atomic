@@ -176,6 +176,8 @@ export class PendingQuestionIndex {
   }
 
   parkTarget(targetSessionId: string, childName: string, ownerSessionId: string): void {
+    // #4992: the link outlives this broker, and covers the asks to the subagent whose asker is away.
+    this.awayAsks().park(ownerSessionId, childName, targetSessionId);
     // #4829: a parked route keeps its durable row: it is still waiting for its released recipient.
     const questions = this.removeForTarget(targetSessionId);
     if (questions.length === 0) return;
@@ -203,6 +205,22 @@ export class PendingQuestionIndex {
     }
     this.forgetLive(result);
     return result;
+  }
+
+  /**
+   * #4992: the owner left, or dropped `childName`: the kept asks to its released subagents (an away asker's, or any
+   * after a broker restart) fail, each with a message held for its asker. Returns them, to write a connected asker's.
+   */
+  failParkedKept(
+    ownerSessionId: string,
+    childName?: string,
+  ): Array<HeldAwayMessage & { readonly askerReturnAddress: string }> {
+    return this.awayAsks().failParked(
+      ownerSessionId,
+      childName,
+      (name, targetSessionId) => `Session "${name || targetSessionId}" ended before replying`,
+      "ended",
+    );
   }
 
   record(senderSessionId: string, targetSessionId: string, messageId: string): void {

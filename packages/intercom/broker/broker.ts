@@ -2279,6 +2279,7 @@ class IntercomBroker {
         for (const childName of childNames) {
           this.releaseReservation(releasedReservationKey(childName), currentId, clientMessage.gone, clientMessage.refusal);
           this.failParkedQuestions(this.pendingQuestions.takeParked(childName, currentId), childName);
+          this.failParkedKept(currentId, childName);
           this.releasedAskerReplies.dropChild(childName, currentId);
         }
         writeMessageIfOpen(socket, { type: "released_children_ack", requestId: clientMessage.requestId });
@@ -3208,6 +3209,22 @@ class IntercomBroker {
     }
   }
 
+  /**
+   * #4992: the asks to the owner's released subagents that wait kept (an away asker's, or any after a broker restart)
+   * end with the owner, or with `childName` when it is dropped: each asker gets one failed-ask message, held until it
+   * saves it, and written now when it is connected.
+   */
+  private failParkedKept(ownerSessionId: string, childName?: string): void {
+    for (const held of this.pendingQuestions.failParkedKept(ownerSessionId, childName)) {
+      const asker = [...this.sessions.values()].find(
+        (session) => session.registrationReturnAddress === held.askerReturnAddress,
+      );
+      if (asker === undefined) continue;
+      writeMessageIfOpen(asker.socket, { type: "message", from: held.from, message: held.message });
+      if (!asker.acknowledgesReceipt) this.pendingQuestions.releaseHeld(held.message.id, held.askerReturnAddress);
+    }
+  }
+
   /** #4639: a session back after its connection closed takes over what its host session kept: released children and answers. */
   private adoptOrphans(ownerSessionId: string, owner: ConnectedSession): void {
     this.restoringRecipients.adoptOrphans(ownerSessionId, owner.registrationReturnAddress);
@@ -3245,6 +3262,7 @@ class IntercomBroker {
       ...this.departedChildren.dropOwner(sessionId, departed.registrationReturnAddress),
     ];
     this.failParkedQuestions(this.pendingQuestions.takeParkedForOwner(sessionId));
+    this.failParkedKept(sessionId);
 
     const unanswered = this.pendingQuestions.takeForSender(sessionId);
     if (departed.supervisorId !== undefined && departed.registrationName !== undefined) {

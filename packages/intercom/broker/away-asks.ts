@@ -77,6 +77,14 @@ export class AwayAsks {
 				broker_instance TEXT NOT NULL,
 				held_at INTEGER NOT NULL
 			);
+			CREATE TABLE IF NOT EXISTS parked_targets (
+				owner_session_id TEXT NOT NULL,
+				child_name TEXT NOT NULL,
+				child_key TEXT NOT NULL,
+				target_session_id TEXT NOT NULL,
+				parked_at INTEGER NOT NULL,
+				PRIMARY KEY (owner_session_id, target_session_id)
+			);
 			CREATE TABLE IF NOT EXISTS held_messages (
 				message_id TEXT PRIMARY KEY,
 				asker_session_id TEXT NOT NULL,
@@ -176,6 +184,7 @@ export class AwayAsks {
 	private purge(): void {
 		const cutoff = this.now() - this.retentionMs;
 		this.statement("DELETE FROM away_questions WHERE kept_at < ?").run(cutoff);
+		this.statement("DELETE FROM parked_targets WHERE parked_at < ?").run(cutoff);
 		this.statement("DELETE FROM held_messages WHERE held_at < ?").run(cutoff);
 		this.statement(
 			`DELETE FROM away_questions WHERE rowid NOT IN (SELECT rowid FROM away_questions ORDER BY kept_at DESC LIMIT ${AWAY_ASKS_MAX})`,
@@ -349,6 +358,75 @@ export class AwayAsks {
 			target.id,
 			targetReturnAddress,
 		);
+		return failed;
+	}
+
+	/**
+	 * #4992: `targetSessionId` was a subagent `ownerSessionId` released as `childName`. The link outlives this broker,
+	 * so the asks to that session still end with its owner after a restart, and so do the ones whose asker is away.
+	 */
+	park(ownerSessionId: string, childName: string, targetSessionId: string): void {
+		this.statement(
+			"INSERT OR REPLACE INTO parked_targets (owner_session_id, child_name, child_key, target_session_id, parked_at) VALUES (?, ?, ?, ?, ?)",
+		).run(ownerSessionId, childName, childName.trim().toLowerCase(), targetSessionId, this.now());
+	}
+
+	/**
+	 * #4992: the owner left, or dropped `childName`: the kept asks to its released subagents end. Each asker gets a
+	 * failed-ask message held until it saves it, whether it is away or connected; the held messages are returned, so a
+	 * connected asker is written its own at once.
+	 */
+	failParked(
+		ownerSessionId: string,
+		childName: string | undefined,
+		reason: (childName: string, targetSessionId: string) => string,
+		idPrefix: string,
+	): Array<HeldAwayMessage & { readonly askerReturnAddress: string }> {
+		const targets =
+			childName === undefined
+				? this.statement("SELECT child_name, target_session_id FROM parked_targets WHERE owner_session_id = ?").all(
+						ownerSessionId,
+					)
+				: this.statement(
+						"SELECT child_name, target_session_id FROM parked_targets WHERE owner_session_id = ? AND child_key = ?",
+					).all(ownerSessionId, childName.trim().toLowerCase());
+		const failed: Array<HeldAwayMessage & { readonly askerReturnAddress: string }> = [];
+		for (const target of targets) {
+			const targetSessionId = String(target.target_session_id);
+			const name = String(target.child_name);
+			const from: SessionInfo = { id: targetSessionId, name, cwd: "", model: "", pid: 0, startedAt: 0, lastActivity: this.now() };
+			const rows = this.statement(
+				"SELECT message_id, sender_session_id, sender_return_address FROM away_questions WHERE target_session_id = ? ORDER BY kept_at",
+			).all(targetSessionId);
+			for (const row of rows) {
+				const askerReturnAddress = typeof row.sender_return_address === "string" ? row.sender_return_address : "";
+				const question = {
+					messageId: String(row.message_id),
+					senderSessionId: String(row.sender_session_id),
+					targetSessionId,
+				};
+				// An asker with no return address cannot be told; its ask ends with the owner all the same.
+				if (askerReturnAddress === "") {
+					this.forget(question);
+					continue;
+				}
+				const text = reason(name, targetSessionId);
+				const message: Message = {
+					// Unguessable, so no other session can name it.
+					id: `${idPrefix}:${randomUUID()}`,
+					timestamp: this.now(),
+					replyTo: question.messageId,
+					replyError: text,
+					content: { text },
+				};
+				this.hold({ ...question, senderReturnAddress: askerReturnAddress }, from, message);
+				failed.push({ askerSessionId: question.senderSessionId, askerReturnAddress, from, message });
+			}
+			this.statement("DELETE FROM parked_targets WHERE owner_session_id = ? AND target_session_id = ?").run(
+				ownerSessionId,
+				targetSessionId,
+			);
+		}
 		return failed;
 	}
 
