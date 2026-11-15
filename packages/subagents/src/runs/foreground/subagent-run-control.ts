@@ -451,7 +451,7 @@ function wakeFailureText(record: SubagentChildRecord): string {
 /** How `status` shows a released child: what it waits on, and what wakes it. */
 function releasedLine(record: SubagentChildRecord): string {
 	const calls = (record.waitingOn ?? []).map((call) => `${call.toolName} (${call.toolCallId})`).join(", ");
-	return `${label(record)} released · waiting${calls ? ` on ${calls}` : ""}, not paused: it holds nothing and wakes by itself when that finishes or a message reaches it, so it needs no resume. To wake it sooner, resume it with { action: "resume", id: "${record.childId}", message? }.${wakeFailureText(record)}`;
+	return `${label(record)} released · waiting${calls ? ` on ${calls}` : ""}; it holds nothing and is not paused: it wakes by itself when that finishes or a message reaches it, and needs no resume. To wake it sooner, resume it with { action: "resume", id: "${record.childId}", message? }.${wakeFailureText(record)}`;
 }
 
 /** How `status` shows a child pause or quit stopped: paused and awaiting resume, as a quit workflow run shows. */
