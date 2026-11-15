@@ -256,6 +256,7 @@ export class SqlRunJournal implements RunJournal {
 			withAppendGuard: (guard, action) => this.appendGuard.run(guard, action),
 			tables: this.tables,
 			olderBuildLive: (executor) => olderBuildLive(executor, this.dialect, this.tables),
+			snapshotBlobs,
 			dialect: this.dialect,
 			adapter: database.descriptor.adapter,
 			...(database.notifications === undefined ? {} : { notifications: database.notifications }),
