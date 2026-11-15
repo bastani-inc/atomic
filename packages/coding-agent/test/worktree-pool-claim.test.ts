@@ -55,12 +55,8 @@ useTemporaryAgentDir();
 const settings = DEFAULT_WORKTREE_SNAPSHOT_SETTINGS;
 /** A Bun child that loads the snapshot modules and claims a slot before it is killed. */
 const CHILD_PROCESS_TIMEOUT_MS = 60_000;
-/** What the benchmark fixture's maintenance spends installing when its marker is missing. */
-const INSTALL_MS = 2_000;
-/** How much faster a resume that claims the slot holding the install must be (spec S5). */
-const CLAIM_SAVES_AT_LEAST_MS = 1_500;
-/** Four resumes, one of them waiting out the install, on a loaded machine. */
-const BENCHMARK_TIMEOUT_MS = 60_000;
+/** Four resumes, each running its blueprint maintenance, on a loaded machine. */
+const FOUR_RESUMES_TIMEOUT_MS = 60_000;
 
 let sandbox: GitSandbox;
 let store: SqlSessionStore;
@@ -353,8 +349,9 @@ await withWorktreeSnapshotGit({ path: ${JSON.stringify(git)}, env }, () =>
 		CHILD_PROCESS_TIMEOUT_MS,
 	);
 
+	// Spec S5's saving, compared by the work each resume does rather than by wall time, which load skews.
 	test(
-		"a resume that claims the slot an install filled is at least 1.5 s faster than a fresh one (#4748)",
+		"a resume that claims the slot an install filled skips the install a fresh one runs (#4748)",
 		async () => {
 			const { a, b, clone } = await twoSnapshots();
 			// POSIX paths: the step runs in bash on every platform, where a backslash would escape the next character.
@@ -364,30 +361,61 @@ await withWorktreeSnapshotGit({ path: ${JSON.stringify(git)}, env }, () =>
 				blueprints: "build" as const,
 				blueprint: {
 					agentDir: sandbox.path("agent"),
-					setupCommand: `test -f ${installed} || { echo install >> ${JSON.stringify(installs)}; sleep ${INSTALL_MS / 1000} && mkdir -p node_modules && : > ${installed}; }`,
+					setupCommand: `test -f ${installed} || { echo install >> ${JSON.stringify(installs)}; mkdir -p node_modules && : > ${installed}; }`,
 					trusted: () => true,
 				},
 			};
-			const timed = async (snapshot: WorktreeSnapshot) => {
-				const started = performance.now();
+			const restoreOf = async (snapshot: WorktreeSnapshot) => {
 				const prepared = await resume(await sessionOf(clone, snapshot), blueprints);
-				const ms = performance.now() - started;
 				assert.equal(prepared.sessionManager.getCwd(), slot(a, 0));
+				const [restore] = latestResumeTimings(prepared.sessionManager)?.restores ?? [];
 				await releaseSessionWorktrees(prepared.sessionManager);
-				return ms;
+				return { mode: restore?.mode, installs: readFileSync(sandbox.path("installs.log"), "utf8") };
 			};
-			const freshMs = await timed(a);
-			// The best of a few claims, alternating snapshots so each resets the slot, so one load spike cannot fail it.
-			const claimedMs = Math.min(await timed(b), await timed(a), await timed(b));
 
-			assert.equal(readFileSync(sandbox.path("installs.log"), "utf8"), "install\n");
-			assert.ok(
-				freshMs - claimedMs >= CLAIM_SAVES_AT_LEAST_MS,
-				`fresh ${Math.round(freshMs)} ms, best claimed ${Math.round(claimedMs)} ms`,
-			);
+			assert.deepEqual(await restoreOf(a), { mode: "fresh", installs: "install\n" });
+			// Alternating snapshots, so each claim resets the slot to a different state.
+			for (const snapshot of [b, a, b])
+				assert.deepEqual(await restoreOf(snapshot), { mode: "claimed", installs: "install\n" }, snapshot.id);
 		},
-		BENCHMARK_TIMEOUT_MS,
+		FOUR_RESUMES_TIMEOUT_MS,
 	);
+});
+
+describe("what pool actions leave in the pool directory (#4991)", () => {
+	/** The pool directory of `snapshot`'s repository holds slot records and live leases, never a private file left over. */
+	function assertOnlyRecordsAndLeases(snapshot: WorktreeSnapshot): void {
+		const pool = join(storeDir(), "pool", repositoryIdOf(snapshot.remotes));
+		const leftovers = readdirSync(pool).filter((name) => !/^\d+\.json(?:\.[0-9a-f-]+\.lease\.lock)?$/.test(name));
+		assert.deepEqual(leftovers, []);
+	}
+
+	test("a hold, a release, a claim and an eviction leave no taken record, temporary file or lock token behind (#4991)", async () => {
+		const { a, b, clone } = await twoSnapshots();
+		const x = await idleSlotOfX(a, clone);
+		assertOnlyRecordsAndLeases(a);
+
+		const held = await holdRestoredWorktree(storeDir(), slot(a, 0), { kind: "session", id: x.getSessionId() });
+		assert.ok(held);
+		assertOnlyRecordsAndLeases(a);
+		assert.equal(await releaseRestoredWorktree(held), true);
+		assertOnlyRecordsAndLeases(a);
+
+		const claim = await claimIdleWorktree(b, claimOptions());
+		assert.equal(claim.claimed, true);
+		assertOnlyRecordsAndLeases(a);
+		if (claim.claimed) await releaseRestoredWorktree(claim.lease);
+		assertOnlyRecordsAndLeases(a);
+
+		assert.deepEqual(await evictIdleWorktrees(storeDir(), repositoryIdOf(a.remotes), { maxIdle: 0, settings }), [
+			slot(a, 0),
+		]);
+		assertOnlyRecordsAndLeases(a);
+		assert.deepEqual(
+			readdirSync(join(storeDir(), "worktrees")).filter((name) => name.startsWith(`${repositoryIdOf(a.remotes)}-`)),
+			[],
+		);
+	});
 });
 
 describe("claim candidates and failures (#4748)", () => {
