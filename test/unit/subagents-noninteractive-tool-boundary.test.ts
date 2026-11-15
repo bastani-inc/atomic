@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@bastani/atomic";
@@ -136,6 +136,7 @@ test("root single reads are schema-valid and cwd-correct", async () => {
 	const parentCwd = mkdtempSync(join(tmpdir(), "atomic-subagent-root-reads-"));
 	try {
 		const childCwd = join(parentCwd, "child");
+		mkdirSync(childCwd);
 		const absoluteRead = join(parentCwd, "absolute.md");
 		const reads = ["docs/a.md", "../shared.md", absoluteRead];
 		assert.equal(Value.Check(SubagentParams, { agent: "worker", task: "fix it", cwd: "child", reads }), true);

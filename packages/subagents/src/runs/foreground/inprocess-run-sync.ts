@@ -33,6 +33,7 @@ import {
 } from "../shared/single-output.js";
 import { registerExecutionIntercomDetach } from "./execution-intercom-detach.js";
 import { registerExecutionParentAskHandoff } from "./execution-parent-ask-handoff.js";
+import { missingCwdMessage } from "./subagent-executor-cwd.js";
 
 function defaultTestSession(): boolean {
 	if (process.env.NODE_TEST_CONTEXT !== undefined) return true;
@@ -233,7 +234,7 @@ export async function runSingleInProcess(
 		"sessionStartTimeoutMs",
 	);
 	const cwd = options.cwd ?? runtimeCwd;
-	if (!existsSync(cwd)) return refusedResult(agent, task, `cwd does not exist: ${cwd}`);
+	if (!existsSync(cwd)) return refusedResult(agent, task, missingCwdMessage(cwd));
 	if (!statSync(cwd).isDirectory()) return refusedResult(agent, task, `cwd is not a directory: ${cwd}`);
 	options.modelRoute?.assertCurrent();
 	const launchModel = options.modelOverride ?? agent.model ?? "";

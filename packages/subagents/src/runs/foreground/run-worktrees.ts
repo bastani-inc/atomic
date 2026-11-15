@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { ensureNamedWorktree, type NamedWorktree } from "../shared/named-worktree.js";
 import {
 	cleanupWorktrees,
 	diffWorktrees,
@@ -21,6 +22,8 @@ export interface SubagentChildWorktree {
 	readonly syntheticPaths: readonly string[];
 	/** Where the run saves the worktree's edits as a patch before removing it. */
 	readonly diffsDir?: string;
+	/** A worktree the launch named (#5202): the caller's, so it and its branch are never removed. */
+	readonly named?: true;
 }
 
 /** Where a run saves each worktree's edits as a patch before removing it, and the agent of each child by index. */
@@ -50,6 +53,36 @@ interface RunWorktrees {
 
 /** Runs whose worktrees still exist in this process, by run id. */
 const runs = new Map<string, RunWorktrees>();
+
+/** The named worktree of each child of a run still in progress, by run id and child index (#5202). */
+const namedWorktrees = new Map<string, Map<number, SubagentChildWorktree>>();
+
+/**
+ * Record the named worktree each child of a run runs in, by child index, so its record names it. Nothing removes a
+ * named worktree; `release` only forgets them once the run returned, as its children's records already hold them.
+ */
+export function registerNamedRunWorktrees(
+	runId: string,
+	worktrees: ReadonlyMap<number, NamedWorktree>,
+): { readonly release: () => void } {
+	if (worktrees.size === 0) return { release: noHold };
+	const records = new Map<number, SubagentChildWorktree>();
+	for (const [index, worktree] of worktrees)
+		records.set(index, {
+			repo: worktree.repo,
+			path: worktree.path,
+			branch: worktree.branch,
+			baseCommit: worktree.baseCommit,
+			syntheticPaths: [],
+			named: true,
+		});
+	namedWorktrees.set(runId, records);
+	return {
+		release() {
+			if (namedWorktrees.get(runId) === records) namedWorktrees.delete(runId);
+		},
+	};
+}
 
 /**
  * Remove the run's worktrees once it returned and no execution holds them. A stopped child's worktree with unsaved work
@@ -151,6 +184,8 @@ export function claimRunWorktree(runId: string, index: number): void {
 
 /** The child's worktree, as recorded with the child. */
 export function runWorktreeRecord(runId: string, index: number): SubagentChildWorktree | undefined {
+	const named = namedWorktrees.get(runId)?.get(index);
+	if (named) return named;
 	const run = runs.get(runId);
 	const worktree = run?.setup.worktrees.find((candidate) => candidate.index === index);
 	if (!run || !worktree) return undefined;
@@ -182,6 +217,17 @@ export function resumeRunWorktree(
 	},
 	setupHook?: WorktreeSetupHookConfig,
 ): () => void {
+	// A named worktree is the caller's: put back where it was if it was removed, and never tracked for removal.
+	if (child.worktree?.named) {
+		if (!existsSync(child.worktree.path)) {
+			try {
+				ensureNamedWorktree(child.worktree.repo, { branch: child.worktree.branch, path: child.worktree.path });
+			} catch {
+				// Left missing: resume then reports that the child's working directory no longer exists.
+			}
+		}
+		return noHold;
+	}
 	let run = runs.get(child.runId);
 	if (!run?.setup.worktrees.some((worktree) => worktree.index === child.index)) {
 		if (!child.worktree) return noHold;
@@ -231,5 +277,5 @@ export function resumeRunWorktree(
 
 /** Runs whose worktrees this process still tracks; counted by tests and the benchmark. */
 export function trackedRunWorktreeCount(): number {
-	return runs.size;
+	return runs.size + namedWorktrees.size;
 }

@@ -72,11 +72,21 @@ const SHARED_FIELDS: readonly SharedField[] = [
 	"agentScope",
 ];
 
+/** A named worktree belongs to its call's own children (#5202); only `worktree: true` is shared by the burst. */
+function sharedValue(params: SubagentParamsLike, field: SharedField): unknown {
+	return field === "worktree" ? params.worktree === true : params[field];
+}
+
+/** The named worktree a call's top level gives each of its children without one of their own. */
+function namedWorktree(params: SubagentParamsLike): TaskParam["worktree"] {
+	return typeof params.worktree === "object" ? params.worktree : undefined;
+}
+
 function incompatibleField(items: BurstItem[]): SharedField | undefined {
 	const first = items[0]!.params;
 	for (const field of SHARED_FIELDS) {
 		for (let index = 1; index < items.length; index++) {
-			if (!isDeepStrictEqual(first[field], items[index]!.params[field])) return field;
+			if (!isDeepStrictEqual(sharedValue(first, field), sharedValue(items[index]!.params, field))) return field;
 		}
 	}
 	return undefined;
@@ -129,6 +139,7 @@ function topLevelSingleTask(item: BurstItem): BurstTaskParam | undefined {
 		task: item.params.task ?? "",
 		cwd: originatingTaskCwd(callCwd, undefined),
 		[BURST_TASK_DISCOVERY_CWD]: callCwd,
+		...(namedWorktree(item.params) ? { worktree: namedWorktree(item.params) } : {}),
 		...(item.params.output !== undefined ? { output: item.params.output } : {}),
 		...(item.params.outputMode !== undefined ? { outputMode: item.params.outputMode } : {}),
 		...(item.params.reads !== undefined ? { reads: item.params.reads } : {}),
@@ -148,6 +159,7 @@ function existingParallelTask(item: BurstItem, task: TaskParam): BurstTaskParam 
 		...task,
 		cwd: originatingTaskCwd(callCwd, task.cwd),
 		[BURST_TASK_DISCOVERY_CWD]: callCwd,
+		...(task.worktree === undefined && namedWorktree(item.params) ? { worktree: namedWorktree(item.params) } : {}),
 		...(task.group === undefined && item.params.group !== undefined ? { group: item.params.group } : {}),
 		...(task.heartbeatMs === undefined && item.params.heartbeatMs !== undefined
 			? { heartbeatMs: item.params.heartbeatMs }
@@ -184,7 +196,7 @@ function mergeBurst(items: BurstItem[]): {
 			tasks,
 			wait: first.wait,
 			concurrency: first.concurrency,
-			worktree: first.worktree,
+			worktree: first.worktree === true ? true : undefined,
 			context: first.context,
 			share: first.share,
 			control: first.control,
