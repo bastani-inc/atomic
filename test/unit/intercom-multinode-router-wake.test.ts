@@ -8,14 +8,17 @@ import {
 	MULTI_NODE_OUTCOME_POLL_INTERVAL_MS,
 	MultiNodeRouter,
 	type ReservationOptions,
+	SESSION_ID_CLAIM_BOUND_MS,
 } from "../../packages/intercom/broker/multinode-router.js";
 import {
+	BROKER_LEASE_RENEW_INTERVAL_MS,
 	BROKER_LEASE_STALE_AFTER_MS,
 	type HeldSendRequest,
 	type IntercomBrokerStateStore,
 	KNOWN_SESSION_RETENTION_MS,
 	OUTBOX_BACKUP_POLL_INTERVAL_MS,
 	OUTBOX_CLAIM_STALE_AFTER_MS,
+	type RecipientPresenceSubject,
 	reservationKeyFor,
 } from "../../packages/intercom/broker/multinode-state-store.js";
 import { PendingQuestionIndex } from "../../packages/intercom/broker/pending-question-index.js";
@@ -1837,6 +1840,122 @@ describe("an Intercom id bound to the return address that registered it", () => 
 		await flush();
 		assert.deepEqual(await queuedFor(senderNode, other), []);
 		assert.deepEqual(await queuedFor(senderNode, original), [send.id]);
+	});
+
+	/** What a broker that grants ids without binding them shares for `other`: its presence and known-session record. */
+	async function sharedByAnUnbindingBroker(node: Node, other: BrokerConnectedSession): Promise<void> {
+		const taken = await node.state.leases.acquire(
+			{ kind: "presence", targetIdentity: deliveryTargetIdentity(other), session: other.info },
+			"unbinding-broker",
+			BROKER_LEASE_STALE_AFTER_MS,
+		);
+		assert.equal(taken.status, "acquired");
+		await node.state.knownSessions.record({
+			targetIdentity: deliveryTargetIdentity(other),
+			intercomSessionId: other.info.id,
+			name: other.info.name,
+			atomicSessionId: other.registrationReturnAddress,
+			group: CREW,
+			groups: [CREW],
+		});
+	}
+
+	test("a session refused its id holds no presence and no record under it, also once it updates and its broker renews", async () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout"] });
+		const shared = await cluster();
+		const { original, senderNode } = await awaySessionAndSender(shared);
+		const elsewhere = await startNode(shared);
+		const other = underTheSameId(original);
+		elsewhere.sessions.set(other.info.id, other);
+		await elsewhere.router.sessionRegistered(other);
+		elsewhere.router.sessionUpdated(other);
+		await vi.advanceTimersByTimeAsync(BROKER_LEASE_RENEW_INTERVAL_MS);
+		await flush();
+
+		const present = await senderNode.state.leases.listLive("presence", BROKER_LEASE_STALE_AFTER_MS);
+		const presentIdentities = present.map((lease) => (lease.subject as RecipientPresenceSubject).targetIdentity);
+		assert.equal(presentIdentities.includes(deliveryTargetIdentity(other)), false);
+		const known = await senderNode.state.knownSessions.lookup(original.info.id, KNOWN_SESSION_RETENTION_MS);
+		assert.deepEqual(known.status === "found" ? known.sessions.map((record) => record.targetIdentity) : known, [
+			deliveryTargetIdentity(original),
+		]);
+	});
+
+	test("a session refused its id leaving does not end the asks of the session the id is bound to", async () => {
+		const shared = await cluster();
+		const { original, senderNode, sender } = await awaySessionAndSender(shared);
+		const askId = randomUUID();
+		await senderNode.state.pendingAsks.record({
+			senderSessionId: original.info.id,
+			targetSessionId: sender.info.id,
+			messageId: askId,
+		});
+		const elsewhere = await startNode(shared);
+		const other = underTheSameId(original);
+		elsewhere.sessions.set(other.info.id, other);
+		await elsewhere.router.sessionRegistered(other);
+		elsewhere.sessions.delete(other.info.id);
+		elsewhere.router.sessionLeft(other, undefined, true);
+		await flush();
+
+		const route = { replySenderSessionId: sender.info.id, replyTargetSessionId: original.info.id, replyTo: askId };
+		assert.equal((await senderNode.state.pendingAsks.matchesReply(route)).status, "match");
+	});
+
+	test("an ask's failure goes to the session its asker's id is bound to, not a presence taken under that id", async () => {
+		const shared = await cluster();
+		const { original, senderNode, sender } = await awaySessionAndSender(shared);
+		const askId = randomUUID();
+		await senderNode.state.pendingAsks.record({
+			senderSessionId: original.info.id,
+			targetSessionId: sender.info.id,
+			messageId: askId,
+		});
+		const other = underTheSameId(original);
+		await sharedByAnUnbindingBroker(senderNode, other);
+		senderNode.sessions.delete(sender.info.id);
+		senderNode.router.sessionLeft(sender, undefined, true);
+		await flush();
+
+		assert.deepEqual(await queuedFor(senderNode, other), []);
+		assert.deepEqual(await queuedFor(senderNode, original), [`ended:${askId}`]);
+	});
+
+	test("a record under an id bound to another return address is not resolved by its name either", async () => {
+		const shared = await cluster();
+		const { original, senderNode, sender } = await awaySessionAndSender(shared);
+		const other = underTheSameId(original);
+		await sharedByAnUnbindingBroker(senderNode, other);
+		await senderNode.state.leases.release(
+			(await senderNode.state.leases.listLive("presence", BROKER_LEASE_STALE_AFTER_MS)).find(
+				(lease) => (lease.subject as RecipientPresenceSubject).targetIdentity === deliveryTargetIdentity(other),
+			)!,
+		);
+
+		const send = remoteSend(sender, "other", false);
+		senderNode.router.routeSend(send.request);
+		await flush();
+		assert.deepEqual(await queuedFor(senderNode, other), []);
+	});
+
+	test("a broker grants a requested id only after binding it to the same return address, and never unchecked", async () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout"] });
+		const node = await startNode(await cluster());
+		const id = randomUUID();
+		assert.equal(await node.router.claimSessionId(id, "return-1"), true);
+		assert.equal(await node.router.claimSessionId(id, "return-2"), false);
+		assert.equal(await node.router.claimSessionId(id, "return-1"), true);
+
+		const bind = vi.spyOn(node.state.knownSessions, "bind");
+		bind.mockRejectedValueOnce(new Error("the shared database is down"));
+		assert.equal(await node.router.claimSessionId(id, "return-1"), false, "a failed binding grants nothing");
+		bind.mockReturnValueOnce(new Promise(() => {}));
+		const claim = node.router.claimSessionId(id, "return-1");
+		await vi.advanceTimersByTimeAsync(SESSION_ID_CLAIM_BOUND_MS);
+		assert.equal(await claim, false, "a binding that does not answer in time grants nothing");
+
+		await node.router.close();
+		assert.equal(await node.router.claimSessionId(id, "return-1"), false, "a closed router grants nothing");
 	});
 
 	test("a presence taken under an id bound to another return address is not routed to by that id", async () => {

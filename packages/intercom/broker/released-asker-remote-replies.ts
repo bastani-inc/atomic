@@ -112,13 +112,11 @@ async function ownerOfSession(state: ReleasedReplyState, ownerSessionId: string)
 	// A presence or record under the owner's id bound to another return address is not the owner (multi-node binding).
 	if (live !== undefined && (await holdsSessionId(state.knownSessions, ownerSessionId, returnAddressOf(live.identity))))
 		return live;
+	// The first record under the id is the bound session's: its binding was taken from that record or before it.
 	const known = await state.knownSessions.lookup(ownerSessionId, KNOWN_SESSION_RETENTION_MS);
-	for (const session of known.status === "found" ? known.sessions : []) {
-		if (session.intercomSessionId !== ownerSessionId) continue;
-		if (await holdsSessionId(state.knownSessions, ownerSessionId, session.atomicSessionId))
-			return { identity: session.targetIdentity, sessionId: ownerSessionId };
-	}
-	return undefined;
+	const session =
+		known.status === "found" ? known.sessions.find((candidate) => candidate.intercomSessionId === ownerSessionId) : undefined;
+	return session === undefined ? undefined : { identity: session.targetIdentity, sessionId: ownerSessionId };
 }
 
 /**

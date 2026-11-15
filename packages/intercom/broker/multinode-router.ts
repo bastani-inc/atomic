@@ -612,15 +612,12 @@ export class MultiNodeRouter {
 				const subject = hosted.subject as RecipientPresenceSubject;
 				asker = { targetIdentity: subject.targetIdentity, groups: [...sessionGroups(subject.session)] };
 			} else {
+				// The first record under the id is the bound session's: its binding was taken from that record or before it.
 				const known = await this.state.knownSessions.lookup(ask.senderSessionId, KNOWN_SESSION_RETENTION_MS);
-				const records = known.status === "found" ? known.sessions : [];
-				for (const session of records) {
-					if (session.intercomSessionId !== ask.senderSessionId) continue;
-					if (await this.holdsSessionId(session.intercomSessionId, session.atomicSessionId)) {
-						asker = session;
-						break;
-					}
-				}
+				asker =
+					known.status === "found"
+						? known.sessions.find((session) => session.intercomSessionId === ask.senderSessionId)
+						: undefined;
 			}
 			if (asker === undefined) continue;
 			const identity = asker.targetIdentity;
@@ -2195,7 +2192,6 @@ export class MultiNodeRouter {
 			if (acquired.status === "acquired") this.membership = acquired.lease;
 		}
 		for (const [session, entry] of this.presence) {
-			if (entry.unbound === true) continue;
 			if (entry.lease !== undefined) {
 				const renewed = await this.state.leases.renew(entry.lease, this.presenceSubject(session));
 				if (renewed.status !== "renewed") entry.lease = undefined;

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import net from "node:net";
 import { afterAll, beforeAll, beforeEach, test, vi } from "vitest";
+import { createMessageReader, writeMessage } from "../../packages/intercom/broker/framing.js";
 import { type TwoBrokerClient, TwoBrokerHarness } from "../helpers/intercom-two-broker-harness.js";
 import { sleep } from "../helpers/runtime.js";
 
@@ -112,6 +114,66 @@ test(
 		assert.equal(back.sessionId, askerId);
 		await vi.waitFor(() => assert.deepEqual(repliesTo(back, askId), ["answer"]), WAIT);
 		assert.deepEqual(repliesTo(other, askId), []);
+	},
+	TEST_TIMEOUT_MS,
+);
+
+/** A raw connection to `node`'s broker that records the frame types it is sent and whether it closed. */
+async function rawConnection(node: "a" | "c") {
+	const socket = net.connect(harness.socketPath(node));
+	const frames: string[] = [];
+	let closed = false;
+	socket.on(
+		"data",
+		createMessageReader(
+			(frame) => {
+				if (typeof frame === "object" && frame !== null && !Array.isArray(frame) && typeof frame.type === "string")
+					frames.push(frame.type);
+			},
+			() => socket.destroy(),
+		),
+	);
+	socket.on("error", () => {});
+	socket.on("close", () => {
+		closed = true;
+	});
+	await new Promise<void>((resolveConnect) => socket.once("connect", () => resolveConnect()));
+	const register = (returnAddress: string, preferredSessionId: string) =>
+		writeMessage(socket, {
+			type: "register",
+			session: {
+				name: unique("raw"),
+				cwd: harness.root,
+				model: "raw",
+				pid: process.pid,
+				startedAt: 1,
+				lastActivity: 1,
+			},
+			returnAddress,
+			preferredSessionId,
+		});
+	return { socket, frames, register, closed: () => closed };
+}
+
+test(
+	"a connection that closes while its requested id is being claimed leaves the id to the session it is bound to",
+	async () => {
+		assert.ok(harness.multiNodeRouting, "the brokers route across nodes");
+		const group = unique("g");
+		const original = await harness.connect("a", unique("original"), { group });
+		const id = original.sessionId;
+		await goAway(original);
+		const raw = await rawConnection("a");
+		raw.register(original.returnAddress, id);
+		raw.socket.destroy();
+		await sleep(SETTLE_MS);
+
+		const back = await harness.connect("a", original.name, {
+			group,
+			returnAddress: original.returnAddress,
+			preferredSessionId: id,
+		});
+		assert.equal(back.sessionId, id);
 	},
 	TEST_TIMEOUT_MS,
 );
