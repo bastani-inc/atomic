@@ -161,3 +161,78 @@ test("a report to a subscriber that is not a stage of the run is saved as soon a
 	await delivered.saved;
 	assert.deepEqual(sent, [REPORT]);
 });
+
+/** A registry whose detached leases count their releases. */
+function countingRegistry(handle: StageControlHandle) {
+	const registry = createStageControlRegistry();
+	registry.register(handle);
+	let released = 0;
+	const acquireDetached = registry.acquireDetached.bind(registry);
+	registry.acquireDetached = (runId, stageId, create) => {
+		const lease = acquireDetached(runId, stageId, create);
+		const release = lease.release.bind(lease);
+		return Object.assign(lease, {
+			release: async () => {
+				released += 1;
+				await release();
+			},
+		});
+	};
+	return { registry, released: () => released };
+}
+
+const watcherDelivery = {
+	subscriber: { name: "watcher", sendUserMessage: async () => {} },
+	live: undefined,
+	stage: replayedWatcher,
+	subscriptionId: `${RUN_ID}/ci#1`,
+	message: REPORT,
+};
+
+test("a report after the run let its subscribers go does not reopen a session nothing would release (#5168)", async () => {
+	let turns = 0;
+	const session = retainedSession(false, async () => {
+		turns += 1;
+	});
+	const { registry, released } = countingRegistry(session.handle);
+	const reports = createSubscriberReports(RUN_ID, { registry }, { cleanupFailed: () => {}, turnFailed: () => {} });
+	await reports.release();
+	await assert.rejects(reports.deliver(watcherDelivery), (error: { name?: string; reason?: string }) => {
+		assert.equal(error.name, "SubscriptionSubscriberUnavailableError");
+		assert.equal(error.reason, "closed");
+		return true;
+	});
+	assert.equal(turns, 0, "no turn started in a session nothing would release");
+	assert.equal(released(), 0);
+});
+
+test("a reopened subscriber's session is released even when waiting for its turn fails (#5168)", async () => {
+	const session = retainedSession(false);
+	const { registry, released } = countingRegistry(session.handle);
+	const failures: string[] = [];
+	const reports = createSubscriberReports(
+		RUN_ID,
+		{ registry },
+		{ cleanupFailed: (stage) => failures.push(stage), turnFailed: () => {} },
+	);
+	await (await reports.deliver(watcherDelivery)).saved;
+	Object.assign(session.handle, {
+		isStreaming: true,
+		subscribe: () => {
+			throw new Error("session closed");
+		},
+	});
+	await reports.release();
+	assert.equal(released(), 1, "the lease is released");
+	assert.deepEqual(failures, ["watcher"], "the failed wait is still reported");
+});
+
+test("cancelling lets a reopened subscriber's session go without waiting for its turn (#5168)", async () => {
+	const session = retainedSession(false);
+	const { registry, released } = countingRegistry(session.handle);
+	const reports = createSubscriberReports(RUN_ID, { registry }, { cleanupFailed: () => {}, turnFailed: () => {} });
+	await (await reports.deliver(watcherDelivery)).saved;
+	Object.assign(session.handle, { isStreaming: true });
+	await reports.cancel();
+	assert.equal(released(), 1, "released while its turn still runs");
+});
