@@ -8,7 +8,7 @@ import { getProjectTrustPath, ProjectTrustStore } from "../src/core/trust-manage
 /** While set, the next write of trust data stops halfway, as a writer killed mid-write would leave it. */
 const crash = vi.hoisted(() => ({ armed: false, fired: false, written: 0.5 }));
 /** How many of the next lock attempts fail with EPERM, as Windows reports a lock directory being created or removed. */
-const lockFaults = vi.hoisted(() => ({ eperm: 0 }));
+const lockFaults = vi.hoisted(() => ({ eperm: 0, releaseThrows: false }));
 
 vi.mock("proper-lockfile", async (importOriginal) => {
 	const actual = (await importOriginal<{ default: typeof import("proper-lockfile") }>()).default;
@@ -17,7 +17,13 @@ vi.mock("proper-lockfile", async (importOriginal) => {
 			lockFaults.eperm--;
 			throw Object.assign(new Error("EPERM: operation not permitted, mkdir"), { code: "EPERM" });
 		}
-		return actual.lockSync(file, options);
+		const release = actual.lockSync(file, options);
+		return () => {
+			release();
+			// proper-lockfile throws ERELEASED for a lock it considers compromised or already released.
+			if (lockFaults.releaseThrows)
+				throw Object.assign(new Error("Lock is already released"), { code: "ERELEASED" });
+		};
 	};
 	return { default: { ...actual, lockSync } };
 });
@@ -45,6 +51,7 @@ beforeEach(() => {
 	crash.fired = false;
 	crash.written = 0.5;
 	lockFaults.eperm = 0;
+	lockFaults.releaseThrows = false;
 });
 
 const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform");
@@ -103,4 +110,22 @@ it("fails a save at once on EPERM from the trust lock outside Windows (#4952)", 
 	lockFaults.eperm = 1;
 
 	assert.throws(() => new ProjectTrustStore(agentDir).set(join(agentDir, "project"), true), { code: "EPERM" });
+});
+
+it("reports a trust write as saved when releasing its lock throws afterwards (#5090)", () => {
+	const project = join(agentDir, "project");
+	lockFaults.releaseThrows = true;
+
+	new ProjectTrustStore(agentDir).set(project, true);
+
+	assert.equal(new ProjectTrustStore(agentDir).get(project), true);
+});
+
+it("reports a failed trust write's own error when releasing its lock also throws (#5090)", () => {
+	const store = new ProjectTrustStore(agentDir);
+	lockFaults.releaseThrows = true;
+	crash.armed = true;
+
+	assert.throws(() => store.set(join(agentDir, "project"), true), /ENOSPC/);
+	assert.equal(crash.fired, true);
 });
