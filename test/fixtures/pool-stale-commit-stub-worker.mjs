@@ -1,6 +1,6 @@
 // Protocol-level stand-in for a local workflow worker, forked by test/unit/workflow-pool-stale-attempt-commit.test.ts
 // through LocalWorkerPool's internal `workerEntry` option (#4768). It claims its work, then sends a commit made for an
-// earlier attempt of that work and one made for the attempt it holds, and records each answer in
+// earlier attempt of that work, one made for another work item (#4822) and one made for the attempt it holds, and records each answer in
 // `stale-commit-replies.log` next to the journal. Afterwards it only follows pool control, so the pool can close it.
 import { appendFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -36,18 +36,19 @@ function request(message) {
 await request({ kind: "ready" });
 let work;
 while (!(work = await request({ kind: "claim" }))) await delay(25);
-for (const [label, generation] of [
-	["earlier", work.generation - 1],
-	["held", work.generation],
+for (const [label, id, generation] of [
+	["earlier", work.id, work.generation - 1],
+	["other work", `${work.id}-other`, work.generation],
+	["held", work.id, work.generation],
 ])
 	await request({
 		kind: "commit",
 		operation: `${label}-operation`,
 		mutation: { kind: "session-append", sessionId: "session", entries: [], expectSeq: 0 },
-		attempt: { id: work.id, generation },
+		attempt: { id, generation },
 	}).then(
 		() => appendFileSync(replies, `${JSON.stringify({ label, outcome: "answered" })}\n`),
-		(error) => appendFileSync(replies, `${JSON.stringify({ label, outcome: "refused", name: error?.name, reason: error?.reason })}\n`),
+		(error) => appendFileSync(replies, `${JSON.stringify({ label, outcome: "refused", name: error?.name, reason: error?.fields?.reason })}\n`),
 	);
 let revision = -1;
 for (;;) {

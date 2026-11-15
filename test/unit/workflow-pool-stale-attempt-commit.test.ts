@@ -31,7 +31,7 @@ const STATE_DEADLINE_MS = 60_000;
 const STUB_WORKER_TIMEOUT_MS = 120_000;
 
 test.skipIf(process.platform === "win32")(
-	"a commit made for an earlier attempt of the work is refused as superseded and never reaches the journal (#4768)",
+	"a commit made for an earlier attempt of the work, or for another work item, is refused as superseded and never reaches the journal (#4768)",
 	async () => {
 		const directory = makeTempDirectory("pool-stale-commit-");
 		const path = join(directory, "journal.sqlite");
@@ -80,15 +80,16 @@ test.skipIf(process.platform === "win32")(
 				: [];
 		try {
 			const deadline = performance.now() + STATE_DEADLINE_MS;
-			while (received().length < 2) {
+			while (received().length < 3) {
 				assert.ok(performance.now() < deadline, `timed out; replies ${JSON.stringify(received())}`);
 				await sleep(25);
 			}
 			assert.deepEqual(
-				received().map((reply) => [reply.label, reply.outcome]),
+				received().map((reply) => [reply.label, reply.outcome, reply.reason]),
 				[
-					["earlier", "refused"],
-					["held", "answered"],
+					["earlier", "refused", "superseded"],
+					["other work", "refused", "superseded"],
+					["held", "answered", undefined],
 				],
 			);
 			assert.deepEqual(committed, ["held-operation"]);
