@@ -126,6 +126,8 @@ async function openStore(work) {
 					detached: true,
 				})
 			: undefined;
+	// A store a stopped run left on the shared port would answer in this one's place.
+	if (native === undefined) spawnSync("docker", ["rm", "-f", name]);
 	if (native !== undefined) {
 	} else if (store === "sqld")
 		spawnSync("docker", [
