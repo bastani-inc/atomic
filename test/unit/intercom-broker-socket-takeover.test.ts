@@ -104,6 +104,12 @@ let socketPath: string;
 let intercomDir: string;
 let pidPath: string;
 
+/**
+ * How long loading the spawner may take: it loads `@bastani/atomic` whole, which on a loaded runner outlasts the
+ * default hook timeout, and a timed-out hook skips every test in this file (#5220).
+ */
+const MODULE_LOAD_TIMEOUT_MS = 180_000;
+
 const directBrokerPids: number[] = [];
 const liveClients: InstanceType<ClientModule["IntercomClient"]>[] = [];
 
@@ -117,7 +123,7 @@ beforeAll(async () => {
 	pidPath = pathsModule.getBrokerPidPath();
 	makeDirectorySync(gateDir, { recursive: true });
 	writeTextSync(preloadFile, holdFirstBrokerPreload());
-});
+}, MODULE_LOAD_TIMEOUT_MS);
 
 function isAlive(pid: number): boolean {
 	try {
