@@ -12,7 +12,8 @@ import { StageWakeDispatcher } from "../../packages/workflows/src/runs/foregroun
 /** A stage's threshold and the busy recheck interval the scan uses, as the scan states them. */
 const THRESHOLD_MS = 100;
 const BUSY_RECHECK_MS = 1_000;
-const START = new Date("2026-01-01T00:00:00.000Z");
+/** When each test starts, by the scan's clock, `performance.now()` (#5058). */
+let start = 0;
 
 interface Probe {
 	readonly stage: IdleStage;
@@ -31,7 +32,7 @@ function probe(afterMs = THRESHOLD_MS, idleSince: number | undefined = undefined
 			afterMs,
 			idleSince: () => state.idleSince,
 			release: async () => {
-				state.released.push(Date.now());
+				state.released.push(performance.now());
 				if (state.releaseError !== undefined) throw state.releaseError;
 			},
 		},
@@ -41,8 +42,8 @@ function probe(afterMs = THRESHOLD_MS, idleSince: number | undefined = undefined
 
 describe("the run's idle scan, at its deadlines (#4309)", () => {
 	beforeEach(() => {
-		vi.useFakeTimers();
-		vi.setSystemTime(START);
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] });
+		start = performance.now();
 	});
 	afterEach(() => {
 		vi.restoreAllMocks();
@@ -51,26 +52,26 @@ describe("the run's idle scan, at its deadlines (#4309)", () => {
 
 	test("a watched stage idle since before it was watched is released exactly when its threshold is up, not before (#4309)", async () => {
 		const releaser = new StageIdleReleaser(() => {});
-		const idle = probe(THRESHOLD_MS, START.getTime());
+		const idle = probe(THRESHOLD_MS, start);
 		releaser.watch("a", idle.stage);
 		assert.equal(releaser.size, 1);
 		await vi.advanceTimersByTimeAsync(THRESHOLD_MS - 1);
 		assert.deepEqual(idle.released, []);
 		assert.equal(releaser.size, 1);
 		await vi.advanceTimersByTimeAsync(1);
-		assert.deepEqual(idle.released, [START.getTime() + THRESHOLD_MS]);
+		assert.deepEqual(idle.released, [start + THRESHOLD_MS]);
 		assert.equal(releaser.size, 0);
 		assert.equal(vi.getTimerCount(), 0);
 	});
 
 	test("a stage idle for exactly its threshold at the scan is released, and one a millisecond short is looked at again exactly when it is due (#4309)", async () => {
 		const releaser = new StageIdleReleaser(() => {});
-		const exact = probe(THRESHOLD_MS, START.getTime());
-		const short = probe(THRESHOLD_MS, START.getTime() + 1);
+		const exact = probe(THRESHOLD_MS, start);
+		const short = probe(THRESHOLD_MS, start + 1);
 		releaser.watch("exact", exact.stage);
 		releaser.watch("short", short.stage);
 		await vi.advanceTimersByTimeAsync(THRESHOLD_MS);
-		assert.deepEqual(exact.released, [START.getTime() + THRESHOLD_MS]);
+		assert.deepEqual(exact.released, [start + THRESHOLD_MS]);
 		assert.deepEqual(short.released, []);
 		assert.equal(releaser.size, 1);
 		// Idle since +1 ms, so due one millisecond later, with one timer left for it.
@@ -78,7 +79,7 @@ describe("the run's idle scan, at its deadlines (#4309)", () => {
 		await vi.advanceTimersByTimeAsync(0);
 		assert.deepEqual(short.released, []);
 		await vi.advanceTimersByTimeAsync(1);
-		assert.deepEqual(short.released, [START.getTime() + THRESHOLD_MS + 1]);
+		assert.deepEqual(short.released, [start + THRESHOLD_MS + 1]);
 		assert.equal(releaser.size, 0);
 		assert.equal(vi.getTimerCount(), 0);
 	});
@@ -92,18 +93,18 @@ describe("the run's idle scan, at its deadlines (#4309)", () => {
 		releaser.watch("slow", slow.stage);
 		await vi.advanceTimersByTimeAsync(THRESHOLD_MS);
 		// Busy at its deadline, the quick stage is rechecked one busy interval later, not after its own threshold.
-		quick.idleSince = START.getTime() - BUSY_RECHECK_MS;
+		quick.idleSince = start - BUSY_RECHECK_MS;
 		await vi.advanceTimersByTimeAsync(BUSY_RECHECK_MS - 1);
 		assert.deepEqual(quick.released, []);
 		await vi.advanceTimersByTimeAsync(1);
-		assert.deepEqual(quick.released, [START.getTime() + THRESHOLD_MS + BUSY_RECHECK_MS]);
+		assert.deepEqual(quick.released, [start + THRESHOLD_MS + BUSY_RECHECK_MS]);
 		// The slow stage is busy at its own deadline, so its recheck is one of its own thresholds later.
 		await vi.advanceTimersByTimeAsync(SLOW_THRESHOLD_MS - THRESHOLD_MS - BUSY_RECHECK_MS);
-		slow.idleSince = START.getTime();
+		slow.idleSince = start;
 		await vi.advanceTimersByTimeAsync(SLOW_THRESHOLD_MS - 1);
 		assert.deepEqual(slow.released, []);
 		await vi.advanceTimersByTimeAsync(1);
-		assert.deepEqual(slow.released, [START.getTime() + SLOW_THRESHOLD_MS * 2]);
+		assert.deepEqual(slow.released, [start + SLOW_THRESHOLD_MS * 2]);
 	});
 
 	test("a stage that went idle only part-way through its threshold is released a full threshold after it went idle (#4309)", async () => {
@@ -113,7 +114,7 @@ describe("the run's idle scan, at its deadlines (#4309)", () => {
 		const WENT_IDLE_AFTER_MS = 60;
 		releaser.watch("a", idle.stage);
 		await vi.advanceTimersByTimeAsync(WENT_IDLE_AFTER_MS);
-		const wentIdleAt = Date.now();
+		const wentIdleAt = performance.now();
 		idle.idleSince = wentIdleAt;
 		// At its deadline the stage has been idle for less than its threshold: it is due a threshold after it went idle.
 		await vi.advanceTimersByTimeAsync(THRESHOLD_MS - WENT_IDLE_AFTER_MS);
@@ -131,9 +132,9 @@ describe("the run's idle scan, at its deadlines (#4309)", () => {
 
 	test("one timer serves every watched stage and it fires at the earliest deadline, then at the next one (#4309)", async () => {
 		const releaser = new StageIdleReleaser(() => {});
-		const late = probe(300, START.getTime());
-		const early = probe(100, START.getTime());
-		const middle = probe(200, START.getTime());
+		const late = probe(300, start);
+		const early = probe(100, start);
+		const middle = probe(200, start);
 		releaser.watch("late", late.stage);
 		assert.equal(vi.getTimerCount(), 1);
 		releaser.watch("early", early.stage);
@@ -156,14 +157,14 @@ describe("the run's idle scan, at its deadlines (#4309)", () => {
 	test("watching a stage later than the armed deadline leaves the timer where it is, and watching it earlier moves it up (#4309)", async () => {
 		const setTimer = vi.spyOn(globalThis, "setTimeout");
 		const releaser = new StageIdleReleaser(() => {});
-		const first = probe(200, START.getTime());
+		const first = probe(200, start);
 		releaser.watch("first", first.stage);
 		assert.equal(setTimer.mock.calls.length, 1);
 		// Not earlier than the armed deadline, equal or later: no new timer.
-		releaser.watch("equal", probe(200, START.getTime()).stage);
-		releaser.watch("later", probe(300, START.getTime()).stage);
+		releaser.watch("equal", probe(200, start).stage);
+		releaser.watch("later", probe(300, start).stage);
 		assert.equal(setTimer.mock.calls.length, 1);
-		releaser.watch("earlier", probe(50, START.getTime()).stage);
+		releaser.watch("earlier", probe(50, start).stage);
 		assert.equal(setTimer.mock.calls.length, 2);
 		assert.equal(setTimer.mock.calls[1]?.[1], 50);
 		assert.equal(vi.getTimerCount(), 1);
@@ -173,7 +174,7 @@ describe("the run's idle scan, at its deadlines (#4309)", () => {
 	test("the timer never keeps the process alive by itself (#4309)", () => {
 		const setTimer = vi.spyOn(globalThis, "setTimeout");
 		const releaser = new StageIdleReleaser(() => {});
-		releaser.watch("a", probe(THRESHOLD_MS, START.getTime()).stage);
+		releaser.watch("a", probe(THRESHOLD_MS, start).stage);
 		assert.equal(setTimer.mock.calls[0]?.[1], THRESHOLD_MS);
 		const timer = setTimer.mock.results[0]?.value as NodeJS.Timeout;
 		assert.equal(timer.hasRef(), false);
@@ -182,8 +183,8 @@ describe("the run's idle scan, at its deadlines (#4309)", () => {
 
 	test("unwatching the last stage clears the timer, and unwatching one of several leaves it armed (#4309)", async () => {
 		const releaser = new StageIdleReleaser(() => {});
-		const a = probe(100, START.getTime());
-		const b = probe(100, START.getTime());
+		const a = probe(100, start);
+		const b = probe(100, start);
 		releaser.watch("a", a.stage);
 		releaser.watch("b", b.stage);
 		releaser.unwatch("a");
@@ -201,7 +202,7 @@ describe("the run's idle scan, at its deadlines (#4309)", () => {
 
 	test("a stage watched again is due a full threshold after it was watched again, and is released once (#4309)", async () => {
 		const releaser = new StageIdleReleaser(() => {});
-		const idle = probe(100, START.getTime());
+		const idle = probe(100, start);
 		releaser.watch("a", idle.stage);
 		await vi.advanceTimersByTimeAsync(50);
 		releaser.watch("a", idle.stage);
@@ -209,7 +210,7 @@ describe("the run's idle scan, at its deadlines (#4309)", () => {
 		await vi.advanceTimersByTimeAsync(99);
 		assert.deepEqual(idle.released, []);
 		await vi.advanceTimersByTimeAsync(1);
-		assert.deepEqual(idle.released, [START.getTime() + 150]);
+		assert.deepEqual(idle.released, [start + 150]);
 		assert.equal(releaser.size, 0);
 		await vi.advanceTimersByTimeAsync(1_000);
 		assert.equal(idle.released.length, 1);
@@ -218,8 +219,8 @@ describe("the run's idle scan, at its deadlines (#4309)", () => {
 	test("a release that fails is reported with the stage's key and the error, and does not stop the other stages (#4309)", async () => {
 		const failures: [string, unknown][] = [];
 		const releaser = new StageIdleReleaser((key, error) => failures.push([key, error]));
-		const broken = probe(100, START.getTime());
-		const fine = probe(100, START.getTime());
+		const broken = probe(100, start);
+		const fine = probe(100, start);
 		broken.releaseError = new Error("store unavailable");
 		releaser.watch("broken", broken.stage);
 		releaser.watch("fine", fine.stage);
@@ -236,7 +237,7 @@ describe("the run's idle scan, at its deadlines (#4309)", () => {
 		let starts = 0;
 		releaser.watch("a", {
 			afterMs: 10,
-			idleSince: () => START.getTime(),
+			idleSince: () => start,
 			release: async () => {
 				starts += 1;
 				await gate.promise;
@@ -252,11 +253,11 @@ describe("the run's idle scan, at its deadlines (#4309)", () => {
 
 	test("a release that ends the scan on its own account leaves no timer behind for the stages it did not reach (#4309)", async () => {
 		const releaser = new StageIdleReleaser(() => {});
-		const later = probe(500, START.getTime());
+		const later = probe(500, start);
 		releaser.watch("later", later.stage);
 		releaser.watch("ending", {
 			afterMs: 100,
-			idleSince: () => START.getTime(),
+			idleSince: () => start,
 			release: async () => releaser.dispose(),
 		});
 		await vi.advanceTimersByTimeAsync(100);
@@ -268,13 +269,13 @@ describe("the run's idle scan, at its deadlines (#4309)", () => {
 	test("after the workflow finished or the run ended nothing is watched, and nothing arms a timer (#4309)", async () => {
 		for (const end of ["settleReleased", "dispose"] as const) {
 			const releaser = new StageIdleReleaser(() => {});
-			const watched = probe(100, START.getTime());
+			const watched = probe(100, start);
 			releaser.watch("before", watched.stage);
 			assert.equal(vi.getTimerCount(), 1);
 			releaser[end]();
 			assert.equal(releaser.size, 0, end);
 			assert.equal(vi.getTimerCount(), 0, end);
-			releaser.watch("after", probe(100, START.getTime()).stage);
+			releaser.watch("after", probe(100, start).stage);
 			assert.equal(releaser.size, 0, end);
 			assert.equal(vi.getTimerCount(), 0, end);
 			await vi.advanceTimersByTimeAsync(1_000);
@@ -335,7 +336,7 @@ describe("the run's idle scan, at its deadlines (#4309)", () => {
 
 			const settled: string[] = [];
 			releaser.trackReleased("a", () => settled.push("a"));
-			releaser.watch("watched", probe(THRESHOLD_MS, START.getTime()).stage);
+			releaser.watch("watched", probe(THRESHOLD_MS, start).stage);
 			settleReleasedStages(dispatcher);
 			assert.deepEqual(settled, ["a"]);
 			assert.equal(releaser.size, 0);
@@ -344,7 +345,7 @@ describe("the run's idle scan, at its deadlines (#4309)", () => {
 			const fresh = stageIdleReleaser(dispatcher, () => {});
 			assert.notEqual(fresh, releaser);
 			// The disposed scan is finished: it watches nothing.
-			releaser.watch("late", probe(THRESHOLD_MS, START.getTime()).stage);
+			releaser.watch("late", probe(THRESHOLD_MS, start).stage);
 			assert.equal(releaser.size, 0);
 			// A run that never had an idle scan has nothing to settle or dispose.
 			settleReleasedStages(unrelated);

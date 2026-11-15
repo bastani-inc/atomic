@@ -504,8 +504,8 @@ export class StageSessionController {
 	private reopenBackoff: AbortController | undefined;
 	/** Prompts of the stage that have not settled; a stage with one cannot be released by its author. */
 	private promptsInFlight = 0;
-	/** When the stage's session last did anything: a prompt, a message or a session event. */
-	private lastActivityAt = Date.now();
+	/** When, by `performance.now()`, the stage's session last did anything: a prompt, a message or a session event. */
+	private lastActivityAt = performance.now();
 
 	private get residency(): StageResidency {
 		this.residencyState ??= new StageResidency();
@@ -881,14 +881,14 @@ export class StageSessionController {
 				await this.queueIntoWaitingTurn(content, kind, expandPromptTemplates);
 			return kind;
 		}
-		this.lastActivityAt = Date.now();
+		this.lastActivityAt = performance.now();
 		try {
 			const action = await this.deliverUserMessage(content, options, beforeDelivery, preparation);
 			// A message that started a turn may have left it waiting on detached tool calls; carry that turn on too.
 			if (action === "prompt") await this.continueDetachedTurns(undefined, "prompt");
 			return action;
 		} finally {
-			this.lastActivityAt = Date.now();
+			this.lastActivityAt = performance.now();
 		}
 	}
 
@@ -1007,7 +1007,7 @@ export class StageSessionController {
 		continuationText?: string,
 	): Promise<void> {
 		this.promptsInFlight += 1;
-		this.lastActivityAt = Date.now();
+		this.lastActivityAt = performance.now();
 		try {
 			if (reopensOnUse(this.releasedWait)) await this.rehydrate();
 			const sent = await this.resumeInterruptedCall(text, continuationText, sdkOptions, consumer);
@@ -1015,7 +1015,7 @@ export class StageSessionController {
 			await this.continueDetachedTurns(sdkOptions, consumer);
 		} finally {
 			this.promptsInFlight -= 1;
-			this.lastActivityAt = Date.now();
+			this.lastActivityAt = performance.now();
 		}
 	}
 
@@ -1494,7 +1494,7 @@ export class StageSessionController {
 			if (input.kind === "steer") await session.steer(text, images, options);
 			else await session.followUp(text, images, options);
 		}
-		this.lastActivityAt = Date.now();
+		this.lastActivityAt = performance.now();
 		ended?.resolve();
 		await hooks.rehydrated(wait);
 	}
@@ -3216,7 +3216,7 @@ export class StageSessionController {
 					void Promise.resolve(onSessionEvent(event)).catch(() => {});
 				} catch {}
 			}
-			this.lastActivityAt = Date.now();
+			this.lastActivityAt = performance.now();
 			if (event.type === "auto_retry_start") this.sessionInternalRetries += 1;
 			if (event.type === "model_fallback_start") applyingFallback = true;
 			// SDK effort-only fallbacks suppress model_changed, but emit thinking_level_changed
