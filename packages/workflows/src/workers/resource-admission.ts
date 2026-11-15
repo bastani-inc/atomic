@@ -3,7 +3,7 @@ import { realpath } from "node:fs/promises";
 import { cpus, freemem, loadavg } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import type { ResourcePermit, ResourceProcessIdentity } from "@bastani/atomic";
-import type { SqliteExecutor, SqliteRow } from "@bastani/atomic/storage";
+import type { SqliteExecutor, SqliteRow, StorageDialect } from "@bastani/atomic/storage";
 import { type SqlPoolStorage, sqlPoolStorage } from "../durable/journal/internal.js";
 import { openSqlPoolQueue } from "../durable/journal/sql-pool-queue.js";
 import { SqlRunJournal } from "../durable/journal/sql-run-journal.js";
@@ -82,7 +82,6 @@ const FENCED_WAITER_REASON = "abandoned waiter fenced";
  */
 const FENCED_WAITER_RETENTION_MS = 10 * 60_000;
 
-const NOW_MS = "CAST(unixepoch('subsec') * 1000 AS INTEGER)";
 /** How often an admission whose attempt lease is late asks again whether it was renewed. */
 const LATE_ATTEMPT_POLL_MS = 100;
 const LATE_ATTEMPT_REASON = "waiting for its attempt lease";
@@ -199,10 +198,15 @@ export class SqlResourceAdmission {
 	private readonly owners: string;
 	private readonly owner = randomUUID();
 	private nextReconciliation = 0;
+	private readonly dialect: StorageDialect;
+	/** The database clock, in integer milliseconds, as SQL. */
+	private readonly now: string;
 	private constructor(
 		private readonly storage: SqlPoolStorage,
 		private readonly options: AdmissionOptions,
 	) {
+		this.dialect = storage.dialect;
+		this.now = storage.dialect.nowMs;
 		this.permits = `${storage.tables.runs}_resource_permits`;
 		this.configuration = `${storage.tables.runs}_resource_limits`;
 		this.owners = `${storage.tables.runs}_resource_owners`;
@@ -224,28 +228,32 @@ export class SqlResourceAdmission {
 			sampleHost: options.sampleHost,
 		});
 		const boot = await admissionBootIdentity();
+		const { dialect } = storage;
+		const { int, serialKey } = dialect.types;
+		const hasColumn = async (tx: SqliteExecutor, table: string, column: string) => {
+			const probe = dialect.columnExists(table, column);
+			return (await tx.get(probe.sql, ...probe.params)) !== undefined;
+		};
 		await storage.transaction(async (tx) => {
 			await tx.exec(`CREATE TABLE IF NOT EXISTS ${admission.configuration}(scope TEXT PRIMARY KEY, config TEXT NOT NULL);
-				CREATE TABLE IF NOT EXISTS ${admission.permits}(ticket INTEGER PRIMARY KEY AUTOINCREMENT, operation TEXT UNIQUE NOT NULL,
+				CREATE TABLE IF NOT EXISTS ${admission.permits}(ticket ${serialKey}, operation TEXT UNIQUE NOT NULL,
 				root TEXT NOT NULL, holder TEXT NOT NULL, kind TEXT NOT NULL, state TEXT NOT NULL, reason TEXT, owner TEXT, attempt TEXT, process_identity TEXT);
 				CREATE INDEX IF NOT EXISTS ${admission.permits}_active ON ${admission.permits}(kind, state, root);
-				CREATE TABLE IF NOT EXISTS ${admission.owners}(id TEXT PRIMARY KEY, host TEXT NOT NULL, pid INTEGER NOT NULL, expires_at INTEGER NOT NULL, boot TEXT);`);
-			const columns = await tx.all(`PRAGMA table_info(${admission.permits})`);
+				CREATE TABLE IF NOT EXISTS ${admission.owners}(id TEXT PRIMARY KEY, host TEXT NOT NULL, pid ${int} NOT NULL, expires_at ${int} NOT NULL, boot TEXT);`);
 			for (const column of ["owner", "attempt", "process_identity"])
-				if (!columns.some((entry) => entry.name === column))
+				if (!(await hasColumn(tx, admission.permits, column)))
 					await tx.exec(`ALTER TABLE ${admission.permits} ADD COLUMN ${column} TEXT`);
-			if (!columns.some((entry) => entry.name === "root_epoch"))
-				await tx.exec(`ALTER TABLE ${admission.permits} ADD COLUMN root_epoch INTEGER`);
-			if (!columns.some((entry) => entry.name === "granted_at"))
-				await tx.exec(`ALTER TABLE ${admission.permits} ADD COLUMN granted_at INTEGER`);
+			for (const column of ["root_epoch", "granted_at"])
+				if (!(await hasColumn(tx, admission.permits, column)))
+					await tx.exec(`ALTER TABLE ${admission.permits} ADD COLUMN ${column} ${int}`);
 			// Reconciliation fences permits owner by owner and finds live permits by state. Without these indexes each
 			// statement reads every permit ever issued, which held the shared journal's write lock for seconds (#3978).
 			await tx.exec(`CREATE INDEX IF NOT EXISTS ${admission.permits}_owner ON ${admission.permits}(owner, state);
 				CREATE INDEX IF NOT EXISTS ${admission.permits}_state ON ${admission.permits}(state)`);
-			if (!(await tx.all(`PRAGMA table_info(${admission.owners})`)).some((entry) => entry.name === "boot"))
+			if (!(await hasColumn(tx, admission.owners, "boot")))
 				await tx.exec(`ALTER TABLE ${admission.owners} ADD COLUMN boot TEXT`);
 			await tx.run(
-				`INSERT INTO ${admission.owners}(id, host, pid, expires_at, boot) VALUES (?, ?, ?, CAST(unixepoch('subsec') * 1000 AS INTEGER) + ?, ?)`,
+				`INSERT INTO ${admission.owners}(id, host, pid, expires_at, boot) VALUES (?, ?, ?, ${admission.now} + ?, ?)`,
 				admission.owner,
 				admissionHost,
 				process.pid,
@@ -278,10 +286,18 @@ export class SqlResourceAdmission {
 							}),
 				});
 				if (ofRoot && rootLimits === "replace") {
-					await tx.run(`INSERT OR REPLACE INTO ${admission.configuration} VALUES (?, ?)`, scope, config);
+					await tx.run(
+						dialect.insertOrReplace(admission.configuration, ["scope", "config"], ["scope"], "VALUES (?, ?)"),
+						scope,
+						config,
+					);
 					continue;
 				}
-				await tx.run(`INSERT OR IGNORE INTO ${admission.configuration} VALUES (?, ?)`, scope, config);
+				await tx.run(
+					dialect.insertOrIgnore(admission.configuration, ["scope", "config"], "VALUES (?, ?)"),
+					scope,
+					config,
+				);
 				if (
 					(await tx.get(`SELECT config FROM ${admission.configuration} WHERE scope = ?`, scope))?.config !== config
 				)
@@ -329,7 +345,7 @@ export class SqlResourceAdmission {
 		const { root, attempt } = this.options;
 		if (!attempt) return "current";
 		const work = await tx.get<SqliteRow & { late: number }>(
-			`SELECT (w.expires_at < ${NOW_MS} OR l.renewed_at + p.timeout < ${NOW_MS}) AS late
+			`SELECT (w.expires_at < ${this.now} OR l.renewed_at + p.timeout < ${this.now}) AS late
 			FROM ${this.storage.tables.runs}_work w JOIN ${this.storage.tables.leases} l ON l.run_id = w.root
 			JOIN ${this.storage.tables.runs}_pool p ON p.root = w.root JOIN ${this.storage.tables.runs} r ON r.run_id = w.root
 			WHERE w.id = ? AND w.root = ? AND w.generation = ? AND w.epoch = ? AND w.state = 'leased' AND r.status IN ('running', 'paused')
@@ -418,7 +434,7 @@ export class SqlResourceAdmission {
 		};
 		await this.storage.transaction(async (tx) => {
 			await tx.run(
-				`UPDATE ${this.owners} SET expires_at = CAST(unixepoch('subsec') * 1000 AS INTEGER) + ? WHERE id = ?`,
+				`UPDATE ${this.owners} SET expires_at = ${this.now} + ? WHERE id = ?`,
 				OWNER_LEASE_MS,
 				this.owner,
 			);
@@ -454,7 +470,7 @@ export class SqlResourceAdmission {
 				const granted = await this.storage.transaction(async (tx) => {
 					quarantined = undefined;
 					await tx.run(
-						`UPDATE ${this.owners} SET expires_at = CAST(unixepoch('subsec') * 1000 AS INTEGER) + ? WHERE id = ?`,
+						`UPDATE ${this.owners} SET expires_at = ${this.now} + ? WHERE id = ?`,
 						OWNER_LEASE_MS,
 						this.owner,
 					);
@@ -475,7 +491,7 @@ export class SqlResourceAdmission {
 					if (
 						pressure &&
 						((await tx.get(
-							`SELECT 1 AS recent FROM ${this.permits} WHERE root = ? AND kind = 'session' AND granted_at >= ${NOW_MS} - ? LIMIT 1`,
+							`SELECT 1 AS recent FROM ${this.permits} WHERE root = ? AND kind = 'session' AND granted_at >= ${this.now} - ? LIMIT 1`,
 							root,
 							STAGE_START_SPACING_MS,
 						)) ||
@@ -488,7 +504,8 @@ export class SqlResourceAdmission {
 					)
 						reason ??= STAGE_START_PRESSURE_REASON;
 					const controls = `${this.storage.tables.runs}_pool_control`;
-					if (await tx.get("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", controls)) {
+					const controlsExist = this.dialect.tableExists(controls);
+					if (await tx.get(controlsExist.sql, ...controlsExist.params)) {
 						const control = await tx.get(`SELECT state FROM ${controls} WHERE root = ?`, root);
 						if (control && control.state !== "running") reason ??= `root ${control.state}`;
 					}
@@ -507,7 +524,7 @@ export class SqlResourceAdmission {
 						);
 						// A stage start waiting only for its pacing slot holds no claim on capacity others may use meanwhile.
 						const older = await tx.get(
-							`SELECT 1 AS waiting FROM ${this.permits} WHERE kind = ? ${rootClause} AND state = 'waiting' AND reason IS NOT ? AND ticket < (SELECT ticket FROM ${this.permits} WHERE operation = ?) LIMIT 1`,
+							`SELECT 1 AS waiting FROM ${this.permits} WHERE kind = ? ${rootClause} AND state = 'waiting' AND ${this.dialect.isDistinct("reason", "?")} AND ticket < (SELECT ticket FROM ${this.permits} WHERE operation = ?) LIMIT 1`,
 							...args,
 							STAGE_START_PRESSURE_REASON,
 							operation,
@@ -542,7 +559,7 @@ export class SqlResourceAdmission {
 					// Only a stage's own session start is recorded for pacing: subagents and processes are not stage starts.
 					const stageStart = kind === "session" && request?.delegated !== true;
 					const updated = await tx.run(
-						`UPDATE ${this.permits} SET state = ?, reason = ?, granted_at = CASE WHEN ? IS NULL AND ? THEN ${NOW_MS} ELSE NULL END WHERE operation = ? AND state = 'waiting'`,
+						`UPDATE ${this.permits} SET state = ?, reason = ?, granted_at = CASE WHEN CAST(? AS TEXT) IS NULL AND ? THEN ${this.now} ELSE NULL END WHERE operation = ? AND state = 'waiting'`,
 						reason ? "waiting" : "granted",
 						reason ?? null,
 						reason ?? null,
@@ -595,7 +612,7 @@ export class SqlResourceAdmission {
 		const pending = await this.storage.read(async (db) => {
 			const live = await db.all<LivePermitRow>(
 				`SELECT p.operation, p.owner, p.kind, p.state, p.reason, p.process_identity, p.attempt, o.host, o.boot, o.pid,
-				o.expires_at < ${NOW_MS} AS expired, ${this.attemptCurrent} AS attempt_current, ${this.rootMoved} AS root_moved
+				o.expires_at < ${this.now} AS expired, ${this.attemptCurrent} AS attempt_current, ${this.rootMoved} AS root_moved
 				FROM ${this.permits} p LEFT JOIN ${this.owners} o ON o.id = p.owner WHERE p.state IN ('waiting', 'granted')`,
 			);
 			if (live.some((permit) => this.needsFencing(permit, fence))) return true;
@@ -615,7 +632,7 @@ export class SqlResourceAdmission {
 			for (const owner of owners) {
 				const { rebooted, stopped } = fence(owner);
 				await tx.run(
-					`UPDATE ${this.permits} SET state = 'released', reason = ? WHERE owner = ? AND state = 'waiting' AND (? OR EXISTS (SELECT 1 FROM ${this.owners} WHERE id = ? AND expires_at < ${NOW_MS}))`,
+					`UPDATE ${this.permits} SET state = 'released', reason = ? WHERE owner = ? AND state = 'waiting' AND (? OR EXISTS (SELECT 1 FROM ${this.owners} WHERE id = ? AND expires_at < ${this.now}))`,
 					FENCED_WAITER_REASON,
 					owner.id,
 					stopped ? 1 : 0,
@@ -633,7 +650,7 @@ export class SqlResourceAdmission {
 					);
 					// A quarantined permit keeps its own reason: admissions waiting on its capacity tell it apart by it.
 					await tx.run(
-						`UPDATE ${this.permits} SET reason = ? WHERE owner = ? AND kind = 'process' AND state = 'granted' AND reason IS NOT ? AND reason IS NOT ?`,
+						`UPDATE ${this.permits} SET reason = ? WHERE owner = ? AND kind = 'process' AND state = 'granted' AND ${this.dialect.isDistinct("reason", "?")} AND ${this.dialect.isDistinct("reason", "?")}`,
 						UNCONFIRMED_REASON,
 						owner.id,
 						UNCONFIRMED_REASON,
@@ -642,21 +659,21 @@ export class SqlResourceAdmission {
 				} else {
 					if (this.options.crossHost === true && owner.host !== admissionHost) {
 						await tx.run(
-							`UPDATE ${this.permits} SET state = 'released', reason = ? WHERE owner = ? AND kind = 'session' AND state = 'granted' AND attempt IS NOT NULL AND EXISTS (SELECT 1 FROM ${this.owners} WHERE id = ? AND expires_at < ${NOW_MS}) AND NOT ${this.attemptCurrentOf(this.permits)}`,
+							`UPDATE ${this.permits} SET state = 'released', reason = ? WHERE owner = ? AND kind = 'session' AND state = 'granted' AND attempt IS NOT NULL AND EXISTS (SELECT 1 FROM ${this.owners} WHERE id = ? AND expires_at < ${this.now}) AND NOT ${this.attemptCurrentOf(this.permits)}`,
 							REPLACED_ON_ANOTHER_HOST_REASON,
 							owner.id,
 							owner.id,
 						);
 						// A root's own sessions carry no attempt: its earlier incarnation's are released once it resumed elsewhere.
 						await tx.run(
-							`UPDATE ${this.permits} SET state = 'released', reason = ? WHERE owner = ? AND kind = 'session' AND state = 'granted' AND attempt IS NULL AND EXISTS (SELECT 1 FROM ${this.owners} WHERE id = ? AND expires_at < ${NOW_MS}) AND ${this.rootMovedOf(this.permits)}`,
+							`UPDATE ${this.permits} SET state = 'released', reason = ? WHERE owner = ? AND kind = 'session' AND state = 'granted' AND attempt IS NULL AND EXISTS (SELECT 1 FROM ${this.owners} WHERE id = ? AND expires_at < ${this.now}) AND ${this.rootMovedOf(this.permits)}`,
 							ROOT_MOVED_REASON,
 							owner.id,
 							owner.id,
 						);
 					}
 					await tx.run(
-						`UPDATE ${this.permits} SET reason = ? WHERE owner = ? AND state = 'granted' AND reason IS NOT ? AND reason IS NOT ? AND EXISTS (SELECT 1 FROM ${this.owners} WHERE id = ? AND expires_at < ${NOW_MS})`,
+						`UPDATE ${this.permits} SET reason = ? WHERE owner = ? AND state = 'granted' AND ${this.dialect.isDistinct("reason", "?")} AND ${this.dialect.isDistinct("reason", "?")} AND EXISTS (SELECT 1 FROM ${this.owners} WHERE id = ? AND expires_at < ${this.now})`,
 						EXPIRED_REASON,
 						owner.id,
 						EXPIRED_REASON,
@@ -681,7 +698,7 @@ export class SqlResourceAdmission {
 				`UPDATE ${this.permits} SET state = 'released', reason = 'legacy waiter fenced' WHERE owner IS NULL AND state = 'waiting'`,
 			);
 			await tx.run(
-				`UPDATE ${this.permits} SET reason = ? WHERE owner IS NULL AND state = 'granted' AND reason IS NOT ?`,
+				`UPDATE ${this.permits} SET reason = ? WHERE owner IS NULL AND state = 'granted' AND ${this.dialect.isDistinct("reason", "?")}`,
 				ANONYMOUS_REASON,
 				ANONYMOUS_REASON,
 			);
@@ -714,7 +731,9 @@ export class SqlResourceAdmission {
 	}
 	/** Whether the attempt of the permit row `alias` still holds its work, as a SQL condition. */
 	private attemptCurrentOf(alias: string): string {
-		return `EXISTS (SELECT 1 FROM ${this.storage.tables.runs}_work w WHERE w.id = json_extract(${alias}.attempt, '$.id') AND w.generation = json_extract(${alias}.attempt, '$.generation') AND w.epoch = json_extract(${alias}.attempt, '$.epoch') AND w.state = 'leased')`;
+		const { jsonText, types } = this.dialect;
+		const field = (key: string) => jsonText(`${alias}.attempt`, key);
+		return `EXISTS (SELECT 1 FROM ${this.storage.tables.runs}_work w WHERE w.id = ${field("id")} AND w.generation = CAST(${field("generation")} AS ${types.int}) AND w.epoch = CAST(${field("epoch")} AS ${types.int}) AND w.state = 'leased')`;
 	}
 	/** The newest released ticket beyond the retained history, or NULL while there is nothing to prune. */
 	private get prunableBefore(): string {
@@ -725,8 +744,9 @@ export class SqlResourceAdmission {
 	 * and its retention. A fenced waiter whose owner renewed its lease within that retention may still rejoin the queue.
 	 */
 	private get prunable(): string {
-		return `+r.state = 'released' AND r.ticket <= ${this.prunableBefore} AND (r.reason IS NOT ? OR NOT EXISTS
-			(SELECT 1 FROM ${this.owners} o WHERE o.id = r.owner AND o.expires_at >= ${NOW_MS} - ?))`;
+		// `r.state || ''` keeps SQLite's planner off the state index, as a unary `+` did: Postgres has no unary `+` on text.
+		return `r.state || '' = 'released' AND r.ticket <= ${this.prunableBefore} AND (${this.dialect.isDistinct("r.reason", "?")} OR NOT EXISTS
+			(SELECT 1 FROM ${this.owners} o WHERE o.id = r.owner AND o.expires_at >= ${this.now} - ?))`;
 	}
 	/** Whether the write pass of `reconcile` would change this live permit; mirrors its statements one for one. */
 	private needsFencing(
@@ -783,7 +803,7 @@ export class SqlResourceAdmission {
 			);
 			// A quarantined permit keeps its reason; it is still counted, since its cleanup is still unconfirmed.
 			await tx.run(
-				`UPDATE ${this.permits} SET reason = ? WHERE root = ? AND holder = ? AND kind = 'process' AND state = 'granted' AND reason IS NOT ?`,
+				`UPDATE ${this.permits} SET reason = ? WHERE root = ? AND holder = ? AND kind = 'process' AND state = 'granted' AND ${this.dialect.isDistinct("reason", "?")}`,
 				UNCONFIRMED_REASON,
 				this.options.root,
 				holder,
@@ -832,11 +852,13 @@ async function settleProcessGroups(
 	const owners = `${storage.tables.runs}_resource_owners`;
 	// Read without the shared write lock; take it only to release permits of groups confirmed gone (#3978).
 	const rows = await storage.read(async (db) => {
-		if (!(await db.get("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", permits))) return [];
+		const exists = storage.dialect.tableExists(permits);
+		if (!(await db.get(exists.sql, ...exists.params))) return [];
+		const attempt = (key: string) => storage.dialect.jsonText("p.attempt", key);
 		const filter =
 			"attempt" in scope
 				? {
-						clause: "json_extract(p.attempt, '$.id') = ? AND json_extract(p.attempt, '$.generation') = ?",
+						clause: `${attempt("id")} = ? AND CAST(${attempt("generation")} AS ${storage.dialect.types.int}) = ?`,
 						args: [scope.attempt.id, scope.attempt.generation],
 					}
 				: { clause: "p.holder = ?", args: [scope.holder] };
