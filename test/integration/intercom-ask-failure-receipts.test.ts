@@ -457,12 +457,18 @@ const ASKER_DIES = ["before the reply", "just after the reply", "as the reply is
 const ASKER_DIES_ITERATIONS = 30;
 /** How long the asker takes to come back. */
 const ASKER_RESTART_MS = 1_000;
+/**
+ * How long an ask's outcome may take to arrive once its asker is back. Generous, so a stalled CI machine shows up as
+ * a slow outcome in the log rather than as a lost one; an outcome that never arrives still fails the test.
+ */
+const OUTCOME_WAIT = { timeout: 30_000, interval: 20 };
 
 for (const [mode, when] of ASKER_DIES.entries()) {
 	test(
 		`an asker whose connection dies ${when} while its recipient ends gets one outcome once it is back, every time (#5095)`,
 		async () => {
 			const outcomes: string[] = [];
+			const outcomeMsByIteration: number[] = [];
 			for (let iteration = 0; iteration < ASKER_DIES_ITERATIONS; iteration++) {
 				const label = `asker-dies-${mode}-${iteration}-5095`;
 				const askerAddress = { name: `asker-${label}`, returnAddress: randomUUID() };
@@ -489,13 +495,17 @@ for (const [mode, when] of ASKER_DIES.entries()) {
 				// Its process restarts, as p28 does, after both departures were handled.
 				await sleep(ASKER_RESTART_MS);
 				const back = await connect(askerAddress.name, { ...askerAddress, preferredSessionId: askerId });
+				const backAt = Date.now();
 				const seen = () =>
 					new Set(
 						[...asker.received, ...back.received]
 							.filter((message) => message.replyTo === questionId)
 							.map((message) => (message.replyError === undefined ? "reply" : "failure")),
 					);
-				await vi.waitFor(() => assert.ok(seen().size > 0, "the ask has an outcome"), WAIT).catch(() => undefined);
+				await vi
+					.waitFor(() => assert.ok(seen().size > 0, "the ask has an outcome"), OUTCOME_WAIT)
+					.catch(() => undefined);
+				const outcomeMs = Date.now() - backAt;
 				await sleep(SETTLE_MS);
 				const ids = new Set(
 					[...asker.received, ...back.received].filter((m) => m.replyTo === questionId).map((m) => m.id),
@@ -503,10 +513,13 @@ for (const [mode, when] of ASKER_DIES.entries()) {
 				outcomes.push(
 					ids.size === 1
 						? `#${iteration}: outcomes=1`
-						: `#${iteration}: outcomes=${ids.size} before=${JSON.stringify(asker.received.filter((m) => m.replyTo === questionId).map((m) => m.id.slice(0, 12)))} back=${JSON.stringify(back.received.filter((m) => m.replyTo === questionId).map((m) => m.id.slice(0, 12)))}`,
+						: `#${iteration}: outcomes=${ids.size} after ${outcomeMs} ms before=${JSON.stringify(asker.received.filter((m) => m.replyTo === questionId).map((m) => m.id.slice(0, 12)))} back=${JSON.stringify(back.received.filter((m) => m.replyTo === questionId).map((m) => m.id.slice(0, 12)))}`,
 				);
+				outcomeMsByIteration.push(outcomeMs);
 				await back.client.disconnect();
 			}
+			// How long each outcome took once the asker was back, so a slow one is visible in the log.
+			process.stderr.write(`asker dies ${when}: outcome ms per iteration ${JSON.stringify(outcomeMsByIteration)}\n`);
 			assert.deepEqual(
 				outcomes,
 				outcomes.map((_, iteration) => `#${iteration}: outcomes=1`),
