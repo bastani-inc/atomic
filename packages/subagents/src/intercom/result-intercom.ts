@@ -167,11 +167,20 @@ export function buildSubagentResultIntercomPayload(
 	return payload;
 }
 
+/**
+ * How the relay settled a result: `delivered` and `unconfirmed` both mean the relay owns the result (an unconfirmed
+ * send may still arrive), so the caller must not also return it inline; only `undelivered` leaves it to the caller.
+ */
+export type SubagentIntercomDelivery = "delivered" | "unconfirmed" | "undelivered";
+
+/** Once the relay has started delivering, how long to wait for its answer before reporting the delivery unconfirmed. */
+export const RESULT_RELAY_COMMITTED_TIMEOUT_MS = 30_000;
+
 export async function deliverSubagentResultIntercomEvent(
 	events: IntercomEventBus,
 	payload: SubagentResultIntercomPayload,
 	timeoutMs: number | false = 500,
-): Promise<boolean> {
+): Promise<SubagentIntercomDelivery> {
 	return deliverSubagentIntercomMessageEvent(
 		events,
 		payload.to,
@@ -187,14 +196,27 @@ export async function deliverSubagentIntercomMessageEvent(
 	message: string,
 	timeoutMs: number | false = 500,
 	extra: Record<string, unknown> = {},
-): Promise<boolean> {
-	if (typeof events.on !== "function" || typeof events.emit !== "function") return false;
+): Promise<SubagentIntercomDelivery> {
+	if (typeof events.on !== "function" || typeof events.emit !== "function") return "undelivered";
 	const requestId = typeof extra.requestId === "string" ? extra.requestId : randomUUID();
 	return new Promise((resolve) => {
 		let settled = false;
 		let unsubscribe: (() => void) | undefined;
 		let timer: ReturnType<typeof setTimeout> | undefined;
-		const finish = (delivered: boolean) => {
+		// Exactly one side delivers the result (#5018): the relay claims it right before dispatching, and a
+		// deadline that passes before that claim takes it back for the inline tool result, so the relay drops it.
+		let owner: "pending" | "relay" | "inline" = "pending";
+		const claimDelivery = (): boolean => {
+			if (owner === "inline") return false;
+			owner = "relay";
+			return true;
+		};
+		const takeInline = (): boolean => {
+			if (owner === "relay") return false;
+			owner = "inline";
+			return true;
+		};
+		const finish = (delivered: SubagentIntercomDelivery) => {
 			if (settled) return;
 			settled = true;
 			if (timer) clearTimeout(timer);
@@ -209,20 +231,34 @@ export async function deliverSubagentIntercomMessageEvent(
 		try {
 			unsubscribe = events.on(SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT, (data) => {
 				if (!data || typeof data !== "object") return;
-				const delivery = data as { requestId?: unknown; delivered?: unknown };
+				const delivery = data as { requestId?: unknown; delivered?: unknown; unconfirmed?: unknown };
 				if (delivery.requestId !== requestId) return;
-				finish(delivery.delivered === true);
+				finish(
+					delivery.delivered === true
+						? "delivered"
+						: delivery.unconfirmed === true
+							? "unconfirmed"
+							: "undelivered",
+				);
 			});
 		} catch (error) {
 			if (!isStaleExtensionContextError(error)) throw error;
-			finish(false);
+			finish("undelivered");
 			return;
 		}
-		if (timeoutMs !== false) timer = setTimeout(() => finish(false), timeoutMs);
+		if (timeoutMs !== false) {
+			timer = setTimeout(() => {
+				if (takeInline()) {
+					finish("undelivered");
+					return;
+				}
+				timer = setTimeout(() => finish("unconfirmed"), RESULT_RELAY_COMMITTED_TIMEOUT_MS);
+			}, timeoutMs);
+		}
 		try {
-			events.emit(SUBAGENT_RESULT_INTERCOM_EVENT, { ...extra, to, message, requestId });
+			events.emit(SUBAGENT_RESULT_INTERCOM_EVENT, { ...extra, to, message, requestId, claimDelivery });
 		} catch {
-			finish(false);
+			finish(takeInline() ? "undelivered" : "unconfirmed");
 		}
 	});
 }
@@ -247,10 +283,15 @@ export function formatSubagentResultReceipt(input: {
 	mode: SubagentRunMode;
 	runId: string;
 	payload: SubagentResultIntercomPayload;
+	/** False when the relay took the result but could not confirm it arrived. */
+	confirmed?: boolean;
 }): string {
 	const modeLabel = input.mode === "single" ? "single subagent result" : "parallel subagent results";
+	const confirmed = input.confirmed !== false;
 	const lines = [
-		`Delivered ${modeLabel} via intercom.`,
+		confirmed
+			? `Delivered ${modeLabel} via intercom.`
+			: `Sent ${modeLabel} via intercom; delivery was not confirmed.`,
 		`Run: ${input.runId}`,
 		`Children: ${formatStatusCounts(input.payload.children)}`,
 	];
@@ -279,6 +320,10 @@ export function formatSubagentResultReceipt(input: {
 		}
 	}
 
-	lines.push("Full grouped output was sent over intercom.");
+	lines.push(
+		confirmed
+			? "Full grouped output was sent over intercom."
+			: "Full grouped output was sent over intercom; if it does not arrive, read the artifacts or sessions above.",
+	);
 	return lines.join("\n");
 }

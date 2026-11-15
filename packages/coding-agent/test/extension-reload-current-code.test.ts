@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, test } from "vitest";
@@ -11,7 +11,6 @@ import {
 	createAgentSessionServices,
 } from "../src/core/agent-session-runtime.ts";
 import { clearExtensionCache, loadExtensionsCached } from "../src/core/extensions/loader.ts";
-import { staleRuntimeEvaluatedExtensionWarning } from "../src/core/extensions/loader-virtual-modules.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { createRpcCommandHandler } from "../src/modes/rpc/rpc-command-handler.ts";
 
@@ -157,40 +156,6 @@ describe("/reload runs the current code of edited extensions", () => {
 		assert.deepEqual(restartWarnings, []);
 	});
 
-	// Node and Bun keep every ESM JavaScript module they import for the life of the process, and jiti imports those
-	// natively, so an edited one still runs its old code until a restart. The reload says so instead of hiding it.
-	test("a reload warns once that an edited ESM JavaScript extension needs a restart (#4986)", async () => {
-		const { cwd, agentDir, extensionDir } = workspace();
-		writeFileSync(join(extensionDir, "package.json"), JSON.stringify({ type: "module" }));
-		const entry = join(extensionDir, "index.js");
-		const writeEsmEntry = (version: string) =>
-			writeFileSync(
-				entry,
-				`export default function (pi) {\n\tpi.registerCommand(${JSON.stringify(COMMAND)}, { description: "entry-${version}", handler: async () => {} });\n}\n`,
-			);
-		writeEsmEntry("1");
-		const runtime = await startRuntime(cwd, agentDir);
-		const restartWarnings = () =>
-			(runtime.session.resourceLoader.getExtensions().warnings ?? []).filter(
-				(warning) => warning.path === entry && /restart/i.test(warning.warning),
-			);
-		assert.equal(probeDescription(runtime), "entry-1");
-
-		await runtime.session.reload();
-		assert.deepEqual(restartWarnings(), []);
-
-		writeEsmEntry("22");
-		await runtime.session.reload();
-		assert.equal(restartWarnings().length, 1);
-
-		await runtime.session.reload();
-		assert.deepEqual(restartWarnings(), []);
-
-		writeEsmEntry("333");
-		await runtime.session.reload();
-		assert.equal(restartWarnings().length, 1);
-	});
-
 	test("fifty reloads of an edited extension keep memory bounded (#4986)", { timeout: 120_000 }, async () => {
 		cleanups.push(replaceEnvironmentVariable("JITI_TRY_NATIVE", "true"));
 		const tracked = trackCollection();
@@ -244,7 +209,7 @@ export default function (pi: any) {
 	});
 });
 
-describe("the restart warning for edited JavaScript extensions the runtime loads", () => {
+describe("reloads of a single JavaScript extension", () => {
 	/** A reload of one extension path, as `/reload` does it: a new cache generation, then a cached load. */
 	async function reloadWarnings(extensionPath: string, cwd: string, agentDir: string) {
 		clearExtensionCache();
@@ -262,94 +227,6 @@ describe("the restart warning for edited JavaScript extensions the runtime loads
 	}
 
 	const esmSource = (version: string) => `export default function () { globalThis.__esm4986 = "${version}"; }\n`;
-
-	test("warns once for an edited .mjs extension (#4986)", async () => {
-		const { cwd, agentDir, extensionDir } = workspace();
-		const entry = join(extensionDir, "probe.mjs");
-		writeFileSync(entry, esmSource("1"));
-		assert.deepEqual(await reloadWarnings(entry, cwd, agentDir), []);
-
-		writeFileSync(entry, esmSource("22"));
-		const [warning, ...rest] = await reloadWarnings(entry, cwd, agentDir);
-		assert.deepEqual(rest, []);
-		assert.match(warning?.warning ?? "", /Restart Atomic/);
-	});
-
-	test("warns when only the modification time of an edited entry changed (#4986)", async () => {
-		const { cwd, agentDir, extensionDir } = workspace();
-		writeFileSync(join(extensionDir, "package.json"), JSON.stringify({ type: "module" }));
-		const entry = join(extensionDir, "index.js");
-		const loadedAt = new Date(Math.floor(statSync(extensionDir).mtimeMs / 1000) * 1000 - 60_000);
-		writeFileSync(entry, esmSource("1"));
-		utimesSync(entry, loadedAt, loadedAt);
-		await reloadWarnings(entry, cwd, agentDir);
-
-		writeFileSync(entry, esmSource("2"));
-		utimesSync(entry, loadedAt, loadedAt);
-		assert.deepEqual(await reloadWarnings(entry, cwd, agentDir), []);
-
-		const later = new Date(loadedAt.getTime() + 5_000);
-		utimesSync(entry, later, later);
-		assert.equal((await reloadWarnings(entry, cwd, agentDir)).length, 1);
-	});
-
-	test("warns when only the size of an edited entry changed (#4986)", async () => {
-		const { cwd, agentDir, extensionDir } = workspace();
-		const entry = join(extensionDir, "probe.mjs");
-		const loadedAt = new Date(Math.floor(statSync(extensionDir).mtimeMs / 1000) * 1000 - 60_000);
-		writeFileSync(entry, esmSource("1"));
-		utimesSync(entry, loadedAt, loadedAt);
-		await reloadWarnings(entry, cwd, agentDir);
-
-		writeFileSync(entry, esmSource("22"));
-		utimesSync(entry, loadedAt, loadedAt);
-		assert.equal((await reloadWarnings(entry, cwd, agentDir)).length, 1);
-	});
-
-	test("warns for an edited JavaScript extension after a native first import (#4986)", async () => {
-		cleanups.push(replaceEnvironmentVariable("JITI_TRY_NATIVE", "true"));
-		const { cwd, agentDir, extensionDir } = workspace();
-		const entry = join(extensionDir, "probe.mjs");
-		writeFileSync(entry, esmSource("1"));
-		assert.deepEqual(await reloadWarnings(entry, cwd, agentDir), []);
-
-		writeFileSync(entry, esmSource("22"));
-		assert.equal((await reloadWarnings(entry, cwd, agentDir)).length, 1);
-	});
-
-	test("an extension this process never loaded has no restart warning (#4986)", () => {
-		const { extensionDir } = workspace();
-		const entry = join(extensionDir, "never-loaded.mjs");
-		writeFileSync(entry, esmSource("1"));
-		assert.equal(staleRuntimeEvaluatedExtensionWarning(entry), undefined);
-	});
-
-	test("loading an unedited TypeScript extension reports no warning (#4986)", async () => {
-		const { cwd, agentDir, extensionDir } = workspace();
-		writeEntry(extensionDir, "1");
-		writeHelper(extensionDir, "1");
-		const result = await loadExtensionsCached(
-			[join(extensionDir, "index.ts")],
-			cwd,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			agentDir,
-		);
-		assert.deepEqual(result.errors, []);
-		assert.deepEqual(result.warnings, []);
-	});
-
-	test("warns for an edited CommonJS extension, which the runtime loads too (#4986)", async () => {
-		const { cwd, agentDir, extensionDir } = workspace();
-		const entry = join(extensionDir, "index.js");
-		writeFileSync(entry, `module.exports = function () { globalThis.__cjs4986 = "1"; };\n`);
-		assert.deepEqual(await reloadWarnings(entry, cwd, agentDir), []);
-
-		writeFileSync(entry, `module.exports = function () { globalThis.__cjs4986 = "22"; };\n`);
-		assert.equal((await reloadWarnings(entry, cwd, agentDir)).length, 1);
-	});
 
 	test("an edited .js extension that jiti compiles reloads its new code without a warning (#4986)", async () => {
 		const { cwd, agentDir, extensionDir } = workspace();

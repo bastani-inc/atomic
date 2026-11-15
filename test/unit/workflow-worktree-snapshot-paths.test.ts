@@ -232,13 +232,14 @@ async function retained(
 		});
 		const acquired = await journal.acquire("run", "holder");
 		if (acquired.status !== "acquired") throw new Error("lease not acquired");
-		const trees: string[] = [];
-		for (const event of events) {
-			await journal.append(acquired.lease, event as unknown as RunEvent);
-			const carried = (event.payload as { worktreeSnapshots?: WorktreeSnapshot[] }).worktreeSnapshots ?? [];
-			trees.push(...carried.map((item) => item.tree));
-		}
+		const trees = events.flatMap((event) =>
+			((event.payload as { worktreeSnapshots?: WorktreeSnapshot[] }).worktreeSnapshots ?? []).map(
+				(item) => item.tree,
+			),
+		);
+		// A checkpoint records its snapshots only while their blobs are stored (#5077).
 		await journal.snapshotBlobs.putBlobs(trees.map(textBlob));
+		for (const event of events) await journal.append(acquired.lease, event as unknown as RunEvent);
 		await ageBlobs(database, journal.snapshotBlobs.table, 10_000);
 		await collectSnapshotGarbage(journal.snapshotBlobs);
 		const kept = new Set(await journal.snapshotBlobs.listBlobHashes());

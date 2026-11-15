@@ -167,8 +167,8 @@ describe("worktree pool slots (#4748)", () => {
 		const { snapshot, clone } = await recordedSnapshot();
 		const patches = snapshot.chain.flatMap((link) => (link.patch === null ? [] : [link.patch]));
 		assert.ok(patches.length > 0);
-		await loseSnapshotBlobs(store.snapshotBlobs, patches);
 		const manager = await sessionOf(clone, snapshot);
+		await loseSnapshotBlobs(store.snapshotBlobs, patches);
 
 		const result = await resumeSessionWorktree(manager, pool());
 
