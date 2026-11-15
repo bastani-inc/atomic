@@ -34,6 +34,7 @@
 
 ### Fixed
 
+- A background shell that a session's close stops now leaves its completion notice, naming `session closed`, for the next time the session is opened, once; it was never saved. When Atomic restarts while a workflow stage is released, the resumed stage is now told, once, that each shell it was running when released and whose notice it had not received was interrupted by the restart, instead of never hearing of it ([#5079](https://github.com/bastani-inc/atomic/issues/5079))
 - Reading or writing a tar archive member selector (`foo.tar:member`, `foo.tgz:member`) no longer hangs Atomic on a malformed PAX header: a record without a length separator, with a zero or too-short length, or running past the header data is refused as `Invalid PAX header` ([#5108](https://github.com/bastani-inc/atomic/issues/5108))
 - Temporary extension installs and the GitHub clone cache now use directories only the current user owns
 - Displayed tool output no longer passes 8-bit control sequences or bidirectional overrides to the terminal
