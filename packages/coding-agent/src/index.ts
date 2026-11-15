@@ -795,6 +795,11 @@ export {
 	serializeSessionStartError,
 } from "./core/session-start-errors.ts";
 export {
+	DEGRADED_RESTORE_RETENTION_DAYS,
+	type DegradedRestorePin,
+	type DiscardDegradedRestoreOptions,
+	degradedRestorePin,
+	discardDegradedRestore,
 	formatDegradedRestoreNotice,
 	formatUnrestoredNotice,
 	formatWorktreeRestoreNotice,

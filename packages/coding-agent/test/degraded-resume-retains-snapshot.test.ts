@@ -1,0 +1,295 @@
+import assert from "node:assert/strict";
+import { existsSync, readFileSync, renameSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
+import { afterEach, beforeEach, describe, test, vi } from "vitest";
+import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
+import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
+import type { WorktreeSnapshotEntry } from "../src/core/session-manager.js";
+import { SessionManager } from "../src/core/session-manager.js";
+import {
+	DEGRADED_RESTORE_RETENTION_DAYS,
+	discardDegradedRestore,
+	SessionWorktreeSnapshotRecorder,
+} from "../src/core/session-worktree-snapshots.js";
+import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
+import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.js";
+import type { SessionStore } from "../src/core/storage/session/types.js";
+import { type SqlSnapshotBlobStore, snapshotBlobHashes } from "../src/core/worktree-snapshot/blob-store.js";
+import { captureWorktreeSnapshot } from "../src/core/worktree-snapshot/capture.js";
+import { collectSnapshotGarbage } from "../src/core/worktree-snapshot/garbage.js";
+import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../src/core/worktree-snapshot/settings.js";
+import type { WorktreeSnapshot } from "../src/core/worktree-snapshot/types.js";
+import { type PreparedSessionResume, type PrepareSessionResumeOptions, prepareSessionResume } from "../src/index.js";
+
+useTemporaryAgentDir();
+
+/** Collection deletes every unreferenced blob at once, so a released snapshot is gone after one collection. */
+const settings = { ...DEFAULT_WORKTREE_SNAPSHOT_SETTINGS, graceSeconds: 0 };
+let sandbox: GitSandbox;
+const cleanups: Array<() => Promise<void> | void> = [];
+
+beforeEach(() => {
+	sandbox = new GitSandbox();
+});
+afterEach(async () => {
+	while (cleanups.length > 0) await cleanups.pop()?.();
+	sandbox.dispose();
+});
+
+async function sqlStore(): Promise<SessionStore> {
+	const database = await openNodeSqliteDatabase(sandbox.path("sessions.sqlite"));
+	const store = await SqlSessionStore.open(database);
+	cleanups.push(async () => {
+		await store.close();
+		await database.close();
+	});
+	return store;
+}
+
+function options(storeDir: string): PrepareSessionResumeOptions {
+	return {
+		entryPoint: "cli",
+		launchCwd: sandbox.root,
+		settings,
+		storeDir: sandbox.path(storeDir),
+		blueprint: { agentDir: sandbox.path("agent"), trusted: () => false },
+	};
+}
+
+function ready(prepared: PreparedSessionResume): Extract<PreparedSessionResume, { status: "ready" }> {
+	assert.equal(prepared.status, "ready");
+	return prepared as Extract<PreparedSessionResume, { status: "ready" }>;
+}
+
+const bashTurn = () => fauxAssistantMessage([fauxToolCall("bash", { command: "ls" })], { stopReason: "toolUse" });
+
+/** One agent turn that ran a file-writing tool, recorded the way a session records it. */
+async function runTurn(manager: SessionManager, cwd: string): Promise<void> {
+	const unavailable: unknown[] = [];
+	const recorder = new SessionWorktreeSnapshotRecorder({
+		sessionManager: manager,
+		cwd: () => cwd,
+		settings: () => settings,
+		declaresWrites: () => false,
+		onUnavailable: (reason) => unavailable.push(reason),
+	});
+	await recorder.recordTurn(bashTurn());
+	assert.deepEqual(unavailable, []);
+}
+
+const snapshotEntries = (manager: SessionManager): WorktreeSnapshotEntry[] =>
+	manager.getEntries().filter((entry): entry is WorktreeSnapshotEntry => entry.type === "worktree_snapshot");
+
+/**
+ * Machine A: a session whose snapshot S holds an unpushed commit that cannot be bundled, because it touches a file
+ * snapshots never copy, and an uncommitted new file.
+ */
+async function machineA() {
+	const { clone } = await sandbox.remoteWithClone("repo", { "README.md": "hello\n" });
+	const pushed = await sandbox.git(clone, "rev-parse", "HEAD");
+	sandbox.write(join(clone, ".env.example"), "TOKEN=placeholder\n");
+	sandbox.write(join(clone, "feature.txt"), "unpushed feature\n");
+	const unpushed = await sandbox.commitAll(clone, "unpushed commit touching a denied path");
+	sandbox.write(join(clone, "work.txt"), "uncommitted work\n");
+	const store = await sqlStore();
+	const manager = await SessionManager.create(store, clone);
+	await manager.appendMessage({ role: "user", content: "edit the files", timestamp: Date.now() });
+	const capture = await captureWorktreeSnapshot(clone, { settings, blobs: store.snapshotBlobs });
+	if (capture.status !== "captured") throw new Error(capture.status);
+	assert.equal(capture.snapshot.bundle, null, "the unpushed commit touches a denied path and is not bundled");
+	await manager.appendWorktreeSnapshot(clone, capture.snapshot.id, capture.snapshot);
+	const elsewhere = sandbox.path("machine-a");
+	renameSync(clone, elsewhere);
+	return { manager, snapshot: capture.snapshot, pushed, unpushed, clone: elsewhere };
+}
+
+/**
+ * Machine B: a degraded resume, then one turn that ran bash in the partly restored worktree, after `work` changed it,
+ * then a collection.
+ */
+async function degradedTurnOnB(
+	manager: SessionManager,
+	snapshot: WorktreeSnapshot,
+	pushed: string,
+	work: (worktree: string) => void = () => {},
+) {
+	const onB = ready(await prepareSessionResume(manager, options("machine-b")));
+	const b = onB.sessionManager.getWorktreeRootMappings().at(-1)!;
+	assert.equal(b.degraded?.stage, "closest-commit");
+	assert.equal(await sandbox.git(b.to, "rev-parse", "HEAD"), pushed);
+	assert.equal(existsSync(join(b.to, "work.txt")), false);
+	work(b.to);
+	await runTurn(onB.sessionManager, b.to);
+	const derived = snapshotEntries(onB.sessionManager).at(-1)!;
+	assert.notEqual(derived.snapshotId, snapshot.id, "the turn recorded the partly restored worktree");
+	await collectSnapshotGarbage(onB.sessionManager.getSessionStore().snapshotBlobs, { graceSeconds: 0 });
+	return { onB, b };
+}
+
+describe("a degraded resume keeps the snapshot it could not restore fully (#4922)", () => {
+	test("after a turn on the degraded machine and a collection, a later resume restores the pushed commit plus work.txt (#4922)", async () => {
+		const a = await machineA();
+		const { onB, b } = await degradedTurnOnB(a.manager, a.snapshot, a.pushed);
+
+		await sandbox.git(a.clone, "push", "-q", "origin", "HEAD:main");
+		rmSync(b.to, { recursive: true, force: true });
+		const onC = ready(await prepareSessionResume(onB.sessionManager, options("machine-c")));
+
+		const c = onC.sessionManager.getWorktreeRootMappings().at(-1)!;
+		assert.equal(c.snapshotId, a.snapshot.id);
+		assert.equal(c.degraded, undefined);
+		assert.equal(await sandbox.git(c.to, "rev-parse", "HEAD"), a.unpushed);
+		assert.equal(readFileSync(join(c.to, "work.txt"), "utf8"), "uncommitted work\n");
+	});
+
+	test("collection never deletes the snapshot's content while its degraded restore stands (#4922)", async () => {
+		const a = await machineA();
+		const { onB } = await degradedTurnOnB(a.manager, a.snapshot, a.pushed);
+		await runTurn(onB.sessionManager, onB.sessionManager.getWorktreeRootMappings().at(-1)!.to);
+		await collectSnapshotGarbage(onB.sessionManager.getSessionStore().snapshotBlobs, { graceSeconds: 0 });
+
+		const stored = new Set(await onB.sessionManager.getSessionStore().snapshotBlobs!.listBlobHashes());
+		for (const hash of snapshotBlobHashes(a.snapshot)) assert.ok(stored.has(hash), `blob ${hash} was collected`);
+	});
+
+	test("work done in the partly restored worktree is applied on top of the full restore, and recorded (#4922)", async () => {
+		const a = await machineA();
+		const { onB, b } = await degradedTurnOnB(a.manager, a.snapshot, a.pushed, (worktree) =>
+			sandbox.write(join(worktree, "from-b.txt"), "done on machine B\n"),
+		);
+
+		await sandbox.git(a.clone, "push", "-q", "origin", "HEAD:main");
+		rmSync(b.to, { recursive: true, force: true });
+		const onC = ready(await prepareSessionResume(onB.sessionManager, options("machine-c")));
+
+		const c = onC.sessionManager.getWorktreeRootMappings().at(-1)!;
+		assert.equal(c.snapshotId, a.snapshot.id);
+		assert.equal(c.degradedWork?.outcome, "applied");
+		assert.deepEqual(c.degradedWork?.paths, ["from-b.txt"]);
+		assert.equal(readFileSync(join(c.to, "work.txt"), "utf8"), "uncommitted work\n");
+		assert.equal(readFileSync(join(c.to, "from-b.txt"), "utf8"), "done on machine B\n");
+		assert.ok(onC.notices.some((notice) => notice.message.startsWith("Also applied the work done")));
+		const recorded = onC.sessionManager.getLatestWorktreeSnapshots().get(c.to)!;
+		assert.notEqual(recorded.id, a.snapshot.id, "the merged worktree is recorded at once");
+		assert.equal(snapshotEntries(onC.sessionManager).at(-1)?.degradedFrom, undefined);
+	});
+
+	test("work that conflicts with the full restore is left out and kept as a commit (#4922)", async () => {
+		const a = await machineA();
+		const { onB, b } = await degradedTurnOnB(a.manager, a.snapshot, a.pushed, (worktree) =>
+			sandbox.write(join(worktree, "work.txt"), "a different work.txt on machine B\n"),
+		);
+
+		await sandbox.git(a.clone, "push", "-q", "origin", "HEAD:main");
+		rmSync(b.to, { recursive: true, force: true });
+		const onC = ready(await prepareSessionResume(onB.sessionManager, options("machine-c")));
+
+		const c = onC.sessionManager.getWorktreeRootMappings().at(-1)!;
+		assert.equal(c.degradedWork?.outcome, "kept");
+		assert.equal(readFileSync(join(c.to, "work.txt"), "utf8"), "uncommitted work\n");
+		assert.equal(await sandbox.git(c.to, "rev-parse", c.degradedWork!.ref!), c.degradedWork!.commit);
+		assert.equal(
+			await sandbox.git(c.to, "show", `${c.degradedWork!.commit}:work.txt`),
+			"a different work.txt on machine B",
+		);
+		const warning = onC.notices.find((notice) => notice.message.startsWith("Did not apply"));
+		assert.ok(warning?.message.includes(`git diff ${c.degradedWork!.base} ${c.degradedWork!.commit}`));
+	});
+
+	test("a resume that still cannot reach the snapshot continues from the partly restored worktree's work, keeping the pin (#4922)", async () => {
+		const a = await machineA();
+		const { onB, b } = await degradedTurnOnB(a.manager, a.snapshot, a.pushed, (worktree) =>
+			sandbox.write(join(worktree, "from-b.txt"), "done on machine B\n"),
+		);
+		const work = snapshotEntries(onB.sessionManager).at(-1)!;
+		assert.equal(work.degradedFrom, a.snapshot.id);
+
+		rmSync(b.to, { recursive: true, force: true });
+		const onC = ready(await prepareSessionResume(onB.sessionManager, options("machine-c")));
+
+		const c = onC.sessionManager.getWorktreeRootMappings().at(-1)!;
+		assert.equal(c.snapshotId, work.snapshotId);
+		assert.equal(readFileSync(join(c.to, "from-b.txt"), "utf8"), "done on machine B\n");
+		assert.equal(snapshotEntries(onC.sessionManager).at(-1)?.degradedFrom, a.snapshot.id);
+		assert.ok(onC.notices.some((notice) => notice.message.includes("still cannot be restored here")));
+		await collectSnapshotGarbage(onC.sessionManager.getSessionStore().snapshotBlobs, { graceSeconds: 0 });
+		const stored = new Set(await onC.sessionManager.getSessionStore().snapshotBlobs!.listBlobHashes());
+		for (const hash of snapshotBlobHashes(a.snapshot)) assert.ok(stored.has(hash), `blob ${hash} was collected`);
+
+		// Once the commit is pushed, the next resume restores the snapshot with the work on top.
+		await sandbox.git(a.clone, "push", "-q", "origin", "HEAD:main");
+		rmSync(c.to, { recursive: true, force: true });
+		const onD = ready(await prepareSessionResume(onC.sessionManager, options("machine-d")));
+		const d = onD.sessionManager.getWorktreeRootMappings().at(-1)!;
+		assert.equal(d.snapshotId, a.snapshot.id);
+		assert.equal(readFileSync(join(d.to, "work.txt"), "utf8"), "uncommitted work\n");
+		assert.equal(readFileSync(join(d.to, "from-b.txt"), "utf8"), "done on machine B\n");
+	});
+
+	test("discardDegradedRestore records the partly restored worktree and releases the snapshot (#4922)", async () => {
+		const a = await machineA();
+		const { onB, b } = await degradedTurnOnB(a.manager, a.snapshot, a.pushed);
+
+		assert.deepEqual(await discardDegradedRestore(onB.sessionManager, { settings }), [b.to]);
+		await collectSnapshotGarbage(onB.sessionManager.getSessionStore().snapshotBlobs, { graceSeconds: 0 });
+
+		const stored = new Set(await onB.sessionManager.getSessionStore().snapshotBlobs!.listBlobHashes());
+		assert.ok(snapshotBlobHashes(a.snapshot).every((hash) => !stored.has(hash)));
+		await runTurn(onB.sessionManager, b.to);
+		assert.equal(snapshotEntries(onB.sessionManager).at(-1)?.degradedFrom, undefined);
+		assert.deepEqual(await discardDegradedRestore(onB.sessionManager, { settings }), []);
+	});
+
+	test(`the pin lapses ${DEGRADED_RESTORE_RETENTION_DAYS} days after the partial restore, with a notice, and collection releases the snapshot (#4922)`, async () => {
+		const a = await machineA();
+		const { onB, b } = await degradedTurnOnB(a.manager, a.snapshot, a.pushed);
+		const blobs = onB.sessionManager.getSessionStore().snapshotBlobs as SqlSnapshotBlobStore;
+		const { database } = blobs as unknown as {
+			readonly database: { run(sql: string, ...params: unknown[]): Promise<unknown> };
+		};
+
+		// Collection counts the days on the database clock.
+		await database.run(
+			"UPDATE snapshot_session_refs SET degraded_since = degraded_since - ? WHERE degraded_from IS NOT NULL",
+			DEGRADED_RESTORE_RETENTION_DAYS * 24 * 60 * 60 + 1,
+		);
+		await collectSnapshotGarbage(blobs, { graceSeconds: 0 });
+		const stored = new Set(await blobs.listBlobHashes());
+		assert.ok(snapshotBlobHashes(a.snapshot).every((hash) => !stored.has(hash)));
+
+		// Resume and capture count them on this machine's clock, from the partial restore.
+		vi.useFakeTimers({
+			toFake: ["Date"],
+			now: Date.now() + (DEGRADED_RESTORE_RETENTION_DAYS + 1) * 24 * 60 * 60 * 1000,
+		});
+		cleanups.push(() => vi.useRealTimers());
+		const again = ready(await prepareSessionResume(onB.sessionManager, options("machine-b")));
+		assert.ok(again.notices.some((notice) => notice.message.includes("is no longer kept")));
+		assert.equal(again.sessionManager.getCwd(), b.to);
+		await runTurn(again.sessionManager, b.to);
+		assert.equal(snapshotEntries(again.sessionManager).at(-1)?.degradedFrom, undefined);
+	});
+
+	test("a resume and collection with no partial restore record and keep what they did before (#4922)", async () => {
+		const { clone } = await sandbox.remoteWithClone("plain", { "README.md": "hello\n" });
+		sandbox.write(join(clone, "work.txt"), "uncommitted work\n");
+		const store = await sqlStore();
+		const manager = await SessionManager.create(store, clone);
+		await runTurn(manager, clone);
+		sandbox.write(join(clone, "work.txt"), "more work\n");
+		await runTurn(manager, clone);
+		const second = snapshotEntries(manager).at(-1)!;
+		await collectSnapshotGarbage(store.snapshotBlobs, { graceSeconds: 0 });
+
+		const stored = new Set(await store.snapshotBlobs!.listBlobHashes());
+		assert.ok(snapshotBlobHashes(second.snapshot!).every((hash) => stored.has(hash)));
+		renameSync(clone, sandbox.path("plain-elsewhere"));
+		const resumed = ready(await prepareSessionResume(manager, options("machine-b")));
+		const restored = resumed.sessionManager.getWorktreeRootMappings().at(-1)!;
+		assert.equal(restored.snapshotId, second.snapshotId);
+		assert.equal(restored.degradedWork, undefined);
+		assert.equal(readFileSync(join(restored.to, "work.txt"), "utf8"), "more work\n");
+		assert.ok(snapshotEntries(resumed.sessionManager).every((entry) => entry.degradedFrom === undefined));
+	});
+});

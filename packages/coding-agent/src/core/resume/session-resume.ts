@@ -6,8 +6,11 @@ import { failureDebugFields, reportDebug } from "../debug.ts";
 import type { SessionManager } from "../session-manager.ts";
 import {
 	currentWorktreeSnapshots,
+	formatLapsedPinNotice,
 	formatMissingRecordNotice,
 	holdSessionWorktrees,
+	lapsedDegradedRestores,
+	latestRestoreTargets,
 	type MissingSnapshotRecord,
 	mapRestoredPath,
 	missingSnapshotRecords,
@@ -163,10 +166,11 @@ export interface SessionSnapshotMatch {
 /** The latest snapshot of the checkout the session works in, the same one #4245's resume verifies. */
 export function latestSessionSnapshot(
 	sessionManager: Pick<SessionManager, "getCwd" | "getWorktreeRootMappings" | "getLatestWorktreeSnapshots">,
+	snapshots: ReadonlyMap<string, WorktreeSnapshot> = sessionManager.getLatestWorktreeSnapshots(),
 ): SessionSnapshotMatch | undefined {
 	const cwd = mapRestoredPath(sessionManager.getCwd(), sessionManager.getWorktreeRootMappings());
 	let match: SessionSnapshotMatch | undefined;
-	for (const [root, snapshot] of sessionManager.getLatestWorktreeSnapshots()) {
+	for (const [root, snapshot] of snapshots) {
 		if (isInside(root, cwd) && (!match || root.length > match.root.length)) match = { root, snapshot, cwd };
 	}
 	return match;
@@ -403,7 +407,11 @@ async function prepareResume(
 		const unchanged = await describeBlueprintsInPlace(sessionManager, storeDir, options);
 		return { status: "ready", sessionManager, notices: [], blueprintNotices: [], blueprintContext: unchanged };
 	}
-	const notices: ResumeNotice[] = [];
+	// A partial restore pinned for longer than its retention no longer holds its snapshot (#4922).
+	const notices: ResumeNotice[] = lapsedDegradedRestores(sessionManager).map((lapsed) => ({
+		type: "warning",
+		message: formatLapsedPinNotice(lapsed),
+	}));
 	const checkoutCount = currentWorktreeSnapshots(sessionManager).size;
 	options.onProgress?.(
 		`Checking ${checkoutCount === 1 ? "1 checkout" : `${checkoutCount} checkouts`} against the session's snapshots`,
@@ -427,7 +435,8 @@ async function prepareResume(
 		partialOnce ??= partialRestores(sessionManager, options);
 		return partialOnce;
 	};
-	const match = latestSessionSnapshot(sessionManager);
+	// A checkout restored only partly is compared with the snapshot it lacks, which stays its restore target (#4922).
+	const match = latestSessionSnapshot(sessionManager, latestRestoreTargets(sessionManager));
 	let git: GitProbe | undefined;
 	let reused: WorktreeRootMapping | undefined;
 	let needsRestore: boolean;

@@ -293,6 +293,32 @@ describe.skipIf(postgresSkipReason !== undefined)("the reference index on Postgr
 		});
 	});
 
+	test("a database migrated before the pins of partial restores gains their columns and rebuilds its index (#4922)", async () => {
+		const expected = await sqliteIndex("pins", false);
+		await withPostgresDatabase(async (scope) => {
+			const database = await scope.open();
+			await createReferencingTables(database);
+			await SqlSnapshotBlobStore.open(database);
+			// What a build before #4922 left: version 2, and the session references without the pin columns.
+			await database.exec(
+				"ALTER TABLE snapshot_session_refs DROP COLUMN degraded_from; ALTER TABLE snapshot_session_refs DROP COLUMN degraded_since",
+			);
+			await database.run("DELETE FROM atomic_migrations WHERE domain = ? AND version = 3", SNAPSHOT_BLOB_DOMAIN);
+			await write(database, EARLY_WRITES);
+			const upgraded = await SqlSnapshotBlobStore.open(database);
+			const columns = await database.all(
+				"SELECT column_name FROM information_schema.columns WHERE table_name = 'snapshot_session_refs' AND column_name LIKE 'degraded%' ORDER BY column_name",
+			);
+			assert.deepEqual(
+				columns.map((row) => row.column_name),
+				["degraded_from", "degraded_since"],
+			);
+			await write(database, LATE_WRITES);
+			await upgraded.completeIndex();
+			assert.deepEqual(await referenceIndex(database), expected);
+		});
+	});
+
 	test("migrating again replaces the triggers, records each step once, and keeps the index (#4793)", async () => {
 		const expected = await sqliteIndex("again", false);
 		await withPostgresDatabase(async (scope) => {
@@ -318,7 +344,7 @@ describe.skipIf(postgresSkipReason !== undefined)("the reference index on Postgr
 			);
 			assert.deepEqual(
 				ledger.map((row) => Number(row.version)),
-				[1, 2],
+				[1, 2, 3],
 			);
 			await write(database, EARLY_WRITES);
 			await write(database, LATE_WRITES);
