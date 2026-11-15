@@ -261,7 +261,7 @@ export function describeStorageFailure(error: Error): string {
 	}
 	const message = firstLine(error.message);
 	const cause = firstLine(innermost.message);
-	const text = innermost === error || message.includes(cause) ? message : `${message}: ${cause}`;
+	const text = message.includes(cause) ? message : `${message}: ${cause}`;
 	return code === undefined || text.includes(code) ? text : `${text} (${code})`;
 }
 

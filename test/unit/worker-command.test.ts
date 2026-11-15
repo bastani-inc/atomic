@@ -894,6 +894,16 @@ test("worker commands show the cause of a storage failure, with its code, after 
 	assert.deepEqual(unauthenticated.err, [
 		"Storage unavailable: postgres at postgresql://atomic@db/atomic: Invalid storage configuration: auth (auth-unavailable). Install @azure/identity",
 	]);
+	// Only a shared pool's setup error lists problems; any other error, or one without problems, shows its message.
+	for (const setup of [
+		Object.assign(new Error("Shared worker pool setup incomplete"), { name: "SharedPoolSetupError" }),
+		Object.assign(new Error("Shared worker pool setup incomplete"), {
+			problems: [{ subject: "s", code: "c", hint: "h" }],
+		}),
+	]) {
+		const result = await run(["start", ...database], async () => fakeModule({ setup }).module);
+		assert.deepEqual(result.err, ["Shared worker pool setup incomplete"]);
+	}
 });
 
 test(
