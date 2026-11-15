@@ -6,6 +6,7 @@ import { configuredSecretRedactor } from "../../packages/coding-agent/src/core/s
 import { redactCredentials } from "../../packages/coding-agent/src/core/workspace/redact.ts";
 import { redactCredentialShapes } from "../../packages/coding-agent/src/utils/credential-redaction.ts";
 import { redactSensitiveText } from "../../packages/workflows/src/shared/workflow-failures-signals.ts";
+import { redactSecrets as redactCliSecrets } from "../../packages/workflows/src/workers/provisioners/cli.ts";
 
 /** A linear scan of this input takes milliseconds; a quadratic one takes minutes. */
 const ADVERSARIAL_LENGTH = 200_000;
@@ -731,7 +732,7 @@ describe("credential redaction in more contexts", () => {
 	test("a password value stops at the end of its own value", () => {
 		assertKept('{"password":null,"email":"bob@example.com","id":7}');
 		assertKept('{"showPassword":false,"user":"bob","mode":"dark"}');
-		assert.equal(redactCredentialShapes('{"password":12,"id":7}'), '{"password":12,"id":7}');
+		assert.equal(redactCredentialShapes('{"password":12,"id":7}'), '{"password": [redacted],"id":7}');
 		assert.equal(
 			redactCredentialShapes("PASSWORD=x123 PORT=8080 HOST=localhost"),
 			"PASSWORD= [redacted] PORT=8080 HOST=localhost",
@@ -783,7 +784,7 @@ describe("credential redaction boundaries", () => {
 		["token: null)", "token: null)"],
 		['"token": 12,', '"token": 12,'],
 		["token: 12", "token: [redacted]"],
-		['"password": -1.5,', '"password": -1.5,'],
+		['"password": -1.5,', '"password": [redacted],'],
 		["password: -1.5", "password: [redacted]"],
 		["password: null, really", "password: [redacted]"],
 		["openaiKey: abcd123", "openaiKey: abcd123"],
@@ -803,7 +804,8 @@ describe("credential redaction boundaries", () => {
 		["< set-cookie: a=b", "< set-cookie: a=[redacted]"],
 		["x > Cookie: a=b", "x > Cookie: a=[redacted]"],
 		[`${"x".repeat(50)} cookie: a=b`, `${"x".repeat(50)} cookie: a=b`],
-		["`Cookie: a=b` c=d", "`Cookie: a=[redacted]` c=d"],
+		["`Cookie: a=b` c=d", "`Cookie: a=b` c=d"],
+		["`Cookie: a=b1c2d3e4` c=d", "`Cookie: a=[redacted]` c=d"],
 		["Cookie: a=1;b=2", "Cookie: a=[redacted];b=[redacted]"],
 		["Cookie: a=;b= ", "Cookie: a=;b= "],
 		['Cookie: a="x y"; b=2', 'Cookie: a="[redacted]"; b=[redacted]'],
@@ -900,7 +902,8 @@ describe("cookie headers inside a line", () => {
 			],
 			["curl --cookie cookies.txt https://x", "curl --cookie cookies.txt https://x"],
 			[`{"h":"Cookie: sid=${PLAIN_SECRET}"}`, '{"h":"Cookie: sid=[redacted]"}'],
-			[`{"h":"x=1, cookie: sid=${PLAIN_SECRET}"}`, `{"h":"x=1, cookie: sid=${PLAIN_SECRET}"}`],
+			[`{"h":"x=1, cookie: sid=${PLAIN_SECRET}"}`, '{"h":"x=1, cookie: sid=[redacted]"}'],
+			['{"h":"x=1, cookie: theme=dark"}', '{"h":"x=1, cookie: theme=dark"}'],
 			[`{\\"h\\":\\"Cookie: sid=${PLAIN_SECRET}\\"}`, '{\\"h\\":\\"Cookie: sid=[redacted]\\"}'],
 			[`{cookie: sid=${PLAIN_SECRET}}`, "{cookie: sid=[redacted]}"],
 			[`resp set-cookie: sid=${PLAIN_SECRET}; Path=/`, "resp set-cookie: sid=[redacted]; Path=/"],
@@ -964,7 +967,7 @@ describe("credential value edges", () => {
 			["x -H cookie: a=b", "x -H cookie: a=[redacted]"],
 			["header: cookie: a=b", "header: cookie: a=[redacted]"],
 			["a=1,cookie: b=2", "a=1,cookie: b=2"],
-			["`cookie: a=b`", "`cookie: a=[redacted]`"],
+			["`cookie: a=b`", "`cookie: a=b`"],
 			["'Cookie: a=b\\\\' x", "'Cookie: a=[redacted]\\\\' x"],
 			["--cookie='a=1; b=2' x", "--cookie='a=[redacted]; b=[redacted]' x"],
 			['--cookie "a=1', '--cookie "a=[redacted]'],
@@ -1075,17 +1078,13 @@ describe("credential redaction, fourth pass", () => {
 			"docker run -u 1000:1000 img",
 			"function f(token: AccessToken, timeout: number): void {}",
 			"I like sweets, cookie: chocolate=yes",
-			"The Set-Cookie header (e.g. Set-Cookie: lang=en-US) sets a cookie.".replace("lang=en-US", "lang"),
+			"The Set-Cookie header (e.g. Set-Cookie: lang=en-US) sets a cookie.",
 			"note: login bob password reset failed in the middle of a line",
 			'{"s3Key":"uploads/2024/11/report-final.pdf"}',
 			'{"objectKey":"img/2024/a.png"}',
 		]) {
 			assert.equal(redactCredentialShapes(text), text, text);
 		}
-		assert.equal(
-			redactCredentialShapes("The Set-Cookie header (e.g. Set-Cookie: lang=en-US) sets a cookie."),
-			"The Set-Cookie header (e.g. Set-Cookie: lang=[redacted]) sets a cookie.",
-		);
 		assert.equal(redactCredentialShapes(`mysql -p'${S}' -u bob:${S}`), "mysql -p'[redacted]' -u bob:[redacted]");
 		assert.equal(redactCredentialShapes(`docker login -pab1cd2ef`), "docker login -p[redacted]");
 		assert.equal(
@@ -1215,5 +1214,87 @@ describe("type annotations need a code context", () => {
 			["connect(password: abc", "connect(password: [redacted]"],
 		];
 		for (const [input, expected] of cases) assert.equal(redactCredentialShapes(input), expected, input);
+	});
+});
+
+describe("remaining leak and over-redaction cases (#5142)", () => {
+	const S = PLAIN_SECRET;
+	/** A numeric password, built here so no scanner reads the test as holding one. */
+	const DIGITS = ["1234", "5678"].join("");
+
+	test("secrets in less common formats are redacted (#5142)", () => {
+		const cases: readonly (readonly [string, string])[] = [
+			[`Cookie: sid=ab}${S}`, "Cookie: sid=[redacted]"],
+			[`Cookie: sid=ab\\${S}`, "Cookie: sid=[redacted]"],
+			[`curl -ubob:${S} https://x`, "curl -ubob:[redacted] https://x"],
+			[`tool --password -${S}`, "tool --password [redacted]"],
+			["mysql -uroot -pcorrecthorsebattery", "mysql -uroot -p[redacted]"],
+			[`docker login -u bob -p ${S} ghcr.io`, "docker login -u bob -p [redacted] ghcr.io"],
+			[`api_key=data.${S}`, "api_key= [redacted]"],
+			[`Server=db;Password=ab;cd=${S};Database=app`, "Server=db;Password= [redacted];Database=app"],
+			[`{"password":${DIGITS}}`, '{"password": [redacted]}'],
+			[`machine x password ${S} login bob`, "machine x password [redacted] login bob"],
+			[`default login bob password ${S}`, "default login bob password [redacted]"],
+			[`password:\n    ${S}`, "password:\n    [redacted]"],
+			[`Password: ${S}. Rotate it soon`, "Password: [redacted]. Rotate it soon"],
+		];
+		for (const [input, expected] of cases) {
+			assert.equal(redactCredentialShapes(input), expected, JSON.stringify(input));
+			assert.ok(!redactSensitiveText(input).includes(S), JSON.stringify(input));
+		}
+	});
+
+	test("documentation, code and prose around credential names stay unchanged (#5142)", () => {
+		for (const text of [
+			"Supported headers: Cookie: name=value; Set-Cookie: name=value",
+			"| Set-Cookie | `Set-Cookie: id=a3fWa; Max-Age=2592000` |",
+			'document.cookie = "theme=dark; path=/; max-age=31536000";',
+			"login bob password reset failed",
+			"login root password: hidden",
+			"PASSWORD= PORT=8080",
+			"if (options.password === undefined) options.password = process.env.DB_PASSWORD;",
+			"Set `password:` in config.yaml; tokens expire after 1h.",
+			"  DB_PASSWORD:  <set to the key 'password' in secret 'db'>  Optional: false",
+			"  API_TOKEN:    <set to the key 'token' in secret 'api'>",
+			"password: (not set)",
+			"Password: must be 8+ characters, include a digit; see below",
+			"gcc -pthread -pedantic x.c",
+			"ssh -p 2222 host",
+		]) {
+			assert.equal(redactCredentialShapes(text), text, text);
+		}
+		// A cookie value that looks generated is still redacted in prose and code.
+		assert.equal(
+			redactCredentialShapes(`document.cookie = "sid=${S}; path=/";`),
+			'document.cookie = "sid=[redacted]; path=/";',
+		);
+	});
+
+	test("a value never extends past a line break (#5142)", () => {
+		const code = "def login(self, password: str) -> Token:\n    token = self.client.auth(user)\n    return token";
+		assert.equal(redactCredentialShapes(code), code);
+		assert.equal(redactCredentialShapes("token: Bearer\nnext line"), "token: [redacted]\nnext line");
+		assert.equal(redactCredentialShapes("Authorization: Bearer\nabc"), "Authorization: [redacted]\nabc");
+		assert.equal(redactCredentialShapes("password=\nPORT=8080"), "password=\nPORT=8080");
+		assert.equal(redactCliSecrets("-> Token:\n    token", [], {}), "-> Token:\n    token");
+		// Only a value alone on the next line, indented deeper, belongs to a name that ends its line, as in YAML.
+		assert.equal(redactCredentialShapes(`token:\n${S}`), `token:\n${S}`);
+		assert.equal(redactCredentialShapes(`  token:\n  ${S}`), `  token:\n  ${S}`);
+		assert.equal(redactCredentialShapes(`  token:\n    ${S}`), "  token:\n    [redacted]");
+	});
+
+	test("a value megabytes long is redacted without exhausting the regular expression stack (#5142)", () => {
+		const length = 8 * 1024 * 1024;
+		for (const text of [
+			`PASSWORD=${"a ".repeat(length / 2)}`,
+			`"password":"${"a".repeat(length)}"`,
+			`\\"password\\":\\"${"a".repeat(length)}`,
+			`Cookie: a=${"b".repeat(length)}`,
+			`${["-----BEGIN", "PRIVATE KEY-----"].join(" ")}\n${"a".repeat(length)}`,
+		]) {
+			const redacted = redactCredentialShapes(text);
+			assert.ok(redacted.length < 1024, text.slice(0, 20));
+			assert.ok(redacted.includes("[redacted]"), text.slice(0, 20));
+		}
 	});
 });
