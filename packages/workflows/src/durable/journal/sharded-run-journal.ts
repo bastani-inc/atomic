@@ -414,7 +414,7 @@ export class ShardedRunJournal implements RunJournal {
 					cwd: header.cwd,
 					status: status ?? header.status,
 				});
-			else if (created === "created" && status !== undefined) await this.recordStatus(header.runId, status);
+			if (created === "created" && status !== undefined) await this.recordStatus(header.runId, status);
 			return created;
 		});
 	}

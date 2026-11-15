@@ -231,3 +231,35 @@ test("a stage session that fails after its delivery reached the attempt's inbox 
 	assert.equal(late.error?.code, "intercom_unavailable", "the failed session's sink is gone from the inbox");
 	assert.deepEqual(received, []);
 });
+
+test("a stage session that fails on the root's host rejects with its own error (#5168)", async () => {
+	const adapter = workerStageAdapter({
+		base: {
+			async create() {
+				throw new Error("the stage's session failed to start");
+			},
+		},
+		store: createStore(),
+		inbox: undefined,
+		shared: { host: "host-a", routes: true },
+		request: async () => "route-capability",
+		published: () => undefined,
+		journal: {
+			getWorkflow: () => ({ pendingStageMessages: [] }),
+			listCheckpoints: () => [],
+			catchUpWorkflow: async () => {},
+		} as never,
+		root: ROOT,
+	});
+	await assert.rejects(
+		adapter.create(
+			{
+				orchestrationContext: {
+					pendingStageDelivery: { deliverPending: async () => {}, ready: () => undefined, fail: () => {} },
+				},
+			} as never,
+			STAGE,
+		),
+		/failed to start/,
+	);
+});

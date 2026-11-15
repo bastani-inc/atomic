@@ -1386,4 +1386,7 @@ test("a retried run creation that finds its run records the seeded status in the
 	await assert.rejects(journal.createRunWithEvents(header, seeds));
 	assert.equal(await journal.createRunWithEvents(header, seeds), "exists");
 	assert.equal((await catalog.locate("seeded"))?.run.status, "paused");
+	const later = [{ event: { type: "StatusChanged", payload: { status: "completed" } } as never }];
+	assert.equal(await journal.createRunWithEvents(header, later), "exists");
+	assert.equal((await catalog.locate("seeded"))?.run.status, "paused", "a placed run keeps its catalog status");
 });

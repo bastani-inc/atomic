@@ -425,12 +425,13 @@ describe("stage chat bash (#5168)", () => {
 			abortBash: () => {},
 		} as unknown as AgentSession;
 		const { handle } = makeHandle(undefined, [], "running", agentSession);
-		// The chat attaches before it runs the command, and the command attaches again: the session closes in between.
+		// The session closes while the command attaches it.
+		let closeOnAttach = false;
 		let attaches = 0;
 		Object.assign(handle, {
 			ensureAttached: async () => {
 				attaches += 1;
-				if (attaches > 1) Object.assign(handle, { isDisposed: true });
+				if (closeOnAttach) Object.assign(handle, { isDisposed: true });
 			},
 		});
 		const view = new StageChatView({
@@ -445,10 +446,15 @@ describe("stage chat bash (#5168)", () => {
 		});
 		const chatHost = (view as unknown as { chatHost: { submit(mode: "auto", text: string): Promise<void> } })
 			.chatHost;
+		await chatHost.submit("auto", "!echo open");
+		await flush();
+		assert.deepEqual(commands, ["echo open"], "a command runs on the stage's open session");
+		closeOnAttach = true;
+		attaches = 0;
 		await chatHost.submit("auto", "!echo hi").catch(() => {});
 		await flush();
-		assert.ok(attaches > 1, "the command attached the stage's session itself");
-		assert.deepEqual(commands, []);
+		assert.ok(attaches > 0, "the command attached the stage's session itself");
+		assert.deepEqual(commands, ["echo open"]);
 		view.dispose();
 	});
 });

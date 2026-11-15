@@ -226,3 +226,13 @@ test("a reopened subscriber's session is released even when waiting for its turn
 	assert.equal(released(), 1, "the lease is released");
 	assert.deepEqual(failures, ["watcher"], "the failed wait is still reported");
 });
+
+test("cancelling lets a reopened subscriber's session go without waiting for its turn (#5168)", async () => {
+	const session = retainedSession(false);
+	const { registry, released } = countingRegistry(session.handle);
+	const reports = createSubscriberReports(RUN_ID, { registry }, { cleanupFailed: () => {}, turnFailed: () => {} });
+	await (await reports.deliver(watcherDelivery)).saved;
+	Object.assign(session.handle, { isStreaming: true });
+	await reports.cancel();
+	assert.equal(released(), 1, "released while its turn still runs");
+});
