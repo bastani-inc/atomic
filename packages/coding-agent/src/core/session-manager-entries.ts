@@ -178,6 +178,7 @@ export function createWorktreeSnapshotEntry(
 	parentId: string | null,
 	unrestored?: WorktreeUnrestored,
 	captureMs?: number,
+	degradedFrom?: string,
 ): WorktreeSnapshotEntry {
 	return {
 		type: "worktree_snapshot",
@@ -189,6 +190,7 @@ export function createWorktreeSnapshotEntry(
 		...(restoreWarnings.length === 0 ? {} : { restoreWarnings: [...restoreWarnings] }),
 		...(unrestored === undefined ? {} : { unrestored }),
 		...(captureMs === undefined ? {} : { captureMs }),
+		...(degradedFrom === undefined ? {} : { degradedFrom }),
 	};
 }
 

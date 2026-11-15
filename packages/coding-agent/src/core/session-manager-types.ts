@@ -269,6 +269,12 @@ export interface WorktreeSnapshotEntry extends SessionEntryBase {
 	/** How long the turn's capture of this checkout took, in milliseconds; present on entries a turn's capture wrote. */
 	captureMs?: number;
 	/**
+	 * The snapshot a resume could restore only partly into this checkout (#4922): this entry records the partly restored
+	 * worktree as it is now, and `degradedFrom` stays the checkout's restore target, kept by collection, until a resume
+	 * restores it fully, `discardDegradedRestore` releases it, or 30 days have passed since the partial restore.
+	 */
+	degradedFrom?: string;
+	/**
 	 * Base64 patch and bundle content by SHA-256, carried by exported session files so a moved file is complete.
 	 * Import verifies each hash and moves the content into the store's blob table.
 	 */

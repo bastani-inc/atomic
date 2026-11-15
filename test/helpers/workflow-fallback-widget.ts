@@ -77,6 +77,7 @@ export async function startFallbackWidgetScenario(explicitModel = true) {
 		settingsManager: { getDefaultThinkingLevel: () => "high", getDefaultProvider: () => "openai" },
 		_modelRuntime: {
 			getAvailableSnapshot: () => models,
+			getModels: () => models,
 			getModel: (provider: string, id: string) =>
 				models.find((model) => model.provider === provider && model.id === id),
 			hasConfiguredAuth: () => true,

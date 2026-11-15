@@ -278,6 +278,12 @@ export interface DurableStageCheckpoint {
 	readonly topology?: DurableStageTopology;
 	/** Stage output text or structured result when the stage completed. */
 	readonly output?: WorkflowSerializableValue;
+	/**
+	 * The answer of a completed `ctx.ui` prompt node, recorded with its completion in this one checkpoint, so a
+	 * completed prompt is never recorded without its answer (#4941). A custom prompt's `undefined` answer has no
+	 * `response`. Absent on records written before it, and on stages that are not prompts.
+	 */
+	readonly promptAnswer?: { readonly response?: WorkflowSerializableValue };
 	/** Resumable Atomic/Pi session metadata for in-progress LM stages. */
 	readonly sessionId?: string;
 	readonly sessionFile?: string;

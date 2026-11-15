@@ -906,14 +906,18 @@ export class LocalWorkerPool {
 								response: response as WorkflowSerializableValue,
 							});
 							// The attempt that asked died before the answer reached it: hold the answer for the
-							// replacement, which asks the same prompt again (#4022).
-							if (!result.ok && result.refusal !== "StageNotLive") {
+							// replacement, which asks the same prompt again (#4022). An answer it took is held as well
+							// until a later attempt shows the stage settled: the attempt may die before it commits the
+							// prompt's completion with the answer, and the replacement asks again (#4941).
+							const delivered = result.ok;
+							if (delivered || result.refusal !== "StageNotLive") {
 								this.heldAnswers.hold(run.id, stage.id, {
 									kind: "prompt",
 									generation,
 									promptId: prompt.id,
 									identity: promptIdentity(prompt),
 									response: response as WorkflowSerializableValue,
+									...(delivered ? { delivered: true as const } : {}),
 								});
 								this.applyHeldAnswer(run.id, stage.id, generation);
 							}
