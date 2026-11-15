@@ -207,14 +207,16 @@ export function runWorktreeIncludeScenario(root: string, module: WorktreeModule)
 	for (let file = 0; file < INCLUDED_CONFIG_FILES; file++)
 		writeFileSync(join(repo, "config", `local-${file}.json`), `${file}\n`);
 	writeFileSync(join(repo, "build.log"), "not included\n");
-	// Long package names make the listing large from few files: creating files is slow on Windows. Each path stays well
-	// under Windows' 260-character limit.
-	for (let pkg = 0; pkg < 40; pkg++) {
-		const directory = join(repo, "node_modules", `dependency-${pkg}-${"x".repeat(110)}`);
+	// Creating files is slow on Windows, so the listing is made large from few of them: names of 80 CJK characters take
+	// 240 UTF-8 bytes each, under the 255-byte file name limit. Git for Windows needs core.longpaths for these paths.
+	git(repo, ["config", "core.longpaths", "true"]);
+	const name = "依".repeat(80);
+	for (let pkg = 0; pkg < 8; pkg++) {
+		const directory = join(repo, "node_modules", `dependency-${pkg}`, name, name);
 		mkdirSync(directory, { recursive: true });
-		for (let file = 0; file < 200; file++) writeFileSync(join(directory, `module-file-${file}.js`), "");
+		for (let file = 0; file < 200; file++) writeFileSync(join(directory, `${name}-${file}.js`), "");
 	}
-	const listing = git(repo, ["ls-files", "--others", "--ignored", "--exclude-standard"]);
+	const listing = git(repo, ["ls-files", "-z", "--others", "--ignored", "--exclude-standard"]);
 	const api = modules(module);
 	const setup = api.create(repo, `include-${module}`, 1);
 	const envPath = join(setup.worktrees[0]!.path, ".env");
@@ -237,7 +239,6 @@ export const MANY_FILES = 400;
 export function runManyFilesScenario(root: string, module: WorktreeModule): ManyFilesScenarioResult {
 	const repo = createScenarioRepository(root);
 	// Quoting is git's default; set it so a global `core.quotePath false` cannot shrink the listing under 1 MiB.
-	git(repo, ["config", "core.quotePath", "true"]);
 	// The paths are longer than Windows' 260 characters, which Git for Windows handles only with this setting.
 	git(repo, ["config", "core.longpaths", "true"]);
 	const api = modules(module);
