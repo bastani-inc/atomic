@@ -17,6 +17,12 @@ export interface StorageMigrationStep {
 export interface StorageMigrationOptions {
 	/** The ledger table, already prefixed (`renderStorageIdentifiers`); default `atomic_migrations`. */
 	readonly table?: string;
+	/**
+	 * A recorded version newer than the last step is accepted, and nothing runs, instead of refusing with
+	 * `StorageSchemaVersionError`. Only for a domain whose later steps stay additive, so a build that knows fewer of
+	 * them still reads and writes it correctly (#5065).
+	 */
+	readonly acceptNewer?: boolean;
 }
 
 export interface StorageMigrationResult {
@@ -48,6 +54,7 @@ async function applyVersioned(
 	table: string,
 	domain: string,
 	steps: readonly StorageMigrationStep[],
+	acceptNewer = false,
 ): Promise<StorageMigrationResult> {
 	const { int, text } = dialect.types;
 	await transaction.exec(
@@ -59,7 +66,10 @@ async function applyVersioned(
 	);
 	const current = row?.version ?? 0;
 	const supported = steps.at(-1)?.version ?? 0;
-	if (current > supported) throw new StorageSchemaVersionError(domain, current, supported);
+	if (current > supported) {
+		if (acceptNewer) return { applied: [], version: current };
+		throw new StorageSchemaVersionError(domain, current, supported);
+	}
 	const applied: number[] = [];
 	for (const step of steps) {
 		if (step.version <= current) continue;
@@ -89,7 +99,8 @@ export async function applyStorageMigrations(
 	const table = options.table ?? DEFAULT_MIGRATION_TABLE;
 	return database.transaction(
 		async (transaction) => {
-			if (dialect.versionedMigrations) return applyVersioned(transaction, dialect, table, domain, steps);
+			if (dialect.versionedMigrations)
+				return applyVersioned(transaction, dialect, table, domain, steps, options.acceptNewer);
 			for (const step of steps) await step.up(transaction, dialect);
 			return { applied: steps.map((step) => step.version), version: steps.at(-1)?.version ?? 0 };
 		},

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, test, vi } from "vitest";
 import { ASK_FAILURE_QUEUED, BROKER_CRASH_AT_ENV } from "../../packages/intercom/broker/crash-points.js";
+import { LOST_RECIPIENT_AFTER_ENV } from "../../packages/intercom/broker/lost-recipients.js";
 import {
 	OUTBOX_BACKUP_POLL_INTERVAL_MS,
 	OUTBOX_CLAIM_STALE_AFTER_MS,
@@ -11,14 +12,24 @@ import { sleep } from "../helpers/runtime.js";
 
 /**
  * #4992: a broker removes an ended recipient's ask route only once its asker's failure is queued, so a broker that
- * crashes right after the route is gone has already queued the failure, and the asker still gets it once.
+ * crashes right after the route is gone has already queued the failure, and the asker still gets it once. #5154: a
+ * kill before the departure marks the asks ended loses the recipient's end instead; its askers are then told once it
+ * stayed lost past the bound, so the asker still gets exactly one failure wherever the kill lands.
  */
 
 /** Spawning, killing and restarting real broker processes is the structural cost of this suite. */
 const REAL_BROKERS_HOOK_TIMEOUT_MS = 60_000;
 const CRASH_TEST_TIMEOUT_MS = 120_000;
-/** A broker finishes what another left only once that is a stale claim's age old, at its next backup poll. */
-const SWEPT_WITHIN_MS = OUTBOX_CLAIM_STALE_AFTER_MS + OUTBOX_BACKUP_POLL_INTERVAL_MS + 15_000;
+/**
+ * #5154: the brokers' shortened lost-recipient bound. A kill that lands before the departing broker marks the
+ * recipient's asks ended leaves the recipient only lost, and its askers are failed once it stayed gone this long.
+ */
+const LOST_AFTER_MS = 3_000;
+/**
+ * A broker finishes what another left only once that is a stale claim's age old, or, for a departure the kill lost, the
+ * lost-recipient bound past the restart, at its next backup poll.
+ */
+const SWEPT_WITHIN_MS = Math.max(OUTBOX_CLAIM_STALE_AFTER_MS, LOST_AFTER_MS) + OUTBOX_BACKUP_POLL_INTERVAL_MS + 15_000;
 /** Every shared database call waits this long, so the crash lands between the broker's writes. */
 const DATABASE_CALL_DELAY_MS = 250;
 const WAIT = { timeout: 45_000, interval: 25 };
@@ -29,7 +40,10 @@ const PENDING_ASKS_TABLE = `${TWO_BROKER_STORAGE_PREFIX}intercom_pending_asks`;
 let harness: TwoBrokerHarness;
 
 beforeAll(async () => {
-	harness = await TwoBrokerHarness.start({ databaseCallDelayMs: DATABASE_CALL_DELAY_MS });
+	harness = await TwoBrokerHarness.start({
+		databaseCallDelayMs: DATABASE_CALL_DELAY_MS,
+		brokerEnv: { [LOST_RECIPIENT_AFTER_ENV]: String(LOST_AFTER_MS) },
+	});
 }, REAL_BROKERS_HOOK_TIMEOUT_MS);
 afterAll(() => harness?.cleanup(), REAL_BROKERS_HOOK_TIMEOUT_MS);
 beforeEach(() => harness.ensureBrokersRunning(), REAL_BROKERS_HOOK_TIMEOUT_MS);
