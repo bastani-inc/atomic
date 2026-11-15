@@ -35,7 +35,7 @@ function heldSendOf(row: HeldRow): HeldSend {
  * by `reservationKeyFor(capability)`; the capability itself is never stored.
  */
 export async function openSqlHeldSendStore({ database, prefix }: IntercomBrokerStateOptions): Promise<HeldSendStore> {
-	const table = `${validateStoragePrefix(prefix)}intercom_held_sends`;
+	const table = `${validateStoragePrefix(prefix, dialectOf(database).name)}intercom_held_sends`;
 	const { types, nowMs } = dialectOf(database);
 	await database.transaction((tx) =>
 		tx.exec(`

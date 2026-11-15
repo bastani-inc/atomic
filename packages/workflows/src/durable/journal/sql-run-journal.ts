@@ -15,6 +15,7 @@ import {
 	type StorageDialect,
 	type StorageFailureCause,
 	StorageUnavailableError,
+	validateStoragePrefix,
 } from "@bastani/atomic/storage";
 import {
 	JOURNAL_READ_PAGE_CHARS,
@@ -212,6 +213,7 @@ export class SqlRunJournal implements RunJournal {
 	}
 
 	static async open(database: SqliteDatabase, options: { readonly prefix?: string } = {}): Promise<SqlRunJournal> {
+		validateStoragePrefix(options.prefix, dialectOf(database).name);
 		const t = renderStorageIdentifiers("journal", JOURNAL_TABLES, options.prefix);
 		if (!(await SqlRunJournal.initialized(database, t))) await SqlRunJournal.initialize(database, t, options.prefix);
 		const readerFile = await sharedFile(database, database);
