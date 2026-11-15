@@ -406,6 +406,146 @@ test("an answer no prompt node records is not lost to a refusal: the attempt fai
 	);
 });
 
+describe("which failed runs resume from their records (#5027)", () => {
+	/** Run `run` once against a fresh memory journal; return what a same-session resume answers. */
+	async function failOnce(
+		body: (ctx: Parameters<WorkflowDefinition["run"]>[0]) => Promise<void>,
+		options: { readonly refuse?: string } = {},
+	) {
+		const backend = await createMemoryTestBackend();
+		const commit = backend.commitCheckpoint.bind(backend);
+		let refused = false;
+		backend.commitCheckpoint = ((checkpoint: DurableCheckpoint, signal?: { readonly signal?: AbortSignal }) => {
+			if (!refused && options.refuse !== undefined && checkpoint.checkpointId.startsWith(options.refuse)) {
+				refused = true;
+				return Promise.reject(
+					new StorageUnavailableError({ adapter: "test", location: "refused" }, new Error("refused") as never),
+				);
+			}
+			return commit(checkpoint, signal);
+		}) as typeof backend.commitCheckpoint;
+		setDurableBackend(backend);
+		let runs = 0;
+		const def = workflow({
+			name: "records-only",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				runs += 1;
+				await body(ctx as never);
+				return {};
+			},
+		}) as WorkflowDefinition;
+		const first = await run(
+			def,
+			{},
+			{ store, durableBackend: backend, adapters: { prompt: { prompt: async (t) => t } } },
+		);
+		assert.equal(first.status, "failed");
+		const runtime = createExtensionRuntime({
+			store,
+			registry: createRegistry([def]),
+			adapters: { prompt: { prompt: async (t: string) => t } },
+		});
+		return { backend, runId: first.runId, runtime, runs: () => runs };
+	}
+
+	let calls = 0;
+	const tool = (
+		ctx: { tool: (name: string, args: object, fn: () => Promise<string>) => Promise<string> },
+		name: string,
+	) =>
+		ctx.tool(name, {}, async () => {
+			calls += 1;
+			return name;
+		});
+
+	test("a run that failed in its own code after its tools resumes and replays them (#5027)", async () => {
+		calls = 0;
+		let failing = true;
+		const h = await failOnce(async (ctx) => {
+			await tool(ctx as never, "t1");
+			await tool(ctx as never, "t2");
+			if (failing) throw new Error("planned failure in plain code");
+		});
+		failing = false;
+		const resumed = await h.runtime.resumeFailedRun(h.runId);
+		assert.equal(resumed.ok, true, JSON.stringify(resumed));
+		await jobTracker.get(h.runId)?.promise.catch(() => {});
+		await waitEnded(h.runId);
+		assert.equal(store.run(h.runId)?.status, "completed", store.run(h.runId)?.error);
+		assert.equal(calls, 2, "the completed tools replay from their records");
+	});
+
+	test("a run whose completed tool has no record does not resume from its records (#5027)", async () => {
+		calls = 0;
+		const h = await failOnce(async (ctx) => {
+			await tool(ctx as never, "t1");
+			throw new Error("planned failure in plain code");
+		});
+		const source = store.run(h.runId)!;
+		const recorded = source.toolNodes[0]!;
+		store.recordRunStart({
+			...source,
+			toolNodes: [...source.toolNodes, { ...recorded, id: "tool:unrecorded", argsHash: "unrecorded", name: "lost" }],
+		});
+		const resumed = await h.runtime.resumeFailedRun(h.runId);
+		assert.equal(resumed.ok, false, JSON.stringify(resumed));
+		assert.match(resumed.ok ? "" : resumed.message, /insufficient_state/);
+		assert.equal(calls, 1);
+	});
+
+	test("a run that failed before any node does not resume from its records (#5027)", async () => {
+		const h = await failOnce(async () => {
+			throw new Error("planned failure before any node");
+		});
+		const resumed = await h.runtime.resumeFailedRun(h.runId);
+		assert.equal(resumed.ok, false);
+		assert.match(resumed.ok ? "" : resumed.message, /does not identify a failed stage/);
+	});
+
+	test("a stage a failure other than a storage refusal kept from starting is not resumed from records (#5027)", async () => {
+		const h = await failOnce(async (ctx) => {
+			await tool(ctx as never, "t1");
+			const pending = ctx.stage("never-started");
+			void pending;
+			throw new Error("planned failure in plain code");
+		});
+		const source = store.run(h.runId)!;
+		store.recordRunStart({
+			...source,
+			stages: [
+				...source.stages,
+				{ ...source.stages[0]!, id: "pending-stage", name: "pending", status: "pending" },
+			].filter((stage) => stage !== undefined),
+		} as RunSnapshot);
+		const resumed = await h.runtime.resumeFailedRun(h.runId);
+		assert.equal(resumed.ok, false, JSON.stringify(resumed));
+	});
+
+	test("a failed tool's refused failure record is written again as the run ends (#5027)", async () => {
+		const h = await failOnce(
+			async (ctx) => {
+				await ctx.tool("throws", {}, async () => {
+					throw new Error("planned tool failure");
+				});
+			},
+			{ refuse: "tool-failure:" },
+		);
+		const failures = h.backend
+			.listCheckpoints(h.runId)
+			.filter((checkpoint) => checkpoint.kind === "tool" && checkpoint.throwingFailureError !== undefined);
+		assert.equal(failures.length, 1);
+		assert.match(
+			failures[0]?.kind === "tool" ? (failures[0].throwingFailureError ?? "") : "",
+			/planned tool failure/,
+		);
+		const live = store.run(h.runId)!;
+		assert.equal(failures[0]?.kind === "tool" ? failures[0].topology?.nodeId : undefined, live.failedToolNodeId);
+	});
+});
+
 /** More than either attempt commits; a case past the last commit refuses nothing and must simply complete. */
 const SWEEP = 40;
 
