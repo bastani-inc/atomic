@@ -102,6 +102,15 @@ test("a provider's aborted stop advances to the fallback model instead of cancel
 	assert.deepEqual(models, ["primary", "fallback"]);
 });
 
+test("a provider's aborted stop is reported as that request's failure on the fresh rung (#4977)", async () => {
+	const { result } = await compact([{ stopReason: "aborted", error: "upstream stream closed" }], {
+		urgency: "load_bearing",
+	});
+
+	assert.equal(result.rung, "fresh");
+	assert.equal(result.freshReason, "upstream stream closed");
+});
+
 test("a load-bearing planned result over the hard input limit continues to the next model, then a fresh window (#4977)", async () => {
 	// The session model's window holds the region only once roughly half of it is deleted.
 	const narrow = { ...plannerModel, contextWindow: Math.floor(WHOLE.region.tokenEstimate * 0.8) };
@@ -115,6 +124,50 @@ test("a load-bearing planned result over the hard input limit continues to the n
 	assert.equal(result.rung, "fresh");
 	assert.ok(result.stats.tokensAfter <= narrow.contextWindow);
 	assert.match(result.freshReason ?? "", /does not fit/);
+});
+
+test("a recoverable caller keeps a planned result over the hard input limit (#4977)", async () => {
+	const narrow = { ...plannerModel, contextWindow: Math.floor(WHOLE.region.tokenEstimate * 0.8) };
+	const { result, models } = await compact(["1:1,1"], { model: narrow, fallback: fallbackContext() });
+
+	assert.deepEqual(models, ["primary"]);
+	assert.equal(result.rung, "planned");
+	assert.ok(result.stats.tokensAfter > narrow.contextWindow);
+});
+
+const classifierSelection = {
+	kind: "classifier" as const,
+	fullId: "typesafe/jev-latest",
+	model: {
+		...plannerModel,
+		type: "classifier",
+		api: "typesafe-system-one",
+		provider: "typesafe",
+		id: "jev-latest",
+	},
+} as unknown as NonNullable<CompactionRunRequest["compactionModel"]>;
+
+const classifyEqually: NonNullable<CompactionRunRequest["classify"]> = async () =>
+	({
+		api: "typesafe-system-one",
+		provider: "typesafe",
+		model: "jev-latest",
+		answers: { score: { type: "score", score: 2, confidence: 1 } },
+		stopReason: "stop",
+		timestamp: 0,
+	}) as never;
+
+test("a classifier result over the hard input limit is used only by a recoverable caller (#4977)", async () => {
+	const tiny = { ...plannerModel, contextWindow: Math.floor(WHOLE.region.tokenEstimate * 0.3) };
+	const request = { model: tiny, compactionModel: classifierSelection, classify: classifyEqually };
+
+	const recoverable = await compact(["unused"], request);
+	assert.equal(recoverable.result.backend, "classifier");
+	assert.ok(recoverable.result.stats.tokensAfter > tiny.contextWindow);
+
+	const loadBearing = await compact(["unused"], { ...request, urgency: "load_bearing" });
+	assert.equal(loadBearing.result.rung, "fresh");
+	assert.match(loadBearing.result.freshReason ?? "", /does not fit/);
 });
 
 test("a split part that fails without a refusal keeps the other parts' verbatim deletions (#4977)", async () => {
@@ -151,9 +204,44 @@ test("a dense-token kept tail that does not fit is dropped by the fresh rung (#4
 	// chars/4 puts the tail at 750 tokens; dense text costs about one token per character.
 	const window = { ...plannerModel, contextWindow: 1_000 };
 
-	return compact(["unused"], { preparation, model: window, urgency: "load_bearing" }).then(({ result }) => {
+	return compact(["unused"], { preparation, model: window, urgency: "load_bearing" }).then(async ({ result }) => {
 		assert.equal(result.rung, "fresh");
 		assert.equal(result.keptTail, false);
+		// At a token per character the 3,000-character tail fills a 3,000-token window exactly.
+		const fitting = await compact(["unused"], {
+			preparation,
+			model: { ...plannerModel, contextWindow: 3_000 },
+			urgency: "load_bearing",
+		});
+		assert.equal(fitting.result.keptTail, true);
+	});
+});
+
+test("an ASCII kept tail that exactly fills the window is kept by the fresh rung (#4977)", () => {
+	const ascii = "a".repeat(4_000);
+	const entries: SessionEntry[] = [
+		{ type: "message", id: "old", parentId: null, timestamp, message: { role: "user", content: "x", timestamp: 0 } },
+		{
+			type: "message",
+			id: "tail",
+			parentId: "old",
+			timestamp,
+			message: { role: "user", content: ascii, timestamp: 1 },
+		},
+	];
+	const preparation = prepareCompactionBoundary(
+		entries,
+		DEFAULT_COMPACTION_SETTINGS,
+		{ preserve_recent: 1 },
+		{ allowSmallRegion: true },
+	);
+	assert.ok(preparation);
+	// chars/4 is exact for ASCII: the 1,000-token tail fits a 1,000-token window with no surcharge.
+	const window = { ...plannerModel, contextWindow: 1_000 };
+
+	return compact(["unused"], { preparation, model: window, urgency: "load_bearing" }).then(({ result }) => {
+		assert.equal(result.rung, "fresh");
+		assert.equal(result.keptTail, true);
 	});
 });
 

@@ -1871,6 +1871,74 @@ describe("background compaction task lifecycle (#4330)", () => {
 		);
 	});
 
+	test("a threshold compaction cancelled after committing a ready result reports it as aborted with that result (#4977)", async () => {
+		const planner = new Planner();
+		planner.text = Array.from({ length: 200 }, (_, line) => `[User]: kept line ${line}`).join("\n");
+		let harness!: Harness;
+		harness = await createBackgroundHarness(
+			[
+				SEED,
+				{ toolCalls: [{ id: "call-a", name: "echo", args: {} }], usage: { input: 760, output: 10 } },
+				{
+					text: "over the hard threshold",
+					usage: { input: 850, output: 10 },
+					beforeEmit: async () => {
+						planner.release();
+						await harness.session.awaitBackgroundCompaction();
+						planner.text = undefined;
+					},
+				},
+				{ text: "1:1,2", beforeEmit: () => harness.session.abortCompaction() },
+			],
+			planner,
+		);
+		harnesses.push(harness);
+		await harness.session.prompt(longPrompt);
+		await harness.session.prompt(`${longPrompt}\nsecond`);
+		await harness.session._awaitPendingPostCompactionContinuation();
+
+		assert.equal(compactionEntries(harness.sessionManager).length, 1, "the stored result stays committed");
+		const end = harness.eventsOfType("compaction_end").at(-1);
+		assert.equal(end?.aborted, true);
+		assert.equal(end?.background, true);
+		assert.equal(end?.willRetry, false);
+		assert.ok(end?.result, "the committed background boundary is reported");
+		assert.equal(end?.errorMessage, undefined);
+	});
+
+	test("an overflow whose ready result already fits the window does not clear a small remaining region (#4977)", async () => {
+		const planner = new Planner();
+		planner.text = Array.from({ length: 3 }, (_, line) => `[User]: kept ${line} ${"k".repeat(600)}`).join("\n");
+		let harness!: Harness;
+		harness = await createBackgroundHarness(
+			[
+				SEED,
+				{ toolCalls: [{ id: "call-a", name: "echo", args: {} }], usage: { input: 760, output: 10 } },
+				{
+					stopReason: "error",
+					error: "prompt is too long",
+					beforeEmit: async () => {
+						planner.release();
+						await harness.session.awaitBackgroundCompaction();
+						planner.text = undefined;
+					},
+				},
+				"recovered after the retry",
+			],
+			planner,
+		);
+		harnesses.push(harness);
+		await harness.session.prompt(longPrompt);
+		await harness.session.prompt(`${longPrompt.replaceAll("\n", " ")} second`);
+		await harness.session._awaitPendingPostCompactionContinuation();
+
+		const boundaries = compactionEntries(harness.sessionManager);
+		assert.equal(boundaries.length, 1, "only the stored result; nothing was cleared");
+		const end = harness.eventsOfType("compaction_end").at(-1);
+		assert.equal(end?.reason, "overflow");
+		assert.equal(end?.background, true);
+	});
+
 	test("an overflow recovery that fails after committing a ready result still retries the turn (#4977)", async () => {
 		const planner = new Planner();
 		planner.text = Array.from({ length: 3 }, (_, line) => `[User]: kept ${line} ${"k".repeat(600)}`).join("\n");
