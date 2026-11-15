@@ -81,6 +81,18 @@ export interface BrokerMembershipSubject {
 	/** Host label for diagnostics and future direct forwarding; not used for routing. */
 	readonly nodeId: string;
 	readonly startedAt: number;
+	/**
+	 * #4997: the broker's durable state on its host, the same across its restarts: a broker that crashed and is not back
+	 * under the same home may keep ask routes no other broker has. Absent from older brokers.
+	 */
+	readonly home?: string;
+	/**
+	 * #5038: what a restart of this broker keeps: its host (node, boot and process namespace) and its socket path. A
+	 * broker starting with the same key retires the leases and claims of an earlier instance whose `pid` has exited.
+	 */
+	readonly instanceKey?: string;
+	/** #5038: the broker's process id, checked on its host before a later instance supersedes it. */
+	readonly pid?: number;
 }
 
 /** Recipient presence: which broker currently hosts the recipient's socket. */
@@ -144,6 +156,11 @@ export interface BrokerLeaseStore {
 	read(key: LeaseKey): Promise<LeaseReadResult>;
 	/** Live leases of one kind, in the order their keys were first acquired. */
 	listLive(kind: LeaseKind, staleAfterMs: number): Promise<LeaseState[]>;
+	/**
+	 * #5038: give up every lease `holderId` holds, as its own `release` would, so their next acquisitions need not
+	 * wait for them to go stale. Resolves to the number of leases retired.
+	 */
+	retireHolder(holderId: string): Promise<number>;
 }
 
 export type OutboxRowState = "queued" | "claimed" | "delivered" | "failed";
@@ -258,6 +275,11 @@ export interface OutboxStore {
 	reportSaving?(claim: OutboxClaim): Promise<OutboxRenewClaimResult>;
 	/** Return the row to `queued`, for example when its recipient disconnected before acknowledging. */
 	releaseClaim(claim: OutboxClaim): Promise<OutboxReleaseClaimResult>;
+	/**
+	 * #5038: return every row `claimantId` holds to `queued`, as its own `releaseClaim` would, so a dead broker's
+	 * claims stop holding its recipients' queues until they go stale. Resolves to the number of rows released.
+	 */
+	releaseClaimsOf(claimantId: string): Promise<number>;
 	/**
 	 * The recipient acknowledged `received`; only now may its sender be told `delivered`. For an ask, record its
 	 * route with `PendingAskStore.record` first: a settled row is never claimed again, so a route written after it
@@ -515,7 +537,15 @@ export interface ReplyRoute {
 export type PendingAskRecordResult =
 	| { readonly status: "recorded" }
 	| { readonly status: "duplicate" }
+	/** #4997: the ask was answered or failed already (`clearReply`): it is not recorded again. */
+	| { readonly status: "settled" }
 	| InvalidStateInput;
+
+/**
+ * #4997: how long an answered or failed ask is remembered, so a copy of its route a stopped broker kept is not recorded
+ * again. Longer than such a copy is kept (`AWAY_ASK_RETENTION_MS`, 7 days).
+ */
+export const SETTLED_ASK_RETENTION_MS = 8 * 24 * 60 * 60 * 1000;
 export type PendingAskMatchResult = { readonly status: "match" } | { readonly status: "no-match" } | InvalidStateInput;
 export type PendingAskClearResult =
 	| { readonly status: "cleared" }
@@ -550,7 +580,15 @@ export interface PendingAskStore {
 	record(ask: PendingAsk): Promise<PendingAskRecordResult>;
 	/** Only the exact reverse route of a recorded ask matches. */
 	matchesReply(route: ReplyRoute): Promise<PendingAskMatchResult>;
+	/**
+	 * The ask is answered or failed: its route is removed, and the ask is remembered as settled (#4997), whether or not
+	 * a route was still recorded, so `record` does not record it again.
+	 */
 	clearReply(route: ReplyRoute): Promise<PendingAskClearResult>;
+	/** #4997: whether the ask was answered or failed (`clearReply`) within `SETTLED_ASK_RETENTION_MS`. */
+	isSettled(route: ReplyRoute): Promise<boolean>;
+	/** #4997: the ask's route moves to one broker's own routes: it is removed without settling the ask. */
+	releaseRoute(route: ReplyRoute): Promise<PendingAskClearResult>;
 	/**
 	 * #4992: a reply to the ask is queued: its route stays, so the reply is still authorized when it is delivered, but
 	 * the ask is answered: `listForTarget` and `listParked` no longer return it, so it does not also fail.

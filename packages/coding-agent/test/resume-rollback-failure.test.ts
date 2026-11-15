@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { renameSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
+import { renameReplacing } from "../src/core/rename-retry.js";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.ts";
 import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.ts";
@@ -56,7 +56,7 @@ test("a rollback that fails is kept as the cleanup cause of the error that trigg
 	});
 	if (capture.status !== "captured") throw new Error(capture.status);
 	await manager.appendWorktreeSnapshot(clone, capture.snapshot.id, capture.snapshot);
-	renameSync(clone, sandbox.path("gone"));
+	renameReplacing(clone, sandbox.path("gone"));
 	removal.failure = new Error("worktree is busy");
 	vi.spyOn(manager, "appendWorktreeSnapshot").mockRejectedValue(recordingFailure);
 
@@ -105,7 +105,7 @@ test("a rollback of two restored worktrees that both fail keeps both causes toge
 		if (capture.status !== "captured") throw new Error(capture.status);
 		await manager.appendWorktreeSnapshot(clone, capture.snapshot.id, capture.snapshot);
 	}
-	renameSync(outer, sandbox.path("outer-gone"));
+	renameReplacing(outer, sandbox.path("outer-gone"));
 	removal.failure = new Error("worktree is busy");
 	vi.spyOn(manager, "appendWorktreeSnapshot").mockRejectedValue(recordingFailure);
 
@@ -149,7 +149,7 @@ test("a restore of another checkout whose removal also fails is skipped with bot
 		if (capture.status !== "captured") throw new Error(capture.status);
 		await manager.appendWorktreeSnapshot(clone, capture.snapshot.id, capture.snapshot);
 	}
-	renameSync(clones[1]!, `${clones[1]}-gone`);
+	renameReplacing(clones[1]!, `${clones[1]}-gone`);
 	removal.failure = new Error("worktree is busy");
 	vi.spyOn(manager, "appendWorktreeSnapshot").mockRejectedValue(
 		new WorkspaceRestoreError("snapshot-not-found", { snapshotId: "gone", target: clones[1]! }),

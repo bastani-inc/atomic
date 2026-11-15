@@ -9,7 +9,13 @@ import {
 	withWorktreeRestoreNotices,
 	withWorktreeRootMappings,
 } from "@bastani/atomic";
-import { beginDurableWorkflowAttempt, forkCopiedNodes, keepsForkCopiedParent } from "../durable/attempt-identity.js";
+import {
+	beginDurableWorkflowAttempt,
+	checkpointAttempt,
+	durableWorkflowAttempt,
+	forkCopiedNodes,
+	keepsForkCopiedParent,
+} from "../durable/attempt-identity.js";
 import { type DurableWorkflowBackend, pendingStageMessagesForDurableRun } from "../durable/backend.js";
 import type { DurableChildInvocation } from "../durable/boundary-topology.js";
 import { createDurableChildWorkflowPrimitive } from "../durable/child-primitive.js";
@@ -23,7 +29,13 @@ import {
 	resumeLaunchCwd,
 } from "../durable/run-restore-preconditions.js";
 import { recordRunResultCheckpointAsync } from "../durable/run-result.js";
-import { inheritedRunElapsedMs, priorRunAccounting, recordRunTimingCheckpointAsync } from "../durable/run-timing.js";
+import {
+	inheritedRunElapsedMs,
+	priorChildRunAccounting,
+	priorRunAccounting,
+	recordChildRunUsageCheckpointAsync,
+	recordRunTimingCheckpointAsync,
+} from "../durable/run-timing.js";
 import { ScopedDurableBackend } from "../durable/scoped-backend.js";
 import {
 	createDurableStagePrimitive,
@@ -34,7 +46,7 @@ import {
 	latestStageSessionCheckpoints,
 } from "../durable/stage-primitive.js";
 import { availableStoreDurableBackendOverride, bindStoreDurableBackend } from "../durable/store-backend.js";
-import { recordUnconsumedToolFrontier } from "../durable/tool-failure-checkpoint.js";
+import { recordThrowingToolFailure, recordUnconsumedToolFrontier } from "../durable/tool-failure-checkpoint.js";
 import { createCheckpointIdGenerator } from "../durable/tool-primitive.js";
 import type { DurableStageCheckpoint } from "../durable/types.js";
 import { transitionDurableWorkflowStatus } from "../durable/workflow-status-transition.js";
@@ -71,6 +83,7 @@ import {
 } from "../runs/foreground/executor-inputs.js";
 import {
 	appendRunEndWhenRecorded,
+	applyFailureToStage,
 	assertWorkflowCreatedExecution,
 	finalizeKilled,
 	finalizeKilledByFailure,
@@ -114,7 +127,7 @@ import { stageWaitToolResults } from "../shared/stage-wait.js";
 import { store as defaultStore } from "../shared/store.js";
 import { workflowObservationRuntime } from "../shared/store-factory.js";
 import { isTerminalRunStatus } from "../shared/store-internal.js";
-import type { RunSnapshot } from "../shared/store-types.js";
+import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
 import type {
 	StageContext,
 	StageOptions,
@@ -546,8 +559,10 @@ async function executeRun(
 				}
 			: undefined;
 	const durableAccounting =
-		hasBudgetDeclaration && opts.parentRun === undefined && opts.continuation === undefined && priorRun === undefined
-			? priorRunAccounting(durableBackend, runId)
+		hasBudgetDeclaration && opts.continuation === undefined && priorRun === undefined
+			? opts.parentRun === undefined
+				? priorRunAccounting(durableBackend, runId)
+				: priorChildRunAccounting(rootBackend, opts.parentRun.rootRunId, runId)
 			: undefined;
 	const continuedBudgetState =
 		opts.continuation?.source.budgetState ??
@@ -818,23 +833,91 @@ async function executeRun(
 			return cwd === undefined ? [] : [cwd];
 		},
 	});
-	const durableOnStageEnd = createDurableStageEndRecorder({
-		rootRunId: runId,
-		deps: durableStageDeps,
-		user: opts.onStageEnd,
-	});
-	const durableOnPromptNodeEnd = createDurableStageEndRecorder({
-		rootRunId: runId,
-		deps: durableStageDeps,
-		user: opts.onStageEnd,
-		metadataOnly: true,
-	});
+	/**
+	 * The failed tool a run ends naming is the frontier its resume starts from, and only its failure record says so after
+	 * a restart. A record the store refused when the tool failed is written once more as the run ends (#5027).
+	 */
+	const recordRefusedToolFailureAgain = async (nodeId: string | undefined): Promise<void> => {
+		const node = runSnapshot.toolNodes.find((candidate) => candidate.id === nodeId);
+		if (node === undefined || node.status !== "failed") return;
+		const attempt = durableWorkflowAttempt(durableBackend, runId) ?? 0;
+		const recorded = durableBackend
+			.listCheckpoints(runId)
+			.some(
+				(checkpoint) =>
+					checkpoint.kind === "tool" &&
+					checkpoint.argsHash === node.argsHash &&
+					checkpointAttempt(checkpoint) === attempt,
+			);
+		if (recorded) return;
+		await recordThrowingToolFailure(
+			{
+				workflowId: runId,
+				backend: durableBackend,
+				nextCheckpointId: checkpointIdGenerator,
+				runTopology: durableRunTopology(runSnapshot),
+			},
+			node,
+			{ ...node, startedAt: node.startedAt ?? Date.now() },
+			new Error(node.error),
+			1,
+		);
+	};
+	/** Fail a stage the run counted as completed when the store refused its record (#5027). */
+	const failStageWithRefusedRecord = (stageRunId: string, stage: StageSnapshot, error: unknown): void => {
+		applyFailureToStage(stage, classifyExecutorFailure(error));
+		activeStore.recordStageEnd(stageRunId, stage);
+	};
+	/**
+	 * Stage end records still being written. A run that fails while a parallel stage it already shows completed is
+	 * still writing that stage's record waits for it before it ends, so a resume right after finds the record (#5027).
+	 */
+	const stageEndWrites = new Set<Promise<void>>();
+	const trackStageEnd =
+		<A extends unknown[]>(record: (...args: A) => Promise<void>) =>
+		(...args: A): Promise<void> => {
+			const write = record(...args);
+			stageEndWrites.add(write);
+			void write.finally(() => stageEndWrites.delete(write)).catch(() => {});
+			return write;
+		};
+	const durableOnStageEnd = trackStageEnd(
+		createDurableStageEndRecorder({
+			rootRunId: runId,
+			deps: durableStageDeps,
+			user: opts.onStageEnd,
+			failStage: failStageWithRefusedRecord,
+		}),
+	);
+	const durableOnPromptNodeEnd = trackStageEnd(
+		createDurableStageEndRecorder({
+			rootRunId: runId,
+			deps: durableStageDeps,
+			user: opts.onStageEnd,
+			metadataOnly: true,
+			failStage: failStageWithRefusedRecord,
+		}),
+	);
+	/**
+	 * A budgeted child records its own accounting, and its root's, on the root run after each of its stage-session
+	 * checkpoints: the root records its own only at its own stages, so a crash inside the child would otherwise lose
+	 * both, and the stages a resume replays leave the meter (#5053).
+	 */
+	const childParent = opts.parentRun;
+	const recordChildUsage =
+		childParent === undefined || !hasBudgetDeclaration
+			? undefined
+			: async (): Promise<void> => {
+					const root = activeStore.run(childParent.rootRunId);
+					if (root !== undefined) await recordChildRunUsageCheckpointAsync(rootBackend, root, runSnapshot);
+				};
 	const durableOnStageSession = createDurableStageSessionRecorder({
 		runId,
 		deps: durableStageDeps,
 		onStageSession: opts.onStageSession,
 		...(opts.parentRun === undefined ? { runSnapshot } : {}),
 		heartbeatIntervalMinutes: def.heartbeatIntervalMinutes,
+		...(recordChildUsage === undefined ? {} : { recordUsage: recordChildUsage }),
 	});
 	const stageOptions: EngineStageRuntimeOptions = {
 		continuation: opts.continuation,
@@ -1013,6 +1096,9 @@ async function executeRun(
 			beforeToolCall: drainCachedStagePersistence,
 			beforeCheckpoint: drainBeforeCheckpoint,
 			recordLiveCheckpoint,
+			recordReplayRefusal: (error) => {
+				cachedStageFailure ??= error instanceof Error ? error : new Error(String(error));
+			},
 		});
 	let selectedAdmittedToolFailure: ReturnType<typeof admittedTools.firstFailure>;
 	/**
@@ -1787,6 +1873,8 @@ async function executeRun(
 					: observedAdmittedToolFailure?.nodeId
 				: undefined);
 		const metadata = failedToolNodeId === undefined ? selectedMetadata : { ...selectedMetadata, failedToolNodeId };
+		await Promise.allSettled([...stageEndWrites]);
+		await recordRefusedToolFailureAgain(failedToolNodeId);
 
 		if (metadata.failureDisposition === "terminal_killed") {
 			for (const failedStageId of metadata.failedStageIds) scheduler.blockKnownNonTerminalDescendants(failedStageId);
@@ -1846,6 +1934,7 @@ async function executeRun(
 					durableBackend,
 					terminalStatusCommitted,
 					store: activeStore,
+					...(recordChildUsage === undefined ? {} : { recordUsage: recordChildUsage }),
 				});
 			}
 		} finally {

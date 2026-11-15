@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.ts";
+import { snapshotBlobHashes } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.ts";
 import type { WorktreeSnapshot } from "../../packages/coding-agent/src/core/worktree-snapshot/types.ts";
 import type { Lease } from "../../packages/workflows/src/durable/journal/types.js";
 import {
@@ -41,6 +42,8 @@ interface Writers {
 	readonly checkpoint: (snapshots: readonly WorktreeSnapshot[]) => Promise<unknown>;
 	readonly status: () => Promise<unknown>;
 	readonly entry: (entry: SessionEntry) => Promise<unknown>;
+	/** Stores the blobs of `snapshots`, which a write that records them requires (#5077). */
+	readonly store: (...snapshots: WorktreeSnapshot[]) => Promise<void>;
 }
 
 /** Rows SQLite changed while `action` ran on `shared`'s connection, triggers' rows included. */
@@ -69,6 +72,10 @@ async function writers(name: string, indexed: boolean): Promise<{ shared: Shared
 		lease,
 		checkpoint: (snapshots) => shared.journal.append(lease, checkpointEvent(snapshots)),
 		status: () => shared.journal.append(lease, statusEvent("run", { status: "running" })),
+		store: (...snapshots) =>
+			shared.journal.snapshotBlobs.putBlobs(
+				snapshots.flatMap(snapshotBlobHashes).map((hash) => ({ hash, data: new TextEncoder().encode(hash) })),
+			),
 		entry: async (entry) => {
 			({ lastSeq } = await shared.sessions.append("session", [{ ...entry, parentId: lastEntryId } as SessionEntry], {
 				expectSeq: lastSeq,
@@ -95,7 +102,14 @@ describe("what the snapshot reference index adds to each write, in rows, counted
 	});
 
 	test("a checkpoint that carries one snapshot adds one row for each blob it needs: ten patches and a bundle", async () => {
-		assert.equal(await indexRowsOf(({ checkpoint }) => checkpoint([snapshotWith("one")])), 11);
+		const one = snapshotWith("one");
+		assert.equal(
+			await indexRowsOf(
+				({ checkpoint }) => checkpoint([one]),
+				({ store }) => store(one),
+			),
+			11,
+		);
 	});
 
 	test("a later checkpoint of the same run that carries the same blobs adds none", async () => {
@@ -103,7 +117,10 @@ describe("what the snapshot reference index adds to each write, in rows, counted
 		assert.equal(
 			await indexRowsOf(
 				({ checkpoint }) => checkpoint([first]),
-				({ checkpoint }) => checkpoint([first]).then(() => undefined),
+				({ checkpoint, store }) =>
+					store(first)
+						.then(() => checkpoint([first]))
+						.then(() => undefined),
 			),
 			0,
 		);
@@ -126,7 +143,10 @@ describe("what the snapshot reference index adds to each write, in rows, counted
 	test("a session entry that carries a snapshot record adds its link, its parent's count, its reference and a row for each blob: fourteen", async () => {
 		const record = snapshotWith("session");
 		assert.equal(
-			await indexRowsOf(({ entry }) => entry(snapshotEntry("/repo", record.id, record)), firstMessage),
+			await indexRowsOf(
+				({ entry }) => entry(snapshotEntry("/repo", record.id, record)),
+				(writers) => writers.store(record).then(() => firstMessage(writers)),
+			),
 			14,
 		);
 	});
@@ -136,7 +156,10 @@ describe("what the snapshot reference index adds to each write, in rows, counted
 		assert.equal(
 			await indexRowsOf(
 				({ entry }) => entry(snapshotEntry("/repo", record.id)),
-				({ entry }) => entry(snapshotEntry("/repo", record.id, record)).then(() => undefined),
+				({ entry, store }) =>
+					store(record)
+						.then(() => entry(snapshotEntry("/repo", record.id, record)))
+						.then(() => undefined),
 			),
 			3,
 		);

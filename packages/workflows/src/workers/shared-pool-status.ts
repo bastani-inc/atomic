@@ -1,5 +1,5 @@
 import type { DurableWorkflowBackend } from "../durable/backend.js";
-import { sqlPoolWrites } from "../durable/journal/internal.js";
+import { sqlPoolStorage, sqlPoolWrites } from "../durable/journal/internal.js";
 import { JournalDurableBackend } from "../durable/journal/journal-backend.js";
 import { classifySharedStoreHealth, withinStatusBudget } from "../durable/journal/shared-store-health.js";
 import { readSharedPoolStats } from "../durable/journal/sql-shared-pool.js";
@@ -25,6 +25,7 @@ export async function sharedPoolStatus(
 			...(sqlPoolWrites(backend.journal) === undefined ? {} : { writes: sqlPoolWrites(backend.journal) }),
 			hostsRegistered: false,
 			readFailure: error as Error,
+			adapter: sqlPoolStorage(backend.journal)?.adapter,
 		});
 		return {
 			sharedPoolUnavailable: {

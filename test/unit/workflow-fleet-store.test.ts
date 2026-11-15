@@ -111,10 +111,13 @@ test.skipIf(process.platform === "win32")(
 			assert.equal(await f.store.requestDrain(fence, "h2", "vm-2"), false, "asked once");
 			assert.equal(await f.shared.drainRequested("h2"), true);
 			assert.equal(await f.shared.drainRequested("h1"), false);
-			assert.deepEqual((await f.store.snapshot()).drains, [
-				{ host: "h", providerId: "vm-0" },
-				{ host: "h2", providerId: "vm-2" },
-			]);
+			assert.deepEqual(
+				(await f.store.snapshot()).drains.map(({ agoMs: _, ...drain }) => drain),
+				[
+					{ host: "h", providerId: "vm-0" },
+					{ host: "h2", providerId: "vm-2" },
+				],
+			);
 			await f.store.clearDrain({ holder: "C", epoch: fence.epoch + 1 }, "h2");
 			assert.equal(await f.shared.drainRequested("h2"), true, "a stale controller clears nothing");
 			await f.store.clearDrain(fence, "h2");

@@ -284,13 +284,14 @@ The package's `examples/worker-fleet` directory has the files the [worker hosts 
 
 ## Troubleshooting
 
-- **`self-signed certificate in certificate chain` or `unable to get local issuer certificate`**: the server's CA is not one Node.js trusts. Add `sslrootcert` with the provider's CA, as in the recipes above.
+- **`self-signed certificate in certificate chain`, `unable to get local issuer certificate` or `unable to verify the first certificate`**: the server's CA is not one Node.js trusts. Add `sslrootcert` with the provider's CA, as in the recipes above.
+- **`StorageConfigError` reason `tls-parameter-case` or `unsupported-sslmode`**: write TLS parameters such as `sslmode` and `sslrootcert` in lowercase, and use an `sslmode` that libpq knows (`disable`, `allow`, `prefer`, `require`, `verify-ca`, `verify-full`). Nothing was opened.
 - **`Hostname/IP does not match certificate's altnames`**: you connect by an address that is not in the server's certificate, such as Cloud SQL's private IP. Use `sslmode=verify-ca` with `sslrootcert`, which checks the CA but not the host name.
 - **`too many connections`** (`53300`), or `remaining connection slots are reserved`: the fleet has outgrown `max_connections`. Use a [pooler](#connection-poolers), raise `max_connections` (on managed services, a larger instance), or run fewer slots per host.
 - **`password authentication failed`** (`28P01`) with `--auth`: the token was refused. Check that the role exists with the identity's exact name, that RDS has `rds_iam` granted and IAM authentication enabled, or that Cloud SQL's `cloudsql.iam_authentication` flag is on. An RDS token is signed for one host and port, so connect to the host it names.
 - **`auth-unavailable`**: the cloud's SDK is not installed for the user that runs Atomic, or the machine has no identity. Install the package the message names.
 - **`permission denied for schema public`** (`42501`) on the first start: the role cannot create tables. Grant `USAGE, CREATE ON SCHEMA public`, or make the role the database's owner.
-- **`StoragePrefixError` reason `"too-long"`**: shorten the prefix to 24 characters or fewer.
+- **`Invalid storage prefix: too-long`** (`StoragePrefixError`): shorten the prefix to 24 characters or fewer.
 - **`StorageSchemaVersionError`** on an older machine: a machine of this release has upgraded the database. Upgrade that machine to 0.9.88 or later; see [Upgrade a fleet](/guides/worker-hosts#upgrade-a-fleet).
 - **Hosts register but never claim**: they serve another prefix or database than the roots, or lack the roots' worker definitions. Compare `atomic worker status` with the roots' `atomic storage status`.
 

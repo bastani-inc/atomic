@@ -5,8 +5,9 @@ import "./bounded-stderr-install.js";
 import "./announce-on-import.js";
 import net from "net";
 import { chmodSync, writeFileSync, unlinkSync, mkdirSync, readFileSync, statSync } from "fs";
+import { hostname } from "os";
 import { dirname } from "path";
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { createMessageReader, type JsonWireValue } from "./framing.js";
 import {
   clientHostsSessions,
@@ -158,6 +159,11 @@ const PID_PATH = getBrokerPidPath();
 const SOCKET_REPLACEMENT_LOCK_PATH = getBrokerSocketReplacementLockPath();
 
 const PENDING_STAGE_MESSAGE_TIMEOUT_MS = 10_000;
+/**
+ * #5096: delay before retrying a delivered-message delete that failed, e.g. while another broker held the write lock.
+ * A delete waits only `FORGET_BUSY_TIMEOUT_MS` for the lock, so a retry costs the broker milliseconds.
+ */
+const PENDING_FORGET_RETRY_MS = 1_000;
 const LISTEN_ATTEMPTS = 5;
 const LISTEN_RETRY_DELAY_MS = 100;
 const SOCKET_OWNERSHIP_CHECK_MS = 1_000;
@@ -442,6 +448,48 @@ class IntercomBroker {
   private get deliveredMessages(): DeliveredMessageCache {
     return this.openDeliveredMessages();
   }
+  /** #5096: reservations whose delete failed, by message ID, retried until the delete lands. */
+  private pendingForgets = new Map<string, string>();
+  private pendingForgetTimer: NodeJS.Timeout | null = null;
+
+  /**
+   * Remove a reservation after a proven non-delivery without letting a failed delete escape (#5096).
+   *
+   * `forget` is a durable SQLite DELETE that throws while another connection holds the write lock or the disk fails.
+   * Its callers include timer callbacks and socket close handlers, where a throw is an uncaughtException that ends
+   * the broker, and outcome paths whose sender must still hear `delivery_failed`. A failed delete is logged and
+   * retried later, so a stale reservation does not keep refusing the sender's retry as uncertain. The delete waits
+   * only `FORGET_BUSY_TIMEOUT_MS` for the lock, so a held lock does not stall the broker. Callers write the sender's
+   * outcome first; the sender's retry is handled only after this synchronous delete, and a failed one is retried
+   * before the ID is looked up again.
+   */
+  private forgetDelivered(messageId: string, signature: string): void {
+    this.pendingForgets.delete(messageId);
+    try {
+      this.deliveredMessages.forget(messageId, signature);
+    } catch (error) {
+      this.pendingForgets.set(messageId, signature);
+      console.error(
+        `Intercom broker could not forget delivered message ${messageId}; retrying: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      this.schedulePendingForgets();
+    }
+  }
+
+  /** Retry a failed delete for `messageId` before its ID is looked up or reserved again. */
+  private retryPendingForget(messageId: string): void {
+    const signature = this.pendingForgets.get(messageId);
+    if (signature !== undefined) this.forgetDelivered(messageId, signature);
+  }
+
+  private schedulePendingForgets(): void {
+    if (this.pendingForgetTimer !== null || this.shuttingDown) return;
+    this.pendingForgetTimer = setTimeout(() => {
+      this.pendingForgetTimer = null;
+      for (const messageId of [...this.pendingForgets.keys()]) this.retryPendingForget(messageId);
+    }, PENDING_FORGET_RETRY_MS);
+    this.pendingForgetTimer.unref?.();
+  }
   private supervisorChannel = new SupervisorChannelCache();
   private sessionIdReclaim = new SessionIdReclaim();
   /** Connections whose requested id is being checked against its multi-node binding before they register. */
@@ -489,6 +537,10 @@ class IntercomBroker {
     if (process.platform !== "win32") chmodSync(INTERCOM_DIR, 0o700);
     this.server = net.createServer(this.handleConnection.bind(this));
     this.pendingQuestions.failThroughOwnerWhen((question) => this.releasedAskerReplies.hasOwnedRoute(question));
+    // #4997: an ask between two top-level sessions may follow either of them to another broker, even after a crash.
+    this.pendingQuestions.movableWhen((question) =>
+      [question.senderSessionId, question.targetSessionId].every((id) => this.isTopLevel(this.sessions.get(id))),
+    );
     // #4992: a reply or failure held for a released subagent wakes it through its owner, also after a restart.
     this.pendingQuestions.onHeldForReleasedAsker((ownerSessionId, childName) => {
       if (this.restoringRecipients.releasedOwner(childName) === ownerSessionId)
@@ -1396,6 +1448,7 @@ class IntercomBroker {
 			return;
 		}
 		const targetIdentity = deliveryTargetIdentity(target);
+		this.retryPendingForget(pending.messageId);
 		const deliveredMatch = this.deliveredMessages.lookupForTarget(
 			pending.messageId,
 			pending.signature,
@@ -1577,13 +1630,13 @@ class IntercomBroker {
 		}
 		if (!writeMessageIfOpen(target.socket, frame)) {
 			if (confirmsSaves) this.receipts.drop(pending.messageId);
-			if (reservation === "recorded") this.deliveredMessages.forget(pending.messageId, pending.signature);
 			writeMessageIfOpen(pending.senderSocket, {
 				type: "delivery_failed",
 				messageId: pending.messageId,
 				...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
 				reason: "Session not found",
 			});
+			if (reservation === "recorded") this.forgetDelivered(pending.messageId, pending.signature);
 			return;
 		}
 		if (!confirmsSaves) finish(target, sender);
@@ -1682,6 +1735,7 @@ class IntercomBroker {
 			routeGroup,
 		].join(":");
 		const signature = buildMessageSendSignature(logicalTarget, message, clientMessage.capability);
+		this.retryPendingForget(message.id);
 		const deliveredMatch = this.deliveredMessages.lookup(message.id, signature);
 		if (deliveredMatch === "match") {
 			writeMessageIfOpen(socket, { type: "delivered", messageId: message.id, ...(attemptId === undefined ? {} : { attemptId }) });
@@ -1774,13 +1828,13 @@ class IntercomBroker {
 			const pending = this.pendingStageNotificationAcknowledgments.get(requestId);
 			if (pending === undefined) return;
 			this.pendingStageNotificationAcknowledgments.delete(requestId);
-			this.deliveredMessages.forget(pending.messageId, pending.signature);
 			this.failPendingStageNotification(
 				pending.senderSocket,
 				pending.messageId,
 				pending.attemptId,
 				"Recipient did not acknowledge the pending-stage notification",
 			);
+			this.forgetDelivered(pending.messageId, pending.signature);
 		}, PENDING_STAGE_MESSAGE_TIMEOUT_MS);
 		this.pendingStageNotificationAcknowledgments.set(requestId, {
 			ownerSessionId: currentId,
@@ -1805,7 +1859,7 @@ class IntercomBroker {
 			clearTimeout(timeout);
 			this.pendingStageNotificationAcknowledgments.delete(requestId);
 			this.failPendingStageNotification(socket, message.id, attemptId, "Session not found");
-			this.deliveredMessages.forget(message.id, signature);
+			this.forgetDelivered(message.id, signature);
 		}
 	}
 
@@ -1832,13 +1886,13 @@ class IntercomBroker {
 		clearTimeout(pending.timeout);
 		this.pendingStageNotificationAcknowledgments.delete(requestId);
 		if (!delivered) {
-			this.deliveredMessages.forget(pending.messageId, pending.signature);
 			this.failPendingStageNotification(
 				pending.senderSocket,
 				pending.messageId,
 				pending.attemptId,
 				"Recipient did not admit the pending-stage notification",
 			);
+			this.forgetDelivered(pending.messageId, pending.signature);
 			return;
 		}
 		let accepted: ReturnType<DeliveredMessageCache["accept"]>;
@@ -1942,9 +1996,13 @@ class IntercomBroker {
           // Multi-node S5: frames written while registration waited for the presence lease follow `registered`.
           flushHeldWrites(socket, held);
           // #4751: a session back under its id takes up the asks it sent or was sent before it went away.
-          this.pendingQuestions.restoreDormant(id, rejoined?.registrationReturnAddress, (sessionId, returnAddress) =>
+          const restored = this.pendingQuestions.restoreDormant(id, rejoined?.registrationReturnAddress, (sessionId, returnAddress) =>
             this.isConnectedAs(sessionId, returnAddress),
           );
+          // #4997: their shared routes, if they had moved there too, are settled: this broker answers them now.
+          this.multiNode?.settleRestoredRoutes(restored);
+          // #4997: and any kept ask that has not reached the shared state yet (its earlier move failed) tries again.
+          void this.multiNode?.publishAwayRoutes(this.pendingQuestions.movableDormant());
           // What was held for it while it was away (replies, failed asks) is delivered once: a recipient that confirms
           // saves releases each when saved, and its inbox shows a redelivered copy only once.
           const returnAddress = rejoined?.registrationReturnAddress;
@@ -2019,10 +2077,17 @@ class IntercomBroker {
         if (presence === undefined) completeRegistration();
         else {
           holdWrites(socket);
+          // #5101: routable now, but its routes are restored only as its registration completes; a reply that only a
+          // restored route would authorize waits for that rather than being refused.
+          const restoring = this.pendingQuestions.beginRestoring(id);
           void presence.then(() => {
             const held = releaseHeldWrites(socket);
-            if (this.sessions.get(id) === rejoined) completeRegistration(held);
-            else discardHeldWrites(held);
+            try {
+              if (this.sessions.get(id) === rejoined) completeRegistration(held);
+              else discardHeldWrites(held);
+            } finally {
+              this.pendingQuestions.finishRestoring(id, restoring);
+            }
           });
         }
   }
@@ -3083,6 +3148,10 @@ class IntercomBroker {
           try {
             this.multiNode = await MultiNodeRouter.start({
               ...opened,
+              // #4997: the same across this broker's restarts on this host, as its away-ask store is.
+              home: createHash("sha256").update(`${hostname()}\0${INTERCOM_DIR}`).digest("hex").slice(0, 32),
+              // #5038: a restarted broker serves the same socket; its previous instance's leases are retired at start.
+              instanceKey: SOCKET_PATH,
               host: {
                 sessions: this.sessions,
                 write: writeMessageIfOpen,
@@ -3120,6 +3189,11 @@ class IntercomBroker {
               this.multiNode.restoringReleased(reservation.capability, reservation.ownerSessionId, reservation.gone);
             }
           }
+          // #4997: the asks a crashed or stopped broker left here between two top-level sessions move to the shared
+          // state, as an away session's do, since either session may come back on another broker.
+          // The away store opens with the delivered-message authority, at the first registration otherwise.
+          this.openDeliveredMessages();
+          void this.multiNode.publishAwayRoutes(this.pendingQuestions.movableDormant());
           if (this.shuttingDown) await this.multiNode.close().catch(() => {});
           this.multiNodeReason = undefined;
           const { adapter, prefix } = describeSharedStorage(setting);
@@ -3426,6 +3500,43 @@ class IntercomBroker {
     this.dispatchHeldSends(this.departedChildren.adoptOrphans(ownerSessionId, owner.registrationReturnAddress));
   }
 
+  private isTopLevel(session: ConnectedSession | undefined): boolean {
+    return session !== undefined && session.supervisorId === undefined && session.hostedBy === undefined;
+  }
+
+  /**
+   * #4751: asks wait here for their away peer. #4997: with multi-node routing that peer may come back on another
+   * broker, so the asks between two top-level sessions also move to the shared state, which either broker answers.
+   */
+  private keepAwayRoutes(
+    departed: ConnectedSession,
+    questions: readonly PendingQuestion[],
+    senderReturnAddress?: string,
+    /** `recipient`: the departed session is their recipient, whose away queue is capped (#4996). */
+    away: "asker" | "recipient" = "asker",
+  ): PendingQuestion[] {
+    // An ask whose other peer is away too, or is a subagent, stays this broker's alone, as before.
+    const movable = new Set(
+      this.multiNode === undefined || !this.isTopLevel(departed)
+        ? []
+        : questions.filter((question) =>
+            [question.senderSessionId, question.targetSessionId].every(
+              (id) => id === departed.info.id || this.isTopLevel(this.sessions.get(id)),
+            ),
+          ),
+    );
+    // Kept, and marked movable, in the write that removes their live routes, so a crash before the shared write
+    // leaves them to move once this broker is back.
+    const isMovable = (question: PendingQuestion) => movable.has(question);
+    const refused =
+      away === "recipient"
+        ? this.pendingQuestions.keepDormantForRecipient(questions, isMovable)
+        : (this.pendingQuestions.keepDormant(questions, senderReturnAddress, isMovable), []);
+    // #4996: one the recipient's full away queue refused is failed to its asker, not moved.
+    void this.multiNode?.publishAwayRoutes([...movable].filter((question) => !refused.includes(question)));
+    return refused;
+  }
+
   /** `ended`: the session said goodbye, so it is not coming back; otherwise its connection only dropped. */
   private disconnectSession(sessionId: string, ended = false): void {
     // A hosted session's departure joins its host's: its outcomes go out when the host's departure is saved.
@@ -3514,7 +3625,7 @@ class IntercomBroker {
       this.pendingQuestions.forgetLive(unanswered.filter((question) => !this.releasedAskerReplies.holds(question)));
     } else if (departed.supervisorId === undefined && !ended) {
       // #4751: an ask has no expiry and survives its asker's restart or release: the route waits for the asker.
-      this.pendingQuestions.keepDormant(unanswered, departed.registrationReturnAddress);
+      this.keepAwayRoutes(departed, unanswered, departed.registrationReturnAddress);
       this.pendingQuestions.markAwayAsker(sessionId, departed.registrationReturnAddress);
       this.pendingQuestions.forgetLive(unanswered);
     } else {
@@ -3537,7 +3648,7 @@ class IntercomBroker {
       // its recipient's full away queue refuses fails to its connected asker at once.
       const askedOfIt = this.pendingQuestions.takeForTarget(sessionId, { keepLiveRecords: true });
       crashPoint(DEPARTURE_ASKS_TO_IT_TAKEN);
-      const refused = this.pendingQuestions.keepDormantForRecipient(askedOfIt);
+      const refused = this.keepAwayRoutes(departed, askedOfIt, undefined, "recipient");
       this.pendingQuestions.forgetLive(askedOfIt);
       this.failAwayQueueFull(refused, departed.info);
     } else {
@@ -3545,11 +3656,13 @@ class IntercomBroker {
         // #4751: an away asker's ask to it fails with a message held until the asker is back; a session that ended
         // for good is waited for by nothing.
         const reason = `Session "${departed.info.name ?? sessionId}" ended before replying`;
+        // #4997: with multi-node routing, an ask that moves to the shared state is failed there, once, on any broker.
         this.pendingQuestions.failDormantForTarget(
           departed.info,
           reason,
           "recipient-ended",
           departed.registrationReturnAddress,
+          this.multiNode !== undefined,
         );
         this.failReleasedAsksTo(departed.info, departed.socket, reason, "recipient-ended");
         if (departed.supervisorId === undefined)
@@ -3609,14 +3722,15 @@ class IntercomBroker {
 		if (pending.ownerSessionId !== sessionId && pending.recipientSessionId !== sessionId) continue;
 		clearTimeout(pending.timeout);
 		this.pendingStageNotificationAcknowledgments.delete(requestId);
-		this.deliveredMessages.forget(pending.messageId, pending.signature);
-		if (pending.ownerSessionId === sessionId) continue;
-		this.failPendingStageNotification(
-			pending.senderSocket,
-			pending.messageId,
-			pending.attemptId,
-			"Recipient disconnected before acknowledging the pending-stage notification",
-		);
+		if (pending.ownerSessionId !== sessionId) {
+			this.failPendingStageNotification(
+				pending.senderSocket,
+				pending.messageId,
+				pending.attemptId,
+				"Recipient disconnected before acknowledging the pending-stage notification",
+			);
+		}
+		this.forgetDelivered(pending.messageId, pending.signature);
 	}
 	for (const [target, registration] of this.liveWorkflowStageRoutes) {
 		if (registration.sessionId === sessionId) this.liveWorkflowStageRoutes.delete(target);
@@ -3690,6 +3804,8 @@ class IntercomBroker {
     this.receipts.clear();
 	for (const pending of this.pendingStageNotificationAcknowledgments.values()) clearTimeout(pending.timeout);
 	this.pendingStageNotificationAcknowledgments.clear();
+	if (this.pendingForgetTimer !== null) clearTimeout(this.pendingForgetTimer);
+	this.pendingForgetTimer = null;
 	this.deliveredMessageCache?.close();
     // The watchdog thread ends while this broker's pipe still answers its probes. On Windows, process.exit waits for
     // that thread, and the thread for its probe's connection: one made after the pipe server closed, while a session's

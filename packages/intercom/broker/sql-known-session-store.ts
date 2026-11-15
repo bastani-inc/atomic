@@ -51,8 +51,8 @@ export async function openSqlKnownSessionStore({
 	database,
 	prefix,
 }: IntercomBrokerStateOptions): Promise<KnownSessionStore> {
-	const table = `${validateStoragePrefix(prefix)}intercom_known_sessions`;
-	const bindings = `${validateStoragePrefix(prefix)}intercom_session_bindings`;
+	const table = `${validateStoragePrefix(prefix, dialectOf(database).name)}intercom_known_sessions`;
+	const bindings = `${validateStoragePrefix(prefix, dialectOf(database).name)}intercom_session_bindings`;
 	const { types, nowMs, greatest } = dialectOf(database);
 	const age = greatest("0", `${nowMs} - recorded_at`);
 	await database.transaction((tx) =>

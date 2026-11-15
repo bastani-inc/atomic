@@ -651,6 +651,29 @@ function Get-AtomicPhysicalPath {
     return [IO.Path]::GetFullPath($current)
 }
 
+# Windows can refuse for a moment to move a directory that was just written or just run from (an antivirus scan, the
+# search indexer, a handle still closing). Try the move again for about two seconds before failing the install.
+function Move-AtomicStagedItem {
+    param(
+        [string]$LiteralPath,
+        [string]$Destination
+    )
+
+    $attemptLimit = 20
+    for ($attempt = 1; ; $attempt++) {
+        try {
+            Move-Item -LiteralPath $LiteralPath -Destination $Destination
+            return
+        }
+        catch [System.IO.IOException], [System.UnauthorizedAccessException] {
+            if ($attempt -ge $attemptLimit) {
+                throw
+            }
+            Start-Sleep -Milliseconds 100
+        }
+    }
+}
+
 function Get-AtomicDirectoryEntry {
     param([string]$Path)
 
@@ -1459,7 +1482,7 @@ try {
             Move-Item -LiteralPath $previousVersionItem.FullName -Destination $versionBackupPath
         }
         $transaction.VersionInstallIntended = $true
-        Move-Item -LiteralPath $versionStagePath -Destination $versionPath
+        Move-AtomicStagedItem -LiteralPath $versionStagePath -Destination $versionPath
 
         New-Item -ItemType Junction -Path $currentNextPath -Target $versionPath | Out-Null
         $previousCurrentItem = Get-AtomicDirectoryEntry $currentPath
@@ -1468,7 +1491,7 @@ try {
             Move-Item -LiteralPath $previousCurrentItem.FullName -Destination $currentBackupPath
         }
         $transaction.CurrentInstallIntended = $true
-        Move-Item -LiteralPath $currentNextPath -Destination $currentPath
+        Move-AtomicStagedItem -LiteralPath $currentNextPath -Destination $currentPath
 
         New-Item -ItemType Directory -Path $binDir -Force | Out-Null
         New-Item -ItemType Junction -Path $atomicCurrentNextPath -Target $versionPath | Out-Null
