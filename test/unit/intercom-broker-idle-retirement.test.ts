@@ -147,17 +147,48 @@ test(
 	REAL_BROKER_IDLE_RETIREMENT_TIMEOUT_MS,
 );
 
+/**
+ * What a broker that idled out leaves in the intercom directory: only the released marker of the socket lock
+ * (#4727, #5220). The marker stays so that the lock's generations never start again from one, which would let a broker
+ * paused with a judgment of an older generation take the lock while another holds it.
+ */
+function assertOnlyReleasedMarker(agentDir: string): void {
+	const intercomDir = join(agentDir, "intercom");
+	const left = readdirSync(intercomDir);
+	assert.equal(left.length, 1, `only the released marker is left: ${left.join(",")}`);
+	const [marker] = left as [string];
+	assert.match(marker, /^broker\.sock\.replace\.lock\.g\d+$/);
+	assert.equal(readFileSync(join(intercomDir, marker), "utf8"), "released\n");
+}
+
+/** Spawn and idle-out cycles after which the released markers must still not have grown. */
+const IDLE_OUT_CYCLES = 5;
+
 test(
-	"a broker that served no session leaves nothing in the agent directory when it idles out (#4727)",
+	"a broker that served no session leaves only the socket lock's released marker when it idles out (#4727, #5220)",
 	async () => {
 		const agentDir = mkdtempSync(join(tmpdir(), "intercom-idle-clean-"));
 		const broker = spawnBroker(agentDir);
 		await waitForBrokerPid(agentDir, broker);
 
 		assert.equal(await waitForExit(broker, BROKER_IDLE_SHUTDOWN_WINDOW_MS), 0);
-		assert.deepEqual(readdirSync(join(agentDir, "intercom")), []);
+		assertOnlyReleasedMarker(agentDir);
 	},
 	REAL_BROKER_IDLE_RETIREMENT_TIMEOUT_MS,
+);
+
+test(
+	"brokers idling out one after another leave one released marker, never more (#5220)",
+	async () => {
+		const agentDir = mkdtempSync(join(tmpdir(), "intercom-idle-cycles-"));
+		for (let cycle = 0; cycle < IDLE_OUT_CYCLES; cycle++) {
+			const broker = spawnBroker(agentDir);
+			await waitForBrokerPid(agentDir, broker);
+			assert.equal(await waitForExit(broker, BROKER_IDLE_SHUTDOWN_WINDOW_MS), 0);
+			assertOnlyReleasedMarker(agentDir);
+		}
+	},
+	IDLE_OUT_CYCLES * REAL_BROKER_IDLE_RETIREMENT_TIMEOUT_MS,
 );
 
 // #2765
