@@ -50,6 +50,7 @@ import {
 	RELEASED_CHILD_WAKE_FAILURE_LABEL,
 } from "../../packages/subagents/src/runs/foreground/released-child-wakes.js";
 import {
+	interruptedStillRunningResult,
 	lateToolResultMessage,
 	SUBAGENT_OWNER_GENERATION,
 	SUBAGENT_RELEASE_AFTER_MS,
@@ -4618,4 +4619,68 @@ test("pause of a released child whose resume is starting it stops the resumed ru
 		"resuming:0",
 		(record) => record.state === "terminal" && record.terminalStatus === "paused" && record.taskId === taskId,
 	);
+});
+
+test("a result batched with a resume is kept for the child when the resumed run is paused before saving it (#5012)", async () => {
+	const h = harness();
+	const dispatcher = await releasedWithWakes(h, "resume-batch");
+	const owner = h.sessionManager.getSessionId();
+	const childId = "resume-batch:0";
+	const key = subagentWakeKey(owner, childId);
+	const released = h.latest(childId);
+	assert.ok(released);
+	await endChildSessionOnCalls(released, [RELEASED_CALL]);
+	const resumedRun = Promise.withResolvers<void>();
+	h.finishOn.set("resume note", resumedRun);
+	const green = waitResult("CI green");
+	// A wake that asks for nothing is being handled, so the result and the resume behind it arrive in one batch.
+	const idle = dispatcher.deliver(key, { id: "redispatch:none", kind: "tool-result" });
+	const result = dispatcher.deliver(key, { id: "tool-result:ci-1", kind: "tool-result", toolResult: green });
+	const resumed = resumeReleasedChild(owner, childId, { prompt: "resume note", message: "resume note" });
+	assert.ok(resumed);
+	await idle;
+	const outcome = await resumed;
+	assert.equal(outcome.kind, "restored", JSON.stringify(outcome));
+	await result;
+	assert.equal(h.runs.length, 2, "one run takes the resume and the result together");
+	assert.deepEqual(h.runs.at(-1)?.options.resumeToolResults, [green]);
+	// The resumed run is paused before it saved the result.
+	await h.waitForLatest(childId, (record) => record.state === "running");
+	await h.call({ action: "pause", id: childId });
+	await h.waitForLatest(childId, (record) => record.terminalStatus === "paused");
+	h.finishOn.clear();
+
+	await h.call({ action: "resume", id: childId });
+	await h.waitForLatest(childId, (record) => h.runs.length === 3 && record.state === "terminal");
+
+	assert.deepEqual(h.runs.at(-1)?.options.resumeToolResults, [green], "the resume after the pause hands it over");
+});
+
+test("a released child of the earlier process told a call is still running starts its waited call again once and hears of the lost call once (#5014)", async () => {
+	const h = harness();
+	const deploy = { toolCallId: "deploy-2", toolName: "wait_for_deploy" };
+	await releasedByEarlierProcess(h, "restart-still", {
+		stillRunning: [{ ...deploy, ownerGeneration: "earlier-process" }],
+	});
+	const redispatched = Promise.withResolvers<DetachedToolResult>();
+	h.redispatchCalls = [{ ...RELEASED_CALL, result: redispatched.promise, abort() {} }];
+	const lost = lateToolResultMessage(interruptedStillRunningResult(deploy));
+	const toldLost = () => h.runs.filter((run) => [run.task, ...(run.options.resumeFollowUps ?? [])].includes(lost));
+
+	const dispatcher = bindProcessWakes(h);
+	const heard = await h.waitForLatest("restart-still:0", (record) => toldLost().length > 0 && clearedOk(record));
+	assert.ok(heard.taskId);
+	await settled(h, heard.taskId);
+	await dispatcher.whenIdle();
+	assert.equal(h.runs.filter((run) => run.options.redispatchDetachedCalls).length, 1, "its call starts again once");
+
+	const green = waitResult("CI green after the restart");
+	redispatched.resolve(green);
+	await h.waitForLatest(
+		"restart-still:0",
+		(record) => h.runs.some((run) => run.task === lateToolResultMessage(green)) && clearedOk(record),
+	);
+	await dispatcher.whenIdle();
+	assert.equal(toldLost().length, 1, "the lost call is reported once");
+	assert.equal(h.runs.filter((run) => run.options.redispatchDetachedCalls).length, 1);
 });
