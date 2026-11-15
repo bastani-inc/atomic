@@ -1,6 +1,6 @@
 import { resolveWorkflowStageDeliveryTarget } from "./agent-session-delivery-forwarding.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
-import type { SessionAbortOptions } from "./agent-session-types.ts";
+import type { SessionAbortOptions } from "./agent-session-types.js";
 
 async function settlePauseAbortBoundaries(boundaries: readonly Promise<void>[]): Promise<void> {
 	let throwFirstFailure: (() => never) | undefined;
