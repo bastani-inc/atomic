@@ -792,6 +792,25 @@ export class SqlPoolQueue {
 			return fromRow((await tx.get<WorkRow>(`SELECT * FROM ${this.work} WHERE id = ?`, id))!);
 		});
 	}
+	/**
+	 * `work` without the worktree snapshot it carries, which its row no longer carries either: for work a root queued in
+	 * this database whose snapshot's blobs, kept in the root's journal in another database, were collected (#5077).
+	 */
+	async dropWorkSnapshot(work: PoolWork): Promise<PoolWork> {
+		await this.transaction(async (tx) => {
+			const row = await tx.get<SqliteRow & { descriptor: string }>(
+				`SELECT descriptor FROM ${this.work} WHERE id = ?`,
+				work.id,
+			);
+			if (row === undefined) return;
+			const { workspaceSnapshot: _missing, ...execution } = (JSON.parse(row.descriptor) as PoolWorkDescriptor)
+				.execution;
+			const descriptor = { ...(JSON.parse(row.descriptor) as PoolWorkDescriptor), execution };
+			await tx.run(`UPDATE ${this.work} SET descriptor = ? WHERE id = ?`, serializeJson(descriptor), work.id);
+		});
+		const { workspaceSnapshot: _missing, ...execution } = work.execution;
+		return { ...work, execution };
+	}
 	/** `descriptor`, without the worktree snapshot it carries when this database no longer holds a blob of it. */
 	private async withStoredSnapshot(tx: SqliteExecutor, descriptor: PoolWorkDescriptor): Promise<PoolWorkDescriptor> {
 		const snapshot = descriptor.execution.workspaceSnapshot as unknown as WorktreeSnapshot | undefined;
