@@ -505,6 +505,8 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	/** Runs that kept only their own checkpoints while this backend owned them, and lack the rest until rebuilt. */
 	private readonly partialRuns = new Set<string>();
 	private timer: ReturnType<typeof setInterval> | undefined;
+	/** Runs whose lease this process took over from an owner that died, until the run is handed on or run here (#5167). */
+	private readonly orphanedOwners = new Set<string>();
 	private state: BackendState = "open";
 	private closing: Promise<void> | undefined;
 	/** Each run's renewal in flight; a run renews independently of every other run. */
@@ -836,11 +838,14 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		if (lost) throw lost;
 		const existing = this.leases.get(runId);
 		if (existing) return existing;
+		// #5167: an executor lease another process left unreleased and expired means the run's owner died.
+		const orphaned = yield* this.leaseOrphaned(runId);
 		const result = yield* invoke(() =>
 			this.journal.takeoverExpired(runId, this.holderId, FOREIGN_LIVE_WORKFLOW_WINDOW_MS),
 		);
 		if (result.status === "held") throw new JournalOwnershipError(runId, result.holderId);
 		this.leases.set(runId, result.lease);
+		if (orphaned) this.orphanedOwners.add(runId);
 		if (this.timer === undefined) {
 			this.timer = setInterval(() => {
 				void this.renewLeases().catch((error: Error) => console.error(error));
@@ -951,6 +956,8 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		};
 		yield* invoke(() => this.journal.createRun(header));
 		yield* this.ownership(input.workflowId);
+		// An executor registering the run runs it here: its owner is alive.
+		this.orphanedOwners.delete(input.workflowId);
 		yield* this.refresh(input.workflowId);
 		const draft = yield* this.draft(input.workflowId);
 		draft.registerWorkflow(input, true);
@@ -1008,6 +1015,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		const draft = yield* this.draft(input.workflowId);
 		const claimed = draft.getWorkflow(input.workflowId);
 		if (claimed === undefined || claimed.status !== "running" || claimed.modelOwner !== modelOwner) return false;
+		this.orphanedOwners.delete(input.workflowId);
 		draft.registerWorkflow(
 			{
 				...input,
@@ -1145,6 +1153,8 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			(expectedUpdatedAt !== undefined && acquired.updatedAt !== expectedUpdatedAt)
 		)
 			return false;
+		// A run handed to a new owner is that owner's, which is alive.
+		if (modelOwner !== undefined) this.orphanedOwners.delete(runId);
 		const seq = this.sequences.get(runId) ?? 0;
 		draft.setWorkflowStatus(runId, status, pendingPrompts, resumable);
 		const { releasedModelOwner: _oldRelease, ...handle } = draft.getWorkflow(runId)!;
@@ -1168,9 +1178,14 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			throw error;
 		}
 	}
-	/** Whether the run's last executor lease was left unreleased by another process and has expired: its owner died. */
+	/**
+	 * Whether the run's owner died: its executor lease was left unreleased by another process and expired, whether this
+	 * process has since taken that lease over without running the run or not.
+	 */
 	private *ownerDied(runId: string): Operation<boolean> {
-		if (this.leases.has(runId)) return false;
+		return this.leases.has(runId) ? this.orphanedOwners.has(runId) : yield* this.leaseOrphaned(runId);
+	}
+	private *leaseOrphaned(runId: string): Operation<boolean> {
 		const lease = yield* invoke(() => this.journal.leaseState(runId));
 		return (
 			lease !== undefined &&
@@ -1834,6 +1849,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	}
 	private dropLease(runId: string): void {
 		this.leases.delete(runId);
+		this.orphanedOwners.delete(runId);
 		// Only the run's owner keeps it narrowed; the next full read of the run rebuilds every checkpoint.
 		if (this.ownCheckpoints.delete(runId)) this.partialRuns.add(runId);
 		if (this.leases.size === 0) {

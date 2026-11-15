@@ -186,3 +186,33 @@ test("a released run leaves its release when it runs again or its owner reclaims
 	assert.equal(await other.commitWorkflowStatusTransition(rerun, ["paused"], "running"), true);
 	assert.equal(other.getWorkflow(rerun)?.releasedModelOwner, undefined);
 });
+
+test("a crashed run paused by a process that already took over its dead owner's lease is still released (#5167)", async () => {
+	const { workflowId, path, backend } = await orphanedRun();
+	// Any write takes over the expired lease first, as a resume in progress here would.
+	await backend.commitPendingPromptAdjustment(workflowId, 0);
+	assert.equal(await backend.workflowOwnership(workflowId), "local");
+	assert.equal(await backend.commitWorkflowStatusTransition(workflowId, ["running"], "paused"), true);
+	assert.equal(backend.getWorkflow(workflowId)?.releasedModelOwner, "old-session");
+	const adopted = await adoptFromNewSession(path, workflowId);
+	assert.equal(adopted.result.ok, true, adopted.result.message);
+});
+
+test("a crashed run handed to a new owner is that owner's: its pause does not release it (#5167)", async () => {
+	const { workflowId, backend } = await orphanedRun();
+	assert.equal(
+		await backend.commitWorkflowStatusTransition(
+			workflowId,
+			["running"],
+			"running",
+			undefined,
+			undefined,
+			undefined,
+			"new-session",
+		),
+		true,
+	);
+	assert.equal(await backend.commitWorkflowStatusTransition(workflowId, ["running"], "paused"), true);
+	const handle = backend.getWorkflow(workflowId);
+	assert.deepEqual([handle?.modelOwner, handle?.releasedModelOwner], ["new-session", undefined]);
+});
