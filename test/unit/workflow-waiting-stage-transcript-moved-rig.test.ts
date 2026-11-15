@@ -239,6 +239,12 @@ describe("a stage's session that waits on a detached call's result (#4580)", () 
 		assert.equal(waitListeners.length, 1);
 		assert.ok(!listeners.has(waitListeners[0]!), "the stage stopped listening for the run");
 		assert.deepEqual(names(rig.log, "prompt#2"), [], "the stage did not prompt the session it handed the results to");
+		await rig.ctx.__dispose();
+		assert.equal(
+			listeners.size,
+			0,
+			"the stage leaves no listener on the session, its attempt's usage window included",
+		);
 	});
 
 	test("a hand-back that finds it running looks again after a moment even when no settling is heard (#4580)", async () => {
@@ -275,6 +281,12 @@ describe("a stage's session that waits on a detached call's result (#4580)", () 
 		assert.equal(state.handBacks, 1, "the hand-back was not tried again");
 		assert.equal(waitListeners.length, 1);
 		assert.ok(!listeners.has(waitListeners[0]!), "the stage stopped listening for the run");
+		await rig.ctx.__dispose();
+		assert.equal(
+			listeners.size,
+			0,
+			"the stage leaves no listener on the session, its attempt's usage window included",
+		);
 	});
 
 	test("a hand-back refused for another reason still fails the turn (#4580)", async () => {
