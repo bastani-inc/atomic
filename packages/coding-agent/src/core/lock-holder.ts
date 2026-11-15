@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { lockHolder } from "./lock-wait.ts";
 import { processStartToken } from "./process-start-token.ts";
@@ -86,28 +86,74 @@ function holderMayRun(record: LockHolderRecord): boolean {
 	return processAlive(record.pid);
 }
 
+/** How old a takeover mutex must be before it is judged left by a killed process and removed. */
+export const TAKEOVER_MUTEX_STALE_MS = 10_000;
+
+/** The directory that serializes takeovers of the lock at `lockPath`. */
+export function takeoverMutexPath(lockPath: string): string {
+	return `${lockPath}.takeover`;
+}
+
+/**
+ * Takes the takeover mutex of the lock at `lockPath` by creating its directory; its release, or undefined while
+ * another process holds it. One left by a killed process is removed once it is {@link TAKEOVER_MUTEX_STALE_MS} old.
+ */
+function takeTakeoverMutex(lockPath: string): (() => void) | undefined {
+	const path = takeoverMutexPath(lockPath);
+	const release = () => {
+		try {
+			rmdirSync(path);
+		} catch {
+			// Removed as stale by another process; nothing is left to release.
+		}
+	};
+	try {
+		mkdirSync(path);
+		return release;
+	} catch {
+		const stats = statSync(path, { throwIfNoEntry: false });
+		if (stats === undefined || Date.now() - stats.mtimeMs < TAKEOVER_MUTEX_STALE_MS) return undefined;
+	}
+	release();
+	try {
+		mkdirSync(path);
+		return release;
+	} catch {
+		return undefined;
+	}
+}
+
 /**
  * Removes the lock directory at `lockPath` when its holder is proven dead, so the next attempt to take it follows at
- * once; true when it did. The directory is first moved aside under a name of its own, and removed only when it is
- * still the one the dead holder took, so a lock another process took in the meantime is put back.
+ * once; true when it did. Takeovers are serialized by a mutex of their own, and inside it the holder record and the
+ * lock directory are checked again just before the directory is moved aside, so a lock another process took after the
+ * dead holder's is never moved. A directory that, once moved, turns out not to be the dead holder's is left where it
+ * is, never put back over the lock path nor removed, and the lock waits for its stale window instead.
  */
 export function takeOverDeadHolder(lockPath: string): boolean {
 	const record = readHolderRecord(lockPath);
 	if (record === undefined || lockHolder(lockPath) !== record.lock || holderMayRun(record)) return false;
-	const aside = `${lockPath}.${randomUUID()}.dead`;
+	const release = takeTakeoverMutex(lockPath);
+	if (release === undefined) return false;
 	try {
-		renameSync(lockPath, aside);
-	} catch {
-		return false;
-	}
-	if (lockHolder(aside) !== record.lock) {
+		// Within the mutex, only this process moves the lock: if the dead holder's record and lock are still in place,
+		// no other process took the lock since they were judged.
+		const current = readHolderRecord(lockPath);
+		if (current === undefined || !sameRecord(current, record) || lockHolder(lockPath) !== record.lock) return false;
+		const aside = `${lockPath}.${randomUUID()}.dead`;
 		try {
-			renameSync(aside, lockPath);
+			renameSync(lockPath, aside);
 		} catch {
-			rmSync(aside, { recursive: true, force: true });
+			return false;
 		}
-		return false;
+		if (lockHolder(aside) !== record.lock) return false;
+		rmSync(aside, { recursive: true, force: true });
+		return true;
+	} finally {
+		release();
 	}
-	rmSync(aside, { recursive: true, force: true });
-	return true;
+}
+
+function sameRecord(a: LockHolderRecord, b: LockHolderRecord): boolean {
+	return a.host === b.host && a.pid === b.pid && a.started === b.started && a.lock === b.lock;
 }
