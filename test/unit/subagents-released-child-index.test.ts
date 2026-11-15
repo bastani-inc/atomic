@@ -23,9 +23,12 @@ import {
 import { subagentRegistrySizes } from "../../packages/subagents/src/runs/foreground/subagent-registry-sizes.js";
 import {
 	forgetRunMembership,
+	rememberSubagentChildSchedule,
 	runAgentTask,
+	subagentRunSchedule,
 	subagentTaskRegistrySizes,
 } from "../../packages/subagents/src/runs/foreground/task-execution.js";
+import { createExecutionScheduler } from "../../packages/subagents/src/runs/shared/parallel-utils.js";
 import type { RunSyncOptions, SingleResult } from "../../packages/subagents/src/shared/types.js";
 import { liveAsyncResources, trackAsyncResources } from "../../scripts/perf/idle-agents/async-resources.js";
 import { settle } from "../../scripts/perf/idle-agents/scripted-model.js";
@@ -277,4 +280,30 @@ test("a child that finishes keeps its parallel run's scheduler for a resume, and
 	assert.equal(subagentTaskRegistrySizes().schedules, before + 1);
 
 	forgetRunMembership(`released-${padded(90_001)}`, 0);
+});
+
+test("a run's scheduler is found through any child that still holds it, and a run whose children all left keeps no entry (#4856)", () => {
+	const before = subagentTaskRegistrySizes();
+	const schedule = createExecutionScheduler(2);
+	rememberSubagentChildSchedule("shared-run", 0, schedule);
+	rememberSubagentChildSchedule("shared-run", 1, schedule);
+	rememberSubagentChildSchedule("shared-run", 1, schedule);
+	assert.equal(
+		subagentTaskRegistrySizes().schedules,
+		before.schedules + 2,
+		"a child counts once however often it is kept",
+	);
+	assert.equal(subagentTaskRegistrySizes().scheduledRuns, before.scheduledRuns + 1);
+
+	forgetRunMembership("shared-run", 0);
+	assert.equal(subagentRunSchedule("shared-run"), schedule, "the run's other child still holds its scheduler");
+	assert.equal(subagentTaskRegistrySizes().schedules, before.schedules + 1);
+
+	forgetRunMembership("shared-run", 1);
+	assert.equal(subagentRunSchedule("shared-run"), undefined);
+	assert.deepEqual(
+		[subagentTaskRegistrySizes().schedules, subagentTaskRegistrySizes().scheduledRuns],
+		[before.schedules, before.scheduledRuns],
+		"nothing is kept for a run none of whose children holds its scheduler",
+	);
 });

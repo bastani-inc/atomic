@@ -91,6 +91,77 @@ it("detects duplicate creation and stale append across simultaneous writer proce
 	}
 });
 
+/** Far more than one write of `appendFile`, so the writer dies with part of the line on disk. */
+const HUGE_ENTRY_BYTES = 64 * 1024 * 1024;
+
+it("loads, lists and appends after a writer process is killed mid-append (#4993)", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "jsonl-torn-append-"));
+	const header = { id: "torn", version: 4, cwd: "/project", createdAt: "2026-10-15T00:00:00Z" } as const;
+	const acknowledged = Array.from({ length: 3 }, (_, index) => ({
+		type: "session_info" as const,
+		id: `entry-${index}`,
+		parentId: null as string | null,
+		timestamp: header.createdAt,
+		name: `entry ${index}`,
+	}));
+	const seed = await JsonlSessionStore.open(directory);
+	let path: string;
+	try {
+		await seed.create(header, acknowledged);
+		path = (await seed.findFile(header.id))!;
+	} finally {
+		await seed.close();
+	}
+	const acknowledgedSize = (await stat(path)).size;
+	const child = spawn(process.execPath, [
+		"--input-type=module",
+		"--eval",
+		`
+import { statSync } from "node:fs";
+const { JsonlSessionStore } = await import(${JSON.stringify(storeModule)});
+const store = await JsonlSessionStore.open(${JSON.stringify(directory)});
+await store.load("torn");
+// The append writes its line in chunks; the process dies between two of them, as a crash or a closed terminal would.
+setInterval(() => {
+  if (statSync(${JSON.stringify(path)}).size > ${acknowledgedSize}) process.kill(process.pid, "SIGKILL");
+}, 0);
+await store.append("torn", [{ type: "session_info", id: "huge", parentId: "entry-2", timestamp: ${JSON.stringify(header.createdAt)}, name: "x".repeat(${HUGE_ENTRY_BYTES}) }], { expectSeq: 3 });
+console.log("ACKNOWLEDGED");
+`,
+	]);
+	let stdout = "";
+	child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
+		stdout += chunk;
+	});
+	const exited = once(child, "exit");
+	try {
+		const [code, signal] = await exited;
+		assert.equal(stdout, "", "the append was acknowledged before the writer died");
+		// Windows reports a killed process by its exit code rather than a signal.
+		assert.ok(signal === "SIGKILL" || (code !== null && code !== 0), `exit ${code} ${signal}`);
+		assert.ok((await stat(path)).size > acknowledgedSize, "the killed writer left part of its line");
+		const store = await JsonlSessionStore.open(directory);
+		try {
+			assert.deepEqual((await store.load(header.id)).entries, acknowledged);
+			const summaries = [];
+			for await (const summary of store.list({})) summaries.push(summary);
+			assert.deepEqual(
+				summaries.map((summary) => summary.id),
+				[header.id],
+			);
+			const next = { ...acknowledged[0]!, id: "next", parentId: "entry-2" };
+			assert.deepEqual(await store.append(header.id, [next], { expectSeq: 3 }), { lastSeq: 4 });
+			assert.deepEqual((await store.load(header.id)).entries, [...acknowledged, next]);
+		} finally {
+			await store.close();
+		}
+	} finally {
+		if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+		await exited;
+		await rm(directory, { recursive: true, force: true, maxRetries: 5 });
+	}
+});
+
 it("recovers the filesystem lock after a writer process is killed", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "jsonl-killed-writer-"));
 	const child = spawn(process.execPath, [

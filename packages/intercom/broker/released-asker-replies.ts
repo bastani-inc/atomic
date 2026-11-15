@@ -201,6 +201,14 @@ export class ReleasedAskerReplies {
 		);
 	}
 
+	/** Whether a route is kept for this question, owned or not: its durable record is this table's to forget. */
+	holds(question: PendingQuestion): boolean {
+		return [...(this.byQuestion.get(question.messageId) ?? [])].some(
+			(entry) =>
+				entry.askerSessionId === question.senderSessionId && entry.replierSessionId === question.targetSessionId,
+		);
+	}
+
 	/** A definitely refused handoff may be tried again; it keeps its original deadline. */
 	restore(route: ReleasedAskerReplyRoute, ownerSessionId: string | undefined): void {
 		this.expire();

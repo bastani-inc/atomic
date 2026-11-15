@@ -113,6 +113,7 @@ import {
   type RefusedReleasedAskerRoute,
   type ReleasedAskerReplyRoute,
 } from "./released-asker-replies.js";
+import { crashPoint, DEPARTURE_ASKS_TAKEN, DEPARTURE_ASKS_TO_IT_TAKEN } from "./crash-points.js";
 import { releasedAskerReplyRefusal } from "./released-asker-remote-replies.js";
 import { hasGroup, normalizeGroup, normalizeGroups, workflowInvocationRefusalFor } from "../group.js";
 import { handleBrokerPresence } from "./presence-handler.js";
@@ -126,6 +127,7 @@ import { type PendingQuestion, PendingQuestionIndex } from "./pending-question-i
 import { AwayAsks, awayQueueFullReason } from "./away-asks.js";
 import { TERMINAL_CHILD_ASK_REFUSAL } from "../recipient-purpose.js";
 import { type ReceiptSender, RecipientReceipts, UNCERTAIN_RECEIPT_REASON } from "./recipient-receipts.js";
+import { deliverAskFailure, deliverHeldToAsker } from "./ask-failures.js";
 import { matchStagePathSegments } from "../workflow-stage-path-matching.js";
 import { DELIVERED_MESSAGE_TTL_MS, RECIPIENT_RECEIPT_TIMEOUT_MS } from "../retry-policy.js";
 import { isAgentRecipient } from "../recipient-purpose.js";
@@ -1993,8 +1995,21 @@ class IntercomBroker {
               this.pendingQuestions.record(id, question.targetSessionId, question.messageId);
             for (const route of this.releasedAskerReplies.takeChild(registered, supervisorId))
               this.pendingQuestions.record(id, route.replierSessionId, route.questionId);
-            for (const held of this.pendingQuestions.takeHeldForReleasedChild(registered, supervisorId))
-              writeMessageIfOpen(socket, { type: "message", from: held.from, message: held.message });
+            // #5004: held again under its own return address until it saved it, so a subagent that dies first gets it again.
+            const child = this.sessions.get(id);
+            if (child !== undefined)
+              for (const held of this.pendingQuestions.takeHeldForReleasedChild(registered, supervisorId))
+                deliverHeldToAsker(
+                  {
+                    asker: child,
+                    question: { senderSessionId: id, targetSessionId: held.from.id, messageId: held.message.replyTo ?? held.message.id },
+                    from: held.from,
+                    pending: this.pendingQuestions,
+                    write: writeMessageIfOpen,
+                    legacy: { type: "message", from: held.from, message: held.message },
+                  },
+                  held.message,
+                );
             for (const question of this.pendingQuestions.takeParked(registered, supervisorId)) {
               this.pendingQuestions.record(question.senderSessionId, id, question.messageId);
               const asker = this.sessions.get(question.senderSessionId);
@@ -3239,13 +3254,27 @@ class IntercomBroker {
     return session !== undefined && (returnAddress === "" || session.registrationReturnAddress === returnAddress);
   }
 
-  private failParkedQuestions(questions: readonly PendingQuestion[], peerName?: string): void {
+  /** `peer`: the recipient that ended, when it is known; otherwise each question's recipient is named by its id. */
+  private failParkedQuestions(questions: readonly PendingQuestion[], peer?: SessionInfo): void {
     for (const question of questions) {
       const asker = this.sessions.get(question.senderSessionId);
       if (asker === undefined) continue;
-      writeMessageIfOpen(asker.socket, {
-        type: "peer_disconnected", replyTo: question.messageId, peerSessionId: question.targetSessionId,
-        ...(peerName === undefined ? {} : { peerName }),
+      const from: SessionInfo = peer ?? {
+        id: question.targetSessionId, cwd: "", model: "", pid: 0, startedAt: 0, lastActivity: Date.now(),
+      };
+      // #5004: held until the asker saved it, like a reply; a client that does not confirm saves gets the notice.
+      deliverAskFailure({
+        asker,
+        question,
+        from,
+        id: `ended:${question.messageId}`,
+        reason: `Session "${from.name ?? from.id}" ended before replying`,
+        pending: this.pendingQuestions,
+        write: writeMessageIfOpen,
+        legacy: {
+          type: "peer_disconnected", replyTo: question.messageId, peerSessionId: question.targetSessionId,
+          ...(peer?.name === undefined ? {} : { peerName: peer.name }),
+        },
       });
     }
   }
@@ -3293,7 +3322,9 @@ class IntercomBroker {
     ];
     this.failParkedQuestions(this.pendingQuestions.takeParkedForOwner(sessionId));
 
-    const unanswered = this.pendingQuestions.takeForSender(sessionId);
+    // Each ask keeps its live record until what replaces it is written, so a crash in between loses none.
+    const unanswered = this.pendingQuestions.takeForSender(sessionId, { keepLiveRecords: true });
+    crashPoint(DEPARTURE_ASKS_TAKEN);
     if (departed.supervisorId !== undefined && departed.registrationName !== undefined) {
       // #4765: an ask kept while its recipient was away waits on the owner's route too, so the recipient's later end
       // fails it through the owner, which wakes the subagent. It stays kept under the subagent's own return address as
@@ -3304,10 +3335,15 @@ class IntercomBroker {
         this.restoringRecipients.releasedOwner(departed.registrationName),
       );
       this.pendingQuestions.markAwayAsker(sessionId, departed.registrationReturnAddress);
+      // A kept route rewrote its ask's live record; one it did not keep has no record left to wait on.
+      this.pendingQuestions.forgetLive(unanswered.filter((question) => !this.releasedAskerReplies.holds(question)));
     } else if (departed.supervisorId === undefined && !ended) {
       // #4751: an ask has no expiry and survives its asker's restart or release: the route waits for the asker.
       this.pendingQuestions.keepDormant(unanswered, departed.registrationReturnAddress);
       this.pendingQuestions.markAwayAsker(sessionId, departed.registrationReturnAddress);
+      this.pendingQuestions.forgetLive(unanswered);
+    } else {
+      this.pendingQuestions.forgetLive(unanswered);
     }
     this.releasedAskerReplies.dropOwner(sessionId);
     for (const [messageId, pending] of [...this.releasedReplyAcks]) {
@@ -3322,7 +3358,12 @@ class IntercomBroker {
       this.pendingQuestions.parkTarget(sessionId, childName, releasedOwner);
     } else if (!ended && departed.supervisorId === undefined && departed.hostedBy === undefined) {
       // #4751: a recipient whose connection dropped without ending its session may restart; its asks stay pending.
-      const refused = this.pendingQuestions.keepDormantForRecipient(this.pendingQuestions.takeForTarget(sessionId));
+      // Each ask keeps its live record until its away record is written, so a crash in between loses none. #4996: one
+      // its recipient's full away queue refuses fails to its connected asker at once.
+      const askedOfIt = this.pendingQuestions.takeForTarget(sessionId, { keepLiveRecords: true });
+      crashPoint(DEPARTURE_ASKS_TO_IT_TAKEN);
+      const refused = this.pendingQuestions.keepDormantForRecipient(askedOfIt);
+      this.pendingQuestions.forgetLive(askedOfIt);
       this.failAwayQueueFull(refused, departed.info);
     } else {
       if (ended) {
@@ -3339,7 +3380,7 @@ class IntercomBroker {
         if (departed.supervisorId === undefined)
           this.pendingQuestions.dropAway(departed.registrationReturnAddress);
       }
-      this.failParkedQuestions(this.pendingQuestions.takeForTarget(sessionId), departed.info.name);
+      this.failParkedQuestions(this.pendingQuestions.takeForTarget(sessionId), departed.info);
     }
     // #4639: a subagent that left without being released: hold sends to it until it is back or its owner says why. An
     // owner already away, as a suspended workflow stage's session is, says so through its host session when it is back.

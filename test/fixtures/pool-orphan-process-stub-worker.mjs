@@ -184,6 +184,9 @@ try {
 			await delay(25);
 			continue;
 		}
+		// A real worker's first heartbeat confirms its claim before it runs the child: only a confirmed claim counts as
+		// one of the child's attempts (#5034).
+		await request({ kind: "heartbeat", reports: [] });
 		if (work.inputs.index < orphanChildren && !existsSync(orphanMarker(work.inputs.index)))
 			await orphanProcessGroup(work, admission);
 		if (replayPermit && work.inputs.index === 0 && !(await admitReplay(work, admission))) continue;

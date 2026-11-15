@@ -980,9 +980,15 @@ describe("resume glue: remaining edge cases (#4329)", () => {
 
 	test("tool paths keep stripping @ and normalizing unicode spaces", async () => {
 		const { resolveToCwd } = await import("../src/core/tools/path-utils.ts");
-		const base = resolve(tmpdir(), "x");
-		assert.equal(resolveToCwd("@a.ts", base), join(base, "a.ts"));
-		assert.equal(resolveToCwd("a\u00A0b.ts", base), join(base, "a b.ts"));
+		const base = mkdtempSync(join(tmpdir(), "resume-glue-tool-paths-"));
+		try {
+			writeFileSync(join(base, "a.ts"), "");
+			writeFileSync(join(base, "a b.ts"), "");
+			assert.equal(resolveToCwd("@a.ts", base), join(base, "a.ts"));
+			assert.equal(resolveToCwd("a\u00A0b.ts", base), join(base, "a b.ts"));
+		} finally {
+			rmSync(base, { recursive: true, force: true });
+		}
 	});
 });
 
