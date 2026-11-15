@@ -209,8 +209,7 @@ export function attemptReachedCheckpoints(
 	const latestAttemptByKey = new Map<string, number>();
 	for (const checkpoint of nodes) {
 		const key = nodeKey(checkpoint);
-		const id = checkpoint.kind === "stage" ? checkpoint.topology?.stageId : checkpoint.topology?.nodeId;
-		if (id !== undefined) nodeKeyById.set(JSON.stringify([ownerRunId(checkpoint, rootRunId), id]), key);
+		nodeKeyById.set(JSON.stringify([ownerRunId(checkpoint, rootRunId), graphNodeId(checkpoint)]), key);
 		latestAttemptByKey.set(key, Math.max(latestAttemptByKey.get(key) ?? 0, checkpointAttempt(checkpoint)));
 	}
 	const parentReached = new Set<string>();
@@ -220,7 +219,7 @@ export function attemptReachedCheckpoints(
 		for (const checkpoint of nodes) {
 			if (!reached.has(nodeKey(checkpoint))) continue;
 			const owner = ownerRunId(checkpoint, rootRunId);
-			for (const parentId of checkpoint.topology?.parentIds ?? []) {
+			for (const parentId of checkpoint.topology!.parentIds) {
 				const parentKey = nodeKeyById.get(JSON.stringify([owner, parentId]));
 				if (parentKey === undefined || reached.has(parentKey)) continue;
 				reached.add(parentKey);
@@ -256,6 +255,11 @@ export function attemptReachedCheckpoints(
 	return checkpoints.filter((checkpoint) => !isGraphRecord(checkpoint) || kept.has(checkpoint));
 }
 
+/** The node id a stage or tool record names: its stage id, or its tool node id. */
+function graphNodeId(checkpoint: DurableStageCheckpoint | DurableToolCheckpoint): string | undefined {
+	return checkpoint.kind === "stage" ? checkpoint.topology?.stageId : checkpoint.topology?.nodeId;
+}
+
 /** A stage or tool record of a graph node; a reserved run-level record has no topology. */
 function isGraphRecord(checkpoint: DurableCheckpoint): checkpoint is DurableStageCheckpoint | DurableToolCheckpoint {
 	return checkpoint.kind !== "ui" && checkpoint.topology !== undefined;
@@ -283,10 +287,6 @@ export function forkCopiedNodeIds(
 	// The fork registered when it copied the source; an execution re-registers it and records after that.
 	if (checkpoints.some((checkpoint) => checkpoint.completedAt >= handle.createdAt)) return new Set();
 	const copied = new Set<string>();
-	for (const checkpoint of checkpoints) {
-		if (checkpoint.kind === "tool" && checkpoint.topology !== undefined) copied.add(checkpoint.topology.nodeId);
-		else if (checkpoint.kind === "stage" && checkpoint.topology !== undefined)
-			copied.add(checkpoint.topology.stageId);
-	}
+	for (const checkpoint of checkpoints.filter(isGraphRecord)) copied.add(graphNodeId(checkpoint)!);
 	return copied;
 }

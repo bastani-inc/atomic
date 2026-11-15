@@ -578,7 +578,7 @@ async function executeRun(
 	const runPossibleStages =
 		persistedPossibleStages ?? coercePossibleStages(rootBackend.getWorkflow(runId)?.possibleStages) ?? [];
 	const forkedFrom = rootBackend.getWorkflow(runId)?.forkedFrom;
-	const forkCopiedNodes = opts.parentRun === undefined ? forkCopiedNodeIds(rootBackend, runId) : new Set<string>();
+	const forkCopiedNodes = forkCopiedNodeIds(rootBackend, runId);
 	const keepsForkCopiedParent = (parentId: string): boolean => forkCopiedNodes.has(parentId);
 	const runSnapshot: RunSnapshot = {
 		id: runId,
