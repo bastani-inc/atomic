@@ -259,8 +259,19 @@ function* invoke<T>(action: () => Promise<T>): Operation<T> {
 		return value!;
 	} catch (error) {
 		if (error instanceof JournalError || error instanceof StorageError) throw error;
+		// A checkpoint refused because a collection deleted its snapshot blobs (#5077) is the recorder's to handle.
+		if (isBlobsCollected(error)) throw error;
 		throw customJournalUnavailable(error as StorageFailureCause);
 	}
+}
+
+/** A `blobs-collected` WorkspaceSnapshotError, told by name so this module need not load the snapshot code. */
+function isBlobsCollected(error: unknown): boolean {
+	return (
+		error instanceof Error &&
+		error.name === "WorkspaceSnapshotError" &&
+		(error as Error & { readonly code?: string }).code === "blobs-collected"
+	);
 }
 
 const CUSTOM_JOURNAL = { adapter: "custom", location: "custom journal" } as const;

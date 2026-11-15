@@ -14,6 +14,11 @@ export interface PostgresDatabaseOptions {
 	maxConnections?: number;
 	/** How long one statement may run before the server cancels it, in milliseconds. Default 30000. */
 	statementTimeoutMs?: number;
+	/**
+	 * A direct (session) endpoint for the connection that listens for wake-ups, when `url` goes through a transaction
+	 * pooler. Default `url`. Without notifications, worker hosts and Intercom brokers find work by polling alone.
+	 */
+	listenUrl?: string;
 }
 
 export const DEFAULT_MAX_CONNECTIONS: 8;
@@ -21,6 +26,8 @@ export const DEFAULT_STATEMENT_TIMEOUT_MS: 30000;
 
 /** `sql` with each positional `?` parameter outside literals, quoted identifiers and comments numbered `$1`, `$2`, .... */
 export function numberPlaceholders(sql: string): string;
+/** `sql` with every unquoted identifier longer than 63 bytes replaced by `postgresDialect.identifier` of it. */
+export function physicalIdentifiers(sql: string): string;
 
 export function openPostgresDatabase(options: PostgresDatabaseOptions): Promise<SqliteDatabase>;
 

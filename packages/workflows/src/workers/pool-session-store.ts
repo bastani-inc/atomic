@@ -1,6 +1,6 @@
 import type { SessionStore, SqliteDatabase } from "@bastani/atomic/storage";
 import type { DurableWorkflowBackend } from "../durable/backend.js";
-import { type SqlPoolStorage, sqlPoolStorage } from "../durable/journal/internal.js";
+import { poolSessionPrefix, type SqlPoolStorage, sqlPoolStorage } from "../durable/journal/internal.js";
 import { existingRootRunJournal } from "../durable/journal/sharded-run-journal.js";
 import { poolJournalOf } from "./pool-journal.js";
 import type { WorkflowExecutionResources } from "./public-options.js";
@@ -8,7 +8,7 @@ import type { WorkflowExecutionResources } from "./public-options.js";
 /**
  * The sessions of stages that ran on local workers (#3996).
  *
- * Workers commit their stage sessions into the journal's `<runs>_pool_` session tables,
+ * Workers commit their stage sessions into the journal's pool session tables (`poolSessionPrefix`),
  * not the host's session store. This opens those tables over the journal's own connection,
  * so a finished pooled stage's transcript can be read and reopened for post-mortem chat,
  * in the same process and after a restart. Undefined when no pool ever ran on the journal.
@@ -37,9 +37,10 @@ async function poolRunsIn(journal: Parameters<typeof sqlPoolStorage>[0], rootRun
 	const storage = sqlPoolStorage(journal);
 	if (storage === undefined) return false;
 	const pool = `${storage.tables.runs}_pool`;
+	const exists = storage.dialect.tableExists(pool);
 	return storage.read(
 		async (executor) =>
-			(await executor.get("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", pool)) !== undefined &&
+			(await executor.get(exists.sql, ...exists.params)) !== undefined &&
 			(await executor.get(`SELECT 1 FROM ${pool} WHERE root = ?`, rootRunId)) !== undefined,
 	);
 }
@@ -47,10 +48,9 @@ async function poolRunsIn(journal: Parameters<typeof sqlPoolStorage>[0], rootRun
 async function openPoolSessionStore(journal: Parameters<typeof sqlPoolStorage>[0]): Promise<SessionStore | undefined> {
 	const storage = sqlPoolStorage(journal);
 	if (storage === undefined) return undefined;
-	const prefix = `${storage.tables.runs}_pool_`;
-	const owners = await storage.transaction((tx) =>
-		tx.get("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", `${prefix}session_owners`),
-	);
+	const prefix = poolSessionPrefix(storage);
+	const exists = storage.dialect.tableExists(`${prefix}session_owners`);
+	const owners = await storage.transaction((tx) => tx.get(exists.sql, ...exists.params));
 	if (owners === undefined) return undefined;
 	return openPoolSessions(storage);
 }
@@ -60,9 +60,10 @@ async function openPoolSessionStore(journal: Parameters<typeof sqlPoolStorage>[0
  * local SQLite journal it shares, or a shared journal every host opens (#4310). The caller owns the returned store.
  */
 export async function openPoolSessions(storage: SqlPoolStorage): Promise<SessionStore> {
-	const prefix = `${storage.tables.runs}_pool_`;
+	const prefix = poolSessionPrefix(storage);
 	const database: SqliteDatabase = {
 		descriptor: { adapter: "pool-journal", location: prefix },
+		dialect: storage.dialect,
 		exec: (sql) => storage.transaction((tx) => tx.exec(sql)),
 		run: (sql, ...params) => storage.transaction((tx) => tx.run(sql, ...params)),
 		get: (sql, ...params) => storage.transaction((tx) => tx.get(sql, ...params)),

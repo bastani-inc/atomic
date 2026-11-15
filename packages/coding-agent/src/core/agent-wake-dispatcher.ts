@@ -94,8 +94,9 @@ interface KeyState {
 	running: Pending[];
 }
 
+/** Times wakes on the monotonic clock, so a step of the wall clock neither delays nor hastens them (#5058). */
 const systemClock: AgentWakeClock = {
-	now: () => Date.now(),
+	now: () => performance.now(),
 	setTimer: (callback, delayMs) => setTimeout(callback, delayMs),
 	clearTimer: (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>),
 };

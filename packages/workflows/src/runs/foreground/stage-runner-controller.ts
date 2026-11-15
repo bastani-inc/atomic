@@ -13,6 +13,7 @@ import {
 	isTransientExtensionStartupFailure,
 	type ModelConstraints,
 	type ModelRoute,
+	modelCallUsage,
 	type PromptOptions,
 	parkWorkflowStageForRelease,
 	parseModelConstraints,
@@ -225,8 +226,10 @@ function hasMeaningfulUsage(
  * One attempt's usage, accrued from the session's provider usage events while
  * the attempt window is open (#5053). Every model call reports here exactly
  * once: each assistant response (`message_end`, including error responses a
- * retry later removes from the live transcript) and each compaction model
- * request (`compaction_usage`). Message-list projections such as compaction
+ * retry later removes from the live transcript), each compaction model
+ * request (`compaction_usage`), each call of a subagent child the stage
+ * launched (`child_session_usage`) and auxiliary usage such as cache warming
+ * (`usage` entries). Message-list projections such as compaction
  * never change what was charged, and resumed or replayed history emits no
  * events, so it is never charged again.
  */
@@ -244,8 +247,7 @@ class AttemptUsageWindow {
 
 	constructor(session: StageSessionRuntime) {
 		this.unsubscribe = session.subscribe((event) => {
-			if (event.type === "message_end" && event.message.role === "assistant") this.add(event.message.usage, true);
-			else if (event.type === "compaction_usage") this.add(event.usage, false);
+			this.add(modelCallUsage(event), event.type === "message_end");
 		});
 	}
 
@@ -260,10 +262,15 @@ class AttemptUsageWindow {
 		this.meaningful = true;
 	}
 
+	/** The usage seen so far, or undefined when nothing meaningful was seen. */
+	peek(): WorkflowModelUsage | undefined {
+		return this.meaningful ? { ...this.totals } : undefined;
+	}
+
 	/** Stop listening. Returns undefined when nothing meaningful was seen, so no `usage: undefined` enters the record. */
 	close(): WorkflowModelUsage | undefined {
 		this.unsubscribe();
-		return this.meaningful ? { ...this.totals } : undefined;
+		return this.peek();
 	}
 }
 
@@ -497,8 +504,8 @@ export class StageSessionController {
 	private reopenBackoff: AbortController | undefined;
 	/** Prompts of the stage that have not settled; a stage with one cannot be released by its author. */
 	private promptsInFlight = 0;
-	/** When the stage's session last did anything: a prompt, a message or a session event. */
-	private lastActivityAt = Date.now();
+	/** When, by `performance.now()`, the stage's session last did anything: a prompt, a message or a session event. */
+	private lastActivityAt = performance.now();
 
 	private get residency(): StageResidency {
 		this.residencyState ??= new StageResidency();
@@ -874,14 +881,14 @@ export class StageSessionController {
 				await this.queueIntoWaitingTurn(content, kind, expandPromptTemplates);
 			return kind;
 		}
-		this.lastActivityAt = Date.now();
+		this.lastActivityAt = performance.now();
 		try {
 			const action = await this.deliverUserMessage(content, options, beforeDelivery, preparation);
 			// A message that started a turn may have left it waiting on detached tool calls; carry that turn on too.
 			if (action === "prompt") await this.continueDetachedTurns(undefined, "prompt");
 			return action;
 		} finally {
-			this.lastActivityAt = Date.now();
+			this.lastActivityAt = performance.now();
 		}
 	}
 
@@ -1000,7 +1007,7 @@ export class StageSessionController {
 		continuationText?: string,
 	): Promise<void> {
 		this.promptsInFlight += 1;
-		this.lastActivityAt = Date.now();
+		this.lastActivityAt = performance.now();
 		try {
 			if (reopensOnUse(this.releasedWait)) await this.rehydrate();
 			const sent = await this.resumeInterruptedCall(text, continuationText, sdkOptions, consumer);
@@ -1008,7 +1015,7 @@ export class StageSessionController {
 			await this.continueDetachedTurns(sdkOptions, consumer);
 		} finally {
 			this.promptsInFlight -= 1;
-			this.lastActivityAt = Date.now();
+			this.lastActivityAt = performance.now();
 		}
 	}
 
@@ -1487,7 +1494,7 @@ export class StageSessionController {
 			if (input.kind === "steer") await session.steer(text, images, options);
 			else await session.followUp(text, images, options);
 		}
-		this.lastActivityAt = Date.now();
+		this.lastActivityAt = performance.now();
 		ended?.resolve();
 		await hooks.rehydrated(wait);
 	}
@@ -2218,6 +2225,16 @@ export class StageSessionController {
 		this.sessionInternalRetries = 0;
 		this.attemptUsage?.close();
 		this.attemptUsage = new AttemptUsageWindow(session);
+	}
+
+	/** Usage of the attempt in flight, before it is recorded in `modelAttempts`. */
+	inFlightAttemptUsage(): WorkflowModelUsage | undefined {
+		return this.attemptUsage?.peek();
+	}
+
+	/** Stop model calls within the current session's turns, or resume them with `undefined`. */
+	stopTurns(reason: string | undefined): void {
+		this.session?.stopTurns?.(reason);
 	}
 
 	/** Consume the current window exactly once; without an open window there is no usage to record. */
@@ -3199,7 +3216,7 @@ export class StageSessionController {
 					void Promise.resolve(onSessionEvent(event)).catch(() => {});
 				} catch {}
 			}
-			this.lastActivityAt = Date.now();
+			this.lastActivityAt = performance.now();
 			if (event.type === "auto_retry_start") this.sessionInternalRetries += 1;
 			if (event.type === "model_fallback_start") applyingFallback = true;
 			// SDK effort-only fallbacks suppress model_changed, but emit thinking_level_changed

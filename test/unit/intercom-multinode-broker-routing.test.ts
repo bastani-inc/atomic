@@ -22,6 +22,7 @@ import {
 	type IntercomBrokerStateOptions,
 	KNOWN_SESSION_RETENTION_MS,
 	OUTBOX_BACKUP_POLL_INTERVAL_MS,
+	OUTBOX_CLAIM_STALE_AFTER_MS,
 	OUTBOX_EXPIRED_REASON,
 	OUTBOX_TARGET_MAX_BYTES,
 	OUTBOX_TARGET_MAX_ROWS,
@@ -76,7 +77,7 @@ const BUS_POLL_INTERVAL_MS = 20;
 const ATTACHMENTS = [{ type: "snippet" as const, name: " a.ts ", content: "const x = 1;\r\n", language: "ts" }];
 const VERBATIM = "  cross-node\tparity\u0000 ünïcödé ✓  \n";
 
-type FakeSocket = net.Socket & { frames: BrokerOutboundFrame[] };
+type FakeSocket = net.Socket & { frames: BrokerOutboundFrame[]; written?: () => void };
 
 function fakeSocket(): FakeSocket {
 	return { destroyed: false, writableEnded: false, frames: [] } as unknown as FakeSocket;
@@ -138,8 +139,10 @@ class Node {
 
 	write(socket: net.Socket, frame: BrokerOutboundFrame): boolean {
 		const fake = socket as Partial<FakeSocket>;
-		if (fake.frames !== undefined) fake.frames.push(frame);
-		else writeMessage(socket, frame);
+		if (fake.frames !== undefined) {
+			fake.frames.push(frame);
+			fake.written?.();
+		} else writeMessage(socket, frame);
 		return true;
 	}
 
@@ -1141,6 +1144,58 @@ test("an old connection of a session that reconnected to the same broker leaves 
 	);
 });
 
+test(
+	"a child that turns terminal while the shared store fails listing its asks once fails them once the store recovers (#5138)",
+	async () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+		const reported = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const [a, b] = await cluster();
+			const asker = await a!.connect("asker");
+			const child = await b!.connect("child");
+			const ask = message({ expectsReply: true });
+			a!.send(asker, "child", ask);
+			await waitFor(() => messageFrames(child, ask.id)[0]);
+			b!.router.received(child, ask.id);
+			assert.equal((await waitFor(() => outcomeOf(asker, ask.id))).type, "delivered");
+
+			const pendingAsks = b!.opened.state.pendingAsks;
+			const listForTarget = pendingAsks.listForTarget.bind(pendingAsks);
+			let failures = 0;
+			pendingAsks.listForTarget = async (targetSessionId) => {
+				if (failures++ === 0) throw new Error("listForTarget failed: shared database is busy");
+				return listForTarget(targetSessionId);
+			};
+			child.info.replyCapability = "terminal";
+			b!.router.sessionUpdated(child);
+			await vi.waitFor(() => assert.equal(failures, 1), { timeout: CROSS_NODE_WAIT_MS });
+			assert.ok(reported.mock.calls.some(([text]) => String(text).includes("listForTarget failed")));
+			assert.equal(
+				framesOf(asker).find((frame) => frame.type === "message" && frame.message.replyTo === ask.id),
+				undefined,
+				"nothing is failed while the store fails",
+			);
+
+			vi.advanceTimersByTime(BROKER_LEASE_RENEW_INTERVAL_MS);
+			const terminal = await waitFor(() =>
+				framesOf(asker).find((frame) => frame.type === "message" && frame.message.replyTo === ask.id),
+			);
+			assert.ok(terminal.type === "message");
+			assert.equal(terminal.message.replyError, TERMINAL_CHILD_ASK_REFUSAL);
+			assert.equal(terminal.message.id, `terminal:${ask.id}`);
+			const listed = failures;
+			vi.advanceTimersByTime(BROKER_LEASE_RENEW_INTERVAL_MS);
+			b!.router.sessionUpdated(child);
+			await new Promise((settle) => setTimeout(settle, 50));
+			assert.equal(failures, listed, "a terminal child's asks are failed once");
+		} finally {
+			vi.useRealTimers();
+			reported.mockRestore();
+		}
+	},
+	2 * CROSS_NODE_WAIT_MS,
+);
+
 test("a terminal child that then ends does not fail an ask from another node a second time (#4842)", async () => {
 	const [a, b] = await cluster();
 	const asker = await a!.connect("asker");
@@ -1295,6 +1350,53 @@ test("an ask whose route write fails is redelivered and keeps its reply route in
 	b!.send(replier, asker.info.id, reply, { requirePendingReply: true, expectedRecipientId: asker.info.id });
 	const frame = await waitFor(() => messageFrames(asker, reply.id)[0] ?? reasonOf(outcomeOf(replier, reply.id)));
 	assert.deepEqual(frame, { type: "message", from: replier.info, message: reply });
+});
+
+test("an away session's asks move to the shared state only once it has them, and stay here otherwise (#4997)", async () => {
+	const [a] = await cluster(1);
+	const pendingAsks = a!.opened.state.pendingAsks;
+	const record = pendingAsks.record.bind(pendingAsks);
+	const question = () => ({ senderSessionId: randomUUID(), targetSessionId: randomUUID(), messageId: randomUUID() });
+	const [moved, refused, takenUp, failed] = [question(), question(), question(), question()];
+	let failedAttempted = false;
+	Object.assign(pendingAsks, {
+		record: async (ask: Parameters<typeof record>[0]) => {
+			if (ask.messageId === refused.messageId) return { status: "invalid", reason: "empty-target-identity" };
+			if (ask.messageId === failed.messageId) {
+				failedAttempted = true;
+				throw new Error("shared database stopped answering");
+			}
+			const recorded = await record(ask);
+			// This broker answers it while its shared route is being written.
+			if (ask.messageId === takenUp.messageId) a!.pendingQuestions.forgetDormant(takenUp);
+			return recorded;
+		},
+	});
+	const shared = async (route: typeof moved) =>
+		(
+			await pendingAsks.matchesReply({
+				replySenderSessionId: route.targetSessionId,
+				replyTargetSessionId: route.senderSessionId,
+				replyTo: route.messageId,
+			})
+		).status;
+	const kept = [moved, refused, takenUp, failed];
+	a!.pendingQuestions.keepDormant(kept, "asker-return-address");
+	void a!.router.publishAwayRoutes(kept);
+
+	await vi.waitFor(() => assert.equal(failedAttempted, true), { timeout: CROSS_NODE_WAIT_MS, interval: 10 });
+	// Taken up here while its shared route was written, so the shared route is settled.
+	await vi.waitFor(async () => assert.equal(await shared(takenUp), "no-match"), { timeout: CROSS_NODE_WAIT_MS });
+	assert.equal(await shared(moved), "match", "the shared state has the moved ask");
+	assert.equal(a!.pendingQuestions.isDormant(refused), true, "a refused ask stays kept here");
+	assert.equal(a!.pendingQuestions.isDormant(failed), true, "an ask the shared state failed to take stays kept here");
+	assert.equal(await shared(refused), "no-match");
+	assert.equal(await shared(failed), "no-match");
+	assert.equal(a!.pendingQuestions.isDormant(takenUp), false);
+
+	// Both of its peers are back on this broker, which takes the moved ask up again: its shared route is settled.
+	a!.router.settleRestoredRoutes([moved]);
+	await vi.waitFor(async () => assert.equal(await shared(moved), "no-match"), { timeout: CROSS_NODE_WAIT_MS });
 });
 
 test(
@@ -1702,6 +1804,9 @@ test("a hold check whose read answers after the save cap has passed ends the rem
 		if (!answerPastCap || result.status !== "found" || result.row.state !== "claimed") return result;
 		// The read answers once the cap has passed, before the cap's own timer has run: a fresh report cannot hold.
 		vi.setSystemTime(Date.now() + RECIPIENT_SAVE_MAX_WAIT_MS);
+		// The cap is timed on the monotonic clock (#5058).
+		const elapsed = performance.now.bind(performance);
+		vi.spyOn(performance, "now").mockImplementation(() => elapsed() + RECIPIENT_SAVE_MAX_WAIT_MS);
 		return { ...result, row: { ...result.row, savingAgeMs: 0 } };
 	});
 	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"], shouldAdvanceTime: true });
@@ -1715,14 +1820,35 @@ test("a hold check whose read answers after the save cap has passed ends the rem
 		assert.deepEqual(holdsOf(sender, sent.id), []);
 	} finally {
 		spy.mockRestore();
+		vi.restoreAllMocks();
 		vi.useRealTimers();
 	}
 });
 
-/** Send and wait for the sender's outcome of that send. */
+/**
+ * Send and wait for the sender's outcome of that send, as the broker writes it: a flood of sends each polled for its
+ * outcome took a timer tick apiece (about 16 ms on Windows) on top of the send itself.
+ */
 async function sendAndSettle(node: Node, from: BrokerConnectedSession, to: string, sent: Message) {
-	node.send(from, to, sent);
-	return waitFor(() => outcomeOf(from, sent.id));
+	const socket = from.socket as FakeSocket;
+	const { promise, resolve, reject } = Promise.withResolvers<BrokerOutboundFrame>();
+	const check = () => {
+		const outcome = outcomeOf(from, sent.id);
+		if (outcome !== undefined) resolve(outcome);
+	};
+	const timer = setTimeout(
+		() => reject(new Error(`no outcome for ${sent.id} within ${CROSS_NODE_WAIT_MS} ms`)),
+		CROSS_NODE_WAIT_MS,
+	);
+	socket.written = check;
+	try {
+		node.send(from, to, sent);
+		check();
+		return await promise;
+	} finally {
+		clearTimeout(timer);
+		socket.written = undefined;
+	}
 }
 
 test(
@@ -1866,6 +1992,88 @@ function failuresOf(session: BrokerConnectedSession, askId: string) {
 		(frame) => frame.type === "message" && frame.message.replyTo === askId && frame.message.replyError !== undefined,
 	);
 }
+
+/**
+ * #5145: asker on a, recipient on b. Broker b stops right after it queued the asker's failure for the ended recipient:
+ * it never clears the ask nor wakes the asker's broker, so the ask stays marked ended, as long ago as a stale claim.
+ * `beforeSweep` changes the queued row before the asker's broker sweeps the ask at its next backup poll, which also
+ * delivers a row still queued. Resolves to the ids of the failures the asker got.
+ */
+async function sweptAfterQueuedFailure(beforeSweep: (node: Node, askId: string) => Promise<void> = async () => {}) {
+	vi.useFakeTimers({ toFake: ["setInterval"] });
+	try {
+		const [a, b] = await cluster();
+		const asker = await a!.connect("asker");
+		const recipient = await b!.connect("recipient");
+		const ask = await savedAsk(a!, asker, b!, recipient);
+		const stopped = () => Promise.reject(new Error("broker b stopped"));
+		Object.assign(b!.opened.state.pendingAsks, { clearReply: stopped, unmarkEnded: stopped });
+		b!.leave(recipient);
+		const queued = await vi.waitFor(
+			async () => {
+				const read = await a!.opened.state.outbox.read(`ended:${ask.id}`);
+				assert.equal(read.status, "found", "the failure is not queued yet");
+				return read;
+			},
+			{ timeout: CROSS_NODE_WAIT_MS },
+		);
+		assert.ok(queued.status === "found" && queued.row.state === "queued");
+		const ended = async () => {
+			const listed = await a!.opened.state.pendingAsks.listEnded(0);
+			return listed.status === "listed" && listed.asks.some((pending) => pending.messageId === ask.id);
+		};
+		assert.equal(await ended(), true, "the ask is still marked ended");
+
+		await beforeSweep(a!, ask.id);
+		await a!.database.run(
+			"UPDATE mn_intercom_pending_asks SET ended_at = ended_at - ? WHERE message_id = ?",
+			OUTBOX_CLAIM_STALE_AFTER_MS + 60_000,
+			ask.id,
+		);
+		vi.advanceTimersByTime(OUTBOX_BACKUP_POLL_INTERVAL_MS);
+		await vi.waitFor(async () => assert.equal(await ended(), false, "the ended ask is not swept yet"), {
+			timeout: CROSS_NODE_WAIT_MS,
+		});
+		await waitFor(() => (failuresOf(asker, ask.id).length > 0 ? true : undefined));
+		vi.advanceTimersByTime(OUTBOX_BACKUP_POLL_INTERVAL_MS);
+		await new Promise((resolve) => setTimeout(resolve, 10 * BUS_POLL_INTERVAL_MS));
+		return {
+			askId: ask.id,
+			failures: failuresOf(asker, ask.id).map((frame) => (frame.type === "message" ? frame.message.id : undefined)),
+		};
+	} finally {
+		vi.useRealTimers();
+	}
+}
+
+test(
+	"an asker on another node is told once when the ended recipient's broker stops after queueing its failure and before clearing the ask (#5145)",
+	async () => {
+		const { askId, failures } = await sweptAfterQueuedFailure();
+		assert.deepEqual(failures, [`ended:${askId}`], "told once");
+	},
+	3 * CROSS_NODE_WAIT_MS,
+);
+
+test(
+	"an asker is still told its ask failed when the failure a stopped broker queued for it expired undelivered (#5145)",
+	async () => {
+		const { askId, failures } = await sweptAfterQueuedFailure(async (node, id) => {
+			const outbox = node.opened.state.outbox;
+			const queued = await outbox.read(`ended:${id}`);
+			assert.ok(queued.status === "found");
+			const claimed = await outbox.claim({
+				claimantId: "expiry",
+				targetIdentity: queued.row.targetIdentity,
+				staleAfterMs: OUTBOX_CLAIM_STALE_AFTER_MS,
+			});
+			assert.ok(claimed.status === "claimed" && claimed.rows.length === 1);
+			assert.equal((await outbox.markFailed(claimed.rows[0]!.claim, OUTBOX_EXPIRED_REASON)).status, "failed");
+		});
+		assert.deepEqual(failures, [`ended:${askId}`], "told once, by its own broker");
+	},
+	3 * CROSS_NODE_WAIT_MS,
+);
 
 /** Owner and its released subagent on b, asker on a: the asker's ask to the subagent is parked for the owner. */
 async function parkedAskScene() {

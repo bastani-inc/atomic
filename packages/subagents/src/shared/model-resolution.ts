@@ -15,13 +15,9 @@
  * string means.
  */
 
+import { resolveFallbackModel } from "@bastani/atomic";
 import type { Api, Model } from "@bastani/pi-ai/compat";
-import {
-	splitKnownThinkingSuffix,
-	splitUnknownThinkingSuffix,
-	THINKING_LEVELS,
-	type ThinkingLevel,
-} from "./model-info.js";
+import { splitUnknownThinkingSuffix, THINKING_LEVELS, type ThinkingLevel } from "./model-info.js";
 
 /** Registry surface needed to resolve a candidate; satisfied by `ctx.modelRegistry`. */
 export interface CandidateModelLookup {
@@ -50,27 +46,21 @@ export interface ResolvedCandidateModel {
  */
 export type CandidateModelResolver = (candidateId: string) => ResolvedCandidateModel | undefined;
 
-function thinkingLevelFromSuffix(suffix: string): ThinkingLevel | undefined {
-	if (!suffix) return undefined;
-	const level = suffix.slice(1);
-	return THINKING_LEVELS.find((known) => known === level);
-}
-
+/** Resolve a name exactly as a settings `fallbackModels` entry or `--model` is resolved (#5046). */
 function findCandidateModel(
-	baseModel: string,
+	name: string,
 	lookup: CandidateModelLookup,
 	preferredProvider: string | undefined,
-): Model<Api> | undefined {
-	const slash = baseModel.indexOf("/");
-	if (slash < 0) {
-		const available = lookup.getAvailable().filter((entry) => entry.id === baseModel);
-		return (
-			available.find((entry) => entry.provider === preferredProvider) ??
-			(available.length === 1 ? available[0] : undefined)
-		);
-	}
-	const model = lookup.find(baseModel.slice(0, slash), baseModel.slice(slash + 1));
-	return model && lookup.hasConfiguredAuth(model) ? model : undefined;
+): ResolvedCandidateModel | undefined {
+	const models = lookup.getAvailable().filter((model) => lookup.hasConfiguredAuth(model));
+	const resolved = resolveFallbackModel(
+		name,
+		{ getModels: () => models, hasConfiguredAuth: () => true },
+		preferredProvider,
+	);
+	if (!resolved) return undefined;
+	const thinkingLevel = THINKING_LEVELS.find((level) => level === resolved.thinkingLevel);
+	return thinkingLevel === undefined ? { model: resolved.model } : { model: resolved.model, thinkingLevel };
 }
 
 export function resolveCandidateModel(
@@ -80,15 +70,13 @@ export function resolveCandidateModel(
 ): ResolvedCandidateModel | undefined {
 	const trimmed = candidateId.trim();
 	if (!trimmed) return undefined;
-	const { baseModel, thinkingSuffix } = splitKnownThinkingSuffix(trimmed);
-	const thinkingLevel = thinkingLevelFromSuffix(thinkingSuffix);
-	const model = findCandidateModel(baseModel, lookup, preferredProvider);
-	if (model) return thinkingLevel === undefined ? { model } : { model, thinkingLevel };
+	const resolved = findCandidateModel(trimmed, lookup, preferredProvider);
+	if (resolved) return resolved;
 	// A model id may end in `:word` itself, so the word is an effort no level names only when the whole id is no model.
-	const unknown = thinkingSuffix ? undefined : splitUnknownThinkingSuffix(trimmed);
+	const unknown = splitUnknownThinkingSuffix(trimmed);
 	if (!unknown) return undefined;
 	const base = findCandidateModel(unknown.baseModel, lookup, preferredProvider);
-	return base ? { model: base, unknownEffort: unknown.effort } : undefined;
+	return base && base.thinkingLevel === undefined ? { model: base.model, unknownEffort: unknown.effort } : undefined;
 }
 
 /** Bind a registry and the parent's provider into a reusable candidate resolver. */

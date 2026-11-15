@@ -30,6 +30,7 @@ export type {
 	ToolNamespace,
 	ToolRendererResolver,
 	ToolRenderers,
+	ToolScriptAccess,
 } from "./core/extensions/tool-types.ts";
 export { resolveRestoredModelReference } from "./core/model-resolver-initial.ts";
 export * from "./core/resume/index.ts";
@@ -455,6 +456,7 @@ export {
 } from "./core/extension-startup-failure.ts";
 // Run modes for programmatic SDK usage
 export { noOpUIContext } from "./core/extensions/runner-ui.ts";
+export { resolveFallbackModel } from "./core/fallback-models.ts";
 export {
 	getModelFastRoute,
 	resolveUpstreamModelId,
@@ -560,6 +562,7 @@ export {
 	validateMcpServerConfig,
 } from "./core/mcp-servers.ts";
 export { convertToLlm } from "./core/messages.ts";
+export { modelCallUsage } from "./core/model-call-usage.ts";
 export type {
 	ModelFallbackFailureKind,
 	ModelFallbackFailureOptions,
@@ -840,6 +843,10 @@ export {
 } from "./core/skills.ts";
 export { createSyntheticSourceInfo } from "./core/source-info.ts";
 export {
+	type ConfiguredSecretRedactorOptions,
+	configuredSecretRedactor,
+} from "./core/storage/sqlite-facade.js";
+export {
 	generateStructuredOutput,
 	type StructuredOutputRequest,
 	type StructuredOutputResult,
@@ -946,6 +953,8 @@ export {
 	type ShellToolPresentation,
 	searchToolSystemPromptContribution,
 	serializeFileToolError,
+	sliceHead,
+	sliceTail,
 	type ToolsOptions,
 	type TruncationOptions,
 	type TruncationResult,
@@ -963,6 +972,11 @@ export {
 } from "./core/tools/index.js";
 /** Bounds extension text in the model's context the way oversized tool results are bounded. */
 export { boundOversizedText } from "./core/tools/oversized-tool-result.js";
+export {
+	assertPrivateDirectory,
+	ensurePrivateTempDir,
+	TempDirRefusedError,
+} from "./core/tools/session-temp-dir.ts";
 export {
 	isShellTimeoutError,
 	isShellToolError,

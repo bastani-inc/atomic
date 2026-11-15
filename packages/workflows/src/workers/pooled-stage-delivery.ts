@@ -217,7 +217,16 @@ export async function createWorkerStageDelivery(
 	}
 	const routeCapability = await request({ kind: "route", runId: stage.runId });
 	if (typeof routeCapability !== "string") throw new Error("Worker root route is unavailable");
-	return createPooledStageDelivery({ ...delivery, routeCapability });
+	return createPooledStageDelivery({
+		...delivery,
+		routeCapability,
+		// The stage keeps its own receipt as well (#5023): a root drain the storage refused records nothing, and the
+		// stage's publications and result still carry what its session took to the root.
+		forward: async (recipient, deliver) => {
+			recordStageReceipts(store, stage, recipient);
+			await delivery.forward(recipient, deliver);
+		},
+	});
 }
 
 /**
@@ -304,7 +313,14 @@ export interface WorkerStageAdapterPorts {
 	readonly inbox: RemoteStageInbox | undefined;
 	/** The shared pool the worker serves, when it serves one (#4310). */
 	readonly shared: WorkerStart["shared"];
-	readonly request: (message: DistributiveOmit<WorkerRequest, "id">, deliver?: WorkerDeliver) => Promise<unknown>;
+	/**
+	 * Asks the root. `outageTolerant`: a storage outage refusing the request rejects it without fencing the attempt.
+	 */
+	readonly request: (
+		message: DistributiveOmit<WorkerRequest, "id">,
+		deliver?: WorkerDeliver,
+		outageTolerant?: boolean,
+	) => Promise<unknown>;
 	/** The attempt's activity publication on its way to the root, if one is. */
 	readonly published: () => Promise<void> | undefined;
 	/** The root's journal, which the worker reads itself, so a stage's startup never waits on the root. */
@@ -340,7 +356,9 @@ export function workerStageAdapter(ports: WorkerStageAdapterPorts): AgentSession
 				},
 				forward: async (recipient, deliver) => {
 					await published();
-					await request({ kind: "delivery", ...identity, recipient }, deliver);
+					// A root drain the storage refused for a while records nothing, and the stage goes on (#5023): its
+					// session holds the messages, its own receipt records them, and the drain runs again later.
+					await request({ kind: "delivery", ...identity, recipient }, deliver, true);
 				},
 				fail: options.orchestrationContext.pendingStageDelivery.fail,
 			});

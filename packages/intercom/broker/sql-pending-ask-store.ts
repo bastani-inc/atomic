@@ -17,6 +17,7 @@ import type {
 	ReplyRoute,
 	StateStoreInvalidReason,
 } from "./multinode-state-store.js";
+import { SETTLED_ASK_RETENTION_MS } from "./multinode-state-store.js";
 import { addMissingColumns } from "./sql-add-column.js";
 
 type AskRow = SqliteRow & { sender_session_id: string; target_session_id: string; message_id: string };
@@ -51,7 +52,7 @@ export async function openSqlPendingAskStore({
 	database,
 	prefix,
 }: IntercomBrokerStateOptions): Promise<PendingAskStore> {
-	const table = `${validateStoragePrefix(prefix)}intercom_pending_asks`;
+	const table = `${validateStoragePrefix(prefix, dialectOf(database).name)}intercom_pending_asks`;
 	const { types, nowMs, greatest } = dialectOf(database);
 	await database.transaction((tx) =>
 		tx.exec(`
@@ -74,6 +75,20 @@ export async function openSqlPendingAskStore({
 		replied: types.int,
 		ended_at: types.int,
 	});
+	// #4997: asks answered or failed, remembered so a stopped broker's copy of one is not recorded again.
+	const settled = `${validateStoragePrefix(prefix)}intercom_settled_asks`;
+	await database.transaction((tx) =>
+		tx.exec(`
+			CREATE TABLE IF NOT EXISTS ${settled}(
+				sender_session_id TEXT NOT NULL,
+				target_session_id TEXT NOT NULL,
+				message_id TEXT NOT NULL,
+				settled_at ${types.int} NOT NULL,
+				PRIMARY KEY(sender_session_id, target_session_id, message_id)
+			);
+			CREATE INDEX IF NOT EXISTS ${settled}_at ON ${settled}(settled_at);
+		`),
+	);
 	const parkedBy = (ownerSessionId: string, reservationKey: string | undefined) =>
 		reservationKey === undefined
 			? { where: "park_owner = ?", params: [ownerSessionId] }
@@ -86,14 +101,17 @@ export async function openSqlPendingAskStore({
 		async record(ask): Promise<PendingAskRecordResult> {
 			const bad = invalidAsk(ask);
 			if (bad !== undefined) return bad;
-			const { changes } = await database.run(
-				`INSERT INTO ${table}(sender_session_id, target_session_id, message_id) VALUES (?, ?, ?)
-				 ON CONFLICT DO NOTHING`,
-				ask.senderSessionId,
-				ask.targetSessionId,
-				ask.messageId,
-			);
-			return changes === 0 ? { status: "duplicate" } : { status: "recorded" };
+			const params = [ask.senderSessionId, ask.targetSessionId, ask.messageId] as const;
+			return database.transaction(async (tx) => {
+				const done = await tx.get(`SELECT 1 AS found FROM ${settled} WHERE ${reverseRoute}`, ...params);
+				if (done !== undefined) return { status: "settled" } as const;
+				const { changes } = await tx.run(
+					`INSERT INTO ${table}(sender_session_id, target_session_id, message_id) VALUES (?, ?, ?)
+					 ON CONFLICT DO NOTHING`,
+					...params,
+				);
+				return changes === 0 ? ({ status: "duplicate" } as const) : ({ status: "recorded" } as const);
+			});
 		},
 		async matchesReply(route): Promise<PendingAskMatchResult> {
 			const bad = invalidRoute(route);
@@ -102,6 +120,24 @@ export async function openSqlPendingAskStore({
 			return row === undefined ? { status: "no-match" } : { status: "match" };
 		},
 		async clearReply(route): Promise<PendingAskClearResult> {
+			const bad = invalidRoute(route);
+			if (bad !== undefined) return bad;
+			return database.transaction(async (tx) => {
+				const { changes } = await tx.run(`DELETE FROM ${table} WHERE ${reverseRoute}`, ...reverseParams(route));
+				await tx.run(
+					`INSERT INTO ${settled}(sender_session_id, target_session_id, message_id, settled_at) VALUES (?, ?, ?, ${nowMs})
+					 ON CONFLICT DO NOTHING`,
+					...reverseParams(route),
+				);
+				await tx.run(`DELETE FROM ${settled} WHERE settled_at < ${nowMs} - ?`, SETTLED_ASK_RETENTION_MS);
+				return changes === 0 ? ({ status: "no-match" } as const) : ({ status: "cleared" } as const);
+			});
+		},
+		async isSettled(route): Promise<boolean> {
+			if (invalidRoute(route) !== undefined) return false;
+			return (await database.get(`SELECT 1 AS found FROM ${settled} WHERE ${reverseRoute}`, ...reverseParams(route))) !== undefined;
+		},
+		async releaseRoute(route): Promise<PendingAskClearResult> {
 			const bad = invalidRoute(route);
 			if (bad !== undefined) return bad;
 			const { changes } = await database.run(`DELETE FROM ${table} WHERE ${reverseRoute}`, ...reverseParams(route));

@@ -33,6 +33,8 @@ export interface DurableTerminalFinalizeInput {
 	readonly terminalStatusCommitted?: boolean;
 	/** Where a failure to record the ending is reported, as a notice, before it is rethrown. */
 	readonly store?: Store;
+	/** A child run's durable budget accounting writer; see `recordChildRunUsageCheckpointAsync`. */
+	readonly recordUsage?: () => Promise<void>;
 }
 
 export async function finalizeDurableTerminalStatus(input: DurableTerminalFinalizeInput): Promise<void> {
@@ -45,7 +47,11 @@ export async function finalizeDurableTerminalStatus(input: DurableTerminalFinali
 }
 
 async function commitDurableTerminalStatus(input: DurableTerminalFinalizeInput): Promise<void> {
-	if (!input.isRoot) return;
+	if (!input.isRoot) {
+		// The child's last charges, such as its wrap-up turn, reach its durable accounting before it ends (#5053).
+		await input.recordUsage?.();
+		return;
+	}
 	const status = effectiveRunStatus(input.runSnapshot);
 	const isExitTerminal = input.runSnapshot.exited === true && status !== "running";
 	const isBlocked =

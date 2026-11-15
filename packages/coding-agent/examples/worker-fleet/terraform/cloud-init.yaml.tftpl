@@ -1,10 +1,17 @@
 #cloud-config
 # Boots a VM into `atomic worker start` (#4768). The template fills ${database}; the provider id comes from the cloud's
 # metadata service (provider_id_command), and the token from your secret store (token_command), never from user data.
+# For a PostgreSQL database the token is the database password, and database_ca, when set, is the server's CA bundle,
+# which the URL names with sslrootcert.
 users:
   - name: atomic
     shell: /bin/bash
 write_files:
+%{ if database_ca != "" ~}
+  - path: /etc/atomic/database-ca.pem
+    permissions: "0644"
+    content: ${jsonencode(database_ca)}
+%{ endif ~}
   - path: /etc/systemd/system/atomic-worker.service
     content: |
       [Unit]
@@ -27,5 +34,7 @@ runcmd:
   - |
     (umask 077 && ${token_command} > /etc/atomic/token && chown atomic:atomic /etc/atomic/token)
   - [sh, -c, "curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs git"]
-  - [sh, -c, "npm install -g @bastani/atomic && sudo -iu atomic atomic install npm:@bastani/atomic-storage-libsql"]
+  - |
+    case "${database}" in postgres://*|postgresql://*) adapter=postgres ;; *) adapter=libsql ;; esac
+    npm install -g @bastani/atomic && sudo -iu atomic atomic install "npm:@bastani/atomic-storage-$adapter"
   - [systemctl, enable, --now, atomic-worker]
