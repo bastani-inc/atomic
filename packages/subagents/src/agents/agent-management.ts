@@ -23,8 +23,10 @@ import {
 import { serializeAgent } from "./agent-serializer.js";
 import {
 	type AgentConfig,
+	type AgentDiscoveryOptions,
 	type AgentSource,
 	buildRuntimeName,
+	contextAgentDiscoveryOptions,
 	defaultInheritProjectContext,
 	defaultInheritSkills,
 	defaultSystemPromptMode,
@@ -35,7 +37,7 @@ import {
 type ManagementAction = "list" | "get" | "create" | "update" | "delete";
 export type ManagementScope = "user" | "project";
 export type ManagementContext = Pick<ExtensionContext, "cwd" | "modelRegistry"> &
-	Pick<Partial<ExtensionContext>, "getSkillCatalog">;
+	Pick<Partial<ExtensionContext>, "getSkillCatalog" | "isProjectTrusted">;
 
 interface ManagementParams {
 	action?: string;
@@ -54,6 +56,7 @@ function resolveTarget<T extends { source: AgentSource; filePath: string; name: 
 	name: string,
 	matches: T[],
 	cwd: string,
+	discovery: AgentDiscoveryOptions,
 	scopeHint?: string,
 ): MutableDefinition<T> | SubagentToolResult {
 	const mutable = matches.filter(isMutableDefinition);
@@ -63,7 +66,7 @@ function resolveTarget<T extends { source: AgentSource; filePath: string; name: 
 				`Agent '${name}' is builtin and cannot be modified. Create a same-named agent in user or project scope to override it.`,
 				true,
 			);
-		const available = availableNames(cwd);
+		const available = availableNames(cwd, discovery);
 		return result(`Agent '${name}' not found. Available: ${available.join(", ") || "none"}.`, true);
 	}
 	if (mutable.length === 1) return mutable[0]!;
@@ -87,8 +90,9 @@ function renamePath(
 	newName: string,
 	scope: ManagementScope,
 	cwd: string,
+	discovery: AgentDiscoveryOptions,
 ): { filePath?: string; error?: string } {
-	if (nameExistsInScope(cwd, scope, newName, currentPath))
+	if (nameExistsInScope(cwd, discovery, scope, newName, currentPath))
 		return { error: `Name '${newName}' already exists in ${scope} scope.` };
 	const filePath = path.join(path.dirname(currentPath), `${newName}.md`);
 	if (fs.existsSync(filePath) && filePath !== currentPath)
@@ -132,7 +136,7 @@ function formatAgentDetail(agent: AgentConfig): string {
 
 export function handleList(params: ManagementParams, ctx: ManagementContext): SubagentToolResult {
 	const scope = normalizeListScope(params.agentScope) ?? "both";
-	const d = discoverAgentsAll(ctx.cwd);
+	const d = discoverAgentsAll(ctx.cwd, contextAgentDiscoveryOptions(ctx));
 	const agents = allAgents(d)
 		.filter((agent) => !agent.disabled && (scope === "both" || agent.source === "builtin" || agent.source === scope))
 		.sort((a, b) => a.name.localeCompare(b.name));
@@ -150,10 +154,10 @@ export function handleList(params: ManagementParams, ctx: ManagementContext): Su
 
 function handleGet(params: ManagementParams, ctx: ManagementContext): SubagentToolResult {
 	if (!params.agent) return result("Specify 'agent' for get.", true);
-	const matches = findAgents(params.agent, ctx.cwd, "both");
+	const matches = findAgents(params.agent, ctx.cwd, contextAgentDiscoveryOptions(ctx), "both");
 	if (!matches.length)
 		return result(
-			`Agent '${params.agent}' not found. Available: ${availableNames(ctx.cwd).join(", ") || "none"}.`,
+			`Agent '${params.agent}' not found. Available: ${availableNames(ctx.cwd, contextAgentDiscoveryOptions(ctx)).join(", ") || "none"}.`,
 			true,
 		);
 	return result(matches.map(formatAgentDetail).join("\n\n"));
@@ -177,10 +181,10 @@ export function handleCreate(params: ManagementParams, ctx: ManagementContext): 
 	const scopeRaw = cfg.scope ?? "user";
 	if (scopeRaw !== "user" && scopeRaw !== "project") return result("config.scope must be 'user' or 'project'.", true);
 	const scope = scopeRaw as ManagementScope;
-	const d = discoverAgentsAll(ctx.cwd);
+	const d = discoverAgentsAll(ctx.cwd, contextAgentDiscoveryOptions(ctx));
 	const targetDir = scope === "user" ? d.userDir : (d.projectDir ?? path.join(ctx.cwd, CONFIG_DIR_NAME, "agents"));
 	fs.mkdirSync(targetDir, { recursive: true });
-	if (nameExistsInScope(ctx.cwd, scope, runtimeName))
+	if (nameExistsInScope(ctx.cwd, contextAgentDiscoveryOptions(ctx), scope, runtimeName))
 		return result(`Name '${runtimeName}' already exists in ${scope} scope. Use update instead.`, true);
 	const targetPath = path.join(targetDir, `${runtimeName}.md`);
 	if (fs.existsSync(targetPath))
@@ -225,8 +229,9 @@ export function handleUpdate(params: ManagementParams, ctx: ManagementContext): 
 	const scopeHint = asDisambiguationScope(params.agentScope);
 	const targetOrError = resolveTarget(
 		params.agent,
-		findAgents(params.agent, ctx.cwd, scopeHint ?? "both"),
+		findAgents(params.agent, ctx.cwd, contextAgentDiscoveryOptions(ctx), scopeHint ?? "both"),
 		ctx.cwd,
+		contextAgentDiscoveryOptions(ctx),
 		params.agentScope,
 	);
 	if ("content" in targetOrError) return targetOrError;
@@ -267,7 +272,13 @@ export function handleUpdate(params: ManagementParams, ctx: ManagementContext): 
 		if (warning) warnings.push(warning);
 	}
 	if (updated.name !== oldName) {
-		const renamed = renamePath(target.filePath, updated.name, target.source, ctx.cwd);
+		const renamed = renamePath(
+			target.filePath,
+			updated.name,
+			target.source,
+			ctx.cwd,
+			contextAgentDiscoveryOptions(ctx),
+		);
 		if (renamed.error) return result(renamed.error, true);
 		updated.filePath = renamed.filePath!;
 	}
@@ -284,8 +295,9 @@ function handleDelete(params: ManagementParams, ctx: ManagementContext): Subagen
 	const scopeHint = asDisambiguationScope(params.agentScope);
 	const targetOrError = resolveTarget(
 		params.agent,
-		findAgents(params.agent, ctx.cwd, scopeHint ?? "both"),
+		findAgents(params.agent, ctx.cwd, contextAgentDiscoveryOptions(ctx), scopeHint ?? "both"),
 		ctx.cwd,
+		contextAgentDiscoveryOptions(ctx),
 		params.agentScope,
 	);
 	if ("content" in targetOrError) return targetOrError;

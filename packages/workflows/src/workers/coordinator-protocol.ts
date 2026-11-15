@@ -84,6 +84,8 @@ interface PoolCoordinatorCommonOptions {
 	readonly workerEntry?: string;
 	/** Internal, tests only: how long the root waits for a stage input's receipt (`STAGE_INPUT_RECEIPT_TIMEOUT_MS`). */
 	readonly stageInputTimeoutMs?: number;
+	/** Internal, tests only: how long a worker resends a refused request before it hands its child on (`OUTAGE_HANDOFF_MS`). */
+	readonly outageHandoffMs?: number;
 }
 
 export type PoolCoordinatorOptions = PoolCoordinatorCommonOptions &

@@ -400,6 +400,29 @@ describe("resumeDurableWorkflow", () => {
 		assert.equal(result.reason, "invalid_inputs");
 	});
 
+	test("returns invalid_inputs when a cached input violates a literal schema (#4849)", async () => {
+		const workflowId = testRunId("wf-bad-literal-in");
+		const literalDef = workflow({
+			name: "resumable-pipeline",
+			description: "",
+			inputs: { topic: Type.Literal("data") },
+			outputs: {},
+			run: async () => ({}),
+		}) as unknown as WorkflowDefinition;
+		await backend.commitWorkflowRegistration({
+			workflowId,
+			name: "resumable-pipeline",
+			inputs: { topic: "other" },
+			createdAt: 1,
+			status: "paused",
+			completedCheckpoints: 1,
+		});
+		const result = await resumeDurableWorkflow(workflowId, { ...deps(), registry: makeRegistryWith(literalDef) });
+		assert.equal(result.ok, false);
+		assert.equal(result.reason, "invalid_inputs");
+		assert.match(result.ok ? "" : result.message, /topic: must equal "data"/);
+	});
+
 	test("successfully re-dispatches with the ORIGINAL workflow id", async () => {
 		const workflowId = testRunId("wf-resume-target");
 		await backend.commitWorkflowRegistration({
