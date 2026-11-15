@@ -23,6 +23,7 @@ test.skipIf(process.platform === "win32")(
 		const path = join(directory, "journal.sqlite");
 		const children: ChildProcess[] = [];
 		let groupId: number | undefined;
+		let guardianPid: number | undefined;
 		const journal = await resolveRunJournal({ journal: { path } });
 		const database = await openNodeSqliteDatabase(path);
 		const launch = async (holder: string) => {
@@ -34,8 +35,9 @@ test.skipIf(process.platform === "win32")(
 			children.push(child);
 			const [message] = await once(child, "message", { signal: budget });
 			if (holder === "coordinator") {
-				groupId = (message as { groupId: number }).groupId;
+				({ groupId, guardianPid } = message as { groupId: number; guardianPid: number });
 				assert.ok(Number.isSafeInteger(groupId) && groupId > 0);
+				assert.ok(Number.isSafeInteger(guardianPid) && guardianPid > 0);
 				process.kill(-groupId, "SIGSTOP");
 			}
 			return child;
@@ -58,6 +60,10 @@ test.skipIf(process.platform === "win32")(
 			const worker = await launch("worker");
 			worker.kill("SIGSTOP");
 			const coordinator = await launch("coordinator");
+			// The coordinator dies together with its host-death guardian, which would otherwise end the paused command's
+			// session (#5057): stopped first, it cannot start a replacement guardian, so its command outlives it.
+			coordinator.kill("SIGSTOP");
+			process.kill(guardianPid!, "SIGKILL");
 			await stop(coordinator);
 			const replacement = await SqlResourceAdmission.open(journal, {
 				root: "root",

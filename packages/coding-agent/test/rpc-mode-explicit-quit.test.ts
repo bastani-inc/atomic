@@ -48,12 +48,12 @@ vi.mock("../src/modes/rpc/jsonl.js", () => ({
 type Listener = (...args: never[]) => void;
 
 /** What the child's shutdown told its runtime, observed by driving the real signal and stdin handlers. */
-async function startChild(engineChild: boolean) {
+async function startChild(engineChild: boolean, disposeRuntime: () => Promise<void> = async () => {}) {
 	rpcIo.engineChild = engineChild;
 	rpcIo.output = [];
 	rpcIo.lineHandler = undefined;
 	const harness: Harness = await createHarness();
-	const dispose = vi.fn(async (_options?: { fromSignal?: boolean }) => {});
+	const dispose = vi.fn((_options?: { fromSignal?: boolean }) => disposeRuntime());
 	const setBeforeSessionInvalidate = vi.fn<(callback?: () => void) => void>();
 	const runtimeHost = {
 		session: harness.session,
@@ -90,6 +90,7 @@ async function startChild(engineChild: boolean) {
 		beforeSessionInvalidate: () => setBeforeSessionInvalidate.mock.calls.at(-1)?.[0],
 		signal: () => signalHandlers.get("SIGTERM")?.(),
 		endInput: () => inputEnd?.(),
+		exitCodes: () => exit.mock.calls.map((call) => call[0]),
 		async disposeOptions() {
 			await vi.waitFor(() => assert.equal(exit.mock.calls.length, 1));
 			assert.equal(dispose.mock.calls.length, 1);
@@ -165,6 +166,91 @@ describe("RPC mode shutdown cause", () => {
 			assert.deepEqual(await closed.disposeOptions(), { fromSignal: false });
 		} finally {
 			closed.cleanup();
+		}
+	});
+});
+
+describe("RPC mode shutdown failure", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	test("a failed disposal is reported as a shutdown_error event and a non-zero exit, never an unhandled rejection (#5166)", async () => {
+		const unhandled: unknown[] = [];
+		const onUnhandled = (reason: unknown) => unhandled.push(reason);
+		process.on("unhandledRejection", onUnhandled);
+		const failure = Object.assign(
+			new AggregateError(
+				[new Error("Cannot dispose a session with a queued protected reconciliation")],
+				"Runtime shutdown failed",
+			),
+			{ code: "ShutdownFailed" },
+		);
+		const child = await startChild(false, () => Promise.reject(failure));
+		try {
+			child.endInput();
+			await child.disposeOptions();
+			await new Promise((resolve) => setImmediate(resolve));
+			assert.deepEqual(
+				{
+					events: rpcIo.output.map((line) => JSON.parse(line)).filter((event) => event.type === "shutdown_error"),
+					exitCodes: child.exitCodes(),
+					unhandled,
+				},
+				{
+					events: [
+						{
+							type: "shutdown_error",
+							error: "Runtime shutdown failed",
+							code: "ShutdownFailed",
+							errors: ["Cannot dispose a session with a queued protected reconciliation"],
+							exitCode: 1,
+						},
+					],
+					exitCodes: [1],
+					unhandled: [],
+				},
+			);
+		} finally {
+			process.off("unhandledRejection", onUnhandled);
+			child.cleanup();
+		}
+	});
+
+	test("a failed disposal after a signal keeps the signal's exit code (#5166)", async () => {
+		const child = await startChild(false, () => Promise.reject(new Error("store close failed")));
+		try {
+			child.signal();
+			await child.disposeOptions();
+			assert.deepEqual(
+				{
+					events: rpcIo.output.map((line) => JSON.parse(line)).filter((event) => event.type === "shutdown_error"),
+					exitCodes: child.exitCodes(),
+				},
+				{ events: [{ type: "shutdown_error", error: "store close failed", exitCode: 143 }], exitCodes: [143] },
+			);
+		} finally {
+			child.cleanup();
+		}
+	});
+});
+
+describe("RPC mode shutdown failure without an Error", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	test("a disposal that rejects with no error object is still reported (#5166)", async () => {
+		const child = await startChild(false, () => Promise.reject(null));
+		try {
+			child.endInput();
+			await child.disposeOptions();
+			assert.deepEqual(
+				rpcIo.output.map((line) => JSON.parse(line)).filter((event) => event.type === "shutdown_error"),
+				[{ type: "shutdown_error", error: "null", exitCode: 1 }],
+			);
+		} finally {
+			child.cleanup();
 		}
 	});
 });

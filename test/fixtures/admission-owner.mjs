@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
 import { createJiti } from "jiti";
@@ -10,6 +11,7 @@ const journal = await resolveRunJournal({ journal: { path } });
 const admission = await SqlResourceAdmission.open(journal, { root: "root", holder, limits: { session: 2, process: 1 } });
 await admission.acquire("session");
 let groupId;
+let guardianPid;
 if (holder === "coordinator") {
 	const { createAgentSession, withResourceAdmission } = await loader.import(fileURLToPath(new URL("../../packages/coding-agent/src/core/sdk.ts", import.meta.url)));
 	const { SessionManager } = await loader.import(fileURLToPath(new URL("../../packages/coding-agent/src/core/session-manager.ts", import.meta.url)));
@@ -25,11 +27,18 @@ if (holder === "coordinator") {
 		groupId = Number(Buffer.concat(page.value.chunks.map((chunk) => Buffer.from(chunk.bytes))).toString().trim());
 		if (!groupId) await new Promise((resolve) => setTimeout(resolve, 10));
 	}
+	// The host-death guardian that ends this command's session once this process dies (#5057): one `/bin/sh` child.
+	const guardians = execFileSync("pgrep", ["-P", String(process.pid), "-f", "^/bin/sh -c trap '' HUP INT"], { encoding: "utf8" })
+		.split("\n")
+		.filter(Boolean)
+		.map(Number);
+	if (guardians.length !== 1) throw new Error(`expected one host-death guardian, found ${JSON.stringify(guardians)}`);
+	guardianPid = guardians[0];
 	void admission.acquire("session");
 	// No deadline of its own: the test bounds the whole exchange with its budget and kills this process.
 	while (!(await admission.inspect()).some((permit) => permit.holder === holder && permit.state === "waiting")) {
 		await new Promise((resolve) => setTimeout(resolve, 10));
 	}
 }
-process.send({ ready: true, groupId });
+process.send({ ready: true, groupId, guardianPid });
 setInterval(() => {}, 1000);
