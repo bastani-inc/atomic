@@ -333,6 +333,11 @@ function forgottenSessionIdentities(id: string, group: string): readonly string[
 	return [JSON.stringify(["return", id, normalizeGroup(group)]), JSON.stringify(["session", id])];
 }
 
+/** #4997: one ask's route, as a set key. */
+function askKey(question: PendingQuestion): string {
+	return JSON.stringify([question.senderSessionId, question.targetSessionId, question.messageId]);
+}
+
 function returnAddressOf(identity: string): string | undefined {
 	try {
 		const parsed = JSON.parse(identity) as unknown;
@@ -377,6 +382,7 @@ export class MultiNodeRouter {
 		this.host = options.host;
 		this.brokerId = options.brokerId ?? randomUUID();
 		this.nodeId = options.nodeId ?? hostname();
+		this.host.pendingQuestions.onAnswered((question) => this.answeredHere(question));
 	}
 
 	/** Take the membership lease, subscribe to wake-ups and adopt the sessions already connected. */
@@ -1268,7 +1274,7 @@ export class MultiNodeRouter {
 		const route = { replySenderSessionId, replyTargetSessionId: target.info.id, replyTo };
 		if ((await this.state.pendingAsks.matchesReply(route)).status !== "match" || late.abandoned) return;
 		this.host.pendingQuestions.record(target.info.id, replySenderSessionId, replyTo);
-		await this.state.pendingAsks.clearReply(route);
+		await this.settleSharedRoute({ senderSessionId: target.info.id, targetSessionId: replySenderSessionId, messageId: replyTo });
 	}
 
 	/**
@@ -1312,6 +1318,11 @@ export class MultiNodeRouter {
 					};
 					const recorded = await this.state.pendingAsks.record(ask);
 					if (recorded.status === "invalid") continue;
+					// #4997: answered or failed on another broker while this one kept its copy: the copy goes.
+					if (recorded.status === "settled") {
+						this.host.pendingQuestions.takeDormant(question);
+						continue;
+					}
 					if (!this.host.pendingQuestions.takeDormant(question)) await this.settleSharedRoute(ask);
 				}
 			} finally {
@@ -1328,12 +1339,38 @@ export class MultiNodeRouter {
 		}
 	}
 
+	/**
+	 * The ask is this broker's own now: its shared route goes, without settling the ask, as the ask may move again. Its
+	 * answer here settles it in the shared state (`answeredHere`), so no copy of the route is recorded there again.
+	 */
 	private async settleSharedRoute(question: PendingQuestion): Promise<void> {
-		await this.state.pendingAsks.clearReply({
+		this.adopted.add(askKey(question));
+		await this.state.pendingAsks.releaseRoute({
 			replySenderSessionId: question.targetSessionId,
 			replyTargetSessionId: question.senderSessionId,
 			replyTo: question.messageId,
 		});
+	}
+
+	/** #4997: the asks this broker took over from the shared state, until they are answered here. */
+	private readonly adopted = new Set<string>();
+
+	/**
+	 * #4997: an ask this broker took over from the shared state was answered here: it is settled there too, so a copy
+	 * of its route that a stopped broker kept is not recorded again, and its recipient's end fails nothing.
+	 */
+	private answeredHere(question: PendingQuestion): void {
+		if (!this.adopted.delete(askKey(question))) return;
+		const settling = this.state.pendingAsks
+			.clearReply({
+				replySenderSessionId: question.targetSessionId,
+				replyTargetSessionId: question.senderSessionId,
+				replyTo: question.messageId,
+			})
+			.then(() => undefined)
+			.catch((error: Error) => this.report(error));
+		this.settling.add(settling);
+		void settling.finally(() => this.settling.delete(settling));
 	}
 
 	/**

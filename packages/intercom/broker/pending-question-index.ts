@@ -319,6 +319,13 @@ export class PendingQuestionIndex {
     this.writeLive(question);
   }
 
+  private answered: (question: PendingQuestion) => void = () => {};
+
+  /** #4997: told of each ask answered on its route here. */
+  onAnswered(listener: (question: PendingQuestion) => void): void {
+    this.answered = listener;
+  }
+
 	/** Authorize only the exact reverse route of a broker-recorded live ask. */
 	matchesReply(senderSessionId: string, targetSessionId: string, replyTo: string): boolean {
 		return (
@@ -339,6 +346,7 @@ export class PendingQuestionIndex {
     if (routes.length === 0) this.questions.delete(replyTo);
     // #4765: a released subagent's ask can be kept for its away recipient while it is live again; answered, it is not.
     this.away?.forget({ messageId: replyTo, senderSessionId: targetSessionId, targetSessionId: senderSessionId });
+    this.answered({ messageId: replyTo, senderSessionId: targetSessionId, targetSessionId: senderSessionId });
     return true;
   }
 

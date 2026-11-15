@@ -1194,6 +1194,26 @@ export function registerPendingAskStoreConformance(
 		assert.deepEqual(await b.matchesReply(reply("target", "sender", "q3")), { status: "no-match" });
 	});
 
+	check(
+		"does not record an ask again once it is answered or failed, but does once its route only moved (#4997)",
+		async (connect) => {
+			const [a, b] = [await connect(), await connect()];
+			assert.deepEqual(await a.record(ask("sender", "target", "q1")), { status: "recorded" });
+			assert.deepEqual(await b.clearReply(reply("target", "sender", "q1")), { status: "cleared" });
+			assert.deepEqual(await a.record(ask("sender", "target", "q1")), { status: "settled" });
+			assert.deepEqual(await b.matchesReply(reply("target", "sender", "q1")), { status: "no-match" });
+			// Settled even with no route recorded: another broker answered it from its own routes.
+			assert.deepEqual(await a.clearReply(reply("target", "sender", "q2")), { status: "no-match" });
+			assert.deepEqual(await b.record(ask("sender", "target", "q2")), { status: "settled" });
+			// Only the exact ask is settled.
+			assert.deepEqual(await b.record(ask("other-sender", "target", "q1")), { status: "recorded" });
+			assert.deepEqual(await a.record(ask("sender", "target", "q3")), { status: "recorded" });
+			assert.deepEqual(await b.releaseRoute(reply("target", "sender", "q3")), { status: "cleared" });
+			assert.deepEqual(await b.releaseRoute(reply("target", "sender", "q3")), { status: "no-match" });
+			assert.deepEqual(await a.record(ask("sender", "target", "q3")), { status: "recorded" });
+		},
+	);
+
 	check("prunes a sender's asks and hands a target's asks over in insertion order", async (connect) => {
 		const [a, b] = [await connect(), await connect()];
 		await a.record(ask("sender", "target", "q1"));
