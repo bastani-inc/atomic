@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { reservationKeyFor } from "../../packages/intercom/broker/multinode-state-store.js";
+import { reservationKeyFor, returnAddressOf } from "../../packages/intercom/broker/multinode-state-store.js";
 import {
 	registerBrokerLeaseStoreConformance,
 	registerCrossNodeHeldRoundTripConformance,
@@ -56,4 +56,12 @@ test("reservationKeyFor is the lowercase hex SHA-256 of the capability, never th
 	const key = reservationKeyFor(capability);
 	assert.match(key, /^[0-9a-f]{64}$/);
 	assert.ok(!key.includes(capability.split(".")[0]!));
+});
+
+test("a delivery identity names a return address only when the session registered with one", () => {
+	assert.equal(returnAddressOf(JSON.stringify(["return", "host-session", "crew"])), "host-session");
+	assert.equal(returnAddressOf(JSON.stringify(["session", "intercom-id"])), undefined);
+	assert.equal(returnAddressOf(JSON.stringify(["return", 7, "crew"])), undefined);
+	assert.equal(returnAddressOf(JSON.stringify({ 0: "return", 1: "host-session" })), undefined);
+	assert.equal(returnAddressOf("not an identity"), undefined);
 });

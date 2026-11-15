@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
-import { describe, test } from "vitest";
+import { describe, test, vi } from "vitest";
 import type { PendingQuestion } from "../../packages/intercom/broker/pending-question-index.js";
 import { PendingQuestionIndex } from "../../packages/intercom/broker/pending-question-index.js";
-import { ReleasedAskerReplies } from "../../packages/intercom/broker/released-asker-replies.js";
+import {
+	failRefusedReleasedAsk,
+	RELEASED_REPLY_ROUTES_FULL_REASON,
+	ReleasedAskerReplies,
+} from "../../packages/intercom/broker/released-asker-replies.js";
 
 const ASKER = "11111111-1111-4111-8111-111111111111";
 const REPLIER = "22222222-2222-4222-8222-222222222222";
@@ -192,6 +196,120 @@ describe("released asker reply routes (#4326)", () => {
 		assert.equal(overflows, 1, "the broker logs only the first overflow");
 		assert.equal(routes.take("q2", REPLIER, ASKER)?.questionId, "q2");
 		assert.equal(routes.take("q3", REPLIER, ASKER), undefined);
+	});
+
+	test("every route refused at capacity, kept or restored, is reported once so its asker is told (#4996)", () => {
+		const routes = new ReleasedAskerReplies(() => 1_000, TTL_MS, 1);
+		const refused: Array<{ questionId: string; ownerSessionId: string | undefined }> = [];
+		routes.refuseWith((route) =>
+			refused.push({ questionId: route.questionId, ownerSessionId: route.ownerSessionId }),
+		);
+		routes.keep({ sessionId: ASKER, childName: CHILD }, [question("q1")], OWNER);
+		const retry = routes.take("q1", REPLIER, ASKER);
+		assert.ok(retry);
+		routes.keep({ sessionId: ASKER, childName: CHILD }, [question("q2"), question("q3")], undefined);
+		routes.restore(retry, OWNER);
+		assert.deepEqual(refused, [
+			{ questionId: "q3", ownerSessionId: undefined },
+			{ questionId: "q1", ownerSessionId: OWNER },
+		]);
+		assert.equal(routes.droppedRoutes, 2);
+	});
+});
+
+describe("a released subagent's ask refused a reply route at capacity (#4996)", () => {
+	const refused = (ownerSessionId: string | undefined) => ({
+		questionId: "q1",
+		askerSessionId: ASKER,
+		childName: CHILD,
+		replierSessionId: REPLIER,
+		ownerSessionId,
+	});
+
+	test("fails once to the subagent through its owner, which is woken for it, and no longer waits as kept (#4996)", () => {
+		const pending = new PendingQuestionIndex();
+		pending.keepDormant([question("q1")], "child-address");
+		const wakes: Array<{ ownerSessionId: string; childName: string }> = [];
+		failRefusedReleasedAsk(
+			refused(OWNER),
+			{
+				pendingQuestions: pending,
+				replier: undefined,
+				askerReturnAddress: "child-address",
+				wake: (wake) => wakes.push(wake),
+			},
+			5_000,
+		);
+		assert.deepEqual(wakes, [{ ownerSessionId: OWNER, childName: CHILD }]);
+		assert.equal(pending.hasDormantReply("q1", REPLIER), false, "a reply to it is not also held for the subagent");
+		const held = pending.takeHeldForReleasedChild(CHILD, OWNER);
+		assert.deepEqual(
+			held.map(({ askerSessionId, from, message }) => ({ askerSessionId, from, message })),
+			[
+				{
+					askerSessionId: ASKER,
+					// The replier is gone: the failure names it by its id alone.
+					from: { id: REPLIER, cwd: "", model: "", pid: 0, startedAt: 0, lastActivity: 5_000 },
+					message: {
+						id: "released-routes-full:q1",
+						timestamp: 5_000,
+						replyTo: "q1",
+						replyError: RELEASED_REPLY_ROUTES_FULL_REASON,
+						content: { text: RELEASED_REPLY_ROUTES_FULL_REASON },
+					},
+				},
+			],
+		);
+		assert.match(RELEASED_REPLY_ROUTES_FULL_REASON, /reply routes are full \(limit 10000\)/);
+		assert.deepEqual(pending.heldForAsker("child-address"), [], "held once, for its owner's route only");
+	});
+
+	test("with no owner yet, fails once to the subagent held under its own return address, from the replier (#4996)", () => {
+		const pending = new PendingQuestionIndex();
+		const replier = { id: REPLIER, name: "replier", cwd: "/", model: "m", pid: 1, startedAt: 0, lastActivity: 0 };
+		const wakes: unknown[] = [];
+		failRefusedReleasedAsk(refused(undefined), {
+			pendingQuestions: pending,
+			replier,
+			askerReturnAddress: "child-address",
+			wake: (wake) => wakes.push(wake),
+		});
+		assert.deepEqual(wakes, []);
+		const held = pending.heldForAsker("child-address");
+		assert.deepEqual(
+			held.map(({ askerSessionId, from, message }) => ({
+				askerSessionId,
+				from,
+				replyTo: message.replyTo,
+				error: message.replyError,
+			})),
+			[{ askerSessionId: ASKER, from: replier, replyTo: "q1", error: RELEASED_REPLY_ROUTES_FULL_REASON }],
+		);
+		assert.equal(pending.hasHeldForReleasedChild(CHILD, OWNER), false);
+	});
+
+	test("a subagent that proves no return address cannot be held for: the broker logs that it could not tell it (#4996)", () => {
+		const pending = new PendingQuestionIndex();
+		const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			for (const askerReturnAddress of [undefined, ""])
+				failRefusedReleasedAsk(refused(undefined), {
+					pendingQuestions: pending,
+					replier: undefined,
+					askerReturnAddress,
+					wake: () => assert.fail("no owner to wake"),
+				});
+			assert.deepEqual(logged.mock.calls, [
+				[
+					`Intercom broker could not tell released subagent "${CHILD}" that its ask q1 failed: ${RELEASED_REPLY_ROUTES_FULL_REASON}`,
+				],
+				[
+					`Intercom broker could not tell released subagent "${CHILD}" that its ask q1 failed: ${RELEASED_REPLY_ROUTES_FULL_REASON}`,
+				],
+			]);
+		} finally {
+			logged.mockRestore();
+		}
 	});
 });
 
