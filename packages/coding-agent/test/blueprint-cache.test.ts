@@ -453,6 +453,14 @@ describe("resume.cache settings overrides (#4748)", () => {
 		]);
 	});
 
+	test("a wrong-typed resume setting is ignored with its own warning, not as an unreadable file (#4902)", async () => {
+		const at = fixture(undefined);
+		write(at.agentDir, "settings.json", JSON.stringify({ resume: "cache everything", extensions: "./x.ts" }));
+		const keys = await keysOf(at);
+		assert.deepEqual(names(keys), ["git", "atomic"]);
+		assert.deepEqual(keys.warnings, [`${join(at.agentDir, "settings.json")}: "resume" must be object; ignoring it.`]);
+	});
+
 	test("a store path inside the worktree is refused with a warning (#4748)", async () => {
 		const at = fixture(undefined);
 		setCache(at.root, [{ paths: ["node_modules", join(at.root, "dist"), "~/.npm"] }]);
