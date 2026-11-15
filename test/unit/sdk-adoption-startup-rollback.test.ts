@@ -243,3 +243,41 @@ test("an abort during the adoption claim restores the released run's paused stat
 	assert.equal(handle?.releasedModelOwner, "old-session");
 	assert.equal(f.deps.jobs.has(f.id), false);
 });
+
+for (const [label, pendingPrompts, resumable] of [
+	["pending prompts", 4, undefined],
+	["resumability", undefined, false],
+] as const) {
+	test(`an abort during the adoption claim keeps the ${label} a write during the claim recorded (#5149)`, async () => {
+		const claimed = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		const settled = Promise.withResolvers<void>();
+		const backend = await createMemoryTestBackend();
+		const claim = backend.commitWorkflowStatusTransition.bind(backend);
+		let calls = 0;
+		backend.commitWorkflowStatusTransition = async (...args) => {
+			const accepted = await claim(...args);
+			calls += 1;
+			if (calls === 1) {
+				claimed.resolve();
+				await release.promise;
+				settled.resolve();
+			}
+			return accepted;
+		};
+		const f = await fixture(backend, { status: "paused", releasedModelOwner: "old-session", ownerLiveness: "alive" });
+		const controller = new AbortController();
+		const reason = new Error("abort adoption");
+		const pending = resumeDurableWorkflow(f.id, { ...f.deps, signal: controller.signal }).catch((error) => error);
+		await claimed.promise;
+		controller.abort(reason);
+		await f.backend.commitWorkflowStatus(f.id, "running", pendingPrompts, resumable);
+		const controlled = f.backend.getWorkflow(f.id);
+		release.resolve();
+		assert.equal(await pending, reason);
+		await settled.promise;
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.equal(f.backend.getWorkflow(f.id), controlled);
+		assert.equal(calls, 1);
+	});
+}
