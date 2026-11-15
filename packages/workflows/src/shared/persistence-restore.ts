@@ -92,8 +92,10 @@ export interface InFlightRun {
 // ---------------------------------------------------------------------------
 
 /**
- * Scans a list of session entries and returns runs that have a
- * `workflow.run.start` entry but no matching `workflow.run.end`.
+ * Scans a list of session entries and returns runs whose latest
+ * `workflow.run.start` has no later `workflow.run.end`. Entries are read in
+ * order: a failed run resumed in place reuses its run id, so a start after an
+ * end reopens the run, and its stage ids come from that latest attempt.
  *
  * Pure function — does not mutate anything.
  */
@@ -111,6 +113,7 @@ export function scanInFlightRuns(entries: readonly SessionEntry[]): InFlightRun[
 			const inputs = entry.payload.inputs;
 			const ts = entry.payload.ts;
 			if (typeof runId === "string" && typeof name === "string" && typeof ts === "number") {
+				ended.delete(runId);
 				started.set(runId, {
 					name,
 					inputs: serializableObjectOrEmpty(inputs),

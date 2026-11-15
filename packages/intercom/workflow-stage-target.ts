@@ -14,9 +14,30 @@ export interface LegacyWorkflowStageTarget {
 	readonly stageKey: string;
 }
 
+/** Most `/` segments a workflow-stage target may carry (#4843). Real stage paths stay far below this. */
+export const MAX_WORKFLOW_STAGE_TARGET_SEGMENTS = 64;
+/** Most characters a whole `workflow:<rootRunId>/...` target may carry (#4843). */
+export const MAX_WORKFLOW_STAGE_TARGET_LENGTH = 1024;
+
+/**
+ * Why a `workflow:` target is too large to route (#4843), or `undefined` when it is within
+ * limits or not a workflow target. Bounds the work every sticky pattern costs the broker.
+ */
+export function workflowStageTargetSizeError(target: string): string | undefined {
+	if (!target.startsWith(WORKFLOW_TARGET_PREFIX)) return undefined;
+	if (target.length > MAX_WORKFLOW_STAGE_TARGET_LENGTH) {
+		return `Workflow-stage target is ${target.length} characters long; targets may be at most ${MAX_WORKFLOW_STAGE_TARGET_LENGTH} characters.`;
+	}
+	const segmentCount = target.split("/").length - 1;
+	if (segmentCount > MAX_WORKFLOW_STAGE_TARGET_SEGMENTS) {
+		return `Workflow-stage target has ${segmentCount} segments; targets may have at most ${MAX_WORKFLOW_STAGE_TARGET_SEGMENTS} segments.`;
+	}
+	return undefined;
+}
+
 /** Parse the canonical root-anchored workflow-stage target grammar. */
 export function parseWorkflowStageTarget(target: string): WorkflowStageTarget | undefined {
-	if (!target.startsWith(WORKFLOW_TARGET_PREFIX)) return undefined;
+	if (!target.startsWith(WORKFLOW_TARGET_PREFIX) || workflowStageTargetSizeError(target) !== undefined) return undefined;
 	const slash = target.indexOf("/", WORKFLOW_TARGET_PREFIX.length);
 	if (slash < 0) return undefined;
 	const rootRunId = target.slice(WORKFLOW_TARGET_PREFIX.length, slash);

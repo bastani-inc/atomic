@@ -483,6 +483,7 @@ export async function runAgentTask(input: {
 					: {}),
 			inherited: subagentChildInheritance(input.options),
 			...subagentChildModelChoice(input.options, agentConfig),
+			...(input.heartbeatMs === undefined ? {} : { heartbeatMs: input.heartbeatMs }),
 		};
 		input.recordChild?.record(record);
 		// #4639: once its session is gone, a send to the child is told why it ended and how to resume it.

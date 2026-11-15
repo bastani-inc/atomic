@@ -55,8 +55,10 @@ export interface WorkflowWorkerHostOptions {
 	readonly idleExitMs?: number;
 	/**
 	 * The id this host's provisioner knows it by, which it reports in the registry so a fleet controller can match the
-	 * two (#4768). Default: the environment variable `ATOMIC_WORKER_PROVIDER_ID`, which a provisioner sets for the hosts
-	 * it starts. A host a fleet controller asks to drain drains as `drain()` does.
+	 * two (#4768). Default: the environment variable `ATOMIC_PROVIDER_ID`, which a provisioner sets for the hosts it
+	 * starts, or on Kubernetes (`KUBERNETES_SERVICE_HOST` set) the pod name in `HOSTNAME`. A host a fleet controller asks
+	 * to drain drains as `drain()` does, and so does a later host with the same provider id until the provider removed
+	 * that instance (#4803).
 	 */
 	readonly providerId?: string;
 	/** Receives what this host does as it happens: children claimed and released, journal outages, idle exit (#4768). */

@@ -1183,11 +1183,10 @@ function matchingLiveStages(
 			) {
 				continue;
 			}
-			const idTarget = formatWorkflowStageTarget(rootRunId, ...hops.map((hop) => hop.name), stage.id);
 			if (stageMatchesPathPattern(patternSegments, hops, [stage.id, stage.name])) {
-				// The forward target stays in the announced boundary-name form: the broker's
-				// live aliases are built from the roster's advertised targets.
-				matches.push({ run, stage, target: idTarget });
+				// Forward to the roster's announced target (#4844): the broker registers live aliases
+				// only under it, and it spells a repeated, slash, or star boundary by its child-run id.
+				matches.push({ run, stage, target: stageRouteTarget(runs, rootRunId, run.id, stage.id) });
 			}
 		}
 	}

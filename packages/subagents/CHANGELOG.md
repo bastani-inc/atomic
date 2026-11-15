@@ -7,6 +7,8 @@
 - Fixed pausing or quitting a released subagent racing with its wake: a wake that has not started the subagent again yet now keeps its results for resume instead of running it, and pause or quit stops a run the wake already started. Before, pause or quit reported success while the subagent ran again ([#4845](https://github.com/bastani-inc/atomic/issues/4845))
 - Fixed `pause` and `quit` with `all: true` overwriting a subagent's record with an old copy, which showed a running subagent as paused or lost a tool result held for its resume ([#4845](https://github.com/bastani-inc/atomic/issues/4845))
 - Fixed a subagent that was released, woken, and then paused while waiting on nothing still showing the calls it waited on before it was woken. Sends to it were held with no answer instead of being told it is stopped and how to resume it ([#4845](https://github.com/bastani-inc/atomic/issues/4845))
+- Fixed a released subagent being told a detached tool call (such as a long `bash`) was "still running" after Atomic restarted, though the call died with the old process and its result never arrived: when a reply, deadline or resume wakes the subagent, that call is now reported interrupted so it can re-run it. An extension `/reload` in the same process is not a restart: a call still running then is neither reported interrupted nor started again ([#4848](https://github.com/bastani-inc/atomic/issues/4848))
+- Fixed a subagent launched with `heartbeatMs` (including `0`, which disables heartbeats) falling back to the 15-minute default after a wake, resume or restore: the cadence is now recorded with the subagent and applied on every relaunch ([#4856](https://github.com/bastani-inc/atomic/issues/4856))
 
 ## [0.9.86] - 2026-11-14
 
