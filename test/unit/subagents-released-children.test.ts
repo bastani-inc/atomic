@@ -37,6 +37,7 @@ import {
 	SUBAGENT_OWNER_GENERATION,
 	SUBAGENT_RELEASE_AFTER_MS,
 	SUBAGENT_STILL_RUNNING_RESULT,
+	savedToolResultIds,
 	subagentReleasePolicy,
 	subagentWakeKey,
 	subagentWakeNamespace,
@@ -621,4 +622,51 @@ test("a new process is a restart: a call a child waited on in the earlier proces
 	const record = releasedRecordOf(earlier);
 	assert.equal(interruptedByRestart(record)("bash-1"), true);
 	assert.equal(needsRedispatch(record), true);
+});
+
+test("a held result counts as saved once the transcript holds it as its call's result or as its late message, never as a still-running answer (#5012)", () => {
+	const result = (toolCallId: string, text: string): DetachedToolResult => ({
+		toolCallId,
+		toolName: "wait_for_ci",
+		result: { content: [{ type: "text", text }], details: undefined },
+		isError: false,
+	});
+	const recorded = result("ci-1", "green");
+	const stillRunning = result("deploy-2", "deployed");
+	const read = result("lint-3", "clean");
+	const readWithImage: DetachedToolResult = {
+		...result("img-4", "chart"),
+		result: {
+			content: [
+				{ type: "text", text: "chart" },
+				{ type: "image", data: "AA==", mimeType: "image/png" },
+			],
+			details: undefined,
+		},
+	};
+	const unseen = result("build-5", "built");
+	const messages = [
+		{ role: "toolResult", toolCallId: "ci-1", content: [{ type: "text", text: "green" }] },
+		{ role: "toolResult", toolCallId: "deploy-2", content: [{ type: "text", text: SUBAGENT_STILL_RUNNING_RESULT }] },
+		{ role: "user", content: lateToolResultMessage(read) },
+		// Read as written, its image attached as an image.
+		{
+			role: "user",
+			content: [
+				{ type: "text", text: lateToolResultMessage(readWithImage).replace(/\n\[image\]$/, "") },
+				{ type: "image", data: "AA==", mimeType: "image/png" },
+			],
+		},
+		{ role: "assistant", content: [{ type: "text", text: lateToolResultMessage(unseen) }] },
+		{ role: "toolResult", toolCallId: "other", content: [{ type: "text", text: lateToolResultMessage(unseen) }] },
+	];
+	const sessionManager = { buildSessionProjection: () => ({ messages }) } as unknown as Parameters<
+		typeof savedToolResultIds
+	>[0];
+
+	assert.deepEqual(savedToolResultIds(sessionManager, [recorded, stillRunning, read, readWithImage, unseen]), [
+		"ci-1",
+		"lint-3",
+		"img-4",
+	]);
 });
