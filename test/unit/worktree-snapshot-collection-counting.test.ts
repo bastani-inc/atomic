@@ -84,7 +84,7 @@ async function history(name: string, snapshots: number, events: number) {
 	);
 	await shared.database.run(
 		`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?)
-		INSERT INTO session_entries SELECT 'session-1', ? + i, 'padding-' || i,
+		INSERT INTO session_entries (session_id, seq, entry_id, entry_json) SELECT 'session-1', ? + i, 'padding-' || i,
 			json_object('type', 'message', 'id', 'padding-' || i) FROM n`,
 		events,
 		sessionBlobs.length,
@@ -180,7 +180,7 @@ describe("collection cost follows the number of snapshots, never the number of j
 			await createSession(shared.sessions, "session-1", [root, base, leftEntry, rightEntry]);
 			await shared.database.run(
 				`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?)
-				INSERT INTO session_entries SELECT 'session-1', 4 + i, 'chat-' || i,
+				INSERT INTO session_entries (session_id, seq, entry_id, entry_json) SELECT 'session-1', 4 + i, 'chat-' || i,
 					json_object('type', 'message', 'id', 'chat-' || i, 'parentId', CASE WHEN i = 1 THEN ? ELSE 'chat-' || (i - 1) END) FROM n`,
 				messages,
 				leftEntry.id,

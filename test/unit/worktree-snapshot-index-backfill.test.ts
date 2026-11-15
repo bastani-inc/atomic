@@ -673,7 +673,7 @@ describe("a long session tree written before the index existed is linked in orde
 		await dropSnapshotIndex(database);
 		await database.run(
 			`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?)
-			INSERT INTO session_entries SELECT 'session-1', i, 'entry-' || i,
+			INSERT INTO session_entries (session_id, seq, entry_id, entry_json) SELECT 'session-1', i, 'entry-' || i,
 				CASE WHEN i % 100 = 0
 					THEN json_object('type', 'worktree_snapshot', 'id', 'entry-' || i, 'parentId', CASE WHEN i = 1 THEN NULL ELSE 'entry-' || (i - 1) END,
 						'root', '/repo', 'snapshotId', 'snapshot-' || (i / 100), 'snapshot', json_object('chain', json_array(json_object('patch', 'snapshot-patch-' || (i / 100)))))

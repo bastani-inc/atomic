@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
@@ -53,6 +53,14 @@ function makeProject(): string {
 		["---", "name: project-helper", "description: A project agent", "---", "Project agent prompt."].join("\n"),
 	);
 	writeFileEnsuringDir(
+		join(project, ".atomic", "agents", "project-reviewer.md"),
+		["---", "name: project-reviewer", "description: Another project agent", "---", "Review prompt."].join("\n"),
+	);
+	writeFileEnsuringDir(
+		join(agentDir, "agents", "user-helper.md"),
+		["---", "name: user-helper", "description: A user agent", "---", "User agent prompt."].join("\n"),
+	);
+	writeFileEnsuringDir(
 		join(project, ".atomic", "settings.json"),
 		JSON.stringify({ subagents: { agentOverrides: { worker: { model: PROJECT_WORKER_MODEL } } } }),
 	);
@@ -92,7 +100,7 @@ describe("project agent discovery follows project trust", () => {
 		const all = discoverAgentsAll(project, { projectTrusted: true });
 		assert.deepEqual(
 			all.project.map((agent) => agent.name),
-			["project-helper"],
+			["project-helper", "project-reviewer"],
 		);
 
 		const listed = handleList({ action: "list" }, {
@@ -238,9 +246,11 @@ describe("/agents follows project trust", () => {
 		assert.match(text, /worker/);
 	});
 
-	test("a trusted project's agents are shown", async () => {
+	test("a trusted project's agents are shown with the user's", async () => {
 		const project = makeProject();
-		assert.match(await browseAgents(project, true), /project-helper/);
+		const text = await browseAgents(project, true);
+		assert.match(text, /project-helper/);
+		assert.match(text, /user-helper/);
 	});
 });
 
@@ -283,4 +293,62 @@ describe("agent management follows project trust", () => {
 		const untrusted = handleManagementAction("create", params, context(project, false));
 		assert.doesNotMatch(managementText(untrusted), /already exists in project scope/);
 	});
+});
+
+describe("agent management lookups", () => {
+	const context = (project: string, trusted: boolean) =>
+		({
+			cwd: project,
+			modelRegistry: { getAvailable: () => [] },
+			isProjectTrusted: () => trusted,
+		}) as unknown as Parameters<typeof handleManagementAction>[2];
+
+	test("a missing agent's error lists the available agents, project agents only for a trusted project", () => {
+		const project = makeProject();
+		const available = (trusted: boolean) => {
+			const text = managementText(handleManagementAction("get", { agent: "missing" }, context(project, trusted)));
+			const listed = /^Agent 'missing' not found\. Available: (.+)\.$/.exec(text);
+			assert.ok(listed, text);
+			return listed[1]!.split(", ");
+		};
+
+		const untrusted = available(false);
+		assert.ok(untrusted.includes("user-helper"), untrusted.join(", "));
+		assert.ok(untrusted.includes("worker"), untrusted.join(", "));
+		assert.equal(untrusted.includes("project-helper"), false);
+		assert.ok(available(true).includes("project-helper"));
+	});
+
+	test("renaming a project agent to a name its scope already has is refused", () => {
+		const project = makeProject();
+		const taken = handleManagementAction(
+			"update",
+			{ agent: "project-helper", config: { name: "project-reviewer" } },
+			context(project, true),
+		);
+		assert.equal(taken.isError, true);
+		assert.equal(managementText(taken), "Name 'project-reviewer' already exists in project scope.");
+
+		const renamed = handleManagementAction(
+			"update",
+			{ agent: "project-helper", config: { name: "project-renamed" } },
+			context(project, true),
+		);
+		assert.equal(renamed.isError, false, managementText(renamed));
+		assert.equal(existsSync(join(project, ".atomic", "agents", "project-renamed.md")), true);
+		assert.equal(existsSync(join(project, ".atomic", "agents", "project-helper.md")), false);
+	});
+
+	for (const action of ["update", "delete"] as const)
+		test(`${action} with an agentScope hint looks only in that scope`, () => {
+			const project = makeProject();
+			const result = handleManagementAction(
+				action,
+				{ agent: "project-helper", agentScope: "user", config: { description: "changed" } },
+				context(project, true),
+			);
+			assert.equal(result.isError, true);
+			assert.match(managementText(result), /^Agent 'project-helper' not found\./);
+			assert.equal(existsSync(join(project, ".atomic", "agents", "project-helper.md")), true);
+		});
 });
