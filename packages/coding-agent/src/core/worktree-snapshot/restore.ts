@@ -1117,11 +1117,18 @@ function isPendingLfs(value: unknown): value is PendingLfs {
 	);
 }
 
+/** How long a resume waits for another running process to finish a download it holds before it warns (#5099). */
+export const LFS_HOLDER_WAIT_MS = 10 * 60_000;
+/** How often a resume waiting for another process's download checks on it. */
+const LFS_HOLDER_POLL_MS = 250;
+
 /**
- * The Git LFS download that a resume interrupted left unfinished in the restored worktree at `worktree` (#5099), or
- * undefined when none is pending. The returned pull resolves to the files that still hold pointers, as a restore's
- * download does. A worktree whose `HEAD` moved since its restore, or whose mark cannot be read, is not changed: the pull
- * then rejects, saying to run `git lfs pull` there, and the mark is removed so this is said once.
+ * The Git LFS download left unfinished in the restored worktree at `worktree` (#5099), by a resume that was interrupted
+ * or by another Atomic process still running it, or undefined when none is pending. The returned function finishes it
+ * and resolves to the files that still hold pointers, as a restore's download does: it waits for a running process to
+ * end its download, at most {@link LFS_HOLDER_WAIT_MS}, and takes over from one that stopped. A worktree whose `HEAD`
+ * moved since its restore, or whose mark cannot be read, is not changed: the function then rejects, saying to run
+ * `git lfs pull` there, and the mark is removed so this is said once.
  */
 export async function pendingLfsDownload(
 	worktree: string,
@@ -1129,15 +1136,38 @@ export async function pendingLfsDownload(
 ): Promise<(() => Promise<readonly string[]>) | undefined> {
 	const git: GitRunOptions = { cwd: worktree, signal: options.signal };
 	const marker = await pendingLfsPath(git);
-	let text: string;
+	if ((await readPendingMark(marker)) === undefined) return undefined;
+	return () => finishPendingLfs(git, marker);
+}
+
+async function readPendingMark(marker: string): Promise<string | undefined> {
 	try {
-		text = await readFile(marker, "utf8");
+		return await readFile(marker, "utf8");
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
 		throw error;
 	}
-	const pending = parsePendingLfs(text);
-	if (pending !== undefined && (await lfsHolderRuns(marker, pending))) return undefined;
+}
+
+async function finishPendingLfs(git: GitRunOptions, marker: string): Promise<string[]> {
+	const waitingSince = Date.now();
+	for (;;) {
+		const text = await readPendingMark(marker);
+		// Its process finished the download: every LFS file has its content.
+		if (text === undefined) return [];
+		const pending = parsePendingLfs(text);
+		if (pending === undefined || !(await lfsHolderRuns(marker, pending)))
+			return takeOverPendingLfs(git, marker, pending);
+		if (Date.now() - waitingSince >= LFS_HOLDER_WAIT_MS) return remainingPointers(git.cwd, await lfsPaths(git));
+		await sleep(LFS_HOLDER_POLL_MS, undefined, { signal: git.signal });
+	}
+}
+
+async function takeOverPendingLfs(
+	git: GitRunOptions,
+	marker: string,
+	pending: PendingLfs | undefined,
+): Promise<string[]> {
 	// A download killed during its Git steps leaves their locks; nothing else takes them in a worktree with a mark.
 	if (pending?.holder !== undefined) {
 		for (const lock of ["HEAD.lock", "index.lock"]) await rm(await worktreeGitPath(git, lock), { force: true });
@@ -1148,14 +1178,12 @@ export async function pendingLfsDownload(
 		pending !== undefined &&
 		(head === pending.head || head === (await writeSnapshotCommit(git, pending.head, pending.tree)))
 	) {
-		return () => pullPendingLfs(git, pending);
+		return pullPendingLfs(git, pending);
 	}
-	return async () => {
-		await rm(marker, { force: true });
-		throw new Error(
-			"its LFS download was interrupted and the worktree changed since, so it was not repeated; run `git lfs pull` in it",
-		);
-	};
+	await rm(marker, { force: true });
+	throw new Error(
+		"its LFS download was interrupted and the worktree changed since, so it was not repeated; run `git lfs pull` in it",
+	);
 }
 
 function parsePendingLfs(text: string): PendingLfs | undefined {

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, renameSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
@@ -112,6 +113,13 @@ function slowLfs(command: string, args: readonly string[]): SpawnFault {
 function hangingLfs(): SpawnFault {
 	const script = `require("node:fs").appendFileSync(process.argv[1], "lfs-started\\n"); setTimeout(() => {}, 600000);`;
 	return { command: process.execPath, args: ["-e", script, markers()] };
+}
+
+/** The id of a process that has exited. */
+function exitedPid(): number {
+	return Number(
+		spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], { encoding: "utf8" }).stdout,
+	);
 }
 
 async function until(condition: () => boolean, what: string): Promise<void> {
@@ -389,6 +397,40 @@ describe("a multi-repository resume overlaps one repository's LFS download with 
 				"HEAD is the snapshot's commit again",
 			);
 			await sandbox.git(worktree, "commit", "-q", "--allow-empty", "-m", "the index is not locked");
+		},
+		OVERLAPPED_RESUME_TIMEOUT_MS,
+	);
+
+	test(
+		"a resume waits for the LFS download another running process holds, and takes it over when that process ends (#5099)",
+		async () => {
+			const manager = await interruptedDuringLfs();
+			const worktree = manager.getWorktreeRootMappings().find((mapping) => mapping.from.endsWith("repo-b"))!.to;
+			const markPath = await sandbox.git(
+				worktree,
+				"rev-parse",
+				"--path-format=absolute",
+				"--git-path",
+				"atomic-lfs-pending.json",
+			);
+			const holdBy = (pid: number) => {
+				const mark = JSON.parse(readFileSync(markPath, "utf8")) as { holder: { host: string } };
+				writeFileSync(markPath, JSON.stringify({ ...mark, holder: { host: mark.holder.host, pid } }));
+			};
+			// Another Atomic process, still running, is downloading into the worktree.
+			holdBy(process.ppid);
+			lfs.fault = undefined;
+			const resumed = prepareSessionResume(manager, options());
+			await until(() => ran().filter((line) => line === "built-a").length === 2, "A to be built again");
+			await new Promise((resolve) => setTimeout(resolve, 500));
+			assert.ok(!ran().some((line) => line.startsWith("started-b")), "B waits for the download");
+			holdBy(exitedPid());
+
+			ready(await resumed);
+			assert.ok(
+				ran().includes(`started-b ${LFS_CONTENT}`),
+				`B's blueprint read the LFS content: ${ran().join(", ")}`,
+			);
 		},
 		OVERLAPPED_RESUME_TIMEOUT_MS,
 	);
