@@ -1759,9 +1759,49 @@ export function registerKnownSessionStoreConformance(
 		assert.deepEqual(await a.lookup("recipient-session", LIVE_MS), { status: "found", sessions: [] });
 	});
 
+	check("grants an Intercom id, on any broker, only to the return address it is bound to", async (connect) => {
+		const [a, b] = [await connect(), await connect()];
+		assert.deepEqual(await a.binding("id-1", LIVE_MS), { status: "unbound" });
+		assert.deepEqual(await a.bind("id-1", "return-1", LIVE_MS), { status: "bound" });
+		assert.deepEqual(await b.bind("id-1", "return-2", LIVE_MS), { status: "refused", returnAddress: "return-1" });
+		assert.deepEqual(await b.bind("id-1", "return-1", LIVE_MS), { status: "bound" });
+		assert.deepEqual(await b.binding("id-1", LIVE_MS), { status: "bound", returnAddress: "return-1" });
+		assert.deepEqual(await b.bind("id-2", "", LIVE_MS), { status: "bound" });
+		assert.deepEqual(await a.bind("id-2", "return-1", LIVE_MS), { status: "refused", returnAddress: "" });
+	});
+
+	check("binds an id first to the return address of its earliest known record", async (connect) => {
+		const [a, b] = [await connect(), await connect()];
+		await a.record(known());
+		await a.record(known({ targetIdentity: OTHER_RECIPIENT, atomicSessionId: "atomic-other" }));
+		assert.deepEqual(await b.bind("recipient-session", "atomic-other", LIVE_MS), {
+			status: "refused",
+			returnAddress: "atomic-recipient",
+		});
+		assert.deepEqual(await b.bind("recipient-session", "atomic-recipient", LIVE_MS), { status: "bound" });
+		await a.record({ targetIdentity: THIRD_RECIPIENT, intercomSessionId: "bare", group: "team", groups: [] });
+		assert.deepEqual(await b.bind("bare", "return-1", LIVE_MS), { status: "refused", returnAddress: "" });
+		assert.deepEqual(await b.bind("expired", "return-1", EXPIRED_MS), { status: "bound" });
+	});
+
+	check("lets a binding older than the retention go, and prunes it", async (connect) => {
+		const [a, b] = [await connect(), await connect()];
+		await a.bind("id-1", "return-1", LIVE_MS);
+		assert.deepEqual(await b.binding("id-1", EXPIRED_MS), { status: "unbound" });
+		await b.prune(LIVE_MS);
+		assert.deepEqual(await b.binding("id-1", LIVE_MS), { status: "bound", returnAddress: "return-1" });
+		await b.prune(EXPIRED_MS);
+		assert.deepEqual(await a.binding("id-1", LIVE_MS), { status: "unbound" });
+		await a.bind("id-2", "return-1", LIVE_MS);
+		assert.deepEqual(await b.bind("id-2", "return-2", EXPIRED_MS), { status: "bound" });
+		assert.deepEqual(await a.binding("id-2", LIVE_MS), { status: "bound", returnAddress: "return-2" });
+	});
+
 	check("rejects empty identifiers", async (connect) => {
 		const a = await connect();
 		const empty = (reason: string) => ({ status: "invalid", reason });
+		assert.deepEqual(await a.bind("", "return-1", LIVE_MS), empty("empty-session-id"));
+		assert.deepEqual(await a.binding("", LIVE_MS), empty("empty-session-id"));
 		assert.deepEqual(await a.record(known({ targetIdentity: "" })), empty("empty-target-identity"));
 		assert.deepEqual(await a.record(known({ intercomSessionId: "" })), empty("empty-session-id"));
 		assert.deepEqual(await a.record(known({ group: "" })), empty("empty-group"));

@@ -940,7 +940,16 @@ interface KnownRecord {
 	readonly recordedAt: number;
 }
 
-function knownSessionStore(known: Map<string, KnownRecord>, nextOrder: { value: number }): KnownSessionStore {
+interface BindingRecord {
+	readonly returnAddress: string;
+	readonly recordedAt: number;
+}
+
+function knownSessionStore(
+	known: Map<string, KnownRecord>,
+	nextOrder: { value: number },
+	bindings: Map<string, BindingRecord>,
+): KnownSessionStore {
 	return {
 		async record(session) {
 			if (session.targetIdentity.length === 0) return invalid("empty-target-identity");
@@ -973,7 +982,36 @@ function knownSessionStore(known: Map<string, KnownRecord>, nextOrder: { value: 
 				}));
 			return { status: "found", sessions };
 		},
+		async bind(intercomSessionId, returnAddress, retentionMs) {
+			if (intercomSessionId.length === 0) return invalid("empty-session-id");
+			const held = bindings.get(intercomSessionId);
+			let holder = held !== undefined && isLive(held.recordedAt, retentionMs) ? held.returnAddress : undefined;
+			if (holder === undefined) {
+				const earliest = [...known.values()]
+					.filter(
+						(record) =>
+							record.session.intercomSessionId === intercomSessionId && isLive(record.recordedAt, retentionMs),
+					)
+					.sort((left, right) => left.order - right.order)[0];
+				holder = earliest === undefined ? returnAddress : (earliest.session.atomicSessionId ?? "");
+			}
+			if (holder !== returnAddress) {
+				if (held?.returnAddress !== holder)
+					bindings.set(intercomSessionId, { returnAddress: holder, recordedAt: Date.now() });
+				return { status: "refused", returnAddress: holder };
+			}
+			bindings.set(intercomSessionId, { returnAddress, recordedAt: Date.now() });
+			return { status: "bound" };
+		},
+		async binding(intercomSessionId, retentionMs) {
+			if (intercomSessionId.length === 0) return invalid("empty-session-id");
+			const held = bindings.get(intercomSessionId);
+			return held === undefined || !isLive(held.recordedAt, retentionMs)
+				? { status: "unbound" }
+				: { status: "bound", returnAddress: held.returnAddress };
+		},
 		async prune(olderThanMs) {
+			for (const [id, binding] of bindings) if (ageOf(binding.recordedAt) > olderThanMs) bindings.delete(id);
 			let removed = 0;
 			for (const [identity, record] of known) {
 				if (ageOf(record.recordedAt) > olderThanMs) {
@@ -1029,7 +1067,8 @@ export function openMemorySentMessageFixture(): Promise<SharedStoreFixture<SentM
 export function openMemoryKnownSessionFixture(): Promise<SharedStoreFixture<KnownSessionStore>> {
 	const known = new Map<string, KnownRecord>();
 	const nextOrder = { value: 1 };
-	return sharedFixture(() => knownSessionStore(known, nextOrder));
+	const bindings = new Map<string, BindingRecord>();
+	return sharedFixture(() => knownSessionStore(known, nextOrder, bindings));
 }
 
 interface MemorySubscription {
