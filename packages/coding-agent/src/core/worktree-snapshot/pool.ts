@@ -12,7 +12,7 @@ import { pooledWorktreeStore, resetPooledWorktree, verifyWorktree } from "./rest
 import { lockShared, sharedClockNow } from "./shared-clock.ts";
 import type { SnapshotBlobStore, WorktreeRestoreWarning, WorktreeSnapshot, WorktreeSnapshotSettings } from "./types.ts";
 
-export { processStartToken } from "./process-holder.ts";
+export { processStartToken } from "../process-start-token.ts";
 
 /**
  * The per-machine pool of restored worktrees (#4748). A session resume restores into a slot at a stable path,

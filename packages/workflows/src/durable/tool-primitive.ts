@@ -13,7 +13,7 @@
  *
  */
 
-import { type AdmittedAgentTask, collectAgentTasks, runCallback, type TaskResult } from "@bastani/atomic";
+import { type AdmittedAgentTask, collectAgentTasks, runCallback, sliceHead, type TaskResult } from "@bastani/atomic";
 import { isWorkflowToolAbortError } from "../engine/workflow-tool-abort.js";
 import { sleepOrAbort } from "../runs/shared/retry.js";
 import { flattenTruncatedString } from "../shared/flat-string.js";
@@ -27,6 +27,7 @@ import type {
 	WorkflowToolPrimitive,
 } from "../shared/types.js";
 import { field, hasProcessFailureEvidence, normalizeCode } from "../shared/workflow-failures-signals.js";
+import { infrastructureFaultOf } from "../shared/workflow-infrastructure-error.js";
 
 export { sleepOrAbort } from "../runs/shared/retry.js";
 
@@ -86,6 +87,12 @@ export interface CreateToolPrimitiveInput {
 	readonly workflowId: string;
 	/** Source run whose completed checkpoints may be replayed into this workflow. */
 	readonly checkpointSourceWorkflowId?: string;
+	/**
+	 * Hand over the store's refusal of the record that this attempt reached a replayed tool (#5027). The tool's output
+	 * is in its own record, so the call returns it; the attempt fails with the refusal at its next boundary, as for a
+	 * replayed stage. Without it the call fails with the refusal.
+	 */
+	readonly recordReplayRefusal?: (error: unknown) => void;
 	readonly backend: DurableWorkflowBackend;
 	/** Monotonic checkpoint id counter source. */
 	readonly nextCheckpointId: () => string;
@@ -367,7 +374,16 @@ async function executeToolInvocation<T extends WorkflowSerializableValue>(
 		control.releaseAdmission();
 		const endedAt = cached.topology?.endedAt ?? cached.completedAt;
 		try {
-			await recordReplayedToolTopology(input, node, cached, argsHash, endedAt);
+			try {
+				await recordReplayedToolTopology(input, node, cached, argsHash, endedAt);
+			} catch (error) {
+				// The tool completed in an earlier attempt and its record holds its output: the store refusing the record
+				// that this attempt reached it fails the attempt, not the tool, so no finished tool becomes the resume
+				// frontier (#5027).
+				if (infrastructureFaultOf(error) !== "storage_unavailable" || input.recordReplayRefusal === undefined)
+					throw error;
+				input.recordReplayRefusal(error);
+			}
 			const returnedOutcome =
 				cached.outcomeKind === undefined ? undefined : workflowToolOutcomeFromValue<T>(cached.output);
 			if (cached.outcomeKind !== undefined && returnedOutcome === undefined) {
@@ -878,7 +894,9 @@ async function recordReplayedToolTopology(
 		JSON.stringify(cached.topology.run) === JSON.stringify(topology.run) &&
 		cached.topology.endedAt === topology.endedAt;
 	if (unchanged && attempt === undefined) return;
-	await input.backend.commitAdditiveCheckpointBestEffort({
+	// The attempt's only record that it reached the tool (#4874), so it is written as the tool's own record is: a refusal
+	// fails the attempt at the tool rather than leaving it out of the run's view (#5027).
+	await recordCheckpointDurably(input.backend, {
 		kind: "tool",
 		workflowId: input.workflowId,
 		checkpointId: `tool-replay-meta:${durableHash(attempt === undefined ? { argsHash, topology } : { argsHash, topology, attempt })}`,
@@ -902,8 +920,8 @@ async function recordReplayedToolTopology(
  */
 function summarizeToolResult(value: WorkflowSerializableValue): string {
 	const serialized = JSON.stringify(value);
-	if (serialized === undefined) return flattenTruncatedString(String(value).slice(0, 240));
-	return serialized.length <= 240 ? serialized : `${flattenTruncatedString(serialized.slice(0, 237))}...`;
+	if (serialized === undefined) return flattenTruncatedString(sliceHead(String(value), 240));
+	return serialized.length <= 240 ? serialized : `${flattenTruncatedString(sliceHead(serialized, 237))}...`;
 }
 
 export async function recordCheckpointDurably(

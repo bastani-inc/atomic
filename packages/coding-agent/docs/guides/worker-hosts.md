@@ -5,30 +5,39 @@ description: "Turn any Linux or macOS machine into a worker host for shared work
 
 # Running workers on many machines
 
-{/* Worker pools on PostgreSQL wait for #4793 P5. When they work, make this guide PostgreSQL-first: the recipes with managed PostgreSQL are on branch wip/postgres-fleet-recipes-p5-4793. */}
+A workflow root with shared placement keeps its work queue in a shared database. Any machine that has Atomic installed can run that root's pooled children: install Atomic, then run one command that names the database. The machines coordinate only through the database. There is no other service to run.
 
-A workflow root with shared placement keeps its work queue in a shared libSQL or Turso database. Any machine that has Atomic installed can run that root's pooled children: install Atomic, then run one command that names the database. The machines coordinate only through the database. There is no other service to run.
+Choose the database:
 
-If you host the database yourself with sqld rather than Turso, start sqld with `--checkpoint-interval-s 60` (or `SQLD_CHECKPOINT_INTERVAL_S=60`): sqld 0.24.33 can otherwise stop taking writes when many hosts write at once. See [Turso and libSQL](/storage#turso-and-libsql).
+- **[PostgreSQL](/storage#postgresql)** for fleets in the cloud, or when you already run managed PostgreSQL: Amazon RDS or Aurora, Google Cloud SQL, Azure Database for PostgreSQL, Neon or Supabase. Hosts sign in with a password file or the cloud's own identity. [Worker fleets on managed PostgreSQL](/guides/worker-fleets-postgres) has a recipe for each service.
+- **[libSQL or Turso](/storage#turso-and-libsql)** as the lightweight option: one URL and a token. If you host it yourself with sqld, start sqld with `--checkpoint-interval-s 60` (or `SQLD_CHECKPOINT_INTERVAL_S=60`): sqld 0.24.33 can otherwise stop taking writes when many hosts write at once.
 
-Worker hosts need libSQL or Turso in this release. `atomic worker` accepts a `postgres://` URL, but the worker pool does not run on [PostgreSQL](/storage#postgresql) yet; support is coming in a later release. If you host the database yourself, run sqld with `--checkpoint-interval-s 60`, as [Scale the fleet automatically](#scale-the-fleet-automatically) explains.
+On either, the pool's writes take turns, one at a time across the database. See [Which store to choose](/storage#which-store-to-choose). On PostgreSQL, size the server's `max_connections` for every host and its slots, or put a pooler in front: see [Plan connections](/guides/worker-fleets-postgres#plan-connections).
 
 ## Join a machine
 
 ```bash
 # once per machine
 npm install -g @bastani/atomic
-atomic install npm:@bastani/atomic-storage-libsql
+atomic install npm:@bastani/atomic-storage-postgres
 # join and serve; Ctrl+C or SIGTERM drains
+atomic worker start --db 'postgresql://atomic@db.example.com:5432/atomic' --password-file /etc/atomic/db-password
+```
+
+On libSQL or Turso, install `@bastani/atomic-storage-libsql` instead and pass the token:
+
+```bash
+atomic install npm:@bastani/atomic-storage-libsql
 atomic worker start --db libsql://pool.example.turso.io --token-file /etc/atomic/token
 ```
 
 The command prints `ready host=… slots=… journal=…` and then one line per event, such as `claimed child=…` when it takes a child and `released child=…` when the child finished. It serves every running root on that database that uses shared placement, and keeps serving roots that start later or resume on another machine.
 
-- `--db` and `--token-file` apply to this process only and write nothing to settings. On a machine joined with `atomic team join`, `atomic worker start` with no options uses the team database.
+- `--db` and its credential apply to this process only and write nothing to settings. On a machine joined with `atomic storage join` or `atomic team join`, `atomic worker start` with no options uses that database.
+- A PostgreSQL URL takes exactly one credential: `--password-file`, `--token-file` for a password another process keeps fresh, or `--auth aws|gcp|azure` for the machine's cloud identity. See [Choose a credential](/guides/worker-fleets-postgres#choose-a-credential). A libSQL URL takes `--token-file`.
 - `--slots <n>` is the most children the machine runs at once. The default is half its CPUs, from 1 to 16, which leaves room for the tools the children run.
 - `--label zone=east` adds a label that `atomic worker status` shows. Repeat it for more labels.
-- `--prefix <prefix>` selects the tables of one team when several share a database.
+- `--prefix <prefix>` selects the tables of one team when several share a database. On PostgreSQL it can be at most 24 characters.
 - `--idle-exit <ms>` drains and exits once no child has run for that long. Use it for machines that should shut down when the queue is empty.
 - `--provider-id <id>` names the VM instance, pod or CI job the host runs on, for a [fleet controller](#scale-the-fleet-automatically). It defaults to the `ATOMIC_PROVIDER_ID` environment variable, or on Kubernetes to the pod name.
 - `--json` prints the events as one JSON object per line, for log shippers.
@@ -39,7 +48,7 @@ A worker host runs on Linux or macOS. It needs the root's worker definitions at 
 
 ## Start roots with shared placement
 
-On the machine that starts the runs, select the shared database for workflow runs (for example with `atomic team join`), and set `workflows.workers` beside `workflows.localWorkers` in settings:
+On the machine that starts the runs, select the shared database for workflow runs (with `atomic storage join`, or `atomic team join` for libSQL), and set `workflows.workers` beside `workflows.localWorkers` in settings:
 
 ```json
 {
@@ -71,6 +80,18 @@ A machine that dies, or is killed with SIGKILL, loses nothing that was committed
 
 The command never waits on a database that stops answering: after 5 seconds it prints `shared store degraded`, why, and a hint, and exits `1`. A database it cannot reach at all prints `shared store unknown` the same way. The command also tries one write that changes nothing, and prints `shared store degraded` with the hint when the database answers reads but does not commit that write within 2 seconds.
 
+## Upgrade a fleet
+
+Atomic 0.9.88 upgrades a shared database's session schema the first time it opens it, and older Atomic versions then refuse that database with `StorageSchemaVersionError`. Upgrade every machine that shares the database together, in this order:
+
+1. Stop the fleet controllers and `atomic worker metrics`, so nothing adds hosts.
+2. Let running roots finish, or stop them and continue them after the upgrade with `/workflow resume`.
+3. Drain the worker hosts with SIGTERM, and stop the Atomic sessions on the machines that start roots.
+4. Install 0.9.88 or later on every machine, including container images and the user data of scaling groups (`atomic update`, or `npm install -g @bastani/atomic`), and update the storage adapter with `atomic update --extensions`.
+5. Start the roots' machines, then the hosts, then the controllers.
+
+A machine you missed fails to open the database once a newer one has; upgrade it and start it again. Before the first 0.9.88 run, back up the database, for example with your service's snapshots or `pg_dump`.
+
 ## Scale the fleet automatically
 
 Every worker host is the same portable process, `atomic worker start`, wherever it runs: a VM, a container, a pod or a CI job. It drains on SIGTERM and can exit on its own once idle (`--idle-exit`), so any platform's own scaling can add and remove hosts safely. Atomic gives that scaling two things:
@@ -80,7 +101,7 @@ Every worker host is the same portable process, `atomic worker start`, wherever 
 
 Both use the same policy and the same defaults, so they want the same number of hosts. Ready-made [recipes](#recipes) cover a container image, a Helm chart with KEDA, Terraform for each cloud's scaling group, and a GitHub Actions workflow.
 
-If you host the shared database yourself with sqld, start sqld with `--checkpoint-interval-s 60` before you let the fleet grow, as [Turso and libSQL](/storage#turso-and-libsql) explains: many hosts writing at once can otherwise stop sqld taking writes.
+Before you let the fleet grow, size the database for it: on PostgreSQL, plan its connections or put a pooler in front, as [Plan connections](/guides/worker-fleets-postgres#plan-connections) explains. If you host a libSQL database yourself with sqld, start sqld with `--checkpoint-interval-s 60`, as [Turso and libSQL](/storage#turso-and-libsql) explains: many hosts writing at once can otherwise stop sqld taking writes.
 
 ### The scaling signal
 
@@ -89,8 +110,8 @@ The policy wants `ceil(demand / workersPerHost)` hosts, kept between `minHosts` 
 `atomic worker status --json` prints it as `scaling`, and `atomic worker metrics` serves it over HTTP:
 
 ```bash
-atomic worker metrics --listen 0.0.0.0:9464 --db libsql://pool.example.turso.io \
-  --token-file /etc/atomic/token --workers-per-host 8 --max-hosts 20
+atomic worker metrics --listen 0.0.0.0:9464 --db 'postgresql://atomic@db.example.com:5432/atomic' \
+  --password-file /etc/atomic/db-password --workers-per-host 8 --max-hosts 20
 ```
 
 - `GET /scaling` returns the signal as JSON, the shape a KEDA [`metrics-api`](https://keda.sh/docs/latest/scalers/metrics-api/) trigger reads. It answers `503` while the database cannot be read.
@@ -138,8 +159,8 @@ When KEDA scales in, Kubernetes sends SIGTERM to pods it picks, which may be bus
 A fleet controller adds worker hosts when the queues grow, and drains and removes only hosts that sat idle, so it never removes a busy host. Run it on any machine that opens the database:
 
 ```bash
-atomic worker controller --provisioner ./fleet.json --db libsql://pool.example.turso.io \
-  --token-file /etc/atomic/token --max-hosts 20 --workers-per-host 8
+atomic worker controller --provisioner ./fleet.json --db 'postgresql://atomic@db.example.com:5432/atomic' \
+  --password-file /etc/atomic/db-password --max-hosts 20 --workers-per-host 8
 ```
 
 `--provisioner` takes the JSON configuration of a [command provisioner](#command-provisioners-and-presets), or a JavaScript module whose default export is a provisioner with three methods:
@@ -204,7 +225,7 @@ A command provisioner runs three commands of yours, each an executable and its a
 
 Credentials come from each tool's own login or environment, or, for `gh`, from short-lived tokens Atomic mints from a GitHub App ([GitHub App auth](#github-app-auth)). Nothing in the configuration is a credential, and none of it is written to the database. A command that fails reports its exit code and its error output, with tokens, passwords and the values of secret-named environment variables replaced by `[redacted]`; its arguments are never reported. The error's `code` says what went wrong: `missing-cli` (not installed or not on `PATH`), `auth` (credentials refused), `exit`, `timeout`, `malformed` (output the list format does not match) or `unavailable` (GitHub could not be reached when minting a token, or answered with a server error or a rate limit).
 
-Atomic ships presets in its package's `examples/worker-fleet/presets` directory. Copy one, replace the names in it (resource group, scale set, group, zone, namespace, repository) with yours, and pass it to `--provisioner`:
+Atomic ships presets in its package's `examples/worker-fleet/presets` directory. Copy one, replace the names in it (resource group, scale set, group, zone, namespace, repository) with yours, and pass it to `--provisioner`. The controller also needs a credential for the database; [Run the fleet controller](/guides/worker-fleets-postgres#run-the-fleet-controller) pairs each preset with one for PostgreSQL:
 
 | Preset | Drives | Host id | Least privilege for the controller | Controller credential |
 | --- | --- | --- | --- | --- |
@@ -280,18 +301,18 @@ Every recipe uses the platform's own short-lived identity, and no recipe stores 
 | `kubectl` for the Kubernetes preset | The controller pod's ServiceAccount, with a Role limited to the worker Deployment | Kubernetes in-cluster config and RBAC |
 | KEDA reading the scaling signal | Nothing: the metrics Service is in-cluster and serves counts only. Limit who reaches it with a NetworkPolicy. Scalers that read a cloud service take a `TriggerAuthentication` with `podIdentity` | KEDA authentication providers |
 | Cloud access from GitHub Actions | GitHub's OIDC token (`id-token: write`) with `azure/login`, `aws-actions/configure-aws-credentials` or `google-github-actions/auth` | GitHub Actions OpenID Connect |
-| The shared database token (`--token-file`) | Read from a secret manager at boot (Key Vault, Secrets Manager, Secret Manager), or mounted in Kubernetes from a Secret synced by the External Secrets Operator or the Secrets Store CSI driver, and copied to a mode 600 file. Never baked into an image | Secrets Store CSI driver, External Secrets Operator |
+| The shared database's password or token (`--password-file`, `--token-file`), or no stored credential with `--auth aws\|gcp\|azure` on PostgreSQL | Read from a secret manager at boot (Key Vault, Secrets Manager, Secret Manager), or mounted in Kubernetes from a Secret synced by the External Secrets Operator or the Secrets Store CSI driver, and copied to a mode 600 file. Never baked into an image | Secrets Store CSI driver, External Secrets Operator |
 
-The database token itself is long-lived.
+A database password or token is long-lived. On PostgreSQL, `--auth` replaces it with a short-lived token from the machine's cloud identity: see [Worker fleets on managed PostgreSQL](/guides/worker-fleets-postgres).
 
 ### Recipes
 
 The package's `examples/worker-fleet` directory has a starting point for each platform:
 
-- `Dockerfile`: the worker image. It runs `atomic worker start` as PID 1 so SIGTERM drains it.
-- `helm/atomic-worker`: a Helm chart sketch with the worker Deployment, an `atomic worker metrics` Deployment and Service, and a KEDA `ScaledObject` that scales the workers from zero. The pods run as their own ServiceAccount, which you can annotate for workload identity (`serviceAccount.annotations`, `podLabels`). An init container copies the token from its Secret, or from your secret manager through the Secrets Store CSI driver (`tokenSecretProviderClass`), into memory, readable only by the container's user. `controllerRbac: true` replaces KEDA with a ServiceAccount and Role for a controller that uses the `kubernetes.json` preset. Install the release in its own namespace, because a Role cannot limit `patch` on pods to one Deployment's pods.
-- `terraform/azure-vmss`, `terraform/aws-asg`, `terraform/gcp-mig`: a scaling group of spot or preemptible VMs that boot into `atomic worker start` with their provider id, at size 0. The VMs read the database token from the cloud's secret manager with their own identity. Each module also creates the controller's identity (a managed identity, an IAM role, a service account) with the least-privilege role for its preset.
-- `github-actions/atomic-workers.yml`: a workflow whose `workflow_dispatch` input `workers` fans out that many jobs, each running `atomic worker start --idle-exit`. Each job signs in to your cloud with GitHub's OIDC token and reads the database token from its secret manager. Run it by hand for a burst, or let the `github-actions.json` preset dispatch it.
+- `Dockerfile`: the worker image. It runs `atomic worker start` as PID 1 so SIGTERM drains it. `STORAGE_ADAPTER` selects the adapter it installs: `atomic-storage-postgres` (the default) or `atomic-storage-libsql`.
+- `helm/atomic-worker`: a Helm chart sketch with the worker Deployment, an `atomic worker metrics` Deployment and Service, and a KEDA `ScaledObject` that scales the workers from zero. The pods run as their own ServiceAccount, which you can annotate for workload identity (`serviceAccount.annotations`, `podLabels`). The database URL comes from `database`, or from the `url` key of the Secret that `databaseSecret` names. An init container copies the password or token from its Secret, or from your secret manager through the Secrets Store CSI driver (`tokenSecretProviderClass`), into memory, readable only by the container's user. `controllerRbac: true` replaces KEDA with a ServiceAccount and Role for a controller that uses the `kubernetes.json` preset. Install the release in its own namespace, because a Role cannot limit `patch` on pods to one Deployment's pods.
+- `terraform/azure-vmss`, `terraform/aws-asg`, `terraform/gcp-mig`: a scaling group of spot or preemptible VMs that boot into `atomic worker start` with their provider id, at size 0. Each module's `postgres.tf` creates a managed PostgreSQL database beside the group (Azure Database for PostgreSQL, Amazon RDS, Cloud SQL) and keeps its password in the cloud's secret manager; set `postgres = false` to use a libSQL or Turso database from `database` instead. The VMs read the password or token from the secret manager with their own identity. Each module also creates the controller's identity (a managed identity, an IAM role, a service account) with the least-privilege role for its preset.
+- `github-actions/atomic-workers.yml`: a workflow whose `workflow_dispatch` input `workers` fans out that many jobs, each running `atomic worker start --idle-exit`. Each job installs the adapter that matches `ATOMIC_DB`, signs in to your cloud with GitHub's OIDC token, and reads the database password or token from its secret manager. Run it by hand for a burst, or let the `github-actions.json` preset dispatch it.
 - `presets/`: the command provisioner presets above.
 
 Spot and preemptible machines are safe: a host told to stop gets SIGTERM and drains, and a child cut off before it finishes is replayed on another host from its last checkpoint.
@@ -318,7 +339,7 @@ Restart=on-failure
 WantedBy=multi-user.target
 ```
 
-`/etc/atomic/worker.env` holds `ATOMIC_DB=libsql://pool.example.turso.io`. `/etc/atomic/token` holds the database token, owned by the `atomic` user with mode 600. Run `atomic install npm:@bastani/atomic-storage-libsql` as the `atomic` user, because each user has their own agent directory. Exit code `1` is a setup error, which `Restart=on-failure` retries; read it with `journalctl -u atomic-worker`.
+`/etc/atomic/worker.env` holds the URL, such as `ATOMIC_DB=postgresql://atomic@db.example.com:5432/atomic`. `/etc/atomic/token` holds the PostgreSQL password, or the libSQL token, owned by the `atomic` user with mode 600. `--token-file` reads it again for every new connection, so a rotated password takes effect without a restart. With a cloud identity, replace `--token-file /etc/atomic/token` with `--auth aws`, `--auth gcp` or `--auth azure`. Run `atomic install npm:@bastani/atomic-storage-postgres` (or `@bastani/atomic-storage-libsql`) as the `atomic` user, because each user has their own agent directory. Exit code `1` is a setup error, which `Restart=on-failure` retries; read it with `journalctl -u atomic-worker`.
 
 ## Provision with cloud-init
 
@@ -332,11 +353,11 @@ users:
 write_files:
   - path: /etc/atomic/worker.env
     content: |
-      ATOMIC_DB=libsql://pool.example.turso.io
+      ATOMIC_DB=postgresql://atomic@db.example.com:5432/atomic
   - path: /etc/atomic/token
     permissions: "0600"
     content: |
-      <database token>
+      <database password>
   - path: /etc/systemd/system/atomic-worker.service
     content: |
       [Unit]
@@ -355,11 +376,11 @@ write_files:
 runcmd:
   - [sh, -c, "chown atomic:atomic /etc/atomic/token"]
   - [sh, -c, "curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs git"]
-  - [sh, -c, "npm install -g @bastani/atomic && sudo -iu atomic atomic install npm:@bastani/atomic-storage-libsql"]
+  - [sh, -c, "npm install -g @bastani/atomic && sudo -iu atomic atomic install npm:@bastani/atomic-storage-postgres"]
   - [systemctl, enable, --now, atomic-worker]
 ```
 
-Put the token in the user data only when the user data itself is private to the VM. Otherwise fetch it from your secret store in `runcmd` before the last line.
+Put the password in the user data only when the user data itself is private to the VM. Otherwise fetch it from your secret store in `runcmd` before the last line, as the package's Terraform recipes do. For libSQL, set a `libsql://` URL, put the token in `/etc/atomic/token`, and install `@bastani/atomic-storage-libsql`.
 
 ## Run it in a container
 
@@ -369,18 +390,19 @@ ARG ATOMIC_VERSION=latest
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
  && rm -rf /var/lib/apt/lists/* \
  && npm install -g @bastani/atomic@${ATOMIC_VERSION}
+ARG STORAGE_ADAPTER=atomic-storage-postgres
 USER node
-RUN atomic install npm:@bastani/atomic-storage-libsql
+RUN atomic install npm:@bastani/${STORAGE_ADAPTER}
 STOPSIGNAL SIGTERM
 ENTRYPOINT ["sh", "-c", "exec atomic worker start --db \"$ATOMIC_DB\" --token-file /run/secrets/atomic-db-token \"$@\"", "--"]
 ```
 
 ```bash
-docker run -d --name atomic-worker -e ATOMIC_DB=libsql://pool.example.turso.io \
-  -v "$PWD/token:/run/secrets/atomic-db-token:ro" --stop-timeout 900 atomic-worker --slots 4
+docker run -d --name atomic-worker -e ATOMIC_DB=postgresql://atomic@db.example.com:5432/atomic \
+  -v "$PWD/db-password:/run/secrets/atomic-db-token:ro" --stop-timeout 900 atomic-worker --slots 4
 ```
 
-`exec` makes `atomic` the process that receives the container's SIGTERM, so stopping the container drains it. Mount the token as a secret file, never as an environment variable or build argument. Options after the image name, such as `--slots 4`, are passed to `atomic worker start`. Process containment needs Linux, so run the container on a Linux host.
+`exec` makes `atomic` the process that receives the container's SIGTERM, so stopping the container drains it. Mount the password or token as a secret file, never as an environment variable or build argument. For libSQL, build with `--build-arg STORAGE_ADAPTER=atomic-storage-libsql` and pass a `libsql://` URL. Options after the image name, such as `--slots 4`, are passed to `atomic worker start`. Process containment needs Linux, so run the container on a Linux host.
 
 ## Security
 
@@ -391,7 +413,8 @@ docker run -d --name atomic-worker -e ATOMIC_DB=libsql://pool.example.turso.io \
 
 ## Troubleshooting
 
-- **`Worker host setup is incomplete`** lists every missing piece at once, with a fix for each: the adapter not installed (`atomic install npm:@bastani/atomic-storage-libsql`), a token file that cannot be read, a journal that other machines cannot open (pass `--db`), or a machine where Atomic cannot contain its workers' processes (Windows, or no native process identity). The command exits `1`.
+- **`Worker host setup is incomplete`** lists every missing piece at once, with a fix for each: the adapter not installed (`atomic install npm:@bastani/atomic-storage-postgres` for a PostgreSQL URL, `atomic install npm:@bastani/atomic-storage-libsql` for libSQL), a token file that cannot be read, a journal that other machines cannot open (pass `--db`), or a machine where Atomic cannot contain its workers' processes (Windows, or no native process identity). The command exits `1`.
 - **`degraded failures=… retry_in_ms=…`** means the host could not reach the database. It keeps running its children and tries again after 1 second, then twice as long after each further failure, up to 30 seconds, and prints `recovered` once it gets through. Its workers keep their children while each child's lease (`localWorkers.leaseMs`, 30 seconds by default) lasts. A child whose lease expires during a longer outage, or that writes a checkpoint while the database is unreachable, is replayed by another host from its last checkpoint.
 - **`shared store unknown` or `shared store degraded`**, or hosts that all turn `stale` at once, mean the database stopped answering or stopped committing writes. sqld 0.24.33 and earlier can stop taking writes from every client until it restarts ([tursodatabase/libsql#2286](https://github.com/tursodatabase/libsql/issues/2286)): start sqld with `--checkpoint-interval-s 60` (`SQLD_CHECKPOINT_INTERVAL_S=60`) to avoid it, and restart it if writes stay stuck. Hosts keep their running children meanwhile.
+- **PostgreSQL connection, TLS, pooler and cloud identity errors**: see [Troubleshooting](/guides/worker-fleets-postgres#troubleshooting) in the PostgreSQL fleet guide.
 - **A host never claims anything.** It runs a root's children only if it has the root's worker definitions at the same paths with the same entry module, and the root uses shared placement. Check `atomic worker status`, and `/workflow status <run>` on the root's machine.

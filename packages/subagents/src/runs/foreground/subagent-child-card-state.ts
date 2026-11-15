@@ -1,4 +1,4 @@
-import type { CustomEntry, ExtensionContext, SessionEntry } from "@bastani/atomic";
+import { type CustomEntry, type ExtensionContext, type SessionEntry, sliceHead } from "@bastani/atomic";
 import { isReleasedChildError, ReleasedChildError } from "./released-child-errors.js";
 import type { SubagentChildRecord } from "./subagent-child-records.js";
 import { reopenChildSession } from "./subagent-child-session.js";
@@ -428,7 +428,7 @@ function transcriptLines(messages: readonly TranscriptMessage[]): string[] {
 						? `→ ${part.name}`
 						: undefined;
 			if (text && (message.role === "user" || message.role === "assistant"))
-				lines.push(text.length > TRANSCRIPT_LINE_CHARS ? `${text.slice(0, TRANSCRIPT_LINE_CHARS - 1)}…` : text);
+				lines.push(text.length > TRANSCRIPT_LINE_CHARS ? `${sliceHead(text, TRANSCRIPT_LINE_CHARS - 1)}…` : text);
 		}
 	}
 	return lines.slice(-TRANSCRIPT_LINES);

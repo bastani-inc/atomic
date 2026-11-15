@@ -116,6 +116,12 @@ export class AwayAsks {
 		const columns = this.statement("PRAGMA table_info(away_questions)").all();
 		if (!columns.some((column) => column.name === "target_return_address"))
 			this.database.exec("ALTER TABLE away_questions ADD COLUMN target_return_address TEXT NOT NULL DEFAULT ''");
+		// #4997: added later, the same way: whether an ask's peers were both top-level sessions, so it may move brokers.
+		for (const table of ["live_questions", "away_questions"]) {
+			const tableColumns = this.statement(`PRAGMA table_info(${table})`).all();
+			if (!tableColumns.some((column) => column.name === "movable"))
+				this.database.exec(`ALTER TABLE ${table} ADD COLUMN movable INTEGER NOT NULL DEFAULT 0`);
+		}
 		this.adoptLiveFromPreviousBrokers();
 		this.purge();
 	}
@@ -133,7 +139,7 @@ export class AwayAsks {
 		if (foreign === undefined && foreignHeld === undefined) return;
 		this.batch(() => {
 			this.statement(
-				"INSERT OR REPLACE INTO away_questions (message_id, sender_session_id, target_session_id, sender_return_address, target_return_address, kept_at) SELECT message_id, sender_session_id, target_session_id, sender_return_address, target_return_address, recorded_at FROM live_questions WHERE broker_instance <> ?",
+				"INSERT OR REPLACE INTO away_questions (message_id, sender_session_id, target_session_id, sender_return_address, target_return_address, kept_at, movable) SELECT message_id, sender_session_id, target_session_id, sender_return_address, target_return_address, recorded_at, movable FROM live_questions WHERE broker_instance <> ?",
 			).run(this.instance);
 			this.statement("DELETE FROM live_questions WHERE broker_instance <> ?").run(this.instance);
 			this.statement(
@@ -180,9 +186,14 @@ export class AwayAsks {
 	 * #4829: a live ask's route, written when it is recorded so it outlives this broker (a restart or a crash), with the
 	 * return addresses its asker and recipient registered with. Only an asker that can prove itself is written.
 	 */
-	recordLive(question: PendingQuestion, senderReturnAddress: string, targetReturnAddress: string): void {
+	recordLive(
+		question: PendingQuestion,
+		senderReturnAddress: string,
+		targetReturnAddress: string,
+		movable = false,
+	): void {
 		this.statement(
-			"INSERT OR REPLACE INTO live_questions (message_id, sender_session_id, target_session_id, sender_return_address, target_return_address, broker_instance, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+			"INSERT OR REPLACE INTO live_questions (message_id, sender_session_id, target_session_id, sender_return_address, target_return_address, broker_instance, recorded_at, movable) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
 		).run(
 			question.messageId,
 			question.senderSessionId,
@@ -191,7 +202,25 @@ export class AwayAsks {
 			targetReturnAddress,
 			this.instance,
 			this.now(),
+			movable ? 1 : 0,
 		);
+	}
+
+	/**
+	 * #4997: the kept asks between two top-level sessions, including those a broker that is gone left behind. Either
+	 * session may come back on another broker, so with multi-node routing they move to the shared state.
+	 */
+	movable(): PendingQuestion[] {
+		this.adoptLiveFromPreviousBrokers();
+		return this.statement(
+			"SELECT message_id, sender_session_id, target_session_id FROM away_questions WHERE movable = 1 ORDER BY kept_at",
+		)
+			.all()
+			.map((row) => ({
+				messageId: String(row.message_id),
+				senderSessionId: String(row.sender_session_id),
+				targetSessionId: String(row.target_session_id),
+			}));
 	}
 
 	/** The live route was answered, failed, or moved on: it no longer outlives this broker. */
@@ -242,17 +271,32 @@ export class AwayAsks {
 	keep(
 		questions: readonly PendingQuestion[],
 		senderReturnAddress?: string | ((question: PendingQuestion) => string | undefined),
+		/** #4997: the questions that may follow their peers to another broker. */
+		movable: (question: PendingQuestion) => boolean = () => false,
 	): void {
 		if (questions.length === 0) return;
 		const insert = this.statement(
-			"INSERT OR REPLACE INTO away_questions (message_id, sender_session_id, target_session_id, sender_return_address, kept_at) VALUES (?, ?, ?, ?, ?)",
+			"INSERT OR REPLACE INTO away_questions (message_id, sender_session_id, target_session_id, sender_return_address, kept_at, movable) VALUES (?, ?, ?, ?, ?, ?)",
+		);
+		const dropLive = this.statement(
+			"DELETE FROM live_questions WHERE message_id = ? AND sender_session_id = ? AND target_session_id = ?",
 		);
 		const at = this.now();
+		// #4997: a live route becomes a kept one in one transaction, so a broker that stops at any point has it as one or
+		// the other, never neither.
 		this.batch(() => {
 			for (const question of questions) {
 				const returnAddress =
 					typeof senderReturnAddress === "function" ? senderReturnAddress(question) : senderReturnAddress;
-				insert.run(question.messageId, question.senderSessionId, question.targetSessionId, returnAddress ?? "", at);
+				insert.run(
+					question.messageId,
+					question.senderSessionId,
+					question.targetSessionId,
+					returnAddress ?? "",
+					at,
+					movable(question) ? 1 : 0,
+				);
+				dropLive.run(question.messageId, question.senderSessionId, question.targetSessionId);
 			}
 			this.purge();
 		});
@@ -265,6 +309,16 @@ export class AwayAsks {
 	keepForAwayRecipient(
 		questions: readonly PendingQuestion[],
 		senderReturnAddress?: (question: PendingQuestion) => string | undefined,
+		/** #4997: as `keep`'s. */
+		movable?: (question: PendingQuestion) => boolean,
+	): PendingQuestion[] {
+		return this.batch(() => this.keepEachForAwayRecipient(questions, senderReturnAddress, movable));
+	}
+
+	private keepEachForAwayRecipient(
+		questions: readonly PendingQuestion[],
+		senderReturnAddress: ((question: PendingQuestion) => string | undefined) | undefined,
+		movable: ((question: PendingQuestion) => boolean) | undefined,
 	): PendingQuestion[] {
 		const count = this.statement("SELECT COUNT(*) AS kept FROM away_questions WHERE target_session_id = ?");
 		const already = this.statement(
@@ -283,7 +337,9 @@ export class AwayAsks {
 				kept.set(target, waiting + 1);
 			}
 		}
-		this.keep(admitted, senderReturnAddress);
+		this.keep(admitted, senderReturnAddress, movable);
+		// #4997: a refused question is failed to its asker; its live route goes in the same write as the kept ones.
+		for (const question of refused) this.forgetLive(question);
 		return refused;
 	}
 
@@ -315,11 +371,21 @@ export class AwayAsks {
 			}));
 	}
 
-	/** The kept question was answered some other way: it no longer waits here. */
-	forget(question: PendingQuestion): void {
-		this.statement(
+	/** The kept question was answered some other way: it no longer waits here. Whether it was kept. */
+	forget(question: PendingQuestion): boolean {
+		const { changes } = this.statement(
 			"DELETE FROM away_questions WHERE message_id = ? AND sender_session_id = ? AND target_session_id = ?",
 		).run(question.messageId, question.senderSessionId, question.targetSessionId);
+		return Number(changes) > 0;
+	}
+
+	/** #4997: whether the question still waits here for an away peer. */
+	isKept(question: PendingQuestion): boolean {
+		return (
+			this.statement(
+				"SELECT 1 FROM away_questions WHERE message_id = ? AND sender_session_id = ? AND target_session_id = ?",
+			).get(question.messageId, question.senderSessionId, question.targetSessionId) !== undefined
+		);
 	}
 
 	/** The kept question `questionId` that `replierSessionId` answers, if its asker is away. */
@@ -417,8 +483,11 @@ export class AwayAsks {
 		failedElsewhere: (question: PendingQuestion) => boolean,
 		targetReturnAddress = "",
 		askerConnected: (question: PendingQuestion, returnAddress: string) => boolean,
+		skipMovable = false,
 	): { failed: PendingQuestion[]; live: PendingQuestion[] } {
-		return this.batch(() => this.failEachForTarget(target, reason, idPrefix, failedElsewhere, targetReturnAddress, askerConnected));
+		return this.batch(() =>
+			this.failEachForTarget(target, reason, idPrefix, failedElsewhere, targetReturnAddress, askerConnected, skipMovable),
+		);
 	}
 
 	private failEachForTarget(
@@ -428,10 +497,11 @@ export class AwayAsks {
 		failedElsewhere: (question: PendingQuestion) => boolean,
 		targetReturnAddress: string,
 		askerConnected: (question: PendingQuestion, returnAddress: string) => boolean,
+		skipMovable: boolean,
 	): { failed: PendingQuestion[]; live: PendingQuestion[] } {
 		const rows = this.statement(
-			`SELECT message_id, sender_session_id, sender_return_address FROM away_questions WHERE target_session_id = ? AND ${PROVEN_RECIPIENT} ORDER BY kept_at`,
-		).all(target.id, targetReturnAddress);
+			`SELECT message_id, sender_session_id, sender_return_address FROM away_questions WHERE target_session_id = ? AND ${PROVEN_RECIPIENT} AND (? = 0 OR movable = 0) ORDER BY kept_at`,
+		).all(target.id, targetReturnAddress, skipMovable ? 1 : 0);
 		const failed: PendingQuestion[] = [];
 		const live: PendingQuestion[] = [];
 		for (const row of rows) {

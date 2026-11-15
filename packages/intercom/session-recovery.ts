@@ -1,4 +1,4 @@
-import type { PendingRecoveryDelivery, SessionEntry, SessionRecoveryReplayResult } from "@bastani/atomic";
+import { type PendingRecoveryDelivery, type SessionEntry, type SessionRecoveryReplayResult, sliceHead } from "@bastani/atomic";
 import type { IntercomClient } from "./broker/client.js";
 import { SUBAGENT_ENDED_OUTCOMES, type SubagentEndedOutcome } from "./broker/recipient-gone-errors.js";
 import type { InboundMessageEntry } from "./intercom-utils.js";
@@ -335,7 +335,7 @@ function isRestoredPeer(from: SessionInfo, restored: readonly RestoredIntercomPe
 }
 
 function boundedBody(text: string): string {
-	return text.length > RECOVERED_BODY_MAX_CHARS ? `${text.slice(0, RECOVERED_BODY_MAX_CHARS)}…` : text;
+	return text.length > RECOVERED_BODY_MAX_CHARS ? `${sliceHead(text, RECOVERED_BODY_MAX_CHARS)}…` : text;
 }
 
 /**

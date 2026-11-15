@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
-import { getAgentDir } from "@bastani/atomic";
+import { getAgentDir, sliceHead } from "@bastani/atomic";
 import type { StorageSelection } from "@bastani/atomic/storage";
 import { openSelectedRunJournal } from "../durable/journal/resolution.js";
 import {
@@ -66,7 +66,7 @@ const ERROR_TEXT_MAX = 1_024;
 function asFailure(error: unknown): WorkflowFleetFailure {
 	const name = error instanceof Error ? error.name : "Error";
 	const message = error instanceof Error ? error.message : String(error);
-	return { name, message: message.length > ERROR_TEXT_MAX ? `${message.slice(0, ERROR_TEXT_MAX)}…` : message };
+	return { name, message: message.length > ERROR_TEXT_MAX ? `${sliceHead(message, ERROR_TEXT_MAX)}…` : message };
 }
 
 /** A failure as a fleet event records it, for operators to read: `name: message`. */
