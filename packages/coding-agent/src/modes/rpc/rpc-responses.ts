@@ -5,7 +5,7 @@ import {
 import { DebugError, serializeDebugError } from "../../core/debug-errors.ts";
 import { CredentialSynchronizationError } from "../../core/model-runtime.js";
 import { isMissingSessionCwdError, serializeMissingSessionCwdError } from "../../core/session-cwd.ts";
-import type { RpcCommand, RpcExtensionUIRequest, RpcResponse } from "./rpc-types.ts";
+import type { RpcCommand, RpcExtensionUIRequest, RpcResponse, RpcShutdownErrorEvent } from "./rpc-types.ts";
 
 export type RpcOutputRecord = RpcResponse | RpcExtensionUIRequest | object;
 export type RpcOutput = (obj: RpcOutputRecord) => void;
@@ -76,4 +76,16 @@ export function createRpcErrorResponse(
 
 export function formatRpcErrorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
+}
+
+/** Describe a failed shutdown as a structured event. */
+export function rpcShutdownErrorEvent(error: unknown, exitCode: number): RpcShutdownErrorEvent {
+	const code = (error as { code?: unknown } | null)?.code;
+	return {
+		type: "shutdown_error",
+		error: formatRpcErrorMessage(error),
+		...(typeof code === "string" ? { code } : {}),
+		...(error instanceof AggregateError ? { errors: error.errors.map(formatRpcErrorMessage) } : {}),
+		exitCode,
+	};
 }

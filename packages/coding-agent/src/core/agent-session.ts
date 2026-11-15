@@ -91,6 +91,7 @@ export type {
 	PromptDisposition,
 	PromptOptions,
 	QueuedInputDisposition,
+	SessionAbortOptions,
 	SessionRecoveryReport,
 	SessionStats,
 } from "./agent-session-types.js";
