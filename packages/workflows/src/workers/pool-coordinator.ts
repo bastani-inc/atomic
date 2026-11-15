@@ -1243,6 +1243,11 @@ export class PoolCoordinator {
 					kind: "health",
 					message: `checkpoint shipping: the local journal failed for work ${workId}, which commits every checkpoint to the shared journal from now on: ${error.message}`,
 				}),
+			onReleaseFailure: ({ workId, error }) =>
+				this.port.send({
+					kind: "health",
+					message: `checkpoint shipping: work ${workId} was released with checkpoints still unshipped, which its replay runs again unless this host ships them before another attempt takes the work: ${error.message}`,
+				}),
 		});
 		shipping.start();
 		return shipping;
