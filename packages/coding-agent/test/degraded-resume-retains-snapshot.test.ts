@@ -17,6 +17,7 @@ import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.j
 import type { SessionStore } from "../src/core/storage/session/types.js";
 import { type SqlSnapshotBlobStore, snapshotBlobHashes } from "../src/core/worktree-snapshot/blob-store.js";
 import { captureWorktreeSnapshot } from "../src/core/worktree-snapshot/capture.js";
+import { carryOverDegradedWork } from "../src/core/worktree-snapshot/degraded-work.js";
 import { collectSnapshotGarbage } from "../src/core/worktree-snapshot/garbage.js";
 import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../src/core/worktree-snapshot/settings.js";
 import type { WorktreeSnapshot } from "../src/core/worktree-snapshot/types.js";
@@ -139,6 +140,7 @@ describe("a degraded resume keeps the snapshot it could not restore fully (#4922
 		const c = onC.sessionManager.getWorktreeRootMappings().at(-1)!;
 		assert.equal(c.snapshotId, a.snapshot.id);
 		assert.equal(c.degraded, undefined);
+		assert.equal(c.degradedWork, undefined, "the partly restored worktree recorded no work of its own");
 		assert.equal(await sandbox.git(c.to, "rev-parse", "HEAD"), a.unpushed);
 		assert.equal(readFileSync(join(c.to, "work.txt"), "utf8"), "uncommitted work\n");
 	});
@@ -169,7 +171,11 @@ describe("a degraded resume keeps the snapshot it could not restore fully (#4922
 		assert.deepEqual(c.degradedWork?.paths, ["from-b.txt"]);
 		assert.equal(readFileSync(join(c.to, "work.txt"), "utf8"), "uncommitted work\n");
 		assert.equal(readFileSync(join(c.to, "from-b.txt"), "utf8"), "done on machine B\n");
-		assert.ok(onC.notices.some((notice) => notice.message.startsWith("Also applied the work done")));
+		assert.ok(
+			onC.notices.some(
+				(notice) => notice.type === "info" && notice.message.startsWith("Also applied the work done"),
+			),
+		);
 		const recorded = onC.sessionManager.getLatestWorktreeSnapshots().get(c.to)!;
 		assert.notEqual(recorded.id, a.snapshot.id, "the merged worktree is recorded at once");
 		assert.equal(snapshotEntries(onC.sessionManager).at(-1)?.degradedFrom, undefined);
@@ -193,7 +199,10 @@ describe("a degraded resume keeps the snapshot it could not restore fully (#4922
 			await sandbox.git(c.to, "show", `${c.degradedWork!.commit}:work.txt`),
 			"a different work.txt on machine B",
 		);
-		const warning = onC.notices.find((notice) => notice.message.startsWith("Did not apply"));
+		assert.ok(c.degradedWork!.ref!.startsWith("refs/atomic/degraded-work/"));
+		const warning = onC.notices.find(
+			(notice) => notice.type === "warning" && notice.message.startsWith("Did not apply"),
+		);
 		assert.ok(warning?.message.includes(`git diff ${c.degradedWork!.base} ${c.degradedWork!.commit}`));
 	});
 
@@ -210,7 +219,9 @@ describe("a degraded resume keeps the snapshot it could not restore fully (#4922
 
 		const c = onC.sessionManager.getWorktreeRootMappings().at(-1)!;
 		assert.equal(c.snapshotId, work.snapshotId);
+		assert.equal(c.degradedWork, undefined);
 		assert.equal(readFileSync(join(c.to, "from-b.txt"), "utf8"), "done on machine B\n");
+		assert.ok(onC.notices.every((notice) => !notice.message.includes("is no longer kept")));
 		assert.equal(snapshotEntries(onC.sessionManager).at(-1)?.degradedFrom, a.snapshot.id);
 		assert.ok(onC.notices.some((notice) => notice.message.includes("still cannot be restored here")));
 		await collectSnapshotGarbage(onC.sessionManager.getSessionStore().snapshotBlobs, { graceSeconds: 0 });
@@ -230,12 +241,18 @@ describe("a degraded resume keeps the snapshot it could not restore fully (#4922
 	test("discardDegradedRestore records the partly restored worktree and releases the snapshot (#4922)", async () => {
 		const a = await machineA();
 		const { onB, b } = await degradedTurnOnB(a.manager, a.snapshot, a.pushed);
+		sandbox.write(join(b.to, "kept.txt"), "kept on machine B\n");
 
-		assert.deepEqual(await discardDegradedRestore(onB.sessionManager, { settings }), [b.to]);
+		assert.deepEqual(await discardDegradedRestore(onB.sessionManager, { settings, root: sandbox.path("other") }), []);
+		assert.deepEqual(await discardDegradedRestore(onB.sessionManager, { settings, root: b.to }), [b.to]);
+		const discarded = snapshotEntries(onB.sessionManager).at(-1)!;
+		assert.equal(discarded.degradedFrom, undefined);
+		assert.ok(discarded.snapshot !== undefined, "the worktree's changed state is recorded");
 		await collectSnapshotGarbage(onB.sessionManager.getSessionStore().snapshotBlobs, { graceSeconds: 0 });
 
 		const stored = new Set(await onB.sessionManager.getSessionStore().snapshotBlobs!.listBlobHashes());
 		assert.ok(snapshotBlobHashes(a.snapshot).every((hash) => !stored.has(hash)));
+		assert.ok(snapshotBlobHashes(discarded.snapshot!).every((hash) => stored.has(hash)));
 		await runTurn(onB.sessionManager, b.to);
 		assert.equal(snapshotEntries(onB.sessionManager).at(-1)?.degradedFrom, undefined);
 		assert.deepEqual(await discardDegradedRestore(onB.sessionManager, { settings }), []);
@@ -249,10 +266,17 @@ describe("a degraded resume keeps the snapshot it could not restore fully (#4922
 			readonly database: { run(sql: string, ...params: unknown[]): Promise<unknown> };
 		};
 
-		// Collection counts the days on the database clock.
+		// Collection counts the days on the database clock: a minute short of them keeps the snapshot.
 		await database.run(
 			"UPDATE snapshot_session_refs SET degraded_since = degraded_since - ? WHERE degraded_from IS NOT NULL",
-			DEGRADED_RESTORE_RETENTION_DAYS * 24 * 60 * 60 + 1,
+			DEGRADED_RESTORE_RETENTION_DAYS * 24 * 60 * 60 - 60,
+		);
+		await collectSnapshotGarbage(blobs, { graceSeconds: 0 });
+		const inside = new Set(await blobs.listBlobHashes());
+		assert.ok(snapshotBlobHashes(a.snapshot).every((hash) => inside.has(hash)));
+		await database.run(
+			"UPDATE snapshot_session_refs SET degraded_since = degraded_since - ? WHERE degraded_from IS NOT NULL",
+			61,
 		);
 		await collectSnapshotGarbage(blobs, { graceSeconds: 0 });
 		const stored = new Set(await blobs.listBlobHashes());
@@ -291,5 +315,109 @@ describe("a degraded resume keeps the snapshot it could not restore fully (#4922
 		assert.equal(restored.degradedWork, undefined);
 		assert.equal(readFileSync(join(restored.to, "work.txt"), "utf8"), "more work\n");
 		assert.ok(snapshotEntries(resumed.sessionManager).every((entry) => entry.degradedFrom === undefined));
+	});
+
+	test("a later resume on the degraded machine restores the snapshot fully once it can, when the worktree holds nothing new (#4922)", async () => {
+		const a = await machineA();
+		const { onB, b } = await degradedTurnOnB(a.manager, a.snapshot, a.pushed);
+
+		await sandbox.git(a.clone, "push", "-q", "origin", "HEAD:main");
+		const again = ready(await prepareSessionResume(onB.sessionManager, options("machine-b")));
+
+		const restored = again.sessionManager.getWorktreeRootMappings().at(-1)!;
+		assert.notEqual(restored.to, b.to);
+		assert.equal(restored.snapshotId, a.snapshot.id);
+		assert.equal(restored.degraded, undefined);
+		assert.equal(readFileSync(join(restored.to, "work.txt"), "utf8"), "uncommitted work\n");
+	});
+
+	test("a resume that can restore nothing keeps the pin and the work done in the partly restored worktree (#4922)", async () => {
+		const a = await machineA();
+		const { onB, b } = await degradedTurnOnB(a.manager, a.snapshot, a.pushed, (worktree) =>
+			sandbox.write(join(worktree, "from-b.txt"), "done on machine B\n"),
+		);
+		const work = snapshotEntries(onB.sessionManager).at(-1)!;
+		rmSync(b.to, { recursive: true, force: true });
+		renameSync(sandbox.path("repo.git"), sandbox.path("remote-gone"));
+
+		const onC = ready(await prepareSessionResume(onB.sessionManager, options("machine-c")));
+
+		const left = snapshotEntries(onC.sessionManager).at(-1)!;
+		assert.ok(left.unrestored !== undefined, JSON.stringify(left));
+		assert.equal(left.snapshotId, work.snapshotId);
+		assert.equal(left.degradedFrom, a.snapshot.id);
+		await collectSnapshotGarbage(onC.sessionManager.getSessionStore().snapshotBlobs, { graceSeconds: 0 });
+		const stored = new Set(await onC.sessionManager.getSessionStore().snapshotBlobs!.listBlobHashes());
+		for (const hash of [...snapshotBlobHashes(a.snapshot), ...snapshotBlobHashes(work.snapshot!)])
+			assert.ok(stored.has(hash), `blob ${hash} was collected`);
+	});
+
+	test("a snapshot entry names in degradedFrom only another snapshot the session recorded (#4922)", async () => {
+		const a = await machineA();
+		const other = "0123456789abcdef0123456789abcdef";
+		await assert.rejects(
+			a.manager.appendWorktreeSnapshot(
+				a.clone,
+				a.snapshot.id,
+				undefined,
+				undefined,
+				[],
+				undefined,
+				undefined,
+				a.snapshot.id,
+			),
+			/degradedFrom/,
+		);
+		await assert.rejects(
+			a.manager.appendWorktreeSnapshot(
+				a.clone,
+				a.snapshot.id,
+				undefined,
+				undefined,
+				[],
+				undefined,
+				undefined,
+				other,
+			),
+			/degradedFrom/,
+		);
+		const { onB } = await degradedTurnOnB(a.manager, a.snapshot, a.pushed);
+		const reopened = await SessionManager.open(
+			onB.sessionManager.getSessionStore(),
+			onB.sessionManager.getSessionId(),
+		);
+		assert.equal(snapshotEntries(reopened).at(-1)?.degradedFrom, a.snapshot.id, "the pin is stored with the entry");
+	});
+
+	test("work that cannot be read on this machine is reported, and nothing is applied (#4922)", async () => {
+		const a = await machineA();
+		const { onB, b } = await degradedTurnOnB(a.manager, a.snapshot, a.pushed, (worktree) =>
+			sandbox.write(join(worktree, "from-b.txt"), "done on machine B\n"),
+		);
+		const work = snapshotEntries(onB.sessionManager).at(-1)!.snapshot!;
+		const blobs = onB.sessionManager.getSessionStore().snapshotBlobs as SqlSnapshotBlobStore;
+		const unreadable = await carryOverDegradedWork({
+			worktree: b.to,
+			work: { ...work, chain: [{ ...work.chain[0]!, patch: "f".repeat(64) }] },
+			base: "0".repeat(40),
+			blobs,
+			storeDir: sandbox.path("machine-b"),
+		});
+		assert.equal(unreadable.outcome, "unavailable");
+		assert.deepEqual(unreadable.paths, []);
+		assert.match(unreadable.reason ?? "", /./);
+		const unknownBase = await carryOverDegradedWork({
+			worktree: b.to,
+			work,
+			base: "0".repeat(40),
+			blobs,
+			storeDir: sandbox.path("machine-b"),
+		});
+		assert.deepEqual([unknownBase.outcome, unknownBase.paths], ["unavailable", []]);
+		assert.match(unknownBase.reason ?? "", /is not here/);
+		const noBase = await carryOverDegradedWork({ worktree: b.to, work, base: undefined, blobs });
+		assert.deepEqual([noBase.outcome, noBase.paths], ["unavailable", []]);
+		assert.match(noBase.reason ?? "", /no record of the partial restore/);
+		assert.equal(readFileSync(join(b.to, "from-b.txt"), "utf8"), "done on machine B\n");
 	});
 });
