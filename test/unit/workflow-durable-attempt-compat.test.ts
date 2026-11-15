@@ -184,7 +184,21 @@ async function runSequence(endings: readonly Ending[], label: string, older: boo
 		});
 		if (result.status !== "failed") break;
 	}
-	if (older) assert.equal(latestWorkflowAttempt(backend.listCheckpoints(runId)), 0, `${label}: no attempt records`);
+	if (older) {
+		// A run without attempt records is written as before #4874: nothing is stamped, and no record exists only to
+		// say an attempt reached a node.
+		const checkpoints = backend.listCheckpoints(runId);
+		assert.equal(latestWorkflowAttempt(checkpoints), 0, `${label}: no attempt records`);
+		assert.deepEqual(
+			checkpoints.filter(
+				(checkpoint) =>
+					(checkpoint.kind !== "ui" && checkpoint.attempt !== undefined) ||
+					/(^|:)(boundary-attempt|tool-replay-meta):|:a\d+:/.test(checkpoint.checkpointId),
+			),
+			[],
+			label,
+		);
+	}
 	return attempts;
 }
 

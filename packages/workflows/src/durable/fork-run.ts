@@ -317,9 +317,8 @@ function stageSessionId(checkpoint: DurableStageCheckpoint): string | undefined 
 		: undefined;
 }
 
-/** Completed stages of a run in completion order, each with a unique dot path. */
 /**
- * The completed stages a run can be forked from. Once the run has attempts, those are the stages its latest attempt
+ * Completed stages of a run in completion order, each with a unique dot path: the stages it can be forked from. Once the run has attempts, those are the stages its latest attempt
  * reached, and a stage's fork copies the events before its first record in the attempt that completed it (#4874).
  */
 function forkPointRecords(checkpoints: readonly CheckpointEvent[], rootRunId: string): readonly ForkPointRecord[] {

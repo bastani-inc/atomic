@@ -39,14 +39,15 @@ afterEach(async () => {
 /** Where an attempt fails: a stage, the tool, or inside the child workflow. */
 type Point = "s1" | "t1" | "s2" | "child";
 /**
- * How an attempt ends: it runs to completion, exits after a node, fails at a point, or completes past a failure of
- * `s2` it caught.
+ * How an attempt ends: it runs to completion, exits after a node, fails at a point, completes past a failure of `s2`
+ * it caught, or calls a tool of its own before `t1`.
  */
 type Ending =
 	| { readonly kind: "complete" }
 	| { readonly kind: "exit"; readonly after: "s1" | "t1" | "s2" }
 	| Fail
-	| { readonly kind: "caught" };
+	| { readonly kind: "caught" }
+	| { readonly kind: "detour" };
 type Fail = { readonly kind: "fail"; readonly at: Point };
 
 interface Behaviour {
@@ -80,6 +81,7 @@ function definitions(behaviour: Behaviour): { parent: WorkflowDefinition; child:
 		run: async (ctx) => {
 			await ctx.stage("s1").prompt("s1");
 			exitAfter("s1", ctx);
+			if (behaviour.ending.kind === "detour") await ctx.tool("detour", {}, async () => "detour");
 			await ctx.tool("t1", {}, async () => {
 				if (fails("t1")) throw new Error("planned tool failure");
 				return "t1";
@@ -253,6 +255,25 @@ describe("a resumed run keeps what its latest attempt did (#4874)", () => {
 		await assertDurableMatchesLive(h, live, "caught");
 	});
 
+	test("a resumed attempt that fails before reaching its failed tool keeps that tool failed (#4874)", async () => {
+		const h = await harness({ kind: "fail", at: "t1" }, "attempt-detour");
+		const live = await h.resume({ kind: "detour" });
+		assert.equal(live.status, "failed");
+		assert.deepEqual(
+			live.toolNodes.map((tool) => `${tool.name}:${tool.status}`),
+			["t1:failed"],
+		);
+		await assertDurableMatchesLive(h, live, "detour");
+	});
+
+	test("a child run again in two later attempts reads as the last one (#4874)", async () => {
+		const h = await harness({ kind: "fail", at: "child" }, "attempt-child-thrice");
+		await assertDurableMatchesLive(h, await h.resume({ kind: "fail", at: "child" }), "failed again");
+		const live = await h.resume({ kind: "complete" });
+		assert.equal(live.status, "completed", live.error);
+		await assertDurableMatchesLive(h, live, "completed");
+	});
+
 	test("a run resumed twice reads as its last attempt, after one that failed elsewhere (#4874)", async () => {
 		const h = await harness({ kind: "fail", at: "t1" }, "attempt-twice");
 		await assertDurableMatchesLive(h, await h.resume({ kind: "fail", at: "s2" }), "failed at s2");
@@ -298,6 +319,17 @@ describe("forking a resumed run (#4874)", () => {
 		);
 		const fromChild = await forkRoot(h, "workflow:attempt-child");
 		assert.deepEqual(stageNames(fromChild.root), ["s1", "s2"]);
+	});
+
+	test("a fork from a stage an earlier attempt completed leaves the later attempts out (#4874)", async () => {
+		const h = await harness({ kind: "fail", at: "child" }, "attempt-fork-earlier");
+		await h.resume({ kind: "fail", at: "child" });
+		const fromS2 = await forkRoot(h, "s2");
+		assert.deepEqual(stageNames(fromS2.root), ["s1"]);
+		assert.deepEqual(
+			fromS2.root?.toolNodes.map((tool) => tool.name),
+			["t1"],
+		);
 	});
 
 	test("a forked run resumed from its fork point reads durably as it ran live (#4874)", async () => {

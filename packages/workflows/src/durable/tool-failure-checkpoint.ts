@@ -3,7 +3,7 @@ import type { WorkflowSerializableValue } from "../shared/types.js";
 import { checkpointAttempt, durableWorkflowAttempt } from "./attempt-identity.js";
 import type { DurableWorkflowBackend } from "./backend.js";
 import { workflowToolFailure } from "./tool-outcome.js";
-import { DURABLE_TOOL_TOPOLOGY_VERSION, type DurableStageRunTopology, type DurableToolCheckpoint } from "./types.js";
+import { DURABLE_TOOL_TOPOLOGY_VERSION, type DurableStageRunTopology } from "./types.js";
 
 export interface ThrowingToolFailureCheckpointInput {
 	readonly workflowId: string;
@@ -77,17 +77,15 @@ export async function recordUnconsumedToolFrontier(
 ): Promise<void> {
 	const attempt = durableWorkflowAttempt(backend, workflowId);
 	if (attempt === undefined) return;
-	let latest: DurableToolCheckpoint | undefined;
-	for (const checkpoint of backend.listCheckpoints(workflowId)) {
-		if (checkpoint.kind !== "tool" || checkpoint.argsHash !== argsHash || checkpoint.topology === undefined) continue;
-		if (latest === undefined || checkpoint.completedAt >= latest.completedAt) latest = checkpoint;
-	}
-	if (latest === undefined || latest.throwingFailureError === undefined || checkpointAttempt(latest) === attempt)
-		return;
+	// A run's checkpoints are listed oldest first.
+	const latest = backend
+		.listCheckpoints(workflowId)
+		.findLast((checkpoint) => checkpoint.kind === "tool" && checkpoint.argsHash === argsHash);
+	if (latest?.kind !== "tool" || checkpointAttempt(latest) === attempt) return;
 	const { attempt: _attempt, ...failure } = latest;
 	await backend.commitAdditiveCheckpointBestEffort({
 		...failure,
 		checkpointId: `tool-failure:${argsHash}:a${attempt}:frontier`,
-		completedAt: Math.max(Date.now(), latest.completedAt + 1),
+		completedAt: Date.now(),
 	});
 }

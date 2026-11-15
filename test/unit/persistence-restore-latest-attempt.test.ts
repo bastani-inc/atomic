@@ -33,6 +33,24 @@ const RESUMED_AFTER_BLOCK: SessionEntry[] = [
 		type: "workflow.run.start",
 		payload: { runId: "r1", name: "wf", inputs: {}, resumedFromRunId: "r1", accumulatedDurationMs: 500, ts: 10 },
 	},
+	{
+		id: "e5",
+		type: "workflow.stage.start",
+		payload: { runId: "r1", stageId: "s2", name: "follow-up", parentIds: [], ts: 11 },
+	},
+	// Another run in the same session, started after this one's latest attempt.
+	{
+		id: "o1",
+		type: "workflow.run.start",
+		payload: {
+			runId: "other",
+			name: "wf",
+			inputs: {},
+			resumedFromRunId: "elsewhere",
+			accumulatedDurationMs: 9,
+			ts: 12,
+		},
+	},
 ];
 
 test("a restored resumed attempt keeps its own start metadata (#4874)", () => {
@@ -56,7 +74,7 @@ test("a run blocked in its latest attempt is restored blocked (#4874)", () => {
 		makeSessionManager([
 			...RESUMED_AFTER_BLOCK,
 			{
-				id: "e5",
+				id: "e6",
 				type: "workflow.run.blocked",
 				payload: {
 					runId: "r1",
@@ -65,13 +83,19 @@ test("a run blocked in its latest attempt is restored blocked (#4874)", () => {
 					failureKind: "unknown",
 					failureRecoverability: "recoverable",
 					resumable: true,
-					ts: 11,
+					ts: 13,
 				},
 			},
+			{
+				id: "e7",
+				type: "workflow.stage.start",
+				payload: { runId: "r1", stageId: "s3", name: "after", parentIds: [], ts: 14 },
+			},
+			{ id: "o2", type: "workflow.run.start", payload: { runId: "third", name: "wf", inputs: {}, ts: 15 } },
 		]),
 		{ resumeInFlight: "auto", persistRuns: true },
 		store,
 	);
-	assert.equal(store.run("r1")?.blockedAt, 11);
+	assert.equal(store.run("r1")?.blockedAt, 13);
 	assert.equal(store.run("r1")?.error, "rate limited again");
 });
