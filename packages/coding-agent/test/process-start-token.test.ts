@@ -77,12 +77,49 @@ describe("the start of a process of this host (#5141)", () => {
 		60_000,
 	);
 
+	test.skipIf(!windows)(
+		"without the native module, a start read is reused for a few seconds, then read again (#5141)",
+		async () => {
+			setNativeProcessCreationTimeForTesting(null);
+			const child = await runningChild();
+			const start = processStartToken(child.pid);
+			assert.match(start ?? "", /^[0-9a-f]{12}$/);
+			await child.stop();
+			assert.equal(processStartToken(child.pid), start);
+			await new Promise((resolve) => setTimeout(resolve, 5_500));
+			assert.equal(processStartToken(child.pid), undefined);
+		},
+		60_000,
+	);
+
+	test.skipIf(!windows)(
+		"without the native module, PowerShell that cannot be started is given up on (#5141)",
+		() => {
+			setNativeProcessCreationTimeForTesting(null);
+			const path = process.env.PATH;
+			process.env.PATH = "";
+			try {
+				assert.equal(processStartToken(process.pid), undefined);
+			} finally {
+				process.env.PATH = path;
+			}
+			assert.equal(processStartToken(process.pid), undefined);
+			setNativeProcessCreationTimeForTesting(null);
+			assert.match(processStartToken(process.pid) ?? "", /^[0-9a-f]{12}$/);
+		},
+		60_000,
+	);
+
 	test.skipIf(!windows)("a native reader that fails or answers nonsense gives no start (#5141)", () => {
 		setNativeProcessCreationTimeForTesting(() => {
 			throw new Error("unreadable");
 		});
 		assert.equal(processStartToken(process.pid), undefined);
 		setNativeProcessCreationTimeForTesting(() => "not a time");
+		assert.equal(processStartToken(process.pid), undefined);
+		setNativeProcessCreationTimeForTesting(() => null);
+		assert.equal(processStartToken(process.pid), undefined);
+		setNativeProcessCreationTimeForTesting(() => "0");
 		assert.equal(processStartToken(process.pid), undefined);
 		setNativeProcessCreationTimeForTesting(() => "132000000000000000");
 		assert.match(processStartToken(process.pid) ?? "", /^[0-9a-f]{12}$/);

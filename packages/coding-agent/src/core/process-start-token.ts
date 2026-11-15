@@ -12,7 +12,6 @@ import { createModuleRequire } from "../utils/module-require.ts";
  * creation time, read by the native module, or, where that is not available, by a bounded PowerShell query.
  */
 export function processStartToken(pid: number): string | undefined {
-	if (!Number.isSafeInteger(pid) || pid <= 0) return undefined;
 	if (process.platform === "win32") {
 		const created = windowsCreationTime(pid);
 		return created === undefined ? undefined : sha12(`windows\n${created}`);
@@ -33,21 +32,21 @@ function sha12(text: string): string {
 	return createHash("sha256").update(text).digest("hex").slice(0, 12);
 }
 
-type CreationTimeReader = (pid: number) => string | null | undefined;
+type CreationTimeReader = (pid: number) => string | null;
 
 let nativeReader: CreationTimeReader | null | undefined;
 
 /** The native module's `processCreationTime`, or null where the module or that binding (added in #5141) is missing. */
 function nativeCreationTime(): CreationTimeReader | null {
-	if (nativeReader !== undefined) return nativeReader;
-	try {
-		const binding = createModuleRequire(import.meta.url)("@bastani/atomic-natives") as {
-			processCreationTime?: unknown;
-		};
-		nativeReader =
-			typeof binding.processCreationTime === "function" ? (binding.processCreationTime as CreationTimeReader) : null;
-	} catch {
-		nativeReader = null;
+	if (nativeReader === undefined) {
+		try {
+			const binding = createModuleRequire(import.meta.url)("@bastani/atomic-natives") as {
+				processCreationTime?: CreationTimeReader;
+			};
+			nativeReader = binding.processCreationTime ?? null;
+		} catch {
+			nativeReader = null;
+		}
 	}
 	return nativeReader;
 }
@@ -58,6 +57,7 @@ const FALLBACK_TIMEOUT_MS = 5_000;
 const FALLBACK_CACHE_MS = 5_000;
 const fallbackReads = new Map<number, { readonly at: number; readonly created: string | undefined }>();
 let fallbackBroken = false;
+const CREATION_TIME = /^[1-9]\d*$/;
 
 /**
  * Process `pid`'s creation time in 100-nanosecond intervals since 1601 UTC, as the native module reads it; without the
@@ -68,7 +68,7 @@ function windowsCreationTime(pid: number): string | undefined {
 	if (native !== null) {
 		try {
 			const created = native(pid);
-			return typeof created === "string" && /^\d+$/.test(created) ? created : undefined;
+			return created !== null && CREATION_TIME.test(created) ? created : undefined;
 		} catch {
 			return undefined;
 		}
@@ -77,13 +77,6 @@ function windowsCreationTime(pid: number): string | undefined {
 	const now = Date.now();
 	const cached = fallbackReads.get(pid);
 	if (cached !== undefined && now - cached.at < FALLBACK_CACHE_MS) return cached.created;
-	const created = powershellCreationTime(pid);
-	if (fallbackReads.size >= 256) fallbackReads.clear();
-	fallbackReads.set(pid, { at: now, created });
-	return created;
-}
-
-function powershellCreationTime(pid: number): string | undefined {
 	const result = spawnSync(
 		"powershell.exe",
 		[
@@ -94,12 +87,14 @@ function powershellCreationTime(pid: number): string | undefined {
 		],
 		{ encoding: "utf8", timeout: FALLBACK_TIMEOUT_MS, windowsHide: true },
 	);
-	if (result.error !== undefined && (result.error as NodeJS.ErrnoException).code !== "ETIMEDOUT") {
-		fallbackBroken = true;
-		return undefined;
-	}
-	const created = result.stdout?.trim() ?? "";
-	return result.status === 0 && /^\d+$/.test(created) && created !== "0" ? created : undefined;
+	// PowerShell that cannot be started never will be; one that timed out may answer the next time.
+	fallbackBroken = (result.error as NodeJS.ErrnoException | undefined)?.code === "ENOENT";
+	const output = result.stdout?.trim() ?? "";
+	const created = CREATION_TIME.test(output) ? output : undefined;
+	// Only the reads of the last few seconds are kept.
+	for (const [read, { at }] of fallbackReads) if (now - at >= FALLBACK_CACHE_MS) fallbackReads.delete(read);
+	fallbackReads.set(pid, { at: now, created });
+	return created;
 }
 
 /** Test seam: replaces the native reader (`null` forces the PowerShell fallback); `undefined` restores loading. */
