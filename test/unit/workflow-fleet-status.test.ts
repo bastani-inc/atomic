@@ -341,6 +341,25 @@ const STATS: SharedPoolStats = {
 	},
 };
 
+test("fleet status shows the provider instance a host runs on, and nothing for a host without one (#4803)", () => {
+	const { leased: _, ...older } = STATS.hosts[2]!;
+	assert.deepEqual(
+		workflowWorkerFleetLines({
+			hosts: [
+				{ ...older, host: "h-pod", providerId: "atomic-worker-7d9c-x2" },
+				{ ...older, host: "h-plain" },
+			],
+			roots: [],
+			fleet: { store: { state: "ok" } },
+		}).slice(0, 3),
+		[
+			"Hosts: 2",
+			"  host h-pod: stale, instance atomic-worker-7d9c-x2, 1 of 2 workers, git system, seen 20.0s ago",
+			"  host h-plain: stale, 1 of 2 workers, git system, seen 20.0s ago",
+		],
+	);
+});
+
 test("fleet status lines show each host's state, the fleet's queue, and every later field only when present (#4768)", () => {
 	assert.deepEqual(sharedPoolStatusLines({ sharedPool: STATS }), [
 		"2 ready · 1 leased · 3 completed · 0 failed · 1 stage input waiting",

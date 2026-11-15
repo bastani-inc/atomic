@@ -327,10 +327,17 @@ export class SqlSharedPool {
 		);
 	}
 
-	/** Whether a fleet controller asked `host` to drain (#4768). */
-	async drainRequested(host: string): Promise<boolean> {
+	/**
+	 * Whether a fleet controller asked `host` to drain (#4768), or the provider instance `providerId` it runs on (#4803): a
+	 * worker that restarts on a drained instance under a new host id stays drained until the instance is removed.
+	 */
+	async drainRequested(host: string, providerId?: string): Promise<boolean> {
 		const row = await this.storage.read((executor) =>
-			executor.get(`SELECT 1 AS asked FROM ${this.drains} WHERE host = ?`, host),
+			executor.get(
+				`SELECT 1 AS asked FROM ${this.drains} WHERE host = ? OR provider_id = ? LIMIT 1`,
+				host,
+				providerId ?? null,
+			),
 		);
 		return row !== undefined;
 	}

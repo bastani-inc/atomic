@@ -5,9 +5,13 @@ description: "Turn any Linux or macOS machine into a worker host for shared work
 
 # Running workers on many machines
 
+{/* Worker pools on PostgreSQL wait for #4793 P5. When they work, make this guide PostgreSQL-first: the recipes with managed PostgreSQL are on branch wip/postgres-fleet-recipes-p5-4793. */}
+
 A workflow root with shared placement keeps its work queue in a shared libSQL or Turso database. Any machine that has Atomic installed can run that root's pooled children: install Atomic, then run one command that names the database. The machines coordinate only through the database. There is no other service to run.
 
 If you host the database yourself with sqld rather than Turso, start sqld with `--checkpoint-interval-s 60` (or `SQLD_CHECKPOINT_INTERVAL_S=60`): sqld 0.24.33 can otherwise stop taking writes when many hosts write at once. See [Turso and libSQL](/storage#turso-and-libsql).
+
+Worker hosts need libSQL or Turso in this release. `atomic worker` accepts a `postgres://` URL, but the worker pool does not run on [PostgreSQL](/storage#postgresql) yet; support is coming in a later release. If you host the database yourself, run sqld with `--checkpoint-interval-s 60`, as [Scale the fleet automatically](#scale-the-fleet-automatically) explains.
 
 ## Join a machine
 
@@ -26,6 +30,7 @@ The command prints `ready host=… slots=… journal=…` and then one line per 
 - `--label zone=east` adds a label that `atomic worker status` shows. Repeat it for more labels.
 - `--prefix <prefix>` selects the tables of one team when several share a database.
 - `--idle-exit <ms>` drains and exits once no child has run for that long. Use it for machines that should shut down when the queue is empty.
+- `--provider-id <id>` names the VM instance, pod or CI job the host runs on, for a [fleet controller](#scale-the-fleet-automatically). It defaults to the `ATOMIC_PROVIDER_ID` environment variable, or on Kubernetes to the pod name.
 - `--json` prints the events as one JSON object per line, for log shippers.
 
 See the [CLI reference](/reference/cli#worker-commands) for every option and exit code.
@@ -58,7 +63,7 @@ A machine that dies, or is killed with SIGKILL, loses nothing that was committed
 
 `atomic worker status` prints the fleet: how many running or paused roots use the database and how many of their children are ready and running, then each registered host and each root's queue. `--json` prints the same as JSON, in the shape of `host.stats()`. Each host line starts with the host's state:
 
-- `busy` or `idle`: whether any of its workers runs a child. The line also shows its workers out of its slots, how many are busy, its labels, and when it last reported. Busy counts are as of the host's last report, at most 5 seconds old.
+- `busy` or `idle`: whether any of its workers runs a child. The line also shows the instance it runs on when it has a provider id, its workers out of its slots, how many are busy, its labels, and when it last reported. Busy counts are as of the host's last report, at most 5 seconds old.
 - `draining`: it takes no more children and stops once its running ones finish.
 - `degraded`: its polls of the database fail; the line shows how many in a row and the last error.
 - `stale`: it has not reported for 15 seconds. It may have died, or lost the database. Its children go to other hosts once their leases expire.
@@ -152,7 +157,9 @@ export default {
 };
 ```
 
-Start each host it creates with `atomic worker start` and the environment variable `ATOMIC_WORKER_PROVIDER_ID` set to the host's provider id, so the controller can match the two.
+Start each host it creates with `atomic worker start --provider-id <id>`, or the environment variable `ATOMIC_PROVIDER_ID`, set to the id `list` reports for it, so the controller can match the two. On Kubernetes a host uses its pod name by default.
+
+A drain applies to the instance, not only to the worker on it. If a drained host's worker restarts, for example when a pod's container restarts, it registers under a new host id but with the same provider id, so it drains again at once and takes no children until the provider has removed the instance, including while a deletion is still in progress. A host started without a provider id is matched by its host id only. When the provider no longer lists an instance, the controller forgets its drain, so a new instance that reuses the id serves normally.
 
 SDK roots can run it themselves while they run: pass `workers: { placement: "shared", provisioner: { provisioner, maxHosts: 20, workersPerHost: 8 } }`, where `provisioner` is a module's provisioner or `createWorkerHostProvisioner(config)`, or call `startWorkflowFleetController({ provisioner, … })`. When such a root ends, its controller asks the idle hosts above the target to drain at once, but nothing removes them from your provider afterwards unless another controller runs. Have your provisioner reap hosts that exited, or run `atomic worker controller` for a fleet that serves many roots.
 
@@ -203,13 +210,13 @@ Atomic ships presets in its package's `examples/worker-fleet/presets` directory.
 | `azure-vmss.json` | `az vmss scale`, `list-instances`, `delete-instances` | Instance id | A custom role on that one scale set: `Microsoft.Compute/virtualMachineScaleSets/{read,write,delete/action}` and `…/virtualMachines/{read,delete}` | A managed identity: `az login --identity --client-id <id>` on an Azure VM, or Workload Identity in AKS. No service principal secret |
 | `aws-asg.json` | `aws autoscaling set-desired-capacity`, `describe-auto-scaling-groups`, `terminate-instance-in-auto-scaling-group` | Instance id | `autoscaling:SetDesiredCapacity` and `autoscaling:TerminateInstanceInAutoScalingGroup` on that group's ARN, and `autoscaling:DescribeAutoScalingGroups`, which AWS does not scope to a resource | A role through the default credential chain: an instance profile, EKS Pod Identity or IRSA. No access keys |
 | `gcp-mig.json` | `gcloud compute instance-groups managed resize`, `list-instances`, `delete-instances` | Instance name | A custom role with `compute.instanceGroupManagers.get`, `compute.instanceGroupManagers.update` and `compute.instances.delete` | A service account attached to the VM, or Workload Identity Federation for GKE. No JSON keys |
-| `kubernetes.json` | `kubectl scale` on a Deployment, `get pods`, and for removal `annotate` with `controller.kubernetes.io/pod-deletion-cost` then a scale-down by one | Pod name | A Role in the namespace with `get`, `list` and `patch` on `pods`, and `get` on `deployments` and `get`, `patch` and `update` on `deployments/scale`, both limited to that Deployment by `resourceNames` | The pod's in-cluster ServiceAccount, which `kubectl` uses on its own. The Helm chart creates it with `controllerRbac: true` |
+| `kubernetes.json` | `kubectl scale` on a Deployment, `get pods`, and for removal `delete pod` then a scale-down by one | Pod name | A Role in the namespace with `get`, `list` and `delete` on `pods`, and `get` on `deployments` and `get`, `patch` and `update` on `deployments/scale`, both limited to that Deployment by `resourceNames` | The pod's in-cluster ServiceAccount, which `kubectl` uses on its own. The Helm chart creates it with `controllerRbac: true` |
 | `github-actions.json` | `gh workflow run` once per host, `gh run list` for queued, running and waiting runs, `gh run cancel` | Run id | **Actions: read and write** on that one repository | A GitHub App's installation tokens, minted for each hour ([GitHub App auth](#github-app-auth)). Inside Actions, the workflow's own `GITHUB_TOKEN`. Fallback: a fine-grained token |
 
 How each preset removes a host:
 
 - The Azure, AWS and Google Cloud presets delete the named instance and lower the group's size in one call, so the platform never picks a victim.
-- The Kubernetes preset marks the drained pod with the lowest deletion cost, then scales the Deployment down by one. The ReplicaSet removes pending pods first, then the marked pod, never a busy one. If a pod was still pending, it goes instead, and the drained pod is drained again later. For scaling to zero on Kubernetes, prefer KEDA on [the scaling signal](#the-scaling-signal).
+- The Kubernetes preset deletes the drained pod, then scales the Deployment down by one, so the ReplicaSet does not replace it. If the ReplicaSet already started a replacement, the scale-down removes it, because a ReplicaSet removes pods that are not ready, or have been ready for the shortest time, first. For scaling to zero on Kubernetes, prefer KEDA on [the scaling signal](#the-scaling-signal).
 - The GitHub Actions preset starts one workflow run per host, each running `atomic worker start --idle-exit`, and cancels a run only if it never registered. A drained host's run ends by itself.
 
 Give each host its provider id: the instance id from the cloud's metadata service, the pod name from the downward API, or `${{ github.run_id }}` in Actions. The recipes below do this.
@@ -274,7 +281,7 @@ Every recipe uses the platform's own short-lived identity, and no recipe stores 
 | Cloud access from GitHub Actions | GitHub's OIDC token (`id-token: write`) with `azure/login`, `aws-actions/configure-aws-credentials` or `google-github-actions/auth` | GitHub Actions OpenID Connect |
 | The shared database token (`--token-file`) | Read from a secret manager at boot (Key Vault, Secrets Manager, Secret Manager), or mounted in Kubernetes from a Secret synced by the External Secrets Operator or the Secrets Store CSI driver, and copied to a mode 600 file. Never baked into an image | Secrets Store CSI driver, External Secrets Operator |
 
-The database token itself is long-lived. For PostgreSQL, the cloud IAM tokens of the PostgreSQL adapter ([#4804](https://github.com/bastani-inc/atomic/issues/4804)) replace it with short-lived tokens once that adapter ships.
+The database token itself is long-lived.
 
 ### Recipes
 
