@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync } from "node:fs";
-import net from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, test, vi } from "vitest";
@@ -28,7 +27,7 @@ type Message = import("../../packages/intercom/types.js").Message;
 const REAL_BROKER_TEST_TIMEOUT_MS = 120_000;
 const WAIT = { timeout: 10_000, interval: 20 };
 /** The broker child compiles its TypeScript as it starts, which takes longer than {@link WAIT} on a loaded machine. */
-const BROKER_START_WAIT = { timeout: 40_000, interval: 50 };
+const BROKER_START_WAIT_MS = 40_000;
 /** Long enough for a frame the broker wrote to arrive, so its absence means none was written. */
 const SETTLE_MS = 300;
 
@@ -46,18 +45,9 @@ async function startBroker(options: { crashAt?: string } = {}): Promise<void> {
 		stdio: "ignore",
 	});
 	brokerFixture.trackBroker(broker);
-	await vi.waitFor(async () => {
-		brokerFixture.assertRunning();
-		const connected = await new Promise<boolean>((resolveConnected) => {
-			const socket = net.createConnection(getBrokerSocketPath(process.platform, brokerFixture.agentDir));
-			socket.once("connect", () => {
-				socket.destroy();
-				resolveConnected(true);
-			});
-			socket.once("error", () => resolveConnected(false));
-		});
-		assert.ok(connected);
-	}, BROKER_START_WAIT);
+	// A broker retires once no session has been connected for 5 s since it listened. Under load the test can spend that
+	// long before its own sessions register, so the fixture holds a session for this broker until cleanup.
+	await brokerFixture.holdSession(getBrokerSocketPath(process.platform, brokerFixture.agentDir), BROKER_START_WAIT_MS);
 }
 
 /** How the broker goes away while both peers of an ask are connected. */
