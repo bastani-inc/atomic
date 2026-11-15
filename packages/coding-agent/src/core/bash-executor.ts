@@ -9,8 +9,7 @@
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { APP_NAME } from "../config.js";
-import { splitIncompleteAnsiSuffix, stripAnsi } from "../utils/ansi.js";
-import { sanitizeBinaryOutput } from "../utils/shell.ts";
+import { TerminalTextSanitizer } from "../utils/terminal-text.ts";
 import type { BashOperations, BashOutputChannel } from "./tools/bash.js";
 import { PersistedOutputFile } from "./tools/persisted-output-file.ts";
 import { ensureSessionTempDir } from "./tools/session-temp-dir.ts";
@@ -116,11 +115,14 @@ export async function executeBashWithOperations(
 	};
 
 	const decoders: Record<BashOutputChannel, TextDecoder> = { stdout: new TextDecoder(), stderr: new TextDecoder() };
-	const pendingAnsi: Record<BashOutputChannel, string> = { stdout: "", stderr: "" };
+	// Escape sequences, control strings and control characters (7-bit and 8-bit) are removed with
+	// state carried across chunks, so a sequence split between chunks is removed whole.
+	const sanitizers: Record<BashOutputChannel, TerminalTextSanitizer> = {
+		stdout: new TerminalTextSanitizer(),
+		stderr: new TerminalTextSanitizer(),
+	};
 
-	const appendText = (rawText: string, channel: BashOutputChannel) => {
-		// Sanitize: strip ANSI, replace binary garbage, normalize newlines
-		const text = sanitizeBinaryOutput(stripAnsi(rawText)).replace(/\r/g, "");
+	const appendText = (text: string, channel: BashOutputChannel) => {
 		if (!text) {
 			return;
 		}
@@ -151,18 +153,13 @@ export async function executeBashWithOperations(
 
 	const onData = (data: Buffer, channel: BashOutputChannel = "stdout") => {
 		totalBytes += data.length;
-		const { complete, pending } = splitIncompleteAnsiSuffix(
-			pendingAnsi[channel] + decoders[channel].decode(data, { stream: true }),
-		);
-		pendingAnsi[channel] = pending;
-		appendText(complete, channel);
+		appendText(sanitizers[channel].write(decoders[channel].decode(data, { stream: true })), channel);
 	};
 
 	const flushOutput = () => {
 		for (const channel of ["stdout", "stderr"] as const) {
-			const rest = pendingAnsi[channel] + decoders[channel].decode();
-			pendingAnsi[channel] = "";
-			appendText(rest, channel);
+			const sanitizer = sanitizers[channel];
+			appendText(sanitizer.write(decoders[channel].decode()) + sanitizer.end(), channel);
 		}
 	};
 
