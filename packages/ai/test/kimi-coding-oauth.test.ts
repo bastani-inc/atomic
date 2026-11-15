@@ -121,6 +121,34 @@ describe("Kimi Code OAuth", () => {
 		expect(pollTimes).toEqual([startTime.getTime() + 5000, startTime.getTime() + 10000]);
 	});
 
+	it("still requires a refresh token from the device login (#4959)", async () => {
+		vi.useFakeTimers();
+		vi.stubGlobal("fetch", async (input: unknown) =>
+			getUrl(input) === `${OAUTH_HOST}/api/oauth/device_authorization`
+				? deviceAuthorizationResponse()
+				: jsonResponse({ access_token: "access-token", expires_in: 3600 }),
+		);
+		const login = kimiCodingOAuth.login(createInteraction([]));
+		const rejection = expect(login).rejects.toThrow(/Kimi Code token poll response missing fields/);
+		await vi.advanceTimersByTimeAsync(5000);
+		await rejection;
+	});
+
+	it("keeps the refresh token when a refresh issues none, but still requires a string access token (#4959)", async () => {
+		const stored = { type: "oauth" as const, access: "old", refresh: "R0", expires: 0 };
+		vi.stubGlobal("fetch", async () => jsonResponse({ access_token: "new-access" }));
+		const before = Date.now();
+		const refreshed = await kimiCodingOAuth.refresh(stored, new AbortController().signal);
+		expect(refreshed.refresh).toBe("R0");
+		expect(refreshed.access).toBe("new-access");
+		expect(refreshed.expires).toBeGreaterThanOrEqual(before + 3600 * 1000);
+
+		vi.stubGlobal("fetch", async () => jsonResponse({ access_token: 123, refresh_token: "R1", expires_in: 3600 }));
+		await expect(kimiCodingOAuth.refresh(stored, new AbortController().signal)).rejects.toThrow(
+			/^Kimi Code token refresh response missing fields/,
+		);
+	});
+
 	it("fails when the device code expires", async () => {
 		vi.useFakeTimers();
 		vi.stubGlobal(
