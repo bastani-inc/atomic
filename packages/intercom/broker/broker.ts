@@ -3214,6 +3214,16 @@ class IntercomBroker {
     this.dispatchHeldSends(this.departedChildren.adoptOrphans(ownerSessionId, owner.registrationReturnAddress));
   }
 
+  /**
+   * #4997: with multi-node routing an away session may come back on another broker, so its routes are kept in the
+   * shared state, which either broker answers; otherwise, or what the shared state does not take, waits here.
+   */
+  private keepAwayRoutes(questions: readonly PendingQuestion[], senderReturnAddress?: string): void {
+    const keepLocally = (kept: readonly PendingQuestion[]) => this.pendingQuestions.keepDormant(kept, senderReturnAddress);
+    if (this.multiNode !== undefined) this.multiNode.keepAwayRoutes(questions, keepLocally);
+    else keepLocally(questions);
+  }
+
   /** `ended`: the session said goodbye, so it is not coming back; otherwise its connection only dropped. */
   private disconnectSession(sessionId: string, ended = false): void {
     const departed = this.sessions.get(sessionId);
@@ -3259,7 +3269,7 @@ class IntercomBroker {
       this.pendingQuestions.markAwayAsker(sessionId, departed.registrationReturnAddress);
     } else if (departed.supervisorId === undefined && !ended) {
       // #4751: an ask has no expiry and survives its asker's restart or release: the route waits for the asker.
-      this.pendingQuestions.keepDormant(unanswered, departed.registrationReturnAddress);
+      this.keepAwayRoutes(unanswered, departed.registrationReturnAddress);
       this.pendingQuestions.markAwayAsker(sessionId, departed.registrationReturnAddress);
     }
     this.releasedAskerReplies.dropOwner(sessionId);
@@ -3275,7 +3285,7 @@ class IntercomBroker {
       this.pendingQuestions.parkTarget(sessionId, childName, releasedOwner);
     } else if (!ended && departed.supervisorId === undefined && departed.hostedBy === undefined) {
       // #4751: a recipient whose connection dropped without ending its session may restart; its asks stay pending.
-      this.pendingQuestions.keepDormant(this.pendingQuestions.takeForTarget(sessionId));
+      this.keepAwayRoutes(this.pendingQuestions.takeForTarget(sessionId));
     } else {
       if (ended) {
         // #4751: an away asker's ask to it fails with a message held until the asker is back; a session that ended

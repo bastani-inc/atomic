@@ -41,7 +41,7 @@ import {
 	type RestoringReservationLease,
 	reservationKeyFor,
 } from "./multinode-state-store.js";
-import type { PendingQuestionIndex } from "./pending-question-index.js";
+import type { PendingQuestion, PendingQuestionIndex } from "./pending-question-index.js";
 import { UNCERTAIN_RECEIPT_REASON } from "./recipient-receipts.js";
 import {
 	decideReleasedAskerReply,
@@ -1107,6 +1107,48 @@ export class MultiNodeRouter {
 	}
 
 	/**
+	 * #4997: a reply to a session on this broker, whose ask this broker's own routes do not know: an ask delivered while
+	 * its peers were on different brokers, or kept while one was away, has its route in the shared state. Both peers are
+	 * here now, so the route becomes this broker's own, and the shared one is settled, so the ask has one outcome.
+	 */
+	private async adoptSharedRoute(request: RemoteSendRequest, target: BrokerConnectedSession): Promise<void> {
+		const replyTo = request.message.replyTo;
+		const replySenderSessionId = request.from.info.id;
+		if (replyTo === undefined) return;
+		if (this.host.pendingQuestions.matchesReply(replySenderSessionId, target.info.id, replyTo)) return;
+		const route = { replySenderSessionId, replyTargetSessionId: target.info.id, replyTo };
+		if ((await this.state.pendingAsks.matchesReply(route)).status !== "match") return;
+		this.host.pendingQuestions.record(target.info.id, replySenderSessionId, replyTo);
+		await this.state.pendingAsks.clearReply(route);
+	}
+
+	/**
+	 * #4997: a session that left without ending may come back on another broker, so the routes of asks between it and a
+	 * session here are kept in the shared state, where either broker answers and settles them. `keepLocally`: the
+	 * routes the shared state did not take, which this broker keeps as a single-node broker does.
+	 */
+	keepAwayRoutes(questions: readonly PendingQuestion[], keepLocally: (questions: readonly PendingQuestion[]) => void): void {
+		if (questions.length === 0) return;
+		let kept = 0;
+		const keeping = (async () => {
+			for (const question of questions) {
+				const recorded = await this.state.pendingAsks.record({
+					senderSessionId: question.senderSessionId,
+					targetSessionId: question.targetSessionId,
+					messageId: question.messageId,
+				});
+				if (recorded.status === "invalid") throw new Error(`Shared ask route not kept: ${question.messageId}`);
+				kept += 1;
+			}
+		})().catch((error: Error) => {
+			this.report(error);
+			keepLocally(questions.slice(kept));
+		});
+		this.settling.add(keeping);
+		void keeping.finally(() => this.settling.delete(keeping));
+	}
+
+	/**
 	 * #4386: a released asker that woke on this broker, under the id it asked with, resolves here, but its question to
 	 * this reply's sender is kept only in the shared state. The question, for a reply to it that this broker's own ask
 	 * routes do not answer: the reply goes to the asker's owner as on any other broker.
@@ -1255,6 +1297,10 @@ export class MultiNodeRouter {
 			}
 			const moved = await Promise.race([released, expired]);
 			if (moved !== "expired" && moved !== undefined && (await this.routeReleasedReply(request, moved))) return;
+			if (moved !== "expired") {
+				const adopted = this.adoptSharedRoute(request, target);
+				if ((await Promise.race([adopted, expired])) === "expired") adopted.catch((error: Error) => this.report(error));
+			}
 			request.notFound();
 		} finally {
 			clearTimeout(bound);
