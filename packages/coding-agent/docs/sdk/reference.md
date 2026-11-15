@@ -64,7 +64,7 @@ const { session, workspace: binding } = await createAgentSession({
 ### Model
 
 ```typescript
-import { getModel } from "@bastani/pi-ai/compat";
+import { getModel } from "@bastani/atomic-ai/compat";
 import { ModelRuntime } from "@bastani/atomic";
 
 const modelRuntime = await ModelRuntime.create();

@@ -1,8 +1,12 @@
 # Changelog
 
-This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at the audited Pi `main` sync point (`cb7969d212836b8939001dce159fbd2ed6ad395f`) lives in [earendil-works/pi](https://github.com/earendil-works/pi/blob/cb7969d212836b8939001dce159fbd2ed6ad395f/packages/ai/CHANGELOG.md).
+This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani/atomic-ai` (formerly `@bastani/pi-ai`). Upstream history at the audited Pi `main` sync point (`cb7969d212836b8939001dce159fbd2ed6ad395f`) lives in [earendil-works/pi](https://github.com/earendil-works/pi/blob/cb7969d212836b8939001dce159fbd2ed6ad395f/packages/ai/CHANGELOG.md).
 
 ## [Unreleased]
+
+### Changed
+
+- Renamed the package from `@bastani/pi-ai` to `@bastani/atomic-ai`. It now depends on Atomic's forks `@bastani/atomic-schema` and `@bastani/atomic-telemetry` instead of pi's packages. Atomic's extension loader still resolves `@bastani/pi-ai`, `@earendil-works/pi-ai` and `@mariozechner/pi-ai` imports to it ([#5174](https://github.com/bastani-inc/atomic/issues/5174))
 
 ### Fixed
 

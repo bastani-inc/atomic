@@ -11,7 +11,7 @@ For providers with non-standard APIs, implement `streamSimple`. Study the existi
 
 **Reference implementations:**
 
-Atomic uses provider implementations from its installed `@bastani/pi-ai` dependency. The streaming implementations behind the `api` field live under `node_modules/@bastani/pi-ai/dist/api/`, including:
+Atomic uses provider implementations from its installed `@bastani/atomic-ai` dependency. The streaming implementations behind the `api` field live under `node_modules/@bastani/atomic-ai/dist/api/`, including:
 - `anthropic-messages.d.ts` / `anthropic-messages.js` - Anthropic Messages API
 - `mistral-conversations.d.ts` / `mistral-conversations.js` - Mistral Conversations/Chat streaming
 - `openai-completions.d.ts` / `openai-completions.js` - OpenAI Chat Completions
@@ -40,7 +40,7 @@ import {
   getCurrentSystemPrompt,
   getCurrentTools,
   ToolCallArgumentsStream,
-} from "@bastani/pi-ai";
+} from "@bastani/atomic-ai";
 
 function streamMyProvider(
   model: Model<any>,
@@ -164,7 +164,7 @@ stream.push({ type: "text_end", contentIndex, content: block.text, partial: outp
 
 ### Tool Calls
 
-Tool calls stream their arguments as JSON text. `ToolCallArgumentsStream` from `@bastani/pi-ai` reads each delta once and returns the arguments parsed so far, so large tool calls do not re-parse the whole text on every delta:
+Tool calls stream their arguments as JSON text. `ToolCallArgumentsStream` from `@bastani/atomic-ai` reads each delta once and returns the arguments parsed so far, so large tool calls do not re-parse the whole text on every delta:
 
 ```typescript
 // Start tool call

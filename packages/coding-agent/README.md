@@ -725,6 +725,6 @@ MIT
 
 ## See Also
 
-- [@bastani/pi-ai](https://www.npmjs.com/package/@bastani/pi-ai): Core LLM toolkit
-- [@earendil-works/pi-agent-core](https://www.npmjs.com/package/@earendil-works/pi-agent-core): Agent framework
-- [@earendil-works/pi-tui](https://www.npmjs.com/package/@earendil-works/pi-tui): Terminal UI components
+- [@bastani/atomic-ai](https://www.npmjs.com/package/@bastani/atomic-ai): Core LLM toolkit
+- [@bastani/atomic-agent-core](https://www.npmjs.com/package/@bastani/atomic-agent-core): Agent framework
+- [@bastani/atomic-tui](https://www.npmjs.com/package/@bastani/atomic-tui): Terminal UI components

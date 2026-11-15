@@ -77,7 +77,7 @@ Run `/login openai`, then choose **API key** or **Sign in with ChatGPT**. The Ch
 
 Complete the browser callback, or paste the full callback URL into the login dialog on a remote machine. If your browser cannot reach `127.0.0.1:1455`, copy the final URL from its address bar, including `code`, `state`, and `client_id`, and paste it into Atomic. Atomic creates a global device identity on first use of this sign-in; project settings do not override it. A saved subscription credential does not verify model entitlement or remaining usage.
 
-Apps using `@bastani/pi-ai` directly can pass `{ agentName: "my-app" }` as the fourth argument to `models.login()` to set the OpenAI ChatGPT name hint or Codex browser-login originator. ChatGPT sign-in keeps `Atomic` as its default name.
+Apps using `@bastani/atomic-ai` directly can pass `{ agentName: "my-app" }` as the fourth argument to `models.login()` to set the OpenAI ChatGPT name hint or Codex browser-login originator. ChatGPT sign-in keeps `Atomic` as its default name.
 
 ### Subscription and API key at the same time
 
@@ -637,7 +637,7 @@ import {
   DefaultResourceLoader,
   type AiGatewayBinding,
 } from "@bastani/atomic";
-import { streamSimple as anthropicStreamSimple } from "@bastani/pi-ai/api/anthropic-messages";
+import { streamSimple as anthropicStreamSimple } from "@bastani/atomic-ai/api/anthropic-messages";
 
 // `AI` is the Workers AI binding; `AiGatewayBinding` is the structural type for it,
 // so the snippet needs no `@cloudflare/workers-types` dependency.
@@ -693,7 +693,7 @@ export default {
 };
 ```
 
-Current Workers AI bindings expose `fetch()`. `createGatewayBindingFetch` forwards each request untouched to `https://workers-binding.ai/ai-gateway/gateways/{gateway}/{provider}/...`. `baseUrl` and `gateway` options are ignored. Methods, headers (including the auth sentinel), query strings, non-JSON bodies, request streams, and response streams retain native fetch semantics; Cloudflare's gateway recognizes and strips the sentinel. Bindings that only expose `gateway(id).run(...)` are not supported. Repeat the same pattern with `@bastani/pi-ai/api/openai-completions` (or `openai-responses`), setting the model `baseUrl` to `${bindingPrefix}/openai` (or `${bindingPrefix}/compat`) for those provider routes.
+Current Workers AI bindings expose `fetch()`. `createGatewayBindingFetch` forwards each request untouched to `https://workers-binding.ai/ai-gateway/gateways/{gateway}/{provider}/...`. `baseUrl` and `gateway` options are ignored. Methods, headers (including the auth sentinel), query strings, non-JSON bodies, request streams, and response streams retain native fetch semantics; Cloudflare's gateway recognizes and strips the sentinel. Bindings that only expose `gateway(id).run(...)` are not supported. Repeat the same pattern with `@bastani/atomic-ai/api/openai-completions` (or `openai-responses`), setting the model `baseUrl` to `${bindingPrefix}/openai` (or `${bindingPrefix}/compat`) for those provider routes.
 
 ### Cloudflare Workers AI
 
