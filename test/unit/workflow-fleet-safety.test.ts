@@ -689,3 +689,20 @@ test("bootHold finds an instance free in a journal that never ran a shared pool 
 		await removeLibsqlDirectory(directory);
 	}
 });
+
+test("a host that reads a drain naming it is draining for the controller at once, before its next report (#5072)", async () => {
+	const f = await fixture();
+	try {
+		await f.report("h1", "vm-1");
+		await f.report("h2", "vm-2");
+		// The controller drained vm-1 for its boot timeout; h1 registered on it just before.
+		await seedDrain(f.store, "boot-timeout:vm-1", "vm-1");
+		assert.equal(await f.shared.drainRequested("h1", "vm-1"), true);
+		// Before h1 acts on the drain or reports again, the controller checks the instance once more.
+		assert.equal(await f.store.bootHold("vm-1", undefined, new Set(["h1"])), "draining");
+		assert.equal(await f.shared.drainRequested("h2", "vm-2"), false);
+		assert.equal(await f.store.bootHold("vm-2", undefined, new Set(["h2"])), "occupied", "a host not asked serves");
+	} finally {
+		await f.close();
+	}
+});
