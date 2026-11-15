@@ -120,6 +120,12 @@ export interface PoolWork extends PoolWorkDescriptor {
 	 * when there are none.
 	 */
 	readonly handoffs?: readonly number[];
+	/**
+	 * Set on a leased attempt whose worker has not confirmed its claim yet (#5034): no heartbeat, commit or other
+	 * operation was recorded under its generation, so no worker is known to have run it. Read by
+	 * {@link SqlPoolQueue.inspect}; absent elsewhere, and once the claim is confirmed.
+	 */
+	readonly unconfirmed?: true;
 }
 type WorkRow = SqliteRow & {
 	id: string;
@@ -217,6 +223,11 @@ export interface PoolCommitReceipt {
 }
 /** The operation a handed-back attempt records for its work (see {@link PoolWork.handoffs}). */
 const HANDOFF_OPERATION = "pool-handoff";
+/**
+ * The operation a worker's heartbeat records for its attempt: the worker has its claim (#5034). Any other operation
+ * under the attempt's generation but a handoff confirms the claim too.
+ */
+const CONFIRMED_OPERATION = "pool-confirmed";
 function fromRow(row: WorkRow): PoolWork {
 	return {
 		...JSON.parse(row.descriptor),
@@ -1768,7 +1779,16 @@ export class SqlPoolQueue {
 			return fromRow({ ...row, state: "ready", worker: null, expires_at: 0, epoch: lease.epoch });
 		});
 	}
-	async expire(lease: Lease, token: WorkLease): Promise<boolean> {
+	/**
+	 * Puts an expired attempt's work back for another attempt. `handOffUnconfirmed`: an attempt whose worker never
+	 * confirmed its claim goes back as a handoff, which counts as none of the child's attempts (#5034); one confirmed
+	 * since it was read counts.
+	 */
+	async expire(
+		lease: Lease,
+		token: WorkLease,
+		options: { readonly handOffUnconfirmed?: boolean } = {},
+	): Promise<boolean> {
 		lease = snapshotLease(lease);
 		token = { ...token };
 		return this.transaction(async (tx) => {
@@ -1776,8 +1796,27 @@ export class SqlPoolQueue {
 			const row = await this.current(tx, lease, token);
 			if (row.epoch === lease.epoch && row.expires_at >= now) return false;
 			await tx.run(`UPDATE ${this.work} SET state = 'ready', worker = NULL, expires_at = 0 WHERE id = ?`, row.id);
+			if (options.handOffUnconfirmed === true)
+				await tx.run(
+					`INSERT OR IGNORE INTO ${this.operations}(work, generation, operation, request, receipt) SELECT ?, ?, ?, ?, '{}'
+					WHERE NOT EXISTS (SELECT 1 FROM ${this.operations} WHERE work = ? AND generation = ? AND operation != ?)`,
+					row.id,
+					Number(row.generation),
+					HANDOFF_OPERATION,
+					HANDOFF_OPERATION,
+					row.id,
+					Number(row.generation),
+					HANDOFF_OPERATION,
+				);
 			return true;
 		});
+	}
+	/** The write that records `token`'s claim as confirmed by its worker (#5034): once per generation. */
+	private confirmation(token: WorkLease): SqliteStatement {
+		return {
+			sql: `INSERT OR IGNORE INTO ${this.operations}(work, generation, operation, request, receipt) VALUES (?, ?, ?, ?, '{}')`,
+			params: [token.id, token.generation, CONFIRMED_OPERATION, CONFIRMED_OPERATION],
+		};
 	}
 	async extend(lease: Lease, token: WorkLease, durationMs: number): Promise<PoolWork> {
 		positive(durationMs);
@@ -1810,6 +1849,8 @@ export class SqlPoolQueue {
 		if (batched === undefined)
 			return this.transaction(async (tx) => {
 				const work = await this.extendIn(tx, lease, token, durationMs);
+				const confirm = this.confirmation(token);
+				await tx.run(confirm.sql, ...confirm.params);
 				const recorded = await record(tx);
 				return { work, recorded, control: await this.controlIn(tx, lease) };
 			});
@@ -1820,7 +1861,8 @@ export class SqlPoolQueue {
 				const reads = [...extension.reads, ...batched.reads];
 				return {
 					fences: extension.fences,
-					writes: [...extension.writes, ...batched.writes],
+					// A worker's heartbeat confirms its claim: from now on, its attempt ending counts (#5034).
+					writes: [...extension.writes, this.confirmation(token), ...batched.writes],
 					reads: [
 						...reads,
 						{
@@ -2015,15 +2057,20 @@ export class SqlPoolQueue {
 	async inspect(root: string): Promise<readonly PoolWork[]> {
 		return this.storage.read(async (executor) =>
 			(
-				await executor.all<WorkRow & { handoffs: string | null }>(
-					`SELECT w.*, (SELECT json_group_array(o.generation) FROM ${this.operations} o WHERE o.work = w.id AND o.operation = ?) AS handoffs
+				await executor.all<WorkRow & { handoffs: string | null; confirmed: number | bigint }>(
+					`SELECT w.*, (SELECT json_group_array(o.generation) FROM ${this.operations} o WHERE o.work = w.id AND o.operation = ?) AS handoffs,
+					EXISTS (SELECT 1 FROM ${this.operations} o WHERE o.work = w.id AND o.generation = w.generation AND o.operation != ?) AS confirmed
 					FROM ${this.work} w WHERE w.root = ? ORDER BY w.ready_at, w.rowid`,
+					HANDOFF_OPERATION,
 					HANDOFF_OPERATION,
 					root,
 				)
 			).map((row) => {
 				const handoffs = JSON.parse(row.handoffs ?? "[]") as number[];
-				return handoffs.length > 0 ? { ...fromRow(row), handoffs } : fromRow(row);
+				const work = handoffs.length > 0 ? { ...fromRow(row), handoffs } : fromRow(row);
+				return row.state === "leased" && Number(row.confirmed) === 0
+					? { ...work, unconfirmed: true as const }
+					: work;
 			}),
 		);
 	}

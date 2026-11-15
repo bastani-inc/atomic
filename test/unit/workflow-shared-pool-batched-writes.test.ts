@@ -417,6 +417,52 @@ test("a claim whose answer was lost hands out the row it took instead of taking 
 	}
 });
 
+for (const batched of [true, false])
+	test(`an expired claim its worker never confirmed goes back as a handoff, and its late confirmation is refused; a confirmed one counts (#5034, ${batched ? "batched" : "transactions"})`, async () => {
+		const f = await fixture(batched);
+		try {
+			// A claim whose worker never learned of it: no heartbeat, no commit under its generation.
+			const lost = await f.pool.claim(f.lease, "host/w1", [work], 60_000);
+			assert.ok(lost);
+			assert.deepEqual(
+				(await f.pool.inspect("root")).map((item) => [item.generation, item.unconfirmed]),
+				[[1, true]],
+			);
+			f.connection.exec("UPDATE acme_wf_runs_work SET expires_at = 1");
+			assert.equal(await f.pool.expire(f.lease, lost, { handOffUnconfirmed: true }), true);
+			assert.deepEqual(
+				(await f.pool.inspect("root")).map((item) => [
+					item.state,
+					item.generation,
+					item.handoffs,
+					item.unconfirmed,
+				]),
+				[["ready", 1, [1], undefined]],
+			);
+			// The dead claim's confirmation arrives late: its generation no longer holds the work.
+			await assert.rejects(
+				f.pool.heartbeat(f.lease, lost, 60_000, f.usage.recording(f.lease, lost, [])),
+				StaleWorkLeaseError,
+			);
+			// The next claim is confirmed by its worker's heartbeat: its expiry counts as an attempt.
+			const confirmed = await f.pool.claim(f.lease, "host/w2", [work], 60_000);
+			assert.equal(confirmed?.generation, 2);
+			await f.pool.heartbeat(f.lease, confirmed, 60_000, f.usage.recording(f.lease, confirmed, []));
+			assert.deepEqual(
+				(await f.pool.inspect("root")).map((item) => [item.generation, item.unconfirmed]),
+				[[2, undefined]],
+			);
+			f.connection.exec("UPDATE acme_wf_runs_work SET expires_at = 1");
+			assert.equal(await f.pool.expire(f.lease, confirmed, { handOffUnconfirmed: true }), true);
+			assert.deepEqual(
+				(await f.pool.inspect("root")).map((item) => [item.state, item.generation, item.handoffs]),
+				[["ready", 2, [1]]],
+			);
+		} finally {
+			await f.close();
+		}
+	});
+
 /** A refusal as its typed error and reason, for comparing the batched path's refusals with the transactional path's. */
 const refusal = (reason: string) => (error: Error) =>
 	error instanceof StaleWorkLeaseError && (error as Error & { reason?: string }).reason === reason;
