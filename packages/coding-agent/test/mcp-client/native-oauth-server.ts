@@ -20,9 +20,13 @@ function json(response: ServerResponse, status: number, body: unknown, headers: 
  * `iss` is sent as the `iss` parameter of authorization responses (RFC 9207).
  * The MCP endpoint assigns a session, so closing a connection sends a DELETE. Paths added to `stall`
  * accept requests and never answer them, like an unresponsive server. `failRefreshes` makes refresh
- * grants fail the way a temporarily unavailable token endpoint does.
+ * grants fail the way a temporarily unavailable token endpoint does. Refresh tokens rotate; `refreshDelayMs`
+ * slows refresh grants down, and `revokeOnReplay` revokes every refresh token when a rotated one is used again
+ * (RFC 9700 §4.14.2).
  */
-export async function startOAuthMcpServer(options: { iss?: string } = {}) {
+export async function startOAuthMcpServer(
+	options: { iss?: string; refreshDelayMs?: number; revokeOnReplay?: boolean } = {},
+) {
 	const log: string[] = [];
 	const registrations: Record<string, unknown>[] = [];
 	const deletes: (string | undefined)[] = [];
@@ -30,6 +34,8 @@ export async function startOAuthMcpServer(options: { iss?: string } = {}) {
 	const stalled: { path: string; request: IncomingMessage }[] = [];
 	const validTokens = new Set<string>();
 	const refreshTokens = new Set<string>();
+	const rotatedRefreshTokens = new Set<string>();
+	const refreshGrants: string[] = [];
 	const challenges = new Map<string, string>();
 	let issued = 0;
 	let origin = "";
@@ -140,7 +146,13 @@ export async function startOAuthMcpServer(options: { iss?: string } = {}) {
 					return;
 				}
 				const refresh = params.get("refresh_token") ?? "";
-				if (!refreshTokens.delete(refresh)) return json(response, 400, { error: "invalid_grant" });
+				refreshGrants.push(refresh);
+				if (options.refreshDelayMs) await new Promise((resolve) => setTimeout(resolve, options.refreshDelayMs));
+				if (!refreshTokens.delete(refresh)) {
+					if (options.revokeOnReplay && rotatedRefreshTokens.has(refresh)) refreshTokens.clear();
+					return json(response, 400, { error: "invalid_grant" });
+				}
+				rotatedRefreshTokens.add(refresh);
 				log.push("token refresh");
 				return json(response, 200, issueTokens());
 			}
@@ -163,6 +175,10 @@ export async function startOAuthMcpServer(options: { iss?: string } = {}) {
 		log,
 		/** Client metadata of dynamic client registrations. */
 		registrations,
+		/** Refresh tokens of refresh grants, in the order they arrived. */
+		refreshGrants,
+		/** Refresh tokens the server still accepts. */
+		refreshTokens,
 		/** Access tokens of session DELETE requests. */
 		deletes,
 		stall,

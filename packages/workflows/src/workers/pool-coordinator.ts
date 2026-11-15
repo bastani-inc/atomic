@@ -2358,23 +2358,39 @@ export class PoolCoordinator {
 						// The third lost attempt of one child fails only that child: the pool and its other children keep
 						// running. Its work item ends failed in the same transaction, so no worker claims it again. A worker
 						// host never fails a child: it releases it, and the root's own pool counts its attempts.
+						// A worker that died before it confirmed its claim never ran the child: its attempt goes back as a
+						// handoff, which counts as none of the child's attempts (#5034).
+						const current = work === undefined ? undefined : await this.counted(work);
+						const unconfirmedClaim =
+							current !== undefined &&
+							current.state === "leased" &&
+							current.generation === work!.generation &&
+							this.handoffs(current) < MAX_CHILD_HANDOFFS &&
+							!(await this.queue!.confirmed(current));
 						const exhausted =
 							this.satellite === undefined &&
-							work !== undefined &&
-							this.attempts(await this.counted(work)) >= MAX_CHILD_ATTEMPTS;
+							current !== undefined &&
+							!unconfirmedClaim &&
+							this.attempts(current) >= MAX_CHILD_ATTEMPTS;
 						const queue = this.queue!;
 						const lease = this.lease!;
 						const attempt = work;
 						const settled =
 							attempt !== undefined &&
 							(await this.whileRootLate(queue, () =>
-								exhausted ? queue.failExited(lease, attempt) : queue.releaseExited(lease, attempt),
+								exhausted
+									? queue.failExited(lease, attempt)
+									: queue.releaseExited(lease, attempt, unconfirmedClaim ? { delayMs: 0 } : undefined),
 							));
 						// An exit whose attempt another one already replaced is not that child's failure: its owner keeps it.
 						const superseded = work !== undefined && !settled && (await this.superseded(work));
 						if (work !== undefined && exhausted && !superseded)
 							// The worker's exit is the fault; process groups it left running are a cleanup that failed after it.
-							this.failWork(work, this.retryLimit(work, "worker-lost", undefined, logPath, unconfirmed));
+							// Its attempts are counted from the work as the queue holds it, which carries its handoffs.
+							this.failWork(
+								work,
+								this.retryLimit(current ?? work, "worker-lost", undefined, logPath, unconfirmed),
+							);
 						// Workers that crash without work are a pool-wide fault. A child that lost its worker consumes its own
 						// attempts, so those replacements are bounded by the children and never count toward this limit. A
 						// worker that ended itself between children for its memory did not crash: it is replaced without
@@ -2498,7 +2514,7 @@ export class PoolCoordinator {
 								const fault = message.fault === undefined ? undefined : rehydrateError(message.fault);
 								this.failWork(
 									fenced,
-									this.retryLimit(fenced, fault === undefined ? "refused-stale" : "pool-fault", fault),
+									this.retryLimit(current, fault === undefined ? "refused-stale" : "pool-fault", fault),
 								);
 							}
 						}
@@ -3042,8 +3058,13 @@ export class PoolCoordinator {
 				if (work.epoch < lease.epoch) await this.releaseRetained(work);
 				// An attempt that changed hands since it was read (its worker's exit released it, its worker completed it,
 				// another worker claimed it) has nothing left to expire. Its fault is never the pool's: thrown from here it
-				// failed the whole pool, and so every unfinished child of the pool at once.
-				else await queue.expire(lease, work).catch(ignoreStaleWorkLease);
+				// failed the whole pool, and so every unfinished child of the pool at once. An attempt whose worker never
+				// confirmed its claim, as when the claim's answer was lost before the worker died, goes back as a handoff: no
+				// worker ever ran it, so it counts as none of the child's attempts (#5034).
+				else
+					await queue
+						.expire(lease, work, { handOffUnconfirmed: this.handoffs(work) < MAX_CHILD_HANDOFFS })
+						.catch(ignoreStaleWorkLease);
 			}
 			if (this.satellite === undefined && this.sharedPool !== undefined)
 				await this.settleShared(queue, lease, this.sharedPool, rows);

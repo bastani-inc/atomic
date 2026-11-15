@@ -383,12 +383,14 @@ function taskResult(value: native.TaskResult, taskId: string, launches: LaunchMe
 			const ownerClose = value.cause === "owner-close" ? launches.ownerClose : undefined;
 			const executionTimeoutMs =
 				value.cause === "execution-timeout" ? launches.executionTimeouts.get(taskId) : undefined;
+			const released = value.cause === "pause" ? launches.releases.get(taskId) : undefined;
 			return {
 				kind: value.kind,
 				cause: value.cause,
 				...(value.output === undefined ? {} : { output: output(value.output) }),
 				...(ownerClose === undefined ? {} : { ownerClose }),
 				...(executionTimeoutMs === undefined ? {} : { executionTimeoutMs }),
+				...(released === undefined ? {} : { released }),
 			};
 		}
 	}
@@ -431,6 +433,8 @@ export type LaunchMetadata = {
 	readonly launchHeartbeats: Map<string, LaunchHeartbeat>;
 	/** Execution timeouts of commands, by task id: a command its timeout stops names it (#4639). */
 	readonly executionTimeouts: Map<string, number>;
+	/** What each agent released while it waited waits on, by task id: it is released, not paused (#5031). */
+	readonly releases: Map<string, C.TaskReleased>;
 	/** The close that ended the owner, which every task that close cancelled names (#4639). Kept past the close. */
 	ownerClose?: C.OwnerCloseCause;
 };
@@ -837,6 +841,7 @@ export function taskHostStateSizesForTesting(owner: OwnerLease) {
 		requestedModels: state.launches.requestedModels.size,
 		launchHeartbeats: state.launches.launchHeartbeats.size,
 		executionTimeouts: state.launches.executionTimeouts.size,
+		releases: state.launches.releases.size,
 	};
 }
 
@@ -895,6 +900,7 @@ export class TaskSupervisor {
 						requestedModels: new Map(),
 						launchHeartbeats: new Map(),
 						executionTimeouts: new Map(),
+						releases: new Map(),
 					},
 				};
 				this.#owners.set(owner, ownerState);
@@ -972,6 +978,7 @@ export class TaskSupervisor {
 		if (state.launches.launchHeartbeats.get(operation)?.taskId === taskId)
 			state.launches.launchHeartbeats.delete(operation);
 		state.launches.executionTimeouts.delete(taskId);
+		state.launches.releases.delete(taskId);
 		if (state.commandStarts.get(operation)?.task === task) state.commandStarts.delete(operation);
 	}
 	#evicted(task: TaskLease): boolean {
@@ -1330,6 +1337,12 @@ export class TaskSupervisor {
 			const outcome = execution.result
 				.catch((error) => ({ kind: "failed" as const, code: "RunnerFailed", message: rejectionMessage(error) }))
 				.then((result) => {
+					// The native outcome has no release: the host keeps it, and reads it back with the result (#5031).
+					if (result.kind === "cancelled" && result.released !== undefined) {
+						const { released, ...native } = result;
+						if (native.cause === "pause") state.launches.releases.set(id, released);
+						result = native;
+					}
 					return mapped(
 						this.#native.reportRunnerOutcome(runner.value, result),
 						(receipt) => this.#notifyTaskSettled(state, taskState.ref, receipt),
@@ -1569,6 +1582,7 @@ export class TaskSupervisor {
 				state.launches.requestedModels.clear();
 				state.launches.launchHeartbeats.clear();
 				state.launches.executionTimeouts.clear();
+				state.launches.releases.clear();
 			}
 		if (result.ok) {
 			for (const taskId of [...state.permits.keys()]) this.#releasePermit(state, taskId);

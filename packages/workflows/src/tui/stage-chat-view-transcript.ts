@@ -7,6 +7,7 @@ import { renderWorkflowNoticeCard, type WorkflowNoticeTone } from "./workflow-no
 
 export function noticeSummary(n: StageNotice): string {
 	if (n.kind === "decision" && n.meta !== undefined) return `~ ${n.meta}`;
+	if (n.kind === "undelivered") return `~ not delivered, the stage finished first: ${JSON.stringify(n.to)}`;
 	const base = `~ ${n.kind} → ${n.to}`;
 	return n.from ? `${base} (was ${n.from})` : base;
 }
@@ -208,6 +209,17 @@ export function stageNoticeCard(entry: NoticeEntry): {
 				fields: [
 					{ label: "outcome", value: entry.value, tone: "text" },
 					{ label: "model", value: entry.from, tone: "muted" },
+				],
+			};
+		case "undelivered":
+			return {
+				title: "MESSAGE NOT DELIVERED",
+				glyph: "✗",
+				headline: "The stage finished before this message was delivered",
+				tone: "warning",
+				fields: [
+					{ label: "message", value: entry.value, tone: "text" },
+					{ label: "next", value: "send it to another stage if it still matters", tone: "muted" },
 				],
 			};
 		case "tree":

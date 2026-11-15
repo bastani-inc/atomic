@@ -345,14 +345,16 @@ test("a named child whose run ended is reported to its owner's Intercom with why
 
 test("the registry sizes count remembered run schedules and drop them when a child ends for good (#4326)", () => {
 	const before = subagentTaskRegistrySizes();
-	assert.deepEqual(Object.keys(before).sort(), ["closing", "queued", "schedules"]);
+	assert.deepEqual(Object.keys(before).sort(), ["closing", "queued", "scheduledRuns", "schedules"]);
 	assert.equal(typeof before.queued, "number");
 	rememberSubagentChildSchedule("sizes-run", 0, () => {});
 	rememberSubagentChildSchedule("sizes-run", 1, () => {});
 	assert.equal(subagentTaskRegistrySizes().schedules, before.schedules + 2);
+	assert.equal(subagentTaskRegistrySizes().scheduledRuns, before.scheduledRuns + 1);
 	forgetRunMembership("sizes-run", 0);
 	forgetRunMembership("sizes-run", 1);
 	assert.equal(subagentTaskRegistrySizes().schedules, before.schedules);
+	assert.equal(subagentTaskRegistrySizes().scheduledRuns, before.scheduledRuns);
 });
 
 test("a task's transcript passes on its session's chat session, running state and queue, and only when it has them (#4640)", async () => {
