@@ -17,6 +17,7 @@ import {
 } from "@bastani/atomic";
 import { type AssistantMessage, createAssistantMessageEventStream, type Model } from "@bastani/pi-ai/compat";
 import { test } from "vitest";
+import { PROTECTED_RECONCILIATION_CUSTOM_TYPE } from "../../packages/coding-agent/src/core/agent-session-persistent-custom-messages.js";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
@@ -37,6 +38,11 @@ const REAL_RUN_TIMEOUT_MS = 90_000;
 const WOKEN_COMMAND_BUDGET_MS = 30_000;
 const PERMIT_POLL_MS = 50;
 const ECHOED = "turn-admission-echo";
+/**
+ * The cards the chat is shown whose hidden turn it must read: the workflow's lifecycle notices, and the completion of
+ * its own bash when that notice's arrival moved the command to the background.
+ */
+const READ_CARD_TYPES = new Set(["workflows:lifecycle-notice", "task-completion"]);
 
 type PermitRow = { kind: string; state: string; reason: string | null; root: string };
 
@@ -148,8 +154,21 @@ test.skipIf(process.platform === "win32")(
 			tools: ["bash"],
 		});
 		const commandOutput = Promise.withResolvers<string>();
+		// The chat is torn down only once it was shown the run's completion and has read every card it was shown: a notice
+		// still queued for its next turn keeps the session from being disposed, by design.
+		const readEverything = Promise.withResolvers<void>();
+		let shown = 0;
+		let read = 0;
+		let completionShown = false;
 		parent.subscribe((event) => {
 			if (event.type === "tool_execution_end") commandOutput.resolve(JSON.stringify(event.result));
+			if (event.type === "message_start" && event.message.role === "custom") {
+				if (event.message.customType === PROTECTED_RECONCILIATION_CUSTOM_TYPE) read++;
+				else if (READ_CARD_TYPES.has(event.message.customType)) shown++;
+				const details = event.message.details as { scope?: string; status?: string } | undefined;
+				if (details?.scope === "run" && details.status === "completed") completionShown = true;
+			}
+			if (event.type === "agent_settled" && completionShown && read >= shown) readEverything.resolve();
 		});
 		const backend = await JournalDurableBackend.open(await openSqlRunJournal(journalPath));
 		const permits = await openNodeSqliteDatabase(journalPath);
@@ -213,6 +232,7 @@ test.skipIf(process.platform === "win32")(
 				{ kind: "ran", ran: true },
 				"the chat's command runs at once and never waits on the workflow's process permit",
 			);
+			await readEverything.promise;
 		} finally {
 			polling = false;
 			notices.setNotificationsActive(false);
