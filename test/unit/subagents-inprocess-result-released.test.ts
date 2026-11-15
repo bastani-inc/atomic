@@ -33,6 +33,7 @@ test("with nothing launched, every registry of the subagents extension is empty 
 		goneChildren: 0,
 		queuedChildren: 0,
 		schedules: 0,
+		scheduledRuns: 0,
 		closingChildren: 0,
 		earlyHolds: 0,
 		ownerlessLive: 0,
