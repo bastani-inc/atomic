@@ -146,7 +146,10 @@ export async function acquireSocketReplacementLock(
     removeFileIfUnchanged(lockPath, record);
     if (!holdsGeneration()) return;
     try {
-      createLockFile(generationPath(lockPath, generation + 1), RELEASED);
+      // Its own generation is removed once the released one is in place, so a broker that idles out leaves exactly one
+      // file, the released marker (#4727, #5220). The marker itself stays: removed, numbering would start again, and a
+      // broker paused with a judgment of an older generation could then take one that looks like the latest.
+      if (createLockFile(generationPath(lockPath, generation + 1), RELEASED)) removeFile(mine);
     } catch {
       // Not written: the lock is free once this broker is gone.
     }
