@@ -396,6 +396,11 @@ test("a host that registers after the snapshot is not removed for a boot timeout
 		);
 		await sleep(5 * TICK_MS);
 		assert.deepEqual(removed, ["vm-3"], "only the instance whose host never registered is removed");
+		assert.deepEqual(
+			(await f.store.snapshot()).drains.filter((drain) => drain.providerId !== "vm-3"),
+			[],
+			"the drain written for a removal that did not happen is cleared, so the hosts kept serve",
+		);
 	} finally {
 		spy.mockRestore();
 		await f.close();
@@ -634,5 +639,53 @@ test("an instance whose late host read its boot-timeout drain and is draining is
 	} finally {
 		spy.mockRestore();
 		await f.close();
+	}
+});
+
+test("bootHold keeps an instance for a host that reports, registered after the snapshot, holds a live child, or drains (#5072)", async () => {
+	const f = await fixture();
+	try {
+		const none = new Set<string>();
+		assert.equal(await f.store.bootHold("vm-0", undefined, none), "free", "nobody on it");
+		await f.report("fresh", "vm-1");
+		assert.equal(await f.store.bootHold("vm-1", undefined, new Set(["fresh"])), "occupied", "a host that reports");
+		await f.report("named");
+		assert.equal(
+			await f.store.bootHold("vm-2", "named", new Set(["named"])),
+			"occupied",
+			"a reporting host the provider names by host id",
+		);
+		await f.report("stale", "vm-3");
+		await f.sql(`UPDATE ${PREFIX}wf_runs_pool_hosts SET heartbeat_at = heartbeat_at - 35000 WHERE host = 'stale'`);
+		assert.equal(
+			await f.store.bootHold("vm-3", undefined, new Set(["stale"])),
+			"free",
+			"a dead host holding nothing",
+		);
+		assert.equal(await f.store.bootHold("vm-3", undefined, none), "occupied", "a host registered after the snapshot");
+		await f.report("leaving", "vm-4", true);
+		assert.equal(await f.store.bootHold("vm-4", undefined, new Set(["leaving"])), "draining");
+		// A host that is not in the registry, which the provider names, holds a live child.
+		const { work, boundary } = poolWorkFixture("held");
+		await f.queue.enqueue(f.lease, work, boundary);
+		assert.ok(await f.queue.claim(f.lease, "gone/worker-1", [definition], 60_000));
+		assert.equal(await f.store.bootHold("vm-5", "gone", none), "occupied", "a host holding a live child");
+		assert.equal(await f.store.bootHold("vm-5", undefined, none), "free");
+	} finally {
+		await f.close();
+	}
+});
+
+test("bootHold finds an instance free in a journal that never ran a shared pool (#5072)", async () => {
+	const directory = makeLibsqlDirectory();
+	const database = await openLibsqlDatabase({ url: pathToFileURL(join(directory, "journal.db")).href });
+	const journal = await SqlRunJournal.open(database, { prefix: PREFIX });
+	try {
+		const store = await SqlFleetStore.open(journal);
+		assert.equal(await store.bootHold("vm-1", "h1", new Set()), "free");
+	} finally {
+		await journal.close();
+		await database.close();
+		await removeLibsqlDirectory(directory);
 	}
 });
