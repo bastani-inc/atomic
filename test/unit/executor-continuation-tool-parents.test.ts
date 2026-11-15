@@ -103,7 +103,7 @@ describe("continuation tool-parent identity map", () => {
 		assert.deepEqual(executed.parentIds, [toolId]);
 	});
 
-	test("does not translate a snapshot tool parent that was never admitted", () => {
+	test("translates a recorded tool parent provisionally and fails when it is never admitted (#4945)", () => {
 		const toolId = "tool:preflight";
 		const completed = stage({
 			id: "source-completed",
@@ -111,25 +111,156 @@ describe("continuation tool-parent identity map", () => {
 			status: "completed",
 			parentIds: [toolId],
 		});
+		const identities = new Map<string, string>();
 		const index = createContinuationReplayIndex(
 			{
 				source: sourceRun([completed], [toolNode(toolId)]),
 				resumeFromStageId: completed.id,
 			},
-			new Map(),
+			identities,
 		);
 
+		// The stage is created before the tool its call follows, so the parents inferred at its creation precede it.
+		const replayed = index.decide({
+			displayName: completed.name,
+			replayKey: completed.replayKey!,
+			parentIds: [],
+			stageId: "continuation-completed",
+			kind: "stage",
+		});
+		assert.equal(replayed.kind, "replay");
+		assert.deepEqual(replayed.parentIds, [toolId]);
+		assert.equal(identities.has(toolId), false, "the tool is not admitted until it starts");
+		assert.throws(
+			() => index.assertProvisionalParentsAdmitted(),
+			/insufficient_state: replay topology mismatch for stage "mapping 1".*tool parent "preflight" \(node "tool:preflight"\) was never admitted/,
+		);
+	});
+
+	test("confirms a provisional tool parent admitted with its source identity (#4945)", () => {
+		const toolId = "tool:preflight";
+		const completed = stage({ id: "source-completed", name: "mapping 1", status: "completed", parentIds: [toolId] });
+		const later = stage({ id: "source-later", name: "mapping 2", status: "completed", parentIds: [toolId] });
+		const index = createContinuationReplayIndex(
+			{ source: sourceRun([completed, later], [toolNode(toolId)]), resumeFromStageId: completed.id },
+			new Map(),
+		);
+		for (const [source, stageId] of [
+			[completed, "continuation-completed"],
+			[later, "continuation-later"],
+		] as const)
+			index.decide({
+				displayName: source.name,
+				replayKey: source.replayKey!,
+				parentIds: [],
+				stageId,
+				kind: "stage",
+			});
+		index.admitToolNode(toolNode(toolId));
+		index.assertProvisionalParentsAdmitted();
+		// Another tool, admitted afterwards, is no provisional parent's.
+		index.admitToolNode({ ...toolNode(toolId), argsHash: "other-hash" });
+	});
+
+	test("names the first stage that took a never-admitted tool parent (#4945)", () => {
+		const toolId = "tool:preflight";
+		const first = stage({ id: "source-first", name: "mapping 1", status: "completed", parentIds: [toolId] });
+		const second = stage({ id: "source-second", name: "mapping 2", status: "completed", parentIds: [toolId] });
+		const index = createContinuationReplayIndex(
+			{ source: sourceRun([first, second], [toolNode(toolId)]), resumeFromStageId: first.id },
+			new Map(),
+		);
+		for (const [source, stageId] of [
+			[first, "continuation-first"],
+			[second, "continuation-second"],
+		] as const)
+			index.decide({
+				displayName: source.name,
+				replayKey: source.replayKey!,
+				parentIds: [],
+				stageId,
+				kind: "stage",
+			});
+		assert.throws(() => index.assertProvisionalParentsAdmitted(), /for stage "mapping 1"/);
+	});
+
+	test("does not match a stage without tool parents by a subset of its inferred parents (#4945)", () => {
+		const completed = stage({
+			id: "source-completed",
+			name: "mapping 1",
+			status: "completed",
+			parentIds: ["source-seed"],
+		});
+		const index = createContinuationReplayIndex(
+			{ source: sourceRun([completed]), resumeFromStageId: completed.id },
+			new Map([["source-seed", "continuation-seed"]]),
+		);
 		assert.throws(
 			() =>
 				index.decide({
 					displayName: completed.name,
 					replayKey: completed.replayKey!,
-					parentIds: [toolId],
+					parentIds: ["continuation-seed", "stage:inserted-parent"],
 					stageId: "continuation-completed",
 					kind: "stage",
 				}),
 			/insufficient_state: replay topology mismatch/,
 		);
+	});
+
+	test("fails when a provisional tool parent is admitted with another identity (#4945)", () => {
+		const toolId = "tool:preflight";
+		const completed = stage({ id: "source-completed", name: "mapping 1", status: "completed", parentIds: [toolId] });
+		for (const changed of [{ argsHash: "other-hash" }, { ordinal: 2 }]) {
+			const index = createContinuationReplayIndex(
+				{ source: sourceRun([completed], [toolNode(toolId)]), resumeFromStageId: completed.id },
+				new Map(),
+			);
+			index.decide({
+				displayName: completed.name,
+				replayKey: completed.replayKey!,
+				parentIds: [],
+				stageId: "continuation-completed",
+				kind: "stage",
+			});
+			assert.throws(
+				() => index.admitToolNode({ ...toolNode(toolId), ...changed }),
+				/insufficient_state: replay topology mismatch for stage "mapping 1".*was admitted with another identity/,
+			);
+		}
+	});
+
+	test("rejects a provisional tool parent when the stage's other parents were not inferred (#4945)", () => {
+		const toolId = "tool:preflight";
+		const completed = stage({
+			id: "source-completed",
+			name: "mapping 1",
+			status: "completed",
+			parentIds: ["source-seed", toolId],
+		});
+		const index = createContinuationReplayIndex(
+			{ source: sourceRun([completed], [toolNode(toolId)]), resumeFromStageId: completed.id },
+			new Map([["source-seed", "continuation-seed"]]),
+		);
+		assert.throws(
+			() =>
+				index.decide({
+					displayName: completed.name,
+					replayKey: completed.replayKey!,
+					parentIds: ["stage:inserted-parent"],
+					stageId: "continuation-completed",
+					kind: "stage",
+				}),
+			/insufficient_state: replay topology mismatch/,
+		);
+		const accepted = index.decide({
+			displayName: completed.name,
+			replayKey: completed.replayKey!,
+			parentIds: ["continuation-seed"],
+			stageId: "continuation-completed",
+			kind: "stage",
+		});
+		assert.deepEqual(accepted.parentIds, ["continuation-seed", toolId]);
 	});
 
 	test("rejects a completed child whose tool parent is absent from the identity map", () => {

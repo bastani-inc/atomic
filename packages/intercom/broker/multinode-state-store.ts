@@ -81,6 +81,13 @@ export interface BrokerMembershipSubject {
 	/** Host label for diagnostics and future direct forwarding; not used for routing. */
 	readonly nodeId: string;
 	readonly startedAt: number;
+	/**
+	 * #5038: what a restart of this broker keeps: its host (node, boot and process namespace) and its socket path. A
+	 * broker starting with the same key retires the leases and claims of an earlier instance whose `pid` has exited.
+	 */
+	readonly instanceKey?: string;
+	/** #5038: the broker's process id, checked on its host before a later instance supersedes it. */
+	readonly pid?: number;
 }
 
 /** Recipient presence: which broker currently hosts the recipient's socket. */
@@ -144,6 +151,11 @@ export interface BrokerLeaseStore {
 	read(key: LeaseKey): Promise<LeaseReadResult>;
 	/** Live leases of one kind, in the order their keys were first acquired. */
 	listLive(kind: LeaseKind, staleAfterMs: number): Promise<LeaseState[]>;
+	/**
+	 * #5038: give up every lease `holderId` holds, as its own `release` would, so their next acquisitions need not
+	 * wait for them to go stale. Resolves to the number of leases retired.
+	 */
+	retireHolder(holderId: string): Promise<number>;
 }
 
 export type OutboxRowState = "queued" | "claimed" | "delivered" | "failed";
@@ -157,6 +169,12 @@ export interface OutboxEnqueueRequest {
 	readonly digest: string;
 	/** Written verbatim to the recipient; its `message.id` is the row's message id. */
 	readonly frame: OutboxFrame;
+	/**
+	 * #4992: a failure the broker owes the recipient for one of its open asks. It is queued past the recipient's
+	 * `OUTBOX_TARGET_MAX_ROWS` and `OUTBOX_TARGET_MAX_BYTES`: it is small, there is at most one per open ask, and
+	 * refusing it would leave the ask waiting forever.
+	 */
+	readonly owed?: boolean;
 }
 
 export interface OutboxRow {
@@ -252,6 +270,11 @@ export interface OutboxStore {
 	reportSaving?(claim: OutboxClaim): Promise<OutboxRenewClaimResult>;
 	/** Return the row to `queued`, for example when its recipient disconnected before acknowledging. */
 	releaseClaim(claim: OutboxClaim): Promise<OutboxReleaseClaimResult>;
+	/**
+	 * #5038: return every row `claimantId` holds to `queued`, as its own `releaseClaim` would, so a dead broker's
+	 * claims stop holding its recipients' queues until they go stale. Resolves to the number of rows released.
+	 */
+	releaseClaimsOf(claimantId: string): Promise<number>;
 	/**
 	 * The recipient acknowledged `received`; only now may its sender be told `delivered`. For an ask, record its
 	 * route with `PendingAskStore.record` first: a settled row is never claimed again, so a route written after it
@@ -515,6 +538,7 @@ export type PendingAskClearResult =
 	| { readonly status: "cleared" }
 	| { readonly status: "no-match" }
 	| InvalidStateInput;
+export type PendingAskMarkResult = { readonly status: "marked" } | { readonly status: "no-match" } | InvalidStateInput;
 export type PendingAskPruneResult = { readonly status: "pruned"; readonly removed: number } | InvalidStateInput;
 export type PendingAskListResult = { readonly status: "listed"; readonly asks: PendingAsk[] } | InvalidStateInput;
 export type PendingAskTakeResult = { readonly status: "taken"; readonly asks: PendingAsk[] } | InvalidStateInput;
@@ -544,11 +568,21 @@ export interface PendingAskStore {
 	/** Only the exact reverse route of a recorded ask matches. */
 	matchesReply(route: ReplyRoute): Promise<PendingAskMatchResult>;
 	clearReply(route: ReplyRoute): Promise<PendingAskClearResult>;
+	/**
+	 * #4992: a reply to the ask is queued: its route stays, so the reply is still authorized when it is delivered, but
+	 * the ask is answered: `listForTarget` and `listParked` no longer return it, so it does not also fail.
+	 */
+	markReplied(route: ReplyRoute): Promise<PendingAskMarkResult>;
 	pruneSender(senderSessionId: string): Promise<PendingAskPruneResult>;
 	/** The sender's asks, in insertion order, without removing them. */
 	listForSender(senderSessionId: string): Promise<PendingAskListResult>;
 	/** Remove and return the asks addressed to this target, in insertion order. */
 	takeForTarget(targetSessionId: string): Promise<PendingAskTakeResult>;
+	/**
+	 * #4992: the unanswered asks addressed to this target, in insertion order, without removing them: each is removed
+	 * with `clearReply` only once its asker's failure is delivered or queued.
+	 */
+	listForTarget(targetSessionId: string): Promise<PendingAskListResult>;
 	/**
 	 * #4386: the target is a subagent its owner released: keep its asks, still matching replies from it, for its
 	 * owner instead of removing them.
@@ -558,6 +592,20 @@ export interface PendingAskStore {
 	rebindParked(park: PendingAskPark, targetSessionId: string): Promise<PendingAskRebindResult>;
 	/** Remove and return the owner's parked asks, of every subagent or only of the one reserved under `reservationKey`. */
 	takeParked(ownerSessionId: string, reservationKey?: string): Promise<PendingAskTakeResult>;
+	/** #4992: the owner's unanswered parked asks, as `takeParked` selects them, without removing them. */
+	listParked(ownerSessionId: string, reservationKey?: string): Promise<PendingAskListResult>;
+	/**
+	 * #4992: the target ended: its unanswered asks are marked ended, durably, before their askers are told, and returned
+	 * as `listForTarget` would. An ask stays marked until `clearReply` removes it or `unmarkEnded` keeps only its route,
+	 * so another broker finishes what a broker that stopped meanwhile left (`listEnded`).
+	 */
+	endForTarget(targetSessionId: string): Promise<PendingAskListResult>;
+	/** #4992: as `endForTarget`, for the owner's parked asks, as `listParked` selects them. */
+	endParked(ownerSessionId: string, reservationKey?: string): Promise<PendingAskListResult>;
+	/** #4992: the unanswered asks marked ended more than `olderThanMs` ago, by store clock, oldest first. */
+	listEnded(olderThanMs: number): Promise<PendingAskListResult>;
+	/** #4992: the ended ask's failure is queued; its route stays only to authorize that failure when it is delivered. */
+	unmarkEnded(route: ReplyRoute): Promise<PendingAskMarkResult>;
 }
 
 /**

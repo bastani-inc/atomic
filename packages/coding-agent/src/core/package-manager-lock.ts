@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import lockfile from "proper-lockfile";
 import { APP_NAME } from "../config.js";
+import { releaseLock } from "./lock-release.ts";
 
 /** A holder that stops refreshing its lock (a killed process) loses it after this long. */
 const INSTALL_LOCK_STALE_MS = 60_000;
@@ -26,6 +27,6 @@ export async function withInstallLock<T>(installPath: string, operation: () => P
 	try {
 		return await operation();
 	} finally {
-		await release().catch(() => {});
+		await releaseLock(release, installPath);
 	}
 }
