@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, test } from "vitest";
 import { collectEverythingTracked, collectGarbage, trackCollection } from "../../../test/helpers/collect-garbage.js";
@@ -11,7 +11,7 @@ import {
 	createAgentSessionRuntime,
 	createAgentSessionServices,
 } from "../src/core/agent-session-runtime.ts";
-import { clearExtensionCache } from "../src/core/extensions/loader.ts";
+import { clearExtensionCache, loadExtensionsCached } from "../src/core/extensions/loader.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 
 const COMMAND = "probe-4988";
@@ -259,5 +259,180 @@ export default function (pi) {
 		// 40 retained evaluations would add 160 MB.
 		const growthMb = (heapAfterLoop - heapAfterWarmup) / (1024 * 1024);
 		assert.ok(growthMb < 40, `heap grew ${growthMb.toFixed(1)} MB over 40 reloads`);
+	});
+});
+
+/** Loads one extension file as `/reload` does (a new cache generation, then a cached load) and returns its probe description. */
+async function reloadProbe(entry: string, cwd: string, agentDir: string): Promise<string | undefined> {
+	clearExtensionCache();
+	const result = await loadExtensionsCached([entry], cwd, undefined, undefined, undefined, undefined, agentDir);
+	assert.deepEqual(result.errors, []);
+	return result.extensions[0]?.commands.get(COMMAND)?.description;
+}
+
+function writeFiles(root: string, files: Record<string, string>): void {
+	for (const [file, content] of Object.entries(files)) {
+		mkdirSync(dirname(join(root, file)), { recursive: true });
+		writeFileSync(join(root, file), content);
+	}
+}
+
+const describeProbe = (expression: string) =>
+	`export default function (pi) {\n\tpi.registerCommand(${JSON.stringify(COMMAND)}, { description: String(${expression}), handler: async () => {} });\n}\n`;
+const describeProbeCjs = (expression: string) =>
+	`module.exports = function (pi) {\n\tpi.registerCommand(${JSON.stringify(COMMAND)}, { description: String(${expression}), handler: async () => {} });\n};\n`;
+
+describe("what a reload of a JavaScript extension evaluates again", () => {
+	test("a reload re-evaluates the files of the node_modules package the extension is in, but not other packages (#4988)", async () => {
+		const { cwd, agentDir, extensionDir } = workspace("unused.mjs");
+		const packageDir = join(extensionDir, "node_modules", "@scope", "probe");
+		const entry = join(packageDir, "index.mjs");
+		const write = (version: string) =>
+			writeFiles(extensionDir, {
+				"node_modules/@scope/probe/lib/own.mjs": `export const own = "${version}";\n`,
+				"node_modules/@scope/other/other.mjs": `export const other = "${version}";\n`,
+				"node_modules/plain/plain.mjs": `export const plain = "${version}";\n`,
+			});
+		writeFiles(packageDir, {
+			"index.mjs": `import { own } from "./lib/own.mjs";
+import { other } from "../other/other.mjs";
+import { plain } from "../../plain/plain.mjs";
+${describeProbe("[own, other, plain].join(' ')")}`,
+		});
+		write("1");
+		assert.equal(await reloadProbe(entry, cwd, agentDir), "1 1 1");
+
+		write("2");
+		assert.equal(await reloadProbe(entry, cwd, agentDir), "2 1 1");
+	});
+
+	test("a reload of an extension outside node_modules does not re-evaluate a package it imports by path (#4988)", async () => {
+		const { cwd, agentDir, extensionDir } = workspace("unused.mjs");
+		const entry = join(extensionDir, "index.mjs");
+		const write = (version: string) =>
+			writeFiles(extensionDir, { "node_modules/dep/dep.mjs": `export const dep = "${version}";\n` });
+		writeFiles(extensionDir, {
+			"index.mjs": `import { dep } from "./node_modules/dep/dep.mjs";\n${describeProbe("dep")}`,
+		});
+		write("1");
+		assert.equal(await reloadProbe(entry, cwd, agentDir), "1");
+
+		write("2");
+		assert.equal(await reloadProbe(entry, cwd, agentDir), "1");
+	});
+
+	test("JavaScript imports an installed package by name as the runtime would, once per process (#4988)", async () => {
+		const { cwd, agentDir, extensionDir } = workspace("unused.mjs");
+		const write = (version: string) =>
+			writeFiles(extensionDir, {
+				"node_modules/probe-dep-4988/package.json": JSON.stringify({
+					name: "probe-dep-4988",
+					exports: { import: "./esm.mjs", require: "./cjs.cjs" },
+				}),
+				"node_modules/probe-dep-4988/esm.mjs": `export const dep = "esm-${version}";\n`,
+				"node_modules/probe-dep-4988/cjs.cjs": `exports.dep = "cjs-${version}";\n`,
+			});
+		writeFiles(extensionDir, {
+			"esm.mjs": `import { dep } from "probe-dep-4988";\n${describeProbe("dep")}`,
+			"cjs.cjs": `const { dep } = require("probe-dep-4988");\n${describeProbeCjs("dep")}`,
+		});
+		write("1");
+		assert.equal(await reloadProbe(join(extensionDir, "esm.mjs"), cwd, agentDir), "esm-1");
+		assert.equal(await reloadProbe(join(extensionDir, "cjs.cjs"), cwd, agentDir), "cjs-1");
+
+		write("2");
+		assert.equal(await reloadProbe(join(extensionDir, "esm.mjs"), cwd, agentDir), "esm-1");
+		assert.equal(await reloadProbe(join(extensionDir, "cjs.cjs"), cwd, agentDir), "cjs-1");
+	});
+
+	test("a package JavaScript cannot resolve itself comes from the host (#4988)", async () => {
+		const { cwd, agentDir, extensionDir } = workspace("unused.mjs");
+		writeFiles(extensionDir, {
+			"esm.mjs": `import { Type } from "typebox";\n${describeProbe("typeof Type.Object")}`,
+			"cjs.cjs": `const { Type } = require("typebox");\n${describeProbeCjs("typeof Type.Object")}`,
+		});
+		assert.equal(await reloadProbe(join(extensionDir, "esm.mjs"), cwd, agentDir), "function");
+		assert.equal(await reloadProbe(join(extensionDir, "cjs.cjs"), cwd, agentDir), "function");
+	});
+
+	test("TypeScript still imports a host package by name from the host when the extension has its own copy (#4988)", async () => {
+		const { cwd, agentDir, extensionDir } = workspace("unused.mjs");
+		writeFiles(extensionDir, {
+			"node_modules/@earendil-works/pi-coding-agent/package.json": JSON.stringify({
+				name: "@earendil-works/pi-coding-agent",
+				type: "module",
+				exports: "./index.js",
+			}),
+			"node_modules/@earendil-works/pi-coding-agent/index.js": "export const physicalCopy = true;\n",
+			"index.ts": `import * as host from "@earendil-works/pi-coding-agent";\n${describeProbe("'physicalCopy' in host")}`,
+		});
+		assert.equal(await reloadProbe(join(extensionDir, "index.ts"), cwd, agentDir), "false");
+	});
+
+	test("one load evaluates a JavaScript module that several modules import once, also under a TypeScript entry (#4988)", async () => {
+		const { cwd, agentDir, extensionDir } = workspace("unused.mjs");
+		const counter = globalThis as typeof globalThis & { __evaluations4988?: number };
+		cleanups.push(() => {
+			delete counter.__evaluations4988;
+		});
+		writeFiles(extensionDir, {
+			"shared.mjs":
+				"globalThis.__evaluations4988 = (globalThis.__evaluations4988 ?? 0) + 1;\nexport const shared = {};\n",
+			"a.mjs": `import { shared } from "./shared.mjs";\nexport const a = shared;\n`,
+			"b.cjs": `module.exports = require("./shared.mjs");\n`,
+			"index.mjs": `import { a } from "./a.mjs";\nimport b from "./b.cjs";\n${describeProbe("a === b.shared")}`,
+			"ts-a.ts": `export { shared as a } from "./shared.mjs";\n`,
+			"ts-b.ts": `export { shared as b } from "./shared.mjs";\n`,
+			"index.ts": `import { a } from "./ts-a.ts";\nimport { b } from "./ts-b.ts";\n${describeProbe("a === b")}`,
+		});
+		assert.equal(await reloadProbe(join(extensionDir, "index.mjs"), cwd, agentDir), "true");
+		assert.equal(counter.__evaluations4988, 1);
+		assert.equal(await reloadProbe(join(extensionDir, "index.mjs"), cwd, agentDir), "true");
+		assert.equal(counter.__evaluations4988, 2);
+		assert.equal(await reloadProbe(join(extensionDir, "index.ts"), cwd, agentDir), "true");
+		assert.equal(counter.__evaluations4988, 3);
+	});
+
+	test("a reload re-evaluates JavaScript imported by a file URL or an absolute path (#4988)", async () => {
+		const { cwd, agentDir, extensionDir } = workspace("unused.mjs");
+		const write = (version: string) =>
+			writeFiles(extensionDir, {
+				"lib/esm.mjs": `export const v = "${version}";\n`,
+				"lib/cjs.cjs": `exports.v = "${version}";\n`,
+			});
+		writeFiles(extensionDir, {
+			"index.mjs": `const { v } = await import(new URL("./lib/esm.mjs", import.meta.url).href);\n${describeProbe("v")}`,
+			"index.cjs": `const { v } = require(require("node:path").join(__dirname, "lib", "cjs.cjs"));\n${describeProbeCjs("v")}`,
+		});
+		write("1");
+		assert.equal(await reloadProbe(join(extensionDir, "index.mjs"), cwd, agentDir), "1");
+		assert.equal(await reloadProbe(join(extensionDir, "index.cjs"), cwd, agentDir), "1");
+
+		write("2");
+		assert.equal(await reloadProbe(join(extensionDir, "index.mjs"), cwd, agentDir), "2");
+		assert.equal(await reloadProbe(join(extensionDir, "index.cjs"), cwd, agentDir), "2");
+	});
+
+	test("ESM extension code stays strict and CommonJS code stays sloppy unless it asks for strict mode (#4988)", async () => {
+		const { cwd, agentDir, extensionDir } = workspace("unused.mjs");
+		const thisIsUndefined = "(function () { return this === undefined; })()";
+		writeFiles(extensionDir, {
+			"esm.mjs": describeProbe(thisIsUndefined),
+			"cjs.cjs": describeProbeCjs(thisIsUndefined),
+			"strict.cjs": `"use strict";\n${describeProbeCjs(thisIsUndefined)}`,
+			"commonjs/index.js": describeProbeCjs(thisIsUndefined),
+			"esm-syntax/index.js": describeProbe(thisIsUndefined),
+			"typed/package.json": JSON.stringify({ type: "module" }),
+			// A module without ESM syntax is ESM too in a "type": "module" package.
+			"typed/helper.js": `globalThis.__typedStrict4988 = ${thisIsUndefined};\n`,
+			"typed/index.js": `import "./helper.js";\n${describeProbe("globalThis.__typedStrict4988")}`,
+		});
+		const probe = (file: string) => reloadProbe(join(extensionDir, file), cwd, agentDir);
+		assert.equal(await probe("esm.mjs"), "true");
+		assert.equal(await probe("cjs.cjs"), "false");
+		assert.equal(await probe("strict.cjs"), "true");
+		assert.equal(await probe("commonjs/index.js"), "false");
+		assert.equal(await probe("esm-syntax/index.js"), "true");
+		assert.equal(await probe("typed/index.js"), "true");
 	});
 });

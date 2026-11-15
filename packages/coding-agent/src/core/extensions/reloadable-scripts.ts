@@ -1,6 +1,6 @@
-import { createRequire } from "node:module";
+import { createRequire, isBuiltin } from "node:module";
 import * as path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import type { createJiti } from "jiti";
 
 /**
@@ -12,67 +12,81 @@ import type { createJiti } from "jiti";
  * transform, like TypeScript: each load evaluates the files as they are on
  * disk now, and an evaluation is collectable once nothing uses it (#4988).
  *
- * The entry is evaluated with {@link evaluateReloadableScript}. Its relative
- * imports reach {@link bindReloadableScriptLoaders} through a prologue that
- * {@link withReloadableScriptPrologue} adds to every module the extension
- * transform emits, which routes relative JavaScript imports and requires back
- * here. Bare specifiers (packages, node builtins, host modules) keep jiti's
- * resolution, and so does JavaScript inside `node_modules` other than the
- * extension's own package.
+ * The entry is evaluated with {@link evaluateReloadableScript}. Every module
+ * the extension transform emits starts with a prologue, added by
+ * {@link withReloadableScriptPrologue}, that hands its `require` and
+ * `jitiImport` to {@link bindReloadableScriptLoaders}:
+ *
+ * - A JavaScript file it imports by path is evaluated the same way, once per
+ *   load, unless it lies in a `node_modules` package other than the importer's
+ *   load's own.
+ * - A bare specifier in a JavaScript module resolves as the runtime would have
+ *   resolved it from the importing file, and the runtime loads what it finds, once per process.
+ *   Only when that finds nothing does jiti resolve it (host aliases and
+ *   virtual modules), as jiti did after a failed native load.
+ * - Everything else (Node builtins, TypeScript files, bare specifiers in
+ *   TypeScript) keeps jiti's handling.
+ *
+ * jiti's transform makes every module strict; CommonJS keeps the sloppy mode
+ * the runtime would have run it in, unless it asks for strict mode itself.
  */
 
 type Jiti = ReturnType<typeof createJiti>;
-type JitiImport = (id: string, options?: { default?: boolean }) => Promise<unknown>;
+type JitiImport = (id: string) => Promise<unknown>;
 type ModuleCache = Record<string, ModuleRecord>;
 
 interface ModuleRecord {
 	exports: unknown;
-	filename?: string;
+	filename: string;
 	parent?: ModuleRecord;
 }
 
-/** One load of one extension: the modules it evaluated, shared so each file is evaluated once per load. */
+/** One load of one extension: the modules it evaluated, so each file is evaluated once per load. */
 interface LoadContext {
 	cache: ModuleCache;
-	/** The package directory of an entry inside `node_modules`, whose own files are reloadable too. */
+	/** The `node_modules` package the load's entry is in, whose own files are reloadable too. */
 	packageRoot: string | undefined;
 }
 
 const SCRIPT_EXTENSIONS = new Set([".js", ".mjs", ".cjs"]);
 const BINDER_KEY = Symbol.for("atomic.extensions.reloadableScripts");
 const PROLOGUE = `{const __atomicReloadable=globalThis[Symbol.for("atomic.extensions.reloadableScripts")];if(__atomicReloadable)[require,jitiImport]=__atomicReloadable(module,require,jitiImport);}`;
-const USE_STRICT = /^\s*(["'])use strict\1;?/;
+const USE_STRICT = /^"use strict";/;
+const SOURCE_USE_STRICT = /^\s*(["'])use strict\1/;
+// jiti's own test for ESM in a `.js` file outside a "type": "module" package.
+const ESM_SYNTAX = /(?:^|[\s;])(?:import\s*["'{*]|import\s+\w|export\s*[{*]|export\s+\w|import\.meta\b)/m;
 
 // The CommonJS fs object, which graph recording observes; an ESM namespace would not see its replacement.
 const fsExports = createRequire(import.meta.url)("node:fs") as typeof import("node:fs");
 const loadContexts = new WeakMap<object, LoadContext>();
+/** A jiti without host aliases or virtual modules, used only to resolve a bare import the way the runtime would. */
+let runtimeResolver: Jiti;
 
 export function isReloadableScriptPath(filePath: string): boolean {
-	return SCRIPT_EXTENSIONS.has(path.extname(filePath).toLowerCase());
+	return SCRIPT_EXTENSIONS.has(path.extname(filePath));
 }
 
 function packageRootOf(filePath: string): string | undefined {
 	const segments = filePath.split(path.sep);
 	const index = segments.lastIndexOf("node_modules");
-	if (index < 0 || index + 1 >= segments.length - 1) return undefined;
-	const scoped = segments[index + 1]?.startsWith("@") ? 2 : 1;
-	return segments.slice(0, index + 1 + scoped).join(path.sep);
+	if (index < 0) return undefined;
+	return segments.slice(0, index + (segments[index + 1]?.startsWith("@") ? 3 : 2)).join(path.sep);
 }
 
 function createLoadContext(entry: string): LoadContext {
 	const context: LoadContext = { cache: {}, packageRoot: packageRootOf(entry) };
 	// jiti records each module it creates in the cache it evaluates with; remember which load it belongs to.
-	context.cache = new Proxy(Object.create(null) as ModuleCache, {
-		set(target, key, value) {
-			target[key as string] = value;
-			if (typeof value === "object" && value !== null) loadContexts.set(value, context);
+	context.cache = new Proxy({} as ModuleCache, {
+		set(target, key: string, value: ModuleRecord) {
+			target[key] = value;
+			loadContexts.set(value, context);
 			return true;
 		},
 	});
 	return context;
 }
 
-/** The load an importing module belongs to; a module jiti evaluated on its own starts one at its root. */
+/** The load a module belongs to; one jiti evaluated on its own (a TypeScript entry) starts one at its root. */
 function loadContextOf(module: ModuleRecord): LoadContext {
 	let root = module;
 	for (let current: ModuleRecord | undefined = module; current; current = current.parent) {
@@ -80,25 +94,20 @@ function loadContextOf(module: ModuleRecord): LoadContext {
 		if (context) return context;
 		root = current;
 	}
-	const context = createLoadContext(root.filename ?? "");
+	const context = createLoadContext(root.filename);
 	loadContexts.set(root, context);
 	return context;
 }
 
-function reloadableTarget(id: unknown, require: Jiti, context: LoadContext): string | undefined {
-	if (typeof id !== "string") return undefined;
-	const isFile = id.startsWith("./") || id.startsWith("../") || id.startsWith("file:") || path.isAbsolute(id);
-	if (!isFile) return undefined;
-	let resolved: string;
-	try {
-		resolved = require.resolve(id.startsWith("file:") ? fileURLToPath(id) : id);
-	} catch {
-		return undefined;
-	}
-	if (!path.isAbsolute(resolved) || !isReloadableScriptPath(resolved)) return undefined;
-	const packageRoot = packageRootOf(resolved);
-	if (packageRoot !== undefined && packageRoot !== context.packageRoot) return undefined;
-	return resolved;
+function isPathSpecifier(id: string): boolean {
+	return id.startsWith("./") || id.startsWith("../") || id.startsWith("file:") || path.isAbsolute(id);
+}
+
+/** The JavaScript file a path specifier names, when this load evaluates it itself. */
+function reloadableFile(id: string, require: Jiti, context: LoadContext): string | undefined {
+	const resolved = require.resolve(id.startsWith("file:") ? fileURLToPath(id) : id);
+	if (!isReloadableScriptPath(resolved)) return undefined;
+	return packageRootOf(resolved) === context.packageRoot ? resolved : undefined;
 }
 
 function evaluate(jiti: Jiti, filename: string, async: boolean, cache: ModuleCache): unknown {
@@ -115,50 +124,89 @@ function evaluate(jiti: Jiti, filename: string, async: boolean, cache: ModuleCac
  * `module`, `require` and `jitiImport`; returns the replacements it uses.
  */
 function bindReloadableScriptLoaders(module: ModuleRecord, require: Jiti, jitiImport: JitiImport): [Jiti, JitiImport] {
-	// A module jiti did not evaluate in a load of ours shares jiti's cache, not ours, for a module both evaluated.
-	const ownsCache = loadContexts.has(module);
-	const load = (filename: string, async: boolean, original: () => unknown): unknown => {
+	const load = (filename: string, async: boolean): unknown => {
 		const context = loadContextOf(module);
-		const cached = context.cache[filename];
-		if (cached) return ownsCache ? original() : cached.exports;
-		return evaluate(require, filename, async, context.cache);
+		return context.cache[filename]?.exports ?? evaluate(require, filename, async, context.cache);
 	};
+	// TypeScript resolves bare specifiers through jiti, host aliases first, as before.
+	const resolvesBareByRuntime = isReloadableScriptPath(module.filename);
 	const reloadableRequire = new Proxy(require, {
 		apply(target, thisArg, args: [string]) {
-			const filename = reloadableTarget(args[0], target, loadContextOf(module));
-			if (filename === undefined) return Reflect.apply(target, thisArg, args);
-			return load(filename, false, () => Reflect.apply(target, thisArg, args));
+			const [id] = args;
+			if (isBuiltin(id)) return Reflect.apply(target, thisArg, args);
+			if (isPathSpecifier(id)) {
+				const filename = reloadableFile(id, target, loadContextOf(module));
+				return filename === undefined ? Reflect.apply(target, thisArg, args) : load(filename, false);
+			}
+			if (!resolvesBareByRuntime) return Reflect.apply(target, thisArg, args);
+			const runtimeRequire = createRequire(module.filename);
+			try {
+				runtimeRequire.resolve(id);
+			} catch {
+				return Reflect.apply(target, thisArg, args);
+			}
+			return runtimeRequire(id);
 		},
 	});
-	const reloadableImport: JitiImport = async (id, options) => {
-		const filename = reloadableTarget(id, require, loadContextOf(module));
-		if (filename === undefined) return jitiImport(id, options);
-		const loaded = (await load(filename, true, () => jitiImport(id))) as { default?: unknown } | undefined;
-		return options?.default ? (loaded?.default ?? loaded) : loaded;
+	const reloadableImport: JitiImport = async (id) => {
+		if (isBuiltin(id)) return jitiImport(id);
+		if (isPathSpecifier(id)) {
+			const filename = reloadableFile(id, require, loadContextOf(module));
+			return filename === undefined ? jitiImport(id) : load(filename, true);
+		}
+		if (!resolvesBareByRuntime) return jitiImport(id);
+		let target: string;
+		try {
+			target = runtimeResolver.esmResolve(id, pathToFileURL(module.filename).href) as string;
+		} catch {
+			return jitiImport(id);
+		}
+		return import(target);
 	};
 	return [reloadableRequire, reloadableImport];
 }
 
-/** Adds the prologue that routes a transformed module's relative JavaScript imports to a fresh evaluation. */
-export function withReloadableScriptPrologue(code: string): string {
-	(globalThis as Record<symbol, unknown>)[BINDER_KEY] ??= bindReloadableScriptLoaders;
+/** Routes the imports of transformed extension modules as described above; `resolver` is a jiti without host aliases. */
+export function installReloadableScripts(resolver: Jiti): void {
+	runtimeResolver = resolver;
+	(globalThis as Record<symbol, unknown>)[BINDER_KEY] = bindReloadableScriptLoaders;
+}
+
+/** The `type` of the package.json nearest to `filePath`. */
+function packageTypeOf(filePath: string): unknown {
+	for (let dir = path.dirname(filePath); ; dir = path.dirname(dir)) {
+		const manifest = path.join(dir, "package.json");
+		if (fsExports.existsSync(manifest)) {
+			try {
+				return (JSON.parse(fsExports.readFileSync(manifest, "utf8")) as { type?: unknown }).type;
+			} catch {
+				return undefined;
+			}
+		}
+		if (path.dirname(dir) === dir) return undefined;
+	}
+}
+
+/** Whether the runtime would have run `source` as CommonJS. */
+function isCommonJs(filename: string, source: string): boolean {
+	const extension = path.extname(filename);
+	if (extension === ".cjs") return true;
+	return extension === ".js" && !ESM_SYNTAX.test(source) && packageTypeOf(filename) !== "module";
+}
+
+/** Adds the prologue that routes a transformed module's imports as described above. */
+export function withReloadableScriptPrologue(code: string, filename: string, source: string): string {
 	const directive = USE_STRICT.exec(code)?.[0] ?? "";
-	return `${directive}${PROLOGUE}${code.slice(directive.length)}`;
+	const sloppy = isCommonJs(filename, source) && !SOURCE_USE_STRICT.test(source);
+	return `${sloppy ? "" : directive}${PROLOGUE}${code.slice(directive.length)}`;
 }
 
 /**
  * Evaluates a JavaScript extension entry through jiti's transform in a new
- * load, so the entry and the relative JavaScript it imports run as they are on
- * disk now. Returns the module's exports, or its default export when asked.
+ * load, so the entry and the JavaScript it imports by path run as they are on
+ * disk now. Returns the default export, else the module.
  */
-export async function evaluateReloadableScript(
-	jiti: Jiti,
-	filename: string,
-	options: { default?: boolean } = {},
-): Promise<unknown> {
-	(globalThis as Record<symbol, unknown>)[BINDER_KEY] ??= bindReloadableScriptLoaders;
-	const loaded = (await evaluate(jiti, filename, true, createLoadContext(filename).cache)) as
-		| { default?: unknown }
-		| undefined;
-	return options.default ? (loaded?.default ?? loaded) : loaded;
+export async function evaluateReloadableScript(jiti: Jiti, filename: string): Promise<unknown> {
+	const loaded = (await evaluate(jiti, filename, true, createLoadContext(filename).cache)) as { default?: unknown };
+	return loaded.default ?? loaded;
 }

@@ -13,6 +13,7 @@ import { getVirtualModules, loadVirtualModules } from "./loader-host-modules.js"
 import { isNativeBuiltinExtensionPath } from "./native-builtin-entries.ts";
 import {
 	evaluateReloadableScript,
+	installReloadableScripts,
 	isReloadableScriptPath,
 	withReloadableScriptPrologue,
 } from "./reloadable-scripts.ts";
@@ -640,6 +641,8 @@ export const extensionLoaderTestHooks = {
  * evaluation collectable instead of adding one registry entry per reload.
  */
 const nativelyImportedPaths = new Set<string>();
+/** Resolves a bare import of extension JavaScript the way the runtime would, without host aliases. */
+let runtimeResolver: ReturnType<typeof createJiti> | undefined;
 
 async function importExtensionModule(
 	extensionPath: string,
@@ -654,12 +657,14 @@ async function importExtensionModule(
 	// file; extensionPath stays the cache and graph key.
 	const importPath = canonicalizePath(extensionPath);
 	const transformSource = getTypeScriptSourceSpecifierTransform(createJitiImpl, cacheDir);
+	runtimeResolver ??= createJitiImpl(resolutionBaseUrl(import.meta.url), { moduleCache: false, fsCache: false });
+	installReloadableScripts(runtimeResolver);
 	const jiti = createJitiImpl(resolutionBaseUrl(import.meta.url), {
 		moduleCache: false,
 		fsCache: false,
 		transform: (options) => {
 			const { code } = transformSource(options);
-			return { code: withReloadableScriptPrologue(code) };
+			return { code: withReloadableScriptPrologue(code, options.filename ?? "", options.source) };
 		},
 		...(forceTransformedImports ? { tryNative: false } : {}),
 		// A first native import can fall back to transformation too. Always share
@@ -672,7 +677,7 @@ async function importExtensionModule(
 	// evaluates it instead, as on every reload (#4988).
 	const importEntry = () =>
 		isReloadableScriptPath(importPath)
-			? evaluateReloadableScript(jiti, importPath, { default: true })
+			? evaluateReloadableScript(jiti, importPath)
 			: jiti.import(specifier, { default: true });
 	// Transformed evaluations are the loads whose repeat cost is the Windows
 	// /reload regression, so they are also the loads whose file graph is
