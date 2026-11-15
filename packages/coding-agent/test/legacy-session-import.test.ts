@@ -208,6 +208,8 @@ interface LargeSessionOptions {
 	readonly name?: string;
 	readonly damagedMiddle?: boolean;
 	readonly tornTail?: boolean;
+	/** A complete line that is not JSON, right after the header or just before the last line. */
+	readonly damagedLine?: "head" | "tail";
 	readonly finalAnswerBytes?: number;
 }
 
@@ -224,6 +226,7 @@ function largeLegacyContent(options: LargeSessionOptions): string {
 	};
 	const lines = [
 		JSON.stringify({ type: "session", version: 4, id: options.id, createdAt, cwd: options.cwd }),
+		...(options.damagedLine === "head" ? ["this head line is not json"] : []),
 		JSON.stringify(userRecord(options.firstText ?? LARGE_FIRST_TEXT, createdAt, 1, link())),
 	];
 	for (let index = 0; index < LARGE_FILLER_MESSAGES; index++) {
@@ -239,6 +242,7 @@ function largeLegacyContent(options: LargeSessionOptions): string {
 	const answer = link();
 	const finalAnswer = `Final answer${options.finalAnswerBytes ? ` ${"y".repeat(options.finalAnswerBytes)}` : ""}`;
 	lines.push(JSON.stringify(assistantRecord(finalAnswer, options.lastAt, 1, answer)));
+	if (options.damagedLine === "tail") lines.push("this tail line is not json");
 	lines.push(
 		JSON.stringify({
 			type: "session_summary",
@@ -835,9 +839,9 @@ describe("legacy JSONL sessions in the default store", () => {
 			});
 		});
 
-		it("uses a readable copy when an earlier large copy has a torn tail", async () => {
+		it("uses a readable copy when an earlier large copy has a damaged tail", async () => {
 			writeLarge(
-				{ id: "large-copy", lastAt, name: "Damaged", tornTail: true },
+				{ id: "large-copy", lastAt, name: "Damaged", damagedLine: "tail" },
 				join(agentDir, "sessions", "--a-damaged-copy--"),
 			);
 			writeLarge({ id: "large-copy", lastAt, name: "Readable" });
@@ -851,6 +855,46 @@ describe("legacy JSONL sessions in the default store", () => {
 				assert.equal((await SessionManager.open(store, "large-copy")).getSessionName(), "Readable");
 			});
 		});
+
+		for (const damagedLine of ["head", "tail"] as const) {
+			it(`does not list one with a damaged complete line in its ${damagedLine} (#4993)`, async () => {
+				writeAllFormats();
+				writeLarge({ id: "large-damaged", lastAt, damagedLine });
+
+				await withDefaultStore(async (store) => {
+					assert.ok(!(await SessionManager.listAll(store)).some((session) => session.id === "large-damaged"));
+				});
+			});
+		}
+
+		for (const last of ["unterminated", "torn"] as const) {
+			it(`reads a session whose head scan reaches an ${last} last line (#4993)`, async () => {
+				// Larger than the window read whole, smaller than the head scan, so the head scan reaches the end.
+				const createdAt = "2026-10-01T00:00:00.000Z";
+				const lines = [JSON.stringify({ type: "session", version: 4, id: "head-eof", createdAt, cwd })];
+				for (let index = 0; index < 60; index++) {
+					const link = { id: `a${index}`, parentId: index === 0 ? null : `a${index - 1}` };
+					lines.push(JSON.stringify(assistantRecord(`${index} ${"x".repeat(1_000)}`, createdAt, index, link)));
+					if (index === 30) lines.push("  ");
+				}
+				const final = JSON.stringify(userRecord("Question at the end", lastAt, 0, { id: "u", parentId: "a59" }));
+				mkdirSync(legacyDirectory, { recursive: true });
+				writeFileSync(
+					join(legacyDirectory, "2026-10-01T00-00-00-000Z_head-eof.jsonl"),
+					`${lines.join("\n")}\n${last === "torn" ? final.slice(0, -10) : final}`,
+				);
+				const warnings = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+
+				try {
+					await withDefaultStore(async (store) => {
+						const listed = (await SessionManager.listAll(store)).find((session) => session.id === "head-eof");
+						assert.equal(listed?.firstMessage, last === "torn" ? "(no messages)" : "Question at the end");
+					});
+				} finally {
+					warnings.mockRestore();
+				}
+			});
+		}
 
 		it("lists and opens one whose last line a crashed writer left unfinished (#4993)", async () => {
 			writeAllFormats();

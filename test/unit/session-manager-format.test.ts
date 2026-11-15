@@ -155,7 +155,16 @@ it("opens, forks and lists a session whose unfinished last line a crashed writer
 		assert.equal(opened.getSessionId(), "torn");
 		assert.deepEqual(opened.buildSessionContext().messages, [message]);
 		assert.notEqual((await SessionManager.forkFrom(path, directory, directory)).getSessionId(), "torn");
-		assert.ok((await SessionManager.list(directory, directory)).some((session) => session.id === "torn"));
+		await writeFile(
+			join(directory, "unterminated.jsonl"),
+			`${JSON.stringify({ type: "session", version: 4, id: "unterminated", createdAt: "2026-10-15T00:00:00Z", cwd: directory })}\n${JSON.stringify(saved)}`,
+		);
+		const listed = await SessionManager.list(directory, directory);
+		const named = listed.filter((session) => session.id === "torn" || session.id === "unterminated");
+		assert.deepEqual(named.map((session) => [session.id, session.messageCount]).sort(), [
+			["torn", 1],
+			["unterminated", 1],
+		]);
 		assert.equal(await readFile(path, "utf8"), content);
 	} finally {
 		warnings.mockRestore();

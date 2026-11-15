@@ -603,7 +603,13 @@ it("accepts another process's append after a last record without a newline only 
 		await store.load(header.id);
 		const foreign = { ...entry, id: "foreign" };
 		await appendFile(path, `\n${JSON.stringify(foreign)}\n`);
-		assert.deepEqual(await store.append(header.id, [entry], { expectSeq: 2 }), { lastSeq: 3 });
+		const warnings = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+		try {
+			assert.deepEqual(await store.append(header.id, [entry], { expectSeq: 2 }), { lastSeq: 3 });
+			assert.equal(warnings.mock.calls.length, 0);
+		} finally {
+			warnings.mockRestore();
+		}
 		assert.deepEqual((await store.load(header.id)).entries, [entry, foreign, entry]);
 
 		await writeFile(path, `${JSON.stringify({ type: "session", ...header })}\n${JSON.stringify(entry)}`);
