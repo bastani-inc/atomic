@@ -20,6 +20,7 @@ import { describeErrorWithCauses } from "../shared/error-with-causes.js";
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import type { Store } from "../shared/store.js";
 import type { RunSnapshot } from "../shared/store-types.js";
+import { infrastructureFaultOf } from "../shared/workflow-infrastructure-error.js";
 
 export interface DurableTerminalFinalizeInput {
 	readonly runId: string;
@@ -40,8 +41,41 @@ export async function finalizeDurableTerminalStatus(input: DurableTerminalFinali
 		await commitDurableTerminalStatus(input);
 	} catch (error) {
 		if (input.store !== undefined) recordDurableEndingFailure(input.store, input.runSnapshot, error);
+		if (infrastructureFaultOf(error) === "storage_unavailable") retryDurableTerminalStatus(input);
 		throw error;
 	}
+}
+
+/** Waits before each later write of a terminal status the store refused (#5133). */
+const TERMINAL_STATUS_RETRY_DELAYS_MS = [1_000, 5_000, 30_000];
+
+/**
+ * Write a terminal status the store refused again, later, while the process lives (#5133). The run's records already
+ * say how it ended where they can (a completed run reads as completed); this brings its handle in line for every reader
+ * of the journal. A write the store still refuses, or that another writer now owns, is left as it is.
+ */
+function retryDurableTerminalStatus(
+	input: DurableTerminalFinalizeInput,
+	attempt = 0,
+	runAttempt = input.durableBackend.workflowAttempt?.(input.runId) ?? 0,
+): void {
+	const delay = TERMINAL_STATUS_RETRY_DELAYS_MS[attempt];
+	if (delay === undefined) return;
+	const timer = setTimeout(() => {
+		// Not once the run has gone on: a resume has begun another attempt, or another writer ended it.
+		const current = input.durableBackend.getWorkflow(input.runId);
+		if (
+			current === undefined ||
+			(input.durableBackend.workflowAttempt?.(input.runId) ?? 0) !== runAttempt ||
+			(current.status !== "running" && current.status !== toDurableStatus(input.runSnapshot.status))
+		)
+			return;
+		commitDurableTerminalStatus({ ...input, terminalStatusCommitted: false }).catch((error: unknown) => {
+			if (infrastructureFaultOf(error) === "storage_unavailable")
+				retryDurableTerminalStatus(input, attempt + 1, runAttempt);
+		});
+	}, delay);
+	timer.unref?.();
 }
 
 async function commitDurableTerminalStatus(input: DurableTerminalFinalizeInput): Promise<void> {

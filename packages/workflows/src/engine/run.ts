@@ -22,6 +22,7 @@ import { createDurableChildWorkflowPrimitive } from "../durable/child-primitive.
 import { initializeDurableBackend } from "../durable/factory.js";
 import { JournalDurableBackend, JournalOwnershipError } from "../durable/journal/journal-backend.js";
 import { isDurableWorkflowResumable } from "../durable/resume-eligibility.js";
+import { recordRunCompletedCheckpointAsync } from "../durable/run-end.js";
 import { availableRunDurableBackend, bindRunDurableBackend } from "../durable/run-owner-backend.js";
 import {
 	recordedInvocationCwd,
@@ -1727,6 +1728,7 @@ async function executeRun(
 		if (opts.parentRun === undefined) {
 			await recordRunTimingCheckpointAsync(durableBackend, runSnapshot);
 			await recordRunResultCheckpointAsync(durableBackend, runSnapshot);
+			if (returned.status === "completed") await recordRunCompletedCheckpointAsync(durableBackend, runId);
 		}
 		await durableBackend.commitWorkflowStatus(runId, returned.status, undefined, returned.metadata?.resumable);
 		terminalStatusCommitted = true;
