@@ -221,13 +221,9 @@ test("the compaction range planner classifies every stop reason without an unhan
 				streamFn: stream.streamFn,
 			});
 
-		if (stopReason === "aborted") {
-			await assert.rejects(plan, /Compaction cancelled/u, "an aborted plan stays a cancellation");
-			continue;
-		}
-
 		const outcome = await plan();
-		if (stopReason === "error") {
+		// Only the caller's own signal cancels; a provider-side abort is a failed request (#4977).
+		if (stopReason === "error" || stopReason === "aborted") {
 			assert.equal(outcome.kind, "providerError");
 			continue;
 		}

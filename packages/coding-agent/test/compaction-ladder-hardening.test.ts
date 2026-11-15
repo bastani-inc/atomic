@@ -50,22 +50,19 @@ const summaryEntries: SessionEntry[] = [
 function fallbackContext(
 	fallbackModels: string[] = ["test/fallback"],
 	overrides: Partial<{
-		getModel: (provider: string, id: string) => Model<Api> | undefined;
+		models: Model<Api>[];
+		hasConfiguredAuth: (provider: string) => boolean;
 		isFallbackModelAllowed: (model: Model<Api>, effort: string | undefined) => boolean;
 	}> = {},
 ) {
-	const models = [plannerModel, fallbackModel];
+	const models = overrides.models ?? [plannerModel, fallbackModel];
 	return {
 		fallbackModels,
 		preferredProvider: "test",
 		sessionThinkingLevel: "off" as const,
 		registry: {
-			getAvailableSnapshot: () => models,
-			getModel:
-				overrides.getModel ??
-				((provider: string, id: string) =>
-					models.find((candidate) => candidate.provider === provider && candidate.id === id)),
-			hasConfiguredAuth: () => true,
+			getModels: () => models,
+			hasConfiguredAuth: overrides.hasConfiguredAuth ?? (() => true),
 		},
 		...(overrides.isFallbackModelAllowed ? { isFallbackModelAllowed: overrides.isFallbackModelAllowed } : {}),
 	};
@@ -248,13 +245,16 @@ test("an ASCII kept tail that exactly fills the window is kept by the fresh rung
 test("a fallback candidate whose lookup throws is skipped and the next candidate plans (#4977)", async () => {
 	const { result, models } = await compact([PROVIDER_ERROR, "1:1,3"], {
 		urgency: "load_bearing",
-		fallback: fallbackContext(["test/broken", "test/denied", "test/fallback"], {
-			getModel: (provider, id) => {
-				if (id === "broken") throw new Error("auth store is corrupt");
-				if (id === "denied") return { ...fallbackModel, id: "denied" };
-				return [plannerModel, fallbackModel].find(
-					(candidate) => candidate.provider === provider && candidate.id === id,
-				);
+		fallback: fallbackContext(["broken/broken", "test/denied", "test/fallback"], {
+			models: [
+				plannerModel,
+				{ ...fallbackModel, provider: "broken", id: "broken" },
+				{ ...fallbackModel, id: "denied" },
+				fallbackModel,
+			],
+			hasConfiguredAuth: (provider) => {
+				if (provider === "broken") throw new Error("auth store is corrupt");
+				return true;
 			},
 			isFallbackModelAllowed: (model) => {
 				if (model.id === "denied") throw new Error("policy lookup failed");
