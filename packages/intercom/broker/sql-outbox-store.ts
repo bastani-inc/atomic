@@ -161,15 +161,15 @@ export async function openSqlOutboxStore(options: IntercomBrokerStateOptions): P
 						? ({ status: "duplicate", row: toRow(existing) } as const)
 						: ({ status: "conflict", messageId } as const);
 				}
-				const frameBytes = Buffer.byteLength(frameJson, "utf8");
-				const queued = await executor.get<{ row_count: SqliteValue; byte_count: SqliteValue }>(
+				const frameBytes = Buffer.byteLength(frameJson);
+				const queued = (await executor.get<{ row_count: SqliteValue; byte_count: SqliteValue }>(
 					`SELECT COUNT(*) AS row_count, COALESCE(SUM(COALESCE(frame_bytes, LENGTH(frame_json))), 0) AS byte_count
 					FROM ${table} WHERE target_identity = ? AND ${UNDELIVERED}`,
 					request.targetIdentity,
-				);
+				))!;
 				if (
-					Number(queued?.row_count ?? 0) >= OUTBOX_TARGET_MAX_ROWS ||
-					Number(queued?.byte_count ?? 0) + frameBytes > OUTBOX_TARGET_MAX_BYTES
+					Number(queued.row_count) >= OUTBOX_TARGET_MAX_ROWS ||
+					Number(queued.byte_count) + frameBytes > OUTBOX_TARGET_MAX_BYTES
 				) {
 					return { status: "full", limit: OUTBOX_TARGET_MAX_ROWS, byteLimit: OUTBOX_TARGET_MAX_BYTES } as const;
 				}

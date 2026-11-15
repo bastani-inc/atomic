@@ -13,17 +13,17 @@ export const INTERCOM_MAX_MESSAGE_BYTES = 8 * MIB;
 
 /** UTF-8 bytes of a message's text and attachments: the size the Intercom limits measure. */
 export function intercomMessageBytes(content: Message["content"]): number {
-	let bytes = Buffer.byteLength(content.text, "utf8");
+	let bytes = Buffer.byteLength(content.text);
 	for (const attachment of content.attachments ?? []) {
-		bytes += Buffer.byteLength(attachment.name, "utf8") + Buffer.byteLength(attachment.content, "utf8");
-		if (attachment.language !== undefined) bytes += Buffer.byteLength(attachment.language, "utf8");
+		bytes += Buffer.byteLength(attachment.name) + Buffer.byteLength(attachment.content);
+		if (attachment.language !== undefined) bytes += Buffer.byteLength(attachment.language);
 	}
 	return bytes;
 }
 
 /** Why a message is too large to send, or `undefined` when it is within both limits. */
 export function intercomMessageSizeError(content: Message["content"]): string | undefined {
-	const textBytes = Buffer.byteLength(content.text, "utf8");
+	const textBytes = Buffer.byteLength(content.text);
 	if (textBytes > INTERCOM_MAX_MESSAGE_TEXT_BYTES) {
 		return `Intercom message text is ${textBytes} bytes, over the limit of ${INTERCOM_MAX_MESSAGE_TEXT_BYTES} bytes (1 MiB); the message was not sent. Shorten it, or save the content to a file and send its path.`;
 	}

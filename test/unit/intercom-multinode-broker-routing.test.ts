@@ -1735,6 +1735,13 @@ test("the per-target outbox byte cap refuses a frame that would pass it, across 
 		byteLimit: OUTBOX_TARGET_MAX_BYTES,
 	});
 	assert.equal((await enqueue(a!, "small", "fits")).status, "inserted");
+	// A frame that brings the target to exactly the byte cap is admitted; one more byte is not.
+	const frameBytes = (id: string, text: string) => Buffer.byteLength(JSON.stringify(frame(id, text)));
+	const used = 3 * frameBytes("big-0", big) + frameBytes("small", "fits");
+	const fill = "f".repeat(OUTBOX_TARGET_MAX_BYTES - used - frameBytes("exact", ""));
+	assert.equal((await enqueue(b!, "over-by-one", `${fill}x`)).status, "full");
+	assert.equal((await enqueue(b!, "exact", fill)).status, "inserted");
+	assert.equal((await enqueue(a!, "after-exact", "")).status, "full");
 	assert.equal((await enqueue(b!, "other-target", big, "elsewhere")).status, "inserted");
 	assert.equal((await enqueue(a!, "big-0", big)).status, "duplicate", "a retry of a queued row is still answered");
 });

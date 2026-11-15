@@ -214,10 +214,10 @@ function runCapacityRefusal(runId: string, stageKey: string): PendingStageQueueR
 
 /** UTF-8 bytes of a queued message's text and attachments, as Intercom measures its message size limit. */
 function pendingStageMessageBytes(message: PendingStageMessageInput["message"]): number {
-	let bytes = Buffer.byteLength(message.content.text, "utf8");
+	let bytes = Buffer.byteLength(message.content.text);
 	for (const attachment of message.content.attachments ?? []) {
-		bytes += Buffer.byteLength(attachment.name, "utf8") + Buffer.byteLength(attachment.content, "utf8");
-		if (attachment.language !== undefined) bytes += Buffer.byteLength(attachment.language, "utf8");
+		bytes += Buffer.byteLength(attachment.name) + Buffer.byteLength(attachment.content);
+		if (attachment.language !== undefined) bytes += Buffer.byteLength(attachment.language);
 	}
 	return bytes;
 }

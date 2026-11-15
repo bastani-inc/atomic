@@ -12,7 +12,7 @@ import {
 import { ReplyTracker } from "../../packages/intercom/reply-tracker.js";
 import type { Attachment, BrokerMessage, Message, SessionInfo } from "../../packages/intercom/types.js";
 
-type ToolResult = { content: Array<{ text: string }>; isError: boolean };
+type ToolResult = { content: Array<{ type?: string; text: string }>; isError: boolean; details?: object };
 type ToolParams = { action: string; to?: string; message?: string; replyTo?: string; attachments?: Attachment[] };
 type Tool = {
 	execute(id: string, params: ToolParams, signal: undefined, update: undefined, ctx: object): Promise<ToolResult>;
@@ -117,6 +117,38 @@ describe("Intercom per-message size limit (#4896)", () => {
 			tooMuch.content[0]?.text ?? "",
 			/text and attachments total 8388625 bytes, over the limit of 8388608 bytes \(8 MiB\); the message was not sent/,
 		);
+		assert.deepEqual(current.sent, []);
+
+		const tooLongReply = await current.tool.execute(
+			"reply",
+			{
+				action: "reply",
+				to: current.recipient.id,
+				replyTo: "q-1",
+				message: "x".repeat(INTERCOM_MAX_MESSAGE_TEXT_BYTES + 1),
+			},
+			undefined,
+			undefined,
+			context,
+		);
+		assert.deepEqual(
+			{ ...tooLongReply, content: tooLongReply.content.map((part) => ({ ...part, text: part.text.slice(0, 39) })) },
+			{
+				content: [{ type: "text", text: "Intercom message text is 1048577 bytes," }],
+				isError: true,
+				details: { error: true },
+			},
+		);
+
+		// Only send, ask and reply carry a message; another action ignores the parameter.
+		const listed = await current.tool.execute(
+			"list",
+			{ action: "list", message: "x".repeat(INTERCOM_MAX_MESSAGE_TEXT_BYTES + 1) },
+			undefined,
+			undefined,
+			context,
+		);
+		assert.equal(listed.isError, false, listed.content[0]?.text);
 		assert.deepEqual(current.sent, []);
 
 		const atLimit = await current.tool.execute(

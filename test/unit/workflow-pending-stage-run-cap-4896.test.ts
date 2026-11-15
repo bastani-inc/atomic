@@ -67,6 +67,10 @@ describe("run-wide pending stage message cap (#4896)", () => {
 		const retry = queueStickyStageMessage(messages, sticky("m-0", `${GROUP}/future-0`), GROUP, GROUP);
 		assert.equal(retry.ok && retry.deduplicated, true);
 
+		// Another run's queued entries do not count against this run's cap.
+		const otherRun = messages.map((entry, index) => (index === 0 ? { ...entry, runId: "other-run" } : entry));
+		assert.equal(queueStickyStageMessage(otherRun, sticky("other", `${GROUP}/future-o`), GROUP, GROUP).ok, true);
+
 		// Settled entries no longer count against the cap.
 		const settled = messages.map((entry, index) =>
 			index === 0 ? { ...entry, status: "delivered" as const, deliveredAt: "2026-11-15T00:00:01.000Z" } : entry,
