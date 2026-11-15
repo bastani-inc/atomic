@@ -222,3 +222,27 @@ test("a recipient that ends while its reply is on its way fails the ask only if 
 	index.unmarkReplied("recipient", "asker", "lost");
 	assert.equal(lost.length, 1, "it fails once");
 });
+
+test("saving a reply releases only the failures held for that ask from that recipient (#5095)", () => {
+	const index = new PendingQuestionIndex();
+	index.useAwayStore(new AwayAsks(), () => "asker-address");
+	const from = (id: string): SessionInfo => ({ id, cwd: "/", model: "m", pid: 1, startedAt: 0, lastActivity: 0 });
+	const hold = (id: string, replierId: string, replyTo: string, replyError?: string) =>
+		index.holdForAwayAsker(
+			{ ...route("asker", replierId, replyTo), senderReturnAddress: "asker-address" },
+			from(replierId),
+			{ id, timestamp: 1, replyTo, ...(replyError === undefined ? {} : { replyError }), content: { text: id } },
+		);
+	hold("ended:q", "recipient", "q", "ended");
+	hold("other-recipient:q", "other", "q", "ended");
+	hold("ended:other-q", "recipient", "other-q", "ended");
+	hold("held-reply", "recipient", "q");
+
+	index.releaseHeldFailures("q", "recipient", "asker-address");
+	assert.deepEqual(
+		index.heldForAsker("asker-address").map((held) => held.message.id),
+		["other-recipient:q", "ended:other-q", "held-reply"],
+	);
+	// An index that keeps nothing for away sessions has nothing to release.
+	assert.doesNotThrow(() => new PendingQuestionIndex().releaseHeldFailures("q", "recipient", "asker-address"));
+});
