@@ -1,5 +1,6 @@
 import { getGitHubCopilotError } from "../providers/github-copilot-errors.ts";
 import type { AssistantMessage } from "../types.ts";
+import { DEFAULT_MAX_RETRY_DELAY_MS } from "./provider-retry.ts";
 
 function buildProviderErrorPattern(patterns: readonly string[]): RegExp {
 	return new RegExp(patterns.join("|"), "i");
@@ -178,7 +179,8 @@ export function failureRetryDelayMs(
 ): number {
 	const hintMs = failure.retryAfterMs;
 	if (hintMs === undefined || !Number.isFinite(hintMs) || hintMs <= 0) return retryDelayMs(policy, attempt);
-	const capMs = policy.maxRetryDelayMs || (policy.maxAgentDelayMs ?? DEFAULT_MAX_AGENT_RETRY_DELAY_MS);
+	const maxRetryDelayMs = policy.maxRetryDelayMs ?? DEFAULT_MAX_RETRY_DELAY_MS;
+	const capMs = maxRetryDelayMs || (policy.maxAgentDelayMs ?? DEFAULT_MAX_AGENT_RETRY_DELAY_MS);
 	return Math.min(hintMs, capMs);
 }
 
