@@ -2,15 +2,20 @@ import assert from "node:assert/strict";
 // `lstatSync`, `chmodSync` and `symlinkSync` have no equivalent in test/helpers/runtime.ts: the socket directory's
 // owner, mode and kind are what these tests pin.
 import { chmodSync, chownSync, existsSync, lstatSync, symlinkSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import net from "node:net";
+import { basename, dirname, join, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, test } from "vitest";
 import { IntercomClient } from "../../packages/intercom/broker/client.js";
 import {
+	chooseBrokerSocketPath,
 	getBrokerPidPath,
 	getBrokerSocketPath,
+	getBrokerSocketPathRecordPath,
 	getBrokerSocketReplacementLockPath,
+	getIntercomDirPath,
 	maxUnixSocketPathBytes,
+	recordBrokerSocketPath,
 } from "../../packages/intercom/broker/paths.js";
 import { isSocketAnswering } from "../../packages/intercom/broker/socket-liveness.js";
 import { acquireSocketReplacementLock } from "../../packages/intercom/broker/socket-replacement-lock.js";
@@ -20,6 +25,7 @@ import {
 	makeTempDirectory,
 	moduleDir,
 	readStreamText,
+	readTextSync,
 	removeTempDirectory,
 	type SpawnedProcess,
 	sleep,
@@ -73,8 +79,7 @@ afterEach(async () => {
 });
 
 /** An agent directory whose `intercom/broker.sock` is exactly `socketPathBytes` bytes long. */
-function agentDirWithSocketPathBytes(socketPathBytes: number, filler = "a"): string {
-	const base = tempDir("ic5040-");
+function agentDirWithSocketPathBytes(socketPathBytes: number, filler = "a", base = tempDir("ic5040-")): string {
 	const fixed = Buffer.byteLength(join(base, "agent-", "intercom", "broker.sock"));
 	const fillerBytes = Buffer.byteLength(filler);
 	const remaining = socketPathBytes - fixed;
@@ -88,8 +93,10 @@ function agentDirWithSocketPathBytes(socketPathBytes: number, filler = "a"): str
 }
 
 test("a broker socket path within the platform limit stays in the agent directory (#5040)", () => {
-	const linuxLimit = agentDirWithSocketPathBytes(maxUnixSocketPathBytes("linux"));
-	const darwinLimit = agentDirWithSocketPathBytes(maxUnixSocketPathBytes("darwin"));
+	// Only the path's length matters here, so a short made-up directory keeps it independent of the real temp directory.
+	const synthetic = join(sep, "s");
+	const linuxLimit = agentDirWithSocketPathBytes(maxUnixSocketPathBytes("linux"), "a", synthetic);
+	const darwinLimit = agentDirWithSocketPathBytes(maxUnixSocketPathBytes("darwin"), "a", synthetic);
 
 	assert.equal(getBrokerSocketPath("linux", linuxLimit), join(linuxLimit, "intercom", "broker.sock"));
 	assert.equal(getBrokerSocketPath("darwin", darwinLimit), join(darwinLimit, "intercom", "broker.sock"));
@@ -207,12 +214,12 @@ rootOnly("a per-user socket directory another user owns is refused, naming it (#
 });
 
 /** Starts a real broker for `agentDir`, optionally with a preload that runs before any broker code. */
-function spawnBroker(agentDir: string, preload?: string) {
+function spawnBroker(agentDir: string, preload?: string, env: Record<string, string | undefined> = {}) {
 	const imports = preload === undefined ? [] : ["--import", pathToFileURL(preload).href];
 	const broker = spawnProcess(
 		[process.execPath, ...imports, getJitiCliPath(extensionDir), join(extensionDir, "broker/broker.ts")],
 		{
-			env: { ...process.env, ATOMIC_CODING_AGENT_DIR: agentDir, PI_CODING_AGENT_DIR: undefined },
+			env: { ...process.env, ATOMIC_CODING_AGENT_DIR: agentDir, PI_CODING_AGENT_DIR: undefined, ...env },
 			stdout: "ignore",
 			stderr: "pipe",
 		},
@@ -353,3 +360,175 @@ unixOnly("a retiring broker still removes the socket it owns (#5040)", async () 
 
 	assert.deepEqual({ exitCode, socketLeft: existsSync(socketPath) }, { exitCode: 0, socketLeft: false });
 });
+
+unixOnly("every spelling of one long agent directory gets the same broker socket (#5040)", () => {
+	const agentDir = agentDirWithSocketPathBytes(maxUnixSocketPathBytes("linux") + 1);
+	const socketPath = getBrokerSocketPath("linux", agentDir);
+
+	assert.deepEqual(
+		[`${agentDir}${sep}`, `${agentDir}${sep}x${sep}..`].map((spelling) => getBrokerSocketPath("linux", spelling)),
+		[socketPath, socketPath],
+	);
+});
+
+/** A process's runtime and temp directories, as a terminal and a service of one user can have different ones. */
+interface ProcessDirectories {
+	readonly XDG_RUNTIME_DIR: string | undefined;
+	readonly TMPDIR: string;
+}
+
+function processDirectories(xdg: boolean): ProcessDirectories {
+	const dir = tempDir(xdg ? "5040-xdg-" : "5040-tmp-");
+	return { XDG_RUNTIME_DIR: xdg ? dir : undefined, TMPDIR: dir };
+}
+
+/** Runs `fn` with this process's environment set as a process with `directories` would have it. */
+function withDirectories<T>(directories: ProcessDirectories, fn: () => T): T {
+	const previous = { XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR, TMPDIR: process.env.TMPDIR };
+	const set = (name: keyof ProcessDirectories, value: string | undefined) => {
+		if (value === undefined) delete process.env[name];
+		else process.env[name] = value;
+	};
+	set("XDG_RUNTIME_DIR", directories.XDG_RUNTIME_DIR);
+	set("TMPDIR", directories.TMPDIR);
+	try {
+		return fn();
+	} finally {
+		set("XDG_RUNTIME_DIR", previous.XDG_RUNTIME_DIR);
+		set("TMPDIR", previous.TMPDIR);
+	}
+}
+
+function listen(socketPath: string): Promise<net.Server> {
+	const server = net.createServer((socket) => socket.on("error", () => {}));
+	return new Promise((resolve, reject) => {
+		server.once("error", reject);
+		server.listen(socketPath, () => resolve(server));
+	});
+}
+
+unixOnly(
+	"a recorded broker socket is found from another runtime directory; a record that is not one is ignored (#5040)",
+	async () => {
+		const agentDir = agentDirWithSocketPathBytes(maxUnixSocketPathBytes(process.platform) + 1);
+		makeDirectorySync(getIntercomDirPath(agentDir), { recursive: true });
+		const terminal = processDirectories(true);
+		const service = processDirectories(false);
+		const terminalSocket = withDirectories(terminal, () => chooseBrokerSocketPath(process.platform, agentDir));
+		const serviceSocket = withDirectories(service, () => chooseBrokerSocketPath(process.platform, agentDir));
+		const server = await listen(terminalSocket);
+		const resolvedFromService = () => withDirectories(service, () => getBrokerSocketPath(process.platform, agentDir));
+		const record = (content: string) => writeTextSync(getBrokerSocketPathRecordPath(agentDir), content);
+
+		try {
+			const withoutRecord = resolvedFromService();
+			withDirectories(terminal, () => recordBrokerSocketPath(terminalSocket, agentDir));
+			const recorded = resolvedFromService();
+			const ignored: Record<string, string> = {};
+			const otherDigest = join(dirname(terminalSocket), `${"0".repeat(16)}.sock`);
+			const strangers = {
+				relative: basename(terminalSocket),
+				unnormalized: `${dirname(terminalSocket)}${sep}.${sep}${basename(terminalSocket)}`,
+				otherAgentDir: otherDigest,
+				notASocket: getBrokerSocketPathRecordPath(agentDir),
+			};
+			for (const [name, content] of Object.entries(strangers)) {
+				record(content);
+				ignored[name] = resolvedFromService();
+			}
+			record(terminalSocket);
+			chmodSync(dirname(terminalSocket), 0o755);
+			ignored.openDirectory = resolvedFromService();
+			chmodSync(dirname(terminalSocket), 0o700);
+
+			assert.notEqual(terminalSocket, serviceSocket);
+			assert.equal(withoutRecord, serviceSocket);
+			assert.equal(recorded, terminalSocket);
+			assert.deepEqual(ignored, {
+				relative: serviceSocket,
+				unnormalized: serviceSocket,
+				otherAgentDir: serviceSocket,
+				notASocket: serviceSocket,
+				openDirectory: serviceSocket,
+			});
+		} finally {
+			await new Promise<void>((resolve) => server.close(() => resolve()));
+		}
+	},
+);
+
+/** A session client for `agentDir` that finds its broker as a process with `directories` would. */
+async function connectFrom(agentDir: string, directories: ProcessDirectories, name: string): Promise<IntercomClient> {
+	const previousAgentDir = process.env.ATOMIC_CODING_AGENT_DIR;
+	process.env.ATOMIC_CODING_AGENT_DIR = agentDir;
+	const client = new IntercomClient();
+	if (previousAgentDir === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
+	else process.env.ATOMIC_CODING_AGENT_DIR = previousAgentDir;
+	client.on("error", () => {});
+	clients.push(client);
+	await withDirectories(directories, () =>
+		client.connect({ cwd: agentDir, model: "test-model", pid: process.pid, startedAt: 1, lastActivity: 1, name }),
+	);
+	return client;
+}
+
+unixOnly(
+	"a terminal and a service with different runtime directories share one broker for a long agent directory (#5040)",
+	async () => {
+		const agentDir = agentDirWithSocketPathBytes(maxUnixSocketPathBytes(process.platform) + 20);
+		const terminal = processDirectories(true);
+		const service = processDirectories(false);
+		const first = spawnBroker(agentDir, undefined, { ...terminal });
+		const socketPath = withDirectories(terminal, () => chooseBrokerSocketPath(process.platform, agentDir));
+		await waitUntilAnswering(first.broker, socketPath, first.stderr);
+
+		const second = spawnBroker(agentDir, undefined, { ...service });
+		const secondExit = await Promise.race([
+			second.broker.exited,
+			sleep(BROKER_BUDGET_MS).then(() => "still running"),
+		]);
+		const terminalSession = await connectFrom(agentDir, terminal, "terminal-session");
+		const serviceSession = await connectFrom(agentDir, service, "service-session");
+		const seenByService = (await serviceSession.listSessions()).map((session) => session.name);
+
+		assert.equal(secondExit, 0, await second.stderr);
+		assert.match(await second.stderr, /a live broker already answers/u);
+		assert.equal(readTextSync(getBrokerPidPath(agentDir), "utf8").trim(), String(first.broker.pid));
+		assert.equal(terminalSession.isConnected(), true);
+		assert.ok(seenByService.includes("terminal-session"), JSON.stringify(seenByService));
+	},
+);
+
+unixOnly(
+	"when the recorded broker is gone, a broker from another runtime directory takes over and sessions follow it (#5040)",
+	async () => {
+		const agentDir = agentDirWithSocketPathBytes(maxUnixSocketPathBytes(process.platform) + 20);
+		const terminal = processDirectories(true);
+		const service = processDirectories(false);
+		const first = spawnBroker(agentDir, undefined, { ...terminal });
+		const terminalSocket = withDirectories(terminal, () => chooseBrokerSocketPath(process.platform, agentDir));
+		await waitUntilAnswering(first.broker, terminalSocket, first.stderr);
+		const session = await connectFrom(agentDir, terminal, "terminal-session");
+		await session.disconnect();
+		first.broker.kill("SIGTERM");
+		await first.broker.exited;
+
+		const second = spawnBroker(agentDir, undefined, { ...service });
+		const serviceSocket = withDirectories(service, () => chooseBrokerSocketPath(process.platform, agentDir));
+		await waitUntilAnswering(second.broker, serviceSocket, second.stderr);
+		await withDirectories(terminal, () =>
+			session.connect({
+				cwd: agentDir,
+				model: "test-model",
+				pid: process.pid,
+				startedAt: 1,
+				lastActivity: 1,
+				name: "terminal-session",
+			}),
+		);
+
+		assert.equal(readTextSync(getBrokerSocketPathRecordPath(agentDir), "utf8").trim(), serviceSocket);
+		assert.equal(session.isConnected(), true);
+		assert.equal(second.broker.exitCode, null);
+	},
+);

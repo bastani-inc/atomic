@@ -38,9 +38,11 @@ import {
 	getBrokerDeliveredMessagesPath,
 	getBrokerPidPath,
 	getBrokerWatchdogLogPath,
+	chooseBrokerSocketPath,
 	getBrokerSocketPath,
 	getBrokerSocketReplacementLockPath,
 	getIntercomDirPath,
+	recordBrokerSocketPath,
 } from "./paths.js";
 import { describeSharedStorage, sharedStorageDigest, sharedStorageSettingSource } from "./shared-storage-setting.js";
 import type {
@@ -138,7 +140,8 @@ import {
 } from "../live-route-refusal.js";
 
 const INTERCOM_DIR = getIntercomDirPath();
-const SOCKET_PATH = getBrokerSocketPath();
+/** The socket clients reach the running broker on, until this broker chooses its own under the startup lock (#5040). */
+let SOCKET_PATH = getBrokerSocketPath();
 const BROKER_IDLE_TIMEOUT_MS = 5_000;
 const UNCLASSIFIED_CONNECTION_RECHECK_MS = 100;
 const PID_PATH = getBrokerPidPath();
@@ -482,11 +485,15 @@ class IntercomBroker {
     this.releaseStartupLock = await acquireSocketReplacementLock(SOCKET_REPLACEMENT_LOCK_PATH, {
       onWait: () => console.error(`Intercom broker waiting for another broker starting on ${SOCKET_PATH}`),
     });
+    // Read again under the lock: a broker that started meanwhile may have recorded a socket of its own.
+    SOCKET_PATH = getBrokerSocketPath();
     if (await isSocketAnswering(SOCKET_PATH)) {
       this.releaseStartupLock();
       exitBecauseLiveBrokerOwnsSocket();
     }
+    SOCKET_PATH = chooseBrokerSocketPath();
     writeFileSync(PID_PATH, String(process.pid));
+    this.recordSocketPath();
     this.listen(1);
     if (this.sharedStorageSetting !== undefined) this.startMultiNode(this.sharedStorageSetting);
     else console.error(`Intercom multi-node routing is off: ${NO_SHARED_STORAGE_REASON}`);
@@ -577,6 +584,15 @@ class IntercomBroker {
       // A clean path has no stale socket to remove.
     }
     this.listen(attempt + 1);
+  }
+
+  /** Sessions whose runtime or temp directory differs from this broker's find its socket through the record (#5040). */
+  private recordSocketPath(): void {
+    try {
+      recordBrokerSocketPath(SOCKET_PATH);
+    } catch (error) {
+      console.error(`Intercom broker could not record its socket path ${SOCKET_PATH}:`, error);
+    }
   }
 
   /** A broker that does not start leaves no pid file of its own and lets the next starting broker go ahead. */

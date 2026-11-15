@@ -1,7 +1,7 @@
 import { createHash } from "crypto";
-import { lstatSync, mkdirSync } from "fs";
+import { lstatSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "fs";
 import { homedir, tmpdir } from "os";
-import { join } from "path";
+import { basename, dirname, isAbsolute, join, resolve } from "path";
 
 /**
  * The shared storage selection (`ATOMIC_STORAGE` JSON) the launching Atomic process hands its broker: its
@@ -27,7 +27,8 @@ function expandTildePath(path: string): string {
   return path;
 }
 
-function getAgentDir(): string {
+/** The agent directory the environment selects now. */
+export function getAgentDir(): string {
   const atomicAgentDir = process.env.ATOMIC_CODING_AGENT_DIR;
   if (atomicAgentDir) return expandTildePath(atomicAgentDir);
   const piAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -106,8 +107,30 @@ export function maxUnixSocketPathBytes(platform: NodeJS.Platform): number {
 /** A Windows pipe name is at most 256 characters. */
 const MAX_PIPE_NAME_LENGTH = 256;
 
+/** Every spelling of one agent directory, such as a trailing separator or a `..` segment, gets the same digest. */
 function agentDirDigest(agentDir: string): string {
-  return createHash("sha256").update(agentDir).digest("hex").slice(0, 16);
+  return createHash("sha256").update(resolve(agentDir)).digest("hex").slice(0, 16);
+}
+
+/**
+ * Where the broker records the socket path it chose when the one in the agent directory is too long (#5040). The
+ * agent directory is what every process using it shares; their runtime and temp directories can differ.
+ */
+export function getBrokerSocketPathRecordPath(agentDir: string = getAgentDir()): string {
+  return join(getIntercomDirPath(agentDir), "broker.sock.path");
+}
+
+function privateDirectoryProblem(directory: string, uid: number | undefined): string | undefined {
+  let stats;
+  try {
+    stats = lstatSync(directory);
+  } catch {
+    return "it does not exist";
+  }
+  if (!stats.isDirectory()) return "it is not a directory (or is a symbolic link)";
+  if (stats.uid !== uid) return `it is owned by uid ${stats.uid}, not ${uid}`;
+  if ((stats.mode & 0o077) !== 0) return `its mode ${(stats.mode & 0o777).toString(8)} lets other users in (expected 700)`;
+  return undefined;
 }
 
 /**
@@ -119,25 +142,55 @@ function privateSocketDirectory(): string {
   const uid = process.getuid?.();
   const directory = join(process.env.XDG_RUNTIME_DIR || tmpdir(), `atomic-intercom-${uid}`);
   mkdirSync(directory, { recursive: true, mode: 0o700 });
-  const stats = lstatSync(directory);
-  const problem = !stats.isDirectory()
-    ? "it is not a directory (or is a symbolic link)"
-    : stats.uid !== uid
-      ? `it is owned by uid ${stats.uid}, not ${uid}`
-      : (stats.mode & 0o077) !== 0
-        ? `its mode ${(stats.mode & 0o777).toString(8)} lets other users in (expected 700)`
-        : undefined;
+  const problem = privateDirectoryProblem(directory, uid);
   if (problem !== undefined) {
     throw new Error(`Intercom refuses the broker socket directory ${directory}: ${problem}`);
   }
   return directory;
 }
 
+function inDirectorySocketPath(agentDir: string): string {
+  return join(getIntercomDirPath(agentDir), "broker.sock");
+}
+
+function fitsUnixSocketPath(socketPath: string, platform: NodeJS.Platform): boolean {
+  return Buffer.byteLength(socketPath) <= maxUnixSocketPathBytes(platform);
+}
+
 /**
- * Where the broker listens and every client connects. Each caller derives it here, so they always agree. A socket path
- * longer than the platform allows moves to a per-user directory, named after a digest of the agent directory (#5040).
+ * The socket path a broker records, while it is one this user's broker for this agent directory could have chosen: an
+ * absolute path `<runtime or temp directory>/atomic-intercom-<uid>/<digest>.sock` within the length limit, whose
+ * directory is this user's alone and which is a socket this user owns. Anything else is ignored.
  */
-export function getBrokerSocketPath(
+function recordedSocketPath(platform: NodeJS.Platform, agentDir: string): string | undefined {
+  let recorded: string;
+  try {
+    recorded = readFileSync(getBrokerSocketPathRecordPath(agentDir), "utf-8").trim();
+  } catch {
+    return undefined;
+  }
+  const uid = process.getuid?.();
+  const directory = dirname(recorded);
+  const wellFormed =
+    isAbsolute(recorded) &&
+    resolve(recorded) === recorded &&
+    fitsUnixSocketPath(recorded, platform) &&
+    basename(recorded) === `${agentDirDigest(agentDir)}.sock` &&
+    basename(directory) === `atomic-intercom-${uid}`;
+  if (!wellFormed || privateDirectoryProblem(directory, uid) !== undefined) return undefined;
+  try {
+    const stats = lstatSync(recorded);
+    return stats.isSocket() && stats.uid === uid ? recorded : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The socket path a broker started by this process chooses. A path in the agent directory longer than the platform
+ * allows moves to this process's per-user runtime or temp directory, named after a digest of the agent directory.
+ */
+export function chooseBrokerSocketPath(
   platform: NodeJS.Platform = process.platform,
   agentDir: string = getAgentDir(),
 ): string {
@@ -146,13 +199,39 @@ export function getBrokerSocketPath(
     return pipe.length <= MAX_PIPE_NAME_LENGTH ? pipe : `\\\\.\\pipe\\pi-intercom-${agentDirDigest(agentDir)}`;
   }
 
-  const socketPath = join(getIntercomDirPath(agentDir), "broker.sock");
-  if (Buffer.byteLength(socketPath) <= maxUnixSocketPathBytes(platform)) return socketPath;
+  const socketPath = inDirectorySocketPath(agentDir);
+  if (fitsUnixSocketPath(socketPath, platform)) return socketPath;
   const shortPath = join(privateSocketDirectory(), `${agentDirDigest(agentDir)}.sock`);
-  if (Buffer.byteLength(shortPath) > maxUnixSocketPathBytes(platform)) {
+  if (!fitsUnixSocketPath(shortPath, platform)) {
     throw new Error(
       `Intercom broker socket paths ${socketPath} and ${shortPath} are both longer than the ${maxUnixSocketPathBytes(platform)} bytes a Unix socket path allows`,
     );
   }
   return shortPath;
+}
+
+/**
+ * Where clients connect to the broker for an agent directory. Each caller derives it here, so they always agree. When
+ * the path in the agent directory is too long, it is the path the running broker recorded (#5040), so sessions with
+ * different runtime or temp directories reach the same broker; without a usable record, it is the path a broker this
+ * process starts would choose.
+ */
+export function getBrokerSocketPath(
+  platform: NodeJS.Platform = process.platform,
+  agentDir: string = getAgentDir(),
+): string {
+  if (platform !== "win32" && !fitsUnixSocketPath(inDirectorySocketPath(agentDir), platform)) {
+    const recorded = recordedSocketPath(platform, agentDir);
+    if (recorded !== undefined) return recorded;
+  }
+  return chooseBrokerSocketPath(platform, agentDir);
+}
+
+/** Records the socket path a starting broker chose, when it is not the one in the agent directory; atomically. */
+export function recordBrokerSocketPath(socketPath: string, agentDir: string = getAgentDir()): void {
+  if (socketPath === inDirectorySocketPath(agentDir) || process.platform === "win32") return;
+  const recordPath = getBrokerSocketPathRecordPath(agentDir);
+  const temporary = `${recordPath}.${process.pid}.tmp`;
+  writeFileSync(temporary, `${socketPath}\n`, { mode: 0o600 });
+  renameSync(temporary, recordPath);
 }
