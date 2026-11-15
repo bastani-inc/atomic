@@ -392,6 +392,7 @@ describe("resume.waitForBlueprint lets the first turn overlap the blueprint buil
 			},
 		);
 		if (opened === "cancelled") throw new Error("the resume was cancelled");
+		await until(() => ran().includes("started"), "the build to start");
 		assert.deepEqual(ran(), ["started"], "the session opened while the build runs");
 		assert.equal(blueprintBuildPending(sessionId), true);
 		writeFileSync(gate(), "");
@@ -409,6 +410,7 @@ describe("resume.waitForBlueprint lets the first turn overlap the blueprint buil
 			sessionManager: await SessionManager.open(manager.getSessionStore(), manager.getSessionId()),
 		});
 		cleanups.push(() => session.dispose());
+		await until(() => ran().includes("started"), "the build to start");
 		assert.deepEqual(ran(), ["started"], "the session was created while the build runs");
 		assert.equal(blueprintBuildPending(session.sessionManager.getSessionId()), true);
 		writeFileSync(gate(), "");
@@ -554,6 +556,12 @@ test('resume.waitForBlueprint defaults to "prompt" with a UI and to "tools" with
 			interactive,
 		).waitForBlueprint;
 	assert.equal(wait(undefined, true), "prompt");
+	assert.equal(
+		sessionResumeOptions("cli", "/work", "/agent", SettingsManager.inMemory(), trusted).waitForBlueprint,
+		"prompt",
+		"a caller that does not say is taken to have a UI",
+	);
+	assert.equal(SettingsManager.inMemory().getResumeWaitForBlueprint(), "prompt");
 	assert.equal(wait(undefined, false), "tools");
 	assert.equal(wait("tools", true), "tools");
 	assert.equal(wait("prompt", false), "prompt");

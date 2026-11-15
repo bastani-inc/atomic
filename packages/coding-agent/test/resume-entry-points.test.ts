@@ -794,8 +794,8 @@ describe("resume helpers (#4329)", () => {
 });
 
 describe("AgentSessionRuntime.switchSession across nodes (#4329)", () => {
-	/** A runtime whose sessions a UI shows, as for /resume, unless `interactive` is false. */
-	async function runtimeOn(agentDir: string, settingsJson: object, interactive = true) {
+	/** A runtime whose sessions a UI shows, as for /resume, or with `"unset"` a runtime that is not told whether one does. */
+	async function runtimeOn(agentDir: string, settingsJson: object, interactive: true | "unset" = true) {
 		mkdirSync(agentDir, { recursive: true });
 		writeFileSync(join(agentDir, "settings.json"), JSON.stringify(settingsJson));
 		const faux = registerFauxProvider();
@@ -849,7 +849,7 @@ describe("AgentSessionRuntime.switchSession across nodes (#4329)", () => {
 			cwd: sandbox.root,
 			agentDir,
 			sessionManager: initial,
-			interactive,
+			...(interactive === "unset" ? {} : { interactive }),
 		});
 		cleanups.push(async () => {
 			await runtime.dispose();
@@ -954,7 +954,7 @@ describe("AgentSessionRuntime.switchSession across nodes (#4329)", () => {
 		assert.equal(existsSync(marker), false);
 	});
 
-	test("a runtime without a UI switches into a restored worktree while its blueprint build runs (#4748)", async () => {
+	test("a runtime not told of a UI switches into a restored worktree while its blueprint build runs (#4748)", async () => {
 		const agentDir = sandbox.path("agent");
 		const gate = sandbox.path("gate");
 		const { sessionId } = await sessionRecordedElsewhere(sqliteSelection("shared"));
@@ -968,7 +968,7 @@ describe("AgentSessionRuntime.switchSession across nodes (#4329)", () => {
 					),
 				},
 			},
-			false,
+			"unset",
 		);
 		assert.deepEqual(await runtime.switchSession(sessionId), { cancelled: false });
 		assert.ok(runtime.session.sessionManager.getCwd().startsWith(join(agentDir, "worktree-snapshots")));
