@@ -424,7 +424,9 @@ describe("a resume without a UI whose blueprint build runs behind the first turn
 			await killed.exited;
 			const again = resume(recorded, "-p", "hello");
 			again.child.stdin.end();
-			await until(() => count("started") === 2, "the second build to start");
+			await until(() => count("started") === 2, "the second build to start").catch((error: Error) => {
+				throw new Error(`${error.message}; the second resume wrote: ${again.err()}`);
+			});
 			writeFileSync(gate(), "");
 			assert.equal(await again.exited, 0);
 			await sleep(HOLD_MS);
