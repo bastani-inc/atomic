@@ -126,7 +126,14 @@ import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 const ORIGINAL_TASK = "original task";
 /** The detached call a released child waits on in these tests. */
 const RELEASED_CALL = { toolCallId: "ci-1", toolName: "wait_for_ci" } as const;
-const RECORD_WAIT_MS = 5_000;
+/**
+ * How long a poll waits for a child's record or worktree to reach a state. Each step behind it is a real in-process
+ * child session starting, reopening or ending, which took over 15 s on Windows with two suites running at once. The
+ * polls end as soon as the state is reached, so the ceiling costs a passing test nothing.
+ */
+const RECORD_WAIT_MS = 20_000;
+/** A launch, a quit and a resume of a real in-process child session, each awaited through {@link RECORD_WAIT_MS}. */
+const LAUNCH_QUIT_RESUME_TIMEOUT_MS = 60_000;
 
 const agent: AgentConfig = {
 	name: "worker",
@@ -2782,25 +2789,29 @@ test("resumeInFlight ask falls back to never without a UI (#3827)", async () => 
 	}
 });
 
-test("resumeInFlight auto resumes a subagent quit before a restart without asking (#3827)", async () => {
-	const h = harness();
-	const quit = await quitChild(h, "auto1");
-	await h.closeOwnerAndReopen("session-close");
-	const { ctx, ui } = startupContext(h);
+test(
+	"resumeInFlight auto resumes a subagent quit before a restart without asking (#3827)",
+	async () => {
+		const h = harness();
+		const quit = await quitChild(h, "auto1");
+		await h.closeOwnerAndReopen("session-close");
+		const { ctx, ui } = startupContext(h);
 
-	await resumeAwaitingSubagentChildren(h.deps, ctx, "auto", () => true);
+		await resumeAwaitingSubagentChildren(h.deps, ctx, "auto", () => true);
 
-	assert.deepEqual(ui.confirms, []);
-	const resumed = await waitForResumed(h, quit);
-	assert.equal(resumed.terminalStatus, "ok");
-	assert.equal(resumed.childSessionId, quit.childSessionId);
-	const relaunch = h.runs.at(-1)!;
-	assert.equal(relaunch.task, SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT);
-	assert.equal(relaunch.options.resumeSession, true);
-	assert.equal(relaunch.options.sessionManager?.getSessionId(), quit.childSessionId);
-	assert.equal(ui.notices.length, 1);
-	assert.equal(ui.notices[0]?.type, "info");
-});
+		assert.deepEqual(ui.confirms, []);
+		const resumed = await waitForResumed(h, quit);
+		assert.equal(resumed.terminalStatus, "ok");
+		assert.equal(resumed.childSessionId, quit.childSessionId);
+		const relaunch = h.runs.at(-1)!;
+		assert.equal(relaunch.task, SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT);
+		assert.equal(relaunch.options.resumeSession, true);
+		assert.equal(relaunch.options.sessionManager?.getSessionId(), quit.childSessionId);
+		assert.equal(ui.notices.length, 1);
+		assert.equal(ui.notices[0]?.type, "info");
+	},
+	LAUNCH_QUIT_RESUME_TIMEOUT_MS,
+);
 
 test("resumeInFlight never resumes subagents owned by a workflow stage (#3827)", async () => {
 	const h = harness({ stage: true });
