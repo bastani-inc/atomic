@@ -356,6 +356,7 @@ function kindFromCode(code: string | number | undefined): ModelFallbackFailureKi
 		case "rate_limit_exceeded":
 		case "too_many_requests":
 		case "throttlingexception":
+		case "resource_exhausted":
 			return "rate_limit";
 		case "quota_exceeded":
 		case "insufficient_quota":
@@ -385,6 +386,8 @@ function kindFromCode(code: string | number | undefined): ModelFallbackFailureKi
 		case "serviceunavailableexception":
 		case "internalserverexception":
 		case "modelnotreadyexception":
+		// Google's provider status for an overloaded or unavailable service (#4994).
+		case "unavailable":
 			return "provider_unavailable";
 		default:
 			return undefined;
@@ -476,6 +479,28 @@ function refusalKindFromMessage(message: string): ModelFallbackFailureKind | und
 	return undefined;
 }
 
+// A status that leads an adapter's error message: `503: …`, `529 {…}`, or `OpenAI API error (503): …`.
+const LEADING_HTTP_STATUS_PATTERN = /^(?:[^\n():]*\((\d{3})\):|(\d{3})(?=[:\s]))/;
+// The status in a JSON error body, as Google's `{"error":{"code":503,…,"status":"UNAVAILABLE"}}`.
+const JSON_ERROR_CODE_PATTERN = /"code"\s*:\s*(\d{3})(?!\d)/;
+const JSON_PROVIDER_STATUS_PATTERN = /"status"\s*:\s*"([A-Z_]+)"/;
+
+/**
+ * The transient kind the provider's own error text names, so no text rule condemns the model over it: an HTTP status
+ * leading the message or in its JSON error body, a provider status such as `UNAVAILABLE`, or an overloaded service. A
+ * permanent HTTP status in the text names no transient kind (#4994).
+ */
+function transientKindFromMessage(message: string): ModelFallbackFailureKind | undefined {
+	const leadingStatus = LEADING_HTTP_STATUS_PATTERN.exec(message);
+	const status = integerFrom(leadingStatus?.[1] ?? leadingStatus?.[2] ?? JSON_ERROR_CODE_PATTERN.exec(message)?.[1]);
+	const kind =
+		status === undefined
+			? (kindFromCode(JSON_PROVIDER_STATUS_PATTERN.exec(message)?.[1]) ??
+				(/overloaded/i.test(message) ? "provider_unavailable" : undefined))
+			: kindFromStatus(status);
+	return kind !== undefined && SAME_MODEL_RETRYABLE_FAILURE_KINDS.has(kind) ? kind : undefined;
+}
+
 function fallbackKindFromMessage(message: string, name: string | undefined): ModelFallbackFailureKind | undefined {
 	const refusalKind = refusalKindFromMessage(message);
 	if (refusalKind !== undefined) return refusalKind;
@@ -485,7 +510,9 @@ function fallbackKindFromMessage(message: string, name: string | undefined): Mod
 	const nameKind = kindFromCode(name);
 	if (nameKind !== undefined) return nameKind;
 	if (QUOTA_EXHAUSTED_FAILURE_PATTERN.test(message)) return "quota_exhausted";
+	const transientKind = transientKindFromMessage(message);
 	const hasRetryablePattern =
+		transientKind !== undefined ||
 		RETRYABLE_MODEL_FAILURE_PATTERNS.some((pattern) => pattern.test(message)) ||
 		messageLooksLikeModelUnavailable(message);
 	if (!hasRetryablePattern) return undefined;
@@ -495,20 +522,22 @@ function fallbackKindFromMessage(message: string, name: string | undefined): Mod
 		)
 	)
 		return "rate_limit";
+	// Text that would condemn the model does not decide over a transient failure the provider names (#4994).
 	if (
+		transientKind === undefined &&
 		/auth|unauthori[sz]ed|\b40[13]\b|api[_\s-]*key|token[_\s-]*(?:expired|revoked|invalidated|rejected)|forbidden|invalid[_\s-]*key/i.test(
 			message,
 		)
 	)
 		return "auth_on_candidate_provider";
-	if (messageLooksLikeModelUnavailable(message)) return "model_unavailable";
+	if (transientKind === undefined && messageLooksLikeModelUnavailable(message)) return "model_unavailable";
 	if (
 		/network|fetch|socket|connection\s*refused|(?<![a-z0-9_])(?:ECONNRESET|ECONNABORTED|ECONNREFUSED|ETIMEDOUT|EPIPE)(?![a-z0-9_])|getaddrinfo|ENOTFOUND|EAI_AGAIN|timeout|timed\s+out/i.test(
 			message,
 		)
 	)
 		return "network_timeout";
-	return "provider_unavailable";
+	return transientKind ?? "provider_unavailable";
 }
 
 function signalSource(value: unknown, fallback: ModelFallbackFailureSource | undefined): ModelFallbackFailureSource {
@@ -576,7 +605,12 @@ function directMessageSignalUnlessTransient(
 ): ModelFallbackFailureSignal | undefined {
 	const signal = fallbackSignalFromDirectMessage(value, source);
 	if (signal === undefined || !MODEL_BLOCKING_FAILURE_KINDS.has(signal.kind)) return signal;
-	const structuredKinds = [kindFromStatus(statusFrom(value)), kindFromCode(codeFrom(value))];
+	// An adapter's `provider_response_failure` diagnostic carries the HTTP status of the failed request (#4994).
+	const rawDiagnostics = field(value, "diagnostics");
+	const structuredKinds = [value, ...(Array.isArray(rawDiagnostics) ? rawDiagnostics : [])].flatMap((source) => [
+		kindFromStatus(statusFrom(source)),
+		kindFromCode(codeFrom(source)),
+	]);
 	return structuredKinds.some((kind) => kind !== undefined && SAME_MODEL_RETRYABLE_FAILURE_KINDS.has(kind))
 		? undefined
 		: signal;
@@ -878,6 +912,7 @@ function isUnrecognizedSignal(signal: ModelFallbackFailureSignal): boolean {
 		signal.status === undefined &&
 		signal.code === undefined &&
 		signal.name === undefined &&
+		transientKindFromMessage(signal.message) === undefined &&
 		!RETRYABLE_MODEL_FAILURE_PATTERNS.some((pattern) => pattern.test(signal.message))
 	);
 }
