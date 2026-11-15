@@ -240,15 +240,19 @@ describe("a session open in this process (#4971)", () => {
 		assert.doesNotThrow(() => assertSessionNotOpenElsewhere("../escape", join(agentDir, "open-sessions")));
 	});
 
-	test("a mark of a process this one may not signal still counts (#4971)", async () => {
-		const target = await saved("target");
-		const deleter = await saved("deleter");
-		const markers = markersOf(target.getSessionId());
-		mkdirSync(markers, { recursive: true });
-		writeFileSync(join(markers, "init.json"), JSON.stringify({ pid: 1, host: hostname() }));
+	// Signalling another user's process fails with EPERM on POSIX only; on Windows pid 1 does not exist.
+	test.skipIf(process.platform === "win32")(
+		"a mark of a process this one may not signal still counts (#4971)",
+		async () => {
+			const target = await saved("target");
+			const deleter = await saved("deleter");
+			const markers = markersOf(target.getSessionId());
+			mkdirSync(markers, { recursive: true });
+			writeFileSync(join(markers, "init.json"), JSON.stringify({ pid: 1, host: hostname() }));
 
-		await assert.rejects(deleter.deleteSession(target.getSessionId()), SessionOpenElsewhereError);
-	});
+			await assert.rejects(deleter.deleteSession(target.getSessionId()), SessionOpenElsewhereError);
+		},
+	);
 
 	test("marks that name no running session are ignored and removed (#4971)", async () => {
 		const target = await saved("target");
