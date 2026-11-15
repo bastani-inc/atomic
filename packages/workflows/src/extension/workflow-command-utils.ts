@@ -1,3 +1,4 @@
+import { type ParsedSlashCommand, parseSlashCommand } from "@bastani/atomic";
 import type { WorkflowExecutionPolicy, WorkflowInputValues, WorkflowSerializableValue } from "../shared/types.js";
 import type { ExtensionAPI, PiCommandContext, PiCommandOptions } from "./public-types.js";
 import { workflowPolicyFromContext } from "./workflow-policy.js";
@@ -61,18 +62,10 @@ export function createWorkflowCommandReporter(
 
 export type WorkflowCommandHandler = PiCommandOptions["handler"];
 
-interface ParsedWorkflowSlashCommand {
-	name: string;
-	args: string;
-}
-
-function parseWorkflowSlashCommand(text: string): ParsedWorkflowSlashCommand | undefined {
+function parseWorkflowSlashCommand(text: string): ParsedSlashCommand | undefined {
 	const trimmed = text.trim();
 	if (!trimmed.startsWith("/")) return undefined;
-	const firstSpace = trimmed.indexOf(" ");
-	const name = firstSpace === -1 ? trimmed.slice(1) : trimmed.slice(1, firstSpace);
-	const args = firstSpace === -1 ? "" : trimmed.slice(firstSpace + 1);
-	return { name, args };
+	return parseSlashCommand(trimmed);
 }
 
 export function registerWorkflowCommand(

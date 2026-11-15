@@ -1,4 +1,5 @@
 import type { ClearedQueue, PromptDisposition } from "../../core/agent-session-types.js";
+import { parseSlashCommand } from "../../core/slash-commands.ts";
 import {
 	clearInteractiveEngineQueue,
 	getInteractiveEngineRemoteCommands,
@@ -163,8 +164,7 @@ InteractiveModeBase.prototype.isExtensionCommand = function (this: InteractiveMo
 
 	const extensionRunner = this.session.extensionRunner;
 
-	const spaceIndex = text.indexOf(" ");
-	const commandName = spaceIndex === -1 ? text.slice(1) : text.slice(1, spaceIndex);
+	const commandName = parseSlashCommand(text).name;
 	if (extensionRunner.getCommand(commandName)) return true;
 	return getInteractiveEngineRemoteCommands(this.runtimeHost).some(
 		(command) => command.source === "extension" && command.name === commandName,

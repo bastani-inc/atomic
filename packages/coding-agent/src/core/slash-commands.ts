@@ -4,6 +4,23 @@ import type { SourceInfo } from "./source-info.ts";
 
 export type SlashCommandSource = "extension" | "prompt" | "skill";
 
+export interface ParsedSlashCommand {
+	/** Command name without the leading `/`. */
+	name: string;
+	/** Everything after the separator, with its own line breaks intact. */
+	args: string;
+}
+
+/**
+ * Split `/name args` at the first whitespace character (space, tab or line break).
+ * Only the separator is removed; a CRLF separator counts as one line break.
+ */
+export function parseSlashCommand(text: string): ParsedSlashCommand {
+	const separator = /\r\n|\s/.exec(text);
+	if (!separator) return { name: text.slice(1), args: "" };
+	return { name: text.slice(1, separator.index), args: text.slice(separator.index + separator[0].length) };
+}
+
 export interface SlashCommandInfo {
 	name: string;
 	description?: string;

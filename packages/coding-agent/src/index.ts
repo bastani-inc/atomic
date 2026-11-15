@@ -47,6 +47,7 @@ export {
 	toolOutputUrl,
 } from "./core/session-tool-output.ts";
 export { CACHE_WARMING_MODES, type CacheWarmingMode } from "./core/settings-manager.ts";
+export { type ParsedSlashCommand, parseSlashCommand } from "./core/slash-commands.ts";
 export * from "./core/storage/index.js";
 // Outside the storage barrel: workflow durability setup imports that barrel in every test worker.
 export {
