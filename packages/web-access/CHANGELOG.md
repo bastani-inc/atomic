@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- Temporary extension installs and the GitHub clone cache now use directories only the current user owns
 - GitHub URLs are now validated, and clones are confined to the clone directory.
 - Files read from a cloned GitHub repository are now confined to the clone.
 - Fetching a PDF no longer overwrites existing files in `~/Downloads`. Each extraction is saved to a new file named after the document title, with `-2`, `-3`, and so on added when that name is taken, so PDFs fetched together never share a file. Titles in any script are kept in the file name instead of becoming `document`; only characters that are unsafe in file names are removed. The 5 MB page and 20 MB PDF size limits now apply while the response is downloaded, so a large response sent without a `Content-Length` header fails with `Response too large` instead of being read in full. When fetching a local, private, or intranet address (for example `localhost`, `127.0.0.1`, `10.x.x.x`, `*.local`, or a host name without a dot) or a URL with embedded credentials fails, the URL is no longer sent to the r.jina.ai or Gemini fallbacks; the original error is returned instead ([#4898](https://github.com/bastani-inc/atomic/issues/4898)).

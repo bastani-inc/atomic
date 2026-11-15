@@ -3,12 +3,12 @@ import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { createOwnerState } from "./owner-state.js";
 import { dirname, extname, isAbsolute, join, relative, resolve as resolvePath, sep as pathSep } from "node:path";
-import { createChildProcessEnvironment } from "@bastani/atomic";
+import { assertPrivateDirectory, createChildProcessEnvironment } from "@bastani/atomic";
 import { activityMonitor } from "./activity.js";
 import type { ExtractedContent } from "./extract.js";
 import { flattenTruncatedString } from "./flat-string.js";
 import { checkGhAvailable, checkRepoSize, fetchViaApi, showGhHint } from "./github-api.js";
-import { BINARY_EXTENSIONS, MAX_INLINE_FILE_CHARS, MAX_TREE_ENTRIES, NOISE_DIRS, assertValidGitHubCoordinates, loadGitHubConfig, parseGitHubUrl, resetGitHubConfig, type GitHubCloneConfig, type GitHubUrlInfo } from "./github-config.js";
+import { BINARY_EXTENSIONS, MAX_INLINE_FILE_CHARS, MAX_TREE_ENTRIES, NOISE_DIRS, assertValidGitHubCoordinates, chosenDefaultGitHubClonePath, loadGitHubConfig, parseGitHubUrl, resetGitHubConfig, type GitHubCloneConfig, type GitHubUrlInfo } from "./github-config.js";
 export { parseGitHubUrl, type GitHubUrlInfo } from "./github-config.js";
 
 /** Written into every clone directory this tool creates; nothing without it is ever removed. */
@@ -80,6 +80,10 @@ function removeOwnedClone(paths: ClonePaths): boolean {
 function prepareCloneDirectory(paths: ClonePaths): boolean {
 	const { root, directory } = paths;
 	try {
+		// The default cache must still be a directory only this account owns;
+		// one swapped or opened up since it was chosen is refused, not used.
+		const privateRoot = chosenDefaultGitHubClonePath();
+		if (privateRoot && (root === privateRoot || dirname(root) === privateRoot)) assertPrivateDirectory(privateRoot);
 		mkdirSync(root, { recursive: true });
 		if (!isConfined(root, directory) || !removeOwnedClone(paths)) return false;
 		mkdirSync(directory, { recursive: true });
