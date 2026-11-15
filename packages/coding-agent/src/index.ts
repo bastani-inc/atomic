@@ -620,6 +620,7 @@ export type {
 	ResolvedResource,
 } from "./core/package-manager.ts";
 export { DefaultPackageManager } from "./core/package-manager.ts";
+export { formatProjectTrustPrompt } from "./core/project-trust.ts";
 export {
 	applyProviderRateLimitObservation,
 	configureProviderRequestBudget,
@@ -973,9 +974,11 @@ export {
 	type TaskToolFailureCode,
 } from "./core/tools/shell-task-status.ts";
 export {
+	getProjectTrustOptions,
 	hasProjectTrustInputs,
 	hasTrustRequiringProjectResources,
 	type ProjectTrustDecision,
+	type ProjectTrustOption,
 	ProjectTrustStore,
 	type ProjectTrustStoreEntry,
 	type ProjectTrustUpdate,

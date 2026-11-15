@@ -21,6 +21,7 @@ import type { WorkflowCommandReporter } from "./workflow-command-utils.js";
 import { workflowCaller } from "./workflow-instance-owner.js";
 import { captureWorkflowOwnerResources, type WorkflowOwnerResources } from "./workflow-owner-resources.js";
 import { workflowPolicyFromContext } from "./workflow-policy.js";
+import { projectTrustConfirmation } from "./workflow-project-trust.js";
 import { injectWorkflowResumeSummary } from "./workflow-resume-summary.js";
 import { overlaySurfaceFromContext } from "./workflow-targets.js";
 
@@ -283,10 +284,12 @@ function releasedRunAdoption(
 
 function crossProjectConfirmation(ctx: PiEventContext): {
 	confirmCrossProjectFork?: (cwd: string) => Promise<boolean>;
+	confirmProjectTrust?: (projectDir: string) => Promise<boolean>;
 	forkModelOwner?: string;
 } {
 	const confirm = ctx.ui.confirm;
-	return workflowPolicyFromContext(ctx).allowInputPicker && confirm !== undefined
+	const policy = workflowPolicyFromContext(ctx);
+	return policy.allowInputPicker && confirm !== undefined
 		? {
 				forkModelOwner: workflowCaller(ctx),
 				confirmCrossProjectFork: (cwd) =>
@@ -294,6 +297,7 @@ function crossProjectConfirmation(ctx: PiEventContext): {
 						"Resume workflow",
 						`Workflow run found in different project: ${cwd}. Fork it into the current directory?`,
 					),
+				...projectTrustConfirmation(ctx, policy),
 			}
 		: {};
 }

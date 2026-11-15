@@ -15,6 +15,8 @@ export interface WorkflowForkActionDeps {
 	readonly signal?: AbortSignal;
 	readonly onRunAccepted?: (runId: string) => void;
 	readonly validateSource?: (handle: DurableWorkflowHandle) => void;
+	/** Asks whether to trust the untrusted project folder the source run's workflow is defined in. */
+	readonly confirmProjectTrust?: (projectDir: string) => Promise<boolean>;
 }
 
 function forkFailure(sourceRunId: string, error: ForkError): ForkResult {
@@ -61,6 +63,7 @@ export async function workflowForkAction(
 		signal: deps.signal,
 		onRunAccepted: deps.onRunAccepted,
 		validateSource: deps.validateSource,
+		...(deps.confirmProjectTrust === undefined ? {} : { confirmProjectTrust: deps.confirmProjectTrust }),
 	});
 	if (!forked.ok) return forkFailure(sourceRunId, forked.error);
 	return {
