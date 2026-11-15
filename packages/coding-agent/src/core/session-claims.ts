@@ -25,7 +25,7 @@ import {
 } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
-import { takeTakeoverMutex } from "./lock-takeover.ts";
+import { putBack, removeAside, takeTakeoverMutex } from "./lock-takeover.ts";
 import { processStartToken } from "./process-start-token.ts";
 import { SessionAlreadyOpenError } from "./session-manager-errors.js";
 
@@ -131,13 +131,13 @@ function stillDead(claim: ReturnType<typeof readClaim>, token: string | undefine
 
 /**
  * Removes the claim at `path` when it is still the one with `token` that was found dead (#5179). Takeovers take turns
- * under the owner-checked takeover mutex, which is stale only once its owner is dead, so a paused takeover keeps it.
- * Inside it the claim is judged again, and moved aside only while this process still owns the mutex; it is removed
- * only when the moved record is the dead one. A claim moved that is not is left aside and nothing is put back. A mutex
- * held elsewhere or lost meanwhile is contention: the caller looks again.
+ * under the takeover mutex, an advisory lock the kernel releases when its holder dies (#5193), and the whole removal
+ * runs while it is held: the claim is judged again inside it and moved aside, and removed only when the moved record is
+ * the dead one. A claim moved that is not is linked back only while no claim is in its place, never replacing one. A
+ * mutex held elsewhere is contention: the caller looks again.
  */
 function removeDeadClaim(path: string, token: string | undefined): void {
-	const mutex = takeTakeoverMutex(path);
+	const mutex = takeTakeoverMutex(path, TAKEOVER_WAIT_MS);
 	if (mutex === undefined) {
 		Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, TAKEOVER_WAIT_MS);
 		return;
@@ -151,7 +151,8 @@ function removeDeadClaim(path: string, token: string | undefined): void {
 			// Gone meanwhile: the next attempt links a claim in its place.
 			return;
 		}
-		if (readClaim(aside)?.record?.token === token) rmSync(aside, { force: true });
+		if (readClaim(aside)?.record?.token === token) removeAside(aside);
+		else putBack(aside, path);
 	} finally {
 		mutex.release();
 	}
