@@ -80,7 +80,7 @@ test.skipIf(process.platform === "win32")(
 				: [];
 		try {
 			const deadline = performance.now() + STATE_DEADLINE_MS;
-			while (received().length < 3) {
+			while (received().length < 4) {
 				assert.ok(performance.now() < deadline, `timed out; replies ${JSON.stringify(received())}`);
 				await sleep(25);
 			}
@@ -90,9 +90,10 @@ test.skipIf(process.platform === "win32")(
 					["earlier", "refused", "superseded"],
 					["other work", "refused", "superseded"],
 					["held", "answered", undefined],
+					["unbound", "answered", undefined],
 				],
 			);
-			assert.deepEqual(committed, ["held-operation"]);
+			assert.deepEqual(committed, ["held-operation", "unbound-operation"]);
 		} finally {
 			await pool.close().catch(() => {});
 			await execution;
