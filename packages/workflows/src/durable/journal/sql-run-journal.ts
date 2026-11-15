@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import type { WorktreeSnapshot } from "@bastani/atomic";
 import {
 	assertStoredSchemaVersion,
 	dialectOf,
@@ -833,7 +834,8 @@ export class SqlRunJournal implements RunJournal {
 					(append.guard === undefined &&
 						typeof append.payload === "string" &&
 						append.stored !== undefined &&
-						append.stored.chunks.length === 0),
+						append.stored.chunks.length === 0 &&
+						append.worktreeSnapshots.length === 0),
 			)
 		)
 			return this.operation(() => this.appendInOneRequest(batch, owned, prepared));
@@ -977,7 +979,12 @@ export class SqlRunJournal implements RunJournal {
 		// How the payload is stored: a large one as a stub in its row and its JSON in chunks (#4965).
 		const stored =
 			payload instanceof StorageUnavailableError ? undefined : storedJournalPayload(payload, event.payload);
-		return { key, type, payload, guard, status, stored };
+		const carried =
+			type === RUN_EVENT_TYPES.checkpointRecorded
+				? (event.payload as { readonly worktreeSnapshots?: readonly WorktreeSnapshot[] }).worktreeSnapshots
+				: undefined;
+		const worktreeSnapshots = Array.isArray(carried) ? carried : [];
+		return { key, type, payload, guard, status, stored, worktreeSnapshots };
 	}
 
 	/** Writes one event row and the chunks of its payload, if it has any, in the caller's transaction. */
@@ -1023,7 +1030,7 @@ export class SqlRunJournal implements RunJournal {
 	private async insert(
 		tx: SqliteExecutor,
 		owned: Lease,
-		{ key, type, payload, guard, status, stored }: ReturnType<SqlRunJournal["prepare"]>,
+		{ key, type, payload, guard, status, stored, worktreeSnapshots }: ReturnType<SqlRunJournal["prepare"]>,
 		expected?: number,
 	): Promise<AppendOutcome> {
 		await guard?.(tx, owned.runId);
@@ -1035,6 +1042,8 @@ export class SqlRunJournal implements RunJournal {
 			);
 			if (row) return { status: "exists", entry: await this.entryOf(row, tx) };
 		}
+		// A checkpoint records its worktree snapshots only while every blob they reference is still stored (#5077).
+		await this.snapshotBlobs.assertStored(tx, worktreeSnapshots);
 		const actual = await this.sequence(tx, owned.runId);
 		if (expected !== undefined && expected !== actual)
 			throw new JournalCasConflictError(owned.runId, expected, actual);

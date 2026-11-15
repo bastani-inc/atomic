@@ -1,3 +1,4 @@
+import type { JsonValue } from "@bastani/pi-ai";
 import { setTimeout as delay } from "node:timers/promises";
 import { RETRY_IDENTITY_MAX_REUSES, RETRY_IDENTITY_TTL_MS } from "./retry-identity.js";
 import { intercomRecoveryStoppedText, RECONNECT_DELAYS_MS } from "./retry-policy.js";
@@ -7,6 +8,8 @@ export interface IntercomAttemptResult {
 	content: Array<{ type: "text"; text: string }>;
 	isError: boolean;
 	details: Record<string, unknown>;
+	/** #5087: what a codemode script call resolves to. */
+	structuredContent?: JsonValue;
 }
 
 /** One invocation owns all retries; separate invocations always start fresh. */

@@ -237,17 +237,21 @@ describe("collection cost follows the number of snapshots, never the number of j
 		assert.deepEqual(fresh.result.deleted, []);
 	});
 
-	test("publishing a snapshot reference costs a checkpoint append no statement beyond an append without one", async () => {
+	test("publishing a snapshot reference costs a checkpoint append one statement beyond an append without one: the check that its blobs are stored (#5077)", async () => {
 		const fixture = await history("writes", 4, 0);
 		const lease = await startRun(fixture.shared.journal, "run-writes");
 		const blob = textBlob("published");
+		await fixture.shared.journal.snapshotBlobs.putBlobs([blob]);
 		const plain = await fixture.measure(() => fixture.shared.journal.append(lease, checkpointEvent([])));
 		const referencing = await fixture.measure(() =>
 			fixture.shared.journal.append(lease, checkpointEvent([syntheticSnapshot("published", [blob.hash])])),
 		);
 
+		const checksBlobs = (sql: string) => sql.startsWith("SELECT hash FROM snapshot_blobs AS b");
+		const sql = referencing.statements.map((statement) => statement.sql);
+		assert.equal(sql.filter(checksBlobs).length, 1);
 		assert.deepEqual(
-			referencing.statements.map((statement) => statement.sql),
+			sql.filter((statement) => !checksBlobs(statement)),
 			plain.statements.map((statement) => statement.sql),
 		);
 		assert.deepEqual(
