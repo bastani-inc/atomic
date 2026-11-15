@@ -193,6 +193,24 @@ describe("released asker reply routes (#4326)", () => {
 		assert.equal(routes.take("q2", REPLIER, ASKER)?.questionId, "q2");
 		assert.equal(routes.take("q3", REPLIER, ASKER), undefined);
 	});
+
+	test("every route refused at capacity, kept or restored, is reported once so its asker is told (#4996)", () => {
+		const routes = new ReleasedAskerReplies(() => 1_000, TTL_MS, 1);
+		const refused: Array<{ questionId: string; ownerSessionId: string | undefined }> = [];
+		routes.refuseWith((route) =>
+			refused.push({ questionId: route.questionId, ownerSessionId: route.ownerSessionId }),
+		);
+		routes.keep({ sessionId: ASKER, childName: CHILD }, [question("q1")], OWNER);
+		const retry = routes.take("q1", REPLIER, ASKER);
+		assert.ok(retry);
+		routes.keep({ sessionId: ASKER, childName: CHILD }, [question("q2"), question("q3")], undefined);
+		routes.restore(retry, OWNER);
+		assert.deepEqual(refused, [
+			{ questionId: "q3", ownerSessionId: undefined },
+			{ questionId: "q1", ownerSessionId: OWNER },
+		]);
+		assert.equal(routes.droppedRoutes, 2);
+	});
 });
 
 describe("pending question routes of a departing asker (#4326)", () => {

@@ -4,6 +4,9 @@ import { normalizeReservationTarget } from "./released-children.js";
 
 const DEFAULT_MAX_ROUTES = 10_000;
 
+/** #4996: why a released subagent's ask failed when the broker had no room left to route its reply. */
+export const RELEASED_REPLY_ROUTES_FULL_REASON = `The Intercom broker's released-subagent reply routes are full (limit ${DEFAULT_MAX_ROUTES}); this ask can no longer receive its reply`;
+
 export interface ReleasedAskerReplyRoute {
 	readonly questionId: string;
 	readonly askerSessionId: string;
@@ -28,6 +31,15 @@ interface Entry {
 	readonly replierSessionId: string;
 	readonly expiresAt: number;
 	ownerSessionId: string | undefined;
+}
+
+/** #4996: a route refused at capacity, whose asker must be told its ask can no longer be answered. */
+export interface RefusedReleasedAskerRoute {
+	readonly questionId: string;
+	readonly askerSessionId: string;
+	readonly childName: string;
+	readonly replierSessionId: string;
+	readonly ownerSessionId: string | undefined;
 }
 
 /** #4829: what keeps a released asker's routes durably. */
@@ -82,6 +94,13 @@ export class ReleasedAskerReplies {
 		this.durable = store;
 	}
 
+	/** #4996: told of each route refused at capacity, so its asker is failed rather than left waiting. */
+	private refused: (route: RefusedReleasedAskerRoute) => void = () => {};
+
+	refuseWith(handler: (route: RefusedReleasedAskerRoute) => void): void {
+		this.refused = handler;
+	}
+
 	keep(
 		asker: { readonly sessionId: string; readonly childName: string },
 		questions: readonly PendingQuestion[],
@@ -105,7 +124,13 @@ export class ReleasedAskerReplies {
 				continue;
 			}
 			if (this.entries.size >= this.maxRoutes) {
-				this.recordOverflow();
+				this.recordOverflow({
+					questionId: question.messageId,
+					askerSessionId: asker.sessionId,
+					childName: asker.childName,
+					replierSessionId: question.targetSessionId,
+					ownerSessionId,
+				});
 				continue;
 			}
 			const entry: Entry = {
@@ -180,7 +205,7 @@ export class ReleasedAskerReplies {
 		this.expire();
 		if (route.expiresAt <= this.now()) return;
 		if (this.entries.size >= this.maxRoutes) {
-			this.recordOverflow();
+			this.recordOverflow({ ...route, ownerSessionId });
 			return;
 		}
 		const entry: Entry = { ...route, ownerSessionId, childKey: normalizeReservationTarget(route.childName) };
@@ -265,9 +290,10 @@ export class ReleasedAskerReplies {
 		this.byOwner.clear();
 	}
 
-	private recordOverflow(): void {
+	private recordOverflow(route: RefusedReleasedAskerRoute): void {
 		this.droppedRoutes += 1;
 		if (this.droppedRoutes === 1) this.onFirstOverflow();
+		this.refused(route);
 	}
 
 	private add(entry: Entry): void {

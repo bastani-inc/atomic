@@ -107,7 +107,12 @@ import { WorkflowStageAliases } from "./workflow-stage-aliases.js";
 import { type IntercomRecipientGoneError, serializeIntercomRecipientGoneError } from "./recipient-gone-errors.js";
 import { NotHostedSessionError, serializeIntercomHostedSessionError } from "./hosted-session-errors.js";
 import { type ParsedHostedSession, validateHostSessionsFrame, validateUnhostSessionsFrame } from "./hosted-sessions.js";
-import { ReleasedAskerReplies, type ReleasedAskerReplyRoute } from "./released-asker-replies.js";
+import {
+  RELEASED_REPLY_ROUTES_FULL_REASON,
+  ReleasedAskerReplies,
+  type RefusedReleasedAskerRoute,
+  type ReleasedAskerReplyRoute,
+} from "./released-asker-replies.js";
 import { releasedAskerReplyRefusal } from "./released-asker-remote-replies.js";
 import { hasGroup, normalizeGroup, normalizeGroups, workflowInvocationRefusalFor } from "../group.js";
 import { handleBrokerPresence } from "./presence-handler.js";
@@ -449,6 +454,7 @@ class IntercomBroker {
       kept: (question) => this.pendingQuestions.writeLive(question),
       removed: (question) => this.pendingQuestions.forgetLive([question]),
     });
+    this.releasedAskerReplies.refuseWith((route) => this.failRefusedReleasedRoute(route));
   }
 
   /**
@@ -3195,6 +3201,41 @@ class IntercomBroker {
       reason,
       ...(reasonCode === undefined ? {} : { reasonCode }),
     });
+  }
+
+  /**
+   * #4996: a released subagent's ask whose reply route the broker had no room for fails to the subagent, once: through
+   * its owner, which wakes it, or, with no owner yet, held for it under its own return address. Never silently.
+   */
+  private failRefusedReleasedRoute(route: RefusedReleasedAskerRoute): void {
+    const question = { messageId: route.questionId, senderSessionId: route.askerSessionId, targetSessionId: route.replierSessionId };
+    // Kept for an away recipient too, it would otherwise be answered or failed a second time.
+    this.pendingQuestions.forgetDormant(question);
+    const from: SessionInfo = this.sessions.get(route.replierSessionId)?.info ?? {
+      id: route.replierSessionId, cwd: "", model: "", pid: 0, startedAt: 0, lastActivity: Date.now(),
+    };
+    const message = {
+      id: `released-routes-full:${route.questionId}`,
+      timestamp: Date.now(),
+      replyTo: route.questionId,
+      replyError: RELEASED_REPLY_ROUTES_FULL_REASON,
+      content: { text: RELEASED_REPLY_ROUTES_FULL_REASON },
+    };
+    if (route.ownerSessionId !== undefined) {
+      this.pendingQuestions.holdForReleasedChild(route.childName, route.ownerSessionId, {
+        askerSessionId: route.askerSessionId, from, message,
+      });
+      this.wakeRestoringRecipientOwner({ ownerSessionId: route.ownerSessionId, childName: route.childName });
+      return;
+    }
+    const returnAddress =
+      this.sessions.get(route.askerSessionId)?.registrationReturnAddress ??
+      this.sessionIdReclaim.retiredReturnAddress(route.askerSessionId);
+    if (returnAddress === undefined || returnAddress === "") {
+      console.error(`Intercom broker could not tell released subagent "${route.childName}" that its ask ${route.questionId} failed: ${RELEASED_REPLY_ROUTES_FULL_REASON}`);
+      return;
+    }
+    this.pendingQuestions.holdForAwayAsker({ ...question, senderReturnAddress: returnAddress }, from, message);
   }
 
   /** #4996: asks the away recipient's full queue could not keep fail at once to their connected askers, never silently. */
