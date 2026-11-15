@@ -729,6 +729,24 @@ describe("secret redaction (#4768)", () => {
 		assert.equal(redactSecrets(`api_key: "${secret} more" next`, [], {}), 'api_key: "[redacted]" next');
 	});
 
+	test("redacting a megabyte of repeated cookie, block and option text in CLI output stays linear", () => {
+		const repeat = (unit: string) => unit.repeat(Math.ceil(1_048_576 / unit.length)).slice(0, 1_048_576);
+		for (const input of [
+			repeat("Cookie: a=b "),
+			repeat("Set-Cookie: a=b, "),
+			repeat("password: |\n"),
+			repeat("--cookie a=b "),
+			repeat('token="'),
+			repeat("aSig="),
+			repeat("a=b "),
+		]) {
+			const started = performance.now();
+			redactSecrets(input, [], {});
+			const elapsed = performance.now() - started;
+			assert.ok(elapsed < 2_000, `took ${Math.round(elapsed)} ms`);
+		}
+	});
+
 	test("redacts tokens a CLI prints (#4768)", () => {
 		const cases: [string, string][] = [
 			["Authorization: Bearer abc.def-ghi, next", "Authorization: Bearer [redacted], next"],

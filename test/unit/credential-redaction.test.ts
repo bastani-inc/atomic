@@ -900,7 +900,7 @@ describe("cookie headers inside a line", () => {
 			],
 			["curl --cookie cookies.txt https://x", "curl --cookie cookies.txt https://x"],
 			[`{"h":"Cookie: sid=${PLAIN_SECRET}"}`, '{"h":"Cookie: sid=[redacted]"}'],
-			[`{"h":"x=1, cookie: sid=${PLAIN_SECRET}"}`, '{"h":"x=1, cookie: sid=[redacted]"}'],
+			[`{"h":"x=1, cookie: sid=${PLAIN_SECRET}"}`, `{"h":"x=1, cookie: sid=${PLAIN_SECRET}"}`],
 			[`{\\"h\\":\\"Cookie: sid=${PLAIN_SECRET}\\"}`, '{\\"h\\":\\"Cookie: sid=[redacted]\\"}'],
 			[`{cookie: sid=${PLAIN_SECRET}}`, "{cookie: sid=[redacted]}"],
 			[`resp set-cookie: sid=${PLAIN_SECRET}; Path=/`, "resp set-cookie: sid=[redacted]; Path=/"],
@@ -963,7 +963,7 @@ describe("credential value edges", () => {
 			["x*cookie: a=b", "x*cookie: a=b"],
 			["x -H cookie: a=b", "x -H cookie: a=[redacted]"],
 			["header: cookie: a=b", "header: cookie: a=[redacted]"],
-			["a=1,cookie: b=2", "a=1,cookie: b=[redacted]"],
+			["a=1,cookie: b=2", "a=1,cookie: b=2"],
 			["`cookie: a=b`", "`cookie: a=[redacted]`"],
 			["'Cookie: a=b\\\\' x", "'Cookie: a=[redacted]\\\\' x"],
 			["--cookie='a=1; b=2' x", "--cookie='a=[redacted]; b=[redacted]' x"],
@@ -981,5 +981,119 @@ describe("credential value edges", () => {
 		];
 		for (const [input, expected] of cases)
 			assert.equal(redactCredentialShapes(input), expected, JSON.stringify(input));
+	});
+});
+
+describe("credential redaction, fourth pass", () => {
+	const S = PLAIN_SECRET;
+
+	test("a megabyte of repeated cookie headers and block headers stays linear", () => {
+		const repeat = (unit: string) => unit.repeat(Math.ceil(MEBIBYTE / unit.length)).slice(0, MEBIBYTE);
+		const staircase = (header: string) => {
+			let text = "";
+			for (let depth = 0; text.length < MEBIBYTE; depth++) text += `${" ".repeat(depth)}${header}\n`;
+			return text.slice(0, MEBIBYTE);
+		};
+		const inputs = [
+			repeat("Cookie: a=b "),
+			repeat("Set-Cookie: a=b, "),
+			repeat('"cookie":"a=b '),
+			repeat("> cookie: a "),
+			repeat("--cookie a=b "),
+			repeat("-b a=b "),
+			`Set-Cookie: ${repeat("a=b,")}`,
+			`Cookie: ${repeat('a="')}`,
+			repeat("'set-cookie': [ 'a=b "),
+			repeat('\\"cookie\\":\\"a=b '),
+			repeat("[x] cookie: a=b "),
+			repeat('cookie="a=b '),
+			staircase("password: |"),
+			staircase("- token: |"),
+			`password: |\n${"\n".repeat(MEBIBYTE)}`,
+			repeat("password: |\n\n"),
+			repeat("login a password b "),
+			repeat("PGPASSWORD=a "),
+			repeat(" -p8080:80"),
+			repeat("-u 1:2 "),
+		];
+		for (const input of inputs) {
+			for (const redact of [redactCredentialShapes, redactSensitiveText]) {
+				const started = performance.now();
+				redact(input);
+				const elapsed = performance.now() - started;
+				assert.ok(
+					elapsed < LINEAR_REDACTION_BUDGET_MS,
+					`${redact.name} took ${Math.round(elapsed)} ms on ${JSON.stringify(input.slice(0, 30))}`,
+				);
+			}
+		}
+	});
+
+	test("cookies in arrays, escaped JSON, logs and other notations are redacted", () => {
+		const cases: readonly (readonly [string, string])[] = [
+			[
+				`headers: { 'set-cookie': [ 'sid=${S}; Path=/; HttpOnly' ] }`,
+				"headers: { 'set-cookie': [ 'sid=[redacted]; Path=/; HttpOnly' ] }",
+			],
+			[`{"set-cookie":["sid=${S}; Path=/","b=${S}"]}`, '{"set-cookie":["sid=[redacted]; Path=/","b=[redacted]"]}'],
+			[`{"cookie":["sid=${S}"]}`, '{"cookie":["sid=[redacted]"]}'],
+			[`{"req":"{\\"cookie\\":\\"sid=${S}\\"}"}`, '{"req":"{\\"cookie\\":\\"sid=[redacted]\\"}"}'],
+			[`[debug] cookie: sid=${S}`, "[debug] cookie: sid=[redacted]"],
+			[`level=debug cookie="sid=${S}"`, 'level=debug cookie="sid=[redacted]"'],
+			[`'Cookie' => 'sid=${S}'`, "'Cookie' => 'sid=[redacted]'"],
+			[`curl -b 'sid=${S}' https://x`, "curl -b 'sid=[redacted]' https://x"],
+			[`curl -b sid=${S} https://x`, "curl -b sid=[redacted] https://x"],
+			["curl -b cookies.txt https://x", "curl -b cookies.txt https://x"],
+			["cookie=abc", "cookie=abc"],
+		];
+		for (const [input, expected] of cases) assert.equal(redactCredentialShapes(input), expected, input);
+	});
+
+	test("upper-case password env names and strong credential suffixes are redacted", () => {
+		const cases: readonly (readonly [string, string])[] = [
+			[`PGPASSWORD=${S} psql -h db`, "PGPASSWORD= [redacted]"],
+			[`MYSQLPASSWORD=${S}`, "MYSQLPASSWORD= [redacted]"],
+			[`MYSQL_PWD=${S}`, "MYSQL_PWD= [redacted]"],
+			[`nextAuthSecret: ${S}`, "nextAuthSecret: [redacted]"],
+			[`{"pageAccessToken":"${S}"}`, '{"pageAccessToken": [redacted]}'],
+			[`getAccessToken=${S}`, "getAccessToken= [redacted]"],
+			[`showRefreshToken: ${S}`, "showRefreshToken: [redacted]"],
+			[`isClientSecret: ${S}`, "isClientSecret: [redacted]"],
+			[`useApiKey: ${S}`, "useApiKey: [redacted]"],
+			[`forgotPassword: ${S}`, "forgotPassword: [redacted]"],
+			["getAccessToken: null", "getAccessToken: null"],
+			["nextPageToken: abc123", "nextPageToken: abc123"],
+		];
+		for (const [input, expected] of cases) assert.equal(redactCredentialShapes(input), expected, input);
+	});
+
+	test("ports, paths, ids, type annotations and prose stay unchanged", () => {
+		for (const text of [
+			"docker run -p8080:80 nginx",
+			"docker run -p127.0.0.1:8080:80/tcp nginx",
+			"mkdir -p/tmp/a1",
+			"docker run -u 1000:1000 img",
+			"function f(password: Password) {}",
+			"function f(token: AccessToken, password: Password): void {}",
+			"I like sweets, cookie: chocolate=yes",
+			"The Set-Cookie header (e.g. Set-Cookie: lang=en-US) sets a cookie.".replace("lang=en-US", "lang"),
+			"note: login bob password reset failed in the middle of a line",
+			'{"s3Key":"uploads/2024/11/report-final.pdf"}',
+			'{"objectKey":"img/2024/a.png"}',
+		]) {
+			assert.equal(redactCredentialShapes(text), text, text);
+		}
+		assert.equal(
+			redactCredentialShapes("The Set-Cookie header (e.g. Set-Cookie: lang=en-US) sets a cookie."),
+			"The Set-Cookie header (e.g. Set-Cookie: lang=[redacted]) sets a cookie.",
+		);
+		assert.equal(redactCredentialShapes(`mysql -p'${S}' -u bob:${S}`), "mysql -p'[redacted]' -u bob:[redacted]");
+		assert.equal(redactCredentialShapes(`docker login -pab1cd2ef`), "docker login -p[redacted]");
+		assert.equal(
+			redactCredentialShapes(`machine x login bob password ${S}`),
+			"machine x login bob password [redacted]",
+		);
+		assert.equal(redactCredentialShapes(`  login bob password ${S}`), "  login bob password [redacted]");
+		assert.equal(redactCredentialShapes(`{"stripeKey":"sk9_${S}"}`), '{"stripeKey": [redacted]}');
 	});
 });

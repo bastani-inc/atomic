@@ -177,6 +177,7 @@ export function runCli(call: CliCall, signal: AbortSignal): Promise<string> {
 			else stdout.push(chunk);
 		});
 		child.stderr.on("data", (chunk: Buffer) => {
+			if (stderrCut) return;
 			const kept = chunk.subarray(0, MAX_STDERR_BYTES - stderrBytes);
 			stderr.push(kept);
 			stderrBytes += kept.length;
