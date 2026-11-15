@@ -276,7 +276,8 @@ export interface ReleasedTarget {
 /**
  * #4386: asks addressed to a departing session end with it, unless its owner released it: those are parked for the
  * owner, still answerable by the subagent, until it registers again on any node. Returns the asks that ended with it,
- * whose askers must be told (#4842). #4992: they are still recorded: each is removed once its failure is queued.
+ * whose askers must be told (#4842). #4992: they are still recorded, marked ended: each is removed once its failure is
+ * queued.
  */
 export async function settleAsksToDeparted(
 	state: Pick<IntercomBrokerStateStore, "pendingAsks">,
@@ -290,8 +291,9 @@ export async function settleAsksToDeparted(
 		});
 		return [];
 	}
-	const listed = await state.pendingAsks.listForTarget(sessionId);
-	return listed.status === "listed" ? listed.asks : [];
+	// #4992: marked ended first, so another broker tells their askers should this one stop before it does.
+	const ended = await state.pendingAsks.endForTarget(sessionId);
+	return ended.status === "listed" ? ended.asks : [];
 }
 
 /** A released subagent registering again under the capability its owner issued. */

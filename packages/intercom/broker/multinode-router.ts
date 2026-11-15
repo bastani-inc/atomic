@@ -391,6 +391,8 @@ export class MultiNodeRouter {
 		if (subscribed.status === "subscribed") router.subscription = subscribed.subscription;
 		router.every(BROKER_LEASE_RENEW_INTERVAL_MS, () => router.renew());
 		router.every(OUTBOX_BACKUP_POLL_INTERVAL_MS, () => router.backupPoll());
+		// #4992: what a broker that stopped mid-departure left is finished now, and at every backup poll.
+		void router.sweepEndedAsks().catch((error: Error) => router.report(error));
 		router.every(MULTI_NODE_OUTCOME_POLL_INTERVAL_MS, () => router.outcomePoll());
 		for (const session of options.host.sessions.values()) void router.sessionRegistered(session);
 		return router;
@@ -501,10 +503,18 @@ export class MultiNodeRouter {
 	 * ended before replying, through the outbox, held for an away asker.
 	 */
 	private async failParkedAsks(ownerSessionId: string, reservationKey?: string): Promise<void> {
-		const listed = await this.state.pendingAsks.listParked(ownerSessionId, reservationKey);
-		if (listed.status !== "listed") return;
+		const ended = await this.state.pendingAsks.endParked(ownerSessionId, reservationKey);
+		if (ended.status === "listed") await this.failAsksOfEnded(ended.asks);
+	}
+
+	/**
+	 * #4992: asks whose target ended, marked so in the shared state, each failed for its asker as sent by that target, as
+	 * Intercom last knew it. The departure that marked them fails them; `sweepEndedAsks` fails those a broker that stopped
+	 * meanwhile left.
+	 */
+	private async failAsksOfEnded(endedAsks: readonly PendingAsk[]): Promise<void> {
 		const byTarget = new Map<string, PendingAsk[]>();
-		for (const ask of listed.asks) byTarget.set(ask.targetSessionId, [...(byTarget.get(ask.targetSessionId) ?? []), ask]);
+		for (const ask of endedAsks) byTarget.set(ask.targetSessionId, [...(byTarget.get(ask.targetSessionId) ?? []), ask]);
 		for (const [targetSessionId, asks] of byTarget) {
 			const known = await this.state.knownSessions.lookup(targetSessionId, KNOWN_SESSION_RETENTION_MS);
 			const subagent =
@@ -524,6 +534,12 @@ export class MultiNodeRouter {
 			const reason = `Session "${from.name ?? targetSessionId}" ended before replying`;
 			await this.failAsksTo(from, asks, reason, "ended", "outside-groups");
 		}
+	}
+
+	/** #4992: fail the asks that ended more than a stale claim's age ago, which the broker that marked them left. */
+	private async sweepEndedAsks(): Promise<void> {
+		const ended = await this.state.pendingAsks.listEnded(OUTBOX_CLAIM_STALE_AFTER_MS);
+		if (ended.status === "listed") await this.failAsksOfEnded(ended.asks);
 	}
 
 	/**
@@ -639,9 +655,15 @@ export class MultiNodeRouter {
 				frame,
 				owed: true,
 			});
-			const queued = enqueued.status !== "full" && enqueued.status !== "invalid";
-			if (queued && reopenRoute === "outside-groups" && asker.groups.some((group) => targetGroups.has(group))) {
-				await settled();
+			// Not queued: the ask stays marked ended, so a later sweep tries again.
+			if (enqueued.status === "full" || enqueued.status === "invalid") continue;
+			if (reopenRoute === "outside-groups" && asker.groups.some((group) => targetGroups.has(group))) await settled();
+			else {
+				await this.state.pendingAsks.unmarkEnded({
+					replySenderSessionId: ask.targetSessionId,
+					replyTargetSessionId: ask.senderSessionId,
+					replyTo: ask.messageId,
+				});
 			}
 			if (enqueued.status === "inserted" && hosted !== undefined) {
 				await this.bus.publish({ brokerId: hosted.holderId, reason: "outbox", version: enqueued.row.sequence });
@@ -673,36 +695,45 @@ export class MultiNodeRouter {
 		}
 		const sessionId = session.info.id;
 		this.serial(identity, async () => {
+			// #4751: a top-level session that is only away keeps its asks: a reply to it is queued in the outbox like any
+			// send to an offline session, and its own recipient may still answer once it is back.
+			const away = session.supervisorId === undefined && !ended;
+			// #4842: a terminal session's remaining routes are the failures it already sent, so they are not sent again.
+			const terminal = session.info.replyCapability === "terminal";
+			// #4992: the replies it sent before it left are queued first, so the asks they answer do not fail. Then, before
+			// anything else, the asks that end with it are marked so in the shared state: should this broker stop before
+			// their askers are told, another broker tells them (`sweepEndedAsks`).
+			// #4386: asks to a released subagent are parked instead; registering again on any node takes its presence over
+			// first, so its rebinding always finds them.
+			await this.serials.get(`reply:${sessionId}`);
+			const ending = (async () => ({
+				asks:
+					away || (terminal && released === undefined)
+						? []
+						: await settleAsksToDeparted(this.state, sessionId, released),
+				// #4992: the asks parked for its released subagents end with it, ended or away, as its local ones do.
+				parked: await this.state.pendingAsks.endParked(sessionId),
+			}))();
+			const marked = await ending.catch((error: Error) => {
+				this.report(error);
+				return undefined;
+			});
 			// #4386: a released subagent's asks outlive its pending-ask routes, and are kept before it stops being live, so
 			// a reply never finds it offline with only its pending asks. A failed write loses them, as a lost local route
 			// does: the subagent then wakes at its reply deadline.
 			await keepReleasedAsks(this.state, session).catch((error: Error) => this.report(error));
 			for (const inflight of claims) await this.state.outbox.releaseClaim(inflight.claim);
-			// #4386: asks to a released subagent are parked before its presence ends; registering again on any node takes
-			// that presence over first, so its rebinding always finds them.
-			// #4751: a top-level session that is only away keeps its asks: a reply to it is queued in the outbox like any
-			// send to an offline session, and its own recipient may still answer once it is back.
-			const away = session.supervisorId === undefined && !ended;
-			// #4842: an ask that ends with its recipient fails for its asker on any node. A terminal session's remaining
-			// routes are the failures it already sent, so they are not sent again.
+			// #4842: an ask that ends with its recipient fails for its asker on any node.
 			await (away ? Promise.resolve() : this.state.pendingAsks.pruneSender(sessionId).then(() => undefined))
 				.then(async () => {
-					// #4992: the replies it sent before it left are queued first, so the asks they answer do not fail.
-					await this.serials.get(`reply:${sessionId}`);
-					// #4842: a terminal session's remaining routes are the failures it already sent; they are not sent again.
-					if (!away && session.info.replyCapability === "terminal" && released === undefined) {
+					if (!away && terminal && released === undefined) {
 						await this.state.pendingAsks.takeForTarget(sessionId);
-					} else if (!away) {
-						const asks = await settleAsksToDeparted(this.state, sessionId, released);
-						if (session.info.replyCapability !== "terminal") {
-							await this.failEndedAsks(session, asks);
-							// #4852: so are the questions released subagents asked it, through their owners.
-							if (released === undefined) await this.failReleasedAsksTo(session);
-						}
+					} else if (!away && !terminal) {
+						await this.failEndedAsks(session, marked?.asks ?? []);
+						// #4852: so are the questions released subagents asked it, through their owners.
+						if (released === undefined) await this.failReleasedAsksTo(session);
 					}
-					// #4992: the asks parked for its released subagents end with it, ended or away, as its local ones do, and
-					// each asker is told on any node.
-					await this.failParkedAsks(sessionId);
+					if (marked?.parked.status === "listed") await this.failAsksOfEnded(marked.parked.asks);
 				})
 				.catch((error: Error) => this.report(error));
 			// A session that reconnected here before its old connection was noticed gone holds the same presence lease (same
@@ -2242,6 +2273,7 @@ export class MultiNodeRouter {
 
 	private async backupPoll(): Promise<void> {
 		this.scanAll();
+		await this.sweepEndedAsks();
 		await this.checkOutcomes();
 		await this.checkHolds();
 		for (const reservationKey of this.mirrored.keys()) {

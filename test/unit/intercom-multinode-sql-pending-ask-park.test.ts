@@ -81,6 +81,8 @@ test("an older broker's table gains the park columns once, and its asks can be p
 		`ALTER TABLE ${TABLE} ADD COLUMN park_key TEXT`,
 		// #4992: whether a reply to the ask is queued.
 		`ALTER TABLE ${TABLE} ADD COLUMN replied INTEGER`,
+		// #4992: when the ask's target ended, while its asker is owed a failure.
+		`ALTER TABLE ${TABLE} ADD COLUMN ended_at INTEGER`,
 	]);
 	assert.deepEqual(
 		await store.parkForTarget("child", { ownerSessionId: "owner", reservationKey: "released:worker" }),
@@ -108,7 +110,7 @@ test("a park column another broker added meanwhile is not an error, however the 
 		await openSqlPendingAskStore({ database, prefix: "" });
 		const wrapped = failingAlter(database, wording, true);
 		await openSqlPendingAskStore({ database: wrapped.database, prefix: "" });
-		assert.equal(wrapped.alters.length, 3);
+		assert.equal(wrapped.alters.length, 4);
 	}
 });
 

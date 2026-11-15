@@ -183,7 +183,7 @@
 		"type": "table",
 		"name": "intercom_pending_asks",
 		"tbl_name": "intercom_pending_asks",
-		"sql": "CREATE TABLE intercom_pending_asks(\n\t\t\t\t\"order\" INTEGER PRIMARY KEY AUTOINCREMENT,\n\t\t\t\tsender_session_id TEXT NOT NULL,\n\t\t\t\ttarget_session_id TEXT NOT NULL,\n\t\t\t\tmessage_id TEXT NOT NULL, park_owner TEXT, park_key TEXT, replied INTEGER,\n\t\t\t\tUNIQUE(sender_session_id, target_session_id, message_id)\n\t\t\t)"
+		"sql": "CREATE TABLE intercom_pending_asks(\n\t\t\t\t\"order\" INTEGER PRIMARY KEY AUTOINCREMENT,\n\t\t\t\tsender_session_id TEXT NOT NULL,\n\t\t\t\ttarget_session_id TEXT NOT NULL,\n\t\t\t\tmessage_id TEXT NOT NULL, park_owner TEXT, park_key TEXT, replied INTEGER, ended_at INTEGER,\n\t\t\t\tUNIQUE(sender_session_id, target_session_id, message_id)\n\t\t\t)"
 	},
 	{
 		"type": "table",
@@ -249,7 +249,7 @@
 		"type": "table",
 		"name": "team_intercom_pending_asks",
 		"tbl_name": "team_intercom_pending_asks",
-		"sql": "CREATE TABLE team_intercom_pending_asks(\n\t\t\t\t\"order\" INTEGER PRIMARY KEY AUTOINCREMENT,\n\t\t\t\tsender_session_id TEXT NOT NULL,\n\t\t\t\ttarget_session_id TEXT NOT NULL,\n\t\t\t\tmessage_id TEXT NOT NULL, park_owner TEXT, park_key TEXT, replied INTEGER,\n\t\t\t\tUNIQUE(sender_session_id, target_session_id, message_id)\n\t\t\t)"
+		"sql": "CREATE TABLE team_intercom_pending_asks(\n\t\t\t\t\"order\" INTEGER PRIMARY KEY AUTOINCREMENT,\n\t\t\t\tsender_session_id TEXT NOT NULL,\n\t\t\t\ttarget_session_id TEXT NOT NULL,\n\t\t\t\tmessage_id TEXT NOT NULL, park_owner TEXT, park_key TEXT, replied INTEGER, ended_at INTEGER,\n\t\t\t\tUNIQUE(sender_session_id, target_session_id, message_id)\n\t\t\t)"
 	},
 	{
 		"type": "table",

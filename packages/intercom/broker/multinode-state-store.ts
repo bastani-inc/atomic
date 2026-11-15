@@ -577,6 +577,18 @@ export interface PendingAskStore {
 	takeParked(ownerSessionId: string, reservationKey?: string): Promise<PendingAskTakeResult>;
 	/** #4992: the owner's unanswered parked asks, as `takeParked` selects them, without removing them. */
 	listParked(ownerSessionId: string, reservationKey?: string): Promise<PendingAskListResult>;
+	/**
+	 * #4992: the target ended: its unanswered asks are marked ended, durably, before their askers are told, and returned
+	 * as `listForTarget` would. An ask stays marked until `clearReply` removes it or `unmarkEnded` keeps only its route,
+	 * so another broker finishes what a broker that stopped meanwhile left (`listEnded`).
+	 */
+	endForTarget(targetSessionId: string): Promise<PendingAskListResult>;
+	/** #4992: as `endForTarget`, for the owner's parked asks, as `listParked` selects them. */
+	endParked(ownerSessionId: string, reservationKey?: string): Promise<PendingAskListResult>;
+	/** #4992: the unanswered asks marked ended more than `olderThanMs` ago, by store clock, oldest first. */
+	listEnded(olderThanMs: number): Promise<PendingAskListResult>;
+	/** #4992: the ended ask's failure is queued; its route stays only to authorize that failure when it is delivered. */
+	unmarkEnded(route: ReplyRoute): Promise<PendingAskMarkResult>;
 }
 
 /**
