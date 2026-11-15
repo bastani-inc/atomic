@@ -65,15 +65,22 @@ function checksum(header: Buffer): { unsigned: number; signed: number } {
 	return { unsigned, signed };
 }
 
+/** PAX records are `<length> <key>=<value>\n`; each one must end past its own length field, so every record advances. */
 function parsePax(data: Buffer, label: string): Map<string, string> {
 	const records = new Map<string, string>();
 	for (let offset = 0; offset < data.length; ) {
 		const space = data.indexOf(0x20, offset);
-		const digits = data.subarray(offset, Math.max(offset, space)).toString();
+		const digits = space < 0 ? "" : data.subarray(offset, space).toString();
 		const length = /^[1-9][0-9]*$/.test(digits) ? Number(digits) : 0;
 		const record = data.subarray(space + 1, offset + length);
 		const equals = record.indexOf(0x3d);
-		if (space + 1 >= offset + length || offset + length > data.length || equals < 1 || record.at(-1) !== 0x0a)
+		if (
+			space < 0 ||
+			space + 1 >= offset + length ||
+			offset + length > data.length ||
+			equals < 1 ||
+			record.at(-1) !== 0x0a
+		)
 			throw new Error(`Invalid PAX header in ${label}`);
 		records.set(record.subarray(0, equals).toString("utf8"), record.subarray(equals + 1, -1).toString("utf8"));
 		offset += length;
