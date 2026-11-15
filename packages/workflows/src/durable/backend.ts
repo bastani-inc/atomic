@@ -299,6 +299,11 @@ export interface DurableWorkflowBackend {
 	workflowOwnership(
 		workflowId: string,
 	): "local" | "foreign" | "available" | Promise<"local" | "foreign" | "available">;
+	/**
+	 * Whether this backend itself holds `workflowId`'s lease without an executor running the run: it took a crashed
+	 * owner's lease over to write to the run, for example to answer a prompt (#5167).
+	 */
+	holdsIdleWorkflowLease?(workflowId: string): boolean;
 	persistSummary?(workflowId: string, summary: string, summarizedThrough: number): Promise<boolean>;
 	/** Register or update a workflow's top-level metadata. */
 	commitWorkflowRegistration(handle: WorkflowRegistrationInput): Promise<void>;
@@ -465,7 +470,10 @@ export interface DurableWorkflowBackend {
 	/**
 	 * Atomically update status only when the authoritative status is expected.
 	 * `modelOwner` adopts the run for a new session. `releasedModelOwner` durably records that
-	 * the session owning the run was disposed; every transition without it clears that record.
+	 * the session owning the run was disposed, so another session may adopt it; `null` clears that record.
+	 * Without either, a run that stays paused keeps its release, and a running run whose owner's process died
+	 * (its executor's lease expired unreleased) is released by that owner as it is paused (#5167). A run that
+	 * leaves paused, or is handed to a new `modelOwner`, loses its release.
 	 */
 	commitWorkflowStatusTransition(
 		workflowId: string,
@@ -475,7 +483,7 @@ export interface DurableWorkflowBackend {
 		resumable?: boolean,
 		expectedUpdatedAt?: number,
 		modelOwner?: string,
-		releasedModelOwner?: string,
+		releasedModelOwner?: string | null,
 	): Promise<boolean>;
 	/** Atomically adjust unresolved UI prompt count, clamped at zero. */
 	commitPendingPromptAdjustment(workflowId: string, delta: number): Promise<void>;
