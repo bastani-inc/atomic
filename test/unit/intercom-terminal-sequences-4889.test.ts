@@ -237,3 +237,20 @@ test("Intercom message card drops stray control characters but keeps the text ar
 	);
 	assert.ok(output.includes("bellringend"), "stray control characters are removed without replacement");
 });
+
+test("Intercom message card removes 8-bit control sequences and shows bidirectional overrides escaped", () => {
+	const eightBit: Message = {
+		id: "msg-c1",
+		timestamp: 1,
+		content: {
+			text: "start \u009d52;c;aGVsbG8=\u009c \u0090q\u009c \u009b2J file \u202Etxt.exe\u202C end",
+			attachments: [],
+		},
+	};
+	const peer: SessionInfo = { ...sender, name: "peer \u009d0;title\u009c\u2066name\u2069", cwd: "/cwd" };
+	const lines = new InlineMessageComponent(peer, eightBit, theme).render(120).join("\n");
+	assert.ok(!/[\u0080-\u009f\u202a-\u202e\u2066-\u2069]/.test(lines), JSON.stringify(lines));
+	assert.ok(!lines.includes("52;c;") && !lines.includes("0;title"), JSON.stringify(lines));
+	assert.ok(lines.includes("file <U+202E>txt.exe<U+202C> end"), JSON.stringify(lines));
+	assert.ok(lines.includes("peer <U+2066>name<U+2069>"), JSON.stringify(lines));
+});

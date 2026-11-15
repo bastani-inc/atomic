@@ -162,8 +162,9 @@ class OwnerProcess {
 }
 
 /**
- * No live presence of the child is left in the shared store: the one a crashed broker held has gone stale. Until then
- * the other node routes a send to that broker, which is a delivery outcome of its own (#4401), not a wake.
+ * No live presence of the child is left in the shared store: the one a crashed broker held has gone stale, or its
+ * restarted broker retired it (#5038). Until then the other node routes a send to that broker, which is a delivery
+ * outcome of its own (#4401), not a wake. A retired or released lease keeps its row without a holder or subject.
  */
 async function presenceGone(childName: string): Promise<void> {
 	const database = await harness.openSharedStorage("a");
@@ -171,7 +172,7 @@ async function presenceGone(childName: string): Promise<void> {
 		async () => {
 			const rows = await database.all<{ subject_json: string; age_ms: number }>(
 				`SELECT subject_json, CAST(unixepoch('subsec') * 1000 AS INTEGER) - renewed_at AS age_ms
-				 FROM "${SHARED_LEASES_TABLE}" WHERE kind = 'presence'`,
+				 FROM "${SHARED_LEASES_TABLE}" WHERE kind = 'presence' AND holder_id IS NOT NULL`,
 			);
 			const live = rows.filter(
 				(row) => row.subject_json.includes(JSON.stringify(childName)) && row.age_ms < BROKER_LEASE_STALE_AFTER_MS,
