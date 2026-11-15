@@ -24,6 +24,7 @@ import {
 	type HeldSendRequest,
 	type IntercomBrokerStateStore,
 	type IntercomDeliveryFrame,
+	holdsSessionId,
 	KNOWN_SESSION_RETENTION_MS,
 	type KnownSession,
 	type KnownSessionState,
@@ -40,6 +41,7 @@ import {
 	type RestoringReservation,
 	type RestoringReservationLease,
 	reservationKeyFor,
+	returnAddressOf,
 } from "./multinode-state-store.js";
 import type { PendingQuestionIndex } from "./pending-question-index.js";
 import { UNCERTAIN_RECEIPT_REASON } from "./recipient-receipts.js";
@@ -110,6 +112,11 @@ const PRESENCE_HANDOVER_RETRY_MS = 50;
  * client gives up after 10 s); the lease is still written when the database answers.
  */
 export const PRESENCE_REGISTRATION_BOUND_MS = 5_000;
+/**
+ * The longest a registration that asks for its id back waits for the shared database to bind it, before the presence
+ * wait: both together stay within the client's 10 s. Past it the session gets a fresh id, never an unchecked one.
+ */
+export const SESSION_ID_CLAIM_BOUND_MS = 2_500;
 /**
  * The longest a send to a local recipient waits for the shared outbox to say whether it is a retry of a cross-node
  * send. Local delivery does not depend on the shared database (spec §8): past this bound the send is delivered
@@ -260,6 +267,11 @@ interface PresenceEntry {
 	terminal?: boolean;
 	/** #4386: a released subagent that registered before the broker it left gave up its presence rebinds once it has it. */
 	rebind?: ReleasedRegistration;
+	/**
+	 * Its Intercom id is bound to another session's return address: it is never known, present or routed to under that
+	 * id across nodes, and its departure leaves that session's shared state alone.
+	 */
+	unbound?: true;
 }
 
 interface ConsumedReservation {
@@ -332,15 +344,6 @@ function forgottenSessionIdentities(id: string, group: string): readonly string[
 	return [JSON.stringify(["return", id, normalizeGroup(group)]), JSON.stringify(["session", id])];
 }
 
-function returnAddressOf(identity: string): string | undefined {
-	try {
-		const parsed = JSON.parse(identity) as unknown;
-		return Array.isArray(parsed) && parsed[0] === "return" && typeof parsed[1] === "string" ? parsed[1] : undefined;
-	} catch {
-		return undefined;
-	}
-}
-
 function sharesGroup(groups: ReadonlySet<string>, sender: SessionInfo): boolean {
 	const senderGroups = sessionGroups(sender);
 	return [...groups].some((group) => senderGroups.has(group));
@@ -400,6 +403,36 @@ export class MultiNodeRouter {
 	// Session lifecycle
 
 	/**
+	 * Whether a registration with `returnAddress` may take the Intercom id `sessionId`, binding the id to it when free.
+	 * In multi-node mode an id carries authority (shared ask routes and known sessions name sessions by id), so only the
+	 * session that registered it gets it back. False when the shared store does not answer in time.
+	 */
+	async claimSessionId(sessionId: string, returnAddress: string): Promise<boolean> {
+		if (this.closed) return false;
+		let bound: ReturnType<typeof setTimeout> | undefined;
+		try {
+			return await Promise.race([
+				this.state.knownSessions
+					.bind(sessionId, returnAddress, KNOWN_SESSION_RETENTION_MS)
+					.then((result) => result.status === "bound"),
+				new Promise<boolean>((resolve) => {
+					bound = setTimeout(() => resolve(false), SESSION_ID_CLAIM_BOUND_MS);
+					bound.unref?.();
+				}),
+			]);
+		} catch (error) {
+			this.report(error);
+			return false;
+		} finally {
+			clearTimeout(bound);
+		}
+	}
+
+	private holdsSessionId(sessionId: string, returnAddress: string | undefined): Promise<boolean> {
+		return holdsSessionId(this.state.knownSessions, sessionId, returnAddress);
+	}
+
+	/**
 	 * A session registered here: record it as known and take its presence lease, retrying briefly while the broker
 	 * it left still holds it. Resolves once other brokers can resolve it, or after `PRESENCE_REGISTRATION_BOUND_MS`
 	 * while the database does not answer; what waits for it is delivered after.
@@ -420,6 +453,16 @@ export class MultiNodeRouter {
 			bound.unref?.();
 			this.serial(identity, async () => {
 				try {
+					// An id bound to another session's return address is not this session's across nodes (see `claimSessionId`).
+					const binding = await this.state.knownSessions.bind(
+						session.info.id,
+						session.registrationReturnAddress ?? "",
+						KNOWN_SESSION_RETENTION_MS,
+					);
+					if (binding.status === "refused") {
+						entry.unbound = true;
+						return;
+					}
 					await this.recordKnown(session, entry);
 					for (let attempt = 0; ; attempt++) {
 						await this.acquirePresence(session, entry);
@@ -463,6 +506,7 @@ export class MultiNodeRouter {
 		const entry = this.presence.get(session);
 		if (this.closed || entry === undefined) return;
 		this.serial(deliveryTargetIdentity(session), async () => {
+			if (entry.unbound === true) return;
 			await this.recordKnown(session, entry);
 			if (session.info.replyCapability === "terminal" && entry.terminal !== true) {
 				entry.terminal = true;
@@ -570,10 +614,17 @@ export class MultiNodeRouter {
 			}
 			const hosted = live.find((lease) => (lease.subject as RecipientPresenceSubject).session.id === ask.senderSessionId);
 			let asker: Pick<KnownSession, "targetIdentity" | "groups"> | undefined;
-			if (hosted !== undefined) {
+			if (
+				hosted !== undefined &&
+				(await this.holdsSessionId(
+					ask.senderSessionId,
+					returnAddressOf((hosted.subject as RecipientPresenceSubject).targetIdentity),
+				))
+			) {
 				const subject = hosted.subject as RecipientPresenceSubject;
 				asker = { targetIdentity: subject.targetIdentity, groups: [...sessionGroups(subject.session)] };
 			} else {
+				// The first record under the id is the bound session's: its binding was taken from that record or before it.
 				const known = await this.state.knownSessions.lookup(ask.senderSessionId, KNOWN_SESSION_RETENTION_MS);
 				asker =
 					known.status === "found"
@@ -606,6 +657,8 @@ export class MultiNodeRouter {
 		const entry = this.presence.get(session);
 		if (this.closed || entry === undefined) return;
 		this.presence.delete(session);
+		// Its id names another session across nodes: that session's asks and records are not this one's to end.
+		const unbound = entry.unbound === true;
 		const identity = deliveryTargetIdentity(session);
 		const claims = [...this.inflight.values()].filter((inflight) => inflight.session === session);
 		for (const inflight of claims) this.inflight.delete(inflight.row.messageId);
@@ -622,6 +675,7 @@ export class MultiNodeRouter {
 		}
 		const sessionId = session.info.id;
 		this.serial(identity, async () => {
+			if (unbound) return;
 			// #4386: a released subagent's asks outlive its pending-ask routes, and are kept before it stops being live, so
 			// a reply never finds it offline with only its pending asks. A failed write loses them, as a lost local route
 			// does: the subagent then wakes at its reply deadline.
@@ -1076,6 +1130,14 @@ export class MultiNodeRouter {
 				return;
 			}
 		}
+		// A presence whose id is bound to another session's return address (from a broker that grants ids without
+		// binding them) is not that session: what is addressed to the id waits for the session it is bound to.
+		if (
+			resolved !== undefined &&
+			!(await this.holdsSessionId(presenceOf(resolved).session.id, returnAddressOf(presenceOf(resolved).targetIdentity)))
+		) {
+			resolved = undefined;
+		}
 		if (resolved !== undefined) {
 			const subject = presenceOf(resolved);
 			await this.deliverThroughOutbox(request, {
@@ -1304,7 +1366,12 @@ export class MultiNodeRouter {
 		const found = await this.state.knownSessions.lookup(request.target, KNOWN_SESSION_RETENTION_MS);
 		if (found.status !== "found") return undefined;
 		const localIdentities = new Set([...this.host.sessions.values()].map(deliveryTargetIdentity));
-		const sessions = found.sessions.filter((session) => !localIdentities.has(session.targetIdentity));
+		const sessions: KnownSessionState[] = [];
+		for (const session of found.sessions) {
+			// A record under an id bound to another session's return address is not that session's.
+			if (localIdentities.has(session.targetIdentity)) continue;
+			if (await this.holdsSessionId(session.intercomSessionId, session.atomicSessionId)) sessions.push(session);
+		}
 		const byId = sessions.find((session) => session.intercomSessionId === request.target);
 		if (byId !== undefined) return byId;
 		const replyAuthorized = await this.replyAuthorizedTargets(
@@ -2146,7 +2213,7 @@ export class MultiNodeRouter {
 				}
 			} else {
 				this.serial(deliveryTargetIdentity(session), async () => {
-					if (this.presence.get(session) !== entry) return;
+					if (this.presence.get(session) !== entry || entry.unbound === true) return;
 					await this.acquirePresence(session, entry);
 					if (entry.lease === undefined) return;
 					const { rebind } = entry;
