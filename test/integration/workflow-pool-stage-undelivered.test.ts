@@ -170,10 +170,10 @@ async function steerThenReplace(prefix: string, replayFinishes: boolean) {
 		// The sender hears `steer` at once; the steer waits in the held turn's queue.
 		assert.equal(await view.sendUserMessage(STEER, { deliverAs: "steer" }), "steer");
 		gate(UNDELIVERED_STAGE_KILLED);
-		const worker = agentStage(store)?.stage.workerExecution?.worker;
-		const pid = pool.workerPids.find((candidate) => worker?.includes(String(candidate))) ?? pool.workerPids[0];
-		assert.ok(pid !== undefined);
-		process.kill(pid, "SIGKILL");
+		// Both workers go, so the attempt holding the steer surely ends; the pool starts the replacement on a new one.
+		const workers = pool.workerPids;
+		assert.equal(workers.length, 2);
+		for (const pid of workers) process.kill(pid, "SIGKILL");
 		if (!replayFinishes) {
 			await until(
 				"the replacement took the resent steer",
