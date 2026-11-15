@@ -777,6 +777,8 @@ export function closeAgentSession(
 		await attempt("storage", () => {
 			session._tempStorageLease?.release();
 			session._tempStorageLease = undefined;
+			session._sessionOpenMarker?.();
+			session._sessionOpenMarker = undefined;
 		});
 		await attempt("session store", async () => {
 			const store = ownedSessionStores.get(session);

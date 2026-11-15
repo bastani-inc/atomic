@@ -276,6 +276,8 @@ class AgentSessionBase {
 	protected _lastAssistantMessage: AssistantMessage | undefined = undefined;
 	/** Protection claim on this session's temp tree and tool-results directory. */
 	protected _tempStorageLease: ProtectedPathLease | undefined;
+	/** Marks the session open in this process, so another process does not delete it (#4971); released on dispose. */
+	protected _sessionOpenMarker: (() => void) | undefined;
 	protected _workflowStageAdmission: WorkflowStageAdmissionBoundary | undefined;
 	protected _subagentMessageAdmission: WorkflowStageAdmissionBoundary | undefined;
 	/** A fresh workflow stage whose own prompt has not started its first run (#3919). */
@@ -414,6 +416,12 @@ class AgentSessionBase {
 					this._workflowStageAdmission,
 				);
 			}
+			try {
+				// #4971: another process refuses to delete a session this one runs; released in dispose().
+				this._sessionOpenMarker = this.sessionManager.holdOpen();
+			} catch {
+				// Marking the session open is best effort and never blocks session construction.
+			}
 			// Claim this session's storage before any tool can spill into it, so the
 			// sweeper below never reaps a directory this process is still writing to.
 			// The claim is a lease, released in dispose(): a session that is gone must
@@ -457,6 +465,7 @@ class AgentSessionBase {
 				() => removeExecutionEndedListener?.(),
 				() => this._unsubscribeAgent?.(),
 				() => this._tempStorageLease?.release(),
+				() => this._sessionOpenMarker?.(),
 				() => this._extensionRunner?.invalidate("Session construction failed"),
 			]) {
 				try {

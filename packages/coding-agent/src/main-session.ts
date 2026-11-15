@@ -30,6 +30,7 @@ import {
 import { ownedSessionManagerStores } from "./core/session-lifecycle-work.ts";
 import { assertValidSessionId, SessionManager } from "./core/session-manager.ts";
 import { classifiedWorkflowMetadata, workflowSessionMetadataFromEnv } from "./core/session-manager-classification.ts";
+import { assertSessionNotOpenElsewhere } from "./core/session-open-markers.ts";
 import { resolveSessionStore, selectSessionStorage } from "./core/session-storage.js";
 import { sessionContinuesIn, sessionRunsInRecordedCheckout } from "./core/session-worktree-snapshots.ts";
 import type { DefaultProjectTrust, SettingsManager } from "./core/settings-manager.ts";
@@ -48,9 +49,10 @@ type ResolvedSession =
 	| { type: "error"; message: string }
 	| { type: "not_found"; arg: string };
 
-/** The `--resume` picker's delete: the id is checked before the store is touched (#4326). */
+/** The `--resume` picker's delete: the id is checked, and a session open in another process refused (#4971), before the store is touched (#4326). */
 export async function deleteSessionFromPicker(store: SessionStore, id: string): Promise<void> {
 	assertValidSessionId(id);
+	assertSessionNotOpenElsewhere(id);
 	await store.delete(id);
 }
 

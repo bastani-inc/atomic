@@ -31,3 +31,38 @@ export class SessionIdError extends Error {
 		this.sessionId = sessionId;
 	}
 }
+
+/**
+ * The session this manager has open was deleted from its store, for example from another process (#4971). The append
+ * that found it gone fails with this error, once; the manager then keeps later entries in memory only and saves
+ * nothing more for the session.
+ */
+export class SessionDeletedError extends Error {
+	readonly sessionId: string;
+
+	constructor(sessionId: string, options?: { readonly cause?: unknown }) {
+		super(
+			`Session ${sessionId} was deleted from its store, possibly by another process; it is no longer saved. Start or resume a session to keep saving.`,
+			options,
+		);
+		this.name = "SessionDeletedError";
+		this.sessionId = sessionId;
+	}
+}
+
+/** Deleting a session another live process has open is refused (#4971). */
+export class SessionOpenElsewhereError extends Error {
+	readonly sessionId: string;
+	readonly pid: number;
+	readonly host: string;
+
+	constructor(sessionId: string, holder: { readonly pid: number; readonly host: string }) {
+		super(
+			`Cannot delete session ${sessionId}: it is open in another process (pid ${holder.pid} on ${holder.host}). Close it there first.`,
+		);
+		this.name = "SessionOpenElsewhereError";
+		this.sessionId = sessionId;
+		this.pid = holder.pid;
+		this.host = holder.host;
+	}
+}

@@ -26,7 +26,7 @@ import {
 	createWorktreeSnapshotEntry,
 	getEntriesWithoutHeader,
 } from "./session-manager-entries.ts";
-import { SessionEntryError } from "./session-manager-errors.js";
+import { SessionDeletedError, SessionEntryError } from "./session-manager-errors.js";
 import {
 	buildContextEntries,
 	buildSessionIndex,
@@ -62,6 +62,7 @@ import {
 	generateId,
 	validateSessionFileEntries,
 } from "./session-manager-validation.ts";
+import { assertSessionNotOpenElsewhere, holdSessionOpenMarker } from "./session-open-markers.ts";
 import { listSessionStore } from "./session-store-list.js";
 import {
 	assertSessionBlobStore,
@@ -73,8 +74,14 @@ import {
 	takeInlineToolOutput,
 } from "./session-tool-output.ts";
 import { adoptInlineSnapshotBlobs } from "./session-worktree-snapshots.ts";
-import { SessionBlobError, type StorageFailureCause, StorageRollbackError } from "./storage/errors.js";
 import {
+	isStorageTransientError,
+	SessionBlobError,
+	type StorageFailureCause,
+	StorageRollbackError,
+} from "./storage/errors.js";
+import {
+	SessionConflictError,
 	SessionFormatVersionError,
 	SessionIdMismatchError,
 	type SessionJsonValue,
@@ -86,6 +93,9 @@ import { MemorySessionStore, markPrivateMemorySessionStore } from "./storage/ses
 import type { SessionBlob, SessionRecordHeader, SessionSnapshot, SessionStore } from "./storage/session/types.js";
 import { WorkspaceConfigError } from "./worktree-snapshot/errors.ts";
 import type { WorktreeRootMapping, WorktreeSnapshot, WorktreeUnrestored } from "./worktree-snapshot/types.ts";
+
+/** How many times one append reads the store's new tail and tries again before its failure stands (#4970). */
+const MAX_APPEND_RECONCILES = 3;
 
 async function resolveSessionStore(cwd: string): Promise<SessionStore> {
 	// Selection loads settings and tools, which depend on the completed session module.
@@ -106,6 +116,13 @@ export class SessionManager {
 	private cwd: string;
 	private store: SessionStore;
 	private lastSeq = 0;
+	/** Ids of entries an append of unknown outcome may have saved, that no read of the store has settled (#4970). */
+	private readonly unconfirmed = new Set<string>();
+	/** The open session was deleted from the store; later entries stay in memory only (#4971). */
+	private deletedFromStore = false;
+	/** How many live sessions run on this manager; while any do, its session is marked open (#4971). */
+	private openHolds = 0;
+	private openMarker: { readonly sessionId: string; readonly release: () => void } | undefined;
 	private mutation: Promise<void> = Promise.resolve();
 	/** Custom entries written with a message, in its own store write, by the message they go with. */
 	private readonly messageCompanions = new WeakMap<object, () => MessageCompanionEntry | undefined>();
@@ -142,9 +159,37 @@ export class SessionManager {
 		this.fileEntries = [{ type: "session", ...header }, ...snapshot.entries];
 		this.sessionId = header.id;
 		this.lastSeq = snapshot.lastSeq;
+		this.unconfirmed.clear();
+		this.deletedFromStore = false;
 		this.sessionFile =
 			location ?? (this.store instanceof JsonlSessionStore ? this.store.locationFor(header) : undefined);
 		this._buildIndex();
+		this.syncOpenMarker();
+	}
+
+	/**
+	 * @internal Marks the session this manager has open, and each one it switches to, as open in this process until
+	 * the returned function is called, so that another process refuses to delete it (#4971).
+	 */
+	holdOpen(): () => void {
+		this.openHolds++;
+		this.syncOpenMarker();
+		let released = false;
+		return () => {
+			if (released) return;
+			released = true;
+			this.openHolds--;
+			this.syncOpenMarker();
+		};
+	}
+
+	private syncOpenMarker(): void {
+		const sessionId = this.openHolds > 0 && this.isPersisted() ? this.sessionId : undefined;
+		if (this.openMarker?.sessionId === sessionId) return;
+		this.openMarker?.release();
+		this.openMarker = undefined;
+		if (sessionId === undefined) return;
+		this.openMarker = { sessionId, release: holdSessionOpenMarker(getAgentDir(), sessionId) };
 	}
 
 	private start(options?: NewSessionOptions): string | undefined {
@@ -161,7 +206,10 @@ export class SessionManager {
 			),
 		];
 		this.lastSeq = 0;
+		this.unconfirmed.clear();
+		this.deletedFromStore = false;
 		this._buildIndex();
+		this.syncOpenMarker();
 		this.sessionFile =
 			this.store instanceof JsonlSessionStore
 				? this.sessionDir
@@ -289,6 +337,7 @@ export class SessionManager {
 		if (sessionId === this.sessionId) {
 			throw new Error(`Cannot delete the session that is currently open: ${sessionId}`);
 		}
+		assertSessionNotOpenElsewhere(sessionId);
 		try {
 			await this.store.delete(sessionId);
 		} catch (error) {
@@ -371,14 +420,84 @@ export class SessionManager {
 	}
 
 	private async _appendEntries(entries: readonly SessionEntry[]): Promise<void> {
-		const result = await this.store.append(this.sessionId, entries, { expectSeq: this.lastSeq });
-		this.lastSeq = result.lastSeq;
+		// #4971: the session was deleted from its store; that was reported once, and nothing more is saved.
+		if (this.deletedFromStore) return this.applyAppended(entries);
+		for (let attempt = 1; ; attempt++) {
+			const expectSeq = this.lastSeq;
+			try {
+				this.lastSeq = (await this.store.append(this.sessionId, entries, { expectSeq })).lastSeq;
+			} catch (error) {
+				if (error instanceof SessionNotFoundError && error.sessionId === this.sessionId) {
+					this.deletedFromStore = true;
+					throw new SessionDeletedError(this.sessionId, { cause: error });
+				}
+				const unknown = isStorageTransientError(error) && error.outcome === "unknown";
+				if ((!unknown && !(error instanceof SessionConflictError)) || attempt > MAX_APPEND_RECONCILES) throw error;
+				const outcome = await this.reconcileAppend(entries, error, unknown);
+				if (outcome === "saved") return;
+				if (outcome === "retry") continue;
+				throw error instanceof SessionConflictError
+					? error
+					: new SessionConflictError(this.sessionId, expectSeq, this.lastSeq);
+			}
+			// The store was at `expectSeq`: no earlier append of unknown outcome was applied.
+			this.unconfirmed.clear();
+			this.applyAppended(entries);
+			return;
+		}
+	}
+
+	private applyAppended(entries: readonly SessionEntry[]): void {
 		for (const entry of entries) {
 			this.fileEntries.push(entry);
 			this.byId.set(entry.id, entry);
 			this.historyIndex.appended(entry, this.byId);
 			this.leafId = entry.id;
 		}
+	}
+
+	/**
+	 * #4970: an append failed with an unknown outcome (the connection broke after the server may have committed it) or
+	 * found the store ahead of `lastSeq`. Reads the store's entries past `lastSeq` and takes them in, in store order, so
+	 * the manager holds what the store holds; entries other than `entries` join the tree without moving the leaf.
+	 * Resolves `"saved"` when `entries` are among them; `"retry"` when they are not, and the rest are this manager's own
+	 * from an earlier append of unknown outcome, so `entries` go on after them; and `"conflict"` when another writer
+	 * added entries (or the store reported a conflict it does not show): the append fails once, and later appends go on
+	 * after the new tail. Rethrows `error` when the store cannot be read, or when its history no longer extends the one
+	 * this manager holds.
+	 */
+	private async reconcileAppend(
+		entries: readonly SessionEntry[],
+		error: unknown,
+		unknown: boolean,
+	): Promise<"saved" | "retry" | "conflict"> {
+		let snapshot: SessionSnapshot;
+		try {
+			snapshot = await this.store.load(this.sessionId);
+		} catch {
+			// Still unreadable: the next append, at the same `lastSeq`, finds out whether these entries were saved.
+			if (unknown) for (const entry of entries) this.unconfirmed.add(entry.id);
+			throw error;
+		}
+		const start = snapshot.entries.length - (snapshot.lastSeq - this.lastSeq);
+		const held = this.fileEntries.length - 1;
+		if (start !== held || (held > 0 && snapshot.entries[held - 1]?.id !== this.fileEntries[held]?.id)) throw error;
+		const own = new Map(entries.map((entry) => [entry.id, entry]));
+		const tail = snapshot.entries.slice(start).map((entry) => own.get(entry.id) ?? entry);
+		const saved = tail.some((entry) => own.has(entry.id));
+		const foreign = tail.some((entry) => !own.has(entry.id) && !this.unconfirmed.has(entry.id));
+		const leafId = this.leafId;
+		if (tail.length === entries.length && saved) {
+			this.applyAppended(entries);
+		} else if (tail.length > 0) {
+			this.fileEntries = [...this.fileEntries, ...tail];
+			this._buildIndex();
+			this.leafId = saved ? entries.at(-1)!.id : leafId;
+		}
+		this.lastSeq = snapshot.lastSeq;
+		this.unconfirmed.clear();
+		if (saved) return "saved";
+		return foreign || (!unknown && tail.length === 0) ? "conflict" : "retry";
 	}
 
 	/**
