@@ -1,7 +1,9 @@
+import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ResolvedStepBehavior } from "../../shared/settings.js";
 import type { ExtensionConfig, SubagentToolResult } from "../../shared/types.js";
 import { resolveChildCwd } from "../../shared/utils.js";
+import { ensureNamedWorktree, type NamedWorktree } from "../shared/named-worktree.js";
 import { resolveSingleOutputPath } from "../shared/single-output.js";
 import {
 	createWorktrees,
@@ -11,7 +13,8 @@ import {
 	formatWorktreeTaskCwdConflict,
 	type WorktreeSetup,
 } from "../shared/worktree.js";
-import type { TaskParam } from "./subagent-executor-types.js";
+import { missingCwdMessage, resolveRequestedCwd } from "./subagent-executor-cwd.js";
+import { NAMED_WORKTREE, type SubagentParamsLike, type TaskParam } from "./subagent-executor-types.js";
 
 export function buildParallelModeError(message: string): SubagentToolResult {
 	return {
@@ -105,4 +108,74 @@ export function findDuplicateParallelOutputPath(input: {
 		seen.set(outputPath, { index, agent: task.agent });
 	}
 	return undefined;
+}
+
+function launchError(params: SubagentParamsLike, message: string): SubagentToolResult {
+	return {
+		content: [{ type: "text", text: message }],
+		isError: true,
+		details: { mode: (params.tasks?.length ?? 0) > 0 ? "parallel" : "single", results: [] },
+	};
+}
+
+function withNamedWorktree<T extends { cwd?: string; worktree?: SubagentParamsLike["worktree"] }>(
+	value: T,
+	worktree: NamedWorktree,
+): Omit<T, "worktree"> & { cwd: string; [NAMED_WORKTREE]: NamedWorktree } {
+	const { worktree: _request, ...rest } = value;
+	return { ...rest, cwd: worktree.agentCwd, [NAMED_WORKTREE]: worktree };
+}
+
+/**
+ * Before any child starts: refuse a launch whose cwd is missing, and check out the named worktree each child asks for
+ * (#5202), setting the child's cwd to it. A top-level named worktree applies to the single child, or to each task
+ * that names none of its own. `worktree: true` is left as it is.
+ */
+export function prepareNamedWorktrees(
+	params: SubagentParamsLike,
+	runtimeCwd: string,
+): { params: SubagentParamsLike; error?: undefined } | { params?: undefined; error: SubagentToolResult } {
+	const callCwd = params.cwd ?? runtimeCwd;
+	const tasks = params.tasks ?? [];
+	const cwds = [callCwd, ...tasks.map((task) => resolveRequestedCwd(callCwd, task.cwd))];
+	const missing = cwds.find((cwd) => !fs.existsSync(cwd));
+	if (missing !== undefined) return { error: launchError(params, missingCwdMessage(missing)) };
+	const topLevel = typeof params.worktree === "object" ? params.worktree : undefined;
+	if (params.worktree === true && tasks.some((task) => task.worktree !== undefined))
+		return {
+			error: launchError(
+				params,
+				"worktree: true gives each task a new worktree of its own, so it cannot be combined with a task's named worktree. Use one or the other.",
+			),
+		};
+	try {
+		if (tasks.length === 0)
+			return { params: topLevel ? withNamedWorktree(params, ensureNamedWorktree(callCwd, topLevel)) : params };
+		const { worktree: _topLevel, ...rest } = params;
+		return {
+			params: {
+				...rest,
+				...(topLevel ? {} : { worktree: params.worktree }),
+				tasks: tasks.map((task) => {
+					const request = task.worktree ?? topLevel;
+					if (!request) return task;
+					return withNamedWorktree(task, ensureNamedWorktree(resolveRequestedCwd(callCwd, task.cwd), request));
+				}),
+			},
+		};
+	} catch (error) {
+		return { error: launchError(params, error instanceof Error ? error.message : String(error)) };
+	}
+}
+
+/** The named worktree each child of a prepared launch runs in, by child index. */
+export function namedWorktreesByIndex(params: SubagentParamsLike): Map<number, NamedWorktree> {
+	const byIndex = new Map<number, NamedWorktree>();
+	if (params.tasks?.length) {
+		for (const [index, task] of params.tasks.entries()) {
+			const worktree = task[NAMED_WORKTREE];
+			if (worktree) byIndex.set(index, worktree);
+		}
+	} else if (params[NAMED_WORKTREE]) byIndex.set(0, params[NAMED_WORKTREE]);
+	return byIndex;
 }

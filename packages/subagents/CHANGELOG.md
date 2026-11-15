@@ -2,8 +2,17 @@
 
 ## [Unreleased]
 
+### Added
+
+- Single and parallel `subagent` calls, and each parallel task, accept `worktree: { branch, base?, path? }`: before the child starts, the branch is checked out in a worktree at `path` (default `.atomic/worktrees/<branch>`), created from `base` (default the upstream, or `HEAD`) or reused when that branch is already checked out there. The call is refused before launch when the branch is checked out elsewhere or the path holds something else. Unlike `worktree: true`, a named worktree and its branch are never removed; it is recorded with the child, so the restore notice names it and resume continues in it ([#5202](https://github.com/bastani-inc/atomic/issues/5202))
+
+### Changed
+
+- A launch whose `cwd` does not exist is refused before any child starts, and the error says the directory may still be being created by a parallel tool call in the same turn: launch after that call returns, or use `worktree: { branch, base?, path? }` ([#5202](https://github.com/bastani-inc/atomic/issues/5202))
+
 ### Fixed
 
+- Fixed a subagent whose final answer its session could not save, for example on a full disk, being reported as completed with no result ([#5210](https://github.com/bastani-inc/atomic/issues/5210)). It now fails with a cause that names the storage error. Its completion card, `/tasks` output and transcript, and its parent's result still show the answer it gave. Resuming it continues after that answer, which its session then holds once.
 - Fixed a long supervising session slowing down until new subagents failed to start with `session-start-timeout` in phase `setup` ([#5186](https://github.com/bastani-inc/atomic/issues/5186)). The cost of a session now follows the subagents running in it, not every one it ever launched:
   - A finished subagent no longer keeps its whole history in memory, or the text of every skill file it loaded. `/tasks`, its transcript, its completion card and `resume` read its history back from its session file when they need it. Reading it never writes: if the file was moved or deleted, `/tasks` and the completion card still show its prompt and answer, its transcript says the history is unavailable, and `resume` reports the missing file.
   - A finished subagent no longer leaves a 10-minute timer behind. The startup cleanup scans now run once per Atomic process, not once per subagent.
