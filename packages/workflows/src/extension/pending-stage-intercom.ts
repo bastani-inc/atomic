@@ -36,6 +36,7 @@ import type {
 	StageSnapshot,
 } from "../shared/store-types.js";
 import {
+	authoritativeWorkflowChildRunId,
 	childRunsInSource,
 	findRunInSource,
 	invocationRunsInSource,
@@ -1219,30 +1220,40 @@ function pendingStageDestination(
 
 /**
  * The receipts the stages of root `rootRunId`'s runs keep for the sticky entry `entry` (#5023): each stage whose session
- * recorded that it took the entry's message.
+ * recorded that it took the entry's message. Only the root's own runs are read, found from the root through each
+ * boundary stage's child run, so finished runs of other roots are never read.
  */
 function stickyStageReceipts(
 	activeStore: Store,
 	rootRunId: string,
 	entry: PendingStageMessage,
 ): { runId: string; stageId: string; stageName: string; sessionId: string; admission: "context" }[] {
-	return activeStore.runs().flatMap((candidate) =>
-		durableRootRunIdForRun(activeStore, candidate.id) !== rootRunId
-			? []
-			: candidate.stages.flatMap(({ id, name, intercomReceipts }) =>
-					intercomReceipts?.messageIds.includes(entry.message.id) === true
-						? [
-								{
-									runId: candidate.id,
-									stageId: id,
-									stageName: name,
-									sessionId: intercomReceipts.sessionId,
-									admission: "context" as const,
-								},
-							]
-						: [],
-				),
-	);
+	const receipts: { runId: string; stageId: string; stageName: string; sessionId: string; admission: "context" }[] =
+		[];
+	const seen = new Set<string>();
+	const pending: RunSnapshot[] = [];
+	const root = activeStore.run(rootRunId);
+	if (root !== undefined) pending.push(root);
+	for (let run = pending.pop(); run !== undefined; run = pending.pop()) {
+		if (seen.has(run.id)) continue;
+		seen.add(run.id);
+		for (const stage of run.stages) {
+			if (stage.intercomReceipts?.messageIds.includes(entry.message.id) === true)
+				receipts.push({
+					runId: run.id,
+					stageId: stage.id,
+					stageName: stage.name,
+					sessionId: stage.intercomReceipts.sessionId,
+					admission: "context",
+				});
+			const childRunId = authoritativeWorkflowChildRunId(stage);
+			const child = childRunId === undefined ? undefined : activeStore.run(childRunId);
+			// A child is the root's only through a reciprocal link, as a run's durable owner is resolved.
+			if (child !== undefined && child.parentRunId === run.id && child.parentStageId === stage.id)
+				pending.push(child);
+		}
+	}
+	return receipts;
 }
 
 function receivedByStageSession(run: ReturnType<Store["runs"]>[number], entry: PendingStageMessage): boolean {
