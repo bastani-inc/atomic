@@ -151,7 +151,24 @@ function createTaskPrimitive(runtime: EngineRuntime): WorkflowTaskPrimitive {
 				return preparedTask;
 			});
 			const artifacts = collect();
-			return artifacts.length === 0 ? result : { ...result, artifacts: [...(result.artifacts ?? []), ...artifacts] };
+			// A worktree whose diff could not be captured is kept, and setup it could not finish is skipped: the task's
+			// result says so, with the worktree (#4876).
+			const worktreeWarnings = [
+				...(prepared?.setup?.worktrees ?? []).flatMap((worktree) => worktree.setupWarnings ?? []),
+				...artifacts.flatMap((artifact) =>
+					artifact.captureError === undefined
+						? []
+						: [
+								`Diff capture failed for task ${name}; its worktree was kept at ${artifact.worktreePath}: ${artifact.captureError}`,
+							],
+				),
+			];
+			if (artifacts.length === 0 && worktreeWarnings.length === 0) return result;
+			return {
+				...result,
+				...(artifacts.length === 0 ? {} : { artifacts: [...(result.artifacts ?? []), ...artifacts] }),
+				...(worktreeWarnings.length === 0 ? {} : { warnings: [...(result.warnings ?? []), ...worktreeWarnings] }),
+			};
 		} finally {
 			if (prepared !== undefined) cleanupPreparedWorktrees(prepared);
 		}
