@@ -28,6 +28,8 @@ describe("standalone workflow package input typing", () => {
 						compilerOptions: {
 							strict: true,
 							target: "ES2022",
+							// The library @bastani/atomic's own source is compiled against (tsconfig.base.json), which `paths` checks here.
+							lib: ["ES2024"],
 							module: "NodeNext",
 							moduleResolution: "NodeNext",
 							noEmit: true,
