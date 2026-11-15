@@ -1,4 +1,3 @@
-import { ASK_REPLY_TIMEOUT_MS } from "../retry-policy.js";
 import type { Message, SessionInfo } from "../types.js";
 import {
 	BROKER_LEASE_STALE_AFTER_MS,
@@ -6,6 +5,7 @@ import {
 	KNOWN_SESSION_RETENTION_MS,
 	OUTBOX_CLAIM_STALE_AFTER_MS,
 	type OutboxRow,
+	type PendingAsk,
 	type RecipientPresenceSubject,
 	type ReboundPendingAsk,
 	type ReleasedAsk,
@@ -13,6 +13,7 @@ import {
 	type ReleasedAskerReplyFrame,
 	type ReleasedAskRecord,
 } from "./multinode-state-store.js";
+import { AWAY_ASK_RETENTION_MS } from "./away-asks.js";
 import { UNCERTAIN_RECEIPT_REASON } from "./recipient-receipts.js";
 import { normalizeReservationTarget, releasedReservationKey } from "./released-children.js";
 import {
@@ -260,7 +261,8 @@ export async function keepReleasedAsks(
 			childName,
 			ownerSessionId,
 		})),
-		ASK_REPLY_TIMEOUT_MS,
+		// #4852: an ask has no expiry (#4751): its question is kept as long as an away session's asks are.
+		AWAY_ASK_RETENTION_MS,
 	);
 }
 
@@ -273,21 +275,25 @@ export interface ReleasedTarget {
 /**
  * #4386: asks addressed to a departing session end with it, unless its owner released it: those are parked for the
  * owner, still answerable by the subagent, until it registers again on any node. A departing owner's parked asks end
- * with it, as its local parked questions do.
+ * with it, as its local parked questions do. Returns the asks that ended with it, whose askers must be told (#4842).
  */
 export async function settleAsksToDeparted(
 	state: Pick<IntercomBrokerStateStore, "pendingAsks">,
 	sessionId: string,
 	released: ReleasedTarget | undefined,
-): Promise<void> {
-	if (released === undefined) await state.pendingAsks.takeForTarget(sessionId);
-	else {
+): Promise<PendingAsk[]> {
+	let ended: PendingAsk[] = [];
+	if (released === undefined) {
+		const taken = await state.pendingAsks.takeForTarget(sessionId);
+		if (taken.status === "taken") ended = taken.asks;
+	} else {
 		await state.pendingAsks.parkForTarget(sessionId, {
 			ownerSessionId: released.ownerSessionId,
 			reservationKey: releasedReservationKey(released.childName),
 		});
 	}
 	await state.pendingAsks.takeParked(sessionId);
+	return ended;
 }
 
 /** A released subagent registering again under the capability its owner issued. */
