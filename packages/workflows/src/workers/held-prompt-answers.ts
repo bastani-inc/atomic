@@ -17,6 +17,11 @@ type HeldAnswer =
 			readonly generation: number;
 			readonly promptId: string;
 			readonly identity: string;
+			/**
+			 * The attempt took it (#4941): it is held until a later attempt shows the stage settled, since the attempt
+			 * may die before it commits the prompt's completion with it. Its own publications say nothing of that.
+			 */
+			readonly delivered?: true;
 	  } & HeldPromptOutcome)
 	| ({
 			readonly kind: "question";
@@ -41,7 +46,9 @@ export function questionIdentity(question: PooledStageQuestion): string {
  * asks the same prompt again; the held answer or failure goes to that prompt once, so the user is
  * not asked twice and a failed prompt is not shown again. A replacement that asks something else, a stage that
  * ends, and an attempt that is still live and moved on discard it: a held answer only ever goes
- * to the same question on a later attempt.
+ * to the same question on a later attempt. An answer the attempt took is held too (#4941), until a later attempt
+ * shows the stage settled: the attempt may die before it commits the prompt's completion with that answer, and its
+ * replacement then asks again.
  */
 export class HeldPromptAnswers {
 	private readonly held = new Map<string, HeldAnswer & { readonly runId: string }>();
@@ -55,6 +62,7 @@ export class HeldPromptAnswers {
 		const key = JSON.stringify([runId, stage.id]);
 		const held = this.held.get(key);
 		if (held === undefined) return;
+		if (held.kind === "prompt" && held.delivered === true && generation <= held.generation) return;
 		if (isTerminalStageStatus(stage.status)) {
 			this.held.delete(key);
 			return;

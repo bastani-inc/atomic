@@ -45,9 +45,15 @@ export interface DurableStageDeps {
 export async function recordStageCheckpoint(
 	deps: DurableStageDeps,
 	stage: StageSnapshot,
-	options?: { readonly metadataOnly?: boolean },
+	options?: {
+		readonly metadataOnly?: boolean;
+		/** A completed prompt node's answer, recorded in the same checkpoint as its completion (#4941). */
+		readonly promptAnswer?: { readonly response?: WorkflowSerializableValue };
+	},
 ): Promise<boolean> {
 	if (stage.status !== "completed" && stage.status !== "failed" && stage.status !== "skipped") return false;
+	const promptAnswer =
+		stage.status === "completed" && options?.promptAnswer !== undefined ? { promptAnswer: options.promptAnswer } : {};
 	const replayKey = deps.replayKeyForCompletedStage?.(stage) ?? stage.replayKey ?? deps.nextReplayKey(stage.name);
 	const metadata = durableStageCheckpointMetadata(stage, deps.runTopology, deps.sourceOrderForStage?.(stage));
 	const hasExistingOutput = deps.backend.getStageOutput(deps.workflowId, replayKey) !== undefined;
@@ -65,6 +71,7 @@ export async function recordStageCheckpoint(
 				replayKey,
 				completedAt: stage.endedAt ?? Date.now(),
 				...metadata,
+				...promptAnswer,
 			}
 		: {
 				kind: "stage",
@@ -75,6 +82,7 @@ export async function recordStageCheckpoint(
 				output: stageOutput(stage),
 				completedAt: stage.endedAt ?? Date.now(),
 				...metadata,
+				...promptAnswer,
 			};
 	await deps.beforeCheckpoint?.();
 	if (stage.status === "completed" && stage.replayed !== true && deps.recordLiveCheckpoint) {
