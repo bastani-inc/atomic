@@ -45,6 +45,8 @@ When a file or directory a capture has to read cannot be read, for example becau
 - Paths on the built-in deny list: `.env*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, SSH key files: any `id_*` file without an extension, and any file named after an SSH key type (`id_rsa`, `id_ed25519`, `id_ecdsa`, `id_dsa`, `id_mldsa`, `id_xmss`) whatever its suffix, such as `id_rsa.bak`, except `.pub` public keys and certificates. Other `id_*` files with an extension, such as `id_utils.ts`, are kept. The secret extensions apply to every name, so `id_server.pem` or `id_rsa.pub.key` is always left out, `credentials`, `credentials.json`, `.netrc`, `_netrc`, `.git-credentials`, `.pgpass`.
 - Untracked files when `snapshots.includeUntracked` is `false`.
 - Files over `snapshots.maxFileBytes`, and files beyond `snapshots.maxSnapshotBytes` in total.
+- Untracked repositories inside the checkout, such as `tools/` after `git init tools`. `omitted` lists the directory as `nested-repository`.
+- Work inside submodules. The snapshot records only the commit each submodule has checked out, and a restore does not check submodules out. `omitted` names a submodule that has uncommitted changes or untracked files (`submodule-changes`), or whose checked-out commit is on none of its remote-tracking branches (`unpushed-submodule-commit`). Commit and push that work in the submodule to keep it. A submodule that could not be checked within 10 seconds is listed as `submodule-unchecked`.
 
 Tracked files that are denied or ignored keep their `HEAD` content in the snapshot; changes you made to them are listed in `omitted`.
 
