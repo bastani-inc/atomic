@@ -74,7 +74,7 @@ async function unindexedHistory(path: string): Promise<void> {
 		);
 		await database.run(
 			`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?)
-			INSERT INTO wf_events SELECT 'big', 1 + i, ?, NULL, 'CheckpointRecorded',
+			INSERT INTO wf_events(run_id, seq, epoch, key, type, payload, at) SELECT 'big', 1 + i, ?, NULL, 'CheckpointRecorded',
 				json_object('kind', 'tool', 'checkpointId', 'c' || i, 'worktreeSnapshots',
 					json_array(json_object('chain', json_array(json_object('patch', 'padded-' || i))))), 0 FROM n`,
 			EVENTS,

@@ -139,6 +139,7 @@ import { shouldUseFullscreenTui } from "./modes/interactive/interactive-tui.ts";
 import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.js";
 import { createRuntimeForMode } from "./modes/interactive-engine/create-isolated-runtime.ts";
 import { startInteractiveEngineLiveness } from "./modes/interactive-engine/engine-child-liveness.ts";
+import { announceBlueprintBuildWaits } from "./modes/print-mode.ts";
 import { isRpcTransportFailure } from "./modes/rpc/rpc-transport-error.ts";
 import { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.ts";
 import {
@@ -661,12 +662,19 @@ export async function main(argv: string[], options?: MainOptions) {
 	let sessionManager: SessionManager;
 	let worktreeRestoreDiagnostics: readonly ResumeNotice[] = [];
 	const startupProgress = createResumeProgress(appMode, engineEnv.child === "1", process.stderr);
+	// Without a UI, a resume that waits for another build of its worktree says so while it waits (#4748).
+	const stopAnnouncingWaits =
+		appMode !== "interactive" && engineEnv.child !== "1"
+			? announceBlueprintBuildWaits(appMode !== "print")
+			: undefined;
 	try {
 		const opened = await openCliSession(parsed, cwd, startupSettingsManager, {
 			agentDir,
 			sessionStorage,
 			trusted: cliResumeTrust(parsed.projectTrustOverride, projectTrustStore, startupDefaultProjectTrust),
 			blueprints: engineEnv.child === "1" ? "skip" : "build",
+			// Without a UI (-p, json, rpc), the first turn starts while the blueprint build runs (#4748).
+			interactive: appMode === "interactive" || engineEnv.child === "1",
 			claim: engineEnv.child !== "1",
 			progress: startupProgress,
 			chooseDirtyCheckout:
@@ -678,6 +686,7 @@ export async function main(argv: string[], options?: MainOptions) {
 						}
 					: undefined,
 		});
+		stopAnnouncingWaits?.();
 		if (opened === "cancelled") process.exit(0);
 		sessionManager = opened.sessionManager;
 		worktreeRestoreDiagnostics = opened.notices;
@@ -1102,6 +1111,7 @@ export async function main(argv: string[], options?: MainOptions) {
 			promptTemplates: resolvedPromptTemplatePaths,
 			themes: resolvedThemePaths,
 		},
+		appMode === "interactive" || engineEnv.child === "1",
 	);
 	endTimingSpan(runtimeCreationSpan);
 	const { services, session, modelFallbackMessage } = runtime;

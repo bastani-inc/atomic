@@ -4,7 +4,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, it } from "vitest";
 import { computeEditsDiff, type Edit } from "../src/core/tools/edit-diff.js";
-import { isEditMatchError, isEditTargetError } from "../src/core/tools/file-tool-errors.js";
+import { isEditInputError, isEditMatchError, isEditTargetError } from "../src/core/tools/file-tool-errors.js";
 import { createEditTool } from "../src/index.js";
 
 const editTool = createEditTool(process.cwd());
@@ -134,6 +134,55 @@ describe("edit tool exactness (#4893)", () => {
 			assert.equal(error.code, "text-not-found");
 			return true;
 		});
+	});
+});
+
+describe("edit tool surrogate pairs (#5013)", () => {
+	const original = "x\u{1F600}y\n";
+
+	async function assertSplitRefused(edits: Edit[], editIndex: number): Promise<void> {
+		const path = writeTestFile("emoji.txt", original);
+		await assert.rejects(edit(path, edits), (error: Error) => {
+			assert.ok(isEditInputError(error));
+			assert.equal(error.code, "text-splits-character");
+			assert.deepEqual(error.fields, { path, editIndex, totalEdits: edits.length });
+			const named = edits.length === 1 ? "oldText or newText" : `edits[${editIndex}].oldText or newText`;
+			assert.ok(error.message.startsWith(`${named} contains half of a surrogate pair in ${path}.`));
+			assert.match(error.hint, /both halves of every emoji/);
+			return true;
+		});
+		assert.ok(readFileSync(path).equals(Buffer.from(original)));
+	}
+
+	it("refuses an oldText ending in a lone high surrogate, a match that ends inside a pair (#5013)", async () => {
+		await assertSplitRefused([{ oldText: "x\uD83D", newText: "z" }], 0);
+	});
+
+	it("refuses an oldText starting with a lone low surrogate, a match that starts inside a pair (#5013)", async () => {
+		await assertSplitRefused([{ oldText: "\uDE00y", newText: "z" }], 0);
+	});
+
+	it("refuses a newText with a leading or trailing lone surrogate (#5013)", async () => {
+		await assertSplitRefused([{ oldText: "y", newText: "\uDE00z" }], 0);
+		await assertSplitRefused([{ oldText: "y", newText: "z\uD83D" }], 0);
+	});
+
+	it("names the edit with the lone surrogate among several (#5013)", async () => {
+		await assertSplitRefused(
+			[
+				{ oldText: "x", newText: "w" },
+				{ oldText: "y", newText: "\uD83D" },
+			],
+			1,
+		);
+	});
+
+	it("still edits text containing whole emoji (#5013)", async () => {
+		const path = writeTestFile("emoji.txt", original);
+
+		await edit(path, [{ oldText: "\u{1F600}y", newText: "\u{1F389}z" }]);
+
+		assert.equal(readFileSync(path, "utf-8"), "x\u{1F389}z\n");
 	});
 });
 

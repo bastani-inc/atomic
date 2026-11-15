@@ -24,7 +24,7 @@ import {
 import { fleetDrainsSchema } from "./sql-fleet.js";
 import type { PoolWork, SqlPoolQueue } from "./sql-pool-queue.js";
 import { type PooledStageInputKind, validateStageInput } from "./stage-input-kinds.js";
-import { type Lease, RUN_EVENT_TYPES, type RunJournal } from "./types.js";
+import { JOURNAL_SCHEMA_VERSION, type Lease, RUN_EVENT_TYPES, type RunJournal } from "./types.js";
 import { validateText } from "./values.js";
 
 export type { SharedPoolFleet, SharedPoolHost, SharedPoolStats, WorkerHostGitSource } from "./shared-pool-types.js";
@@ -40,6 +40,8 @@ const hostStatusColumns = (dialect: StorageDialect) =>
 		draining: `${dialect.types.int} NOT NULL DEFAULT 0`,
 		degraded: "TEXT",
 		provider_id: "TEXT",
+		// The journal schema version the host's build reads, so a later build can tell a live host of an older one (#4965).
+		journal_schema: dialect.types.int,
 	}) as const;
 
 /** A stage input that answers a prompt the stage raised; its payload is the answer. */
@@ -306,12 +308,12 @@ export class SqlSharedPool {
 		await this.plainWrite(
 			[
 				{
-					sql: `INSERT INTO ${this.hosts}(host, labels, git, restore, workers, max_workers, heartbeat_at, roots, slots_busy, draining, degraded, provider_id)
-				VALUES (?, ?, ?, ?, ?, ?, ${this.now}, ?, ?, ?, ?, ?)
+					sql: `INSERT INTO ${this.hosts}(host, labels, git, restore, workers, max_workers, heartbeat_at, roots, slots_busy, draining, degraded, provider_id, journal_schema)
+				VALUES (?, ?, ?, ?, ?, ?, ${this.now}, ?, ?, ?, ?, ?, ?)
 				ON CONFLICT(host) DO UPDATE SET labels = excluded.labels, git = excluded.git, restore = excluded.restore,
 				workers = excluded.workers, max_workers = excluded.max_workers, heartbeat_at = excluded.heartbeat_at, roots = excluded.roots,
 				slots_busy = excluded.slots_busy, draining = excluded.draining, degraded = excluded.degraded,
-				provider_id = excluded.provider_id`,
+				provider_id = excluded.provider_id, journal_schema = excluded.journal_schema`,
 					params: [
 						host.host,
 						JSON.stringify(host.labels),
@@ -324,6 +326,7 @@ export class SqlSharedPool {
 						host.draining === true ? 1 : 0,
 						host.degraded === undefined ? null : JSON.stringify(host.degraded),
 						host.providerId ?? null,
+						JOURNAL_SCHEMA_VERSION,
 					],
 				},
 			],

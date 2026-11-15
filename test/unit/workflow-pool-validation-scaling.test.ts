@@ -122,7 +122,7 @@ async function recordHistory(tx: SqliteExecutor, children: number, checkpoints: 
 	const insert = async (checkpoint: DurableCheckpoint) => {
 		const key = JSON.stringify([RUN_EVENT_TYPES.checkpointRecorded, checkpoint.kind, checkpoint.checkpointId]);
 		await tx.run(
-			"INSERT INTO wf_events VALUES ('root', ?, 1, ?, ?, ?, ?)",
+			"INSERT INTO wf_events(run_id, seq, epoch, key, type, payload, at) VALUES ('root', ?, 1, ?, ?, ?, ?)",
 			seq++,
 			key,
 			RUN_EVENT_TYPES.checkpointRecorded,
@@ -130,7 +130,7 @@ async function recordHistory(tx: SqliteExecutor, children: number, checkpoints: 
 			seq,
 		);
 		await tx.run(
-			"INSERT INTO wf_events VALUES ('root', ?, 1, NULL, ?, ?, ?)",
+			"INSERT INTO wf_events(run_id, seq, epoch, key, type, payload, at) VALUES ('root', ?, 1, NULL, ?, ?, ?)",
 			seq++,
 			RUN_EVENT_TYPES.messageDelivered,
 			JSON.stringify({ delivered: seq }),
@@ -359,8 +359,13 @@ test(
 		const small = await totalReads(1_000);
 		const large = await totalReads(40_000);
 		assert.deepEqual(large, small, "a usage total's reads must not depend on how many usage rows the root has");
-		assert.equal(large.rows, READS, "each total is one row of the totals table");
-		assert.deepEqual(Object.keys(large.tables), ["wf_runs_pool_usage_totals"], "no usage row is read");
+		// Each read also checks the journal's schema version, one row of its meta table (#4965).
+		assert.equal(large.rows, 2 * READS, "each total is one row of the totals table, and one of the meta table");
+		assert.deepEqual(
+			Object.keys(large.tables).sort(),
+			["wf_meta", "wf_runs_pool_usage_totals"],
+			"no usage row is read",
+		);
 	},
 	HISTORY_FIXTURE_TIMEOUT_MS,
 );

@@ -4,6 +4,7 @@ import type { SnapshotBlobStore, WorktreeSnapshot } from "@bastani/atomic";
 import {
 	assertStorageSchemaVersion,
 	fencedPath,
+	readStoredJsonChunks,
 	renderStorageIdentifiers,
 	type SessionStore,
 	type SqliteDatabase,
@@ -12,9 +13,13 @@ import {
 	type SqliteStatement,
 	type SqliteValue,
 	type SqlSnapshotBlobStore,
+	STORED_JSON_CHUNK_BYTES,
 	type StorageDialect,
 	StorageError,
 	StorageProvider,
+	storedJournalPayload,
+	storedJsonChunks,
+	withJournalPayloads,
 } from "@bastani/atomic/storage";
 import { assertWorkflowSerializableObject } from "../../shared/serializable.js";
 import type { WorkflowSerializableObject } from "../../shared/types.js";
@@ -77,8 +82,31 @@ export type { PoolMutation } from "./pool-mutations.js";
 type Transaction = SqlPoolStorage["transaction"];
 type JournalTables = SqlPoolStorage["tables"];
 const MAX_WORKER_CLOCK_SKEW_MS = 1_000;
-/** Version 2 keeps no lease renewal rows and stores a digest, not the full request, per pool operation. */
-const POOL_SCHEMA_VERSION = 2;
+/**
+ * Version 2 keeps no lease renewal rows and stores a digest, not the full request, per pool operation. Version 3 stores
+ * large work inputs and results in chunks (#4965), which a build of version 2 would read as their stubs, so it refuses
+ * a pool of version 3.
+ */
+const POOL_SCHEMA_VERSION = 3;
+/** The pool schema before chunked inputs and results; this build upgrades it when it opens the pool. */
+const POOL_SCHEMA_VERSION_UNCHUNKED = 2;
+/** Work whose inputs a work row holds only as a stub, by the work this queue read: how many chunks hold them. */
+const chunkedInputs = new WeakMap<PoolWork, number>();
+/**
+ * A work descriptor as its work row stores it, and the chunks of its inputs: inputs whose JSON is longer than one
+ * chunk are stored in chunks (#4965) and the row's descriptor holds `{}` for them, keeping every field SQL reads.
+ * `whole`: a process of an older build may be reading the pool, so the inputs stay in the row (see `olderBuildLive`).
+ */
+function storedDescriptor(
+	json: string,
+	whole: boolean,
+): { readonly descriptor: string; readonly chunks: readonly Uint8Array[] } {
+	if (whole) return { descriptor: json, chunks: [] };
+	const descriptor = JSON.parse(json) as PoolWorkDescriptor;
+	const chunks = storedJsonChunks(serializeJson(descriptor.inputs));
+	if (chunks === undefined) return { descriptor: json, chunks: [] };
+	return { descriptor: serializeJson({ ...descriptor, inputs: {} }), chunks };
+}
 
 /** The columns of the pool's operations table, in order. */
 const OPERATION_COLUMNS = ["work", "generation", "operation", "request", "receipt"];
@@ -142,6 +170,8 @@ type WorkRow = SqliteRow & {
 	id: string;
 	root: string;
 	descriptor: string;
+	/** How many rows of the input chunks table hold the descriptor's inputs; 0 or absent when it holds them. */
+	inputs_chunks?: number | null;
 	state: PoolWork["state"];
 	generation: number;
 	worker: string | null;
@@ -304,7 +334,7 @@ const HANDOFF_OPERATION = "pool-handoff";
  */
 const CONFIRMED_OPERATION = "pool-confirmed";
 function fromRow(row: WorkRow): PoolWork {
-	return {
+	const work: PoolWork = {
 		...JSON.parse(row.descriptor),
 		id: row.id,
 		state: row.state,
@@ -314,6 +344,9 @@ function fromRow(row: WorkRow): PoolWork {
 		expiresAt: Number(row.expires_at),
 		renewedAt: Number(row.renewed_at),
 	};
+	const chunks = Number(row.inputs_chunks ?? 0);
+	if (chunks > 0) chunkedInputs.set(work, chunks);
+	return work;
 }
 function positive(value: number): void {
 	if (!Number.isSafeInteger(value) || value <= 0) throw new Error("Pool duration must be a positive safe integer");
@@ -411,7 +444,8 @@ export class SqlPoolQueue {
 			if (versions.length > 1) throw new Error("Corrupt pool schema metadata");
 			const version = versions[0]?.version;
 			if (version === undefined) await tx.run(`INSERT INTO ${pool.meta} VALUES (?)`, POOL_SCHEMA_VERSION);
-			else if (version !== 1) assertStorageSchemaVersion("journal", version, POOL_SCHEMA_VERSION);
+			else if (version !== 1 && version !== POOL_SCHEMA_VERSION_UNCHUNKED)
+				assertStorageSchemaVersion("journal", version, POOL_SCHEMA_VERSION);
 			await tx.exec(`
 				CREATE TABLE IF NOT EXISTS ${pool.roots}(root TEXT PRIMARY KEY REFERENCES ${journal.runs}(run_id) ON DELETE CASCADE, timeout ${int} NOT NULL);
 				CREATE TABLE IF NOT EXISTS ${pool.work}(
@@ -459,8 +493,153 @@ export class SqlPoolQueue {
 				)`);
 			if (remote) pool.outboxPending = (await tx.get(`SELECT 1 AS held FROM ${pool.outbox} LIMIT 1`)) !== undefined;
 			if (version === 1) await pool.migrateFromVersion1(tx);
+			await pool.addChunks(tx);
 		});
 		return pool;
+	}
+	/**
+	 * Large inputs and results in chunks (#4965): each table's chunk count column, 0 for every row written before it, the
+	 * chunk tables, deleted with their work or result, and the pool meta at version 3. Idempotent.
+	 */
+	private async addChunks(tx: SqliteExecutor): Promise<void> {
+		const { int, blob } = this.dialect.types;
+		const has = async (table: string, column: string) => {
+			const probe = this.dialect.columnExists(table, column);
+			return (await tx.get(probe.sql, ...probe.params)) !== undefined;
+		};
+		if (!(await has(this.work, "inputs_chunks")))
+			await tx.exec(`ALTER TABLE ${this.work} ADD COLUMN inputs_chunks ${int} NOT NULL DEFAULT 0`);
+		if (!(await has(`${this.work}_results`, "chunks")))
+			await tx.exec(`ALTER TABLE ${this.work}_results ADD COLUMN chunks ${int} NOT NULL DEFAULT 0`);
+		await tx.exec(`
+			CREATE TABLE IF NOT EXISTS ${this.work}_input_chunks(
+				work TEXT NOT NULL REFERENCES ${this.work}(id) ON DELETE CASCADE, idx ${int} NOT NULL, data ${blob} NOT NULL,
+				PRIMARY KEY(work, idx)
+			);
+			CREATE TABLE IF NOT EXISTS ${this.work}_result_chunks(
+				work TEXT NOT NULL REFERENCES ${this.work}_results(work) ON DELETE CASCADE, idx ${int} NOT NULL, data ${blob} NOT NULL,
+				PRIMARY KEY(work, idx)
+			);
+		`);
+		await tx.run(`UPDATE ${this.meta} SET version = ? WHERE version < ?`, POOL_SCHEMA_VERSION, POOL_SCHEMA_VERSION);
+	}
+	/**
+	 * Whether JSON this write stores, any of `jsons`, must stay in its row although it may be longer than a chunk: a
+	 * process of an older build may be reading the pool and would read its stub (#4965). False at once when every one
+	 * is short enough, by its length, to need no chunks.
+	 */
+	private async keepsWhole(executor: SqliteExecutor, ...jsons: readonly string[]): Promise<boolean> {
+		if (jsons.every((json) => json.length * 3 <= STORED_JSON_CHUNK_BYTES)) return false;
+		return this.storage.olderBuildLive(executor);
+	}
+	/** `work` with its inputs read from their chunks when its work row holds only their stub; as it is otherwise. */
+	private async withInputs(executor: SqliteExecutor, work: PoolWork): Promise<PoolWork>;
+	private async withInputs(executor: SqliteExecutor, work: PoolWork | undefined): Promise<PoolWork | undefined>;
+	private async withInputs(executor: SqliteExecutor, work: PoolWork | undefined): Promise<PoolWork | undefined> {
+		const chunks = work === undefined ? undefined : chunkedInputs.get(work);
+		if (chunks === undefined) return work;
+		const inputs = await readStoredJsonChunks(
+			executor,
+			`SELECT data FROM ${this.work}_input_chunks WHERE work = ? AND idx = ?`,
+			[work!.id],
+			chunks,
+			`Pool work ${work!.id} inputs`,
+		);
+		return { ...work!, inputs: JSON.parse(inputs) as WorkflowSerializableObject };
+	}
+	/** Writes a work row's input chunks in the caller's transaction, replacing any it had. */
+	private async writeInputChunks(tx: SqliteExecutor, id: string, chunks: readonly Uint8Array[]): Promise<void> {
+		await tx.run(`DELETE FROM ${this.work}_input_chunks WHERE work = ?`, id);
+		for (const [index, data] of chunks.entries())
+			await tx.run(`INSERT INTO ${this.work}_input_chunks VALUES (?, ?, ?)`, id, index, data);
+	}
+	/** A stored result's JSON, read from its chunks when it is stored in chunks. */
+	private async resultJson(
+		executor: SqliteExecutor,
+		work: string,
+		row: SqliteRow & { result?: unknown; chunks?: unknown },
+	): Promise<string> {
+		const chunks = Number(row.chunks ?? 0);
+		if (chunks === 0) return String(row.result);
+		return readStoredJsonChunks(
+			executor,
+			`SELECT data FROM ${this.work}_result_chunks WHERE work = ? AND idx = ?`,
+			[work],
+			chunks,
+			`Pool work ${work} result`,
+		);
+	}
+	/**
+	 * The statements that record a checkpoint event of the root `runId` under `key`: its row, at `seq` or, when
+	 * undefined, after the root's latest event, and the chunks of a payload longer than one chunk, addressed through the
+	 * event's key so that they follow the row in one batch (#4965). `at` is the SQL of its time, with `atParams`.
+	 */
+	private eventWrites(
+		runId: string,
+		seq: number | undefined,
+		epoch: number,
+		key: string,
+		payload: string,
+		at: string,
+		atParams: readonly SqliteValue[],
+		value?: unknown,
+		/** A process of an older build may be reading the journal: the payload stays in its row (#4965). */
+		whole = false,
+	): SqliteStatement[] {
+		const { events, eventChunks } = this.journal;
+		const stored = whole ? { payload, chunks: [] } : storedJournalPayload(payload, value);
+		const columns = "run_id, seq, epoch, key, type, payload, at, chunks";
+		const row: SqliteStatement =
+			seq === undefined
+				? {
+						sql: `INSERT INTO ${events} (${columns}) SELECT ?, COALESCE(MAX(seq), 0) + 1, ?, ?, ?, ?, ${at}, ? FROM ${events} WHERE run_id = ?`,
+						params: [
+							runId,
+							epoch,
+							key,
+							RUN_EVENT_TYPES.checkpointRecorded,
+							stored.payload,
+							...atParams,
+							stored.chunks.length,
+							runId,
+						],
+					}
+				: {
+						sql: `INSERT INTO ${events} (${columns}) VALUES (?, ?, ?, ?, ?, ?, ${at}, ?)`,
+						params: [
+							runId,
+							seq,
+							epoch,
+							key,
+							RUN_EVENT_TYPES.checkpointRecorded,
+							stored.payload,
+							...atParams,
+							stored.chunks.length,
+						],
+					};
+		if (stored.chunks.length === 0) return [row];
+		const event = `SELECT seq FROM ${events} WHERE run_id = ? AND key = ?`;
+		return [
+			row,
+			{ sql: `DELETE FROM ${eventChunks} WHERE run_id = ? AND seq = (${event})`, params: [runId, runId, key] },
+			...stored.chunks.map((data, index) => ({
+				sql: `INSERT INTO ${eventChunks} (run_id, seq, idx, data) SELECT ?, seq, ?, ? FROM ${events} WHERE run_id = ? AND key = ?`,
+				params: [runId, index, data, runId, key],
+			})),
+		];
+	}
+	/**
+	 * The JSON of the root's event under `key`, its payload read from its chunks when it is stored in chunks, or
+	 * undefined when the root has none.
+	 */
+	private async eventPayload(executor: SqliteExecutor, root: string, key: string): Promise<string | undefined> {
+		const row = await executor.get<SqliteRow & { run_id: string; seq: number; payload: string; chunks: number }>(
+			`SELECT run_id, seq, payload, chunks FROM ${this.journal.events} WHERE run_id = ? AND key = ?`,
+			root,
+			key,
+		);
+		if (row === undefined) return undefined;
+		return (await withJournalPayloads(executor, this.journal.eventChunks, [row]))[0]!.payload;
 	}
 	/**
 	 * Version 1 stored every lease renewal as an operation row whose receipt was the full work descriptor, and every
@@ -569,7 +748,7 @@ export class SqlPoolQueue {
 			(SELECT ${object(...columns("id", "root", "boundary", "descriptor", "fingerprint", "state", "generation", "worker", "epoch", "expires_at", "renewed_at", "ready_at"))} FROM ${this.work} WHERE id = ? AND root = l.run_id) AS work_row,
 			(SELECT ${object(...columns("request", "receipt"))} FROM ${this.operations} WHERE work = ? AND generation = ? AND operation = ?) AS previous,
 			(SELECT COALESCE(MAX(seq), 0) FROM ${this.journal.events} WHERE run_id = l.run_id) AS head,
-			(SELECT ${object(...columns("seq", "at", "payload"))} FROM ${this.journal.events} WHERE run_id = l.run_id AND key = ?) AS existing
+			(SELECT ${object(...columns("seq", "at", "payload", "chunks"))} FROM ${this.journal.events} WHERE run_id = l.run_id AND key = ?) AS existing
 			${prefetch === undefined ? "" : `, ${prefetch.sql}`}
 			FROM ${this.journal.leases} l JOIN ${this.journal.runs} r ON r.run_id = l.run_id LEFT JOIN ${this.roots} p ON p.root = l.run_id WHERE l.run_id = ?`,
 			token.id,
@@ -582,6 +761,13 @@ export class SqlPoolQueue {
 		);
 		const { now, status } = this.authorityOf(row, lease);
 		if (prefetch !== undefined) checkpoints!.prefetch(row!);
+		const existing =
+			row!.existing === null
+				? undefined
+				: (JSON.parse(row!.existing) as { seq: number; at: number; payload: string; chunks: number });
+		// A checkpoint stored in chunks has its stub in the row: the identity check compares the whole payload.
+		if (existing !== undefined && Number(existing.chunks) > 0)
+			existing.payload = (await this.eventPayload(read, lease.runId, key!))!;
 		return {
 			now,
 			status,
@@ -589,13 +775,7 @@ export class SqlPoolQueue {
 			work: row!.work_row === null ? undefined : (JSON.parse(row!.work_row) as WorkRow),
 			previous:
 				row!.previous === null ? undefined : (JSON.parse(row!.previous) as { request: string; receipt: string }),
-			recorded: {
-				head: Number(row!.head ?? 0),
-				existing:
-					row!.existing === null
-						? undefined
-						: (JSON.parse(row!.existing) as { seq: number; at: number; payload: string }),
-			},
+			recorded: { head: Number(row!.head ?? 0), existing },
 		};
 	}
 	/** A fence: `lease` still holds the root, renewed within its pool's window, by the database clock. */
@@ -862,18 +1042,25 @@ export class SqlPoolQueue {
 						? previous
 						: await this.rebind(tx, lease, previous, requested, JSON.parse(payload), fingerprint, options);
 				await this.claimSessions(tx, lease.runId, row.id, descriptor, options.claimSessions);
-				if ((row.state !== "ready" && row.state !== "failed") || row.epoch >= lease.epoch) return fromRow(row);
+				if ((row.state !== "ready" && row.state !== "failed") || row.epoch >= lease.epoch)
+					return this.withInputs(tx, fromRow(row));
 				// Work of an earlier incarnation becomes claimable again once this root enqueues it (#3979), including
 				// work that incarnation failed or left unfinished when its pool closed. It carries the worktree snapshot this
 				// incarnation captured (#4492), whose blobs are fresh.
+				const stored = storedDescriptor(requested, await this.keepsWhole(tx, requested));
 				await tx.run(
-					`UPDATE ${this.work} SET state = 'ready', epoch = ?, descriptor = ? WHERE id = ?`,
+					`UPDATE ${this.work} SET state = 'ready', epoch = ?, descriptor = ?, inputs_chunks = ? WHERE id = ?`,
 					lease.epoch,
-					requested,
+					stored.descriptor,
+					stored.chunks.length,
 					row.id,
 				);
+				await this.writeInputChunks(tx, row.id, stored.chunks);
 				await this.notifyReady(tx, lease.runId);
-				return fromRow({ ...row, state: "ready", epoch: lease.epoch, descriptor: requested });
+				return {
+					...fromRow({ ...row, state: "ready", epoch: lease.epoch, descriptor: requested }),
+					inputs: descriptor.inputs,
+				};
 			}
 			const siblings = await tx.all<SqliteRow & { scope: string }>(
 				`SELECT ${this.dialect.jsonIndexText("descriptor", "scope")} AS scope FROM ${this.work} WHERE root = ?`,
@@ -882,16 +1069,20 @@ export class SqlPoolQueue {
 			if (siblings.some((item) => scope.startsWith(`${item.scope}:`) || item.scope.startsWith(`${scope}:`)))
 				throw new Error("Pool work scopes overlap");
 			const id = randomUUID();
+			const whole = await this.keepsWhole(tx, json, payload);
+			const stored = storedDescriptor(json, whole);
 			await tx.run(
-				`INSERT INTO ${this.work}(id, root, boundary, descriptor, fingerprint, epoch, ready_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO ${this.work}(id, root, boundary, descriptor, fingerprint, epoch, ready_at, inputs_chunks) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 				id,
 				lease.runId,
 				boundaryId,
-				json,
+				stored.descriptor,
 				fingerprint,
 				lease.epoch,
 				now,
+				stored.chunks.length,
 			);
+			await this.writeInputChunks(tx, id, stored.chunks);
 			if (!this.remote) {
 				// The run's next sequence, read under its run row as every append to the run does (#5102).
 				await this.lockRows(tx, this.journal.runs, "run_id = ?", lease.runId);
@@ -899,27 +1090,28 @@ export class SqlPoolQueue {
 					`SELECT COALESCE(MAX(seq), 0) AS seq FROM ${this.journal.events} WHERE run_id = ?`,
 					lease.runId,
 				);
-				const existing = await tx.get(
-					`SELECT payload FROM ${this.journal.events} WHERE run_id = ? AND key = ?`,
-					lease.runId,
-					key,
-				);
-				if (existing && existing.payload !== payload) throw new Error("Pool boundary identity conflict");
-				if (!existing)
-					await tx.run(
-						`INSERT INTO ${this.journal.events} VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				const existing = await this.eventPayload(tx, lease.runId, key);
+				if (existing !== undefined && existing !== payload) throw new Error("Pool boundary identity conflict");
+				if (existing === undefined)
+					for (const write of this.eventWrites(
 						lease.runId,
 						journalCounter(lease.runId, "seq", Number(seq!.seq) + 1, "overflow"),
 						lease.epoch,
 						key,
-						RUN_EVENT_TYPES.checkpointRecorded,
 						payload,
-						now,
-					);
+						"?",
+						[now],
+						undefined,
+						whole,
+					))
+						await tx.run(write.sql, ...write.params);
 			}
 			await this.claimSessions(tx, lease.runId, id, descriptor, options.claimSessions);
 			await this.notifyReady(tx, lease.runId);
-			return fromRow((await tx.get<WorkRow>(`SELECT * FROM ${this.work} WHERE id = ?`, id))!);
+			return {
+				...fromRow((await tx.get<WorkRow>(`SELECT * FROM ${this.work} WHERE id = ?`, id))!),
+				inputs: descriptor.inputs,
+			};
 		});
 	}
 	/**
@@ -1074,13 +1266,16 @@ export class SqlPoolQueue {
 			throw new Error(
 				`Pool boundary identity conflict: child ${requested.childRunId} was queued by an earlier run of root ${lease.runId} with the entry module of worker definition ${requested.definition} at sha256 ${short(queued.digest)}, and the root now runs that module at sha256 ${short(requested.digest)}. Resume the root with /workflow resume ${lease.runId} --accept-entry-changes, or acceptEntryChanges: true in the SDK, to run the child with the edited module, or restore the module.`,
 			);
+		const stored = storedDescriptor(json, await this.keepsWhole(tx, json));
 		await tx.run(
-			`UPDATE ${this.work} SET descriptor = ?, fingerprint = ? WHERE id = ?`,
-			json,
+			`UPDATE ${this.work} SET descriptor = ?, fingerprint = ?, inputs_chunks = ? WHERE id = ?`,
+			stored.descriptor,
 			fingerprint,
+			stored.chunks.length,
 			previous.id,
 		);
-		return { ...previous, descriptor: json, fingerprint };
+		await this.writeInputChunks(tx, previous.id, stored.chunks);
+		return { ...previous, descriptor: stored.descriptor, fingerprint, inputs_chunks: stored.chunks.length };
 	}
 	async claim(
 		lease: Lease,
@@ -1122,8 +1317,9 @@ export class SqlPoolQueue {
 							],
 						};
 		// The ready row is chosen and taken in one statement, so workers racing for the oldest one never conflict: each
-		// takes whichever ready row is oldest when its batch runs.
-		return guardedPoolWrite(
+		// takes whichever ready row is oldest when its batch runs. Inputs stored in chunks are read after it (#4965):
+		// a work item's inputs never change once it is queued.
+		const claimed = await guardedPoolWrite(
 			this.storage,
 			async (read, optimistic, afterUnknown) => {
 				// A claim whose answer was lost may have taken a row: a leased row of this worker that this queue does not know
@@ -1200,6 +1396,8 @@ export class SqlPoolQueue {
 			},
 			CLAIM,
 		);
+		if (claimed === undefined || !chunkedInputs.has(claimed)) return claimed;
+		return this.storage.read((executor) => this.withInputs(executor, claimed));
 	}
 	/**
 	 * The oldest work this root incarnation may hand out now, up to `limit` items, with each item's workspace binding:
@@ -1933,10 +2131,19 @@ export class SqlPoolQueue {
 			},
 			this.scopeFence(lease, work.scope, head, own),
 		);
-		write.writes.push({
-			sql: `INSERT INTO ${events} SELECT ?, COALESCE(MAX(seq), 0) + 1, ?, ?, ?, ?, ${this.now} FROM ${events} WHERE run_id = ?`,
-			params: [lease.runId, lease.epoch, key, RUN_EVENT_TYPES.checkpointRecorded, payload, lease.runId],
-		});
+		write.writes.push(
+			...this.eventWrites(
+				lease.runId,
+				undefined,
+				lease.epoch,
+				key,
+				payload,
+				this.now,
+				[],
+				checkpoint,
+				await this.keepsWhole(read, payload),
+			),
+		);
 		const billed = poolCheckpointUsage(checkpoint);
 		// Where writes run concurrently, the root's totals row exists before the usage's trigger adds to it (#5102).
 		if (billed && this.rowLocks) write.writes.push(poolUsageTotalsSeed(this.dialect, this.journal.runs, lease.runId));
@@ -1982,14 +2189,25 @@ export class SqlPoolQueue {
 		// every transaction that sent a notification under one lock, which would put the completions of every host in
 		// line again (#5102). A notification lost to a crash in between only leaves the root to its next poll.
 		const notifyAfter = this.rowLocks ? ready : undefined;
-		const writes = [
-			{ sql: `INSERT INTO ${this.work}_results VALUES (?, ?)`, params: [token.id, payload] },
+		// A result longer than one chunk is stored in chunks, with `null` in its row (#4965), unless a process of an older
+		// build may be reading the pool, which would read the `null`: then it stays whole, decided as each plan reads.
+		const chunked = storedJsonChunks(payload) ?? [];
+		const writesOf = (chunks: readonly Uint8Array[]) => [
+			{
+				sql: `INSERT INTO ${this.work}_results (work, result, chunks) VALUES (?, ?, ?)`,
+				params: [token.id, chunks.length === 0 ? payload : "null", chunks.length],
+			},
+			...chunks.map((data, index) => ({
+				sql: `INSERT INTO ${this.work}_result_chunks VALUES (?, ?, ?)`,
+				params: [token.id, index, data],
+			})),
 			{ sql: `UPDATE ${this.work} SET state = 'completed' WHERE id = ?`, params: [token.id] },
 			...(ready === undefined || notifyAfter !== undefined ? [] : [ready]),
 		];
 		await guardedPoolWrite(
 			this.storage,
 			async (read, optimistic) => {
+				const writes = writesOf((await this.keepsWhole(read, payload)) ? [] : chunked);
 				// Planned without a read from the attempt's row as this queue last saw it: the fences repeat every check, and
 				// a completion that one refuses is planned again from a read, which names why.
 				const cached = this.attempts.get(token.id);
@@ -2016,8 +2234,12 @@ export class SqlPoolQueue {
 				const row = await this.current(read, lease, token, true);
 				if (row.epoch !== lease.epoch) throw staleWork(lease, token, "epoch-mismatch");
 				if (row.state === "completed") {
-					const previous = await read.get(`SELECT result FROM ${this.work}_results WHERE work = ?`, token.id);
-					if (previous?.result !== payload) throw new Error("Pool result identity conflict");
+					const previous = await read.get(
+						`SELECT result, chunks FROM ${this.work}_results WHERE work = ?`,
+						token.id,
+					);
+					if (previous === undefined || (await this.resultJson(read, token.id, previous)) !== payload)
+						throw new Error("Pool result identity conflict");
 					return { done: undefined };
 				}
 				if (row.expires_at < now) throw staleWork(lease, token, "expired");
@@ -2060,11 +2282,11 @@ export class SqlPoolQueue {
 	async result(root: string, id: string): Promise<WorkflowSerializableObject | undefined> {
 		return this.storage.read(async (executor) => {
 			const row = await executor.get(
-				`SELECT r.result FROM ${this.work}_results r JOIN ${this.work} w ON w.id = r.work WHERE w.root = ? AND w.id = ?`,
+				`SELECT r.result, r.chunks FROM ${this.work}_results r JOIN ${this.work} w ON w.id = r.work WHERE w.root = ? AND w.id = ?`,
 				root,
 				id,
 			);
-			return row ? (JSON.parse(String(row.result)) as WorkflowSerializableObject) : undefined;
+			return row ? (JSON.parse(await this.resultJson(executor, id, row)) as WorkflowSerializableObject) : undefined;
 		});
 	}
 	/**
@@ -2083,8 +2305,9 @@ export class SqlPoolQueue {
 			await this.lockRows(tx, this.work, "id = ? AND root = ?", id, lease.runId);
 			const row = await tx.get<WorkRow>(`SELECT * FROM ${this.work} WHERE id = ? AND root = ?`, id, lease.runId);
 			if (row?.state !== "completed" || row.epoch >= lease.epoch) return undefined;
-			const stored = await tx.get(`SELECT result FROM ${this.work}_results WHERE work = ?`, id);
-			if (!stored || !rerun(JSON.parse(String(stored.result)) as WorkflowSerializableObject)) return undefined;
+			const stored = await tx.get(`SELECT result, chunks FROM ${this.work}_results WHERE work = ?`, id);
+			if (!stored || !rerun(JSON.parse(await this.resultJson(tx, id, stored)) as WorkflowSerializableObject))
+				return undefined;
 			await tx.run(`DELETE FROM ${this.work}_results WHERE work = ?`, id);
 			await tx.run(
 				`UPDATE ${this.work} SET state = 'ready', worker = NULL, expires_at = 0, epoch = ? WHERE id = ?`,
@@ -2092,7 +2315,10 @@ export class SqlPoolQueue {
 				id,
 			);
 			await this.notifyReady(tx, lease.runId);
-			return fromRow({ ...row, state: "ready", worker: null, expires_at: 0, epoch: lease.epoch });
+			return this.withInputs(
+				tx,
+				fromRow({ ...row, state: "ready", worker: null, expires_at: 0, epoch: lease.epoch }),
+			);
 		});
 	}
 	/**
