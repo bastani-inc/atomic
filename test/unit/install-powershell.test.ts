@@ -2043,6 +2043,7 @@ function global:Add-Type {
 
 $global:AtomicFixturePayloadCopyCount = 0
 $global:AtomicFixtureFailurePoint = $null
+$global:AtomicFixtureBusyStageMoveRefusals = 0
 $global:AtomicFixtureRollbackFailurePoint = $null
 $global:AtomicFixtureRollbackFailureDelivered = $false
 $global:AtomicFixtureRollbackArmed = $false
@@ -2222,6 +2223,12 @@ function global:Move-Item {
 
     $leafName = [IO.Path]::GetFileName($LiteralPath)
     $destinationLeaf = [IO.Path]::GetFileName($Destination)
+    if ($global:AtomicFixtureFailurePoint -eq "busy-stage-move" -and
+        $leafName -match '^\.stage-[0-9a-f]{32}$' -and
+        $global:AtomicFixtureBusyStageMoveRefusals -lt 2) {
+        $global:AtomicFixtureBusyStageMoveRefusals++
+        throw [System.IO.IOException]::new("Injected busy stage move")
+    }
     if ($global:AtomicFixtureFailurePoint -eq "current-move" -and
         $leafName -match '^\.current-[0-9a-f]{32}$') {
         throw "Injected transaction failure: current-move"
@@ -2607,6 +2614,18 @@ try {
         Assert-Fixture ($env:Path -eq $beforeProcessPath) "failed final smoke did not restore current PATH"
         Assert-Fixture (-not (Test-Path -LiteralPath $installRoot)) "failed final smoke left a new installation"
         Assert-Fixture (-not (Test-Path -LiteralPath $binDir)) "failed final smoke left a new bin directory"
+    }
+    elseif ($Scenario -eq "busy-stage-move") {
+        $env:PROCESSOR_ARCHITEW6432 = "AMD64"
+        $env:PROCESSOR_ARCHITECTURE = "AMD64"
+        $global:AtomicFixtureFailurePoint = "busy-stage-move"
+        & $InstallerPath -Ref "2.0.0" | Out-Null
+        $global:AtomicFixtureFailurePoint = $null
+        Assert-Fixture ($global:AtomicFixtureBusyStageMoveRefusals -eq 2) "the staged version move was not refused twice"
+        Assert-Fixture ((Get-Content -LiteralPath (Join-Path $installRoot "current\version.txt") -Raw) -eq "2.0.0") "a staged version move refused twice did not install the version"
+        $probe = Invoke-FixtureShim (Join-Path $binDir "atomic.cmd") "--version"
+        Assert-Fixture ($probe.ExitCode -eq 0 -and $probe.Output -eq "2.0.0") "shim failed after a staged version move was refused twice"
+        Assert-NoTransactionResidue $installRoot $binDir
     }
     elseif ($Scenario -eq "unicode") {
         $env:PROCESSOR_ARCHITEW6432 = "AMD64"
@@ -4093,6 +4112,7 @@ function runPowerShellFixture(
 		| "preflight-errors"
 		| "checksum"
 		| "final-smoke"
+		| "busy-stage-move"
 		| "unicode"
 		| "dangling-junction"
 		| "rollback-retries"
@@ -4183,6 +4203,10 @@ powershellTest("PowerShell 5.1 fixture rejects a checksum mismatch without mutat
 
 powershellTest("PowerShell 5.1 fixture rolls back a failing final shim smoke and PATH changes", () => {
 	runPowerShellFixture("final-smoke");
+});
+
+powershellTest("PowerShell 5.1 fixture installs when Windows refuses the staged version move twice", () => {
+	runPowerShellFixture("busy-stage-move");
 });
 
 powershellTest("PowerShell 5.1 fixture preserves Unicode install paths and rolls back final smoke failure", () => {

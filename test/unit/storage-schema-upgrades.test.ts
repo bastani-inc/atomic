@@ -20,6 +20,9 @@ import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-
 import { createSession, snapshotEntry, syntheticSnapshot, textBlob } from "../helpers/snapshot-reference-index.js";
 
 let directory: string;
+/** How many times faster than converting the 256 MiB legacy blob its schema-only open must at least be: it measured 5 to 7. */
+const SCHEMA_ONLY_OPEN_SPEEDUP = 2;
+
 const closers: Array<() => Promise<void>> = [];
 beforeEach(() => {
 	directory = mkdtempSync(join(tmpdir(), "storage-schema-upgrade-"));
@@ -397,7 +400,6 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 			const upgraded = await SqlSessionStore.open(measured);
 			closers.push(() => upgraded.close());
 			const openMs = performance.now() - started;
-			assert.ok(openMs < 1_000, `schema-only open took ${openMs.toFixed(0)} ms`);
 			const pending = await database.get(
 				"SELECT chunks, length(data) AS bytes FROM session_blobs WHERE hash = ?",
 				hash,
@@ -420,6 +422,12 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 			const longest = Math.max(...durations);
 			process.stdout.write(
 				`${adapter}: 256 MiB open ${openMs.toFixed(0)} ms; lazy conversion ${elapsed.toFixed(0)} ms; longest write ${longest.toFixed(0)} ms\n`,
+			);
+			// Measured against the conversion on the same machine, so a loaded runner slows both: an open that read or
+			// rewrote the blob would cost about as much as converting it.
+			assert.ok(
+				openMs * SCHEMA_ONLY_OPEN_SPEEDUP < elapsed,
+				`schema-only open took ${openMs.toFixed(0)} ms against ${elapsed.toFixed(0)} ms to convert the blob`,
 			);
 			assert.ok(longest < 5_000, `one write transaction held the lock for ${longest.toFixed(0)} ms`);
 			assert.ok(durations.length > 2, "large blobs must commit between chunk batches");
