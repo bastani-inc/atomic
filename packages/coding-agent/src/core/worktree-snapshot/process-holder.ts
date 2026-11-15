@@ -22,14 +22,17 @@ export function thisProcess(): ProcessHolder {
 
 /**
  * Whether `holder` still runs (#4830, #4990): a process of this host with its id that, when it names its start, started
- * then; one that names no start only while its hold is younger than `unstartedLimitMs`. A process this one may not
- * signal runs too. A holder of another host never runs here.
+ * then; one that names no start only while its hold is younger than `unstartedLimitMs`. One naming a start that cannot
+ * be read now runs while a process of its id does: an unreadable start is never another process's (#5141). A process
+ * this one may not signal runs too. A holder of another host never runs here.
  */
 export function holderRuns(holder: ProcessHolder, ageMs: number, unstartedLimitMs: number): boolean {
 	if (holder.host !== HOST) return false;
 	const started = holder.start === undefined ? undefined : processStartToken(holder.pid);
 	if (started !== undefined) return started === holder.start;
-	if (ageMs > unstartedLimitMs) return false;
+	// A hold naming a start that cannot be read right now, as when a read timed out, is its holder's while a process of
+	// that id runs (#5141); only one naming no start is judged by its age.
+	if (holder.start === undefined && ageMs > unstartedLimitMs) return false;
 	try {
 		process.kill(holder.pid, 0);
 		return true;

@@ -46,7 +46,7 @@ String bindings containing U+0000 are rejected before SQL executes with `Storage
 | --- | --- | --- |
 | One machine, one person | **Local SQLite** (the default) | Nothing to set up. Runs never wait for each other, because the [journal store](#the-workflow-journal-store) gives each root its own shard |
 | Sessions, workflow runs and Intercom shared across machines in a cloud deployment, or a team that already runs managed PostgreSQL | **[PostgreSQL](#postgresql)** | Many machines write at the same time. Managed services on Azure, AWS, Google Cloud, Neon or Supabase add high availability, backups and cloud identities |
-| [Worker fleets](/guides/worker-hosts): roots with shared placement and their worker hosts | **[libSQL / Turso](#turso-and-libsql)** or **[PostgreSQL](#postgresql)** | Both hold the pool's queue, leases and admission. libSQL is one URL and a token; self-hosted sqld needs `--checkpoint-interval-s 60`. On PostgreSQL, choose it when you already run managed PostgreSQL; in this release the pool's writes there take turns, one at a time, as on libSQL |
+| [Worker fleets](/guides/worker-hosts): roots with shared placement and their worker hosts | **[libSQL / Turso](#turso-and-libsql)** or **[PostgreSQL](#postgresql)** | Both hold the pool's queue, leases and admission. libSQL is one URL and a token; self-hosted sqld needs `--checkpoint-interval-s 60`. PostgreSQL also lets hosts claim and record checkpoints in parallel instead of taking turns, so it suits larger fleets |
 | A few machines, a small team, CI caches | **libSQL / Turso** | Lightweight: one URL and a token. One writer at a time, so it suits a handful of machines writing at once |
 | Data that must stay on one machine | **Local SQLite** | Nothing leaves the machine |
 
@@ -67,7 +67,7 @@ In this release:
 - **Worker pools**: roots with shared placement and their worker hosts, with `atomic worker start`, `status`, `metrics` and `controller --db postgres://…`. The pool's queue, leases, resource admission, pooled-stage transcripts and fleet controller live in the database. See [Running workers on many machines](/guides/worker-hosts).
 - **Setup and checks**: `atomic storage join`, `atomic storage status`, password files, rotated token files, cloud identities, TLS and connection poolers, as described below.
 
-A worker pool's writes on PostgreSQL take turns, one at a time across every machine that shares the database, whatever its prefix, as they do on libSQL. Hosts that wait for a claim poll the database; they are not woken by `LISTEN`/`NOTIFY`.
+On PostgreSQL, worker hosts claim children, send heartbeats, record checkpoints and complete children in parallel: each of these writes locks only the rows it changes, so hosts do not take turns as they do on libSQL. A root's checkpoints still get their place in its history one at a time, so one root's commits do not speed up beyond that. The pool's other writes, such as queueing work and admission, take turns across every machine that shares the database, whatever its prefix, as on libSQL. Hosts waiting for a claim are woken as soon as work is queued; see [Wake-ups](#wake-ups).
 
 ### Set up the database
 
