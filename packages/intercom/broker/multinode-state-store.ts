@@ -730,6 +730,18 @@ export interface KnownSessionState extends KnownSession {
 }
 
 export type KnownSessionRecordResult = { readonly status: "recorded" } | InvalidStateInput;
+/**
+ * Which return address an Intercom session id is bound to: `""` for a session that registered with none. `bound`
+ * means `returnAddress` holds the id (it is the requester's own, or the id was free); `refused` names the other one.
+ */
+export type KnownSessionBindResult =
+	| { readonly status: "bound" }
+	| { readonly status: "refused"; readonly returnAddress: string }
+	| InvalidStateInput;
+export type KnownSessionBindingResult =
+	| { readonly status: "bound"; readonly returnAddress: string }
+	| { readonly status: "unbound" }
+	| InvalidStateInput;
 export type KnownSessionLookupResult =
 	| { readonly status: "found"; readonly sessions: KnownSessionState[] }
 	| InvalidStateInput;
@@ -743,8 +755,41 @@ export interface KnownSessionStore {
 	 * name equals it case-insensitively (`toLowerCase`), in first-record order.
 	 */
 	lookup(target: string, retentionMs: number): Promise<KnownSessionLookupResult>;
-	/** Delete records last recorded more than `olderThanMs` ago; returns the count. */
+	/**
+	 * Bind the Intercom id `intercomSessionId` to the return address of the session registering under it (`""` when it
+	 * gave none), unless another return address has held it within `retentionMs`, and reset the binding's age. In multi-node mode an id carries
+	 * authority: it is granted, and delivered to, only the session it is bound to. An id with no binding yet is bound
+	 * first to the return address its earliest known-session record has, so a record kept from before bindings existed
+	 * still holds it.
+	 */
+	bind(intercomSessionId: string, returnAddress: string, retentionMs: number): Promise<KnownSessionBindResult>;
+	/** The return address the id is bound to, if a binding recorded within `retentionMs` holds it. */
+	binding(intercomSessionId: string, retentionMs: number): Promise<KnownSessionBindingResult>;
+	/** Delete records and bindings last recorded more than `olderThanMs` ago; returns the count of records. */
 	prune(olderThanMs: number): Promise<number>;
+}
+
+/** The return address a delivery identity (`deliveryTargetIdentity`) names; none for a session that gave none. */
+export function returnAddressOf(identity: string): string | undefined {
+	try {
+		const parsed = JSON.parse(identity) as unknown;
+		return Array.isArray(parsed) && parsed[0] === "return" && typeof parsed[1] === "string" ? parsed[1] : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Whether the Intercom id `sessionId` is bound to `returnAddress` (`undefined` for none), or to no session at all. In
+ * multi-node mode a presence or record under an id bound to another return address is not that session.
+ */
+export async function holdsSessionId(
+	knownSessions: Pick<KnownSessionStore, "binding">,
+	sessionId: string,
+	returnAddress: string | undefined,
+): Promise<boolean> {
+	const bound = await knownSessions.binding(sessionId, KNOWN_SESSION_RETENTION_MS);
+	return bound.status !== "bound" || bound.returnAddress === (returnAddress ?? "");
 }
 
 /** One broker's view of the shared Intercom state. */
