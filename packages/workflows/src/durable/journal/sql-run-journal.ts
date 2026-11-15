@@ -1,6 +1,8 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import {
+	assertStoredSchemaVersion,
 	dialectOf,
+	olderBuildLive,
 	openNodeSqliteDatabase,
 	RUN_JOURNAL_SCHEMA_VERSION_UNCHUNKED,
 	renderStorageIdentifiers,
@@ -13,6 +15,7 @@ import {
 	type StorageDescriptor,
 	type StorageDialect,
 	type StorageFailureCause,
+	StorageSchemaVersionError,
 	StorageUnavailableError,
 	type StoredJournalPayload,
 	storedJournalPayload,
@@ -35,6 +38,7 @@ import {
 } from "./internal.js";
 import { isWorkflowLeaseExpired } from "./lease-expiry.js";
 import { LegacyJournalRuns, latestEventColumns, type RunVersionRow } from "./legacy-journal-tables.js";
+import { poolFenceTable } from "./pool-guarded-write.js";
 import {
 	type AppendOutcome,
 	JOURNAL_COLUMNS as c,
@@ -77,7 +81,21 @@ type HeaderRow = SqliteRow & { [c.headerJson]: string; [c.status]: string };
 const EVENT_COLUMNS = [c.runId, c.seq, c.epoch, c.key, c.type, c.payload, c.at] as const;
 const APPEND_SAVEPOINT = "journal_append";
 
+/** The column a read selects the journal's schema version as, so that it checks the version in its own statement. */
+const META_VERSION = "meta_version";
+
+/**
+ * Throws {@link JournalSchemaVersionError} when a row a read returned says the journal is at another schema version
+ * than this build's: a later build upgraded it after this process opened it (#4965). Rows without the column pass.
+ */
+function assertRowVersion(row: SqliteRow | undefined): void {
+	if (row === undefined || !(META_VERSION in row)) return;
+	const found = row[META_VERSION] ?? null;
+	if (found !== JOURNAL_SCHEMA_VERSION) throw new JournalSchemaVersionError(found);
+}
+
 function entryFromRow(row: EventRow): JournalEntry {
+	assertRowVersion(row);
 	const key = row[c.key];
 	return {
 		runId: row[c.runId],
@@ -98,12 +116,13 @@ function entryFromRow(row: EventRow): JournalEntry {
 async function readSizedPage(
 	database: SqliteDatabase,
 	chunkTable: string,
+	meta: string,
 	pageRows: string,
 	order: string,
 	params: readonly SqliteValue[],
 ): Promise<{ readonly page: JournalEntry[]; readonly more: boolean }> {
 	const rows = await database.all<EventRow & { fetched: number | bigint }>(
-		`SELECT * FROM (
+		`SELECT *, (SELECT ${c.schemaVersion} FROM ${meta}) AS ${META_VERSION} FROM (
 			SELECT page.*, sum(length(page.${c.payload})) OVER (ORDER BY page.${order}) - length(page.${c.payload}) AS before_chars,
 				count(*) OVER () AS fetched
 			FROM (${pageRows}) AS page
@@ -112,6 +131,10 @@ async function readSizedPage(
 		JOURNAL_READ_PAGE_CHARS,
 	);
 	const fetched = Number(rows[0]?.fetched ?? 0);
+	if (rows.length === 0) {
+		// No row carries the version: read it on its own, so an upgraded journal is refused rather than read as empty.
+		assertRowVersion(await database.get(`SELECT ${c.schemaVersion} AS ${META_VERSION} FROM ${meta}`));
+	}
 	return {
 		// A payload stored in chunks has its stub's length in the page's size: its chunks are read one statement each.
 		page: (await withJournalPayloads(database, chunkTable, rows)).map(entryFromRow),
@@ -198,19 +221,39 @@ export class SqlRunJournal implements RunJournal {
 		this.readerFile = readerFile;
 		this.snapshotBlobs = snapshotBlobs;
 		const batch = database.batch?.bind(database);
+		// Every pool transaction and read checks the schema version before its first statement, and every pool batch fences
+		// on it, so the pool refuses a journal a later build upgraded (#4965). A plan that reads nothing, as an optimistic
+		// pool write's, costs no request: its batch's fence checks the version, and refuses it as a read would.
+		const versionFence: SqliteStatement = {
+			sql: `INSERT INTO ${poolFenceTable(this.tables.runs)}(reason) SELECT NULL WHERE NOT EXISTS (SELECT 1 FROM ${this.tables.meta} WHERE ${c.schemaVersion} = ?)`,
+			params: [JOURNAL_SCHEMA_VERSION],
+		};
 		registerSqlPoolStorage(this, {
-			transaction: (body) => this.operation(() => this.database.transaction(body, JOURNAL_TRANSACTION)),
+			transaction: (body) =>
+				this.operation(() => this.database.transaction((tx) => body(this.versionChecked(tx)), JOURNAL_TRANSACTION)),
 			...(batch === undefined
 				? {}
 				: {
 						batch: (statements, options) =>
-							this.operation(() =>
-								batch(statements, { lockWaitMs: JOURNAL_TRANSACTION.lockWaitMs, ...options }),
-							),
+							this.operation(async () => {
+								try {
+									return (
+										await batch([versionFence, ...statements], {
+											lockWaitMs: JOURNAL_TRANSACTION.lockWaitMs,
+											...options,
+										})
+									).slice(1);
+								} catch (error) {
+									// A fence aborted the batch: when it was the version's, say so rather than plan it again.
+									await this.assertVersion(this.database);
+									throw error;
+								}
+							}),
 					}),
-			read: (body) => this.operation(() => this.readSnapshot(body)),
+			read: (body) => this.operation(() => this.readSnapshot((executor) => body(this.versionChecked(executor)))),
 			withAppendGuard: (guard, action) => this.appendGuard.run(guard, action),
 			tables: this.tables,
+			olderBuildLive: (executor) => olderBuildLive(executor, this.dialect, this.tables),
 		});
 		registerJournalKeyRangeRead(this, (runId, fromKey, toKey) =>
 			SqlRunJournal.readKeyRange(this, runId, fromKey, toKey),
@@ -284,7 +327,61 @@ export class SqlRunJournal implements RunJournal {
 	 * transient failure that ended it before it committed (`JOURNAL_WRITE_TRANSACTION`).
 	 */
 	private transaction<T>(body: (tx: SqliteExecutor) => Promise<T>): Promise<T> {
-		return this.database.transaction(body, JOURNAL_WRITE_TRANSACTION);
+		return this.database.transaction(async (tx) => {
+			await this.assertVersion(tx);
+			return body(tx);
+		}, JOURNAL_WRITE_TRANSACTION);
+	}
+
+	/**
+	 * Refuses a journal a later build upgraded after this process opened it (#4965): each transaction reads the schema
+	 * version first, once, so a process that stays open across an upgrade never misreads or misses what it now stores.
+	 */
+	private async assertVersion(executor: SqliteExecutor): Promise<void> {
+		try {
+			await assertStoredSchemaVersion(
+				executor,
+				{ sql: `SELECT ${c.schemaVersion} FROM ${this.tables.meta}` },
+				"journal",
+				JOURNAL_SCHEMA_VERSION,
+				c.schemaVersion,
+			);
+		} catch (error) {
+			if (error instanceof StorageSchemaVersionError) throw new JournalSchemaVersionError(error.found);
+			throw error;
+		}
+	}
+
+	/** `executor`, checking the journal's schema version with {@link assertVersion} before its first statement. */
+	private versionChecked(executor: SqliteExecutor): SqliteExecutor {
+		let checked: Promise<void> | undefined;
+		const first = () => {
+			checked ??= this.assertVersion(executor);
+			return checked;
+		};
+		return {
+			exec: async (sql) => {
+				await first();
+				return executor.exec(sql);
+			},
+			run: async (sql, ...params) => {
+				await first();
+				return executor.run(sql, ...params);
+			},
+			get: async (sql, ...params) => {
+				await first();
+				return executor.get(sql, ...params);
+			},
+			all: async (sql, ...params) => {
+				await first();
+				return executor.all(sql, ...params);
+			},
+		} as SqliteExecutor;
+	}
+
+	/** The column that reads the journal's schema version in a read's own statement. */
+	private get metaVersion(): string {
+		return `(SELECT ${c.schemaVersion} FROM ${this.tables.meta}) AS ${META_VERSION}`;
 	}
 
 	private async readSnapshot<T>(body: (executor: SqliteExecutor) => Promise<T>): Promise<T> {
@@ -409,9 +506,11 @@ export class SqlRunJournal implements RunJournal {
 		validateText("runId", runId);
 		return this.operation(async () => {
 			const row = await this.database.get<HeaderRow>(
-				`SELECT ${c.headerJson}, ${c.status} FROM ${this.tables.runs} WHERE ${c.runId} = ?`,
+				`SELECT ${c.headerJson}, ${c.status}, ${this.metaVersion} FROM ${this.tables.runs} WHERE ${c.runId} = ?`,
 				runId,
 			);
+			if (row === undefined) await this.assertVersion(this.database);
+			assertRowVersion(row);
 			const found = row ?? (await this.legacy?.find(this.database, runId));
 			return found
 				? { ...(JSON.parse(found[c.headerJson]) as RunHeader), status: runStatusFromRecord(found[c.status]) }
@@ -424,9 +523,11 @@ export class SqlRunJournal implements RunJournal {
 		if (filter?.cwd !== undefined) validateText("cwd", filter.cwd);
 		return this.operation(async () => {
 			const rows = await this.database.all<HeaderRow>(
-				`SELECT ${c.headerJson}, ${c.status} FROM ${this.tables.runs} ${filter?.cwd === undefined ? "" : `WHERE ${c.cwd} = ?`} ORDER BY ${c.runId}`,
+				`SELECT ${c.headerJson}, ${c.status}, ${this.metaVersion} FROM ${this.tables.runs} ${filter?.cwd === undefined ? "" : `WHERE ${c.cwd} = ?`} ORDER BY ${c.runId}`,
 				...(filter?.cwd === undefined ? [] : [filter.cwd]),
 			);
+			if (rows.length === 0) await this.assertVersion(this.database);
+			assertRowVersion(rows[0]);
 			const legacy = (await this.legacy?.pending(this.database, filter)) ?? [];
 			return [...rows, ...legacy]
 				.map((row) => ({
@@ -490,7 +591,7 @@ export class SqlRunJournal implements RunJournal {
 			const later = `FROM ${events} AS later WHERE later.${c.runId} = snapshot.${c.runId} AND later.${c.seq} > snapshot.${c.seq} AND later.${c.type} = ?`;
 			const row = await this.database.get<SnapshotTailRow>(
 				`SELECT ${EVENT_COLUMNS.map((column) => `snapshot.${column}`).join(", ")}, snapshot.${c.chunks},
-					latest.${c.seq} AS latest_seq, latest.${c.at} AS latest_at,
+					latest.${c.seq} AS latest_seq, latest.${c.at} AS latest_at, ${this.metaVersion},
 					(SELECT count(*) ${later}) AS later_checkpoints,
 					(SELECT ${this.dialect.jsonText(`later.${c.payload}`, "completedAt")} ${later} ORDER BY later.${c.seq} DESC LIMIT 1) AS last_checkpoint_at
 				FROM (SELECT ${c.seq}, ${c.at} FROM ${events} WHERE ${c.runId} = ? ORDER BY ${c.seq} DESC LIMIT 1) AS latest,
@@ -501,7 +602,10 @@ export class SqlRunJournal implements RunJournal {
 				runId,
 				...NON_SNAPSHOT_EVENT_TYPES,
 			);
-			if (row === undefined) return undefined;
+			if (row === undefined) {
+				await this.assertVersion(this.database);
+				return undefined;
+			}
 			const [snapshot] = await withJournalPayloads(this.database, this.tables.eventChunks, [row]);
 			return {
 				version: { seq: journalCounter(runId, "seq", row.latest_seq), at: Number(row.latest_at) },
@@ -544,6 +648,14 @@ export class SqlRunJournal implements RunJournal {
 			runId,
 			holderId,
 			epoch,
+		);
+		// Records that this build granted the lease, so a write can tell a live holder of an older build (#4965).
+		await tx.run(
+			`INSERT INTO ${this.tables.leaseBuilds} (${c.runId}, ${c.holderId}, ${c.epoch}, ${c.schemaVersion}) VALUES (?, ?, ?, ?) ON CONFLICT(${c.runId}) DO UPDATE SET ${c.holderId} = excluded.${c.holderId}, ${c.epoch} = excluded.${c.epoch}, ${c.schemaVersion} = excluded.${c.schemaVersion}`,
+			runId,
+			holderId,
+			epoch,
+			JOURNAL_SCHEMA_VERSION,
 		);
 		return { status: "acquired", lease: { runId, holderId, epoch } };
 	}
@@ -767,7 +879,10 @@ export class SqlRunJournal implements RunJournal {
 		const held = [owned.runId, owned.holderId, owned.epoch] as const;
 		const latest = `SELECT * FROM ${t.events} WHERE ${c.runId} = ? AND ${c.seq} = (SELECT MAX(${c.seq}) FROM ${t.events} WHERE ${c.runId} = ?)`;
 		const statements: SqliteStatement[] = [
-			{ sql: `SELECT * FROM ${t.leases} WHERE ${c.runId} = ?`, params: [owned.runId] },
+			{
+				sql: `SELECT ${this.metaVersion}, l.* FROM (SELECT 1) AS one LEFT JOIN ${t.leases} AS l ON l.${c.runId} = ?`,
+				params: [owned.runId],
+			},
 		];
 		const at = (statement: SqliteStatement) => statements.push(statement) - 1;
 		const plans = prepared.map((append) => {
@@ -783,7 +898,7 @@ export class SqlRunJournal implements RunJournal {
 			// The append is written when the run's last sequence is below the limit, the lease is still held and the key
 			// is new. The status update tests the same condition first, which it does not change, so the two agree.
 			const appends = `FROM (SELECT COALESCE(MAX(${c.seq}), 0) AS latest FROM ${t.events} WHERE ${c.runId} = ?) AS current
-					WHERE current.latest < ? AND ${holds}${
+					WHERE current.latest < ? AND ${holds} AND EXISTS (SELECT 1 FROM ${t.meta} WHERE ${c.schemaVersion} = ?)${
 						key === undefined
 							? ""
 							: ` AND NOT EXISTS (SELECT 1 FROM ${t.events} WHERE ${c.runId} = ? AND ${c.key} = ?)`
@@ -792,6 +907,7 @@ export class SqlRunJournal implements RunJournal {
 				owned.runId,
 				Number.MAX_SAFE_INTEGER,
 				...held,
+				JOURNAL_SCHEMA_VERSION,
 				...(key === undefined ? [] : [owned.runId, key]),
 			];
 			if (status !== undefined)
@@ -810,7 +926,10 @@ export class SqlRunJournal implements RunJournal {
 			return { existing, inserted, row };
 		});
 		const rows = await batch(statements);
-		const lease = rows[0]![0] as LeaseRow | undefined;
+		// The batch wrote nothing when the journal is at another version: every write checks it in its own condition.
+		assertRowVersion(rows[0]![0]);
+		const leaseRow = rows[0]![0] as LeaseRow | undefined;
+		const lease = leaseRow?.[c.holderId] === undefined && leaseRow?.[c.epoch] == null ? undefined : leaseRow;
 		const epoch = lease === undefined ? undefined : journalCounter(owned.runId, "epoch", lease[c.epoch]);
 		if (lease?.[c.holderId] !== owned.holderId || epoch !== owned.epoch)
 			throw new StaleLeaseError(owned.runId, owned.epoch, epoch ?? JOURNAL_LEASE.absentEpoch);
@@ -873,8 +992,9 @@ export class SqlRunJournal implements RunJournal {
 		epoch: number,
 		key: string | undefined,
 		type: string,
-		stored: StoredJournalPayload,
+		chunked: StoredJournalPayload,
 	): Promise<void> {
+		const stored = await this.withOlderBuilds(tx, chunked);
 		await tx.run(
 			`INSERT INTO ${this.tables.events} (${c.runId}, ${c.seq}, ${c.epoch}, ${c.key}, ${c.type}, ${c.payload}, ${c.at}, ${c.chunks}) VALUES (?, ?, ?, ?, ?, ?, ${this.dialect.nowMs}, ?)`,
 			runId,
@@ -886,6 +1006,16 @@ export class SqlRunJournal implements RunJournal {
 			stored.chunks.length,
 		);
 		await writeJournalPayloadChunks(tx, this.tables.eventChunks, runId, seq, stored.chunks);
+	}
+
+	/**
+	 * `stored`, or the payload whole when it is stored in chunks while a process of an older build may be reading the
+	 * journal (#4965): such a process would read its stub. Whole, it is too large for a libSQL server, and fails there
+	 * with `StoragePayloadTooLargeError` as it did before chunks.
+	 */
+	private async withOlderBuilds(tx: SqliteExecutor, stored: StoredJournalPayload): Promise<StoredJournalPayload> {
+		if (stored.chunks.length === 0 || !(await olderBuildLive(tx, this.dialect, this.tables))) return stored;
+		return { payload: Buffer.concat(stored.chunks).toString("utf8"), chunks: [] };
 	}
 
 	/** The entry of an events row, its payload read from its chunks when it is stored in them. */
@@ -942,6 +1072,7 @@ export class SqlRunJournal implements RunJournal {
 				return readSizedPage(
 					this.database,
 					this.tables.eventChunks,
+					this.tables.meta,
 					`SELECT * FROM ${this.tables.events} WHERE ${c.runId} = ? AND ${c.seq} >= ? ORDER BY ${c.seq} LIMIT ?`,
 					c.seq,
 					[runId, nextSeq, JOURNAL_READ_PAGE_SIZE],
@@ -967,10 +1098,11 @@ export class SqlRunJournal implements RunJournal {
 				this.legacy !== undefined && (await this.isUnconvertedLegacyRun(runId))
 					? ((await this.legacy.eventByKey(this.database, runId, key)) as EventRow | undefined)
 					: await this.database.get<EventRow>(
-							`SELECT * FROM ${this.tables.events} WHERE ${c.runId} = ? AND ${c.key} = ?`,
+							`SELECT *, ${this.metaVersion} FROM ${this.tables.events} WHERE ${c.runId} = ? AND ${c.key} = ?`,
 							runId,
 							key,
 						);
+			if (row === undefined && !(await this.isUnconvertedLegacyRun(runId))) await this.assertVersion(this.database);
 			return row ? this.entryOf(row) : undefined;
 		});
 	}
@@ -1005,6 +1137,7 @@ export class SqlRunJournal implements RunJournal {
 				return readSizedPage(
 					journal.database,
 					journal.tables.eventChunks,
+					journal.tables.meta,
 					`SELECT * FROM ${journal.tables.events} WHERE ${c.runId} = ? AND ${c.key} ${after === undefined ? ">=" : ">"} ? AND ${c.key} < ? ORDER BY ${c.key} LIMIT ?`,
 					c.key,
 					[runId, after ?? fromKey, toKey, JOURNAL_READ_PAGE_SIZE],
@@ -1053,6 +1186,7 @@ export class SqlRunJournal implements RunJournal {
 			runId,
 		);
 		await tx.run(`DELETE FROM ${this.tables.eventChunks} WHERE ${c.runId} = ?`, runId);
+		await tx.run(`DELETE FROM ${this.tables.leaseBuilds} WHERE ${c.runId} = ?`, runId);
 		await tx.run(`DELETE FROM ${this.tables.events} WHERE ${c.runId} = ?`, runId);
 		await tx.run(`DELETE FROM ${this.tables.runs} WHERE ${c.runId} = ?`, runId);
 	}

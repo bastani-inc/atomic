@@ -348,8 +348,13 @@ test(
 		const small = await totalReads(1_000);
 		const large = await totalReads(40_000);
 		assert.deepEqual(large, small, "a usage total's reads must not depend on how many usage rows the root has");
-		assert.equal(large.rows, READS, "each total is one row of the totals table");
-		assert.deepEqual(Object.keys(large.tables), ["wf_runs_pool_usage_totals"], "no usage row is read");
+		// Each read also checks the journal's schema version, one row of its meta table (#4965).
+		assert.equal(large.rows, 2 * READS, "each total is one row of the totals table, and one of the meta table");
+		assert.deepEqual(
+			Object.keys(large.tables).sort(),
+			["wf_meta", "wf_runs_pool_usage_totals"],
+			"no usage row is read",
+		);
 	},
 	HISTORY_FIXTURE_TIMEOUT_MS,
 );

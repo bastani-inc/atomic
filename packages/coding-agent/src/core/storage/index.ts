@@ -31,7 +31,7 @@ export {
 export { renderStorageIdentifiers, validateStoragePrefix } from "./prefix.js";
 export * from "./provider.js";
 export * from "./run-journal.js";
-export { assertStorageSchemaVersion } from "./schema.js";
+export { assertStorageSchemaVersion, assertStoredSchemaVersion } from "./schema.js";
 export {
 	getTeamProfile,
 	type InMemorySecretRef,

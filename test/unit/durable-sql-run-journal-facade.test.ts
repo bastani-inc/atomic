@@ -125,6 +125,7 @@ test("session and journal stores isolate records in one caller-owned database ac
 			"snapshot_session_refs",
 			"wf_event_chunks",
 			"wf_events",
+			"wf_lease_builds",
 			"wf_leases",
 			"wf_meta",
 			"wf_runs",

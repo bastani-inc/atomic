@@ -52,6 +52,7 @@ export const RUN_JOURNAL_TABLE_NAMES = {
 	events: "events",
 	leases: "leases",
 	eventChunks: "event_chunks",
+	leaseBuilds: "lease_builds",
 } as const;
 
 /** A SQL run journal's table names under `prefix`. */
@@ -83,6 +84,9 @@ export function runJournalTableDefinitions(prefix = "", dialect: StorageDialect 
 		CREATE TABLE IF NOT EXISTS ${t.leases}(
 			run_id TEXT PRIMARY KEY,
 			holder_id TEXT, epoch ${int} NOT NULL, renewed_at ${int} NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS ${t.leaseBuilds}(
+			run_id TEXT PRIMARY KEY, holder_id TEXT NOT NULL, epoch ${int} NOT NULL, schema_version ${int} NOT NULL
 		);
 		CREATE TABLE IF NOT EXISTS ${t.eventChunks}(
 			run_id TEXT NOT NULL, seq ${int} NOT NULL, idx ${int} NOT NULL, data ${blob} NOT NULL,

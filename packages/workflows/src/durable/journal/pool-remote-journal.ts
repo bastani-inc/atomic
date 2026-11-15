@@ -3,6 +3,7 @@ import type { DurableCheckpoint } from "../types.js";
 import type { SqlPoolStorage } from "./internal.js";
 import {
 	type AppendOutcome,
+	JOURNAL_SCHEMA_VERSION,
 	type JournalEntry,
 	type Lease,
 	RUN_EVENT_TYPES,
@@ -52,7 +53,7 @@ export class PoolRemoteJournal {
 		const sampledAt = performance.now();
 		const [run, state] = await Promise.all([this.journal.getRun(root), this.journal.leaseState(root)]);
 		if (run === undefined) throw new RunNotFoundError(root);
-		const { runs, leases } = this.storage.tables;
+		const { runs, leases, leaseBuilds } = this.storage.tables;
 		await this.storage.transaction(async (tx) => {
 			await tx.run(
 				`INSERT INTO ${runs}(run_id, name, cwd, created_at, status, header_json) VALUES (?, ?, ?, ?, ?, ?)
@@ -73,6 +74,16 @@ export class PoolRemoteJournal {
 					state.holderId,
 					state.epoch,
 					Math.ceil(Math.max(0, state.ageMs) + (performance.now() - sampledAt)),
+				);
+			// The mirrored lease is this process's own, of this build: a write must not take it for an older build's (#4965).
+			if (state !== undefined && state.holderId === lease.holderId && state.epoch === lease.epoch)
+				await tx.run(
+					`INSERT INTO ${leaseBuilds}(run_id, holder_id, epoch, schema_version) VALUES (?, ?, ?, ?)
+					ON CONFLICT(run_id) DO UPDATE SET holder_id = excluded.holder_id, epoch = excluded.epoch, schema_version = excluded.schema_version`,
+					root,
+					state.holderId,
+					state.epoch,
+					JOURNAL_SCHEMA_VERSION,
 				);
 		});
 		if (state === undefined || state.holderId !== lease.holderId || state.epoch !== lease.epoch)

@@ -11,6 +11,7 @@ import {
 	type SqliteRow,
 	type SqliteStatement,
 	type SqliteValue,
+	STORED_JSON_CHUNK_BYTES,
 	StorageError,
 	StorageProvider,
 	storedJournalPayload,
@@ -80,8 +81,13 @@ const chunkedInputs = new WeakMap<PoolWork, number>();
 /**
  * A work descriptor as its work row stores it, and the chunks of its inputs: inputs whose JSON is longer than one
  * chunk are stored in chunks (#4965) and the row's descriptor holds `{}` for them, keeping every field SQL reads.
+ * `whole`: a process of an older build may be reading the pool, so the inputs stay in the row (see `olderBuildLive`).
  */
-function storedDescriptor(json: string): { readonly descriptor: string; readonly chunks: readonly Uint8Array[] } {
+function storedDescriptor(
+	json: string,
+	whole: boolean,
+): { readonly descriptor: string; readonly chunks: readonly Uint8Array[] } {
+	if (whole) return { descriptor: json, chunks: [] };
 	const descriptor = JSON.parse(json) as PoolWorkDescriptor;
 	const chunks = storedJsonChunks(serializeJson(descriptor.inputs));
 	if (chunks === undefined) return { descriptor: json, chunks: [] };
@@ -411,6 +417,15 @@ export class SqlPoolQueue {
 		`);
 		await tx.run(`UPDATE ${this.meta} SET version = ? WHERE version < ?`, POOL_SCHEMA_VERSION, POOL_SCHEMA_VERSION);
 	}
+	/**
+	 * Whether JSON this write stores, any of `jsons`, must stay in its row although it may be longer than a chunk: a
+	 * process of an older build may be reading the pool and would read its stub (#4965). False at once when every one
+	 * is short enough, by its length, to need no chunks.
+	 */
+	private async keepsWhole(executor: SqliteExecutor, ...jsons: readonly string[]): Promise<boolean> {
+		if (jsons.every((json) => json.length * 3 <= STORED_JSON_CHUNK_BYTES)) return false;
+		return this.storage.olderBuildLive(executor);
+	}
 	/** `work` with its inputs read from their chunks when its work row holds only their stub; as it is otherwise. */
 	private async withInputs(executor: SqliteExecutor, work: PoolWork): Promise<PoolWork>;
 	private async withInputs(executor: SqliteExecutor, work: PoolWork | undefined): Promise<PoolWork | undefined>;
@@ -462,9 +477,11 @@ export class SqlPoolQueue {
 		at: string,
 		atParams: readonly SqliteValue[],
 		value?: unknown,
+		/** A process of an older build may be reading the journal: the payload stays in its row (#4965). */
+		whole = false,
 	): SqliteStatement[] {
 		const { events, eventChunks } = this.journal;
-		const stored = storedJournalPayload(payload, value);
+		const stored = whole ? { payload, chunks: [] } : storedJournalPayload(payload, value);
 		const columns = "run_id, seq, epoch, key, type, payload, at, chunks";
 		const row: SqliteStatement =
 			seq === undefined
@@ -886,7 +903,7 @@ export class SqlPoolQueue {
 				// Work of an earlier incarnation becomes claimable again once this root enqueues it (#3979), including
 				// work that incarnation failed or left unfinished when its pool closed. It carries the worktree snapshot this
 				// incarnation captured (#4492), whose blobs are fresh.
-				const stored = storedDescriptor(requested);
+				const stored = storedDescriptor(requested, await this.keepsWhole(tx, requested));
 				await tx.run(
 					`UPDATE ${this.work} SET state = 'ready', epoch = ?, descriptor = ?, inputs_chunks = ? WHERE id = ?`,
 					lease.epoch,
@@ -907,7 +924,8 @@ export class SqlPoolQueue {
 			if (siblings.some((item) => scope.startsWith(`${item.scope}:`) || item.scope.startsWith(`${scope}:`)))
 				throw new Error("Pool work scopes overlap");
 			const id = randomUUID();
-			const stored = storedDescriptor(json);
+			const whole = await this.keepsWhole(tx, json, payload);
+			const stored = storedDescriptor(json, whole);
 			await tx.run(
 				`INSERT INTO ${this.work}(id, root, boundary, descriptor, fingerprint, epoch, ready_at, inputs_chunks) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 				id,
@@ -936,6 +954,8 @@ export class SqlPoolQueue {
 						payload,
 						"?",
 						[now],
+						undefined,
+						whole,
 					))
 						await tx.run(write.sql, ...write.params);
 			}
@@ -1072,7 +1092,7 @@ export class SqlPoolQueue {
 			throw new Error(
 				`Pool boundary identity conflict: child ${requested.childRunId} was queued by an earlier run of root ${lease.runId} with the entry module of worker definition ${requested.definition} at sha256 ${short(queued.digest)}, and the root now runs that module at sha256 ${short(requested.digest)}. Resume the root with /workflow resume ${lease.runId} --accept-entry-changes, or acceptEntryChanges: true in the SDK, to run the child with the edited module, or restore the module.`,
 			);
-		const stored = storedDescriptor(json);
+		const stored = storedDescriptor(json, await this.keepsWhole(tx, json));
 		await tx.run(
 			`UPDATE ${this.work} SET descriptor = ?, fingerprint = ?, inputs_chunks = ? WHERE id = ?`,
 			stored.descriptor,
@@ -1835,7 +1855,17 @@ export class SqlPoolQueue {
 			},
 		);
 		write.writes.push(
-			...this.eventWrites(lease.runId, undefined, lease.epoch, key, payload, STORE_NOW, [], checkpoint),
+			...this.eventWrites(
+				lease.runId,
+				undefined,
+				lease.epoch,
+				key,
+				payload,
+				STORE_NOW,
+				[],
+				checkpoint,
+				await this.keepsWhole(read, payload),
+			),
 		);
 		const billed = poolCheckpointUsage(checkpoint);
 		if (billed)
@@ -1853,9 +1883,10 @@ export class SqlPoolQueue {
 		assertWorkflowSerializableObject(result, "Pool result");
 		const payload = serializeJson(result);
 		await this.remote?.fresh(lease);
-		// A result longer than one chunk is stored in chunks, with `null` in its row (#4965).
-		const chunks = storedJsonChunks(payload) ?? [];
-		const writes = [
+		// A result longer than one chunk is stored in chunks, with `null` in its row (#4965), unless a process of an older
+		// build may be reading the pool, which would read the `null`: then it stays whole, decided as each plan reads.
+		const chunked = storedJsonChunks(payload) ?? [];
+		const writesOf = (chunks: readonly Uint8Array[]) => [
 			{
 				sql: `INSERT INTO ${this.work}_results (work, result, chunks) VALUES (?, ?, ?)`,
 				params: [token.id, chunks.length === 0 ? payload : "null", chunks.length],
@@ -1867,6 +1898,7 @@ export class SqlPoolQueue {
 			{ sql: `UPDATE ${this.work} SET state = 'completed' WHERE id = ?`, params: [token.id] },
 		];
 		await guardedPoolWrite(this.storage, async (read, optimistic) => {
+			const writes = writesOf((await this.keepsWhole(read, payload)) ? [] : chunked);
 			// Planned without a read from the attempt's row as this queue last saw it: the fences repeat every check, and
 			// a completion that one refuses is planned again from a read, which names why.
 			const cached = this.attempts.get(token.id);

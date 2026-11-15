@@ -1,11 +1,13 @@
 import type { SnapshotBlobStore } from "../worktree-snapshot/types.ts";
 import type { SqliteExecutor, SqliteRow, SqliteValue, StorageDescriptor } from "./database.js";
+import type { StorageDialect } from "./dialect.js";
 import { StorageError } from "./errors.js";
 
 /**
  * The schema version of a SQL run journal's `meta` table that this Atomic reads and writes. Version 2 stores a large
  * event payload in chunks behind a stub (#4965), which a build that knows only version 1 would read as the payload, so
- * opening a journal upgrades it to 2 and older builds refuse it with `StorageSchemaVersionError`.
+ * opening a journal upgrades it to 2 and older builds refuse it with `StorageSchemaVersionError`. The same version
+ * covers worktree snapshot blobs stored in chunks (#4954, #5065), which the journal's snapshots reference.
  */
 export const RUN_JOURNAL_SCHEMA_VERSION = 2;
 /** The run journal schema builds before chunked event payloads wrote; this build upgrades it when it opens it. */
@@ -303,4 +305,53 @@ export async function withJournalPayloads<Row extends JournalPayloadRow>(
 		loaded.push({ ...row, payload, chunks: 0 });
 	}
 	return loaded;
+}
+
+/**
+ * How long after its last renewal a lease, or after its last report a worker host, counts as live for
+ * {@link olderBuildLive}: past the windows in which either renews.
+ */
+export const OLDER_BUILD_LIVE_MS = 120_000;
+/** The lease holder prefix of a journal store consolidation, which copies events whole and never reads chunks. */
+const CONSOLIDATION_HOLDER = "atomic-storage-consolidate:";
+
+/**
+ * Whether a process of an older build may be reading the journal whose tables are `tables` right now, as far as it
+ * can be told (#4965). A process that opened the journal before this build upgraded it never reads its schema version
+ * again, so it would read a payload stored in chunks as its stub; while one is live, payloads are stored whole. It is
+ * live when it holds a lease renewed within {@link OLDER_BUILD_LIVE_MS} that no build of this version granted (each
+ * grant records its build in the lease builds table), or reports as a worker host within that window without the
+ * journal schema version its build reads. Other older processes, such as one only reading, cannot be told apart.
+ */
+export async function olderBuildLive(
+	executor: SqliteExecutor,
+	dialect: StorageDialect,
+	tables: { readonly runs: string; readonly leases: string; readonly leaseBuilds: string },
+): Promise<boolean> {
+	const lease = await executor.get(
+		`SELECT 1 AS live FROM ${tables.leases} AS l
+		WHERE l.holder_id IS NOT NULL AND l.renewed_at > ${dialect.nowMs} - ? AND substr(l.holder_id, 1, ?) <> ?
+		AND NOT EXISTS (
+			SELECT 1 FROM ${tables.leaseBuilds} AS b
+			WHERE b.run_id = l.run_id AND b.holder_id = l.holder_id AND b.epoch = l.epoch AND b.schema_version >= ?
+		) LIMIT 1`,
+		OLDER_BUILD_LIVE_MS,
+		CONSOLIDATION_HOLDER.length,
+		CONSOLIDATION_HOLDER,
+		RUN_JOURNAL_SCHEMA_VERSION,
+	);
+	if (lease !== undefined) return true;
+	const hosts = `${tables.runs}_pool_hosts`;
+	const exists = dialect.tableExists(hosts);
+	if ((await executor.get(exists.sql, ...exists.params)) === undefined) return false;
+	const recorded = dialect.columnExists(hosts, "journal_schema");
+	const known = (await executor.get(recorded.sql, ...recorded.params)) !== undefined;
+	const host = await executor.get(
+		`SELECT 1 AS live FROM ${hosts} WHERE heartbeat_at > ${dialect.nowMs} - ?${
+			known ? " AND (journal_schema IS NULL OR journal_schema < ?)" : ""
+		} LIMIT 1`,
+		OLDER_BUILD_LIVE_MS,
+		...(known ? [RUN_JOURNAL_SCHEMA_VERSION] : []),
+	);
+	return host !== undefined;
 }

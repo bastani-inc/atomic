@@ -13,6 +13,7 @@ export const JOURNAL_TABLES = {
 	events: "events",
 	leases: "leases",
 	eventChunks: "event_chunks",
+	leaseBuilds: "lease_builds",
 } as const;
 export type JournalTable = (typeof JOURNAL_TABLES)[keyof typeof JOURNAL_TABLES];
 export const JOURNAL_COLUMNS = {

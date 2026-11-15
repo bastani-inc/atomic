@@ -992,8 +992,15 @@ test("delete/recreate cycles durably fence every old handle without affecting ot
 test("schema v2 exports stable names and stores event payloads as JSON text with required SQLite pragmas", async () => {
 	assert.equal(JOURNAL_SCHEMA_VERSION, 2);
 	assert.equal(JOURNAL_PAYLOAD_ENCODING, "json-text");
-	assert.deepEqual(Object.values(tableNames), ["meta", "runs", "events", "leases", "event_chunks"]);
-	assert.deepEqual(Object.values(t), ["wf_meta", "wf_runs", "wf_events", "wf_leases", "wf_event_chunks"]);
+	assert.deepEqual(Object.values(tableNames), ["meta", "runs", "events", "leases", "event_chunks", "lease_builds"]);
+	assert.deepEqual(Object.values(t), [
+		"wf_meta",
+		"wf_runs",
+		"wf_events",
+		"wf_leases",
+		"wf_event_chunks",
+		"wf_lease_builds",
+	]);
 	assert.deepEqual(Object.values(c), [
 		"schema_version",
 		"run_id",
