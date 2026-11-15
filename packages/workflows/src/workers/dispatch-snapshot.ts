@@ -2,6 +2,7 @@ import {
 	captureWorktreeSnapshot,
 	isWorkspaceGitError,
 	type SnapshotBlobStore,
+	snapshotBlobHashes,
 	WorkspaceSnapshotError,
 	type WorktreeSnapshot,
 	type WorktreeSnapshotCapture,
@@ -72,6 +73,22 @@ export class DispatchSnapshots {
 			this.latest.set(worktree, capture.snapshot);
 			return capture.snapshot;
 		});
+	}
+
+	/**
+	 * `snapshot` while its blob store still holds every blob of it, whose age this restarts as storing it again would,
+	 * so a collection keeps them until the work that carries it is queued. Otherwise undefined, with a `blobs-collected`
+	 * reason to `unavailable` (#5077): the work is queued without a snapshot rather than with one that cannot be restored.
+	 */
+	async stored(snapshot: WorktreeSnapshot | undefined): Promise<WorktreeSnapshot | undefined> {
+		const blobs = this.options.blobs;
+		if (snapshot === undefined || blobs === undefined) return snapshot;
+		for (const hash of snapshotBlobHashes(snapshot)) {
+			if (await blobs.refreshBlobs([hash])) continue;
+			this.options.unavailable(new WorkspaceSnapshotError("blobs-collected", hash));
+			return undefined;
+		}
+		return snapshot;
 	}
 
 	/** Runs `action` once every capture of `worktree` queued before it has settled. */

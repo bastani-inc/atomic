@@ -1,4 +1,10 @@
-import type { SqliteExecutor, SqliteRow, SqliteStatement, SqliteTransactionOptions } from "@bastani/atomic/storage";
+import type {
+	SqliteExecutor,
+	SqliteRow,
+	SqliteStatement,
+	SqliteTransactionOptions,
+	SqlSnapshotBlobStore,
+} from "@bastani/atomic/storage";
 import {
 	type AppendOutcome,
 	type JournalEntry,
@@ -108,6 +114,8 @@ export interface SqlPoolStorage {
 	read<T>(body: (executor: SqliteExecutor) => Promise<T>): Promise<T>;
 	withAppendGuard<T>(guard: JournalAppendGuard, action: () => Promise<T>): Promise<T>;
 	readonly tables: Readonly<{ runs: string; events: string; leases: string }>;
+	/** The journal database's snapshot blob table, which the work a pool queues carries snapshots of (#5077). */
+	readonly snapshotBlobs?: SqlSnapshotBlobStore;
 }
 
 /** The storage errors that say the store did not take a write, rather than that the write itself was refused. */

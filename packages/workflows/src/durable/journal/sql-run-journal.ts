@@ -205,6 +205,7 @@ export class SqlRunJournal implements RunJournal {
 			read: (body) => this.operation(() => this.readSnapshot(body)),
 			withAppendGuard: (guard, action) => this.appendGuard.run(guard, action),
 			tables: this.tables,
+			snapshotBlobs,
 		});
 		registerJournalKeyRangeRead(this, (runId, fromKey, toKey) =>
 			SqlRunJournal.readKeyRange(this, runId, fromKey, toKey),

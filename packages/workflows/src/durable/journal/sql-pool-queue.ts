@@ -10,6 +10,7 @@ import {
 	type SqliteRow,
 	type SqliteStatement,
 	type SqliteValue,
+	type SqlSnapshotBlobStore,
 	StorageError,
 	StorageProvider,
 } from "@bastani/atomic/storage";
@@ -265,6 +266,11 @@ export class SqlPoolQueue {
 	private readonly operations: string;
 	/** Checkpoint events a commit accepted that the durable journal has not recorded yet (remote journals only). */
 	private readonly outbox: string;
+	/**
+	 * The snapshot blobs of this database, when the root's journal is in it: work is queued with a snapshot, and a root
+	 * holds its binding's, only while every blob of it is stored (#5077).
+	 */
+	private readonly blobs?: SqlSnapshotBlobStore;
 	/** The snapshot each root's binding carries to its unbound children, while its pool is prepared (#4503). */
 	private readonly rootSnapshots: string;
 	private readonly transaction: Transaction;
@@ -294,6 +300,8 @@ export class SqlPoolQueue {
 		this.operations = `${journal.runs}_pool_operations`;
 		this.outbox = `${journal.runs}_pool_outbox`;
 		this.rootSnapshots = `${journal.runs}_pool_root_snapshot`;
+		// Only a journal in this database holds the blobs of the snapshots queued work carries (#5077).
+		this.blobs = remote === undefined ? storage.snapshotBlobs : undefined;
 	}
 	/**
 	 * `remote` is the root's durable journal when it lives in another database than `storage`, whose run and lease rows
@@ -555,15 +563,16 @@ export class SqlPoolQueue {
 	 * has queued nothing yet records it too, so only the root's lease is checked: one another holder or epoch took is a
 	 * {@link StaleLeaseError}.
 	 */
-	async holdRootSnapshot(lease: Lease, snapshot: WorktreeSnapshot | undefined): Promise<void> {
+	async holdRootSnapshot(lease: Lease, snapshot: WorktreeSnapshot | undefined): Promise<boolean> {
 		lease = snapshotLease(lease);
-		await this.transaction(async (tx) => {
+		return this.transaction(async (tx) => {
 			const row = await this.leaseRow(tx, lease);
 			if (row?.epoch !== lease.epoch || row.holder_id !== lease.holderId)
 				throw new StaleLeaseError(lease.runId, lease.epoch, Number(row?.epoch ?? 0));
-			if (snapshot === undefined) {
+			const held = snapshot !== undefined && (await this.blobs?.missingBlob(tx, [snapshot])) === undefined;
+			if (!held) {
 				await tx.run(`DELETE FROM ${this.rootSnapshots} WHERE root = ? AND epoch < ?`, lease.runId, lease.epoch);
-				return;
+				return snapshot === undefined;
 			}
 			await tx.run(
 				`INSERT INTO ${this.rootSnapshots}(root, epoch, snapshot) VALUES (?, ?, ?) ON CONFLICT(root) DO UPDATE SET epoch = excluded.epoch, snapshot = excluded.snapshot`,
@@ -571,6 +580,7 @@ export class SqlPoolQueue {
 				lease.epoch,
 				JSON.stringify(snapshot),
 			);
+			return true;
 		});
 	}
 	/** Lets go of the snapshot `lease`'s incarnation of the root recorded; one a later incarnation recorded stays. */
@@ -699,15 +709,19 @@ export class SqlPoolQueue {
 		assertWorkflowSerializableObject(descriptor.execution, "Pool execution");
 		assertWorkflowSerializableObject(boundary, "Pool boundary");
 		validateCheckpointInvocationFingerprint(boundary);
-		const json = serializeJson({ ...descriptor });
+		const queuedJson = serializeJson({ ...descriptor });
 		const payload = serializeJson(boundary);
-		const fingerprint = workFingerprint(JSON.parse(json), JSON.parse(payload));
+		const fingerprint = workFingerprint(JSON.parse(queuedJson), JSON.parse(payload));
 		const key = JSON.stringify([RUN_EVENT_TYPES.checkpointRecorded, boundary.kind, boundary.checkpointId]);
 		// A journal in another database takes the boundary's start first, as its own idempotent write: a crash before the
 		// work row below leaves a start with no work, which the root's resume enqueues again and finds already recorded.
 		if (this.remote) await this.recordBoundaryStart(lease, key, boundary);
 		return this.transaction(async (tx) => {
 			const { now } = await this.authority(tx, lease);
+			// Work carries its root's snapshot only while every blob of it is stored (#5077): the child of work queued
+			// without one restores as for a capture that was unavailable, never from a snapshot it cannot restore.
+			const queued = await this.withStoredSnapshot(tx, descriptor);
+			const json = queued === descriptor ? queuedJson : serializeJson({ ...queued });
 			const previous = await tx.get<WorkRow>(
 				`SELECT * FROM ${this.work} WHERE root = ? AND (boundary = ? OR json_extract(descriptor, '$.scope') = ? OR json_extract(descriptor, '$.childRunId') = ?)`,
 				lease.runId,
@@ -716,7 +730,7 @@ export class SqlPoolQueue {
 				childRunId,
 			);
 			if (previous) {
-				const requested = withQueuedSnapshot(descriptor, previous.descriptor);
+				const requested = withQueuedSnapshot(queued, previous.descriptor);
 				const row =
 					previous.fingerprint === fingerprint
 						? previous
@@ -777,6 +791,13 @@ export class SqlPoolQueue {
 			await this.claimSessions(tx, lease.runId, id, descriptor, options.claimSessions);
 			return fromRow((await tx.get<WorkRow>(`SELECT * FROM ${this.work} WHERE id = ?`, id))!);
 		});
+	}
+	/** `descriptor`, without the worktree snapshot it carries when this database no longer holds a blob of it. */
+	private async withStoredSnapshot(tx: SqliteExecutor, descriptor: PoolWorkDescriptor): Promise<PoolWorkDescriptor> {
+		const snapshot = descriptor.execution.workspaceSnapshot as unknown as WorktreeSnapshot | undefined;
+		if (snapshot === undefined || (await this.blobs?.missingBlob(tx, [snapshot])) === undefined) return descriptor;
+		const { workspaceSnapshot: _missing, ...execution } = descriptor.execution;
+		return { ...descriptor, execution };
 	}
 	/**
 	 * Makes `work` the owner of each claimed session, in the transaction that queues it. Only a session nobody owns is
