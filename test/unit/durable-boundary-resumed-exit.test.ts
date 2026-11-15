@@ -54,6 +54,11 @@ test("a boundary that failed, was resumed and then skipped by ctx.exit stays rea
 		});
 		const failed = prepareDurableChildInvocation(boundaryDescriptor(writer));
 		await failed.recordStart([], 0);
+		// An attempt the process left before any terminal is prepared again.
+		assert.equal(
+			prepareDurableChildInvocation(boundaryDescriptor(writer)).identity.childRunId,
+			failed.identity.childRunId,
+		);
 		await failed.recordTerminal("failed");
 		const exited = prepareDurableChildInvocation(boundaryDescriptor(writer));
 		assert.equal(exited.identity.childRunId, failed.identity.childRunId);
@@ -283,6 +288,8 @@ test("the lifecycle validator accepts exactly the per-attempt histories and ever
 		const label = `seed ${seed}: ${JSON.stringify(history)}`;
 		// Whatever earlier releases read stays readable, with the same latest state.
 		assert.equal("lifecycle" in resolved, perAttempt || "lifecycle" in previous, label);
+		if ("error" in resolved && new Set(history.map((entry) => entry.status)).size === history.length)
+			assert.equal(resolved.error, "boundary has an illegal terminal transition", label);
 		if ("lifecycle" in previous && "lifecycle" in resolved)
 			assert.equal(resolved.lifecycle.latestTerminal, previous.lifecycle.latestTerminal, label);
 		if ("lifecycle" in resolved) {
