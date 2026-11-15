@@ -1084,6 +1084,16 @@ test("a child that turns terminal fails the asks delivered to it from another no
 	);
 	assert.equal(terminal.type === "message" && terminal.message.replyError, TERMINAL_CHILD_ASK_REFUSAL);
 	assert.ok(terminal.type === "message");
+	assert.equal(terminal.message.id, `terminal:${ask.id}`);
+	// The route stays open for the error until the asker has it.
+	assert.deepEqual(
+		await a!.opened.state.pendingAsks.matchesReply({
+			replySenderSessionId: child.info.id,
+			replyTargetSessionId: asker.info.id,
+			replyTo: ask.id,
+		}),
+		{ status: "match" },
+	);
 	a!.router.received(asker, terminal.message.id);
 	await vi.waitFor(
 		async () =>
@@ -1097,6 +1107,111 @@ test("a child that turns terminal fails the asks delivered to it from another no
 			),
 		{ timeout: CROSS_NODE_WAIT_MS },
 	);
+});
+
+test("an old connection of a session that reconnected to the same broker leaves without taking the live one's presence with it", async () => {
+	const [a, b] = await cluster();
+	const sender = await a!.connect("sender");
+	const returnAddress = randomUUID();
+	const old = await b!.connect("recipient", { returnAddress });
+	// The session reconnected before this broker noticed its old connection was gone: same identity, a new id.
+	const live = await b!.connect("recipient", { returnAddress });
+	b!.leave(old);
+	// The old connection's departure is done once it recorded the session as it last knew it.
+	await vi.waitFor(async () => {
+		const known = await b!.opened.state.knownSessions.lookup(old.info.id, KNOWN_SESSION_RETENTION_MS);
+		assert.equal(known.status, "found");
+	});
+
+	const sent = message();
+	a!.send(sender, live.info.id, sent);
+	// Well before the presence renewal would take the lease again.
+	await waitFor(() => messageFrames(live, sent.id)[0], BROKER_LEASE_RENEW_INTERVAL_MS / 2);
+	b!.router.received(live, sent.id);
+	assert.equal((await waitFor(() => outcomeOf(sender, sent.id))).type, "delivered");
+	const leases = await b!.opened.state.leases.listLive("presence", BROKER_LEASE_RENEW_INTERVAL_MS);
+	assert.ok(
+		leases.some((lease) => lease.subject.kind === "presence" && lease.subject.session.id === live.info.id),
+		"the live session's presence is still held",
+	);
+});
+
+test("a terminal child that then ends does not fail an ask from another node a second time (#4842)", async () => {
+	const [a, b] = await cluster();
+	const asker = await a!.connect("asker");
+	const child = await b!.connect("child");
+	const ask = message({ expectsReply: true });
+	a!.send(asker, "child", ask);
+	await waitFor(() => messageFrames(child, ask.id)[0]);
+	b!.router.received(child, ask.id);
+	assert.equal((await waitFor(() => outcomeOf(asker, ask.id))).type, "delivered");
+	const failures = () =>
+		framesOf(asker).filter((frame) => frame.type === "message" && frame.message.replyTo === ask.id);
+
+	child.info.replyCapability = "terminal";
+	b!.router.sessionUpdated(child);
+	await waitFor(() => failures()[0]);
+	// The asker has not confirmed the terminal error yet when the child ends.
+	b!.leave(child);
+	// A second failure would cross the nodes as fast as the first did.
+	await new Promise((resolveDelay) => setTimeout(resolveDelay, 500));
+
+	assert.equal(failures().length, 1, "the asker is told once");
+	assert.ok(
+		failures().every((frame) => frame.type === "message" && frame.message.replyError === TERMINAL_CHILD_ASK_REFUSAL),
+	);
+});
+
+test("a recipient that ends fails an ask from another node with the reason a local asker gets, and its route ends with it (#4842)", async () => {
+	const [a, b] = await cluster();
+	const asker = await a!.connect("asker");
+	const recipient = await b!.connect("recipient");
+	const ask = message({ expectsReply: true });
+	a!.send(asker, "recipient", ask);
+	await waitFor(() => messageFrames(recipient, ask.id)[0]);
+	b!.router.received(recipient, ask.id);
+	assert.equal((await waitFor(() => outcomeOf(asker, ask.id))).type, "delivered");
+
+	b!.leave(recipient);
+	const failure = await waitFor(() =>
+		framesOf(asker).find((frame) => frame.type === "message" && frame.message.replyTo === ask.id),
+	);
+	assert.ok(failure.type === "message");
+	assert.equal(failure.message.id, `ended:${ask.id}`);
+	assert.equal(failure.message.replyError, 'Session "recipient" ended before replying');
+	assert.equal(failure.from.id, recipient.info.id);
+	// The asker shares its group: the failure needs no route, and a late reply from the ended session is refused.
+	assert.deepEqual(
+		await a!.opened.state.pendingAsks.matchesReply({
+			replySenderSessionId: recipient.info.id,
+			replyTargetSessionId: asker.info.id,
+			replyTo: ask.id,
+		}),
+		{ status: "no-match" },
+	);
+});
+
+test("an asker that moved to its recipient's broker while away gets the failure there when the recipient ends (#4842)", async () => {
+	const [a, b] = await cluster();
+	const returnAddress = randomUUID();
+	const asker = await a!.connect("asker", { returnAddress });
+	const recipient = await b!.connect("recipient");
+	const ask = message({ expectsReply: true });
+	a!.send(asker, "recipient", ask);
+	await waitFor(() => messageFrames(recipient, ask.id)[0]);
+	b!.router.received(recipient, ask.id);
+	assert.equal((await waitFor(() => outcomeOf(asker, ask.id))).type, "delivered");
+	// The asker is only away, and comes back on the recipient's broker under the same id.
+	a!.sessions.delete(asker.info.id);
+	a!.router.sessionLeft(asker, undefined, false);
+	const back = await b!.connect("asker", { returnAddress, id: asker.info.id });
+
+	b!.leave(recipient);
+	const failure = await waitFor(() =>
+		framesOf(back).find((frame) => frame.type === "message" && frame.message.replyTo === ask.id),
+	);
+	assert.ok(failure.type === "message");
+	assert.equal(failure.message.replyError, 'Session "recipient" ended before replying');
 });
 
 test("an ask whose route write fails is redelivered and keeps its reply route instead of settling without one", async () => {
