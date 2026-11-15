@@ -166,6 +166,7 @@ async function trial(hosts, shipping) {
 		for (let index = 0; index < hosts; index++) await waitFor(join(work, `ready-${index}`), deadline, processes, log);
 		const resultFile = join(work, "result.json");
 		const cpuBefore = shared.cpuMs();
+		const rootLog = [];
 		const root = start(process.execPath, [join(here, "bench-root.mjs")], {
 			...common,
 			HOME: join(work, "root"),
@@ -178,9 +179,9 @@ async function trial(hosts, shipping) {
 			ELASTIC_SESSIONS: String(hosts * slots + 1),
 			...(killAfter === undefined ? {} : { ELASTIC_LEASE_MS: "8000" }),
 			...(shipping === "sync" ? {} : { ELASTIC_CHECKPOINT_SHIPPING: shipping }),
-		}, log, work);
+		}, rootLog, work);
 		processes.push(root);
-		const exited = new Promise((resolve) => root.on("exit", resolve));
+		const exited = new Promise((resolve) => root.on("exit", (code, signal) => resolve(code ?? signal)));
 		const runStart = Date.now();
 		let killedAt;
 		const killer =
@@ -193,7 +194,7 @@ async function trial(hosts, shipping) {
 		const code = await Promise.race([exited, sleep(RUN_TIMEOUT_MS).then(() => "timeout")]);
 		clearTimeout(killer);
 		const cpuMs = shared.cpuMs() - cpuBefore;
-		if (code !== 0 || !existsSync(resultFile)) throw new Error(`root exited ${code}\n${log.join("").slice(-4000)}`);
+		if (code !== 0 || !existsSync(resultFile)) throw new Error(`root exited ${code}\n${rootLog.join("").slice(-6000)}`);
 		const result = JSON.parse(readFileSync(resultFile, "utf8"));
 		const events = await query(
 			shared.url,
