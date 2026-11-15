@@ -1,4 +1,4 @@
-import type { StorageDialectName } from "./dialect.js";
+import { postgresDialect, type StorageDialectName } from "./dialect.js";
 import { StoragePrefixError } from "./errors.js";
 
 /**
@@ -223,7 +223,33 @@ export function validateStoragePrefix(prefix = "", dialect?: StorageDialectName)
 	if (dialect === "postgres" && /[A-Z]/.test(prefix)) throw new StoragePrefixError(prefix, "uppercase");
 	if (dialect === "postgres" && chosen.length > POSTGRES_MAX_STORAGE_PREFIX_LENGTH)
 		throw new StoragePrefixError(prefix, "too-long", POSTGRES_MAX_STORAGE_PREFIX_LENGTH);
+	if (dialect === "postgres") {
+		const collision = postgresIdentifierCollision(chosen);
+		if (collision !== undefined) throw new StoragePrefixError(prefix, "identifier-collision", undefined, collision);
+	}
 	return prefix;
+}
+
+const postgresCollisions = new Map<string, string | undefined>();
+
+/**
+ * The identifier PostgreSQL would know two of the names under `prefix` by, if any (#5219): a name too long to keep whole
+ * is its head and a hash of the whole name, so two names that share their head differ only in that hash.
+ */
+function postgresIdentifierCollision(prefix: string): string | undefined {
+	if (postgresCollisions.has(prefix)) return postgresCollisions.get(prefix);
+	const seen = new Set<string>();
+	let collision: string | undefined;
+	for (const suffix of [...POSTGRES_STORAGE_IDENTIFIER_SUFFIXES, ...POSTGRES_HASHED_STORAGE_IDENTIFIER_SUFFIXES]) {
+		const identifier = postgresDialect.identifier(`${prefix}${suffix}`);
+		if (seen.has(identifier)) {
+			collision = identifier;
+			break;
+		}
+		seen.add(identifier);
+	}
+	postgresCollisions.set(prefix, collision);
+	return collision;
 }
 
 export function renderStorageIdentifiers<T extends Readonly<Record<string, string>>>(

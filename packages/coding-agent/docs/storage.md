@@ -840,7 +840,7 @@ Use error classes and their fields, not message matching. Configuration and faca
 | `StorageConfigError` | `code` `"invalid-config"`; `source`, `field`, `reason` identify an invalid selected option, and `hint`, when present, says what to pass instead. Correct that selection; Atomic does not try a lower-precedence store. |
 | `StorageAdapterLoadError` | `module`, `cause`. Check installation and the module's default export. |
 | `StorageUnavailableError` | `adapter`, `location`, `cause`. Restore access to the selected store before retrying. |
-| `StoragePrefixError` | `prefix`, `reason` (`"pattern"`, `"reserved"`, `"too-long"` with `maxLength`, or `"uppercase"` on PostgreSQL). Use a valid non-reserved prefix, at most 24 characters and lowercase on PostgreSQL. |
+| `StoragePrefixError` | `prefix`, `reason` (`"pattern"`, `"reserved"`, `"too-long"` with `maxLength`, `"identifier-collision"` with `identifier`, the PostgreSQL name two of the prefix's long names would share, or `"uppercase"` on PostgreSQL). Use a valid non-reserved prefix, at most 24 characters and lowercase on PostgreSQL. |
 | `StorageSchemaVersionError` | `domain`, `found`, `supported`. Use a supported database; Atomic does not migrate an unknown schema. |
 | `StoreClosedError` / `StorageTransactionClosedError` | The store is closing/closed, or the transaction callback has ended. Open a new store or use the live callback handle. |
 | `StorageRollbackError` | `cause`, `rollbackCause`. Do not assume the transaction rolled back. |
