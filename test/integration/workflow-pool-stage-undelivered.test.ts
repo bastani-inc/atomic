@@ -58,11 +58,18 @@ function textOf(message: object): string {
 		: (content ?? []).map((block) => (block.type === "text" ? (block.text ?? "") : "")).join("");
 }
 
+function agentStages(store: Store): { readonly runId: string; readonly stage: StageSnapshot }[] {
+	return store
+		.runs()
+		.flatMap((candidate) =>
+			candidate.stages
+				.filter((stage) => stage.name === "agent" && stage.workerExecution !== undefined)
+				.map((stage) => ({ runId: candidate.id, stage })),
+		);
+}
+
 function agentStage(store: Store): { readonly runId: string; readonly stage: StageSnapshot } | undefined {
-	for (const candidate of store.runs())
-		for (const stage of candidate.stages)
-			if (stage.name === "agent" && stage.workerExecution !== undefined) return { runId: candidate.id, stage };
-	return undefined;
+	return agentStages(store)[0];
 }
 
 async function until(
@@ -183,15 +190,21 @@ async function steerThenReplace(prefix: string, replayFinishes: boolean) {
 		assert.equal(outcome.status, "completed", JSON.stringify(outcome));
 		release();
 		await until("the stage's outbox settled", () => !replayFinishes || sent.length > 0, execution, observe, true);
-		const finished = agentStage(store)!;
-		const sessions = await poolSessionStore(backend, rootOf(backend, finished.runId));
+		// The replacement may hold the stage under a new id, or not start its session: read every copy of the stage.
+		const copies = agentStages(store);
+		const sessions = await poolSessionStore(backend, rootOf(backend, copies[0]!.runId));
 		assert.ok(sessions !== undefined);
-		const users = (await SessionManager.open(sessions, finished.stage.sessionId!))
-			.buildSessionContext()
-			.messages.filter((message) => message.role === "user")
-			.map(textOf);
+		const users: string[] = [];
+		for (const sessionId of new Set(copies.flatMap(({ stage }) => stage.sessionId ?? [])))
+			users.push(
+				...(await SessionManager.open(sessions, sessionId))
+					.buildSessionContext()
+					.messages.filter((message) => message.role === "user")
+					.map(textOf),
+			);
 		await sessions.close();
-		return { users, sent: [...sent], stage: finished.stage };
+		const notices = copies.flatMap(({ stage }) => stage.notices ?? []);
+		return { users, sent: [...sent], notices };
 	} finally {
 		stopNotices();
 		gate(UNDELIVERED_STAGE_KILLED);
@@ -207,14 +220,14 @@ async function steerThenReplace(prefix: string, replayFinishes: boolean) {
 test.skipIf(process.platform === "win32")(
 	"a steer the replacement's replay finishes the stage before resending tells its sender once, naming it and the stage (#4884)",
 	async () => {
-		const { users, sent, stage } = await steerThenReplace("pool-stage-undelivered-replay-", true);
+		const { users, sent, notices: all } = await steerThenReplace("pool-stage-undelivered-replay-", true);
 		assert.ok(!users.includes(STEER), `the steer was delivered after all: ${JSON.stringify(users)}`);
 		assert.equal(sent.length, 1, `one parent-session notice: ${JSON.stringify(sent)}`);
 		assert.equal(sent[0]!.customType, UNDELIVERED_STAGE_MESSAGE_CUSTOM_TYPE);
 		assert.match(sent[0]!.content, new RegExp(STEER));
 		assert.match(sent[0]!.content, /"agent"/);
-		const notices = (stage.notices ?? []).filter((notice) => notice.kind === "undelivered");
-		assert.equal(notices.length, 1, `one stage-chat notice: ${JSON.stringify(stage.notices)}`);
+		const notices = all.filter((notice) => notice.kind === "undelivered");
+		assert.equal(notices.length, 1, `one stage-chat notice: ${JSON.stringify(all)}`);
 		assert.equal(notices[0]!.to, STEER);
 	},
 	LOCAL_WORKER_PROCESS_TIMEOUT_MS,
@@ -223,7 +236,7 @@ test.skipIf(process.platform === "win32")(
 test.skipIf(process.platform === "win32")(
 	"a steer the replacement takes on resend reaches it once and tells its sender nothing (#4884)",
 	async () => {
-		const { users, sent, stage } = await steerThenReplace("pool-stage-undelivered-resend-", false);
+		const { users, sent, notices } = await steerThenReplace("pool-stage-undelivered-resend-", false);
 		assert.deepEqual(
 			users.filter((text) => text === STEER),
 			[STEER],
@@ -231,7 +244,7 @@ test.skipIf(process.platform === "win32")(
 		);
 		assert.deepEqual(sent, []);
 		assert.deepEqual(
-			(stage.notices ?? []).filter((notice) => notice.kind === "undelivered"),
+			notices.filter((notice) => notice.kind === "undelivered"),
 			[],
 		);
 	},

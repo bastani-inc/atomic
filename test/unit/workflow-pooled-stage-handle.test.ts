@@ -835,3 +835,42 @@ test("a stage that ends while a first send waits marks it refused, and leaves an
 		],
 	);
 });
+
+test("a stage that ends with text sent while reconnecting reports it, without refusing it twice (#4884)", async () => {
+	const fake = pool(() => []);
+	const outbox: OutboundEntry[] = [];
+	const opened = await openPooledStageHandle(
+		fake.transport,
+		{ runId: "child", stageId: "agent" },
+		"agent",
+		() => {},
+		outbox,
+	);
+	assert.ok(opened.ok);
+	fake.end("worker_exited");
+	await assert.rejects(opened.handle.followUp("FOLLOW"), /sent again when it reconnects/);
+	opened.handle.receive({ kind: "ended", reason: "stage_finished" });
+	assert.deepEqual(
+		outbox.map((entry) => [entry.text, entry.refused]),
+		[["FOLLOW", undefined]],
+	);
+});
+
+test("a first send its attempt refuses as stale stays in the outbox for the next attempt (#4884)", async () => {
+	const fake = pool(() => []);
+	const outbox: OutboundEntry[] = [];
+	fake.transport.deliver = async () => ({ ok: false, refusal: "StaleAttempt" });
+	const opened = await openPooledStageHandle(
+		fake.transport,
+		{ runId: "child", stageId: "agent" },
+		"agent",
+		() => {},
+		outbox,
+	);
+	assert.ok(opened.ok);
+	await assert.rejects(opened.handle.steer("STEER"), /moving to another worker attempt/);
+	assert.deepEqual(
+		outbox.map((entry) => entry.text),
+		["STEER"],
+	);
+});
