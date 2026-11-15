@@ -1,5 +1,5 @@
-import { existsSync, realpathSync } from "node:fs";
-import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { isAbsolute, relative, resolve, sep } from "node:path";
+import { resolvePhysicalPath } from "../../utils/physical-path.ts";
 import { WorkspaceBindingError, WorkspaceConfigError, WorkspaceSandboxError } from "./errors.ts";
 import { adoptWorkspaceBinding, type BoundWorkspace, isBoundWorkspace, resolveWorkspace } from "./resolve.ts";
 import { restoreRecordedWorkspace } from "./restore.ts";
@@ -10,17 +10,6 @@ export const WORKSPACE_WRITE_TOOL_NAMES: ReadonlySet<string> = new Set(["write",
 
 /** Session custom entry that records the resolved binding. */
 export const WORKSPACE_BINDING_ENTRY_TYPE = "workspace_binding";
-
-/** `path` with symbolic links resolved in its existing part; the filesystem root always exists. */
-function canonical(path: string): string {
-	let existing = path;
-	const missing: string[] = [];
-	while (!existsSync(existing)) {
-		missing.unshift(basename(existing));
-		existing = dirname(existing);
-	}
-	return resolve(realpathSync(existing), ...missing);
-}
 
 /**
  * The working directory for a session bound to `binding`: the worktree, or `cwd` resolved against it. A `cwd` that
@@ -39,8 +28,8 @@ export function workspaceSessionCwd(binding: Pick<BoundWorkspace, "worktree">, c
 
 /** `path` resolved through symbolic links when it lies inside the worktree, else undefined. */
 function insideWorktree(binding: Pick<BoundWorkspace, "worktree">, path: string): string | undefined {
-	const target = canonical(path);
-	const inside = relative(canonical(binding.worktree), target);
+	const target = resolvePhysicalPath(path);
+	const inside = relative(resolvePhysicalPath(binding.worktree), target);
 	// `relative` returns an absolute path only across Windows drives.
 	return inside !== ".." && !inside.startsWith(`..${sep}`) && !isAbsolute(inside) ? target : undefined;
 }
