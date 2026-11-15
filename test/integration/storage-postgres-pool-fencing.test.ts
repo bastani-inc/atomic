@@ -429,6 +429,39 @@ describe.skipIf(postgres.skipReason !== undefined)("the worker pool's fenced wri
 		assert.equal((await pool.inspect("root"))[0]!.state, "leased", "nothing was written");
 	});
 
+	test("a version bump waits for a fenced write that passed the version fence, so the write never commits against it (#5219)", async () => {
+		await pool.enqueue(lease, item.work, item.boundary);
+		const attempt = (await pool.claim(lease, "worker", [definition], 60_000))!;
+		const meta = table("wf_meta");
+		const [{ schema_version: version }] = await other.all<{ schema_version: number }>(
+			`SELECT schema_version FROM ${meta}`,
+		);
+		// The commit passes its version fence first, then waits for the run row this transaction holds.
+		const runRow = await holding(other, (tx) =>
+			tx.all(`SELECT 1 FROM ${table("wf_runs")} WHERE run_id = 'root' FOR UPDATE`),
+		);
+		const commit = pool.commit(lease, attempt, "step", { kind: "checkpoint", checkpoint: toolCheckpoint(item, 0) });
+		const bumper = await scope.connect();
+		try {
+			assert.equal(await pendingAfter(commit), true, "the commit waits for the run row");
+			const bump = bumper.run(`UPDATE ${meta} SET schema_version = ?`, Number(version) + 1);
+			const bumpWaited = await pendingAfter(bump);
+			runRow.release();
+			await runRow.done;
+			const committed = await commit.then(
+				() => true,
+				() => false,
+			);
+			await bump;
+			assert.equal(bumpWaited, true, "the bump waits for the write that passed the fence");
+			assert.equal(committed, true, "the write passed the fence before the bump, and commits");
+		} finally {
+			runRow.release();
+			await other.run(`UPDATE ${meta} SET schema_version = ?`, Number(version));
+			await bumper.close();
+		}
+	});
+
 	test("the pool's fenced writes are counted and watched like its other writes (#5102)", async () => {
 		let observed = 0;
 		observeSqlPoolTransactions(journal, () => observed++);

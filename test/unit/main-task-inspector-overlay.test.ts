@@ -456,9 +456,9 @@ for (const [isolated, completeOlderFirst] of [
 			assert.ok(host.frame().includes("0 active · 0 total"));
 			Object.defineProperty(host.session, "isStreaming", { value: true, configurable: true });
 			await host.paint();
-			// The identity line is idle information (#4690); under navigation a running turn shows only that it works.
+			// The identity line is idle information (#4690); under navigation a running turn shows no status line.
 			assert.ok(!host.frame().includes(context), host.frame());
-			assert.match(host.frame(), /^working\b/m);
+			assert.doesNotMatch(host.frame(), /^working\b/m);
 			assert.ok(host.frame().includes("MCP: 0/1 servers"));
 			assert.doesNotMatch(host.frame(), /esc to interrupt/i);
 			Object.defineProperty(host.session, "isStreaming", { value: false, configurable: true });
