@@ -8,6 +8,10 @@ import type { ExtensionContext } from "../../packages/coding-agent/src/index.js"
 import { createGitEnvironment } from "../../packages/coding-agent/src/utils/git-env.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
 import { SubagentParams } from "../../packages/subagents/src/extension/schemas.js";
+import {
+	resumeRunWorktree,
+	trackedRunWorktreeCount,
+} from "../../packages/subagents/src/runs/foreground/run-worktrees.js";
 import { SUBAGENT_CHILD_RECORD_TYPE } from "../../packages/subagents/src/runs/foreground/subagent-child-card-state.js";
 import type { SubagentChildRecord } from "../../packages/subagents/src/runs/foreground/subagent-child-records.js";
 import { createSubagentExecutor } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
@@ -233,4 +237,125 @@ test("a missing cwd is refused before launch with the hint about a parallel tool
 	assert.match(text(result), /parallel tool call in this same turn/);
 	assert.match(text(result), /worktree: \{ branch/);
 	assert.equal(harness.launches.length, 0);
+});
+
+test("a parallel call's named worktree applies to each task without its own, and cannot mix with worktree: true (#5202)", async () => {
+	const repo = makeRepo();
+	const harness = makeHarness(repo);
+
+	const shared = await harness.execute({
+		worktree: { branch: "shared" },
+		tasks: [
+			{ agent: "worker", task: "one" },
+			{ agent: "worker", task: "two", worktree: { branch: "own" } },
+		],
+	});
+
+	assert.equal(shared.isError, undefined, text(shared));
+	const cwdOf = (task: string) => harness.launches.find((launch) => launch.task.endsWith(task))?.cwd;
+	assert.equal(cwdOf("one"), join(repo, ".atomic", "worktrees", "shared"));
+	assert.equal(cwdOf("two"), join(repo, ".atomic", "worktrees", "own"));
+
+	const mixed = await harness.execute({
+		worktree: true,
+		tasks: [{ agent: "worker", task: "three", worktree: { branch: "mixed" } }],
+	});
+	assert.equal(mixed.isError, true);
+	assert.match(text(mixed), /cannot be combined with a task's named worktree/);
+	assert.equal(harness.launches.length, 2);
+});
+
+test("a named worktree checks out an existing branch as it is, follows the upstream, and keeps the cwd's subdirectory (#5202)", async () => {
+	const repo = makeRepo();
+	mkdirSync(join(repo, "pkg"));
+	writeFileSync(join(repo, "pkg", "index.ts"), "export {};\n");
+	git(repo, "add", "pkg");
+	git(repo, "commit", "-q", "-m", "pkg");
+	writeFileSync(join(repo, "later.txt"), "later\n");
+	git(repo, "add", "later.txt");
+	git(repo, "commit", "-q", "-m", "later");
+	const tip = git(repo, "rev-parse", "HEAD");
+	git(repo, "branch", "existing", "HEAD~1");
+	git(repo, "branch", "upstream-base", "HEAD~1");
+	git(repo, "branch", "--set-upstream-to=upstream-base");
+	const harness = makeHarness(repo);
+
+	const existing = await harness.execute({ agent: "worker", task: "e", worktree: { branch: "existing" } });
+	const fresh = await harness.execute({ agent: "worker", task: "f", cwd: "pkg", worktree: { branch: "fresh" } });
+
+	assert.equal(existing.isError, undefined, text(existing));
+	assert.equal(fresh.isError, undefined, text(fresh));
+	const existingPath = join(repo, ".atomic", "worktrees", "existing");
+	assert.equal(
+		git(existingPath, "rev-parse", "HEAD"),
+		git(repo, "rev-parse", "existing"),
+		"an existing branch as it is",
+	);
+	const freshPath = join(repo, ".atomic", "worktrees", "fresh");
+	assert.equal(git(freshPath, "rev-parse", "HEAD"), git(repo, "rev-parse", "upstream-base"), "from HEAD's upstream");
+	assert.notEqual(git(freshPath, "rev-parse", "HEAD"), tip);
+	assert.equal(harness.launches[1]?.cwd, join(freshPath, "pkg"), "the child runs in the same subdirectory");
+	const tracking = spawnSyncCollect(["git", "rev-parse", "--abbrev-ref", "fresh@{upstream}"], {
+		cwd: repo,
+		env: createGitEnvironment(),
+	});
+	assert.notEqual(tracking.exitCode, 0, "a new branch does not track its base");
+	assert.ok(existsSync(join(repo, ".atomic", "worktrees", ".gitignore")), "the default worktree root is ignored");
+});
+
+test("a named worktree is refused for an invalid branch, a path on another branch, and a missing task cwd (#5202)", async () => {
+	const repo = makeRepo();
+	const harness = makeHarness(repo);
+	const other = join(repo, "..", "other");
+	git(repo, "worktree", "add", "-q", "-b", "other", other);
+	const empty = join(repo, "..", "empty");
+	mkdirSync(empty);
+
+	const invalid = await harness.execute({ agent: "worker", task: "t", worktree: { branch: "bad..name" } });
+	const occupied = await harness.execute({ agent: "worker", task: "t", worktree: { branch: "mine", path: other } });
+	const missingTask = await harness.execute({
+		tasks: [{ agent: "worker", task: "t", cwd: "nowhere" }],
+	});
+
+	assert.match(text(invalid), /worktree.branch "bad..name" is not a valid branch name/);
+	assert.match(text(occupied), /is not the worktree of branch "mine"/);
+	assert.equal(missingTask.isError, true);
+	assert.equal(missingTask.details?.mode, "parallel");
+	assert.match(text(missingTask), /cwd does not exist: .*nowhere\. It may still be being created/);
+	assert.equal(harness.launches.length, 0);
+
+	const intoEmpty = await harness.execute({
+		agent: "worker",
+		task: "e",
+		worktree: { branch: "into-empty", path: empty },
+	});
+	assert.equal(intoEmpty.isError, undefined, text(intoEmpty));
+	assert.equal(harness.launches[0]?.cwd, empty, "an empty directory takes the worktree");
+});
+
+test("resuming a child in a removed named worktree checks its branch out there again and never tracks it for removal (#5202)", async () => {
+	const repo = makeRepo();
+	const before = trackedRunWorktreeCount();
+	const created = await makeHarness(repo).execute({ agent: "worker", task: "t", worktree: { branch: "resumed" } });
+	assert.equal(created.isError, undefined, text(created));
+	assert.equal(trackedRunWorktreeCount(), before, "the run forgets its named worktrees once it returns");
+	const path = join(repo, ".atomic", "worktrees", "resumed");
+	writeFileSync(join(path, "work.txt"), "work\n");
+	git(path, "add", "work.txt");
+	git(path, "commit", "-q", "-m", "work");
+	const head = git(path, "rev-parse", "HEAD");
+	git(repo, "worktree", "remove", path);
+
+	const release = resumeRunWorktree({
+		runId: "run",
+		index: 0,
+		cwd: path,
+		agent: "worker",
+		worktree: { repo, path, branch: "resumed", baseCommit: head, syntheticPaths: [], named: true },
+	});
+
+	assert.equal(git(path, "rev-parse", "HEAD"), head, "the branch, with its commits, is checked out again");
+	assert.equal(trackedRunWorktreeCount(), before);
+	release();
+	assert.ok(existsSync(path), "releasing the resume removes nothing");
 });
