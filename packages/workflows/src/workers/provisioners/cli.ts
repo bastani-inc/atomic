@@ -45,12 +45,10 @@ const SECRET_TEXT: readonly [RegExp, (match: string, ...groups: string[]) => str
 	[/(?<![\w-])eyJ[\w-]+\.[\w-]+(?:\.[\w-]*)?/g, () => "[redacted]"],
 	[
 		new RegExp(String.raw`(?<![\w-])([\w-]+)(["']?\s*[:=]\s*)(${SECRET_PAIR_VALUE})`, "g"),
-		(match, name = "", separator = "", value = "") => {
-			if (!isSecretName(name)) return match;
-			const quote = /^["']/u.exec(value)?.[0] ?? "";
-			const closed = quote !== "" && value.length > 1 && value.endsWith(quote);
-			return `${name}${separator}${quote}[redacted]${closed ? quote : ""}`;
-		},
+		(match, name: string, separator: string, value: string) =>
+			isSecretName(name)
+				? `${name}${separator}${value.replace(/^(["']?)[\s\S]*?(\1?)$/u, "$1[redacted]$2")}`
+				: match,
 	],
 ];
 /** Shorter values are not redacted where they appear: they would match ordinary words. */
@@ -179,7 +177,6 @@ export function runCli(call: CliCall, signal: AbortSignal): Promise<string> {
 			else stdout.push(chunk);
 		});
 		child.stderr.on("data", (chunk: Buffer) => {
-			if (stderrCut) return;
 			const kept = chunk.subarray(0, MAX_STDERR_BYTES - stderrBytes);
 			stderr.push(kept);
 			stderrBytes += kept.length;

@@ -927,3 +927,59 @@ describe("connection strings", () => {
 		for (const [input, expected] of cases) assert.equal(redactCredentialShapes(input), expected, input);
 	});
 });
+
+describe("credential value edges", () => {
+	test("each edge of a credential value is redacted exactly", () => {
+		const cases: readonly (readonly [string, string])[] = [
+			["{ token: null }", "{ token: null }"],
+			['{"token": 12ab}', '{"token": [redacted]}'],
+			['{"token": a12}', '{"token": [redacted]}'],
+			['{"token": 1.25}', '{"token": 1.25}'],
+			["password: abc  \nx", "password: [redacted]  \nx"],
+			[`openaiKey: "ab'c1234"`, "openaiKey: [redacted]"],
+			["note password: |\n  secret\n more", "note password: |\n  [redacted]"],
+			["password: |\n  password: |\n    x", "password: |\n  [redacted]"],
+			["XnextToken: Zq9vR2mXw7LpT4kN", "XnextToken: [redacted]"],
+			[`${"a".repeat(70)}nextToken: Zq9vR2mXw7LpT4kN`, `${"a".repeat(70)}nextToken: [redacted]`],
+			[`${"A".repeat(70)}nextToken: Zq9vR2mXw7LpT4kN`, `${"A".repeat(70)}nextToken: [redacted]`],
+			['Set-Cookie: a=1; Path="/x"', 'Set-Cookie: a=[redacted]; Path="/x"'],
+			['Set-Cookie: a="1"; b="2", c="3"', 'Set-Cookie: a="[redacted]"; b="2", c="[redacted]"'],
+			['Cookie: a="x;y"; b=2', 'Cookie: a="[redacted]"; b=[redacted]'],
+			["Set-Cookie: a=1,  b=2", "Set-Cookie: a=[redacted],  b=[redacted]"],
+			["Set-Cookie: a=1, =2", "Set-Cookie: a=[redacted], =2"],
+			["Cookie: a=\tb", "Cookie: a=[redacted]"],
+			['{"cookie": 5}', '{"cookie": 5}'],
+			['{"cookie": sid=x}', '{"cookie": sid=x}'],
+			["{'cookie': 'sid=x'}", "{'cookie': 'sid=[redacted]'}"],
+			["\"cookie: 'sid=x'\"", "\"cookie: 'sid=x'\""],
+			['cookie: "sid=x"', 'cookie: "sid=x"'],
+			['Cookie: "sid=x"', 'Cookie: "sid=[redacted]"'],
+			["\tcookie: a=b", "\tcookie: a=[redacted]"],
+			["\n  cookie: a=b", "\n  cookie: a=[redacted]"],
+			["x\ncookie: a=b", "x\ncookie: a=[redacted]"],
+			[`${"y".repeat(45)}\ncookie: a=b`, `${"y".repeat(45)}\ncookie: a=[redacted]`],
+			[`${"y".repeat(45)} cookie: a=b`, `${"y".repeat(45)} cookie: a=b`],
+			["x <cookie: a=b", "x <cookie: a=[redacted]"],
+			["x*cookie: a=b", "x*cookie: a=b"],
+			["x -H cookie: a=b", "x -H cookie: a=[redacted]"],
+			["header: cookie: a=b", "header: cookie: a=[redacted]"],
+			["a=1,cookie: b=2", "a=1,cookie: b=[redacted]"],
+			["`cookie: a=b`", "`cookie: a=[redacted]`"],
+			["'Cookie: a=b\\\\' x", "'Cookie: a=[redacted]\\\\' x"],
+			["--cookie='a=1; b=2' x", "--cookie='a=[redacted]; b=[redacted]' x"],
+			['--cookie "a=1', '--cookie "a=[redacted]'],
+			["--cookie=a=1", "--cookie=a=[redacted]"],
+			['--token="" x', "--token= [redacted] x"],
+			["--token 'ab cd' x", "--token '[redacted]' x"],
+			["--password\tabc x", "--password\t[redacted] x"],
+			["-p'' x", "-p'' x"],
+			["-pab1 x", "-pab1 x"],
+			["-pabcde1 x", "-p[redacted] x"],
+			["-p1abcde x", "-p[redacted] x"],
+			["-u=bob:pw x", "-u=bob:[redacted] x"],
+			["login a\tpassword\tb", "login a\tpassword\t[redacted]"],
+		];
+		for (const [input, expected] of cases)
+			assert.equal(redactCredentialShapes(input), expected, JSON.stringify(input));
+	});
+});

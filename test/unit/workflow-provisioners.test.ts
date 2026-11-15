@@ -715,6 +715,10 @@ describe("secret redaction (#4768)", () => {
 			["X_SIG=a", "X_SIG=[redacted]"],
 			["xSignature=a", "xSignature=[redacted]"],
 			["sigma=1 mysig=1", "sigma=1 mysig=1"],
+			["token: '", "token: '[redacted]"],
+			["token: 'a\" x", "token: '[redacted]"],
+			['token: ""', 'token: "[redacted]"'],
+			["token: abc'", "token: [redacted]'"],
 		];
 		for (const [text, redacted] of cases) assert.equal(redactSecrets(text, [], {}), redacted, text);
 	});

@@ -103,11 +103,13 @@ const CODE_IDENTIFIER =
 const ORDINARY_CAMEL_CASE_PREFIX =
 	/^(?:next|cancel|cancellation|continuation|page|pagination|cursor|has|is|show|hide|use|with|include|requires?|enable|disable|allow|toggle|max|min|num|count|should|can|on|get|set|parse|validate|check|forgot)$/u;
 
-/** The first word of the camelCase identifier whose credential name starts at `index` of `input`, or "". */
+/**
+ * The first word of the camelCase identifier whose credential name starts at `index` of `input`: its lower-case
+ * letters before the next capital or digit, "" when the name is not camelCase. It looks at most 64 characters back.
+ */
 function camelCasePrefix(input: string, index: number): string {
-	let start = index;
-	while (start > 0 && index - start < 64 && /[A-Za-z0-9_$]/u.test(input[start - 1]!)) start--;
-	return /^[a-z]+/u.exec(input.slice(start, index))?.[0] ?? "";
+	const identifier = /[A-Za-z0-9]*$/u.exec(input.slice(Math.max(0, index - 64), index))![0];
+	return /^[a-z]*/u.exec(identifier)![0];
 }
 
 /**
@@ -116,8 +118,7 @@ function camelCasePrefix(input: string, index: number): string {
  * identifier, followed by nothing but closing punctuation.
  */
 function holdsSecret(value: string, quotedName: boolean, password: boolean): boolean {
-	if (/^["'\\]/u.test(value)) return true;
-	const first = /^[^\s,;)}\]]*/u.exec(value)![0];
+	const first = /[^\s,;)}\]]*/u.exec(value)![0];
 	const rest = value.slice(first.length).trim();
 	if (!/^[,;)}\]]*$/u.test(rest)) return true;
 	if (LITERAL.test(first)) return false;
@@ -133,11 +134,9 @@ function fieldValue(password: boolean): Redaction {
 		const name = text.slice(0, separator);
 		const value = text.slice(separator + 1).trimStart();
 		// A value redacted already stays as it is, unless it sits on the next line, as a key block under `key:` does.
-		if (value.startsWith(REDACTED) && !text.slice(separator + 1, text.length - value.length).includes("\n"))
-			return [];
+		if (value.startsWith(REDACTED) && !text.includes("\n")) return [];
 		if (!holdsSecret(value, /["']/u.test(name), password)) return [];
-		const camelCase = match.index > 0 && /[A-Za-z0-9]/u.test(match.input[match.index - 1]!);
-		if (camelCase && ORDINARY_CAMEL_CASE_PREFIX.test(camelCasePrefix(match.input, match.index))) return [];
+		if (ORDINARY_CAMEL_CASE_PREFIX.test(camelCasePrefix(match.input, match.index))) return [];
 		return [{ start: separator + 1, end: text.trimEnd().length, replacement: ` ${REDACTED}` }];
 	};
 }
@@ -155,7 +154,7 @@ const PROVIDER_KEY_FIELD = new RegExp(
 /** Whether `value`, unquoted, looks like a secret: eight characters or more with a digit or a symbol, and no space. */
 function looksSecret(value: string): boolean {
 	const bare = value.replace(/^["']|["']$/gu, "");
-	return bare.length >= 8 && /[\d_\-+/=]/u.test(bare) && !/\s/u.test(bare) && !bare.startsWith(REDACTED);
+	return bare.length >= 8 && /[\d_\-+/=]/u.test(bare) && !/\s/u.test(bare);
 }
 
 const PROVIDER_KEY_VALUE: Redaction = (match) => {
@@ -204,163 +203,116 @@ const BLOCK: Redaction = (match) => {
 /** A `Cookie` or `Set-Cookie` header or field name, quoted or not, in any case, and its separator. */
 const COOKIE_HEADER = /(?<![A-Za-z0-9-])(set-)?cookie(["']?)[ \t]*:[ \t]*/giu;
 
-/** What may come right before a lower-case `cookie:` header inside a line: `>`/`<` of `curl -v`, `-H`, `headers:`. */
-const COOKIE_HEADER_CONTEXT = /(?:(?:^|\s)[<>*]|(?:^|\s)-H|headers?[ \t]*:|[,{])[ \t]*$/iu;
+/**
+ * What may come right before a lower-case `cookie:` header: the start of its line (the text before it starts with a
+ * line break), or inside a line `>`, `<` or `*` of `curl -v`, `-H`, `headers:`, `,` or `{`.
+ */
+const COOKIE_HEADER_CONTEXT = /(?:\n[ \t]*|\s[<>*][ \t]*|\s-H[ \t]*|headers?[ \t]*:[ \t]*|[,{][ \t]*)$/iu;
 
 /**
  * Whether a bare cookie header at `index` of `input` is a header, and the quote that ends it: `""` for none, undefined
  * when it is not a header. A `Set-Cookie` header in any case, and a capitalized `Cookie`, are headers anywhere; a
- * lower-case `cookie:` only at the start of its line, right after a quote, or after a header context such as `>`,
- * `-H`, `headers:`, `,` or `{`, so `My favourite cookie: oatmeal=great` stays prose.
+ * lower-case `cookie:` only after a header context, or right after a quote, so `My favourite cookie: oatmeal=great`
+ * stays prose. It looks at most 40 characters back.
  */
 function headerQuote(input: string, index: number, anywhere: boolean): string | undefined {
-	const before = input.slice(Math.max(0, index - 40), index);
+	const before = index > 40 ? input.slice(index - 40, index) : `\n${input.slice(0, index)}`;
 	const quote = /["'`]$/u.exec(before)?.[0];
 	if (quote !== undefined) return quote;
-	if (anywhere) return "";
-	const lineBreak = before.lastIndexOf("\n");
-	const line = before.slice(lineBreak + 1);
-	if ((lineBreak !== -1 || index === before.length) && /^[ \t]*$/u.test(line)) return "";
-	return COOKIE_HEADER_CONTEXT.test(line) ? "" : undefined;
+	return anywhere || COOKIE_HEADER_CONTEXT.test(before) ? "" : undefined;
 }
 
 /**
- * The values of the cookie pairs in `input` from `from` to `end`, in one pass: every pair of a `Cookie` header, and the
- * first pair of each cookie of a `Set-Cookie` header, where a `,` followed by `name=` starts another cookie (as fetch's
- * `Headers.get` joins them) and the other pairs are attributes such as `Path` and `Expires`. A quoted value ends at its
- * closing quote.
+ * A cookie pair: its name, then after `=` a quoted value or an unquoted one (after any leading spaces, up to
+ * whitespace, `,`, `;`, `"`, `\` or `}`), then the rest of the pair up to its `;` or `,`.
  */
-function cookieValues(input: string, from: number, end: number, setCookie: boolean): [number, number][] {
+const COOKIE_PAIR = /([^;,=]*)(?:=(?:"([^"]*)"?|([ \t]*[^;,\s"\\}]+)))?[^;,]*[;,]?/dgu;
+/** A cookie name a `,` of joined `Set-Cookie` headers is followed by when it starts another cookie. */
+const NEXT_COOKIE = /^ *[^;,= ]+=/u;
+
+/**
+ * The values of the cookie pairs of `segment`, as `[start, end)` offsets in it, in one pass: every pair of a `Cookie`
+ * header, and the first pair of each cookie of a `Set-Cookie` header, where a `,` followed by `name=` starts another
+ * cookie (as fetch's `Headers.get` joins them) and the other pairs are attributes such as `Path` and `Expires`.
+ */
+function cookieValues(segment: string, setCookie: boolean): [number, number][] {
 	const values: [number, number][] = [];
-	let position = from;
 	let first = true;
-	while (position < end) {
-		let nameEnd = position;
-		while (nameEnd < end && !";,=".includes(input[nameEnd]!)) nameEnd++;
-		position = nameEnd;
-		if (nameEnd < end && input[nameEnd] === "=") {
-			let valueEnd = nameEnd + 1;
-			if (input[valueEnd] === '"') {
-				const closing = input.slice(valueEnd + 1, end).indexOf('"');
-				valueEnd = closing === -1 ? end : valueEnd + 1 + closing;
-				if (first || !setCookie) values.push([nameEnd + 2, valueEnd]);
-				if (valueEnd < end) valueEnd++;
-			} else {
-				// A cookie value holds no whitespace, `,`, `"`, `\` or `}`: it ends there, after any spaces that lead it.
-				while (valueEnd < end && (input[valueEnd] === " " || input[valueEnd] === "\t")) valueEnd++;
-				const valueStart = nameEnd + 1;
-				const runStart = valueEnd;
-				while (valueEnd < end && !/[;,\s"\\}]/u.test(input[valueEnd]!)) valueEnd++;
-				if ((first || !setCookie) && valueEnd > runStart) values.push([valueStart, valueEnd]);
-			}
-			position = valueEnd;
-		}
-		while (position < end && !";,".includes(input[position]!)) position++;
-		if (position >= end) break;
-		const delimiter = input[position];
-		position++;
-		first = false;
-		if (setCookie && delimiter === ",") {
-			let tokenStart = position;
-			while (tokenStart < end && input[tokenStart] === " ") tokenStart++;
-			let tokenEnd = tokenStart;
-			while (tokenEnd < end && !";,= ".includes(input[tokenEnd]!)) tokenEnd++;
-			first = tokenEnd > tokenStart && input[tokenEnd] === "=";
-		}
+	for (const pair of segment.matchAll(COOKIE_PAIR)) {
+		const value = pair.indices![2] ?? pair.indices![3];
+		if (value !== undefined && value[1] > value[0] && (first || !setCookie)) values.push(value);
+		first = pair[0].endsWith(",") && NEXT_COOKIE.test(segment.slice(pair.index + pair[0].length));
 	}
 	return values;
 }
 
+/** `values`, offsets in the text from `from`, as replacements of a match at `index`. */
+function cookieReplacements(values: readonly [number, number][], from: number, index: number): Replacement[] {
+	return values.map(([start, end]) => ({
+		start: from + start - index,
+		end: from + end - index,
+		replacement: REDACTED,
+	}));
+}
+
 /**
  * The cookie values of a `Cookie` or `Set-Cookie` header, or of a quoted `cookie` field (`{"cookie":"sid=…"}`), with
- * cookie names and attributes kept. A bare header counts only where a header starts, so prose and code stay.
+ * cookie names and attributes kept. A bare header counts only where a header starts, so prose and code stay. A quoted
+ * header ends at its closing quote, before any backslashes that escape it.
  */
 const COOKIE_VALUES: Redaction = (match) => {
 	const input = match.input;
-	const headerEnd = match.index + match[0].length;
+	let from = match.index + match[0].length;
+	const next = input[from] ?? "";
 	let quote: string | undefined;
-	let from = headerEnd;
 	if (match[2] !== "") {
-		quote = input[headerEnd];
-		if (quote !== '"' && quote !== "'") return [];
+		quote = /["']/u.test(next) ? next : undefined;
 		from++;
 	} else {
 		const anywhere = match[1] !== undefined || match[0].startsWith("C");
 		quote = headerQuote(input, match.index, anywhere);
 		// A lower-case `cookie: "…"` outside quotes is code, such as `{ cookie: "theme=dark" }`.
-		if (quote === "" && !anywhere && /["']/u.test(input[headerEnd] ?? "")) return [];
+		if (!anywhere && /["']/u.test(next)) quote = undefined;
 	}
 	if (quote === undefined) return [];
-	const lineEnd = input.indexOf("\n", from);
-	let end = lineEnd === -1 ? input.length : lineEnd;
-	if (quote !== "") {
-		const closing = input.slice(from, end).indexOf(quote);
-		if (closing !== -1) end = from + closing;
-		// An escaped quote (`\"` in JSON inside a JSON string) keeps its backslashes.
-		while (end > from && input[end - 1] === "\\") end--;
-	}
-	return cookieValues(input, from, end, match[1] !== undefined).map(([start, valueEnd]) => ({
-		start: start - match.index,
-		end: valueEnd - match.index,
-		replacement: REDACTED,
-	}));
+	let segment = /[^\n]*/u.exec(input.slice(from))![0];
+	if (quote !== "") segment = segment.split(quote, 1)[0]!.replace(/\\+$/u, "");
+	return cookieReplacements(cookieValues(segment, match[1] !== undefined), from, match.index);
 };
 
 /** A `--cookie` option and its cookies, quoted or not: `--cookie sid=X` or `--cookie "a=1; b=2"`. */
-const COOKIE_OPTION = /(?<![\w-])--cookie(?:=|[ \t]+)(?:"[^"\n]*"?|'[^'\n]*'?|[^\s"']+)/gu;
+const COOKIE_OPTION = /(?<![\w-])--cookie(?:=|[ \t]+)(?:"([^"\n]*)"?|'([^'\n]*)'?|([^\s"']+))/dgu;
 
 /** The cookie values of a `--cookie` option. A file name, with no `=`, stays. */
 const COOKIE_OPTION_VALUES: Redaction = (match) => {
-	const text = match[0];
-	const valueStart = /--cookie(?:=|[ \t]+)/u.exec(text)![0].length;
-	const quoted = /["']/u.test(text[valueStart] ?? "");
-	const from = match.index + valueStart + (quoted ? 1 : 0);
-	const end =
-		match.index + text.length - (quoted && text.length - valueStart > 1 && text.endsWith(text[valueStart]!) ? 1 : 0);
-	return cookieValues(match.input, from, end, false).map(([start, valueEnd]) => ({
-		start: start - match.index,
-		end: valueEnd - match.index,
-		replacement: REDACTED,
-	}));
+	const [from, end] = match.indices![1] ?? match.indices![2] ?? match.indices![3]!;
+	return cookieReplacements(cookieValues(match.input.slice(from, end), false), from, match.index);
 };
 
+/** Each non-empty capture group of a match, replaced. */
+const GROUPS: Redaction = (match) =>
+	match
+		.indices!.slice(1)
+		.flatMap((group) =>
+			group !== undefined && group[1] > group[0]
+				? [{ start: group[0] - match.index, end: group[1] - match.index, replacement: REDACTED }]
+				: [],
+		);
+
+/** An option's value, quoted (its quotes kept) or not. */
+const OPTION_VALUE_GROUPS = String.raw`(?:"([^"\n]*)"?|'([^'\n]*)'?|([^\s"'<>|]+))`;
 /** Option names whose value is a credential, as in `--password X`, `--db-password=X` or `--api-key X`. */
 const CREDENTIAL_OPTION = new RegExp(
-	String.raw`(?<![\w-])--?(?:[a-z0-9]+-)*(?:password|passwd|pass|token|secret|api-key|apikey|access-key|secret-key|client-secret|private-key|auth-token)(?:=|[ \t]+)(?![-<>|])(?:${QUOTED_VALUE}|[^\s"'<>|]+)`,
-	"giu",
+	String.raw`(?<![\w-])--?(?:[a-z0-9]+-)*(?:password|passwd|pass|token|secret|api-key|apikey|access-key|secret-key|client-secret|private-key|auth-token)(?:=|[ \t]+)(?![-<>|])${OPTION_VALUE_GROUPS}`,
+	"dgiu",
 );
-/** A MySQL-style password joined to `-p`: quoted, or unquoted and holding a digit or a symbol. */
-const JOINED_PASSWORD_OPTION = new RegExp(String.raw`(?<!\S)-p(?:${QUOTED_VALUE}|[^\s'"]{6,})`, "gu");
+/** A MySQL-style password joined to `-p`: quoted, or unquoted, six characters or more, holding a digit or a symbol. */
+const JOINED_PASSWORD_OPTION =
+	/(?<!\S)-p(?:"([^"\n]*)"?|'([^'\n]*)'?|(?=[^\s'"]{6})([A-Za-z]*[^\sA-Za-z'"][^\s'"]*))/dgu;
 /** `curl -u user:password` and `--user user:password`. */
-const USER_OPTION = /(?<![\w-])(?:-u|--user)(?:=|[ \t]+)["']?[^\s:"']+:[^\s"']+/gu;
+const USER_OPTION = /(?<![\w-])(?:-u|--user)(?:=|[ \t]+)["']?[^\s:"']+:([^\s"']+)/dgu;
 /** A netrc entry: `login user password secret`, on one line or several. */
-const NETRC_PASSWORD = /(?<![\w-])login\s+\S+\s+password\s+\S+/gu;
-
-/** The value after an option's last separator, keeping its quotes. */
-function valueAfter(start: number, text: string): Replacement[] {
-	const quoted = /^["']/u.test(text.slice(start));
-	const end = quoted && text.length - start > 1 && text.endsWith(text[start]!) ? text.length - 1 : text.length;
-	return [{ start: quoted ? start + 1 : start, end, replacement: REDACTED }];
-}
-
-const OPTION_VALUE: Redaction = (match) => {
-	const text = match[0];
-	const separator = /=|[ \t]+/u.exec(text.slice(2))!;
-	return valueAfter(2 + separator.index + separator[0].length, text);
-};
-const JOINED_PASSWORD: Redaction = (match) => {
-	const value = match[0].slice(2);
-	if (!/^["']/u.test(value) && !/[^A-Za-z]/u.test(value)) return [];
-	return valueAfter(2, match[0]);
-};
-const USER_PASSWORD: Redaction = (match) => {
-	const text = match[0];
-	const colon = text.indexOf(":", text.search(/[=\s]/u));
-	return [{ start: colon + 1, end: text.length, replacement: REDACTED }];
-};
-const LAST_WORD: Redaction = (match) => [
-	{ start: match[0].search(/\S+$/u), end: match[0].length, replacement: REDACTED },
-];
+const NETRC_PASSWORD = /(?<![\w-])login\s+\S+\s+password\s+(\S+)/dgu;
 
 /**
  * A token with a well-known prefix, such as `sk-…` or `token_…`. A snake_case or kebab-case name of three or more short
@@ -400,10 +352,10 @@ const STEPS: readonly (readonly [RegExp, Redaction])[] = [
 	[PRIVATE_KEY_BLOCK, WHOLE],
 	[COOKIE_HEADER, COOKIE_VALUES],
 	[COOKIE_OPTION, COOKIE_OPTION_VALUES],
-	[CREDENTIAL_OPTION, OPTION_VALUE],
-	[JOINED_PASSWORD_OPTION, JOINED_PASSWORD],
-	[USER_OPTION, USER_PASSWORD],
-	[NETRC_PASSWORD, LAST_WORD],
+	[CREDENTIAL_OPTION, GROUPS],
+	[JOINED_PASSWORD_OPTION, GROUPS],
+	[USER_OPTION, GROUPS],
+	[NETRC_PASSWORD, GROUPS],
 	[blockField(PASSWORD_NAME), BLOCK],
 	[blockField(OTHER_NAME), BLOCK],
 	[credentialField(PASSWORD_NAME, PASSWORD_VALUES), fieldValue(true)],
@@ -445,7 +397,7 @@ function redactMatches(text: string, pattern: RegExp, redaction: Redaction): str
 		for (const { start, end, replacement } of redaction(match)) {
 			const from = match.index + start;
 			const to = match.index + end;
-			if (to <= from || from < plainCopied) continue;
+			if (from < plainCopied) continue;
 			redacted += text.slice(copied, at(from)) + replacement;
 			copied = at(to - 1) + 1;
 			plainCopied = to;
