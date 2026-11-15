@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync } from "node:fs";
-import net from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, test, vi } from "vitest";
@@ -17,37 +16,38 @@ const { getJitiCliPath } = await import("../../packages/intercom/broker/spawn.js
 const { requestBrokerShutdown } = await import("../../packages/intercom/broker/broker-stop.js");
 const { IntercomClient } = await import("../../packages/intercom/broker/client.js");
 const { HELD_FOR_AWAY_ASKER_TARGET } = await import("../../packages/intercom/broker/held-reply-targets.js");
+const { BROKER_CRASH_AT_ENV, DEPARTURE_ASKS_TAKEN, DEPARTURE_ASKS_TO_IT_TAKEN } = await import(
+	"../../packages/intercom/broker/crash-points.js"
+);
 
 type Client = InstanceType<typeof IntercomClient>;
 type Message = import("../../packages/intercom/types.js").Message;
 
 /** Spawning, and restarting, the real broker child is the structural cost of this suite. */
-const REAL_BROKER_TEST_TIMEOUT_MS = 60_000;
+const REAL_BROKER_TEST_TIMEOUT_MS = 120_000;
 const WAIT = { timeout: 10_000, interval: 20 };
+/** The broker child compiles its TypeScript as it starts, which takes longer than {@link WAIT} on a loaded machine. */
+const BROKER_START_WAIT_MS = 40_000;
 /** Long enough for a frame the broker wrote to arrive, so its absence means none was written. */
 const SETTLE_MS = 300;
 
 let broker: ChildProcess | undefined;
 
-async function startBroker(): Promise<void> {
+/** `crashAt`: the broker crashes at this point of its work instead of carrying on (see the broker's crash points). */
+async function startBroker(options: { crashAt?: string } = {}): Promise<void> {
 	const extensionDir = join(repoRoot, "packages/intercom");
 	broker = spawn(process.execPath, [getJitiCliPath(extensionDir), join(extensionDir, "broker/broker.ts")], {
-		env: { ...process.env, ATOMIC_CODING_AGENT_DIR: brokerFixture.agentDir },
+		env: {
+			...process.env,
+			ATOMIC_CODING_AGENT_DIR: brokerFixture.agentDir,
+			...(options.crashAt === undefined ? {} : { [BROKER_CRASH_AT_ENV]: options.crashAt }),
+		},
 		stdio: "ignore",
 	});
 	brokerFixture.trackBroker(broker);
-	await vi.waitFor(async () => {
-		brokerFixture.assertRunning();
-		const connected = await new Promise<boolean>((resolveConnected) => {
-			const socket = net.createConnection(getBrokerSocketPath(process.platform, brokerFixture.agentDir));
-			socket.once("connect", () => {
-				socket.destroy();
-				resolveConnected(true);
-			});
-			socket.once("error", () => resolveConnected(false));
-		});
-		assert.ok(connected);
-	}, WAIT);
+	// A broker retires once no session has been connected for 5 s since it listened. Under load the test can spend that
+	// long before its own sessions register, so the fixture holds a session for this broker until cleanup.
+	await brokerFixture.holdSession(getBrokerSocketPath(process.platform, brokerFixture.agentDir), BROKER_START_WAIT_MS);
 }
 
 /** How the broker goes away while both peers of an ask are connected. */
@@ -67,13 +67,16 @@ const RESTARTS = [
 	},
 ] as const;
 
-async function restartBroker(stop: (running: ChildProcess) => Promise<void>): Promise<void> {
+async function restartBroker(
+	stop: (running: ChildProcess) => Promise<void>,
+	options: { crashAt?: string } = {},
+): Promise<void> {
 	const running = broker;
 	assert.ok(running !== undefined && running.exitCode === null && running.signalCode === null);
 	const exited = new Promise<void>((resolveExit) => running.once("exit", () => resolveExit()));
 	await stop(running);
 	await exited;
-	await startBroker();
+	await startBroker(options);
 }
 
 /** A real client that records what arrives and confirms each save, as a session does. */
@@ -114,6 +117,14 @@ async function connect(
 	);
 	brokerFixture.onCleanup(() => client.disconnect().catch(() => undefined));
 	return { client, received, peerGone };
+}
+
+/** Wait until the broker has handled `sessionId`'s departure, as the session's listing shows. */
+async function untilDeparted(observer: Client, sessionId: string): Promise<void> {
+	await vi.waitFor(
+		async () => assert.ok(!(await observer.listSessions()).some((session) => session.id === sessionId)),
+		WAIT,
+	);
 }
 
 function idOf(client: Client): string {
@@ -168,7 +179,7 @@ function outcomes(session: { received: readonly Message[]; peerGone: readonly st
 	];
 }
 
-beforeAll(startBroker, REAL_BROKER_TEST_TIMEOUT_MS);
+beforeAll(() => startBroker(), REAL_BROKER_TEST_TIMEOUT_MS);
 afterAll(() => brokerFixture.cleanup());
 
 for (const restart of RESTARTS) {
@@ -213,7 +224,8 @@ for (const restart of RESTARTS) {
 			await sleep(SETTLE_MS);
 			assert.deepEqual(
 				outcomes(askerBack, questionId),
-				[{ id: "peer_disconnected", failed: true }],
+				// #5004: an asker that confirms saves is sent a failure it confirms, as it would a reply.
+				[{ id: `ended:${questionId}`, failed: true }],
 				"the asker is told once that its recipient is gone",
 			);
 		},
@@ -239,6 +251,89 @@ for (const restart of RESTARTS) {
 		REAL_BROKER_TEST_TIMEOUT_MS,
 	);
 }
+
+/**
+ * The recipient of a live ask between connected sessions closes, to be resumed, and the broker crashes while it handles
+ * that departure: after it took the ask off its live routes and before it kept it for the recipient's return.
+ */
+async function recipientDepartsIntoACrash(label: string) {
+	await restartBroker(RESTARTS[0].stop, { crashAt: DEPARTURE_ASKS_TO_IT_TAKEN });
+	const crashing = broker;
+	assert.ok(crashing !== undefined);
+	const crashed = new Promise<void>((resolveExit) => crashing.once("exit", () => resolveExit()));
+	const asker = { name: `asker-${label}`, returnAddress: randomUUID() };
+	const recipient = { name: `recipient-${label}`, returnAddress: randomUUID() };
+	const askerFirst = await connect(asker.name, asker);
+	const recipientFirst = await connect(recipient.name, recipient);
+	const askerId = idOf(askerFirst.client);
+	const recipientId = idOf(recipientFirst.client);
+	const questionId = randomUUID();
+	const asked = await askerFirst.client.send(recipient.name, {
+		messageId: questionId,
+		text: "which port?",
+		expectsReply: true,
+	});
+	assert.equal(asked.delivered, true, asked.reason);
+	await vi.waitFor(() => assert.ok(recipientFirst.received.some((message) => message.id === questionId)), WAIT);
+	await recipientFirst.client.disconnect({ resumable: true });
+	await crashed;
+	await startBroker();
+	return {
+		asker: { ...asker, id: askerId },
+		recipient: { ...recipient, id: recipientId },
+		askerFirst,
+		questionId,
+	};
+}
+
+test(
+	"a live ask whose recipient departs into a broker crash is answered once when both are back",
+	async () => {
+		const { asker, recipient, askerFirst, questionId } = await recipientDepartsIntoACrash(
+			`answered-mid-departure-${randomUUID().slice(0, 8)}`,
+		);
+		const askerBack = await reconnect(asker);
+		const recipientBack = await reconnect(recipient);
+		const replyId = randomUUID();
+		const replied = await recipientBack.client.send(asker.id, {
+			messageId: replyId,
+			text: "port 8080",
+			replyTo: questionId,
+			requirePendingReply: true,
+			expectedRecipientId: asker.id,
+		});
+		assert.equal(replied.delivered, true, replied.reason);
+		await vi.waitFor(() => assert.equal(outcomes(askerBack, questionId).length, 1), WAIT);
+		await recipientBack.client.disconnect();
+		await sleep(SETTLE_MS);
+		assert.deepEqual(
+			[...outcomes(askerFirst, questionId), ...outcomes(askerBack, questionId)],
+			[{ id: replyId, failed: false }],
+		);
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
+
+test(
+	"a live ask whose recipient departs into a broker crash fails once when that recipient ends",
+	async () => {
+		const { asker, recipient, askerFirst, questionId } = await recipientDepartsIntoACrash(
+			`ended-mid-departure-${randomUUID().slice(0, 8)}`,
+		);
+		const askerBack = await reconnect(asker);
+		const recipientBack = await reconnect(recipient);
+		await recipientBack.client.disconnect();
+		await vi.waitFor(() => assert.equal(outcomes(askerBack, questionId).length, 1), WAIT);
+		await sleep(SETTLE_MS);
+		assert.equal(
+			[...outcomes(askerFirst, questionId), ...outcomes(askerBack, questionId)].length,
+			1,
+			"the asker is told once",
+		);
+		assert.equal(outcomes(askerBack, questionId)[0]?.failed, true);
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
 
 test(
 	"a session holding a live ask's recipient id after a restart can neither answer nor fail it (#4829)",
@@ -321,7 +416,7 @@ test(
  * A subagent asks a connected recipient, then its owner releases it between turns: the ask's route waits for the
  * subagent, kept by its owner, while both the subagent and the broker are away.
  */
-async function releasedSubagentAsks(label: string) {
+async function releasedSubagentAsks(label: string, options: { departure?: "handled" | "unhandled" } = {}) {
 	const owner = { name: `owner-${label}`, returnAddress: randomUUID(), ownerToken: randomUUID() };
 	const ownerFirst = await connect(owner.name, owner);
 	const child = { name: `subagent-${label}`, returnAddress: randomUUID() };
@@ -340,12 +435,17 @@ async function releasedSubagentAsks(label: string) {
 	assert.equal(asked.delivered, true, asked.reason);
 	await vi.waitFor(() => assert.ok(recipientFirst.received.some((message) => message.id === questionId)), WAIT);
 	const childId = idOf(childFirst.client);
+	// Read before the departure: a broker that crashes in it leaves the recipient's client without an id.
+	const recipientId = idOf(recipientFirst.client);
 	await ownerFirst.client.reserveReleasedChildren([{ childName: child.name, wake: true }]);
 	await childFirst.client.disconnect({ resumable: true });
+	// On Windows `disconnect()` can resolve before the broker has handled the subagent's goodbye (#4894): a pipe has no
+	// half-close. A crash before then is a different case (the test above), so wait until the broker no longer lists it.
+	if (options.departure !== "unhandled") await untilDeparted(ownerFirst.client, childId);
 	return {
 		owner,
 		child: { ...child, id: childId },
-		recipient: { ...recipient, id: idOf(recipientFirst.client) },
+		recipient: { ...recipient, id: recipientId },
 		recipientSession: recipientFirst,
 		ownerSession: ownerFirst,
 		questionId,
@@ -412,6 +512,39 @@ for (const restart of RESTARTS) {
 		REAL_BROKER_TEST_TIMEOUT_MS,
 	);
 }
+
+test(
+	"a released subagent's ask survives a broker crash in the middle of its departure",
+	async () => {
+		// The broker crashes while it handles the subagent's departure, after it took the subagent's asks off its live
+		// routes and before it kept them for the subagent's return.
+		await restartBroker(RESTARTS[0].stop, { crashAt: DEPARTURE_ASKS_TAKEN });
+		const crashing = broker;
+		assert.ok(crashing !== undefined);
+		const crashed = new Promise<void>((resolveExit) => crashing.once("exit", () => resolveExit()));
+		const { owner, child, recipient, questionId } = await releasedSubagentAsks(
+			`mid-departure-${randomUUID().slice(0, 8)}`,
+			{ departure: "unhandled" },
+		);
+		await crashed;
+		await startBroker();
+
+		const recipientBack = await reconnect(recipient);
+		const replyId = randomUUID();
+		const replied = await recipientBack.client.send(child.id, {
+			messageId: replyId,
+			text: "port 8080",
+			replyTo: questionId,
+			requirePendingReply: true,
+			expectedRecipientId: child.id,
+		});
+		assert.equal(replied.queued, true, JSON.stringify(replied));
+		assert.equal(replied.target, HELD_FOR_AWAY_ASKER_TARGET);
+		const childBack = await restoreSubagent(owner, child);
+		await vi.waitFor(() => assert.deepEqual(outcomes(childBack, questionId), [{ id: replyId, failed: false }]), WAIT);
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
 
 test(
 	"a released subagent back after a restart is answered directly by its recipient (#4829, #4852)",

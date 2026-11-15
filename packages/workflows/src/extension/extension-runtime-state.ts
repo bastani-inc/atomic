@@ -45,6 +45,10 @@ import {
 import type { ExtensionAPI, PiModelContext } from "./public-types.js";
 import { createExtensionRuntime, type ExtensionRuntime } from "./runtime.js";
 import { createStatusWriter, type StatusWriter } from "./status-writer.js";
+import {
+	installUndeliveredStageMessageNotifications,
+	registerUndeliveredStageMessageRenderer,
+} from "./undelivered-stage-message-notifications.js";
 import { createWorkflowBackgroundWarningReporter } from "./workflow-background-warning.js";
 import { registerWorkflowHeartbeatRenderer } from "./workflow-heartbeat-notice.js";
 import {
@@ -215,6 +219,7 @@ export function createWorkflowExtensionRuntimeState(
 	});
 	let lifecycleNotificationsUnsubscribe: (() => void) | null = null;
 	let hilAnswerNotificationsUnsubscribe: (() => void) | null = null;
+	let undeliveredStageMessageNotificationsUnsubscribe: (() => void) | null = null;
 	let workflowHeartbeatScheduler: WorkflowHeartbeatScheduler | null = null;
 	let notificationsActive = false;
 	let notificationGeneration = 0;
@@ -236,6 +241,7 @@ export function createWorkflowExtensionRuntimeState(
 			: undefined;
 	registerLifecycleNoticeRenderer({ rendererHost: pi, registerMessageRenderer });
 	registerHilAnswerNoticeRenderer({ rendererHost: pi, registerMessageRenderer });
+	registerUndeliveredStageMessageRenderer({ rendererHost: pi, registerMessageRenderer });
 	registerWorkflowHeartbeatRenderer({ rendererHost: pi, registerMessageRenderer });
 	const sendWorkflowNotificationMessage: ExtensionAPI["sendMessage"] | undefined =
 		typeof pi.sendMessage === "function"
@@ -261,6 +267,15 @@ export function createWorkflowExtensionRuntimeState(
 			store,
 			stageUiBroker,
 			state: hilAnswerNotificationState,
+			sendMessage: sendWorkflowNotificationMessage,
+		});
+	};
+	const reinstallUndeliveredStageMessageNotifications = (): void => {
+		undeliveredStageMessageNotificationsUnsubscribe?.();
+		undeliveredStageMessageNotificationsUnsubscribe = null;
+		if (!notificationsActive) return;
+		undeliveredStageMessageNotificationsUnsubscribe = installUndeliveredStageMessageNotifications({
+			store,
 			sendMessage: sendWorkflowNotificationMessage,
 		});
 	};
@@ -748,6 +763,7 @@ export function createWorkflowExtensionRuntimeState(
 			notificationsActive = active;
 			reinstallLifecycleNotifications();
 			reinstallHilAnswerNotifications();
+			reinstallUndeliveredStageMessageNotifications();
 			// A fresh host session restarts the cadence from each run's persisted
 			// start time; prior-session schedule and pending state cannot apply.
 			if (!active) resetWorkflowHeartbeatSchedulerState(workflowHeartbeatSchedulerState);
