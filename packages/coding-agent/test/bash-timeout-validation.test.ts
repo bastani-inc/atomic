@@ -21,6 +21,40 @@ describe("bash timeout validation", () => {
 		expect(observed).toEqual([300, 3600]);
 	});
 
+	test("honours a fractional timeout instead of flooring it to whole seconds", async () => {
+		const observed: number[] = [];
+		const bash = createBashToolDefinition(process.cwd(), {
+			operations: {
+				exec: async (_command, _cwd, options) => {
+					observed.push(options.timeout ?? -1);
+					return { exitCode: 0 };
+				},
+			},
+		});
+
+		for (const timeout of [1.9, 0.29, 0.0001]) {
+			await bash.execute("fraction", { command: "true", timeout }, undefined, undefined, context);
+		}
+
+		// The nearest whole millisecond, and at least one.
+		expect(observed).toEqual([1.9, 0.29, 0.001]);
+	});
+
+	test("lets a command finish within a fractional timeout longer than its whole seconds", async () => {
+		const bash = createBashToolDefinition(process.cwd());
+
+		const result = await bash.execute(
+			"fraction",
+			{ command: "sleep 1.2; echo done", timeout: 1.9 },
+			undefined,
+			undefined,
+			context,
+		);
+
+		expect(result.content).toEqual([{ type: "text", text: "done\n" }]);
+		expect(result.details?.timeoutSeconds).toBe(1.9);
+	});
+
 	test("local operations accept omitted timeout and the 3600 second maximum", async () => {
 		const operations = createLocalBashOperations();
 		await expect(operations.exec("true", process.cwd(), { onData: () => {} })).resolves.toEqual({ exitCode: 0 });
