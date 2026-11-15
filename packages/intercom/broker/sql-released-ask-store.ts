@@ -132,6 +132,16 @@ export async function openSqlReleasedAskStore({ database, prefix }: IntercomBrok
 			const row = live(await select(database, key));
 			return row === undefined ? { status: "missing" } : { status: "found", ask: toRecord(row) };
 		},
+		async openForReplier(replierSessionId) {
+			if (replierSessionId.length === 0) return invalid("empty-session-id");
+			const rows = await database.all<ReleasedAskRow>(
+				`SELECT question_id, replier_session_id, asker_session_id, child_name, owner_session_id, state, reply_message_id,
+					0 AS lapsed, NULL AS claim_age
+				 FROM ${table} WHERE replier_session_id = ? AND state = 'open' AND expires_at > ${nowMs} ORDER BY "order"`,
+				replierSessionId,
+			);
+			return { status: "listed", asks: rows.map(toRecord) };
+		},
 		async claim(claim) {
 			const bad = invalidReleasedAskClaim(claim);
 			if (bad !== undefined) return bad;

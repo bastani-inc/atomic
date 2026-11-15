@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SingleResult } from "../../shared/types.js";
+import { utf8Head } from "../../shared/types-output.js";
 
 /** Bytes of settled agent output inlined into a wait, status, or launch result. */
 export const INLINE_TASK_OUTPUT_MAX_BYTES = 16 * 1024;
@@ -77,7 +78,6 @@ export function retainTaskOutput(
 	text: string,
 	ref: { readonly ownerId: string; readonly taskId: string },
 ): void {
-	const bytes = Buffer.from(text);
 	const path = writePrivateCopy(ref.ownerId, ref.taskId, fullOutputText(child, text));
 	const key = retentionKey(ref.ownerId, ref.taskId);
 	removeCopy(retained.get(key));
@@ -86,8 +86,8 @@ export function retainTaskOutput(
 		...(path ? { path } : {}),
 		...(child.outputReference ? { requestedPath: child.outputReference.path } : {}),
 		...(child.outputSaveError ? { saveError: child.outputSaveError } : {}),
-		head: new TextDecoder().decode(bytes.subarray(0, INLINE_TASK_OUTPUT_MAX_BYTES)),
-		totalBytes: bytes.byteLength,
+		head: utf8Head(text, INLINE_TASK_OUTPUT_MAX_BYTES),
+		totalBytes: Buffer.byteLength(text, "utf-8"),
 	});
 	while (retained.size > MAX_RETAINED_TASK_OUTPUTS) {
 		const oldest = retained.keys().next().value;

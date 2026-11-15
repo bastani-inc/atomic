@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { setImmediate } from "node:timers/promises";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
+import { workflowAttemptOf } from "../../packages/workflows/src/durable/attempt-identity.js";
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
@@ -60,7 +61,8 @@ try {
 	assert.equal(result.status, "completed", JSON.stringify(result));
 	assert.deepEqual(prompts, ["one", "two"]);
 	assert.deepEqual(answers, prompts);
-	assert.equal(backend.listCheckpoints(options.runId).filter((entry) => entry.kind === "ui").length, 2);
+	// The resume's attempt record is a reserved ui-kind record, not an answer (#4874).
+	assert.equal(backend.listCheckpoints(options.runId).filter((entry) => entry.kind === "ui" && workflowAttemptOf(entry) === undefined).length, 2);
 	assert.equal(backend.listCheckpoints(options.runId).filter((entry) => entry.checkpointId.startsWith("stage-replay-meta:")).length, 1);
 	console.log("cached-stage-ui-drained");
 } finally {

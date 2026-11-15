@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative, sep } from "node:path";
-import type { ExtensionContext } from "@bastani/atomic";
+import { join, relative } from "node:path";
+import { type ExtensionContext, isPathInside } from "@bastani/atomic";
 import { afterEach, beforeEach, test } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { runOwnerlessChild } from "../../packages/subagents/src/runs/foreground/ownerless-children.js";
@@ -40,8 +40,7 @@ afterEach(() => {
 });
 
 function isInside(parent: string, child: string): boolean {
-	const path = relative(parent, child);
-	return path !== "" && !path.startsWith("..") && !path.startsWith(sep);
+	return relative(parent, child) !== "" && isPathInside(parent, child);
 }
 
 test("a parent without a session file keeps child sessions under the agent directory, stable per parent session (#4660)", () => {

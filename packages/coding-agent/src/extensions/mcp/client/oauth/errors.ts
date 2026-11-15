@@ -1,12 +1,27 @@
 export class OAuthError extends Error {
 	readonly code: string;
 	readonly errorUri: string | undefined;
+	/** HTTP status of the response that reported the error. */
+	readonly status: number | undefined;
 
-	constructor(code: string, message: string, errorUri?: string) {
+	constructor(code: string, message: string, errorUri?: string, status?: number) {
 		super(message || code);
 		this.name = "OAuthError";
 		this.code = code;
 		this.errorUri = errorUri;
+		this.status = status;
+	}
+}
+
+/**
+ * A token refresh failed for a reason that may pass (a 5xx or 429 answer, `server_error`,
+ * `temporarily_unavailable`, a network error, or a timeout). The stored grant is still valid.
+ */
+export class OAuthTemporarilyUnavailableError extends Error {
+	constructor(cause: unknown) {
+		const reason = cause instanceof Error ? cause.message : String(cause);
+		super(`OAuth authorization server temporarily unavailable during token refresh: ${reason}`, { cause });
+		this.name = "OAuthTemporarilyUnavailableError";
 	}
 }
 

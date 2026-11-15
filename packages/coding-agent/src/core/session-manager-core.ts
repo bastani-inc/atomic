@@ -72,7 +72,7 @@ import {
 	type ToolOutputReference,
 	takeInlineToolOutput,
 } from "./session-tool-output.ts";
-import { adoptInlineSnapshotBlobs } from "./session-worktree-snapshots.ts";
+import { adoptInlineSnapshotBlobs, deleteSessionWithSnapshotRefs } from "./session-worktree-snapshots.ts";
 import { SessionBlobError, type StorageFailureCause, StorageRollbackError } from "./storage/errors.js";
 import {
 	SessionFormatVersionError,
@@ -92,6 +92,12 @@ async function resolveSessionStore(cwd: string): Promise<SessionStore> {
 	return (await import("./session-storage.js")).resolveSessionStore(cwd);
 }
 
+/** A custom entry written with a message, in the same store write (see `SessionManager.appendWithMessage`). */
+export interface MessageCompanionEntry {
+	readonly customType: string;
+	readonly data?: SessionJsonValue;
+}
+
 /** An in-memory session tree whose mutations await the backing store. */
 export class SessionManager {
 	private sessionId = "";
@@ -101,6 +107,8 @@ export class SessionManager {
 	private store: SessionStore;
 	private lastSeq = 0;
 	private mutation: Promise<void> = Promise.resolve();
+	/** Custom entries written with a message, in its own store write, by the message they go with. */
+	private readonly messageCompanions = new WeakMap<object, () => MessageCompanionEntry | undefined>();
 	private fileEntries: FileEntry[] = [];
 	private byId: Map<string, SessionEntry> = new Map();
 	private labelsById: Map<string, string> = new Map();
@@ -282,7 +290,7 @@ export class SessionManager {
 			throw new Error(`Cannot delete the session that is currently open: ${sessionId}`);
 		}
 		try {
-			await this.store.delete(sessionId);
+			await deleteSessionWithSnapshotRefs(this.store, sessionId);
 		} catch (error) {
 			if (!(error instanceof SessionNotFoundError)) throw error;
 		}
@@ -399,9 +407,33 @@ export class SessionManager {
 	appendMessage(message: Message | CustomMessage | BashExecutionMessage): Promise<string> {
 		return this.runMutation(async () => {
 			const entry = createMessageEntry(message, this.byId, this.leafId);
-			await this._appendEntry(entry);
+			const companion = this.messageCompanions.get(message);
+			this.messageCompanions.delete(message);
+			const custom = companion?.();
+			await this._appendEntries(
+				custom === undefined
+					? [entry]
+					: [
+							entry,
+							createCustomEntry(
+								custom.customType,
+								custom.data,
+								{ has: (id) => id === entry.id || this.byId.has(id) },
+								entry.id,
+							),
+						],
+			);
 			return entry.id;
 		});
+	}
+
+	/**
+	 * @internal Writes the custom entry `companion` returns in the same store write as `message`, right after it, when
+	 * `message` is appended: the session then holds both or neither. `companion` runs once, as that write is made, and
+	 * may return undefined to write the message alone; a message never appended never calls it.
+	 */
+	appendWithMessage(message: object, companion: () => MessageCompanionEntry | undefined): void {
+		this.messageCompanions.set(message, companion);
 	}
 
 	/** Append a thinking level change as child of current leaf, then advance leaf. Returns entry id. */
@@ -563,7 +595,8 @@ export class SessionManager {
 	 * entry's snapshot with the same id (an unchanged capture). `restore` records that the snapshot was restored on
 	 * this host into `root`, and `restoreWarnings` what that restore reported beyond its snapshot record. `unrestored`
 	 * records that a resume continued without restoring the checkout at `root` (#4733). `captureMs` is how long the
-	 * turn's capture took (#4748).
+	 * turn's capture took (#4748). `degradedFrom` names the snapshot a resume restored only partly into `root`, which
+	 * stays the checkout's restore target while this entry records the worktree as it is (#4922).
 	 */
 	appendWorktreeSnapshot(
 		root: string,
@@ -573,6 +606,7 @@ export class SessionManager {
 		restoreWarnings: readonly WorktreeRestoreHostWarning[] = [],
 		unrestored?: WorktreeUnrestored,
 		captureMs?: number,
+		degradedFrom?: string,
 	): Promise<string> {
 		return this.runMutation(async () => {
 			if (snapshot !== undefined && snapshot.id !== snapshotId) {
@@ -590,6 +624,16 @@ export class SessionManager {
 			if (restore === undefined && restoreWarnings.length > 0) {
 				throw new WorkspaceConfigError("sdk", "restoreWarnings", "warnings recorded together with their restore");
 			}
+			if (
+				degradedFrom !== undefined &&
+				(degradedFrom === snapshotId || !this.getWorktreeSnapshotRecords().has(degradedFrom))
+			) {
+				throw new WorkspaceConfigError(
+					"sdk",
+					"degradedFrom",
+					"the id of another snapshot recorded in this session",
+				);
+			}
 			const entry = createWorktreeSnapshotEntry(
 				root,
 				snapshotId,
@@ -600,6 +644,7 @@ export class SessionManager {
 				this.leafId,
 				unrestored,
 				captureMs,
+				degradedFrom,
 			);
 			await this._appendEntry(entry);
 			return entry.id;

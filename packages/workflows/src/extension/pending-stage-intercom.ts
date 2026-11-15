@@ -9,6 +9,7 @@ import {
 	workflowInvocationIntercomGroup,
 	workflowInvocationOwnsGroup,
 } from "../shared/intercom-group.js";
+import { pendingStageQueueRefusal } from "../shared/pending-stage-delivery.js";
 import { workflowPendingStageRouteCapability } from "../shared/pending-stage-route-capability.js";
 import { registerWorkflowPendingStageRouteReadiness } from "../shared/pending-stage-route-readiness.js";
 import {
@@ -926,12 +927,8 @@ async function queueAndPersist(
 	);
 	if (result === undefined) return { outcome: "refused", reason: "Session not found" };
 	if (!result.ok) {
-		if (result.reason === "capacity") {
-			return {
-				outcome: "refused",
-				reason: `Pending stage message queue is full (limit ${result.limit}) for ${event.target}`,
-			};
-		}
+		const capacityRefusal = pendingStageQueueRefusal(result, event.target);
+		if (capacityRefusal !== undefined) return { outcome: "refused", reason: capacityRefusal };
 		if (result.reason === "message_id_conflict") {
 			return {
 				outcome: "refused",
@@ -1023,12 +1020,8 @@ async function deliverStickyTarget(
 	const result = await activeStore.queueStickyStageMessage(request, senderGroup, runGroup, backend);
 	if (result === undefined) return { outcome: "refused", reason: "Session not found" };
 	if (!result.ok) {
-		if (result.reason === "capacity") {
-			return {
-				outcome: "refused",
-				reason: `Pending stage message queue is full (limit ${result.limit}) for ${event.target}`,
-			};
-		}
+		const capacityRefusal = pendingStageQueueRefusal(result, event.target);
+		if (capacityRefusal !== undefined) return { outcome: "refused", reason: capacityRefusal };
 		if (result.reason === "message_id_conflict") {
 			return {
 				outcome: "refused",
@@ -1183,11 +1176,10 @@ function matchingLiveStages(
 			) {
 				continue;
 			}
-			const idTarget = formatWorkflowStageTarget(rootRunId, ...hops.map((hop) => hop.name), stage.id);
 			if (stageMatchesPathPattern(patternSegments, hops, [stage.id, stage.name])) {
-				// The forward target stays in the announced boundary-name form: the broker's
-				// live aliases are built from the roster's advertised targets.
-				matches.push({ run, stage, target: idTarget });
+				// Forward to the roster's announced target (#4844): the broker registers live aliases
+				// only under it, and it spells a repeated, slash, or star boundary by its child-run id.
+				matches.push({ run, stage, target: stageRouteTarget(runs, rootRunId, run.id, stage.id) });
 			}
 		}
 	}

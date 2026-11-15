@@ -96,8 +96,7 @@ describe("selectable -fast model identity", () => {
 	it("keeps normal and fast IDs as distinct ordered fallback candidates and attempt keys", async () => {
 		const runtime = await createRuntime();
 		const lookup: FallbackModelLookup = {
-			getAvailableSnapshot: () => runtime.getAvailableSnapshot(),
-			getModel: (provider, modelId) => runtime.getModel(provider, modelId),
+			getModels: () => runtime.getModels(),
 			hasConfiguredAuth: () => true,
 		};
 		const configured = ["openai-codex/gpt-5.6-sol-fast:medium", "openai-codex/gpt-5.6-sol:medium"];
