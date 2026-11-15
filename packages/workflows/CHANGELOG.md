@@ -21,6 +21,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- `open-claude-design` artifacts written to the temp directory now use a directory only the current user owns
 - A workflow stage now charges every model call it makes to the stage and run budgets exactly once, read from the session's provider usage events instead of the stage's message list: a compaction inside a stage prompt no longer drops that prompt's usage, the compaction's own planner, classifier and summary requests are charged, and a session retry keeps the failed request's usage. A resumed stage never re-charges its history ([#5053](https://github.com/bastani-inc/atomic/issues/5053))
 - A run budget now charges the budget wrap-up turn's spend when the turn finishes, so a stopped run's accounting includes it and a resumed run starts with that much less headroom. Before, it was never charged ([#5053](https://github.com/bastani-inc/atomic/issues/5053))
 - A child workflow's own budget now keeps what it already charged when its root run resumes after a crash at any point, including in a new process. The child records its accounting, and its root's, on the root run after each of its stages, in one write. Before, the child's budget restarted at zero and the child could spend past its own cap, and the stages a resume replayed were never charged to the root ([#5053](https://github.com/bastani-inc/atomic/issues/5053))

@@ -3,12 +3,12 @@ import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { createOwnerState } from "./owner-state.js";
 import { dirname, extname, isAbsolute, join, relative, resolve as resolvePath, sep as pathSep } from "node:path";
-import { createChildProcessEnvironment } from "@bastani/atomic";
+import { assertPrivateDirectory, createChildProcessEnvironment } from "@bastani/atomic";
 import { activityMonitor } from "./activity.js";
 import type { ExtractedContent } from "./extract.js";
 import { flattenTruncatedString } from "./flat-string.js";
 import { checkGhAvailable, checkRepoSize, fetchViaApi, showGhHint } from "./github-api.js";
-import { BINARY_EXTENSIONS, MAX_INLINE_FILE_CHARS, MAX_TREE_ENTRIES, NOISE_DIRS, assertValidGitHubCoordinates, loadGitHubConfig, parseGitHubUrl, resetGitHubConfig, type GitHubCloneConfig, type GitHubUrlInfo } from "./github-config.js";
+import { BINARY_EXTENSIONS, MAX_INLINE_FILE_CHARS, MAX_TREE_ENTRIES, NOISE_DIRS, assertValidGitHubCoordinates, chosenDefaultGitHubClonePath, loadGitHubConfig, parseGitHubUrl, resetGitHubConfig, type GitHubCloneConfig, type GitHubUrlInfo } from "./github-config.js";
 export { parseGitHubUrl, type GitHubUrlInfo } from "./github-config.js";
 
 /** Written into every clone directory this tool creates; nothing without it is ever removed. */
@@ -55,10 +55,14 @@ function pathExists(path: string): boolean {
 	return lstatSync(path, { throwIfNoEntry: false }) !== undefined;
 }
 
-/** True when `path` is strictly inside the clone root after resolving every symlink that exists along it. */
+/**
+ * True when `path` is strictly inside the clone root after resolving every symlink along it.
+ * The walk uses lstat, so it stops at a dangling symlink, which refuses the path.
+ */
 function isConfined(root: string, path: string): boolean {
 	let existing = path;
-	while (!existsSync(existing)) existing = dirname(existing);
+	while (!pathExists(existing)) existing = dirname(existing);
+	if (!existsSync(existing)) return false;
 	const realPath = join(realpathSync(existing), relative(existing, path));
 	return isInside(realpathSync(root), realPath);
 }
@@ -76,6 +80,10 @@ function removeOwnedClone(paths: ClonePaths): boolean {
 function prepareCloneDirectory(paths: ClonePaths): boolean {
 	const { root, directory } = paths;
 	try {
+		// The default cache must still be a directory only this account owns;
+		// one swapped or opened up since it was chosen is refused, not used.
+		const privateRoot = chosenDefaultGitHubClonePath();
+		if (privateRoot && (root === privateRoot || dirname(root) === privateRoot)) assertPrivateDirectory(privateRoot);
 		mkdirSync(root, { recursive: true });
 		if (!isConfined(root, directory) || !removeOwnedClone(paths)) return false;
 		mkdirSync(directory, { recursive: true });
@@ -173,7 +181,7 @@ function resolveWithinRepo(rootPath: string, relativePath: string): string | nul
 		if (!candidate.startsWith(rootPrefix)) return null;
 	}
 
-	if (!existsSync(candidate)) return candidate;
+	if (!pathExists(candidate)) return isConfined(normalizedRoot, candidate) ? candidate : null;
 
 	try {
 		const realRoot = realpathSync(normalizedRoot);
@@ -285,8 +293,8 @@ function buildDirListing(rootPath: string, subPath: string): string {
 export function readReadme(localPath: string): string | null {
 	const candidates = ["README.md", "readme.md", "README", "README.txt", "README.rst"];
 	for (const name of candidates) {
-		const readmePath = join(localPath, name);
-		if (existsSync(readmePath)) {
+		const readmePath = resolveWithinRepo(localPath, name);
+		if (readmePath && existsSync(readmePath)) {
 			try {
 				const content = readFileSync(readmePath, "utf-8");
 				return content.length > 8192 ? flattenTruncatedString(content.slice(0, 8192) + "\n\n[README truncated at 8K chars]") : content;

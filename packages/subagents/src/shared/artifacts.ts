@@ -1,9 +1,9 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { getAgentConfigPaths } from "@bastani/atomic";
+import { ensurePrivateTempDir, getAgentConfigPaths } from "@bastani/atomic";
 import { appendToActiveEventWriter } from "./event-jsonl-writer.js";
 import { publishFileExclusive, unlinkIfPresent } from "./exclusive-file-publication.js";
-import { type ArtifactPaths, TEMP_ARTIFACTS_DIR } from "./types.js";
+import type { ArtifactPaths } from "./types.js";
 
 const CLEANUP_MARKER_FILE = ".last-cleanup";
 const CLEANUP_LOCK_FILE = ".cleanup.lock";
@@ -15,7 +15,16 @@ export function getArtifactsDir(sessionFile: string | null): string {
 		const sessionDir = path.dirname(sessionFile);
 		return path.join(sessionDir, "subagent-artifacts");
 	}
-	return TEMP_ARTIFACTS_DIR;
+	return sessionlessArtifactsDir();
+}
+
+/**
+ * The session-less artifact directory, created private to this account (see
+ * `ensurePrivateTempDir`) before anything — progress files, worktree diffs — is
+ * written below it, and checked again on every call.
+ */
+function sessionlessArtifactsDir(): string {
+	return ensurePrivateTempDir("subagents", "artifacts");
 }
 
 export function getArtifactPaths(artifactsDir: string, runId: string, agent: string, index?: number): ArtifactPaths {
@@ -229,7 +238,11 @@ function cleanupSessionsRoot(sessionsBase: string, maxAgeDays: number): void {
 }
 
 export function cleanupAllArtifactDirs(maxAgeDays: number, sessionsRoots?: readonly string[]): void {
-	cleanupOldArtifacts(TEMP_ARTIFACTS_DIR, maxAgeDays);
+	try {
+		cleanupOldArtifacts(sessionlessArtifactsDir(), maxAgeDays);
+	} catch {
+		// No private session-less artifact directory; there is nothing of ours to clean.
+	}
 
 	// Host-provided sessions roots keep isolated/programmatic agent directories from
 	// leaking into the real global (and legacy) session roots; only the env/global

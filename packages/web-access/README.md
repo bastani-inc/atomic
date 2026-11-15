@@ -156,7 +156,7 @@ get_search_content({ responseId: "abc123", query: "original query" })
 
 GitHub URLs are cloned locally instead of scraped. The agent gets real file contents and a local path to explore with `read` and `bash`. Root URLs return the repo tree + README, `/tree/` paths return directory listings, `/blob/` paths return file contents.
 
-Repos over 350MB get a lightweight API-based view instead of a full clone (override with `forceClone: true`). Commit SHA URLs are handled via the API. Clones are cached for the session and wiped on session change. Private repos require the `gh` CLI.
+Repos over 350MB get a lightweight API-based view instead of a full clone (override with `forceClone: true`). Commit SHA URLs are handled via the API. Clones are cached for the session and wiped on session change. Private repos require the `gh` CLI. By default clones go to a `github-repos` directory that only the current user owns: under `$XDG_RUNTIME_DIR/atomic` when that is set, else under `cache/tmp` in the agent directory, else under `atomic-<uid>` in the system temp directory. Set `githubClone.clonePath` to choose another location.
 
 ### YouTube videos
 
@@ -273,7 +273,7 @@ All config lives in `~/.pi/web-search.json`. Every field is optional.
     "enabled": true,
     "maxRepoSizeMB": 350,
     "cloneTimeoutSeconds": 30,
-    "clonePath": "/tmp/atomic-github-repos"
+    "clonePath": "<per-user dir>/github-repos"
   },
   "youtube": {
     "enabled": true,
