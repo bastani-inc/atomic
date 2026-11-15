@@ -368,7 +368,13 @@ export function duplicateSessionNames(sessions: SessionInfo[]): Set<string> {
       .filter((name, index, names) => names.indexOf(name) !== index)
   );
 }
-export function parseSubagentIntercomPayload(payload: unknown): { to: string; message: string; requestId?: string } | null {
+export function parseSubagentIntercomPayload(payload: unknown): {
+  to: string;
+  message: string;
+  requestId?: string;
+  /** Asks the sender for the right to deliver; false means it already returned the result itself. */
+  claimDelivery?: () => boolean;
+} | null {
   if (typeof payload !== "object" || payload === null) {
     return null;
   }
@@ -377,7 +383,13 @@ export function parseSubagentIntercomPayload(payload: unknown): { to: string; me
     return null;
   }
   const requestId = typeof record.requestId === "string" ? record.requestId : undefined;
-  return { to: record.to, message: record.message, ...(requestId ? { requestId } : {}) };
+  const claimDelivery = typeof record.claimDelivery === "function" ? record.claimDelivery as () => boolean : undefined;
+  return {
+    to: record.to,
+    message: record.message,
+    ...(requestId ? { requestId } : {}),
+    ...(claimDelivery ? { claimDelivery } : {}),
+  };
 }
 function subagentTargetPart(value: string): string {
   return value.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || "agent";
