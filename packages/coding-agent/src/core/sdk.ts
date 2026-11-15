@@ -267,8 +267,9 @@ async function acquireSessionPermit(
 
 /**
  * A supplied session that recorded worktree snapshots, prepared the way `atomic --session` prepares it: continued in
- * its recorded checkout when that still matches, in a matching checkout, or in a worktree restored from its snapshot,
- * with its blueprints built. The checkout is compared under the `snapshots` the session itself records with. A session
+ * its recorded checkout when that still matches, in a matching checkout, or in a worktree restored from its snapshot.
+ * Without a UI, the blueprint build of a restored worktree runs behind the session's first turn and holds its tool calls,
+ * unless `resume.waitForBlueprint` is `"prompt"`. The checkout is compared under the `snapshots` the session itself records with. A session
  * without snapshots is returned unchanged, so creating it costs no Git call.
  */
 async function sessionResumedOnThisNode(
@@ -287,6 +288,7 @@ async function sessionResumedOnThisNode(
 			agentDir,
 			settings,
 			savedProjectTrust(agentDir, settings),
+			false,
 		),
 		settings: resolveWorktreeSnapshotSettings(snapshots, "sdk", "snapshots", settings.getWorktreeSnapshotSettings()),
 	});

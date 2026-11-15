@@ -398,10 +398,12 @@ describe("cross-machine session resume", () => {
 			};
 		};
 		const start = await SessionManager.create(storeB, sandbox.root);
+		// As /resume in the TUI: the session opens once the worktree is built.
 		const runtime = await createAgentSessionRuntime(createRuntime, {
 			cwd: sandbox.root,
 			agentDir: sandbox.path("machine-b", "agent"),
 			sessionManager: start,
+			interactive: true,
 		});
 		cleanups.push(() => runtime.dispose());
 		assert.deepEqual(await runtime.switchSession(imported.getSessionId()), { cancelled: false });
