@@ -62,6 +62,7 @@ function isPrivateIPv4(a: number, b: number): boolean {
 	return a === 0 || a === 10 || a === 127 ||
 		(a === 169 && b === 254) ||
 		(a === 172 && b >= 16 && b <= 31) ||
+		(a === 100 && b >= 64 && b <= 127) ||
 		(a === 192 && b === 168);
 }
 
@@ -77,7 +78,7 @@ function ipv6Groups(address: string): number[] {
 function isPrivateIPv6(address: string): boolean {
 	const groups = ipv6Groups(address);
 	const [first] = groups;
-	if ((first & 0xfe00) === 0xfc00 || (first & 0xffc0) === 0xfe80) return true;
+	if ((first & 0xfe00) === 0xfc00 || (first & 0xff80) === 0xfe80) return true;
 	const prefix = groups.slice(0, 6).join(":");
 	// IPv4-compatible (which also covers :: and ::1, as 0.0.0.0/8), IPv4-mapped, IPv4-translated, and NAT64.
 	const embedsIPv4 = ["0:0:0:0:0:0", "0:0:0:0:0:65535", "0:0:0:0:65535:0", "100:65435:0:0:0:0"].includes(prefix);

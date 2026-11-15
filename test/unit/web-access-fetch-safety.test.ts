@@ -331,7 +331,6 @@ test("public URLs still use the remote fallback services (#4898)", async () => {
 		"http://[::ffff:a00:101:1]/",
 		"http://[2001:db8::fd1]/",
 		"http://[2001:db8::fe80]/",
-		"http://[fec0::1]/",
 		"http://[::ffff:8.8.8.8]/",
 		"http://notlocalhost.com/",
 		"http://example.local.com/",
@@ -418,6 +417,10 @@ test("private hosts in every notation are never sent to remote fallback services
 		"http://[0:0:0:0:0:0:0:1]/",
 		"http://[FE80::1]/",
 		"http://[FEBF::1]/",
+		"http://[FEC0::1]/",
+		"http://[feff::1]/",
+		"http://100.64.0.1/",
+		"http://100.127.255.254/",
 		"http://[FD12:3456::1]/",
 		"http://[FC00::1]/",
 	]) {
@@ -448,7 +451,8 @@ test("public hosts that only resemble private ones still use the remote fallback
 		"http://[::8.8.8.8]/",
 		"http://[64:ff9c::a00:1]/",
 		"http://[0:0:0:1::a00:1]/",
-		"http://[fec0::1]/",
+		"http://100.63.255.255/",
+		"http://100.128.0.1/",
 		"http://[fbff::1]/",
 		"http://[fe7f::1]/",
 	];
@@ -536,6 +540,27 @@ test("redirects between public URLs are followed and still allow the remote fall
 		"https://docs.example.org/page",
 		"https://r.jina.ai/https://example.com/a/start",
 	]);
+});
+
+test("a non-redirect response with a Location header is used as is (#5127)", async () => {
+	const fetch = vi.fn(
+		async (_input: string | URL | Request) =>
+			new Response("# Created\n\nDone.", {
+				status: 201,
+				headers: { "content-type": "text/plain", location: "http://10.0.0.5/item" },
+			}),
+	);
+	vi.stubGlobal("fetch", fetch);
+
+	const result = await extractContent("https://example.com/items");
+
+	assert.deepEqual(result, {
+		url: "https://example.com/items",
+		title: "Created",
+		content: "# Created\n\nDone.",
+		error: null,
+	});
+	assert.deepEqual(requestedUrls(fetch), ["https://example.com/items"]);
 });
 
 test("a 3xx response without a Location header is reported as an HTTP error (#5127)", async () => {
