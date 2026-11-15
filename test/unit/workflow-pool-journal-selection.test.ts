@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { inMemorySecret, type StorageSelection } from "@bastani/atomic/storage";
@@ -214,6 +214,14 @@ test("an identity an earlier build kept beside the agent directories is adopted 
 		assert.equal(poolHostId(first), legacy, "the first directory to start keeps the identity it had");
 		assert.notEqual(poolHostId(second), legacy, "its sibling does not adopt it too");
 		assert.equal(poolHostId(first), legacy);
+		// A crash after claiming the identity and before keeping it: the claimant adopts it on its next start.
+		for (const entry of readdirSync(first)) rmSync(join(first, entry), { recursive: true });
+		assert.equal(poolHostId(first), legacy);
+		assert.deepEqual(
+			readdirSync(join(directory, "workflows", "pool")).sort(),
+			["host-id", "host-id.adopted-by"],
+			"no staged claim is left behind",
+		);
 	} finally {
 		removeTempDirectory(directory);
 	}
