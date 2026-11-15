@@ -219,8 +219,13 @@ export class McpOAuthCredentialStore {
 		}
 	}
 
-	/** The first server to load legacy state takes it over; others with the same URL sign in again. */
+	/**
+	 * The first server to load legacy state takes it over; others with the same URL sign in again. Reads without the
+	 * lock and takes it only when there is legacy state to move.
+	 */
 	private claimLegacy(key: string, legacyKey: string): StoredStates {
+		const states = this.read();
+		if (states[key] || !states[legacyKey]) return states;
 		return this.backend.withLock((current) => {
 			const states = parseStates(current);
 			if (states[key] || !states[legacyKey]) return { result: states };
@@ -263,7 +268,12 @@ export class McpOAuthCredentialStore {
 		return removed;
 	}
 
+	/**
+	 * Reads without the lock when the backend can: writers replace the file whole, so a read sees the last complete
+	 * file, and readers never wait for or fail on another process's lock.
+	 */
 	private read(): StoredStates {
+		if (this.backend.read) return parseStates(this.backend.read());
 		return this.backend.withLock((current) => ({ result: parseStates(current) }));
 	}
 
