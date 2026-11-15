@@ -21,6 +21,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Project workflows and agents are now loaded only for trusted projects, and their presence prompts for trust. Workflow modules in `.atomic/workflows`, workflows named by the project's `.atomic/extensions/workflow/config.json` and that config itself are read only when the project is trusted, and trust granted later in the session is picked up by the next discovery
 - Fixed pattern sends such as `workflow:<root>/**` and `workflow:<root>/*/reviewer` silently missing live stages when a parent runs the same child workflow more than once, or names a child's boundary stage with `/` or `*`. Live forwards now use the target the run's roster announces, so every matching live stage gets the message once ([#4844](https://github.com/bastani-inc/atomic/issues/4844))
 - Fixed workflow stage patterns with many `**` segments taking exponential time to match against stage paths; matching now takes time proportional to pattern length times stage depth, and `workflow:` targets longer than 1024 characters or with more than 64 segments are no longer accepted ([#4843](https://github.com/bastani-inc/atomic/issues/4843))
 - A workflow heartbeat that arrives while main chat is idle after an interrupt now starts a turn at once instead of waiting for your next message; `tasks.heartbeatWakesIdleSession` turns this off ([#4795](https://github.com/bastani-inc/atomic/issues/4795))

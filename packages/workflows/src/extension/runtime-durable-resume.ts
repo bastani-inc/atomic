@@ -118,6 +118,8 @@ export interface DurableResumeRuntimeDeps {
 	/** Reports a warning once; each shard of the journal store that cannot be opened is reported through it. */
 	readonly reportWarning?: (message: string) => void;
 	readonly getWorkflowHostModules?: import("./workflow-module-loader.js").WorkflowHostModuleProvider;
+	/** The project trust decision; an untrusted project's workflow modules are not discovered. */
+	readonly isProjectTrusted?: () => boolean;
 }
 
 export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): DurableResumeRuntime {
@@ -156,6 +158,7 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 			await discoverWorkflows({
 				cwd: cwd ?? deps.runtimeCwd,
 				getWorkflowHostModules: deps.getWorkflowHostModules,
+				projectTrusted: deps.isProjectTrusted?.(),
 			})
 		).registry.get(name);
 	const runtime: DurableResumeRuntime = {
@@ -267,6 +270,7 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 											await discoverWorkflows({
 												cwd: cwd ?? deps.runtimeCwd,
 												getWorkflowHostModules: deps.getWorkflowHostModules,
+												projectTrusted: deps.isProjectTrusted?.(),
 											})
 										).registry.get(name)
 								: async () => options.definition,

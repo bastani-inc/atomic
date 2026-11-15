@@ -480,6 +480,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 			adapters,
 			runtimeCwd,
 			getWorkflowHostModules: opts.getWorkflowHostModules,
+			...(opts.isProjectTrusted === undefined ? {} : { isProjectTrusted: opts.isProjectTrusted }),
 			ensureReady,
 			backendRef,
 			resolveDefaultStageSessionDir,

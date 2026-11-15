@@ -120,6 +120,8 @@ export interface LoadWorkflowConfigOpts {
 	 * configured agent directories, honoring ATOMIC_CODING_AGENT_DIR.
 	 */
 	readonly agentDirs?: readonly string[];
+	/** When false, the project-local config is not read: the project is not trusted. Default: true. */
+	readonly projectTrusted?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -384,7 +386,10 @@ export async function loadWorkflowConfig(opts: LoadWorkflowConfigOpts = {}): Pro
 		join(agentDir, "extensions", "workflow", "config.json"),
 	);
 
-	const projectCandidates = [join(projectRoot, CONFIG_DIR_NAME, "extensions", "workflow", "config.json")];
+	const projectCandidates =
+		opts.projectTrusted === false
+			? []
+			: [join(projectRoot, CONFIG_DIR_NAME, "extensions", "workflow", "config.json")];
 
 	let globalConfig: WorkflowExtensionConfig | null = null;
 	for (let i = globalCandidates.length - 1; i >= 0; i--) {
