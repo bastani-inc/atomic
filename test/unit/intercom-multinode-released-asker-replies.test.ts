@@ -1993,6 +1993,30 @@ describe("an ask to a subagent that is then released keeps waiting for it across
 		}
 	});
 
+	test("an owner that leaves a broker where it never took its presence still ends the reservations it made there", async () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+		try {
+			const shared = await cluster();
+			const [b, c] = [await startNode(shared), await startNode(shared)];
+			const previous = session("owner");
+			await register(b, previous);
+			// The broker it left still holds its presence: this connection never takes it.
+			const returned = reconnected(previous);
+			await register(c, returned);
+			const key = releasedReservationKey("worker");
+			reserveReleased(c, returned, "worker");
+			await vi.waitFor(async () => assert.equal((await c.state.reservations.read(key)).status, "active"), waitFor);
+
+			await leave(c, returned);
+			await vi.waitFor(
+				async () => assert.notEqual((await c.state.reservations.read(key)).status, "active"),
+				waitFor,
+			);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	test("a departing subagent whose asks cannot be parked is reported, and its presence still ends (#4386)", async () => {
 		const scene = await parkedScene((state) => ({
 			...state,
