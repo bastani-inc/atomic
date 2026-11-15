@@ -29,6 +29,18 @@
 
 ### Fixed
 
+- Fixed compaction failures that errored the turn, or lost verbatim deletions, instead of moving to the next documented rung ([#4977](https://github.com/bastani-inc/atomic/issues/4977)):
+  - A provider that ends a planner stream as aborted on its side now counts as a failed request, so the fallback models and the fresh context window are tried. Only your own cancellation stops compaction.
+  - Overflow recovery and post-tool preflight now accept a planned result only when it fits the model's context window. Otherwise they try the next model, then the fresh context window.
+  - When the transcript is split after repeated policy refusals, a part that fails for another reason stays as it is, and the other parts keep their deletions. Atomic falls back to the summary only when no part deletes anything.
+  - A backup that cannot be written (`ENOSPC`, `EACCES`) no longer blocks the boundary. The boundary is written without a `backupPath`.
+  - A cancel that arrives while the boundary is being written now leaves the session unchanged and reports the compaction as cancelled.
+  - A `session_before_compact` handler that returns empty or whitespace `compactedText` now counts as no override, and Atomic plans the region itself.
+  - The fresh context window counts text outside ASCII, such as CJK, at a token per character when deciding whether the recent tail fits, so a dense tail that does not fit is dropped instead of being refused at the next request.
+  - A fallback model whose lookup throws, for example on a corrupt credential store, is skipped.
+  - When a stored background result is applied and the foreground compaction after it fails, `compaction_end` now reports the applied boundary together with the error. Overflow recovery still retries the turn, and the main chat shows the "Context compacted" card.
+  - A small remaining region is no longer cleared when a stored background result has already brought the context under the context window.
+  - A context overflow on the request right after a compaction boundary, in the same millisecond, now starts overflow recovery instead of being ignored as stale.
 - Fixed worktree snapshot capture storing a commit that was never checked against the deny-list: the bundle of unpushed commits was built from `HEAD`, so a commit that landed during the capture, such as one adding a `.env`, could reach snapshot blob storage. The bundle is now built from the commit the capture checked, through a temporary ref under `refs/atomic/capture/` that is removed afterwards, and a bundle whose tip or commits differ from the record is discarded instead of stored ([#4900](https://github.com/bastani-inc/atomic/issues/4900))
 - GitHub URLs are now validated, and clones are confined to the clone directory.
 - Fixed a session resume reusing or removing an idle restored worktree that held an unsaved edit to a tracked file that snapshots leave out, such as a tracked `.env.example`, a file listed in `.atomic/snapshot-ignore` or a file over the size cap: the reuse put back the committed content and the edit was lost. Such a worktree is now kept as it is, and the resume restores a new one ([#4897](https://github.com/bastani-inc/atomic/issues/4897))
