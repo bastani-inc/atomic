@@ -99,16 +99,6 @@ export class OutboundAsks {
 		return record !== undefined && answeredByRecipient(record.ask, from) ? record : undefined;
 	}
 
-	/**
-	 * #4992: a failed-ask message for an ask that already has its outcome, a reply or a failure. Each ask has one
-	 * outcome, so it is not shown.
-	 */
-	isLateFailure(from: SessionInfo, message: Message): boolean {
-		if (message.replyError === undefined) return false;
-		const record = this.answeredBy(from, message);
-		return record !== undefined && record.state !== "pending";
-	}
-
 	/** Asks still waiting for their reply, oldest first. */
 	pending(): OutboundAsk[] {
 		return [...this.records().values()]
