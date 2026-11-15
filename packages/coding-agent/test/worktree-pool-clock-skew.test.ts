@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { readdirSync, readFileSync, renameSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	renameSync,
+	statSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -23,7 +32,7 @@ import {
 	type SlotNumber,
 } from "../src/core/worktree-snapshot/pool.js";
 import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../src/core/worktree-snapshot/settings.js";
-import { lockShared } from "../src/core/worktree-snapshot/shared-clock.js";
+import { LEFTOVER_PROBE_AGE_MS, lockShared, sharedClockOffset } from "../src/core/worktree-snapshot/shared-clock.js";
 import type { WorktreeSnapshot } from "../src/core/worktree-snapshot/types.js";
 
 // This process plays a second host sharing the pool: its leases name another host than the children's, so a child's
@@ -290,3 +299,19 @@ test(
 	},
 	TIMEOUT_MS,
 );
+
+test("a clock probe a process left when it stopped mid-probe is removed once it is old; a recent one is kept (#5050)", async () => {
+	const directory = sandbox.path("probes");
+	mkdirSync(directory);
+	const left = join(directory, ".clock-0123456789abcdef.probe");
+	const recent = join(directory, ".clock-fedcba9876543210.probe");
+	const notAProbe = join(directory, ".clock-notes.txt");
+	for (const path of [left, recent, notAProbe]) writeFileSync(path, "");
+	backdate(left, LEFTOVER_PROBE_AGE_MS + 60_000);
+	backdate(notAProbe, LEFTOVER_PROBE_AGE_MS + 60_000);
+
+	await sharedClockOffset(directory);
+
+	assert.deepEqual(probes(directory).sort(), [".clock-fedcba9876543210.probe", ".clock-notes.txt"]);
+	assert.equal(existsSync(recent), true);
+});
