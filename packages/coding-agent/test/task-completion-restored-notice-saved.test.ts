@@ -8,6 +8,7 @@ import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
 import { Type } from "typebox";
 import { describe, test, vi } from "vitest";
 import type { AgentSessionInternalSurface } from "../src/core/agent-session-methods.js";
+import { replaceSessionTaskOwner } from "../src/core/agent-session-tasks.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
 import {
@@ -16,8 +17,8 @@ import {
 	type TaskCompletionEnvelope,
 	TaskCompletionOutbox,
 } from "../src/core/tasks/completion.js";
-import type { OwnerId, Sequence, TaskId } from "../src/core/tasks/contracts.js";
-import { createHarness } from "./suite/harness.js";
+import type { OperationId, OwnerId, Sequence, TaskId } from "../src/core/tasks/contracts.js";
+import { createHarness, getMessageText } from "./suite/harness.js";
 
 const FIXTURE = fileURLToPath(new URL("./fixtures/restored-task-notice-host.ts", import.meta.url));
 const REPOSITORY = fileURLToPath(new URL("../../../", import.meta.url));
@@ -189,4 +190,75 @@ describe("restored task completion notices are acknowledged only once saved", ()
 		assert.deepEqual(restoredDelivered, [COMPLETION_ID]);
 		assert.equal(pendingTaskCompletionIntents(session).length, 0);
 	});
+});
+
+function ownerIdOf(session: AgentSessionInternalSurface): string {
+	const watched = session.getAgentTaskHost().watchOwnerTasks();
+	assert.ok(watched.ok);
+	const { ownerId } = watched.value.snapshot;
+	watched.value.dispose();
+	return ownerId;
+}
+
+describe("a restored completion notice describes its own task, not a new one that reuses its id", () => {
+	for (const mode of ["foreground", "background"] as const) {
+		test(`a new ${mode} shell with the restored task's id leaves the restored notice whole and shown once (#5047)`, async () => {
+			const manager = SessionManager.inMemory();
+			const harness = await createHarness({ sessionManager: manager });
+			const session = harness.session as unknown as AgentSessionInternalSurface;
+			try {
+				// A restarted process restarts its counters: the next owner gets the ids an earlier process's owner had.
+				const [, environment, owner] = /^owner-(\d+)-(\d+)$/.exec(ownerIdOf(session)) ?? [];
+				const nextOwner = `${environment}-${Number(owner) + 1}`;
+				await manager.appendCustomEntry("task-completion-intent", {
+					...intent,
+					ownerId: `owner-${nextOwner}`,
+					taskId: `task-${nextOwner}-0`,
+					result: { kind: "failed", code: "fixture", message: "OLD TASK FAILED: tests red" },
+				});
+				replaceSessionTaskOwner(session);
+				assert.equal(ownerIdOf(session), `owner-${nextOwner}`);
+				const commandOwner = session._getCommandTaskOwner()!;
+				const started = await commandOwner.supervisor.startCommandTask(
+					commandOwner.owner,
+					{
+						kind: "command",
+						command: "echo NEW TASK OUTPUT",
+						description: "new unrelated command",
+						terminal: { kind: "pipe" },
+					},
+					"new-op" as OperationId,
+				);
+				assert.ok(started.ok);
+				const taskId = commandOwner.supervisor.taskReference(started.value).taskId;
+				assert.equal(taskId, `task-${nextOwner}-0`);
+				const first = await commandOwner.supervisor.initialObservation(
+					started.value,
+					mode === "foreground" ? { kind: "foreground", budgetMs: 10_000 } : { kind: "background" },
+				);
+				assert.ok(first.ok);
+				await vi.waitFor(async () => {
+					const observed = await commandOwner.supervisor.waitForTaskId(commandOwner.owner, taskId, 100);
+					assert.ok(observed.ok && observed.value.kind === "settled");
+				});
+
+				await session._taskCompletionOutbox!.flushRestored();
+
+				const shown = manager
+					.getEntries()
+					.filter(
+						(entry) =>
+							entry.type === "custom_message" &&
+							entry.customType === TASK_COMPLETION_MESSAGE_TYPE &&
+							entry.stageAdmissionKey === COMPLETION_ID,
+					);
+				assert.equal(shown.length, 1);
+				const text = getMessageText(shown[0]);
+				assert.match(text, /OLD TASK FAILED: tests red/);
+				assert.doesNotMatch(text, /NEW TASK OUTPUT|new unrelated command/);
+			} finally {
+				await harness.cleanup();
+			}
+		});
+	}
 });
