@@ -1,14 +1,14 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getCurrentSystemMessage } from "@bastani/pi-ai";
+import { getCurrentSystemMessage } from "@bastani/atomic-ai";
 import {
 	fauxAssistantMessage,
 	fauxToolCall,
 	getApiProvider,
 	registerApiProvider,
 	registerFauxProvider,
-} from "@bastani/pi-ai/compat";
+} from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../../src/core/auth-storage.ts";

@@ -1,4 +1,4 @@
-import { getCapabilities, setCapabilityOverrides, type WheelScrollLines } from "@earendil-works/pi-tui";
+import { getCapabilities, setCapabilityOverrides, type WheelScrollLines } from "@bastani/atomic-tui";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.ts";
 import "../src/modes/interactive/interactive-session-runtime.ts";

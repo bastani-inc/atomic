@@ -1,6 +1,6 @@
 import { CustomEditor, type ExtensionAPI, type ExtensionContext, type KeybindingsManager } from "@bastani/atomic";
-import type { Component, EditorTheme, TUI } from "@earendil-works/pi-tui";
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import type { Component, EditorTheme, TUI } from "@bastani/atomic-tui";
+import { truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 
 function fitBorder(
 	left: string,

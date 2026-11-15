@@ -1,5 +1,5 @@
-import type { AssistantMessage, ToolResultMessage } from "@bastani/pi-ai/compat";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AgentMessage } from "@bastani/atomic-agent-core";
+import type { AssistantMessage, ToolResultMessage } from "@bastani/atomic-ai/compat";
 import { describe, expect, test } from "vitest";
 import { convertToLlm, repairOrphanToolResults } from "../src/core/messages.ts";
 

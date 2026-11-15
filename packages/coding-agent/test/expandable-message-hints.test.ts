@@ -1,4 +1,4 @@
-import { getKeybindings, setKeybindings, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { getKeybindings, setKeybindings, type TUI, type TuiMouseEvent } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, describe, expect, test } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import { renderTodoResult } from "../src/core/tools/todos-render.ts";

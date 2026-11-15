@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import { stripVTControlCharacters } from "node:util";
-import { type Component, getKeybindings, setKeybindings, visibleWidth } from "@earendil-works/pi-tui";
+import { type Component, getKeybindings, setKeybindings, visibleWidth } from "@bastani/atomic-tui";
 import { test } from "vitest";
 import type { AgentSession } from "../../packages/coding-agent/src/core/agent-session.js";
 import type { ExtensionUIContext } from "../../packages/coding-agent/src/core/extensions/index.js";

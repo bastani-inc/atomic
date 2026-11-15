@@ -7,7 +7,7 @@ import {
 	truncateToWidth,
 	visibleWidth,
 	wrapTextWithAnsi,
-} from "@earendil-works/pi-tui";
+} from "@bastani/atomic-tui";
 import { theme } from "../theme/theme.js";
 import { formatKeyText } from "./keybinding-hints.js";
 import type { TreeList } from "./tree-selector-list.ts";

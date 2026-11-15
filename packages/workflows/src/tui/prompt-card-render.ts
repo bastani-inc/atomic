@@ -1,5 +1,5 @@
 import { keyHint, keyText, rawKeyHint } from "@bastani/atomic";
-import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@bastani/atomic-tui";
 import type { PendingPrompt } from "../shared/store-types.js";
 import { BOLD, hexBg, hexToAnsi, paint, RESET } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";

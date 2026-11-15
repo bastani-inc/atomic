@@ -1,4 +1,4 @@
-import type { AuthOperationOptions, CredentialStore, ModelsStore } from "@bastani/pi-ai";
+import type { AuthOperationOptions, CredentialStore, ModelsStore } from "@bastani/atomic-ai";
 
 export interface CreateModelRuntimeOptions {
 	/** Credential storage. Defaults to the file at authPath. */
@@ -13,6 +13,7 @@ export interface CreateModelRuntimeOptions {
 	modelRefreshTimeoutMs?: number;
 	/** Skip the initial catalog and availability refresh. Static models remain available. */
 	refreshOnCreate?: boolean;
+	/** Base URL of the models.dev catalog (`<url>/api.json`) refreshes read. Default: `ATOMIC_MODEL_CATALOG_URL`, else https://models.dev. */
 	catalogBaseUrl?: string;
 }
 

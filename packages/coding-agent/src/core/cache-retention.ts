@@ -1,4 +1,4 @@
-import type { Api, CacheRetention, Model } from "@bastani/pi-ai/compat";
+import type { Api, CacheRetention, Model } from "@bastani/atomic-ai/compat";
 
 // Extended retention is model-specific, not implied by ordinary prompt caching.
 // https://developers.openai.com/api/docs/guides/prompt-caching#extended-retention-models

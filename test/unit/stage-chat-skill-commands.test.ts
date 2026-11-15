@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { type AgentSession, buildSkillCatalog } from "@bastani/atomic";
-import type { AutocompleteProvider } from "@earendil-works/pi-tui";
+import type { AutocompleteProvider } from "@bastani/atomic-tui";
 import { test, vi } from "vitest";
 import { createSessionSkillAutocompleteProvider } from "../../packages/coding-agent/src/modes/interactive/skill-command-autocomplete.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";

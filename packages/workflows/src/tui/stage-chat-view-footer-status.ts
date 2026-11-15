@@ -1,5 +1,5 @@
 import type { AgentSession } from "@bastani/atomic";
-import { Box, Text } from "@earendil-works/pi-tui";
+import { Box, Text } from "@bastani/atomic-tui";
 import { isTerminalStageStatus } from "../shared/store-internal.js";
 import type { StageSnapshot } from "../shared/store-types.js";
 import { hexToAnsi, RESET } from "./color-utils.js";

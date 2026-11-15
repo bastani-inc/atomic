@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { getModel } from "@bastani/pi-ai/compat";
+import { getModel } from "@bastani/atomic-ai/compat";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveRunJournal } from "../../workflows/src/durable/journal/resolution.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";

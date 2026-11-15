@@ -69,7 +69,7 @@ Use `ctx.modelRegistry.complete()` for an extension model request that must use 
 
 Use `ctx.modelRegistry.generateImages(model, context, options)` to run an image model with request-time authentication. It resolves to the generated image blocks and usage, and reports provider errors through `stopReason`, `errorMessage` and, for a classified failure, `error` instead of rejecting. For `openai-images` models, `options` takes `size`, `quality`, `n`, `background`, `outputFormat` (`png`, `jpeg`, `webp`, `gif`, `svg`), `outputCompression`, `frameCount`, `frameDurationMs`, `complexity`, `svg`, `moderation` and `safetyIdentifier`; an image block with `role: "markup"` or `role: "mask"` is sent as the `markup` or `mask` field, and the first other image is the base image of an edit. GIF, SVG, `complexity` and the frame options need a GPT Image 2.6 model, which declares them in `model.capabilities`; a provider you register with image models declares them the same way.
 
-`outputFormat: "svg"` works without `svg`. Some accounts must name the model that writes the SVG. When the API answers that `svg.model` is required and the request set no `svg`, Atomic retries once with `gpt-6.1-sol` (exported as `DEFAULT_SVG_AUTHOR_MODEL` from `@bastani/pi-ai`), and `result.svgModel` reports the model that wrote the SVG. OpenAI's API reference lists no authoring models and no default, so `gpt-6.1-sol` is a value that worked in testing, not a documented default. Pass `svg: { model, reasoning }` to choose another model. An `svg` you pass is always sent as given and never retried or replaced. If the API rejects the retry's `svg` as unsupported, Atomic retries once more without it, so one call sends at most three requests. SVG authoring takes tens of seconds (plain requests took 12 to 46 seconds in testing, and OpenAI says complex prompts can take up to 2 minutes). Image requests have no deadline shorter than the SDK's 10 minutes unless you set `timeoutMs`, so leave it unset or allow at least 180000 for SVG.
+`outputFormat: "svg"` works without `svg`. Some accounts must name the model that writes the SVG. When the API answers that `svg.model` is required and the request set no `svg`, Atomic retries once with `gpt-6.1-sol` (exported as `DEFAULT_SVG_AUTHOR_MODEL` from `@bastani/atomic-ai`), and `result.svgModel` reports the model that wrote the SVG. OpenAI's API reference lists no authoring models and no default, so `gpt-6.1-sol` is a value that worked in testing, not a documented default. Pass `svg: { model, reasoning }` to choose another model. An `svg` you pass is always sent as given and never retried or replaced. If the API rejects the retry's `svg` as unsupported, Atomic retries once more without it, so one call sends at most three requests. SVG authoring takes tens of seconds (plain requests took 12 to 46 seconds in testing, and OpenAI says complex prompts can take up to 2 minutes). Image requests have no deadline shorter than the SDK's 10 minutes unless you set `timeoutMs`, so leave it unset or allow at least 180000 for SVG.
 
 ```typescript
 const flare = ctx.modelRegistry.getModelOfType("image", "openai-images", "gpt-image-2.6-flare");
@@ -90,7 +90,7 @@ const motion = await ctx.modelRegistry.generateImages(
 if (motion.stopReason !== "stop") throw new Error(motion.errorMessage);
 ```
 
-`result.error` is a JSON-safe `ImageGenerationErrorData`. Rebuild it with `imageGenerationErrorFromData()` from `@bastani/pi-ai` and branch on its class, guard or `code`, not on the message. A cancelled request resolves with `stopReason: "aborted"` and no `error`.
+`result.error` is a JSON-safe `ImageGenerationErrorData`. Rebuild it with `imageGenerationErrorFromData()` from `@bastani/atomic-ai` and branch on its class, guard or `code`, not on the message. A cancelled request resolves with `stopReason: "aborted"` and no `error`.
 
 | Error class (guard) | `code` | When it happens | `retryable` | What to do |
 | --- | --- | --- | --- | --- |
@@ -197,7 +197,7 @@ A read-only `AbortSignal` for the session lifetime, available even while the age
 Custom UI mounted through `ctx.ui.custom` is dismissed automatically when the session ends; an explicit caller signal can still dismiss it earlier. Use `ctx.sessionSignal` for other long-running command resources, such as browser windows, instead of waiting for `session_shutdown`, which cannot run until those commands settle. Cancellation should stop waiting for input, not abandon a session write already started: keep awaiting that write so teardown can drain it safely.
 
 ```typescript
-import { Text } from "@earendil-works/pi-tui";
+import { Text } from "@bastani/atomic-tui";
 
 pi.registerCommand("monitor", {
   description: "Keep a monitor open until the session ends",
@@ -734,7 +734,7 @@ Register a TUI renderer for durable custom entries created by `pi.appendEntry()`
 SDK hosts can inspect the original callback with `session.extensionRunner.getEntryRenderer(customType)`. To render through the owning session, call `session.extensionRunner.renderEntry(customType, entry, { expanded }, theme)`; retired runners reject rendering.
 
 ```typescript
-import { Text } from "@earendil-works/pi-tui";
+import { Text } from "@bastani/atomic-tui";
 
 pi.registerEntryRenderer("status-card", (entry, { expanded }, theme) =>
   new Text(theme.fg("accent", `${expanded ? "Details" : "Status"}: ${JSON.stringify(entry.data)}`), 0, 0)
@@ -797,7 +797,7 @@ pi.registerCommand("stats", {
 Optional: add argument auto-completion for `/command ...`:
 
 ```typescript
-import type { AutocompleteItem } from "@earendil-works/pi-tui";
+import type { AutocompleteItem } from "@bastani/atomic-tui";
 
 pi.registerCommand("deploy", {
   description: "Deploy to an environment",
@@ -926,8 +926,8 @@ Returns a promise for the running host's in-memory module namespaces. The workfl
 The returned object has exactly these keys:
 
 - `@bastani/atomic`
-- `@bastani/pi-ai`, backed by the host's compatibility API
-- `@bastani/pi-ai/providers/all`
+- `@bastani/atomic-ai`, backed by the host's compatibility API
+- `@bastani/atomic-ai/providers/all`
 
 These are shared host instances, not isolated copies. Workflow imports use the host's versions rather than project-local copies of these exact specifiers, preserving identity for exports such as `AuthStorage` and sharing module state. This also supports standalone-binary projects without those packages in `node_modules`. Other deep subpaths and third-party dependencies still resolve from disk. Workflow files and their relative imports are evaluated fresh on `/workflow reload`.
 
@@ -1013,7 +1013,7 @@ If you implement an `ExtensionRuntime` for an embedded host, provide `trackEvent
 
 ### Native providers
 
-In addition to `registerProvider(name, config)`, extensions can register a complete native `Provider` from `@bastani/pi-ai` with `pi.registerProvider(provider)`. Use the native overload for provider-owned authentication, catalog refresh, and transport behavior; use the config overload for ordinary proxies and custom endpoints.
+In addition to `registerProvider(name, config)`, extensions can register a complete native `Provider` from `@bastani/atomic-ai` with `pi.registerProvider(provider)`. Use the native overload for provider-owned authentication, catalog refresh, and transport behavior; use the config overload for ordinary proxies and custom endpoints.
 
 ### pi.registerProvider(name, config)
 

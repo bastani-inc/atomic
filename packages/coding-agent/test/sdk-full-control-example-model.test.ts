@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { getModel } from "@bastani/pi-ai/compat";
+import { getModel } from "@bastani/atomic-ai/compat";
 import { describe, expect, test } from "vitest";
 
 const exampleUrl = new URL("../examples/sdk/12-full-control.ts", import.meta.url);

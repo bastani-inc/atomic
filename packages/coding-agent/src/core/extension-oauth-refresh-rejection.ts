@@ -5,7 +5,7 @@ import {
 	type OAuthErrorDetail,
 	OAuthRefreshRejectedError,
 	parseOAuthErrorBody,
-} from "@bastani/pi-ai";
+} from "@bastani/atomic-ai";
 
 /** RFC 6749 §5.2: a token endpoint answers an invalid refresh token with HTTP 400 and `invalid_grant`. */
 const OAUTH_ERROR_STATUS = 400;

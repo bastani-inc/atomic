@@ -11,8 +11,8 @@ import {
 	type Model,
 	normalizeContext,
 	type ProviderHeaders,
-} from "@bastani/pi-ai";
-import { getModel } from "@bastani/pi-ai/compat";
+} from "@bastani/atomic-ai";
+import { getModel } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, test, vi } from "vitest";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";

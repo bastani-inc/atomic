@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { fauxAssistantMessage } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, it } from "vitest";
 import { type JsonAgentSessionEvent, toJsonEvent } from "../../../src/modes/json-event.js";
 import { serializeRpcOutputRecord } from "../../../src/modes/rpc/rpc-output-buffer.js";

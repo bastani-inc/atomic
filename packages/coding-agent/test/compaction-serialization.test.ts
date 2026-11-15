@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { Message } from "@bastani/pi-ai/compat";
+import type { Message } from "@bastani/atomic-ai/compat";
 import { describe, it } from "vitest";
 import { serializeConversation } from "../src/core/compaction/utils.js";
 

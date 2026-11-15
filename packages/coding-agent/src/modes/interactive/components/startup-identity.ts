@@ -1,4 +1,4 @@
-import { type Component, Text, type TUI } from "@earendil-works/pi-tui";
+import { type Component, Text, type TUI } from "@bastani/atomic-tui";
 import { markLifecycleTiming } from "../../../core/lifecycle-timings.ts";
 import { STARTUP_ASSEMBLY_GAPS, STARTUP_FRAME_MS, supportsAtomicBanner } from "./atomic-banner.ts";
 

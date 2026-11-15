@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { Input } from "@earendil-works/pi-tui";
+import { Input } from "@bastani/atomic-tui";
 import { afterEach, test, vi } from "vitest";
 import type { AgentSession } from "../../packages/coding-agent/src/core/agent-session.js";
 import {

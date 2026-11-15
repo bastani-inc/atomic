@@ -7,7 +7,7 @@
  * 3. In-memory and write-failure fallback (original RangePlanError preserved).
  */
 
-import type { Api, AssistantMessage, Model, Usage } from "@bastani/pi-ai/compat";
+import type { Api, AssistantMessage, Model, Usage } from "@bastani/atomic-ai/compat";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from "fs";
 import { tmpdir } from "os";
 import { basename, dirname, join } from "path";

@@ -10,7 +10,7 @@
  * the border 11-13 columns early — on the active row alone. See TMUX-EVIDENCE.md.
  */
 import assert from "node:assert/strict";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { visibleWidth } from "@bastani/atomic-tui";
 import { test } from "vitest";
 import {
 	OVERLAY_ACTIVE_ROW_MARKER,

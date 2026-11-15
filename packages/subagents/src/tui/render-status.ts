@@ -1,5 +1,5 @@
 import { keyHintIfBound } from "@bastani/atomic";
-import { type Component, stripTerminalSequences, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { type Component, stripTerminalSequences, Text, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import { formatModelThinking } from "../shared/formatters.js";
 import type { SubagentStatusGroup } from "../shared/types.js";
 import type { Theme } from "./render-layout.js";

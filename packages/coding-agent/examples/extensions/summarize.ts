@@ -1,8 +1,8 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@bastani/atomic";
 import { DynamicBorder, getMarkdownTheme } from "@bastani/atomic";
-import { uuidv7 } from "@bastani/pi-ai";
-import { complete, getModel } from "@bastani/pi-ai/compat";
-import { Container, Markdown, matchesKey, Text } from "@earendil-works/pi-tui";
+import { uuidv7 } from "@bastani/atomic-ai";
+import { complete, getModel } from "@bastani/atomic-ai/compat";
+import { Container, Markdown, matchesKey, Text } from "@bastani/atomic-tui";
 
 type ContentBlock = {
 	type?: string;

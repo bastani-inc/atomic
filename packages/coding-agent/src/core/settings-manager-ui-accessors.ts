@@ -1,4 +1,4 @@
-import type { ScrollViewScrollbar, TerminalCapabilities, WheelScrollLines } from "@earendil-works/pi-tui";
+import type { ScrollViewScrollbar, TerminalCapabilities, WheelScrollLines } from "@bastani/atomic-tui";
 import { ENV_CLEAR_ON_SHRINK, ENV_HARDWARE_CURSOR, getEnvValue } from "../config.js";
 import { SETTINGS_DEFAULTS } from "./settings-defaults.ts";
 import { SettingsManager } from "./settings-manager-core.ts";

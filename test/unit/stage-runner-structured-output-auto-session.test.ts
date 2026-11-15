@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AssistantMessage, TranscriptContext } from "@bastani/pi-ai";
+import type { AssistantMessage, TranscriptContext } from "@bastani/atomic-ai";
 import { Type } from "typebox";
 import { afterEach, test } from "vitest";
 import { DefaultResourceLoader } from "../../packages/coding-agent/src/core/resource-loader.js";

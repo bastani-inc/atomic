@@ -1,4 +1,4 @@
-import type { Component, Container } from "@earendil-works/pi-tui";
+import type { Component, Container } from "@bastani/atomic-tui";
 
 /**
  * Append rendered children normally, then move only newly appended components

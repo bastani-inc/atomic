@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
-import { stream as streamAnthropic } from "@bastani/pi-ai/api/anthropic-messages";
-import { stream as streamGoogle } from "@bastani/pi-ai/api/google-generative-ai";
-import { stream as streamVertex } from "@bastani/pi-ai/api/google-vertex";
-import { stream as streamMistral } from "@bastani/pi-ai/api/mistral-conversations";
-import { stream as streamCompletions } from "@bastani/pi-ai/api/openai-completions";
-import { stream as streamResponses } from "@bastani/pi-ai/api/openai-responses";
-import { type AssistantMessage, getModel, type Model, normalizeContext } from "@bastani/pi-ai/compat";
+import { stream as streamAnthropic } from "@bastani/atomic-ai/api/anthropic-messages";
+import { stream as streamGoogle } from "@bastani/atomic-ai/api/google-generative-ai";
+import { stream as streamVertex } from "@bastani/atomic-ai/api/google-vertex";
+import { stream as streamMistral } from "@bastani/atomic-ai/api/mistral-conversations";
+import { stream as streamCompletions } from "@bastani/atomic-ai/api/openai-completions";
+import { stream as streamResponses } from "@bastani/atomic-ai/api/openai-responses";
+import { type AssistantMessage, getModel, type Model, normalizeContext } from "@bastani/atomic-ai/compat";
 import { afterEach, test } from "vitest";
 import {
 	isRetryableModelFailure,

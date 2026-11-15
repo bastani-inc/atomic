@@ -1,6 +1,6 @@
-import { normalizeContext, retryAssistantCall, uuidv7 } from "@bastani/pi-ai";
-import type { AssistantMessage, Usage } from "@bastani/pi-ai/compat";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AgentMessage } from "@bastani/atomic-agent-core";
+import { normalizeContext, retryAssistantCall, uuidv7 } from "@bastani/atomic-ai";
+import type { AssistantMessage, Usage } from "@bastani/atomic-ai/compat";
 import { convertToLlm, toolBatchCutStart } from "../messages.ts";
 import {
 	buildSessionProjection,

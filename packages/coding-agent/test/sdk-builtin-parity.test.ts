@@ -3,8 +3,8 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } fro
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getModel } from "@bastani/pi-ai/compat";
-import { Agent } from "@earendil-works/pi-agent-core";
+import { Agent } from "@bastani/atomic-agent-core";
+import { getModel } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { test, vi } from "vitest";
 import * as config from "../src/config.js";
@@ -2759,7 +2759,7 @@ test.each(["path", "inline"] as const)("failed %s factory rejects with original 
 
 // #3105: sealing fresh dispatch must not discard already completed conversation events.
 test("closing preserves queued message persistence and completion hooks", async () => {
-	const { createAssistantMessageEventStream } = await import("@bastani/pi-ai/compat");
+	const { createAssistantMessageEventStream } = await import("@bastani/atomic-ai/compat");
 	const entered = Promise.withResolvers<void>();
 	const release = Promise.withResolvers<void>();
 	const completed = Promise.withResolvers<void>();
@@ -2932,7 +2932,7 @@ test.each(["override", "cleanup"] as const)("failed reload preparation releases 
 });
 
 test.each([1, 2])("disposal cancels %i admitted background summaries without waiting", async (count) => {
-	const { createAssistantMessageEventStream } = await import("@bastani/pi-ai/compat");
+	const { createAssistantMessageEventStream } = await import("@bastani/atomic-ai/compat");
 	const cwd = mkdtempSync(join(tmpdir(), "sdk-summary-cancel-"));
 	const release = Promise.withResolvers<void>();
 	const signals: AbortSignal[] = [];
@@ -3016,7 +3016,7 @@ test.each([1, 2])("disposal cancels %i admitted background summaries without wai
 
 // #3105: the tool has already executed; closing must retain its result and hook.
 test("closing preserves admitted tool results", async () => {
-	const { createAssistantMessageEventStream } = await import("@bastani/pi-ai/compat");
+	const { createAssistantMessageEventStream } = await import("@bastani/atomic-ai/compat");
 	const cwd = mkdtempSync(join(tmpdir(), "sdk-tool-completion-"));
 	const entered = Promise.withResolvers<void>();
 	const release = Promise.withResolvers<void>();

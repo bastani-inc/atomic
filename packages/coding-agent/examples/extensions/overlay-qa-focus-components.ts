@@ -1,6 +1,6 @@
 import type { Theme } from "@bastani/atomic";
-import type { OverlayHandle, OverlayOptions, TUI } from "@earendil-works/pi-tui";
-import { Input, matchesKey } from "@earendil-works/pi-tui";
+import type { OverlayHandle, OverlayOptions, TUI } from "@bastani/atomic-tui";
+import { Input, matchesKey } from "@bastani/atomic-tui";
 import { BaseOverlay } from "./overlay-qa-shared.js";
 
 export type FocusPanelColor = "error" | "success" | "accent";

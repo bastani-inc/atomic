@@ -1,4 +1,4 @@
-import { type MarkdownTheme, truncateToWidth } from "@earendil-works/pi-tui";
+import { type MarkdownTheme, truncateToWidth } from "@bastani/atomic-tui";
 import type { Theme } from "../../../../../../modes/interactive/theme/theme.js";
 import { fieldTone, styleFieldTone } from "../../../state/selectors/field-tone.ts";
 import type { QuestionData } from "../../../tool/types.js";

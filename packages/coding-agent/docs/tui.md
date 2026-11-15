@@ -9,7 +9,7 @@ description: "Build custom terminal UI for extensions."
 
 Extensions and custom tools can render custom TUI components for interactive user interfaces. This page covers the component system and available building blocks.
 
-**Source:** TUI components are provided by Atomic's installed `@earendil-works/pi-tui` runtime dependency (`node_modules/@earendil-works/pi-tui/dist/`).
+**Source:** TUI components are provided by Atomic's installed `@bastani/atomic-tui` runtime dependency (`node_modules/@bastani/atomic-tui/dist/`).
 
 ## On this page and its reference
 
@@ -148,10 +148,10 @@ See [overlay-qa-tests.ts](https://github.com/bastani-inc/atomic/blob/main/packag
 
 ## Built-in Components
 
-Import from `@earendil-works/pi-tui`:
+Import from `@bastani/atomic-tui`:
 
 ```typescript
-import { Text, Box, Container, Spacer, Markdown } from "@earendil-works/pi-tui";
+import { Text, Box, Container, Spacer, Markdown } from "@bastani/atomic-tui";
 ```
 
 ### Text
@@ -244,7 +244,7 @@ Example: Interactive selector
 import {
   matchesKey, Key,
   truncateToWidth, visibleWidth
-} from "@earendil-works/pi-tui";
+} from "@bastani/atomic-tui";
 
 class MySelector {
   private items: string[];
@@ -359,7 +359,7 @@ renderResult(result, options, theme, context) {
 
 ```typescript
 import { getMarkdownTheme } from "@bastani/atomic";
-import { Markdown } from "@earendil-works/pi-tui";
+import { Markdown } from "@bastani/atomic-tui";
 
 renderResult(result, options, theme, context) {
   const mdTheme = getMarkdownTheme();
@@ -410,12 +410,12 @@ These patterns cover the most common UI needs in extensions. **Copy these patter
 
 ### Pattern 1: Selection Dialog (SelectList)
 
-For letting users pick from a list of options. Use `SelectList` from `@earendil-works/pi-tui` with `DynamicBorder` for framing.
+For letting users pick from a list of options. Use `SelectList` from `@bastani/atomic-tui` with `DynamicBorder` for framing.
 
 ```typescript
 import type { ExtensionAPI } from "@bastani/atomic";
 import { DynamicBorder } from "@bastani/atomic";
-import { Container, type SelectItem, SelectList, Text } from "@earendil-works/pi-tui";
+import { Container, type SelectItem, SelectList, Text } from "@bastani/atomic-tui";
 
 pi.registerCommand("pick", {
   handler: async (_args, ctx) => {
@@ -506,11 +506,11 @@ pi.registerCommand("fetch", {
 
 ### Pattern 3: Settings/Toggles (SettingsList)
 
-For toggling multiple settings. Use `SettingsList` from `@earendil-works/pi-tui` with `getSettingsListTheme()`.
+For toggling multiple settings. Use `SettingsList` from `@bastani/atomic-tui` with `getSettingsListTheme()`.
 
 ```typescript
 import { getSettingsListTheme } from "@bastani/atomic";
-import { Container, type SettingItem, SettingsList, Text } from "@earendil-works/pi-tui";
+import { Container, type SettingItem, SettingsList, Text } from "@bastani/atomic-tui";
 
 pi.registerCommand("settings", {
   handler: async (_args, ctx) => {
@@ -640,7 +640,7 @@ For a cap that follows terminal resizing, use `scroll: { maxHeight: 10, maxHeigh
 
 ```typescript
 import type { ScrollableWidgetComponent, WidgetScrollRequest } from "@bastani/atomic";
-import { truncateToWidth } from "@earendil-works/pi-tui";
+import { truncateToWidth } from "@bastani/atomic-tui";
 
 let position: WidgetScrollRequest = { version: 0, scrollTop: 0 };
 let currentTop = 0;
@@ -715,7 +715,7 @@ Replace the main input editor with a custom implementation. Useful for modal edi
 
 ```typescript
 import { CustomEditor, type ExtensionAPI } from "@bastani/atomic";
-import { matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
+import { matchesKey, truncateToWidth } from "@bastani/atomic-tui";
 
 type Mode = "normal" | "insert";
 

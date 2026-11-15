@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { ModelsError } from "@bastani/pi-ai";
+import { ModelsError } from "@bastani/atomic-ai";
 import chalk from "chalk";
 import { selectConfig } from "./cli/config-selector.ts";
 import { createProjectTrustContext } from "./cli/project-trust.ts";

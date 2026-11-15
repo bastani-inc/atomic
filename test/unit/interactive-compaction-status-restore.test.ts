@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
-import { Container, getKeybindings, setKeybindings, Text } from "@earendil-works/pi-tui";
+import { Container, getKeybindings, setKeybindings, Text } from "@bastani/atomic-tui";
 import { afterAll, beforeAll, test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import { AtomicWorkingLoader } from "../../packages/coding-agent/src/modes/interactive/components/atomic-working-status.ts";

@@ -1,5 +1,5 @@
-import type { Message } from "@bastani/pi-ai/compat";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AgentMessage } from "@bastani/atomic-agent-core";
+import type { Message } from "@bastani/atomic-ai/compat";
 import {
 	convertToLlm,
 	createBranchSummaryMessage,

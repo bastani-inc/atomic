@@ -7,7 +7,7 @@ import {
 	SessionManager,
 	type TaskCleanupError,
 } from "@bastani/atomic";
-import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { test, vi } from "vitest";
 import type { AgentSessionEvent } from "../../packages/coding-agent/src/core/agent-session-types.js";
 import { withResourceAdmission } from "../../packages/coding-agent/src/core/resource-admission-scope.js";

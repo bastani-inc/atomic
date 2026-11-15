@@ -1,7 +1,13 @@
-import { normalizeContext, type RetryCallbacks, type RetryPolicy, retryAssistantCall, uuidv7 } from "@bastani/pi-ai";
-import type { Api, AssistantMessage, Model, SimpleStreamOptions, Usage } from "@bastani/pi-ai/compat";
-import { isContextOverflow } from "@bastani/pi-ai/compat";
-import type { StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { StreamFn, ThinkingLevel } from "@bastani/atomic-agent-core";
+import {
+	normalizeContext,
+	type RetryCallbacks,
+	type RetryPolicy,
+	retryAssistantCall,
+	uuidv7,
+} from "@bastani/atomic-ai";
+import type { Api, AssistantMessage, Model, SimpleStreamOptions, Usage } from "@bastani/atomic-ai/compat";
+import { isContextOverflow } from "@bastani/atomic-ai/compat";
 import type {
 	BorrowedPlanner,
 	NumberedRegion,

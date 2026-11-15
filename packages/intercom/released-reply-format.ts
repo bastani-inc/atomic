@@ -1,4 +1,4 @@
-import type { JsonValue } from "@bastani/pi-ai";
+import type { JsonValue } from "@bastani/atomic-ai";
 import { formatAttachments, parseStructuredSupervisorReply, validateSupervisorInterviewRequest } from "./intercom-utils.js";
 import { ASK_REPLY_TIMEOUT_MS } from "./retry-policy.js";
 import type { Message } from "./types.js";

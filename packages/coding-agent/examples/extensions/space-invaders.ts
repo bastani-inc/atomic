@@ -4,7 +4,7 @@
  */
 
 import type { ExtensionAPI } from "@bastani/atomic";
-import { isKeyRelease, Key, matchesKey, visibleWidth } from "@earendil-works/pi-tui";
+import { isKeyRelease, Key, matchesKey, visibleWidth } from "@bastani/atomic-tui";
 
 const GAME_WIDTH = 60;
 const GAME_HEIGHT = 24;

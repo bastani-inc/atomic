@@ -1,4 +1,4 @@
-import type { Credential } from "@bastani/pi-ai";
+import type { Credential } from "@bastani/atomic-ai";
 import type { AgentSession } from "../../core/agent-session.js";
 import type { HostInputFormRequest } from "../../core/extensions/ui-types.js";
 import { CredentialSynchronizationError, type SaveCredentialOptions } from "../../core/model-runtime.js";

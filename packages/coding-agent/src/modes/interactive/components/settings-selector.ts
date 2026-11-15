@@ -1,4 +1,4 @@
-import { Container, SettingsList } from "@earendil-works/pi-tui";
+import { Container, SettingsList } from "@bastani/atomic-tui";
 import { getSettingsListTheme } from "../theme/theme.js";
 import { DynamicBorder } from "./dynamic-border.ts";
 import { createSettingsChangeHandler } from "./settings-selector-handlers.ts";

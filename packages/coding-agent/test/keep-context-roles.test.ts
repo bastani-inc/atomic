@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { Message } from "@bastani/pi-ai/compat";
+import type { Message } from "@bastani/atomic-ai/compat";
 import { test } from "vitest";
 import type { NumberedRegion } from "../src/core/compaction/compaction-types.js";
 import { releaseKeepContextSpans } from "../src/core/compaction/keep-context-release.js";

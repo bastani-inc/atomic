@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { Agent } from "@earendil-works/pi-agent-core";
+import { Agent } from "@bastani/atomic-agent-core";
 import { test } from "vitest";
 import { AgentSession } from "../../packages/coding-agent/src/core/agent-session.js";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";

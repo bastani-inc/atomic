@@ -6,7 +6,7 @@ import {
 	type Terminal,
 	Text,
 	type TuiAltScreen,
-} from "@earendil-works/pi-tui";
+} from "@bastani/atomic-tui";
 import { ENV_OFFLINE } from "../../src/config.ts";
 import { KeybindingsManager } from "../../src/core/keybindings.ts";
 import { WidgetContainer } from "../../src/modes/interactive/components/scroll-widget.js";

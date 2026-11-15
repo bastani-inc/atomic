@@ -9,8 +9,8 @@
  */
 
 import type { ExtensionAPI } from "@bastani/atomic";
-import type { AssistantMessage } from "@bastani/pi-ai/compat";
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import type { AssistantMessage } from "@bastani/atomic-ai/compat";
+import { truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 
 export default function (pi: ExtensionAPI) {
 	let enabled = false;

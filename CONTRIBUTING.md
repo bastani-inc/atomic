@@ -83,7 +83,7 @@ Debug output is cleared the same way: `test/global-setup-debug-isolation.ts` rem
 Live provider tests, which skip when their key is unset, therefore skip in a default run even if you exported the key. To run them against real providers, opt back in to your shell's credentials:
 
 ```bash
-OPENAI_API_KEY=sk-... ATOMIC_TEST_KEEP_PROVIDER_CREDENTIALS=1 npm run test --workspace=@bastani/pi-ai
+OPENAI_API_KEY=sk-... ATOMIC_TEST_KEEP_PROVIDER_CREDENTIALS=1 npm run test --workspace=@bastani/atomic-ai
 ```
 
 ## Pull requests

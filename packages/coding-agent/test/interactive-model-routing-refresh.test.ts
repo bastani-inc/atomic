@@ -1,4 +1,4 @@
-import type { Api, Model } from "@bastani/pi-ai/compat";
+import type { Api, Model } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { INTERACTIVE_MODEL_REFRESH_TIMEOUT_MS } from "../src/core/model-refresh-timeout.ts";
 import type { ModelRuntime } from "../src/core/model-runtime.ts";

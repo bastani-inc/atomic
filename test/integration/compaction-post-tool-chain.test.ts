@@ -10,9 +10,9 @@
 
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
-import type { Api, AssistantMessage, Model } from "@bastani/pi-ai/compat";
-import { getCurrentSystemPrompt, getModel } from "@bastani/pi-ai/compat";
-import { Agent, type AgentTool, type StreamFn } from "@earendil-works/pi-agent-core";
+import { Agent, type AgentTool, type StreamFn } from "@bastani/atomic-agent-core";
+import type { Api, AssistantMessage, Model } from "@bastani/atomic-ai/compat";
+import { getCurrentSystemPrompt, getModel } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { test } from "vitest";
 import { AgentSession, type AgentSessionEvent } from "../../packages/coding-agent/src/core/agent-session.js";

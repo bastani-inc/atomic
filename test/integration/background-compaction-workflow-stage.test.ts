@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { AgentTool } from "@earendil-works/pi-agent-core";
+import type { AgentTool } from "@bastani/atomic-agent-core";
 import { Type } from "typebox";
 import { afterEach, test } from "vitest";
 import type { ExtensionFactory } from "../../packages/coding-agent/src/core/extensions/index.js";

@@ -1,4 +1,4 @@
-import { Box, Text } from "@earendil-works/pi-tui";
+import { Box, Text } from "@bastani/atomic-tui";
 import type { PendingPrompt, StageSnapshot } from "../shared/store-types.js";
 import { renderRoundedBoxLines } from "./chat-surface.js";
 import { hexToAnsi, RESET } from "./color-utils.js";

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { ClassifierResult } from "@bastani/pi-ai";
+import type { ClassifierResult } from "@bastani/atomic-ai";
 import { afterEach, test, vi } from "vitest";
 import { routeExecutionModel } from "../../packages/coding-agent/src/core/execution-model-router.js";
 import { generateStructuredOutput } from "../../packages/coding-agent/src/core/structured-output/index.js";

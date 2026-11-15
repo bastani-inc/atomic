@@ -2,7 +2,7 @@
 
 These 62 badges are generated from `scripts/readme-badges/manifest.json`. Each SVG is checked in, self-contained, and contains local icon geometry plus visible label text. Generation performs no network fetch.
 
-Exact groups: **19 engineering stack**, **28 provider brands**, and **15 local/open entries**.
+Exact groups: **19 engineering stack**, **27 provider brands**, and **15 local/open entries**.
 
 Simple Icons vectors come from the pinned `simple-icons@16.28.0` package. Simple Icons does not grant trademark rights; each brand's own rules still apply. Official vectors and every audited monogram fallback are recorded below.
 
@@ -33,7 +33,6 @@ Simple Icons vectors come from the pinned `simple-icons@16.28.0` package. Simple
 | providers | OpenRouter | [Simple Icons 16.28.0](https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/openrouter.svg) | [Brand source](https://openrouter.ai/) | Simple Icons 16.28.0 |
 | providers | Kimi | [Simple Icons 16.28.0](https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/kimi.svg) | [Brand source](https://moonshotai.github.io/Branding-Guide/) | Simple Icons 16.28.0 |
 | providers | xAI | [Monogram fallback](https://x.ai/api) | [Brand source](https://x.ai/legal/brand-guidelines) | Monogram fallback: No reusable first-party compact vector was verified; use xAI rather than the unrelated X social-network mark. |
-| providers | Radius | [Monogram fallback](https://radius.pi.dev/) | [Brand source](https://radius.pi.dev/) | Monogram fallback: Radius publishes no reusable compact logo or media kit. |
 | providers | Ant Ling | [Official vector](https://mdn.alipayobjects.com/huamei_yj1ans/afts/img/g8JZRrqn3R8AAAAAQCAAAAgADqLdAQFr/original) | [Brand source](https://www.ant-ling.com/en/) | Official vector |
 | providers | Azure OpenAI | [Official vector](https://learn.microsoft.com/en-us/azure/architecture/icons/) | [Brand source](https://azure.microsoft.com/en-us/products/ai-services/openai-service) | Official vector |
 | providers | Amazon Bedrock | [Official vector](https://aws.amazon.com/architecture/icons/) | [Brand source](https://aws.amazon.com/bedrock/) | Official vector |

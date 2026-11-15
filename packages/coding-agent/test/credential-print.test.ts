@@ -11,7 +11,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFil
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { inspect } from "node:util";
-import { ModelsError } from "@bastani/pi-ai";
+import { ModelsError } from "@bastani/atomic-ai";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { type Args, parseArgs } from "../src/cli/args.ts";
 import {
@@ -166,12 +166,12 @@ function runtimeStub(options: {
 	} as unknown as ModelRuntime;
 }
 
-/** The `@bastani/pi-ai` build this checkout actually resolves. */
+/** The `@bastani/atomic-ai` build this checkout actually resolves. */
 function installedPiAiResolveJs(): string {
 	for (let dir = import.meta.dirname; ; dir = dirname(dir)) {
-		const candidate = join(dir, "node_modules", "@earendil-works", "pi-ai", "dist", "auth", "resolve.js");
+		const candidate = join(dir, "node_modules", "@bastani", "atomic-ai", "dist", "auth", "resolve.js");
 		if (existsSync(candidate)) return candidate;
-		if (dirname(dir) === dir) throw new Error("installed @bastani/pi-ai not found");
+		if (dirname(dir) === dir) throw new Error("installed @bastani/atomic-ai not found");
 	}
 }
 

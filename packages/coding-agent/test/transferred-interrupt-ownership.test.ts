@@ -1,5 +1,5 @@
-import { fauxAssistantMessage } from "@bastani/pi-ai/compat";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AgentMessage } from "@bastani/atomic-agent-core";
+import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { StageSessionReplacement } from "../../workflows/src/runs/foreground/stage-runner-replacement.ts";
 import type { AgentSession } from "../src/core/agent-session.ts";

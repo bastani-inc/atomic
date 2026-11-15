@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { visibleWidth } from "@bastani/atomic-tui";
 import { test } from "vitest";
 import type { StoreSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { buildThemedWidgetLines } from "../../packages/workflows/src/tui/widget.js";

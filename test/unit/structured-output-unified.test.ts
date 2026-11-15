@@ -6,7 +6,7 @@ import type {
 	ClassifierResult,
 	Context,
 	JsonObject,
-} from "@bastani/pi-ai";
+} from "@bastani/atomic-ai";
 import { type TSchema, Type } from "typebox";
 import { afterEach, test, vi } from "vitest";
 import {

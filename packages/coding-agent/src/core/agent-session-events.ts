@@ -1,6 +1,6 @@
-import type { AssistantMessage, Message, TextContent, ToolResultMessage } from "@bastani/pi-ai/compat";
-import { cleanupSessionResources } from "@bastani/pi-ai/compat";
-import type { AgentEvent, AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AgentEvent, AgentMessage } from "@bastani/atomic-agent-core";
+import type { AssistantMessage, Message, TextContent, ToolResultMessage } from "@bastani/atomic-ai/compat";
+import { cleanupSessionResources } from "@bastani/atomic-ai/compat";
 import { abortBash } from "./agent-session-bash.ts";
 import { releaseDetachedCallHolds, withoutDetachedPlaceholders } from "./agent-session-detached-tools.ts";
 import { heldInputView } from "./agent-session-held-input.ts";

@@ -2,7 +2,14 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Api, ApiStreamOptions, Model, Provider, SimpleStreamOptions, TranscriptContext } from "@bastani/pi-ai";
+import type {
+	Api,
+	ApiStreamOptions,
+	Model,
+	Provider,
+	SimpleStreamOptions,
+	TranscriptContext,
+} from "@bastani/atomic-ai";
 import { test } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.js";
 import { resolveCliModel } from "../src/core/model-resolver-cli.js";

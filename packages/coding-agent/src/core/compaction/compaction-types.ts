@@ -1,6 +1,6 @@
-import type { ProviderHeaders } from "@bastani/pi-ai";
-import type { Api, Model, Usage } from "@bastani/pi-ai/compat";
-import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { ThinkingLevel } from "@bastani/atomic-agent-core";
+import type { ProviderHeaders } from "@bastani/atomic-ai";
+import type { Api, Model, Usage } from "@bastani/atomic-ai/compat";
 import type { CompactionSettings } from "./compaction.ts";
 
 export const VERBATIM_COMPACTION_PROMPT_VERSION = 6 as const;

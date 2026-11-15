@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import type { AssistantMessage } from "@bastani/pi-ai/compat";
-import type { TUI } from "@earendil-works/pi-tui";
+import type { AssistantMessage } from "@bastani/atomic-ai/compat";
+import type { TUI } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, describe, it, vi } from "vitest";
 import { createWriteToolDefinition } from "../src/core/tools/write.js";
 import { AssistantMessageComponent } from "../src/modes/interactive/components/assistant-message.js";

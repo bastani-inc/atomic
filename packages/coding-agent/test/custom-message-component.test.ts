@@ -1,4 +1,4 @@
-import { type Component, Text } from "@earendil-works/pi-tui";
+import { type Component, Text } from "@bastani/atomic-tui";
 import { beforeAll, describe, expect, test } from "vitest";
 import type { MessageRenderer } from "../src/core/extensions/types.ts";
 import { createCustomMessage } from "../src/core/messages.ts";

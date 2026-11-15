@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAgentSession, SessionManager, SettingsManager } from "@bastani/atomic";
-import { Container, ProcessTerminal, TuiMainScreen } from "@earendil-works/pi-tui";
+import { Container, ProcessTerminal, TuiMainScreen } from "@bastani/atomic-tui";
 
 // #3105: dedicated terminal probe, actual CLI dialog methods and keyboard/rendering.
 assert.ok(process.stdin.isTTY && process.stdout.isTTY);

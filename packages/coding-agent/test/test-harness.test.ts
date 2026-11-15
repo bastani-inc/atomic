@@ -3,8 +3,8 @@
  * Validates that the faux provider and session factory work correctly.
  */
 
-import type { AssistantMessage } from "@bastani/pi-ai/compat";
-import type { AgentTool } from "@earendil-works/pi-agent-core";
+import type { AgentTool } from "@bastani/atomic-agent-core";
+import type { AssistantMessage } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import { createHarness, createHarnessWithExtensions, type Harness } from "./test-harness.ts";

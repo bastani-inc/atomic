@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import type { OAuthCredential } from "@bastani/pi-ai";
-import { setKeybindings, type TUI } from "@earendil-works/pi-tui";
+import type { OAuthCredential } from "@bastani/atomic-ai";
+import { setKeybindings, type TUI } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, describe, test, vi } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.js";
 import { AuthStorage, InMemoryAuthStorageBackend } from "../src/core/auth-storage.js";

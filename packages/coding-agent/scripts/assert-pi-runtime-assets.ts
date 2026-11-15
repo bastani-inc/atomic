@@ -1,9 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
-/** Remaining registry Pi packages (`pi-agent-core`, `pi-tui`, …) stay on this version. */
-export const expectedPiVersion = "1.5.2";
-export const expectedPiAiPackage = "@bastani/pi-ai";
+export const expectedPiAiPackage = "@bastani/atomic-ai";
 const requiredPiAiFiles = [
 	"package.json",
 	"dist/models.generated.js",
@@ -29,8 +27,8 @@ const requiredPiTuiFiles = [
 	"native/win32/prebuilds/win32-x64/win32-platform.node",
 	"native/win32/prebuilds/win32-arm64/win32-platform.node",
 ] as const;
-const frozenNativeModifiersMarker = "@earendil-works/pi-tui/dist/native-modifiers.js";
-const barePiTuiRequirePattern = /require\((["'])@earendil-works\/pi-tui\1\)/u;
+const frozenNativeModifiersMarker = "@bastani/atomic-tui/dist/native-modifiers.js";
+const barePiTuiRequirePattern = /require\((["'])@bastani\/atomic-tui\1\)/u;
 const externalNativeModifiersPattern = /require\((["'])\.\/native-modifiers\.js\1\)/u;
 const requiredAppMarkers = [
 	"global.anthropic.claude-opus-5",
@@ -54,11 +52,14 @@ function requireFile(path: string): void {
 
 export function assertPiRuntimeAssets(options: PiRuntimeAssetOptions): void {
 	const nodeModulesRoot = resolve(options.nodeModulesRoot);
-	requireFile(join(packagePath(nodeModulesRoot, "@earendil-works/pi-codemode"), "dist/runtime/worker.js"));
+	requireFile(join(packagePath(nodeModulesRoot, "@bastani/atomic-codemode"), "dist/runtime/worker.js"));
+	for (const name of ["@bastani/atomic-agent-core", "@bastani/atomic-schema", "@bastani/atomic-telemetry"]) {
+		requireFile(join(packagePath(nodeModulesRoot, name), "dist/index.js"));
+	}
 	requireFile(join(packagePath(nodeModulesRoot, "quickjs-wasi"), "quickjs.wasm"));
-	const piAiRoot = packagePath(nodeModulesRoot, "@bastani/pi-ai");
+	const piAiRoot = packagePath(nodeModulesRoot, "@bastani/atomic-ai");
 	for (const relativePath of requiredPiAiFiles) requireFile(join(piAiRoot, relativePath));
-	const piTuiRoot = packagePath(nodeModulesRoot, "@earendil-works/pi-tui");
+	const piTuiRoot = packagePath(nodeModulesRoot, "@bastani/atomic-tui");
 	for (const relativePath of requiredPiTuiFiles) requireFile(join(piTuiRoot, relativePath));
 
 	const packageJson = JSON.parse(readFileSync(join(piAiRoot, "package.json"), "utf-8")) as {
@@ -118,5 +119,5 @@ if (import.meta.main) {
 		throw new Error(`Unknown argument: ${arg}`);
 	}
 	assertPiRuntimeAssets({ nodeModulesRoot, appBundlePath });
-	console.log(`Pi ${expectedPiVersion} model-data, OAuth, and external TUI runtime assets verified.`);
+	console.log("Model-data, OAuth, and external TUI runtime assets verified.");
 }

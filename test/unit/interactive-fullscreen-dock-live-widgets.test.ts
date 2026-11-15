@@ -1,4 +1,4 @@
-import { type Component, visibleWidth } from "@earendil-works/pi-tui";
+import { type Component, visibleWidth } from "@bastani/atomic-tui";
 import { afterEach, expect, test, vi } from "vitest";
 import {
 	createProductionFullscreenContext,

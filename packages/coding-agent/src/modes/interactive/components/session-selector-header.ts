@@ -1,4 +1,4 @@
-import { type Component, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { type Component, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import { theme } from "../theme/theme.js";
 import { keyHint } from "./keybinding-hints.js";
 import type { NameFilter, SortMode } from "./session-selector-search.ts";

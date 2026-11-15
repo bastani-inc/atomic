@@ -1,5 +1,5 @@
-import type { ToolResultMessage } from "@bastani/pi-ai/compat";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AgentMessage } from "@bastani/atomic-agent-core";
+import type { ToolResultMessage } from "@bastani/atomic-ai/compat";
 import { describe, expect, it } from "vitest";
 import {
 	type BranchSummaryEntry,

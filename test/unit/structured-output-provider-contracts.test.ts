@@ -5,7 +5,7 @@ import {
 	type ClassifierModel,
 	type Model,
 	REQUEST_AUTH_PREPARATION_TIMEOUT_MS,
-} from "@bastani/pi-ai";
+} from "@bastani/atomic-ai";
 import { afterEach, test, vi } from "vitest";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
 import { isDecisionConfigError } from "../../packages/coding-agent/src/core/decision/errors.js";

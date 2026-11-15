@@ -65,7 +65,7 @@ test("each pi-owned dependency is ignored by name for every version", () => {
 	// Each of these reached Atomic as a Dependabot PR that moved it away from
 	// the version pi runs and had to be closed.
 	const ignored = new Set(rules.map((rule) => rule["dependency-name"]));
-	for (const name of ["typebox", "vitest", "minimatch", "@types/node", "@earendil-works/pi-tui"]) {
+	for (const name of ["typebox", "vitest", "minimatch", "@types/node"]) {
 		assert.ok(ignored.has(name), `${name} is declared by upstream pi and must come only through the pi sync`);
 	}
 });

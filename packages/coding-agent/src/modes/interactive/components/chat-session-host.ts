@@ -1,4 +1,4 @@
-import type { Component, Focusable } from "@earendil-works/pi-tui";
+import type { Component, Focusable } from "@bastani/atomic-tui";
 import type { AgentSessionEvent, CompactionReason } from "../../../core/agent-session.js";
 import { repairOrphanToolResults } from "../../../core/messages.ts";
 import { SessionManager } from "../../../core/session-manager.ts";

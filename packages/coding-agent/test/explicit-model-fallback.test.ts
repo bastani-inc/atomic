@@ -8,8 +8,13 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getCurrentSystemPrompt } from "@bastani/pi-ai";
-import { type AssistantMessage, createAssistantMessageEventStream, getModel, type Model } from "@bastani/pi-ai/compat";
+import { getCurrentSystemPrompt } from "@bastani/atomic-ai";
+import {
+	type AssistantMessage,
+	createAssistantMessageEventStream,
+	getModel,
+	type Model,
+} from "@bastani/atomic-ai/compat";
 import { afterEach, describe, test } from "vitest";
 import { parseArgs } from "../src/cli/args.js";
 import { ignoredProjectSettingsWarning } from "../src/cli/project-trust.js";

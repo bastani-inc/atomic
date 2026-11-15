@@ -3,9 +3,9 @@
  */
 
 import type { SerializedSessionStartError, SessionStats } from "@bastani/atomic";
+import type { AgentToolResult } from "@bastani/atomic-agent-core";
+import type { Message } from "@bastani/atomic-ai/compat";
 import type { ChildIdentity } from "@bastani/atomic-natives";
-import type { Message } from "@bastani/pi-ai/compat";
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 
 export interface MaxOutputConfig {
 	bytes?: number;
