@@ -762,3 +762,115 @@ test("the root handle lists the background tasks its worker reports and runs tas
 	]);
 	handle.dispose();
 });
+
+test("a resend the finished stage refuses stays in the outbox, unsent and counted, for its sender's notice (#4884)", async () => {
+	const fake = replacementPool({ isStreaming: false, turnStarted: true });
+	const outbox: OutboundEntry[] = [];
+	const opened = await openPooledStageHandle(
+		fake.transport,
+		{ runId: "child", stageId: "agent" },
+		"agent",
+		() => {},
+		outbox,
+	);
+	assert.ok(opened.ok);
+	await opened.handle.steer("STEER");
+	const deliver = fake.transport.deliver;
+	fake.transport.deliver = async (delivery) => {
+		await deliver(delivery);
+		return { ok: false, refusal: "StageNotLive" };
+	};
+	fake.end("worker_exited");
+	await reconnectPooledStageHandle(opened.handle, fake.transport);
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.deepEqual(
+		outbox.map((entry) => [entry.text, entry.refused]),
+		[["STEER", undefined]],
+		"nobody heard of the refused resend, so it waits to be reported",
+	);
+	assert.equal(opened.handle.placement.undelivered, 1);
+	assert.equal(fake.deliveries.length, 2, "it is not sent again to the stage that refused it");
+});
+
+test("a first send the finished stage refuses tells its caller and leaves nothing to report (#4884)", async () => {
+	const fake = pool(() => []);
+	const outbox: OutboundEntry[] = [];
+	fake.transport.deliver = async () => ({ ok: false, refusal: "StageNotLive" });
+	const opened = await openPooledStageHandle(
+		fake.transport,
+		{ runId: "child", stageId: "agent" },
+		"agent",
+		() => {},
+		outbox,
+	);
+	assert.ok(opened.ok);
+	await assert.rejects(opened.handle.steer("STEER"), /finished first/);
+	assert.deepEqual(outbox, []);
+});
+
+test("a stage that ends while a first send waits marks it refused, and leaves an admitted one to report (#4884)", async () => {
+	const fake = pool(() => []);
+	const outbox: OutboundEntry[] = [];
+	const opened = await openPooledStageHandle(
+		fake.transport,
+		{ runId: "child", stageId: "agent" },
+		"agent",
+		() => {},
+		outbox,
+	);
+	assert.ok(opened.ok);
+	await opened.handle.steer("ADMITTED");
+	const gate = Promise.withResolvers<void>();
+	fake.holdDeliveries(gate.promise);
+	const waiting = opened.handle.steer("WAITING");
+	await fake.deliveryStarted;
+	fake.end("stage_finished");
+	await assert.rejects(waiting, /finished first/);
+	gate.resolve();
+	assert.deepEqual(
+		outbox.map((entry) => [entry.text, entry.refused]),
+		[
+			["ADMITTED", undefined],
+			["WAITING", true],
+		],
+	);
+});
+
+test("a stage that ends with text sent while reconnecting reports it, without refusing it twice (#4884)", async () => {
+	const fake = pool(() => []);
+	const outbox: OutboundEntry[] = [];
+	const opened = await openPooledStageHandle(
+		fake.transport,
+		{ runId: "child", stageId: "agent" },
+		"agent",
+		() => {},
+		outbox,
+	);
+	assert.ok(opened.ok);
+	fake.end("worker_exited");
+	await assert.rejects(opened.handle.followUp("FOLLOW"), /sent again when it reconnects/);
+	opened.handle.receive({ kind: "ended", reason: "stage_finished" });
+	assert.deepEqual(
+		outbox.map((entry) => [entry.text, entry.refused]),
+		[["FOLLOW", undefined]],
+	);
+});
+
+test("a first send its attempt refuses as stale stays in the outbox for the next attempt (#4884)", async () => {
+	const fake = pool(() => []);
+	const outbox: OutboundEntry[] = [];
+	fake.transport.deliver = async () => ({ ok: false, refusal: "StaleAttempt" });
+	const opened = await openPooledStageHandle(
+		fake.transport,
+		{ runId: "child", stageId: "agent" },
+		"agent",
+		() => {},
+		outbox,
+	);
+	assert.ok(opened.ok);
+	await assert.rejects(opened.handle.steer("STEER"), /moving to another worker attempt/);
+	assert.deepEqual(
+		outbox.map((entry) => entry.text),
+		["STEER"],
+	);
+});

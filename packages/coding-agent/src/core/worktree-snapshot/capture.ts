@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import {
 	copyFile,
 	type FileHandle,
@@ -163,6 +164,29 @@ interface WorkingTreeOptions {
 	readonly neutral?: boolean;
 	readonly seedTree?: string;
 	readonly attributesFile?: string;
+	/** The recorded tree whose executable and symbolic-link modes unchanged files keep ({@link carryRecordedModes}). */
+	readonly modeTree?: string;
+}
+
+/**
+ * The file in a restored worktree's own Git directory that names the tree the restore checked out, so its first
+ * capture, which has no earlier snapshot of that checkout, can keep the modes the snapshot recorded (#4932).
+ */
+export const RESTORED_TREE_FILE = "atomic-restored-tree";
+
+/** Records `tree` as the tree the restored worktree at `worktree` holds. */
+export async function recordRestoredTree(worktree: GitRunOptions, tree: string): Promise<void> {
+	const gitDir = await gitText(["rev-parse", "--absolute-git-dir"], worktree);
+	await writeFile(join(gitDir, RESTORED_TREE_FILE), `${tree}\n`);
+}
+
+/** The tree a restore recorded in the Git directory `gitDir`, or undefined when it is not a restored worktree. */
+async function restoredTreeOf(gitDir: string): Promise<string | undefined> {
+	try {
+		return (await readFile(join(gitDir, RESTORED_TREE_FILE), "utf8")).trim() || undefined;
+	} catch {
+		return undefined;
+	}
 }
 
 async function userIndexPathOf(root: string, signal?: AbortSignal): Promise<string> {
@@ -291,6 +315,7 @@ async function writeCapturedTree(
 	policy: SnapshotPathPolicy,
 	scratch: string,
 	storeDir: string,
+	previousTree: string | undefined,
 	signal?: AbortSignal,
 ): Promise<WorkingTreeState> {
 	const { root } = checkout;
@@ -299,7 +324,8 @@ async function writeCapturedTree(
 	).split("\n");
 	const userIndexPath = isAbsolute(userIndex) ? userIndex : resolve(root, userIndex);
 	const index = captureIndexPath(storeDir, gitDir, root);
-	if (!usableOutside(root, index)) return writeWorkingTree(checkout, settings, policy, scratch, { signal });
+	const options: WorkingTreeOptions = { signal, modeTree: previousTree ?? (await restoredTreeOf(gitDir)) };
+	if (!usableOutside(root, index)) return writeWorkingTree(checkout, settings, policy, scratch, options);
 	return inTurn(index, async () => {
 		const working = `${index}.${process.pid}.tmp`;
 		try {
@@ -312,17 +338,10 @@ async function writeCapturedTree(
 				await rm(working, { force: true });
 				await seedFromUserIndex(userIndexPath, working);
 			}
-			const state = await writeTreeThrough(
-				working,
-				checkout,
-				settings,
-				policy,
-				{ signal },
-				{
-					refresh: true,
-					forceAdded: () => ignoredAdditionsToHead(checkout, signal),
-				},
-			);
+			const state = await writeTreeThrough(working, checkout, settings, policy, options, {
+				refresh: true,
+				forceAdded: () => ignoredAdditionsToHead(checkout, signal),
+			});
 			const written: IndexRecord = {
 				version: CAPTURE_INDEX_VERSION,
 				seed,
@@ -337,7 +356,7 @@ async function writeCapturedTree(
 			await remove([working, `${working}.lock`]);
 			signal?.throwIfAborted();
 			await remove([index, `${index}.json`]);
-			return writeWorkingTree(checkout, settings, policy, scratch, { signal });
+			return writeWorkingTree(checkout, settings, policy, scratch, options);
 		}
 	});
 }
@@ -453,10 +472,9 @@ async function writeTreeThrough(
 		(await runGit([...config, "diff-files", "-z", "--name-only", "--no-renames"], git)).stdout,
 	);
 	const forceAdded = await how.forceAdded(git);
+	// An untracked repository inside the checkout is listed as its directory, ending in `/`: its files are not captured.
 	const untracked = [
-		...nulFields((await runGit(["ls-files", "-z", "--others", "--exclude-standard"], git)).stdout).filter(
-			(path) => !path.endsWith("/"),
-		),
+		...nulFields((await runGit(["ls-files", "-z", "--others", "--exclude-standard"], git)).stdout),
 		...forceAdded,
 	];
 	const omitted: Extract<WorktreeSnapshotOmission, { readonly path: string }>[] = [];
@@ -474,6 +492,10 @@ async function writeTreeThrough(
 		}
 		if (!tracked && !settings.includeUntracked) {
 			omitted.push({ reason: "untracked-excluded", path });
+			continue;
+		}
+		if (path.endsWith("/")) {
+			omitted.push({ reason: "nested-repository", path });
 			continue;
 		}
 		const bytes = await fileBytes(join(root, path));
@@ -501,7 +523,53 @@ async function writeTreeThrough(
 			input: `${admitted.join("\0")}\0`,
 		});
 	}
+	if (options.modeTree !== undefined) {
+		await carryRecordedModes(git, options.modeTree, new Set(omitted.map((omission) => omission.path)));
+	}
 	return { tree: await gitText(["write-tree"], git), omitted };
+}
+
+/**
+ * Where the repository does not trust the file system's executable bits (`core.filemode=false`) or has no symbolic
+ * links (`core.symlinks=false`), as on Windows, gives each regular file of the private index that `recorded` holds as
+ * executable or as a link the mode `recorded` gives it, with the file's current content: Git would otherwise record the
+ * checked-out file as a regular one (#4932). An edit keeps the mode, as Git keeps a tracked entry's mode where it cannot
+ * read one from the file; a link's new content is its new target. Files the capture leaves out (`omitted`) keep HEAD's
+ * entry.
+ */
+async function carryRecordedModes(git: GitRunOptions, recorded: string, omitted: ReadonlySet<string>): Promise<void> {
+	const settings = await runGit(["config", "-z", "--type=bool", "--get-regexp", "^core\\.(filemode|symlinks)$"], {
+		cwd: git.cwd,
+		signal: git.signal,
+		allowExitCodes: [1],
+	});
+	const trusted = new Map([
+		["core.filemode", true],
+		["core.symlinks", true],
+	]);
+	for (const field of nulFields(settings.stdout)) {
+		const [key = "", value] = field.split("\n");
+		trusted.set(key, value === "true");
+	}
+	const carried = new Set<string>();
+	if (!trusted.get("core.filemode")) carried.add("100755");
+	if (!trusted.get("core.symlinks")) carried.add("120000");
+	if (carried.size === 0) return;
+	// A recorded tree this store no longer holds has no modes to give: Git fails, printing no entries.
+	const diff = await runGit(["diff-index", "--cached", "--raw", "-z", "--no-renames", recorded], {
+		...git,
+		allowExitCodes: [128],
+	});
+	const fields = nulFields(diff.stdout);
+	const entries: string[] = [];
+	for (let index = 0; index + 1 < fields.length; index += 2) {
+		const [oldMode = "", newMode, , newBlob] = fields[index]!.slice(1).split(" ");
+		const path = fields[index + 1]!;
+		if (carried.has(oldMode) && newMode === "100644" && !omitted.has(path)) {
+			entries.push(`${oldMode} ${newBlob}\t${path}\0`);
+		}
+	}
+	if (entries.length > 0) await runGit(["update-index", "-z", "--index-info"], { ...git, input: entries.join("") });
 }
 
 async function fileBytes(path: string): Promise<number> {
@@ -513,6 +581,59 @@ async function fileBytes(path: string): Promise<number> {
 		}
 		throw unreadablePathError(path, error);
 	}
+}
+
+type PathOmission = Extract<WorktreeSnapshotOmission, { readonly path: string }>;
+
+/** How long checking the submodules of one capture may take; a submodule not checked by then is listed as unchecked. */
+export const SUBMODULE_CHECK_TIMEOUT_MS = 10_000;
+
+/**
+ * Submodules whose work a snapshot does not record: uncommitted changes or untracked files, or a checked-out commit
+ * that no remote-tracking ref of the submodule reaches. Only checkouts with a `.gitmodules` file are checked, and only
+ * submodules checked out here. A check that fails or runs past {@link SUBMODULE_CHECK_TIMEOUT_MS} lists its submodule
+ * as `submodule-unchecked` instead of failing the capture.
+ */
+async function submoduleOmissions(root: string, signal?: AbortSignal): Promise<PathOmission[]> {
+	if (!existsSync(join(root, ".gitmodules"))) return [];
+	const bounded = AbortSignal.any([AbortSignal.timeout(SUBMODULE_CHECK_TIMEOUT_MS), ...(signal ? [signal] : [])]);
+	const unchecked = (path: string, error: unknown): PathOmission[] => {
+		if (signal?.aborted) throw error;
+		return [{ reason: "submodule-unchecked", path }];
+	};
+	let paths: string[];
+	try {
+		const { stdout } = await runGit(
+			["config", "-z", "-f", ".gitmodules", "--get-regexp", "^submodule\\..*\\.path$"],
+			{ cwd: root, signal: bounded, allowExitCodes: [1] },
+		);
+		paths = nulFields(stdout).map((field) => field.slice(field.indexOf("\n") + 1));
+	} catch (error) {
+		return unchecked(".gitmodules", error);
+	}
+	const checkedOut = [...new Set(paths)].sort().filter((path) => {
+		const fromRoot = relative(root, resolve(root, path));
+		const inside = fromRoot !== "" && fromRoot !== ".." && !fromRoot.startsWith(`..${sep}`) && !isAbsolute(fromRoot);
+		return inside && existsSync(join(root, fromRoot, ".git"));
+	});
+	const results = await Promise.all(
+		checkedOut.map(async (path): Promise<PathOmission[]> => {
+			const git: GitRunOptions = { cwd: join(root, path), signal: bounded };
+			try {
+				const [status, unpushed] = await Promise.all([
+					runGit(["status", "--porcelain", "-z"], git),
+					runGit(["rev-list", "-n", "1", "HEAD", "--not", "--remotes"], git),
+				]);
+				return [
+					...(status.stdout.byteLength > 0 ? [{ reason: "submodule-changes" as const, path }] : []),
+					...(unpushed.stdout.byteLength > 0 ? [{ reason: "unpushed-submodule-commit" as const, path }] : []),
+				];
+			} catch (error) {
+				return unchecked(path, error);
+			}
+		}),
+	);
+	return results.flat();
 }
 
 interface RepositoryConfig {
@@ -783,9 +904,11 @@ async function captureCheckout(
 			policy,
 			scratch,
 			resolve(defaultWorktreeSnapshotStoreDir()),
+			previous?.tree,
 			signal,
 		);
-		const omissions = pathOmissionKeys(state.omitted);
+		const pathOmissions = [...state.omitted, ...(await submoduleOmissions(root, signal))];
+		const omissions = pathOmissionKeys(pathOmissions);
 		if (
 			previous &&
 			previous.head === head &&
@@ -855,7 +978,7 @@ async function captureCheckout(
 			version: 1,
 			id: snapshotId(fields, omissions),
 			...fields,
-			omitted: [...state.omitted, ...history.omitted],
+			omitted: [...pathOmissions, ...history.omitted],
 			filters: await readFilters(root, config, signal),
 			capturedAt: new Date().toISOString(),
 		};

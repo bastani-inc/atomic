@@ -5,7 +5,7 @@ import lockfile from "proper-lockfile";
 import { failureDebugFields, reportDebug } from "../debug.ts";
 import { timeRestorePhase } from "../resume/timings.ts";
 import { admitPooledWorktree, discardPooledWorktree, type PoolOwner, releaseRestoredWorktree } from "./pool.ts";
-import { type RepositoryId, repositoryIdOf } from "./repository-identity.ts";
+import { type RepositoryId, sharedRepositoryIdOf } from "./repository-identity.ts";
 import { restoreWorktreeAt } from "./restore.ts";
 import type { WorktreeSnapshot } from "./types.ts";
 
@@ -147,15 +147,18 @@ export interface AdoptPrebuiltSeedOptions {
  * Turns the seed of `snapshot`'s repository into an idle pooled worktree a claim can take (#4748): restores the
  * manifest's commit and tree into a new slot, moves each parked path into its place there when nothing is there yet,
  * and releases the slot. The manifest goes once the seed is adopted, so it is adopted once. A missing or foreign seed,
- * or a restore that fails, adopts nothing and leaves the seed as it was; rejects only when `signal` aborted.
+ * or a restore that fails, adopts nothing and leaves the seed as it was; rejects only when `signal` aborted. A
+ * checkout whose remotes name no one repository, as one without remotes, has no seed (#4989).
  */
 export async function adoptPrebuiltSeed(
-	snapshot: Pick<WorktreeSnapshot, "remotes">,
+	snapshot: Pick<WorktreeSnapshot, "remotes" | "root">,
 	options: AdoptPrebuiltSeedOptions,
 ): Promise<SeedAdoption> {
 	const storeDir = resolve(options.storeDir);
-	const repository = repositoryIdOf(snapshot.remotes);
-	if ((await readSeedManifest(storeDir, repository)) === undefined) return { adopted: false, reason: "missing" };
+	const repository = sharedRepositoryIdOf(snapshot.remotes, snapshot.root);
+	if (repository === undefined || (await readSeedManifest(storeDir, repository)) === undefined) {
+		return { adopted: false, reason: "missing" };
+	}
 	try {
 		return await withSeedLock(storeDir, repository, false, () =>
 			adoptLocked(snapshot, storeDir, repository, options),
@@ -170,7 +173,7 @@ export async function adoptPrebuiltSeed(
 }
 
 async function adoptLocked(
-	snapshot: Pick<WorktreeSnapshot, "remotes">,
+	snapshot: Pick<WorktreeSnapshot, "remotes" | "root">,
 	storeDir: string,
 	repository: RepositoryId,
 	options: AdoptPrebuiltSeedOptions,
@@ -181,7 +184,7 @@ async function adoptLocked(
 	let lease: Awaited<ReturnType<typeof admitPooledWorktree>> | undefined;
 	try {
 		lease = await admitPooledWorktree(
-			{ storeDir, remotes: snapshot.remotes, lastState: state, envHash: manifest.envHash },
+			{ storeDir, remotes: snapshot.remotes, root: snapshot.root, lastState: state, envHash: manifest.envHash },
 			SEED_OWNER,
 		);
 		if (lease.path !== resolve(manifest.worktree)) {
@@ -194,7 +197,7 @@ async function adoptLocked(
 			tree: manifest.tree,
 			envHash: manifest.envHash,
 		};
-		await restoreWorktreeAt(binding, lease.path, { storeDir, signal: options.signal });
+		await restoreWorktreeAt(binding, lease.path, { storeDir, root: snapshot.root, signal: options.signal });
 	} catch (error) {
 		if (lease !== undefined) await discardPooledWorktree(lease);
 		options.signal?.throwIfAborted();
