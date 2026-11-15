@@ -114,3 +114,9 @@ describe("message Markdown strips raw terminal sequences (#4889)", () => {
 		assertInert(await renderOnScreen(new CustomMessageComponent(message)), VISIBLE);
 	});
 });
+
+test("message text drops stray control characters but keeps the text around them (#4889)", async () => {
+	initTheme("dark");
+	const output = await renderOnScreen(new UserMessageComponent("bell\x07ring\x1bend"));
+	assert.ok(output.includes("bellringend"), "stray control characters are removed without replacement");
+});

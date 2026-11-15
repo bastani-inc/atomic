@@ -36,7 +36,8 @@ export const renderContactSupervisorResult: ToolResultRenderer = (result, { isPa
 	const details = result.details as ContactSupervisorResultDetails | undefined;
 	const textContent = firstTextContent(result);
 	const failed = Boolean(context.isError || details?.error === true || details?.delivered === false);
-	const parseWarning = typeof details?.structuredReplyParseError === "string";
+	const parseError = details?.structuredReplyParseError;
+	const parseWarning = typeof parseError === "string";
 	let text = failed
 		? theme.fg("error", "✗ ")
 		: parseWarning
@@ -44,7 +45,7 @@ export const renderContactSupervisorResult: ToolResultRenderer = (result, { isPa
 			: theme.fg("success", "✓ ");
 	text += theme.fg(failed ? "error" : "text", textContent);
 	if (parseWarning) {
-		text += "\n" + theme.fg("warning", `Structured reply parse issue: ${terminalSafeText(details?.structuredReplyParseError ?? "")}`);
+		text += "\n" + theme.fg("warning", `Structured reply parse issue: ${terminalSafeText(parseError)}`);
 	}
 	return new Text(text, 0, 0);
 };

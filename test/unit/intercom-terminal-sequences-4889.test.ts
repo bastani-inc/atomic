@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { type Component, type Terminal, TuiMainScreen } from "@earendil-works/pi-tui";
+import { type Component, stripTerminalSequences, type Terminal, TuiMainScreen } from "@earendil-works/pi-tui";
 import { beforeAll, test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
@@ -153,7 +153,10 @@ test("Intercom session list strips terminal sequences from peer names, cwd and m
 
 test("a narrow Intercom message card strips terminal sequences from the sender name (#4889)", () => {
 	const narrow = { ...sender, name: `${TITLE_OSC}${CLEAR_CSI}` };
-	assertNoPayloadSequences(new InlineMessageComponent(narrow, message, theme).render(2).join(""));
+	const lines = new InlineMessageComponent(narrow, message, theme).render(2);
+	assertNoPayloadSequences(lines.join(""));
+	assert.equal(lines.length, 1);
+	assert.equal(stripTerminalSequences(lines[0]), "..");
 });
 
 test("Intercom message card strips terminal sequences from the reply-to id (#4889)", async () => {
@@ -185,7 +188,8 @@ test("Intercom tool result strips terminal sequences from an expanded delivery r
 	);
 	const output = await renderOnScreen(rendered);
 	assertNoPayloadSequences(output);
-	assert.ok(output.includes("peer reason"));
+	const lines = rendered.render(100).map((line) => stripTerminalSequences(line).trim());
+	assert.ok(lines.includes("Reason: peer reason"), `reason line missing in ${JSON.stringify(lines)}`);
 });
 
 test("contact_supervisor result strips terminal sequences from the reply and its parse issue (#4889)", async () => {
@@ -200,7 +204,12 @@ test("contact_supervisor result strips terminal sequences from the reply and its
 	);
 	const output = await renderOnScreen(rendered);
 	assertNoPayloadSequences(output);
-	assert.ok(output.includes("supervisor reply") && output.includes("parse issue"));
+	const lines = rendered.render(100).map((line) => stripTerminalSequences(line).trim());
+	assert.ok(lines.includes("⚠ supervisor reply"), `reply line missing in ${JSON.stringify(lines)}`);
+	assert.ok(
+		lines.includes("Structured reply parse issue: parse issue"),
+		`issue line missing in ${JSON.stringify(lines)}`,
+	);
 });
 
 test("Intercom compose overlay strips terminal sequences from the target label, cwd and model (#4889)", async () => {
@@ -220,4 +229,11 @@ test("Intercom compose overlay strips terminal sequences from the target label, 
 	for (const visible of ["peer-label", "/peer/cwd", "peer-model"]) {
 		assert.ok(output.includes(visible), `visible text ${visible} is missing`);
 	}
+});
+
+test("Intercom message card drops stray control characters but keeps the text around them (#4889)", async () => {
+	const output = await renderOnScreen(
+		new InlineMessageComponent(sender, { ...message, content: { text: "bell\x07ring\x1bend" } }, theme),
+	);
+	assert.ok(output.includes("bellringend"), "stray control characters are removed without replacement");
 });
