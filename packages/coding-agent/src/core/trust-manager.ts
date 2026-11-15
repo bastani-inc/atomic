@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAMES } from "../config.js";
@@ -33,6 +33,10 @@ export const TRUST_REQUIRING_PROJECT_CONFIG_RESOURCES = [
 	"skills",
 	"prompts",
 	"themes",
+	"workflows",
+	"agents",
+	"mcp.json",
+	"blueprint.yaml",
 	"SYSTEM.md",
 	"APPEND_SYSTEM.md",
 ] as const;
@@ -263,6 +267,42 @@ function hasTrustRequiringConfigResources(cwd: string): boolean {
 	});
 }
 
+function isDirectory(path: string): boolean {
+	try {
+		return statSync(path).isDirectory();
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Subagent definitions and their settings overrides are read from the nearest
+ * ancestor of cwd that has a project config dir or a `.agents` dir, not only
+ * from cwd. Returns true when that project root has agent definitions or a
+ * settings file. The home directory holds the user's own config dirs, so it is
+ * never treated as a project root.
+ */
+function hasNearestProjectRootAgentResources(cwd: string): boolean {
+	const homeDir = canonicalizePath(resolvePath(getHomeDir()));
+	let currentDir = canonicalizePath(resolvePath(cwd));
+	while (true) {
+		const configDirs = CONFIG_DIR_NAMES.map((configDirName) => join(currentDir, configDirName));
+		const legacyAgentsDir = join(currentDir, ".agents");
+		if (configDirs.some(isDirectory) || isDirectory(legacyAgentsDir)) {
+			if (pathsEqual(currentDir, homeDir)) return false;
+			return (
+				isDirectory(legacyAgentsDir) ||
+				configDirs.some(
+					(configDir) => existsSync(join(configDir, "agents")) || existsSync(join(configDir, "settings.json")),
+				)
+			);
+		}
+		const parentDir = dirname(currentDir);
+		if (parentDir === currentDir) return false;
+		currentDir = parentDir;
+	}
+}
+
 /**
  * Returns true when cwd has project-local resources that must be gated by
  * project trust: trust-requiring entries under cwd/.atomic or cwd/.pi, or
@@ -271,7 +311,7 @@ function hasTrustRequiringConfigResources(cwd: string): boolean {
  * always treated as a trusted user resource and ignored, even when cwd is $HOME.
  */
 export function hasTrustRequiringProjectResources(cwd: string): boolean {
-	if (hasTrustRequiringConfigResources(cwd)) {
+	if (hasTrustRequiringConfigResources(cwd) || hasNearestProjectRootAgentResources(cwd)) {
 		return true;
 	}
 
@@ -293,7 +333,7 @@ export function hasTrustRequiringProjectResources(cwd: string): boolean {
 
 export function hasProjectTrustInputs(cwd: string): boolean {
 	let currentDir = canonicalizePath(resolvePath(cwd));
-	if (hasTrustRequiringConfigResources(currentDir)) {
+	if (hasTrustRequiringConfigResources(currentDir) || hasNearestProjectRootAgentResources(currentDir)) {
 		return true;
 	}
 	const userGlobalSkillsDir = canonicalizePath(resolvePath(join(getHomeDir(), ".agents", "skills")));

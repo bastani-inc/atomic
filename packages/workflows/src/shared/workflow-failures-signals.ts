@@ -1,3 +1,4 @@
+import { redactCredentialShapes } from "@bastani/atomic";
 import type {
 	WorkflowFailureCode,
 	WorkflowFailureDisposition,
@@ -294,10 +295,12 @@ function redactedSecretReplacement(prefix: string): string {
 	return `${prefix}[redacted]`;
 }
 
+/**
+ * Redact credentials in failure text, tool output and prediction prompts: an `sk-` key keeps its first eight
+ * characters so the key stays recognizable, and everything else goes through Atomic's shared credential redactor.
+ */
 export function redactSensitiveText(value: string): string {
-	return value
-		.replace(/(sk-[A-Za-z0-9_-]{8})[A-Za-z0-9_-]+/g, redactedSecretReplacement("$1"))
-		.replace(/\b(authorization\s*:\s*bearer\s+)[^\s,;]+/gi, "$1[redacted]")
-		.replace(/\b(bearer\s+)[A-Za-z0-9._~+/-]{8,}=*/gi, "$1[redacted]")
-		.replace(/((?:api[_-]?key|token|credential|secret)\s*[:=]\s*)[^\s,;]+/gi, "$1[redacted]");
+	return redactCredentialShapes(
+		value.replace(/(sk-[A-Za-z0-9_-]{8})[A-Za-z0-9_-]+/g, redactedSecretReplacement("$1")),
+	);
 }
