@@ -6,7 +6,7 @@ import { canonicalizePath } from "../utils/paths.ts";
 import type { ResourceDiagnostic } from "./diagnostics.ts";
 import type { ResourceLoader } from "./resource-loader-types.ts";
 import type { Skill } from "./skills.ts";
-import { parseSlashCommand } from "./slash-commands.ts";
+import { parseSlashCommand } from "./slash-commands.js";
 
 export interface SkillCandidate {
 	readonly id: string;

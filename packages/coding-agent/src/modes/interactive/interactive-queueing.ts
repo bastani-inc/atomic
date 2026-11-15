@@ -1,5 +1,5 @@
 import type { ClearedQueue, PromptDisposition } from "../../core/agent-session-types.js";
-import { parseSlashCommand } from "../../core/slash-commands.ts";
+import { parseSlashCommand } from "../../core/slash-commands.js";
 import {
 	clearInteractiveEngineQueue,
 	getInteractiveEngineRemoteCommands,

@@ -35,7 +35,7 @@ import type { CustomMessage, StageAdmittedCustomMessage } from "./messages.ts";
 import { withOwnResourceAdmission } from "./resource-admission-scope.ts";
 import { assertSessionOpen, sessionLifetime, trackSessionWork } from "./session-lifecycle-work.ts";
 import { settingsWriteOwner } from "./settings-write-ownership.ts";
-import { parseSlashCommand } from "./slash-commands.ts";
+import { parseSlashCommand } from "./slash-commands.js";
 
 export { transferWorkflowStageDeliveriesTo };
 

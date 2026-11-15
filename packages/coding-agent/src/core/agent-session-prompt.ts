@@ -42,7 +42,7 @@ import {
 	trackSessionWork,
 } from "./session-lifecycle-work.ts";
 import { expandSkillCommand, getSkillCatalog } from "./skill-catalog.ts";
-import { parseSlashCommand } from "./slash-commands.ts";
+import { parseSlashCommand } from "./slash-commands.js";
 import { ToolDetachmentError } from "./tool-detachment-errors.ts";
 
 const customPreparations = new WeakMap<AgentSession, Promise<void>>();

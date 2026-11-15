@@ -4,7 +4,7 @@ import { CONFIG_DIR_NAME } from "../config.js";
 import { parseFrontmatter } from "../utils/frontmatter.ts";
 import { isPathWithin, resolvePath } from "../utils/paths.ts";
 import type { ResourceDiagnostic } from "./diagnostics.ts";
-import { parseSlashCommand } from "./slash-commands.ts";
+import { parseSlashCommand } from "./slash-commands.js";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
 
 /**
