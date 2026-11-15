@@ -5,6 +5,7 @@
  * a summary of the branch being left so context isn't lost.
  */
 
+import type { AgentMessage, StreamFn, ThinkingLevel } from "@bastani/atomic-agent-core";
 import {
 	normalizeContext,
 	type ProviderHeaders,
@@ -12,10 +13,9 @@ import {
 	type RetryPolicy,
 	retryAssistantCall,
 	uuidv7,
-} from "@bastani/pi-ai";
-import type { Api, Model, SimpleStreamOptions, ToolResultMessage, Usage } from "@bastani/pi-ai/compat";
-import { completeSimple } from "@bastani/pi-ai/compat";
-import type { AgentMessage, StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
+} from "@bastani/atomic-ai";
+import type { Api, Model, SimpleStreamOptions, ToolResultMessage, Usage } from "@bastani/atomic-ai/compat";
+import { completeSimple } from "@bastani/atomic-ai/compat";
 import { convertToLlm, createBranchSummaryMessage, createCustomMessage } from "../messages.ts";
 import type { ContextEditEntry, ReadonlySessionManager, SessionEntry } from "../session-manager.ts";
 import { applyContextEdit } from "../session-manager-history.ts";

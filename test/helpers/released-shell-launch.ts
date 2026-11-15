@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { fauxAssistantMessage, fauxToolCall, type ToolResultMessage } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage, fauxToolCall, type ToolResultMessage } from "@bastani/atomic-ai/compat";
 import type { AgentWakeDispatcher } from "../../packages/coding-agent/src/core/agent-wake-dispatcher.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";

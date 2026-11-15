@@ -71,58 +71,87 @@ function expandIpv6(address: string): number[] | undefined {
 	return [...left, ...Array.from({ length: zeros }, () => 0), ...right];
 }
 
-function embeddedPrivateIpv4(address: string): boolean {
-	const hextets = expandIpv6(address);
-	if (!hextets) return false;
-	// IPv4-mapped (::ffff:0:0/96) and IPv4-compatible (::/96) addresses: any
-	// fully-expanded form (e.g. [0:0:0:0:0:ffff:169.254.169.254]) must be
-	// re-checked against the IPv4 private predicates, not just the compressed
-	// `::ffff:` literals handled by isPrivateIpAddress.
-	if (hextets.slice(0, 5).every((part) => part === 0) && hextets[5] === 0xffff)
-		return isPrivateIpAddress(ipv4FromHextets(hextets[6]!, hextets[7]!));
-	if (hextets.slice(0, 6).every((part) => part === 0))
-		return isPrivateIpAddress(ipv4FromHextets(hextets[6]!, hextets[7]!));
-	if (hextets[0] === 0x2002) return isPrivateIpAddress(ipv4FromHextets(hextets[1]!, hextets[2]!));
-	if (hextets[0] === 0x64 && hextets[1] === 0xff9b && hextets.slice(2, 6).every((part) => part === 0))
-		return isPrivateIpAddress(ipv4FromHextets(hextets[6]!, hextets[7]!));
-	return false;
+// Every range here is either not globally reachable (IANA IPv4 and IPv6 Special-Purpose Address Registries),
+// multicast, or reserved. A fetch to any of them is refused, whatever the host's own network looks like.
+const NON_PUBLIC_IPV4: readonly (readonly [string, number])[] = [
+	["0.0.0.0", 8], // "this network"
+	["10.0.0.0", 8], // private
+	["100.64.0.0", 10], // shared address space (CGNAT)
+	["127.0.0.0", 8], // loopback
+	["169.254.0.0", 16], // link-local, including cloud metadata
+	["172.16.0.0", 12], // private
+	["192.0.0.0", 24], // IETF protocol assignments, including a cloud metadata address
+	["192.0.2.0", 24], // documentation (TEST-NET-1)
+	["192.168.0.0", 16], // private
+	["198.18.0.0", 15], // benchmarking
+	["198.51.100.0", 24], // documentation (TEST-NET-2)
+	["203.0.113.0", 24], // documentation (TEST-NET-3)
+	["224.0.0.0", 4], // multicast
+	["240.0.0.0", 4], // reserved, including the limited broadcast address
+];
+
+const NON_PUBLIC_IPV6: readonly (readonly [string, number])[] = [
+	["::", 128], // unspecified
+	["::1", 128], // loopback
+	["64:ff9b:1::", 48], // local-use IPv4/IPv6 translation
+	["100::", 64], // discard-only
+	["2001::", 23], // IETF protocol assignments
+	["2001:db8::", 32], // documentation
+	["3fff::", 20], // documentation
+	["5f00::", 16], // segment routing (SRv6) SIDs
+	["fc00::", 7], // unique local
+	["fe80::", 10], // link-local
+	["fec0::", 10], // site-local (deprecated)
+	["ff00::", 8], // multicast
+];
+
+function ipv4Value(address: string): number | undefined {
+	const parts = address.split(".");
+	if (parts.length !== 4 || parts.some((part) => !/^\d{1,3}$/.test(part))) return undefined;
+	const octets = parts.map(Number);
+	if (octets.some((octet) => octet > 255)) return undefined;
+	return ((octets[0]! << 24) | (octets[1]! << 16) | (octets[2]! << 8) | octets[3]!) >>> 0;
 }
 
-function isPrivateIpv6Address(address: string): boolean {
-	const hextets = expandIpv6(address);
-	if (!hextets) return false;
-	const h0 = hextets[0]!;
-	return (
-		hextets.every((part) => part === 0) ||
-		(hextets.slice(0, 7).every((part) => part === 0) && hextets[7] === 1) ||
-		(h0 & 0xffc0) === 0xfe80 ||
-		(h0 & 0xfe00) === 0xfc00
-	);
+function inIpv4Prefix(value: number, base: string, bits: number): boolean {
+	const mask = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0;
+	return (value & mask) >>> 0 === (ipv4Value(base)! & mask) >>> 0;
 }
 
+function inIpv6Prefix(hextets: readonly number[], base: readonly number[], bits: number): boolean {
+	for (let index = 0; index < 8 && bits > 0; index++, bits -= 16) {
+		const mask = bits >= 16 ? 0xffff : (0xffff << (16 - bits)) & 0xffff;
+		if ((hextets[index]! & mask) !== (base[index]! & mask)) return false;
+	}
+	return true;
+}
+
+const NON_PUBLIC_IPV6_PREFIXES = NON_PUBLIC_IPV6.map(([base, bits]) => [expandIpv6(base)!, bits] as const);
+
+/** The IPv4 address a translation or transition IPv6 address carries, when it carries one. */
+function embeddedIpv4(hextets: readonly number[]): string | undefined {
+	const zeros = (from: number, to: number) => hextets.slice(from, to).every((part) => part === 0);
+	const tail = () => ipv4FromHextets(hextets[6]!, hextets[7]!);
+	if (zeros(0, 5) && hextets[5] === 0xffff) return tail(); // IPv4-mapped ::ffff:0:0/96
+	if (zeros(0, 4) && hextets[4] === 0xffff && hextets[5] === 0) return tail(); // IPv4-translated ::ffff:0:0:0/96
+	if (zeros(0, 6)) return tail(); // IPv4-compatible ::/96
+	if (hextets[0] === 0x64 && hextets[1] === 0xff9b && zeros(2, 6)) return tail(); // NAT64 64:ff9b::/96
+	if (hextets[0] === 0x2002) return ipv4FromHextets(hextets[1]!, hextets[2]!); // 6to4 2002::/16
+	return undefined;
+}
+
+/**
+ * Whether a fetch to this IP address must be refused: anything that isn't a globally reachable unicast address,
+ * including IPv6 addresses that carry such an IPv4 address.
+ */
 export function isPrivateIpAddress(address: string): boolean {
 	if (address.includes(":")) {
-		const lower = address.toLowerCase();
-		if (isPrivateIpv6Address(lower)) return true;
-		const mapped = lower.match(/::ffff:(\d+\.\d+\.\d+\.\d+)$/)?.[1];
-		const hexMapped = lower.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
-		if (hexMapped) {
-			const high = Number.parseInt(hexMapped[1]!, 16),
-				low = Number.parseInt(hexMapped[2]!, 16);
-			return isPrivateIpAddress(`${high >> 8}.${high & 255}.${low >> 8}.${low & 255}`);
-		}
-		return mapped ? isPrivateIpAddress(mapped) : embeddedPrivateIpv4(address);
+		const hextets = expandIpv6(address);
+		if (!hextets) return false;
+		if (NON_PUBLIC_IPV6_PREFIXES.some(([base, bits]) => inIpv6Prefix(hextets, base, bits))) return true;
+		const embedded = embeddedIpv4(hextets);
+		return embedded !== undefined && isPrivateIpAddress(embedded);
 	}
-	const parts = address.split(".").map((part) => Number.parseInt(part, 10));
-	if (parts.length !== 4 || parts.some((part) => !Number.isFinite(part))) return false;
-	const [a, b] = parts as [number, number, number, number];
-	return (
-		a === 0 ||
-		a === 10 ||
-		a === 127 ||
-		(a === 169 && b === 254) ||
-		(a === 172 && b >= 16 && b <= 31) ||
-		(a === 192 && b === 168) ||
-		(a === 100 && b >= 64 && b <= 127)
-	);
+	const value = ipv4Value(address);
+	return value !== undefined && NON_PUBLIC_IPV4.some(([base, bits]) => inIpv4Prefix(value, base, bits));
 }

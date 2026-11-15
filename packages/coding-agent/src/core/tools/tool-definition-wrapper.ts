@@ -1,10 +1,10 @@
-import type { AgentTool, AgentToolParams } from "@earendil-works/pi-agent-core";
+import type { AgentTool, AgentToolParams } from "@bastani/atomic-agent-core";
 import type { Static, TSchema } from "typebox";
 import { runCallback, runSynchronousCallback } from "../callback-activity.ts";
 import type { ExtensionContext, ToolDefinition } from "../extensions/types.ts";
 import type { ToolConcurrency } from "./tool-concurrency.ts";
 
-declare module "@earendil-works/pi-agent-core" {
+declare module "@bastani/atomic-agent-core" {
 	interface AgentTool<TParameters extends object = object, TDetails = any> {
 		/** Optional per-tool character cap for model-visible result persistence. Use Infinity to opt out. */
 		maxResultSizeChars?: number;

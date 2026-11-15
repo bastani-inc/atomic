@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { Component, TUI } from "@earendil-works/pi-tui";
+import type { Component, TUI } from "@bastani/atomic-tui";
 import { Type } from "typebox";
 import { beforeAll, test } from "vitest";
 import type { ToolDefinition } from "../src/core/extensions/types.js";

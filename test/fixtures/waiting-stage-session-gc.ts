@@ -9,8 +9,8 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fauxAssistantMessage, fauxToolCall, registerFauxProvider } from "@bastani/pi-ai/compat";
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import { fauxAssistantMessage, fauxToolCall, registerFauxProvider } from "@bastani/atomic-ai/compat";
+import type { AgentToolResult } from "@bastani/atomic-agent-core";
 import { Type } from "typebox";
 // From the package, not `packages/coding-agent/src/index.js`: the stage adapter loads `@bastani/atomic` for its
 // sessions, so the source barrel would load a second copy of the coding agent through jiti, about 870 more modules

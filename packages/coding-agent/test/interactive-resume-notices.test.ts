@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { Container } from "@earendil-works/pi-tui";
+import { Container } from "@bastani/atomic-tui";
 import { test } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";

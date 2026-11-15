@@ -3,8 +3,8 @@
  */
 
 import { isAbsolute, relative, sep } from "node:path";
-import type { Message } from "@bastani/pi-ai/compat";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AgentMessage } from "@bastani/atomic-agent-core";
+import type { Message } from "@bastani/atomic-ai/compat";
 import { resolveToCwd } from "../tools/path-utils.ts";
 import { sliceHead } from "../tools/truncate.ts";
 import type { LineRange } from "./compaction-types.js";

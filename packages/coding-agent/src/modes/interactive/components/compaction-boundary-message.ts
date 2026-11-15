@@ -1,4 +1,4 @@
-import { Box, Container, MouseRegion, Spacer, Text } from "@earendil-works/pi-tui";
+import { Box, Container, MouseRegion, Spacer, Text } from "@bastani/atomic-tui";
 import type {
 	VerbatimCompactionDetails,
 	VerbatimCompactionResult,

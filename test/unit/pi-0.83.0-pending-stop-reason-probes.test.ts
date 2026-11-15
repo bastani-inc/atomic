@@ -19,9 +19,9 @@
 
 import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
-import type { AssistantMessage, Model, StopReason } from "@bastani/pi-ai/compat";
-import { fauxAssistantMessage } from "@bastani/pi-ai/compat";
-import type { StreamFn } from "@earendil-works/pi-agent-core";
+import type { StreamFn } from "@bastani/atomic-agent-core";
+import type { AssistantMessage, Model, StopReason } from "@bastani/atomic-ai/compat";
+import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
 import { test } from "vitest";
 import type { AgentSessionEvent } from "../../packages/coding-agent/src/core/agent-session.js";
 import { generateBranchSummary } from "../../packages/coding-agent/src/core/compaction/branch-summarization.js";

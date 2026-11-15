@@ -1,6 +1,6 @@
 # README badges
 
-The root README has three compact generated badge groups: 19 engineering-stack entries, 28 hosted/provider brands, and 15 local/open entries. `manifest.json` owns their exact order, destinations, local SVG paths, alt text, icon geometry, and source or fallback record.
+The root README has three compact generated badge groups: 19 engineering-stack entries, 27 hosted/provider brands, and 15 local/open entries. `manifest.json` owns their exact order, destinations, local SVG paths, alt text, icon geometry, and source or fallback record.
 
 ## Contract
 

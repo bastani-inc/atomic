@@ -1,4 +1,4 @@
-import { Container } from "@earendil-works/pi-tui";
+import { Container } from "@bastani/atomic-tui";
 import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
 import type { ResourceOverlap } from "../src/core/diagnostics.ts";
 import type { QuietStartup } from "../src/core/settings-manager.ts";

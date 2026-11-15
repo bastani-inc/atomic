@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
 import { crc32, deflateSync } from "node:zlib";
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import type { AgentToolResult } from "@bastani/atomic-agent-core";
 import {
 	Container,
 	getCapabilities,
@@ -17,7 +17,7 @@ import {
 	type TUI,
 	type TuiAltScreen,
 	TuiMainScreen,
-} from "@earendil-works/pi-tui";
+} from "@bastani/atomic-tui";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { registerContentTools } from "../../web-access/content-tools.ts";
 import type { ExtensionAPI } from "../src/core/extensions/api-types.ts";

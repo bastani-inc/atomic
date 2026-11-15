@@ -7,7 +7,7 @@ import {
 	ModelPromptCacheSchema,
 	ModelThinkingLevelSchema,
 	ThinkingLevelMapSchema,
-} from "@bastani/pi-ai/providers/model-schema";
+} from "@bastani/atomic-ai/providers/model-schema";
 import type { TSchema } from "typebox";
 import { KeybindingsSchema, KeybindingValueSchema } from "../src/core/keybindings-schema.ts";
 import { ModelsConfigSchema, ModelsJsonCompatSchema } from "../src/core/model-config.ts";

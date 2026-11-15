@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import type { Api, AssistantMessage, Model, ProviderHeaders } from "@bastani/pi-ai";
-import { getModel } from "@bastani/pi-ai/compat";
+import type { Api, AssistantMessage, Model, ProviderHeaders } from "@bastani/atomic-ai";
+import { getModel } from "@bastani/atomic-ai/compat";
 import { test } from "vitest";
 import { generateSummaryDraft, type SummaryGenerationContext } from "../../web-access/summary-review.js";
 import { rewriteSearchQuery } from "../../web-access/web-search-summary.js";

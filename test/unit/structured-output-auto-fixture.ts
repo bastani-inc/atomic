@@ -1,4 +1,4 @@
-import type { JsonObject, TranscriptContext } from "@bastani/pi-ai";
+import type { JsonObject, TranscriptContext } from "@bastani/atomic-ai";
 import type { ExtensionContext } from "../../packages/coding-agent/src/core/extensions/context-types.js";
 import {
 	decisionChatModel,

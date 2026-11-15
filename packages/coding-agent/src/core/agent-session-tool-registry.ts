@@ -1,4 +1,4 @@
-import type { AgentTool } from "@earendil-works/pi-agent-core";
+import type { AgentTool } from "@bastani/atomic-agent-core";
 import { shellCommandPrefixFor } from "./agent-session-blueprint-environment.ts";
 import { detachableTool, forgetDetachableTools } from "./agent-session-detached-tools.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { Api, JsonObject, Model } from "@bastani/pi-ai";
+import type { Api, JsonObject, Model } from "@bastani/atomic-ai";
 import { type TSchema, Type } from "typebox";
 import { test, vi } from "vitest";
 import type { ModelRegistry } from "../../packages/coding-agent/src/core/model-registry.js";

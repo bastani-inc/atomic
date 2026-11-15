@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { fauxAssistantMessage } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, test, vi } from "vitest";
 import { createRpcCommandHandler } from "../src/modes/rpc/rpc-command-handler.ts";
 import type { RpcResponse } from "../src/modes/rpc/rpc-types.ts";

@@ -222,41 +222,17 @@ describe("Pi 0.82.1 authentication integration", () => {
 		});
 	});
 
-	it("routes configured Radius refresh directly through the declared gateway", async () => {
-		const directory = mkdtempSync(join(tmpdir(), "atomic-radius-auth-"));
+	it("rejects a models.json that still configures the removed Radius provider (#5174)", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "atomic-radius-removed-"));
 		try {
-			writeFileSync(
-				join(directory, "models.json"),
-				JSON.stringify({
-					providers: {
-						"corp-radius": {
-							name: "Corporate Radius",
-							baseUrl: "https://radius.example.test/v1",
-							oauth: "radius",
-						},
-					},
-				}),
-			);
-			const storage = AuthStorage.inMemory({
-				"corp-radius": { type: "oauth", access: "old", refresh: "refresh", expires: 0 },
-			});
-			const registry = await createModelRegistry(storage, join(directory, "models.json"));
-			const runtime = getModelRuntime(registry);
-			const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-				jsonResponse({
-					access_token: "new-access",
-					refresh_token: "new-refresh",
-					expires_in: 3600,
-				}),
-			);
-
-			await expect(runtime.getAuth("corp-radius")).resolves.toMatchObject({
-				auth: { apiKey: "new-access" },
-			});
-			expect(fetchSpy).toHaveBeenCalledWith(
-				new URL("https://radius.example.test/v1/oauth/token"),
-				expect.objectContaining({ method: "POST" }),
-			);
+			for (const providers of [
+				{ "corp-radius": { name: "Corporate Radius", baseUrl: "https://radius.example.test/v1", oauth: "radius" } },
+				{ radius: { apiKey: "key" } },
+			]) {
+				writeFileSync(join(directory, "models.json"), JSON.stringify({ providers }));
+				const registry = await createModelRegistry(AuthStorage.inMemory({}), join(directory, "models.json"));
+				expect(registry.getError()).toMatch(/^Provider "radius" was removed from Atomic: /u);
+			}
 		} finally {
 			rmSync(directory, { recursive: true, force: true });
 		}

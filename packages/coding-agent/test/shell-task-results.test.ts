@@ -3,7 +3,7 @@ import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
-import type { Component } from "@earendil-works/pi-tui";
+import type { Component } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, describe, test, vi } from "vitest";
 import { AgentTaskHost } from "../src/core/tasks/agent-adapter.js";
 import type { CancelReceipt, OperationId, TaskId, WaitOutcome } from "../src/core/tasks/contracts.js";

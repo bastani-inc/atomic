@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { Worker } from "node:worker_threads";
-import * as codemode from "@earendil-works/pi-codemode";
+import * as codemode from "@bastani/atomic-codemode";
 import { afterEach, beforeEach, describe, it, vi } from "vitest";
 import { executeCodemode } from "../src/extensions/codemode/execute.js";
 
-vi.mock("@earendil-works/pi-codemode", async (importOriginal) => {
+vi.mock("@bastani/atomic-codemode", async (importOriginal) => {
 	const actual = await importOriginal<typeof codemode>();
 	return { ...actual, loadQuickJSWasm: vi.fn(actual.loadQuickJSWasm) };
 });

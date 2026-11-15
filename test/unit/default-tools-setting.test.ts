@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { getModel } from "@bastani/pi-ai/compat";
+import { getModel } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { afterEach, describe, test } from "vitest";
 import { getBuiltinPackagePaths } from "../../packages/coding-agent/src/core/builtin-packages.js";

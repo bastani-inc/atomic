@@ -1,4 +1,4 @@
-import { Container, Text } from "@earendil-works/pi-tui";
+import { Container, Text } from "@bastani/atomic-tui";
 import { Type } from "typebox";
 import { experimentalToolSamplingProperty } from "../experimental.ts";
 import type { ToolDefinition } from "../extensions/types.ts";

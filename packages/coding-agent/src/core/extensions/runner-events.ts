@@ -1,6 +1,6 @@
-import { getCurrentSystemMessage } from "@bastani/pi-ai";
-import type { ImageContent } from "@bastani/pi-ai/compat";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AgentMessage } from "@bastani/atomic-agent-core";
+import { getCurrentSystemMessage } from "@bastani/atomic-ai";
+import type { ImageContent } from "@bastani/atomic-ai/compat";
 import { runCallback } from "../callback-activity.ts";
 import {
 	type BuildSystemPromptOptions,

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { Container, Text } from "@earendil-works/pi-tui";
+import { Container, Text } from "@bastani/atomic-tui";
 import { test } from "vitest";
 import type { SessionEntry } from "../src/core/session-manager.js";
 import type { ChatMessageEntry } from "../src/modes/interactive/components/chat-message-renderer.js";

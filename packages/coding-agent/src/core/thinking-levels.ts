@@ -1,4 +1,4 @@
-import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { ThinkingLevel } from "@bastani/atomic-agent-core";
 
 /**
  * Every thinking level a model reference may name as a `:<level>` suffix. A leaf module, so model resolution can use it

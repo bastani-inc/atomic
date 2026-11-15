@@ -3,8 +3,8 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CompatSchemasByApi } from "@bastani/pi-ai/providers/compat-schema";
-import { ModelInputLimitsSchema } from "@bastani/pi-ai/providers/model-schema";
+import { CompatSchemasByApi } from "@bastani/atomic-ai/providers/compat-schema";
+import { ModelInputLimitsSchema } from "@bastani/atomic-ai/providers/model-schema";
 import { type TSchema, Type } from "typebox";
 import { getPackageDir } from "../src/config.js";
 import { ModelsJsonCompatSchema, ModelsJsonSchemas } from "../src/core/model-config.js";

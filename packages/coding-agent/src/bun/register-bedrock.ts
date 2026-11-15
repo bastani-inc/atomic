@@ -1,4 +1,4 @@
-import { bedrockProviderModule } from "@bastani/pi-ai/bedrock-provider";
-import { setBedrockProviderModule } from "@bastani/pi-ai/compat";
+import { bedrockProviderModule } from "@bastani/atomic-ai/bedrock-provider";
+import { setBedrockProviderModule } from "@bastani/atomic-ai/compat";
 
 setBedrockProviderModule(bedrockProviderModule);

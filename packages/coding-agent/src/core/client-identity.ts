@@ -1,4 +1,4 @@
-import type { ClientAttribution, ClientIdentity } from "@bastani/pi-ai";
+import type { ClientAttribution, ClientIdentity } from "@bastani/atomic-ai";
 import { APP_NAME, VERSION } from "../config.js";
 import { getPiUserAgent } from "../utils/pi-user-agent.ts";
 import type { SettingsManager } from "./settings-manager.ts";

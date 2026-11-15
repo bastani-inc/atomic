@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ClassifierContext, Credential } from "@bastani/pi-ai";
+import type { ClassifierContext, Credential } from "@bastani/atomic-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.ts";
 import { AuthStorage, InMemoryAuthStorageBackend } from "../src/core/auth-storage.ts";

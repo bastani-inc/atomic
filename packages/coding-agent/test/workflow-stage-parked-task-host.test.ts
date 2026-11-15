@@ -8,7 +8,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, test, vi } from "vitest";
 import type { WorkflowStageOrchestrationContext } from "../src/core/extensions/index.js";
 import { SessionManager } from "../src/core/session-manager.js";

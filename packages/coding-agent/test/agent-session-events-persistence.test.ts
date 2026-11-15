@@ -3,8 +3,8 @@
  * it is produced.
  */
 import assert from "node:assert/strict";
-import { fauxAssistantMessage, fauxToolCall, type ToolResultMessage } from "@bastani/pi-ai/compat";
-import type { AgentEvent, AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AgentEvent, AgentMessage } from "@bastani/atomic-agent-core";
+import { fauxAssistantMessage, fauxToolCall, type ToolResultMessage } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, test } from "vitest";
 import type { BashExecutionMessage } from "../src/core/messages.js";
 import { createHarness, type Harness } from "./suite/harness.js";

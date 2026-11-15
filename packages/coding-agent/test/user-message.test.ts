@@ -1,4 +1,4 @@
-import { Box, Markdown } from "@earendil-works/pi-tui";
+import { Box, Markdown } from "@bastani/atomic-tui";
 import { describe, expect, test } from "vitest";
 import { UserMessageComponent } from "../src/modes/interactive/components/user-message.ts";
 import { getMarkdownTheme, initTheme, theme } from "../src/modes/interactive/theme/theme.ts";

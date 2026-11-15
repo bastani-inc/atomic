@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { fuzzyFilter } from "@earendil-works/pi-tui";
+import { fuzzyFilter } from "@bastani/atomic-tui";
 import { describe, expect, test } from "vitest";
 import {
 	getDistinctModelName,

@@ -17,7 +17,7 @@ import {
 	resetCapabilitiesCache,
 	setCapabilities,
 	type TUI,
-} from "@earendil-works/pi-tui";
+} from "@bastani/atomic-tui";
 import { describe, test, vi } from "vitest";
 import {
 	installReactiveWidget,

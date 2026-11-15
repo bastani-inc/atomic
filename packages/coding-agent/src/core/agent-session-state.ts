@@ -1,6 +1,6 @@
-import { getCurrentSystemMessage, getCurrentTools, type SystemMessage } from "@bastani/pi-ai";
-import type { Api, Model } from "@bastani/pi-ai/compat";
-import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { AgentMessage, ThinkingLevel } from "@bastani/atomic-agent-core";
+import { getCurrentSystemMessage, getCurrentTools, type SystemMessage } from "@bastani/atomic-ai";
+import type { Api, Model } from "@bastani/atomic-ai/compat";
 import { getGitStatus } from "../utils/tools-manager.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { getCallableTools } from "./agent-session-nested-tools.js";

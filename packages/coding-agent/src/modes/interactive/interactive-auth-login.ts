@@ -50,9 +50,7 @@ InteractiveModeBase.prototype.completeProviderAuthentication = async function (
 			selectionError = `${actionLabel}, but no models are available for that provider. Use /model to select a model.`;
 		} else {
 			const defaultModelId = defaultModelPerProvider[providerId];
-			selectedModel =
-				providerModels.find((model) => model.id === defaultModelId) ??
-				(providerId === "radius" ? providerModels[0] : undefined);
+			selectedModel = providerModels.find((model) => model.id === defaultModelId);
 			if (!selectedModel) {
 				selectionError = `${actionLabel}, but its default model "${defaultModelId}" is not available. Use /model to select a model.`;
 			} else {

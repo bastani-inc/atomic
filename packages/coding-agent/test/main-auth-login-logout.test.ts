@@ -103,7 +103,7 @@ describe("atomic auth login and logout from main", () => {
 	test("logs out without starting a session and ignores --offline", async () => {
 		writeAuth({
 			openai: { type: "api_key", key: "sk-test" },
-			radius: { type: "oauth", access: "access", refresh: "refresh", expires: Date.now() + 3_600_000 },
+			"kimi-coding": { type: "oauth", access: "access", refresh: "refresh", expires: Date.now() + 3_600_000 },
 		});
 		const log = vi.spyOn(console, "log").mockImplementation(() => {});
 		const logout = vi.spyOn(ModelRuntime.prototype, "logout");
@@ -119,7 +119,7 @@ describe("atomic auth login and logout from main", () => {
 		assert.deepEqual(log.mock.calls, [
 			["Removed stored API key for OpenAI. Environment variables and models.json config are unchanged."],
 		]);
-		assert.deepEqual(Object.keys(readAuth()), ["radius"]);
+		assert.deepEqual(Object.keys(readAuth()), ["kimi-coding"]);
 		assert.equal(logout.mock.calls.length, 1);
 		const signal = logout.mock.calls[0][1]?.signal;
 		assert.ok(signal instanceof AbortSignal);

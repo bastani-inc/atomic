@@ -10,10 +10,18 @@ const repoRoot = resolve(scriptDir, "..");
 const codingAgentDir = join(repoRoot, "packages/coding-agent");
 const rootLockfilePath = join(repoRoot, "package-lock.json");
 const shrinkwrapPath = join(codingAgentDir, "npm-shrinkwrap.json");
-const internalPackageNames = new Set(["@bastani/atomic-natives", "@bastani/pi-ai"]);
+// Atomic's forks of pi's packages publish in lockstep with @bastani/atomic.
+const forkedPackageNames = [
+	"@bastani/atomic-ai",
+	"@bastani/atomic-agent-core",
+	"@bastani/atomic-codemode",
+	"@bastani/atomic-schema",
+	"@bastani/atomic-telemetry",
+	"@bastani/atomic-tui",
+];
+const internalPackageNames = new Set(["@bastani/atomic-natives", ...forkedPackageNames]);
 const defaultNpmRegistry = "https://registry.npmjs.org";
 const allowedInstallScriptPackages = new Map([
-	["@google/genai@2.21.0", "preinstall is a no-op in the published package"],
 	["@google/genai@2.32.0", "preinstall is a no-op in the published package"],
 	["protobufjs@7.6.6", "postinstall only warns about protobufjs version scheme mismatches"],
 ]);
@@ -191,7 +199,7 @@ function buildInternalPackageEntries(workspaces) {
 			}
 			continue;
 		}
-		if (name === "@bastani/pi-ai") {
+		if (forkedPackageNames.includes(name)) {
 			const mainEntry = copyPackageJsonEntry(packageJson, { includeName: false });
 			mainEntry.resolved = registryTarballUrl(name, packageJson.version);
 			entries.set(name, sortedPackageEntry(mainEntry));

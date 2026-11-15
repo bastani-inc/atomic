@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { TUI } from "@earendil-works/pi-tui";
+import type { TUI } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parseArgs } from "../src/cli/args.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";

@@ -1,4 +1,4 @@
-import type { Api, Model } from "@bastani/pi-ai/compat";
+import type { Api, Model } from "@bastani/atomic-ai/compat";
 import type { Args } from "./cli/args.ts";
 import { findInitialModel, resolveRestoredModelReference, uncachedCopilotModelHint } from "./core/model-resolver.ts";
 import type { ScopedModel } from "./core/model-resolver-types.ts";

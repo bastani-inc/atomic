@@ -1,10 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-	compareProviders,
-	isPreferredProvider,
-	PREFERRED_PROVIDER_IDS,
-	RADIUS_PROVIDER_ID,
-} from "../src/core/preferred-providers.ts";
+import { compareProviders, isPreferredProvider, PREFERRED_PROVIDER_IDS } from "../src/core/preferred-providers.ts";
 import {
 	getLoginProviderCompletions,
 	mergeLoginProviderOptions,
@@ -16,13 +11,11 @@ describe("compareProviders", () => {
 			{ id: "zai", name: "Z.AI" },
 			{ id: "openrouter", name: "OpenRouter" },
 			{ id: "anthropic", name: "Anthropic" },
-			{ id: "radius", name: "Radius" },
 			{ id: "google", name: "Google" },
 		];
 
-		expect(PREFERRED_PROVIDER_IDS).toEqual(["radius", "openrouter"]);
+		expect(PREFERRED_PROVIDER_IDS).toEqual(["openrouter"]);
 		expect(providers.sort(compareProviders).map((provider) => provider.id)).toEqual([
-			"radius",
 			"openrouter",
 			"anthropic",
 			"google",
@@ -31,10 +24,12 @@ describe("compareProviders", () => {
 	});
 
 	it("keeps a partner first even when its name sorts last", () => {
-		expect(compareProviders({ id: "radius", name: "Zzz" }, { id: "anthropic", name: "Anthropic" })).toBeLessThan(0);
-		expect(compareProviders({ id: "anthropic", name: "Anthropic" }, { id: "radius", name: "Zzz" })).toBeGreaterThan(
+		expect(compareProviders({ id: "openrouter", name: "Zzz" }, { id: "anthropic", name: "Anthropic" })).toBeLessThan(
 			0,
 		);
+		expect(
+			compareProviders({ id: "anthropic", name: "Anthropic" }, { id: "openrouter", name: "Zzz" }),
+		).toBeGreaterThan(0);
 	});
 
 	it("treats equal providers as equal so a stable sort keeps their order", () => {
@@ -47,8 +42,7 @@ describe("compareProviders", () => {
 
 describe("isPreferredProvider", () => {
 	it("recognizes only the preferred partners", () => {
-		expect(RADIUS_PROVIDER_ID).toBe("radius");
-		expect(isPreferredProvider("radius")).toBe(true);
+		expect(isPreferredProvider("radius")).toBe(false);
 		expect(isPreferredProvider("openrouter")).toBe(true);
 		expect(isPreferredProvider("anthropic")).toBe(false);
 	});
@@ -60,12 +54,10 @@ describe("login provider completions", () => {
 		{ id: "openrouter", name: "OpenRouter", authType: "oauth" as const, subscription: false },
 		{ id: "openrouter", name: "OpenRouter", authType: "api_key" as const },
 		{ id: "anthropic", name: "Anthropic", authType: "api_key" as const },
-		{ id: "radius", name: "Radius", authType: "oauth" as const },
 	];
 
 	it("merges methods per provider and lists partners first", () => {
 		expect(mergeLoginProviderOptions(options).map((option) => `${option.id}:${option.authTypes.join("+")}`)).toEqual([
-			"radius:oauth",
 			"openrouter:oauth+api_key",
 			"anthropic:api_key",
 			"zai:api_key",
@@ -74,7 +66,6 @@ describe("login provider completions", () => {
 
 	it("offers partners first when nothing is typed and keeps fuzzy matching otherwise", () => {
 		expect(getLoginProviderCompletions(options, "")?.map((item) => item.value)).toEqual([
-			"radius",
 			"openrouter",
 			"anthropic",
 			"zai",

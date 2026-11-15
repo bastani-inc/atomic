@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { visibleWidth } from "@bastani/atomic-tui";
 import { Terminal } from "@xterm/headless";
 
 /** Assert actual terminal cells, not just the presence of a background escape. */

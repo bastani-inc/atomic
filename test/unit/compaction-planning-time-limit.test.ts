@@ -5,8 +5,8 @@
  */
 
 import assert from "node:assert/strict";
-import type { Api, AssistantMessage, Context, Model, SimpleStreamOptions } from "@bastani/pi-ai/compat";
-import type { StreamFn } from "@earendil-works/pi-agent-core";
+import type { StreamFn } from "@bastani/atomic-agent-core";
+import type { Api, AssistantMessage, Context, Model, SimpleStreamOptions } from "@bastani/atomic-ai/compat";
 import { afterEach, test, vi } from "vitest";
 import { runVerbatimCompaction } from "../../packages/coding-agent/src/core/compaction/compaction-runner.js";
 import type { PlannerAuth } from "../../packages/coding-agent/src/core/compaction/compaction-types.js";

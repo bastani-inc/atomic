@@ -10,8 +10,8 @@ import {
 	type ProviderRequestOptions,
 	type StreamOptions,
 	type TranscriptContext,
-} from "@bastani/pi-ai";
-import { refreshGitHubCopilotAccountModelLists } from "@bastani/pi-ai/providers/github-copilot";
+} from "@bastani/atomic-ai";
+import { refreshGitHubCopilotAccountModelLists } from "@bastani/atomic-ai/providers/github-copilot";
 
 export interface ProviderAliasConfig {
 	id: string;

@@ -72,7 +72,21 @@ const NATIVE_ENV =
 /** @type {BuildStep[]} */
 export const BUILD_STEPS = [
 	{
-		name: "pi-ai-models",
+		name: "schema",
+		packageDir: "packages/schema",
+		inputs: ["packages/schema/src", "packages/schema/package.json", "packages/schema/tsconfig.build.json"],
+		outputs: ["packages/schema/dist"],
+		scripts: [{ script: "build", tsc: true }],
+	},
+	{
+		name: "telemetry",
+		packageDir: "packages/telemetry",
+		inputs: ["packages/telemetry/src", "packages/telemetry/package.json", "packages/telemetry/tsconfig.build.json"],
+		outputs: ["packages/telemetry/dist"],
+		scripts: [{ script: "build", tsc: true }],
+	},
+	{
+		name: "ai-models",
 		packageDir: "packages/ai",
 		// models.dev and the other remote catalogs are refetched when the generator or its inputs change,
 		// and otherwise once the snapshot is older than MODEL_CATALOG_MAX_AGE_MS.
@@ -94,7 +108,7 @@ export const BUILD_STEPS = [
 		snapshot: { maxAgeMs: MODEL_CATALOG_MAX_AGE_MS, label: "model catalog snapshot" },
 	},
 	{
-		name: "pi-ai",
+		name: "ai",
 		packageDir: "packages/ai",
 		inputs: [
 			"packages/ai/src",
@@ -106,6 +120,29 @@ export const BUILD_STEPS = [
 		],
 		outputs: ["packages/ai/dist"],
 		scripts: [{ script: "check:model-data" }, { script: "build:tsc", tsc: true }, { script: "build:model-data" }],
+		after: ["schema", "telemetry"],
+	},
+	{
+		name: "tui",
+		packageDir: "packages/tui",
+		inputs: ["packages/tui/src", "packages/tui/package.json", "packages/tui/tsconfig.build.json"],
+		outputs: ["packages/tui/dist"],
+		scripts: [{ script: "build", tsc: true }],
+	},
+	{
+		name: "agent",
+		packageDir: "packages/agent",
+		inputs: ["packages/agent/src", "packages/agent/package.json", "packages/agent/tsconfig.build.json"],
+		outputs: ["packages/agent/dist"],
+		scripts: [{ script: "build", tsc: true }],
+		after: ["ai", "schema"],
+	},
+	{
+		name: "codemode",
+		packageDir: "packages/codemode",
+		inputs: ["packages/codemode/src", "packages/codemode/package.json", "packages/codemode/tsconfig.build.json"],
+		outputs: ["packages/codemode/dist"],
+		scripts: [{ script: "build", tsc: true }],
 	},
 	{
 		name: "natives",
@@ -142,7 +179,7 @@ export const BUILD_STEPS = [
 		outputs: ["packages/coding-agent/dist"],
 		scripts: [{ script: "build:tsc", tsc: true }, { script: "build:assets" }],
 		toolchains: ["bun"],
-		after: ["pi-ai", "natives"],
+		after: ["ai", "tui", "agent", "codemode", "natives"],
 	},
 ];
 
@@ -245,14 +282,7 @@ export function build({ force }) {
 				);
 			}
 		}
-		if (step.name === "pi-ai") runNode("scripts/alias-pi-ai.mjs");
 	}
-}
-
-/** @param {string} script */
-function runNode(script) {
-	const result = spawnSync(process.execPath, [join(root, script)], { cwd: root, stdio: "inherit" });
-	if (result.status !== 0) throw new Error(`${script} failed (${result.status ?? result.signal})`);
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {

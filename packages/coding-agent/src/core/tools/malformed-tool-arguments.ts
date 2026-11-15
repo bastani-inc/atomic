@@ -1,5 +1,5 @@
-import { type ToolCall, validateToolArguments } from "@bastani/pi-ai";
-import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
+import type { AgentMessage, AgentTool } from "@bastani/atomic-agent-core";
+import { type ToolCall, validateToolArguments } from "@bastani/atomic-ai";
 
 function findIssuingToolCall(messages: readonly AgentMessage[], args: unknown): ToolCall | undefined {
 	for (let index = messages.length - 1; index >= 0; index--) {

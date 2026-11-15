@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Container, type Terminal, Text, type TUI, TuiMainScreen } from "@earendil-works/pi-tui";
+import { Container, type Terminal, Text, type TUI, TuiMainScreen } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, describe, it } from "vitest";
 import { createEditToolDefinition } from "../src/core/tools/edit.js";
 import { computeEditsDiff, type Edit } from "../src/core/tools/edit-diff.js";

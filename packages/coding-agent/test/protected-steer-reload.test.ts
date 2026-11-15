@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { fauxAssistantMessage, getApiProvider, registerApiProvider } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage, getApiProvider, registerApiProvider } from "@bastani/atomic-ai/compat";
 import { test } from "vitest";
 import { PROTECTED_RECONCILIATION_CUSTOM_TYPE } from "../src/core/agent-session-persistent-custom-messages.js";
 import type { ExtensionFactory } from "../src/index.js";
@@ -63,7 +63,7 @@ test.each([
 				});
 				return fauxAssistantMessage("interrupted");
 			},
-			...Array.from({ length: 3 }, () => (context: import("@bastani/pi-ai/compat").Context) => {
+			...Array.from({ length: 3 }, () => (context: import("@bastani/atomic-ai/compat").Context) => {
 				requests.push(JSON.stringify(context.messages));
 				return fauxAssistantMessage("successor answered notices");
 			}),

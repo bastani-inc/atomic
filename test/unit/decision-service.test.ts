@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { createAssistantMessageEventStream, getCurrentSystemPrompt } from "@bastani/pi-ai";
+import { createAssistantMessageEventStream, getCurrentSystemPrompt } from "@bastani/atomic-ai";
 import { afterEach, test, vi } from "vitest";
 import { decide } from "../../packages/coding-agent/src/core/decision/decide.js";
 import {

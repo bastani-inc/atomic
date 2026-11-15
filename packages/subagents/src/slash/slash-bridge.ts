@@ -1,5 +1,5 @@
 import type { ExtensionContext } from "@bastani/atomic";
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import type { AgentToolResult } from "@bastani/atomic-agent-core";
 import type { SubagentParamsLike } from "../runs/foreground/subagent-executor.js";
 import {
 	type Details,

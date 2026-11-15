@@ -31,7 +31,7 @@ Atomic finds its bundled resources and native modules relative to its installed 
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  serverExternalPackages: ["@bastani/atomic", "@bastani/atomic-natives", "@bastani/pi-ai", "typebox"],
+  serverExternalPackages: ["@bastani/atomic", "@bastani/atomic-natives", "@bastani/atomic-ai", "typebox"],
 };
 
 export default nextConfig;

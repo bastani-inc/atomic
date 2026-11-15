@@ -1,5 +1,5 @@
 import * as crypto from "node:crypto";
-import type { Component, TUI } from "@earendil-works/pi-tui";
+import type { Component, TUI } from "@bastani/atomic-tui";
 import type {
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,

@@ -122,7 +122,7 @@ describe("runtime module-graph walker", () => {
 				"const r = makeRequire(import.meta.url);",
 				"const s = r;",
 				'export const host = s("@bastani/atomic");',
-				'export const resolved = r.resolve("@earendil-works/pi-tui");',
+				'export const resolved = r.resolve("@bastani/atomic-tui");',
 				"",
 			].join("\n"),
 		});
@@ -131,7 +131,7 @@ describe("runtime module-graph walker", () => {
 
 		assert.deepEqual(walk.externals.map((entry) => entry.description).sort(), [
 			"@bastani/atomic",
-			"@earendil-works/pi-tui",
+			"@bastani/atomic-tui",
 		]);
 	});
 
@@ -328,7 +328,7 @@ describe("runtime module-graph walker", () => {
 			"broker/broker.ts": [
 				'import module from "node:module";',
 				'export const host = module["createRequire"](import.meta.url)("@bastani/atomic");',
-				'export const path = require["resolve"]("@earendil-works/pi-tui");',
+				'export const path = require["resolve"]("@bastani/atomic-tui");',
 				'export const builtin = process["getBuiltinModule"]("fs");',
 				"",
 			].join("\n"),
@@ -339,7 +339,7 @@ describe("runtime module-graph walker", () => {
 		// The builtin request is allowed; both package requests are reported.
 		assert.deepEqual(walk.externals.map((entry) => entry.description).sort(), [
 			"@bastani/atomic",
-			"@earendil-works/pi-tui",
+			"@bastani/atomic-tui",
 		]);
 		assert.deepEqual(describeViolations(walk.dynamic), []);
 	});

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { afterEach, beforeEach, test } from "vitest";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
 import { SessionManager } from "../src/core/session-manager.ts";

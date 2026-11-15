@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AutocompleteProvider } from "@earendil-works/pi-tui";
+import type { AutocompleteProvider } from "@bastani/atomic-tui";
 import { afterAll, describe, test } from "vitest";
 import { computeStartupInputCaptureEnabled } from "../../packages/coding-agent/src/main-deferred-startup.js";
 import {

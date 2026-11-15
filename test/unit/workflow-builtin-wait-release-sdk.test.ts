@@ -13,7 +13,7 @@ import {
 	fauxAssistantMessage,
 	fauxToolCall,
 	registerFauxProvider,
-} from "@bastani/pi-ai/compat";
+} from "@bastani/atomic-ai/compat";
 import { test } from "vitest";
 import { InMemoryCodingAgentModelsStore } from "../../packages/coding-agent/src/core/models-store.js";
 import { resolveSessionStore } from "../../packages/coding-agent/src/core/session-storage.js";

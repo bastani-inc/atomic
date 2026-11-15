@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { isDeepStrictEqual } from "node:util";
-import type { Api, Model } from "@bastani/pi-ai";
-import { getSupportedThinkingLevels } from "@bastani/pi-ai/compat";
-import { getBuiltinModels } from "@bastani/pi-ai/providers/all";
+import type { Api, Model } from "@bastani/atomic-ai";
+import { getSupportedThinkingLevels } from "@bastani/atomic-ai/compat";
+import { getBuiltinModels } from "@bastani/atomic-ai/providers/all";
 import { afterEach, describe, test, vi } from "vitest";
 import { printHelp } from "../src/cli/args.js";
 import type { AgentSessionInternalSurface } from "../src/core/agent-session-methods.js";

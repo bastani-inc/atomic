@@ -1,10 +1,10 @@
+import type { AgentMessage } from "@bastani/atomic-agent-core";
 import {
 	fauxAssistantMessage,
 	getCurrentSystemPrompt,
 	getCurrentTools,
 	type TranscriptContext,
-} from "@bastani/pi-ai/compat";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+} from "@bastani/atomic-ai/compat";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ExtensionFactory } from "../../../src/index.ts";
 import { createHarness, type Harness } from "../harness.ts";

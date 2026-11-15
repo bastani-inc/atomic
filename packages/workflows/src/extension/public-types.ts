@@ -7,7 +7,7 @@ import type {
 	WorkflowRunControl,
 	WorkflowRunControlRegistration,
 } from "@bastani/atomic";
-import type { Api, Model } from "@bastani/pi-ai/compat";
+import type { Api, Model } from "@bastani/atomic-ai/compat";
 import type { RunJournalSettings } from "../durable/journal/resolution.js";
 import type { StageSessionRuntime } from "../runs/foreground/stage-runner.js";
 import type { LegacyWaitingStatus } from "../shared/legacy-waiting-status.js";

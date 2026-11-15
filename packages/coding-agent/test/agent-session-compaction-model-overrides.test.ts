@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { AgentTool } from "@earendil-works/pi-agent-core";
+import type { AgentTool } from "@bastani/atomic-agent-core";
 import { Type } from "typebox";
 import { afterEach, describe, it } from "vitest";
 import { convertToLlm } from "../src/core/messages.js";

@@ -207,7 +207,7 @@ function nativeIndexTargets(): VersionTarget[] {
 	return existsSync(resolve(ROOT, filePath)) ? [{ kind: "nativeIndex", filePath }] : [];
 }
 
-/** pi-ai reports its version in the User-Agent without reading package.json, which browsers cannot do. */
+/** atomic-ai reports its version in the User-Agent without reading package.json, which browsers cannot do. */
 function aiVersionTargets(): VersionTarget[] {
 	const filePath = "packages/ai/src/utils/version.ts";
 	return existsSync(resolve(ROOT, filePath)) ? [{ kind: "aiVersion", filePath }] : [];
@@ -229,9 +229,21 @@ function shieldBadgeVersion(version: string): string {
 	return version.replaceAll("_", "__").replaceAll("-", "--").replaceAll(" ", "_");
 }
 
+/** Atomic's forks of pi's packages, published in lockstep with `@bastani/atomic`. */
+const FORKED_PACKAGE_NAMES = new Set([
+	"@bastani/atomic-ai",
+	"@bastani/atomic-agent-core",
+	"@bastani/atomic-codemode",
+	"@bastani/atomic-schema",
+	"@bastani/atomic-telemetry",
+	"@bastani/atomic-tui",
+]);
+
 function shouldBumpFirstPartyDependency(name: string): boolean {
 	return (
-		name === "@bastani/pi-ai" || name === "@bastani/atomic-natives" || name.startsWith("@bastani/atomic-natives-")
+		FORKED_PACKAGE_NAMES.has(name) ||
+		name === "@bastani/atomic-natives" ||
+		name.startsWith("@bastani/atomic-natives-")
 	);
 }
 

@@ -3,7 +3,7 @@ export type AppHostModuleSpecifier =
 	| "@bastani/atomic"
 	| "@bastani/atomic/storage"
 	| "@bastani/atomic-natives"
-	| "@bastani/pi-ai/providers/all"
+	| "@bastani/atomic-ai/providers/all"
 	| "typebox"
 	| "typebox/compile"
 	| "typebox/value";

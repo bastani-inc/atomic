@@ -7,8 +7,8 @@
  */
 
 import { join } from "node:path";
-import type { Api, AssistantMessage, Model } from "@bastani/pi-ai/compat";
-import type { Agent, AgentMessage, AgentTool, ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { Agent, AgentMessage, AgentTool, ThinkingLevel } from "@bastani/atomic-agent-core";
+import type { Api, AssistantMessage, Model } from "@bastani/atomic-ai/compat";
 import { installAgentSessionAccessors } from "./agent-session-accessors.ts";
 import { agentSessionAutoCompactionMethods } from "./agent-session-auto-compaction.ts";
 import {

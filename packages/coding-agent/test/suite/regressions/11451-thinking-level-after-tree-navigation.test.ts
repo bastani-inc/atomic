@@ -1,5 +1,5 @@
-import { fauxAssistantMessage } from "@bastani/pi-ai/compat";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AgentMessage } from "@bastani/atomic-agent-core";
+import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useTemporaryAgentDir } from "../../../../../test/helpers/temporary-agent-dir.js";
 import type { AgentSessionInternalSurface } from "../../../src/core/agent-session-methods.ts";

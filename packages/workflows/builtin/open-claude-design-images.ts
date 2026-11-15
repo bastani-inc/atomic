@@ -20,8 +20,8 @@ import type {
   ImageModel,
   ImagesContext,
   OpenAIImagesOptions,
-} from "@bastani/pi-ai";
-import { builtinModels } from "@bastani/pi-ai/providers/all";
+} from "@bastani/atomic-ai";
+import { builtinModels } from "@bastani/atomic-ai/providers/all";
 import { type Static, Type } from "typebox";
 import type { WorkflowToolPrimitive } from "../src/shared/types.js";
 import type { OutputType } from "./open-claude-design-utils.js";

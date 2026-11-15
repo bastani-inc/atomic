@@ -7,7 +7,7 @@ import {
 	truncateToWidth,
 	visibleWidth,
 	wrapTextWithAnsi,
-} from "@earendil-works/pi-tui";
+} from "@bastani/atomic-tui";
 import type { AgentConfig } from "../agents/agents.js";
 
 type Theme = ExtensionContext["ui"]["theme"];

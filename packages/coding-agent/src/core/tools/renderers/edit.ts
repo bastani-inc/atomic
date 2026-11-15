@@ -6,7 +6,7 @@
  * definition, so the tool's public shape is unchanged.
  */
 
-import { Box, Container, Spacer, Text } from "@earendil-works/pi-tui";
+import { Box, Container, Spacer, Text } from "@bastani/atomic-tui";
 import { renderDiff } from "../../../modes/interactive/components/diff.ts";
 import type { Theme } from "../../../modes/interactive/theme/theme.js";
 import type { ToolDefinition } from "../../extensions/types.ts";

@@ -1,4 +1,4 @@
-import type { ImageContent } from "@bastani/pi-ai/compat";
+import type { ImageContent } from "@bastani/atomic-ai/compat";
 import type { Args } from "./args.ts";
 
 export interface InitialMessageInput {

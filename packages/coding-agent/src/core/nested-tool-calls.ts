@@ -1,10 +1,10 @@
-import type { JsonObject, NestedToolCallRecord, NestedToolCalls, Usage } from "@bastani/pi-ai";
 import type {
 	AgentToolCall,
 	AgentToolCallOutcome,
 	AgentToolResult,
 	AgentToolUpdateCallback,
-} from "@earendil-works/pi-agent-core";
+} from "@bastani/atomic-agent-core";
+import type { JsonObject, NestedToolCallRecord, NestedToolCalls, Usage } from "@bastani/atomic-ai";
 import { combineUsage } from "./usage-totals.ts";
 
 export const NESTED_CALL_LIMITS = {

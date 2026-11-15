@@ -1,4 +1,4 @@
-import { Text } from "@earendil-works/pi-tui";
+import { Text } from "@bastani/atomic-tui";
 
 /** Text whose theme-dependent styling is rebuilt when the UI is invalidated. */
 export class ThemedText extends Text {

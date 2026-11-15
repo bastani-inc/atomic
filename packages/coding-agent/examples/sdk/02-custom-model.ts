@@ -5,7 +5,7 @@
  */
 
 import { createAgentSession, ModelRuntime } from "@bastani/atomic";
-import { getModel } from "@bastani/pi-ai/compat";
+import { getModel } from "@bastani/atomic-ai/compat";
 
 // ModelRuntime owns credential resolution and built-in/custom model discovery.
 const modelRuntime = await ModelRuntime.create();

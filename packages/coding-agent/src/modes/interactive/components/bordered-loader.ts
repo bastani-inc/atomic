@@ -1,4 +1,4 @@
-import { CancellableLoader, Container, getKeybindings, Loader, Spacer, Text, type TUI } from "@earendil-works/pi-tui";
+import { CancellableLoader, Container, getKeybindings, Loader, Spacer, Text, type TUI } from "@bastani/atomic-tui";
 import type { Theme } from "../theme/theme.js";
 import { DynamicBorder } from "./dynamic-border.ts";
 import { keyHint } from "./keybinding-hints.js";

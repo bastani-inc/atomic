@@ -10,7 +10,7 @@ import {
 	SessionManager,
 	type Skill,
 } from "@bastani/atomic";
-import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { createHarness, getUserTexts } from "../../packages/coding-agent/test/suite/harness.js";
 import type { ExtensionFactory } from "../../packages/coding-agent/src/core/extensions/index.js";

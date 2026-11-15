@@ -4,8 +4,8 @@ import type { SettingsManager } from "../src/core/settings-manager.ts";
 
 const screens = vi.hoisted(() => ({ created: [] as Array<{ stop: () => void; start: () => void }> }));
 
-vi.mock("@earendil-works/pi-tui", async (importOriginal) => {
-	const original = await importOriginal<typeof import("@earendil-works/pi-tui")>();
+vi.mock("@bastani/atomic-tui", async (importOriginal) => {
+	const original = await importOriginal<typeof import("@bastani/atomic-tui")>();
 	class FakeMainScreen extends original.Container {
 		start = vi.fn();
 		stop = vi.fn();

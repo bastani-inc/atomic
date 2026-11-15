@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Api, Model } from "@bastani/pi-ai/compat";
+import type { Api, Model } from "@bastani/atomic-ai/compat";
 import { beforeEach, describe, test } from "vitest";
 import type { PiRenderComponent } from "../../packages/workflows/src/extension/public-types.js";
 import type { WorkflowToolResult } from "../../packages/workflows/src/extension/render-result.js";

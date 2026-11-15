@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { ChatSessionHost, SessionManager } from "@bastani/atomic";
-import { Key, matchesKey, setKeybindings } from "@earendil-works/pi-tui";
+import { Key, matchesKey, setKeybindings } from "@bastani/atomic-tui";
 import { FooterDataProvider } from "../../packages/coding-agent/src/core/footer-data-provider.js";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import { bindOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";

@@ -1,4 +1,4 @@
-import { getKeybindings, setKeybindings, type TUI } from "@earendil-works/pi-tui";
+import { getKeybindings, setKeybindings, type TUI } from "@bastani/atomic-tui";
 import { Type } from "typebox";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { ToolDefinition } from "../../../src/core/extensions/types.ts";

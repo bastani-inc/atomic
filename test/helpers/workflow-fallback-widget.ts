@@ -1,5 +1,5 @@
-import type { AssistantMessage, Model } from "@bastani/pi-ai";
-import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { ThinkingLevel } from "@bastani/atomic-agent-core";
+import type { AssistantMessage, Model } from "@bastani/atomic-ai";
 import type { AgentSessionEvent } from "../../packages/coding-agent/src/core/agent-session.js";
 import { _emitModelChanged } from "../../packages/coding-agent/src/core/agent-session-models.js";
 import { _trySwitchToFallbackModel } from "../../packages/coding-agent/src/core/agent-session-retry.js";
