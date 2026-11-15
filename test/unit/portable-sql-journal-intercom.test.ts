@@ -5,7 +5,6 @@ import type {
 	SqliteDatabase,
 	SqliteExecutor,
 	SqliteRow,
-	SqliteValue,
 } from "../../packages/coding-agent/src/core/storage/database.js";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { openDatabaseWakeUpBus } from "../../packages/intercom/broker/database-wake-up-bus.js";
@@ -20,6 +19,7 @@ import { openSqlRestoringReservationStore } from "../../packages/intercom/broker
 import { openSqlSentMessageAuthority } from "../../packages/intercom/broker/sql-sent-message-authority.js";
 import type { SessionInfo } from "../../packages/intercom/types.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
+import { interceptingDatabase } from "../helpers/intercepting-database.js";
 import { makeTempDirectory, moduleDir, readJson, removeTempDirectory } from "../helpers/runtime.js";
 
 /**
@@ -48,7 +48,7 @@ const SCHEMA_FIXTURE = join(moduleDir(import.meta.url), "../fixtures/portable-sq
  * The tables and indexes this slice owns. The snapshot blob tables and the triggers on the journal tables belong to the
  * snapshot blob store.
  */
-const OWNED_TABLE = /^(team_)?(wf_(meta|runs|events|leases)|intercom_.*)$/;
+const OWNED_TABLE = /^(team_)?(wf_(meta|runs|events|leases|event_chunks)|intercom_.*)$/;
 
 async function openEveryOwnedStore(db: SqliteDatabase): Promise<void> {
 	await (await SqlRunJournal.open(db)).close();
@@ -138,7 +138,7 @@ test("a one-request appendMany past the last sequence writes nothing and leaves 
 	const source = await database();
 	const { journal, lease } = await heldJournal(batchingFacade(source));
 	await source.run(
-		"INSERT INTO wf_events VALUES (?, ?, ?, NULL, 'RunStarted', 'null', 0)",
+		"INSERT INTO wf_events(run_id, seq, epoch, key, type, payload, at) VALUES (?, ?, ?, NULL, 'RunStarted', 'null', 0)",
 		header.runId,
 		Number.MAX_SAFE_INTEGER,
 		lease.epoch,
@@ -323,13 +323,13 @@ test("an outbox claim's age is null while unclaimed and clamped to zero once cla
 
 /** `db`, where every column probe finds nothing and every `ALTER TABLE` fails with `failure`. */
 function failingAlters(db: SqliteDatabase, failure: Error): SqliteDatabase {
-	return {
-		...batchingFacade(db),
-		batch: undefined,
-		all: ((sql: string, ...params: SqliteValue[]) =>
-			/table_info/i.test(sql) ? Promise.resolve([]) : db.all(sql, ...params)) as SqliteDatabase["all"],
-		exec: (sql) => (sql.startsWith("ALTER TABLE") ? Promise.reject(failure) : db.exec(sql)),
-	};
+	return interceptingDatabase(
+		{ ...batchingFacade(db), batch: undefined },
+		{
+			all: async (sql, params, next) => (/table_info/i.test(sql) ? [] : next(sql, ...params)),
+			exec: (sql, next) => (sql.startsWith("ALTER TABLE") ? Promise.reject(failure) : next(sql)),
+		},
+	);
 }
 
 test("a column another broker added meanwhile is not an error in Postgres's wording either (#4793)", async () => {

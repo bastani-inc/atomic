@@ -72,10 +72,11 @@ const isSettled = (record: OutboxRecord): boolean => record.state === "delivered
  */
 export async function openSqlOutboxStore(options: IntercomBrokerStateOptions): Promise<OutboxStore> {
 	const { database } = options;
-	const table = `${validateStoragePrefix(options.prefix)}intercom_outbox`;
+	const table = `${validateStoragePrefix(options.prefix, dialectOf(database).name)}intercom_outbox`;
 	const { types, nowMs, greatest } = dialectOf(database);
 	const ageSince = (column: string) => greatest("0", `${nowMs} - ${column}`);
-	await database.exec(`
+	// In a serial transaction, so brokers opening a new store at once take turns creating it (#5054).
+	const schema = `
 		CREATE TABLE IF NOT EXISTS ${table}(
 			sequence ${types.serialKey},
 			message_id TEXT NOT NULL UNIQUE,
@@ -92,7 +93,8 @@ export async function openSqlOutboxStore(options: IntercomBrokerStateOptions): P
 			settled_at ${types.int}
 		);
 		CREATE INDEX IF NOT EXISTS ${table}_target ON ${table}(target_identity, state, sequence);
-	`);
+	`;
+	await database.transaction((tx) => tx.exec(schema));
 	// #3983: added later; a table from an older broker gets the column, and an older broker ignores it.
 	await addMissingColumns(database, table, { saving_at: types.int });
 	// #4896: when the row was queued and the size of its frame; rows an older broker wrote have neither.
@@ -104,11 +106,17 @@ export async function openSqlOutboxStore(options: IntercomBrokerStateOptions): P
 		CASE WHEN saving_at IS NULL THEN NULL ELSE ${ageSince("saving_at")} END AS saving_age`;
 	const select = (executor: SqliteExecutor, messageId: string) =>
 		executor.get<OutboxRecord>(`SELECT ${columns} FROM ${table} WHERE message_id = ?`, messageId);
-	const undelivered = (executor: SqliteExecutor, targetIdentity: string) =>
-		executor.all<OutboxRecord>(
-			`SELECT ${columns} FROM ${table} WHERE target_identity = ? AND ${UNDELIVERED} ORDER BY sequence`,
-			targetIdentity,
-		);
+	const undelivered = (executor: SqliteExecutor, targetIdentity: string, limit?: number) =>
+		limit === undefined
+			? executor.all<OutboxRecord>(
+					`SELECT ${columns} FROM ${table} WHERE target_identity = ? AND ${UNDELIVERED} ORDER BY sequence`,
+					targetIdentity,
+				)
+			: executor.all<OutboxRecord>(
+					`SELECT ${columns} FROM ${table} WHERE target_identity = ? AND ${UNDELIVERED} ORDER BY sequence LIMIT ?`,
+					targetIdentity,
+					limit,
+				);
 	const isLive = (record: OutboxRecord, staleAfterMs: number): boolean =>
 		record.claim_age !== null && Number(record.claim_age) <= staleAfterMs;
 
@@ -162,14 +170,18 @@ export async function openSqlOutboxStore(options: IntercomBrokerStateOptions): P
 						: ({ status: "conflict", messageId } as const);
 				}
 				const frameBytes = Buffer.byteLength(frameJson);
-				const queued = (await executor.get<{ row_count: SqliteValue; byte_count: SqliteValue }>(
-					`SELECT COUNT(*) AS row_count, COALESCE(SUM(COALESCE(frame_bytes, LENGTH(frame_json))), 0) AS byte_count
-					FROM ${table} WHERE target_identity = ? AND ${UNDELIVERED}`,
-					request.targetIdentity,
-				))!;
+				const queued =
+					request.owed === true
+						? undefined
+						: (await executor.get<{ row_count: SqliteValue; byte_count: SqliteValue }>(
+								`SELECT COUNT(*) AS row_count, COALESCE(SUM(COALESCE(frame_bytes, LENGTH(frame_json))), 0) AS byte_count
+								FROM ${table} WHERE target_identity = ? AND ${UNDELIVERED}`,
+								request.targetIdentity,
+							))!;
 				if (
-					Number(queued.row_count) >= OUTBOX_TARGET_MAX_ROWS ||
-					Number(queued.byte_count) + frameBytes > OUTBOX_TARGET_MAX_BYTES
+					queued !== undefined &&
+					(Number(queued.row_count) >= OUTBOX_TARGET_MAX_ROWS ||
+						Number(queued.byte_count) + frameBytes > OUTBOX_TARGET_MAX_BYTES)
 				) {
 					return { status: "full", limit: OUTBOX_TARGET_MAX_ROWS, byteLimit: OUTBOX_TARGET_MAX_BYTES } as const;
 				}
@@ -251,6 +263,16 @@ export async function openSqlOutboxStore(options: IntercomBrokerStateOptions): P
 			});
 		},
 
+		async releaseClaimsOf(claimantId) {
+			const { changes } = await database.run(
+				`UPDATE ${table} SET state = 'queued', claimant_id = NULL, claim_token = NULL, claim_renewed_at = NULL,
+					saving_at = NULL
+				WHERE state = 'claimed' AND claimant_id = ?`,
+				claimantId,
+			);
+			return changes;
+		},
+
 		markDelivered(claim) {
 			return withClaim(claim, async (executor) => ({
 				status: "delivered" as const,
@@ -271,9 +293,26 @@ export async function openSqlOutboxStore(options: IntercomBrokerStateOptions): P
 			return record === undefined ? { status: "missing" } : { status: "found", row: toRow(record) };
 		},
 
-		async listUndelivered(targetIdentity) {
+		async listUndelivered(targetIdentity, limit) {
 			if (targetIdentity.length === 0) return invalid("empty-target-identity");
-			return { status: "listed", rows: (await undelivered(database, targetIdentity)).map(toRow) };
+			return { status: "listed", rows: (await undelivered(database, targetIdentity, limit)).map(toRow) };
+		},
+
+		async undeliveredPosition(targetIdentity, messageId) {
+			if (targetIdentity.length === 0) return invalid("empty-target-identity");
+			if (messageId.length === 0) return invalid("empty-message-id");
+			// Counted on the (target_identity, state, sequence) index: no row, and no frame, is read.
+			const counted = await database.get<{ position: SqliteValue }>(
+				`SELECT COUNT(*) AS position FROM ${table}
+				WHERE target_identity = ? AND ${UNDELIVERED} AND sequence <= (
+					SELECT sequence FROM ${table} WHERE message_id = ? AND target_identity = ? AND ${UNDELIVERED}
+				)`,
+				targetIdentity,
+				messageId,
+				targetIdentity,
+			);
+			const position = Number(counted?.position ?? 0);
+			return position === 0 ? { status: "missing" } : { status: "positioned", position };
 		},
 
 		async prune(settledOlderThanMs, queuedOlderThanMs) {

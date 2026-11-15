@@ -34,7 +34,12 @@ import {
 	type JournalShardRecord,
 } from "./journal-catalog.js";
 import { openNodeSqliteDatabase } from "./node-sqlite.js";
-import { RUN_EVENT_TYPES } from "./run-journal.js";
+import {
+	RUN_EVENT_TYPES,
+	storedJournalPayload,
+	withJournalPayloads,
+	writeJournalPayloadChunks,
+} from "./run-journal.js";
 import {
 	readTransferDirectory,
 	StorageImportIncompleteError,
@@ -502,10 +507,14 @@ export async function exportWorkflowRuns(
 			const written: string[] = [];
 			const unchanged: string[] = [];
 			for (const { source, run: listedRun } of selected) {
-				const readEvents = (executor: SqliteExecutor) =>
-					executor.all<JournalEventTableRow>(
-						`SELECT * FROM ${t.events} WHERE run_id = ? ORDER BY seq`,
-						listedRun.run_id,
+				const readEvents = async (executor: SqliteExecutor) =>
+					withJournalPayloads(
+						executor,
+						t.eventChunks,
+						await executor.all<JournalEventTableRow>(
+							`SELECT * FROM ${t.events} WHERE run_id = ? ORDER BY seq`,
+							listedRun.run_id,
+						),
 					);
 				// A source without a read snapshot reads each run's row and events together, in one transaction, so a
 				// run that finishes meanwhile is exported with the status its events reach.
@@ -705,9 +714,10 @@ async function readStoredRun(
 	if (!(await hasTables(executor, t, dialect))) return undefined;
 	const run = await executor.get<JournalRunTableRow>(`SELECT * FROM ${t.runs} WHERE run_id = ?`, runId);
 	if (run === undefined) return undefined;
-	const events = await executor.all<JournalEventTableRow>(
-		`SELECT * FROM ${t.events} WHERE run_id = ? ORDER BY seq`,
-		runId,
+	const events = await withJournalPayloads(
+		executor,
+		t.eventChunks,
+		await executor.all<JournalEventTableRow>(`SELECT * FROM ${t.events} WHERE run_id = ? ORDER BY seq`, runId),
 	);
 	const lease = (await hasTable(executor, t.leases, dialect))
 		? await executor.get<JournalLeaseTableRow & { age_ms: number }>(
@@ -796,17 +806,21 @@ async function writeImport(
 			JSON.stringify(header.header),
 		);
 	else await tx.run(`UPDATE ${t.runs} SET status = ? WHERE run_id = ?`, header.status, header.runId);
-	for (const event of events.slice(stored?.events.length ?? 0))
+	for (const event of events.slice(stored?.events.length ?? 0)) {
+		const payload = storedJournalPayload(JSON.stringify(event.payload), event.payload);
 		await tx.run(
-			`INSERT INTO ${t.events}(run_id, seq, epoch, key, type, payload, at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO ${t.events}(run_id, seq, epoch, key, type, payload, at, chunks) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 			header.runId,
 			event.seq,
 			event.epoch,
 			event.key,
 			event.type,
-			JSON.stringify(event.payload),
+			payload.payload,
 			event.at,
+			payload.chunks.length,
 		);
+		await writeJournalPayloadChunks(tx, t.eventChunks, header.runId, event.seq, payload.chunks);
+	}
 	const epoch = events.reduce((highest, event) => Math.max(highest, event.epoch), 0);
 	await tx.run(
 		`INSERT INTO ${t.leases}(run_id, holder_id, epoch, renewed_at) VALUES (?, NULL, ?, ${dialect.nowMs})

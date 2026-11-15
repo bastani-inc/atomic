@@ -68,7 +68,7 @@ async function history(name: string, snapshots: number, events: number) {
 			await shared.journal.append(lease, checkpointEvent([syntheticSnapshot(blob.hash, [blob.hash])]));
 		await shared.database.run(
 			`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?)
-			INSERT INTO wf_events SELECT ?, (SELECT MAX(seq) FROM wf_events WHERE run_id = ?) + i, ?, NULL,
+			INSERT INTO wf_events(run_id, seq, epoch, key, type, payload, at) SELECT ?, (SELECT MAX(seq) FROM wf_events WHERE run_id = ?) + i, ?, NULL,
 				'CheckpointRecorded', json_object('kind', 'tool', 'checkpointId', 'padding-' || i), 0 FROM n`,
 			events / 2,
 			runId,
@@ -238,17 +238,21 @@ describe("collection cost follows the number of snapshots, never the number of j
 		assert.deepEqual(fresh.result.deleted, []);
 	});
 
-	test("publishing a snapshot reference costs a checkpoint append no statement beyond an append without one", async () => {
+	test("publishing a snapshot reference costs a checkpoint append one statement beyond an append without one: the check that its blobs are stored (#5077)", async () => {
 		const fixture = await history("writes", 4, 0);
 		const lease = await startRun(fixture.shared.journal, "run-writes");
 		const blob = textBlob("published");
+		await fixture.shared.journal.snapshotBlobs.putBlobs([blob]);
 		const plain = await fixture.measure(() => fixture.shared.journal.append(lease, checkpointEvent([])));
 		const referencing = await fixture.measure(() =>
 			fixture.shared.journal.append(lease, checkpointEvent([syntheticSnapshot("published", [blob.hash])])),
 		);
 
+		const checksBlobs = (sql: string) => sql.startsWith("SELECT hash FROM snapshot_blobs AS b");
+		const sql = referencing.statements.map((statement) => statement.sql);
+		assert.equal(sql.filter(checksBlobs).length, 1);
 		assert.deepEqual(
-			referencing.statements.map((statement) => statement.sql),
+			sql.filter((statement) => !checksBlobs(statement)),
 			plain.statements.map((statement) => statement.sql),
 		);
 		assert.deepEqual(

@@ -1,4 +1,11 @@
-import type { SqliteExecutor, SqliteRow, SqliteValue } from "@bastani/atomic/storage";
+import {
+	type SqliteExecutor,
+	type SqliteRow,
+	type SqliteValue,
+	type StorageDialect,
+	sqliteDialect,
+	withJournalPayloads,
+} from "@bastani/atomic/storage";
 import { durableStageGroupKey } from "../stage-topology-validation.js";
 import type { DurableCheckpoint, DurableStageCheckpoint } from "../types.js";
 import { type JournalEntry, RUN_EVENT_TYPES } from "./types.js";
@@ -162,6 +169,11 @@ const CHECKPOINT_PAGE_BYTES = 2 * 1024 * 1024;
  * not read the root yet, as one that took over a child, reads them all, which in one response a server refuses
  * (#4768). Each page holds at least one checkpoint, however large.
  */
+/** The event chunks table beside the events table `events`, as `runJournalTables` names both under one prefix. */
+function eventChunksTable(events: string): string {
+	return `${events.slice(0, -"events".length)}event_chunks`;
+}
+
 async function readCheckpointPages(
 	tx: SqliteExecutor,
 	events: string,
@@ -169,11 +181,13 @@ async function readCheckpointPages(
 	from: number,
 	to: number,
 ): Promise<(SqliteRow & { seq: number; key: string | null; payload: string })[]> {
-	const rows: (SqliteRow & { seq: number; key: string | null; payload: string })[] = [];
+	type Row = SqliteRow & { run_id: string; seq: number; key: string | null; payload: string; chunks: number };
+	const rows: Row[] = [];
 	for (let after = from; after < to; ) {
-		const page = await tx.all<SqliteRow & { seq: number; key: string | null; payload: string }>(
-			`SELECT seq, key, payload FROM (
-				SELECT seq, key, payload, SUM(length(payload)) OVER (ORDER BY seq) - length(payload) AS before
+		// A checkpoint stored in chunks counts its stub here, and its chunks are read one statement each (#4965).
+		const page = await tx.all<Row>(
+			`SELECT run_id, seq, key, payload, chunks FROM (
+				SELECT run_id, seq, key, payload, chunks, SUM(length(payload)) OVER (ORDER BY seq) - length(payload) AS before
 				FROM ${events} WHERE run_id = ? AND seq > ? AND seq <= ? AND type = ?
 			) WHERE before < ? ORDER BY seq`,
 			root,
@@ -183,7 +197,7 @@ async function readCheckpointPages(
 			CHECKPOINT_PAGE_BYTES,
 		);
 		if (page.length === 0) break;
-		rows.push(...page);
+		rows.push(...(await withJournalPayloads(tx, eventChunksTable(events), page)));
 		after = Number(page.at(-1)!.seq);
 	}
 	return rows;
@@ -194,6 +208,20 @@ async function readCheckpointPages(
  * {@link PoolCheckpointIndex.recordOwn}).
  */
 const OWN_MAX = 64;
+
+/** The root's latest event, as JSON a read selects. */
+const headObject = (dialect: StorageDialect) =>
+	dialect.jsonObject([
+		["seq", "seq"],
+		["key", "key"],
+		["at", "at"],
+	]);
+/** The event at the index's watermark, as JSON a read selects. */
+const markObject = (dialect: StorageDialect) =>
+	dialect.jsonObject([
+		["key", "key"],
+		["at", "at"],
+	]);
 
 /** The most checkpoints, and bytes of their payloads, a commit's read carries for the checkpoint index. */
 const PREFETCH_MAX_CHECKPOINTS = 64;
@@ -220,6 +248,9 @@ export class PoolCheckpointIndex {
 	private readonly roots = new Map<string, RootCheckpoints>();
 	/** Checkpoints this process committed for each root past the index's watermark, until a read folds them in. */
 	private readonly own = new Map<string, IndexedEntry[]>();
+
+	/** `dialect`: the journal database's, whose SQL the index's reads use. */
+	constructor(private readonly dialect: StorageDialect = sqliteDialect) {}
 
 	/**
 	 * Notes a checkpoint this process committed as the root's event `seq` under `key`. Past {@link OWN_MAX} of them the
@@ -261,19 +292,21 @@ export class PoolCheckpointIndex {
 
 	/**
 	 * See {@link PoolCheckpointRead.prefetchColumns}. The checkpoints come along only while they are few and small
-	 * ({@link PREFETCH_MAX_CHECKPOINTS}, {@link PREFETCH_MAX_BYTES}); otherwise `cp_added` is NULL. A queue that has not
+	 * ({@link PREFETCH_MAX_CHECKPOINTS}, {@link PREFETCH_MAX_BYTES}) and none is stored in chunks (#4965);
+	 * otherwise `cp_added` is NULL. A queue that has not
 	 * read the root yet, as on a host that just took over a child, would otherwise ask for every checkpoint of the root
 	 * in one value, past what the database returns in one (#4768).
 	 */
 	prefetchColumns(events: string, root: string): { readonly sql: string; readonly params: readonly SqliteValue[] } {
+		const dialect = this.dialect;
 		const from = this.roots.get(root)?.seq ?? 0;
-		const added = `SELECT seq, key, payload FROM ${events} WHERE run_id = ? AND seq > ? AND type = ? ORDER BY seq LIMIT ${PREFETCH_MAX_CHECKPOINTS + 1}`;
+		const added = `SELECT seq, key, payload, chunks FROM ${events} WHERE run_id = ? AND seq > ? AND type = ? ORDER BY seq LIMIT ${PREFETCH_MAX_CHECKPOINTS + 1}`;
 		return {
-			sql: `? AS cp_from,
-			(SELECT json_object('seq', seq, 'key', key, 'at', at) FROM ${events} WHERE run_id = ? ORDER BY seq DESC LIMIT 1) AS cp_head,
-			(SELECT json_object('key', key, 'at', at) FROM ${events} WHERE run_id = ? AND seq = ?) AS cp_mark,
-			(SELECT CASE WHEN COUNT(*) <= ${PREFETCH_MAX_CHECKPOINTS} AND COALESCE(SUM(length(payload)), 0) <= ${PREFETCH_MAX_BYTES}
-				THEN json_group_array(json_array(seq, key, payload)) END FROM (${added})) AS cp_added`,
+			sql: `CAST(? AS ${dialect.types.int}) AS cp_from,
+			(SELECT ${headObject(dialect)} FROM ${events} WHERE run_id = ? ORDER BY seq DESC LIMIT 1) AS cp_head,
+			(SELECT ${markObject(dialect)} FROM ${events} WHERE run_id = ? AND seq = ?) AS cp_mark,
+			(SELECT CASE WHEN COUNT(*) <= ${PREFETCH_MAX_CHECKPOINTS} AND COALESCE(SUM(length(payload)), 0) <= ${PREFETCH_MAX_BYTES} AND COALESCE(MAX(chunks), 0) = 0
+				THEN ${dialect.jsonGroupArray(dialect.jsonArray(["seq", "key", "payload"]), "seq")} END FROM (${added}) AS added) AS cp_added`,
 			params: [from, root, root, from, root, from, RUN_EVENT_TYPES.checkpointRecorded],
 		};
 	}
@@ -294,8 +327,8 @@ export class PoolCheckpointIndex {
 		const marks =
 			usable ??
 			(await tx.get<SqliteRow & { head: string | null; mark: string | null }>(
-				`SELECT (SELECT json_object('seq', seq, 'key', key, 'at', at) FROM ${events} WHERE run_id = ? ORDER BY seq DESC LIMIT 1) AS head,
-			(SELECT json_object('key', key, 'at', at) FROM ${events} WHERE run_id = ? AND seq = ?) AS mark`,
+				`SELECT (SELECT ${headObject(this.dialect)} FROM ${events} WHERE run_id = ? ORDER BY seq DESC LIMIT 1) AS head,
+			(SELECT ${markObject(this.dialect)} FROM ${events} WHERE run_id = ? AND seq = ?) AS mark`,
 				root,
 				root,
 				base?.seq ?? 0,

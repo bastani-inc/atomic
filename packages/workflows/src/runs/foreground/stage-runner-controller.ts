@@ -13,6 +13,7 @@ import {
 	isTransientExtensionStartupFailure,
 	type ModelConstraints,
 	type ModelRoute,
+	modelCallUsage,
 	type PromptOptions,
 	parkWorkflowStageForRelease,
 	parseModelConstraints,
@@ -213,38 +214,64 @@ type AttemptUsageTotals = {
  * provider record when any aggregated value is non-finite or negative so
  * malformed telemetry cannot poison a durable stage checkpoint.
  */
-function hasMeaningfulUsage(usage: StageAssistantMessage["usage"] | undefined): boolean {
+function hasMeaningfulUsage(
+	usage: StageAssistantMessage["usage"] | undefined,
+): usage is StageAssistantMessage["usage"] {
 	if (usage === undefined) return false;
 	const values = [usage.input, usage.output, usage.cacheRead, usage.cacheWrite, usage.totalTokens, usage.cost.total];
 	return values.every((value) => Number.isFinite(value) && value >= 0) && values.some((value) => value > 0);
 }
 
 /**
- * Aggregate the assistant-message usage admitted since the latched attempt
- * boundary, plus usage accrued from error assistants that a retry restoration
- * removed from the live transcript. Returns undefined when nothing meaningful
- * was seen, so no `usage: undefined` enters the serializable attempt record.
+ * One attempt's usage, accrued from the session's provider usage events while
+ * the attempt window is open (#5053). Every model call reports here exactly
+ * once: each assistant response (`message_end`, including error responses a
+ * retry later removes from the live transcript), each compaction model
+ * request (`compaction_usage`), each call of a subagent child the stage
+ * launched (`child_session_usage`) and auxiliary usage such as cache warming
+ * (`usage` entries). Message-list projections such as compaction
+ * never change what was charged, and resumed or replayed history emits no
+ * events, so it is never charged again.
  */
-function usageForAttempt(
-	messages: readonly StageMessage[],
-	start: number,
-	discarded: AttemptUsageTotals,
-): WorkflowModelUsage | undefined {
-	const totals = { ...discarded };
-	let meaningful = totals.turns > 0;
+class AttemptUsageWindow {
+	private readonly totals: AttemptUsageTotals = {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		cost: 0,
+		turns: 0,
+	};
+	private meaningful = false;
+	private readonly unsubscribe: () => void;
 
-	for (const message of messages.slice(start)) {
-		if (message.role !== "assistant" || !hasMeaningfulUsage(message.usage)) continue;
-		totals.input += message.usage.input;
-		totals.output += message.usage.output;
-		totals.cacheRead += message.usage.cacheRead;
-		totals.cacheWrite += message.usage.cacheWrite;
-		totals.cost += message.usage.cost.total;
-		totals.turns += 1;
-		meaningful = true;
+	constructor(session: StageSessionRuntime) {
+		this.unsubscribe = session.subscribe((event) => {
+			this.add(modelCallUsage(event), event.type === "message_end");
+		});
 	}
 
-	return meaningful ? totals : undefined;
+	private add(usage: StageAssistantMessage["usage"] | undefined, turn: boolean): void {
+		if (!hasMeaningfulUsage(usage)) return;
+		this.totals.input += usage.input;
+		this.totals.output += usage.output;
+		this.totals.cacheRead += usage.cacheRead;
+		this.totals.cacheWrite += usage.cacheWrite;
+		this.totals.cost += usage.cost.total;
+		if (turn) this.totals.turns += 1;
+		this.meaningful = true;
+	}
+
+	/** The usage seen so far, or undefined when nothing meaningful was seen. */
+	peek(): WorkflowModelUsage | undefined {
+		return this.meaningful ? { ...this.totals } : undefined;
+	}
+
+	/** Stop listening. Returns undefined when nothing meaningful was seen, so no `usage: undefined` enters the record. */
+	close(): WorkflowModelUsage | undefined {
+		this.unsubscribe();
+		return this.peek();
+	}
 }
 
 interface ThrownErrorRetryState {
@@ -399,17 +426,8 @@ export class StageSessionController {
 	private bindingCleanupFailure: StageSessionBindingCleanupFailure | undefined;
 	private reattachSessionId: string | undefined;
 	private lastPromptStartIndex: number | undefined;
-	/** Message index latched once per high-level candidate prompt; never re-read later. */
-	private attemptUsageStartIndex: number | undefined;
-	/** Usage accrued from error assistants removed by retry restoration. */
-	private discardedAttemptUsage: AttemptUsageTotals = {
-		input: 0,
-		output: 0,
-		cacheRead: 0,
-		cacheWrite: 0,
-		cost: 0,
-		turns: 0,
-	};
+	/** Usage window opened once per high-level candidate prompt; closed exactly once. */
+	private attemptUsage: AttemptUsageWindow | undefined;
 	private latestStructuredOutputToolErrorValue: string | undefined;
 	private structuredOutputExecutionFailureValue: string | undefined;
 	private structuredOutputCycleAttemptMark: number | undefined;
@@ -486,8 +504,8 @@ export class StageSessionController {
 	private reopenBackoff: AbortController | undefined;
 	/** Prompts of the stage that have not settled; a stage with one cannot be released by its author. */
 	private promptsInFlight = 0;
-	/** When the stage's session last did anything: a prompt, a message or a session event. */
-	private lastActivityAt = Date.now();
+	/** When, by `performance.now()`, the stage's session last did anything: a prompt, a message or a session event. */
+	private lastActivityAt = performance.now();
 
 	private get residency(): StageResidency {
 		this.residencyState ??= new StageResidency();
@@ -863,14 +881,14 @@ export class StageSessionController {
 				await this.queueIntoWaitingTurn(content, kind, expandPromptTemplates);
 			return kind;
 		}
-		this.lastActivityAt = Date.now();
+		this.lastActivityAt = performance.now();
 		try {
 			const action = await this.deliverUserMessage(content, options, beforeDelivery, preparation);
 			// A message that started a turn may have left it waiting on detached tool calls; carry that turn on too.
 			if (action === "prompt") await this.continueDetachedTurns(undefined, "prompt");
 			return action;
 		} finally {
-			this.lastActivityAt = Date.now();
+			this.lastActivityAt = performance.now();
 		}
 	}
 
@@ -989,7 +1007,7 @@ export class StageSessionController {
 		continuationText?: string,
 	): Promise<void> {
 		this.promptsInFlight += 1;
-		this.lastActivityAt = Date.now();
+		this.lastActivityAt = performance.now();
 		try {
 			if (reopensOnUse(this.releasedWait)) await this.rehydrate();
 			const sent = await this.resumeInterruptedCall(text, continuationText, sdkOptions, consumer);
@@ -997,7 +1015,7 @@ export class StageSessionController {
 			await this.continueDetachedTurns(sdkOptions, consumer);
 		} finally {
 			this.promptsInFlight -= 1;
-			this.lastActivityAt = Date.now();
+			this.lastActivityAt = performance.now();
 		}
 	}
 
@@ -1467,18 +1485,27 @@ export class StageSessionController {
 		this.releasedWaitEnded = undefined;
 		const held = this.heldWhileReleased ?? [];
 		this.heldWhileReleased = undefined;
+		// One input the session refuses neither drops the rest nor leaves callers waiting for the session (#5156); the
+		// refusals fail the turn once the session is reopened.
+		const refusals: unknown[] = [];
 		for (const input of held) {
 			const { text, images } = splitStageContent(input.content);
 			const options =
 				input.expandPromptTemplates === undefined
 					? undefined
 					: { expandPromptTemplates: input.expandPromptTemplates };
-			if (input.kind === "steer") await session.steer(text, images, options);
-			else await session.followUp(text, images, options);
+			try {
+				if (input.kind === "steer") await session.steer(text, images, options);
+				else await session.followUp(text, images, options);
+			} catch (error) {
+				refusals.push(error);
+			}
 		}
-		this.lastActivityAt = Date.now();
+		this.lastActivityAt = performance.now();
 		ended?.resolve();
 		await hooks.rehydrated(wait);
+		if (refusals.length === 1) throw refusals[0];
+		if (refusals.length > 1) throw new AggregateError(refusals, "The reopened session refused held input.");
 	}
 
 	/**
@@ -2199,47 +2226,31 @@ export class StageSessionController {
 		return undefined;
 	}
 	/**
-	 * Latch a fresh high-level usage window against the active session. The
-	 * boundary is the message length before the candidate prompt, so retries,
-	 * pause/re-prompts, and recording never re-read a later index.
+	 * Open a fresh high-level usage window on the active session. It records the
+	 * session's provider usage events until the attempt is recorded, so retries,
+	 * pause/re-prompts and compaction inside the prompt are all charged (#5053).
 	 */
 	private beginAttemptUsage(session: StageSessionRuntime): void {
 		this.sessionInternalRetries = 0;
-		this.attemptUsageStartIndex = session.messages.length;
-		this.discardedAttemptUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
+		this.attemptUsage?.close();
+		this.attemptUsage = new AttemptUsageWindow(session);
 	}
 
-	/**
-	 * Consume the current window exactly once. A session-creation failure has no
-	 * window: clear the latch instead of reading a previous session's messages.
-	 */
-	private takeAttemptUsage(session: StageSessionRuntime | undefined): WorkflowModelUsage | undefined {
-		const start = this.attemptUsageStartIndex;
-		const usage =
-			session === undefined || start === undefined
-				? undefined
-				: usageForAttempt(session.messages, start, this.discardedAttemptUsage);
-		this.clearAttemptUsage();
+	/** Usage of the attempt in flight, before it is recorded in `modelAttempts`. */
+	inFlightAttemptUsage(): WorkflowModelUsage | undefined {
+		return this.attemptUsage?.peek();
+	}
+
+	/** Stop model calls within the current session's turns, or resume them with `undefined`. */
+	stopTurns(reason: string | undefined): void {
+		this.session?.stopTurns?.(reason);
+	}
+
+	/** Consume the current window exactly once; without an open window there is no usage to record. */
+	private takeAttemptUsage(): WorkflowModelUsage | undefined {
+		const usage = this.attemptUsage?.close();
+		this.attemptUsage = undefined;
 		return usage;
-	}
-
-	private clearAttemptUsage(): void {
-		this.attemptUsageStartIndex = undefined;
-		this.discardedAttemptUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
-	}
-
-	/**
-	 * Keep the usage of an error assistant that a retry restoration is about to
-	 * remove from the live transcript, so the final attempt total still counts it.
-	 */
-	private accrueDiscardedAttemptUsage(message: StageAssistantMessage): void {
-		if (!hasMeaningfulUsage(message.usage)) return;
-		this.discardedAttemptUsage.input += message.usage.input;
-		this.discardedAttemptUsage.output += message.usage.output;
-		this.discardedAttemptUsage.cacheRead += message.usage.cacheRead;
-		this.discardedAttemptUsage.cacheWrite += message.usage.cacheWrite;
-		this.discardedAttemptUsage.cost += message.usage.cost.total;
-		this.discardedAttemptUsage.turns += 1;
 	}
 
 	/**
@@ -2261,10 +2272,6 @@ export class StageSessionController {
 	): StageSessionRuntime["messages"][number] | undefined {
 		const snapshotMessages = new Set(snapshot);
 		const admitted = session.messages.filter((message) => !snapshotMessages.has(message));
-		for (const message of admitted) {
-			if (message.role !== "assistant" || (!discardAttemptTurns && message.stopReason !== "error")) continue;
-			this.accrueDiscardedAttemptUsage(message);
-		}
 		const failedAssistantIndex = admitted.findLastIndex(
 			(message) => message.role === "assistant" && message.stopReason === "error",
 		);
@@ -3218,7 +3225,7 @@ export class StageSessionController {
 					void Promise.resolve(onSessionEvent(event)).catch(() => {});
 				} catch {}
 			}
-			this.lastActivityAt = Date.now();
+			this.lastActivityAt = performance.now();
 			if (event.type === "auto_retry_start") this.sessionInternalRetries += 1;
 			if (event.type === "model_fallback_start") applyingFallback = true;
 			// SDK effort-only fallbacks suppress model_changed, but emit thinking_level_changed
@@ -3398,7 +3405,7 @@ export class StageSessionController {
 			const terminalFailure = latestTerminalAssistantFailureSince(resumedSession.messages, terminalScanStartIndex);
 			if (terminalFailure === undefined || this.capturedStructuredOutputForAttempt()) {
 				this.artifactCapture.settleAttempt(true);
-				const usage = this.takeAttemptUsage(resumedSession);
+				const usage = this.takeAttemptUsage();
 				this.modelAttempts.push({
 					model: resumedLabel,
 					success: true,
@@ -3415,7 +3422,7 @@ export class StageSessionController {
 			if (err instanceof DetachedResultsNotSaved) throw err;
 			if (this.capturedStructuredOutputForAttempt() && isRetryableModelFailure(err, this.fallbackFailureOptions())) {
 				this.artifactCapture.settleAttempt(true);
-				const usage = this.takeAttemptUsage(resumedSession);
+				const usage = this.takeAttemptUsage();
 				this.modelAttempts.push({
 					model: resumedLabel,
 					success: true,
@@ -3429,7 +3436,7 @@ export class StageSessionController {
 			}
 			this.artifactCapture.settleAttempt(false);
 			const message = errorMessage(err);
-			const usage = this.takeAttemptUsage(resumedSession);
+			const usage = this.takeAttemptUsage();
 			this.modelAttempts.push({
 				model: resumedLabel,
 				success: false,
@@ -3511,7 +3518,7 @@ export class StageSessionController {
 			return "handled";
 		}
 		this.artifactCapture.settleAttempt(false);
-		const usage = this.takeAttemptUsage(this.session);
+		const usage = this.takeAttemptUsage();
 		this.modelAttempts.push({
 			model: candidate.id,
 			success: false,
@@ -3565,7 +3572,7 @@ export class StageSessionController {
 
 	private recordSuccessfulAttempt(candidate: WorkflowResolvedModelCandidate): void {
 		this.artifactCapture.settleAttempt(true);
-		const usage = this.takeAttemptUsage(this.session);
+		const usage = this.takeAttemptUsage();
 		if (this.modelRoute && this.session?.model)
 			candidate = {
 				id: workflowModelId(this.session.model)!,

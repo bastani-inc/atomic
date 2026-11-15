@@ -3,6 +3,7 @@ import type { DurableCheckpoint } from "../types.js";
 import type { SqlPoolStorage } from "./internal.js";
 import {
 	type AppendOutcome,
+	JOURNAL_SCHEMA_VERSION,
 	type JournalEntry,
 	type Lease,
 	RUN_EVENT_TYPES,
@@ -52,7 +53,7 @@ export class PoolRemoteJournal {
 		const sampledAt = performance.now();
 		const [run, state] = await Promise.all([this.journal.getRun(root), this.journal.leaseState(root)]);
 		if (run === undefined) throw new RunNotFoundError(root);
-		const { runs, leases } = this.storage.tables;
+		const { runs, leases, leaseBuilds } = this.storage.tables;
 		await this.storage.transaction(async (tx) => {
 			await tx.run(
 				`INSERT INTO ${runs}(run_id, name, cwd, created_at, status, header_json) VALUES (?, ?, ?, ?, ?, ?)
@@ -67,12 +68,22 @@ export class PoolRemoteJournal {
 			if (state === undefined) await tx.run(`DELETE FROM ${leases} WHERE run_id = ?`, root);
 			else
 				await tx.run(
-					`INSERT INTO ${leases}(run_id, holder_id, epoch, renewed_at) VALUES (?, ?, ?, CAST(unixepoch('subsec') * 1000 AS INTEGER) - ?)
+					`INSERT INTO ${leases}(run_id, holder_id, epoch, renewed_at) VALUES (?, ?, ?, ${this.storage.dialect.nowMs} - ?)
 					ON CONFLICT(run_id) DO UPDATE SET holder_id = excluded.holder_id, epoch = excluded.epoch, renewed_at = excluded.renewed_at`,
 					root,
 					state.holderId,
 					state.epoch,
 					Math.ceil(Math.max(0, state.ageMs) + (performance.now() - sampledAt)),
+				);
+			// The mirrored lease is this process's own, of this build: a write must not take it for an older build's (#4965).
+			if (state !== undefined && state.holderId === lease.holderId && state.epoch === lease.epoch)
+				await tx.run(
+					`INSERT INTO ${leaseBuilds}(run_id, holder_id, epoch, schema_version) VALUES (?, ?, ?, ?)
+					ON CONFLICT(run_id) DO UPDATE SET holder_id = excluded.holder_id, epoch = excluded.epoch, schema_version = excluded.schema_version`,
+					root,
+					state.holderId,
+					state.epoch,
+					JOURNAL_SCHEMA_VERSION,
 				);
 		});
 		if (state === undefined || state.holderId !== lease.holderId || state.epoch !== lease.epoch)
@@ -165,4 +176,19 @@ export function isRecordedCheckpointValue(stored: unknown, next: DurableCheckpoi
 			: retimed,
 		recorded,
 	);
+}
+
+/**
+ * Whether `stored` is `next` recorded without the worktree snapshots `next` carries: a checkpoint whose snapshot's
+ * blobs were collected before it reached the journal is recorded without them (#5077), and a resend or retry of the
+ * same checkpoint with them finds it so.
+ */
+export function isRecordedWithoutSnapshots(stored: unknown, next: DurableCheckpoint): boolean {
+	const carried = (next as { readonly worktreeSnapshots?: unknown }).worktreeSnapshots;
+	if (!Array.isArray(carried)) return false;
+	if ((stored as { readonly worktreeSnapshots?: unknown }).worktreeSnapshots !== undefined) return false;
+	const { worktreeSnapshots: _carried, ...bare } = next as DurableCheckpoint & {
+		readonly worktreeSnapshots?: unknown;
+	};
+	return isRecordedCheckpointValue(stored, bare as DurableCheckpoint);
 }

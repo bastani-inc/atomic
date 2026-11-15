@@ -166,3 +166,36 @@ test("only the third unanswered write in a row warns of a stall, any answer star
 		process.off("atomic-libsql-write-health" as "warning", onHealth as never);
 	}
 });
+
+test("write batches held by a server that stops answering do not hold back writes to another server (#4790)", async () => {
+	const stalled = await server();
+	const healthy = await server();
+	const real = globalThis.fetch;
+	const held: (() => void)[] = [];
+	vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+		const request = new Request(input, init);
+		const body = await request.clone().text();
+		if (request.url.startsWith(stalled.url) && body.includes('"type":"batch"'))
+			await new Promise<void>((resolve) => held.push(resolve));
+		return real(request);
+	});
+	// One database per write: a database runs its calls one at a time.
+	const stalledDatabases: SqliteDatabase[] = [];
+	for (let index = 0; index < 4; index++) stalledDatabases.push(await open(stalled.url));
+	const healthyDatabase = await open(healthy.url);
+	await stalledDatabases[0]!.exec("CREATE TABLE events(n INTEGER NOT NULL)");
+	await healthyDatabase.exec("CREATE TABLE events(n INTEGER NOT NULL)");
+	const stuck = stalledDatabases.map((database, n) => database.batch!(insert(n)));
+	while (held.length < 4) await sleep(5);
+	let healthyWrote = false;
+	const healthyWrite = healthyDatabase.batch!(insert(10)).then(() => {
+		healthyWrote = true;
+	});
+	for (let waited = 0; waited < 2_000 && !healthyWrote; waited += 20) await sleep(20);
+	const wroteWhileStalled = healthyWrote;
+	for (const release of held.splice(0)) release();
+	await Promise.all([...stuck, healthyWrite]);
+	assert.ok(wroteWhileStalled, "the write to the healthy server waited for the stalled server's writes");
+	assert.equal(countRows(healthy, "SELECT COUNT(*) AS count FROM events"), 1);
+	assert.equal(countRows(stalled, "SELECT COUNT(*) AS count FROM events"), 4);
+});

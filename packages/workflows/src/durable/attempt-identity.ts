@@ -20,8 +20,10 @@
  * executed in. A history with no attempt record is returned as it is.
  */
 
+import type { RunSnapshot, StageSnapshot, ToolNodeSnapshot } from "../shared/store-types.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
 import type { DurableWorkflowBackend } from "./backend.js";
+import { durableHash } from "./durable-hash.js";
 import type { DurableCheckpoint, DurableStageCheckpoint, DurableToolCheckpoint, DurableUiCheckpoint } from "./types.js";
 
 /** Prompt hash and checkpoint id prefix of an attempt record. */
@@ -202,6 +204,32 @@ export function attemptReachedCheckpoints(
 		const attempt = anchor(ownerRunId(checkpoint, rootRunId));
 		if (attempt === undefined || checkpointAttempt(checkpoint) === attempt) reached.add(nodeKey(checkpoint));
 	}
+	// A reached node's recorded parents are part of the run the attempt left, also those it did not run again: a stage
+	// that replays at creation keeps the tool its call followed, and a resume that no longer reaches that tool fails,
+	// but its records still name it (#4945). Of such a parent the records of its latest attempt are kept.
+	const nodeKeyById = new Map<string, string>();
+	const latestAttemptByKey = new Map<string, number>();
+	for (const checkpoint of nodes) {
+		const key = nodeKey(checkpoint);
+		nodeKeyById.set(JSON.stringify([ownerRunId(checkpoint, rootRunId), graphNodeId(checkpoint)]), key);
+		latestAttemptByKey.set(key, Math.max(latestAttemptByKey.get(key) ?? 0, checkpointAttempt(checkpoint)));
+	}
+	const parentReached = new Set<string>();
+	let grew = true;
+	while (grew) {
+		grew = false;
+		for (const checkpoint of nodes) {
+			if (!reached.has(nodeKey(checkpoint))) continue;
+			const owner = ownerRunId(checkpoint, rootRunId);
+			for (const parentId of checkpoint.topology!.parentIds) {
+				const parentKey = nodeKeyById.get(JSON.stringify([owner, parentId]));
+				if (parentKey === undefined || reached.has(parentKey)) continue;
+				reached.add(parentKey);
+				parentReached.add(parentKey);
+				grew = true;
+			}
+		}
+	}
 	const shownRuns = new Map<string, boolean>();
 	const shown = (runId: string): boolean => {
 		const known = shownRuns.get(runId);
@@ -212,19 +240,50 @@ export function attemptReachedCheckpoints(
 		shownRuns.set(runId, result);
 		return result;
 	};
-	const kept = new Set<DurableCheckpoint>(
+	const kept = new Set<DurableStageCheckpoint | DurableToolCheckpoint>(
 		nodes.filter((checkpoint) => {
 			const owner = ownerRunId(checkpoint, rootRunId);
 			const attempt = anchor(owner);
 			if (!shown(owner) || !reached.has(nodeKey(checkpoint))) return false;
 			if (attempt === undefined || checkpointAttempt(checkpoint) === attempt) return true;
+			const key = nodeKey(checkpoint);
+			if (parentReached.has(key)) return checkpointAttempt(checkpoint) === latestAttemptByKey.get(key);
 			return (
 				checkpoint.kind === "stage" &&
 				(checkpoint.output !== undefined || checkpoint.topology?.boundary !== undefined)
 			);
 		}),
 	);
-	return checkpoints.filter((checkpoint) => !isGraphRecord(checkpoint) || kept.has(checkpoint));
+	// A kept parent may share its place in its run with the node that replaced it, such as a child the attempt invoked
+	// again with other inputs: it is shown just before that node.
+	const placed = new Set<string>();
+	for (const checkpoint of kept) {
+		const order = sourceOrderOf(checkpoint);
+		if (order !== undefined && !parentReached.has(nodeKey(checkpoint)))
+			placed.add(JSON.stringify([ownerRunId(checkpoint, rootRunId), order]));
+	}
+	return checkpoints.flatMap((checkpoint): DurableCheckpoint[] => {
+		if (!isGraphRecord(checkpoint)) return [checkpoint];
+		if (!kept.has(checkpoint)) return [];
+		const order = sourceOrderOf(checkpoint);
+		if (
+			order === undefined ||
+			!parentReached.has(nodeKey(checkpoint)) ||
+			!placed.has(JSON.stringify([ownerRunId(checkpoint, rootRunId), order]))
+		)
+			return [checkpoint];
+		return [{ ...checkpoint, topology: { ...checkpoint.topology!, sourceOrder: order - 0.5 } } as DurableCheckpoint];
+	});
+}
+
+/** A stage record's place in its run; a tool record has none. */
+function sourceOrderOf(checkpoint: DurableStageCheckpoint | DurableToolCheckpoint): number | undefined {
+	return checkpoint.kind === "stage" ? checkpoint.topology?.sourceOrder : undefined;
+}
+
+/** The node id a stage or tool record names: its stage id, or its tool node id. */
+function graphNodeId(checkpoint: DurableStageCheckpoint | DurableToolCheckpoint): string | undefined {
+	return checkpoint.kind === "stage" ? checkpoint.topology?.stageId : checkpoint.topology?.nodeId;
 }
 
 /** A stage or tool record of a graph node; a reserved run-level record has no topology. */
@@ -235,4 +294,110 @@ function isGraphRecord(checkpoint: DurableCheckpoint): checkpoint is DurableStag
 /** A stage record's node: its replay key, and its prompt occurrence when it has one. */
 function stageNodeKey(checkpoint: DurableStageCheckpoint): string {
 	return JSON.stringify([checkpoint.replayKey, checkpoint.topology?.occurrenceKey ?? null]);
+}
+
+/** A node a fork copied from its source: the kind and name its replacement shares, and a tool's callback source. */
+export interface ForkCopiedNode {
+	readonly kind: "stage" | "tool";
+	readonly name: string;
+	readonly source?: string;
+}
+
+/**
+ * The nodes a fork's first execution may keep as recorded parents without running them again (#4321): a fork that only
+ * replaces its source's inputs replays every recorded stage, and a stage whose recorded parent is a call the new inputs
+ * changed keeps the copied call as its parent. Its records still name a recorded node, so the fork stays readable.
+ *
+ * None when the fork kept its source's inputs, or its source is not in this journal: a fork whose definition changed
+ * a call fails like a resume. Read before the execution registers: once any execution of the fork has recorded
+ * something, a later execution of the fork, like any other run, keeps none (#4945).
+ */
+export function forkCopiedNodes(
+	backend: Pick<DurableWorkflowBackend, "getWorkflow" | "listCheckpoints">,
+	runId: string,
+): ReadonlyMap<string, ForkCopiedNode> {
+	const handle = backend.getWorkflow(runId);
+	if (handle?.forkedFrom === undefined) return new Map();
+	const source = backend.getWorkflow(handle.forkedFrom.runId);
+	if (source === undefined) return new Map();
+	if (durableHash(handle.inputs) === durableHash(source.inputs)) return new Map();
+	const checkpoints = backend.listCheckpoints(runId);
+	// The fork registered when it copied the source; an execution re-registers it and records after that.
+	if (checkpoints.some((checkpoint) => checkpoint.completedAt >= handle.createdAt)) return new Map();
+	const copied = new Map<string, ForkCopiedNode>();
+	for (const checkpoint of checkpoints.filter(isGraphRecord)) {
+		// A child run's nodes are its own: a child whose inputs changed is invoked again as another child.
+		if (checkpoint.topology!.run !== undefined && checkpoint.topology!.run.runId !== runId) continue;
+		const source = checkpoint.kind === "tool" ? checkpoint.source : undefined;
+		copied.set(graphNodeId(checkpoint)!, {
+			kind: checkpoint.kind,
+			name: checkpoint.name,
+			...(source === undefined ? {} : { source }),
+		});
+	}
+	return copied;
+}
+
+/**
+ * Whether a fork's first execution keeps the copied node `parentId` as a recorded parent (#4321, #4945): the run made
+ * the same call again, under the same name and kind and, for a tool, from the same callback, so only its arguments, the
+ * inputs that replaced the source's, changed.
+ */
+export function keepsForkCopiedParent(
+	copied: ReadonlyMap<string, ForkCopiedNode>,
+	run: Pick<RunSnapshot, "stages" | "toolNodes">,
+	parentId: string,
+): boolean {
+	const node = copied.get(parentId);
+	if (node === undefined) return false;
+	const candidates: readonly (StageSnapshot | ToolNodeSnapshot)[] = node.kind === "tool" ? run.toolNodes : run.stages;
+	return candidates.some(
+		(candidate) =>
+			candidate.id !== parentId &&
+			candidate.name === node.name &&
+			candidate.replayed !== true &&
+			("source" in candidate ? candidate.source : undefined) === node.source,
+	);
+}
+
+/**
+ * The record that a root run's definition completed (#5133). A run commits its terminal status as one write to its
+ * handle; when the store refuses that write, and its retry, the handle still says `running` though the run's work is
+ * done. So, before the status, the run records that its definition completed in its current attempt, as a run-timing
+ * record carrying the run's elapsed time as every timing record does: every release reads it as timing, none as a graph
+ * node. A handle still `running` whose run recorded this in the attempt it is in reads as completed.
+ */
+/** `RUN_TIMING_CHECKPOINT_NAME` of `run-timing.ts`, whose imports a reader of this record need not load. */
+const RUN_TIMING_CHECKPOINT_NAME = "workflow-run-timing";
+
+/** Checkpoint id prefix of the record that a run's definition completed. */
+export const RUN_END_CHECKPOINT_ID_PREFIX = "run-end:";
+
+/** The attempt a run-end record says completed, or undefined for any other checkpoint. */
+export function completedRunAttempt(checkpoint: DurableCheckpoint): number | undefined {
+	if (checkpoint.kind !== "tool" || !checkpoint.checkpointId.startsWith(RUN_END_CHECKPOINT_ID_PREFIX))
+		return undefined;
+	const attempt = (checkpoint.output as { readonly completedAttempt?: unknown } | null)?.completedAttempt;
+	return typeof attempt === "number" ? attempt : undefined;
+}
+
+/** Record, before its status, that the current attempt of root run `workflowId` completed. */
+export async function recordRunCompletedCheckpointAsync(
+	backend: DurableWorkflowBackend,
+	workflowId: string,
+): Promise<void> {
+	const attempt = backend.workflowAttempt?.(workflowId) ?? 0;
+	const timing = backend.getToolOutput(workflowId, RUN_TIMING_CHECKPOINT_NAME) as {
+		readonly elapsedMs?: unknown;
+	} | null;
+	const elapsedMs = typeof timing?.elapsedMs === "number" ? timing.elapsedMs : undefined;
+	await backend.commitCheckpoint({
+		kind: "tool",
+		workflowId,
+		checkpointId: `${RUN_END_CHECKPOINT_ID_PREFIX}${attempt}`,
+		name: RUN_TIMING_CHECKPOINT_NAME,
+		argsHash: RUN_TIMING_CHECKPOINT_NAME,
+		output: { ...(elapsedMs === undefined ? {} : { elapsedMs }), completedAttempt: attempt },
+		completedAt: Date.now(),
+	} satisfies DurableToolCheckpoint);
 }

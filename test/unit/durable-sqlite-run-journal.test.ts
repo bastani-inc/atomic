@@ -992,8 +992,15 @@ test("delete/recreate cycles durably fence every old handle without affecting ot
 test("schema v2 exports stable names and stores event payloads as JSON text with required SQLite pragmas", async () => {
 	assert.equal(JOURNAL_SCHEMA_VERSION, 2);
 	assert.equal(JOURNAL_PAYLOAD_ENCODING, "json-text");
-	assert.deepEqual(Object.values(tableNames), ["meta", "runs", "events", "leases"]);
-	assert.deepEqual(Object.values(t), ["wf_meta", "wf_runs", "wf_events", "wf_leases"]);
+	assert.deepEqual(Object.values(tableNames), ["meta", "runs", "events", "leases", "event_chunks", "lease_builds"]);
+	assert.deepEqual(Object.values(t), [
+		"wf_meta",
+		"wf_runs",
+		"wf_events",
+		"wf_leases",
+		"wf_event_chunks",
+		"wf_lease_builds",
+	]);
 	assert.deepEqual(Object.values(c), [
 		"schema_version",
 		"run_id",
@@ -1008,6 +1015,7 @@ test("schema v2 exports stable names and stores event payloads as JSON text with
 		"type",
 		"payload",
 		"at",
+		"chunks",
 		"holder_id",
 		"renewed_at",
 	]);
@@ -1056,7 +1064,7 @@ test("schema v2 exports stable names and stores event payloads as JSON text with
 			for (const [table, columns] of [
 				[t.meta, [c.schemaVersion]],
 				[t.runs, [c.runId, c.name, c.cwd, c.createdAt, c.status, c.headerJson]],
-				[t.events, [c.runId, c.seq, c.epoch, c.key, c.type, c.payload, c.at]],
+				[t.events, [c.runId, c.seq, c.epoch, c.key, c.type, c.payload, c.at, c.chunks]],
 				[t.leases, [c.runId, c.holderId, c.epoch, c.renewedAt]],
 			] as const)
 				assert.deepEqual(
@@ -1127,7 +1135,7 @@ test("seq at MAX_SAFE_INTEGER rejects its successor before changing any rows", a
 		const db = new JournalTestDatabase(journal.path);
 		try {
 			db.run(
-				`INSERT INTO ${t.events} VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO ${t.events}(run_id, seq, epoch, key, type, payload, at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 				header.runId,
 				Number.MAX_SAFE_INTEGER,
 				1,
@@ -1243,7 +1251,7 @@ test.each([
 		const db = new JournalTestDatabase(journal.path);
 		try {
 			db.run(
-				`INSERT INTO ${t.events} VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO ${t.events}(run_id, seq, epoch, key, type, payload, at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 				header.runId,
 				field === "seq" ? seed : 1,
 				field === "epoch" ? seed : 1,
@@ -1285,7 +1293,7 @@ test("safe integer boundary counters remain usable without an overflowing succes
 		try {
 			db.run(`UPDATE ${t.leases} SET ${c.epoch} = ?`, Number.MAX_SAFE_INTEGER - 1);
 			db.run(
-				`INSERT INTO ${t.events} VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO ${t.events}(run_id, seq, epoch, key, type, payload, at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 				header.runId,
 				Number.MAX_SAFE_INTEGER - 1,
 				Number.MAX_SAFE_INTEGER - 1,
@@ -1331,7 +1339,7 @@ test("zero database counters are valid for reads, replay and lease operations", 
 		try {
 			db.run(`UPDATE ${t.leases} SET ${c.epoch} = 0`);
 			db.run(
-				`INSERT INTO ${t.events} VALUES (?, 0, 0, ?, ?, ?, 0)`,
+				`INSERT INTO ${t.events}(run_id, seq, epoch, key, type, payload, at) VALUES (?, 0, 0, ?, ?, ?, 0)`,
 				header.runId,
 				"zero",
 				e.summaryRecorded,

@@ -324,6 +324,16 @@ function getEmptyOldTextError(path: string, editIndex: number, totalEdits: numbe
 	return new EditInputError("old-text-empty", `edits[${editIndex}].oldText must not be empty in ${path}.`, fields);
 }
 
+function getSplitCharacterError(path: string, editIndex: number, totalEdits: number): EditInputError {
+	const fields = { path, editIndex, totalEdits };
+	const edit = totalEdits === 1 ? "oldText or newText" : `edits[${editIndex}].oldText or newText`;
+	return new EditInputError(
+		"text-splits-character",
+		`${edit} contains half of a surrogate pair in ${path}. Replacing it would split a character and corrupt the text next to the match. The file was left unchanged.`,
+		fields,
+	);
+}
+
 function getNoChangeError(path: string, totalEdits: number): EditMatchError {
 	if (totalEdits === 1) {
 		return new EditMatchError(
@@ -358,8 +368,14 @@ export function applyEditsToNormalizedContent(
 	}));
 
 	for (let i = 0; i < normalizedEdits.length; i++) {
-		if (normalizedEdits[i].oldText.length === 0) {
+		const { oldText, newText } = normalizedEdits[i];
+		if (oldText.length === 0) {
 			throw getEmptyOldTextError(path, i, normalizedEdits.length);
+		}
+		// The file is valid UTF-8, so a match can only start or end inside a surrogate pair when oldText starts
+		// or ends with a lone surrogate. Refusing lone surrogates keeps every match on character boundaries.
+		if (!oldText.isWellFormed() || !newText.isWellFormed()) {
+			throw getSplitCharacterError(path, i, normalizedEdits.length);
 		}
 	}
 

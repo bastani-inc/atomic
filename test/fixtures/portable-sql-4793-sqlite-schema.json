@@ -55,9 +55,9 @@
 	},
 	{
 		"type": "index",
-		"name": "intercom_restoring_reservations_wake_requested",
+		"name": "intercom_restoring_reservations_wake",
 		"tbl_name": "intercom_restoring_reservations",
-		"sql": "CREATE INDEX intercom_restoring_reservations_wake_requested ON intercom_restoring_reservations(owner_broker_id) WHERE wake_requested = 1"
+		"sql": "CREATE INDEX intercom_restoring_reservations_wake ON intercom_restoring_reservations(owner_broker_id) WHERE wake_requested = 1"
 	},
 	{
 		"type": "index",
@@ -70,6 +70,12 @@
 		"name": "intercom_session_bindings_recorded",
 		"tbl_name": "intercom_session_bindings",
 		"sql": "CREATE INDEX intercom_session_bindings_recorded ON intercom_session_bindings(recorded_at)"
+	},
+	{
+		"type": "index",
+		"name": "intercom_settled_asks_at",
+		"tbl_name": "intercom_settled_asks",
+		"sql": "CREATE INDEX intercom_settled_asks_at ON intercom_settled_asks(settled_at)"
 	},
 	{
 		"type": "index",
@@ -139,9 +145,9 @@
 	},
 	{
 		"type": "index",
-		"name": "team_intercom_restoring_reservations_wake_requested",
+		"name": "team_intercom_restoring_reservations_wake",
 		"tbl_name": "team_intercom_restoring_reservations",
-		"sql": "CREATE INDEX team_intercom_restoring_reservations_wake_requested ON team_intercom_restoring_reservations(owner_broker_id) WHERE wake_requested = 1"
+		"sql": "CREATE INDEX team_intercom_restoring_reservations_wake ON team_intercom_restoring_reservations(owner_broker_id) WHERE wake_requested = 1"
 	},
 	{
 		"type": "index",
@@ -154,6 +160,12 @@
 		"name": "team_intercom_session_bindings_recorded",
 		"tbl_name": "team_intercom_session_bindings",
 		"sql": "CREATE INDEX team_intercom_session_bindings_recorded ON team_intercom_session_bindings(recorded_at)"
+	},
+	{
+		"type": "index",
+		"name": "team_intercom_settled_asks_at",
+		"tbl_name": "team_intercom_settled_asks",
+		"sql": "CREATE INDEX team_intercom_settled_asks_at ON team_intercom_settled_asks(settled_at)"
 	},
 	{
 		"type": "index",
@@ -195,7 +207,7 @@
 		"type": "table",
 		"name": "intercom_pending_asks",
 		"tbl_name": "intercom_pending_asks",
-		"sql": "CREATE TABLE intercom_pending_asks(\n\t\t\t\t\"order\" INTEGER PRIMARY KEY AUTOINCREMENT,\n\t\t\t\tsender_session_id TEXT NOT NULL,\n\t\t\t\ttarget_session_id TEXT NOT NULL,\n\t\t\t\tmessage_id TEXT NOT NULL, park_owner TEXT, park_key TEXT,\n\t\t\t\tUNIQUE(sender_session_id, target_session_id, message_id)\n\t\t\t)"
+		"sql": "CREATE TABLE intercom_pending_asks(\n\t\t\t\t\"order\" INTEGER PRIMARY KEY AUTOINCREMENT,\n\t\t\t\tsender_session_id TEXT NOT NULL,\n\t\t\t\ttarget_session_id TEXT NOT NULL,\n\t\t\t\tmessage_id TEXT NOT NULL, park_owner TEXT, park_key TEXT, replied INTEGER, ended_at INTEGER,\n\t\t\t\tUNIQUE(sender_session_id, target_session_id, message_id)\n\t\t\t)"
 	},
 	{
 		"type": "table",
@@ -235,6 +247,12 @@
 	},
 	{
 		"type": "table",
+		"name": "intercom_settled_asks",
+		"tbl_name": "intercom_settled_asks",
+		"sql": "CREATE TABLE intercom_settled_asks(\n\t\t\t\tsender_session_id TEXT NOT NULL,\n\t\t\t\ttarget_session_id TEXT NOT NULL,\n\t\t\t\tmessage_id TEXT NOT NULL,\n\t\t\t\tsettled_at INTEGER NOT NULL,\n\t\t\t\tPRIMARY KEY(sender_session_id, target_session_id, message_id)\n\t\t\t)"
+	},
+	{
+		"type": "table",
 		"name": "intercom_wakeups",
 		"tbl_name": "intercom_wakeups",
 		"sql": "CREATE TABLE intercom_wakeups (\n\t\t\tid INTEGER PRIMARY KEY AUTOINCREMENT,\n\t\t\tbroker_id TEXT NOT NULL,\n\t\t\treason TEXT NOT NULL CHECK (reason IN ('outbox', 'outcome')),\n\t\t\tversion INTEGER NOT NULL,\n\t\t\tcreated_at INTEGER NOT NULL\n\t\t)"
@@ -267,7 +285,7 @@
 		"type": "table",
 		"name": "team_intercom_pending_asks",
 		"tbl_name": "team_intercom_pending_asks",
-		"sql": "CREATE TABLE team_intercom_pending_asks(\n\t\t\t\t\"order\" INTEGER PRIMARY KEY AUTOINCREMENT,\n\t\t\t\tsender_session_id TEXT NOT NULL,\n\t\t\t\ttarget_session_id TEXT NOT NULL,\n\t\t\t\tmessage_id TEXT NOT NULL, park_owner TEXT, park_key TEXT,\n\t\t\t\tUNIQUE(sender_session_id, target_session_id, message_id)\n\t\t\t)"
+		"sql": "CREATE TABLE team_intercom_pending_asks(\n\t\t\t\t\"order\" INTEGER PRIMARY KEY AUTOINCREMENT,\n\t\t\t\tsender_session_id TEXT NOT NULL,\n\t\t\t\ttarget_session_id TEXT NOT NULL,\n\t\t\t\tmessage_id TEXT NOT NULL, park_owner TEXT, park_key TEXT, replied INTEGER, ended_at INTEGER,\n\t\t\t\tUNIQUE(sender_session_id, target_session_id, message_id)\n\t\t\t)"
 	},
 	{
 		"type": "table",
@@ -307,15 +325,27 @@
 	},
 	{
 		"type": "table",
+		"name": "team_intercom_settled_asks",
+		"tbl_name": "team_intercom_settled_asks",
+		"sql": "CREATE TABLE team_intercom_settled_asks(\n\t\t\t\tsender_session_id TEXT NOT NULL,\n\t\t\t\ttarget_session_id TEXT NOT NULL,\n\t\t\t\tmessage_id TEXT NOT NULL,\n\t\t\t\tsettled_at INTEGER NOT NULL,\n\t\t\t\tPRIMARY KEY(sender_session_id, target_session_id, message_id)\n\t\t\t)"
+	},
+	{
+		"type": "table",
 		"name": "team_intercom_wakeups",
 		"tbl_name": "team_intercom_wakeups",
 		"sql": "CREATE TABLE team_intercom_wakeups (\n\t\t\tid INTEGER PRIMARY KEY AUTOINCREMENT,\n\t\t\tbroker_id TEXT NOT NULL,\n\t\t\treason TEXT NOT NULL CHECK (reason IN ('outbox', 'outcome')),\n\t\t\tversion INTEGER NOT NULL,\n\t\t\tcreated_at INTEGER NOT NULL\n\t\t)"
 	},
 	{
 		"type": "table",
+		"name": "team_wf_event_chunks",
+		"tbl_name": "team_wf_event_chunks",
+		"sql": "CREATE TABLE team_wf_event_chunks(\n\t\t\trun_id TEXT NOT NULL, seq INTEGER NOT NULL, idx INTEGER NOT NULL, data BLOB NOT NULL,\n\t\t\tPRIMARY KEY(run_id, seq, idx)\n\t\t) STRICT"
+	},
+	{
+		"type": "table",
 		"name": "team_wf_events",
 		"tbl_name": "team_wf_events",
-		"sql": "CREATE TABLE team_wf_events(\n\t\t\trun_id TEXT NOT NULL,\n\t\t\tseq INTEGER NOT NULL, epoch INTEGER NOT NULL, key TEXT,\n\t\t\ttype TEXT NOT NULL, payload TEXT NOT NULL, at INTEGER NOT NULL,\n\t\t\tPRIMARY KEY(run_id, seq), UNIQUE(run_id, key)\n\t\t)"
+		"sql": "CREATE TABLE team_wf_events(\n\t\t\trun_id TEXT NOT NULL,\n\t\t\tseq INTEGER NOT NULL, epoch INTEGER NOT NULL, key TEXT,\n\t\t\ttype TEXT NOT NULL, payload TEXT NOT NULL, at INTEGER NOT NULL,\n\t\t\tchunks INTEGER NOT NULL DEFAULT 0,\n\t\t\tPRIMARY KEY(run_id, seq), UNIQUE(run_id, key)\n\t\t)"
 	},
 	{
 		"type": "table",
@@ -337,9 +367,15 @@
 	},
 	{
 		"type": "table",
+		"name": "wf_event_chunks",
+		"tbl_name": "wf_event_chunks",
+		"sql": "CREATE TABLE wf_event_chunks(\n\t\t\trun_id TEXT NOT NULL, seq INTEGER NOT NULL, idx INTEGER NOT NULL, data BLOB NOT NULL,\n\t\t\tPRIMARY KEY(run_id, seq, idx)\n\t\t) STRICT"
+	},
+	{
+		"type": "table",
 		"name": "wf_events",
 		"tbl_name": "wf_events",
-		"sql": "CREATE TABLE wf_events(\n\t\t\trun_id TEXT NOT NULL,\n\t\t\tseq INTEGER NOT NULL, epoch INTEGER NOT NULL, key TEXT,\n\t\t\ttype TEXT NOT NULL, payload TEXT NOT NULL, at INTEGER NOT NULL,\n\t\t\tPRIMARY KEY(run_id, seq), UNIQUE(run_id, key)\n\t\t)"
+		"sql": "CREATE TABLE wf_events(\n\t\t\trun_id TEXT NOT NULL,\n\t\t\tseq INTEGER NOT NULL, epoch INTEGER NOT NULL, key TEXT,\n\t\t\ttype TEXT NOT NULL, payload TEXT NOT NULL, at INTEGER NOT NULL,\n\t\t\tchunks INTEGER NOT NULL DEFAULT 0,\n\t\t\tPRIMARY KEY(run_id, seq), UNIQUE(run_id, key)\n\t\t)"
 	},
 	{
 		"type": "table",

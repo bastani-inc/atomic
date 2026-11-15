@@ -253,8 +253,11 @@ test.skipIf(process.platform === "win32")(
 	BUDGET.timeoutMs,
 );
 
-/** The root's own pool only: one cold start. */
-const ROOT_FLEET_BUDGET = poolTestBudgetMs(1);
+/**
+ * Two cold starts: the root process, which loads the workflow runtime through jiti itself (7 to 10 s of an unloaded
+ * host's CPU before its run starts), and its own pool, which starts its worker and runs the three children on it.
+ */
+const ROOT_FLEET_BUDGET = poolTestBudgetMs(2);
 
 test.skipIf(process.platform === "win32")(
 	"a root with workers.provisioner runs a fleet controller while it runs, never records the provisioner, and releases the lease when it ends (#4768)",

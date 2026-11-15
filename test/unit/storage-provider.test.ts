@@ -437,7 +437,7 @@ for (const domain of ["sessions", "journal"] as const) {
 					assert.ok(error instanceof StorageSchemaVersionError);
 					assert.equal(error.domain, domain);
 					assert.equal(error.found, 99);
-					// Sessions are at version 2 since long entries are stored in chunks (#4954), the journal since chunked snapshot blobs are (#5065).
+					// Sessions are at version 2 since long entries are stored in chunks (#4954), the journal since large events are (#4965).
 					assert.equal(error.supported, 2);
 					assert.ok(error.cleanupCause instanceof adapter.cleanupErrorType);
 					assert.equal(error.cleanupCause, adapter.cleanupFailure);

@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import {
 	adapterOpenContext,
+	dialectOf,
 	loadStorageAdapter,
 	openNodeSqliteDatabase,
 	resolveAdapterOptions,
@@ -106,18 +107,12 @@ export async function resolveBrokerStateSource(
 /**
  * A view of `database` whose `close` leaves it open. The wake-up bus borrows the stores' connection: a SQLite driver
  * that waits for a lock synchronously (node:sqlite) would otherwise block this process on a second connection's
- * write while one of the stores' transactions is suspended between statements.
+ * write while one of the stores' transactions is suspended between statements. Every other field, such as the
+ * dialect and the batch method, is the database's own, so the bus speaks Postgres on Postgres (#5054).
  */
 export function borrowedDatabase(database: SqliteDatabase): SqliteDatabase {
-	return {
-		descriptor: database.descriptor,
-		exec: (sql) => database.exec(sql),
-		run: (sql, ...params) => database.run(sql, ...params),
-		get: (sql, ...params) => database.get(sql, ...params),
-		all: (sql, ...params) => database.all(sql, ...params),
-		transaction: (callback) => database.transaction(callback),
-		close: async () => {},
-	};
+	const close = async () => {};
+	return new Proxy(database, { get: (target, key) => (key === "close" ? close : Reflect.get(target, key)) });
 }
 
 /** Compose S1–S4 and the S5 known-session store, and the wake-up bus, on one connection. */
@@ -127,6 +122,8 @@ export async function openIntercomBrokerState(
 ): Promise<OpenedBrokerState> {
 	const database = await source.openDatabase();
 	try {
+		// The backend is known once the database is open: refuse a prefix too long for it before creating anything (#5067).
+		validateStoragePrefix(source.prefix, dialectOf(database).name);
 		const options = { database, prefix: source.prefix ?? "" };
 		const leases = await openSqlBrokerLeaseStore(options);
 		const outbox = await openSqlOutboxStore(options);

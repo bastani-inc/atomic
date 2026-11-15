@@ -2,9 +2,8 @@ import { pathToFileURL } from "node:url";
 import type { ImageContent, TextContent } from "@bastani/pi-ai/compat";
 import { getCapabilities, getImageDimensions, hyperlink, imageFallback } from "@earendil-works/pi-tui";
 import type { ThemeColor } from "../../modes/interactive/theme/theme.js";
-import { stripAnsi } from "../../utils/ansi.js";
 import { resolvePath, shortenHomePath } from "../../utils/paths.ts";
-import { sanitizeBinaryOutput } from "../../utils/shell.ts";
+import { terminalDisplayText } from "../../utils/terminal-text.ts";
 import type { ToolRenderContext } from "../extensions/tool-types.ts";
 
 export function shortenPath(path: unknown): string {
@@ -70,7 +69,7 @@ export function getTextOutput(
 	const textBlocks = result.content.filter((c) => c.type === "text");
 	const imageBlocks = result.content.filter((c) => c.type === "image");
 
-	let output = textBlocks.map((c) => sanitizeBinaryOutput(stripAnsi(c.text || "")).replace(/\r/g, "")).join("\n");
+	let output = textBlocks.map((c) => terminalDisplayText(c.text || "")).join("\n");
 
 	const caps = getCapabilities();
 	if (imageBlocks.length > 0 && (!caps.images || !showImages)) {
@@ -99,7 +98,7 @@ export function formatToolCallWithArgs(
 	theme: { fg: (name: ThemeColor, text: string) => string; bold: (text: string) => string },
 	expanded: boolean,
 ): string {
-	const clean = (text: string) => sanitizeBinaryOutput(stripAnsi(text));
+	const clean = terminalDisplayText;
 	const header = theme.fg("toolTitle", theme.bold(clean(title)));
 	if (args == null) return header;
 	const entries = typeof args === "object" && !Array.isArray(args) ? Object.entries(args) : [["args", args]];

@@ -47,6 +47,7 @@ import {
 	JournalError,
 	type Lease,
 	type RunEvent,
+	type RunHeader,
 	type RunJournal,
 	RunNotFoundError,
 	StaleLeaseError,
@@ -258,8 +259,19 @@ function* invoke<T>(action: () => Promise<T>): Operation<T> {
 		return value!;
 	} catch (error) {
 		if (error instanceof JournalError || error instanceof StorageError) throw error;
+		// A checkpoint refused because a collection deleted its snapshot blobs (#5077) is the recorder's to handle.
+		if (isBlobsCollected(error)) throw error;
 		throw customJournalUnavailable(error as StorageFailureCause);
 	}
+}
+
+/** A `blobs-collected` WorkspaceSnapshotError, told by name so this module need not load the snapshot code. */
+function isBlobsCollected(error: unknown): boolean {
+	return (
+		error instanceof Error &&
+		error.name === "WorkspaceSnapshotError" &&
+		(error as Error & { readonly code?: string }).code === "blobs-collected"
+	);
 }
 
 const CUSTOM_JOURNAL = { adapter: "custom", location: "custom journal" } as const;
@@ -523,8 +535,14 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		let backend: JournalDurableBackend<Journal> | undefined;
 		try {
 			backend = new JournalDurableBackend(journal, undefined, options.ownsJournal ?? true);
-			for (const runId of options.runs ?? (await journal.listRuns()).map((run) => run.runId))
-				for await (const entry of journal.read(runId)) backend.fold(entry);
+			const headers =
+				options.runs === undefined
+					? await journal.listRuns()
+					: (await Promise.all(options.runs.map((runId) => journal.getRun(runId)))).filter(
+							(header): header is RunHeader => header !== undefined,
+						);
+			for (const { runId } of headers) for await (const entry of journal.read(runId)) backend.fold(entry);
+			await backend.writeRecordedCompletions(headers);
 			return backend;
 		} catch (error) {
 			if (backend === undefined) {
@@ -537,6 +555,24 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			)
 				throw error;
 			throw customJournalUnavailable(error as StorageFailureCause);
+		}
+	}
+
+	/**
+	 * Write the completed status of each run whose row still says `running` though its records say its definition
+	 * completed in its latest attempt: the store refused that write when the run ended (#5133). A run another process
+	 * holds, or a store that refuses again, is left as it reads, completed, for the next open.
+	 */
+	private async writeRecordedCompletions(headers: readonly RunHeader[]): Promise<void> {
+		for (const header of headers) {
+			const handle = this.getWorkflow(header.runId);
+			if (header.status !== "running" || handle?.status !== "completed") continue;
+			try {
+				await this.commitWorkflowStatus(header.runId, "completed", undefined, handle.resumable);
+				await this.releaseWorkflow(header.runId);
+			} catch {
+				// Read as completed all the same; the next open writes it again.
+			}
 		}
 	}
 

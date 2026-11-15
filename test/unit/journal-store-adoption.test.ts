@@ -1093,7 +1093,7 @@ test("a destination copy that holds the source's events and more, as after a res
 	copy.exec(`ATTACH DATABASE '${path}' AS source`);
 	for (const table of ["wf_runs", "wf_events"]) copy.exec(`INSERT INTO main.${table} SELECT * FROM source.${table}`);
 	copy.exec(
-		"INSERT INTO wf_events SELECT run_id, seq + 10, epoch, 'third', type, payload, at FROM wf_events WHERE key = 'second'",
+		"INSERT INTO wf_events(run_id, seq, epoch, key, type, payload, at) SELECT run_id, seq + 10, epoch, 'third', type, payload, at FROM wf_events WHERE key = 'second'",
 	);
 	copy.close();
 	const events = Number(scalar(target.path, "SELECT count(*) FROM wf_events WHERE run_id = 'copy'"));
@@ -2513,3 +2513,52 @@ for (const repointed of [true, false])
 			DatabaseSync.prototype.prepare = prepare;
 		}
 	});
+
+// On Windows SQLite opens these through the `\\?\` form; elsewhere the same paths open as written.
+test("a journal and a store whose database paths pass 240 characters adopt and consolidate under their ordinary paths (#5139)", async () => {
+	// Long enough that SQLite opens every database here through the `\\?\` form.
+	const deep = join(root, "d".repeat(250 - join(root, "a", "journal.sqlite").length - 1));
+	store = join(deep, "workflows", "journal");
+	const path = await journal(join(deep, "a", "journal.sqlite"), [
+		{ runId: "a1", references: join(deep, "a", "journal.sqlite") },
+	]);
+	assert.ok(path.length > 240, path);
+
+	const database = await openNodeSqliteDatabase(path, { readOnly: true });
+	try {
+		assert.equal(database.descriptor.location, path, "the descriptor names the path, not its long-path form");
+	} finally {
+		await database.close();
+	}
+	await withCatalog(async (catalog) => {
+		const report = await adoptJournals(catalog, [path]);
+		// The journal's reference to itself is recognised as the journal, so nothing else is discovered.
+		assert.deepEqual(report.adopted, [{ path, status: "adopted", shardId: 1, runs: 1 }]);
+		assert.deepEqual(report.discovered, []);
+	});
+	// What a reader of a connection's location sees, as the interference hooks above read it with `realpathSync`.
+	const locations = new Set<string>();
+	const exec = DatabaseSync.prototype.exec;
+	DatabaseSync.prototype.exec = function (this: DatabaseSync, sql: string) {
+		const location = this.location();
+		if (location !== null) locations.add(location);
+		exec.call(this, sql);
+	} as typeof exec;
+	let consolidated: Awaited<ReturnType<typeof consolidateJournalStore>>;
+	try {
+		consolidated = await consolidateJournalStore(store);
+	} finally {
+		DatabaseSync.prototype.exec = exec;
+	}
+	assert.ok(locations.size > 0);
+	for (const location of locations) {
+		assert.ok(location.startsWith(deep), location);
+		assert.ok(realpathSync(location).length > 240, location);
+	}
+	assert.deepEqual(
+		consolidated.runs.map((run) => [run.runId, run.outcome]),
+		[["a1", "moved"]],
+	);
+	const shard = (await withCatalog((catalog) => catalog.locate("a1")))?.shard.path;
+	assert.ok(shard?.startsWith(store), shard);
+});

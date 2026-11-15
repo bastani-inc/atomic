@@ -107,7 +107,7 @@ test.runIf(process.platform !== "win32")(
 test.runIf(process.platform !== "win32")(
 	"a long background shell heartbeats into the owning chat once per unread notice, then resumes after it is read",
 	async () => {
-		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"], shouldAdvanceTime: true });
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"], shouldAdvanceTime: true });
 		// The heartbeat must not start a turn of its own (#4795), so the first card stays unread.
 		const harness = await sessionHarness({
 			settings: { tasks: { heartbeatMs: MINUTE, heartbeatWakesIdleSession: false } },
@@ -157,7 +157,7 @@ test.runIf(process.platform !== "win32")(
 test.runIf(process.platform !== "win32")(
 	"a heartbeat releases a tool call stuck waiting on its shell, so the model can act while the command keeps running",
 	async () => {
-		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"], shouldAdvanceTime: true });
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"], shouldAdvanceTime: true });
 		const harness = await sessionHarness();
 		const { session } = harness;
 		const taskId = await launch(session, { command: "read value", heartbeatMs: MINUTE });

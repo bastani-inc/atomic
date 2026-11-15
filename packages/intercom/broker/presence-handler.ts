@@ -13,11 +13,22 @@ interface PresenceClientMessage extends Record<string, unknown> {
 
 type WriteMessage = (socket: net.Socket, message: BrokerMessage) => void;
 
+/** #5146: queues `session`'s presence for `peer`; without one, it is written at once. */
+type QueuePresence = (peer: BrokerConnectedSession, session: BrokerConnectedSession) => void;
+
+/** #5146: what a `presence_update` tells a peer, without the activity time every Intercom tool call refreshes. */
+function visiblePresence(info: BrokerConnectedSession["info"]): string {
+	const { name, model, status, replyCapability, groups, group } = info;
+	return JSON.stringify([name, model, status, replyCapability, groups, group]);
+}
+
 function broadcastMembershipChange(
 	sessions: Map<string, BrokerConnectedSession>,
 	write: WriteMessage,
 	session: BrokerConnectedSession,
 	previous: ReadonlySet<string>,
+	presenceChanged: boolean,
+	queuePresence: QueuePresence | undefined,
 ): void {
 	if (!isAgentRecipient(session.info)) return;
 	const previousInfo = { ...session.info, groups: [...previous], group: previous.values().next().value };
@@ -30,8 +41,9 @@ function broadcastMembershipChange(
 			write(peer.socket, { type: "session_joined", session: session.info });
 		} else if (sharedBefore && !sharedAfter) {
 			write(peer.socket, { type: "session_left", sessionId: session.info.id });
-		} else if (sharedAfter) {
-			write(peer.socket, { type: "presence_update", session: session.info });
+		} else if (sharedAfter && presenceChanged) {
+			if (queuePresence === undefined) write(peer.socket, { type: "presence_update", session: session.info });
+			else queuePresence(peer, session);
 		}
 	}
 }
@@ -44,6 +56,7 @@ export function handleBrokerPresence(
 	sessions: Map<string, BrokerConnectedSession>,
 	write: WriteMessage,
 	pendingQuestions?: PendingQuestionIndex,
+	queuePresence?: QueuePresence,
 ): void {
 	const rawRequestId = clientMessage.requestId;
 	if (rawRequestId !== undefined && typeof rawRequestId !== "string") {
@@ -111,6 +124,7 @@ export function handleBrokerPresence(
 		return void fail("Terminal reply capability cannot be revived");
 	}
 
+	const presenceBefore = visiblePresence(session.info);
 	if (typeof name === "string") session.info.name = name;
 	if (typeof status === "string") session.info.status = status;
 	if (typeof model === "string") session.info.model = model;
@@ -118,7 +132,14 @@ export function handleBrokerPresence(
 	if (capability === "terminal" && pendingQuestions) failTerminalQuestions(session, sessions, pendingQuestions, write);
 	setSessionGroups(session.info, nextGroups, legacyGroup);
 	session.info.lastActivity = Date.now();
-	broadcastMembershipChange(sessions, write, session, previousGroups);
+	broadcastMembershipChange(
+		sessions,
+		write,
+		session,
+		previousGroups,
+		visiblePresence(session.info) !== presenceBefore,
+		queuePresence,
+	);
 
 	if (requestId !== undefined) {
 		if (clientMessage.type === "join_group" || clientMessage.type === "leave_group") {

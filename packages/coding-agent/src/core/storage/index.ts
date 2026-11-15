@@ -12,6 +12,10 @@ export type {
 	SqliteTransactionOptions,
 	SqliteValue,
 	StorageDescriptor,
+	StorageListenerState,
+	StorageNotificationEvent,
+	StorageNotificationSubscription,
+	StorageNotifications,
 	TransactionConcurrency,
 } from "./database.js";
 export * from "./dialect.js";
@@ -28,7 +32,14 @@ export {
 	type WriterQueueStats,
 	wrapNodeSqliteDatabase,
 } from "./node-sqlite.js";
-export { renderStorageIdentifiers, validateStoragePrefix } from "./prefix.js";
+export {
+	POSTGRES_HASHED_STORAGE_IDENTIFIER_SUFFIXES,
+	POSTGRES_MAX_STORAGE_PREFIX_LENGTH,
+	POSTGRES_POOL_SESSION_PREFIX,
+	POSTGRES_STORAGE_IDENTIFIER_SUFFIXES,
+	renderStorageIdentifiers,
+	validateStoragePrefix,
+} from "./prefix.js";
 export * from "./provider.js";
 export * from "./run-journal.js";
 export { assertStorageSchemaVersion, assertStoredSchemaVersion } from "./schema.js";
@@ -36,10 +47,12 @@ export {
 	getTeamProfile,
 	type InMemorySecretRef,
 	inMemorySecret,
+	isPostgresUrl,
 	joinTeam,
 	LIBSQL_ADAPTER_PACKAGE,
 	LOCAL_SESSIONS_STORAGE,
 	leaveTeam,
+	POSTGRES_ADAPTER_PACKAGE,
 	REDACTED_SECRET,
 	type StorageInputSelection,
 	type StorageSettingsSelection,

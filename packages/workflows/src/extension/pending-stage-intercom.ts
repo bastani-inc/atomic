@@ -36,6 +36,7 @@ import type {
 	StageSnapshot,
 } from "../shared/store-types.js";
 import {
+	authoritativeWorkflowChildRunId,
 	childRunsInSource,
 	findRunInSource,
 	invocationRunsInSource,
@@ -1217,6 +1218,44 @@ function pendingStageDestination(
 	return candidates.length === 1 ? candidates[0] : undefined;
 }
 
+/**
+ * The receipts the stages of root `rootRunId`'s runs keep for the sticky entry `entry` (#5023): each stage whose session
+ * recorded that it took the entry's message. Only the root's own runs are read, found from the root through each
+ * boundary stage's child run, so finished runs of other roots are never read.
+ */
+function stickyStageReceipts(
+	activeStore: Store,
+	rootRunId: string,
+	entry: PendingStageMessage,
+): { runId: string; stageId: string; stageName: string; sessionId: string; admission: "context" }[] {
+	const receipts: { runId: string; stageId: string; stageName: string; sessionId: string; admission: "context" }[] =
+		[];
+	const seen = new Set<string>();
+	const pending: RunSnapshot[] = [];
+	const root = activeStore.run(rootRunId);
+	if (root !== undefined) pending.push(root);
+	for (let run = pending.pop(); run !== undefined; run = pending.pop()) {
+		if (seen.has(run.id)) continue;
+		seen.add(run.id);
+		for (const stage of run.stages) {
+			if (stage.intercomReceipts?.messageIds.includes(entry.message.id) === true)
+				receipts.push({
+					runId: run.id,
+					stageId: stage.id,
+					stageName: stage.name,
+					sessionId: stage.intercomReceipts.sessionId,
+					admission: "context",
+				});
+			const childRunId = authoritativeWorkflowChildRunId(stage);
+			const child = childRunId === undefined ? undefined : activeStore.run(childRunId);
+			// A child is the root's only through a reciprocal link, as a run's durable owner is resolved.
+			if (child !== undefined && child.parentRunId === run.id && child.parentStageId === stage.id)
+				pending.push(child);
+		}
+	}
+	return receipts;
+}
+
 function receivedByStageSession(run: ReturnType<Store["runs"]>[number], entry: PendingStageMessage): boolean {
 	return pendingStageDestination(run, entry)?.intercomReceipts?.messageIds.includes(entry.message.id) === true;
 }
@@ -1325,6 +1364,17 @@ async function settleRuns(
 		for (const snapshotEntry of run.pendingStageMessages ?? []) {
 			let entry = snapshotEntry;
 			if (entry.status === "queued" && entry.sticky === true && isTerminalRunStatus(run.status)) {
+				// A stage's own receipt counts as its delivery (#5023): its session took the message even when the drain
+				// that would have recorded it was refused. A receipt already recorded is not recorded again.
+				const receipts = stickyStageReceipts(activeStore, run.id, entry);
+				if (receipts.length > 0)
+					await activeStore.recordPendingStageMessageDeliveries(
+						run.id,
+						entry.id,
+						receipts,
+						new Date().toISOString(),
+						backend,
+					);
 				if (
 					await activeStore.settleStickyPendingStageMessageDelivered(
 						run.id,

@@ -864,7 +864,7 @@ describe("token and cost budget metering", () => {
 		assert.equal(report?.status, "budget_exceeded");
 		assert.equal(report?.dimension, "tokens");
 		assert.equal(report?.reading, 280);
-		assert.equal(current?.budgetState?.accounting?.tokens, 280);
+		assert.equal(current?.budgetState?.accounting?.tokens, 360, "the wrap-up turn is charged too (#5053)");
 	});
 
 	test("budget prior-run carry with stages does not recharge persisted usage", async () => {
@@ -918,7 +918,7 @@ describe("token and cost budget metering", () => {
 			snapshots[0]?.stages.map((stage) => stage.name),
 			["fresh-spend"],
 		);
-		assert.equal(snapshots[0]?.budgetState?.accounting?.tokens, 280);
+		assert.equal(snapshots[0]?.budgetState?.accounting?.tokens, 360, "the wrap-up turn is charged too (#5053)");
 	});
 
 	test("budget durable resume carries token and cost accounting after the prior snapshot is removed", async () => {
@@ -973,15 +973,15 @@ describe("token and cost budget metering", () => {
 
 		const first = await run(definition, {}, opts);
 		assert.equal(budgetOutcome(first.result)?.reading, 15);
-		assert.equal(store.runs()[0]?.budgetState?.accounting?.cost, 1.5);
+		assert.equal(store.runs()[0]?.budgetState?.accounting?.cost, 2, "three prompts and the wrap-up turn (#5053)");
 		assert.equal(promptCount, 4);
 		assert.equal(store.removeRun(runId), true);
 
 		const resumed = await run(definition, {}, opts);
 		assert.equal(budgetOutcome(resumed.result)?.status, "budget_exceeded");
 		assert.equal(budgetOutcome(resumed.result)?.dimension, "tokens");
-		assert.equal(budgetOutcome(resumed.result)?.reading, 15);
-		assert.equal(store.runs()[0]?.budgetState?.accounting?.cost, 1.5);
+		assert.equal(budgetOutcome(resumed.result)?.reading, 20, "the resumed run reads the charged wrap-up (#5053)");
+		assert.equal(store.runs()[0]?.budgetState?.accounting?.cost, 2);
 		assert.equal(promptCount, 4, "durable resume must not grant a fresh usage allowance");
 	});
 

@@ -11,6 +11,7 @@
  * cross-ref: issue #1498.
  */
 
+import { checkpointAttempt, durableWorkflowAttempt } from "../durable/attempt-identity.js";
 import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { recordRunResultCheckpointAsync } from "../durable/run-result.js";
 import { recordRunTimingCheckpointAsync } from "../durable/run-timing.js";
@@ -32,6 +33,8 @@ export interface DurableTerminalFinalizeInput {
 	readonly terminalStatusCommitted?: boolean;
 	/** Where a failure to record the ending is reported, as a notice, before it is rethrown. */
 	readonly store?: Store;
+	/** A child run's durable budget accounting writer; see `recordChildRunUsageCheckpointAsync`. */
+	readonly recordUsage?: () => Promise<void>;
 }
 
 export async function finalizeDurableTerminalStatus(input: DurableTerminalFinalizeInput): Promise<void> {
@@ -44,7 +47,11 @@ export async function finalizeDurableTerminalStatus(input: DurableTerminalFinali
 }
 
 async function commitDurableTerminalStatus(input: DurableTerminalFinalizeInput): Promise<void> {
-	if (!input.isRoot) return;
+	if (!input.isRoot) {
+		// The child's last charges, such as its wrap-up turn, reach its durable accounting before it ends (#5053).
+		await input.recordUsage?.();
+		return;
+	}
 	const status = effectiveRunStatus(input.runSnapshot);
 	const isExitTerminal = input.runSnapshot.exited === true && status !== "running";
 	const isBlocked =
@@ -94,6 +101,7 @@ async function commitDurableTerminalStatus(input: DurableTerminalFinalizeInput):
 						...(input.runSnapshot.failedToolNodeId !== undefined
 							? { failedToolNodeId: input.runSnapshot.failedToolNodeId }
 							: {}),
+						...(failedToolUnrecorded(input) ? { failedToolUnrecorded: true as const } : {}),
 					}
 				: undefined;
 		await input.durableBackend.commitWorkflowStatus(
@@ -104,6 +112,25 @@ async function commitDurableTerminalStatus(input: DurableTerminalFinalizeInput):
 			failure,
 		);
 	}
+}
+
+/**
+ * Whether the failed tool the run ends naming has no record of its failure from this attempt: the store refused it, and
+ * its rewrite as the run ended (#5027). The run's own failure says so, in the same write, so a resume runs the tool again
+ * rather than finding no frontier.
+ */
+function failedToolUnrecorded(input: DurableTerminalFinalizeInput): boolean {
+	const nodeId = input.runSnapshot.failedToolNodeId;
+	if (nodeId === undefined) return false;
+	const attempt = durableWorkflowAttempt(input.durableBackend, input.runId) ?? 0;
+	return !input.durableBackend
+		.listCheckpoints(input.runId)
+		.some(
+			(checkpoint) =>
+				checkpoint.kind === "tool" &&
+				checkpoint.topology?.nodeId === nodeId &&
+				checkpointAttempt(checkpoint) === attempt,
+		);
 }
 
 /**

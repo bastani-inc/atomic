@@ -1,4 +1,4 @@
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import type { AgentSessionInternalSurface } from "../src/core/agent-session-methods.ts";
 import type { BashOperations } from "../src/core/tools/bash.js";
 
@@ -17,6 +17,7 @@ vi.mock("../src/core/tools/bash-session-environment.ts", () => ({
 }));
 
 import { abortBash, executeBash } from "../src/core/agent-session-bash.ts";
+import { awaitBlueprintReady, holdToolsUntilBuilt } from "../src/core/resume/blueprint/barrier.ts";
 
 const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
 afterEach(() => {
@@ -28,7 +29,11 @@ function session() {
 	return {
 		_bashAbortControllers: new Map(),
 		settingsManager: { getShellCommandPrefix: () => "prefix", getShellPath: () => "/custom/bash" },
-		sessionManager: { getCwd: () => process.cwd(), getSessionId: () => "interactive-shell-test" },
+		sessionManager: {
+			getCwd: () => process.cwd(),
+			getSessionId: () => "interactive-shell-test",
+			getWorktreeRootMappings: () => [],
+		},
 		_emit: vi.fn(),
 		recordBashResult: vi.fn(),
 	};
@@ -73,4 +78,42 @@ test("Windows interactive cancellation reaches the selected operations and clear
 	abortBash.call(owner as AgentSessionInternalSurface, "cancel-me");
 	expect((await run).cancelled).toBe(true);
 	expect(owner._bashAbortControllers.size).toBe(0);
+});
+
+describe("a user's shell command in a worktree whose blueprint build runs (#4748)", () => {
+	test("runs once the build settled, with the build's report left for a tool call", async () => {
+		Object.defineProperty(process, "platform", { configurable: true, value: "linux" });
+		const build = Promise.withResolvers<string | undefined>();
+		holdToolsUntilBuilt("interactive-shell-test", build.promise, { roots: [process.cwd()] });
+		const owner = session();
+		const run = executeBash.call(owner as AgentSessionInternalSurface, "command", undefined, { id: "waits" });
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		expect(shells.exec).not.toHaveBeenCalled();
+		build.resolve("report");
+		expect((await run).cancelled).toBe(false);
+		expect(shells.exec).toHaveBeenCalledOnce();
+		expect(await awaitBlueprintReady("interactive-shell-test")).toBe("report");
+	});
+
+	for (const recordResult of [undefined, false] as const) {
+		test(`cancelled while it waits, it never runs and is ${recordResult === false ? "not " : ""}recorded as cancelled`, async () => {
+			const build = Promise.withResolvers<string | undefined>();
+			holdToolsUntilBuilt("interactive-shell-test", build.promise, { roots: [process.cwd()] });
+			const owner = session();
+			const run = executeBash.call(owner as AgentSessionInternalSurface, "command", undefined, {
+				id: "cancel-wait",
+				...(recordResult === undefined ? {} : { recordResult }),
+			});
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			abortBash.call(owner as AgentSessionInternalSurface, "cancel-wait");
+			const result = await run;
+			expect(result).toEqual({ output: "", exitCode: undefined, cancelled: true, truncated: false });
+			expect(shells.exec).not.toHaveBeenCalled();
+			expect(owner._bashAbortControllers.size).toBe(0);
+			if (recordResult === false) expect(owner.recordBashResult).not.toHaveBeenCalled();
+			else expect(owner.recordBashResult).toHaveBeenCalledWith("command", result, { id: "cancel-wait" });
+			build.resolve(undefined);
+			await awaitBlueprintReady("interactive-shell-test");
+		});
+	}
 });

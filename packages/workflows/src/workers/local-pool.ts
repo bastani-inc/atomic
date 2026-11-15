@@ -584,7 +584,8 @@ export class LocalWorkerPool {
 			worktree === undefined
 				? Promise.resolve(undefined)
 				: this.dispatchSnapshots.capture(worktree, this.options.snapshots);
-		const rootSnapshot = await this.rootSnapshot;
+		// Its blobs may have been collected since it was captured: then its children carry none (#5077).
+		const rootSnapshot = await this.dispatchSnapshots.stored(await this.rootSnapshot);
 		// Read only: a delivery receipt checks its work lease inside the root's own journal append, or, for a journal in
 		// another database, in the pool's database just before it.
 		this.queue ??= await openSqlPoolQueue(
@@ -601,9 +602,11 @@ export class LocalWorkerPool {
 		const queue = this.queue;
 		const lease = this.lease;
 		if (!this.closed && (rootSnapshot !== undefined || this.options.shared !== undefined))
-			this.rootSnapshotHeld ??= queue
-				.holdRootSnapshot(lease, rootSnapshot)
-				.then(() => (rootSnapshot === undefined ? undefined : () => queue.releaseRootSnapshot(lease)));
+			this.rootSnapshotHeld ??= queue.holdRootSnapshot(lease, rootSnapshot).then(async (held) => {
+				// A pool in the journal's database holds the snapshot only while every blob of it is stored (#5077).
+				if (!held) await this.dispatchSnapshots.stored(rootSnapshot);
+				return rootSnapshot === undefined ? undefined : () => queue.releaseRootSnapshot(lease);
+			});
 		await this.rootSnapshotHeld;
 		// A pool that already ran for this root, as for a resumed root, is recovered now: its earlier attempts, their
 		// process groups and their undelivered events. Any other root starts its coordinator with its first pooled child,
@@ -1417,10 +1420,12 @@ export class LocalWorkerPool {
 		const shared = this.options.shared !== undefined;
 		// A child of a shared pool carries a snapshot of the worktree it is bound to, captured here as it is dispatched, or
 		// of its root's binding, so a host without that tree can restore it (#4492).
-		const workspaceSnapshot =
+		// Work carries a snapshot only while every blob of it is stored (#5077).
+		const workspaceSnapshot = await this.dispatchSnapshots.stored(
 			shared && isBoundWorkspace(options.workspace)
 				? await this.dispatchSnapshots.capture(options.workspace.worktree, options.snapshots, options.signal)
-				: await this.rootSnapshot;
+				: await this.rootSnapshot,
+		);
 		const execution = JSON.parse(
 			JSON.stringify({
 				cwd: options.cwd,
@@ -1467,6 +1472,9 @@ export class LocalWorkerPool {
 			() => !this.closed && this.failure === undefined && options.signal?.aborted !== true,
 		)) as { readonly work: PoolWork; readonly result?: WorkflowSerializableObject };
 		const work = enqueued.work;
+		// A pool in the journal's database queues work without a snapshot whose blobs a collection deleted meanwhile.
+		if (workspaceSnapshot !== undefined && work.execution.workspaceSnapshot === undefined)
+			await this.dispatchSnapshots.stored(workspaceSnapshot);
 		this.works.set(work.id, work);
 		if (enqueued.result !== undefined && !this.results.has(work.id)) this.results.set(work.id, enqueued.result);
 		this.waiting++;

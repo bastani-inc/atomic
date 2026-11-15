@@ -426,6 +426,7 @@ test("one send invocation keeps its broker-accepted ID when reconnect transport 
 		content: [{ type: "text", text: "Message sent to recipient" }],
 		isError: false,
 		details: { messageId: firstMessage.id, delivered: true },
+		structuredContent: { action: "send", target: "recipient", messageId: firstMessage.id, outcome: "delivered" },
 	});
 	assert.deepEqual(brokerResults, [{ id: firstMessage.id, delivered: true }]);
 	assert.equal(received.length, 1, "the broker must not forward a duplicate delivery");

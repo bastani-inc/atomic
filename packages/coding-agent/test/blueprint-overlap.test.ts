@@ -1,19 +1,28 @@
 import assert from "node:assert/strict";
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
+import { parseArgs } from "../src/cli/args.ts";
+import { blueprintSubject } from "../src/core/agent-session-tool-hooks.ts";
 import type { ToolDefinition } from "../src/core/extensions/index.ts";
+import { renameReplacing } from "../src/core/rename-retry.js";
 import {
 	awaitBlueprintReady,
-	BLUEPRINT_GATED_TOOLS,
+	type BlueprintBuildFinished,
 	blueprintBuildPending,
+	blueprintBuildSettled,
+	blueprintBuildsRunning,
+	blueprintBuildsSettled,
 	holdToolsUntilBuilt,
 	holdToolsUntilOwnerBuilt,
+	onBlueprintBuildFinished,
+	shareBlueprintBuild,
+	stopBlueprintBuilds,
 } from "../src/core/resume/blueprint/barrier.ts";
 import type { BlueprintBuildOutcome } from "../src/core/resume/blueprint/build.ts";
 import { BLUEPRINT_BUILDING_CONTEXT, blueprintBuildReport } from "../src/core/resume/blueprint/resume.ts";
@@ -32,6 +41,7 @@ import {
 	type PrepareSessionResumeOptions,
 	prepareSessionResume,
 } from "../src/index.ts";
+import { openCliSession } from "../src/main-session.ts";
 import { forThisHost } from "./helpers/blueprint-fixtures.ts";
 import { createHarness, type Harness } from "./suite/harness.ts";
 
@@ -98,7 +108,7 @@ async function recordedProject(afterGate = "", gone = true, name = "repo"): Prom
 	const capture = await captureWorktreeSnapshot(clone, { settings, blobs: store.snapshotBlobs });
 	if (capture.status !== "captured") throw new Error("the fixture's snapshot was not captured");
 	await manager.appendWorktreeSnapshot(clone, capture.snapshot.id, capture.snapshot);
-	if (gone) renameSync(clone, sandbox.path("node-a-gone"));
+	if (gone) renameReplacing(clone, sandbox.path("node-a-gone"));
 	return manager;
 }
 
@@ -319,41 +329,164 @@ describe("resume.waitForBlueprint lets the first turn overlap the blueprint buil
 		assert.equal(await awaitBlueprintReady(sessionId), undefined, "the report is told once");
 	});
 
-	test("tools that neither run project code nor read the worktree run during the build; a tool that declares writesFiles waits (#4748)", async () => {
+	test("every tool call waits for the build, also one that neither runs project code nor reads the worktree (#4748)", async () => {
 		const manager = await recordedProject();
 		const prepared = ready(await prepareSessionResume(manager, options("tools")));
 		const executed: string[] = [];
-		const tool = (name: string, writesFiles: boolean): ToolDefinition => ({
-			name,
-			label: name,
-			description: name,
-			parameters: Type.Object({}),
-			...(writesFiles ? { writesFiles: true } : {}),
-			execute: async () => {
-				executed.push(`${name} ${ran().includes("built") ? "after" : "during"} the build`);
-				return { content: [{ type: "text", text: `${name} done` }], details: undefined };
-			},
-		});
 		const harness = await createHarness({
 			sessionManager: prepared.sessionManager,
 			cwd: prepared.sessionManager.getCwd(),
-			customTools: [tool("note", false), tool("generate", true)],
+			customTools: [
+				{
+					name: "note",
+					label: "note",
+					description: "note",
+					parameters: Type.Object({}),
+					execute: async () => {
+						executed.push(`note ${ran().includes("built") ? "after" : "during"} the build`);
+						return { content: [{ type: "text", text: "note done" }], details: undefined };
+					},
+				} satisfies ToolDefinition,
+			],
 		});
 		cleanups.push(() => harness.cleanup());
 		harness.setResponses([
 			fauxAssistantMessage([fauxToolCall("note", {}, { id: "n-1" })], { stopReason: "toolUse" }),
-			fauxAssistantMessage([fauxToolCall("generate", {}, { id: "g-1" })], { stopReason: "toolUse" }),
 			fauxAssistantMessage("done"),
 		]);
 		const run = harness.session.prompt("go on");
-		await until(() => harness.eventsOfType("tool_execution_start").length > 1, "the generate call");
+		await until(() => harness.eventsOfType("tool_execution_start").length > 0, "the note call");
 		await new Promise((resolve) => setTimeout(resolve, 200));
-		assert.deepEqual(executed, ["note during the build"]);
-		assert.equal(toolResultText(harness, "n-1"), "note done");
+		assert.deepEqual(executed, [], "the note call waits for the build");
 		writeFileSync(gate(), "");
 		await run;
-		assert.deepEqual(executed, ["note during the build", "generate after the build"]);
-		assert.match(toolResultText(harness, "g-1"), /^<blueprint_build_finished>[\s\S]*\ngenerate done$/);
+		assert.deepEqual(executed, ["note after the build"]);
+		assert.match(toolResultText(harness, "n-1"), /^<blueprint_build_finished>[\s\S]*\nnote done$/);
+	});
+
+	test("a run without a UI waits for the build before it ends, even when no tool waited (#4748)", async () => {
+		const manager = await recordedProject();
+		const prepared = ready(await prepareSessionResume(manager, options("tools")));
+		let settled = false;
+		const waiting = blueprintBuildSettled(prepared.sessionManager.getSessionId()).then(() => {
+			settled = true;
+		});
+		await new Promise((resolve) => setTimeout(resolve, 200));
+		assert.equal(settled, false, "the build still runs");
+		writeFileSync(gate(), "");
+		await waiting;
+		assert.deepEqual(ran(), ["started", "built"]);
+		assert.deepEqual(
+			latestResumeTimings(prepared.sessionManager)?.blueprint.map((step) => step.name),
+			["Install dependencies"],
+			"the build's timings were recorded before the wait ended",
+		);
+		assert.match((await awaitBlueprintReady(prepared.sessionManager.getSessionId())) ?? "", /has finished\./);
+	});
+
+	test("atomic --session without a UI opens the session during the build and holds its tools (#4748)", async () => {
+		const recorded = await recordedProject();
+		const store = recorded.getSessionStore();
+		const sessionId = recorded.getSessionId();
+		const opened = await openCliSession(
+			parseArgs(["--session", sessionId]),
+			sandbox.root,
+			SettingsManager.inMemory(),
+			{
+				agentDir: sandbox.path("agent"),
+				sessionStorage: store,
+				trusted: () => true,
+				interactive: false,
+			},
+		);
+		if (opened === "cancelled") throw new Error("the resume was cancelled");
+		await until(() => ran().includes("started"), "the build to start");
+		assert.deepEqual(ran(), ["started"], "the session opened while the build runs");
+		assert.equal(blueprintBuildPending(sessionId), true);
+		writeFileSync(gate(), "");
+		await blueprintBuildSettled(sessionId);
+		assert.deepEqual(ran(), ["started", "built"]);
+	});
+
+	for (const how of ["the process ends", "the resume's signal aborts"] as const) {
+		test(`a build behind the first turn stops when ${how}: what ran is recorded and the user and agent are told (#4748)`, async () => {
+			const manager = await recordedProject();
+			const aborting = new AbortController();
+			const heard: BlueprintBuildFinished[] = [];
+			const unsubscribe = onBlueprintBuildFinished((finished) => heard.push(finished));
+			cleanups.push(unsubscribe);
+			const prepared = ready(await prepareSessionResume(manager, { ...options("tools"), signal: aborting.signal }));
+			await until(() => ran().includes("started"), "the build to start");
+			if (how === "the process ends") await stopBlueprintBuilds();
+			else {
+				aborting.abort(new Error("cancelled"));
+				await blueprintBuildsSettled();
+			}
+			writeFileSync(gate(), "");
+			await new Promise((resolve) => setTimeout(resolve, 300));
+			assert.deepEqual(ran(), ["started"], "the build's step was stopped");
+			const stopped =
+				/^Blueprint build stopped before it finished \(.+\); the next resume builds the restored worktree again\.$/;
+			const ours = heard.filter((finished) => finished.sessionId === prepared.sessionManager.getSessionId());
+			assert.equal(ours.length, 1);
+			assert.equal(ours[0]!.notices.length, 1);
+			assert.equal(ours[0]!.notices[0]!.type, "warning");
+			assert.match(ours[0]!.notices[0]!.message, stopped);
+			assert.match((await awaitBlueprintReady(prepared.sessionManager.getSessionId())) ?? "", stopped);
+			assert.notEqual(latestResumeTimings(prepared.sessionManager)?.blueprintReadyMs, undefined, "timings recorded");
+		});
+	}
+
+	test("an SDK session resumed without a UI is created during the build and holds its tools (#4748)", async () => {
+		const manager = await recordedProject();
+		const { createAgentSession } = await import("../src/core/sdk.ts");
+		const { session } = await createAgentSession({
+			agentDir: sandbox.path("agent"),
+			builtins: { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false },
+			settingsManager: SettingsManager.inMemory({ defaultProjectTrust: "always" }),
+			sessionManager: await SessionManager.open(manager.getSessionStore(), manager.getSessionId()),
+		});
+		cleanups.push(() => session.dispose());
+		await until(() => ran().includes("started"), "the build to start");
+		assert.deepEqual(ran(), ["started"], "the session was created while the build runs");
+		assert.equal(blueprintBuildPending(session.sessionManager.getSessionId()), true);
+		writeFileSync(gate(), "");
+		await blueprintBuildSettled(session.sessionManager.getSessionId());
+		assert.deepEqual(ran(), ["started", "built"]);
+	});
+
+	for (const wait of ["tools", "prompt"] as const) {
+		test(`resuming again during the build joins it instead of building again, with "${wait}" (#4748)`, async () => {
+			const first = ready(await prepareSessionResume(await recordedProject(), options("tools")));
+			await until(() => ran().includes("started"), "the build to start");
+			let settled = false;
+			const joining = prepareSessionResume(first.sessionManager, options(wait)).then((prepared) => {
+				settled = true;
+				return ready(prepared);
+			});
+			if (wait === "tools") await until(() => settled, "the joining resume to return during the build");
+			else await new Promise((resolve) => setTimeout(resolve, 300));
+			assert.equal(settled, wait === "tools", "only a resume that waits for the build waits for the one it joins");
+			assert.deepEqual(ran(), ["started"], "the joined build still runs");
+			writeFileSync(gate(), "");
+			const joined = await joining;
+			await blueprintBuildsSettled();
+			assert.deepEqual(ran(), ["started", "built"], "one build ran");
+			assert.deepEqual(joined.blueprintNotices, []);
+			if (wait === "tools") assert.equal(joined.blueprintContext, BLUEPRINT_BUILDING_CONTEXT);
+			else assert.notEqual(joined.blueprintContext, BLUEPRINT_BUILDING_CONTEXT);
+		});
+	}
+
+	test("a resume that builds no blueprint does not join the build either (#4748)", async () => {
+		const first = ready(await prepareSessionResume(await recordedProject(), options("tools")));
+		await until(() => ran().includes("started"), "the build to start");
+		const skipped = ready(
+			await prepareSessionResume(first.sessionManager, { ...options("tools"), blueprints: "skip" }),
+		);
+		assert.equal(skipped.blueprintContext, undefined);
+		writeFileSync(gate(), "");
+		await blueprintBuildsSettled();
 	});
 
 	test('"tools" changes nothing when the resume restores no worktree or builds no blueprint (#4748)', async () => {
@@ -373,20 +506,6 @@ describe("resume.waitForBlueprint lets the first turn overlap the blueprint buil
 });
 
 describe("the blueprint barrier (#4748)", () => {
-	test("the built-in tools that wait for the build are the ones the settings guide names (#4748)", () => {
-		assert.deepEqual([...BLUEPRINT_GATED_TOOLS].sort(), [
-			"bash",
-			"edit",
-			"find",
-			"grep",
-			"ls",
-			"powershell",
-			"read",
-			"search",
-			"write",
-		]);
-	});
-
 	test("an abort rejects the wait with its reason and leaves the build pending (#4748)", async () => {
 		const build = Promise.withResolvers<string | undefined>();
 		holdToolsUntilBuilt("abort-session", build.promise);
@@ -447,10 +566,105 @@ describe("the blueprint barrier (#4748)", () => {
 		const first = Promise.withResolvers<string | undefined>();
 		holdToolsUntilBuilt("replaced-session", first.promise);
 		const waiting = awaitBlueprintReady("replaced-session");
-		holdToolsUntilBuilt("replaced-session", new Promise(() => {}));
+		const second = Promise.withResolvers<string | undefined>();
+		holdToolsUntilBuilt("replaced-session", second.promise);
 		first.resolve("first build");
 		assert.equal(await waiting, undefined);
 		assert.equal(blueprintBuildPending("replaced-session"), true);
+		second.resolve(undefined);
+	});
+
+	test("a build holds every session working in its worktree, and their reports are told once, together (#4748)", async () => {
+		const root = sandbox.path("worktrees", "repo-0");
+		holdToolsUntilBuilt("resumed", Promise.resolve({ report: "first build" }), { roots: [root] });
+		holdToolsUntilBuilt("other", Promise.resolve("second build"), { roots: [sandbox.path("worktrees", "repo-1")] });
+		const newSession = { sessionId: "new", roots: [join(root, "src")] };
+		assert.equal(blueprintBuildPending(newSession), true, "a session in the worktree waits");
+		assert.equal(blueprintBuildPending({ sessionId: "elsewhere", roots: [sandbox.path("elsewhere")] }), false);
+		const both = { sessionId: "other", roots: [root] };
+		assert.equal(await awaitBlueprintReady(both), "first build\nsecond build");
+		assert.equal(await awaitBlueprintReady(newSession), undefined, "each report is told once");
+	});
+
+	test("a session's subject names the worktrees its restores put its checkouts in (#4748)", () => {
+		const manager = {
+			getSessionId: () => "s",
+			getCwd: () => sandbox.path("launch"),
+			getWorktreeRootMappings: () => [{ from: "/recorded", to: sandbox.path("worktrees", "repo-0") }],
+		};
+		const subject = blueprintSubject({ sessionManager: manager } as unknown as Parameters<
+			typeof blueprintSubject
+		>[0]);
+		assert.deepEqual(subject, {
+			sessionId: "s",
+			roots: [sandbox.path("launch"), sandbox.path("worktrees", "repo-0")],
+		});
+	});
+
+	test("each finished build is told once to the listeners of its time, or to the next one (#4748)", async () => {
+		const heard: BlueprintBuildFinished[] = [];
+		const stop = onBlueprintBuildFinished((finished) => heard.push(finished));
+		const notices = [{ type: "warning" as const, message: "Partial build: x" }];
+		holdToolsUntilBuilt("told", Promise.resolve({ report: "r", notices }), { roots: [sandbox.path("w")] });
+		holdToolsUntilBuilt("untold", Promise.resolve("report only"));
+		await blueprintBuildsSettled();
+		const mine = (list: BlueprintBuildFinished[]) =>
+			list.filter((finished) => ["told", "untold", "later"].includes(finished.sessionId));
+		assert.deepEqual(mine(heard), [
+			{ type: "blueprint_build_finished", sessionId: "told", roots: [sandbox.path("w")], notices },
+		]);
+		stop();
+		holdToolsUntilBuilt("later", Promise.resolve({ notices: [] }));
+		await blueprintBuildsSettled();
+		assert.equal(mine(heard).length, 1, "an unsubscribed listener hears nothing more");
+		const next: BlueprintBuildFinished[] = [];
+		onBlueprintBuildFinished((finished) => next.push(finished))();
+		assert.deepEqual(
+			mine(next).map((finished) => finished.sessionId),
+			["later"],
+			"the next listener hears what nobody heard",
+		);
+	});
+
+	test("stopping the builds stops each that can be stopped and waits until all have settled (#4748)", async () => {
+		const stoppable = Promise.withResolvers<string | undefined>();
+		const reasons: Error[] = [];
+		holdToolsUntilBuilt("stoppable", stoppable.promise, {
+			stop: (reason) => {
+				reasons.push(reason);
+				stoppable.resolve("stopped");
+			},
+		});
+		const plain = Promise.withResolvers<string | undefined>();
+		holdToolsUntilBuilt("plain", plain.promise);
+		assert.equal(blueprintBuildsRunning(), true);
+		let stopped = false;
+		const stopping = stopBlueprintBuilds().then(() => {
+			stopped = true;
+		});
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		assert.equal(stopped, false, "a build without a stop is waited for");
+		plain.resolve(undefined);
+		await stopping;
+		assert.deepEqual(
+			reasons.map((reason) => reason.message),
+			["Atomic is exiting"],
+		);
+		assert.equal(blueprintBuildsRunning(), false);
+	});
+
+	test("the engine's sessions in the worktree a host shares the build of wait for it too (#4748)", async () => {
+		const root = sandbox.path("worktrees", "shared-0");
+		const build = Promise.withResolvers<string | undefined>();
+		const other = Promise.withResolvers<string | undefined>();
+		holdToolsUntilBuilt("someone-else", other.promise);
+		holdToolsUntilBuilt("shared-roots", build.promise, { roots: [root] });
+		await shareBlueprintBuild(sandbox.path("host"), "shared-roots");
+		holdToolsUntilOwnerBuilt(sandbox.path("host"), process.pid, "shared-roots");
+		assert.equal(blueprintBuildPending({ sessionId: "engine-new", roots: [root] }), true);
+		build.resolve("shared report");
+		assert.equal(await awaitBlueprintReady({ sessionId: "engine-new", roots: [root] }), "shared report");
+		other.resolve(undefined);
 	});
 
 	test("an engine whose host shared no build holds nothing (#4748)", () => {
@@ -496,10 +710,25 @@ test("the report of an overlapped build says whether it finished cleanly, with i
 	);
 });
 
-test('resume.waitForBlueprint defaults to "prompt" and reaches the resume options (#4748)', () => {
+test('resume.waitForBlueprint defaults to "prompt" with a UI and to "tools" without one, and a setting wins (#4748)', () => {
 	const trusted = () => true;
-	const defaults = sessionResumeOptions("cli", "/work", "/agent", SettingsManager.inMemory(), trusted);
-	assert.equal(defaults.waitForBlueprint, "prompt");
-	const overlapping = SettingsManager.inMemory({ resume: { waitForBlueprint: "tools" } });
-	assert.equal(sessionResumeOptions("cli", "/work", "/agent", overlapping, trusted).waitForBlueprint, "tools");
+	const wait = (configured: "prompt" | "tools" | undefined, interactive: boolean) =>
+		sessionResumeOptions(
+			"cli",
+			"/work",
+			"/agent",
+			SettingsManager.inMemory(configured === undefined ? {} : { resume: { waitForBlueprint: configured } }),
+			trusted,
+			interactive,
+		).waitForBlueprint;
+	assert.equal(wait(undefined, true), "prompt");
+	assert.equal(
+		sessionResumeOptions("cli", "/work", "/agent", SettingsManager.inMemory(), trusted).waitForBlueprint,
+		"prompt",
+		"a caller that does not say is taken to have a UI",
+	);
+	assert.equal(SettingsManager.inMemory().getResumeWaitForBlueprint(), "prompt");
+	assert.equal(wait(undefined, false), "tools");
+	assert.equal(wait("tools", true), "tools");
+	assert.equal(wait("prompt", false), "prompt");
 });

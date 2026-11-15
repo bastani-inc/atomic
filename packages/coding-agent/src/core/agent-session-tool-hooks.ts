@@ -18,7 +18,7 @@ import { estimateContextTokens } from "./compaction/compaction.ts";
 import { assertToolPairingInvariant } from "./context-tool-pairing.js";
 import {
 	awaitBlueprintReady,
-	BLUEPRINT_GATED_TOOLS,
+	type BlueprintBuildSubject,
 	blueprintBuildPending,
 	holdToolsUntilBuilt,
 } from "./resume/blueprint/barrier.ts";
@@ -70,9 +70,10 @@ async function checkToolCall(
 	// may wait for this tool to start.
 	await this._messagesAwaitingPersistence.get(assistantMessage)?.catch(() => {});
 	if (this._persistenceFailure !== undefined) return { block: true, reason: this._persistenceFailure };
+	if (this._turnStopReason !== undefined) return { block: true, reason: `Cancelled: ${this._turnStopReason}` };
 	const sandboxDenial = workspaceSandboxDenial(this._workspace, toolCall.name);
 	if (sandboxDenial !== undefined) return { block: true, reason: sandboxDenial.message };
-	const blueprintWait = await waitForBlueprintBuild(this, toolCall, signal, waited);
+	const blueprintWait = await waitForBlueprintBuild(this, signal, waited);
 	if (blueprintWait !== undefined) return blueprintWait;
 	if (!runner.hasHandlers("tool_call")) {
 		return undefined;
@@ -123,28 +124,35 @@ function keepBlueprintReport(
 		return;
 	}
 	const sessionId = session.sessionManager.getSessionId();
-	if (!blueprintBuildPending(sessionId)) holdToolsUntilBuilt(sessionId, Promise.resolve(report));
+	if (!blueprintBuildPending(blueprintSubject(session))) holdToolsUntilBuilt(sessionId, Promise.resolve(report));
 }
 
 /**
- * With `resume.waitForBlueprint: "tools"`, holds a tool that runs project code or reads the worktree until the
- * blueprint build of the session's resume has settled, and puts the build's report in `waited`. Returns the block of
- * a call whose turn was aborted during the wait; the build goes on.
+ * The session as a waiter for blueprint builds: by its id, and by the directories it works in, so a session that a new
+ * session, fork or switch opened in a worktree that is still being built waits for that build too (#4748).
+ */
+export function blueprintSubject(session: Pick<AgentSession, "sessionManager">): BlueprintBuildSubject {
+	const manager = session.sessionManager;
+	return {
+		sessionId: manager.getSessionId(),
+		roots: [manager.getCwd(), ...manager.getWorktreeRootMappings().map((mapping) => mapping.to)],
+	};
+}
+
+/**
+ * With `resume.waitForBlueprint: "tools"`, holds every tool call until the blueprint build of the session's resume has
+ * settled, so none runs against a half-built environment, and puts the build's report in `waited`. Returns the block
+ * of a call whose turn was aborted during the wait; the build goes on.
  */
 async function waitForBlueprintBuild(
 	session: AgentSession,
-	toolCall: Pick<ToolCall, "id" | "name">,
 	signal: AbortSignal | undefined,
 	waited: WaitedBuild,
 ): Promise<{ block: true; reason: string } | undefined> {
-	const sessionId = session.sessionManager.getSessionId();
-	if (!blueprintBuildPending(sessionId)) return undefined;
-	const gated =
-		BLUEPRINT_GATED_TOOLS.has(toolCall.name) ||
-		session._toolDefinitions.get(toolCall.name)?.definition.writesFiles === true;
-	if (!gated) return undefined;
+	const subject = blueprintSubject(session);
+	if (!blueprintBuildPending(subject)) return undefined;
 	try {
-		waited.report = await awaitBlueprintReady(sessionId, signal);
+		waited.report = await awaitBlueprintReady(subject, signal);
 	} catch {
 		return { block: true, reason: "Interrupted while waiting for the environment build of this resumed session." };
 	}

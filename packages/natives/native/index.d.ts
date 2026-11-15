@@ -507,6 +507,12 @@ export interface InputReceipt {
  */
 export declare function invalidateFsScanCache(path?: string | undefined | null): void
 
+/**
+ * Sends SIGKILL to every running supervised command's whole process tree at once, for a host about to exit without
+ * closing its task owners (#5057). Their cleanup still completes as usual. On Windows, Job objects already end them.
+ */
+export declare function killSupervisedProcessTrees(): void
+
 /** A single match in the content. */
 export interface Match {
   /** 1-indexed line number. */
@@ -640,6 +646,13 @@ export interface OwnerSnapshot {
   tasks: Array<TaskRecord>
   cursor: Cursor
 }
+
+/**
+ * When running process `pid` was created, as the decimal count of 100-nanosecond intervals since 1601-01-01 UTC (the
+ * Windows process creation time), or `null` where that cannot be read: on other platforms, for a process that is gone
+ * or has exited, and for one this process may not query.
+ */
+export declare function processCreationTime(pid: number): string | null
 
 export interface PromptRoute {
   sessionId: string

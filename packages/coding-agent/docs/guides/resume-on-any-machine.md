@@ -39,6 +39,16 @@ An SDK `createAgentSession({ sessionManager })` call prepares a supplied session
 
 When the shared storage does not answer, `atomic --session`, `--resume`, `--continue` and `/resume` stop after 15 seconds with a retryable `ResumeCatalogTimeoutError` instead of waiting for the network to give up. Nothing was changed; resume again once `atomic storage status` reaches the database.
 
+### When the session is already open
+
+A session runs in one process at a time. `atomic --session`, `--resume` and `--continue` claim the session they open before they write to it or restore its checkouts. When another process on this machine still has the session open, the resume changes nothing and exits with code `75`:
+
+```text
+Error: Session <id> is already open in process <pid> on <host>. Nothing was changed. Close it there or wait for that process to exit, then resume again.
+```
+
+Interactive mode prints the same message before it starts. When several resumes of one session start at once, exactly one runs and the others exit this way. A claim left by a process that no longer runs, for example one killed with `SIGKILL`, is taken over by the next resume. The process is matched by its pid and, on Linux, by when it started, so a later process given the same pid does not count as the holder. Claims are files under `~/.atomic/agent/session-claims`, so they are seen by the processes that share that agent directory. If a process with another agent directory writes to the same session store at the same time, the run whose write conflicts stops with `Another process wrote to session <id> …` and exit code `1`; resume the session again to continue from what was saved.
+
 ## Wake a released subagent
 
 A background subagent that was released while it waited keeps its session in the shared storage when it was launched with `context: "fork"`, so it can be woken on another machine. The wake maps its recorded directory through the restores of the session that owns it. The subagent's own session is then prepared as a woken session is: each checkout it worked in on this machine stays as it is, and every other checkout is restored from its snapshots into a worktree on this machine, with its blueprints built. Its tools resolve the earlier machine's absolute paths there, and follow the restores of the session or run it was launched in. A subagent started without `context: "fork"` keeps a session file on the machine that launched it, which another machine cannot reopen; it is reported as unrestorable.
@@ -121,13 +131,17 @@ Every step writes a log under `~/.atomic/agent/worktree-snapshots/blueprint-logs
 
 ### Start the first turn while the build runs
 
-By default a resume opens the session once the build has finished. To send the first request while the build still runs, set `resume.waitForBlueprint` to `"tools"` in your settings:
+`resume.waitForBlueprint` decides what waits for the build. In the interactive TUI it defaults to `"prompt"`: the session opens once the build has finished. Without a UI (`atomic -p`, `--mode json`, `--mode rpc`, and sessions created with the SDK) it defaults to `"tools"`: the session opens once the worktrees are restored, and the first request goes out while the build still runs.
+
+With `"tools"`, the agent is told that the environment is still being built. Every tool call and shell command in the restored worktree waits until the build ends, also those of a new session, fork or switch that works there, so nothing runs in a half-built environment. The first tool call that waited then shows the agent how the build went before its own output. You see the build's warnings once, as a resume that waits shows them: `atomic -p` prints them to stderr, and `--mode json` and `--mode rpc` emit a `blueprint_build_finished` event. A failed build releases the tools as a finished one does; it never blocks the session. Interrupting the turn stops the wait, not the build. `atomic -p` and `--mode json` print their answer and then exit once the build has ended. If Atomic is stopped before the build ends (Ctrl-C or another signal, or RPC's stdin closing), the build's processes stop with it and the next resume builds the worktree again; if it was killed outright, the next resume first stops the processes that build left running, when it can confirm they are that build's processes (on systems where Atomic cannot read when a process started, it stops nothing and warns that the earlier build may still be running). A resume waits at most five minutes for another Atomic process that is still building the same worktree, and says so as soon as it starts waiting (a line on stderr with `-p`, a `blueprint_build_waiting` event with `--mode json` and `--mode rpc`); after that it stops the processes it can confirm are that build's and builds the worktree anyway with a warning. One build runs per worktree: switching back to a session whose build still runs joins that build.
+
+A setting always wins. To wait for the build without a UI too, as before, set:
 
 ```json
-{ "resume": { "waitForBlueprint": "tools" } }
+{ "resume": { "waitForBlueprint": "prompt" } }
 ```
 
-The agent is told that the environment is still being built. Tools that run project code or read the worktree (`bash`, `powershell`, `edit`, `write`, `read`, `ls`, `find`, `grep`, `search`, and extension tools that write files) wait until the build ends. The first of them then shows how the build went, with the same warnings a resume shows when it waits, before its own output. A failed build releases the tools as a finished one does. Interrupting the turn stops the wait, not the build. If Atomic exits before the build ends, the next resume builds the worktree again.
+To start the first turn early in the TUI as well, set it to `"tools"`.
 
 ### What the agent sees
 
@@ -211,6 +225,7 @@ Missing setup is checked in one pass before anything is restored: the storage ad
 | `ResumeCatalogUnavailableError` | `catalog-unavailable` | The shared storage could not be reached while looking the session or run up, for example because the connection was refused or broke. Retryable. Any other storage failure, such as a missing token file, is reported as that storage error itself. | Check connectivity with `atomic storage status` and resume again. |
 | `ResumeCatalogTimeoutError` | `catalog-timeout` | The shared storage did not answer the lookup within 15 seconds, for example during a network partition. `subject` is `session` or `run`. Retryable. A partition that starts later in the resume is reported when the connection gives up. | Check connectivity with `atomic storage status` and resume again. |
 | `WorkspaceDriftError` | `tree-drift` | A workflow run's recorded state cannot be rebuilt, for example because unpushed commits touch files that are never recorded (`.env`, keys), a snapshot blob is missing, or the disk is full. The message names what the restore could not do (the commits, blob, remote or full volume) and the fix. A session resume does not stop for these; it restores what it can, with a notice. | Do what the message says; for unpushed commits, push them from the original machine, or continue there. |
+| `WorkspaceRestoreError` | `path-too-long` | On Windows, a worktree root or its Git directory under the agent directory would be longer than Git for Windows accepts. Nothing is written. | Set `ATOMIC_CODING_AGENT_DIR` to a shorter directory. See [Long paths on Windows](#long-paths-on-windows). |
 | `WorkspaceRestoreError` | `invalid-snapshot` | A snapshot record names a remote with credentials, a Git remote helper (`ext::`), another scheme than `https`, `http`, `ssh`, `git` or `file`, or holds a value Atomic never writes. Nothing is fetched or run. | Resume only sessions and runs from storage you trust, or export the session again on the machine that recorded it. |
 
 Secret values never appear in these messages; they name the environment variable or file instead. The classes, their codes and the `isResume…Error` guards are exported from `@bastani/atomic`.
@@ -218,6 +233,18 @@ Secret values never appear in these messages; they name the environment variable
 ## Windows
 
 Sessions and workflow runs resume on Windows as they do elsewhere. Local workers are not available on Windows, because Atomic cannot contain their tool processes there: a run with `localWorkers` fails with `SharedPoolSetupError` (code `process-containment-unavailable`) before it starts, so resume pooled runs on Linux or macOS.
+
+### Long paths on Windows
+
+Atomic restores worktrees under the agent directory, `%USERPROFILE%\.atomic\agent` unless `ATOMIC_CODING_AGENT_DIR` names another one. Windows limits most paths to 260 characters (`MAX_PATH`), and Git for Windows refuses, even with `core.longpaths`, an object store (`worktree-snapshots\repositories\<id>.git`) longer than 220 characters, a worktree whose root is longer than 212, and a worktree whose own Git directory, under the store's `worktrees`, is longer than 247. Atomic keeps its own names short, opens its SQLite files, such as a worktree's writer lease, through the `\\?\` long-path form, and turns on `core.longpaths` in the Git object stores it creates, so files deep inside a restored worktree check out. With these, an agent directory of up to about 155 characters works.
+
+A deeper agent directory fails the restore before anything is written, with `WorkspaceRestoreError` code `path-too-long`. The message names the path that would be too long, the limit, and the agent directory. Move the agent directory to a shorter path, for example:
+
+```powershell
+$env:ATOMIC_CODING_AGENT_DIR = "C:\atomic\agent"
+```
+
+Earlier versions failed these restores with `unable to open database file (SQLite code 14)`. Worktrees they restored keep working; their staging directories, named `.staging-<id>`, are still recognized and cleaned up.
 
 ## Trust
 

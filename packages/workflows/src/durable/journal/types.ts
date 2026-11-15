@@ -7,7 +7,14 @@ export const JOURNAL_SCHEMA_VERSION = RUN_JOURNAL_SCHEMA_VERSION;
 export type JournalSchemaVersion = typeof JOURNAL_SCHEMA_VERSION;
 export const JOURNAL_PAYLOAD_ENCODING = "json-text";
 export type JournalPayloadEncoding = typeof JOURNAL_PAYLOAD_ENCODING;
-export const JOURNAL_TABLES = { meta: "meta", runs: "runs", events: "events", leases: "leases" } as const;
+export const JOURNAL_TABLES = {
+	meta: "meta",
+	runs: "runs",
+	events: "events",
+	leases: "leases",
+	eventChunks: "event_chunks",
+	leaseBuilds: "lease_builds",
+} as const;
 export type JournalTable = (typeof JOURNAL_TABLES)[keyof typeof JOURNAL_TABLES];
 export const JOURNAL_COLUMNS = {
 	schemaVersion: "schema_version",
@@ -23,6 +30,7 @@ export const JOURNAL_COLUMNS = {
 	type: "type",
 	payload: "payload",
 	at: "at",
+	chunks: "chunks",
 	holderId: "holder_id",
 	renewedAt: "renewed_at",
 } as const;
@@ -60,6 +68,8 @@ export interface JournalEventRow {
 	[JOURNAL_COLUMNS.type]: RunEventType;
 	[JOURNAL_COLUMNS.payload]: string;
 	[JOURNAL_COLUMNS.at]: number;
+	/** How many rows of the event chunks table hold the payload; 0 or absent when `payload` holds it (#4965). */
+	[JOURNAL_COLUMNS.chunks]?: number;
 }
 
 export class JournalError extends Error {}

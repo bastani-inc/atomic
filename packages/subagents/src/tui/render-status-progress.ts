@@ -1,3 +1,4 @@
+import { sliceHead } from "@bastani/atomic";
 import { isParentCancellation } from "../runs/shared/cancellation-recovery.js";
 import { formatDuration, formatTokens, formatToolCall } from "../shared/formatters.js";
 import { formatActivityLabel } from "../shared/status-format.js";
@@ -54,7 +55,7 @@ export function formatCurrentToolLine(
 	const toolArgsPreview = progress.currentToolArgs
 		? expanded || progress.currentToolArgs.length <= maxToolArgsLen
 			? progress.currentToolArgs
-			: `${progress.currentToolArgs.slice(0, maxToolArgsLen)}...`
+			: `${sliceHead(progress.currentToolArgs, maxToolArgsLen)}...`
 		: "";
 	const durationSuffix =
 		progress.currentToolStartedAt !== undefined && snapshotNow !== undefined

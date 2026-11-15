@@ -12,13 +12,15 @@ import { JOURNAL_COLUMNS as c, JOURNAL_TABLES } from "./types.js";
 
 /** The legacy tables' schema version, which never changes: they are read and never written. */
 const LEGACY_SCHEMA_VERSION = RUN_JOURNAL_SCHEMA_VERSION_UNCHUNKED;
+/** The tables a pre-0.9.38 journal had, unprefixed. */
+type LegacyTable = "meta" | "runs" | "events" | "leases";
 
 const CURRENT = renderStorageIdentifiers("journal", {
 	...JOURNAL_TABLES,
 	legacyDeleted: "legacy_deleted",
 	migrations: "migrations",
 });
-const LEGACY_COLUMNS: Readonly<Record<keyof typeof JOURNAL_TABLES, readonly string[]>> = {
+const LEGACY_COLUMNS: Readonly<Record<LegacyTable, readonly string[]>> = {
 	meta: [c.schemaVersion],
 	runs: [c.runId, c.name, c.cwd, c.createdAt, c.status, c.headerJson],
 	events: [c.runId, c.seq, c.epoch, c.key, c.type, c.payload, c.at],
@@ -49,7 +51,7 @@ export function latestEventColumns(events: string, runs: string): string {
 		`COALESCE((SELECT ${column} FROM ${events} AS latest WHERE latest.${c.runId} = ${runs}.${c.runId} ORDER BY latest.${c.seq} DESC LIMIT 1), 0) AS ${column}`;
 	return `${latest(c.seq)}, ${latest(c.at)}`;
 }
-async function hasLegacyTable(tx: SqliteExecutor, table: keyof typeof JOURNAL_TABLES): Promise<boolean> {
+async function hasLegacyTable(tx: SqliteExecutor, table: LegacyTable): Promise<boolean> {
 	const columns = await tx.all<SqliteRow & { name: string }>(
 		"SELECT name FROM pragma_table_info(?)",
 		JOURNAL_TABLES[table],

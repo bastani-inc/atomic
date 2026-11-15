@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { spawn } from "node:child_process";
 import { writeSync } from "node:fs";
 import { mkdir, open, readFile } from "node:fs/promises";
@@ -35,6 +36,12 @@ export interface LoggedProcessOptions {
 	readonly signal?: AbortSignal;
 }
 
+/**
+ * Told of each process a step starts (`running` true) and of its end, for the build that runs the step: a build records
+ * them so a later process can stop them when this one dies without stopping them (#4748).
+ */
+export const stepProcessWatcher = new AsyncLocalStorage<(pid: number, running: boolean) => void>();
+
 /** Whether a process started on `platform` leads its own process group, which is how stopping it stops its children. */
 export function startsProcessGroup(platform: NodeJS.Platform): boolean {
 	return platform !== "win32";
@@ -69,6 +76,8 @@ export async function runLoggedProcess(
 				copiesOutput ? "pipe" : log.fd,
 			],
 		});
+		const watch = stepProcessWatcher.getStore();
+		if (child.pid !== undefined) watch?.(child.pid, true);
 		let timedOut = false;
 		let writeError: Error | undefined;
 		const stop = () => {
@@ -103,6 +112,7 @@ export async function runLoggedProcess(
 			}
 		}
 		const settle = () => {
+			if (child.pid !== undefined) watch?.(child.pid, false);
 			clearTimeout(timer);
 			options.signal?.removeEventListener("abort", onAbort);
 		};

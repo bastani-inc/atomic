@@ -7,7 +7,6 @@ import {
 	readFileSync,
 	readlinkSync,
 	realpathSync,
-	renameSync,
 	rmSync,
 	statSync,
 	writeFileSync,
@@ -18,39 +17,19 @@ import { CONFIG_DIR_NAME } from "../config.js";
 import { parseJsonFileContent } from "../utils/json.ts";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import { normalizeAzureSettings } from "./azure-provider-compat.js";
+import { releaseLockSync } from "./lock-release.ts";
+import { waitForLockSync } from "./lock-wait.ts";
+import { renameReplacing } from "./rename-retry.ts";
 import { deepMergeSettings } from "./settings-merge.js";
-import type { Settings, SettingsFieldOrigin, SettingsScope, SettingsStorage } from "./settings-types.ts";
-
-/** Windows refuses to replace a file another process has open for a moment; rename again before giving up. */
-const RENAME_ATTEMPTS = 10;
-const RENAME_RETRY_MS = 20;
+import type { Settings, SettingsFieldOrigin, SettingsLayer, SettingsScope, SettingsStorage } from "./settings-types.ts";
 
 /**
- * Rename `from` over `to`. On Windows, a rename that another process's open handle blocks (EPERM, EACCES, EBUSY) is
- * retried up to ten times, 20 ms apart; elsewhere, and for any other error, it throws at once.
+ * How long a save waits for one other process to release a settings file's lock. Kept short: the wait blocks this
+ * process, so a lock it holds asynchronously stops being refreshed and would be taken over as stale.
  */
-export function renameReplacing(
-	from: string,
-	to: string,
-	platform: NodeJS.Platform = process.platform,
-	rename: (from: string, to: string) => void = renameSync,
-): void {
-	for (let attempt = 1; ; attempt++) {
-		try {
-			rename(from, to);
-			return;
-		} catch (error) {
-			const code = (error as NodeJS.ErrnoException).code ?? "";
-			if (platform !== "win32" || attempt === RENAME_ATTEMPTS || !["EPERM", "EACCES", "EBUSY"].includes(code)) {
-				throw error;
-			}
-			const start = Date.now();
-			while (Date.now() - start < RENAME_RETRY_MS) {
-				// Sleep synchronously, as the settings lock does, so callers stay synchronous.
-			}
-		}
-	}
-}
+const SETTINGS_LOCK_WAIT_MS = 200;
+const SETTINGS_LOCK_POLL_MIN_MS = 10;
+const SETTINGS_LOCK_POLL_MAX_MS = 50;
 
 /** A rename that cannot replace the file at all: it is a mount point (EBUSY), or on another device (EXDEV). */
 const UNREPLACEABLE_FILE_CODES: ReadonlySet<string> = new Set(["EBUSY", "EXDEV"]);
@@ -166,31 +145,23 @@ export class FileSettingsStorage implements SettingsStorage {
 		return undefined;
 	}
 
+	/** Takes the lock of the settings file `path`, waiting while other processes save to it (see {@link waitForLockSync}). */
 	private acquireLockSyncWithRetry(path: string): () => void {
-		const maxAttempts = 10;
-		const delayMs = 20;
-		let lastError: unknown;
-
-		for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-			try {
-				return lockfile.lockSync(path, { realpath: false });
-			} catch (error) {
-				const code =
-					typeof error === "object" && error !== null && "code" in error
-						? String((error as { code?: unknown }).code)
-						: undefined;
-				if (code !== "ELOCKED" || attempt === maxAttempts) {
-					throw error;
-				}
-				lastError = error;
-				const start = Date.now();
-				while (Date.now() - start < delayMs) {
-					// Sleep synchronously to avoid changing callers to async.
-				}
-			}
-		}
-
-		throw (lastError as Error) ?? new Error("Failed to acquire settings lock");
+		return waitForLockSync(() => lockfile.lockSync(path, { realpath: false }), {
+			lockPath: `${path}.lock`,
+			holderWaitMs: SETTINGS_LOCK_WAIT_MS,
+			pollMinMs: SETTINGS_LOCK_POLL_MIN_MS,
+			pollMaxMs: SETTINGS_LOCK_POLL_MAX_MS,
+			retryable: (error) => (error as NodeJS.ErrnoException).code === "ELOCKED",
+			stuck: (error) => error as Error,
+			contended: (error, waitedMs) =>
+				Object.assign(
+					new Error(`Other processes kept saving ${path} for ${Math.round(waitedMs / 1000)} s`, { cause: error }),
+					{
+						code: "ELOCKED",
+					},
+				),
+		});
 	}
 
 	private readMergedSettings(readPaths: string[]): string | undefined {
@@ -209,6 +180,19 @@ export class FileSettingsStorage implements SettingsStorage {
 			}
 		}
 		return found ? JSON.stringify(merged, null, 2) : undefined;
+	}
+
+	readLayers(scope: SettingsScope): SettingsLayer[] {
+		const path = scope === "global" ? this.globalSettingsPath : this.projectSettingsPath;
+		const readPaths = scope === "global" ? this.globalReadPaths : this.projectReadPaths;
+		const release = existsSync(path) ? this.acquireLockSyncWithRetry(path) : undefined;
+		try {
+			return readPaths
+				.filter((readPath) => existsSync(readPath))
+				.map((readPath) => ({ path: readPath, content: readFileSync(readPath, "utf-8") }));
+		} finally {
+			release?.();
+		}
 	}
 
 	withLock(scope: SettingsScope, fn: (current: string | undefined) => string | undefined): void {
@@ -239,7 +223,7 @@ export class FileSettingsStorage implements SettingsStorage {
 			}
 		} finally {
 			if (release) {
-				release();
+				releaseLockSync(release, path);
 			}
 		}
 	}
@@ -259,7 +243,7 @@ export class FileSettingsStorage implements SettingsStorage {
 				writeSettingsFile(path, next);
 			}
 		} finally {
-			release();
+			releaseLockSync(release, path);
 		}
 	}
 }

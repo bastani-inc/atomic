@@ -1,4 +1,4 @@
-import { reportDebug } from "@bastani/atomic";
+import { reportDebug, sliceHead } from "@bastani/atomic";
 import type { StageUiBroker } from "../shared/stage-ui-broker.js";
 import type { Store } from "../shared/store.js";
 import { readGraphStoreSnapshot, subscribeStoreInvalidation } from "../shared/store-observation.js";
@@ -309,7 +309,7 @@ function formatQuestionnaireAnswerPart(value: unknown): string {
 function truncateAnswerSnippet(value: string): string {
 	const normalized = value.replace(/\s+/g, " ").trim();
 	if (normalized.length <= HIL_ANSWER_SNIPPET_LIMIT) return normalized;
-	return `${normalized.slice(0, HIL_ANSWER_SNIPPET_LIMIT - 1)}…`;
+	return `${sliceHead(normalized, HIL_ANSWER_SNIPPET_LIMIT - 1)}…`;
 }
 
 function answerNoticeKey(

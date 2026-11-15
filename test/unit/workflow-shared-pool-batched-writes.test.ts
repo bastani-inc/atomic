@@ -39,7 +39,10 @@ function countingDriver(path: string) {
 	const priorities: boolean[] = [];
 	/** The longest text value any statement returned, and the most text one statement returned in all. */
 	const largest = { bytes: 0, response: 0 };
-	const hooks: { beforeBatch?: (connection: DatabaseSync) => void; afterCommit?: () => void } = {};
+	const hooks: {
+		beforeBatch?: (connection: DatabaseSync, statements: readonly SqliteStatement[]) => void;
+		afterCommit?: () => void;
+	} = {};
 	const execute = (sql: string, params: readonly unknown[]): SqliteDriverResult => {
 		const statement = connection.prepare(sql);
 		statement.setReadBigInts(true);
@@ -82,7 +85,7 @@ function countingDriver(path: string) {
 		batch(statements: readonly SqliteStatement[], options?: { readonly priority?: boolean }) {
 			requests.push("batch");
 			priorities.push(options?.priority === true);
-			hooks.beforeBatch?.(connection);
+			hooks.beforeBatch?.(connection, statements);
 			connection.exec("BEGIN IMMEDIATE");
 			let results: SqliteDriverResult[];
 			try {
@@ -361,7 +364,7 @@ test("a commit planned without a read is refused when another writer recorded a 
 			f.hooks.beforeBatch = undefined;
 			connection
 				.prepare(
-					"INSERT INTO acme_wf_events SELECT 'root', MAX(seq) + 1, 1, ?, 'CheckpointRecorded', ?, 0 FROM acme_wf_events WHERE run_id = 'root'",
+					"INSERT INTO acme_wf_events(run_id, seq, epoch, key, type, payload, at) SELECT 'root', MAX(seq) + 1, 1, ?, 'CheckpointRecorded', ?, 0 FROM acme_wf_events WHERE run_id = 'root'",
 				)
 				.run(JSON.stringify(["CheckpointRecorded", "tool", foreign.checkpointId]), JSON.stringify(foreign));
 		};
@@ -407,6 +410,43 @@ test("a claim whose answer was lost hands out the row it took instead of taking 
 		};
 		const claimed = await f.pool.claim(f.lease, "host/w1", [work, other.work], 60_000);
 		assert.ok(claimed);
+		const states = (await f.pool.inspect("root")).map((item) => [item.id === claimed.id, item.state, item.worker]);
+		assert.deepEqual(states.sort(), [
+			[false, "ready", null],
+			[true, "leased", "host/w1"],
+		]);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a claim whose answer was lost and that commits late is handed out after a later attempt is fenced off, without a second claim (#5126)", async () => {
+	const f = await fixture();
+	try {
+		const other = poolWorkFixture("other");
+		await f.pool.enqueue(f.lease, other.work, other.boundary);
+		let lost: readonly SqliteStatement[] = [];
+		let batches = 0;
+		f.hooks.beforeBatch = (connection, statements) => {
+			batches++;
+			// The first claim's answer never arrives, and the server has not applied it yet.
+			if (batches === 1) {
+				lost = statements;
+				throw Object.assign(new Error("the request timed out"), { name: "TimeoutError" });
+			}
+			if (batches !== 2) return;
+			// The first claim commits late, and changes what the second attempt's fence decided on: it aborts.
+			connection.exec("BEGIN IMMEDIATE");
+			for (const { sql, params } of lost) connection.prepare(sql).all(...(params as never[]));
+			connection.exec("COMMIT");
+			const { name } = connection
+				.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE '%_pool_fence'")
+				.get() as { name: string };
+			connection.exec(`INSERT INTO ${name}(reason) VALUES (NULL)`);
+		};
+		const claimed = await f.pool.claim(f.lease, "host/w1", [work, other.work], 60_000);
+		assert.ok(claimed);
+		assert.equal(batches, 2);
 		const states = (await f.pool.inspect("root")).map((item) => [item.id === claimed.id, item.state, item.worker]);
 		assert.deepEqual(states.sort(), [
 			[false, "ready", null],

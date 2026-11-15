@@ -14,8 +14,16 @@ import type { ToolDefinition } from "../core/extensions/types.ts";
 import type { CustomMessage } from "../core/messages.ts";
 import { formatModelLabel } from "../core/model-label.ts";
 import { flushRawStdout, writeRawStdout } from "../core/output-guard.ts";
+import {
+	type BlueprintBuildFinished,
+	type BlueprintBuildWaiting,
+	blueprintBuildsSettled,
+	onBlueprintBuildFinished,
+	onBlueprintBuildWaiting,
+} from "../core/resume/blueprint/barrier.ts";
 import { serviceTierWarnings } from "../core/service-tier-warnings.ts";
 import { ranOnModelLine } from "../core/tasks/completion.js";
+import { reportDiagnostics } from "../main-stdio.ts";
 import { killTrackedDetachedChildren } from "../utils/shell.ts";
 import { toJsonEvent } from "./json-event.ts";
 
@@ -106,6 +114,22 @@ function terminatingStructuredOutputText(
 	return textFromToolResult(message);
 }
 
+/** Writes a blueprint build event (#4748) as one JSON line on stdout, for `--mode json` and an RPC process's startup. */
+export function writeBlueprintBuildEvent(event: BlueprintBuildFinished | BlueprintBuildWaiting): void {
+	writeRawStdout(`${JSON.stringify(event)}\n`);
+}
+
+/**
+ * Tells a run without a UI that a resume waits for another blueprint build of its worktree, as soon as it starts
+ * waiting (#4748): JSON modes get the event on stdout, text mode a line on stderr. Returns the unsubscribe.
+ */
+export function announceBlueprintBuildWaits(json: boolean): () => void {
+	return onBlueprintBuildWaiting((waiting) => {
+		if (json) writeBlueprintBuildEvent(waiting);
+		else reportDiagnostics([{ type: "info", message: waiting.message }]);
+	});
+}
+
 /**
  * Run in print (single-shot) mode.
  * Sends prompts to the agent and outputs the result.
@@ -137,13 +161,15 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 	};
 
 	const registerSignalHandlers = (): void => {
-		const signals: NodeJS.Signals[] = ["SIGTERM"];
+		// SIGINT (Ctrl-C) ends the run the same way (#4748): a blueprint build still running behind the first turn is
+		// stopped with its process tree instead of being left in its own process group.
+		const signals: NodeJS.Signals[] = ["SIGTERM", "SIGINT"];
 		if (process.platform !== "win32") {
 			signals.push("SIGHUP");
 		}
 
 		for (const signal of signals) {
-			const exitCode = signal === "SIGHUP" ? 129 : 143;
+			const exitCode = signal === "SIGHUP" ? 129 : signal === "SIGINT" ? 130 : 143;
 			const handler = () => {
 				signalCount++;
 				killTrackedDetachedChildren();
@@ -158,6 +184,18 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 	};
 
 	registerSignalHandlers();
+	// A resumed session's blueprint build may run behind its first turn (#4748): its warnings reach the user once it
+	// ends, as a resume that waits shows them, and a JSON run emits the build's end as an event.
+	// A resume that waits for another build of its worktree says so at once, not only in the warning after the wait.
+	const stopAnnouncingFinished = onBlueprintBuildFinished((finished) => {
+		if (mode === "json") writeBlueprintBuildEvent(finished);
+		else reportDiagnostics(finished.notices);
+	});
+	const stopAnnouncingWaits = announceBlueprintBuildWaits(mode === "json");
+	const stopAnnouncing = () => {
+		stopAnnouncingFinished();
+		stopAnnouncingWaits();
+	};
 
 	const promptWithScopedCommandSuppression = async (
 		text: string,
@@ -335,6 +373,10 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 		console.error(error instanceof Error ? error.message : String(error));
 		return 1;
 	} finally {
+		// A blueprint build may still run behind the first turn (#4748), also for a session opened since in its worktree:
+		// the run ends once every build it started has settled, so it never leaves a restored worktree half built.
+		await blueprintBuildsSettled();
+		stopAnnouncing();
 		// Keep the signal handlers until disposal is done: without one, a signal would kill the
 		// process mid-dispose.
 		await disposeRuntime();

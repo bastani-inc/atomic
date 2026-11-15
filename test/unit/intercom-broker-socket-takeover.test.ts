@@ -58,6 +58,9 @@ const POLL_INTERVAL_MS = 20;
 /** Older than the 1 s after which an unreadable lock or takeover token counts as left by a crashed broker. */
 const ABANDONED_FILE_AGE_MS = 10_000;
 
+/** Far longer than any test run, so a lock dated this far ahead is never older than the 1 s unreadable grace. */
+const UNREADABLE_LOCK_FRESH_FOR_MS = 60 * 60 * 1000;
+
 /** Long enough for the lock's 20 ms poll to retry many times, while a live holder still holds it. */
 const LIVE_HOLDER_OBSERVATION_MS = 300;
 
@@ -555,6 +558,33 @@ describe("socket replacement lock (#3505)", () => {
 		const release = await acquiring;
 		release();
 		assert.equal(fileExistsSync(path), false);
+	});
+
+	test("a lock still unreadable only briefly is waited on, not taken over (#5132)", async () => {
+		const path = lockPath();
+		writeTextSync(path, "");
+		// Dated ahead, the lock stays inside the 1 s unreadable grace however long a loaded machine takes.
+		const writtenAt = new Date(Date.now() + UNREADABLE_LOCK_FRESH_FOR_MS);
+		utimesSync(path, writtenAt, writtenAt);
+		let waits = 0;
+		let noticed!: () => void;
+		const waitNoticed = new Promise<void>((resolve) => (noticed = resolve));
+		const acquiring = acquireSocketReplacementLock(path, {
+			onWait: () => {
+				waits++;
+				noticed();
+			},
+		});
+
+		const first = await Promise.race([waitNoticed.then(() => "waiting"), acquiring.then(() => "taken over")]);
+		assert.equal(first, "waiting");
+		// The lock is polled again meanwhile; a slower machine polls it less often, which the assertions allow.
+		await sleep(LIVE_HOLDER_OBSERVATION_MS);
+		assert.equal(waits, 1, "the wait is announced once");
+		assert.equal(readTextSync(path, "utf8"), "");
+
+		removePathSync(path, { force: true });
+		(await acquiring)();
 	});
 
 	test("an unreadable lock and an unreadable takeover token left by crashed brokers are both recovered", async () => {
