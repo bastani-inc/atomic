@@ -92,6 +92,8 @@ export interface WorkerStart {
 	 * starts a fresh worker in its place (`localWorkers.maxWorkerRssBytes`). Undefined: never.
 	 */
 	readonly maxRssBytes?: number;
+	/** Internal, tests only: overrides `OUTAGE_HANDOFF_MS` (#4768). */
+	readonly outageHandoffMs?: number;
 }
 export type WorkerRequest = { readonly id: number } & (
 	| { readonly kind: "ready" | "claim" | "budget" | "control" }
@@ -104,7 +106,15 @@ export type WorkerRequest = { readonly id: number } & (
 	 * The worker ended its attempt because a reply refused it as stale, or because its run failed on a fault of the pool
 	 * (`fault` is that fault); neither is a worker fault, and the child replays within its attempt limit.
 	 */
-	| { readonly kind: "fenced"; readonly fault?: SerializedError }
+	| {
+			readonly kind: "fenced";
+			readonly fault?: SerializedError;
+			/**
+			 * The worker gave its attempt up because the shared store kept refusing one of its requests (#4768): the store's
+			 * fault, not the child's, so the child goes back to the queue for another host without counting as an attempt.
+			 */
+			readonly handoff?: true;
+	  }
 	/**
 	 * The worker holds no attempt and is about to exit because its resident set size, `rssBytes`, passed its
 	 * `maxRssBytes`, after running `attempts` attempts: a planned exit, not a crash, so the pool starts a replacement
@@ -136,7 +146,16 @@ export type WorkerRequest = { readonly id: number } & (
 			readonly sessionId?: string;
 	  }
 	| { readonly kind: "delivery-ack"; readonly deliveryId: string; readonly error?: SerializedError }
-	| { readonly kind: "commit"; readonly operation: string; readonly mutation: PoolMutation }
+	| {
+			readonly kind: "commit";
+			readonly operation: string;
+			readonly mutation: PoolMutation;
+			/**
+			 * The attempt that made the commit (#4768). The pool refuses it as stale once the worker's slot holds another
+			 * attempt, so a commit an ended attempt still resends never lands in its replay.
+			 */
+			readonly attempt?: { readonly id: string; readonly generation: number };
+	  }
 	| { readonly kind: "complete"; readonly result: PooledRunResult }
 	// One-way stage watch traffic (#3996); the coordinator does not reply to these.
 	| {
