@@ -15,6 +15,7 @@ import type {
 	WakeUpSubscribeResult,
 	WakeUpSubscription,
 } from "./wake-up-bus.js";
+import { ensureBrokerSchema } from "./sql-schema.js";
 
 /**
  * S4 wake-up bus (specs/2026-10-19-intercom-multi-node.md §5.6): a hint log in the shared storage database. Each
@@ -72,7 +73,7 @@ const scheduleTimeout: WakeUpPollScheduler = (callback, delayMs) => {
 	return () => clearTimeout(timer);
 };
 
-async function createSchema(database: SqliteDatabase, table: string): Promise<void> {
+async function createSchema(database: SqliteDatabase, table: string, prefix: string | undefined): Promise<void> {
 	const { types } = dialectOf(database);
 	// In a serial transaction, so brokers opening a new bus at once take turns creating it (#5054).
 	const schema = `CREATE TABLE IF NOT EXISTS ${table} (
@@ -84,7 +85,7 @@ async function createSchema(database: SqliteDatabase, table: string): Promise<vo
 		);
 		CREATE INDEX IF NOT EXISTS ${table}_broker ON ${table} (broker_id, id);
 		CREATE INDEX IF NOT EXISTS ${table}_created ON ${table} (created_at);`;
-	await database.transaction((tx) => tx.exec(schema));
+	await ensureBrokerSchema(database, prefix, "wakeups", (tx) => tx.exec(schema));
 }
 
 async function openSchemaConnection(options: DatabaseWakeUpBusOptions, table: string): Promise<SqliteDatabase> {
@@ -92,7 +93,7 @@ async function openSchemaConnection(options: DatabaseWakeUpBusOptions, table: st
 	try {
 		// Refused before anything is created when the prefix is too long for this backend's identifiers (#5067).
 		validateStoragePrefix(options.prefix, dialectOf(database).name);
-		await createSchema(database, table);
+		await createSchema(database, table, options.prefix);
 	} catch (cause) {
 		await database.close().catch(() => {});
 		throw cause;

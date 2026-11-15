@@ -111,10 +111,10 @@ async function openEveryStore(scope: PostgresScope, prefix: string): Promise<voi
  */
 async function createdIdentifiers(database: SqliteDatabase): Promise<string[]> {
 	const rows = await database.all(`
-		SELECT relname AS name FROM pg_class c WHERE relnamespace = 'public'::regnamespace AND (relkind = 'r'
+		SELECT relname AS name FROM pg_class c WHERE relnamespace = current_schema()::regnamespace AND (relkind = 'r'
 			OR relkind = 'i' AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conindid = c.oid))
 		UNION SELECT tgname FROM pg_trigger WHERE NOT tgisinternal
-		UNION SELECT proname FROM pg_proc WHERE pronamespace = 'public'::regnamespace
+		UNION SELECT proname FROM pg_proc WHERE pronamespace = current_schema()::regnamespace
 		ORDER BY 1`);
 	return rows.map((row) => String(row.name));
 }
@@ -157,6 +157,26 @@ describe.skipIf(postgresSkipReason !== undefined)("Postgres storage prefix lengt
 				assert.deepEqual(await createdIdentifiers(database), []);
 			});
 		});
+
+	test("a prefix with uppercase letters is refused before anything is created, so it never shares its lowercase form's tables (#5218)", async () => {
+		await withPostgresDatabase(async (scope) => {
+			const database = await scope.open();
+			const prefix = "Team_";
+			const uppercase = (error: Error) => {
+				assert.ok(error instanceof StoragePrefixError, String(error));
+				assert.equal(error.reason, "uppercase");
+				assert.match(error.message, /team_/);
+				return true;
+			};
+			await assert.rejects(SqlSessionStore.open(database, { prefix }), uppercase);
+			await assert.rejects(SqlRunJournal.open(database, { prefix }), uppercase);
+			await assert.rejects(openIntercomBrokerState({ prefix, openDatabase: () => scope.open() }), uppercase);
+			for (const open of INTERCOM_STORES) await assert.rejects(open({ database, prefix }), uppercase);
+			assert.deepEqual(await createdIdentifiers(database), []);
+			// The lowercase form works.
+			await (await SqlRunJournal.open(database, { prefix: "team_" })).close();
+		});
+	});
 
 	for (const length of [18, 24])
 		test(`a store created before #5067 with a ${length}-character prefix opens, migrates and works (#5067)`, async () => {

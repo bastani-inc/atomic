@@ -1,5 +1,6 @@
 // @ts-check
 import { connect as connectSocket } from "node:net";
+import { join } from "node:path";
 import {
 	createSqliteDatabase,
 	postgresDialect,
@@ -25,6 +26,8 @@ import { createPostgresListener } from "./listen.js";
  *   maxConnections?: number,
  *   statementTimeoutMs?: number,
  *   listenUrl?: string,
+ *   schema?: string,
+ *   sdkSearchPaths?: readonly string[],
  * }} PostgresDatabaseOptions
  */
 
@@ -51,6 +54,67 @@ const CANCEL_REQUEST_CODE = 80877102;
 const DATABASE_LOCK_SCOPE = "atomic";
 /** The oldest server major version the adapter supports. */
 const MINIMUM_SERVER_VERSION = 140000;
+/**
+ * Node's codes for a server certificate that TLS verification refused: the same on every attempt, so never retried.
+ * @type {ReadonlySet<string>}
+ */
+const TLS_VERIFICATION_CODES = new Set([
+	"ERR_TLS_CERT_ALTNAME_INVALID",
+	"UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+	"UNABLE_TO_GET_ISSUER_CERT",
+	"UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+	"SELF_SIGNED_CERT_IN_CHAIN",
+	"DEPTH_ZERO_SELF_SIGNED_CERT",
+	"CERT_HAS_EXPIRED",
+	"CERT_NOT_YET_VALID",
+	"CERT_UNTRUSTED",
+	"CERT_REJECTED",
+	"CERT_SIGNATURE_FAILURE",
+	"CERT_CHAIN_TOO_LONG",
+	"INVALID_CA",
+	"HOSTNAME_MISMATCH",
+]);
+
+/**
+ * The permanent failure a connection refused by TLS verification is (#5218), with the reason and the fix: a host name
+ * the certificate names, or the CA in `sslrootcert`. Undefined for any other failure.
+ * @param {unknown} cause
+ * @returns {StorageError | undefined}
+ */
+function tlsVerificationFailure(cause) {
+	/** @type {unknown} */
+	let current = cause;
+	for (let depth = 0; depth < MAX_CAUSE_DEPTH && typeof current === "object" && current !== null; depth++) {
+		const code = /** @type {{ code?: unknown }} */ (current).code;
+		if (typeof code === "string" && TLS_VERIFICATION_CODES.has(code)) {
+			const fix =
+				code === "ERR_TLS_CERT_ALTNAME_INVALID" || code === "HOSTNAME_MISMATCH"
+					? "Connect by a host name the certificate names, or, for an address it does not name such as a private IP address, add sslmode=verify-ca with sslrootcert=<CA file> to the URL"
+					: "Add sslrootcert=<CA file> with the server's CA to the URL; see TLS in docs/storage.md";
+			return new StorageError(
+				`The server's TLS certificate was not accepted (${code}: ${/** @type {Error} */ (current).message}). ${fix}. It is not retried`,
+				{ cause: /** @type {Error} */ (cause) },
+			);
+		}
+		current = /** @type {{ cause?: unknown }} */ (current).cause;
+	}
+	return undefined;
+}
+
+/** The SQLSTATEs of a refused password or token: `28P01`, and `28000`, which Azure sends for a malformed token. */
+const REFUSED_TOKEN_SQLSTATES = new Set(["28P01", "28000"]);
+/** The schema Atomic's tables, indexes, triggers and functions live in when the options name none (#5218). */
+export const DEFAULT_SCHEMA = "atomic";
+/**
+ * Where releases before #5218 created everything: the first schema of the default `search_path`. A database whose
+ * `public` holds Atomic's tables and that has no `atomic` schema yet keeps using it until `atomic storage migrate` moves
+ * them.
+ */
+const LEGACY_SCHEMA = "public";
+/** A table every release that used a database created in it: the migration ledger, the run journal, sessions, Intercom. */
+const LEGACY_MARKERS = "(atomic_migrations|wf_runs|session_sessions|intercom_leases)$";
+/** A schema name the adapter accepts: a lowercase identifier that needs no quotes. */
+const SCHEMA_NAME = /^[a-z_][a-z0-9_]{0,62}$/;
 
 /**
  * @param {string} field
@@ -59,6 +123,37 @@ const MINIMUM_SERVER_VERSION = 140000;
  */
 function configError(field, reason, hint) {
 	return new StorageConfigError("sdk", field, reason, hint);
+}
+
+/**
+ * The failure of a statement the server refused for a missing privilege (SQLSTATE `42501`), as a configuration error
+ * that names the privilege and the fix (#5218): never retried, and never the server's bare message.
+ * @param {{ message: string }} cause
+ * @param {string} role
+ * @param {string} schema
+ * @param {string} database
+ */
+function missingPrivilege(cause, role, schema, database) {
+	const who = role === "" ? "This role" : `Role "${role}"`;
+	const denied = cause.message;
+	/** @type {string} */
+	let fix;
+	if (/must be owner of/.test(denied))
+		fix = `Changing Atomic's tables needs their owner: the schema is behind this version of Atomic. Run \`atomic storage migrate\` as the owner role (the role that owns schema ${schema}), then start again.`;
+	else if (/permission denied for database/.test(denied))
+		fix = `Creating schema ${schema} needs CREATE on the database: run \`atomic storage migrate\` as the owner role, or GRANT CREATE ON DATABASE ${database} TO <owner role>.`;
+	else if (/permission denied for schema/.test(denied))
+		fix = `A runtime role needs USAGE on schema ${schema} (GRANT USAGE ON SCHEMA ${schema} TO <runtime role>); creating tables there needs its owner: run \`atomic storage migrate\` as the owner role when the schema is behind this version of Atomic.`;
+	else if (/permission denied for (table|relation|sequence)/.test(denied))
+		fix = `A runtime role needs SELECT, INSERT, UPDATE and DELETE on every table in schema ${schema} and USAGE, SELECT on its sequences: GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA ${schema} TO <runtime role>; GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA ${schema} TO <runtime role>, and ALTER DEFAULT PRIVILEGES as the owner for tables created later.`;
+	else if (/permission denied for function/.test(denied))
+		fix = `A runtime role needs EXECUTE on Atomic's trigger functions in schema ${schema}: GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA ${schema} TO <runtime role>.`;
+	else fix = `Grant the role the privilege, or run \`atomic storage migrate\` as the owner role.`;
+	return configError(
+		"privileges",
+		"missing-privilege",
+		`${who} lacks a privilege PostgreSQL requires: ${denied} (SQLSTATE 42501). ${fix} See "PostgreSQL roles" in docs/storage.md`,
+	);
 }
 
 /** Whether `host` reaches this machine without a network: a socket directory, a loopback name or address. */
@@ -498,6 +593,21 @@ export async function openPostgresDatabase(options) {
 		options.statementTimeoutMs,
 		DEFAULT_STATEMENT_TIMEOUT_MS,
 	);
+	if (options.schema !== undefined && (typeof options.schema !== "string" || !SCHEMA_NAME.test(options.schema)))
+		throw configError("schema", "invalid-schema", "Use a lowercase identifier of letters, digits and _, such as atomic");
+	/**
+	 * The schema every statement runs in, set with `SET LOCAL search_path` in each transaction so a transaction-mode
+	 * pooler can serve it: the configured one, else `atomic`, or `public` for a database an earlier release set up there.
+	 * Resolved when the database opens.
+	 */
+	let schema = options.schema ?? DEFAULT_SCHEMA;
+	/** Whether `schema` exists; until it does, the first statement that creates something creates it first. */
+	let schemaReady = true;
+	/** @type {Promise<void> | undefined} */
+	let creatingSchema;
+	const searchPathSql = () => `SET LOCAL search_path TO "${schema}"`;
+	/** A lock or channel name of this schema's own: unchanged for `public`, so earlier releases there share them. */
+	const inSchema = (/** @type {string} */ name) => (schema === LEGACY_SCHEMA ? name : `${schema}:${name}`);
 
 	/** @type {Pick<typeof import("pg"), "Pool" | "Client" | "DatabaseError" | "types">} */
 	let pg;
@@ -522,6 +632,9 @@ export async function openPostgresDatabase(options) {
 	const listenConnection =
 		options.listenUrl === undefined ? connection : parseConnection(connectionUrl(options.listenUrl, "listenUrl"));
 
+	/** The cloud token providers of the pool's and the listening connection's hosts. */
+	/** @type {Set<{ invalidate(): void }>} */
+	const tokenProviders = new Set();
 	/** Every password the pool was given, so the redactor can remove them from failures. */
 	const passwords = new Set(typeof options.password === "string" ? [options.password] : []);
 	/**
@@ -530,15 +643,18 @@ export async function openPostgresDatabase(options) {
 	 * @returns {(() => Promise<string>) | undefined}
 	 */
 	const passwordFor = (target) => {
-		const source =
+		const provider =
 			cloud === undefined
-				? options.password
+				? undefined
 				: createCloudPasswordProvider({
 						auth: cloud,
 						host: target.host ?? "",
 						port: target.port ?? 5432,
 						user: target.user ?? "",
+						...(options.sdkSearchPaths === undefined ? {} : { searchPaths: options.sdkSearchPaths }),
 					});
+		if (provider !== undefined) tokenProviders.add(provider);
+		const source = provider ?? options.password;
 		return source === undefined
 			? undefined
 			: async () => {
@@ -589,6 +705,18 @@ export async function openPostgresDatabase(options) {
 		try {
 			return await pool.connect();
 		} catch (cause) {
+			// A cloud token the server refused (28P01, or Azure's 28000 for a malformed one) is dropped, and a fresh one
+			// tried once: a clock that runs behind can reuse a cached token past its expiry (#5218).
+			if (tokenProviders.size > 0 && cause instanceof pg.DatabaseError && REFUSED_TOKEN_SQLSTATES.has(cause.code ?? "")) {
+				for (const provider of tokenProviders) provider.invalidate();
+				try {
+					return await pool.connect();
+				} catch (retried) {
+					throw new PostgresConnectionFailure("connect", /** @type {StorageFailureCause} */ (retried));
+				}
+			}
+			const tls = tlsVerificationFailure(cause);
+			if (tls !== undefined) throw tls;
 			throw new PostgresConnectionFailure("connect", /** @type {StorageFailureCause} */ (cause));
 		}
 	};
@@ -644,6 +772,12 @@ export async function openPostgresDatabase(options) {
 				lost.add(client);
 			if (!(cause instanceof pg.DatabaseError) && lost.has(client))
 				throw new PostgresConnectionFailure("lost", /** @type {StorageFailureCause} */ (cause));
+			if (cause instanceof pg.DatabaseError && cause.code === "42501")
+				throw Object.defineProperty(
+					missingPrivilege(cause, connection.user ?? "", schema, connection.database ?? ""),
+					"cause",
+					{ value: cause, configurable: true },
+				);
 			throw cause;
 		} finally {
 			clearTimeout(timer);
@@ -657,6 +791,49 @@ export async function openPostgresDatabase(options) {
 	 */
 	const statement = (client, sql, params) =>
 		client.query({ text: numberPlaceholders(physicalIdentifiers(sql)), values: [...params], rowMode: "array" });
+
+	/**
+	 * Creates `schema` when it does not exist yet and `sql` creates something, before `sql` runs: on a connection of its
+	 * own, which commits at once, so the transaction `sql` runs in finds it. Opening a database, `atomic storage status`
+	 * and `atomic storage join` create nothing; the first store that sets up its tables creates the schema too, under an
+	 * advisory lock, so hosts that start together on a new database create it once.
+	 * @param {string} sql
+	 */
+	const schemaFor = async (sql) => {
+		if (schemaReady || !/(?:^|;)\s*CREATE\s/i.test(sql)) return;
+		creatingSchema ??= (async () => {
+			const client = new ClosingClient({
+				...connection,
+				...(password === undefined ? {} : { password }),
+				connectionTimeoutMillis: CONNECT_TIMEOUT_MS,
+				application_name: "atomic",
+			});
+			client.on("error", () => {});
+			try {
+				await new Promise((resolve, reject) =>
+					client.connect((/** @type {Error | undefined} */ error) => (error ? reject(error) : resolve(undefined))),
+				);
+			} catch (cause) {
+				throw new PostgresConnectionFailure("connect", /** @type {StorageFailureCause} */ (cause));
+			}
+			try {
+				await watched(
+					/** @type {PoolClient} */ (/** @type {unknown} */ (client)),
+					() =>
+						client.query(
+							`BEGIN; ${setTimeoutSql}; SELECT pg_advisory_xact_lock(${lockKey(`schema:${schema}`)}); CREATE SCHEMA IF NOT EXISTS "${schema}"; COMMIT`,
+						),
+					clientTimeoutMs,
+				);
+				schemaReady = true;
+			} finally {
+				await client.end().catch(() => {});
+			}
+		})().finally(() => {
+			creatingSchema = undefined;
+		});
+		await creatingSchema;
+	};
 
 	/**
 	 * @param {import("pg").QueryResult<SqliteValue[]>} result
@@ -675,8 +852,10 @@ export async function openPostgresDatabase(options) {
 	 * @param {number} timeoutMs
 	 * @returns {Promise<SqliteDriverResult>}
 	 */
-	const execute = async (client, sql, params, timeoutMs) =>
-		driverResult(await watched(client, () => statement(client, sql, params), timeoutMs));
+	const execute = async (client, sql, params, timeoutMs) => {
+		await schemaFor(sql);
+		return driverResult(await watched(client, () => statement(client, sql, params), timeoutMs));
+	};
 
 	/**
 	 * @param {PoolClient} client
@@ -685,6 +864,7 @@ export async function openPostgresDatabase(options) {
 	 */
 	const executeMultiple = async (client, sql, timeoutMs) => {
 		if (isPragma(sql)) return;
+		await schemaFor(sql);
 		await watched(client, () => client.query(physicalIdentifiers(sql)), timeoutMs);
 	};
 
@@ -723,6 +903,22 @@ export async function openPostgresDatabase(options) {
 	};
 
 	/**
+	 * Runs `body`, a statement that cannot run in a transaction block, in the schema: the connection's `search_path` is
+	 * set for it, and reset after.
+	 * @template T
+	 * @param {PoolClient} client
+	 * @param {() => Promise<T>} body
+	 */
+	const inSearchPath = async (client, body) => {
+		await watched(client, () => client.query(`SET search_path TO "${schema}"`), clientTimeoutMs);
+		try {
+			return await body();
+		} finally {
+			await watched(client, () => client.query("RESET search_path"), clientTimeoutMs).catch(() => lost.add(client));
+		}
+	};
+
+	/**
 	 * Runs one statement on `client` in a transaction of its own, which the server cancels at the statement timeout. The
 	 * pipelined connection writes the `BEGIN`, the statement and the `COMMIT` together, so this costs one round trip like
 	 * the statement alone. A statement that fails aborts the transaction, which the `COMMIT` then rolls back.
@@ -733,12 +929,13 @@ export async function openPostgresDatabase(options) {
 	const executeAutocommit = (client, sql, params) =>
 		withTimeout(
 			async () => {
+				await schemaFor(sql);
 				const result = await watched(
 					client,
 					async () => {
 						// Every answer is awaited, so none is left to fail unheard; the first failure is the call's.
 						const answers = await Promise.allSettled([
-							client.query(`BEGIN; ${setTimeoutSql}`),
+							client.query(`BEGIN; ${setTimeoutSql}; ${searchPathSql()}`),
 							statement(client, sql, params),
 							client.query("COMMIT"),
 						]);
@@ -749,7 +946,7 @@ export async function openPostgresDatabase(options) {
 				);
 				return driverResult(result);
 			},
-			() => execute(client, sql, params, clientTimeoutMs),
+			() => inSearchPath(client, () => execute(client, sql, params, clientTimeoutMs)),
 		);
 
 	/**
@@ -761,8 +958,8 @@ export async function openPostgresDatabase(options) {
 	const executeMultipleAutocommit = async (client, sql) => {
 		if (isPragma(sql)) return;
 		await withTimeout(
-			() => executeMultiple(client, `${setTimeoutSql}; ${sql}`, clientTimeoutMs),
-			() => executeMultiple(client, sql, clientTimeoutMs),
+			() => executeMultiple(client, `${setTimeoutSql}; ${searchPathSql()}; ${sql}`, clientTimeoutMs),
+			() => inSearchPath(client, () => executeMultiple(client, sql, clientTimeoutMs)),
 		);
 	};
 
@@ -789,7 +986,9 @@ export async function openPostgresDatabase(options) {
 		send: async (channel, payload) => {
 			await autocommit((client) => client.query("SELECT pg_notify($1, $2)", [channel, payload]));
 		},
-		channelName: (channel) => postgresDialect.identifier(channel),
+		// Each schema's wake-ups are its own; `public` keeps the channels earlier releases listen on.
+		channelName: (channel) =>
+			postgresDialect.identifier(schema === LEGACY_SCHEMA ? channel : `${schema}_${channel}`),
 	});
 
 	const database = createSqliteDatabase({
@@ -821,11 +1020,11 @@ export async function openPostgresDatabase(options) {
 			const lock =
 				concurrency.kind !== "serial"
 					? concurrency.excludesSerial === true
-						? `SELECT pg_advisory_xact_lock_shared(${lockKey(DATABASE_LOCK_SCOPE)}); `
+						? `SELECT pg_advisory_xact_lock_shared(${lockKey(inSchema(DATABASE_LOCK_SCOPE))}); `
 						: ""
 					: concurrency.domain === undefined
-						? `SELECT pg_advisory_xact_lock(${lockKey(DATABASE_LOCK_SCOPE)}); `
-						: `SELECT pg_advisory_xact_lock_shared(${lockKey(DATABASE_LOCK_SCOPE)}), pg_advisory_xact_lock(${lockKey(concurrency.domain)}); `;
+						? `SELECT pg_advisory_xact_lock(${lockKey(inSchema(DATABASE_LOCK_SCOPE))}); `
+						: `SELECT pg_advisory_xact_lock_shared(${lockKey(inSchema(DATABASE_LOCK_SCOPE))}), pg_advisory_xact_lock(${lockKey(inSchema(concurrency.domain))}); `;
 			const client = await connect();
 			try {
 				// One round trip, with nothing set outside the transaction, so a transaction-mode pooler can serve it.
@@ -833,7 +1032,7 @@ export async function openPostgresDatabase(options) {
 					client,
 					() =>
 						client.query(
-							`BEGIN; SET LOCAL lock_timeout = ${lockWaitMs}; ${lock}SET LOCAL statement_timeout = ${statementTimeoutMs}`,
+							`BEGIN; SET LOCAL lock_timeout = ${lockWaitMs}; ${lock}SET LOCAL statement_timeout = ${statementTimeoutMs}; ${searchPathSql()}`,
 						),
 					lockWaitMs + clientTimeoutMs,
 				);
@@ -881,6 +1080,20 @@ export async function openPostgresDatabase(options) {
 				new StorageError(`PostgreSQL server version ${version} is older than 14`),
 				"PostgreSQL 14 or newer is required",
 			);
+		// Which schema holds Atomic's tables, read without creating anything (#5218).
+		const found = await database.get(
+			`SELECT (SELECT count(*) FROM pg_catalog.pg_namespace WHERE nspname = ?) AS present,
+				(SELECT count(*) FROM pg_catalog.pg_namespace WHERE nspname = ?) AS preferred,
+				(SELECT count(*) FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+					WHERE n.nspname = ? AND c.relkind = 'r' AND c.relname ~ ?) AS legacy`,
+			schema,
+			DEFAULT_SCHEMA,
+			LEGACY_SCHEMA,
+			LEGACY_MARKERS,
+		);
+		if (options.schema === undefined && Number(found?.preferred) === 0 && Number(found?.legacy) > 0)
+			schema = LEGACY_SCHEMA;
+		else schemaReady = Number(found?.present) > 0;
 		return database;
 	} catch (error) {
 		await database
@@ -919,6 +1132,9 @@ const adapter = {
 			...(typeof options.maxConnections === "number" ? { maxConnections: options.maxConnections } : {}),
 			...(typeof options.statementTimeoutMs === "number" ? { statementTimeoutMs: options.statementTimeoutMs } : {}),
 			...(typeof options.listenUrl === "string" ? { listenUrl: options.listenUrl } : {}),
+			...(options.schema === undefined ? {} : { schema: /** @type {string} */ (options.schema) }),
+			// A cloud SDK `atomic install` put in the user packages, for an adapter installed from a local path (#5218).
+			...(cloud ? { sdkSearchPaths: [join(context.agentDir, "npm")] } : {}),
 		});
 	},
 };

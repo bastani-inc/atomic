@@ -220,6 +220,7 @@ export function validateStoragePrefix(prefix = "", dialect?: StorageDialectName)
 	const chosen = prefix.endsWith(POSTGRES_POOL_SESSION_PREFIX)
 		? prefix.slice(0, -POSTGRES_POOL_SESSION_PREFIX.length)
 		: prefix;
+	if (dialect === "postgres" && /[A-Z]/.test(prefix)) throw new StoragePrefixError(prefix, "uppercase");
 	if (dialect === "postgres" && chosen.length > POSTGRES_MAX_STORAGE_PREFIX_LENGTH)
 		throw new StoragePrefixError(prefix, "too-long", POSTGRES_MAX_STORAGE_PREFIX_LENGTH);
 	return prefix;
