@@ -14,23 +14,38 @@ export interface ConflictBlock {
 
 const conflictRegistry = new Map<string, ConflictBlock[]>();
 
+type ConflictMarker = "<" | "|" | "=" | ">";
+
+/**
+ * The marker a line is, as Git writes it: exactly seven marker characters at the start of the line, then the end of
+ * the line or a space and a label. `========`, `=======foo` and `>>>>>>>>` are content.
+ */
+function conflictMarker(line: string): ConflictMarker | undefined {
+	return /^(?:<{7}|\|{7}|={7}|>{7})(?:[ \r]|$)/.test(line) ? (line[0] as ConflictMarker) : undefined;
+}
+
+/**
+ * Conflict regions in `text`. A region is `<<<<<<<`, an optional `|||||||` base, `=======`, then `>>>>>>>`; a marker
+ * line anywhere else in the region (a second separator, a base after the separator, an end before it, or a nested
+ * start) makes the region ambiguous, so it is left out rather than split at a guess, as Git's rerere refuses it.
+ */
 export function parseConflictBlocks(file: string, text: string): ConflictBlock[] {
 	const lines = text.split("\n"),
 		blocks: ConflictBlock[] = [];
 	for (let index = 0; index < lines.length; index++) {
-		if (!lines[index]?.startsWith("<<<<<<<")) continue;
+		if (conflictMarker(lines[index] ?? "") !== "<") continue;
 		let baseSep: number | undefined,
 			sep = -1,
 			end = -1;
 		for (let cursor = index + 1; cursor < lines.length; cursor++) {
-			if (lines[cursor]?.startsWith("|||||||")) baseSep = cursor;
-			else if (lines[cursor]?.startsWith("=======")) sep = cursor;
-			else if (lines[cursor]?.startsWith(">>>>>>>")) {
-				end = cursor;
-				break;
-			}
+			const marker = conflictMarker(lines[cursor] ?? "");
+			if (marker === undefined) continue;
+			if (marker === "|" && sep < 0 && baseSep === undefined) baseSep = cursor;
+			else if (marker === "=" && sep < 0) sep = cursor;
+			else if (marker === ">" && sep >= 0) end = cursor;
+			if (end >= 0 || (cursor !== baseSep && cursor !== sep)) break;
 		}
-		if (sep < 0 || end < 0) continue;
+		if (end < 0) continue;
 		blocks.push({
 			file,
 			start: index,

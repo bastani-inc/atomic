@@ -5,6 +5,7 @@
 import { isPermanentRefreshRejection, OAuthRefreshRejectedError } from "../oauth-refresh-errors.ts";
 import type { OAuthAuth, OAuthCredential, ProviderAuthInteraction } from "../types.ts";
 import { pollOAuthDeviceCodeFlow } from "./device-code.ts";
+import { refreshedOAuthCredential } from "./token-response.ts";
 
 const XAI_CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828";
 const XAI_SCOPE = "openid profile email offline_access grok-cli:access api:access";
@@ -12,7 +13,6 @@ const XAI_DEVICE_CODE_URL = "https://auth.x.ai/oauth2/device/code";
 const XAI_TOKEN_URL = "https://auth.x.ai/oauth2/token";
 // Refresh slightly before the reported expiry to avoid using a token that dies mid-request.
 const REFRESH_SKEW_MS = 5 * 60 * 1000;
-const DEFAULT_TOKEN_LIFETIME_SECONDS = 3600;
 
 type JsonObject = Record<string, unknown>;
 
@@ -129,18 +129,8 @@ function parseDeviceCode(body: JsonObject): XaiDeviceCode {
 function credentialsFromTokenResponse(body: JsonObject, previousRefreshToken?: string): OAuthCredential {
 	const access = requiredString(body, "access_token");
 	// xAI may omit refresh_token on refresh when the token is not rotated.
-	const refresh =
-		body.refresh_token === undefined && previousRefreshToken
-			? previousRefreshToken
-			: requiredString(body, "refresh_token");
-	const expiresInSeconds =
-		body.expires_in === undefined ? DEFAULT_TOKEN_LIFETIME_SECONDS : positiveNumber(body, "expires_in");
-	return {
-		type: "oauth",
-		access,
-		refresh,
-		expires: Date.now() + expiresInSeconds * 1000 - REFRESH_SKEW_MS,
-	};
+	const presented = previousRefreshToken || requiredString(body, "refresh_token");
+	return refreshedOAuthCredential(access, body, presented, REFRESH_SKEW_MS);
 }
 
 async function requestDeviceCode(signal: AbortSignal): Promise<XaiDeviceCode> {
