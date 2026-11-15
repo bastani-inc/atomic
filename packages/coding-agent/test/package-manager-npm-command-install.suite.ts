@@ -99,8 +99,11 @@ describe("DefaultPackageManager", () => {
 	let settingsManager: SettingsManager;
 	let packageManager: DefaultPackageManager;
 	let previousOfflineEnv: string | undefined;
+	/** Where the latest mocked `git clone` wrote: a staging directory renamed into place afterwards. */
+	let cloneDir = "";
 
 	beforeEach(() => {
+		cloneDir = "";
 		previousOfflineEnv = process.env.ATOMIC_OFFLINE;
 		delete process.env.ATOMIC_OFFLINE;
 		tempDir = join(tmpdir(), `pm-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -178,6 +181,23 @@ describe("DefaultPackageManager", () => {
 			);
 		});
 
+		it.each([
+			[["bun"], "bun", ["uninstall", "@scope/pkg", "--cwd"]],
+			[["pnpm"], "pnpm", ["uninstall", "@scope/pkg", "--prefix"]],
+		])("uninstalls npm packages with %j in the real install root", async (npmCommand, command, args) => {
+			packageManager = new DefaultPackageManager({
+				cwd: tempDir,
+				agentDir,
+				settingsManager: SettingsManager.inMemory({ npmCommand }),
+			});
+			mkdirSync(join(agentDir, "npm"), { recursive: true });
+			const runCommandSpy = vi.spyOn(packageManager as any, "runCommand").mockResolvedValue(undefined);
+
+			await packageManager.remove("npm:@scope/pkg");
+
+			assertCalledWith(runCommandSpy, command, [...args, realpathSync(join(agentDir, "npm"))], undefined);
+		});
+
 		// Regression test for upstream #11358: npm writes nested package-lock.json entries for a symlinked --prefix.
 		it("should pass the real path as --prefix when the agent dir is a symlink", async () => {
 			const realAgentDir = join(tempDir, "dotfiles", "agent");
@@ -243,14 +263,14 @@ describe("DefaultPackageManager", () => {
 
 		it("should install git package dependencies without auto-installing peers", async () => {
 			const source = "git:github.com/user/repo";
-			const targetDir = join(agentDir, "git", "github.com", "user", "repo");
 			const runCommandSpy = vi
 				.spyOn(packageManager as any, "runCommand")
 				.mockImplementation(async (...callArgs: unknown[]) => {
 					const [command, args] = callArgs as [string, string[]];
 					if (command === "git" && args[0] === "clone") {
-						mkdirSync(targetDir, { recursive: true });
-						writeFileSync(join(targetDir, "package.json"), JSON.stringify({ name: "repo", version: "1.0.0" }));
+						cloneDir = args[args.length - 1]!;
+						mkdirSync(cloneDir, { recursive: true });
+						writeFileSync(join(cloneDir, "package.json"), JSON.stringify({ name: "repo", version: "1.0.0" }));
 					}
 				});
 
@@ -261,7 +281,7 @@ describe("DefaultPackageManager", () => {
 				"npm",
 				["install", "--omit=dev", "--legacy-peer-deps", "--no-audit", "--no-fund"],
 				{
-					cwd: targetDir,
+					cwd: cloneDir,
 				},
 			);
 		});
@@ -282,7 +302,7 @@ describe("DefaultPackageManager", () => {
 		it("should reconcile an existing git checkout to a pinned ref during install", async () => {
 			const source = "git:github.com/user/repo@v2";
 			const targetDir = join(agentDir, "git", "github.com", "user", "repo");
-			mkdirSync(targetDir, { recursive: true });
+			mkdirSync(join(targetDir, ".git"), { recursive: true });
 			writeFileSync(join(targetDir, "package.json"), JSON.stringify({ name: "repo", version: "1.0.0" }));
 
 			const managerWithInternals = packageManager as unknown as PackageManagerInternals;
@@ -318,7 +338,7 @@ describe("DefaultPackageManager", () => {
 			const source = "git:github.com/user/repo";
 			const targetDir = join(agentDir, "git", "github.com", "user", "repo");
 			const fetchArgs = ["fetch", "--prune", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main"];
-			mkdirSync(targetDir, { recursive: true });
+			mkdirSync(join(targetDir, ".git"), { recursive: true });
 
 			const managerWithInternals = packageManager as unknown as PackageManagerInternals;
 			vi.spyOn(managerWithInternals, "getLocalGitUpdateTarget").mockResolvedValue({
@@ -357,14 +377,14 @@ describe("DefaultPackageManager", () => {
 			});
 
 			const source = "git:github.com/user/repo";
-			const targetDir = join(agentDir, "git", "github.com", "user", "repo");
 			const runCommandSpy = vi
 				.spyOn(packageManager as any, "runCommand")
 				.mockImplementation(async (...callArgs: unknown[]) => {
 					const [command, args] = callArgs as [string, string[]];
 					if (command === "git" && args[0] === "clone") {
-						mkdirSync(targetDir, { recursive: true });
-						writeFileSync(join(targetDir, "package.json"), JSON.stringify({ name: "repo", version: "1.0.0" }));
+						cloneDir = args[args.length - 1]!;
+						mkdirSync(cloneDir, { recursive: true });
+						writeFileSync(join(cloneDir, "package.json"), JSON.stringify({ name: "repo", version: "1.0.0" }));
 					}
 				});
 
@@ -383,7 +403,7 @@ describe("DefaultPackageManager", () => {
 					"--config.strict-peer-dependencies=false",
 					"--config.strict-dep-builds=false",
 				],
-				{ cwd: targetDir },
+				{ cwd: cloneDir },
 			);
 		});
 
@@ -398,14 +418,14 @@ describe("DefaultPackageManager", () => {
 			});
 
 			const source = "git:github.com/user/repo";
-			const targetDir = join(agentDir, "git", "github.com", "user", "repo");
 			const runCommandSpy = vi
 				.spyOn(packageManager as any, "runCommand")
 				.mockImplementation(async (...callArgs: unknown[]) => {
 					const [command, args] = callArgs as [string, string[]];
 					if (command === "git" && args[0] === "clone") {
-						mkdirSync(targetDir, { recursive: true });
-						writeFileSync(join(targetDir, "package.json"), JSON.stringify({ name: "repo", version: "1.0.0" }));
+						cloneDir = args[args.length - 1]!;
+						mkdirSync(cloneDir, { recursive: true });
+						writeFileSync(join(cloneDir, "package.json"), JSON.stringify({ name: "repo", version: "1.0.0" }));
 					}
 				});
 
@@ -422,7 +442,7 @@ describe("DefaultPackageManager", () => {
 					"--config.strict-peer-dependencies=false",
 					"--config.strict-dep-builds=false",
 				],
-				{ cwd: targetDir },
+				{ cwd: cloneDir },
 			);
 		});
 
@@ -437,14 +457,14 @@ describe("DefaultPackageManager", () => {
 			});
 
 			const source = "git:github.com/user/repo";
-			const targetDir = join(agentDir, "git", "github.com", "user", "repo");
 			const runCommandSpy = vi
 				.spyOn(packageManager as any, "runCommand")
 				.mockImplementation(async (...callArgs: unknown[]) => {
 					const [command, args] = callArgs as [string, string[]];
 					if (command === "git" && args[0] === "clone") {
-						mkdirSync(targetDir, { recursive: true });
-						writeFileSync(join(targetDir, "package.json"), JSON.stringify({ name: "repo", version: "1.0.0" }));
+						cloneDir = args[args.length - 1]!;
+						mkdirSync(cloneDir, { recursive: true });
+						writeFileSync(join(cloneDir, "package.json"), JSON.stringify({ name: "repo", version: "1.0.0" }));
 					}
 				});
 
@@ -455,7 +475,7 @@ describe("DefaultPackageManager", () => {
 
 			assert.ok(
 				!runCommandSpy.mock.calls.some(
-					([command, , options]) => command === "corepack" && isDeepStrictEqual(options, { cwd: targetDir }),
+					([command, , options]) => command === "corepack" && isDeepStrictEqual(options, { cwd: cloneDir }),
 				),
 			);
 		});
@@ -471,28 +491,28 @@ describe("DefaultPackageManager", () => {
 			});
 
 			const source = "git:github.com/user/repo";
-			const targetDir = join(agentDir, "git", "github.com", "user", "repo");
 			const runCommandSpy = vi
 				.spyOn(packageManager as any, "runCommand")
 				.mockImplementation(async (...callArgs: unknown[]) => {
 					const [command, args] = callArgs as [string, string[]];
 					if (command === "git" && args[0] === "clone") {
-						mkdirSync(targetDir, { recursive: true });
-						writeFileSync(join(targetDir, "package.json"), JSON.stringify({ name: "repo", version: "1.0.0" }));
+						cloneDir = args[args.length - 1]!;
+						mkdirSync(cloneDir, { recursive: true });
+						writeFileSync(join(cloneDir, "package.json"), JSON.stringify({ name: "repo", version: "1.0.0" }));
 					}
 				});
 
 			await packageManager.install(source);
 
 			assertCalledWith(runCommandSpy, "bun", ["install", "--omit=dev", "--omit=peer"], {
-				cwd: targetDir,
+				cwd: cloneDir,
 			});
 		});
 
 		it("should update git package dependencies without auto-installing peers", async () => {
 			const source = "git:github.com/user/repo";
 			const targetDir = join(tempDir, ".pi", "git", "github.com", "user", "repo");
-			mkdirSync(targetDir, { recursive: true });
+			mkdirSync(join(targetDir, ".git"), { recursive: true });
 			writeFileSync(join(targetDir, "package.json"), JSON.stringify({ name: "repo", version: "1.0.0" }));
 			settingsManager.setProjectPackages([source]);
 
@@ -527,7 +547,7 @@ describe("DefaultPackageManager", () => {
 			const source = "git:github.com/user/repo";
 			const targetDir = join(agentDir, "git", "github.com", "user", "repo");
 			const fetchArgs = ["fetch", "--prune", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main"];
-			mkdirSync(targetDir, { recursive: true });
+			mkdirSync(join(targetDir, ".git"), { recursive: true });
 			writeFileSync(
 				join(targetDir, "package.json"),
 				JSON.stringify({ name: "repo", version: "1.0.0", dependencies: { dependency: "1.0.0" } }),
@@ -561,7 +581,7 @@ describe("DefaultPackageManager", () => {
 			const targetDir = join(agentDir, "git", "github.com", "user", "repo");
 			const markerPath = join(dirname(targetDir), `.repo.${APP_NAME}-update-incomplete`);
 			const fetchArgs = ["fetch", "--prune", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main"];
-			mkdirSync(targetDir, { recursive: true });
+			mkdirSync(join(targetDir, ".git"), { recursive: true });
 			writeFileSync(
 				join(targetDir, "package.json"),
 				JSON.stringify({ name: "repo", version: "1.0.0", dependencies: { dependency: "1.0.0" } }),
@@ -615,7 +635,7 @@ describe("DefaultPackageManager", () => {
 			const source = "git:github.com/user/repo";
 			const targetDir = join(agentDir, "git", "github.com", "user", "repo");
 			const fetchArgs = ["fetch", "--prune", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main"];
-			mkdirSync(targetDir, { recursive: true });
+			mkdirSync(join(targetDir, ".git"), { recursive: true });
 			writeFileSync(
 				join(targetDir, "package.json"),
 				JSON.stringify({ name: "repo", version: "1.0.0", dependencies: { dependency: "1.0.0" } }),
@@ -660,7 +680,7 @@ describe("DefaultPackageManager", () => {
 
 			const source = "git:github.com/user/repo";
 			const targetDir = join(tempDir, ".pi", "git", "github.com", "user", "repo");
-			mkdirSync(targetDir, { recursive: true });
+			mkdirSync(join(targetDir, ".git"), { recursive: true });
 			writeFileSync(join(targetDir, "package.json"), JSON.stringify({ name: "repo", version: "1.0.0" }));
 			settingsManager.setProjectPackages([source]);
 

@@ -13,6 +13,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
+import { getAgentDir } from "../../packages/coding-agent/src/config.ts";
 import {
 	captureWorktreeSnapshot,
 	type WorktreeSnapshotCapture,
@@ -22,10 +23,16 @@ import {
 	captureIndexPath,
 	defaultWorktreeSnapshotStoreDir,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/paths.ts";
+import { bunExecutable, moduleDir, readStreamText, spawnProcess } from "../helpers/runtime.js";
 import { GitSandbox } from "../helpers/worktree-snapshot.js";
 
 /** The benchmark writes several thousand files and captures them twice. */
 const BENCHMARK_TIMEOUT_MS = 120_000;
+/** The cross-process test starts real Bun processes, each loading the capture module before it captures. */
+const CHILD_PROCESS_TIMEOUT_MS = 90_000;
+const CAPTURE_PROCESSES = 4;
+const CAPTURES_PER_PROCESS = 5;
+const CAPTURE_CHILD = join(moduleDir(import.meta.url), "..", "fixtures", "worktree-snapshot-capture-child.ts");
 
 let sandbox: GitSandbox;
 beforeEach(() => {
@@ -256,6 +263,122 @@ describe("a private index that cannot be used falls back to today's capture (#47
 			assert.equal(JSON.parse(readFileSync(`${index}.json`, "utf8")).version, 1);
 		});
 	}
+});
+
+describe("the private index and its record stay consistent (#4847)", () => {
+	/**
+	 * A checkout whose `a.txt` was rewritten with the same size and time while Git ignores ctime, then staged again:
+	 * only the user's index knows its new content, so a private index from before is stale.
+	 */
+	async function sameStatRewriteStaged(clone: string): Promise<void> {
+		const file = join(clone, "a.txt");
+		const { mtime } = statSync(file);
+		writeFileSync(file, "bbbb\n");
+		utimesSync(file, mtime, mtime);
+		await sandbox.git(clone, "rm", "-q", "--cached", "a.txt");
+		await sandbox.git(clone, "add", "a.txt");
+	}
+
+	async function trustlessCtimeClone(): Promise<string> {
+		const { clone } = await sandbox.remoteWithClone("repo", { "a.txt": "aaaa\n" });
+		await sandbox.git(clone, "config", "core.trustctime", "false");
+		const past = Math.floor(Date.now() / 1000) - 60;
+		utimesSync(join(clone, "a.txt"), past, past);
+		return clone;
+	}
+
+	test("a private index a crash left behind its newer record is rebuilt from the user's index (#4847)", async () => {
+		const clone = await trustlessCtimeClone();
+		await treeThroughPrivateIndex(clone);
+		const index = await privateIndexOf(clone);
+		const before = readFileSync(index);
+		await sameStatRewriteStaged(clone);
+		await treeOf(clone);
+		// The record moved on to the user's new index; the index file did not.
+		writeFileSync(index, before);
+
+		const tree = await treeThroughPrivateIndex(clone);
+
+		assert.equal(await treeFile(clone, tree, "a.txt"), "bbbb");
+	});
+
+	test("a record a crash left behind its newer private index is rebuilt from the user's index (#4847)", async () => {
+		const clone = await trustlessCtimeClone();
+		await treeThroughPrivateIndex(clone);
+		const index = await privateIndexOf(clone);
+		await sameStatRewriteStaged(clone);
+		const record = readFileSync(`${index}.json`);
+		await treeOf(clone);
+		// The index file moved on; its record still describes the one before.
+		writeFileSync(`${index}.json`, record);
+
+		const tree = await treeThroughPrivateIndex(clone);
+
+		assert.equal(await treeFile(clone, tree, "a.txt"), "bbbb");
+	});
+
+	test(
+		"captures from several processes at once record the right tree and leave a truthful record (#4847)",
+		async () => {
+			const clone = await trustlessCtimeClone();
+			sandbox.write(join(clone, "new.txt"), "new\n");
+			sandbox.write(join(clone, "staged.txt"), "staged\n");
+			await sandbox.git(clone, "add", "staged.txt");
+			await treeOf(clone);
+			// Removes the private index and its record, so the processes also race to seed it.
+			const expected = await treeWithoutPrivateIndex(clone);
+
+			const children = Array.from({ length: CAPTURE_PROCESSES }, () =>
+				spawnProcess([bunExecutable(), CAPTURE_CHILD, clone, String(CAPTURES_PER_PROCESS)], {
+					env: { ...process.env, ...sandbox.executable.env, ATOMIC_CODING_AGENT_DIR: getAgentDir() },
+					stdout: "pipe",
+					stderr: "pipe",
+				}),
+			);
+			const outputs = await Promise.all(
+				children.map(async (child) => {
+					const [stdout, stderr, code] = await Promise.all([
+						readStreamText(child.stdout),
+						readStreamText(child.stderr),
+						child.exited,
+					]);
+					assert.equal(code, 0, stderr);
+					return stdout.trim().split("\n");
+				}),
+			);
+
+			assert.deepEqual(outputs, Array(CAPTURE_PROCESSES).fill(Array(CAPTURES_PER_PROCESS).fill(expected)));
+			assert.deepEqual(
+				readdirSync(join(defaultWorktreeSnapshotStoreDir(), "capture-index")).filter((name) =>
+					name.endsWith(".tmp"),
+				),
+				[],
+			);
+			await sameStatRewriteStaged(clone);
+			const tree = await treeThroughPrivateIndex(clone);
+			assert.equal(await treeFile(clone, tree, "a.txt"), "bbbb");
+			assert.equal(await treeFile(clone, tree, "new.txt"), "new");
+		},
+		CHILD_PROCESS_TIMEOUT_MS,
+	);
+
+	test("after a crash between the two steps, a file unstaged with git rm --cached is not recorded (#4847)", async () => {
+		const { clone } = await sandbox.remoteWithClone("repo", { ".gitignore": "*.log\n", "a.txt": "a\n" });
+		sandbox.write(join(clone, "secret.log"), "secret\n");
+		await sandbox.git(clone, "add", "-f", "secret.log");
+		await treeThroughPrivateIndex(clone);
+		const index = await privateIndexOf(clone);
+		const before = readFileSync(index);
+		await sandbox.git(clone, "rm", "-q", "--cached", "secret.log");
+		await treeOf(clone);
+		writeFileSync(index, before);
+
+		const tree = await treeThroughPrivateIndex(clone);
+
+		const paths = (await sandbox.git(clone, "ls-tree", "-r", "--name-only", tree)).split("\n");
+		assert.deepEqual(paths, [".gitignore", "a.txt"]);
+		assert.equal(await treeWithoutPrivateIndex(clone), tree);
+	});
 });
 
 describe("where the private index may not go (#4748)", () => {

@@ -238,6 +238,7 @@ describe("DefaultPackageManager", () => {
 			const source = `git:github.com/example/branch-${Date.now()}-${Math.random().toString(36).slice(2)}@main`;
 			const installedPath = internals.getGitInstallPath(internals.parseSource(source), "temporary");
 			try {
+				mkdirSync(join(installedPath, ".git"), { recursive: true });
 				mkdirSync(join(installedPath, "extensions"), { recursive: true });
 				writeFileSync(join(installedPath, "extensions", "index.ts"), "export default function() {};");
 

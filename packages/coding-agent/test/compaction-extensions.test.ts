@@ -243,10 +243,16 @@ describe("verbatim compaction extension hooks", () => {
 		expect(session.sessionManager.getEntries().some((entry) => entry.type === "compaction")).toBe(false);
 	});
 
-	it("rejects whitespace extension text before persistence", async () => {
-		await create(extension(() => ({ compactedText: "  \n" })));
-		await expect(session.compact()).rejects.toThrow("No compacted text provided by extension");
-		expect(session.sessionManager.getEntries().some((entry) => entry.type === "compaction")).toBe(false);
+	it("treats whitespace extension text as no override and plans the region itself (#4977)", async () => {
+		const faux = createFauxStreamFn(["1:1,2"]);
+		await create(
+			extension(() => ({ compactedText: "  \n" })),
+			faux.streamFn,
+		);
+		const result = await session.compact();
+		expect(faux.state.callCount).toBe(1);
+		expect(result.rung).toBe("planned");
+		expect(result.compactedText.trim()).not.toBe("");
 	});
 
 	it.each([

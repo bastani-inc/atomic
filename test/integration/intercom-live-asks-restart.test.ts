@@ -213,7 +213,8 @@ for (const restart of RESTARTS) {
 			await sleep(SETTLE_MS);
 			assert.deepEqual(
 				outcomes(askerBack, questionId),
-				[{ id: "peer_disconnected", failed: true }],
+				// #5004: an asker that confirms saves is sent a failure it confirms, as it would a reply.
+				[{ id: `ended:${questionId}`, failed: true }],
 				"the asker is told once that its recipient is gone",
 			);
 		},

@@ -2,7 +2,7 @@ import type { SessionEntry } from "../../session-manager-types.ts";
 import { SqlSnapshotBlobStore } from "../../worktree-snapshot/blob-store.ts";
 import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteTransactionOptions, SqliteValue } from "../database.js";
 import { dialectOf, type StorageDialect } from "../dialect.js";
-import { SessionBlobError, StorageInvalidTextError } from "../errors.js";
+import { SessionBlobError, StorageError, StorageInvalidTextError } from "../errors.js";
 import { applyStorageMigrations } from "../migrations.js";
 import { renderStorageIdentifiers, storageMigrationTable } from "../prefix.js";
 import { assertStorageSchemaVersion } from "../schema.js";
@@ -26,6 +26,9 @@ import type {
 	SessionBlob,
 	SessionCwdMatcher,
 	SessionListQuery,
+	SessionOpenMarker,
+	SessionOpenMarkerAge,
+	SessionOpenMarkerStore,
 	SessionRecordHeader,
 	SessionSnapshot,
 	SessionStore,
@@ -35,7 +38,14 @@ import type {
 } from "./types.js";
 import { validateSessionEntries, validateSessionHeader, validateSessionText } from "./validation.js";
 
-export const SESSION_SCHEMA_VERSION = 1;
+/**
+ * The sessions schema this build writes. Version 2 stores long entries in chunks (#4954), which a build that knows only
+ * version 1 would read as stubs, so opening a database upgrades its sessions meta to 2 and older builds refuse it with
+ * `StorageSchemaVersionError`. Postgres records the same step in its migration ledger, which older builds check there.
+ */
+export const SESSION_SCHEMA_VERSION = 2;
+/** The sessions schema older builds wrote; this build upgrades it when it opens the database. */
+const SESSION_SCHEMA_VERSION_UNCHUNKED = 1;
 /** The schema domain of the session tables in the prefix's migration ledger. */
 export const SESSION_DOMAIN = "sessions";
 /**
@@ -45,6 +55,21 @@ export const SESSION_DOMAIN = "sessions";
  * this size. A different size needs different table names, because a blob's rows are addressed by their index.
  */
 export const SESSION_BLOB_CHUNK_BYTES = 1024 * 1024;
+/**
+ * The most bytes of an entry's JSON one row of the entries table holds. A longer entry is stored as a stub in its
+ * entries row, which keeps its `type`, `id` and `parentId` for the snapshot reference index, and its UTF-8 JSON in
+ * rows of at most this many bytes in the entry chunks table, written in the entry's transaction (#4954). Like
+ * {@link SESSION_BLOB_CHUNK_BYTES} it stays well under the smallest backend limit, sqld's 5,000,000 bytes per value
+ * and per row. Snapshot entries are never split: the reference index reads their whole JSON.
+ */
+export const SESSION_ENTRY_CHUNK_BYTES = 1024 * 1024;
+/**
+ * The most characters one read of entries or listing rows returns, by the stored text's `length()`. A character is at
+ * most four bytes of UTF-8 and a JSON escape at most doubles a character on a server's wire, so a page stays under
+ * sqld's 10 MB response limit; a single row longer than this, at most {@link SESSION_ENTRY_CHUNK_BYTES}, is a page
+ * of its own (#4954).
+ */
+export const SESSION_READ_PAGE_CHARS = 1024 * 1024;
 /** Bound each write transaction while reusing the bytes already supplied to putBlob. */
 const LEGACY_BLOB_BATCH_CHUNKS = 16;
 export const SESSION_TABLES = Object.freeze({
@@ -54,7 +79,12 @@ export const SESSION_TABLES = Object.freeze({
 	searchTexts: "search_texts",
 	blobs: "blobs",
 	blobChunks: "blob_chunks",
+	entryChunks: "entry_chunks",
 });
+
+/** The schema domain, in the prefix's migration ledger, of the table of open sessions (#4971). */
+export const SESSION_PRESENCE_DOMAIN = "session-presence";
+export const SESSION_PRESENCE_TABLES = Object.freeze({ open: "open" });
 
 type Tables = Readonly<Record<keyof typeof SESSION_TABLES, string>>;
 type HeaderRow = SqliteRow & { header_json: string; last_seq: number };
@@ -73,6 +103,43 @@ type ListingRow = HeaderRow & {
 	revision: string;
 };
 type SummaryRow = ListingRow & { search_texts_json: string };
+/** A row's key and how many characters its stored text holds, for reading rows in pages. */
+type SizedRow = SqliteRow & { size: number | bigint | null };
+/** A row of a page: its position in store order, and how many rows the page's statement could have returned. */
+type PageRow = { ord: number | bigint; remaining: number | bigint };
+
+/** `rows` split into runs, in order, of at most {@link SESSION_READ_PAGE_CHARS}; a longer row is a run of its own. */
+function pagesOf<Row extends { readonly size: number | bigint | null }>(rows: readonly Row[]): Row[][] {
+	const pages: Row[][] = [];
+	let page: Row[] = [];
+	let chars = 0;
+	for (const row of rows) {
+		const size = Number(row.size ?? 0);
+		if (page.length > 0 && chars + size > SESSION_READ_PAGE_CHARS) {
+			pages.push(page);
+			page = [];
+			chars = 0;
+		}
+		page.push(row);
+		chars += size;
+	}
+	if (page.length > 0) pages.push(page);
+	return pages;
+}
+
+/** An entry's JSON as its entries row stores it, and the UTF-8 chunks of a long one. */
+function storedEntry(entry: SessionEntry, json: string): { readonly json: string; readonly chunks: Uint8Array[] } {
+	// Every UTF-16 code unit is at most three bytes of UTF-8, so a short entry needs no encoding to be measured.
+	if (json.length * 3 <= SESSION_ENTRY_CHUNK_BYTES || entry.type === "worktree_snapshot") return { json, chunks: [] };
+	const bytes = Buffer.from(json, "utf8");
+	if (bytes.byteLength <= SESSION_ENTRY_CHUNK_BYTES) return { json, chunks: [] };
+	const chunks: Uint8Array[] = [];
+	for (let offset = 0; offset < bytes.byteLength; offset += SESSION_ENTRY_CHUNK_BYTES) {
+		chunks.push(bytes.subarray(offset, offset + SESSION_ENTRY_CHUNK_BYTES));
+	}
+	const stub = { type: entry.type, id: entry.id, parentId: entry.parentId ?? null };
+	return { json: JSON.stringify(stub), chunks };
+}
 
 /** Each committed batch is its own durable checkpoint; the legacy bytes stay readable until publication. */
 async function migrateLegacyBlobBatch(
@@ -116,6 +183,9 @@ async function migrateLegacyBlobBatch(
 /** Every listing column except search text, so an unchanged row keeps its cached summary. */
 const LISTING_COLUMNS =
 	"id, cwd, internal, header_json, last_seq, modified_at, message_count, first_message, name, has_name, summary, summarized_through_id, revision";
+/** The characters a listing row holds, its search text aside, for reading listings in pages (#4954). */
+const LISTING_SIZE =
+	"length(header_json) + length(first_message) + COALESCE(length(name), 0) + COALESCE(length(summary), 0) + 256";
 /** Rows whose search text is read per query; well under SQLite's bound-parameter limit. */
 export const LISTING_FETCH_BATCH = 500;
 /** Listing scopes (visibility and project) kept at once; the picker uses two. */
@@ -165,6 +235,8 @@ export class SqlSessionStore implements SessionStore {
 	private closed = false;
 	private readonly cwdMatcher?: SessionCwdMatcher;
 	readonly snapshotBlobs: SqlSnapshotBlobStore;
+	/** Set by `open`, once the store exists (#4971). */
+	openMarkers!: SqlSessionOpenMarkers;
 	/** Session ids of each recently listed scope, valid while the store's change token is unchanged. */
 	private readonly scopes = new Map<string, { readonly token: string | undefined; readonly ids: readonly string[] }>();
 	/** Listed summaries of sessions that still exist at the cached version; never more than the store holds. */
@@ -212,6 +284,7 @@ export class SqlSessionStore implements SessionStore {
 				await tx.run(`INSERT INTO ${tables.meta} VALUES (?)`, SESSION_SCHEMA_VERSION);
 			}
 			for (const version of versions) {
+				if (version.schema_version === SESSION_SCHEMA_VERSION_UNCHUNKED) continue;
 				assertStorageSchemaVersion("sessions", version.schema_version!, SESSION_SCHEMA_VERSION);
 			}
 			// The sessions table is ordered by insertion to notice changes, and entries for the snapshot reference index.
@@ -251,11 +324,51 @@ export class SqlSessionStore implements SessionStore {
 				await tx.exec(`ALTER TABLE ${tables.blobs} ADD COLUMN chunks ${int} NOT NULL DEFAULT -1`);
 			}
 		};
-		await applyStorageMigrations(database, SESSION_DOMAIN, [{ version: 1, up: createTables }], {
-			table: storageMigrationTable(options.prefix),
-		});
+		/**
+		 * Long entries in chunks (#4954): the entry chunks table, the entries table's `chunks` column, 0 for an entry
+		 * stored whole, as every entry written before it was, and the sessions meta at version 2. Idempotent, so SQLite
+		 * runs it with every open.
+		 */
+		const addEntryChunks = async (tx: SqliteExecutor, dialect: StorageDialect) => {
+			const { int, text, blob } = dialect.types;
+			await tx.exec(`
+				CREATE TABLE IF NOT EXISTS ${tables.entryChunks} (
+					session_id ${text} NOT NULL, seq ${int} NOT NULL, idx ${int} NOT NULL, data ${blob} NOT NULL,
+					PRIMARY KEY(session_id, seq, idx)
+				)${dialect.tableOptions};
+			`);
+			const probe = dialect.columnExists(tables.entries, "chunks");
+			if ((await tx.get(probe.sql, ...probe.params)) === undefined) {
+				await tx.exec(`ALTER TABLE ${tables.entries} ADD COLUMN chunks ${int} NOT NULL DEFAULT 0`);
+			}
+			// One way: a build that knows only version 1 now refuses the database instead of reading stubs.
+			await tx.run(
+				`UPDATE ${tables.meta} SET schema_version = ? WHERE schema_version = ?`,
+				SESSION_SCHEMA_VERSION,
+				SESSION_SCHEMA_VERSION_UNCHUNKED,
+			);
+		};
+		await applyStorageMigrations(
+			database,
+			SESSION_DOMAIN,
+			[
+				{ version: 1, up: createTables },
+				{ version: 2, up: addEntryChunks },
+			],
+			{ table: storageMigrationTable(options.prefix) },
+		);
+		// A domain of its own, so Atomic versions that do not know it keep opening the sessions tables (#4971).
+		const presence = renderStorageIdentifiers("sessions", SESSION_PRESENCE_TABLES, options.prefix);
+		await applyStorageMigrations(
+			database,
+			SESSION_PRESENCE_DOMAIN,
+			[{ version: 1, up: (tx, dialect) => SqlSessionOpenMarkers.createTable(tx, dialect, presence.open) }],
+			{ table: storageMigrationTable(options.prefix) },
+		);
 		const blobs = await SqlSnapshotBlobStore.open(database, options.prefix);
-		return new SqlSessionStore(database, tables, options.prefix, options.cwdMatcher, blobs, legacyBlobData);
+		const store = new SqlSessionStore(database, tables, options.prefix, options.cwdMatcher, blobs, legacyBlobData);
+		store.openMarkers = new SqlSessionOpenMarkers(database, presence.open, () => store.assertOpen());
+		return store;
 	}
 
 	get descriptor(): StorageDescriptor {
@@ -312,6 +425,7 @@ export class SqlSessionStore implements SessionStore {
 			validateSessionEntries(entries);
 			if (header.id !== sessionId) throw new SessionIdMismatchError(sessionId, header.id);
 			await tx.run(`DELETE FROM ${this.tables.searchTexts} WHERE session_id = ?`, sessionId);
+			await tx.run(`DELETE FROM ${this.tables.entryChunks} WHERE session_id = ?`, sessionId);
 			await tx.run(`DELETE FROM ${this.tables.entries} WHERE session_id = ?`, sessionId);
 			const texts = await this.saveSummary(tx, sessionId, { header, entries, lastSeq: entries.length });
 			await this.insertEntries(tx, sessionId, entries, 0, texts);
@@ -349,6 +463,7 @@ export class SqlSessionStore implements SessionStore {
 			await tx.run(`DELETE FROM ${this.tables.blobChunks} WHERE session_id = ?`, sessionId);
 			await tx.run(`DELETE FROM ${this.tables.blobs} WHERE session_id = ?`, sessionId);
 			await tx.run(`DELETE FROM ${this.tables.searchTexts} WHERE session_id = ?`, sessionId);
+			await tx.run(`DELETE FROM ${this.tables.entryChunks} WHERE session_id = ?`, sessionId);
 			await tx.run(`DELETE FROM ${this.tables.entries} WHERE session_id = ?`, sessionId);
 			await tx.run(`DELETE FROM ${this.tables.sessions} WHERE id = ?`, sessionId);
 		}, SESSION_TRANSACTION);
@@ -583,12 +698,7 @@ export class SqlSessionStore implements SessionStore {
 		];
 		const inScope = (row: ListingRow) => !matchesCwd || matchesCwd(row.cwd);
 		if (listedBefore) {
-			const rows = (
-				await this.database.all<ListingRow>(
-					`SELECT ${LISTING_COLUMNS} FROM ${this.tables.sessions} WHERE ${scope}`,
-					...params,
-				)
-			).filter(inScope);
+			const rows = (await this.readListingRows(scope, params)).filter(inScope);
 			this.assertListing(query);
 			const stale = rows.filter((row) => this.summaries.get(row.id)?.version !== listingVersion(row));
 			// A few changed sessions are read by id; when most changed, one scan of the scope is cheaper.
@@ -610,20 +720,95 @@ export class SqlSessionStore implements SessionStore {
 		return rows.map((row) => row.id);
 	}
 
-	/** Reads full listing rows, search text included, and caches their summaries. */
+	/**
+	 * The listing rows `where` selects, without search text, in store order, a page per statement: each returns the rows
+	 * whose preceding rows in it fit in {@link SESSION_READ_PAGE_CHARS}, the first always, so that no response passes a
+	 * libSQL server's limit however many sessions there are (#4954), while a listing that fits takes one statement.
+	 */
+	private async readListingRows(where: string, params: readonly SqliteValue[]): Promise<ListingRow[]> {
+		const order = this.dialect.rowOrder();
+		const rows: ListingRow[] = [];
+		for (let after = 0; ; ) {
+			const page = await this.database.all<ListingRow & PageRow>(
+				`SELECT ${LISTING_COLUMNS}, ord, remaining FROM (
+					SELECT ${LISTING_COLUMNS}, ord, count(*) OVER () AS remaining,
+						sum(size) OVER (ORDER BY ord) - size AS before_chars
+					FROM (
+						SELECT ${LISTING_COLUMNS}, ${order} AS ord, ${LISTING_SIZE} AS size
+						FROM ${this.tables.sessions} WHERE (${where}) AND ${order} > ?
+					) AS sized
+				) AS page WHERE before_chars < ? ORDER BY ord LIMIT ?`,
+				...params,
+				after,
+				SESSION_READ_PAGE_CHARS,
+				LISTING_FETCH_BATCH,
+			);
+			rows.push(...page);
+			const last = page.at(-1);
+			if (last === undefined || page.length >= Number(last.remaining)) return rows;
+			after = Number(last.ord);
+		}
+	}
+
+	/**
+	 * Reads full listing rows, search text included, and caches their summaries, a page per statement as
+	 * {@link readListingRows} reads, search text counted. A session whose search text alone is longer than a page has
+	 * it read in pages of its own and joined here rather than by the database, whose string limit it may pass (#4954).
+	 */
 	private async readSummaries(where: string, params: readonly SqliteValue[]): Promise<readonly SummaryRow[]> {
-		// Combine encoded strings only at read time, preserving NUL and lone surrogates verbatim.
-		const rows = await this.database.all<SummaryRow>(
-			`SELECT ${LISTING_COLUMNS}, (
-				SELECT COALESCE('[' || ${this.dialect.orderedConcat("text_json", "','", "seq")} || ']', '[]')
-				FROM (SELECT text_json, seq FROM ${this.tables.searchTexts} WHERE session_id = s.id ORDER BY seq)
-			) AS search_texts_json
-			FROM ${this.tables.sessions} AS s WHERE ${where}`,
-			...params,
+		const order = this.dialect.rowOrder();
+		const rows: SummaryRow[] = [];
+		for (let after = 0; ; ) {
+			// Combine encoded strings only at read time, preserving NUL and lone surrogates verbatim.
+			const page = await this.database.all<SummaryRow & PageRow & { search_texts_json: string | null }>(
+				`SELECT ${LISTING_COLUMNS}, ord, remaining, CASE WHEN search_size <= ? THEN (
+					SELECT COALESCE('[' || ${this.dialect.orderedConcat("text_json", "','", "seq")} || ']', '[]')
+					FROM (SELECT text_json, seq FROM ${this.tables.searchTexts} WHERE session_id = page.id ORDER BY seq)
+				) END AS search_texts_json
+				FROM (
+					SELECT ${LISTING_COLUMNS}, ord, search_size, count(*) OVER () AS remaining,
+						sum(size + search_size) OVER (ORDER BY ord) - (size + search_size) AS before_chars
+					FROM (
+						SELECT ${LISTING_COLUMNS}, ${order} AS ord, ${LISTING_SIZE} AS size,
+							(SELECT COALESCE(sum(length(text_json)), 0) FROM ${this.tables.searchTexts} WHERE session_id = s.id) AS search_size
+						FROM ${this.tables.sessions} AS s WHERE (${where}) AND ${order} > ?
+					) AS sized
+				) AS page WHERE before_chars < ? ORDER BY ord LIMIT ?`,
+				SESSION_READ_PAGE_CHARS,
+				...params,
+				after,
+				SESSION_READ_PAGE_CHARS,
+				LISTING_FETCH_BATCH,
+			);
+			for (const row of page) {
+				const summaryRow =
+					row.search_texts_json === null ? { ...row, search_texts_json: await this.readSearchTexts(row.id) } : row;
+				this.summaries.set(row.id, { version: listingVersion(summaryRow), summary: summaryFromRow(summaryRow) });
+				rows.push(summaryRow);
+			}
+			const last = page.at(-1);
+			if (last === undefined || page.length >= Number(last.remaining)) return rows;
+			after = Number(last.ord);
+		}
+	}
+
+	/** A session's search texts as one JSON array, read in pages of at most {@link SESSION_READ_PAGE_CHARS}. */
+	private async readSearchTexts(sessionId: string): Promise<string> {
+		const sizes = await this.database.all<SizedRow & { seq: number }>(
+			`SELECT seq, length(text_json) AS size FROM ${this.tables.searchTexts} WHERE session_id = ? ORDER BY seq`,
+			sessionId,
 		);
-		for (const row of rows)
-			this.summaries.set(row.id, { version: listingVersion(row), summary: summaryFromRow(row) });
-		return rows;
+		const texts: string[] = [];
+		for (const page of pagesOf(sizes)) {
+			const rows = await this.database.all<SqliteRow & { text_json: string }>(
+				`SELECT text_json FROM ${this.tables.searchTexts} WHERE session_id = ? AND seq >= ? AND seq <= ? ORDER BY seq`,
+				sessionId,
+				page[0]!.seq,
+				page.at(-1)!.seq,
+			);
+			for (const row of rows) texts.push(row.text_json);
+		}
+		return `[${texts.join(",")}]`;
 	}
 
 	/**
@@ -650,15 +835,55 @@ export class SqlSessionStore implements SessionStore {
 			sessionId,
 		);
 		if (!row) throw new SessionNotFoundError(sessionId);
-		const entries = await tx.all<SqliteRow & { entry_json: string }>(
-			`SELECT entry_json FROM ${this.tables.entries} WHERE session_id = ? ORDER BY seq`,
-			sessionId,
-		);
+		// One statement for every entry would return the whole session at once, more than a libSQL server's response
+		// limit for a long one. Each statement returns the entries whose preceding entries in it fit in a page, the
+		// first always, so a session that fits takes one statement, as before; all of them run in this transaction.
+		const entries: SessionEntry[] = [];
+		for (let next = 0; ; ) {
+			const rows = await tx.all<
+				SqliteRow & { seq: number; entry_json: string; chunks: number; remaining: number | bigint }
+			>(
+				`SELECT seq, entry_json, chunks, remaining FROM (
+					SELECT seq, entry_json, chunks, count(*) OVER () AS remaining,
+						sum(length(entry_json)) OVER (ORDER BY seq) - length(entry_json) AS before_chars
+					FROM ${this.tables.entries} WHERE session_id = ? AND seq > ?
+				) AS page WHERE before_chars < ? ORDER BY seq`,
+				sessionId,
+				next,
+				SESSION_READ_PAGE_CHARS,
+			);
+			for (const entry of rows) {
+				const chunks = Number(entry.chunks);
+				const json = chunks === 0 ? entry.entry_json : await this.readEntryChunks(tx, sessionId, entry.seq, chunks);
+				entries.push(JSON.parse(json) as SessionEntry);
+			}
+			const last = rows.at(-1);
+			if (last === undefined || rows.length >= Number(last.remaining)) break;
+			next = Number(last.seq);
+		}
 		return {
 			header: JSON.parse(row.header_json) as SessionRecordHeader,
-			entries: entries.map((entry) => JSON.parse(entry.entry_json) as SessionEntry),
+			entries,
 			lastSeq: row.last_seq,
 		};
+	}
+
+	/** The JSON of a long entry, from its chunks, one statement each. */
+	private async readEntryChunks(tx: SqliteExecutor, sessionId: string, seq: number, count: number): Promise<string> {
+		const chunks: Uint8Array[] = [];
+		for (let index = 0; index < count; index++) {
+			const chunk = await tx.get<SqliteRow & { data: Uint8Array }>(
+				`SELECT data FROM ${this.tables.entryChunks} WHERE session_id = ? AND seq = ? AND idx = ?`,
+				sessionId,
+				seq,
+				index,
+			);
+			if (chunk === undefined) {
+				throw new StorageError(`Session ${sessionId} entry ${seq} is missing chunk ${index} of ${count}`);
+			}
+			chunks.push(chunk.data);
+		}
+		return Buffer.concat(chunks).toString("utf8");
 	}
 
 	private forWrite(
@@ -739,13 +964,25 @@ export class SqlSessionStore implements SessionStore {
 		texts: readonly SessionSummaryText[],
 	): Promise<void> {
 		for (const [index, entry] of entries.entries()) {
+			const seq = lastSeq + index + 1;
+			const stored = storedEntry(entry, this.encode(entry));
 			await tx.run(
-				`INSERT INTO ${this.tables.entries} (session_id, seq, entry_id, entry_json) VALUES (?, ?, ?, ?)`,
+				`INSERT INTO ${this.tables.entries} (session_id, seq, entry_id, entry_json, chunks) VALUES (?, ?, ?, ?, ?)`,
 				sessionId,
-				lastSeq + index + 1,
+				seq,
 				entry.id,
-				this.encode(entry),
+				stored.json,
+				stored.chunks.length,
 			);
+			for (const [chunk, data] of stored.chunks.entries()) {
+				await tx.run(
+					`INSERT INTO ${this.tables.entryChunks} (session_id, seq, idx, data) VALUES (?, ?, ?, ?)`,
+					sessionId,
+					seq,
+					chunk,
+					data,
+				);
+			}
 		}
 		for (const { index, text } of texts) {
 			await tx.run(
@@ -763,5 +1000,60 @@ export class SqlSessionStore implements SessionStore {
 		} catch (cause) {
 			throw new StorageUnavailableError(this.descriptor, cause as Error);
 		}
+	}
+}
+
+type OpenMarkerRow = SqliteRow & { token: string; pid: number; host: string; age_ms: number };
+
+/** The running sessions that have a SQL store's sessions open, in a table every host sharing the store reads (#4971). */
+class SqlSessionOpenMarkers implements SessionOpenMarkerStore {
+	static async createTable(tx: SqliteExecutor, dialect: StorageDialect, table: string): Promise<void> {
+		const { int, text } = dialect.types;
+		await tx.exec(`
+			CREATE TABLE IF NOT EXISTS ${table} (
+				session_id ${text} NOT NULL, token ${text} NOT NULL, pid ${int} NOT NULL, host ${text} NOT NULL,
+				heartbeat_at ${int} NOT NULL, PRIMARY KEY(session_id, token)
+			)${dialect.tableOptions};
+		`);
+	}
+
+	private readonly database: SqliteDatabase;
+	private readonly table: string;
+	private readonly assertOpen: () => void;
+
+	constructor(database: SqliteDatabase, table: string, assertOpen: () => void) {
+		this.database = database;
+		this.table = table;
+		this.assertOpen = assertOpen;
+	}
+
+	async put(sessionId: string, marker: SessionOpenMarker): Promise<void> {
+		this.assertOpen();
+		// The database's clock, not this host's: hosts whose clocks differ read the same heartbeat age.
+		const now = dialectOf(this.database).nowMs;
+		await this.database.run(
+			`INSERT INTO ${this.table} (session_id, token, pid, host, heartbeat_at) VALUES (?, ?, ?, ?, ${now})
+			 ON CONFLICT(session_id, token) DO UPDATE SET pid = excluded.pid, host = excluded.host,
+			 heartbeat_at = excluded.heartbeat_at`,
+			sessionId,
+			marker.token,
+			marker.pid,
+			marker.host,
+		);
+	}
+
+	async remove(sessionId: string, token: string): Promise<void> {
+		this.assertOpen();
+		await this.database.run(`DELETE FROM ${this.table} WHERE session_id = ? AND token = ?`, sessionId, token);
+	}
+
+	async list(sessionId: string): Promise<readonly SessionOpenMarkerAge[]> {
+		this.assertOpen();
+		const now = dialectOf(this.database).nowMs;
+		const rows = await this.database.all<OpenMarkerRow>(
+			`SELECT token, pid, host, ${now} - heartbeat_at AS age_ms FROM ${this.table} WHERE session_id = ?`,
+			sessionId,
+		);
+		return rows.map((row) => ({ token: row.token, pid: Number(row.pid), host: row.host, ageMs: Number(row.age_ms) }));
 	}
 }
