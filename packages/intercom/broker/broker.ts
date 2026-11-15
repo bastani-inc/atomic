@@ -124,6 +124,7 @@ import {
 import { releasedAskerReplyRefusal } from "./released-asker-remote-replies.js";
 import { hasGroup, normalizeGroup, normalizeGroups, workflowInvocationRefusalFor } from "../group.js";
 import { handleBrokerPresence } from "./presence-handler.js";
+import { PresenceFanout } from "./presence-fanout.js";
 import {
 	knownGroupSummaries,
 	sessionGroups,
@@ -407,6 +408,10 @@ function isWorkflowPossibleStageAnnouncements(
 
 class IntercomBroker {
   private sessions = new Map<string, ConnectedSession>();
+  /** #5146: presence frames gathered per recipient, so they grow with the changes, not their square. */
+  private readonly presenceFanout = new PresenceFanout(this.sessions, (socket, message) => {
+    writeMessageIfOpen(socket, message);
+  });
   /** #4642: the sessions each connection hosts, by the hosting session's id. */
   private hostedSessions = new Map<string, Set<string>>();
   private unclassifiedConnections = new Map<net.Socket, number>();
@@ -2259,7 +2264,11 @@ class IntercomBroker {
 			canInspectSelectedGroup: (group) => this.canInspectSelectedGroup(requester, group),
 			workflowStages: () => this.workflowStagesVisibleTo(requester, selectedGroup),
 			workflowFutureStages: () => this.workflowFutureStagesVisibleTo(requester, selectedGroup),
-			write: (reply) => writeMessageIfOpen(socket, reply),
+			write: (reply) => {
+				// #5146: presence gathered for this session goes first, so a list never precedes a staler update.
+				this.presenceFanout.flush(socket);
+				writeMessageIfOpen(socket, reply);
+			},
 		});
         break;
       }
@@ -2859,6 +2868,7 @@ class IntercomBroker {
           this.sessions,
           (target, message) => writeMessageIfOpen(target, message),
           this.pendingQuestions,
+          (peer, changed) => this.presenceFanout.queue(peer, changed.info.id),
         );
         const updated = this.sessions.get(currentId);
         // #4751: a recipient that can no longer answer fails the asks of released subagents waiting for it.
@@ -3685,6 +3695,7 @@ class IntercomBroker {
 	}
 	this.workflowInvocationClaims.delete(sessionId);
 	this.sessions.delete(sessionId);
+	if (departed.hostedBy === undefined) this.presenceFanout.forget(departed.socket);
 	this.multiNode?.sessionLeft(departed, parked ? { ownerSessionId: releasedOwner, childName } : undefined, ended);
 	this.sessionIdReclaim.retire(sessionId, departed.registrationReturnAddress);
 	if (isAgentRecipient(departed.info)) this.broadcastToMemberships({ type: "session_left", sessionId }, sessionGroups(departed.info), sessionId);
@@ -3744,6 +3755,7 @@ class IntercomBroker {
     this.liveWorkflowStageRouteActivations.clear();
     this.restoringRecipients.clear();
     this.releasedAskerReplies.clear();
+    this.presenceFanout.dispose();
     for (const pending of this.releasedReplyAcks.values()) clearTimeout(pending.timer);
     this.releasedReplyAcks.clear();
     this.receipts.clear();
