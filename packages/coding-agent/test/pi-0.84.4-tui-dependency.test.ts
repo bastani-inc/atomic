@@ -80,9 +80,15 @@ async function settle(): Promise<void> {
 	await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
+/**
+ * Structural: removing the autocomplete test's flood fixture, 2,250 nested directories and the fd fixture, took 2.8 to
+ * 5.2 s on a Windows VM running twelve copies of the test at once, and past the 10 s hook default under a full shard.
+ */
+const FLOODED_TREE_CLEANUP_TIMEOUT_MS = 30_000;
+
 afterEach(() => {
 	removeTempDirs(tempDirs);
-});
+}, FLOODED_TREE_CLEANUP_TIMEOUT_MS);
 
 describe("pi-tui 0.85.0 dependency behavior", () => {
 	test(

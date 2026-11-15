@@ -133,6 +133,19 @@ function ageLease(snapshot: WorktreeSnapshot, pid: number, ageMs: number, elsewh
 	return lock;
 }
 
+/** A process id no process can have: past Linux's largest, and not a multiple of four as every Windows id is. */
+const NO_PROCESS_PID = 2 ** 22 + 7;
+
+/** Renames process `pid`'s lease of `snapshot`'s slot 0 to name process `to` instead, as if `to` had taken it. */
+function renameLeaseHolder(snapshot: WorktreeSnapshot, pid: number, to: number): number {
+	const lease = new RegExp(`^(0\\.json\\.(?:[0-9a-f]{12}-)?)${pid}(-[0-9a-f]{8}(?:-[0-9a-f]{12})?\\.lease\\.lock)$`);
+	const name = readdirSync(poolDirectory(snapshot)).find((entry) => lease.test(entry));
+	assert.ok(name, `process ${pid} leases slot 0`);
+	const [, before, after] = lease.exec(name)!;
+	renameSync(join(poolDirectory(snapshot), name), join(poolDirectory(snapshot), `${before}${to}${after}`));
+	return to;
+}
+
 type Child = ChildProcessByStdio<Writable, Readable, null>;
 
 /** Runs `source` in a Bun child, answering one line per line it is sent, its first line once it is ready. */
@@ -326,14 +339,17 @@ describe("a pooled worktree whose holder stalled (#4830)", () => {
 			const exited = new Promise((resolve) => holder.child.once("exit", resolve));
 			holder.child.kill("SIGKILL");
 			await exited;
-			ageLease(snapshot, holder.child.pid!, LEASE_STALE_MS + LEASE_CLAIM_GRACE_MS / 2);
+			// Where no process start can be read (Windows), a lease is held while any process of its id runs, and Windows
+			// soon gives a dead holder's id to another process: the lease names an id no process can have.
+			const dead = renameLeaseHolder(snapshot, holder.child.pid!, NO_PROCESS_PID);
+			ageLease(snapshot, dead, LEASE_STALE_MS + LEASE_CLAIM_GRACE_MS / 2);
 
 			const s2 = await sessionOf(clone, snapshot);
 			const kept = await resumeSessionWorktree(s2, pool());
 			assert.equal(kept.status === "restored" && kept.mappings[0]!.to, slot(snapshot, 1));
 			assert.deepEqual(recordOf(snapshot, 0).holder, ownerOf(s1));
 
-			const lease = ageLease(snapshot, holder.child.pid!, LEASE_STALE_MS + LEASE_CLAIM_GRACE_MS + 30_000);
+			const lease = ageLease(snapshot, dead, LEASE_STALE_MS + LEASE_CLAIM_GRACE_MS + 30_000);
 			const s3 = await sessionOf(clone, snapshot);
 			const claimed = await resumeSessionWorktree(s3, pool());
 			assert.equal(claimed.status === "restored" && claimed.mappings[0]!.to, slot(snapshot, 0));
@@ -582,7 +598,7 @@ describe("checks of a pooled worktree's lease (#4830)", () => {
 		const lease = await admit();
 		await releaseRestoredWorktree(lease);
 		// A process id no live process has: its lease is judged by age alone.
-		const lock = leaseOf(2 ** 22 + 7, LEASE_STALE_MS + LEASE_CLAIM_GRACE_MS / 2);
+		const lock = leaseOf(NO_PROCESS_PID, LEASE_STALE_MS + LEASE_CLAIM_GRACE_MS / 2);
 		assert.deepEqual(await pooledWorktreeHolder(storeDir(), lease.path), { owner: x, held: false });
 		assert.equal(existsSync(lock), true);
 		assert.deepEqual(await evictIdleWorktrees(storeDir(), repository, { maxIdle: 0, settings }), []);

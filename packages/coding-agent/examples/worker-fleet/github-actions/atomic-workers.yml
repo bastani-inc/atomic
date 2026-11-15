@@ -11,7 +11,8 @@
 #           this repository and may secretsmanager:GetSecretValue that secret.
 #   Google: GCP_WORKLOAD_IDENTITY_PROVIDER, GCP_SERVICE_ACCOUNT, GCP_TOKEN_SECRET (projects/<p>/secrets/<name>). A
 #           Workload Identity Federation provider for this repository and roles/secretmanager.secretAccessor.
-# Without any of them it falls back to the repository secret ATOMIC_DB_TOKEN. Repository variable: ATOMIC_DB.
+# Without any of them it falls back to the repository secret ATOMIC_DB_TOKEN. Repository variable: ATOMIC_DB, a PostgreSQL
+# URL (the token is then the database password) or a libSQL / Turso URL.
 name: atomic-workers
 on:
   workflow_dispatch:
@@ -53,7 +54,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
-      - run: npm install -g @bastani/atomic && atomic install npm:@bastani/atomic-storage-libsql
+      - name: Install Atomic and the storage adapter for ATOMIC_DB
+        env:
+          ATOMIC_DB: ${{ vars.ATOMIC_DB }}
+        run: |
+          case "$ATOMIC_DB" in postgres://*|postgresql://*) adapter=postgres ;; *) adapter=libsql ;; esac
+          npm install -g @bastani/atomic && atomic install "npm:@bastani/atomic-storage-$adapter"
       - if: vars.AZURE_CLIENT_ID != ''
         uses: azure/login@v2
         with:

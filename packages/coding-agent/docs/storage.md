@@ -67,7 +67,7 @@ In this release:
 - **Worker pools**: roots with shared placement and their worker hosts, with `atomic worker start`, `status`, `metrics` and `controller --db postgres://…`. The pool's queue, leases, resource admission, pooled-stage transcripts and fleet controller live in the database. See [Running workers on many machines](/guides/worker-hosts).
 - **Setup and checks**: `atomic storage join`, `atomic storage status`, password files, rotated token files, cloud identities, TLS and connection poolers, as described below.
 
-A worker pool's writes on PostgreSQL take turns, one at a time across every machine that shares the database and prefix, as they do on libSQL. Hosts that wait for a claim poll the database; they are not woken by `LISTEN`/`NOTIFY`.
+A worker pool's writes on PostgreSQL take turns, one at a time across every machine that shares the database, whatever its prefix, as they do on libSQL. Hosts that wait for a claim poll the database; they are not woken by `LISTEN`/`NOTIFY`.
 
 ### Set up the database
 
@@ -120,8 +120,9 @@ You can write this block by hand as well. `secrets.password` takes `{ "file": �
 | `auth` | `"password"` | `"azure-entra"`, `"aws-iam"`, or `"gcp-iam"` for [cloud identities](#cloud-identities) |
 | `maxConnections` | 8 | Connections each Atomic process may open |
 | `statementTimeoutMs` | 30000 | How long one statement may run before the server cancels it |
+| `listenUrl` | `url` | A direct endpoint for [wake-ups](#wake-ups), when `url` goes through a transaction pooler |
 
-`atomic team join` takes libSQL URLs only; use `atomic storage join` for PostgreSQL. SDK callers can import `openPostgresDatabase` from `@bastani/atomic-storage-postgres`.
+`atomic team join` takes libSQL URLs only; use `atomic storage join` for PostgreSQL. To run worker hosts and a fleet controller on a managed service, follow [Worker fleets on managed PostgreSQL](/guides/worker-fleets-postgres). SDK callers can import `openPostgresDatabase` from `@bastani/atomic-storage-postgres`.
 
 ### TLS
 
@@ -129,13 +130,28 @@ Atomic connects with TLS to every host except the local machine, and checks the 
 
 By provider:
 
-- Azure Database for PostgreSQL, Neon, and Supabase use certificates that Node.js trusts: no option is needed.
+- Azure Database for PostgreSQL and Neon use certificates that Node.js trusts: no option is needed.
+- Supabase: download the project's CA certificate (**Project Settings → Database → SSL Configuration**) and add `?sslrootcert=/path/to/supabase-ca.pem`. Its certificates chain to Supabase's own CA.
 - Amazon RDS and Aurora: download your region's certificate bundle from `https://truststore.pki.rds.amazonaws.com/<region>/<region>-bundle.pem` and add `?sslrootcert=/path/to/bundle.pem`.
 - Google Cloud SQL: save the instance's server CA certificate (`gcloud sql instances describe <instance> --format='value(serverCaCert.cert)'`) and add `?sslmode=verify-ca&sslrootcert=/path/to/server-ca.pem` when you connect by private IP address, which is not among the certificate's names.
 
 ### Connection poolers
 
-Atomic works through transaction-mode poolers: PgBouncer, the PgBouncer built into Azure Database for PostgreSQL (port 6432), Supabase's Supavisor (port 6543), and Neon's pooled endpoint (the `-pooler` host name). Point the URL at the pooler. A pooler lets many machines share a small number of server connections.
+Atomic works through transaction-mode poolers: PgBouncer, the PgBouncer built into Azure Database for PostgreSQL (port 6432), Supabase's Supavisor (port 6543), and Neon's pooled endpoint (the `-pooler` host name). Point the URL at the pooler. A pooler lets many machines share a small number of server connections. Use transaction or session mode, not statement mode. For a worker fleet's connection count and pooler settings, see [Worker fleets on managed PostgreSQL](/guides/worker-fleets-postgres#connection-poolers).
+
+A transaction-mode pooler does not pass on [wake-ups](#wake-ups). To keep them, set `listenUrl` to the server's direct endpoint, such as port 5432 instead of 6432 on Azure, or Neon's host name without `-pooler`. Everything else still goes through the pooler.
+
+### Wake-ups
+
+On PostgreSQL, worker hosts and Intercom brokers learn about new work at once through `LISTEN`/`NOTIFY`. A host's idle workers claim a queued child right away, the root sees a finished child right away, and an Intercom message reaches a broker on another machine without waiting for its next check. Each Atomic process holds one extra connection for this, outside `maxConnections`.
+
+Wake-ups only make Atomic faster. Hosts and brokers keep checking the database as often as they would without them, so no work is lost or delayed beyond that when wake-ups stop arriving. That happens when the connection drops or the URL goes through a transaction pooler. Atomic checks the connection every 30 seconds and opens it again when it drops or stops delivering. When it finds a transaction pooler, it stops trying until the process restarts, so it leaves nothing behind on the pooler's server connections.
+
+`atomic storage status` shows whether wake-ups arrive:
+
+- `wake-ups: LISTEN/NOTIFY`: they arrive.
+- `wake-ups: polling only, notifications do not pass the URL's transaction pooler`: set `listenUrl` to a direct endpoint, as in [Connection poolers](#connection-poolers).
+- `wake-ups: polling only, the listen connection failed`: the listen endpoint is unreachable or refused the login. Check `listenUrl`, or the server's connection limit.
 
 ### Cloud identities
 
@@ -169,11 +185,12 @@ The first machine to join also needs `CREATE` on the schema, to create the table
 - **A certificate error** (`self-signed certificate in certificate chain`, `unable to get local issuer certificate`): the server's CA is not one Node.js trusts. Add `sslrootcert`, as in [TLS](#tls).
 - **`too many connections`** (`53300`): lower `maxConnections`, raise the server's `max_connections`, or put a [pooler](#connection-poolers) in front.
 - **`StorageTransientError` with code `lock-conflict` or `transaction-timeout`**: the server cancelled a statement or transaction that waited too long for a lock or ran past `statementTimeoutMs`, and nothing it wrote was kept. Persistent ones point to an overloaded server.
+- **`wake-ups: polling only`** in `atomic storage status`: see [Wake-ups](#wake-ups). Work still runs, found by the regular checks.
 - **Connections dropped during a failover or a pooler restart** are reported as `StorageTransientError` with code `connection-lost`, as for [libSQL](#turso-and-libsql).
 
 ## Turso and libSQL
 
-`@bastani/atomic-storage-libsql` is the maintained adapter for Turso and other libSQL databases. It stores sessions, workflow runs, and Intercom's multi-node routing in the database. It is the lightweight shared store, one URL and a token, and in this release the store for [worker fleets](/guides/worker-hosts). See [Which store to choose](#which-store-to-choose). Install it once per machine, in user scope so Atomic can find it:
+`@bastani/atomic-storage-libsql` is the maintained adapter for Turso and other libSQL databases. It stores sessions, workflow runs, and Intercom's multi-node routing in the database. It is the lightweight shared store, one URL and a token, and holds [worker fleets](/guides/worker-hosts) as PostgreSQL does. See [Which store to choose](#which-store-to-choose). Install it once per machine, in user scope so Atomic can find it:
 
 ```bash
 atomic install npm:@bastani/atomic-storage-libsql
