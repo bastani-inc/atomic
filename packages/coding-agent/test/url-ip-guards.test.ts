@@ -64,7 +64,7 @@ describe("isPrivateIpAddress — IPv6", () => {
 		{ address: "fe80::1", expected: true, note: "link-local" },
 		{ address: "fe9f::1", expected: true, note: "link-local fe80::/10 middle" },
 		{ address: "febf::1", expected: true, note: "link-local fe80::/10 upper bound" },
-		{ address: "fec0::1", expected: false, note: "outside link-local fe80::/10" },
+		{ address: "fec0::1", expected: true, note: "site-local fec0::/10, outside link-local" },
 		{ address: "fd00::1", expected: true, note: "ULA fd::/8" },
 		{ address: "fc00::1", expected: true, note: "ULA fc::/8" },
 		{ address: "2001:4860:4860::8888", expected: false, note: "public" },
@@ -77,6 +77,151 @@ describe("isPrivateIpAddress — IPv6", () => {
 	];
 	for (const { address, expected, note } of cases) {
 		it(`${note ? `${note}: ` : ""}isPrivateIpAddress(${JSON.stringify(address)}) === ${expected}`, () => {
+			expect(isPrivateIpAddress(address)).toBe(expected);
+		});
+	}
+});
+
+describe("isPrivateIpAddress — reserved and non-public ranges", () => {
+	// Each range: its first and last address are refused, and the addresses just outside it are allowed.
+	const ranges: Array<{ name: string; first: string; last: string; outside: string[] }> = [
+		{
+			name: "IETF protocol assignments 192.0.0.0/24",
+			first: "192.0.0.0",
+			last: "192.0.0.255",
+			outside: ["191.255.255.255", "192.0.1.0"],
+		},
+		{
+			name: "TEST-NET-1 192.0.2.0/24",
+			first: "192.0.2.0",
+			last: "192.0.2.255",
+			outside: ["192.0.1.255", "192.0.3.0"],
+		},
+		{
+			name: "benchmarking 198.18.0.0/15",
+			first: "198.18.0.0",
+			last: "198.19.255.255",
+			outside: ["198.17.255.255", "198.20.0.0"],
+		},
+		{
+			name: "TEST-NET-2 198.51.100.0/24",
+			first: "198.51.100.0",
+			last: "198.51.100.255",
+			outside: ["198.51.99.255", "198.51.101.0"],
+		},
+		{
+			name: "TEST-NET-3 203.0.113.0/24",
+			first: "203.0.113.0",
+			last: "203.0.113.255",
+			outside: ["203.0.112.255", "203.0.114.0"],
+		},
+		{ name: "multicast 224.0.0.0/4", first: "224.0.0.0", last: "239.255.255.255", outside: ["223.255.255.255"] },
+		{ name: "reserved 240.0.0.0/4 and broadcast", first: "240.0.0.0", last: "255.255.255.255", outside: [] },
+		{ name: "this network 0.0.0.0/8", first: "0.0.0.0", last: "0.255.255.255", outside: ["1.0.0.0"] },
+		{
+			name: "loopback 127.0.0.0/8",
+			first: "127.0.0.0",
+			last: "127.255.255.255",
+			outside: ["126.255.255.255", "128.0.0.0"],
+		},
+		{ name: "private 10.0.0.0/8", first: "10.0.0.0", last: "10.255.255.255", outside: ["9.255.255.255", "11.0.0.0"] },
+		{
+			name: "private 172.16.0.0/12",
+			first: "172.16.0.0",
+			last: "172.31.255.255",
+			outside: ["172.15.255.255", "172.32.0.0"],
+		},
+		{
+			name: "private 192.168.0.0/16",
+			first: "192.168.0.0",
+			last: "192.168.255.255",
+			outside: ["192.167.255.255", "192.169.0.0"],
+		},
+		{
+			name: "link-local 169.254.0.0/16",
+			first: "169.254.0.0",
+			last: "169.254.255.255",
+			outside: ["169.253.255.255", "169.255.0.0"],
+		},
+		{
+			name: "shared address space 100.64.0.0/10",
+			first: "100.64.0.0",
+			last: "100.127.255.255",
+			outside: ["100.63.255.255", "100.128.0.0"],
+		},
+		{
+			name: "local-use translation 64:ff9b:1::/48",
+			first: "64:ff9b:1::",
+			last: "64:ff9b:1:ffff:ffff:ffff:ffff:ffff",
+			outside: ["64:ff9b:0:ffff:ffff:ffff:ffff:ffff", "64:ff9b:2::"],
+		},
+		{
+			name: "discard-only 100::/64",
+			first: "100::",
+			last: "100::ffff:ffff:ffff:ffff",
+			outside: ["ff:ffff:ffff:ffff:ffff:ffff:ffff:ffff", "100:0:0:1::"],
+		},
+		{
+			name: "IETF protocol assignments 2001::/23",
+			first: "2001::",
+			last: "2001:1ff:ffff:ffff:ffff:ffff:ffff:ffff",
+			outside: ["2000:ffff:ffff:ffff:ffff:ffff:ffff:ffff", "2001:200::"],
+		},
+		{
+			name: "documentation 2001:db8::/32",
+			first: "2001:db8::",
+			last: "2001:db8:ffff:ffff:ffff:ffff:ffff:ffff",
+			outside: ["2001:db7:ffff:ffff:ffff:ffff:ffff:ffff", "2001:db9::"],
+		},
+		{
+			name: "documentation 3fff::/20",
+			first: "3fff::",
+			last: "3fff:fff:ffff:ffff:ffff:ffff:ffff:ffff",
+			outside: ["3ffe:ffff:ffff:ffff:ffff:ffff:ffff:ffff", "3fff:1000::"],
+		},
+		{
+			name: "segment routing 5f00::/16",
+			first: "5f00::",
+			last: "5f00:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+			outside: ["5eff:ffff:ffff:ffff:ffff:ffff:ffff:ffff", "5f01::"],
+		},
+		{
+			name: "unique local fc00::/7",
+			first: "fc00::",
+			last: "fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+			outside: ["fbff:ffff:ffff:ffff:ffff:ffff:ffff:ffff", "fe00::"],
+		},
+		{
+			name: "link-local fe80::/10",
+			first: "fe80::",
+			last: "febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+			outside: ["fe7f:ffff:ffff:ffff:ffff:ffff:ffff:ffff"],
+		},
+		{ name: "site-local fec0::/10", first: "fec0::", last: "feff:ffff:ffff:ffff:ffff:ffff:ffff:ffff", outside: [] },
+		{ name: "multicast ff00::/8", first: "ff00::", last: "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff", outside: [] },
+	];
+	for (const { name, first, last, outside } of ranges) {
+		it(`refuses ${name} at both edges and allows the addresses just outside`, () => {
+			expect(isPrivateIpAddress(first), first).toBe(true);
+			expect(isPrivateIpAddress(last), last).toBe(true);
+			for (const address of outside) expect(isPrivateIpAddress(address), address).toBe(false);
+		});
+	}
+
+	const embedded: Array<{ address: string; expected: boolean; note: string }> = [
+		{ address: "::ffff:0:a00:1", expected: true, note: "IPv4-translated ::ffff:0:0:0/96 carrying 10.0.0.1" },
+		{ address: "0:0:0:0:ffff:0:c000:c0", expected: true, note: "IPv4-translated, expanded, carrying 192.0.0.192" },
+		{ address: "::ffff:0:808:808", expected: false, note: "IPv4-translated carrying a public address" },
+		{ address: "::ffff:192.0.0.192", expected: true, note: "IPv4-mapped metadata address in 192.0.0.0/24" },
+		{ address: "::ffff:198.18.0.1", expected: true, note: "IPv4-mapped benchmarking address" },
+		{ address: "64:ff9b::224.0.0.1", expected: true, note: "NAT64 carrying multicast" },
+		{ address: "64:ff9b::255.255.255.255", expected: true, note: "NAT64 carrying broadcast" },
+		{ address: "2002:c000:c0::", expected: true, note: "6to4 carrying 192.0.0.192" },
+		{ address: "2001:4860:4860::8888", expected: false, note: "public IPv6" },
+		{ address: "2606:4700:4700::1111", expected: false, note: "public IPv6" },
+	];
+	for (const { address, expected, note } of embedded) {
+		it(`${note}: isPrivateIpAddress(${JSON.stringify(address)}) === ${expected}`, () => {
 			expect(isPrivateIpAddress(address)).toBe(expected);
 		});
 	}

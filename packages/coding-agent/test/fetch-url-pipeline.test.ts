@@ -137,13 +137,48 @@ test("pins the DNS-resolved address for hostname fetches (no rebinding at connec
 		globalFetchCalls++;
 		return new Response("should-not-reach", { status: 200 });
 	}) as typeof fetch;
-	// Resolve the hostname to a routable-but-unreachable public IP; undici's
+	// Resolve the hostname to a public IP on a port nothing answers; undici's
 	// pinned client attempts the connect and fails — proving the request went
 	// through undici (the pinned path), not the mocked global fetch.
-	setResolvedHost({ address: "192.0.2.1", family: 4 });
+	setResolvedHost({ address: "8.8.8.8", family: 4 });
 	try {
-		await expect(loadPage("http://dns-pinned.example/", 2000, undefined, "text/plain")).rejects.toThrow();
+		const failure = await loadPage("http://dns-pinned.example:9/", 2000, undefined, "text/plain").then(
+			() => undefined,
+			(error: unknown) => error,
+		);
+		expect(failure).toBeInstanceOf(Error);
+		expect((failure as Error).message).not.toMatch(/Refusing to fetch/);
 		// The hostname went through undici's pinned client, not global fetch.
+		expect(globalFetchCalls).toBe(0);
+	} finally {
+		setResolvedHost(null);
+		globalThis.fetch = previousFetch;
+		if (previousAllowance === undefined) delete process.env.ATOMIC_ALLOW_PRIVATE_URL_READS;
+		else process.env.ATOMIC_ALLOW_PRIVATE_URL_READS = previousAllowance;
+	}
+});
+
+test("refuses a hostname whose DNS answer is a reserved or non-public address", async () => {
+	const previousAllowance = process.env.ATOMIC_ALLOW_PRIVATE_URL_READS;
+	const previousFetch = globalThis.fetch;
+	delete process.env.ATOMIC_ALLOW_PRIVATE_URL_READS;
+	let globalFetchCalls = 0;
+	globalThis.fetch = (async () => {
+		globalFetchCalls++;
+		return new Response("should-not-reach", { status: 200 });
+	}) as typeof fetch;
+	try {
+		for (const resolved of [
+			{ address: "192.0.0.192", family: 4 },
+			{ address: "198.18.0.1", family: 4 },
+			{ address: "::ffff:0:a00:1", family: 6 },
+			{ address: "ff02::1", family: 6 },
+		]) {
+			setResolvedHost(resolved);
+			await expect(loadPage("http://reserved.example/", 2000, undefined, "text/plain")).rejects.toThrow(
+				/Refusing to fetch private or metadata URL/,
+			);
+		}
 		expect(globalFetchCalls).toBe(0);
 	} finally {
 		setResolvedHost(null);
