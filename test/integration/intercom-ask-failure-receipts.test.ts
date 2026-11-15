@@ -361,3 +361,263 @@ test(
 	},
 	REAL_BROKER_TEST_TIMEOUT_MS,
 );
+
+/** The recipient answers `questionId` on the ask's own reply route, as the `reply` action does. */
+function replyTo(recipient: Session, askerId: string, questionId: string) {
+	return recipient.client.send(askerId, {
+		text: "port 8080",
+		replyTo: questionId,
+		requirePendingReply: true,
+		expectedRecipientId: askerId,
+	});
+}
+
+/** The replies to `questionId` that reached the session. */
+function repliesTo(session: Session, questionId: string): Message[] {
+	return session.received.filter((message) => message.replyTo === questionId && message.replyError === undefined);
+}
+
+/** How many times the recipient replies and ends at once: the race lost about half the time before the fix. */
+const REPLY_THEN_END_ITERATIONS = 30;
+
+test(
+	"an asker whose recipient replies and ends at once gets only the reply, every time (#5095)",
+	async () => {
+		const outcomes: string[] = [];
+		for (let iteration = 0; iteration < REPLY_THEN_END_ITERATIONS; iteration++) {
+			const label = `reply-then-end-${iteration}-5095`;
+			const asker = await connect(`asker-${label}`, { returnAddress: randomUUID() });
+			const askerId = idOf(asker.client);
+			const recipient = await connect(`recipient-${label}`, { returnAddress: randomUUID() });
+			const questionId = randomUUID();
+			const asked = await asker.client.send(`recipient-${label}`, {
+				messageId: questionId,
+				text: "which port?",
+				expectsReply: true,
+			});
+			assert.equal(asked.delivered, true, asked.reason);
+			await vi.waitFor(() => assert.ok(recipient.received.some((message) => message.id === questionId)), WAIT);
+
+			// The recipient replies and ends without waiting for the reply to be confirmed.
+			const replying = replyTo(recipient, askerId, questionId).catch(() => undefined);
+			void recipient.client.disconnect();
+			await replying;
+			await vi.waitFor(() => assert.equal(repliesTo(asker, questionId).length, 1), WAIT);
+			await sleep(SETTLE_MS);
+			outcomes.push(
+				`#${iteration}: replies=${repliesTo(asker, questionId).length} failures=${failuresOf(asker, questionId).length}`,
+			);
+			await asker.client.disconnect();
+		}
+		assert.deepEqual(
+			outcomes,
+			outcomes.map((_, iteration) => `#${iteration}: replies=1 failures=0`),
+			"each ask has exactly one outcome: its reply",
+		);
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS * 3,
+);
+
+test(
+	"a recipient that ends while its reply waits for the asker to save it fails only the ask it did not answer, once (#5095)",
+	async () => {
+		const label = "reply-unsaved-then-end-5095";
+		// The asker saves nothing yet, so the reply is still on its way when the recipient ends.
+		const asker = await connect(`asker-${label}`, { returnAddress: randomUUID(), confirms: false });
+		const askerId = idOf(asker.client);
+		const recipient = await connect(`recipient-${label}`, { returnAddress: randomUUID() });
+		const [answered, unanswered] = [randomUUID(), randomUUID()] as const;
+		for (const messageId of [answered, unanswered]) {
+			const asked = await asker.client.send(`recipient-${label}`, {
+				messageId,
+				text: "which port?",
+				expectsReply: true,
+			});
+			assert.equal(asked.delivered, true, asked.reason);
+		}
+		await vi.waitFor(() => assert.ok(recipient.received.some((message) => message.id === unanswered)), WAIT);
+
+		const replying = replyTo(recipient, askerId, answered).catch(() => undefined);
+		await vi.waitFor(() => assert.equal(repliesTo(asker, answered).length, 1), WAIT);
+		await recipient.client.disconnect();
+		await vi.waitFor(() => assert.equal(failuresOf(asker, unanswered).length, 1), WAIT);
+		for (const message of asker.received) asker.client.acknowledgeReceived(message.id);
+		await replying;
+		await sleep(SETTLE_MS);
+
+		assert.deepEqual(failuresOf(asker, answered), [], "an answered ask is not also failed");
+		assert.equal(repliesTo(asker, answered).length, 1);
+		assert.deepEqual(failuresOf(asker, unanswered), [`ended:${unanswered}`], "an unanswered ask still fails, once");
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
+
+/** How the asker's connection dies around its recipient's reply. */
+const ASKER_DIES = ["before the reply", "just after the reply", "as the reply is sent"] as const;
+const ASKER_DIES_ITERATIONS = 30;
+/** How long the asker takes to come back. */
+const ASKER_RESTART_MS = 1_000;
+/**
+ * How long an ask's outcome may take to arrive once its asker is back. Generous, so a stalled CI machine shows up as
+ * a slow outcome in the log rather than as a lost one; an outcome that never arrives still fails the test.
+ */
+const OUTCOME_WAIT = { timeout: 30_000, interval: 20 };
+
+for (const [mode, when] of ASKER_DIES.entries()) {
+	test(
+		`an asker whose connection dies ${when} while its recipient ends gets one outcome once it is back, every time (#5095)`,
+		async () => {
+			const outcomes: string[] = [];
+			const outcomeMsByIteration: number[] = [];
+			for (let iteration = 0; iteration < ASKER_DIES_ITERATIONS; iteration++) {
+				const label = `asker-dies-${mode}-${iteration}-5095`;
+				const askerAddress = { name: `asker-${label}`, returnAddress: randomUUID() };
+				const asker = await connect(askerAddress.name, askerAddress);
+				const askerId = idOf(asker.client);
+				const recipient = await connect(`recipient-${label}`, { returnAddress: randomUUID() });
+				const questionId = randomUUID();
+				const asked = await asker.client.send(`recipient-${label}`, {
+					messageId: questionId,
+					text: "which port?",
+					expectsReply: true,
+				});
+				assert.equal(asked.delivered, true, asked.reason);
+				await vi.waitFor(() => assert.ok(recipient.received.some((message) => message.id === questionId)), WAIT);
+
+				// The asker's connection dies around the reply, as a crashing process's does; the recipient ends at once.
+				const socket = (asker.client as unknown as { socket: net.Socket | null }).socket;
+				if (mode === 0) socket?.destroy();
+				const replying = replyTo(recipient, askerId, questionId).catch(() => undefined);
+				if (mode === 1) await sleep(1);
+				if (mode !== 0) socket?.destroy();
+				void recipient.client.disconnect().catch(() => undefined);
+				await replying;
+				// Its process restarts, as p28 does, after both departures were handled.
+				await sleep(ASKER_RESTART_MS);
+				const back = await connect(askerAddress.name, { ...askerAddress, preferredSessionId: askerId });
+				const backAt = Date.now();
+				const seen = () =>
+					new Set(
+						[...asker.received, ...back.received]
+							.filter((message) => message.replyTo === questionId)
+							.map((message) => (message.replyError === undefined ? "reply" : "failure")),
+					);
+				await vi
+					.waitFor(() => assert.ok(seen().size > 0, "the ask has an outcome"), OUTCOME_WAIT)
+					.catch(() => undefined);
+				const outcomeMs = Date.now() - backAt;
+				await sleep(SETTLE_MS);
+				const ids = new Set(
+					[...asker.received, ...back.received].filter((m) => m.replyTo === questionId).map((m) => m.id),
+				);
+				outcomes.push(
+					ids.size === 1
+						? `#${iteration}: outcomes=1`
+						: `#${iteration}: outcomes=${ids.size} after ${outcomeMs} ms before=${JSON.stringify(asker.received.filter((m) => m.replyTo === questionId).map((m) => m.id.slice(0, 12)))} back=${JSON.stringify(back.received.filter((m) => m.replyTo === questionId).map((m) => m.id.slice(0, 12)))}`,
+				);
+				outcomeMsByIteration.push(outcomeMs);
+				await back.client.disconnect();
+			}
+			// How long each outcome took once the asker was back, so a slow one is visible in the log.
+			process.stderr.write(`asker dies ${when}: outcome ms per iteration ${JSON.stringify(outcomeMsByIteration)}\n`);
+			assert.deepEqual(
+				outcomes,
+				outcomes.map((_, iteration) => `#${iteration}: outcomes=1`),
+				"each ask has exactly one outcome, the reply or the failure",
+			);
+		},
+		REAL_BROKER_TEST_TIMEOUT_MS * 3,
+	);
+}
+
+test(
+	"an ask answered while its recipient was away cannot be answered again when that recipient is back (#5095)",
+	async () => {
+		const label = "answered-while-away-5095";
+		const asker = await connect(`asker-${label}`, { returnAddress: randomUUID(), confirms: false });
+		const askerId = idOf(asker.client);
+		const recipientAddress = { name: `recipient-${label}`, returnAddress: randomUUID() };
+		const recipient = await connect(recipientAddress.name, recipientAddress);
+		const recipientId = idOf(recipient.client);
+		const questionId = randomUUID();
+		const asked = await asker.client.send(recipientAddress.name, {
+			messageId: questionId,
+			text: "which port?",
+			expectsReply: true,
+		});
+		assert.equal(asked.delivered, true, asked.reason);
+		await vi.waitFor(() => assert.ok(recipient.received.some((message) => message.id === questionId)), WAIT);
+
+		// The recipient replies and goes away before the asker saves the reply; the asker saves it then.
+		const replying = replyTo(recipient, askerId, questionId).catch(() => undefined);
+		await vi.waitFor(() => assert.equal(repliesTo(asker, questionId).length, 1), WAIT);
+		await recipient.client.disconnect({ resumable: true });
+		await sleep(SETTLE_MS);
+		asker.client.acknowledgeReceived(repliesTo(asker, questionId)[0]?.id ?? "");
+		await replying;
+		await sleep(SETTLE_MS);
+
+		const back = await connect(recipientAddress.name, { ...recipientAddress, preferredSessionId: recipientId });
+		assert.equal(idOf(back.client), recipientId);
+		const again = await replyTo(back, askerId, questionId).catch((error: Error) => ({
+			delivered: false,
+			reason: error.message,
+		}));
+		assert.equal(again.delivered, false, "an answered ask is not answered again");
+		await back.client.disconnect();
+		await sleep(SETTLE_MS);
+		assert.equal(repliesTo(asker, questionId).length, 1);
+		assert.deepEqual(failuresOf(asker, questionId), []);
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
+
+test(
+	"an asker back to a resent reply whose recipient ended meanwhile gets only that reply, then and later (#5095)",
+	async () => {
+		const label = "resent-reply-5095";
+		const askerAddress = { name: `asker-${label}`, returnAddress: randomUUID() };
+		// It gets the reply but crashes before saving it.
+		const first = await connect(askerAddress.name, { ...askerAddress, confirms: false });
+		const askerId = idOf(first.client);
+		const recipient = await connect(`recipient-${label}`, { returnAddress: randomUUID() });
+		const questionId = randomUUID();
+		const asked = await first.client.send(`recipient-${label}`, {
+			messageId: questionId,
+			text: "which port?",
+			expectsReply: true,
+		});
+		assert.equal(asked.delivered, true, asked.reason);
+		await vi.waitFor(() => assert.ok(recipient.received.some((message) => message.id === questionId)), WAIT);
+		const replying = replyTo(recipient, askerId, questionId).catch(() => undefined);
+		await vi.waitFor(() => assert.equal(repliesTo(first, questionId).length, 1), WAIT);
+		const [reply] = repliesTo(first, questionId);
+		await first.client.disconnect({ resumable: true });
+		await sleep(SETTLE_MS);
+		// The recipient ends while the asker is away, its reply still unsaved.
+		await recipient.client.disconnect();
+		await replying;
+		await sleep(SETTLE_MS);
+
+		const back = await connect(askerAddress.name, { ...askerAddress, preferredSessionId: askerId });
+		await vi.waitFor(
+			() =>
+				assert.deepEqual(
+					repliesTo(back, questionId).map((message) => message.id),
+					[reply?.id],
+				),
+			WAIT,
+		);
+		await sleep(SETTLE_MS);
+		assert.deepEqual(failuresOf(back, questionId), [], "the resent reply is the ask's one outcome");
+
+		// Saved now: coming back again brings neither the reply nor a failure.
+		await back.client.disconnect({ resumable: true });
+		await sleep(SETTLE_MS);
+		const again = await connect(askerAddress.name, { ...askerAddress, preferredSessionId: askerId });
+		await sleep(SETTLE_MS);
+		assert.deepEqual(failuresOf(again, questionId), []);
+		assert.deepEqual(repliesTo(again, questionId), []);
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);

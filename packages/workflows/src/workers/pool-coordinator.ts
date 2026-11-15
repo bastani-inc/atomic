@@ -6,8 +6,8 @@ import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import { setDebugSetting, type WorktreeSnapshot } from "@bastani/atomic";
-import { JournalShardUnavailableError } from "@bastani/atomic/storage";
-import { observeSqlPoolTransactions, sqlPoolStorage } from "../durable/journal/internal.js";
+import { JournalShardUnavailableError, type StorageNotificationSubscription } from "@bastani/atomic/storage";
+import { listenPoolReady, observeSqlPoolTransactions, sqlPoolStorage } from "../durable/journal/internal.js";
 import { PoolRemoteJournal } from "../durable/journal/pool-remote-journal.js";
 import { resolveRunJournal } from "../durable/journal/resolution.js";
 import "../durable/journal/workflows-host-module.js";
@@ -104,6 +104,7 @@ import {
 } from "./placement-errors.js";
 import { PoolCoordinationCounters } from "./pool-coordination-stats.js";
 import { openDurableJournal, type PoolDurableJournal, poolWorkerEnvironment } from "./pool-journal.js";
+import { coordinatorWakeUps, IdleClaimPauses } from "./pool-wake-ups.js";
 import { configurePooledWatchTrace, tracePooledWatch } from "./pooled-watch-trace.js";
 import { appendProcessLog, logFailureOf } from "./process-log.js";
 import type {
@@ -667,6 +668,9 @@ export class PoolCoordinator {
 	/** The newest pool control committed, as pushed to ready workers. */
 	private committedControl?: PoolControl;
 	private recoveryTimer?: NodeJS.Timeout;
+	/** The shared pool's wake-ups from its journal (#5103), and the idle workers' pauses they end. */
+	private poolReady?: StorageNotificationSubscription;
+	private readonly idlePauses = new IdleClaimPauses(SHARED_IDLE_CLAIM_MS);
 	private flushTimer?: NodeJS.Timeout;
 	private lastFlushAt = 0;
 	private batchSequence = 0;
@@ -1185,7 +1189,7 @@ export class PoolCoordinator {
 
 	/** Starts the recovery of expired attempts, every {@link RECOVERY_INTERVAL_MS}. */
 	private startRecovery(): void {
-		this.recoveryTimer = setInterval(() => {
+		const recover = () => {
 			this.counters.enter("recovery");
 			void this.recoverExpired().catch(async (error: Error) => {
 				// A late root renewal stops nothing: the next recovery runs once it lands.
@@ -1195,7 +1199,24 @@ export class PoolCoordinator {
 				if (infrastructureFaultOf(error) === "storage_unavailable") return;
 				this.fail(error);
 			});
-		}, RECOVERY_INTERVAL_MS).unref();
+		};
+		this.recoveryTimer = setInterval(recover, RECOVERY_INTERVAL_MS).unref();
+		// A shared pool's journal on Postgres says when its root's work became ready or an attempt ended (#5103): an idle
+		// worker asks for work at once, and the root settles what another host's worker ended, instead of at their polls.
+		if (this.options?.shared === undefined) return;
+		this.poolReady = listenPoolReady(
+			this.journal!,
+			coordinatorWakeUps({
+				root: () => this.root,
+				satellite: this.satellite !== undefined,
+				pauses: this.idlePauses,
+				recovering: () => this.recovering,
+				recover: () => {
+					this.nextRecoveryAt = 0;
+					recover();
+				},
+			}),
+		);
 	}
 
 	/** Publishes a shared pool's configuration for worker hosts, and starts its relay and stage input passes. */
@@ -2576,7 +2597,7 @@ export class PoolCoordinator {
 						if (claimed === undefined) {
 							// An idle worker of a shared pool asks again only after a pause: the workers of every host ask the
 							// same journal, a network away (#4310).
-							if (options.shared !== undefined) await delay(SHARED_IDLE_CLAIM_MS);
+							if (options.shared !== undefined) await this.idlePauses.pause();
 							return undefined;
 						}
 						slot.work = claimed.work;
@@ -3290,6 +3311,7 @@ export class PoolCoordinator {
 		this.placingSignal.abort();
 		clearInterval(this.ticker);
 		clearInterval(this.recoveryTimer);
+		this.poolReady?.close();
 		clearInterval(this.mirrorTimer);
 		clearInterval(this.statsTimer);
 		clearInterval(this.sharedTimer);

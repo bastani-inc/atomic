@@ -38,6 +38,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { sliceHead } from "@bastani/atomic";
 import { normalizeWorkflowName } from "../workflows/identity.js";
 
 /** Mirror of the engine's child-nesting default (`engine/run.ts` `opts.config?.maxDepth ?? 3`). */
@@ -1080,7 +1081,7 @@ class PossibleStagesScanner {
 			code: "zero-stages",
 			file: this.relativeFile(entryPath),
 			line: 1,
-			excerpt: entryUnit === undefined ? "" : linesText(entryUnit, 1, 7).slice(0, MAX_EXCERPT_LENGTH),
+			excerpt: entryUnit === undefined ? "" : sliceHead(linesText(entryUnit, 1, 7), MAX_EXCERPT_LENGTH),
 			boundary: "",
 			candidates: capCandidates(literals),
 		});
@@ -2177,7 +2178,7 @@ function linesText(unit: FileUnit, first: number, last: number): string {
 function excerptAround(unit: FileUnit, line: number): string {
 	const wide = linesText(unit, Math.max(1, line - 3), line + 3);
 	if (wide.length <= MAX_EXCERPT_LENGTH) return wide;
-	return linesText(unit, line, line + 3).slice(0, MAX_EXCERPT_LENGTH);
+	return sliceHead(linesText(unit, line, line + 3), MAX_EXCERPT_LENGTH);
 }
 
 /** `name: "literal"` values of object literals in a token slice, in source order. */

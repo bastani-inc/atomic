@@ -265,7 +265,7 @@ A model named with `--model` runs as named. It falls back only to the models `--
 |--------|-------------|
 | `-c`, `--continue` | Continue the most recent session for the current directory |
 | `-r`, `--resume` | Browse and select a session |
-| `--session <id\|prefix>` | Use an exact ID or unique 8-hex UUID prefix, and run it in its working directory. If it only matches a session from another directory, Atomic offers to fork it into the current directory |
+| `--session <id\|prefix>` | Use an exact ID or unique 8-hex UUID prefix, and run it in its working directory. If it only matches a session from another directory, Atomic offers to fork it into the current directory. A session another live process has open is not resumed: Atomic exits with code `75` ([When the session is already open](/guides/resume-on-any-machine#when-the-session-is-already-open)) |
 | `--import <file>` | Import a format-4 JSONL export into session storage |
 | `--session-id <id>` | Use an exact project session ID; warn and create it when missing |
 | `--fork <id\|prefix>` | Fork an exact ID or unique 8-hex UUID prefix into a new session in the current directory |

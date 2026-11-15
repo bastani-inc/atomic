@@ -32,7 +32,7 @@ import {
 	type DurableCheckpoint,
 	type DurableStageCheckpoint,
 } from "../types.js";
-import { locksRows, poolSessionPrefix, type SqlPoolStorage, sqlPoolStorage } from "./internal.js";
+import { locksRows, poolReadyChannel, poolSessionPrefix, type SqlPoolStorage, sqlPoolStorage } from "./internal.js";
 import { isWorkflowLeaseExpired } from "./lease-expiry.js";
 import { PoolCheckpointIndex, type PoolCheckpointRead, type PoolCheckpointSource } from "./pool-checkpoint-index.js";
 import { guardedPoolWrite, poolFenceSchema, poolWriteBatch } from "./pool-guarded-write.js";
@@ -810,6 +810,7 @@ export class SqlPoolQueue {
 					requested,
 					row.id,
 				);
+				await this.notifyReady(tx, lease.runId);
 				return fromRow({ ...row, state: "ready", epoch: lease.epoch, descriptor: requested });
 			}
 			const siblings = await tx.all<SqliteRow & { scope: string }>(
@@ -855,6 +856,7 @@ export class SqlPoolQueue {
 					);
 			}
 			await this.claimSessions(tx, lease.runId, id, descriptor, options.claimSessions);
+			await this.notifyReady(tx, lease.runId);
 			return fromRow((await tx.get<WorkRow>(`SELECT * FROM ${this.work} WHERE id = ?`, id))!);
 		});
 	}
@@ -1821,9 +1823,11 @@ export class SqlPoolQueue {
 		assertWorkflowSerializableObject(result, "Pool result");
 		const payload = serializeJson(result);
 		await this.remote?.fresh(lease);
+		const ready = this.readyNotice(lease.runId);
 		const writes = [
 			{ sql: `INSERT INTO ${this.work}_results VALUES (?, ?)`, params: [token.id, payload] },
 			{ sql: `UPDATE ${this.work} SET state = 'completed' WHERE id = ?`, params: [token.id] },
+			...(ready === undefined ? [] : [ready]),
 		];
 		await guardedPoolWrite(
 			this.storage,
@@ -1924,6 +1928,7 @@ export class SqlPoolQueue {
 				lease.epoch,
 				id,
 			);
+			await this.notifyReady(tx, lease.runId);
 			return fromRow({ ...row, state: "ready", worker: null, expires_at: 0, epoch: lease.epoch });
 		});
 	}
@@ -1961,6 +1966,7 @@ export class SqlPoolQueue {
 					Number(row.generation),
 					HANDOFF_OPERATION,
 				);
+			await this.notifyReady(tx, lease.runId);
 			return true;
 		});
 	}
@@ -2153,6 +2159,7 @@ export class SqlPoolQueue {
 					HANDOFF_OPERATION,
 				);
 			}
+			await this.notifyReady(tx, lease.runId);
 			return true;
 		});
 	}
@@ -2174,6 +2181,7 @@ export class SqlPoolQueue {
 				adopt ? lease.epoch : row.epoch,
 				row.id,
 			);
+			await this.notifyReady(tx, lease.runId);
 			return true;
 		});
 	}
@@ -2193,6 +2201,7 @@ export class SqlPoolQueue {
 				lease.epoch,
 				JSON.stringify(retained),
 			);
+			if (released.changes > 0) await this.notifyReady(tx, lease.runId);
 			return released.changes;
 		});
 	}
@@ -2207,8 +2216,20 @@ export class SqlPoolQueue {
 				lease.epoch,
 				JSON.stringify(retained),
 			);
+			if (released.changes > 0) await this.notifyReady(tx, lease.runId);
 			return released.changes;
 		});
+	}
+	/**
+	 * The statement that tells listening hosts and the root that `root`'s queue changed, once the transaction it runs in
+	 * commits: work became ready, or an attempt ended (#5103). Undefined on a database without notifications.
+	 */
+	private readyNotice(root: string): SqliteStatement | undefined {
+		return this.storage.notifications?.notify(poolReadyChannel(this.storage), root);
+	}
+	private async notifyReady(tx: SqliteExecutor, root: string): Promise<void> {
+		const notice = this.readyNotice(root);
+		if (notice !== undefined) await tx.run(notice.sql, ...notice.params);
 	}
 	/** Every work item of `root`. A read: each coordinator's recovery asks every half second. */
 	async inspect(root: string): Promise<readonly PoolWork[]> {
