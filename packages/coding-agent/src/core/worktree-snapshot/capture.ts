@@ -498,9 +498,11 @@ async function writeTreeThrough(
 
 /**
  * Where the repository does not trust the file system's executable bits (`core.filemode=false`) or has no symbolic
- * links (`core.symlinks=false`), as on Windows, gives each file of the private index that `recorded` holds as
- * executable or as a link, with the same content, the mode `recorded` gives it: Git would otherwise record the
- * checked-out file as a regular one (#4932). Files the capture leaves out (`omitted`) keep HEAD's entry.
+ * links (`core.symlinks=false`), as on Windows, gives each regular file of the private index that `recorded` holds as
+ * executable or as a link the mode `recorded` gives it, with the file's current content: Git would otherwise record the
+ * checked-out file as a regular one (#4932). An edit keeps the mode, as Git keeps a tracked entry's mode where it cannot
+ * read one from the file; a link's new content is its new target. Files the capture leaves out (`omitted`) keep HEAD's
+ * entry.
  */
 async function carryRecordedModes(git: GitRunOptions, recorded: string, omitted: ReadonlySet<string>): Promise<void> {
 	const settings = await runGit(["config", "-z", "--type=bool", "--get-regexp", "^core\\.(filemode|symlinks)$"], {
@@ -528,10 +530,10 @@ async function carryRecordedModes(git: GitRunOptions, recorded: string, omitted:
 	const fields = nulFields(diff.stdout);
 	const entries: string[] = [];
 	for (let index = 0; index + 1 < fields.length; index += 2) {
-		const [oldMode = "", newMode, oldBlob, newBlob] = fields[index]!.slice(1).split(" ");
+		const [oldMode = "", newMode, , newBlob] = fields[index]!.slice(1).split(" ");
 		const path = fields[index + 1]!;
-		if (carried.has(oldMode) && newMode === "100644" && oldBlob === newBlob && !omitted.has(path)) {
-			entries.push(`${oldMode} ${oldBlob}\t${path}\0`);
+		if (carried.has(oldMode) && newMode === "100644" && !omitted.has(path)) {
+			entries.push(`${oldMode} ${newBlob}\t${path}\0`);
 		}
 	}
 	if (entries.length > 0) await runGit(["update-index", "-z", "--index-info"], { ...git, input: entries.join("") });

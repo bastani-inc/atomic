@@ -95,17 +95,18 @@ test("a capture after a restore on a store without exec bits or symlinks keeps b
 		assert.equal(await entryOf(restored.path, recaptured.tree, "link"), `120000 ${linkBlob}`);
 		assert.equal(recaptured.tree, uncommitted.tree);
 
-		// An edit is recorded as the working file, and a new file takes Git's usual mode.
+		// An edited script stays executable and a repointed link stays a link, as Git keeps an index entry's mode on edit
+		// where it cannot read one from the file; a new file takes Git's usual mode.
 		writeFileSync(join(restored.path, "run.sh"), "#!/bin/sh\necho changed\n");
+		writeFileSync(join(restored.path, "link"), "README.md");
 		writeFileSync(join(restored.path, "new.sh"), "#!/bin/sh\n");
 		const edited = snapshotOf(await captureWorktreeSnapshot(restored.path, { blobs, previous: recaptured }));
-		assert.match(await entryOf(restored.path, edited.tree, "run.sh"), /^100644 /);
-		assert.notEqual(
-			await entryOf(restored.path, edited.tree, "run.sh"),
-			await entryOf(clone, uncommitted.tree, "run.sh"),
-		);
+		const runBlob = await sandbox.git(restored.path, "hash-object", "run.sh");
+		const readmeLink = await sandbox.git(restored.path, "hash-object", "link");
+		assert.equal(await entryOf(restored.path, edited.tree, "run.sh"), `100755 ${runBlob}`);
+		assert.equal(await entryOf(restored.path, edited.tree, "link"), `120000 ${readmeLink}`);
+		assert.notEqual(readmeLink, linkBlob);
 		assert.match(await entryOf(restored.path, edited.tree, "new.sh"), /^100644 /);
-		assert.equal(await entryOf(restored.path, edited.tree, "link"), `120000 ${linkBlob}`);
 	} finally {
 		await removeRestoredWorktree(restored.path, { storeDir });
 	}
