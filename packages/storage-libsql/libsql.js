@@ -389,6 +389,15 @@ function closeLocalConnectionsOnce(clientEntry) {
 	Database.prototype[closesOnce] = true;
 }
 
+/**
+ * A libSQL server's (sqld's) default payload limits, which the facade names when a value or a response is too large
+ * (#4954): `max_row_size`, which sqld sets as SQLite's `SQLITE_LIMIT_LENGTH` on every connection, is `bytesize::mb(5)`
+ * (5,000,000 bytes) for a value and a whole row, and `--max-response-size` is 10 MB for one statement's response.
+ */
+const SERVER_PAYLOAD_LIMITS = Object.freeze({ value: 5_000_000, response: 10_000_000 });
+/** A local file's limit: SQLite's default `SQLITE_MAX_LENGTH`. */
+const LOCAL_PAYLOAD_LIMITS = Object.freeze({ value: 1_000_000_000 });
+
 /** How far `transientFailure` follows `cause`: a driver error wraps the network error that fetch wraps. */
 const MAX_CAUSE_DEPTH = 8;
 /**
@@ -533,6 +542,7 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 		descriptor: { adapter: "libsql", location: url },
 		redact,
 		transientFailure,
+		payloadLimits: local ? LOCAL_PAYLOAD_LIMITS : SERVER_PAYLOAD_LIMITS,
 		// A server's batch the busy lock ended: the facade sends it again within the caller's `lockWaitMs`.
 		lockBusy: (failure) => !local && isLockBusy(failure),
 		// One statement outside a transaction, run alone or as an `exec` of one statement, that waited out the busy

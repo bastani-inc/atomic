@@ -365,8 +365,8 @@ test("reopening a session store and run journal finds their index triggers and c
 
 	assert.deepEqual(
 		opens,
-		[3, 0],
-		"the first opens install the triggers of each of the three sources, the second none",
+		[4, 0],
+		"the first opens install the triggers of each of the three sources and the chunk cleanup (#4954), the second none",
 	);
 	assert.deepEqual(
 		(
@@ -379,6 +379,7 @@ test("reopening a session store and run journal finds their index triggers and c
 			["session_entries_snapshot_pending", "session_entries"],
 			["session_entries_snapshot_refs", "session_entries"],
 			["session_entries_snapshot_refs_delete", "session_entries"],
+			["snapshot_blobs_chunks_delete", "snapshot_blobs"],
 			["wf_events_snapshot_refs", "wf_events"],
 			["wf_events_snapshot_state", "wf_events"],
 			["wf_runs_snapshot_refs_delete", "wf_runs"],
@@ -391,6 +392,7 @@ test("reopening a session store and run journal finds their index triggers and c
 test("the index tables are named under the storage prefix, and under none by default (#4355)", () => {
 	assert.deepEqual(snapshotIndexTables(), {
 		blobs: "snapshot_blobs",
+		blobChunks: "snapshot_blob_chunks",
 		runRefs: "snapshot_run_refs",
 		runState: "snapshot_run_state",
 		sessionRefs: "snapshot_session_refs",

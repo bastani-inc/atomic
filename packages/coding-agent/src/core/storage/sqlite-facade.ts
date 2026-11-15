@@ -11,10 +11,14 @@ import type {
 } from "./database.js";
 import { type StorageDialect, sqliteDialect } from "./dialect.js";
 import {
+	largestValueBytes,
+	payloadTooLargeKind,
 	StorageConfigError,
 	StorageError,
 	type StorageFailureCause,
 	StorageInvalidTextError,
+	type StoragePayloadLimits,
+	StoragePayloadTooLargeError,
 	StorageRollbackError,
 	StorageTransactionClosedError,
 	StorageTransientError,
@@ -110,6 +114,11 @@ export interface SqliteDriver extends SqliteDriverExecutor {
 	 * facade redacts it. The call then fails with `StorageTransientError`, and a call that wrote nothing runs again.
 	 */
 	transientFailure?(failure: StorageFailureCause): SqliteDriverTransientFailure | undefined;
+	/**
+	 * Optional. The backend's payload limits in bytes, named in the `StoragePayloadTooLargeError` the facade throws when
+	 * a driver call fails because a value, row or response was too large for the backend (#4954).
+	 */
+	readonly payloadLimits?: StoragePayloadLimits;
 }
 
 /**
@@ -377,7 +386,12 @@ class DriverDatabase implements SqliteDatabase {
 						);
 						if (invalidIndex !== -1) throw new StorageInvalidTextError(invalidIndex);
 					}
-					const results = await this.call(() => batch(bound, passed), attempt, true);
+					const results = await this.call(
+						() => batch(bound, passed),
+						attempt,
+						true,
+						bound.flatMap((statement) => statement.params),
+					);
 					return results.map((result) => result.rows.map((row) => normalizeRow(row, result.columns)));
 				}, true),
 			passed?.priority === true,
@@ -430,11 +444,25 @@ class DriverDatabase implements SqliteDatabase {
 	 * the driver recognizes it and the call belongs to an `attempt`. `applies` says whether the call commits on its
 	 * own; a failed call inside an open transaction applied nothing, whatever the driver says of the request.
 	 */
-	private async call<T>(operation: () => Awaitable<T>, attempt?: Attempt, applies = false): Promise<T> {
+	private async call<T>(
+		operation: () => Awaitable<T>,
+		attempt?: Attempt,
+		applies = false,
+		params: readonly SqliteValue[] = [],
+	): Promise<T> {
 		try {
 			return await operation();
 		} catch (cause) {
 			const safe = redactCause(cause as StorageFailureCause, this.redact);
+			// A payload too large for the backend fails the same way every time: permanent, never an outage (#4954).
+			const kind = payloadTooLargeKind(cause as StorageFailureCause);
+			if (kind !== undefined) {
+				throw new StoragePayloadTooLargeError(
+					this.driver.payloadLimits?.[kind] ?? 0,
+					kind === "value" ? largestValueBytes(params) : 0,
+					{ kind, descriptor: this.descriptor, cause: safe },
+				);
+			}
 			if (attempt !== undefined) {
 				const transient = this.driver.transientFailure?.(cause as StorageFailureCause);
 				if (transient !== undefined) {
@@ -465,7 +493,7 @@ class DriverDatabase implements SqliteDatabase {
 			return admit(async (attempt) => {
 				const invalidIndex = bound.findIndex((value) => typeof value === "string" && value.includes("\0"));
 				if (invalidIndex !== -1) throw new StorageInvalidTextError(invalidIndex);
-				return this.call(() => connection.execute(sql, bound), attempt, applies);
+				return this.call(() => connection.execute(sql, bound), attempt, applies, bound);
 			});
 		};
 		return {

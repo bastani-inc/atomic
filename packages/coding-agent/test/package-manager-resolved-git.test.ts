@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, it, vi } from "vitest";
 import { DefaultPackageManager } from "../src/core/package-manager.ts";
 import { runCommand } from "../src/core/package-manager-command.ts";
@@ -62,18 +62,21 @@ describe("package manager git commands (#4322)", () => {
 		const internals = packageManager as unknown as CommandInternals;
 		const runCommand = vi.spyOn(internals, "runCommand").mockImplementation(async (_command, args) => {
 			if (args[0] === "clone") {
-				mkdirSync(targetDir, { recursive: true });
-				writeFileSync(join(targetDir, "README.md"), "x");
+				const cloneDir = args[args.length - 1]!;
+				mkdirSync(cloneDir, { recursive: true });
+				writeFileSync(join(cloneDir, "README.md"), "x");
 			}
 		});
 
 		await packageManager.install("git:github.com/user/repo");
 
-		assert.deepEqual(runCommand.mock.calls[0], [
-			resolved.path,
-			["clone", "--", "https://github.com/user/repo", targetDir],
-			{ env: resolved.env },
-		]);
+		const [command, args, options] = runCommand.mock.calls[0]!;
+		assert.deepEqual(
+			[command, args.slice(0, 3), options],
+			[resolved.path, ["clone", "--", "https://github.com/user/repo"], { env: resolved.env }],
+		);
+		assert.equal(dirname(args[3]!), dirname(targetDir));
+		assert.equal(readFileSync(join(targetDir, "README.md"), "utf-8"), "x");
 	});
 
 	it("keeps caller variables over the portable environment when capturing output", async () => {
@@ -138,16 +141,11 @@ describe("package manager command environment (#4322)", () => {
 			const internals = packageManager as unknown as CommandInternals;
 			const runCommand = vi.spyOn(internals, "runCommand").mockResolvedValue(undefined);
 			await packageManager.install("git:github.com/user/repo").catch(() => undefined);
-			assert.deepEqual(runCommand.mock.calls[0], [
-				resolved.path,
-				[
-					"clone",
-					"--",
-					"https://github.com/user/repo",
-					join(tempDir, "agent", "git", "github.com", "user", "repo"),
-				],
-				undefined,
-			]);
+			const [command, args, options] = runCommand.mock.calls[0]!;
+			assert.deepEqual(
+				[command, args.slice(0, 3), options],
+				[resolved.path, ["clone", "--", "https://github.com/user/repo"], undefined],
+			);
 		} finally {
 			resolved.env = { GIT_EXEC_PATH: "/opt/atomic/bin/git/libexec/git-core" };
 			rmSync(tempDir, { recursive: true, force: true });
@@ -194,15 +192,18 @@ describe("package manager git call sites (#4322)", () => {
 	});
 
 	it("checks out a pinned ref after cloning with the resolved git", async () => {
-		const targetDir = join(tempDir, "agent", "git", "github.com", "user", "repo");
+		let cloneDir = "";
 		const runCommand = vi.spyOn(internals, "runCommand").mockImplementation(async (_command, args) => {
-			if (args[0] === "clone") mkdirSync(targetDir, { recursive: true });
+			if (args[0] === "clone") {
+				cloneDir = args[args.length - 1]!;
+				mkdirSync(cloneDir, { recursive: true });
+			}
 		});
 		await packageManager.install("git:github.com/user/repo@v1");
 		assert.deepEqual(runCommand.mock.calls[1], [
 			resolved.path,
 			["checkout", "v1"],
-			{ cwd: targetDir, env: resolved.env },
+			{ cwd: cloneDir, env: resolved.env },
 		]);
 	});
 
@@ -493,7 +494,7 @@ describe("package manager rethrows an unavailable git from each best-effort site
 
 	it("when cleaning an updated checkout, instead of reporting that files are in use", async () => {
 		const installed = join(tempDir, "agent", "git", "github.com", "user", "repo");
-		mkdirSync(installed, { recursive: true });
+		mkdirSync(join(installed, ".git"), { recursive: true });
 		const events: object[] = [];
 		packageManager.setProgressCallback((event) => events.push(event));
 		capturing({ "rev-parse HEAD": "old", "rev-parse FETCH_HEAD^{commit}": "new" });

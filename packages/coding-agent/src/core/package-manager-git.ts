@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { APP_NAME, getProjectConfigDirs } from "../config.js";
 import type { GitSource } from "../utils/git.ts";
@@ -8,6 +9,7 @@ import { getToolEnv, getToolPath } from "../utils/tools-manager.ts";
 import { runCommand, runCommandCapture } from "./package-manager-command.ts";
 import { NETWORK_TIMEOUT_MS } from "./package-manager-constants.ts";
 import { isOfflineModeEnabled } from "./package-manager-env.ts";
+import { withInstallLock } from "./package-manager-lock.ts";
 import { ensureGitIgnore, getGitDependencyInstallArgs, runNpmCommand } from "./package-manager-npm.ts";
 import { getBaseDirsForScope, getGitInstallPath, getGitInstallRoot } from "./package-manager-paths.ts";
 import { emitProgress, withProgress } from "./package-manager-progress.ts";
@@ -17,6 +19,7 @@ import type {
 	PackageManagerContext,
 	SourceScope,
 } from "./package-manager-types.ts";
+import { renameReplacing } from "./settings-storage.ts";
 
 /** A failure to provide git is never a best-effort miss: callers see it, with its code and install command. */
 function rethrowGitProvisionError(error: unknown): void {
@@ -96,6 +99,9 @@ export function getExistingGitInstallPath(
 	return undefined;
 }
 
+/** A staging directory older than this belongs to an install that was killed, not one still running. */
+const STALE_GIT_STAGING_MS = 24 * 60 * 60 * 1000;
+
 function getGitUpdateMarkerPath(targetDir: string): string {
 	return join(dirname(targetDir), `.${basename(targetDir)}.${APP_NAME}-update-incomplete`);
 }
@@ -156,23 +162,137 @@ async function cleanAndInstallGitDependencies(
 export async function installGit(context: PackageManagerContext, source: GitSource, scope: SourceScope): Promise<void> {
 	const safeRef = source.ref ? getSafeGitRef(source.ref) : undefined;
 	const targetDir = getGitInstallPath(context, source, scope);
-	if (existsSync(targetDir)) {
-		if (safeRef) {
-			await ensureGitRef(context, targetDir, ["fetch", "origin", "--", safeRef], "FETCH_HEAD");
+	const installedBefore = existsSync(targetDir);
+	await withGitInstallLock(context, scope, targetDir, async () => {
+		if (!existsSync(targetDir)) {
+			await cloneGit(context, source, scope, targetDir, safeRef);
 			return;
 		}
-		const target = context.driver
-			? await context.driver.getLocalGitUpdateTarget(targetDir)
-			: await getLocalGitUpdateTarget(context, targetDir);
-		await ensureGitRef(context, targetDir, target.fetchArgs, target.ref);
+		// Another process finished installing it while this one waited for the lock.
+		if (!installedBefore && (await isCompleteGitCheckout(context, targetDir))) return;
+		await updateGitCheckout(context, source, scope, targetDir, safeRef, "install");
+	});
+}
+
+/** Holds the install lock of `targetDir`, then drops host/owner directories a failed install left empty. */
+async function withGitInstallLock(
+	context: PackageManagerContext,
+	scope: SourceScope,
+	targetDir: string,
+	operation: () => Promise<void>,
+): Promise<void> {
+	try {
+		await withInstallLock(targetDir, operation);
+	} finally {
+		pruneEmptyGitParents(targetDir, getGitInstallRoot(context, scope));
+	}
+}
+
+/**
+ * Brings an existing checkout to its target commit. A directory that is not its own repository, or whose update fails
+ * because it is not a complete checkout (a clone killed partway), is cloned again.
+ */
+async function updateGitCheckout(
+	context: PackageManagerContext,
+	source: GitSource,
+	scope: SourceScope,
+	targetDir: string,
+	safeRef: string | undefined,
+	action: "install" | "update",
+): Promise<void> {
+	if (existsSync(join(targetDir, ".git"))) {
+		try {
+			await updateCompleteGitCheckout(context, targetDir, safeRef);
+			return;
+		} catch (error) {
+			if (isGitProvisionError(error) || (await isCompleteGitCheckout(context, targetDir))) throw error;
+		}
+	}
+	emitProgress(context, {
+		type: "progress",
+		action,
+		source: targetDir,
+		message: `${targetDir} is not a complete git checkout (an earlier install may have been interrupted); cloning it again.`,
+	});
+	rmSync(targetDir, { recursive: true, force: true });
+	await cloneGit(context, source, scope, targetDir, safeRef);
+}
+
+async function updateCompleteGitCheckout(
+	context: PackageManagerContext,
+	targetDir: string,
+	safeRef: string | undefined,
+): Promise<void> {
+	if (safeRef) {
+		await ensureGitRef(context, targetDir, ["fetch", "origin", "--", safeRef], "FETCH_HEAD");
 		return;
 	}
+	const target = context.driver
+		? await context.driver.getLocalGitUpdateTarget(targetDir)
+		: await getLocalGitUpdateTarget(context, targetDir);
+	await ensureGitRef(context, targetDir, target.fetchArgs, target.ref);
+}
+
+/**
+ * Whether `dir` is a git checkout an update can work with: its own repository with a HEAD commit and either an
+ * upstream branch or a remote default branch. A clone killed before it fetched leaves none of these.
+ */
+async function isCompleteGitCheckout(context: PackageManagerContext, dir: string): Promise<boolean> {
+	if (!existsSync(join(dir, ".git"))) return false;
+	const resolves = (revision: string) =>
+		captureGitProcess(context, ["rev-parse", "--verify", "--quiet", `${revision}^{commit}`], {
+			cwd: dir,
+			timeoutMs: NETWORK_TIMEOUT_MS,
+		}).then(
+			() => true,
+			(error) => {
+				rethrowGitProvisionError(error);
+				return false;
+			},
+		);
+	if (!(await resolves("HEAD"))) return false;
+	return (await resolves("@{upstream}")) || (await resolves("refs/remotes/origin/HEAD"));
+}
+
+/** Staging directories are named after their target so a later install of the same package can sweep them. */
+function getGitStagingPrefix(targetDir: string): string {
+	return `.${basename(targetDir)}.${APP_NAME}-clone-`;
+}
+
+/** Removes staging directories that interrupted installs of `targetDir` left behind. */
+function sweepStaleGitStagingDirs(targetDir: string): void {
+	const parent = dirname(targetDir);
+	const prefix = getGitStagingPrefix(targetDir);
+	for (const entry of readdirSync(parent)) {
+		if (!entry.startsWith(prefix)) continue;
+		const path = join(parent, entry);
+		try {
+			if (Date.now() - statSync(path).mtimeMs > STALE_GIT_STAGING_MS) rmSync(path, { recursive: true, force: true });
+		} catch {
+			// Another process removed it first, or it is still in use; the next install tries again.
+		}
+	}
+}
+
+/**
+ * Clones into a staging directory next to `targetDir` and renames it into place once the clone, checkout, and
+ * dependency install succeed, so a killed install never leaves a partial checkout at `targetDir`.
+ */
+async function cloneGit(
+	context: PackageManagerContext,
+	source: GitSource,
+	scope: SourceScope,
+	targetDir: string,
+	safeRef: string | undefined,
+): Promise<void> {
 	const gitRoot = getGitInstallRoot(context, scope);
 	if (gitRoot) {
 		ensureGitIgnore(gitRoot);
 	}
-	mkdirSync(dirname(targetDir), { recursive: true });
+	const parent = dirname(targetDir);
+	mkdirSync(parent, { recursive: true });
 	rmSync(getGitUpdateMarkerPath(targetDir), { force: true });
+	sweepStaleGitStagingDirs(targetDir);
 
 	// Defense-in-depth: the clone URL is already parsed/validated upstream, but
 	// assert it contains only shell-safe characters immediately before it reaches
@@ -183,22 +303,23 @@ export async function installGit(context: PackageManagerContext, source: GitSour
 	if (!/^[A-Za-z0-9._~:@/%+-]+$/.test(cloneUrl)) {
 		throw new Error(`Refusing to clone repository with unsafe URL: ${cloneUrl}`);
 	}
+	const stagingDir = join(parent, `${getGitStagingPrefix(targetDir)}${process.pid}-${randomUUID().slice(0, 8)}`);
 	try {
-		await runGitProcess(context, ["clone", "--", cloneUrl, targetDir]);
+		await runGitProcess(context, ["clone", "--", cloneUrl, stagingDir]);
 		if (safeRef) {
-			await runGitProcess(context, ["checkout", safeRef], { cwd: targetDir });
+			await runGitProcess(context, ["checkout", safeRef], { cwd: stagingDir });
 		}
-		const packageJsonPath = join(targetDir, "package.json");
-		if (existsSync(packageJsonPath)) {
-			await runNpmCommand(context, getGitDependencyInstallArgs(context), { cwd: targetDir });
+		if (existsSync(join(stagingDir, "package.json"))) {
+			await runNpmCommand(context, getGitDependencyInstallArgs(context), { cwd: stagingDir });
 		}
-	} catch (error) {
-		// A half-written clone would otherwise be treated as installed by the
-		// `existsSync(targetDir)` check above, so the next install silently skips
-		// the repair. Remove it, then drop the now-empty host/owner directories.
-		rmSync(targetDir, { recursive: true, force: true });
-		pruneEmptyGitParents(targetDir, gitRoot);
-		throw error;
+		try {
+			renameReplacing(stagingDir, targetDir);
+		} catch (error) {
+			// An install that does not take the lock (an older version) can finish first; use its checkout.
+			if (!existsSync(targetDir) || !(await isCompleteGitCheckout(context, targetDir))) throw error;
+		}
+	} finally {
+		rmSync(stagingDir, { recursive: true, force: true });
 	}
 }
 
@@ -225,18 +346,13 @@ export async function getInstalledGitHead(
 export async function updateGit(context: PackageManagerContext, source: GitSource, scope: SourceScope): Promise<void> {
 	const safeRef = source.ref ? getSafeGitRef(source.ref) : undefined;
 	const targetDir = getExistingGitInstallPath(context, source, scope) ?? getGitInstallPath(context, source, scope);
-	if (!existsSync(targetDir)) {
-		await installGit(context, source, scope);
-		return;
-	}
-	if (safeRef) {
-		await ensureGitRef(context, targetDir, ["fetch", "origin", "--", safeRef], "FETCH_HEAD");
-		return;
-	}
-	const target = context.driver
-		? await context.driver.getLocalGitUpdateTarget(targetDir)
-		: await getLocalGitUpdateTarget(context, targetDir);
-	await ensureGitRef(context, targetDir, target.fetchArgs, target.ref);
+	await withGitInstallLock(context, scope, targetDir, async () => {
+		if (!existsSync(targetDir)) {
+			await cloneGit(context, source, scope, targetDir, safeRef);
+			return;
+		}
+		await updateGitCheckout(context, source, scope, targetDir, safeRef, "update");
+	});
 }
 
 async function ensureGitRef(
@@ -302,9 +418,11 @@ export async function refreshTemporaryGitSource(
 
 export async function removeGit(context: PackageManagerContext, source: GitSource, scope: SourceScope): Promise<void> {
 	const targetDir = getGitInstallPath(context, source, scope);
-	rmSync(targetDir, { recursive: true, force: true });
-	rmSync(getGitUpdateMarkerPath(targetDir), { force: true });
-	pruneEmptyGitParents(targetDir, getGitInstallRoot(context, scope));
+	if (!existsSync(dirname(targetDir))) return;
+	await withGitInstallLock(context, scope, targetDir, async () => {
+		rmSync(targetDir, { recursive: true, force: true });
+		rmSync(getGitUpdateMarkerPath(targetDir), { force: true });
+	});
 }
 
 function pruneEmptyGitParents(targetDir: string, installRoot: string | undefined): void {

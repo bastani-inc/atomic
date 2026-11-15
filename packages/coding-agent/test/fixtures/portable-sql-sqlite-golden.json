@@ -100,7 +100,13 @@
 			"type": "table",
 			"name": "session_entries",
 			"tbl_name": "session_entries",
-			"sql": "CREATE TABLE session_entries (\n\t\t\t\t\tsession_id TEXT NOT NULL, seq INTEGER NOT NULL, entry_id TEXT NOT NULL,\n\t\t\t\t\tentry_json TEXT NOT NULL CHECK(json_valid(entry_json)), PRIMARY KEY(session_id, seq)\n\t\t\t\t) STRICT"
+			"sql": "CREATE TABLE session_entries (\n\t\t\t\t\tsession_id TEXT NOT NULL, seq INTEGER NOT NULL, entry_id TEXT NOT NULL,\n\t\t\t\t\tentry_json TEXT NOT NULL CHECK(json_valid(entry_json)), chunks INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(session_id, seq)\n\t\t\t\t) STRICT"
+		},
+		{
+			"type": "table",
+			"name": "session_entry_chunks",
+			"tbl_name": "session_entry_chunks",
+			"sql": "CREATE TABLE session_entry_chunks (\n\t\t\t\t\tsession_id TEXT NOT NULL, seq INTEGER NOT NULL, idx INTEGER NOT NULL, data BLOB NOT NULL,\n\t\t\t\t\tPRIMARY KEY(session_id, seq, idx)\n\t\t\t\t) STRICT"
 		},
 		{
 			"type": "table",
@@ -122,9 +128,15 @@
 		},
 		{
 			"type": "table",
+			"name": "snapshot_blob_chunks",
+			"tbl_name": "snapshot_blob_chunks",
+			"sql": "CREATE TABLE snapshot_blob_chunks (hash TEXT NOT NULL, idx INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (hash, idx)) STRICT, WITHOUT ROWID"
+		},
+		{
+			"type": "table",
 			"name": "snapshot_blobs",
 			"tbl_name": "snapshot_blobs",
-			"sql": "CREATE TABLE snapshot_blobs (hash TEXT PRIMARY KEY, bytes INTEGER NOT NULL, data BLOB NOT NULL, created_at INTEGER NOT NULL DEFAULT (unixepoch())) STRICT"
+			"sql": "CREATE TABLE snapshot_blobs (hash TEXT PRIMARY KEY, bytes INTEGER NOT NULL, data BLOB NOT NULL, created_at INTEGER NOT NULL DEFAULT (unixepoch()), chunks INTEGER NOT NULL DEFAULT 0) STRICT"
 		},
 		{
 			"type": "table",
@@ -190,7 +202,13 @@
 			"type": "table",
 			"name": "team_session_entries",
 			"tbl_name": "team_session_entries",
-			"sql": "CREATE TABLE team_session_entries (\n\t\t\t\t\tsession_id TEXT NOT NULL, seq INTEGER NOT NULL, entry_id TEXT NOT NULL,\n\t\t\t\t\tentry_json TEXT NOT NULL CHECK(json_valid(entry_json)), PRIMARY KEY(session_id, seq)\n\t\t\t\t) STRICT"
+			"sql": "CREATE TABLE team_session_entries (\n\t\t\t\t\tsession_id TEXT NOT NULL, seq INTEGER NOT NULL, entry_id TEXT NOT NULL,\n\t\t\t\t\tentry_json TEXT NOT NULL CHECK(json_valid(entry_json)), chunks INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(session_id, seq)\n\t\t\t\t) STRICT"
+		},
+		{
+			"type": "table",
+			"name": "team_session_entry_chunks",
+			"tbl_name": "team_session_entry_chunks",
+			"sql": "CREATE TABLE team_session_entry_chunks (\n\t\t\t\t\tsession_id TEXT NOT NULL, seq INTEGER NOT NULL, idx INTEGER NOT NULL, data BLOB NOT NULL,\n\t\t\t\t\tPRIMARY KEY(session_id, seq, idx)\n\t\t\t\t) STRICT"
 		},
 		{
 			"type": "table",
@@ -212,9 +230,15 @@
 		},
 		{
 			"type": "table",
+			"name": "team_snapshot_blob_chunks",
+			"tbl_name": "team_snapshot_blob_chunks",
+			"sql": "CREATE TABLE team_snapshot_blob_chunks (hash TEXT NOT NULL, idx INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (hash, idx)) STRICT, WITHOUT ROWID"
+		},
+		{
+			"type": "table",
 			"name": "team_snapshot_blobs",
 			"tbl_name": "team_snapshot_blobs",
-			"sql": "CREATE TABLE team_snapshot_blobs (hash TEXT PRIMARY KEY, bytes INTEGER NOT NULL, data BLOB NOT NULL, created_at INTEGER NOT NULL DEFAULT (unixepoch())) STRICT"
+			"sql": "CREATE TABLE team_snapshot_blobs (hash TEXT PRIMARY KEY, bytes INTEGER NOT NULL, data BLOB NOT NULL, created_at INTEGER NOT NULL DEFAULT (unixepoch()), chunks INTEGER NOT NULL DEFAULT 0) STRICT"
 		},
 		{
 			"type": "table",
@@ -314,6 +338,12 @@
 		},
 		{
 			"type": "trigger",
+			"name": "snapshot_blobs_chunks_delete",
+			"tbl_name": "snapshot_blobs",
+			"sql": "CREATE TRIGGER snapshot_blobs_chunks_delete AFTER DELETE ON snapshot_blobs WHEN OLD.chunks > 0 BEGIN DELETE FROM snapshot_blob_chunks WHERE hash = OLD.hash; END"
+		},
+		{
+			"type": "trigger",
 			"name": "team_session_entries_snapshot_links",
 			"tbl_name": "team_session_entries",
 			"sql": "CREATE TRIGGER team_session_entries_snapshot_links AFTER INSERT ON team_session_entries WHEN (SELECT backfilled_through >= watermark FROM team_snapshot_index_sources WHERE source = 'session-entries') BEGIN UPDATE team_snapshot_session_links SET children = children + 1 FROM (SELECT NEW.session_id AS session_id, NEW.seq AS seq, NEW.entry_id AS entry_id, NEW.entry_json AS entry_json, json_extract(NEW.entry_json, '$.parentId') AS parent_id, json_type(NEW.entry_json, '$.parentId') AS parent_type) AS r WHERE team_snapshot_session_links.session_id = r.session_id AND team_snapshot_session_links.entry_id = r.parent_id AND r.parent_type = 'text' AND NOT EXISTS (SELECT 1 FROM team_snapshot_session_links AS own WHERE own.session_id = r.session_id AND own.seq = r.seq); INSERT OR IGNORE INTO team_snapshot_session_links (session_id, seq, entry_id, parent_id, anchor_seq, children, broken) SELECT r.session_id, r.seq, r.entry_id, CASE WHEN r.parent_type = 'text' THEN r.parent_id END, CASE WHEN instr(r.entry_json, '\"worktree_snapshot\"') > 0 AND json_extract(r.entry_json, '$.type') = 'worktree_snapshot' AND json_type(r.entry_json, '$.root') = 'text' AND json_type(r.entry_json, '$.snapshotId') = 'text' THEN r.seq ELSE parent.anchor_seq END, 0, CASE WHEN EXISTS (SELECT 1 FROM team_snapshot_session_links AS other WHERE other.session_id = r.session_id AND other.entry_id = r.entry_id AND other.seq <> r.seq) THEN 1 WHEN r.parent_type IS NULL OR r.parent_type = 'null' THEN 0 WHEN r.parent_type = 'text' AND parent.entry_id IS NOT NULL THEN parent.broken ELSE 1 END FROM (SELECT NEW.session_id AS session_id, NEW.seq AS seq, NEW.entry_id AS entry_id, NEW.entry_json AS entry_json, json_extract(NEW.entry_json, '$.parentId') AS parent_id, json_type(NEW.entry_json, '$.parentId') AS parent_type) AS r LEFT JOIN team_snapshot_session_links AS parent ON parent.session_id = r.session_id AND parent.entry_id = r.parent_id AND r.parent_type = 'text'; END"
@@ -335,6 +365,12 @@
 			"name": "team_session_entries_snapshot_refs_delete",
 			"tbl_name": "team_session_entries",
 			"sql": "CREATE TRIGGER team_session_entries_snapshot_refs_delete AFTER DELETE ON team_session_entries BEGIN UPDATE team_snapshot_session_links SET children = children - 1 WHERE session_id = OLD.session_id AND children > 0 AND entry_id = (SELECT parent_id FROM team_snapshot_session_links WHERE session_id = OLD.session_id AND seq = OLD.seq); DELETE FROM team_snapshot_session_links WHERE session_id = OLD.session_id AND seq = OLD.seq; DELETE FROM team_snapshot_session_refs WHERE session_id = OLD.session_id AND seq = OLD.seq; DELETE FROM team_snapshot_session_records WHERE session_id = OLD.session_id AND seq = OLD.seq; END"
+		},
+		{
+			"type": "trigger",
+			"name": "team_snapshot_blobs_chunks_delete",
+			"tbl_name": "team_snapshot_blobs",
+			"sql": "CREATE TRIGGER team_snapshot_blobs_chunks_delete AFTER DELETE ON team_snapshot_blobs WHEN OLD.chunks > 0 BEGIN DELETE FROM team_snapshot_blob_chunks WHERE hash = OLD.hash; END"
 		},
 		{
 			"type": "trigger",
@@ -528,7 +564,13 @@
 			"type": "table",
 			"name": "session_entries",
 			"tbl_name": "session_entries",
-			"sql": "CREATE TABLE session_entries (\n\t\t\t\t\tsession_id TEXT NOT NULL, seq INTEGER NOT NULL, entry_id TEXT NOT NULL,\n\t\t\t\t\tentry_json TEXT NOT NULL CHECK(json_valid(entry_json)), PRIMARY KEY(session_id, seq)\n\t\t\t\t) STRICT"
+			"sql": "CREATE TABLE session_entries (\n\t\t\tsession_id TEXT NOT NULL, seq INTEGER NOT NULL, entry_id TEXT NOT NULL,\n\t\t\tentry_json TEXT NOT NULL CHECK(json_valid(entry_json)), chunks INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(session_id, seq)\n\t\t) STRICT"
+		},
+		{
+			"type": "table",
+			"name": "session_entry_chunks",
+			"tbl_name": "session_entry_chunks",
+			"sql": "CREATE TABLE session_entry_chunks (\n\t\t\t\t\tsession_id TEXT NOT NULL, seq INTEGER NOT NULL, idx INTEGER NOT NULL, data BLOB NOT NULL,\n\t\t\t\t\tPRIMARY KEY(session_id, seq, idx)\n\t\t\t\t) STRICT"
 		},
 		{
 			"type": "table",
@@ -550,9 +592,15 @@
 		},
 		{
 			"type": "table",
+			"name": "snapshot_blob_chunks",
+			"tbl_name": "snapshot_blob_chunks",
+			"sql": "CREATE TABLE snapshot_blob_chunks (hash TEXT NOT NULL, idx INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (hash, idx)) STRICT, WITHOUT ROWID"
+		},
+		{
+			"type": "table",
 			"name": "snapshot_blobs",
 			"tbl_name": "snapshot_blobs",
-			"sql": "CREATE TABLE snapshot_blobs (hash TEXT PRIMARY KEY, bytes INTEGER NOT NULL, data BLOB NOT NULL, created_at INTEGER NOT NULL DEFAULT 0) STRICT"
+			"sql": "CREATE TABLE snapshot_blobs (hash TEXT PRIMARY KEY, bytes INTEGER NOT NULL, data BLOB NOT NULL, created_at INTEGER NOT NULL DEFAULT 0, chunks INTEGER NOT NULL DEFAULT 0) STRICT"
 		},
 		{
 			"type": "table",
@@ -625,6 +673,12 @@
 			"name": "session_entries_snapshot_refs_delete",
 			"tbl_name": "session_entries",
 			"sql": "CREATE TRIGGER session_entries_snapshot_refs_delete AFTER DELETE ON session_entries BEGIN UPDATE snapshot_session_links SET children = children - 1 WHERE session_id = OLD.session_id AND children > 0 AND entry_id = (SELECT parent_id FROM snapshot_session_links WHERE session_id = OLD.session_id AND seq = OLD.seq); DELETE FROM snapshot_session_links WHERE session_id = OLD.session_id AND seq = OLD.seq; DELETE FROM snapshot_session_refs WHERE session_id = OLD.session_id AND seq = OLD.seq; DELETE FROM snapshot_session_records WHERE session_id = OLD.session_id AND seq = OLD.seq; END"
+		},
+		{
+			"type": "trigger",
+			"name": "snapshot_blobs_chunks_delete",
+			"tbl_name": "snapshot_blobs",
+			"sql": "CREATE TRIGGER snapshot_blobs_chunks_delete AFTER DELETE ON snapshot_blobs WHEN OLD.chunks > 0 BEGIN DELETE FROM snapshot_blob_chunks WHERE hash = OLD.hash; END"
 		},
 		{
 			"type": "trigger",
@@ -712,74 +766,89 @@
 				{
 					"hash": "p-bundle-after",
 					"bytes": 14,
+					"chunks": 0,
 					"data": "p-bundle-after"
 				},
 				{
 					"hash": "p-bundle-before",
 					"bytes": 15,
+					"chunks": 0,
 					"data": "p-bundle-before"
 				},
 				{
 					"hash": "p-patch-after",
 					"bytes": 13,
+					"chunks": 0,
 					"data": "p-patch-after"
 				},
 				{
 					"hash": "p-patch-before",
 					"bytes": 14,
+					"chunks": 0,
 					"data": "p-patch-before"
 				},
 				{
 					"hash": "r-bundle-after",
 					"bytes": 14,
+					"chunks": 0,
 					"data": "r-bundle-after"
 				},
 				{
 					"hash": "r-bundle-before",
 					"bytes": 15,
+					"chunks": 0,
 					"data": "r-bundle-before"
 				},
 				{
 					"hash": "r-patch-after",
 					"bytes": 13,
+					"chunks": 0,
 					"data": "r-patch-after"
 				},
 				{
 					"hash": "r-patch-before",
 					"bytes": 14,
+					"chunks": 0,
 					"data": "r-patch-before"
 				},
 				{
 					"hash": "s-bundle-1",
 					"bytes": 10,
+					"chunks": 0,
 					"data": "s-bundle-1"
 				},
 				{
 					"hash": "s-bundle-4",
 					"bytes": 10,
+					"chunks": 0,
 					"data": "s-bundle-4"
 				},
 				{
 					"hash": "s-patch-1",
 					"bytes": 9,
+					"chunks": 0,
 					"data": "s-patch-1"
 				},
 				{
 					"hash": "s-patch-4",
 					"bytes": 9,
+					"chunks": 0,
 					"data": "s-patch-4"
 				},
 				{
 					"hash": "w-bundle-before",
 					"bytes": 15,
+					"chunks": 0,
 					"data": "w-bundle-before"
 				},
 				{
 					"hash": "w-patch-before",
 					"bytes": 14,
+					"chunks": 0,
 					"data": "w-patch-before"
 				}
 			],
+			"blobChunks": [],
 			"runRefs": [
 				{
 					"run_id": "done-after",
