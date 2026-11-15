@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "vitest";
 import { AwayAsks } from "../../packages/intercom/broker/away-asks.js";
 import { PendingQuestionIndex } from "../../packages/intercom/broker/pending-question-index.js";
+import { SessionIdReclaim } from "../../packages/intercom/broker/session-id-reclaim.js";
 import type { SessionInfo } from "../../packages/intercom/types.js";
 
 const ADDRESSES: Record<string, string> = {
@@ -14,6 +15,8 @@ const ADDRESSES: Record<string, string> = {
 	child: "child-address",
 	// The released subagent back under a new Intercom id, with the same return address.
 	"child-2": "child-address",
+	// A session that registered with an empty return address proves nothing.
+	unproven: "",
 };
 
 const info = (id: string): SessionInfo => ({
@@ -72,6 +75,7 @@ test("an answered or failed live route does not come back after a restart (#4829
 test("a live route whose asker cannot prove itself is not written (#4829)", () => {
 	const path = fileIn();
 	broker(path).record("anonymous", "recipient", "q-1");
+	broker(path).record("unproven", "recipient", "q-2");
 	const restarted = broker(path);
 	assert.deepEqual(
 		restarted.restoreDormant("recipient", ADDRESSES.recipient, () => true),
@@ -177,4 +181,73 @@ test("a durable file an older broker wrote opens, and its kept asks still route 
 	assert.deepEqual(broker(path).restoreDormant("recipient", ADDRESSES.recipient, connected("asker", "recipient")), [
 		{ messageId: "q-1", senderSessionId: "asker", targetSessionId: "recipient" },
 	]);
+});
+
+test("a live route an earlier broker writes after this one opened the file is taken up all the same (#4829)", () => {
+	const path = fileIn();
+	// A broker that lost its socket path keeps serving its sessions for a moment after its successor opened the file.
+	const successor = broker(path);
+	broker(path).record("asker", "recipient", "q-late");
+	assert.deepEqual(successor.restoreDormant("recipient", ADDRESSES.recipient, connected("asker", "recipient")), [
+		{ messageId: "q-late", senderSessionId: "asker", targetSessionId: "recipient" },
+	]);
+});
+
+test("a route parked for a departed owner's released recipient does not come back after a restart (#4829)", () => {
+	const path = fileIn();
+	const first = broker(path);
+	first.record("asker", "child", "q-1");
+	first.parkTarget("child", "child", "owner");
+	assert.equal(first.takeParkedForOwner("owner").length, 1);
+	assert.deepEqual(broker(path).restoreDormant("child", ADDRESSES.child, connected("asker", "child")), []);
+});
+
+test("a failed-ask message held for a released subagent outlives its broker on its own, once (#4829)", () => {
+	const path = fileIn();
+	const first = broker(path);
+	const failure = (id: string, askerSessionId: string) => ({
+		askerSessionId,
+		from: info("gone"),
+		message: { id, timestamp: 0, replyTo: "q-1", replyError: "ended", content: { text: "ended" } },
+	});
+	first.holdForReleasedChild("child", "owner", failure("failed-1", "child"));
+	first.holdForReleasedChild("child", "owner", failure("failed-1", "child"));
+	// One whose subagent cannot prove itself is held in memory only.
+	first.holdForReleasedChild("anonymous", "owner", failure("failed-2", "anonymous"));
+	first.holdForReleasedChild("unproven", "owner", failure("failed-3", "unproven"));
+	assert.equal(first.hasHeldForReleasedChild("anonymous", "owner"), true);
+
+	const restarted = broker(path);
+	assert.deepEqual(
+		restarted.heldForAsker(ADDRESSES.child).map(({ message }) => message.id),
+		["failed-1"],
+	);
+	assert.deepEqual(
+		first.takeHeldForReleasedChild("child", "owner").map(({ message }) => message.id),
+		["failed-1"],
+		"a failure held twice is taken once",
+	);
+});
+
+test("a released subagent's held failure is taken from a broker that keeps nothing durably (#4829)", () => {
+	const index = new PendingQuestionIndex();
+	index.holdForReleasedChild("child", "owner", {
+		askerSessionId: "child",
+		from: info("gone"),
+		message: { id: "failed-1", timestamp: 0, replyTo: "q-1", replyError: "ended", content: { text: "ended" } },
+	});
+	assert.equal(index.takeHeldForReleasedChild("child", "owner").length, 1);
+});
+
+test("a departed session's return address is known until its id is granted again (#4829)", () => {
+	const reclaim = new SessionIdReclaim();
+	const id = "00000000-0000-4000-8000-000000000001";
+	assert.equal(reclaim.retiredReturnAddress(id), undefined);
+	reclaim.retire(id, "child-address");
+	assert.equal(reclaim.retiredReturnAddress(id), "child-address");
+	assert.equal(
+		reclaim.grant(id, "child-address", () => false),
+		id,
+	);
+	assert.equal(reclaim.retiredReturnAddress(id), undefined);
 });

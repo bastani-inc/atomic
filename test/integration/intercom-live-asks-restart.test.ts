@@ -346,6 +346,8 @@ async function releasedSubagentAsks(label: string) {
 		owner,
 		child: { ...child, id: childId },
 		recipient: { ...recipient, id: idOf(recipientFirst.client) },
+		recipientSession: recipientFirst,
+		ownerSession: ownerFirst,
 		questionId,
 	};
 }
@@ -429,6 +431,45 @@ test(
 		});
 		assert.equal(replied.delivered, true, replied.reason);
 		await vi.waitFor(() => assert.deepEqual(outcomes(childBack, questionId), [{ id: replyId, failed: false }]), WAIT);
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
+
+test(
+	"a released subagent answered after it came back under a new id is not told the ask failed after a restart (#4829, #4852)",
+	async () => {
+		const { owner, child, recipient, recipientSession, ownerSession, questionId } = await releasedSubagentAsks(
+			`new-id-${randomUUID().slice(0, 8)}`,
+		);
+		// Its owner restores it under a new Intercom id, and its recipient answers it there.
+		const childBack = await connect(child.name, {
+			returnAddress: child.returnAddress,
+			supervisor: await ownerSession.client.authorizeSupervisorChild(child.name),
+		});
+		const backId = idOf(childBack.client);
+		assert.notEqual(backId, child.id);
+		const recipientFirst = recipientSession;
+		const replyId = randomUUID();
+		const replied = await recipientFirst.client.send(backId, {
+			messageId: replyId,
+			text: "port 8080",
+			replyTo: questionId,
+			requirePendingReply: true,
+			expectedRecipientId: backId,
+		});
+		assert.equal(replied.delivered, true, replied.reason);
+		await vi.waitFor(() => assert.equal(outcomes(childBack, questionId).length, 1), WAIT);
+
+		await restartBroker(RESTARTS[1].stop);
+		const childAgain = await connect(child.name, {
+			returnAddress: child.returnAddress,
+			preferredSessionId: backId,
+			supervisor: await (await connect(owner.name, owner)).client.authorizeSupervisorChild(child.name),
+		});
+		const recipientBack = await reconnect(recipient);
+		await recipientBack.client.disconnect();
+		await sleep(SETTLE_MS);
+		assert.deepEqual(outcomes(childAgain, questionId), [], "the answered ask fails nothing");
 	},
 	REAL_BROKER_TEST_TIMEOUT_MS,
 );
