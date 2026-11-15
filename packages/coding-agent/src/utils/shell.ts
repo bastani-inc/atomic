@@ -221,17 +221,6 @@ export function getShellEnv(): NodeJS.ProcessEnv {
 	};
 }
 
-/**
- * Sanitize binary output for display/storage.
- * Removes characters that crash string-width or cause display issues:
- * - Control characters (except tab, newline, carriage return)
- * - Unicode interlinear annotation characters U+FFF9..U+FFFB
- */
-export function sanitizeBinaryOutput(str: string): string {
-	// Removed characters are single UTF-16 code units; surrogate pairs remain intact.
-	return str.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\uFFF9-\uFFFB]/g, "");
-}
-
 interface DetachedChildGuardian {
 	postMessage(message: { action: "track" | "untrack"; pid: number }): void;
 	terminate(): Promise<number>;
