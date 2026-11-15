@@ -14,8 +14,11 @@ const waiters = new Map<string, PromiseWithResolvers<SubagentChildRestoreOutcome
 const active = new Set<string>();
 /** Pause and quit calls in flight per wake key: while one is, a wake of that child does not relaunch it (#4845). */
 const pendingStops = new Map<string, number>();
-/** Per active wake: settles with the task its relaunch started, or undefined once it decided not to relaunch. */
-const relaunches = new Map<string, PromiseWithResolvers<string | undefined>>();
+/**
+ * Per active wake: settles once the wake has relaunched the child, its new run's record written, or decided not to.
+ * Until then a pause or quit could not tell a child about to run again from a released one.
+ */
+const relaunches = new Map<string, PromiseWithResolvers<void>>();
 
 export function bindResumeDispatcher(owner: string, dispatcher: AgentWakeDispatcher): () => void {
 	const binding = { dispatcher };
@@ -32,55 +35,49 @@ export function isReleasedChildWakeActive(key: string): boolean {
 	return active.has(key);
 }
 export function setReleasedChildWakeActive(key: string, value: boolean): void {
-	if (value) {
-		active.add(key);
-		openReleasedChildRelaunch(key);
-	} else {
-		active.delete(key);
-		relaunches.get(key)?.resolve(undefined);
-		relaunches.delete(key);
-	}
+	if (value) active.add(key);
+	else active.delete(key);
+	settleReleasedChildRelaunch(key);
+	if (value) relaunches.set(key, Promise.withResolvers());
+	else relaunches.delete(key);
 }
 
-/** A wake of this child may relaunch it again, as after its previous woken run settled. */
+/**
+ * The active wake of this child has relaunched it, its new run's record written, or will not relaunch it now. A later
+ * relaunch in the same wake opens a new window with {@link openReleasedChildRelaunch}.
+ */
+export function settleReleasedChildRelaunch(key: string): void {
+	relaunches.get(key)?.resolve();
+}
+
+/** The active wake of this child may relaunch it again, as after its previous woken run settled. */
 export function openReleasedChildRelaunch(key: string): void {
-	relaunches.get(key)?.resolve(undefined);
-	relaunches.set(key, Promise.withResolvers());
-}
-
-/** The active wake of this child relaunched it as `taskId`, or decided not to relaunch it (undefined). */
-export function settleReleasedChildRelaunch(key: string, taskId: string | undefined): void {
-	relaunches.get(key)?.resolve(taskId);
+	settleReleasedChildRelaunch(key);
+	if (active.has(key)) relaunches.set(key, Promise.withResolvers());
 }
 
 /** Whether a pause or quit of this child is in flight, so its wake must hold what it carries instead (#4845). */
 export function isReleasedChildStopPending(key: string): boolean {
-	return (pendingStops.get(key) ?? 0) > 0;
+	return pendingStops.has(key);
 }
 
 /**
- * Begin a pause or quit of a child that is not running in this process (#4845). From now until `end` is called, no wake
- * of the child relaunches it. When its wake is active, waits until that wake decided: the task it relaunched, which the
- * caller stops as a running child, or undefined when it relaunched nothing. Marked in the same turn as the active check,
+ * Begin a pause or quit of a child that is not running in this process (#4845). Until `end` is called, no wake of the
+ * child relaunches it. `decided` settles once its active wake, if any, has relaunched it, its new run's record written,
+ * or decided not to: the child's latest record then says whether it runs. Marked in the same turn as the active check,
  * so no wake can start between them unseen.
  */
-export function beginReleasedChildStop(key: string): { readonly relaunched: Promise<string | undefined>; end(): void } {
+export function beginReleasedChildStop(key: string): { readonly decided: Promise<void>; end(): void } {
 	pendingStops.set(key, (pendingStops.get(key) ?? 0) + 1);
-	let ended = false;
 	return {
-		relaunched: active.has(key)
-			? (relaunches.get(key)?.promise ?? Promise.resolve(undefined))
-			: Promise.resolve(undefined),
+		decided: relaunches.get(key)?.promise ?? Promise.resolve(),
 		end() {
-			if (ended) return;
-			ended = true;
-			const left = (pendingStops.get(key) ?? 1) - 1;
+			const left = (pendingStops.get(key) ?? 0) - 1;
 			if (left > 0) pendingStops.set(key, left);
 			else pendingStops.delete(key);
 		},
 	};
 }
-
 export function resumeReleasedChild(
 	owner: string,
 	child: string,

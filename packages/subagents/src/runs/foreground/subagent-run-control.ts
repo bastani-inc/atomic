@@ -241,33 +241,23 @@ async function stopLiveChild(
 	return { kind: "stopped" };
 }
 
-type IdleChildStop =
-	/** Its wake had relaunched it: that run was stopped as a running child. */
-	| { readonly kind: "live"; readonly record: SubagentChildRecord; readonly stop: LiveChildStop }
-	/** Its latest record after the stop was recorded in its owner's order; it names whether the stop took. */
-	| { readonly kind: "recorded"; readonly latest: SubagentChildRecord };
-
 /**
- * Pause or quit a released child, or quit a paused one (#4845). No wake relaunches it while this runs; one already
- * waking it is waited for, and the run it started is stopped like any running child. Otherwise the stop is recorded in
- * the owner's order over the child's latest record, never over the copy `record` was read as.
+ * Pause or quit a released child, or quit a paused one (#4845). No wake relaunches it while this runs, and one already
+ * waking it is waited for until it relaunched it or decided not to. The stop is then recorded in the owner's order over
+ * the child's latest record, never over the copy `record` was read as; returns that latest record, which tells whether
+ * the stop took or the child runs again.
  */
 async function stopIdleChild(
 	deps: SubagentChildRestoreDeps,
 	ctx: ExtensionContext,
-	host: AgentTaskHost | undefined,
 	record: SubagentChildRecord,
 	status: SubagentChildStopStatus,
-): Promise<IdleChildStop> {
+): Promise<SubagentChildRecord> {
 	const stop = beginReleasedChildStop(subagentWakeKey(subagentChildOwner(ctx).sessionId, record.childId));
 	try {
-		const relaunched = await stop.relaunched;
-		if (relaunched !== undefined) {
-			const woken = { ...record, taskId: relaunched };
-			return { kind: "live", record: woken, stop: await stopLiveChild(deps, ctx, host, woken, status) };
-		}
+		await stop.decided;
 		indexSubagentChildOwner(ctx);
-		return { kind: "recorded", latest: await recordSubagentChildStop(deps.pi, record, status) };
+		return await recordSubagentChildStop(deps.pi, record, status);
 	} finally {
 		stop.end();
 	}
@@ -346,14 +336,9 @@ async function stopChildren(
 			continue;
 		}
 		// Nothing of it runs: stopping it only stops what would wake it. Results that arrive are kept for resume.
-		const idle = await stopIdleChild(deps, ctx, host, record, status);
-		if (idle.kind === "live") {
-			reportLive(idle.record, idle.stop);
-			continue;
-		}
-		const { latest } = idle;
+		const latest = await stopIdleChild(deps, ctx, record, status);
 		if (latest.state !== "terminal" || latest.terminalStatus !== status) {
-			// Something else ran it or ended it first; a run of it live here is stopped like any running child.
+			// A wake or resume ran it again, or it ended first; a run of it live here is stopped like any running child.
 			const running =
 				latest.taskId !== undefined &&
 				(liveTaskIds(host).has(latest.taskId) || isLiveOwnerlessChild(latest.taskId));

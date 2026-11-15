@@ -4066,6 +4066,13 @@ for (const action of ["pause", "quit"] as const) {
 		assert.equal(latest?.state, "terminal");
 		assert.equal(latest?.terminalStatus, status);
 		assert.deepEqual(latest?.heldToolResults, [green], "the wake's result is held for resume");
+		const reserved = h.holds.flatMap((hold) => ("reserve" in hold ? [hold.reserve] : []));
+		assert.ok(reserved.length > 0, "the restore held sends to the child");
+		for (const capability of reserved)
+			assert.ok(
+				h.holds.some((hold) => "release" in hold && hold.release === capability),
+				"the restore that relaunched nothing released its hold",
+			);
 
 		const resumed = await h.call({ action: "resume", id: `${runId}:0`, message: "go on" });
 		await settled(h, resumedTaskId(resumed));
@@ -4195,4 +4202,43 @@ test("a child woken from its release and then paused while it waits on nothing i
 	const requests = h.releasedChildRequests.length;
 	await reserveReleasedChildrenOf(h.deps.pi.events, h.sessionManager.getSessionId());
 	assert.deepEqual(h.releasedChildRequests.slice(requests), [], "a reconnect reserves nothing for it");
+});
+
+test("pause while a wake still saves the result it carries neither wakes the child nor tells the broker it wakes (#4845)", async () => {
+	const h = harness();
+	const dispatcher = await releasedWithWakes(h, "saving");
+	const saved = Promise.withResolvers<void>();
+	const reached = Promise.withResolvers<void>();
+	const pi = h.deps.pi as unknown as { appendEntry(type: string, data?: SubagentChildRecord): Promise<void> };
+	const append = pi.appendEntry.bind(pi);
+	let armed = true;
+	pi.appendEntry = async (type, data) => {
+		if (armed && data?.childId === "saving:0" && (data.heldToolResults ?? []).length > 0) {
+			armed = false;
+			reached.resolve();
+			await saved.promise;
+		}
+		await append(type, data);
+	};
+	const runsBefore = h.runs.length;
+	const acknowledged = () => h.releasedChildRequests.filter((request) => "acknowledge" in request).length;
+	const acknowledgedBefore = acknowledged();
+	const green = waitResult("CI green");
+	const wake = dispatcher.deliver(subagentWakeKey(h.sessionManager.getSessionId(), "saving:0"), {
+		id: "tool-result:ci-1",
+		kind: "tool-result",
+		toolResult: green,
+	});
+	await reached.promise;
+
+	const paused = h.call({ action: "pause", id: "saving:0" });
+	saved.resolve();
+	const result = await paused;
+	await wake;
+
+	assert.notEqual(result.isError, true, text(result));
+	assert.equal(h.runs.length, runsBefore, "the wake relaunched nothing");
+	assert.equal(acknowledged(), acknowledgedBefore, "the broker is not told the child wakes");
+	assert.equal(h.latest("saving:0")?.terminalStatus, "paused");
+	assert.deepEqual(h.latest("saving:0")?.heldToolResults, [green]);
 });
