@@ -1298,7 +1298,12 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               return {
                 content: [{ type: "text", text: `Failed: ${replyMessage.replyError}` }],
                 isError: true,
-                details: { error: true, askId: questionId, replyTo: replyMessage.replyTo },
+                details: {
+                  error: true,
+                  askId: questionId,
+                  replyTo: replyMessage.replyTo,
+                  ...(replyMessage.retryLater === true ? { retryLater: true as const } : {}),
+                },
               };
             }
             return {

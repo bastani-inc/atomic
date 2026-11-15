@@ -34,6 +34,7 @@ import {
 	type WorktreeRestoreWarning,
 	type WorktreeSnapshot,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/index.ts";
+import { pendingLfsDownload } from "../../packages/coding-agent/src/core/worktree-snapshot/restore.ts";
 import { GitSandbox } from "../helpers/worktree-snapshot.js";
 import { gitCommand } from "../helpers/worktree-snapshot-faults.js";
 
@@ -216,6 +217,41 @@ describe("which remotes an LFS restore pulls from (#4245)", () => {
 		const { warnings } = await restoreCollectingWarnings(snapshot, blobs);
 		assert.deepEqual(pulls(), []);
 		assert.deepEqual(warnings[0], { code: "lfs-objects-unavailable", paths: ["data.bin"] });
+	});
+});
+
+describe("a restore that defers its LFS download (#5099)", () => {
+	async function deferredRestore() {
+		const { blobs, snapshot } = await sharedLfsSnapshot();
+		const handed: { worktree: string; pull: () => Promise<readonly string[]> }[] = [];
+		const restored = await restoreWorktree(snapshot, {
+			blobs,
+			storeDir: sandbox.path("host"),
+			deferLfs: (worktree, pull) => handed.push({ worktree, pull }),
+		});
+		assert.equal(handed.length, 1);
+		assert.equal(handed[0]!.worktree, restored.path);
+		return { restored, pull: handed[0]!.pull };
+	}
+
+	test("publishes the worktree with LFS pointers, marked pending until its download gives every file its content (#5099)", async () => {
+		fakeLfs([]);
+		const { restored, pull } = await deferredRestore();
+		assert.ok(readFileSync(join(restored.path, "data.bin"), "utf8").startsWith(LFS_POINTER_PREFIX));
+		assert.deepEqual(pulls(), [], "nothing was downloaded before the worktree was published");
+		assert.ok(await pendingLfsDownload(restored.path), "a resume interrupted now would finish the download");
+
+		assert.deepEqual(await pull(), []);
+		assert.equal(readFileSync(join(restored.path, "data.bin"), "utf8"), "LFS-CONTENT-123\n");
+		assert.equal(await pendingLfsDownload(restored.path), undefined);
+	});
+
+	test("stays marked pending while a file still holds its pointer (#5099)", async () => {
+		const { remote, mirror } = await sharedLfsSnapshot();
+		fakeLfs([asUrl(remote), asUrl(mirror)]);
+		const { restored, pull } = await deferredRestore();
+		assert.deepEqual(await pull(), ["data.bin"]);
+		assert.ok(await pendingLfsDownload(restored.path), "the next resume tries again");
 	});
 });
 

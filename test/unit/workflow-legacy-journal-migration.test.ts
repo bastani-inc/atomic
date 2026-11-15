@@ -2,9 +2,14 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, test } from "vitest";
+import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.js";
+import { dialectOf } from "../../packages/coding-agent/src/core/storage/dialect.js";
+import { StorageUnavailableError } from "../../packages/coding-agent/src/core/storage/errors.js";
+import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import { migrateStageSessionCheckpoint } from "../../packages/workflows/src/durable/backend.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
+import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import { type JournalEntry, RUN_EVENT_TYPES } from "../../packages/workflows/src/durable/journal/types.js";
 import type { DurableStageCheckpoint } from "../../packages/workflows/src/durable/types.js";
@@ -96,6 +101,47 @@ function convertedRunIds(path: string): string[] {
 		database.close();
 	}
 }
+
+test("a storage failure while reading the legacy tables fails the open instead of hiding their runs (#5065)", async () => {
+	const path = join(tempDirectory(), "journal.sqlite");
+	writeLegacyJournal(path);
+	await (await openSqlRunJournal(path)).close();
+	const database = await openNodeSqliteDatabase(path);
+	const failure = new StorageUnavailableError(database.descriptor, new Error("the database server call failed"));
+	// The journal's tables exist, so its next transaction is the one that reads the legacy tables.
+	const failing = new Proxy(database, {
+		get(target, property, receiver) {
+			if (property === "transaction") return () => Promise.reject(failure);
+			const value = Reflect.get(target, property, receiver);
+			return typeof value === "function" ? value.bind(target) : value;
+		},
+	}) as SqliteDatabase;
+	try {
+		await assert.rejects(SqlRunJournal.open(failing), (error) => error === failure);
+	} finally {
+		await database.close();
+	}
+});
+
+test("a database with a migration ledger, as Postgres keeps, is never read for pre-0.9.38 runs (#5065)", async () => {
+	const path = join(tempDirectory(), "journal.sqlite");
+	writeLegacyJournal(path);
+	const database = await openNodeSqliteDatabase(path);
+	const ledgered = new Proxy(database, {
+		get(target, property, receiver) {
+			if (property === "dialect") return { ...dialectOf(target), versionedMigrations: true };
+			const value = Reflect.get(target, property, receiver);
+			return typeof value === "function" ? value.bind(target) : value;
+		},
+	}) as SqliteDatabase;
+	try {
+		const journal = await SqlRunJournal.open(ledgered);
+		assert.deepEqual(await journal.listRuns({ cwd: legacyRun.cwd }), []);
+		await journal.close();
+	} finally {
+		await database.close();
+	}
+});
 
 test("lists legacy runs from the unprefixed tables without converting them", async () => {
 	const path = join(tempDirectory(), "journal.sqlite");

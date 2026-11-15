@@ -319,7 +319,8 @@ test("SQL append and replace read bounded state and append writes stay bounded (
 						expectSeq: prior.length + 1,
 					});
 				}
-				assert.equal(rowsRead, 1, `${operation} should read just one session state row`);
+				// The schema version row each transaction checks (#5065), and one session state row.
+				assert.equal(rowsRead, 2, `${operation} should read just the schema version and one session state row`);
 				measureWrites = false;
 				assert.ok(bytesRead < 4096, `${operation} must not read accumulated search text: ${bytesRead} bytes`);
 				if (operation === "append") {
