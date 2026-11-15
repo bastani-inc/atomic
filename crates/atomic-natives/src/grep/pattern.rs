@@ -167,7 +167,14 @@ fn build_regex_matcher(
 	ignore_case: bool,
 	multiline: bool,
 ) -> std::result::Result<grep_regex::RegexMatcher, grep_regex::Error> {
-	RegexMatcherBuilder::new().case_insensitive(ignore_case).multi_line(multiline).build(pattern)
+	// CRLF mode makes multi-line `^` and `$` treat `\r\n` as a line end, like ripgrep's `--crlf`. It also sets a
+	// `\r\n` line terminator, which the searcher would reject as a mismatch with its own `\n`, so that is cleared.
+	RegexMatcherBuilder::new()
+		.case_insensitive(ignore_case)
+		.multi_line(multiline)
+		.crlf(true)
+		.line_terminator(None)
+		.build(pattern)
 }
 
 pub fn build_matcher(

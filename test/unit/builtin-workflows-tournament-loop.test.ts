@@ -3,7 +3,8 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { join, resolve } from "node:path";
+import { isPathInside } from "@bastani/atomic";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import {
 	accumulate,
@@ -336,8 +337,7 @@ describe("tournament builtin", () => {
 		assert.equal(new Set(output.judge_artifact_paths).size, output.judge_artifact_paths.length);
 		assert.equal(output.judge_artifact_paths.length, ledger.comparisons.length);
 		for (const path of output.judge_artifact_paths) {
-			const fromRoot = relative(judgeRoot, resolve(path));
-			assert.equal(fromRoot.startsWith("..") || isAbsolute(fromRoot), false);
+			assert.equal(isPathInside(judgeRoot, resolve(path)), true);
 		}
 		assert.deepEqual(new Set(ledger.comparisons.map((entry) => entry.criterion_id)), new Set(suppliedIds));
 		assert.equal(existsSync(join(output.artifact_dir, "escaped-r0.json")), false);

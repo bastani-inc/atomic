@@ -24,6 +24,7 @@ import {
 import type { ModelSingleResponse } from "../../../../coding-agent/src/core/tasks/contracts.js";
 import { resolveExecutionAgentScope } from "../../agents/agent-scope.js";
 import type { AgentConfig, AgentScope, AgentSource } from "../../agents/agent-types.js";
+import { contextAgentDiscoveryOptions } from "../../agents/agents.js";
 import {
 	applyIntercomBridgeToAgent,
 	resolveIntercomBridge,
@@ -301,6 +302,7 @@ function freshPrompts(
  */
 function rediscoverAgent(
 	deps: SubagentChildRestoreDeps,
+	ctx: ExtensionContext,
 	cwd: string,
 	name: string,
 	source: AgentSource | undefined,
@@ -308,7 +310,7 @@ function rediscoverAgent(
 	const scopes: readonly AgentScope[] = source ? ["both", "user", "project"] : [resolveExecutionAgentScope(undefined)];
 	for (const scope of scopes) {
 		const agent = deps
-			.discoverAgents(cwd, scope)
+			.discoverAgents(cwd, scope, contextAgentDiscoveryOptions(ctx))
 			.agents.find((candidate) => candidate.name === name && (!source || candidate.source === source));
 		if (agent) return agent;
 	}
@@ -438,7 +440,7 @@ async function relaunchChild(
 		onReopened(previousIntercomId);
 		if (previousIntercomId) await hold?.add(previousIntercomId);
 	}
-	const discovered = rediscoverAgent(deps, cwd, record.agent, record.agentSource);
+	const discovered = rediscoverAgent(deps, ctx, cwd, record.agent, record.agentSource);
 	if (!discovered)
 		return unrestorable(
 			`agent "${record.agent}"${record.agentSource ? ` (${record.agentSource})` : ""} is no longer defined`,
