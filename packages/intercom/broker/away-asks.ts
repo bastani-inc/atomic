@@ -153,9 +153,17 @@ export class AwayAsks {
 		);
 	}
 
+	/** #4997: these kept questions are between two top-level sessions, so they may move to another broker with them. */
+	markMovable(questions: readonly PendingQuestion[]): void {
+		const mark = this.statement(
+			"UPDATE away_questions SET movable = 1 WHERE message_id = ? AND sender_session_id = ? AND target_session_id = ?",
+		);
+		for (const question of questions) mark.run(question.messageId, question.senderSessionId, question.targetSessionId);
+	}
+
 	/**
-	 * #4997: the asks a broker that is gone left behind between two top-level sessions. Either may come back on another
-	 * broker, so with multi-node routing they move to the shared state, as an away session's asks do.
+	 * #4997: the kept asks between two top-level sessions, including those a broker that is gone left behind. Either
+	 * session may come back on another broker, so with multi-node routing they move to the shared state.
 	 */
 	movable(): PendingQuestion[] {
 		this.adoptLiveFromPreviousBrokers();
@@ -368,10 +376,11 @@ export class AwayAsks {
 		failedElsewhere: (question: PendingQuestion) => boolean,
 		targetReturnAddress = "",
 		askerConnected: (question: PendingQuestion, returnAddress: string) => boolean,
+		skipMovable = false,
 	): { failed: PendingQuestion[]; live: PendingQuestion[] } {
 		const rows = this.statement(
-			`SELECT message_id, sender_session_id, sender_return_address FROM away_questions WHERE target_session_id = ? AND ${PROVEN_RECIPIENT} ORDER BY kept_at`,
-		).all(target.id, targetReturnAddress);
+			`SELECT message_id, sender_session_id, sender_return_address FROM away_questions WHERE target_session_id = ? AND ${PROVEN_RECIPIENT} AND (? = 0 OR movable = 0) ORDER BY kept_at`,
+		).all(target.id, targetReturnAddress, skipMovable ? 1 : 0);
 		const failed: PendingQuestion[] = [];
 		const live: PendingQuestion[] = [];
 		for (const row of rows) {

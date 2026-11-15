@@ -1326,7 +1326,7 @@ test("an away session's asks move to the shared state only once it has them, and
 		).status;
 	const kept = [moved, refused, takenUp, failed];
 	a!.pendingQuestions.keepDormant(kept, "asker-return-address");
-	a!.router.publishAwayRoutes(kept, randomUUID());
+	void a!.router.publishAwayRoutes(kept);
 
 	await vi.waitFor(() => assert.equal(failedAttempted, true), { timeout: CROSS_NODE_WAIT_MS, interval: 10 });
 	// Taken up here while its shared route was written, so the shared route is settled.

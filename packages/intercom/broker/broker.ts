@@ -1976,6 +1976,8 @@ class IntercomBroker {
           );
           // #4997: their shared routes, if they had moved there too, are settled: this broker answers them now.
           this.multiNode?.settleRestoredRoutes(restored);
+          // #4997: and any kept ask that has not reached the shared state yet (its earlier move failed) tries again.
+          void this.multiNode?.publishAwayRoutes(this.pendingQuestions.movableDormant());
           // What was held for it while it was away (replies, failed asks) is delivered once: a recipient that confirms
           // saves releases each when saved, and its inbox shows a redelivered copy only once.
           const returnAddress = rejoined?.registrationReturnAddress;
@@ -3000,7 +3002,7 @@ class IntercomBroker {
           }
           // #4997: the asks a crashed or stopped broker left here between two top-level sessions move to the shared
           // state, as an away session's do, since either session may come back on another broker.
-          this.multiNode.publishAwayRoutes(this.pendingQuestions.movableDormant(), "adopted");
+          void this.multiNode.publishAwayRoutes(this.pendingQuestions.movableDormant());
           if (this.shuttingDown) await this.multiNode.close().catch(() => {});
           this.multiNodeReason = undefined;
           const { adapter, prefix } = describeSharedStorage(setting);
@@ -3278,7 +3280,9 @@ class IntercomBroker {
           ),
         )
       : [];
-    this.multiNode.publishAwayRoutes(movable, deliveryTargetIdentity(departed));
+    // Marked first, so a crash before the shared write leaves them to move once this broker is back.
+    this.pendingQuestions.markMovable(movable);
+    void this.multiNode.publishAwayRoutes(movable);
   }
 
   /** `ended`: the session said goodbye, so it is not coming back; otherwise its connection only dropped. */
@@ -3348,11 +3352,13 @@ class IntercomBroker {
         // #4751: an away asker's ask to it fails with a message held until the asker is back; a session that ended
         // for good is waited for by nothing.
         const reason = `Session "${departed.info.name ?? sessionId}" ended before replying`;
+        // #4997: with multi-node routing, an ask that moves to the shared state is failed there, once, on any broker.
         this.pendingQuestions.failDormantForTarget(
           departed.info,
           reason,
           "recipient-ended",
           departed.registrationReturnAddress,
+          this.multiNode !== undefined,
         );
         this.failReleasedAsksTo(departed.info, departed.socket, reason, "recipient-ended");
         if (departed.supervisorId === undefined)

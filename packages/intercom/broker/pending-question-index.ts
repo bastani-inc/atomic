@@ -46,9 +46,14 @@ export class PendingQuestionIndex {
     this.isMovable = check;
   }
 
-  /** #4997: the asks a broker that is gone left between two sessions that may each come back on another broker. */
+  /** #4997: the kept asks between two sessions that may each come back on another broker, so they move with them. */
   movableDormant(): PendingQuestion[] {
     return this.away?.movable() ?? [];
+  }
+
+  /** #4997: these kept asks are between two sessions that may each come back on another broker. */
+  markMovable(questions: readonly PendingQuestion[]): void {
+    if (questions.length > 0) this.away?.markMovable(questions);
   }
 
   forgetLive(questions: readonly PendingQuestion[]): void {
@@ -126,7 +131,14 @@ export class PendingQuestionIndex {
    * Kept questions to a recipient that ended or can no longer answer. Their askers are away, so each gets a failed-ask
    * message held until it is back (#4751).
    */
-  failDormantForTarget(target: SessionInfo, reason: string, idPrefix: string, targetReturnAddress?: string): void {
+  failDormantForTarget(
+    target: SessionInfo,
+    reason: string,
+    idPrefix: string,
+    targetReturnAddress?: string,
+    /** #4997: leave the asks that move to the shared state, which fails them there, once. */
+    skipMovable = false,
+  ): void {
     const { live } = this.awayAsks().failForTarget(
       target,
       reason,
@@ -134,6 +146,7 @@ export class PendingQuestionIndex {
       this.failsThroughOwner,
       targetReturnAddress,
       this.askerConnected,
+      skipMovable,
     );
     // #4950: a connected asker's question routes again, so the recipient's end fails it on that route as it does today.
     for (const question of live) this.record(question.senderSessionId, question.targetSessionId, question.messageId);

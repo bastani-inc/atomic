@@ -638,7 +638,9 @@ export class MultiNodeRouter {
 				.then(() =>
 					away
 						? this.state.pendingAsks.takeParked(sessionId).then(() => undefined)
-						: settleAsksToDeparted(this.state, sessionId, released).then(async (asks) => {
+						: this.moveAsksTo(session)
+								.then(() => settleAsksToDeparted(this.state, sessionId, released))
+								.then(async (asks) => {
 								if (session.info.replyCapability === "terminal") return;
 								await this.failEndedAsks(session, asks);
 								// #4852: so are the questions released subagents asked it, through their owners.
@@ -1166,22 +1168,36 @@ export class MultiNodeRouter {
 	}
 
 	/**
+	 * #4997: the session ended: its kept asks that move to the shared state get there first, so they fail there, once.
+	 * One the shared state does not take fails here, as on a single node.
+	 */
+	private async moveAsksTo(session: BrokerConnectedSession): Promise<void> {
+		const pending = this.host.pendingQuestions;
+		const moving = pending.movableDormant().filter((ask) => ask.targetSessionId === session.info.id);
+		await this.publishAwayRoutes(moving);
+		await Promise.all([...this.settling]);
+		if (!moving.some((ask) => pending.isDormant(ask))) return;
+		const reason = `Session "${session.info.name ?? session.info.id}" ended before replying`;
+		pending.failDormantForTarget(session.info, reason, "recipient-ended", session.registrationReturnAddress);
+	}
+
+	/**
 	 * #4997: a session that left without ending may come back on another broker, so the asks between it and a session
 	 * here, kept on this broker (durably, before this is called), move to the shared state, where either broker answers
 	 * and settles them. Each stays kept here until its shared route is written, so neither a crash nor a reply in
 	 * between finds no route; one this broker took up meanwhile (its peer came back here, or it was answered or failed
-	 * here) is this broker's alone, and its shared route is settled. `identity`: the departing session's, so its moves
-	 * run in order.
+	 * here) is this broker's alone, and its shared route is settled. One whose write fails stays here, to move later.
 	 */
-	publishAwayRoutes(questions: readonly PendingQuestion[], identity: string): void {
-		if (questions.length === 0) return;
+	publishAwayRoutes(questions: readonly PendingQuestion[]): Promise<void> {
+		if (questions.length === 0) return Promise.resolve();
 		let finished!: () => void;
 		const publishing = new Promise<void>((resolve) => {
 			finished = resolve;
 		});
 		this.settling.add(publishing);
 		void publishing.finally(() => this.settling.delete(publishing));
-		this.serial(`away-routes:${identity}`, async () => {
+		// One move at a time, so an ask two moves both see kept is written once and dropped here once.
+		this.serial("away-routes", async () => {
 			try {
 				for (const question of questions) {
 					if (!this.host.pendingQuestions.isDormant(question)) continue;
@@ -1198,6 +1214,7 @@ export class MultiNodeRouter {
 				finished();
 			}
 		});
+		return publishing;
 	}
 
 	/** #4997: asks this broker took up again, as both of their peers are here: their shared routes, if any, are settled. */
