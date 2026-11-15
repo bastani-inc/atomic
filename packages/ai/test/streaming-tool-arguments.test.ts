@@ -296,7 +296,7 @@ const PATHS: readonly Path[] = [
 					id: "auto",
 					name: "a",
 					api: "pi-messages",
-					provider: "radius",
+					provider: "custom-gateway",
 					baseUrl: "https://example.test/v1",
 				},
 				context,

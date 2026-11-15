@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { Component, Focusable, TUI } from "@earendil-works/pi-tui";
+import type { Component, Focusable, TUI } from "@bastani/atomic-tui";
 import type {
 	PiCustomComponent,
 	PiCustomOverlayFactory,

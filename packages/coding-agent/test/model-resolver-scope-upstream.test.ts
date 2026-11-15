@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { Model } from "@bastani/pi-ai/compat";
+import type { Model } from "@bastani/atomic-ai/compat";
 import { describe, expect, test, vi } from "vitest";
 import * as modelResolver from "../src/core/model-resolver.js";
 import { resolveModelScopeWithDiagnostics } from "../src/core/model-resolver.js";

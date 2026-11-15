@@ -13,8 +13,9 @@ import {
 	WAKE_UP_POLL_INTERVAL_MS,
 	type WakeUpPollScheduler,
 } from "../../packages/intercom/broker/database-wake-up-bus.js";
-import type { WakeUpEvent } from "../../packages/intercom/broker/wake-up-bus.js";
-import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
+import type { WakeUpBus, WakeUpEvent } from "../../packages/intercom/broker/wake-up-bus.js";
+import { removeFixtureTree } from "../helpers/fixture-removal.js";
+import { makeTempDirectory } from "../helpers/runtime.js";
 
 /**
  * The database wake-up bus on a database that delivers notifications (#5103), as Postgres does, here a SQLite file
@@ -39,6 +40,7 @@ async function notifyingFile() {
 	const listening: Listening[] = [];
 	const transactions: (SqliteTransactionOptions | undefined)[] = [];
 	const opened: SqliteDatabase[] = [];
+	const buses: WakeUpBus[] = [];
 	const notifications: StorageNotifications = {
 		notify: (channel, payload) => ({
 			sql: "INSERT INTO notices(channel, payload) VALUES (?, ?)",
@@ -93,12 +95,24 @@ async function notifyingFile() {
 				release();
 			};
 		},
+		/** Opens a bus on the file, closed with it: a bus's close waits for a connection it is still opening. */
+		async openBus(schedule?: WakeUpPollScheduler): Promise<WakeUpBus> {
+			const bus = await openDatabaseWakeUpBus({ openDatabase: open, prefix: "team_", schedule });
+			buses.push(bus);
+			return bus;
+		},
 		async close() {
-			for (const database of opened) await database.close().catch(() => {});
-			removeTempDirectory(directory);
+			const busCloses = await Promise.allSettled(buses.map((bus) => bus.close()));
+			const databaseCloses = await Promise.allSettled(opened.map((database) => database.close()));
+			const closes = [...busCloses, ...databaseCloses];
+			removeFixtureTree(directory);
+			for (const close of closes) if (close.status === "rejected") throw close.reason;
 		},
 	};
 }
+
+/** How long a poll, including reopening the database, may take to end on a loaded machine. */
+const POLL_END_LIMIT_MS = 20_000;
 
 /** Records the bus's poll timers; `fire` runs the armed poll. */
 function scheduler() {
@@ -115,6 +129,14 @@ function scheduler() {
 		schedule,
 		delays,
 		armed: () => pending !== undefined,
+		/** Resolves once the poll in progress has ended and armed the next one, however long a loaded machine takes. */
+		async settled(): Promise<void> {
+			const deadline = Date.now() + POLL_END_LIMIT_MS;
+			while (pending === undefined) {
+				assert.ok(Date.now() < deadline, `the poll ends and arms the next within ${POLL_END_LIMIT_MS} ms`);
+				await new Promise((resolve) => setTimeout(resolve, 5));
+			}
+		},
 		fire() {
 			const callback = pending;
 			assert.ok(callback, "a poll is armed");
@@ -124,8 +146,6 @@ function scheduler() {
 	};
 }
 
-const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
-
 function recorder() {
 	const events: WakeUpEvent[] = [];
 	return { events, listener: (event: WakeUpEvent) => events.push(event) };
@@ -134,7 +154,7 @@ function recorder() {
 test("a publish writes its hint and its notification in one transaction serial on the bus's table (#5103)", async () => {
 	const file = await notifyingFile();
 	try {
-		const bus = await openDatabaseWakeUpBus({ openDatabase: file.open, prefix: "team_" });
+		const bus = await file.openBus();
 		file.transactions.length = 0;
 		assert.deepEqual(await bus.publish({ brokerId: "broker-b", reason: "outbox", version: 3 }), {
 			status: "published",
@@ -161,7 +181,7 @@ test("a notification for a subscribed broker, or a resumed listener, polls at on
 	const file = await notifyingFile();
 	try {
 		const timers = scheduler();
-		const bus = await openDatabaseWakeUpBus({ openDatabase: file.open, prefix: "team_", schedule: timers.schedule });
+		const bus = await file.openBus(timers.schedule);
 		await bus.subscribe("broker-b", recorder().listener);
 		await bus.subscribe("broker-c", recorder().listener);
 		assert.equal(file.listening.length, 1, "one listener per database, whatever the subscriptions");
@@ -173,7 +193,7 @@ test("a notification for a subscribed broker, or a resumed listener, polls at on
 		listening!.listener({ kind: "notification", payload: "broker-c" });
 		assert.deepEqual(timers.delays, [WAKE_UP_POLL_INTERVAL_MS, 0]);
 		timers.fire();
-		await settle();
+		await timers.settled();
 		assert.deepEqual(timers.delays, [WAKE_UP_POLL_INTERVAL_MS, 0, WAKE_UP_POLL_INTERVAL_MS]);
 		listening!.listener({ kind: "listening" });
 		assert.deepEqual(timers.delays.at(-1), 0);
@@ -191,7 +211,7 @@ test("a notification during a poll runs the next poll as soon as that one ends (
 	const file = await notifyingFile();
 	try {
 		const timers = scheduler();
-		const bus = await openDatabaseWakeUpBus({ openDatabase: file.open, prefix: "team_", schedule: timers.schedule });
+		const bus = await file.openBus(timers.schedule);
 		await bus.subscribe("broker-b", recorder().listener);
 		const [listening] = file.listening;
 		let release = file.hold();
@@ -199,12 +219,12 @@ test("a notification during a poll runs the next poll as soon as that one ends (
 		listening!.listener({ kind: "notification", payload: "broker-b" });
 		assert.equal(timers.armed(), false, "no second poll starts beside the one in progress");
 		release();
-		await settle();
+		await timers.settled();
 		assert.deepEqual(timers.delays, [WAKE_UP_POLL_INTERVAL_MS, 0]);
 		release = file.hold();
 		timers.fire();
 		release();
-		await settle();
+		await timers.settled();
 		assert.deepEqual(
 			timers.delays,
 			[WAKE_UP_POLL_INTERVAL_MS, 0, WAKE_UP_POLL_INTERVAL_MS],
@@ -220,17 +240,17 @@ test("a bus listens again through the database it reopens, and a subscription ma
 	const file = await notifyingFile();
 	try {
 		const timers = scheduler();
-		const bus = await openDatabaseWakeUpBus({ openDatabase: file.open, prefix: "team_", schedule: timers.schedule });
+		const bus = await file.openBus(timers.schedule);
 		const received = recorder();
 		await bus.subscribe("broker-b", received.listener);
 		await file.opened.at(-1)!.close();
 		timers.fire();
-		await settle();
+		await timers.settled();
 		// The failed poll dropped the connection; the bus has none until its next poll reopens it.
 		await bus.subscribe("broker-c", recorder().listener);
 		assert.equal(file.listening.length, 1);
 		timers.fire();
-		await settle();
+		await timers.settled();
 		assert.equal(file.listening.length, 2);
 		assert.deepEqual(
 			file.listening.map((entry) => entry.open),

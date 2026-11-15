@@ -1,5 +1,5 @@
 import type { Theme } from "@bastani/atomic";
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 
 export function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));

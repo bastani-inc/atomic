@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
-import type { AssistantMessage } from "@bastani/pi-ai/compat";
-import type { ProgramStatus, Terminal } from "@earendil-works/pi-tui";
+import type { AssistantMessage } from "@bastani/atomic-ai/compat";
+import type { ProgramStatus, Terminal } from "@bastani/atomic-tui";
 import { test } from "vitest";
 import { APP_NAME } from "../src/config.js";
 import type { AgentSessionEvent } from "../src/core/agent-session.js";

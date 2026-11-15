@@ -10,7 +10,7 @@
 
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
-import { type Component, type EditorTheme, Text } from "@earendil-works/pi-tui";
+import { type Component, type EditorTheme, Text } from "@bastani/atomic-tui";
 import { beforeAll, test } from "vitest";
 import type { AgentSessionEvent } from "../../packages/coding-agent/src/core/agent-session.js";
 import type {

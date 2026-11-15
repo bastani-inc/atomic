@@ -9,7 +9,7 @@ import {
 	truncateToWidth,
 	visibleWidth,
 	type WheelScrollLines,
-} from "@earendil-works/pi-tui";
+} from "@bastani/atomic-tui";
 import { WheelScrollAccelerator } from "./wheel-scroll-accelerator.ts";
 
 /**

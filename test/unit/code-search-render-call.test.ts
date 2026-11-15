@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
 import type { ExtensionAPI, ToolDefinition } from "@bastani/atomic";
-import { ProcessTerminal, TuiMainScreen } from "@earendil-works/pi-tui";
+import { ProcessTerminal, TuiMainScreen } from "@bastani/atomic-tui";
 import { test } from "vitest";
 import { ToolExecutionComponent } from "../../packages/coding-agent/src/modes/interactive/components/tool-execution.js";
 import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";

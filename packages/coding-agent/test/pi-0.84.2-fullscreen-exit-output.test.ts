@@ -1,5 +1,5 @@
 import { tmpdir } from "node:os";
-import { Container, ScrollView, Text, type TuiAltScreen, VStack } from "@earendil-works/pi-tui";
+import { Container, ScrollView, Text, type TuiAltScreen, VStack } from "@bastani/atomic-tui";
 import { expect, test, vi } from "vitest";
 import { type FullscreenExitOutput, SettingsManager } from "../src/core/settings-manager.js";
 import { createSettingsChangeHandler } from "../src/modes/interactive/components/settings-selector-handlers.js";

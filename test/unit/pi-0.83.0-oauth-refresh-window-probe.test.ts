@@ -18,8 +18,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Credential, Provider } from "@bastani/pi-ai";
-import { createModels } from "@bastani/pi-ai";
+import type { Credential, Provider } from "@bastani/atomic-ai";
+import { createModels } from "@bastani/atomic-ai";
 import { afterEach, test } from "vitest";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
 

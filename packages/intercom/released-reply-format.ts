@@ -1,4 +1,4 @@
-import type { JsonValue } from "@bastani/pi-ai";
+import type { JsonValue } from "@bastani/atomic-ai";
 import { formatAttachments, parseStructuredSupervisorReply, validateSupervisorInterviewRequest } from "./intercom-utils.js";
 import { ASK_REPLY_TIMEOUT_MS } from "./retry-policy.js";
 import type { Message } from "./types.js";
@@ -64,17 +64,18 @@ export function formatReleasedReply(request: Omit<ReleasedReplyFormatRequest, "r
 	if (outcome.kind === "timeout")
 		return { ok: true, formatted: formatTimeout(toolName, outcome.from) };
 	const reply = outcome.reply;
+	// #5188: a failed ask is a failure for every waiting tool, and is never read as the replier's answer.
+	if (reply.replyError !== undefined)
+		return {
+			ok: true,
+			formatted: {
+				content: [{ type: "text", text: `Failed: ${reply.replyError}` }],
+				details: { error: true, replyTo: reply.replyTo },
+				isError: true,
+			},
+		};
 	const attachments = reply.attachments?.length ? formatAttachments(reply.attachments) : "";
 	if (toolName === "intercom") {
-		if (reply.replyError !== undefined)
-			return {
-				ok: true,
-				formatted: {
-					content: [{ type: "text", text: `Failed: ${reply.replyError}` }],
-					details: { error: true, replyTo: reply.replyTo },
-					isError: true,
-				},
-			};
 		return {
 			ok: true,
 			formatted: {

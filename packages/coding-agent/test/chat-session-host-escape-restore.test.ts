@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { Component, EditorComponent, EditorTheme, TUI } from "@earendil-works/pi-tui";
+import type { Component, EditorComponent, EditorTheme, TUI } from "@bastani/atomic-tui";
 import { describe, test, vi } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.ts";
 import {

@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getModel } from "@bastani/pi-ai/compat";
+import { getModel } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { createAgentSessionFromServices, createAgentSessionServices } from "../src/core/agent-session-services.ts";

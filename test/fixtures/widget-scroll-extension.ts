@@ -1,4 +1,4 @@
-import { truncateToWidth } from "@earendil-works/pi-tui";
+import { truncateToWidth } from "@bastani/atomic-tui";
 import type { ExtensionAPI } from "../../packages/coding-agent/src/core/extensions/index.js";
 
 /** Dedicated terminal fixture: no model calls, workflow execution, or persistent state. */

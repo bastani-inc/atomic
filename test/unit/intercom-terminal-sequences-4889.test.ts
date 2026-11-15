@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { type Component, stripTerminalSequences, type Terminal, TuiMainScreen } from "@earendil-works/pi-tui";
+import { type Component, stripTerminalSequences, type Terminal, TuiMainScreen } from "@bastani/atomic-tui";
 import { beforeAll, test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";

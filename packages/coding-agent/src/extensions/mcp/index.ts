@@ -27,7 +27,7 @@
  */
 
 import { join, resolve } from "node:path";
-import type { SelectItem } from "@earendil-works/pi-tui";
+import type { SelectItem } from "@bastani/atomic-tui";
 import type { TSchema } from "typebox";
 import { CONFIG_DIR_NAME, getAgentDir } from "../../config.js";
 import type {

@@ -24,7 +24,7 @@ export type {
  * Extension system for lifecycle events and custom tools.
  */
 
-export type { ConstrainedSamplingConfig } from "@bastani/pi-ai/compat";
+export type { ConstrainedSamplingConfig } from "@bastani/atomic-ai/compat";
 export type { AtomicProviderCompat } from "../model-capabilities.ts";
 export type { SlashCommandInfo, SlashCommandSource } from "../slash-commands.js";
 export type { SourceInfo } from "../source-info.ts";

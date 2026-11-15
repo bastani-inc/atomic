@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
-import type { AssistantMessage } from "@bastani/pi-ai/compat";
-import type { Component, TUI } from "@earendil-works/pi-tui";
+import type { AssistantMessage } from "@bastani/atomic-ai/compat";
+import type { Component, TUI } from "@bastani/atomic-tui";
 import { test, vi } from "vitest";
 import type { ExtensionUIContext } from "../../packages/coding-agent/src/core/extensions/index.js";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";

@@ -9,6 +9,7 @@ import {
 	getAttributionHeaders,
 	getIdentityHeaders,
 	mergeClientIdentity,
+	ATOMIC_ATTRIBUTION,
 	PI_ATTRIBUTION,
 	withClientIdentity,
 } from "../src/utils/identity.ts";
@@ -71,10 +72,15 @@ describe("client identity", () => {
 		expect(PI_AI_VERSION).toBe(pkg.version);
 	});
 
+	it("keeps the deprecated PI_ATTRIBUTION name attributing to Atomic", () => {
+		expect(PI_ATTRIBUTION).toBe(ATOMIC_ATTRIBUTION);
+		expect(ATOMIC_ATTRIBUTION.url).not.toContain("pi.dev");
+	});
+
 	it("formats user agents", () => {
-		expect(formatUserAgent()).toBe(`pi/${PI_AI_VERSION} (${process.platform}; ${runtime}; ${process.arch})`);
-		expect(formatUserAgent({ version: "9.9.9" })).toBe(`pi/9.9.9 (${process.platform}; ${runtime}; ${process.arch})`);
-		expect(formatUserAgent({ userAgent: "short", version: "9.9.9" })).toBe("pi");
+		expect(formatUserAgent()).toBe(`atomic/${PI_AI_VERSION} (${process.platform}; ${runtime}; ${process.arch})`);
+		expect(formatUserAgent({ version: "9.9.9" })).toBe(`atomic/9.9.9 (${process.platform}; ${runtime}; ${process.arch})`);
+		expect(formatUserAgent({ userAgent: "short", version: "9.9.9" })).toBe("atomic");
 		expect(formatUserAgent({ userAgent: { custom: "acme/1.0" } })).toBe("acme/1.0");
 	});
 
@@ -82,11 +88,11 @@ describe("client identity", () => {
 		expect(mergeClientIdentity(undefined, undefined)).toBeUndefined();
 		expect(
 			mergeClientIdentity(
-				{ attribution: PI_ATTRIBUTION, userAgent: "short" },
+				{ attribution: ATOMIC_ATTRIBUTION, userAgent: "short" },
 				{ attribution: undefined, version: "1.0.0" },
 			),
-		).toEqual({ attribution: PI_ATTRIBUTION, userAgent: "short", version: "1.0.0" });
-		expect(mergeClientIdentity({ attribution: PI_ATTRIBUTION }, { attribution: null })).toEqual({
+		).toEqual({ attribution: ATOMIC_ATTRIBUTION, userAgent: "short", version: "1.0.0" });
+		expect(mergeClientIdentity({ attribution: ATOMIC_ATTRIBUTION }, { attribution: null })).toEqual({
 			attribution: null,
 		});
 	});
@@ -100,9 +106,9 @@ describe("client identity", () => {
 
 	it("attributes OpenRouter requests", () => {
 		const openRouter = target("openrouter", "https://openrouter.ai/api/v1");
-		expect(getAttributionHeaders(openRouter, { attribution: PI_ATTRIBUTION })).toEqual({
-			"HTTP-Referer": "https://pi.dev",
-			"X-OpenRouter-Title": "pi",
+		expect(getAttributionHeaders(openRouter, { attribution: ATOMIC_ATTRIBUTION })).toEqual({
+			"HTTP-Referer": "https://github.com/bastani-inc/atomic",
+			"X-OpenRouter-Title": "Atomic",
 			"X-OpenRouter-Categories": "cli-agent",
 		});
 		expect(
@@ -120,31 +126,31 @@ describe("client identity", () => {
 		});
 		// Custom providers routed through OpenRouter.
 		expect(
-			getAttributionHeaders(target("custom", "https://openrouter.ai/api/v1"), { attribution: PI_ATTRIBUTION }),
-		).toMatchObject({ "X-OpenRouter-Title": "pi" });
+			getAttributionHeaders(target("custom", "https://openrouter.ai/api/v1"), { attribution: ATOMIC_ATTRIBUTION }),
+		).toMatchObject({ "X-OpenRouter-Title": "Atomic" });
 		// Hosts that only contain "openrouter.ai" are not OpenRouter.
 		for (const baseUrl of [
 			"https://proxy.openrouter.ai/v1",
 			"https://openrouter.ai.evil.test/v1",
 			"not-a-url-openrouter.ai",
 		]) {
-			expect(getAttributionHeaders(target("custom", baseUrl), { attribution: PI_ATTRIBUTION })).toEqual({});
+			expect(getAttributionHeaders(target("custom", baseUrl), { attribution: ATOMIC_ATTRIBUTION })).toEqual({});
 		}
 	});
 
 	it("attributes NVIDIA NIM requests with a capitalized name and OpenCode requests with the name", () => {
 		expect(
-			getAttributionHeaders(target("nvidia", "https://example.test/v1"), { attribution: PI_ATTRIBUTION }),
+			getAttributionHeaders(target("nvidia", "https://example.test/v1"), { attribution: ATOMIC_ATTRIBUTION }),
 		).toEqual({
-			"X-BILLING-INVOKE-ORIGIN": "Pi",
+			"X-BILLING-INVOKE-ORIGIN": "Atomic",
 		});
 		expect(
 			getAttributionHeaders(target("custom-nim", "https://integrate.api.nvidia.com/v1"), { attribution: ACME }),
 		).toEqual({ "X-BILLING-INVOKE-ORIGIN": "Acme" });
 		expect(
-			getAttributionHeaders(target("opencode", "https://opencode.ai/zen/v1"), { attribution: PI_ATTRIBUTION }),
+			getAttributionHeaders(target("opencode", "https://opencode.ai/zen/v1"), { attribution: ATOMIC_ATTRIBUTION }),
 		).toEqual({
-			"x-opencode-client": "pi",
+			"x-opencode-client": "Atomic",
 		});
 		expect(getAttributionHeaders(target("custom", "https://opencode.ai/zen/v1"), { attribution: ACME })).toEqual({
 			"x-opencode-client": "acme",
@@ -153,11 +159,11 @@ describe("client identity", () => {
 
 	it("does not attribute NVIDIA models routed through gateways to NVIDIA", () => {
 		expect(
-			getAttributionHeaders(target("openrouter", "https://openrouter.ai/api/v1"), { attribution: PI_ATTRIBUTION }),
+			getAttributionHeaders(target("openrouter", "https://openrouter.ai/api/v1"), { attribution: ATOMIC_ATTRIBUTION }),
 		).not.toHaveProperty("X-BILLING-INVOKE-ORIGIN");
 		expect(
 			getAttributionHeaders(target("vercel-ai-gateway", "https://ai-gateway.vercel.sh/v1"), {
-				attribution: PI_ATTRIBUTION,
+				attribution: ATOMIC_ATTRIBUTION,
 			}),
 		).toEqual({});
 	});
@@ -172,12 +178,12 @@ describe("client identity in requests", () => {
 		await streamCompletions(model, context, {
 			apiKey: "key",
 			fetch: capture.fetch,
-			identity: { attribution: PI_ATTRIBUTION, userAgent: "short" },
+			identity: { attribution: ATOMIC_ATTRIBUTION, userAgent: "short" },
 			headers: { "HTTP-Referer": null } as ProviderHeaders,
 		}).result();
 
 		const headers = capture.headers();
-		expect(headers.get("user-agent")).toBe("pi");
+		expect(headers.get("user-agent")).toBe("atomic");
 		expect(headers.get("x-openrouter-title")).toBe("model-title");
 		expect(headers.has("http-referer")).toBe(false);
 	});
@@ -215,12 +221,12 @@ describe("client identity in requests", () => {
 		};
 
 		const fromModels = await send(models);
-		expect(fromModels.get("user-agent")).toBe("pi");
+		expect(fromModels.get("user-agent")).toBe("atomic");
 		expect(fromModels.get("x-openrouter-title")).toBe("models");
 
 		const wrapped = withClientIdentity(models, { attribution: attribution("wrapper") });
 		const fromWrapper = await send(wrapped);
-		expect(fromWrapper.get("user-agent")).toBe("pi");
+		expect(fromWrapper.get("user-agent")).toBe("atomic");
 		expect(fromWrapper.get("x-openrouter-title")).toBe("wrapper");
 		expect(wrapped.getModel("openrouter", "test-model")).toBe(model);
 		// A MutableModels stays mutable.
@@ -237,7 +243,7 @@ describe("client identity in requests", () => {
 
 		const fromRequest = await send(wrapped, { attribution: null });
 		expect(fromRequest.has("x-openrouter-title")).toBe(false);
-		expect(fromRequest.get("user-agent")).toBe("pi");
+		expect(fromRequest.get("user-agent")).toBe("atomic");
 	});
 
 	it("sends the OpenCode session header to custom providers pointing at OpenCode", async () => {

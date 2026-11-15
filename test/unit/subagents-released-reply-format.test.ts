@@ -117,6 +117,55 @@ test("a released ask preserves its target and attachment formatting, and returns
 	});
 });
 
+test("a released child whose supervisor ask failed wakes to a failure for decisions and interviews alike (#5188)", async () => {
+	const session = SessionManager.inMemory("/repo");
+	await session.appendMessage({
+		role: "assistant",
+		content: [
+			{ type: "toolCall", id: "call-d", name: "contact_supervisor", arguments: { reason: "need_decision" } },
+			{
+				type: "toolCall",
+				id: "call-i",
+				name: "contact_supervisor",
+				arguments: {
+					reason: "interview_request",
+					interview: { questions: [{ id: "choice", type: "text", question: "Proceed?" }] },
+				},
+			},
+		],
+		api: "faux",
+		provider: "faux",
+		model: "faux",
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "toolUse",
+		timestamp: 1,
+	});
+	const ended = 'Session "boss" ended before replying';
+	const failure: Message = { ...reply, content: { text: ended }, replyError: ended };
+	const formatted = formatReleasedReplyResults(
+		session,
+		[
+			releasedReplyToolResult({ toolCallId: "call-d", toolName: "contact_supervisor" }, failure),
+			releasedReplyToolResult({ toolCallId: "call-i", toolName: "contact_supervisor" }, failure),
+		],
+		intercomEvents,
+	);
+	for (const result of formatted) {
+		assert.equal(result.isError, true, result.toolCallId);
+		assert.deepEqual(result.result, {
+			content: [{ type: "text", text: `Failed: ${ended}` }],
+			details: { error: true, replyTo: "q-1" },
+		});
+	}
+});
+
 test("a released reply is not delivered when Intercom is not loaded to format it: typed child-unrestorable (#4326)", () => {
 	const call = { toolCallId: "call-3", toolName: "intercom" };
 	assert.throws(

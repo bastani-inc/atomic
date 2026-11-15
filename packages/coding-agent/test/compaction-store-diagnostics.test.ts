@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import type { Api, AssistantMessage, Model } from "@bastani/pi-ai/compat";
+import type { Api, AssistantMessage, Model } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, test, vi } from "vitest";
 import { ENV_AGENT_DIR, getCompactionDiagnosticsDir, getDebugLogPath } from "../src/config.js";
 import { runVerbatimCompaction } from "../src/core/compaction/compaction-runner.js";

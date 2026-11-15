@@ -2,14 +2,14 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { registerFauxProvider } from "@bastani/pi-ai/compat";
+import { registerFauxProvider } from "@bastani/atomic-ai/compat";
 import {
 	getCapabilities,
 	getKeybindings,
 	setCapabilityOverrides,
 	setKeybindings,
 	type Terminal,
-} from "@earendil-works/pi-tui";
+} from "@bastani/atomic-tui";
 import { afterEach, test } from "vitest";
 import {
 	type CreateAgentSessionRuntimeFactory,

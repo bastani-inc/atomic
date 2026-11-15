@@ -47,6 +47,7 @@ export {
 	toolOutputUrl,
 } from "./core/session-tool-output.ts";
 export { CACHE_WARMING_MODES, type CacheWarmingMode } from "./core/settings-manager.ts";
+export { type ParsedSlashCommand, parseSlashCommand } from "./core/slash-commands.js";
 export * from "./core/storage/index.js";
 // Outside the storage barrel: workflow durability setup imports that barrel in every test worker.
 export {
@@ -208,7 +209,7 @@ export {
 	isRetryableGitHubCopilotError,
 	type SerializedGitHubCopilotError,
 	serializeGitHubCopilotError,
-} from "@bastani/pi-ai";
+} from "@bastani/atomic-ai";
 export { type Args, parseArgs } from "./cli/args.ts";
 // Config paths
 export {
@@ -635,6 +636,7 @@ export {
 	type ProviderRateLimitObservation,
 	type ProviderRateLimitSnapshot,
 	type ProviderRequestBudget,
+	type ProviderRequestGate,
 	providerCooldownMs,
 	providerIdForModel,
 	providerRateLimitObservations,
@@ -642,6 +644,7 @@ export {
 	providerRetryHint,
 	providerUnavailableMs,
 	recordProviderRateLimit,
+	setProviderRequestGate,
 } from "./core/provider-rate-limits.js";
 export type {
 	DefaultResourceLoaderInheritanceSnapshot,

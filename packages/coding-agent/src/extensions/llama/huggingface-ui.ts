@@ -7,7 +7,7 @@ import {
 	Spacer,
 	Text,
 	type TUI,
-} from "@earendil-works/pi-tui";
+} from "@bastani/atomic-tui";
 import type { KeybindingsManager } from "../../core/keybindings.ts";
 import type { Theme } from "../../modes/interactive/theme/theme.js";
 import type { HuggingFaceModel } from "./huggingface.js";

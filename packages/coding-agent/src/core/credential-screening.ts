@@ -1,4 +1,4 @@
-import { type Credential, containsKnownEnvCredential } from "@bastani/pi-ai";
+import { type Credential, containsKnownEnvCredential } from "@bastani/atomic-ai";
 import { containsConfiguredValue } from "./resolve-config-value.ts";
 
 export function containsCredentialValue(serialized: string, value: unknown): boolean {

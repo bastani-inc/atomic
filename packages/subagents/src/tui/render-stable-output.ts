@@ -1,4 +1,4 @@
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import type { AgentToolResult } from "@bastani/atomic-agent-core";
 import type { AgentProgress, Details } from "../shared/types.js";
 
 export function progressRenderKey(progress: Partial<AgentProgress> | undefined): string {

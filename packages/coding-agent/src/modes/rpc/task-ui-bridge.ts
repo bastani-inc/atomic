@@ -1,4 +1,4 @@
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import type { AgentSession } from "../../core/agent-session.js";
 import type { ExtensionUIContext } from "../../core/extensions/index.js";
 import type { TaskId } from "../../core/tasks/contracts.js";

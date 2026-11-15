@@ -1,4 +1,4 @@
-import type { KeyId } from "@earendil-works/pi-tui";
+import type { KeyId } from "@bastani/atomic-tui";
 import { yieldToEventLoop } from "../utils/event-loop.ts";
 import { resolvePath } from "../utils/paths.ts";
 import type { OverlappingResourceType } from "./diagnostics.ts";

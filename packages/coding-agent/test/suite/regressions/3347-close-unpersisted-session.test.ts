@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fauxAssistantMessage, registerFauxProvider } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage, registerFauxProvider } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	type CreateAgentSessionRuntimeFactory,

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { type AssistantMessage, createAssistantMessageEventStream } from "@bastani/pi-ai";
+import { type AssistantMessage, createAssistantMessageEventStream } from "@bastani/atomic-ai";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import type { ModelRegistry } from "../../packages/coding-agent/src/core/model-registry.js";
 import { SETTINGS_DEFAULTS } from "../../packages/coding-agent/src/core/settings-defaults.js";

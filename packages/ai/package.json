@@ -1,7 +1,7 @@
 {
-	"name": "@bastani/pi-ai",
+	"name": "@bastani/atomic-ai",
 	"version": "0.0.0",
-	"description": "Bastani-branded unified LLM API with automatic model discovery and provider configuration",
+	"description": "Atomic's unified LLM API: providers, models, auth, streaming, tools, images and classification",
 	"type": "module",
 	"main": "./dist/index.js",
 	"types": "./dist/index.d.ts",
@@ -74,7 +74,6 @@
 		"clean": "node ../../scripts/package-files.mjs clean dist",
 		"generate-models": "node scripts/generate-models.ts --strict",
 		"hydrate-model-data": "node scripts/generate-models.ts --strict --data-only",
-		"generate-model-catalog": "node scripts/generate-models.ts --strict --json-only --json-output .artifacts/model-catalog",
 		"generate-decision-models": "node scripts/generate-decision-models.ts --strict",
 		"check:model-data": "node scripts/check-model-data.ts",
 		"build": "npm run generate-models && npm run build:offline",
@@ -91,8 +90,8 @@
 	"dependencies": {
 		"@anthropic-ai/sdk": "0.129.0",
 		"@aws-sdk/client-bedrock-runtime": "3.1127.0",
-		"@earendil-works/pi-schema": "1.5.2",
-		"@earendil-works/pi-telemetry": "1.5.2",
+		"@bastani/atomic-schema": "0.0.0",
+		"@bastani/atomic-telemetry": "0.0.0",
 		"@google/genai": "2.32.0",
 		"@smithy/node-http-handler": "4.13.0",
 		"http-proxy-agent": "9.1.0",
@@ -116,7 +115,7 @@
 		"bedrock",
 		"unified",
 		"api",
-		"bastani"
+		"atomic"
 	],
 	"author": "Mario Zechner",
 	"contributors": [
@@ -131,7 +130,7 @@
 		"url": "git+https://github.com/bastani-inc/atomic.git",
 		"directory": "packages/ai"
 	},
-	"homepage": "https://github.com/bastani-inc/atomic/tree/main/packages/ai#readme",
+	"homepage": "https://docs.bastani.ai/libraries/ai",
 	"bugs": {
 		"url": "https://github.com/bastani-inc/atomic/issues"
 	},

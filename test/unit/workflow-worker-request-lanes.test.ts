@@ -142,7 +142,36 @@ test("requests that take or end an attempt are barriers, and commits and heartbe
 	assert.deepEqual(lanes("acknowledgements"), ["controlled"]);
 	assert.deepEqual(lanes("free"), ["budget", "route"]);
 	assert.deepEqual(lanes("publications"), ["activity"]);
-	assert.deepEqual(lanes("detached"), ["delivery", "delivery-ready", "place"]);
+	// A model call's token of the fleet's rate limits (#4768) is detached: no commit or heartbeat holds it back, and no
+	// barrier, heartbeat or exit cleanup waits on a call that may wait out a rate limit.
+	assert.deepEqual(lanes("detached"), ["delivery", "delivery-ready", "place", "rate-acquire"]);
+});
+
+test("a rate-limit token is answered while a slow commit and heartbeat are in flight, and a barrier does not wait for it (#4768)", async () => {
+	const { started, settled, lanes, send, finish } = heldLanes();
+	void send("commit", WORKER_REQUEST_LANES.commit);
+	void send("renew", WORKER_REQUEST_LANES.heartbeat);
+	void send("token", WORKER_REQUEST_LANES["rate-acquire"]);
+	await drain();
+	assert.deepEqual(started, ["commit", "renew", "token"], "the token starts at once, beside the commit and heartbeat");
+	await finish("token");
+	assert.ok(
+		settled.includes("token") && !settled.includes("commit"),
+		"it settles while the commit is still in flight",
+	);
+	void send("slow token", WORKER_REQUEST_LANES["rate-acquire"]);
+	let cleaned = false;
+	void lanes.settled().then(() => {
+		cleaned = true;
+	});
+	void send("complete", WORKER_REQUEST_LANES.complete);
+	await finish("commit");
+	await finish("renew");
+	await drain();
+	assert.ok(started.includes("complete"), "the attempt's end does not wait for a token still waiting");
+	await finish("complete");
+	assert.equal(cleaned, true, "nor does the worker's exit cleanup");
+	await finish("slow token");
 });
 
 /** An attempt of work `id`, with the lease it holds until `expiresAt`. */

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { fauxAssistantMessage, fauxToolCall, type ImageContent } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxToolCall, type ImageContent } from "@bastani/atomic-ai";
 import { afterEach, describe, it } from "vitest";
 import { createHarness, type Harness } from "../harness.js";
 

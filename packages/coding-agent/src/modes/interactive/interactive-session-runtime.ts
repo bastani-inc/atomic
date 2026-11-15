@@ -1,4 +1,4 @@
-import { setCapabilityOverrides } from "@earendil-works/pi-tui";
+import { setCapabilityOverrides } from "@bastani/atomic-tui";
 import type { SessionRecoveryReport } from "../../core/agent-session-types.js";
 import type { SessionRecoveryReason, ToolRenderers } from "../../core/extensions/types.ts";
 import { ensurePngTranscoder } from "../../utils/image-convert.ts";

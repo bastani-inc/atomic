@@ -26,7 +26,7 @@ Source on GitHub ([atomic](https://github.com/bastani-inc/atomic)):
 - [`packages/coding-agent/src/core/session-manager.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/core/session-manager.ts) - Session entry types and SessionManager
 - [`packages/coding-agent/src/core/messages.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/core/messages.ts) - Extended message types (BashExecutionMessage, CustomMessage, etc.)
 
-For TypeScript definitions in your project, inspect the installed `@bastani/atomic`, `@bastani/pi-ai`, and `@earendil-works/pi-agent-core` packages under their `dist/` directories.
+For TypeScript definitions in your project, inspect the installed `@bastani/atomic`, `@bastani/atomic-ai`, and `@bastani/atomic-agent-core` packages under their `dist/` directories.
 
 ## Message Types
 
@@ -63,7 +63,7 @@ interface ToolCall {
 
 <a id="base-message-types-from-bastani/pi-ai"></a>
 
-### Base Message Types (from `@bastani/pi-ai`)
+### Base Message Types (from `@bastani/atomic-ai`)
 
 ```typescript
 interface SystemMessage {

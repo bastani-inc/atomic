@@ -44,11 +44,11 @@ import {
 	normalizeProviderId,
 	type Provider,
 	type ProviderHeaders,
-} from "@bastani/pi-ai";
-import * as builtinProviderCatalog from "@bastani/pi-ai/providers/all";
-import { discoverGitHubCopilotModels } from "@bastani/pi-ai/providers/github-copilot";
-import { personalizeOpenRouterCatalog } from "@bastani/pi-ai/providers/openrouter";
-import { getAgentDir } from "../config.js";
+} from "@bastani/atomic-ai";
+import * as builtinProviderCatalog from "@bastani/atomic-ai/providers/all";
+import { discoverGitHubCopilotModels } from "@bastani/atomic-ai/providers/github-copilot";
+import { personalizeOpenRouterCatalog } from "@bastani/atomic-ai/providers/openrouter";
+import { ENV_MODEL_CATALOG_URL, getAgentDir, getEnvValue } from "../config.js";
 import { operationSignal, raceWithAbortSignal } from "../utils/abort.js";
 import { normalizePath } from "../utils/paths.ts";
 import { AuthStorage as DefaultAuthStorage } from "./auth-storage.ts";
@@ -225,18 +225,18 @@ export class ModelRuntime implements Models {
 				? new FileModelsStore(options.modelsStorePath ?? join(dirname(modelsPath), "models-store.json"))
 				: new InMemoryCodingAgentModelsStore());
 		const builtinModelDataGeneratedAt = builtinProviderCatalog.getBuiltinModelDataGeneratedAt();
+		const catalogBaseUrl = options.catalogBaseUrl ?? (getEnvValue(ENV_MODEL_CATALOG_URL) || undefined);
 		const providers = builtinProviderCatalog.builtinProviders().map((provider) => {
-			if (provider.id === "radius") return provider;
 			// OpenRouter narrows the catalog to the models, limits and prices of the user's key.
 			if (provider.id === "openrouter") {
 				return withPersonalizedCatalog(
 					provider,
 					personalizeOpenRouterCatalog,
-					options.catalogBaseUrl,
+					catalogBaseUrl,
 					builtinModelDataGeneratedAt,
 				);
 			}
-			const withCatalog = withRemoteCatalog(provider, options.catalogBaseUrl, builtinModelDataGeneratedAt);
+			const withCatalog = withRemoteCatalog(provider, catalogBaseUrl, builtinModelDataGeneratedAt);
 			// GitHub Copilot adds the models the account's own list offers beyond the catalog.
 			return provider.id === "github-copilot"
 				? withDiscoveredModels(withCatalog, discoverGitHubCopilotModels)
@@ -250,7 +250,7 @@ export class ModelRuntime implements Models {
 			providers,
 			!isOfflineModeEnabled(),
 		);
-		runtime.configureRadiusProviders();
+		runtime.rebuildBuiltinProviders();
 		runtime.rebuildProviders();
 		const refreshFromNetwork = runtime.modelNetworkEnabled && options.allowModelNetwork === true;
 		const controller = refreshFromNetwork ? new AbortController() : undefined;
@@ -266,8 +266,8 @@ export class ModelRuntime implements Models {
 		}
 		return runtime;
 	}
-	private configureRadiusProviders(): void {
-		configureBuiltinProviders(this.builtins, this.defaultBuiltins, this.config, process.env, (providerId) =>
+	private rebuildBuiltinProviders(): void {
+		configureBuiltinProviders(this.builtins, this.defaultBuiltins, process.env, (providerId) =>
 			this.credentials.peek(providerId),
 		);
 	}
@@ -1251,7 +1251,7 @@ export class ModelRuntime implements Models {
 			return { aborted: true, errors: new Map<string, Error>() };
 		}
 		this.config = config;
-		this.configureRadiusProviders();
+		this.rebuildBuiltinProviders();
 		if (options.providers) options = { ...options, providers: options.providers.map(normalizeProviderId) };
 		if (options.providers) {
 			for (const providerId of new Set(options.providers)) this.recomposeProvider(providerId);

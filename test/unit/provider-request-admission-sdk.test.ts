@@ -9,18 +9,19 @@ import {
 	normalizeContext,
 	type Provider,
 	type StreamOptions,
-} from "@bastani/pi-ai";
-import { stream as streamAnthropic } from "@bastani/pi-ai/api/anthropic-messages";
-import { stream as streamMistral } from "@bastani/pi-ai/api/mistral-conversations";
-import { stream as streamCodex } from "@bastani/pi-ai/api/openai-codex-responses";
-import { stream as streamOpenAI } from "@bastani/pi-ai/api/openai-completions";
-import { createFetchWithAdmission, getFetchAdmission } from "@bastani/pi-ai/utils/request-admission";
+} from "@bastani/atomic-ai";
+import { stream as streamAnthropic } from "@bastani/atomic-ai/api/anthropic-messages";
+import { stream as streamMistral } from "@bastani/atomic-ai/api/mistral-conversations";
+import { stream as streamCodex } from "@bastani/atomic-ai/api/openai-codex-responses";
+import { stream as streamOpenAI } from "@bastani/atomic-ai/api/openai-completions";
+import { createFetchWithAdmission, getFetchAdmission } from "@bastani/atomic-ai/utils/request-admission";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
 import { wrapCodexFastRouteFetch } from "../../packages/coding-agent/src/core/fast-model-routing-transport.js";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
 import {
 	configureProviderRequestBudget,
+	setProviderRequestGate,
 	tryAdmitProviderRequest,
 } from "../../packages/coding-agent/src/core/provider-rate-limits.js";
 import { admitProviderStream } from "../../packages/coding-agent/src/core/provider-request-admission.js";
@@ -42,6 +43,7 @@ const context = normalizeContext({ messages: [{ role: "user", content: "Hello", 
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => {
 	configureProviderRequestBudget(model.provider, undefined);
+	setProviderRequestGate(undefined);
 	vi.useRealTimers();
 });
 
@@ -569,4 +571,33 @@ test("Codex routing wraps an admitted fetch without admitting twice (#3864)", as
 	});
 	assert.equal(admissions, 1);
 	assert.equal(seen[1]!.get("x-atomic-codex-fast-route"), null);
+});
+
+test("a request waits on the process's request gate after its own admission, with the provider, model and signal (#4768)", async () => {
+	const seen: string[] = [];
+	let open!: () => void;
+	setProviderRequestGate(async (provider, modelId, signal) => {
+		seen.push(`${provider}/${modelId}/${signal === undefined ? "no-signal" : "signal"}`);
+		await new Promise<void>((resolve) => {
+			open = resolve;
+		});
+	});
+	let dispatches = 0;
+	const fetcher: typeof fetch = Object.assign(async () => {
+		dispatches++;
+		return new Response("{}", { status: 200 });
+	}, globalThis.fetch);
+	const controller = new AbortController();
+	const admitted = await admitProviderStream(
+		model as Model<Api>,
+		{ fetch: fetcher, signal: controller.signal },
+		false,
+	);
+	const sent = admitted.options.fetch!("https://example.invalid/v1/chat", { signal: controller.signal });
+	await vi.advanceTimersByTimeAsync(0);
+	assert.equal(dispatches, 0, "the request waits on the gate");
+	assert.deepEqual(seen, ["sdk-admission/test-model/signal"]);
+	open();
+	await sent;
+	assert.equal(dispatches, 1);
 });

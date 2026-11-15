@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { Api, Model } from "@bastani/pi-ai";
+import type { Api, Model } from "@bastani/atomic-ai";
 import { test } from "vitest";
 import { workflowModelCatalogFromContext } from "../../packages/workflows/src/extension/workflow-model-catalog.js";
 import type { StageOptions } from "../../packages/workflows/src/shared/types.js";

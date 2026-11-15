@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { setTimeout as delay } from "node:timers/promises";
-import { getModel } from "@bastani/pi-ai/compat";
+import { getModel } from "@bastani/atomic-ai/compat";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import type { DurableBackendProcessOwner } from "../../workflows/src/durable/backend-process-owner.js";
 import { MemoryRunJournal } from "../../workflows/src/durable/journal/memory-run-journal.js";

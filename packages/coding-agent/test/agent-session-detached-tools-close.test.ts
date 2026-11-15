@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import v8 from "node:v8";
 import vm from "node:vm";
-import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { afterEach, test, vi } from "vitest";
 import type { AgentSessionInternalSurface } from "../src/core/agent-session-methods.js";
 import { waitTool } from "./helpers/detached-tools.js";

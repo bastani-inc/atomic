@@ -1,4 +1,4 @@
-import { replaceControlCharacters } from "@earendil-works/pi-tui";
+import { replaceControlCharacters } from "@bastani/atomic-tui";
 import { openLocalHostInputForm } from "./components/host-input-form-mount.ts";
 import { openLocalHostSessionPicker } from "./components/host-session-picker.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";

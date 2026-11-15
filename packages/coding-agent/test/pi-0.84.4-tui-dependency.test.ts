@@ -2,13 +2,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-	CombinedAutocompleteProvider,
-	type Component,
-	Text,
-	TuiAltScreen,
-	TuiMainScreen,
-} from "@earendil-works/pi-tui";
+import { CombinedAutocompleteProvider, type Component, Text, TuiAltScreen, TuiMainScreen } from "@bastani/atomic-tui";
 import { afterEach, describe, expect, test } from "vitest";
 import { bunExecutable, removeTempDirs } from "./cli-test-helpers.ts";
 import { RecordingTerminal } from "./helpers/interactive-fullscreen-layout.ts";

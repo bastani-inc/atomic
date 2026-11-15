@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { KeyId } from "@earendil-works/pi-tui";
+import type { KeyId } from "@bastani/atomic-tui";
 import { test } from "vitest";
 import type { AgentSession } from "../../packages/coding-agent/src/core/agent-session.ts";
 import type { AgentSessionRuntime } from "../../packages/coding-agent/src/core/agent-session-runtime.ts";

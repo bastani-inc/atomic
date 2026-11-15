@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { visibleWidth } from "@bastani/atomic-tui";
 import { afterEach, test } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";

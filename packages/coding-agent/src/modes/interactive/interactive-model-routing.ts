@@ -1,5 +1,5 @@
-import { clampThinkingLevel, modelsAreEqual } from "@bastani/pi-ai/compat";
-import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { ThinkingLevel } from "@bastani/atomic-agent-core";
+import { clampThinkingLevel, modelsAreEqual } from "@bastani/atomic-ai/compat";
 import { boundedInteractiveModelRefresh } from "../../core/bounded-model-refresh.ts";
 import { formatModelLabel } from "../../core/model-label.ts";
 import { thinkingLevelForModelSwitch } from "../../core/model-switch-thinking-level.ts";

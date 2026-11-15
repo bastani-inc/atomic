@@ -1,4 +1,4 @@
-import { type Component, type Focusable, getKeybindings, Input, truncateToWidth } from "@earendil-works/pi-tui";
+import { type Component, type Focusable, getKeybindings, Input, truncateToWidth } from "@bastani/atomic-tui";
 import { theme } from "../theme/theme.js";
 import { keyHint } from "./keybinding-hints.js";
 

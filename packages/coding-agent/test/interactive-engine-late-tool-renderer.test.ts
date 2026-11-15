@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { Container, Text, type TUI } from "@earendil-works/pi-tui";
+import { Container, Text, type TUI } from "@bastani/atomic-tui";
 import { beforeAll, test } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.js";
 import type { ToolRenderers } from "../src/core/extensions/types.js";

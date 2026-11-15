@@ -1,8 +1,8 @@
 import { join } from "node:path";
-import type { AgentTool } from "@earendil-works/pi-agent-core";
-import type { CodemodeJsonSchema, CodemodeTool } from "@earendil-works/pi-codemode";
-import { renderToolOutputType, renderToolSample, toCodemodeIdentifier } from "@earendil-works/pi-codemode/declarations";
-import { CODEMODE_SOURCE_GRAMMAR } from "@earendil-works/pi-codemode/source";
+import type { AgentTool } from "@bastani/atomic-agent-core";
+import type { CodemodeJsonSchema, CodemodeTool } from "@bastani/atomic-codemode";
+import { renderToolOutputType, renderToolSample, toCodemodeIdentifier } from "@bastani/atomic-codemode/declarations";
+import { CODEMODE_SOURCE_GRAMMAR } from "@bastani/atomic-codemode/source";
 import { type Static, Type } from "typebox";
 import { getDocsPath } from "../../config.js";
 import type { ToolDefinition, ToolInfo, ToolLoadout, ToolNamespace } from "../../core/extensions/types.ts";

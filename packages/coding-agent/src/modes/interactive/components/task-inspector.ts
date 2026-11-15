@@ -7,7 +7,7 @@ import {
 	Text,
 	truncateToWidth,
 	visibleWidth,
-} from "@earendil-works/pi-tui";
+} from "@bastani/atomic-tui";
 import type { KeybindingsManager } from "../../../core/keybindings.ts";
 import type { PromptRoute, TaskId } from "../../../core/tasks/contracts.js";
 import { OwnerTaskStore } from "../../../core/tasks/owner-store.js";

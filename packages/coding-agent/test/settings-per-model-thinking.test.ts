@@ -1,5 +1,5 @@
 import { stripVTControlCharacters } from "node:util";
-import type { Container, SelectItem, SelectList } from "@earendil-works/pi-tui";
+import type { Container, SelectItem, SelectList } from "@bastani/atomic-tui";
 import { beforeAll, expect, test, vi } from "vitest";
 import { buildSettingsItems } from "../src/modes/interactive/components/settings-selector-items.ts";
 import type { SettingsCallbacks, SettingsConfig } from "../src/modes/interactive/components/settings-selector-types.ts";

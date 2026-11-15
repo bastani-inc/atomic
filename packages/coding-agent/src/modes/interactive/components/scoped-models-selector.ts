@@ -1,4 +1,4 @@
-import type { Api, Model } from "@bastani/pi-ai/compat";
+import type { Api, Model } from "@bastani/atomic-ai/compat";
 import {
 	Container,
 	type Focusable,
@@ -11,7 +11,7 @@ import {
 	Spacer,
 	Text,
 	visibleWidth,
-} from "@earendil-works/pi-tui";
+} from "@bastani/atomic-tui";
 import { formatModelLabel, MODEL_LABEL_SEPARATOR } from "../../../core/model-label.ts";
 import { getDistinctModelName, getModelSearchText } from "../model-search.ts";
 import { theme } from "../theme/theme.js";

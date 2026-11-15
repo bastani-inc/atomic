@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fauxAssistantMessage, getApiProvider, registerApiProvider } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage, getApiProvider, registerApiProvider } from "@bastani/atomic-ai/compat";
 import { afterEach, test, vi } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.js";
 import { createExtensionRuntime } from "../src/core/extensions/loader.js";

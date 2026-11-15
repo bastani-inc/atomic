@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { type ToolCall, validateToolArguments } from "@earendil-works/pi-ai";
-import { stream as streamCompletions } from "@earendil-works/pi-ai/api/openai-completions";
-import { stream as streamResponses } from "@earendil-works/pi-ai/api/openai-responses";
-import { getModel } from "@earendil-works/pi-ai/compat";
+import { type ToolCall, validateToolArguments } from "@bastani/atomic-ai";
+import { stream as streamCompletions } from "@bastani/atomic-ai/api/openai-completions";
+import { stream as streamResponses } from "@bastani/atomic-ai/api/openai-responses";
+import { getModel } from "@bastani/atomic-ai/compat";
 import { test } from "vitest";
 import { createBashToolDefinition } from "../src/core/tools/bash.js";
 import { createAllTools } from "../src/core/tools/index.js";

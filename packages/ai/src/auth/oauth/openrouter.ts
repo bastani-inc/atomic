@@ -11,7 +11,7 @@
  * It is only intended for CLI use, not browser environments.
  */
 
-import { getProviderEnvValue } from "../../utils/provider-env.ts";
+import { getAtomicEnvValue } from "../../utils/provider-env.ts";
 import type { OAuthAuth, OAuthCredential, ProviderAuthInteraction } from "../types.ts";
 import { startOAuthCallbackServer, waitForCallbackOrManualInput } from "./callback-server.ts";
 import { generatePKCE } from "./pkce.ts";
@@ -22,7 +22,7 @@ const LOGIN_TIMEOUT_MS = 5 * 60 * 1000;
 const TOKEN_EXCHANGE_TIMEOUT_MS = 30_000;
 
 function getCallbackHost(): string {
-	return getProviderEnvValue("PI_OAUTH_CALLBACK_HOST") || "127.0.0.1";
+	return getAtomicEnvValue("OAUTH_CALLBACK_HOST") || "127.0.0.1";
 }
 
 type JsonObject = Record<string, unknown>;

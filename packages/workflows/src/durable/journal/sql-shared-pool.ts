@@ -66,6 +66,12 @@ export interface SharedPoolConfig {
 	readonly checkpointShipping?: ResolvedCheckpointShipping;
 	/** Children raise `ctx.ui` prompts for the root to answer, on whichever host runs them. */
 	readonly promptNodes?: boolean;
+	/** Fleet-wide model rate limits by provider or `provider/model` (#4768). */
+	readonly rateLimits?: Readonly<
+		Record<string, { readonly requestsPerMinute: number; readonly burst?: number; readonly prefetch?: number }>
+	>;
+	/** 429 cooldowns go to every host through the journal (#4768). */
+	readonly shareCooldowns?: boolean;
 }
 
 /** A root that runs its pool on the shared journal, with the root's current lease as the journal holds it. */

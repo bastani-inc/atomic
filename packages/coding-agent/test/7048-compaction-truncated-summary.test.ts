@@ -1,4 +1,4 @@
-import { fauxAssistantMessage } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, expect, it } from "vitest";
 import { generateBranchSummary } from "../src/core/compaction/branch-summarization.ts";
 import { createHarness, type Harness } from "./suite/harness.ts";

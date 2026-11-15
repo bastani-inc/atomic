@@ -1,6 +1,6 @@
 import * as os from "node:os";
 import { formatReadLineRange } from "@bastani/atomic";
-import type { Message } from "@bastani/pi-ai/compat";
+import type { Message } from "@bastani/atomic-ai/compat";
 
 export function formatTokens(count: number): string {
 	if (count < 1000) return count.toString();

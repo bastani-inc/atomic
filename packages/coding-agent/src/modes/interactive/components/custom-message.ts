@@ -1,6 +1,6 @@
-import type { TextContent } from "@bastani/pi-ai/compat";
-import type { Component } from "@earendil-works/pi-tui";
-import { Box, Container, Markdown, type MarkdownTheme, Spacer, Text } from "@earendil-works/pi-tui";
+import type { TextContent } from "@bastani/atomic-ai/compat";
+import type { Component } from "@bastani/atomic-tui";
+import { Box, Container, Markdown, type MarkdownTheme, Spacer, Text } from "@bastani/atomic-tui";
 import type { MarkdownTransformer, MessageRenderer } from "../../../core/extensions/types.ts";
 import type { CustomMessage } from "../../../core/messages.ts";
 import { TASK_COMPLETION_MESSAGE_TYPE } from "../../../core/tasks/completion.js";

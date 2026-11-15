@@ -798,6 +798,31 @@ describe("registered blocking intercom tools", () => {
 		assert.equal(failed.content[0]?.text, 'Message to "parent" was not delivered: Session not found');
 	});
 
+	test("contact_supervisor whose ask failed returns the failure, never a supervisor reply, for decisions and interviews (#5188)", async () => {
+		const ended = 'Session "boss" ended before replying';
+		for (const params of [
+			{ reason: "need_decision", message: "Choose" },
+			{
+				reason: "interview_request",
+				message: "Answer",
+				interview: { questions: [{ id: "choice", type: "text", question: "Proceed?" }] },
+			},
+		]) {
+			const current = fixture("supervisor");
+			const execution = current.tool.execute("call", params, undefined, undefined, context);
+			await sleep(20);
+			current.reply(ended, ended);
+			const result = (await execution) as unknown as {
+				content: Array<{ text: string }>;
+				isError: boolean;
+				details: object;
+			};
+			assert.equal(result.isError, true, params.reason);
+			assert.equal(result.content[0]?.text, `Failed: ${ended}`);
+			assert.deepEqual(result.details, { error: true, replyTo: current.sent[0]?.message.messageId });
+		}
+	});
+
 	// #2840: cancelling the child cannot retract an already accepted progress update.
 	test("stage closure preserves an in-flight progress update's transport receipt", async () => {
 		const started = Promise.withResolvers<void>();

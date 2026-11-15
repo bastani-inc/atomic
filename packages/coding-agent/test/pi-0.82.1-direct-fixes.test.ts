@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Text } from "@earendil-works/pi-tui";
+import { Text } from "@bastani/atomic-tui";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { MessageRenderer, MessageRenderOptions } from "../src/core/extensions/types.ts";
 import type { CustomMessage } from "../src/core/messages.ts";

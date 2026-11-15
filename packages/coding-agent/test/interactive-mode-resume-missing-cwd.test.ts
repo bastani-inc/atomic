@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Container } from "@earendil-works/pi-tui";
+import { Container } from "@bastani/atomic-tui";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MissingSessionCwdError } from "../src/core/session-cwd.ts";
 import { SessionManager } from "../src/core/session-manager.ts";

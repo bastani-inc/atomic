@@ -1,4 +1,4 @@
-import type { TerminalColors } from "@earendil-works/pi-tui";
+import type { TerminalColors } from "@bastani/atomic-tui";
 import { terminalAppearance } from "./system-theme.js";
 
 let colors: TerminalColors = {};

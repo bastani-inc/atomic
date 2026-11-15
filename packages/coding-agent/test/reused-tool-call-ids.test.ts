@@ -1,4 +1,4 @@
-import type { AgentTool } from "@earendil-works/pi-agent-core";
+import type { AgentTool } from "@bastani/atomic-agent-core";
 import { Type } from "typebox";
 import { afterEach, describe, expect, test } from "vitest";
 import { convertToLlm } from "../src/core/messages.ts";

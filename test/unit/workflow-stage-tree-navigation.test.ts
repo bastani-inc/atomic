@@ -5,7 +5,7 @@
 
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { fauxAssistantMessage, registerFauxProvider } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage, registerFauxProvider } from "@bastani/atomic-ai/compat";
 import { afterEach, test } from "vitest";
 import { InMemoryCodingAgentModelsStore } from "../../packages/coding-agent/src/core/models-store.js";
 import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager.js";

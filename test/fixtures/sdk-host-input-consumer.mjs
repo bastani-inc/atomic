@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getModel } from "@bastani/pi-ai/compat";
+import { getModel } from "@bastani/atomic-ai/compat";
 import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager } from "../../packages/coding-agent/dist/index.js";
 
 assert.equal(process.stdin.isTTY, undefined);

@@ -1,3 +1,4 @@
+import type { AgentTool, AgentToolResult } from "@bastani/atomic-agent-core";
 import {
 	type AnyModel,
 	type ClassifierContext,
@@ -9,8 +10,7 @@ import {
 	type OpenAIImagesOptions,
 	type TextContent,
 	type Usage,
-} from "@bastani/pi-ai";
-import type { AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
+} from "@bastani/atomic-ai";
 import {
 	type CodemodeOutputItem,
 	type CodemodeResult,
@@ -20,7 +20,7 @@ import {
 	parseCodemodeSource,
 	renderToolSample,
 	toCodemodeIdentifier,
-} from "@earendil-works/pi-codemode";
+} from "@bastani/atomic-codemode";
 import { ENV_CODEMODE_MAX_WORKERS, getCodemodeWorkerUrl, getEnvValue, getQuickJSWasmPath } from "../../config.js";
 import type { ExtensionToolContext } from "../../core/extensions/context-types.ts";
 import type { ToolNamespace } from "../../core/extensions/tool-types.ts";

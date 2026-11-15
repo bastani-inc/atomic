@@ -4411,7 +4411,7 @@ for (const scenario of ["startup replacement", "durable acknowledgment replay"] 
 	test(`sticky broadcast reaches real later-stage context and transcript before first turn after ${scenario} (#3406)`, async () => {
 		const { createHarness, getMessageText } = await import("../../packages/coding-agent/test/suite/harness.js");
 		const { readText } = await import("../helpers/runtime.js");
-		const { fauxAssistantMessage } = await import("@bastani/pi-ai/compat");
+		const { fauxAssistantMessage } = await import("@bastani/atomic-ai/compat");
 		const { SettingsManager } = await import("../../packages/coding-agent/src/core/settings-manager.js");
 		const store = createStore();
 		const backend = await createMemoryTestBackend();

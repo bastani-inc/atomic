@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { Component } from "@earendil-works/pi-tui";
+import type { Component } from "@bastani/atomic-tui";
 import { test } from "vitest";
 import type { InteractiveEngineMessage } from "../src/modes/interactive-engine/protocol.js";
 import {

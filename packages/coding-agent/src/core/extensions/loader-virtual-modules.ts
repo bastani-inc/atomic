@@ -8,6 +8,12 @@ import { getAgentDir, getExtensionTranspileCacheDir, isBunBinary, isBundledBuild
 import { resolutionBaseUrl } from "../../utils/module-require.ts";
 import { canonicalizePath, pathsEqual, resolvePath } from "../../utils/paths.ts";
 import { moduleDirFromMetaUrl } from "../../utils/split-launcher.ts";
+import {
+	FORKED_PACKAGE_WORKSPACE_DIRS,
+	type ForkedPackageManifest,
+	forkedPackageExportAliases,
+	withLegacyPackageNames,
+} from "./forked-package-names.ts";
 import { installHostModuleBridge } from "./host-module-bridge.ts";
 import { getVirtualModules, loadVirtualModules } from "./loader-host-modules.js";
 import { isNativeBuiltinExtensionPath } from "./native-builtin-entries.ts";
@@ -497,101 +503,113 @@ function getAliases(): Record<string, string> {
 	};
 
 	const piCodingAgentEntry = packageIndex;
-	const piAgentCoreEntry = resolveWorkspaceOrImport("agent/dist/index.js", "@earendil-works/pi-agent-core");
-	const piTuiEntry = resolveWorkspaceOrImport("tui/dist/index.js", "@earendil-works/pi-tui");
-	const piTuiLayoutEntry = resolveWorkspaceOrImport("tui/dist/layout.js", "@earendil-works/pi-tui");
-	const piTuiLayoutNodeEntry = resolveWorkspaceOrImport("tui/dist/layout-node.js", "@earendil-works/pi-tui");
+	const piAgentCoreEntry = resolveWorkspaceOrImport("agent/dist/index.js", "@bastani/atomic-agent-core");
+	const piTuiEntry = resolveWorkspaceOrImport("tui/dist/index.js", "@bastani/atomic-tui");
+	const piTuiLayoutEntry = resolveWorkspaceOrImport("tui/dist/layout.js", "@bastani/atomic-tui");
+	const piTuiLayoutNodeEntry = resolveWorkspaceOrImport("tui/dist/layout-node.js", "@bastani/atomic-tui");
 	// The workspace path mirrors pi-ai 0.80.x's built dist layout. If an
 	// upstream layout change moves these files, this join needs updating to
 	// match the package's real dist paths.
-	const piAiEntry = resolveWorkspaceOrImport("ai/dist/compat.js", "@bastani/pi-ai");
-	const piAiCodexResponsesEntry = resolveWorkspaceOrImport("ai/dist/api/openai-codex-responses.js", "@bastani/pi-ai");
+	const piAiEntry = resolveWorkspaceOrImport("ai/dist/compat.js", "@bastani/atomic-ai");
+	const piAiCodexResponsesEntry = resolveWorkspaceOrImport(
+		"ai/dist/api/openai-codex-responses.js",
+		"@bastani/atomic-ai",
+	);
 	const piAiLlamaCppClassifyEntry = resolveWorkspaceOrImport(
 		"ai/dist/api/llama-cpp-classify.lazy.js",
-		"@bastani/pi-ai",
+		"@bastani/atomic-ai",
 	);
 	const piAiTypesafeSystemOneEntry = resolveWorkspaceOrImport(
 		"ai/dist/api/typesafe-system-one.lazy.js",
-		"@bastani/pi-ai",
+		"@bastani/atomic-ai",
 	);
-	const piAiOauthEntry = resolveWorkspaceOrImport("ai/dist/oauth.js", "@bastani/pi-ai");
-	const piAiModelsEntry = resolveWorkspaceOrImport("ai/dist/models.js", "@bastani/pi-ai");
-	const piAiProvidersEntry = resolveWorkspaceOrImport("ai/dist/providers/all.js", "@bastani/pi-ai");
-	const piAiCopilotEnvEntry = resolveWorkspaceOrImport("ai/dist/providers/github-copilot-env.js", "@bastani/pi-ai");
-	const piAiCopilotEntry = resolveWorkspaceOrImport("ai/dist/providers/github-copilot.js", "@bastani/pi-ai");
-	const piAiOpenRouterEntry = resolveWorkspaceOrImport("ai/dist/providers/openrouter.js", "@bastani/pi-ai");
-	const piAiProviderEnvEntry = resolveWorkspaceOrImport("ai/dist/utils/provider-env.js", "@bastani/pi-ai");
-	const piAiRetryEntry = resolveWorkspaceOrImport("ai/dist/utils/retry.js", "@bastani/pi-ai");
-	const piAiRequestAdmissionEntry = resolveWorkspaceOrImport("ai/dist/utils/request-admission.js", "@bastani/pi-ai");
-	const piAiRetryHintsEntry = resolveWorkspaceOrImport("ai/dist/utils/retry-hints.js", "@bastani/pi-ai");
-	const piAiCompatSchemaEntry = resolveWorkspaceOrImport("ai/dist/providers/compat-schema.js", "@bastani/pi-ai");
-	const piAiModelSchemaEntry = resolveWorkspaceOrImport("ai/dist/providers/model-schema.js", "@bastani/pi-ai");
-	const piAiOauthPageEntry = resolveWorkspaceOrImport("ai/dist/utils/oauth-page.js", "@bastani/pi-ai");
+	const piAiOauthEntry = resolveWorkspaceOrImport("ai/dist/oauth.js", "@bastani/atomic-ai");
+	const piAiModelsEntry = resolveWorkspaceOrImport("ai/dist/models.js", "@bastani/atomic-ai");
+	const piAiProvidersEntry = resolveWorkspaceOrImport("ai/dist/providers/all.js", "@bastani/atomic-ai");
+	const piAiCopilotEnvEntry = resolveWorkspaceOrImport(
+		"ai/dist/providers/github-copilot-env.js",
+		"@bastani/atomic-ai",
+	);
+	const piAiCopilotEntry = resolveWorkspaceOrImport("ai/dist/providers/github-copilot.js", "@bastani/atomic-ai");
+	const piAiOpenRouterEntry = resolveWorkspaceOrImport("ai/dist/providers/openrouter.js", "@bastani/atomic-ai");
+	const piAiProviderEnvEntry = resolveWorkspaceOrImport("ai/dist/utils/provider-env.js", "@bastani/atomic-ai");
+	const piAiRetryEntry = resolveWorkspaceOrImport("ai/dist/utils/retry.js", "@bastani/atomic-ai");
+	const piAiRequestAdmissionEntry = resolveWorkspaceOrImport(
+		"ai/dist/utils/request-admission.js",
+		"@bastani/atomic-ai",
+	);
+	const piAiRetryHintsEntry = resolveWorkspaceOrImport("ai/dist/utils/retry-hints.js", "@bastani/atomic-ai");
+	const piAiCompatSchemaEntry = resolveWorkspaceOrImport("ai/dist/providers/compat-schema.js", "@bastani/atomic-ai");
+	const piAiModelSchemaEntry = resolveWorkspaceOrImport("ai/dist/providers/model-schema.js", "@bastani/atomic-ai");
+	const piAiOauthPageEntry = resolveWorkspaceOrImport("ai/dist/utils/oauth-page.js", "@bastani/atomic-ai");
 	const piAiGatewayBindingEntry = resolveWorkspaceOrImport(
 		"ai/dist/api/cloudflare-gateway-binding.js",
-		"@bastani/pi-ai",
+		"@bastani/atomic-ai",
 	);
 	// The Anthropic thinking guard replays assistant turns with pi-ai's own conversion (#4185).
 	const piAiAnthropicAssistantContentEntry = resolveWorkspaceOrImport(
 		"ai/dist/api/anthropic-assistant-content.js",
-		"@bastani/pi-ai",
+		"@bastani/atomic-ai",
 	);
-	const piAiTransformMessagesEntry = resolveWorkspaceOrImport("ai/dist/api/transform-messages.js", "@bastani/pi-ai");
+	const piAiTransformMessagesEntry = resolveWorkspaceOrImport(
+		"ai/dist/api/transform-messages.js",
+		"@bastani/atomic-ai",
+	);
+	// Every specifier each forked package's manifest exposes, so no subpath resolves below a root entry file.
+	const forkedPackageAliases: Record<string, string> = {};
+	for (const [name, dir] of Object.entries(FORKED_PACKAGE_WORKSPACE_DIRS)) {
+		const workspaceRoot = path.join(packagesRoot, dir);
+		const workspaceManifest = path.join(workspaceRoot, "package.json");
+		const packageRoot =
+			fs.existsSync(workspaceManifest) &&
+			(JSON.parse(fs.readFileSync(workspaceManifest, "utf8")) as { name?: string }).name === name
+				? workspaceRoot
+				: findPackageRoot(name);
+		const manifest = JSON.parse(
+			fs.readFileSync(path.join(packageRoot, "package.json"), "utf8"),
+		) as ForkedPackageManifest;
+		Object.assign(forkedPackageAliases, forkedPackageExportAliases(name, packageRoot, manifest, path.join));
+	}
 
-	_aliases = {
+	// Each forked package also answers to its legacy pi names (@earendil-works/pi-*, @mariozechner/pi-*).
+	_aliases = withLegacyPackageNames({
+		...forkedPackageAliases,
 		"@bastani/atomic/storage": path.resolve(__dirname, "../storage/index.js"),
 		"@bastani/atomic": piCodingAgentEntry,
 		"@earendil-works/pi-coding-agent": piCodingAgentEntry,
 		"@mariozechner/pi-coding-agent": piCodingAgentEntry,
-		"@earendil-works/pi-agent-core": piAgentCoreEntry,
-		"@earendil-works/pi-tui/dist/layout.js": piTuiLayoutEntry,
-		"@earendil-works/pi-tui/dist/layout-node.js": piTuiLayoutNodeEntry,
-		"@earendil-works/pi-tui": piTuiEntry,
-		"@bastani/pi-ai/api/openai-codex-responses": piAiCodexResponsesEntry,
-		"@bastani/pi-ai/api/llama-cpp-classify.lazy": piAiLlamaCppClassifyEntry,
-		"@bastani/pi-ai/api/typesafe-system-one.lazy": piAiTypesafeSystemOneEntry,
-		"@bastani/pi-ai/oauth": piAiOauthEntry,
-		"@bastani/pi-ai/models": piAiModelsEntry,
-		"@bastani/pi-ai/providers/all": piAiProvidersEntry,
-		"@bastani/pi-ai/providers/github-copilot-env": piAiCopilotEnvEntry,
-		"@bastani/pi-ai/providers/github-copilot": piAiCopilotEntry,
-		"@bastani/pi-ai/providers/openrouter": piAiOpenRouterEntry,
-		"@bastani/pi-ai/providers/compat-schema": piAiCompatSchemaEntry,
-		"@bastani/pi-ai/providers/model-schema": piAiModelSchemaEntry,
-		"@bastani/pi-ai/utils/provider-env": piAiProviderEnvEntry,
-		"@bastani/pi-ai/utils/oauth-page": piAiOauthPageEntry,
-		"@bastani/pi-ai/utils/request-admission": piAiRequestAdmissionEntry,
-		"@bastani/pi-ai/utils/retry-hints": piAiRetryHintsEntry,
-		"@bastani/pi-ai/utils/retry": piAiRetryEntry,
-		"@bastani/pi-ai/compat": piAiEntry,
-		"@bastani/pi-ai/api/cloudflare-gateway-binding": piAiGatewayBindingEntry,
-		"@bastani/pi-ai/api/anthropic-assistant-content": piAiAnthropicAssistantContentEntry,
-		"@bastani/pi-ai/api/transform-messages": piAiTransformMessagesEntry,
-		"@bastani/pi-ai": piAiEntry,
-		"@earendil-works/pi-ai/api/openai-codex-responses": piAiCodexResponsesEntry,
-		"@earendil-works/pi-ai/oauth": piAiOauthEntry,
-		"@earendil-works/pi-ai/models": piAiModelsEntry,
-		"@earendil-works/pi-ai/providers/all": piAiProvidersEntry,
-		"@earendil-works/pi-ai/compat": piAiEntry,
-		"@earendil-works/pi-ai/api/cloudflare-gateway-binding": piAiGatewayBindingEntry,
-		"@earendil-works/pi-ai/utils/oauth-page": piAiOauthPageEntry,
-		"@earendil-works/pi-ai": piAiEntry,
-		"@mariozechner/pi-agent-core": piAgentCoreEntry,
-		"@mariozechner/pi-tui/dist/layout.js": piTuiLayoutEntry,
-		"@mariozechner/pi-tui": piTuiEntry,
-		"@mariozechner/pi-ai/oauth": piAiOauthEntry,
-		"@mariozechner/pi-ai/models": piAiModelsEntry,
-		"@mariozechner/pi-ai/providers/all": piAiProvidersEntry,
-		"@mariozechner/pi-ai/compat": piAiEntry,
-		"@mariozechner/pi-ai/api/cloudflare-gateway-binding": piAiGatewayBindingEntry,
-		"@mariozechner/pi-ai": piAiEntry,
+		"@bastani/atomic-agent-core": piAgentCoreEntry,
+		"@bastani/atomic-tui/dist/layout.js": piTuiLayoutEntry,
+		"@bastani/atomic-tui/dist/layout-node.js": piTuiLayoutNodeEntry,
+		"@bastani/atomic-tui": piTuiEntry,
+		"@bastani/atomic-ai/api/openai-codex-responses": piAiCodexResponsesEntry,
+		"@bastani/atomic-ai/api/llama-cpp-classify.lazy": piAiLlamaCppClassifyEntry,
+		"@bastani/atomic-ai/api/typesafe-system-one.lazy": piAiTypesafeSystemOneEntry,
+		"@bastani/atomic-ai/oauth": piAiOauthEntry,
+		"@bastani/atomic-ai/models": piAiModelsEntry,
+		"@bastani/atomic-ai/providers/all": piAiProvidersEntry,
+		"@bastani/atomic-ai/providers/github-copilot-env": piAiCopilotEnvEntry,
+		"@bastani/atomic-ai/providers/github-copilot": piAiCopilotEntry,
+		"@bastani/atomic-ai/providers/openrouter": piAiOpenRouterEntry,
+		"@bastani/atomic-ai/providers/compat-schema": piAiCompatSchemaEntry,
+		"@bastani/atomic-ai/providers/model-schema": piAiModelSchemaEntry,
+		"@bastani/atomic-ai/utils/provider-env": piAiProviderEnvEntry,
+		"@bastani/atomic-ai/utils/oauth-page": piAiOauthPageEntry,
+		"@bastani/atomic-ai/utils/request-admission": piAiRequestAdmissionEntry,
+		"@bastani/atomic-ai/utils/retry-hints": piAiRetryHintsEntry,
+		"@bastani/atomic-ai/utils/retry": piAiRetryEntry,
+		"@bastani/atomic-ai/compat": piAiEntry,
+		"@bastani/atomic-ai/api/cloudflare-gateway-binding": piAiGatewayBindingEntry,
+		"@bastani/atomic-ai/api/anthropic-assistant-content": piAiAnthropicAssistantContentEntry,
+		"@bastani/atomic-ai/api/transform-messages": piAiTransformMessagesEntry,
+		"@bastani/atomic-ai": piAiEntry,
 		typebox: typeboxEntry,
 		"typebox/compile": typeboxCompileEntry,
 		"typebox/value": typeboxValueEntry,
 		"@sinclair/typebox": typeboxEntry,
 		"@sinclair/typebox/compile": typeboxCompileEntry,
 		"@sinclair/typebox/value": typeboxValueEntry,
-	};
+	});
 
 	return _aliases;
 }

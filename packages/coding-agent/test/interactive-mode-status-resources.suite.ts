@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { homedir } from "node:os";
 import * as path from "node:path";
-import { Container } from "@earendil-works/pi-tui";
+import { Container } from "@bastani/atomic-tui";
 import { beforeAll, describe, expect, test } from "vitest";
 import { AgentSessionRuntime } from "../src/core/agent-session-runtime.js";
 import { INSTALLED_EXTENSION_ENTRIES, SOURCE_EXTENSION_ENTRIES } from "../src/core/builtin-install-layout.js";

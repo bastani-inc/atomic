@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@bastani/atomic";
 import { randomUUID } from "crypto";
 import { Type } from "typebox";
-import { Text } from "@earendil-works/pi-tui";
+import { Text } from "@bastani/atomic-tui";
 import type { IntercomClient } from "./broker/client.js";
 import { ReleasedReplyHandoff, type ReplyWait, type ReplyWaitAdmission } from "./reply-waiter.ts";
 import { prepareReleasedReplyWait, releasedReplyHandoffResult } from "./released-reply-wait.js";
@@ -296,6 +296,13 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
           });
           await prepareReleasedReplyWait(pi, wait, signal, { toolCallId, questionId, from: sendTo, retryCount: 0 }, () => deps.mayDetachReplyWait?.() === true);
           const replyMessage = await wait.promise;
+          // #5188: a failed ask is reported as a failure, never as the supervisor's reply or a parsed interview answer.
+          if (replyMessage.replyError !== undefined)
+            return {
+              content: [{ type: "text", text: `Failed: ${replyMessage.replyError}` }],
+              isError: true,
+              details: { error: true, replyTo: replyMessage.replyTo },
+            };
           const replyText = replyMessage.content.text;
           const replyAttachments = replyMessage.content.attachments?.length
             ? formatAttachments(replyMessage.content.attachments)

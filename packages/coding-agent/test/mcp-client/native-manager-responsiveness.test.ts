@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { TUI } from "@earendil-works/pi-tui";
+import type { TUI } from "@bastani/atomic-tui";
 import { describe, it, vi } from "vitest";
 import { InMemoryAuthStorageBackend } from "../../src/core/auth-storage.js";
 import type { ExtensionCustomComponent } from "../../src/core/extensions/types.js";

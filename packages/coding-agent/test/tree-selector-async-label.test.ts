@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
-import { setKeybindings } from "@earendil-works/pi-tui";
+import { setKeybindings } from "@bastani/atomic-tui";
 import { test } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import { SessionManager } from "../src/core/session-manager.ts";

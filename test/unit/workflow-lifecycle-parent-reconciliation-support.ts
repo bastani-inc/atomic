@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { Context } from "@bastani/pi-ai/compat";
+import type { Context } from "@bastani/atomic-ai/compat";
 import { getMessageText } from "../../packages/coding-agent/test/suite/harness.js";
 
 export const lifecycleConfig = {

@@ -12,7 +12,7 @@
  */
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { fauxAssistantMessage, fauxToolCall, getModel } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage, fauxToolCall, getModel } from "@bastani/atomic-ai/compat";
 import { parseArgs } from "../../packages/coding-agent/src/cli/args.ts";
 import { getAgentDir } from "../../packages/coding-agent/src/config.ts";
 import { resumeFailureMessage } from "../../packages/coding-agent/src/core/resume/failure.ts";

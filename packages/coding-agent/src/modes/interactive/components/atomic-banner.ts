@@ -1,5 +1,5 @@
-import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { isAppleTerminalSession, visibleWidth } from "@earendil-works/pi-tui";
+import type { ThinkingLevel } from "@bastani/atomic-agent-core";
+import { isAppleTerminalSession, visibleWidth } from "@bastani/atomic-tui";
 import type { Theme } from "../theme/theme.js";
 import { theme } from "../theme/theme.js";
 

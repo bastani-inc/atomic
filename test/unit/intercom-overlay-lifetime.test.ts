@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import type { ExtensionCommandContext, KeybindingsManager, Theme } from "@bastani/atomic";
-import type { TUI } from "@earendil-works/pi-tui";
+import type { TUI } from "@bastani/atomic-tui";
 import { test, vi } from "vitest";
 import { noOpUIContext } from "../../packages/coding-agent/src/core/extensions/runner-ui.ts";
 import type { ExtensionUIContext } from "../../packages/coding-agent/src/core/extensions/types.ts";

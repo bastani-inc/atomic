@@ -1,4 +1,4 @@
-import type { AssistantMessage, ToolResultMessage } from "@bastani/pi-ai/compat";
+import type { AssistantMessage, ToolResultMessage } from "@bastani/atomic-ai/compat";
 import { describe, expect, it } from "vitest";
 import {
 	DEFAULT_COMPACTION_SETTINGS,

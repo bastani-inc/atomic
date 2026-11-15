@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { Container, Text } from "@earendil-works/pi-tui";
+import { Container, Text } from "@bastani/atomic-tui";
 import { describe, test } from "vitest";
 import type { MarkdownTransformContext } from "../src/core/extensions/types.js";
 import type { SessionEntry } from "../src/core/session-manager.js";

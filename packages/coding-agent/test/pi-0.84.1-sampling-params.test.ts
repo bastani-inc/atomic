@@ -1,5 +1,5 @@
-import type { Model, SimpleStreamOptions } from "@bastani/pi-ai/compat";
-import { streamSimple } from "@bastani/pi-ai/compat";
+import type { Model, SimpleStreamOptions } from "@bastani/atomic-ai/compat";
+import { streamSimple } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
 

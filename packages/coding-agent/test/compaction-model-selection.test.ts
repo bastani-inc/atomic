@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import type { ClassifierModel } from "@bastani/pi-ai";
-import type { Api, Model } from "@bastani/pi-ai/compat";
+import type { ClassifierModel } from "@bastani/atomic-ai";
+import type { Api, Model } from "@bastani/atomic-ai/compat";
 import { test } from "vitest";
 import { DEFAULT_COMPACTION_SETTINGS } from "../src/core/compaction/compaction.js";
 import { runVerbatimCompaction } from "../src/core/compaction/compaction-runner.js";

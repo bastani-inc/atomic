@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import type { AgentToolResult } from "@bastani/atomic-agent-core";
 import { describe, test } from "vitest";
 import { shouldSuppressIntermediateRetryableFailureUpdate } from "../../packages/subagents/src/runs/foreground/execution.js";
 import type { AgentProgress, Details, SingleResult, Usage } from "../../packages/subagents/src/shared/types.js";

@@ -1,5 +1,5 @@
-import type { ImageContent, TextContent } from "@bastani/pi-ai/compat";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AgentMessage } from "@bastani/atomic-agent-core";
+import type { ImageContent, TextContent } from "@bastani/atomic-ai/compat";
 import { commitAdmittedCustomMessage, commitAdmittedCustomMessages } from "./agent-session-custom-message-commit.ts";
 import { forwardedMessageOptions, resolveWorkflowStageDeliveryTarget } from "./agent-session-delivery-forwarding.ts";
 import { holdsTurnsForDetachedResults } from "./agent-session-detached-tools.ts";
@@ -35,6 +35,7 @@ import type { CustomMessage, StageAdmittedCustomMessage } from "./messages.ts";
 import { withOwnResourceAdmission } from "./resource-admission-scope.ts";
 import { assertSessionOpen, sessionLifetime, trackSessionWork } from "./session-lifecycle-work.ts";
 import { settingsWriteOwner } from "./settings-write-ownership.ts";
+import { parseSlashCommand } from "./slash-commands.js";
 
 export { transferWorkflowStageDeliveriesTo };
 
@@ -118,8 +119,7 @@ export async function _queueFollowUp(
  */
 
 export function _throwIfExtensionCommand(this: AgentSession, text: string): void {
-	const spaceIndex = text.indexOf(" ");
-	const commandName = spaceIndex === -1 ? text.slice(1) : text.slice(1, spaceIndex);
+	const commandName = parseSlashCommand(text).name;
 	const command = this._extensionRunner.getCommand(commandName);
 
 	if (command) {

@@ -1,4 +1,4 @@
-import { replaceControlCharacters, ScrollView, VStack } from "@earendil-works/pi-tui";
+import { replaceControlCharacters, ScrollView, VStack } from "@bastani/atomic-tui";
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { formatModelLabel } from "../../core/model-label.ts";
 import { isOfflineModeEnabled } from "../../core/package-manager-env.ts";

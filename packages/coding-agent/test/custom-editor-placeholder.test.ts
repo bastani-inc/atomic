@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
-import { CURSOR_MARKER, renderFakeCursor, type TUI, VStack, visibleWidth } from "@earendil-works/pi-tui";
+import { CURSOR_MARKER, renderFakeCursor, type TUI, VStack, visibleWidth } from "@bastani/atomic-tui";
 import { beforeEach, describe, it } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.js";
 import { CustomEditor } from "../src/modes/interactive/components/custom-editor.js";

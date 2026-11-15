@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import type { Provider } from "@bastani/pi-ai";
-import { builtinProviders } from "@bastani/pi-ai/providers/all";
+import type { Provider } from "@bastani/atomic-ai";
+import { builtinProviders } from "@bastani/atomic-ai/providers/all";
 import { describe, expect, it } from "vitest";
 import { collectOAuthProviderMetadata } from "../src/core/oauth-provider-metadata.ts";
 import type { ProviderConfigInput } from "../src/core/provider-composer.ts";

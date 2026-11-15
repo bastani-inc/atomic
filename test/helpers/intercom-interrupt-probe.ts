@@ -1,5 +1,5 @@
-import type { FauxResponseFactory, FauxResponseStep } from "@bastani/pi-ai/compat";
-import { fauxAssistantMessage } from "@bastani/pi-ai/compat";
+import type { FauxResponseFactory, FauxResponseStep } from "@bastani/atomic-ai/compat";
+import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
 
 /**
  * A priority interrupt aborts the receiver's native run. The faux provider still
