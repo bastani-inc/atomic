@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
 import { thisProcess } from "../src/core/worktree-snapshot/process-holder.ts";
@@ -129,6 +129,12 @@ describe("an LFS download an interrupted resume left pending (#5099)", () => {
 		assert.ok(pull);
 		await pull();
 		assert.equal(await sandbox.git(clone, "rev-parse", "HEAD"), head, "the download puts HEAD back");
+	});
+
+	test("a mark that cannot be read fails the download it would finish, rather than being taken as none (#5099)", async () => {
+		const { clone, mark } = await checkout();
+		mkdirSync(mark);
+		await assert.rejects(pendingLfsDownload(clone), { code: "EISDIR" });
 	});
 
 	test("a worktree whose HEAD moved since is left as it is, and told once to run git lfs pull (#5099)", async () => {

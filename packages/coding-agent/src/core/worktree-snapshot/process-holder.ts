@@ -34,7 +34,7 @@ const PROCESS_START = processStartToken(process.pid);
 
 /** This process, as a {@link ProcessHolder}. */
 export function thisProcess(): ProcessHolder {
-	return { host: HOST, pid: process.pid, ...(PROCESS_START === undefined ? {} : { start: PROCESS_START }) };
+	return { host: HOST, pid: process.pid, start: PROCESS_START };
 }
 
 /**
