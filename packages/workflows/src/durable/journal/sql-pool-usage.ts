@@ -1,12 +1,13 @@
 import type { SqliteExecutor, SqliteRow, StorageDialect } from "@bastani/atomic/storage";
 import { StaleWorkLeaseError, type StaleWorkLeaseReason } from "../../shared/worker-pool-errors.js";
-import { type SqlPoolStorage, sqlPoolStorage } from "./internal.js";
+import { locksRows, type SqlPoolStorage, sqlPoolStorage } from "./internal.js";
 import { isWorkflowLeaseExpired } from "./lease-expiry.js";
 import {
 	POOL_USAGE_FIELDS as FIELDS,
 	type PoolUsage,
 	poolUsageSchema,
 	poolUsageTable,
+	poolUsageTotalsSeed,
 	poolUsageTotalsTable,
 	poolUsageUpsert,
 	upsertPoolUsage,
@@ -81,6 +82,13 @@ export class SqlPoolUsage {
 	private async totalIn(tx: SqliteExecutor, root: string): Promise<PoolUsage> {
 		const kept = await this.keptTotal(tx, root);
 		if (kept) return kept;
+		if (locksRows(this.dialect)) {
+			// Fenced heartbeats create the row concurrently (#5102): create it the way they do, or keep theirs.
+			const seed = poolUsageTotalsSeed(this.dialect, this.journal.runs, root);
+			await tx.run(seed.sql, ...seed.params);
+			const seeded = await this.keptTotal(tx, root);
+			if (seeded) return seeded;
+		}
 		const columns = FIELDS.map((field) => field.toLowerCase());
 		const row = await tx.get(
 			`SELECT ${FIELDS.map((field) => `COALESCE(SUM(u.${field.toLowerCase()}), 0) AS ${field}`).join(", ")}
@@ -121,17 +129,9 @@ export class SqlPoolUsage {
 		for (const report of reports) validate(report);
 		const snapshot = reports.map((report) => ({ key: report.key, usage: { ...report.usage } }));
 		const columns = FIELDS.map((field) => field.toLowerCase());
-		const pool = `${this.journal.runs}_pool`;
 		const batched = {
 			writes: [
-				{
-					sql: `INSERT INTO ${this.totals}(root, ${columns.map((column) => `${column}, ${column}_err`).join(", ")})
-					SELECT ?, ${columns.map((column) => `s.${column}, 0`).join(", ")} FROM (
-						SELECT ${columns.map((column) => `COALESCE(SUM(u.${column}), 0) AS ${column}`).join(", ")}
-						FROM ${this.table} u JOIN ${this.journal.runs}_work w ON w.id = u.work WHERE w.root = ?
-					) s WHERE NOT EXISTS (SELECT 1 FROM ${this.totals} WHERE root = ?) AND EXISTS (SELECT 1 FROM ${pool} WHERE root = ?)`,
-					params: [lease.runId, lease.runId, lease.runId, lease.runId],
-				},
+				poolUsageTotalsSeed(this.dialect, this.journal.runs, lease.runId),
 				...snapshot.map(({ key, usage }) =>
 					poolUsageUpsert(this.dialect, this.journal.runs, token.id, token.generation, key, usage),
 				),
@@ -174,6 +174,11 @@ export class SqlPoolUsage {
 			if (work.generation !== token.generation) throw stale("generation-mismatch");
 			if (work.worker !== token.worker) throw stale("worker-mismatch");
 			if (work.state === "leased" && Number(work.expires_at) < Number(authority.now)) throw stale("expired");
+			if (locksRows(this.dialect)) {
+				// The totals row first, as a fenced heartbeat makes it, so this usage's trigger adds to it (#5102).
+				const seed = poolUsageTotalsSeed(this.dialect, this.journal.runs, lease.runId);
+				await tx.run(seed.sql, ...seed.params);
+			}
 			for (const { key, usage } of snapshot)
 				await upsertPoolUsage(tx, this.dialect, this.journal.runs, token.id, token.generation, key, usage);
 			return this.totalIn(tx, lease.runId);

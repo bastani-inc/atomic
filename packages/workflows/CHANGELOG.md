@@ -20,6 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Changed
 
 - The `keepContext` helper documentation and the workflow tool's guidance now explain that protection has a budget: restating a constraint adds no protection, and old duplicate or over-budget spans can be released and compacted. Tag constraints, not material ([#4794](https://github.com/bastani-inc/atomic/issues/4794))
+- Worker pools on PostgreSQL no longer take turns across machines for their busiest writes. Claiming a child, heartbeats, checkpoints and completing a child lock only the rows they change, and a claim skips work another host is taking, so hosts claim and record in parallel. Every guarantee holds as before: a child is held by one worker at a time, a replaced worker's writes are refused, and each checkpoint is recorded once in order. With 32 hosts of 4 workers on one PostgreSQL 16 server, claims ran 8 to 13 times faster and checkpoint commits about 1.5 times faster, and the slowest claims and commits take a third to half as long. SQLite and libSQL pools are unchanged ([#5102](https://github.com/bastani-inc/atomic/issues/5102))
 
 ### Fixed
 

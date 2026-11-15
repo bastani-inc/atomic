@@ -1,4 +1,5 @@
 import {
+	type FencedPathId,
 	POSTGRES_POOL_SESSION_PREFIX,
 	type SqliteExecutor,
 	type SqliteRow,
@@ -97,7 +98,32 @@ export type JournalAppendGuard = (tx: SqliteExecutor, runId: string) => Promise<
 export interface SqlPoolBatchOptions {
 	/** Goes ahead of the journal's other queued calls and of the process's limit on writes in flight: lease renewals. */
 	readonly priority?: boolean;
+	/**
+	 * The audited fenced path the write is (`fenced-paths.ts`): on a database with `SqlPoolStorage.fenced` it runs as a
+	 * `fenced` transaction. Without it, such a database runs the write in a `serial` transaction, as before (#5102).
+	 */
+	readonly audit?: FencedPathId;
+	/** The fenced write also excludes whole-database serial transactions (`TransactionConcurrency`). */
+	readonly excludesSerial?: boolean;
 }
+
+/**
+ * Whether the database runs write transactions concurrently and its stores take row locks themselves (PostgreSQL):
+ * the dialect then renders a lock clause. SQLite serializes every write, so nothing there takes row locks.
+ */
+export function locksRows(dialect: StorageDialect): boolean {
+	return dialect.lockClause("update") !== "";
+}
+
+/**
+ * Runs a planned pool write's statements in order in one `fenced` transaction (#5102): no database-wide lock, the
+ * fences lock the rows the write decided on. `audit` names the reviewed path (`fenced-paths.ts`).
+ */
+export type SqlPoolFencedWrite = (
+	statements: readonly SqliteStatement[],
+	audit: FencedPathId,
+	excludesSerial?: boolean,
+) => Promise<SqliteRow[][]>;
 
 export interface SqlPoolStorage {
 	transaction<T>(body: (tx: SqliteExecutor) => Promise<T>): Promise<T>;
@@ -107,6 +133,12 @@ export interface SqlPoolStorage {
 	 * the journal's transactions do. Resolves with each statement's rows.
 	 */
 	readonly batch?: (statements: readonly SqliteStatement[], options?: SqlPoolBatchOptions) => Promise<SqliteRow[][]>;
+	/**
+	 * Present when the journal's database runs transactions concurrently and locks rows (PostgreSQL), and has no
+	 * `batch`: an audited pool write's planned statements run as one `fenced` transaction instead of under the database's
+	 * write lock, so pool writes of many hosts proceed together.
+	 */
+	readonly fenced?: SqlPoolFencedWrite;
 	/**
 	 * A read that never takes the shared write lock. On a node:sqlite journal file it is one read transaction on a
 	 * read-only connection to that file: all of its statements see the same last commit, it reads while another
@@ -208,7 +240,7 @@ const poolWrites = new WeakMap<RunJournal, SharedStoreWrites>();
 export function registerSqlPoolStorage(journal: RunJournal, storage: SqlPoolStorage): void {
 	const writes = new SharedStoreWrites();
 	poolWrites.set(journal, writes);
-	const batch = storage.batch;
+	const { batch, fenced } = storage;
 	poolStorage.set(journal, {
 		...storage,
 		transaction: (body) => writes.watch(() => storage.transaction(body)),
@@ -216,6 +248,12 @@ export function registerSqlPoolStorage(journal: RunJournal, storage: SqlPoolStor
 		...(batch === undefined
 			? {}
 			: { batch: (statements, options) => writes.watch(() => batch(statements, options)) }),
+		...(fenced === undefined
+			? {}
+			: {
+					fenced: (statements, audit, excludesSerial) =>
+						writes.watch(() => fenced(statements, audit, excludesSerial)),
+				}),
 	});
 }
 
@@ -252,13 +290,21 @@ export function listenPoolReady(
 export function observeSqlPoolTransactions(journal: RunJournal, observe: () => void): void {
 	const storage = poolStorage.get(journal);
 	if (storage === undefined) return;
-	const batch = storage.batch;
+	const { batch, fenced } = storage;
 	poolStorage.set(journal, {
 		...storage,
 		transaction: (body) => {
 			observe();
 			return storage.transaction(body);
 		},
+		...(fenced === undefined
+			? {}
+			: {
+					fenced: (statements, audit, excludesSerial) => {
+						observe();
+						return fenced(statements, audit, excludesSerial);
+					},
+				}),
 		...(batch === undefined
 			? {}
 			: {
