@@ -189,16 +189,31 @@ test("a refused second quarter ends the split without planning the rest (#4543)"
 	assert.equal(planner.requested.length, 5);
 });
 
-test("a part that fails without a refusal ends the split without a further request (#4543)", async () => {
+test("a part that fails without a refusal stays undeleted while the other parts keep their deletions (#4977)", async () => {
+	const planner = scripted([
+		refusal("midstream"),
+		refusal("midstream"),
+		failed({ kind: "unusable", category: "no_usable_ranges", excerpt: "" }),
+		planned([2, 5]),
+	]);
+
+	const result = await planWithRefusalRecovery(WHOLE, planner.planRegion);
+
+	assert.deepEqual(result, planned([HALF_LINES + 2, HALF_LINES + 5]));
+	assert.deepEqual(planner.requested, [WHOLE_LINES, WHOLE_LINES, HALF_LINES, SECOND_HALF_LINES]);
+});
+
+test("when every part fails without a refusal the retry's refusal is returned (#4977)", async () => {
 	const retried = refusal("midstream");
 	const planner = scripted([
 		refusal("midstream"),
 		retried,
-		failed({ kind: "unusable", category: "no_usable_ranges", excerpt: "" }),
+		failed({ kind: "providerError", message: "boom" }),
+		failed({ kind: "unusable", category: "malformed_output", excerpt: "" }),
 	]);
 
 	assert.equal(await planWithRefusalRecovery(WHOLE, planner.planRegion), retried);
-	assert.equal(planner.requested.length, 3);
+	assert.equal(planner.requested.length, 4);
 });
 
 test("a part that cannot be split further ends the split (#4543)", async () => {
