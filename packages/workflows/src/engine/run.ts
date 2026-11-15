@@ -9,7 +9,7 @@ import {
 	withWorktreeRestoreNotices,
 	withWorktreeRootMappings,
 } from "@bastani/atomic";
-import { beginDurableWorkflowAttempt } from "../durable/attempt-identity.js";
+import { beginDurableWorkflowAttempt, forkCopiedNodes, keepsForkCopiedParent } from "../durable/attempt-identity.js";
 import { type DurableWorkflowBackend, pendingStageMessagesForDurableRun } from "../durable/backend.js";
 import type { DurableChildInvocation } from "../durable/boundary-topology.js";
 import { createDurableChildWorkflowPrimitive } from "../durable/child-primitive.js";
@@ -23,7 +23,13 @@ import {
 	resumeLaunchCwd,
 } from "../durable/run-restore-preconditions.js";
 import { recordRunResultCheckpointAsync } from "../durable/run-result.js";
-import { inheritedRunElapsedMs, priorRunAccounting, recordRunTimingCheckpointAsync } from "../durable/run-timing.js";
+import {
+	inheritedRunElapsedMs,
+	priorChildRunAccounting,
+	priorRunAccounting,
+	recordChildRunUsageCheckpointAsync,
+	recordRunTimingCheckpointAsync,
+} from "../durable/run-timing.js";
 import { ScopedDurableBackend } from "../durable/scoped-backend.js";
 import {
 	createDurableStagePrimitive,
@@ -106,6 +112,7 @@ import { resolve_budget, type WorkflowBudget } from "../shared/budget.js";
 import type { RunUsageTree } from "../shared/budget-meter.js";
 import { appendRunStart } from "../shared/persistence-session-entries.js";
 import { coercePossibleStages } from "../shared/possible-stages.js";
+import { assertRecordedParentsMaterialised } from "../shared/replay-topology-failure.js";
 import { parseEvictWhenWaiting, type RunEvictionPolicy } from "../shared/run-eviction.js";
 import { RunEvictedError, RunEvictionConfigError, RunReplayError } from "../shared/run-eviction-errors.js";
 import { currentStageUiBroker } from "../shared/stage-ui-broker.js";
@@ -545,8 +552,10 @@ async function executeRun(
 				}
 			: undefined;
 	const durableAccounting =
-		hasBudgetDeclaration && opts.parentRun === undefined && opts.continuation === undefined && priorRun === undefined
-			? priorRunAccounting(durableBackend, runId)
+		hasBudgetDeclaration && opts.continuation === undefined && priorRun === undefined
+			? opts.parentRun === undefined
+				? priorRunAccounting(durableBackend, runId)
+				: priorChildRunAccounting(rootBackend, opts.parentRun.rootRunId, runId)
 			: undefined;
 	const continuedBudgetState =
 		opts.continuation?.source.budgetState ??
@@ -577,6 +586,8 @@ async function executeRun(
 	const runPossibleStages =
 		persistedPossibleStages ?? coercePossibleStages(rootBackend.getWorkflow(runId)?.possibleStages) ?? [];
 	const forkedFrom = rootBackend.getWorkflow(runId)?.forkedFrom;
+	const copiedByFork = forkCopiedNodes(rootBackend, runId);
+	const keepsCopiedParent = (parentId: string): boolean => keepsForkCopiedParent(copiedByFork, runSnapshot, parentId);
 	const runSnapshot: RunSnapshot = {
 		id: runId,
 		name: def.name,
@@ -779,6 +790,8 @@ async function executeRun(
 		assertSuccessfulCompletion: () => {
 			if (cachedStageFailure !== undefined) throw cachedStageFailure;
 			assertFrontierConsumed();
+			replayIndex.assertProvisionalParentsAdmitted();
+			assertRecordedParentsMaterialised(runSnapshot, keepsCopiedParent);
 		},
 		recordRefusedCompletion: async (error) => {
 			const frontier = unconsumedToolFrontier(
@@ -824,12 +837,26 @@ async function executeRun(
 		user: opts.onStageEnd,
 		metadataOnly: true,
 	});
+	/**
+	 * A budgeted child records its own accounting, and its root's, on the root run after each of its stage-session
+	 * checkpoints: the root records its own only at its own stages, so a crash inside the child would otherwise lose
+	 * both, and the stages a resume replays leave the meter (#5053).
+	 */
+	const childParent = opts.parentRun;
+	const recordChildUsage =
+		childParent === undefined || !hasBudgetDeclaration
+			? undefined
+			: async (): Promise<void> => {
+					const root = activeStore.run(childParent.rootRunId);
+					if (root !== undefined) await recordChildRunUsageCheckpointAsync(rootBackend, root, runSnapshot);
+				};
 	const durableOnStageSession = createDurableStageSessionRecorder({
 		runId,
 		deps: durableStageDeps,
 		onStageSession: opts.onStageSession,
 		...(opts.parentRun === undefined ? { runSnapshot } : {}),
 		heartbeatIntervalMinutes: def.heartbeatIntervalMinutes,
+		...(recordChildUsage === undefined ? {} : { recordUsage: recordChildUsage }),
 	});
 	const stageOptions: EngineStageRuntimeOptions = {
 		continuation: opts.continuation,
@@ -1001,6 +1028,7 @@ async function executeRun(
 				(node) => node.id === opts.continuation?.resumeFromToolNodeId,
 			),
 			retryToolNodes: opts.continuation?.retryToolNodes,
+			admitToolNode: (node) => replayIndex.admitToolNode(node),
 			toolControls,
 			toolAdmission,
 			budget,
@@ -1647,7 +1675,11 @@ async function executeRun(
 		while (scheduler.isRunPaused()) await waitForRunRelease();
 		ownController.signal.throwIfAborted();
 		const returned = classifyReturnedRunStatus(result, runSnapshot);
-		if (returned.status === "completed") assertFrontierConsumed();
+		if (returned.status === "completed") {
+			assertFrontierConsumed();
+			replayIndex.assertProvisionalParentsAdmitted();
+			assertRecordedParentsMaterialised(runSnapshot, keepsCopiedParent);
+		}
 		const recorded = activeStore.recordRunEnd(runId, returned.status, result, returned.error, returned.metadata);
 		// Durable identity must reach its terminal state even if the session journal fails.
 		if (opts.parentRun === undefined) {
@@ -1836,6 +1868,7 @@ async function executeRun(
 					durableBackend,
 					terminalStatusCommitted,
 					store: activeStore,
+					...(recordChildUsage === undefined ? {} : { recordUsage: recordChildUsage }),
 				});
 			}
 		} finally {

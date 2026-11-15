@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import lockfile from "proper-lockfile";
+import { releaseLock } from "../../lock-release.ts";
 
 /** What the last build on this machine left for one workspace: a rebuild is needed unless it succeeded unchanged. */
 export interface WorkspaceLedgerEntry {
@@ -156,7 +157,7 @@ export async function updateLedger(
 			await rename(temporary, path);
 			return next;
 		} finally {
-			await release();
+			await releaseLock(release, `${path}.lock`);
 		}
 	});
 }

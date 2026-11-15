@@ -30,6 +30,7 @@ export type {
 	ToolNamespace,
 	ToolRendererResolver,
 	ToolRenderers,
+	ToolScriptAccess,
 } from "./core/extensions/tool-types.ts";
 export { resolveRestoredModelReference } from "./core/model-resolver-initial.ts";
 export * from "./core/resume/index.ts";
@@ -560,6 +561,7 @@ export {
 	validateMcpServerConfig,
 } from "./core/mcp-servers.ts";
 export { convertToLlm } from "./core/messages.ts";
+export { modelCallUsage } from "./core/model-call-usage.ts";
 export type {
 	ModelFallbackFailureKind,
 	ModelFallbackFailureOptions,
@@ -964,6 +966,11 @@ export {
 /** Bounds extension text in the model's context the way oversized tool results are bounded. */
 export { boundOversizedText } from "./core/tools/oversized-tool-result.js";
 export {
+	assertPrivateDirectory,
+	ensurePrivateTempDir,
+	TempDirRefusedError,
+} from "./core/tools/session-temp-dir.ts";
+export {
 	isShellTimeoutError,
 	isShellToolError,
 	rehydrateShellToolError,
@@ -1273,6 +1280,8 @@ export { detectSupportedImageMimeTypeFromFile } from "./utils/mime.ts";
 export { isPathInside, type PathInsideApi } from "./utils/path-inside.ts";
 // Shell utilities
 export { getPowerShellConfig, getShellConfig } from "./utils/shell.ts";
+// Terminal-safe display text
+export { terminalDisplayText } from "./utils/terminal-text.ts";
 export {
 	type GitToolStatus,
 	type GitUpdateStatus,
