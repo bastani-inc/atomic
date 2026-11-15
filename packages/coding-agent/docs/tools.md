@@ -97,6 +97,7 @@ Answers depend on DeepWiki's repository indexing and availability. Check the rep
 - `edit` does not depend on an earlier `read`. A file changed by `bash`, another tool, or another program is edited by its current text.
 - When no exact match exists, `edit` retries after normalizing trailing whitespace, Unicode quotes, dashes, spaces, and compatibility forms such as full-width characters. The normalization only finds the region; `newText` replaces the file's original text there, and everything outside that region, including the rest of its lines, stays byte-for-byte unchanged. A single exact match is always used, even when the normalized text would match more than once.
 - `edit` only edits UTF-8 text. A file that is not valid UTF-8, such as a Latin-1 file, is refused with `target-not-utf8` and left unchanged.
+- `oldText` and `newText` must hold whole characters. One that starts or ends with half of an emoji or another surrogate pair is refused with `text-splits-character`, and the file is left unchanged.
 - A UTF-8 byte-order mark is kept, and every line outside the replaced text keeps its own line ending (LF, CRLF, or a lone CR). Line breaks in `newText` take the line ending of the line where the replaced text starts; a file that uses only lone CR line endings gets CR.
 - Either every edit applies or the file is left unchanged.
 - In the built-in tool, a notebook (`.ipynb`) is edited through the same `# %% [code] cell:N` text that `read` shows; cell metadata, outputs, and execution counts are kept.
@@ -117,6 +118,7 @@ The built-in `write` also accepts these targets, described under [Lines and loca
 | --- | --- | --- | --- | --- |
 | `EditInputError` | `edits-empty` | `edits` is empty or missing | `path`, `totalEdits` | Pass at least one replacement. |
 | `EditInputError` | `old-text-empty` | An `oldText` is empty | `path`, `editIndex`, `totalEdits` | Copy at least one character of the current file into `oldText`. |
+| `EditInputError` | `text-splits-character` | An `oldText` or `newText` holds half of a surrogate pair, such as half of an emoji, so the edit would split a character | `path`, `editIndex`, `totalEdits` | Copy whole characters, including both halves of every emoji. |
 | `EditMatchError` | `text-not-found` | An `oldText` does not occur in the file | `path`, `editIndex`, `totalEdits` | Read the file again and copy `oldText` exactly. |
 | `EditMatchError` | `text-not-unique` | An `oldText` occurs more than once | `path`, `editIndex`, `totalEdits`, `occurrences` | Add surrounding lines until it matches once. |
 | `EditMatchError` | `edits-overlap` | Two edits touch the same region | `path`, `editIndex`, `overlapsEditIndex`, `totalEdits` | Merge them into one edit. |
