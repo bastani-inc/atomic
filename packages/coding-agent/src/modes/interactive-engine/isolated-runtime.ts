@@ -20,7 +20,7 @@ import {
 } from "../../core/compaction/background-compaction.ts";
 import { onDebugSettingChange } from "../../core/debug-setting.ts";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
-import type { ExtensionError, LoadExtensionsResult } from "../../core/extensions/index.js";
+import type { ExtensionError } from "../../core/extensions/index.js";
 import type { SessionRecoveryReason } from "../../core/extensions/session-events.ts";
 import type { WorkflowActivityFrame } from "../../core/extensions/workflow-events.js";
 import { SessionManager } from "../../core/session-manager.ts";
@@ -65,6 +65,11 @@ import { RemoteModelCatalog } from "./remote-model-catalog.ts";
 import { RemoteQueuePause } from "./remote-queue-pause.js";
 import { InteractiveEngineResourceReadinessError } from "./resource-readiness-error.ts";
 
+/** The extension load errors and warnings of the engine's last (re)load. */
+export interface EngineResourceIssues {
+	errors: Array<{ path: string; error: string }>;
+	warnings: Array<{ path: string; warning: string }>;
+}
 type ResourceExtensionsListener = (extensions: readonly RpcResourceExtension[]) => void;
 type QueueSnapshot = { steering: string[]; followUp: string[] };
 type CompactionReadyListener = (state: BackgroundCompactionState) => void;
@@ -160,7 +165,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private resourceOverlaps: ResourceOverlap[] = [];
 	private readonly resourceExtensionsListeners: ResourceExtensionsListener[] = [];
 	private resourceExtensions: RpcResourceExtension[] = [];
-	private resourceIssues: Pick<LoadExtensionsResult, "errors" | "warnings"> = { errors: [], warnings: [] };
+	private resourceIssues: EngineResourceIssues = { errors: [], warnings: [] };
 	private resourcesInitializedGeneration = 0;
 	private resourceInitialization: { generation: number; promise: Promise<void> } | undefined;
 	private readonly retiredResourceGenerations = new Set<number>();
@@ -553,7 +558,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		};
 	}
 	/** The engine's extension load errors and warnings of its last (re)load, as its session's resource loader holds them. */
-	getResourceIssues(): Pick<LoadExtensionsResult, "errors" | "warnings"> {
+	getResourceIssues(): EngineResourceIssues {
 		return this.resourceIssues;
 	}
 	private updateResources(

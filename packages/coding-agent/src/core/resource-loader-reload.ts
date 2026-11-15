@@ -23,7 +23,6 @@ import {
 import type { DefaultResourceLoader } from "./resource-loader-core.ts";
 import { discoverAppendSystemPromptFile, discoverSystemPromptFile } from "./resource-loader-discovery.ts";
 import {
-	collectDuplicateToolWarnings,
 	collectExtensionPackageWarnings,
 	collectPackageInstallWarnings,
 	mergeExtensionWarnings,
@@ -182,6 +181,7 @@ export async function loadProjectTrustExtensions(loader: DefaultResourceLoader):
 		workflowResourceProvider,
 		inheritanceSnapshotProvider,
 	);
+	mergeExtensionWarnings(extensionsResult, [...installWarnings, ...packageWarnings]);
 	const inlineExtensions = await loadExtensionFactories(
 		loader,
 		extensionsResult.runtime,
@@ -190,11 +190,6 @@ export async function loadProjectTrustExtensions(loader: DefaultResourceLoader):
 	);
 	extensionsResult.extensions.push(...inlineExtensions.extensions);
 	extensionsResult.errors.push(...inlineExtensions.errors);
-	mergeExtensionWarnings(extensionsResult, [
-		...installWarnings,
-		...packageWarnings,
-		...collectDuplicateToolWarnings(extensionsResult.extensions),
-	]);
 	const mandatoryPaths = new Set(getMandatoryBuiltinExtensionPaths().map((path) => resolvePath(path, state.cwd)));
 	for (const extension of extensionsResult.extensions) {
 		if (mandatoryPaths.has(extension.resolvedPath)) markTrustedMandatoryRuntimeExtension(extension);
@@ -377,12 +372,7 @@ export async function prepareDefaultResourceLoaderReload(
 					workflowResourceProvider,
 					inheritanceSnapshotProvider,
 				);
-		if (!options?.deferExtensions)
-			mergeExtensionWarnings(extensionsResult, [
-				...installWarnings,
-				...packageWarnings,
-				...collectDuplicateToolWarnings(extensionsResult.extensions),
-			]);
+		if (!options?.deferExtensions) mergeExtensionWarnings(extensionsResult, [...installWarnings, ...packageWarnings]);
 		const mandatoryExtensionPaths = new Set(
 			getMandatoryBuiltinExtensionPaths().map((path) =>
 				resolvePath(path, state.cwd, { normalizeUnicodeSpaces: true }),

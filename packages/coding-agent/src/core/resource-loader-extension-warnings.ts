@@ -79,7 +79,7 @@ export function collectPackageInstallWarnings(
 }
 
 /** One warning per extension that registered a tool name more than once. */
-export function collectDuplicateToolWarnings(extensions: readonly Extension[]): ExtensionPackageWarning[] {
+function collectDuplicateToolWarnings(extensions: readonly Extension[]): ExtensionPackageWarning[] {
 	return extensions.flatMap((extension) => {
 		const names = [...(extension.duplicateToolNames ?? [])];
 		if (names.length === 0) return [];
@@ -91,8 +91,8 @@ export function collectDuplicateToolWarnings(extensions: readonly Extension[]): 
 	});
 }
 
+/** Add `warnings` and the duplicate-tool warnings of the loaded extensions to the result, one per path. */
 export function mergeExtensionWarnings(result: LoadExtensionsResult, warnings: ExtensionPackageWarning[]): void {
-	result.warnings = [
-		...new Map([...(result.warnings ?? []), ...warnings].map((warning) => [warning.path, warning])).values(),
-	];
+	const merged = [...(result.warnings ?? []), ...warnings, ...collectDuplicateToolWarnings(result.extensions)];
+	result.warnings = [...new Map(merged.map((warning) => [warning.path, warning])).values()];
 }

@@ -3,14 +3,14 @@ import type { AgentSession, ClearedQueue } from "../../core/agent-session.js";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
 import type { UIPromptEndEvent, UIPromptStartEvent } from "../../core/extensions/agent-events.ts";
-import type { ExtensionUIContext, LoadExtensionsResult } from "../../core/extensions/index.js";
+import type { ExtensionUIContext } from "../../core/extensions/index.js";
 import type { WorkflowActivityFrame } from "../../core/extensions/workflow-events.js";
 import type { KeybindingsManager } from "../../core/keybindings.ts";
 import type { RpcAutocompleteItem, RpcResourceExtension, RpcSlashCommand } from "../rpc/rpc-types.ts";
 import type { ActivityWatchdogDiagnostic } from "./activity-watchdog.ts";
 import { EngineDialogHostController } from "./engine-dialog-host.ts";
 import { InputFormHostController } from "./input-form-host.ts";
-import { IsolatedInteractiveRuntime } from "./isolated-runtime.js";
+import { type EngineResourceIssues, IsolatedInteractiveRuntime } from "./isolated-runtime.js";
 import type { EngineExtensionShortcut, EngineKeybindingState, InteractiveEngineMessage } from "./protocol.ts";
 import { RemoteComponentController, type TuiRendererLifecycle } from "./remote-component.ts";
 import { registerRemoteProxyOwnership } from "./remote-input-ownership.ts";
@@ -220,9 +220,7 @@ export function getInteractiveEngineResourceExtensions(runtime: AgentSessionRunt
 }
 
 /** The interactive engine's extension load errors and warnings; empty for a session that runs in this process. */
-export function getInteractiveEngineResourceIssues(
-	runtime: AgentSessionRuntime,
-): Pick<LoadExtensionsResult, "errors" | "warnings"> {
+export function getInteractiveEngineResourceIssues(runtime: AgentSessionRuntime): EngineResourceIssues {
 	return runtime instanceof IsolatedInteractiveRuntime ? runtime.getResourceIssues() : { errors: [], warnings: [] };
 }
 

@@ -313,7 +313,7 @@ InteractiveModeBase.prototype.showLoadedResources = function (
 		for (const error of [...extensionsResult.errors, ...engineIssues.errors]) {
 			extensionDiagnostics.push({ type: "error", message: error.error, path: error.path });
 		}
-		for (const warning of [...(extensionsResult.warnings ?? []), ...(engineIssues.warnings ?? [])]) {
+		for (const warning of [...(extensionsResult.warnings ?? []), ...engineIssues.warnings]) {
 			extensionDiagnostics.push({ type: "warning", message: warning.warning, path: warning.path });
 		}
 
