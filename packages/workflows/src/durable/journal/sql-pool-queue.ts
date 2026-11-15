@@ -163,6 +163,11 @@ function withQueuedSnapshot(descriptor: PoolWorkDescriptor, queued: string): str
 		descriptor.execution.workspaceSnapshot ?? (JSON.parse(queued) as PoolWorkDescriptor).execution.workspaceSnapshot;
 	return serializeJson({ ...descriptor, execution: { ...descriptor.execution, workspaceSnapshot } });
 }
+/** The worktree snapshots a checkpoint records, where it carries a well-formed list of them. */
+function carriedSnapshots(checkpoint: DurableCheckpoint): readonly WorktreeSnapshot[] {
+	const carried = (checkpoint as { readonly worktreeSnapshots?: unknown }).worktreeSnapshots;
+	return Array.isArray(carried) ? (carried as readonly WorktreeSnapshot[]) : [];
+}
 /**
  * Which ready work a claim may take (shared placement, #4310): only work without a workspace binding, as the root's
  * own workers take it, or exactly one ready item a worker host chose by its binding. Unset: any ready work.
@@ -1197,6 +1202,10 @@ export class SqlPoolQueue {
 		const sessions =
 			mutation.kind === "checkpoint" || this.storage.batch === undefined ? undefined : await this.poolSessions();
 		const checkpoints = this.checkpoints.begin(lease.runId);
+		// A checkpoint records its worktree snapshots only while every blob of them is stored (#5077): the plan that
+		// reads checks them, and a fence repeats the check in the request that writes it.
+		const snapshots = mutation.kind === "checkpoint" ? carriedSnapshots(mutation.checkpoint) : [];
+		const blobsFence = this.blobs?.storedFence(snapshots);
 		let recorded: { readonly seq: number; readonly key: string; readonly checkpoint: DurableCheckpoint } | undefined;
 		const receipt = await guardedPoolWrite<PoolCommitReceipt>(this.storage, async (read, optimistic) => {
 			recorded = undefined;
@@ -1205,6 +1214,7 @@ export class SqlPoolQueue {
 				: undefined;
 			if (fromCache !== undefined) {
 				const { write, receiptParts } = fromCache;
+				if (blobsFence !== undefined) write.fences.push(blobsFence);
 				const checkpoint = (mutation as PoolCheckpointMutation).checkpoint;
 				write.writes.push({
 					sql: `INSERT INTO ${this.operations} SELECT ?, ?, ?, ?, ${receiptParts.sql}`,
@@ -1243,12 +1253,14 @@ export class SqlPoolQueue {
 			if (row.expires_at < now) throw staleWork(lease, token, "expired");
 			if (status !== "running" && !(status === "paused" && state.control === "paused"))
 				throw staleWork(lease, token, "root-not-running");
+			await this.blobs?.assertStored(read, snapshots);
 			const write: CommitWrite = {
 				fences: [
 					this.rootFence(lease),
 					this.attemptFence(lease, token, true),
 					this.admitsFence(lease),
 					this.operationFence(token, operationId),
+					...(blobsFence === undefined ? [] : [blobsFence]),
 				],
 				writes: [],
 			};
