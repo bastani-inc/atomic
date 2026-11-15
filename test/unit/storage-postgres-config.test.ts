@@ -40,6 +40,32 @@ test("Postgres refuses a password query parameter in the URL (#4793)", async () 
 		await assertRefused(() => openPostgresDatabase({ url }), "url", "credential-in-url", ["fixture-secret"]);
 });
 
+test("Postgres refuses a listen URL that holds a password or is not a Postgres URL, naming listenUrl (#5103)", async () => {
+	const url = "postgres://atomic@127.0.0.1:1/atomic";
+	await assertRefused(
+		() => openPostgresDatabase({ url, listenUrl: "postgres://atomic:fixture-secret@127.0.0.1:1/atomic" }),
+		"listenUrl",
+		"credential-in-url",
+		["fixture-secret"],
+	);
+	for (const listenUrl of ["http://127.0.0.1:1/atomic", "not a url"]) {
+		await assertRefused(() => openPostgresDatabase({ url, listenUrl }), "listenUrl", "unsupported-url");
+		await assert.rejects(openPostgresDatabase({ url, listenUrl }), {
+			hint: "Use a postgres:// or postgresql:// URL",
+		});
+	}
+	await assertRefused(
+		() =>
+			adapter.openDatabase(
+				{ url, listenUrl: "postgres://atomic@127.0.0.1:1/atomic?password=fixture-secret" },
+				{ agentDir: "/nonexistent", domain: "journal" },
+			),
+		"listenUrl",
+		"credential-in-url",
+		["fixture-secret"],
+	);
+});
+
 test("Postgres refuses URLs that are not postgres:// or postgresql:// (#4793)", async () => {
 	for (const url of ["libsql://db.turso.io", "file:/tmp/db.sqlite", "http://127.0.0.1:5432/db", "not a url", ""])
 		await assertRefused(() => openPostgresDatabase({ url }), "url", "unsupported-url");
