@@ -489,6 +489,30 @@ class IntercomBroker {
     if (process.platform !== "win32") chmodSync(INTERCOM_DIR, 0o700);
     this.server = net.createServer(this.handleConnection.bind(this));
     this.pendingQuestions.failThroughOwnerWhen((question) => this.releasedAskerReplies.hasOwnedRoute(question));
+    // #5095: a reply that never reached its asker after its recipient ended fails the ask then, once.
+    this.pendingQuestions.onReplyLost((question, held, askerReturnAddress) => {
+      const asker = this.sessions.get(question.senderSessionId);
+      if (asker !== undefined) {
+        deliverHeldToAsker(
+          {
+            asker,
+            question,
+            from: held.from,
+            pending: this.pendingQuestions,
+            write: this.writeAfterDeparture,
+            legacy: {
+              type: "peer_disconnected",
+              replyTo: question.messageId,
+              peerSessionId: question.targetSessionId,
+              ...(held.from.name === undefined ? {} : { peerName: held.from.name }),
+            },
+          },
+          held.message,
+        );
+      } else if (askerReturnAddress !== undefined && askerReturnAddress !== "") {
+        this.pendingQuestions.holdForAwayAsker({ ...question, senderReturnAddress: askerReturnAddress }, held.from, held.message);
+      }
+    });
     // #4992: a reply or failure held for a released subagent wakes it through its owner, also after a restart.
     this.pendingQuestions.onHeldForReleasedAsker((ownerSessionId, childName) => {
       if (this.restoringRecipients.releasedOwner(childName) === ownerSessionId)
@@ -3557,7 +3581,7 @@ class IntercomBroker {
         if (departed.supervisorId === undefined)
           this.pendingQuestions.dropAway(departed.registrationReturnAddress);
       }
-      this.failParkedQuestions(this.pendingQuestions.takeForTarget(sessionId), departed.info);
+      this.failParkedQuestions(this.pendingQuestions.takeForTarget(sessionId, { ended: departed.info }), departed.info);
       if (ended) crashPoint(DEPARTURE_ASKS_TO_IT_FAILED);
     }
     // #4639: a subagent that left without being released: hold sends to it until it is back or its owner says why. An

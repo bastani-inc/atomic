@@ -304,25 +304,59 @@ export class PendingQuestionIndex {
 		);
 	}
   /**
-   * #5095: routes whose reply is on its way to the asker (written, and waiting for it to save it). Answered, they no
-   * longer fail when their recipient leaves; the asker's save clears them as usual.
+   * #5095: live routes whose reply is on its way to their connected asker: written, or held until the asker saves it.
+   * A mark lasts only that long: the asker's save, a write that fails, the reply's receipt lapsing, or the route leaving
+   * the live index clears it.
    */
   private readonly replied = new Set<string>();
+
+  /**
+   * #5095: asks whose recipient ended while their reply was on its way, with the failure each gets should that reply
+   * never arrive. The failure is written durably now, so a broker crash before the asker saves the reply still fails
+   * the ask once the asker is back.
+   */
+  private readonly endedWhileReplying = new Map<
+    string,
+    { readonly question: PendingQuestion; readonly held: HeldAwayMessage; readonly askerReturnAddress: string | undefined }
+  >();
+
+  private replyLost: (question: PendingQuestion, held: HeldAwayMessage, askerReturnAddress: string | undefined) => void =
+    () => {};
+
+  /** #5095: told when a reply never reached its asker after its recipient ended, so the broker fails the ask. */
+  onReplyLost(
+    listener: (question: PendingQuestion, held: HeldAwayMessage, askerReturnAddress: string | undefined) => void,
+  ): void {
+    this.replyLost = listener;
+  }
 
   private static repliedKey(question: PendingQuestion): string {
     return JSON.stringify([question.messageId, question.senderSessionId, question.targetSessionId]);
   }
 
+  private static replyKey(senderSessionId: string, targetSessionId: string, replyTo: string): string {
+    return PendingQuestionIndex.repliedKey({ messageId: replyTo, senderSessionId: targetSessionId, targetSessionId: senderSessionId });
+  }
+
   /** #5095: `senderSessionId`'s reply to `replyTo` is on its way to `targetSessionId`; returns whether it answers a route. */
   markReplied(senderSessionId: string, targetSessionId: string, replyTo: string): boolean {
     if (!this.matchesReply(senderSessionId, targetSessionId, replyTo)) return false;
-    this.replied.add(PendingQuestionIndex.repliedKey({ messageId: replyTo, senderSessionId: targetSessionId, targetSessionId: senderSessionId }));
+    this.replied.add(PendingQuestionIndex.replyKey(senderSessionId, targetSessionId, replyTo));
     return true;
   }
 
-  /** #5095: the reply marked by {@link markReplied} was never written, so the ask still waits for one. */
+  /**
+   * #5095: the reply marked by {@link markReplied} did not reach its asker (its write failed, or its receipt lapsed
+   * unsaved), so the ask still waits for one; one whose recipient ended meanwhile fails now.
+   */
   unmarkReplied(senderSessionId: string, targetSessionId: string, replyTo: string): void {
-    this.replied.delete(PendingQuestionIndex.repliedKey({ messageId: replyTo, senderSessionId: targetSessionId, targetSessionId: senderSessionId }));
+    const key = PendingQuestionIndex.replyKey(senderSessionId, targetSessionId, replyTo);
+    this.replied.delete(key);
+    const ended = this.endedWhileReplying.get(key);
+    if (ended === undefined) return;
+    this.endedWhileReplying.delete(key);
+    this.away?.forgetLiveHeld(ended.held.message.id);
+    this.replyLost(ended.question, ended.held, ended.askerReturnAddress);
   }
 
   clearReply(senderSessionId: string, targetSessionId: string, replyTo: string): boolean {
@@ -330,8 +364,16 @@ export class PendingQuestionIndex {
     const index = routes?.findIndex(
       (route) => route.targetSessionId === senderSessionId && route.senderSessionId === targetSessionId,
     ) ?? -1;
+    const key = PendingQuestionIndex.replyKey(senderSessionId, targetSessionId, replyTo);
+    const ended = this.endedWhileReplying.get(key);
+    if (ended !== undefined) {
+      // #5095: the asker saved the reply of a recipient that has since ended: answered, its failure is not needed.
+      this.endedWhileReplying.delete(key);
+      this.away?.forgetLiveHeld(ended.held.message.id);
+      return true;
+    }
     if (!routes || index < 0) return false;
-    this.unmarkReplied(senderSessionId, targetSessionId, replyTo);
+    this.replied.delete(key);
     this.forgetLive(routes.splice(index, 1));
     if (routes.length === 0) this.questions.delete(replyTo);
     // #4765: a released subagent's ask can be kept for its away recipient while it is live again; answered, it is not.
@@ -352,6 +394,8 @@ export class PendingQuestionIndex {
     for (const [messageId, routes] of this.questions) {
       const remaining = routes.filter((route) => {
         if (route.senderSessionId !== senderSessionId) return true;
+        // #5095: its reply is no longer on its way to a connected asker.
+        this.replied.delete(PendingQuestionIndex.repliedKey(route));
         pending.push(route);
         return false;
       });
@@ -371,19 +415,31 @@ export class PendingQuestionIndex {
     return pending;
   }
 
-  /** `keepLiveRecords`: as for {@link takeForSender}, the caller forgets them once what replaces them is written. */
-  takeForTarget(targetSessionId: string, options: { readonly keepLiveRecords?: boolean } = {}): PendingQuestion[] {
-    const pending = this.removeForTarget(targetSessionId);
+  /**
+   * `keepLiveRecords`: as for {@link takeForSender}, the caller forgets them once what replaces them is written.
+   * `ended`: the recipient ended. #5095: an ask whose reply is on its way is not returned: it is answered unless that
+   * reply never reaches its asker, when it fails then (see {@link unmarkReplied}).
+   */
+  takeForTarget(
+    targetSessionId: string,
+    options: { readonly keepLiveRecords?: boolean; readonly ended?: SessionInfo } = {},
+  ): PendingQuestion[] {
+    const pending = this.removeForTarget(targetSessionId, options.ended);
     if (options.keepLiveRecords !== true) this.forgetLive(pending);
     return pending;
   }
 
-  /** #5095: a route whose reply is on its way stays until the asker saves the reply: its recipient leaving does not end it. */
-  private removeForTarget(targetSessionId: string): PendingQuestion[] {
+  /** #5095: `ended`: the recipient ended, so asks whose reply is on its way wait for that reply's outcome. */
+  private removeForTarget(targetSessionId: string, ended?: SessionInfo): PendingQuestion[] {
     const pending: PendingQuestion[] = [];
     for (const [messageId, routes] of this.questions) {
       const remaining = routes.filter((route) => {
-        if (route.targetSessionId !== targetSessionId || this.replied.has(PendingQuestionIndex.repliedKey(route))) return true;
+        if (route.targetSessionId !== targetSessionId) return true;
+        const key = PendingQuestionIndex.repliedKey(route);
+        if (this.replied.delete(key) && ended !== undefined) {
+          this.awaitReplyOutcome(key, route, ended);
+          return false;
+        }
         pending.push(route);
         return false;
       });
@@ -391,5 +447,26 @@ export class PendingQuestionIndex {
       else if (remaining.length !== routes.length) this.questions.set(messageId, remaining);
     }
     return pending;
+  }
+
+  /** #5095: the ended recipient's reply to `question` is on its way; its failure is written durably should it not arrive. */
+  private awaitReplyOutcome(key: string, question: PendingQuestion, ended: SessionInfo): void {
+    const reason = `Session "${ended.name ?? ended.id}" ended before replying`;
+    const held: HeldAwayMessage = {
+      askerSessionId: question.senderSessionId,
+      from: ended,
+      message: {
+        id: `ended:${question.messageId}`,
+        timestamp: Date.now(),
+        replyTo: question.messageId,
+        replyError: reason,
+        content: { text: reason },
+      },
+    };
+    const askerReturnAddress = this.returnAddressOf(question.senderSessionId);
+    this.endedWhileReplying.set(key, { question, held, askerReturnAddress });
+    // Written before the route's live record goes, so a crash in between leaves the ask one outcome to come.
+    if (askerReturnAddress !== undefined && askerReturnAddress !== "") this.away?.holdLive(held, askerReturnAddress);
+    this.forgetLive([question]);
   }
 }

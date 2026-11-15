@@ -905,6 +905,10 @@ export function handleBrokerSend(
           hold: (waiting, timeoutMs) => {
             write(waiting.socket, { type: "send_held", messageId: message.id, attemptId: waiting.attemptId, timeoutMs });
           },
+          // #5095: a reply its asker never saved did not answer the ask.
+          ...(message.replyTo === undefined
+            ? {}
+            : { lapse: () => pendingQuestions.unmarkReplied(fromSession.info.id, target.info.id, message.replyTo as string) }),
         },
         senderWaiting,
       );

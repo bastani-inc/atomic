@@ -6,8 +6,10 @@ import {
 	DeliveredMessageCache,
 } from "../../packages/intercom/broker/delivered-message-cache.js";
 import { PendingQuestionIndex } from "../../packages/intercom/broker/pending-question-index.js";
+import { RecipientReceipts } from "../../packages/intercom/broker/recipient-receipts.js";
 import {
 	type BrokerConnectedSession,
+	type ConfirmedMessageWriter,
 	deliveryTargetIdentity,
 	handleBrokerSend,
 } from "../../packages/intercom/broker/send-handler.js";
@@ -1339,4 +1341,64 @@ test("a reply the broker could not write to its asker leaves the ask unanswered,
 	assert.deepEqual(pending.takeForTarget("target-unwritten"), [
 		{ senderSessionId: "asker-unwritten", targetSessionId: "target-unwritten", messageId: "question-unwritten" },
 	]);
+});
+
+/** Asker and recipient sessions with one ask from the asker recorded, as the broker routes it. */
+function askedPair(label: string) {
+	const asker: BrokerConnectedSession = {
+		...session(`asker-${label}`, "asker", {} as net.Socket),
+		acknowledgesReceipt: true,
+	};
+	const target = session(`target-${label}`, "target", {} as net.Socket);
+	const sessions = new Map([asker, target].map((peer) => [peer.info.id, peer]));
+	const pending = new PendingQuestionIndex();
+	pending.record(asker.info.id, target.info.id, `question-${label}`);
+	const reply = (writeConfirmed?: ConfirmedMessageWriter, receipts?: RecipientReceipts<BrokerConnectedSession>) =>
+		handleBrokerSend(
+			target.socket,
+			{
+				type: "send",
+				to: asker.info.id,
+				requirePendingReply: true,
+				message: { ...message(`reply-${label}`), replyTo: `question-${label}` },
+			},
+			target.info.id,
+			sessions,
+			new DeliveredMessageCache(),
+			() => true,
+			new SupervisorChannelCache(),
+			pending,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			writeConfirmed,
+			undefined,
+			undefined,
+			receipts,
+		);
+	return { asker, target, pending, reply };
+}
+
+test("a reply whose asker never saves it before its receipt lapses leaves the ask unanswered (#5095)", async () => {
+	const { asker, target, pending, reply } = askedPair("lapsed");
+	reply(undefined, new RecipientReceipts<BrokerConnectedSession>(10_000, 20));
+	await new Promise((resolveLapse) => setTimeout(resolveLapse, 100));
+	assert.deepEqual(pending.takeForTarget(target.info.id, { ended: target.info }), [
+		{ senderSessionId: asker.info.id, targetSessionId: target.info.id, messageId: "question-lapsed" },
+	]);
+});
+
+test("a reply that fails to reach its asker after its recipient ended fails the ask then, once (#5095)", () => {
+	const { target, pending, reply } = askedPair("write-fails");
+	const lost: string[] = [];
+	pending.onReplyLost((_question, held) => lost.push(held.message.id));
+	let settle: ((written: boolean) => void) | undefined;
+	reply((_socket, _frame, onSettled) => {
+		settle = onSettled;
+	});
+	assert.deepEqual(pending.takeForTarget(target.info.id, { ended: target.info }), []);
+	assert.deepEqual(lost, []);
+	settle?.(false);
+	assert.deepEqual(lost, ["ended:question-write-fails"]);
 });

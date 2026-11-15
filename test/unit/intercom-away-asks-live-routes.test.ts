@@ -314,3 +314,20 @@ test("a recipient's end reports which kept asks it held for their askers and whi
 	assert.deepEqual(outcome, { failed: [toRecipient("asker", "q-held")], live: [toRecipient("child", "q-live")] });
 	assert.equal(store.question("q-live", "recipient"), undefined);
 });
+
+test("a broker that crashes after a recipient ended with its reply still unsaved fails the ask once the asker is back (#5095)", () => {
+	const path = fileIn();
+	const before = broker(path);
+	before.record("asker", "recipient", "unsaved");
+	before.record("asker", "recipient", "saved");
+	before.markReplied("recipient", "asker", "unsaved");
+	before.markReplied("recipient", "asker", "saved");
+	before.takeForTarget("recipient", { ended: info("recipient") });
+	before.clearReply("recipient", "asker", "saved");
+
+	const restarted = broker(path);
+	assert.deepEqual(
+		restarted.heldForAsker(ADDRESSES.asker).map((held) => held.message.id),
+		["ended:unsaved"],
+	);
+});
