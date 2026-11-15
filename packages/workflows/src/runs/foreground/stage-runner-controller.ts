@@ -2220,14 +2220,11 @@ export class StageSessionController {
 		this.attemptUsage = new AttemptUsageWindow(session);
 	}
 
-	/**
-	 * Consume the current window exactly once. A session-creation failure has no
-	 * window: close any open one instead of charging it to a session that never ran.
-	 */
-	private takeAttemptUsage(session: StageSessionRuntime | undefined): WorkflowModelUsage | undefined {
+	/** Consume the current window exactly once; without an open window there is no usage to record. */
+	private takeAttemptUsage(): WorkflowModelUsage | undefined {
 		const usage = this.attemptUsage?.close();
 		this.attemptUsage = undefined;
-		return session === undefined ? undefined : usage;
+		return usage;
 	}
 
 	/**
@@ -3382,7 +3379,7 @@ export class StageSessionController {
 			const terminalFailure = latestTerminalAssistantFailureSince(resumedSession.messages, terminalScanStartIndex);
 			if (terminalFailure === undefined || this.capturedStructuredOutputForAttempt()) {
 				this.artifactCapture.settleAttempt(true);
-				const usage = this.takeAttemptUsage(resumedSession);
+				const usage = this.takeAttemptUsage();
 				this.modelAttempts.push({
 					model: resumedLabel,
 					success: true,
@@ -3399,7 +3396,7 @@ export class StageSessionController {
 			if (err instanceof DetachedResultsNotSaved) throw err;
 			if (this.capturedStructuredOutputForAttempt() && isRetryableModelFailure(err, this.fallbackFailureOptions())) {
 				this.artifactCapture.settleAttempt(true);
-				const usage = this.takeAttemptUsage(resumedSession);
+				const usage = this.takeAttemptUsage();
 				this.modelAttempts.push({
 					model: resumedLabel,
 					success: true,
@@ -3413,7 +3410,7 @@ export class StageSessionController {
 			}
 			this.artifactCapture.settleAttempt(false);
 			const message = errorMessage(err);
-			const usage = this.takeAttemptUsage(resumedSession);
+			const usage = this.takeAttemptUsage();
 			this.modelAttempts.push({
 				model: resumedLabel,
 				success: false,
@@ -3495,7 +3492,7 @@ export class StageSessionController {
 			return "handled";
 		}
 		this.artifactCapture.settleAttempt(false);
-		const usage = this.takeAttemptUsage(this.session);
+		const usage = this.takeAttemptUsage();
 		this.modelAttempts.push({
 			model: candidate.id,
 			success: false,
@@ -3549,7 +3546,7 @@ export class StageSessionController {
 
 	private recordSuccessfulAttempt(candidate: WorkflowResolvedModelCandidate): void {
 		this.artifactCapture.settleAttempt(true);
-		const usage = this.takeAttemptUsage(this.session);
+		const usage = this.takeAttemptUsage();
 		if (this.modelRoute && this.session?.model)
 			candidate = {
 				id: workflowModelId(this.session.model)!,

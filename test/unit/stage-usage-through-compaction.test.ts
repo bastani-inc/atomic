@@ -211,6 +211,11 @@ describe("stage usage through compaction (#5053)", () => {
 		);
 		assert.equal(harness.charged(), 8.5);
 		assert.equal(harness.charged(), sum(harness.spent));
+		assert.deepEqual(
+			harness.attempts().map((attempt) => attempt.usage?.turns),
+			[1, 1, 1, 1, 1, 1, 1, 1],
+			"a compaction request is charged but is not a turn",
+		);
 	});
 
 	test("overflow recovery charges the overflowed request, the planner and the retried turn (#5053)", async () => {
