@@ -57,6 +57,7 @@ const exportName =
 		typed: "typedFailureChild",
 		remote: "remoteStageChild",
 		scale: "scaleChild",
+		sequential: "distributedChild",
 	}[scenario] ??
 	"sharedChild";
 // A journal whose server needs a token reads it from a file every host has (SHARED_POOL_TOKEN_FILE), as the adapter's
@@ -85,21 +86,33 @@ const parent = workflow({
 	inputs: {},
 	outputs: {},
 	async run(ctx) {
-		const results = await Promise.allSettled(
-			Array.from({ length: Number(children) }, (_, index) =>
-				ctx.workflow(child, {
-					inputs:
-						scenario === "bound" || scenario === "typed"
-							? {}
-							: scenario === "remote"
-								? { directory }
-								: scenario === "distributed"
-									? { index, workMs: Number(process.env.SHARED_POOL_WORK_MS ?? "5000") }
-									: scenario === "scale"
-										? { index, steps: Number(process.env.SHARED_POOL_STEPS ?? "10") }
-										: { directory, index, hosts: 2 },
-				}),
-			),
+		// The sequential scenario (#5103) queues each child once the one before it finished, so idle workers wait for it.
+		const settled = async (start) => {
+			const indexes = Array.from({ length: Number(children) }, (_, index) => index);
+			if (scenario !== "sequential") return Promise.allSettled(indexes.map(start));
+			const results = [];
+			for (const index of indexes)
+				results.push(
+					await start(index).then(
+						(value) => ({ status: "fulfilled", value }),
+						(reason) => ({ status: "rejected", reason }),
+					),
+				);
+			return results;
+		};
+		const results = await settled((index) =>
+			ctx.workflow(child, {
+				inputs:
+					scenario === "bound" || scenario === "typed"
+						? {}
+						: scenario === "remote"
+							? { directory }
+							: scenario === "distributed" || scenario === "sequential"
+								? { index, workMs: Number(process.env.SHARED_POOL_WORK_MS ?? "5000") }
+								: scenario === "scale"
+									? { index, steps: Number(process.env.SHARED_POOL_STEPS ?? "10") }
+									: { directory, index, hosts: 2 },
+			}),
 		);
 		for (const result of results)
 			outcomes.push(
