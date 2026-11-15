@@ -8,6 +8,7 @@ import type { SessionEntry } from "../../packages/coding-agent/src/core/session-
 import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.js";
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
+import { dropLibsqlScope } from "../helpers/storage-backends.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 
 useTemporaryAgentDir();
@@ -105,6 +106,8 @@ describe.skipIf(serverUrl === undefined)("a lost COMMIT response on a libSQL ser
 		await store?.close();
 		await database?.close();
 		await directStore?.close();
+		// Tables left on the server slow every later request to it: sqld loads the whole schema for each (#4768).
+		if (direct !== undefined) await dropLibsqlScope(direct, prefix);
 		await direct?.close();
 		await proxy?.close();
 	});

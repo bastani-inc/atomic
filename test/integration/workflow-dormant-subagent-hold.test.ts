@@ -301,6 +301,35 @@ async function registerRestoredChild(run: InterruptedRun, capability: Supervisor
 	return child;
 }
 
+/**
+ * Structural: the restore reopens the subagent's session and reserves its targets through the real broker before it
+ * launches the subagent, which takes 13 to 132 ms on gate VMs, up to 24 copies at once.
+ */
+const RESTORE_LAUNCH_TIMEOUT_MS = 30_000;
+
+/** Waits for the restore to launch the subagent; a restore that ends otherwise, or never launches it, fails saying so. */
+async function waitForRestoreLaunch(launch: Promise<void>, restoration: Promise<{ kind: string }>): Promise<void> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	try {
+		await Promise.race([
+			launch,
+			restoration.then((outcome) => {
+				if (outcome.kind === "restored") return launch;
+				throw new Error(`the restore ended without launching the subagent: ${JSON.stringify(outcome)}`);
+			}),
+			new Promise<never>((_, reject) => {
+				timer = setTimeout(
+					() =>
+						reject(new Error(`the restore did not launch the subagent within ${RESTORE_LAUNCH_TIMEOUT_MS} ms`)),
+					RESTORE_LAUNCH_TIMEOUT_MS,
+				);
+			}),
+		]);
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
 let broker: ChildProcess | undefined;
 
 beforeAll(async () => {
@@ -373,9 +402,26 @@ test(
 				});
 				await stage.start();
 				const launched: RunSyncOptions[] = [];
-				const restoration = restoreSubagentChild(stage.restoreDeps(launched), stage.ctx, "lane-run:0");
+				const deps = stage.restoreDeps(launched);
+				const launch = Promise.withResolvers<void>();
+				const restoration = restoreSubagentChild(
+					{
+						...deps,
+						runtime: {
+							...deps.runtime,
+							runSync: (...args: Parameters<typeof runSync>) => {
+								const running = deps.runtime!.runSync!(...args);
+								launch.resolve();
+								return running;
+							},
+						},
+					},
+					stage.ctx,
+					"lane-run:0",
+				);
 				void Promise.allSettled([restoration]);
-				await vi.waitFor(() => assert.equal(launched.length, 1), { timeout: 15_000, interval: 10 });
+				await waitForRestoreLaunch(launch.promise, restoration);
+				assert.equal(launched.length, 1);
 				const afterHandover = await sendUntilHeld(thirdParty, childName, "RESUMED-4-BY-NAME");
 				assert.deepEqual(settled, [], "the handover released nothing");
 

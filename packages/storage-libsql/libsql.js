@@ -47,17 +47,138 @@ function requestHeaders(url, namespace, headers) {
 const REQUEST_TIMEOUT_MS = 30_000;
 
 /**
- * `fetch` that adds `headers` to every request the libSQL HTTP client sends, and abandons a request after
- * `REQUEST_TIMEOUT_MS`.
+ * The wait before the first resend of the close of a stream abandoned in an outage (#5114); each later wait doubles, up
+ * to `ABANDONED_STREAM_CLOSE_LAST_WAIT_MS`. A stream the server keeps holds its open transaction, and with it the
+ * database's write lock, until the server expires it: every writer waits for the lock meanwhile, this process's and
+ * every other's. A close the server answers, whatever the answer, is done.
+ */
+const ABANDONED_STREAM_CLOSE_FIRST_WAIT_MS = 250;
+/** The longest wait between two resends of abandoned stream closes. */
+const ABANDONED_STREAM_CLOSE_LAST_WAIT_MS = 8_000;
+/**
+ * How long one abandoned stream's close is sent again before it is given up. The client does not know the server's
+ * stream lifetime (10 s in sqld); a server keeps no stream this long, so the close no longer frees anything.
+ */
+const ABANDONED_STREAM_CLOSE_MAX_AGE_MS = 5 * 60_000;
+/** How long one resend of an abandoned stream's close may go unanswered; a later resend tries again. */
+const ABANDONED_STREAM_CLOSE_TIMEOUT_MS = 5_000;
+/** The most abandoned stream closes kept for resending; the oldest is dropped past it, its stream long expired. */
+const MAX_ABANDONED_STREAM_CLOSES = 16;
+
+/**
+ * Whether `body`, a Hrana pipeline request body, only closes the stream its baton names: the request the HTTP client
+ * sends once for a stream it gave up on, `{"baton":…,"requests":[{"type":"close"}]}`. `@libsql/client` speaks Hrana 2
+ * over HTTP, whose bodies are JSON; any other body is never taken for a close.
+ * @param {Uint8Array} body
+ */
+function closesStream(body) {
+	try {
+		const { baton, requests } = JSON.parse(new TextDecoder().decode(body));
+		return typeof baton === "string" && Array.isArray(requests) && requests.length === 1 && requests[0]?.type === "close";
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * The closes of streams this client abandoned that never reached the server, sent again until the server answers one.
+ * The HTTP client sends a stream's close once, when a request of the stream fails; in an outage that close fails too,
+ * and the server keeps the stream, with its open transaction and the write lock it holds, for the stream's whole
+ * lifetime. Sending the close again as soon as the server is reachable ends the transaction there and frees the lock.
+ */
+class AbandonedStreams {
+	/** @type {{ url: string, headers: [string, string][], body: ArrayBuffer, since: number }[]} */
+	pending = [];
+	/** @type {ReturnType<typeof setTimeout> | undefined} */
+	timer;
+	/** @type {Promise<void> | undefined} */
+	sending;
+	wait = ABANDONED_STREAM_CLOSE_FIRST_WAIT_MS;
+	closed = false;
+
+	/**
+	 * Keeps `request`'s close for resending when it only closes a stream.
+	 * @param {Request} request an unread copy of the request that failed
+	 */
+	async failed(request) {
+		const body = await request.arrayBuffer();
+		if (this.closed || !closesStream(new Uint8Array(body))) return;
+		this.pending.push({ url: request.url, headers: [...request.headers], body, since: Date.now() });
+		if (this.pending.length > MAX_ABANDONED_STREAM_CLOSES) this.pending.shift();
+		this.schedule();
+	}
+
+	/** Sends the kept closes again after the current wait, unless a resend is already planned. */
+	schedule() {
+		if (this.timer !== undefined || this.pending.length === 0) return;
+		this.timer = setTimeout(() => {
+			this.timer = undefined;
+			void this.send().then(() => this.schedule());
+		}, this.wait);
+		// A close waiting to be sent again never keeps the process alive.
+		this.timer.unref();
+	}
+
+	/**
+	 * Sends each kept close again, in order, until one goes unanswered, which doubles the wait before the next round; an
+	 * answered close is done, whatever it says, and resets the wait. A close older than
+	 * `ABANDONED_STREAM_CLOSE_MAX_AGE_MS` is given up.
+	 */
+	send() {
+		this.sending ??= (async () => {
+			const oldest = Date.now() - ABANDONED_STREAM_CLOSE_MAX_AGE_MS;
+			this.pending = this.pending.filter((close) => close.since > oldest);
+			while (this.pending.length > 0) {
+				const [close] = this.pending;
+				try {
+					const response = await fetch(close.url, {
+						method: "POST",
+						headers: close.headers,
+						body: close.body,
+						signal: AbortSignal.timeout(ABANDONED_STREAM_CLOSE_TIMEOUT_MS),
+					});
+					await response.arrayBuffer().catch(() => {});
+				} catch {
+					this.wait = Math.min(this.wait * 2, ABANDONED_STREAM_CLOSE_LAST_WAIT_MS);
+					return;
+				}
+				this.wait = ABANDONED_STREAM_CLOSE_FIRST_WAIT_MS;
+				this.pending = this.pending.filter((kept) => kept !== close);
+			}
+		})().finally(() => {
+			this.sending = undefined;
+		});
+		return this.sending;
+	}
+
+	/** Stops resending: the closes kept are given up, and a resend under way sends no further close. */
+	close() {
+		this.closed = true;
+		clearTimeout(this.timer);
+		this.timer = undefined;
+		this.pending = [];
+	}
+}
+
+/**
+ * `fetch` that adds `headers` to every request the libSQL HTTP client sends, abandons a request after
+ * `REQUEST_TIMEOUT_MS`, and hands a stream's close that failed to `abandoned` for resending.
  * @param {[string, string][]} headers
+ * @param {AbandonedStreams} abandoned
  * @returns {(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>}
  */
-function fetchWith(headers) {
-	return (input, init) => {
+function fetchWith(headers, abandoned) {
+	return async (input, init) => {
 		const request = new Request(input, init);
 		for (const [name, value] of headers) request.headers.set(name, value);
+		const copy = request.clone();
 		const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
-		return fetch(request, { signal: init?.signal ? AbortSignal.any([init.signal, timeout]) : timeout });
+		try {
+			return await fetch(request, { signal: init?.signal ? AbortSignal.any([init.signal, timeout]) : timeout });
+		} catch (error) {
+			await abandoned.failed(copy).catch(() => {});
+			throw error;
+		}
 	};
 }
 
@@ -471,6 +592,7 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 	}
 	/** @type {import("@libsql/client").Client | undefined} */
 	let client;
+	const abandoned = new AbandonedStreams();
 	// Create the client inside a driver call, so the facade redacts credentials from its failures. The busy timeout is a
 	// client option, not a PRAGMA, because the client opens more connections than the one that ran the PRAGMA, and
 	// each needs it; a connection waits for a lock on the calling thread.
@@ -480,7 +602,7 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 			authToken,
 			intMode: "bigint",
 			...(local ? { timeout: FILE_BUSY_TIMEOUT_MS } : {}),
-			...(local ? {} : { fetch: fetchWith(added) }),
+			...(local ? {} : { fetch: fetchWith(added, abandoned) }),
 		});
 	// A local statement that fails part way, as a write does when another process holds the lock past the busy timeout,
 	// stays active on its connection: the driver resets and finalizes a statement only when it is garbage collected.
@@ -618,6 +740,7 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 		async close() {
 			client?.close();
 			probe?.close();
+			abandoned.close();
 			if (local) await releaseClosedConnections();
 		},
 	});

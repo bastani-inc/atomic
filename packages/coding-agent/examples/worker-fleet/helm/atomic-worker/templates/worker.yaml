@@ -45,8 +45,7 @@ spec:
           image: "{{ .Values.image }}"
           args: ["--slots", "{{ .Values.workersPerHost }}"]
           env:
-            - name: ATOMIC_DB
-              value: "{{ .Values.database }}"
+            {{- include "atomic-worker.databaseEnv" . | nindent 12 }}
             - name: ATOMIC_PROVIDER_ID
               valueFrom:
                 fieldRef:
