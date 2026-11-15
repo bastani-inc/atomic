@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { openNodeSqliteDatabase } from "@bastani/atomic/storage";
-import { afterEach, test } from "vitest";
+import { afterEach, test, vi } from "vitest";
 import {
 	type RateAcquireOutcome,
 	type RateBucketPoll,
@@ -10,6 +10,7 @@ import {
 	waitFor,
 } from "../../packages/workflows/src/durable/journal/sql-rate-buckets.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
+import type { RunJournal } from "../../packages/workflows/src/durable/journal/types.js";
 import {
 	bucketShape,
 	cooldownObservation,
@@ -19,9 +20,10 @@ import {
 	fleetRateGate,
 	fleetRateLimitsProblem,
 	LocalGcra,
+	observationScope,
 	rateScopesFor,
 } from "../../packages/workflows/src/workers/fleet-rate-limits.js";
-import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
+import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
 
 const directories: string[] = [];
 const opened: { close(): Promise<void> }[] = [];
@@ -337,4 +339,172 @@ test("a worker's model call asks for a token only for a configured scope, waits 
 	const waiting = fleetRateGate(["p"], async () => 60_000)("p", "m", aborted.signal);
 	aborted.abort(new Error("stop"));
 	await assert.rejects(waiting, /stop/);
+});
+
+test("each malformed limit is named exactly (#4768)", () => {
+	for (const value of [null, 5, "x", []])
+		assert.equal(fleetRateLimitsProblem(value), "an object of limits by provider or provider/model");
+	for (const scope of [" ", "p/", "/m"])
+		assert.equal(
+			fleetRateLimitsProblem({ [scope]: { requestsPerMinute: 1 } }),
+			`"${scope}" is not a provider id or provider/model`,
+		);
+	assert.equal(fleetRateLimitsProblem({ "p/m": { requestsPerMinute: 1 } }), undefined);
+	assert.equal(fleetRateLimitsProblem({ p: 5 }), "p needs { requestsPerMinute }");
+	for (const requestsPerMinute of ["60", Number.POSITIVE_INFINITY, Number.NaN, -1])
+		assert.equal(
+			fleetRateLimitsProblem({ p: { requestsPerMinute } }),
+			"p.requestsPerMinute must be a positive number",
+		);
+	assert.equal(observationScope({ provider: "p", kind: "cooldown", untilEpochMs: 1 }), "p");
+	assert.equal(observationScope({ provider: "p", model: "m", kind: "cooldown", untilEpochMs: 1 }), "p/m");
+});
+
+test("a shared cooldown's bucket, which has no rate, fits its burst once the cooldown ends (#4768)", () => {
+	assert.deepEqual(waitFor({ tat: 0, intervalMs: 0, burst: 1, cooldownUntil: 1_200, now: 1_000 }), {
+		granted: 0,
+		waitMs: 200,
+		fits: 1,
+		cooldownMs: 200,
+	});
+});
+
+test("the journal counts the worker hosts that reported within the live window, and refuses a journal that is not SQL (#4768)", async () => {
+	const j = await journal();
+	const store = await SqlRateBuckets.open(j);
+	const database = opened[0] as unknown as { run(sql: string, ...params: unknown[]): Promise<unknown> };
+	await database.run("CREATE TABLE wf_runs_pool_hosts(host TEXT PRIMARY KEY, heartbeat_at INTEGER NOT NULL)");
+	await database.run("INSERT INTO wf_runs_pool_hosts VALUES ('a', ?), ('b', ?), ('gone', 0)", Date.now(), Date.now());
+	assert.equal((await store.poll()).liveHosts, 2);
+	await assert.rejects(SqlRateBuckets.open({} as RunJournal), /SQL run journal/);
+});
+
+test("prefetched tokens are kept for a burst's worth of time, then the store is asked again (#4768)", async () => {
+	vi.useFakeTimers({ toFake: ["Date"] });
+	try {
+		vi.setSystemTime(100_000);
+		const { store, calls } = fakeStore(async (_scope, count) => ({ granted: count }));
+		const limiter = new FleetRateLimiter({
+			store,
+			limits: { p: { requestsPerMinute: 60, burst: 3, prefetch: 3 } },
+			shareCooldowns: false,
+			slots: 1,
+			applyCooldowns: () => {},
+		});
+		assert.equal(await limiter.acquire("p", "m"), 0);
+		vi.setSystemTime(102_000);
+		assert.equal(await limiter.acquire("p", "m"), 0);
+		assert.equal(calls.length, 1, "tokens three seconds' worth of the rate are still good after two");
+		vi.setSystemTime(103_500);
+		assert.equal(await limiter.acquire("p", "m"), 0);
+		assert.equal(calls.length, 2, "expired tokens are dropped and the store asked again");
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+test("a batch refused with a wait is not asked again smaller, and one asked smaller is asked once more at most (#4768)", async () => {
+	const waiting = fakeStore(async () => ({ granted: 0, waitMs: 1_000, fits: 1, cooldownMs: 0 }));
+	const limiter = new FleetRateLimiter({
+		store: waiting.store,
+		limits: { p: { requestsPerMinute: 60, prefetch: 4 } },
+		shareCooldowns: false,
+		slots: 1,
+		applyCooldowns: () => {},
+	});
+	assert.ok((await limiter.acquire("p", "m")) > 900);
+	assert.equal(waiting.calls.length, 1);
+	const shrinking = fakeStore(async (_scope, count) => ({ granted: 0, waitMs: 0, fits: count - 1, cooldownMs: 0 }));
+	const other = new FleetRateLimiter({
+		store: shrinking.store,
+		limits: { p: { requestsPerMinute: 60, prefetch: 4 } },
+		shareCooldowns: false,
+		slots: 1,
+		applyCooldowns: () => {},
+	});
+	assert.ok((await other.acquire("p", "m")) >= 1);
+	assert.deepEqual(
+		shrinking.calls.map((call) => call.count),
+		[4, 3],
+	);
+	const whole = fakeStore(async (_scope, count) => ({ granted: 0, waitMs: 0, fits: count, cooldownMs: 0 }));
+	const third = new FleetRateLimiter({
+		store: whole.store,
+		limits: { p: { requestsPerMinute: 60, prefetch: 2 } },
+		shareCooldowns: false,
+		slots: 1,
+		applyCooldowns: () => {},
+	});
+	assert.ok((await third.acquire("p", "m")) >= 1);
+	assert.equal(whole.calls.length, 1);
+});
+
+test("while metering locally a two-scope call gives the local token back, and the store is not asked again before the retry wait (#4768)", async () => {
+	const { store, calls } = fakeStore(async () => {
+		throw new Error("unreachable");
+	});
+	const limiter = new FleetRateLimiter({
+		store,
+		limits: { p: { requestsPerMinute: 60, burst: 2 }, "p/m": { requestsPerMinute: 60, burst: 1 } },
+		shareCooldowns: false,
+		slots: 1,
+		applyCooldowns: () => {},
+		retryStoreMs: 60_000,
+	});
+	assert.equal(await limiter.acquire("p", "m"), 0);
+	assert.equal(calls.length, 2);
+	await sleep(20);
+	// The model's bucket is empty: the provider's token taken for this call goes back to its local bucket.
+	assert.ok((await limiter.acquire("p", "m")) > 0);
+	assert.equal(await limiter.acquire("p", "other"), 0, "the provider's token was given back");
+	assert.equal(calls.length, 2, "nothing asks the store within the retry wait");
+});
+
+test("polling repeats until the limiter closes, and applies nothing when no cooldown runs (#4768)", async () => {
+	let polls = 0;
+	const applied: unknown[] = [];
+	const { store } = fakeStore(
+		async (_s, count) => ({ granted: count }),
+		async () => {
+			polls++;
+			return { cooldowns: [], liveHosts: 1 };
+		},
+	);
+	const limiter = new FleetRateLimiter({
+		store,
+		limits: {},
+		shareCooldowns: true,
+		slots: 1,
+		applyCooldowns: (observations) => applied.push(...observations),
+		pollMs: 5,
+	});
+	limiter.start();
+	await sleep(60);
+	await limiter.close();
+	const seen = polls;
+	assert.ok(seen >= 3, String(seen));
+	await sleep(30);
+	assert.equal(polls, seen, "no poll after close");
+	assert.deepEqual(applied, []);
+});
+
+test("a malformed or negative reply lets the call go, and an abort while waiting rejects with its reason (#4768)", async () => {
+	for (const reply of ["x", -5, Number.NaN, Number.POSITIVE_INFINITY]) {
+		let asked = 0;
+		await fleetRateGate(["p"], async () => {
+			asked++;
+			return reply;
+		})("p", "m");
+		assert.equal(asked, 1, String(reply));
+	}
+	const aborted = new AbortController();
+	const waiting = fleetRateGate(["p"], async () => 60_000)("p", "m", aborted.signal);
+	await sleep(20);
+	aborted.abort(new Error("stopped while waiting"));
+	await assert.rejects(waiting, /stopped while waiting/);
+	const plain = new AbortController();
+	const plainWait = fleetRateGate(["p"], async () => 60_000)("p", "m", plain.signal);
+	await sleep(20);
+	plain.abort();
+	await assert.rejects(plainWait, (error: Error) => error.name === "AbortError");
 });

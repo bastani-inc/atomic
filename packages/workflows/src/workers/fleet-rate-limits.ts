@@ -294,18 +294,20 @@ export class FleetRateLimiter {
 
 	private fallBack(state: ScopeState): void {
 		state.retryStoreAt = Date.now() + this.retryStoreMs;
+		this.localBucket(state);
+	}
+
+	/** The scope's local bucket: this host's share of the fleet's rate, the rate divided by the live hosts. */
+	private localBucket(state: ScopeState): LocalGcra {
 		state.local ??= new LocalGcra({
 			intervalMs: state.shape.intervalMs * Math.max(1, this.liveHosts),
 			burst: state.shape.burst,
 		});
+		return state.local;
 	}
 
 	private takeLocally(state: ScopeState, now: number): number {
-		state.local ??= new LocalGcra({
-			intervalMs: state.shape.intervalMs * Math.max(1, this.liveHosts),
-			burst: state.shape.burst,
-		});
-		return state.local.take(now);
+		return this.localBucket(state).take(now);
 	}
 
 	private async fetch(scope: string, state: ScopeState): Promise<void> {
