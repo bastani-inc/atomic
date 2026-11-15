@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { readFileSync, readlinkSync } from "node:fs";
+import { mkdtempSync, readFileSync, readlinkSync, rmSync, statSync } from "node:fs";
+import { tmpdir, uptime } from "node:os";
+import { join } from "node:path";
 import { afterEach, test } from "vitest";
 import {
 	brokerHostIdentity,
@@ -8,6 +10,7 @@ import {
 	isProcessAlive,
 	osMachineId,
 	persistedMachineId,
+	systemSources,
 } from "../../packages/intercom/broker/broker-instance.js";
 import { MultiNodeRouter, type MultiNodeRouterOptions } from "../../packages/intercom/broker/multinode-router.js";
 import {
@@ -293,6 +296,10 @@ test("off Linux a host is the OS machine id with its boot minute (#5038)", () =>
 		undefined,
 	);
 	assert.equal(osMachineId(fakeSources({ platform: "darwin", commands: { [MAC_IOREG]: "no uuid here" } })), undefined);
+	assert.equal(
+		osMachineId(fakeSources({ platform: "darwin", commands: { [MAC_IOREG]: '"IOPlatformUUID"="tight"' } })),
+		"tight",
+	);
 	assert.deepEqual(fakeSources({ platform: "darwin" }).runs, []);
 });
 
@@ -311,6 +318,39 @@ test("without an OS machine id a host keeps a random id saved once in the config
 
 test("a host with no machine id it can read or save has no identity (#5038)", () => {
 	assert.equal(brokerHostIdentity(fakeSources({ platform: "win32", unwritable: true })), undefined);
+});
+
+test("the real sources save a private machine id once, run commands and read this boot (#5038)", () => {
+	const dir = mkdtempSync(join(tmpdir(), "intercom-host-"));
+	try {
+		const sources = systemSources(join(dir, "nested", "intercom"));
+		const id = persistedMachineId(sources);
+		assert.match(id ?? "", /^[0-9a-f-]{36}$/);
+		assert.equal(persistedMachineId(systemSources(join(dir, "nested", "intercom"))), id);
+		const path = join(dir, "nested", "intercom", "machine-id");
+		if (process.platform !== "win32") assert.equal(statSync(path).mode & 0o777, 0o600);
+		assert.throws(() => sources.writeNewPrivateFile(path, "other"), { code: "EEXIST" });
+		assert.equal(readFileSync(path, "utf8"), id);
+		assert.equal(sources.run(process.execPath, ["-e", "process.stdout.write('out')"]), "out");
+		assert.ok(Math.abs(sources.bootTimeMs - (Date.now() - uptime() * 1000)) < 5_000);
+		if (process.platform === "linux")
+			assert.equal(sources.readLink("/proc/self/ns/pid"), readlinkSync("/proc/self/ns/pid"));
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("a process this one may not signal still counts as alive (#5038)", (context) => {
+	if (process.platform === "win32") return context.skip();
+	assert.equal(isProcessAlive(1), true);
+});
+
+test("by default a broker uses the real host identity, so its next instance supersedes it (#5038)", async () => {
+	const { start } = await crashedCluster();
+	const socket = "/real-host/broker.sock";
+	const { leases, router: previous } = await start({ instanceKey: socket, hostIdentity: undefined });
+	await start({ instanceKey: socket, hostIdentity: undefined, isProcessAlive: () => false });
+	assert.deepEqual(await leases.read({ kind: "broker", brokerId: previous.brokerId }), { status: "missing" });
 });
 
 test("the real host's identity is stable (#5038)", () => {

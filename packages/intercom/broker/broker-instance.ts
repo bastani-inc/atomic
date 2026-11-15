@@ -31,7 +31,8 @@ export interface HostIdentitySources {
 	readonly bootTimeMs: number;
 }
 
-const systemSources = (): HostIdentitySources => ({
+/** This host's real identity sources, saving a machine id under `configDir`. */
+export const systemSources = (configDir: string = getIntercomDirPath()): HostIdentitySources => ({
 	platform: process.platform,
 	readFile: (path) => readFileSync(path, "utf8"),
 	readLink: (path) => readlinkSync(path),
@@ -46,7 +47,7 @@ const systemSources = (): HostIdentitySources => ({
 		mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
 		writeFileSync(path, content, { mode: 0o600, flag: "wx" });
 	},
-	configDir: getIntercomDirPath(),
+	configDir,
 	bootTimeMs: Date.now() - uptime() * 1000,
 });
 
@@ -71,12 +72,10 @@ export function osMachineId(sources: HostIdentitySources): string | undefined {
 /** A random id saved once, readable only by this user, in the Atomic config directory. */
 export function persistedMachineId(sources: HostIdentitySources): string | undefined {
 	const path = join(sources.configDir, "machine-id");
-	const saved = orUndefined(() => sources.readFile(path));
-	if (saved !== undefined) return saved;
 	try {
 		sources.writeNewPrivateFile(path, randomUUID());
 	} catch {
-		// Another broker wrote it first, or it cannot be written: what is there now, if anything, is the id.
+		// It was saved before, or cannot be written: what is there now, if anything, is the id.
 	}
 	return orUndefined(() => sources.readFile(path));
 }
