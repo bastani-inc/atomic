@@ -1,9 +1,9 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync } from "node:fs";
-import { tmpdir, userInfo } from "node:os";
+import { mkdirSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
 import { Type } from "typebox";
-import { createChildProcessEnvironment } from "@bastani/atomic";
+import { createChildProcessEnvironment, ensurePrivateTempDir } from "@bastani/atomic";
 import type { WorkflowTaskResult } from "../src/shared/types.js";
 
 
@@ -116,20 +116,7 @@ export function joinResults(results: readonly WorkflowTaskResult[]): string {
     .join("\n\n---\n\n");
 }
 
-/**
- * Per-user tmpdir base for run artifacts. Namespacing by username avoids
- * EACCES collisions on shared hosts where another user already owns a plain
- * `<tmpdir>/open-claude-design` directory.
- */
-function tmpArtifactBase(): string {
-  let user = "default";
-  try {
-    user = userInfo().username.replace(/[^A-Za-z0-9._-]/g, "_") || "default";
-  } catch {
-    // keep the "default" namespace when the username is unavailable
-  }
-  return join(tmpdir(), `open-claude-design-${user}`);
-}
+const TMP_ARTIFACT_DIR = "open-claude-design";
 
 /**
  * Compute (and best-effort create) a per-run artifact directory.
@@ -147,16 +134,16 @@ export function prepareArtifactDir(cwd = process.cwd()): {
   const runId = `${new Date().toISOString().replace(/[:.]/g, "-")}-${Math.random().toString(36).slice(2, 8)}`;
   // Under automated tests, prefer the OS tmpdir so a full `d.run()` does not
   // pollute the project's `specs/design/` tree with per-run artifact folders.
-  const tmpCandidates = [
-    join(tmpArtifactBase(), runId),
-    join(tmpdir(), "open-claude-design", runId),
-  ];
+  // The temp fallback lives below a directory only this account owns (see
+  // `ensurePrivateTempDir`), never a fixed name another account could create.
+  const tmpCandidate = (): string => join(ensurePrivateTempDir(TMP_ARTIFACT_DIR), runId);
   const candidates =
     process.env.NODE_ENV === "test"
-      ? tmpCandidates
-      : [join(cwd, "specs", "design", runId), ...tmpCandidates];
-  for (const candidate of candidates) {
+      ? [tmpCandidate]
+      : [() => join(cwd, "specs", "design", runId), tmpCandidate];
+  for (const resolveCandidate of candidates) {
     try {
+      const candidate = resolveCandidate();
       mkdirSync(candidate, { recursive: true });
       return {
         runId,
@@ -168,9 +155,15 @@ export function prepareArtifactDir(cwd = process.cwd()): {
       // try next fallback
     }
   }
-  // Last-resort: synthesize paths even if mkdir failed; downstream agents will
-  // recreate parents using their Write tool.
-  const fallback = join(tmpArtifactBase(), runId);
+  // Last resort: a fresh owner-only mkdtemp directory; if even that fails,
+  // synthesize the project path (never one through a refused temp base) and
+  // let downstream agents recreate parents using their Write tool.
+  let fallback = join(cwd, "specs", "design", runId);
+  try {
+    fallback = mkdtempSync(join(tmpdir(), `${TMP_ARTIFACT_DIR}-${runId}-`));
+  } catch {
+    // keep the project path
+  }
   return {
     runId,
     artifactDir: fallback,
