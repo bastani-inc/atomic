@@ -1201,9 +1201,9 @@ export class PoolCoordinator {
 		this.recoveryTimer = setInterval(recover, RECOVERY_INTERVAL_MS).unref();
 		// A shared pool's journal on Postgres says when its root's work became ready or an attempt ended (#5103): an idle
 		// worker asks for work at once, and the root settles what another host's worker ended, instead of at their polls.
-		if (this.options?.shared === undefined || this.journal === undefined) return;
+		if (this.options?.shared === undefined) return;
 		this.poolReady = listenPoolReady(
-			this.journal,
+			this.journal!,
 			coordinatorWakeUps({
 				root: () => this.root,
 				satellite: this.satellite !== undefined,

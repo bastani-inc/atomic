@@ -66,7 +66,8 @@ test("a host polls for a wake-up of a root it does not serve or a missed one, ne
 	let now = 1_000;
 	const polls: number[] = [];
 	const wake = hostWakeUps(
-		(root) => root === "served",
+		// A missed wake-up names no root, and polls whatever this says of one.
+		(root) => root !== "new",
 		() => polls.push(now),
 		100,
 		() => now,
@@ -133,4 +134,21 @@ test("a wake-up during a recovery pass runs the next one as soon as that pass en
 	finish();
 	await vi.advanceTimersByTimeAsync(0);
 	assert.equal(root.recoveries(), 1);
+});
+
+test("a host's wake-ups are spaced by the real clock when none is given (#5103)", () => {
+	let polls = 0;
+	const wake = hostWakeUps(
+		() => false,
+		() => {
+			polls++;
+		},
+		100,
+	);
+	wake("new");
+	wake("new");
+	assert.equal(polls, 1);
+	vi.advanceTimersByTime(100);
+	wake("new");
+	assert.equal(polls, 2);
 });

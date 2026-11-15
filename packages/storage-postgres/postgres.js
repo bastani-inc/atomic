@@ -716,7 +716,7 @@ export async function openPostgresDatabase(options) {
 		);
 	};
 
-	const listenPassword = listenConnection === connection ? password : passwordFor(listenConnection);
+	const listenPassword = passwordFor(listenConnection);
 	const listener = createPostgresListener({
 		async connect() {
 			const client = new ClosingClient({

@@ -448,3 +448,17 @@ test("a health probe the pool cannot send replaces the session too (#5103)", asy
 	assert.deepEqual(await server.listener.state(), { status: "unavailable", reason: "connection-failed" });
 	await server.listener.close();
 });
+
+test("a notification for a channel whose last listener just left is dropped (#5103)", async () => {
+	const server = fakeServer();
+	const other = recorder();
+	const leaving = server.listener.listen("ready", () => {});
+	server.listener.listen("other", other.listener);
+	await server.listener.state();
+	leaving.close();
+	// The session may still hand one over before its UNLISTEN takes effect.
+	server.sessions[0]!.emit({ channel: "n_ready", payload: "late" });
+	server.sessions[0]!.emit({ channel: "n_other", payload: "root" });
+	assert.deepEqual(other.events.at(-1), { kind: "notification", payload: "root" });
+	await server.listener.close();
+});

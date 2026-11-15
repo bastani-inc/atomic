@@ -63,6 +63,9 @@ export function createPostgresListener(options) {
 	let state = { status: "connecting" };
 	/** @type {ListenClient | undefined} */
 	let client;
+	/** The connection while it listens: `client` once its probe arrived. */
+	/** @type {ListenClient | undefined} */
+	let live;
 	/** @type {Promise<void> | undefined} */
 	let firstAttempt;
 	/** @type {NodeJS.Timeout | undefined} */
@@ -71,13 +74,18 @@ export function createPostgresListener(options) {
 	let healthTimer;
 	let failures = 0;
 	let closed = false;
+	/** A transaction pooler was found: it stays one, and probing it again would leave a LISTEN on it each time. */
+	let pooled = false;
 	/** The probes in flight, by nonce. */
 	/** @type {Map<string, () => void>} */
 	const probes = new Map();
 
 	/** @param {string} name @param {StorageNotificationEvent} event */
 	const dispatch = (name, event) => {
-		for (const listener of [...(channels.get(name) ?? [])]) {
+		const listeners = channels.get(name);
+		// A notification can arrive for a channel whose last listener just left, before its UNLISTEN.
+		if (listeners === undefined) return;
+		for (const listener of [...listeners]) {
 			try {
 				listener(event);
 			} catch {
@@ -87,8 +95,7 @@ export function createPostgresListener(options) {
 	};
 
 	const scheduleRetry = () => {
-		// A pooler stays one: probing it again would leave a LISTEN on another pooled server connection each time.
-		if (closed || retryTimer !== undefined || (state.status === "unavailable" && state.reason === "pooler")) return;
+		if (closed || pooled || retryTimer !== undefined) return;
 		const delayMs = Math.min(retry.maxMs, retry.firstMs * 2 ** failures);
 		failures++;
 		retryTimer = setTimeout(() => {
@@ -102,6 +109,7 @@ export function createPostgresListener(options) {
 	const drop = (lost, reason) => {
 		if (client !== lost) return;
 		client = undefined;
+		live = undefined;
 		clearTimeout(healthTimer);
 		state = { status: "unavailable", reason };
 		void lost.end().catch(() => {});
@@ -132,9 +140,15 @@ export function createPostgresListener(options) {
 
 	/** @param {ListenClient} opened */
 	const scheduleHealth = (opened) => {
+		// `drop` and `close` clear the timer, so it fires only while `opened` listens.
 		healthTimer = setTimeout(async () => {
-			if (client !== opened) return;
-			if (await probe().catch(() => false)) scheduleHealth(opened);
+			let healthy = false;
+			try {
+				healthy = await probe();
+			} catch {
+				// The pool could not send the probe: the connection is not known to listen.
+			}
+			if (healthy) scheduleHealth(opened);
 			else drop(opened, "connection-failed");
 		}, healthIntervalMs);
 		healthTimer.unref?.();
@@ -170,6 +184,7 @@ export function createPostgresListener(options) {
 			await opened.query(`LISTEN ${quoted(probeChannel)}`);
 			if (!(await probe())) {
 				await opened.query("UNLISTEN *").catch(() => {});
+				pooled = true;
 				drop(opened, "pooler");
 				return;
 			}
@@ -181,6 +196,7 @@ export function createPostgresListener(options) {
 		}
 		if (client !== opened) return;
 		failures = 0;
+		live = opened;
 		state = { status: "listening" };
 		scheduleHealth(opened);
 		for (const name of channels.keys()) dispatch(name, { kind: "listening" });
@@ -201,25 +217,22 @@ export function createPostgresListener(options) {
 			if (listeners === undefined) {
 				listeners = new Set();
 				channels.set(name, listeners);
-				const current = client;
+				const current = live;
 				// A channel added while listening is listened to on that connection; a failure drops it, and the next one
 				// listens to every channel. One added while connecting is listened to once the probe arrives.
-				if (current !== undefined && state.status === "listening")
+				if (current !== undefined)
 					current.query(`LISTEN ${quoted(name)}`).catch(() => drop(current, "connection-failed"));
 			}
 			listeners.add(listener);
 			void start();
-			let open = true;
 			return {
 				close() {
-					if (!open) return;
-					open = false;
 					const current = channels.get(name);
-					current?.delete(listener);
-					if (current?.size !== 0) return;
+					// Closing again finds the listener gone.
+					if (!current?.delete(listener) || current.size > 0) return;
 					channels.delete(name);
-					const connected = client;
-					if (connected !== undefined && state.status === "listening")
+					const connected = live;
+					if (connected !== undefined)
 						connected.query(`UNLISTEN ${quoted(name)}`).catch(() => drop(connected, "connection-failed"));
 				},
 			};
