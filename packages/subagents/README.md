@@ -730,7 +730,7 @@ For existing subagent integrations and agent definitions:
 
 Foreground runs show compact live progress for single and parallel modes: current tool, recent output, token counts, duration, activity freshness, current-tool duration, and artifact paths when available.
 
-File-based tracking and returned telemetry are separate. On a single-agent call, `progress: true` creates a run-scoped `progress.md` under isolated subagent artifact storage and asks the child to maintain it without writing `progress.md` into the child working directory. `progress: false` disables an agent's `defaultProgress`. `includeProgress: true` only adds detailed runtime progress data to the final foreground tool result; it does not enable the file.
+File-based tracking and returned telemetry are separate. On a single-agent call, `progress: true` creates a run-scoped `progress.md` under isolated subagent artifact storage and asks the child to maintain it without writing `progress.md` into the child working directory. `progress: false` disables an agent's `defaultProgress`. Parallel tasks with `progress` enabled share one run-scoped `progress.md` in the same artifact storage, never in a task's working directory or the project. `includeProgress: true` only adds detailed runtime progress data to the final foreground tool result; it does not enable the file.
 
 Press `CTRL+O` to expand the full streaming view with complete output per step.
 

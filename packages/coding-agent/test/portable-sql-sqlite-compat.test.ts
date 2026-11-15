@@ -368,6 +368,7 @@ test("a store with a migration ledger records each step of the session and blob 
 	await SqlSessionStore.open(database, { prefix: "team_" });
 	const store = await SqlSessionStore.open(database, { prefix: "team_" });
 	assert.deepEqual(await database.all("SELECT domain, version FROM team_atomic_migrations ORDER BY domain, version"), [
+		{ domain: "session-presence", version: 1 },
 		{ domain: "sessions", version: 1 },
 		{ domain: "sessions", version: 2 },
 		{ domain: "snapshot-blobs", version: 1 },
@@ -376,6 +377,14 @@ test("a store with a migration ledger records each step of the session and blob 
 		{ domain: "snapshot-blobs", version: 4 },
 	]);
 	await store.create(header("a"), [message("a1", null), message("a2", "a1")]);
+	// Open-session markers stay under their prefix too (#4971).
+	await store.openMarkers.put("a", { token: "t", pid: 1, host: "h" });
+	const unprefixed = await SqlSessionStore.open(database);
+	assert.deepEqual(await unprefixed.openMarkers.list("a"), []);
+	assert.deepEqual(
+		(await store.openMarkers.list("a")).map((marker) => marker.token),
+		["t"],
+	);
 	const blob = await store.putBlob("a", new TextEncoder().encode("blob"));
 	assert.equal(new TextDecoder().decode(await store.getBlob("a", blob.hash)), "blob");
 	const [listed] = await Array.fromAsync(store.list({}));

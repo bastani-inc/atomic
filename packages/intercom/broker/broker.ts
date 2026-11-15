@@ -121,6 +121,7 @@ import { type PendingQuestion, PendingQuestionIndex } from "./pending-question-i
 import { AwayAsks } from "./away-asks.js";
 import { TERMINAL_CHILD_ASK_REFUSAL } from "../recipient-purpose.js";
 import { type ReceiptSender, RecipientReceipts, UNCERTAIN_RECEIPT_REASON } from "./recipient-receipts.js";
+import { deliverAskFailure, deliverHeldToAsker } from "./ask-failures.js";
 import { matchStagePathSegments } from "../workflow-stage-path-matching.js";
 import { DELIVERED_MESSAGE_TTL_MS, RECIPIENT_RECEIPT_TIMEOUT_MS } from "../retry-policy.js";
 import { isAgentRecipient } from "../recipient-purpose.js";
@@ -1993,8 +1994,21 @@ class IntercomBroker {
               this.pendingQuestions.record(id, question.targetSessionId, question.messageId);
             for (const route of this.releasedAskerReplies.takeChild(registered, supervisorId))
               this.pendingQuestions.record(id, route.replierSessionId, route.questionId);
-            for (const held of this.pendingQuestions.takeHeldForReleasedChild(registered, supervisorId))
-              writeMessageIfOpen(socket, { type: "message", from: held.from, message: held.message });
+            // #5004: held again under its own return address until it saved it, so a subagent that dies first gets it again.
+            const child = this.sessions.get(id);
+            if (child !== undefined)
+              for (const held of this.pendingQuestions.takeHeldForReleasedChild(registered, supervisorId))
+                deliverHeldToAsker(
+                  {
+                    asker: child,
+                    question: { senderSessionId: id, targetSessionId: held.from.id, messageId: held.message.replyTo ?? held.message.id },
+                    from: held.from,
+                    pending: this.pendingQuestions,
+                    write: writeMessageIfOpen,
+                    legacy: { type: "message", from: held.from, message: held.message },
+                  },
+                  held.message,
+                );
             for (const question of this.pendingQuestions.takeParked(registered, supervisorId)) {
               this.pendingQuestions.record(question.senderSessionId, id, question.messageId);
               const asker = this.sessions.get(question.senderSessionId);
@@ -3214,13 +3228,27 @@ class IntercomBroker {
     return session !== undefined && (returnAddress === "" || session.registrationReturnAddress === returnAddress);
   }
 
-  private failParkedQuestions(questions: readonly PendingQuestion[], peerName?: string): void {
+  /** `peer`: the recipient that ended, when it is known; otherwise each question's recipient is named by its id. */
+  private failParkedQuestions(questions: readonly PendingQuestion[], peer?: SessionInfo): void {
     for (const question of questions) {
       const asker = this.sessions.get(question.senderSessionId);
       if (asker === undefined) continue;
-      writeMessageIfOpen(asker.socket, {
-        type: "peer_disconnected", replyTo: question.messageId, peerSessionId: question.targetSessionId,
-        ...(peerName === undefined ? {} : { peerName }),
+      const from: SessionInfo = peer ?? {
+        id: question.targetSessionId, cwd: "", model: "", pid: 0, startedAt: 0, lastActivity: Date.now(),
+      };
+      // #5004: held until the asker saved it, like a reply; a client that does not confirm saves gets the notice.
+      deliverAskFailure({
+        asker,
+        question,
+        from,
+        id: `ended:${question.messageId}`,
+        reason: `Session "${from.name ?? from.id}" ended before replying`,
+        pending: this.pendingQuestions,
+        write: writeMessageIfOpen,
+        legacy: {
+          type: "peer_disconnected", replyTo: question.messageId, peerSessionId: question.targetSessionId,
+          ...(peer?.name === undefined ? {} : { peerName: peer.name }),
+        },
       });
     }
   }
@@ -3330,7 +3358,7 @@ class IntercomBroker {
         if (departed.supervisorId === undefined)
           this.pendingQuestions.dropAway(departed.registrationReturnAddress);
       }
-      this.failParkedQuestions(this.pendingQuestions.takeForTarget(sessionId), departed.info.name);
+      this.failParkedQuestions(this.pendingQuestions.takeForTarget(sessionId), departed.info);
     }
     // #4639: a subagent that left without being released: hold sends to it until it is back or its owner says why. An
     // owner already away, as a suspended workflow stage's session is, says so through its host session when it is back.
