@@ -96,6 +96,8 @@ export function createRpcCommandHandler({
 	beginCommand,
 }: RpcCommandHandlerOptions): ManagedRpcCommandHandler {
 	let fallbackShortcutKeybindings: KeybindingsManager | undefined;
+	/** The session whose queue hold an `abort` established; the next `prompt` releases it, as a TUI submission does. */
+	let abortPausedSession: AgentSession | undefined;
 	const providerAuth = new RpcProviderAuth(inputForm, {
 		output,
 		pending: pendingExtensionRequests ?? new Map(),
@@ -134,6 +136,10 @@ export function createRpcCommandHandler({
 					if (pendingResources) await pendingResources;
 					if (rejectUnsupportedProviderPrompt(runtimeHost, output, id)) return;
 					const promptSession = getSession();
+					if (abortPausedSession === promptSession) {
+						abortPausedSession = undefined;
+						await promptSession.resumeQueuedMessages();
+					}
 					await promptSession.prompt(command.message, {
 						images: command.images,
 						streamingBehavior: command.streamingBehavior,
@@ -175,7 +181,10 @@ export function createRpcCommandHandler({
 			}
 
 			case "abort": {
-				await session.abort();
+				// Hold queued messages before aborting, as the TUI does, so a protected notice still queued is saved
+				// when the session closes instead of failing its disposal (#5166).
+				if (!session.queuedMessagesPaused) abortPausedSession = session;
+				await session.abort({ pauseQueuedMessages: true });
 				return createRpcSuccessResponse(id, "abort");
 			}
 			case "new_session": {
@@ -424,9 +433,11 @@ export function createRpcCommandHandler({
 				return createRpcSuccessResponse(id, "clear_queue", session.clearQueue());
 			}
 			case "pause_queued_messages":
+				abortPausedSession = undefined;
 				session.pauseQueuedMessages();
 				return createRpcSuccessResponse(id, "pause_queued_messages");
 			case "resume_queued_messages":
+				abortPausedSession = undefined;
 				return createRpcSuccessResponse(id, "resume_queued_messages", {
 					released: await session.resumeQueuedMessages(),
 				});

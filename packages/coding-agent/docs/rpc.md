@@ -11,7 +11,9 @@ RPC mode enables headless operation of the coding agent via a JSON protocol over
 
 An extension can call `ctx.shutdown()` to close an idle RPC session without another client command. Shutdown waits for any active command response and running turn. A request during extension-started compaction outside a turn is processed after the next command or turn once compaction finishes.
 
-Closing stdin, `SIGTERM` and `SIGHUP` each start an orderly shutdown that disposes the active runtime before the process exits. Once a shutdown has started, a stdin close or a single signal does not interrupt it, so a client that closes stdin and sends `SIGTERM` together, as a process manager does, lets cleanup finish. A second signal exits at once, with code 143 for `SIGTERM` and 129 for `SIGHUP`. `SIGKILL` always ends the process immediately.
+Closing stdin, `SIGTERM` and `SIGHUP` each start an orderly shutdown that disposes the active runtime before the process exits. Once a shutdown has started, a stdin close or a single signal does not interrupt it, so a client that closes stdin and sends `SIGTERM` together, as a process manager does, lets cleanup finish. A second signal exits at once, with code 143 for `SIGTERM` and 129 for `SIGHUP`. `SIGKILL` always ends the process immediately. An orderly shutdown exits with code 0. If disposing the session fails, the process writes a [`shutdown_error`](/rpc/protocol#shutdown_error) event and exits with code 1, or with the signal's code when a signal started the shutdown.
+
+[`abort`](/rpc/protocol#abort) holds queued messages, as Esc does in the TUI, so a client can abort and then close stdin: a completion notice still queued is saved for the next session rather than failing the shutdown.
 
 ## Where to go next
 

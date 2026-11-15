@@ -115,6 +115,8 @@ See [set_follow_up_mode](#set_follow_up_mode) for controlling how follow-up mess
 
 Abort the current operation and wait for the session to become idle before responding.
 
+Like Esc in the TUI, `abort` first holds queued messages: queued steering and follow-up messages, and notices that arrive afterwards, such as a background command's completion, wait instead of starting a turn. The next `prompt` releases the hold and starts its turn with them. If the client had already paused the queue with `pause_queued_messages`, or pauses it after the abort, the hold stays until `resume_queued_messages`. When the process shuts down while a notice is held, the notice is saved, and the session shows it once when it is opened again.
+
 ```json
 {"type": "abort"}
 ```
@@ -1171,6 +1173,7 @@ Events are streamed to stdout as JSON lines. Most events do not include an `id`;
 | `summarization_retry_attempt_start` | Retried summarization request starts |
 | `summarization_retry_finished` | Summarization retry loop completes |
 | `extension_error` | Extension threw an error |
+| `shutdown_error` | Disposing the session failed during shutdown; the process exits next |
 | `blueprint_build_waiting` | A resume waits for another Atomic process's blueprint build of the same worktree; `message` says which. Sent once per wait, and may come before the first response |
 | `blueprint_build_finished` | The blueprint build of a resumed session's restored worktree ended; `notices` lists its warnings, empty when it finished cleanly |
 
@@ -1481,6 +1484,20 @@ Emitted when an extension throws an error. An extension that fails to load is re
   "extensionPath": "/path/to/extension.ts",
   "event": "tool_call",
   "error": "Error message..."
+}
+```
+
+### shutdown_error
+
+The last line an RPC process writes when disposing its session failed during shutdown. Atomic attempted every cleanup step first. `code` is the failure's code, such as `ShutdownFailed`, when it has one, and `errors` lists the failed cleanup steps when there are several. The process then exits with `exitCode`: `1` after stdin closed or a shutdown request, or the signal's code (`143` for `SIGTERM`, `129` for `SIGHUP`).
+
+```json
+{
+  "type": "shutdown_error",
+  "error": "Runtime shutdown failed",
+  "code": "ShutdownFailed",
+  "errors": ["messages"],
+  "exitCode": 1
 }
 ```
 

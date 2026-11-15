@@ -1,5 +1,6 @@
 import { resolveWorkflowStageDeliveryTarget } from "./agent-session-delivery-forwarding.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
+import type { SessionAbortOptions } from "./agent-session-types.ts";
 
 async function settlePauseAbortBoundaries(boundaries: readonly Promise<void>[]): Promise<void> {
 	let throwFirstFailure: (() => never) | undefined;
@@ -74,7 +75,9 @@ export async function resumeQueuedMessages(this: AgentSession, beforeRelease?: (
 }
 
 /** Abort an ordinary turn and synchronously publish its pause-associated settlement boundary. */
-export function abort(this: AgentSession): Promise<void> {
+export function abort(this: AgentSession, options?: SessionAbortOptions): Promise<void> {
+	// Establish the hold before aborting, as the TUI does, so dispose can save a queued protected notice (#5166).
+	if (options?.pauseQueuedMessages) this.pauseQueuedMessages();
 	this._extensionRunner.cancelHostInput();
 	const owner = resolveWorkflowStageDeliveryTarget(this);
 	if (owner !== this) return owner.abort();

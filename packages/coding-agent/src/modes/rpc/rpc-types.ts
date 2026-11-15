@@ -543,6 +543,21 @@ export type RpcErrorDetails =
 /** Events streamed by RPC mode as session activity occurs. */
 export type RpcEvent = JsonAgentSessionEvent;
 
+/** Exit code of an RPC process whose shutdown failed after a clean stdin close or shutdown request. */
+export const RPC_SHUTDOWN_FAILED_EXIT_CODE = 1;
+
+/** The last line an RPC process writes when disposing its session failed; the process then exits with `exitCode`. */
+export interface RpcShutdownErrorEvent {
+	type: "shutdown_error";
+	/** The failure's message. */
+	error: string;
+	/** The failure's code, such as `ShutdownFailed`, when it has one. */
+	code?: string;
+	/** Messages of the cleanup steps that failed, when the failure aggregates several. */
+	errors?: string[];
+	exitCode: number;
+}
+
 // ============================================================================
 // Extension UI Events (stdout)
 // ============================================================================
