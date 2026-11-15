@@ -181,9 +181,20 @@ describe.skipIf(postgresSkipReason !== undefined)("Postgres sslmode (#5113)", ()
 		);
 	});
 
-	test("sslmode=verify-full and require still check the host name (#5113)", async () => {
-		for (const sslmode of ["verify-full", "require"])
-			await assertRefused({ sslmode, sslrootcert: join(directory, "ca.pem") }, "ERR_TLS_CERT_ALTNAME_INVALID");
+	test("sslmode=verify-full checks the host name (#5113)", async () => {
+		await assertRefused(
+			{ sslmode: "verify-full", sslrootcert: join(directory, "ca.pem") },
+			"ERR_TLS_CERT_ALTNAME_INVALID",
+		);
+	});
+
+	test("sslmode=require with sslrootcert checks the CA but not the host name, as libpq does; without it, the certificate is checked (#5113)", async () => {
+		await assertConnects({ sslmode: "require", sslrootcert: join(directory, "ca.pem") });
+		await assertRefused(
+			{ sslmode: "require", sslrootcert: join(directory, "other-ca.pem") },
+			"UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+		);
+		await assertRefused({ sslmode: "require" }, "UNABLE_TO_VERIFY_LEAF_SIGNATURE");
 	});
 
 	test("sslmode=prefer and allow encrypt without checking the certificate, as libpq does (#5113)", async () => {

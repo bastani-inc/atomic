@@ -70,8 +70,20 @@ function isLocalHost(/** @type {string} */ host) {
 }
 
 /**
+ * The `sslmode` values libpq knows.
+ * @type {ReadonlySet<string>}
+ */
+const SSL_MODES = new Set(["disable", "allow", "prefer", "require", "verify-ca", "verify-full"]);
+
+/** Whether `name`, in lowercase, is a parameter that chooses or configures TLS. */
+function isTlsParameter(/** @type {string} */ name) {
+	return name.startsWith("ssl") || name === "uselibpqcompat";
+}
+
+/**
  * The URL pg connects with: a `postgres:` or `postgresql:` URL without a password, which gets `sslmode=verify-full`
- * when it names none and its host is not this machine.
+ * when it names none and its host is not this machine. A TLS parameter whose name is not lowercase, or an `sslmode`
+ * libpq does not know, is refused.
  * @param {unknown} url
  * @returns {string}
  */
@@ -92,7 +104,15 @@ function connectionUrl(url) {
 			"credential-in-url",
 			"Remove the password from the URL and pass it through the storage secrets instead",
 		);
-	if (names.includes("sslmode")) return /** @type {string} */ (url);
+	// pg reads parameter names exactly as written, as libpq does: `SSLMODE=verify-full` would be ignored, and the
+	// connection made without TLS.
+	for (const name of parsed.searchParams.keys())
+		if (name !== name.toLowerCase() && isTlsParameter(name.toLowerCase()))
+			throw configError("url", "tls-parameter-case", `Write the parameter ${name} in lowercase`);
+	const mode = parsed.searchParams.get("sslmode");
+	if (mode !== null && !SSL_MODES.has(mode))
+		throw configError("url", "unsupported-sslmode", `Use an sslmode of ${[...SSL_MODES].join(", ")}`);
+	if (mode !== null) return /** @type {string} */ (url);
 	const host = parsed.searchParams.get("host") ?? parsed.hostname;
 	if (isLocalHost(host)) return /** @type {string} */ (url);
 	parsed.searchParams.set("sslmode", "verify-full");
@@ -101,9 +121,10 @@ function connectionUrl(url) {
 
 /**
  * The `sslmode` values whose TLS options the adapter sets itself, as libpq reads them, rather than as pg does, which
- * checks the host name for each of them: `verify-ca` checks the certificate's CA but not its host name, and `prefer`
- * and `allow` encrypt without checking the certificate (pg cannot fall back to an unencrypted connection, so neither
- * does). `require` checks the certificate and its host name, as `verify-full` does.
+ * checks the host name for each of them: `verify-ca`, and `require` with an `sslrootcert`, check the certificate's CA
+ * but not its host name, and `prefer` and `allow` encrypt without checking the certificate (pg cannot fall back to an
+ * unencrypted connection, so neither does). `require` without an `sslrootcert` checks the certificate and its host
+ * name, as `verify-full` does: stricter than libpq, which checks neither.
  * @type {ReadonlySet<string>}
  */
 const LIBPQ_SSL_MODES = new Set(["allow", "prefer", "require", "verify-ca"]);
@@ -122,7 +143,8 @@ function clientConfig(parseUrl, url) {
 	parsed.searchParams.set("sslmode", "verify-full");
 	const connection = parseUrl(parsed.href);
 	const ssl = /** @type {import("node:tls").ConnectionOptions} */ (connection.ssl);
-	if (mode === "verify-ca") ssl.checkServerIdentity = () => undefined;
+	if (mode === "verify-ca" || (mode === "require" && parsed.searchParams.has("sslrootcert")))
+		ssl.checkServerIdentity = () => undefined;
 	else if (mode !== "require") ssl.rejectUnauthorized = false;
 	return connection;
 }

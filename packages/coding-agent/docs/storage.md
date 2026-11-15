@@ -129,7 +129,9 @@ You can write this block by hand as well. `secrets.password` takes `{ "file": â€
 
 ### TLS
 
-Atomic connects with TLS to every host except the local machine, and checks the server's certificate and host name (`sslmode=verify-full`). Add `sslmode` to the URL to choose otherwise:
+Atomic connects with TLS to every host except the local machine, and checks the server's certificate and host name (`sslmode=verify-full`). Add `sslmode` to the URL to choose otherwise. It follows libpq: `verify-ca` checks the certificate's CA but not its host name, `prefer` and `allow` encrypt without checking the certificate, and `disable` turns TLS off. The CA is the one `sslrootcert` names, or otherwise the CAs Node.js trusts. `require` with `sslrootcert` acts as `verify-ca`; without `sslrootcert`, Atomic's `require` checks the certificate and its host name, as `verify-full` does, which is stricter than libpq. Write parameter names in lowercase: a URL with a TLS parameter such as `SSLMODE`, or an `sslmode` libpq does not know, is refused with `StorageConfigError`.
+
+By provider:
 
 - Azure Database for PostgreSQL, Neon, and Supabase use certificates that Node.js trusts: no option is needed.
 - Amazon RDS and Aurora: download your region's certificate bundle from `https://truststore.pki.rds.amazonaws.com/<region>/<region>-bundle.pem` and add `?sslrootcert=/path/to/bundle.pem`.
