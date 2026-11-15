@@ -108,6 +108,7 @@ import { type IntercomRecipientGoneError, serializeIntercomRecipientGoneError } 
 import { NotHostedSessionError, serializeIntercomHostedSessionError } from "./hosted-session-errors.js";
 import { type ParsedHostedSession, validateHostSessionsFrame, validateUnhostSessionsFrame } from "./hosted-sessions.js";
 import { ReleasedAskerReplies, type ReleasedAskerReplyRoute } from "./released-asker-replies.js";
+import { crashPoint, DEPARTURE_ASKS_TAKEN, DEPARTURE_ASKS_TO_IT_TAKEN } from "./crash-points.js";
 import { releasedAskerReplyRefusal } from "./released-asker-remote-replies.js";
 import { hasGroup, normalizeGroup, normalizeGroups, workflowInvocationRefusalFor } from "../group.js";
 import { handleBrokerPresence } from "./presence-handler.js";
@@ -121,6 +122,7 @@ import { type PendingQuestion, PendingQuestionIndex } from "./pending-question-i
 import { AwayAsks } from "./away-asks.js";
 import { TERMINAL_CHILD_ASK_REFUSAL } from "../recipient-purpose.js";
 import { type ReceiptSender, RecipientReceipts, UNCERTAIN_RECEIPT_REASON } from "./recipient-receipts.js";
+import { deliverAskFailure, deliverHeldToAsker } from "./ask-failures.js";
 import { matchStagePathSegments } from "../workflow-stage-path-matching.js";
 import { DELIVERED_MESSAGE_TTL_MS, RECIPIENT_RECEIPT_TIMEOUT_MS } from "../retry-policy.js";
 import { isAgentRecipient } from "../recipient-purpose.js";
@@ -248,6 +250,16 @@ interface PendingReleasedReplyAck {
   readonly questionId: string;
   readonly childName: string;
   readonly route: ReleasedAskerReplyRoute;
+}
+
+/** What registering a session reads from its validated `register` message. */
+interface SessionRegistrationRequest {
+  readonly session: Omit<SessionInfo, "id">;
+  readonly registrationGroup?: unknown;
+  readonly returnAddress?: unknown;
+  readonly supervisorOwnerToken?: unknown;
+  readonly acknowledgesReceipt?: unknown;
+  readonly supervisor?: unknown;
 }
 
 function isSupervisorRegistration(value: unknown): value is SupervisorRegistration {
@@ -401,6 +413,8 @@ class IntercomBroker {
   }
   private supervisorChannel = new SupervisorChannelCache();
   private sessionIdReclaim = new SessionIdReclaim();
+  /** Connections whose requested id is being checked against its multi-node binding before they register. */
+  private claimingSessionIds = new WeakSet<net.Socket>();
   private pendingQuestions = new PendingQuestionIndex();
   private receipts = new RecipientReceipts<ConnectedSession>();
   // #4751: an ask has no expiry, so a released asker's route lasts until the child or its owner ends or it is back.
@@ -1788,120 +1802,14 @@ class IntercomBroker {
 		});
 	}
 
-  private handleMessage(
+  /** Register the session under the id it was granted, and complete its registration (see `register`). */
+  private completeSessionRegistration(
     socket: net.Socket,
-    msg: JsonWireValue,
-    currentId: string | null,
+    clientMessage: SessionRegistrationRequest,
+    id: string,
+    supervisorId: string | undefined,
     setId: (id: string | null) => void,
   ): void {
-    if (typeof msg !== "object" || msg === null || Array.isArray(msg) || typeof msg.type !== "string") {
-      throw new Error("Invalid client message");
-    }
-
-    const clientMessage = msg;
-
-    if (clientMessage.type === "health") {
-      if (typeof clientMessage.requestId !== "string" || clientMessage.requestId.length > 128) {
-        throw new Error("Invalid health request");
-      }
-      writeMessageIfOpen(socket, { type: "health", requestId: clientMessage.requestId, instanceId: this.instanceId });
-      return;
-    }
-
-    // Control requests need no registration: `atomic intercom restart` and `atomic storage status` send them.
-    if (clientMessage.type === "broker_status" || clientMessage.type === "shutdown") {
-      if (typeof clientMessage.requestId !== "string") throw new Error(`Invalid ${clientMessage.type} message`);
-      const requestId = clientMessage.requestId;
-      if (clientMessage.type === "broker_status") {
-        void this.statusReport().then((report) => writeMessageIfOpen(socket, { type: "broker_status", requestId, report }));
-        return;
-      }
-      console.error("Intercom broker shutting down on request, so its sessions reconnect to a new broker");
-      writeMessageWithOutcome(socket, { type: "shutdown_ack", requestId }, () => this.shutdown());
-      return;
-    }
-
-    if (currentId === null && clientMessage.type !== "register" && clientMessage.type !== "register_verified") {
-      throw new Error(`Received ${clientMessage.type} before register`);
-    }
-
-    switch (clientMessage.type) {
-      case "register":
-      case "register_verified": {
-        if (this.shuttingDown) {
-          // A client that connected while this broker was closing (a multi-node broker takes up to two seconds to give
-          // its leases up) learns it lost the race and spawns the replacement, instead of finding its socket reset.
-          writeMessageIfOpen(socket, RETIRING_REFUSAL);
-          socket.end();
-          return;
-        }
-        if (clientMessage.type === "register_verified") {
-          const expected = clientMessage.expectedRouting;
-          if (typeof expected !== "object" || expected === null || Array.isArray(expected) || typeof expected.acrossMachines !== "boolean") {
-            throw new Error("Invalid expected routing");
-          }
-          if (expected.acrossMachines !== (this.multiNodeStatus !== "off")) {
-            writeMessageIfOpen(socket, ROUTING_CHANGED_REFUSAL);
-            socket.end();
-            return;
-          }
-        }
-        if (!isSessionRegistration(clientMessage.session)) {
-          throw new Error("Invalid register message");
-        }
-		if (clientMessage.registrationGroup !== undefined &&
-			(typeof clientMessage.registrationGroup !== "string" || clientMessage.registrationGroup.trim().length === 0)) {
-			throw new Error("Invalid registration group");
-		}
-		if (clientMessage.returnAddress !== undefined &&
-			(typeof clientMessage.returnAddress !== "string" || clientMessage.returnAddress.length === 0)) {
-			throw new Error("Invalid return address");
-		}
-		if (clientMessage.supervisorOwnerToken !== undefined
-			&& (typeof clientMessage.supervisorOwnerToken !== "string" || !clientMessage.supervisorOwnerToken)) {
-			throw new Error("Invalid supervisor owner token");
-		}
-		if (clientMessage.preferredSessionId !== undefined && typeof clientMessage.preferredSessionId !== "string") {
-			throw new Error("Invalid preferred session id");
-		}
-		if (clientMessage.acknowledgesReceipt !== undefined && clientMessage.acknowledgesReceipt !== true) {
-			throw new Error("Invalid receipt acknowledgement capability");
-		}
-		if (clientMessage.protocol !== undefined && !isBrokerProtocolRange(clientMessage.protocol)) {
-			throw new Error("Invalid protocol range");
-		}
-
-        if (currentId) {
-          throw new Error("Received duplicate register message");
-        }
-        // #4538: a client that names no range is a 0.9.71-or-older client, which drops its connection over a frame
-        // type it does not know; such frames are never written to it.
-        recordClientProtocol(
-          socket,
-          protocolRangeOf(isBrokerProtocolRange(clientMessage.protocol) ? clientMessage.protocol : undefined),
-        );
-
-        let supervisorId: string | undefined;
-        if (clientMessage.supervisor !== undefined) {
-          const childName = clientMessage.session.name?.trim();
-          const claimedSupervisorId = isSupervisorRegistration(clientMessage.supervisor) && childName
-            ? this.supervisorChannel.claim(clientMessage.supervisor.capability, childName)
-            : undefined;
-          if (!claimedSupervisorId || !this.sessions.has(claimedSupervisorId)) {
-            writeMessageIfOpen(socket, { type: "registration_failed", reason: "Invalid supervisor authorization" });
-            this.endRefusedConnection(socket, currentId, setId);
-            return;
-          }
-          supervisorId = claimedSupervisorId;
-        }
-
-        this.openDeliveredMessages();
-        // #3760: a restored or reconnected session keeps the id peers know when it is free; never a live one.
-        const id = this.sessionIdReclaim.grant(
-          clientMessage.preferredSessionId,
-          clientMessage.returnAddress,
-          (sessionId) => this.sessions.has(sessionId),
-        ) ?? randomUUID();
         setId(id);
         const initialGroups = normalizeGroups(clientMessage.session.groups, clientMessage.session.group);
         const legacyGroup = normalizeGroup(clientMessage.session.group ?? initialGroups.values().next().value);
@@ -1987,8 +1895,21 @@ class IntercomBroker {
               this.pendingQuestions.record(id, question.targetSessionId, question.messageId);
             for (const route of this.releasedAskerReplies.takeChild(registered, supervisorId))
               this.pendingQuestions.record(id, route.replierSessionId, route.questionId);
-            for (const held of this.pendingQuestions.takeHeldForReleasedChild(registered, supervisorId))
-              writeMessageIfOpen(socket, { type: "message", from: held.from, message: held.message });
+            // #5004: held again under its own return address until it saved it, so a subagent that dies first gets it again.
+            const child = this.sessions.get(id);
+            if (child !== undefined)
+              for (const held of this.pendingQuestions.takeHeldForReleasedChild(registered, supervisorId))
+                deliverHeldToAsker(
+                  {
+                    asker: child,
+                    question: { senderSessionId: id, targetSessionId: held.from.id, messageId: held.message.replyTo ?? held.message.id },
+                    from: held.from,
+                    pending: this.pendingQuestions,
+                    write: writeMessageIfOpen,
+                    legacy: { type: "message", from: held.from, message: held.message },
+                  },
+                  held.message,
+                );
             for (const question of this.pendingQuestions.takeParked(registered, supervisorId)) {
               this.pendingQuestions.record(question.senderSessionId, id, question.messageId);
               const asker = this.sessions.get(question.senderSessionId);
@@ -2035,6 +1956,151 @@ class IntercomBroker {
             else discardHeldWrites(held);
           });
         }
+  }
+
+  private handleMessage(
+    socket: net.Socket,
+    msg: JsonWireValue,
+    currentId: string | null,
+    setId: (id: string | null) => void,
+  ): void {
+    if (typeof msg !== "object" || msg === null || Array.isArray(msg) || typeof msg.type !== "string") {
+      throw new Error("Invalid client message");
+    }
+
+    const clientMessage = msg;
+
+    if (clientMessage.type === "health") {
+      if (typeof clientMessage.requestId !== "string" || clientMessage.requestId.length > 128) {
+        throw new Error("Invalid health request");
+      }
+      writeMessageIfOpen(socket, { type: "health", requestId: clientMessage.requestId, instanceId: this.instanceId });
+      return;
+    }
+
+    // Control requests need no registration: `atomic intercom restart` and `atomic storage status` send them.
+    if (clientMessage.type === "broker_status" || clientMessage.type === "shutdown") {
+      if (typeof clientMessage.requestId !== "string") throw new Error(`Invalid ${clientMessage.type} message`);
+      const requestId = clientMessage.requestId;
+      if (clientMessage.type === "broker_status") {
+        void this.statusReport().then((report) => writeMessageIfOpen(socket, { type: "broker_status", requestId, report }));
+        return;
+      }
+      console.error("Intercom broker shutting down on request, so its sessions reconnect to a new broker");
+      writeMessageWithOutcome(socket, { type: "shutdown_ack", requestId }, () => this.shutdown());
+      return;
+    }
+
+    if (currentId === null && clientMessage.type !== "register" && clientMessage.type !== "register_verified") {
+      throw new Error(`Received ${clientMessage.type} before register`);
+    }
+
+    switch (clientMessage.type) {
+      case "register":
+      case "register_verified": {
+        if (this.shuttingDown) {
+          // A client that connected while this broker was closing (a multi-node broker takes up to two seconds to give
+          // its leases up) learns it lost the race and spawns the replacement, instead of finding its socket reset.
+          writeMessageIfOpen(socket, RETIRING_REFUSAL);
+          socket.end();
+          return;
+        }
+        if (clientMessage.type === "register_verified") {
+          const expected = clientMessage.expectedRouting;
+          if (typeof expected !== "object" || expected === null || Array.isArray(expected) || typeof expected.acrossMachines !== "boolean") {
+            throw new Error("Invalid expected routing");
+          }
+          if (expected.acrossMachines !== (this.multiNodeStatus !== "off")) {
+            writeMessageIfOpen(socket, ROUTING_CHANGED_REFUSAL);
+            socket.end();
+            return;
+          }
+        }
+        if (!isSessionRegistration(clientMessage.session)) {
+          throw new Error("Invalid register message");
+        }
+		if (clientMessage.registrationGroup !== undefined &&
+			(typeof clientMessage.registrationGroup !== "string" || clientMessage.registrationGroup.trim().length === 0)) {
+			throw new Error("Invalid registration group");
+		}
+		if (clientMessage.returnAddress !== undefined &&
+			(typeof clientMessage.returnAddress !== "string" || clientMessage.returnAddress.length === 0)) {
+			throw new Error("Invalid return address");
+		}
+		if (clientMessage.supervisorOwnerToken !== undefined
+			&& (typeof clientMessage.supervisorOwnerToken !== "string" || !clientMessage.supervisorOwnerToken)) {
+			throw new Error("Invalid supervisor owner token");
+		}
+		if (clientMessage.preferredSessionId !== undefined && typeof clientMessage.preferredSessionId !== "string") {
+			throw new Error("Invalid preferred session id");
+		}
+		if (clientMessage.acknowledgesReceipt !== undefined && clientMessage.acknowledgesReceipt !== true) {
+			throw new Error("Invalid receipt acknowledgement capability");
+		}
+		if (clientMessage.protocol !== undefined && !isBrokerProtocolRange(clientMessage.protocol)) {
+			throw new Error("Invalid protocol range");
+		}
+
+        if (currentId || this.claimingSessionIds.has(socket)) {
+          throw new Error("Received duplicate register message");
+        }
+        // #4538: a client that names no range is a 0.9.71-or-older client, which drops its connection over a frame
+        // type it does not know; such frames are never written to it.
+        recordClientProtocol(
+          socket,
+          protocolRangeOf(isBrokerProtocolRange(clientMessage.protocol) ? clientMessage.protocol : undefined),
+        );
+
+        let supervisorId: string | undefined;
+        if (clientMessage.supervisor !== undefined) {
+          const childName = clientMessage.session.name?.trim();
+          const claimedSupervisorId = isSupervisorRegistration(clientMessage.supervisor) && childName
+            ? this.supervisorChannel.claim(clientMessage.supervisor.capability, childName)
+            : undefined;
+          if (!claimedSupervisorId || !this.sessions.has(claimedSupervisorId)) {
+            writeMessageIfOpen(socket, { type: "registration_failed", reason: "Invalid supervisor authorization" });
+            this.endRefusedConnection(socket, currentId, setId);
+            return;
+          }
+          supervisorId = claimedSupervisorId;
+        }
+
+        this.openDeliveredMessages();
+        // #3760: a restored or reconnected session keeps the id peers know when it is free; never a live one.
+        const preferred = this.sessionIdReclaim.grant(
+          clientMessage.preferredSessionId,
+          clientMessage.returnAddress,
+          (sessionId) => this.sessions.has(sessionId),
+        );
+        const multiNode = this.multiNode;
+        const returnAddress = clientMessage.returnAddress;
+        const registration: SessionRegistrationRequest = { ...clientMessage, session: clientMessage.session };
+        if (preferred !== undefined && multiNode !== undefined && typeof returnAddress === "string") {
+          // In multi-node mode the id carries authority on every broker (shared ask routes and known sessions name
+          // sessions by id), so it is granted only to the return address it is bound to in shared storage.
+          this.claimingSessionIds.add(socket);
+          void multiNode
+            .claimSessionId(preferred, returnAddress)
+            .then((claimed) => {
+              this.claimingSessionIds.delete(socket);
+              if (socket.destroyed || socket.writableEnded) return;
+              if (this.shuttingDown) {
+                writeMessageIfOpen(socket, RETIRING_REFUSAL);
+                socket.end();
+                return;
+              }
+              this.completeSessionRegistration(
+                socket,
+                registration,
+                claimed && !this.sessions.has(preferred) ? preferred : randomUUID(),
+                supervisorId,
+                setId,
+              );
+            })
+            .catch((error: unknown) => socket.destroy(error instanceof Error ? error : new Error(String(error))));
+          break;
+        }
+        this.completeSessionRegistration(socket, registration, preferred ?? randomUUID(), supervisorId, setId);
         break;
       }
 
@@ -3205,13 +3271,27 @@ class IntercomBroker {
     return session !== undefined && (returnAddress === "" || session.registrationReturnAddress === returnAddress);
   }
 
-  private failParkedQuestions(questions: readonly PendingQuestion[], peerName?: string): void {
+  /** `peer`: the recipient that ended, when it is known; otherwise each question's recipient is named by its id. */
+  private failParkedQuestions(questions: readonly PendingQuestion[], peer?: SessionInfo): void {
     for (const question of questions) {
       const asker = this.sessions.get(question.senderSessionId);
       if (asker === undefined) continue;
-      writeMessageIfOpen(asker.socket, {
-        type: "peer_disconnected", replyTo: question.messageId, peerSessionId: question.targetSessionId,
-        ...(peerName === undefined ? {} : { peerName }),
+      const from: SessionInfo = peer ?? {
+        id: question.targetSessionId, cwd: "", model: "", pid: 0, startedAt: 0, lastActivity: Date.now(),
+      };
+      // #5004: held until the asker saved it, like a reply; a client that does not confirm saves gets the notice.
+      deliverAskFailure({
+        asker,
+        question,
+        from,
+        id: `ended:${question.messageId}`,
+        reason: `Session "${from.name ?? from.id}" ended before replying`,
+        pending: this.pendingQuestions,
+        write: writeMessageIfOpen,
+        legacy: {
+          type: "peer_disconnected", replyTo: question.messageId, peerSessionId: question.targetSessionId,
+          ...(peer?.name === undefined ? {} : { peerName: peer.name }),
+        },
       });
     }
   }
@@ -3254,7 +3334,9 @@ class IntercomBroker {
     ];
     this.failParkedQuestions(this.pendingQuestions.takeParkedForOwner(sessionId));
 
-    const unanswered = this.pendingQuestions.takeForSender(sessionId);
+    // Each ask keeps its live record until what replaces it is written, so a crash in between loses none.
+    const unanswered = this.pendingQuestions.takeForSender(sessionId, { keepLiveRecords: true });
+    crashPoint(DEPARTURE_ASKS_TAKEN);
     if (departed.supervisorId !== undefined && departed.registrationName !== undefined) {
       // #4765: an ask kept while its recipient was away waits on the owner's route too, so the recipient's later end
       // fails it through the owner, which wakes the subagent. It stays kept under the subagent's own return address as
@@ -3265,10 +3347,15 @@ class IntercomBroker {
         this.restoringRecipients.releasedOwner(departed.registrationName),
       );
       this.pendingQuestions.markAwayAsker(sessionId, departed.registrationReturnAddress);
+      // A kept route rewrote its ask's live record; one it did not keep has no record left to wait on.
+      this.pendingQuestions.forgetLive(unanswered.filter((question) => !this.releasedAskerReplies.holds(question)));
     } else if (departed.supervisorId === undefined && !ended) {
       // #4751: an ask has no expiry and survives its asker's restart or release: the route waits for the asker.
       this.pendingQuestions.keepDormant(unanswered, departed.registrationReturnAddress);
       this.pendingQuestions.markAwayAsker(sessionId, departed.registrationReturnAddress);
+      this.pendingQuestions.forgetLive(unanswered);
+    } else {
+      this.pendingQuestions.forgetLive(unanswered);
     }
     this.releasedAskerReplies.dropOwner(sessionId);
     for (const [messageId, pending] of [...this.releasedReplyAcks]) {
@@ -3283,7 +3370,11 @@ class IntercomBroker {
       this.pendingQuestions.parkTarget(sessionId, childName, releasedOwner);
     } else if (!ended && departed.supervisorId === undefined && departed.hostedBy === undefined) {
       // #4751: a recipient whose connection dropped without ending its session may restart; its asks stay pending.
-      this.pendingQuestions.keepDormant(this.pendingQuestions.takeForTarget(sessionId));
+      // Each ask keeps its live record until its away record is written, so a crash in between loses none.
+      const askedOfIt = this.pendingQuestions.takeForTarget(sessionId, { keepLiveRecords: true });
+      crashPoint(DEPARTURE_ASKS_TO_IT_TAKEN);
+      this.pendingQuestions.keepDormant(askedOfIt);
+      this.pendingQuestions.forgetLive(askedOfIt);
     } else {
       if (ended) {
         // #4751: an away asker's ask to it fails with a message held until the asker is back; a session that ended
@@ -3299,7 +3390,7 @@ class IntercomBroker {
         if (departed.supervisorId === undefined)
           this.pendingQuestions.dropAway(departed.registrationReturnAddress);
       }
-      this.failParkedQuestions(this.pendingQuestions.takeForTarget(sessionId), departed.info.name);
+      this.failParkedQuestions(this.pendingQuestions.takeForTarget(sessionId), departed.info);
     }
     // #4639: a subagent that left without being released: hold sends to it until it is back or its owner says why. An
     // owner already away, as a suspended workflow stage's session is, says so through its host session when it is back.

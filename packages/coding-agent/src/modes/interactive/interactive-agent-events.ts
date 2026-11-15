@@ -457,23 +457,28 @@ InteractiveModeBase.prototype.handleEvent = async function (
 				} else if (!manualTakeoverPending) {
 					this.showStatus("Auto-compaction cancelled");
 				}
-			} else if (event.result && !event.errorMessage) {
-				this.chatContainer.clear();
-				this.rebuildChatFromMessages({ suppressCompactionBoundary: event.result });
-				this.addCompactionBoundaryToChat(event.result);
-				if (event.result.usage) this.addCompactionCostNotice("compaction", event.result.usage);
-				if (event.cacheMiss && this.settingsManager.getShowCacheMissNotices()) {
-					this.chatContainer.addChild(
-						new Text(theme.fg("warning", formatCompactionCacheMissNotice(event.cacheMiss)), 1, 0),
-					);
+			} else {
+				// `result` and `errorMessage` are independent: a committed boundary stays visible when a
+				// later step failed, such as foreground compaction after a background result (#4977).
+				if (event.result) {
+					this.chatContainer.clear();
+					this.rebuildChatFromMessages({ suppressCompactionBoundary: event.result });
+					this.addCompactionBoundaryToChat(event.result);
+					if (event.result.usage) this.addCompactionCostNotice("compaction", event.result.usage);
+					if (event.cacheMiss && this.settingsManager.getShowCacheMissNotices()) {
+						this.chatContainer.addChild(
+							new Text(theme.fg("warning", formatCompactionCacheMissNotice(event.cacheMiss)), 1, 0),
+						);
+					}
+					this.footer.invalidate();
 				}
-				this.footer.invalidate();
-			} else if (event.errorMessage && !manualTakeoverPending) {
-				if (event.reason === "manual") {
-					this.showError(event.errorMessage);
-				} else {
-					this.chatContainer.addChild(new Spacer(1));
-					this.chatContainer.addChild(new Text(theme.fg("error", event.errorMessage), 1, 0));
+				if (event.errorMessage && !manualTakeoverPending) {
+					if (event.reason === "manual") {
+						this.showError(event.errorMessage);
+					} else {
+						this.chatContainer.addChild(new Spacer(1));
+						this.chatContainer.addChild(new Text(theme.fg("error", event.errorMessage), 1, 0));
+					}
 				}
 			}
 			// Post-tool compaction resumes the same active run, so no new

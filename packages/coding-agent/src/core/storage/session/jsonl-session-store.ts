@@ -61,9 +61,41 @@ interface SessionFileState {
 	readonly size: number;
 	readonly lastSeq: number;
 	readonly terminated: boolean;
+	/** The file goes on past `size` with the start of a line its writer never finished, which the next append removes. */
+	readonly torn: boolean;
 }
 
 type JsonValue = SessionJsonValue;
+
+/** The last 64 bytes, which locate the boundary a later append starts from. */
+function witnessOf(bytes: Buffer): Buffer {
+	return Buffer.from(bytes.subarray(-64));
+}
+
+/**
+ * The entry on a last line that has no newline after it, or `undefined` when that line is torn: its writer stopped
+ * before finishing it, so it was never acknowledged. Every entry line is a JSON object, and no part of an object's
+ * text is itself valid JSON, so a line that parses is complete.
+ */
+function parseUnterminated(line: string): SessionEntry | undefined {
+	try {
+		return JSON.parse(line) as SessionEntry;
+	} catch {
+		return undefined;
+	}
+}
+
+/** Session files whose torn last line this process has already reported. */
+const reportedTornFiles = new Set<string>();
+
+function reportTornLine(path: string): void {
+	if (reportedTornFiles.has(path)) return;
+	reportedTornFiles.add(path);
+	process.emitWarning(
+		`Ignoring the unfinished last line of ${path}: the write that started it never completed. The next append removes it.`,
+		{ code: "ATOMIC_SESSION_TORN_LINE" },
+	);
+}
 
 /** One read takes the whole header line of any ordinary session; a longer line takes further reads of this size. */
 const HEADER_READ_CHUNK_BYTES = 64 * 1024;
@@ -211,6 +243,7 @@ export class JsonlSessionStore implements SessionStore {
 			const { path, state } = await this.forWrite(sessionId, options);
 			validateSessionEntries(entries);
 			if (entries.length === 0) return { lastSeq: state.lastSeq };
+			if (state.torn) await truncate(path, state.size);
 			let payload = `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`;
 			if (!state.terminated) payload = `\n${payload}`;
 			const offset = state.size;
@@ -237,7 +270,8 @@ export class JsonlSessionStore implements SessionStore {
 				lastSeq,
 				lastEntryId: entries.at(-1)?.id,
 				terminated: true,
-				witness: Buffer.from(Buffer.concat([state.witness, Buffer.from(payload)]).subarray(-64)),
+				torn: false,
+				witness: witnessOf(Buffer.concat([state.witness, Buffer.from(payload)])),
 			});
 			return { lastSeq };
 		});
@@ -652,27 +686,8 @@ export class JsonlSessionStore implements SessionStore {
 	): Promise<SessionSnapshot> {
 		stored ??= await this.readFirstLine(path);
 		const header = await this.readHeaderAt(path, stored);
-		const input = createReadStream(path);
-		let witness: Buffer = Buffer.alloc(0);
-		let terminated = false;
-		input.on("data", (chunk: string | Buffer) => {
-			const bytes = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
-			witness = Buffer.from(Buffer.concat([witness, bytes]).subarray(-64));
-			terminated = bytes.at(-1) === 10;
-		});
-		const entries: SessionEntry[] = [];
-		let first = true;
-		try {
-			for await (const line of readLines(input)) {
-				if (first) {
-					first = false;
-					continue;
-				}
-				if (line.trim()) entries.push(JSON.parse(line) as SessionEntry);
-			}
-		} finally {
-			input.destroy();
-		}
+		const { entries, witness, terminated, torn, size } = await this.readEntries(path);
+		if (torn) reportTornLine(path);
 		if (!isCurrentSessionHeader(stored)) {
 			const upgraded = upgradeLegacySessionEntries(stored, entries, path).entries;
 			validateSessionEntryStructure(upgraded, path);
@@ -682,15 +697,73 @@ export class JsonlSessionStore implements SessionStore {
 		}
 		validateSessionEntryStructure(entries, path);
 		validateSessionEntries(entries);
-		await this.remember(path, {
-			headerStamp: JSON.stringify(header),
-			headerId: header.id,
-			lastSeq: entries.length,
-			lastEntryId: entries.at(-1)?.id,
-			witness,
-			terminated,
-		});
+		await this.remember(
+			path,
+			{
+				headerStamp: JSON.stringify(header),
+				headerId: header.id,
+				lastSeq: entries.length,
+				lastEntryId: entries.at(-1)?.id,
+				witness,
+				terminated,
+				torn,
+			},
+			torn ? size : undefined,
+		);
 		return { header, entries, lastSeq: entries.length };
+	}
+
+	/**
+	 * The entries after the header line. A last line without a newline is read when it is a complete record and
+	 * left out when it is torn; `size` and `witness` then end at the last complete line. A malformed line before
+	 * the last one is still a parse failure.
+	 */
+	private async readEntries(path: string): Promise<{
+		entries: SessionEntry[];
+		witness: Buffer;
+		terminated: boolean;
+		torn: boolean;
+		size: number;
+	}> {
+		const input = createReadStream(path);
+		let size = 0;
+		let complete = 0;
+		let witness: Buffer = Buffer.alloc(0);
+		let completeWitness: Buffer = Buffer.alloc(0);
+		input.on("data", (chunk: string | Buffer) => {
+			const bytes = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+			const newline = bytes.lastIndexOf(10);
+			if (newline !== -1) {
+				complete = size + newline + 1;
+				completeWitness = witnessOf(Buffer.concat([witness, bytes.subarray(0, newline + 1)]));
+			}
+			witness = witnessOf(Buffer.concat([witness, bytes]));
+			size += bytes.length;
+		});
+		const entries: SessionEntry[] = [];
+		let first = true;
+		let last: string | undefined;
+		try {
+			for await (const line of readLines(input)) {
+				if (first) {
+					first = false;
+					continue;
+				}
+				if (last?.trim()) entries.push(JSON.parse(last) as SessionEntry);
+				last = line;
+			}
+		} finally {
+			input.destroy();
+		}
+		const terminated = complete === size;
+		if (last !== undefined && terminated) {
+			if (last.trim()) entries.push(JSON.parse(last) as SessionEntry);
+		} else if (last !== undefined) {
+			const entry = parseUnterminated(last);
+			if (!entry) return { entries, witness: completeWitness, terminated: true, torn: true, size: complete };
+			entries.push(entry);
+		}
+		return { entries, witness, terminated, torn: false, size };
 	}
 
 	private stamp(stats: BigIntStats): string {
@@ -708,17 +781,23 @@ export class JsonlSessionStore implements SessionStore {
 			headerId: header.id,
 			lastEntryId: entries.at(-1)?.id,
 			terminated: content.endsWith("\n"),
-			witness: Buffer.from(Buffer.from(content).subarray(-64)),
+			torn: false,
+			witness: witnessOf(Buffer.from(content)),
 		};
 	}
 
-	private async remember(path: string, state: Omit<SessionFileState, "stamp" | "identity" | "size">): Promise<void> {
+	/** Records the file as it is now; `size` ends it before a torn last line. */
+	private async remember(
+		path: string,
+		state: Omit<SessionFileState, "stamp" | "identity" | "size">,
+		size?: number,
+	): Promise<void> {
 		const stats = await stat(path, { bigint: true });
 		this.fileStates.set(path, {
 			...state,
 			stamp: this.stamp(stats),
 			identity: `${stats.dev}:${stats.ino}`,
-			size: Number(stats.size),
+			size: size ?? Number(stats.size),
 		});
 	}
 
@@ -740,14 +819,15 @@ export class JsonlSessionStore implements SessionStore {
 			await this.readSnapshot(path);
 			state = this.fileStates.get(path)!;
 		} else {
-			const lastSeq = state.lastSeq;
-			const stale = () => new SessionConflictError(sessionId, options.expectSeq, lastSeq);
+			// The file changed under the baseline, so its sequence comes from the file itself, not from the baseline.
+			const stale = async () =>
+				new SessionConflictError(sessionId, options.expectSeq, (await this.readEntries(path)).entries.length);
 			if (
 				state.identity !== `${stats.dev}:${stats.ino}` ||
 				state.headerStamp !== JSON.stringify(header) ||
 				Number(stats.size) < state.size
 			)
-				throw stale();
+				throw await stale();
 			if (state.stamp !== this.stamp(stats)) {
 				const file = await open(path, "r");
 				const offset = state.size - state.witness.length;
@@ -756,31 +836,37 @@ export class JsonlSessionStore implements SessionStore {
 					let read = 0;
 					while (read < bytes.length) {
 						const { bytesRead } = await file.read(bytes, read, bytes.length - read, offset + read);
-						if (!bytesRead) throw stale();
+						if (!bytesRead) throw await stale();
 						read += bytesRead;
 					}
 				} finally {
 					await file.close();
 				}
-				if (!bytes.subarray(0, state.witness.length).equals(state.witness)) throw stale();
+				if (!bytes.subarray(0, state.witness.length).equals(state.witness)) throw await stale();
 				let appended = bytes.subarray(state.witness.length).toString("utf8");
 				if (appended && !state.terminated) {
-					if (!appended.startsWith("\n")) throw stale();
+					if (!appended.startsWith("\n")) throw await stale();
 					appended = appended.slice(1);
 				}
 				const lines = appended.split("\n");
-				if (lines.at(-1) === "") lines.pop();
+				const last = lines.pop() ?? "";
 				const entries = lines.map((line) => JSON.parse(line) as SessionEntry);
+				const unterminated = last === "" ? undefined : parseUnterminated(last);
+				if (unterminated) entries.push(unterminated);
+				const torn = last !== "" && !unterminated;
+				if (torn) reportTornLine(path);
 				validateSessionEntryStructure(entries, path);
 				validateSessionEntries(entries);
+				const end = torn ? bytes.lastIndexOf(10) + 1 : bytes.length;
 				state = {
 					...state,
 					stamp: this.stamp(stats),
-					size: Number(stats.size),
+					size: offset + end,
 					lastSeq: state.lastSeq + entries.length,
 					lastEntryId: entries.at(-1)?.id ?? state.lastEntryId,
-					terminated: bytes.at(-1) === 10,
-					witness: Buffer.from(bytes.subarray(-64)),
+					terminated: bytes.at(end - 1) === 10,
+					torn,
+					witness: witnessOf(bytes.subarray(0, end)),
 				};
 				this.fileStates.set(path, state);
 			}

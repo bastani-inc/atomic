@@ -50,6 +50,7 @@ import {
 	RELEASED_CHILD_WAKE_FAILURE_LABEL,
 } from "../../packages/subagents/src/runs/foreground/released-child-wakes.js";
 import {
+	interruptedStillRunningResult,
 	lateToolResultMessage,
 	SUBAGENT_OWNER_GENERATION,
 	SUBAGENT_RELEASE_AFTER_MS,
@@ -126,7 +127,14 @@ import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 const ORIGINAL_TASK = "original task";
 /** The detached call a released child waits on in these tests. */
 const RELEASED_CALL = { toolCallId: "ci-1", toolName: "wait_for_ci" } as const;
-const RECORD_WAIT_MS = 5_000;
+/**
+ * How long a poll waits for a child's record or worktree to reach a state. Each step behind it is a real in-process
+ * child session starting, reopening or ending, which took over 15 s on Windows with two suites running at once. The
+ * polls end as soon as the state is reached, so the ceiling costs a passing test nothing.
+ */
+const RECORD_WAIT_MS = 20_000;
+/** A launch, a quit and a resume of a real in-process child session, each awaited through {@link RECORD_WAIT_MS}. */
+const LAUNCH_QUIT_RESUME_TIMEOUT_MS = 60_000;
 
 const agent: AgentConfig = {
 	name: "worker",
@@ -2782,25 +2790,29 @@ test("resumeInFlight ask falls back to never without a UI (#3827)", async () => 
 	}
 });
 
-test("resumeInFlight auto resumes a subagent quit before a restart without asking (#3827)", async () => {
-	const h = harness();
-	const quit = await quitChild(h, "auto1");
-	await h.closeOwnerAndReopen("session-close");
-	const { ctx, ui } = startupContext(h);
+test(
+	"resumeInFlight auto resumes a subagent quit before a restart without asking (#3827)",
+	async () => {
+		const h = harness();
+		const quit = await quitChild(h, "auto1");
+		await h.closeOwnerAndReopen("session-close");
+		const { ctx, ui } = startupContext(h);
 
-	await resumeAwaitingSubagentChildren(h.deps, ctx, "auto", () => true);
+		await resumeAwaitingSubagentChildren(h.deps, ctx, "auto", () => true);
 
-	assert.deepEqual(ui.confirms, []);
-	const resumed = await waitForResumed(h, quit);
-	assert.equal(resumed.terminalStatus, "ok");
-	assert.equal(resumed.childSessionId, quit.childSessionId);
-	const relaunch = h.runs.at(-1)!;
-	assert.equal(relaunch.task, SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT);
-	assert.equal(relaunch.options.resumeSession, true);
-	assert.equal(relaunch.options.sessionManager?.getSessionId(), quit.childSessionId);
-	assert.equal(ui.notices.length, 1);
-	assert.equal(ui.notices[0]?.type, "info");
-});
+		assert.deepEqual(ui.confirms, []);
+		const resumed = await waitForResumed(h, quit);
+		assert.equal(resumed.terminalStatus, "ok");
+		assert.equal(resumed.childSessionId, quit.childSessionId);
+		const relaunch = h.runs.at(-1)!;
+		assert.equal(relaunch.task, SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT);
+		assert.equal(relaunch.options.resumeSession, true);
+		assert.equal(relaunch.options.sessionManager?.getSessionId(), quit.childSessionId);
+		assert.equal(ui.notices.length, 1);
+		assert.equal(ui.notices[0]?.type, "info");
+	},
+	LAUNCH_QUIT_RESUME_TIMEOUT_MS,
+);
 
 test("resumeInFlight never resumes subagents owned by a workflow stage (#3827)", async () => {
 	const h = harness({ stage: true });
@@ -3121,6 +3133,8 @@ test(
 			requestedModels: processWide.requestedModels,
 			launchHeartbeats: processWide.launchHeartbeats,
 			executionTimeouts: processWide.executionTimeouts,
+			// A retained released child keeps what it waits on for its notice; an evicted one keeps nothing (#5031).
+			releases: FINISHED_TASK_RETENTION,
 		});
 
 		const resumed = await h.call({ action: "resume", id: "retained0:0", message: "carry on" });
@@ -3294,6 +3308,11 @@ test("status names every call a released child waits on, and shows one stored wi
 	assert.equal(lines.length, 2, lines.join("\n"));
 	assert.match(lines[0] ?? "", /released · waiting on wait_for_ci \(ci-1\), deploy \(deploy-2\); it holds nothing/);
 	assert.match(lines[1] ?? "", /released · waiting; it holds nothing/);
+	// A released child is not paused and needs no resume (#5031).
+	assert.match(
+		lines[0] ?? "",
+		/it holds nothing and is not paused: it wakes by itself when that finishes.*needs no resume/,
+	);
 	assert.deepEqual(subagentChildrenAwaitingResume(h.ctx, "no-such-child:0"), []);
 });
 
@@ -3808,6 +3827,114 @@ test("a child of the earlier process whose call result is already held is woken 
 	await h.waitForLatest("heldrestart1:0", clearedOk);
 	assert.equal(h.runs.filter((run) => run.options.redispatchDetachedCalls).length, 0);
 	assert.equal(h.runs.filter((run) => run.task === lateToolResultMessage(green)).length, 1);
+});
+
+function wakeWith(h: Harness, dispatcher: AgentWakeDispatcher, childId: string, output: string): void {
+	void dispatcher
+		.deliver(subagentWakeKey(h.sessionManager.getSessionId(), childId), {
+			id: `tool-result:${childId}`,
+			kind: "tool-result",
+			toolResult: waitResult(output),
+		})
+		.catch((error) => dispatcher.reportUnobservedFailure(error));
+}
+
+async function releasedMember(
+	h: Harness,
+	runId: string,
+	index: number,
+	schedule: ReturnType<typeof createExecutionScheduler>,
+): Promise<SubagentChildRecord> {
+	h.releaseOriginal = true;
+	await settled(
+		h,
+		await h.admit(runId, schedule, { index, intercomSessionName: `subagent-worker-${runId}-${index}` }),
+	);
+	const released = await h.waitForLatest(
+		`${runId}:${index}`,
+		(record) => record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS,
+	);
+	h.releaseOriginal = false;
+	return released;
+}
+
+function wokenRuns(h: Harness, runId: string, index: number): Harness["runs"] {
+	return h.runs.filter(
+		(run) => run.options.runId === runId && (run.options.index ?? 0) === index && run.task !== ORIGINAL_TASK,
+	);
+}
+
+test("a released child woken while a sibling holds its run's only slot waits for that sibling to finish (#4856)", async () => {
+	const h = harness();
+	const dispatcher = bindProcessWakes(h);
+	const schedule = createExecutionScheduler(1);
+	const a = await releasedMember(h, "conc-live", 0, schedule);
+	const b = await h.admit("conc-live", schedule, { index: 1, intercomSessionName: "subagent-worker-conc-live-1" });
+	await h.waitForLatest("conc-live:1", (record) => record.launchLeafId !== undefined);
+
+	wakeWith(h, dispatcher, "conc-live:0", "CI green for A");
+	await sleep(150);
+	assert.deepEqual(wokenRuns(h, "conc-live", 0), [], "A waits while B holds the run's only slot");
+
+	await h.call({ action: "quit", id: "conc-live:1" });
+	await settled(h, b);
+	const woken = await h.waitForLatest("conc-live:0", (record) => record.taskId !== a.taskId && clearedOk(record));
+	assert.ok(woken.taskId);
+	assert.equal(wokenRuns(h, "conc-live", 0).length, 1, "A starts once B frees the slot");
+});
+
+test("released children of one run woken with no sibling running still take its concurrency limit's slots one at a time (#4856)", async () => {
+	const h = harness();
+	const dispatcher = bindProcessWakes(h);
+	const schedule = createExecutionScheduler(1);
+	await releasedMember(h, "conc-idle", 0, schedule);
+	await releasedMember(h, "conc-idle", 1, schedule);
+	const gates = [Promise.withResolvers<void>(), Promise.withResolvers<void>()] as const;
+	h.finishOn.set("CI green for 0", gates[0]);
+	h.finishOn.set("CI green for 1", gates[1]);
+
+	wakeWith(h, dispatcher, "conc-idle:0", "CI green for 0");
+	wakeWith(h, dispatcher, "conc-idle:1", "CI green for 1");
+	const started = () => [0, 1].filter((index) => wokenRuns(h, "conc-idle", index).length > 0);
+	const deadline = Date.now() + RECORD_WAIT_MS;
+	while (started().length === 0 && Date.now() < deadline) await sleep(10);
+	await sleep(150);
+	const [first] = started();
+	assert.equal(started().length, 1, "one woken child runs; the other waits for the run's only slot");
+	assert.ok(first !== undefined);
+
+	gates[first]?.resolve();
+	gates[1 - first]?.resolve();
+	for (const index of [0, 1])
+		await h.waitForLatest(
+			`conc-idle:${index}`,
+			(record) => wokenRuns(h, "conc-idle", index).length === 1 && clearedOk(record),
+		);
+});
+
+test("a woken child waiting for its run's slot leaves parallel.runningCapacity to another run's woken child, which starts at once (#4856)", async () => {
+	const h = harness();
+	h.deps.config.parallel = { runningCapacity: 1 };
+	const dispatcher = bindProcessWakes(h);
+	const runA = createExecutionScheduler(1);
+	await releasedMember(h, "hol-a", 0, runA);
+	const a1 = await h.admit("hol-a", runA, { index: 1, intercomSessionName: "subagent-worker-hol-a-1" });
+	await h.waitForLatest("hol-a:1", (record) => record.launchLeafId !== undefined);
+	await releasedMember(h, "hol-b", 0, createExecutionScheduler(1));
+
+	wakeWith(h, dispatcher, "hol-a:0", "CI green for A");
+	await sleep(150);
+	assert.deepEqual(wokenRuns(h, "hol-a", 0), [], "A waits while its sibling holds its run's only slot");
+	wakeWith(h, dispatcher, "hol-b:0", "CI green for B");
+	await h.waitForLatest("hol-b:0", () => wokenRuns(h, "hol-b", 0).length === 1);
+	assert.deepEqual(wokenRuns(h, "hol-a", 0), [], "A still waits for its run");
+
+	await h.call({ action: "quit", id: "hol-a:1" });
+	await settled(h, a1);
+	await h.waitForLatest("hol-a:0", (record) => wokenRuns(h, "hol-a", 0).length === 1 && clearedOk(record));
+	await h.waitForLatest("hol-b:0", (record) => clearedOk(record));
+	await dispatcher.whenIdle();
+	assert.equal(dispatcher.stats().running, 0);
 });
 
 /** A detached call of the child's last turn whose process died with the earlier owner (#4848). */
@@ -4503,4 +4630,68 @@ test("pause of a released child whose resume is starting it stops the resumed ru
 		"resuming:0",
 		(record) => record.state === "terminal" && record.terminalStatus === "paused" && record.taskId === taskId,
 	);
+});
+
+test("a result batched with a resume is kept for the child when the resumed run is paused before saving it (#5012)", async () => {
+	const h = harness();
+	const dispatcher = await releasedWithWakes(h, "resume-batch");
+	const owner = h.sessionManager.getSessionId();
+	const childId = "resume-batch:0";
+	const key = subagentWakeKey(owner, childId);
+	const released = h.latest(childId);
+	assert.ok(released);
+	await endChildSessionOnCalls(released, [RELEASED_CALL]);
+	const resumedRun = Promise.withResolvers<void>();
+	h.finishOn.set("resume note", resumedRun);
+	const green = waitResult("CI green");
+	// A wake that asks for nothing is being handled, so the result and the resume behind it arrive in one batch.
+	const idle = dispatcher.deliver(key, { id: "redispatch:none", kind: "tool-result" });
+	const result = dispatcher.deliver(key, { id: "tool-result:ci-1", kind: "tool-result", toolResult: green });
+	const resumed = resumeReleasedChild(owner, childId, { prompt: "resume note", message: "resume note" });
+	assert.ok(resumed);
+	await idle;
+	const outcome = await resumed;
+	assert.equal(outcome.kind, "restored", JSON.stringify(outcome));
+	await result;
+	assert.equal(h.runs.length, 2, "one run takes the resume and the result together");
+	assert.deepEqual(h.runs.at(-1)?.options.resumeToolResults, [green]);
+	// The resumed run is paused before it saved the result.
+	await h.waitForLatest(childId, (record) => record.state === "running");
+	await h.call({ action: "pause", id: childId });
+	await h.waitForLatest(childId, (record) => record.terminalStatus === "paused");
+	h.finishOn.clear();
+
+	await h.call({ action: "resume", id: childId });
+	await h.waitForLatest(childId, (record) => h.runs.length === 3 && record.state === "terminal");
+
+	assert.deepEqual(h.runs.at(-1)?.options.resumeToolResults, [green], "the resume after the pause hands it over");
+});
+
+test("a released child of the earlier process told a call is still running starts its waited call again once and hears of the lost call once (#5014)", async () => {
+	const h = harness();
+	const deploy = { toolCallId: "deploy-2", toolName: "wait_for_deploy" };
+	await releasedByEarlierProcess(h, "restart-still", {
+		stillRunning: [{ ...deploy, ownerGeneration: "earlier-process" }],
+	});
+	const redispatched = Promise.withResolvers<DetachedToolResult>();
+	h.redispatchCalls = [{ ...RELEASED_CALL, result: redispatched.promise, abort() {} }];
+	const lost = lateToolResultMessage(interruptedStillRunningResult(deploy));
+	const toldLost = () => h.runs.filter((run) => [run.task, ...(run.options.resumeFollowUps ?? [])].includes(lost));
+
+	const dispatcher = bindProcessWakes(h);
+	const heard = await h.waitForLatest("restart-still:0", (record) => toldLost().length > 0 && clearedOk(record));
+	assert.ok(heard.taskId);
+	await settled(h, heard.taskId);
+	await dispatcher.whenIdle();
+	assert.equal(h.runs.filter((run) => run.options.redispatchDetachedCalls).length, 1, "its call starts again once");
+
+	const green = waitResult("CI green after the restart");
+	redispatched.resolve(green);
+	await h.waitForLatest(
+		"restart-still:0",
+		(record) => h.runs.some((run) => run.task === lateToolResultMessage(green)) && clearedOk(record),
+	);
+	await dispatcher.whenIdle();
+	assert.equal(toldLost().length, 1, "the lost call is reported once");
+	assert.equal(h.runs.filter((run) => run.options.redispatchDetachedCalls).length, 1);
 });
