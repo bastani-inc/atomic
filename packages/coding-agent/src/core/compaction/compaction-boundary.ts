@@ -6,6 +6,7 @@ import {
 	createCustomMessage,
 	messageIsLlmVisible,
 	messageStartsLlmUserTurn,
+	toolBatchCutStart,
 } from "../messages.ts";
 import { normalizeDerivedSessionEntries } from "../session-entry-normalization.ts";
 import { applyContextEdit, buildSessionProjection, collectContextEdits } from "../session-manager-history.ts";
@@ -272,7 +273,10 @@ export function prepareCompactionBoundary(
 
 	const visible = visibleEntries(entries, regionStart, collectContextEdits(entries));
 	const parameters = normalizeCompactionParameters({ ...settings, ...options }, autoDetectCompactionQuery(entries));
-	const tailStart = Math.max(0, visible.length - parameters.preserve_recent);
+	// A cut never separates tool calls from their results: the tail starts at the assistant that made them.
+	const tailStart = toolBatchCutStart(visible, Math.max(0, visible.length - parameters.preserve_recent), (item) => [
+		item.message,
+	]);
 	const regionMessages = visible.slice(0, tailStart);
 	const tailMessages = visible.slice(tailStart);
 

@@ -56,6 +56,11 @@ export class PendingQuestionIndex {
     for (const question of questions) this.away?.forgetLive(question);
   }
 
+  /** #4996: what `work` writes to the away store is one transaction, not one commit per write. */
+  batch<T>(work: () => T): T {
+    return this.away === undefined ? work() : this.away.batch(work);
+  }
+
   private awayAsks(): AwayAsks {
     if (this.away === undefined) {
       this.away = new AwayAsks();
@@ -99,6 +104,23 @@ export class PendingQuestionIndex {
     this.awayAsks().keep(
       questions,
       senderReturnAddress ?? ((question) => this.returnAddressOf(question.senderSessionId)),
+      movable,
+    );
+  }
+
+  /**
+   * Keep questions whose recipient is away until it is back. Returns those refused because that recipient's away queue
+   * is full; their askers are connected, and are told at once (#4996).
+   */
+  keepDormantForRecipient(
+    questions: readonly PendingQuestion[],
+    /** #4997: as `keepDormant`'s. */
+    movable?: (question: PendingQuestion) => boolean,
+  ): PendingQuestion[] {
+    // #4950: each keeps its asker's return address too, so its failure reaches it even if this broker goes first.
+    return this.awayAsks().keepForAwayRecipient(
+      questions,
+      (question) => this.returnAddressOf(question.senderSessionId),
       movable,
     );
   }
@@ -356,10 +378,10 @@ export class PendingQuestionIndex {
   }
 
   /**
-   * `keepLive`: the questions are about to be kept for an away peer (`keepDormant`), which removes their live routes in
-   * the same write, so a broker that stops in between still has them (#4997).
+   * `keepLiveRecords`: the caller writes what replaces each question's live record first, then forgets the ones nothing
+   * keeps, so a crash in between loses no ask (a broker adopting both records keeps one).
    */
-  takeForSender(senderSessionId: string, options: { readonly keepLive?: boolean } = {}): PendingQuestion[] {
+  takeForSender(senderSessionId: string, options: { readonly keepLiveRecords?: boolean } = {}): PendingQuestion[] {
     const pending: PendingQuestion[] = [];
     for (const [messageId, routes] of this.questions) {
       const remaining = routes.filter((route) => {
@@ -379,14 +401,14 @@ export class PendingQuestionIndex {
       if (remaining.length === 0) this.parked.delete(key);
       else parked.questions = remaining;
     }
-    if (options.keepLive !== true) this.forgetLive(pending);
+    if (options.keepLiveRecords !== true) this.forgetLive(pending);
     return pending;
   }
 
-  /** `keepLive`: as `takeForSender`'s (#4997). */
-  takeForTarget(targetSessionId: string, options: { readonly keepLive?: boolean } = {}): PendingQuestion[] {
+  /** `keepLiveRecords`: as for {@link takeForSender}, the caller forgets them once what replaces them is written. */
+  takeForTarget(targetSessionId: string, options: { readonly keepLiveRecords?: boolean } = {}): PendingQuestion[] {
     const pending = this.removeForTarget(targetSessionId);
-    if (options.keepLive !== true) this.forgetLive(pending);
+    if (options.keepLiveRecords !== true) this.forgetLive(pending);
     return pending;
   }
 

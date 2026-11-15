@@ -25,7 +25,7 @@ afterAll(() => harness?.cleanup(), REAL_BROKERS_HOOK_TIMEOUT_MS);
 beforeEach(() => harness.ensureBrokersRunning(), REAL_BROKERS_HOOK_TIMEOUT_MS);
 
 const unique = (label: string): string => `${label}-${randomUUID().slice(0, 8)}`;
-const OTHER: Record<BrokerNode, BrokerNode> = { a: "b", b: "a" };
+const OTHER: Record<BrokerNode, BrokerNode> = { a: "b", b: "a", c: "a" };
 
 /** Every outcome an asker's connections saw for one ask: replies, failed-ask replies, and peer disconnects. */
 function outcomeLog() {

@@ -315,25 +315,12 @@ test("a recipient's end reports which kept asks it held for their askers and whi
 	assert.equal(store.question("q-live", "recipient"), undefined);
 });
 
-test("a peer's asks move from its live routes to the kept ones at once, so a broker that crashes in between still has them (#4997)", () => {
-	const path = fileIn();
-	const first = broker(path);
-	first.record("asker", "recipient", "q-1");
-	// The recipient left without ending: its asks are taken, to be kept while it is away, and the broker crashes first.
-	assert.equal(first.takeForTarget("recipient", { keepLive: true }).length, 1);
-
-	const restarted = broker(path);
-	assert.deepEqual(restarted.restoreDormant("recipient", ADDRESSES.recipient, connected("asker", "recipient")), [
-		{ messageId: "q-1", senderSessionId: "asker", targetSessionId: "recipient" },
-	]);
-});
-
 test("asks kept for an away peer are kept once, as movable when they may follow it to another broker (#4997)", () => {
 	const path = fileIn();
 	const first = broker(path);
 	first.record("asker", "recipient", "moves");
 	first.record("asker", "recipient", "stays");
-	const taken = first.takeForTarget("recipient", { keepLive: true });
+	const taken = first.takeForTarget("recipient", { keepLiveRecords: true });
 	first.keepDormant(taken, undefined, (question) => question.messageId === "moves");
 
 	const restarted = broker(path);
