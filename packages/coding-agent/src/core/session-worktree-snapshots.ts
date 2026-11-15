@@ -181,7 +181,8 @@ export class SessionWorktreeSnapshotRecorder {
 				continue;
 			}
 			const previous = this.deps.sessionManager.getLatestWorktreeSnapshots().get(root);
-			// A capture in a partly restored worktree records it as derived from the snapshot it lacks (#4922).
+			// A capture in a partly restored worktree records it as derived from the snapshot it lacks (#4922); one of a
+			// full restore that carried work over records the merged worktree, or keeps naming the work it kept (#5009).
 			const pin = degradedRestorePin(this.deps.sessionManager, root);
 			try {
 				const started = performance.now();
@@ -196,7 +197,7 @@ export class SessionWorktreeSnapshotRecorder {
 						[],
 						undefined,
 						captureMs,
-						pin !== undefined && pin.snapshotId !== result.snapshot.id ? pin.snapshotId : undefined,
+						captureDegradedFrom(pin, result.snapshot.id),
 					);
 					await keepLatestSnapshotCommit(this.deps.sessionManager, root, result.snapshot);
 				} else if (result.status === "unavailable") {
@@ -501,6 +502,16 @@ export interface DegradedRestorePin {
 	readonly base?: { readonly head: string; readonly tree: string };
 	/** Whether {@link DEGRADED_RESTORE_RETENTION_DAYS} have passed since the partial restore, which ends the pin. */
 	readonly lapsed: boolean;
+	/**
+	 * After a full restore of `snapshotId` carried the work of the partly restored worktree over (#5009): the snapshot
+	 * of that work, which stays kept until the merged worktree is recorded, so a resume elsewhere carries it over again.
+	 */
+	readonly work?: string;
+	/**
+	 * Whether that work conflicted with the full restore and was kept apart (#5009): it stays kept, and the checkout
+	 * continues from its latest snapshot, until `discardDegradedRestore` releases it.
+	 */
+	readonly kept?: boolean;
 }
 
 /** What the active branch records of one checkout: its latest snapshot, and the pin of a partial restore, if any. */
@@ -532,9 +543,20 @@ function checkoutRecords(
 		const original = originalRoot(entry.root, mappings);
 		const previous = checkouts.get(original)?.pin;
 		let pin: DegradedRestorePin | undefined;
-		if (entry.degradedFrom !== undefined) {
+		const carried = entry.restore?.degraded === undefined ? entry.restore?.degradedWork : undefined;
+		if (entry.degradedFrom !== undefined && carried?.snapshotId === entry.degradedFrom) {
+			// A full restore that carried the work over keeps that work until the merged worktree is recorded (#5009).
+			pin = {
+				snapshotId: entry.snapshotId,
+				since: entry.timestamp,
+				...(previous?.base === undefined ? {} : { base: previous.base }),
+				lapsed: isLapsed(entry.timestamp, now),
+				work: entry.degradedFrom,
+				...(carried.outcome === "kept" ? { kept: true } : {}),
+			};
+		} else if (entry.degradedFrom !== undefined) {
 			pin =
-				previous?.snapshotId === entry.degradedFrom
+				previous?.snapshotId === entry.degradedFrom || (previous?.kept && previous.work === entry.degradedFrom)
 					? previous
 					: { snapshotId: entry.degradedFrom, since: entry.timestamp, lapsed: isLapsed(entry.timestamp, now) };
 		} else if (entry.restore?.degraded) {
@@ -553,7 +575,45 @@ function checkoutRecords(
 
 /** The snapshot a resume restores for `checkout`: the pinned one while its pin stands, else the latest (#4922). */
 function restoreTargetId(checkout: CheckoutRecord): string {
-	return checkout.pin !== undefined && !checkout.pin.lapsed ? checkout.pin.snapshotId : checkout.latest;
+	return checkout.pin !== undefined && !checkout.pin.lapsed && !checkout.pin.kept
+		? checkout.pin.snapshotId
+		: checkout.latest;
+}
+
+/**
+ * The snapshot a capture of the checkout pinned by `pin` names in `degradedFrom`, given that it records `snapshotId`:
+ * the snapshot a partial restore lacks, or kept conflicting work (#5009); none once a capture records the merged
+ * worktree of a full restore that carried the work over, which ends the pin.
+ */
+function captureDegradedFrom(pin: DegradedRestorePin | undefined, snapshotId: string): string | undefined {
+	const named =
+		pin === undefined ? undefined : pin.work === undefined ? pin.snapshotId : pin.kept ? pin.work : undefined;
+	return named === snapshotId ? undefined : named;
+}
+
+/**
+ * Records again the checkouts whose full restore carried the work of a partly restored worktree over but whose merged
+ * worktree a capture has not recorded yet (#5009), where that worktree is still here holding the restored snapshot's
+ * commit. Recording it ends the pin. A checkout that cannot be recorded keeps its pin; the reason goes to the debug log.
+ */
+export async function recordPendingCarriedWork(
+	sessionManager: SessionManager,
+	options: { readonly settings: WorktreeSnapshotSettings; readonly storeDir?: string; readonly signal?: AbortSignal },
+): Promise<void> {
+	const blobs = sessionManager.getSessionStore().snapshotBlobs;
+	if (blobs === undefined || !options.settings.enabled) return;
+	const mappings = sessionManager.getWorktreeRootMappings();
+	const records = sessionManager.getWorktreeSnapshotRecords();
+	const storeDir = resolve(options.storeDir ?? defaultWorktreeSnapshotStoreDir());
+	for (const [original, checkout] of checkoutRecords(sessionManager, mappings)) {
+		const pin = checkout.pin;
+		if (pin?.work === undefined || pin.kept || pin.lapsed || checkout.latest !== pin.snapshotId) continue;
+		const restored = records.get(pin.snapshotId);
+		const root = mapRestoredPath(original, mappings);
+		if (restored === undefined || !existsSync(root)) continue;
+		if (await pooledWorktreeOwnedElsewhere(storeDir, root, sessionManager.getSessionId())) continue;
+		await recordCarriedWork(sessionManager, root, restored.head, options);
+	}
 }
 
 /**
@@ -663,7 +723,7 @@ export function lapsedDegradedRestores(
 ): { readonly root: string; readonly pin: DegradedRestorePin; readonly latest: string }[] {
 	const mappings = sessionManager.getWorktreeRootMappings();
 	return [...checkoutRecords(sessionManager, mappings)].flatMap(([original, checkout]) =>
-		checkout.pin?.lapsed && checkout.pin.snapshotId !== checkout.latest
+		checkout.pin?.lapsed && checkout.pin.work === undefined && checkout.pin.snapshotId !== checkout.latest
 			? [{ root: mapRestoredPath(original, mappings), pin: checkout.pin, latest: checkout.latest }]
 			: [],
 	);
@@ -821,10 +881,13 @@ export async function resumeSessionWorktree(
 	// `snapshot` cannot be, and puts on top of it when it can (#4922).
 	const pinnedWork = (original: string, snapshot: WorktreeSnapshot) => {
 		const checkout = checkouts.get(original);
-		if (checkout?.pin === undefined || checkout.pin.snapshotId !== snapshot.id || checkout.latest === snapshot.id)
-			return undefined;
-		const work = records.get(checkout.latest);
-		return work === undefined ? undefined : { pin: checkout.pin, work };
+		const pin = checkout?.pin;
+		if (checkout === undefined || pin === undefined || pin.lapsed || pin.snapshotId !== snapshot.id) return undefined;
+		// After a full restore whose merged worktree is not recorded yet, the work it carried over (#5009).
+		const workId = pin.work ?? checkout.latest;
+		if (workId === snapshot.id) return undefined;
+		const work = records.get(workId);
+		return work === undefined ? undefined : { pin, work };
 	};
 	const missingRecords: MissingSnapshotRecord[] = [];
 	for (const [root, snapshotId] of latestIds) {
@@ -857,11 +920,14 @@ export async function resumeSessionWorktree(
 			if (isInside(root, cwd) && (!selected || root.length > selected.root.length)) selected = { root, snapshot };
 			if (options.keepInPlace?.has(root)) continue;
 			const pinned = pinnedWork(original, snapshot);
+			// Conflicting work a full restore kept apart stays kept, whatever the checkout is restored from (#5009).
+			const pin = checkouts.get(original)?.pin;
+			const keptWork = pin?.kept && !pin.lapsed && pin.work !== snapshot.id ? pin.work : undefined;
 			// A pinned checkout left unrestored keeps its pin and the work done in its partly restored worktree (#4922).
 			const leave = (reason: Error) =>
 				left.push(
 					pinned === undefined
-						? { root, snapshot, reason }
+						? { root, snapshot, reason, ...(keptWork === undefined ? {} : { degradedFrom: keptWork }) }
 						: { root, snapshot: pinned.work, reason, degradedFrom: snapshot.id },
 				);
 			const cannot = options.cannotRestore?.get(root);
@@ -1013,6 +1079,7 @@ export async function resumeSessionWorktree(
 			};
 			mappings.push(mapping);
 			if (restoredFrom !== snapshot) pinnedTo.set(mapping, snapshot.id);
+			else if (keptWork !== undefined && degradedWork === undefined) pinnedTo.set(mapping, keptWork);
 			if (lease) {
 				leases.set(mapping, lease);
 				admitted.add(lease.repository);
@@ -1048,9 +1115,15 @@ export async function resumeSessionWorktree(
 				hostWarnings.get(mapping),
 				undefined,
 				undefined,
-				pinnedTo.get(mapping),
+				// Work carried over stays kept until the merged worktree is recorded, or released when it conflicted (#5009).
+				pinnedTo.get(mapping) ??
+					(mapping.degradedWork === undefined || mapping.degradedWork.outcome === "unavailable"
+						? undefined
+						: mapping.degradedWork.snapshotId),
 			);
-			if (mapping.degradedWork?.outcome === "applied") await recordCarriedWork(sessionManager, mapping, options);
+			if (mapping.degradedWork?.outcome === "applied") {
+				await recordCarriedWork(sessionManager, mapping.to, records.get(mapping.snapshotId)?.head, options);
+			}
 		}
 		const continuing = mapRestoredPath(cwd, mappings);
 		const recordedHere = selected !== undefined && left.some((checkout) => checkout.root === selected!.root);
@@ -1137,26 +1210,28 @@ async function restorePinnedWorktree(
 }
 
 /**
- * Records the restored worktree of `mapping` as it is once a restore carried the work of a partly restored worktree
- * over (#4922), so the session holds that work without waiting for a turn. A capture that fails leaves it to the next
- * turn's capture; the reason goes to the debug log.
+ * Records the restored worktree at `root` as it is once a restore carried the work of a partly restored worktree over
+ * (#4922), so the session holds that work without waiting for a turn, which ends the pin. A worktree whose HEAD is no
+ * longer `head` is left alone. A capture that fails keeps the pin, and with it the carried work, for the next turn's
+ * capture or resume to record (#5009); the reason goes to the debug log.
  */
 async function recordCarriedWork(
 	sessionManager: SessionManager,
-	mapping: WorktreeRootMapping,
+	root: string,
+	head: string | undefined,
 	options: Pick<ResumeSessionWorktreeOptions, "settings" | "signal">,
 ): Promise<void> {
 	const blobs = sessionManager.getSessionStore().snapshotBlobs;
 	if (blobs === undefined) return;
 	try {
-		const result = await captureWorktreeSnapshot(mapping.to, {
+		const result = await captureWorktreeSnapshot(root, {
 			settings: options.settings,
 			blobs,
 			signal: options.signal,
 		});
-		if (result.status === "captured" || result.status === "unchanged") {
+		if ((result.status === "captured" || result.status === "unchanged") && result.snapshot.head === head) {
 			await sessionManager.appendWorktreeSnapshot(
-				mapping.to,
+				root,
 				result.snapshot.id,
 				result.status === "captured" ? result.snapshot : undefined,
 			);
@@ -1339,22 +1414,32 @@ function restoreNotices(
 	include: (entry: Extract<SessionEntry, { type: "worktree_snapshot" }>) => boolean,
 ): { readonly type: "info" | "warning"; readonly message: string }[] {
 	const records = sessionManager.getWorktreeSnapshotRecords();
-	return sessionManager.getBranch().flatMap((entry) => {
-		if (entry.type !== "worktree_snapshot" || !include(entry)) return [];
+	const branch = sessionManager.getBranch();
+	// The snapshots of conflicting work a full restore kept apart, which later entries go on naming (#5009).
+	const keptWork = new Set<string>();
+	return branch.flatMap((entry, index) => {
+		if (entry.type !== "worktree_snapshot") return [];
+		if (entry.restore?.degradedWork?.outcome === "kept") keptWork.add(entry.restore.degradedWork.snapshotId);
+		if (!include(entry)) return [];
 		if (entry.unrestored) {
 			return [{ type: "warning" as const, message: formatUnrestoredNotice(entry.root, entry.unrestored) }];
 		}
 		if (!entry.restore) return [];
 		const snapshot = records.get(entry.snapshotId);
+		const work = entry.restore.degradedWork;
 		const pinned =
-			entry.degradedFrom === undefined
+			entry.degradedFrom === undefined || entry.degradedFrom === work?.snapshotId || keptWork.has(entry.degradedFrom)
 				? []
 				: [{ type: "warning" as const, message: formatPinnedRestoreNotice(entry.restore, entry.degradedFrom) }];
 		if (entry.restore.degraded) {
 			const message = formatDegradedRestoreNotice(entry.restore, snapshot, entry.restoreWarnings);
 			return [{ type: "warning" as const, message }, ...pinned];
 		}
-		const work = entry.restore.degradedWork;
+		// Applied work no capture recorded since, whose pin stands until one does (#5009).
+		const unrecorded =
+			work?.outcome === "applied" &&
+			entry.degradedFrom === work.snapshotId &&
+			!branch.slice(index + 1).some((later) => later.type === "worktree_snapshot" && later.root === entry.root);
 		return [
 			{ type: "info" as const, message: formatWorktreeRestoreNotice(entry.restore) },
 			...pinned,
@@ -1366,6 +1451,9 @@ function restoreNotices(
 							message: formatDegradedWorkNotice(entry.restore, work),
 						},
 					]),
+			...(unrecorded && work !== undefined
+				? [{ type: "warning" as const, message: formatUnrecordedWorkNotice(entry.restore, work) }]
+				: []),
 			...[...(snapshot ? snapshotRestoreWarnings(snapshot) : []), ...(entry.restoreWarnings ?? [])].map(
 				(warning) => ({ type: "warning" as const, message: formatWorktreeRestoreWarning(warning) }),
 			),
@@ -1389,10 +1477,18 @@ export function formatDegradedWorkNotice(mapping: WorktreeRootMapping, work: Wor
 		case "applied":
 			return `Also applied ${done}, on top of snapshot ${short(mapping.snapshotId)} in ${mapping.to}.`;
 		case "kept":
-			return `Did not apply ${done}: it conflicts with snapshot ${short(mapping.snapshotId)}. Commit ${short(work.commit ?? "")} (ref ${work.ref}) holds it; run \`git diff ${work.base} ${work.commit} | git apply --3way\` in ${mapping.to} to apply it.`;
+			return `Did not apply ${done}: it conflicts with snapshot ${short(mapping.snapshotId)}. Commit ${short(work.commit ?? "")} (ref ${work.ref}) holds it; run \`git diff ${work.base} ${work.commit} | git apply --3way\` in ${mapping.to} to apply it. Snapshot ${short(work.snapshotId)} stays in the session's storage, so a resume on another machine keeps it as such a commit too, until discardDegradedRestore releases it.`;
 		case "unavailable":
 			return `Could not read ${done} here (${work.reason}), so it is not in ${mapping.to}; it is still in that worktree on the machine where it was done.`;
 	}
+}
+
+/**
+ * The notice for work a full restore carried over whose merged worktree could not be recorded yet (#5009): the restored
+ * snapshot stays the restore target and the work stays kept until the next turn or resume records it.
+ */
+export function formatUnrecordedWorkNotice(mapping: WorktreeRootMapping, work: WorktreeDegradedWork): string {
+	return `The work applied in ${mapping.to} is not recorded yet: snapshot ${short(work.snapshotId)} stays kept, and a resume elsewhere applies it on top of snapshot ${short(mapping.snapshotId)} again, until the next turn or resume records the worktree.`;
 }
 
 /**
