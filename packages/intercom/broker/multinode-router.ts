@@ -508,7 +508,11 @@ export class MultiNodeRouter {
 		router.every(BROKER_LEASE_RENEW_INTERVAL_MS, () => router.renew());
 		router.every(OUTBOX_BACKUP_POLL_INTERVAL_MS, () => router.backupPoll());
 		// #4992: what a broker that stopped mid-departure left is finished now, and at every backup poll.
-		void router.sweepEndedAsks().catch((error: Error) => router.report(error));
+		// #5154: and the asks to recipients lost long enough.
+		void router
+			.sweepEndedAsks()
+			.then(() => router.sweepLostRecipients())
+			.catch((error: Error) => router.report(error));
 		router.every(MULTI_NODE_OUTCOME_POLL_INTERVAL_MS, () => router.outcomePoll());
 		for (const session of options.host.sessions.values()) void router.sessionRegistered(session);
 		return router;
@@ -708,9 +712,7 @@ export class MultiNodeRouter {
 	 */
 	private async sweepLostRecipients(): Promise<void> {
 		const { afterRestartMs, afterStaleLeaseMs } = this.lostBounds;
-		const presences = (await this.state.leases.listLive("presence", Number.MAX_SAFE_INTEGER)).filter(
-			(lease) => lease.subject.kind === "presence",
-		);
+		const presences = await this.state.leases.listLive("presence", Number.MAX_SAFE_INTEGER);
 		const live = new Set<string>();
 		const lost = new Map<string, { from: SessionInfo; targetIdentity: string; boundMs: number }>();
 		for (const lease of presences) {
@@ -2669,7 +2671,7 @@ export class MultiNodeRouter {
 			if (instanceKey !== this.instanceKey || pid === undefined || this.isProcessAlive(pid)) continue;
 			// #5154: the sessions it had present may have ended with it unrecorded: they are lost until they register again.
 			const present = (await this.state.leases.listLive("presence", Number.MAX_SAFE_INTEGER)).filter(
-				(presence) => presence.holderId === lease.holderId && presence.subject.kind === "presence",
+				(presence) => presence.holderId === lease.holderId,
 			);
 			await this.state.knownSessions.markLost(
 				present.map((presence) => (presence.subject as RecipientPresenceSubject).targetIdentity),

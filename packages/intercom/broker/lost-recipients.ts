@@ -27,7 +27,7 @@ export interface LostRecipientBounds {
 }
 
 function boundFrom(value: string | undefined, fallback: number): number {
-	const parsed = value === undefined ? Number.NaN : Number(value);
+	const parsed = value === undefined || value.trim() === "" ? Number.NaN : Number(value);
 	return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
