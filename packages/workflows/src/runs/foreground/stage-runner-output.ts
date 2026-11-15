@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import type { AgentSession, PromptOptions } from "@bastani/atomic";
+import { type AgentSession, type PromptOptions, sliceHead } from "@bastani/atomic";
 import type { StageOutputOptions, StagePromptOptions, WorkflowMaxOutput } from "../../shared/types.js";
 import { ensureWorkflowArtifactRunDirectory, workflowArtifactRunPath } from "../../shared/workflow-artifacts.js";
 
@@ -49,7 +49,7 @@ function truncateByBytes(text: string, maxBytes: number): { text: string; trunca
 		if (Buffer.byteLength(text.slice(0, mid), "utf8") <= maxBytes) low = mid;
 		else high = mid - 1;
 	}
-	return { text: text.slice(0, low), truncated: true };
+	return { text: sliceHead(text, low), truncated: true };
 }
 
 function truncateOutput(text: string, maxOutput: WorkflowMaxOutput | undefined): string {

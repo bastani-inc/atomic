@@ -6,6 +6,7 @@
  * still targets the visible root. Shared status listings keep their looser
  * root/parent attribution and must not import this module.
  */
+import { sliceHead } from "@bastani/atomic";
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import { runStageIndex } from "../shared/run-stage-index.js";
 import type { PendingPrompt, RunSnapshot, RunStatus, StageInputRequest, StageSnapshot } from "../shared/store-types.js";
@@ -154,11 +155,7 @@ function normalizePromptDisplay(message: string): string {
 }
 
 function boundPromptDisplay(message: string): string {
-	if (message.length <= MAX_PROMPT_DISPLAY_CHARS) return message;
-	let end = MAX_PROMPT_DISPLAY_CHARS;
-	const lead = message.charCodeAt(end - 1);
-	if (lead >= 0xd800 && lead <= 0xdbff) end -= 1;
-	return message.slice(0, end);
+	return sliceHead(message, MAX_PROMPT_DISPLAY_CHARS);
 }
 
 function isDisplayablePrompt(message: string): boolean {

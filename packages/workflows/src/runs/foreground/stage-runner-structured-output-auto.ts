@@ -3,6 +3,8 @@ import {
 	findDecisionError,
 	isDecisionOutputError,
 	type StructuredOutputCapture,
+	sliceHead,
+	sliceTail,
 } from "@bastani/atomic";
 import type { TSchema } from "typebox";
 import {
@@ -41,7 +43,7 @@ export interface AutomaticStructuredOutputEvidence {
 function boundedText(text: string, limit: number): string {
 	if (text.length <= limit) return text;
 	const head = Math.ceil(limit / 2);
-	return `${text.slice(0, head)}\n[… ${text.length - limit} characters omitted …]\n${text.slice(text.length - (limit - head))}`;
+	return `${sliceHead(text, head)}\n[… ${text.length - limit} characters omitted …]\n${sliceTail(text, limit - head)}`;
 }
 
 function conversationText(message: StageMessage): AutomaticStructuredOutputMessage | undefined {

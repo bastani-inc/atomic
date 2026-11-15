@@ -129,6 +129,29 @@ export function goneRecipientReason(childName: string, reason: string): string {
 	return `Subagent \`${childName}\` did not survive the restart and is gone${reason.trim() ? `: ${reason.trim()}` : ""}. The message was not sent; launch a fresh subagent if its work is still needed.`;
 }
 
+const RESTORING_RECIPIENT_GONE_REASON_MAX = 1_000;
+
+/** At most `max` UTF-16 units of `reason`, never ending in half of a surrogate pair (#5097). */
+function boundedReason(reason: string): string {
+	const lead = reason.charCodeAt(RESTORING_RECIPIENT_GONE_REASON_MAX - 1);
+	const end = lead >= 0xd800 && lead <= 0xdbff ? RESTORING_RECIPIENT_GONE_REASON_MAX - 1 : RESTORING_RECIPIENT_GONE_REASON_MAX;
+	return reason.slice(0, end);
+}
+
+/**
+ * The reasons an owner gave for ending a reservation, bounded for the broker to keep. A blank refusal is none. The
+ * broker cannot load `@bastani/atomic`, whose `sliceHead` cuts text this way for the extensions.
+ */
+export function boundedReleaseReasons(
+	gone: string | undefined,
+	refusal: string | undefined,
+): { readonly gone: string | undefined; readonly refusal: string | undefined } {
+	return {
+		gone: gone === undefined ? undefined : boundedReason(gone),
+		refusal: refusal?.trim() ? boundedReason(refusal) : undefined,
+	};
+}
+
 /** Why a send held for a reservation was refused or timed out: a parked released child is never woken for it. */
 export function unrestoredReasonCode(reservationKey: string, wake: boolean): DeliveryFailureReasonCode {
 	return isReleasedReservationKey(reservationKey) && !wake ? "recipient_parked" : "recipient_not_restored";

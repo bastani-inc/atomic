@@ -24,6 +24,7 @@ import {
 	type SubagentChildRecord,
 } from "../../packages/subagents/src/runs/foreground/subagent-child-records.js";
 import {
+	awaitSubagentChildRestoration,
 	recordReportedGoneSubagentChildren,
 	restoredChildrenAwaitingIntercom,
 	restoreSubagentChild,
@@ -59,6 +60,10 @@ function taskHost(owner: string): AgentTaskHost {
 	});
 }
 const RECORD_WAIT_MS = 5_000;
+/** Long enough that a target matched only at the deadline is plainly late, short enough to stay inside the test budget. */
+const UNMATCHED_TARGET_WAIT_MS = 10_000;
+/** A wait that ends while a restoration is still blocked. */
+const SHORT_RESTORE_WAIT_MS = 200;
 
 const agent: AgentConfig = {
 	name: "worker",
@@ -855,6 +860,119 @@ test("a child reported gone on one resume is neither retried nor reported again 
 		assert.equal(gone?.state, "terminal");
 		assert.equal(gone?.terminalStatus, "gone");
 		assert.equal(gone?.childSessionId, original.childSessionId, "the gone record keeps the child's identity");
+	} finally {
+		await resumedHost.close("session-close");
+		removeTempDirectory(cwd);
+	}
+});
+
+test("a restored child's pre-restart Intercom id is recognized while a sibling is still being restored (#5097)", async () => {
+	const cwd = makeTempDirectory("subagent-child-sibling-id-");
+	const resumedHost = taskHost("parent-after-restart");
+	const open = SessionManager.open.bind(SessionManager);
+	const slowSibling = Promise.withResolvers<SessionManager>();
+	try {
+		const parent = parentSession(cwd);
+		await launchInterruptedChild(cwd, parent, "known1");
+		await launchInterruptedChild(cwd, parent, "slow1");
+		const children = readSubagentChildRecords(parent.sessionManager.getEntries());
+		const known = children.get("known1:0")!;
+		const slow = children.get("slow1:0")!;
+		const previousIntercomId = randomUUID();
+		const childSession = await SessionManager.open(known.childSessionFile!, undefined, cwd);
+		await childSession.appendCustomEntry("intercom_session_identity", {
+			sessionId: known.childSessionId,
+			intercomSessionId: previousIntercomId,
+		});
+		// The known child never re-registers with Intercom, so its restoration settles with a refusal to send.
+		const emitted = parent.pi.events.emit.bind(parent.pi.events);
+		parent.pi.events.emit = (channel: string, data: unknown) => {
+			if (channel === SUBAGENT_AWAIT_INTERCOM_PEER_EVENT) {
+				(data as { completion?: Promise<boolean> }).completion = Promise.resolve(false);
+				return;
+			}
+			emitted(channel, data);
+		};
+		// The sibling's session does not reopen until the end of the test.
+		vi.spyOn(SessionManager, "open").mockImplementation(((...args: Parameters<typeof open>) =>
+			args[0] === (slow.childSessionFile as unknown) ? slowSibling.promise : open(...args)) as typeof open);
+
+		const restoring = restoreSubagentChildren(restoreDeps(parent, []), parent.ctx(resumedHost));
+		const refusal = await awaitSubagentChildRestoration(
+			parent.sessionManager.getSessionId(),
+			parent.sessionManager.getEntries(),
+			previousIntercomId,
+			RECORD_WAIT_MS,
+		);
+		// The sibling, named, is found at once and is still being restored when the short wait ends.
+		const slowRefusal = await awaitSubagentChildRestoration(
+			parent.sessionManager.getSessionId(),
+			parent.sessionManager.getEntries(),
+			slow.intercomTarget!,
+			SHORT_RESTORE_WAIT_MS,
+		);
+
+		slowSibling.reject(new Error("the sibling's session is gone"));
+		await restoring;
+		assert.match(refusal ?? "", /subagent-worker-known1-1.*has not reconnected to Intercom/);
+		assert.match(slowRefusal ?? "", /subagent-worker-slow1-1.*is still being restored/);
+	} finally {
+		slowSibling.reject(new Error("the sibling's session is gone"));
+		vi.restoreAllMocks();
+		await resumedHost.close("session-close");
+		removeTempDirectory(cwd);
+	}
+});
+
+test("a restored child's pre-restart Intercom id is matched past a sibling's, and a target that is no child's is answered at once (#5097)", async () => {
+	const cwd = makeTempDirectory("subagent-child-two-ids-");
+	const resumedHost = taskHost("parent-after-restart");
+	try {
+		const parent = parentSession(cwd);
+		await launchInterruptedChild(cwd, parent, "first1");
+		await launchInterruptedChild(cwd, parent, "second1");
+		const children = readSubagentChildRecords(parent.sessionManager.getEntries());
+		const previousIds = new Map<string, string>();
+		for (const childId of ["first1:0", "second1:0"]) {
+			const child = children.get(childId)!;
+			const previousIntercomId = randomUUID();
+			previousIds.set(childId, previousIntercomId);
+			const childSession = await SessionManager.open(child.childSessionFile!, undefined, cwd);
+			await childSession.appendCustomEntry("intercom_session_identity", {
+				sessionId: child.childSessionId,
+				intercomSessionId: previousIntercomId,
+			});
+		}
+		const emitted = parent.pi.events.emit.bind(parent.pi.events);
+		parent.pi.events.emit = (channel: string, data: unknown) => {
+			if (channel === SUBAGENT_AWAIT_INTERCOM_PEER_EVENT) {
+				(data as { completion?: Promise<boolean> }).completion = Promise.resolve(false);
+				return;
+			}
+			emitted(channel, data);
+		};
+		const outcomes = await restoreSubagentChildren(restoreDeps(parent, []), parent.ctx(resumedHost));
+		assert.deepEqual(
+			outcomes.map((outcome) => outcome.kind),
+			["restored", "restored"],
+		);
+		const owner = parent.sessionManager.getSessionId();
+		const entries = parent.sessionManager.getEntries();
+
+		const second = await awaitSubagentChildRestoration(owner, entries, previousIds.get("second1:0")!, RECORD_WAIT_MS);
+		assert.match(second ?? "", /subagent-worker-second1-1.*has not reconnected to Intercom/);
+
+		// Every id is known, so a target that is none of them is not held until the deadline.
+		const started = Date.now();
+		assert.equal(
+			await awaitSubagentChildRestoration(owner, entries, "someone-else", UNMATCHED_TARGET_WAIT_MS),
+			undefined,
+		);
+		assert.equal(
+			await awaitSubagentChildRestoration("another-owner", entries, "someone-else", UNMATCHED_TARGET_WAIT_MS),
+			undefined,
+		);
+		assert.ok(Date.now() - started < UNMATCHED_TARGET_WAIT_MS / 2, "an unmatched target waited for the deadline");
 	} finally {
 		await resumedHost.close("session-close");
 		removeTempDirectory(cwd);

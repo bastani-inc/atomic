@@ -12,7 +12,7 @@
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { AuthStorage } from "@bastani/atomic";
+import { AuthStorage, sliceHead } from "@bastani/atomic";
 import type {
   AssistantImages,
   CredentialStore,
@@ -176,7 +176,7 @@ export function selectReferenceImageModel<T extends RankableModel>(
 function excerpt(label: string, text: string | undefined, limit: number): string | undefined {
   const trimmed = text?.trim() ?? "";
   if (trimmed.length === 0) return undefined;
-  return `${label}:\n${trimmed.slice(0, limit).trimEnd()}`;
+  return `${label}:\n${sliceHead(trimmed, limit).trimEnd()}`;
 }
 
 export type ReferenceImagePromptContext = {
