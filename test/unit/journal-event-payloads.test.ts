@@ -39,6 +39,11 @@ test("JSON up to one chunk stays in its row; one byte more is split into chunks 
 		chunks?.map((chunk) => chunk.byteLength),
 		[STORED_JSON_CHUNK_BYTES, 1],
 	);
+	// JSON of exactly two chunks is two full chunks, with no empty one after them.
+	assert.deepEqual(
+		storedJsonChunks(jsonOfBytes(2 * STORED_JSON_CHUNK_BYTES))?.map((chunk) => chunk.byteLength),
+		[STORED_JSON_CHUNK_BYTES, STORED_JSON_CHUNK_BYTES],
+	);
 	// Characters of two to four bytes are split between chunks and still join back.
 	const text = JSON.stringify("é😀".repeat(STORED_JSON_CHUNK_BYTES / 2));
 	const split = storedJsonChunks(text)!;
