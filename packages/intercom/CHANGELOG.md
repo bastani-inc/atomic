@@ -7,6 +7,7 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 ### Fixed
 
 - Fixed a `workflow:` target with many `**` segments stalling the shared Intercom broker for every session on the machine: stage patterns now match in time proportional to pattern length times stage depth, and a `workflow:` target longer than 1024 characters or with more than 64 segments is refused with an error that states the limit ([#4843](https://github.com/bastani-inc/atomic/issues/4843))
+- Security: Intercom messages from other sessions can no longer control your terminal. Message text, headings, sender names and paths, attachments, session lists and tool results are shown without their terminal control sequences, and the broker closes a connection that declares a frame larger than 64 MiB instead of buffering it ([#4889](https://github.com/bastani-inc/atomic/issues/4889))
 
 ## [0.9.87] - 2026-11-14
 
