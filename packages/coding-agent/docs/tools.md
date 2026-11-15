@@ -212,7 +212,7 @@ These are the only internal URL schemes. `read`, `search`, `write`, `find` and `
 
 A cancelled `read` or `find` throws the same `FileToolAbortedError` as a cancelled `edit` or `write` (see [Edit and write errors](#edit-and-write-errors)). Filesystem failures such as `ENOENT` or `EACCES` are the filesystem's own errors.
 
-Workspace-scoped selectors reject lexical and symlink escapes outside the workspace or skill root. Existing non-SQLite `.db` and `.sqlite` files remain plain files. Archive writes reject directory targets ending in `/` and return the resolved archive path. SQLite writes return source-path metadata.
+Workspace-scoped selectors reject lexical and symlink escapes outside the workspace or skill root. Existing non-SQLite `.db` and `.sqlite` files remain plain files. Archive writes reject directory targets ending in `/` and return the resolved archive path. Writing a tar member leaves every other member exactly as it was and keeps the written member's mode; overwriting a link, a directory, a member stored more than once, or an archive with a damaged header is refused. SQLite writes return source-path metadata.
 
 ### SQLite limits and writes
 
@@ -221,10 +221,11 @@ Workspace-scoped selectors reject lexical and symlink escapes outside the worksp
 - Table lists cap at 500, excluding `sqlite_%` tables. Row counts probe at most 50,001 rows.
 - Table writes accept `{}` as `INSERT DEFAULT VALUES`. Row writes parse non-empty JSON5-style objects, including comments, and validate column names and scalar values before binding.
 - Empty SQLite row writes delete only when a row ID is present.
+- A row selector names one row by its primary key, as in `data.sqlite:users:42`. Tables without a primary key use `rowid`. For a composite primary key, give every key value as a JSON array in key order, such as `data.sqlite:members:["acme",2]`; a partial key is refused. A row update or delete that would change more than one row is refused and changes nothing.
 
 ### Conflict resolution and file writes
 
-`conflict://<id>` and `conflict://*` writes replace conflict marker regions and expand `@ours`, `@theirs`, and `@base`. Scoped sides such as `conflict://1/ours` are read-only. `read` and `search` accept the same URLs: `conflict://*` lists every conflict region under the working directory, `conflict://<id>` shows one with its ours, theirs and base sides, and `conflict://<id>/ours` (or `theirs`, `base`) returns just that side. The ids match the ones `write` resolves.
+`conflict://<id>` and `conflict://*` writes replace conflict marker regions and expand `@ours`, `@theirs`, and `@base`. Marker lines are matched as Git writes them: exactly seven `<`, `|`, `=` or `>` characters, alone or followed by a space and a label, in that order. Longer runs such as a markdown `==========` underline are content, and a region with an extra or out-of-order marker is left untouched. Scoped sides such as `conflict://1/ours` are read-only. `read` and `search` accept the same URLs: `conflict://*` lists every conflict region under the working directory, `conflict://<id>` shows one with its ours, theirs and base sides, and `conflict://<id>/ours` (or `theirs`, `base`) returns just that side. The ids match the ones `write` resolves.
 
 ### Documents and URLs
 
