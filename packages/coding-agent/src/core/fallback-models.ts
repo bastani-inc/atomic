@@ -10,17 +10,7 @@
 import type { Api, Model } from "@bastani/pi-ai/compat";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { resolveModelReference } from "./model-resolver-patterns.ts";
-
-const THINKING_SUFFIXES = [
-	"off",
-	"minimal",
-	"low",
-	"medium",
-	"high",
-	"xhigh",
-	"max",
-] as const satisfies readonly ThinkingLevel[];
-const THINKING_SUFFIX_SET: ReadonlySet<string> = new Set(THINKING_SUFFIXES);
+import { isValidThinkingLevel } from "./thinking-levels.ts";
 
 /** Minimal runtime surface needed to resolve a configured fallback entry. */
 export interface FallbackModelLookup {
@@ -40,8 +30,8 @@ export function splitFallbackModel(value: string): { modelId: string; thinkingLe
 	const index = trimmed.lastIndexOf(":");
 	if (index < 0) return { modelId: trimmed };
 	const suffix = trimmed.slice(index + 1);
-	if (!THINKING_SUFFIX_SET.has(suffix)) return { modelId: trimmed };
-	return { modelId: trimmed.slice(0, index), thinkingLevel: suffix as ThinkingLevel };
+	if (!isValidThinkingLevel(suffix)) return { modelId: trimmed };
+	return { modelId: trimmed.slice(0, index), thinkingLevel: suffix };
 }
 
 /**
