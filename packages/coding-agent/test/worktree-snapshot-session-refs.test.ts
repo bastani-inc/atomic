@@ -3,6 +3,7 @@ import { existsSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
 import { afterEach, beforeEach, describe, test } from "vitest";
+import { withDebugLog } from "../../../test/helpers/debug-mode.js";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
 import { SessionManager } from "../src/core/session-manager.ts";
@@ -144,6 +145,44 @@ describe("snapshot commits survive git gc (#4923)", () => {
 			(await atomicRefs(worktree)).map((ref) => ref.split(" ")[1]),
 			[moved.getLatestWorktreeSnapshots().get(worktree)!.snapshot],
 		);
+	});
+
+	test("working in one restored checkout releases only that checkout's ref, not a sibling's (#4923)", async () => {
+		const { clone, manager, recorder } = await sessionThatEdited();
+		const { clone: sibling } = await sandbox.remoteWithClone("sibling");
+		sandbox.write(join(sibling, "README.md"), "the session's sibling edit\n");
+		await recorder.recordTurn(writeTurn(join(sibling, "README.md")));
+		assert.equal((await atomicRefs(sibling)).length, 1);
+		renameSync(clone, sandbox.path("away"));
+		renameSync(sibling, sandbox.path("sibling-away"));
+		const prepared = await prepareSessionResume(manager, options());
+		renameSync(sandbox.path("away"), clone);
+		renameSync(sandbox.path("sibling-away"), sibling);
+		const moved = prepared.status === "ready" ? prepared.sessionManager : manager;
+		const worktree = moved.getWorktreeRootMappings().find((mapping) => mapping.from === clone)!.to;
+
+		sandbox.write(join(worktree, "README.md"), "the session's work in the worktree\n");
+		await recorderFor(moved, worktree).recordTurn(writeTurn(join(worktree, "README.md")));
+
+		assert.deepEqual(await atomicRefs(clone), []);
+		assert.equal((await atomicRefs(sibling)).length, 1);
+	});
+
+	test("deleting a session whose checkout is gone still deletes it, and the debug log says which ref stayed (#4923)", async () => {
+		const { clone, store, manager } = await sessionThatEdited();
+		renameSync(clone, sandbox.path("away"));
+		await withDebugLog("ATOMIC_DEBUG", async (log) => {
+			await (await SessionManager.create(store, sandbox.root)).deleteSession(manager.getSessionId());
+
+			assert.equal(await store.readHeader(manager.getSessionId()), undefined);
+			const failures = log.records().filter((record) => record.event === "snapshot-ref-release-failed");
+			assert.deepEqual(
+				failures.map((record) => [record.area, record.data.root]),
+				[["storage", clone]],
+			);
+			assert.equal(typeof failures[0]!.data.message, "string");
+		});
+		assert.equal((await atomicRefs(sandbox.path("away"))).length, 1);
 	});
 
 	test("snapshot refs are never pushed by git push --all or --tags, nor carried in a snapshot's bundle (#4923)", async () => {

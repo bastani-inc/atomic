@@ -54,7 +54,7 @@ export async function holdsSessionSnapshotRef(
 	signal?: AbortSignal,
 ): Promise<boolean> {
 	try {
-		const { exitCode } = await runGit(["show-ref", "--verify", "--quiet", sessionSnapshotRef(sessionId, root)], {
+		const { exitCode } = await runGit(["rev-parse", "--verify", "--quiet", sessionSnapshotRef(sessionId, root)], {
 			cwd: root,
 			signal,
 			allowExitCodes: [1, 128],
