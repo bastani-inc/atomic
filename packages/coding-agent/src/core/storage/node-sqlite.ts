@@ -25,10 +25,13 @@ import type {
 	StorageDescriptor,
 } from "./database.js";
 import {
+	payloadTooLargeKind,
+	SQLITE_PAYLOAD_LIMITS,
 	StorageAdapterLoadError,
 	StorageConfigError,
 	type StorageFailureCause,
 	StorageInvalidTextError,
+	StoragePayloadTooLargeError,
 	StorageRollbackError,
 	StorageTransactionClosedError,
 	StorageUnavailableError,
@@ -805,6 +808,13 @@ function sqliteFailureDetail(cause: unknown): string | undefined {
 }
 
 function unavailable(descriptor: StorageDescriptor, cause: unknown, detail = sqliteFailureDetail(cause)) {
+	// A value over SQLite's length limit fails the same way every time: permanent, never an outage (#4954).
+	if (payloadTooLargeKind(cause as StorageFailureCause) !== undefined) {
+		return new StoragePayloadTooLargeError(SQLITE_PAYLOAD_LIMITS.value ?? 0, 0, {
+			descriptor,
+			cause: cause as StorageFailureCause,
+		});
+	}
 	return new StorageUnavailableError(descriptor, cause as StorageFailureCause, detail);
 }
 
