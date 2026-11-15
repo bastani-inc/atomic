@@ -272,6 +272,22 @@ function treatFilesAsExecutable(): void {
 	});
 }
 
+/**
+ * Answer every later `stat` of `paths` with what it reports now, so the files stay unchanged as Atomic sees them. On
+ * Windows, a scanner or indexer can update a freshly written file's change time after the test wrote it. Atomic then
+ * correctly sees a changed git and probes it again.
+ */
+function freezeStats(...paths: string[]): void {
+	const actualStat = mocks.actualFs!.statSync as (
+		path: string,
+		options?: object,
+	) => import("node:fs").Stats | undefined;
+	const frozen = new Map(paths.map((path) => [path, actualStat(path)]));
+	mocks.statSync.mockImplementation((path: string, options?: object) =>
+		frozen.has(String(path)) ? frozen.get(String(path)) : actualStat(path, options),
+	);
+}
+
 function leftovers(): string[] {
 	const binDir = join(agentDir, "bin");
 	return existsSync(binDir) ? readdirSync(binDir).filter((name) => name !== "git") : [];
@@ -655,11 +671,12 @@ describe("git resolution (#4322)", () => {
 
 	it("caches the system probe per PATH", () => {
 		const systemGit = makeSystemGit("2.43.0");
+		const alternate = makeSystemGit("2.44.0");
+		freezeStats(systemGit, alternate);
 		usePath(join(systemGit, ".."));
 		tools.resolveGitSync();
 		tools.resolveGitSync();
 		tools.getGitStatus();
-		const alternate = makeSystemGit("2.44.0");
 		usePath(join(alternate, ".."));
 		assert.equal(tools.resolveGitSync().path, alternate);
 		usePath(join(systemGit, ".."));
@@ -674,6 +691,7 @@ describe("git resolution (#4322)", () => {
 		"probes an unchanged %s system git once while reusing portable git",
 		async (_problem, version, status) => {
 			const systemGit = makeSystemGit(version, status);
+			freezeStats(systemGit);
 			usePath(join(systemGit, ".."));
 			const portable = makeProvisionedGit();
 			const fetchMock = vi.spyOn(globalThis, "fetch");

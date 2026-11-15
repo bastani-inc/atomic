@@ -1472,6 +1472,10 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               const retained = retainInconclusiveRetry(retryIdentities, retryIdentity);
               retryIdentity = undefined;
               const errorText = result.reason ?? "Session may not exist or has disconnected.";
+              // #4997, #5101: not a final refusal: the reply may be authorized once the ask's route is restored.
+              const retryLater = result.reasonCode === "route_unavailable"
+                ? { reasonCode: result.reasonCode, retryLater: true as const }
+                : {};
               return {
                 content: [{
                   type: "text",
@@ -1479,10 +1483,11 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
                 }],
                 isError: true,
                 details: retryToken === undefined
-                  ? { messageId: result.id, delivered: false, reason: result.reason }
+                  ? { messageId: result.id, delivered: false, reason: result.reason, ...retryLater }
                   : {
                       delivered: false,
                       reason: result.reason,
+                      ...retryLater,
                       ...(retained.retryToken === undefined ? {} : { retryToken: retained.retryToken }),
                     },
               };
