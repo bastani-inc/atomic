@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { buildLockPath, settleOtherBuilds, withBuildLocks } from "../src/core/resume/blueprint/build-lock.ts";
 import { runLoggedProcess } from "../src/core/resume/blueprint/process.ts";
+import { processStartToken } from "../src/core/worktree-snapshot/pool.ts";
 
 let dir: string;
 const children: ChildProcess[] = [];
@@ -59,7 +60,7 @@ describe("blueprint build locks (#4748)", () => {
 		const fd = openSync(log, "a");
 		const gate = join(dir, "gate");
 		const seen: { pid: number; steps: number[] }[] = [];
-		await withBuildLocks(dir, [root()], undefined, async () => {
+		await withBuildLocks(dir, [root()], async () => {
 			assert.equal(existsSync(buildLockPath(dir, root())), false, "nothing is written before a step starts");
 			const quick = { command: process.execPath, args: ["-e", ""], cwd: dir, env: process.env };
 			await runLoggedProcess(quick, { fd, path: log }, { timeoutMs: 30_000 });
@@ -89,11 +90,67 @@ describe("blueprint build locks (#4748)", () => {
 		assert.equal(existsSync(buildLockPath(dir, root())), false, "the lock is removed once the build settled");
 	});
 
-	test("the step processes of a build whose process died are stopped, and its lock removed", async () => {
-		const orphan = sleeper();
-		writeLock({ pid: await deadPid(), steps: [{ pid: orphan.pid }] });
-		await settleOtherBuilds(dir, [root()], undefined);
-		await exited(orphan);
+	test.skipIf(processStartToken(process.pid) === undefined)(
+		"the step processes of a build whose process died are stopped when proven to be its steps, and its lock removed",
+		async () => {
+			const orphan = sleeper();
+			writeLock({ pid: await deadPid(), steps: [{ pid: orphan.pid, start: processStartToken(orphan.pid!) }] });
+			assert.deepEqual(await settleOtherBuilds(dir, [root()]), []);
+			await exited(orphan);
+			assert.equal(existsSync(buildLockPath(dir, root())), false);
+		},
+	);
+
+	test("a process that only has a recorded step's id, with no start to prove it is that step, is never stopped", async () => {
+		const unrelated = sleeper();
+		writeLock({ pid: await deadPid(), steps: [{ pid: unrelated.pid }] });
+		const waits: string[] = [];
+		const warnings = await settleOtherBuilds(dir, [root()], {
+			waitMs: 600,
+			onWait: (message) => waits.push(message),
+		});
+		assert.equal(unrelated.exitCode, null);
+		assert.equal(unrelated.signalCode, null, "the unrelated process still runs");
+		assert.equal(warnings.length, 1);
+		assert.match(warnings[0]!, /may still be running \(process \d+\).*not stopped/);
+		assert.equal(waits.length, 1, "the wait is shown once");
+		assert.equal(existsSync(buildLockPath(dir, root())), false);
+	});
+
+	test("a process with a recorded step's id but another start is never stopped", async () => {
+		const later = sleeper();
+		writeLock({ pid: await deadPid(), steps: [{ pid: later.pid, start: "000000000000" }] });
+		await settleOtherBuilds(dir, [root()], { waitMs: 600 });
+		assert.equal(later.exitCode, null);
+		assert.equal(later.signalCode, null, "the later process given the id still runs");
+	});
+
+	test("a holder that cannot be proven gone is waited for only up to the bound, then the build goes on with a warning", async () => {
+		const holder = sleeper();
+		writeLock({ pid: holder.pid, steps: [] });
+		const waits: string[] = [];
+		const started = Date.now();
+		const warnings = await Promise.race([
+			settleOtherBuilds(dir, [root()], { waitMs: 600, onWait: (message) => waits.push(message) }),
+			new Promise<"wedged">((resolve) => setTimeout(() => resolve("wedged"), 10_000)),
+		]);
+		assert.notEqual(warnings, "wedged", "the wait is bounded");
+		assert.ok(Date.now() - started >= 600);
+		assert.equal((warnings as string[]).length, 1);
+		assert.match((warnings as string[])[0]!, /still seemed to build .* building it anyway/);
+		assert.equal(waits.length, 1);
+		assert.match(waits[0]!, /^Waiting for another Atomic process's blueprint build of /);
+		assert.equal(holder.signalCode, null, "the holder is not stopped");
+	});
+
+	test("a lock that cannot be read stops nothing and the build goes on with a warning", async () => {
+		const bystander = sleeper();
+		mkdirSync(join(dir, "blueprint-builds", "locks"), { recursive: true });
+		writeFileSync(buildLockPath(dir, root()), `{"host":"${THIS_HOST}","pid":${bystander.pid},"steps":[{"pid":"x"`);
+		const warnings = await settleOtherBuilds(dir, [root()], { waitMs: 600 });
+		assert.equal(warnings.length, 1);
+		assert.match(warnings[0]!, /could not be read; building it anyway/);
+		assert.equal(bystander.signalCode, null);
 		assert.equal(existsSync(buildLockPath(dir, root())), false);
 	});
 
@@ -101,7 +158,7 @@ describe("blueprint build locks (#4748)", () => {
 		const host = sleeper();
 		writeLock({ pid: host.pid, steps: [] });
 		let settled = false;
-		const waiting = settleOtherBuilds(dir, [root()], undefined).then(() => {
+		const waiting = settleOtherBuilds(dir, [root()]).then(() => {
 			settled = true;
 		});
 		await new Promise((resolve) => setTimeout(resolve, 500));
@@ -115,7 +172,7 @@ describe("blueprint build locks (#4748)", () => {
 		const host = sleeper();
 		writeLock({ pid: host.pid, steps: [] });
 		const controller = new AbortController();
-		const waiting = settleOtherBuilds(dir, [root()], controller.signal);
+		const waiting = settleOtherBuilds(dir, [root()], { signal: controller.signal });
 		controller.abort(new Error("cancelled"));
 		await assert.rejects(waiting, /cancelled/);
 		assert.equal(existsSync(buildLockPath(dir, root())), true, "a live build's lock is kept");
@@ -127,9 +184,9 @@ describe("blueprint build locks (#4748)", () => {
 			buildLockPath(dir, root()),
 			JSON.stringify({ host: "another-host", pid: sleeper().pid, steps: [] }),
 		);
-		await settleOtherBuilds(dir, [root()], undefined);
+		await settleOtherBuilds(dir, [root()]);
 		writeLock({ pid: process.pid, steps: [] });
-		await settleOtherBuilds(dir, [root()], undefined);
+		await settleOtherBuilds(dir, [root()]);
 		assert.equal(existsSync(buildLockPath(dir, root())), true);
 	});
 });

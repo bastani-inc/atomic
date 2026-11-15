@@ -42,12 +42,43 @@ export function buildLockPath(storeDir: string, root: string): string {
 	return join(storeDir, "blueprint-builds", "locks", `${rootKey(root)}.json`);
 }
 
-function readLock(file: string): BuildLock | undefined {
+/** A lock file as read: absent, unreadable or not a lock this version writes, or a lock. */
+type ReadLock =
+	| { readonly kind: "none" }
+	| { readonly kind: "corrupt" }
+	| { readonly kind: "lock"; readonly lock: BuildLock };
+
+function isLockedProcess(value: unknown): value is LockedProcess {
+	const candidate = value as Partial<LockedProcess> | null;
+	return (
+		typeof candidate === "object" &&
+		candidate !== null &&
+		Number.isInteger(candidate.pid) &&
+		(candidate.start === undefined || typeof candidate.start === "string")
+	);
+}
+
+function readLockFile(file: string): ReadLock {
+	let text: string;
 	try {
-		return JSON.parse(readFileSync(file, "utf8")) as BuildLock;
-	} catch {
-		return undefined;
+		text = readFileSync(file, "utf8");
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "ENOENT" ? { kind: "none" } : { kind: "corrupt" };
 	}
+	try {
+		const lock = JSON.parse(text) as Partial<BuildLock> | null;
+		const steps = lock?.steps;
+		const host = lock?.host;
+		if (isLockedProcess(lock) && typeof host === "string" && Array.isArray(steps) && steps.every(isLockedProcess)) {
+			return { kind: "lock", lock: lock as BuildLock };
+		}
+	} catch {}
+	return { kind: "corrupt" };
+}
+
+function readLock(file: string): BuildLock | undefined {
+	const read = readLockFile(file);
+	return read.kind === "lock" ? read.lock : undefined;
 }
 
 function writeLock(file: string, lock: BuildLock): void {
@@ -57,22 +88,27 @@ function writeLock(file: string, lock: BuildLock): void {
 	renameSync(temporary, file);
 }
 
-/** Whether `process` still runs: the same process, where its start can be read, not a later one given its id. */
-function runs(process_: LockedProcess): boolean {
-	const start = processStartToken(process_.pid);
-	if (process_.start !== undefined && start !== undefined) return start === process_.start;
+/**
+ * Whether `recorded` is the process that runs under its id now: proven only by the start it recorded matching the
+ * running process's. `"unknown"` when either start cannot be read: a process of that id runs, but it may be a later
+ * one given the same id.
+ */
+function identity(recorded: LockedProcess): "same" | "gone" | "unknown" {
+	const start = processStartToken(recorded.pid);
+	if (recorded.start !== undefined && start !== undefined) return start === recorded.start ? "same" : "gone";
 	try {
-		process.kill(process_.pid, 0);
-		return true;
+		process.kill(recorded.pid, 0);
+		return "unknown";
 	} catch (error) {
-		return (error as NodeJS.ErrnoException).code === "EPERM";
+		return (error as NodeJS.ErrnoException).code === "EPERM" ? "unknown" : "gone";
 	}
 }
 
 /**
  * On Windows, the processes left behind by `steps` whose step process itself has ended: Git for Windows' `bash.exe`
  * starts the shell as a child and may end without it, and nothing then ties that shell to a process tree. They are
- * found as processes of a step's id, started after it, and their own children.
+ * found as processes whose parent has a step's id, started after the step and before any later process given that id,
+ * and their own children. Only steps whose start was recorded are followed, so a step's identity was established.
  */
 function orphanedChildren(steps: readonly LockedProcess[]): LockedProcess[] {
 	const script =
@@ -96,18 +132,28 @@ function orphanedChildren(steps: readonly LockedProcess[]): LockedProcess[] {
 		.filter((fields) => fields.length === 3 && fields.every(Number.isFinite))
 		.map(([pid, parent, created]) => ({ pid: pid!, parent: parent!, created: created! }));
 	const found: LockedProcess[] = [];
-	let parents = steps.map((step) => ({ pid: step.pid, at: step.at ?? 0 }));
+	type Parent = { readonly pid: number; readonly after: number; readonly before: number };
+	const window = (pid: number, after: number): Parent => ({
+		pid,
+		after,
+		// A process that holds the id now and started after `after` is a later one: only children older than it count.
+		before: processes.find((candidate) => candidate.pid === pid && candidate.created > after)?.created ?? Infinity,
+	});
+	let parents = steps
+		.filter((step) => step.start !== undefined && step.at !== undefined)
+		.map((step) => window(step.pid, step.at! - 1_000));
 	while (parents.length > 0) {
 		const children = processes.filter((candidate) =>
 			parents.some(
 				(parent) =>
 					candidate.parent === parent.pid &&
-					candidate.created >= parent.at - 1_000 &&
+					candidate.created >= parent.after &&
+					candidate.created < parent.before &&
 					!found.some((known) => known.pid === candidate.pid),
 			),
 		);
 		found.push(...children.map((child) => ({ pid: child.pid })));
-		parents = children.map((child) => ({ pid: child.pid, at: child.created }));
+		parents = children.map((child) => window(child.pid, child.created));
 	}
 	return found;
 }
@@ -127,55 +173,105 @@ function delay(ms: number, signal: AbortSignal | undefined): Promise<void> {
 	});
 }
 
+/** How long a build waits for another process's build of the same worktree before it builds anyway, with a warning. */
+export const BUILD_LOCK_WAIT_MS = 5 * 60_000;
+
+export interface SettleOtherBuildsOptions {
+	readonly signal?: AbortSignal;
+	/** How long to wait for another process's build. Default {@link BUILD_LOCK_WAIT_MS}. */
+	readonly waitMs?: number;
+	/** Told once per worktree when it starts waiting for another process's build. */
+	readonly onWait?: (message: string) => void;
+}
+
 /**
- * Waits until no other process of this host builds the worktree at `root`. A process that still runs is waited for;
- * the step processes of one that died are stopped, with their process trees, and its lock is removed.
+ * Waits until no other process of this host builds the worktree whose lock is `file`, for at most `options.waitMs`.
+ * A process proven to be the build's holder is waited for. The step processes of a holder that died are stopped, with
+ * their process trees, only when each is proven to be the step the lock recorded (its recorded start matches);
+ * a process whose identity cannot be proven is never stopped, and while one may still run the wait goes on. Returns
+ * the warnings for the user: the wait timed out, a step may still run, or the lock could not be read.
  */
-async function settleOtherBuild(file: string, signal: AbortSignal | undefined): Promise<void> {
+async function settleOtherBuild(file: string, root: string, options: SettleOtherBuildsOptions): Promise<string[]> {
+	const deadline = Date.now() + (options.waitMs ?? BUILD_LOCK_WAIT_MS);
+	let told = false;
+	const wait = async (why: string): Promise<boolean> => {
+		if (Date.now() >= deadline) return false;
+		if (!told) options.onWait?.(`Waiting for ${why} of ${root} to end`);
+		told = true;
+		await delay(BUILD_LOCK_POLL_MS, options.signal);
+		return true;
+	};
 	for (;;) {
-		const lock = readLock(file);
-		if (lock === undefined || lock.host !== HOST || lock.pid === process.pid) return;
-		if (runs(lock)) {
-			await delay(BUILD_LOCK_POLL_MS, signal);
-			continue;
+		const read = readLockFile(file);
+		if (read.kind === "none") return [];
+		if (read.kind === "corrupt") {
+			rmSync(file, { force: true });
+			return [
+				`The build lock of ${root} could not be read; building it anyway. An earlier build may still be running there.`,
+			];
 		}
-		const steps = lock.steps ?? [];
-		const orphans = [...steps.filter(runs), ...(process.platform === "win32" ? orphanedChildren(steps) : [])];
+		const { lock } = read;
+		if (lock.host !== HOST || lock.pid === process.pid) return [];
+		const holder = identity(lock);
+		if (holder !== "gone") {
+			if (await wait("another Atomic process's blueprint build")) continue;
+			return [
+				`Another process (pid ${lock.pid}) still seemed to build ${root} after ${Math.round((options.waitMs ?? BUILD_LOCK_WAIT_MS) / 1000)} s; building it anyway.`,
+			];
+		}
+		const proven = (lock.steps ?? []).filter((step) => identity(step) === "same");
+		const orphans = [...proven, ...(process.platform === "win32" ? orphanedChildren(lock.steps ?? []) : [])];
 		for (const step of orphans) killProcessTree(step.pid);
-		for (let waited = 0; waited < 25 && orphans.some(runs); waited++) await delay(BUILD_LOCK_POLL_MS / 2, signal);
+		for (let waited = 0; waited < 25 && proven.some((step) => identity(step) === "same"); waited++) {
+			await delay(BUILD_LOCK_POLL_MS / 2, options.signal);
+		}
+		const unproven = (lock.steps ?? []).filter((step) => identity(step) === "unknown");
+		if (unproven.length > 0) {
+			if (await wait("an earlier blueprint build")) continue;
+			rmSync(file, { force: true });
+			const pids = unproven.map((step) => step.pid).join(", ");
+			return [
+				`An earlier blueprint build of ${root} may still be running (process ${pids}), but it could not be confirmed as that build, so it was not stopped; building the worktree anyway.`,
+			];
+		}
 		rmSync(file, { force: true });
-		return;
+		return [];
 	}
 }
 
 /**
  * Waits until no other process of this host builds any of the worktrees at `roots`, stopping what the builds of
- * processes that died left running. Only `signal` aborting rejects.
+ * processes that died left running where that is proven to be theirs. Resolves the warnings for the user; only
+ * `options.signal` aborting rejects.
  */
 export async function settleOtherBuilds(
 	storeDir: string,
 	roots: readonly string[],
-	signal: AbortSignal | undefined,
-): Promise<void> {
-	for (const file of new Set(roots.map((root) => buildLockPath(storeDir, root)))) {
-		await settleOtherBuild(file, signal);
+	options: SettleOtherBuildsOptions = {},
+): Promise<string[]> {
+	const warnings: string[] = [];
+	const seen = new Set<string>();
+	for (const root of roots) {
+		const file = buildLockPath(storeDir, root);
+		if (seen.has(file)) continue;
+		seen.add(file);
+		warnings.push(...(await settleOtherBuild(file, root, options)));
 	}
+	return warnings;
 }
 
 /**
- * Runs `build` of the worktrees at `roots` under their build locks: first waits out, or cleans up after, another
- * process's build of any of them, then, from the first step process `build` starts until it settles, records this
- * process and the step processes that run.
+ * Runs `build` of the worktrees at `roots` under their build locks: from the first step process `build` starts until it
+ * settles, records this process and the step processes that run. Callers settle other processes' builds of them first
+ * ({@link settleOtherBuilds}).
  * A lock that cannot be written never stops the build.
  */
 export async function withBuildLocks<T>(
 	storeDir: string,
 	roots: readonly string[],
-	signal: AbortSignal | undefined,
 	build: () => Promise<T>,
 ): Promise<T> {
 	const files = [...new Set(roots.map((root) => buildLockPath(storeDir, root)))];
-	await settleOtherBuilds(storeDir, roots, signal);
 	const steps = new Map<number, LockedProcess>();
 	const write = () => {
 		const lock: BuildLock = { host: HOST, ...locked(process.pid), steps: [...steps.values()] };

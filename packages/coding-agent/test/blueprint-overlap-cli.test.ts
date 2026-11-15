@@ -15,6 +15,7 @@ import { SessionManager } from "../src/core/session-manager.ts";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.ts";
 import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.ts";
 import { captureWorktreeSnapshot } from "../src/core/worktree-snapshot/capture.ts";
+import { processStartToken } from "../src/core/worktree-snapshot/pool.ts";
 import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../src/core/worktree-snapshot/settings.ts";
 import { bunExecutable, cliPath } from "./cli-test-helpers.ts";
 import { forThisHost } from "./helpers/blueprint-fixtures.ts";
@@ -407,7 +408,9 @@ describe("a resume without a UI whose blueprint build runs behind the first turn
 		CLI_RESUME_TIMEOUT_MS,
 	);
 
-	test(
+	// Stopping a leftover step needs its recorded start to prove it is that step; without process starts, nothing is
+	// stopped and the resume warns instead.
+	test.skipIf(processStartToken(process.pid) === undefined)(
 		"a resume after its host was killed during the build stops the build's leftover steps before building again (#4748)",
 		async () => {
 			const recorded = await recordedSession();

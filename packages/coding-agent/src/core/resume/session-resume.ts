@@ -1066,13 +1066,15 @@ async function setUpCheckoutBlueprints(
 		await Promise.all(joined.map((checkout) => buildInProgress(checkout.root)));
 		// Another process's build of one of them is waited for, or the steps of one whose process died are stopped,
 		// before the ledger says which need building.
-		await settleOtherBuilds(storeDir, claimed, options.signal);
+		const lockWarnings = await settleOtherBuilds(storeDir, claimed, {
+			signal: options.signal,
+			onWait: options.onProgress,
+		});
 		const retried = await checkoutsNeedingRebuild(candidates, storeDir);
 		const restored = [...toBuild, ...retried];
-		return await withBuildLocks(
+		const built = await withBuildLocks(
 			storeDir,
 			restored.map((checkout) => checkout.root),
-			options.signal,
 			() =>
 				setUpResumedBlueprints({
 					restored,
@@ -1082,6 +1084,9 @@ async function setUpCheckoutBlueprints(
 					signal: options.signal,
 				}),
 		);
+		if (lockWarnings.length === 0) return built;
+		const warnings = lockWarnings.map((message) => ({ type: "warning" as const, message }));
+		return { ...built, notices: [...warnings, ...built.notices] };
 	} finally {
 		for (const root of claimed) if (buildsInProgress.get(root) === settled) buildsInProgress.delete(root);
 		settle(undefined);

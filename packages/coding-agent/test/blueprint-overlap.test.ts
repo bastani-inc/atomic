@@ -464,8 +464,10 @@ describe("resume.waitForBlueprint lets the first turn overlap the blueprint buil
 				settled = true;
 				return ready(prepared);
 			});
-			await new Promise((resolve) => setTimeout(resolve, 300));
+			if (wait === "tools") await until(() => settled, "the joining resume to return during the build");
+			else await new Promise((resolve) => setTimeout(resolve, 300));
 			assert.equal(settled, wait === "tools", "only a resume that waits for the build waits for the one it joins");
+			assert.deepEqual(ran(), ["started"], "the joined build still runs");
 			writeFileSync(gate(), "");
 			const joined = await joining;
 			await blueprintBuildsSettled();
