@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, it } from "vitest";
 import { bunExecutable, readStreamText, type SpawnedProcess, spawnProcess } from "../../../../test/helpers/runtime.js";
-import { FileAuthStorageBackend } from "../../src/core/auth-storage.ts";
+import { type AuthStorageBackend, FileAuthStorageBackend } from "../../src/core/auth-storage.ts";
 import { createMcpAuthProvider, McpOAuthCredentialStore } from "../../src/extensions/mcp/oauth.ts";
 
 // Each multi-process case runs real Bun child processes that import the TypeScript source.
@@ -114,6 +114,33 @@ describe("MCP OAuth token reads under concurrent sessions (#4952)", () => {
 		mkdirSync(`${authPath}.lock`);
 
 		assert.equal(await provider(authPath).token(), "work-token");
+	});
+
+	it("reads the token without the lock when legacy state is already taken over (#4952)", async () => {
+		const legacy = { serverUrl: SERVER_URL, tokens: { access_token: "legacy", token_type: "Bearer" } };
+		const stored = JSON.parse(readFileSync(authPath, "utf8")) as Record<string, object>;
+		writeFileSync(authPath, JSON.stringify({ ...stored, [SERVER_URL]: legacy }));
+		mkdirSync(`${authPath}.lock`);
+
+		assert.equal(await provider(authPath).token(), "work-token");
+	});
+
+	it("reads through the lock for a backend without a lock-free read (#4952)", () => {
+		const backend = new FileAuthStorageBackend(authPath);
+		let locked = 0;
+		const lockOnly: AuthStorageBackend = {
+			withLock: (fn) => {
+				locked++;
+				return backend.withLock(fn);
+			},
+			withLockAsync: (fn) => backend.withLockAsync(fn),
+		};
+
+		assert.equal(
+			new McpOAuthCredentialStore(lockOnly, sandbox).tokens("work", SERVER_URL)?.access_token,
+			"work-token",
+		);
+		assert.equal(locked, 1);
 	});
 
 	it("still moves credentials stored by URL alone to the server that reads them (#4952)", async () => {
