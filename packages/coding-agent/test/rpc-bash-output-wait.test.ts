@@ -180,7 +180,8 @@ describe("waitForRpcBashOutput", () => {
 			process.execPath,
 			[
 				"-e",
-				`const fs = require("node:fs"); fs.writeSync(1, "before"); fs.writeFileSync(${JSON.stringify(written)}, ""); setInterval(() => {}, 1000);`,
+				'const fs = require("node:fs"); fs.writeSync(1, "before"); fs.writeFileSync(process.argv[1], ""); setInterval(() => {}, 1000);',
+				written,
 			],
 			{ stdio: ["ignore", "pipe", "inherit"] },
 		);

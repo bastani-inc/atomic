@@ -173,3 +173,93 @@ test("a real stage session a worker created on another host leaves its attempt's
 		await ctx.__dispose();
 	}
 });
+
+test("a stage session that fails after its delivery reached the attempt's inbox leaves that inbox (#5168)", async () => {
+	const store = createStore();
+	store.recordRunStart({
+		id: STAGE.runId,
+		name: "child",
+		inputs: {},
+		status: "running",
+		startedAt: 0,
+		stages: [{ id: STAGE.stageId, name: STAGE.stageName, status: "running", parentIds: [], toolEvents: [] }],
+		toolNodes: [],
+	});
+	const inbox = new RemoteStageInbox();
+	const received: string[] = [];
+	const adapter = workerStageAdapter({
+		base: {
+			async create(options) {
+				await options.orchestrationContext?.pendingStageDelivery?.deliverPending(
+					(_from, message) => {
+						received.push(message.id);
+					},
+					{ sessionId: "failed-session", receivedMessageIds: [] },
+				);
+				throw new Error("the stage's session failed after it started");
+			},
+		},
+		store,
+		inbox,
+		shared: { host: "host-b", routes: false },
+		request: async () => undefined,
+		published: () => undefined,
+		journal: {
+			getWorkflow: () => ({ pendingStageMessages: [] }),
+			listCheckpoints: () => [],
+			catchUpWorkflow: async () => {},
+		} as never,
+		root: ROOT,
+	});
+	await assert.rejects(
+		adapter.create(
+			{
+				orchestrationContext: {
+					pendingStageDelivery: { deliverPending: async () => {}, ready: () => undefined, fail: () => {} },
+				},
+			} as never,
+			STAGE,
+		),
+		/failed after it started/,
+	);
+	const sender = { id: "sender-id", name: "sender" } as Parameters<WorkerDeliver>[0];
+	const late = await inbox.deliver({ runId: STAGE.runId, stageId: STAGE.stageId }, "failed-session", sender, {
+		id: "late",
+		timestamp: 2,
+		content: { text: "late" },
+	} as Parameters<WorkerDeliver>[1]);
+	assert.equal(late.error?.code, "intercom_unavailable", "the failed session's sink is gone from the inbox");
+	assert.deepEqual(received, []);
+});
+
+test("a stage session that fails on the root's host rejects with its own error (#5168)", async () => {
+	const adapter = workerStageAdapter({
+		base: {
+			async create() {
+				throw new Error("the stage's session failed to start");
+			},
+		},
+		store: createStore(),
+		inbox: undefined,
+		shared: { host: "host-a", routes: true },
+		request: async () => "route-capability",
+		published: () => undefined,
+		journal: {
+			getWorkflow: () => ({ pendingStageMessages: [] }),
+			listCheckpoints: () => [],
+			catchUpWorkflow: async () => {},
+		} as never,
+		root: ROOT,
+	});
+	await assert.rejects(
+		adapter.create(
+			{
+				orchestrationContext: {
+					pendingStageDelivery: { deliverPending: async () => {}, ready: () => undefined, fail: () => {} },
+				},
+			} as never,
+			STAGE,
+		),
+		/failed to start/,
+	);
+});
