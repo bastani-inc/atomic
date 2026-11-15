@@ -211,7 +211,8 @@ test.skipIf(process.platform === "win32")(
 				[],
 			);
 			const firsts = await s.query(
-				`SELECT payload FROM ${PREFIX}wf_events WHERE run_id = ? AND json_extract(payload, '$.name') = 'first'`,
+				// A resumed attempt's replay of a step is recorded under its own id (#4874); this counts the steps' live records.
+				`SELECT payload FROM ${PREFIX}wf_events WHERE run_id = ? AND json_extract(payload, '$.name') = 'first' AND json_extract(payload, '$.checkpointId') NOT LIKE '%tool-replay-meta:%'`,
 				s.root,
 			);
 			assert.equal(firsts.length, CHILDREN, "each child's first step is in the journal once");
