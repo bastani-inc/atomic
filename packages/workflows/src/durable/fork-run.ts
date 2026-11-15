@@ -35,6 +35,7 @@ import { workflowNamesEqual } from "../workflows/identity.js";
 import {
 	attemptReachedCheckpoints,
 	checkpointAttempt,
+	completedRunAttempt,
 	workflowAttemptCheckpoint,
 	workflowAttemptOf,
 } from "./attempt-identity.js";
@@ -74,7 +75,6 @@ import {
 import { WorkflowProjectNotTrustedError } from "./project-trust.js";
 import { FOREIGN_LIVE_WORKFLOW_WINDOW_MS } from "./resume-eligibility.js";
 import { claimsOf, hasForkClaim, hasResumeClaim, pendingForks } from "./run-claims.js";
-import { completedRunAttempt } from "./run-end.js";
 import { RUN_RESULT_CHECKPOINT_NAME } from "./run-result.js";
 import { type ForkPointTopology, forkPointCheckpointKey } from "./stage-topology.js";
 import { durableStageGroupKey } from "./stage-topology-validation.js";

@@ -15,6 +15,7 @@ import {
 	durableWorkflowAttempt,
 	forkCopiedNodes,
 	keepsForkCopiedParent,
+	recordRunCompletedCheckpointAsync,
 } from "../durable/attempt-identity.js";
 import { type DurableWorkflowBackend, pendingStageMessagesForDurableRun } from "../durable/backend.js";
 import type { DurableChildInvocation } from "../durable/boundary-topology.js";
@@ -22,7 +23,6 @@ import { createDurableChildWorkflowPrimitive } from "../durable/child-primitive.
 import { initializeDurableBackend } from "../durable/factory.js";
 import { JournalDurableBackend, JournalOwnershipError } from "../durable/journal/journal-backend.js";
 import { isDurableWorkflowResumable } from "../durable/resume-eligibility.js";
-import { recordRunCompletedCheckpointAsync } from "../durable/run-end.js";
 import { availableRunDurableBackend, bindRunDurableBackend } from "../durable/run-owner-backend.js";
 import {
 	recordedInvocationCwd,

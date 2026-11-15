@@ -4,10 +4,9 @@ import { closeSync, openSync, readSync } from "node:fs";
 import type { JournalShardUnavailableError, RunJournal } from "@bastani/atomic/storage";
 import type { PendingStageMessage, PendingStageMessageDelivery } from "../shared/store-types.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
-import { stampCheckpointAttempt, workflowAttemptOf } from "./attempt-identity.js";
+import { completedRunAttempt, stampCheckpointAttempt, workflowAttemptOf } from "./attempt-identity.js";
 import type { PromptReservationToken } from "./prompt-reservation-state.js";
 import { isDurableWorkflowResumable } from "./resume-eligibility.js";
-import { completedRunAttempt } from "./run-end.js";
 import { durableStageGroupKey } from "./stage-topology-validation.js";
 import type {
 	DurableCheckpoint,
