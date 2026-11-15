@@ -99,6 +99,15 @@ function active(status: string | undefined): boolean {
 	return status === "running" || status === "paused";
 }
 
+/**
+ * The provider id a host reports when it is given none (#4803): `ATOMIC_PROVIDER_ID`, or on Kubernetes, where
+ * `KUBERNETES_SERVICE_HOST` is set, the pod name `HOSTNAME` holds. A restarted container keeps its pod's name.
+ */
+export function defaultProviderId(env: NodeJS.ProcessEnv): string | undefined {
+	if (env.ATOMIC_PROVIDER_ID) return env.ATOMIC_PROVIDER_ID;
+	return env.KUBERNETES_SERVICE_HOST ? env.HOSTNAME || undefined : undefined;
+}
+
 /** The host's options, checked before anything opens or starts. */
 function validated(options: WorkflowWorkerHostOptions): void {
 	if (!Number.isSafeInteger(options.maxWorkers) || options.maxWorkers < 1)
@@ -292,7 +301,7 @@ class WorkerHost implements WorkflowWorkerHost {
 		private readonly restorePort: WorkspaceRestore | undefined,
 		private readonly options: WorkflowWorkerHostOptions,
 	) {
-		this.providerId = options.providerId ?? (process.env.ATOMIC_WORKER_PROVIDER_ID || undefined);
+		this.providerId = options.providerId ?? defaultProviderId(process.env);
 		this.timer = setInterval(() => this.tick(), HOST_POLL_MS);
 	}
 
@@ -434,7 +443,7 @@ class WorkerHost implements WorkflowWorkerHost {
 		const reported = await this.report();
 		const now = performance.now();
 		// A fleet controller asks an idle host to drain through the journal (#4768); the drain waits for this poll.
-		if (reported && (await this.shared.drainRequested(this.hostId))) {
+		if (reported && (await this.shared.drainRequested(this.hostId, this.providerId))) {
 			this.emit({ kind: "drain-requested" });
 			void this.drain().catch((error: Error) => {
 				this.lastDetach = failure(error);

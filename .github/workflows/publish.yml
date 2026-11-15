@@ -13,7 +13,7 @@ on:
         required: true
         type: string
       source_ref:
-        description: "Source ref to build/publish (defaults to tag; use only for release recovery)"
+        description: "Source ref to build (defaults to tag); must resolve to the tag's commit or the run fails"
         required: false
         type: string
 
@@ -47,9 +47,12 @@ jobs:
       version: ${{ steps.verify.outputs.version }}
       npm-tag: ${{ steps.verify.outputs.npm-tag }}
     steps:
+      # Check out the requested source and require it to be the tag's commit. Every
+      # job that builds or packages code then checks out `outputs.sha`, so what is
+      # published is exactly the commit verified here.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ env.RELEASE_TAG }}
+          ref: ${{ env.SOURCE_REF }}
           fetch-depth: 0
           persist-credentials: false
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
@@ -65,7 +68,7 @@ jobs:
           git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
           sha=$(git rev-parse 'HEAD^{commit}')
           tag_sha=$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")
-          [[ "$sha" == "$tag_sha" ]] || { echo "Source ref does not resolve to tag commit $tag_sha" >&2; exit 1; }
+          [[ "$sha" == "$tag_sha" ]] || { echo "Source ref $SOURCE_REF resolves to $sha, not tag commit $tag_sha" >&2; exit 1; }
           version=$(bun -e 'console.log((await Bun.file("packages/coding-agent/package.json").json()).version)')
           [[ "$version" == "$RELEASE_TAG" ]] || { echo "Package version $version does not match tag $RELEASE_TAG" >&2; exit 1; }
           subject=$(git show -s --format=%s HEAD)
@@ -169,7 +172,7 @@ jobs:
       # Release checkout does not use the Namespace git mirror.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ env.SOURCE_REF }}
+          ref: ${{ needs.integrity.outputs.sha }}
           persist-credentials: false
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
@@ -452,7 +455,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ env.SOURCE_REF }}
+          ref: ${{ needs.integrity.outputs.sha }}
           persist-credentials: false
       - id: bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
@@ -536,7 +539,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ env.SOURCE_REF }}
+          ref: ${{ needs.integrity.outputs.sha }}
           persist-credentials: false
       - id: bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
@@ -645,7 +648,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ env.SOURCE_REF }}
+          ref: ${{ needs.integrity.outputs.sha }}
           persist-credentials: false
       - id: bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
@@ -717,7 +720,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ env.SOURCE_REF }}
+          ref: ${{ needs.integrity.outputs.sha }}
           persist-credentials: false
       - id: bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
@@ -850,9 +853,10 @@ jobs:
     env:
       GH_REPO: ${{ github.repository }}
     steps:
-      # Release tooling comes from the workflow's own commit, not SOURCE_REF, so a
-      # recovery dispatch from a repaired branch runs that branch's scripts against
-      # the unchanged tagged payload.
+      # Release tooling comes from the workflow's own commit, not the verified tag
+      # commit, so a recovery dispatch from a repaired branch runs that branch's
+      # scripts against the unchanged tagged payload. Only the release scripts are
+      # checked out; nothing here is built into the payload.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.workflow_sha }}

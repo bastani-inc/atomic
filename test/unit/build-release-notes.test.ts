@@ -369,3 +369,97 @@ describe("release-note deduplication (#4799)", () => {
 		assert.equal(notes, "### Added\n\n- same entry\n- distinct entry\n");
 	});
 });
+
+function oLink(number: number): string {
+	return `[#${number}](https://github.com/o/r/issues/${number})`;
+}
+
+function bulletWithLinks(text: string, links: readonly number[]): string {
+	return `- ${text} (${links.map(oLink).join(", ")})`;
+}
+
+function linksOf(bullet: string): Set<number> {
+	return new Set([...bullet.matchAll(/\/issues\/(\d+)\)/g)].map((match) => Number(match[1])));
+}
+
+function permutations<T>(items: readonly T[]): T[][] {
+	if (items.length <= 1) return [[...items]];
+	return items.flatMap((item, index) =>
+		permutations([...items.slice(0, index), ...items.slice(index + 1)]).map((rest) => [item, ...rest]),
+	);
+}
+
+/** Deterministic PRNG (mulberry32) so a failing property run is reproducible from its seed. */
+function seededRandom(seed: number): () => number {
+	let state = seed >>> 0;
+	return () => {
+		state = (state + 0x6d2b79f5) >>> 0;
+		let value = Math.imul(state ^ (state >>> 15), 1 | state);
+		value = (value + Math.imul(value ^ (value >>> 7), 61 | value)) ^ value;
+		return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+	};
+}
+
+const PACKAGE_NAMES = ["coding-agent", "intercom", "subagents", "workflows"] as const;
+
+function fixedSources(entries: readonly (readonly string[])[]): ChangelogSource[] {
+	return entries.map((bullets, index) => ({
+		name: PACKAGE_NAMES[index],
+		content: `## [1.0.0]\n\n### Fixed\n\n${bullets.join("\n")}\n`,
+	}));
+}
+
+describe("release-note deduplication keeps every distinct change (#4835)", () => {
+	const resume = bulletWithLinks("Fixed session resume", [1, 2]);
+	const subagents = bulletWithLinks("Fixed session resume for subagents", [1, 2, 3]);
+	const lease = bulletWithLinks("Fixed workflow lease timeout", [1, 2, 4]);
+
+	for (const order of permutations([resume, subagents, lease])) {
+		test(`keeps both bullets that a shared subset bullet overlaps, input order ${order.map((bullet) => [resume, subagents, lease].indexOf(bullet)).join("")} (#4835)`, () => {
+			const notes = buildReleaseNotes(fixedSources(order.map((bullet) => [bullet])), "1.0.0");
+			const expected = order.filter((bullet) => bullet !== resume);
+			assert.equal(notes, `### Fixed\n\n${expected.join("\n")}\n`);
+		});
+	}
+
+	test("never drops a distinct change, is idempotent, and keeps the same bullets in any input order (#4835)", () => {
+		const SEEDS = 200;
+		const words = ["alpha", "beta", "gamma", "delta"];
+		for (let seed = 1; seed <= SEEDS; seed += 1) {
+			const random = seededRandom(seed);
+			const pick = (count: number): number => Math.floor(random() * count);
+			const pool: string[] = [];
+			const packages: string[][] = PACKAGE_NAMES.map(() => []);
+			const bulletCount = 2 + pick(8);
+			for (let index = 0; index < bulletCount; index += 1) {
+				let bullet: string;
+				if (pool.length > 0 && random() < 0.2) {
+					bullet = pool[pick(pool.length)];
+				} else {
+					const links = [1, 2, 3, 4, 5].filter(() => random() < 0.45);
+					const text = `Fixed ${words[pick(words.length)]} ${index}`;
+					bullet = links.length > 0 ? bulletWithLinks(text, links) : `- ${text}`;
+					pool.push(bullet);
+				}
+				packages[pick(packages.length)].push(bullet);
+			}
+			const context = `seed ${seed}:\n${packages.map((bullets) => bullets.join("\n")).join("\n--\n")}`;
+
+			const notes = buildReleaseNotes(fixedSources(packages), "1.0.0");
+			const kept = bulletsOf(notes);
+			const keptLinks = kept.map(linksOf);
+			for (const bullet of packages.flat()) {
+				if (kept.includes(bullet)) continue;
+				const links = linksOf(bullet);
+				const covered = keptLinks.some((set) => links.size >= 2 && [...links].every((link) => set.has(link)));
+				assert.ok(covered, `${bullet} was dropped without a kept bullet covering it\n${context}\n=>\n${notes}`);
+			}
+
+			const rebuilt = buildReleaseNotes([{ name: "coding-agent", content: `## [1.0.0]\n\n${notes}` }], "1.0.0");
+			assert.equal(rebuilt, notes, `not idempotent\n${context}`);
+
+			const reversed = buildReleaseNotes(fixedSources([...packages].reverse()), "1.0.0");
+			assert.deepEqual(new Set(bulletsOf(reversed)), new Set(kept), `order-dependent\n${context}`);
+		}
+	});
+});
