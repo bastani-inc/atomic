@@ -2,6 +2,7 @@ import {
 	type SqliteExecutor,
 	type SqliteRow,
 	type SqliteStatement,
+	type StorageDialect,
 	StorageTransientError,
 } from "@bastani/atomic/storage";
 import type { SqlPoolBatchOptions, SqlPoolStorage } from "./internal.js";
@@ -27,10 +28,10 @@ export function poolFenceTable(runs: string): string {
  * The table a pool batch's fences insert into when what the write decided on no longer holds: its trigger aborts the
  * batch, so nothing of the batch is written. It never holds a row.
  */
-export function poolFenceSchema(runs: string): string {
+export function poolFenceSchema(runs: string, dialect: StorageDialect): string {
 	const fence = poolFenceTable(runs);
 	return `CREATE TABLE IF NOT EXISTS ${fence}(reason TEXT);
-	CREATE TRIGGER IF NOT EXISTS ${fence}_abort BEFORE INSERT ON ${fence} BEGIN SELECT RAISE(ABORT, '${FENCE_MESSAGE}'); END;`;
+	${dialect.renderTrigger({ name: `${fence}_abort`, table: fence, timing: "BEFORE", event: "INSERT", statements: [dialect.abort(FENCE_MESSAGE)] })}`;
 }
 
 /** A pool write planned from what a read saw, sent to the database as one request. */
