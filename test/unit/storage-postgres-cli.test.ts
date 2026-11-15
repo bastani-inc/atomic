@@ -262,6 +262,17 @@ export default {
 			async all() { return []; },
 			async transaction(body) { return body(this); },
 			async close() {},
+			// A host named wake-<status>[-<reason>] delivers notifications, in that state (#5103).
+			...(host.startsWith("wake-")
+				? {
+						notifications: {
+							async state() {
+								const [status, ...reason] = host.slice("wake-".length).split("-");
+								return reason.length === 0 ? { status } : { status, reason: reason.join("-") };
+							},
+						},
+					}
+				: {}),
 		};
 	},
 };
@@ -447,6 +458,24 @@ describe("atomic storage status for a Postgres selection (#4793)", () => {
 		assert.ok(!JSON.stringify(status).includes(PASSWORD));
 		const result = await storage(["status"]);
 		assert.ok(!`${result.out}${result.err}`.includes(PASSWORD));
+	});
+
+	test("says whether wake-ups arrive through LISTEN or by polling alone, and why (#5103)", async () => {
+		installFakePostgres();
+		for (const [host, wakeUps] of [
+			["wake-listening", "wake-ups: LISTEN/NOTIFY"],
+			["wake-connecting", "wake-ups: connecting"],
+			[
+				"wake-unavailable-pooler",
+				"wake-ups: polling only, notifications do not pass the URL's transaction pooler (set listenUrl to a direct endpoint)",
+			],
+			["wake-unavailable-connection-failed", "wake-ups: polling only, the listen connection failed"],
+		] as const) {
+			selectPostgres(host);
+			const status = await collectStorageStatus({ cwd: project, agentDir, probe: true });
+			const detail = status.domains.find((domain) => domain.domain === "journal")?.probe?.connection.detail ?? "";
+			assert.ok(detail.endsWith(`, PostgreSQL 16.4; ${wakeUps}`), detail);
+		}
 	});
 
 	test("a server that does not answer fails the check within the probe timeout (#4793)", async () => {

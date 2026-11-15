@@ -416,6 +416,29 @@ function liveObjects(): Record<keyof typeof COUNTED, number> {
 	return counts;
 }
 
+/** Promise counts a settled sample may take, a settle apart, before two agree. */
+const PROMISE_COUNT_SAMPLES = 5;
+/** A macrotask's wait between two promise counts, for work a settle cannot see, which holds no handle. */
+const PROMISE_COUNT_GAP_MS = 100;
+
+/**
+ * Live objects once the promise count holds still. Under load, work still finishing after {@link settledHandles} was
+ * seen holding 15 more promises across 24 agents for one sample, all gone
+ * 500 ms later and none after: counted at once, that read as a promise per agent the agents do not keep. A promise an
+ * agent keeps stays in every count, so it still fails the bound.
+ */
+async function liveObjectsOnceSettled(settle: () => Promise<unknown>): Promise<Record<keyof typeof COUNTED, number>> {
+	const counts = liveObjects();
+	for (let sample = 1; sample < PROMISE_COUNT_SAMPLES; sample++) {
+		await new Promise((resolve) => setTimeout(resolve, PROMISE_COUNT_GAP_MS));
+		await settle();
+		const promises = queryObjects(Promise, { format: "count" }) as number;
+		if (promises === counts.Promise) return counts;
+		counts.Promise = promises;
+	}
+	return counts;
+}
+
 /** The test walks the vitest worker's whole heap seven times; in a loaded full-suite run that outlasts the default budget. */
 const HEAP_WALK_TEST_TIMEOUT_MS = 90_000;
 
@@ -503,12 +526,12 @@ describe("a released agent keeps its history and its long call's delivery, nothi
 
 			await wave(0);
 			await h.settled();
-			const before = liveObjects();
+			const before = await liveObjectsOnceSettled(h.settled);
 			const firstWave = new Set(operations.keys());
 			await wave(AGENTS_PER_WAVE);
 			await wave(AGENTS_PER_WAVE * 2);
 			await h.settled();
-			const idle = liveObjects();
+			const idle = await liveObjectsOnceSettled(h.settled);
 
 			const agents = AGENTS_PER_WAVE * 2;
 			const perAgent = (counts: Record<keyof typeof COUNTED, number>, name: keyof typeof COUNTED) =>
@@ -569,7 +592,11 @@ describe("a released agent's history leaves process memory (#4502)", () => {
 		let last = "";
 		const sample = async () => {
 			await h.settled();
-			return { ...liveObjects(), bytes: process.memoryUsage().arrayBuffers, held: h.store.inner.historyBytes() };
+			return {
+				...(await liveObjectsOnceSettled(h.settled)),
+				bytes: process.memoryUsage().arrayBuffers,
+				held: h.store.inner.historyBytes(),
+			};
 		};
 		const waves = async (count: number, promptBytes: number) => {
 			for (let wave = 0; wave < count; wave++) {

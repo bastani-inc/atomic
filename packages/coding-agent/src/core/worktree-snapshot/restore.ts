@@ -35,7 +35,12 @@ import {
 	runGit,
 	withWorktreeSnapshotGit,
 } from "./git.ts";
-import { canonicalizeWorktreePath, defaultWorktreeSnapshotStoreDir } from "./paths.ts";
+import {
+	assertRestorePathBudget,
+	canonicalizeWorktreePath,
+	defaultWorktreeSnapshotStoreDir,
+	stagingWorktreeName,
+} from "./paths.ts";
 import { loadSnapshotPathPolicy } from "./policy.ts";
 import { holderRuns, type ProcessHolder, thisProcess } from "./process-holder.ts";
 import { assertUsableBundlePrerequisites, assertUsableSnapshotRecord, isAllowedRemote } from "./records.ts";
@@ -285,11 +290,15 @@ function isRestoreRecord(value: unknown, storeDir: string, id: string): value is
 		!/^[0-9a-f]{24}\.git$/.test(basename(record.store))
 	)
 		return false;
-	const defaultStaging = join(storeDir, "worktrees", `.staging-${id}`);
-	const siblingStaging = join(dirname(record.target), `.${basename(record.target)}.atomic-restore-${id}`);
+	// Earlier versions named staging worktrees `.staging-<id>` and `.<target>.atomic-restore-<id>` (#5139).
+	const defaultStaging = [stagingWorktreeName(id), `.staging-${id}`].map((name) => join(storeDir, "worktrees", name));
+	const { staging, target } = record;
+	const siblingStaging = [stagingWorktreeName(id), `.atomic-restore-${id}`].map((suffix) =>
+		join(dirname(target), `.${basename(target)}${suffix}`),
+	);
 	return (
-		record.staging === siblingStaging ||
-		(record.staging === defaultStaging && dirname(record.target) === join(storeDir, "worktrees"))
+		siblingStaging.includes(staging) ||
+		(defaultStaging.includes(staging) && dirname(target) === join(storeDir, "worktrees"))
 	);
 }
 
@@ -593,11 +602,12 @@ async function initializedStore(store: string): Promise<boolean> {
  * half-made store; a directory already there that is not one, as an older build may have left, is initialized in place.
  */
 async function ensureObjectStore(store: string, signal?: AbortSignal): Promise<void> {
-	if (await initializedStore(store)) return;
+	if (await initializedStore(store)) return enableLongPaths(store, signal);
 	const repositories = dirname(store);
 	const fresh = join(repositories, `.${basename(store)}.${process.pid}.init`);
 	try {
 		await runGit(["init", "-q", "--bare", fresh], { cwd: repositories, signal });
+		await enableLongPaths(fresh, signal);
 		try {
 			await rename(fresh, store);
 		} catch {
@@ -606,6 +616,21 @@ async function ensureObjectStore(store: string, signal?: AbortSignal): Promise<v
 	} finally {
 		await rm(fresh, { recursive: true, force: true });
 	}
+}
+
+/**
+ * On Windows, turns on `core.longpaths` in `store`'s configuration, which its worktrees share, so Git run in a restored
+ * worktree by the user or an agent handles that worktree's files past 260 characters as Atomic's own Git does (#5139).
+ * A store that has it is left alone, so its configuration is rewritten at most once; a failure to write it costs only
+ * that, since Atomic's own Git commands set it on their command lines. Run only under the store's repository lock.
+ */
+async function enableLongPaths(store: string, signal?: AbortSignal): Promise<void> {
+	if (process.platform !== "win32") return;
+	const config = join(store, "config");
+	const git: GitRunOptions = { cwd: store, signal, allowExitCodes: [1] };
+	const current = await runGit(["config", "--file", config, "--type=bool", "--get", "core.longpaths"], git);
+	if (current.stdout.toString("utf8").trim() === "true") return;
+	await runGit(["config", "--file", config, "core.longpaths", "true"], git).catch(() => signal?.throwIfAborted());
 }
 
 function bundlePrerequisites(bundle: Uint8Array): string[] {
@@ -1300,6 +1325,13 @@ async function restoreValidated(
 		warnings.push(warning);
 		options.onWarning?.(warning);
 	};
+	checkPathBudget(
+		storeDir,
+		() => restoreStorePath(storeDir, target, snapshot ?? { id: null, root }),
+		path,
+		options.into,
+		snapshotId,
+	);
 	await sweepRestoreRecords(storeDir, warn, signal);
 	return withScratchDirectory(async (scratch) => {
 		const store = restoreStorePath(storeDir, target, snapshot ?? { id: null, root });
@@ -1588,6 +1620,7 @@ async function restoreDegradedValidated(
 		warnings.push(warning);
 		options.onWarning?.(warning);
 	};
+	checkPathBudget(storeDir, () => restoreStorePath(storeDir, snapshot, snapshot), path, undefined, snapshot.id);
 	await sweepRestoreRecords(storeDir, warn, signal);
 	return withScratchDirectory(async (scratch) => {
 		const store = restoreStorePath(storeDir, snapshot, snapshot);
@@ -1901,6 +1934,28 @@ interface PublishWorktree {
 	readonly verify: "tree" | "head";
 }
 
+/** The staging worktree of the restore `id` into `path`: under `storeDir`, or beside `path` when the caller chose it. */
+function stagingPath(storeDir: string, path: string, into: string | undefined, id: string): string {
+	return into === undefined
+		? join(storeDir, "worktrees", stagingWorktreeName(id))
+		: join(dirname(path), `.${basename(path)}${stagingWorktreeName(id)}`);
+}
+
+/**
+ * On Windows, fails a restore into `path` over the object store `store` names before it writes anything when a path it
+ * would create is longer than Git for Windows accepts (#5139). Staging names have one length, whatever the id.
+ */
+function checkPathBudget(
+	storeDir: string,
+	store: () => string,
+	path: string,
+	into: string | undefined,
+	snapshotId: string | null,
+): void {
+	const staging = stagingPath(storeDir, path, into, "0".repeat(12));
+	assertRestorePathBudget({ storeDir, store, staging, target: path, snapshotId });
+}
+
 /**
  * Checks `head` and `tree` out of `store` into a staging worktree, verifies it, and moves it to `path`, under a crash
  * record, so a final path never holds an unverified worktree.
@@ -1914,10 +1969,7 @@ async function publishWorktree(publish: PublishWorktree): Promise<string> {
 	await checkTarget(path, snapshotId);
 	const createdTarget = (await statIfPresent(path)) === undefined;
 	const id = randomUUID();
-	const staging =
-		publish.into === undefined
-			? join(storeDir, "worktrees", `.staging-${id}`)
-			: join(dirname(path), `.${basename(path)}.atomic-restore-${id}`);
+	const staging = stagingPath(storeDir, path, publish.into, id);
 	const record: RestoreRecord = { staging, target: path, store, createdTarget };
 	await withRestoreRecord(storeDir, id, record, snapshotId, warn, signal, async (assertActive) => {
 		await timeRestorePhase("materialize", () => materialize(git, staging, head, tree, scratch, snapshotId, signal));

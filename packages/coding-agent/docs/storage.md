@@ -120,6 +120,7 @@ You can write this block by hand as well. `secrets.password` takes `{ "file": â€
 | `auth` | `"password"` | `"azure-entra"`, `"aws-iam"`, or `"gcp-iam"` for [cloud identities](#cloud-identities) |
 | `maxConnections` | 8 | Connections each Atomic process may open |
 | `statementTimeoutMs` | 30000 | How long one statement may run before the server cancels it |
+| `listenUrl` | `url` | A direct endpoint for [wake-ups](#wake-ups), when `url` goes through a transaction pooler |
 
 `atomic team join` takes libSQL URLs only; use `atomic storage join` for PostgreSQL. To run worker hosts and a fleet controller on a managed service, follow [Worker fleets on managed PostgreSQL](/guides/worker-fleets-postgres). SDK callers can import `openPostgresDatabase` from `@bastani/atomic-storage-postgres`.
 
@@ -137,6 +138,20 @@ By provider:
 ### Connection poolers
 
 Atomic works through transaction-mode poolers: PgBouncer, the PgBouncer built into Azure Database for PostgreSQL (port 6432), Supabase's Supavisor (port 6543), and Neon's pooled endpoint (the `-pooler` host name). Point the URL at the pooler. A pooler lets many machines share a small number of server connections. Use transaction or session mode, not statement mode. For a worker fleet's connection count and pooler settings, see [Worker fleets on managed PostgreSQL](/guides/worker-fleets-postgres#connection-poolers).
+
+A transaction-mode pooler does not pass on [wake-ups](#wake-ups). To keep them, set `listenUrl` to the server's direct endpoint, such as port 5432 instead of 6432 on Azure, or Neon's host name without `-pooler`. Everything else still goes through the pooler.
+
+### Wake-ups
+
+On PostgreSQL, worker hosts and Intercom brokers learn about new work at once through `LISTEN`/`NOTIFY`. A host's idle workers claim a queued child right away, the root sees a finished child right away, and an Intercom message reaches a broker on another machine without waiting for its next check. Each Atomic process holds one extra connection for this, outside `maxConnections`.
+
+Wake-ups only make Atomic faster. Hosts and brokers keep checking the database as often as they would without them, so no work is lost or delayed beyond that when wake-ups stop arriving. That happens when the connection drops or the URL goes through a transaction pooler. Atomic checks the connection every 30 seconds and opens it again when it drops or stops delivering. When it finds a transaction pooler, it stops trying until the process restarts, so it leaves nothing behind on the pooler's server connections.
+
+`atomic storage status` shows whether wake-ups arrive:
+
+- `wake-ups: LISTEN/NOTIFY`: they arrive.
+- `wake-ups: polling only, notifications do not pass the URL's transaction pooler`: set `listenUrl` to a direct endpoint, as in [Connection poolers](#connection-poolers).
+- `wake-ups: polling only, the listen connection failed`: the listen endpoint is unreachable or refused the login. Check `listenUrl`, or the server's connection limit.
 
 ### Cloud identities
 
@@ -170,6 +185,7 @@ The first machine to join also needs `CREATE` on the schema, to create the table
 - **A certificate error** (`self-signed certificate in certificate chain`, `unable to get local issuer certificate`): the server's CA is not one Node.js trusts. Add `sslrootcert`, as in [TLS](#tls).
 - **`too many connections`** (`53300`): lower `maxConnections`, raise the server's `max_connections`, or put a [pooler](#connection-poolers) in front.
 - **`StorageTransientError` with code `lock-conflict` or `transaction-timeout`**: the server cancelled a statement or transaction that waited too long for a lock or ran past `statementTimeoutMs`, and nothing it wrote was kept. Persistent ones point to an overloaded server.
+- **`wake-ups: polling only`** in `atomic storage status`: see [Wake-ups](#wake-ups). Work still runs, found by the regular checks.
 - **Connections dropped during a failover or a pooler restart** are reported as `StorageTransientError` with code `connection-lost`, as for [libSQL](#turso-and-libsql).
 
 ## Turso and libSQL
@@ -192,7 +208,7 @@ Then select it in `~/.atomic/agent/settings.json`:
 }
 ```
 
-Start a self-hosted sqld with `--checkpoint-interval-s 60` (or `SQLD_CHECKPOINT_INTERVAL_S=60`). sqld 0.24.33 and earlier can stop taking writes from every client under concurrent writes when it checkpoints its write-ahead log after a commit ([tursodatabase/libsql#2286](https://github.com/tursodatabase/libsql/issues/2286)). Reads keep working, and only a restart clears it. A checkpoint on an interval instead avoids that. When writes stop this way, Atomic prints a warning naming the issue after its writes have gone unanswered three times in a row.
+Start a self-hosted sqld with `--checkpoint-interval-s 60` (or `SQLD_CHECKPOINT_INTERVAL_S=60`). sqld 0.24.33 and earlier can stop taking writes from every client under concurrent writes when it checkpoints its write-ahead log after a commit ([tursodatabase/libsql#2286](https://github.com/tursodatabase/libsql/issues/2286)). Reads keep working, and only a restart clears it. A checkpoint on an interval instead avoids that. No sqld release fixes the bug yet, so keep the setting on every sqld version until the issue lists a fixed release. When writes stop this way, Atomic prints a warning naming the issue after its writes have gone unanswered three times in a row.
 
 For a self-hosted sqld started with `--enable-namespaces`, add `"namespace": "<name>"` to `options`; the adapter sends it as the `x-namespace` header, so each namespace is its own database with its own token. `namespace` needs a `libsql:`, `https:`, or `http:` URL. SDK callers can also pass extra request `headers` to `openLibsqlDatabase`; their values are redacted from errors.
 

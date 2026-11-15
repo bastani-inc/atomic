@@ -22,6 +22,9 @@ import { sleep } from "../helpers/runtime.js";
 
 const PREFIX = "acme_";
 const TICK_MS = 100;
+/** How long a test waits for the controller's ticks to reach a state, however slowly they come under load. */
+const FLEET_TICKS_WAIT_MS = 10_000;
+const TICKS_WAIT = { timeout: FLEET_TICKS_WAIT_MS, interval: 10 };
 const definition = { definition: "fixture/child", digest: "sha256:child" };
 const config = {
 	definitions: [],
@@ -193,14 +196,17 @@ test("an idle host is drained when the only leased work on it belongs to a dead 
 			events,
 			{ idleDrainMs: 0, minHosts: 0 },
 		);
-		// The host on vm-1 keeps reporting itself, idle (its worker lost the child when the root died).
-		for (let i = 0; i < 20; i++) {
-			await f.report("h1", "vm-1");
-			await sleep(TICK_MS);
-		}
-		assert.ok(
-			events.some((e) => e.kind === "drain-requested"),
-			"an idle host whose only lease belongs to a dead root, with an expired work lease, should be drained to the floor",
+		// The host on vm-1 keeps reporting itself, idle (its worker lost the child when the root died), until the drain
+		// comes: however few ticks a loaded machine runs meanwhile.
+		await vi.waitFor(
+			async () => {
+				await f.report("h1", "vm-1");
+				assert.ok(
+					events.some((e) => e.kind === "drain-requested"),
+					"an idle host whose only lease belongs to a dead root, with an expired work lease, should be drained to the floor",
+				);
+			},
+			{ ...TICKS_WAIT, interval: TICK_MS },
 		);
 	} finally {
 		await f.close();
@@ -286,8 +292,7 @@ test("a drained host that confirmed its drain and left the registry is removed (
 				removed.push(id);
 			},
 		});
-		await sleep(5 * TICK_MS);
-		assert.ok(removed.includes("vm-1"));
+		await vi.waitFor(() => assert.ok(removed.includes("vm-1")), TICKS_WAIT);
 	} finally {
 		await f.close();
 	}
@@ -313,8 +318,7 @@ test("a drained host still in the registry is removed once its drain timed out w
 				removed.push(id);
 			},
 		});
-		await sleep(5 * TICK_MS);
-		assert.ok(removed.includes("vm-1"));
+		await vi.waitFor(() => assert.ok(removed.includes("vm-1")), TICKS_WAIT);
 	} finally {
 		await f.close();
 	}
@@ -417,7 +421,16 @@ test("a host that registers after the snapshot is not removed for a boot timeout
 			[],
 			{ bootTimeoutMs: 1, minHosts: 3 },
 		);
-		await sleep(5 * TICK_MS);
+		// Ticks, not time: under load five ticks' worth of time held fewer than the removal and the ticks after it.
+		await vi.waitFor(() => assert.ok(removed.length > 0, "the instance whose host never registered is removed"), {
+			timeout: FLEET_TICKS_WAIT_MS,
+			interval: 10,
+		});
+		const ticksAtRemoval = snapshots;
+		await vi.waitFor(() => assert.ok(snapshots >= ticksAtRemoval + 3, "three more ticks read the registry"), {
+			timeout: FLEET_TICKS_WAIT_MS,
+			interval: 10,
+		});
 		assert.deepEqual(removed, ["vm-3"], "only the instance whose host never registered is removed");
 		assert.deepEqual(
 			(await f.store.snapshot()).drains.filter((drain) => drain.providerId !== "vm-3"),
@@ -476,10 +489,12 @@ test("an instance whose worker died after registering is removed for its boot ti
 		await f.report("h1", "vm-1");
 		await f.sql(`UPDATE ${PREFIX}wf_runs_pool_hosts SET heartbeat_at = heartbeat_at - 3600000 WHERE host = 'h1'`);
 		const removed: string[] = [];
+		let lists = 0;
 		f.controller(
 			{
 				kind: "fake",
 				async list() {
+					lists++;
 					return removed.includes("vm-1") ? [] : [{ id: "vm-1", state: "running", since: 0 }];
 				},
 				async scaleTo() {},
@@ -490,7 +505,16 @@ test("an instance whose worker died after registering is removed for its boot ti
 			[],
 			{ bootTimeoutMs: 200, minHosts: 1 },
 		);
-		await sleep(30 * TICK_MS);
+		// Ticks, not time: under load thirty ticks' worth of time held too few ticks to time the boot out.
+		await vi.waitFor(() => assert.ok(removed.length > 0, "the instance is removed for its boot timeout"), {
+			timeout: FLEET_TICKS_WAIT_MS,
+			interval: 10,
+		});
+		const listsAtRemoval = lists;
+		await vi.waitFor(() => assert.ok(lists >= listsAtRemoval + 3, "three more ticks list the instances"), {
+			timeout: FLEET_TICKS_WAIT_MS,
+			interval: 10,
+		});
 		assert.deepEqual(removed, ["vm-1"]);
 	} finally {
 		await f.close();
@@ -567,7 +591,10 @@ test("an instance removed for its boot timeout is drained first, so a host that 
 			[],
 			{ bootTimeoutMs: 1 },
 		);
-		await sleep(10 * TICK_MS);
+		await vi.waitFor(
+			() => assert.ok(claims.length > 0, "the host on the instance being removed tried to claim"),
+			TICKS_WAIT,
+		);
 		assert.deepEqual(claims, [undefined], "the host on the instance being removed claims nothing");
 	} finally {
 		await f.close();
@@ -613,8 +640,9 @@ test("an instance removed for its boot timeout is kept while a host that registe
 			[],
 			{ bootTimeoutMs: 200, minHosts: 0 },
 		);
+		await vi.waitFor(() => assert.ok(removed.includes("vm-0")), TICKS_WAIT);
+		// What must not happen is given the ticks it would take to happen.
 		await sleep(20 * TICK_MS);
-		assert.ok(removed.includes("vm-0"));
 		assert.ok(!removed.includes("vm-1"), "an instance whose host holds a live lease is not removed");
 	} finally {
 		await f.close();
@@ -654,7 +682,14 @@ test("an instance whose late host read its boot-timeout drain and is draining is
 		spy.mockRestore();
 		// The host finished draining and left the registry.
 		await f.shared.forgetHost("h1");
-		await sleep(5 * TICK_MS);
+		await vi.waitFor(
+			() =>
+				assert.ok(
+					events.some((event) => event.kind === "removed"),
+					"the instance is removed once its host left",
+				),
+			TICKS_WAIT,
+		);
 		assert.deepEqual(
 			events.flatMap((event) => (event.kind === "removed" ? [[event.id, event.reason]] : [])),
 			[["vm-1", "drained"]],

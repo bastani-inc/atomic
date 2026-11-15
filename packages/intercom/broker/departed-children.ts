@@ -133,7 +133,7 @@ interface Departure {
 	group: string;
 	readonly targets: Set<string>;
 	verdict?: Verdict;
-	/** While no verdict is known: when the sends held now stop waiting for one. */
+	/** While no verdict is known: when, by `performance.now()`, the sends held now stop waiting for one. */
 	deadline?: number;
 	timer?: ReturnType<typeof setTimeout>;
 	readonly held: HeldSend[];
@@ -217,7 +217,7 @@ export class DepartedChildren {
 		if (departure.verdict?.kind !== "ended") {
 			departure.verdict = undefined;
 			this.disarm(departure);
-			departure.deadline = Date.now() + this.holdMs;
+			departure.deadline = performance.now() + this.holdMs;
 			const timer = setTimeout(() => this.expire(departure), this.holdMs);
 			timer.unref();
 			departure.timer = timer;
@@ -281,7 +281,7 @@ export class DepartedChildren {
 			return { kind: "refused", error: this.disconnectedError(departure, target) };
 		departure.held.push(held);
 		this.heldTotal += 1;
-		return { kind: "held", timeoutMs: Math.max(1, (departure.deadline ?? Date.now()) - Date.now()) };
+		return { kind: "held", timeoutMs: Math.max(1, (departure.deadline ?? performance.now()) - performance.now()) };
 	}
 
 	/** The subagent registered again under its owner's authorization: forget it and return its held sends, in order. */

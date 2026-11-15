@@ -12,11 +12,12 @@ export interface ProcessHolder {
 	readonly start?: string | undefined;
 }
 
-const PROCESS_START = processStartToken(process.pid);
+let ownStart: { readonly start: string | undefined } | undefined;
 
-/** This process, as a {@link ProcessHolder}. */
+/** This process, as a {@link ProcessHolder}; its start is read once, on first use, as reading it may start a process. */
 export function thisProcess(): ProcessHolder {
-	return { host: HOST, pid: process.pid, start: PROCESS_START };
+	ownStart ??= { start: processStartToken(process.pid) };
+	return { host: HOST, pid: process.pid, start: ownStart.start };
 }
 
 /**

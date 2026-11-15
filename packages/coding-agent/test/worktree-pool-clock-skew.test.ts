@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { readdirSync, readFileSync, renameSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	renameSync,
+	statSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -23,7 +32,7 @@ import {
 	type SlotNumber,
 } from "../src/core/worktree-snapshot/pool.js";
 import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../src/core/worktree-snapshot/settings.js";
-import { lockShared } from "../src/core/worktree-snapshot/shared-clock.js";
+import { LEFTOVER_PROBE_AGE_MS, lockShared, sharedClockOffset } from "../src/core/worktree-snapshot/shared-clock.js";
 import type { WorktreeSnapshot } from "../src/core/worktree-snapshot/types.js";
 
 // This process plays a second host sharing the pool: its leases name another host than the children's, so a child's
@@ -97,10 +106,15 @@ function skewThisProcess(skewMs: number): void {
 	vi.spyOn(Date, "now").mockImplementation(() => now() + skewMs);
 }
 
-/** Asserts that no probe file of the filesystem's clock was left in `directory`. */
-function assertNoProbes(directory: string): void {
+/** The probe files of the filesystem's clock in `directory`. */
+function probes(directory: string): string[] {
+	return readdirSync(directory).filter((name) => name.startsWith(".clock-"));
+}
+
+/** Asserts that no probe file of the filesystem's clock was left in `directory`, beyond `leftBefore`. */
+function assertNoProbes(directory: string, leftBefore: readonly string[] = []): void {
 	assert.deepEqual(
-		readdirSync(directory).filter((name) => name.startsWith(".clock-")),
+		probes(directory).filter((name) => !leftBefore.includes(name)),
 		[],
 	);
 }
@@ -231,6 +245,8 @@ test(
 		assert.equal(first, "held");
 		await sleep(LEASE_REFRESHED_MS);
 		await kill();
+		// A holder killed during one of its lease refreshes leaves that refresh's probe.
+		const leftByHolder = probes(poolDirectory(snapshot));
 		skewThisProcess(-2 * 60_000);
 
 		// Right after the crash, the lease keeps the slot through its grace period.
@@ -239,7 +255,7 @@ test(
 		const resumed = await resumeSessionWorktree(s2, pool());
 		assert.equal(resumed.status === "restored" && resumed.mappings[0]!.to, slot(snapshot, 0));
 		assert.deepEqual(recordOf(snapshot, 0).holder, ownerOf(s2));
-		assertNoProbes(poolDirectory(snapshot));
+		assertNoProbes(poolDirectory(snapshot), leftByHolder);
 	},
 	TIMEOUT_MS,
 );
@@ -271,13 +287,31 @@ test(
 		assert.equal(first, "locked");
 		await sleep(2_500);
 		await kill();
+		// The holder refreshes its lock every second, each time through a probe: killed during one, it leaves it.
+		const leftByHolder = probes(sandbox.path("."));
 		skewThisProcess(-2 * 60_000);
 
 		await assert.rejects(lockShared(path, { realpath: false, stale: STALE_MS }), { code: "ELOCKED" });
 		backdate(`${path}.lock`, STALE_MS + 1_000);
 		const unlock = await lockShared(path, { realpath: false, stale: STALE_MS });
 		await unlock();
-		assertNoProbes(sandbox.path("."));
+		assertNoProbes(sandbox.path("."), leftByHolder);
 	},
 	TIMEOUT_MS,
 );
+
+test("a clock probe a process left when it stopped mid-probe is removed once it is old; a recent one is kept (#5050)", async () => {
+	const directory = sandbox.path("probes");
+	mkdirSync(directory);
+	const left = join(directory, ".clock-0123456789abcdef.probe");
+	const recent = join(directory, ".clock-fedcba9876543210.probe");
+	const notAProbe = join(directory, ".clock-notes.txt");
+	for (const path of [left, recent, notAProbe]) writeFileSync(path, "");
+	backdate(left, LEFTOVER_PROBE_AGE_MS + 60_000);
+	backdate(notAProbe, LEFTOVER_PROBE_AGE_MS + 60_000);
+
+	await sharedClockOffset(directory);
+
+	assert.deepEqual(probes(directory).sort(), [".clock-fedcba9876543210.probe", ".clock-notes.txt"]);
+	assert.equal(existsSync(recent), true);
+});

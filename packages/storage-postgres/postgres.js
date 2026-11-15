@@ -9,6 +9,7 @@ import {
 	StorageUnavailableError,
 } from "@bastani/atomic/storage";
 import { createCloudPasswordProvider } from "./auth.js";
+import { createPostgresListener } from "./listen.js";
 
 /**
  * @typedef {import("@bastani/atomic/storage").SqliteDriverResult} SqliteDriverResult
@@ -23,6 +24,7 @@ import { createCloudPasswordProvider } from "./auth.js";
  *   auth?: PostgresAuth,
  *   maxConnections?: number,
  *   statementTimeoutMs?: number,
+ *   listenUrl?: string,
  * }} PostgresDatabaseOptions
  */
 
@@ -32,6 +34,8 @@ export const DEFAULT_MAX_CONNECTIONS = 8;
 export const DEFAULT_STATEMENT_TIMEOUT_MS = 30_000;
 /** How long opening a connection, or waiting for a free one, may take. */
 const CONNECT_TIMEOUT_MS = 10_000;
+/** How long the listening connection stays idle before TCP keepalive probes start. */
+const LISTEN_KEEPALIVE_IDLE_MS = 10_000;
 /** An idle connection is closed after this long. */
 const IDLE_TIMEOUT_MS = 10_000;
 /**
@@ -85,22 +89,23 @@ function isTlsParameter(/** @type {string} */ name) {
  * when it names none and its host is not this machine. A TLS parameter whose name is not lowercase, or an `sslmode`
  * libpq does not know, is refused.
  * @param {unknown} url
+ * @param {"url" | "listenUrl"} [field] The option that holds the URL, which a refusal names.
  * @returns {string}
  */
-function connectionUrl(url) {
+function connectionUrl(url, field = "url") {
 	/** @type {URL} */
 	let parsed;
 	try {
 		parsed = new URL(/** @type {string} */ (url));
 	} catch {
-		throw configError("url", "unsupported-url", "Use a postgres:// or postgresql:// URL");
+		throw configError(field, "unsupported-url", "Use a postgres:// or postgresql:// URL");
 	}
 	if (parsed.protocol !== "postgres:" && parsed.protocol !== "postgresql:")
-		throw configError("url", "unsupported-url", "Use a postgres:// or postgresql:// URL");
+		throw configError(field, "unsupported-url", "Use a postgres:// or postgresql:// URL");
 	const names = [...parsed.searchParams.keys()].map((name) => name.toLowerCase());
 	if (parsed.password !== "" || names.includes("password"))
 		throw configError(
-			"url",
+			field,
 			"credential-in-url",
 			"Remove the password from the URL and pass it through the storage secrets instead",
 		);
@@ -506,23 +511,35 @@ export async function openPostgresDatabase(options) {
 	}
 
 	// The URL is parsed here rather than passed as `connectionString`, whose empty password would replace `password`.
-	const connection = clientConfig(parseUrl, connectionString);
-	delete connection.password;
+	/** @param {string} url */
+	const parseConnection = (url) => {
+		const parsed = clientConfig(parseUrl, url);
+		delete parsed.password;
+		return parsed;
+	};
+	const connection = parseConnection(connectionString);
+	// Notifications reach only a session of their own: through a transaction pooler `listenUrl` names a direct endpoint.
+	const listenConnection =
+		options.listenUrl === undefined ? connection : parseConnection(connectionUrl(options.listenUrl, "listenUrl"));
 
 	/** Every password the pool was given, so the redactor can remove them from failures. */
 	const passwords = new Set(typeof options.password === "string" ? [options.password] : []);
-	const source =
-		cloud === undefined
-			? options.password
-			: createCloudPasswordProvider({
-					auth: cloud,
-					host: connection.host ?? "",
-					port: connection.port ?? 5432,
-					user: connection.user ?? "",
-				});
-	/** @type {(() => Promise<string>) | undefined} */
-	const password =
-		source === undefined
+	/**
+	 * The password function for connections to `target`: cloud IAM tokens are issued per host.
+	 * @param {typeof connection} target
+	 * @returns {(() => Promise<string>) | undefined}
+	 */
+	const passwordFor = (target) => {
+		const source =
+			cloud === undefined
+				? options.password
+				: createCloudPasswordProvider({
+						auth: cloud,
+						host: target.host ?? "",
+						port: target.port ?? 5432,
+						user: target.user ?? "",
+					});
+		return source === undefined
 			? undefined
 			: async () => {
 					const value = typeof source === "string" ? source : await source();
@@ -531,6 +548,8 @@ export async function openPostgresDatabase(options) {
 					passwords.add(value);
 					return value;
 				};
+	};
+	const password = passwordFor(connection);
 
 	// pg leaves the socket of a connection that failed to start open, for instance when the password source failed while
 	// the server waited for the password; the server keeps that half-started backend until its authentication timeout,
@@ -747,6 +766,32 @@ export async function openPostgresDatabase(options) {
 		);
 	};
 
+	const listenPassword = passwordFor(listenConnection);
+	const listener = createPostgresListener({
+		async connect() {
+			const client = new ClosingClient({
+				...listenConnection,
+				...(listenPassword === undefined ? {} : { password: listenPassword }),
+				connectionTimeoutMillis: CONNECT_TIMEOUT_MS,
+				// A short keepalive notices a peer that vanished without a reset sooner than the system's two hours; the
+				// listener's own health probe catches the rest.
+				keepAlive: true,
+				keepAliveInitialDelayMillis: LISTEN_KEEPALIVE_IDLE_MS,
+				application_name: "atomic-listen",
+			});
+			// An error before the listener attaches its own handler must not end the process unheard.
+			client.on("error", () => {});
+			await new Promise((resolve, reject) =>
+				client.connect((/** @type {Error | undefined} */ error) => (error ? reject(error) : resolve(undefined))),
+			);
+			return client;
+		},
+		send: async (channel, payload) => {
+			await autocommit((client) => client.query("SELECT pg_notify($1, $2)", [channel, payload]));
+		},
+		channelName: (channel) => postgresDialect.identifier(channel),
+	});
+
 	const database = createSqliteDatabase({
 		descriptor: { adapter: "postgres", location: connectionString },
 		redact: (text) => {
@@ -817,7 +862,11 @@ export async function openPostgresDatabase(options) {
 				close: () => client.release(lost.has(client)),
 			};
 		},
-		close: () => pool.end(),
+		notifications: listener,
+		close: async () => {
+			await listener.close();
+			await pool.end();
+		},
 	});
 	try {
 		const row = await database.get("SELECT current_setting('server_version_num') AS version");
@@ -865,6 +914,7 @@ const adapter = {
 			...(typeof options.auth === "string" ? { auth: /** @type {PostgresAuth} */ (options.auth) } : {}),
 			...(typeof options.maxConnections === "number" ? { maxConnections: options.maxConnections } : {}),
 			...(typeof options.statementTimeoutMs === "number" ? { statementTimeoutMs: options.statementTimeoutMs } : {}),
+			...(typeof options.listenUrl === "string" ? { listenUrl: options.listenUrl } : {}),
 		});
 	},
 };
