@@ -4,6 +4,7 @@ import {
 	type AgentRehydrateError,
 	type AgentWake,
 	type AgentWakeDispatcher,
+	type AgentWakeSlot,
 	agentWakeDispatcher,
 	type DetachedToolCall,
 	type DetachedToolResult,
@@ -349,13 +350,14 @@ export interface ReleasedChildWakeActions {
 	readonly wake: (
 		record: SubagentChildRecord,
 		decision: Extract<ReleasedChildWakeDecision, { kind: "wake" }>,
+		slot?: AgentWakeSlot,
 	) => Promise<void>;
 	readonly hold: (record: SubagentChildRecord, toolResults: readonly DetachedToolResult[]) => Promise<void>;
 	readonly resume?: (
 		record: SubagentChildRecord,
 		request: SubagentChildResumeRequest,
 	) => Promise<SubagentChildRestoreOutcome>;
-	readonly redispatch?: (record: SubagentChildRecord) => Promise<void>;
+	readonly redispatch?: (record: SubagentChildRecord, slot?: AgentWakeSlot) => Promise<void>;
 	readonly fail?: (
 		record: SubagentChildRecord,
 		toolResults: readonly DetachedToolResult[],
@@ -391,14 +393,14 @@ export function handleReleasedChildWakes(
 	// A reload's newer extension generation takes the owner's children over before the older one shuts down.
 	return dispatcher.handle(
 		namespace,
-		async (wakeKey, wakes) => {
+		async (wakeKey, wakes, slot) => {
 			const childId = wakeKey.slice(namespace.length + 1);
 			const record = await latest(childId);
 			setReleasedChildWakeActive(wakeKey, true);
 			try {
 				const redispatch =
 					actions.redispatch !== undefined && wakes.some(isRedispatchWake) && needsRedispatch(record);
-				if (redispatch) await actions.redispatch?.(record);
+				if (redispatch) await actions.redispatch?.(record, slot);
 				const current = redispatch ? await latest(childId) : record;
 				const others = withReleasedReplyTimeouts(
 					current,
@@ -423,7 +425,7 @@ export function handleReleasedChildWakes(
 				}
 				const decision = decideReleasedChildWake(current, others);
 				if (decision.kind === "hold") await actions.hold(current, decision.toolResults);
-				else if (decision.kind === "wake") await actions.wake(current, decision);
+				else if (decision.kind === "wake") await actions.wake(current, decision, slot);
 			} catch (error) {
 				const results = withReleasedReplyTimeouts(record, wakes).flatMap((wake) =>
 					wake.toolResult === undefined ? [] : [wake.toolResult],

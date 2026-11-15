@@ -564,6 +564,63 @@ describe("AgentWakeDispatcher concurrency (#4326)", () => {
 		assert.equal(dispatcher.stats().keys, 0);
 	});
 
+	test("a handler waiting outside its slot lets the next key run and takes the slot back in turn (#4856)", async () => {
+		const dispatcher = new AgentWakeDispatcher();
+		const started: string[] = [];
+		const outsideWait = Promise.withResolvers<void>();
+		const gates = new Map<string, () => void>();
+		let active = 0;
+		let maxActive = 0;
+		dispatcher.handle(
+			"bench",
+			async (key, _wakes, slot) => {
+				if (key === "bench:a") await slot.outside(outsideWait.promise);
+				started.push(key);
+				active += 1;
+				maxActive = Math.max(maxActive, active);
+				await new Promise<void>((resolve) => gates.set(key, resolve));
+				active -= 1;
+			},
+			{ maxConcurrent: 1 },
+		);
+		const delivered = ["bench:a", "bench:b", "bench:c"].map((key) => dispatcher.deliver(key, wake("1")));
+		await flush();
+		assert.deepEqual(started, ["bench:b"], "the next key runs while the first waits outside its slot");
+		outsideWait.resolve();
+		await flush();
+		assert.deepEqual(started, ["bench:b"], "the first waits its turn behind the key already waiting");
+		gates.get("bench:b")?.();
+		await flush();
+		assert.deepEqual(started, ["bench:b", "bench:c"]);
+		gates.get("bench:c")?.();
+		await flush();
+		assert.deepEqual(started, ["bench:b", "bench:c", "bench:a"]);
+		gates.get("bench:a")?.();
+		await Promise.all(delivered);
+		assert.equal(maxActive, 1);
+		assert.equal(dispatcher.stats().keys, 0);
+	});
+
+	test("a handler that ends while its slot is out frees the slot it takes back, so the limit is not lost (#4856)", async () => {
+		const dispatcher = new AgentWakeDispatcher();
+		const outsideWait = Promise.withResolvers<void>();
+		const started: string[] = [];
+		dispatcher.handle(
+			"bench",
+			async (key, _wakes, slot) => {
+				started.push(key);
+				if (key === "bench:a") void slot.outside(outsideWait.promise);
+			},
+			{ maxConcurrent: 1 },
+		);
+		await dispatcher.deliver("bench:a", wake("1"));
+		outsideWait.resolve();
+		await flush();
+		await Promise.all([dispatcher.deliver("bench:b", wake("1")), dispatcher.deliver("bench:c", wake("1"))]);
+		assert.deepEqual(started, ["bench:a", "bench:b", "bench:c"]);
+		assert.equal(dispatcher.stats().keys, 0);
+	});
+
 	test("a replacement handler's lower limit holds back waiting keys until running keys fit under it (#4326)", async () => {
 		const dispatcher = new AgentWakeDispatcher();
 		const started: string[] = [];
