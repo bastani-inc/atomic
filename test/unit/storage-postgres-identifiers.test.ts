@@ -102,6 +102,49 @@ const cases: readonly (readonly [string, string, string])[] = [
 		`CREATE FUNCTION f(a text DEFAULT $$${L}$$) AS $$${H}$$`,
 	],
 	["a word ending in DO is not DO", `UNDO $$${L}$$`, `UNDO $$${L}$$`],
+	["a word starting with DO is not DO", `do_something($$${L}$$)`, `do_something($$${L}$$)`],
+	["a doubled quote ending a string", `SELECT 'a''' || ${L}`, `SELECT 'a''' || ${H}`],
+	["a backslash in a string at the start", `'a\\' || ${L}`, `'a\\' || ${H}`],
+	["a quoted identifier with a space", `SELECT "a ${L}" FROM ${L}`, `SELECT "a ${L}" FROM ${H}`],
+	["an asterisk after a parenthesis is not a comment", `SELECT count(*) FROM ${L}`, `SELECT count(*) FROM ${H}`],
+	["a dollar quote later in the statement", `SELECT $1, ${L}, $$x$$`, `SELECT $1, ${H}, $$x$$`],
+	["a dollar quote with a longer tag", `SELECT $tag$ ${L} $tag$, ${L}`, `SELECT $tag$ ${L} $tag$, ${H}`],
+	[
+		"a value after a function in one call",
+		`CREATE FUNCTION f() AS $$x$$; SELECT 1 AS $$${L}$$`,
+		`CREATE FUNCTION f() AS $$x$$; SELECT 1 AS $$${L}$$`,
+	],
+	["a DO block after another statement", `SELECT 1; DO $$ DELETE FROM ${L} $$`, `SELECT 1; DO $$ DELETE FROM ${H} $$`],
+	[
+		"a DO block with more spaces",
+		`DO  LANGUAGE  plpgsql  $$ DELETE FROM ${L} $$`,
+		`DO  LANGUAGE  plpgsql  $$ DELETE FROM ${H} $$`,
+	],
+	[
+		"a function header with a comment between words",
+		`CREATE/* c */FUNCTION f() AS $$ DELETE FROM ${L} $$`,
+		`CREATE/* c */FUNCTION f() AS $$ DELETE FROM ${H} $$`,
+	],
+	[
+		"a function body after a line comment",
+		`CREATE FUNCTION f() AS -- body\n$$ DELETE FROM ${L} $$`,
+		`CREATE FUNCTION f() AS -- body\n$$ DELETE FROM ${H} $$`,
+	],
+	[
+		"a function header with more spaces",
+		`\n CREATE  OR  REPLACE  FUNCTION f() AS $$ DELETE FROM ${L} $$`,
+		`\n CREATE  OR  REPLACE  FUNCTION f() AS $$ DELETE FROM ${H} $$`,
+	],
+	[
+		"a value in a statement that quotes a function header",
+		`INSERT INTO t SELECT 'CREATE FUNCTION f() AS' AS $$${L}$$`,
+		`INSERT INTO t SELECT 'CREATE FUNCTION f() AS' AS $$${L}$$`,
+	],
+	[
+		"a value after a function's AS clause",
+		`CREATE FUNCTION f() LANGUAGE sql AS 'SELECT 1' SET search_path = $$${L}$$`,
+		`CREATE FUNCTION f() LANGUAGE sql AS 'SELECT 1' SET search_path = $$${L}$$`,
+	],
 ];
 
 for (const [name, sql, expected] of cases)
