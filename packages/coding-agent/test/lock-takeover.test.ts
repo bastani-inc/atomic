@@ -344,6 +344,22 @@ describe("the advisory takeover mutex (#5193)", () => {
 		assert.equal(again, undefined, "and the advisory lock is not kept by the refused taker");
 	});
 
+	it("removes the staging directories a killed native taker left, and never leaves a mutex without its owner (#5193)", () => {
+		const leftover = `${takeoverMutexPath(lockPath)}.left-by-a-killed-taker.tmp`;
+		mkdirSync(leftover);
+		writeFileSync(join(leftover, "owner"), "{}");
+		const mutex = takeTakeoverMutex(lockPath, 0);
+		assert.ok(mutex);
+		assert.equal(existsSync(leftover), false, "the leftover staging directory is removed");
+		assert.ok(readFileSync(join(takeoverMutexPath(lockPath), "owner"), "utf8").includes(String(process.pid)));
+		mutex.release();
+		assert.deepEqual(
+			readdirSync(directory).filter((name) => name.includes(".takeover") && !name.endsWith(".takeover.lock")),
+			[],
+			"nothing is left beside the advisory lock file",
+		);
+	});
+
 	it("also holds the owner-checked directory mutex, freed once its owner is dead (#5193)", () => {
 		const mutex = takeTakeoverMutex(lockPath, 0);
 		assert.ok(mutex);
@@ -422,7 +438,8 @@ describe("a native module without the advisory lock (#5193)", () => {
 
 	it("with only one of the lock's functions, falls back to the directory mutex (#5193)", () => {
 		const lock = "tryAdvisoryLock: () => ({ release() {} })";
-		const rename = "renameNoReplace: () => false";
+		const rename =
+			'renameNoReplace: (from, to) => { const fs = require("node:fs"); if (fs.existsSync(to)) return false; fs.renameSync(from, to); return true; }';
 		assert.deepEqual(anotherProcessWithBinding(`{ ${lock} }`), { directory: true, warnings: 1 });
 		assert.deepEqual(anotherProcessWithBinding(`{ ${rename} }`), { directory: true, warnings: 1 });
 		assert.deepEqual(anotherProcessWithBinding(`{ ${lock}, ${rename} }`), { directory: true, warnings: 0 });

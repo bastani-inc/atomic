@@ -216,7 +216,8 @@ export function takeTakeoverMutex(
 		return takeDirectoryMutex(lockPath);
 	}
 	if (lock === null) return undefined;
-	const directory = takeDirectoryMutex(lockPath);
+	removeLeftoverStaging(lockPath);
+	const directory = takeDirectoryMutex(lockPath, native);
 	if (directory === undefined) {
 		lock.release();
 		return undefined;
@@ -269,7 +270,7 @@ export function putBack(aside: string, path: string): boolean {
  * proven dead is removed, as is one that names no owner once it is {@link TAKEOVER_MUTEX_STALE_MS} old; a live owner
  * keeps its mutex however long it holds it.
  */
-function takeDirectoryMutex(lockPath: string): TakeoverMutex | undefined {
+function takeDirectoryMutex(lockPath: string, native?: NativeLocks): TakeoverMutex | undefined {
 	const path = takeoverMutexPath(lockPath);
 	const owner: MutexOwner = {
 		host: hostname(),
@@ -278,7 +279,27 @@ function takeDirectoryMutex(lockPath: string): TakeoverMutex | undefined {
 		id: randomUUID(),
 	};
 	const owned = () => readMutexOwner(path)?.id === owner.id;
+	const mutex: TakeoverMutex = {
+		owned,
+		release: () => {
+			if (!owned()) return;
+			try {
+				if (native === undefined) {
+					rmSync(mutexOwnerPath(path), { force: true });
+					rmdirSync(path);
+					return;
+				}
+				// Moved away whole, so the mutex is never seen without its owner; a leftover is removed later.
+				const leaving = staging(path);
+				renameSync(path, leaving);
+				rmSync(leaving, { recursive: true, force: true });
+			} catch {
+				// Left behind, it names this process, and its owner check frees it once this process is gone.
+			}
+		},
+	};
 	const take = (): TakeoverMutex | undefined => {
+		if (native !== undefined) return createWithOwner(path, owner, native) ? mutex : undefined;
 		try {
 			mkdirSync(path);
 		} catch {
@@ -289,20 +310,50 @@ function takeDirectoryMutex(lockPath: string): TakeoverMutex | undefined {
 		} catch {
 			// A mutex that names no owner is not owned: this process moves nothing, and it goes stale by its age.
 		}
-		return {
-			owned,
-			release: () => {
-				if (!owned()) return;
-				try {
-					rmSync(mutexOwnerPath(path), { force: true });
-					rmdirSync(path);
-				} catch {
-					// Left behind, it names no owner and goes stale by its age.
-				}
-			},
-		};
+		return mutex;
 	};
 	return take() ?? (removeStaleMutex(path) ? take() : undefined);
+}
+
+/** A name beside the directory mutex at `path` for one being made or removed by a process holding the advisory lock. */
+function staging(path: string): string {
+	return `${path}.${randomUUID()}.tmp`;
+}
+
+/**
+ * Makes the directory mutex at `path` with its owner already inside (#5193): it is made under a name of its own and
+ * moved into place only while nothing is there, so a process killed meanwhile never leaves a mutex that names no owner,
+ * which would be kept for {@link TAKEOVER_MUTEX_STALE_MS}. True when it is in place.
+ */
+function createWithOwner(path: string, owner: MutexOwner, native: NativeLocks): boolean {
+	const made = staging(path);
+	try {
+		mkdirSync(made);
+		writeFileSync(mutexOwnerPath(made), JSON.stringify(owner));
+		if (native.renameNoReplace(made, path)) return true;
+	} catch {
+		// Not made: the mutex is not taken.
+	}
+	rmSync(made, { recursive: true, force: true });
+	return false;
+}
+
+/**
+ * Removes the staging directories of {@link createWithOwner} and of releases that processes killed meanwhile left
+ * beside the directory mutex of `lockPath`. Only a process holding the advisory lock makes them, so one seen by the
+ * holder of that lock is a leftover.
+ */
+function removeLeftoverStaging(lockPath: string): void {
+	const path = takeoverMutexPath(lockPath);
+	const prefix = `${basename(path)}.`;
+	try {
+		for (const name of readdirSync(dirname(path))) {
+			if (name.startsWith(prefix) && name.endsWith(".tmp"))
+				rmSync(join(dirname(path), name), { recursive: true, force: true });
+		}
+	} catch {
+		// Best effort: a leftover is only clutter.
+	}
 }
 
 /** The file beside lock directory `lockPath` that names its holder. */
