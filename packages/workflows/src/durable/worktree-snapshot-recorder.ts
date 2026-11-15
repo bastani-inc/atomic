@@ -124,7 +124,7 @@ export function createWorkflowSnapshotRecorder(input: {
 					captured = await captureAll(latest);
 					if (!(await committed(captured.snapshots))) {
 						report(refused!);
-						captured = { snapshots: [], blobs: [] };
+						captured = { snapshots: [], blobs: captured.blobs };
 						await commit([]);
 					}
 				}

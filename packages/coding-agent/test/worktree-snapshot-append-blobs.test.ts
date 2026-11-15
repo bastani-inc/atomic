@@ -174,27 +174,35 @@ test("a capture whose blobs are always collected rejects with blobs-collected af
 	assert.equal(manager.getLatestWorktreeSnapshots().size, 0);
 });
 
-test("a record that fails for another reason is neither retried nor captured again (#5077)", async () => {
-	const { clone, store } = await openSession();
-	const failure = new Error("not a collection");
-	let captures = 0;
-	let records = 0;
-	await assert.rejects(
-		recordWorktreeCapture(
-			store.snapshotBlobs,
-			async () => {
-				captures++;
-				return captureWorktreeSnapshot(clone, { blobs: store.snapshotBlobs });
-			},
-			async () => {
-				records++;
-				throw failure;
-			},
-		),
-		(error) => error === failure,
-	);
-	assert.deepEqual([captures, records], [1, 1]);
-});
+for (const [name, failures] of [
+	["fails for another reason", [new Error("not a collection")]],
+	["fails with another snapshot error", [new WorkspaceSnapshotError("blob-store-failed", "node-sqlite")]],
+	["fails with an error that only shares the code", [Object.assign(new Error("other"), { code: "blobs-collected" })]],
+	[
+		"is refused, then fails for another reason once its blobs are stored again",
+		[new WorkspaceSnapshotError("blobs-collected", "hash"), new Error("not a collection")],
+	],
+] as const) {
+	test(`a record that ${name} is not tried again and the checkout is not captured again (#5077)`, async () => {
+		const { clone, store } = await openSession();
+		let captures = 0;
+		let records = 0;
+		await assert.rejects(
+			recordWorktreeCapture(
+				store.snapshotBlobs,
+				async () => {
+					captures++;
+					return captureWorktreeSnapshot(clone, { blobs: store.snapshotBlobs });
+				},
+				async () => {
+					throw failures[records++];
+				},
+			),
+			(error) => error === failures.at(-1),
+		);
+		assert.deepEqual([captures, records], [1, failures.length]);
+	});
+}
 
 test("an unchanged capture refused for collected blobs is captured again rather than stored again (#5077)", async () => {
 	const { clone, store } = await openSession();
