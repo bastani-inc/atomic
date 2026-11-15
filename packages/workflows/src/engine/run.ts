@@ -140,6 +140,7 @@ import { durableRootRegistrationForRun, WorkflowRunControlError } from "./run-du
 import { createDurableStageSessionRecorder } from "./run-durable-stage-session.js";
 import {
 	createDurableCachedStageRecorder,
+	createDurablePromptAnswerResolver,
 	createDurableStageDeps,
 	createDurableStageEndRecorder,
 	createDurableStageTopologyResolver,
@@ -1042,6 +1043,7 @@ async function executeRun(
 				checkpoint.kind === "stage" &&
 				(checkpoint.topology?.run === undefined || checkpoint.topology.run.runId === runId),
 		);
+	const durablePromptAnswerForStageId = createDurablePromptAnswerResolver(durableBackend, runId);
 	let promptNodeUi: ReturnType<typeof buildPromptNodeUiAdapter> | undefined;
 	const getPromptNodeUi = (): ReturnType<typeof buildPromptNodeUiAdapter> => {
 		promptNodeUi ??= buildPromptNodeUiAdapter({
@@ -1059,6 +1061,8 @@ async function executeRun(
 			workflowExitSkippedReason: exit.workflowExitSkippedReason,
 			preserveWorkflowExitSkippedReason: exit.preserveWorkflowExitSkippedReason,
 			durableTopologyForReplayKey: resolvePromptNodeTopology,
+			durablePromptAnswerForStageId,
+			recordPromptStageEnd: durableOnPromptNodeEnd,
 			durableTimingForStageId: (stageId) =>
 				priorPromptStageCheckpoints.find(
 					(checkpoint) =>

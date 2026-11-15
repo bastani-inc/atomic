@@ -14,8 +14,10 @@ import { waitForExecutorStagePendingPrompt } from "../unit/executor-shared.js";
 
 afterEach(() => setDurableBackend(undefined));
 
-// #3038: prompt answers live in UI checkpoints, not in their completed stage metadata.
-test.each(["valid", "missing-ui", "mismatched-ui"] as const)(
+// #3038: a completed prompt replays its recorded answer, and recovery without it fails before any later step runs.
+// #4941: the answer is recorded with the prompt's completion, so a missing UI checkpoint still recovers from it; a
+// journal from before that (`missing-ui`, `mismatched-ui`), whose run recorded steps after the prompt, still fails.
+test.each(["valid", "answer-in-completion", "missing-ui", "mismatched-ui"] as const)(
 	"public durable prompt/tool recovery (%s)",
 	async (mode) => {
 		let backend = await createMemoryTestBackend();
@@ -59,7 +61,11 @@ test.each(["valid", "missing-ui", "mismatched-ui"] as const)(
 			const incomplete = await createMemoryTestBackend();
 			await incomplete.commitWorkflowRegistration(backend.getWorkflow(original.runId)!);
 			for (const checkpoint of backend.listCheckpoints(original.runId)) {
-				if (checkpoint.kind !== "ui") await incomplete.commitCheckpoint(checkpoint);
+				if (checkpoint.kind === "stage" && mode !== "answer-in-completion") {
+					// As written before answers were recorded with completions.
+					const { promptAnswer: _answer, ...legacy } = checkpoint;
+					await incomplete.commitCheckpoint(legacy);
+				} else if (checkpoint.kind !== "ui") await incomplete.commitCheckpoint(checkpoint);
 				else if (mode === "mismatched-ui")
 					await incomplete.commitCheckpoint({ ...checkpoint, promptHash: "different-prompt" });
 			}
@@ -81,7 +87,7 @@ test.each(["valid", "missing-ui", "mismatched-ui"] as const)(
 				await sleep(10);
 			}
 			const recovered = store.runs().find((entry) => entry.id === original.runId)!;
-			if (mode !== "valid") {
+			if (mode === "missing-ui" || mode === "mismatched-ui") {
 				assert.equal(recovered.status, "failed");
 				assert.match(recovered.error ?? "", /insufficient_state: missing durable UI answer/);
 				assert.equal(recovered.stages.length, 0, "reject before exposing a prompt node");
