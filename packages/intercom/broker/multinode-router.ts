@@ -79,6 +79,7 @@ import {
 } from "./send-handler.js";
 import { deliverHeldToAsker } from "./ask-failures.js";
 import { brokerHostIdentity, isProcessAlive } from "./broker-instance.js";
+import { type LostRecipientBounds, lostRecipientBounds, lostRecipientReason } from "./lost-recipients.js";
 import type { BrokerOutboundFrame } from "./socket-writes.js";
 import type { SupervisorChannelCache } from "./supervisor-channel.js";
 import type { WakeUpBus, WakeUpEvent, WakeUpSubscription } from "./wake-up-bus.js";
@@ -226,6 +227,8 @@ export interface MultiNodeRouterOptions {
 	readonly pid?: number;
 	/** #5038: whether a process of this host still runs (`isProcessAlive`). */
 	readonly isProcessAlive?: (pid: number) => boolean;
+	/** #5154: how long a recipient whose end was lost stays gone before its asks fail; `lostRecipientBounds()`. */
+	readonly lostRecipientBounds?: LostRecipientBounds;
 }
 
 interface Inflight {
@@ -452,6 +455,7 @@ export class MultiNodeRouter {
 	private readonly instanceKey: string;
 	private readonly pid: number;
 	private readonly isProcessAlive: (pid: number) => boolean;
+	private readonly lostBounds: LostRecipientBounds;
 	private membership: Lease | undefined;
 	private subscription: WakeUpSubscription | undefined;
 	private readonly presence = new Map<BrokerConnectedSession, PresenceEntry>();
@@ -486,6 +490,7 @@ export class MultiNodeRouter {
 				: `${this.nodeId}:${hostIdentity}:${options.instanceKey}`;
 		this.pid = options.pid ?? process.pid;
 		this.isProcessAlive = options.isProcessAlive ?? isProcessAlive;
+		this.lostBounds = options.lostRecipientBounds ?? lostRecipientBounds();
 	}
 
 	/** Take the membership lease, subscribe to wake-ups and adopt the sessions already connected. */
@@ -695,6 +700,68 @@ export class MultiNodeRouter {
 	}
 
 	/**
+	 * #5154: a recipient whose broker stopped before it recorded the recipient leaving looks like a session that may come
+	 * back. One that has not, within its bound (`LOST_RECIPIENT_UNAVAILABLE_AFTER_MS` once its broker restarted, or
+	 * `LOST_RECIPIENT_STALE_LEASE_AFTER_MS` past its presence lease going stale) and whose owner holds no reservation
+	 * for its return, has its unparked asks failed as "unavailable": marked ended, so of brokers that find it lost at
+	 * once only the one that marked an ask tells its asker, through the outbox as an ended recipient's failure.
+	 */
+	private async sweepLostRecipients(): Promise<void> {
+		const { afterRestartMs, afterStaleLeaseMs } = this.lostBounds;
+		const presences = (await this.state.leases.listLive("presence", Number.MAX_SAFE_INTEGER)).filter(
+			(lease) => lease.subject.kind === "presence",
+		);
+		const live = new Set<string>();
+		const lost = new Map<string, { from: SessionInfo; targetIdentity: string; boundMs: number }>();
+		for (const lease of presences) {
+			const subject = lease.subject as RecipientPresenceSubject;
+			if (lease.ageMs <= BROKER_LEASE_STALE_AFTER_MS) {
+				live.add(subject.session.id);
+				live.add(subject.targetIdentity);
+			} else if (lease.ageMs >= BROKER_LEASE_STALE_AFTER_MS + afterStaleLeaseMs) {
+				lost.set(subject.session.id, {
+					from: subject.session,
+					targetIdentity: subject.targetIdentity,
+					boundMs: afterStaleLeaseMs,
+				});
+			}
+		}
+		for (const known of await this.state.knownSessions.listLost(afterRestartMs)) {
+			const from: SessionInfo = {
+				id: known.intercomSessionId,
+				...(known.name === undefined ? {} : { name: known.name }),
+				group: known.group,
+				groups: [...known.groups],
+				cwd: "",
+				model: "",
+				pid: 0,
+				startedAt: 0,
+				lastActivity: Date.now(),
+			};
+			lost.set(known.intercomSessionId, { from, targetIdentity: known.targetIdentity, boundMs: afterRestartMs });
+		}
+		for (const [sessionId, { from, targetIdentity, boundMs }] of lost) {
+			if (live.has(sessionId) || live.has(targetIdentity) || this.host.sessions.has(sessionId)) continue;
+			if (await this.reservedForReturn(sessionId, targetIdentity, from)) continue;
+			const ended = await this.state.pendingAsks.endLost(sessionId);
+			if (ended.status !== "listed") continue;
+			const reason = lostRecipientReason(from.name ?? sessionId, boundMs);
+			await this.failAsksTo(from, ended.asks, reason, "ended", "outside-groups", true);
+		}
+	}
+
+	/** #5154: whether an owner holds a reservation for this session's return, as for a released subagent. */
+	private async reservedForReturn(sessionId: string, targetIdentity: string, from: SessionInfo): Promise<boolean> {
+		const sender = { sessionId, groups: [...sessionGroups(from)] };
+		for (const id of [sessionId, returnAddressOf(targetIdentity)]) {
+			if (id === undefined) continue;
+			const lookup = await this.state.reservations.lookup(normalizeTarget(id), sender, BROKER_LEASE_STALE_AFTER_MS);
+			if (lookup.status === "reserved") return true;
+		}
+		return false;
+	}
+
+	/**
 	 * #4852: the session ended: the open questions released subagents asked it fail through each subagent's owner, as a
 	 * reply to them would arrive, so the subagent is told once that its recipient ended before replying.
 	 */
@@ -754,6 +821,7 @@ export class MultiNodeRouter {
 		reason: string,
 		idPrefix: string,
 		reopenRoute: "always" | "outside-groups",
+		retryLater = false,
 	): Promise<void> {
 		if (asks.length === 0) return;
 		const live = (await this.state.leases.listLive("presence", BROKER_LEASE_STALE_AFTER_MS)).filter(
@@ -775,6 +843,8 @@ export class MultiNodeRouter {
 					timestamp: Date.now(),
 					replyTo: ask.messageId,
 					replyError: reason,
+					// #5154: the recipient may only be away: asking again later may reach it.
+					...(retryLater ? { retryLater: true as const } : {}),
 					content: { text: reason },
 				},
 			};
@@ -2597,6 +2667,13 @@ export class MultiNodeRouter {
 		for (const lease of await this.state.leases.listLive("broker", BROKER_LEASE_STALE_AFTER_MS)) {
 			const { instanceKey, pid } = lease.subject as Partial<BrokerMembershipSubject>;
 			if (instanceKey !== this.instanceKey || pid === undefined || this.isProcessAlive(pid)) continue;
+			// #5154: the sessions it had present may have ended with it unrecorded: they are lost until they register again.
+			const present = (await this.state.leases.listLive("presence", Number.MAX_SAFE_INTEGER)).filter(
+				(presence) => presence.holderId === lease.holderId && presence.subject.kind === "presence",
+			);
+			await this.state.knownSessions.markLost(
+				present.map((presence) => (presence.subject as RecipientPresenceSubject).targetIdentity),
+			);
 			await this.state.leases.retireHolder(lease.holderId);
 			await this.state.outbox.releaseClaimsOf(lease.holderId);
 		}
@@ -2653,6 +2730,7 @@ export class MultiNodeRouter {
 	private async backupPoll(): Promise<void> {
 		this.scanAll();
 		await this.sweepEndedAsks();
+		await this.sweepLostRecipients();
 		await this.checkOutcomes();
 		await this.checkHolds();
 		for (const reservationKey of this.mirrored.keys()) {
