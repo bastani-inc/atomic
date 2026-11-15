@@ -98,7 +98,9 @@ async function recordUntil(
 		if (record && accept(record)) return record;
 		await sleep(10);
 	}
-	throw new Error(`child ${childId} never reached the expected record`);
+	throw new Error(
+		`child ${childId} never reached the expected record: ${JSON.stringify(readSubagentChildRecords(owner.getEntries()).get(childId))}`,
+	);
 }
 
 test(
@@ -116,8 +118,10 @@ test(
 		const base = env.options("build-wait");
 		const childOptions = base.getChildSessionOptions;
 		assert.ok(childOptions);
+		// A wake restores the child with its recorded options: it runs on this test's model, as a real session.
 		const withChildOptions = (options: RunSyncOptions): RunSyncOptions => ({
 			...options,
+			testSession: false,
 			getChildSessionOptions: (session) => ({ ...childOptions(session), parentCommandTaskOwner }),
 		});
 		const events = ownerEvents();
@@ -139,9 +143,10 @@ test(
 			model: undefined,
 			thinkingLevel: undefined,
 		} as unknown as ExtensionContext;
-		const runtime = { runSync: (...args: Parameters<typeof runSync>) => runSync(...args) };
-		runtime.runSync = (cwd, agents, name, task, options) =>
-			runSync(cwd, agents, name, task, withChildOptions(options));
+		const runtime = {
+			runSync: (...[cwd, agents, name, task, options]: Parameters<typeof runSync>) =>
+				runSync(cwd, agents, name, task, withChildOptions(options)),
+		};
 		const stopWakes = bindReleasedChildWakes(
 			{
 				pi,
@@ -239,11 +244,18 @@ test(
 			bytes: Buffer.from("go\n"),
 		});
 
-		const finished = await recordUntil(owner, "build-wait:0", (record) => record.terminalStatus === "ok");
-		assert.notEqual(finished.taskId, childTaskId, "the wake ran the child again on its own");
+		const finished = await recordUntil(
+			owner,
+			"build-wait:0",
+			(record) =>
+				record.taskId !== childTaskId &&
+				record.state === "terminal" &&
+				record.terminalStatus !== SUBAGENT_CHILD_RELEASED_STATUS,
+		);
 		const woken = await host.waitForTask(finished.taskId as TaskId);
 		assert.ok(woken.ok && woken.value.kind === "settled");
-		assert.equal(woken.value.result.kind, "completed");
+		assert.equal(woken.value.result.kind, "completed", JSON.stringify(woken.value.result));
+		assert.equal(finished.terminalStatus, "ok", "the wake ran the child again on its own, and it finished");
 		assert.equal(env.faux.getPendingResponseCount(), 0, "the woken child answered its wait's result");
 	},
 	LIVE_CHILD_TIMEOUT_MS,

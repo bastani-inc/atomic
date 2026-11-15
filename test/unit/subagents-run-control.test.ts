@@ -3121,7 +3121,8 @@ test(
 			requestedModels: processWide.requestedModels,
 			launchHeartbeats: processWide.launchHeartbeats,
 			executionTimeouts: processWide.executionTimeouts,
-			releases: processWide.releases,
+			// A retained released child keeps what it waits on for its notice; an evicted one keeps nothing (#5031).
+			releases: FINISHED_TASK_RETENTION,
 		});
 
 		const resumed = await h.call({ action: "resume", id: "retained0:0", message: "carry on" });

@@ -5,6 +5,7 @@ import { test } from "vitest";
 import { cancelReasonText } from "../../packages/coding-agent/src/core/tasks/cancel-reason.js";
 import {
 	formatTaskCompletion,
+	isResumableStop,
 	type TaskCompletionEnvelope,
 	taskCompletionEnvelope,
 } from "../../packages/coding-agent/src/core/tasks/completion.js";
@@ -94,6 +95,25 @@ test("a subagent released while it waits is reported as released and waking by i
 	assert.match(released, /it wakes by itself when that finishes/);
 	assert.match(released, /waiting on the build/);
 	assert.doesNotMatch(released, /paused|awaiting resume|resume|Stop reason: pause|This execution has ended/);
+
+	// Each call it waits on is named; a release that names none still reads as one, also without a task record.
+	const releasedOn = (waitingOn: Array<{ toolCallId: string; toolName: string }>) =>
+		formatTaskCompletion({ ...envelope, result: { kind: "cancelled", cause: "pause", released: { waitingOn } } });
+	assert.match(
+		releasedOn([
+			{ toolCallId: "toolu-7", toolName: "bash" },
+			{ toolCallId: "ask-2", toolName: "intercom" },
+		]),
+		/^Background task released while waiting on bash \(toolu-7\), intercom \(ask-2\)\./,
+	);
+	assert.match(releasedOn([]), /^Background task released while waiting on a tool call\./);
+	assert.doesNotMatch(releasedOn([]), /pause/);
+	assert.equal(
+		isResumableStop({ kind: "cancelled", cause: "pause", released: { waitingOn: [] } }),
+		false,
+		"a release is not a resumable stop",
+	);
+	assert.equal(isResumableStop({ kind: "completed", output: task.output }), false);
 
 	const paused = formatTaskCompletion({ ...envelope, result: { kind: "cancelled", cause: "pause" } }, launched);
 	assert.match(paused, RESUMABLE_STOP_TITLES.pause);

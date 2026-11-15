@@ -21,8 +21,7 @@ export function taskState(task: TaskRecord): string {
 	)
 		return "killed";
 	// A released agent waits on a call and wakes by itself when it finishes; nothing paused it (#5031).
-	if (task.kind === "agent" && task.execution.kind === "settled" && releasedWaitingOn(task.execution.result))
-		return "released";
+	if (task.execution.kind === "settled" && releasedWaitingOn(task.execution.result)) return "released";
 	// A quit or paused agent awaits resume, as a quit workflow run does.
 	if (task.kind === "agent" && task.execution.kind === "settled" && isResumableStop(task.execution.result))
 		return "paused";
