@@ -330,4 +330,16 @@ test("a broker that crashes after a recipient ended with its reply still unsaved
 		restarted.heldForAsker(ADDRESSES.asker).map((held) => held.message.id),
 		["ended:unsaved"],
 	);
+	// Its route is not also kept: the failure is the ask's one outcome.
+	assert.deepEqual(restarted.restoreDormant("asker", ADDRESSES.asker, connected("asker", "recipient")), []);
+	assert.deepEqual(restarted.restoreDormant("recipient", ADDRESSES.recipient, connected("asker", "recipient")), []);
+});
+
+test("an asker that cannot prove itself keeps nothing for a crash when its recipient ends with a reply on its way (#5095)", () => {
+	const path = fileIn();
+	const before = broker(path);
+	before.record("stranger", "recipient", "q");
+	before.markReplied("recipient", "stranger", "q");
+	assert.deepEqual(before.takeForTarget("recipient", { ended: info("recipient") }), []);
+	assert.deepEqual(broker(path).heldForAsker(undefined), []);
 });

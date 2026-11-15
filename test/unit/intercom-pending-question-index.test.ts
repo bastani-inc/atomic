@@ -207,6 +207,8 @@ test("a recipient that ends while its reply is on its way fails the ask only if 
 	index.markReplied("recipient", "asker", "saved");
 	index.markReplied("recipient", "asker", "lost");
 	assert.deepEqual(index.takeForTarget("recipient", { ended: recipient }), []);
+	assert.equal(index.matchesReply("recipient", "asker", "lost"), false, "the ended recipient answers nothing more");
+	assert.deepEqual(index.takeForTarget("recipient", { ended: recipient }), []);
 
 	assert.equal(index.clearReply("recipient", "asker", "saved"), true, "a saved reply answers its ask");
 	index.unmarkReplied("recipient", "asker", "lost");
