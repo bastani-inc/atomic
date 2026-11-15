@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import * as nodeFs from "node:fs";
-import { mkdirSync, readFileSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { processStartToken } from "./process-start-token.ts";
 
 /*
@@ -156,6 +156,34 @@ export function takeTakeoverMutex(lockPath: string): TakeoverMutex | undefined {
 	return take() ?? (removeStaleMutex(path) ? take() : undefined);
 }
 
+/** The file beside lock directory `lockPath` that names its holder. */
+export function lockHolderPath(lockPath: string): string {
+	return `${lockPath}.holder`;
+}
+
+/** How old a holder record's temporary file must be before it is judged left by a killed writer and removed. */
+export const HOLDER_TEMP_STALE_MS = 60_000;
+
+/**
+ * Removes the temporary files of holder records for the lock at `lockPath` that writers killed mid-write left, once
+ * they are {@link HOLDER_TEMP_STALE_MS} old. Called under the takeover mutex whenever a lock is taken over or removed
+ * as stale, since a writer killed before its record was in place leaves a lock that is only ever removed as stale.
+ */
+export function removeLeftoverHolderFiles(lockPath: string): void {
+	const directory = dirname(lockPath);
+	const prefix = `${basename(lockHolderPath(lockPath))}.`;
+	try {
+		for (const name of readdirSync(directory)) {
+			if (!name.startsWith(prefix) || !name.endsWith(".tmp")) continue;
+			const path = join(directory, name);
+			const stats = statSync(path, { throwIfNoEntry: false });
+			if (stats !== undefined && Date.now() - stats.mtimeMs > HOLDER_TEMP_STALE_MS) rmSync(path, { force: true });
+		}
+	} catch {
+		// Best effort: a leftover file is only clutter.
+	}
+}
+
 /**
  * Removes the lock directory at `lockPath` that proper-lockfile judged stale, older than `staleMs`, under the takeover
  * mutex (#5161). proper-lockfile checks a lock's age and then removes it, so two processes
@@ -170,6 +198,7 @@ export function removeStaleLock(lockPath: string, staleMs: number): void {
 		const stats = statSync(lockPath, { throwIfNoEntry: false });
 		if (stats === undefined || Date.now() - stats.mtimeMs <= staleMs || !mutex.owned()) return;
 		rmdirSync(lockPath);
+		removeLeftoverHolderFiles(lockPath);
 	} finally {
 		mutex.release();
 	}
