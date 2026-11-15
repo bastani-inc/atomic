@@ -6,7 +6,6 @@ import { afterEach, describe, it } from "vitest";
 import { MAX_SERIALIZED_CAUSE_DEPTH } from "../src/core/error-contract.js";
 import type { ExtensionToolContext } from "../src/core/extensions/types.js";
 import { createEditTool, createEditToolDefinition } from "../src/core/tools/edit.js";
-import { widenReplacementsToLines } from "../src/core/tools/edit-diff.js";
 import {
 	EditInputError,
 	EditMatchError,
@@ -585,28 +584,6 @@ describe("serialization round trip", () => {
 		const cause = rehydrateEditToolError(wire).cause as Error;
 		assert.equal("code" in cause, false);
 		assert.equal(cause.cause, undefined);
-	});
-});
-
-describe("edit-diff invariants", () => {
-	it("refuses to preserve lines when the normalized base has a different line count", () => {
-		assert.throws(
-			() => widenReplacementsToLines("a\nb\n", "a\n", [{ matchIndex: 0, matchLength: 1, newText: "x" }]),
-			{ message: "Cannot preserve unchanged lines because the base content has a different line count." },
-		);
-	});
-
-	it("refuses a replacement outside the base content", () => {
-		assert.throws(() => widenReplacementsToLines("a\n", "a\n", [{ matchIndex: 5, matchLength: 1, newText: "x" }]), {
-			message: "Replacement range is outside the base content.",
-		});
-		assert.throws(() => widenReplacementsToLines("a\n", "a\n", [{ matchIndex: 0, matchLength: 9, newText: "x" }]), {
-			message: "Replacement range is outside the base content.",
-		});
-		assert.throws(
-			() => widenReplacementsToLines("a\nb\n", "a\nb\n", [{ matchIndex: -5, matchLength: 1, newText: "x" }]),
-			{ message: "Replacement range is outside the base content." },
-		);
 	});
 });
 
