@@ -241,3 +241,11 @@ describe("workflow discovery and config loading take the trust decision", () => 
 		assert.equal(trusted.diagnostics[0]?.code, "CONFIG_INVALID");
 	});
 });
+
+test.sequential("discovery with no options reads the working directory's project as trusted", async () => {
+	const { localMarker } = await makeProject("discovery-no-options");
+
+	const result = await discoverWorkflows();
+	assert.equal(result.registry.has("project-local-flow"), true);
+	assert.equal(existsSync(localMarker), true);
+});
