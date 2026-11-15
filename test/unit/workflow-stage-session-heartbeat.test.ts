@@ -89,6 +89,40 @@ test("drains an in-flight checkpoint at shutdown and surfaces its late rejection
 	}
 });
 
+test("keeps one checkpoint in flight across stop and start and drains its late failure (#4853)", async () => {
+	vi.useFakeTimers();
+	vi.setSystemTime(0);
+	const releases: Array<PromiseWithResolvers<void>> = [];
+	let running = 0;
+	let maxRunning = 0;
+	const heartbeat = createStageSessionHeartbeat(async () => {
+		running += 1;
+		maxRunning = Math.max(maxRunning, running);
+		const release = Promise.withResolvers<void>();
+		releases.push(release);
+		try {
+			await release.promise;
+			if (releases.length === 1) throw new Error("first checkpoint failed late");
+		} finally {
+			running -= 1;
+		}
+	}, 50);
+
+	heartbeat.start();
+	await vi.advanceTimersByTimeAsync(70);
+	assert.equal(releases.length, 1);
+	heartbeat.stop();
+	heartbeat.start();
+	await vi.advanceTimersByTimeAsync(80);
+
+	assert.equal(maxRunning, 1);
+	const drained = assert.rejects(heartbeat.drain(), /first checkpoint failed late/);
+	for (const release of releases) release.resolve();
+	await drained;
+	assert.equal(maxRunning, 1);
+	assert.equal(vi.getTimerCount(), 0);
+});
+
 describe("active workflow stage session durability", () => {
 	test("persists identity after stage start, refreshes every 30 seconds, and stops on completion", async () => {
 		vi.useFakeTimers();
