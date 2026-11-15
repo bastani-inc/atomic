@@ -29,6 +29,7 @@
 
 ### Fixed
 
+- Fixed MCP Streamable HTTP response streams that broke in the middle of an event: the reconnect asked the server to resume after that incomplete event, so the server skipped it and the tool call could lose its answer. A reconnect now resumes after the last event that arrived complete ([#5019](https://github.com/bastani-inc/atomic/issues/5019))
 - Fixed compaction failures that errored the turn, or lost verbatim deletions, instead of moving to the next documented rung ([#4977](https://github.com/bastani-inc/atomic/issues/4977)):
   - A provider that ends a planner stream as aborted on its side now counts as a failed request, so the fallback models and the fresh context window are tried. Only your own cancellation stops compaction.
   - Overflow recovery and post-tool preflight now accept a planned result only when it fits the model's context window. Otherwise they try the next model, then the fresh context window.

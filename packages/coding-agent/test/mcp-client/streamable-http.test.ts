@@ -491,6 +491,38 @@ describe("StreamableHttpTransport", () => {
 		await client.close();
 	});
 
+	it("resumes a stream broken mid-event after the last complete event (#5019)", async () => {
+		const resumeHeaders: string[] = [];
+		let answer = "";
+		const { url } = await startServer(async (request, response, requests) => {
+			const lastEventId = request.headers["last-event-id"];
+			if (request.method === "GET" && typeof lastEventId === "string") {
+				resumeHeaders.push(lastEventId);
+				response.writeHead(200, { "content-type": "text/event-stream" });
+				// Replays every event after the one the client reports.
+				response.end(lastEventId === "1" ? `id: 2\ndata: ${answer}\n\n` : "");
+				return;
+			}
+			if (request.method !== "POST") return protocolHandler(request, response, requests);
+			const message = JSON.parse(await readBody(request)) as Record<string, unknown>;
+			if (message.method !== "tools/call") return protocolHandler(request, response, requests, message);
+			answer = JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { content: [{ type: "text", text: "answer" }] } });
+			response.writeHead(200, { "content-type": "text/event-stream" });
+			// The priming event, then event 2's ID and half its data before the connection breaks.
+			response.write("id: 1\ndata:\n\n");
+			response.write(`id: 2\ndata: ${answer.slice(0, answer.length / 2)}`, () => response.socket?.destroy());
+		});
+		const client = new McpClient({ name: "http-test", version: "1.0.0" });
+		await client.connect(
+			new StreamableHttpTransport({ url, openGetStream: false, reconnect: { initialDelayMs: 1, maxRetries: 2 } }),
+		);
+		assert.deepEqual(await client.callTool("echo", {}, { timeoutMs: 5_000 }), {
+			content: [{ type: "text", text: "answer" }],
+		});
+		assert.deepEqual(resumeHeaders, ["1"]);
+		await client.close();
+	});
+
 	it("fails a request whose response stream ends without an answer", async () => {
 		const { url } = await startServer(async (request, response, requests) => {
 			if (request.method !== "POST") return protocolHandler(request, response, requests);

@@ -32,7 +32,10 @@ export interface SseEvent {
 export interface ConsumeSseOptions {
 	maxEventBytes?: number;
 	onEvent(event: SseEvent): void;
-	/** Called for every `id` field, including events without data (for example resumption priming events). */
+	/**
+	 * Called with the ID of every dispatched event that has one, including events without data (for example
+	 * resumption priming events). An event cut off before it ends never reports its ID.
+	 */
 	onId?(id: string): void;
 	/** Called for every valid `retry` field, in milliseconds. */
 	onRetry?(delayMs: number): void;
@@ -61,6 +64,8 @@ export async function consumeSseStream(stream: ReadableStream<Uint8Array>, optio
 	const maxEventBytes = options.maxEventBytes ?? DEFAULT_MAX_MESSAGE_BYTES;
 
 	const dispatch = () => {
+		// An event's ID counts as received only once the whole event has arrived.
+		if (eventId !== undefined) options.onId?.(eventId);
 		if (dataLines.length === 0) {
 			eventName = undefined;
 			eventId = undefined;
@@ -89,10 +94,8 @@ export async function consumeSseStream(stream: ReadableStream<Uint8Array>, optio
 			if (dataBytes > maxEventBytes) throw new Error(`MCP SSE event exceeds ${maxEventBytes} bytes`);
 			dataLines.push(value);
 		} else if (field === "event") eventName = value;
-		else if (field === "id" && !value.includes("\0")) {
-			eventId = value;
-			options.onId?.(value);
-		} else if (field === "retry" && /^\d+$/.test(value)) options.onRetry?.(Number(value));
+		else if (field === "id" && !value.includes("\0")) eventId = value;
+		else if (field === "retry" && /^\d+$/.test(value)) options.onRetry?.(Number(value));
 	};
 
 	// SSE lines end with CRLF, LF, or a lone CR.
