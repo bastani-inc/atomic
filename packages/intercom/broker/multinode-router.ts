@@ -112,6 +112,11 @@ const PRESENCE_HANDOVER_RETRY_MS = 50;
  */
 export const PRESENCE_REGISTRATION_BOUND_MS = 5_000;
 /**
+ * The longest a registration that asks for its id back waits for the shared database to bind it, before the presence
+ * wait: both together stay within the client's 10 s. Past it the session gets a fresh id, never an unchecked one.
+ */
+export const SESSION_ID_CLAIM_BOUND_MS = 2_500;
+/**
  * The longest a send to a local recipient waits for the shared outbox to say whether it is a retry of a cross-node
  * send. Local delivery does not depend on the shared database (spec §8): past this bound the send is delivered
  * locally, with the local accepted-delivery cache as its duplicate protection.
@@ -410,7 +415,7 @@ export class MultiNodeRouter {
 					.bind(sessionId, returnAddress, KNOWN_SESSION_RETENTION_MS)
 					.then((result) => result.status === "bound"),
 				new Promise<boolean>((resolve) => {
-					bound = setTimeout(() => resolve(false), PRESENCE_REGISTRATION_BOUND_MS);
+					bound = setTimeout(() => resolve(false), SESSION_ID_CLAIM_BOUND_MS);
 					bound.unref?.();
 				}),
 			]);
