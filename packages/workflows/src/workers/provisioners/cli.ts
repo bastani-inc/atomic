@@ -159,12 +159,11 @@ export function runCli(call: CliCall, signal: AbortSignal): Promise<string> {
 			else stdout.push(chunk);
 		});
 		child.stderr.on("data", (chunk: Buffer) => {
-			const room = MAX_STDERR_BYTES - stderrBytes;
-			if (chunk.length > room) stderrCut = true;
-			if (room <= 0) return;
-			const kept = chunk.subarray(0, room);
+			if (stderrCut) return;
+			const kept = chunk.subarray(0, MAX_STDERR_BYTES - stderrBytes);
 			stderr.push(kept);
 			stderrBytes += kept.length;
+			stderrCut = kept.length < chunk.length;
 		});
 		child.on("error", (error: NodeJS.ErrnoException) =>
 			finish(() =>

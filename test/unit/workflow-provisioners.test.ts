@@ -710,8 +710,16 @@ describe("configured secrets in a failing CLI's stderr", () => {
 	const SECRET = "Zq9vR2mXw7LpT4kNsecretvalue";
 
 	/** The message of the error a CLI that writes `chunks` to stderr, one write at a time, then fails, rejects with. */
-	async function failureMessage(chunks: readonly string[], env: Readonly<Record<string, string>>): Promise<string> {
-		const source = `const chunks = ${JSON.stringify(chunks)};
+	async function failureMessage(
+		chunks: readonly string[],
+		env: Readonly<Record<string, string>>,
+		newlineRuns = false,
+	): Promise<string> {
+		/** Long runs of line breaks are rebuilt in the child: an argument list cannot hold a megabyte. */
+		const literal = newlineRuns
+			? `[${chunks.map((chunk) => (/^\n+$/u.test(chunk) ? `"\\n".repeat(${chunk.length})` : JSON.stringify(chunk))).join(", ")}]`
+			: JSON.stringify(chunks);
+		const source = `const chunks = ${literal};
 const write = (text) => new Promise((done) => process.stderr.write(text, () => setTimeout(done, 1)));
 (async () => { for (const chunk of chunks) await write(chunk); process.exit(3); })();`;
 		const error = await rejection(
@@ -757,6 +765,18 @@ const write = (text) => new Promise((done) => process.stderr.write(text, () => s
 		const key = `line1-${SECRET}\nline2-${second}`;
 		const message = await failureMessage([`bad key:\n${key}\n`], { PROBE_PRIVATE_KEY: key });
 		assert.equal(message, "probe exited with code 3: bad key: [redacted]");
+	});
+
+	test("stderr past 1 MiB loses its cut last line, so a secret the cut splits never shows", async () => {
+		const cap = 1024 * 1024;
+		const cut = await failureMessage(
+			[`\n`.repeat(cap - 12), `denied ${SECRET}\n`, "after the cap\n"],
+			{ PROBE_TOKEN: SECRET },
+			true,
+		);
+		assert.equal(cut, "probe exited with code 3");
+		const exact = await failureMessage(["\n".repeat(cap - 5), "tail!"], {}, true);
+		assert.equal(exact, "probe exited with code 3: tail!");
 	});
 
 	test("no configured secret survives random stderr chunkings", async () => {

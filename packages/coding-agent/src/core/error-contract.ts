@@ -117,7 +117,9 @@ function rawDelimiterUserInfoEnd(
 	const authority = text.slice(authorityStart, delimiter);
 	const colon = authorityStart + authority.indexOf(":");
 	if (colon < authorityStart || authority.startsWith("[")) return -1;
-	if (/^\d*$/u.test(text.slice(colon + 1, delimiter))) return -1;
+	if ([...authority.slice(colon - authorityStart + 1)].every((character) => character >= "0" && character <= "9")) {
+		return -1;
+	}
 	let lastAt = -1;
 	for (let index = delimiter; index < text.length; index++) {
 		const character = text[index]!;
@@ -128,23 +130,37 @@ function rawDelimiterUserInfoEnd(
 	return lastAt;
 }
 
-/** A percent-encoded `://`, whose URL's user info ends at its last `%40` before an encoded or raw delimiter. */
-const ENCODED_SCHEME_SEPARATOR = /%3A%2F%2F/giu;
-const ENCODED_AUTHORITY_END = /%2F|%3F|%23|[/?#&\s]/giu;
+const ENCODED_SCHEME_SEPARATOR = "%3A%2F%2F";
+const ENCODED_AUTHORITY_ENDS = new Set(["%2F", "%3F", "%23"]);
+const ENCODED_AT = "%40";
 
-/** Remove the user info of every percent-encoded URL in `text`, as in `?next=https%3A%2F%2Fuser%3Apass%40host`. */
+/** Whether `text` holds the percent-encoding `encoded` (upper-case) at `index`, in either case. */
+function encodedAt(text: string, index: number, encoded: string): boolean {
+	return text.slice(index, index + encoded.length).toUpperCase() === encoded;
+}
+
+/**
+ * Remove the user info of every percent-encoded URL in `text`, as in `?next=https%3A%2F%2Fuser%3Apass%40host`: from
+ * an encoded `://` to the last encoded `@` before an encoded `/`, `?` or `#`, a raw `/`, `?`, `#` or `&`, or whitespace.
+ */
 function redactEncodedUrlCredentials(text: string): string {
 	let redacted = "";
 	let copied = 0;
-	for (const separator of text.matchAll(ENCODED_SCHEME_SEPARATOR)) {
-		const authorityStart = separator.index + separator[0].length;
-		if (authorityStart < copied) continue;
-		ENCODED_AUTHORITY_END.lastIndex = authorityStart;
-		const end = ENCODED_AUTHORITY_END.exec(text)?.index ?? text.length;
-		const lastAt = text.slice(authorityStart, end).toUpperCase().lastIndexOf("%40");
+	for (let percent = text.indexOf("%"); percent !== -1; percent = text.indexOf("%", percent + 1)) {
+		if (!encodedAt(text, percent, ENCODED_SCHEME_SEPARATOR)) continue;
+		const authorityStart = percent + ENCODED_SCHEME_SEPARATOR.length;
+		let lastAt = -1;
+		for (let index = authorityStart; index < text.length; index++) {
+			const character = text[index]!;
+			if ("/?#&".includes(character) || WHITESPACE.test(character)) break;
+			if (character !== "%") continue;
+			const encoded = text.slice(index, index + 3).toUpperCase();
+			if (ENCODED_AUTHORITY_ENDS.has(encoded)) break;
+			if (encoded === ENCODED_AT) lastAt = index;
+		}
 		if (lastAt === -1) continue;
 		redacted += text.slice(copied, authorityStart);
-		copied = authorityStart + lastAt + 3;
+		copied = lastAt + ENCODED_AT.length;
 	}
 	return redacted + text.slice(copied);
 }

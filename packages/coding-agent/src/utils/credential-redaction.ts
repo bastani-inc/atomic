@@ -99,7 +99,7 @@ const MIN_BASE64_LENGTH = 8;
  * alphabets: for each of the three offsets, the encoding of the whole 3-byte groups that start there.
  */
 function base64Forms(secret: string): string[] {
-	const bytes = Buffer.from(secret, "utf8");
+	const bytes = Buffer.from(secret);
 	const forms: string[] = [];
 	for (let offset = 0; offset < 3; offset++) {
 		const whole = bytes.subarray(offset, offset + Math.floor((bytes.length - offset) / 3) * 3);
@@ -110,11 +110,12 @@ function base64Forms(secret: string): string[] {
 }
 
 /**
- * The plain forms of a configured secret: as given without trailing line breaks (a secret read from a file often ends
- * with one, which the text around a printed secret need not repeat), trimmed, and each line of a multi-line secret.
+ * The plain forms of a configured secret: trimmed, since a secret read from a file often ends with a line break that
+ * the text around a printed secret need not repeat, and each line of a multi-line secret, trimmed. The secret as given
+ * holds its trimmed form, so overlapping matches still remove it whole.
  */
 function plainForms(secret: string): string[] {
-	return [secret.replace(/[\r\n]+$/u, ""), secret.trim(), ...secret.split(/\r?\n/u).map((line) => line.trim())];
+	return [secret.trim(), ...secret.split(/\r?\n/u).map((line) => line.trim())];
 }
 
 /** The forms a configured secret takes in output: plain, JSON-escaped, URI-encoded and -decoded, and base64. */
@@ -141,7 +142,7 @@ function secretRanges(text: string, forms: readonly string[]): [number, number][
 	for (const form of forms) {
 		for (let at = text.indexOf(form); at !== -1; at = text.indexOf(form, at + 1)) found.push([at, at + form.length]);
 	}
-	found.sort((first, second) => first[0] - second[0] || second[1] - first[1]);
+	found.sort((first, second) => first[0] - second[0]);
 	const merged: [number, number][] = [];
 	for (const [start, end] of found) {
 		const last = merged.at(-1);
@@ -163,7 +164,6 @@ export function configuredSecretRedactor(
 ): (text: string) => string {
 	const forms = new Set<string>();
 	for (const secret of secrets) for (const form of secretForms(secret, options.minLength ?? 1)) forms.add(form);
-	if (forms.size === 0) return (text) => text;
 	const ordered = [...forms];
 	return (text) =>
 		text

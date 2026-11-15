@@ -318,11 +318,21 @@ describe("credential shape coverage", () => {
 		}
 	});
 
+	test("URL user info with a raw delimiter ends at the host's own path", () => {
+		assert.equal(redactUrlCredentials("https://user:ab/cd@host/path@x end"), "https://host/path@x end");
+		assert.equal(redactUrlCredentials("https://user:ab/cd@host?q=a@b"), "https://host?q=a@b");
+		assert.equal(redactUrlCredentials("https://user:ab/cd@host#a@b"), "https://host#a@b");
+		assert.equal(redactUrlCredentials("https://:ab/cd@host/x"), "https://host/x");
+		assert.equal(redactUrlCredentials("https://u:x/next://host@y"), "https://u:x/next://y");
+		assert.equal(redactUrlCredentials("http://[::1]:x/a@b"), "http://[::1]:x/a@b");
+	});
+
 	test("percent-encoded nested URL user info is removed", () => {
 		const text = `https://a.example/cb?next=https%3A%2F%2Fuser%3A${PLAIN_SECRET}%40b.example%2Fpath&x=1`;
 		assert.equal(redactUrlCredentials(text), "https://a.example/cb?next=https%3A%2F%2Fb.example%2Fpath&x=1");
 		assertGone(text);
 		assert.equal(redactUrlCredentials("q=https%3A%2F%2Fb.example%2Fa%40b"), "q=https%3A%2F%2Fb.example%2Fa%40b");
+		assert.equal(redactUrlCredentials("https%3a%2f%2fuser%3as%40host%2f"), "https%3a%2f%2fhost%2f");
 	});
 
 	test("credential coverage stays linear on adversarial input", () => {
@@ -366,6 +376,27 @@ describe("configured secret redaction", () => {
 		}
 		const basic = Buffer.from(`user:${secret}`).toString("base64");
 		assert.equal(redact(`Basic ${basic}`).includes(basic.slice(8, -4)), false);
+	});
+
+	test("base64 of a configured secret is redacted at any position in the encoded stream", () => {
+		const secret = `w0rd ${PLAIN_SECRET}`;
+		const redact = configuredSecretRedactor([secret]);
+		for (const prefix of ["", "a", "ab", "abc"]) {
+			const encoded = Buffer.from(`${prefix}${secret}more text`).toString("base64");
+			const redacted = redact(encoded);
+			assert.ok(redacted.includes("[redacted]"), `${prefix}: ${redacted}`);
+			assert.ok(redacted.length < encoded.length - 10, `${prefix}: ${redacted}`);
+		}
+		const short = configuredSecretRedactor(["abcdef"]);
+		assert.equal(short("YWJjZGVm"), "[redacted]");
+		assert.equal(short("YmNk Y2Rl"), "YmNk Y2Rl");
+	});
+
+	test("short forms of a configured secret are not redacted", () => {
+		const redact = configuredSecretRedactor(["ABCDEFGH\n//", "%41%42%43%44"], { minLength: 6 });
+		assert.equal(redact("x %2F%2F // ABCD y"), "x %2F%2F // ABCD y");
+		assert.equal(redact("x ABCDEFGH y"), "x [redacted] y");
+		assert.equal(configuredSecretRedactor(["p%40ss-word"])("x p@ss-word y"), "x [redacted] y");
 	});
 
 	test("configured secrets with surrounding whitespace or several lines are redacted", () => {
