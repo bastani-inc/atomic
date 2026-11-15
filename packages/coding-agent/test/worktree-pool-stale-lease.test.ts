@@ -1,9 +1,22 @@
 import assert from "node:assert/strict";
 import { type ChildProcessByStdio, spawn } from "node:child_process";
-import { chmodSync, existsSync, readdirSync, readFileSync, renameSync, utimesSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
+import { hostname } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import type { Readable, Writable } from "node:stream";
+import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
 import { afterEach, beforeEach, describe, test } from "vitest";
@@ -21,10 +34,17 @@ import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
 import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.js";
 import { captureWorktreeSnapshot } from "../src/core/worktree-snapshot/capture.js";
 import {
+	admitPooledWorktree,
+	confirmPooledWorktreeLease,
+	discardPooledWorktree,
+	evictIdleWorktrees,
+	holdRestoredWorktree,
 	LEASE_CLAIM_GRACE_MS,
 	type PoolSlotRecord,
 	pooledWorktreeHolder,
 	pooledWorktreePath,
+	recordPooledWorktreeState,
+	releaseRestoredWorktree,
 	repositoryIdOf,
 	type SlotNumber,
 } from "../src/core/worktree-snapshot/pool.js";
@@ -359,6 +379,13 @@ describe("a pooled worktree whose holder stalled (#4830)", () => {
 				[["pooled-worktree-lost", { subject: root }]],
 			);
 			assert.match(unavailable[0]!.message, /no longer holds the pooled worktree/);
+			// A later turn there is not recorded either, though the session no longer has a lease to check.
+			await recorder.recordTurn(
+				fauxAssistantMessage([fauxToolCall("write", { path: join(root, "file.txt"), content: "S1 edit\n" })], {
+					stopReason: "toolUse",
+				}),
+			);
+			assert.equal(s1.getEntries().length, entries);
 			await recorder.releaseWorktrees();
 			assert.equal(recordText(snapshot, 0), claimed);
 			const again = await resumeSessionWorktree(s1, pool());
@@ -385,6 +412,186 @@ describe("a pooled worktree whose holder stalled (#4830)", () => {
 			const restored = result.mappings[0]!.to;
 			assert.notEqual(restored, slot(snapshot, 0));
 			assert.equal(readFileSync(join(restored, "file.txt"), "utf8"), "recorded\n");
+		},
+		CHILD_PROCESS_TIMEOUT_MS,
+	);
+});
+
+describe("checks of a pooled worktree's lease (#4830)", () => {
+	const x = { kind: "session" as const, id: "session-x" };
+	const y = { kind: "session" as const, id: "session-y" };
+	const state = { snapshotId: "z9", head: "9".repeat(40), tree: "8".repeat(40) };
+	const remotes = ["https://example.com/lease.git"];
+	const repository = repositoryIdOf(remotes);
+	const admit = () =>
+		admitPooledWorktree(
+			{
+				storeDir: storeDir(),
+				remotes,
+				lastState: { snapshotId: "a1", head: "1".repeat(40), tree: "2".repeat(40) },
+				envHash: "env",
+			},
+			x,
+		);
+	const file = () => join(storeDir(), "pool", repository, "0.json");
+	const leases = () =>
+		readdirSync(join(storeDir(), "pool", repository)).filter((name) => name.endsWith(".lease.lock"));
+	/** Writes slot 0's record as another process would, changing `fields`. */
+	const rewrite = (fields: Partial<PoolSlotRecord>) =>
+		writeFileSync(
+			file(),
+			JSON.stringify({ ...(JSON.parse(readFileSync(file(), "utf8")) as PoolSlotRecord), ...fields }),
+		);
+	/** A lease lock of slot 0 as process `pid` on this host would hold it, last refreshed `ageMs` ago. */
+	const leaseOf = (pid: number, ageMs: number) => {
+		const host = createHash("sha256").update(hostname()).digest("hex").slice(0, 12);
+		const lock = join(storeDir(), "pool", repository, `0.json.${host}-${pid}-0badcafe.lease.lock`);
+		mkdirSync(lock);
+		const past = new Date(Date.now() - ageMs);
+		utimesSync(lock, past, past);
+		return lock;
+	};
+
+	test("a hold whose slot another holder took writes nothing, ends its lease and no longer holds it (#4830)", async () => {
+		const lease = await admit();
+		rewrite({ holder: y, tenancy: "taken-by-y" });
+		const taken = readFileSync(file(), "utf8");
+
+		assert.equal(await recordPooledWorktreeState(lease, state), false);
+		assert.equal(await confirmPooledWorktreeLease(lease), false);
+		assert.equal(await releaseRestoredWorktree(lease, state), false);
+		assert.equal(await holdRestoredWorktree(storeDir(), lease.path, x), undefined);
+		await discardPooledWorktree(lease);
+
+		assert.equal(readFileSync(file(), "utf8"), taken);
+		assert.deepEqual(leases(), []);
+		assert.deepEqual(await pooledWorktreeHolder(storeDir(), lease.path), { owner: y, held: false });
+	});
+
+	test("a release that finds its slot taken by the same owner's new take resolves false and writes nothing (#4830)", async () => {
+		const lease = await admit();
+		rewrite({ tenancy: "a-later-take" });
+		const taken = readFileSync(file(), "utf8");
+		assert.equal(await releaseRestoredWorktree(lease, state), false);
+		assert.equal(readFileSync(file(), "utf8"), taken);
+	});
+
+	test("a second hold released after the slot was lost resolves false, and a released lease confirms nothing (#4830)", async () => {
+		const first = await admit();
+		const second = await holdRestoredWorktree(storeDir(), first.path, x);
+		assert.ok(second);
+		assert.equal(await confirmPooledWorktreeLease(second), true);
+		assert.equal(await releaseRestoredWorktree(second), true);
+		assert.equal(await confirmPooledWorktreeLease(second), false);
+		rewrite({ holder: y });
+		assert.equal(await confirmPooledWorktreeLease(first), false);
+		assert.equal(await releaseRestoredWorktree(first), false);
+	});
+
+	test("a hold whose record is gone is lost, and a record that cannot be read keeps the hold (#4830)", async () => {
+		const lease = await admit();
+		writeFileSync(file(), "{ not json");
+		assert.equal(await confirmPooledWorktreeLease(lease), true);
+		await assert.rejects(recordPooledWorktreeState(lease, state));
+		rmSync(file());
+		assert.equal(await confirmPooledWorktreeLease(lease), false);
+		assert.equal(await releaseRestoredWorktree(lease, state), false);
+		assert.equal(existsSync(file()), false);
+	});
+
+	test("a record with a tenancy that is not a string names no owner (#4830)", async () => {
+		const lease = await admit();
+		await releaseRestoredWorktree(lease);
+		rewrite({ tenancy: 7 as unknown as string });
+		assert.deepEqual(await pooledWorktreeHolder(storeDir(), lease.path), { owner: null, held: false });
+	});
+
+	test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+		"a lease of a process on this host that cannot be signalled keeps the slot, however stale (#4830)",
+		async () => {
+			const lease = await admit();
+			await releaseRestoredWorktree(lease);
+			const lock = leaseOf(1, LEASE_STALE_MS + LEASE_CLAIM_GRACE_MS + 30_000);
+			assert.deepEqual(await pooledWorktreeHolder(storeDir(), lease.path), { owner: x, held: true });
+			assert.deepEqual(await evictIdleWorktrees(storeDir(), repository, { maxIdle: 0, settings }), []);
+			assert.equal(existsSync(lock), true);
+		},
+	);
+
+	test("a stale lease within the grace period is not held, yet stays and keeps the slot from eviction (#4830)", async () => {
+		const lease = await admit();
+		await releaseRestoredWorktree(lease);
+		// A process id no live process has: its lease is judged by age alone.
+		const lock = leaseOf(2 ** 22 + 7, LEASE_STALE_MS + LEASE_CLAIM_GRACE_MS / 2);
+		assert.deepEqual(await pooledWorktreeHolder(storeDir(), lease.path), { owner: x, held: false });
+		assert.equal(existsSync(lock), true);
+		assert.deepEqual(await evictIdleWorktrees(storeDir(), repository, { maxIdle: 0, settings }), []);
+		assert.equal(existsSync(file()), true);
+		utimesSync(lock, new Date(0), new Date(0));
+		assert.deepEqual(await evictIdleWorktrees(storeDir(), repository, { maxIdle: 0, settings }), [lease.path]);
+		assert.equal(existsSync(lock), false);
+	});
+
+	test(
+		"a session whose lease was removed while it still owns its slot takes it again and keeps recording there (#4830)",
+		async () => {
+			const { snapshot, clone } = await recordedSnapshot();
+			const s1 = await sessionOf(clone, snapshot);
+			const result = await resumeSessionWorktree(s1, pool());
+			const root = slot(snapshot, 0);
+			assert.equal(result.status === "restored" && result.mappings[0]!.to, root);
+			const unavailable: WorktreeSnapshotUnavailable[] = [];
+			const recorder = new SessionWorktreeSnapshotRecorder({
+				sessionManager: s1,
+				cwd: () => root,
+				settings: () => settings,
+				declaresWrites: () => false,
+				onUnavailable: (reason) => unavailable.push(reason),
+			});
+			const turn = (content: string) => {
+				sandbox.write(join(root, "file.txt"), content);
+				return recorder.recordTurn(
+					fauxAssistantMessage([fauxToolCall("write", { path: join(root, "file.txt"), content })], {
+						stopReason: "toolUse",
+					}),
+				);
+			};
+			const entries = s1.getEntries().length;
+			await turn("first\n");
+			assert.equal(s1.getEntries().length, entries + 1);
+
+			// Another process removed this one's lease; the lease's next refresh, within 10 seconds, notices.
+			const lock = ageLease(snapshot, process.pid, 0);
+			rmSync(lock, { recursive: true });
+			await sleep(11_000);
+			await turn("second\n");
+
+			assert.deepEqual(unavailable, []);
+			assert.equal(s1.getEntries().length, entries + 2);
+			assert.equal(existsSync(lock), true);
+			const again = await resumeSessionWorktree(s1, pool());
+			assert.equal(again.status, "verified");
+		},
+		CHILD_PROCESS_TIMEOUT_MS,
+	);
+
+	test(
+		"a session whose slot was claimed while it stalled restores fresh on its next resume, without a turn first (#4830)",
+		async () => {
+			const { snapshot, clone } = await recordedSnapshot();
+			const s1 = await sessionOf(clone, snapshot);
+			const result = await resumeSessionWorktree(s1, pool());
+			assert.equal(result.status === "restored" && result.mappings[0]!.to, slot(snapshot, 0));
+			ageLease(snapshot, process.pid, LEASE_STALE_MS + LEASE_CLAIM_GRACE_MS + 30_000, true);
+			const claimer = await claimerChild(snapshot, { kind: "session", id: "session-s2" });
+			assert.equal(claimer.first, slot(snapshot, 0));
+			const claimed = recordText(snapshot, 0);
+
+			// S2 still works in the slot when S1 resumes.
+			const again = await resumeSessionWorktree(s1, pool());
+			assert.equal(again.status === "restored" && again.mappings[0]!.to, slot(snapshot, 1));
+			await releaseSessionWorktrees(s1);
+			assert.equal(recordText(snapshot, 0), claimed);
 		},
 		CHILD_PROCESS_TIMEOUT_MS,
 	);
