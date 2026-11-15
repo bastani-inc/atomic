@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { loadStorageAdapter, type SqliteDatabase } from "@bastani/atomic/storage";
+import type { SqliteDatabase } from "@bastani/atomic/storage";
 import { test } from "vitest";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import type { OutboxStore } from "../../packages/intercom/broker/multinode-state-store.js";
 import { openSqlOutboxStore } from "../../packages/intercom/broker/sql-outbox-store.js";
+import { loadFixtureStorageAdapter } from "../helpers/fixture-storage-adapter.js";
 import {
 	type OpenSharedStoreFixture,
 	registerCrossNodeRoundTripConformance,
@@ -15,7 +16,7 @@ import {
 	openMemoryPendingAskFixture,
 	openMemoryWakeUpBusFixture,
 } from "../helpers/intercom-multinode-memory-reference.js";
-import { makeTempDirectory, moduleDir, removeTempDirectory } from "../helpers/runtime.js";
+import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 function sharedOutboxFixture(
 	label: string,
@@ -45,10 +46,7 @@ const openNodeSqliteOutbox = sharedOutboxFixture("node-sqlite", "", (directory) 
 
 const openAdapterOutbox = sharedOutboxFixture("adapter", "team_", async (directory) => {
 	const context = { agentDir: directory, domain: "sessions" } as const;
-	const adapter = await loadStorageAdapter(
-		join(moduleDir(import.meta.url), "../fixtures/storage-adapter.ts"),
-		context,
-	);
+	const adapter = await loadFixtureStorageAdapter();
 	assert.ok(adapter.openDatabase);
 	return adapter.openDatabase({ path: join(directory, "shared.sqlite") }, context);
 });

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { loadStorageAdapter, openNodeSqliteDatabase, type SqliteDatabase } from "@bastani/atomic/storage";
+import { openNodeSqliteDatabase, type SqliteDatabase } from "@bastani/atomic/storage";
 import { test } from "vitest";
 import type { IntercomBrokerStateOptions } from "../../packages/intercom/broker/multinode-state-store.js";
 import { openSqlHeldSendStore } from "../../packages/intercom/broker/sql-held-send-store.js";
@@ -9,6 +9,7 @@ import { openSqlPendingAskStore } from "../../packages/intercom/broker/sql-pendi
 import { openSqlReleasedAskStore } from "../../packages/intercom/broker/sql-released-ask-store.js";
 import { openSqlRestoringReservationStore } from "../../packages/intercom/broker/sql-restoring-reservation-store.js";
 import { openSqlSentMessageAuthority } from "../../packages/intercom/broker/sql-sent-message-authority.js";
+import { loadFixtureStorageAdapter } from "../helpers/fixture-storage-adapter.js";
 import {
 	type OpenSharedStoreFixture,
 	registerCrossNodeHeldRoundTripConformance,
@@ -21,7 +22,7 @@ import {
 	type SharedStoreFixture,
 } from "../helpers/intercom-multinode-contract.js";
 import { openMemoryOutboxFixture, openMemoryWakeUpBusFixture } from "../helpers/intercom-multinode-memory-reference.js";
-import { makeTempDirectory, moduleDir, removeTempDirectory } from "../helpers/runtime.js";
+import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 
 useTemporaryAgentDir();
@@ -54,10 +55,7 @@ function sharedFileFixture<Store>(
 const nodeSqlite: OpenConnection = (directory) => openNodeSqliteDatabase(join(directory, "intercom.sqlite"));
 
 const moduleSelectedAdapter: OpenConnection = async (directory) => {
-	const adapter = await loadStorageAdapter(join(moduleDir(import.meta.url), "../fixtures/storage-adapter.ts"), {
-		agentDir: directory,
-		domain: "sessions",
-	});
+	const adapter = await loadFixtureStorageAdapter();
 	assert.ok(adapter.openDatabase);
 	return adapter.openDatabase({ path: join(directory, "shared.sqlite") }, { agentDir: directory, domain: "sessions" });
 };
