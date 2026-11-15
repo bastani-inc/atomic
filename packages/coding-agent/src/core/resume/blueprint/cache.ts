@@ -18,7 +18,7 @@ import { computeEnvironmentHash, sha256Hex } from "../../worktree-snapshot/env-h
 import { runGit } from "../../worktree-snapshot/git.ts";
 import { canonicalizeWorktreePath } from "../../worktree-snapshot/paths.ts";
 import { isDeniedSnapshotPath } from "../../worktree-snapshot/policy.ts";
-import { repositoryIdOf } from "../../worktree-snapshot/repository-identity.ts";
+import { repositoryIdOf, sharedRepositoryIdOf } from "../../worktree-snapshot/repository-identity.ts";
 import { objectStorePath } from "../../worktree-snapshot/restore.ts";
 import { seedDirectory, seedManifestPath } from "../../worktree-snapshot/seeds.ts";
 import { detectPackageManagerStores } from "./cache-stores.ts";
@@ -133,9 +133,11 @@ export async function blueprintCacheKeys(
 	const detected = await detectPackageManagerStores(root, { os, home, env: options.env ?? process.env });
 	const settings = settingsCache(root, agentDir, warnings);
 	const remotes = await checkoutRemotes(root);
-	const store = remotes.length > 0 ? objectStorePath(storeDir, remotes) : undefined;
-	// Normalized, so a runner's HTTPS checkout names the entries a session recorded over SSH names too.
-	const repository = repositoryIdOf(remotes);
+	// Normalized, so a runner's HTTPS checkout names the entries a session recorded over SSH names too; relative-path
+	// remotes resolved against the checkout, as a resume resolves them (#4989).
+	const checkout = canonicalizeWorktreePath(root);
+	const repository = sharedRepositoryIdOf(remotes, checkout) ?? repositoryIdOf(remotes);
+	const store = remotes.length > 0 ? objectStorePath(storeDir, remotes, checkout) : undefined;
 	if (store === undefined) warnings.push("the checkout has no Git remote; the git and build entries are omitted");
 
 	const stores: CacheMember[] = [];

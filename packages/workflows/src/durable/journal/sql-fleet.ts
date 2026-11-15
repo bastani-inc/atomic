@@ -256,6 +256,24 @@ export class SqlFleetStore {
 	}
 
 	/**
+	 * Asks `host` to drain, under `fence`, because its provider lists it on the drained instance `providerId` (#4828): a
+	 * worker without a provider id that restarted there under a new host id drains whether or not it took a child.
+	 */
+	async carryDrain(fence: FleetFence, host: string, providerId: string): Promise<void> {
+		await this.storage.transaction((tx) =>
+			tx.run(
+				`INSERT INTO ${this.drains}(host, provider_id, requested_at) SELECT ?, ?, ${STORE_NOW}
+				WHERE ${this.fenced()}
+				ON CONFLICT(host) DO NOTHING`,
+				host,
+				providerId,
+				fence.holder,
+				fence.epoch,
+			),
+		);
+	}
+
+	/**
 	 * Forgets the drain of `host`, once its provider no longer lists its instance: a host that registers with that id
 	 * later serves.
 	 */

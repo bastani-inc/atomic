@@ -245,6 +245,8 @@ Explicit selectors override the active turn: `to` selects a pending ask from tha
 
 A message's text can be at most **1 MiB** (UTF-8 bytes), and its text plus every attachment's name, language, and content at most **8 MiB**. Both the `intercom` tool and the broker refuse a larger message, which is not sent: `Intercom message text is <n> bytes, over the limit of 1048576 bytes (1 MiB); the message was not sent` or `Intercom message text and attachments total <n> bytes, over the limit of 8388608 bytes (8 MiB); the message was not sent`. To share more, save the content to a file and send its path.
 
+A received message whose text and attachments total more than **50 KB** (UTF-8 bytes, the limit for tool output) does not enter the recipient's context whole. Its full text and attachments are saved to a file in the recipient's session directory (or its temporary directory for a session that has none), and the message card shows a short preview with the file's path, the way oversized tool results are shown. Read the file to see the rest. This also applies to messages from older Atomic versions that sent larger messages, and to saved messages shown when a session resumes.
+
 ## Configuration
 
 Create `~/.atomic/agent/intercom/config.json`. The legacy `~/.pi/agent/intercom/config.json` fallback is read when the Atomic config is absent:

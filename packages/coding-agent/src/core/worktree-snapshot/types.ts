@@ -29,7 +29,19 @@ export interface WorktreeSnapshotSettings {
 	readonly graceSeconds: number;
 }
 
-export type WorktreeSnapshotPathOmissionReason = "denied" | "snapshot-ignore" | "untracked-excluded";
+/**
+ * Why a path was left out. `nested-repository` is an untracked repository inside the checkout (`path` ends in `/`);
+ * `submodule-changes`, `unpushed-submodule-commit` and `submodule-unchecked` name a submodule whose uncommitted
+ * changes, local commit, or state (when checking it failed or took too long) a snapshot does not record.
+ */
+export type WorktreeSnapshotPathOmissionReason =
+	| "denied"
+	| "snapshot-ignore"
+	| "untracked-excluded"
+	| "nested-repository"
+	| "submodule-changes"
+	| "unpushed-submodule-commit"
+	| "submodule-unchecked";
 export type WorktreeSnapshotSizeOmissionReason = "over-file-cap" | "over-snapshot-cap";
 
 /** Content a snapshot left out, and why. */
