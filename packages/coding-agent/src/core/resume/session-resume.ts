@@ -56,6 +56,7 @@ import {
 	holdToolsUntilBuilt,
 } from "./blueprint/barrier.ts";
 import type { BlueprintBuildConfig } from "./blueprint/build.ts";
+import { settleOtherBuilds, withBuildLocks } from "./blueprint/build-lock.ts";
 import {
 	BLUEPRINT_BUILDING_CONTEXT,
 	type BlueprintCheckout,
@@ -535,6 +536,24 @@ async function prepareResume(
 			.map((mapping) => resolve(mapping.to))
 			.filter((root) => isInside(storeDir, root)),
 	);
+	// A resume that only joins a build this process already runs in its worktree, as a switch back to the session that
+	// started it, waits for nothing: that build holds the session's tools, and tells the user when it ends (#4748).
+	if (
+		restoredNow.size === 0 &&
+		options.blueprints !== "skip" &&
+		options.waitForBlueprint === "tools" &&
+		joinsBuildInProgress(opened.sessionManager)
+	) {
+		await recordBlueprintContext(opened.sessionManager, BLUEPRINT_BUILDING_CONTEXT);
+		return {
+			status: "ready",
+			sessionManager: opened.sessionManager,
+			notices,
+			blueprintNotices: [],
+			missingRecordNotices: resumed.missingNotices,
+			blueprintContext: BLUEPRINT_BUILDING_CONTEXT,
+		};
+	}
 	if (restoredNow.size > 0 && options.blueprints !== "skip" && options.waitForBlueprint === "tools") {
 		// The build can be stopped when the process ends before it does (#4748): its steps' process trees end with it,
 		// what ran is recorded, and the ledger keeps the worktrees unbuilt for the next resume.
@@ -1035,14 +1054,51 @@ async function setUpCheckoutBlueprints(
 		else if (isInside(storeDir, root)) earlier.push(checkout);
 		else if (await isDirectory(root)) inPlace.push(checkout);
 	}
-	const retried = await checkoutsNeedingRebuild(earlier, storeDir);
-	return setUpResumedBlueprints({
-		restored: [...restoredHere, ...retried],
-		inPlace,
-		earlier: earlier.filter((checkout) => !retried.includes(checkout)),
-		config: { ...options.blueprint, storeDir },
-		signal: options.signal,
-	});
+	// A worktree this process is building already is joined, not built again (#4748): its tools wait for that build.
+	const joined = [...restoredHere, ...earlier].filter((checkout) => buildInProgress(checkout.root) !== undefined);
+	const toBuild = restoredHere.filter((checkout) => !joined.includes(checkout));
+	const candidates = earlier.filter((checkout) => !joined.includes(checkout));
+	// Claimed before anything is awaited, so a resume that starts meanwhile in this process joins this one.
+	const { promise: settled, resolve: settle } = Promise.withResolvers<undefined>();
+	const claimed = [...toBuild, ...candidates].map((checkout) => resolve(checkout.root));
+	for (const root of claimed) buildsInProgress.set(root, settled);
+	try {
+		await Promise.all(joined.map((checkout) => buildInProgress(checkout.root)));
+		// Another process's build of one of them is waited for, or the steps of one whose process died are stopped,
+		// before the ledger says which need building.
+		await settleOtherBuilds(storeDir, claimed, options.signal);
+		const retried = await checkoutsNeedingRebuild(candidates, storeDir);
+		const restored = [...toBuild, ...retried];
+		return await withBuildLocks(
+			storeDir,
+			restored.map((checkout) => checkout.root),
+			options.signal,
+			() =>
+				setUpResumedBlueprints({
+					restored,
+					inPlace,
+					earlier: [...joined, ...candidates.filter((checkout) => !retried.includes(checkout))],
+					config: { ...options.blueprint, storeDir },
+					signal: options.signal,
+				}),
+		);
+	} finally {
+		for (const root of claimed) if (buildsInProgress.get(root) === settled) buildsInProgress.delete(root);
+		settle(undefined);
+	}
+}
+
+/** The blueprint builds this process runs, by the restored worktree they build, each settling once its build has. */
+const buildsInProgress = new Map<string, Promise<undefined>>();
+
+/** The build this process runs of the worktree at `root`, if one runs. */
+function buildInProgress(root: string): Promise<undefined> | undefined {
+	return buildsInProgress.get(resolve(root));
+}
+
+/** Whether a resume of `sessionManager` joins a blueprint build this process already runs in one of its worktrees. */
+function joinsBuildInProgress(sessionManager: SessionManager): boolean {
+	return [...currentWorktreeSnapshots(sessionManager).keys()].some((root) => buildInProgress(root) !== undefined);
 }
 
 /**

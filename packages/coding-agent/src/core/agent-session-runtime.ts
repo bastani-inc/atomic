@@ -777,7 +777,12 @@ export class AgentSessionRuntime {
 			}
 
 			const previousSessionId = this.session.sessionId;
-			const sessionManager = await this.session.sessionManager.openSessionById(previousSessionId);
+			// The fork continues where the session works now: a resumed session's restored worktree, not the recorded
+			// checkout its header names, which may be missing on this machine (#4748).
+			const sessionManager = await this.session.sessionManager.openSessionById(
+				previousSessionId,
+				this.session.sessionManager.getCwd(),
+			);
 			if (!targetLeafId) {
 				await sessionManager.newSession({ parentSession: previousSessionId });
 			} else {

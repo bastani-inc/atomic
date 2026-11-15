@@ -213,6 +213,22 @@ function send(child: ChildProcessWithoutNullStreams, command: object): void {
 	child.stdin.write(`${JSON.stringify(command)}\n`);
 }
 
+/** A session recorded in the store of {@link recordedSession} in a directory that holds no checkout. */
+async function plainSession(storePath: string): Promise<string> {
+	const directory = sandbox.path("elsewhere");
+	mkdirSync(directory, { recursive: true });
+	const database = await openNodeSqliteDatabase(storePath);
+	const store = await SqlSessionStore.open(database);
+	const manager = await SessionManager.create(store, directory);
+	await manager.appendMessage({ role: "user", content: "other", timestamp: Date.now() });
+	const sessionId = manager.getSessionId();
+	await store.close();
+	await database.close();
+	return sessionId;
+}
+
+const count = (marker: string) => ran().filter((line) => line === marker).length;
+
 const PARTIAL_BUILD = /Partial build: .*Install dependencies/;
 
 describe("a resume without a UI whose blueprint build runs behind the first turn (#4748)", () => {
@@ -344,24 +360,93 @@ describe("a resume without a UI whose blueprint build runs behind the first turn
 		CLI_RESUME_TIMEOUT_MS,
 	);
 
+	test(
+		"switching an RPC session away and back during its build joins that build instead of starting another (#4748)",
+		async () => {
+			const recorded = await recordedSession();
+			const other = await plainSession(recorded.storePath);
+			const run = resume(recorded, "--mode", "rpc");
+			await until(() => ran().includes("started"), "the build to start");
+			send(run.child, { id: "away", type: "switch_session", sessionId: other });
+			await until(() => run.out().includes('"away"'), "the switch away");
+			send(run.child, { id: "back", type: "switch_session", sessionId: recorded.sessionId });
+			await until(() => run.out().includes('"back"'), "the switch back, before the build ends");
+			await sleep(HOLD_MS);
+			assert.equal(count("started"), 1, "no second build of the worktree started");
+			send(run.child, { id: "p1", type: "prompt", message: "GOBASH" });
+			await until(() => requests >= 1, "the first request");
+			await sleep(HOLD_MS);
+			assert.equal(existsSync(toolRan()), false, "the session's bash call waits for the joined build");
+			writeFileSync(gate(), "");
+			await until(() => existsSync(toolRan()), "the bash call after the build");
+			run.child.stdin.end();
+			await run.exited;
+			assert.deepEqual(ran(), ["started", "built"]);
+			assert.equal(events(run.out(), "blueprint_build_finished").length, 1, "the build's end is told once");
+		},
+		CLI_RESUME_TIMEOUT_MS,
+	);
+
+	test(
+		"a clone of a resumed RPC session works in the restored worktree, not the missing recorded checkout (#4748)",
+		async () => {
+			const recorded = await recordedSession();
+			writeFileSync(gate(), "");
+			const run = resume(recorded, "--mode", "rpc");
+			await until(() => ran().includes("built"), "the build");
+			send(run.child, { id: "c1", type: "clone" });
+			await until(() => run.out().includes('"c1"'), "the clone");
+			send(run.child, { id: "p1", type: "prompt", message: "GOBASH" });
+			await until(() => events(run.out(), "tool_execution_end").length > 0, "the bash call");
+			const [end] = events(run.out(), "tool_execution_end");
+			assert.equal(end!.isError, false, JSON.stringify(end).slice(-400));
+			assert.ok(existsSync(toolRan()));
+			run.child.stdin.end();
+			await run.exited;
+		},
+		CLI_RESUME_TIMEOUT_MS,
+	);
+
+	test(
+		"a resume after its host was killed during the build stops the build's leftover steps before building again (#4748)",
+		async () => {
+			const recorded = await recordedSession();
+			const killed = resume(recorded, "-p", "hello");
+			killed.child.stdin.end();
+			await until(() => ran().includes("started"), "the build to start");
+			killed.child.kill("SIGKILL");
+			await killed.exited;
+			const again = resume(recorded, "-p", "hello");
+			again.child.stdin.end();
+			await until(() => count("started") === 2, "the second build to start");
+			writeFileSync(gate(), "");
+			assert.equal(await again.exited, 0);
+			await sleep(HOLD_MS);
+			assert.deepEqual(ran(), ["started", "started", "built"], "only the second build ran to its end");
+		},
+		CLI_RESUME_TIMEOUT_MS,
+	);
+
 	for (const [how, end] of [
-		["SIGTERM during -p's wait for the build", "sigterm"],
+		["SIGTERM during -p's wait for the build", "SIGTERM"],
+		["SIGINT during -p's wait for the build", "SIGINT"],
 		["closing RPC's stdin", "stdin"],
 	] as const) {
-		test.skipIf(how.startsWith("SIGTERM") && process.platform === "win32")(
+		test.skipIf(end !== "stdin" && process.platform === "win32")(
 			`${how} stops the build's process tree, and the next resume builds the worktree again (#4748)`,
 			async () => {
 				const recorded = await recordedSession();
-				const run = end === "sigterm" ? resume(recorded, "-p", "hello") : resume(recorded, "--mode", "rpc");
+				const run = end === "stdin" ? resume(recorded, "--mode", "rpc") : resume(recorded, "-p", "hello");
 				await until(() => ran().includes("started"), "the build to start");
-				if (end === "sigterm") {
-					await until(() => run.out().includes("ANSWER-TEXT"), "the answer");
-					run.child.kill("SIGTERM");
-				} else {
+				if (end === "stdin") {
 					await sleep(HOLD_MS);
 					run.child.stdin.end();
+				} else {
+					await until(() => run.out().includes("ANSWER-TEXT"), "the answer");
+					run.child.kill(end);
 				}
-				await run.exited;
+				const code = await run.exited;
+				if (end !== "stdin") assert.equal(code, end === "SIGINT" ? 130 : 143);
 				writeFileSync(gate(), "");
 				await sleep(HOLD_MS);
 				assert.deepEqual(ran(), ["started"], "the build's shell ended with the process");

@@ -139,13 +139,15 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 	};
 
 	const registerSignalHandlers = (): void => {
-		const signals: NodeJS.Signals[] = ["SIGTERM"];
+		// SIGINT (Ctrl-C) ends the run the same way (#4748): a blueprint build still running behind the first turn is
+		// stopped with its process tree instead of being left in its own process group.
+		const signals: NodeJS.Signals[] = ["SIGTERM", "SIGINT"];
 		if (process.platform !== "win32") {
 			signals.push("SIGHUP");
 		}
 
 		for (const signal of signals) {
-			const exitCode = signal === "SIGHUP" ? 129 : 143;
+			const exitCode = signal === "SIGHUP" ? 129 : signal === "SIGINT" ? 130 : 143;
 			const handler = () => {
 				signalCount++;
 				killTrackedDetachedChildren();
