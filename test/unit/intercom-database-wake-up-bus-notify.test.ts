@@ -14,7 +14,8 @@ import {
 	type WakeUpPollScheduler,
 } from "../../packages/intercom/broker/database-wake-up-bus.js";
 import type { WakeUpEvent } from "../../packages/intercom/broker/wake-up-bus.js";
-import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
+import { removeFixtureTree } from "../helpers/fixture-removal.js";
+import { makeTempDirectory } from "../helpers/runtime.js";
 
 /**
  * The database wake-up bus on a database that delivers notifications (#5103), as Postgres does, here a SQLite file
@@ -94,8 +95,9 @@ async function notifyingFile() {
 			};
 		},
 		async close() {
-			for (const database of opened) await database.close().catch(() => {});
-			removeTempDirectory(directory);
+			const closes = await Promise.allSettled(opened.map((database) => database.close()));
+			removeFixtureTree(directory);
+			for (const close of closes) if (close.status === "rejected") throw close.reason;
 		},
 	};
 }
