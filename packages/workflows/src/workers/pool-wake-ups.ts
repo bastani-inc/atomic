@@ -33,6 +33,35 @@ export class IdleClaimPauses {
 	}
 }
 
+/** What a pool coordinator's wake-ups act on. */
+export interface CoordinatorWakeUpTarget {
+	/** The root the coordinator's pool serves. */
+	readonly root: () => string | undefined;
+	/** Whether the coordinator is a worker host's satellite rather than the root's own pool. */
+	readonly satellite: boolean;
+	readonly pauses: IdleClaimPauses;
+	/** The recovery pass in progress, if any. */
+	readonly recovering: () => Promise<void> | undefined;
+	/** Runs a recovery pass now, which settles what other hosts' workers ended. */
+	readonly recover: () => void;
+}
+
+/**
+ * The listener a pool coordinator gives its journal: a wake-up of its root, or a missed one, ends an idle worker's
+ * pause; on the root's own pool it also runs a recovery pass now, or once the one in progress ends, so a child another
+ * host finished is settled at once rather than at the next pass.
+ */
+export function coordinatorWakeUps(target: CoordinatorWakeUpTarget): (root: string | undefined) => void {
+	return (woken) => {
+		const root = target.root();
+		target.pauses.wake(woken, root);
+		if (target.satellite || (woken !== undefined && woken !== root)) return;
+		const recovering = target.recovering();
+		if (recovering === undefined) target.recover();
+		else void recovering.finally(target.recover);
+	};
+}
+
 /**
  * The listener a worker host gives its journal: a wake-up of a root it does not serve, or a missed one, starts a poll
  * that attaches it, at most once per `minIntervalMs`. A served root's satellite hears its root's wake-ups itself.

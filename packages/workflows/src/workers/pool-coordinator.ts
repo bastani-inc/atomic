@@ -104,7 +104,7 @@ import {
 } from "./placement-errors.js";
 import { PoolCoordinationCounters } from "./pool-coordination-stats.js";
 import { openDurableJournal, type PoolDurableJournal, poolWorkerEnvironment } from "./pool-journal.js";
-import { IdleClaimPauses } from "./pool-wake-ups.js";
+import { coordinatorWakeUps, IdleClaimPauses } from "./pool-wake-ups.js";
 import { configurePooledWatchTrace, tracePooledWatch } from "./pooled-watch-trace.js";
 import { appendProcessLog, logFailureOf } from "./process-log.js";
 import type {
@@ -1193,16 +1193,19 @@ export class PoolCoordinator {
 		// A shared pool's journal on Postgres says when its root's work became ready or an attempt ended (#5103): an idle
 		// worker asks for work at once, and the root settles what another host's worker ended, instead of at their polls.
 		if (this.options?.shared === undefined || this.journal === undefined) return;
-		this.poolReady = listenPoolReady(this.journal, (root) => {
-			this.idlePauses.wake(root, this.root);
-			if (this.satellite !== undefined || (root !== undefined && root !== this.root)) return;
-			const recoverNow = () => {
-				this.nextRecoveryAt = 0;
-				recover();
-			};
-			if (this.recovering === undefined) recoverNow();
-			else void this.recovering.finally(recoverNow);
-		});
+		this.poolReady = listenPoolReady(
+			this.journal,
+			coordinatorWakeUps({
+				root: () => this.root,
+				satellite: this.satellite !== undefined,
+				pauses: this.idlePauses,
+				recovering: () => this.recovering,
+				recover: () => {
+					this.nextRecoveryAt = 0;
+					recover();
+				},
+			}),
+		);
 	}
 
 	/** Publishes a shared pool's configuration for worker hosts, and starts its relay and stage input passes. */

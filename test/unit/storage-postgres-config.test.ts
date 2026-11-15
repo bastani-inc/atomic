@@ -48,11 +48,12 @@ test("Postgres refuses a listen URL that holds a password or is not a Postgres U
 		"credential-in-url",
 		["fixture-secret"],
 	);
-	await assertRefused(
-		() => openPostgresDatabase({ url, listenUrl: "http://127.0.0.1:1/atomic" }),
-		"listenUrl",
-		"unsupported-url",
-	);
+	for (const listenUrl of ["http://127.0.0.1:1/atomic", "not a url"]) {
+		await assertRefused(() => openPostgresDatabase({ url, listenUrl }), "listenUrl", "unsupported-url");
+		await assert.rejects(openPostgresDatabase({ url, listenUrl }), {
+			hint: "Use a postgres:// or postgresql:// URL",
+		});
+	}
 	await assertRefused(
 		() =>
 			adapter.openDatabase(

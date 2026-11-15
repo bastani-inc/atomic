@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, test, vi } from "vitest";
-import { hostWakeUps, IdleClaimPauses } from "../../packages/workflows/src/workers/pool-wake-ups.js";
+import {
+	coordinatorWakeUps,
+	hostWakeUps,
+	IdleClaimPauses,
+} from "../../packages/workflows/src/workers/pool-wake-ups.js";
 
 /** The idle-claim pause of a shared pool's workers in these tests. */
 const PAUSE_MS = 500;
@@ -78,4 +82,55 @@ test("a host polls for a wake-up of a root it does not serve or a missed one, ne
 	now = 1_100;
 	wake(undefined);
 	assert.deepEqual(polls, [1_000, 1_100]);
+});
+
+/** A coordinator's wake-up listener over recorded recovery passes and pauses. */
+function coordinator(options: { satellite: boolean; recovering?: Promise<void> }) {
+	const pauses = new IdleClaimPauses(PAUSE_MS);
+	const ended = paused(pauses);
+	let recoveries = 0;
+	const wake = coordinatorWakeUps({
+		root: () => "root",
+		satellite: options.satellite,
+		pauses,
+		recovering: () => options.recovering,
+		recover: () => {
+			recoveries++;
+		},
+	});
+	return { wake, ended, recoveries: () => recoveries };
+}
+
+test("the root's own pool settles at once on a wake-up of its root or a missed one, never of another root (#5103)", async () => {
+	const root = coordinator({ satellite: false });
+	root.wake("other");
+	await vi.advanceTimersByTimeAsync(0);
+	assert.deepEqual([root.recoveries(), root.ended()], [0, false]);
+	root.wake("root");
+	await vi.advanceTimersByTimeAsync(0);
+	assert.deepEqual([root.recoveries(), root.ended()], [1, true]);
+	root.wake(undefined);
+	assert.equal(root.recoveries(), 2);
+});
+
+test("a satellite's wake-up ends an idle pause but runs no recovery of its own (#5103)", async () => {
+	const satellite = coordinator({ satellite: true });
+	satellite.wake("root");
+	satellite.wake(undefined);
+	await vi.advanceTimersByTimeAsync(0);
+	assert.deepEqual([satellite.recoveries(), satellite.ended()], [0, true]);
+});
+
+test("a wake-up during a recovery pass runs the next one as soon as that pass ends (#5103)", async () => {
+	let finish!: () => void;
+	const recovering = new Promise<void>((resolve) => {
+		finish = resolve;
+	});
+	const root = coordinator({ satellite: false, recovering });
+	root.wake("root");
+	await vi.advanceTimersByTimeAsync(0);
+	assert.equal(root.recoveries(), 0);
+	finish();
+	await vi.advanceTimersByTimeAsync(0);
+	assert.equal(root.recoveries(), 1);
 });

@@ -161,9 +161,9 @@ export function createPostgresListener(options) {
 				listeners = new Set();
 				channels.set(name, listeners);
 				const current = client;
-				// A channel added while connected is listened to on that connection; a failure drops it, and the next one
-				// listens to every channel.
-				if (current !== undefined && state.status === "listening")
+				// A channel added while a connection is open, listening or still probing, is listened to on it; a failure drops
+				// it, and the next one listens to every channel.
+				if (current !== undefined)
 					current.query(`LISTEN ${quoted(name)}`).catch(() => drop(current, "connection-failed"));
 			}
 			listeners.add(listener);
@@ -178,7 +178,7 @@ export function createPostgresListener(options) {
 					if (current?.size !== 0) return;
 					channels.delete(name);
 					const connected = client;
-					if (connected !== undefined && state.status === "listening")
+					if (connected !== undefined)
 						connected.query(`UNLISTEN ${quoted(name)}`).catch(() => drop(connected, "connection-failed"));
 				},
 			};

@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import type { StorageNotificationEvent } from "@bastani/atomic/storage";
 import { afterEach, beforeEach, test, vi } from "vitest";
-import { createPostgresListener, type ListenClient } from "../../packages/storage-postgres/listen.js";
+import {
+	createPostgresListener,
+	LISTEN_RETRY,
+	type ListenClient,
+	type ListenerOptions,
+} from "../../packages/storage-postgres/listen.js";
 
 /**
  * The Postgres listening connection (#5103) against a fake session: what it listens to, when it reports listening,
@@ -17,10 +22,13 @@ class FakeSession implements ListenClient {
 	readonly channels = new Set<string>();
 	ended = false;
 	private readonly handlers = new Map<string, ((...args: never[]) => void)[]>();
-	constructor(private readonly options: { readonly failQuery?: boolean } = {}) {}
+	failQuery: boolean;
+	constructor(options: { readonly failQuery?: boolean } = {}) {
+		this.failQuery = options.failQuery === true;
+	}
 	async query(sql: string): Promise<unknown> {
 		this.statements.push(sql);
-		if (this.options.failQuery) throw new Error("connection lost");
+		if (this.failQuery) throw new Error("connection lost");
 		const listened = /^(UN)?LISTEN "(.*)"$/.exec(sql);
 		if (listened?.[1] === undefined && listened?.[2] !== undefined) this.channels.add(listened[2]);
 		else if (listened?.[2] !== undefined) this.channels.delete(listened[2]);
@@ -38,13 +46,30 @@ class FakeSession implements ListenClient {
 		for (const handler of this.handlers.get("notification") ?? [])
 			(handler as (message: { channel: string; payload?: string }) => void)({ channel, payload });
 	}
-	fail(): void {
-		for (const handler of this.handlers.get("error") ?? []) (handler as () => void)();
+	fail(event: "error" | "end" = "error"): void {
+		for (const handler of this.handlers.get(event) ?? []) (handler as () => void)();
+	}
+	/** Hands the listener a notification as the session would, whatever it listens to. */
+	emit(message: { channel: string; payload?: string }): void {
+		for (const handler of this.handlers.get("notification") ?? [])
+			(handler as (message: { channel: string; payload?: string }) => void)(message);
+	}
+	/** The probe channel the listener listened to first. */
+	probeChannel(): string {
+		return /^LISTEN "(.*)"$/.exec(this.statements[0] ?? "")![1]!;
 	}
 }
 
 /** A fake server: every session it opened, and whether the pool's notifications reach them (not through a pooler). */
-function fakeServer(options: { pooled?: boolean; refuse?: () => boolean; failQuery?: boolean } = {}) {
+function fakeServer(
+	options: {
+		pooled?: boolean;
+		refuse?: () => boolean;
+		failQuery?: boolean;
+		send?: (deliver: (channel: string, payload: string) => void, channel: string, payload: string) => void;
+		defaults?: boolean;
+	} = {},
+) {
 	const sessions: FakeSession[] = [];
 	let connects = 0;
 	const deliver = (channel: string, payload: string) => {
@@ -59,12 +84,12 @@ function fakeServer(options: { pooled?: boolean; refuse?: () => boolean; failQue
 			return session;
 		},
 		async send(channel, payload) {
-			if (!options.pooled) deliver(channel, payload);
+			if (options.send !== undefined) options.send(deliver, channel, payload);
+			else if (!options.pooled) deliver(channel, payload);
 		},
 		channelName: (channel) => `n_${channel}`,
-		probeTimeoutMs: PROBE_TIMEOUT_MS,
-		retry: RETRY,
-	});
+		...(options.defaults === true ? {} : { probeTimeoutMs: PROBE_TIMEOUT_MS, retry: RETRY }),
+	} satisfies ListenerOptions);
 	return { listener, sessions, deliver, connects: () => connects };
 }
 
@@ -225,4 +250,142 @@ test("a listener closed while connecting ends the session it opens (#5103)", asy
 	await closed;
 	assert.equal(session.ended, true);
 	assert.deepEqual(session.statements, []);
+	assert.deepEqual(await listener.state(), { status: "connecting" }, "a connection never opened says so");
+});
+
+test("without options the listener retries after a second, doubling up to thirty (#5103)", async () => {
+	assert.deepEqual(LISTEN_RETRY, { firstMs: 1_000, maxMs: 30_000 });
+	const server = fakeServer({ refuse: () => true, defaults: true });
+	server.listener.listen("ready", () => {});
+	await server.listener.state();
+	await vi.advanceTimersByTimeAsync(999);
+	assert.equal(server.connects(), 1);
+	await vi.advanceTimersByTimeAsync(1);
+	assert.equal(server.connects(), 2);
+	await server.listener.close();
+});
+
+test("a channel name with a quote is quoted whole (#5103)", async () => {
+	const server = fakeServer();
+	server.listener.listen('a"b', () => {});
+	await server.listener.state();
+	assert.equal(server.sessions[0]!.statements.at(-1), 'LISTEN "n_a""b"');
+	await server.listener.close();
+});
+
+test("a listener closed while its connection is refused connects no more (#5103)", async () => {
+	let refuse!: (error: Error) => void;
+	let connects = 0;
+	const listener = createPostgresListener({
+		connect: () => {
+			connects++;
+			return new Promise<ListenClient>((_, reject) => {
+				refuse = reject;
+			});
+		},
+		send: async () => {},
+		channelName: (channel) => channel,
+	});
+	listener.listen("ready", () => {});
+	const closed = listener.close();
+	refuse(new Error("refused"));
+	await closed;
+	await vi.advanceTimersByTimeAsync(LISTEN_RETRY.maxMs * 2);
+	assert.equal(connects, 1);
+});
+
+test("a session that ends is replaced, and a failure of a session already replaced changes nothing (#5103)", async () => {
+	const server = fakeServer();
+	const events = recorder();
+	server.listener.listen("ready", events.listener);
+	await server.listener.state();
+	server.sessions[0]!.fail("end");
+	assert.deepEqual(await server.listener.state(), { status: "unavailable", reason: "connection-failed" });
+	await vi.advanceTimersByTimeAsync(RETRY.firstMs);
+	assert.deepEqual(await server.listener.state(), { status: "listening" });
+	server.sessions[0]!.fail("error");
+	assert.deepEqual(await server.listener.state(), { status: "listening" });
+	assert.equal(server.sessions[1]!.ended, false);
+	// A notification the replaced session still hands over is not delivered.
+	server.sessions[0]!.emit({ channel: "n_ready", payload: "stale" });
+	server.sessions[1]!.emit({ channel: "n_ready" });
+	assert.deepEqual(events.events.slice(-1), [{ kind: "notification", payload: "" }]);
+	assert.ok(!events.events.some((event) => event.kind === "notification" && event.payload === "stale"));
+	await server.listener.close();
+});
+
+test("a notification before the probe arrives, or a probe with another payload, is not taken for listening (#5103)", async () => {
+	let session: FakeSession | undefined;
+	const events = recorder();
+	const server = fakeServer({
+		send: (_deliver, channel) => {
+			session = server.sessions[0];
+			session!.emit({ channel: "n_ready", payload: "early" });
+			session!.emit({ channel, payload: "not-the-nonce" });
+		},
+	});
+	server.listener.listen("ready", events.listener);
+	const state = server.listener.state();
+	await vi.advanceTimersByTimeAsync(PROBE_TIMEOUT_MS);
+	assert.deepEqual(await state, { status: "unavailable", reason: "pooler" });
+	assert.deepEqual(events.events, []);
+	await server.listener.close();
+});
+
+test("a probe that arrives after its session broke does not make the listener listening (#5103)", async () => {
+	const server = fakeServer({
+		send: (deliver, channel, payload) => {
+			server.sessions[0]!.fail();
+			server.sessions[0]!.ended = false;
+			deliver(channel, payload);
+		},
+	});
+	server.listener.listen("ready", () => {});
+	assert.deepEqual(await server.listener.state(), { status: "unavailable", reason: "connection-failed" });
+	await server.listener.close();
+});
+
+test("a stray probe notification after listening is ignored (#5103)", async () => {
+	const server = fakeServer();
+	const events = recorder();
+	server.listener.listen("ready", events.listener);
+	await server.listener.state();
+	server.sessions[0]!.emit({ channel: server.sessions[0]!.probeChannel(), payload: "late" });
+	assert.deepEqual(events.events, [{ kind: "listening" }]);
+	await server.listener.close();
+});
+
+test("a channel added while the probe is in flight is listened to on that session (#5103)", async () => {
+	let release!: () => void;
+	const server = fakeServer({
+		send: (deliver, channel, payload) => {
+			release = () => deliver(channel, payload);
+		},
+	});
+	server.listener.listen("ready", () => {});
+	const state = server.listener.state();
+	await vi.advanceTimersByTimeAsync(0);
+	const late = recorder();
+	server.listener.listen("late", late.listener);
+	await vi.advanceTimersByTimeAsync(0);
+	release();
+	assert.deepEqual(await state, { status: "listening" });
+	server.deliver("n_late", "root");
+	assert.deepEqual(late.events, [{ kind: "listening" }, { kind: "notification", payload: "root" }]);
+	await server.listener.close();
+});
+
+test("a LISTEN or UNLISTEN that fails on a listening session drops it as a failed connection (#5103)", async () => {
+	for (const failing of ["listen", "unlisten"] as const) {
+		const server = fakeServer();
+		const first = server.listener.listen("ready", () => {});
+		await server.listener.state();
+		server.sessions[0]!.failQuery = true;
+		if (failing === "listen") server.listener.listen("other", () => {});
+		else first.close();
+		await vi.advanceTimersByTimeAsync(0);
+		assert.deepEqual(await server.listener.state(), { status: "unavailable", reason: "connection-failed" }, failing);
+		assert.equal(server.sessions[0]!.ended, true);
+		await server.listener.close();
+	}
 });
