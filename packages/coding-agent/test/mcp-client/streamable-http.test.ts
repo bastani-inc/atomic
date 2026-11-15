@@ -105,6 +105,53 @@ describe("consumeSseStream", () => {
 		assert.deepEqual(events, [{ id: "7", data: '{"one":\n1}' }]);
 	});
 
+	it("reports an event's ID when the event dispatches, never for an event cut off (#5019)", async () => {
+		const text = "id: 1\nretry: 250\nretry: x5\nretry: 5x\ndata: 9\n\nid: 2\ndata: half";
+		// The text arrives, then the connection breaks.
+		const brokenStream = () => {
+			let sent = false;
+			return new ReadableStream<Uint8Array>({
+				pull(controller) {
+					if (sent) controller.error(new Error("connection reset"));
+					else controller.enqueue(new TextEncoder().encode(text));
+					sent = true;
+				},
+			});
+		};
+		const calls: string[] = [];
+		await assert.rejects(
+			consumeSseStream(brokenStream(), {
+				onEvent: (event) => calls.push(`event ${event.data}`),
+				onId: (id) => calls.push(`id ${id}`),
+				onRetry: (delayMs) => calls.push(`retry ${delayMs}`),
+			}),
+			/connection reset/,
+		);
+		assert.deepEqual(calls, ["retry 250", "id 1", "event 9"]);
+		// Without ID and retry listeners, those fields are parsed and ignored.
+		const events: SseEvent[] = [];
+		await assert.rejects(
+			consumeSseStream(brokenStream(), { onEvent: (event) => events.push(event) }),
+			/connection reset/,
+		);
+		assert.deepEqual(events, [{ id: "1", data: "9" }]);
+	});
+
+	it("delivers the event pending at the end of the stream without reporting its ID (#5019)", async () => {
+		const stream = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.enqueue(new TextEncoder().encode("id: 1\ndata: a\n\nid: 2\ndata: b"));
+				controller.close();
+			},
+		});
+		const calls: string[] = [];
+		await consumeSseStream(stream, {
+			onEvent: (event, terminated) => calls.push(`event ${event.data} ${terminated}`),
+			onId: (id) => calls.push(`id ${id}`),
+		});
+		assert.deepEqual(calls, ["id 1", "event a true", "event b false"]);
+	});
+
 	it("recognizes CR, LF, and CRLF line endings, including CRLF split across chunks (pi #11775)", async () => {
 		const encoder = new TextEncoder();
 		const parse = async (chunks: string[]) => {
@@ -488,6 +535,66 @@ describe("StreamableHttpTransport", () => {
 		assert.deepEqual(resumeHeaders, ["1"]);
 		assert.deepEqual(resumeAccepts, ["text/event-stream"]);
 		assert.deepEqual(errors, []);
+		await client.close();
+	});
+
+	for (const ending of ["breaks", "ends"] as const) {
+		it(`resumes a stream that ${ending} mid-event after the last complete event (#5019)`, async () => {
+			const resumeHeaders: string[] = [];
+			let answer = "";
+			const { url } = await startServer(async (request, response, requests) => {
+				const lastEventId = request.headers["last-event-id"];
+				if (request.method === "GET" && typeof lastEventId === "string") {
+					resumeHeaders.push(lastEventId);
+					response.writeHead(200, { "content-type": "text/event-stream" });
+					// Replays every event after the one the client reports.
+					response.end(lastEventId === "1" ? `id: 2\ndata: ${answer}\n\n` : "");
+					return;
+				}
+				if (request.method !== "POST") return protocolHandler(request, response, requests);
+				const message = JSON.parse(await readBody(request)) as Record<string, unknown>;
+				if (message.method !== "tools/call") return protocolHandler(request, response, requests, message);
+				answer = JSON.stringify({
+					jsonrpc: "2.0",
+					id: message.id,
+					result: { content: [{ type: "text", text: "answer" }] },
+				});
+				response.writeHead(200, { "content-type": "text/event-stream" });
+				// The priming event, then event 2's ID and half its data before the connection breaks or the stream ends.
+				response.write("id: 1\ndata:\n\n");
+				const half = `id: 2\ndata: ${answer.slice(0, answer.length / 2)}`;
+				if (ending === "ends") response.end(half);
+				else response.write(half, () => response.socket?.destroy());
+			});
+			const client = new McpClient({ name: "http-test", version: "1.0.0" });
+			const errors: Error[] = [];
+			client.onError((error) => errors.push(error));
+			await client.connect(
+				new StreamableHttpTransport({ url, openGetStream: false, reconnect: { initialDelayMs: 1, maxRetries: 2 } }),
+			);
+			assert.deepEqual(await client.callTool("echo", {}, { timeoutMs: 5_000 }), {
+				content: [{ type: "text", text: "answer" }],
+			});
+			assert.deepEqual(resumeHeaders, ["1"]);
+			assert.deepEqual(errors, []);
+			await client.close();
+		});
+	}
+
+	it("delivers a complete last event that the stream ends without a blank line (#5019)", async () => {
+		const { url } = await startServer(async (request, response, requests) => {
+			if (request.method !== "POST") return protocolHandler(request, response, requests);
+			const message = JSON.parse(await readBody(request)) as Record<string, unknown>;
+			if (message.method !== "tools/call") return protocolHandler(request, response, requests, message);
+			const answer = { jsonrpc: "2.0", id: message.id, result: { content: [{ type: "text", text: "last" }] } };
+			response.writeHead(200, { "content-type": "text/event-stream" });
+			response.end(`id: 1\ndata: ${JSON.stringify(answer)}`);
+		});
+		const client = new McpClient({ name: "http-test", version: "1.0.0" });
+		await client.connect(new StreamableHttpTransport({ url, openGetStream: false }));
+		assert.deepEqual(await client.callTool("echo", {}, { timeoutMs: 5_000 }), {
+			content: [{ type: "text", text: "last" }],
+		});
 		await client.close();
 	});
 
