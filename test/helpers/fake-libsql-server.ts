@@ -113,6 +113,11 @@ export interface FakeLibsqlServer {
 	 * sent; the answer waits for the hook. Replaces any hook set before; `undefined` removes it.
 	 */
 	onOpenTransaction(hook: ((pipeline: FakeLibsqlPipeline) => Promise<void> | void) | undefined): void;
+	/**
+	 * Calls `hook` after a pipeline request carrying a batch ran, before the answer is sent; the answer waits for the
+	 * hook. A batch is a write transaction in one request, so it never leaves one open. `undefined` removes it.
+	 */
+	onBatch(hook: ((pipeline: FakeLibsqlPipeline) => Promise<void> | void) | undefined): void;
 	/** Expires every open stream at once, rolling back the open transaction. */
 	expireStreams(): void;
 	close(): Promise<void>;
@@ -166,6 +171,7 @@ export async function startFakeLibsqlServer(options: FakeLibsqlServerOptions = {
 	const sockets = new Set<Socket>();
 	let owner: Stream | undefined;
 	let hook: ((pipeline: FakeLibsqlPipeline) => Promise<void> | void) | undefined;
+	let batchHook: ((pipeline: FakeLibsqlPipeline) => Promise<void> | void) | undefined;
 	let expiredStatements = 0;
 	let nextBaton = 0;
 
@@ -331,8 +337,12 @@ export async function startFakeLibsqlServer(options: FakeLibsqlServerOptions = {
 		busy = fault?.kind === "busy";
 		const results = body.requests.map((each) => {
 			if (timedOut !== undefined && each.type === "batch") {
+				// As sqld answers a batch whose first step failed: the steps conditioned on it never ran.
 				const steps = each.batch.steps.map(() => null);
-				const result = { step_results: steps, step_errors: each.batch.steps.map(() => timedOut) };
+				const result = {
+					step_results: steps,
+					step_errors: each.batch.steps.map((_step, index) => (index === 0 ? timedOut : null)),
+				};
 				return { type: "ok", response: { type: "batch", result } };
 			}
 			if (timedOut !== undefined && (each.type === "execute" || each.type === "sequence"))
@@ -349,6 +359,7 @@ export async function startFakeLibsqlServer(options: FakeLibsqlServerOptions = {
 		if (closing) expire(stream);
 		if (fault?.kind === "reset-after") return void socket.resetAndDestroy();
 		if (owner === stream && hook !== undefined) await hook(pipeline);
+		if (batchHook !== undefined && body.requests.some((each) => each.type === "batch")) await batchHook(pipeline);
 		stream.lastActive = performance.now();
 		answer(response, 200, { baton: closing ? null : stream.baton, base_url: null, results });
 	};
@@ -384,6 +395,9 @@ export async function startFakeLibsqlServer(options: FakeLibsqlServerOptions = {
 			return expiredStatements;
 		},
 		fail: (...planned) => void faults.push(...planned),
+		onBatch(next) {
+			batchHook = next;
+		},
 		onOpenTransaction(next) {
 			hook = next;
 		},

@@ -186,3 +186,29 @@ test("a storage outage refusing an outage-tolerant request leaves the attempt to
 	assert.equal(stale.state.attemptFenced, true);
 	assert.ok(isWorkAttemptFencedError(stale.settled[0]?.error));
 });
+
+test("a refusal of a request an earlier attempt made rejects it without fencing the attempt the worker holds now (#4768)", () => {
+	const h = harness();
+	h.pending.set(1, {
+		resolve: (value) => h.settled.push({ id: 1, value }),
+		reject: (error) => h.settled.push({ id: 1, error }),
+		attempt: { workId: attempt.id, generation: attempt.generation - 1 },
+	});
+	// A fault of the pool, which would fence the attempt the worker holds if the request were that attempt's.
+	const refusal = new StorageTransientError(
+		{ adapter: "libsql", location: "http://127.0.0.1:1" },
+		{ code: "connection-refused", outcome: "not-applied", attempts: 1 },
+	);
+	h.receive({ id: 1, error: serializeError(refusal) });
+	assert.equal(h.state.attemptFenced, false);
+	assert.equal(h.settled.length, 1);
+	assert.equal(h.settled[0]!.error?.name, "StorageTransientError");
+	// The same refusal of a request the held attempt made fences it.
+	h.pending.set(2, {
+		resolve: (value) => h.settled.push({ id: 2, value }),
+		reject: (error) => h.settled.push({ id: 2, error }),
+		attempt: { workId: attempt.id, generation: attempt.generation },
+	});
+	h.receive({ id: 2, error: serializeError(refusal) });
+	assert.equal(h.state.attemptFenced, true);
+});
