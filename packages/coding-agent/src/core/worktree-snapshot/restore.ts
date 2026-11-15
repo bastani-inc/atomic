@@ -4,6 +4,7 @@ import { lstat, mkdir, open, readdir, readFile, realpath, rename, rm, rmdir, sta
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
+import { releaseLock } from "../lock-release.ts";
 import { noteRestoreFetch, timeRestorePhase } from "../resume/timings.ts";
 import {
 	locateCheckout,
@@ -216,7 +217,7 @@ function withRepositoryLock<T>(
 			return await action();
 		} finally {
 			// A release that fails leaves a lock file nothing refreshes, which the next waiter takes once it is stale.
-			await unlock().catch(() => {});
+			await releaseLock(unlock, store);
 		}
 	});
 }

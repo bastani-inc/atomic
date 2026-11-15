@@ -2,6 +2,7 @@ import type { Stats } from "node:fs";
 import { lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { failureDebugFields, reportDebug } from "../debug.ts";
+import { releaseLock } from "../lock-release.ts";
 import { timeRestorePhase } from "../resume/timings.ts";
 import { admitPooledWorktree, discardPooledWorktree, type PoolOwner, releaseRestoredWorktree } from "./pool.ts";
 import { type RepositoryId, sharedRepositoryIdOf } from "./repository-identity.ts";
@@ -122,7 +123,7 @@ export async function withSeedLock<T>(
 	try {
 		return await action();
 	} finally {
-		await unlock().catch(() => {});
+		await releaseLock(unlock, file);
 	}
 }
 
