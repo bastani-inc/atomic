@@ -17,7 +17,8 @@ const { SqlRunJournal } = await load("../../packages/workflows/src/durable/journ
 const { SqlRateBuckets } = await load("../../packages/workflows/src/durable/journal/sql-rate-buckets.ts");
 const { FleetRateLimiter, fleetRateGate } = await load("../../packages/workflows/src/workers/fleet-rate-limits.ts");
 
-const journal = await SqlRunJournal.open(await openNodeSqliteDatabase(env.JOURNAL_PATH));
+const database = await openNodeSqliteDatabase(env.JOURNAL_PATH);
+const journal = await SqlRunJournal.open(database);
 const store = await SqlRateBuckets.open(journal);
 const limiter = new FleetRateLimiter({
 	store,
@@ -62,4 +63,5 @@ while (Date.now() < end) {
 await limiter.close();
 writeFileSync(env.OUT, JSON.stringify({ calls, modes, waits }));
 await journal.close();
+await database.close();
 process.exit(0);

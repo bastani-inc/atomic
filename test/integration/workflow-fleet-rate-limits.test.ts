@@ -35,9 +35,12 @@ async function fleet() {
 	directories.push(directory);
 	const path = join(directory, "journal.sqlite");
 	// The journal exists, with its bucket table, before any host opens it.
-	const journal = await SqlRunJournal.open(await openNodeSqliteDatabase(path));
+	const database = await openNodeSqliteDatabase(path);
+	const journal = await SqlRunJournal.open(database);
 	await SqlRateBuckets.open(journal);
 	await journal.close();
+	// Windows refuses to remove a database file a connection still holds.
+	await database.close();
 	let next = 0;
 	return {
 		path,

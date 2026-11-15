@@ -24,14 +24,21 @@ import {
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 const directories: string[] = [];
+const opened: { close(): Promise<void> }[] = [];
 afterEach(async () => {
-	for (const directory of directories.splice(0)) await removeTempDirectory(directory);
+	// Windows refuses to remove a database file a connection still holds.
+	for (const handle of opened.splice(0).reverse()) await handle.close();
+	for (const directory of directories.splice(0)) removeTempDirectory(directory);
 });
 
 async function journal() {
 	const directory = makeTempDirectory("fleet-rate-");
 	directories.push(directory);
-	return SqlRunJournal.open(await openNodeSqliteDatabase(join(directory, "journal.sqlite")));
+	const database = await openNodeSqliteDatabase(join(directory, "journal.sqlite"));
+	opened.push(database);
+	const journal = await SqlRunJournal.open(database);
+	opened.push(journal);
+	return journal;
 }
 
 test("a GCRA bucket admits its burst at once, then one token per interval (#4768)", () => {
