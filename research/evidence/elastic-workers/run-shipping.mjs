@@ -16,6 +16,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
+import { DatabaseSync } from "node:sqlite";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { percentile, summarize } from "./stats.mjs";
@@ -76,6 +77,33 @@ function killGroup(child, signal) {
 	} catch {}
 }
 
+/**
+ * SIGKILLs `pid` and every process under it at once, as a machine that dies would: a host's coordinator and workers
+ * run in process groups of their own, so killing the host's group alone lets them flush and hand their work back.
+ */
+function killTree(pid) {
+	const children = new Map();
+	for (const line of spawnSync("ps", ["-eo", "pid=,ppid="]).stdout.toString().trim().split("\n")) {
+		const [child, parent] = line.trim().split(/\s+/).map(Number);
+		children.set(parent, [...(children.get(parent) ?? []), child]);
+	}
+	const all = [];
+	for (const queue = [pid]; queue.length > 0; ) {
+		const next = queue.shift();
+		all.push(next);
+		queue.push(...(children.get(next) ?? []));
+	}
+	for (const target of all)
+		try {
+			process.kill(target, "SIGSTOP");
+		} catch {}
+	for (const target of all)
+		try {
+			process.kill(target, "SIGKILL");
+		} catch {}
+	return all.length;
+}
+
 async function waitFor(file, deadline, processes, log) {
 	while (!existsSync(file)) {
 		for (const p of processes)
@@ -103,6 +131,10 @@ async function openStore(work) {
 		spawnSync("docker", [
 			"run", "-d", "--rm", "--name", name, "-e", "SQLD_CHECKPOINT_INTERVAL_S=60", "-p", `${listen ?? "127.0.0.1"}:${port}:8080`,
 			"ghcr.io/tursodatabase/libsql-server:v0.24.33",
+			// --sqld-max-concurrent-requests: sqld's limit (128 by default), past which it answers 429.
+			...(args["sqld-max-concurrent-requests"] === undefined
+				? []
+				: ["/bin/sqld", "--max-concurrent-requests", args["sqld-max-concurrent-requests"]]),
 		]);
 	else
 		spawnSync("docker", [
@@ -186,7 +218,8 @@ async function openStore(work) {
 }
 
 function storeUrl(ip, port) {
-	return store === "sqld" ? `http://${ip}:${port}` : `postgres://postgres@${ip}:${port}/postgres`;
+	// The benchmark's PostgreSQL has no TLS; the adapter asks for it on any address but loopback.
+	return store === "sqld" ? `http://${ip}:${port}` : `postgres://postgres@${ip}:${port}/postgres?sslmode=disable`;
 }
 
 async function query(url, sql) {
@@ -212,6 +245,35 @@ async function query(url, sql) {
 function distribution(values) {
 	const sorted = [...values].sort((a, b) => a - b);
 	return { n: sorted.length, p50: percentile(sorted, 50), p90: percentile(sorted, 90), p99: percentile(sorted, 99), max: sorted.at(-1) ?? null };
+}
+
+/**
+ * The host whose local journal holds the most unshipped checkpoints now: the one a kill costs the most steps of, so a
+ * kill run measures the replay window rather than a host that happened to be idle.
+ */
+function busiestHost(work, count) {
+	let busiest = count - 1;
+	let most = -1;
+	for (let index = 0; index < count; index++) {
+		const ship = join(work, `host-${index}`, "workflows", "pool", "ship");
+		let held = 0;
+		if (existsSync(ship))
+			for (const file of readdirSync(ship, { recursive: true, encoding: "utf8" }).filter((name) => name.endsWith(".sqlite"))) {
+				try {
+					const local = new DatabaseSync(join(ship, file), { readOnly: true });
+					held += Number(local.prepare("SELECT COUNT(*) AS n FROM ship_events").get().n);
+					local.close();
+				} catch (error) {
+					process.stderr.write(`cannot read ${file}: ${error.message}\n`);
+				}
+			}
+		process.stderr.write(`at the kill, host h${index} held ${held} unshipped\n`);
+		if (held > most) {
+			most = held;
+			busiest = index;
+		}
+	}
+	return busiest;
 }
 
 async function trial(hosts, shipping) {
@@ -282,12 +344,14 @@ async function trial(hosts, shipping) {
 		const exited = new Promise((resolve) => root.on("exit", (code, signal) => resolve(code ?? signal)));
 		const runStart = Date.now();
 		let killedAt;
+		let killed = hosts - 1;
 		const killer =
 			killAfter === undefined
 				? undefined
 				: setTimeout(() => {
 						killedAt = Date.now() - runStart;
-						killGroup(processes[hosts - 1], "SIGKILL");
+						killed = busiestHost(work, hosts - remoteHosts);
+						killTree(processes[killed].pid);
 					}, killAfter);
 		const code = await Promise.race([exited, sleep(RUN_TIMEOUT_MS).then(() => "timeout")]);
 		clearTimeout(killer);
@@ -318,9 +382,8 @@ async function trial(hosts, shipping) {
 			}
 		// What the killed host held unshipped when it died, per attempt: its local journal, which nothing reopened.
 		const unshippedAtKill = [];
-		const killedShip = join(work, `host-${hosts - 1}`, "workflows", "pool", "ship");
+		const killedShip = join(work, `host-${killed}`, "workflows", "pool", "ship");
 		if (killedAt !== undefined && existsSync(killedShip)) {
-			const { DatabaseSync } = await import("node:sqlite");
 			for (const file of readdirSync(killedShip, { recursive: true, encoding: "utf8" }).filter((name) =>
 				name.endsWith(".sqlite"),
 			)) {
@@ -337,6 +400,7 @@ async function trial(hosts, shipping) {
 			slots,
 			shipping: shipping === "sync" ? "sync" : JSON.parse(shipping),
 			killedHostAtMs: killedAt ?? null,
+			killedHost: killedAt === undefined ? null : `h${killed}`,
 			...summarize(result),
 			journal: {
 				checkpoints: recorded.length,
