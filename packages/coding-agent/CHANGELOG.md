@@ -36,6 +36,7 @@
 
 ### Fixed
 
+- Displayed tool output no longer passes 8-bit control sequences or bidirectional overrides to the terminal
 - Fixed a failed lock release masking the result of the operation it guarded: a trust, settings, auth, MCP sign-in, package-install, blueprint-ledger, or worktree-snapshot write that succeeded is no longer reported as failed, and a write that failed reports its own error. The release failure is recorded in the debug log ([#5090](https://github.com/bastani-inc/atomic/issues/5090))
 - `.atomic/snapshot-ignore` now matches paths exactly as Git matches `.gitignore` rules in the same repository: case sensitivity follows the repository's `core.ignorecase` (case-sensitive by default on Linux), so a rule such as `Notes.txt` no longer leaves `notes.txt` out of a snapshot and `!*.log` no longer brings back `SECRET.LOG`, and trailing spaces are dropped as Git drops them, so `build/ ` matches `build/` at any depth ([#5051](https://github.com/bastani-inc/atomic/issues/5051))
 - Skill, prompt, theme and extension discovery now applies `.gitignore`, `.ignore` and `.fdignore` files as Git does: a pattern without a slash in a nested ignore file, such as `drafts` in `team/.gitignore`, also hides `team/x/drafts`; an escaped `\!name` is a literal file name instead of a negation; trailing spaces are dropped; and rules are case-sensitive except on Windows and macOS ([#5051](https://github.com/bastani-inc/atomic/issues/5051))
