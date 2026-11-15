@@ -4,8 +4,8 @@
  * they return and nothing else, and a finalization that throws fails the call.
  */
 import assert from "node:assert/strict";
-import { fauxAssistantMessage, type ToolResultMessage } from "@bastani/pi-ai/compat";
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import type { AgentToolResult } from "@bastani/atomic-agent-core";
+import { fauxAssistantMessage, type ToolResultMessage } from "@bastani/atomic-ai/compat";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import type { ExtensionFactory } from "../src/core/extensions/index.js";
 import { DEFAULT_MAX_RESULT_SIZE_CHARS, PERSISTED_OUTPUT_TAG } from "../src/core/tools/tool-limits.js";

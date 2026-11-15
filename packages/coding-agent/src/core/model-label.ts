@@ -7,7 +7,7 @@
  * `--model anthropic/claude-sonnet-4-5:high` takes.
  */
 
-import type { Api, Model } from "@bastani/pi-ai/compat";
+import type { Api, Model } from "@bastani/atomic-ai/compat";
 import { splitFallbackModel } from "./fallback-models.ts";
 
 /** Between a model's ID and its level in the TUI and in notices. */

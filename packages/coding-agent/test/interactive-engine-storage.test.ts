@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getModel } from "@bastani/pi-ai/compat";
+import { getModel } from "@bastani/atomic-ai/compat";
 import { test } from "vitest";
 import { parseArgs } from "../src/cli/args.ts";
 import { createAgentSessionFromServices, createAgentSessionServices } from "../src/core/agent-session-services.ts";

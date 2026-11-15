@@ -8,7 +8,7 @@
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { type AssistantMessage, createAssistantMessageEventStream, type Message } from "@bastani/pi-ai/compat";
+import { type AssistantMessage, createAssistantMessageEventStream, type Message } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { afterEach, test, vi } from "vitest";
 import { isStaleExtensionContextError } from "../../packages/coding-agent/src/core/extensions/stale-context.js";

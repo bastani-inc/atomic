@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getKeybindings, setKeybindings, visibleWidth } from "@earendil-works/pi-tui";
+import { getKeybindings, setKeybindings, visibleWidth } from "@bastani/atomic-tui";
 import { test, vi } from "vitest";
 import {
 	FooterDataProvider,

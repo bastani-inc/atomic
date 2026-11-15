@@ -1,5 +1,5 @@
-import type { Api, Model } from "@bastani/pi-ai/compat";
-import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { AgentMessage, ThinkingLevel } from "@bastani/atomic-agent-core";
+import type { Api, Model } from "@bastani/atomic-ai/compat";
 import type { AgentSession } from "./agent-session.js";
 import type { ReleaseWhenIdleOptions } from "./agent-session-release.ts";
 import type { ExtensionBindings } from "./agent-session-types.js";
@@ -157,7 +157,7 @@ export interface CreateAgentSessionOptions {
 	 * A parent's child session options set it, so the parent emits `child_session_usage` for each call a subagent
 	 * child makes and a workflow stage charges its subagents' spend (#5053).
 	 */
-	parentUsageSink?: (usage: import("@bastani/pi-ai/compat").Usage) => void;
+	parentUsageSink?: (usage: import("@bastani/atomic-ai/compat").Usage) => void;
 	/**
 	 * Internal: called with `true` when this session starts waiting for its resource-admission permit and `false` when
 	 * the wait ends, so an in-process subagent's start budget can tell that wait from the rest of its setup.

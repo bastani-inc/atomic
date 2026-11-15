@@ -127,6 +127,11 @@ export interface WorkflowWorkerHostStats {
 		readonly since: number;
 		readonly error: WorkerHostFailure;
 	};
+	/**
+	 * Set while a root this host serves has fleet-wide rate limits (#4768): `"local-fallback"` while the shared journal
+	 * does not answer for one of them and this host meters model calls at its share of the limit instead.
+	 */
+	readonly rateLimit?: "store" | "local-fallback";
 }
 
 export interface WorkflowWorkerHost {

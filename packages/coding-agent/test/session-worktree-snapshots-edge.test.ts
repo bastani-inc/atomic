@@ -11,7 +11,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
-import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { GitSandbox, gitConfigPath, lfsPointer, loseSnapshotBlobs } from "../../../test/helpers/worktree-snapshot.js";

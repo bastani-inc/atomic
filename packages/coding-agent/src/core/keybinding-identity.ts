@@ -1,4 +1,4 @@
-import type { KeyId } from "@earendil-works/pi-tui";
+import type { KeyId } from "@bastani/atomic-tui";
 
 /** Comparison identity only; keep the caller's spelling for registration and display. */
 export function keybindingIdentity(key: KeyId): string {

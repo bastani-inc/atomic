@@ -3,7 +3,7 @@ import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { resetCapabilitiesCache, setCapabilities, Text, type TUI } from "@earendil-works/pi-tui";
+import { resetCapabilitiesCache, setCapabilities, Text, type TUI } from "@bastani/atomic-tui";
 import { Type } from "typebox";
 import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import { getReadmePath } from "../src/config.ts";

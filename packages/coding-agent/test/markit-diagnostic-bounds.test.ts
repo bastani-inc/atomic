@@ -1,4 +1,4 @@
-import { Container } from "@earendil-works/pi-tui";
+import { Container } from "@bastani/atomic-tui";
 import { afterEach, expect, test, vi } from "vitest";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";

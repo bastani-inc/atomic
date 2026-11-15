@@ -1,5 +1,5 @@
-import { type CoercingValidator, compile } from "@earendil-works/pi-schema";
-import { formats } from "@earendil-works/pi-schema/formats";
+import { type CoercingValidator, compile } from "@bastani/atomic-schema";
+import { formats } from "@bastani/atomic-schema/formats";
 import { Compile } from "typebox/compile";
 import type { TLocalizedValidationError } from "typebox/error";
 import { Value } from "typebox/value";
@@ -350,7 +350,7 @@ function formatJsonPointerPath(pointer: string): string {
  *
  * A schema TypeBox built is converted and checked by TypeBox, so TypeBox features outside JSON Schema (refinements,
  * formats registered with `Format.Set()`) keep applying. Any other JSON Schema (an MCP tool's, a pi-schema builder's,
- * a plain object) is coerced and checked by `@earendil-works/pi-schema` (`compile(schema, { coerce: true }).parse()`):
+ * a plain object) is coerced and checked by `@bastani/atomic-schema` (`compile(schema, { coerce: true }).parse()`):
  * models often send `"42"` for a number, a single value for an array, or `null` for an omitted optional property.
  * @param tool The tool definition with its parameter schema
  * @param toolCall The tool call from the LLM

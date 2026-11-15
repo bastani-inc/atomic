@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { existsSync, fstatSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import type { AssistantMessage, Model } from "@bastani/pi-ai";
-import { fauxAssistantMessage, registerFauxProvider } from "@bastani/pi-ai/compat";
+import type { AssistantMessage, Model } from "@bastani/atomic-ai";
+import { fauxAssistantMessage, registerFauxProvider } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import "../helpers/provider-rate-limit-isolation.js";
 import { test } from "vitest";

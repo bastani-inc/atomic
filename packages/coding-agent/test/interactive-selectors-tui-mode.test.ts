@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
-import { getModel } from "@bastani/pi-ai/compat";
-import type { Component, Terminal, TUI } from "@earendil-works/pi-tui";
+import { getModel } from "@bastani/atomic-ai/compat";
+import type { Component, Terminal, TUI } from "@bastani/atomic-tui";
 import {
 	getKeybindings,
 	KeybindingsManager,
 	setKeybindings,
 	stripTerminalSequences,
 	TUI_KEYBINDINGS,
-} from "@earendil-works/pi-tui";
+} from "@bastani/atomic-tui";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { isDebugEnabled } from "../src/core/debug.js";
 import { setDebugSetting } from "../src/core/debug-setting.js";

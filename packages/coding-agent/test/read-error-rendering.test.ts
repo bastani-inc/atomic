@@ -1,4 +1,4 @@
-import type { TUI } from "@earendil-works/pi-tui";
+import type { TUI } from "@bastani/atomic-tui";
 import { beforeAll, expect, test } from "vitest";
 import { createReadToolDefinition } from "../src/core/tools/read.ts";
 import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";

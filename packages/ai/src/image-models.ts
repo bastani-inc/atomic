@@ -26,7 +26,7 @@ for (const [provider, models] of Object.entries(IMAGE_MODELS)) {
 	if (imageModels.size > 0) imageModelsByProvider.set(provider, imageModels);
 }
 
-/** @deprecated Static catalog read. Use `getBuiltinImageModel` from "@earendil-works/pi-ai/providers/all" or `Models.getModelOfType("image", ...)`. */
+/** @deprecated Static catalog read. Use `getBuiltinImageModel` from "@bastani/atomic-ai/providers/all" or `Models.getModelOfType("image", ...)`. */
 export function getImageModel<TProvider extends BuiltinImageProvider, TModelId extends ImageModelIds<TProvider>>(
 	provider: TProvider,
 	modelId: TModelId,
@@ -39,7 +39,7 @@ export function getImageProviders(): BuiltinImageProvider[] {
 	return Array.from(imageModelsByProvider.keys()) as BuiltinImageProvider[];
 }
 
-/** @deprecated Static catalog read. Use `getBuiltinImageModels` from "@earendil-works/pi-ai/providers/all" or `Models.getModelsOfType("image")`. */
+/** @deprecated Static catalog read. Use `getBuiltinImageModels` from "@bastani/atomic-ai/providers/all" or `Models.getModelsOfType("image")`. */
 export function getImageModels<TProvider extends BuiltinImageProvider>(
 	provider: TProvider,
 ): BuiltinImageModel<TProvider, ImageModelIds<TProvider>>[] {

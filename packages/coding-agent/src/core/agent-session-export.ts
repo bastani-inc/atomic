@@ -12,7 +12,7 @@ import {
 	writeSync,
 } from "node:fs";
 import { dirname } from "node:path";
-import type { AssistantMessage, Usage } from "@bastani/pi-ai/compat";
+import type { AssistantMessage, Usage } from "@bastani/atomic-ai/compat";
 import { getThemeByName, theme } from "../modes/interactive/theme/theme.js";
 import { resolvePath } from "../utils/paths.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";

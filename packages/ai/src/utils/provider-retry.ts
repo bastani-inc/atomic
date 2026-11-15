@@ -1,4 +1,4 @@
-const DEFAULT_MAX_RETRY_DELAY_MS = 60_000;
+export const DEFAULT_MAX_RETRY_DELAY_MS = 60_000;
 
 interface ProviderRetryOptions {
 	maxRetries?: number;

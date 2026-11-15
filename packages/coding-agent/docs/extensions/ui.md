@@ -245,7 +245,7 @@ See [github-issue-autocomplete.ts](https://github.com/bastani-inc/atomic/blob/ma
 For complex UI, use `ctx.ui.custom()`. This temporarily replaces the editor with your component until `done()` is called:
 
 ```typescript
-import { Text, type Component } from "@earendil-works/pi-tui";
+import { Text, type Component } from "@bastani/atomic-tui";
 
 class ConfirmPrompt implements Component {
   render(width: number): string[] {
@@ -353,7 +353,7 @@ Replace the main input editor with a custom implementation (vim mode, emacs mode
 
 ```typescript
 import { CustomEditor, type ExtensionAPI } from "@bastani/atomic";
-import { matchesKey } from "@earendil-works/pi-tui";
+import { matchesKey } from "@bastani/atomic-tui";
 
 class VimEditor extends CustomEditor {
   private mode: "normal" | "insert" = "insert";
@@ -405,7 +405,7 @@ See [TUI components](/tui) Pattern 7 for a complete example with mode indicator.
 Register a custom renderer for messages with your `customType`:
 
 ```typescript
-import { Text } from "@earendil-works/pi-tui";
+import { Text } from "@bastani/atomic-tui";
 
 pi.registerMessageRenderer("my-extension", (message, options, theme) => {
   const { expanded, outputPad } = options;

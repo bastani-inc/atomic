@@ -1,7 +1,7 @@
 import { AsyncResource } from "node:async_hooks";
 import { isDeepStrictEqual } from "node:util";
+import type { AgentMessage } from "@bastani/atomic-agent-core";
 import type * as native from "@bastani/atomic-natives";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { createModuleRequire } from "../../utils/module-require.ts";
 import type { AgentSession, AgentSessionEvent, CompactionReason } from "../agent-session.js";
 import { currentResourceAdmission } from "../resource-admission-scope.ts";

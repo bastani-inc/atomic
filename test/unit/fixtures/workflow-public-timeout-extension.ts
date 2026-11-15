@@ -1,5 +1,5 @@
-import type { AssistantMessage } from "@bastani/pi-ai/compat";
-import { createAssistantMessageEventStream } from "@bastani/pi-ai/compat";
+import type { AssistantMessage } from "@bastani/atomic-ai/compat";
+import { createAssistantMessageEventStream } from "@bastani/atomic-ai/compat";
 import type { ExtensionAPI as CodingAgentExtensionAPI } from "../../../packages/coding-agent/src/core/extensions/types.js";
 import type { WorkflowToolResult } from "../../../packages/workflows/src/extension/render-result.js";
 import { registerWorkflowTool } from "../../../packages/workflows/src/extension/workflow-tool-registration.js";

@@ -8,7 +8,7 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { TUI } from "@earendil-works/pi-tui";
+import type { TUI } from "@bastani/atomic-tui";
 import { Type } from "typebox";
 import { beforeAll, test } from "vitest";
 import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
-import type { AssistantMessage } from "@bastani/pi-ai/compat";
+import type { AssistantMessage } from "@bastani/atomic-ai/compat";
 import { test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import type { TaskId } from "../../packages/coding-agent/src/core/tasks/contracts.js";

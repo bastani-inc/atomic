@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { setKeybindings } from "@earendil-works/pi-tui";
+import { setKeybindings } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.js";
 import { type SessionInfo, SessionManager } from "../src/core/session-manager.js";

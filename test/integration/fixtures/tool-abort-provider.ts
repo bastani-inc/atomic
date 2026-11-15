@@ -1,6 +1,6 @@
 /** Offline provider fixture: exercise the real registered workflow tool, with no model/network calls. */
 import type { ExtensionAPI } from "@bastani/atomic";
-import { type AssistantMessage, createAssistantMessageEventStream } from "@bastani/pi-ai/compat";
+import { type AssistantMessage, createAssistantMessageEventStream } from "@bastani/atomic-ai/compat";
 
 export default function (pi: ExtensionAPI): void {
 	pi.registerProvider("tool-abort-fixture", {

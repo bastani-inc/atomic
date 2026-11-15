@@ -1,4 +1,4 @@
-import type { Usage } from "@bastani/pi-ai/compat";
+import type { Usage } from "@bastani/atomic-ai/compat";
 import type { SessionEntry } from "./session-manager.ts";
 
 export interface UsageTotals {

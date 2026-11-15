@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { fauxAssistantMessage } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
 import { test, vi } from "vitest";
 import type { ExtensionFactory } from "../../packages/coding-agent/src/core/extensions/index.js";
 import { stripAnsi } from "../../packages/coding-agent/src/utils/ansi.js";

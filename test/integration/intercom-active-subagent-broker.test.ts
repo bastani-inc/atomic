@@ -4,8 +4,8 @@ import { mkdtempSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { type FauxResponseFactory, fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
-import type { AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
+import type { AgentTool, AgentToolResult } from "@bastani/atomic-agent-core";
+import { type FauxResponseFactory, fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { afterAll, beforeAll, test, vi } from "vitest";
 import type {

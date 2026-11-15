@@ -8,7 +8,7 @@ import {
   sliceHead,
 } from "@bastani/atomic";
 import { Type } from "typebox";
-import { Text } from "@earendil-works/pi-tui";
+import { Text } from "@bastani/atomic-tui";
 import type { IntercomClient, SendResult } from "./broker/client.js";
 import type { Attachment, BrokerMultiNodeStatus, Message, SessionInfo, SessionDirectory, WorkflowStageRosterEntry, WorkflowFutureStageRosterEntry } from "./types.js";
 import { OutboundAsks } from "./outbound-asks.js";

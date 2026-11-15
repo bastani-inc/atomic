@@ -1,4 +1,4 @@
-import { type Component, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { type Component, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import type { QuestionData } from "../../../tool/types.js";
 import type { StatefulView } from "../../stateful-view.ts";
 import type { OptionListView } from "../option-list-view.ts";

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { type Api, getModel, type Model } from "@bastani/pi-ai/compat";
-import { builtinProviders } from "@bastani/pi-ai/providers/all";
+import { type Api, getModel, type Model } from "@bastani/atomic-ai/compat";
+import { builtinProviders } from "@bastani/atomic-ai/providers/all";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { collectOAuthProviderMetadata } from "../src/core/oauth-provider-metadata.ts";
 import { LoginDialogComponent } from "../src/modes/interactive/components/login-dialog.ts";
@@ -383,14 +383,9 @@ describe("post-login model refresh", () => {
 	for (const scenario of [
 		{ provider: "kimi-coding", name: "Kimi For Coding", authType: "api_key" as const, modelId: "kimi-for-coding" },
 		{ provider: "anthropic", name: "Anthropic", authType: "oauth" as const, modelId: "claude-opus-5-5" },
-		{ provider: "radius", name: "Radius", authType: "api_key" as const, modelId: "balanced" },
-		{ provider: "radius", name: "Radius", authType: "api_key" as const, modelId: "account-specific" },
 	]) {
 		it(`selects the ${scenario.provider} default immediately after ${scenario.authType} login`, async () => {
-			const model =
-				scenario.provider === "radius"
-					? { ...getModel("anthropic", "claude-opus-4-8")!, provider: "radius", id: scenario.modelId }
-					: getModel(scenario.provider, scenario.modelId);
+			const model = getModel(scenario.provider, scenario.modelId);
 			const refresh = vi.fn(async () => ({ aborted: false, errors: new Map() }));
 			const getAvailable = vi.fn(() => [model as Model<Api>]);
 			const setModel = vi.fn(async () => {});

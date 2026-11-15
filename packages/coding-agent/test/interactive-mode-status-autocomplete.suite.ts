@@ -1,8 +1,8 @@
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Api, Model } from "@bastani/pi-ai/compat";
-import { type AutocompleteProvider, CombinedAutocompleteProvider } from "@earendil-works/pi-tui";
+import type { Api, Model } from "@bastani/atomic-ai/compat";
+import { type AutocompleteProvider, CombinedAutocompleteProvider } from "@bastani/atomic-tui";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { AutocompleteProviderFactory } from "../src/core/extensions/types.ts";
 import { buildSkillCatalog, type SkillCatalog } from "../src/core/skill-catalog.ts";

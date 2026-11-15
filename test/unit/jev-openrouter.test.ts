@@ -34,13 +34,13 @@ function classifierWireResponse(body: string) {
 }
 
 /**
- * pi.dev has no newer OpenRouter catalog, `/models/user` allows a single chat model, and the
+ * models.dev has no newer OpenRouter catalog, `/models/user` allows a single chat model, and the
  * System One endpoint answers classifier calls.
  */
 function stubOpenRouter() {
 	const transport = vi.fn(async (input: string | URL | Request, options?: RequestInit) => {
 		const url = String(input instanceof Request ? input.url : input);
-		if (url.includes("/api/models/providers/openrouter")) return new Response("not found", { status: 404 });
+		if (url === "https://models.dev/api.json") return new Response("not found", { status: 404 });
 		if (url === "https://openrouter.ai/api/v1/models/user") {
 			assert.equal(new Headers(options?.headers).get("authorization"), `Bearer ${OPENROUTER_KEY}`);
 			return Response.json({

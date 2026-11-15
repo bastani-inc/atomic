@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox, loseSnapshotBlobs } from "../../../test/helpers/worktree-snapshot.js";

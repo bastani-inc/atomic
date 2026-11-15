@@ -1,6 +1,6 @@
 /** Minimal host TUI fixture for components that read terminal geometry. */
 
-import type { TUI } from "@earendil-works/pi-tui";
+import type { TUI } from "@bastani/atomic-tui";
 
 export function makeTestTui(rows: number | (() => number | undefined)): TUI {
 	const readRows = typeof rows === "function" ? rows : () => rows;

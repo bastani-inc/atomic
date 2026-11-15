@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { fauxAssistantMessage } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, test, vi } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.js";
 import type { VerbatimCompactionResult } from "../src/core/compaction/index.js";

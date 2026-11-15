@@ -3,7 +3,7 @@
  * continue the turn: the results stay with the host for the session reopened from the store.
  */
 import assert from "node:assert/strict";
-import { fauxAssistantMessage } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
 import { afterEach, test } from "vitest";
 import { isToolDetachmentError } from "../src/index.js";
 import {

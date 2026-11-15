@@ -5,7 +5,7 @@ import {
 	type Model,
 	type ModelFastRoute,
 	type Provider,
-} from "@bastani/pi-ai";
+} from "@bastani/atomic-ai";
 import type { ModelsJsonModelOverride } from "./model-config.ts";
 import { applyModelOverride } from "./provider-composer-internal.ts";
 

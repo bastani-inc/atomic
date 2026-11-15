@@ -22,7 +22,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { setKeybindings } from "@earendil-works/pi-tui";
+import { setKeybindings } from "@bastani/atomic-tui";
 import type { AgentSession } from "../../../packages/coding-agent/src/core/agent-session.js";
 import { WorkflowActivityHub } from "../../../packages/coding-agent/src/core/extensions/workflow-activity-hub.js";
 import { KeybindingsManager } from "../../../packages/coding-agent/src/core/keybindings.js";

@@ -1,10 +1,9 @@
 /**
- * Animated brand styles for the names of preferred partner providers in selectors: Radius shimmers in its logo
- * colors and OpenRouter glows in its brand color. Selectors apply them to the selected row only.
+ * Animated brand styles for the names of preferred partner providers in selectors: OpenRouter glows in its brand
+ * color. Selectors apply them to the selected row only.
  */
 
-import { type Color, foregroundAnsi, mixColors, parseColor, type TUI } from "@earendil-works/pi-tui";
-import { RADIUS_PROVIDER_ID } from "../../../core/preferred-providers.ts";
+import { foregroundAnsi, mixColors, parseColor, type TUI } from "@bastani/atomic-tui";
 import { getCurrentThemeName } from "../theme/global-theme.ts";
 import { isLightTheme, theme } from "../theme/theme.js";
 
@@ -13,36 +12,8 @@ export type ProviderBrandStyle = (text: string, elapsedMs: number) => string;
 
 /** The animated style of a provider's name, or `undefined` when the provider has none. */
 export function getProviderBrandStyle(providerId: string): ProviderBrandStyle | undefined {
-	if (providerId === RADIUS_PROVIDER_ID) return radiusShimmer;
 	if (providerId === "openrouter") return openRouterGlow;
 	return undefined;
-}
-
-/** The four colors of the Radius logo, in the order they stream across the text. */
-const RADIUS_COLORS: readonly Color[] = ["#4d9abf", "#83ccd2", "#f1be57", "#f09082"].map((hex) => parseColor(hex));
-/** Width of each color band, in characters. */
-const CHARS_PER_COLOR = 4;
-const CHARS_PER_SECOND = 10;
-
-/** Colors `text` with the Radius logo colors flowing left to right. */
-export function radiusShimmer(text: string, elapsedMs: number): string {
-	const mode = theme.getColorMode();
-	const cycle = RADIUS_COLORS.length * CHARS_PER_COLOR;
-	const offset = (elapsedMs / 1000) * CHARS_PER_SECOND;
-	let result = "";
-	let index = 0;
-	for (const char of text) {
-		const position = (((index - offset) % cycle) + cycle) % cycle;
-		const band = Math.floor(position / CHARS_PER_COLOR);
-		const t = position / CHARS_PER_COLOR - band;
-		// Smoothstep keeps each band recognizable while still blending into the next one.
-		const amount = t * t * (3 - 2 * t);
-		const from = RADIUS_COLORS[band] as Color;
-		const to = RADIUS_COLORS[(band + 1) % RADIUS_COLORS.length] as Color;
-		result += foregroundAnsi(mixColors(from, to, amount, "srgb"), mode) + char;
-		index++;
-	}
-	return `${result}\x1b[39m`;
 }
 
 /**

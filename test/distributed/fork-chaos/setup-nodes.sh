@@ -196,7 +196,7 @@ export PATH=$root/bin:$root/node/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbi
 ENV
 chown -R azureuser:azureuser $root
 rm -rf /tmp/fc
-sudo -u azureuser bash -c "source $root/env && cd $root/repo && npm ci --ignore-scripts --no-audit --no-fund --loglevel=error >/dev/null && node scripts/alias-pi-ai.mjs >/dev/null"
+sudo -u azureuser bash -c "source $root/env && cd $root/repo && npm ci --ignore-scripts --no-audit --no-fund --loglevel=error >/dev/null"
 echo "worker $NODE_NAME ready: node $($root/node/bin/node --version), bun $($root/bin/bun --version)"
 EOF
 }

@@ -1,5 +1,5 @@
-import { type ModelsRefreshResult, normalizeProviderId } from "@bastani/pi-ai";
-import type { Api, Model } from "@bastani/pi-ai/compat";
+import { type ModelsRefreshResult, normalizeProviderId } from "@bastani/atomic-ai";
+import type { Api, Model } from "@bastani/atomic-ai/compat";
 import type { AgentSession } from "../../core/agent-session.js";
 import { INTERACTIVE_MODEL_REFRESH_TIMEOUT_MS } from "../../core/model-refresh-timeout.ts";
 import type { ModelRuntime } from "../../core/model-runtime.js";

@@ -4,7 +4,7 @@ import {
 	getCapabilities,
 	resetCapabilitiesCache,
 	setCapabilityOverrides,
-} from "@earendil-works/pi-tui";
+} from "@bastani/atomic-tui";
 import { afterEach, describe, expect, test } from "vitest";
 import { type Settings, SettingsManager } from "../src/core/settings-manager.ts";
 

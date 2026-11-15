@@ -5,7 +5,7 @@
  * without an import cycle.
  */
 
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AgentMessage } from "@bastani/atomic-agent-core";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { describeStorageError } from "./storage/errors.js";
 

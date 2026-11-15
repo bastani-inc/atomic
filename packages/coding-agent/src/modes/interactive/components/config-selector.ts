@@ -1,12 +1,5 @@
 /** TUI component for managing global and project package resources. */
-import {
-	type Component,
-	Container,
-	type Focusable,
-	Spacer,
-	truncateToWidth,
-	visibleWidth,
-} from "@earendil-works/pi-tui";
+import { type Component, Container, type Focusable, Spacer, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import { CONFIG_DIR_NAME } from "../../../config.js";
 import type { ResolvedPaths } from "../../../core/package-manager.ts";
 import type { SettingsManager } from "../../../core/settings-manager.ts";

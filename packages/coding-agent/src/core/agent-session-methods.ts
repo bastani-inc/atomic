@@ -1,4 +1,5 @@
-import type { ProviderHeaders } from "@bastani/pi-ai";
+import type { Agent, AgentEvent, AgentMessage, AgentState, AgentTool, ThinkingLevel } from "@bastani/atomic-agent-core";
+import type { ProviderHeaders } from "@bastani/atomic-ai";
 import type {
 	Api,
 	AssistantMessage,
@@ -7,15 +8,7 @@ import type {
 	Model,
 	TextContent,
 	ToolResultMessage,
-} from "@bastani/pi-ai/compat";
-import type {
-	Agent,
-	AgentEvent,
-	AgentMessage,
-	AgentState,
-	AgentTool,
-	ThinkingLevel,
-} from "@earendil-works/pi-agent-core";
+} from "@bastani/atomic-ai/compat";
 import type {
 	BackgroundCompactionRuntime,
 	CommitReadyOptions,
@@ -254,7 +247,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	_preparePromptAndToolLoadout(
 		options: NormalizedBuildSystemPromptOptions,
 		messages?: AgentMessage[],
-	): import("@bastani/pi-ai").SystemMessage | undefined;
+	): import("@bastani/atomic-ai").SystemMessage | undefined;
 	_restoreToolsFromTranscript(options?: { startup?: boolean }): void;
 	_refreshBaseSystemPromptFromActiveTools(): void;
 	_currentRunSystemPromptOptions(): NormalizedBuildSystemPromptOptions;

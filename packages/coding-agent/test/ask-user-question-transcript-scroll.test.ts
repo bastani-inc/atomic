@@ -9,7 +9,7 @@ import {
 	Text,
 	type TuiAltScreen,
 	VStack,
-} from "@earendil-works/pi-tui";
+} from "@bastani/atomic-tui";
 import { afterEach, beforeAll, describe, expect, test } from "vitest";
 import type { ExtensionUIContext, HostCustomUiStateListener } from "../src/core/extensions/types.ts";
 import { OVERLAY_ACTIVE_ROW_MARKER } from "../src/core/extensions/ui-types.ts";

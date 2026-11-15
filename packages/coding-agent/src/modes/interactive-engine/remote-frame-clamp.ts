@@ -1,4 +1,4 @@
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 
 /**
  * Width clamp for frames rendered out-of-process by the isolated interactive

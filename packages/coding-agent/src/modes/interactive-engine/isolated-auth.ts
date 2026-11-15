@@ -1,4 +1,4 @@
-import type { AuthInteraction } from "@bastani/pi-ai";
+import type { AuthInteraction } from "@bastani/atomic-ai";
 import type { AgentSession } from "../../core/agent-session.js";
 import { type AtomicOAuthLoginCallbacks, normalizeOAuthLoginError } from "../../core/oauth-login.ts";
 import { operationSignal, raceWithAbortSignal } from "../../utils/abort.js";

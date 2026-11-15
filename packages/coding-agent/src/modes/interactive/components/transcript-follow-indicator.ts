@@ -1,4 +1,4 @@
-import { type Component, hyperlink, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { type Component, hyperlink, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import { theme } from "../theme/theme.js";
 
 export const TRANSCRIPT_JUMP_TO_END_URL = "atomic-ui://transcript/jump-to-end";

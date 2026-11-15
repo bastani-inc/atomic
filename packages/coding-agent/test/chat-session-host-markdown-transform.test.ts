@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import type { AssistantMessage } from "@bastani/pi-ai/compat";
-import type { EditorTheme } from "@earendil-works/pi-tui";
+import type { AssistantMessage } from "@bastani/atomic-ai/compat";
+import type { EditorTheme } from "@bastani/atomic-tui";
 import { test } from "vitest";
 import type { MarkdownTransformer } from "../src/core/extensions/types.ts";
 import { ChatSessionHost } from "../src/modes/interactive/components/chat-session-host.ts";

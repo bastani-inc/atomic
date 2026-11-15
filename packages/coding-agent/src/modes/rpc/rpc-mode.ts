@@ -13,7 +13,7 @@ import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
  * - Extension UI: Extension UI requests are emitted, client responds with extension_ui_response
  */
 
-import { setKeybindings } from "@earendil-works/pi-tui";
+import { setKeybindings } from "@bastani/atomic-tui";
 import type { AgentSession } from "../../core/agent-session.js";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
 import { KeybindingsManager } from "../../core/keybindings.ts";

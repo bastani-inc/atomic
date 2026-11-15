@@ -1,4 +1,4 @@
-import type { AssistantMessage } from "@bastani/pi-ai/compat";
+import type { AssistantMessage } from "@bastani/atomic-ai/compat";
 import { describe, test } from "vitest";
 import {
 	EMPTY_COMPLETION_FAILURE_MESSAGE,

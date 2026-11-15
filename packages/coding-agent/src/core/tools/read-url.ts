@@ -4,7 +4,7 @@
  * URL line selectors reuse the same safe rendering path before slicing lines.
  */
 import { resolve as resolvePath } from "node:path";
-import type { TextContent } from "@bastani/pi-ai/compat";
+import type { TextContent } from "@bastani/atomic-ai/compat";
 import { getAgentDir } from "../../config.js";
 import { sessionScratchDir } from "../storage/session/scratch-directory.js";
 import { executeReadUrl, loadPage } from "./fetch-url.ts";

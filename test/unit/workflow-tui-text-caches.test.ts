@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { truncateToWidth as piTruncateToWidth } from "@earendil-works/pi-tui";
+import { truncateToWidth as piTruncateToWidth } from "@bastani/atomic-tui";
 import { test } from "vitest";
 import { fillBackground } from "../../packages/workflows/src/tui/color-utils.ts";
 import { BoundedTextCache, truncateToWidth } from "../../packages/workflows/src/tui/text-helpers.ts";

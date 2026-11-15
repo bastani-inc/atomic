@@ -1,4 +1,4 @@
-import { Container, Text } from "@earendil-works/pi-tui";
+import { Container, Text } from "@bastani/atomic-tui";
 import { describe, expect, it, vi } from "vitest";
 import type { UserMessageSelectorComponent } from "../src/modes/interactive/components/user-message-selector.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";

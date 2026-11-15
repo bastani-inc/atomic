@@ -1,4 +1,4 @@
-import type { KeyId } from "@earendil-works/pi-tui";
+import type { KeyId } from "@bastani/atomic-tui";
 import type { ResourceDiagnostic } from "../diagnostics.ts";
 import { keybindingIdentity } from "../keybinding-identity.js";
 import type { KeybindingsConfig } from "../keybindings.ts";

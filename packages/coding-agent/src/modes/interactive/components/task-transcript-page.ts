@@ -1,4 +1,4 @@
-import { getKeybindings, type KeybindingsManager, matchesKey, Text } from "@earendil-works/pi-tui";
+import { getKeybindings, type KeybindingsManager, matchesKey, Text } from "@bastani/atomic-tui";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
 import type { TaskId } from "../../../core/tasks/contracts.js";
 import { TaskMessageError } from "../../../core/tasks/message-error.js";

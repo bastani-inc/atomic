@@ -1,8 +1,8 @@
 import "../helpers/provider-rate-limit-isolation.js";
 import assert from "node:assert/strict";
-import type { AssistantMessage, Model } from "@bastani/pi-ai";
-import { stream as streamAnthropicMessages } from "@bastani/pi-ai/api/anthropic-messages";
-import { normalizeContext } from "@bastani/pi-ai/compat";
+import type { AssistantMessage, Model } from "@bastani/atomic-ai";
+import { stream as streamAnthropicMessages } from "@bastani/atomic-ai/api/anthropic-messages";
+import { normalizeContext } from "@bastani/atomic-ai/compat";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import {
 	applyProviderRateLimitObservation,

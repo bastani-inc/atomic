@@ -500,7 +500,7 @@ Older settings with a boolean `websockets` value are migrated to `transport`: `t
 | `terminal.images` | `"kitty"`, `"iterm2"`, `"auto"`, or `false` | `"auto"` | JSON-only inline-image protocol override. `false` disables terminal images; `"auto"`, omitted, and invalid values preserve detection. Not shown in `/settings` |
 | `terminal.trueColor` | boolean or `"auto"` | `"auto"` | JSON-only truecolor capability override. `true`/`false` overrides detection; `"auto"`, omitted, and invalid values preserve detection. Not shown in `/settings` |
 
-The installed pi-tui 0.85.0 renderer owns the matching environment overrides: `PI_HYPERLINKS=1|0|auto`, `PI_IMAGE_PROTOCOL=kitty|iterm2|none|auto`, and `PI_TRUE_COLOR=1|0|auto`. Explicit JSON booleans/protocols take precedence over those environment values. Use `"auto"` or omit a JSON value to leave environment and terminal detection in control.
+The matching environment overrides are `ATOMIC_HYPERLINKS=1|0|auto`, `ATOMIC_IMAGE_PROTOCOL=kitty|iterm2|none|auto`, and `ATOMIC_TRUE_COLOR=1|0|auto`; their `PI_*` names are legacy aliases. Explicit JSON booleans/protocols take precedence over those environment values. Use `"auto"` or omit a JSON value to leave environment and terminal detection in control.
 When `images.autoResize` is enabled, Atomic normalizes images before sending them to the model. Tool-result images are normalized after `tool_result` extension handlers run, so images an extension inserts receive the same limit; if processing fails, Atomic keeps the original image. Set it to `false` to preserve source dimensions.
 
 ### Shell

@@ -100,7 +100,7 @@ export type ChatSurfacePayload = DispatchPayload | StatusPayload | ListPayload |
 
 /**
  * Subset of pi-tui's `Component` we depend on. Defined locally so the
- * project doesn't import from `@earendil-works/pi-tui` directly — it's a
+ * project doesn't import from `@bastani/atomic-tui` directly — it's a
  * peer dep of pi-coding-agent we link transitively.
  */
 interface CardComponent {

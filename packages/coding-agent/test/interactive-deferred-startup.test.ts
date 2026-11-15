@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { Container, stripTerminalSequences } from "@earendil-works/pi-tui";
+import { Container, stripTerminalSequences } from "@bastani/atomic-tui";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.js";
 import type { ModelRegistry } from "../src/core/model-registry.js";

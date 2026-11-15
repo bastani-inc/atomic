@@ -1,4 +1,4 @@
-import { ModelsError } from "@bastani/pi-ai";
+import { ModelsError } from "@bastani/atomic-ai";
 import type { AgentSession } from "./agent-session.js";
 import type { AgentSessionInternalSurface } from "./agent-session-methods.ts";
 import { CredentialSynchronizationError } from "./model-runtime.js";

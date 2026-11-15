@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { type FauxResponseFactory, fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
-import type { AgentTool } from "@earendil-works/pi-agent-core";
+import type { AgentTool } from "@bastani/atomic-agent-core";
+import { type FauxResponseFactory, fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { test, vi } from "vitest";
 import type {

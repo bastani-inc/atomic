@@ -1,4 +1,4 @@
-import { type AuthResult, type CredentialStore, ModelsError } from "@bastani/pi-ai";
+import { type AuthResult, type CredentialStore, ModelsError } from "@bastani/atomic-ai";
 import { findExactModelReferenceMatch, resolveCliModel } from "../core/model-resolver.ts";
 import { ModelRuntime } from "../core/model-runtime.js";
 import { InMemoryCodingAgentModelsStore } from "../core/models-store.ts";

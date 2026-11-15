@@ -8,7 +8,7 @@ import {
 	oklchColor,
 	type RgbColor,
 	rgbColor,
-} from "@earendil-works/pi-tui";
+} from "@bastani/atomic-tui";
 import type { ThemeBg, ThemeColor } from "./theme-class.ts";
 
 export const SYSTEM_THEME_NAME = "system";

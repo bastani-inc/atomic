@@ -1,4 +1,4 @@
-import type { Component } from "@earendil-works/pi-tui";
+import type { Component } from "@bastani/atomic-tui";
 
 /**
  * Generic prop-driven component contract. Every renderable owns its own `P` shape;

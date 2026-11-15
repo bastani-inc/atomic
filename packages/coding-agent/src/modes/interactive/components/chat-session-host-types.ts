@@ -6,7 +6,7 @@ import type {
 	ScrollViewScrollbar,
 	TUI,
 	WheelScrollLines,
-} from "@earendil-works/pi-tui";
+} from "@bastani/atomic-tui";
 import type { AgentSession } from "../../../core/agent-session.js";
 import type { BashResult } from "../../../core/bash-executor.ts";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
@@ -114,7 +114,7 @@ export interface ChatSessionHostOpts<TExtraEntry extends ChatTranscriptEntryLike
 	tui?: TUI;
 	keybindings?: unknown;
 	editorFactory?: (tui: TUI, theme: EditorTheme, keybindings: unknown) => EditorComponent;
-	autocompleteProvider?: import("@earendil-works/pi-tui").AutocompleteProvider;
+	autocompleteProvider?: import("@bastani/atomic-tui").AutocompleteProvider;
 	editorTheme: EditorTheme;
 	getChatRenderSettings?: () =>
 		| (Partial<Omit<ChatMessageRenderOptions, "ui" | "cwd">> & ChatSessionViewportSettings)

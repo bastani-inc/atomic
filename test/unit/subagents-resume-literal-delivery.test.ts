@@ -12,7 +12,7 @@ import {
 	createAssistantMessageEventStream,
 	getModel,
 	type Message,
-} from "@bastani/pi-ai/compat";
+} from "@bastani/atomic-ai/compat";
 import { afterEach, test } from "vitest";
 import { createAgentSession } from "../../packages/coding-agent/src/core/sdk.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";

@@ -1,4 +1,4 @@
-import type { CredentialStore } from "@bastani/pi-ai";
+import type { CredentialStore } from "@bastani/atomic-ai";
 import { ModelRegistry } from "../src/core/model-registry.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 

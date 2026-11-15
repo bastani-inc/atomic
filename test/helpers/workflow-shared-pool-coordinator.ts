@@ -18,6 +18,7 @@ import type {
 	CoordinatorPort,
 } from "../../packages/workflows/src/workers/coordinator-protocol.js";
 import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
+import type { FleetRateLimits } from "../../packages/workflows/src/workers/fleet-rate-types.js";
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
 import { PoolCoordinator } from "../../packages/workflows/src/workers/pool-coordinator.js";
 import { poolDurableJournal } from "../../packages/workflows/src/workers/pool-journal.js";
@@ -98,6 +99,8 @@ export async function fixture(
 		leaseMs?: number;
 		stageControlRegistry?: StageControlRegistry;
 		stageInputTimeoutMs?: number;
+		/** The root's fleet-wide model rate limits (#4768). */
+		rateLimits?: FleetRateLimits;
 	},
 ): Promise<Fixture> {
 	const directory = makeLibsqlDirectory(`${label}-`);
@@ -125,6 +128,7 @@ export async function fixture(
 			stateDirectory: join(directory, "root", "state"),
 			host: "root-host",
 			claimWindowMs: options.claimWindowMs ?? 60_000,
+			...(options.rateLimits === undefined ? {} : { rateLimits: options.rateLimits }),
 		},
 		...(bound === undefined ? {} : { workspace: bound }),
 		...(options.workspaceWorktree === undefined ? {} : { workspaceWorktree: options.workspaceWorktree }),
@@ -154,7 +158,7 @@ export async function fixture(
 				.filter(
 					(line) =>
 						line !== "" &&
-						!/^(answer|start|question|user|intercom|received|restore-outcome) /.test(line) &&
+						!/^(answer|start|question|user|intercom|received|restore-outcome|rate) /.test(line) &&
 						!line.startsWith("place-released "),
 				)
 				.map((line) => line.split(" ")),

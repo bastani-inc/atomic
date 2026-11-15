@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runInNewContext } from "node:vm";
-import { getSystemMessageText, renderSystemMessageUpdate, type SystemMessage } from "@earendil-works/pi-ai";
+import { getSystemMessageText, renderSystemMessageUpdate, type SystemMessage } from "@bastani/atomic-ai";
 import { parseHTML } from "linkedom";
 import { describe, it } from "vitest";
 import { exportFromFile } from "../src/core/export-html/index.js";

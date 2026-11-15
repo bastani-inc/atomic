@@ -1,4 +1,4 @@
-import type { AutocompleteItem } from "@earendil-works/pi-tui";
+import type { AutocompleteItem } from "@bastani/atomic-tui";
 import type { SourceInfo } from "../source-info.ts";
 import type { ExtensionCommandContext } from "./context-types.ts";
 

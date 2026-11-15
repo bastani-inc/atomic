@@ -1,8 +1,8 @@
 import { once } from "node:events";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
-import { type AssistantMessage, type AssistantMessageEvent, type Model, normalizeContext } from "@bastani/pi-ai";
-import { stream as streamOpenAICompletions } from "@bastani/pi-ai/api/openai-completions";
+import { type AssistantMessage, type AssistantMessageEvent, type Model, normalizeContext } from "@bastani/atomic-ai";
+import { stream as streamOpenAICompletions } from "@bastani/atomic-ai/api/openai-completions";
 import { describe, it } from "vitest";
 import type { AgentSession, AgentSessionAdapter, InternalStageContext } from "./stage-runner-helpers.js";
 import { assert, createStageContext, makeMockSession, makeOpts } from "./stage-runner-helpers.js";

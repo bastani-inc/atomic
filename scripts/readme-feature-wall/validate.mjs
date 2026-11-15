@@ -10,7 +10,7 @@
 // Checks, in order:
 //   1  required feature set, count, fixed product-impact order, lesson/display binding, and docs mapping
 //   2  README hierarchy and table shape: 6 featured + 31 remaining, exact placement, links, media, alt
-//   3  exact 19 + 28 + 15 badge manifest and README groups; local SVG XML, icon/text shape, and source records
+//   3  exact 19 + 27 + 15 badge manifest and README groups; local SVG XML, icon/text shape, and source records
 //   4  feature media exist for all 74 files named by the manifest
 //   5  dimensions: every GIF and poster is exactly 960x540 (16:9)
 //   6  GIF duration bounds, declared frame rate bounds, and maximum held-frame duration
@@ -147,7 +147,6 @@ const BADGE_GROUPS_REQUIRED = [
 			badge("OpenRouter", "openrouter", "https://openrouter.ai/", "OpenRouter provider badge for Atomic"),
 			badge("Kimi", "kimi", "https://www.kimi.com/code", "Kimi provider badge for Atomic"),
 			badge("xAI", "xai", "https://x.ai/api", "xAI provider badge for Atomic"),
-			badge("Radius", "radius", "https://radius.pi.dev/", "Radius provider badge for Atomic"),
 			badge("Ant Ling", "ant-ling", "https://www.ant-ling.com/en/", "Ant Ling provider badge for Atomic", "antling"),
 			badge(
 				"Azure OpenAI",
@@ -304,7 +303,6 @@ const FALLBACK_ICONS_REQUIRED = new Map([
 	["cli", "Generic glyph"],
 	["openai", "Monogram fallback"],
 	["xai", "Monogram fallback"],
-	["radius", "Monogram fallback"],
 	["cerebras", "Monogram fallback"],
 	["sglang", "Monogram fallback"],
 	["llama", "Monogram fallback"],
@@ -776,7 +774,7 @@ const has = (bin) => {
 		const manifestIconKeys = Object.keys(BADGE_MANIFEST.icons ?? {}).sort();
 		const requiredIconKeys = [...usedIcons].sort();
 		if (JSON.stringify(manifestIconKeys) !== JSON.stringify(requiredIconKeys))
-			fail("badges", "badge manifest icon definitions must match the exact icons used by the 62 entries");
+			fail("badges", "badge manifest icon definitions must match the exact icons used by the 61 entries");
 		for (const iconKey of requiredIconKeys) {
 			const icon = BADGE_MANIFEST.icons?.[iconKey];
 			if (!icon?.source?.type || !icon.source.brand || !icon.source.guidelines)
@@ -809,7 +807,7 @@ const has = (bin) => {
 		if (!existsSync(sourceDocPath)) fail("badges", "badge source attribution record is missing beside the assets");
 		else {
 			const sourceDoc = readFileSync(sourceDocPath, "utf8");
-			if (!sourceDoc.includes("**19 engineering stack**, **28 provider brands**, and **15 local/open entries**"))
+			if (!sourceDoc.includes("**19 engineering stack**, **27 provider brands**, and **15 local/open entries**"))
 				fail("badges", "badge source attribution record is missing exact group counts");
 			for (const iconKey of FALLBACK_ICONS_REQUIRED.keys()) {
 				const reason = BADGE_MANIFEST.icons?.[iconKey]?.source?.reason;
@@ -821,7 +819,7 @@ const has = (bin) => {
 	if (!failures.some((failure) => failure.startsWith("badges")))
 		ok(
 			"badges",
-			"exact 19 + 28 + 15 manifest and README groups; 62 local SVGs parse with icon geometry, labels, and source records",
+			"exact 19 + 27 + 15 manifest and README groups; 61 local SVGs parse with icon geometry, labels, and source records",
 		);
 }
 

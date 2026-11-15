@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Text, type TUI } from "@earendil-works/pi-tui";
+import { Text, type TUI } from "@bastani/atomic-tui";
 import { afterEach, describe, expect, it } from "vitest";
 import { APP_NAME } from "../src/config.ts";
 import { KeybindingsManager } from "../src/core/keybindings.ts";

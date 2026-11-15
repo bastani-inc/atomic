@@ -20,7 +20,7 @@
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@bastani/atomic";
-import type { OverlayAnchor, OverlayHandle, OverlayOptions } from "@earendil-works/pi-tui";
+import type { OverlayAnchor, OverlayHandle, OverlayOptions } from "@bastani/atomic-tui";
 import { AnimationDemoComponent, StreamingOverflowComponent } from "./overlay-qa-animation-components.js";
 import { FocusDemoController } from "./overlay-qa-focus-components.js";
 import {

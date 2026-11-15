@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import type { Provider } from "@bastani/pi-ai";
-import type { KeyId } from "@earendil-works/pi-tui";
+import type { Provider } from "@bastani/atomic-ai";
+import type { KeyId } from "@bastani/atomic-tui";
 import { canonicalEventBusFor, type EventBus, registerCanonicalEventBus } from "../event-bus.js";
 import type { ExecOptions } from "../exec.ts";
 import { execCommand } from "../exec.ts";

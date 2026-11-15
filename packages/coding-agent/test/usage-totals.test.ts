@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { Usage } from "@bastani/pi-ai/compat";
+import type { Usage } from "@bastani/atomic-ai/compat";
 import { describe, it } from "vitest";
 import { combineUsage } from "../src/core/usage-totals.js";
 

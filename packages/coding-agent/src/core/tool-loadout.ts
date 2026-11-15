@@ -1,4 +1,4 @@
-import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
+import type { AgentMessage, AgentTool } from "@bastani/atomic-agent-core";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { getCallableTools } from "./agent-session-nested-tools.js";
 import type { ToolLoadout } from "./extensions/tool-types.ts";

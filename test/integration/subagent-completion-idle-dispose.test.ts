@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
-import { fauxAssistantMessage } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
 import { test, vi } from "vitest";
 import { PROTECTED_RECONCILIATION_CUSTOM_TYPE } from "../../packages/coding-agent/src/core/agent-session-persistent-custom-messages.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";

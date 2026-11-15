@@ -30,14 +30,14 @@ on:
 #
 #   unit-tests      build package -> one of five unit shards (per OS)
 #   integration-tests build package -> one of four integration shards (per OS)
-#   agent-suite     build ai + native bindings -> one of three pi-ai and coding-agent shards (per OS)
+#   agent-suite     build ai + native bindings -> one of three atomic-ai and coding-agent shards (per OS)
 #   release-archive build package -> build-binaries.sh -> archive smoke
 #   static-checks   typecheck, docs, Mintlify, CI contracts (Linux)
 #   test            result gate; carries the required check contexts
 #
 # Nothing is passed between jobs as an artifact: waiting for a producer job
 # adds a serial dependency, regardless of how cheaply its output transfers.
-# The model data the jobs build pi-ai from reaches them through a cache that `main` refreshes,
+# The model data the jobs build atomic-ai from reaches them through a cache that `main` refreshes,
 # not from a producer job, for the same reason (docs/ci.md, "Model data cached, fetched live in one place").
 #
 # Every job runs on a `namespace-profile-atomic-ci-*` repository runner profile,
@@ -135,8 +135,8 @@ jobs:
           cache: ${{ steps.natives.outputs.cache-hit == 'true' && 'npm' || 'npm,rust' }}
       - name: Install dependencies
         run: npm ci --ignore-scripts
-      - name: Alias @earendil-works/pi-ai onto the workspace package
-        run: node scripts/alias-pi-ai.mjs
+      - name: Build @bastani/atomic-schema and @bastani/atomic-telemetry
+        run: npm --workspace=@bastani/atomic-schema --workspace=@bastani/atomic-telemetry run build
       # Model data (packages/ai/src/providers/data/) is gitignored, and its only source is the upstream
       # catalogs. static-checks is the one job that fetches them live and strictly on every run, and on `main`
       # it saves what it built. Every other job restores the newest snapshot (any day) built from the same
@@ -154,18 +154,20 @@ jobs:
       - name: Hydrate model data unless the restored snapshot is valid
         shell: bash
         run: |
-          if [ -n "${{ steps.model-data.outputs.cache-matched-key }}" ] && npm run check:model-data --workspace=@bastani/pi-ai >/dev/null 2>&1; then
+          if [ -n "${{ steps.model-data.outputs.cache-matched-key }}" ] && npm run check:model-data --workspace=@bastani/atomic-ai >/dev/null 2>&1; then
             echo "Using the restored model data snapshot ${{ steps.model-data.outputs.cache-matched-key }}"
           else
             echo "No valid model data snapshot; hydrating from the upstream catalogs"
             npm run hydrate:model-data
           fi
-      - name: Build @bastani/pi-ai
-        run: npm run build:offline --workspace=@bastani/pi-ai
+      - name: Build @bastani/atomic-ai
+        run: npm run build:offline --workspace=@bastani/atomic-ai
+      - name: Build @bastani/atomic-tui, @bastani/atomic-agent-core and @bastani/atomic-codemode
+        run: npm --workspace=@bastani/atomic-tui --workspace=@bastani/atomic-agent-core --workspace=@bastani/atomic-codemode run build
       # Measured at 42s Linux / 86s Windows, both inside the existing caps.
       - name: Build native bindings for the root suites
         if: steps.natives.outputs.cache-hit != 'true'
-        run: npm run build --workspace=@bastani/atomic-natives
+        run: npm --workspace=@bastani/atomic-natives run build
       # Unit artifact tests require dist/ to retain their full coverage.
       - name: Build @bastani/atomic package
         working-directory: packages/coding-agent
@@ -259,8 +261,8 @@ jobs:
           cache: ${{ steps.natives.outputs.cache-hit == 'true' && 'npm' || 'npm,rust' }}
       - name: Install dependencies
         run: npm ci --ignore-scripts
-      - name: Alias @earendil-works/pi-ai onto the workspace package
-        run: node scripts/alias-pi-ai.mjs
+      - name: Build @bastani/atomic-schema and @bastani/atomic-telemetry
+        run: npm --workspace=@bastani/atomic-schema --workspace=@bastani/atomic-telemetry run build
       # Model data (packages/ai/src/providers/data/) is gitignored, and its only source is the upstream
       # catalogs. static-checks is the one job that fetches them live and strictly on every run, and on `main`
       # it saves what it built. Every other job restores the newest snapshot (any day) built from the same
@@ -278,17 +280,19 @@ jobs:
       - name: Hydrate model data unless the restored snapshot is valid
         shell: bash
         run: |
-          if [ -n "${{ steps.model-data.outputs.cache-matched-key }}" ] && npm run check:model-data --workspace=@bastani/pi-ai >/dev/null 2>&1; then
+          if [ -n "${{ steps.model-data.outputs.cache-matched-key }}" ] && npm run check:model-data --workspace=@bastani/atomic-ai >/dev/null 2>&1; then
             echo "Using the restored model data snapshot ${{ steps.model-data.outputs.cache-matched-key }}"
           else
             echo "No valid model data snapshot; hydrating from the upstream catalogs"
             npm run hydrate:model-data
           fi
-      - name: Build @bastani/pi-ai
-        run: npm run build:offline --workspace=@bastani/pi-ai
+      - name: Build @bastani/atomic-ai
+        run: npm run build:offline --workspace=@bastani/atomic-ai
+      - name: Build @bastani/atomic-tui, @bastani/atomic-agent-core and @bastani/atomic-codemode
+        run: npm --workspace=@bastani/atomic-tui --workspace=@bastani/atomic-agent-core --workspace=@bastani/atomic-codemode run build
       - name: Build native bindings for the root suites
         if: steps.natives.outputs.cache-hit != 'true'
-        run: npm run build --workspace=@bastani/atomic-natives
+        run: npm --workspace=@bastani/atomic-natives run build
       - name: Build @bastani/atomic package
         working-directory: packages/coding-agent
         run: npm run build
@@ -385,8 +389,8 @@ jobs:
           cache: ${{ steps.natives.outputs.cache-hit == 'true' && 'npm' || 'npm,rust' }}
       - name: Install dependencies
         run: npm ci --ignore-scripts
-      - name: Alias @earendil-works/pi-ai onto the workspace package
-        run: node scripts/alias-pi-ai.mjs
+      - name: Build @bastani/atomic-schema and @bastani/atomic-telemetry
+        run: npm --workspace=@bastani/atomic-schema --workspace=@bastani/atomic-telemetry run build
       - name: Restore model data
         id: model-data
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -399,17 +403,19 @@ jobs:
       - name: Hydrate model data unless the restored snapshot is valid
         shell: bash
         run: |
-          if [ -n "${{ steps.model-data.outputs.cache-matched-key }}" ] && npm run check:model-data --workspace=@bastani/pi-ai >/dev/null 2>&1; then
+          if [ -n "${{ steps.model-data.outputs.cache-matched-key }}" ] && npm run check:model-data --workspace=@bastani/atomic-ai >/dev/null 2>&1; then
             echo "Using the restored model data snapshot ${{ steps.model-data.outputs.cache-matched-key }}"
           else
             echo "No valid model data snapshot; hydrating from the upstream catalogs"
             npm run hydrate:model-data
           fi
-      - name: Build @bastani/pi-ai
-        run: npm run build:offline --workspace=@bastani/pi-ai
+      - name: Build @bastani/atomic-ai
+        run: npm run build:offline --workspace=@bastani/atomic-ai
+      - name: Build @bastani/atomic-tui, @bastani/atomic-agent-core and @bastani/atomic-codemode
+        run: npm --workspace=@bastani/atomic-tui --workspace=@bastani/atomic-agent-core --workspace=@bastani/atomic-codemode run build
       - name: Build native bindings for the root suites
         if: steps.natives.outputs.cache-hit != 'true'
-        run: npm run build --workspace=@bastani/atomic-natives
+        run: npm --workspace=@bastani/atomic-natives run build
       - name: Build @bastani/atomic package
         working-directory: packages/coding-agent
         run: npm run build
@@ -444,8 +450,8 @@ jobs:
     name: agent-suite (${{ matrix.binary_platform }}, ${{ matrix.shard }}/3)
     strategy:
       matrix:
-        # Three shards per OS, each running its share of both the pi-ai and the coding-agent suites. The
-        # coding-agent share is balanced by measured file duration; pi-ai's small suite uses vitest's own split.
+        # Three shards per OS, each running its share of both the atomic-ai and the coding-agent suites. The
+        # coding-agent share is balanced by measured file duration; atomic-ai's small suite uses vitest's own split.
         binary_platform: [linux-x64, windows-x64]
         shard: [1, 2, 3]
         include:
@@ -519,8 +525,8 @@ jobs:
           cache: ${{ steps.natives.outputs.cache-hit == 'true' && 'npm' || 'npm,rust' }}
       - name: Install dependencies
         run: npm ci --ignore-scripts
-      - name: Alias @earendil-works/pi-ai onto the workspace package
-        run: node scripts/alias-pi-ai.mjs
+      - name: Build @bastani/atomic-schema and @bastani/atomic-telemetry
+        run: npm --workspace=@bastani/atomic-schema --workspace=@bastani/atomic-telemetry run build
       # Model data (packages/ai/src/providers/data/) is gitignored, and its only source is the upstream
       # catalogs. static-checks is the one job that fetches them live and strictly on every run, and on `main`
       # it saves what it built. Every other job restores the newest snapshot (any day) built from the same
@@ -538,22 +544,28 @@ jobs:
       - name: Hydrate model data unless the restored snapshot is valid
         shell: bash
         run: |
-          if [ -n "${{ steps.model-data.outputs.cache-matched-key }}" ] && npm run check:model-data --workspace=@bastani/pi-ai >/dev/null 2>&1; then
+          if [ -n "${{ steps.model-data.outputs.cache-matched-key }}" ] && npm run check:model-data --workspace=@bastani/atomic-ai >/dev/null 2>&1; then
             echo "Using the restored model data snapshot ${{ steps.model-data.outputs.cache-matched-key }}"
           else
             echo "No valid model data snapshot; hydrating from the upstream catalogs"
             npm run hydrate:model-data
           fi
-      - name: Build @bastani/pi-ai
-        run: npm run build:offline --workspace=@bastani/pi-ai
-      - name: pi-ai vitest suite
-        run: npm run test --workspace=@bastani/pi-ai -- --shard=${{ matrix.shard }}/3
+      - name: Build @bastani/atomic-ai
+        run: npm run build:offline --workspace=@bastani/atomic-ai
+      - name: Build @bastani/atomic-tui, @bastani/atomic-agent-core and @bastani/atomic-codemode
+        run: npm --workspace=@bastani/atomic-tui --workspace=@bastani/atomic-agent-core --workspace=@bastani/atomic-codemode run build
+      - name: atomic-ai vitest suite
+        run: npm --workspace=@bastani/atomic-ai run test -- --shard=${{ matrix.shard }}/3
+      # The other forked packages' suites are small, so one shard per OS runs them whole.
+      - name: Forked package suites (schema, telemetry, tui, agent-core, codemode)
+        if: matrix.shard == 1
+        run: npm --workspace=@bastani/atomic-schema --workspace=@bastani/atomic-telemetry --workspace=@bastani/atomic-tui --workspace=@bastani/atomic-agent-core --workspace=@bastani/atomic-codemode run test
       # packages/coding-agent/test/native-binding-exports.test.ts is hard-required
       # by ATOMIC_REQUIRE_NATIVE_BINDING_SMOKE below, so the vitest suite must
       # stay behind this build.
       - name: Build native bindings for package tests
         if: steps.natives.outputs.cache-hit != 'true'
-        run: npm run build --workspace=@bastani/atomic-natives
+        run: npm --workspace=@bastani/atomic-natives run build
       # The coding-agent suite's ripgrep tests run this pinned ripgrep, first on PATH, and with
       # ATOMIC_REQUIRE_PROVISIONED_RIPGREP never download one themselves (#4389). The archive is checked against its
       # SHA-256 on every run; only a cache miss downloads it, here, with retries.
@@ -685,8 +697,8 @@ jobs:
           cache: ${{ steps.natives.outputs.cache-hit == 'true' && 'npm' || 'npm,rust' }}
       - name: Install dependencies
         run: npm ci --ignore-scripts
-      - name: Alias @earendil-works/pi-ai onto the workspace package
-        run: node scripts/alias-pi-ai.mjs
+      - name: Build @bastani/atomic-schema and @bastani/atomic-telemetry
+        run: npm --workspace=@bastani/atomic-schema --workspace=@bastani/atomic-telemetry run build
       # Model data (packages/ai/src/providers/data/) is gitignored, and its only source is the upstream
       # catalogs. static-checks is the one job that fetches them live and strictly on every run, and on `main`
       # it saves what it built. Every other job restores the newest snapshot (any day) built from the same
@@ -704,15 +716,17 @@ jobs:
       - name: Hydrate model data unless the restored snapshot is valid
         shell: bash
         run: |
-          if [ -n "${{ steps.model-data.outputs.cache-matched-key }}" ] && npm run check:model-data --workspace=@bastani/pi-ai >/dev/null 2>&1; then
+          if [ -n "${{ steps.model-data.outputs.cache-matched-key }}" ] && npm run check:model-data --workspace=@bastani/atomic-ai >/dev/null 2>&1; then
             echo "Using the restored model data snapshot ${{ steps.model-data.outputs.cache-matched-key }}"
           else
             echo "No valid model data snapshot; hydrating from the upstream catalogs"
             npm run hydrate:model-data
           fi
       # build-binaries.sh gets --offline-model-data below, so it doesn't regenerate the data a second time.
-      - name: Build @bastani/pi-ai
-        run: npm run build:offline --workspace=@bastani/pi-ai
+      - name: Build @bastani/atomic-ai
+        run: npm run build:offline --workspace=@bastani/atomic-ai
+      - name: Build @bastani/atomic-tui, @bastani/atomic-agent-core and @bastani/atomic-codemode
+        run: npm --workspace=@bastani/atomic-tui --workspace=@bastani/atomic-agent-core --workspace=@bastani/atomic-codemode run build
       - name: Build @bastani/atomic package
         working-directory: packages/coding-agent
         run: npm run build
@@ -903,10 +917,12 @@ jobs:
           cache: npm
       - name: Install dependencies
         run: npm ci --ignore-scripts
-      - name: Alias @earendil-works/pi-ai onto the workspace package
-        run: node scripts/alias-pi-ai.mjs
-      - name: Build @bastani/pi-ai
-        run: npm run build --workspace=@bastani/pi-ai
+      - name: Build @bastani/atomic-schema and @bastani/atomic-telemetry
+        run: npm --workspace=@bastani/atomic-schema --workspace=@bastani/atomic-telemetry run build
+      - name: Build @bastani/atomic-ai
+        run: npm --workspace=@bastani/atomic-ai run build
+      - name: Build @bastani/atomic-tui, @bastani/atomic-agent-core and @bastani/atomic-codemode
+        run: npm --workspace=@bastani/atomic-tui --workspace=@bastani/atomic-agent-core --workspace=@bastani/atomic-codemode run build
       - name: Check the generation left the committed provider shards unchanged
         id: model-data-saveable
         shell: bash

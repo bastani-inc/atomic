@@ -239,7 +239,7 @@ describe("models.json schema", () => {
 		assert.equal(
 			validator().Check({
 				providers: {
-					radius: { oauth: "radius", authHeader: true },
+					gateway: { authHeader: true },
 					local: {
 						compat: {
 							zaiToolStream: true,

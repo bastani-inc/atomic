@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
-import type { Terminal } from "@earendil-works/pi-tui";
+import type { Terminal } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";

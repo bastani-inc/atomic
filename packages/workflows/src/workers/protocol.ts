@@ -94,6 +94,11 @@ export interface WorkerStart {
 	readonly maxRssBytes?: number;
 	/** Internal, tests only: overrides `OUTAGE_HANDOFF_MS` (#4768). */
 	readonly outageHandoffMs?: number;
+	/**
+	 * The provider and `provider/model` scopes of the root's fleet-wide rate limits (`workers.rateLimits`, #4768): a model
+	 * call to one of them asks the coordinator for a token first (`rate-acquire`). Absent: no call does.
+	 */
+	readonly rateScopes?: readonly string[];
 }
 export type WorkerRequest = { readonly id: number } & (
 	| { readonly kind: "ready" | "claim" | "budget" | "control" }
@@ -135,6 +140,11 @@ export type WorkerRequest = { readonly id: number } & (
 	 */
 	| { readonly kind: "place"; readonly op: "release" | "reacquire" }
 	| { readonly kind: "route"; readonly runId: string }
+	/**
+	 * A token of the fleet-wide rate limits for one model call (#4768): the reply is how many milliseconds to wait before
+	 * asking again, 0 when the call may start. Never refused.
+	 */
+	| { readonly kind: "rate-acquire"; readonly provider: string; readonly model: string }
 	/** A stage of the attempt started its session: the pool records where it runs (shared pools only, #4310). */
 	| { readonly kind: "stage-workspace"; readonly runId: string; readonly stageId: string }
 	| {

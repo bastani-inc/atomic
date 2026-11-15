@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
 import { bindOwnerTaskStore, CustomEditor } from "@bastani/atomic";
-import { setKeybindings } from "@earendil-works/pi-tui";
+import { setKeybindings } from "@bastani/atomic-tui";
 import { test, vi } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import { createStageSkillFixture } from "../fixtures/stage-chat-skill-session.js";
