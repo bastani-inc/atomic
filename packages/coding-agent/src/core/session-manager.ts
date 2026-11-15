@@ -1,6 +1,11 @@
 export type { VerbatimCompactionDetails } from "./compaction/compaction-types.js";
 export { SessionManager } from "./session-manager-core.ts";
-export { SessionEntryError, SessionIdError } from "./session-manager-errors.js";
+export {
+	SessionDeletedError,
+	SessionEntryError,
+	SessionIdError,
+	SessionOpenElsewhereError,
+} from "./session-manager-errors.js";
 export {
 	buildContextEntries,
 	buildSessionContext,
