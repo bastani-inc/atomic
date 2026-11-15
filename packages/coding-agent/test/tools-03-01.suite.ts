@@ -726,7 +726,7 @@ describe("edit tool CRLF handling", () => {
 		assert.ok(readFileSync(testFile).equals(Buffer.from("a\nb\r\nx\r\ny")));
 	});
 
-	it("should keep untouched line endings when fuzzy matching widens the edit to whole lines (pi #8544)", async () => {
+	it("should keep untouched line endings when fuzzy matching locates the edit (pi #8544)", async () => {
 		const testFile = join(testDir, "mixed-fuzzy.txt");
 		writeFileSync(testFile, "a\r\nfoo   \r\nb\n");
 

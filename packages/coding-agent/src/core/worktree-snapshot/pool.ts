@@ -692,7 +692,9 @@ async function claimSlot(
 
 /**
  * Whether the worktree at `path` holds files its recorded `tree` does not, that verification leaves out: staged content
- * that is neither HEAD's nor the tree's, an untracked file outside the tree, as when untracked files are not captured or are on the deny list, or an ignored file on the
+ * that is neither HEAD's nor the tree's, a tracked file whose content is neither HEAD's nor the tree's, as an edit to a
+ * file snapshots omit, such as a tracked `.env.example`, one under `.atomic/snapshot-ignore` or one over the size cap
+ * (#4897), an untracked file outside the tree, as when untracked files are not captured or are on the deny list, or an ignored file on the
  * deny list, such as `.env`. Other ignored files, build output and dependencies, are rebuilt and may go.
  */
 async function holdsUnrecordedFiles(path: string, tree: string, signal: AbortSignal | undefined): Promise<boolean> {
@@ -701,6 +703,15 @@ async function holdsUnrecordedFiles(path: string, tree: string, signal: AbortSig
 	const stagedDiffers = async (base: string) =>
 		(await runGit(["diff", "--cached", "--quiet", base, "--"], { ...git, allowExitCodes: [1] })).exitCode !== 0;
 	if ((await stagedDiffers("HEAD")) && (await stagedDiffers(tree))) return true;
+	// Verification compares omitted files as HEAD's, so a tracked file is checked against the tree itself: one that
+	// changed since HEAD is recorded only when the tree holds its content (#4897).
+	const changedFrom = async (base: string) =>
+		nulFields((await runGit(["diff", "--name-only", "-z", "--no-renames", "--no-ext-diff", base, "--"], git)).stdout);
+	const changed = await changedFrom("HEAD");
+	if (changed.length > 0) {
+		const unrecorded = new Set(await changedFrom(tree));
+		if (changed.some((file) => unrecorded.has(file))) return true;
+	}
 	const recorded = new Set(nulFields((await runGit(["ls-tree", "-r", "-z", "--name-only", tree], git)).stdout));
 	const untracked = nulFields((await runGit(["ls-files", "-z", "--others", "--exclude-standard"], git)).stdout);
 	if (untracked.some((file) => !recorded.has(file))) return true;

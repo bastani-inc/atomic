@@ -5,6 +5,7 @@
  * {@link rehydrateWorkerPlacementError}.
  */
 
+import { redactUrlCredentials } from "@bastani/atomic";
 import { SHARED_STORAGE_JOIN_HINT } from "@bastani/atomic/storage";
 import type { PooledStageInputKind } from "./stage-input-kind.js";
 import type { WorkspaceBinding } from "./workspace-binding.js";
@@ -127,20 +128,6 @@ export class WorkerPlacementError extends Error {
 	}
 }
 
-/** A redacted remote URL: credentials in its user info are never kept. */
-function redactRemote(remote: string): string {
-	try {
-		const url = new URL(remote);
-		if (url.username === "" && url.password === "") return remote;
-		url.username = "";
-		url.password = "";
-		return url.toString();
-	} catch {
-		// Not a URL (an scp-like `git@host:path` remote): its user part names an account, never a secret.
-		return remote;
-	}
-}
-
 /** A binding's identity as an error carries it: the matched fields, with remote URLs stripped of credentials. */
 export interface WorkspaceBindingIdentity {
 	readonly remotes: readonly string[];
@@ -151,7 +138,7 @@ export interface WorkspaceBindingIdentity {
 
 export function workspaceBindingIdentity(binding: WorkspaceBinding): WorkspaceBindingIdentity {
 	return {
-		remotes: binding.remotes.map(redactRemote),
+		remotes: binding.remotes.map((remote) => redactUrlCredentials(remote)),
 		head: binding.head,
 		tree: binding.tree,
 		envHash: binding.envHash,

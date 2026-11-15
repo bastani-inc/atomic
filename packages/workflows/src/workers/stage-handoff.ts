@@ -26,6 +26,7 @@ import {
 	StaleWorkLeaseError,
 	type StaleWorkLeaseReason,
 } from "../shared/worker-pool-errors.js";
+import { infrastructureFaultOf } from "../shared/workflow-infrastructure-error.js";
 import { authoritativeWorkflowChildRunId } from "../shared/workflow-run-ownership.js";
 import { stageInputRefusal, stageInputRefusedReason } from "./placement-errors.js";
 import type { PooledRunResult, StageReceipts } from "./protocol.js";
@@ -189,6 +190,9 @@ export class PoolStageHandoff {
 	 * before them, so the attempt's later changes are refused with this first reason until it publishes in full (#4317).
 	 */
 	refuse(work: Pick<PoolWork, "id" | "generation">, error: Error): void {
+		// A store that refused only for a while applied nothing of the publication: the pool sends the attempt's activity
+		// again in full, which the attempt's later changes then apply to (#4768).
+		if (infrastructureFaultOf(error) === "storage_unavailable") return;
 		const known = this.refusals.get(work.id);
 		if (known === undefined || known.generation < work.generation)
 			this.refusals.set(work.id, { generation: work.generation, error });
