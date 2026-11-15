@@ -323,7 +323,7 @@ test("a newer build's session-presence version does not lock this build out of t
 		// A newer build added a presence step this build does not know; presence is not needed to read or write sessions.
 		await database.run("INSERT INTO atomic_migrations VALUES (?, 3, 0)", SESSION_PRESENCE_DOMAIN);
 		const store = await SqlSessionStore.open(database);
-		await store.create({ id: "s", version: 3, createdAt: "2026-01-01T00:00:00.000Z", cwd: "/w" }, []);
+		await store.create({ id: "s", version: 4, createdAt: "2026-01-01T00:00:00.000Z", cwd: "/w" }, []);
 		assert.equal((await store.load("s")).lastSeq, 0);
 		await store.close();
 	} finally {
