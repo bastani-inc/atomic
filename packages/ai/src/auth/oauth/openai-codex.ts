@@ -13,7 +13,7 @@ if (typeof process !== "undefined" && (process.versions?.node || process.version
 	});
 }
 
-import { getAtomicEnvValue, getProviderEnvValue } from "../../utils/provider-env.ts";
+import { getAtomicEnvValue } from "../../utils/provider-env.ts";
 import { isPermanentRefreshRejection, OAuthRefreshRejectedError, parseOAuthErrorBody } from "../oauth-refresh-errors.ts";
 import type { LoginOptions, OAuthAuth, OAuthCredential, ProviderAuthInteraction } from "../types.js";
 import { startOAuthCallbackServer, waitForCallbackOrManualInput } from "./callback-server.ts";

@@ -27,7 +27,7 @@ import { appendAssistantMessageDiagnostic, createAssistantMessageDiagnostic } fr
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { headersToRecord, providerHeadersToRecord } from "../utils/headers.ts";
 import { getIdentityHeaders } from "../utils/identity.ts";
-import { getAtomicEnvValue, getProviderEnvValue } from "../utils/provider-env.ts";
+import { getAtomicEnvValue } from "../utils/provider-env.ts";
 import { getRetryAfterMs } from "../utils/retry-hints.ts";
 import { ServerSentEventDecoder } from "../utils/sse.ts";
 import { createStreamDeadline, withStreamDeadline } from "../utils/stream-deadline.ts";

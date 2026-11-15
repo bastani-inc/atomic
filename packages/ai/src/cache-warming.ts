@@ -2,7 +2,7 @@
 // whether a refresh pays for itself. Hosts own the scheduling; this module owns the numbers.
 import { calculateCost } from "./models.ts";
 import type { Api, Model, SimpleStreamOptions, Usage } from "./types.ts";
-import { getAtomicEnvValue, getProviderEnvValue } from "./utils/provider-env.ts";
+import { getAtomicEnvValue } from "./utils/provider-env.ts";
 
 /** Whether a refresh is sent ("warm") or warming ends until the next real request ("stop"). */
 export type CacheWarmingAction = "warm" | "stop";

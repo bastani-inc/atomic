@@ -25,6 +25,10 @@ This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani
 
 - Removed the `radius` provider, its OAuth flow and models, and the build-time fetch of its catalog from radius.pi.dev. The generic `pi-messages` API stays available for custom providers ([#5174](https://github.com/bastani-inc/atomic/issues/5174))
 
+### Added
+
+- Added `buildModelsDevChatModels()` and `finalizeChatModels()` in `@bastani/atomic-ai/utils/models-dev-catalog`, the transform from models.dev's `api.json` to the built-in chat catalog ([#5174](https://github.com/bastani-inc/atomic/issues/5174))
+
 ## [0.9.85] - 2026-11-13
 
 Dropped connections are retried automatically.

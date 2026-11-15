@@ -15,7 +15,7 @@
  *  - DESIGN.md §5 (Components — pill / box / banner vocabulary)
  *  - src/runs/foreground/stage-control-registry.ts (StageControlHandle)
  *  - src/shared/store-types.ts (StageSnapshot.notices, StageNotice)
- *  - https://pi.dev/docs/latest/tui (canonical Pi-tui component contract)
+ *  - packages/coding-agent/docs/tui.md (the @bastani/atomic-tui component contract)
  */
 
 import type { Component, Focusable } from "@bastani/atomic-tui";

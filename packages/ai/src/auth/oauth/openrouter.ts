@@ -11,7 +11,7 @@
  * It is only intended for CLI use, not browser environments.
  */
 
-import { getAtomicEnvValue, getProviderEnvValue } from "../../utils/provider-env.ts";
+import { getAtomicEnvValue } from "../../utils/provider-env.ts";
 import type { OAuthAuth, OAuthCredential, ProviderAuthInteraction } from "../types.ts";
 import { startOAuthCallbackServer, waitForCallbackOrManualInput } from "./callback-server.ts";
 import { generatePKCE } from "./pkce.ts";

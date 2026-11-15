@@ -19,7 +19,7 @@
  *
  * Rendering primitives are different — `Box`, `Text`, `Spacer`,
  * `Markdown`, etc. from `@bastani/atomic-tui` are stateless and SHOULD be
- * imported directly in extension code (per pi.dev/docs/latest/tui).
+ * imported directly in extension code (see packages/coding-agent/docs/tui.md).
  *
  * cross-ref:
  *   - node_modules/@bastani/atomic-tui/src/keybindings.ts → KeybindingsManager

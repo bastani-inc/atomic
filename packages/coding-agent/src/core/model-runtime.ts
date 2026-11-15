@@ -48,7 +48,7 @@ import {
 import * as builtinProviderCatalog from "@bastani/atomic-ai/providers/all";
 import { discoverGitHubCopilotModels } from "@bastani/atomic-ai/providers/github-copilot";
 import { personalizeOpenRouterCatalog } from "@bastani/atomic-ai/providers/openrouter";
-import { getAgentDir } from "../config.js";
+import { ENV_MODEL_CATALOG_URL, getAgentDir, getEnvValue } from "../config.js";
 import { operationSignal, raceWithAbortSignal } from "../utils/abort.js";
 import { normalizePath } from "../utils/paths.ts";
 import { AuthStorage as DefaultAuthStorage } from "./auth-storage.ts";
@@ -225,17 +225,18 @@ export class ModelRuntime implements Models {
 				? new FileModelsStore(options.modelsStorePath ?? join(dirname(modelsPath), "models-store.json"))
 				: new InMemoryCodingAgentModelsStore());
 		const builtinModelDataGeneratedAt = builtinProviderCatalog.getBuiltinModelDataGeneratedAt();
+		const catalogBaseUrl = options.catalogBaseUrl ?? (getEnvValue(ENV_MODEL_CATALOG_URL) || undefined);
 		const providers = builtinProviderCatalog.builtinProviders().map((provider) => {
 			// OpenRouter narrows the catalog to the models, limits and prices of the user's key.
 			if (provider.id === "openrouter") {
 				return withPersonalizedCatalog(
 					provider,
 					personalizeOpenRouterCatalog,
-					options.catalogBaseUrl,
+					catalogBaseUrl,
 					builtinModelDataGeneratedAt,
 				);
 			}
-			const withCatalog = withRemoteCatalog(provider, options.catalogBaseUrl, builtinModelDataGeneratedAt);
+			const withCatalog = withRemoteCatalog(provider, catalogBaseUrl, builtinModelDataGeneratedAt);
 			// GitHub Copilot adds the models the account's own list offers beyond the catalog.
 			return provider.id === "github-copilot"
 				? withDiscoveredModels(withCatalog, discoverGitHubCopilotModels)

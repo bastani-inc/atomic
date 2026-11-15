@@ -92,7 +92,7 @@ function stubNetwork(
 ): void {
 	vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
 		const request = input instanceof Request ? input : new Request(input, init);
-		if (request.url.startsWith("https://pi.dev/")) return new Response("not found", { status: 404 });
+		if (request.url === "https://models.dev/api.json") return new Response("not found", { status: 404 });
 		if (request.url.endsWith("/models")) {
 			modelListUrls.push(request.url);
 			const authorization = request.headers.get("Authorization");

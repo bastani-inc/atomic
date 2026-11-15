@@ -2,7 +2,7 @@
 import { randomBytes } from "node:crypto";
 import { createServer, type Server, type ServerResponse } from "node:http";
 import { oauthErrorHtml, oauthSuccessHtml } from "../../utils/oauth-page.ts";
-import { getAtomicEnvValue, getProviderEnvValue } from "../../utils/provider-env.ts";
+import { getAtomicEnvValue } from "../../utils/provider-env.ts";
 import { isPermanentRefreshRejection, OAuthRefreshRejectedError, parseOAuthErrorBody } from "../oauth-refresh-errors.ts";
 import type { LoginOptions, OAuthAuth, OAuthCredential, ProviderAuthInteraction } from "../types.ts";
 import { generatePKCE } from "./pkce.ts";

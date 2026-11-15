@@ -104,8 +104,9 @@ If no model is provided:
 
 #### Model catalog persistence and refresh
 
-`ModelRuntime.create()` restores cached catalogs from local persistence but does not contact
-pi.dev unless you opt in. `allowModelNetwork` (default `false`) enables a create-time network
+`ModelRuntime.create()` restores cached catalogs from local persistence but does not download
+the models.dev catalog unless you opt in. Pass `catalogBaseUrl` (or set `ATOMIC_MODEL_CATALOG_URL`) to read
+`<url>/api.json` from your own models.dev mirror instead of https://models.dev. `allowModelNetwork` (default `false`) enables a create-time network
 refresh, and `modelRefreshTimeoutMs` (default `15_000`) bounds how long that refresh may run
 before it is aborted. Pass `refreshOnCreate: false` to skip the initial catalog and
 availability refresh entirely; built-in models remain available.

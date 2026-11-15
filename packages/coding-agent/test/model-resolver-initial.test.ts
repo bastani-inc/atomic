@@ -444,7 +444,7 @@ describe("default model selection", () => {
 						],
 					});
 				}
-				if (url.includes("/api/models/providers/")) return new Response("not found", { status: 404 });
+				if (url === "https://models.dev/api.json") return new Response("not found", { status: 404 });
 				throw new Error(`Unexpected fetch: ${url}`);
 			});
 

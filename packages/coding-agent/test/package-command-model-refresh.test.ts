@@ -50,9 +50,10 @@ describe("atomic update --models", () => {
 
 		await refreshModelCatalogs(agentDir);
 
-		const [url, init] = fetchMock.mock.calls[0]!;
-		expect(url.toString()).toBe("https://pi.dev/api/models/providers/anthropic?types=chat%2Cimage%2Cclassifier");
-		expect(init?.signal?.aborted).toBe(false);
+		// One download of models.dev's catalog serves every provider (#5174).
+		const urls = fetchMock.mock.calls.map(([url]) => url.toString());
+		expect(urls.filter((url) => url === "https://models.dev/api.json")).toHaveLength(1);
+		expect(urls.some((url) => url.includes("pi.dev"))).toBe(false);
 	});
 
 	it("loads and force-refreshes Atomic extension providers", async () => {

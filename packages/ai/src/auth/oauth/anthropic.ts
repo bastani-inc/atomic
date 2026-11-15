@@ -5,7 +5,7 @@
  * It is only intended for CLI use, not browser environments.
  */
 
-import { getAtomicEnvValue, getProviderEnvValue } from "../../utils/provider-env.ts";
+import { getAtomicEnvValue } from "../../utils/provider-env.ts";
 import { isPermanentRefreshRejection, OAuthRefreshRejectedError, parseOAuthErrorBody } from "../oauth-refresh-errors.ts";
 import type { OAuthAuth, OAuthCredential, ProviderAuthInteraction } from "../types.ts";
 import { startOAuthCallbackServer, waitForCallbackOrManualInput } from "./callback-server.ts";
