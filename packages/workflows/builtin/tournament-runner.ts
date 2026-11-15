@@ -1,5 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { join, isAbsolute, relative, resolve } from "node:path";
+import { join, resolve } from "node:path";
+import { isPathInside } from "@bastani/atomic";
 import { Type } from "typebox";
 import type { WorkflowInputValues, WorkflowRunContext, WorkflowSerializableObject, WorkflowSerializableValue, WorkflowTaskResult, WorkflowTaskStep } from "../src/shared/types.js";
 import { accumulate, plan_comparisons, rank_candidates, select_pivots, soft_win, type Preference, type ScoringJob } from "./selection-math.js";
@@ -92,8 +93,7 @@ function judgeArtifactPath(judgesDir: string, job: ScoringJob, criterionIndex: n
 	const filename = `judge-${job.a}-${job.b}-c${criterionIndex}-${criterionSlug(job.criterionId)}-r${job.rep}.json`;
 	const root = resolve(judgesDir);
 	const path = resolve(judgesDir, filename);
-	const fromRoot = relative(root, path);
-	if (fromRoot.startsWith("..") || isAbsolute(fromRoot)) {
+	if (!isPathInside(root, path)) {
 		throw new Error(`tournament: judge artifact escaped its directory: ${path}`);
 	}
 	return path;
