@@ -9,7 +9,7 @@ description: "Build custom terminal UI for extensions."
 
 Extensions and custom tools can render custom TUI components for interactive user interfaces. This page covers the component system and available building blocks.
 
-**Source:** TUI components are provided by Atomic's installed `@bastani/atomic-tui` runtime dependency (`node_modules/@bastani/atomic-tui/dist/`).
+**Source:** TUI components are provided by Atomic's installed `@bastani/atomic-tui` runtime dependency (`node_modules/@bastani/atomic-tui/dist/`). The [`@bastani/atomic-tui` library page](/libraries/tui) documents its full API, including standalone use outside Atomic.
 
 ## On this page and its reference
 

@@ -595,6 +595,13 @@ class WorkerHost implements WorkflowWorkerHost {
 		this.satellites.set(root.root, satellite);
 	}
 
+	/** The fleet rate limits' mode across the roots this host serves: local fallback when any of them falls back. */
+	private rateLimitStats(): { readonly rateLimit?: "store" | "local-fallback" } {
+		const modes = [...this.satellites.values()].map((satellite) => satellite.coordinator.rateLimitMode);
+		if (modes.includes("local-fallback")) return { rateLimit: "local-fallback" };
+		return modes.includes("store") ? { rateLimit: "store" } : {};
+	}
+
 	async stats(): Promise<WorkflowWorkerHostStats> {
 		const { workers, busy } = this.workerCount();
 		// A root whose stats the journal cannot give now, while it is unreachable, is left out (#4768).
@@ -618,6 +625,7 @@ class WorkerHost implements WorkflowWorkerHost {
 			...(this.lastDetach === undefined ? {} : { lastDetach: this.lastDetach }),
 			...(this.lastHealth === undefined ? {} : { lastHealth: this.lastHealth }),
 			...(this.degraded === undefined ? {} : { degraded: this.degraded }),
+			...this.rateLimitStats(),
 		};
 	}
 
