@@ -1067,13 +1067,13 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		)
 			return false;
 		// #5167: a pause leaves the run adoptable when its owner cannot resume it: a released run stays released, and a
-		// running run whose owner's process died (read before this transition takes its expired lease) is released by it.
+		// run whose owner's process died (read before this transition takes its expired lease) is released by that owner.
 		const release =
 			releasedModelOwner !== undefined || modelOwner !== undefined || status !== "paused"
 				? (releasedModelOwner ?? undefined)
 				: current.status === "paused"
 					? current.releasedModelOwner
-					: current.status === "running" && current.modelOwner !== undefined && (yield* this.ownerDied(runId))
+					: (yield* this.ownerDied(runId))
 						? current.modelOwner
 						: undefined;
 		const draft = yield* this.draft(runId);
