@@ -1,4 +1,10 @@
-import { dialectOf, type SqliteDatabase, type SqliteRow, validateStoragePrefix } from "@bastani/atomic/storage";
+import {
+	dialectOf,
+	type SqliteDatabase,
+	type SqliteRow,
+	type StorageNotificationSubscription,
+	validateStoragePrefix,
+} from "@bastani/atomic/storage";
 import { OUTBOX_BACKUP_POLL_INTERVAL_MS } from "./multinode-state-store.js";
 import type {
 	WakeUpBus,
@@ -16,6 +22,11 @@ import type {
  * the connection; the next poll or publish reopens it and every subscription gets a `reconnected` resync, because
  * hints written meanwhile may have been pruned or missed. While the database stays unavailable, reopening backs off
  * exponentially from the poll interval up to `WAKE_UP_RECONNECT_MAX_DELAY_MS`.
+ *
+ * On a database that delivers notifications (Postgres), a publish also notifies the channel named like the table, in
+ * the transaction that writes the hint, and a subscribed connection polls as soon as a notification for one of its
+ * brokers arrives (#5103). The interval poll stays: notifications are lost while the listening connection is down, and
+ * none arrive through a transaction pooler.
  */
 
 /** How often a connection with subscriptions reads its hints. */
@@ -104,6 +115,10 @@ class DatabaseWakeUpBus implements WakeUpBus {
 	/** Consecutive failed attempts to reopen the database; each doubles the wait before the next. */
 	private reconnectFailures = 0;
 	private reconnectNotBefore = 0;
+	/** The notification channel this connection listens on, and the database it listens through. */
+	private listening: { readonly database: SqliteDatabase; readonly subscription: StorageNotificationSubscription } | undefined;
+	/** A notification arrived during a poll: the next poll runs as soon as that one ends. */
+	private pollAgain = false;
 
 	constructor(options: DatabaseWakeUpBusOptions, table: string, database: SqliteDatabase) {
 		this.options = options;
@@ -118,13 +133,21 @@ class DatabaseWakeUpBus implements WakeUpBus {
 		const database = await this.connection(false);
 		if (database === undefined) return { status: "unavailable" };
 		const { nowMs } = dialectOf(database);
+		const insert = `INSERT INTO ${this.table} (broker_id, reason, version, created_at) VALUES (?, ?, ?, ${nowMs})`;
+		const notifications = database.notifications;
 		try {
-			await database.run(
-				`INSERT INTO ${this.table} (broker_id, reason, version, created_at) VALUES (?, ?, ?, ${nowMs})`,
-				hint.brokerId,
-				hint.reason,
-				hint.version,
-			);
+			if (notifications === undefined) await database.run(insert, hint.brokerId, hint.reason, hint.version);
+			else {
+				// The notification goes out when the hint commits, so the poll it starts finds the hint.
+				const notify = notifications.notify(this.table, hint.brokerId);
+				await database.transaction(
+					async (tx) => {
+						await tx.run(insert, hint.brokerId, hint.reason, hint.version);
+						await tx.run(notify.sql, ...notify.params);
+					},
+					{ concurrency: { kind: "serial", domain: this.table } },
+				);
+			}
 			await database.run(
 				`DELETE FROM ${this.table} WHERE created_at < ${nowMs} - ?`,
 				WAKE_UP_HINT_RETENTION_MS,
@@ -142,6 +165,7 @@ class DatabaseWakeUpBus implements WakeUpBus {
 		const subscription: DatabaseSubscription = { brokerId, listener, open: true };
 		this.subscriptions.add(subscription);
 		this.deliver(subscription, { kind: "resync", cause: "subscribed" });
+		this.listen();
 		this.armPoll();
 		const handle: WakeUpSubscription = {
 			brokerId,
@@ -162,6 +186,8 @@ class DatabaseWakeUpBus implements WakeUpBus {
 		this.closed = true;
 		this.cancelPoll?.();
 		this.cancelPoll = undefined;
+		this.listening?.subscription.close();
+		this.listening = undefined;
 		for (const subscription of this.subscriptions) subscription.open = false;
 		this.subscriptions.clear();
 		await this.polling;
@@ -177,16 +203,44 @@ class DatabaseWakeUpBus implements WakeUpBus {
 		});
 	}
 
-	private armPoll(): void {
+	/** Listens for notifications through the current database, when it delivers them. */
+	private listen(): void {
+		const database = this.database;
+		if (this.closed || database === undefined || this.listening?.database === database) return;
+		this.listening?.subscription.close();
+		this.listening = undefined;
+		const notifications = database.notifications;
+		if (notifications === undefined) return;
+		const subscription = notifications.listen(this.table, (event) => {
+			if (event.kind === "listening" || [...this.subscriptions].some((open) => open.brokerId === event.payload))
+				this.pollNow();
+		});
+		this.listening = { database, subscription };
+	}
+
+	/** Polls at once, or as soon as the poll in progress ends, instead of at the next interval. */
+	private pollNow(): void {
+		if (this.closed) return;
+		if (this.polling !== undefined) {
+			this.pollAgain = true;
+			return;
+		}
+		this.cancelPoll?.();
+		this.cancelPoll = undefined;
+		this.armPoll(0);
+	}
+
+	private armPoll(delayMs = this.nextPollDelayMs()): void {
 		if (this.closed || this.cancelPoll !== undefined || this.polling !== undefined) return;
 		if (this.subscriptions.size === 0) return;
 		this.cancelPoll = this.schedule(() => {
 			this.cancelPoll = undefined;
+			this.pollAgain = false;
 			this.polling = this.poll().finally(() => {
 				this.polling = undefined;
-				this.armPoll();
+				this.armPoll(this.pollAgain ? 0 : this.nextPollDelayMs());
 			});
-		}, this.nextPollDelayMs());
+		}, delayMs);
 	}
 
 	private nextPollDelayMs(): number {
@@ -256,6 +310,7 @@ class DatabaseWakeUpBus implements WakeUpBus {
 			return undefined;
 		}
 		this.database = database;
+		this.listen();
 		for (const subscription of this.subscriptions) {
 			this.deliver(subscription, { kind: "resync", cause: "reconnected" });
 		}
