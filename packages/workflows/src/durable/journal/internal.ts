@@ -108,6 +108,8 @@ export interface SqlPoolStorage {
 	read<T>(body: (executor: SqliteExecutor) => Promise<T>): Promise<T>;
 	withAppendGuard<T>(guard: JournalAppendGuard, action: () => Promise<T>): Promise<T>;
 	readonly tables: Readonly<{ runs: string; events: string; leases: string }>;
+	/** The database's adapter, as its descriptor names it, such as `"libsql"` or `"postgres"`. */
+	readonly adapter: string;
 }
 
 /** The storage errors that say the store did not take a write, rather than that the write itself was refused. */
