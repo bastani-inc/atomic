@@ -10,6 +10,7 @@ import {
 import { borrowedDatabase } from "../../packages/intercom/broker/open-broker-state.js";
 import { releasedReservationKey } from "../../packages/intercom/broker/released-children.js";
 import { openSqlRestoringReservationStore } from "../../packages/intercom/broker/sql-restoring-reservation-store.js";
+import { interceptingDatabase } from "../helpers/intercepting-database.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 const TABLE = "intercom_restoring_reservations";
@@ -85,18 +86,16 @@ function failingAlter(
 	const alters: string[] = [];
 	return {
 		alters,
-		database: {
-			...borrowed,
-			all: (async (sql: string, ...params: never[]) =>
-				staleColumns && /table_info/i.test(sql) ? [] : borrowed.all(sql, ...params)) as SqliteDatabase["all"],
-			exec: async (sql) => {
+		database: interceptingDatabase(borrowed, {
+			all: async (sql, params, next) => (staleColumns && /table_info/i.test(sql) ? [] : next(sql, ...params)),
+			exec: async (sql, next) => {
 				if (sql.startsWith("ALTER TABLE")) {
 					alters.push(sql);
 					throw failure();
 				}
-				return borrowed.exec(sql);
+				return next(sql);
 			},
-		},
+		}),
 	};
 }
 
@@ -162,13 +161,12 @@ describe("SQL reservation store wake schema (#4326)", () => {
 		const borrowed = borrowedDatabase(database);
 		const alters: string[] = [];
 		await openSqlRestoringReservationStore({
-			database: {
-				...borrowed,
-				exec: async (sql) => {
+			database: interceptingDatabase(borrowed, {
+				exec: async (sql, next) => {
 					if (sql.startsWith("ALTER TABLE")) alters.push(sql);
-					return borrowed.exec(sql);
+					return next(sql);
 				},
-			},
+			}),
 			prefix: "",
 		});
 		assert.deepEqual(alters, [

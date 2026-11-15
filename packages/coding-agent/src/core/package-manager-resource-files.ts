@@ -1,15 +1,15 @@
 import { access, readdir, readFile, stat } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
-import ignore from "ignore";
 import { yieldToEventLoopIfSlow } from "../utils/event-loop.ts";
 import { stripBom } from "../utils/text.ts";
+import { NestedGitignore } from "./gitignore-rules.ts";
 import { getManifestFromPackageJson } from "./package-manager-manifest.ts";
 import { toPosixPath } from "./package-manager-resource-patterns.ts";
 import { FILE_PATTERNS, type ResourceType } from "./package-manager-types.ts";
 
 const IGNORE_FILE_NAMES = [".gitignore", ".ignore", ".fdignore"];
 const RESOURCE_DISCOVERY_YIELD_AFTER_MS = 8;
-type IgnoreMatcher = ReturnType<typeof ignore>;
+type IgnoreMatcher = NestedGitignore;
 type SkillDiscoveryMode = "pi" | "agents";
 
 type DirEntryInfo = {
@@ -27,33 +27,14 @@ async function exists(path: string): Promise<boolean> {
 	}
 }
 
-function prefixIgnorePattern(line: string, prefix: string): string | null {
-	const trimmed = line.trim();
-	if (!trimmed || (trimmed.startsWith("#") && !trimmed.startsWith("\\#"))) return null;
-	let pattern = line;
-	let negated = false;
-	if (pattern.startsWith("!")) {
-		negated = true;
-		pattern = pattern.slice(1);
-	} else if (pattern.startsWith("\\!")) pattern = pattern.slice(1);
-	if (pattern.startsWith("/")) pattern = pattern.slice(1);
-	const prefixed = prefix ? `${prefix}${pattern}` : pattern;
-	return negated ? `!${prefixed}` : prefixed;
-}
-
-async function addIgnoreRules(ig: IgnoreMatcher, dir: string, rootDir: string): Promise<void> {
-	const relativeDir = relative(rootDir, dir);
-	const prefix = relativeDir ? `${toPosixPath(relativeDir)}/` : "";
+async function withIgnoreRules(rules: NestedGitignore, dir: string, rootDir: string): Promise<NestedGitignore> {
+	const contents: string[] = [];
 	for (const filename of IGNORE_FILE_NAMES) {
 		try {
-			const content = await readFile(join(dir, filename), "utf-8");
-			const patterns = content
-				.split(/\r?\n/)
-				.map((line) => prefixIgnorePattern(line, prefix))
-				.filter((line): line is string => Boolean(line));
-			if (patterns.length > 0) ig.add(patterns);
+			contents.push(await readFile(join(dir, filename), "utf-8"));
 		} catch {}
 	}
+	return rules.within(toPosixPath(relative(rootDir, dir)), contents);
 }
 
 async function getEntryInfo(
@@ -88,8 +69,7 @@ export async function collectFiles(
 	const files: string[] = [];
 	if (!(await exists(dir))) return files;
 	const root = rootDir ?? dir;
-	const ig = ignoreMatcher ?? ignore();
-	await addIgnoreRules(ig, dir, root);
+	const ig = await withIgnoreRules(ignoreMatcher ?? NestedGitignore.empty(), dir, root);
 	const startedAt = Date.now();
 	try {
 		const entries = await readdir(dir, { withFileTypes: true });
@@ -117,8 +97,7 @@ async function collectSkillEntries(
 	const entries: string[] = [];
 	if (!(await exists(dir))) return entries;
 	const root = rootDir ?? dir;
-	const ig = ignoreMatcher ?? ignore();
-	await addIgnoreRules(ig, dir, root);
+	const ig = await withIgnoreRules(ignoreMatcher ?? NestedGitignore.empty(), dir, root);
 	const startedAt = Date.now();
 	try {
 		const dirEntries = await readdir(dir, { withFileTypes: true });
@@ -186,8 +165,7 @@ export async function collectAncestorAgentsSkillDirs(startDir: string): Promise<
 async function collectFlatEntries(dir: string, extension: string): Promise<string[]> {
 	const entries: string[] = [];
 	if (!(await exists(dir))) return entries;
-	const ig = ignore();
-	await addIgnoreRules(ig, dir, dir);
+	const ig = await withIgnoreRules(NestedGitignore.empty(), dir, dir);
 	const startedAt = Date.now();
 	try {
 		const dirEntries = await readdir(dir, { withFileTypes: true });
@@ -239,8 +217,7 @@ export async function collectAutoExtensionEntries(dir: string): Promise<string[]
 	if (!(await exists(dir))) return entries;
 	const rootEntries = await resolveExtensionEntries(dir);
 	if (rootEntries) return rootEntries;
-	const ig = ignore();
-	await addIgnoreRules(ig, dir, dir);
+	const ig = await withIgnoreRules(NestedGitignore.empty(), dir, dir);
 	const startedAt = Date.now();
 	try {
 		const dirEntries = await readdir(dir, { withFileTypes: true });

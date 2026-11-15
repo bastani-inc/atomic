@@ -1,7 +1,9 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import ignore, { type Ignore } from "ignore";
+import { gitignoreMatcher } from "../gitignore-rules.ts";
 import { unreadablePathError } from "./errors.ts";
+import { runGit } from "./git.ts";
 
 /** Built-in patterns, in `.gitignore` syntax, for files that commonly hold credentials. Nothing un-denies them. */
 export const SNAPSHOT_DENY_PATTERNS: readonly string[] = Object.freeze([
@@ -51,15 +53,29 @@ export function isDeniedSnapshotPath(path: string): boolean {
 	return alwaysDenied.ignores(path) || keyFiles.ignores(path);
 }
 
-/** The deny list plus the repository's `.atomic/snapshot-ignore`, matched against root-relative paths. */
+/** Whether Git matches ignore rules in the repository at `root` without regard to case (`core.ignorecase`). */
+async function gitIgnoresCase(root: string): Promise<boolean> {
+	const { stdout } = await runGit(["config", "--type=bool", "--get", "core.ignorecase"], {
+		cwd: root,
+		allowExitCodes: [1],
+	});
+	return stdout.toString("utf8").trim() === "true";
+}
+
+/**
+ * The deny list plus the repository's `.atomic/snapshot-ignore`, matched against root-relative paths. The project
+ * rules match as Git would match them in a `.gitignore` at the root, including the repository's `core.ignorecase`.
+ */
 export async function loadSnapshotPathPolicy(root: string): Promise<SnapshotPathPolicy> {
-	let projectIgnore: Ignore | undefined;
+	let rules: string | undefined;
 	try {
-		projectIgnore = ignore().add(await readFile(join(root, SNAPSHOT_IGNORE_FILE), "utf8"));
+		rules = await readFile(join(root, SNAPSHOT_IGNORE_FILE), "utf8");
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
 		if (code !== "ENOENT" && code !== "ENOTDIR") throw unreadablePathError(join(root, SNAPSHOT_IGNORE_FILE), error);
 	}
+	const projectIgnore: Ignore | undefined =
+		rules === undefined ? undefined : gitignoreMatcher(rules, await gitIgnoresCase(root));
 	return {
 		exclusion(path) {
 			if (isDeniedSnapshotPath(path)) return "denied";
