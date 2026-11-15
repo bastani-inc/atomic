@@ -373,6 +373,7 @@ test("a store with a migration ledger records each step of the session and blob 
 	const store = await SqlSessionStore.open(database, { prefix: "team_" });
 	assert.deepEqual(await database.all("SELECT domain, version FROM team_atomic_migrations ORDER BY domain, version"), [
 		{ domain: "session-presence", version: 1 },
+		{ domain: "session-presence", version: 2 },
 		{ domain: "sessions", version: 1 },
 		{ domain: "sessions", version: 2 },
 		{ domain: "snapshot-blobs", version: 1 },

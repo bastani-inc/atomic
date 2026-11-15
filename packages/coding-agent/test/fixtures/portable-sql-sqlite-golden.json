@@ -118,7 +118,7 @@
 			"type": "table",
 			"name": "session_open",
 			"tbl_name": "session_open",
-			"sql": "CREATE TABLE session_open (\n\t\t\t\tsession_id TEXT NOT NULL, token TEXT NOT NULL, pid INTEGER NOT NULL, host TEXT NOT NULL,\n\t\t\t\theartbeat_at INTEGER NOT NULL, PRIMARY KEY(session_id, token)\n\t\t\t) STRICT"
+			"sql": "CREATE TABLE session_open (\n\t\t\t\tsession_id TEXT NOT NULL, token TEXT NOT NULL, pid INTEGER NOT NULL, host TEXT NOT NULL,\n\t\t\t\theartbeat_at INTEGER NOT NULL, schema_version INTEGER, PRIMARY KEY(session_id, token)\n\t\t\t) STRICT"
 		},
 		{
 			"type": "table",
@@ -226,7 +226,7 @@
 			"type": "table",
 			"name": "team_session_open",
 			"tbl_name": "team_session_open",
-			"sql": "CREATE TABLE team_session_open (\n\t\t\t\tsession_id TEXT NOT NULL, token TEXT NOT NULL, pid INTEGER NOT NULL, host TEXT NOT NULL,\n\t\t\t\theartbeat_at INTEGER NOT NULL, PRIMARY KEY(session_id, token)\n\t\t\t) STRICT"
+			"sql": "CREATE TABLE team_session_open (\n\t\t\t\tsession_id TEXT NOT NULL, token TEXT NOT NULL, pid INTEGER NOT NULL, host TEXT NOT NULL,\n\t\t\t\theartbeat_at INTEGER NOT NULL, schema_version INTEGER, PRIMARY KEY(session_id, token)\n\t\t\t) STRICT"
 		},
 		{
 			"type": "table",
@@ -594,7 +594,7 @@
 			"type": "table",
 			"name": "session_open",
 			"tbl_name": "session_open",
-			"sql": "CREATE TABLE session_open (\n\t\t\t\tsession_id TEXT NOT NULL, token TEXT NOT NULL, pid INTEGER NOT NULL, host TEXT NOT NULL,\n\t\t\t\theartbeat_at INTEGER NOT NULL, PRIMARY KEY(session_id, token)\n\t\t\t) STRICT"
+			"sql": "CREATE TABLE session_open (\n\t\t\t\tsession_id TEXT NOT NULL, token TEXT NOT NULL, pid INTEGER NOT NULL, host TEXT NOT NULL,\n\t\t\t\theartbeat_at INTEGER NOT NULL, schema_version INTEGER, PRIMARY KEY(session_id, token)\n\t\t\t) STRICT"
 		},
 		{
 			"type": "table",
@@ -1098,6 +1098,11 @@
 					"source": "session-entries",
 					"watermark": 6,
 					"backfilled_through": 6
+				},
+				{
+					"source": "session-entries@degraded-pins",
+					"watermark": 0,
+					"backfilled_through": 0
 				}
 			]
 		}

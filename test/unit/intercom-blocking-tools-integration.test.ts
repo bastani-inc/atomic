@@ -211,7 +211,7 @@ function fixture(kind: "intercom" | "supervisor", options: FixtureOptions = {}) 
 			assert.ok(tool);
 			return tool;
 		},
-		reply(text: string, replyError?: string) {
+		reply(text: string, replyError?: string, retryLater?: true) {
 			const current = slot.pending()[0];
 			assert.ok(current);
 			current.resolve({
@@ -219,6 +219,7 @@ function fixture(kind: "intercom" | "supervisor", options: FixtureOptions = {}) 
 				timestamp: 2,
 				replyTo: current.replyTo,
 				...(replyError !== undefined ? { replyError } : {}),
+				...(retryLater !== undefined ? { retryLater } : {}),
 				content: { text },
 			});
 		},
@@ -599,6 +600,52 @@ describe("registered blocking intercom tools", () => {
 		const result = await execution;
 		assert.equal(result.isError, true);
 		assert.equal(result.content[0]?.text, 'Failed: Session "sibling" disconnected before replying');
+	});
+
+	test("intercom ask whose recipient is unavailable fails marked as worth retrying later (#5154)", async () => {
+		const current = fixture("intercom");
+		const execution = current.tool.execute(
+			"call",
+			{ action: "ask", to: "sibling", message: "Peer question" },
+			undefined,
+			undefined,
+			context,
+		);
+		await sleep(0);
+		const reason = 'Session "sibling" is unavailable: its broker stopped';
+		current.reply(reason, reason, true);
+
+		const result = (await execution) as {
+			isError?: boolean;
+			content: { text: string }[];
+			details: Record<string, unknown>;
+		};
+		assert.equal(result.isError, true);
+		assert.equal(result.content[0]?.text, `Failed: ${reason}`);
+		assert.deepEqual(result.details, {
+			error: true,
+			askId: result.details.askId,
+			replyTo: result.details.replyTo,
+			retryLater: true,
+		});
+	});
+
+	test("intercom ask that failed for good is not marked as worth retrying (#5154)", async () => {
+		const current = fixture("intercom");
+		const execution = current.tool.execute(
+			"call",
+			{ action: "ask", to: "sibling", message: "Peer question" },
+			undefined,
+			undefined,
+			context,
+		);
+		await sleep(0);
+		current.reply("ended", 'Session "sibling" ended before replying');
+
+		const result = (await execution) as unknown as { isError?: boolean; details: Record<string, unknown> };
+		assert.equal(result.isError, true);
+		assert.equal(result.details.error, true);
+		assert.equal(result.details.retryLater, undefined);
 	});
 
 	test("contact_supervisor blocking waits receive the same peer disconnect release", async () => {

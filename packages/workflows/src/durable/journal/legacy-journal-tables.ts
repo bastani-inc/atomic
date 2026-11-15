@@ -74,7 +74,9 @@ async function hasLegacyTable(tx: SqliteExecutor, table: LegacyTable): Promise<b
 export class LegacyJournalRuns {
 	/**
 	 * Present only for the unprefixed journal in a database that still has version-1 legacy tables. Only SQLite
-	 * journals written before 0.9.38 have them, so their columns are read from SQLite's catalog once all three exist.
+	 * journals written before 0.9.38 have them, so their columns are read from SQLite's catalog once all three exist; a
+	 * database with a migration ledger (Postgres) never has them. A storage failure while reading them fails the open:
+	 * it must not hide their runs (#5065).
 	 */
 	static async open(database: SqliteDatabase): Promise<LegacyJournalRuns | undefined> {
 		const dialect = dialectOf(database);
@@ -82,31 +84,27 @@ export class LegacyJournalRuns {
 			const probe = dialect.tableExists(table);
 			return (await executor.get(probe.sql, ...probe.params)) !== undefined;
 		};
-		try {
-			for (const table of [JOURNAL_TABLES.meta, JOURNAL_TABLES.runs, JOURNAL_TABLES.events])
-				if (!(await exists(database, table))) return undefined;
-			return await database.transaction(async (tx) => {
-				for (const table of ["meta", "runs", "events"] as const) {
-					if (!(await hasLegacyTable(tx, table))) return undefined;
-				}
-				const versions = await tx.all<SqliteRow & { [c.schemaVersion]: number }>(
-					`SELECT ${c.schemaVersion} FROM ${JOURNAL_TABLES.meta}`,
-				);
-				if (versions.length !== 1 || Number(versions[0]![c.schemaVersion]) !== LEGACY_SCHEMA_VERSION)
-					return undefined;
-				const copiedAll =
-					(await exists(tx, CURRENT.migrations)) &&
-					(await tx.get(`SELECT name FROM ${CURRENT.migrations} WHERE name = ?`, JOURNAL_COPIED_ALL_MARKER)) !==
-						undefined;
-				if (copiedAll) return undefined;
-				await tx.exec(
-					`CREATE TABLE IF NOT EXISTS ${CURRENT.legacyDeleted}(${c.runId} TEXT PRIMARY KEY, deleted_at ${dialect.types.int} NOT NULL)`,
-				);
-				return new LegacyJournalRuns();
-			}, JOURNAL_TRANSACTION);
-		} catch {
-			return undefined;
-		}
+		if (dialect.versionedMigrations) return undefined;
+		for (const table of [JOURNAL_TABLES.meta, JOURNAL_TABLES.runs, JOURNAL_TABLES.events])
+			if (!(await exists(database, table))) return undefined;
+		return await database.transaction(async (tx) => {
+			for (const table of ["meta", "runs", "events"] as const) {
+				if (!(await hasLegacyTable(tx, table))) return undefined;
+			}
+			const versions = await tx.all<SqliteRow & { [c.schemaVersion]: number }>(
+				`SELECT ${c.schemaVersion} FROM ${JOURNAL_TABLES.meta}`,
+			);
+			if (versions.length !== 1 || Number(versions[0]![c.schemaVersion]) !== LEGACY_SCHEMA_VERSION) return undefined;
+			const copiedAll =
+				(await exists(tx, CURRENT.migrations)) &&
+				(await tx.get(`SELECT name FROM ${CURRENT.migrations} WHERE name = ?`, JOURNAL_COPIED_ALL_MARKER)) !==
+					undefined;
+			if (copiedAll) return undefined;
+			await tx.exec(
+				`CREATE TABLE IF NOT EXISTS ${CURRENT.legacyDeleted}(${c.runId} TEXT PRIMARY KEY, deleted_at ${dialect.types.int} NOT NULL)`,
+			);
+			return new LegacyJournalRuns();
+		}, JOURNAL_TRANSACTION);
 	}
 
 	async pending(executor: SqliteExecutor, filter?: { cwd?: string }): Promise<LegacyRunRow[]> {

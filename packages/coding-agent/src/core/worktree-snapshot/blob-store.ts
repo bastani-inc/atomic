@@ -10,6 +10,7 @@ import { dialectOf, type StorageDialect, type StorageJsonSource, type StorageTri
 import { StorageWriteLockTimeoutError } from "../storage/errors.js";
 import { applyStorageMigrations } from "../storage/migrations.js";
 import { renderStorageIdentifiers, storageMigrationTable, validateStoragePrefix } from "../storage/prefix.js";
+import { RUN_JOURNAL_SCHEMA_VERSION, RUN_JOURNAL_SCHEMA_VERSION_UNCHUNKED } from "../storage/run-journal.js";
 import type { WorkspaceCollectionError } from "./errors.ts";
 import type { SnapshotBlob, SnapshotBlobStore, WorktreeSnapshot } from "./types.ts";
 
@@ -305,6 +306,12 @@ interface IndexSource {
 	readonly rowwise?: readonly string[];
 	/** Clears the source's index rows when its triggers are installed again, so no stale row outlives its entry. */
 	readonly reset?: readonly string[];
+	/**
+	 * The progress row this build writes when it installs the source's triggers, and that no older build writes. Without
+	 * it, triggers of the source's names are an older build's, which index less, and this build installs its own and
+	 * indexes the table again (#5065).
+	 */
+	readonly version?: string;
 }
 
 interface SourceState {
@@ -617,6 +624,8 @@ function indexSources(prefix: string, t: SnapshotIndexTables, d: StorageDialect)
 		],
 		backfill: [],
 		rowwise: [...sessionLink(storedEntry), ...sessionRecord(storedEntry)],
+		// The triggers that index degraded pins (#4922). Older builds install theirs under the same names (#5065).
+		version: "session-entries@degraded-pins",
 		reset: [`DELETE FROM ${t.sessionLinks}`, `DELETE FROM ${t.sessionRefs}`, `DELETE FROM ${t.sessionRecords}`],
 	};
 	// What a shared-placement root carries to its children (#4503): the snapshot each queued pool work row carries, and
@@ -770,11 +779,18 @@ async function installSource(
 	source: IndexSource,
 ): Promise<void> {
 	for (const sql of source.reset ?? []) await transaction.run(sql);
+	// Triggers of these names that an older build installed are replaced, not kept (#5065).
+	for (const trigger of source.triggers) await transaction.exec(dialect.dropTrigger(trigger.name, trigger.table));
 	await transaction.exec(source.triggers.map((trigger) => dialect.renderTrigger(trigger)).join("\n"));
 	await transaction.run(
 		`INSERT INTO ${t.sources} (source, watermark, backfilled_through) SELECT ?, COALESCE(MAX(${dialect.rowOrder()}), 0), 0 FROM ${source.table} WHERE true ${REPLACE_PROGRESS}`,
 		source.name,
 	);
+	if (source.version !== undefined)
+		await transaction.run(
+			`INSERT INTO ${t.sources} (source, watermark, backfilled_through) VALUES (?, 0, 0) ${REPLACE_PROGRESS}`,
+			source.version,
+		);
 }
 
 /**
@@ -820,17 +836,21 @@ async function readSourceStates(
 		.filter((source) => present.has(source.table))
 		.map((source) => {
 			const row = progress.get(source.name);
+			// A source whose triggers an older build installed is indexed again by collection, as after an upgrade.
+			const foreign = source.version !== undefined && !progress.has(source.version);
 			return {
 				source,
 				installed:
 					row !== undefined &&
+					!foreign &&
 					Number(row.watermark) >= 0 &&
 					source.triggers.every((trigger) => present.has(trigger.name)),
 				backfilled:
 					row !== undefined &&
+					!foreign &&
 					Number(row.watermark) >= 0 &&
 					Number(row.backfilled_through) >= Number(row.watermark),
-				deferred: row !== undefined && Number(row.watermark) === -1,
+				deferred: row !== undefined && (foreign || Number(row.watermark) === -1),
 			};
 		});
 }
@@ -841,6 +861,9 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	private readonly tables: SnapshotIndexTables;
 	private readonly sources: readonly IndexSource[];
 	private readonly dialect: StorageDialect;
+	/** The meta table of the run journal under the same prefix, which a chunked blob's write marks (#5065). */
+	private readonly journalMeta: string;
+	private readonly prefix: string;
 	readonly table: string;
 
 	private constructor(
@@ -848,11 +871,15 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		dialect: StorageDialect,
 		tables: SnapshotIndexTables,
 		sources: readonly IndexSource[],
+		journalMeta: string,
+		prefix: string,
 	) {
+		this.prefix = prefix;
 		this.database = database;
 		this.dialect = dialect;
 		this.tables = tables;
 		this.sources = sources;
+		this.journalMeta = journalMeta;
 		this.table = tables.blobs;
 	}
 
@@ -912,7 +939,15 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 				{ table: storageMigrationTable(prefix) },
 			);
 		}
-		const store = new SqlSnapshotBlobStore(database, dialect, t, indexSources(prefix, t, dialect));
+		const journalMeta = renderStorageIdentifiers("journal", { meta: "meta" }, prefix).meta;
+		const store = new SqlSnapshotBlobStore(
+			database,
+			dialect,
+			t,
+			indexSources(prefix, t, dialect),
+			journalMeta,
+			prefix,
+		);
 		await store.installIndex();
 		return store;
 	}
@@ -939,6 +974,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		const header = `INSERT INTO ${this.table} (hash, bytes, data, created_at, chunks) VALUES (?, ?, ?, ${now}, ?) ON CONFLICT(hash) DO UPDATE SET created_at = ${now}`;
 		const chunk = `INSERT INTO ${this.tables.blobChunks} (hash, idx, data) SELECT ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM ${this.table} WHERE hash = ?) ON CONFLICT DO NOTHING`;
 		const statements: { sql: string; params: SqliteValue[] }[] = [];
+		let chunked = false;
 		for (const blob of blobs) {
 			const { hash, data } = blob;
 			if (data.byteLength <= SNAPSHOT_BLOB_CHUNK_BYTES) {
@@ -946,20 +982,47 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 				continue;
 			}
 			const chunks = Math.ceil(data.byteLength / SNAPSHOT_BLOB_CHUNK_BYTES);
+			chunked = true;
 			for (let index = 0; index < chunks; index++) {
 				const bytes = data.subarray(index * SNAPSHOT_BLOB_CHUNK_BYTES, (index + 1) * SNAPSHOT_BLOB_CHUNK_BYTES);
 				statements.push({ sql: chunk, params: [hash, index, bytes, hash] });
 			}
 			statements.push({ sql: header, params: [hash, data.byteLength, new Uint8Array(), chunks] });
 		}
-		if (this.database.batch) {
+		if (!chunked && this.database.batch) {
 			await this.database.batch(statements);
 			return;
 		}
+		// Loaded only when a chunked blob is written: the journal's schema module is not in the store's eager graph.
+		const journal = chunked ? await import("../storage/journal-adoption.js") : undefined;
 		await this.database.transaction(async (transaction) => {
+			if (journal) await this.refuseOlderJournals(transaction, journal.upgradeRunJournalSchema);
 			for (const statement of statements) await transaction.run(statement.sql, ...statement.params);
 		});
 	}
+	/**
+	 * Makes the run journal under this store's prefix one that builds before chunked blobs refuse, in the transaction
+	 * that writes a chunked blob: they read one as empty, and open a journal only at the version they know (#5065). A
+	 * database without a journal, such as shared storage before any workflow run, gets a meta row at this build's
+	 * version, as a new journal's would be. A journal an older build created, at the previous version, is upgraded by
+	 * the journal's own upgrade, so its tables are what this build's journal expects. A newer or damaged one is left to
+	 * the journal's open to refuse.
+	 */
+	private async refuseOlderJournals(
+		transaction: SqliteExecutor,
+		upgrade: (transaction: SqliteExecutor, prefix: string, dialect: StorageDialect) => Promise<void>,
+	): Promise<void> {
+		const meta = this.journalMeta;
+		await transaction.exec(`CREATE TABLE IF NOT EXISTS ${meta}(schema_version ${this.dialect.types.int} NOT NULL)`);
+		const versions = await transaction.all<SqliteRow & { schema_version: SqliteValue }>(
+			`SELECT schema_version FROM ${meta}`,
+		);
+		if (versions.length === 0)
+			await transaction.run(`INSERT INTO ${meta} (schema_version) VALUES (?)`, RUN_JOURNAL_SCHEMA_VERSION);
+		else if (versions.length === 1 && versions[0]!.schema_version === RUN_JOURNAL_SCHEMA_VERSION_UNCHUNKED)
+			await upgrade(transaction, this.prefix, this.dialect);
+	}
+
 	/**
 	 * The blob's bytes, read a chunk per statement when it has chunks, so no response holds more than one chunk. A
 	 * chunked blob whose chunks are not all there, as when a collection deleted it during the read, is not returned.
