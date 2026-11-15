@@ -4,10 +4,8 @@ import type { PendingQuestion, PendingQuestionIndex } from "./pending-question-i
 import { type BrokerConnectedSession, messageFrameFor } from "./send-handler.js";
 
 export interface AskFailure {
-	/** The asker, when it is connected to this broker. */
-	readonly asker: BrokerConnectedSession | undefined;
-	/** An away asker's return address: its failure is held for it until it is back. */
-	readonly askerReturnAddress?: string;
+	/** The asker, connected to this broker. */
+	readonly asker: BrokerConnectedSession;
 	readonly question: PendingQuestion;
 	/** The recipient the failure is from, as the asker's ask names it. */
 	readonly from: SessionInfo;
@@ -23,8 +21,8 @@ export interface AskFailure {
 /**
  * #5004: deliver a failure the broker generates for an ask as durably as a reply. An asker that confirms saves has it
  * held under its return address until it confirms (`received`), and is sent it again when it registers again without
- * having confirmed; its inbox saves it once, by its id. An away asker has it held for when it is back. A client that
- * does not confirm saves gets what it always got, written once.
+ * having confirmed; its inbox saves it once, by its id. A client that does not confirm saves gets what it always got,
+ * written once.
  */
 export function deliverAskFailure(failure: AskFailure): void {
 	const message: Message = {
@@ -42,17 +40,12 @@ export function deliverAskFailure(failure: AskFailure): void {
  * durably as a reply: see {@link deliverAskFailure}.
  */
 export function deliverHeldToAsker(
-	target: Pick<AskFailure, "asker" | "askerReturnAddress" | "question" | "from" | "pending" | "write" | "legacy">,
+	target: Pick<AskFailure, "asker" | "question" | "from" | "pending" | "write" | "legacy">,
 	message: Message,
 ): void {
 	const { asker, question, from, pending, write } = target;
-	if (asker === undefined) {
-		const away = target.askerReturnAddress;
-		if (away !== undefined && away !== "") pending.holdForAwayAsker({ ...question, senderReturnAddress: away }, from, message);
-		return;
-	}
 	const returnAddress = asker.registrationReturnAddress;
-	if (asker.acknowledgesReceipt !== true || returnAddress === undefined || returnAddress === "") {
+	if (asker.acknowledgesReceipt !== true || !returnAddress) {
 		write(asker.socket, target.legacy ?? messageFrameFor(asker, from, message));
 		return;
 	}

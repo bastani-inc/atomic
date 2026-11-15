@@ -1990,18 +1990,19 @@ class IntercomBroker {
               this.pendingQuestions.record(id, route.replierSessionId, route.questionId);
             // #5004: held again under its own return address until it saved it, so a subagent that dies first gets it again.
             const child = this.sessions.get(id);
-            for (const held of this.pendingQuestions.takeHeldForReleasedChild(registered, supervisorId))
-              deliverHeldToAsker(
-                {
-                  asker: child,
-                  question: { senderSessionId: id, targetSessionId: held.from.id, messageId: held.message.replyTo ?? held.message.id },
-                  from: held.from,
-                  pending: this.pendingQuestions,
-                  write: writeMessageIfOpen,
-                  legacy: { type: "message", from: held.from, message: held.message },
-                },
-                held.message,
-              );
+            if (child !== undefined)
+              for (const held of this.pendingQuestions.takeHeldForReleasedChild(registered, supervisorId))
+                deliverHeldToAsker(
+                  {
+                    asker: child,
+                    question: { senderSessionId: id, targetSessionId: held.from.id, messageId: held.message.replyTo ?? held.message.id },
+                    from: held.from,
+                    pending: this.pendingQuestions,
+                    write: writeMessageIfOpen,
+                    legacy: { type: "message", from: held.from, message: held.message },
+                  },
+                  held.message,
+                );
             for (const question of this.pendingQuestions.takeParked(registered, supervisorId)) {
               this.pendingQuestions.record(question.senderSessionId, id, question.messageId);
               const asker = this.sessions.get(question.senderSessionId);

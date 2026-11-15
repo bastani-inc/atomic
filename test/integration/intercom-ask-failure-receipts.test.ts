@@ -129,27 +129,34 @@ const RECIPIENT_FAILURES = [
 	},
 ] as const;
 
-/** An asker asks a connected recipient, which then fails the ask while the asker is connected. */
+/** An asker asks a connected recipient twice, which then fails both asks while the asker is connected. */
 async function askThenFail(
 	label: string,
-	asker: { confirms?: boolean; acknowledgesReceipt?: boolean },
+	asker: { confirms?: boolean; acknowledgesReceipt?: boolean; returnAddress?: string },
 	fail: (client: Client) => Promise<void>,
 ) {
-	const askerAddress = { name: `asker-${label}`, returnAddress: randomUUID() };
-	const first = await connect(askerAddress.name, { ...askerAddress, ...asker });
+	const askerAddress = { name: `asker-${label}`, returnAddress: asker.returnAddress ?? randomUUID() };
+	const first = await connect(askerAddress.name, { ...asker, ...askerAddress });
 	const askerId = idOf(first.client);
 	const recipient = await connect(`recipient-${label}`, { returnAddress: randomUUID() });
-	const questionId = randomUUID();
-	const asked = await first.client.send(`recipient-${label}`, {
-		messageId: questionId,
-		text: "which port?",
-		expectsReply: true,
-	});
-	assert.equal(asked.delivered, true, asked.reason);
-	await vi.waitFor(() => assert.ok(recipient.received.some((message) => message.id === questionId)), WAIT);
+	const questionIds = [randomUUID(), randomUUID()] as const;
+	for (const messageId of questionIds) {
+		const asked = await first.client.send(`recipient-${label}`, {
+			messageId,
+			text: "which port?",
+			expectsReply: true,
+		});
+		assert.equal(asked.delivered, true, asked.reason);
+	}
+	await vi.waitFor(
+		() => assert.ok(questionIds.every((id) => recipient.received.some((message) => message.id === id))),
+		WAIT,
+	);
 	await fail(recipient.client);
-	await vi.waitFor(() => assert.equal(failuresOf(first, questionId).length, 1), WAIT);
-	return { askerAddress, askerId, first, questionId };
+	await vi.waitFor(() => {
+		for (const id of questionIds) assert.equal(failuresOf(first, id).length, 1);
+	}, WAIT);
+	return { askerAddress, askerId, first, questionId: questionIds[0], otherQuestionId: questionIds[1] };
 }
 
 beforeAll(startBroker, REAL_BROKER_TEST_TIMEOUT_MS);
@@ -160,8 +167,13 @@ for (const { how, reason, fail } of RECIPIENT_FAILURES) {
 		`an asker that drops before saving the failure of an ask whose recipient ${how} gets it again once it is back, once (#5004)`,
 		async () => {
 			const label = `unsaved-${how.replace(/\W/g, "-")}-5004`;
-			const { askerAddress, askerId, first, questionId } = await askThenFail(label, { confirms: false }, fail);
+			const { askerAddress, askerId, first, questionId, otherQuestionId } = await askThenFail(
+				label,
+				{ confirms: false },
+				fail,
+			);
 			const [failureId] = failuresOf(first, questionId);
+			const [otherFailureId] = failuresOf(first, otherQuestionId);
 			assert.notEqual(failureId, "peer_disconnected", "a receipt-confirming asker is sent a failure it can confirm");
 
 			// The asker crashes before saving it: its connection drops without confirming, and its session comes back.
@@ -169,7 +181,11 @@ for (const { how, reason, fail } of RECIPIENT_FAILURES) {
 			await sleep(SETTLE_MS);
 			const back = await connect(askerAddress.name, { ...askerAddress, preferredSessionId: askerId });
 			assert.equal(idOf(back.client), askerId);
-			await vi.waitFor(() => assert.deepEqual(failuresOf(back, questionId), [failureId]), WAIT);
+			// Each ask's failure comes back, once.
+			await vi.waitFor(() => {
+				assert.deepEqual(failuresOf(back, questionId), [failureId]);
+				assert.deepEqual(failuresOf(back, otherQuestionId), [otherFailureId]);
+			}, WAIT);
 			assert.match(back.received.find((message) => message.id === failureId)?.replyError ?? "", reason);
 
 			// Saved this time: it is not sent again.
@@ -286,6 +302,60 @@ test(
 			preferredSessionId: childId,
 			supervisor: await owner.client.authorizeSupervisorChild(childName),
 		});
+		await sleep(SETTLE_MS);
+		assert.deepEqual(failuresOf(again, questionId), [], "a saved failure is delivered once");
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
+
+test(
+	"an asker that drops before saving the failure of its ask to a released subagent whose owner ended gets it again once it is back, once (#5004)",
+	async () => {
+		const childName = "subagent-parked-owner-ends-5004";
+		const owner = await connect("owner-parked-owner-ends-5004", {
+			returnAddress: randomUUID(),
+			ownerToken: randomUUID(),
+		});
+		const child = await connect(childName, {
+			returnAddress: randomUUID(),
+			supervisor: await owner.client.authorizeSupervisorChild(childName),
+		});
+		const childId = idOf(child.client);
+		const askerAddress = { name: "asker-parked-owner-ends-5004", returnAddress: randomUUID() };
+		const first = await connect(askerAddress.name, { ...askerAddress, confirms: false });
+		const askerId = idOf(first.client);
+		const questionId = randomUUID();
+		const asked = await first.client.send(childName, {
+			messageId: questionId,
+			text: "which port?",
+			expectsReply: true,
+		});
+		assert.equal(asked.delivered, true, asked.reason);
+		await vi.waitFor(() => assert.ok(child.received.some((message) => message.id === questionId)), WAIT);
+
+		// The subagent is released with the ask open, then its owner ends for good: the ask can never be answered.
+		await owner.client.reserveReleasedChildren([{ childName, wake: false }]);
+		await child.client.disconnect();
+		await vi.waitFor(
+			async () => assert.ok(!(await owner.client.listSessions()).some((session) => session.id === childId)),
+			WAIT,
+		);
+		await owner.client.disconnect();
+		await vi.waitFor(() => assert.equal(failuresOf(first, questionId).length, 1), WAIT);
+		const [failureId] = failuresOf(first, questionId);
+		assert.equal(
+			first.received.find((message) => message.id === failureId)?.replyError,
+			`Session "${childId}" ended before replying`,
+		);
+
+		// The asker crashes before saving it, and comes back.
+		await first.client.disconnect({ resumable: true });
+		await sleep(SETTLE_MS);
+		const back = await connect(askerAddress.name, { ...askerAddress, preferredSessionId: askerId });
+		await vi.waitFor(() => assert.deepEqual(failuresOf(back, questionId), [failureId]), WAIT);
+		await back.client.disconnect({ resumable: true });
+		await sleep(SETTLE_MS);
+		const again = await connect(askerAddress.name, { ...askerAddress, preferredSessionId: askerId });
 		await sleep(SETTLE_MS);
 		assert.deepEqual(failuresOf(again, questionId), [], "a saved failure is delivered once");
 	},
