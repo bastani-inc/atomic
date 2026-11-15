@@ -16,7 +16,7 @@ import {
 	type WorktreeSetup,
 } from "../shared/worktree.js";
 import { resolveWorktreeStageCwd } from "../shared/worktree-cwd.js";
-import { withoutUndefinedProperties } from "./executor-task-prompts.js";
+import { withoutUndefinedProperties, withSharedDefaults } from "./executor-task-prompts.js";
 
 export type { GitWorktreeSetupCache } from "../shared/worktree.js";
 export { createGitWorktreeSetupCache, createGitWorktreeSetupCacheOwner } from "../shared/worktree.js";
@@ -152,22 +152,13 @@ export function stageOptionsWithInputDefaults<T extends StageOptions>(
 	// A stage's own workspace replaces the worktree its run derived from inputs.
 	const defaults = options?.workspace === undefined ? allDefaults : withoutWorktree;
 	if (Object.keys(defaults).length === 0) return options;
-	return {
-		...defaults,
-		...withoutUndefinedProperties(options ?? {}),
+	const own = withoutUndefinedProperties(options ?? {});
+	return withSharedDefaults<T>(defaults, {
+		...own,
 		...(defaults.workspace !== undefined && options?.workspace !== undefined
 			? { workspace: inheritWorkspace(defaults.workspace, options.workspace) }
 			: {}),
-		...(defaults.modelConstraints !== undefined && options?.modelConstraints !== undefined
-			? {
-					inheritedModelConstraints: [
-						...(defaults.inheritedModelConstraints ?? []),
-						defaults.modelConstraints,
-						...(options.inheritedModelConstraints ?? []),
-					],
-				}
-			: {}),
-	} as T;
+	});
 }
 
 export function stageOptionsWithGitWorktree<T extends StageOptions>(
