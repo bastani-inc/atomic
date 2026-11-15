@@ -453,6 +453,7 @@ test("public hosts that only resemble private ones still use the remote fallback
 		"http://[0:0:0:1::a00:1]/",
 		"http://100.63.255.255/",
 		"http://100.128.0.1/",
+		"http://101.64.0.1/",
 		"http://[fbff::1]/",
 		"http://[fe7f::1]/",
 	];
