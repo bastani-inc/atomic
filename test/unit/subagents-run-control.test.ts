@@ -50,6 +50,7 @@ import {
 	RELEASED_CHILD_WAKE_FAILURE_LABEL,
 } from "../../packages/subagents/src/runs/foreground/released-child-wakes.js";
 import {
+	interruptedStillRunningResult,
 	lateToolResultMessage,
 	SUBAGENT_OWNER_GENERATION,
 	SUBAGENT_RELEASE_AFTER_MS,
@@ -4538,4 +4539,33 @@ test("a result batched with a resume is kept for the child when the resumed run 
 	await h.waitForLatest(childId, (record) => h.runs.length === 3 && record.state === "terminal");
 
 	assert.deepEqual(h.runs.at(-1)?.options.resumeToolResults, [green], "the resume after the pause hands it over");
+});
+
+test("a released child of the earlier process told a call is still running starts its waited call again once and hears of the lost call once (#5014)", async () => {
+	const h = harness();
+	const deploy = { toolCallId: "deploy-2", toolName: "wait_for_deploy" };
+	await releasedByEarlierProcess(h, "restart-still", {
+		stillRunning: [{ ...deploy, ownerGeneration: "earlier-process" }],
+	});
+	const redispatched = Promise.withResolvers<DetachedToolResult>();
+	h.redispatchCalls = [{ ...RELEASED_CALL, result: redispatched.promise, abort() {} }];
+	const lost = lateToolResultMessage(interruptedStillRunningResult(deploy));
+	const toldLost = () => h.runs.filter((run) => [run.task, ...(run.options.resumeFollowUps ?? [])].includes(lost));
+
+	const dispatcher = bindProcessWakes(h);
+	const heard = await h.waitForLatest("restart-still:0", (record) => toldLost().length > 0 && clearedOk(record));
+	assert.ok(heard.taskId);
+	await settled(h, heard.taskId);
+	await dispatcher.whenIdle();
+	assert.equal(h.runs.filter((run) => run.options.redispatchDetachedCalls).length, 1, "its call starts again once");
+
+	const green = waitResult("CI green after the restart");
+	redispatched.resolve(green);
+	await h.waitForLatest(
+		"restart-still:0",
+		(record) => h.runs.some((run) => run.task === lateToolResultMessage(green)) && clearedOk(record),
+	);
+	await dispatcher.whenIdle();
+	assert.equal(toldLost().length, 1, "the lost call is reported once");
+	assert.equal(h.runs.filter((run) => run.options.redispatchDetachedCalls).length, 1);
 });

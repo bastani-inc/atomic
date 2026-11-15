@@ -221,6 +221,17 @@ test(
 		env.faux.setResponses([fauxAssistantMessage("still done.")]);
 		await wake(second);
 		assert.deepEqual(second, [["ci-1"]]);
+		// A run nobody asked to report to is handed it again too.
+		env.faux.setResponses([fauxAssistantMessage("done again.")]);
+		const unreported = await runSingleInProcess(env.root, agent, "watch CI", {
+			...env.options("release-early", {
+				sessionManager: await SessionManager.open(store, childSession.getSessionId()),
+				resumeSession: true,
+				resumeToolResults: [green],
+				skipTaskPrompt: true,
+			}),
+		});
+		assert.notEqual(unreported.status, "error", unreported.error);
 	},
 	LIVE_CHILD_TIMEOUT_MS,
 );

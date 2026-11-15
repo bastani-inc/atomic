@@ -1467,8 +1467,10 @@ test("a wake keeps tracking the calls the child was told are still running until
 	const build = { toolCallId: "build-4", toolName: "wait_for_build" } as const;
 	const tracked: SubagentChildRecord = {
 		...record,
+		// lint-3 was told so before too: its call is still pending, so this wake tells it again.
 		stillRunning: [
 			{ ...DEPLOY_CALL, ownerGeneration: SUBAGENT_OWNER_GENERATION },
+			{ ...LINT_CALL, ownerGeneration: SUBAGENT_OWNER_GENERATION },
 			{ ...build, ownerGeneration: SUBAGENT_OWNER_GENERATION },
 		],
 	};
