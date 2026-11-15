@@ -14,7 +14,7 @@ import { ensureTool } from "../../utils/tools-manager.ts";
 import { experimentalToolSamplingProperty } from "../experimental.ts";
 import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { FileToolAbortedError } from "./file-tool-errors.ts";
-import { normalizePathLikeInput, splitPathLikeGlob } from "./glob-path-utils.ts";
+import { literalPathLike, normalizePathLikeInput, splitPathLikeGlob } from "./glob-path-utils.ts";
 import { pathExists, resolveToCwd } from "./path-utils.ts";
 import { getTextOutput } from "./render-utils.ts";
 import { type InternalResourceContext, isInternalUrl, resolveInternalSelector } from "./resource-selectors.ts";
@@ -160,6 +160,7 @@ async function expandDelimitedFindPaths(
 		const resolvedRaw = await resolveFindInternal(raw, cwd, ctx);
 		const rawParsed = splitPathLikeGlob(resolvedRaw);
 		if (
+			(await ops.exists(resolveFindBackendPath(resolvedRaw, cwd, customBackend))) ||
 			(rawParsed.glob === undefined &&
 				(await ops.exists(resolveFindBackendPath(rawParsed.basePath, cwd, customBackend)))) ||
 			(await delimiterInExistingGlobRoot(resolvedRaw, cwd, ops, customBackend))
@@ -194,10 +195,19 @@ async function expandDelimitedFindPaths(
 	}
 	return expanded;
 }
-function normalizeFindTargets(cwd: string, pathsValue: string[] | undefined, customBackend = false): FindTarget[] {
+async function normalizeFindTargets(
+	cwd: string,
+	pathsValue: string[] | undefined,
+	ops: FindOperations,
+	customBackend = false,
+): Promise<FindTarget[]> {
 	if (!pathsValue || pathsValue.length === 0) throw new Error("find.paths must include at least one path or glob.");
-	return pathsValue.map((searchPath) => {
-		const parsed = splitPathLikeGlob(searchPath);
+	const literal = await Promise.all(
+		pathsValue.map((searchPath) => ops.exists(resolveFindBackendPath(searchPath, cwd, customBackend))),
+	);
+	return pathsValue.map((searchPath, index) => {
+		// An existing path is used exactly, so `app/[id]/page.tsx` is that file, not the pattern `app/[id]` (#5177).
+		const parsed = literal[index] ? literalPathLike(searchPath) : splitPathLikeGlob(searchPath);
 		const target = {
 			searchPath: resolveFindBackendPath(parsed.basePath, cwd, customBackend),
 			pattern: parsed.glob ?? "**/*",
@@ -458,9 +468,10 @@ export function createFindToolDefinition(
 				(async () => {
 					try {
 						const ops = customOps ?? defaultFindOperations;
-						const targets = normalizeFindTargets(
+						const targets = await normalizeFindTargets(
 							executionCwd,
 							await expandDelimitedFindPaths(paths, executionCwd, ops, resourceCtx, !!customOps),
+							ops,
 							!!customOps,
 						);
 						const searchPaths = targets.map((target) => target.searchPath);

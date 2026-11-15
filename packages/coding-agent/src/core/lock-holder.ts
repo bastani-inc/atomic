@@ -1,8 +1,16 @@
 import { randomUUID } from "node:crypto";
-import { readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
-import { basename, dirname, join } from "node:path";
-import { processMayRun, takeTakeoverMutex } from "./lock-takeover.ts";
+import {
+	HOLDER_TEMP_STALE_MS,
+	lockHolderPath,
+	processMayRun,
+	removeLeftoverHolderFiles,
+	takeTakeoverMutex,
+} from "./lock-takeover.ts";
+
+export { HOLDER_TEMP_STALE_MS, lockHolderPath };
+
 import { lockHolder } from "./lock-wait.ts";
 import { processStartToken } from "./process-start-token.ts";
 import { renameReplacing } from "./rename-retry.ts";
@@ -18,33 +26,6 @@ interface LockHolderRecord {
 	readonly started?: string;
 	/** The lock directory this holder created, as {@link lockHolder} names it. */
 	readonly lock: string;
-}
-
-/** The file beside lock directory `lockPath` that names its holder. */
-export function lockHolderPath(lockPath: string): string {
-	return `${lockPath}.holder`;
-}
-
-/** How old a holder record's temporary file must be before it is judged left by a killed writer and removed. */
-export const HOLDER_TEMP_STALE_MS = 60_000;
-
-/**
- * Removes the temporary files of holder records for the lock at `lockPath` that writers killed mid-write left, once
- * they are {@link HOLDER_TEMP_STALE_MS} old. Called under the takeover mutex, after a takeover.
- */
-function removeLeftoverHolderFiles(lockPath: string): void {
-	const directory = dirname(lockPath);
-	const prefix = `${basename(lockHolderPath(lockPath))}.`;
-	try {
-		for (const name of readdirSync(directory)) {
-			if (!name.startsWith(prefix) || !name.endsWith(".tmp")) continue;
-			const path = join(directory, name);
-			const stats = statSync(path, { throwIfNoEntry: false });
-			if (stats !== undefined && Date.now() - stats.mtimeMs > HOLDER_TEMP_STALE_MS) rmSync(path, { force: true });
-		}
-	} catch {
-		// Best effort: a leftover file is only clutter.
-	}
 }
 
 /**

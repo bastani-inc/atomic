@@ -64,6 +64,8 @@ export async function reclaimReleasedRunsOwnedBy(backend: DurableWorkflowBackend
 					undefined,
 					undefined,
 					handle.updatedAt,
+					undefined,
+					null,
 				);
 				if (reclaimed) releasedRuns.get(backend)?.delete(handle.workflowId);
 			}),

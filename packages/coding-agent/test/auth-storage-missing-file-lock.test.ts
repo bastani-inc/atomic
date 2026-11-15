@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import {
+	chmodSync,
+	mkdtempSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	statSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -57,4 +66,26 @@ it("holds the auth.json lock while saving the first credential, so another proce
 	assert.deepEqual(Object.keys(saved), ["mine"]);
 	assert.equal(anotherProcessSaves("other"), true);
 	assert.deepEqual(Object.keys(JSON.parse(readFileSync(authPath, "utf8")) as object).sort(), ["mine", "other"]);
+});
+
+it("leaves an existing auth.json as it is when it makes sure the file exists (#5161)", async (context) => {
+	if (process.platform === "win32") context.skip();
+	writeFileSync(authPath, JSON.stringify({ kept: { type: "api_key", key: "kept" } }));
+	chmodSync(authPath, 0o640);
+	await new FileAuthStorageBackend(authPath, [authPath]).withLockAsync(async (current) => ({
+		result: undefined,
+		next: current,
+	}));
+	assert.equal(statSync(authPath).mode & 0o777, 0o640, "an existing file's mode is not changed");
+	assert.deepEqual(Object.keys(JSON.parse(readFileSync(authPath, "utf8")) as object), ["kept"]);
+});
+
+it("reports an auth.json that cannot be resolved, rather than locking a name beside it (#5161)", (context) => {
+	if (process.platform === "win32") context.skip();
+	symlinkSync(authPath, authPath);
+	const backend = new FileAuthStorageBackend(authPath, [authPath]);
+	assert.throws(
+		() => backend.withLock(() => ({ result: undefined, next: undefined })),
+		(error: NodeJS.ErrnoException) => error.code === "ELOOP",
+	);
 });
