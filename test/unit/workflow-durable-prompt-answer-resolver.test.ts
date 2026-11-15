@@ -121,3 +121,12 @@ test("a prompt with no completed record, or another run's completed prompt, reso
 	assert.equal(resolve("foreign"), undefined);
 	assert.equal(resolve("missing"), undefined);
 });
+
+test("another prompt's answer of the same run never answers this one (#4941)", async () => {
+	const resolve = await resolverOver([
+		stageRecord("other-prompt", "completed", { promptAnswer: { response: "other-answer" } }),
+		stageRecord("prompt", "completed"),
+	]);
+	assert.deepEqual(resolve("prompt"), { kind: "unanswered", laterRecorded: false });
+	assert.deepEqual(resolve("other-prompt"), { kind: "answered", answer: { response: "other-answer" } });
+});
