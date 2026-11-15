@@ -270,3 +270,10 @@ test("borrowed fallback rechecks hard eligibility after auth resolution", async 
 	});
 	assert.equal(result, undefined);
 });
+
+test("a model the main chat blocked earlier in the turn is never borrowed or asked for credentials (#5046)", async () => {
+	const borrow = borrower({ blockedModels: [primary, secondary] });
+	const { seen, resolveAuth } = trackedAuth();
+	assert.equal((await borrow(new Set(), resolveAuth))?.model.id, "planner-c");
+	assert.deepEqual(seen, ["planner-c"]);
+});

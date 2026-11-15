@@ -6,7 +6,7 @@ import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 
 useTemporaryAgentDir();
 
-const { crossNodeDigest, LOCAL_RETRY_LOOKUP_BOUND_MS, MultiNodeRouter } = await import(
+const { crossNodeDigest, LOCAL_RETRY_LOOKUP_BOUND_MS, MultiNodeRouter, REGISTRATION_STEP_ATTEMPTS } = await import(
 	"../../packages/intercom/broker/multinode-router.js"
 );
 const { PendingQuestionIndex } = await import("../../packages/intercom/broker/pending-question-index.js");
@@ -1767,9 +1767,9 @@ describe("an ask to a subagent that is then released keeps waiting for it across
 	}
 
 	/** The child and its owner on B; one asker on A and one on C asked the child, and the owner released it. */
-	async function parkedScene(wrapB?: (state: State) => State): Promise<ParkedScene> {
+	async function parkedScene(wrapB?: (state: State) => State, wrapC?: (state: State) => State): Promise<ParkedScene> {
 		const shared = await cluster();
-		const [a, b, c] = [await startNode(shared), await startNode(shared, wrapB), await startNode(shared)];
+		const [a, b, c] = [await startNode(shared), await startNode(shared, wrapB), await startNode(shared, wrapC)];
 		const owner = session("owner");
 		await register(b, owner);
 		const child = session("worker", { supervisorId: owner.info.id });
@@ -1988,6 +1988,7 @@ describe("an ask to a subagent that is then released keeps waiting for it across
 			assert.deepEqual(deliveredTo(), [], "nothing takes the queued message before the renewal");
 			vi.advanceTimersByTime(BROKER_LEASE_RENEW_INTERVAL_MS);
 			await vi.waitFor(() => assert.equal(deliveredTo().length, 1), waitFor);
+			assert.deepEqual(vi.mocked(console.error).mock.calls, [], "the takeover reports no error");
 		} finally {
 			vi.useRealTimers();
 		}
@@ -2011,6 +2012,156 @@ describe("an ask to a subagent that is then released keeps waiting for it across
 			await vi.waitFor(
 				async () => assert.notEqual((await c.state.reservations.read(key)).status, "active"),
 				waitFor,
+			);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	type RegistrationStoreCall = "insertionMark" | "consume" | "rebindParked";
+
+	/** #5138: the store call a woken subagent's registration makes throws while `failing` says so. */
+	function failing(call: RegistrationStoreCall, failing: () => boolean, calls: { count: number }) {
+		return (state: State): State => {
+			const fail = () => {
+				calls.count++;
+				if (failing()) throw new Error(`${call} failed: shared database is busy`);
+			};
+			return call === "rebindParked"
+				? {
+						...state,
+						pendingAsks: {
+							...state.pendingAsks,
+							rebindParked: async (parked, sessionId) => {
+								fail();
+								return state.pendingAsks.rebindParked(parked, sessionId);
+							},
+						},
+					}
+				: {
+						...state,
+						reservations: {
+							...state.reservations,
+							...(call === "insertionMark"
+								? {
+										insertionMark: async () => {
+											fail();
+											return state.reservations.insertionMark();
+										},
+									}
+								: {
+										consume: async (reservationKey, registered) => {
+											fail();
+											return state.reservations.consume(reservationKey, registered);
+										},
+									}),
+						},
+					};
+		};
+	}
+
+	for (const call of ["insertionMark", "consume", "rebindParked"] as const) {
+		test(`a subagent woken under another id while its registration's ${call} fails once takes its asks along once the store recovers (#5138)`, async () => {
+			vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+			try {
+				let failures = 0;
+				const calls = { count: 0 };
+				const scene = await parkedScene(
+					undefined,
+					failing(call, () => failures++ === 0, calls),
+				);
+				const key = releasedReservationKey("worker");
+				reserveReleased(scene.b, scene.owner, "worker");
+				await vi.waitFor(
+					async () => assert.equal((await scene.b.state.reservations.read(key)).status, "active"),
+					waitFor,
+				);
+				const woken = reconnected(scene.child, randomUUID());
+				await registerWoken(scene.c, woken, scene.owner);
+				assert.equal(failures > 0, true, "the store call failed");
+				vi.advanceTimersByTime(BROKER_LEASE_RENEW_INTERVAL_MS);
+				await vi.waitFor(
+					() =>
+						assert.deepEqual(
+							framesOf(scene.localAsker).filter((frame) => frame.type === "peer_rebound"),
+							reboundFrames(scene, woken),
+						),
+					waitFor,
+				);
+				const sent = answer(woken, scene.remoteAsker, scene.questions.remote);
+				scene.c.router.routeSend(sent.request);
+				await vi.waitFor(
+					() =>
+						assert.ok(
+							framesOf(scene.remoteAsker).some(
+								(frame) => frame.type === "message" && frame.message.id === sent.id,
+							),
+						),
+					waitFor,
+				);
+				// Without the insertion mark, only reservations older than the registration may end: none is ended by name.
+				if (call !== "insertionMark") {
+					await vi.waitFor(
+						async () => assert.notEqual((await scene.c.state.reservations.read(key)).status, "active"),
+						waitFor,
+					);
+				}
+				const settledCalls = calls.count;
+				vi.advanceTimersByTime(BROKER_LEASE_RENEW_INTERVAL_MS);
+				await flush();
+				assert.equal(calls.count, settledCalls, "a finished registration is not retried");
+				assert.equal(
+					framesOf(scene.localAsker).filter((frame) => frame.type === "peer_rebound").length,
+					1,
+					"rebinds once",
+				);
+				const reported = vi.mocked(console.error).mock.calls.map(([text]) => String(text));
+				assert.ok(reported.length > 0, "the failure is reported");
+				assert.deepEqual(
+					reported.filter((text) => !text.includes(`${call} failed`)),
+					[],
+					"nothing else fails",
+				);
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+	}
+
+	test("a registration whose reservation can never be consumed still takes its asks along, and is reported and given up, not retried forever (#5138)", async () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+		try {
+			const calls = { count: 0 };
+			const scene = await parkedScene(
+				undefined,
+				failing("consume", () => true, calls),
+			);
+			const woken = reconnected(scene.child, randomUUID());
+			await registerWoken(scene.c, woken, scene.owner);
+			assert.deepEqual(
+				framesOf(scene.localAsker).filter((frame) => frame.type === "peer_rebound"),
+				reboundFrames(scene, woken),
+			);
+			let previous = -1;
+			for (let tick = 0; tick < 200 && calls.count !== previous; tick++) {
+				previous = calls.count;
+				for (let quiet = 0; quiet < 3; quiet++) {
+					vi.advanceTimersByTime(BROKER_LEASE_RENEW_INTERVAL_MS);
+					await flush();
+				}
+			}
+			assert.equal(calls.count, previous, "the retries stop");
+			assert.equal(calls.count, REGISTRATION_STEP_ATTEMPTS, "the consume is tried until it is given up");
+			const reported = vi.mocked(console.error).mock.calls.map(([text]) => String(text));
+			assert.ok(reported.length > 0);
+			assert.deepEqual(
+				reported.filter((text) => !text.includes("consume failed")),
+				[],
+			);
+			assert.equal(
+				framesOf(scene.localAsker).filter((frame) => frame.type === "peer_rebound").length,
+				1,
+				"rebinds once",
 			);
 		} finally {
 			vi.useRealTimers();
@@ -2306,6 +2457,70 @@ describe("a released asker's question lasts as long as the ask does (#4852)", ()
 		assert.equal(only(handoffsTo(owner), "handoffs").replyTo, questionId);
 		const kept = await b.state.releasedAsks.lookup({ questionId: refused, replierSessionId: replier.info.id });
 		assert.equal(kept.status === "found" && kept.ask.state, "open");
+	});
+
+	test("a released asker's failure queued just before its broker stops still reaches the owner once (#4992)", async () => {
+		const shared = await cluster();
+		const a = await startNode(shared);
+		// The replier's broker stops right after queuing the failure, before it claims the question for it.
+		const b = await startNode(shared, (state) => ({
+			...state,
+			releasedAsks: {
+				...state.releasedAsks,
+				claim: async (claim) => {
+					if (claim.replyMessageId.startsWith("ended:")) throw new Error("broker stopped");
+					return state.releasedAsks.claim(claim);
+				},
+			},
+		}));
+		const owner = session("owner");
+		await register(a, owner);
+		const replier = session("replier");
+		await register(b, replier);
+		const { questionId } = await releaseChild(a, owner, "worker", replier);
+
+		await leave(b, replier);
+		await vi.waitFor(() => assert.equal(handoffsTo(owner).length, 1), { timeout: 2_000, interval: 5 });
+		const handoff = only(handoffsTo(owner), "handoffs");
+		assert.equal(handoff.replyTo, questionId);
+		assert.equal(handoff.message.replyError, 'Session "replier" ended before replying');
+		await flush();
+		assert.equal(handoffsTo(owner).length, 1, "the owner is told once");
+	});
+
+	test("a released asker's failure is queued for its offline owner even when the owner's queue is full (#4992)", async () => {
+		const shared = await cluster();
+		const a = await startNode(shared);
+		// The offline owner's queue is at its limit: the outbox takes only what is owed to an open ask.
+		const b = await startNode(shared, (state) => ({
+			...state,
+			outbox: {
+				...state.outbox,
+				enqueue: async (request) =>
+					request.owed === true
+						? state.outbox.enqueue(request)
+						: { status: "full", limit: 1_000, byteLimit: 64 * 1024 * 1024 },
+			},
+		}));
+		const replier = session("replier");
+		await register(b, replier);
+		const offline = session("offline-owner");
+		await a.state.knownSessions.record({
+			targetIdentity: deliveryTargetIdentity(offline),
+			intercomSessionId: offline.info.id,
+			name: "offline-owner",
+			group: CREW,
+			groups: [CREW],
+		});
+		const { questionId } = await releaseChild(a, offline, "waiting", replier);
+
+		await leave(b, replier);
+		await vi.waitFor(async () => {
+			const row = await b.state.outbox.read(`ended:${questionId}`);
+			assert.equal(row.status === "found" && row.row.targetIdentity, deliveryTargetIdentity(offline));
+		});
+		const held = await b.state.releasedAsks.lookup({ questionId, replierSessionId: replier.info.id });
+		assert.equal(held.status === "found" && held.ask.replyMessageId, `ended:${questionId}`);
 	});
 
 	test("a recipient that ends long after the release fails the released asker's question once, through its owner (#4852)", async () => {

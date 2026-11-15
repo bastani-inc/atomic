@@ -33,6 +33,8 @@ const repoRoot = resolve(import.meta.dirname, "../..");
 const extensionDir = join(repoRoot, "packages/intercom");
 const storageAdapterModule = join(repoRoot, "test/fixtures/storage-adapter.ts");
 const BROKER_READY_TIMEOUT_MS = 10_000;
+/** Generously more database calls than a broker's shared storage opening makes (its tables, columns and indexes). */
+const SHARED_STORAGE_OPENING_CALLS = 60;
 const CLIENT_DISCONNECT_TIMEOUT_MS = 5_000;
 const BROKER_SHUTDOWN_TIMEOUT_MS = 15_000;
 /** How long start() waits for a broker to write its lease before reporting single-node brokers. */
@@ -163,6 +165,11 @@ export class TwoBrokerHarness {
 		readonly root: string,
 		nodes: Partial<Record<BrokerNode, NodeState>>,
 		private readonly gatedStorageOpening?: BrokerNode,
+		/**
+		 * How long a broker may take to open the shared storage: every call of the opening waits the configured database
+		 * delay, so a slow database extends it.
+		 */
+		private readonly sharedRoutingReadyTimeoutMs = BROKER_READY_TIMEOUT_MS,
 	) {
 		this.sharedDatabasePath = join(root, "shared.sqlite");
 		this.nodes = nodes;
@@ -195,7 +202,12 @@ export class TwoBrokerHarness {
 				broker: undefined,
 			};
 		}
-		const harness = new TwoBrokerHarness(root, nodes, options.gatedStorageOpening);
+		const harness = new TwoBrokerHarness(
+			root,
+			nodes,
+			options.gatedStorageOpening,
+			BROKER_READY_TIMEOUT_MS + SHARED_STORAGE_OPENING_CALLS * (options.databaseCallDelayMs ?? 0),
+		);
 		try {
 			for (const node of harness.nodeNames) await harness.startBroker(node);
 			harness.advertised = await harness.probeMultiNodeRouting();
@@ -263,10 +275,11 @@ export class TwoBrokerHarness {
 		return broker !== undefined && broker.exitCode === null && broker.signalCode === null;
 	}
 
-	async startBroker(node: BrokerNode): Promise<void> {
+	/** `env`: added to this start's broker environment only, as a crash point (`ATOMIC_INTERCOM_BROKER_CRASH_AT`). */
+	async startBroker(node: BrokerNode, env: Readonly<Record<string, string>> = {}): Promise<void> {
 		const state = this.node(node);
 		const broker = spawn(process.execPath, [getJitiCliPath(extensionDir), join(extensionDir, "broker/broker.ts")], {
-			env: { ...process.env, ATOMIC_CODING_AGENT_DIR: state.fixture.agentDir },
+			env: { ...process.env, ...env, ATOMIC_CODING_AGENT_DIR: state.fixture.agentDir },
 			stdio: "ignore",
 		});
 		state.broker = broker;
@@ -289,7 +302,7 @@ export class TwoBrokerHarness {
 						throw new Error(`broker ${node} has not opened multi-node routing`);
 					}
 				},
-				{ timeout: BROKER_READY_TIMEOUT_MS, interval: 20 },
+				{ timeout: this.sharedRoutingReadyTimeoutMs, interval: 20 },
 			);
 		}
 	}

@@ -862,6 +862,7 @@ module.exports.hasMatch = nativeBinding.hasMatch
 module.exports.invalidateFsScanCache = nativeBinding.invalidateFsScanCache
 module.exports.killSupervisedProcessTrees = nativeBinding.killSupervisedProcessTrees
 module.exports.OwnerCloseCause = nativeBinding.OwnerCloseCause
+module.exports.processCreationTime = nativeBinding.processCreationTime
 module.exports.search = nativeBinding.search
 module.exports.TerminationCause = nativeBinding.TerminationCause
 module.exports.YieldReason = nativeBinding.YieldReason

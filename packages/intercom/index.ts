@@ -1,5 +1,5 @@
 import { reportOwnedIntercomDiagnostic } from "./diagnostics.js";
-import { APP_NAME, getEnvValue, type ExtensionAPI, type ExtensionContext, type SessionStartEvent, type ToolDefinition } from "@bastani/atomic";
+import { APP_NAME, type ExtensionAPI, type ExtensionContext, getEnvValue, type SessionStartEvent, sliceHead, type ToolDefinition } from "@bastani/atomic";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { getExtensionContextOwner } from "./context-owner.js";
@@ -41,6 +41,7 @@ import {
 } from "./session-recovery.js";
 import type { SessionInfo } from "./types.js";
 import { answerReleasedReplyFormatRequests } from "./released-reply-format.js";
+import { intercomScriptAccess } from "./codemode-access.js";
 import { ASK_DESCRIPTION, ASK_PROMPT_SNIPPET, ASK_USAGE, askIdSchema, askWaitSchema } from "./ask-wait.js";
 import { INTERCOM_INBOX_REPLAY_EVENT, type IntercomInboxReplayRequest, unconsumedIntercomInbox } from "./durable-inbox.js";
 import {
@@ -563,15 +564,23 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		pendingStageDelivery: WorkflowStagePendingDelivery,
 		initialError: unknown,
 	): void {
-		if (warmUpRetry) return;
+		const staleFor = (owner: WarmUpRetry): boolean =>
+			owner.cancelled ||
+			activeLease !== owner.lease ||
+			owner.lease.retired ||
+			sessionSnapshot?.generation !== owner.generation;
 		const state: WarmUpRetry = { lease, generation, timer: null, cancelled: false };
+		// #5096: a stale session's failure must not take the slot, and a stale owner
+		// must not keep the current session from scheduling its own retry chain.
+		if (staleFor(state)) return;
+		if (warmUpRetry && !staleFor(warmUpRetry)) return;
+		cancelWarmUpRetry();
 		warmUpRetry = state;
 		let lastError: unknown = initialError;
 		const clearOwner = (): void => {
 			if (warmUpRetry === state) warmUpRetry = null;
 		};
-		const stale = (): boolean =>
-			state.cancelled || activeLease !== lease || lease.retired || sessionSnapshot?.generation !== generation;
+		const stale = (): boolean => staleFor(state);
 		const attemptAt = (attempt: number): void => {
 			const delay = warmUpRetryDelay(attempt);
 			if (delay === undefined) {
@@ -1048,6 +1057,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 	pi.registerTool({
 		name: "intercom",
 		exposure: "model-only",
+		scriptAccess: intercomScriptAccess,
 		detachable: (params) => intercomCallMayDetach(params) && heavyReplyWaitMayDetach("intercom", params),
 		detachmentRequiresReady: true,
 		label: "Intercom",
@@ -1146,7 +1156,7 @@ ${ASK_USAGE}
 				const preview = input.message?.trim();
 				let text = theme.fg("toolTitle", theme.bold("contact_supervisor ")) + theme.fg(reason === "need_decision" ? "warning" : reason === "progress_update" ? "muted" : "accent", reason);
 				if (title) text += " " + theme.fg("accent", title);
-				if (preview) text += "\n  " + theme.fg("dim", preview.length > 96 ? `${preview.slice(0, 93)}...` : preview);
+				if (preview) text += "\n  " + theme.fg("dim", preview.length > 96 ? `${sliceHead(preview, 93)}...` : preview);
 				return new Text(text, 0, 0);
 			},
 		});

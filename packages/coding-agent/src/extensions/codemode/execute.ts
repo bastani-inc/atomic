@@ -437,6 +437,7 @@ function discoveryGlobals(
 			.find(
 				(name) =>
 					name !== CODEMODE_TOOL_NAME &&
+					!tools.some((tool) => tool.name === name) &&
 					[name, toCodemodeIdentifier(name)].some((candidate) => candidate.toLowerCase() === wanted),
 			);
 		return name

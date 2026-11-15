@@ -5,6 +5,7 @@ import type {
 	PendingAsk,
 	PendingAskClearResult,
 	PendingAskListResult,
+	PendingAskMarkResult,
 	PendingAskMatchResult,
 	PendingAskPark,
 	PendingAskParkResult,
@@ -16,6 +17,7 @@ import type {
 	ReplyRoute,
 	StateStoreInvalidReason,
 } from "./multinode-state-store.js";
+import { SETTLED_ASK_RETENTION_MS } from "./multinode-state-store.js";
 import { addMissingColumns } from "./sql-add-column.js";
 
 type AskRow = SqliteRow & { sender_session_id: string; target_session_id: string; message_id: string };
@@ -50,8 +52,8 @@ export async function openSqlPendingAskStore({
 	database,
 	prefix,
 }: IntercomBrokerStateOptions): Promise<PendingAskStore> {
-	const table = `${validateStoragePrefix(prefix)}intercom_pending_asks`;
-	const { types } = dialectOf(database);
+	const table = `${validateStoragePrefix(prefix, dialectOf(database).name)}intercom_pending_asks`;
+	const { types, nowMs, greatest } = dialectOf(database);
 	await database.transaction((tx) =>
 		tx.exec(`
 			CREATE TABLE IF NOT EXISTS ${table}(
@@ -65,7 +67,28 @@ export async function openSqlPendingAskStore({
 		`),
 	);
 	// #4386: added later; a table from an older broker gets the columns, and an older broker ignores them.
-	await addMissingColumns(database, table, { park_owner: types.text, park_key: types.text });
+	// #4992: `replied` is set once a reply to the ask is queued; an older broker ignores it.
+	// #4992: `ended_at` is set, by store clock, once the target ended and its askers are owed a failure.
+	await addMissingColumns(database, table, {
+		park_owner: types.text,
+		park_key: types.text,
+		replied: types.int,
+		ended_at: types.int,
+	});
+	// #4997: asks answered or failed, remembered so a stopped broker's copy of one is not recorded again.
+	const settled = `${validateStoragePrefix(prefix)}intercom_settled_asks`;
+	await database.transaction((tx) =>
+		tx.exec(`
+			CREATE TABLE IF NOT EXISTS ${settled}(
+				sender_session_id TEXT NOT NULL,
+				target_session_id TEXT NOT NULL,
+				message_id TEXT NOT NULL,
+				settled_at ${types.int} NOT NULL,
+				PRIMARY KEY(sender_session_id, target_session_id, message_id)
+			);
+			CREATE INDEX IF NOT EXISTS ${settled}_at ON ${settled}(settled_at);
+		`),
+	);
 	const parkedBy = (ownerSessionId: string, reservationKey: string | undefined) =>
 		reservationKey === undefined
 			? { where: "park_owner = ?", params: [ownerSessionId] }
@@ -78,14 +101,17 @@ export async function openSqlPendingAskStore({
 		async record(ask): Promise<PendingAskRecordResult> {
 			const bad = invalidAsk(ask);
 			if (bad !== undefined) return bad;
-			const { changes } = await database.run(
-				`INSERT INTO ${table}(sender_session_id, target_session_id, message_id) VALUES (?, ?, ?)
-				 ON CONFLICT DO NOTHING`,
-				ask.senderSessionId,
-				ask.targetSessionId,
-				ask.messageId,
-			);
-			return changes === 0 ? { status: "duplicate" } : { status: "recorded" };
+			const params = [ask.senderSessionId, ask.targetSessionId, ask.messageId] as const;
+			return database.transaction(async (tx) => {
+				const done = await tx.get(`SELECT 1 AS found FROM ${settled} WHERE ${reverseRoute}`, ...params);
+				if (done !== undefined) return { status: "settled" } as const;
+				const { changes } = await tx.run(
+					`INSERT INTO ${table}(sender_session_id, target_session_id, message_id) VALUES (?, ?, ?)
+					 ON CONFLICT DO NOTHING`,
+					...params,
+				);
+				return changes === 0 ? ({ status: "duplicate" } as const) : ({ status: "recorded" } as const);
+			});
 		},
 		async matchesReply(route): Promise<PendingAskMatchResult> {
 			const bad = invalidRoute(route);
@@ -96,8 +122,35 @@ export async function openSqlPendingAskStore({
 		async clearReply(route): Promise<PendingAskClearResult> {
 			const bad = invalidRoute(route);
 			if (bad !== undefined) return bad;
+			return database.transaction(async (tx) => {
+				const { changes } = await tx.run(`DELETE FROM ${table} WHERE ${reverseRoute}`, ...reverseParams(route));
+				await tx.run(
+					`INSERT INTO ${settled}(sender_session_id, target_session_id, message_id, settled_at) VALUES (?, ?, ?, ${nowMs})
+					 ON CONFLICT DO NOTHING`,
+					...reverseParams(route),
+				);
+				await tx.run(`DELETE FROM ${settled} WHERE settled_at < ${nowMs} - ?`, SETTLED_ASK_RETENTION_MS);
+				return changes === 0 ? ({ status: "no-match" } as const) : ({ status: "cleared" } as const);
+			});
+		},
+		async isSettled(route): Promise<boolean> {
+			if (invalidRoute(route) !== undefined) return false;
+			return (await database.get(`SELECT 1 AS found FROM ${settled} WHERE ${reverseRoute}`, ...reverseParams(route))) !== undefined;
+		},
+		async releaseRoute(route): Promise<PendingAskClearResult> {
+			const bad = invalidRoute(route);
+			if (bad !== undefined) return bad;
 			const { changes } = await database.run(`DELETE FROM ${table} WHERE ${reverseRoute}`, ...reverseParams(route));
 			return changes === 0 ? { status: "no-match" } : { status: "cleared" };
+		},
+		async markReplied(route): Promise<PendingAskMarkResult> {
+			const bad = invalidRoute(route);
+			if (bad !== undefined) return bad;
+			const { changes } = await database.run(
+				`UPDATE ${table} SET replied = 1 WHERE ${reverseRoute}`,
+				...reverseParams(route),
+			);
+			return changes === 0 ? { status: "no-match" } : { status: "marked" };
 		},
 		async pruneSender(senderSessionId): Promise<PendingAskPruneResult> {
 			if (senderSessionId.length === 0) return invalid("empty-session-id");
@@ -126,6 +179,15 @@ export async function openSqlPendingAskStore({
 			});
 			return { status: "taken", asks: rows.map(toAsk) };
 		},
+		async listForTarget(targetSessionId): Promise<PendingAskListResult> {
+			if (targetSessionId.length === 0) return invalid("empty-session-id");
+			const rows = await database.all<AskRow>(
+				`SELECT sender_session_id, target_session_id, message_id FROM ${table}
+				 WHERE target_session_id = ? AND replied IS NULL ORDER BY "order"`,
+				targetSessionId,
+			);
+			return { status: "listed", asks: rows.map(toAsk) };
+		},
 		async parkForTarget(targetSessionId, park): Promise<PendingAskParkResult> {
 			if (targetSessionId.length === 0) return invalid("empty-session-id");
 			const bad = invalidPark(park);
@@ -144,12 +206,15 @@ export async function openSqlPendingAskStore({
 			if (bad !== undefined) return bad;
 			const parked = parkedBy(park.ownerSessionId, park.reservationKey);
 			const rows = await database.transaction(async (tx) => {
+				// #4992: an ask that ended with its owner stays ended: it is failed, not taken up again.
 				const found = await tx.all<AskRow>(
-					`SELECT sender_session_id, target_session_id, message_id FROM ${table} WHERE ${parked.where} ORDER BY "order"`,
+					`SELECT sender_session_id, target_session_id, message_id FROM ${table}
+					 WHERE ${parked.where} AND ended_at IS NULL ORDER BY "order"`,
 					...parked.params,
 				);
 				await tx.run(
-					`UPDATE ${table} SET target_session_id = ?, park_owner = NULL, park_key = NULL WHERE ${parked.where}`,
+					`UPDATE ${table} SET target_session_id = ?, park_owner = NULL, park_key = NULL
+					 WHERE ${parked.where} AND ended_at IS NULL`,
 					targetSessionId,
 					...parked.params,
 				);
@@ -178,5 +243,60 @@ export async function openSqlPendingAskStore({
 			});
 			return { status: "taken", asks: rows.map(toAsk) };
 		},
+		async listParked(ownerSessionId, reservationKey): Promise<PendingAskListResult> {
+			if (ownerSessionId.length === 0) return invalid("empty-session-id");
+			if (reservationKey !== undefined && reservationKey.length === 0) return invalid("empty-reservation-key");
+			const parked = parkedBy(ownerSessionId, reservationKey);
+			const rows = await database.all<AskRow>(
+				`SELECT sender_session_id, target_session_id, message_id FROM ${table}
+				 WHERE ${parked.where} AND replied IS NULL ORDER BY "order"`,
+				...parked.params,
+			);
+			return { status: "listed", asks: rows.map(toAsk) };
+		},
+		async endForTarget(targetSessionId): Promise<PendingAskListResult> {
+			if (targetSessionId.length === 0) return invalid("empty-session-id");
+			return endWhere("target_session_id = ?", [targetSessionId]);
+		},
+		async endParked(ownerSessionId, reservationKey): Promise<PendingAskListResult> {
+			if (ownerSessionId.length === 0) return invalid("empty-session-id");
+			if (reservationKey !== undefined && reservationKey.length === 0) return invalid("empty-reservation-key");
+			const parked = parkedBy(ownerSessionId, reservationKey);
+			return endWhere(parked.where, parked.params);
+		},
+		async listEnded(olderThanMs): Promise<PendingAskListResult> {
+			const rows = await database.all<AskRow>(
+				`SELECT sender_session_id, target_session_id, message_id FROM ${table}
+				 WHERE ended_at IS NOT NULL AND replied IS NULL AND ${greatest("0", `${nowMs} - ended_at`)} >= ?
+				 ORDER BY ended_at, "order"`,
+				olderThanMs,
+			);
+			return { status: "listed", asks: rows.map(toAsk) };
+		},
+		async unmarkEnded(route): Promise<PendingAskMarkResult> {
+			const bad = invalidRoute(route);
+			if (bad !== undefined) return bad;
+			const { changes } = await database.run(
+				`UPDATE ${table} SET ended_at = NULL WHERE ${reverseRoute}`,
+				...reverseParams(route),
+			);
+			return changes === 0 ? { status: "no-match" } : { status: "marked" };
+		},
 	};
+
+	/** Mark the unanswered asks `where` selects ended, keeping an earlier mark, and return them. */
+	async function endWhere(where: string, params: readonly string[]): Promise<PendingAskListResult> {
+		const rows = await database.transaction(async (tx) => {
+			await tx.run(
+				`UPDATE ${table} SET ended_at = ${nowMs} WHERE ${where} AND replied IS NULL AND ended_at IS NULL`,
+				...params,
+			);
+			return tx.all<AskRow>(
+				`SELECT sender_session_id, target_session_id, message_id FROM ${table}
+				 WHERE ${where} AND replied IS NULL AND ended_at IS NOT NULL ORDER BY "order"`,
+				...params,
+			);
+		});
+		return { status: "listed", asks: rows.map(toAsk) };
+	}
 }

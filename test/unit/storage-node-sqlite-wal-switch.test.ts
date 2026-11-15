@@ -61,13 +61,13 @@ test("an open refused for longer than its busy timeout fails with SQLITE_BUSY on
 	const path = databasePath();
 	const holder = await holdSqliteWriteLock(path);
 	try {
-		const started = Date.now();
+		const started = performance.now();
 		await assert.rejects(openNodeSqliteDatabase(path, { busyTimeoutMs: 300 }), (error: unknown) => {
 			assert.ok(error instanceof StorageUnavailableError);
 			assert.equal((error.cause as { errcode?: unknown }).errcode, 5);
 			return true;
 		});
-		const waited = Date.now() - started;
+		const waited = performance.now() - started;
 		assert.ok(waited >= 300, `the open gave up after ${waited} ms, before its 300 ms busy timeout`);
 	} finally {
 		await holder.release();
@@ -122,8 +122,11 @@ interface GaveUp {
 	readonly error: unknown;
 }
 
+/** The switch's retry deadline is on the monotonic clock (#5058): fake it along with the timers and the wall clock. */
+const FAKED = ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date", "performance"] as const;
+
 async function giveUp(failure: unknown, busyTimeoutMs: number): Promise<GaveUp> {
-	vi.useFakeTimers();
+	vi.useFakeTimers({ toFake: [...FAKED] });
 	const started = Date.now();
 	let attempts = 0;
 	let outcome: { readonly error: unknown } | undefined;
@@ -144,9 +147,9 @@ async function giveUp(failure: unknown, busyTimeoutMs: number): Promise<GaveUp> 
 }
 
 function giveUpSync(failure: unknown, busyTimeoutMs: number): GaveUp {
-	vi.useFakeTimers();
+	vi.useFakeTimers({ toFake: [...FAKED] });
 	vi.spyOn(Atomics, "wait").mockImplementation((_array, _index, _value, timeout) => {
-		vi.setSystemTime(Date.now() + Number(timeout));
+		vi.advanceTimersByTime(Number(timeout));
 		return "timed-out";
 	});
 	const started = Date.now();

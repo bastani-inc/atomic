@@ -62,8 +62,9 @@ export interface TaskHeartbeatClock {
 	clearTimeout(handle: object): void;
 }
 
+/** Times the cadence on the monotonic clock, so a step of the wall clock neither delays nor bunches heartbeats (#5058). */
 const systemClock: TaskHeartbeatClock = {
-	now: () => Date.now(),
+	now: () => performance.now(),
 	setTimeout: (run, delayMs) => {
 		const handle = setTimeout(run, delayMs);
 		handle.unref();
@@ -326,7 +327,8 @@ export class TaskHeartbeatMonitor {
 		const tasks: TaskHeartbeatTask[] = [];
 		for (const entry of detailed) tasks.push(await this.describeTask(entry, at));
 		return {
-			scheduledAt: at,
+			// Shown to the user: the wall clock, while the cadence runs on the monotonic one (#5058).
+			scheduledAt: Date.now(),
 			tasks,
 			more: rest.slice(0, TASK_HEARTBEAT_LIST_LIMIT).map((entry) => ({
 				taskId: entry.taskId,

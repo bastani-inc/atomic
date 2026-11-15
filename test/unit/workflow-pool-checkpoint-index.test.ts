@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import type { SqliteExecutor } from "@bastani/atomic/storage";
+import { type SqliteExecutor, sqliteDialect } from "@bastani/atomic/storage";
 import { test, vi } from "vitest";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { boundaryTransitionError } from "../../packages/workflows/src/durable/boundary-lifecycle.js";
@@ -408,7 +408,9 @@ async function validateWithBoth(
 	const read = index.begin("root");
 	const decided = await f.database.transaction(async (tx) => ({
 		expected: await outcome(originalValidatePoolMutation(tx, f.tables, "root", work, mutation)),
-		actual: await outcome(validatePoolMutation(tx, f.tables, "root", work, mutation, read)),
+		actual: await outcome(
+			validatePoolMutation(tx, { tables: f.tables, dialect: sqliteDialect }, "root", work, mutation, read),
+		),
 	}));
 	read.commit();
 	return decided;
@@ -459,7 +461,14 @@ test("the indexed validator accepts and rejects exactly what the full-history va
 						f.database.transaction(async (tx) => {
 							await f.record(tx, g.start(g.r.int(children)));
 							await f.record(tx, g.checkpoint(target));
-							await validatePoolMutation(tx, f.tables, "root", work, g.mutation(target), read);
+							await validatePoolMutation(
+								tx,
+								{ tables: f.tables, dialect: sqliteDialect },
+								"root",
+								work,
+								g.mutation(target),
+								read,
+							);
 							throw new Error("rolled back");
 						}),
 					);
@@ -512,7 +521,14 @@ test("a rolled-back transaction's checkpoints never reach the index", async () =
 		await assert.rejects(
 			f.database.transaction(async (tx) => {
 				await f.record(tx, child(0).boundary);
-				await validatePoolMutation(tx, f.tables, "root", child(0).work, mutation, read);
+				await validatePoolMutation(
+					tx,
+					{ tables: f.tables, dialect: sqliteDialect },
+					"root",
+					child(0).work,
+					mutation,
+					read,
+				);
 				throw new Error("rolled back after validation");
 			}),
 			/rolled back after validation/,

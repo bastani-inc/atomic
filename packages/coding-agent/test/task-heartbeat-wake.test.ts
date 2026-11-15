@@ -36,7 +36,7 @@ const blockingTool: ToolDefinition = {
 };
 
 async function sessionHarness(settings: Record<string, unknown> = {}, tools: ToolDefinition[] = []): Promise<Harness> {
-	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"], shouldAdvanceTime: true });
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"], shouldAdvanceTime: true });
 	const harness = await createHarness({
 		initialActiveToolNames: ["bash", "block", ...tools.map((tool) => tool.name)],
 		customTools: [blockingTool, ...tools],
@@ -450,7 +450,7 @@ test("a heartbeat wakes an idle paused main chat but not a workflow stage or sub
 	} as const;
 	const woke: Record<string, boolean> = {};
 	for (const [kind, subagentPolicy] of Object.entries(kinds)) {
-		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"], shouldAdvanceTime: true });
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"], shouldAdvanceTime: true });
 		const harness = await createHarness({ ...(subagentPolicy ? { subagentPolicy } : {}) });
 		harnesses.push(harness);
 		const session = harness.session as AgentSession & { _workflowStageAdmission?: WorkflowStageAdmissionBoundary };

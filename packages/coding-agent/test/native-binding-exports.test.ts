@@ -35,6 +35,7 @@ const EXPECTED_NATIVE_EXPORTS = [
 	"hasMatch",
 	"invalidateFsScanCache",
 	"killSupervisedProcessTrees",
+	"processCreationTime",
 	"search",
 ] as const;
 

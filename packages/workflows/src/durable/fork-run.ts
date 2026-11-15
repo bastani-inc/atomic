@@ -1100,6 +1100,7 @@ function forkHandle(
 		failureRecoverability: _failureRecoverability,
 		failureDisposition: _failureDisposition,
 		failedToolNodeId: _failedToolNodeId,
+		failedToolUnrecorded: _failedToolUnrecorded,
 		summary,
 		summarizedThrough,
 		modelOwner: _modelOwner,

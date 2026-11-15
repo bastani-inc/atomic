@@ -7,6 +7,7 @@ import { test } from "vitest";
 import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
 import { type BudgetedProcess, expectExitedCleanly, spawnWithinBudget } from "../helpers/budgeted-process.js";
 import { makeTempDirectory, readJson, removeTempDirectory, sleep } from "../helpers/runtime.js";
+import { dropLibsqlScope } from "../helpers/storage-backends.js";
 
 /**
  * Shared placement at the scale where it used to stop committing (#4768): 8 and 16 worker hosts, each a process of its
@@ -87,18 +88,6 @@ async function probeWrite(url: string, table: string): Promise<number> {
 	return Math.round(performance.now() - started);
 }
 
-async function dropPrefix(url: string, prefix: string): Promise<void> {
-	await withDatabase(url, async (database) => {
-		const tables = await database.all<{ name: string }>(
-			"SELECT name FROM sqlite_master WHERE type = 'table' AND substr(name, 1, ?) = ?",
-			prefix.length,
-			prefix,
-		);
-		await database.exec("PRAGMA foreign_keys = OFF");
-		for (const { name } of tables) await database.exec(`DROP TABLE IF EXISTS "${name}"`);
-	});
-}
-
 async function runScale(url: string, hosts: number): Promise<void> {
 	const directory = makeTempDirectory(`shared-pool-scale-${hosts}-`);
 	const prefix = `scale${hosts}_${randomBytes(4).toString("hex")}_`;
@@ -130,6 +119,7 @@ async function runScale(url: string, hosts: number): Promise<void> {
 		}
 	};
 	const probes: number[] = [];
+	let passed = false;
 	try {
 		for (let index = 0; index < hosts; index++)
 			processes.push(
@@ -177,11 +167,16 @@ async function runScale(url: string, hosts: number): Promise<void> {
 		assert.ok(new Set(outcome.children.map((child) => child.host)).size > hosts / 2);
 		probes.push(await probeWrite(url, `${prefix}probe`));
 		assert.ok(probes.length >= 2);
+		passed = true;
 	} finally {
 		for (const child of processes) if (child.process.exitCode === null) child.process.kill("SIGTERM");
 		await Promise.allSettled(processes.map((child) => child.process.exited));
-		await dropPrefix(url, prefix).catch(() => {});
 		removeTempDirectory(directory);
+		// The case's tables go with it: sqld loads the whole schema for every request, so tables left behind slow every
+		// later request to the server, the next case's first (#4768). A case that failed already says why.
+		await withDatabase(url, (database) => dropLibsqlScope(database, prefix)).catch((error: unknown) => {
+			if (passed) throw error;
+		});
 	}
 }
 

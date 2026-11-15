@@ -76,11 +76,16 @@ export class StorageSchemaVersionError extends StorageError {
 
 export class StoragePrefixError extends StorageError {
 	readonly prefix: string;
-	readonly reason: "pattern" | "reserved";
-	constructor(prefix: string, reason: "pattern" | "reserved") {
-		super(`Invalid storage prefix: ${reason}`);
+	readonly reason: "pattern" | "reserved" | "too-long";
+	/** With `too-long`: the longest prefix the selected backend takes (#5067). */
+	declare readonly maxLength?: number;
+	constructor(prefix: string, reason: "pattern" | "reserved" | "too-long", maxLength?: number) {
+		super(
+			`Invalid storage prefix: ${reason}${maxLength === undefined ? "" : ` (PostgreSQL allows at most ${maxLength} characters)`}`,
+		);
 		this.prefix = prefix;
 		this.reason = reason;
+		if (maxLength !== undefined) this.maxLength = maxLength;
 	}
 }
 
@@ -241,6 +246,29 @@ export function describeStorageError(error: Error | object | string | undefined)
 
 /** How far guards and the serializer follow `cause`, so a cyclic or very deep chain stays bounded. */
 const MAX_STORAGE_CAUSE_DEPTH = 8;
+
+/**
+ * A storage failure as a command shows it: the first line of its message, then of its innermost cause's when the
+ * message does not already hold it, and the innermost code along its causes, such as a TLS error's code, a SQLSTATE
+ * or a configuration error's reason. Adapters redact their causes, so nothing here needs redacting again.
+ */
+export function describeStorageFailure(error: Error): string {
+	const firstLine = (text: string): string => text.split("\n", 1)[0]!.trim();
+	let innermost: Error = error;
+	let code: string | undefined;
+	let current = error.cause;
+	for (let depth = 0; depth < MAX_STORAGE_CAUSE_DEPTH && current instanceof Error; depth++) {
+		innermost = current;
+		const named = current as Error & { readonly code?: string | number; readonly reason?: string };
+		const label = current instanceof StorageConfigError ? named.reason : named.code;
+		if (typeof label === "string") code = label;
+		current = current.cause;
+	}
+	const message = firstLine(error.message);
+	const cause = firstLine(innermost.message);
+	const text = message.includes(cause) ? message : `${message}: ${cause}`;
+	return code === undefined || text.includes(code) ? text : `${text} (${code})`;
+}
 
 export type StorageWriteLockTimeoutCode = "write-lock-timeout";
 /** Where the writer was when it gave up: behind older writers in the queue, or first in line and trying the lock. */
@@ -1342,11 +1370,14 @@ function knownStorageError(
 				field<string>(serialized, "found", "string") ?? field<number>(serialized, "found", "number") ?? null,
 				field<number>(serialized, "supported", "number") ?? 0,
 			);
-		case "StoragePrefixError":
+		case "StoragePrefixError": {
+			const reason = field<string>(serialized, "reason", "string");
 			return new StoragePrefixError(
 				field<string>(serialized, "prefix", "string") ?? "",
-				field<string>(serialized, "reason", "string") === "reserved" ? "reserved" : "pattern",
+				reason === "reserved" || reason === "too-long" ? reason : "pattern",
+				field<number>(serialized, "maxLength", "number"),
 			);
+		}
 		case "StorageAdapterLoadError":
 			return new StorageAdapterLoadError(field<string>(serialized, "module", "string") ?? "", cause);
 		case "StorageOutcomeUnknownError":

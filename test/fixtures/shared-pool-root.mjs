@@ -57,11 +57,15 @@ const exportName =
 		typed: "typedFailureChild",
 		remote: "remoteStageChild",
 		scale: "scaleChild",
+		sequential: "distributedChild",
 	}[scenario] ??
 	"sharedChild";
-// A journal whose server needs a token reads it from a file every host has (SHARED_POOL_TOKEN_FILE).
+// A journal whose server needs a token reads it from a file every host has (SHARED_POOL_TOKEN_FILE), as the adapter's
+// secret SHARED_POOL_TOKEN_SECRET (`authToken` for libSQL, `password` for PostgreSQL).
 const secrets =
-	process.env.SHARED_POOL_TOKEN_FILE === undefined ? {} : { secrets: { authToken: { file: process.env.SHARED_POOL_TOKEN_FILE } } };
+	process.env.SHARED_POOL_TOKEN_FILE === undefined
+		? {}
+		: { secrets: { [process.env.SHARED_POOL_TOKEN_SECRET ?? "authToken"]: { file: process.env.SHARED_POOL_TOKEN_FILE } } };
 const journal = await resolveRunJournal({
 	agentDir: process.env.SHARED_POOL_AGENT_DIR,
 	journal: {
@@ -82,21 +86,33 @@ const parent = workflow({
 	inputs: {},
 	outputs: {},
 	async run(ctx) {
-		const results = await Promise.allSettled(
-			Array.from({ length: Number(children) }, (_, index) =>
-				ctx.workflow(child, {
-					inputs:
-						scenario === "bound" || scenario === "typed"
-							? {}
-							: scenario === "remote"
-								? { directory }
-								: scenario === "distributed"
-									? { index, workMs: Number(process.env.SHARED_POOL_WORK_MS ?? "5000") }
-									: scenario === "scale"
-										? { index, steps: Number(process.env.SHARED_POOL_STEPS ?? "10") }
-										: { directory, index, hosts: 2 },
-				}),
-			),
+		// The sequential scenario (#5103) queues each child once the one before it finished, so idle workers wait for it.
+		const settled = async (start) => {
+			const indexes = Array.from({ length: Number(children) }, (_, index) => index);
+			if (scenario !== "sequential") return Promise.allSettled(indexes.map(start));
+			const results = [];
+			for (const index of indexes)
+				results.push(
+					await start(index).then(
+						(value) => ({ status: "fulfilled", value }),
+						(reason) => ({ status: "rejected", reason }),
+					),
+				);
+			return results;
+		};
+		const results = await settled((index) =>
+			ctx.workflow(child, {
+				inputs:
+					scenario === "bound" || scenario === "typed"
+						? {}
+						: scenario === "remote"
+							? { directory }
+							: scenario === "distributed" || scenario === "sequential"
+								? { index, workMs: Number(process.env.SHARED_POOL_WORK_MS ?? "5000") }
+								: scenario === "scale"
+									? { index, steps: Number(process.env.SHARED_POOL_STEPS ?? "10") }
+									: { directory, index, hosts: 2 },
+			}),
 		);
 		for (const result of results)
 			outcomes.push(
@@ -287,17 +303,12 @@ try {
 		const operator = await operating;
 		record = { status: result.status, error: result.error ?? null, ...(operator === undefined ? {} : { operator }) };
 	} else {
-		// The dead host's root lease would expire on its own; the test does not wait for that.
-		const { openLibsqlDatabase } = await import("../../packages/storage-libsql/libsql.js");
-		const { readFileSync } = await import("node:fs");
-		const database = await openLibsqlDatabase({
-			url: process.env.SHARED_POOL_URL,
-			...(process.env.SHARED_POOL_TOKEN_FILE === undefined
-				? {}
-				: { authToken: readFileSync(process.env.SHARED_POOL_TOKEN_FILE, "utf8").trim() }),
-		});
-		await database.run(`UPDATE ${prefix}wf_leases SET renewed_at = 0 WHERE run_id = ?`, ROOT);
-		await database.close();
+		// The dead host's root lease would expire on its own; the test does not wait for that. Through the journal's own
+		// database, whatever its adapter.
+		const { sqlPoolStorage } = await load("../../packages/workflows/src/durable/journal/internal.ts");
+		await sqlPoolStorage(journal).transaction((tx) =>
+			tx.run(`UPDATE ${prefix}wf_leases SET renewed_at = 0 WHERE run_id = ?`, ROOT),
+		);
 		const jobs = createJobTracker();
 		let completion;
 		const resumed = await resumeDurableWorkflow(ROOT, {

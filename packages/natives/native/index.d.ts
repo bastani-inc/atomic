@@ -647,6 +647,13 @@ export interface OwnerSnapshot {
   cursor: Cursor
 }
 
+/**
+ * When running process `pid` was created, as the decimal count of 100-nanosecond intervals since 1601-01-01 UTC (the
+ * Windows process creation time), or `null` where that cannot be read: on other platforms, for a process that is gone
+ * or has exited, and for one this process may not query.
+ */
+export declare function processCreationTime(pid: number): string | null
+
 export interface PromptRoute {
   sessionId: string
   promptId: string

@@ -268,6 +268,12 @@ export function restoreBudgetState(value: unknown): RunBudgetState | undefined {
 					])
 						? { externalBaseline: accountingValue.externalBaseline }
 						: {}),
+					...(isRecord(accountingValue.stageCharges) &&
+					Object.values(accountingValue.stageCharges).every((charge) =>
+						requiredNumbers(charge, ["input", "output", "cacheRead", "cacheWrite", "cost"]),
+					)
+						? { stageCharges: accountingValue.stageCharges }
+						: {}),
 				} as RunBudgetState["accounting"])
 			: undefined;
 	const state = {

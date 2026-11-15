@@ -15,6 +15,7 @@ import {
 	sessionTargetFailureReason,
 } from "../session-target.js";
 import type { DeliveryFailureReasonCode, Message, SessionInfo } from "../types.js";
+import { ASK_FAILURE_QUEUED, crashPoint } from "./crash-points.js";
 import type { DeliveredMessageCache } from "./delivered-message-cache.js";
 import { sameGroup } from "./group-isolation.js";
 import { sessionGroups } from "./group-membership.js";
@@ -35,6 +36,7 @@ import {
 	type OutboxClaim,
 	type OutboxRow,
 	type PendingAsk,
+	type BrokerMembershipSubject,
 	type RecipientPresenceSubject,
 	type ReleasedAskerReplyFrame,
 	type ReleasedAskRecord,
@@ -43,12 +45,14 @@ import {
 	reservationKeyFor,
 	returnAddressOf,
 } from "./multinode-state-store.js";
-import type { PendingQuestionIndex } from "./pending-question-index.js";
+import type { PendingQuestion, PendingQuestionIndex } from "./pending-question-index.js";
+import { ROUTE_UNAVAILABLE_REASON } from "./delivery-failure-reason.js";
 import { UNCERTAIN_RECEIPT_REASON } from "./recipient-receipts.js";
 import {
 	decideReleasedAskerReply,
 	isReleasedReplyCandidate,
 	keepReleasedAsks,
+	ownerOfAsker,
 	ownerOfReleasedReplyRow,
 	type ReleasedRegistration,
 	type ReleasedReplyDelivery,
@@ -75,6 +79,7 @@ import {
 	senderGroupIdentity,
 } from "./send-handler.js";
 import { deliverHeldToAsker } from "./ask-failures.js";
+import { brokerHostIdentity, isProcessAlive } from "./broker-instance.js";
 import type { BrokerOutboundFrame } from "./socket-writes.js";
 import type { SupervisorChannelCache } from "./supervisor-channel.js";
 import type { WakeUpBus, WakeUpEvent, WakeUpSubscription } from "./wake-up-bus.js";
@@ -95,6 +100,10 @@ export { readSharedStorageSetting } from "./shared-storage-setting.js";
 export const MULTI_NODE_OUTCOME_POLL_INTERVAL_MS = 5_000;
 export { OFFLINE_SESSION_TARGET };
 /** A send for another node while the shared database cannot be reached (spec §8, "Database unavailable"). */
+/** #4997: a broker that renewed its membership within this long, and has missed its renewals since, is down. */
+const ROUTE_HOLDER_DOWN_WINDOW_MS = 10 * 60_000;
+/** #4997: a broker that has not renewed its membership within this long has missed a renewal. */
+const BROKER_UNRESPONSIVE_AFTER_MS = (3 * BROKER_LEASE_RENEW_INTERVAL_MS) / 2;
 export const SHARED_STORAGE_UNAVAILABLE_REASON =
 	"Session not found on this node, and Intercom could not reach the shared storage database to look for it on other nodes. Try again once the database is available.";
 const MAX_HELD_SENDS = 256;
@@ -107,6 +116,11 @@ const HOLD_CHECK_GRACE_MS = 500;
 /** A session that moved here may find its presence lease still held by the broker it just left. */
 const PRESENCE_HANDOVER_ATTEMPTS = 4;
 const PRESENCE_HANDOVER_RETRY_MS = 50;
+/**
+ * #5138: how many times a session's store steps (ending its reservations, rebinding its parked asks, failing a terminal
+ * session's asks) are tried, once when due and then at each renewal, before a failure that keeps recurring is given up.
+ */
+export const REGISTRATION_STEP_ATTEMPTS = 30;
 /**
  * The longest a registration waits for its presence lease. A hung shared database must not hang registration (the
  * client gives up after 10 s); the lease is still written when the database answers.
@@ -202,6 +216,22 @@ export interface MultiNodeRouterOptions {
 	readonly host: MultiNodeHost;
 	readonly brokerId?: string;
 	readonly nodeId?: string;
+	/** #4997: this broker's durable state on its host (`BrokerMembershipSubject.home`). */
+	readonly home?: string;
+	/**
+	 * #5038: what stays the same when this broker restarts (its socket path); with the node and host identity it
+	 * names the earlier instances, whose leases and claims this one retires as it starts once their process exited.
+	 */
+	readonly instanceKey?: string;
+	/**
+	 * #5038: tells this host from another with the same name (`brokerHostIdentity`); `null` when there is no reliable
+	 * one, so no earlier instance is retired early.
+	 */
+	readonly hostIdentity?: string | null;
+	/** #5038: this broker's process id; `process.pid` by default. */
+	readonly pid?: number;
+	/** #5038: whether a process of this host still runs (`isProcessAlive`). */
+	readonly isProcessAlive?: (pid: number) => boolean;
 }
 
 interface Inflight {
@@ -233,7 +263,7 @@ interface Waiter {
 	/** Told `queued` already: `delivered` follows only while the sender is connected, and it never expires. */
 	readonly queued: boolean;
 	timer: ReturnType<typeof setTimeout> | undefined;
-	/** When the sender started waiting; a recipient's save reports never keep it waiting past the save cap (#3983). */
+	/** When, by `performance.now()`, the sender started waiting; a recipient's save reports never keep it waiting past the save cap (#3983). */
 	readonly waitingSince: number;
 	/** Ends the wait as uncertain at the save cap, whatever the store does (#3983). */
 	capTimer?: ReturnType<typeof setTimeout>;
@@ -267,11 +297,23 @@ interface PresenceEntry {
 	terminal?: boolean;
 	/** #4386: a released subagent that registered before the broker it left gave up its presence rebinds once it has it. */
 	rebind?: ReleasedRegistration;
+	/** #5138: the session's store steps not yet done, recorded before they run so a failed one is retried. */
+	unfinished?: UnfinishedRegistration;
 	/**
 	 * Its Intercom id is bound to another session's return address: it is never known, present or routed to under that
 	 * id across nodes, and its departure leaves that session's shared state alone.
 	 */
 	unbound?: true;
+}
+
+interface UnfinishedRegistration {
+	consume?: ConsumedReservation;
+	/** The reservations' insertion mark read as the registration began, until `consume` takes it. */
+	mark?: Promise<number> | undefined;
+	rebind?: ReleasedRegistration | undefined;
+	/** The session turned terminal: the asks delivered to it fail. */
+	failTerminal?: true;
+	attempts: number;
 }
 
 interface ConsumedReservation {
@@ -344,6 +386,11 @@ function forgottenSessionIdentities(id: string, group: string): readonly string[
 	return [JSON.stringify(["return", id, normalizeGroup(group)]), JSON.stringify(["session", id])];
 }
 
+/** #4997: one ask's route, as a set key. */
+function askKey(question: PendingQuestion): string {
+	return JSON.stringify([question.senderSessionId, question.targetSessionId, question.messageId]);
+}
+
 function sharesGroup(groups: ReadonlySet<string>, sender: SessionInfo): boolean {
 	const senderGroups = sessionGroups(sender);
 	return [...groups].some((group) => senderGroups.has(group));
@@ -351,10 +398,78 @@ function sharesGroup(groups: ReadonlySet<string>, sender: SessionInfo): boolean 
 
 export class MultiNodeRouter {
 	readonly brokerId: string;
+	private readonly home: string | undefined;
+
+	/**
+	 * #4997: whether a broker that may keep ask routes no other broker has is down: it renewed its membership within
+	 * `ROUTE_HOLDER_DOWN_WINDOW_MS` but has missed its renewals since, and no broker is back under its home.
+	 */
+	private async routeHolderDown(): Promise<boolean> {
+		const [recent, responsive] = await Promise.all([
+			this.state.leases.listLive("broker", ROUTE_HOLDER_DOWN_WINDOW_MS),
+			this.state.leases.listLive("broker", BROKER_UNRESPONSIVE_AFTER_MS),
+		]);
+		const homeOf = (lease: LeaseState) => (lease.subject.kind === "broker" ? lease.subject.home : undefined);
+		const answering = new Set(responsive.map((lease) => lease.holderId));
+		const homesBack = new Set(responsive.map(homeOf));
+		return recent.some((lease) => {
+			const home = homeOf(lease);
+			return home !== undefined && !answering.has(lease.holderId) && !homesBack.has(home);
+		});
+	}
+
+	/**
+	 * A reply no ask route authorizes: refused, as retryable while a broker that may keep its route is down (#4997).
+	 */
+	/**
+	 * #4997: whether the ask's route may be kept by a broker this one cannot reach: not answered or failed already, and
+	 * either both the asker and the replier were last present on one other broker (a route between them lives there
+	 * even before that broker is noticed down), or a broker that may keep routes is down (`routeHolderDown`).
+	 */
+	private async routeMayBeElsewhere(
+		request: RemoteSendRequest,
+		askerSessionId: string,
+		askerIdentity: string,
+	): Promise<boolean> {
+		const replyTo = request.message.replyTo;
+		if (replyTo === undefined) return false;
+		const route = { replySenderSessionId: request.from.info.id, replyTargetSessionId: askerSessionId, replyTo };
+		if (await this.state.pendingAsks.isSettled(route)) return false;
+		const holderOf = async (targetIdentity: string) => {
+			const read = await this.state.leases.read({ kind: "presence", targetIdentity });
+			return read.status === "found" ? read.lease.holderId : undefined;
+		};
+		const [askerHolder, replierHolder] = await Promise.all([
+			holderOf(askerIdentity),
+			holderOf(deliveryTargetIdentity(request.from)),
+		]);
+		if (askerHolder !== undefined && askerHolder !== this.brokerId && askerHolder === replierHolder) return true;
+		return this.routeHolderDown();
+	}
+
+	private async refuseUnauthorizedReply(
+		request: RemoteSendRequest,
+		asker: { readonly sessionId: string; readonly identity: string },
+	): Promise<void> {
+		if (!(await this.routeMayBeElsewhere(request, asker.sessionId, asker.identity).catch(() => false))) {
+			this.fail(request, "Pending question route does not authorize this public reply");
+			return;
+		}
+		this.host.write(request.socket, {
+			type: "delivery_failed",
+			messageId: request.message.id,
+			attemptId: request.attemptId,
+			reason: ROUTE_UNAVAILABLE_REASON,
+			routeUnavailable: true,
+		});
+	}
 	private readonly state: IntercomBrokerStateStore;
 	private readonly bus: WakeUpBus;
 	private readonly host: MultiNodeHost;
 	private readonly nodeId: string;
+	private readonly instanceKey: string;
+	private readonly pid: number;
+	private readonly isProcessAlive: (pid: number) => boolean;
 	private membership: Lease | undefined;
 	private subscription: WakeUpSubscription | undefined;
 	private readonly presence = new Map<BrokerConnectedSession, PresenceEntry>();
@@ -379,13 +494,24 @@ export class MultiNodeRouter {
 		this.host = options.host;
 		this.brokerId = options.brokerId ?? randomUUID();
 		this.nodeId = options.nodeId ?? hostname();
+		this.home = options.home;
+		this.host.pendingQuestions.onAnswered((question) => this.answeredHere(question));
+		// Without a key of its own, no earlier broker can be this one.
+		const hostIdentity = options.hostIdentity === undefined ? brokerHostIdentity() : options.hostIdentity;
+		this.instanceKey =
+			hostIdentity == null || options.instanceKey === undefined
+				? `${this.nodeId}:${this.brokerId}`
+				: `${this.nodeId}:${hostIdentity}:${options.instanceKey}`;
+		this.pid = options.pid ?? process.pid;
+		this.isProcessAlive = options.isProcessAlive ?? isProcessAlive;
 	}
 
 	/** Take the membership lease, subscribe to wake-ups and adopt the sessions already connected. */
 	static async start(options: MultiNodeRouterOptions): Promise<MultiNodeRouter> {
 		const router = new MultiNodeRouter(options);
+		await router.retirePreviousInstances();
 		const acquired = await router.state.leases.acquire(
-			{ kind: "broker", brokerId: router.brokerId, nodeId: router.nodeId, startedAt: Date.now() },
+			router.membershipSubject(),
 			router.brokerId,
 			BROKER_LEASE_STALE_AFTER_MS,
 		);
@@ -394,6 +520,8 @@ export class MultiNodeRouter {
 		if (subscribed.status === "subscribed") router.subscription = subscribed.subscription;
 		router.every(BROKER_LEASE_RENEW_INTERVAL_MS, () => router.renew());
 		router.every(OUTBOX_BACKUP_POLL_INTERVAL_MS, () => router.backupPoll());
+		// #4992: what a broker that stopped mid-departure left is finished now, and at every backup poll.
+		void router.sweepEndedAsks().catch((error: Error) => router.report(error));
 		router.every(MULTI_NODE_OUTCOME_POLL_INTERVAL_MS, () => router.outcomePoll());
 		for (const session of options.host.sessions.values()) void router.sessionRegistered(session);
 		return router;
@@ -471,26 +599,18 @@ export class MultiNodeRouter {
 						await new Promise<void>((wait) => setTimeout(wait, PRESENCE_HANDOVER_RETRY_MS * 2 ** attempt).unref());
 					}
 					if (consumed !== undefined) {
-						// #4488: the child may have been released since the registration began, while its presence was being
-						// taken over. A reservation its owner made for that release must stay, or the released child is
-						// unreachable: by the child's name, only reservations older than the registration end, and none
-						// once the session left; the capability's own one always ends.
-						const ownOnly: ConsumedReservation = {
-							groups: consumed.groups,
-							...(consumed.capability === undefined ? {} : { capability: consumed.capability }),
-						};
-						const mark = await insertedBy;
-						await this.consumeReservation(
-							this.presence.get(session) !== entry
-								? ownOnly
-								: { ...consumed, ...(mark === undefined ? {} : { insertedBy: mark }) },
-						);
+						// #5138: recorded before the store is asked, so a step a store error interrupts is retried at renewal.
 						const { childName, authorizedBy } = consumed;
-						if (childName !== undefined && authorizedBy !== undefined) {
-							const registration = { childName, authorizedBy };
-							if (entry.lease === undefined) entry.rebind = registration;
-							await this.rebindParked(session, registration);
-						}
+						const registration =
+							childName !== undefined && authorizedBy !== undefined ? { childName, authorizedBy } : undefined;
+						if (entry.lease === undefined) entry.rebind = registration;
+						entry.unfinished = {
+							consume: consumed,
+							mark: insertedBy,
+							rebind: registration,
+							attempts: 0,
+						};
+						await this.finishRegistration(session, entry);
 					}
 				} finally {
 					clearTimeout(bound);
@@ -501,17 +621,92 @@ export class MultiNodeRouter {
 		});
 	}
 
+	/**
+	 * #5138: run the session's store steps not yet done. Each runs once more after a failure, at each renewal, until
+	 * it succeeds or `REGISTRATION_STEP_ATTEMPTS` attempts failed; a failure is reported.
+	 */
+	private async finishRegistration(session: BrokerConnectedSession, entry: PresenceEntry): Promise<void> {
+		const unfinished = entry.unfinished;
+		if (unfinished === undefined) return;
+		unfinished.attempts++;
+		const failures: unknown[] = [];
+		const { consume } = unfinished;
+		if (consume !== undefined) {
+			try {
+				await this.consumeReservation(await this.registeredConsumption(session, entry, unfinished, consume));
+				delete unfinished.consume;
+			} catch (error) {
+				failures.push(error);
+			}
+		}
+		const { rebind } = unfinished;
+		if (rebind !== undefined) {
+			try {
+				await this.rebindParked(session, rebind);
+				delete unfinished.rebind;
+			} catch (error) {
+				failures.push(error);
+			}
+		}
+		if (unfinished.failTerminal === true) {
+			try {
+				await this.failTerminalAsks(session);
+				delete unfinished.failTerminal;
+			} catch (error) {
+				failures.push(error);
+			}
+		}
+		const done =
+			unfinished.consume === undefined && unfinished.rebind === undefined && unfinished.failTerminal === undefined;
+		// Steps run one at a time per session (`serial`), so `entry.unfinished` is still this record.
+		if (done || unfinished.attempts >= REGISTRATION_STEP_ATTEMPTS) delete entry.unfinished;
+		if (failures.length > 0) throw failures[0];
+	}
+
+	/**
+	 * What a registration's consume ends. #4488: the child may have been released since the registration began, while
+	 * its presence was being taken over. A reservation its owner made for that release must stay, or the released child
+	 * is unreachable: by the child's name, only reservations older than the registration end, none once the session
+	 * left, and none when the mark could not be read (#5138); the capability's own one always ends.
+	 */
+	private async registeredConsumption(
+		session: BrokerConnectedSession,
+		entry: PresenceEntry,
+		unfinished: UnfinishedRegistration,
+		consumed: ConsumedReservation,
+	): Promise<ConsumedReservation> {
+		const ownOnly: ConsumedReservation = {
+			groups: consumed.groups,
+			...(consumed.capability === undefined ? {} : { capability: consumed.capability }),
+		};
+		if (this.presence.get(session) !== entry) return ownOnly;
+		// A retried consume ends the same reservations: the mark is read once, as the registration began.
+		const { mark } = unfinished;
+		if (mark === undefined) return consumed;
+		try {
+			const insertedBy = await mark;
+			unfinished.consume = { ...consumed, insertedBy };
+		} catch (error) {
+			this.report(error);
+			unfinished.consume = ownOnly;
+		}
+		delete unfinished.mark;
+		return unfinished.consume;
+	}
+
 	/** Presence or memberships changed: the shared subject follows them. */
 	sessionUpdated(session: BrokerConnectedSession): void {
 		const entry = this.presence.get(session);
 		if (this.closed || entry === undefined) return;
 		this.serial(deliveryTargetIdentity(session), async () => {
 			if (entry.unbound === true) return;
-			await this.recordKnown(session, entry);
 			if (session.info.replyCapability === "terminal" && entry.terminal !== true) {
 				entry.terminal = true;
-				await this.failTerminalAsks(session);
+				// #5138: recorded before the store is asked, so a store error is retried at renewal, not lost.
+				entry.unfinished = { ...entry.unfinished, failTerminal: true, attempts: 0 };
 			}
+			await this.recordKnown(session, entry);
+			if (entry.unfinished?.failTerminal === true) await this.finishRegistration(session, entry);
 			if (entry.lease === undefined) return;
 			const renewed = await this.state.leases.renew(entry.lease, this.presenceSubject(session));
 			if (renewed.status !== "renewed") entry.lease = undefined;
@@ -524,9 +719,9 @@ export class MultiNodeRouter {
 	 * route stays open until that reply is delivered and then closes like any answered ask.
 	 */
 	private async failTerminalAsks(target: BrokerConnectedSession): Promise<void> {
-		const taken = await this.state.pendingAsks.takeForTarget(target.info.id);
-		if (taken.status !== "taken") return;
-		await this.failAsksTo(target, taken.asks, TERMINAL_CHILD_ASK_REFUSAL, "terminal", "always");
+		const listed = await this.state.pendingAsks.listForTarget(target.info.id);
+		if (listed.status !== "listed") return;
+		await this.failAsksTo(target.info, listed.asks, TERMINAL_CHILD_ASK_REFUSAL, "terminal", "always");
 	}
 
 	/**
@@ -536,7 +731,52 @@ export class MultiNodeRouter {
 	 */
 	private async failEndedAsks(target: BrokerConnectedSession, asks: readonly PendingAsk[]): Promise<void> {
 		const reason = `Session "${target.info.name ?? target.info.id}" ended before replying`;
-		await this.failAsksTo(target, asks, reason, "ended", "outside-groups");
+		await this.failAsksTo(target.info, asks, reason, "ended", "outside-groups");
+	}
+
+	/**
+	 * #4992: the owner of released subagents left, or dropped one (`reservationKey`): the asks parked for them end, as
+	 * its local parked questions do (`failParkedQuestions`), and each asker is told once on any node that the subagent
+	 * ended before replying, through the outbox, held for an away asker.
+	 */
+	private async failParkedAsks(ownerSessionId: string, reservationKey?: string): Promise<void> {
+		const ended = await this.state.pendingAsks.endParked(ownerSessionId, reservationKey);
+		if (ended.status === "listed") await this.failAsksOfEnded(ended.asks);
+	}
+
+	/**
+	 * #4992: asks whose target ended, marked so in the shared state, each failed for its asker as sent by that target, as
+	 * Intercom last knew it. The departure that marked them fails them; `sweepEndedAsks` fails those a broker that stopped
+	 * meanwhile left.
+	 */
+	private async failAsksOfEnded(endedAsks: readonly PendingAsk[]): Promise<void> {
+		const byTarget = new Map<string, PendingAsk[]>();
+		for (const ask of endedAsks) byTarget.set(ask.targetSessionId, [...(byTarget.get(ask.targetSessionId) ?? []), ask]);
+		for (const [targetSessionId, asks] of byTarget) {
+			const known = await this.state.knownSessions.lookup(targetSessionId, KNOWN_SESSION_RETENTION_MS);
+			const subagent =
+				known.status === "found"
+					? known.sessions.find((session) => session.intercomSessionId === targetSessionId)
+					: undefined;
+			const from: SessionInfo = {
+				id: targetSessionId,
+				...(subagent?.name === undefined ? {} : { name: subagent.name }),
+				...(subagent === undefined ? {} : { group: subagent.group, groups: [...subagent.groups] }),
+				cwd: "",
+				model: "",
+				pid: 0,
+				startedAt: 0,
+				lastActivity: Date.now(),
+			};
+			const reason = `Session "${from.name ?? targetSessionId}" ended before replying`;
+			await this.failAsksTo(from, asks, reason, "ended", "outside-groups");
+		}
+	}
+
+	/** #4992: fail the asks that ended more than a stale claim's age ago, which the broker that marked them left. */
+	private async sweepEndedAsks(): Promise<void> {
+		const ended = await this.state.pendingAsks.listEnded(OUTBOX_CLAIM_STALE_AFTER_MS);
+		if (ended.status === "listed") await this.failAsksOfEnded(ended.asks);
 	}
 
 	/**
@@ -555,26 +795,46 @@ export class MultiNodeRouter {
 				replyError: reason,
 				content: { text: reason },
 			};
-			const request = { from: target, message, target: ask.askerSessionId, supervisorSend: false };
-			const decision = await decideReleasedAskerReply(this.state, request, ask);
-			if (decision?.kind !== "deliver") continue;
-			const { owner, frame } = decision;
-			const enqueued = await this.state.outbox
-				.enqueue({ targetIdentity: owner.identity, originBrokerId: this.brokerId, digest: crossNodeDigest(JSON.stringify(frame)), frame })
-				.catch((error: Error) => this.reopenAfter(decision, error));
-			if (enqueued.status === "invalid") await this.reopenQuestion(decision);
+			const owner = await ownerOfAsker(this.state, ask);
+			if (owner === undefined) continue;
+			const frame: ReleasedAskerReplyFrame = {
+				type: "released_child_reply",
+				childName: ask.childName,
+				replyTo: ask.questionId,
+				from: target.info,
+				message,
+			};
+			// #4992: queued before its question is claimed. The owner's broker hands it over only while it holds the
+			// question (`releasedReplyHandoffRefusal`), so a broker that stops before the claim still has it delivered, and
+			// a reply that claimed the question first has it refused. Owed to the open question, so a full queue takes it.
+			const enqueued = await this.state.outbox.enqueue({
+				targetIdentity: owner.identity,
+				originBrokerId: this.brokerId,
+				digest: crossNodeDigest(JSON.stringify(frame)),
+				frame,
+				owed: true,
+			});
+			if (enqueued.status === "invalid" || enqueued.status === "full") continue;
 			if (enqueued.status === "inserted" && owner.hostBrokerId !== undefined) {
 				await this.bus.publish({ brokerId: owner.hostBrokerId, reason: "outbox", version: enqueued.row.sequence });
 			}
+			await this.state.releasedAsks.claim({
+				questionId: ask.questionId,
+				replierSessionId: ask.replierSessionId,
+				replyMessageId: message.id,
+			});
 		}
 	}
 
 	/**
-	 * Send each asker a failure correlated to its ask. `reopenRoute`: when the ask's route is recorded again, so the
-	 * failure is authorized as its reply and the route closes once it is delivered.
+	 * Send each asker a failure correlated to its ask. `reopenRoute`: when the ask's route stays recorded, so the
+	 * failure is authorized as its reply and the route closes once it is delivered. #4992: each ask is still recorded
+	 * when it gets here, and its route is removed only once its failure is written or queued, so a broker that stops
+	 * in between leaves the ask open rather than its asker untold; a failure queued again has the same message id and
+	 * is not queued twice.
 	 */
 	private async failAsksTo(
-		target: BrokerConnectedSession,
+		from: SessionInfo,
 		asks: readonly PendingAsk[],
 		reason: string,
 		idPrefix: string,
@@ -584,10 +844,17 @@ export class MultiNodeRouter {
 		const live = (await this.state.leases.listLive("presence", BROKER_LEASE_STALE_AFTER_MS)).filter(
 			(lease) => lease.subject.kind === "presence",
 		);
+		const targetGroups = sessionGroups(from);
 		for (const ask of asks) {
+			const settled = () =>
+				this.state.pendingAsks.clearReply({
+					replySenderSessionId: ask.targetSessionId,
+					replyTargetSessionId: ask.senderSessionId,
+					replyTo: ask.messageId,
+				});
 			const frame: IntercomDeliveryFrame = {
 				type: "message",
-				from: target.info,
+				from,
 				message: {
 					id: `${idPrefix}:${ask.messageId}`,
 					timestamp: Date.now(),
@@ -598,18 +865,27 @@ export class MultiNodeRouter {
 			};
 			const local = this.host.sessions.get(ask.senderSessionId);
 			if (local !== undefined) {
+				// #5145: a broker that stopped after queueing this failure, before it cleared the ask, left the failure to its
+				// row: this broker's outbox scans deliver it (at the asker's registration and every backup poll, which runs
+				// before this sweep), or already did, so only the ask is settled here. A row that expired was never delivered.
+				const queued = await this.state.outbox.read(frame.message.id);
+				if (queued.status === "found" && queued.row.state !== "failed") {
+					await settled();
+					continue;
+				}
 				// #5004: held until the asker saved it, like a reply.
 				deliverHeldToAsker(
 					{
 						asker: local,
 						question: ask,
-						from: target.info,
+						from,
 						pending: this.host.pendingQuestions,
 						write: (socket, written) => this.host.write(socket, written),
 						legacy: frame,
 					},
 					frame.message,
 				);
+				await settled();
 				continue;
 			}
 			const hosted = live.find((lease) => (lease.subject as RecipientPresenceSubject).session.id === ask.senderSessionId);
@@ -631,18 +907,28 @@ export class MultiNodeRouter {
 						? known.sessions.find((session) => session.intercomSessionId === ask.senderSessionId)
 						: undefined;
 			}
-			if (asker === undefined) continue;
-			const identity = asker.targetIdentity;
-			const targetGroups = sessionGroups(target.info);
-			if (reopenRoute === "always" || !asker.groups.some((group) => targetGroups.has(group))) {
-				await this.state.pendingAsks.record(ask);
+			if (asker === undefined) {
+				await settled();
+				continue;
 			}
 			const enqueued = await this.state.outbox.enqueue({
-				targetIdentity: identity,
+				targetIdentity: asker.targetIdentity,
 				originBrokerId: this.brokerId,
 				digest: crossNodeDigest(JSON.stringify(frame)),
 				frame,
+				owed: true,
 			});
+			// Not queued: the ask stays marked ended, so a later sweep tries again.
+			if (enqueued.status === "full" || enqueued.status === "invalid") continue;
+			crashPoint(ASK_FAILURE_QUEUED);
+			if (reopenRoute === "outside-groups" && asker.groups.some((group) => targetGroups.has(group))) await settled();
+			else {
+				await this.state.pendingAsks.unmarkEnded({
+					replySenderSessionId: ask.targetSessionId,
+					replyTargetSessionId: ask.senderSessionId,
+					replyTo: ask.messageId,
+				});
+			}
 			if (enqueued.status === "inserted" && hosted !== undefined) {
 				await this.bus.publish({ brokerId: hosted.holderId, reason: "outbox", version: enqueued.row.sequence });
 			}
@@ -676,29 +962,48 @@ export class MultiNodeRouter {
 		const sessionId = session.info.id;
 		this.serial(identity, async () => {
 			if (unbound) return;
+			// #4751: a top-level session that is only away keeps its asks: a reply to it is queued in the outbox like any
+			// send to an offline session, and its own recipient may still answer once it is back.
+			const away = session.supervisorId === undefined && !ended;
+			// #4842: a terminal session's remaining routes are the failures it already sent, so they are not sent again.
+			const terminal = session.info.replyCapability === "terminal";
+			// #4992: the replies it sent before it left are queued first, so the asks they answer do not fail. Then, before
+			// anything else, the asks that end with it are marked so in the shared state: should this broker stop before
+			// their askers are told, another broker tells them (`sweepEndedAsks`).
+			// #4386: asks to a released subagent are parked instead; registering again on any node takes its presence over
+			// first, so its rebinding always finds them.
+			await this.serials.get(`reply:${sessionId}`);
+			// #4997: its kept asks that move to the shared state get there first, so they end there, once.
+			if (!away && !terminal) await this.moveAsksTo(session).catch((error: Error) => this.report(error));
+			const ending = (async () => ({
+				asks:
+					away || (terminal && released === undefined)
+						? []
+						: await settleAsksToDeparted(this.state, sessionId, released),
+				// #4992: the asks parked for its released subagents end with it, ended or away, as its local ones do.
+				parked: await this.state.pendingAsks.endParked(sessionId),
+			}))();
+			const marked = await ending.catch((error: Error) => {
+				this.report(error);
+				return undefined;
+			});
 			// #4386: a released subagent's asks outlive its pending-ask routes, and are kept before it stops being live, so
 			// a reply never finds it offline with only its pending asks. A failed write loses them, as a lost local route
 			// does: the subagent then wakes at its reply deadline.
 			await keepReleasedAsks(this.state, session).catch((error: Error) => this.report(error));
 			for (const inflight of claims) await this.state.outbox.releaseClaim(inflight.claim);
-			// #4386: asks to a released subagent are parked before its presence ends; registering again on any node takes
-			// that presence over first, so its rebinding always finds them.
-			// #4751: a top-level session that is only away keeps its asks: a reply to it is queued in the outbox like any
-			// send to an offline session, and its own recipient may still answer once it is back.
-			const away = session.supervisorId === undefined && !ended;
-			// #4842: an ask that ends with its recipient fails for its asker on any node. A terminal session's remaining
-			// routes are the failures it already sent, so they are not sent again.
+			// #4842: an ask that ends with its recipient fails for its asker on any node.
 			await (away ? Promise.resolve() : this.state.pendingAsks.pruneSender(sessionId).then(() => undefined))
-				.then(() =>
-					away
-						? this.state.pendingAsks.takeParked(sessionId).then(() => undefined)
-						: settleAsksToDeparted(this.state, sessionId, released).then(async (asks) => {
-								if (session.info.replyCapability === "terminal") return;
-								await this.failEndedAsks(session, asks);
-								// #4852: so are the questions released subagents asked it, through their owners.
-								if (released === undefined) await this.failReleasedAsksTo(session);
-							}),
-				)
+				.then(async () => {
+					if (!away && terminal && released === undefined) {
+						await this.state.pendingAsks.takeForTarget(sessionId);
+					} else if (!away && !terminal) {
+						await this.failEndedAsks(session, marked?.asks ?? []);
+						// #4852: so are the questions released subagents asked it, through their owners.
+						if (released === undefined) await this.failReleasedAsksTo(session);
+					}
+					if (marked?.parked.status === "listed") await this.failAsksOfEnded(marked.parked.asks);
+				})
 				.catch((error: Error) => this.report(error));
 			// A session that reconnected here before its old connection was noticed gone holds the same presence lease (same
 			// holder, same token): the old connection leaving must not end it for the live one.
@@ -956,7 +1261,7 @@ export class MultiNodeRouter {
 			for (const targetIdentity of identities) {
 				const presence = await this.state.leases.read({ kind: "presence", targetIdentity });
 				if (presence.status === "found" && presence.lease.ageMs < BROKER_LEASE_STALE_AFTER_MS) continue;
-				const queued = await this.state.outbox.listUndelivered(targetIdentity);
+				const queued = await this.state.outbox.listUndelivered(targetIdentity, 1);
 				if (queued.status === "listed" && queued.rows.length > 0) return queued.rows[0].messageId;
 			}
 		}
@@ -995,8 +1300,9 @@ export class MultiNodeRouter {
 		const reservationKey = reservationKeyFor(capability);
 		// Behind the reserve on the same key: a release while the reserve is still being written ends what it wrote.
 		this.serial(`reservation:${reservationKey}`, async () => {
-			// #4386: asks parked for a released subagent its owner no longer holds end here, as its local ones do.
-			await this.state.pendingAsks.takeParked(ownerSessionId, reservationKey);
+			// #4386: asks parked for a released subagent its owner no longer holds end here, as its local ones do; #4992:
+			// each asker is told, on any node.
+			await this.failParkedAsks(ownerSessionId, reservationKey);
 			const mirror = this.mirrored.get(reservationKey);
 			if (mirror === undefined || mirror.lease.ownerSessionId !== ownerSessionId) return;
 			if (gone === undefined) this.mirrored.delete(reservationKey);
@@ -1063,6 +1369,7 @@ export class MultiNodeRouter {
 	/** Answer a send no local session resolved: another node's session, a shared hold, an offline session, or none. */
 	routeSend(request: RemoteSendRequest): void {
 		// #4386: one sender's replies are routed in the order it sent them, so they reach an owner in that order.
+		// #4992: a departing replier waits for this queue, so its asks fail only after the replies it sent are queued.
 		if (isReleasedReplyCandidate(request)) this.serial(`reply:${request.from.info.id}`, () => this.routeSendSafely(request));
 		else void this.routeSendSafely(request);
 	}
@@ -1178,6 +1485,167 @@ export class MultiNodeRouter {
 				await this.sendReleasedReply(request, decision);
 				return true;
 		}
+	}
+
+	/**
+	 * #4997: a reply to a session on this broker, whose ask this broker's own routes do not know: an ask delivered while
+	 * its peers were on different brokers, or kept while one was away, has its route in the shared state. Both peers are
+	 * here now, so the route becomes this broker's own, and the shared one is settled, so the ask has one outcome.
+	 */
+	/**
+	 * #4997: a reply to a session here that no route authorizes, here or in the shared state, while a broker that may
+	 * keep its ask's route is down, is refused as retryable rather than by the local path's final refusal. True when
+	 * the reply was answered.
+	 */
+	private async routeUnreachable(request: RemoteSendRequest, target: BrokerConnectedSession): Promise<boolean> {
+		const replyTo = request.message.replyTo;
+		if (!request.requirePendingReply || replyTo === undefined) return false;
+		if (this.host.pendingQuestions.matchesReply(request.from.info.id, target.info.id, replyTo)) return false;
+		// A retry of a reply already delivered here is answered by the local path.
+		if (this.host.deliveredMessages.lookupForTarget(request.message.id, request.signature, deliveryTargetIdentity(target)) !== "miss")
+			return false;
+		const asker = { sessionId: target.info.id, identity: deliveryTargetIdentity(target) };
+		if (!(await this.routeMayBeElsewhere(request, asker.sessionId, asker.identity).catch(() => false))) return false;
+		await this.refuseUnauthorizedReply(request, asker);
+		return true;
+	}
+
+	private async adoptSharedRouteWithin(request: RemoteSendRequest, target: BrokerConnectedSession): Promise<void> {
+		const late = { abandoned: false };
+		const adopted = this.adoptSharedRoute(request, target, late);
+		// A reply that must answer an open ask can only be authorized by the shared state when this broker's routes do not
+		// authorize it, so it waits for that state longer than a send the local path delivers anyway.
+		const boundMs = request.requirePendingReply ? PRESENCE_REGISTRATION_BOUND_MS : LOCAL_RETRY_LOOKUP_BOUND_MS;
+		let bound: ReturnType<typeof setTimeout> | undefined;
+		const expired = new Promise<"expired">((resolve) => {
+			bound = setTimeout(() => resolve("expired"), boundMs);
+			bound.unref?.();
+		});
+		try {
+			if ((await Promise.race([adopted, expired])) === "expired") {
+				// The send takes the local path now: a route found later is left where it is, for a retry to find.
+				late.abandoned = true;
+				adopted.catch((error: Error) => this.report(error));
+			}
+		} catch (error) {
+			this.report(error);
+		} finally {
+			clearTimeout(bound);
+		}
+	}
+
+	private async adoptSharedRoute(
+		request: RemoteSendRequest,
+		target: BrokerConnectedSession,
+		late: { readonly abandoned: boolean },
+	): Promise<void> {
+		const replyTo = request.message.replyTo;
+		const replySenderSessionId = request.from.info.id;
+		if (replyTo === undefined) return;
+		if (this.host.pendingQuestions.matchesReply(replySenderSessionId, target.info.id, replyTo)) return;
+		// An ask whose route is still moving there from this broker is in the shared state once that move is done.
+		await Promise.all([...this.settling]);
+		if (this.host.pendingQuestions.matchesReply(replySenderSessionId, target.info.id, replyTo)) return;
+		const route = { replySenderSessionId, replyTargetSessionId: target.info.id, replyTo };
+		if ((await this.state.pendingAsks.matchesReply(route)).status !== "match" || late.abandoned) return;
+		this.host.pendingQuestions.record(target.info.id, replySenderSessionId, replyTo);
+		await this.settleSharedRoute({ senderSessionId: target.info.id, targetSessionId: replySenderSessionId, messageId: replyTo });
+	}
+
+	/**
+	 * #4997: the session ended: its kept asks that move to the shared state get there first, so they fail there, once.
+	 * One the shared state does not take fails here, as on a single node.
+	 */
+	private async moveAsksTo(session: BrokerConnectedSession): Promise<void> {
+		const pending = this.host.pendingQuestions;
+		const moving = pending.movableDormant().filter((ask) => ask.targetSessionId === session.info.id);
+		await this.publishAwayRoutes(moving);
+		await Promise.all([...this.settling]);
+		if (!moving.some((ask) => pending.isDormant(ask))) return;
+		const reason = `Session "${session.info.name ?? session.info.id}" ended before replying`;
+		pending.failDormantForTarget(session.info, reason, "recipient-ended", session.registrationReturnAddress);
+	}
+
+	/**
+	 * #4997: a session that left without ending may come back on another broker, so the asks between it and a session
+	 * here, kept on this broker (durably, before this is called), move to the shared state, where either broker answers
+	 * and settles them. Each stays kept here until its shared route is written, so neither a crash nor a reply in
+	 * between finds no route; one this broker took up meanwhile (its peer came back here, or it was answered or failed
+	 * here) is this broker's alone, and its shared route is settled. One whose write fails stays here, to move later.
+	 */
+	publishAwayRoutes(questions: readonly PendingQuestion[]): Promise<void> {
+		if (questions.length === 0) return Promise.resolve();
+		let finished!: () => void;
+		const publishing = new Promise<void>((resolve) => {
+			finished = resolve;
+		});
+		this.settling.add(publishing);
+		void publishing.finally(() => this.settling.delete(publishing));
+		// One move at a time, so an ask two moves both see kept is written once and dropped here once.
+		this.serial("away-routes", async () => {
+			try {
+				for (const question of questions) {
+					if (!this.host.pendingQuestions.isDormant(question)) continue;
+					const ask = {
+						senderSessionId: question.senderSessionId,
+						targetSessionId: question.targetSessionId,
+						messageId: question.messageId,
+					};
+					const recorded = await this.state.pendingAsks.record(ask);
+					if (recorded.status === "invalid") continue;
+					// #4997: answered or failed on another broker while this one kept its copy: the copy goes.
+					if (recorded.status === "settled") {
+						this.host.pendingQuestions.takeDormant(question);
+						continue;
+					}
+					if (!this.host.pendingQuestions.takeDormant(question)) await this.settleSharedRoute(ask);
+				}
+			} finally {
+				finished();
+			}
+		});
+		return publishing;
+	}
+
+	/** #4997: asks this broker took up again, as both of their peers are here: their shared routes, if any, are settled. */
+	settleRestoredRoutes(questions: readonly PendingQuestion[]): void {
+		for (const question of questions) {
+			void this.settleSharedRoute(question).catch((error: Error) => this.report(error));
+		}
+	}
+
+	/**
+	 * The ask is this broker's own now: its shared route goes, without settling the ask, as the ask may move again. Its
+	 * answer here settles it in the shared state (`answeredHere`), so no copy of the route is recorded there again.
+	 */
+	private async settleSharedRoute(question: PendingQuestion): Promise<void> {
+		this.adopted.add(askKey(question));
+		await this.state.pendingAsks.releaseRoute({
+			replySenderSessionId: question.targetSessionId,
+			replyTargetSessionId: question.senderSessionId,
+			replyTo: question.messageId,
+		});
+	}
+
+	/** #4997: the asks this broker took over from the shared state, until they are answered here. */
+	private readonly adopted = new Set<string>();
+
+	/**
+	 * #4997: an ask this broker took over from the shared state was answered here: it is settled there too, so a copy
+	 * of its route that a stopped broker kept is not recorded again, and its recipient's end fails nothing.
+	 */
+	private answeredHere(question: PendingQuestion): void {
+		if (!this.adopted.delete(askKey(question))) return;
+		const settling = this.state.pendingAsks
+			.clearReply({
+				replySenderSessionId: question.targetSessionId,
+				replyTargetSessionId: question.senderSessionId,
+				replyTo: question.messageId,
+			})
+			.then(() => undefined)
+			.catch((error: Error) => this.report(error));
+		this.settling.add(settling);
+		void settling.finally(() => this.settling.delete(settling));
 	}
 
 	/**
@@ -1318,6 +1786,7 @@ export class MultiNodeRouter {
 			const existing = await Promise.race([lookup, expired]);
 			if (existing === "expired") {
 				lookup.catch((error: Error) => this.report(error));
+				await this.adoptSharedRouteWithin(request, target);
 				request.notFound();
 				return;
 			}
@@ -1329,6 +1798,8 @@ export class MultiNodeRouter {
 			}
 			const moved = await Promise.race([released, expired]);
 			if (moved !== "expired" && moved !== undefined && (await this.routeReleasedReply(request, moved))) return;
+			await this.adoptSharedRouteWithin(request, target);
+			if (await this.routeUnreachable(request, target)) return;
 			request.notFound();
 		} finally {
 			clearTimeout(bound);
@@ -1433,7 +1904,7 @@ export class MultiNodeRouter {
 				})
 			).status === "match";
 		if (request.requirePendingReply && !correlatedReply) {
-			this.fail(request, "Pending question route does not authorize this public reply");
+			await this.refuseUnauthorizedReply(request, { sessionId: target.sessionId, identity: target.identity });
 			return;
 		}
 		const verticalReply =
@@ -1480,6 +1951,14 @@ export class MultiNodeRouter {
 			await this.state.sentMessages.forget({ messageId: message.id, digest });
 			this.fail(request, outboxFullReason(enqueued));
 			return;
+		}
+		// #4992: the ask is answered once its reply is queued: the replier ending before delivery does not also fail it.
+		if (correlatedReply) {
+			await this.state.pendingAsks.markReplied({
+				replySenderSessionId: from.info.id,
+				replyTargetSessionId: target.sessionId,
+				replyTo: message.replyTo!,
+			});
 		}
 		await this.answerExistingRow(request, target, digest, enqueued.row);
 	}
@@ -1570,7 +2049,7 @@ export class MultiNodeRouter {
 			targetIdentity: target.identity,
 			queued: offline,
 			timer: undefined,
-			waitingSince: Date.now(),
+			waitingSince: performance.now(),
 		};
 		this.armWaiter(waiter, offline ? DELIVERED_MESSAGE_TTL_MS : RECIPIENT_RECEIPT_TIMEOUT_MS);
 		this.waiters.set(message.id, waiter);
@@ -1595,10 +2074,10 @@ export class MultiNodeRouter {
 		this.host.write(socket, queuedFrame(messageId, attemptId, await this.queuePosition(identity, messageId)));
 	}
 
+	/** #4896: counted, not listed: a send to a busy recipient never reads its whole queue to learn its place. */
 	private async queuePosition(identity: string, messageId: string): Promise<number> {
-		const listed = await this.state.outbox.listUndelivered(identity);
-		const index = listed.status === "listed" ? listed.rows.findIndex((entry) => entry.messageId === messageId) : -1;
-		return index + 1 || 1;
+		const counted = await this.state.outbox.undeliveredPosition(identity, messageId);
+		return counted.status === "positioned" ? counted.position : 1;
 	}
 
 	/**
@@ -2068,7 +2547,7 @@ export class MultiNodeRouter {
 		if (!waiter.queued && waiter.capTimer === undefined) {
 			waiter.capTimer = setTimeout(
 				() => this.expireUncertain(waiter),
-				Math.max(0, waiter.waitingSince + RECIPIENT_SAVE_MAX_WAIT_MS - Date.now()),
+				Math.max(0, waiter.waitingSince + RECIPIENT_SAVE_MAX_WAIT_MS - performance.now()),
 			);
 			waiter.capTimer.unref?.();
 		}
@@ -2076,7 +2555,7 @@ export class MultiNodeRouter {
 
 	/** The sender may wait this much longer under the save cap; 0 once the cap is reached. */
 	private capRemaining(waiter: Waiter): number {
-		return Math.max(0, waiter.waitingSince + RECIPIENT_SAVE_MAX_WAIT_MS - Date.now());
+		return Math.max(0, waiter.waitingSince + RECIPIENT_SAVE_MAX_WAIT_MS - performance.now());
 	}
 
 	/**
@@ -2190,6 +2669,33 @@ export class MultiNodeRouter {
 		}
 	}
 
+	private membershipSubject(): BrokerMembershipSubject {
+		return {
+			kind: "broker",
+			brokerId: this.brokerId,
+			nodeId: this.nodeId,
+			startedAt: Date.now(),
+			instanceKey: this.instanceKey,
+			pid: this.pid,
+			...(this.home === undefined ? {} : { home: this.home }),
+		};
+	}
+
+	/**
+	 * #5038: an earlier instance of this broker (same host and socket) still listed as live whose process has exited
+	 * died without releasing anything. Its presence leases would keep other brokers routing to it, and keep sessions
+	 * that re-register here from taking their presence, and its outbox claims would hold its recipients' queues, until
+	 * they go stale; retire them now. Its claimed rows are delivered again, once, by whoever claims them next.
+	 */
+	private async retirePreviousInstances(): Promise<void> {
+		for (const lease of await this.state.leases.listLive("broker", BROKER_LEASE_STALE_AFTER_MS)) {
+			const { instanceKey, pid } = lease.subject as Partial<BrokerMembershipSubject>;
+			if (instanceKey !== this.instanceKey || pid === undefined || this.isProcessAlive(pid)) continue;
+			await this.state.leases.retireHolder(lease.holderId);
+			await this.state.outbox.releaseClaimsOf(lease.holderId);
+		}
+	}
+
 	private async renew(): Promise<void> {
 		if (this.membership !== undefined) {
 			const renewed = await this.state.leases.renew(this.membership);
@@ -2197,7 +2703,7 @@ export class MultiNodeRouter {
 		}
 		if (this.membership === undefined) {
 			const acquired = await this.state.leases.acquire(
-				{ kind: "broker", brokerId: this.brokerId, nodeId: this.nodeId, startedAt: Date.now() },
+				this.membershipSubject(),
 				this.brokerId,
 				BROKER_LEASE_STALE_AFTER_MS,
 			);
@@ -2211,17 +2717,26 @@ export class MultiNodeRouter {
 					// A live session stays known: retention counts from its last renewal, not from its registration.
 					this.serial(deliveryTargetIdentity(session), () => this.recordKnown(session, entry));
 				}
+				if (entry.unfinished !== undefined) {
+					this.serial(deliveryTargetIdentity(session), async () => {
+						if (this.presence.get(session) === entry) await this.finishRegistration(session, entry);
+					});
+				}
 			} else {
 				this.serial(deliveryTargetIdentity(session), async () => {
 					if (this.presence.get(session) !== entry || entry.unbound === true) return;
 					await this.acquirePresence(session, entry);
-					if (entry.lease === undefined) return;
 					const { rebind } = entry;
-					if (rebind !== undefined) {
+					if (entry.lease !== undefined && rebind !== undefined) {
+						// #5138: kept as an unfinished step until it succeeds, so a store error does not lose it.
 						delete entry.rebind;
-						await this.rebindParked(session, rebind);
+						entry.unfinished = { ...(entry.unfinished ?? { attempts: 0 }), rebind };
 					}
-					this.scanIdentity(deliveryTargetIdentity(session));
+					try {
+						await this.finishRegistration(session, entry);
+					} finally {
+						if (entry.lease !== undefined) this.scanIdentity(deliveryTargetIdentity(session));
+					}
 				});
 			}
 		}
@@ -2240,6 +2755,7 @@ export class MultiNodeRouter {
 
 	private async backupPoll(): Promise<void> {
 		this.scanAll();
+		await this.sweepEndedAsks();
 		await this.checkOutcomes();
 		await this.checkHolds();
 		for (const reservationKey of this.mirrored.keys()) {

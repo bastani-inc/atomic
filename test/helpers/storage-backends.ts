@@ -54,8 +54,9 @@ function serverUrl(variable: string): { readonly url: string } | { readonly skip
 	return { skipReason: `${variable} is not set` };
 }
 
+/** Ten characters: the longest prefix PostgreSQL names every identifier of, worker pools included, under. */
 function scopePrefix(): string {
-	return `c${randomBytes(6).toString("hex")}_`;
+	return `c${randomBytes(4).toString("hex")}_`;
 }
 
 /** Opens connections through `open` and closes every one of them, whatever the suite left open. */
@@ -112,8 +113,13 @@ export const sqliteFileBackend: StorageBackend = {
  */
 const FACADE_SUITE_TABLES = ["children", "parents", "items", "concurrent_items", "integers", "reals", "texts", "blobs"];
 
-/** Drops the scope's tables on a shared libSQL server; a table another still references is retried after it. */
-async function dropLibsqlScope(database: SqliteDatabase, prefix: string, facadeTables: boolean): Promise<void> {
+/**
+ * Drops the scope's tables on a shared libSQL server; a table another still references is retried after it. Every
+ * request to the server runs on a connection of its own, so `PRAGMA foreign_keys = OFF` would not reach the drops.
+ * Tables a test leaves behind make every later request to the server slower: sqld loads the whole schema for each
+ * request (#4768).
+ */
+export async function dropLibsqlScope(database: SqliteDatabase, prefix: string, facadeTables = false): Promise<void> {
 	const fixed = facadeTables ? FACADE_SUITE_TABLES : [];
 	const rows = await database.all(
 		`SELECT name FROM sqlite_master WHERE type = 'table' AND (substr(name, 1, length(?)) = ? OR name IN (${fixed.map(() => "?").join(", ")}))`,

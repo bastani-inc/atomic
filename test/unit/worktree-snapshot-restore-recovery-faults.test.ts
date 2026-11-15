@@ -182,8 +182,9 @@ const warning = (
 ): WorktreeRestoreWarning => ({ code: "stale-restore-retained", path, kind });
 const retainedWarnings = (warnings: readonly WorktreeRestoreWarning[]) =>
 	warnings.filter((candidate) => candidate.code === "stale-restore-retained");
+/** The staging worktree beside `target` of the restore `id`: `.s-` and 12 hex digits of the id (#5139). */
 const siblingStaging = (target: string, id: string) =>
-	join(dirname(target), `.${basename(target)}.atomic-restore-${id}`);
+	join(dirname(target), `.${basename(target)}.s-${id.replaceAll("-", "").slice(0, 12)}`);
 
 function uuid(): string {
 	const hex = createHash("sha256").update(String(Math.random())).digest("hex");
@@ -389,7 +390,10 @@ describe("where a restore stages its worktree", () => {
 		faults.uuids.push(otherId);
 		await restoreWorktree(snapshot, { blobs, storeDir, into });
 
-		assert.deepEqual(adds, [join(storeDir, "worktrees", `.staging-${id}`), siblingStaging(into, otherId)]);
+		assert.deepEqual(adds, [
+			join(storeDir, "worktrees", `.s-${id.replaceAll("-", "").slice(0, 12)}`),
+			siblingStaging(into, otherId),
+		]);
 		assert.equal(dirname(first.path), join(storeDir, "worktrees"));
 		assert.equal(basename(first.path).endsWith(slug.slice(0, 8)), true);
 	});

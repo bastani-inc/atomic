@@ -110,6 +110,8 @@ export interface StageSessionRuntime {
 	readonly thinkingLevel: AgentSession["thinkingLevel"];
 	readonly messages: AgentSession["messages"];
 	readonly isStreaming: AgentSession["isStreaming"];
+	/** See `AgentSession.stopTurns`; absent from runtimes that cannot stop a turn. */
+	stopTurns?(reason: string | undefined): void;
 	/** Number of SDK-level queued steering/follow-up messages, when supported. */
 	readonly pendingMessageCount?: number;
 	/**
@@ -330,6 +332,10 @@ export interface InternalStageContext extends StageContext {
 	__queueUserText?(text: string, kind: "steer" | "followUp", options?: StageQueuedTextOptions): Promise<void>;
 	/** Internal: selected/effective model and fallback attempt metadata. */
 	__modelFallbackMeta(): StageModelFallbackMeta;
+	/** Internal: usage of the attempt in flight, not yet in `__modelFallbackMeta().modelAttempts` (#5053). */
+	__inFlightAttemptUsage?(): import("../../shared/types.js").WorkflowModelUsage | undefined;
+	/** Internal: stop (or with `undefined` resume) model calls within the current session's turns (#5053). */
+	__stopTurns?(reason: string | undefined): void;
 	/** Internal: register a controlled-pause request. */
 	__requestPause(): Promise<void>;
 	/** Internal: complete a pending controlled pause and report its released raw work. */
