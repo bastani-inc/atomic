@@ -206,9 +206,9 @@ export function createRunBudgetController(input: {
 		usage?: WorkflowModelUsage,
 		delivered = true,
 	): WorkflowBudgetExceededError => {
-		// The wrap-up turn ran after the last checkpoint: charge its stage growth now, before the stop
-		// is persisted. A resume treats every stage in the tree as already charged (#5053).
-		if (delivered && usageEnabled) measure();
+		// Charge the growth since the last checkpoint, such as a delivered wrap-up turn, before the stop is
+		// persisted: a resume treats every stage in the tree as already charged (#5053).
+		measure();
 		updateState({
 			systemOwnedStop: true,
 			...(delivered ? { wrapUpDelivered: true, wrapUpCompleted: true } : {}),
@@ -359,7 +359,6 @@ export function createRunBudgetController(input: {
 	};
 	const exhaustedWith = (pending: WorkflowModelUsage): boolean => {
 		if (root?.exhaustedWith(pending) === true) return true;
-		if (!ownEnabled || !usageEnabled) return false;
 		const meters = measure();
 		const tokens = meters.tokens + (pending.input ?? 0) + (pending.output ?? 0);
 		const cost = costFromUnits(costUnits(meters.cost) + costUnits(pending.cost ?? 0));

@@ -247,8 +247,7 @@ class AttemptUsageWindow {
 
 	constructor(session: StageSessionRuntime) {
 		this.unsubscribe = session.subscribe((event) => {
-			const usage = modelCallUsage(event);
-			if (usage !== undefined) this.add(usage, event.type === "message_end");
+			this.add(modelCallUsage(event), event.type === "message_end");
 		});
 	}
 

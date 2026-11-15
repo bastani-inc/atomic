@@ -133,6 +133,10 @@ describe("token cap inside a stage's turn (#5053)", () => {
 			"Cancelled: the workflow budget is exhausted",
 		);
 
+		// The stop held only for the stage's call: the session's own later turns run their tool loop again.
+		await sessions[0]!.prompt("once more");
+		assert.equal(calls, 10, "the next turn called the model until it answered without a tool call");
+
 		const resumed = await run(definition, {}, options(1000));
 		assert.equal(resumed.status, "completed", "the stopped run resumes under a raised budget");
 	});
