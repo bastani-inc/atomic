@@ -1131,11 +1131,13 @@ describe("capitalised credential values", () => {
 			"token: Optional[str] = None",
 			"token: Record<string, string>",
 			"token: Promise<Token>",
-			"secret: SecretRef | null",
-			"token: AuthToken & Disposable",
-			"token: TokenSet[]",
+			"type A = { secret: SecretRef | null }",
+			"let token: AuthToken & Disposable;",
+			"  readonly token: TokenSet[];",
 			"token?: AuthToken;",
-			"token: TokenFactory => void",
+			"export type F = { token: TokenFactory => void };",
+			"token: Map<string, AuthToken>",
+			"token: Optional[List[str]]",
 			"password: str",
 			"password: Optional[str]",
 		]) {
@@ -1144,7 +1146,74 @@ describe("capitalised credential values", () => {
 		assert.equal(redactCredentialShapes("password: Password)"), "password: [redacted]");
 		assert.equal(
 			redactCredentialShapes("connect(host: string, password: Password)"),
-			"connect(host: string, password: [redacted]",
+			"connect(host: string, password: [redacted])",
 		);
+	});
+});
+
+describe("type annotations need a code context", () => {
+	test("capitalised values and generics outside code are redacted", () => {
+		const cases: readonly (readonly [string, string])[] = [
+			["token: CorrectHorse | tee out.log", "token: [redacted] | tee out.log"],
+			["api_key: CorrectHorse & echo", "api_key: [redacted] & echo"],
+			["token: CorrectHorse => x", "token: [redacted] => x"],
+			["token: CorrectHorse[]", "token: [redacted]"],
+			["login(user: Bob, token: CorrectHorse)", "login(user: Bob, token: [redacted]"],
+			[`token: Optional[${PLAIN_SECRET}]`, "token: [redacted]"],
+			[`token: Map<${PLAIN_SECRET}>`, "token: [redacted]"],
+			[`token: Map<string, ${"A".repeat(41)}>`, `token: [redacted], ${"A".repeat(41)}>`],
+			["token: Optional[Token9]", "token: [redacted]"],
+			["token: Optional[", "token: [redacted]"],
+			["token: Optional[str", "token: [redacted]"],
+			["token: Optional[str]x", "token: [redacted]"],
+			[`token: Map<${"Abc, ".repeat(50)}Abc>`, `token: [redacted], ${"Abc, ".repeat(49)}Abc>`],
+			["token: Foo<string>", "token: [redacted]"],
+			[
+				`${"q".repeat(50)}const ${"p".repeat(113)} token: AuthToken`,
+				`${"q".repeat(50)}const ${"p".repeat(113)} token: [redacted]`,
+			],
+		];
+		for (const [input, expected] of cases) {
+			assert.equal(redactCredentialShapes(input), expected, input);
+			assert.equal(redactSensitiveText(input), expected, input);
+		}
+	});
+
+	test("capitalised values in declarations and typed parameter lists stay", () => {
+		for (const text of [
+			"login(user: string, token: CorrectHorse)",
+			"login(user: str, token: CorrectHorse)",
+			"interface A { token: AuthToken }",
+			"  const token: AuthToken = load();",
+			"var token: AuthToken",
+			"class A { private token: AuthToken }",
+			"  protected token: AuthToken;",
+			"  public token: AuthToken;",
+			"def f(token: AuthToken): ...",
+			"token: Optional[CorrectHorse]",
+			`token: Map<string, ${"A".repeat(40)}>`,
+			"token: Record<string, Array<Token>>",
+			"token: Record<Array<Token>, string>",
+		]) {
+			assert.equal(redactCredentialShapes(text), text, text);
+		}
+	});
+
+	test("a password inside a parameter list stops at the next comma or parenthesis", () => {
+		const cases: readonly (readonly [string, string])[] = [
+			[
+				"connect(host: string, password: Password, timeout = 30)",
+				"connect(host: string, password: [redacted], timeout = 30)",
+			],
+			["connect(password=hunter2, timeout=30)", "connect(password= [redacted], timeout=30)"],
+			["connect(a) password: x, y", "connect(a) password: [redacted]"],
+			["password: Hunter, x", "password: [redacted]"],
+			["login(user: string, password: string): Session", "login(user: string, password: string): Session"],
+			["login(password: Optional[str], x)", "login(password: Optional[str], x)"],
+			["login(password: 'a, b', x)", "login(password: [redacted], x)"],
+			["login(password:'a, b', x)", "login(password: [redacted], x)"],
+			["connect(password: abc", "connect(password: [redacted]"],
+		];
+		for (const [input, expected] of cases) assert.equal(redactCredentialShapes(input), expected, input);
 	});
 });
