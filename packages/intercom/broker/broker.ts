@@ -1560,7 +1560,7 @@ class IntercomBroker {
 		reason: string,
 		reasonCode?: "message_id_conflict",
 	): void {
-		writeMessageIfOpen(socket, {
+		this.writeAfterDeparture(socket, {
 			type: "delivery_failed",
 			messageId,
 			...(attemptId === undefined ? {} : { attemptId }),
@@ -2852,7 +2852,8 @@ class IntercomBroker {
     } else if (ownerStillHolds) {
       this.releasedAskerReplies.restore(pending.route, pending.ownerSessionId);
     }
-    writeMessageIfOpen(pending.socket, {
+    // #4996: a replier is told its reply failed only once the departure in progress, if any, is saved.
+    this.writeAfterDeparture(pending.socket, {
       type: "delivery_failed",
       messageId,
       ...attempt,
@@ -3460,7 +3461,7 @@ class IntercomBroker {
       clearTimeout(pending.timeout);
       this.pendingStageAcknowledgments.delete(requestId);
       this.releasePendingStageAcknowledgment(requestId);
-      writeMessageIfOpen(pending.senderSocket, {
+      this.writeAfterDeparture(pending.senderSocket, {
         type: "delivery_failed",
         messageId: pending.messageId,
         ...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
