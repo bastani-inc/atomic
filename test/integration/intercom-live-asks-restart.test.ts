@@ -23,8 +23,10 @@ type Client = InstanceType<typeof IntercomClient>;
 type Message = import("../../packages/intercom/types.js").Message;
 
 /** Spawning, and restarting, the real broker child is the structural cost of this suite. */
-const REAL_BROKER_TEST_TIMEOUT_MS = 60_000;
+const REAL_BROKER_TEST_TIMEOUT_MS = 120_000;
 const WAIT = { timeout: 10_000, interval: 20 };
+/** The broker child compiles its TypeScript as it starts, which takes longer than {@link WAIT} on a loaded machine. */
+const BROKER_START_WAIT = { timeout: 40_000, interval: 50 };
 /** Long enough for a frame the broker wrote to arrive, so its absence means none was written. */
 const SETTLE_MS = 300;
 
@@ -53,7 +55,7 @@ async function startBroker(options: { crashAt?: string } = {}): Promise<void> {
 			socket.once("error", () => resolveConnected(false));
 		});
 		assert.ok(connected);
-	}, WAIT);
+	}, BROKER_START_WAIT);
 }
 
 /** How the broker goes away while both peers of an ask are connected. */
@@ -357,6 +359,8 @@ async function releasedSubagentAsks(label: string, options: { departure?: "handl
 	assert.equal(asked.delivered, true, asked.reason);
 	await vi.waitFor(() => assert.ok(recipientFirst.received.some((message) => message.id === questionId)), WAIT);
 	const childId = idOf(childFirst.client);
+	// Read before the departure: a broker that crashes in it leaves the recipient's client without an id.
+	const recipientId = idOf(recipientFirst.client);
 	await ownerFirst.client.reserveReleasedChildren([{ childName: child.name, wake: true }]);
 	await childFirst.client.disconnect({ resumable: true });
 	// On Windows `disconnect()` can resolve before the broker has handled the subagent's goodbye (#4894): a pipe has no
@@ -365,7 +369,7 @@ async function releasedSubagentAsks(label: string, options: { departure?: "handl
 	return {
 		owner,
 		child: { ...child, id: childId },
-		recipient: { ...recipient, id: idOf(recipientFirst.client) },
+		recipient: { ...recipient, id: recipientId },
 		recipientSession: recipientFirst,
 		ownerSession: ownerFirst,
 		questionId,
