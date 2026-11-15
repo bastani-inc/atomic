@@ -70,7 +70,8 @@ interface Stream {
  * answers this error, and the stream's open transaction rolls back, as sqld rolls back a transaction it times out.
  * `reset-before` / `reset-after`: the connection is reset before the request runs, or after it ran and committed.
  * `closed-before`: the connection is closed without an answer before the request runs. `gateway-after`: the request
- * runs and commits, and a gateway in front of the server then answers HTTP 502 with an HTML page instead. `busy`: the request's first
+ * runs and commits, and a gateway in front of the server then answers HTTP `status` (502 by default) with an HTML
+ * page instead. `busy`: the request's first
  * statement fails with `SQLITE_BUSY` without running, as sqld answers a writer that meets its checkpoint; the rest of
  * a batch runs as its conditions say. `stream-busy`: the request fails as a whole with `SQLITE_BUSY`, which ends its
  * stream and rolls back the stream's open transaction.
@@ -83,7 +84,7 @@ export type FakeLibsqlFault =
 	| { readonly kind: "reset-before" }
 	| { readonly kind: "reset-after" }
 	| { readonly kind: "closed-before" }
-	| { readonly kind: "gateway-after" };
+	| { readonly kind: "gateway-after"; readonly status?: number };
 
 export interface FakeLibsqlPipeline {
 	/** The SQL texts the request runs, in order. */
@@ -361,8 +362,9 @@ export async function startFakeLibsqlServer(options: FakeLibsqlServerOptions = {
 		if (closing) expire(stream);
 		if (fault?.kind === "reset-after") return void socket.resetAndDestroy();
 		if (fault?.kind === "gateway-after") {
-			response.writeHead(502, { "content-type": "text/html" });
-			return void response.end("<html><body>502 Bad Gateway</body></html>");
+			const status = fault.status ?? 502;
+			response.writeHead(status, { "content-type": "text/html" });
+			return void response.end(`<html><body>${status}</body></html>`);
 		}
 		if (owner === stream && hook !== undefined) await hook(pipeline);
 		if (batchHook !== undefined && body.requests.some((each) => each.type === "batch")) await batchHook(pipeline);

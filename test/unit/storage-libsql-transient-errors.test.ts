@@ -101,6 +101,24 @@ test("a write a gateway answered with HTTP 502 after the server applied it has a
 	assert.deepEqual(await database.all("SELECT n FROM events"), [{ n: 1 }]);
 });
 
+test("only an HTTP 5xx answer counts as a lost answer; a 4xx stays a plain StorageUnavailableError (#4970)", async () => {
+	const fake = await server();
+	const database = await open(fake.url);
+	await database.exec("CREATE TABLE events(n INTEGER NOT NULL)");
+	fake.fail({ kind: "gateway-after", status: 500 });
+	await assert.rejects(database.run("INSERT INTO events VALUES (1)"), (error: unknown) => {
+		assert.ok(error instanceof StorageTransientError);
+		assert.equal(error.outcome, "unknown");
+		return true;
+	});
+	fake.fail({ kind: "gateway-after", status: 499 });
+	await assert.rejects(database.run("INSERT INTO events VALUES (2)"), (error: unknown) => {
+		assert.ok(error instanceof StorageUnavailableError);
+		assert.equal(error instanceof StorageTransientError, false);
+		return true;
+	});
+});
+
 test("a failure that does not pass stays a plain StorageUnavailableError and is sent once (#4383)", async () => {
 	const fake = await server();
 	const database = await open(fake.url);

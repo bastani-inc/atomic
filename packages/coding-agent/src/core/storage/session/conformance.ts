@@ -916,6 +916,8 @@ export function registerSessionStoreConformance(
 					assert.deepEqual(await reopened.list("none"), []);
 					await store.close();
 					await assert.rejects(reopened.list("session"), StoreClosedError);
+					await assert.rejects(reopened.put("session", marker), StoreClosedError);
+					await assert.rejects(reopened.remove("session", "5678-ef01"), StoreClosedError);
 				},
 			);
 

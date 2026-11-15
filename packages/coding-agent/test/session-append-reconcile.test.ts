@@ -2,8 +2,19 @@ import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import { SessionDeletedError, SessionManager } from "../src/core/session-manager.js";
 import type { SessionEntry } from "../src/core/session-manager-types.js";
-import { StorageTransientError, StorageUnavailableError } from "../src/core/storage/errors.js";
-import { SessionConflictError, SessionNotFoundError } from "../src/core/storage/session/errors.js";
+import {
+	StoreClosedError as DatabaseClosedError,
+	StoragePayloadTooLargeError,
+	StorageTransientError,
+	StorageUnavailableError,
+} from "../src/core/storage/errors.js";
+import {
+	SessionConflictError,
+	SessionInvalidTextError,
+	SessionInvalidTimestampError,
+	SessionNotFoundError,
+	StoreClosedError as SessionStoreClosedError,
+} from "../src/core/storage/session/errors.js";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
 import type { SessionStore } from "../src/core/storage/session/types.js";
 
@@ -119,6 +130,38 @@ describe("SessionManager appends after an unknown outcome (#4970)", () => {
 		assert.deepEqual(texts(stored.entries), ["one", "two", "three", "four"]);
 		assert.deepEqual(stored.entries, manager.getEntries());
 		assert.deepEqual(texts(manager.getBranch()), ["one", "two", "three", "four"]);
+	});
+
+	it("an append the store refused before writing anything is neither read back nor tried again (#4970)", async () => {
+		const store = new MemorySessionStore();
+		const refusals: Error[] = [
+			new StorageTransientError(store.descriptor, { code: "lock-conflict", outcome: "not-applied", attempts: 5 }),
+			new SessionInvalidTextError("entry.id", "nul-character"),
+			new SessionInvalidTimestampError("entry.timestamp", "x", "unparseable"),
+			new StoragePayloadTooLargeError(1, 2),
+			new SessionStoreClosedError(store.descriptor),
+			new DatabaseClosedError(store.descriptor),
+		];
+		let refusal: Error | undefined;
+		let loads = 0;
+		const refusing: SessionStore = Object.assign(Object.create(store) as SessionStore, {
+			async append(...args: Parameters<SessionStore["append"]>) {
+				if (refusal !== undefined) throw refusal;
+				return store.append(...args);
+			},
+			async load(sessionId: string) {
+				loads++;
+				return store.load(sessionId);
+			},
+		});
+		const manager = await SessionManager.create(refusing, "/project");
+		await manager.appendMessage(message("one"));
+		for (const each of refusals) {
+			refusal = each;
+			await assert.rejects(manager.appendMessage(message("refused")), (error: unknown) => error === each);
+		}
+		assert.equal(loads, 0);
+		assert.deepEqual(texts(manager.getEntries()), ["one"]);
 	});
 
 	it("an append that failed without writing anything is not tried again (#4970)", async () => {

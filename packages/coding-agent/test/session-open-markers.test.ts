@@ -232,6 +232,25 @@ describe("a session open in this process (#4971)", () => {
 		assert.equal(vi.getTimerCount(), 0);
 	});
 
+	test("a hold released twice drops only itself, and holds on two stores are kept apart (#4971)", async () => {
+		const sessionId = "held-session";
+		const otherAgentDir = join(dir, "other-agent");
+		const first = holdSessionOpenMarker(sessionId, { agentDir });
+		const second = holdSessionOpenMarker(sessionId, { agentDir });
+		const elsewhere = holdSessionOpenMarker(sessionId, { agentDir: otherAgentDir });
+		await first();
+		await first();
+		await assert.rejects(assertSessionNotOpenElsewhere(sessionId, { agentDir }), SessionOpenElsewhereError);
+		await second();
+		await assertSessionNotOpenElsewhere(sessionId, { agentDir });
+		await assert.rejects(
+			assertSessionNotOpenElsewhere(sessionId, { agentDir: otherAgentDir }),
+			SessionOpenElsewhereError,
+		);
+		await elsewhere();
+		await assertSessionNotOpenElsewhere(sessionId, { agentDir: otherAgentDir });
+	});
+
 	test("a session id that cannot name a directory gets no mark and is never found held (#4971)", async () => {
 		const release = holdSessionOpenMarker("../escape", { agentDir });
 		await release();
