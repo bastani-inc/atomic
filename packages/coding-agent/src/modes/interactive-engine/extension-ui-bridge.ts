@@ -3,7 +3,7 @@ import type { AgentSession, ClearedQueue } from "../../core/agent-session.js";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
 import type { UIPromptEndEvent, UIPromptStartEvent } from "../../core/extensions/agent-events.ts";
-import type { ExtensionUIContext } from "../../core/extensions/index.js";
+import type { ExtensionUIContext, LoadExtensionsResult } from "../../core/extensions/index.js";
 import type { WorkflowActivityFrame } from "../../core/extensions/workflow-events.js";
 import type { KeybindingsManager } from "../../core/keybindings.ts";
 import type { RpcAutocompleteItem, RpcResourceExtension, RpcSlashCommand } from "../rpc/rpc-types.ts";
@@ -217,6 +217,13 @@ export function getInteractiveEngineResourceOverlaps(runtime: AgentSessionRuntim
 
 export function getInteractiveEngineResourceExtensions(runtime: AgentSessionRuntime): readonly RpcResourceExtension[] {
 	return runtime instanceof IsolatedInteractiveRuntime ? runtime.getResourceExtensions() : [];
+}
+
+/** The interactive engine's extension load errors and warnings; empty for a session that runs in this process. */
+export function getInteractiveEngineResourceIssues(
+	runtime: AgentSessionRuntime,
+): Pick<LoadExtensionsResult, "errors" | "warnings"> {
+	return runtime instanceof IsolatedInteractiveRuntime ? runtime.getResourceIssues() : { errors: [], warnings: [] };
 }
 
 export function onInteractiveEngineResourceExtensionsChanged(

@@ -1,0 +1,159 @@
+/**
+ * An extension that fails to load must be reported after `/reload` and the RPC `reload` command exactly as it is at
+ * startup, rather than silently dropping out of the extension list (#4968).
+ */
+
+import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeAll, test } from "vitest";
+import type { ExtensionError } from "../src/core/extensions/index.js";
+import { DefaultResourceLoader } from "../src/core/resource-loader.js";
+import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
+import { initTheme } from "../src/modes/interactive/theme/theme.js";
+import { createRpcCommandHandler } from "../src/modes/rpc/rpc-command-handler.js";
+import { createEngineHostPair, type EngineHostPair } from "./helpers/in-process-engine-pair.js";
+import { normalizeRenderedOutput } from "./interactive-mode-status-helpers.js";
+import { createShowLoadedResourcesThis } from "./interactive-mode-status-resources-helpers.js";
+import { createHarness, type Harness } from "./suite/harness.js";
+
+/**
+ * An extension that fails once its `broken` marker exists. Its factory runs on every load, so creating the marker
+ * breaks the next reload without depending on the module cache seeing a rewritten file.
+ */
+function breakableExtension(marker: string): string {
+	return `
+		import { existsSync } from "node:fs";
+		export default function () {
+			if (existsSync(${JSON.stringify(marker)})) throw new Error("broken on reload");
+		}
+	`;
+}
+
+let root: string | undefined;
+let harness: Harness | undefined;
+let pair: EngineHostPair | undefined;
+
+beforeAll(() => {
+	initTheme("dark");
+});
+
+afterEach(async () => {
+	await pair?.cleanup();
+	pair = undefined;
+	await harness?.cleanup();
+	harness = undefined;
+	if (root) rmSync(root, { recursive: true, force: true });
+	root = undefined;
+});
+
+/** A real resource loader over one extension file that the test rewrites between loads. */
+function createExtensionFixture(source?: string): {
+	loader: DefaultResourceLoader;
+	extensionPath: string;
+	breakExtension: () => void;
+} {
+	root = mkdtempSync(join(tmpdir(), "atomic-4968-"));
+	const marker = join(root, "broken");
+	const cwd = join(root, "project");
+	const agentDir = join(root, "agent");
+	mkdirSync(cwd, { recursive: true });
+	mkdirSync(agentDir, { recursive: true });
+	const extensionPath = join(root, "extension.ts");
+	writeFileSync(extensionPath, source ?? breakableExtension(marker));
+	const loader = new DefaultResourceLoader({
+		cwd,
+		agentDir,
+		builtinPackagePaths: [],
+		additionalExtensionPaths: [extensionPath],
+		noSkills: true,
+		noPromptTemplates: true,
+		noThemes: true,
+		noContextFiles: true,
+	});
+	return { loader, extensionPath, breakExtension: () => writeFileSync(marker, "") };
+}
+
+test("the RPC reload command emits extension_error for an extension that no longer loads (#4968)", async () => {
+	const { loader, extensionPath, breakExtension } = createExtensionFixture();
+	await loader.reload();
+	harness = await createHarness({ resourceLoader: loader });
+	const session = harness.session;
+	const output: object[] = [];
+	const handle = createRpcCommandHandler({
+		runtimeHost: { session, services: { agentDir: harness.tempDir } } as never,
+		getSession: () => session,
+		rebindSession: async () => {},
+		output: (record) => output.push(record),
+	});
+
+	breakExtension();
+	const response = await handle({ id: "reload-1", type: "reload" });
+
+	assert.deepEqual(response, { id: "reload-1", type: "response", command: "reload", success: true });
+	assert.deepEqual(
+		output.filter((record) => (record as { type?: string }).type === "extension_error"),
+		[
+			{
+				type: "extension_error",
+				extensionPath,
+				event: "reload",
+				error: "Failed to load extension: broken on reload",
+			},
+		],
+	);
+});
+
+test("interactive /reload shows an extension that no longer loads under [Extension issues] (#4968)", async () => {
+	const { loader, extensionPath, breakExtension } = createExtensionFixture();
+	await loader.reload();
+	pair = await createEngineHostPair({ resourceLoader: loader });
+	const hostErrors: ExtensionError[] = [];
+	await pair.engine.session.bindExtensions({ shutdownHandler: () => {} });
+	await pair.runtime.session.bindExtensions({
+		shutdownHandler: () => {},
+		onError: (error) => hostErrors.push(error),
+	});
+	await pair.runtime.initializeFromEngine();
+
+	breakExtension();
+	// What `/reload` runs under the isolated interactive runtime, then the diagnostics it shows.
+	await pair.runtime.session.reload();
+	await pair.drain();
+	const mode = createShowLoadedResourcesThis({ quietStartup: true, runtimeHost: pair.runtime });
+	mode.formatDiagnostics = (diagnostics: Array<{ path?: string; message: string }>) =>
+		diagnostics.map((diagnostic) => `${diagnostic.path}: ${diagnostic.message}`).join("\n");
+	(InteractiveMode as any).prototype.showLoadedResources.call(mode, { force: false, showDiagnosticsWhenQuiet: true });
+
+	const output = normalizeRenderedOutput(mode.chatContainer);
+	assert.match(output, /\[Extension issues\]/);
+	assert.ok(output.includes(`${extensionPath}: Failed to load extension: broken on reload`), output);
+	// The load error is shown once, with the resource diagnostics, not again as a chat error line.
+	assert.deepEqual(hostErrors, []);
+});
+
+test("an extension that registers one tool name twice gets a warning, and the second registration wins (#4968)", async () => {
+	const { loader, extensionPath } = createExtensionFixture(`
+		import { Type } from "typebox";
+		const tool = (description) => ({
+			name: "twice",
+			label: "twice",
+			description,
+			parameters: Type.Object({}),
+			execute: async () => ({ content: [], details: {} }),
+		});
+		export default function (pi) {
+			pi.registerTool(tool("first"));
+			pi.registerTool(tool("second"));
+		}
+	`);
+	await loader.reload();
+
+	const result = loader.getExtensions();
+	assert.deepEqual(result.errors, []);
+	assert.equal(result.extensions[0]?.tools.get("twice")?.definition.description, "second");
+	assert.deepEqual(result.warnings, [
+		{ path: extensionPath, warning: 'registers tool "twice" more than once; the last registration is used.' },
+	]);
+});

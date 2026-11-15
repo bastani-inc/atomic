@@ -20,7 +20,7 @@ import {
 } from "../../core/compaction/background-compaction.ts";
 import { onDebugSettingChange } from "../../core/debug-setting.ts";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
-import type { ExtensionError } from "../../core/extensions/index.js";
+import type { ExtensionError, LoadExtensionsResult } from "../../core/extensions/index.js";
 import type { SessionRecoveryReason } from "../../core/extensions/session-events.ts";
 import type { WorkflowActivityFrame } from "../../core/extensions/workflow-events.js";
 import { SessionManager } from "../../core/session-manager.ts";
@@ -32,6 +32,7 @@ import { canonicalizePath } from "../../utils/paths.ts";
 import { sleep } from "../../utils/sleep.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
 import type { RpcClient } from "../rpc/rpc-client.ts";
+import { isExtensionLoadError } from "../rpc/rpc-extension-load-errors.ts";
 import {
 	isRpcRequestAcceptedFailure,
 	isRpcTransportFailure,
@@ -46,6 +47,7 @@ import type {
 	RpcModelCatalog,
 	RpcResourceExtension,
 	RpcResumeNotice,
+	RpcSessionState,
 	RpcSlashCommand,
 } from "../rpc/rpc-types.ts";
 import type { ActivityWatchdogDiagnostic } from "./activity-watchdog.ts";
@@ -158,6 +160,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private resourceOverlaps: ResourceOverlap[] = [];
 	private readonly resourceExtensionsListeners: ResourceExtensionsListener[] = [];
 	private resourceExtensions: RpcResourceExtension[] = [];
+	private resourceIssues: Pick<LoadExtensionsResult, "errors" | "warnings"> = { errors: [], warnings: [] };
 	private resourcesInitializedGeneration = 0;
 	private resourceInitialization: { generation: number; promise: Promise<void> } | undefined;
 	private readonly retiredResourceGenerations = new Set<number>();
@@ -218,7 +221,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		this.client.onGenerationEnded((event) => {
 			this.retiredResourceGenerations.add(event.generation);
 			if (event.generation === this.client.getGeneration()) {
-				this.updateResourceExtensions([]);
+				this.updateResources({});
 				this.mirrorBackgroundCompaction(IDLE_BACKGROUND_COMPACTION_STATE);
 			}
 			this.health.handleGenerationEnded(event);
@@ -320,7 +323,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				this.mirrorBackgroundCompaction(rehydrateBackgroundCompactionState(state.compaction));
 			}
 			this.resourceOverlaps = state.resourceOverlaps ?? [];
-			this.updateResourceExtensions(state.resourceExtensions ?? []);
+			this.updateResources(state);
 			this.remoteSessionName = state.sessionName;
 			this.remoteSessionId = state.sessionId;
 			this.remoteSessionFile = state.sessionLocation;
@@ -549,8 +552,15 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			if (index !== -1) this.resourceExtensionsListeners.splice(index, 1);
 		};
 	}
-	private updateResourceExtensions(extensions: readonly RpcResourceExtension[]): void {
-		this.resourceExtensions = [...extensions];
+	/** The engine's extension load errors and warnings of its last (re)load, as its session's resource loader holds them. */
+	getResourceIssues(): Pick<LoadExtensionsResult, "errors" | "warnings"> {
+		return this.resourceIssues;
+	}
+	private updateResources(
+		state: Pick<RpcSessionState, "resourceExtensions" | "resourceErrors" | "resourceWarnings">,
+	): void {
+		this.resourceIssues = { errors: state.resourceErrors ?? [], warnings: state.resourceWarnings ?? [] };
+		this.resourceExtensions = [...(state.resourceExtensions ?? [])];
 		for (const listener of [...this.resourceExtensionsListeners]) listener(this.resourceExtensions);
 	}
 	async synchronize(): Promise<void> {
@@ -560,7 +570,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		this.remoteSessionFile = state.sessionLocation;
 		this.remoteSessionName = state.sessionName;
 		this.resourceOverlaps = state.resourceOverlaps ?? [];
-		this.updateResourceExtensions(state.resourceExtensions ?? []);
+		this.updateResources(state);
 	}
 
 	setEngineCallbackActive(active: boolean): void {
@@ -1234,6 +1244,8 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		// its error listeners show them; a message the engine could not save is reported only this way (#4226).
 		const record: unknown = event;
 		if (isEngineExtensionError(record)) {
+			// A load failure is part of the engine's resource state, which the host shows with its resource diagnostics.
+			if (isExtensionLoadError(record)) return;
 			session.extensionRunner.emitError({
 				extensionPath: record.extensionPath,
 				event: record.event,

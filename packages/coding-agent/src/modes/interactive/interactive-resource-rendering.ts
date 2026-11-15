@@ -1,6 +1,7 @@
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
 import {
 	getInteractiveEngineResourceExtensions,
+	getInteractiveEngineResourceIssues,
 	getInteractiveEngineResourceOverlaps,
 } from "../interactive-engine/extension-ui-bridge.ts";
 import { ThemedText } from "./components/themed-text.js";
@@ -308,10 +309,11 @@ InteractiveModeBase.prototype.showLoadedResources = function (
 
 		const extensionDiagnostics: ResourceDiagnostic[] = [];
 		const extensionsResult = this.session.resourceLoader.getExtensions();
-		for (const error of extensionsResult.errors) {
+		const engineIssues = getInteractiveEngineResourceIssues(this.runtimeHost);
+		for (const error of [...extensionsResult.errors, ...engineIssues.errors]) {
 			extensionDiagnostics.push({ type: "error", message: error.error, path: error.path });
 		}
-		for (const warning of extensionsResult.warnings ?? []) {
+		for (const warning of [...(extensionsResult.warnings ?? []), ...(engineIssues.warnings ?? [])]) {
 			extensionDiagnostics.push({ type: "warning", message: warning.warning, path: warning.path });
 		}
 

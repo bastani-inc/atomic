@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { APP_NAME } from "../config.js";
 import { stripBom } from "../utils/text.ts";
-import type { LoadExtensionsResult } from "./extensions/types.ts";
+import type { Extension, LoadExtensionsResult } from "./extensions/types.ts";
 import type { PackageInstallFailure, PathMetadata } from "./package-manager.ts";
 
 export type ExtensionPackageWarning = { path: string; warning: string };
@@ -76,6 +76,19 @@ export function collectPackageInstallWarnings(
 	return failures.flatMap((entries) =>
 		(entries ?? []).map((failure) => ({ path: failure.source, warning: describePackageInstallFailure(failure) })),
 	);
+}
+
+/** One warning per extension that registered a tool name more than once. */
+export function collectDuplicateToolWarnings(extensions: readonly Extension[]): ExtensionPackageWarning[] {
+	return extensions.flatMap((extension) => {
+		const names = [...(extension.duplicateToolNames ?? [])];
+		if (names.length === 0) return [];
+		const list = names.map((name) => `"${name}"`).join(", ");
+		const noun = names.length === 1 ? "tool" : "tools";
+		return [
+			{ path: extension.path, warning: `registers ${noun} ${list} more than once; the last registration is used.` },
+		];
+	});
 }
 
 export function mergeExtensionWarnings(result: LoadExtensionsResult, warnings: ExtensionPackageWarning[]): void {
