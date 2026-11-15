@@ -20,6 +20,7 @@
  * executed in. A history with no attempt record is returned as it is.
  */
 
+import type { RunSnapshot, StageSnapshot, ToolNodeSnapshot } from "../shared/store-types.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
 import type { DurableWorkflowBackend } from "./backend.js";
 import { durableHash } from "./durable-hash.js";
@@ -239,7 +240,7 @@ export function attemptReachedCheckpoints(
 		shownRuns.set(runId, result);
 		return result;
 	};
-	const kept = new Set<DurableCheckpoint>(
+	const kept = new Set<DurableStageCheckpoint | DurableToolCheckpoint>(
 		nodes.filter((checkpoint) => {
 			const owner = ownerRunId(checkpoint, rootRunId);
 			const attempt = anchor(owner);
@@ -256,23 +257,28 @@ export function attemptReachedCheckpoints(
 	// A kept parent may share its place in its run with the node that replaced it, such as a child the attempt invoked
 	// again with other inputs: it is shown just before that node.
 	const placed = new Set<string>();
-	for (const checkpoint of kept)
-		if (checkpoint.kind === "stage" && !parentReached.has(nodeKey(checkpoint)))
-			placed.add(JSON.stringify([ownerRunId(checkpoint, rootRunId), checkpoint.topology!.sourceOrder ?? null]));
+	for (const checkpoint of kept) {
+		const order = sourceOrderOf(checkpoint);
+		if (order !== undefined && !parentReached.has(nodeKey(checkpoint)))
+			placed.add(JSON.stringify([ownerRunId(checkpoint, rootRunId), order]));
+	}
 	return checkpoints.flatMap((checkpoint): DurableCheckpoint[] => {
 		if (!isGraphRecord(checkpoint)) return [checkpoint];
 		if (!kept.has(checkpoint)) return [];
+		const order = sourceOrderOf(checkpoint);
 		if (
-			checkpoint.kind !== "stage" ||
-			checkpoint.topology!.sourceOrder === undefined ||
+			order === undefined ||
 			!parentReached.has(nodeKey(checkpoint)) ||
-			!placed.has(JSON.stringify([ownerRunId(checkpoint, rootRunId), checkpoint.topology!.sourceOrder]))
+			!placed.has(JSON.stringify([ownerRunId(checkpoint, rootRunId), order]))
 		)
 			return [checkpoint];
-		return [
-			{ ...checkpoint, topology: { ...checkpoint.topology!, sourceOrder: checkpoint.topology!.sourceOrder - 0.5 } },
-		];
+		return [{ ...checkpoint, topology: { ...checkpoint.topology!, sourceOrder: order - 0.5 } } as DurableCheckpoint];
 	});
+}
+
+/** A stage record's place in its run; a tool record has none. */
+function sourceOrderOf(checkpoint: DurableStageCheckpoint | DurableToolCheckpoint): number | undefined {
+	return checkpoint.kind === "stage" ? checkpoint.topology?.sourceOrder : undefined;
 }
 
 /** The node id a stage or tool record names: its stage id, or its tool node id. */
@@ -311,8 +317,9 @@ export function forkCopiedNodes(
 	runId: string,
 ): ReadonlyMap<string, ForkCopiedNode> {
 	const handle = backend.getWorkflow(runId);
-	const source = handle?.forkedFrom === undefined ? undefined : backend.getWorkflow(handle.forkedFrom.runId);
-	if (handle === undefined || source === undefined) return new Map();
+	if (handle?.forkedFrom === undefined) return new Map();
+	const source = backend.getWorkflow(handle.forkedFrom.runId);
+	if (source === undefined) return new Map();
 	if (durableHash(handle.inputs) === durableHash(source.inputs)) return new Map();
 	const checkpoints = backend.listCheckpoints(runId);
 	// The fork registered when it copied the source; an execution re-registers it and records after that.
@@ -321,11 +328,34 @@ export function forkCopiedNodes(
 	for (const checkpoint of checkpoints.filter(isGraphRecord)) {
 		// A child run's nodes are its own: a child whose inputs changed is invoked again as another child.
 		if (checkpoint.topology!.run !== undefined && checkpoint.topology!.run.runId !== runId) continue;
+		const source = checkpoint.kind === "tool" ? checkpoint.source : undefined;
 		copied.set(graphNodeId(checkpoint)!, {
 			kind: checkpoint.kind,
 			name: checkpoint.name,
-			...(checkpoint.kind === "tool" && checkpoint.source !== undefined ? { source: checkpoint.source } : {}),
+			...(source === undefined ? {} : { source }),
 		});
 	}
 	return copied;
+}
+
+/**
+ * Whether a fork's first execution keeps the copied node `parentId` as a recorded parent (#4321, #4945): the run made
+ * the same call again, under the same name and kind and, for a tool, from the same callback, so only its arguments, the
+ * inputs that replaced the source's, changed.
+ */
+export function keepsForkCopiedParent(
+	copied: ReadonlyMap<string, ForkCopiedNode>,
+	run: Pick<RunSnapshot, "stages" | "toolNodes">,
+	parentId: string,
+): boolean {
+	const node = copied.get(parentId);
+	if (node === undefined) return false;
+	const candidates: readonly (StageSnapshot | ToolNodeSnapshot)[] = node.kind === "tool" ? run.toolNodes : run.stages;
+	return candidates.some(
+		(candidate) =>
+			candidate.id !== parentId &&
+			candidate.name === node.name &&
+			candidate.replayed !== true &&
+			("source" in candidate ? candidate.source : undefined) === node.source,
+	);
 }

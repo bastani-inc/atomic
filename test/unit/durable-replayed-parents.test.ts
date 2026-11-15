@@ -3,6 +3,7 @@ import { describe, test } from "vitest";
 import {
 	attemptReachedCheckpoints,
 	forkCopiedNodes,
+	keepsForkCopiedParent,
 	workflowAttemptCheckpoint,
 } from "../../packages/workflows/src/durable/attempt-identity.js";
 import {
@@ -96,6 +97,91 @@ describe("the records of a run's latest attempt keep its replayed nodes' recorde
 			stage("agent", 2, ["tool:never-recorded"]),
 		];
 		assert.deepEqual(graph(attemptReachedCheckpoints(records, ROOT, { rootReach: true })), ["agent:2"]);
+	});
+});
+
+describe("a kept parent that shares its place with the node that replaced it (#4945)", () => {
+	const boundary = (id: string, order: number, attempt: number, completedAt: number): DurableStageCheckpoint => ({
+		...stage(id, attempt, ["plan"], completedAt),
+		name: "workflow:child",
+		replayKey: `workflow:child:${id}`,
+		topology: { ...stage(id, attempt, ["plan"]).topology!, sourceOrder: order },
+	});
+	const orders = (checkpoints: readonly DurableCheckpoint[]) =>
+		checkpoints.flatMap((checkpoint) =>
+			checkpoint.kind === "stage" ? [[checkpoint.topology!.stageId, checkpoint.topology!.sourceOrder]] : [],
+		);
+
+	test("is shown just before the node in its place, and the others keep theirs (#4945)", () => {
+		const records = [
+			workflowAttemptCheckpoint(ROOT, 1, 1),
+			{ ...stage("plan", 1, [], 2), topology: { ...stage("plan", 1, []).topology!, sourceOrder: 0 } },
+			boundary("old", 1, 1, 3),
+			tool("start", 1, ["plan"], 4),
+			workflowAttemptCheckpoint(ROOT, 2, 5),
+			{ ...stage("plan", 2, [], 6), topology: { ...stage("plan", 2, []).topology!, sourceOrder: 0 } },
+			boundary("new", 1, 2, 7),
+			// Replays after the boundary its first attempt followed, and the tool that attempt ran.
+			{
+				...stage("ship", 2, ["old", "tool:start"], 8),
+				topology: { ...stage("ship", 2, ["old", "tool:start"]).topology!, sourceOrder: 2 },
+			},
+		];
+		assert.deepEqual(orders(attemptReachedCheckpoints(records, ROOT, { rootReach: true })), [
+			["plan", 0],
+			["old", 0.5],
+			["plan", 0],
+			["new", 1],
+			["ship", 2],
+		]);
+	});
+
+	test("keeps its place when nothing replaced it (#4945)", () => {
+		const records = [
+			workflowAttemptCheckpoint(ROOT, 1, 1),
+			boundary("old", 1, 1, 3),
+			workflowAttemptCheckpoint(ROOT, 2, 5),
+			{ ...stage("ship", 2, ["old"], 8), topology: { ...stage("ship", 2, ["old"]).topology!, sourceOrder: 2 } },
+		];
+		assert.deepEqual(orders(attemptReachedCheckpoints(records, ROOT, { rootReach: true })), [
+			["old", 1],
+			["ship", 2],
+		]);
+	});
+});
+
+describe("a copied parent a fork's first execution keeps (#4945)", () => {
+	const copied = new Map([
+		["tool:start", { kind: "tool" as const, name: "start", source: "async () => 1" }],
+		["old", { kind: "stage" as const, name: "workflow:child" }],
+	]);
+	const startAgain = (fields: Partial<ToolNodeSnapshot> = {}): ToolNodeSnapshot => ({
+		...replayedTool("tool:start-v2", []),
+		name: "start",
+		source: "async () => 1",
+		replayed: false,
+		...fields,
+	});
+	const keeps = (toolNodes: ToolNodeSnapshot[], stages: StageSnapshot[], parentId: string) =>
+		keepsForkCopiedParent(copied, { stages, toolNodes }, parentId);
+
+	test("is a call the run made again, by the same name, kind and callback (#4945)", () => {
+		assert.equal(keeps([startAgain()], [], "tool:start"), true);
+		assert.equal(keeps([], [{ ...replayedStage("new", ["plan"], false), name: "workflow:child" }], "old"), true);
+	});
+
+	test("is not a node the fork did not copy, or one the run did not make again the same way (#4945)", () => {
+		assert.equal(keeps([startAgain()], [], "tool:other"), false);
+		assert.equal(keeps([], [], "tool:start"), false, "removed");
+		assert.equal(keeps([startAgain({ name: "begin" })], [], "tool:start"), false, "renamed");
+		assert.equal(keeps([startAgain({ source: "async () => 2" })], [], "tool:start"), false, "another callback");
+		assert.equal(keeps([startAgain({ replayed: true })], [], "tool:start"), false, "replayed, not made again");
+		assert.equal(keeps([startAgain({ id: "tool:start" })], [], "tool:start"), false, "itself");
+		assert.equal(
+			keeps([], [{ ...replayedStage("new", [], false), name: "start" }], "tool:start"),
+			false,
+			"a stage is no tool",
+		);
 	});
 });
 
