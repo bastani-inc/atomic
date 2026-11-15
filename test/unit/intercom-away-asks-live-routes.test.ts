@@ -291,3 +291,26 @@ test("a kept ask whose asker can neither be told nor held for stays kept when it
 	index.failDormantForTarget(info("recipient"), "ended", "recipient-ended", ADDRESSES.recipient);
 	assert.equal(index.hasDormantReply("q-1", "recipient", ADDRESSES.recipient), true);
 });
+
+test("a recipient's end reports which kept asks it held for their askers and which return to a connected asker (#4950)", () => {
+	const store = new AwayAsks(fileIn());
+	const toRecipient = (senderSessionId: string, messageId: string) => ({
+		senderSessionId,
+		targetSessionId: "recipient",
+		messageId,
+	});
+	store.keep([toRecipient("asker", "q-held"), toRecipient("child", "q-live")], (question) =>
+		question.senderSessionId === "asker" ? ADDRESSES.asker : ADDRESSES.child,
+	);
+
+	const outcome = store.failForTarget(
+		info("recipient"),
+		"ended",
+		"recipient-ended",
+		() => false,
+		"",
+		(question, returnAddress) => connected("child")(question.senderSessionId, returnAddress),
+	);
+	assert.deepEqual(outcome, { failed: [toRecipient("asker", "q-held")], live: [toRecipient("child", "q-live")] });
+	assert.equal(store.question("q-live", "recipient"), undefined);
+});

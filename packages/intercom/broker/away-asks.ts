@@ -328,7 +328,7 @@ export class AwayAsks {
 		idPrefix: string,
 		failedElsewhere: (question: PendingQuestion) => boolean,
 		targetReturnAddress = "",
-		askerConnected: (question: PendingQuestion, returnAddress: string) => boolean = () => false,
+		askerConnected: (question: PendingQuestion, returnAddress: string) => boolean,
 	): { failed: PendingQuestion[]; live: PendingQuestion[] } {
 		const rows = this.statement(
 			`SELECT message_id, sender_session_id, sender_return_address FROM away_questions WHERE target_session_id = ? AND ${PROVEN_RECIPIENT} ORDER BY kept_at`,
