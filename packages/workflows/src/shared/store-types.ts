@@ -361,6 +361,15 @@ export type PendingStageQueueResult =
 			readonly limit: number;
 			readonly runId: string;
 			readonly stageKey: string;
+	  }
+	| {
+			/** #4896: the run already holds its run-wide maximum of queued messages or bytes, over every target. */
+			readonly ok: false;
+			readonly reason: "run_capacity";
+			readonly limit: number;
+			readonly byteLimit: number;
+			readonly runId: string;
+			readonly stageKey: string;
 	  };
 
 export type LiveStageMessageValidationResult =

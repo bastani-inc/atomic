@@ -138,6 +138,11 @@ export interface DiscoveryOptions {
 	packageWorkflowPaths?: string[] | Record<string, string>;
 	/** When false, bundled workflows are excluded. Default: true */
 	includeBundled?: boolean;
+	/**
+	 * When false, the project is not trusted: neither project-local workflow modules
+	 * nor settings-project workflow paths are read or imported. Default: true
+	 */
+	projectTrusted?: boolean;
 	getWorkflowHostModules?: WorkflowHostModuleProvider;
 }
 
@@ -325,6 +330,8 @@ function applyBatchShapeOnly(
  *   4. user-global      — {agentDir}/workflows/*.{ts,js,mjs,cjs}
  *   5. package          — package-supplied workflow files
  *   6. bundled          — shipped workflows (omitted when includeBundled=false)
+ *
+ * Sources 1 and 2 belong to the project and are skipped when projectTrusted=false.
  */
 export async function discoverWorkflows(options?: Partial<DiscoveryOptions>): Promise<DiscoveryResult> {
 	const cwd = options?.cwd ?? process.cwd();
@@ -333,6 +340,7 @@ export async function discoverWorkflows(options?: Partial<DiscoveryOptions>): Pr
 	const config = options?.config;
 	const packageWorkflowPaths = options?.packageWorkflowPaths;
 	const includeBundled = options?.includeBundled !== false;
+	const projectTrusted = options?.projectTrusted !== false;
 	let hostModules: Promise<WorkflowHostModules> | undefined;
 	const hostModuleProvider = options?.getWorkflowHostModules;
 	const getWorkflowHostModules = hostModuleProvider ? () => (hostModules ??= hostModuleProvider()) : undefined;
@@ -358,7 +366,7 @@ export async function discoverWorkflows(options?: Partial<DiscoveryOptions>): Pr
 	}
 
 	// 1. settings-project (highest precedence)
-	if (configIsValid && config !== undefined && config.projectWorkflows !== undefined) {
+	if (projectTrusted && configIsValid && config !== undefined && config.projectWorkflows !== undefined) {
 		const pw = config.projectWorkflows;
 		const hasEntries = Array.isArray(pw) ? pw.length > 0 : Object.keys(pw).length > 0;
 		if (hasEntries) {
@@ -368,7 +376,8 @@ export async function discoverWorkflows(options?: Partial<DiscoveryOptions>): Pr
 	}
 
 	// 2. project-local
-	for (const dir of [join(cwd, CONFIG_DIR_NAME, "workflows")]) {
+	if (projectTrusted) {
+		const dir = join(cwd, CONFIG_DIR_NAME, "workflows");
 		const candidates = await loadFromDir(dir, "project-local", diagnostics, getWorkflowHostModules);
 		registry = await applyBatch(candidates, registry, sources, diagnostics);
 	}

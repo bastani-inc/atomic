@@ -16,8 +16,10 @@ import {
 	type OAuthClientInformationMixed,
 	type OAuthClientProvider,
 	type OAuthDiscoveryState,
+	OAuthError,
 	OAuthInsecureEndpointError,
 	OAuthIssuerMismatchError,
+	OAuthTemporarilyUnavailableError,
 	type OAuthTokens,
 	registerClient,
 	startAuthorization,
@@ -680,6 +682,184 @@ describe("MCP OAuth", () => {
 		};
 		assert.equal(await run(refreshing), "/token");
 	});
+});
+
+describe("MCP OAuth token request failures", () => {
+	const origin = "http://127.0.0.1:9";
+	const json = (status: number, body: Record<string, string>) => () => Response.json(body, { status });
+	const text = (status: number) => () => new Response("unavailable", { status });
+	const fail = (error: Error) => () => Promise.reject(error);
+
+	/** A provider with a registered client, stored tokens, cached discovery, and a pending PKCE verifier. */
+	function signedInProvider(): TestOAuthProvider {
+		const provider = new TestOAuthProvider("http://127.0.0.1/callback");
+		provider.client = { client_id: "client" };
+		provider.tokenSet = { access_token: "a1", refresh_token: "r1", token_type: "Bearer" };
+		provider.verifier = "pending-verifier";
+		provider.discovery = {
+			authorizationServerUrl: origin,
+			authorizationServerMetadata: {
+				issuer: origin,
+				authorization_endpoint: `${origin}/authorize`,
+				token_endpoint: `${origin}/token`,
+				registration_endpoint: `${origin}/register`,
+				response_types_supported: ["code"],
+			},
+		};
+		return provider;
+	}
+
+	/** Refresh against a token endpoint that answers with `respond`, then the outcome and what was stored. */
+	async function refreshWith(respond: () => Response | Promise<Response>) {
+		const provider = signedInProvider();
+		// Only the token endpoint fails; discovery after an invalidated client finds no metadata.
+		const fetch = async (input: string | URL) => {
+			const { pathname } = new URL(String(input));
+			if (pathname === "/token") return respond();
+			if (pathname === "/register")
+				return Response.json({ client_id: "client-2", redirect_uris: [provider.redirectUrl] }, { status: 201 });
+			return new Response(null, { status: 404 });
+		};
+		const outcome = await authorizeMcp(provider, { serverUrl: `${origin}/mcp`, fetch }).catch(
+			(error: Error) => error,
+		);
+		return { outcome, provider };
+	}
+
+	it.each([
+		["a 503 without an OAuth error", text(503)],
+		["a 500 with server_error", json(500, { error: "server_error" })],
+		["a 502 with an unknown error", json(502, { error: "bad_gateway" })],
+		["a 429", text(429)],
+		["a 408", text(408)],
+		["temporarily_unavailable", json(400, { error: "temporarily_unavailable" })],
+		["server_error without an error status", json(200, { error: "server_error" })],
+		["a network error", fail(new TypeError("fetch failed"))],
+		["a timeout", fail(new DOMException("The operation timed out", "TimeoutError"))],
+		["an aborted request", fail(new DOMException("The operation was aborted", "AbortError"))],
+	])("keeps the grant and the pending sign-in after %s (#4910)", async (_name, respond) => {
+		const { outcome, provider } = await refreshWith(respond);
+
+		assert.ok(outcome instanceof OAuthTemporarilyUnavailableError);
+		assert.equal(outcome.name, "OAuthTemporarilyUnavailableError");
+		assert.match(outcome.message, /^OAuth authorization server temporarily unavailable during token refresh: /);
+		assert.equal(provider.tokenSet?.refresh_token, "r1");
+		assert.equal(provider.client?.client_id, "client");
+		assert.equal(provider.verifier, "pending-verifier");
+		assert.equal(provider.authorizationUrl, undefined);
+	});
+
+	it("names the token endpoint's answer in the error (#4910)", async () => {
+		const { outcome } = await refreshWith(text(503));
+		assert.equal(
+			outcome instanceof Error && outcome.message,
+			"OAuth authorization server temporarily unavailable during token refresh: HTTP 503: unavailable",
+		);
+		assert.ok(outcome instanceof Error && outcome.cause instanceof OAuthError);
+		assert.equal(outcome.cause.status, 503);
+	});
+
+	it.each([
+		["invalid_grant", json(400, { error: "invalid_grant" }), "client"],
+		["invalid_grant with a 5xx status", json(503, { error: "invalid_grant" }), "client"],
+		["invalid_client", json(401, { error: "invalid_client" }), "client-2"],
+		["invalid_client with a 5xx status", json(503, { error: "invalid_client" }), "client-2"],
+		["unauthorized_client with a 5xx status", json(503, { error: "unauthorized_client" }), "client-2"],
+		["unauthorized_client", json(400, { error: "unauthorized_client" }), "client-2"],
+		["a 400 without an OAuth error", text(400), "client"],
+		["server_error with a 400 status", json(400, { error: "server_error" }), "client"],
+		["an unexpected failure", fail(new DOMException("unsupported", "NotSupportedError")), "client"],
+	])("asks for a sign-in after %s (#4910)", async (_name, respond, clientId) => {
+		const { outcome, provider } = await refreshWith(respond);
+
+		assert.equal(outcome, "REDIRECT");
+		assert.equal(provider.client?.client_id, clientId);
+		assert.ok(provider.authorizationUrl);
+		assert.notEqual(provider.verifier, "pending-verifier");
+	});
+
+	it("keeps the stored tokens when a code exchange is rejected (#4916)", async () => {
+		for (const error of ["invalid_grant", "invalid_client"]) {
+			const provider = signedInProvider();
+			let requests = 0;
+			const outcome = await authorizeMcp(provider, {
+				serverUrl: `${origin}/mcp`,
+				authorizationCode: "code",
+				fetch: async () => {
+					requests++;
+					return Response.json({ error }, { status: 400 });
+				},
+			}).catch((failure: Error) => failure);
+
+			assert.ok(outcome instanceof OAuthError);
+			assert.equal(outcome.code, error);
+			assert.equal(requests, 1);
+			assert.equal(provider.tokenSet?.access_token, "a1");
+			assert.equal(provider.client?.client_id, "client");
+		}
+	});
+
+	it("drops only the rejected grant when a refresh fails with invalid_grant (#4916)", async () => {
+		const grants: string[] = [];
+		const current = signedInProvider();
+		const result = await authorizeMcp(current, {
+			serverUrl: `${origin}/mcp`,
+			fetch: async (_input, init) => {
+				const grant = new URLSearchParams(String(init?.body)).get("refresh_token") ?? "";
+				grants.push(grant);
+				if (grant === "r1") {
+					// Another sign-in saves new tokens while the old grant is being rejected.
+					current.tokenSet = { access_token: "a2", refresh_token: "r2", token_type: "Bearer" };
+					return Response.json({ error: "invalid_grant" }, { status: 400 });
+				}
+				return Response.json({ access_token: "a3", refresh_token: "r3", token_type: "Bearer" });
+			},
+		});
+
+		assert.equal(result, "AUTHORIZED");
+		assert.deepEqual(grants, ["r1", "r2"]);
+		assert.equal(current.tokenSet?.refresh_token, "r3");
+	});
+
+	it.each([
+		["invalid_request", 400],
+		["invalid_scope", 200],
+	])("reports %s from a refresh as it is (#4910)", async (code, status) => {
+		const { outcome, provider } = await refreshWith(json(status, { error: code }));
+
+		assert.ok(outcome instanceof OAuthError);
+		assert.equal(outcome.name, "OAuthError");
+		assert.equal(outcome.code, code);
+		assert.equal(outcome.status, status);
+		assert.equal(provider.verifier, "pending-verifier");
+	});
+
+	it("asks for a sign-in when the tokens were removed while their refresh was rejected (#4916)", async () => {
+		const provider = signedInProvider();
+		const outcome = await authorizeMcp(provider, {
+			serverUrl: `${origin}/mcp`,
+			fetch: async () => {
+				provider.tokenSet = undefined;
+				return Response.json({ error: "invalid_grant" }, { status: 400 });
+			},
+		});
+
+		assert.equal(outcome, "REDIRECT");
+	});
+
+	it.each(["invalid_grant", "invalid_client"])(
+		"reports %s from providers that cannot invalidate credentials (#4916)",
+		async (code) => {
+			const provider = Object.assign(signedInProvider(), { invalidateCredentials: undefined });
+			const outcome = await authorizeMcp(provider, {
+				serverUrl: `${origin}/mcp`,
+				fetch: async () => Response.json({ error: code }, { status: 400 }),
+			}).catch((error: Error) => error);
+
+			assert.ok(outcome instanceof OAuthError);
+			assert.equal(outcome.code, code);
+		},
+	);
 });
 
 describe("OAuthCallbackServer pages", () => {
