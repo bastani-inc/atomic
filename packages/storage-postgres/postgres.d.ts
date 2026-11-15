@@ -26,6 +26,8 @@ export const DEFAULT_STATEMENT_TIMEOUT_MS: 30000;
 
 /** `sql` with each positional `?` parameter outside literals, quoted identifiers and comments numbered `$1`, `$2`, .... */
 export function numberPlaceholders(sql: string): string;
+/** `sql` with every unquoted identifier longer than 63 bytes replaced by `postgresDialect.identifier` of it. */
+export function physicalIdentifiers(sql: string): string;
 
 export function openPostgresDatabase(options: PostgresDatabaseOptions): Promise<SqliteDatabase>;
 
