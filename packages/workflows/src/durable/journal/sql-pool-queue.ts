@@ -1824,10 +1824,14 @@ export class SqlPoolQueue {
 		const payload = serializeJson(result);
 		await this.remote?.fresh(lease);
 		const ready = this.readyNotice(lease.runId);
+		// Where completions run concurrently (PostgreSQL), the wake-up goes after the commit, not in it: PostgreSQL commits
+		// every transaction that sent a notification under one lock, which would put the completions of every host in
+		// line again (#5102). A notification lost to a crash in between only leaves the root to its next poll.
+		const notifyAfter = this.rowLocks ? ready : undefined;
 		const writes = [
 			{ sql: `INSERT INTO ${this.work}_results VALUES (?, ?)`, params: [token.id, payload] },
 			{ sql: `UPDATE ${this.work} SET state = 'completed' WHERE id = ?`, params: [token.id] },
-			...(ready === undefined ? [] : [ready]),
+			...(ready === undefined || notifyAfter !== undefined ? [] : [ready]),
 		];
 		await guardedPoolWrite(
 			this.storage,
@@ -1893,6 +1897,11 @@ export class SqlPoolQueue {
 			COMPLETE,
 		);
 		this.attempts.delete(token.id);
+		if (notifyAfter !== undefined) await this.sendNotice(notifyAfter);
+	}
+	/** Sends `notice` in a statement of its own. A wake-up is a hint that pollers do not depend on, so a failure is dropped. */
+	private async sendNotice(notice: SqliteStatement): Promise<void> {
+		await this.storage.read((executor) => executor.run(notice.sql, ...notice.params)).catch(() => {});
 	}
 	async result(root: string, id: string): Promise<WorkflowSerializableObject | undefined> {
 		return this.storage.read(async (executor) => {
