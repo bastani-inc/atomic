@@ -3094,6 +3094,8 @@ class IntercomBroker {
               ...opened,
               // #4997: the same across this broker's restarts on this host, as its away-ask store is.
               home: createHash("sha256").update(`${hostname()}\0${INTERCOM_DIR}`).digest("hex").slice(0, 32),
+              // #5038: a restarted broker serves the same socket; its previous instance's leases are retired at start.
+              instanceKey: SOCKET_PATH,
               host: {
                 sessions: this.sessions,
                 write: writeMessageIfOpen,

@@ -174,6 +174,15 @@ function leaseStore(records: Map<string, LeaseRecord>, nextOrder: { value: numbe
 						: [],
 				);
 		},
+		async retireHolder(holderId) {
+			let retired = 0;
+			for (const record of records.values()) {
+				if (holderId.length === 0 || record.holder?.holderId !== holderId) continue;
+				record.holder = undefined;
+				retired++;
+			}
+			return retired;
+		},
 	};
 }
 
@@ -304,6 +313,16 @@ function outboxStore(shared: OutboxState): OutboxStore {
 			record.claim = undefined;
 			record.state = "queued";
 			return { status: "released" };
+		},
+		async releaseClaimsOf(claimantId) {
+			let released = 0;
+			for (const record of shared.rows.values()) {
+				if (settled(record) || record.claim?.claimantId !== claimantId) continue;
+				record.claim = undefined;
+				record.state = "queued";
+				released++;
+			}
+			return released;
 		},
 		async markDelivered(claim) {
 			const record = heldClaim(claim);

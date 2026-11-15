@@ -28,7 +28,6 @@ import {
 	KNOWN_SESSION_RETENTION_MS,
 	type KnownSession,
 	type KnownSessionState,
-	type BrokerMembershipSubject,
 	type Lease,
 	type LeaseState,
 	OUTBOX_BACKUP_POLL_INTERVAL_MS,
@@ -36,6 +35,7 @@ import {
 	type OutboxClaim,
 	type OutboxRow,
 	type PendingAsk,
+	type BrokerMembershipSubject,
 	type RecipientPresenceSubject,
 	type ReleasedAskerReplyFrame,
 	type ReleasedAskRecord,
@@ -77,6 +77,7 @@ import {
 	senderGroupIdentity,
 } from "./send-handler.js";
 import { deliverHeldToAsker } from "./ask-failures.js";
+import { brokerHostIdentity, isProcessAlive } from "./broker-instance.js";
 import type { BrokerOutboundFrame } from "./socket-writes.js";
 import type { SupervisorChannelCache } from "./supervisor-channel.js";
 import type { WakeUpBus, WakeUpEvent, WakeUpSubscription } from "./wake-up-bus.js";
@@ -212,6 +213,20 @@ export interface MultiNodeRouterOptions {
 	readonly nodeId?: string;
 	/** #4997: this broker's durable state on its host (`BrokerMembershipSubject.home`). */
 	readonly home?: string;
+	/**
+	 * #5038: what stays the same when this broker restarts (its socket path); with the node and host identity it
+	 * names the earlier instances, whose leases and claims this one retires as it starts once their process exited.
+	 */
+	readonly instanceKey?: string;
+	/**
+	 * #5038: tells this host from another with the same name (`brokerHostIdentity`); `null` when there is no reliable
+	 * one, so no earlier instance is retired early.
+	 */
+	readonly hostIdentity?: string | null;
+	/** #5038: this broker's process id; `process.pid` by default. */
+	readonly pid?: number;
+	/** #5038: whether a process of this host still runs (`isProcessAlive`). */
+	readonly isProcessAlive?: (pid: number) => boolean;
 }
 
 interface Inflight {
@@ -368,16 +383,6 @@ export class MultiNodeRouter {
 	readonly brokerId: string;
 	private readonly home: string | undefined;
 
-	private membershipSubject(): BrokerMembershipSubject {
-		return {
-			kind: "broker",
-			brokerId: this.brokerId,
-			nodeId: this.nodeId,
-			startedAt: Date.now(),
-			...(this.home === undefined ? {} : { home: this.home }),
-		};
-	}
-
 	/**
 	 * #4997: whether a broker that may keep ask routes no other broker has is down: it renewed its membership within
 	 * `ROUTE_HOLDER_DOWN_WINDOW_MS` but has missed its renewals since, and no broker is back under its home.
@@ -445,6 +450,9 @@ export class MultiNodeRouter {
 	private readonly bus: WakeUpBus;
 	private readonly host: MultiNodeHost;
 	private readonly nodeId: string;
+	private readonly instanceKey: string;
+	private readonly pid: number;
+	private readonly isProcessAlive: (pid: number) => boolean;
 	private membership: Lease | undefined;
 	private subscription: WakeUpSubscription | undefined;
 	private readonly presence = new Map<BrokerConnectedSession, PresenceEntry>();
@@ -471,11 +479,20 @@ export class MultiNodeRouter {
 		this.nodeId = options.nodeId ?? hostname();
 		this.home = options.home;
 		this.host.pendingQuestions.onAnswered((question) => this.answeredHere(question));
+		// Without a key of its own, no earlier broker can be this one.
+		const hostIdentity = options.hostIdentity === undefined ? brokerHostIdentity() : options.hostIdentity;
+		this.instanceKey =
+			hostIdentity == null || options.instanceKey === undefined
+				? `${this.nodeId}:${this.brokerId}`
+				: `${this.nodeId}:${hostIdentity}:${options.instanceKey}`;
+		this.pid = options.pid ?? process.pid;
+		this.isProcessAlive = options.isProcessAlive ?? isProcessAlive;
 	}
 
 	/** Take the membership lease, subscribe to wake-ups and adopt the sessions already connected. */
 	static async start(options: MultiNodeRouterOptions): Promise<MultiNodeRouter> {
 		const router = new MultiNodeRouter(options);
+		await router.retirePreviousInstances();
 		const acquired = await router.state.leases.acquire(
 			router.membershipSubject(),
 			router.brokerId,
@@ -2556,6 +2573,33 @@ export class MultiNodeRouter {
 			void this.checkOutcomes();
 			void this.guard(this.checkHolds());
 			void this.guard(this.deliverWakeRequests());
+		}
+	}
+
+	private membershipSubject(): BrokerMembershipSubject {
+		return {
+			kind: "broker",
+			brokerId: this.brokerId,
+			nodeId: this.nodeId,
+			startedAt: Date.now(),
+			instanceKey: this.instanceKey,
+			pid: this.pid,
+			...(this.home === undefined ? {} : { home: this.home }),
+		};
+	}
+
+	/**
+	 * #5038: an earlier instance of this broker (same host and socket) still listed as live whose process has exited
+	 * died without releasing anything. Its presence leases would keep other brokers routing to it, and keep sessions
+	 * that re-register here from taking their presence, and its outbox claims would hold its recipients' queues, until
+	 * they go stale; retire them now. Its claimed rows are delivered again, once, by whoever claims them next.
+	 */
+	private async retirePreviousInstances(): Promise<void> {
+		for (const lease of await this.state.leases.listLive("broker", BROKER_LEASE_STALE_AFTER_MS)) {
+			const { instanceKey, pid } = lease.subject as Partial<BrokerMembershipSubject>;
+			if (instanceKey !== this.instanceKey || pid === undefined || this.isProcessAlive(pid)) continue;
+			await this.state.leases.retireHolder(lease.holderId);
+			await this.state.outbox.releaseClaimsOf(lease.holderId);
 		}
 	}
 

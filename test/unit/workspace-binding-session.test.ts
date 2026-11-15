@@ -454,6 +454,16 @@ describe("workspace session helpers (#3109)", () => {
 		assert.equal(git(repo, "status", "--porcelain").includes("escape-link"), true);
 	});
 
+	test("reject a session cwd below a dangling link that points outside the worktree (#5045)", async () => {
+		const repo = createRepository(dirs.root, "cwd-dangling");
+		const binding = await resolveWorkspace(workspace({ repo }));
+		symlinkSync(join(dirs.root, "not-created"), join(binding.worktree, "gone-link"), "junction");
+		assert.throws(
+			() => workspaceSessionCwd(binding, "gone-link/sub"),
+			(error: unknown) => isWorkspaceBindingError(error) && error.code === "cwd-outside-worktree",
+		);
+	});
+
 	test("deny only file-writing tools, only in read-only bindings (#3109)", () => {
 		const readOnly = { sandbox: "read-only" as const, worktree: "/w" };
 		const denial = workspaceSandboxDenial(readOnly, "edit");

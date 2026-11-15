@@ -86,6 +86,13 @@ export interface BrokerMembershipSubject {
 	 * under the same home may keep ask routes no other broker has. Absent from older brokers.
 	 */
 	readonly home?: string;
+	/**
+	 * #5038: what a restart of this broker keeps: its host (node, boot and process namespace) and its socket path. A
+	 * broker starting with the same key retires the leases and claims of an earlier instance whose `pid` has exited.
+	 */
+	readonly instanceKey?: string;
+	/** #5038: the broker's process id, checked on its host before a later instance supersedes it. */
+	readonly pid?: number;
 }
 
 /** Recipient presence: which broker currently hosts the recipient's socket. */
@@ -149,6 +156,11 @@ export interface BrokerLeaseStore {
 	read(key: LeaseKey): Promise<LeaseReadResult>;
 	/** Live leases of one kind, in the order their keys were first acquired. */
 	listLive(kind: LeaseKind, staleAfterMs: number): Promise<LeaseState[]>;
+	/**
+	 * #5038: give up every lease `holderId` holds, as its own `release` would, so their next acquisitions need not
+	 * wait for them to go stale. Resolves to the number of leases retired.
+	 */
+	retireHolder(holderId: string): Promise<number>;
 }
 
 export type OutboxRowState = "queued" | "claimed" | "delivered" | "failed";
@@ -263,6 +275,11 @@ export interface OutboxStore {
 	reportSaving?(claim: OutboxClaim): Promise<OutboxRenewClaimResult>;
 	/** Return the row to `queued`, for example when its recipient disconnected before acknowledging. */
 	releaseClaim(claim: OutboxClaim): Promise<OutboxReleaseClaimResult>;
+	/**
+	 * #5038: return every row `claimantId` holds to `queued`, as its own `releaseClaim` would, so a dead broker's
+	 * claims stop holding its recipients' queues until they go stale. Resolves to the number of rows released.
+	 */
+	releaseClaimsOf(claimantId: string): Promise<number>;
 	/**
 	 * The recipient acknowledged `received`; only now may its sender be told `delivered`. For an ask, record its
 	 * route with `PendingAskStore.record` first: a settled row is never claimed again, so a route written after it

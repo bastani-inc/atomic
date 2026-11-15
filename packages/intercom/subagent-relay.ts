@@ -179,6 +179,12 @@ export function registerSubagentRelay(pi: ExtensionAPI, deps: SubagentRelayDeps)
               : "Local Intercom delivery authority is invalid; refusing delivery";
         throw new Error(reason);
       }
+      if (parsed.claimDelivery?.() === false) {
+        // The sender already returned this result inline; delivering it too would duplicate it (#5018).
+        localDeliveries.forget(parsed.requestId, signature);
+        acknowledgeResult(options, parsed.requestId, false);
+        return;
+      }
 
       try {
         await deliverLocalSubagentRelayMessage(
@@ -264,6 +270,10 @@ export function registerSubagentRelay(pi: ExtensionAPI, deps: SubagentRelayDeps)
         return;
       }
 
+      if (parsed.claimDelivery?.() === false) {
+        acknowledgeResult(options, parsed.requestId, false);
+        return;
+      }
       try {
         const result = await activeClient.send(target, {
           text: parsed.message,
