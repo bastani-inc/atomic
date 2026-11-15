@@ -205,9 +205,7 @@ export class SessionManager {
 			),
 		];
 		this.lastSeq = 0;
-		this.deletedFromStore = false;
 		this._buildIndex();
-		this.syncOpenMarker();
 		this.sessionFile =
 			this.store instanceof JsonlSessionStore
 				? this.sessionDir
@@ -431,12 +429,8 @@ export class SessionManager {
 				}
 				const unknown = isStorageTransientError(error) && error.outcome === "unknown";
 				if ((!unknown && !(error instanceof SessionConflictError)) || attempt > MAX_APPEND_RECONCILES) throw error;
-				const outcome = await this.reconcileAppend(entries, error, unknown);
-				if (outcome === "saved") return;
-				if (outcome === "retry") continue;
-				throw error instanceof SessionConflictError
-					? error
-					: new SessionConflictError(this.sessionId, expectSeq, this.lastSeq);
+				if (await this.reconcileAppend(entries, error, unknown, expectSeq)) return;
+				continue;
 			}
 			this.applyAppended(entries);
 			return;
@@ -456,18 +450,20 @@ export class SessionManager {
 	 * #4970: an append failed with an unknown outcome (the connection broke after the server may have committed it) or
 	 * found the store ahead of `lastSeq`. Reads the store's entries past `lastSeq` and takes them in, in store order, so
 	 * the manager holds what the store holds; entries other than `entries` join the tree without moving the leaf.
-	 * Resolves `"saved"` when `entries` are among them; `"retry"` when they are not, and the rest are this manager's own
-	 * from an earlier append of unknown outcome, so `entries` go on after them; and `"conflict"` when another writer
-	 * added entries (or the store reported a conflict it does not show): the append fails once, and later appends go on
-	 * after the new tail. Rethrows `error` when the store cannot be read, or when its history no longer extends the one
-	 * this manager holds.
+	 * Resolves true when `entries` are among them (they are saved), and false when they are not and the rest are this
+	 * manager's own from an earlier append of unknown outcome (`entries` go on after them). Throws a
+	 * `SessionConflictError` when another writer added entries (or the store reported a conflict it does not show):
+	 * the append fails once, and later appends go on after the new tail. Rethrows `error` when the store cannot be
+	 * read, or when its history no longer extends the one this manager holds.
 	 */
 	private async reconcileAppend(
 		entries: readonly SessionEntry[],
 		error: unknown,
 		unknown: boolean,
-	): Promise<"saved" | "retry" | "conflict"> {
-		if (unknown) for (const entry of entries) this.unconfirmed.add(entry.id);
+		expectSeq: number,
+	): Promise<boolean> {
+		// Entries of an append that failed for certain are never in the store, so marking them too changes nothing.
+		for (const entry of entries) this.unconfirmed.add(entry.id);
 		let snapshot: SessionSnapshot;
 		try {
 			snapshot = await this.store.load(this.sessionId);
@@ -476,8 +472,8 @@ export class SessionManager {
 			throw error;
 		}
 		const start = snapshot.entries.length - (snapshot.lastSeq - this.lastSeq);
-		const held = this.fileEntries.length - 1;
-		if (start !== held || (held > 0 && snapshot.entries[held - 1]!.id !== this.fileEntries[held]!.id)) throw error;
+		const lastHeld = this.fileEntries.length > 1 ? this.fileEntries.at(-1)!.id : undefined;
+		if (snapshot.entries[start - 1]?.id !== lastHeld) throw error;
 		const own = new Map(entries.map((entry) => [entry.id, entry]));
 		const tail = snapshot.entries.slice(start).map((entry) => own.get(entry.id) ?? entry);
 		const saved = tail.some((entry) => own.has(entry.id));
@@ -487,9 +483,13 @@ export class SessionManager {
 		this._buildIndex();
 		this.leafId = leafId;
 		this.lastSeq = snapshot.lastSeq;
-		this.unconfirmed.clear();
-		if (saved) return "saved";
-		return foreign || (!unknown && tail.length === 0) ? "conflict" : "retry";
+		if (saved) return true;
+		if (foreign || (!unknown && tail.length === 0)) {
+			throw error instanceof SessionConflictError
+				? error
+				: new SessionConflictError(this.sessionId, expectSeq, this.lastSeq);
+		}
+		return false;
 	}
 
 	/**

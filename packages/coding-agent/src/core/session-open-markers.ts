@@ -12,7 +12,6 @@ import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { getAgentDir } from "../config.js";
 import { SessionOpenElsewhereError } from "./session-manager-errors.js";
-import { assertValidSessionId } from "./session-manager-validation.ts";
 
 /** How often a held marker's heartbeat is refreshed. */
 const HEARTBEAT_MS = 15_000;
@@ -20,6 +19,8 @@ const HEARTBEAT_MS = 15_000;
 const STALE_MS = 4 * HEARTBEAT_MS;
 /** Tells this process's markers apart from those of an earlier process given the same pid. */
 const PROCESS_NONCE = randomBytes(8).toString("hex");
+/** The session ids a marker directory can be named after, as `assertValidSessionId` accepts them. */
+const VALID_SESSION_ID = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/;
 
 interface HeldMarker {
 	readonly path: string;
@@ -34,16 +35,10 @@ export interface SessionOpenHolder {
 
 const held = new Map<string, HeldMarker>();
 let heartbeat: ReturnType<typeof setInterval> | undefined;
-let exitHookInstalled = false;
 
 /** The directory of `sessionId`'s markers; undefined for an id that cannot name one (no marker is kept for it). */
 function markerDirectory(agentDir: string, sessionId: string): string | undefined {
-	try {
-		assertValidSessionId(sessionId);
-	} catch {
-		return undefined;
-	}
-	return join(agentDir, "open-sessions", sessionId);
+	return VALID_SESSION_ID.test(sessionId) ? join(agentDir, "open-sessions", sessionId) : undefined;
 }
 
 function writeMarker(path: string): void {
@@ -68,21 +63,21 @@ function refreshMarkers(): void {
 
 function removeMarker(path: string): void {
 	try {
-		rmSync(path, { force: true });
+		rmSync(path);
 		rmdirSync(join(path, ".."));
 	} catch {
 		// Another process's marker may remain in the directory, or it is gone already.
 	}
 }
 
-function removeAllMarkers(): void {
+// A process that exits with sessions still open removes their markers; one killed leaves them stale.
+process.on("exit", () => {
 	for (const marker of held.values()) removeMarker(marker.path);
-	held.clear();
-}
+});
 
 /**
- * Records that this process has `sessionId` open, until the returned function is called; holds by one process for
- * one session share a marker. Never throws: a marker that cannot be written leaves the session unprotected.
+ * Records that this process has `sessionId` open, until the returned function is called, once; holds by one process
+ * for one session share a marker. Never throws: a marker that cannot be written leaves the session unprotected.
  */
 export function holdSessionOpenMarker(agentDir: string, sessionId: string): () => void {
 	const directory = markerDirectory(agentDir, sessionId);
@@ -98,24 +93,17 @@ export function holdSessionOpenMarker(agentDir: string, sessionId: string): () =
 		}
 		marker = { path, holds: 0 };
 		held.set(key, marker);
-		if (!exitHookInstalled) {
-			exitHookInstalled = true;
-			process.once("exit", removeAllMarkers);
-		}
 		if (heartbeat === undefined) {
 			heartbeat = setInterval(refreshMarkers, HEARTBEAT_MS);
 			heartbeat.unref();
 		}
 	}
-	marker.holds++;
-	let released = false;
+	const holding = marker;
+	holding.holds++;
 	return () => {
-		if (released) return;
-		released = true;
-		const current = held.get(key);
-		if (current === undefined || --current.holds > 0) return;
+		if (--holding.holds > 0) return;
 		held.delete(key);
-		removeMarker(current.path);
+		removeMarker(holding.path);
 		if (held.size === 0 && heartbeat !== undefined) {
 			clearInterval(heartbeat);
 			heartbeat = undefined;

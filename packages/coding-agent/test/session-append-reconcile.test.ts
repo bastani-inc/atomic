@@ -96,6 +96,37 @@ describe("SessionManager appends after an unknown outcome (#4970)", () => {
 		assert.deepEqual(texts(manager.getEntries()), ["one"]);
 	});
 
+	it("an append that failed without writing anything is not tried again (#4970)", async () => {
+		const store = new MemorySessionStore();
+		const failures = [
+			new StorageTransientError(store.descriptor, {
+				code: "connection-refused",
+				outcome: "not-applied",
+				attempts: 3,
+			}),
+			new Error("disk full"),
+		];
+		let appends = 0;
+		const failing: SessionStore = Object.assign(Object.create(store) as SessionStore, {
+			async append(...args: Parameters<SessionStore["append"]>) {
+				appends++;
+				const failure = appends > 1 ? failures.shift() : undefined;
+				if (failure !== undefined) throw failure;
+				return store.append(...args);
+			},
+		});
+		const manager = await SessionManager.create(failing, "/project");
+		await manager.appendMessage(message("one"));
+
+		await assert.rejects(manager.appendMessage(message("two")), StorageTransientError);
+		await assert.rejects(manager.appendMessage(message("three")), /disk full/);
+		await manager.appendMessage(message("four"));
+
+		assert.equal(appends, 4);
+		assert.deepEqual(texts((await store.load(manager.getSessionId())).entries), ["one", "four"]);
+		assert.deepEqual(texts(manager.getEntries()), ["one", "four"]);
+	});
+
 	it("an append whose outcome could not be read back fails, and the next append takes the saved entry in (#4970)", async () => {
 		const { store, faulty, loseConnection } = faultyStore();
 		const manager = await SessionManager.create(faulty, "/project");
@@ -142,6 +173,21 @@ describe("SessionManager appends after an unknown outcome (#4970)", () => {
 		assert.deepEqual(texts(stored.entries), ["elsewhere", "two"]);
 		assert.deepEqual(stored.entries, manager.getEntries());
 		assert.deepEqual(texts(manager.getBranch()), ["two"]);
+	});
+
+	it("a store whose history was cut short fails the append and is not taken in (#4970)", async () => {
+		const store = new MemorySessionStore();
+		const manager = await SessionManager.create(store, "/project");
+		await manager.appendMessage(message("one"));
+		await manager.appendMessage(message("two"));
+		const other = await SessionManager.create(store, "/project");
+		await other.appendMessage(message("x"));
+		const header = (await store.load(manager.getSessionId())).header;
+		await store.replace(manager.getSessionId(), header, other.getEntries(), { expectSeq: 2 });
+
+		await assert.rejects(manager.appendMessage(message("three")), SessionConflictError);
+
+		assert.deepEqual(texts(manager.getEntries()), ["one", "two"]);
 	});
 
 	it("a store whose history no longer extends the manager's fails the append and is not taken in (#4970)", async () => {

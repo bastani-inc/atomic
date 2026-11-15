@@ -5,6 +5,7 @@ import { hostname, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { SessionManager, SessionOpenElsewhereError } from "../src/core/session-manager.js";
+import { assertSessionNotOpenElsewhere, holdSessionOpenMarker } from "../src/core/session-open-markers.js";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
 import { bunExecutable } from "./cli-test-helpers.js";
 
@@ -159,11 +160,12 @@ describe("a session open in this process (#4971)", () => {
 		const sameSession = await SessionManager.open(running.getSessionFile()!, sessionDir);
 		const deleter = await saved("deleter");
 		const releaseFirst = hold(running);
-		const releaseSecond = hold(sameSession);
+		const releaseSecond = hold(running);
 
 		await assert.rejects(deleter.deleteSession(running.getSessionId()), (error: unknown) => {
 			assert.ok(error instanceof SessionOpenElsewhereError);
 			assert.equal(error.name, "SessionOpenElsewhereError");
+			assert.equal(error.sessionId, running.getSessionId());
 			assert.equal(error.pid, process.pid);
 			assert.equal(error.host, hostname());
 			return true;
@@ -171,7 +173,10 @@ describe("a session open in this process (#4971)", () => {
 		releaseFirst();
 		releaseFirst();
 		await assert.rejects(deleter.deleteSession(running.getSessionId()), SessionOpenElsewhereError);
+		const releaseOther = hold(sameSession);
 		releaseSecond();
+		await assert.rejects(deleter.deleteSession(running.getSessionId()), SessionOpenElsewhereError);
+		releaseOther();
 		assert.equal(existsSync(markersOf(running.getSessionId())), false);
 
 		await deleter.deleteSession(running.getSessionId());
@@ -212,6 +217,37 @@ describe("a session open in this process (#4971)", () => {
 		rmSync(markers, { recursive: true });
 		vi.advanceTimersByTime(15_000);
 		await assert.rejects(deleter.deleteSession(running.getSessionId()), SessionOpenElsewhereError);
+	});
+
+	test("the heartbeat stops once no session is held (#4971)", async () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+		const first = hold(await saved("first"));
+		const second = hold(await saved("second"));
+		assert.equal(vi.getTimerCount(), 1);
+		first();
+		assert.equal(vi.getTimerCount(), 1);
+		second();
+		assert.equal(vi.getTimerCount(), 0);
+	});
+
+	test("a session id that cannot name a directory gets no mark and is never found held (#4971)", () => {
+		const release = holdSessionOpenMarker(agentDir, "../escape");
+		release();
+		assert.equal(existsSync(join(agentDir, "open-sessions")), false);
+		assert.equal(existsSync(join(agentDir, "escape")), false);
+		mkdirSync(join(agentDir, "escape"), { recursive: true });
+		writeFileSync(join(agentDir, "escape", "x.json"), JSON.stringify({ pid: process.pid, host: "another-host" }));
+		assert.doesNotThrow(() => assertSessionNotOpenElsewhere("../escape", join(agentDir, "open-sessions")));
+	});
+
+	test("a mark of a process this one may not signal still counts (#4971)", async () => {
+		const target = await saved("target");
+		const deleter = await saved("deleter");
+		const markers = markersOf(target.getSessionId());
+		mkdirSync(markers, { recursive: true });
+		writeFileSync(join(markers, "init.json"), JSON.stringify({ pid: 1, host: hostname() }));
+
+		await assert.rejects(deleter.deleteSession(target.getSessionId()), SessionOpenElsewhereError);
 	});
 
 	test("marks that name no running session are ignored and removed (#4971)", async () => {
