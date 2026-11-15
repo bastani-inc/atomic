@@ -107,8 +107,18 @@ import { WorkflowStageAliases } from "./workflow-stage-aliases.js";
 import { type IntercomRecipientGoneError, serializeIntercomRecipientGoneError } from "./recipient-gone-errors.js";
 import { NotHostedSessionError, serializeIntercomHostedSessionError } from "./hosted-session-errors.js";
 import { type ParsedHostedSession, validateHostSessionsFrame, validateUnhostSessionsFrame } from "./hosted-sessions.js";
-import { ReleasedAskerReplies, type ReleasedAskerReplyRoute } from "./released-asker-replies.js";
-import { crashPoint, DEPARTURE_ASKS_TAKEN, DEPARTURE_ASKS_TO_IT_TAKEN } from "./crash-points.js";
+import {
+  failRefusedReleasedAsk,
+  ReleasedAskerReplies,
+  type RefusedReleasedAskerRoute,
+  type ReleasedAskerReplyRoute,
+} from "./released-asker-replies.js";
+import {
+  crashPoint,
+  DEPARTURE_ASKS_TAKEN,
+  DEPARTURE_ASKS_TO_IT_FAILED,
+  DEPARTURE_ASKS_TO_IT_TAKEN,
+} from "./crash-points.js";
 import { releasedAskerReplyRefusal } from "./released-asker-remote-replies.js";
 import { hasGroup, normalizeGroup, normalizeGroups, workflowInvocationRefusalFor } from "../group.js";
 import { handleBrokerPresence } from "./presence-handler.js";
@@ -119,7 +129,7 @@ import {
 } from "./group-membership.js";
 import { replyToList } from "./list-reply.js";
 import { type PendingQuestion, PendingQuestionIndex } from "./pending-question-index.js";
-import { AwayAsks } from "./away-asks.js";
+import { AwayAsks, awayQueueFullReason } from "./away-asks.js";
 import { TERMINAL_CHILD_ASK_REFUSAL } from "../recipient-purpose.js";
 import { type ReceiptSender, RecipientReceipts, UNCERTAIN_RECEIPT_REASON } from "./recipient-receipts.js";
 import { deliverAskFailure, deliverHeldToAsker } from "./ask-failures.js";
@@ -466,6 +476,7 @@ class IntercomBroker {
       kept: (question) => this.pendingQuestions.writeLive(question),
       removed: (question) => this.pendingQuestions.forgetLive([question]),
     });
+    this.releasedAskerReplies.refuseWith((route) => this.failRefusedReleasedRoute(route));
   }
 
   /**
@@ -1561,7 +1572,7 @@ class IntercomBroker {
 		reason: string,
 		reasonCode?: "message_id_conflict",
 	): void {
-		writeMessageIfOpen(socket, {
+		this.writeAfterDeparture(socket, {
 			type: "delivery_failed",
 			messageId,
 			...(attemptId === undefined ? {} : { attemptId }),
@@ -2845,11 +2856,12 @@ class IntercomBroker {
    */
   private failReleasedAsksTo(target: SessionInfo, socket: net.Socket, reason: string, idPrefix: string): void {
     for (const route of this.releasedAskerReplies.takeForReplier(target.id)) {
-      this.handOffReleasedReply(
+      // #4996: handed to the owner once the departure in progress, if any, is saved; one id per ask (#5004).
+      this.afterDeparture(() => this.handOffReleasedReply(
         route,
         target,
         {
-          id: `${idPrefix}:${randomUUID()}`,
+          id: `${idPrefix}:${route.questionId}`,
           timestamp: Date.now(),
           replyTo: route.questionId,
           replyError: reason,
@@ -2858,7 +2870,7 @@ class IntercomBroker {
         socket,
         undefined,
         true,
-      );
+      ));
     }
   }
 
@@ -2891,7 +2903,8 @@ class IntercomBroker {
     } else if (ownerStillHolds) {
       this.releasedAskerReplies.restore(pending.route, pending.ownerSessionId);
     }
-    writeMessageIfOpen(pending.socket, {
+    // #4996: a replier is told its reply failed only once the departure in progress, if any, is saved.
+    this.writeAfterDeparture(pending.socket, {
       type: "delivery_failed",
       messageId,
       ...attempt,
@@ -3265,6 +3278,37 @@ class IntercomBroker {
     });
   }
 
+  /** #4996: a released subagent's ask refused a reply route at capacity fails to the subagent, never silently. */
+  private failRefusedReleasedRoute(route: RefusedReleasedAskerRoute): void {
+    failRefusedReleasedAsk(route, {
+      pendingQuestions: this.pendingQuestions,
+      replier: this.sessions.get(route.replierSessionId)?.info,
+      askerReturnAddress:
+        this.sessions.get(route.askerSessionId)?.registrationReturnAddress ??
+        this.sessionIdReclaim.retiredReturnAddress(route.askerSessionId),
+      wake: (wake) => this.afterDeparture(() => this.wakeRestoringRecipientOwner(wake)),
+    });
+  }
+
+  /** #4996: asks the away recipient's full queue could not keep fail at once to their connected askers, never silently. */
+  private failAwayQueueFull(questions: readonly PendingQuestion[], recipient: SessionInfo): void {
+    const reason = awayQueueFullReason(recipient.name ?? recipient.id);
+    for (const question of questions) {
+      const asker = this.sessions.get(question.senderSessionId);
+      if (asker === undefined) continue;
+      // #5004: held until the asker saved it, like a reply, and sent once this departure is saved.
+      deliverAskFailure({
+        asker,
+        question,
+        from: recipient,
+        id: `away-queue-full:${question.messageId}`,
+        reason,
+        pending: this.pendingQuestions,
+        write: this.writeAfterDeparture,
+      });
+    }
+  }
+
   /** Whether `sessionId` is connected and proves the kept return address (an empty one proves nothing to match). */
   private isConnectedAs(sessionId: string, returnAddress: string): boolean {
     const session = this.sessions.get(sessionId);
@@ -3287,7 +3331,7 @@ class IntercomBroker {
         id: `ended:${question.messageId}`,
         reason: `Session "${from.name ?? from.id}" ended before replying`,
         pending: this.pendingQuestions,
-        write: writeMessageIfOpen,
+        write: this.writeAfterDeparture,
         legacy: {
           type: "peer_disconnected", replyTo: question.messageId, peerSessionId: question.targetSessionId,
           ...(peer?.name === undefined ? {} : { peerName: peer.name }),
@@ -3304,6 +3348,39 @@ class IntercomBroker {
 
   /** `ended`: the session said goodbye, so it is not coming back; otherwise its connection only dropped. */
   private disconnectSession(sessionId: string, ended = false): void {
+    // A hosted session's departure joins its host's: its outcomes go out when the host's departure is saved.
+    if (this.departureOutcomes !== undefined) {
+      this.departSession(sessionId, ended);
+      return;
+    }
+    // #4996: what a departure keeps, holds and forgets durably (possibly thousands of asks) is one transaction. What it
+    // tells askers goes out only once that is saved: a crash before then undoes the decision, which the next broker
+    // makes again, so an asker is never told of an outcome that did not happen.
+    const outcomes: Array<() => void> = [];
+    this.departureOutcomes = outcomes;
+    try {
+      this.pendingQuestions.batch(() => this.departSession(sessionId, ended));
+    } finally {
+      this.departureOutcomes = undefined;
+    }
+    for (const tell of outcomes) tell();
+  }
+
+  /** #4996: what a departure tells askers, collected while it is saved; undefined outside a departure. */
+  private departureOutcomes: Array<() => void> | undefined;
+
+  /** #4996: tell an asker now, or, during a departure, once the departure is saved. */
+  private afterDeparture(tell: () => void): void {
+    if (this.departureOutcomes === undefined) tell();
+    else this.departureOutcomes.push(tell);
+  }
+
+  /** #4996: a frame to an asker, written once the departure in progress, if any, is saved. */
+  private readonly writeAfterDeparture = (socket: net.Socket, frame: BrokerMessage): void => {
+    this.afterDeparture(() => writeMessageIfOpen(socket, frame));
+  };
+
+  private departSession(sessionId: string, ended: boolean): void {
     const departed = this.sessions.get(sessionId);
     if (!departed) return;
     // #4642: the sessions a connection hosts leave with it, and a hosted session leaves its host's index.
@@ -3370,11 +3447,13 @@ class IntercomBroker {
       this.pendingQuestions.parkTarget(sessionId, childName, releasedOwner);
     } else if (!ended && departed.supervisorId === undefined && departed.hostedBy === undefined) {
       // #4751: a recipient whose connection dropped without ending its session may restart; its asks stay pending.
-      // Each ask keeps its live record until its away record is written, so a crash in between loses none.
+      // Each ask keeps its live record until its away record is written, so a crash in between loses none. #4996: one
+      // its recipient's full away queue refuses fails to its connected asker at once.
       const askedOfIt = this.pendingQuestions.takeForTarget(sessionId, { keepLiveRecords: true });
       crashPoint(DEPARTURE_ASKS_TO_IT_TAKEN);
-      this.pendingQuestions.keepDormant(askedOfIt);
+      const refused = this.pendingQuestions.keepDormantForRecipient(askedOfIt);
       this.pendingQuestions.forgetLive(askedOfIt);
+      this.failAwayQueueFull(refused, departed.info);
     } else {
       if (ended) {
         // #4751: an away asker's ask to it fails with a message held until the asker is back; a session that ended
@@ -3391,6 +3470,7 @@ class IntercomBroker {
           this.pendingQuestions.dropAway(departed.registrationReturnAddress);
       }
       this.failParkedQuestions(this.pendingQuestions.takeForTarget(sessionId), departed.info);
+      if (ended) crashPoint(DEPARTURE_ASKS_TO_IT_FAILED);
     }
     // #4639: a subagent that left without being released: hold sends to it until it is back or its owner says why. An
     // owner already away, as a suspended workflow stage's session is, says so through its host session when it is back.
@@ -3432,7 +3512,7 @@ class IntercomBroker {
       clearTimeout(pending.timeout);
       this.pendingStageAcknowledgments.delete(requestId);
       this.releasePendingStageAcknowledgment(requestId);
-      writeMessageIfOpen(pending.senderSocket, {
+      this.writeAfterDeparture(pending.senderSocket, {
         type: "delivery_failed",
         messageId: pending.messageId,
         ...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
