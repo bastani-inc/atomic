@@ -70,24 +70,19 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 			// snapshot, not the display store, when attaching completion context.
 			const host = this._agentTaskHost;
 			const watched = host?.watchOwnerTasks();
-			const candidate = watched?.ok
+			const task = watched?.ok
 				? watched.value.snapshot.tasks.find(
-						(item) => item.ref.taskId === envelope.taskId && item.ref.ownerId === envelope.ownerId,
+						(item) =>
+							item.ref.taskId === envelope.taskId &&
+							item.ref.ownerId === envelope.ownerId &&
+							settledWithCompletion(host!, envelope),
 					)
 				: undefined;
 			if (watched?.ok) watched.value.dispose();
-			// Task ids restart with each process, so a task with this id may be a new one: only the task that settled
-			// with this completion describes it. Any other renders from the envelope alone (#5047).
-			const candidateLease = candidate ? host?.resolveTask(envelope.taskId) : undefined;
-			const lease =
-				candidateLease?.ok &&
-				host?.ownerBinding.supervisor.taskCompletionId(candidateLease.value) === envelope.completionId
-					? candidateLease
-					: undefined;
-			const task = lease ? candidate : undefined;
 			// Foreground shell results already return through their tool call. Do not
 			// create a second model turn or background card for that same execution.
 			if (task?.kind === "command" && !task.wasBackground) return;
+			const lease = task ? host?.resolveTask(envelope.taskId) : undefined;
 			const source = lease?.ok ? taskTranscriptSource(lease.value) : undefined;
 			const ownEntries = lease?.ok ? taskOwnTranscriptEntries(lease.value) : undefined;
 			const response = ownEntries
@@ -229,6 +224,16 @@ export function deliverHeldTaskCompletions(session: AgentSession): void {
 	if (outbox === undefined || outbox.pending.length === 0 || waitsOnDetachedResults(session)) return;
 	void outbox.flushRestored();
 	void outbox.flush();
+}
+
+/**
+ * Whether the owner's task with this id is the one that settled with this completion. Task ids restart with each
+ * process, so a restored completion may name the id of a new, unrelated task; its notice then renders from its envelope
+ * alone (#5047).
+ */
+function settledWithCompletion(host: AgentTaskHost, envelope: Pick<TaskCompletionEnvelope, "taskId" | "completionId">) {
+	const task = host.resolveTask(envelope.taskId);
+	return task.ok && host.ownerBinding.supervisor.taskCompletionId(task.value) === envelope.completionId;
 }
 
 function releaseDeliveredTaskRecord(

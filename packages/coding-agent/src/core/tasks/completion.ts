@@ -284,12 +284,19 @@ export class TaskCompletionOutbox {
 			if (this.restored.has(envelope.completionId) !== restored) continue;
 			if (!this.isOpen()) return;
 			try {
-				const { persisted, noticeSaved } = this.saved(envelope.completionId);
+				const persisted = this.session
+					.getEntries()
+					.some(
+						(entry) =>
+							entry.type === "custom" &&
+							entry.customType === "task-completion-intent" &&
+							(entry.data as TaskCompletionEnvelope | undefined)?.completionId === envelope.completionId,
+					);
 				if (!persisted) await this.session.appendCustomEntry("task-completion-intent", envelope);
 				if (!this.isOpen()) return;
 				// Saved, it waits for a later flush; the rest are saved too.
 				if (!this.canAdmit()) continue;
-				const admitted = noticeSaved ? undefined : await this.admit(envelope, restored);
+				const admitted = this.noticeSaved(envelope.completionId) ? undefined : await this.admit(envelope, restored);
 				if (admitted !== undefined) {
 					const { completionId } = envelope;
 					this.saving.add(completionId);
@@ -308,22 +315,11 @@ export class TaskCompletionOutbox {
 		}
 	}
 
-	/** Whether this session already holds the intent, and the notice, of a completion. */
-	private saved(completionId: string): { persisted: boolean; noticeSaved: boolean } {
-		const entries = this.session.getEntries();
-		const persisted = entries.some(
-			(entry) =>
-				entry.type === "custom" &&
-				entry.customType === "task-completion-intent" &&
-				(entry.data as TaskCompletionEnvelope | undefined)?.completionId === completionId,
-		);
-		const noticeSaved = entries.some(
-			(entry) =>
-				entry.type === "custom_message" &&
-				entry.customType === TASK_COMPLETION_MESSAGE_TYPE &&
-				entry.stageAdmissionKey === completionId,
-		);
-		return { persisted, noticeSaved };
+	/** Whether the notice of a completion is in this session, as when a process ended before acknowledging it. */
+	private noticeSaved(completionId: string): boolean {
+		return this.session
+			.getEntries()
+			.some((entry) => entry.type === "custom_message" && entry.stageAdmissionKey === completionId);
 	}
 
 	private async acknowledge(envelope: TaskCompletionEnvelope, restored: boolean): Promise<void> {

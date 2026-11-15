@@ -95,8 +95,9 @@ describe("restored task completion notices are acknowledged only once saved", ()
 			assert.equal(harness.session.isStreaming, true);
 			session.getAgentTaskHost();
 			await session._taskCompletionOutbox!.flushRestored();
-			// A second flush during the turn does not admit the notice that waits to be saved again.
+			// Later flushes during the turn do not admit the notice that waits to be saved again.
 			await session._taskCompletionOutbox!.flushRestored();
+			await session._taskCompletionOutbox!.flush();
 
 			// A crash now leaves exactly what the file holds.
 			assertOwedOrShownOnce(await SessionManager.open(manager.getSessionFile()!, dir, root));

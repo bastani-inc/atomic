@@ -277,11 +277,8 @@ export function pendingCustomMessageSaved(session: AgentSession, stageAdmissionK
 		(candidate) => (candidate as StageAdmittedCustomMessage).stageAdmissionKey === stageAdmissionKey,
 	);
 	if (message === undefined) return undefined;
-	let saved = pendingCustomMessageSaves.get(message);
-	if (saved === undefined) {
-		saved = Promise.withResolvers<void>();
-		pendingCustomMessageSaves.set(message, saved);
-	}
+	const saved = pendingCustomMessageSaves.get(message) ?? Promise.withResolvers<void>();
+	pendingCustomMessageSaves.set(message, saved);
 	return saved.promise;
 }
 
