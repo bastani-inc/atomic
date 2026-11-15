@@ -4,6 +4,7 @@ import type { JournalShardUnavailableError, RunJournal } from "@bastani/atomic/s
 
 import type { PendingStageMessage, PendingStageMessageDelivery } from "../shared/store-types.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
+import { stampCheckpointAttempt, workflowAttemptOf } from "./attempt-identity.js";
 import type { PromptReservationToken } from "./prompt-reservation-state.js";
 import { isDurableWorkflowResumable } from "./resume-eligibility.js";
 import { durableStageGroupKey } from "./stage-topology-validation.js";
@@ -385,6 +386,8 @@ export interface DurableWorkflowBackend {
 				startedAt?: number;
 				durationMs?: number;
 				routerSelection?: import("@bastani/atomic").ModelRouterOutput;
+				/** The attempt the session record was written in (#4874). */
+				attempt?: number;
 		  }
 		| undefined;
 
@@ -398,6 +401,11 @@ export interface DurableWorkflowBackend {
 	 * `NestedSnapshotVersion` for the one class of record that leaves it alone.
 	 */
 	nestedSnapshotVersion?(workflowId: string): number | undefined;
+	/**
+	 * The attempt the run is in: the highest attempt record its root holds, 0 before its first resume (#4874). A child
+	 * run's backend answers for its root.
+	 */
+	workflowAttempt?(workflowId: string): number;
 
 	/**
 	 * What `listCheckpoints` lists for the run plus the checkpoints recorded under its child boundary scope `scope`
@@ -647,6 +655,8 @@ interface JournalWorkflowRecord {
 	nestedSnapshotVersion: NestedSnapshotVersion;
 	/** Checkpoints counted as recorded but not kept in memory (see `releaseCheckpoints`). */
 	released: number;
+	/** The highest attempt record folded, kept or only counted (#4874). */
+	attempt: number;
 }
 
 export function checkpointKey(c: DurableCheckpoint): string {
@@ -788,6 +798,7 @@ class JournalProjection {
 				stageSessionByReplayKey: new Map(),
 				nestedSnapshotVersion: new NestedSnapshotVersion(handle.workflowId),
 				released: 0,
+				attempt: 0,
 			});
 	}
 	applyWorkflowSnapshot(handle: DurableWorkflowHandle): void {
@@ -902,6 +913,7 @@ class JournalProjection {
 	countCheckpoint(recorded: DurableCheckpoint): void {
 		const rec = this.workflows.get(recorded.workflowId);
 		if (!rec) return;
+		rec.attempt = Math.max(rec.attempt, workflowAttemptOf(recorded) ?? 0);
 		rec.released++;
 		rec.handle = {
 			...rec.handle,
@@ -962,6 +974,7 @@ class JournalProjection {
 		const key = checkpointKey(currentCheckpoint);
 		if (rec.checkpoints.has(key)) return undefined;
 		rec.checkpoints.set(key, currentCheckpoint);
+		rec.attempt = Math.max(rec.attempt, workflowAttemptOf(currentCheckpoint) ?? 0);
 		rec.nestedSnapshotVersion.record(currentCheckpoint);
 		if (currentCheckpoint.kind === "tool") {
 			const existing = rec.toolByHash.get(currentCheckpoint.argsHash);
@@ -1013,6 +1026,8 @@ class JournalProjection {
 				startedAt?: number;
 				durationMs?: number;
 				routerSelection?: import("@bastani/atomic").ModelRouterOutput;
+				/** The attempt the session record was written in (#4874). */
+				attempt?: number;
 		  }
 		| undefined {
 		const checkpoint = this.workflows.get(workflowId)?.stageSessionByReplayKey.get(replayKey);
@@ -1023,6 +1038,7 @@ class JournalProjection {
 			...(checkpoint.startedAt !== undefined ? { startedAt: checkpoint.startedAt } : {}),
 			...(checkpoint.durationMs !== undefined ? { durationMs: checkpoint.durationMs } : {}),
 			...(checkpoint.routerSelection !== undefined ? { routerSelection: checkpoint.routerSelection } : {}),
+			...(checkpoint.attempt !== undefined ? { attempt: checkpoint.attempt } : {}),
 		};
 	}
 
@@ -1030,6 +1046,27 @@ class JournalProjection {
 		const rec = this.workflows.get(workflowId);
 		if (!rec) return [];
 		return [...rec.checkpoints.values()].sort((a, b) => a.completedAt - b.completedAt);
+	}
+
+	/** The checkpoint kept under `checkpointKey(checkpoint)`, if any. */
+	getStoredCheckpoint(checkpoint: DurableCheckpoint): DurableCheckpoint | undefined {
+		return this.workflows.get(checkpoint.workflowId)?.checkpoints.get(checkpointKey(checkpoint));
+	}
+
+	workflowAttempt(workflowId: string): number {
+		return this.workflows.get(workflowId)?.attempt ?? 0;
+	}
+
+	/**
+	 * `checkpoint` stamped with its run's attempt, as it is committed (#4874): every writer of the run's records commits
+	 * through here or through a pool worker, which stamps the same way.
+	 */
+	stampAttempt(checkpoint: DurableCheckpoint): DurableCheckpoint {
+		return stampCheckpointAttempt(
+			checkpoint,
+			this.workflowAttempt(checkpoint.workflowId),
+			this.getStoredCheckpoint(checkpoint),
+		);
 	}
 
 	/** One stage checkpoint by id, without listing the run's checkpoints. */

@@ -389,6 +389,15 @@ function closeLocalConnectionsOnce(clientEntry) {
 	Database.prototype[closesOnce] = true;
 }
 
+/**
+ * A libSQL server's (sqld's) default payload limits, which the facade names when a value or a response is too large
+ * (#4954): `max_row_size`, which sqld sets as SQLite's `SQLITE_LIMIT_LENGTH` on every connection, is `bytesize::mb(5)`
+ * (5,000,000 bytes) for a value and a whole row, and `--max-response-size` is 10 MB for one statement's response.
+ */
+const SERVER_PAYLOAD_LIMITS = Object.freeze({ value: 5_000_000, response: 10_000_000 });
+/** A local file's limit: SQLite's default `SQLITE_MAX_LENGTH`. */
+const LOCAL_PAYLOAD_LIMITS = Object.freeze({ value: 1_000_000_000 });
+
 /** How far `transientFailure` follows `cause`: a driver error wraps the network error that fetch wraps. */
 const MAX_CAUSE_DEPTH = 8;
 /**
@@ -412,8 +421,8 @@ const CONNECTION_LOST = new Set(["ECONNRESET", "EPIPE", "ETIMEDOUT", "UND_ERR_SO
 
 /**
  * The failure, as one that passes, when the server ended the stream or transaction of a process that stalled, or the
- * connection to the server could not be made or broke; read from each error's `code` along the cause chain, never
- * from its message.
+ * connection to the server could not be made or broke, or something between answered HTTP 5xx; read from each error's
+ * `code`, `name` and `status` along the cause chain, never from its message.
  * @param {import("@bastani/atomic/storage").StorageFailureCause} failure
  * @returns {import("@bastani/atomic/storage").SqliteDriverTransientFailure | undefined}
  */
@@ -421,11 +430,15 @@ function transientFailure(failure) {
 	/** @type {unknown} */
 	let current = failure;
 	for (let depth = 0; depth < MAX_CAUSE_DEPTH && typeof current === "object" && current !== null; depth++) {
-		const { code, cause, name } = /** @type {{ readonly code?: unknown, readonly cause?: unknown, readonly name?: unknown }} */ (
+		const { code, cause, name, status } = /** @type {{ readonly code?: unknown, readonly cause?: unknown, readonly name?: unknown, readonly status?: unknown }} */ (
 			current
 		);
 		// A request abandoned after `REQUEST_TIMEOUT_MS`: the server may have applied it.
 		if (name === "TimeoutError") return { code: "connection-lost", outcome: "unknown" };
+		// An HTTP 5xx with no Hrana error in it, such as a gateway's 502 or 504: the request may have reached the server
+		// and been applied before the answer was lost (#4970).
+		if (name === "HttpServerError" && typeof status === "number" && status >= 500)
+			return { code: "connection-lost", outcome: "unknown" };
 		const ended = ENDED_BY_SERVER.get(code);
 		if (ended !== undefined) return { code: ended, outcome: "not-applied" };
 		if (NOT_SENT.has(code)) return { code: "connection-refused", outcome: "not-applied" };
@@ -533,6 +546,7 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 		descriptor: { adapter: "libsql", location: url },
 		redact,
 		transientFailure,
+		payloadLimits: local ? LOCAL_PAYLOAD_LIMITS : SERVER_PAYLOAD_LIMITS,
 		// A server's batch the busy lock ended: the facade sends it again within the caller's `lockWaitMs`.
 		lockBusy: (failure) => !local && isLockBusy(failure),
 		// One statement outside a transaction, run alone or as an `exec` of one statement, that waited out the busy

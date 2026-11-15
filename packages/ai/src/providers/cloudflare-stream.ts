@@ -9,8 +9,8 @@ export function resolveCloudflareModel<TModel extends { baseUrl: string }>(
 ): TModel {
 	if (!env) return model;
 	const baseUrl = model.baseUrl
-		.replaceAll(`{${CLOUDFLARE_ACCOUNT_ID}}`, env[CLOUDFLARE_ACCOUNT_ID] ?? `{${CLOUDFLARE_ACCOUNT_ID}}`)
-		.replaceAll(`{${CLOUDFLARE_GATEWAY_ID}}`, env[CLOUDFLARE_GATEWAY_ID] ?? `{${CLOUDFLARE_GATEWAY_ID}}`);
+		.replaceAll(`{${CLOUDFLARE_ACCOUNT_ID}}`, (match) => env[CLOUDFLARE_ACCOUNT_ID] ?? match)
+		.replaceAll(`{${CLOUDFLARE_GATEWAY_ID}}`, (match) => env[CLOUDFLARE_GATEWAY_ID] ?? match);
 	return baseUrl === model.baseUrl ? model : { ...model, baseUrl };
 }
 

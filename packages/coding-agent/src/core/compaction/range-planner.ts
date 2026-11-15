@@ -368,8 +368,10 @@ export async function planDeletedLineRanges(
 		);
 	}
 	const text = responseText(response);
-	if (response.stopReason === "aborted" || signal?.aborted) throw new Error("Compaction cancelled");
-	if (response.stopReason === "error") {
+	if (signal?.aborted) throw new Error("Compaction cancelled");
+	// Only our own signal cancels the run. A provider that ends the stream as "aborted" on its
+	// side is a failed request, and the ladder moves on to the next rung (#4977).
+	if (response.stopReason === "error" || response.stopReason === "aborted") {
 		const message = response.errorMessage || "Compaction provider failed";
 		return providerFailureOutcome(options, model, response, text, message, false, retry.scheduled());
 	}

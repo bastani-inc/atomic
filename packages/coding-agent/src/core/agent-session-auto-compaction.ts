@@ -9,6 +9,7 @@ import {
 	estimateContextTokens,
 	estimateProjectedContextTokens,
 	shouldCompact,
+	type VerbatimCompactionResult,
 } from "./compaction/index.ts";
 import { MIN_RESPONSES_MAX_OUTPUT_TOKENS } from "./openai-responses-payload-sanitizer.ts";
 import { type ContextEditEntry, getLatestCompactionBoundaryEntry } from "./session-manager.ts";
@@ -135,9 +136,18 @@ export async function _checkCompaction(
 	// compaction boundary. This prevents a stale pre-compaction usage/error
 	// from retriggering compaction on the first prompt after compaction.
 	const compactionBoundaryEntry = getLatestCompactionBoundaryEntry(this.sessionManager.getBranch());
-	const assistantIsFromBeforeCompactionBoundary =
-		compactionBoundaryEntry !== null &&
-		assistantMessage.timestamp <= new Date(compactionBoundaryEntry.timestamp).getTime();
+	// Branch order decides, not wall-clock time: a provider overflow on the request right after a
+	// boundary often shares its millisecond and must still recover (#4977). An assistant that is not
+	// persisted yet is newer than every boundary.
+	const isFromBeforeCompactionBoundary = (message: AssistantMessage): boolean => {
+		if (compactionBoundaryEntry === null) return false;
+		if (!projectionAware) return message.timestamp <= new Date(compactionBoundaryEntry.timestamp).getTime();
+		const entryId = this._findPersistedMessageEntryId(message);
+		if (entryId === undefined) return false;
+		const boundaryIndex = branch.findIndex((entry) => entry.id === compactionBoundaryEntry.id);
+		return branch.findIndex((entry) => entry.id === entryId) < boundaryIndex;
+	};
+	const assistantIsFromBeforeCompactionBoundary = isFromBeforeCompactionBoundary(assistantMessage);
 	const backgroundBoundary = () => this._runBackgroundCompactionBoundary(!isLiveTurnCompletion);
 	if (assistantIsFromBeforeCompactionBoundary) {
 		await backgroundBoundary();
@@ -237,11 +247,7 @@ export async function _checkCompaction(
 		// Only usage-backed estimates need the stale pre-compaction check.
 		if (estimate.lastUsageIndex !== null) {
 			const usageMsg = messages[estimate.lastUsageIndex];
-			if (
-				compactionBoundaryEntry &&
-				usageMsg.role === "assistant" &&
-				(usageMsg as AssistantMessage).timestamp <= new Date(compactionBoundaryEntry.timestamp).getTime()
-			) {
+			if (usageMsg.role === "assistant" && isFromBeforeCompactionBoundary(usageMsg as AssistantMessage)) {
 				await backgroundBoundary();
 				return;
 			}
@@ -511,6 +517,18 @@ export function hasPendingManualCompactionTakeover(this: AgentSession): boolean 
 	return this._compactionReason === "manual" && this._compactionAbortController !== undefined;
 }
 
+function autoCompactionFailureMessage(
+	reason: "overflow" | "threshold",
+	urgency: CompactionUrgency,
+	error: unknown,
+): string {
+	const message = error instanceof Error ? error.message : "compaction failed";
+	if (reason !== "overflow") return `Auto-compaction failed: ${message}`;
+	return urgency === "recoverable"
+		? `Response truncation recovery failed: ${message}`
+		: `Context overflow recovery failed: ${message}`;
+}
+
 export async function _runAutoCompaction(
 	this: AgentSession,
 	reason: "overflow" | "threshold",
@@ -569,10 +587,13 @@ export async function _runAutoCompaction(
 		// compaction or provide compacted text, so local extension compaction does not
 		// require provider credentials. Missing auth then fails model-driven compaction
 		// before persistence or continuation, matching other provider-call failures.
-		const result =
-			ready?.sufficient === true
-				? ready.result
-				: ((await this._applyVerbatimCompaction({
+		let foregroundError: unknown;
+		let result: VerbatimCompactionResult | undefined;
+		if (ready?.sufficient === true) result = ready.result;
+		else {
+			try {
+				result =
+					(await this._applyVerbatimCompaction({
 						resolvePlannerAuth: async (candidate, signal) => {
 							const authResult = await this._getRequiredRequestAuth(candidate, signal ?? controller.signal);
 							return authResult.apiKey || authResult.headers ? authForStream(this, authResult) : undefined;
@@ -585,9 +606,22 @@ export async function _runAutoCompaction(
 							fromExtension = value;
 						},
 						// Only an actual context overflow proved the context cannot fit. A
-						// recoverable length stop must never reach the fresh-context fallback.
-						...(urgency === "load_bearing" ? { allowSmallRegion: true } : {}),
-					})) ?? ready?.result);
+						// recoverable length stop must never reach the fresh-context fallback,
+						// and neither may an overflow that a committed background result
+						// already brought under the hard limit (#4977).
+						...(urgency === "load_bearing" &&
+						(ready === undefined || ready.projectedTokens > (this.model?.contextWindow ?? 0))
+							? { allowSmallRegion: true }
+							: {}),
+					})) ?? ready?.result;
+			} catch (error) {
+				// The committed background boundary is already in context: report it together with
+				// the foreground failure instead of a plain failure (#4977).
+				if (ready === undefined) throw error;
+				foregroundError = error;
+				result = ready.result;
+			}
+		}
 		const fromBackground = ready !== undefined && result === ready.result;
 		if (!result) {
 			const manualTakeoverPending = hasPendingManualCompactionTakeover.call(this);
@@ -609,6 +643,22 @@ export async function _runAutoCompaction(
 			return manualTakeoverPending ? "deferred" : "not_compactable";
 		}
 
+		const foregroundAborted = foregroundError !== undefined && controller.signal.aborted;
+		if (foregroundAborted) {
+			const manualTakeoverPending = hasPendingManualCompactionTakeover.call(this);
+			this._emit({
+				type: "compaction_end",
+				reason,
+				result,
+				aborted: true,
+				willRetry: false,
+				...(manualTakeoverPending ? { manualTakeoverPending: true } : {}),
+				background: true,
+				...(ready?.cacheMiss ? { cacheMiss: ready.cacheMiss } : {}),
+			});
+			return manualTakeoverPending ? "deferred" : "failed";
+		}
+
 		if (willRetry) {
 			this._dropTrailingAutoCompactionRetryAssistantIfPresent();
 		}
@@ -619,6 +669,9 @@ export async function _runAutoCompaction(
 			result,
 			aborted: false,
 			willRetry,
+			...(foregroundError === undefined
+				? {}
+				: { errorMessage: autoCompactionFailureMessage(reason, urgency, foregroundError) }),
 			...(hasPendingManualCompactionTakeover.call(this) ? { manualTakeoverPending: true } : {}),
 			...(fromBackground ? { background: true as const } : {}),
 			...(fromBackground && ready.cacheMiss ? { cacheMiss: ready.cacheMiss } : {}),
@@ -628,16 +681,9 @@ export async function _runAutoCompaction(
 		}
 		return "compacted";
 	} catch (error) {
-		const errorMessage = error instanceof Error ? error.message : "compaction failed";
 		const aborted = controller.signal.aborted;
 		const manualTakeoverPending = hasPendingManualCompactionTakeover.call(this);
-		const formattedErrorMessage = aborted
-			? undefined
-			: reason === "overflow"
-				? urgency === "recoverable"
-					? `Response truncation recovery failed: ${errorMessage}`
-					: `Context overflow recovery failed: ${errorMessage}`
-				: `Auto-compaction failed: ${errorMessage}`;
+		const formattedErrorMessage = aborted ? undefined : autoCompactionFailureMessage(reason, urgency, error);
 		this._emit({
 			type: "compaction_end",
 			reason,

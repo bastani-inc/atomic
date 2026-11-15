@@ -7,6 +7,7 @@ import { timeCheckoutRestore } from "./resume/timings.ts";
 import type { SessionManager } from "./session-manager.ts";
 import { getBranchPath, getSessionLeafId } from "./session-manager-history.ts";
 import type { SessionEntry, WorktreeRestoreHostWarning } from "./session-manager-types.ts";
+import { isStorageError } from "./storage/errors.js";
 import type { SessionStore } from "./storage/session/types.js";
 import {
 	type BestWorktreeRestore,
@@ -230,11 +231,36 @@ export class SessionWorktreeSnapshotRecorder {
 		await releaseSessionWorktrees(this.deps.sessionManager);
 	}
 
+	/**
+	 * Reports a typed reason once. A storage failure, such as a store that is unreachable or refuses a payload, is a
+	 * `blob-store-failed` reason: recording a snapshot never fails the turn (#4954). Any other error is a defect.
+	 */
 	private reportFailure(error: unknown): void {
 		const reason = isGitUnavailableError(error) ? error : findWorkspaceError(error);
-		if (!reason) throw error;
-		this.report(reason);
+		if (reason) {
+			this.report(reason);
+			return;
+		}
+		if (!isStorageFailure(error)) throw error;
+		this.report(
+			new WorkspaceSnapshotError(
+				"blob-store-failed",
+				this.deps.sessionManager.getSessionStore().descriptor.adapter,
+				error as Error,
+			),
+		);
 	}
+}
+
+/** Whether `error`, or a cause of it, is a failure of the storage: a storage error, or a session store's. */
+function isStorageFailure(error: unknown): boolean {
+	let current = error;
+	for (let depth = 0; depth < 8 && current instanceof Error; depth++) {
+		if (isStorageError(current) || current.name.startsWith("Storage") || current.name === "StoreClosedError")
+			return true;
+		current = current.cause;
+	}
+	return false;
 }
 
 /**

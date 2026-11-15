@@ -455,7 +455,11 @@ describe("Anthropic message threads", () => {
 		assert.equal(failed.stopReason, "error");
 		assert.ok(failed.errorMessage?.includes(message));
 		assert.equal(h.requests.length, 2);
-		assert.equal(failed.diagnostics, undefined);
+		// No thread fallback is recorded: only the failed request's HTTP status.
+		assert.deepEqual(
+			failed.diagnostics?.map((diagnostic) => [diagnostic.type, diagnostic.details]),
+			[["provider_response_failure", { status }]],
+		);
 
 		// Threads stay on: after a fix such as compaction, the next request starts a new thread.
 		await turn(h, messages);
