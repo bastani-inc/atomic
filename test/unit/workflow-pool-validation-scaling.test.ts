@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteValue } from "@bastani/atomic/storage";
+import {
+	type SqliteDatabase,
+	type SqliteExecutor,
+	type SqliteRow,
+	type SqliteValue,
+	sqliteDialect,
+} from "@bastani/atomic/storage";
 import { test } from "vitest";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { POOL_USAGE_FIELDS, upsertPoolUsage } from "../../packages/workflows/src/durable/journal/pool-stage-usage.js";
@@ -270,7 +276,8 @@ async function usageHistory(seed: number): Promise<void> {
 			const roll = next();
 			const id = works[Math.floor(next() * works.length)]!;
 			const key = `stage-${Math.floor(next() * 6)}`;
-			if (roll < 0.7) await f.database.transaction((tx) => upsertPoolUsage(tx, "wf_runs", id, 1, key, usage()));
+			if (roll < 0.7)
+				await f.database.transaction((tx) => upsertPoolUsage(tx, sqliteDialect, "wf_runs", id, 1, key, usage()));
 			else if (roll < 0.8)
 				// Another connection rewrites a row in place, as a repair or an older Atomic might.
 				await other.run("UPDATE wf_runs_pool_usage SET cost = ?, input = input + 1 WHERE work = ?", next(), id);
@@ -304,14 +311,18 @@ test("a journal written before usage totals existed reports its full SUM", async
 			DROP TRIGGER wf_runs_pool_usage_totals_delete; DROP TRIGGER wf_runs_pool_usage_totals_work_delete;`);
 		await f.database.transaction(async (tx) => {
 			for (const [index, id] of ids.entries())
-				await upsertPoolUsage(tx, "wf_runs", id, 1, "stage", { ...zero, input: 10 * index, cost: 0.1 * index });
+				await upsertPoolUsage(tx, sqliteDialect, "wf_runs", id, 1, "stage", {
+					...zero,
+					input: 10 * index,
+					cost: 0.1 * index,
+				});
 		});
 		const ledger = await openSqlPoolUsage(f.journal);
 		const expected = await sumOfRows(f.database, "root");
 		assert.equal(expected.input, 100);
 		assert.deepEqual(await ledger.total("root"), expected);
 		await f.database.transaction((tx) =>
-			upsertPoolUsage(tx, "wf_runs", ids[0]!, 2, "stage", { ...zero, input: 1, cost: 0.3 }),
+			upsertPoolUsage(tx, sqliteDialect, "wf_runs", ids[0]!, 2, "stage", { ...zero, input: 1, cost: 0.3 }),
 		);
 		assert.deepEqual(await ledger.total("root"), await sumOfRows(f.database, "root"));
 	} finally {
@@ -327,7 +338,7 @@ async function totalReads(rows: number): Promise<ReadCounts> {
 		await f.database.transaction(async (tx) => {
 			const ids = await addWork(tx, "root", 400);
 			for (let row = 0; row < rows; row++)
-				await upsertPoolUsage(tx, "wf_runs", ids[row % ids.length]!, 1, `stage-${row}`, {
+				await upsertPoolUsage(tx, sqliteDialect, "wf_runs", ids[row % ids.length]!, 1, `stage-${row}`, {
 					...zero,
 					input: row,
 					cost: row / 1_000,

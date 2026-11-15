@@ -1,4 +1,11 @@
-import { type SqliteExecutor, type SqliteRow, type SqliteValue, withJournalPayloads } from "@bastani/atomic/storage";
+import {
+	type SqliteExecutor,
+	type SqliteRow,
+	type SqliteValue,
+	type StorageDialect,
+	sqliteDialect,
+	withJournalPayloads,
+} from "@bastani/atomic/storage";
 import { durableStageGroupKey } from "../stage-topology-validation.js";
 import type { DurableCheckpoint, DurableStageCheckpoint } from "../types.js";
 import { type JournalEntry, RUN_EVENT_TYPES } from "./types.js";
@@ -202,6 +209,20 @@ async function readCheckpointPages(
  */
 const OWN_MAX = 64;
 
+/** The root's latest event, as JSON a read selects. */
+const headObject = (dialect: StorageDialect) =>
+	dialect.jsonObject([
+		["seq", "seq"],
+		["key", "key"],
+		["at", "at"],
+	]);
+/** The event at the index's watermark, as JSON a read selects. */
+const markObject = (dialect: StorageDialect) =>
+	dialect.jsonObject([
+		["key", "key"],
+		["at", "at"],
+	]);
+
 /** The most checkpoints, and bytes of their payloads, a commit's read carries for the checkpoint index. */
 const PREFETCH_MAX_CHECKPOINTS = 64;
 const PREFETCH_MAX_BYTES = 256 * 1024;
@@ -227,6 +248,9 @@ export class PoolCheckpointIndex {
 	private readonly roots = new Map<string, RootCheckpoints>();
 	/** Checkpoints this process committed for each root past the index's watermark, until a read folds them in. */
 	private readonly own = new Map<string, IndexedEntry[]>();
+
+	/** `dialect`: the journal database's, whose SQL the index's reads use. */
+	constructor(private readonly dialect: StorageDialect = sqliteDialect) {}
 
 	/**
 	 * Notes a checkpoint this process committed as the root's event `seq` under `key`. Past {@link OWN_MAX} of them the
@@ -274,14 +298,15 @@ export class PoolCheckpointIndex {
 	 * in one value, past what the database returns in one (#4768).
 	 */
 	prefetchColumns(events: string, root: string): { readonly sql: string; readonly params: readonly SqliteValue[] } {
+		const dialect = this.dialect;
 		const from = this.roots.get(root)?.seq ?? 0;
 		const added = `SELECT seq, key, payload, chunks FROM ${events} WHERE run_id = ? AND seq > ? AND type = ? ORDER BY seq LIMIT ${PREFETCH_MAX_CHECKPOINTS + 1}`;
 		return {
-			sql: `? AS cp_from,
-			(SELECT json_object('seq', seq, 'key', key, 'at', at) FROM ${events} WHERE run_id = ? ORDER BY seq DESC LIMIT 1) AS cp_head,
-			(SELECT json_object('key', key, 'at', at) FROM ${events} WHERE run_id = ? AND seq = ?) AS cp_mark,
+			sql: `CAST(? AS ${dialect.types.int}) AS cp_from,
+			(SELECT ${headObject(dialect)} FROM ${events} WHERE run_id = ? ORDER BY seq DESC LIMIT 1) AS cp_head,
+			(SELECT ${markObject(dialect)} FROM ${events} WHERE run_id = ? AND seq = ?) AS cp_mark,
 			(SELECT CASE WHEN COUNT(*) <= ${PREFETCH_MAX_CHECKPOINTS} AND COALESCE(SUM(length(payload)), 0) <= ${PREFETCH_MAX_BYTES} AND COALESCE(MAX(chunks), 0) = 0
-				THEN json_group_array(json_array(seq, key, payload)) END FROM (${added})) AS cp_added`,
+				THEN ${dialect.jsonGroupArray(dialect.jsonArray(["seq", "key", "payload"]), "seq")} END FROM (${added}) AS added) AS cp_added`,
 			params: [from, root, root, from, root, from, RUN_EVENT_TYPES.checkpointRecorded],
 		};
 	}
@@ -302,8 +327,8 @@ export class PoolCheckpointIndex {
 		const marks =
 			usable ??
 			(await tx.get<SqliteRow & { head: string | null; mark: string | null }>(
-				`SELECT (SELECT json_object('seq', seq, 'key', key, 'at', at) FROM ${events} WHERE run_id = ? ORDER BY seq DESC LIMIT 1) AS head,
-			(SELECT json_object('key', key, 'at', at) FROM ${events} WHERE run_id = ? AND seq = ?) AS mark`,
+				`SELECT (SELECT ${headObject(this.dialect)} FROM ${events} WHERE run_id = ? ORDER BY seq DESC LIMIT 1) AS head,
+			(SELECT ${markObject(this.dialect)} FROM ${events} WHERE run_id = ? AND seq = ?) AS mark`,
 				root,
 				root,
 				base?.seq ?? 0,

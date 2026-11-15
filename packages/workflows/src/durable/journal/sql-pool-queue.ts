@@ -12,6 +12,7 @@ import {
 	type SqliteStatement,
 	type SqliteValue,
 	STORED_JSON_CHUNK_BYTES,
+	type StorageDialect,
 	StorageError,
 	StorageProvider,
 	storedJournalPayload,
@@ -35,7 +36,7 @@ import {
 	type DurableCheckpoint,
 	type DurableStageCheckpoint,
 } from "../types.js";
-import { type SqlPoolStorage, sqlPoolStorage } from "./internal.js";
+import { poolSessionPrefix, type SqlPoolStorage, sqlPoolStorage } from "./internal.js";
 import { isWorkflowLeaseExpired } from "./lease-expiry.js";
 import { PoolCheckpointIndex, type PoolCheckpointRead, type PoolCheckpointSource } from "./pool-checkpoint-index.js";
 import { guardedPoolWrite, poolFenceSchema } from "./pool-guarded-write.js";
@@ -67,7 +68,6 @@ export type { PoolMutation } from "./pool-mutations.js";
 
 type Transaction = SqlPoolStorage["transaction"];
 type JournalTables = SqlPoolStorage["tables"];
-const STORE_NOW = "CAST(unixepoch('subsec') * 1000 AS INTEGER)";
 const MAX_WORKER_CLOCK_SKEW_MS = 1_000;
 /**
  * Version 2 keeps no lease renewal rows and stores a digest, not the full request, per pool operation. Version 3 stores
@@ -94,6 +94,9 @@ function storedDescriptor(
 	if (chunks === undefined) return { descriptor: json, chunks: [] };
 	return { descriptor: serializeJson({ ...descriptor, inputs: {} }), chunks };
 }
+
+/** The columns of the pool's operations table, in order. */
+const OPERATION_COLUMNS = ["work", "generation", "operation", "request", "receipt"];
 
 /** A retried operation must repeat its request exactly; its digest is enough to prove that. */
 function requestIdentity(request: string): string {
@@ -166,11 +169,13 @@ type WorkRow = SqliteRow & {
 };
 type WorkLease = Pick<PoolWork, "id" | "generation" | "worker" | "epoch">;
 /** The workspace binding a child carries in its execution, as SQL reads it from a work row's descriptor. */
-const WORKSPACE_BINDING = "json_extract(descriptor, '$.execution.workspaceBinding')";
-function compatibleClause(definitions: number): string {
+function workspaceBinding(dialect: StorageDialect): string {
+	return dialect.jsonAt({ column: "descriptor" }, "execution", "workspaceBinding");
+}
+function compatibleClause(dialect: StorageDialect, definitions: number): string {
 	return Array.from(
 		{ length: definitions },
-		() => "(json_extract(descriptor, '$.definition') = ? AND json_extract(descriptor, '$.digest') = ?)",
+		() => `(${dialect.jsonText("descriptor", "definition")} = ? AND ${dialect.jsonText("descriptor", "digest")} = ?)`,
 	).join(" OR ");
 }
 /**
@@ -312,7 +317,10 @@ export class SqlPoolQueue {
 	private readonly rootSnapshots: string;
 	private readonly transaction: Transaction;
 	private readonly journal: JournalTables;
-	private readonly checkpoints = new PoolCheckpointIndex();
+	private readonly dialect: StorageDialect;
+	/** The database clock, in integer milliseconds, as SQL. */
+	private readonly now: string;
+	private readonly checkpoints: PoolCheckpointIndex;
 	/** The executor a pool session store's calls go to, for every store this queue opens (see `openPoolSessions`). */
 	private readonly poolSessionScope = new AsyncLocalStorage<SqliteExecutor>();
 	/** Commits in flight by work, generation and operation, so a duplicate joins the first instead of racing it. */
@@ -328,9 +336,12 @@ export class SqlPoolQueue {
 		/** The durable journal when it is not this storage's own database; undefined when it is. */
 		private readonly remote?: PoolRemoteJournal,
 	) {
-		const { transaction, tables: journal } = storage;
+		const { transaction, tables: journal, dialect } = storage;
 		this.transaction = transaction;
 		this.journal = journal;
+		this.dialect = dialect;
+		this.now = dialect.nowMs;
+		this.checkpoints = new PoolCheckpointIndex(dialect);
 		this.meta = `${journal.runs}_pool_meta`;
 		this.roots = `${journal.runs}_pool`;
 		this.work = `${journal.runs}_work`;
@@ -346,10 +357,13 @@ export class SqlPoolQueue {
 	static async open(storage: SqlPoolStorage, remote?: PoolRemoteJournal): Promise<SqlPoolQueue> {
 		const journal = storage.tables;
 		const pool = new SqlPoolQueue(storage, remote);
+		const { dialect } = storage;
+		const { int } = dialect.types;
 		await storage.transaction(async (tx) => {
-			if ((await tx.get("PRAGMA foreign_keys"))?.foreign_keys !== 1)
+			const foreignKeys = dialect.foreignKeysCheck;
+			if (Number((await tx.get(foreignKeys.sql, ...foreignKeys.params))?.foreign_keys) !== 1)
 				throw new Error("Pool requires SQLite foreign keys");
-			await tx.exec(`CREATE TABLE IF NOT EXISTS ${pool.meta}(version INTEGER NOT NULL)`);
+			await tx.exec(`CREATE TABLE IF NOT EXISTS ${pool.meta}(version ${int} NOT NULL)`);
 			const versions = await tx.all(`SELECT version FROM ${pool.meta}`);
 			if (versions.length > 1) throw new Error("Corrupt pool schema metadata");
 			const version = versions[0]?.version;
@@ -357,25 +371,25 @@ export class SqlPoolQueue {
 			else if (version !== 1 && version !== POOL_SCHEMA_VERSION_UNCHUNKED)
 				assertStorageSchemaVersion("journal", version, POOL_SCHEMA_VERSION);
 			await tx.exec(`
-				CREATE TABLE IF NOT EXISTS ${pool.roots}(root TEXT PRIMARY KEY REFERENCES ${journal.runs}(run_id) ON DELETE CASCADE, timeout INTEGER NOT NULL);
+				CREATE TABLE IF NOT EXISTS ${pool.roots}(root TEXT PRIMARY KEY REFERENCES ${journal.runs}(run_id) ON DELETE CASCADE, timeout ${int} NOT NULL);
 				CREATE TABLE IF NOT EXISTS ${pool.work}(
 					id TEXT PRIMARY KEY, root TEXT NOT NULL REFERENCES ${pool.roots}(root) ON DELETE CASCADE,
 					boundary TEXT NOT NULL, descriptor TEXT NOT NULL, fingerprint TEXT NOT NULL,
-					state TEXT NOT NULL DEFAULT 'ready', generation INTEGER NOT NULL DEFAULT 0,
-					worker TEXT, epoch INTEGER NOT NULL DEFAULT 0, expires_at INTEGER NOT NULL DEFAULT 0,
-					renewed_at INTEGER NOT NULL DEFAULT 0,
-					ready_at INTEGER NOT NULL, UNIQUE(root, boundary)
+					state TEXT NOT NULL DEFAULT 'ready', generation ${int} NOT NULL DEFAULT 0,
+					worker TEXT, epoch ${int} NOT NULL DEFAULT 0, expires_at ${int} NOT NULL DEFAULT 0,
+					renewed_at ${int} NOT NULL DEFAULT 0,
+					ready_at ${int} NOT NULL, UNIQUE(root, boundary)${dialect.rowOrderColumn}
 				);
 				CREATE INDEX IF NOT EXISTS ${pool.work}_ready ON ${pool.work}(root, state, ready_at);
 				CREATE INDEX IF NOT EXISTS ${pool.work}_expiry ON ${pool.work}(state, expires_at);
-				CREATE TABLE IF NOT EXISTS ${pool.journal.runs}_pool_session_owners(
+				CREATE TABLE IF NOT EXISTS ${poolSessionPrefix(storage)}session_owners(
 					session TEXT PRIMARY KEY, work TEXT NOT NULL REFERENCES ${pool.work}(id) ON DELETE CASCADE, replay_key TEXT NOT NULL
 				);
-				CREATE UNIQUE INDEX IF NOT EXISTS ${pool.work}_scope ON ${pool.work}(root, json_extract(descriptor, '$.scope'));
-				CREATE UNIQUE INDEX IF NOT EXISTS ${pool.work}_child ON ${pool.work}(root, json_extract(descriptor, '$.childRunId'));
+				CREATE UNIQUE INDEX IF NOT EXISTS ${pool.work}_scope ON ${pool.work}(root, ${dialect.jsonIndexText("descriptor", "scope")});
+				CREATE UNIQUE INDEX IF NOT EXISTS ${pool.work}_child ON ${pool.work}(root, ${dialect.jsonIndexText("descriptor", "childRunId")});
 				CREATE TABLE IF NOT EXISTS ${pool.operations}(
 					work TEXT NOT NULL REFERENCES ${pool.work}(id) ON DELETE CASCADE,
-					generation INTEGER NOT NULL, operation TEXT NOT NULL, request TEXT NOT NULL, receipt TEXT NOT NULL, PRIMARY KEY(work, generation, operation)
+					generation ${int} NOT NULL, operation TEXT NOT NULL, request TEXT NOT NULL, receipt TEXT NOT NULL, PRIMARY KEY(work, generation, operation)
 				);
 				CREATE TABLE IF NOT EXISTS ${pool.work}_results(
 					work TEXT PRIMARY KEY REFERENCES ${pool.work}(id) ON DELETE CASCADE, result TEXT NOT NULL
@@ -383,23 +397,23 @@ export class SqlPoolQueue {
 			`);
 			await tx.exec(`CREATE TABLE IF NOT EXISTS ${pool.roots}_control(
 				root TEXT PRIMARY KEY REFERENCES ${pool.roots}(root) ON DELETE CASCADE,
-				state TEXT NOT NULL DEFAULT 'running', revision INTEGER NOT NULL DEFAULT 0
+				state TEXT NOT NULL DEFAULT 'running', revision ${int} NOT NULL DEFAULT 0
 			)`);
-			await tx.exec(poolUsageSchema(journal.runs));
-			await tx.exec(poolFenceSchema(journal.runs));
+			await tx.exec(poolUsageSchema(journal.runs, dialect));
+			await tx.exec(poolFenceSchema(journal.runs, dialect));
 			// A worker host's claims check the drains a fleet controller asked for (#5072).
-			await tx.exec(fleetDrainsSchema(journal.runs));
+			await tx.exec(fleetDrainsSchema(journal.runs, dialect));
 			// Keyed by the run, not the pool row: a root records its binding's snapshot before it queues anything.
 			await tx.exec(`CREATE TABLE IF NOT EXISTS ${pool.rootSnapshots}(
 				root TEXT PRIMARY KEY REFERENCES ${journal.runs}(run_id) ON DELETE CASCADE,
-				epoch INTEGER NOT NULL, snapshot TEXT NOT NULL
+				epoch ${int} NOT NULL, snapshot TEXT NOT NULL${dialect.rowOrderColumn}
 			)`);
 			if (remote)
 				await tx.exec(`CREATE TABLE IF NOT EXISTS ${pool.outbox}(
 					work TEXT NOT NULL REFERENCES ${pool.work}(id) ON DELETE CASCADE,
-					generation INTEGER NOT NULL, operation TEXT NOT NULL, request TEXT NOT NULL,
-					event_key TEXT NOT NULL, payload TEXT NOT NULL, last_seq INTEGER,
-					PRIMARY KEY(work, generation, operation)
+					generation ${int} NOT NULL, operation TEXT NOT NULL, request TEXT NOT NULL,
+					event_key TEXT NOT NULL, payload TEXT NOT NULL, last_seq ${int},
+					PRIMARY KEY(work, generation, operation)${dialect.rowOrderColumn}
 				)`);
 			if (remote) pool.outboxPending = (await tx.get(`SELECT 1 AS held FROM ${pool.outbox} LIMIT 1`)) !== undefined;
 			if (version === 1) await pool.migrateFromVersion1(tx);
@@ -412,23 +426,22 @@ export class SqlPoolQueue {
 	 * chunk tables, deleted with their work or result, and the pool meta at version 3. Idempotent.
 	 */
 	private async addChunks(tx: SqliteExecutor): Promise<void> {
-		const columns = async (table: string) =>
-			new Set(
-				(await tx.all<SqliteRow & { name: string }>("SELECT name FROM pragma_table_info(?)", table)).map(
-					(column) => column.name,
-				),
-			);
-		if (!(await columns(this.work)).has("inputs_chunks"))
-			await tx.exec(`ALTER TABLE ${this.work} ADD COLUMN inputs_chunks INTEGER NOT NULL DEFAULT 0`);
-		if (!(await columns(`${this.work}_results`)).has("chunks"))
-			await tx.exec(`ALTER TABLE ${this.work}_results ADD COLUMN chunks INTEGER NOT NULL DEFAULT 0`);
+		const { int, blob } = this.dialect.types;
+		const has = async (table: string, column: string) => {
+			const probe = this.dialect.columnExists(table, column);
+			return (await tx.get(probe.sql, ...probe.params)) !== undefined;
+		};
+		if (!(await has(this.work, "inputs_chunks")))
+			await tx.exec(`ALTER TABLE ${this.work} ADD COLUMN inputs_chunks ${int} NOT NULL DEFAULT 0`);
+		if (!(await has(`${this.work}_results`, "chunks")))
+			await tx.exec(`ALTER TABLE ${this.work}_results ADD COLUMN chunks ${int} NOT NULL DEFAULT 0`);
 		await tx.exec(`
 			CREATE TABLE IF NOT EXISTS ${this.work}_input_chunks(
-				work TEXT NOT NULL REFERENCES ${this.work}(id) ON DELETE CASCADE, idx INTEGER NOT NULL, data BLOB NOT NULL,
+				work TEXT NOT NULL REFERENCES ${this.work}(id) ON DELETE CASCADE, idx ${int} NOT NULL, data ${blob} NOT NULL,
 				PRIMARY KEY(work, idx)
 			);
 			CREATE TABLE IF NOT EXISTS ${this.work}_result_chunks(
-				work TEXT NOT NULL REFERENCES ${this.work}_results(work) ON DELETE CASCADE, idx INTEGER NOT NULL, data BLOB NOT NULL,
+				work TEXT NOT NULL REFERENCES ${this.work}_results(work) ON DELETE CASCADE, idx ${int} NOT NULL, data ${blob} NOT NULL,
 				PRIMARY KEY(work, idx)
 			);
 		`);
@@ -558,6 +571,7 @@ export class SqlPoolQueue {
 	 * the request's digest, so drop the renewal rows and keep a digest of each remaining request.
 	 */
 	private async migrateFromVersion1(tx: SqliteExecutor): Promise<void> {
+		// Only SQLite pools were ever at version 1, so `rowid` is there.
 		await tx.run(`DELETE FROM ${this.operations} WHERE substr(request, 1, 1) = '['`);
 		for (let after = 0; ; ) {
 			const rows = await tx.all<SqliteRow & { rowid: number; request: string }>(
@@ -586,7 +600,7 @@ export class SqlPoolQueue {
 				timeout: number | null;
 			}
 		>(
-			`SELECT l.*, r.status, p.timeout, ${STORE_NOW} AS now FROM ${this.journal.leases} l JOIN ${this.journal.runs} r ON r.run_id = l.run_id LEFT JOIN ${this.roots} p ON p.root = l.run_id WHERE l.run_id = ?`,
+			`SELECT l.*, r.status, p.timeout, ${this.now} AS now FROM ${this.journal.leases} l JOIN ${this.journal.runs} r ON r.run_id = l.run_id LEFT JOIN ${this.roots} p ON p.root = l.run_id WHERE l.run_id = ?`,
 			lease.runId,
 		);
 	}
@@ -628,6 +642,8 @@ export class SqlPoolQueue {
 		checkpoints?: PoolCheckpointRead,
 	) {
 		const prefetch = checkpoints?.prefetchColumns(this.journal.events);
+		const object = (...entries: (readonly [string, string])[]) => this.dialect.jsonObject(entries);
+		const columns = (...names: string[]) => names.map((name) => [name, name] as const);
 		const row = await read.get<
 			NonNullable<Awaited<ReturnType<SqlPoolQueue["leaseRow"]>>> & {
 				control: string | null;
@@ -637,14 +653,12 @@ export class SqlPoolQueue {
 				existing: string | null;
 			}
 		>(
-			`SELECT l.*, r.status, p.timeout, ${STORE_NOW} AS now,
+			`SELECT l.*, r.status, p.timeout, ${this.now} AS now,
 			(SELECT state FROM ${this.roots}_control WHERE root = l.run_id) AS control,
-			(SELECT json_object('id', id, 'root', root, 'boundary', boundary, 'descriptor', descriptor, 'fingerprint', fingerprint,
-				'state', state, 'generation', generation, 'worker', worker, 'epoch', epoch, 'expires_at', expires_at,
-				'renewed_at', renewed_at, 'ready_at', ready_at) FROM ${this.work} WHERE id = ? AND root = l.run_id) AS work_row,
-			(SELECT json_object('request', request, 'receipt', receipt) FROM ${this.operations} WHERE work = ? AND generation = ? AND operation = ?) AS previous,
+			(SELECT ${object(...columns("id", "root", "boundary", "descriptor", "fingerprint", "state", "generation", "worker", "epoch", "expires_at", "renewed_at", "ready_at"))} FROM ${this.work} WHERE id = ? AND root = l.run_id) AS work_row,
+			(SELECT ${object(...columns("request", "receipt"))} FROM ${this.operations} WHERE work = ? AND generation = ? AND operation = ?) AS previous,
 			(SELECT COALESCE(MAX(seq), 0) FROM ${this.journal.events} WHERE run_id = l.run_id) AS head,
-			(SELECT json_object('seq', seq, 'at', at, 'payload', payload, 'chunks', chunks) FROM ${this.journal.events} WHERE run_id = l.run_id AND key = ?) AS existing
+			(SELECT ${object(...columns("seq", "at", "payload", "chunks"))} FROM ${this.journal.events} WHERE run_id = l.run_id AND key = ?) AS existing
 			${prefetch === undefined ? "" : `, ${prefetch.sql}`}
 			FROM ${this.journal.leases} l JOIN ${this.journal.runs} r ON r.run_id = l.run_id LEFT JOIN ${this.roots} p ON p.root = l.run_id WHERE l.run_id = ?`,
 			token.id,
@@ -677,7 +691,7 @@ export class SqlPoolQueue {
 	/** A fence: `lease` still holds the root, renewed within its pool's window, by the database clock. */
 	rootFence(lease: Lease): SqliteStatement {
 		return {
-			sql: `SELECT 1 FROM ${this.journal.leases} l JOIN ${this.roots} p ON p.root = l.run_id WHERE l.run_id = ? AND l.epoch = ? AND l.holder_id = ? AND ${STORE_NOW} - l.renewed_at <= p.timeout`,
+			sql: `SELECT 1 FROM ${this.journal.leases} l JOIN ${this.roots} p ON p.root = l.run_id WHERE l.run_id = ? AND l.epoch = ? AND l.holder_id = ? AND ${this.now} - l.renewed_at <= p.timeout`,
 			params: [lease.runId, lease.epoch, lease.holderId],
 		};
 	}
@@ -687,7 +701,7 @@ export class SqlPoolQueue {
 	 */
 	attemptFence(lease: Lease, token: WorkLease, unexpired: boolean): SqliteStatement {
 		return {
-			sql: `SELECT 1 FROM ${this.work} WHERE id = ? AND root = ? AND state = 'leased' AND epoch = ? AND epoch = ? AND generation = ? AND worker IS ?${unexpired ? ` AND expires_at >= ${STORE_NOW}` : ""}`,
+			sql: `SELECT 1 FROM ${this.work} WHERE id = ? AND root = ? AND state = 'leased' AND epoch = ? AND epoch = ? AND generation = ? AND ${this.dialect.isNotDistinct("worker", "?")}${unexpired ? ` AND expires_at >= ${this.now}` : ""}`,
 			params: [token.id, lease.runId, token.epoch, lease.epoch, token.generation, token.worker],
 		};
 	}
@@ -795,7 +809,7 @@ export class SqlPoolQueue {
 			await this.authority(tx, lease);
 			await tx.run(
 				`INSERT INTO ${this.roots}_control(root, state, revision) VALUES (?, ?, 1)
-				ON CONFLICT(root) DO UPDATE SET state = excluded.state, revision = revision + (state != excluded.state)`,
+				ON CONFLICT(root) DO UPDATE SET state = excluded.state, revision = ${this.roots}_control.revision + (${this.dialect.flag(`${this.roots}_control.state != excluded.state`)})`,
 				lease.runId,
 				state,
 			);
@@ -902,7 +916,7 @@ export class SqlPoolQueue {
 		return this.transaction(async (tx) => {
 			const { now } = await this.authority(tx, lease);
 			const previous = await tx.get<WorkRow>(
-				`SELECT * FROM ${this.work} WHERE root = ? AND (boundary = ? OR json_extract(descriptor, '$.scope') = ? OR json_extract(descriptor, '$.childRunId') = ?)`,
+				`SELECT * FROM ${this.work} WHERE root = ? AND (boundary = ? OR ${this.dialect.jsonIndexText("descriptor", "scope")} = ? OR ${this.dialect.jsonIndexText("descriptor", "childRunId")} = ?)`,
 				lease.runId,
 				boundaryId,
 				scope,
@@ -935,7 +949,7 @@ export class SqlPoolQueue {
 				};
 			}
 			const siblings = await tx.all<SqliteRow & { scope: string }>(
-				`SELECT json_extract(descriptor, '$.scope') AS scope FROM ${this.work} WHERE root = ?`,
+				`SELECT ${this.dialect.jsonIndexText("descriptor", "scope")} AS scope FROM ${this.work} WHERE root = ?`,
 				lease.runId,
 			);
 			if (siblings.some((item) => scope.startsWith(`${item.scope}:`) || item.scope.startsWith(`${scope}:`)))
@@ -998,8 +1012,8 @@ export class SqlPoolQueue {
 	): Promise<void> {
 		if (claims === undefined || claims.length === 0) return;
 		const { childRunId, scope } = descriptor;
-		const prefix = `${this.journal.runs}_pool_`;
-		const sessions = await poolTransactionSessionStore(tx, prefix);
+		const prefix = poolSessionPrefix(this.storage);
+		const sessions = await poolTransactionSessionStore(tx, this.dialect, prefix);
 		let primary: unknown;
 		try {
 			for (const claim of claims) {
@@ -1131,7 +1145,7 @@ export class SqlPoolQueue {
 		lease = snapshotLease(lease);
 		const compatibleDefinitions = definitions.flatMap((d) => [d.definition, d.digest]);
 		validateText("holderId", worker);
-		const compatible = compatibleClause(definitions.length);
+		const compatible = compatibleClause(this.dialect, definitions.length);
 		if (this.remote) {
 			await this.remote.fresh(lease);
 			// No work is handed out while an event this root's workers were told is committed is missing from the
@@ -1149,9 +1163,9 @@ export class SqlPoolQueue {
 			placement === undefined
 				? { clause: "", args: [] }
 				: placement.kind === "unbound"
-					? { clause: `AND ${WORKSPACE_BINDING} IS NULL`, args: [] }
+					? { clause: `AND ${workspaceBinding(this.dialect)} IS NULL`, args: [] }
 					: {
-							clause: `AND id = ? AND generation = ? AND NOT EXISTS (SELECT 1 FROM ${this.journal.runs}_fleet_drains WHERE host = ? OR provider_id = ?)`,
+							clause: `AND id = ? AND generation = ? AND NOT EXISTS (SELECT 1 FROM ${this.journal.runs}_fleet_drains WHERE host = CAST(? AS TEXT) OR provider_id = CAST(? AS TEXT))`,
 							args: [
 								placement.id,
 								placement.generation,
@@ -1184,7 +1198,7 @@ export class SqlPoolQueue {
 				const row = await read.get<
 					NonNullable<Awaited<ReturnType<SqlPoolQueue["leaseRow"]>>> & { control: string | null }
 				>(
-					`SELECT l.*, r.status, p.timeout, ${STORE_NOW} AS now, (SELECT state FROM ${this.roots}_control WHERE root = l.run_id) AS control
+					`SELECT l.*, r.status, p.timeout, ${this.now} AS now, (SELECT state FROM ${this.roots}_control WHERE root = l.run_id) AS control
 				FROM ${this.journal.leases} l JOIN ${this.journal.runs} r ON r.run_id = l.run_id LEFT JOIN ${this.roots} p ON p.root = l.run_id WHERE l.run_id = ?`,
 					lease.runId,
 				);
@@ -1205,8 +1219,8 @@ export class SqlPoolQueue {
 				// re-enqueued since resuming, so an earlier incarnation's released work waits for its enqueue (#3979).
 				reads: [
 					{
-						sql: `UPDATE ${this.work} SET state = 'leased', generation = generation + 1, worker = ?, epoch = ?, expires_at = ${STORE_NOW} + ?, renewed_at = ${STORE_NOW}
-						WHERE id = (SELECT id FROM ${this.work} WHERE root = ? AND state = 'ready' AND epoch = ? AND ready_at <= ${STORE_NOW} AND (${compatible}) ${placed.clause} ORDER BY ready_at, rowid LIMIT 1)
+						sql: `UPDATE ${this.work} SET state = 'leased', generation = generation + 1, worker = ?, epoch = ?, expires_at = ${this.now} + ?, renewed_at = ${this.now}
+						WHERE id = (SELECT id FROM ${this.work} WHERE root = ? AND state = 'ready' AND epoch = ? AND ready_at <= ${this.now} AND (${compatible}) ${placed.clause} ORDER BY ready_at, ${this.dialect.rowOrder()} LIMIT 1)
 						RETURNING *`,
 						params: [
 							worker,
@@ -1243,7 +1257,7 @@ export class SqlPoolQueue {
 		if (definitions.length === 0) return [];
 		const rows = await this.storage.read((executor) =>
 			executor.all<SqliteRow & { id: string; generation: number; workspace: string | null }>(
-				`SELECT id, generation, ${WORKSPACE_BINDING} AS workspace FROM ${this.work} WHERE root = ? AND state = 'ready' AND epoch = ? AND ready_at <= ${STORE_NOW} AND (${compatibleClause(definitions.length)}) ORDER BY ready_at, rowid LIMIT ?`,
+				`SELECT id, generation, ${workspaceBinding(this.dialect)} AS workspace FROM ${this.work} WHERE root = ? AND state = 'ready' AND epoch = ? AND ready_at <= ${this.now} AND (${compatibleClause(this.dialect, definitions.length)}) ORDER BY ready_at, ${this.dialect.rowOrder()} LIMIT ?`,
 				lease.runId,
 				lease.epoch,
 				...definitions.flatMap((d) => [d.definition, d.digest]),
@@ -1606,7 +1620,7 @@ export class SqlPoolQueue {
 			}
 			if (row.expires_at < now) throw staleWork(lease, token, "expired");
 			if (!(await this.admitsAttemptWrites(tx, lease, status))) throw staleWork(lease, token, "root-not-running");
-			await validatePoolMutation(tx, this.journal, lease.runId, fromRow(row), mutation, source);
+			await validatePoolMutation(tx, this.storage, lease.runId, fromRow(row), mutation, source);
 			if (checkpoint.completedAt > Math.max(now, Date.now()) + MAX_WORKER_CLOCK_SKEW_MS)
 				throw new Error("Pool checkpoint timestamp is in the future");
 			assertWorkflowSerializableObject(checkpoint, "Pool checkpoint");
@@ -1616,10 +1630,18 @@ export class SqlPoolQueue {
 			const lastSeq =
 				mutation.kind === "checkpoint"
 					? undefined
-					: await applyPoolSession(tx, `${this.journal.runs}_pool_`, row.id, mutation);
+					: await applyPoolSession(tx, this.dialect, poolSessionPrefix(this.storage), row.id, mutation);
 			const billed = poolCheckpointUsage(checkpoint);
 			if (billed && !existing)
-				await upsertPoolUsage(tx, this.journal.runs, row.id, token.generation, billed.key, billed.usage);
+				await upsertPoolUsage(
+					tx,
+					this.dialect,
+					this.journal.runs,
+					row.id,
+					token.generation,
+					billed.key,
+					billed.usage,
+				);
 			if (existing) {
 				const receipt: PoolCommitReceipt = { seq: existing.seq, at: existing.at };
 				await tx.run(
@@ -1681,7 +1703,7 @@ export class SqlPoolQueue {
 		};
 		await this.transaction(async (tx) => {
 			await tx.run(
-				`INSERT OR IGNORE INTO ${this.operations} VALUES (?, ?, ?, ?, ?)`,
+				this.dialect.insertOrIgnore(this.operations, OPERATION_COLUMNS, "VALUES (?, ?, ?, ?, ?)"),
 				held.work,
 				held.generation,
 				held.operation,
@@ -1711,7 +1733,7 @@ export class SqlPoolQueue {
 		this.outboxPending = false;
 		const rows = await this.transaction((tx) =>
 			tx.all<OutboxRow>(
-				`SELECT o.* FROM ${this.outbox} o JOIN ${this.work} w ON w.id = o.work WHERE w.root = ? ORDER BY o.rowid`,
+				`SELECT o.* FROM ${this.outbox} o JOIN ${this.work} w ON w.id = o.work WHERE w.root = ? ORDER BY ${this.dialect.rowOrder("o")}`,
 				lease.runId,
 			),
 		);
@@ -1735,7 +1757,13 @@ export class SqlPoolQueue {
 		sessions: PoolSessions,
 	): Promise<ReceiptSql> {
 		const lastSeq = await this.planSession(read, row.id, mutation, write, sessions);
-		return { sql: `json_object('at', ${STORE_NOW}, 'lastSeq', ?)`, params: [lastSeq] };
+		return {
+			sql: this.dialect.jsonObject([
+				["at", this.now],
+				["lastSeq", `CAST(? AS ${this.dialect.types.int})`],
+			]),
+			params: [lastSeq],
+		};
 	}
 	/**
 	 * Plans a pool session mutation into `write` as statements, from what `read` sees: the pool's session store runs
@@ -1750,7 +1778,7 @@ export class SqlPoolQueue {
 		write: CommitWrite,
 		store: PoolSessions,
 	): Promise<number> {
-		const prefix = `${this.journal.runs}_pool_`;
+		const prefix = poolSessionPrefix(this.storage);
 		const sessions = renderStorageIdentifiers("sessions", { sessions: "sessions" }, prefix).sessions;
 		const recorder: SqliteExecutor = {
 			get: (sql, ...params) => read.get(sql, ...params),
@@ -1764,7 +1792,7 @@ export class SqlPoolQueue {
 			},
 		};
 		const lastSeq = await store.within.run(recorder, () =>
-			applyPoolSession(recorder, prefix, work, mutation, store.store),
+			applyPoolSession(recorder, this.dialect, prefix, work, mutation, store.store),
 		);
 		const sessionId = mutation.kind === "session-append" ? mutation.sessionId : mutation.checkpoint.sessionId!;
 		write.fences.push(
@@ -1802,9 +1830,10 @@ export class SqlPoolQueue {
 			if (current === undefined) throw new Error("Pool session store used outside a pool write");
 			return current;
 		};
-		const prefix = `${this.journal.runs}_pool_`;
+		const prefix = poolSessionPrefix(this.storage);
 		const database: SqliteDatabase = {
 			descriptor: { adapter: "pool-transaction", location: prefix },
+			dialect: this.dialect,
 			exec: (sql) => executor().exec(sql),
 			run: (sql, ...params) => executor().run(sql, ...params),
 			get: (sql, ...params) => executor().get(sql, ...params),
@@ -1856,7 +1885,7 @@ export class SqlPoolQueue {
 		const events = this.journal.events;
 		const key = checkpointKey(checkpoint);
 		const work = fromRow(row);
-		await validatePoolMutation(read, this.journal, lease.runId, work, mutation, checkpoints);
+		await validatePoolMutation(read, this.storage, lease.runId, work, mutation, checkpoints);
 		if (checkpoint.completedAt > Math.max(now, Date.now()) + MAX_WORKER_CLOCK_SKEW_MS)
 			throw new Error("Pool checkpoint timestamp is in the future");
 		assertWorkflowSerializableObject(checkpoint, "Pool checkpoint");
@@ -1874,6 +1903,7 @@ export class SqlPoolQueue {
 				sql: `SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM ${events} WHERE run_id = ? AND key = ?)`,
 				params: [lease.runId, key],
 			},
+			// SQLite SQL: fences run only in a batch, which only a libSQL database sends (`guardedPoolWrite`).
 			{
 				sql: `SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM ${events} WHERE run_id = ? AND seq > ? AND type = ? AND instr(json_extract(key, '$[2]'), ?) = 1 AND seq NOT IN (SELECT value FROM json_each(?)))`,
 				params: [lease.runId, head, RUN_EVENT_TYPES.checkpointRecorded, `${work.scope}:`, JSON.stringify(own)],
@@ -1886,7 +1916,7 @@ export class SqlPoolQueue {
 				lease.epoch,
 				key,
 				payload,
-				STORE_NOW,
+				this.now,
 				[],
 				checkpoint,
 				await this.keepsWhole(read, payload),
@@ -1895,10 +1925,14 @@ export class SqlPoolQueue {
 		const billed = poolCheckpointUsage(checkpoint);
 		if (billed)
 			write.writes.push(
-				poolUsageUpsert(this.journal.runs, row.id, Number(row.generation), billed.key, billed.usage),
+				poolUsageUpsert(this.dialect, this.journal.runs, row.id, Number(row.generation), billed.key, billed.usage),
 			);
 		return {
-			sql: `(SELECT json_object('seq', seq, 'at', at${lastSeq === undefined ? "" : ", 'lastSeq', ?"}) FROM ${events} WHERE run_id = ? AND key = ?)`,
+			sql: `(SELECT ${this.dialect.jsonObject([
+				["seq", "seq"],
+				["at", "at"],
+				...(lastSeq === undefined ? [] : [["lastSeq", `CAST(? AS ${this.dialect.types.int})`] as const]),
+			])} FROM ${events} WHERE run_id = ? AND key = ?)`,
 			params: [...(lastSeq === undefined ? [] : [lastSeq]), lease.runId, key],
 		};
 	}
@@ -2036,8 +2070,11 @@ export class SqlPoolQueue {
 			await tx.run(`UPDATE ${this.work} SET state = 'ready', worker = NULL, expires_at = 0 WHERE id = ?`, row.id);
 			if (options.handOffUnconfirmed === true)
 				await tx.run(
-					`INSERT OR IGNORE INTO ${this.operations}(work, generation, operation, request, receipt) SELECT ?, ?, ?, ?, '{}'
-					WHERE NOT EXISTS (SELECT 1 FROM ${this.operations} WHERE work = ? AND generation = ? AND operation != ?)`,
+					this.dialect.insertOrIgnore(
+						this.operations,
+						OPERATION_COLUMNS,
+						`SELECT ?, ?, ?, ?, '{}' WHERE NOT EXISTS (SELECT 1 FROM ${this.operations} WHERE work = ? AND generation = ? AND operation != ?)`,
+					),
 					row.id,
 					Number(row.generation),
 					HANDOFF_OPERATION,
@@ -2052,7 +2089,7 @@ export class SqlPoolQueue {
 	/** The write that records `token`'s claim as confirmed by its worker (#5034): once per generation. */
 	private confirmation(token: WorkLease): SqliteStatement {
 		return {
-			sql: `INSERT OR IGNORE INTO ${this.operations}(work, generation, operation, request, receipt) VALUES (?, ?, ?, ?, '{}')`,
+			sql: this.dialect.insertOrIgnore(this.operations, OPERATION_COLUMNS, "VALUES (?, ?, ?, ?, '{}')"),
 			params: [token.id, token.generation, CONFIRMED_OPERATION, CONFIRMED_OPERATION],
 		};
 	}
@@ -2151,7 +2188,7 @@ export class SqlPoolQueue {
 			fences: [this.rootFence(lease), this.attemptFence(lease, token, unexpired)],
 			writes: [
 				{
-					sql: `UPDATE ${this.work} SET expires_at = MAX(expires_at, ${STORE_NOW} + ?), renewed_at = ${STORE_NOW} WHERE id = ?`,
+					sql: `UPDATE ${this.work} SET expires_at = ${this.dialect.greatest("expires_at", `${this.now} + ?`)}, renewed_at = ${this.now} WHERE id = ?`,
 					params: [durationMs, token.id],
 				},
 			],
@@ -2223,12 +2260,12 @@ export class SqlPoolQueue {
 			);
 			if (handoff !== undefined) {
 				await tx.run(
-					`UPDATE ${this.work} SET ready_at = ${STORE_NOW} + ? WHERE id = ?`,
+					`UPDATE ${this.work} SET ready_at = ${this.now} + ? WHERE id = ?`,
 					Math.max(0, Math.round(handoff.delayMs)),
 					row.id,
 				);
 				await tx.run(
-					`INSERT OR IGNORE INTO ${this.operations}(work, generation, operation, request, receipt) VALUES (?, ?, ?, ?, '{}')`,
+					this.dialect.insertOrIgnore(this.operations, OPERATION_COLUMNS, "VALUES (?, ?, ?, ?, '{}')"),
 					row.id,
 					Number(row.generation),
 					HANDOFF_OPERATION,
@@ -2269,7 +2306,7 @@ export class SqlPoolQueue {
 		return this.transaction(async (tx) => {
 			await this.authority(tx, lease);
 			const released = await tx.run(
-				`UPDATE ${this.work} SET state = 'failed', worker = NULL, expires_at = 0 WHERE root = ? AND (state = 'ready' OR (state = 'leased' AND epoch = ?)) AND id NOT IN (SELECT value FROM json_each(?))`,
+				`UPDATE ${this.work} SET state = 'failed', worker = NULL, expires_at = 0 WHERE root = ? AND (state = 'ready' OR (state = 'leased' AND epoch = ?)) AND id NOT IN (SELECT value FROM ${this.dialect.jsonValues("?")})`,
 				lease.runId,
 				lease.epoch,
 				JSON.stringify(retained),
@@ -2283,7 +2320,7 @@ export class SqlPoolQueue {
 		return this.transaction(async (tx) => {
 			await this.authority(tx, lease);
 			const released = await tx.run(
-				`UPDATE ${this.work} SET state = 'ready', worker = NULL, expires_at = 0 WHERE root = ? AND state = 'leased' AND epoch < ? AND id NOT IN (SELECT value FROM json_each(?))`,
+				`UPDATE ${this.work} SET state = 'ready', worker = NULL, expires_at = 0 WHERE root = ? AND state = 'leased' AND epoch < ? AND id NOT IN (SELECT value FROM ${this.dialect.jsonValues("?")})`,
 				lease.runId,
 				lease.epoch,
 				JSON.stringify(retained),
@@ -2296,8 +2333,8 @@ export class SqlPoolQueue {
 		return this.storage.read(async (executor) =>
 			(
 				await executor.all<WorkRow & { handoffs: string | null }>(
-					`SELECT w.*, (SELECT json_group_array(o.generation) FROM ${this.operations} o WHERE o.work = w.id AND o.operation = ?) AS handoffs
-					FROM ${this.work} w WHERE w.root = ? ORDER BY w.ready_at, w.rowid`,
+					`SELECT w.*, (SELECT ${this.dialect.jsonGroupArray("o.generation")} FROM ${this.operations} o WHERE o.work = w.id AND o.operation = ?) AS handoffs
+					FROM ${this.work} w WHERE w.root = ? ORDER BY w.ready_at, ${this.dialect.rowOrder("w")}`,
 					HANDOFF_OPERATION,
 					root,
 				)
