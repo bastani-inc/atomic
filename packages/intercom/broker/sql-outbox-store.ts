@@ -106,11 +106,17 @@ export async function openSqlOutboxStore(options: IntercomBrokerStateOptions): P
 		CASE WHEN saving_at IS NULL THEN NULL ELSE ${ageSince("saving_at")} END AS saving_age`;
 	const select = (executor: SqliteExecutor, messageId: string) =>
 		executor.get<OutboxRecord>(`SELECT ${columns} FROM ${table} WHERE message_id = ?`, messageId);
-	const undelivered = (executor: SqliteExecutor, targetIdentity: string) =>
-		executor.all<OutboxRecord>(
-			`SELECT ${columns} FROM ${table} WHERE target_identity = ? AND ${UNDELIVERED} ORDER BY sequence`,
-			targetIdentity,
-		);
+	const undelivered = (executor: SqliteExecutor, targetIdentity: string, limit?: number) =>
+		limit === undefined
+			? executor.all<OutboxRecord>(
+					`SELECT ${columns} FROM ${table} WHERE target_identity = ? AND ${UNDELIVERED} ORDER BY sequence`,
+					targetIdentity,
+				)
+			: executor.all<OutboxRecord>(
+					`SELECT ${columns} FROM ${table} WHERE target_identity = ? AND ${UNDELIVERED} ORDER BY sequence LIMIT ?`,
+					targetIdentity,
+					limit,
+				);
 	const isLive = (record: OutboxRecord, staleAfterMs: number): boolean =>
 		record.claim_age !== null && Number(record.claim_age) <= staleAfterMs;
 
@@ -287,9 +293,26 @@ export async function openSqlOutboxStore(options: IntercomBrokerStateOptions): P
 			return record === undefined ? { status: "missing" } : { status: "found", row: toRow(record) };
 		},
 
-		async listUndelivered(targetIdentity) {
+		async listUndelivered(targetIdentity, limit) {
 			if (targetIdentity.length === 0) return invalid("empty-target-identity");
-			return { status: "listed", rows: (await undelivered(database, targetIdentity)).map(toRow) };
+			return { status: "listed", rows: (await undelivered(database, targetIdentity, limit)).map(toRow) };
+		},
+
+		async undeliveredPosition(targetIdentity, messageId) {
+			if (targetIdentity.length === 0) return invalid("empty-target-identity");
+			if (messageId.length === 0) return invalid("empty-message-id");
+			// Counted on the (target_identity, state, sequence) index: no row, and no frame, is read.
+			const counted = await database.get<{ position: SqliteValue }>(
+				`SELECT COUNT(*) AS position FROM ${table}
+				WHERE target_identity = ? AND ${UNDELIVERED} AND sequence <= (
+					SELECT sequence FROM ${table} WHERE message_id = ? AND target_identity = ? AND ${UNDELIVERED}
+				)`,
+				targetIdentity,
+				messageId,
+				targetIdentity,
+			);
+			const position = Number(counted?.position ?? 0);
+			return position === 0 ? { status: "missing" } : { status: "positioned", position };
 		},
 
 		async prune(settledOlderThanMs, queuedOlderThanMs) {

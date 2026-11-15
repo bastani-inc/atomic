@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { test } from "vitest";
+import { removeFixtureTree } from "../../../test/helpers/fixture-removal.js";
 import { parseArgs } from "../src/cli/args.ts";
 import { findMostRecentSession, SessionManager } from "../src/core/session-manager.ts";
 import { resolveSessionStore } from "../src/core/session-storage.js";
@@ -62,7 +63,7 @@ for (const input of ["home shorthand", "file URL"] as const) {
 				else process.env.HOME = previousHome;
 				if (previousUserProfile === undefined) delete process.env.USERPROFILE;
 				else process.env.USERPROFILE = previousUserProfile;
-				await rm(root, { recursive: true, force: true });
+				removeFixtureTree(root);
 			}
 		});
 	}
@@ -124,7 +125,7 @@ for (const adapter of ["memory", "jsonl", "sqlite"] as const) {
 			try {
 				await store?.close();
 			} finally {
-				await rm(root, { recursive: true, force: true });
+				removeFixtureTree(root);
 			}
 		}
 	});
@@ -145,7 +146,7 @@ test("a portable store without a filesystem matcher retains exact cwd matching",
 		try {
 			await store?.close();
 		} finally {
-			await rm(root, { recursive: true, force: true });
+			removeFixtureTree(root);
 		}
 	}
 });
