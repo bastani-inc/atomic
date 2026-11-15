@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { describe, test } from "vitest";
 import { type BashOperations, executeBashWithOperations } from "../src/core/bash-executor.ts";
 import { formatToolCallWithArgs, getTextOutput } from "../src/core/tools/render-utils.ts";
+import { BashExecutionComponent } from "../src/modes/interactive/components/bash-execution.ts";
+import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { stripTerminalControls } from "../src/utils/ansi.ts";
 
 // Neutral 8-bit sequences: a window title OSC, an OSC hyperlink, a CSI clear, a DCS query and an APC string.
@@ -83,6 +85,62 @@ describe("displayed output control sequences", () => {
 			const { output } = await runBash(splitAt(bytes, [point]));
 			assert.equal(output, "abc", `split at ${point}`);
 		}
+	});
+
+	test("escape sequences end at their final byte and text around them is kept", () => {
+		const cases: ReadonlyArray<readonly [string, string]> = [
+			// two-character escapes with intermediates (0x20-0x2f) and finals (0x30-0x7e)
+			["a\u001b b", "a"],
+			["a\u001b/0b", "ab"],
+			["a\u001b( Bc", "ac"],
+			["a\u001b(/Bc", "ac"],
+			["a\u001b(0c", "ac"],
+			["a\u001b(~c", "ac"],
+			["a\u001b(\u00e9c", "a\u00e9c"],
+			["a\u001b(\tc", "a\tc"],
+			["bell\u0007ring\u001bend", "bellringend"],
+			// CSI parameters and intermediates (0x20-0x3f), finals (0x40-0x7e)
+			["a\u001b[2 qb", "ab"],
+			["a\u001b[1@b", "ab"],
+			["a\u001b[1~b", "ab"],
+			["a\u001b[1\u00e9b", "a\u00e9b"],
+			["a\u001b[1\tmb", "a\tmb"],
+			// control strings: every introducer, every terminator
+			["a\u001bXsos\u001b\\b", "ab"],
+			["a\u001b^pm\u0007b", "ab"],
+			["a\u0098sos\u009cb", "ab"],
+			["a\u009epm\u009cb", "ab"],
+			["a\u001b]0;t\u0018b", "ab"],
+			["a\u001b]0;t\u001ab", "ab"],
+			["a\u001b]0;t\u001b[31mb", "ab"],
+			["a\u001b]0;never terminated", "a"],
+			// interlinear annotation characters
+			["a\ufff9\ufffa\ufffbb\ufff8\ufffc", "ab\ufff8\ufffc"],
+		];
+		for (const [input, expected] of cases) {
+			assert.equal(stripTerminalControls(input), expected, JSON.stringify(input));
+		}
+	});
+
+	test("text blocks of a tool result are shown on separate lines", () => {
+		const content = [
+			{ type: "text", text: "one" },
+			{ type: "text", text: "two" },
+		];
+		assert.equal(getTextOutput({ content }, false), "one\ntwo");
+	});
+
+	test("the shell command view shows each carriage return as a line break and drops control sequences", () => {
+		initTheme(undefined, false);
+		const ui = {
+			terminal: { columns: 80, rows: 24 },
+			addInterval: () => ({ dispose: () => {} }),
+			removeInterval: () => {},
+			requestRender: () => {},
+		};
+		const view = new BashExecutionComponent("x", ui as never);
+		view.appendOutput("one\r\ntwo\rthree \u009d0;t\u009c\u202Eend");
+		assert.equal(view.getOutput(), "one\ntwo\nthree <U+202E>end");
 	});
 
 	test("bidirectional overrides are shown escaped in displayed text", () => {

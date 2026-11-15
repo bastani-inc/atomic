@@ -46,7 +46,10 @@ function isDroppedCharacter(code: number): boolean {
 	);
 }
 
-/** Streaming sanitizer: feed chunks with {@link write}, then call {@link end}. */
+/**
+ * Streaming sanitizer: feed chunks to {@link write}. A sequence still open when the stream ends is dropped, since its
+ * remaining bytes never arrive.
+ */
 export class TerminalTextSanitizer {
 	private state: State = State.Ground;
 
@@ -72,14 +75,8 @@ export class TerminalTextSanitizer {
 				runStart = index + 1;
 			}
 		}
-		if (this.state === State.Ground) output += chunk.slice(runStart);
-		return output;
-	}
-
-	/** Finish the stream. An unterminated sequence at the end is dropped. */
-	end(): string {
-		this.state = State.Ground;
-		return "";
+		// Inside a sequence runStart is already past the chunk, so this adds only ground text.
+		return output + chunk.slice(runStart);
 	}
 
 	/** Consume one character inside a sequence. Returns false when the character does not belong to it. */
@@ -111,24 +108,21 @@ export class TerminalTextSanitizer {
 				if (code === BEL || code === ST || code === CAN || code === SUB) this.state = State.Ground;
 				else if (code === ESC) this.state = State.ControlStringEscape;
 				return true;
-			case State.ControlStringEscape:
+			default:
+				// After ESC inside a control string: ESC \ ends it; any other ESC ends it and starts a new sequence.
 				if (code === 0x5c) {
 					this.state = State.Ground;
 					return true;
 				}
-				// ESC inside a control string ends it and starts a new sequence.
 				this.state = State.Escape;
 				return this.step(code);
-			default:
-				return false;
 		}
 	}
 }
 
 /** Remove escape sequences and control characters other than tab and newline from complete text. */
 export function sanitizeTerminalText(text: string): string {
-	const sanitizer = new TerminalTextSanitizer();
-	return sanitizer.write(text) + sanitizer.end();
+	return new TerminalTextSanitizer().write(text);
 }
 
 const BIDI_CONTROLS = /[\u202a-\u202e\u2066-\u2069]/g;

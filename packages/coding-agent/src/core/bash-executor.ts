@@ -158,8 +158,7 @@ export async function executeBashWithOperations(
 
 	const flushOutput = () => {
 		for (const channel of ["stdout", "stderr"] as const) {
-			const sanitizer = sanitizers[channel];
-			appendText(sanitizer.write(decoders[channel].decode()) + sanitizer.end(), channel);
+			appendText(sanitizers[channel].write(decoders[channel].decode()), channel);
 		}
 	};
 
