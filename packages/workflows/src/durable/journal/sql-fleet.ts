@@ -311,22 +311,42 @@ export class SqlFleetStore {
 	}
 
 	/**
-	 * Whether a worker host on the instance `providerId`, or the host `host`, reported within {@link FLEET_HOST_LIVE_MS}
-	 * by the database's clock (#5072): a boot timeout planned from an older snapshot is not acted on once its host
-	 * registered, while the stale row of a worker that died after it registered does not keep its instance.
+	 * Whether a boot timeout planned from `known`, the registry hosts of an older snapshot, may still remove the instance
+	 * `providerId`, whose host the provider may name `host` (#5072). A host on it that registered since or reported
+	 * within {@link FLEET_HOST_LIVE_MS}, or that holds a live lease, makes it `occupied`; one that started draining makes
+	 * it `draining`, since the drain the controller wrote reached it. The stale row of a worker that died after it
+	 * registered, holding nothing, leaves it `free`.
 	 */
-	async registered(providerId: string, host?: string): Promise<boolean> {
+	async bootHold(
+		providerId: string,
+		host: string | undefined,
+		known: ReadonlySet<string>,
+	): Promise<"free" | "occupied" | "draining"> {
 		const hosts = `${this.runs}_pool_hosts`;
-		return this.storage.read(
-			async (executor) =>
-				(await tableExists(executor, hosts)) &&
-				(await executor.get(
-					`SELECT 1 AS held FROM ${hosts} WHERE (provider_id = ? OR host = ?) AND ${STORE_NOW} - heartbeat_at <= ? LIMIT 1`,
-					providerId,
-					host ?? null,
-					FLEET_HOST_LIVE_MS,
-				)) !== undefined,
-		);
+		return this.storage.read(async (executor) => {
+			if (!(await tableExists(executor, hosts))) return "free";
+			const rows = await executor.all<SqliteRow & { host: string; draining: number; ago: number }>(
+				`SELECT host, draining, ${STORE_NOW} - heartbeat_at AS ago FROM ${hosts} WHERE provider_id = ? OR host = ?`,
+				providerId,
+				host ?? null,
+			);
+			if (rows.some((row) => Number(row.draining) === 1)) return "draining";
+			if (rows.some((row) => !known.has(row.host) || Number(row.ago) <= FLEET_HOST_LIVE_MS)) return "occupied";
+			const holders = new Set(rows.map((row) => row.host));
+			if (host !== undefined) holders.add(host);
+			for (const holder of holders)
+				if (
+					(await executor.get(
+						`SELECT 1 AS held FROM ${this.runs}_work w LEFT JOIN ${this.storage.tables.leases} l ON l.run_id = w.root
+						LEFT JOIN ${this.runs}_pool p ON p.root = w.root
+						WHERE w.state = 'leased' AND substr(w.worker, 1, length(?) + 1) = ? || '/' AND ${liveLease()} LIMIT 1`,
+						holder,
+						holder,
+					)) !== undefined
+				)
+					return "occupied";
+			return "free";
+		});
 	}
 
 	/** The latest events, newest last. */

@@ -43,8 +43,9 @@ async function fixture() {
 	const store = await SqlFleetStore.open(journal);
 	const storage = sqlPoolStorage(journal)!;
 	const sql = (text: string) => storage.transaction((tx) => tx.run(text));
-	const report = (host: string, providerId?: string) =>
+	const report = (host: string, providerId?: string, draining?: boolean) =>
 		shared.reportHost({
+			...(draining === undefined ? {} : { draining }),
 			host,
 			labels: {},
 			git: "unavailable",
@@ -541,6 +542,97 @@ test("an instance removed for its boot timeout is drained first, so a host that 
 		await sleep(10 * TICK_MS);
 		assert.deepEqual(claims, [undefined], "the host on the instance being removed claims nothing");
 	} finally {
+		await f.close();
+	}
+});
+
+test("an instance removed for its boot timeout is kept while a host that registered on it during the tick holds a child, though it went quiet (#5072)", async () => {
+	const f = await fixture();
+	try {
+		const { work, boundary } = poolWorkFixture("late");
+		await f.queue.enqueue(f.lease, work, boundary);
+		const removed: string[] = [];
+		f.controller(
+			{
+				kind: "fake",
+				async list() {
+					return ["vm-0", "vm-1"]
+						.filter((id) => !removed.includes(id))
+						.map((id) => ({ id, state: "pending" as const, since: 0 }));
+				},
+				async scaleTo() {},
+				async drain(id) {
+					if (id === "vm-0" && !removed.includes("vm-0")) {
+						// While vm-0's removal runs, the worker on vm-1 boots, registers and takes a child...
+						await f.report("h1", "vm-1");
+						const [candidate] = await f.queue.readyCandidates(f.lease, [definition], 10);
+						assert.ok(
+							await f.queue.claim(f.lease, "h1/worker-1", [definition], 60_000, {
+								kind: "work",
+								id: candidate!.id,
+								generation: candidate!.generation,
+								host: { id: "h1", providerId: "vm-1" },
+							}),
+						);
+						// ...and then goes 35 s without reporting, its child still running.
+						await f.sql(
+							`UPDATE ${PREFIX}wf_runs_pool_hosts SET heartbeat_at = heartbeat_at - 35000 WHERE host = 'h1'`,
+						);
+					}
+					removed.push(id);
+				},
+			},
+			[],
+			{ bootTimeoutMs: 200, minHosts: 0 },
+		);
+		await sleep(20 * TICK_MS);
+		assert.ok(removed.includes("vm-0"));
+		assert.ok(!removed.includes("vm-1"), "an instance whose host holds a live lease is not removed");
+	} finally {
+		await f.close();
+	}
+});
+
+test("an instance whose late host read its boot-timeout drain and is draining is removed once that host leaves, not after another boot timeout (#5072)", async () => {
+	const f = await fixture();
+	const carryDrain = SqlFleetStore.prototype.carryDrain;
+	const spy = vi.spyOn(SqlFleetStore.prototype, "carryDrain").mockImplementation(async function (
+		this: SqlFleetStore,
+		...args: Parameters<typeof carryDrain>
+	) {
+		await carryDrain.apply(this, args);
+		// The host on vm-1 registers right after the drain was written, reads it at its poll, and starts draining.
+		await f.report("h1", "vm-1", true);
+	});
+	try {
+		const events: WorkflowFleetEvent[] = [];
+		const removed: string[] = [];
+		f.controller(
+			{
+				kind: "fake",
+				async list() {
+					return removed.includes("vm-1") ? [] : [{ id: "vm-1", state: "running", since: 0 }];
+				},
+				async scaleTo() {},
+				async drain(id) {
+					removed.push(id);
+				},
+			},
+			events,
+			{ bootTimeoutMs: 1, minHosts: 0 },
+		);
+		await sleep(3 * TICK_MS);
+		assert.deepEqual(removed, [], "the instance waits for its draining host");
+		spy.mockRestore();
+		// The host finished draining and left the registry.
+		await f.shared.forgetHost("h1");
+		await sleep(5 * TICK_MS);
+		assert.deepEqual(
+			events.flatMap((event) => (event.kind === "removed" ? [[event.id, event.reason]] : [])),
+			[["vm-1", "drained"]],
+		);
+	} finally {
+		spy.mockRestore();
 		await f.close();
 	}
 });

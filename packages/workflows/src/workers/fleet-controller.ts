@@ -282,6 +282,7 @@ export class FleetController implements WorkflowFleetController {
 			const snapshot = await store.snapshot();
 			await this.followDrains(fence, listed, snapshot);
 			const hosts = joinHosts(listed, snapshot);
+			const known = new Set(snapshot.hosts.map((host) => host.host));
 			const now = Date.now();
 			const plan = planFleet(
 				this.policy,
@@ -293,7 +294,7 @@ export class FleetController implements WorkflowFleetController {
 			const ready = snapshot.roots.reduce((total, root) => total + (root.blocked ? 0 : root.ready), 0);
 			for (const action of plan.actions) {
 				this.tickAbort.signal.throwIfAborted();
-				await this.act(action, fence, plan, hosts, ready);
+				await this.act(action, fence, plan, hosts, ready, known);
 			}
 			this.succeeded();
 		} catch (error) {
@@ -395,6 +396,8 @@ export class FleetController implements WorkflowFleetController {
 		plan: FleetPlan,
 		hosts: readonly JoinedHost[],
 		ready: number,
+		/** The registry hosts of the snapshot the plan was made from. */
+		known: ReadonlySet<string> = new Set(),
 	): Promise<void> {
 		const store = this.store!;
 		const joined = action.kind === "scale-up" ? undefined : hosts.find((entry) => entry.view.id === action.id);
@@ -424,13 +427,14 @@ export class FleetController implements WorkflowFleetController {
 			case "remove":
 				if (action.reason === "boot-timeout") {
 					// The instance is drained before it is checked once more and removed, so a host that registers on it from
-					// now on claims nothing. One that registered since the snapshot booted after all, and stays (#5072).
+					// now on claims nothing. One that registered since the snapshot, reports, or holds a child booted after
+					// all, and stays. One that already read the drain finishes it: the planner removes the instance once that
+					// host leaves (#5072).
 					const host = joined?.hostId ?? `boot-timeout:${action.id}`;
 					await store.carryDrain(fence, host, action.id);
-					if (await store.registered(action.id, joined?.hostId)) {
-						await store.clearDrain(fence, host);
-						return;
-					}
+					const hold = await store.bootHold(action.id, joined?.hostId, known);
+					if (hold === "occupied") await store.clearDrain(fence, host);
+					if (hold !== "free") return;
 				}
 				// Its drains stay until the provider no longer lists it (#4803): a removal the provider accepted may take
 				// minutes, and a worker that restarts on the instance meanwhile must not take children.
