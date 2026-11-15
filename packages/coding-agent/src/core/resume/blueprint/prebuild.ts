@@ -1,7 +1,7 @@
 /**
  * `atomic blueprint prebuild` (#4748): builds a repository ahead of time, in a trusted job such as a default-branch CI
  * run or on a developer's machine, so a later resume claims a ready worktree instead of building one. With `park`, the
- * declared `kind: build` output moves into the seed directory that `atomic blueprint cache-key` names, for a cache
+ * build output that `resume.cache` declares moves into the seed directory that `atomic blueprint cache-key` names, for a cache
  * save; a resume on another machine adopts it.
  */
 
@@ -10,7 +10,7 @@ import { lstat, mkdir, rename, rm } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { MemorySnapshotBlobStore } from "../../worktree-snapshot/blob-store.ts";
 import { captureWorktreeSnapshot, readRepositoryConfig } from "../../worktree-snapshot/capture.ts";
-import { runGit } from "../../worktree-snapshot/git.ts";
+import { nulFields, runGit } from "../../worktree-snapshot/git.ts";
 import {
 	admitPooledWorktree,
 	discardPooledWorktree,
@@ -45,7 +45,7 @@ export interface PrebuildRepositoryOptions {
 	readonly settings: WorktreeSnapshotSettings;
 	/** `snapshots.pool.maxIdlePerRepository`: idle worktrees of the repository kept after the prebuild. */
 	readonly maxIdlePerRepository: number;
-	/** Move the declared `kind: build` output into the seed directory for a cache save. */
+	/** Move the build output `resume.cache` declares into the seed directory for a cache save. */
 	readonly park?: boolean;
 	/** The deprecated `resume.setupCommand`, run as a resume would. */
 	readonly setupCommand?: string;
@@ -159,11 +159,12 @@ export async function prebuildRepository(root: string, options: PrebuildReposito
 }
 
 /**
- * Moves each of `declared`, root-relative, from the worktree at `worktree` into a new seed directory of the
- * repository, which then replaces the earlier one under the seed lock, and writes its manifest. A path inside another
- * declared one moves with it; a path that is a symbolic link or lies below one is left alone. Resolves to the paths
- * moved; with none, the earlier seed goes and no manifest is written. A move that fails puts the moved paths back and
- * rejects, keeping the earlier seed.
+ * Moves the files Git does not track under each of `declared`, root-relative, from the worktree at `worktree` into a
+ * new seed directory of the repository, which then replaces the earlier one under the seed lock, and writes its
+ * manifest. Tracked files stay, so the worktree keeps the tree its pool record names and stays claimable (#4911); a
+ * declared path Git tracks nothing under moves whole. A path inside another declared one moves with it; a path that is
+ * a symbolic link or lies below one is left alone. Resolves to the paths moved; with none, the earlier seed goes and no
+ * manifest is written. A move that fails puts the moved paths back and rejects, keeping the earlier seed.
  */
 async function parkBuildOutput(
 	storeDir: string,
@@ -187,10 +188,15 @@ async function parkBuildOutput(
 				const entry = await lstat(from).catch(() => undefined);
 				if (entry === undefined || entry.isSymbolicLink()) continue;
 				if (!(await insideThroughDirectories(worktree, segments))) continue;
-				const to = join(staging, ...segments);
-				await mkdir(dirname(to), { recursive: true });
-				await rename(from, to);
-				parked.push(path);
+				for (const untracked of await untrackedUnder(worktree, path)) {
+					// A name a seed manifest cannot hold stays in the worktree.
+					const parts = seedPathSegments(untracked);
+					if (parts === undefined) continue;
+					const to = join(staging, ...parts);
+					await mkdir(dirname(to), { recursive: true });
+					await rename(join(worktree, ...parts), to);
+					parked.push(untracked);
+				}
 			}
 		} catch (error) {
 			for (const path of [...parked].reverse()) {
@@ -219,4 +225,16 @@ async function parkBuildOutput(
 	} finally {
 		await rm(staging, { recursive: true, force: true });
 	}
+}
+
+/**
+ * The untracked and ignored entries under `path` in the worktree at `worktree`, root-relative: `path` itself when Git
+ * tracks nothing under it, otherwise each untracked file and each directory holding no tracked file.
+ */
+async function untrackedUnder(worktree: string, path: string): Promise<string[]> {
+	// Without exclude options, `--others` lists ignored files too; `--directory` lists a wholly untracked directory once.
+	const listed = await runGit(["ls-files", "-z", "--others", "--directory", "--", `:(literal)${path}`], {
+		cwd: worktree,
+	});
+	return nulFields(listed.stdout).map((entry) => entry.replace(/\/$/, ""));
 }

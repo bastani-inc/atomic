@@ -503,7 +503,7 @@ describe("verifyWorktree", () => {
 });
 
 describe("removeRestoredWorktree guards", () => {
-	test("refuses the shared store itself, anything inside it, its parent and a missing git directory", async () => {
+	test("refuses the shared store itself, anything inside it, its parent and a missing git directory (#4748)", async () => {
 		const { clone } = await sandbox.remoteWithClone();
 		sandbox.write(join(clone, "x.txt"), "x\n");
 		const blobs = new MemorySnapshotBlobStore();
@@ -512,7 +512,10 @@ describe("removeRestoredWorktree guards", () => {
 		const restored = await restoreWorktree(snapshot, { blobs, storeDir });
 		const store = await sandbox.git(restored.path, "rev-parse", "--git-common-dir");
 		const outside = mkdtempSync(join(sandbox.root, "outside-"));
-		for (const path of [store, join(store, "objects"), join(storeDir, "repositories"), outside]) {
+		// Named like `..x`, yet inside the store: only `..` or `../…` leaves a directory (#4748).
+		const dotted = join(store, "..x");
+		mkdirSync(dotted);
+		for (const path of [store, join(store, "objects"), dotted, join(storeDir, "repositories"), outside]) {
 			await assert.rejects(removeRestoredWorktree(path, { storeDir }), (error: unknown) => {
 				assert.ok(isWorkspaceRestoreError(error));
 				assert.equal(error.code, "unsafe-target");

@@ -289,7 +289,40 @@ describe.skipIf(postgresSkipReason !== undefined)("the reference index on Postgr
 				},
 			});
 			await SqlSnapshotBlobStore.open(recording);
-			assert.deepEqual(installs, Array(5).fill("atomic_migrations"));
+			// The five index sources and the chunk cleanup of chunked blobs (#4954), each under the migration lock.
+			assert.deepEqual(installs, Array(6).fill("atomic_migrations"));
+		});
+	});
+
+	test("a database migrated before the pins of partial restores gains their columns and rebuilds its index (#4922)", async () => {
+		const expected = await sqliteIndex("pins", false);
+		await withPostgresDatabase(async (scope) => {
+			const database = await scope.open();
+			await createReferencingTables(database);
+			await SqlSnapshotBlobStore.open(database);
+			await write(database, EARLY_WRITES);
+			// What a build before #4922 left: version 2, and the session references without the pin columns.
+			await database.exec(
+				"ALTER TABLE snapshot_session_refs DROP COLUMN degraded_from; ALTER TABLE snapshot_session_refs DROP COLUMN degraded_since",
+			);
+			// That build also predates the chunked blobs of step 4 (#4954).
+			await database.run("DELETE FROM atomic_migrations WHERE domain = ? AND version >= 3", SNAPSHOT_BLOB_DOMAIN);
+			const upgraded = await SqlSnapshotBlobStore.open(database);
+			const columns = await database.all(
+				"SELECT column_name FROM information_schema.columns WHERE table_name = 'snapshot_session_refs' AND column_name LIKE 'degraded%' ORDER BY column_name",
+			);
+			assert.deepEqual(
+				columns.map((row) => row.column_name),
+				["degraded_from", "degraded_since"],
+			);
+			await write(database, LATE_WRITES);
+			await upgraded.completeIndex();
+			// The rebuild indexes every entry again, so only its progress row differs from an index that never rebuilt.
+			const { snapshot_index_sources: progress, ...rebuilt } = await referenceIndex(database);
+			const { snapshot_index_sources: _fresh, ...references } = expected;
+			assert.deepEqual(rebuilt, references);
+			const sessions = progress!.find((row) => row.includes("source=session-entries"))!;
+			assert.match(sessions, /^backfilled_through=(\d+) source=session-entries watermark=\1$/);
 		});
 	});
 
@@ -302,10 +335,11 @@ describe.skipIf(postgresSkipReason !== undefined)("the reference index on Postgr
 			const triggers =
 				"SELECT tgname, tgfoid::regprocedure::text AS fn FROM pg_trigger WHERE NOT tgisinternal ORDER BY tgname";
 			const installed = await database.all(triggers);
-			assert.equal(installed.length, 15);
+			// The reference index's triggers, and the one that deletes a chunked blob's chunks with it (#4954).
+			assert.equal(installed.length, 16);
 
 			// Forget that the triggers were installed, as a database migrated by a build before them would.
-			await database.run("DELETE FROM atomic_migrations WHERE domain = ? AND version = 2", SNAPSHOT_BLOB_DOMAIN);
+			await database.run("DELETE FROM atomic_migrations WHERE domain = ? AND version >= 2", SNAPSHOT_BLOB_DOMAIN);
 			await database.run("DELETE FROM snapshot_index_sources");
 			const again = await SqlSnapshotBlobStore.open(database);
 			await SqlSnapshotBlobStore.open(database);
@@ -318,7 +352,7 @@ describe.skipIf(postgresSkipReason !== undefined)("the reference index on Postgr
 			);
 			assert.deepEqual(
 				ledger.map((row) => Number(row.version)),
-				[1, 2],
+				[1, 2, 3, 4],
 			);
 			await write(database, EARLY_WRITES);
 			await write(database, LATE_WRITES);

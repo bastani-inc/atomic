@@ -844,6 +844,31 @@ describe("resume storage precondition messages (#4329)", () => {
 		]);
 	});
 
+	test("an all-whitespace secret is missing whether it comes from the environment or a file", async () => {
+		const io = new CountingIo();
+		io.variables.set("BLANK", " \t ");
+		io.files.set("/blank/token", "  \n");
+		const problems = await storagePreconditionProblems(
+			[{ domain: "sessions", selection: adapter({ a: { env: "BLANK" }, b: { file: "/blank/token" } }) }],
+			agentDir,
+			io,
+		);
+		assert.deepEqual(problems, [
+			{
+				code: "credential-missing",
+				subject: "environment variable BLANK",
+				why: `storage secret a of ${LIBSQL_ADAPTER_PACKAGE} reads it to authenticate to the shared storage, and it is empty`,
+				fix: `Set BLANK for this process, or join with \`${STORAGE_JOIN_COMMAND}\` to keep the token in a file.`,
+			},
+			{
+				code: "credential-missing",
+				subject: "token file /blank/token",
+				why: `storage secret b of ${LIBSQL_ADAPTER_PACKAGE} reads it to authenticate to the shared storage, and it is empty`,
+				fix: `Write the token to /blank/token (mode 600, readable by this user), or join again with \`${STORAGE_JOIN_COMMAND}\`.`,
+			},
+		]);
+	});
+
 	test("the default I/O loads adapters without opening storage, reads files, reads the environment and probes Git", async () => {
 		const { defaultResumePreflightIo } = await import("../src/core/resume/preflight.ts");
 		const { setWorktreeSnapshotGit } = await import("../src/core/worktree-snapshot/git.ts");
@@ -955,9 +980,15 @@ describe("resume glue: remaining edge cases (#4329)", () => {
 
 	test("tool paths keep stripping @ and normalizing unicode spaces", async () => {
 		const { resolveToCwd } = await import("../src/core/tools/path-utils.ts");
-		const base = resolve(tmpdir(), "x");
-		assert.equal(resolveToCwd("@a.ts", base), join(base, "a.ts"));
-		assert.equal(resolveToCwd("a\u00A0b.ts", base), join(base, "a b.ts"));
+		const base = mkdtempSync(join(tmpdir(), "resume-glue-tool-paths-"));
+		try {
+			writeFileSync(join(base, "a.ts"), "");
+			writeFileSync(join(base, "a b.ts"), "");
+			assert.equal(resolveToCwd("@a.ts", base), join(base, "a.ts"));
+			assert.equal(resolveToCwd("a\u00A0b.ts", base), join(base, "a b.ts"));
+		} finally {
+			rmSync(base, { recursive: true, force: true });
+		}
 	});
 });
 

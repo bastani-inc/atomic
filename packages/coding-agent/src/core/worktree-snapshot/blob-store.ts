@@ -37,15 +37,25 @@ export class MemorySnapshotBlobStore implements SnapshotBlobStore {
  * these tables and never a journal or a session.
  */
 export interface SnapshotIndexTables {
+	/**
+	 * `(hash, bytes, data, created_at, chunks)`: one row per blob. A blob of at most {@link SNAPSHOT_BLOB_CHUNK_BYTES}
+	 * is in `data` (`chunks` 0, as every blob written before chunks was); a larger one has an empty `data` and its bytes
+	 * in `chunks` rows of {@link SnapshotIndexTables.blobChunks}.
+	 */
 	readonly blobs: string;
+	/** `(hash, idx, data)`: the chunks of each blob larger than {@link SNAPSHOT_BLOB_CHUNK_BYTES}, in order (#4954). */
+	readonly blobChunks: string;
 	/** `(run_id, hash)`: each blob a run's tool or stage checkpoints reference, once per run. */
 	readonly runRefs: string;
 	/** `(run_id, retained, seq)`: whether the run's latest status keeps its snapshots, from the event at `seq`. */
 	readonly runState: string;
 	/**
-	 * `(session_id, seq, root, snapshot_id, prev_seq, restore_from, restore_to)`: one row per `worktree_snapshot`
-	 * session entry, with the `seq` of the nearest snapshot entry before it on its branch and, for the entry written
-	 * when a snapshot was restored into a new worktree, the root it moved from and to.
+	 * `(session_id, seq, root, snapshot_id, prev_seq, restore_from, restore_to, degraded_from, degraded_since)`: one row
+	 * per `worktree_snapshot` session entry, with the `seq` of the nearest snapshot entry before it on its branch and,
+	 * for the entry written when a snapshot was restored into a new worktree, the root it moved from and to. An entry of
+	 * a partly restored worktree names the snapshot it lacks in `degraded_from` (#4922), with `degraded_since`, on the
+	 * database clock, when the entries naming it began: the nearest snapshot entry before it's when that one names it
+	 * too, else when this entry was indexed.
 	 */
 	readonly sessionRefs: string;
 	/**
@@ -73,6 +83,7 @@ export function snapshotIndexTables(prefix = ""): SnapshotIndexTables {
 	const p = validateStoragePrefix(prefix);
 	return Object.freeze({
 		blobs: `${p}snapshot_blobs`,
+		blobChunks: `${p}snapshot_blob_chunks`,
 		runRefs: `${p}snapshot_run_refs`,
 		runState: `${p}snapshot_run_state`,
 		sessionRefs: `${p}snapshot_session_refs`,
@@ -83,6 +94,15 @@ export function snapshotIndexTables(prefix = ""): SnapshotIndexTables {
 		sources: `${p}snapshot_index_sources`,
 	});
 }
+
+/**
+ * The most bytes of a snapshot blob one row holds. A larger blob, such as the patch of a checkout with a large
+ * untracked file, is stored as rows of at most this size, written in one transaction: a libSQL server refuses a value
+ * or row over 5,000,000 bytes by default (sqld's `max_row_size`) and a response over 10 MB, so one row per blob failed
+ * on it below the documented `maxFileBytes` (#4954). A different size needs a different table name, because a blob's
+ * rows are addressed by their index.
+ */
+export const SNAPSHOT_BLOB_CHUNK_BYTES = 1024 * 1024;
 
 /** The schema domain of the blob table and its reference index, in the prefix's migration ledger. */
 export const SNAPSHOT_BLOB_DOMAIN = "snapshot-blobs";
@@ -191,6 +211,14 @@ export function runningSnapshotCollectionsOn(descriptor: StorageDescriptor): Pro
  * the host process for all of them.
  */
 const yieldToEventLoop = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+/**
+ * How long the snapshot a resume restored only partly stays its checkout's restore target and is kept by collection
+ * (#4922). Resume and capture count it from the partial restore; collection, on the database clock, from the first
+ * session entry that names the snapshot, which never comes earlier.
+ */
+export const DEGRADED_RESTORE_RETENTION_DAYS = 30;
+const DEGRADED_PIN_SECONDS = DEGRADED_RESTORE_RETENTION_DAYS * 24 * 60 * 60;
 
 /** Blobs one collection batch examines and deletes in one write transaction. */
 export const SNAPSHOT_COLLECTION_BATCH = 256;
@@ -461,12 +489,26 @@ function indexSources(prefix: string, t: SnapshotIndexTables, d: StorageDialect)
 				`SELECT r.session_id, r.seq, ${d.jsonText(entry.column, "snapshotId")}, ${d.jsonAt(source, ...keys)} FROM ${rows} AS r${from} WHERE ${d.jsonAtIsText(source, ...keys)} AND ${isSnapshot}`,
 			);
 		const restored = `${d.jsonHasType("text", entry.column, "restore", "from")} AND ${d.jsonHasType("text", entry.column, "restore", "to")}`;
+		const pinned = d.jsonHasType("text", entry.column, "degradedFrom");
+		const degradedFrom = d.jsonText(entry.column, "degradedFrom");
+		// A pin began with the first entry naming its snapshot; entries that go on naming it keep that start (#4922).
+		const degradedSince = `COALESCE((SELECT earlier.degraded_since FROM ${t.sessionRefs} AS earlier WHERE earlier.session_id = r.session_id AND earlier.seq = parent.anchor_seq AND earlier.degraded_from = ${degradedFrom}), ${d.nowSeconds})`;
 		return [
 			d.insertOrReplace(
 				t.sessionRefs,
-				["session_id", "seq", "root", "snapshot_id", "prev_seq", "restore_from", "restore_to"],
+				[
+					"session_id",
+					"seq",
+					"root",
+					"snapshot_id",
+					"prev_seq",
+					"restore_from",
+					"restore_to",
+					"degraded_from",
+					"degraded_since",
+				],
 				["session_id", "seq"],
-				`SELECT r.session_id, r.seq, ${d.jsonText(entry.column, "root")}, ${d.jsonText(entry.column, "snapshotId")}, parent.anchor_seq, CASE WHEN ${restored} THEN ${d.jsonText(entry.column, "restore", "from")} END, CASE WHEN ${restored} THEN ${d.jsonText(entry.column, "restore", "to")} END FROM ${parentOf(rows)} WHERE ${isSnapshot}`,
+				`SELECT r.session_id, r.seq, ${d.jsonText(entry.column, "root")}, ${d.jsonText(entry.column, "snapshotId")}, parent.anchor_seq, CASE WHEN ${restored} THEN ${d.jsonText(entry.column, "restore", "from")} END, CASE WHEN ${restored} THEN ${d.jsonText(entry.column, "restore", "to")} END, CASE WHEN ${pinned} THEN ${degradedFrom} END, CASE WHEN ${pinned} THEN ${degradedSince} END FROM ${parentOf(rows)} WHERE ${isSnapshot}`,
 			),
 			record({ ...entry, element: "link" }, ["patch"], `, ${d.jsonEach(entry, "link", "snapshot", "chain")}`),
 			record(entry, ["snapshot", "bundle", "blob"]),
@@ -581,6 +623,39 @@ function indexSources(prefix: string, t: SnapshotIndexTables, d: StorageDialect)
 	return [eventsSource, runsSource, entriesSource, workSource, rootSource];
 }
 
+/**
+ * Chunked blobs (#4954): the chunk table, the blob table's `chunks` column, 0 for a blob whose bytes are in its own row,
+ * as every blob written before it was, and the trigger that deletes a blob's chunks with it. Idempotent.
+ */
+async function addBlobChunks(
+	transaction: SqliteExecutor,
+	t: SnapshotIndexTables,
+	dialect: StorageDialect,
+): Promise<void> {
+	const { int, text, blob } = dialect.types;
+	await transaction.exec(
+		`CREATE TABLE IF NOT EXISTS ${t.blobChunks} (hash ${text} NOT NULL, idx ${int} NOT NULL, data ${blob} NOT NULL, PRIMARY KEY (hash, idx))${dialect.withoutRowidTableOptions}`,
+	);
+	const column = dialect.columnExists(t.blobs, "chunks");
+	if (!(await transaction.get(column.sql, ...column.params))) {
+		await transaction.exec(`ALTER TABLE ${t.blobs} ADD COLUMN chunks ${int} NOT NULL DEFAULT 0`);
+	}
+	// A deleted blob takes its chunks with it, in the statement that deletes it, whoever deletes it.
+	const trigger = dialect.schemaObjects([`${t.blobs}_chunks_delete`]);
+	if (await transaction.get(trigger.sql, ...trigger.params)) return;
+	await transaction.exec(
+		dialect.renderTrigger(
+			createTrigger(
+				`${t.blobs}_chunks_delete`,
+				"DELETE",
+				t.blobs,
+				[`DELETE FROM ${t.blobChunks} WHERE hash = OLD.hash`],
+				"OLD.chunks > 0",
+			),
+		),
+	);
+}
+
 /** Creates the blob table and the tables of its reference index that are missing. */
 async function createSnapshotIndexTables(
 	transaction: SqliteExecutor,
@@ -608,7 +683,7 @@ async function createSnapshotIndexTables(
 		CREATE TABLE IF NOT EXISTS ${t.runRefs} (run_id ${text} NOT NULL, hash ${text} NOT NULL, PRIMARY KEY (run_id, hash))${keyed};
 		CREATE INDEX IF NOT EXISTS ${t.runRefs}_hash ON ${t.runRefs} (hash);
 		CREATE TABLE IF NOT EXISTS ${t.runState} (run_id ${text} PRIMARY KEY, retained ${int} NOT NULL, seq ${int} NOT NULL)${keyed};
-		CREATE TABLE IF NOT EXISTS ${t.sessionRefs} (session_id ${text} NOT NULL, seq ${int} NOT NULL, root ${text} NOT NULL, snapshot_id ${text} NOT NULL, prev_seq ${int}, restore_from ${text}, restore_to ${text}, PRIMARY KEY (session_id, seq))${keyed};
+		CREATE TABLE IF NOT EXISTS ${t.sessionRefs} (session_id ${text} NOT NULL, seq ${int} NOT NULL, root ${text} NOT NULL, snapshot_id ${text} NOT NULL, prev_seq ${int}, restore_from ${text}, restore_to ${text}, degraded_from ${text}, degraded_since ${int}, PRIMARY KEY (session_id, seq))${keyed};
 		CREATE TABLE IF NOT EXISTS ${t.sessionLinks} (session_id ${text} NOT NULL, seq ${int} NOT NULL, entry_id ${text} NOT NULL, parent_id ${text}, anchor_seq ${int}, children ${int} NOT NULL, broken ${int} NOT NULL, PRIMARY KEY (session_id, seq))${strict};
 		CREATE INDEX IF NOT EXISTS ${t.sessionLinks}_entry ON ${t.sessionLinks} (session_id, entry_id);
 		CREATE INDEX IF NOT EXISTS ${t.sessionLinks}_leaves ON ${t.sessionLinks} (session_id, anchor_seq) WHERE children = 0 AND anchor_seq IS NOT NULL;
@@ -621,12 +696,34 @@ async function createSnapshotIndexTables(
 		INSERT INTO ${t.collection} (id) VALUES (1) ON CONFLICT DO NOTHING;
 		CREATE TABLE IF NOT EXISTS ${t.sources} (source ${text} PRIMARY KEY, watermark ${int} NOT NULL, backfilled_through ${int} NOT NULL)${keyed};
 	`);
+	await addBlobChunks(transaction, t, dialect);
+	await addSessionRefColumns(transaction, t, prefix, dialect);
+}
+
+/** The columns of {@link SnapshotIndexTables.sessionRefs} that later builds added, with their types. */
+const SESSION_REF_COLUMNS = ["prev_seq", "restore_from", "restore_to", "degraded_from", "degraded_since"] as const;
+
+/**
+ * Adds the columns of the session references that an index written by an earlier build lacks. Adding any drops the
+ * session entries' triggers and marks their index for a rebuild, which collection runs before it deletes anything.
+ */
+async function addSessionRefColumns(
+	transaction: SqliteExecutor,
+	t: SnapshotIndexTables,
+	prefix: string,
+	dialect: StorageDialect,
+): Promise<void> {
+	const { int, text } = dialect.types;
+	const types: Record<(typeof SESSION_REF_COLUMNS)[number], string> = {
+		prev_seq: int,
+		restore_from: text,
+		restore_to: text,
+		degraded_from: text,
+		degraded_since: int,
+	};
 	let migrated = false;
-	for (const [name, type] of [
-		["prev_seq", int],
-		["restore_from", text],
-		["restore_to", text],
-	] as const) {
+	for (const name of SESSION_REF_COLUMNS) {
+		const type = types[name];
 		const column = dialect.columnExists(t.sessionRefs, name);
 		if (await transaction.get(column.sql, ...column.params)) continue;
 		await transaction.exec(`ALTER TABLE ${t.sessionRefs} ADD COLUMN ${name} ${type}`);
@@ -757,7 +854,9 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		const probes = [
 			...Object.values(t).map((table) => dialect.tableExists(table)),
 			dialect.columnExists(t.blobs, "created_at"),
-			...["prev_seq", "restore_from", "restore_to"].map((column) => dialect.columnExists(t.sessionRefs, column)),
+			dialect.columnExists(t.blobs, "chunks"),
+			dialect.schemaObjects([`${t.blobs}_chunks_delete`]),
+			...SESSION_REF_COLUMNS.map((column) => dialect.columnExists(t.sessionRefs, column)),
 		];
 		const found = await Promise.all(probes.map((probe) => database.get(probe.sql, ...probe.params)));
 		// A versioned database always checks its ledger: a newer schema with the same tables is refused, and a step it
@@ -776,6 +875,18 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 									version: 2,
 									up: (transaction: SqliteExecutor, dialect: StorageDialect) =>
 										installMissingSources(transaction, t, prefix, dialect),
+								},
+								// The pins of partly restored worktrees (#4922); SQLite adds them in step 1, which runs every time.
+								{
+									version: 3,
+									up: (transaction: SqliteExecutor, dialect: StorageDialect) =>
+										addSessionRefColumns(transaction, t, prefix, dialect),
+								},
+								// Chunked blobs (#4954); SQLite adds them in step 1, which runs every time.
+								{
+									version: 4,
+									up: (transaction: SqliteExecutor, dialect: StorageDialect) =>
+										addBlobChunks(transaction, t, dialect),
 								},
 							]
 						: []),
@@ -799,10 +910,30 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		await installMissingSources(transaction, t, prefix, dialect);
 	}
 
+	/**
+	 * Stores every blob, in one transaction, or restarts the age of one stored already. A blob larger than
+	 * {@link SNAPSHOT_BLOB_CHUNK_BYTES} is stored as chunk rows and a header row that names how many, so no statement
+	 * binds more than one chunk (#4954); the chunks of a blob stored already are not written again.
+	 */
 	async putBlobs(blobs: readonly SnapshotBlob[]): Promise<void> {
 		if (blobs.length === 0) return;
-		const sql = `INSERT INTO ${this.table} (hash, bytes, data, created_at) VALUES (?, ?, ?, ${this.dialect.nowSeconds}) ON CONFLICT(hash) DO UPDATE SET created_at = ${this.dialect.nowSeconds}`;
-		const statements = blobs.map((blob) => ({ sql, params: [blob.hash, blob.data.byteLength, blob.data] }));
+		const now = this.dialect.nowSeconds;
+		const header = `INSERT INTO ${this.table} (hash, bytes, data, created_at, chunks) VALUES (?, ?, ?, ${now}, ?) ON CONFLICT(hash) DO UPDATE SET created_at = ${now}`;
+		const chunk = `INSERT INTO ${this.tables.blobChunks} (hash, idx, data) SELECT ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM ${this.table} WHERE hash = ?) ON CONFLICT DO NOTHING`;
+		const statements: { sql: string; params: SqliteValue[] }[] = [];
+		for (const blob of blobs) {
+			const { hash, data } = blob;
+			if (data.byteLength <= SNAPSHOT_BLOB_CHUNK_BYTES) {
+				statements.push({ sql: header, params: [hash, data.byteLength, data, 0] });
+				continue;
+			}
+			const chunks = Math.ceil(data.byteLength / SNAPSHOT_BLOB_CHUNK_BYTES);
+			for (let index = 0; index < chunks; index++) {
+				const bytes = data.subarray(index * SNAPSHOT_BLOB_CHUNK_BYTES, (index + 1) * SNAPSHOT_BLOB_CHUNK_BYTES);
+				statements.push({ sql: chunk, params: [hash, index, bytes, hash] });
+			}
+			statements.push({ sql: header, params: [hash, data.byteLength, new Uint8Array(), chunks] });
+		}
 		if (this.database.batch) {
 			await this.database.batch(statements);
 			return;
@@ -811,14 +942,46 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			for (const statement of statements) await transaction.run(statement.sql, ...statement.params);
 		});
 	}
+	/**
+	 * The blob's bytes, read a chunk per statement when it has chunks, so no response holds more than one chunk. A
+	 * chunked blob whose chunks are not all there, as when a collection deleted it during the read, is not returned.
+	 */
 	async getBlob(hash: string): Promise<Uint8Array | undefined> {
-		const row = await this.database.get<{ data: Uint8Array }>(`SELECT data FROM ${this.table} WHERE hash = ?`, hash);
-		return row?.data;
+		const row = await this.database.get<SqliteRow & { data: Uint8Array; bytes: number; chunks: number }>(
+			`SELECT data, bytes, chunks FROM ${this.table} WHERE hash = ?`,
+			hash,
+		);
+		if (row === undefined) return undefined;
+		const chunks = Number(row.chunks);
+		if (chunks === 0) return row.data;
+		const data = new Uint8Array(Number(row.bytes));
+		let offset = 0;
+		for (let index = 0; index < chunks; index++) {
+			const chunk = await this.database.get<SqliteRow & { data: Uint8Array }>(
+				`SELECT data FROM ${this.tables.blobChunks} WHERE hash = ? AND idx = ?`,
+				hash,
+				index,
+			);
+			if (chunk === undefined || offset + chunk.data.byteLength > data.byteLength) return undefined;
+			data.set(chunk.data, offset);
+			offset += chunk.data.byteLength;
+		}
+		return offset === data.byteLength ? data : undefined;
 	}
 	/** Restarts the age of every stored hash in one statement on the database clock; false when any is missing. */
 	async refreshBlobs(hashes: readonly string[]): Promise<boolean> {
 		const unique = [...new Set(hashes)];
 		if (unique.length === 0) return true;
+		// One request where the database takes batches: a server holds its write lock for that request only (#4768).
+		if (this.database.batch) {
+			const [refreshed] = await this.database.batch([
+				{
+					sql: `UPDATE ${this.table} SET created_at = unixepoch() WHERE hash IN (SELECT value FROM json_each(?)) RETURNING hash`,
+					params: [JSON.stringify(unique)],
+				},
+			]);
+			return refreshed!.length === unique.length;
+		}
 		const { changes } = await this.database.transaction((transaction) =>
 			transaction.run(
 				`UPDATE ${this.table} SET created_at = ${this.dialect.nowSeconds} WHERE hash IN (SELECT value FROM ${this.dialect.jsonValues("?")})`,
@@ -1010,16 +1173,17 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 * that share their latest snapshot are followed once. Roots are grouped into checkouts the way resume does: a root
 	 * a restore moved to is the root it moved from, taking the branch's restores from the newest back. Resume compares
 	 * canonical paths where this compares the recorded ones, so a checkout reached through a symbolic link can keep one
-	 * snapshot more than resume needs and never fewer.
+	 * snapshot more than resume needs and never fewer. A head that records a partly restored worktree also keeps the
+	 * snapshot it lacks, named in `degraded_from`, for {@link DEGRADED_RESTORE_RETENTION_DAYS} (#4922).
 	 */
 	private sessionHeads(): string {
 		const t = this.tables;
 		return `WITH RECURSIVE
 			open_anchors(session_id, seq) AS (SELECT DISTINCT session_id, anchor_seq FROM ${t.sessionLinks} WHERE children = 0 AND anchor_seq IS NOT NULL),
-			branch(session_id, start_seq, root, snapshot_id, restore_from, restore_to, prev_seq, depth) AS (
-				SELECT ref.session_id, ref.seq, ref.root, ref.snapshot_id, ref.restore_from, ref.restore_to, ref.prev_seq, 0 FROM open_anchors AS anchor JOIN ${t.sessionRefs} AS ref ON ref.session_id = anchor.session_id AND ref.seq = anchor.seq
+			branch(session_id, start_seq, root, snapshot_id, restore_from, restore_to, degraded_from, degraded_since, prev_seq, depth) AS (
+				SELECT ref.session_id, ref.seq, ref.root, ref.snapshot_id, ref.restore_from, ref.restore_to, ref.degraded_from, ref.degraded_since, ref.prev_seq, 0 FROM open_anchors AS anchor JOIN ${t.sessionRefs} AS ref ON ref.session_id = anchor.session_id AND ref.seq = anchor.seq
 				UNION ALL
-				SELECT branch.session_id, branch.start_seq, ref.root, ref.snapshot_id, ref.restore_from, ref.restore_to, ref.prev_seq, branch.depth + 1 FROM branch JOIN ${t.sessionRefs} AS ref ON ref.session_id = branch.session_id AND ref.seq = branch.prev_seq
+				SELECT branch.session_id, branch.start_seq, ref.root, ref.snapshot_id, ref.restore_from, ref.restore_to, ref.degraded_from, ref.degraded_since, ref.prev_seq, branch.depth + 1 FROM branch JOIN ${t.sessionRefs} AS ref ON ref.session_id = branch.session_id AND ref.seq = branch.prev_seq
 			),
 			walk(session_id, start_seq, root, current, position) AS (
 				SELECT DISTINCT session_id, start_seq, root, root, -1 FROM branch
@@ -1031,10 +1195,14 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			checkout(session_id, start_seq, root, original) AS (
 				SELECT session_id, start_seq, root, current FROM walk AS last WHERE position = (SELECT max(other.position) FROM walk AS other WHERE other.session_id = last.session_id AND other.start_seq = last.start_seq AND other.root = last.root)
 			),
-			session_heads(session_id, snapshot_id, depth) AS (
-				SELECT branch.session_id, branch.snapshot_id, min(branch.depth) FROM branch JOIN checkout ON checkout.session_id = branch.session_id AND checkout.start_seq = branch.start_seq AND checkout.root = branch.root GROUP BY branch.session_id, branch.start_seq, checkout.original
+			session_heads(session_id, start_seq, original, depth) AS (
+				SELECT branch.session_id, branch.start_seq, checkout.original, min(branch.depth) FROM branch JOIN checkout ON checkout.session_id = branch.session_id AND checkout.start_seq = branch.start_seq AND checkout.root = branch.root GROUP BY branch.session_id, branch.start_seq, checkout.original
+			),
+			head_records(session_id, snapshot_id, degraded_from, degraded_since) AS (
+				SELECT branch.session_id, branch.snapshot_id, branch.degraded_from, branch.degraded_since FROM session_heads JOIN checkout ON checkout.session_id = session_heads.session_id AND checkout.start_seq = session_heads.start_seq AND checkout.original = session_heads.original JOIN branch ON branch.session_id = checkout.session_id AND branch.start_seq = checkout.start_seq AND branch.root = checkout.root AND branch.depth = session_heads.depth
 			)
-			SELECT session_id, snapshot_id FROM session_heads`;
+			SELECT session_id, snapshot_id FROM head_records
+			UNION SELECT session_id, degraded_from FROM head_records WHERE degraded_from IS NOT NULL AND (degraded_since IS NULL OR degraded_since > ${this.dialect.nowSeconds} - ${DEGRADED_PIN_SECONDS})`;
 	}
 
 	/**

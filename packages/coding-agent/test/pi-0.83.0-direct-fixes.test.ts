@@ -570,7 +570,7 @@ describe("Pi 0.83.0 direct coding-agent parity", () => {
 		vi.spyOn(packageManager as unknown as PackageManagerCommandInternals, "runCommand").mockImplementation(
 			async (command, args) => {
 				if (command === "git" && args[0] === "clone") {
-					mkdirSync(targetDir, { recursive: true });
+					mkdirSync(args[args.length - 1]!, { recursive: true });
 					throw new Error("simulated git clone failure");
 				}
 			},
@@ -596,8 +596,9 @@ describe("Pi 0.83.0 direct coding-agent parity", () => {
 		vi.spyOn(packageManager as unknown as PackageManagerCommandInternals, "runCommand").mockImplementation(
 			async (command, args) => {
 				if (command === "git" && args[0] === "clone") {
-					mkdirSync(targetDir, { recursive: true });
-					writeFileSync(join(targetDir, "package.json"), JSON.stringify({ name: "repo", version: "1.0.0" }));
+					const cloneDir = args[args.length - 1]!;
+					mkdirSync(cloneDir, { recursive: true });
+					writeFileSync(join(cloneDir, "package.json"), JSON.stringify({ name: "repo", version: "1.0.0" }));
 					return;
 				}
 				if (command === "npm") throw new Error("simulated dependency install failure");
@@ -609,6 +610,7 @@ describe("Pi 0.83.0 direct coding-agent parity", () => {
 		);
 
 		expect(existsSync(targetDir)).toBe(false);
+		expect(existsSync(join(agentDir, "git", "github.com"))).toBe(false);
 	});
 
 	it("cefa40ed: refuses tree navigation while a response is still streaming", async () => {

@@ -24,6 +24,7 @@ import {
 import type { ModelSingleResponse } from "../../../../coding-agent/src/core/tasks/contracts.js";
 import { resolveExecutionAgentScope } from "../../agents/agent-scope.js";
 import type { AgentConfig, AgentScope, AgentSource } from "../../agents/agent-types.js";
+import { contextAgentDiscoveryOptions } from "../../agents/agents.js";
 import {
 	applyIntercomBridgeToAgent,
 	resolveIntercomBridge,
@@ -44,7 +45,7 @@ import { currentModelFullId } from "../shared/model-fallback.js";
 import { createExecutionScheduler } from "../shared/parallel-utils.js";
 import { type OwnerlessChildLaunch, runOwnerlessChild, takeStoppedQueuedOwnerlessChild } from "./ownerless-children.js";
 import { formatReleasedReplyResults } from "./released-child-replies.js";
-import { pendingToolCalls, planReleasedChildWake } from "./released-children.js";
+import { interruptedByRestart, pendingToolCalls, planReleasedChildWake } from "./released-children.js";
 import { resumeRunWorktree } from "./run-worktrees.js";
 import { indexSubagentChildOwner, subagentChildRecordOf } from "./subagent-child-card-state.js";
 import { type ChildTargetHold, childHoldKey, holdChildTargets, takeEarlyChildHold } from "./subagent-child-hold.js";
@@ -302,6 +303,7 @@ function freshPrompts(
  */
 function rediscoverAgent(
 	deps: SubagentChildRestoreDeps,
+	ctx: ExtensionContext,
 	cwd: string,
 	name: string,
 	source: AgentSource | undefined,
@@ -309,7 +311,7 @@ function rediscoverAgent(
 	const scopes: readonly AgentScope[] = source ? ["both", "user", "project"] : [resolveExecutionAgentScope(undefined)];
 	for (const scope of scopes) {
 		const agent = deps
-			.discoverAgents(cwd, scope)
+			.discoverAgents(cwd, scope, contextAgentDiscoveryOptions(ctx))
 			.agents.find((candidate) => candidate.name === name && (!source || candidate.source === source));
 		if (agent) return agent;
 	}
@@ -376,6 +378,7 @@ async function relaunchChild(
 	release: () => void,
 	onReopened: (previousIntercomId: string | undefined) => void,
 	resume: SubagentChildResumeRequest | undefined,
+	refuseRelaunch: (() => SubagentChildRecord | undefined) | undefined,
 ): Promise<SubagentChildRestoreOutcome> {
 	const unrestorable = (reason: string): SubagentChildRestoreOutcome => ({
 		kind: "unrestorable",
@@ -439,7 +442,7 @@ async function relaunchChild(
 		onReopened(previousIntercomId);
 		if (previousIntercomId) await hold?.add(previousIntercomId);
 	}
-	const discovered = rediscoverAgent(deps, cwd, record.agent, record.agentSource);
+	const discovered = rediscoverAgent(deps, ctx, cwd, record.agent, record.agentSource);
 	if (!discovered)
 		return unrestorable(
 			`agent "${record.agent}"${record.agentSource ? ` (${record.agentSource})` : ""} is no longer defined`,
@@ -492,6 +495,13 @@ async function relaunchChild(
 		redispatch || (childOptions && !childAllowsIntercom(childOptions)) ? undefined : hold?.authorization;
 	// A child that will not use Intercom never registers, so nothing it could be sent should wait for it.
 	if (!supervisorAuthorization) await hold?.release();
+	// The last check before it runs again, with nothing awaited after it: a wake whose child was paused or quit meanwhile
+	// relaunches nothing, and the results it carries stay held for the child's resume (#4845).
+	const declined = refuseRelaunch?.();
+	if (declined !== undefined) {
+		await hold?.release();
+		return { kind: "terminal", record: declined };
+	}
 	const intercomGroup = launchIntercomGroup(record, ctx);
 	// A released child, or one results are held for, continues the turn it was waiting in before anything else (#4326).
 	const kept = record.heldToolResults ?? [];
@@ -512,7 +522,12 @@ async function relaunchChild(
 		(record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS ||
 			(record.waitingOn?.length ?? 0) > 0 ||
 			toolResults.length > 0)
-			? planReleasedChildWake(pendingToolCalls(sessionManager), toolResults, !promptless)
+			? planReleasedChildWake(
+					pendingToolCalls(sessionManager),
+					toolResults,
+					!promptless,
+					interruptedByRestart(record),
+				)
 			: undefined;
 	const basePrompts = fresh ? freshPrompts(record, fresh, resume) : resumedPrompts(record, resume);
 	const prompts = redispatch
@@ -623,6 +638,7 @@ async function relaunchChild(
 		runtime,
 		recordChild,
 		forked: record.forked === true,
+		...(record.heartbeatMs === undefined ? {} : { heartbeatMs: record.heartbeatMs }),
 		...(schedule ? { schedule } : {}),
 		onTerminal: () => {
 			release();
@@ -774,13 +790,15 @@ async function relaunched(
  * Records that a fork copied from another session name that session as their owner, so they are never restored here.
  * With `resume`, an explicit `subagent({ action: "resume" })` reopens a settled child the same way; the caller
  * decides which settled children are resumable. A failure that passes (`isRetryableStorageError`) rejects with that
- * failure and leaves the child as it was, never gone.
+ * failure and leaves the child as it was, never gone. `refuseRelaunch`, checked last before the child runs again,
+ * returns the child's latest record when it must not run after all; the outcome is then `terminal` with that record.
  */
 export async function restoreSubagentChild(
 	deps: SubagentChildRestoreDeps,
 	ctx: ExtensionContext,
 	id: string,
 	resume?: SubagentChildResumeRequest,
+	refuseRelaunch?: () => SubagentChildRecord | undefined,
 ): Promise<SubagentChildRestoreOutcome> {
 	const ownerSessionId = subagentChildOwner(ctx).sessionId;
 	indexSubagentChildOwner(ctx);
@@ -795,7 +813,7 @@ export async function restoreSubagentChild(
 		if (resume === undefined) return active.outcome;
 		await active.finished;
 		await subagentChildRecordsAppended(ownerSessionId);
-		return restoreSubagentChild(deps, ctx, id, resume);
+		return restoreSubagentChild(deps, ctx, id, resume, refuseRelaunch);
 	}
 	goneChildren.delete(key);
 	const previousIntercomId = Promise.withResolvers<string | undefined>();
@@ -843,7 +861,7 @@ export async function restoreSubagentChild(
 		// outside any work, so neither is in scope here.
 		return withWorktreeRootMappings(
 			ctx.sessionManager.getWorktreeRootMappings(),
-			() => relaunchChild(deps, ctx, record, hold, release, onReopened, resume),
+			() => relaunchChild(deps, ctx, record, hold, release, onReopened, resume, refuseRelaunch),
 			recordedWorktreeRootMappings(record),
 		);
 	})().then(

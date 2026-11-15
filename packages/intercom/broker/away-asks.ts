@@ -20,6 +20,9 @@ export interface HeldAwayMessage {
 	readonly message: Message;
 }
 
+/** #4829: a kept question's recipient, when its return address was kept, is only the session that proves it. */
+const PROVEN_RECIPIENT = "(target_return_address = '' OR target_return_address = ?)";
+
 interface Statement {
 	all(...params: Array<string | number>): Array<Record<string, unknown>>;
 	get(...params: Array<string | number>): Record<string, unknown> | undefined;
@@ -54,6 +57,26 @@ export class AwayAsks {
 				kept_at INTEGER NOT NULL,
 				PRIMARY KEY (message_id, sender_session_id, target_session_id)
 			);
+			CREATE TABLE IF NOT EXISTS live_questions (
+				message_id TEXT NOT NULL,
+				sender_session_id TEXT NOT NULL,
+				target_session_id TEXT NOT NULL,
+				sender_return_address TEXT NOT NULL,
+				target_return_address TEXT NOT NULL,
+				broker_instance TEXT NOT NULL,
+				recorded_at INTEGER NOT NULL,
+				PRIMARY KEY (message_id, sender_session_id, target_session_id)
+			);
+			CREATE TABLE IF NOT EXISTS live_held (
+				message_id TEXT PRIMARY KEY,
+				asker_session_id TEXT NOT NULL,
+				asker_return_address TEXT NOT NULL,
+				replier_session_id TEXT NOT NULL,
+				from_json TEXT NOT NULL,
+				message_json TEXT NOT NULL,
+				broker_instance TEXT NOT NULL,
+				held_at INTEGER NOT NULL
+			);
 			CREATE TABLE IF NOT EXISTS held_messages (
 				message_id TEXT PRIMARY KEY,
 				asker_session_id TEXT NOT NULL,
@@ -64,7 +87,86 @@ export class AwayAsks {
 				held_at INTEGER NOT NULL
 			);
 		`);
+		// #4829: added later. A file from an older broker gets the column; an older broker ignores it.
+		const columns = this.statement("PRAGMA table_info(away_questions)").all();
+		if (!columns.some((column) => column.name === "target_return_address"))
+			this.database.exec("ALTER TABLE away_questions ADD COLUMN target_return_address TEXT NOT NULL DEFAULT ''");
+		this.adoptLiveFromPreviousBrokers();
 		this.purge();
+	}
+
+	/** This broker's live routes; another instance's are what a broker that shut down or crashed left behind. */
+	private readonly instance = randomUUID();
+
+	/**
+	 * #4829: the live asks of a broker that is gone wait like away asks: every one of its sessions is away until it
+	 * registers again. Each keeps both peers' return addresses, so only the proven asker or recipient takes it up.
+	 */
+	private adoptLiveFromPreviousBrokers(): void {
+		const foreign = this.statement("SELECT 1 FROM live_questions WHERE broker_instance <> ? LIMIT 1").get(this.instance);
+		const foreignHeld = this.statement("SELECT 1 FROM live_held WHERE broker_instance <> ? LIMIT 1").get(this.instance);
+		if (foreign === undefined && foreignHeld === undefined) return;
+		this.database.exec("BEGIN IMMEDIATE");
+		try {
+			this.statement(
+				"INSERT OR REPLACE INTO away_questions (message_id, sender_session_id, target_session_id, sender_return_address, target_return_address, kept_at) SELECT message_id, sender_session_id, target_session_id, sender_return_address, target_return_address, recorded_at FROM live_questions WHERE broker_instance <> ?",
+			).run(this.instance);
+			this.statement("DELETE FROM live_questions WHERE broker_instance <> ?").run(this.instance);
+			this.statement(
+				"INSERT OR IGNORE INTO held_messages (message_id, asker_session_id, asker_return_address, replier_session_id, from_json, message_json, held_at) SELECT message_id, asker_session_id, asker_return_address, replier_session_id, from_json, message_json, held_at FROM live_held WHERE broker_instance <> ?",
+			).run(this.instance);
+			this.statement("DELETE FROM live_held WHERE broker_instance <> ?").run(this.instance);
+			this.database.exec("COMMIT");
+		} catch (error) {
+			this.database.exec("ROLLBACK");
+			throw error;
+		}
+	}
+
+	/**
+	 * #4829: a live ask's route, written when it is recorded so it outlives this broker (a restart or a crash), with the
+	 * return addresses its asker and recipient registered with. Only an asker that can prove itself is written.
+	 */
+	recordLive(question: PendingQuestion, senderReturnAddress: string, targetReturnAddress: string): void {
+		this.statement(
+			"INSERT OR REPLACE INTO live_questions (message_id, sender_session_id, target_session_id, sender_return_address, target_return_address, broker_instance, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		).run(
+			question.messageId,
+			question.senderSessionId,
+			question.targetSessionId,
+			senderReturnAddress,
+			targetReturnAddress,
+			this.instance,
+			this.now(),
+		);
+	}
+
+	/** The live route was answered, failed, or moved on: it no longer outlives this broker. */
+	forgetLive(question: PendingQuestion): void {
+		this.statement(
+			"DELETE FROM live_questions WHERE message_id = ? AND sender_session_id = ? AND target_session_id = ?",
+		).run(question.messageId, question.senderSessionId, question.targetSessionId);
+	}
+
+	/** #4829: a failed-ask message this broker holds for a released subagent, kept for it should this broker go. */
+	holdLive(held: HeldAwayMessage, askerReturnAddress: string): void {
+		this.statement(
+			"INSERT OR IGNORE INTO live_held (message_id, asker_session_id, asker_return_address, replier_session_id, from_json, message_json, broker_instance, held_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+		).run(
+			held.message.id,
+			held.askerSessionId,
+			askerReturnAddress,
+			held.from.id,
+			JSON.stringify(held.from),
+			JSON.stringify(held.message),
+			this.instance,
+			this.now(),
+		);
+	}
+
+	/** The released subagent took its held failed-ask message from this broker. */
+	forgetLiveHeld(messageId: string): void {
+		this.statement("DELETE FROM live_held WHERE message_id = ?").run(messageId);
 	}
 
 	private statement(sql: string): Statement {
@@ -84,17 +186,24 @@ export class AwayAsks {
 	}
 
 	/**
-	 * Keep questions whose asker or recipient is away until it is back. `senderReturnAddress`: the away asker's own
-	 * session, so a reply is not held for an asker that is already back under another Intercom id.
+	 * Keep questions whose asker or recipient is away until it is back. `senderReturnAddress`: the asker's own session,
+	 * so a reply is not held for an asker that is already back under another Intercom id. #4950: a live asker's is kept
+	 * too, resolved per question, so its failure still reaches it should this broker go before its departure.
 	 */
-	keep(questions: readonly PendingQuestion[], senderReturnAddress?: string): void {
+	keep(
+		questions: readonly PendingQuestion[],
+		senderReturnAddress?: string | ((question: PendingQuestion) => string | undefined),
+	): void {
 		if (questions.length === 0) return;
 		const insert = this.statement(
 			"INSERT OR REPLACE INTO away_questions (message_id, sender_session_id, target_session_id, sender_return_address, kept_at) VALUES (?, ?, ?, ?, ?)",
 		);
 		const at = this.now();
-		for (const question of questions)
-			insert.run(question.messageId, question.senderSessionId, question.targetSessionId, senderReturnAddress ?? "", at);
+		for (const question of questions) {
+			const returnAddress =
+				typeof senderReturnAddress === "function" ? senderReturnAddress(question) : senderReturnAddress;
+			insert.run(question.messageId, question.senderSessionId, question.targetSessionId, returnAddress ?? "", at);
+		}
 		this.purge();
 	}
 
@@ -137,10 +246,11 @@ export class AwayAsks {
 	question(
 		questionId: string,
 		replierSessionId: string,
+		replierReturnAddress = "",
 	): (PendingQuestion & { readonly senderReturnAddress?: string }) | undefined {
 		const row = this.statement(
-			"SELECT sender_session_id, sender_return_address FROM away_questions WHERE message_id = ? AND target_session_id = ? LIMIT 1",
-		).get(questionId, replierSessionId);
+			`SELECT sender_session_id, sender_return_address FROM away_questions WHERE message_id = ? AND target_session_id = ? AND ${PROVEN_RECIPIENT} LIMIT 1`,
+		).get(questionId, replierSessionId, replierReturnAddress);
 		if (typeof row?.sender_session_id !== "string") return undefined;
 		const returnAddress = typeof row.sender_return_address === "string" ? row.sender_return_address : "";
 		return {
@@ -155,19 +265,21 @@ export class AwayAsks {
 	restore(
 		sessionId: string,
 		returnAddress: string | undefined,
-		isConnected: (sessionId: string) => boolean,
+		isConnected: (sessionId: string, returnAddress: string) => boolean,
 	): PendingQuestion[] {
+		this.adoptLiveFromPreviousBrokers();
 		// An asker's routes come back only to the session that proves it is the asker (see `held`), under whatever id it
-		// registered with now; a recipient's come back to the id it is asked under.
+		// registered with now; a recipient's come back to the id it is asked under, and, when the recipient's return
+		// address was kept (#4829), only to the session that proves it.
 		const proven = returnAddress ?? "";
 		const rows = this.statement(
-			"SELECT message_id, sender_session_id, target_session_id, sender_return_address, kept_at FROM away_questions WHERE (sender_return_address <> '' AND sender_return_address = ?) OR (sender_return_address = '' AND sender_session_id = ?) OR target_session_id = ? ORDER BY kept_at",
-		).all(proven, sessionId, sessionId);
+			`SELECT message_id, sender_session_id, target_session_id, sender_return_address, target_return_address, kept_at FROM away_questions WHERE (sender_return_address <> '' AND sender_return_address = ?) OR (sender_return_address = '' AND sender_session_id = ?) OR (target_session_id = ? AND ${PROVEN_RECIPIENT}) ORDER BY kept_at`,
+		).all(proven, sessionId, sessionId, proven);
 		const remove = this.statement(
 			"DELETE FROM away_questions WHERE message_id = ? AND sender_session_id = ? AND target_session_id = ?",
 		);
 		const rebind = this.statement(
-			"INSERT OR REPLACE INTO away_questions (message_id, sender_session_id, target_session_id, sender_return_address, kept_at) VALUES (?, ?, ?, ?, ?)",
+			"INSERT OR REPLACE INTO away_questions (message_id, sender_session_id, target_session_id, sender_return_address, target_return_address, kept_at) VALUES (?, ?, ?, ?, ?, ?)",
 		);
 		const restored: PendingQuestion[] = [];
 		for (const row of rows) {
@@ -178,12 +290,23 @@ export class AwayAsks {
 			};
 			const askerBack = proven !== "" && row.sender_return_address === proven;
 			const question = askerBack ? { ...kept, senderSessionId: sessionId } : kept;
-			if (!isConnected(question.senderSessionId) || !isConnected(question.targetSessionId)) {
+			const senderProof = askerBack ? proven : String(row.sender_return_address);
+			if (
+				!isConnected(question.senderSessionId, senderProof) ||
+				!isConnected(question.targetSessionId, String(row.target_return_address))
+			) {
 				// #4765: an asker back under a new id while its recipient is still away keeps the question under that id, so
 				// the recipient's answer to it clears the question and its later end does not fail it again.
 				if (question.senderSessionId !== kept.senderSessionId) {
 					remove.run(kept.messageId, kept.senderSessionId, kept.targetSessionId);
-					rebind.run(question.messageId, question.senderSessionId, question.targetSessionId, proven, Number(row.kept_at));
+					rebind.run(
+						question.messageId,
+						question.senderSessionId,
+						question.targetSessionId,
+						proven,
+						String(row.target_return_address),
+						Number(row.kept_at),
+					);
 				}
 				continue;
 			}
@@ -195,18 +318,23 @@ export class AwayAsks {
 
 	/**
 	 * The recipient `target` ended, or can no longer answer: each kept question to it becomes a failed-ask message held
-	 * for its away asker. Returns the questions failed.
+	 * for its away asker. #4950: a question whose asker is connected is returned in `live` for the broker to fail on its
+	 * route; one whose asker kept no return address and is not connected stays kept (it ages out), never dropped
+	 * unseen. Returns the questions held for their askers.
 	 */
 	failForTarget(
 		target: SessionInfo,
 		reason: string,
 		idPrefix: string,
 		failedElsewhere: (question: PendingQuestion) => boolean,
-	): PendingQuestion[] {
+		targetReturnAddress = "",
+		askerConnected: (question: PendingQuestion, returnAddress: string) => boolean,
+	): { failed: PendingQuestion[]; live: PendingQuestion[] } {
 		const rows = this.statement(
-			"SELECT message_id, sender_session_id, sender_return_address FROM away_questions WHERE target_session_id = ? ORDER BY kept_at",
-		).all(target.id);
+			`SELECT message_id, sender_session_id, sender_return_address FROM away_questions WHERE target_session_id = ? AND ${PROVEN_RECIPIENT} ORDER BY kept_at`,
+		).all(target.id, targetReturnAddress);
 		const failed: PendingQuestion[] = [];
+		const live: PendingQuestion[] = [];
 		for (const row of rows) {
 			const question = {
 				messageId: String(row.message_id),
@@ -214,10 +342,18 @@ export class AwayAsks {
 				targetSessionId: target.id,
 			};
 			const returnAddress = typeof row.sender_return_address === "string" ? row.sender_return_address : "";
-			// A recipient's own asks to an away session keep no asker identity: only an away asker learns of the end.
+			if (askerConnected(question, returnAddress)) {
+				live.push(question);
+				this.forget(question);
+				continue;
+			}
+			// An asker that kept no return address cannot be told while away: its question waits until it ages out.
 			if (returnAddress === "") continue;
 			// #4765: a released subagent's owner is handed this failure on its own route, which wakes the subagent.
-			if (failedElsewhere(question)) continue;
+			if (failedElsewhere(question)) {
+				this.forget(question);
+				continue;
+			}
 			failed.push(question);
 			this.hold({ ...question, senderReturnAddress: returnAddress }, target, {
 				// Unguessable, so no other session can name it.
@@ -228,8 +364,7 @@ export class AwayAsks {
 				content: { text: reason },
 			});
 		}
-		this.statement("DELETE FROM away_questions WHERE target_session_id = ?").run(target.id);
-		return failed;
+		return { failed, live };
 	}
 
 	/** The asker that proves itself by its return address ended for good: nothing waits for it any more. */

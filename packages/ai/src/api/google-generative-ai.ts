@@ -27,6 +27,7 @@ import { providerHeadersToRecord } from "../utils/headers.ts";
 import { type ClientIdentity, getIdentityHeaders } from "../utils/identity.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
+import { createStreamDeadline, withStreamDeadline } from "../utils/stream-deadline.ts";
 import { getSystemMessageText } from "../utils/text.ts";
 import { collapseSystemMessages, getCurrentTools, getInitialSystemMessage } from "../utils/transcript.ts";
 import type { GoogleApiThinkingLevel, ResolvedGoogleThinkingLevel } from "./google-shared.ts";
@@ -88,6 +89,7 @@ export const stream: StreamFunction<"google-generative-ai", GoogleOptions> = (
 			stopReason: "pending",
 			timestamp: Date.now(),
 		};
+		const streamDeadline = createStreamDeadline(options?.streamDeadlineMs, options?.signal);
 
 		try {
 			const apiKey = options?.apiKey;
@@ -103,13 +105,20 @@ export const stream: StreamFunction<"google-generative-ai", GoogleOptions> = (
 			if (nextParams !== undefined) {
 				params = nextParams as GenerateContentParameters;
 			}
-			const googleStream = await retryGoogleRequest(() => client.models.generateContentStream(params), options);
+			// The deadline signal aborts the SDK request, closing the connection when the stream stalls.
+			const requestParams: GenerateContentParameters = streamDeadline.signal
+				? { ...params, config: { ...params.config, abortSignal: streamDeadline.signal } }
+				: params;
+			const googleStream = await retryGoogleRequest(() => client.models.generateContentStream(requestParams), {
+				...options,
+				signal: streamDeadline.signal,
+			});
 
 			stream.push({ type: "start", partial: output });
 			let currentBlock: TextContent | ThinkingContent | null = null;
 			const blocks = output.content;
 			const blockIndex = () => blocks.length - 1;
-			for await (const chunk of googleStream) {
+			for await (const chunk of withStreamDeadline(googleStream, streamDeadline.deadlineMs, streamDeadline.abort)) {
 				await options?.onProviderStreamEvent?.(chunk, model);
 				// @google/genai documents GenerateContentResponse.responseId as an output-only field
 				// used to identify each response. Keep the first non-empty one from the stream.
@@ -297,6 +306,8 @@ export const stream: StreamFunction<"google-generative-ai", GoogleOptions> = (
 			output.retryAfterMs = error instanceof Error ? getProviderRetryAfterMs(error) : undefined;
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
+		} finally {
+			streamDeadline.cleanup();
 		}
 	})();
 

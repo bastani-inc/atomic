@@ -15,9 +15,27 @@ export class PendingQuestionIndex {
    */
   private away: AwayAsks | undefined;
 
-  /** Keep what waits for away sessions in this store (the broker's durable one); in memory until then. */
-  useAwayStore(store: AwayAsks): void {
+  /** Return addresses of sessions by id, live or departed: a live route is written durably with its peers' (#4829). */
+  private returnAddressOf: (sessionId: string) => string | undefined = () => undefined;
+
+  /**
+   * Keep what waits for away sessions in this store (the broker's durable one); in memory until then. #4829: live
+   * routes are written to it too, with the return addresses `returnAddressOf` resolves, so they outlive the broker.
+   */
+  useAwayStore(store: AwayAsks, returnAddressOf?: (sessionId: string) => string | undefined): void {
     this.away = store;
+    if (returnAddressOf !== undefined) this.returnAddressOf = returnAddressOf;
+  }
+
+  /** #4829: a live route outlives this broker only when its asker can prove itself by its return address. */
+  writeLive(question: PendingQuestion): void {
+    const senderReturnAddress = this.returnAddressOf(question.senderSessionId);
+    if (this.away === undefined || senderReturnAddress === undefined || senderReturnAddress === "") return;
+    this.away.recordLive(question, senderReturnAddress, this.returnAddressOf(question.targetSessionId) ?? "");
+  }
+
+  forgetLive(questions: readonly PendingQuestion[]): void {
+    for (const question of questions) this.away?.forgetLive(question);
   }
 
   private awayAsks(): AwayAsks {
@@ -25,10 +43,16 @@ export class PendingQuestionIndex {
     return this.away;
   }
 
-  /** Keep questions whose peer is away until it is back. */
+  /**
+   * Keep questions whose peer is away until it is back. #4950: without `senderReturnAddress` (their recipient is the one
+   * away), each keeps its asker's return address now, so its failure reaches it even if this broker goes first.
+   */
   keepDormant(questions: readonly PendingQuestion[], senderReturnAddress?: string): void {
     if (questions.length === 0) return;
-    this.awayAsks().keep(questions, senderReturnAddress);
+    this.awayAsks().keep(
+      questions,
+      senderReturnAddress ?? ((question) => this.returnAddressOf(question.senderSessionId)),
+    );
   }
 
   /** The asker is away now too: its questions kept for an away recipient wait for it under its return address (#4761). */
@@ -47,23 +71,24 @@ export class PendingQuestionIndex {
   }
 
   /** Whether `replierSessionId` answers the kept question `questionId`, whose asker is away (#4751). */
-  hasDormantReply(questionId: string, replierSessionId: string): boolean {
-    return this.awayAsks().question(questionId, replierSessionId) !== undefined;
+  hasDormantReply(questionId: string, replierSessionId: string, replierReturnAddress?: string): boolean {
+    return this.awayAsks().question(questionId, replierSessionId, replierReturnAddress) !== undefined;
   }
 
   /** The kept question `questionId` that `replierSessionId` answers while its asker is away (#4751). */
   dormantReply(
     questionId: string,
     replierSessionId: string,
+    replierReturnAddress?: string,
   ): (PendingQuestion & { readonly senderReturnAddress?: string }) | undefined {
-    return this.awayAsks().question(questionId, replierSessionId);
+    return this.awayAsks().question(questionId, replierSessionId, replierReturnAddress);
   }
 
   /** A session is back under its id: its kept questions route again once both of their peers are connected. */
   restoreDormant(
     sessionId: string,
     returnAddress: string | undefined,
-    isConnected: (sessionId: string) => boolean,
+    isConnected: (sessionId: string, returnAddress: string) => boolean,
   ): PendingQuestion[] {
     const restored = this.awayAsks().restore(sessionId, returnAddress, isConnected);
     for (const question of restored) this.record(question.senderSessionId, question.targetSessionId, question.messageId);
@@ -74,8 +99,24 @@ export class PendingQuestionIndex {
    * Kept questions to a recipient that ended or can no longer answer. Their askers are away, so each gets a failed-ask
    * message held until it is back (#4751).
    */
-  failDormantForTarget(target: SessionInfo, reason: string, idPrefix: string): void {
-    this.awayAsks().failForTarget(target, reason, idPrefix, this.failsThroughOwner);
+  failDormantForTarget(target: SessionInfo, reason: string, idPrefix: string, targetReturnAddress?: string): void {
+    const { live } = this.awayAsks().failForTarget(
+      target,
+      reason,
+      idPrefix,
+      this.failsThroughOwner,
+      targetReturnAddress,
+      this.askerConnected,
+    );
+    // #4950: a connected asker's question routes again, so the recipient's end fails it on that route as it does today.
+    for (const question of live) this.record(question.senderSessionId, question.targetSessionId, question.messageId);
+  }
+
+  private askerConnected: (question: PendingQuestion, returnAddress: string) => boolean = () => false;
+
+  /** #4950: whether a kept question's asker is connected, so its failure is delivered rather than held. */
+  failToConnectedAskerWhen(check: (question: PendingQuestion, returnAddress: string) => boolean): void {
+    this.askerConnected = check;
   }
 
   private failsThroughOwner: (question: PendingQuestion) => boolean = () => false;
@@ -121,6 +162,7 @@ export class PendingQuestionIndex {
   parkAsker(childName: string, ownerSessionId: string, question: PendingQuestion): void {
     const key = JSON.stringify([ownerSessionId, childName.trim().toLowerCase()]);
     this.parkedAskers.set(key, [...(this.parkedAskers.get(key) ?? []), question]);
+    this.writeLive(question);
   }
 
   /** #4751: failed-ask messages for a released subagent whose recipient ended, by owner and child name. */
@@ -129,7 +171,10 @@ export class PendingQuestionIndex {
   holdForReleasedChild(childName: string, ownerSessionId: string, held: HeldAwayMessage): void {
     const key = JSON.stringify([ownerSessionId, childName.trim().toLowerCase()]);
     const list = this.heldForChildren.get(key) ?? [];
-    if (!list.some((existing) => existing.message.id === held.message.id)) this.heldForChildren.set(key, [...list, held]);
+    if (list.some((existing) => existing.message.id === held.message.id)) return;
+    this.heldForChildren.set(key, [...list, held]);
+    const askerReturnAddress = this.returnAddressOf(held.askerSessionId);
+    if (askerReturnAddress !== undefined && askerReturnAddress !== "") this.away?.holdLive(held, askerReturnAddress);
   }
 
   hasHeldForReleasedChild(childName: string, ownerSessionId: string): boolean {
@@ -140,6 +185,7 @@ export class PendingQuestionIndex {
     const key = JSON.stringify([ownerSessionId, childName.trim().toLowerCase()]);
     const held = this.heldForChildren.get(key) ?? [];
     this.heldForChildren.delete(key);
+    for (const message of held) this.away?.forgetLiveHeld(message.message.id);
     return held;
   }
 
@@ -147,11 +193,13 @@ export class PendingQuestionIndex {
     const key = JSON.stringify([ownerSessionId, childName.trim().toLowerCase()]);
     const questions = this.parkedAskers.get(key) ?? [];
     this.parkedAskers.delete(key);
+    this.forgetLive(questions);
     return questions;
   }
 
   parkTarget(targetSessionId: string, childName: string, ownerSessionId: string): void {
-    const questions = this.takeForTarget(targetSessionId);
+    // #4829: a parked route keeps its durable row: it is still waiting for its released recipient.
+    const questions = this.removeForTarget(targetSessionId);
     if (questions.length === 0) return;
     const key = JSON.stringify([ownerSessionId, childName.trim().toLowerCase()]);
     const previous = this.parked.get(key);
@@ -164,6 +212,7 @@ export class PendingQuestionIndex {
     const parked = this.parked.get(key);
     if (parked === undefined) return [];
     this.parked.delete(key);
+    this.forgetLive(parked.questions);
     return parked.questions;
   }
 
@@ -174,14 +223,17 @@ export class PendingQuestionIndex {
       this.parked.delete(key);
       result.push(...parked.questions);
     }
+    this.forgetLive(result);
     return result;
   }
 
   record(senderSessionId: string, targetSessionId: string, messageId: string): void {
     const routes = this.questions.get(messageId) ?? [];
     if (routes.some((route) => route.senderSessionId === senderSessionId && route.targetSessionId === targetSessionId)) return;
-    routes.push({ senderSessionId, targetSessionId, messageId });
+    const question = { senderSessionId, targetSessionId, messageId };
+    routes.push(question);
     this.questions.set(messageId, routes);
+    this.writeLive(question);
   }
 
 	/** Authorize only the exact reverse route of a broker-recorded live ask. */
@@ -200,7 +252,7 @@ export class PendingQuestionIndex {
       (route) => route.targetSessionId === senderSessionId && route.senderSessionId === targetSessionId,
     ) ?? -1;
     if (!routes || index < 0) return false;
-    routes.splice(index, 1);
+    this.forgetLive(routes.splice(index, 1));
     if (routes.length === 0) this.questions.delete(replyTo);
     // #4765: a released subagent's ask can be kept for its away recipient while it is live again; answered, it is not.
     this.away?.forget({ messageId: replyTo, senderSessionId: targetSessionId, targetSessionId: senderSessionId });
@@ -231,10 +283,17 @@ export class PendingQuestionIndex {
       if (remaining.length === 0) this.parked.delete(key);
       else parked.questions = remaining;
     }
+    this.forgetLive(pending);
     return pending;
   }
 
   takeForTarget(targetSessionId: string): PendingQuestion[] {
+    const pending = this.removeForTarget(targetSessionId);
+    this.forgetLive(pending);
+    return pending;
+  }
+
+  private removeForTarget(targetSessionId: string): PendingQuestion[] {
     const pending: PendingQuestion[] = [];
     for (const [messageId, routes] of this.questions) {
       const remaining = routes.filter((route) => {

@@ -28,6 +28,7 @@ import { headersToRecord } from "../utils/headers.ts";
 import { getIdentityHeaders } from "../utils/identity.ts";
 import { resolveHttpProxyUrlForTarget } from "../utils/node-http-proxy.ts";
 import { admitFetch } from "../utils/request-admission.ts";
+import { ServerSentEventDecoder } from "../utils/sse.ts";
 import { createStreamDeadline, type StreamDeadlineHandle, withStreamDeadline } from "../utils/stream-deadline.ts";
 import { getSystemMessageText } from "../utils/text.ts";
 import { recordThinkingOffFallback } from "../utils/thinking-off.ts";
@@ -905,8 +906,7 @@ async function* parseSSE(response: Response, signal?: AbortSignal): AsyncGenerat
 	if (!response.body) return;
 
 	const reader = response.body.getReader();
-	const decoder = new TextDecoder();
-	let buffer = "";
+	const decoder = new ServerSentEventDecoder();
 	const onAbort = () => {
 		void reader.cancel().catch(() => {});
 	};
@@ -921,33 +921,19 @@ async function* parseSSE(response: Response, signal?: AbortSignal): AsyncGenerat
 			if (signal?.aborted) {
 				throw new Error("Request was aborted");
 			}
-			buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
-			// Treat EOF as terminating the residual SSE frame.
-			if (done && buffer.trim()) buffer += "\n\n";
-
-			let idx = buffer.indexOf("\n\n");
-			while (idx !== -1) {
-				const chunk = buffer.slice(0, idx);
-				buffer = buffer.slice(idx + 2);
-
-				const dataLines = chunk
-					.split("\n")
-					.filter((l) => l.startsWith("data:"))
-					.map((l) => l.slice(5).trim());
-				if (dataLines.length > 0) {
-					const data = dataLines.join("\n").trim();
-					if (data && data !== "[DONE]") {
-						try {
-							yield JSON.parse(data) as Record<string, unknown>;
-						} catch (cause) {
-							throw new CodexProtocolError(`Invalid Codex SSE JSON: ${formatThrownValue(cause)}`, {
-								cause,
-								payload: data,
-							});
-						}
+			// EOF terminates the residual SSE frame.
+			for (const sse of done ? decoder.end() : decoder.decode(value)) {
+				const data = sse.data.trim();
+				if (data && data !== "[DONE]") {
+					try {
+						yield JSON.parse(data) as Record<string, unknown>;
+					} catch (cause) {
+						throw new CodexProtocolError(`Invalid Codex SSE JSON: ${formatThrownValue(cause)}`, {
+							cause,
+							payload: data,
+						});
 					}
 				}
-				idx = buffer.indexOf("\n\n");
 			}
 
 			if (done) break;

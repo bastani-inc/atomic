@@ -2,6 +2,7 @@
 
 use std::io;
 
+use grep_matcher::Matcher;
 use grep_searcher::{
 	BinaryDetection, Searcher, SearcherBuilder, Sink, SinkContext, SinkContextKind, SinkMatch,
 };
@@ -13,7 +14,8 @@ use super::{ContextLine, OutputMode, SearchParams};
 // Internal match collection
 // ---------------------------------------------------------------------------
 
-struct MatchCollector {
+struct MatchCollector<'m> {
+	matcher: &'m grep_regex::RegexMatcher,
 	matches: Vec<CollectedMatch>,
 	match_count: u64,
 	collected_count: u64,
@@ -41,14 +43,16 @@ pub(super) struct SearchResultInternal {
 	pub(super) limit_reached: bool,
 }
 
-impl MatchCollector {
+impl<'m> MatchCollector<'m> {
 	fn new(
+		matcher: &'m grep_regex::RegexMatcher,
 		max_count: Option<u64>,
 		offset: u64,
 		max_columns: Option<usize>,
 		collect_matches: bool,
 	) -> Self {
 		Self {
+			matcher,
 			matches: Vec::new(),
 			match_count: 0,
 			collected_count: 0,
@@ -67,12 +71,34 @@ impl MatchCollector {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn truncate_line(line: String, max_columns: Option<usize>) -> (String, bool) {
+/// Truncates `line` to `max_columns` bytes, ellipses included. When `first_match` (a byte range) ends past
+/// the kept head, the kept window moves to show the match instead, with "..." on each cut side.
+fn truncate_line(
+	line: String,
+	max_columns: Option<usize>,
+	first_match: Option<(usize, usize)>,
+) -> (String, bool) {
 	match max_columns {
 		Some(max) if line.len() > max => {
 			let cut = max.saturating_sub(3);
-			let boundary = line.floor_char_boundary(cut);
-			(format!("{}...", &line[..boundary]), true)
+			match first_match {
+				Some((start, end)) if end > cut => {
+					let budget = max.saturating_sub(6);
+					let match_len = end.saturating_sub(start).min(budget);
+					let window_start = start
+						.saturating_sub((budget - match_len) / 2)
+						.min(line.len().saturating_sub(budget));
+					let window_start = line.floor_char_boundary(window_start);
+					let window_end = line.floor_char_boundary((window_start + budget).min(line.len()));
+					let prefix = if window_start > 0 { "..." } else { "" };
+					let suffix = if window_end < line.len() { "..." } else { "" };
+					(format!("{prefix}{}{suffix}", &line[window_start..window_end]), true)
+				},
+				_ => {
+					let boundary = line.floor_char_boundary(cut);
+					(format!("{}...", &line[..boundary]), true)
+				},
+			}
 		},
 		_ => (line, false),
 	}
@@ -89,7 +115,7 @@ fn bytes_to_trimmed_string(bytes: &[u8]) -> String {
 // Sink implementation for grep-searcher
 // ---------------------------------------------------------------------------
 
-impl Sink for MatchCollector {
+impl Sink for MatchCollector<'_> {
 	type Error = io::Error;
 
 	fn matched(
@@ -111,7 +137,16 @@ impl Sink for MatchCollector {
 
 		if self.collect_matches {
 			let raw_line = bytes_to_trimmed_string(mat.bytes());
-			let (line, truncated) = truncate_line(raw_line, self.max_columns);
+			let first_match = match self.max_columns {
+				Some(max) if raw_line.len() > max => self
+					.matcher
+					.find(mat.bytes())
+					.ok()
+					.flatten()
+					.map(|found| (found.start(), found.end())),
+				_ => None,
+			};
+			let (line, truncated) = truncate_line(raw_line, self.max_columns, first_match);
 			let line_number = mat.line_number().unwrap_or(0);
 
 			self.matches.push(CollectedMatch {
@@ -146,7 +181,7 @@ impl Sink for MatchCollector {
 		}
 
 		let raw_line = bytes_to_trimmed_string(ctx.bytes());
-		let (line, _) = truncate_line(raw_line, self.max_columns);
+		let (line, _) = truncate_line(raw_line, self.max_columns, None);
 		let line_number = ctx.line_number().unwrap_or(0);
 
 		match ctx.kind() {
@@ -188,6 +223,7 @@ pub(super) fn run_search_slice(
 	params: SearchParams,
 ) -> io::Result<SearchResultInternal> {
 	let mut collector = MatchCollector::new(
+		matcher,
 		params.max_count,
 		params.offset,
 		params.max_columns.map(|v| v as usize),

@@ -1,7 +1,12 @@
 import type { BoundWorkspace, WorkspaceWriterLease } from "@bastani/atomic";
 import type { WorkflowChildResult, WorkflowOutputValues, WorkflowSerializableValue } from "../shared/types.js";
+import { boundaryAttemptCheckpoint, durableWorkflowAttempt } from "./attempt-identity.js";
 import type { DurableWorkflowBackend } from "./backend.js";
-import { boundaryTransitionError, resolveBoundaryLifecycle } from "./boundary-lifecycle.js";
+import {
+	boundaryTerminalAdmitsNewAttempt,
+	boundaryTransitionError,
+	resolveBoundaryLifecycle,
+} from "./boundary-lifecycle.js";
 import type { DurableScope } from "./scoped-backend.js";
 import {
 	DURABLE_BOUNDARY_TOPOLOGY_VERSION,
@@ -91,7 +96,7 @@ export function prepareDurableChildInvocation(input: DurableBoundaryDescriptor):
 		const resolved = resolveBoundaryLifecycle(start, stages, false);
 		if ("error" in resolved) throw invalid(input, resolved.error);
 		const terminalStatus = resolved.lifecycle.latestTerminal?.topology?.boundary?.status;
-		if (terminalStatus !== undefined && terminalStatus !== "failed") {
+		if (terminalStatus !== undefined && !boundaryTerminalAdmitsNewAttempt(terminalStatus)) {
 			throw invalid(input, "terminal boundary has no valid replayable child result");
 		}
 	}
@@ -151,6 +156,19 @@ export function prepareDurableChildInvocation(input: DurableBoundaryDescriptor):
 				if (topology.sourceOrder !== sourceOrder || !sameStrings(topology.parentIds, parentIds)) {
 					throw invalid(input, "persisted source order or parent edges do not match replay");
 				}
+				// The start record keeps the earlier attempt's id; this record says this attempt started the child (#4874).
+				const attempt = durableWorkflowAttempt(input.backend, input.workflowId);
+				if (attempt !== undefined)
+					await input.backend.commitCheckpoint(
+						boundaryAttemptCheckpoint({
+							workflowId: input.workflowId,
+							replayKey: input.replayKey,
+							name: input.boundaryName,
+							topology,
+							attempt,
+							now: Date.now(),
+						}),
+					);
 				return;
 			}
 			topology = makeTopology(input, boundaryId, childRunId, parentIds, sourceOrder, "start", "running", workspace);
