@@ -137,6 +137,21 @@ describe("consumeSseStream", () => {
 		assert.deepEqual(events, [{ id: "1", data: "9" }]);
 	});
 
+	it("delivers the event pending at the end of the stream without reporting its ID (#5019)", async () => {
+		const stream = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.enqueue(new TextEncoder().encode("id: 1\ndata: a\n\nid: 2\ndata: b"));
+				controller.close();
+			},
+		});
+		const calls: string[] = [];
+		await consumeSseStream(stream, {
+			onEvent: (event, terminated) => calls.push(`event ${event.data} ${terminated}`),
+			onId: (id) => calls.push(`id ${id}`),
+		});
+		assert.deepEqual(calls, ["id 1", "event a true", "event b false"]);
+	});
+
 	it("recognizes CR, LF, and CRLF line endings, including CRLF split across chunks (pi #11775)", async () => {
 		const encoder = new TextEncoder();
 		const parse = async (chunks: string[]) => {
@@ -523,39 +538,63 @@ describe("StreamableHttpTransport", () => {
 		await client.close();
 	});
 
-	it("resumes a stream broken mid-event after the last complete event (#5019)", async () => {
-		const resumeHeaders: string[] = [];
-		let answer = "";
-		const { url } = await startServer(async (request, response, requests) => {
-			const lastEventId = request.headers["last-event-id"];
-			if (request.method === "GET" && typeof lastEventId === "string") {
-				resumeHeaders.push(lastEventId);
+	for (const ending of ["breaks", "ends"] as const) {
+		it(`resumes a stream that ${ending} mid-event after the last complete event (#5019)`, async () => {
+			const resumeHeaders: string[] = [];
+			let answer = "";
+			const { url } = await startServer(async (request, response, requests) => {
+				const lastEventId = request.headers["last-event-id"];
+				if (request.method === "GET" && typeof lastEventId === "string") {
+					resumeHeaders.push(lastEventId);
+					response.writeHead(200, { "content-type": "text/event-stream" });
+					// Replays every event after the one the client reports.
+					response.end(lastEventId === "1" ? `id: 2\ndata: ${answer}\n\n` : "");
+					return;
+				}
+				if (request.method !== "POST") return protocolHandler(request, response, requests);
+				const message = JSON.parse(await readBody(request)) as Record<string, unknown>;
+				if (message.method !== "tools/call") return protocolHandler(request, response, requests, message);
+				answer = JSON.stringify({
+					jsonrpc: "2.0",
+					id: message.id,
+					result: { content: [{ type: "text", text: "answer" }] },
+				});
 				response.writeHead(200, { "content-type": "text/event-stream" });
-				// Replays every event after the one the client reports.
-				response.end(lastEventId === "1" ? `id: 2\ndata: ${answer}\n\n` : "");
-				return;
-			}
+				// The priming event, then event 2's ID and half its data before the connection breaks or the stream ends.
+				response.write("id: 1\ndata:\n\n");
+				const half = `id: 2\ndata: ${answer.slice(0, answer.length / 2)}`;
+				if (ending === "ends") response.end(half);
+				else response.write(half, () => response.socket?.destroy());
+			});
+			const client = new McpClient({ name: "http-test", version: "1.0.0" });
+			const errors: Error[] = [];
+			client.onError((error) => errors.push(error));
+			await client.connect(
+				new StreamableHttpTransport({ url, openGetStream: false, reconnect: { initialDelayMs: 1, maxRetries: 2 } }),
+			);
+			assert.deepEqual(await client.callTool("echo", {}, { timeoutMs: 5_000 }), {
+				content: [{ type: "text", text: "answer" }],
+			});
+			assert.deepEqual(resumeHeaders, ["1"]);
+			assert.deepEqual(errors, []);
+			await client.close();
+		});
+	}
+
+	it("delivers a complete last event that the stream ends without a blank line (#5019)", async () => {
+		const { url } = await startServer(async (request, response, requests) => {
 			if (request.method !== "POST") return protocolHandler(request, response, requests);
 			const message = JSON.parse(await readBody(request)) as Record<string, unknown>;
 			if (message.method !== "tools/call") return protocolHandler(request, response, requests, message);
-			answer = JSON.stringify({
-				jsonrpc: "2.0",
-				id: message.id,
-				result: { content: [{ type: "text", text: "answer" }] },
-			});
+			const answer = { jsonrpc: "2.0", id: message.id, result: { content: [{ type: "text", text: "last" }] } };
 			response.writeHead(200, { "content-type": "text/event-stream" });
-			// The priming event, then event 2's ID and half its data before the connection breaks.
-			response.write("id: 1\ndata:\n\n");
-			response.write(`id: 2\ndata: ${answer.slice(0, answer.length / 2)}`, () => response.socket?.destroy());
+			response.end(`id: 1\ndata: ${JSON.stringify(answer)}`);
 		});
 		const client = new McpClient({ name: "http-test", version: "1.0.0" });
-		await client.connect(
-			new StreamableHttpTransport({ url, openGetStream: false, reconnect: { initialDelayMs: 1, maxRetries: 2 } }),
-		);
+		await client.connect(new StreamableHttpTransport({ url, openGetStream: false }));
 		assert.deepEqual(await client.callTool("echo", {}, { timeoutMs: 5_000 }), {
-			content: [{ type: "text", text: "answer" }],
+			content: [{ type: "text", text: "last" }],
 		});
-		assert.deepEqual(resumeHeaders, ["1"]);
 		await client.close();
 	});
 
