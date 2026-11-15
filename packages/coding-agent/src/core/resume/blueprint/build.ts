@@ -508,6 +508,15 @@ async function writeSessionEnvironment(run: BuildRun, roots: readonly BlueprintR
 	}
 }
 
+/** Whether `config` trusts `root`. A trust check that fails leaves the repository untrusted rather than failing the build. */
+function isTrusted(config: BlueprintBuildConfig, root: string): boolean {
+	try {
+		return config.trusted(root);
+	} catch {
+		return false;
+	}
+}
+
 function statusOf(run: BuildRun, globalFailed: boolean): BlueprintBuildStatus {
 	if (globalFailed) return "failed";
 	return run.failures.length > 0 ? "partial" : "success";
@@ -520,7 +529,7 @@ async function executeBuild(
 ): Promise<BlueprintBuildOutcome> {
 	const platform = config.platform ?? hostPlatform();
 	const now = config.now ?? Date.now;
-	const trusted = repositories.filter((repository) => config.trusted(repository.root));
+	const trusted = repositories.filter((repository) => isTrusted(config, repository.root));
 	const untrusted = repositories.filter((repository) => !trusted.includes(repository));
 	const global = await loadGlobal(config, platform);
 	const alias = config.setupCommand?.trim() || undefined;
@@ -684,7 +693,7 @@ async function layersOfCrashedBuild(
 		state: failedState,
 	};
 	try {
-		const trusted = repositories.filter((repository) => config.trusted(repository.root));
+		const trusted = repositories.filter((repository) => isTrusted(config, repository.root));
 		const untrusted = repositories.filter((repository) => !trusted.includes(repository));
 		const described = [
 			...(await describeBlueprints(trusted, config, "build-failed")),

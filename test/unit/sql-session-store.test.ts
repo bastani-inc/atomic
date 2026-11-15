@@ -157,19 +157,25 @@ test("SQL session schema is strict, checks JSON, and rejects unsupported version
 			assert.equal((await database.get("SELECT strict FROM pragma_table_list WHERE name = ?", name))?.strict, 1);
 		}
 		await assert.rejects(
-			database.run(`INSERT INTO ${tables.entries} VALUES (?, ?, ?, ?)`, "session", 1, "entry", "not json"),
+			database.run(
+				`INSERT INTO ${tables.entries} (session_id, seq, entry_id, entry_json) VALUES (?, ?, ?, ?)`,
+				"session",
+				1,
+				"entry",
+				"not json",
+			),
 			StorageUnavailableError,
 		);
 		await store.close();
-		await database.run(`UPDATE ${tables.meta} SET schema_version = 2`);
+		await database.run(`UPDATE ${tables.meta} SET schema_version = 3`);
 		await assert.rejects(SqlSessionStore.open(database, { prefix: "tenant_" }), (error: Error) => {
 			assert.ok(error instanceof StorageSchemaVersionError);
 			assert.equal(error.domain, "sessions");
-			assert.equal(error.found, 2);
-			assert.equal(error.supported, 1);
+			assert.equal(error.found, 3);
+			assert.equal(error.supported, 2);
 			return true;
 		});
-		assert.equal((await database.get(`SELECT schema_version FROM ${tables.meta}`))?.schema_version, 2);
+		assert.equal((await database.get(`SELECT schema_version FROM ${tables.meta}`))?.schema_version, 3);
 	});
 });
 
