@@ -96,6 +96,16 @@ export interface SubagentChildWaitingCall {
 	};
 }
 
+/**
+ * A detached call a wake answered "still running" (#5014): its result still comes from the owner process that answered
+ * it, so a record from another generation means the call died with that process.
+ */
+export interface SubagentChildStillRunningCall {
+	readonly toolCallId: string;
+	readonly toolName: string;
+	readonly ownerGeneration: string;
+}
+
 export interface SubagentChildRecord {
 	readonly version: 1;
 	readonly childId: string;
@@ -162,6 +172,12 @@ export interface SubagentChildRecord {
 	/** The launch's own `modelConstraints`, which every model its child falls back to must satisfy (#4188). */
 	readonly modelConstraints?: ModelConstraints;
 	/**
+	 * The concurrency limit of the run that dispatched the child, as plain data: a woken or resumed child waits for a slot
+	 * under it when no sibling in this process still holds the run's scheduler (#4856). Absent for a launch outside a run
+	 * scheduler.
+	 */
+	readonly runConcurrency?: number;
+	/**
 	 * The task heartbeat cadence the launch chose, which every wake, resume and restore launches with again; `0` disables.
 	 * Absent when the launch used the owner default (#4856).
 	 */
@@ -171,6 +187,11 @@ export interface SubagentChildRecord {
 	 * results wake it. Empty once nothing is outstanding.
 	 */
 	readonly waitingOn?: readonly SubagentChildWaitingCall[];
+	/**
+	 * The calls its wakes answered "still running" whose results have not reached it yet (#5014). Kept across its later
+	 * runs and releases until a wake delivers the result, or until another owner generation reports the call interrupted.
+	 */
+	readonly stillRunning?: readonly SubagentChildStillRunningCall[];
 	/**
 	 * The Intercom session id a released child was registered under. The broker reserves it with the child's name, so a
 	 * reply or a send addressed to that id still reaches the hold that wakes the child (#4326).
@@ -798,6 +819,31 @@ export async function clearSubagentChildHeldToolResults(
 		);
 	}).catch((error: ReleasedChildError) => {
 		observeChildRecordFailure(ownerSessionId, error);
+	});
+}
+
+/**
+ * Hold `resultOf` for each call the child was told is still running in an owner generation other than `generation`,
+ * in the owner's order, and stop tracking those calls (#5014): the call died with that process, so its result never
+ * arrives, and the held result tells the child so once. Undefined when there was nothing to report.
+ */
+export async function holdInterruptedStillRunningCalls(
+	pi: Pick<ExtensionAPI, "appendEntry">,
+	ownerSessionId: string,
+	childId: string,
+	generation: string,
+	resultOf: (call: SubagentChildStillRunningCall) => DetachedToolResult,
+): Promise<SubagentChildRecord | undefined> {
+	return appendInTurn(pi, ownerSessionId, childId, (latest) => {
+		const tracked = latest.stillRunning ?? [];
+		const interrupted = tracked.filter((call) => call.ownerGeneration !== generation);
+		if (interrupted.length === 0) return undefined;
+		return {
+			...latest,
+			// A result that arrived for the call meanwhile is kept over its interrupted one.
+			heldToolResults: withHeldToolResults(latest.heldToolResults, interrupted.map(resultOf)),
+			stillRunning: tracked.filter((call) => call.ownerGeneration === generation),
+		};
 	});
 }
 

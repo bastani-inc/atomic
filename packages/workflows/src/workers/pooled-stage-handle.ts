@@ -122,6 +122,8 @@ export interface OutboundEntry {
 	 * (it may still admit it, deduplicated by op); the next one is.
 	 */
 	unconfirmedOn?: number;
+	/** The sender heard that the stage finished first, so it needs no notice of it (#4884). */
+	refused?: boolean;
 	/** The caller waiting for the first send's outcome. */
 	waiter?: {
 		readonly resolve: (action: StageUserMessageDeliveryAction | undefined) => void;
@@ -564,8 +566,9 @@ export class PooledStageHandle implements StageControlHandle {
 		this.streamingNow = false;
 		if (undelivered > 0) this.undelivered = undelivered;
 		for (const entry of this.outbound) {
-			if (this.admitted(entry)) continue;
-			entry.waiter?.reject(new PooledStageDeliveryError("StageNotLive", this.stageName));
+			if (this.admitted(entry) || entry.waiter === undefined) continue;
+			entry.refused = true;
+			entry.waiter.reject(new PooledStageDeliveryError("StageNotLive", this.stageName));
 			entry.waiter = undefined;
 		}
 	}
@@ -719,8 +722,10 @@ export class PooledStageHandle implements StageControlHandle {
 					waiter?.resolve(result.action);
 					continue;
 				}
-				// A stale or unconfirmed send stays in the outbox and is sent again on reconnect.
-				if (result.refusal === "StageNotLive") this.forget(entry.op);
+				// A stale or unconfirmed send stays in the outbox and is sent again on reconnect. A resend the finished
+				// stage refused has no caller left to hear it: it stays, not sent again, so the stage's end reports it (#4884).
+				if (result.refusal === "StageNotLive" && waiter !== undefined) this.forget(entry.op);
+				else if (result.refusal === "StageNotLive") entry.failedOn = generation;
 				waiter?.reject(new PooledStageDeliveryError(result.refusal, this.stageName));
 				if (result.refusal !== "StageNotLive") return;
 			}
