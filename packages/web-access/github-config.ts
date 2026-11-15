@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import { resolvePrivateTempDirPath } from "@bastani/atomic";
 import { findReadableConfigPath } from "./config-paths.ts";
 import { createOwnerState } from "./owner-state.js";
 
@@ -34,6 +35,17 @@ export interface GitHubUrlInfo {
 	type: "root" | "blob" | "tree";
 }
 
+/** Directory name of the default clone cache below the per-user temp root. */
+export const DEFAULT_GITHUB_CLONE_DIR = "github-repos";
+
+/**
+ * The default clone cache: below a temp directory only the current account
+ * owns (`<tmpdir>/<APP_NAME>-<owner>/github-repos`), never a fixed shared name.
+ */
+export function defaultGitHubClonePath(): string {
+	return resolvePrivateTempDirPath(DEFAULT_GITHUB_CLONE_DIR);
+}
+
 export interface GitHubCloneConfig {
 	enabled: boolean;
 	maxRepoSizeMB: number;
@@ -66,7 +78,7 @@ export function loadGitHubConfig(): GitHubCloneConfig {
 		enabled: true,
 		maxRepoSizeMB: 350,
 		cloneTimeoutSeconds: 30,
-		clonePath: "/tmp/atomic-github-repos",
+		clonePath: defaultGitHubClonePath(),
 	};
 
 	if (!existsSync(CONFIG_PATH)) {

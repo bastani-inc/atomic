@@ -273,7 +273,7 @@ All config lives in `~/.pi/web-search.json`. Every field is optional.
     "enabled": true,
     "maxRepoSizeMB": 350,
     "cloneTimeoutSeconds": 30,
-    "clonePath": "/tmp/atomic-github-repos"
+    "clonePath": "<tmpdir>/atomic-<uid>/github-repos"
   },
   "youtube": {
     "enabled": true,

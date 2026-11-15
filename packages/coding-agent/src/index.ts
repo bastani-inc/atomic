@@ -962,6 +962,12 @@ export {
 	writeToolSystemPromptContribution,
 } from "./core/tools/index.js";
 export {
+	assertPrivateDirectory,
+	ensurePrivateTempDir,
+	resolvePrivateTempDirPath,
+	TempDirRefusedError,
+} from "./core/tools/session-temp-dir.ts";
+export {
 	isShellTimeoutError,
 	isShellToolError,
 	rehydrateShellToolError,

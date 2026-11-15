@@ -221,7 +221,7 @@ export class TempDirRefusedError extends Error {
  * accident, which is a different problem and is not a substitute for this
  * verification.
  */
-function verifyOwnedDirectory(path: string, known?: Stats): void {
+function verifyOwnedDirectory(path: string, known?: Stats, strict = false): void {
 	let stat = known ?? lstatSync(path);
 	if (stat.isSymbolicLink()) {
 		throw new TempDirRefusedError(path, "it is a symbolic link");
@@ -243,6 +243,11 @@ function verifyOwnedDirectory(path: string, known?: Stats): void {
 	if ((stat.mode & 0o777) === SESSION_TEMP_DIR_MODE) {
 		return;
 	}
+	if (strict && (stat.mode & 0o077) !== 0) {
+		// Someone else could already have written into it; repairing the mode
+		// would not undo that, so the directory is refused instead.
+		throw new TempDirRefusedError(path, "it is accessible to other accounts");
+	}
 	try {
 		chmodSync(path, SESSION_TEMP_DIR_MODE);
 		stat = lstatSync(path);
@@ -261,7 +266,7 @@ function verifyOwnedDirectory(path: string, known?: Stats): void {
  * on the way down, which is how a link planted at the predictable owner root
  * redirects every later write outside the tree.
  */
-function ensureOwnedDirectory(path: string): void {
+function ensureOwnedDirectory(path: string, strict = false): void {
 	let stat: Stats | undefined;
 	try {
 		stat = lstatSync(path);
@@ -277,10 +282,56 @@ function ensureOwnedDirectory(path: string): void {
 				throw new TempDirRefusedError(path, "it could not be created");
 			}
 		}
-		verifyOwnedDirectory(path);
+		verifyOwnedDirectory(path, undefined, strict);
 		return;
 	}
-	verifyOwnedDirectory(path, stat);
+	verifyOwnedDirectory(path, stat, strict);
+}
+
+/**
+ * `<tmpdir>/<APP_NAME>-<owner>/<...segments>`, without creating it.
+ *
+ * The shared location for state that must stay private to this account
+ * (temporary extension installs, the GitHub clone cache, subagent artifacts).
+ */
+export function resolvePrivateTempDirPath(...segments: string[]): string {
+	return join(getTempRootDir(), ...segments);
+}
+
+/**
+ * Create or adopt `<tmpdir>/<APP_NAME>-<owner>/<...segments>` for this account only.
+ *
+ * Every component from the owner root down is created non-recursively with
+ * mode 0700, or — when it already exists — must be a real directory (not a
+ * symlink) owned by this account with no group or other access. Unlike the
+ * session spill tree, nothing found is repaired or replaced: a pre-existing
+ * path this account did not create privately may already hold someone else's
+ * content, so it is refused with {@link TempDirRefusedError}.
+ *
+ * Windows has no uid or POSIX mode; there the system temp directory is the
+ * account's own `%TEMP%` and each component's owner SID and DACL are verified.
+ */
+export function ensurePrivateTempDir(...segments: string[]): string {
+	const base = baseTempDirs();
+	const root = getTempRootDir();
+	const parts = [root.slice(base.raw.length + sep.length), ...segments.flatMap((segment) => segment.split(/[\\/]/))];
+	let current = base.canonical;
+	for (const part of parts) {
+		if (part.length === 0 || part === "." || part === "..") {
+			throw new TempDirRefusedError(join(root, ...segments), "it is not a plain path below the temp root");
+		}
+		current = join(current, part);
+		ensureOwnedDirectory(current, true);
+	}
+	return join(root, ...segments);
+}
+
+/**
+ * Throw {@link TempDirRefusedError} unless `path` is a real directory owned by
+ * this account with no group or other access. Nothing is created or changed.
+ */
+export function assertPrivateDirectory(path: string): void {
+	verifyOwnedDirectory(path, undefined, true);
 }
 
 /**
