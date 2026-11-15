@@ -74,8 +74,11 @@ export function resolveTempScopeId(options?: {
 export const MAX_PARALLEL_TASKS = 1000;
 export const MAX_CONCURRENCY = 1000;
 export const DEFAULT_RUNNING_CAPACITY = 1000;
-export const TEMP_ROOT_DIR = path.join(os.tmpdir(), `${APP_NAME}-subagents-${resolveTempScopeId()}`);
-export const TEMP_ARTIFACTS_DIR = path.join(TEMP_ROOT_DIR, "artifacts");
+/**
+ * Fixed-name root earlier versions created directly in the shared temp
+ * directory. Only read by the guarded startup cleanup of their leftovers.
+ */
+export const LEGACY_TEMP_ROOT_DIR = path.join(os.tmpdir(), `${APP_NAME}-subagents-${resolveTempScopeId()}`);
 export const SLASH_RESULT_TYPE = "subagent-slash-result";
 export const SLASH_SUBAGENT_REQUEST_EVENT = "subagent:slash:request";
 export const SLASH_SUBAGENT_STARTED_EVENT = "subagent:slash:started";
