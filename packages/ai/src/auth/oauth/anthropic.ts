@@ -10,6 +10,7 @@ import { isPermanentRefreshRejection, OAuthRefreshRejectedError, parseOAuthError
 import type { OAuthAuth, OAuthCredential, ProviderAuthInteraction } from "../types.ts";
 import { startOAuthCallbackServer, waitForCallbackOrManualInput } from "./callback-server.ts";
 import { generatePKCE } from "./pkce.ts";
+import { oauthTokenExpiry, refreshedOAuthCredential } from "./token-response.ts";
 
 const decode = (s: string) => atob(s);
 const CLIENT_ID = decode("OWQxYzI1MGEtZTYxYi00NGQ5LTg4ZWQtNTk0NGQxOTYyZjVl");
@@ -24,6 +25,8 @@ const REDIRECT_URI = `http://localhost:${CALLBACK_PORT}${CALLBACK_PATH}`;
 const COPY_CODE_REDIRECT_URI = "https://platform.claude.com/oauth/code/callback";
 const ANTHROPIC_BROWSER_LOGIN_METHOD = "browser";
 const ANTHROPIC_COPY_CODE_LOGIN_METHOD = "copy_code";
+/** Tokens count as expired this long before Anthropic says they do. */
+const EXPIRY_SKEW_MS = 5 * 60 * 1000;
 const SCOPES =
 	"org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload";
 
@@ -142,7 +145,7 @@ async function exchangeAuthorizationCode(
 		type: "oauth",
 		refresh: tokenData.refresh_token,
 		access: tokenData.access_token,
-		expires: Date.now() + tokenData.expires_in * 1000 - 5 * 60 * 1000,
+		expires: oauthTokenExpiry(tokenData.access_token, tokenData.expires_in, EXPIRY_SKEW_MS),
 	};
 }
 
@@ -262,12 +265,12 @@ async function refreshAnthropicToken(refreshToken: string, signal: AbortSignal):
 		throw new Error(`Anthropic token refresh request failed. url=${TOKEN_URL}; details=${formatErrorDetails(error)}`);
 	}
 
-	let data: { access_token: string; refresh_token: string; expires_in: number; scope?: string };
+	let data: { access_token: string; refresh_token?: string; expires_in?: number; scope?: string };
 	try {
 		data = JSON.parse(responseBody) as {
 			access_token: string;
-			refresh_token: string;
-			expires_in: number;
+			refresh_token?: string;
+			expires_in?: number;
 			scope?: string;
 		};
 	} catch (error) {
@@ -276,12 +279,7 @@ async function refreshAnthropicToken(refreshToken: string, signal: AbortSignal):
 		);
 	}
 
-	return {
-		type: "oauth",
-		refresh: data.refresh_token,
-		access: data.access_token,
-		expires: Date.now() + data.expires_in * 1000 - 5 * 60 * 1000,
-	};
+	return refreshedOAuthCredential(data.access_token, data, refreshToken, EXPIRY_SKEW_MS);
 }
 
 export const anthropicOAuth: OAuthAuth = {

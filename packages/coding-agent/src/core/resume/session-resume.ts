@@ -1120,8 +1120,9 @@ async function checkoutsWorkedHere(
 		if (!existsSync(isInside(root, cwd) ? cwd : root)) continue;
 		const holder = await pooledWorktreeHolder(storeDir, root);
 		if (holder !== "unpooled") {
-			// Slots share their repository's object store, so only the pool record tells whose work a slot holds.
-			const owned = holder.owner?.kind === "session" && holder.owner.id === sessionId;
+			// Slots share their repository's object store, so only the pool record tells whose work a slot holds, and a
+			// slot the session could not hold, or lost while stalled, is not its to continue in (#4830).
+			const owned = !(await pooledWorktreeOwnedElsewhere(storeDir, root, sessionId));
 			if (owned && !partial.has(resolve(root))) own.add(root);
 			continue;
 		}
