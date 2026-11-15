@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { describe, test } from "vitest";
+import { describe, test, vi } from "vitest";
 import type { PendingQuestion } from "../../packages/intercom/broker/pending-question-index.js";
 import { PendingQuestionIndex } from "../../packages/intercom/broker/pending-question-index.js";
 import {
@@ -244,11 +244,12 @@ describe("a released subagent's ask refused a reply route at capacity (#4996)", 
 		assert.equal(pending.hasDormantReply("q1", REPLIER), false, "a reply to it is not also held for the subagent");
 		const held = pending.takeHeldForReleasedChild(CHILD, OWNER);
 		assert.deepEqual(
-			held.map(({ askerSessionId, from, message }) => ({ askerSessionId, from: from.id, message })),
+			held.map(({ askerSessionId, from, message }) => ({ askerSessionId, from, message })),
 			[
 				{
 					askerSessionId: ASKER,
-					from: REPLIER,
+					// The replier is gone: the failure names it by its id alone.
+					from: { id: REPLIER, cwd: "", model: "", pid: 0, startedAt: 0, lastActivity: 5_000 },
 					message: {
 						id: "released-routes-full:q1",
 						timestamp: 5_000,
@@ -287,16 +288,28 @@ describe("a released subagent's ask refused a reply route at capacity (#4996)", 
 		assert.equal(pending.hasHeldForReleasedChild(CHILD, OWNER), false);
 	});
 
-	test("a subagent that proves no return address cannot be held for, and nothing is held for another (#4996)", () => {
+	test("a subagent that proves no return address cannot be held for: the broker logs that it could not tell it (#4996)", () => {
 		const pending = new PendingQuestionIndex();
-		for (const askerReturnAddress of [undefined, ""])
-			failRefusedReleasedAsk(refused(undefined), {
-				pendingQuestions: pending,
-				replier: undefined,
-				askerReturnAddress,
-				wake: () => assert.fail("no owner to wake"),
-			});
-		assert.deepEqual(pending.heldForAsker(""), []);
+		const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			for (const askerReturnAddress of [undefined, ""])
+				failRefusedReleasedAsk(refused(undefined), {
+					pendingQuestions: pending,
+					replier: undefined,
+					askerReturnAddress,
+					wake: () => assert.fail("no owner to wake"),
+				});
+			assert.deepEqual(logged.mock.calls, [
+				[
+					`Intercom broker could not tell released subagent "${CHILD}" that its ask q1 failed: ${RELEASED_REPLY_ROUTES_FULL_REASON}`,
+				],
+				[
+					`Intercom broker could not tell released subagent "${CHILD}" that its ask q1 failed: ${RELEASED_REPLY_ROUTES_FULL_REASON}`,
+				],
+			]);
+		} finally {
+			logged.mockRestore();
+		}
 	});
 });
 

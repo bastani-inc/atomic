@@ -115,3 +115,21 @@ test("a kept ask and a reply held for its away asker survive any number of rows 
 	);
 	assert.equal(back.hasDormantReply("unanswered", "recipient"), true, "the unanswered ask still waits for its reply");
 });
+
+test("an ask kept for its away recipient keeps its asker's return address, so a broker that goes first still fails it to the asker (#4996)", () => {
+	const path = fileIn();
+	const first = new PendingQuestionIndex();
+	first.useAwayStore(new AwayAsks(path, () => 1_000), (sessionId) =>
+		sessionId === "asker" ? "asker-address" : undefined,
+	);
+	first.record("asker", "recipient", "q-1");
+	assert.deepEqual(first.keepDormantForRecipient(first.takeForTarget("recipient")), []);
+
+	// The broker goes before the asker's departure is handled; the recipient then ends.
+	const restarted = brokerIndex(path);
+	restarted.failDormantForTarget(info("recipient"), "ended", "recipient-ended");
+	assert.deepEqual(
+		restarted.heldForAsker("asker-address").map(({ message }) => message.replyTo),
+		["q-1"],
+	);
+});
