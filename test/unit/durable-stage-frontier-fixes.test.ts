@@ -223,7 +223,10 @@ test("parallel replay uses fail-fast scope parents instead of flattening fanout"
 	const run = store.runs().find((r) => r.id === WORKFLOW_ID)!;
 	const reviewers = run.stages.filter((stage) => stage.name.startsWith("review-"));
 	assert.equal(reviewers.length, 2);
-	for (const reviewer of reviewers) assert.deepEqual([...reviewer.parentIds], [setupId]);
+	const parentsByName = Object.fromEntries(reviewers.map((stage) => [stage.name, [...stage.parentIds]]));
+	// A record of this run keeps the parents it recorded, also one that has not replayed yet (#4888); a record without
+	// this run's topology takes the scope's parents.
+	assert.deepEqual(parentsByName, { "review-a": [setupId], "review-b": ["missing-source-parent"] });
 });
 
 function cpStageId(name: string): string {
