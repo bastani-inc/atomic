@@ -54,7 +54,6 @@ export class PendingQuestionIndex {
    * is full; their askers are connected, and are told at once (#4996).
    */
   keepDormantForRecipient(questions: readonly PendingQuestion[]): PendingQuestion[] {
-    if (questions.length === 0) return [];
     return this.awayAsks().keepForAwayRecipient(questions);
   }
 
