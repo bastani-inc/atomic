@@ -36,7 +36,16 @@ const POLICY: FleetPolicy = resolveFleetPolicy({
 });
 
 function host(id: string, overrides: Partial<FleetHostView> = {}): FleetHostView {
-	return { id, state: "running", since: 0, registered: true, leased: 0, draining: false, ...overrides };
+	return {
+		id,
+		state: "running",
+		since: 0,
+		registered: true,
+		leased: 0,
+		draining: false,
+		drained: false,
+		...overrides,
+	};
 }
 
 function observe(now: number, roots: readonly FleetRootDemand[], hosts: readonly FleetHostView[]): FleetObservation {
@@ -261,7 +270,7 @@ test("a host that takes a child resets its idle time (#4768)", () => {
 test("a drained host that left the registry is removed from the provider (#4768)", () => {
 	const plan = planFleet(
 		POLICY,
-		observe(0, [], [host("a", { draining: true, registered: false }), host("b", { draining: true })]),
+		observe(0, [], [host("a", { draining: true, registered: false, drained: true }), host("b", { draining: true })]),
 		INITIAL_FLEET_STATE,
 	);
 	assert.deepEqual(
@@ -407,7 +416,7 @@ test("each removal names its reason, and only a failed host that was not drainin
 				host("failed", { state: "failed", registered: false }),
 				host("stopped", { state: "stopped", registered: false }),
 				host("failed-draining", { state: "failed", registered: false, draining: true }),
-				host("drained", { state: "draining", registered: false }),
+				host("drained", { state: "draining", registered: false, drained: true }),
 				host("late", { state: "pending", registered: false }),
 			],
 		),

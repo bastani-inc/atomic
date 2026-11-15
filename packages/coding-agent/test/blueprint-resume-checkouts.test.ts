@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
+import { renameReplacing } from "../src/core/rename-retry.js";
 import { readLedger } from "../src/core/resume/blueprint/ledger.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.ts";
@@ -110,8 +111,8 @@ describe("resuming sessions with several checkouts and without any (#4588)", () 
 		assert.equal(capture.status, "captured");
 		if (capture.status !== "captured") throw new Error("unreachable");
 		await manager.appendWorktreeSnapshot(second, capture.snapshot.id, capture.snapshot);
-		renameSync(first, sandbox.path("first-gone"));
-		renameSync(second, sandbox.path("second-gone"));
+		renameReplacing(first, sandbox.path("first-gone"));
+		renameReplacing(second, sandbox.path("second-gone"));
 		return { manager, first, second };
 	}
 
@@ -153,7 +154,7 @@ describe("resuming sessions with several checkouts and without any (#4588)", () 
 		const manager = await recordSession(clone);
 		const checkout = sandbox.path("node-b", "dirty");
 		mkdirSync(sandbox.path("node-b"));
-		renameSync(clone, checkout);
+		renameReplacing(clone, checkout);
 		sandbox.write(join(checkout, "README.md"), "user edit\n");
 		const prepared = ready(
 			await prepareSessionResume(manager, {
@@ -265,7 +266,7 @@ describe("resuming sessions with several checkouts and without any (#4588)", () 
 			calls++;
 		};
 		await continueSessionWhereItWorked(manager, { ...options(), onNotices });
-		renameSync(clone, sandbox.path("quiet-gone"));
+		renameReplacing(clone, sandbox.path("quiet-gone"));
 		const restored = await continueSessionWhereItWorked(manager, { ...options(), onNotices });
 		assert.ok(restored.getCwd().startsWith(sandbox.path("host")));
 		await continueSessionWhereItWorked(restored, { ...options(), onNotices });
@@ -278,7 +279,7 @@ describe("resuming sessions with several checkouts and without any (#4588)", () 
 		const manager = await recordSession(clone);
 		const checkout = sandbox.path("node-b", "cancelled");
 		mkdirSync(sandbox.path("node-b"));
-		renameSync(clone, checkout);
+		renameReplacing(clone, checkout);
 		sandbox.write(join(checkout, "README.md"), "user edit\n");
 		const heard: string[] = [];
 		const woken = await continueSessionWhereItWorked(manager, {
@@ -314,7 +315,7 @@ describe("resuming sessions with several checkouts and without any (#4588)", () 
 			forThisHost(`initialize: ${mark("initialize")}\nmaintenance: ${mark("maintenance")}\n`),
 		);
 		const recorded = await recordSession(clone);
-		renameSync(clone, sandbox.path("two-hops-gone"));
+		renameReplacing(clone, sandbox.path("two-hops-gone"));
 		const manager = ready(await prepareSessionResume(recorded, options())).sessionManager;
 		const firstHop = manager.getWorktreeRootMappings().at(-1)!.to;
 		assert.deepEqual(ran(), [`initialize ${shellPath(firstHop)}`, `maintenance ${shellPath(firstHop)}`]);
@@ -342,7 +343,7 @@ describe("resuming sessions with several checkouts and without any (#4588)", () 
 	test("cancelling the build of a worktree that was really restored removes it from the store again (#4588)", async () => {
 		const { clone } = await sandbox.remoteWithClone("restorable", { "README.md": "hello\n" });
 		const manager = await recordSession(clone);
-		renameSync(clone, sandbox.path("restorable-gone"));
+		renameReplacing(clone, sandbox.path("restorable-gone"));
 		const storeDir = sandbox.path("agent", "worktree-snapshots");
 		ready(await prepareSessionResume(manager, { ...options(), storeDir }));
 		const root = manager.getWorktreeRootMappings().at(-1)!.to;
@@ -379,7 +380,7 @@ describe("resuming sessions with several checkouts and without any (#4588)", () 
 		const { clone } = await sandbox.remoteWithClone("global-dir", { "README.md": "hello\n" });
 		sandbox.write(join(clone, ".atomic", "blueprint.yaml"), forThisHost(`maintenance: ${mark("repo")}\n`));
 		const manager = await recordSession(clone);
-		renameSync(clone, sandbox.path("global-dir-gone"));
+		renameReplacing(clone, sandbox.path("global-dir-gone"));
 		const restored = ready(await prepareSessionResume(manager, options()));
 		assert.equal(restored.blueprintNotices.length, 1);
 		assert.match(restored.blueprintNotices[0]?.message ?? "", /^Blueprint build FAILED: /);
@@ -420,7 +421,7 @@ describe("resuming sessions with several checkouts and without any (#4588)", () 
 		const manager = await recordSession(clone);
 		const checkout = sandbox.path("node-b", "skipped");
 		mkdirSync(sandbox.path("node-b"));
-		renameSync(clone, checkout);
+		renameReplacing(clone, checkout);
 		sandbox.write(join(checkout, "README.md"), "user edit\n");
 		const chosen = ready(
 			await prepareSessionResume(manager, {

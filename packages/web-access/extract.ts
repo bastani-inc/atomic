@@ -51,32 +51,57 @@ function responseTooLarge(sizeBytes: number, overLimit = false): string {
 	return `Response too large (${overLimit ? "over " : ""}${Math.round(sizeBytes / 1024 / 1024)}MB)`;
 }
 
-function isPrivateIPv4(address: string): boolean {
-	const [a, b] = address.split(".").map(Number);
+const MAX_REDIRECTS = 20;
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
+function isHttpUrl(url: URL): boolean {
+	return url.protocol === "http:" || url.protocol === "https:";
+}
+
+function isPrivateIPv4(a: number, b: number): boolean {
 	return a === 0 || a === 10 || a === 127 ||
 		(a === 169 && b === 254) ||
 		(a === 172 && b >= 16 && b <= 31) ||
+		(a === 100 && b >= 64 && b <= 127) ||
 		(a === 192 && b === 168);
 }
 
+/** The eight 16-bit groups of a canonical (WHATWG-serialized, so dotted-quad-free) IPv6 address. */
+function ipv6Groups(address: string): number[] {
+	const [head, tail] = address.split("::");
+	const parse = (part: string | undefined) => (part ? part.split(":").map((group) => parseInt(group, 16)) : []);
+	const high = parse(head);
+	const low = parse(tail);
+	return [...high, ...Array<number>(8 - high.length - low.length).fill(0), ...low];
+}
+
+function isPrivateIPv6(address: string): boolean {
+	const groups = ipv6Groups(address);
+	const [first] = groups;
+	if ((first & 0xfe00) === 0xfc00 || (first & 0xff80) === 0xfe80) return true;
+	const prefix = groups.slice(0, 6).join(":");
+	// IPv4-compatible (which also covers :: and ::1, as 0.0.0.0/8), IPv4-mapped, IPv4-translated, and NAT64.
+	const embedsIPv4 = ["0:0:0:0:0:0", "0:0:0:0:0:65535", "0:0:0:0:65535:0", "100:65435:0:0:0:0"].includes(prefix);
+	return embedsIPv4 && isPrivateIPv4(groups[6] >> 8, groups[6] & 255);
+}
+
+const PRIVATE_HOST_SUFFIX = /(^|\.)(localhost|localdomain|local|internal|lan|home\.arpa)$/;
+
 /**
- * True when a URL must not be handed to a third-party fallback service: it carries credentials or
- * names a loopback, private, link-local, or intranet host that such a service could not reach anyway.
+ * True when a URL must not be handed to a third-party fallback service: it is not http(s), carries
+ * credentials, or names a loopback, private, link-local, or intranet host that such a service could
+ * not reach anyway. http(s) hosts arrive lowercased, with every IPv4 notation normalized to dotted quads.
  */
 function isPrivateUrl(url: string): boolean {
 	const parsed = new URL(url);
-	if (parsed.username || parsed.password) return true;
-	const host = parsed.hostname.replace(/[[\]]/g, "").replace(/\.$/, "");
-	if (isIPv6(host)) {
-		const mapped = host.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
-		if (mapped) {
-			const high = parseInt(mapped[1], 16);
-			return isPrivateIPv4(`${high >> 8}.${high & 255}`);
-		}
-		return host === "::1" || host === "::" || /^f[cd]/.test(host) || /^fe[89ab]/.test(host);
+	if (!isHttpUrl(parsed) || parsed.username || parsed.password) return true;
+	const host = parsed.hostname.replace(/^\[(.*)\]$/, "$1").replace(/\.+$/, "");
+	if (isIPv6(host)) return isPrivateIPv6(host);
+	if (isIPv4(host)) {
+		const [a, b] = host.split(".").map(Number);
+		return isPrivateIPv4(a, b);
 	}
-	if (isIPv4(host)) return isPrivateIPv4(host);
-	return !host.includes(".") || /\.(localhost|local|internal)$/.test(host);
+	return !host.includes(".") || PRIVATE_HOST_SUFFIX.test(host);
 }
 
 function errorMessage(err: unknown): string {
@@ -228,10 +253,14 @@ export async function extractContent(
 		}
 	}
 
+	let parsedUrl: URL;
 	try {
-		new URL(url);
+		parsedUrl = new URL(url);
 	} catch {
 		return { url, title: "", content: "", error: "Invalid URL" };
+	}
+	if (!isHttpUrl(parsedUrl)) {
+		return { url, title: "", content: "", error: `Unsupported URL scheme: ${parsedUrl.protocol}` };
 	}
 
 	try {
@@ -275,13 +304,14 @@ export async function extractContent(
 
 	if (signal?.aborted) return abortedResult(url);
 
-	const httpResult = await extractViaHttp(url, signal, options);
+	const redirects: string[] = [];
+	const httpResult = await extractViaHttp(url, signal, options, redirects);
 
 	if (signal?.aborted) return abortedResult(url);
 	if (!httpResult.error) return httpResult;
 	if (NON_RECOVERABLE_ERRORS.some(prefix => httpResult.error!.startsWith(prefix))) return httpResult;
-	// Remote fallbacks cannot reach local hosts; sending them the URL would only leak it.
-	if (isPrivateUrl(url)) return httpResult;
+	// Remote fallbacks cannot reach local hosts, even via a public redirect; sending them the URL would only leak it.
+	if ([url, ...redirects].some(isPrivateUrl)) return httpResult;
 
 	const jinaResult = await extractWithJinaReader(url, signal);
 	if (jinaResult) return jinaResult;
@@ -393,10 +423,27 @@ function isLikelyJSRendered(html: string): boolean {
 	return textContent.length < 500 && scriptCount > 3;
 }
 
+/** Fetch `url`, following redirects by hand so every hop is recorded in `redirects`. */
+async function fetchFollowingRedirects(url: string, init: RequestInit, redirects: string[]): Promise<Response> {
+	let current = url;
+	for (;;) {
+		const response = await fetch(current, { ...init, redirect: "manual" });
+		const location = response.headers.get("location");
+		if (!REDIRECT_STATUSES.has(response.status) || !location) return response;
+		await response.body?.cancel();
+		if (redirects.length === MAX_REDIRECTS) throw new Error("Too many redirects");
+		const next = new URL(location, current);
+		redirects.push(next.href);
+		if (!isHttpUrl(next)) throw new Error(`Unsupported redirect URL scheme: ${next.protocol}`);
+		current = next.href;
+	}
+}
+
 async function extractViaHttp(
 	url: string,
-	signal?: AbortSignal,
-	options?: ExtractOptions,
+	signal: AbortSignal | undefined,
+	options: ExtractOptions | undefined,
+	redirects: string[],
 ): Promise<ExtractedContent> {
 	const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 	const activityId = activityMonitor.logStart({ type: "fetch", url });
@@ -408,7 +455,7 @@ async function extractViaHttp(
 	signal?.addEventListener("abort", onAbort);
 
 	try {
-		const response = await fetch(url, {
+		const response = await fetchFollowingRedirects(url, {
 			signal: controller.signal,
 			headers: {
 				"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
@@ -421,7 +468,7 @@ async function extractViaHttp(
 				"Sec-Fetch-User": "?1",
 				"Upgrade-Insecure-Requests": "1",
 			},
-		});
+		}, redirects);
 
 		if (!response.ok) {
 			activityMonitor.logComplete(activityId, response.status);

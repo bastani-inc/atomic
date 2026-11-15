@@ -17,6 +17,7 @@ import lockfile from "proper-lockfile";
 import { APP_NAME, getAgentDir } from "../../config.js";
 import { type AuthStorageBackend, FileAuthStorageBackend } from "../../core/auth-storage.ts";
 import { releaseLock } from "../../core/lock-release.ts";
+import { waitForLock } from "../../core/lock-wait.ts";
 import { mcpNamespace } from "../../core/mcp-servers.ts";
 import type { AuthProvider, McpFetch } from "./client/index.js";
 import {
@@ -48,7 +49,7 @@ const REFRESH_SKEW_MS = 30_000;
 const OAUTH_REQUEST_TIMEOUT_MS = 15_000;
 /** A refresh lock that its holder stopped renewing (the process was killed) is taken over after this. */
 const REFRESH_LOCK_STALE_MS = 20_000;
-/** How long to wait for another process's refresh: longer than a stale lock lives. */
+/** How long to wait for one other process's refresh: longer than a stale lock lives. */
 const REFRESH_LOCK_WAIT_MS = 25_000;
 const REFRESH_LOCK_RETRY_MS = 100;
 
@@ -203,18 +204,34 @@ export class McpOAuthCredentialStore {
 		mkdirSync(this.lockDir, { recursive: true, mode: 0o700 });
 		const hash = createHash("sha256").update(key).digest("hex").slice(0, 16);
 		const lockPath = join(this.lockDir, `mcp-auth-refresh-${hash}`);
-		const release = await lockfile.lock(lockPath, {
-			realpath: false,
-			stale: REFRESH_LOCK_STALE_MS,
-			retries: {
-				retries: REFRESH_LOCK_WAIT_MS / REFRESH_LOCK_RETRY_MS,
-				factor: 1,
-				minTimeout: REFRESH_LOCK_RETRY_MS,
-				maxTimeout: REFRESH_LOCK_RETRY_MS,
+		const release = await waitForLock(
+			() =>
+				lockfile.lock(lockPath, {
+					realpath: false,
+					stale: REFRESH_LOCK_STALE_MS,
+					retries: 0,
+					// The default throws from a timer. A lost lock at worst lets two refreshes overlap.
+					onCompromised: () => {},
+				}),
+			{
+				lockPath: `${lockPath}.lock`,
+				holderWaitMs: REFRESH_LOCK_WAIT_MS,
+				pollMinMs: REFRESH_LOCK_RETRY_MS,
+				pollMaxMs: REFRESH_LOCK_RETRY_MS,
+				retryable: (error) => (error as NodeJS.ErrnoException).code === "ELOCKED",
+				stuck: (error) => error as Error,
+				contended: (error, waitedMs) =>
+					Object.assign(
+						new Error(
+							`Other processes kept refreshing this server's tokens for ${Math.round(waitedMs / 1000)} s`,
+							{
+								cause: error,
+							},
+						),
+						{ code: "ELOCKED" },
+					),
 			},
-			// The default throws from a timer. A lost lock at worst lets two refreshes overlap.
-			onCompromised: () => {},
-		});
+		);
 		try {
 			return await fn();
 		} finally {
