@@ -4,6 +4,7 @@
 
 ### Added
 
+- Codemode scripts can call `intercom` with `list`, `status`, `pending`, and `send` to an exact target, each resolving to a structured value, so a script can filter a long session list or send computed messages to several sessions in one turn. Other Intercom actions and pattern targets stay model-only. Extensions can offer the same to their own model-only tools with the new `ToolDefinition.scriptAccess` ([#5087](https://github.com/bastani-inc/atomic/issues/5087))
 - Added the `compaction_usage` session event: each compaction model request (planner, classifier, summary fallback, and their retries) reports its usage as it returns, for foreground and background runs and runs that later fail, so an integration can charge every compaction request once ([#5053](https://github.com/bastani-inc/atomic/issues/5053))
 - `AgentSession.resumeDetachedTurn` takes an optional `onRecorded` callback, told the ids of the results it recorded as soon as they are saved and before the turn continues, so a caller holding them elsewhere can let them go even if the continued turn never ends ([#5012](https://github.com/bastani-inc/atomic/issues/5012)).
 - Added `AgentWakeSlot`, the third argument of an `AgentWakeDispatcher` handler: `slot.outside(wait)` frees the handler's `maxConcurrent` slot while `wait` settles and takes it back in turn, so a handler waiting on something else does not hold up other keys ([#4856](https://github.com/bastani-inc/atomic/issues/4856))

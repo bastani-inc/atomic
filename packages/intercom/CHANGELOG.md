@@ -4,6 +4,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Added
+
+- Codemode scripts can call `intercom` with `list`, `status`, `pending`, and `send`. `list` and `status` resolve to session entries (`sessionId`, `name`, `cwd`, `state`, `groups`, `replyCapability`), and each `send` to its delivery outcome. Scripts may send only to exact targets: globs, `*`, `subagents:` targets and workflow path patterns are refused, and `ask`, `reply`, `join`, `leave` and the other actions fail with a pointer to the direct tool ([#5087](https://github.com/bastani-inc/atomic/issues/5087))
+
 ### Fixed
 
 - Fixed sends from other brokers that stalled for about 30 seconds, and reported their delivery as uncertain, after a broker was killed and restarted, with multi-node routing. A restarted broker now retires the leases and message claims its killed instance left behind as it starts, once that instance's process has exited on the same host, so a session that registers on it again receives sends from other brokers at once, a message that was in flight when the broker was killed is delivered again once, and a send to a session that has not come back yet is queued for it, as for any session that is away. A live broker on another machine with the same host name and home directory is never affected: machines are told apart by the Linux boot id, or on macOS and Windows by the OS machine id (or one Atomic saves once) with the boot (macOS's boot session id, Windows' exact boot time), so even clones of one image started together differ. Where none of these can be read, including other platforms, a restarted broker waits for the old leases to go stale as before, and without a reliable machine id nothing is retired early ([#5038](https://github.com/bastani-inc/atomic/issues/5038))
