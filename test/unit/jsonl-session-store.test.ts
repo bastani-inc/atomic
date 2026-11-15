@@ -518,6 +518,9 @@ for (const invalid of [
 	});
 }
 
+/** Longer than one read of the file stream, so no read of the torn line holds a newline. */
+const LONG_TORN_LINE_BYTES = 256 * 1024;
+
 it("ignores a torn final line, keeps listing the session, and removes the line on the next append (#4993)", async () => {
 	await withStore(async (store, directory) => {
 		const path = join(directory, "torn.jsonl");
@@ -559,6 +562,12 @@ it("removes a torn line another process left after this store loaded the session
 		const warnings = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
 		try {
 			assert.deepEqual(await store.append(header.id, [entry], { expectSeq: 2 }), { lastSeq: 3 });
+			assert.deepEqual(warnings.mock.calls, [
+				[
+					`Ignoring the unfinished last line of ${path}: the write that started it never completed. The next append removes it.`,
+					{ code: "ATOMIC_SESSION_TORN_LINE" },
+				],
+			]);
 		} finally {
 			warnings.mockRestore();
 		}
@@ -567,6 +576,94 @@ it("removes a torn line another process left after this store loaded the session
 			`${acknowledged}${JSON.stringify(foreign)}\n${JSON.stringify(entry)}\n`,
 		);
 		assert.deepEqual((await store.load(header.id)).entries, [entry, foreign, entry]);
+	});
+});
+
+it("keeps a complete record another process appended without a newline (#4993)", async () => {
+	await withStore(async (store) => {
+		await store.create(header, [entry]);
+		const path = await location(store);
+		const foreign = { ...entry, id: "foreign" };
+		await appendFile(path, JSON.stringify(foreign));
+		const warnings = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+		try {
+			assert.deepEqual(await store.append(header.id, [entry], { expectSeq: 2 }), { lastSeq: 3 });
+			assert.deepEqual((await store.load(header.id)).entries, [entry, foreign, entry]);
+			assert.equal(warnings.mock.calls.length, 0);
+		} finally {
+			warnings.mockRestore();
+		}
+	});
+});
+
+it("accepts another process's append after a last record without a newline only when it starts a new line", async () => {
+	await withStore(async (store, directory) => {
+		const path = join(directory, "unterminated.jsonl");
+		await writeFile(path, `${JSON.stringify({ type: "session", ...header })}\n${JSON.stringify(entry)}`);
+		await store.load(header.id);
+		const foreign = { ...entry, id: "foreign" };
+		await appendFile(path, `\n${JSON.stringify(foreign)}\n`);
+		assert.deepEqual(await store.append(header.id, [entry], { expectSeq: 2 }), { lastSeq: 3 });
+		assert.deepEqual((await store.load(header.id)).entries, [entry, foreign, entry]);
+
+		await writeFile(path, `${JSON.stringify({ type: "session", ...header })}\n${JSON.stringify(entry)}`);
+		await store.load(header.id);
+		// Joined to the last record, the appended one leaves a damaged line that no store can read.
+		await appendFile(path, `${JSON.stringify(foreign)}\n`);
+		const content = await readFile(path, "utf8");
+		for (const write of [store.append(header.id, [entry], { expectSeq: 2 }), store.load(header.id)]) {
+			await assert.rejects(write, (error: Error) => {
+				assert.ok(error instanceof StorageUnavailableError);
+				assert.ok(error.cause instanceof SyntaxError);
+				return true;
+			});
+		}
+		assert.equal(await readFile(path, "utf8"), content);
+	});
+});
+
+it("skips blank lines and reports nothing for a session without a torn line (#4993)", async () => {
+	await withStore(async (store, directory) => {
+		const path = join(directory, "blank.jsonl");
+		const second = { ...entry, id: "second" };
+		await writeFile(
+			path,
+			`${JSON.stringify({ type: "session", ...header })}\n${JSON.stringify(entry)}\n  \n${JSON.stringify(second)}\n \n`,
+		);
+		const warnings = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+		try {
+			assert.deepEqual((await store.load(header.id)).entries, [entry, second]);
+			assert.equal(warnings.mock.calls.length, 0);
+		} finally {
+			warnings.mockRestore();
+		}
+	});
+});
+
+it("removes a torn line longer than one read, and another store appends after it (#4993)", async () => {
+	await withStore(async (store, directory) => {
+		const path = join(directory, "long-torn.jsonl");
+		const acknowledged = `${JSON.stringify({ type: "session", ...header })}\n${JSON.stringify(entry)}\n`;
+		await writeFile(
+			path,
+			`${acknowledged}${JSON.stringify({ ...entry, name: "x".repeat(LONG_TORN_LINE_BYTES) }).slice(0, -2)}`,
+		);
+		const other = await JsonlSessionStore.open(directory);
+		const warnings = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+		try {
+			assert.equal((await store.load(header.id)).lastSeq, 1);
+			const first = { ...entry, id: "first" };
+			const second = { ...entry, id: "second" };
+			assert.deepEqual(await other.append(header.id, [first], { expectSeq: 1 }), { lastSeq: 2 });
+			assert.deepEqual(await store.append(header.id, [second], { expectSeq: 2 }), { lastSeq: 3 });
+			assert.equal(
+				await readFile(path, "utf8"),
+				`${acknowledged}${JSON.stringify(first)}\n${JSON.stringify(second)}\n`,
+			);
+		} finally {
+			warnings.mockRestore();
+			await other.close();
+		}
 	});
 });
 

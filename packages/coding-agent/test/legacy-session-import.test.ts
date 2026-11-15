@@ -560,7 +560,7 @@ describe("legacy JSONL sessions in the default store", () => {
 		const broken: Record<string, string> = {
 			"garbage.jsonl": "this is not a session\n",
 			"empty.jsonl": "",
-			"torn.jsonl": `${JSON.stringify({ ...header, version: 4, id: "torn" })}\n{"type":"message","id":"x`,
+			"damaged.jsonl": `${JSON.stringify({ ...header, version: 4, id: "damaged" })}\n{"type":"message","id":"x\n`,
 			"future.jsonl": encode([{ ...header, version: 5, id: "future" }]),
 			"bad-entry.jsonl": encode([
 				{ type: "session", version: 3, id: "bad-entry", timestamp: header.createdAt, cwd },
@@ -852,15 +852,19 @@ describe("legacy JSONL sessions in the default store", () => {
 			});
 		});
 
-		it("does not list one whose tail is torn, because it cannot be opened either", async () => {
+		it("lists and opens one whose last line a crashed writer left unfinished (#4993)", async () => {
 			writeAllFormats();
 			writeLarge({ id: "large-torn", lastAt, tornTail: true });
+			const warnings = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
 
-			await withDefaultStore(async (store) => {
-				assert.ok(!(await SessionManager.listAll(store)).some((session) => session.id === "large-torn"));
-				assert.equal((await store.findMostRecent({ cwd }))?.id, ids.v4);
-				await assert.rejects(SessionManager.open(store, "large-torn"));
-			});
+			try {
+				await withDefaultStore(async (store) => {
+					assert.ok((await SessionManager.listAll(store)).some((session) => session.id === "large-torn"));
+					assert.equal((await SessionManager.open(store, "large-torn")).getSessionId(), "large-torn");
+				});
+			} finally {
+				warnings.mockRestore();
+			}
 		});
 
 		it("lists one whose first message is larger than the head window with that message", async () => {
