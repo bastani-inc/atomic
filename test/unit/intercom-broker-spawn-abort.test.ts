@@ -98,7 +98,8 @@ async function startOlderBroker(onShutdown: () => void): Promise<void> {
 function neverReadyBrokerCommand(markerPath: string): string[] {
 	return [
 		"-e",
-		`require("node:fs").writeFileSync(${JSON.stringify(markerPath)}, String(process.pid)); setInterval(() => {}, 1000);`,
+		'require("node:fs").writeFileSync(process.argv[1], String(process.pid)); setInterval(() => {}, 1000);',
+		markerPath,
 	];
 }
 

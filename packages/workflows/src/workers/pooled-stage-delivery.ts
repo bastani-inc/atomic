@@ -362,10 +362,17 @@ export function workerStageAdapter(ports: WorkerStageAdapterPorts): AgentSession
 				},
 				fail: options.orchestrationContext.pendingStageDelivery.fail,
 			});
-			const created = await base.create(
-				{ ...options, orchestrationContext: { ...options.orchestrationContext, pendingStageDelivery } },
-				meta,
-			);
+			let created: Awaited<ReturnType<AgentSessionAdapter["create"]>>;
+			try {
+				created = await base.create(
+					{ ...options, orchestrationContext: { ...options.orchestrationContext, pendingStageDelivery } },
+					meta,
+				);
+			} catch (error) {
+				// A session that failed after its delivery reached the inbox never closes through the sink's owner (#5168).
+				inbox?.unregister(identity, pendingStageDelivery);
+				throw error;
+			}
 			return unregisterWhenClosed(created, inbox, identity, pendingStageDelivery);
 		},
 	};
