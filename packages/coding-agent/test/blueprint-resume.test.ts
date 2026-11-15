@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, parse } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
+import { renameReplacing } from "../src/core/rename-retry.js";
 import type { BlueprintBuildConfig } from "../src/core/resume/blueprint/build.ts";
 import { rootKey, updateLedger } from "../src/core/resume/blueprint/ledger.ts";
 import {
@@ -114,7 +115,7 @@ async function recordedProject(blueprint: string | undefined, extra: Record<stri
 		sandbox.write(join(clone, file), file.endsWith("blueprint.yaml") ? forThisHost(content) : content);
 	}
 	const manager = await recordSession(clone);
-	renameSync(clone, sandbox.path("node-a-gone"));
+	renameReplacing(clone, sandbox.path("node-a-gone"));
 	return { clone, manager };
 }
 
@@ -269,7 +270,7 @@ describe("resuming a session builds its blueprints and never fails on them (#458
 		const manager = await recordSession(clone);
 		const checkout = sandbox.path("node-b", "moved");
 		mkdirSync(sandbox.path("node-b"));
-		renameSync(clone, checkout);
+		renameReplacing(clone, checkout);
 		const prepared = ready(
 			await prepareSessionResume(manager, {
 				...options({ setupCommand: mark(SETUP_COMMAND_ALIAS) }),

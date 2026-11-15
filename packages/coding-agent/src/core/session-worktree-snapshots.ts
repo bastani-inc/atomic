@@ -20,6 +20,7 @@ import { DEGRADED_RESTORE_RETENTION_DAYS, snapshotBlobHashes } from "./worktree-
 import {
 	captureWorktreeSnapshot,
 	locateCheckout,
+	recordWorktreeCapture,
 	type WorktreeSnapshotUnavailableReason,
 	withScratchDirectory,
 	writeWorkingTree,
@@ -186,24 +187,33 @@ export class SessionWorktreeSnapshotRecorder {
 			// full restore that carried work over records the merged worktree, or keeps naming the work it kept (#5009).
 			const pin = degradedRestorePin(this.deps.sessionManager, root);
 			try {
-				const started = performance.now();
-				const result = await captureWorktreeSnapshot(root, { settings, previous, blobs });
-				const captureMs = Math.floor(performance.now() - started);
-				if (result.status === "captured" || result.status === "unchanged") {
-					await this.deps.sessionManager.appendWorktreeSnapshot(
-						root,
-						result.snapshot.id,
-						result.status === "captured" ? result.snapshot : undefined,
-						undefined,
-						[],
-						undefined,
-						captureMs,
-						captureDegradedFrom(pin, result.snapshot.id),
-					);
-					await keepLatestSnapshotCommit(this.deps.sessionManager, root, result.snapshot);
-				} else if (result.status === "unavailable") {
-					this.report(result.reason);
-				}
+				let captureMs = 0;
+				await recordWorktreeCapture(
+					blobs,
+					async () => {
+						const started = performance.now();
+						const result = await captureWorktreeSnapshot(root, { settings, previous, blobs });
+						captureMs = Math.floor(performance.now() - started);
+						return result;
+					},
+					async (result) => {
+						if (result.status === "captured" || result.status === "unchanged") {
+							await this.deps.sessionManager.appendWorktreeSnapshot(
+								root,
+								result.snapshot.id,
+								result.status === "captured" ? result.snapshot : undefined,
+								undefined,
+								[],
+								undefined,
+								captureMs,
+								captureDegradedFrom(pin, result.snapshot.id),
+							);
+							await keepLatestSnapshotCommit(this.deps.sessionManager, root, result.snapshot);
+						} else if (result.status === "unavailable") {
+							this.report(result.reason);
+						}
+					},
+				);
 			} catch (error) {
 				this.reportFailure(error);
 			}
@@ -695,20 +705,24 @@ export async function discardDegradedRestore(
 		const store = sessionManager.getSessionStore();
 		if (store.snapshotBlobs === undefined)
 			throw new WorkspaceSnapshotError("blob-store-unsupported", store.descriptor.adapter);
-		const result = await captureWorktreeSnapshot(root, {
-			settings: options.settings,
-			previous: sessionManager.getLatestWorktreeSnapshots().get(root),
-			blobs: store.snapshotBlobs,
-			signal: options.signal,
-		});
-		if (result.status === "unavailable") throw result.reason;
-		if (result.status === "disabled") continue;
-		await sessionManager.appendWorktreeSnapshot(
-			root,
-			result.snapshot.id,
-			result.status === "captured" ? result.snapshot : undefined,
+		const blobs = store.snapshotBlobs;
+		const previous = sessionManager.getLatestWorktreeSnapshots().get(root);
+		let recorded = false;
+		await recordWorktreeCapture(
+			blobs,
+			() => captureWorktreeSnapshot(root, { settings: options.settings, previous, blobs, signal: options.signal }),
+			async (result) => {
+				if (result.status === "unavailable") throw result.reason;
+				if (result.status === "disabled") return;
+				await sessionManager.appendWorktreeSnapshot(
+					root,
+					result.snapshot.id,
+					result.status === "captured" ? result.snapshot : undefined,
+				);
+				recorded = true;
+			},
 		);
-		released.push(root);
+		if (recorded) released.push(root);
 	}
 	return released;
 }
@@ -1231,17 +1245,18 @@ async function recordCarriedWork(
 	const blobs = sessionManager.getSessionStore().snapshotBlobs;
 	if (blobs === undefined) return;
 	try {
-		const result = await captureWorktreeSnapshot(root, {
-			settings: options.settings,
+		await recordWorktreeCapture(
 			blobs,
-			signal: options.signal,
-		});
-		// Without a previous snapshot to compare with, a capture never resolves unchanged.
-		if (result.status === "captured" && result.snapshot.head === head) {
-			await sessionManager.appendWorktreeSnapshot(root, result.snapshot.id, result.snapshot);
-		} else if (result.status === "unavailable") {
-			reportDebug("storage", "degraded-work-capture-failed", failureDebugFields(result.reason));
-		}
+			() => captureWorktreeSnapshot(root, { settings: options.settings, blobs, signal: options.signal }),
+			async (result) => {
+				// Without a previous snapshot to compare with, a capture never resolves unchanged.
+				if (result.status === "captured" && result.snapshot.head === head) {
+					await sessionManager.appendWorktreeSnapshot(root, result.snapshot.id, result.snapshot);
+				} else if (result.status === "unavailable") {
+					reportDebug("storage", "degraded-work-capture-failed", failureDebugFields(result.reason));
+				}
+			},
+		);
 	} catch (error) {
 		options.signal?.throwIfAborted();
 		if (!isWorkspaceError(error) && !isGitUnavailableError(error)) throw error;

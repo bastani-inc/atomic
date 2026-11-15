@@ -501,6 +501,15 @@ class PooledRoutes {
 	}
 }
 
+/**
+ * Whether a newer attempt, or completion, replaced `work`, among the root's work items as the queue holds them: its
+ * item is gone, carries another generation, or completed.
+ */
+export function attemptSuperseded(items: readonly PoolWork[], work: Pick<PoolWork, "id" | "generation">): boolean {
+	const current = items.find((candidate) => candidate.id === work.id);
+	return current === undefined || current.generation !== work.generation || current.state === "completed";
+}
+
 /** Whether a worker holds an attempt, or has a claim in flight that may become one. */
 function holding(slot: WorkerSlot): boolean {
 	return slot.work !== undefined || slot.claiming === true;
@@ -537,6 +546,8 @@ interface WorkerSlot {
  */
 export interface SatellitePlacement {
 	readonly host: string;
+	/** The id the host's provisioner knows its instance by: a drain of the instance stops its claims (#5072). */
+	readonly providerId?: string | undefined;
 	/** The host's warm worktrees: the path of one whose current tree is the binding's, or undefined. */
 	readonly prefer?: WorkspacePreference;
 	/** The host's restore port, present only when one is configured and git is available. */
@@ -2781,6 +2792,8 @@ export class PoolCoordinator {
 			kind: "work",
 			id: candidate.id,
 			generation: candidate.generation,
+			// A host asked to drain claims nothing more, though it reads the drain only at its next poll (#5072).
+			host: { id: satellite.host, providerId: satellite.providerId },
 		});
 		if (work === undefined) return undefined;
 		if (this.closed) {
@@ -2994,8 +3007,7 @@ export class PoolCoordinator {
 
 	/** Whether a newer attempt, or completion, replaced this one. */
 	private async superseded(work: PoolWork): Promise<boolean> {
-		const current = (await this.queue!.inspect(this.root!)).find((candidate) => candidate.id === work.id);
-		return current === undefined || current.generation !== work.generation || current.state === "completed";
+		return attemptSuperseded(await this.queue!.inspect(this.root!), work);
 	}
 
 	private assertPublished(work: PoolWork): void {

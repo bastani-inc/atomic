@@ -127,7 +127,9 @@ export async function guardedPoolWrite<T>(
 				error.outcome === "unknown" &&
 				++unknownOutcomes <= UNKNOWN_OUTCOME_REPLANS;
 			if (!(isFenceAbort(error) || unknown) || Date.now() >= deadline) throw error;
-			afterUnknown = unknown;
+			// An unknown outcome stays pending until a batch succeeds: a fence abort after it says nothing of whether the
+			// earlier request committed late, so every later plan still finds out first (#5126).
+			afterUnknown ||= unknown;
 		}
 		const bound = Math.min(FENCE_RETRY_MAX_MS, FENCE_RETRY_BASE_MS * 2 ** Math.min(attempt, 16));
 		await new Promise((resolve) => setTimeout(resolve, Math.random() * bound));

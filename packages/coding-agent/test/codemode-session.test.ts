@@ -1604,3 +1604,60 @@ test("codemode reports a running update before the script's first nested call, s
 		await harness.cleanup();
 	}
 });
+
+test("codemode reaches a model-only tool only through its script access (#5087)", async () => {
+	const ran: string[] = [];
+	const tool = (name: string, exposure: "model-only" | "hidden") => ({
+		name,
+		label: name,
+		description: `${name} for the model`,
+		exposure,
+		parameters: Type.Object({ mode: Type.String() }),
+		scriptAccess: {
+			description: `${name} for scripts`,
+			outputSchema: Type.Object({ mode: Type.String() }),
+			refuse: ({ mode }: { mode: string }) => (mode === "safe" ? undefined : `${name} ${mode} is model-only`),
+		},
+		execute: async (_id: string, { mode }: { mode: string }) => {
+			ran.push(`${name}:${mode}`);
+			return { content: [{ type: "text" as const, text: mode }], structuredContent: { mode }, details: {} };
+		},
+	});
+	const harness = await createHarness({
+		extensionFactories: [
+			createCodemodeExtension(),
+			(pi) => {
+				pi.registerTool(tool("coordinate", "model-only"));
+				pi.registerTool(tool("secret", "hidden"));
+			},
+		],
+		initialActiveToolNames: ["codemode", "coordinate", "secret"],
+	});
+	try {
+		harness.setResponses([
+			fauxAssistantMessage(
+				[
+					fauxToolCall("codemode", {
+						code: 'return { safe: await tools.coordinate({ mode: "safe" }), unsafe: await tools.coordinate({ mode: "unsafe" }).catch((error) => error.message), invalid: await tools.coordinate({}).catch(() => "invalid"), secret: "secret" in tools, described: await describeTool("coordinate") };',
+					}),
+				],
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("done"),
+		]);
+		await harness.session.prompt("coordinate");
+		const result = harness.session.messages.find((message) => message.role === "toolResult");
+		assert(result?.role === "toolResult" && !result.isError, getMessageText(result));
+		const output = JSON.parse(getMessageText(result).split("\n").at(-1) ?? "");
+		assert.deepEqual(output.safe, { mode: "safe" });
+		assert.equal(output.unsafe, "coordinate unsafe is model-only");
+		assert.equal(output.invalid, "invalid");
+		assert.equal(output.secret, false);
+		assert.match(output.described, /^coordinate for scripts/);
+		assert.deepEqual(ran, ["coordinate:safe"]);
+		const declared = harness.session.agent.state.tools.find((candidate) => candidate.name === "coordinate");
+		assert.equal(declared?.description, "coordinate for the model");
+	} finally {
+		await harness.cleanup();
+	}
+});

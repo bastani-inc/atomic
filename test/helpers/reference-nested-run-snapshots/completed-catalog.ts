@@ -546,7 +546,13 @@ function runSnapshotsFromCheckpoints(
 		);
 		const owner = runId === rootRunId ? undefined : boundaryOwner(grouped, runId);
 		const status = owner === undefined ? "completed" : childRunStatus(owner);
-		const terminal = status !== "running" && status !== "pending" && status !== "paused" && status !== "blocked";
+		const ownerChild = owner === undefined ? undefined : workflowChildFromDraft(owner);
+		// #5053: a child that soft-landed blocked ended; the one deliberate change to this reference.
+		const terminal =
+			status !== "running" &&
+			status !== "pending" &&
+			status !== "paused" &&
+			(status !== "blocked" || ownerChild?.exited === true);
 		const parentRunId = run?.parentRunId ?? rootRunId;
 		const boundarySourceId = grouped.get(parentRunId)?.find((draft) => childRunIdFromDraft(draft) === runId)
 			?.topology?.stageId;
@@ -555,7 +561,6 @@ function runSnapshotsFromCheckpoints(
 		const parentStageId =
 			declaredParentStageId ??
 			(boundarySourceId === undefined ? undefined : idMaps.get(parentRunId)?.get(boundarySourceId));
-		const ownerChild = owner === undefined ? undefined : workflowChildFromDraft(owner);
 		runs.push({
 			id: runId,
 			name: run?.runName ?? rootRunName,

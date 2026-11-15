@@ -6,7 +6,8 @@ import { CONFIG_DIR_NAMES } from "../config.js";
 import { parseJsonFileContent } from "../utils/json.ts";
 import { canonicalizePath, getHomeDir, pathsEqual, resolvePath } from "../utils/paths.ts";
 import { releaseLockSync } from "./lock-release.ts";
-import { renameReplacing } from "./settings-storage.ts";
+import { waitForLockSync } from "./lock-wait.ts";
+import { renameReplacing } from "./rename-retry.ts";
 
 export type ProjectTrustDecision = boolean | null;
 
@@ -111,17 +112,10 @@ export function getProjectTrustOptions(cwd: string, options?: { includeSessionOn
 	return trustOptions;
 }
 
-/** How long a save waits, with backoff, for another process to release the trust store lock. */
+/** How long a save waits for one other process to release the trust store lock. */
 export const TRUST_LOCK_WAIT_MS = 5_000;
 const TRUST_LOCK_POLL_MIN_MS = 10;
-const TRUST_LOCK_POLL_MAX_MS = 250;
-
-const sleeper = new Int32Array(new SharedArrayBuffer(4));
-
-function sleepSync(ms: number): void {
-	// Callers of the trust store are synchronous; block this thread without spinning the CPU.
-	Atomics.wait(sleeper, 0, 0, ms);
-}
+const TRUST_LOCK_POLL_MAX_MS = 50;
 
 /** A trust.json that exists but is not a valid trust store. */
 class CorruptTrustFileError extends Error {}
@@ -221,30 +215,35 @@ function writeTrustFile(path: string, data: TrustFile): void {
 }
 
 /**
- * Takes the trust store writer lock, waiting with backoff up to {@link TRUST_LOCK_WAIT_MS} for another process to
- * release it. A lock its holder stopped refreshing is stale and taken over, as for auth.json.
+ * Takes the trust store writer lock, waiting while other processes hold it. Contention never fails a save: it fails
+ * only when one process keeps the lock for {@link TRUST_LOCK_WAIT_MS}, or after two minutes of
+ * saves by others. A lock its holder stopped refreshing is stale and taken over, as for auth.json.
  */
 function acquireTrustLockSync(path: string): () => void {
 	const trustDir = dirname(path);
 	mkdirSync(trustDir, { recursive: true });
-	const deadline = Date.now() + TRUST_LOCK_WAIT_MS;
-	for (let pollMs = TRUST_LOCK_POLL_MIN_MS; ; pollMs = Math.min(pollMs * 2, TRUST_LOCK_POLL_MAX_MS)) {
-		try {
-			return lockfile.lockSync(trustDir, { realpath: false, lockfilePath: `${path}.lock` });
-		} catch (error) {
+	const lockPath = `${path}.lock`;
+	return waitForLockSync(() => lockfile.lockSync(trustDir, { realpath: false, lockfilePath: lockPath }), {
+		lockPath,
+		holderWaitMs: TRUST_LOCK_WAIT_MS,
+		pollMinMs: TRUST_LOCK_POLL_MIN_MS,
+		pollMaxMs: TRUST_LOCK_POLL_MAX_MS,
+		retryable: (error) => {
 			const code = (error as NodeJS.ErrnoException).code;
 			// Windows reports a lock directory another process is creating or removing as EPERM, as for auth.json.
-			if (code !== "ELOCKED" && !(code === "EPERM" && process.platform === "win32")) throw error;
-			const remainingMs = deadline - Date.now();
-			if (remainingMs <= 0) {
-				throw new Error(
-					`Could not save the trust decision: ${path} is locked by another process (waited ${TRUST_LOCK_WAIT_MS / 1000} s)`,
-					{ cause: error },
-				);
-			}
-			sleepSync(Math.min(Math.round(pollMs * (1 + Math.random())), remainingMs));
-		}
-	}
+			return code === "ELOCKED" || (code === "EPERM" && process.platform === "win32");
+		},
+		stuck: (error) =>
+			new Error(
+				`Could not save the trust decision: ${path} is locked by another process (waited ${TRUST_LOCK_WAIT_MS / 1000} s)`,
+				{ cause: error },
+			),
+		contended: (error, waitedMs) =>
+			new Error(
+				`Could not save the trust decision: other processes kept saving to ${path} for ${Math.round(waitedMs / 1000)} s`,
+				{ cause: error },
+			),
+	});
 }
 
 function withTrustFileLock<T>(path: string, fn: () => T): T {
