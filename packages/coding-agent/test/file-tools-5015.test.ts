@@ -77,6 +77,12 @@ describe("read file names that look like selectors (#5015)", () => {
 		},
 	);
 
+	it("still refuses an invalid line selector when no file has the full name (#5015)", async () => {
+		const dir = await tempDir();
+		await writeFile(join(dir, "build"), "one\n");
+		await assert.rejects(read(dir, "build:5-2"));
+	});
+
 	it("still applies a line selector when no file has the full name (#5015)", async () => {
 		const dir = await tempDir();
 		await writeFile(join(dir, "build"), "one\ntwo\nthree\n");
@@ -232,6 +238,14 @@ describe("conflict://* covers every conflict under the working directory (#5015)
 		assert.equal(await readFile(join(dir, "a.txt"), "utf8"), CONFLICT);
 	});
 
+	it("lists at most 100 regions across files (#5015)", async () => {
+		const dir = await tempDir();
+		for (let index = 0; index < 101; index++)
+			await writeFile(join(dir, `f${String(index).padStart(3, "0")}.txt`), CONFLICT);
+		assert.equal(await write(dir, "conflict://*", "@ours"), "Resolved 100 conflicts");
+		assert.match(await read(dir, "conflict://*"), /^# conflict:\/\/1 f\d{3}\.txt:1-5\n## ours\nA\n## theirs\nB$/);
+	});
+
 	it("skips .git and node_modules, and walks other directories (#5015)", async () => {
 		const dir = await tempDir();
 		for (const sub of [".git", "node_modules", join("src", "deep")]) {
@@ -258,6 +272,7 @@ describe("conflict://* covers every conflict under the working directory (#5015)
 			join("pkg", "lib", "inner", "x.tmp"),
 			join("pkg", "out", "keep.txt"),
 			join("pkg", "#note"),
+			join("pkg", "note#"),
 		];
 		for (const file of files) {
 			await mkdir(join(dir, file, ".."), { recursive: true });
@@ -266,7 +281,7 @@ describe("conflict://* covers every conflict under the working directory (#5015)
 		await writeFile(join(dir, ".gitignore"), "*.log\r\n!keep.log\r\n");
 		await writeFile(
 			join(dir, "pkg", ".gitignore"),
-			"# note\n\n*.gen\n!keep.gen\n/only.txt\ndir/skip.txt\nout/\n!out/keep.txt\n",
+			"# note\n\n  *.gen  \n!keep.gen\n/only.txt\ndir/skip.txt\nout/\n!out/keep.txt\nnote#\n",
 		);
 		await writeFile(join(dir, "pkg", "lib", ".ignore"), "inner/*.tmp\n");
 		await write(dir, "conflict://*", "@ours");

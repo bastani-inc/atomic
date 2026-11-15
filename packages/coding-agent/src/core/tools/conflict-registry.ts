@@ -154,8 +154,8 @@ export async function findConflictBlocks(root: string, limit = MAX_CONFLICT_BLOC
 			} else if (entry.isFile() && !matcher.ignores(rel)) {
 				scanned++;
 				const bytes = await fsReadFile(full).catch(() => undefined);
-				if (bytes?.includes("<<<<<<<") && bytes.includes("=======") && bytes.includes(">>>>>>>"))
-					out.push(...parseConflictBytes(full, bytes).slice(0, limit - out.length));
+				// Every region has a separator line after its start, so a file without one is not parsed.
+				if (bytes?.includes("\n=======")) out.push(...parseConflictBytes(full, bytes).slice(0, limit - out.length));
 			}
 		}
 	}

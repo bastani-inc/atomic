@@ -335,7 +335,8 @@ async function isExistingLiteralPath(pathValue: string, cwd: string, ops: ReadOp
 	const stat = ops.stat ?? (ops === defaultReadOperations ? localStat : undefined);
 	if (!stat || isUrlLike(pathValue)) return false;
 	const absolute = await resolveReadPathAsync(pathValue, cwd);
-	return (await stat(absolute).catch(() => undefined)) !== undefined;
+	const found = await stat(absolute).catch(() => undefined);
+	return found?.isFile === true || found?.isDirectory === true;
 }
 /**
  * The line selector of `pathValue`, or `whole` when line parsing refuses it: a SQLite row id such as `2024-01-05`,
