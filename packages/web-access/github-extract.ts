@@ -57,17 +57,14 @@ function pathExists(path: string): boolean {
 
 /**
  * True when `path` is strictly inside the clone root after resolving every symlink along it.
- * The walk uses lstat, so a dangling symlink is resolved too and refuses the path.
+ * The walk uses lstat, so it stops at a dangling symlink, which refuses the path.
  */
 function isConfined(root: string, path: string): boolean {
 	let existing = path;
 	while (!pathExists(existing)) existing = dirname(existing);
-	try {
-		const realPath = join(realpathSync(existing), relative(existing, path));
-		return isInside(realpathSync(root), realPath);
-	} catch {
-		return false;
-	}
+	if (!existsSync(existing)) return false;
+	const realPath = join(realpathSync(existing), relative(existing, path));
+	return isInside(realpathSync(root), realPath);
 }
 
 /** Removes a clone directory only when it is confined and carries this tool's marker. */

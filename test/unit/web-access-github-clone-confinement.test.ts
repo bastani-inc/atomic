@@ -493,6 +493,12 @@ test.skipIf(!fileLinksSupported)("links that stay inside the repository are stil
 	assert.match(blob!.content, /## lib\/a\.ts\nexport const a = 1;/);
 });
 
+test.skipIf(!fileLinksSupported)("a link to the repository root is listed as a directory", async () => {
+	boundary.links = { self: { target: ".", type: "dir" } };
+	const tree = await extractGitHub("https://github.com/octo/widgets/tree/main", undefined, true);
+	assert.match(tree!.content, /\n {2}self\/\n/);
+});
+
 test("invalid GitHub URLs name the part that was rejected", () => {
 	assert.throws(
 		() => parseGitHubUrl("https://github.com/-octo/r"),
