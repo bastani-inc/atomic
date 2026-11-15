@@ -701,6 +701,13 @@ function pendingAskStore(asks: PendingAskEntry[]): PendingAskStore {
 			asks.splice(0, asks.length, ...asks.filter((ask) => ask.targetSessionId !== targetSessionId));
 			return { status: "taken", asks: taken.map(plainAsk) };
 		},
+		async listForTarget(targetSessionId) {
+			if (targetSessionId.length === 0) return invalid("empty-session-id");
+			return {
+				status: "listed",
+				asks: asks.filter((ask) => ask.targetSessionId === targetSessionId).map(plainAsk),
+			};
+		},
 		async parkForTarget(targetSessionId, park) {
 			if (targetSessionId.length === 0) return invalid("empty-session-id");
 			const bad = invalidPark(park);
@@ -736,6 +743,11 @@ function pendingAskStore(asks: PendingAskEntry[]): PendingAskStore {
 			const taken = asks.filter(matches);
 			asks.splice(0, asks.length, ...asks.filter((ask) => !matches(ask)));
 			return { status: "taken", asks: taken.map(plainAsk) };
+		},
+		async listParked(ownerSessionId, reservationKey) {
+			if (ownerSessionId.length === 0) return invalid("empty-session-id");
+			if (reservationKey !== undefined && reservationKey.length === 0) return invalid("empty-reservation-key");
+			return { status: "listed", asks: asks.filter(parkedBy(ownerSessionId, reservationKey)).map(plainAsk) };
 		},
 	};
 }

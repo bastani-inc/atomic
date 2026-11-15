@@ -157,6 +157,12 @@ export interface OutboxEnqueueRequest {
 	readonly digest: string;
 	/** Written verbatim to the recipient; its `message.id` is the row's message id. */
 	readonly frame: OutboxFrame;
+	/**
+	 * #4992: a failure the broker owes the recipient for one of its open asks. It is queued past the recipient's
+	 * `OUTBOX_TARGET_MAX_ROWS` and `OUTBOX_TARGET_MAX_BYTES`: it is small, there is at most one per open ask, and
+	 * refusing it would leave the ask waiting forever.
+	 */
+	readonly owed?: boolean;
 }
 
 export interface OutboxRow {
@@ -550,6 +556,11 @@ export interface PendingAskStore {
 	/** Remove and return the asks addressed to this target, in insertion order. */
 	takeForTarget(targetSessionId: string): Promise<PendingAskTakeResult>;
 	/**
+	 * #4992: the asks addressed to this target, in insertion order, without removing them: each is removed with
+	 * `clearReply` only once its asker's failure is delivered or queued.
+	 */
+	listForTarget(targetSessionId: string): Promise<PendingAskListResult>;
+	/**
 	 * #4386: the target is a subagent its owner released: keep its asks, still matching replies from it, for its
 	 * owner instead of removing them.
 	 */
@@ -558,6 +569,8 @@ export interface PendingAskStore {
 	rebindParked(park: PendingAskPark, targetSessionId: string): Promise<PendingAskRebindResult>;
 	/** Remove and return the owner's parked asks, of every subagent or only of the one reserved under `reservationKey`. */
 	takeParked(ownerSessionId: string, reservationKey?: string): Promise<PendingAskTakeResult>;
+	/** #4992: the owner's parked asks, as `takeParked` selects them, without removing them. */
+	listParked(ownerSessionId: string, reservationKey?: string): Promise<PendingAskListResult>;
 }
 
 /**

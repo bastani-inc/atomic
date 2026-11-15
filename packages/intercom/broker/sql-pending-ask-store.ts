@@ -126,6 +126,15 @@ export async function openSqlPendingAskStore({
 			});
 			return { status: "taken", asks: rows.map(toAsk) };
 		},
+		async listForTarget(targetSessionId): Promise<PendingAskListResult> {
+			if (targetSessionId.length === 0) return invalid("empty-session-id");
+			const rows = await database.all<AskRow>(
+				`SELECT sender_session_id, target_session_id, message_id FROM ${table}
+				 WHERE target_session_id = ? ORDER BY "order"`,
+				targetSessionId,
+			);
+			return { status: "listed", asks: rows.map(toAsk) };
+		},
 		async parkForTarget(targetSessionId, park): Promise<PendingAskParkResult> {
 			if (targetSessionId.length === 0) return invalid("empty-session-id");
 			const bad = invalidPark(park);
@@ -177,6 +186,16 @@ export async function openSqlPendingAskStore({
 				return taken;
 			});
 			return { status: "taken", asks: rows.map(toAsk) };
+		},
+		async listParked(ownerSessionId, reservationKey): Promise<PendingAskListResult> {
+			if (ownerSessionId.length === 0) return invalid("empty-session-id");
+			if (reservationKey !== undefined && reservationKey.length === 0) return invalid("empty-reservation-key");
+			const parked = parkedBy(ownerSessionId, reservationKey);
+			const rows = await database.all<AskRow>(
+				`SELECT sender_session_id, target_session_id, message_id FROM ${table} WHERE ${parked.where} ORDER BY "order"`,
+				...parked.params,
+			);
+			return { status: "listed", asks: rows.map(toAsk) };
 		},
 	};
 }

@@ -1301,6 +1301,19 @@ export function registerPendingAskStoreConformance(
 		await a.parkForTarget("child-1", { ownerSessionId: "owner", reservationKey: "released:one" });
 		await a.parkForTarget("child-2", { ownerSessionId: "owner", reservationKey: "released:two" });
 		await a.parkForTarget("child-3", { ownerSessionId: "other-owner", reservationKey: "released:three" });
+		// #4992: listing leaves each ask for its own `clearReply`, once its asker's failure is queued.
+		assert.deepEqual(await b.listParked("owner"), {
+			status: "listed",
+			asks: [ask("asker", "child-1", "q1"), ask("asker", "child-2", "q2")],
+		});
+		assert.deepEqual(await b.listParked("owner", "released:two"), {
+			status: "listed",
+			asks: [ask("asker", "child-2", "q2")],
+		});
+		assert.deepEqual(await a.listForTarget("child-3"), { status: "listed", asks: [ask("asker", "child-3", "q3")] });
+		assert.deepEqual(await a.listForTarget(""), { status: "invalid", reason: "empty-session-id" });
+		assert.deepEqual(await a.listParked(""), { status: "invalid", reason: "empty-session-id" });
+		assert.deepEqual(await a.listParked("owner", ""), { status: "invalid", reason: "empty-reservation-key" });
 		assert.deepEqual(await b.takeParked("owner", "released:one"), {
 			status: "taken",
 			asks: [ask("asker", "child-1", "q1")],
