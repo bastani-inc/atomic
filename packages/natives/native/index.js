@@ -835,6 +835,7 @@ function __napiStampBindingTarget(exportsObject, target) {
 // linked import resolves to `undefined`.
 module.exports.__napiBindingTarget = __napiStampBindingTarget(nativeBinding, __napiLoadedBindingTarget)
 module.exports = nativeBinding
+module.exports.AdvisoryLock = nativeBinding.AdvisoryLock
 module.exports.HostSession = nativeBinding.HostSession
 module.exports.OwnerLease = nativeBinding.OwnerLease
 module.exports.PtySession = nativeBinding.PtySession
@@ -863,6 +864,8 @@ module.exports.invalidateFsScanCache = nativeBinding.invalidateFsScanCache
 module.exports.killSupervisedProcessTrees = nativeBinding.killSupervisedProcessTrees
 module.exports.OwnerCloseCause = nativeBinding.OwnerCloseCause
 module.exports.processCreationTime = nativeBinding.processCreationTime
+module.exports.renameNoReplace = nativeBinding.renameNoReplace
 module.exports.search = nativeBinding.search
 module.exports.TerminationCause = nativeBinding.TerminationCause
+module.exports.tryAdvisoryLock = nativeBinding.tryAdvisoryLock
 module.exports.YieldReason = nativeBinding.YieldReason

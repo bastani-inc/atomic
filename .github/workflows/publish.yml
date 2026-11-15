@@ -636,6 +636,11 @@ jobs:
           $binding = (Join-Path $smoke "node_modules/@bastani/atomic-natives") -replace '\\', '/'
           bun -e "const b = require('$binding'); const t = b.processCreationTime(process.pid); if (!/^\d+$/.test(t ?? '')) throw new Error('processCreationTime returned ' + t); if (b.processCreationTime(4194311) !== null) throw new Error('processCreationTime read a missing process'); console.log('native process creation time', t)"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # #5193: lock takeovers are serialized by an advisory file lock the kernel releases when its holder dies;
+          # a binding without it falls back to a directory mutex that a paused process can lose.
+          $lockFile = (Join-Path $env:RUNNER_TEMP "atomic-smoke.takeover.lock") -replace '\\', '/'
+          bun -e "const b = require('$binding'); const l = b.tryAdvisoryLock('$lockFile', 0); if (l === null) throw new Error('tryAdvisoryLock refused a free lock'); if (b.tryAdvisoryLock('$lockFile', 50) !== null) throw new Error('tryAdvisoryLock took a held lock'); l.release(); const again = b.tryAdvisoryLock('$lockFile', 0); if (again === null) throw new Error('tryAdvisoryLock refused a released lock'); again.release(); if (typeof b.renameNoReplace !== 'function') throw new Error('renameNoReplace is missing'); console.log('native advisory lock taken and released')"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $cwd = Join-Path $env:RUNNER_TEMP "atomic-windows-cwd"
           New-Item -ItemType Directory -Force -Path $cwd | Out-Null
           Push-Location $cwd
@@ -748,7 +753,7 @@ jobs:
           # paths, so starting is not proof the addon dlopen'd. Require it here.
           docker run --rm --platform "${{ matrix.docker_platform }}" -v "$smoke:/smoke:ro" node:22-alpine node -e '
             const binding = require("/smoke/atomic/node_modules/@bastani/atomic-natives");
-            for (const name of ["glob", "grep", "processCreationTime"]) {
+            for (const name of ["glob", "grep", "processCreationTime", "tryAdvisoryLock", "renameNoReplace"]) {
               if (typeof binding[name] !== "function") throw new Error(`musl binding is missing ${name}()`);
             }
             console.log("musl native binding loaded:", Object.keys(binding).length, "exports");'
