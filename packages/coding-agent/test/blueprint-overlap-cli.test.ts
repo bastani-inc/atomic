@@ -5,12 +5,15 @@
  */
 import assert from "node:assert/strict";
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { join } from "node:path";
+import { hostname } from "node:os";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
+import { buildLockPath } from "../src/core/resume/blueprint/build-lock.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.ts";
 import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.ts";
@@ -429,6 +432,57 @@ describe("a resume without a UI whose blueprint build runs behind the first turn
 		},
 		CLI_RESUME_TIMEOUT_MS,
 	);
+
+	for (const mode of ["text", "json"] as const) {
+		test.skipIf(processStartToken(process.pid) === undefined)(
+			`-p in ${mode} mode says at once that it waits for another process's build of the worktree (#4748)`,
+			async () => {
+				const recorded = await recordedSession();
+				writeFileSync(gate(), "");
+				const first = resume(recorded, "-p", "hello");
+				first.child.stdin.end();
+				assert.equal(await first.exited, 0);
+				const worktrees = sandbox.path("agent", "worktree-snapshots", "worktrees");
+				const [slot] = readdirSync(worktrees);
+				const holder = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+				const lock = buildLockPath(sandbox.path("agent", "worktree-snapshots"), join(worktrees, slot!));
+				mkdirSync(dirname(lock), { recursive: true });
+				const host = createHash("sha256").update(hostname()).digest("hex").slice(0, 12);
+				writeFileSync(
+					lock,
+					JSON.stringify({ host, pid: holder.pid, start: processStartToken(holder.pid!), steps: [] }),
+				);
+				const again =
+					mode === "json" ? resume(recorded, "--mode", "json", "hello") : resume(recorded, "-p", "hello");
+				again.child.stdin.end();
+				const waiting = /Waiting for another Atomic process's blueprint build of .* to end/;
+				await until(
+					() =>
+						mode === "json"
+							? events(again.out(), "blueprint_build_waiting").length > 0
+							: waiting.test(again.err()),
+					"the wait to be shown",
+				);
+				holder.kill("SIGKILL");
+				assert.equal(await again.exited, 0);
+				if (mode === "json") {
+					const [event] = events(again.out(), "blueprint_build_waiting");
+					assert.match(String(event!.message), waiting);
+					assert.equal(events(again.out(), "blueprint_build_waiting").length, 1);
+				} else {
+					assert.equal(
+						again
+							.err()
+							.split("\n")
+							.filter((line) => waiting.test(line)).length,
+						1,
+						again.err(),
+					);
+				}
+			},
+			CLI_RESUME_TIMEOUT_MS,
+		);
+	}
 
 	for (const [how, end] of [
 		["SIGTERM during -p's wait for the build", "SIGTERM"],

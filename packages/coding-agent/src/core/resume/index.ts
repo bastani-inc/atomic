@@ -10,9 +10,11 @@ export {
 	awaitBlueprintReady,
 	type BlueprintBuildFinished,
 	type BlueprintBuildNotice,
+	type BlueprintBuildWaiting,
 	blueprintBuildPending,
 	blueprintBuildSettled,
 	onBlueprintBuildFinished,
+	onBlueprintBuildWaiting,
 } from "./blueprint/barrier.ts";
 export {
 	BLUEPRINT_FULL_BUILD_MAX_AGE_MS,

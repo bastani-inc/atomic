@@ -173,6 +173,19 @@ function delay(ms: number, signal: AbortSignal | undefined): Promise<void> {
 	});
 }
 
+/** Stops each of `steps` proven to be the step its lock recorded, and `extra`, and waits briefly until they ended. */
+async function stopProven(
+	steps: readonly LockedProcess[],
+	signal: AbortSignal | undefined,
+	extra: readonly LockedProcess[] = [],
+): Promise<void> {
+	const proven = steps.filter((step) => identity(step) === "same");
+	for (const step of [...proven, ...extra]) killProcessTree(step.pid);
+	for (let waited = 0; waited < 25 && proven.some((step) => identity(step) === "same"); waited++) {
+		await delay(BUILD_LOCK_POLL_MS / 2, signal);
+	}
+}
+
 /** How long a build waits for another process's build of the same worktree before it builds anyway, with a warning. */
 export const BUILD_LOCK_WAIT_MS = 5 * 60_000;
 
@@ -180,8 +193,8 @@ export interface SettleOtherBuildsOptions {
 	readonly signal?: AbortSignal;
 	/** How long to wait for another process's build. Default {@link BUILD_LOCK_WAIT_MS}. */
 	readonly waitMs?: number;
-	/** Told once per worktree when it starts waiting for another process's build. */
-	readonly onWait?: (message: string) => void;
+	/** Told once per worktree, with that worktree, when it starts waiting for another process's build. */
+	readonly onWait?: (root: string, message: string) => void;
 }
 
 /**
@@ -196,7 +209,7 @@ async function settleOtherBuild(file: string, root: string, options: SettleOther
 	let told = false;
 	let stopped = false;
 	const wait = async (why: string): Promise<boolean> => {
-		if (!told) options.onWait?.(`Waiting for ${why} of ${root} to end`);
+		if (!told) options.onWait?.(root, `Waiting for ${why} of ${root} to end`);
 		told = true;
 		if (Date.now() >= deadline) return false;
 		await delay(BUILD_LOCK_POLL_MS, options.signal);
@@ -213,24 +226,22 @@ async function settleOtherBuild(file: string, root: string, options: SettleOther
 		}
 		const { lock } = read;
 		if (lock.host !== HOST || lock.pid === process.pid) return [];
+		const steps = lock.steps ?? [];
 		const holder = identity(lock);
 		if (holder !== "gone") {
 			if (await wait("another Atomic process's blueprint build")) continue;
+			// Building anyway: the steps proven to be that build's stop first, so two builds never run in the worktree.
+			await stopProven(steps, options.signal);
 			return [
 				`Another process (pid ${lock.pid}) still seemed to build ${root} after ${Math.round((options.waitMs ?? BUILD_LOCK_WAIT_MS) / 1000)} s; building it anyway.`,
 			];
 		}
-		const proven = stopped ? [] : (lock.steps ?? []).filter((step) => identity(step) === "same");
-		// Stopped once: the Windows scan lists every process, and a later look only waits on what could not be proven.
-		const orphans = stopped
-			? []
-			: [...proven, ...(process.platform === "win32" ? orphanedChildren(lock.steps ?? []) : [])];
-		stopped = true;
-		for (const step of orphans) killProcessTree(step.pid);
-		for (let waited = 0; waited < 25 && proven.some((step) => identity(step) === "same"); waited++) {
-			await delay(BUILD_LOCK_POLL_MS / 2, options.signal);
+		if (!stopped) {
+			stopped = true;
+			// Stopped once: the Windows scan lists every process, and a later look only waits on what could not be proven.
+			await stopProven(steps, options.signal, process.platform === "win32" ? orphanedChildren(steps) : []);
 		}
-		const unproven = (lock.steps ?? []).filter((step) => identity(step) === "unknown");
+		const unproven = steps.filter((step) => identity(step) === "unknown");
 		if (unproven.length > 0) {
 			if (await wait("an earlier blueprint build")) continue;
 			rmSync(file, { force: true });
@@ -240,6 +251,14 @@ async function settleOtherBuild(file: string, root: string, options: SettleOther
 			];
 		}
 		rmSync(file, { force: true });
+		// A step recorded without its start cannot be told from what it left running (on Windows, Git's bash.exe ends
+		// before the shell it started), so the user hears that the earlier build may still run.
+		const unidentified = steps.filter((step) => step.start === undefined);
+		if (unidentified.length > 0) {
+			return [
+				`An earlier blueprint build of ${root} was interrupted, and processes it started could not be identified to stop them; they may still be running while the worktree is built again.`,
+			];
+		}
 		return [];
 	}
 }

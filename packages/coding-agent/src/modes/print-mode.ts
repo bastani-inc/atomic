@@ -14,7 +14,13 @@ import type { ToolDefinition } from "../core/extensions/types.ts";
 import type { CustomMessage } from "../core/messages.ts";
 import { formatModelLabel } from "../core/model-label.ts";
 import { flushRawStdout, writeRawStdout } from "../core/output-guard.ts";
-import { blueprintBuildsSettled, onBlueprintBuildFinished } from "../core/resume/blueprint/barrier.ts";
+import {
+	type BlueprintBuildFinished,
+	type BlueprintBuildWaiting,
+	blueprintBuildsSettled,
+	onBlueprintBuildFinished,
+	onBlueprintBuildWaiting,
+} from "../core/resume/blueprint/barrier.ts";
 import { serviceTierWarnings } from "../core/service-tier-warnings.ts";
 import { ranOnModelLine } from "../core/tasks/completion.js";
 import { reportDiagnostics } from "../main-stdio.ts";
@@ -108,6 +114,22 @@ function terminatingStructuredOutputText(
 	return textFromToolResult(message);
 }
 
+/** Writes a blueprint build event (#4748) as one JSON line on stdout, for `--mode json` and an RPC process's startup. */
+export function writeBlueprintBuildEvent(event: BlueprintBuildFinished | BlueprintBuildWaiting): void {
+	writeRawStdout(`${JSON.stringify(event)}\n`);
+}
+
+/**
+ * Tells a run without a UI that a resume waits for another blueprint build of its worktree, as soon as it starts
+ * waiting (#4748): JSON modes get the event on stdout, text mode a line on stderr. Returns the unsubscribe.
+ */
+export function announceBlueprintBuildWaits(json: boolean): () => void {
+	return onBlueprintBuildWaiting((waiting) => {
+		if (json) writeBlueprintBuildEvent(waiting);
+		else reportDiagnostics([{ type: "info", message: waiting.message }]);
+	});
+}
+
 /**
  * Run in print (single-shot) mode.
  * Sends prompts to the agent and outputs the result.
@@ -164,10 +186,16 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 	registerSignalHandlers();
 	// A resumed session's blueprint build may run behind its first turn (#4748): its warnings reach the user once it
 	// ends, as a resume that waits shows them, and a JSON run emits the build's end as an event.
-	const stopAnnouncing = onBlueprintBuildFinished((finished) => {
-		if (mode === "json") writeRawStdout(`${JSON.stringify(finished)}\n`);
+	// A resume that waits for another build of its worktree says so at once, not only in the warning after the wait.
+	const stopAnnouncingFinished = onBlueprintBuildFinished((finished) => {
+		if (mode === "json") writeBlueprintBuildEvent(finished);
 		else reportDiagnostics(finished.notices);
 	});
+	const stopAnnouncingWaits = announceBlueprintBuildWaits(mode === "json");
+	const stopAnnouncing = () => {
+		stopAnnouncingFinished();
+		stopAnnouncingWaits();
+	};
 
 	const promptWithScopedCommandSuppression = async (
 		text: string,

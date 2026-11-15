@@ -18,7 +18,7 @@ import type { AgentSession } from "../../core/agent-session.js";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
 import { KeybindingsManager } from "../../core/keybindings.ts";
 import { flushRawStdout, takeOverStdout, writeRawStdout } from "../../core/output-guard.ts";
-import { onBlueprintBuildFinished } from "../../core/resume/blueprint/barrier.ts";
+import { onBlueprintBuildFinished, onBlueprintBuildWaiting } from "../../core/resume/blueprint/barrier.ts";
 import { isInteractiveEngineChild } from "../../utils/interactive-engine-env.ts";
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
 import { startInteractiveEngineLiveness } from "../interactive-engine/engine-child-liveness.ts";
@@ -144,7 +144,12 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 
 	// A resumed session's blueprint build may run behind its first turn (#4748): the client hears once that it ended,
 	// with the warnings a resume that waits for it returns.
-	const stopAnnouncingBuilds = onBlueprintBuildFinished((finished) => output(finished));
+	const stopAnnouncingFinished = onBlueprintBuildFinished((finished) => output(finished));
+	const stopAnnouncingWaits = onBlueprintBuildWaiting((waiting) => output(waiting));
+	const stopAnnouncingBuilds = () => {
+		stopAnnouncingFinished();
+		stopAnnouncingWaits();
+	};
 
 	runtimeHost.setRebindSession(async () => {
 		projectTrust?.dispose();

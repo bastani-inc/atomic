@@ -31,6 +31,14 @@ export interface BlueprintBuildFinished {
 	readonly notices: readonly BlueprintBuildNotice[];
 }
 
+/** A resume that waits for another blueprint build of a worktree before it builds it, as `onBlueprintBuildWaiting` tells it. */
+export interface BlueprintBuildWaiting {
+	readonly type: "blueprint_build_waiting";
+	/** The worktree whose earlier build is waited for. */
+	readonly root: string;
+	readonly message: string;
+}
+
 /**
  * Who waits for a build: a session by its id, and the directories it works in (its cwd and the worktrees its restores
  * put its checkouts in). A session id alone names only the session whose resume started the build.
@@ -113,6 +121,29 @@ export function onBlueprintBuildFinished(listener: (finished: BlueprintBuildFini
 	listeners.add(listener);
 	for (const finished of unannounced.splice(0)) listener(finished);
 	return () => listeners.delete(listener);
+}
+
+const unannouncedWaits: BlueprintBuildWaiting[] = [];
+const waitListeners = new Set<(waiting: BlueprintBuildWaiting) => void>();
+
+/**
+ * Tells the user, through the listeners of {@link onBlueprintBuildWaiting}, that a resume waits for another blueprint
+ * build of the worktree at `root`: one still running in another process, or the leftovers of one whose process died.
+ */
+export function announceBlueprintBuildWaiting(root: string, message: string): void {
+	const waiting: BlueprintBuildWaiting = { type: "blueprint_build_waiting", root, message };
+	if (waitListeners.size === 0) unannouncedWaits.push(waiting);
+	for (const listener of waitListeners) listener(waiting);
+}
+
+/**
+ * Tells `listener` each time a resume of this process starts waiting for another blueprint build of a worktree, and at
+ * once of those that started before anyone listened, each told once. Returns the unsubscribe.
+ */
+export function onBlueprintBuildWaiting(listener: (waiting: BlueprintBuildWaiting) => void): () => void {
+	waitListeners.add(listener);
+	for (const waiting of unannouncedWaits.splice(0)) listener(waiting);
+	return () => waitListeners.delete(listener);
 }
 
 /** Whether tool calls of `subject` wait for a blueprint build, or the agent has not yet been told how it ended. */

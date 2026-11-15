@@ -50,6 +50,7 @@ import type {
 	WorktreeUnrestored,
 } from "../worktree-snapshot/types.ts";
 import {
+	announceBlueprintBuildWaiting,
 	type BlueprintBuildResult,
 	blueprintBuildShared,
 	handOverBuildTimings,
@@ -1068,7 +1069,10 @@ async function setUpCheckoutBlueprints(
 		// before the ledger says which need building.
 		const lockWarnings = await settleOtherBuilds(storeDir, claimed, {
 			signal: options.signal,
-			onWait: options.onProgress,
+			onWait: (root, message) => {
+				options.onProgress?.(message);
+				announceBlueprintBuildWaiting(root, message);
+			},
 		});
 		const retried = await checkoutsNeedingRebuild(candidates, storeDir);
 		const restored = [...toBuild, ...retried];

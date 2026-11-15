@@ -107,7 +107,7 @@ describe("blueprint build locks (#4748)", () => {
 		const waits: string[] = [];
 		const warnings = await settleOtherBuilds(dir, [root()], {
 			waitMs: 600,
-			onWait: (message) => waits.push(message),
+			onWait: (_root, message) => waits.push(message),
 		});
 		assert.equal(unrelated.exitCode, null);
 		assert.equal(unrelated.signalCode, null, "the unrelated process still runs");
@@ -131,7 +131,7 @@ describe("blueprint build locks (#4748)", () => {
 		const waits: string[] = [];
 		const started = Date.now();
 		const warnings = await Promise.race([
-			settleOtherBuilds(dir, [root()], { waitMs: 600, onWait: (message) => waits.push(message) }),
+			settleOtherBuilds(dir, [root()], { waitMs: 600, onWait: (_root, message) => waits.push(message) }),
 			new Promise<"wedged">((resolve) => setTimeout(() => resolve("wedged"), 10_000)),
 		]);
 		assert.notEqual(warnings, "wedged", "the wait is bounded");
@@ -141,6 +141,32 @@ describe("blueprint build locks (#4748)", () => {
 		assert.equal(waits.length, 1);
 		assert.match(waits[0]!, /^Waiting for another Atomic process's blueprint build of /);
 		assert.equal(holder.signalCode, null, "the holder is not stopped");
+	});
+
+	test.skipIf(processStartToken(process.pid) === undefined)(
+		"once the wait for a holder that cannot be proven gone ends, its steps proven to be that build's are stopped first",
+		async () => {
+			const holder = sleeper();
+			const step = sleeper();
+			writeLock({ pid: holder.pid, steps: [{ pid: step.pid, start: processStartToken(step.pid!) }] });
+			const warnings = await settleOtherBuilds(dir, [root()], { waitMs: 300 });
+			assert.match(warnings[0] ?? "", /building it anyway/);
+			await exited(step);
+			assert.equal(holder.signalCode, null, "the holder itself is not stopped");
+		},
+	);
+
+	test("a build whose dead process recorded its steps without their start is reported, as they may still run", async () => {
+		writeLock({ pid: await deadPid(), steps: [{ pid: await deadPid() }] });
+		const warnings = await settleOtherBuilds(dir, [root()], { waitMs: 300 });
+		assert.equal(warnings.length, 1);
+		assert.match(warnings[0]!, /was interrupted, and processes it started could not be identified/);
+		assert.equal(existsSync(buildLockPath(dir, root())), false);
+	});
+
+	test("a build whose dead process recorded the start of each step it ran leaves nothing to report", async () => {
+		writeLock({ pid: await deadPid(), steps: [{ pid: await deadPid(), start: "000000000000" }] });
+		assert.deepEqual(await settleOtherBuilds(dir, [root()], { waitMs: 300 }), []);
 	});
 
 	test("a lock that cannot be read stops nothing and the build goes on with a warning", async () => {
