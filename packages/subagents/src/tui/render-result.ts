@@ -1,4 +1,4 @@
-import { getMarkdownTheme, keyHintIfBound, sliceHead } from "@bastani/atomic";
+import { getMarkdownTheme, keyHintIfBound } from "@bastani/atomic";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { type Component, Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { isParentCancellation } from "../runs/shared/cancellation-recovery.js";
@@ -142,9 +142,8 @@ export function renderSubagentResult(
 			),
 		);
 		c.addChild(new Spacer(1));
-		const taskMaxLen = Math.max(20, w - 8);
-		const taskPreview = expanded || r.task.length <= taskMaxLen ? r.task : `${sliceHead(r.task, taskMaxLen)}...`;
-		c.addChild(new Text(fit(theme.fg("dim", `Task: ${taskPreview}`)), 0, 0));
+		// Only an expanded single result gets here, and it shows the whole task.
+		c.addChild(new Text(fit(theme.fg("dim", `Task: ${r.task}`)), 0, 0));
 		c.addChild(new Spacer(1));
 
 		if (isRunning && r.progress) {
@@ -164,10 +163,7 @@ export function renderSubagentResult(
 			}
 			if (r.progress.recentTools?.length) {
 				for (const t of r.progress.recentTools.slice(-3)) {
-					const maxArgsLen = Math.max(40, w - 24);
-					const argsPreview =
-						expanded || t.args.length <= maxArgsLen ? t.args : `${sliceHead(t.args, maxArgsLen)}...`;
-					c.addChild(new Text(fit(theme.fg("dim", `${t.tool}: ${argsPreview}`)), 0, 0));
+					c.addChild(new Text(fit(theme.fg("dim", `${t.tool}: ${t.args}`)), 0, 0));
 				}
 			}
 			for (const line of (r.progress.recentOutput ?? []).slice(-5)) {
@@ -375,9 +371,8 @@ export function renderSubagentResult(
 		const toolCallLines = getToolCallLines(r, expanded);
 		c.addChild(new Text(fit(stepHeader), 0, 0));
 
-		const taskMaxLen = Math.max(20, w - 12);
-		const taskPreview = expanded || r.task.length <= taskMaxLen ? r.task : `${sliceHead(r.task, taskMaxLen)}...`;
-		c.addChild(new Text(fit(theme.fg("dim", `    task: ${taskPreview}`)), 0, 0));
+		// Only an expanded result list gets here, and it shows each whole task.
+		c.addChild(new Text(fit(theme.fg("dim", `    task: ${r.task}`)), 0, 0));
 
 		const outputTarget = extractOutputTarget(r.task);
 		if (outputTarget) {
@@ -416,10 +411,7 @@ export function renderSubagentResult(
 			}
 			if (rProg.recentTools?.length) {
 				for (const t of rProg.recentTools.slice(-3)) {
-					const maxArgsLen = Math.max(40, w - 30);
-					const argsPreview =
-						expanded || t.args.length <= maxArgsLen ? t.args : `${sliceHead(t.args, maxArgsLen)}...`;
-					c.addChild(new Text(fit(theme.fg("dim", `      ${t.tool}: ${argsPreview}`)), 0, 0));
+					c.addChild(new Text(fit(theme.fg("dim", `      ${t.tool}: ${t.args}`)), 0, 0));
 				}
 			}
 			const recentLines = (rProg.recentOutput ?? []).slice(-5);

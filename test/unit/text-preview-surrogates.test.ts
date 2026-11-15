@@ -61,6 +61,8 @@ test("a subagent's tool-argument preview cuts before a split emoji (#5097)", () 
 		`s/t ${"a".repeat(39)}`,
 	);
 	assert.equal(extractToolArgsPreview({ tool: "t", args: "a".repeat(40) }), `t ${"a".repeat(40)}`);
+	assert.equal(extractToolArgsPreview({ tool: "t" }), "t");
+	assert.equal(extractToolArgsPreview({ tool: "t", args: { a: 1 } }), "t");
 });
 
 test("a subagent error's details cut before a split emoji (#5097)", () => {

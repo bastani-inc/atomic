@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
+import { durableHash } from "../../packages/workflows/src/durable/backend.js";
+import { resolveCompletedWorkflow } from "../../packages/workflows/src/durable/completed-catalog.js";
+import { createToolPrimitive } from "../../packages/workflows/src/durable/tool-primitive.js";
 import {
 	installWorkflowHilAnswerNotifications,
 	type WorkflowHilAnswerNoticeDetails,
@@ -8,9 +11,22 @@ import { workflowSummaryInput } from "../../packages/workflows/src/extension/wor
 import { truncateTaskOutput } from "../../packages/workflows/src/runs/foreground/executor-task-prompts.js";
 import { StageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
-import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
+import type { RunSnapshot, StageSnapshot, ToolNodeSnapshot } from "../../packages/workflows/src/shared/store-types.js";
+import type { WorkflowSerializableValue } from "../../packages/workflows/src/shared/types.js";
+import { testRunId } from "../helpers/run-id.js";
+import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 const EMOJI = "😀";
+
+useTemporaryAgentDir();
+
+/** Tool results whose summaries fit, are cut next to an emoji, and have no JSON form. */
+const TOOL_OUTPUTS: readonly (readonly [WorkflowSerializableValue, string])[] = [
+	["f".repeat(238), `"${"f".repeat(238)}"`],
+	[`${"x".repeat(235)}${EMOJI}yy`, `"${"x".repeat(235)}...`],
+	[undefined as unknown as WorkflowSerializableValue, "undefined"],
+];
 
 function stage(name: string, result: string): StageSnapshot {
 	return { id: name, name, status: "completed", parentIds: [], toolEvents: [], result };
@@ -126,4 +142,73 @@ test("a workflow human-in-the-loop answer notice cuts the prompt before a split 
 	unsubscribe();
 
 	assert.equal(sent[0]?.details?.promptMessage, `${"q".repeat(998)}…`);
+});
+
+test("a workflow tool's result summary cuts before a split emoji, live and in the completed catalog (#5097)", async () => {
+	const backend = await createMemoryTestBackend();
+	const workflowId = testRunId("tool-summary-surrogates");
+	await backend.commitWorkflowRegistration({
+		workflowId,
+		name: workflowId,
+		inputs: {},
+		createdAt: 1,
+		updatedAt: 100,
+		status: "running",
+	});
+	const ended: Partial<ToolNodeSnapshot>[] = [];
+	const tool = createToolPrimitive({
+		workflowId,
+		backend,
+		nextCheckpointId: () => "unused",
+		throwIfCancelled() {},
+		onNodeEnd(_nodeId, update) {
+			ended.push(update);
+		},
+	});
+	for (const [index, [output]] of TOOL_OUTPUTS.entries()) await tool(`summary-${index}`, {}, async () => output);
+	assert.deepEqual(
+		ended.map((update) => update.resultSummary),
+		TOOL_OUTPUTS.map(([, summary]) => summary),
+	);
+
+	for (const [index, [output]] of TOOL_OUTPUTS.entries()) {
+		const argsHash = durableHash({ name: `catalog-${index}`, args: {}, ordinal: index + 1 });
+		await backend.commitCheckpoint({
+			kind: "tool",
+			workflowId,
+			checkpointId: `tool:${argsHash}`,
+			name: `catalog-${index}`,
+			argsHash,
+			output,
+			completedAt: 20 + index,
+			topology: {
+				version: 1,
+				nodeId: `tool:${argsHash}`,
+				ordinal: index + 1,
+				order: index,
+				parentIds: [],
+				run: { runId: workflowId, runName: "test" },
+			},
+		});
+	}
+	await backend.commitWorkflowRegistration({
+		workflowId,
+		name: workflowId,
+		inputs: {},
+		createdAt: 1,
+		updatedAt: 100,
+		status: "completed",
+	});
+	const resolved = await resolveCompletedWorkflow(workflowId, backend);
+	assert.equal(resolved.kind, "found");
+	const summaries = new Map(
+		(resolved.kind === "found" ? (resolved.snapshot.toolNodes ?? []) : []).map((node) => [
+			node.name,
+			node.resultSummary,
+		]),
+	);
+	assert.deepEqual(
+		TOOL_OUTPUTS.map((_, index) => summaries.get(`catalog-${index}`)),
+		TOOL_OUTPUTS.map(([, summary]) => summary),
+	);
 });
