@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.ts";
 import {
@@ -176,7 +176,8 @@ test("staging worktrees take a 15-character name from the restore's id (#5139)",
 describe("the restore path budget on Windows (#5139)", () => {
 	/** A store under an agent directory of `length` characters, and its one object store. */
 	function layout(length: number) {
-		const agentDir = `/${"a".repeat(length - 1)}`;
+		// Resolved, as Atomic resolves it: a drive letter on Windows.
+		const agentDir = resolve(`/${"a".repeat(length - 1)}`);
 		cleanups.push(replaceEnvironmentVariable("ATOMIC_CODING_AGENT_DIR", agentDir));
 		const storeDir = join(agentDir, "worktree-snapshots");
 		const store = join(storeDir, "repositories", `${"f".repeat(24)}.git`);
@@ -210,7 +211,7 @@ describe("the restore path budget on Windows (#5139)", () => {
 		assert.deepEqual(error.fields, { snapshotId: "s1", target: over, limit: 212, agentDir });
 		assert.equal(
 			error.message,
-			`Cannot restore snapshot s1: ${over} would be 213 characters, over the 212 that Windows and Git allow for it (path-too-long). Atomic keeps restored worktrees under ${agentDir} (120 characters). Set ATOMIC_CODING_AGENT_DIR to a shorter directory, such as C:\\atomic, or restore with a shorter storeDir, then retry.`,
+			`Cannot restore snapshot s1: ${over} would be 213 characters, over the 212 that Windows and Git allow for it (path-too-long). Atomic keeps restored worktrees under ${agentDir} (${agentDir.length} characters). Set ATOMIC_CODING_AGENT_DIR to a shorter directory, such as C:\\atomic, or restore with a shorter storeDir, then retry.`,
 		);
 	});
 
@@ -245,7 +246,7 @@ describe("the restore path budget on Windows (#5139)", () => {
 			}),
 		);
 		assert.ok(isWorkspaceRestoreError(error));
-		assert.equal(error.agentDir, storeDir);
+		assert.equal(error.agentDir, resolve(storeDir));
 	});
 
 	test("other platforms have no budget", () => {
