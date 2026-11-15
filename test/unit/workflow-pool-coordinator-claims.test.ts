@@ -5,6 +5,7 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import type { SessionEntry } from "@bastani/atomic";
+import { sqliteDialect } from "@bastani/atomic/storage";
 import { test } from "vitest";
 import { ForkSessionClaimError, isForkSessionClaimError } from "../../packages/workflows/src/durable/fork-errors.js";
 import { sqlPoolStorage } from "../../packages/workflows/src/durable/journal/internal.js";
@@ -77,7 +78,7 @@ async function coordinator() {
 	assert.equal(prepared.error, undefined, prepared.error);
 	const stageCopy = (id: string) =>
 		storage.transaction(async (tx) => {
-			const sessions = await poolTransactionSessionStore(tx, prefix);
+			const sessions = await poolTransactionSessionStore(tx, sqliteDialect, prefix);
 			try {
 				await sessions.create(
 					{

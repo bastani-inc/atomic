@@ -1,5 +1,5 @@
 import type { WorktreeSnapshot } from "@bastani/atomic";
-import type { SqliteExecutor, SqliteRow, SqliteStatement } from "@bastani/atomic/storage";
+import type { SqliteExecutor, SqliteRow, SqliteStatement, StorageDialect } from "@bastani/atomic/storage";
 import type { SerializedError } from "../../shared/error-codec.js";
 import { StaleStageLeaseError } from "../../workers/placement-errors.js";
 import type { WorkspaceBinding } from "../../workers/workspace-binding.js";
@@ -30,18 +30,17 @@ import { validateText } from "./values.js";
 export type { SharedPoolFleet, SharedPoolHost, SharedPoolStats, WorkerHostGitSource } from "./shared-pool-types.js";
 export type { PooledStageInputKind } from "./stage-input-kinds.js";
 
-const STORE_NOW = "CAST(unixepoch('subsec') * 1000 AS INTEGER)";
-
 /** A registered worker host counts as live this long after its last report. */
 export const WORKER_HOST_TTL_MS = 15_000;
 
-/** Columns of the host registry that hosts of older versions created it without (#4768). */
-const HOST_STATUS_COLUMNS = {
-	slots_busy: "INTEGER",
-	draining: "INTEGER NOT NULL DEFAULT 0",
-	degraded: "TEXT",
-	provider_id: "TEXT",
-} as const;
+/** Columns of the host registry that hosts of older versions created it without (#4768), with their types. */
+const hostStatusColumns = (dialect: StorageDialect) =>
+	({
+		slots_busy: dialect.types.int,
+		draining: `${dialect.types.int} NOT NULL DEFAULT 0`,
+		degraded: "TEXT",
+		provider_id: "TEXT",
+	}) as const;
 
 /** A stage input that answers a prompt the stage raised; its payload is the answer. */
 export const STAGE_INPUT_PROMPT_ANSWER = "prompt-answer" as const satisfies PooledStageInputKind;
@@ -151,6 +150,9 @@ export class SqlSharedPool {
 	private readonly backoffs: string;
 	private readonly drains: string;
 	private readonly work: string;
+	private readonly dialect: StorageDialect;
+	/** The database clock, in integer milliseconds, as SQL. */
+	private readonly now: string;
 	private constructor(
 		private readonly storage: SqlPoolStorage,
 		private readonly queue: SqlPoolQueue,
@@ -166,6 +168,8 @@ export class SqlSharedPool {
 		this.backoffs = `${runs}_pool_restore_backoffs`;
 		this.drains = `${runs}_fleet_drains`;
 		this.work = `${runs}_work`;
+		this.dialect = storage.dialect;
+		this.now = storage.dialect.nowMs;
 	}
 
 	/** Opens the shared-placement tables beside `queue`'s, creating them; the queue must be open on the same journal. */
@@ -174,56 +178,56 @@ export class SqlSharedPool {
 		if (!storage) throw new Error("Shared worker placement requires a SQL run journal");
 		const pool = new SqlSharedPool(storage, queue, sqlPoolWrites(journal));
 		const runs = storage.tables.runs;
+		const { dialect } = storage;
+		const { int } = dialect.types;
 		await storage.transaction(async (tx) => {
 			await tx.exec(`
 				CREATE TABLE IF NOT EXISTS ${pool.shared}(
 					root TEXT PRIMARY KEY REFERENCES ${runs}_pool(root) ON DELETE CASCADE, config TEXT NOT NULL,
-					epoch INTEGER NOT NULL, budget_blocked INTEGER NOT NULL DEFAULT 0
+					epoch ${int} NOT NULL, budget_blocked ${int} NOT NULL DEFAULT 0${dialect.rowOrderColumn}
 				);
 				CREATE TABLE IF NOT EXISTS ${pool.hosts}(
-					host TEXT PRIMARY KEY, labels TEXT NOT NULL, git TEXT NOT NULL, restore INTEGER NOT NULL,
-					workers INTEGER NOT NULL, max_workers INTEGER NOT NULL, heartbeat_at INTEGER NOT NULL,
-					roots TEXT NOT NULL DEFAULT '[]', slots_busy INTEGER, draining INTEGER NOT NULL DEFAULT 0, degraded TEXT
+					host TEXT PRIMARY KEY, labels TEXT NOT NULL, git TEXT NOT NULL, restore ${int} NOT NULL,
+					workers ${int} NOT NULL, max_workers ${int} NOT NULL, heartbeat_at ${int} NOT NULL,
+					roots TEXT NOT NULL DEFAULT '[]', slots_busy ${int}, draining ${int} NOT NULL DEFAULT 0, degraded TEXT
 				);
 				CREATE TABLE IF NOT EXISTS ${pool.activity}(
 					work TEXT PRIMARY KEY REFERENCES ${pool.work}(id) ON DELETE CASCADE, token TEXT NOT NULL,
-					runs TEXT NOT NULL, version INTEGER NOT NULL
+					runs TEXT NOT NULL, version ${int} NOT NULL
 				);
 				CREATE INDEX IF NOT EXISTS ${pool.activity}_version ON ${pool.activity}(version);
 				CREATE TABLE IF NOT EXISTS ${pool.inputs}(
-					root TEXT NOT NULL, run_id TEXT NOT NULL, stage_id TEXT NOT NULL, seq INTEGER NOT NULL,
+					root TEXT NOT NULL, run_id TEXT NOT NULL, stage_id TEXT NOT NULL, seq ${int} NOT NULL,
 					work TEXT NOT NULL REFERENCES ${pool.work}(id) ON DELETE CASCADE, kind TEXT NOT NULL, op TEXT NOT NULL,
 					payload TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending', receipt TEXT,
-					created_at INTEGER NOT NULL, settled_at INTEGER,
+					created_at ${int} NOT NULL, settled_at ${int},
 					PRIMARY KEY(root, run_id, stage_id, seq), UNIQUE(root, run_id, stage_id, op)
 				);
 				CREATE INDEX IF NOT EXISTS ${pool.inputs}_pending ON ${pool.inputs}(work, state);
 				CREATE TABLE IF NOT EXISTS ${pool.stageLeases}(
-					root TEXT NOT NULL, run_id TEXT NOT NULL, stage_id TEXT NOT NULL, token INTEGER NOT NULL,
-					work TEXT, generation INTEGER, worker TEXT, epoch INTEGER, seq INTEGER,
-					expires_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(root, run_id, stage_id)
+					root TEXT NOT NULL, run_id TEXT NOT NULL, stage_id TEXT NOT NULL, token ${int} NOT NULL,
+					work TEXT, generation ${int}, worker TEXT, epoch ${int}, seq ${int},
+					expires_at ${int} NOT NULL DEFAULT 0, PRIMARY KEY(root, run_id, stage_id)
 				);
 				CREATE TABLE IF NOT EXISTS ${pool.workspaces}(
 					root TEXT NOT NULL, run_id TEXT NOT NULL, stage_id TEXT NOT NULL,
-					work TEXT NOT NULL REFERENCES ${pool.work}(id) ON DELETE CASCADE, generation INTEGER NOT NULL,
-					host TEXT NOT NULL, worktree TEXT NOT NULL, binding TEXT, recorded_at INTEGER NOT NULL,
+					work TEXT NOT NULL REFERENCES ${pool.work}(id) ON DELETE CASCADE, generation ${int} NOT NULL,
+					host TEXT NOT NULL, worktree TEXT NOT NULL, binding TEXT, recorded_at ${int} NOT NULL,
 					PRIMARY KEY(root, run_id, stage_id)
 				);
 				CREATE TABLE IF NOT EXISTS ${pool.backoffs}(
-					host TEXT NOT NULL, binding TEXT NOT NULL, until INTEGER NOT NULL, failure TEXT NOT NULL,
-					recorded_at INTEGER NOT NULL, PRIMARY KEY(host, binding)
+					host TEXT NOT NULL, binding TEXT NOT NULL, until ${int} NOT NULL, failure TEXT NOT NULL,
+					recorded_at ${int} NOT NULL, PRIMARY KEY(host, binding)${dialect.rowOrderColumn}
 				);
-				${fleetDrainsSchema(runs)};
+				${fleetDrainsSchema(runs, dialect)};
 			`);
 			// A registry an older version created lacks the status and provider id columns; its hosts go on writing
 			// without them.
-			const present = new Set(
-				(await tx.all<SqliteRow & { name: string }>("SELECT name FROM pragma_table_info(?)", pool.hosts)).map(
-					(column) => column.name,
-				),
-			);
-			for (const [column, type] of Object.entries(HOST_STATUS_COLUMNS))
-				if (!present.has(column)) await tx.exec(`ALTER TABLE ${pool.hosts} ADD COLUMN ${column} ${type}`);
+			for (const [column, type] of Object.entries(hostStatusColumns(dialect))) {
+				const present = dialect.columnExists(pool.hosts, column);
+				if (!(await tx.get(present.sql, ...present.params)))
+					await tx.exec(`ALTER TABLE ${pool.hosts} ADD COLUMN ${column} ${type}`);
+			}
 		});
 		return pool;
 	}
@@ -280,9 +284,9 @@ export class SqlSharedPool {
 					budget_blocked: number;
 				}
 			>(
-				`SELECT s.root, s.config, s.budget_blocked, r.status, l.holder_id, l.epoch, l.renewed_at, p.timeout, ${STORE_NOW} AS now
+				`SELECT s.root, s.config, s.budget_blocked, r.status, l.holder_id, l.epoch, l.renewed_at, p.timeout, ${this.now} AS now
 				FROM ${this.shared} s JOIN ${runs} r ON r.run_id = s.root JOIN ${this.storage.tables.leases} l ON l.run_id = s.root
-				JOIN ${runs}_pool p ON p.root = s.root WHERE s.epoch = l.epoch ORDER BY s.rowid`,
+				JOIN ${runs}_pool p ON p.root = s.root WHERE s.epoch = l.epoch ORDER BY ${this.dialect.rowOrder("s")}`,
 			),
 		);
 		return rows.map((row) => ({
@@ -303,7 +307,7 @@ export class SqlSharedPool {
 			[
 				{
 					sql: `INSERT INTO ${this.hosts}(host, labels, git, restore, workers, max_workers, heartbeat_at, roots, slots_busy, draining, degraded, provider_id)
-				VALUES (?, ?, ?, ?, ?, ?, ${STORE_NOW}, ?, ?, ?, ?, ?)
+				VALUES (?, ?, ?, ?, ?, ?, ${this.now}, ?, ?, ?, ?, ?)
 				ON CONFLICT(host) DO UPDATE SET labels = excluded.labels, git = excluded.git, restore = excluded.restore,
 				workers = excluded.workers, max_workers = excluded.max_workers, heartbeat_at = excluded.heartbeat_at, roots = excluded.roots,
 				slots_busy = excluded.slots_busy, draining = excluded.draining, degraded = excluded.degraded,
@@ -335,7 +339,7 @@ export class SqlSharedPool {
 	 * drain only reads: hosts take the write lock only when a drain names them.
 	 */
 	async drainRequested(host: string, providerId?: string): Promise<boolean> {
-		const asked = `EXISTS (SELECT 1 FROM ${this.drains} WHERE host = ? OR provider_id = ?)`;
+		const asked = `EXISTS (SELECT 1 FROM ${this.drains} WHERE host = CAST(? AS TEXT) OR provider_id = CAST(? AS TEXT))`;
 		const found = await this.storage.read((executor) =>
 			executor.get<SqliteRow & { asked: number }>(`SELECT ${asked} AS asked`, host, providerId ?? null),
 		);
@@ -379,9 +383,9 @@ export class SqlSharedPool {
 	async capableHostLive(root: string, ttlMs: number, binding: string): Promise<boolean> {
 		const row = await this.storage.read((executor) =>
 			executor.get(
-				`SELECT 1 AS live FROM ${this.hosts} h WHERE restore = 1 AND git != 'unavailable' AND draining = 0 AND heartbeat_at >= ${STORE_NOW} - ?
-				AND EXISTS (SELECT 1 FROM json_each(roots) WHERE value = ?)
-				AND NOT EXISTS (SELECT 1 FROM ${this.backoffs} b WHERE b.host = h.host AND b.binding = ? AND b.until > ${STORE_NOW})
+				`SELECT 1 AS live FROM ${this.hosts} h WHERE restore = 1 AND git != 'unavailable' AND draining = 0 AND heartbeat_at >= ${this.now} - ?
+				AND EXISTS (SELECT 1 FROM ${this.dialect.jsonValues("roots")} WHERE value = ?)
+				AND NOT EXISTS (SELECT 1 FROM ${this.backoffs} b WHERE b.host = h.host AND b.binding = ? AND b.until > ${this.now})
 				LIMIT 1`,
 				ttlMs,
 				root,
@@ -399,7 +403,7 @@ export class SqlSharedPool {
 		validateText("key", host);
 		await this.plainWrite([
 			{
-				sql: `INSERT INTO ${this.backoffs}(host, binding, until, failure, recorded_at) VALUES (?, ?, ${STORE_NOW} + ?, ?, ${STORE_NOW})
+				sql: `INSERT INTO ${this.backoffs}(host, binding, until, failure, recorded_at) VALUES (?, ?, ${this.now} + ?, ?, ${this.now})
 				ON CONFLICT(host, binding) DO UPDATE SET until = excluded.until, failure = excluded.failure, recorded_at = excluded.recorded_at`,
 				params: [host, binding, waitMs, JSON.stringify(failure)],
 			},
@@ -417,7 +421,7 @@ export class SqlSharedPool {
 	async restoreFailure(binding: string): Promise<SerializedError | undefined> {
 		const row = await this.storage.read((executor) =>
 			executor.get<SqliteRow & { failure: string }>(
-				`SELECT failure FROM ${this.backoffs} WHERE binding = ? ORDER BY recorded_at DESC, rowid DESC LIMIT 1`,
+				`SELECT failure FROM ${this.backoffs} WHERE binding = ? ORDER BY recorded_at DESC, ${this.dialect.rowOrder()} DESC LIMIT 1`,
 				binding,
 			),
 		);
@@ -431,7 +435,7 @@ export class SqlSharedPool {
 	async recordedSnapshots(binding: Pick<WorkspaceBinding, "head" | "tree">): Promise<readonly WorktreeSnapshot[]> {
 		const rows = await this.storage.read((executor) =>
 			executor.all<SqliteRow & { payload: string }>(
-				`SELECT payload FROM ${this.storage.tables.events} WHERE type = ? AND instr(payload, ?) > 0 ORDER BY rowid`,
+				`SELECT payload FROM ${this.storage.tables.events} WHERE type = ? AND ${this.dialect.contains("payload", "?")} ORDER BY ${this.dialect.rowOrder()}`,
 				RUN_EVENT_TYPES.checkpointRecorded,
 				binding.tree,
 			),
@@ -461,7 +465,7 @@ export class SqlSharedPool {
 			entries.map((entry) => ({
 				sql: `INSERT INTO ${this.activity}(work, token, runs, version)
 				SELECT ?, ?, ?, (SELECT COALESCE(MAX(version), 0) + 1 FROM ${this.activity})
-				WHERE EXISTS (SELECT 1 FROM ${this.work} WHERE id = ? AND root = ? AND state = 'leased' AND generation = ? AND worker IS ? AND epoch = ?)
+				WHERE EXISTS (SELECT 1 FROM ${this.work} WHERE id = ? AND root = ? AND state = 'leased' AND generation = ? AND ${this.dialect.isNotDistinct("worker", "?")} AND epoch = ?)
 				ON CONFLICT(work) DO UPDATE SET token = excluded.token, runs = excluded.runs, version = excluded.version`,
 				params: [
 					entry.work.id,
@@ -518,7 +522,7 @@ export class SqlSharedPool {
 				writes: [
 					{
 						sql: `INSERT INTO ${this.inputs}(root, run_id, stage_id, seq, work, kind, op, payload, created_at)
-						SELECT ?, ?, ?, COALESCE(MAX(seq), 0) + 1, ?, ?, ?, ?, ${STORE_NOW} FROM ${this.inputs} WHERE root = ? AND run_id = ? AND stage_id = ?
+						SELECT ?, ?, ?, COALESCE(MAX(seq), 0) + 1, ?, ?, ?, ?, ${this.now} FROM ${this.inputs} WHERE root = ? AND run_id = ? AND stage_id = ?
 						ON CONFLICT(root, run_id, stage_id, op) DO NOTHING`,
 						params: [
 							lease.runId,
@@ -547,7 +551,7 @@ export class SqlSharedPool {
 	): Promise<readonly { work: string; runId: string; stageId: string }[]> {
 		return this.storage.read((executor) =>
 			executor.all<SqliteRow & { work: string; runId: string; stageId: string }>(
-				`SELECT DISTINCT work, run_id AS runId, stage_id AS stageId FROM ${this.inputs} WHERE root = ? AND state = 'pending' AND work IN (SELECT value FROM json_each(?)) ORDER BY run_id, stage_id`,
+				`SELECT DISTINCT work, run_id AS runId, stage_id AS stageId FROM ${this.inputs} WHERE root = ? AND state = 'pending' AND work IN (SELECT value FROM ${this.dialect.jsonValues("?")}) ORDER BY run_id, stage_id`,
 				root,
 				JSON.stringify(works),
 			),
@@ -584,7 +588,7 @@ export class SqlSharedPool {
 				SqliteRow & { seq: number; kind: PooledStageInputKind; op: string; payload: string }
 			>(
 				`SELECT seq, kind, op, payload FROM ${this.inputs} WHERE root = ? AND run_id = ? AND stage_id = ? AND work = ? AND state = 'pending'
-				AND kind NOT IN (SELECT value FROM json_each(?)) ORDER BY seq LIMIT 1`,
+				AND kind NOT IN (SELECT value FROM ${this.dialect.jsonValues("?")}) ORDER BY seq LIMIT 1`,
 				lease.runId,
 				stage.runId,
 				stage.stageId,
@@ -605,7 +609,7 @@ export class SqlSharedPool {
 								params: key,
 							}
 						: {
-								sql: `SELECT 1 FROM ${this.stageLeases} WHERE root = ? AND run_id = ? AND stage_id = ? AND token = ? AND expires_at < ${STORE_NOW}`,
+								sql: `SELECT 1 FROM ${this.stageLeases} WHERE root = ? AND run_id = ? AND stage_id = ? AND token = ? AND expires_at < ${this.now}`,
 								params: [...key, Number(held.token)],
 							},
 					{
@@ -615,7 +619,7 @@ export class SqlSharedPool {
 				],
 				writes: [
 					{
-						sql: `INSERT INTO ${this.stageLeases}(root, run_id, stage_id, token, work, generation, worker, epoch, seq, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ${STORE_NOW} + ?)
+						sql: `INSERT INTO ${this.stageLeases}(root, run_id, stage_id, token, work, generation, worker, epoch, seq, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ${this.now} + ?)
 						ON CONFLICT(root, run_id, stage_id) DO UPDATE SET token = excluded.token, work = excluded.work, generation = excluded.generation,
 						worker = excluded.worker, epoch = excluded.epoch, seq = excluded.seq, expires_at = excluded.expires_at`,
 						params: [
@@ -659,7 +663,7 @@ export class SqlSharedPool {
 	async ackStageInput(lease: Lease, taken: StageInputLease, receipt: string): Promise<void> {
 		await this.settle(lease, taken, [
 			{
-				sql: `UPDATE ${this.inputs} SET state = 'done', receipt = ?, settled_at = ${STORE_NOW} WHERE root = ? AND run_id = ? AND stage_id = ? AND seq = ? AND state = 'pending'`,
+				sql: `UPDATE ${this.inputs} SET state = 'done', receipt = ?, settled_at = ${this.now} WHERE root = ? AND run_id = ? AND stage_id = ? AND seq = ? AND state = 'pending'`,
 				params: [receipt, taken.root, taken.runId, taken.stageId, taken.seq],
 			},
 			this.idle(taken),
@@ -679,7 +683,7 @@ export class SqlSharedPool {
 			taken,
 			[
 				{
-					sql: `UPDATE ${this.stageLeases} SET expires_at = MAX(?, ${STORE_NOW} + ?) WHERE root = ? AND run_id = ? AND stage_id = ?`,
+					sql: `UPDATE ${this.stageLeases} SET expires_at = ${this.dialect.greatest("?", `${this.now} + ?`)} WHERE root = ? AND run_id = ? AND stage_id = ?`,
 					params: [taken.expiresAt, durationMs, ...key],
 				},
 			],
@@ -717,7 +721,7 @@ export class SqlSharedPool {
 		const row = await this.storage.read((executor) =>
 			executor.get<SqliteRow & { state: string; receipt: string | null; held: number }>(
 				`SELECT i.state, i.receipt, EXISTS (SELECT 1 FROM ${this.stageLeases} l WHERE l.root = i.root AND l.run_id = i.run_id
-				AND l.stage_id = i.stage_id AND l.seq = i.seq AND l.expires_at >= ${STORE_NOW}) AS held
+				AND l.stage_id = i.stage_id AND l.seq = i.seq AND l.expires_at >= ${this.now}) AS held
 				FROM ${this.inputs} i WHERE i.root = ? AND i.run_id = ? AND i.stage_id = ? AND i.seq = ?`,
 				root,
 				runId,
@@ -747,7 +751,7 @@ export class SqlSharedPool {
 				fences: [this.queue.rootFence(lease), this.queue.attemptFence(lease, attempt, true)],
 				writes: [
 					{
-						sql: `INSERT INTO ${this.workspaces}(root, run_id, stage_id, work, generation, host, worktree, binding, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ${STORE_NOW})
+						sql: `INSERT INTO ${this.workspaces}(root, run_id, stage_id, work, generation, host, worktree, binding, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ${this.now})
 						ON CONFLICT(root, run_id, stage_id) DO UPDATE SET work = excluded.work, generation = excluded.generation, host = excluded.host,
 						worktree = excluded.worktree, binding = excluded.binding, recorded_at = excluded.recorded_at`,
 						params: [
@@ -936,7 +940,9 @@ async function registeredHosts(storage: SqlPoolStorage): Promise<readonly Shared
 				draining?: number;
 				degraded?: string | null;
 			}
-		>(`SELECT *, ${STORE_NOW} - heartbeat_at AS ago FROM ${storage.tables.runs}_pool_hosts ORDER BY host`),
+		>(
+			`SELECT *, ${storage.dialect.nowMs} - heartbeat_at AS ago FROM ${storage.tables.runs}_pool_hosts ORDER BY host`,
+		),
 	);
 	return rows.map((row) => {
 		const degraded =
@@ -984,7 +990,7 @@ async function fleetStatus(
 	const row = (await storage.read((executor) =>
 		executor.get<SqliteRow & { roots: number; ready: number; leased: number; hosts: number }>(
 			`SELECT COUNT(DISTINCT s.root) AS roots,
-			COALESCE(SUM(w.state = 'ready'), 0) AS ready, COALESCE(SUM(w.state = 'leased'), 0) AS leased,
+			COALESCE(SUM(${storage.dialect.flag("w.state = 'ready'")}), 0) AS ready, COALESCE(SUM(${storage.dialect.flag("w.state = 'leased'")}), 0) AS leased,
 			(SELECT COUNT(*) FROM ${runs}_pool_hosts) AS hosts
 			FROM ${runs}_pool_shared s JOIN ${runs} r ON r.run_id = s.root LEFT JOIN ${runs}_work w ON w.root = s.root
 			WHERE r.status IN ('running', 'paused')`,
@@ -1024,9 +1030,9 @@ async function poolStats(
 					expires: number;
 				}
 			>(
-				`SELECT id, json_extract(descriptor, '$.childRunId') AS child, worker, generation,
-				${STORE_NOW} - renewed_at AS renewed, expires_at - ${STORE_NOW} AS expires
-				FROM ${storage.tables.runs}_work WHERE root = ? AND state = 'leased' ORDER BY ready_at, rowid`,
+				`SELECT id, ${storage.dialect.jsonText("descriptor", "childRunId")} AS child, worker, generation,
+				${storage.dialect.nowMs} - renewed_at AS renewed, expires_at - ${storage.dialect.nowMs} AS expires
+				FROM ${storage.tables.runs}_work WHERE root = ? AND state = 'leased' ORDER BY ready_at, ${storage.dialect.rowOrder()}`,
 				root,
 			),
 		),
@@ -1072,12 +1078,8 @@ async function poolStats(
 export async function readSharedPoolStats(journal: RunJournal, root: string): Promise<SharedPoolStats | undefined> {
 	const storage = sqlPoolStorage(journal);
 	if (storage === undefined) return undefined;
-	const shared = await storage.read((executor) =>
-		executor.get(
-			"SELECT 1 AS held FROM sqlite_master WHERE type = 'table' AND name = ?",
-			`${storage.tables.runs}_stage_inputs`,
-		),
-	);
+	const exists = storage.dialect.tableExists(`${storage.tables.runs}_stage_inputs`);
+	const shared = await storage.read((executor) => executor.get(exists.sql, ...exists.params));
 	return shared === undefined
 		? undefined
 		: poolStats(storage, root, () => fleetStatus(storage, sqlPoolWrites(journal)));
@@ -1094,15 +1096,14 @@ export async function readSharedPoolFleet(
 	const storage = sqlPoolStorage(journal);
 	if (storage === undefined) return undefined;
 	const runs = storage.tables.runs;
-	const shared = await storage.read((executor) =>
-		executor.get("SELECT 1 AS held FROM sqlite_master WHERE type = 'table' AND name = ?", `${runs}_pool_shared`),
-	);
+	const exists = storage.dialect.tableExists(`${runs}_pool_shared`);
+	const shared = await storage.read((executor) => executor.get(exists.sql, ...exists.params));
 	if (shared === undefined)
 		return { hosts: [], roots: [], fleet: { store: sharedStoreHealth(), queue: { roots: 0, ready: 0, leased: 0 } } };
 	const active = await storage.read((executor) =>
 		executor.all<SqliteRow & { root: string }>(
 			`SELECT s.root FROM ${runs}_pool_shared s JOIN ${runs} r ON r.run_id = s.root
-			WHERE r.status IN ('running', 'paused') ORDER BY s.rowid`,
+			WHERE r.status IN ('running', 'paused') ORDER BY ${storage.dialect.rowOrder("s")}`,
 		),
 	);
 	const writes = sqlPoolWrites(journal);
@@ -1112,7 +1113,7 @@ export async function readSharedPoolFleet(
 	if (options.probeWrites !== true) return { hosts, roots, fleet: read };
 	// Last, after every read: a probe the store leaves unanswered holds up the journal's calls after it.
 	const probe = await probeSharedStoreWrite(() =>
-		storage.transaction((tx) => tx.run(`UPDATE ${runs} SET run_id = run_id WHERE 0`)),
+		storage.transaction((tx) => tx.run(`UPDATE ${runs} SET run_id = run_id WHERE ${storage.dialect.literals.false}`)),
 	);
 	const fleet = {
 		...read,
