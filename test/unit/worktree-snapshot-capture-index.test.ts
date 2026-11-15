@@ -248,6 +248,23 @@ describe("a private index that cannot be used falls back to today's capture (#47
 		});
 	}
 
+	test("a record that cannot be replaced leaves no temporary record behind (#4847)", async () => {
+		const { clone } = await sandbox.remoteWithClone("repo", { "a.txt": "a\n" });
+		sandbox.write(join(clone, "a.txt"), "changed\n");
+		const expected = await treeThroughPrivateIndex(clone);
+		const index = await privateIndexOf(clone);
+		// A directory where the record goes refuses the rename on every platform, as a record another process holds
+		// open does on Windows.
+		rmSync(`${index}.json`);
+		sandbox.write(join(`${index}.json`, "held"), "");
+
+		assert.equal(await treeOf(clone), expected);
+		assert.deepEqual(
+			readdirSync(join(defaultWorktreeSnapshotStoreDir(), "capture-index")).filter((name) => name.endsWith(".tmp")),
+			[],
+		);
+	});
+
 	for (const [name, record] of [
 		["of another version", JSON.stringify({ version: 0 })],
 		["with an unreadable record", "not json"],

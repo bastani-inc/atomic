@@ -1298,11 +1298,14 @@ export class IntercomClient extends EventEmitter {
 		) {
 			throw new Error("Invalid delivery_failed message");
 		}
+		// #4997, #5101: carried apart from the wire `reasonCode`, so older clients, which validate it, are not refused it.
+		const routeUnavailable = brokerMessage.routeUnavailable === true && reasonCode === undefined;
 		const result: SendResult = {
 			id: messageId,
 			delivered: false,
 			reason,
 			...(reasonCode === undefined ? {} : { reasonCode }),
+			...(routeUnavailable ? { reasonCode: "route_unavailable" as const } : {}),
 			...(releasedReplyError === undefined ? {} : { error: rehydrateIntercomReleasedReplyError(releasedReplyError) }),
 			...(hostedSessionError === undefined ? {} : { error: rehydrateIntercomHostedSessionError(hostedSessionError) }),
 			...(recipientError === undefined
