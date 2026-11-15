@@ -2,6 +2,7 @@
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { isPathInside } from "../src/utils/path-inside.ts";
 
 const repoRoot = path.resolve(import.meta.dir, "../../..");
 const docsDir = path.join(repoRoot, "packages/coding-agent/docs");
@@ -127,14 +128,14 @@ function docsSlugForTarget(sourceFile: string, pathPart: string): string | null 
   const targetPath = pathPart.startsWith("/") ? pathPart.slice(1) : path.posix.join(sourceDir, pathPart);
   const normalized = path.posix.normalize(targetPath);
 
-  if (normalized === "." || normalized.startsWith("../")) return null;
+  if (normalized === "." || !isPathInside(docsDir, path.resolve(docsDir, normalized))) return null;
   return normalized.replace(markdownPageExtensionPattern, "");
 }
 
 function localPathForTarget(sourceFile: string, pathPart: string): string | null {
   if (pathPart.startsWith("/")) return path.join(docsDir, pathPart.slice(1));
   const full = path.resolve(path.dirname(sourceFile), pathPart);
-  if (!toPosix(path.relative(docsDir, full)).startsWith("..")) return full;
+  if (isPathInside(docsDir, full)) return full;
   return null;
 }
 

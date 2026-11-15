@@ -83,3 +83,14 @@ export function stripAnsi(value: string): string {
 	// and doing it manually has a performance penalty.
 	return value.replace(regex, "");
 }
+
+// C0 and C1 control characters other than tab and newline.
+const UNSAFE_CONTROL_CHARACTERS = /[\u0000-\u0008\u000B-\u001F\u007F-\u009F]/g;
+
+/**
+ * Remove terminal sequences and the remaining control characters from text that is rendered as content, keeping
+ * newlines and tabs, so the text cannot drive the terminal.
+ */
+export function stripTerminalControls(value: string): string {
+	return stripAnsi(value).replace(UNSAFE_CONTROL_CHARACTERS, "");
+}

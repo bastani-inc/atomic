@@ -1,9 +1,10 @@
 import { existsSync } from "node:fs";
 import { readFile as fsReadFile, stat as fsStat } from "node:fs/promises";
-import { isAbsolute, join, relative, resolve as resolvePath, sep } from "node:path";
+import { join, relative, resolve as resolvePath, sep } from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Text } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
+import { isPathInside } from "../../utils/path-inside.ts";
 import { experimentalToolSamplingProperty } from "../experimental.ts";
 import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { normalizePathLikeInput, splitPathLikeGlob } from "./glob-path-utils.ts";
@@ -353,8 +354,7 @@ function isVirtualSearchTarget(target: SearchTarget | undefined): boolean {
 
 function displaySearchPath(absolutePath: string, cwd: string): string {
 	const relativePath = relative(cwd, absolutePath);
-	const displayPath =
-		relativePath && !relativePath.startsWith("..") && !isAbsolute(relativePath) ? relativePath : absolutePath;
+	const displayPath = relativePath && isPathInside(cwd, absolutePath) ? relativePath : absolutePath;
 	return displayPath.split(sep).join("/");
 }
 

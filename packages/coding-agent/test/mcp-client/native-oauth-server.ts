@@ -2,6 +2,9 @@ import { createHash } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { LATEST_PROTOCOL_VERSION } from "../../src/extensions/mcp/client/index.js";
 
+/** A 503 answer, a dropped connection, or no answer at all. */
+export type RefreshFailure = "503" | "network error" | "stall";
+
 async function readBody(request: IncomingMessage): Promise<string> {
 	const chunks: Buffer[] = [];
 	for await (const chunk of request) chunks.push(Buffer.from(chunk));
@@ -16,7 +19,8 @@ function json(response: ServerResponse, status: number, body: unknown, headers: 
  * MCP server protected by OAuth, with its own authorization server (discovery, DCR, PKCE, refresh).
  * `iss` is sent as the `iss` parameter of authorization responses (RFC 9207).
  * The MCP endpoint assigns a session, so closing a connection sends a DELETE. Paths added to `stall`
- * accept requests and never answer them, like an unresponsive server.
+ * accept requests and never answer them, like an unresponsive server. `failRefreshes` makes refresh
+ * grants fail the way a temporarily unavailable token endpoint does.
  */
 export async function startOAuthMcpServer(options: { iss?: string } = {}) {
 	const log: string[] = [];
@@ -29,6 +33,7 @@ export async function startOAuthMcpServer(options: { iss?: string } = {}) {
 	const challenges = new Map<string, string>();
 	let issued = 0;
 	let origin = "";
+	let refreshFailure: { mode: RefreshFailure; remaining: number } | undefined;
 
 	const issueTokens = () => {
 		issued++;
@@ -126,6 +131,14 @@ export async function startOAuthMcpServer(options: { iss?: string } = {}) {
 					log.push("token code");
 					return json(response, 200, issueTokens());
 				}
+				if (refreshFailure && refreshFailure.remaining > 0) {
+					refreshFailure.remaining--;
+					log.push(`token refresh ${refreshFailure.mode}`);
+					if (refreshFailure.mode === "network error") request.socket.destroy();
+					else if (refreshFailure.mode === "stall") stalled.push({ path: url.pathname, request });
+					else response.writeHead(503, { "content-type": "text/plain" }).end("Service Unavailable");
+					return;
+				}
 				const refresh = params.get("refresh_token") ?? "";
 				if (!refreshTokens.delete(refresh)) return json(response, 400, { error: "invalid_grant" });
 				log.push("token refresh");
@@ -159,6 +172,12 @@ export async function startOAuthMcpServer(options: { iss?: string } = {}) {
 		/** A valid access token issued without a sign-in, like one of a provider login. */
 		issueAccessToken: () => issueTokens().access_token,
 		expireAccessTokens: () => validTokens.clear(),
+		/** Simulates a revoked grant: refreshes fail with `invalid_grant`. */
+		revokeRefreshTokens: () => refreshTokens.clear(),
+		/** The next `times` refresh grants fail with `mode`; refresh tokens stay valid. */
+		failRefreshes: (mode: RefreshFailure, times = Number.POSITIVE_INFINITY) => {
+			refreshFailure = { mode, remaining: times };
+		},
 		close: () =>
 			new Promise<void>((resolve) => {
 				server.closeAllConnections();

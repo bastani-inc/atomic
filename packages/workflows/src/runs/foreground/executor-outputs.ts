@@ -1,5 +1,6 @@
+import { IsOptional, type TSchema, Type } from "typebox";
 import { Value } from "typebox/value";
-import { schemaChoices, schemaFieldKind, schemaIsRequired } from "../../shared/schema-introspection.js";
+import { schemaChoices, schemaFieldKind } from "../../shared/schema-introspection.js";
 import {
 	assertWorkflowSerializableObject,
 	WORKFLOW_SERIALIZABLE_DESCRIPTION,
@@ -37,7 +38,7 @@ function assertWorkflowOutputsExplicit(
 	}
 	for (const [key, schema] of Object.entries(declarations)) {
 		if (!(key in sourceOutput)) {
-			if (schemaIsRequired(schema)) {
+			if (!IsOptional(schema)) {
 				throw new Error(`atomic-workflows: ${scope} missing output "${key}"${missingOutputSuffix}`);
 			}
 			continue;
@@ -76,6 +77,22 @@ function normalizeWorkflowOutputObject(
 
 export function normalizeWorkflowRunOutput(workflowName: string, rawOutput: unknown): WorkflowOutputValues | undefined {
 	return normalizeWorkflowOutputObject(workflowName, rawOutput, ".run() return");
+}
+
+/**
+ * Fill outputs the run omitted from their declared `default`, so a defaulted
+ * output is present like the static output type says. Outputs are copied first,
+ * because `Value.Default` writes into the value it is handed.
+ */
+export function applyWorkflowOutputDefaults(
+	result: WorkflowOutputValues | undefined,
+	declaredOutputs: Readonly<Record<string, WorkflowOutputSchema>> | undefined,
+): WorkflowOutputValues | undefined {
+	const withDefaults = Value.Default(
+		Type.Object((declaredOutputs ?? {}) as Record<string, TSchema>, { additionalProperties: true }),
+		Value.Clone(result ?? {}),
+	) as WorkflowOutputValues;
+	return result === undefined && Object.keys(withDefaults).length === 0 ? undefined : withDefaults;
 }
 
 export function normalizeWorkflowExitOutput(

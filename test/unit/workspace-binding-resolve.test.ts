@@ -664,6 +664,25 @@ describe("workspace git runner (#3109)", () => {
 		assert.equal(typeof local.fields.status, "number");
 	});
 
+	test("redacts an '@'-bearing password from git's command and stderr (#4833)", async () => {
+		const url = "https://alice:s3cr@tPass@example.invalid/org/repo.git";
+		const error = await rejection(
+			runWorkspaceGit({
+				cwd: dirs.root,
+				args: ["-c", `alias.leak=!f() { echo "fatal: unable to access '${url}/'" >&2; exit 128; }; f`, "leak", url],
+				phase: "fetch",
+			}),
+		);
+		assert.ok(isWorkspaceBindingError(error));
+		assert.equal(error.code, "git-failed");
+		assert.equal(error.fields.detail, "fatal: unable to access 'https://example.invalid/org/repo.git/'");
+		assert.ok(String(error.fields.command).endsWith(" leak https://example.invalid/org/repo.git"));
+		for (const fragment of ["s3cr", "tPass", "alice"]) {
+			assert.equal(JSON.stringify(error.fields).includes(fragment), false, fragment);
+			assert.equal(error.message.includes(fragment), false, fragment);
+		}
+	});
+
 	test("times out a slow command with WorkspaceTimeoutError carrying phase and timings (#3109)", async () => {
 		const error = await rejection(
 			runWorkspaceGit({
