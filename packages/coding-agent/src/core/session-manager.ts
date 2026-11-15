@@ -1,6 +1,8 @@
 export type { VerbatimCompactionDetails } from "./compaction/compaction-types.js";
 export { SessionManager } from "./session-manager-core.ts";
 export {
+	SESSION_ALREADY_OPEN_EXIT_CODE,
+	SessionAlreadyOpenError,
 	SessionDeletedError,
 	SessionEntryError,
 	SessionIdError,

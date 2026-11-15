@@ -1,4 +1,4 @@
-import { reportDebug } from "@bastani/atomic";
+import { reportDebug, sliceHead } from "@bastani/atomic";
 import type { Store } from "../shared/store.js";
 import { readGraphStoreSnapshot, subscribeStoreInvalidation } from "../shared/store-observation.js";
 import type { StoreSnapshot } from "../shared/store-types.js";
@@ -110,7 +110,7 @@ function sendNotice(
 
 function snippet(value: string): string {
 	const normalized = value.replace(/\s+/g, " ").trim();
-	return normalized.length <= SNIPPET_LIMIT ? normalized : `${normalized.slice(0, SNIPPET_LIMIT - 1)}…`;
+	return normalized.length <= SNIPPET_LIMIT ? normalized : `${sliceHead(normalized, SNIPPET_LIMIT - 1)}…`;
 }
 
 function noticeComponent(details: UndeliveredStageMessageNoticeDetails, piTheme: unknown): PiMessageRenderComponent {

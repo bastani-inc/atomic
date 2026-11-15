@@ -1,3 +1,4 @@
+import { sliceHead, sliceTail } from "@bastani/atomic";
 import { availableStoreDurableBackend } from "../durable/store-backend.js";
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import { isTerminalRunStatus } from "../shared/store-internal.js";
@@ -126,28 +127,33 @@ export function workflowSummaryInput(run: RunSnapshot): string {
 		0,
 		20,
 	);
-	const objective = keys
-		.map((key) => {
-			const value = run.inputs[key];
-			const text =
-				typeof value === "string"
-					? value.slice(0, 2000)
-					: typeof value === "object" && value !== null
-						? "[structured input]"
-						: String(value);
-			return `${key.slice(0, 100)}: ${text}`;
-		})
-		.join("\n")
-		.slice(0, 4000);
-	const stages = run.stages
-		.slice(-40)
-		.map(
-			(stage) => `${stage.name.slice(0, 100)}: ${stage.status}\n${(stage.result ?? stage.error ?? "").slice(-1500)}`,
-		)
-		.join("\n")
-		.slice(-11000);
-	return `Workflow: ${run.name.slice(0, 200)}\nRun: ${run.id}\nStatus: ${effectiveRunStatus(run)}\nObjective/inputs:\n${objective}\nLatest stages and outputs:\n${stages}`.slice(
-		0,
+	const objective = sliceHead(
+		keys
+			.map((key) => {
+				const value = run.inputs[key];
+				const text =
+					typeof value === "string"
+						? sliceHead(value, 2000)
+						: typeof value === "object" && value !== null
+							? "[structured input]"
+							: String(value);
+				return `${sliceHead(key, 100)}: ${text}`;
+			})
+			.join("\n"),
+		4000,
+	);
+	const stages = sliceTail(
+		run.stages
+			.slice(-40)
+			.map(
+				(stage) =>
+					`${sliceHead(stage.name, 100)}: ${stage.status}\n${sliceTail(stage.result ?? stage.error ?? "", 1500)}`,
+			)
+			.join("\n"),
+		11000,
+	);
+	return sliceHead(
+		`Workflow: ${sliceHead(run.name, 200)}\nRun: ${run.id}\nStatus: ${effectiveRunStatus(run)}\nObjective/inputs:\n${objective}\nLatest stages and outputs:\n${stages}`,
 		16000,
 	);
 }
