@@ -9,8 +9,10 @@
  */
 
 import type { DurableWorkflowBackend } from "./backend.js";
-import { priorRunElapsedMs, RUN_TIMING_CHECKPOINT_NAME } from "./run-timing.js";
 import type { DurableCheckpoint, DurableToolCheckpoint } from "./types.js";
+
+/** `RUN_TIMING_CHECKPOINT_NAME` of `run-timing.ts`, whose imports a reader of this record need not load. */
+const RUN_TIMING_CHECKPOINT_NAME = "workflow-run-timing";
 
 /** Checkpoint id prefix of the record that a run's definition completed. */
 export const RUN_END_CHECKPOINT_ID_PREFIX = "run-end:";
@@ -29,7 +31,10 @@ export async function recordRunCompletedCheckpointAsync(
 	workflowId: string,
 ): Promise<void> {
 	const attempt = backend.workflowAttempt?.(workflowId) ?? 0;
-	const elapsedMs = priorRunElapsedMs(backend, workflowId);
+	const timing = backend.getToolOutput(workflowId, RUN_TIMING_CHECKPOINT_NAME) as {
+		readonly elapsedMs?: unknown;
+	} | null;
+	const elapsedMs = typeof timing?.elapsedMs === "number" ? timing.elapsedMs : undefined;
 	await backend.commitCheckpoint({
 		kind: "tool",
 		workflowId,
