@@ -365,8 +365,6 @@ export class MultiNodeRouter {
 	private readonly scanning = new Map<string, { rescan: boolean }>();
 	private readonly serials = new Map<string, Promise<void>>();
 	private readonly settling = new Set<Promise<void>>();
-	/** #4992: replies each session sent that are still being routed; its departure waits for them. */
-	private readonly routingReplies = new Map<string, Set<Promise<void>>>();
 	private readonly timers: ReturnType<typeof setInterval>[] = [];
 	private checkingOutcomes: { again: boolean } | undefined;
 	private closed = false;
@@ -690,7 +688,7 @@ export class MultiNodeRouter {
 			await (away ? Promise.resolve() : this.state.pendingAsks.pruneSender(sessionId).then(() => undefined))
 				.then(async () => {
 					// #4992: the replies it sent before it left are queued first, so the asks they answer do not fail.
-					await Promise.all([...(this.routingReplies.get(sessionId) ?? []), this.serials.get(`reply:${sessionId}`)]);
+					await this.serials.get(`reply:${sessionId}`);
 					// #4842: a terminal session's remaining routes are the failures it already sent; they are not sent again.
 					if (!away && session.info.replyCapability === "terminal" && released === undefined) {
 						await this.state.pendingAsks.takeForTarget(sessionId);
@@ -1071,19 +1069,9 @@ export class MultiNodeRouter {
 	/** Answer a send no local session resolved: another node's session, a shared hold, an offline session, or none. */
 	routeSend(request: RemoteSendRequest): void {
 		// #4386: one sender's replies are routed in the order it sent them, so they reach an owner in that order.
+		// #4992: a departing replier waits for this queue, so its asks fail only after the replies it sent are queued.
 		if (isReleasedReplyCandidate(request)) this.serial(`reply:${request.from.info.id}`, () => this.routeSendSafely(request));
-		else if (request.message.replyTo === undefined) void this.routeSendSafely(request);
-		else {
-			// #4992: a replier that ends right after replying has its asks failed only once this reply is queued.
-			const senderId = request.from.info.id;
-			const replies = this.routingReplies.get(senderId) ?? new Set<Promise<void>>();
-			this.routingReplies.set(senderId, replies);
-			const routing: Promise<void> = this.routeSendSafely(request).finally(() => {
-				replies.delete(routing);
-				if (replies.size === 0 && this.routingReplies.get(senderId) === replies) this.routingReplies.delete(senderId);
-			});
-			replies.add(routing);
-		}
+		else void this.routeSendSafely(request);
 	}
 
 	private async routeSendSafely(request: RemoteSendRequest): Promise<void> {
