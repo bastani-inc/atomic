@@ -32,6 +32,7 @@
 
 ### Fixed
 
+- Fixed the Windows installer (`install.ps1`) failing with "Access to the path ... is denied" when Windows briefly refused to move the newly extracted version into place, for example while an antivirus scan held it. The installer now retries that move for about two seconds before failing and rolling back
 - Fixed binding a workspace to a remote repository on Windows failing with `EPERM` when Windows briefly refused to move the just-fetched repository into place, for example while an antivirus scan or the search indexer held it. Atomic now retries that move, and its other renames, for about two seconds instead of 200 ms
 - Saving a project trust decision, settings, `auth.json` credentials or an MCP server's refreshed tokens no longer fails while other Atomic processes save the same file one after another. A save now waits as long as the file keeps changing hands, up to two minutes, and fails only when one process keeps it locked. Waiting saves also get their turn sooner instead of losing it to newer ones ([#4952](https://github.com/bastani-inc/atomic/issues/4952))
 - Fixed a session snapshot capture on Windows leaving a `capture-index/*.json.<pid>.tmp` file behind when another Atomic process held the capture record open while it was being replaced ([#4847](https://github.com/bastani-inc/atomic/issues/4847))
