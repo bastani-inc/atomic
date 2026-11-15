@@ -50,7 +50,7 @@ export async function openSqlPendingAskStore({
 	database,
 	prefix,
 }: IntercomBrokerStateOptions): Promise<PendingAskStore> {
-	const table = `${validateStoragePrefix(prefix)}intercom_pending_asks`;
+	const table = `${validateStoragePrefix(prefix, dialectOf(database).name)}intercom_pending_asks`;
 	const { types } = dialectOf(database);
 	await database.transaction((tx) =>
 		tx.exec(`

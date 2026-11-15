@@ -37,22 +37,24 @@ const POSTGRES_IDENTIFIER_BYTES = 63;
 
 const prefixOfLength = (length: number) => `${"p".repeat(length - 1)}_`;
 
+/** Every Intercom store's open function, each of which a caller may use on its own. */
+const INTERCOM_STORES = [
+	openSqlBrokerLeaseStore,
+	openSqlOutboxStore,
+	openSqlHeldSendStore,
+	openSqlRestoringReservationStore,
+	openSqlPendingAskStore,
+	openSqlReleasedAskStore,
+	openSqlSentMessageAuthority,
+	openSqlKnownSessionStore,
+] as const;
+
 /** Opens every store Atomic keeps on a PostgreSQL database: sessions, the run journal and the Intercom broker state. */
 async function openEveryStore(scope: PostgresScope, prefix: string): Promise<void> {
 	const database = await scope.open();
 	await (await SqlSessionStore.open(database, { prefix })).close();
 	await (await SqlRunJournal.open(database, { prefix })).close();
-	for (const open of [
-		openSqlBrokerLeaseStore,
-		openSqlOutboxStore,
-		openSqlHeldSendStore,
-		openSqlRestoringReservationStore,
-		openSqlPendingAskStore,
-		openSqlReleasedAskStore,
-		openSqlSentMessageAuthority,
-		openSqlKnownSessionStore,
-	])
-		await open({ database, prefix });
+	for (const open of INTERCOM_STORES) await open({ database, prefix });
 	await (await openDatabaseWakeUpBus({ openDatabase: () => scope.open(), prefix })).close();
 }
 
@@ -102,6 +104,9 @@ describe.skipIf(postgresSkipReason !== undefined)("Postgres storage prefix lengt
 					openIntercomBrokerState({ prefix, openDatabase: () => scope.open() }),
 					tooLong(prefix),
 				);
+				// Opened directly, each Intercom store and the wake-up bus refuse it too.
+				for (const open of INTERCOM_STORES) await assert.rejects(open({ database, prefix }), tooLong(prefix));
+				await assert.rejects(openDatabaseWakeUpBus({ openDatabase: () => scope.open(), prefix }), tooLong(prefix));
 				assert.deepEqual(await createdIdentifiers(database), []);
 			});
 		});

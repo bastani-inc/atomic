@@ -124,7 +124,7 @@ export async function openSqlRestoringReservationStore({
 	database,
 	prefix,
 }: IntercomBrokerStateOptions): Promise<RestoringReservationStore> {
-	const validPrefix = validateStoragePrefix(prefix);
+	const validPrefix = validateStoragePrefix(prefix, dialectOf(database).name);
 	const table = `${validPrefix}intercom_restoring_reservations`;
 	const counters = `${validPrefix}intercom_restoring_reservation_counters`;
 	const wakeClaims = `${validPrefix}intercom_restoring_wake_claims`;
