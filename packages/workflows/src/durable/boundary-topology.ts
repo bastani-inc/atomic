@@ -171,17 +171,28 @@ export function prepareDurableChildInvocation(input: DurableBoundaryDescriptor):
 					);
 				return;
 			}
-			topology = makeTopology(input, boundaryId, childRunId, parentIds, sourceOrder, "start", "running", workspace);
+			const started = makeTopology(
+				input,
+				boundaryId,
+				childRunId,
+				parentIds,
+				sourceOrder,
+				"start",
+				"running",
+				workspace,
+			);
 			await input.backend.commitCheckpoint({
 				kind: "stage",
 				workflowId: input.workflowId,
 				checkpointId: `boundary-start:${input.replayKey}`,
 				name: input.boundaryName,
 				replayKey: input.replayKey,
-				topology,
+				topology: started,
 				startedAt,
 				completedAt: startedAt,
 			});
+			// Only once stored: a start the store refused is recorded again with the failure it ends with (#5027).
+			topology = started;
 		},
 		async recordTerminal(status, output): Promise<void> {
 			if (terminalRecorded) return;

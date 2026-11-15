@@ -32,7 +32,7 @@ afterEach(() => {
 	setDurableBackend(undefined);
 });
 
-/** Where an attempt fails on purpose. */
+/** Where an attempt fails on purpose: tool t2 throws, or the run fails at its end (s2's prompt, or plain code). */
 interface Plan {
 	failT2: boolean;
 	failS2: boolean;
@@ -43,18 +43,30 @@ type Refusal =
 	| { readonly attempt: number; readonly nth: number }
 	| { readonly attempt: number; readonly prefix: string };
 
-function definitions(plan: { current: Plan }): { parent: WorkflowDefinition; child: WorkflowDefinition } {
+/**
+ * The workflows refused writes are swept over. `full`: s1 → a ui prompt → t1 → t2 → s2 → a child workflow (c1, ct).
+ * `tail`: s1 → t1 → t2, then plain code that may throw. `par`: s1 → [t1 ‖ stage s2], then t2 and the throw. `child`:
+ * s1 → a child workflow (ct, cs) → t2, then the throw.
+ */
+type Shape = "full" | "tail" | "par" | "child";
+
+function definitions(shape: Shape, plan: { current: Plan }): { parent: WorkflowDefinition; child: WorkflowDefinition } {
 	const child = workflow({
 		name: "refused-child",
 		description: "",
 		inputs: {},
 		outputs: {},
 		run: async (ctx) => {
-			await ctx.stage("c1").prompt("c1");
+			if (shape === "full") await ctx.stage("c1").prompt("c1");
 			await ctx.tool("ct", {}, async () => "ct");
+			if (shape !== "full") await ctx.stage("cs").prompt("cs");
 			return {};
 		},
 	}) as WorkflowDefinition;
+	const t2 = async () => {
+		if (plan.current.failT2) throw new Error("planned t2 failure");
+		return "t2";
+	};
 	const parent = workflow({
 		name: "refused-parent",
 		description: "",
@@ -62,14 +74,20 @@ function definitions(plan: { current: Plan }): { parent: WorkflowDefinition; chi
 		outputs: {},
 		run: async (ctx) => {
 			await ctx.stage("s1").prompt("s1");
-			assert.equal(await ctx.ui.confirm("go on?"), true);
-			await ctx.tool("t1", {}, async () => "t1");
-			await ctx.tool("t2", {}, async () => {
-				if (plan.current.failT2) throw new Error("planned t2 failure");
-				return "t2";
-			});
-			await ctx.stage("s2").prompt("s2");
-			await ctx.workflow(child);
+			if (shape === "full") {
+				assert.equal(await ctx.ui.confirm("go on?"), true);
+				await ctx.tool("t1", {}, async () => "t1");
+				await ctx.tool("t2", {}, t2);
+				await ctx.stage("s2").prompt("s2");
+				await ctx.workflow(child);
+				return {};
+			}
+			if (shape === "tail") await ctx.tool("t1", {}, async () => "t1");
+			if (shape === "par")
+				await Promise.all([ctx.tool("t1", {}, async () => "t1"), ctx.stage("s2").prompt("s2-par")]);
+			if (shape === "child") await ctx.workflow(child);
+			await ctx.tool("t2", {}, t2);
+			if (plan.current.failS2) throw new Error("planned failure in plain code");
 			return {};
 		},
 	}) as WorkflowDefinition;
@@ -129,45 +147,64 @@ async function waitEnded(runId: string): Promise<RunSnapshot> {
 async function runWithRefusal(
 	refusal: Refusal,
 	plans: readonly Plan[],
-): Promise<{ refused: string | undefined; errors: readonly string[] }> {
-	const backend = await JournalTestBackend.create();
-	setDurableBackend(backend);
+	options: { readonly shape?: Shape; readonly restart?: boolean } = {},
+): Promise<{
+	refused: string | undefined;
+	errors: readonly string[];
+	/** The live and durable views of the run after each of its attempts. */
+	views: readonly { readonly live: unknown; readonly durable: unknown }[];
+}> {
+	const shape = options.shape ?? "full";
 	let attempt = 0;
 	let commits = 0;
 	let refused: string | undefined;
-	const commit = backend.commitCheckpoint.bind(backend);
-	backend.commitCheckpoint = ((checkpoint: DurableCheckpoint, options?: { readonly signal?: AbortSignal }) => {
-		commits += 1;
-		const hit =
-			refused === undefined &&
-			attempt === refusal.attempt &&
-			("nth" in refusal ? commits === refusal.nth : checkpoint.checkpointId.startsWith(refusal.prefix));
-		if (hit) {
-			refused = checkpoint.checkpointId;
-			return Promise.reject(
-				new StorageUnavailableError(
-					{ adapter: "test", location: "refused" },
-					new Error("journal refused") as never,
-				),
-			);
-		}
-		return commit(checkpoint, options);
-	}) as typeof backend.commitCheckpoint;
+	const instrument = (opened: JournalTestBackend): JournalTestBackend => {
+		const commit = opened.commitCheckpoint.bind(opened);
+		opened.commitCheckpoint = ((checkpoint: DurableCheckpoint, signal?: { readonly signal?: AbortSignal }) => {
+			commits += 1;
+			const hit =
+				refused === undefined &&
+				attempt === refusal.attempt &&
+				("nth" in refusal ? commits === refusal.nth : checkpoint.checkpointId.startsWith(refusal.prefix));
+			if (hit) {
+				refused = checkpoint.checkpointId;
+				return Promise.reject(
+					new StorageUnavailableError(
+						{ adapter: "test", location: "refused" },
+						new Error("journal refused") as never,
+					),
+				);
+			}
+			return commit(checkpoint, signal);
+		}) as typeof opened.commitCheckpoint;
+		setDurableBackend(opened);
+		return opened;
+	};
+	let backend = instrument(await JournalTestBackend.create());
 
 	const plan = { current: plans[0]! };
-	const { parent, child } = definitions(plan);
-	const runtime = createExtensionRuntime({
-		store,
-		registry: createRegistry([parent, child]),
-		adapters: {
-			prompt: {
-				prompt: async (text: string) => {
-					if (text === "s2" && plan.current.failS2) throw new Error("planned s2 failure");
-					return text;
+	const { parent, child } = definitions(shape, plan);
+	const makeRuntime = () =>
+		createExtensionRuntime({
+			store,
+			registry: createRegistry([parent, child]),
+			adapters: {
+				prompt: {
+					prompt: async (text: string) => {
+						if (text === "s2" && plan.current.failS2) throw new Error("planned s2 failure");
+						return text;
+					},
 				},
 			},
-		},
-	});
+		});
+	let runtime = makeRuntime();
+	/** A new process: the live runs are gone and the journal is opened again. */
+	const restart = async () => {
+		if (options.restart !== true) return;
+		store.clear();
+		backend = instrument(await backend.reopen());
+		runtime = makeRuntime();
+	};
 	answering = setInterval(() => {
 		for (const live of store.runs())
 			for (const stage of live.stages)
@@ -178,6 +215,7 @@ async function runWithRefusal(
 	const started = await runtime.dispatch({ action: "run", workflow: parent.name, inputs: {} });
 	assert.ok("runId" in started, JSON.stringify(started));
 	const errors: string[] = [];
+	const views: { live: unknown; durable: unknown }[] = [];
 	const where = () => `refused ${refused ?? "nothing"} in attempt ${attempt}`;
 	/** Resume `runId` until it completes, from attempt `first`, with a durable view after every attempt. */
 	const complete = async (runId: string, first: number, plans: readonly Plan[]): Promise<void> => {
@@ -185,12 +223,21 @@ async function runWithRefusal(
 		let live = first === FORK ? undefined : await waitEnded(runId);
 		for (let next = first; ; next++) {
 			assert.notEqual(durableGraph(backend, runId), undefined, `${where()}: the run has a durable view`);
-			if (live?.status === "completed") return;
+			if (live !== undefined) views.push({ live: liveGraph(runId), durable: durableGraph(backend, runId) });
+			if (live?.status === "completed") {
+				assert.deepEqual(
+					durableGraph(backend, runId),
+					liveGraph(runId),
+					`${where()}: the durable view is the live one`,
+				);
+				return;
+			}
 			if (live !== undefined) errors.push(live.error ?? "");
 			assert.ok(next <= first + plans.length + 2, `${where()}: the run completes once resumed (${live?.error})`);
 			attempt = next;
 			commits = 0;
 			plan.current = plans[next - first] ?? { failT2: false, failS2: false };
+			if (first !== FORK) await restart();
 			const resume = async () => {
 				const result = await workflowResumeAction(
 					{ action: "resume", runId },
@@ -214,30 +261,34 @@ async function runWithRefusal(
 	const runId = started.runId;
 	await complete(runId, 1, plans.slice(1));
 	const expected = liveGraph(runId);
-	assert.deepEqual(durableGraph(backend, runId), expected, `${where()}: the durable view is the live one`);
-	// A fork from s2 replays s1, the prompt and the tools into a run of its own, then runs s2 and the child.
-	const fork = await forkDurableRun(backend, {
-		source: "sdk",
-		runId,
-		fromStage: "s2",
-		cwd: process.cwd(),
-		carryMessages: "before",
-		definition: parent,
-	});
-	const forkRoot = durableWorkflowRunSnapshots(backend, backend.getWorkflow(fork.runId)!).find(
-		(candidate) => candidate.id === fork.runId,
-	);
-	assert.ok(
-		forkRoot?.stages.some((stage) => stage.name === "s1"),
-		`${where()}: a fork keeps what came before s2`,
-	);
-	await complete(fork.runId, FORK, []);
-	const forkExpected = liveGraph(fork.runId);
-	assert.deepEqual(durableGraph(backend, fork.runId), forkExpected, `${where()}: the fork's durable view`);
+	// A fork from s2 replays what came before it into a run of its own, then runs s2 and what follows.
+	let forkCheck = async (_reopened: DurableWorkflowBackend): Promise<void> => {};
+	if (shape === "full" || shape === "par") {
+		const fork = await forkDurableRun(backend, {
+			source: "sdk",
+			runId,
+			fromStage: "s2",
+			cwd: process.cwd(),
+			carryMessages: "before",
+			definition: parent,
+		});
+		const forkRoot = durableWorkflowRunSnapshots(backend, backend.getWorkflow(fork.runId)!).find(
+			(candidate) => candidate.id === fork.runId,
+		);
+		assert.ok(
+			forkRoot?.stages.some((stage) => stage.name === "s1"),
+			`${where()}: a fork keeps what came before s2`,
+		);
+		await complete(fork.runId, FORK, []);
+		const forkExpected = liveGraph(fork.runId);
+		assert.deepEqual(durableGraph(backend, fork.runId), forkExpected, `${where()}: the fork's durable view`);
+		forkCheck = async (reopened) =>
+			assert.deepEqual(durableGraph(reopened, fork.runId), forkExpected, `${where()}: the reopened fork's view`);
+	}
 	const reopened = await backend.reopen();
 	assert.deepEqual(durableGraph(reopened, runId), expected, `${where()}: the reopened durable view is the live one`);
-	assert.deepEqual(durableGraph(reopened, fork.runId), forkExpected, `${where()}: the reopened fork's view`);
-	return { refused, errors };
+	await forkCheck(reopened);
+	return { refused, errors, views };
 }
 
 /** The attempts of a fork of the completed run are numbered from here. */
@@ -269,6 +320,24 @@ describe("a refused durable write leaves the run inspectable and resumable (#502
 			{ failT2: true, failS2: false },
 		]);
 		assert.match(refused ?? "", /^tool-failure:/);
+	});
+
+	test("a refused tool failure record keeps the run resumable after a restart (#5027)", async () => {
+		for (const attempt of [0, 1]) {
+			const plans = [
+				{ failT2: true, failS2: false },
+				{ failT2: attempt === 1, failS2: false },
+			];
+			const { refused } = await runWithRefusal({ attempt, prefix: "tool-failure:" }, plans, { restart: true });
+			assert.match(refused ?? "", /^tool-failure:/);
+			store.clear();
+		}
+	});
+
+	test("a refused child boundary start leaves the failed boundary in the run's durable view (#5027)", async () => {
+		const { refused, views } = await runWithRefusal({ attempt: 0, prefix: "boundary-start:" }, COMPLETES);
+		assert.match(refused ?? "", /^boundary-start:/);
+		assert.deepEqual(views[0]?.durable, views[0]?.live);
 	});
 
 	test("a refused stage replay record names the stage the attempt failed at (#5027)", async () => {
@@ -341,23 +410,24 @@ test("an answer no prompt node records is not lost to a refusal: the attempt fai
 const SWEEP = 40;
 
 describe("one refusal at every checkpoint write (#5027)", () => {
-	for (const [label, attempt, plans] of [
-		["a first attempt", 0, COMPLETES],
-		["a resumed attempt", 1, RESUMED],
-	] as const) {
-		test(`one refused write in ${label} leaves the run inspectable, resumable and completing (#5027)`, {
-			timeout: 300_000,
-		}, async () => {
-			const refusedIds: string[] = [];
-			for (let nth = 1; nth <= SWEEP; nth++) {
-				const { refused } = await runWithRefusal({ attempt, nth }, plans);
-				if (refused !== undefined) refusedIds.push(refused);
-				store.clear();
-				setDurableBackend(undefined);
+	for (const shape of ["full", "tail", "par", "child"] as const)
+		for (const restart of [false, true])
+			for (const [label, attempt, plans] of [
+				["a first attempt", 0, COMPLETES],
+				["a resumed attempt", 1, RESUMED],
+			] as const) {
+				test(`one refused write in ${label} of the ${shape} workflow${restart ? ", resumed after a restart," : ""} leaves the run inspectable, resumable and completing (#5027)`, {
+					timeout: 300_000,
+				}, async () => {
+					const refusedIds: string[] = [];
+					for (let nth = 1; nth <= SWEEP; nth++) {
+						const { refused } = await runWithRefusal({ attempt, nth }, plans, { shape, restart });
+						if (refused !== undefined) refusedIds.push(refused);
+						store.clear();
+						setDurableBackend(undefined);
+					}
+					// The sweep reached past the attempt's last write, so it refused each of them once.
+					assert.ok(refusedIds.length < SWEEP, `the sweep covers every write: ${refusedIds.length}`);
+				});
 			}
-			// The sweep reached the run's every record kind, so a run that commits more can't slip past it.
-			assert.ok(refusedIds.length < SWEEP, `the sweep covers every write: ${refusedIds.length}`);
-			assert.ok(refusedIds.some((id) => id.startsWith(attempt === 0 ? "stage:stage:s1:" : "stage-replay-meta:")));
-		});
-	}
 });

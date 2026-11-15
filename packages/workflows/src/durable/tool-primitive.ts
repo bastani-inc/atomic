@@ -878,7 +878,9 @@ async function recordReplayedToolTopology(
 		JSON.stringify(cached.topology.run) === JSON.stringify(topology.run) &&
 		cached.topology.endedAt === topology.endedAt;
 	if (unchanged && attempt === undefined) return;
-	await input.backend.commitAdditiveCheckpointBestEffort({
+	// The attempt's only record that it reached the tool (#4874), so it is written as the tool's own record is: a refusal
+	// fails the attempt at the tool rather than leaving it out of the run's view (#5027).
+	await recordCheckpointDurably(input.backend, {
 		kind: "tool",
 		workflowId: input.workflowId,
 		checkpointId: `tool-replay-meta:${durableHash(attempt === undefined ? { argsHash, topology } : { argsHash, topology, attempt })}`,

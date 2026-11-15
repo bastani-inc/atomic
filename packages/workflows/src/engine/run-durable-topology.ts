@@ -26,6 +26,7 @@ import type { ParallelFailFastScope, RunOpts } from "../runs/foreground/executor
 import type { Store } from "../shared/store.js";
 import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
+import { infrastructureFaultOf } from "../shared/workflow-infrastructure-error.js";
 import {
 	authoritativeWorkflowChildRunId,
 	type RunsById,
@@ -106,7 +107,7 @@ export function createDurableStageEndRecorder(input: {
 					...(promptAnswer === undefined ? {} : { promptAnswer }),
 				});
 			} catch (error) {
-				if (snapshot.status !== "completed") throw error;
+				if (snapshot.status !== "completed" || infrastructureFaultOf(error) !== "storage_unavailable") throw error;
 				// The attempt fails with the refusal, at this stage: a stage that reads as completed with no record of its
 				// completion leaves the failed run naming no node to resume from (#5027). Its failure is recorded if the
 				// store takes it; the live run names the stage either way.
