@@ -12,7 +12,7 @@ import { processImage } from "../../utils/image-process.ts";
 import { detectSupportedImageMimeTypeFromFile } from "../../utils/mime.ts";
 import { formatPathRelativeToCwdOrAbsolute } from "../../utils/paths.ts";
 import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
-import { parseConflictBlocks, registerConflictBlocks } from "./conflict-registry.ts";
+import { parseConflictBytes, registerConflictBlocks } from "./conflict-registry.ts";
 import {
 	buildDirectoryTree,
 	buildDirectoryTreeFromOperations,
@@ -44,6 +44,7 @@ import { getTextOutput, invalidArgText, replaceTabs, shortenPath, str } from "./
 import {
 	type InternalResourceContext,
 	isInternalUrl,
+	isUrlLike,
 	parseArchiveSelector,
 	readArchiveSelector,
 	readInternalSelector,
@@ -127,6 +128,10 @@ const defaultReadOperations: ReadOperations = {
 	access: (path) => fsAccess(path, constants.R_OK),
 	detectImageMimeType: detectSupportedImageMimeTypeFromFile,
 };
+async function localStat(absolutePath: string): Promise<{ isFile: boolean; isDirectory: boolean }> {
+	const found = await fsStat(absolutePath);
+	return { isFile: found.isFile(), isDirectory: found.isDirectory() };
+}
 async function* readWholeFile(ops: ReadOperations, absolutePath: string): AsyncGenerator<Uint8Array> {
 	yield await ops.readFile(absolutePath);
 }
@@ -321,6 +326,37 @@ function archiveSelectorMemberExists(pathValue: string, cwd: string): boolean {
 		return false;
 	}
 }
+/**
+ * Whether `pathValue` names an existing file or directory as written. Such a path is read by its full name, so
+ * `notes:0` or `build:12` reads that file rather than parsing `:0` or `:12` as a line selector.
+ */
+async function isExistingLiteralPath(pathValue: string, cwd: string, ops: ReadOperations): Promise<boolean> {
+	if (!pathValue.includes(":") || isUrlLike(pathValue)) return false;
+	// Custom operations without `stat` cannot tell an existing path from one they would serve anyway.
+	const stat = ops.stat ?? (ops === defaultReadOperations ? localStat : undefined);
+	if (!stat) return false;
+	try {
+		const found = await stat(await resolveReadPathAsync(pathValue, cwd));
+		return found?.isFile === true || found?.isDirectory === true;
+	} catch {
+		return false;
+	}
+}
+/**
+ * The selector of a SQLite row path. A row id such as `2024-01-05`, `3-1` or `1.5` is not a line range, so when line
+ * parsing refuses it the whole path is the row selector, with only its `:raw` and `:conflicts` markers peeled.
+ */
+function splitRowSelector(pathValue: string): ReadLineSelector {
+	try {
+		return splitReadLineSelector(pathValue);
+	} catch {
+		return {
+			path: pathValue.replace(/:raw(?=(:|$))/g, "").replace(/:conflicts(?=(:|$))/g, ""),
+			raw: /:raw(?=(:|$))/.test(pathValue),
+			conflicts: /:conflicts(?=(:|$))/.test(pathValue),
+		};
+	}
+}
 function appendReadSelectors(pathValue: string, selector: ReadLineSelector): string {
 	const range =
 		selector.ranges
@@ -349,21 +385,28 @@ export function createReadToolDefinition(
 		async execute(_toolCallId, { path }: ReadToolInput, signal?: AbortSignal, _onUpdate?, ctx?: ExtensionContext) {
 			const resourceCtx = ctx as InternalResourceContext | undefined;
 			const executionCwd = ctx?.cwd || cwd;
-			const splitSelector = splitReadLineSelector(path),
-				markerless = path.replace(/:raw(?=(:|$))/g, "").replace(/:conflicts(?=(:|$))/g, ""),
+			const markerless = path.replace(/:raw(?=(:|$))/g, "").replace(/:conflicts(?=(:|$))/g, ""),
 				sqliteOriginal = sqliteSelectorForPath(markerless, executionCwd),
-				sqliteDirect = sqliteSelectorForPath(path, executionCwd);
-			const selector = archiveSelectorMemberExists(path, executionCwd)
+				sqliteDirect = sqliteSelectorForPath(path, executionCwd),
+				literalPath = await isExistingLiteralPath(path, executionCwd, ops);
+			const splitSelector: ReadLineSelector = literalPath
 				? { path }
-				: sqliteDirect && (sqliteDirect.table === "raw" || sqliteDirect.table === "conflicts")
+				: sqliteOriginal?.rowId
+					? splitRowSelector(path)
+					: splitReadLineSelector(path);
+			const selector = literalPath
+				? { path }
+				: archiveSelectorMemberExists(path, executionCwd)
 					? { path }
-					: sqliteOriginal?.rowId && splitSelector.path !== markerless
-						? { path: markerless, raw: splitSelector.raw, conflicts: splitSelector.conflicts }
-						: sqliteOriginal && splitSelector.path === markerless && markerless !== path
+					: sqliteDirect && (sqliteDirect.table === "raw" || sqliteDirect.table === "conflicts")
+						? { path }
+						: sqliteOriginal?.rowId && splitSelector.path !== markerless
 							? { path: markerless, raw: splitSelector.raw, conflicts: splitSelector.conflicts }
-							: splitSelector.path === path && sqliteDirect
-								? { path }
-								: splitSelector;
+							: sqliteOriginal && splitSelector.path === markerless && markerless !== path
+								? { path: markerless, raw: splitSelector.raw, conflicts: splitSelector.conflicts }
+								: splitSelector.path === path && sqliteDirect
+									? { path }
+									: splitSelector;
 			const effectivePath = selector.path;
 			const effectiveOffset = selector.offset;
 			const effectiveLimit = selector.limit;
@@ -754,7 +797,11 @@ export function createReadToolDefinition(
 									let allLines =
 										rawOutput || !lineTextContent.endsWith("\n") ? sourceLines : sourceLines.slice(0, -1);
 									if (conflictsOnly) {
-										registerConflictBlocks(executionCwd, parseConflictBlocks(absolutePath, textContent));
+										registerConflictBlocks(
+											executionCwd,
+											absolutePath,
+											parseConflictBytes(absolutePath, buffer),
+										);
 										const conflictLines: string[] = [];
 										let inConflict = false;
 										for (const line of allLines) {
