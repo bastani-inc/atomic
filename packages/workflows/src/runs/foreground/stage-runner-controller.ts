@@ -213,38 +213,58 @@ type AttemptUsageTotals = {
  * provider record when any aggregated value is non-finite or negative so
  * malformed telemetry cannot poison a durable stage checkpoint.
  */
-function hasMeaningfulUsage(usage: StageAssistantMessage["usage"] | undefined): boolean {
+function hasMeaningfulUsage(
+	usage: StageAssistantMessage["usage"] | undefined,
+): usage is StageAssistantMessage["usage"] {
 	if (usage === undefined) return false;
 	const values = [usage.input, usage.output, usage.cacheRead, usage.cacheWrite, usage.totalTokens, usage.cost.total];
 	return values.every((value) => Number.isFinite(value) && value >= 0) && values.some((value) => value > 0);
 }
 
 /**
- * Aggregate the assistant-message usage admitted since the latched attempt
- * boundary, plus usage accrued from error assistants that a retry restoration
- * removed from the live transcript. Returns undefined when nothing meaningful
- * was seen, so no `usage: undefined` enters the serializable attempt record.
+ * One attempt's usage, accrued from the session's provider usage events while
+ * the attempt window is open (#5053). Every model call reports here exactly
+ * once: each assistant response (`message_end`, including error responses a
+ * retry later removes from the live transcript) and each compaction model
+ * request (`compaction_usage`). Message-list projections such as compaction
+ * never change what was charged, and resumed or replayed history emits no
+ * events, so it is never charged again.
  */
-function usageForAttempt(
-	messages: readonly StageMessage[],
-	start: number,
-	discarded: AttemptUsageTotals,
-): WorkflowModelUsage | undefined {
-	const totals = { ...discarded };
-	let meaningful = totals.turns > 0;
+class AttemptUsageWindow {
+	private readonly totals: AttemptUsageTotals = {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		cost: 0,
+		turns: 0,
+	};
+	private meaningful = false;
+	private readonly unsubscribe: () => void;
 
-	for (const message of messages.slice(start)) {
-		if (message.role !== "assistant" || !hasMeaningfulUsage(message.usage)) continue;
-		totals.input += message.usage.input;
-		totals.output += message.usage.output;
-		totals.cacheRead += message.usage.cacheRead;
-		totals.cacheWrite += message.usage.cacheWrite;
-		totals.cost += message.usage.cost.total;
-		totals.turns += 1;
-		meaningful = true;
+	constructor(session: StageSessionRuntime) {
+		this.unsubscribe = session.subscribe((event) => {
+			if (event.type === "message_end" && event.message.role === "assistant") this.add(event.message.usage, true);
+			else if (event.type === "compaction_usage") this.add(event.usage, false);
+		});
 	}
 
-	return meaningful ? totals : undefined;
+	private add(usage: StageAssistantMessage["usage"] | undefined, turn: boolean): void {
+		if (!hasMeaningfulUsage(usage)) return;
+		this.totals.input += usage.input;
+		this.totals.output += usage.output;
+		this.totals.cacheRead += usage.cacheRead;
+		this.totals.cacheWrite += usage.cacheWrite;
+		this.totals.cost += usage.cost.total;
+		if (turn) this.totals.turns += 1;
+		this.meaningful = true;
+	}
+
+	/** Stop listening. Returns undefined when nothing meaningful was seen, so no `usage: undefined` enters the record. */
+	close(): WorkflowModelUsage | undefined {
+		this.unsubscribe();
+		return this.meaningful ? { ...this.totals } : undefined;
+	}
 }
 
 interface ThrownErrorRetryState {
@@ -399,17 +419,8 @@ export class StageSessionController {
 	private bindingCleanupFailure: StageSessionBindingCleanupFailure | undefined;
 	private reattachSessionId: string | undefined;
 	private lastPromptStartIndex: number | undefined;
-	/** Message index latched once per high-level candidate prompt; never re-read later. */
-	private attemptUsageStartIndex: number | undefined;
-	/** Usage accrued from error assistants removed by retry restoration. */
-	private discardedAttemptUsage: AttemptUsageTotals = {
-		input: 0,
-		output: 0,
-		cacheRead: 0,
-		cacheWrite: 0,
-		cost: 0,
-		turns: 0,
-	};
+	/** Usage window opened once per high-level candidate prompt; closed exactly once. */
+	private attemptUsage: AttemptUsageWindow | undefined;
 	private latestStructuredOutputToolErrorValue: string | undefined;
 	private structuredOutputExecutionFailureValue: string | undefined;
 	private structuredOutputCycleAttemptMark: number | undefined;
@@ -2199,47 +2210,24 @@ export class StageSessionController {
 		return undefined;
 	}
 	/**
-	 * Latch a fresh high-level usage window against the active session. The
-	 * boundary is the message length before the candidate prompt, so retries,
-	 * pause/re-prompts, and recording never re-read a later index.
+	 * Open a fresh high-level usage window on the active session. It records the
+	 * session's provider usage events until the attempt is recorded, so retries,
+	 * pause/re-prompts and compaction inside the prompt are all charged (#5053).
 	 */
 	private beginAttemptUsage(session: StageSessionRuntime): void {
 		this.sessionInternalRetries = 0;
-		this.attemptUsageStartIndex = session.messages.length;
-		this.discardedAttemptUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
+		this.attemptUsage?.close();
+		this.attemptUsage = new AttemptUsageWindow(session);
 	}
 
 	/**
 	 * Consume the current window exactly once. A session-creation failure has no
-	 * window: clear the latch instead of reading a previous session's messages.
+	 * window: close any open one instead of charging it to a session that never ran.
 	 */
 	private takeAttemptUsage(session: StageSessionRuntime | undefined): WorkflowModelUsage | undefined {
-		const start = this.attemptUsageStartIndex;
-		const usage =
-			session === undefined || start === undefined
-				? undefined
-				: usageForAttempt(session.messages, start, this.discardedAttemptUsage);
-		this.clearAttemptUsage();
-		return usage;
-	}
-
-	private clearAttemptUsage(): void {
-		this.attemptUsageStartIndex = undefined;
-		this.discardedAttemptUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
-	}
-
-	/**
-	 * Keep the usage of an error assistant that a retry restoration is about to
-	 * remove from the live transcript, so the final attempt total still counts it.
-	 */
-	private accrueDiscardedAttemptUsage(message: StageAssistantMessage): void {
-		if (!hasMeaningfulUsage(message.usage)) return;
-		this.discardedAttemptUsage.input += message.usage.input;
-		this.discardedAttemptUsage.output += message.usage.output;
-		this.discardedAttemptUsage.cacheRead += message.usage.cacheRead;
-		this.discardedAttemptUsage.cacheWrite += message.usage.cacheWrite;
-		this.discardedAttemptUsage.cost += message.usage.cost.total;
-		this.discardedAttemptUsage.turns += 1;
+		const usage = this.attemptUsage?.close();
+		this.attemptUsage = undefined;
+		return session === undefined ? undefined : usage;
 	}
 
 	/**
@@ -2261,10 +2249,6 @@ export class StageSessionController {
 	): StageSessionRuntime["messages"][number] | undefined {
 		const snapshotMessages = new Set(snapshot);
 		const admitted = session.messages.filter((message) => !snapshotMessages.has(message));
-		for (const message of admitted) {
-			if (message.role !== "assistant" || (!discardAttemptTurns && message.stopReason !== "error")) continue;
-			this.accrueDiscardedAttemptUsage(message);
-		}
 		const failedAssistantIndex = admitted.findLastIndex(
 			(message) => message.role === "assistant" && message.stopReason === "error",
 		);
