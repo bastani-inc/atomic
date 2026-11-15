@@ -71,6 +71,14 @@ export type AgentSessionEvent =
 			usage: Usage;
 	  }
 	| {
+			/**
+			 * One model call made by a child session this session created through its child session options, such
+			 * as a subagent, or by one of that child's own children. `usage` is that one call's usage (#5053).
+			 */
+			type: "child_session_usage";
+			usage: Usage;
+	  }
+	| {
 			/** Background compaction changed state; `discarded` names a stored result dropped without a commit. */
 			type: "background_compaction";
 			compaction: import("./compaction/background-compaction.ts").SerializedBackgroundCompactionState;

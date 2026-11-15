@@ -16,7 +16,7 @@ import lockfile from "proper-lockfile";
 import { afterEach, beforeEach, describe, it } from "vitest";
 import { bunExecutable, readStreamText, type SpawnedProcess, spawnProcess } from "../../../test/helpers/runtime.js";
 import { type BlueprintRepository, runBlueprintBuild, savedProjectTrust } from "../src/core/resume/index.ts";
-import { getProjectTrustPath, ProjectTrustStore } from "../src/core/trust-manager.ts";
+import { getProjectTrustPath, ProjectTrustStore, TRUST_LOCK_WAIT_MS } from "../src/core/trust-manager.ts";
 
 // Each multi-process case runs real Bun child processes that import the TypeScript source.
 const CHILD_PROCESS_TEST_TIMEOUT_MS = 120_000;
@@ -26,6 +26,9 @@ const WRITER_PROCESSES = 8;
 const DECISIONS_PER_WRITER = 100;
 const BACKGROUND_WRITERS = 6;
 const BLUEPRINT_BUILDS = 40;
+/** Holders in turn keep the lock for longer in all than one holder may keep a waiting save. */
+const RELAY_HOLDERS = 6;
+const RELAY_HOLD_MS = TRUST_LOCK_WAIT_MS / 4;
 const TRUST_MODULE = fileURLToPath(new URL("../src/core/trust-manager.ts", import.meta.url));
 
 // Permission bits do not deny root, and Windows ignores them.
@@ -310,6 +313,40 @@ describe("trust store under concurrent sessions (#4952)", () => {
 			}
 		},
 		HELD_LOCK_TEST_TIMEOUT_MS,
+	);
+
+	it(
+		"a save waits while the lock keeps changing hands for longer than one holder may keep it (#4952)",
+		async () => {
+			// Each holder is a new lock directory made the moment the last one goes, as proper-lockfile makes it. When the
+			// save wins that moment, as it can on Windows, the relay ends there.
+			const relay = spawnBun(`
+				import { mkdirSync, rmdirSync } from "node:fs";
+				const lock = ${JSON.stringify(`${trustPath}.lock`)};
+				const sleeper = new Int32Array(new SharedArrayBuffer(4));
+				mkdirSync(lock);
+				console.log("started");
+				for (let holder = 1; holder <= ${RELAY_HOLDERS}; holder++) {
+					Atomics.wait(sleeper, 0, 0, ${RELAY_HOLD_MS});
+					rmdirSync(lock);
+					if (holder === ${RELAY_HOLDERS}) break;
+					try {
+						mkdirSync(lock);
+					} catch (error) {
+						if (error.code === "EEXIST") break;
+						throw error;
+					}
+				}
+			`);
+			await waitForLine(relay, "started");
+			const project = join(sandbox, "project");
+
+			new ProjectTrustStore(agentDir).set(project, true);
+
+			assert.equal(new ProjectTrustStore(agentDir).get(project), true);
+			await finish(relay);
+		},
+		CHILD_PROCESS_TEST_TIMEOUT_MS,
 	);
 
 	it("takes over a lock a crashed process left behind (#4952)", () => {
