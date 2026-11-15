@@ -229,14 +229,17 @@ function processAlive(pid: number): boolean {
 
 /**
  * Whether the holder of `marker`, a marker of this host, still runs (#5058): a process with its pid that started when
- * the marker says, or, for a marker that does not say, any process with its pid for a day after its last heartbeat.
+ * the marker says, or, for a marker that does not say, any process with its pid for a day after its last heartbeat. A
+ * marker whose start cannot be read right now is its holder's while a process with its pid runs (#5141).
  */
 function holderRuns(marker: SessionOpenMarkerAge): boolean {
 	if (marker.pid === process.pid) return marker.token === PROCESS_TOKEN;
 	const started = STARTED_TOKEN.exec(marker.token)?.[1];
 	const current = started === undefined ? undefined : processStartToken(marker.pid);
 	if (current !== undefined) return current === started;
-	return marker.ageMs <= UNSTARTED_MARKER_LIMIT_MS && processAlive(marker.pid);
+	// A start recorded yet unreadable right now, as when a read timed out, never makes a running process another one
+	// (#5141); only a marker naming no start is judged by its age.
+	return (started !== undefined || marker.ageMs <= UNSTARTED_MARKER_LIMIT_MS) && processAlive(marker.pid);
 }
 
 /**

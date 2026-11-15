@@ -188,8 +188,9 @@ function holderRuns(name: string, age: number): boolean {
 	if (lease?.[1] !== HOST) return false;
 	const started = lease[3] === undefined ? undefined : processStartToken(Number(lease[2]));
 	if (started !== undefined) return started === lease[3];
-	// Without a start to compare, a process of that id is the holder only for so long (#4990).
-	if (age > UNSTARTED_LEASE_LIMIT_MS) return false;
+	// A lease naming no start: a process of that id is the holder only for so long (#4990). One naming a start that
+	// cannot be read right now, as when a read timed out, is its holder's while a process of that id runs (#5141).
+	if (lease[3] === undefined && age > UNSTARTED_LEASE_LIMIT_MS) return false;
 	try {
 		process.kill(Number(lease[2]), 0);
 		return true;
