@@ -879,9 +879,9 @@ export async function resumeSessionWorktree(
 	// The work done in a partly restored worktree of the pinned snapshot `snapshot`, which this resume restores when
 	// `snapshot` cannot be, and puts on top of it when it can (#4922).
 	const pinnedWork = (original: string, snapshot: WorktreeSnapshot) => {
-		const checkout = checkouts.get(original);
-		const pin = checkout?.pin;
-		if (checkout === undefined || pin === undefined || pin.lapsed || pin.snapshotId !== snapshot.id) return undefined;
+		const checkout = checkouts.get(original)!;
+		const pin = checkout.pin;
+		if (pin === undefined || pin.lapsed || pin.snapshotId !== snapshot.id) return undefined;
 		// After a full restore whose merged worktree is not recorded yet, the work it carried over (#5009).
 		const workId = pin.work ?? checkout.latest;
 		if (workId === snapshot.id) return undefined;
@@ -905,7 +905,7 @@ export async function resumeSessionWorktree(
 	const hostWarnings = new Map<WorktreeRootMapping, WorktreeRestoreHostWarning[]>();
 	const reportedLeftovers = new Set<string>();
 	const left: { root: string; snapshot: WorktreeSnapshot; reason: Error; degradedFrom?: string }[] = [];
-	const pinnedTo = new Map<WorktreeRootMapping, string>();
+	const pinnedTo = new Map<WorktreeRootMapping, string | undefined>();
 	const unrestored: UnrestoredWorktree[] = [];
 	let continuedIn: string;
 	let selected: { root: string; snapshot: WorktreeSnapshot } | undefined;
@@ -920,7 +920,7 @@ export async function resumeSessionWorktree(
 			if (options.keepInPlace?.has(root)) continue;
 			const pinned = pinnedWork(original, snapshot);
 			// Conflicting work a full restore kept apart stays kept, whatever the checkout is restored from (#5009).
-			const pin = checkouts.get(original)?.pin;
+			const pin = checkouts.get(original)!.pin;
 			const keptWork = pin?.kept && !pin.lapsed && pin.work !== snapshot.id ? pin.work : undefined;
 			// A pinned checkout left unrestored keeps its pin and the work done in its partly restored worktree (#4922).
 			const leave = (reason: Error) =>
@@ -1077,8 +1077,7 @@ export async function resumeSessionWorktree(
 				...(degradedWork === undefined ? {} : { degradedWork }),
 			};
 			mappings.push(mapping);
-			if (restoredFrom !== snapshot) pinnedTo.set(mapping, snapshot.id);
-			else if (keptWork !== undefined) pinnedTo.set(mapping, keptWork);
+			pinnedTo.set(mapping, restoredFrom !== snapshot ? snapshot.id : keptWork);
 			if (lease) {
 				leases.set(mapping, lease);
 				admitted.add(lease.repository);
@@ -1121,7 +1120,7 @@ export async function resumeSessionWorktree(
 						: mapping.degradedWork.snapshotId),
 			);
 			if (mapping.degradedWork?.outcome === "applied") {
-				await recordCarriedWork(sessionManager, mapping.to, records.get(mapping.snapshotId)?.head, options);
+				await recordCarriedWork(sessionManager, mapping.to, records.get(mapping.snapshotId)!.head, options);
 			}
 		}
 		const continuing = mapRestoredPath(cwd, mappings);
@@ -1228,12 +1227,9 @@ async function recordCarriedWork(
 			blobs,
 			signal: options.signal,
 		});
-		if ((result.status === "captured" || result.status === "unchanged") && result.snapshot.head === head) {
-			await sessionManager.appendWorktreeSnapshot(
-				root,
-				result.snapshot.id,
-				result.status === "captured" ? result.snapshot : undefined,
-			);
+		// Without a previous snapshot to compare with, a capture never resolves unchanged.
+		if (result.status === "captured" && result.snapshot.head === head) {
+			await sessionManager.appendWorktreeSnapshot(root, result.snapshot.id, result.snapshot);
 		} else if (result.status === "unavailable") {
 			reportDebug("storage", "degraded-work-capture-failed", failureDebugFields(result.reason));
 		}
@@ -1414,12 +1410,17 @@ function restoreNotices(
 ): { readonly type: "info" | "warning"; readonly message: string }[] {
 	const records = sessionManager.getWorktreeSnapshotRecords();
 	const branch = sessionManager.getBranch();
-	// The snapshots of conflicting work a full restore kept apart, which later entries go on naming (#5009).
+	// The snapshots of conflicting work a full restore kept apart, which later entries go on naming, and the last entry
+	// of each root, after which nothing recorded the worktree (#5009).
 	const keptWork = new Set<string>();
-	return branch.flatMap((entry, index) => {
-		if (entry.type !== "worktree_snapshot") return [];
+	const last = new Map<string, SessionEntry>();
+	for (const entry of branch) {
+		if (entry.type !== "worktree_snapshot") continue;
 		if (entry.restore?.degradedWork?.outcome === "kept") keptWork.add(entry.restore.degradedWork.snapshotId);
-		if (!include(entry)) return [];
+		last.set(entry.root, entry);
+	}
+	return branch.flatMap((entry) => {
+		if (entry.type !== "worktree_snapshot" || !include(entry)) return [];
 		if (entry.unrestored) {
 			return [{ type: "warning" as const, message: formatUnrestoredNotice(entry.root, entry.unrestored) }];
 		}
@@ -1435,10 +1436,7 @@ function restoreNotices(
 			return [{ type: "warning" as const, message }, ...pinned];
 		}
 		// Applied work no capture recorded since, whose pin stands until one does (#5009).
-		const unrecorded =
-			work?.outcome === "applied" &&
-			entry.degradedFrom === work.snapshotId &&
-			!branch.slice(index + 1).some((later) => later.type === "worktree_snapshot" && later.root === entry.root);
+		const unrecorded = work?.outcome === "applied" && last.get(entry.root) === entry ? work : undefined;
 		return [
 			{ type: "info" as const, message: formatWorktreeRestoreNotice(entry.restore) },
 			...pinned,
@@ -1450,9 +1448,9 @@ function restoreNotices(
 							message: formatDegradedWorkNotice(entry.restore, work),
 						},
 					]),
-			...(unrecorded && work !== undefined
-				? [{ type: "warning" as const, message: formatUnrecordedWorkNotice(entry.restore, work) }]
-				: []),
+			...(unrecorded === undefined
+				? []
+				: [{ type: "warning" as const, message: formatUnrecordedWorkNotice(entry.restore, unrecorded) }]),
 			...[...(snapshot ? snapshotRestoreWarnings(snapshot) : []), ...(entry.restoreWarnings ?? [])].map(
 				(warning) => ({ type: "warning" as const, message: formatWorktreeRestoreWarning(warning) }),
 			),

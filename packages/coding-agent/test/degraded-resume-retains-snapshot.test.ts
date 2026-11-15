@@ -12,6 +12,7 @@ import {
 	degradedRestorePin,
 	describeWorktreeRestoreStatus,
 	discardDegradedRestore,
+	formatDegradedWorkNotice,
 	SessionWorktreeSnapshotRecorder,
 } from "../src/core/session-worktree-snapshots.js";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
@@ -453,6 +454,9 @@ describe("a degraded resume keeps the snapshot it could not restore fully (#4922
 		assert.deepEqual([noBase.outcome, noBase.paths], ["unavailable", []]);
 		assert.match(noBase.reason ?? "", /no record of the partial restore/);
 		assert.equal(readFileSync(join(b.to, "from-b.txt"), "utf8"), "done on machine B\n");
+		const notice = formatDegradedWorkNotice(onB.sessionManager.getWorktreeRootMappings().at(-1)!, noBase);
+		assert.match(notice, /^Could not read the work done in the partly restored worktree /);
+		assert.ok(notice.includes("(the session holds no record of the partial restore)"));
 	});
 
 	test("a resume on the degraded machine continues in the worktree the session worked in, as it is (#4922)", async () => {
