@@ -124,3 +124,20 @@ describe("a resumed detached turn settles as a prompt's run does (#4309)", () =>
 		assert.equal(reopened.getPendingResponseCount(), 1);
 	});
 });
+
+test("a resumed detached turn reports its results recorded before the turn continues (#5012)", async () => {
+	const { reopened } = await reopenedAfterDetaching(pool, [waitTool().definition], [waitForCiTurn("ci-1")]);
+	const reported: string[][] = [];
+	let reportedWhenContinued: string[][] | undefined;
+	reopened.setResponses([
+		() => {
+			reportedWhenContinued = reported.map((ids) => [...ids]);
+			return fauxAssistantMessage("ci passed");
+		},
+	]);
+
+	await reopened.session.resumeDetachedTurn([detachedResult("ci-1", "passed")], (ids) => reported.push([...ids]));
+
+	assert.deepEqual(reportedWhenContinued, [["ci-1"]], "a crash during the continued turn finds them reported");
+	assert.deepEqual(reported, [["ci-1"]]);
+});
