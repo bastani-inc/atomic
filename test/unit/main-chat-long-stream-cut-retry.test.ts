@@ -69,6 +69,7 @@ function createSession(options: { readonly fallbackModels?: readonly string[] } 
 		},
 		_modelRuntime: {
 			getAvailableSnapshot: () => [primary, fallback],
+			getModels: () => [primary, fallback],
 			getModel: (provider: string, id: string) =>
 				[primary, fallback].find((candidate) => candidate.provider === provider && candidate.id === id),
 			hasConfiguredAuth: () => true,

@@ -7,6 +7,7 @@ import { stripBom } from "../utils/text.ts";
 import { runCommand, runCommandCapture, runCommandSync } from "./package-manager-command.ts";
 import { NETWORK_TIMEOUT_MS } from "./package-manager-constants.ts";
 import { isOfflineModeEnabled } from "./package-manager-env.ts";
+import { withInstallLock } from "./package-manager-lock.ts";
 import { getNpmInstallRoot } from "./package-manager-paths.ts";
 import type {
 	InstalledSourceScope,
@@ -118,8 +119,10 @@ export async function installNpm(
 	temporary: boolean,
 ): Promise<void> {
 	const installRoot = getNpmInstallRoot(context, scope, temporary);
-	ensureNpmProject(installRoot);
-	await runNpmCommand(context, getNpmInstallArgs(context, [source.spec], installRoot));
+	await withInstallLock(installRoot, async () => {
+		ensureNpmProject(installRoot);
+		await runNpmCommand(context, getNpmInstallArgs(context, [source.spec], installRoot));
+	});
 }
 
 export async function uninstallNpm(
@@ -133,13 +136,15 @@ export async function uninstallNpm(
 	}
 	// npm writes broken nested package-lock.json paths when --prefix goes through a symlink.
 	const installRoot = realpathSync(root);
-	if (getPackageManagerName(context) === "bun") {
-		await runNpmCommand(context, ["uninstall", source.name, "--cwd", installRoot]);
-		return;
-	}
-	const args = ["uninstall", source.name, "--prefix", installRoot];
-	if (getPackageManagerName(context) !== "pnpm") args.push("--no-audit", "--no-fund");
-	await runNpmCommand(context, args);
+	await withInstallLock(root, async () => {
+		if (getPackageManagerName(context) === "bun") {
+			await runNpmCommand(context, ["uninstall", source.name, "--cwd", installRoot]);
+			return;
+		}
+		const args = ["uninstall", source.name, "--prefix", installRoot];
+		if (getPackageManagerName(context) !== "pnpm") args.push("--no-audit", "--no-fund");
+		await runNpmCommand(context, args);
+	});
 }
 
 export async function installNpmBatch(
@@ -148,8 +153,10 @@ export async function installNpmBatch(
 	scope: InstalledSourceScope,
 ): Promise<void> {
 	const installRoot = getNpmInstallRoot(context, scope, false);
-	ensureNpmProject(installRoot);
-	await runNpmCommand(context, getNpmInstallArgs(context, specs, installRoot));
+	await withInstallLock(installRoot, async () => {
+		ensureNpmProject(installRoot);
+		await runNpmCommand(context, getNpmInstallArgs(context, specs, installRoot));
+	});
 }
 
 function ensureNpmProject(installRoot: string): void {

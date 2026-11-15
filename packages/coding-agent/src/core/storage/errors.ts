@@ -126,14 +126,108 @@ export class StorageOutcomeUnknownError extends StorageError {
 	}
 }
 
+/**
+ * What a backend refused as too large: a value or row a statement writes or computes, or the response to a
+ * statement.
+ */
+export type StoragePayloadKind = "value" | "response";
+
+export interface StoragePayloadTooLargeOptions {
+	readonly kind?: StoragePayloadKind;
+	readonly descriptor?: StorageDescriptor;
+	readonly cause?: StorageFailureCause;
+}
+
+const PAYLOAD_TOO_LARGE_HINT =
+	"Retrying does not help: store less in one value, or raise the backend's limit (sqld: max_row_size, --max-response-size)";
+
+function byteCount(bytes: number): string {
+	return `${bytes.toLocaleString("en-US")} bytes`;
+}
+
+/**
+ * The backend refused a payload larger than it accepts: a bound or computed value or row (a libSQL server's
+ * `SQLITE_TOOBIG`, `ARGS_INVALID "string or blob too big"`, Postgres's `54000`), or a statement's response (a libSQL
+ * server's `RESPONSE_TOO_LARGE`). Permanent: the same write fails again, so it is never `retryable` and never a
+ * `StorageUnavailableError` (#4954). `limitBytes` is the backend's default limit when the backend does not report its
+ * own; `actualBytes` is the largest value the statement bound, or 0 when unknown (a response).
+ */
 export class StoragePayloadTooLargeError extends StorageError {
+	readonly code = "payload-too-large" as const;
+	readonly retryable = false as const;
+	readonly hint = PAYLOAD_TOO_LARGE_HINT;
 	readonly limitBytes: number;
 	readonly actualBytes: number;
-	constructor(limitBytes: number, actualBytes: number) {
-		super("Storage payload exceeds the backend limit");
+	readonly kind: StoragePayloadKind;
+	declare readonly adapter?: string;
+	declare readonly location?: string;
+	declare readonly cause: StorageFailureCause;
+	constructor(limitBytes: number, actualBytes: number, options: StoragePayloadTooLargeOptions = {}) {
+		const kind = options.kind ?? "value";
+		const where =
+			options.descriptor === undefined ? "" : `: ${options.descriptor.adapter} at ${options.descriptor.location}`;
+		const limit = limitBytes > 0 ? `the limit is ${byteCount(limitBytes)}` : "over its limit";
+		const what =
+			kind === "response"
+				? `refused to return a response larger than it allows; ${limit} per response`
+				: `refused a value${actualBytes > 0 ? ` of ${byteCount(actualBytes)}` : ""} larger than it stores; ${limit} per value or row`;
+		super(
+			`Storage payload too large${where}: the backend ${what} (payload-too-large). ${PAYLOAD_TOO_LARGE_HINT}.`,
+			options.cause === undefined ? undefined : { cause: options.cause },
+		);
 		this.limitBytes = limitBytes;
 		this.actualBytes = actualBytes;
+		this.kind = kind;
+		if (options.descriptor !== undefined) {
+			this.adapter = options.descriptor.adapter;
+			this.location = options.descriptor.location;
+		}
 	}
+}
+
+/** SQLite's result code for a string, blob or row over its length limit. */
+const SQLITE_TOOBIG = 18;
+
+/** A backend's payload limits, in bytes, for the messages of {@link StoragePayloadTooLargeError}. */
+export type StoragePayloadLimits = Readonly<Partial<Record<StoragePayloadKind, number>>>;
+/** SQLite's default `SQLITE_MAX_LENGTH`, the limit of Atomic's own SQLite stores. */
+export const SQLITE_PAYLOAD_LIMITS: StoragePayloadLimits = Object.freeze({ value: 1_000_000_000 });
+
+/**
+ * The kind of payload `failure`, or a cause of it, says the backend refused as too large, if it says so: read from
+ * codes, never from a message, except libSQL's `ARGS_INVALID`, whose code covers other argument errors too.
+ */
+export function payloadTooLargeKind(failure: StorageFailureCause | Error): StoragePayloadKind | undefined {
+	let current: unknown = failure;
+	for (let depth = 0; depth < MAX_STORAGE_CAUSE_DEPTH && typeof current === "object" && current !== null; depth++) {
+		const { code, errcode, message, cause } = current as {
+			readonly code?: unknown;
+			readonly errcode?: unknown;
+			readonly message?: unknown;
+			readonly cause?: unknown;
+		};
+		if (code === "RESPONSE_TOO_LARGE") return "response";
+		if (code === "SQLITE_TOOBIG" || code === "54000") return "value";
+		if (code === "ARGS_INVALID" && typeof message === "string" && /too big/i.test(message)) return "value";
+		if (typeof errcode === "number" && (errcode & 0xff) === SQLITE_TOOBIG) return "value";
+		current = cause;
+	}
+	return undefined;
+}
+
+/** The byte size of the largest text or binary value in `params`, as UTF-8 for text. */
+export function largestValueBytes(params: readonly SqliteValue[]): number {
+	let largest = 0;
+	for (const value of params) {
+		const bytes =
+			typeof value === "string"
+				? Buffer.byteLength(value, "utf8")
+				: value instanceof Uint8Array
+					? value.byteLength
+					: 0;
+		largest = Math.max(largest, bytes);
+	}
+	return largest;
 }
 
 /** An error and its direct cause on one line, for status output (a module-resolution "Require stack" is dropped). */
@@ -1261,11 +1355,18 @@ function knownStorageError(
 				field<string>(serialized, "id", "string") ?? "",
 				field<string>(serialized, "key", "string") ?? "",
 			);
-		case "StoragePayloadTooLargeError":
+		case "StoragePayloadTooLargeError": {
+			const adapter = field<string>(serialized, "adapter", "string");
 			return new StoragePayloadTooLargeError(
 				field<number>(serialized, "limitBytes", "number") ?? 0,
 				field<number>(serialized, "actualBytes", "number") ?? 0,
+				{
+					kind: field<string>(serialized, "kind", "string") === "response" ? "response" : "value",
+					...(adapter === undefined ? {} : { descriptor: descriptorOf(serialized) }),
+					...(cause === undefined ? {} : { cause }),
+				},
 			);
+		}
 	}
 	return undefined;
 }

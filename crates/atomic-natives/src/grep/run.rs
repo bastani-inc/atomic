@@ -58,7 +58,9 @@ pub(super) fn search_sync(content: &[u8], options: SearchOptions) -> SearchResul
 	let ignore_case = options.ignore_case.unwrap_or(false);
 	let multiline = options.multiline.unwrap_or(false);
 	let mode = parse_output_mode(options.mode);
-	let matcher = match build_matcher(&options.pattern, ignore_case, multiline) {
+	// Line anchors, as in ripgrep: `$` matches before a line's `\n` or `\r\n`. Only the searcher's
+	// `multiline` setting decides whether a match may span lines.
+	let matcher = match build_matcher(&options.pattern, ignore_case, true) {
 		Ok(matcher) => matcher,
 		Err(err) => return empty_search_result(Some(err.to_string())),
 	};
@@ -102,7 +104,9 @@ pub(super) fn grep_sync(
 	let ignore_case = options.ignore_case.unwrap_or(false);
 	let multiline = options.multiline.unwrap_or(false);
 	let output_mode = parse_output_mode(options.mode);
-	let matcher = build_matcher(&options.pattern, ignore_case, multiline)?;
+	// Line anchors, as in ripgrep: `$` matches before a line's `\n` or `\r\n`. Only the searcher's
+	// `multiline` setting decides whether a match may span lines.
+	let matcher = build_matcher(&options.pattern, ignore_case, true)?;
 
 	let (context_before, context_after) =
 		resolve_context(options.context, options.context_before, options.context_after);

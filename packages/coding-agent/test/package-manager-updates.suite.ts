@@ -402,7 +402,11 @@ describe("DefaultPackageManager", () => {
 
 			expect(runCommandCaptureSpy).toHaveBeenCalledTimes(5);
 			expect(runCommandSpy).toHaveBeenCalledTimes(2);
-			assert.deepEqual(runCommandSpy.mock.calls[0], [
+			// Each scope's batch holds its own install lock, so the two batches run at once in either order.
+			const npmCalls = [...runCommandSpy.mock.calls].sort((left, right) =>
+				String((left[1] as string[])[1]).localeCompare(String((right[1] as string[])[1])),
+			);
+			assert.deepEqual(npmCalls[1], [
 				"npm",
 				[
 					"install",
@@ -416,7 +420,7 @@ describe("DefaultPackageManager", () => {
 				],
 				undefined,
 			]);
-			assert.deepEqual(runCommandSpy.mock.calls[1], [
+			assert.deepEqual(npmCalls[0], [
 				"npm",
 				[
 					"install",

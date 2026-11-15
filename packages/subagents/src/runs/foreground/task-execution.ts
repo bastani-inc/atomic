@@ -467,7 +467,9 @@ export async function runAgentTask(input: {
 			...subagentChildTask(input.intentTask ?? input.task, input.options),
 			...(worktree ? { worktree } : {}),
 			...(terminalStatus ? { terminalStatus } : {}),
-			...(waitingOn ? { waitingOn } : {}),
+			// Every record a run writes says what that run waits on, so a later run's record never keeps the detached calls
+			// an earlier released run waited on: records merge field by field (#4845).
+			waitingOn: waitingOn ?? [],
 			...(releasedIntercomId === undefined ? {} : { releasedIntercomId }),
 			...(terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS ? { ownerGeneration: SUBAGENT_OWNER_GENERATION } : {}),
 			...(heldMessages?.messages.length ? { heldMessages: { taskId, ...heldMessages } } : {}),
@@ -481,6 +483,7 @@ export async function runAgentTask(input: {
 					: {}),
 			inherited: subagentChildInheritance(input.options),
 			...subagentChildModelChoice(input.options, agentConfig),
+			...(input.heartbeatMs === undefined ? {} : { heartbeatMs: input.heartbeatMs }),
 		};
 		input.recordChild?.record(record);
 		// #4639: once its session is gone, a send to the child is told why it ended and how to resume it.

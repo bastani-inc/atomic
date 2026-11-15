@@ -16,34 +16,17 @@ export function addSourceToSettings(
 	options?: { local?: boolean },
 ): boolean {
 	const scope: SourceScope = options?.local ? "project" : "user";
-	const currentSettings =
-		scope === "project" ? context.settingsManager.getProjectSettings() : context.settingsManager.getGlobalSettings();
-	const currentPackages = currentSettings.packages ?? [];
 	const normalizedSource = normalizePackageSourceForSettings(context, source, scope);
-	const matchIndex = currentPackages.findIndex((existing) => packageSourcesMatch(context, existing, source, scope));
-	if (matchIndex !== -1) {
-		const existing = currentPackages[matchIndex];
-		if (getPackageSourceString(existing) === normalizedSource) {
-			return false;
-		}
+	return context.settingsManager.updatePackages(scope === "project" ? "project" : "global", (currentPackages) => {
+		const matchIndex = currentPackages.findIndex((existing) => packageSourcesMatch(context, existing, source, scope));
+		if (matchIndex === -1) return [...currentPackages, normalizedSource];
+		const existing = currentPackages[matchIndex]!;
+		if (getPackageSourceString(existing) === normalizedSource) return undefined;
 		const nextPackages = [...currentPackages];
 		nextPackages[matchIndex] =
 			typeof existing === "string" ? normalizedSource : { ...existing, source: normalizedSource };
-		if (scope === "project") {
-			context.settingsManager.setProjectPackages(nextPackages);
-		} else {
-			context.settingsManager.setPackages(nextPackages);
-		}
-		return true;
-	}
-
-	const nextPackages = [...currentPackages, normalizedSource];
-	if (scope === "project") {
-		context.settingsManager.setProjectPackages(nextPackages);
-	} else {
-		context.settingsManager.setPackages(nextPackages);
-	}
-	return true;
+		return nextPackages;
+	});
 }
 
 export function removeSourceFromSettings(
@@ -52,18 +35,10 @@ export function removeSourceFromSettings(
 	options?: { local?: boolean },
 ): boolean {
 	const scope: SourceScope = options?.local ? "project" : "user";
-	const currentSettings =
-		scope === "project" ? context.settingsManager.getProjectSettings() : context.settingsManager.getGlobalSettings();
-	const currentPackages = currentSettings.packages ?? [];
-	const nextPackages = currentPackages.filter((existing) => !packageSourcesMatch(context, existing, source, scope));
-	const changed = nextPackages.length !== currentPackages.length;
-	if (!changed) return false;
-	if (scope === "project") {
-		context.settingsManager.setProjectPackages(nextPackages);
-	} else {
-		context.settingsManager.setPackages(nextPackages);
-	}
-	return true;
+	return context.settingsManager.updatePackages(scope === "project" ? "project" : "global", (currentPackages) => {
+		const nextPackages = currentPackages.filter((existing) => !packageSourcesMatch(context, existing, source, scope));
+		return nextPackages.length === currentPackages.length ? undefined : nextPackages;
+	});
 }
 
 export function getInstalledPath(

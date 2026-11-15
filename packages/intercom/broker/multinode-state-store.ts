@@ -27,6 +27,17 @@ export const OUTBOX_CLAIM_STALE_AFTER_MS = 30_000;
 export const OUTBOX_BACKUP_POLL_INTERVAL_MS = 30_000;
 /** How long a session that left stays known, so a send to it is queued for its return (spec §14, S5 amendment). */
 export const KNOWN_SESSION_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+/**
+ * #4896: most undelivered outbox rows one recipient may have; a send past it is refused, and rows already queued stay.
+ * Undelivered rows are those queued for a session that is away, or still being delivered.
+ */
+export const OUTBOX_TARGET_MAX_ROWS = 1_000;
+/** #4896: most bytes of serialized frames one recipient's undelivered outbox rows may hold together. */
+export const OUTBOX_TARGET_MAX_BYTES = 64 * 1024 * 1024;
+/** #4896: the failure an outbox row records when it expires unclaimed, after its recipient stayed away too long. */
+export const OUTBOX_EXPIRED_REASON = `The recipient did not return within the known-session retention of ${
+	KNOWN_SESSION_RETENTION_MS / (24 * 60 * 60 * 1000)
+} days; the queued message expired undelivered`;
 
 /** The exact frame a broker writes to a recipient's socket; a cross-node delivery writes the same frame. */
 export type IntercomDeliveryFrame = Extract<BrokerMessage, { type: "message" }>;
@@ -194,6 +205,8 @@ export type OutboxEnqueueResult =
 	/** Same id and digest: no second row is written and the existing row reports its current state. */
 	| { readonly status: "duplicate"; readonly row: OutboxRow }
 	| { readonly status: "conflict"; readonly messageId: string }
+	/** #4896: the recipient already has its maximum of undelivered rows or bytes; nothing was written. */
+	| { readonly status: "full"; readonly limit: number; readonly byteLimit: number }
 	| InvalidStateInput;
 
 export type OutboxClaimResult =
@@ -250,8 +263,12 @@ export interface OutboxStore {
 	read(messageId: string): Promise<OutboxReadResult>;
 	/** The recipient's `queued` and `claimed` rows in insertion order, without claiming them. */
 	listUndelivered(targetIdentity: string): Promise<OutboxListResult>;
-	/** Delete `delivered` and `failed` rows settled more than `settledOlderThanMs` ago; returns the count. */
-	prune(settledOlderThanMs: number): Promise<number>;
+	/**
+	 * Delete `delivered` and `failed` rows settled more than `settledOlderThanMs` ago; returns the count. With
+	 * `queuedOlderThanMs`, first fail rows queued more than that long ago that no live claim holds, with
+	 * `OUTBOX_EXPIRED_REASON` (#4896).
+	 */
+	prune(settledOlderThanMs: number, queuedOlderThanMs?: number): Promise<number>;
 }
 
 /**
@@ -585,6 +602,7 @@ export type ReleasedAskLookupResult =
 	| { readonly status: "found"; readonly ask: ReleasedAskRecord }
 	| { readonly status: "missing" }
 	| InvalidStateInput;
+export type ReleasedAskListResult = { readonly status: "listed"; readonly asks: ReleasedAskRecord[] } | InvalidStateInput;
 export type ReleasedAskClaimResult =
 	/** This reply holds the ask: it claimed it now, or had claimed or answered it before. */
 	| { readonly status: "claimed"; readonly ask: ReleasedAskRecord }
@@ -608,6 +626,8 @@ export interface ReleasedAskStore {
 	/** Keep each ask open for `ttlMs` of store time; an ask kept before is left as it is. */
 	keep(asks: readonly ReleasedAsk[], ttlMs: number): Promise<ReleasedAskKeepResult>;
 	lookup(key: ReleasedAskKey): Promise<ReleasedAskLookupResult>;
+	/** #4852: the asks to this replier still open, which no reply has claimed, oldest first. */
+	openForReplier(replierSessionId: string): Promise<ReleasedAskListResult>;
 	/** Claim an open ask for this reply, atomically, so only one reply is ever handed to the owner at a time. */
 	claim(claim: ReleasedAskClaim): Promise<ReleasedAskClaimResult>;
 	/** The owner accepted the claiming reply. Answering again for the same reply is `settled`. */

@@ -132,6 +132,7 @@ test("main-chat fallback switches models after same-model retry exhaustion", asy
 		},
 		_modelRuntime: {
 			getAvailableSnapshot: () => [primary, fallback],
+			getModels: () => [primary, fallback],
 			getModel: (provider: string, id: string) =>
 				provider === fallback.provider && id === fallback.id ? fallback : undefined,
 			hasConfiguredAuth: (provider: string) => provider === fallback.provider || provider === primary.provider,
@@ -201,6 +202,7 @@ test("main-chat fallback remains the session model after its lifecycle settles",
 		},
 		_modelRuntime: {
 			getAvailableSnapshot: () => [primary, fallback],
+			getModels: () => [primary, fallback],
 			getModel: (provider: string, id: string) =>
 				provider === fallback.provider && id === fallback.id ? fallback : undefined,
 			hasConfiguredAuth: () => true,
@@ -257,6 +259,7 @@ test("a transient failure can still change reasoning on the same provider/model"
 		},
 		_modelRuntime: {
 			getAvailableSnapshot: () => [primary],
+			getModels: () => [primary],
 			getModel: (provider: string, id: string) =>
 				provider === primary.provider && id === primary.id ? primary : undefined,
 			hasConfiguredAuth: () => true,
@@ -321,6 +324,7 @@ test("main-chat retry-disabled fallback keeps prompt waiting for fallback comple
 		},
 		_modelRuntime: {
 			getAvailableSnapshot: () => [primary, fallback],
+			getModels: () => [primary, fallback],
 			getModel: (provider: string, id: string) =>
 				provider === fallback.provider && id === fallback.id ? fallback : undefined,
 			hasConfiguredAuth: (provider: string) => provider === fallback.provider || provider === primary.provider,
@@ -395,6 +399,7 @@ test("main-chat fallback rejection settles the retry wait", async () => {
 		},
 		_modelRuntime: {
 			getAvailableSnapshot: () => [primary, fallback],
+			getModels: () => [primary, fallback],
 			getModel: (provider: string, id: string) =>
 				provider === fallback.provider && id === fallback.id ? fallback : undefined,
 			hasConfiguredAuth: (provider: string) => provider === fallback.provider || provider === primary.provider,
@@ -462,6 +467,7 @@ test("main-chat fallback continuation resolution does not mark assistant errors 
 		},
 		_modelRuntime: {
 			getAvailableSnapshot: () => [primary, fallback],
+			getModels: () => [primary, fallback],
 			getModel: (provider: string, id: string) =>
 				provider === fallback.provider && id === fallback.id ? fallback : undefined,
 			hasConfiguredAuth: (provider: string) => provider === fallback.provider || provider === primary.provider,
@@ -518,6 +524,7 @@ test("a rejected codex credential advances to the next candidate without re-requ
 		},
 		_modelRuntime: {
 			getAvailableSnapshot: () => [primary, fallback],
+			getModels: () => [primary, fallback],
 			getModel: (provider: string, id: string) =>
 				provider === fallback.provider && id === fallback.id ? fallback : undefined,
 			hasConfiguredAuth: () => true,
@@ -577,6 +584,7 @@ test("an explicit /model choice during a fallback remains selected after settlem
 		},
 		_modelRuntime: {
 			getAvailableSnapshot: () => [primary, fallback, chosen],
+			getModels: () => [primary, fallback, chosen],
 			getModel: (provider: string, id: string) =>
 				provider === fallback.provider && id === fallback.id ? fallback : undefined,
 			hasConfiguredAuth: () => true,
@@ -762,6 +770,7 @@ test("a failed overflow compaction advances the real fallback chain end to end",
 		},
 		_modelRuntime: {
 			getAvailableSnapshot: () => [primary, fallback],
+			getModels: () => [primary, fallback],
 			getModel: (provider: string, id: string) =>
 				provider === fallback.provider && id === fallback.id ? fallback : undefined,
 			hasConfiguredAuth: () => true,
@@ -843,6 +852,7 @@ function thinkingLevelFallbackSession(
 		},
 		_modelRuntime: {
 			getAvailableSnapshot: () => [primary, fallback],
+			getModels: () => [primary, fallback],
 			getModel: (provider: string, id: string) =>
 				provider === fallback.provider && id === fallback.id ? fallback : undefined,
 			hasConfiguredAuth: () => true,
@@ -966,6 +976,7 @@ test("a Copilot model unavailable to the client integration names the model and 
 		},
 		_modelRuntime: {
 			getAvailableSnapshot: () => [primary, fallback],
+			getModels: () => [primary, fallback],
 			getModel: (provider: string, id: string) =>
 				provider === fallback.provider && id === fallback.id ? fallback : undefined,
 			hasConfiguredAuth: () => true,
@@ -1037,6 +1048,7 @@ test("a terminal provider failure skips reasoning-only variants of the failed mo
 		},
 		_modelRuntime: {
 			getAvailableSnapshot: () => [primary, anthropic],
+			getModels: () => [primary, anthropic],
 			getModel: (provider: string, id: string) => {
 				if (provider === primary.provider && id === primary.id) return primary;
 				return provider === anthropic.provider && id === anthropic.id ? anthropic : undefined;
@@ -1103,6 +1115,7 @@ test("a blocked model stays blocked for the rest of the turn", async () => {
 		},
 		_modelRuntime: {
 			getAvailableSnapshot: () => [primary, anthropic],
+			getModels: () => [primary, anthropic],
 			getModel: (provider: string, id: string) => {
 				if (provider === primary.provider && id === primary.id) return primary;
 				return provider === anthropic.provider && id === anthropic.id ? anthropic : undefined;

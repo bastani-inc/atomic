@@ -9,6 +9,7 @@ import {
 	withWorktreeRestoreNotices,
 	withWorktreeRootMappings,
 } from "@bastani/atomic";
+import { beginDurableWorkflowAttempt } from "../durable/attempt-identity.js";
 import { type DurableWorkflowBackend, pendingStageMessagesForDurableRun } from "../durable/backend.js";
 import type { DurableChildInvocation } from "../durable/boundary-topology.js";
 import { createDurableChildWorkflowPrimitive } from "../durable/child-primitive.js";
@@ -33,6 +34,7 @@ import {
 	latestStageSessionCheckpoints,
 } from "../durable/stage-primitive.js";
 import { availableStoreDurableBackendOverride, bindStoreDurableBackend } from "../durable/store-backend.js";
+import { recordUnconsumedToolFrontier } from "../durable/tool-failure-checkpoint.js";
 import { createCheckpointIdGenerator } from "../durable/tool-primitive.js";
 import type { DurableStageCheckpoint } from "../durable/types.js";
 import { transitionDurableWorkflowStatus } from "../durable/workflow-status-transition.js";
@@ -78,7 +80,11 @@ import {
 	recordActiveBlockedFailure,
 	selectRunFailureDisposition,
 } from "../runs/foreground/executor-lifecycle.js";
-import { assertWorkflowRunOutputs, normalizeWorkflowRunOutput } from "../runs/foreground/executor-outputs.js";
+import {
+	applyWorkflowOutputDefaults,
+	assertWorkflowRunOutputs,
+	normalizeWorkflowRunOutput,
+} from "../runs/foreground/executor-outputs.js";
 import { buildPromptNodeUiAdapter } from "../runs/foreground/executor-prompt-nodes.js";
 import { createRunFinalizers } from "../runs/foreground/executor-run-finalizers.js";
 import { createStageScheduler } from "../runs/foreground/executor-scheduler.js";
@@ -140,6 +146,7 @@ import { durableRootRegistrationForRun, WorkflowRunControlError } from "./run-du
 import { createDurableStageSessionRecorder } from "./run-durable-stage-session.js";
 import {
 	createDurableCachedStageRecorder,
+	createDurablePromptAnswerResolver,
 	createDurableStageDeps,
 	createDurableStageEndRecorder,
 	createDurableStageTopologyResolver,
@@ -773,11 +780,27 @@ async function executeRun(
 			if (cachedStageFailure !== undefined) throw cachedStageFailure;
 			assertFrontierConsumed();
 		},
+		recordRefusedCompletion: async (error) => {
+			const frontier = unconsumedToolFrontier(
+				opts.continuation,
+				error instanceof Error ? error.message : String(error),
+			);
+			if (frontier !== undefined) await recordUnconsumedToolFrontier(durableBackend, runId, frontier.argsHash);
+		},
 	});
 	const checkpointIdGenerator = createCheckpointIdGenerator();
 	const stageReplayKeyGenerator = createStageReplayKeyGenerator(runId);
 	const completedStageReplayKeys = new Map<string, string>();
+	// Only this run's own stages: a resumed pooled root holds its children's checkpoints until it replays them (#4318).
+	// Listed once: a pooled child reads it before it runs, and every further listing costs it a read (#4440).
+	const priorCheckpoints = durableBackend.listCheckpoints(runId);
+	const priorPromptStageCheckpoints = priorCheckpoints.filter(
+		(checkpoint): checkpoint is DurableStageCheckpoint =>
+			checkpoint.kind === "stage" &&
+			(checkpoint.topology?.run === undefined || checkpoint.topology.run.runId === runId),
+	);
 	const durableStageDeps = createDurableStageDeps({
+		priorStageCheckpoints: priorPromptStageCheckpoints,
 		backend: durableBackend,
 		run: runSnapshot,
 		nextCheckpointId: checkpointIdGenerator,
@@ -1034,14 +1057,7 @@ async function executeRun(
 	};
 	// Prompt-node mode re-materializes metadata before returning a durable ctx.ui cache hit.
 	const resolvePromptNodeTopology = createDurableStageTopologyResolver(durableBackend, runId);
-	// Only this run's own stages: a resumed pooled root holds its children's checkpoints until it replays them (#4318).
-	const priorPromptStageCheckpoints = durableBackend
-		.listCheckpoints(runId)
-		.filter(
-			(checkpoint): checkpoint is DurableStageCheckpoint =>
-				checkpoint.kind === "stage" &&
-				(checkpoint.topology?.run === undefined || checkpoint.topology.run.runId === runId),
-		);
+	const durablePromptAnswerForStageId = createDurablePromptAnswerResolver(priorCheckpoints, runId);
 	let promptNodeUi: ReturnType<typeof buildPromptNodeUiAdapter> | undefined;
 	const getPromptNodeUi = (): ReturnType<typeof buildPromptNodeUiAdapter> => {
 		promptNodeUi ??= buildPromptNodeUiAdapter({
@@ -1059,6 +1075,8 @@ async function executeRun(
 			workflowExitSkippedReason: exit.workflowExitSkippedReason,
 			preserveWorkflowExitSkippedReason: exit.preserveWorkflowExitSkippedReason,
 			durableTopologyForReplayKey: resolvePromptNodeTopology,
+			durablePromptAnswerForStageId,
+			recordPromptStageEnd: durableOnPromptNodeEnd,
 			durableTimingForStageId: (stageId) =>
 				priorPromptStageCheckpoints.find(
 					(checkpoint) =>
@@ -1557,6 +1575,8 @@ async function executeRun(
 			} else {
 				await durableBackend.commitWorkflowStatus(runId, "running");
 			}
+			// Before this attempt writes anything, so each of its records is told from an earlier attempt's (#4874).
+			await beginDurableWorkflowAttempt(durableBackend, runId);
 		}
 		durableRootAdmitted = true;
 		if (dispatcher?.prepare !== undefined)
@@ -1621,7 +1641,7 @@ async function executeRun(
 		const quitDuringSuccess = observedQuitCancellation() ?? observedTaskTailQuit;
 		if (quitDuringSuccess !== undefined) return suspendForGracefulQuit(quitDuringSuccess);
 
-		const result = normalizeWorkflowRunOutput(def.name, rawResult);
+		const result = applyWorkflowOutputDefaults(normalizeWorkflowRunOutput(def.name, rawResult), def.outputs);
 		assertWorkflowRunOutputs(def.name, result, def.outputs);
 		assertWorkflowCreatedExecution(runSnapshot, eventPrimitives.opened);
 		while (scheduler.isRunPaused()) await waitForRunRelease();
@@ -1747,6 +1767,8 @@ async function executeRun(
 			),
 		);
 		const rejectedToolFrontier = unconsumedToolFrontier(opts.continuation, selectedMetadata.errorMessage);
+		if (rejectedToolFrontier !== undefined)
+			await recordUnconsumedToolFrontier(durableBackend, runId, rejectedToolFrontier.argsHash);
 		const failedToolNodeId =
 			rejectedToolFrontier?.id ??
 			(selectedMetadata.failedStageId === undefined && selectedMetadata.failureDisposition !== "terminal_killed"

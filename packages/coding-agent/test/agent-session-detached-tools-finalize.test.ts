@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
+import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall, type ToolResultMessage } from "@bastani/pi-ai/compat";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
@@ -25,6 +25,7 @@ import {
 	PERSISTED_OUTPUT_TAG,
 	TOOL_RESULTS_SUBDIR,
 } from "../src/core/tools/tool-limits.js";
+import { isPathInside } from "../src/utils/path-inside.js";
 import { createHarness, getMessageText, type Harness } from "./suite/harness.js";
 
 const harnesses: Harness[] = [];
@@ -334,7 +335,7 @@ describe("persisted oversized output (#4309)", () => {
 		const saved = await savedInline(textResult("i".repeat(DEFAULT_MAX_RESULT_SIZE_CHARS + 1)), { agentDir });
 
 		const path = savedFilePath(getMessageText(saved));
-		assert.ok(!relative(getTempRootDir(), path).startsWith(".."), `${path} is outside the temp tree`);
+		assert.ok(isPathInside(getTempRootDir(), path), `${path} is outside the temp tree`);
 	});
 
 	test("of a released stage whose store holds no blobs stays in the temp tree the sweeper reaps (#4379)", async () => {
@@ -344,7 +345,7 @@ describe("persisted oversized output (#4309)", () => {
 		const { saved, sessionId, store } = await detachedSession(textResult(output), { agentDir, blobless: true });
 
 		const path = savedFilePath(getMessageText(saved));
-		assert.ok(!relative(getTempRootDir(), path).startsWith(".."), `${path} is outside the temp tree`);
+		assert.ok(isPathInside(getTempRootDir(), path), `${path} is outside the temp tree`);
 		assert.equal(readFileSync(path, "utf8"), output);
 		assert.deepEqual(await toolOutputEntries(store, sessionId), []);
 	});

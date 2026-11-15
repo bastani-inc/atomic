@@ -50,10 +50,14 @@ export interface SettingsStorage {
 	 */
 	withPrimaryWriteLock?(scope: SettingsScope, fn: (currentPrimary: string | undefined) => string | undefined): void;
 	getFieldOrigin?(scope: SettingsScope, field: keyof Settings): SettingsFieldOrigin | undefined;
+	/** The file whose value of a top-level field is in effect for the scope, when the storage is file-backed. */
+	getFieldPath?(scope: SettingsScope, field: string): string | undefined;
 }
 
 export interface SettingsError {
 	scope: SettingsScope;
 	path?: string;
 	error: Error;
+	/** Set when the file was read but this wrong-typed value was ignored, as `extensions` or `extensions[2]`. */
+	invalidKey?: string;
 }

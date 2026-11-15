@@ -1,5 +1,7 @@
+import assert from "node:assert/strict";
 import { crc32, deflateSync } from "node:zlib";
 import { expect, test } from "vitest";
+import { convertMcpResult } from "../src/extensions/mcp/tools.ts";
 import { normalizeToolResultImages, type ToolResultContent } from "../src/utils/tool-result-images.ts";
 
 const TINY_PNG_BASE64 =
@@ -138,4 +140,31 @@ test("preserves surrounding tool-result text and order", async () => {
 	expect(normalized.map((block) => block.type)).toEqual(["text", "image", "text", "text"]);
 	expect(normalized[0]).toEqual({ type: "text", text: "before" });
 	expect(normalized[3]).toEqual({ type: "text", text: "after" });
+});
+
+const SVG_PLACEHOLDER = "[Image omitted: could not be converted to a supported inline image format (image/svg+xml).]";
+
+test("replaces an SVG image from an MCP tool before it enters history (#4908)", async () => {
+	const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"/>').toString("base64");
+	const result = await convertMcpResult("charts", "render", {
+		content: [
+			{ type: "text", text: "chart" },
+			{ type: "image", data: svg, mimeType: "image/svg+xml" },
+		],
+	});
+
+	const normalized = await normalizeToolResultImages(result.content);
+
+	assert.deepEqual(normalized, [
+		{ type: "text", text: "chart" },
+		{ type: "text", text: SVG_PLACEHOLDER },
+	]);
+});
+
+test("still converts a BMP tool image to PNG with default options (#4908)", async () => {
+	const normalized = await normalizeToolResultImages([imageBlock(createTinyBmp1x1Red24bpp(), "image/bmp")]);
+
+	assert.equal(normalized[0]?.type, "image");
+	assert.equal(normalized[0]?.type === "image" && normalized[0].mimeType, "image/png");
+	assert.deepEqual(normalized[1], { type: "text", text: "[Image converted from image/bmp to image/png.]" });
 });
