@@ -3,6 +3,7 @@ import { isJournalCatalogError, rehydrateJournalStoreError } from "@bastani/atom
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
+import { workflowAttemptOf } from "../../packages/workflows/src/durable/attempt-identity.js";
 import { durableHash } from "../../packages/workflows/src/durable/backend.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { makeExecuteWorkflowTool } from "../../packages/workflows/src/extension/workflow-tool.js";
@@ -138,7 +139,20 @@ describe("workflow tool durable-only checkpoint replay", () => {
 		assert.equal(result.status, "running");
 		assert.equal(result.runId, workflowId);
 		assert.equal(sideEffectCalls, 0, "replayed ctx.tool must not execute its side-effect callback");
-		assert.equal(backend.listCheckpoints(workflowId).length, 1, "replay must not duplicate the checkpoint");
+		// The resume records its attempt and the replay's reach in that attempt (#4874), and never the tool's result again.
+		const [original, ...attemptRecords] = backend.listCheckpoints(workflowId);
+		assert.equal(original?.checkpointId, `tool:${argsHash}`, "replay must not duplicate the checkpoint");
+		assert.deepEqual(
+			attemptRecords.map((checkpoint) => [
+				checkpoint.kind,
+				checkpoint.checkpointId.split(":")[0],
+				checkpoint.kind === "ui" ? workflowAttemptOf(checkpoint) : checkpoint.attempt,
+			]),
+			[
+				["ui", "workflow-attempt", 1],
+				["tool", "tool-replay-meta", 1],
+			],
+		);
 		const resumedJob = jobTracker.get(workflowId);
 		assert.ok(resumedJob);
 		releasePrompt.resolve();

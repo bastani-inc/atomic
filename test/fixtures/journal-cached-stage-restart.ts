@@ -17,6 +17,7 @@ const journal = await openSqlRunJournal(path);
 const backend = await JournalDurableBackend.open(journal);
 const replayMetadata = () => backend.listCheckpoints(runId).filter((entry) => entry.checkpointId.startsWith("stage-replay-meta:"));
 if (mode === "resume") assert.equal(replayMetadata().length, 1);
+const retained = replayMetadata().map((entry) => entry.checkpointId);
 const definition = workflow({
 	name: "cached-stage-restart",
 	description: "",
@@ -51,7 +52,14 @@ try {
 		adapters: { complete: { complete: async (text) => text } },
 	});
 	assert.equal(result.status, "completed", JSON.stringify(result));
-	if (mode === "resume") assert.equal(replayMetadata().length, 1);
+	if (mode === "resume") {
+		// The record from before the kill is kept, and the resume records its own replay in its attempt (#4874).
+		const after = replayMetadata();
+		assert.deepEqual(after.slice(0, retained.length).map((entry) => entry.checkpointId), retained);
+		assert.equal(after.length, retained.length + 1);
+		const added = after.at(-1);
+		assert.ok(added?.kind === "stage" && added.attempt === backend.workflowAttempt(runId));
+	}
 } finally {
 	await backend.close();
 }

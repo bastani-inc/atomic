@@ -22,6 +22,8 @@ export function createRunFinalizers(input: {
 	readonly classifyExecutorFailure: (error: unknown) => WorkflowFailure;
 	readonly drainWorkflowExitCleanups: (reason?: string) => Promise<void>;
 	readonly assertSuccessfulCompletion: () => void;
+	/** Records what the durable view needs of an exit `assertSuccessfulCompletion` refused (#4874). */
+	readonly recordRefusedCompletion?: (error: unknown) => Promise<void>;
 }): RunFinalizers {
 	const finalizeWorkflowExitValidationFailure = async (
 		err: unknown,
@@ -84,6 +86,7 @@ export function createRunFinalizers(input: {
 			try {
 				input.assertSuccessfulCompletion();
 			} catch (err) {
+				await input.recordRefusedCompletion?.(err);
 				return finalizeWorkflowExitValidationFailure(err, undefined, true);
 			}
 		}
