@@ -555,6 +555,7 @@ class WorkerHost implements WorkflowWorkerHost {
 				workerEntry: this.options.workerEntry ?? defaultWorkerEntry(),
 				placement: {
 					host: this.hostId,
+					...(this.providerId === undefined ? {} : { providerId: this.providerId }),
 					...(this.options.placement?.prefer === undefined ? {} : { prefer: this.options.placement.prefer }),
 					restore: this.restorePort,
 					restoreBackoff: this.restoreBackoff,

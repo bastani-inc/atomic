@@ -167,8 +167,9 @@ Every 10 seconds the controller:
 
 - computes the [scaling signal's](#the-scaling-signal) target.
 - adds hosts with `scaleTo` when more than `scaleUpQueueDepth` children have been waiting for `scaleUpDelayMs`, or when children wait and no host runs at all. Hosts below `minHosts` are added at once.
-- asks a host to drain once it has held no child for `idleDrainMs` and the fleet is above its target. The host takes no more children and exits as on SIGTERM; the controller then calls `drain`. A host that holds a child is never drained or removed.
-- removes a host that has not registered `bootTimeoutMs` after it started, or that the provider reports failed, and replaces it once. Further failures in a row wait 30 seconds, then twice as long each time, up to 10 minutes.
+- asks a host to drain once it has held no child for `idleDrainMs` and the fleet is above its target. The host takes no more children, from the moment the drain is asked even before the host has read it, and exits as on SIGTERM; the controller calls `drain` once the host has left the registry. A host that stopped reporting without leaving is removed only 5 minutes after its drain was asked, and only if it holds no child. A host that holds a child is never drained or removed, whether or not it still reports. A child whose root died and whose own lease expired no longer counts, so it does not keep an idle host or the fleet's target up.
+- removes a host that has not registered `bootTimeoutMs` after it started, or that the provider reports failed, and replaces it once. A host that registers just as its boot timeout is reached is kept. Further failures in a row wait 30 seconds, then twice as long each time, up to 10 minutes.
+- makes no provider call once its lease may have lapsed, including after its process was paused or blocked: it checks the lease's age with a monotonic clock right before each call.
 
 | Option | Default | |
 | --- | --- | --- |
