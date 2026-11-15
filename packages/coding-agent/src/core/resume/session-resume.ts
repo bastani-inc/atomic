@@ -39,6 +39,7 @@ import {
 import { sameRemote } from "../worktree-snapshot/repository-identity.ts";
 import {
 	defaultWorktreeSnapshotStoreDir,
+	pendingLfsDownload,
 	type VerifyWorktreeOptions,
 	verifyWorktree,
 } from "../worktree-snapshot/restore.ts";
@@ -71,6 +72,7 @@ import {
 } from "./blueprint/resume.ts";
 import { isResumePreconditionError, type ResumeEntryPoint } from "./errors.ts";
 import { isResumeFailure } from "./failure.ts";
+import { LfsDownloads } from "./lfs-downloads.ts";
 import { isInside } from "./path-mapping.ts";
 import { defaultResumePreflightIo, type ResumePreflightIo } from "./preflight.ts";
 import { formatResumeTimings, type ResumeTimings, ResumeTimingsRecorder, recordResumeTimings } from "./timings.ts";
@@ -381,8 +383,9 @@ export async function prepareSessionResume(
 	const buildSettled = async (session: SessionManager): Promise<void> => {
 		const atReady = await recordedAtReady;
 		if (atReady === undefined) return;
-		const { blueprint, blueprintReadyMs } = timings.finish();
-		const recorded = { ...atReady, blueprint, blueprintReadyMs };
+		// The restores too: an LFS download behind the first turn ends after it (#5099).
+		const { restores, blueprint, blueprintReadyMs } = timings.finish();
+		const recorded = { ...atReady, restores, blueprint, blueprintReadyMs };
 		recordTimingLines(formatResumeTimings(recorded), "resume");
 		// The isolated engine has the session open by now, so it records them.
 		if (blueprintBuildShared(session.getSessionId())) handOverBuildTimings(session.getSessionId(), recorded);
@@ -520,7 +523,9 @@ async function prepareResume(
 	const plan = planRestores(candidates, git?.unavailable);
 	notices.push(...plan.left.values());
 	const recordedBefore = sessionManager.getWorktreeRootMappings().length;
-	const resumed = await restorePlanned(sessionManager, plan, reused, storeDir, resume);
+	// Each fresh worktree's LFS download runs behind the other restores and the builds; its own build waits (#5099).
+	const lfs = new LfsDownloads();
+	const resumed = await restorePlanned(sessionManager, plan, reused, storeDir, resume, lfs);
 	const cwd = resumed.cwd ?? mapRestoredPath(sessionManager.getCwd(), sessionManager.getWorktreeRootMappings());
 	const opened = await openResumedSession(
 		sessionManager,
@@ -561,7 +566,13 @@ async function prepareResume(
 		const stopping = new AbortController();
 		const signal =
 			options.signal === undefined ? stopping.signal : AbortSignal.any([options.signal, stopping.signal]);
-		const building = setUpCheckoutBlueprints(opened.sessionManager, restoredNow, storeDir, { ...options, signal });
+		const building = setUpCheckoutBlueprints(
+			opened.sessionManager,
+			restoredNow,
+			storeDir,
+			{ ...options, signal },
+			lfs,
+		);
 		const result = building.then(
 			async (blueprints): Promise<BlueprintBuildResult> => {
 				await buildSettled(opened.sessionManager);
@@ -590,7 +601,7 @@ async function prepareResume(
 	if (restoredNow.size > 0 && options.blueprints !== "skip") {
 		options.onProgress?.("Setting up the blueprints of restored worktrees");
 	}
-	const blueprints = await setUpCheckoutBlueprints(opened.sessionManager, restoredNow, storeDir, options);
+	const blueprints = await setUpCheckoutBlueprints(opened.sessionManager, restoredNow, storeDir, options, lfs);
 	notices.push(...blueprints.notices);
 	await recordBlueprintContext(opened.sessionManager, blueprints.context);
 	return {
@@ -933,6 +944,7 @@ async function restorePlanned(
 	reused: WorktreeRootMapping | undefined,
 	storeDir: string,
 	options: PrepareSessionResumeOptions,
+	lfs: LfsDownloads,
 ): Promise<{
 	restored: WorktreeRootMapping[];
 	failed: ResumeNotice[];
@@ -977,6 +989,7 @@ async function restorePlanned(
 			fallbackCwd: options.launchCwd,
 			skipMissingRecords: true,
 			pool: options.pool ?? { maxIdlePerRepository: DEFAULT_MAX_IDLE_PER_REPOSITORY },
+			deferLfs: lfs.start,
 			beforeRecord,
 		});
 		for (const missing of resumed.missingRecords ?? []) {
@@ -1044,15 +1057,18 @@ async function setUpCheckoutBlueprints(
 	restoredNow: ReadonlySet<string>,
 	storeDir: string,
 	options: PrepareSessionResumeOptions,
+	lfs = new LfsDownloads(),
 ): Promise<ResumedBlueprints> {
-	if (options.blueprints === "skip") return SKIPPED_BLUEPRINTS;
+	// The warnings of LFS downloads that end after their restores were recorded come with the build's (#5099).
+	if (options.blueprints === "skip") return { ...SKIPPED_BLUEPRINTS, notices: await lfs.notices(restoredNow) };
 	const restoredHere: BlueprintCheckout[] = [];
 	const earlier: BlueprintCheckout[] = [];
 	const inPlace: BlueprintCheckout[] = [];
 	for (const [root, snapshot] of currentWorktreeSnapshots(sessionManager)) {
 		const checkout = checkoutOf(sessionManager, root, snapshot);
-		if (restoredNow.has(root)) restoredHere.push(checkout);
-		else if (isInside(storeDir, root)) earlier.push(checkout);
+		if (restoredNow.has(root)) restoredHere.push({ ...checkout, ready: lfs.ready(root) });
+		else if (isInside(storeDir, root))
+			earlier.push({ ...checkout, ready: finishPendingLfs(lfs, root, options.signal) });
 		else if (await isDirectory(root)) inPlace.push(checkout);
 	}
 	// A worktree this process is building already is joined, not built again (#4748): its tools wait for that build.
@@ -1094,9 +1110,10 @@ async function setUpCheckoutBlueprints(
 					signal: options.signal,
 				}),
 		);
-		if (lockWarnings.length === 0) return built;
+		// The warnings of LFS downloads that end after their restores were recorded come with the build's (#5099).
+		const downloads = await lfs.notices([...restoredHere, ...earlier].map((checkout) => checkout.root));
 		const warnings = lockWarnings.map((message) => ({ type: "warning" as const, message }));
-		return { ...built, notices: [...warnings, ...built.notices] };
+		return { ...built, notices: [...warnings, ...downloads, ...built.notices] };
 	} finally {
 		for (const root of claimed) if (buildsInProgress.get(root) === settled) buildsInProgress.delete(root);
 		settle(undefined);
@@ -1114,6 +1131,15 @@ function buildInProgress(root: string): Promise<undefined> | undefined {
 /** Whether a resume of `sessionManager` joins a blueprint build this process already runs in one of its worktrees. */
 function joinsBuildInProgress(sessionManager: SessionManager): boolean {
 	return [...currentWorktreeSnapshots(sessionManager).keys()].some((root) => buildInProgress(root) !== undefined);
+}
+
+/**
+ * Finishes the LFS download a resume interrupted, or another process still runs, in the restored worktree at `root`,
+ * if one is pending (#5099), so its blueprint runs on the files' content; settles once that is done.
+ */
+function finishPendingLfs(lfs: LfsDownloads, root: string, signal: AbortSignal | undefined): Promise<void> {
+	lfs.start(root, async () => (await (await pendingLfsDownload(root, { signal }))?.()) ?? []);
+	return lfs.ready(root);
 }
 
 /**

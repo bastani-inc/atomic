@@ -182,6 +182,60 @@ test("closing ends every concurrent transaction's retry wait at once (#4793)", a
 	}
 });
 
+test("a pipelined driver gets a transaction's calls before their answers, and its commit behind them (#5102)", async () => {
+	const { driver, events, release } = gatedDriver({ concurrentTransactions: true, pipelinedTransactions: true });
+	const database = createSqliteDatabase(driver);
+	let answers: Promise<unknown[]> | undefined;
+	const done = database.transaction(
+		async (tx) => {
+			answers = Promise.all([tx.all("wait"), tx.all("second")]);
+		},
+		{ concurrency: { kind: "fenced", audit: AUDITED } },
+	);
+	await settle();
+	// Both statements and the commit went out while the first still waits for its answer.
+	assert.deepEqual(events, ["begin fenced", "tx wait", "tx second", "commit fenced"]);
+	release();
+	await done;
+	assert.equal((await answers!).length, 2);
+	await database.close();
+});
+
+test("without pipelining, each call of a transaction waits for the one before, and the commit for all (#5102)", async () => {
+	const { driver, events, release } = gatedDriver({ concurrentTransactions: true });
+	const database = createSqliteDatabase(driver);
+	const done = database.transaction(
+		async (tx) => {
+			void Promise.all([tx.all("wait"), tx.all("second")]);
+		},
+		{ concurrency: { kind: "fenced", audit: AUDITED } },
+	);
+	await settle();
+	assert.deepEqual(events, ["begin fenced", "tx wait"]);
+	release();
+	await done;
+	assert.deepEqual(events, ["begin fenced", "tx wait", "tx second", "commit fenced"]);
+	await database.close();
+});
+
+test("a pipelined transaction whose callback fails rolls back once its calls settle (#5102)", async () => {
+	const { driver, events, release } = gatedDriver({ concurrentTransactions: true, pipelinedTransactions: true });
+	const database = createSqliteDatabase(driver);
+	const done = database.transaction(
+		async (tx) => {
+			void tx.all("wait").catch(() => {});
+			throw new Error("refused");
+		},
+		{ concurrency: { kind: "fenced", audit: AUDITED } },
+	);
+	await settle();
+	assert.deepEqual(events, ["begin fenced", "tx wait"]);
+	release();
+	await assert.rejects(done, /refused/);
+	assert.deepEqual(events, ["begin fenced", "tx wait", "rollback fenced"]);
+	await database.close();
+});
+
 test("a live secret's name is left out of options even when an option shares it (#4793)", async () => {
 	const selection = {
 		kind: "adapter",

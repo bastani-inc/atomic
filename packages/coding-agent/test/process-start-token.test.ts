@@ -87,7 +87,9 @@ describe("the start of a process of this host (#5141)", () => {
 			await child.stop();
 			assert.equal(processStartToken(child.pid), start);
 			await new Promise((resolve) => setTimeout(resolve, 5_500));
-			assert.equal(processStartToken(child.pid), undefined);
+			// Read again, not the cached start: none, or, where Windows already gave the id to another process under load,
+			// that process's start, which differs.
+			assert.notEqual(processStartToken(child.pid), start);
 		},
 		60_000,
 	);

@@ -16,3 +16,15 @@ export const resumeLaunchCwd = Symbol("resume-launch-cwd");
  * in could not be restored (#4738): the run keeps it as its own, so a later resume restores that checkout again.
  */
 export const recordedInvocationCwd = Symbol("recorded-invocation-cwd");
+
+/**
+ * The claim a resume made on its run (#5149): the run is `running` under `modelOwner`. `run()` takes the run up only
+ * while it still is, and otherwise calls `onLost` and stops without changing it, so a write that landed after the
+ * claim (a pause, an answer, `resumable: false`) is kept.
+ */
+export const resumeClaim = Symbol("resume-claim");
+
+export interface ResumeClaim {
+	readonly modelOwner: string | undefined;
+	readonly onLost: () => void;
+}

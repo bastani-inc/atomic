@@ -72,12 +72,14 @@ export type FencedPathId = string & { readonly __atomicFencedPath: true };
  * `serial`: the body runs as if it were the only writer of `domain`, or of the whole database when `domain` is absent:
  * `BEGIN IMMEDIATE` on SQLite, `BEGIN` plus that domain's transaction advisory lock on Postgres. Several prefixes may
  * share one database, so `domain` names the scope in full: a store passes one of its prefixed table names.
- * `fenced`: the body runs under READ COMMITTED and takes the row locks it relies on itself
+ * `fenced`: the body runs under READ COMMITTED and takes the row locks it relies on itself. With `excludesSerial`, it
+ * also waits for and excludes `serial` transactions without a domain, as a `serial` transaction with a domain does,
+ * for a body whose check a whole-database writer (such as snapshot garbage collection) could otherwise race
  * (`StorageDialect.lockClause`); `audit` names the reviewed path. Identical to `serial` on SQLite.
  */
 export type TransactionConcurrency =
 	| { readonly kind: "serial"; readonly domain?: string }
-	| { readonly kind: "fenced"; readonly audit: FencedPathId };
+	| { readonly kind: "fenced"; readonly audit: FencedPathId; readonly excludesSerial?: boolean };
 
 /**
  * What a database's listening connection is doing: `listening`, notifications arrive; `connecting`, it is not known yet;

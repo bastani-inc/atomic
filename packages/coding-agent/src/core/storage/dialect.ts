@@ -3,8 +3,11 @@ import type { SqliteStatement } from "./database.js";
 /** The database engines a store's SQL is written for. */
 export type StorageDialectName = "sqlite" | "postgres";
 
-/** A row lock a `fenced` transaction takes on the rows it reads: see `StorageDialect.lockClause`. */
-export type StorageLockKind = "update" | "share" | "update-skip-locked";
+/**
+ * A row lock a `fenced` transaction takes on the rows it reads: see `StorageDialect.lockClause`. `key-share` excludes
+ * only deleting the row or locking it `update`, not an update of its other columns.
+ */
+export type StorageLockKind = "update" | "share" | "update-skip-locked" | "key-share";
 
 /** A JSON type, named as SQLite's `json_type` names it: see `StorageDialect.jsonHasType`. */
 export type StorageJsonType = "null" | "text" | "object" | "array";
@@ -308,6 +311,7 @@ const POSTGRES_LOCKS: Readonly<Record<StorageLockKind, string>> = {
 	update: " FOR UPDATE",
 	share: " FOR SHARE",
 	"update-skip-locked": " FOR UPDATE SKIP LOCKED",
+	"key-share": " FOR KEY SHARE",
 };
 
 /**
