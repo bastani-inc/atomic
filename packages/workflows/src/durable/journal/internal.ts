@@ -116,6 +116,8 @@ export interface SqlPoolStorage {
 	readonly tables: Readonly<{ runs: string; events: string; leases: string }>;
 	/** The journal database's snapshot blob table, which the work a pool queues carries snapshots of (#5077). */
 	readonly snapshotBlobs?: SqlSnapshotBlobStore;
+	/** The database's adapter, as its descriptor names it, such as `"libsql"` or `"postgres"`. */
+	readonly adapter: string;
 }
 
 /** The storage errors that say the store did not take a write, rather than that the write itself was refused. */

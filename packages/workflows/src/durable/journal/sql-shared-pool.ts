@@ -994,6 +994,7 @@ async function fleetStatus(
 		store: classifySharedStoreHealth({
 			...(writes === undefined ? {} : { writes }),
 			hostsRegistered: Number(row.hosts) > 0,
+			adapter: storage.adapter,
 		}),
 		queue: { roots: Number(row.roots), ready: Number(row.ready), leased: Number(row.leased) },
 	};
@@ -1119,6 +1120,7 @@ export async function readSharedPoolFleet(
 			...(writes === undefined ? {} : { writes }),
 			hostsRegistered: hosts.length > 0,
 			probe,
+			adapter: storage.adapter,
 		}),
 	};
 	return { hosts, roots: roots.map((root) => ({ ...root, fleet })), fleet };

@@ -1,4 +1,4 @@
-import type { Api, Model } from "@bastani/pi-ai";
+import { type Api, getServiceTierCost, type Model, type ModelCost } from "@bastani/pi-ai";
 import { type Static, Type } from "typebox";
 import { Compile } from "typebox/compile";
 
@@ -84,22 +84,30 @@ export function setsProviders(constraints: ModelConstraints | undefined): boolea
 	return constraints?.allowedProviders !== undefined || constraints?.excludedProviders !== undefined;
 }
 
+/** The rates a model is billed at: a derived fast route's service tier when it has a published price, else its catalog rates. */
+export function billedModelCost(model: Model<Api>): ModelCost {
+	return (model.fastRoute?.serviceTier && getServiceTierCost(model, model.fastRoute.serviceTier)) || model.cost;
+}
+
 /** Every applicable declaration must hold; a caller never widens a definition restriction. */
 export function eligiblePair(
 	model: Model<Api>,
 	pair: ModelRouterOutput,
 	constraints: readonly ModelConstraints[],
 ): boolean {
+	// Only a cost limit reads the price, so a model without catalog pricing still passes every other constraint.
+	const billedRates = () => {
+		const cost = billedModelCost(model);
+		return [cost, ...(cost.tiers ?? [])];
+	};
 	return constraints.every(
 		(c) =>
 			(c.allowedModels === undefined || c.allowedModels.includes(pair.model)) &&
 			(c.allowedProviders === undefined || c.allowedProviders.includes(model.provider)) &&
 			!c.excludedProviders?.includes(model.provider) &&
 			(c.allowedEfforts === undefined || c.allowedEfforts.some((e) => e === pair.effort)) &&
-			(c.maxInputCost === undefined ||
-				[model.cost, ...(model.cost.tiers ?? [])].every((rate) => rate.input <= c.maxInputCost!)) &&
-			(c.maxOutputCost === undefined ||
-				[model.cost, ...(model.cost.tiers ?? [])].every((rate) => rate.output <= c.maxOutputCost!)) &&
+			(c.maxInputCost === undefined || billedRates().every((rate) => rate.input <= c.maxInputCost!)) &&
+			(c.maxOutputCost === undefined || billedRates().every((rate) => rate.output <= c.maxOutputCost!)) &&
 			(c.minContextWindow === undefined || model.contextWindow >= c.minContextWindow) &&
 			(c.requiredInputs === undefined || c.requiredInputs.every((input) => model.input.includes(input))),
 	);
