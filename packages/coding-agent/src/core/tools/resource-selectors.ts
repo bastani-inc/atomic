@@ -1057,15 +1057,15 @@ function sqliteRowKey(db: SqliteDatabase, table: string): string[] {
  * `'2'`: such a column binds a canonical number as a number.
  */
 function sqliteSingleKeyValue(db: SqliteDatabase, table: string, column: string, rowId: string): SqliteValue {
-	if (column === "rowid" || !/^-?(?:0|[1-9]\d*)(?:\.\d+)?$/.test(rowId)) return rowId;
-	const declared = (
-		db.query(`pragma table_info(${quoteSqliteIdent(table)})`).all() as Array<{ name: string; type: string }>
-	).find((row) => row.name === column)?.type;
-	const type = (declared ?? "").toUpperCase();
-	const noAffinity = type === "" || (type.includes("BLOB") && !/INT|CHAR|CLOB|TEXT/.test(type));
-	if (!noAffinity) return rowId;
 	const value = Number(rowId);
-	return Number.isSafeInteger(value) || !Number.isInteger(value) ? value : rowId;
+	if (!Number.isFinite(value) || String(value) !== rowId) return rowId;
+	const type = (
+		(db.query(`pragma table_info(${quoteSqliteIdent(table)})`).all() as Array<{ name: string; type: string }>).find(
+			(row) => row.name === column,
+		)?.type ?? ""
+	).toUpperCase();
+	// SQLite's affinity rules: INT, then CHAR/CLOB/TEXT, then BLOB or no type, which is the only one without affinity.
+	return !/INT|CHAR|CLOB|TEXT/.test(type) && (type === "" || type.includes("BLOB")) ? value : rowId;
 }
 /**
  * Bind values for a row selector. A single-column key takes the selector text as its value; a composite key takes a
@@ -1201,7 +1201,7 @@ function stripJson5Comments(input: string): string {
 	}
 	return out;
 }
-const LOOSE_JSON_NUMBER = /-?(?:0[xX][\da-fA-F]+|[\d.]+(?:[eE][+-]?\d+)?)/y;
+const LOOSE_JSON_NUMBER = /0[xX][\da-fA-F]+|[\d.]+(?:[eE][+-]?\d+)?/y;
 const LOOSE_JSON_WORD = /[\w$]+/y;
 const LOOSE_JSON_KEY_COLON = /\s*:/y;
 /**
@@ -1217,7 +1217,7 @@ function looseJsonToJson(input: string): string {
 			let j = i + 1;
 			for (; j < input.length && input[j] !== ch; j++) {
 				const c = input[j] as string;
-				if (c === "\\" && j + 1 < input.length) {
+				if (c === "\\") {
 					const escaped = input[++j] as string;
 					body += escaped === "'" ? "'" : `\\${escaped}`;
 				} else body += c === '"' ? '\\"' : c;
@@ -1226,18 +1226,18 @@ function looseJsonToJson(input: string): string {
 			i = j;
 			continue;
 		}
-		if (ch === "+" && /[\d.]/.test(input[i + 1] ?? "")) continue;
-		if (/[\d.]/.test(ch) || (ch === "-" && /[\d.]/.test(input[i + 1] ?? ""))) {
+		// A `+` outside a string can only be a number sign; JSON has none.
+		if (ch === "+") continue;
+		if (/[\d.]/.test(ch)) {
 			LOOSE_JSON_NUMBER.lastIndex = i;
-			const number = LOOSE_JSON_NUMBER.exec(input)?.[0] ?? ch;
-			const hex = /^(-?)0[xX]([\da-fA-F]+)$/.exec(number);
-			out += hex ? `${hex[1]}${Number.parseInt(hex[2] as string, 16)}` : number;
+			const number = (LOOSE_JSON_NUMBER.exec(input) as RegExpExecArray)[0];
+			out += /[xX]/.test(number) ? String(Number(number)) : number;
 			i += number.length - 1;
 			continue;
 		}
 		if (/[A-Za-z_$]/.test(ch)) {
 			LOOSE_JSON_WORD.lastIndex = i;
-			const word = LOOSE_JSON_WORD.exec(input)?.[0] ?? ch;
+			const word = (LOOSE_JSON_WORD.exec(input) as RegExpExecArray)[0];
 			LOOSE_JSON_KEY_COLON.lastIndex = i + word.length;
 			out += LOOSE_JSON_KEY_COLON.test(input) ? JSON.stringify(word) : word;
 			i += word.length - 1;

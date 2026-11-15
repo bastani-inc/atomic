@@ -38,7 +38,7 @@ const NEWLINE = 0x0a;
 function splitByteLines(bytes: Buffer): Buffer[] {
 	const lines: Buffer[] = [];
 	let from = 0;
-	for (let at = bytes.indexOf(NEWLINE); at >= 0; at = bytes.indexOf(NEWLINE, from)) {
+	for (let at = bytes.indexOf(NEWLINE); at !== -1; at = bytes.indexOf(NEWLINE, from)) {
 		lines.push(bytes.subarray(from, at));
 		from = at + 1;
 	}
@@ -60,19 +60,19 @@ function conflictReplacement(content: string, block: ConflictBlock, region: Buff
 	const unified = content.replace(/\r\n/g, "\n");
 	const normalized = unified.endsWith("\n") ? unified.slice(0, -1) : unified;
 	if (normalized === "") return [];
-	const crlf = block.lines[0]?.endsWith("\r") === true;
-	const lastEnding = block.lines.at(-1)?.endsWith("\r") === true ? "\r" : "";
+	const crlf = (block.lines[0] as string).endsWith("\r");
+	const lastEnding = (block.lines.at(-1) as string).endsWith("\r") ? "\r" : "";
 	const lines = normalized.split("\n");
 	return lines.map((line, index) =>
-		Buffer.from(`${line}${index === lines.length - 1 ? lastEnding : crlf ? "\r" : ""}`, "utf8"),
+		Buffer.from(`${line}${index === lines.length - 1 ? lastEnding : crlf ? "\r" : ""}`),
 	);
 }
 
 const utf8 = new TextDecoder("utf-8", { fatal: true });
 
 /**
- * Splice each region's replacement into its file's bytes, leaving every other byte as it was. Every region is checked
- * before any file is written: its bytes must be UTF-8 and still read exactly as when it was listed.
+ * Splice each region's replacement into its file's bytes, leaving every other byte as it was. Every region's bytes
+ * must be UTF-8; they are checked before any file is written.
  */
 async function resolveConflictBlocks(
 	blocks: ConflictBlock[],
@@ -87,9 +87,8 @@ async function resolveConflictBlocks(
 		const lines = splitByteLines(await fsReadFile(file));
 		for (const block of fileBlocks.sort((a, b) => b.start - a.start)) {
 			const region = lines.slice(block.start, block.end + 1);
-			let text: string[];
 			try {
-				text = region.map((line) => utf8.decode(line));
+				for (const line of region) utf8.decode(line);
 			} catch (error: unknown) {
 				throw new WriteSelectorError(
 					"conflict-not-utf8",
@@ -98,12 +97,6 @@ async function resolveConflictBlocks(
 					{ cause: error },
 				);
 			}
-			if (text.join("\n") !== block.lines.join("\n"))
-				throw new WriteSelectorError(
-					"conflict-stale",
-					`Conflict in ${file} changed since it was read. No file was changed.`,
-					{ path },
-				);
 			lines.splice(block.start, region.length, ...conflictReplacement(content, block, region));
 		}
 		updates.push({
@@ -131,8 +124,14 @@ async function writeConflictSelector(path: string, content: string, cwd: string)
 			"Scoped conflict resources are read-only; write conflict://<id> or conflict://*.",
 			{ path },
 		);
+	if (target !== "*" && !/^\d+$/.test(target))
+		throw new WriteSelectorError(
+			"conflict-target-invalid",
+			"Conflict writes must target conflict://<id> or conflict://*.",
+			{ path, conflictId: target },
+		);
 	const entries = await conflictEntries(cwd);
-	const entry = /^\d+$/.test(target) ? entries[Number.parseInt(target, 10) - 1] : undefined;
+	const entry = entries[Number(target) - 1];
 	if (entry?.stale)
 		throw new WriteSelectorError(
 			"conflict-stale",
@@ -147,12 +146,6 @@ async function writeConflictSelector(path: string, content: string, cwd: string)
 		const text = `Resolved ${blocks.length} conflict${blocks.length === 1 ? "" : "s"}`;
 		return { content: [{ type: "text", text }], details: undefined };
 	}
-	if (!/^\d+$/.test(target))
-		throw new WriteSelectorError(
-			"conflict-target-invalid",
-			"Conflict writes must target conflict://<id> or conflict://*.",
-			{ path, conflictId: target },
-		);
 	if (!entry)
 		throw new WriteSelectorError("conflict-id-not-found", `Conflict id not found: ${target}`, {
 			path,

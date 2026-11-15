@@ -328,33 +328,24 @@ function archiveSelectorMemberExists(pathValue: string, cwd: string): boolean {
 }
 /**
  * Whether `pathValue` names an existing file or directory as written. Such a path is read by its full name, so
- * `notes:0` or `build:12` reads that file rather than parsing `:0` or `:12` as a line selector.
+ * `notes:0` or `build:12` reads that file rather than parsing `:0` or `:12` as a line selector. Custom operations
+ * without `stat` cannot tell an existing path from one they would serve anyway, so they keep selector parsing.
  */
 async function isExistingLiteralPath(pathValue: string, cwd: string, ops: ReadOperations): Promise<boolean> {
-	if (!pathValue.includes(":") || isUrlLike(pathValue)) return false;
-	// Custom operations without `stat` cannot tell an existing path from one they would serve anyway.
 	const stat = ops.stat ?? (ops === defaultReadOperations ? localStat : undefined);
-	if (!stat) return false;
-	try {
-		const found = await stat(await resolveReadPathAsync(pathValue, cwd));
-		return found?.isFile === true || found?.isDirectory === true;
-	} catch {
-		return false;
-	}
+	if (!stat || isUrlLike(pathValue)) return false;
+	const absolute = await resolveReadPathAsync(pathValue, cwd);
+	return (await stat(absolute).catch(() => undefined)) !== undefined;
 }
 /**
- * The selector of a SQLite row path. A row id such as `2024-01-05`, `3-1` or `1.5` is not a line range, so when line
- * parsing refuses it the whole path is the row selector, with only its `:raw` and `:conflicts` markers peeled.
+ * The line selector of `pathValue`, or `whole` when line parsing refuses it: a SQLite row id such as `2024-01-05`,
+ * `3-1` or `1.5`, or a file name read in full, is not a line range.
  */
-function splitRowSelector(pathValue: string): ReadLineSelector {
+function splitSelectorOr(pathValue: string, whole: string): ReadLineSelector {
 	try {
 		return splitReadLineSelector(pathValue);
 	} catch {
-		return {
-			path: pathValue.replace(/:raw(?=(:|$))/g, "").replace(/:conflicts(?=(:|$))/g, ""),
-			raw: /:raw(?=(:|$))/.test(pathValue),
-			conflicts: /:conflicts(?=(:|$))/.test(pathValue),
-		};
+		return { path: whole };
 	}
 }
 function appendReadSelectors(pathValue: string, selector: ReadLineSelector): string {
@@ -388,25 +379,21 @@ export function createReadToolDefinition(
 			const markerless = path.replace(/:raw(?=(:|$))/g, "").replace(/:conflicts(?=(:|$))/g, ""),
 				sqliteOriginal = sqliteSelectorForPath(markerless, executionCwd),
 				sqliteDirect = sqliteSelectorForPath(path, executionCwd),
-				literalPath = await isExistingLiteralPath(path, executionCwd, ops);
-			const splitSelector: ReadLineSelector = literalPath
+				literalPath = await isExistingLiteralPath(path, executionCwd, ops),
+				splitSelector =
+					literalPath || sqliteOriginal?.rowId ? splitSelectorOr(path, markerless) : splitReadLineSelector(path);
+			const wholePath = literalPath || archiveSelectorMemberExists(path, executionCwd);
+			const selector = wholePath
 				? { path }
-				: sqliteOriginal?.rowId
-					? splitRowSelector(path)
-					: splitReadLineSelector(path);
-			const selector = literalPath
-				? { path }
-				: archiveSelectorMemberExists(path, executionCwd)
+				: sqliteDirect && (sqliteDirect.table === "raw" || sqliteDirect.table === "conflicts")
 					? { path }
-					: sqliteDirect && (sqliteDirect.table === "raw" || sqliteDirect.table === "conflicts")
-						? { path }
-						: sqliteOriginal?.rowId && splitSelector.path !== markerless
+					: sqliteOriginal?.rowId && splitSelector.path !== markerless
+						? { path: markerless, raw: splitSelector.raw, conflicts: splitSelector.conflicts }
+						: sqliteOriginal && splitSelector.path === markerless && markerless !== path
 							? { path: markerless, raw: splitSelector.raw, conflicts: splitSelector.conflicts }
-							: sqliteOriginal && splitSelector.path === markerless && markerless !== path
-								? { path: markerless, raw: splitSelector.raw, conflicts: splitSelector.conflicts }
-								: splitSelector.path === path && sqliteDirect
-									? { path }
-									: splitSelector;
+							: splitSelector.path === path && sqliteDirect
+								? { path }
+								: splitSelector;
 			const effectivePath = selector.path;
 			const effectiveOffset = selector.offset;
 			const effectiveLimit = selector.limit;

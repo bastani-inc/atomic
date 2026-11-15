@@ -85,7 +85,7 @@ export function parseConflictBytes(file: string, bytes: Buffer): ConflictBlock[]
 }
 
 async function readConflictFile(file: string): Promise<ConflictBlock[]> {
-	return parseConflictBytes(file, await fsReadFile(file)).slice(0, MAX_CONFLICT_BLOCKS);
+	return parseConflictBytes(file, await fsReadFile(file));
 }
 
 /**
@@ -103,7 +103,7 @@ export function registerConflictBlocks(cwd: string, file: string, blocks: Confli
 /** Re-read `file` and record its current conflict regions, after a write changed it. */
 export async function refreshConflictFile(cwd: string, file: string): Promise<void> {
 	if (!conflictRegistry.get(cwd)?.some((block) => block.file === file)) return;
-	registerConflictBlocks(cwd, file, await readConflictFile(file).catch(() => []));
+	registerConflictBlocks(cwd, file, await readConflictFile(file));
 }
 
 function sameBlock(a: ConflictBlock, b: ConflictBlock): boolean {
@@ -123,10 +123,9 @@ async function addIgnoreRules(matcher: IgnoreMatcher, dir: string, root: string)
 			const negated = line.startsWith("!");
 			const pattern = negated ? line.slice(1) : line;
 			const anchored = pattern.replace(/^\//, "");
-			// A pattern without an inner slash matches at any depth below its directory.
-			const scoped = !prefix
-				? anchored
-				: pattern.startsWith("/") || anchored.replace(/\/$/, "").includes("/")
+			// A pattern without an inner slash matches at any depth below its directory; `/x` is `x` at the root.
+			const scoped =
+				pattern.startsWith("/") || anchored.replace(/\/$/, "").includes("/")
 					? `${prefix}/${anchored}`
 					: `${prefix}/**/${anchored}`;
 			matcher.add(negated ? `!${scoped}` : scoped);
@@ -145,7 +144,7 @@ export async function findConflictBlocks(root: string, limit = MAX_CONFLICT_BLOC
 	async function walk(dir: string): Promise<void> {
 		await addIgnoreRules(matcher, dir, root);
 		const entries = await fsReaddir(dir, { withFileTypes: true }).catch(() => []);
-		for (const entry of entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
+		for (const entry of entries) {
 			if (out.length >= limit || scanned >= MAX_SCANNED_FILES) return;
 			if (entry.name === ".git" || entry.name === "node_modules") continue;
 			const full = join(dir, entry.name);
@@ -178,9 +177,8 @@ export async function conflictEntries(cwd: string): Promise<ConflictEntry[]> {
 		block,
 		stale: !(current.get(block.file) ?? []).some((live) => sameBlock(live, block)),
 	}));
-	const listed = entries.filter((entry) => !entry.stale).map((entry) => entry.block);
 	for (const block of await findConflictBlocks(cwd))
-		if (!listed.some((seen) => sameBlock(seen, block))) entries.push({ block, stale: false });
+		if (!registered.some((seen) => sameBlock(seen, block))) entries.push({ block, stale: false });
 	return entries;
 }
 
@@ -202,25 +200,24 @@ export async function readConflictUrl(url: string, cwd: string): Promise<string>
 			"conflict:// target is required: conflict://<id>, conflict://<id>/ours|theirs|base or conflict://*",
 		);
 	const [id = "", side, ...extra] = target.split("/");
+	if (id !== "*" && !/^\d+$/.test(id)) throw new Error("Conflict reads must target conflict://<id> or conflict://*.");
+	if (id === "*" && side !== undefined) throw new Error("conflict://* does not take a side.");
 	const entries = await conflictEntries(cwd);
-	const entry = /^\d+$/.test(id) ? entries[Number.parseInt(id, 10) - 1] : undefined;
-	if (entry?.stale) throw new Error(`Conflict ${id} changed since it was read; read conflict://* or the file again.`);
+	const index = Number(id) - 1;
+	if (entries[index]?.stale)
+		throw new Error(`Conflict ${id} changed since it was read; read conflict://* or the file again.`);
 	if (!entries.some((candidate) => !candidate.stale)) throw new Error("No conflict markers found.");
-	const describe = (block: ConflictBlock, index: number): string[] => [
-		`# conflict://${index + 1} ${relative(cwd, block.file)}:${block.start + 1}-${block.end + 1}`,
+	const describe = (block: ConflictBlock, at: number): string[] => [
+		`# conflict://${at + 1} ${relative(cwd, block.file)}:${block.start + 1}-${block.end + 1}`,
 		...conflictSection("ours", block.ours),
 		...conflictSection("theirs", block.theirs),
 		...(block.baseSep === undefined ? [] : conflictSection("base", block.base)),
 	];
-	if (id === "*") {
-		if (side !== undefined) throw new Error("conflict://* does not take a side.");
-		return entries
-			.flatMap((candidate, index) => (candidate.stale ? [] : describe(candidate.block, index)))
-			.join("\n");
-	}
-	if (!/^\d+$/.test(id)) throw new Error("Conflict reads must target conflict://<id> or conflict://*.");
+	if (id === "*")
+		return entries.flatMap((candidate, at) => (candidate.stale ? [] : describe(candidate.block, at))).join("\n");
+	const entry = entries[index];
 	if (!entry) throw new Error(`Conflict id not found: ${id}`);
-	if (side === undefined) return describe(entry.block, Number.parseInt(id, 10) - 1).join("\n");
+	if (side === undefined) return describe(entry.block, index).join("\n");
 	if (extra.length > 0 || !CONFLICT_SIDES.includes(side as ConflictSide))
 		throw new Error(`Unknown conflict side: ${side}; use ours, theirs or base.`);
 	return entry.block[side as ConflictSide].join("\n");
