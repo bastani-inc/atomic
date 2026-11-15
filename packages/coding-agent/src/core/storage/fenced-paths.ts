@@ -47,6 +47,14 @@ const FENCED_PATHS = {
 		],
 		conformance: "many hosts claim, commit and complete concurrently: no double claim, no lost settle (#5102)",
 	},
+	/**
+	 * `SqlRateBuckets.acquire` and `cooldown`: one `UPDATE … RETURNING` (or upsert) of the scope's bucket row, which locks
+	 * no pool row, so it orders after none of them (#4768).
+	 */
+	"rate-bucket": {
+		fences: ["the scope's rate bucket row, by its own UPDATE"],
+		conformance: "many hosts acquire from one rate bucket concurrently and never take more than it allows (#4768)",
+	},
 } as const satisfies Readonly<Record<string, FencedPathAudit>>;
 
 export type FencedPathName = keyof typeof FENCED_PATHS;

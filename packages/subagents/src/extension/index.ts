@@ -144,7 +144,7 @@ import {
 	SUBAGENT_CONTROL_MESSAGE_TYPE,
 	type SubagentControlMessageDetails,
 } from "./control-notices.js";
-import { createSubagentStartupMaintenance } from "./startup-maintenance.js";
+import { claimStartupCleanup, createSubagentStartupMaintenance } from "./startup-maintenance.js";
 
 export { loadConfig } from "./config.js";
 
@@ -295,8 +295,14 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		const maintenance = createSubagentStartupMaintenance(state, {
 			artifactCleanupDays: DEFAULT_ARTIFACT_CONFIG.cleanupDays,
 		});
-		maintenance.scheduleStartupCleanup();
-		registrationFailureCleanups.push(() => maintenance.stop());
+		// Scheduled by the first session that starts, never by a subagent child or an instance that never starts (#5186).
+		let releaseStartupCleanup: (() => void) | undefined;
+		const stopMaintenance = () => {
+			maintenance.stop();
+			releaseStartupCleanup?.();
+			releaseStartupCleanup = undefined;
+		};
+		registrationFailureCleanups.push(stopMaintenance);
 		const executorDeps = {
 			pi,
 			state,
@@ -447,7 +453,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			const cleanupSteps: Array<() => void> = [
 				...eventUnsubscribes,
 				notifyCleanup,
-				() => maintenance.stop(),
+				stopMaintenance,
 				() => stopResultAnimations(),
 				() => clearPendingForegroundControlNotices(state),
 				() => childExecutors.clear(),
@@ -483,6 +489,8 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		let stopReleasedChildWakes: (() => void) | undefined;
 		pi.on("session_start", (event, ctx) => {
 			if (!lifecycle.isCurrent()) return;
+			if (releaseStartupCleanup === undefined && !isSubagentChildSession(ctx))
+				releaseStartupCleanup = claimStartupCleanup(maintenance);
 			resetSessionState(ctx);
 			stopReleasedChildWakes?.();
 			stopReleasedChildWakes = undefined;

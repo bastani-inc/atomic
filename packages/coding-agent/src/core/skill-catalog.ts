@@ -6,6 +6,7 @@ import { canonicalizePath } from "../utils/paths.ts";
 import type { ResourceDiagnostic } from "./diagnostics.ts";
 import type { ResourceLoader } from "./resource-loader-types.ts";
 import type { Skill } from "./skills.ts";
+import { parseSlashCommand } from "./slash-commands.js";
 
 export interface SkillCandidate {
 	readonly id: string;
@@ -321,9 +322,9 @@ export function expandSkillCommand(
 ): string {
 	if (!text.startsWith("/skill:")) return text;
 
-	const spaceIndex = text.indexOf(" ");
-	const selector = spaceIndex === -1 ? text.slice(7) : text.slice(7, spaceIndex);
-	const args = spaceIndex === -1 ? "" : text.slice(spaceIndex + 1).trim();
+	const command = parseSlashCommand(text);
+	const selector = command.name.slice("skill:".length);
+	const args = command.args.trim();
 	const resolution = catalog.resolve(selector);
 	if (!resolution.ok) {
 		if (selector.includes("@")) onError({ path: `skill:${selector}`, message: resolution.message });

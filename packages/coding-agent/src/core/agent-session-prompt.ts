@@ -42,6 +42,7 @@ import {
 	trackSessionWork,
 } from "./session-lifecycle-work.ts";
 import { expandSkillCommand, getSkillCatalog } from "./skill-catalog.ts";
+import { parseSlashCommand } from "./slash-commands.js";
 import { ToolDetachmentError } from "./tool-detachment-errors.ts";
 
 const customPreparations = new WeakMap<AgentSession, Promise<void>>();
@@ -269,8 +270,7 @@ function isSessionClosed(error: unknown): boolean {
 
 function isExtensionCommand(session: AgentSession, text: string): boolean {
 	if (!text.startsWith("/")) return false;
-	const spaceIndex = text.indexOf(" ");
-	const commandName = spaceIndex === -1 ? text.slice(1) : text.slice(1, spaceIndex);
+	const commandName = parseSlashCommand(text).name;
 	return session._extensionRunner?.getCommand(commandName) !== undefined;
 }
 
@@ -1030,9 +1030,7 @@ async function answerAdmittedQueuedMessage(session: AgentSession): Promise<void>
 
 export async function _tryExecuteExtensionCommand(this: AgentSession, text: string): Promise<boolean> {
 	// Parse command name and args
-	const spaceIndex = text.indexOf(" ");
-	const commandName = spaceIndex === -1 ? text.slice(1) : text.slice(1, spaceIndex);
-	const args = spaceIndex === -1 ? "" : text.slice(spaceIndex + 1);
+	const { name: commandName, args } = parseSlashCommand(text);
 
 	const quitSignal = sessionQuitSignal(this);
 	const command = this._extensionRunner.getCommand(commandName, quitSignal);
