@@ -164,7 +164,14 @@ export async function blueprintCacheKeys(
 		const refusal = refuseBuild(setting.path);
 		if (refusal !== undefined) {
 			warnings.push(`cache path '${setting.path}' is omitted: ${refusal}`);
-		} else if (store !== undefined) {
+			continue;
+		}
+		if (await tracksFilesUnder(root, buildSegments(setting.path).join("/"))) {
+			warnings.push(
+				`cache path '${setting.path}' holds files Git tracks; only its untracked and ignored files are parked, and tracked files stay in the worktree`,
+			);
+		}
+		if (store !== undefined) {
 			builds.push({ ...member, path: join(seedDirectory(storeDir, repository), ...buildSegments(setting.path)) });
 		}
 	}
@@ -230,9 +237,11 @@ async function blueprintDigest(root: string, warnings: string[]): Promise<string
 function settingsCache(root: string, agentDir: string, warnings: string[]): readonly CacheSetting[] {
 	// The checkout is the project; its settings are read like its blueprint, and every path they name is checked below.
 	const settings = SettingsManager.create(root, agentDir);
-	for (const { path, error } of settings.drainErrors()) {
-		if (path !== undefined)
+	for (const { path, error, invalidKey } of settings.drainErrors()) {
+		if (path === undefined) continue;
+		if (invalidKey === undefined)
 			warnings.push(`${path} could not be read, so its resume.cache is ignored: ${error.message}`);
+		else if (invalidKey === "resume") warnings.push(`${path}: ${error.message}`);
 	}
 	return readCacheSetting(settings.getSettings().resume?.cache, warnings);
 }
@@ -339,6 +348,16 @@ async function checkoutRemotes(root: string): Promise<readonly string[]> {
 		return (await readRepositoryConfig(root)).remotes;
 	} catch {
 		return [];
+	}
+}
+
+/** Whether Git tracks a file at or under the root-relative `path` of the checkout at `root`; false when it cannot tell. */
+async function tracksFilesUnder(root: string, path: string): Promise<boolean> {
+	try {
+		const { stdout } = await runGit(["ls-files", "-z", "--", `:(literal)${path}`], { cwd: root });
+		return stdout.length > 0;
+	} catch {
+		return false;
 	}
 }
 

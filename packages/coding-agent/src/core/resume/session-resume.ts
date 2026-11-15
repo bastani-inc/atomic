@@ -35,6 +35,7 @@ import {
 	pooledWorktreeHolder,
 	type WorktreePoolSettings,
 } from "../worktree-snapshot/pool.ts";
+import { sameRemote } from "../worktree-snapshot/repository-identity.ts";
 import {
 	defaultWorktreeSnapshotStoreDir,
 	type VerifyWorktreeOptions,
@@ -211,7 +212,10 @@ async function reuseLaunchCheckout(
 	// A pooled worktree another session owns holds that session's work, even when it matches (#4748).
 	if (await pooledWorktreeOwnedElsewhere(resolveStoreDir(options), root, sessionId)) return undefined;
 	const { remotes } = await readRepositoryConfig(root, options.signal);
-	if (!remotes.some((remote) => match.snapshot.remotes.includes(remote))) return undefined;
+	// The same repository spelled another way, SSH or HTTPS, with or without `.git`, is still the session's (#4913).
+	if (!remotes.some((remote) => match.snapshot.remotes.some((recorded) => sameRemote(remote, recorded)))) {
+		return undefined;
+	}
 	let matches = true;
 	try {
 		await verifyWorktree(match.snapshot, root, { settings: options.settings, signal: options.signal });
