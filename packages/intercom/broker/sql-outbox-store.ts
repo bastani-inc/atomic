@@ -6,17 +6,21 @@ import {
 	type SqliteValue,
 	validateStoragePrefix,
 } from "@bastani/atomic/storage";
-import type {
-	ClaimedOutboxRow,
-	InvalidStateInput,
-	IntercomBrokerStateOptions,
-	OutboxClaim,
-	OutboxClaimWriteRejection,
-	OutboxFrame,
-	OutboxRow,
-	OutboxRowState,
-	OutboxStore,
-	StateStoreInvalidReason,
+import {
+	OUTBOX_CLAIM_STALE_AFTER_MS,
+	OUTBOX_EXPIRED_REASON,
+	OUTBOX_TARGET_MAX_BYTES,
+	OUTBOX_TARGET_MAX_ROWS,
+	type ClaimedOutboxRow,
+	type InvalidStateInput,
+	type IntercomBrokerStateOptions,
+	type OutboxClaim,
+	type OutboxClaimWriteRejection,
+	type OutboxFrame,
+	type OutboxRow,
+	type OutboxRowState,
+	type OutboxStore,
+	type StateStoreInvalidReason,
 } from "./multinode-state-store.js";
 import { addMissingColumns } from "./sql-add-column.js";
 
@@ -91,6 +95,8 @@ export async function openSqlOutboxStore(options: IntercomBrokerStateOptions): P
 	`);
 	// #3983: added later; a table from an older broker gets the column, and an older broker ignores it.
 	await addMissingColumns(database, table, { saving_at: types.int });
+	// #4896: when the row was queued and the size of its frame; rows an older broker wrote have neither.
+	await addMissingColumns(database, table, { queued_at: types.int, frame_bytes: types.int });
 
 	const columns = `sequence, message_id, target_identity, origin_broker_id, digest, frame_json, state,
 		claim_attempts, claimant_id, claim_token, failure_reason,
@@ -155,14 +161,28 @@ export async function openSqlOutboxStore(options: IntercomBrokerStateOptions): P
 						? ({ status: "duplicate", row: toRow(existing) } as const)
 						: ({ status: "conflict", messageId } as const);
 				}
+				const frameBytes = Buffer.byteLength(frameJson, "utf8");
+				const queued = await executor.get<{ row_count: SqliteValue; byte_count: SqliteValue }>(
+					`SELECT COUNT(*) AS row_count, COALESCE(SUM(COALESCE(frame_bytes, LENGTH(frame_json))), 0) AS byte_count
+					FROM ${table} WHERE target_identity = ? AND ${UNDELIVERED}`,
+					request.targetIdentity,
+				);
+				if (
+					Number(queued?.row_count ?? 0) >= OUTBOX_TARGET_MAX_ROWS ||
+					Number(queued?.byte_count ?? 0) + frameBytes > OUTBOX_TARGET_MAX_BYTES
+				) {
+					return { status: "full", limit: OUTBOX_TARGET_MAX_ROWS, byteLimit: OUTBOX_TARGET_MAX_BYTES } as const;
+				}
 				await executor.run(
-					`INSERT INTO ${table}(message_id, target_identity, origin_broker_id, digest, frame_json, state)
-					VALUES (?, ?, ?, ?, ?, 'queued')`,
+					`INSERT INTO ${table}(message_id, target_identity, origin_broker_id, digest, frame_json, state, queued_at,
+						frame_bytes)
+					VALUES (?, ?, ?, ?, ?, 'queued', ${nowMs}, ?)`,
 					messageId,
 					request.targetIdentity,
 					request.originBrokerId,
 					request.digest,
 					frameJson,
+					frameBytes,
 				);
 				return { status: "inserted", row: toRow((await select(executor, messageId))!) } as const;
 			});
@@ -256,7 +276,22 @@ export async function openSqlOutboxStore(options: IntercomBrokerStateOptions): P
 			return { status: "listed", rows: (await undelivered(database, targetIdentity)).map(toRow) };
 		},
 
-		async prune(settledOlderThanMs) {
+		async prune(settledOlderThanMs, queuedOlderThanMs) {
+			if (queuedOlderThanMs !== undefined) {
+				await database.transaction(async (executor) => {
+					// A row an older broker queued has no time: its retention starts now.
+					await executor.run(`UPDATE ${table} SET queued_at = ${nowMs} WHERE queued_at IS NULL AND ${UNDELIVERED}`);
+					await executor.run(
+						`UPDATE ${table} SET state = 'failed', failure_reason = ?, settled_at = ${nowMs},
+							claimant_id = NULL, claim_token = NULL, claim_renewed_at = NULL, saving_at = NULL
+						WHERE ${UNDELIVERED} AND ${ageSince("queued_at")} > ?
+							AND (claim_renewed_at IS NULL OR ${ageSince("claim_renewed_at")} > ?)`,
+						JSON.stringify(OUTBOX_EXPIRED_REASON),
+						queuedOlderThanMs,
+						OUTBOX_CLAIM_STALE_AFTER_MS,
+					);
+				});
+			}
 			const result = await database.run(
 				`DELETE FROM ${table}
 				WHERE state IN ('delivered', 'failed') AND ${ageSince("settled_at")} > ?`,

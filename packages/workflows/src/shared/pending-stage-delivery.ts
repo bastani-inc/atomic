@@ -17,6 +17,13 @@ export type {
 
 /** Maximum queued messages retained for one canonical workflow stage. */
 export const PENDING_STAGE_MESSAGE_LIMIT = 50;
+/**
+ * #4896: maximum queued messages one run holds over every stage and target path, including speculative future
+ * stages. Queued messages stay in the run's owner and its journal until delivered or until the run ends.
+ */
+export const PENDING_STAGE_RUN_MESSAGE_LIMIT = 1_000;
+/** #4896: maximum UTF-8 bytes of text and attachments one run's queued messages hold together. */
+export const PENDING_STAGE_RUN_MESSAGE_BYTES = 64 * 1024 * 1024;
 const PENDING_STAGE_UNDELIVERABLE_NOTIFICATION_PREFIX = "atomic-pending-stage-undeliverable";
 
 export class PendingStageMessageOrderError extends Error {
@@ -95,6 +102,7 @@ export function queueStageMessage(
 			stageKey: input.stageKey,
 		};
 	}
+	if (exceedsRunCapacity(messages, input)) return runCapacityRefusal(input.runId, input.stageKey);
 
 	const entry: PendingStageMessage = {
 		...input,
@@ -160,6 +168,7 @@ export function queueStickyStageMessage(
 			stageKey: input.targetPath,
 		};
 	}
+	if (exceedsRunCapacity(messages, input)) return runCapacityRefusal(input.runId, input.targetPath);
 
 	const entry: PendingStageMessage = {
 		...input,
@@ -178,6 +187,49 @@ export function queueStickyStageMessage(
 		position: queuedStickyCount(messages, input.runId, input.targetPath) + 1,
 		deduplicated: false,
 	};
+}
+
+/** Whether queueing `input` would take its run past the run-wide message or byte cap (#4896). */
+function exceedsRunCapacity(messages: readonly PendingStageMessage[], input: PendingStageMessageInput): boolean {
+	let count = 1;
+	let bytes = pendingStageMessageBytes(input.message);
+	for (const entry of messages) {
+		if (entry.runId !== input.runId || entry.status !== "queued") continue;
+		count += 1;
+		bytes += pendingStageMessageBytes(entry.message);
+	}
+	return count > PENDING_STAGE_RUN_MESSAGE_LIMIT || bytes > PENDING_STAGE_RUN_MESSAGE_BYTES;
+}
+
+function runCapacityRefusal(runId: string, stageKey: string): PendingStageQueueResult {
+	return {
+		ok: false,
+		reason: "run_capacity",
+		limit: PENDING_STAGE_RUN_MESSAGE_LIMIT,
+		byteLimit: PENDING_STAGE_RUN_MESSAGE_BYTES,
+		runId,
+		stageKey,
+	};
+}
+
+/** UTF-8 bytes of a queued message's text and attachments, as Intercom measures its message size limit. */
+function pendingStageMessageBytes(message: PendingStageMessageInput["message"]): number {
+	let bytes = Buffer.byteLength(message.content.text, "utf8");
+	for (const attachment of message.content.attachments ?? []) {
+		bytes += Buffer.byteLength(attachment.name, "utf8") + Buffer.byteLength(attachment.content, "utf8");
+		if (attachment.language !== undefined) bytes += Buffer.byteLength(attachment.language, "utf8");
+	}
+	return bytes;
+}
+
+/** The sender-facing reason for a refusal at the per-target or run-wide cap; `undefined` for any other refusal. */
+export function pendingStageQueueRefusal(
+	result: Extract<PendingStageQueueResult, { ok: false }>,
+	target: string,
+): string | undefined {
+	if (result.reason === "capacity") return `Pending stage message queue is full (limit ${result.limit}) for ${target}`;
+	if (result.reason !== "run_capacity") return undefined;
+	return `Workflow run ${result.runId} already holds the most queued stage messages it accepts (${result.limit} messages or ${result.byteLimit / (1024 * 1024)} MiB); the message to ${target} was not queued. Wait for queued messages to be delivered, or send to a running stage.`;
 }
 
 function queuedStickyCount(messages: readonly PendingStageMessage[], runId: string, targetPath: string): number {

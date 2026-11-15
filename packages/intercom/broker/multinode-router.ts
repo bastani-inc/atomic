@@ -305,6 +305,13 @@ interface RemoteTarget {
 	readonly hostBrokerId?: string;
 }
 
+/** #4896: why a send was refused because its recipient's undelivered outbox rows reached their cap. */
+function outboxFullReason(full: { readonly limit: number; readonly byteLimit: number }): string {
+	return `The recipient already has the most queued Intercom messages it accepts (${full.limit} messages or ${
+		full.byteLimit / (1024 * 1024)
+	} MiB); this message was not queued. Messages already queued for it are kept. Try again after it returns and receives them.`;
+}
+
 function queuedFrame(messageId: string, attemptId: string | undefined, position: number): BrokerOutboundFrame {
 	return {
 		type: "queued",
@@ -1088,6 +1095,11 @@ export class MultiNodeRouter {
 			this.fail(request, "Session not found");
 			return;
 		}
+		if (enqueued.status === "full") {
+			await this.reopenQuestion(decision);
+			this.fail(request, outboxFullReason(enqueued));
+			return;
+		}
 		await this.answerExistingRow(request, { ...owner, groups: new Set(), gates: {} }, digest, enqueued.row);
 	}
 
@@ -1310,6 +1322,11 @@ export class MultiNodeRouter {
 		}
 		if (enqueued.status === "invalid") {
 			this.fail(request, "Session not found");
+			return;
+		}
+		if (enqueued.status === "full") {
+			await this.state.sentMessages.forget({ messageId: message.id, digest });
+			this.fail(request, outboxFullReason(enqueued));
 			return;
 		}
 		await this.answerExistingRow(request, target, digest, enqueued.row);
@@ -2080,7 +2097,7 @@ export class MultiNodeRouter {
 				this.wakeWaitingChild(reservationKey).finally(() => this.pendingWakeChecks.delete(reservationKey)),
 			);
 		}
-		await this.state.outbox.prune(DELIVERED_MESSAGE_TTL_MS);
+		await this.state.outbox.prune(DELIVERED_MESSAGE_TTL_MS, KNOWN_SESSION_RETENTION_MS);
 		await this.state.sentMessages.prune(DELIVERED_MESSAGE_TTL_MS);
 		await this.state.reservations.prune(DELIVERED_MESSAGE_TTL_MS);
 		await this.state.releasedAsks.prune(DELIVERED_MESSAGE_TTL_MS);

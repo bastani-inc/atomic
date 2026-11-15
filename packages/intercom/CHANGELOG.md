@@ -7,6 +7,7 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 ### Fixed
 
 - Fixed a `workflow:` target with many `**` segments stalling the shared Intercom broker for every session on the machine: stage patterns now match in time proportional to pattern length times stage depth, and a `workflow:` target longer than 1024 characters or with more than 64 segments is refused with an error that states the limit ([#4843](https://github.com/bastani-inc/atomic/issues/4843))
+- Fixed Intercom messages and queues that could grow without bound: a message's text is limited to 1 MiB and its text plus attachments to 8 MiB, refused by both the `intercom` tool and the broker; with multi-node routing, one session can have at most 1,000 queued messages or 64 MiB waiting for it, and messages queued for a session that does not return within the 7-day known-session retention expire undelivered. A send past a limit is refused with an error that states it, and messages already queued are kept ([#4896](https://github.com/bastani-inc/atomic/issues/4896))
 
 ## [0.9.87] - 2026-11-14
 
