@@ -130,6 +130,8 @@ export class FleetController implements WorkflowFleetController {
 	private tickAbort = new AbortController();
 	/** When, by `Date.now()`, the lease was last taken or renewed, measured before the request. */
 	private renewedAt = 0;
+	/** Listings in a row that omitted each drained instance, by the drained host id (#4828). */
+	private missed = new Map<string, number>();
 	private stopping?: Promise<void>;
 	private settleClosed!: () => void;
 	readonly closed = new Promise<void>((resolve) => {
@@ -242,6 +244,7 @@ export class FleetController implements WorkflowFleetController {
 		if (this.epoch !== lease.epoch) {
 			// A controller that takes over plans afresh: the last holder's idle and boot timers were its own.
 			this.state = INITIAL_FLEET_STATE;
+			this.missed = new Map();
 			this.epoch = lease.epoch;
 			this.role = "active";
 			this.emit({ kind: "active", epoch: lease.epoch });
@@ -266,9 +269,7 @@ export class FleetController implements WorkflowFleetController {
 		try {
 			const listed = await this.call((signal) => this.options.provisioner.list(signal));
 			const snapshot = await store.snapshot();
-			// A drain lasts as long as its instance (#4803): once the provider no longer lists it, a new one may reuse its id.
-			for (const drain of snapshot.drains)
-				if (!listed.some((provided) => provided.id === drain.providerId)) await store.clearDrain(fence, drain.host);
+			await this.followDrains(fence, listed, snapshot);
 			const hosts = joinHosts(listed, snapshot);
 			const now = Date.now();
 			const plan = planFleet(
@@ -300,6 +301,34 @@ export class FleetController implements WorkflowFleetController {
 		} finally {
 			clearInterval(renewal);
 		}
+	}
+
+	/**
+	 * A drain lasts as long as its instance (#4803). Once {@link DRAIN_CLEAR_MISSED_LISTINGS} listings in a row omit the
+	 * instance, it is forgotten, since a new instance may reuse its id; one listing that omits it is not enough (#4828).
+	 * A host the provider lists on a drained instance under another host id is asked to drain too (#4828).
+	 */
+	private async followDrains(
+		fence: FleetFence,
+		listed: readonly ProvisionedHost[],
+		snapshot: FleetSnapshot,
+	): Promise<void> {
+		const store = this.store!;
+		const missed = new Map<string, number>();
+		for (const drain of snapshot.drains) {
+			if (listed.some((provided) => provided.id === drain.providerId)) continue;
+			const times = (this.missed.get(drain.host) ?? 0) + 1;
+			if (times >= DRAIN_CLEAR_MISSED_LISTINGS) await store.clearDrain(fence, drain.host);
+			else missed.set(drain.host, times);
+		}
+		this.missed = missed;
+		for (const provided of listed)
+			if (
+				provided.hostId !== undefined &&
+				snapshot.drains.some((drain) => drain.providerId === provided.id) &&
+				!snapshot.drains.some((drain) => drain.host === provided.hostId)
+			)
+				await store.carryDrain(fence, provided.hostId, provided.id);
 	}
 
 	/**
@@ -430,8 +459,16 @@ export interface JoinedHost {
  * The provider's hosts joined with the journal's registry: a registered host matches the provider host whose id it
  * reports (`ATOMIC_PROVIDER_ID`), or whose `hostId` the provider gives. A worker that restarted on the same instance
  * registered again under a new host id (#4803): the live one is its host, and the instance holds the children of all.
+ * A worker without a provider id that restarted under a host id the provider does not list matches no instance
+ * (#4828): its children count on every drained instance that has no live host, so none it may run on is removed.
  */
 export function joinHosts(listed: readonly ProvisionedHost[], snapshot: FleetSnapshot): JoinedHost[] {
+	const unclaimed = snapshot.hosts
+		.filter(
+			(host) =>
+				host.live && host.providerId === undefined && !listed.some((provided) => provided.hostId === host.host),
+		)
+		.reduce((total, host) => total + (snapshot.leased.get(host.host) ?? 0), 0);
 	return listed.map((provided) => {
 		const matching = snapshot.hosts.filter(
 			(host) => host.providerId === provided.id || (provided.hostId !== undefined && host.host === provided.hostId),
@@ -440,10 +477,11 @@ export function joinHosts(listed: readonly ProvisionedHost[], snapshot: FleetSna
 		const hostId = registered?.host ?? provided.hostId;
 		const holders = new Set(matching.map((host) => host.host));
 		if (hostId !== undefined) holders.add(hostId);
-		const leased = [...holders].reduce((total, host) => total + (snapshot.leased.get(host) ?? 0), 0);
 		const drainHosts = snapshot.drains
 			.filter((drain) => drain.providerId === provided.id || (hostId !== undefined && drain.host === hostId))
 			.map((drain) => drain.host);
+		const orphaned = drainHosts.length > 0 && registered?.live !== true ? unclaimed : 0;
+		const leased = [...holders].reduce((total, host) => total + (snapshot.leased.get(host) ?? 0), orphaned);
 		return {
 			view: {
 				id: provided.id,

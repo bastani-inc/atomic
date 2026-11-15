@@ -704,10 +704,10 @@ test("a drained instance whose host is gone keeps the children of a live host no
 		[],
 	);
 	// Once the unclaimed host holds no child, the drained instance is removed.
-	const idle = joinHosts(
-		[{ id: "vm-1", hostId: "h1", state: "running", since: 1 }],
-		{ ...snapshot, leased: new Map([["h3", 2]]) },
-	);
+	const idle = joinHosts([{ id: "vm-1", hostId: "h1", state: "running", since: 1 }], {
+		...snapshot,
+		leased: new Map([["h3", 2]]),
+	});
 	assert.equal(idle[0]?.view.leased, 0);
 });
 
@@ -738,13 +738,10 @@ test.skipIf(process.platform === "win32")(
 		await until("the restarted host to be asked to drain", () => restarted.events.length > 0, 10_000);
 		assert.deepEqual(restarted.events, [{ kind: "drain-requested" }]);
 		const store = await openStore();
-		assert.deepEqual(
-			(await store.snapshot()).drains,
-			[
-				{ host: "h1", providerId: "vm-1" },
-				{ host: "h2", providerId: "vm-1" },
-			],
-		);
+		assert.deepEqual((await store.snapshot()).drains, [
+			{ host: "h1", providerId: "vm-1" },
+			{ host: "h2", providerId: "vm-1" },
+		]);
 	},
 );
 
@@ -804,7 +801,10 @@ test.skipIf(process.platform === "win32")(
 		const removing: string[] = [];
 		await controller(provisioner);
 		await until("the listed instance's removal to start", () => removing.length > 0);
-		await until("the unlisted instance's drain to be forgotten", async () => (await store.snapshot()).drains.length === 1);
+		await until(
+			"the unlisted instance's drain to be forgotten",
+			async () => (await store.snapshot()).drains.length === 1,
+		);
 		assert.deepEqual((await store.snapshot()).drains, [{ host: "h-kept", providerId: "vm-kept" }]);
 		assert.deepEqual([...new Set(removing)], ["vm-kept"]);
 	},
