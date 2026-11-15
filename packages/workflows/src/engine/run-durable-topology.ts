@@ -45,6 +45,7 @@ export function createDurableStageDeps(input: {
 	readonly recordLiveCheckpoint?: DurableStageDeps["recordLiveCheckpoint"];
 	readonly stageDirectories?: DurableStageDeps["stageDirectories"];
 }): DurableStageDeps {
+	const priorSourceOrders = priorStageSourceOrders(input.backend, input.run.id);
 	return {
 		workflowId: input.run.id,
 		backend: input.backend,
@@ -56,10 +57,24 @@ export function createDurableStageDeps(input: {
 		replayKeyForCompletedStage: (stage) => input.completedReplayKeys.get(stage.id),
 		runTopology: durableRunTopology(input.run),
 		sourceOrderForStage: (stage) => {
+			// A stage re-run on resume keeps the source order its first attempt recorded, as it keeps its parents:
+			// cached siblings that replayed first now sit ahead of it in `run.stages` (#4871).
+			const prior = priorSourceOrders.get(stage.id);
+			if (prior !== undefined) return prior;
 			const order = input.run.stages.findIndex((candidate) => candidate.id === stage.id);
 			return order >= 0 ? order : undefined;
 		},
 	};
+}
+
+/** The source order this run's records from an earlier process hold for each stage, by stage id. */
+function priorStageSourceOrders(backend: DurableWorkflowBackend, runId: string): ReadonlyMap<string, number> {
+	const orders = new Map<string, number>();
+	for (const checkpoint of backend.listCheckpoints(runId)) {
+		const topology = checkpoint.kind === "stage" ? checkpoint.topology : undefined;
+		if (topology?.sourceOrder !== undefined) orders.set(topology.stageId, topology.sourceOrder);
+	}
+	return orders;
 }
 
 export function createDurableStageEndRecorder(input: {
