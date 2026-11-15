@@ -70,8 +70,8 @@ export class NestedGitignore {
 	 */
 	ignores(path: string): boolean {
 		for (let index = this.levels.length - 1; index >= 0; index--) {
+			// Every level is a directory on the way down to `path`.
 			const { base, matcher } = this.levels[index] as Level;
-			if (!path.startsWith(base)) continue;
 			const result = matcher.checkIgnore(path.slice(base.length));
 			if (result.ignored) return true;
 			if (result.unignored) return false;
