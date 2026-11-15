@@ -1,8 +1,5 @@
 import { mountStageCustomUi, type StageCustomUiRequest } from "../shared/stage-ui-broker.js";
-import {
-	embedOrchestratorReturnHintInWidget,
-	embedStageLabelInWidgetTopRule,
-} from "./stage-chat-view-footer-status.js";
+import { embedStageLabelInWidgetTopRule } from "./stage-chat-view-footer-status.js";
 import { setComponentFocused } from "./stage-chat-view-render-helpers.js";
 import { currentStage } from "./stage-chat-view-state.js";
 import type { StageChatViewContext } from "./stage-chat-view-types.js";
@@ -77,10 +74,9 @@ export function renderCustomUi(ctx: StageChatViewContext, width: number): string
 	if (!component) return [];
 	setComponentFocused(component, ctx.focused);
 	const rendered = component.render(width);
-	// Case 2 of #2886: inject [stage: name] into the widget's top rule, then
-	// merge the ctrl+x hint on the last content line (independent passes).
-	const withLabel = embedStageLabelInWidgetTopRule(ctx, currentStage(ctx)?.name, rendered, width);
-	return embedOrchestratorReturnHintInWidget(ctx, withLabel, width);
+	// Case 2 of #2886: inject [stage: name] into the widget's top rule. A custom widget owns every key, including the
+	// back keys, so it carries no back-to-graph hint; Ctrl+C closes the workflow view.
+	return embedStageLabelInWidgetTopRule(ctx, currentStage(ctx)?.name, rendered, width);
 }
 
 export function hideMountedCustomUi(ctx: StageChatViewContext, request: StageCustomUiRequest): void {

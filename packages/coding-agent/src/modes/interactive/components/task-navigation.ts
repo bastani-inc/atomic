@@ -1,6 +1,7 @@
 import { matchesKey } from "@bastani/atomic-tui";
 import type { KeybindingsManager } from "../../../core/keybindings.ts";
 import type { PromptRoute, TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
+import { TwoPressConfirm } from "./nav-keys.ts";
 import type { TaskDetailAction } from "./task-detail.js";
 
 export type TaskFocus =
@@ -11,8 +12,11 @@ export type TaskFocus =
 export type TaskNavigationActions = {
 	inspect(task: TaskRecord): void;
 	transcript(task: TaskRecord): void;
-	confirmCancel(task: TaskRecord): Promise<boolean>;
+	/** The first `x` on a running task: it asks for the second press that stops it. */
+	armStop(task: TaskRecord): void;
 	cancel(task: TaskRecord): void;
+	/** `x` on a finished task: it leaves the list. */
+	dismiss(task: TaskRecord): void;
 	input(task: TaskRecord): void;
 	stdinAvailable(task: TaskRecord): boolean;
 	openQuestion(route: PromptRoute): void;
@@ -23,12 +27,15 @@ export class TaskNavigation {
 	focus: TaskFocus = { kind: "composer" };
 	selectedTaskId?: TaskId;
 	private tasks: TaskRecord[] = [];
+	/** `x` stops a task only when pressed again on the same task within three seconds. */
+	readonly stopConfirm: TwoPressConfirm;
 
 	private keys: KeybindingsManager;
 	private actions: TaskNavigationActions;
-	constructor(keys: KeybindingsManager, actions: TaskNavigationActions) {
+	constructor(keys: KeybindingsManager, actions: TaskNavigationActions, now: () => number = Date.now) {
 		this.keys = keys;
 		this.actions = actions;
+		this.stopConfirm = new TwoPressConfirm(now);
 	}
 
 	update(tasks: readonly TaskRecord[]): void {
@@ -49,12 +56,15 @@ export class TaskNavigation {
 		const task = this.tasks.find((task) => task.ref.taskId === this.selectedTaskId);
 		if (!task) return;
 		if (action === "transcript") return this.actions.transcript(task);
-		if (task.execution.kind === "settled") return;
+		if (task.execution.kind === "settled") {
+			if (action === "cancel") this.actions.dismiss(task);
+			return;
+		}
 		if (action === "question" && task.attention.kind === "input-needed")
 			this.actions.openQuestion(task.attention.route);
-		if (action === "cancel" && (await this.actions.confirmCancel(task))) {
-			const current = this.tasks.find((candidate) => candidate.ref.taskId === task.ref.taskId);
-			if (current && current.execution.kind !== "settled") this.actions.cancel(current);
+		if (action === "cancel") {
+			if (this.stopConfirm.press(task.ref.taskId)) this.actions.cancel(task);
+			else this.actions.armStop(task);
 		}
 		if (action === "input" && this.actions.stdinAvailable(task)) {
 			this.focus = { kind: "stdin", taskId: task.ref.taskId };
@@ -75,7 +85,7 @@ export class TaskNavigation {
 			return true;
 		}
 		if (this.focus.kind === "stdin") return false;
-		if (this.keys.matches(data, "app.tasks.inspect")) {
+		if (this.keys.matches(data, "app.list.open")) {
 			const task = this.tasks.find((task) => task.ref.taskId === this.selectedTaskId);
 			if (task) {
 				this.focus = { kind: "detail" };
@@ -83,11 +93,13 @@ export class TaskNavigation {
 			}
 			return true;
 		}
-		for (const action of ["cancel", "input"] as const) {
-			if (this.keys.matches(data, `app.tasks.${action}`)) {
-				void this.activate(action);
-				return true;
-			}
+		if (this.keys.matches(data, "app.list.stop")) {
+			void this.activate("cancel");
+			return true;
+		}
+		if (this.keys.matches(data, "app.tasks.input")) {
+			void this.activate("input");
+			return true;
 		}
 		const index = this.tasks.findIndex((task) => task.ref.taskId === this.selectedTaskId);
 		let next = index;

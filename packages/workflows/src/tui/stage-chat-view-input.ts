@@ -1,6 +1,6 @@
 import { TRANSCRIPT_JUMP_TO_END_URL } from "@bastani/atomic";
 
-import { APP_ACTION, isKeybindingsLike, matchesAction, TUI_ACTION } from "./keybindings-adapter.js";
+import { APP_ACTION, isKeybindingsLike, matchesAction, matchesNavAction, TUI_ACTION } from "./keybindings-adapter.js";
 import { parseTerminalMouseInput, terminalMouseWheelDirection } from "./mouse-input.js";
 import { defaultResponseFor, handlePromptCardInput, isPromptEscapeInput } from "./prompt-card.js";
 import { releaseMountedCustomUi } from "./stage-chat-view-custom-ui.js";
@@ -25,23 +25,12 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
 	// and tool-output toggles stay the stage's, so a task transcript follows them.
 	if (ctx.chatHost.hasTaskInspector) {
 		if (matchesKey(data, Key.ctrl("c"))) ctx.chatHost.closeTasks();
-		else if (matchesKey(data, Key.ctrl("x"))) ctx.onDetach();
 		else if (!handleToolsExpandInput(ctx, data) && !ctx.chatHost.handleTaskInput(data))
 			return !isHostThinkingToggle(ctx, data);
 		return true;
 	}
 	if (data === TRANSCRIPT_JUMP_TO_END_URL) return handleStageChatJumpToBottom(ctx, data);
 	if (isHostThinkingToggle(ctx, data)) return false;
-	if (matchesKey(data, Key.ctrl("x"))) {
-		if (ctx.mountedCustomUi) releaseMountedCustomUi(ctx);
-		else {
-			const stage = currentStage(ctx);
-			syncPromptState(ctx, stage?.pendingPrompt);
-			recordCurrentPromptDraft(ctx);
-		}
-		ctx.onDetach();
-		return true;
-	}
 	if (ctx.mountedCustomUi) {
 		return handleMountedCustomUiInput(ctx, data);
 	}
@@ -51,6 +40,11 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
 	const readOnlyPromptArchive = readOnlyArchive && stage?.promptFootprint !== undefined;
 
 	if (ctx.promptState) {
+		if (isPromptBackInput(ctx, data)) {
+			recordCurrentPromptDraft(ctx);
+			ctx.onDetach();
+			return true;
+		}
 		if (handlePromptScrollInput(ctx, data, ctx.promptEditor === null)) return true;
 		handlePromptInput(ctx, data);
 		return true;
@@ -61,15 +55,18 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
 	}
 	if (handleStageChatJumpToBottom(ctx, data)) return true;
 	if (ctx.chatHost.handleScrollInput(data)) return true;
+	// The back key on an empty prompt returns to the graph, one level up; it never discards typed text.
+	if (isBackToGraphInput(ctx, data)) {
+		recordCurrentPromptDraft(ctx);
+		ctx.onDetach();
+		return true;
+	}
+	// Esc interrupts or cancels; it never leaves the stage chat.
 	if (matchesKey(data, Key.escape)) {
 		if (ctx.chatHost.isCompacting() || ctx.chatHost.isBashRunning() || ctx.chatHost.isEditingBashCommand()) {
 			return ctx.chatHost.handleInput(data);
 		}
-		if (isAbortableStreamingSession(ctx)) {
-			void ctx.chatHost.interrupt({ restoreQueuedMessages: true });
-			return true;
-		}
-		ctx.onClose();
+		if (isAbortableStreamingSession(ctx)) void ctx.chatHost.interrupt({ restoreQueuedMessages: true });
 		return true;
 	}
 	if (matchesKey(data, Key.ctrl("c"))) {
@@ -87,6 +84,26 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
 	}
 	if (blocked) return true;
 	return ctx.chatHost.handleInput(data);
+}
+
+function isBackToGraphInput(ctx: StageChatViewContext, data: string): boolean {
+	const keybindings = isKeybindingsLike(ctx.piKeybindings) ? ctx.piKeybindings : undefined;
+	return matchesNavAction(keybindings, data, APP_ACTION.navBack) && !ctx.chatHost.hasInputText();
+}
+
+/**
+ * Leaving a question for the graph; the question stays waiting. A typed answer leaves with the back key while it is
+ * empty. Choices and yes/no questions move with ← and have nothing to type, so Esc leaves them, as it leaves the graph.
+ */
+function isPromptBackInput(ctx: StageChatViewContext, data: string): boolean {
+	const state = ctx.promptState;
+	if (!state) return false;
+	const keybindings = isKeybindingsLike(ctx.piKeybindings) ? ctx.piKeybindings : undefined;
+	if (state.prompt.kind !== "input" && state.prompt.kind !== "editor") return matchesKey(data, Key.escape);
+	if (!matchesNavAction(keybindings, data, APP_ACTION.navBack)) return false;
+	const text =
+		ctx.promptEditor && ctx.promptEditorPromptId === state.prompt.id ? ctx.promptEditor.getText() : state.rawText;
+	return text.length === 0;
 }
 
 /** Only the default physical Ctrl+T belongs to the host thinking action; a remap may reuse an editor key. */

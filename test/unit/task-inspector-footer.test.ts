@@ -61,14 +61,19 @@ test("task picker and detail show exact navigation hints and action rows (#4521)
 	const h = await host();
 	try {
 		await h.fixture.start("Footer task");
-		assert.match(h.lines().join("\n"), /↑↓ select · enter view · Esc back/i);
-		assert.doesNotMatch(h.lines().join("\n"), /x stop|› Inspect transcript/);
+		assert.ok(h.lines().includes("  ↑↓ select · enter/→ open · x stop · esc close · ? keys"));
+		assert.doesNotMatch(h.lines().join("\n"), /› Inspect transcript/);
 		await enter(h.inspector);
 		assert.match(h.lines().join("\n"), /› Inspect transcript/);
-		assert.match(h.lines().join("\n"), /PgUp\/PgDn scroll · ↑↓ actions · enter select · x stop · Esc back/i);
+		assert.ok(
+			h.lines().includes("  ↑↓ actions · enter/→ select · x stop · pgup/pgdn scroll · esc back to list · ? keys"),
+		);
+		// The first x asks for a second press within three seconds; the task keeps running (#5224).
 		h.inspector.handleInput("x");
-		assert.match(h.lines().join("\n"), /y confirm · n\/Esc keep running/);
-		assert.doesNotMatch(h.lines().join("\n"), /› Inspect transcript/);
+		assert.match(h.lines().join("\n"), /Press x again within 3s to stop Footer task/);
+		assert.equal(h.fixture.store.tasks[0]?.execution.kind, "running");
+		h.inspector.handleInput("\x1b[B");
+		assert.doesNotMatch(h.lines().join("\n"), /again within 3s/, "another key ends the wait for the second press");
 	} finally {
 		await h.dispose();
 	}
@@ -112,8 +117,7 @@ test("shell transcript retains the note and exact footer at the bottom of its vi
 		const lines = h.lines(110, 30);
 		assert.equal(lines.length, 30);
 		assert.equal(lines.at(-2), "Earlier output omitted · showing retained 8 KiB tail");
-		assert.equal(lines.at(-1), "Esc back · ctrl+home/ctrl+end top/latest");
-		assert.doesNotMatch(lines.at(-1) ?? "", /Enter messages/);
+		assert.equal(lines.at(-1), "  ← back · pgup/pgdn scroll · ctrl+o expand · ? keys");
 		assert.ok(lines.slice(3, -2).some((line) => line === ""));
 	} finally {
 		await h.dispose();
@@ -134,13 +138,7 @@ test("agent transcript footer offers messaging only when the source supports it 
 			await enter(h.inspector);
 			assert.equal(h.lines(110, 30).at(-2), "─".repeat(110));
 			const footer = h.lines(110, 30).at(-1) ?? "";
-			assert.equal(footer.includes("Enter messages the agent"), canSend);
-			assert.equal(
-				footer,
-				canSend
-					? "Esc back · Enter messages the agent · ctrl+home/ctrl+end top/latest"
-					: "Esc back · ctrl+home/ctrl+end top/latest",
-			);
+			assert.equal(footer, "  ← back · pgup/pgdn scroll · ctrl+o expand · ? keys");
 			assert.doesNotMatch(footer, / · {2}· /);
 		} finally {
 			await h.dispose();
@@ -201,21 +199,24 @@ test("settled tasks do not offer a stop shortcut (#4521)", async () => {
 		await h.fixture.settle();
 		await flush();
 		const footer = h.lines().at(-1) ?? "";
-		assert.match(footer, /↑↓ select · enter view · Esc back/i);
+		assert.equal(footer, "  ↑↓ select · enter/→ open · x dismiss · esc close · ? keys");
 		await enter(h.inspector);
-		assert.match(h.lines().at(-1) ?? "", /↑↓ actions · enter select · Esc back/i);
+		assert.equal(
+			h.lines().at(-1),
+			"  ↑↓ actions · enter/→ select · x dismiss · pgup/pgdn scroll · esc back to list · ? keys",
+		);
 	} finally {
 		await h.dispose();
 	}
 });
 
 test("configured stop shortcut is shown on picker and detail instead of x (#4521)", async () => {
-	const h = await host(undefined, new KeybindingsManager({ "app.tasks.cancel": "ctrl+k" }));
+	const h = await host(undefined, new KeybindingsManager({ "app.list.stop": "ctrl+k" }));
 	try {
 		await h.fixture.start("Configured stop");
-		assert.match(h.lines().at(-1) ?? "", /ctrl\+k stop · Esc back/);
+		assert.match(h.lines().at(-1) ?? "", /ctrl\+k stop · esc close/);
 		await enter(h.inspector);
-		assert.match(h.lines().at(-1) ?? "", /ctrl\+k stop · Esc back/);
+		assert.match(h.lines().at(-1) ?? "", /ctrl\+k stop · pgup\/pgdn scroll/);
 		assert.doesNotMatch(h.lines().at(-1) ?? "", /x stop/);
 	} finally {
 		await h.dispose();
@@ -247,7 +248,7 @@ test("an open agent transcript remains renderable after its task disappears (#45
 		await flush();
 		const lines = h.lines();
 		assert.match(lines[0] ?? "", /^Transcript · Task$/);
-		assert.equal(lines.at(-1), "Esc back · ctrl+home/ctrl+end top/latest");
+		assert.equal(lines.at(-1), "  ← back · pgup/pgdn scroll · ctrl+o expand · ? keys");
 	} finally {
 		await h.dispose();
 	}

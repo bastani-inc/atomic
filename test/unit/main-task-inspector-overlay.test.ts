@@ -69,8 +69,8 @@ async function flush(): Promise<void> {
 async function mountMainInspector(isolated: boolean, populated = true) {
 	initTheme("dark");
 	const keys = new KeybindingsManager({
-		"app.tasks.inspect": "ctrl+e",
-		"app.tasks.cancel": "ctrl+x",
+		"app.list.open": "ctrl+e",
+		"app.list.stop": "ctrl+x",
 		"tui.altScreen.halfPageUp": "ctrl+alt+u",
 		"tui.altScreen.halfPageDown": "ctrl+alt+d",
 	});
@@ -386,7 +386,15 @@ for (const isolated of [false, true]) {
 				host.terminal.resize(width, rows);
 				await assertFrame();
 			}
+			// Esc only interrupts a task's chat; it never leaves it (#5224).
 			await host.input("\x1b");
+			assert.match(await assertFrame(), /^Transcript/);
+			// ← with text typed edits it; on an empty prompt it goes back one level.
+			await host.input("\x1b[D");
+			assert.match(await assertFrame(), /^Transcript/);
+			await host.input("\x1b[F");
+			await host.input("\x15");
+			await host.input("\x1b[D");
 			assert.match(await assertFrame(), /Inspect transcript/);
 			await host.input("\x1b");
 			assert.equal(host.tui.hasOverlay(), false);
@@ -400,9 +408,8 @@ for (const isolated of [false, true]) {
 			const reopened = host.open();
 			await flush();
 			await host.paint();
-			await host.input("\x18"); // configured task cancel still requires confirmation
-			assert.match(await assertFrame(), /confirm/);
-			await host.input("\x1b");
+			await host.input("\x18"); // the configured stop key asks for a second press
+			assert.match(stripVTControlCharacters((await host.paint()).join("\n")), /again within 3s to stop/);
 			assert.equal(host.fixture.runners[0].context.signal.aborted, false);
 			await host.input("\x03");
 			assert.equal(host.tui.hasOverlay(), false, "physical Ctrl+C must close the view, not trap input");
@@ -830,6 +837,13 @@ for (const isolated of [false, true]) {
 					if (transcript) {
 						await host.input("\x1b");
 						assert.equal(settled, false, "transcript Escape must not cancel the questionnaire");
+						assert.match(
+							stripVTControlCharacters((await host.paint()).join("\n")),
+							/^Transcript/,
+							"Esc never leaves a task's chat (#5224)",
+						);
+						await host.input("\x1b[D");
+						assert.equal(settled, false, "transcript ← must not cancel the questionnaire");
 						assert.match(stripVTControlCharacters((await host.paint()).join("\n")), /Inspect transcript/);
 						await host.input("\x1b");
 						assert.equal(settled, false, "detail Escape must not cancel the questionnaire");

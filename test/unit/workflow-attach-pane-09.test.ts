@@ -181,6 +181,8 @@ describe("WorkflowAttachPane", () => {
 		});
 
 		pane.handleInput(Key.ctrl("x"));
+		assert.equal(hidden, 0, "Ctrl+X no longer navigates");
+		pane.handleInput("\x1b");
 
 		assert.equal(hidden, 1);
 		assert.deepEqual(
@@ -259,7 +261,7 @@ describe("WorkflowAttachPane", () => {
 		assert.equal(pane._lastAttachedStageId, "stage-a");
 		assert.equal(pane.wantsFocusForAwaitingInput(store.snapshot()), false, "sibling node cannot answer the prompt");
 
-		pane.handleInput(Key.ctrl("x"));
+		pane.handleInput("\x1b[D");
 		pane.handleInput(Key.enter);
 		assert.equal(pane._lastAttachedStageId, "stage-b");
 		assert.equal(pane.wantsFocusForAwaitingInput(store.snapshot()), true, "attached prompted node owns input");

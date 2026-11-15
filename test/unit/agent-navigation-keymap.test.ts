@@ -1,0 +1,290 @@
+import assert from "node:assert/strict";
+import { stripVTControlCharacters } from "node:util";
+import { getKeybindings, setKeybindings, visibleWidth } from "@bastani/atomic-tui";
+import { test } from "vitest";
+import type { WorkflowRunSummary } from "../../packages/coding-agent/src/core/extensions/workflow-run-control.js";
+import { KeybindingsManager, migrateKeybindingsConfig } from "../../packages/coding-agent/src/core/keybindings.js";
+import { bindOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
+import {
+	type StopAllBackgroundOutcome,
+	stopAllBackgroundMessage,
+	stopAllBackgroundWork,
+} from "../../packages/coding-agent/src/core/tasks/stop-all.js";
+import {
+	type NavKey,
+	type NavKeyStyle,
+	navActionText,
+	renderNavHintLine,
+	renderNavKeyOverlay,
+	TwoPressConfirm,
+} from "../../packages/coding-agent/src/modes/interactive/components/nav-keys.js";
+import { TaskInspector } from "../../packages/coding-agent/src/modes/interactive/components/task-inspector.js";
+import { createStopAllChord } from "../../packages/coding-agent/src/modes/interactive/interactive-stop-all.js";
+import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
+import { taskFixture } from "../helpers/task-projection.js";
+
+const plainStyle: NavKeyStyle = {
+	dim: (text) => text,
+	text: (text) => text,
+	muted: (text) => text,
+	border: (text) => text,
+	bold: (text) => text,
+};
+
+const CTRL_X = "\x18";
+const CTRL_K = "\x0b";
+
+test("the navigation actions have their documented defaults (#5224)", () => {
+	const keys = new KeybindingsManager();
+	assert.deepEqual(keys.getKeys("app.nav.back"), ["left"]);
+	assert.deepEqual(keys.getKeys("app.list.open"), ["enter", "right"]);
+	assert.deepEqual(keys.getKeys("app.list.stop"), ["x"]);
+	assert.deepEqual(keys.getKeys("app.list.peek"), ["space"]);
+	assert.deepEqual(keys.getKeys("app.list.filter"), ["/"]);
+	assert.deepEqual(keys.getKeys("app.keys.help"), ["?"]);
+	assert.deepEqual(keys.getKeys("app.agents.focus"), ["down"]);
+	assert.deepEqual(keys.getKeys("app.agents.chord"), ["ctrl+x"]);
+	assert.deepEqual(keys.getKeys("app.agents.stopAll"), ["ctrl+k"]);
+	assert.deepEqual(keys.getKeys("app.auth.copyUrl"), ["ctrl+x"], "the OAuth copy key is unchanged");
+	assert.deepEqual(keys.getKeys("app.interrupt"), ["escape"]);
+});
+
+test("old task ids migrate to the list ids, and a new id already set wins (#5224)", () => {
+	const migrated = migrateKeybindingsConfig({ "app.tasks.inspect": "ctrl+e", "app.tasks.cancel": "ctrl+k" });
+	assert.equal(migrated.migrated, true);
+	assert.deepEqual(migrated.config, { "app.list.open": "ctrl+e", "app.list.stop": "ctrl+k" });
+	const both = migrateKeybindingsConfig({ "app.tasks.cancel": "ctrl+k", "app.list.stop": "ctrl+s" });
+	assert.deepEqual(both.config, { "app.list.stop": "ctrl+s" });
+});
+
+const KEYS: readonly NavKey[] = [
+	{ keys: "↑↓", label: "select" },
+	{ action: "app.list.open", label: "open" },
+	{ action: "app.list.stop", label: "stop" },
+	{ keys: "esc", label: "back to prompt" },
+	{ action: "app.keys.help", label: "keys" },
+];
+
+test("one dim hint line names exactly the screen's keys and fits 80 and 160 columns (#5224)", () => {
+	const keys = new KeybindingsManager();
+	for (const width of [160, 80]) {
+		const line = renderNavHintLine(KEYS, width, plainStyle, keys);
+		assert.equal(line, "  ↑↓ select · enter/→ open · x stop · esc back to prompt · ? keys");
+		assert.ok(visibleWidth(line) <= width);
+	}
+	// Narrow terminals drop whole entries from the end instead of cutting one mid-word.
+	const narrow = renderNavHintLine(KEYS, 37, plainStyle, keys);
+	assert.equal(narrow, "  ↑↓ select · enter/→ open · x stop");
+	assert.ok(visibleWidth(renderNavHintLine(KEYS, 8, plainStyle, keys)) <= 8);
+});
+
+test("hints follow remaps, leave out unbound actions and never repeat a key two actions share (#5224)", () => {
+	const remapped = new KeybindingsManager({ "app.list.stop": "ctrl+k", "app.keys.help": [] });
+	assert.equal(navActionText(remapped, "app.list.stop"), "ctrl+k");
+	assert.equal(
+		renderNavHintLine(KEYS, 160, plainStyle, remapped),
+		"  ↑↓ select · enter/→ open · ctrl+k stop · esc back to prompt",
+	);
+	const shared = new KeybindingsManager({ "app.list.open": "x" });
+	assert.equal(renderNavHintLine(KEYS, 160, plainStyle, shared), "  ↑↓ select · x open · esc back to prompt · ? keys");
+});
+
+test("the ? overlay lists every key in a rounded box, and degrades to plain rows when narrow (#5224)", () => {
+	const keys = new KeybindingsManager();
+	for (const width of [160, 80]) {
+		const box = renderNavKeyOverlay("keys · tasks", KEYS, width, plainStyle, keys);
+		assert.match(box[0] ?? "", /^╭─ keys · tasks ─+╮$/);
+		assert.match(box.at(-1) ?? "", /^╰─+╯$/);
+		assert.ok(box.every((line) => visibleWidth(line) === width));
+		assert.match(box.join("\n"), /│ enter\/→ +open +│/);
+		assert.match(box.join("\n"), /│ esc\/\? +close this help +│/);
+	}
+	const narrow = renderNavKeyOverlay("keys", KEYS, 20, plainStyle, keys);
+	assert.equal(narrow[0], "keys");
+	assert.ok(narrow.every((line) => visibleWidth(line) <= 20));
+});
+
+test("a second press confirms only on the same target within three seconds (#5224)", () => {
+	let now = 0;
+	const confirm = new TwoPressConfirm(() => now);
+	assert.equal(confirm.press("a"), false);
+	assert.equal(confirm.pending(), "a");
+	assert.equal(confirm.press("b"), false, "another target starts over");
+	now += 3000;
+	assert.equal(confirm.press("b"), true);
+	assert.equal(confirm.pending(), undefined);
+	assert.equal(confirm.press("a"), false);
+	now += 3001;
+	assert.equal(confirm.pending(), undefined, "the window closes after three seconds");
+	assert.equal(confirm.press("a"), false);
+});
+
+function chordHost(editorOwnsInput = true) {
+	const statuses: string[] = [];
+	const warnings: string[] = [];
+	let stops = 0;
+	let outcome: StopAllBackgroundOutcome = { agents: 2, workflowRuns: 1, failures: [] };
+	const host = {
+		keybindings: new KeybindingsManager(),
+		editorOwnsInput: () => editorOwnsInput,
+		stopAll: async () => {
+			stops++;
+			return outcome;
+		},
+		showStatus: (message: string) => statuses.push(message),
+		showWarning: (message: string) => warnings.push(message),
+	};
+	return {
+		host,
+		statuses,
+		warnings,
+		stops: () => stops,
+		setOutcome(next: StopAllBackgroundOutcome) {
+			outcome = next;
+		},
+	};
+}
+
+test("Ctrl+X Ctrl+K stops all background work only after a second press within three seconds (#5224)", async () => {
+	let now = 0;
+	const h = chordHost();
+	const listener = createStopAllChord(h.host, () => now);
+	assert.deepEqual(listener(CTRL_X), { consume: true }, "Ctrl+X only starts the chord");
+	assert.deepEqual(listener(CTRL_K), { consume: true });
+	assert.equal(h.stops(), 0);
+	assert.deepEqual(h.statuses, [
+		"Press ctrl+x ctrl+k again within 3s to stop all background subagents and workflow runs",
+	]);
+	now += 2000;
+	listener(CTRL_X);
+	listener(CTRL_K);
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	assert.equal(h.stops(), 1);
+	assert.equal(h.statuses.at(-1), "Stopped 2 subagents and 1 workflow run.");
+	// A late second press arms again instead of stopping.
+	listener(CTRL_X);
+	listener(CTRL_K);
+	now += 3500;
+	listener(CTRL_X);
+	listener(CTRL_K);
+	assert.equal(h.stops(), 1);
+});
+
+test("Ctrl+X never navigates: any other key after it reaches the prompt, and dialogs keep their own Ctrl+X (#5224)", () => {
+	const h = chordHost();
+	const listener = createStopAllChord(h.host);
+	listener(CTRL_X);
+	assert.equal(listener("a"), undefined, "the chord ends and the key is typed");
+	assert.equal(listener(CTRL_K), undefined, "Ctrl+K without the chord stays an editor key");
+	const dialog = chordHost(false);
+	const dialogListener = createStopAllChord(dialog.host);
+	assert.equal(dialogListener(CTRL_X), undefined, "a dialog such as OAuth sign-in keeps Ctrl+X");
+	assert.equal(dialogListener(CTRL_K), undefined);
+	assert.equal(dialog.stops(), 0);
+});
+
+test("a stop-all that cannot stop everything says what is left (#5224)", () => {
+	assert.equal(
+		stopAllBackgroundMessage({ agents: 0, workflowRuns: 0, failures: [] }),
+		"No background subagents or workflow runs to stop.",
+	);
+	assert.equal(
+		stopAllBackgroundMessage({ agents: 1, workflowRuns: 0, failures: ["workflow abc: pause_failed"] }),
+		"Stopped 1 subagent. Could not stop: workflow abc: pause_failed",
+	);
+});
+
+test("stop-all stops the session's background subagents and quits its workflow runs, leaving shells (#5224)", async () => {
+	const fixture = taskFixture();
+	try {
+		await fixture.start("first agent");
+		await fixture.start("second agent");
+		const session = {};
+		bindOwnerTaskStore(session, fixture.store);
+		const quits: unknown[] = [];
+		const running: WorkflowRunSummary = {
+			runId: "run-1",
+			name: "ralph",
+			status: "running",
+			startedAt: 0,
+			elapsedMs: 1,
+			activeStages: [],
+			awaitingInputCount: 0,
+			awaitingInput: [],
+		};
+		const outcome = await stopAllBackgroundWork(
+			Object.assign(session, {
+				workflows: {
+					listRuns: async () => [
+						running,
+						{ ...running, runId: "run-2", status: "completed" as const, endedAt: 1 },
+					],
+					quit: async (target: unknown) => {
+						quits.push(target);
+						return { action: "quit" as const, runId: "--all", status: "ok" as const, message: "" };
+					},
+				},
+			}),
+		);
+		assert.deepEqual(outcome, { agents: 2, workflowRuns: 1, failures: [] });
+		assert.deepEqual(quits, [{ all: true }]);
+		fixture.store.drain();
+		assert.ok(fixture.runners.every((runner) => runner.context.signal.aborted));
+	} finally {
+		await fixture.dispose();
+	}
+});
+
+test("? opens the task list's key overlay and Esc closes it, keeping the list open (#5224)", async () => {
+	initTheme("dark");
+	const previous = getKeybindings();
+	setKeybindings(new KeybindingsManager());
+	const fixture = taskFixture();
+	let closed = 0;
+	const inspector = new TaskInspector(
+		fixture.store,
+		() => {},
+		() => {
+			closed++;
+		},
+	);
+	try {
+		await fixture.start("Overlay task");
+		const frame = () => stripVTControlCharacters(inspector.renderViewport(80, 24).join("\n"));
+		assert.equal(inspector.handleInput("?"), true);
+		assert.match(frame(), /keys · tasks/);
+		assert.match(frame(), /x +stop/);
+		inspector.handleInput("x");
+		assert.equal(fixture.store.tasks[0]?.execution.kind, "running", "keys wait while the overlay is open");
+		inspector.handleInput("\x1b");
+		assert.doesNotMatch(frame(), /keys · tasks/);
+		assert.match(frame(), /Background tasks/);
+		assert.equal(closed, 0);
+	} finally {
+		inspector.dispose();
+		await fixture.dispose();
+		setKeybindings(previous);
+	}
+});
+
+test("an empty task list offers only the keys that do something (#5224)", () => {
+	initTheme("dark");
+	const previous = getKeybindings();
+	setKeybindings(new KeybindingsManager());
+	const fixture = taskFixture();
+	const inspector = new TaskInspector(
+		fixture.store,
+		() => {},
+		() => {},
+	);
+	try {
+		for (const width of [160, 80]) {
+			const lines = inspector.renderViewport(width, 12).map((line) => stripVTControlCharacters(line));
+			assert.equal(lines.at(-1), "  esc close · ? keys");
+		}
+	} finally {
+		inspector.dispose();
+		void fixture.dispose();
+		setKeybindings(previous);
+	}
+});

@@ -59,6 +59,10 @@ export interface TaskTranscriptPage {
 	hasDraft(): boolean;
 	/** Whether the page takes Escape and Left itself, as while its own task list is open. */
 	handlesBack(): boolean;
+	/** Whether Esc would interrupt the task's current turn now. */
+	interruptible(): boolean;
+	/** Interrupts the task's current turn; the task keeps running and waits for its next message. */
+	interrupt(): Promise<TaskViewResult<undefined>>;
 	render(width: number, rows: number): string[];
 	invalidate(): void;
 	dispose(): void;
@@ -289,6 +293,17 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		return this.chat.hasTaskInspector;
 	}
 
+	interruptible(): boolean {
+		return this.source.interruptTask !== undefined && this.followed?.isRunning?.() === true;
+	}
+
+	async interrupt(): Promise<TaskViewResult<undefined>> {
+		const interrupt = this.source.interruptTask;
+		if (interrupt === undefined)
+			return { ok: false, error: { message: "This task's turn cannot be interrupted from here." } };
+		return interrupt.call(this.source, this.taskId);
+	}
+
 	private adoptLatestPage(page: TaskViewResult<TaskTranscriptView>): void {
 		if (!page.ok) {
 			this.status = page.error.message;
@@ -462,6 +477,14 @@ export class TaskCommandOutputPage implements TaskTranscriptPage {
 
 	handlesBack(): boolean {
 		return false;
+	}
+
+	interruptible(): boolean {
+		return false;
+	}
+
+	async interrupt(): Promise<TaskViewResult<undefined>> {
+		return { ok: false, error: { message: "A shell's output has no turn to interrupt." } };
 	}
 
 	render(width: number, rows: number): string[] {

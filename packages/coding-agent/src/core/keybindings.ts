@@ -45,9 +45,22 @@ const APP_KEYBINDINGS = {
 	"app.model.select": { defaultKeys: "ctrl+l", description: "Open model selector" },
 	"app.tools.expand": { defaultKeys: "ctrl+o", description: "Toggle tool output" },
 	"app.tasks.open": { defaultKeys: [], description: "Open task list" },
-	"app.tasks.inspect": { defaultKeys: "enter", description: "Inspect selected task" },
-	"app.tasks.cancel": { defaultKeys: [], description: "Cancel selected task with confirmation" },
 	"app.tasks.input": { defaultKeys: [], description: "Input to selected task" },
+	"app.nav.back": { defaultKeys: "left", description: "Go back one level from an empty prompt" },
+	"app.list.open": { defaultKeys: ["enter", "right"], description: "Open the selected item" },
+	"app.list.stop": {
+		defaultKeys: "x",
+		description: "Stop the selected item (press again to confirm); dismiss a finished one",
+	},
+	"app.list.peek": { defaultKeys: "space", description: "Peek at the selected task" },
+	"app.list.filter": { defaultKeys: "/", description: "Filter the list by name" },
+	"app.keys.help": { defaultKeys: "?", description: "Show the keys of the current screen" },
+	"app.agents.focus": { defaultKeys: "down", description: "Focus the agent panel from an empty prompt" },
+	"app.agents.chord": { defaultKeys: "ctrl+x", description: "Start a background-work chord" },
+	"app.agents.stopAll": {
+		defaultKeys: "ctrl+k",
+		description: "After the chord key: stop all background subagents and workflow runs (press twice to confirm)",
+	},
 	"app.thinking.toggle": {
 		defaultKeys: "ctrl+t",
 		description: "Toggle thinking blocks",
@@ -253,6 +266,8 @@ const KEYBINDING_NAME_MIGRATIONS = {
 	renameSession: "app.session.rename",
 	deleteSession: "app.session.delete",
 	deleteSessionNoninvasive: "app.session.deleteNoninvasive",
+	"app.tasks.inspect": "app.list.open",
+	"app.tasks.cancel": "app.list.stop",
 } as const satisfies Record<string, Keybinding>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -8,7 +8,7 @@ import {
 	renderPromptIdentityBanner,
 	renderPromptRunIdBanner,
 } from "./prompt-card-render.js";
-import { bannerLines, embedOrchestratorReturnHintInWidget } from "./stage-chat-view-footer-status.js";
+import { backToGraphKey, bannerLines, embedOrchestratorReturnHintInWidget } from "./stage-chat-view-footer-status.js";
 import {
 	blankLine,
 	paint,
@@ -184,7 +184,9 @@ export function renderPausedBody(
 	const t = ctx.theme;
 	const callout: string[] = [];
 	callout.push(blankLine(width));
-	callout.push(...bannerLines(ctx, width, "warning", "❚❚", "PAUSED", "enter resumes · ctrl+x return to graph"));
+	callout.push(
+		...bannerLines(ctx, width, "warning", "❚❚", "PAUSED", `enter resumes · ${backToGraphKey(ctx)} return to graph`),
+	);
 	callout.push(
 		...new Text(
 			paint("This workflow stage is paused. Type a message below and press Enter to resume.", t.textMuted),
@@ -241,9 +243,11 @@ export function renderBlockedBody(
 		...new Text(paint("This stage is waiting for the upstream stage to resume.", t.textMuted), 2, 0).render(width),
 	);
 	lines.push(
-		...new Text(paint("ctrl+x", t.accent, { bold: true }) + paint(" return to graph", t.textMuted), 2, 0).render(
-			width,
-		),
+		...new Text(
+			paint(backToGraphKey(ctx), t.accent, { bold: true }) + paint(" return to graph", t.textMuted),
+			2,
+			0,
+		).render(width),
 	);
 	while (lines.length < budget) lines.push(blankLine(width));
 	if (lines.length > budget) lines.length = budget;

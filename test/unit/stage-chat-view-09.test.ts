@@ -17,7 +17,7 @@ import {
 } from "./stage-chat-view-helpers.js";
 
 describe("StageChatView", () => {
-	test("Escape variants and Ctrl+C variants on settled stages call onClose", () => {
+	test("Ctrl+C variants on settled stages call onClose; Escape variants never leave (#5224)", () => {
 		const store = createStore();
 		setupRun(store, "run-1", "stage-a", "completed");
 		let closed = 0;
@@ -32,7 +32,9 @@ describe("StageChatView", () => {
 				closed += 1;
 			},
 		});
-		const closeKeys = ["\x1b", "\x1b[27u", "\x1b[27;1;27~", "\x03", "\x1b[99;5u", "\x1b[99;5:1u", "\x1b[27;5;99~"];
+		for (const key of ["\x1b", "\x1b[27u", "\x1b[27;1;27~"]) view.handleInput(key);
+		assert.equal(closed, 0, "Esc never closes the stage chat");
+		const closeKeys = ["\x03", "\x1b[99;5u", "\x1b[99;5:1u", "\x1b[27;5;99~"];
 		for (const key of closeKeys) {
 			view.handleInput(key);
 		}
@@ -126,8 +128,8 @@ describe("StageChatView", () => {
 		const footer = view
 			.render(96)
 			.map(stripAnsi)
-			.find((line) => line.includes("esc to close"));
-		assert.match(footer ?? "", /esc to close\s+ctrl\+x return to graph$/);
+			.find((line) => line.includes("ctrl+c to close"));
+		assert.match(footer ?? "", /ctrl\+c to close\s+← return to graph$/);
 		for (const key of ["\x14", "\x1b[116;5u", "\x1b[116;5:1u", "\x1b[27;5;116~"]) {
 			assert.equal(view.handleInput(key), false, `Ctrl+T variant ${JSON.stringify(key)} must fall through`);
 		}
@@ -135,8 +137,12 @@ describe("StageChatView", () => {
 		assert.equal(closed, 0);
 
 		assert.equal(view.handleInput("\x18"), true);
+		assert.equal(detached, 0);
+		assert.equal(view.handleInput("\x1b[D"), true);
 		assert.equal(detached, 1);
 		assert.equal(view.handleInput("\x1b"), true);
+		assert.equal(closed, 0);
+		assert.equal(view.handleInput("\x03"), true);
 		assert.equal(closed, 1);
 		view.dispose();
 	});
@@ -327,7 +333,7 @@ describe("StageChatView", () => {
 		view.dispose();
 	});
 
-	test("Escape closes a non-streaming stage chat instead of entering workflow pause UI", async () => {
+	test("Escape on a non-streaming stage chat neither closes it nor enters the workflow pause UI (#5224)", async () => {
 		const store = createStore();
 		setupRun(store, "run-1", "stage-a", "running");
 		const { handle, state } = makeHandle(
@@ -361,7 +367,7 @@ describe("StageChatView", () => {
 		await flush();
 		assert.equal(state.pauseCalls, 0);
 		assert.equal(view._isLocalPaused, false);
-		assert.equal(closed, 1);
+		assert.equal(closed, 0, "Esc on an idle stage chat does nothing; it never closes it");
 		view.dispose();
 	});
 

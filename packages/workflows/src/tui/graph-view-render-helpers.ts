@@ -61,7 +61,7 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 		const leftEdgePad = 1;
 		const rightEdgePad = 2;
 		const hintsBudget = Math.max(0, width - leftEdgePad - pillW - rightEdgePad);
-		const fullHierarchyHint = "ctrl+x return to main chat";
+		const fullHierarchyHint = "esc main chat";
 		// A focused tool node has no stage chat, but Enter now opens its read-only
 		// detail, so it keeps an activation hint of its own instead of losing the
 		// `↵` affordance entirely the way an unfocusable node does. Both lookups

@@ -457,7 +457,7 @@ test("fullscreen keeps pi-tui selection active while a workflow overlay owns foc
 	}
 });
 
-test("fullscreen workflow Ctrl+X does not copy or retain an overlay-owned selection", async () => {
+test("fullscreen workflow Ctrl+X neither navigates nor copies, and Esc leaves without retaining an overlay-owned selection (#5224)", async () => {
 	const { bridge, detached, host, overlay, tui, terminal } = await makeFullscreenGraphFixture({ copyOnSelect: false });
 	try {
 		const lines = host.render(terminal.columns).map((line) => stripTerminalSequences(line));
@@ -474,8 +474,12 @@ test("fullscreen workflow Ctrl+X does not copy or retain an overlay-owned select
 
 		terminal.input("\x18");
 		await flush();
-		assert.equal(detached.count, 1, "workflow graph did not own the hierarchy transition");
-		assert.deepEqual(bridge.selectionCopies, [], "hierarchy Ctrl+X leaked into clipboard dispatch");
+		assert.equal(detached.count, 0, "Ctrl+X no longer navigates the workflow graph");
+		assert.deepEqual(bridge.selectionCopies, [], "Ctrl+X leaked into clipboard dispatch");
+		terminal.input("\x1b");
+		await flush();
+		assert.equal(detached.count, 1, "Esc returns from the graph to main chat");
+		assert.deepEqual(bridge.selectionCopies, [], "Esc leaked into clipboard dispatch");
 
 		overlay.hide();
 		tui.renderNow();

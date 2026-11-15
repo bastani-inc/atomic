@@ -547,7 +547,7 @@ describe("/tasks in a subagent's chat (#4640)", () => {
 		assert.equal(rows.length, 24);
 		assert.deepEqual(labelRows(rows), [], "the composer is hidden while the list is open");
 		assert.equal(rows.at(-1), "Tasks  2 background tasks running · /tasks");
-		assert.match(rows.at(-2) ?? "", /Esc back/);
+		assert.match(rows.at(-2) ?? "", /esc close/);
 		const [only, ...rest] = plain(page.render(80, 1));
 		assert.deepEqual(rest, []);
 		assert.notEqual(only, "Tasks  2 background tasks running · /tasks", "one row goes to the list, not the footer");
@@ -697,6 +697,8 @@ describe("/tasks in a subagent's chat (#4640)", () => {
 			assert.doesNotMatch(chat, /Background tasks/);
 		}
 		inspector.handleInput(ESCAPE);
+		assert.match(text(inspector.renderViewport(80, 24)), /Transcript ·/, "Esc never leaves the chat (#5224)");
+		inspector.handleInput(LEFT);
 		assert.doesNotMatch(text(inspector.renderViewport(80, 24)), /Transcript ·/);
 		inspector.dispose();
 	});

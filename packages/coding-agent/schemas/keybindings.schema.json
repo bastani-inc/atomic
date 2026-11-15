@@ -243,17 +243,49 @@
       "$ref": "#/$defs/KeybindingValue",
       "description": "Open task list"
     },
-    "app.tasks.inspect": {
-      "$ref": "#/$defs/KeybindingValue",
-      "description": "Inspect selected task"
-    },
-    "app.tasks.cancel": {
-      "$ref": "#/$defs/KeybindingValue",
-      "description": "Cancel selected task with confirmation"
-    },
     "app.tasks.input": {
       "$ref": "#/$defs/KeybindingValue",
       "description": "Input to selected task"
+    },
+    "app.nav.back": {
+      "$ref": "#/$defs/KeybindingValue",
+      "description": "Go back one level from an empty prompt"
+    },
+    "app.nav.mainChat": {
+      "$ref": "#/$defs/KeybindingValue",
+      "description": "Return from the workflow graph to the main chat"
+    },
+    "app.list.open": {
+      "$ref": "#/$defs/KeybindingValue",
+      "description": "Open the selected item"
+    },
+    "app.list.stop": {
+      "$ref": "#/$defs/KeybindingValue",
+      "description": "Stop the selected item (press again to confirm); dismiss a finished one"
+    },
+    "app.list.peek": {
+      "$ref": "#/$defs/KeybindingValue",
+      "description": "Peek at the selected task"
+    },
+    "app.list.filter": {
+      "$ref": "#/$defs/KeybindingValue",
+      "description": "Filter the list by name"
+    },
+    "app.keys.help": {
+      "$ref": "#/$defs/KeybindingValue",
+      "description": "Show the keys of the current screen"
+    },
+    "app.agents.focus": {
+      "$ref": "#/$defs/KeybindingValue",
+      "description": "Focus the agent panel from an empty prompt"
+    },
+    "app.agents.chord": {
+      "$ref": "#/$defs/KeybindingValue",
+      "description": "Start a background-work chord"
+    },
+    "app.agents.stopAll": {
+      "$ref": "#/$defs/KeybindingValue",
+      "description": "After the chord key: stop all background subagents and workflow runs (press twice to confirm)"
     },
     "app.thinking.toggle": {
       "$ref": "#/$defs/KeybindingValue",

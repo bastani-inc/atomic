@@ -78,7 +78,7 @@ test("task picker and detail show page-specific hints and wheel moves selection 
 	try {
 		await h.fixture.start("First task");
 		await h.fixture.start("Second task");
-		assert.match(h.text(), /↑↓ select.*view.*Esc back/);
+		assert.match(h.text(), /↑↓ select · enter\/→ open · x stop · esc close · \? keys/);
 		const initial = h.inspector.navigation.selectedTaskId;
 		h.inspector.handleInput(up);
 		assert.notEqual(h.inspector.navigation.selectedTaskId, initial);
@@ -92,7 +92,7 @@ test("task picker and detail show page-specific hints and wheel moves selection 
 		h.fixture.store.drain();
 		h.inspector.handleInput("\r");
 		await flush();
-		assert.match(h.text(), /PgUp\/PgDn scroll · ↑↓ actions.*select.*stop.*Esc back/);
+		assert.match(h.text(), /↑↓ actions · enter\/→ select · x stop · pgup\/pgdn scroll · esc back to list/);
 		const before = h.text(80, 10);
 		h.inspector.handleInput(up);
 		assert.equal(h.text(80, 10), before);
@@ -126,8 +126,7 @@ test("agent transcript footer offers messaging only when supported and fills the
 			const text = plain(lines);
 			assert.match(text, /^Transcript/);
 			assert.match(text, /hello transcript/);
-			assert.match(text, /Esc back · .*top\/latest/);
-			assert.equal(text.includes("Enter messages the agent"), canSend);
+			assert.match(text, /← back · pgup\/pgdn scroll · ctrl\+o expand · \? keys/);
 			assert.equal(lines.length, 30);
 			assert.ok(lines.every((line) => visibleWidth(line) <= 110));
 			h.inspector.invalidate();
@@ -181,11 +180,11 @@ test("shell transcript uses selected task's current output tail and refreshes it
 		assert.equal(reads.at(-1)?.start, "1808");
 		assert.match(h.text(), /OUTPUT FROM 1808/);
 		assert.match(h.text(), /Earlier output omitted · showing retained 8 KiB tail/);
-		assert.match(h.text(), /Esc back · .*top\/latest/);
-		assert.doesNotMatch(h.text(), /Enter messages the agent/);
+		assert.match(h.text(), /← back · pgup\/pgdn scroll/);
+		assert.doesNotMatch(h.text(), /esc interrupt/, "a shell's output has no turn to interrupt");
 		const frame = h.frame(110, 24);
 		assert.equal(frame.length, 24);
-		assert.equal(plain(frame).split("\n").at(-1)?.includes("Esc back"), true);
+		assert.equal(plain(frame).split("\n").at(-1)?.includes("← back"), true);
 		shell.output.byteCount = "12000";
 		changed();
 		await flush();
@@ -230,6 +229,8 @@ test("store updates reload only the focused detail, and closing transcript reloa
 		assert.match(h.text(), /^Transcript/);
 		detail = "Returned prompt";
 		assert.equal(h.inspector.handleInput("\x1b"), true);
+		assert.match(h.text(), /^Transcript/, "Esc never leaves a task's chat (#5224)");
+		assert.equal(h.inspector.handleInput("\x1b[D"), true);
 		await flush();
 		assert.match(h.text(), /Returned prompt/);
 		assert.match(h.text(), /Inspect transcript/);
@@ -248,7 +249,7 @@ test("a delayed stop failure remains visible below an open transcript (#4521)", 
 		h.inspector.handleInput("\r");
 		await flush();
 		h.inspector.handleInput("x");
-		h.inspector.handleInput("y");
+		h.inspector.handleInput("x");
 		await flush();
 		h.inspector.handleInput("\r");
 		await flush();
@@ -256,7 +257,7 @@ test("a delayed stop failure remains visible below an open transcript (#4521)", 
 		await flush();
 		const lines = h.frame(110, 24);
 		assert.equal(lines.length, 24);
-		assert.match(plain(lines), /Esc back.*top\/latest\nCould not stop the task: stop refused/);
+		assert.match(plain(lines), /← back.*\? keys\nCould not stop the task: stop refused/);
 	} finally {
 		result.resolve({ ok: false, error: { message: "stop refused" } });
 		await h.dispose();

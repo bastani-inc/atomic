@@ -207,14 +207,23 @@ describe("GraphView keyboard navigation", () => {
 		view.dispose();
 	});
 
-	it("Escape variants and Ctrl+C variants call onClose", () => {
-		const stages = [makeStage("A")];
+	it("Ctrl+C variants call onClose; Escape variants return to main chat without closing (#5224)", () => {
 		const onClose = vi.fn(() => {});
-		const view = makeView(stages, onClose);
-		const closeKeys = ["\x1b", "\x1b[27u", "\x1b[27;1;27~", "\x03", "\x1b[99;5u", "\x1b[99;5:1u", "\x1b[27;5;99~"];
-		for (const key of closeKeys) {
-			view.handleInput(key);
-		}
+		const onDetach = vi.fn(() => {});
+		const view = new GraphView({
+			piKeybindings: s5aKeybindings(),
+			mode: "overlay",
+			runId: "run-1",
+			store: makeStore(makeSnap([makeStage("A")])),
+			graphTheme: defaultTheme,
+			onClose,
+			onDetach,
+		});
+		for (const key of ["\x1b", "\x1b[27u", "\x1b[27;1;27~"]) assert.equal(view.handleInput(key), true);
+		assert.equal(onDetach.mock.calls.length, 3);
+		assert.equal(onClose.mock.calls.length, 0);
+		const closeKeys = ["\x03", "\x1b[99;5u", "\x1b[99;5:1u", "\x1b[27;5;99~"];
+		for (const key of closeKeys) view.handleInput(key);
 		assert.equal(onClose.mock.calls.length, closeKeys.length);
 		view.dispose();
 	});

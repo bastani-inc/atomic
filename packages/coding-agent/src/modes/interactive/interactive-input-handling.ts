@@ -1,5 +1,6 @@
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { getOwnerTaskStore } from "../../core/tasks/owner-store.js";
+import { stopAllBackgroundWork } from "../../core/tasks/stop-all.ts";
 import { yieldToEventLoop } from "../../utils/event-loop.ts";
 import {
 	interactiveEngineNeedsExplicitTermination,
@@ -23,6 +24,7 @@ import { pasteClipboardImageToEditor, recordTimeSinceReset } from "./interactive
 import { pauseAndAbortInteractiveSession } from "./interactive-pause.ts";
 import { restoreFailedSubmissionDraft, restoreRefusedSubmission } from "./interactive-prompt-restore.ts";
 import { handOffCompactionQueue, settleSubmission, showSubmissionAsQueued } from "./interactive-queueing.ts";
+import { createStopAllChord } from "./interactive-stop-all.ts";
 
 export function registerStartupInputListeners(mode: InteractiveModeBase): void {
 	mode.addTuiInputListener(() =>
@@ -59,6 +61,18 @@ export function registerStartupInputListeners(mode: InteractiveModeBase): void {
 
 InteractiveModeBase.prototype.setupKeyHandlers = async function (this: InteractiveModeBase): Promise<void> {
 	registerStartupInputListeners(this);
+	this.addTuiInputListener(
+		createStopAllChord({
+			keybindings: this.keybindings,
+			editorOwnsInput: () => !this.ui.hasOverlay() && this.editorContainer.children.includes(this.editor),
+			stopAll: () =>
+				this.runtimeHost instanceof IsolatedInteractiveRuntime
+					? this.runtimeHost.stopAllBackgroundWork()
+					: stopAllBackgroundWork(this.session),
+			showStatus: (message) => this.showStatus(message),
+			showWarning: (message) => this.showWarning(message),
+		}),
+	);
 	// Set up handlers on defaultEditor - they use this.editor for text access
 	// so they work correctly regardless of which editor is active
 	this.defaultEditor.onEscape = () => {

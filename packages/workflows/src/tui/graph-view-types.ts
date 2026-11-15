@@ -31,7 +31,7 @@ export interface GraphViewOpts {
 	 */
 	onStageAttach?: (runId: string, stageId: string) => void;
 	/**
-	 * Invoked when the user presses `Ctrl+X` in graph mode. Returns to main
+	 * Invoked when the user presses the graph's back key. Returns to main
 	 * chat by hiding the popup with `setHidden(true)`. Falls back to `onHide`
 	 * when unset.
 	 */

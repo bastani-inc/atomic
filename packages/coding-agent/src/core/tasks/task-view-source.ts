@@ -96,6 +96,11 @@ export interface TaskViewSource {
 	 * messaged.
 	 */
 	sendTaskMessage?(id: TaskId, text: string): Promise<void>;
+	/**
+	 * Interrupts an agent task's current turn, as Esc does in its chat. The task keeps running and waits for its next
+	 * message. Absent where a view cannot interrupt a task's turn.
+	 */
+	interruptTask?(id: TaskId): Promise<TaskViewResult<undefined>>;
 	/** What a chat of an agent task completes: its session's cwd and skill commands. Absent where unknown. */
 	taskCommands?(id: TaskId): TaskCommandCatalog | undefined | Promise<TaskCommandCatalog | undefined>;
 }
@@ -121,6 +126,7 @@ export function launchedTaskViewSource(source: TaskViewSource, launcher: TaskId)
 	const launched = (tasks: readonly TaskRecord[]) => tasks.filter((task) => task.parentTaskId === launcher);
 	const sendTaskMessage = root.sendTaskMessage;
 	const taskCommands = root.taskCommands;
+	const interruptTask = root.interruptTask;
 	const view: TaskViewSource = {
 		get tasks() {
 			return launched(root.tasks);
@@ -148,6 +154,7 @@ export function launchedTaskViewSource(source: TaskViewSource, launcher: TaskId)
 			? {}
 			: { sendTaskMessage: (id: TaskId, text: string) => sendTaskMessage.call(root, id, text) }),
 		...(taskCommands === undefined ? {} : { taskCommands: (id: TaskId) => taskCommands.call(root, id) }),
+		...(interruptTask === undefined ? {} : { interruptTask: (id: TaskId) => interruptTask.call(root, id) }),
 	};
 	views.set(launcher, view);
 	launchedViewRoots.set(view, root);
@@ -278,6 +285,20 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 		watchExtensionStatuses(id, listener) {
 			const task = lease(id);
 			return task.ok ? watchTaskExtensionStatuses(task.value, listener) : () => {};
+		},
+		async interruptTask(id) {
+			const task = lease(id);
+			if (!task.ok) return { ok: false, error: { message: task.error.message } };
+			const bound = taskTranscriptSource(task.value);
+			const interrupt = bound.ok ? bound.value.session.interruptTurn : undefined;
+			if (!bound.ok || interrupt === undefined)
+				return { ok: false, error: { message: "This task's turn cannot be interrupted from here." } };
+			try {
+				await interrupt.call(bound.value.session);
+				return { ok: true, value: undefined };
+			} catch (error) {
+				return { ok: false, error: { message: error instanceof Error ? error.message : String(error) } };
+			}
 		},
 		async sendTaskMessage(id, text) {
 			const task = lease(id);

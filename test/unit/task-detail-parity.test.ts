@@ -80,7 +80,7 @@ test("detail keeps status, zero metrics and the selected action pinned while con
 test("configured x inspection takes precedence over the reference stop shortcut", async () => {
 	initTheme("dark");
 	const previous = getKeybindings();
-	setKeybindings(new KeybindingsManager({ "app.tasks.inspect": "x" }));
+	setKeybindings(new KeybindingsManager({ "app.list.open": "x" }));
 	const fixture = taskFixture();
 	const inspector = new TaskInspector(
 		fixture.store,
@@ -154,7 +154,7 @@ for (const [binding, input] of [
 	test(`configured ${binding} inspection works in the list and detail`, async () => {
 		initTheme("dark");
 		const previous = getKeybindings();
-		setKeybindings(new KeybindingsManager({ "app.tasks.inspect": binding }));
+		setKeybindings(new KeybindingsManager({ "app.list.open": binding }));
 		const fixture = taskFixture();
 		const environment = taskTranscriptEnvironment();
 		const inspector = new TaskInspector(
