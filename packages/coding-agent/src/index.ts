@@ -840,6 +840,10 @@ export {
 } from "./core/skills.ts";
 export { createSyntheticSourceInfo } from "./core/source-info.ts";
 export {
+	type ConfiguredSecretRedactorOptions,
+	configuredSecretRedactor,
+} from "./core/storage/sqlite-facade.js";
+export {
 	generateStructuredOutput,
 	type StructuredOutputRequest,
 	type StructuredOutputResult,
@@ -1206,11 +1210,7 @@ export { pickWhimsicalWorkingMessage } from "./modes/interactive/whimsical-messa
 export { createChildProcessEnvironment, spawnProcess } from "./utils/child-process.ts";
 // Clipboard utilities
 export { copyToClipboard } from "./utils/clipboard.js";
-export {
-	type ConfiguredSecretRedactorOptions,
-	configuredSecretRedactor,
-	redactCredentialShapes,
-} from "./utils/credential-redaction.js";
+export { redactCredentialShapes } from "./utils/credential-redaction.js";
 export { parseFrontmatter, stripFrontmatter } from "./utils/frontmatter.ts";
 export {
 	isSafeFsWatchPathError,

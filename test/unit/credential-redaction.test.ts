@@ -2,11 +2,9 @@ import assert from "node:assert/strict";
 import { performance } from "node:perf_hooks";
 import { describe, test } from "vitest";
 import { redactUrlCredentials } from "../../packages/coding-agent/src/core/error-contract.ts";
+import { configuredSecretRedactor } from "../../packages/coding-agent/src/core/storage/sqlite-facade.ts";
 import { redactCredentials } from "../../packages/coding-agent/src/core/workspace/redact.ts";
-import {
-	configuredSecretRedactor,
-	redactCredentialShapes,
-} from "../../packages/coding-agent/src/utils/credential-redaction.ts";
+import { redactCredentialShapes } from "../../packages/coding-agent/src/utils/credential-redaction.ts";
 import { redactSensitiveText } from "../../packages/workflows/src/shared/workflow-failures-signals.ts";
 
 /** A linear scan of this input takes milliseconds; a quadratic one takes minutes. */
@@ -344,6 +342,18 @@ describe("credential shape coverage", () => {
 			`Bearer${"\u001b[0m".repeat(ADVERSARIAL_LENGTH / 4)}`,
 			"aT".repeat(ADVERSARIAL_LENGTH / 2),
 			"\\".repeat(ADVERSARIAL_LENGTH),
+			`${"1".repeat(ADVERSARIAL_LENGTH)}aBearer`,
+			"1 ;a".repeat(ADVERSARIAL_LENGTH / 4),
+			`password:${" ".repeat(ADVERSARIAL_LENGTH)}`,
+			`token:${"\u001b[0m ".repeat(ADVERSARIAL_LENGTH / 5)},`,
+			`token${"\\".repeat(ADVERSARIAL_LENGTH)}`,
+			"token\\\\".repeat(ADVERSARIAL_LENGTH / 7),
+			`token:\\${"\\".repeat(ADVERSARIAL_LENGTH)}`,
+			`-----BEGIN ${"A ".repeat(ADVERSARIAL_LENGTH / 2)}`,
+			"-----BEGIN A ".repeat(ADVERSARIAL_LENGTH / 13),
+			`-----BEGIN ${["PRIVATE", "KEY"].join(" ")}-----`.repeat(ADVERSARIAL_LENGTH / 27),
+			"aToken=".repeat(ADVERSARIAL_LENGTH / 7),
+			`Authorization: ${"\u001b[1m".repeat(ADVERSARIAL_LENGTH / 4)}`,
 		]) {
 			const started = performance.now();
 			redactCredentialShapes(input);
@@ -354,6 +364,20 @@ describe("credential shape coverage", () => {
 });
 
 describe("configured secret redaction", () => {
+	test("configured secret redaction stays linear on adversarial input", () => {
+		const redact = configuredSecretRedactor(["aaaaaa", "aaaaaaab", `${"a".repeat(64)}\n${"b".repeat(64)}`]);
+		for (const input of [
+			"a".repeat(ADVERSARIAL_LENGTH),
+			"ab".repeat(ADVERSARIAL_LENGTH / 2),
+			"[redacted]a".repeat(ADVERSARIAL_LENGTH / 11),
+		]) {
+			const started = performance.now();
+			redact(input);
+			const elapsed = performance.now() - started;
+			assert.ok(elapsed < LINEAR_REDACTION_BUDGET_MS, `took ${Math.round(elapsed)} ms`);
+		}
+	});
+
 	test("overlapping configured secrets are redacted whole", () => {
 		const redact = configuredSecretRedactor(["AAAA1111BBBB", "BBBB2222CCCC"]);
 		assert.equal(redact("x AAAA1111BBBB2222CCCC y"), "x [redacted] y");
