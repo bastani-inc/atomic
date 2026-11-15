@@ -62,6 +62,7 @@ export * from "./utils/diagnostics.ts";
 export * from "./utils/event-stream.ts";
 export { AssistantMessageEventStream } from "./utils/event-stream.ts";
 export * from "./utils/identity.ts";
+export { toInlineImage } from "./utils/inline-images.ts";
 export * from "./utils/json-parse.ts";
 export * from "./utils/overflow.ts";
 export * from "./utils/retry.ts";

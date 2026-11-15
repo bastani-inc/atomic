@@ -1,7 +1,6 @@
 import { statSync } from "node:fs";
 import { stat as fsStat } from "node:fs/promises";
 import path, { type PlatformPath } from "node:path";
-import { createInterface } from "node:readline";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Text } from "@earendil-works/pi-tui";
 import { spawn } from "child_process";
@@ -9,6 +8,7 @@ import { Minimatch } from "minimatch";
 import { type Static, Type } from "typebox";
 import { parenthesizedKeyHint } from "../../modes/interactive/components/keybinding-hints.js";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
+import { attachLineReader } from "../../utils/lines.ts";
 import type { ManagedToolError } from "../../utils/managed-tool-errors.ts";
 import { ensureTool } from "../../utils/tools-manager.ts";
 import { experimentalToolSamplingProperty } from "../experimental.ts";
@@ -740,7 +740,7 @@ export function createFindToolDefinition(
 									env: createChildProcessEnvironment(),
 									stdio: ["ignore", "pipe", "pipe"],
 								});
-								const rl = createInterface({ input: child.stdout });
+								let detachLines = () => {};
 								let stderr = "";
 								const lines: string[] = [];
 								stopChild = () => {
@@ -752,12 +752,12 @@ export function createFindToolDefinition(
 								}, remainingMs);
 								const cleanup = () => {
 									clearTimeout(targetTimer);
-									rl.close();
+									detachLines();
 								};
 								child.stderr?.on("data", (chunk) => {
 									stderr += chunk.toString();
 								});
-								rl.on("line", (rawLine) => {
+								detachLines = attachLineReader(child.stdout, (rawLine) => {
 									if (windowsPathMatcher) {
 										const matchPath = relativizeFindResultPath(
 											cleanFdLine(rawLine).replaceAll("\\", "/"),

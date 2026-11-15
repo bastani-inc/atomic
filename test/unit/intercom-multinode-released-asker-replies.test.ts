@@ -1993,6 +1993,30 @@ describe("an ask to a subagent that is then released keeps waiting for it across
 		}
 	});
 
+	test("an owner that leaves a broker where it never took its presence still ends the reservations it made there", async () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+		try {
+			const shared = await cluster();
+			const [b, c] = [await startNode(shared), await startNode(shared)];
+			const previous = session("owner");
+			await register(b, previous);
+			// The broker it left still holds its presence: this connection never takes it.
+			const returned = reconnected(previous);
+			await register(c, returned);
+			const key = releasedReservationKey("worker");
+			reserveReleased(c, returned, "worker");
+			await vi.waitFor(async () => assert.equal((await c.state.reservations.read(key)).status, "active"), waitFor);
+
+			await leave(c, returned);
+			await vi.waitFor(
+				async () => assert.notEqual((await c.state.reservations.read(key)).status, "active"),
+				waitFor,
+			);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	test("a departing subagent whose asks cannot be parked is reported, and its presence still ends (#4386)", async () => {
 		const scene = await parkedScene((state) => ({
 			...state,
@@ -2194,6 +2218,94 @@ describe("a released asker's question lasts as long as the ask does (#4852)", ()
 		const kept = await b.state.releasedAsks.lookup({ questionId, replierSessionId: replier.info.id });
 		assert.equal(kept.status === "found" && kept.ask.state, "open");
 		assert.deepEqual(handoffsTo(owner), []);
+	});
+
+	test("a recipient that ends still fails a released asker's question after one whose owner no longer holds its asker (#4852)", async () => {
+		const shared = await cluster();
+		const a = await startNode(shared);
+		const b = await startNode(shared);
+		const owner = session("owner");
+		await register(a, owner);
+		const replier = session("replier");
+		await register(b, replier);
+		// An older question from a subagent its owner no longer holds: no owner takes its failure.
+		const dropped = session("dropped", { supervisorId: owner.info.id });
+		await register(a, dropped);
+		await a.state.pendingAsks.record({
+			senderSessionId: dropped.info.id,
+			targetSessionId: replier.info.id,
+			messageId: randomUUID(),
+		});
+		await leave(a, dropped);
+		const { questionId } = await releaseChild(a, owner, "worker", replier);
+
+		await leave(b, replier);
+		await vi.waitFor(() => assert.equal(handoffsTo(owner).length, 1), { timeout: 2_000, interval: 5 });
+		const handoff = only(handoffsTo(owner), "handoffs");
+		assert.equal(handoff.replyTo, questionId);
+		assert.equal(handoff.childName, "worker");
+	});
+
+	test("a recipient that ends queues a released asker's failure for its offline owner and still tells a live owner (#4852)", async () => {
+		const shared = await cluster();
+		const a = await startNode(shared);
+		const b = await startNode(shared);
+		const replier = session("replier");
+		await register(b, replier);
+		// The owner of the older question is offline: Intercom still knows it, no broker hosts it.
+		const offline = session("offline-owner");
+		await a.state.knownSessions.record({
+			targetIdentity: deliveryTargetIdentity(offline),
+			intercomSessionId: offline.info.id,
+			name: "offline-owner",
+			group: CREW,
+			groups: [CREW],
+		});
+		const queued = await releaseChild(a, offline, "waiting", replier);
+		const owner = session("owner");
+		await register(a, owner);
+		const { questionId } = await releaseChild(a, owner, "worker", replier);
+
+		await leave(b, replier);
+		await vi.waitFor(() => assert.equal(handoffsTo(owner).length, 1), { timeout: 2_000, interval: 5 });
+		assert.equal(only(handoffsTo(owner), "handoffs").replyTo, questionId);
+		const row = await b.state.outbox.read(`ended:${queued.questionId}`);
+		assert.equal(row.status === "found" && row.row.targetIdentity, deliveryTargetIdentity(offline));
+		// The queued failure holds its question until the offline owner takes it.
+		const held = await b.state.releasedAsks.lookup({
+			questionId: queued.questionId,
+			replierSessionId: replier.info.id,
+		});
+		assert.equal(held.status === "found" && held.ask.state, "claimed");
+		assert.equal(held.status === "found" && held.ask.replyMessageId, `ended:${queued.questionId}`);
+	});
+
+	test("a failure the outbox refuses leaves that released asker's question open and still tells the other owners (#4852)", async () => {
+		let refused: string | undefined;
+		const shared = await cluster();
+		const a = await startNode(shared);
+		const b = await startNode(shared, (state) => ({
+			...state,
+			outbox: {
+				...state.outbox,
+				enqueue: async (request) =>
+					request.frame.message.id === `ended:${refused}`
+						? { status: "invalid", reason: "empty-target" }
+						: state.outbox.enqueue(request),
+			},
+		}));
+		const owner = session("owner");
+		await register(a, owner);
+		const replier = session("replier");
+		await register(b, replier);
+		refused = (await releaseChild(a, owner, "refused", replier)).questionId;
+		const { questionId } = await releaseChild(a, owner, "worker", replier);
+
+		await leave(b, replier);
+		await vi.waitFor(() => assert.equal(handoffsTo(owner).length, 1), { timeout: 2_000, interval: 5 });
+		assert.equal(only(handoffsTo(owner), "handoffs").replyTo, questionId);
+		const kept = await b.state.releasedAsks.lookup({ questionId: refused, replierSessionId: replier.info.id });
+		assert.equal(kept.status === "found" && kept.ask.state, "open");
 	});
 
 	test("a recipient that ends long after the release fails the released asker's question once, through its owner (#4852)", async () => {

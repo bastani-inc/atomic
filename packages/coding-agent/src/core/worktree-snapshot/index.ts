@@ -100,6 +100,7 @@ export type {
 	WorkspaceBinding,
 	WorktreeDegradedRestore,
 	WorktreeDegradedRestoreBasis,
+	WorktreeDegradedWork,
 	WorktreeRestoreWarning,
 	WorktreeRootMapping,
 	WorktreeSnapshot,

@@ -82,6 +82,24 @@ describe("recordStageCheckpoint", () => {
 		}
 	});
 
+	test("records a completed prompt's answer in its completion record, and never on a stage that did not complete (#4941)", async () => {
+		const promptAnswer = { response: "first-answer" };
+		for (const status of ["completed", "failed", "skipped"] as const) {
+			const replayKey = `prompt:${status}:1`;
+			await recordStageCheckpoint(deps(), makeStage({ status, replayKey, result: undefined }), {
+				metadataOnly: true,
+				promptAnswer,
+			});
+			const cp = backend
+				.listCheckpoints(WORKFLOW_ID)
+				.find((item) => item.kind === "stage" && item.replayKey === replayKey);
+			assert.deepEqual(
+				cp?.kind === "stage" ? cp.promptAnswer : "missing",
+				status === "completed" ? promptAnswer : undefined,
+			);
+		}
+	});
+
 	test("preserves first replay output when later lifecycle metadata is recorded", async () => {
 		const d = deps();
 		await recordStageCheckpoint(d, makeStage({ replayKey: "rk-1", durationMs: 1000 }));

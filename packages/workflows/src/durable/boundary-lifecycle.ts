@@ -25,6 +25,15 @@ export interface BoundaryLifecycleRecords {
 	readonly outputRecords: () => readonly DurableStageCheckpoint[];
 }
 
+/**
+ * Whether a resumed run may start a new attempt at a boundary whose latest terminal has `status`: only a failed child
+ * is run again, and the new attempt records a terminal of its own. `prepareDurableChildInvocation` admits attempts by
+ * this rule and the lifecycle validator accepts the histories it writes (#4863).
+ */
+export function boundaryTerminalAdmitsNewAttempt(status: string): boolean {
+	return status === "failed";
+}
+
 /** Validate one boundary's atomic start/terminal lifecycle and resolve its latest legal state. */
 export function resolveBoundaryLifecycle(
 	start: DurableStageCheckpoint,
@@ -128,12 +137,16 @@ export function resolveBoundaryLifecycleFromRecords(
 		}
 	}
 
+	// One terminal per attempt, so a second, later terminal belongs to the attempt a failed one admitted, whatever its
+	// own status (#4863). Earlier releases also read a completed terminal beside a failed or skipped one in either
+	// order; that history stays readable.
+	const ordered = [...terminals].sort((left, right) => left.completedAt - right.completedAt);
+	const [earlier, later] = ordered as [DurableStageCheckpoint, DurableStageCheckpoint | undefined];
 	if (
-		terminals.length > 2 ||
-		(terminals.length === 2 &&
-			(!statuses.has("completed") ||
-				(!statuses.has("failed") && !statuses.has("skipped")) ||
-				terminals[0]!.completedAt === terminals[1]!.completedAt))
+		ordered.length > 2 ||
+		(later !== undefined &&
+			(earlier.completedAt === later.completedAt ||
+				(!boundaryTerminalAdmitsNewAttempt(earlier.topology!.boundary!.status) && !statuses.has("completed"))))
 	) {
 		return failure("boundary has an illegal terminal transition");
 	}
@@ -145,9 +158,7 @@ export function resolveBoundaryLifecycleFromRecords(
 	) {
 		return failure("boundary replay key has conflicting output records");
 	}
-	const latestTerminal = terminals.reduce((latest, terminal) =>
-		terminal.completedAt > latest.completedAt ? terminal : latest,
-	);
+	const latestTerminal = ordered[ordered.length - 1]!;
 	return {
 		lifecycle: {
 			latestTerminal,

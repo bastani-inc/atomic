@@ -22,6 +22,7 @@ import { resolveSessionStore, type SessionStorageOptions } from "../src/core/ses
 import { SettingsManager } from "../src/core/settings-manager.js";
 import { JsonlSessionStore } from "../src/core/storage/session/jsonl-session-store.js";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
+import { SESSION_SUMMARY_TEXT_CHARS } from "../src/core/storage/session/session-summary.ts";
 import type { SessionStore } from "../src/core/storage/session/types.js";
 import { createSessionManager } from "../src/main-session.js";
 import { runCliProcess } from "./cli-test-helpers.js";
@@ -869,7 +870,8 @@ describe("legacy JSONL sessions in the default store", () => {
 
 			await withDefaultStore(async (store) => {
 				const listed = (await SessionManager.list(cwd, store)).find((session) => session.id === "large-first");
-				assert.equal(listed?.firstMessage, firstText);
+				// Every store lists the first SESSION_SUMMARY_TEXT_CHARS of a message (#4954); that prefix lies past the window.
+				assert.equal(listed?.firstMessage, firstText.slice(0, SESSION_SUMMARY_TEXT_CHARS));
 			});
 		});
 

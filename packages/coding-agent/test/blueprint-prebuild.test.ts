@@ -1058,3 +1058,135 @@ describe("prebuild and seed edge cases (#4748)", () => {
 		assert.equal(existsSync(join(storeDir(), "pool")), false);
 	});
 });
+
+describe("parking a build path Git tracks files under (#4911)", () => {
+	/** `dist/out.js` is committed; the build adds the ignored `dist/extra.js` and installs `node_modules`. */
+	async function trackedDistCheckout() {
+		return sandbox.remoteWithClone("repo", {
+			".gitignore": "node_modules/\ndist/*\n!dist/out.js\n",
+			"dist/out.js": "committed\n",
+			".atomic/blueprint.yaml": forThisHost(
+				`maintenance:\n  - ${JSON.stringify(INSTALL)}\n  - "mkdir -p dist && echo built > dist/extra.js"\n`,
+			),
+			".atomic/settings.json": buildSettings(["dist", "node_modules"]),
+		});
+	}
+
+	function parkedPrebuild(root: string): Promise<PrebuildOutcome> {
+		return prebuildRepository(root, {
+			agentDir: agentDir(),
+			storeDir: storeDir(),
+			settings,
+			maxIdlePerRepository: 1,
+			park: true,
+		});
+	}
+
+	test(
+		"repeated parked prebuilds keep one idle slot, with its tracked files, that a resume claims (#4911)",
+		async () => {
+			const { clone, remote } = await trackedDistCheckout();
+			let last: PrebuildOutcome | undefined;
+			for (let n = 0; n < 4; n++) {
+				last = await parkedPrebuild(clone);
+				assert.equal(last.status, "built");
+				assert.deepEqual(last.parked, ["dist/extra.js", "node_modules"]);
+				assert.equal(readFileSync(join(last.path!, "dist", "out.js"), "utf8"), "committed\n");
+				assert.equal(existsSync(join(last.path!, "dist", "extra.js")), false);
+			}
+			const records = readdirSync(join(storeDir(), "pool", repositoryIdOf([remote]))).filter((name) =>
+				name.endsWith(".json"),
+			);
+			assert.equal(records.length, 1, records.join(", "));
+			const seeds = seedDirectory(storeDir(), repositoryIdOf([remote]));
+			assert.equal(readFileSync(join(seeds, "dist", "extra.js"), "utf8"), "built\n");
+			assert.equal(existsSync(join(seeds, "dist", "out.js")), false, "tracked files are never parked");
+			assert.equal(readFileSync(join(seeds, "node_modules", ".installed"), "utf8"), "installed\n");
+
+			const { manager } = await editedSession(clone);
+			const prepared = await resume(manager);
+
+			assert.equal(prepared.sessionManager.getCwd(), last?.path);
+			assert.equal(latestResumeTimings(prepared.sessionManager)?.restores[0]?.mode, "claimed");
+			assert.equal(readFileSync(join(last!.path!, "dist", "out.js"), "utf8"), "committed\n");
+			assert.equal(readFileSync(join(last!.path!, "README.md"), "utf8"), "edited\n");
+		},
+		PREBUILD_TEST_TIMEOUT_MS,
+	);
+
+	test(
+		"an adopted seed puts parked output beside the tracked files of its build path, and a resume claims it (#4911)",
+		async () => {
+			const { clone, remote } = await trackedDistCheckout();
+			const outcome = await parkedPrebuild(clone);
+			assert.deepEqual(outcome.parked, ["dist/extra.js", "node_modules"]);
+			const keys = await blueprintCacheKeys(clone, { agentDir: agentDir(), storeDir: storeDir() });
+			const paths = keys.entries
+				.filter((entry) => entry.name === "build" || entry.name === "git")
+				.flatMap((entry) => entry.paths);
+			const cache = sandbox.path("cache");
+			for (const [index, path] of paths.entries()) cpSync(path, join(cache, String(index)), { recursive: true });
+			rmSync(storeDir(), { recursive: true, force: true });
+			for (const [index, path] of paths.entries()) cpSync(join(cache, String(index)), path, { recursive: true });
+			const { manager } = await editedSession(clone);
+
+			const prepared = await resume(manager);
+
+			const root = slot([remote], 0);
+			assert.equal(prepared.sessionManager.getCwd(), root);
+			assert.equal(latestResumeTimings(prepared.sessionManager)?.restores[0]?.mode, "seeded");
+			assert.equal(readFileSync(join(root, "dist", "out.js"), "utf8"), "committed\n");
+			assert.equal(readFileSync(join(root, "dist", "extra.js"), "utf8"), "built\n");
+			assert.equal(readFileSync(join(root, "node_modules", ".installed"), "utf8"), "installed\n");
+			assert.equal(readFileSync(join(root, "README.md"), "utf8"), "edited\n");
+		},
+		PREBUILD_TEST_TIMEOUT_MS,
+	);
+
+	test.skipIf(process.platform === "win32")(
+		"output whose name a seed manifest cannot hold stays in the worktree, which stays claimable (#4911)",
+		async () => {
+			const { clone, remote } = await trackedDistCheckout();
+			sandbox.write(
+				join(clone, ".atomic", "blueprint.yaml"),
+				forThisHost(
+					`maintenance:\n  - "mkdir -p dist && echo built > dist/extra.js && echo odd > 'dist/a:b.js'"\n`,
+				),
+			);
+			await sandbox.commitAll(clone, "odd output name");
+			const outcome = await parkedPrebuild(clone);
+			assert.equal(outcome.status, "built");
+			assert.deepEqual(outcome.parked, ["dist/extra.js"]);
+			assert.equal(readFileSync(join(outcome.path!, "dist", "a:b.js"), "utf8"), "odd\n");
+			const { manager } = await editedSession(clone);
+			const prepared = await resume(manager);
+			assert.equal(prepared.sessionManager.getCwd(), slot([remote], 0));
+			assert.equal(latestResumeTimings(prepared.sessionManager)?.restores[0]?.mode, "claimed");
+		},
+		PREBUILD_TEST_TIMEOUT_MS,
+	);
+
+	test("the cache keys warn that only untracked and ignored files of a tracked build path are parked (#4911)", async () => {
+		const { clone } = await trackedDistCheckout();
+		sandbox.write(join(clone, "pkg", "lib", "index.js"), "committed\n");
+		sandbox.write(join(clone, ".atomic", "settings.json"), buildSettings(["dist", "node_modules", "pkg/lib"]));
+		await sandbox.commitAll(clone, "a nested tracked build path");
+		const keys = await blueprintCacheKeys(clone, { agentDir: agentDir(), storeDir: storeDir() });
+		const warnings = keys.warnings.filter((text) => text.includes("Git tracks"));
+		assert.equal(warnings.length, 2, keys.warnings.join("\n"));
+		assert.match(warnings[0]!, /^cache path 'dist' holds files Git tracks/);
+		assert.match(warnings[0]!, /only its untracked and ignored files are parked/);
+		assert.match(warnings[1]!, /^cache path 'pkg\/lib' holds files Git tracks/);
+
+		const plain = sandbox.path("plain");
+		sandbox.write(join(plain, ".atomic", "settings.json"), buildSettings(["dist"]));
+		sandbox.write(join(plain, "dist", "out.js"), "not in Git\n");
+		const outside = await blueprintCacheKeys(plain, { agentDir: agentDir(), storeDir: storeDir() });
+		assert.ok(outside.warnings.length > 0, "a checkout without Git warns that it has no remote");
+		assert.equal(
+			outside.warnings.filter((text) => text.includes("Git tracks")).length,
+			0,
+			outside.warnings.join("\n"),
+		);
+	});
+});

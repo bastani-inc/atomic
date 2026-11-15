@@ -30,6 +30,7 @@ import { field, hasProcessFailureEvidence, normalizeCode } from "../shared/workf
 
 export { sleepOrAbort } from "../runs/shared/retry.js";
 
+import { durableWorkflowAttempt } from "./attempt-identity.js";
 import type { DurableWorkflowBackend } from "./backend.js";
 import { durableHash } from "./backend.js";
 import { recordThrowingToolFailure } from "./tool-failure-checkpoint.js";
@@ -542,12 +543,9 @@ async function executeLiveToolInvocation<T extends WorkflowSerializableValue>(
 	let callbackCompleted = false;
 	const cancelInvocation = async (cancellation: Error): Promise<never> => {
 		control.noteCancelled();
-		// Cancellation is inspection-only: resume must retry this ordinal.
-		if (
-			returnFailure ||
-			(isWorkflowToolAbortError(cancellation) && cancellation.scope === "node") ||
-			input.runFailing?.() === true
-		) {
+		// Cancellation is inspection-only: resume must retry this ordinal. A call a node abort, or a run's quit or pause
+		// (#4878), stopped keeps its cancelled record.
+		if (returnFailure || isWorkflowToolAbortError(cancellation) || input.runFailing?.() === true) {
 			await recordCancelledToolInspection(live, startedAt, cancellation, attempts);
 		}
 		const endedAt = Date.now();
@@ -864,7 +862,10 @@ async function recordReplayedToolTopology(
 	const runTopology = input.runTopology;
 	if (runTopology === undefined) return;
 	if (cached.topology === undefined) throw new DurableToolTopologyError(input.workflowId, argsHash);
-	if (cached.topology.run?.runId === runTopology.runId) return;
+	// While the run has attempts each attempt that replays the tool records it, as the record that says the attempt
+	// reached it (#4874); otherwise only a replay into another run does.
+	const attempt = durableWorkflowAttempt(input.backend, input.workflowId);
+	if (attempt === undefined && cached.topology.run?.runId === runTopology.runId) return;
 	const topology = {
 		...cached.topology,
 		parentIds: [...node.parentIds],
@@ -876,11 +877,11 @@ async function recordReplayedToolTopology(
 		JSON.stringify(cached.topology.parentIds) === JSON.stringify(topology.parentIds) &&
 		JSON.stringify(cached.topology.run) === JSON.stringify(topology.run) &&
 		cached.topology.endedAt === topology.endedAt;
-	if (unchanged) return;
+	if (unchanged && attempt === undefined) return;
 	await input.backend.commitAdditiveCheckpointBestEffort({
 		kind: "tool",
 		workflowId: input.workflowId,
-		checkpointId: `tool-replay-meta:${durableHash({ argsHash, topology })}`,
+		checkpointId: `tool-replay-meta:${durableHash(attempt === undefined ? { argsHash, topology } : { argsHash, topology, attempt })}`,
 		name: node.name,
 		...(cached.args !== undefined ? { args: cached.args } : {}),
 		...(cached.source !== undefined ? { source: cached.source } : {}),

@@ -7,6 +7,8 @@
  *   - unknown input keys (catches typos like "propmt")
  *   - wrong-typed values (number/boolean/string/select-union/integer)
  *   - number/integer values outside the schema's declared minimum/maximum
+ *   - text values that break the schema's literal, minLength, maxLength,
+ *     pattern, or format constraint
  *   - select values not in the declared literal union
  *   - missing required inputs
  *   - non-JSON-serializable values
@@ -28,9 +30,18 @@ export interface ValidationError {
 	reason: string;
 }
 
-function firstSchemaError(def: TSchema, value: number, kind: string): string {
+function firstSchemaError(def: TSchema, value: number | string, kind: string): string {
 	const first = [...Value.Errors(def, value)][0];
-	return first === undefined ? `does not match ${kind} schema` : first.message;
+	if (first === undefined) return `does not match ${kind} schema`;
+	switch (first.keyword) {
+		case "const":
+			return `must equal ${JSON.stringify(first.params.allowedValue)}`;
+		case "minLength":
+		case "maxLength":
+			return `${first.message} (${first.keyword} ${first.params.limit})`;
+		default:
+			return first.message;
+	}
 }
 
 export function validateInputs(
@@ -40,13 +51,13 @@ export function validateInputs(
 	const errors: ValidationError[] = [];
 
 	for (const key of Object.keys(inputs)) {
-		if (!(key in schema)) {
+		if (!Object.hasOwn(schema, key)) {
 			errors.push({ key, reason: "unknown input key (not declared by this workflow)" });
 		}
 	}
 
 	for (const [key, def] of Object.entries(schema)) {
-		const value = inputs[key];
+		const value = Object.hasOwn(inputs, key) ? inputs[key] : undefined;
 		let hasTypeError = false;
 
 		if (value === undefined) {
@@ -62,6 +73,8 @@ export function validateInputs(
 				if (typeof value !== "string") {
 					errors.push({ key, reason: `expected string, got ${workflowSerializableTypeName(value)}` });
 					hasTypeError = true;
+				} else if (!Value.Check(def, value)) {
+					errors.push({ key, reason: firstSchemaError(def, value, kind) });
 				}
 				break;
 			case "number":

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getDefaultSessionDirPath, JsonlSessionStore } from "@bastani/atomic";
@@ -55,6 +55,7 @@ beforeEach(() => {
 afterEach(() => {
 	store.clear();
 	setDurableBackend(undefined);
+	vi.unstubAllEnvs();
 });
 
 async function forkToolFixture(seed: string) {
@@ -616,17 +617,28 @@ test("completing a run-targeting subcommand never loads workflow resources, and 
 
 const DISCOVERED = "fork-discovered";
 
-async function discoverableSource(seed: string) {
+/**
+ * A completed run of a workflow defined only in its source project's directory. `trust` is the saved project trust
+ * decision for that directory, or `null` for none; the workflow module records being imported in `marker`.
+ */
+async function discoverableSource(seed: string, trust: boolean | null = true) {
 	const backend = await createMemoryTestBackend();
 	setDurableBackend(backend);
-	const root = mkdtempSync(join(tmpdir(), "fork-discovery-"));
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "fork-discovery-")));
 	const sourceDir = join(root, "source");
 	const runtimeDir = join(root, "runtime");
+	const agentDir = join(root, "agent");
+	const marker = join(root, "source-module-loaded");
 	mkdirSync(join(sourceDir, ".atomic", "workflows"), { recursive: true });
 	mkdirSync(runtimeDir);
+	mkdirSync(agentDir);
+	vi.stubEnv("ATOMIC_CODING_AGENT_DIR", agentDir);
+	if (trust !== null) writeFileSync(join(agentDir, "trust.json"), `${JSON.stringify({ [sourceDir]: trust })}\n`);
 	writeFileSync(
 		join(sourceDir, ".atomic", "workflows", `${DISCOVERED}.ts`),
-		`import { workflow } from "@bastani/atomic/workflows";
+		`import { writeFileSync } from "node:fs";
+import { workflow } from "@bastani/atomic/workflows";
+writeFileSync(${JSON.stringify(marker)}, "loaded");
 export default workflow({
 	name: "${DISCOVERED}",
 	description: "",
@@ -664,7 +676,7 @@ export default workflow({
 		() => undefined,
 		() => undefined,
 	);
-	return { backend, root, runId, runtimeDir, runtime, execute, jobs };
+	return { backend, root, runId, sourceDir, runtimeDir, agentDir, marker, runtime, execute, jobs };
 }
 
 test("resuming a run in its own project still finds its workflow by discovery when no fork definition is given (#4321)", async () => {
@@ -890,4 +902,68 @@ test("the fork action's tool content names the fork, or the source when no fork 
 		),
 		"answer: r/s ok — sent",
 	);
+});
+
+for (const trust of [false, null] as const)
+	test(`a fork of a workflow defined only in a project ${trust === null ? "with no trust decision" : "that is not trusted"} is refused without loading it`, async () => {
+		const { backend, root, runId, sourceDir, marker, execute } = await discoverableSource(
+			`fork-untrusted-${trust}`,
+			trust,
+		);
+		try {
+			const runsBefore = await backend.journal.listRuns();
+			const refused = (await execute({ action: "fork", runId, fromStage: "plan" }, context())) as ForkResult;
+			assert.equal(refused.status, "failed");
+			assert.equal(refused.code, "definition-mismatch");
+			assert.ok(refused.message.includes(sourceDir), refused.message);
+			assert.match(refused.message, /not a trusted project/);
+			assert.match(refused.message, /\/trust/);
+			assert.equal(existsSync(marker), false);
+			assert.deepEqual(await backend.journal.listRuns(), runsBefore);
+		} finally {
+			vi.unstubAllEnvs();
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+test("/workflow fork asks whether to trust the source project and forks once it is trusted", async () => {
+	const { backend, root, runId, sourceDir, agentDir, marker } = await discoverableSource("fork-trust-prompt", null);
+	try {
+		const { workflowCmd } = await registerWorkflowCommand();
+		const prompts: string[] = [];
+		const run = async (answer: (options: string[]) => string | undefined) => {
+			const messages: string[] = [];
+			await workflowCmd.options.handler(`fork ${runId}`, {
+				hasUI: true,
+				ui: {
+					notify: (message: string) => messages.push(message),
+					select: async (title: string, options: string[]) => {
+						prompts.push(title);
+						return answer(options);
+					},
+				},
+			});
+			return messages;
+		};
+
+		const declined = await run((options) => options.find((option) => option === "Do not trust"));
+		assert.equal(prompts.length, 1);
+		assert.ok(prompts[0]!.includes(sourceDir), prompts[0]);
+		assert.match(declined.join("\n"), /not a trusted project/);
+		assert.equal(existsSync(marker), false);
+		assert.deepEqual(JSON.parse(readFileSync(join(agentDir, "trust.json"), "utf8")), { [sourceDir]: false });
+
+		writeFileSync(join(agentDir, "trust.json"), "{}\n");
+		const trusted = await run((options) => options.find((option) => option === "Trust"));
+		assert.equal(prompts.length, 2);
+		const forked = new RegExp(`^Forked workflow ${runId} into (\\S+)\\. `).exec(trusted[0] ?? "");
+		assert.ok(forked, trusted.join("\n"));
+		assert.equal(existsSync(marker), true);
+		assert.deepEqual(JSON.parse(readFileSync(join(agentDir, "trust.json"), "utf8")), { [sourceDir]: true });
+		await currentJobTracker().get(forked[1]!)?.promise;
+		assert.equal(backend.getWorkflow(forked[1]!)?.status, "completed");
+	} finally {
+		vi.unstubAllEnvs();
+		rmSync(root, { recursive: true, force: true });
+	}
 });

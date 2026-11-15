@@ -481,7 +481,7 @@ describe("interactive engine resource readiness", () => {
 			await expect(binding.loadDeferredResources()).rejects.toThrow("workflow load failed");
 			expect(reload).toHaveBeenCalledWith({ reason: "startup" });
 			expect(output).toHaveBeenCalledWith(
-				expect.objectContaining({ type: "extension_error", extensionPath: "builtin/workflows" }),
+				expect.objectContaining({ type: "extension_error", extensionPath: "builtin/workflows", event: "startup" }),
 			);
 		} finally {
 			harness.cleanup();

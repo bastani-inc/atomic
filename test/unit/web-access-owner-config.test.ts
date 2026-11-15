@@ -47,7 +47,15 @@ test("provider configuration is cached per lifecycle owner and survives reporter
 		const { loadGitHubConfig, resetGitHubConfig } = await import("../../packages/web-access/github-config.js");
 		const { isYouTubeEnabled } = await import("../../packages/web-access/youtube-extract.js");
 		const { isVideoFile } = await import("../../packages/web-access/video-extract.js");
-		const readVideo = () => [isYouTubeEnabled(), isVideoFile(video) !== null];
+		const videoEnabled = () => {
+			try {
+				return isVideoFile(video) !== null;
+			} catch (err) {
+				assert.match(String(err), /video extraction is disabled \(video\.enabled\)/);
+				return false;
+			}
+		};
+		const readVideo = () => [isYouTubeEnabled(), videoEnabled()];
 		assert.deepEqual(context.run(reporter(scope), readVideo), [false, false]);
 		const read = () => [
 			isPerplexityAvailable(),

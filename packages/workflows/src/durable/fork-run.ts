@@ -3,6 +3,7 @@
  * to a stage and continues from there. The source run is never written; the fork is a new run, so the
  * run graph stays acyclic.
  */
+
 import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
@@ -31,6 +32,12 @@ import type {
 import { formatWorkflowStageTarget, parseWorkflowStageTarget } from "../shared/workflow-stage-target.js";
 import { poolSessionStore } from "../workers/pool-session-store.js";
 import { workflowNamesEqual } from "../workflows/identity.js";
+import {
+	attemptReachedCheckpoints,
+	checkpointAttempt,
+	workflowAttemptCheckpoint,
+	workflowAttemptOf,
+} from "./attempt-identity.js";
 import type { DurableWorkflowBackend } from "./backend.js";
 import { durableHash } from "./durable-hash.js";
 import {
@@ -64,6 +71,7 @@ import {
 	type RunJournalSeedEvent,
 	StaleLeaseError,
 } from "./journal/types.js";
+import { WorkflowProjectNotTrustedError } from "./project-trust.js";
 import { FOREIGN_LIVE_WORKFLOW_WINDOW_MS } from "./resume-eligibility.js";
 import { claimsOf, hasForkClaim, hasResumeClaim, pendingForks } from "./run-claims.js";
 import { RUN_RESULT_CHECKPOINT_NAME } from "./run-result.js";
@@ -311,13 +319,20 @@ function stageSessionId(checkpoint: DurableStageCheckpoint): string | undefined 
 		: undefined;
 }
 
-/** Completed stages of a run in completion order, each with a unique dot path. */
-function forkPointRecords(checkpoints: readonly CheckpointEvent[]): readonly ForkPointRecord[] {
+/**
+ * Completed stages of a run in completion order, each with a unique dot path: the stages it can be forked from. Once the run has attempts, those are the stages its latest attempt
+ * reached, and a stage's fork copies the events before its first record in the attempt that completed it (#4874).
+ */
+function forkPointRecords(checkpoints: readonly CheckpointEvent[], rootRunId: string): readonly ForkPointRecord[] {
+	const all = checkpoints.map((event) => event.checkpoint);
+	const reached = attemptReachedCheckpoints(all, rootRunId, { rootReach: true });
+	const visible = reached === all ? undefined : new Set(reached);
 	const boundaries = new Map<string, string>();
 	const firstSeq = new Map<string, number>();
 	for (const { seq, checkpoint } of checkpoints) {
 		if (checkpoint.kind !== "stage") continue;
-		if (!firstSeq.has(checkpoint.replayKey)) firstSeq.set(checkpoint.replayKey, seq);
+		const key = JSON.stringify([checkpoint.replayKey, checkpointAttempt(checkpoint)]);
+		if (!firstSeq.has(key)) firstSeq.set(key, seq);
 		if (checkpoint.topology?.boundary !== undefined && !boundaries.has(checkpoint.replayKey))
 			boundaries.set(checkpoint.replayKey, checkpoint.name);
 	}
@@ -334,7 +349,8 @@ function forkPointRecords(checkpoints: readonly CheckpointEvent[]): readonly For
 			checkpoint.kind !== "stage" ||
 			checkpoint.output === undefined ||
 			checkpoint.topology?.occurrenceKey !== undefined ||
-			seen.has(checkpoint.replayKey)
+			seen.has(checkpoint.replayKey) ||
+			visible?.has(checkpoint) === false
 		)
 			continue;
 		seen.add(checkpoint.replayKey);
@@ -352,7 +368,7 @@ function forkPointRecords(checkpoints: readonly CheckpointEvent[]): readonly For
 			replayKey: checkpoint.replayKey,
 			sessionId,
 			completedAt: checkpoint.completedAt,
-			firstSeq: firstSeq.get(checkpoint.replayKey)!,
+			firstSeq: firstSeq.get(JSON.stringify([checkpoint.replayKey, checkpointAttempt(checkpoint)]))!,
 		});
 	}
 	return records;
@@ -461,7 +477,7 @@ export async function* durableForkPoints(
 	let sessions: SourceSessions | undefined;
 	let primary: unknown;
 	try {
-		for (const record of forkPointRecords(source.checkpoints)) {
+		for (const record of forkPointRecords(source.checkpoints, source.runId)) {
 			if (record.sessionId === undefined) {
 				yield { stagePath: record.stagePath, completedAt: record.completedAt };
 				continue;
@@ -716,7 +732,14 @@ async function resolveForkDefinition(
 			definition = await request.resolveDefinition?.(handle.name, handle.invocationCwd);
 		} catch (error) {
 			throw new ForkDefinitionMismatchError(
-				{ runId: handle.workflowId, workflow: handle.name, reason: "definition-unavailable" },
+				error instanceof WorkflowProjectNotTrustedError
+					? {
+							runId: handle.workflowId,
+							workflow: handle.name,
+							reason: "project-not-trusted",
+							projectDir: error.projectDir,
+						}
+					: { runId: handle.workflowId, workflow: handle.name, reason: "definition-unavailable" },
 				{ cause: error as Error },
 			);
 		}
@@ -766,7 +789,7 @@ interface ForkSelection {
 }
 
 function selectForkEvents(source: ForkSource, request: DurableForkRequest): ForkSelection {
-	const records = forkPointRecords(source.checkpoints);
+	const records = forkPointRecords(source.checkpoints, source.runId);
 	const target = records.find((record) => record.stagePath === request.fromStage);
 	if (request.fromStage !== undefined && target === undefined)
 		throw new ForkTargetNotFoundError({
@@ -785,7 +808,8 @@ function selectForkEvents(source: ForkSource, request: DurableForkRequest): Fork
 	);
 	const completedGroups = completedStageGroups(prefix);
 	const keep = ({ seq, checkpoint }: CheckpointEvent): boolean => {
-		if (seq >= cut) return carryAll && checkpoint.kind === "ui";
+		// An attempt that began after the cut is not part of the fork (#4874).
+		if (seq >= cut) return carryAll && checkpoint.kind === "ui" && workflowAttemptOf(checkpoint) === undefined;
 		if (target === undefined) return true;
 		if (checkpoint.kind === "tool") return checkpoint.name !== RUN_RESULT_CHECKPOINT_NAME;
 		if (checkpoint.kind === "ui") return true;
@@ -887,6 +911,9 @@ class ForkIdentities {
  */
 function forkUiCheckpoint(checkpoint: Extract<DurableCheckpoint, { kind: "ui" }>, ids: ForkIdentities) {
 	const copy = { ...checkpoint, workflowId: ids.forkRunId };
+	// An attempt record names its run; the fork's copy names the fork, so the fork reads its attempts (#4874).
+	const attempt = workflowAttemptOf(checkpoint);
+	if (attempt !== undefined) return workflowAttemptCheckpoint(ids.forkRunId, attempt, checkpoint.completedAt);
 	let identity: Record<string, WorkflowSerializableValue> | null;
 	try {
 		identity = JSON.parse(checkpoint.message) as Record<string, WorkflowSerializableValue>;

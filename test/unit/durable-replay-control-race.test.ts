@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { setImmediate } from "node:timers/promises";
 import { test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
+import { workflowAttemptOf } from "../../packages/workflows/src/durable/attempt-identity.js";
 import {
 	createDurableTaskPrimitive,
 	createStageReplayKeyGenerator,
@@ -289,7 +290,8 @@ for (const boundary of ["stage", "ui", "diagnostic"] as const) {
 			}
 			if (
 				(checkpoint.kind === "stage" && checkpoint.name === "live" && checkpoint.output !== undefined) ||
-				checkpoint.kind === "ui" ||
+				// The resume's attempt record is a reserved ui-kind record written before replay begins (#4874).
+				(checkpoint.kind === "ui" && workflowAttemptOf(checkpoint) === undefined) ||
 				checkpoint.checkpointId.startsWith("tool-failure:")
 			)
 				writes++;
