@@ -961,7 +961,7 @@ export {
 	writeToolSystemPromptContribution,
 } from "./core/tools/index.js";
 /** Bounds extension text in the model's context the way oversized tool results are bounded. */
-export { boundOversizedText } from "./core/tools/oversized-tool-result.ts";
+export { boundOversizedText } from "./core/tools/oversized-tool-result.js";
 export {
 	isShellTimeoutError,
 	isShellToolError,
