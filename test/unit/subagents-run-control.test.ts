@@ -3122,6 +3122,8 @@ test(
 			requestedModels: processWide.requestedModels,
 			launchHeartbeats: processWide.launchHeartbeats,
 			executionTimeouts: processWide.executionTimeouts,
+			// A retained released child keeps what it waits on for its notice; an evicted one keeps nothing (#5031).
+			releases: FINISHED_TASK_RETENTION,
 		});
 
 		const resumed = await h.call({ action: "resume", id: "retained0:0", message: "carry on" });
@@ -3295,6 +3297,11 @@ test("status names every call a released child waits on, and shows one stored wi
 	assert.equal(lines.length, 2, lines.join("\n"));
 	assert.match(lines[0] ?? "", /released · waiting on wait_for_ci \(ci-1\), deploy \(deploy-2\); it holds nothing/);
 	assert.match(lines[1] ?? "", /released · waiting; it holds nothing/);
+	// A released child is not paused and needs no resume (#5031).
+	assert.match(
+		lines[0] ?? "",
+		/it holds nothing and is not paused: it wakes by itself when that finishes.*needs no resume/,
+	);
 	assert.deepEqual(subagentChildrenAwaitingResume(h.ctx, "no-such-child:0"), []);
 });
 

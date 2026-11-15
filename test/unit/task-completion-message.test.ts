@@ -5,6 +5,7 @@ import { test } from "vitest";
 import { cancelReasonText } from "../../packages/coding-agent/src/core/tasks/cancel-reason.js";
 import {
 	formatTaskCompletion,
+	isResumableStop,
 	type TaskCompletionEnvelope,
 	taskCompletionEnvelope,
 } from "../../packages/coding-agent/src/core/tasks/completion.js";
@@ -73,6 +74,52 @@ test("a quit or paused subagent's notice says it is paused and resumable and nam
 	}
 	const killed = formatTaskCompletion({ ...envelope, result: { kind: "cancelled", cause: "user" } }, task);
 	assert.match(killed, /This execution has ended\. Do not restart it/);
+});
+
+test("a subagent released while it waits is reported as released and waking by itself, while a pause keeps its pause notice (#5031)", () => {
+	const launched = { ...task, agentName: "worker", launchOperationId: RESUMABLE_CHILD_ID } as typeof task;
+	const released = formatTaskCompletion(
+		{
+			...envelope,
+			result: {
+				kind: "cancelled",
+				cause: "pause",
+				released: { waitingOn: [{ toolCallId: "toolu-7", toolName: "bash" }] },
+			},
+		},
+		launched,
+		"waiting on the build",
+	);
+	assert.match(released, /^Subagent worker released while waiting on bash \(toolu-7\): /);
+	assert.match(released, /Stop reason: released\n/);
+	assert.match(released, /it wakes by itself when that finishes/);
+	assert.match(released, /waiting on the build/);
+	assert.doesNotMatch(released, /paused|awaiting resume|resume|Stop reason: pause|This execution has ended/);
+
+	// Each call it waits on is named; a release that names none still reads as one, also without a task record.
+	const releasedOn = (waitingOn: Array<{ toolCallId: string; toolName: string }>) =>
+		formatTaskCompletion({ ...envelope, result: { kind: "cancelled", cause: "pause", released: { waitingOn } } });
+	assert.match(
+		releasedOn([
+			{ toolCallId: "toolu-7", toolName: "bash" },
+			{ toolCallId: "ask-2", toolName: "intercom" },
+		]),
+		/^Background task released while waiting on bash \(toolu-7\), intercom \(ask-2\)\./,
+	);
+	assert.match(releasedOn([]), /^Background task released while waiting on a tool call\./);
+	assert.doesNotMatch(releasedOn([]), /pause/);
+	assert.equal(
+		isResumableStop({ kind: "cancelled", cause: "pause", released: { waitingOn: [] } }),
+		false,
+		"a release is not a resumable stop",
+	);
+	assert.equal(isResumableStop({ kind: "completed", output: task.output }), false);
+
+	const paused = formatTaskCompletion({ ...envelope, result: { kind: "cancelled", cause: "pause" } }, launched);
+	assert.match(paused, RESUMABLE_STOP_TITLES.pause);
+	assert.match(paused, /Stop reason: pause\n/);
+	assert.ok(paused.includes(`subagent({ action: "resume", id: "${RESUMABLE_CHILD_ID}" })`), paused);
+	assert.doesNotMatch(paused, /released/);
 });
 
 test("a shell interrupted by a stage, run or session pause asks to redo the step (#3996)", () => {
