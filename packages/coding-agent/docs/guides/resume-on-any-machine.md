@@ -131,13 +131,17 @@ Every step writes a log under `~/.atomic/agent/worktree-snapshots/blueprint-logs
 
 ### Start the first turn while the build runs
 
-By default a resume opens the session once the build has finished. To send the first request while the build still runs, set `resume.waitForBlueprint` to `"tools"` in your settings:
+`resume.waitForBlueprint` decides what waits for the build. In the interactive TUI it defaults to `"prompt"`: the session opens once the build has finished. Without a UI (`atomic -p`, `--mode json`, `--mode rpc`, and sessions created with the SDK) it defaults to `"tools"`: the session opens once the worktrees are restored, and the first request goes out while the build still runs.
+
+With `"tools"`, the agent is told that the environment is still being built. Every tool call and shell command in the restored worktree waits until the build ends, also those of a new session, fork or switch that works there, so nothing runs in a half-built environment. The first tool call that waited then shows the agent how the build went before its own output. You see the build's warnings once, as a resume that waits shows them: `atomic -p` prints them to stderr, and `--mode json` and `--mode rpc` emit a `blueprint_build_finished` event. A failed build releases the tools as a finished one does; it never blocks the session. Interrupting the turn stops the wait, not the build. `atomic -p` and `--mode json` print their answer and then exit once the build has ended. If Atomic is stopped before the build ends (Ctrl-C or another signal, or RPC's stdin closing), the build's processes stop with it and the next resume builds the worktree again; if it was killed outright, the next resume first stops the processes that build left running, when it can confirm they are that build's processes (on systems where Atomic cannot read when a process started, it stops nothing and warns that the earlier build may still be running). A resume waits at most five minutes for another Atomic process that is still building the same worktree, and says so as soon as it starts waiting (a line on stderr with `-p`, a `blueprint_build_waiting` event with `--mode json` and `--mode rpc`); after that it stops the processes it can confirm are that build's and builds the worktree anyway with a warning. One build runs per worktree: switching back to a session whose build still runs joins that build.
+
+A setting always wins. To wait for the build without a UI too, as before, set:
 
 ```json
-{ "resume": { "waitForBlueprint": "tools" } }
+{ "resume": { "waitForBlueprint": "prompt" } }
 ```
 
-The agent is told that the environment is still being built. Tools that run project code or read the worktree (`bash`, `powershell`, `edit`, `write`, `read`, `ls`, `find`, `grep`, `search`, and extension tools that write files) wait until the build ends. The first of them then shows how the build went, with the same warnings a resume shows when it waits, before its own output. A failed build releases the tools as a finished one does. Interrupting the turn stops the wait, not the build. If Atomic exits before the build ends, the next resume builds the worktree again.
+To start the first turn early in the TUI as well, set it to `"tools"`.
 
 ### What the agent sees
 

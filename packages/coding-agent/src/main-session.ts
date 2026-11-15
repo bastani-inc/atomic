@@ -553,6 +553,11 @@ export interface OpenCliSessionOptions {
 	readonly io?: ResumePreflightIo;
 	/** `"skip"` in the interactive engine child, whose host already built the blueprints of this resume. */
 	readonly blueprints?: "build" | "skip";
+	/**
+	 * Whether a user interface shows the session (default true). Without one, a resume that restores a worktree opens
+	 * the session while its blueprint build runs, unless `resume.waitForBlueprint` is set.
+	 */
+	readonly interactive?: boolean;
 	/** Shows the slow steps of opening and preparing the session; told `done()` once the session is ready. */
 	readonly progress?: StartupProgress;
 	/** Entries from which a history is announced before it loads. Default {@link EAGER_HISTORY_ENTRIES}. */
@@ -632,7 +637,7 @@ export async function openCliSession(
 	}
 	const choose = options.chooseDirtyCheckout;
 	const prepared = await prepareSessionResume(sessionManager, {
-		...sessionResumeOptions("cli", cwd, options.agentDir, settingsManager, options.trusted),
+		...sessionResumeOptions("cli", cwd, options.agentDir, settingsManager, options.trusted, options.interactive),
 		chooseDirtyCheckout:
 			choose &&
 			((prompt) => {

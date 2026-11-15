@@ -16,6 +16,11 @@ import { createAgentSessionFromServices, createAgentSessionServices } from "../s
 import { AuthStorage } from "../src/core/auth-storage.js";
 import { ModelRuntime } from "../src/core/model-runtime.js";
 import { renameReplacing } from "../src/core/rename-retry.js";
+import {
+	blueprintBuildPending,
+	blueprintBuildSettled,
+	blueprintBuildsRunning,
+} from "../src/core/resume/blueprint/barrier.js";
 import { RESUME_CATALOG_TIMEOUT_MS } from "../src/core/resume/not-found.js";
 import { sessionResumeOptions } from "../src/core/resume/session-resume.js";
 import type { CreateAgentSessionOptions } from "../src/core/sdk-types.js";
@@ -784,7 +789,8 @@ describe("resume helpers (#4329)", () => {
 });
 
 describe("AgentSessionRuntime.switchSession across nodes (#4329)", () => {
-	async function runtimeOn(agentDir: string, settingsJson: object) {
+	/** A runtime whose sessions a UI shows, as for /resume, or with `"unset"` a runtime that is not told whether one does. */
+	async function runtimeOn(agentDir: string, settingsJson: object, interactive: true | "unset" = true) {
 		mkdirSync(agentDir, { recursive: true });
 		writeFileSync(join(agentDir, "settings.json"), JSON.stringify(settingsJson));
 		const faux = registerFauxProvider();
@@ -838,6 +844,7 @@ describe("AgentSessionRuntime.switchSession across nodes (#4329)", () => {
 			cwd: sandbox.root,
 			agentDir,
 			sessionManager: initial,
+			...(interactive === "unset" ? {} : { interactive }),
 		});
 		cleanups.push(async () => {
 			await runtime.dispose();
@@ -940,6 +947,54 @@ describe("AgentSessionRuntime.switchSession across nodes (#4329)", () => {
 		assert.equal(readFileSync(join(cwd, "README.md"), "utf8"), "edited on node A\n");
 		assert.equal(existsSync(join(cwd, "..", "hook-ran")), false);
 		assert.equal(existsSync(marker), false);
+	});
+
+	test("a runtime not told of a UI switches into a restored worktree while its blueprint build runs (#4748)", async () => {
+		const agentDir = sandbox.path("agent");
+		const gate = sandbox.path("gate");
+		const { sessionId } = await sessionRecordedElsewhere(sqliteSelection("shared"));
+		const { runtime } = await runtimeOn(
+			agentDir,
+			{
+				defaultProjectTrust: "always",
+				resume: {
+					setupCommand: nodeCommand(
+						`(function wait(){require('fs').existsSync('${shellPath(gate)}')||setTimeout(wait,20)})()`,
+					),
+				},
+			},
+			"unset",
+		);
+		assert.deepEqual(await runtime.switchSession(sessionId), { cancelled: false });
+		assert.ok(runtime.session.sessionManager.getCwd().startsWith(join(agentDir, "worktree-snapshots")));
+		assert.equal(blueprintBuildPending(sessionId), true, "the build still runs and holds the session's tools");
+		writeFileSync(gate, "");
+		await blueprintBuildSettled(sessionId);
+	});
+
+	test("disposing a runtime during the build stops the build before it closes the session (#4748)", async () => {
+		const agentDir = sandbox.path("agent");
+		const gate = sandbox.path("gate");
+		const { sessionId } = await sessionRecordedElsewhere(sqliteSelection("shared"));
+		const { runtime } = await runtimeOn(
+			agentDir,
+			{
+				defaultProjectTrust: "always",
+				resume: {
+					setupCommand: nodeCommand(
+						`(function wait(){require('fs').existsSync('${shellPath(gate)}')||setTimeout(wait,20)})()`,
+					),
+				},
+			},
+			"unset",
+		);
+		assert.deepEqual(await runtime.switchSession(sessionId), { cancelled: false });
+		const session = runtime.session as unknown as { readonly _disposed: boolean };
+		assert.equal(blueprintBuildsRunning(), true);
+		await runtime.dispose();
+		assert.equal(blueprintBuildsRunning(), false, "the build was stopped");
+		assert.equal(session._disposed, true, "and the session closed after it");
+		writeFileSync(gate, "");
 	});
 
 	test("/resume with a failing initialize step still resumes in the restored worktree, hands its warning over once and gives the agent the failure (#4588)", async () => {
@@ -1429,6 +1484,8 @@ describe("createAgentSession with a session recorded on another node (#4329)", (
 		const cwd = session.sessionManager.getCwd();
 		assert.ok(cwd.startsWith(join(agentDir, "worktree-snapshots", "worktrees")), cwd);
 		assert.equal(readFileSync(join(cwd, "README.md"), "utf8"), "edited on node A\n");
+		// Without a UI the build runs behind the first turn (#4748).
+		await blueprintBuildSettled(session.sessionManager.getSessionId());
 		assert.equal(readFileSync(marker, "utf8"), "ran\n");
 		assert.match(await readWithTools(session, join(clone, "README.md")), /edited on node A/);
 	});
