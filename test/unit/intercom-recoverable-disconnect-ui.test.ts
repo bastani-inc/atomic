@@ -615,6 +615,41 @@ describe("Intercom bounded warm-up retry for a parked workflow stage", () => {
 		assert.deepEqual(consoleErrorCalls, []);
 	});
 
+	test("stops a replaced session's in-flight warm-up retry without failing its stage (#5096)", async () => {
+		// The replaced session's retry is still loading when the current session
+		// starts. When that shared load fails, the replaced chain must stop quietly,
+		// not run out its attempts and fail a stage that no longer exists, while the
+		// current session retries and resumes its own stage.
+		let rejectRetry: ((error: unknown) => void) | undefined;
+		const retryImport = new Promise<HeavyModule>((_resolve, reject) => {
+			rejectRetry = reject;
+		});
+		const staleDelivery = pendingStageDeliveryWithQueuedMessages();
+		const currentDelivery = pendingStageDeliveryWithQueuedMessages();
+		const current = fixture(
+			[
+				{ error: new IntercomClientDisconnectedError() },
+				{ pending: retryImport },
+				{ module: successfulHeavyModule() },
+			],
+			[1],
+		);
+
+		assert.deepEqual(await current.emitSessionStart(workflowStageContext(staleDelivery)), []);
+		await waitFor(() => current.imports === 2);
+		const currentStart = current.emitSessionStart(workflowStageContext(currentDelivery));
+		await sleep(10);
+		rejectRetry?.(new IntercomClientDisconnectedError());
+		assert.deepEqual(await currentStart, []);
+
+		await waitFor(() => currentDelivery.readySettled);
+		await sleep(20);
+
+		assert.equal(currentDelivery.readyOutcome, "delivered", "the current stage resumes");
+		assert.deepEqual(staleDelivery.failReasons, [], "the replaced stage is not handed a terminal failure");
+		assert.equal(current.imports, 3);
+	});
+
 	test("cancels the retry on session shutdown without another attempt", async () => {
 		const delivery = pendingStageDeliveryWithQueuedMessages();
 		const current = fixture(
