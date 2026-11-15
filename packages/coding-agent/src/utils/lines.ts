@@ -16,7 +16,7 @@ export class LineSplitter {
 		let start = 0;
 		for (let newline = bytes.indexOf(0x0a); newline !== -1; newline = bytes.indexOf(0x0a, start)) {
 			this.parts.push(bytes.subarray(start, newline));
-			lines.push(this.take());
+			lines.push(this.finishLine());
 			start = newline + 1;
 		}
 		if (start < bytes.length) this.parts.push(bytes.subarray(start));
@@ -25,10 +25,10 @@ export class LineSplitter {
 
 	/** Returns the last line when the input did not end with a newline. */
 	end(): string[] {
-		return this.parts.length === 0 ? [] : [this.take()];
+		return this.parts.length === 0 ? [] : [this.finishLine()];
 	}
 
-	private take(): string {
+	private finishLine(): string {
 		const line = Buffer.concat(this.parts);
 		this.parts = [];
 		return line.toString("utf8", 0, line.at(-1) === 0x0d ? line.length - 1 : line.length);
