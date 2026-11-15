@@ -262,9 +262,9 @@ describe("workflow lazy-startup continuation fixes", () => {
 			await cleanupJobs();
 			assert.equal(store.runs().length, 0);
 			assert.equal(backend.getWorkflow(runId)?.status, "paused");
-			assert.equal(
-				notices.some((notice) => /resum/i.test(notice)),
-				false,
+			assert.ok(
+				notices.some((notice) => notice.includes(`Workflow ${runId} changed while startup recovery was pending`)),
+				JSON.stringify(notices),
 			);
 		} finally {
 			process.chdir(originalCwd);

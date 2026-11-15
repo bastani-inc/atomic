@@ -6,8 +6,10 @@ import {
 	resolveWorktreeSnapshotSettings,
 } from "@bastani/atomic";
 import type { JournalCatalogError } from "@bastani/atomic/storage";
+import { WorkflowGracefulQuitError } from "../engine/workflow-tool-abort.js";
 import { raceAbort } from "../shared/abort.js";
 import { currentWorkflowStore } from "../shared/store-factory.js";
+import { WorkflowRequestTimeoutError } from "../shared/workflow-request-timeout.js";
 import { WorkflowProjectNotTrustedError } from "./project-trust.js";
 /** Resume workflows from durable checkpoints without repeating completed work. */
 
@@ -175,11 +177,23 @@ export async function resumeDurableWorkflow(
 			message: `Workflow ${id} is already running or has a pending resume admission.`,
 		};
 	pending.add(id);
+	// #5149: an abort releases the caller only until the executor is admitted; from then on the resume has succeeded.
+	let admitted = false;
+	const caller = new AbortController();
+	const releaseCaller = (): void => {
+		if (!admitted) caller.abort(deps.signal?.reason);
+	};
+	if (deps.signal?.aborted === true) releaseCaller();
+	else deps.signal?.addEventListener("abort", releaseCaller, { once: true });
 	try {
-		const resume = () => resumeDurableWorkflowClaimed(workflowId, { ...deps, durableBackend: backend }, catalog);
+		const resume = () =>
+			resumeDurableWorkflowClaimed(workflowId, { ...deps, durableBackend: backend }, catalog, () => {
+				admitted = true;
+			});
 		const execution = backend instanceof JournalDurableBackend ? backend.withWorkflowLease(id, resume) : resume();
-		return await raceAbort(execution, deps.signal);
+		return await raceAbort(execution, deps.signal === undefined ? undefined : caller.signal);
 	} finally {
+		deps.signal?.removeEventListener("abort", releaseCaller);
 		pending.delete(id);
 	}
 }
@@ -189,6 +203,7 @@ async function resumeDurableWorkflowClaimed(
 	workflowId: string,
 	deps: ResumeDurableDeps,
 	catalog?: readonly ResumableWorkflowEntry[],
+	onAdmitted?: () => void,
 ): Promise<ResumeDurableResult> {
 	deps.signal?.throwIfAborted();
 	const backend = resumeBackend(deps, workflowId);
@@ -366,18 +381,31 @@ async function resumeDurableWorkflowClaimed(
 		failedToolNodeId: handle.failedToolNodeId,
 	};
 	const sourceSnapshot = toolContinuation?.source ?? deps.baseRunOpts.store?.run(resolved.workflowId);
-	let adoptedClaimUpdatedAt: number | undefined;
+	/**
+	 * Undo the claim. An adoption is undone only while the adopter still owns the run and nothing else changed it; an
+	 * aborted adoption (`restoreOwner`) also returns the run to its previous owner, and a released run goes back to the
+	 * session that released it even when a write landed meanwhile, which it keeps (#5149).
+	 */
 	const rollbackStartup = async (onRestored?: () => void, restoreOwner = false): Promise<boolean> => {
 		if (adopting) {
 			const current = backend.getWorkflow(resolved.workflowId);
-			if (adoptedClaimUpdatedAt === undefined || current?.modelOwner !== requestedOwner) return false;
+			if (current === undefined || current.modelOwner !== requestedOwner) return false;
+			const untouched =
+				current.status === "running" &&
+				(current.pendingPrompts ?? 0) === (handle.pendingPrompts ?? 0) &&
+				(current.resumable !== false) === (handle.resumable !== false);
+			const released =
+				restoreOwner &&
+				handle.releasedModelOwner !== undefined &&
+				(current.status === "running" || current.status === "paused");
+			if (!untouched && !released) return false;
 			const restored = await backend.commitWorkflowStatusTransition(
 				resolved.workflowId,
-				["running"],
+				[current.status],
 				handle.status,
-				handle.pendingPrompts,
-				handle.resumable,
-				adoptedClaimUpdatedAt,
+				undefined,
+				undefined,
+				current.updatedAt,
 				restoreOwner ? handle.modelOwner : undefined,
 				restoreOwner ? handle.releasedModelOwner : undefined,
 			);
@@ -413,12 +441,6 @@ async function resumeDurableWorkflowClaimed(
 				resolved.updatedAt,
 				adopting ? requestedOwner : undefined,
 			);
-			if (claimed && adopting) {
-				const adopted = backend.getWorkflow(resolved.workflowId);
-				// #5149: only a run still as this claim left it is rolled back later, so a write that landed first stays.
-				if (adopted?.pendingPrompts === handle.pendingPrompts && adopted.resumable === handle.resumable)
-					adoptedClaimUpdatedAt = adopted.updatedAt;
-			}
 			// #5149: an aborted adoption is rolled back too, restoring its status and its previous owner.
 			if (claimed && deps.signal?.aborted) await rollbackStartup(undefined, true);
 			deps.signal?.throwIfAborted();
@@ -453,11 +475,28 @@ async function resumeDurableWorkflowClaimed(
 		...(deps.baseRunOpts.cwd === undefined ? {} : { [resumeLaunchCwd]: deps.baseRunOpts.cwd }),
 	};
 
+	// #5149: an abort before the executor is admitted suspends it without ending the run, so the claim can be undone.
+	const startup = new AbortController();
+	const suspendStartup = (): void => {
+		const reason = deps.signal?.reason;
+		startup.abort(
+			reason instanceof WorkflowRequestTimeoutError
+				? reason
+				: new WorkflowGracefulQuitError(resolved.workflowId, "aborted resume startup"),
+		);
+	};
+	if (deps.signal?.aborted === true) suspendStartup();
+	else deps.signal?.addEventListener("abort", suspendStartup, { once: true });
 	let launch: ReturnType<typeof launchDetachedUntilStartup>;
 	try {
 		launch = launchDetachedUntilStartup(def, inputs, {
 			...resumeRunOpts,
-			startupSignal: deps.signal,
+			startupSignal: startup.signal,
+			onWorkflowStartReady: () => {
+				deps.signal?.removeEventListener("abort", suspendStartup);
+				onAdmitted?.();
+				resumeRunOpts.onWorkflowStartReady?.();
+			},
 			...(deps.jobs !== undefined ? { jobs: deps.jobs } : {}),
 			onRawSettled: async (_ok, result, error) => {
 				const message = result?.error ?? (error instanceof Error ? error.message : String(error));
@@ -488,9 +527,11 @@ async function resumeDurableWorkflowClaimed(
 			},
 		});
 	} catch (error) {
+		deps.signal?.removeEventListener("abort", suspendStartup);
 		await rollbackStartup(() => {
 			if (sourceSnapshot !== undefined) deps.baseRunOpts.store?.recordRunStart(sourceSnapshot);
-		});
+		}, deps.signal?.aborted === true);
+		if (deps.signal?.aborted === true) throw deps.signal.reason;
 		return {
 			ok: false,
 			reason: "startup_failed",
@@ -501,6 +542,8 @@ async function resumeDurableWorkflowClaimed(
 	deps.onRunAccepted?.(accepted.runId);
 	const admission = await launch.wait;
 	if (!admission.started) {
+		deps.signal?.removeEventListener("abort", suspendStartup);
+		const aborted = deps.signal?.aborted === true;
 		const snapshot = deps.baseRunOpts.store?.run(accepted.runId);
 		const error = workflowStartupFailureMessage(
 			admission,
@@ -511,7 +554,8 @@ async function resumeDurableWorkflowClaimed(
 		await rollbackStartup(() => {
 			if (adopting && sourceSnapshot === undefined) deps.baseRunOpts.store?.removeRun(accepted.runId);
 			if (sourceSnapshot !== undefined) deps.baseRunOpts.store?.recordRunStart(sourceSnapshot);
-		});
+		}, aborted);
+		if (aborted) throw deps.signal?.reason;
 		const drift = findWorkspaceError(admission.error, isWorkspaceDriftError);
 		if (drift !== undefined) throw drift;
 		const resumeFailure = findResumeError(admission.error);

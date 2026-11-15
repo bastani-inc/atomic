@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { resumeDurableWorkflow } from "../../packages/workflows/src/durable/resume-runtime.js";
 import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
@@ -244,40 +244,144 @@ test("an abort during the adoption claim restores the released run's paused stat
 	assert.equal(f.deps.jobs.has(f.id), false);
 });
 
-for (const [label, pendingPrompts, resumable] of [
-	["pending prompts", 4, undefined],
-	["resumability", undefined, false],
+/** Holds the first status transition (the adoption claim) until `release`, and reports the claim. */
+function holdClaim(backend: InMemoryDurableBackend) {
+	const claimed = Promise.withResolvers<void>();
+	const release = Promise.withResolvers<void>();
+	const claim = backend.commitWorkflowStatusTransition.bind(backend);
+	let calls = 0;
+	backend.commitWorkflowStatusTransition = async (...args) => {
+		const accepted = await claim(...args);
+		calls += 1;
+		if (calls === 1) {
+			claimed.resolve();
+			await release.promise;
+		}
+		return accepted;
+	};
+	return { claimed: claimed.promise, release: () => release.resolve() };
+}
+
+const RELEASED = { status: "paused", releasedModelOwner: "old-session", ownerLiveness: "alive" } as const;
+
+for (const [label, status, pendingPrompts, resumable] of [
+	["pending prompts", "running", 4, undefined],
+	["resumability", "running", undefined, false],
+	["pause", "paused", undefined, undefined],
 ] as const) {
-	test(`an abort during the adoption claim keeps the ${label} a write during the claim recorded (#5149)`, async () => {
-		const claimed = Promise.withResolvers<void>();
-		const release = Promise.withResolvers<void>();
-		const settled = Promise.withResolvers<void>();
+	test(`an aborted adoption of a released run keeps the ${label} a write during the claim recorded, and returns the run to its previous owner (#5149)`, async () => {
 		const backend = await createMemoryTestBackend();
-		const claim = backend.commitWorkflowStatusTransition.bind(backend);
-		let calls = 0;
-		backend.commitWorkflowStatusTransition = async (...args) => {
-			const accepted = await claim(...args);
-			calls += 1;
-			if (calls === 1) {
-				claimed.resolve();
-				await release.promise;
-				settled.resolve();
-			}
-			return accepted;
-		};
-		const f = await fixture(backend, { status: "paused", releasedModelOwner: "old-session", ownerLiveness: "alive" });
+		const held = holdClaim(backend);
+		const f = await fixture(backend, RELEASED);
 		const controller = new AbortController();
 		const reason = new Error("abort adoption");
 		const pending = resumeDurableWorkflow(f.id, { ...f.deps, signal: controller.signal }).catch((error) => error);
-		await claimed.promise;
+		await held.claimed;
 		controller.abort(reason);
-		await f.backend.commitWorkflowStatus(f.id, "running", pendingPrompts, resumable);
-		const controlled = f.backend.getWorkflow(f.id);
-		release.resolve();
+		await f.backend.commitWorkflowStatus(f.id, status, pendingPrompts, resumable);
+		const written = f.backend.getWorkflow(f.id);
+		held.release();
 		assert.equal(await pending, reason);
-		await settled.promise;
-		await new Promise<void>((resolve) => setImmediate(resolve));
-		assert.equal(f.backend.getWorkflow(f.id), controlled);
-		assert.equal(calls, 1);
+		// The caller is released at once; the claim is undone once it settles.
+		await vi.waitFor(() => {
+			const handle = f.backend.getWorkflow(f.id);
+			assert.deepEqual(
+				{
+					status: handle?.status,
+					pendingPrompts: handle?.pendingPrompts,
+					resumable: handle?.resumable,
+					modelOwner: handle?.modelOwner,
+					releasedModelOwner: handle?.releasedModelOwner,
+				},
+				{
+					status: "paused",
+					pendingPrompts: written?.pendingPrompts,
+					resumable: written?.resumable,
+					modelOwner: "old-session",
+					releasedModelOwner: "old-session",
+				},
+			);
+		});
+		assert.equal(f.deps.jobs.has(f.id), false);
 	});
 }
+
+for (const [kind, overrides, status] of [
+	["crashed", {}, "running"],
+	["released", RELEASED, "paused"],
+] as const) {
+	test(`an abort while the executor of a ${kind} run's adoption starts stops it and returns the run, still resumable, to its previous owner (#5149)`, async () => {
+		const backend = await createMemoryTestBackend();
+		const f = await fixture(backend, overrides);
+		const controller = new AbortController();
+		const reason = new Error("abort adoption");
+		const register = backend.commitWorkflowRegistration.bind(backend);
+		let aborted = false;
+		backend.commitWorkflowRegistration = async (...args) => {
+			// The executor's first write as it starts.
+			if (!aborted && f.deps.jobs.has(f.id)) {
+				aborted = true;
+				controller.abort(reason);
+			}
+			return await register(...args);
+		};
+		const result = await resumeDurableWorkflow(f.id, { ...f.deps, signal: controller.signal }).catch(
+			(error) => error,
+		);
+		assert.equal(aborted, true);
+		assert.equal(result, reason);
+		await vi.waitFor(() => assert.equal(f.deps.jobs.has(f.id), false));
+		await vi.waitFor(() => {
+			const handle = f.backend.getWorkflow(f.id);
+			assert.deepEqual(
+				{
+					status: handle?.status,
+					resumable: handle?.resumable !== false,
+					modelOwner: handle?.modelOwner,
+					releasedModelOwner: handle?.releasedModelOwner,
+				},
+				{
+					status,
+					resumable: true,
+					modelOwner: "old-session",
+					releasedModelOwner: kind === "released" ? "old-session" : undefined,
+				},
+			);
+		});
+	});
+}
+
+test("an abort after the adopted executor is admitted does not undo the resume (#5149)", async () => {
+	const backend = await createMemoryTestBackend();
+	backend.workflowOwnership = async () => "available";
+	const controller = new AbortController();
+	const finish = Promise.withResolvers<void>();
+	const definition = workflow({
+		name: "adoption-startup",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async () => {
+			// The body runs only once the executor was admitted.
+			controller.abort(new Error("abort adoption"));
+			await finish.promise;
+			return {};
+		},
+	});
+	const f = await fixture(backend, RELEASED);
+	try {
+		const result = await resumeDurableWorkflow(f.id, {
+			...f.deps,
+			registry: createRegistry([definition]),
+			signal: controller.signal,
+		});
+		assert.equal(controller.signal.aborted, true);
+		assert.equal(result.ok, true);
+		assert.equal(f.deps.jobs.has(f.id), true);
+		assert.equal(f.backend.getWorkflow(f.id)?.status, "running");
+		assert.equal(f.backend.getWorkflow(f.id)?.modelOwner, "new-session");
+	} finally {
+		finish.resolve();
+		await f.deps.jobs.get(f.id)?.promise;
+	}
+});

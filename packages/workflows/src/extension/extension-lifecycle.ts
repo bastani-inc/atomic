@@ -268,8 +268,15 @@ export function registerWorkflowLifecycleHandlers(pi: ExtensionAPI, deps: Workfl
 			}
 			for (const entry of prepared.resumable) {
 				if (!isCurrent()) return;
+				if (!eligibleIds.has(entry.workflowId)) continue;
 				// #5149: a run paused or taken elsewhere while the dialog was open is skipped; a failed check warns below.
-				if (!eligibleIds.has(entry.workflowId) || !(await isInterruptedInProject(entry))) continue;
+				if (!(await isInterruptedInProject(entry))) {
+					ctx?.ui?.notify?.(
+						`Workflow ${entry.workflowId} changed while startup recovery was pending, so it was not resumed. Use /workflow resume ${entry.workflowId} if it should continue.`,
+						"info",
+					);
+					continue;
+				}
 				const result = await runtime.resumeDurableWorkflow(entry.workflowId, {
 					policy: workflowPolicyFromContext(ctx),
 					actor: "user",
