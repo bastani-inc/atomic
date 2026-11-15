@@ -377,6 +377,7 @@ async function relaunchChild(
 	release: () => void,
 	onReopened: (previousIntercomId: string | undefined) => void,
 	resume: SubagentChildResumeRequest | undefined,
+	refuseRelaunch: (() => SubagentChildRecord | undefined) | undefined,
 ): Promise<SubagentChildRestoreOutcome> {
 	const unrestorable = (reason: string): SubagentChildRestoreOutcome => ({
 		kind: "unrestorable",
@@ -493,6 +494,13 @@ async function relaunchChild(
 		redispatch || (childOptions && !childAllowsIntercom(childOptions)) ? undefined : hold?.authorization;
 	// A child that will not use Intercom never registers, so nothing it could be sent should wait for it.
 	if (!supervisorAuthorization) await hold?.release();
+	// The last check before it runs again, with nothing awaited after it: a wake whose child was paused or quit meanwhile
+	// relaunches nothing, and the results it carries stay held for the child's resume (#4845).
+	const declined = refuseRelaunch?.();
+	if (declined !== undefined) {
+		await hold?.release();
+		return { kind: "terminal", record: declined };
+	}
 	const intercomGroup = launchIntercomGroup(record, ctx);
 	// A released child, or one results are held for, continues the turn it was waiting in before anything else (#4326).
 	const kept = record.heldToolResults ?? [];
@@ -777,13 +785,15 @@ async function relaunched(
  * Records that a fork copied from another session name that session as their owner, so they are never restored here.
  * With `resume`, an explicit `subagent({ action: "resume" })` reopens a settled child the same way; the caller
  * decides which settled children are resumable. A failure that passes (`isRetryableStorageError`) rejects with that
- * failure and leaves the child as it was, never gone.
+ * failure and leaves the child as it was, never gone. `refuseRelaunch`, checked last before the child runs again,
+ * returns the child's latest record when it must not run after all; the outcome is then `terminal` with that record.
  */
 export async function restoreSubagentChild(
 	deps: SubagentChildRestoreDeps,
 	ctx: ExtensionContext,
 	id: string,
 	resume?: SubagentChildResumeRequest,
+	refuseRelaunch?: () => SubagentChildRecord | undefined,
 ): Promise<SubagentChildRestoreOutcome> {
 	const ownerSessionId = subagentChildOwner(ctx).sessionId;
 	indexSubagentChildOwner(ctx);
@@ -798,7 +808,7 @@ export async function restoreSubagentChild(
 		if (resume === undefined) return active.outcome;
 		await active.finished;
 		await subagentChildRecordsAppended(ownerSessionId);
-		return restoreSubagentChild(deps, ctx, id, resume);
+		return restoreSubagentChild(deps, ctx, id, resume, refuseRelaunch);
 	}
 	goneChildren.delete(key);
 	const previousIntercomId = Promise.withResolvers<string | undefined>();
@@ -846,7 +856,7 @@ export async function restoreSubagentChild(
 		// outside any work, so neither is in scope here.
 		return withWorktreeRootMappings(
 			ctx.sessionManager.getWorktreeRootMappings(),
-			() => relaunchChild(deps, ctx, record, hold, release, onReopened, resume),
+			() => relaunchChild(deps, ctx, record, hold, release, onReopened, resume, refuseRelaunch),
 			recordedWorktreeRootMappings(record),
 		);
 	})().then(
