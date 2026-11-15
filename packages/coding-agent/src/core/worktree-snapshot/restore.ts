@@ -8,6 +8,7 @@ import { noteRestoreFetch, timeRestorePhase } from "../resume/timings.ts";
 import {
 	locateCheckout,
 	readRepositoryConfig,
+	recordRestoredTree,
 	withScratchDirectory,
 	writeSnapshotCommit,
 	writeWorkingTree,
@@ -941,6 +942,7 @@ async function materialize(
 	await runGit(["-c", `core.attributesFile=${attributes}`, "read-tree", "--reset", "-u", tree], neutral);
 	await runGit(["read-tree", head], neutral);
 	await runGit(["update-index", "-q", "--refresh"], { ...neutral, allowExitCodes: [1] });
+	await recordRestoredTree(neutral, tree);
 }
 
 /** Removes the restored worktree at `target` from the store `git` points at, then prunes what its removal left. */
@@ -1174,6 +1176,7 @@ export async function resetPooledWorktree(
 			await runGit(["update-ref", "--no-deref", "HEAD", snapshot.head], neutral);
 			await runGit(["read-tree", "--reset", snapshot.head], neutral);
 			await runGit(["update-index", "-q", "--refresh"], { ...neutral, allowExitCodes: [1] });
+			await recordRestoredTree(neutral, snapshot.tree);
 		});
 		const warnings = snapshotRestoreWarnings(snapshot);
 		if (snapshot.filters?.drivers.includes("lfs")) {
