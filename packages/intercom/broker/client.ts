@@ -3,7 +3,7 @@ import net from "net";
 import { randomUUID } from "crypto";
 import { writeMessage, createMessageReader, type JsonWireValue } from "./framing.js";
 import { isBrokerStatusReport } from "./broker-status.js";
-import { getBrokerSocketPath } from "./paths.js";
+import { getAgentDir, getBrokerSocketPath } from "./paths.js";
 import type {
 	SessionInfo,
 	Message,
@@ -197,7 +197,10 @@ export interface IntercomClientOptions {
 	 * refuse one run's route on its own and keep the connection open for the others.
 	 */
 	readonly multiplexesPendingStageRoutes?: true;
-	/** Broker socket this client connects to; defaults to the one for the agent directory current when it is created (#4561). */
+	/**
+	 * Broker socket this client connects to; defaults to the one for the agent directory current when it is created
+	 * (#4561), looked up at each connection, since a broker that replaces another may record a different one (#5040).
+	 */
 	readonly brokerSocketPath?: string;
 }
 
@@ -454,7 +457,8 @@ export class IntercomClient extends EventEmitter {
 	private readonly preferredSessionId: string | undefined;
 	private readonly acknowledgesReceipt: boolean;
 	private readonly connectTimeoutMs: number;
-	private readonly brokerSocketPath: string;
+	private readonly explicitBrokerSocketPath: string | undefined;
+	private readonly brokerAgentDir: string;
 	/** #3761: the broker of the current registration echoed `acknowledgesReceipt`, so it understands `received`. */
 	private brokerAcknowledgesReceipt = false;
 	/** The broker of the current registration answers a pending-stage route registration that carries a `requestId`. */
@@ -553,8 +557,13 @@ export class IntercomClient extends EventEmitter {
 		this.acknowledgesReceipt = options.acknowledgesReceipt === true;
 		this.connectTimeoutMs = options.connectTimeoutMs ?? BROKER_CONNECT_TIMEOUT_MS;
 		this.multiplexesPendingStageRoutes = options.multiplexesPendingStageRoutes === true;
-		this.brokerSocketPath = options.brokerSocketPath ?? getBrokerSocketPath();
+		this.explicitBrokerSocketPath = options.brokerSocketPath;
+		this.brokerAgentDir = getAgentDir();
 	}
+
+  private get brokerSocketPath(): string {
+    return this.explicitBrokerSocketPath ?? getBrokerSocketPath(process.platform, this.brokerAgentDir);
+  }
 
   private failPending(error: Error): void {
     this.pendingSends.rejectAll(error);
