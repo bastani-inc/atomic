@@ -1202,11 +1202,13 @@ describe("background compaction scheduling edges (#4330)", () => {
 		const commitGate = new Promise<void>((resolve) => {
 			releaseCommit = resolve;
 		});
+		const compactHooks: string[] = [];
 		const planner = new Planner();
 		const harness = await createBackgroundHarness([...TRIGGER, "after"], planner, {
 			extensionFactories: [
 				(pi) => {
-					pi.on("session_compact", async () => {
+					pi.on("session_compact", async (event) => {
+						compactHooks.push(event.reason);
 						commitEntered();
 						await commitGate;
 					});
@@ -1240,6 +1242,7 @@ describe("background compaction scheduling edges (#4330)", () => {
 
 		assert.equal(compactionEntries(harness.sessionManager).length, 1, "exactly one boundary is written");
 		assert.equal(planner.calls.length, 1, "the committed result fits, so no second planner request is made");
+		assert.deepEqual(compactHooks, ["threshold"], "extensions hear about the one boundary once");
 		const ends = harness.eventsOfType("compaction_end");
 		assert.equal(ends.at(-1)?.reason, "overflow");
 		assert.equal(ends.at(-1)?.background, true);
