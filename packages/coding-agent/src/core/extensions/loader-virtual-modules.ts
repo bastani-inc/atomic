@@ -653,26 +653,27 @@ interface FileSignature {
  */
 const evaluatedEntries = new Map<
 	string,
-	{ evaluated: FileSignature; runtimeEvaluated: boolean; warned?: FileSignature }
+	{ evaluated: FileSignature; warned: FileSignature; runtimeEvaluated: boolean }
 >();
 
-function fileSignature(filePath: string): FileSignature | undefined {
-	try {
-		const stats = fs.statSync(filePath);
-		return { mtimeMs: stats.mtimeMs, size: stats.size };
-	} catch {
-		return undefined;
+function fileSignature(filePath: string): FileSignature {
+	const stats = fs.statSync(filePath);
+	return { mtimeMs: stats.mtimeMs, size: stats.size };
+}
+
+function sameSignature(a: FileSignature, b: FileSignature): boolean {
+	return a.mtimeMs === b.mtimeMs && a.size === b.size;
+}
+
+/** Records an entry file this process just evaluated; its first evaluation is the one the runtime may keep. */
+function rememberEvaluatedEntry(extensionPath: string, importPath: string, runtimeEvaluated: boolean): void {
+	const entry = evaluatedEntries.get(extensionPath);
+	if (entry) {
+		if (runtimeEvaluated) entry.runtimeEvaluated = true;
+		return;
 	}
-}
-
-function sameSignature(a: FileSignature | undefined, b: FileSignature | undefined): boolean {
-	return a !== undefined && b !== undefined && a.mtimeMs === b.mtimeMs && a.size === b.size;
-}
-
-function rememberEvaluatedEntry(extensionPath: string, importPath: string): void {
-	if (evaluatedEntries.has(extensionPath)) return;
 	const evaluated = fileSignature(importPath);
-	if (evaluated) evaluatedEntries.set(extensionPath, { evaluated, runtimeEvaluated: false });
+	evaluatedEntries.set(extensionPath, { evaluated, warned: evaluated, runtimeEvaluated });
 }
 
 /**
@@ -684,7 +685,7 @@ export function staleRuntimeEvaluatedExtensionWarning(extensionPath: string): st
 	const entry = evaluatedEntries.get(extensionPath);
 	if (!entry?.runtimeEvaluated) return undefined;
 	const current = fileSignature(canonicalizePath(extensionPath));
-	if (!current || sameSignature(current, entry.evaluated) || sameSignature(current, entry.warned)) return undefined;
+	if (sameSignature(current, entry.evaluated) || sameSignature(current, entry.warned)) return undefined;
 	entry.warned = current;
 	return 'This JavaScript extension changed since it was loaded, but the runtime keeps the JavaScript modules it loads itself (.mjs, .cjs, and .js that is ESM in a "type": "module" package or CommonJS) until the process exits, so it still runs the code it was loaded with. Restart Atomic to run the edited code, or write the extension in TypeScript, which /reload re-evaluates.';
 }
@@ -702,12 +703,14 @@ async function importExtensionModule(
 	// file; extensionPath stays the cache and graph key.
 	const importPath = canonicalizePath(extensionPath);
 	const transformSource = getTypeScriptSourceSpecifierTransform(createJitiImpl, cacheDir);
+	// jiti decides first whether it compiles the entry or leaves it to the runtime, whose loader then imports the
+	// entry's own imports itself: this import compiles anything only if it compiles the entry.
 	let entryCompiled = false;
 	const jiti = createJitiImpl(resolutionBaseUrl(import.meta.url), {
 		moduleCache: false,
 		fsCache: false,
 		transform: (options) => {
-			if (options.filename !== undefined && pathsEqual(options.filename, importPath)) entryCompiled = true;
+			entryCompiled = true;
 			return transformSource(options);
 		},
 		...(forceTransformedImports ? { tryNative: false } : {}),
@@ -717,7 +720,6 @@ async function importExtensionModule(
 		...(!isSingleFileBuild ? { alias: getAliases() } : {}),
 	});
 	const specifier = extensionImportSpecifier(importPath, cacheToken);
-	rememberEvaluatedEntry(extensionPath, importPath);
 	// Transformed evaluations are the loads whose repeat cost is the Windows
 	// /reload regression, so they are also the loads whose file graph is
 	// recorded into a content-hash manifest. Without a transpile cache there is
@@ -734,10 +736,7 @@ async function importExtensionModule(
 		module = await jiti.import(specifier, { default: true });
 	}
 	// A load that would compile the entry but left it to the runtime evaluated it in the runtime's module cache.
-	if (!jiti.options.tryNative && !entryCompiled) {
-		const entry = evaluatedEntries.get(extensionPath);
-		if (entry) entry.runtimeEvaluated = true;
-	}
+	rememberEvaluatedEntry(extensionPath, importPath, !jiti.options.tryNative && !entryCompiled);
 	// jiti tries native imports first under Bun; under Node it transforms, except on Windows where re-loads keep
 	// using the transformed path and its retained-evaluation reuse.
 	if ((isWindows || jiti.options.tryNative) && !forceTransformedImports) {

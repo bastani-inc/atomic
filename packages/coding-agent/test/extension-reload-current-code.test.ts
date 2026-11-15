@@ -11,6 +11,7 @@ import {
 	createAgentSessionServices,
 } from "../src/core/agent-session-runtime.ts";
 import { clearExtensionCache, loadExtensionsCached } from "../src/core/extensions/loader.ts";
+import { staleRuntimeEvaluatedExtensionWarning } from "../src/core/extensions/loader-virtual-modules.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { createRpcCommandHandler } from "../src/modes/rpc/rpc-command-handler.ts";
 
@@ -290,6 +291,54 @@ describe("the restart warning for edited JavaScript extensions the runtime loads
 		const later = new Date(loadedAt.getTime() + 5_000);
 		utimesSync(entry, later, later);
 		assert.equal((await reloadWarnings(entry, cwd, agentDir)).length, 1);
+	});
+
+	test("warns when only the size of an edited entry changed (#4986)", async () => {
+		const { cwd, agentDir, extensionDir } = workspace();
+		const entry = join(extensionDir, "probe.mjs");
+		const loadedAt = new Date(Math.floor(statSync(extensionDir).mtimeMs / 1000) * 1000 - 60_000);
+		writeFileSync(entry, esmSource("1"));
+		utimesSync(entry, loadedAt, loadedAt);
+		await reloadWarnings(entry, cwd, agentDir);
+
+		writeFileSync(entry, esmSource("22"));
+		utimesSync(entry, loadedAt, loadedAt);
+		assert.equal((await reloadWarnings(entry, cwd, agentDir)).length, 1);
+	});
+
+	test("warns for an edited JavaScript extension after a native first import (#4986)", async () => {
+		cleanups.push(replaceEnvironmentVariable("JITI_TRY_NATIVE", "true"));
+		const { cwd, agentDir, extensionDir } = workspace();
+		const entry = join(extensionDir, "probe.mjs");
+		writeFileSync(entry, esmSource("1"));
+		assert.deepEqual(await reloadWarnings(entry, cwd, agentDir), []);
+
+		writeFileSync(entry, esmSource("22"));
+		assert.equal((await reloadWarnings(entry, cwd, agentDir)).length, 1);
+	});
+
+	test("an extension this process never loaded has no restart warning (#4986)", () => {
+		const { extensionDir } = workspace();
+		const entry = join(extensionDir, "never-loaded.mjs");
+		writeFileSync(entry, esmSource("1"));
+		assert.equal(staleRuntimeEvaluatedExtensionWarning(entry), undefined);
+	});
+
+	test("loading an unedited TypeScript extension reports no warning (#4986)", async () => {
+		const { cwd, agentDir, extensionDir } = workspace();
+		writeEntry(extensionDir, "1");
+		writeHelper(extensionDir, "1");
+		const result = await loadExtensionsCached(
+			[join(extensionDir, "index.ts")],
+			cwd,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			agentDir,
+		);
+		assert.deepEqual(result.errors, []);
+		assert.deepEqual(result.warnings, []);
 	});
 
 	test("warns for an edited CommonJS extension, which the runtime loads too (#4986)", async () => {
