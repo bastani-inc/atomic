@@ -284,7 +284,7 @@ describe("the identity a repository's checkouts share (#4989)", () => {
 	test("a relative-path remote names the path it resolves to from the checkout's root (#4989)", () => {
 		assert.equal(normalizeRemoteUrl("../upstream", root), resolve("/work", "one", "upstream"));
 		assert.equal(normalizeRemoteUrl(" ./up\n", root), resolve(root, "up"));
-		assert.equal(normalizeRemoteUrl("./a:b", root), resolve(root, "a:b"));
+		assert.equal(normalizeRemoteUrl("./a:b", root), resolve(root, "./a:b"));
 		// A drive-relative Windows path is a path, not a host named by one letter.
 		assert.equal(normalizeRemoteUrl("C:repo", root), resolve(root, "C:repo"));
 		assert.equal(normalizeRemoteUrl("../upstream"), "../upstream");
