@@ -1,10 +1,12 @@
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { deflateRawSync, gunzipSync, gzipSync, inflateRawSync } from "node:zlib";
+import { isPathInside } from "../../utils/path-inside.ts";
 import { readConflictUrl } from "./conflict-registry.ts";
 import { loadNativeSearchBinding } from "./search-native.ts";
 import { plainShellWordMask } from "./shell-plain-words.ts";
+import { listTarMembers, writeTarMember } from "./tar-archive.ts";
 
 export interface ArchiveSelector {
 	archivePath: string;
@@ -335,57 +337,21 @@ function writeZipEntries(path: string, entries: Map<string, Buffer>): void {
 	eocd.writeUInt32LE(offset, 16);
 	writeFileSync(path, Buffer.concat([...locals, ...centrals, eocd]));
 }
-function parseTar(path: string): Map<string, Buffer> {
+function readTarBuffer(path: string): Buffer {
 	const raw = readFileSync(path);
 	if (raw.length > MAX_TAR_ARCHIVE_BYTES) throw new Error(`Archive too large: ${path}`);
 	const buf = isGzipTar(path) ? gunzipSync(raw, { maxOutputLength: MAX_TAR_ARCHIVE_BYTES }) : raw;
 	if (buf.length > MAX_TAR_ARCHIVE_BYTES) throw new Error(`Archive too large: ${path}`);
+	return buf;
+}
+function parseTar(path: string): Map<string, Buffer> {
 	const entries = new Map<string, Buffer>();
-	for (let offset = 0; offset + 512 <= buf.length; ) {
-		const header = buf.subarray(offset, offset + 512);
-		if (header.every((byte) => byte === 0)) break;
-		const name = header.subarray(0, 100).toString().replace(/\0.*$/, "");
-		const prefix = header.subarray(345, 500).toString().replace(/\0.*$/, "");
-		const fullName = prefix ? `${prefix}/${name}` : name;
-		const size = Number.parseInt(header.subarray(124, 136).toString().replace(/\0.*$/, "").trim() || "0", 8);
-		const type = String.fromCharCode(header[156] ?? 48);
-		const dataStart = offset + 512;
-		if (type !== "5" && fullName) {
-			if (size > MAX_ARCHIVE_MEMBER_BYTES) throw new Error(`Archive member too large: ${fullName}`);
-			entries.set(fullName, Buffer.from(buf.subarray(dataStart, dataStart + size)));
-		}
-		offset = dataStart + Math.ceil(size / 512) * 512;
+	for (const member of listTarMembers(readTarBuffer(path), path).members) {
+		if (member.type === "5" || member.type === "g" || !member.name) continue;
+		if (member.data.length > MAX_ARCHIVE_MEMBER_BYTES) throw new Error(`Archive member too large: ${member.name}`);
+		entries.set(member.name, Buffer.from(member.data));
 	}
 	return entries;
-}
-function tarHeader(name: string, size: number): Buffer {
-	const header = Buffer.alloc(512);
-	const nameBytes = Buffer.from(name);
-	nameBytes.copy(header, 0, 0, Math.min(100, nameBytes.length));
-	header.write("0000644\0", 100);
-	header.write("0000000\0", 108);
-	header.write("0000000\0", 116);
-	header.write(`${size.toString(8).padStart(11, "0")}\0`, 124);
-	header.write("00000000000\0", 136);
-	header.fill(0x20, 148, 156);
-	header[156] = 48;
-	header.write("ustar\0", 257);
-	header.write("00", 263);
-	let sum = 0;
-	for (const byte of header) sum += byte;
-	header.write(`${sum.toString(8).padStart(6, "0")}\0 `, 148);
-	return header;
-}
-function writeTar(path: string, entries: Map<string, Buffer>): void {
-	const parts: Buffer[] = [];
-	for (const [name, data] of entries) {
-		parts.push(tarHeader(name, data.length), data);
-		const pad = (512 - (data.length % 512)) % 512;
-		if (pad) parts.push(Buffer.alloc(pad));
-	}
-	parts.push(Buffer.alloc(1024));
-	const out = Buffer.concat(parts);
-	writeFileSync(path, isGzipTar(path) ? gzipSync(out) : out);
 }
 function listArchiveDirectory(names: Iterable<string>, memberPath: string): string {
 	const prefix = memberPath ? `${memberPath.replace(/\/+$/g, "")}/` : "";
@@ -534,9 +500,10 @@ export function writeArchiveSelector(selector: ArchiveSelector, content: string)
 		writeZipEntrySelective(selector.archivePath, selector.memberPath, Buffer.from(content));
 		return;
 	}
-	const entries = existsSync(selector.archivePath) ? parseTar(selector.archivePath) : new Map<string, Buffer>();
-	entries.set(selector.memberPath, Buffer.from(content));
-	writeTar(selector.archivePath, entries);
+	const path = selector.archivePath;
+	const source = existsSync(path) ? readTarBuffer(path) : Buffer.alloc(0);
+	const out = writeTarMember(source, selector.memberPath, Buffer.from(content), path);
+	writeFileSync(path, isGzipTar(path) ? gzipSync(out) : out);
 }
 const SEARCH_LINE_LIMIT = 512;
 function truncateSearchLine(line: string): string {
@@ -719,10 +686,6 @@ async function resolveViaRouter(
 	if (resolved) return resolved;
 	return resolveInternalSelector(value, cwd);
 }
-function isContained(root: string, candidate: string): boolean {
-	const rel = relative(root, candidate);
-	return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
-}
 function nearestExistingAncestor(pathValue: string): string {
 	let current = pathValue;
 	while (!existsSync(current)) {
@@ -738,8 +701,8 @@ function realpathExisting(pathValue: string): string {
 function resolveContainedPath(root: string, pathValue: string, label: string): string {
 	const lexicalRoot = resolve(root),
 		resolved = resolve(root, pathValue);
-	if (!isContained(lexicalRoot, resolved)) throw new Error(`${label} escapes the workspace: ${pathValue}`);
-	if (!isContained(realpathExisting(lexicalRoot), realpathExisting(resolved)))
+	if (!isPathInside(lexicalRoot, resolved)) throw new Error(`${label} escapes the workspace: ${pathValue}`);
+	if (!isPathInside(realpathExisting(lexicalRoot), realpathExisting(resolved)))
 		throw new Error(`${label} escapes the workspace: ${pathValue}`);
 	return resolved;
 }
@@ -1078,12 +1041,70 @@ function normalizeSqliteWriteValue(value: unknown, column: string): SqliteValue 
 	throw new Error(`SQLite column '${column}' only accepts JSON scalar values or null`);
 }
 
-function sqlitePrimaryKey(db: SqliteDatabase, table: string): string {
-	return (
-		(db.query(`pragma table_info(${quoteSqliteIdent(table)})`).all() as Array<{ name?: string; pk?: number }>).find(
-			(row) => row.pk === 1,
-		)?.name ?? "rowid"
-	);
+/** The columns that identify one row: the complete primary key in key order, or `rowid` for a table without one. */
+function sqliteRowKey(db: SqliteDatabase, table: string): string[] {
+	const columns = (
+		db.query(`pragma table_info(${quoteSqliteIdent(table)})`).all() as Array<{ name: string; pk: number }>
+	)
+		.filter((row) => row.pk > 0)
+		.sort((a, b) => a.pk - b.pk)
+		.map((row) => row.name);
+	return columns.length > 0 ? columns : ["rowid"];
+}
+/**
+ * Bind values for a row selector. A single-column key takes the selector text as its value; a composite key takes a
+ * JSON array with one value per key column, in key order, such as `["acme",2]`. Anything else is refused, because
+ * matching on part of a composite key would select several rows.
+ */
+function sqliteRowKeyValues(key: string[], rowId: string, table: string): SqliteValue[] {
+	if (key.length === 1) return [rowId];
+	let values: unknown;
+	try {
+		values = JSON.parse(rowId);
+	} catch {
+		values = undefined;
+	}
+	if (!Array.isArray(values) || values.length !== key.length)
+		throw new Error(
+			`SQLite table '${table}' has a composite primary key (${key.join(", ")}); select a row with a JSON array of all ${key.length} key values in that order`,
+		);
+	return values.map((value, index) => normalizeSqliteWriteValue(value, key[index] as string));
+}
+function sqliteRowKeyWhere(key: string[]): string {
+	return key.map((column) => `${quoteSqliteIdent(column)} = ?`).join(" and ");
+}
+/** Runs a row update or delete that changes at most one row, refusing (and changing nothing) when more match. */
+function runSingleRowWrite(
+	db: SqliteDatabase,
+	table: string,
+	rowId: string,
+	where: string,
+	keyValues: SqliteValue[],
+	statement: string,
+	params: SqliteValue[],
+): number {
+	db.query("begin immediate").run();
+	let committed = false;
+	try {
+		const matched = Number(
+			db.query(`select count(*) as count from ${quoteSqliteIdent(table)} where ${where}`).all(...keyValues)[0]
+				?.count,
+		);
+		if (matched > 1)
+			throw new Error(
+				`SQLite row selector '${rowId}' matches ${matched} rows in ${table}; refusing to change more than one row. Select the row by its complete primary key.`,
+			);
+		const changes = db.query(statement).run(...params).changes ?? 0;
+		db.query("commit").run();
+		committed = true;
+		return changes;
+	} finally {
+		if (!committed) db.query("rollback").run();
+	}
+}
+function sqliteRowKeyText(key: string[], row: Record<string, unknown>, fallback: number): string {
+	if (key.length > 1) return JSON.stringify(key.map((column) => row[column]));
+	return String(row[key[0] as string] ?? fallback);
 }
 export function readSqliteSelector(selector: SqliteSelector): string {
 	const Database = sqliteDatabase();
@@ -1104,8 +1125,9 @@ export function readSqliteSelector(selector: SqliteSelector): string {
 		}
 		const schemaRows = db.query(`pragma table_info(${quoteSqliteIdent(selector.table)})`).all();
 		if (selector.schema) return rowsToJsonLines(schemaRows);
-		const key = sqlitePrimaryKey(db, selector.table);
-		const where = selector.rowId ? `${quoteSqliteIdent(key)} = ?` : validateSqliteWhere(selector.where);
+		const key = sqliteRowKey(db, selector.table);
+		const keyValues = selector.rowId ? sqliteRowKeyValues(key, selector.rowId, selector.table) : [];
+		const where = selector.rowId ? sqliteRowKeyWhere(key) : validateSqliteWhere(selector.where);
 		const order = formatSqliteOrder(selector.order);
 		const isQuery = selector.limit !== undefined || selector.offset !== undefined || selector.where || selector.order;
 		const limit = selector.sampleRows ?? selector.limit ?? (isQuery ? 20 : 5);
@@ -1118,7 +1140,7 @@ export function readSqliteSelector(selector: SqliteSelector): string {
 		]
 			.filter(Boolean)
 			.join(" ");
-		const rows = selector.rowId ? db.query(sql).all(selector.rowId, limit, offset) : db.query(sql).all(limit, offset);
+		const rows = db.query(sql).all(...keyValues, limit, offset);
 		if (selector.rowId || isQuery || selector.sampleRows !== undefined) return rowsToJsonLines(rows);
 		return [`# ${selector.table}`, "Schema:", rowsToJsonLines(schemaRows), "Rows:", rowsToJsonLines(rows)].join("\n");
 	} finally {
@@ -1202,10 +1224,19 @@ export function writeSqliteSelector(selector: SqliteSelector, content: string): 
 		const db = new Database(selector.databasePath);
 		try {
 			const table = selector.table;
-			const result = db
-				.query(`delete from ${quoteSqliteIdent(table)} where ${quoteSqliteIdent(sqlitePrimaryKey(db, table))} = ?`)
-				.run(selector.rowId);
-			return (result.changes ?? 0) > 0
+			const key = sqliteRowKey(db, table);
+			const keyValues = sqliteRowKeyValues(key, selector.rowId, table);
+			const where = sqliteRowKeyWhere(key);
+			const changes = runSingleRowWrite(
+				db,
+				table,
+				selector.rowId,
+				where,
+				keyValues,
+				`delete from ${quoteSqliteIdent(table)} where ${where}`,
+				keyValues,
+			);
+			return changes > 0
 				? `Deleted row '${selector.rowId}' in ${table}`
 				: `No row deleted for '${selector.rowId}' in ${table}`;
 		} finally {
@@ -1218,11 +1249,12 @@ export function writeSqliteSelector(selector: SqliteSelector, content: string): 
 	try {
 		const table = selector.table;
 		const quotedTable = quoteSqliteIdent(table);
-		const key = sqlitePrimaryKey(db, table);
-		const quotedKey = quoteSqliteIdent(key);
+		const key = sqliteRowKey(db, table);
+		const keyValues = selector.rowId ? sqliteRowKeyValues(key, selector.rowId, table) : [];
 		const validColumns = new Set(sqliteTableColumns(db, table));
-		if (!selector.rowId && key !== "id" && Object.hasOwn(data, "id") && !Object.hasOwn(data, key)) {
-			data[key] = data.id;
+		const [single = ""] = key;
+		if (!selector.rowId && key.length === 1 && Object.hasOwn(data, "id") && !Object.hasOwn(data, single)) {
+			data[single] = data.id;
 			delete data.id;
 		}
 		const columns = Object.keys(data);
@@ -1243,10 +1275,17 @@ export function writeSqliteSelector(selector: SqliteSelector, content: string): 
 			return `Inserted row into ${table}`;
 		}
 		const assignments = columns.map((column) => `${quoteSqliteIdent(column)} = ?`).join(", ");
-		const result = db
-			.query(`update ${quotedTable} set ${assignments} where ${quotedKey} = ?`)
-			.run(...columns.map((column) => data[column]), selector.rowId);
-		return (result.changes ?? 0) > 0
+		const where = sqliteRowKeyWhere(key);
+		const changes = runSingleRowWrite(
+			db,
+			table,
+			selector.rowId,
+			where,
+			keyValues,
+			`update ${quotedTable} set ${assignments} where ${where}`,
+			[...columns.map((column) => data[column] as SqliteValue), ...keyValues],
+		);
+		return changes > 0
 			? `Updated row '${selector.rowId}' in ${table}`
 			: `No row updated for '${selector.rowId}' in ${table}`;
 	} finally {
@@ -1275,13 +1314,15 @@ export function searchSqliteSelector(
 	const Database = sqliteDatabase();
 	const db = new Database(selector.databasePath, { readonly: true });
 	try {
-		const key = sqlitePrimaryKey(db, selector.table);
-		const where = selector.rowId ? `${quoteSqliteIdent(key)} = ?` : validateSqliteWhere(selector.where);
+		const key = sqliteRowKey(db, selector.table);
+		const keyValues = selector.rowId ? sqliteRowKeyValues(key, selector.rowId, selector.table) : [];
+		const where = selector.rowId ? sqliteRowKeyWhere(key) : validateSqliteWhere(selector.where);
 		const order = formatSqliteOrder(selector.order);
 		const limit = selector.sampleRows ?? selector.limit ?? 1000;
 		const offset = selector.offset ?? 0;
 		const rowIdAlias = "__atomic_rowid__";
-		const selectList = key === "rowid" ? `rowid as ${quoteSqliteIdent(rowIdAlias)}, *` : "*";
+		const usesRowid = key[0] === "rowid";
+		const selectList = usesRowid ? `rowid as ${quoteSqliteIdent(rowIdAlias)}, *` : "*";
 		const sql = [
 			`select ${selectList} from ${quoteSqliteIdent(selector.table)}`,
 			where ? `where ${where}` : "",
@@ -1290,13 +1331,15 @@ export function searchSqliteSelector(
 		]
 			.filter(Boolean)
 			.join(" ");
-		const rows = selector.rowId ? db.query(sql).all(selector.rowId, limit, offset) : db.query(sql).all(limit, offset);
+		const rows = db.query(sql).all(...keyValues, limit, offset);
 		return rows
 			.map((rawRow, index) => {
 				const row = rawRow as Record<string, unknown>;
-				const rowKey = key === "rowid" ? row[rowIdAlias] : row[key];
-				if (key === "rowid") delete row[rowIdAlias];
-				return { row, key: String(rowKey ?? offset + index + 1) };
+				const rowKey = usesRowid
+					? String(row[rowIdAlias] ?? offset + index + 1)
+					: sqliteRowKeyText(key, row, offset + index + 1);
+				delete row[rowIdAlias];
+				return { row, key: rowKey };
 			})
 			.filter(({ row }) => matcher.test(JSON.stringify(row)))
 			.map(

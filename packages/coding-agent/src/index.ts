@@ -620,6 +620,7 @@ export type {
 	ResolvedResource,
 } from "./core/package-manager.ts";
 export { DefaultPackageManager } from "./core/package-manager.ts";
+export { formatProjectTrustPrompt } from "./core/project-trust.ts";
 export {
 	applyProviderRateLimitObservation,
 	configureProviderRequestBudget,
@@ -795,6 +796,11 @@ export {
 	serializeSessionStartError,
 } from "./core/session-start-errors.ts";
 export {
+	DEGRADED_RESTORE_RETENTION_DAYS,
+	type DegradedRestorePin,
+	type DiscardDegradedRestoreOptions,
+	degradedRestorePin,
+	discardDegradedRestore,
 	formatDegradedRestoreNotice,
 	formatUnrestoredNotice,
 	formatWorktreeRestoreNotice,
@@ -973,9 +979,11 @@ export {
 	type TaskToolFailureCode,
 } from "./core/tools/shell-task-status.ts";
 export {
+	getProjectTrustOptions,
 	hasProjectTrustInputs,
 	hasTrustRequiringProjectResources,
 	type ProjectTrustDecision,
+	type ProjectTrustOption,
 	ProjectTrustStore,
 	type ProjectTrustStoreEntry,
 	type ProjectTrustUpdate,
@@ -1197,6 +1205,7 @@ export { pickWhimsicalWorkingMessage } from "./modes/interactive/whimsical-messa
 export { createChildProcessEnvironment, spawnProcess } from "./utils/child-process.ts";
 // Clipboard utilities
 export { copyToClipboard } from "./utils/clipboard.js";
+export { redactCredentialShapes } from "./utils/credential-redaction.js";
 export { parseFrontmatter, stripFrontmatter } from "./utils/frontmatter.ts";
 export {
 	isSafeFsWatchPathError,
@@ -1258,6 +1267,7 @@ export {
 	type ManagedToolTimeoutFields,
 } from "./utils/managed-tool-errors.ts";
 export { detectSupportedImageMimeTypeFromFile } from "./utils/mime.ts";
+export { isPathInside, type PathInsideApi } from "./utils/path-inside.ts";
 // Shell utilities
 export { getPowerShellConfig, getShellConfig } from "./utils/shell.ts";
 export {

@@ -35,6 +35,7 @@ import {
 } from "./workflow-command-utils.js";
 import { captureWorkflowOwnerResources, type WorkflowOwnerResources } from "./workflow-owner-resources.js";
 import { workflowPolicyFromContext } from "./workflow-policy.js";
+import { projectTrustConfirmation } from "./workflow-project-trust.js";
 import { normalizeWorkflowReloadReport, type WorkflowReloadReport } from "./workflow-reload-report.js";
 import { handleRunControlCommand, type WorkflowRunControlDeps } from "./workflow-run-control-command.js";
 import { overlaySurfaceFromContext, reloadFailureMessage, resolveRunId } from "./workflow-targets.js";
@@ -210,7 +211,12 @@ async function workflowSlashHandler(
 		await ensureWorkflowResourcesVisible();
 		const result = await workflowForkAction(
 			{ runId: parsed.runId, fromStage: parsed.fromStage },
-			{ getRuntime: () => deps.runtimeForContext(ctx), policy, source: "cli" },
+			{
+				getRuntime: () => deps.runtimeForContext(ctx),
+				policy,
+				source: "cli",
+				...projectTrustConfirmation(ctx, policy),
+			},
 		);
 		if (result.status === "failed") return fail(result.message);
 		print(result.message);

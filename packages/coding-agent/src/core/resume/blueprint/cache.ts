@@ -235,9 +235,11 @@ async function blueprintDigest(root: string, warnings: string[]): Promise<string
 function settingsCache(root: string, agentDir: string, warnings: string[]): readonly CacheSetting[] {
 	// The checkout is the project; its settings are read like its blueprint, and every path they name is checked below.
 	const settings = SettingsManager.create(root, agentDir);
-	for (const { path, error } of settings.drainErrors()) {
-		if (path !== undefined)
+	for (const { path, error, invalidKey } of settings.drainErrors()) {
+		if (path === undefined) continue;
+		if (invalidKey === undefined)
 			warnings.push(`${path} could not be read, so its resume.cache is ignored: ${error.message}`);
+		else if (invalidKey === "resume") warnings.push(`${path}: ${error.message}`);
 	}
 	return readCacheSetting(settings.getSettings().resume?.cache, warnings);
 }

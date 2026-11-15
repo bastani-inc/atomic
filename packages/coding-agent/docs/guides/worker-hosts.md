@@ -9,6 +9,8 @@ description: "Turn any Linux or macOS machine into a worker host for shared work
 
 A workflow root with shared placement keeps its work queue in a shared libSQL or Turso database. Any machine that has Atomic installed can run that root's pooled children: install Atomic, then run one command that names the database. The machines coordinate only through the database. There is no other service to run.
 
+If you host the database yourself with sqld rather than Turso, start sqld with `--checkpoint-interval-s 60` (or `SQLD_CHECKPOINT_INTERVAL_S=60`): sqld 0.24.33 can otherwise stop taking writes when many hosts write at once. See [Turso and libSQL](/storage#turso-and-libsql).
+
 Worker hosts need libSQL or Turso in this release. `atomic worker` accepts a `postgres://` URL, but the worker pool does not run on [PostgreSQL](/storage#postgresql) yet; support is coming in a later release. If you host the database yourself, run sqld with `--checkpoint-interval-s 60`, as [Scale the fleet automatically](#scale-the-fleet-automatically) explains.
 
 ## Join a machine
