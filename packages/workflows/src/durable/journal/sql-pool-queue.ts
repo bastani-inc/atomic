@@ -293,6 +293,18 @@ type OutboxRow = SqliteRow & {
 	payload: string;
 	last_seq: number | null;
 };
+/**
+ * What a shipped batch's plan validates and fences against: the attempt's work row, the root's latest sequence and the
+ * events past it the view holds already, that view, and the payloads its keys recorded already (#4768).
+ */
+interface ShipPlan {
+	readonly row: WorkRow;
+	readonly now: number;
+	readonly head: number;
+	readonly own: readonly number[];
+	readonly source: PoolCheckpointSource;
+	readonly existing?: ReadonlyMap<string, string>;
+}
 /** A commit's fences and writes, as its plan gathers them. */
 interface CommitWrite {
 	readonly fences: SqliteStatement[];
@@ -1696,11 +1708,17 @@ export class SqlPoolQueue {
 	}
 	/**
 	 * Records an attempt's batch of checkpoints, which its host accepted in its local journal, in the root's journal
-	 * (#4768): in one request, under the same fences as a commit of each (the root's lease, the attempt's work lease,
-	 * the root's status), each validated against the root's checkpoints and those before it in the batch. A batch is
-	 * delivered once: its id in the ledger means it was, so a retry after a lost answer writes nothing. A checkpoint the
-	 * root holds already with the same payload is not recorded again; with another payload it is an identity conflict.
-	 * Refused with {@link StaleWorkLeaseError}, writing nothing, once another attempt owns the work.
+	 * (#4768), as one request: on SQLite and libSQL one batch, on PostgreSQL one fenced transaction. Its fences are those
+	 * of a commit, checked once for the whole batch (the root's lease, the attempt's work lease, the root's status, no
+	 * checkpoint of the attempt's scope recorded since the view validation used, none of the batch's keys recorded
+	 * already), and its events go in with one multi-row insert that takes the run's next sequences under the run row.
+	 * Each checkpoint is validated against the root's checkpoints and those before it in the batch.
+	 *
+	 * Its first plan reads nothing: it validates against the checkpoints this queue knows of the root, as a commit's
+	 * first plan does, and a fence that no longer holds plans it again from one read. A batch is delivered once: its id
+	 * in the ledger means it was, so a retry after a lost answer writes nothing. A checkpoint the root holds already
+	 * with the same payload is not recorded again; with another payload it is an identity conflict. Refused with
+	 * {@link StaleWorkLeaseError}, writing nothing, once another attempt owns the work.
 	 */
 	async shipBatch(lease: Lease, token: WorkLease, batch: PoolShipBatch): Promise<void> {
 		lease = snapshotLease(lease);
@@ -1716,39 +1734,54 @@ export class SqlPoolQueue {
 		for (const event of parsed)
 			if (checkpointKey(event.checkpoint) !== event.key) throw new Error("Pool checkpoint identity conflict");
 		const checkpoints = this.checkpoints.begin(lease.runId);
+		const shipped = { sql: `SELECT 1 FROM ${runs}_ship_batches WHERE batch = ?`, params: [batch.id] };
 		let recorded: { readonly seq: number; readonly key: string; readonly checkpoint: DurableCheckpoint }[] = [];
-		await guardedPoolWrite<void>(
+		const seqs = await guardedPoolWrite<ReadonlyMap<string, number>>(
 			this.storage,
-			async (read) => {
+			async (read, optimistic) => {
 				recorded = [];
-				const state = await this.attemptState(read, lease, token, `ship:${batch.id}`, undefined, checkpoints);
-				const shipped = await read.get(`SELECT 1 AS shipped FROM ${runs}_ship_batches WHERE batch = ?`, batch.id);
-				if (shipped !== undefined) return { done: undefined };
-				const { now, status } = state;
-				const row = this.currentOf(state.work, lease, token);
-				if (row.epoch !== lease.epoch) throw staleWork(lease, token, "epoch-mismatch");
-				if (row.expires_at < now) throw staleWork(lease, token, "expired");
-				if (status !== "running" && !(status === "paused" && state.control === "paused"))
-					throw staleWork(lease, token, "root-not-running");
-				const work = fromRow(row);
-				const head = state.recorded.head;
-				const write: CommitWrite = {
-					fences: [
-						this.rootFence(lease),
-						this.attemptFence(lease, token, true),
-						...this.admitsFences(lease, "update"),
-						{
-							sql: `SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM ${runs}_ship_batches WHERE batch = ?)`,
-							params: [batch.id],
-						},
-					],
-					writes: [],
-				};
-				let source: PoolCheckpointSource = checkpoints;
-				let added = 0;
+				let plan: ShipPlan;
+				const cached = this.attempts.get(token.id);
+				const known = this.checkpoints.known(lease.runId);
+				if (
+					optimistic &&
+					known !== undefined &&
+					cached?.state === "leased" &&
+					Number(cached.generation) === token.generation &&
+					cached.worker === token.worker &&
+					Number(cached.epoch) === token.epoch &&
+					Number(cached.epoch) === lease.epoch
+				)
+					// Every check it skips, a fence repeats: a batch shipped already, or one of its keys recorded, breaks one, and
+					// the plan that follows reads why.
+					plan = { row: cached, now: Date.now(), head: known.from, own: known.own, source: known.source };
+				else {
+					const state = await this.attemptState(read, lease, token, `ship:${batch.id}`, undefined, checkpoints);
+					if ((await read.get(shipped.sql, ...shipped.params)) !== undefined) return { done: new Map() };
+					const { now, status } = state;
+					const row = this.currentOf(state.work, lease, token);
+					if (row.epoch !== lease.epoch) throw staleWork(lease, token, "epoch-mismatch");
+					if (row.expires_at < now) throw staleWork(lease, token, "expired");
+					if (status !== "running" && !(status === "paused" && state.control === "paused"))
+						throw staleWork(lease, token, "root-not-running");
+					plan = {
+						row,
+						now,
+						head: state.recorded.head,
+						own: [],
+						source: checkpoints,
+						existing: await this.recordedPayloads(
+							read,
+							lease.runId,
+							parsed.map((event) => event.key),
+						),
+					};
+				}
+				const work = fromRow(plan.row);
+				const rows: { key: string; payload: string; chunks: readonly Uint8Array[] }[] = [];
 				for (const event of parsed) {
 					const checkpoint = event.checkpoint;
-					const existing = await this.eventPayload(read, lease.runId, event.key);
+					const existing = plan.existing?.get(event.key);
 					if (existing !== undefined) {
 						if (!isRecordedCheckpoint(existing, event.payload))
 							throw new Error("Pool checkpoint identity conflict");
@@ -1760,41 +1793,43 @@ export class SqlPoolQueue {
 						lease.runId,
 						work,
 						{ kind: "checkpoint", checkpoint },
-						source,
+						recorded.length === 0 ? plan.source : withRecorded(plan.source, recorded),
 					);
-					if (checkpoint.completedAt > Math.max(now, Date.now()) + MAX_WORKER_CLOCK_SKEW_MS)
+					if (checkpoint.completedAt > Math.max(plan.now, Date.now()) + MAX_WORKER_CLOCK_SKEW_MS)
 						throw new Error("Pool checkpoint timestamp is in the future");
 					assertWorkflowSerializableObject(checkpoint, "Pool checkpoint");
 					if (poolCheckpointUsage(checkpoint) !== undefined)
 						throw new Error("A pool checkpoint that bills usage is committed, not shipped");
-					added++;
-					const entry = { seq: head + added, key: event.key, checkpoint };
-					recorded.push(entry);
-					source = withRecorded(checkpoints, recorded);
-					write.fences.push({
-						sql: `SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM ${this.journal.events} WHERE run_id = ? AND key = ?)`,
-						params: [lease.runId, event.key],
-					});
-					write.writes.push(
-						...this.eventWrites(
-							lease.runId,
-							undefined,
-							lease.epoch,
-							event.key,
-							event.payload,
-							this.now,
-							[],
-							checkpoint,
-							await this.keepsWhole(read, event.payload),
-						),
-					);
+					// Positions past the head, in order: what validation of the next checkpoint in the batch sees.
+					recorded.push({ seq: plan.head + recorded.length + 1, key: event.key, checkpoint });
+					const stored = (await this.keepsWhole(read, event.payload))
+						? { payload: event.payload, chunks: [] }
+						: storedJournalPayload(event.payload, checkpoint);
+					rows.push({ key: event.key, payload: stored.payload, chunks: stored.chunks });
 				}
-				if (added > 0) {
-					journalCounter(lease.runId, "seq", head + added, "overflow");
-					write.fences.push(this.scopeFence(lease, work.scope, head, []));
-				}
+				const keys = rows.map((row) => row.key);
 				const first = batch.events[0]!;
 				const last = batch.events.at(-1)!;
+				const write: CommitWrite = {
+					fences: [
+						this.rootFence(lease),
+						this.attemptFence(lease, token, true),
+						...this.admitsFences(lease, "update"),
+						{ sql: `SELECT 1 WHERE NOT EXISTS (${shipped.sql})`, params: shipped.params },
+					],
+					writes: [],
+				};
+				if (rows.length > 0) {
+					journalCounter(lease.runId, "seq", plan.head + rows.length, "overflow");
+					write.fences.push(
+						{
+							sql: `SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM ${this.journal.events} WHERE run_id = ? AND key IN (${keys.map(() => "?").join(", ")}))`,
+							params: [lease.runId, ...keys],
+						},
+						this.scopeFence(lease, work.scope, plan.head, plan.own),
+					);
+					write.writes.push(...this.shippedEventWrites(lease, rows));
+				}
 				write.writes.push(
 					{
 						sql: `INSERT INTO ${runs}_ship_batches(batch, work, generation, worker, epoch, host, first_local_seq, last_local_seq, events, shipped_at)
@@ -1820,13 +1855,88 @@ export class SqlPoolQueue {
 						params: [token.id, token.generation, batch.host, last.localSeq, last.key],
 					},
 				);
-				return { ...write, result: () => undefined };
+				return {
+					...write,
+					// The sequences the batch's events took, so the next batch validates against them without a read.
+					reads:
+						rows.length === 0
+							? []
+							: [
+									{
+										sql: `SELECT key, seq FROM ${this.journal.events} WHERE run_id = ? AND key IN (${keys.map(() => "?").join(", ")})`,
+										params: [lease.runId, ...keys],
+									},
+								],
+					result: (read) => new Map((read[0] ?? []).map((row) => [String(row.key), Number(row.seq)] as const)),
+				};
 			},
 			COMMIT,
 		);
-		// Only now has the write committed what validation read. The recorded events' sequences are not read back: the
-		// index reads them at its next catch-up.
+		// Only now has the write committed what validation read; a write that never committed never reaches the index.
 		checkpoints.commit();
+		for (const entry of recorded) {
+			const seq = seqs.get(entry.key);
+			if (seq !== undefined) this.checkpoints.recordOwn(lease.runId, seq, entry.key, entry.checkpoint);
+		}
+	}
+	/**
+	 * A shipped batch's events, as one multi-row insert that numbers them from the run's next sequence in the order
+	 * given, and the chunks of those stored in chunks (#4965).
+	 */
+	private shippedEventWrites(
+		lease: Lease,
+		rows: readonly { readonly key: string; readonly payload: string; readonly chunks: readonly Uint8Array[] }[],
+	): SqliteStatement[] {
+		const { events, eventChunks } = this.journal;
+		const int = this.dialect.types.int;
+		const values = rows
+			.map((_, index) =>
+				index === 0
+					? `SELECT CAST(? AS ${int}) AS n, CAST(? AS TEXT) AS k, CAST(? AS TEXT) AS p, CAST(? AS ${int}) AS c`
+					: "SELECT ?, ?, ?, ?",
+			)
+			.join(" UNION ALL ");
+		const insert: SqliteStatement = {
+			sql: `INSERT INTO ${events} (run_id, seq, epoch, key, type, payload, at, chunks)
+			SELECT ?, (SELECT COALESCE(MAX(seq), 0) FROM ${events} WHERE run_id = ?) + v.n, ?, v.k, ?, v.p, ${this.now}, v.c
+			FROM (${values}) AS v ORDER BY v.n`,
+			params: [
+				lease.runId,
+				lease.runId,
+				lease.epoch,
+				RUN_EVENT_TYPES.checkpointRecorded,
+				...rows.flatMap((row, index) => [index + 1, row.key, row.payload, row.chunks.length]),
+			],
+		};
+		const chunked = rows.filter((row) => row.chunks.length > 0);
+		return [
+			insert,
+			...chunked.flatMap((row) => [
+				{
+					sql: `DELETE FROM ${eventChunks} WHERE run_id = ? AND seq = (SELECT seq FROM ${events} WHERE run_id = ? AND key = ?)`,
+					params: [lease.runId, lease.runId, row.key],
+				},
+				...row.chunks.map((data, index) => ({
+					sql: `INSERT INTO ${eventChunks} (run_id, seq, idx, data) SELECT ?, seq, ?, ? FROM ${events} WHERE run_id = ? AND key = ?`,
+					params: [lease.runId, index, data, lease.runId, row.key],
+				})),
+			]),
+		];
+	}
+	/** The payloads the root's journal records under any of `keys`, whole, by key. */
+	private async recordedPayloads(
+		read: SqliteExecutor,
+		runId: string,
+		keys: readonly string[],
+	): Promise<ReadonlyMap<string, string>> {
+		const found = await read.all<SqliteRow & { key: string; chunks: number }>(
+			`SELECT key, chunks FROM ${this.journal.events} WHERE run_id = ? AND key IN (${keys.map(() => "?").join(", ")})`,
+			runId,
+			...keys,
+		);
+		const payloads = new Map<string, string>();
+		for (const row of found) payloads.set(String(row.key), (await this.eventPayload(read, runId, String(row.key)))!);
+		return payloads;
 	}
 	/**
 	 * A checkpoint commit planned without a read, for a batched write's first try: from the attempt's work row as this

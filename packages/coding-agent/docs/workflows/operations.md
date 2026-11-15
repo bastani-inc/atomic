@@ -1062,11 +1062,11 @@ If no live host that serves the root and can restore a binding claims a bound ch
 
 | Option | Range | Default | Meaning |
 | --- | --- | --- | --- |
-| `intervalMs` | 100 to 60 000 | 2 000 | How often a host ships what its children recorded. |
+| `intervalMs` | 100 to 60 000 | 2 000 | How often a host ships what its children recorded. A host also ships at least every quarter of `maxLagMs`. |
 | `maxBatch` | 1 to 1 000 | 64 | The most checkpoints one shipment carries. |
-| `maxLagMs` | 1 000 to 600 000 | 30 000 | How far a host's shipping may fall behind before it claims no new children. |
+| `maxLagMs` | 1 000 to 600 000 | 30 000 | The longest a recorded step waits to be shipped. Once a child's oldest unshipped checkpoint has waited half of it, the child's next step waits until what it holds is shipped, and its host claims no new children. |
 
-A step returns once its host has recorded the checkpoint locally, and the host ships its children's checkpoints in batches in the background. A child that has a checkpoint waiting longer than `maxLagMs` records no further steps until that checkpoint is shipped. It ships everything a child recorded before the child completes, before a pause or quit takes effect, and before the host stops. A delivery that fails is retried while children keep running. A host whose oldest unshipped checkpoint has waited longer than `maxLagMs` claims no new children until it catches up.
+A step returns once its host has recorded the checkpoint locally, and the host ships its children's checkpoints in batches in the background. Each shipment of a child's checkpoints is one request to the shared store. It ships everything a child recorded before the child completes, before a pause or quit takes effect, and before the host stops. A delivery that fails is retried while children keep running. A host whose oldest unshipped checkpoint has waited longer than `maxLagMs` claims no new children until it catches up.
 
 These always commit to the shared journal directly, after anything the child recorded before them:
 
