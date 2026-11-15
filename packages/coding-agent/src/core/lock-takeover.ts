@@ -84,7 +84,7 @@ function warnFallback(): void {
 	if (warnedFallback) return;
 	warnedFallback = true;
 	process.emitWarning(
-		"The native module has no advisory file lock; lock takeovers use a directory mutex instead, which a paused process can lose (#5193).",
+		"The native module has no advisory file lock; lock takeovers use a directory mutex instead, which a process killed while taking it leaves for 10 seconds (#5193).",
 	);
 }
 
@@ -160,6 +160,26 @@ export interface TakeoverMutex {
 	release(): void;
 }
 
+const warnedUnremovable = new Set<string>();
+
+/**
+ * Removes `path`, a lock, claim or mutex moved aside or a staging directory, which is no longer at any lock's path
+ * (#5193). Removing it is only tidying: when it fails, as for a directory another user owns (left by `sudo atomic`),
+ * it is left where it is with a one-time warning, and the takeover goes on.
+ */
+export function removeAside(path: string): void {
+	try {
+		rmSync(path, { recursive: true, force: true });
+	} catch (error) {
+		if (warnedUnremovable.has(path)) return;
+		warnedUnremovable.add(path);
+		const reason = error instanceof Error ? error.message : String(error);
+		process.emitWarning(
+			`${path}, left by a lock takeover, cannot be removed (${reason}). It holds no lock: remove it, or give it to your user (for example \`sudo chown -R $USER ${path}\`), as one an \`atomic\` run as another user can leave behind (#5193).`,
+		);
+	}
+}
+
 /**
  * Removes the takeover mutex at `mutexPath` when it is stale: its owner is proven dead, or it names no owner and is
  * {@link TAKEOVER_MUTEX_STALE_MS} old. It is moved aside first and removed only when it is still the mutex judged, so a
@@ -183,7 +203,7 @@ function removeStaleMutex(mutexPath: string): boolean {
 	}
 	// A mutex taken since it was judged is left aside: its owner no longer owns the mutex path, so it moves nothing.
 	if (lockHolder(aside) !== judged || readMutexOwner(aside)?.id !== owner?.id) return false;
-	rmSync(aside, { recursive: true, force: true });
+	removeAside(aside);
 	return true;
 }
 
@@ -241,7 +261,7 @@ function warnUnopenable(file: string, error: unknown): void {
 	warnedUnopenable.add(file);
 	const reason = error instanceof Error ? error.message : String(error);
 	process.emitWarning(
-		`The lock file ${file} cannot be opened (${reason}); lock takeovers use a directory mutex instead, which a paused process can lose. Remove the file, or give it to your user (for example \`sudo chown $USER ${file}\`), as one an \`atomic\` run as another user can leave behind (#5193).`,
+		`The lock file ${file} cannot be opened (${reason}); lock takeovers use a directory mutex instead, which a process killed while taking it leaves for 10 seconds. Remove the file, or give it to your user (for example \`sudo chown $USER ${file}\`), as one an \`atomic\` run as another user can leave behind (#5193).`,
 	);
 }
 
@@ -334,7 +354,7 @@ function createWithOwner(path: string, owner: MutexOwner, native: NativeLocks): 
 	} catch {
 		// Not made: the mutex is not taken.
 	}
-	rmSync(made, { recursive: true, force: true });
+	removeAside(made);
 	return false;
 }
 

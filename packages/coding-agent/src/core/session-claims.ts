@@ -25,7 +25,7 @@ import {
 } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
-import { putBack, takeTakeoverMutex } from "./lock-takeover.ts";
+import { putBack, removeAside, takeTakeoverMutex } from "./lock-takeover.ts";
 import { processStartToken } from "./process-start-token.ts";
 import { SessionAlreadyOpenError } from "./session-manager-errors.js";
 
@@ -151,7 +151,7 @@ function removeDeadClaim(path: string, token: string | undefined): void {
 			// Gone meanwhile: the next attempt links a claim in its place.
 			return;
 		}
-		if (readClaim(aside)?.record?.token === token) rmSync(aside, { force: true });
+		if (readClaim(aside)?.record?.token === token) removeAside(aside);
 		else putBack(aside, path);
 	} finally {
 		mutex.release();

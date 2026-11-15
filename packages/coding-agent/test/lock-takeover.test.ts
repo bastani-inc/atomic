@@ -478,6 +478,45 @@ describe("an advisory lock file that cannot be opened (#5193)", () => {
 	});
 });
 
+describe("a moved-aside mutex that cannot be removed (#5193)", () => {
+	// Windows ignores a directory's mode, and root may remove anything: neither can make the directory unremovable here.
+	const cannotProtect = process.platform === "win32" || process.getuid?.() === 0;
+
+	it.skipIf(cannotProtect)(
+		"never fails the takeover, and warns once naming the directory and the fix (#5193)",
+		async () => {
+			await new Promise((resolve) => setTimeout(resolve, 50));
+			staleLock(lockPath);
+			// A fallback holder run as another user, then killed: its owner file is in a directory this user cannot change.
+			mutexOf({ host: hostname(), pid: exitedPid(), id: "root" });
+			chmodSync(takeoverMutexPath(lockPath), 0o555);
+			const warnings: string[] = [];
+			const listen = (warning: Error) => warnings.push(warning.message);
+			process.on("warning", listen);
+			let asides: string[] = [];
+			try {
+				assert.doesNotThrow(() => removeStaleLock(lockPath, STALE_MS));
+				assert.equal(existsSync(lockPath), false, "the stale lock is removed");
+				asides = readdirSync(directory).filter((name) => name.endsWith(".dead"));
+				const mutex = takeTakeoverMutex(lockPath, 0);
+				assert.ok(mutex, "the takeover mutex is taken again");
+				mutex.release();
+				removeStaleLock(lockPath, STALE_MS);
+				await new Promise((resolve) => setImmediate(resolve));
+			} finally {
+				process.off("warning", listen);
+				for (const name of readdirSync(directory)) {
+					if (name.includes(".takeover")) chmodSync(join(directory, name), 0o755);
+				}
+			}
+			assert.equal(asides.length, 1, "the dead mutex is left aside");
+			const named = warnings.filter((message) => message.includes(asides[0]!));
+			assert.equal(named.length, 1, JSON.stringify(warnings));
+			assert.match(named[0]!, /remove|chown/i);
+		},
+	);
+});
+
 describe("putting back a moved item that is not the one judged (#5193)", () => {
 	it("links a file back only while nothing is at its path (#5193)", () => {
 		const path = join(directory, "claim.json");

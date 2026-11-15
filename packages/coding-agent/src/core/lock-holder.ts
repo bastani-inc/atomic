@@ -6,6 +6,7 @@ import {
 	lockHolderPath,
 	processMayRun,
 	putBack,
+	removeAside,
 	removeLeftoverHolderFiles,
 	takeTakeoverMutex,
 } from "./lock-takeover.ts";
@@ -103,7 +104,7 @@ export function takeOverDeadHolder(lockPath: string): boolean {
 			putBack(aside, lockPath);
 			return false;
 		}
-		rmSync(aside, { recursive: true, force: true });
+		removeAside(aside);
 		removeLeftoverHolderFiles(lockPath);
 		return true;
 	} finally {
