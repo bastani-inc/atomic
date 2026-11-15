@@ -1,5 +1,5 @@
 // A Worker whose Durable Object runs codemode the way an agent session would: tools run here, in the
-// session object, and scripts run in the separately deployed pi-codemode-sandbox Worker.
+// session object, and scripts run in the separately deployed atomic-codemode-sandbox Worker.
 //
 //   curl -X POST http://localhost:8787 --data 'const n = await tools.count({ add: 2 }); text("n=" + n); return n'
 import type { CodemodeSandboxDurableObject } from "@bastani/atomic-codemode/cloudflare";

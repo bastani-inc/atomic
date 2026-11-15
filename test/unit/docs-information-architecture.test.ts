@@ -427,6 +427,16 @@ const generatedNavigationInsertions: Record<string, readonly string[]> = {
 	"/models/reference": ["/models-configuration"],
 	"/extensions/api-reference": ["/custom-provider/api-reference"],
 	"/sdk": ["/sdk/web-server"],
+	// Atomic's libraries (#5174) follow the TUI component guide.
+	"/tui": [
+		"/libraries",
+		"/libraries/ai",
+		"/libraries/tui",
+		"/libraries/agent-core",
+		"/libraries/codemode",
+		"/libraries/schema",
+		"/libraries/telemetry",
+	],
 	"/sdk/reference": ["/storage", "/sdk/structured-decisions"],
 };
 
@@ -645,7 +655,7 @@ describe("docs information architecture (#2847)", () => {
 		const expectedGenerated = Object.values(generatedNavigationInsertions).flat().sort();
 		assert.equal(
 			expectedGenerated.length,
-			43,
+			50,
 			"migration routes, additions, and the storage API have insertion points",
 		);
 		assert.deepEqual(generated, expectedGenerated, "no generated page may fall outside the insertion contract");
