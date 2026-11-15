@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
+	appendFileSync,
 	chmodSync,
 	existsSync,
 	mkdirSync,
@@ -14,7 +15,7 @@ import {
 import { dirname, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
-import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
+import { GitSandbox, gitConfigPath } from "../../../test/helpers/worktree-snapshot.js";
 import { holdsSnapshotCommit } from "../src/core/resume/session-resume.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
@@ -608,6 +609,67 @@ describe("prepareSessionResume started in a checkout of the session's repository
 		);
 		assert.equal(asked, false);
 		assert.ok(manager.getWorktreeRootMappings().at(-1)!.to.startsWith(sandbox.path("host")));
+	});
+});
+
+describe("prepareSessionResume matches a launch checkout by repository, not by remote spelling (#4913)", () => {
+	/** Points the hosted remote spellings the tests record at the sandbox's own bare repositories, so nothing leaves it. */
+	function hostRemotes(remotes: Record<string, readonly string[]>): void {
+		const sections = Object.entries(remotes).map(
+			([name, spellings]) =>
+				`[url "${gitConfigPath(sandbox.path(`${name}.git`))}"]\n${spellings.map((spelling) => `\tinsteadOf = ${spelling}\n`).join("")}`,
+		);
+		appendFileSync(sandbox.globalConfig, sections.join(""));
+	}
+
+	/** A session recorded in a clone whose origin is spelled `recorded`, then moved to a checkout spelling it `launch`. */
+	async function movedCheckout(recorded: string, launch: string) {
+		const { clone } = await editedClone();
+		await sandbox.git(clone, "remote", "set-url", "origin", recorded);
+		const manager = await recordSession(clone, join(clone, "notes"));
+		assert.deepEqual(manager.getLatestWorktreeSnapshots().get(clone)!.remotes, [recorded]);
+		const checkout = sandbox.path("node-b", "repo");
+		mkdirSync(sandbox.path("node-b"));
+		renameSync(clone, checkout);
+		await sandbox.git(checkout, "remote", "set-url", "origin", launch);
+		return { clone, manager, checkout };
+	}
+
+	const spellings: ReadonlyArray<[string, string]> = [
+		["https://github.com/acme/app.git", "git@github.com:acme/app.git"],
+		["https://github.com/acme/app", "https://github.com/acme/app.git"],
+	];
+	for (const [recorded, launch] of spellings) {
+		test(`a session recorded with ${recorded} resumes in a checkout whose origin is ${launch} (#4913)`, async () => {
+			hostRemotes({ repo: [recorded, launch] });
+			const { clone, manager, checkout } = await movedCheckout(recorded, launch);
+
+			const prepared = await prepareSessionResume(manager, options({ launchCwd: join(checkout, "notes") }));
+
+			assert.equal(cwdOf(prepared), join(checkout, "notes"));
+			assert.match(prepared.status === "ready" ? prepared.notices[0]!.message : "", /which matches snapshot/);
+			assert.deepEqual(
+				manager.getWorktreeRootMappings().map((mapping) => [mapping.from, mapping.to]),
+				[[clone, checkout]],
+			);
+			assert.equal(existsSync(sandbox.path("host")), false);
+		});
+	}
+
+	test("a checkout of another repository spelled the other way is not reused (#4913)", async () => {
+		await sandbox.remoteWithClone("other");
+		hostRemotes({ repo: ["https://github.com/acme/app.git"], other: ["git@github.com:acme/other.git"] });
+		const { checkout, manager } = await movedCheckout(
+			"https://github.com/acme/app.git",
+			"git@github.com:acme/other.git",
+		);
+
+		const prepared = await prepareSessionResume(manager, options({ launchCwd: checkout }));
+
+		assert.equal(prepared.status, "ready");
+		const restored = manager.getWorktreeRootMappings().at(-1)!.to;
+		assert.ok(restored.startsWith(sandbox.path("host")), restored);
+		assert.equal(readFileSync(join(restored, "README.md"), "utf8"), "edited\n");
 	});
 });
 

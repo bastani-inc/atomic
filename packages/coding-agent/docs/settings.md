@@ -11,6 +11,8 @@ Edit directly or use `/settings` for common options. Choosing a model or thinkin
 
 For editor completion and validation, add `"$schema": "https://raw.githubusercontent.com/bastani-inc/atomic/main/packages/coding-agent/schemas/settings.schema.json"` to `settings.json`. Atomic preserves `$schema` and settings it does not recognize, such as extension settings, when it saves.
 
+Atomic checks the type of each setting when it loads a settings file. A value of the wrong type, such as a string where a list belongs (`"extensions": "./my-ext.ts"` instead of `["./my-ext.ts"]`), is ignored: Atomic behaves as if it were not set, so the other settings file or the default applies. A list entry of the wrong type, such as a number in `fallbackModels`, is dropped and the rest of the list is kept. Each ignored value is reported once as a warning that names the file and the key, for example `Invalid settings file ~/.atomic/agent/settings.json: "extensions" must be array of string; ignoring it.` Atomic never rewrites the file; fix the value to clear the warning. Values of the right type that break a narrower rule, such as an out-of-range number, are reported by the feature that uses them, as described for each setting below. So are wrong-typed values of settings that check their own values and stop the request instead of switching to something else: `decisionModel`, `compactionModel`, `modelRouting`, `storage`, `sessions`, `workflows`, `snapshots`, `httpIdleTimeoutMs`, `websocketConnectTimeoutMs` and `streamDeadlineMs`.
+
 Saving an Atomic setting applies only the changed fields to the corresponding `.atomic` file; it does not copy untouched fallback fields out of `.pi`. To intentionally override an inherited array such as `packages`, set it in `.atomic`, including an explicit empty array (`"packages": []`) when the inherited list should be disabled.
 
 ## On this page and its guide
@@ -178,7 +180,9 @@ Changing the reasoning level after fallback is not a model choice, so the fallba
 
 The same list is also **borrowed by compaction**. When the compaction range planner cannot produce a usable plan on the current model — a rate limit, quota exhaustion, provider error, context overflow, or an empty plan — Atomic runs one planner request against the next configured candidate, using that candidate's own credentials. **A configured fallback model may therefore receive the compaction transcript.** Borrowing is planner-only: it never changes the session model, thinking level, or model history, it appends no model-change entry, and it emits no fallback status. See [Compaction](/compaction#planning-rungs-and-failure-behavior).
 
-Fallback entries should be fully qualified `provider/model` ids. Add a reasoning suffix to a candidate to override the effort for that fallback only; valid suffixes are `:off`, `:minimal`, `:low`, `:medium`, `:high`, `:xhigh`, and `:max`. Atomic clamps or hides levels that the selected model's capability map does not support.
+Fallback entries are written like `--model` and resolve the same way: `provider/model` or a bare model id, in any letter case, with an optional reasoning suffix. Ids that contain `/` or `:` themselves, such as OpenRouter's `qwen/qwen3-coder:exacto`, work as written. Fully qualified `provider/model` ids are clearest, because a bare id that several authenticated providers serve picks the current or default provider. Add a reasoning suffix to a candidate to override the effort for that fallback only; valid suffixes are `:off`, `:minimal`, `:low`, `:medium`, `:high`, `:xhigh`, and `:max`. Atomic clamps or hides levels that the selected model's capability map does not support.
+
+A fallback can only use a model whose provider has credentials. At startup, Atomic warns once for each entry that matches no such model, naming the entry, and the chain skips it when a fallback is needed. Run `atomic --list-models` to see the available ids.
 
 ```json
 {

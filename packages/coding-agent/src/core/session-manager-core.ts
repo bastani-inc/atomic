@@ -731,7 +731,8 @@ export class SessionManager {
 	 * entry's snapshot with the same id (an unchanged capture). `restore` records that the snapshot was restored on
 	 * this host into `root`, and `restoreWarnings` what that restore reported beyond its snapshot record. `unrestored`
 	 * records that a resume continued without restoring the checkout at `root` (#4733). `captureMs` is how long the
-	 * turn's capture took (#4748).
+	 * turn's capture took (#4748). `degradedFrom` names the snapshot a resume restored only partly into `root`, which
+	 * stays the checkout's restore target while this entry records the worktree as it is (#4922).
 	 */
 	appendWorktreeSnapshot(
 		root: string,
@@ -741,6 +742,7 @@ export class SessionManager {
 		restoreWarnings: readonly WorktreeRestoreHostWarning[] = [],
 		unrestored?: WorktreeUnrestored,
 		captureMs?: number,
+		degradedFrom?: string,
 	): Promise<string> {
 		return this.runMutation(async () => {
 			if (snapshot !== undefined && snapshot.id !== snapshotId) {
@@ -758,6 +760,16 @@ export class SessionManager {
 			if (restore === undefined && restoreWarnings.length > 0) {
 				throw new WorkspaceConfigError("sdk", "restoreWarnings", "warnings recorded together with their restore");
 			}
+			if (
+				degradedFrom !== undefined &&
+				(degradedFrom === snapshotId || !this.getWorktreeSnapshotRecords().has(degradedFrom))
+			) {
+				throw new WorkspaceConfigError(
+					"sdk",
+					"degradedFrom",
+					"the id of another snapshot recorded in this session",
+				);
+			}
 			const entry = createWorktreeSnapshotEntry(
 				root,
 				snapshotId,
@@ -768,6 +780,7 @@ export class SessionManager {
 				this.leafId,
 				unrestored,
 				captureMs,
+				degradedFrom,
 			);
 			await this._appendEntry(entry);
 			return entry.id;
