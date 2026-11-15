@@ -109,6 +109,7 @@ describe("an older build on a snapshot store this build wrote (#5065)", () => {
 		// An older build created the journal first: its tables, at schema version 1.
 		await (await SqlRunJournal.open(database)).close();
 		await database.run("UPDATE wf_meta SET schema_version = 1");
+		await database.exec("DROP TABLE wf_event_chunks");
 		// This build then opens only the session store and stores a chunked blob.
 		const sessions = await SqlSessionStore.open(database);
 		const blob = largeBlob();
@@ -120,6 +121,8 @@ describe("an older build on a snapshot store this build wrote (#5065)", () => {
 			"refused" in read,
 			`0.9.87 read the chunked blob as ${(read as { blob?: Uint8Array }).blob?.byteLength} bytes`,
 		);
+		// The journal's own upgrade ran, so its version 2 tables are there too.
+		assert.ok(await database.get("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'wf_event_chunks'"));
 		const journal = await SqlRunJournal.open(database);
 		assert.deepEqual(await journal.snapshotBlobs.getBlob(blob.hash), blob.data);
 		await journal.close();
