@@ -38,9 +38,11 @@ import {
 	getBrokerDeliveredMessagesPath,
 	getBrokerPidPath,
 	getBrokerWatchdogLogPath,
+	chooseBrokerSocketPath,
 	getBrokerSocketPath,
 	getBrokerSocketReplacementLockPath,
 	getIntercomDirPath,
+	recordBrokerSocketPath,
 } from "./paths.js";
 import { describeSharedStorage, sharedStorageDigest, sharedStorageSettingSource } from "./shared-storage-setting.js";
 import type {
@@ -107,8 +109,18 @@ import { WorkflowStageAliases } from "./workflow-stage-aliases.js";
 import { type IntercomRecipientGoneError, serializeIntercomRecipientGoneError } from "./recipient-gone-errors.js";
 import { NotHostedSessionError, serializeIntercomHostedSessionError } from "./hosted-session-errors.js";
 import { type ParsedHostedSession, validateHostSessionsFrame, validateUnhostSessionsFrame } from "./hosted-sessions.js";
-import { ReleasedAskerReplies, type ReleasedAskerReplyRoute } from "./released-asker-replies.js";
-import { crashPoint, DEPARTURE_ASKS_TAKEN, DEPARTURE_ASKS_TO_IT_TAKEN } from "./crash-points.js";
+import {
+  failRefusedReleasedAsk,
+  ReleasedAskerReplies,
+  type RefusedReleasedAskerRoute,
+  type ReleasedAskerReplyRoute,
+} from "./released-asker-replies.js";
+import {
+  crashPoint,
+  DEPARTURE_ASKS_TAKEN,
+  DEPARTURE_ASKS_TO_IT_FAILED,
+  DEPARTURE_ASKS_TO_IT_TAKEN,
+} from "./crash-points.js";
 import { releasedAskerReplyRefusal } from "./released-asker-remote-replies.js";
 import { hasGroup, normalizeGroup, normalizeGroups, workflowInvocationRefusalFor } from "../group.js";
 import { handleBrokerPresence } from "./presence-handler.js";
@@ -119,7 +131,7 @@ import {
 } from "./group-membership.js";
 import { replyToList } from "./list-reply.js";
 import { type PendingQuestion, PendingQuestionIndex } from "./pending-question-index.js";
-import { AwayAsks } from "./away-asks.js";
+import { AwayAsks, awayQueueFullReason } from "./away-asks.js";
 import { TERMINAL_CHILD_ASK_REFUSAL } from "../recipient-purpose.js";
 import { type ReceiptSender, RecipientReceipts, UNCERTAIN_RECEIPT_REASON } from "./recipient-receipts.js";
 import { deliverAskFailure, deliverHeldToAsker } from "./ask-failures.js";
@@ -138,7 +150,8 @@ import {
 } from "../live-route-refusal.js";
 
 const INTERCOM_DIR = getIntercomDirPath();
-const SOCKET_PATH = getBrokerSocketPath();
+/** The socket clients reach the running broker on, until this broker chooses its own under the startup lock (#5040). */
+let SOCKET_PATH = getBrokerSocketPath();
 const BROKER_IDLE_TIMEOUT_MS = 5_000;
 const UNCLASSIFIED_CONNECTION_RECHECK_MS = 100;
 const PID_PATH = getBrokerPidPath();
@@ -167,6 +180,24 @@ const MULTI_NODE_OFF_REASONS: Readonly<Record<string, string>> = {
   memory: "the shared storage selection is in memory",
   "domain-only-adapter": "the storage adapter has no openDatabase hook",
 };
+
+function socketPathInode(): number | undefined {
+  try {
+    return statSync(SOCKET_PATH).ino;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The socket lock, or undefined when a starting broker still holds it after `budgetMs`. */
+async function acquireSocketLockWithin(budgetMs: number): Promise<(() => void) | undefined> {
+  // A lock taken after the budget is never released by hand: the broker exits at once, and a lock whose holder is dead
+  // is taken over.
+  return Promise.race([
+    acquireSocketReplacementLock(SOCKET_REPLACEMENT_LOCK_PATH),
+    new Promise<undefined>((resolve) => setTimeout(resolve, budgetMs).unref()),
+  ]);
+}
 
 function exitBecauseLiveBrokerOwnsSocket(): never {
   console.error(`Intercom broker not started: a live broker already answers on ${SOCKET_PATH}`);
@@ -250,6 +281,16 @@ interface PendingReleasedReplyAck {
   readonly questionId: string;
   readonly childName: string;
   readonly route: ReleasedAskerReplyRoute;
+}
+
+/** What registering a session reads from its validated `register` message. */
+interface SessionRegistrationRequest {
+  readonly session: Omit<SessionInfo, "id">;
+  readonly registrationGroup?: unknown;
+  readonly returnAddress?: unknown;
+  readonly supervisorOwnerToken?: unknown;
+  readonly acknowledgesReceipt?: unknown;
+  readonly supervisor?: unknown;
 }
 
 function isSupervisorRegistration(value: unknown): value is SupervisorRegistration {
@@ -403,6 +444,8 @@ class IntercomBroker {
   }
   private supervisorChannel = new SupervisorChannelCache();
   private sessionIdReclaim = new SessionIdReclaim();
+  /** Connections whose requested id is being checked against its multi-node binding before they register. */
+  private claimingSessionIds = new WeakSet<net.Socket>();
   private pendingQuestions = new PendingQuestionIndex();
   private receipts = new RecipientReceipts<ConnectedSession>();
   // #4751: an ask has no expiry, so a released asker's route lasts until the child or its owner ends or it is back.
@@ -446,6 +489,11 @@ class IntercomBroker {
     if (process.platform !== "win32") chmodSync(INTERCOM_DIR, 0o700);
     this.server = net.createServer(this.handleConnection.bind(this));
     this.pendingQuestions.failThroughOwnerWhen((question) => this.releasedAskerReplies.hasOwnedRoute(question));
+    // #4992: a reply or failure held for a released subagent wakes it through its owner, also after a restart.
+    this.pendingQuestions.onHeldForReleasedAsker((ownerSessionId, childName) => {
+      if (this.restoringRecipients.releasedOwner(childName) === ownerSessionId)
+        this.afterDeparture(() => this.wakeRestoringRecipientOwner({ ownerSessionId, childName }));
+    });
     this.pendingQuestions.failToConnectedAskerWhen((question, returnAddress) =>
       this.isConnectedAs(question.senderSessionId, returnAddress),
     );
@@ -454,6 +502,7 @@ class IntercomBroker {
       kept: (question) => this.pendingQuestions.writeLive(question),
       removed: (question) => this.pendingQuestions.forgetLive([question]),
     });
+    this.releasedAskerReplies.refuseWith((route) => this.failRefusedReleasedRoute(route));
   }
 
   /**
@@ -464,11 +513,15 @@ class IntercomBroker {
     this.releaseStartupLock = await acquireSocketReplacementLock(SOCKET_REPLACEMENT_LOCK_PATH, {
       onWait: () => console.error(`Intercom broker waiting for another broker starting on ${SOCKET_PATH}`),
     });
+    // Read again under the lock: a broker that started meanwhile may have recorded a socket of its own.
+    SOCKET_PATH = getBrokerSocketPath();
     if (await isSocketAnswering(SOCKET_PATH)) {
       this.releaseStartupLock();
       exitBecauseLiveBrokerOwnsSocket();
     }
+    SOCKET_PATH = chooseBrokerSocketPath();
     writeFileSync(PID_PATH, String(process.pid));
+    this.recordSocketPath();
     this.listen(1);
     if (this.sharedStorageSetting !== undefined) this.startMultiNode(this.sharedStorageSetting);
     else console.error(`Intercom multi-node routing is off: ${NO_SHARED_STORAGE_REASON}`);
@@ -483,7 +536,14 @@ class IntercomBroker {
     this.server.once("error", onError);
     this.server.listen(SOCKET_PATH, () => {
       this.server.off("error", onError);
-      if (process.platform !== "win32") this.boundSocketInode = statSync(SOCKET_PATH).ino;
+      if (process.platform !== "win32") {
+        const inode = socketPathInode();
+        if (inode === undefined) {
+          this.rebindVanishedSocket(attempt);
+          return;
+        }
+        this.boundSocketInode = inode;
+      }
       this.releaseStartupLock();
       // The pid file takes over from the start-up announcement the moment the broker answers.
       retractBrokerStartAnnouncement();
@@ -495,13 +555,24 @@ class IntercomBroker {
     });
   }
 
+  /**
+   * #5040: the path this broker just bound is gone. The startup lock is still held, so no broker that takes it can have
+   * bound the path since; the server is closed while nothing is there for its close to unlink, and bound again.
+   */
+  private rebindVanishedSocket(attempt: number): void {
+    this.server.close();
+    if (attempt >= LISTEN_ATTEMPTS) {
+      console.error(`Intercom broker could not listen on ${SOCKET_PATH}: the socket vanished after it was bound`);
+      this.abandonStart();
+      process.exit(1);
+    }
+    console.error(`Intercom broker socket ${SOCKET_PATH} vanished after it was bound; binding it again`);
+    this.listen(attempt + 1);
+  }
+
   private ownsSocketPath(): boolean {
     if (this.boundSocketInode === undefined) return process.platform === "win32";
-    try {
-      return statSync(SOCKET_PATH).ino === this.boundSocketInode;
-    } catch {
-      return false;
-    }
+    return socketPathInode() === this.boundSocketInode;
   }
 
   /**
@@ -541,6 +612,15 @@ class IntercomBroker {
       // A clean path has no stale socket to remove.
     }
     this.listen(attempt + 1);
+  }
+
+  /** Sessions whose runtime or temp directory differs from this broker's find its socket through the record (#5040). */
+  private recordSocketPath(): void {
+    try {
+      recordBrokerSocketPath(SOCKET_PATH);
+    } catch (error) {
+      console.error(`Intercom broker could not record its socket path ${SOCKET_PATH}:`, error);
+    }
   }
 
   /** A broker that does not start leaves no pid file of its own and lets the next starting broker go ahead. */
@@ -1549,7 +1629,7 @@ class IntercomBroker {
 		reason: string,
 		reasonCode?: "message_id_conflict",
 	): void {
-		writeMessageIfOpen(socket, {
+		this.writeAfterDeparture(socket, {
 			type: "delivery_failed",
 			messageId,
 			...(attemptId === undefined ? {} : { attemptId }),
@@ -1790,6 +1870,163 @@ class IntercomBroker {
 		});
 	}
 
+  /** Register the session under the id it was granted, and complete its registration (see `register`). */
+  private completeSessionRegistration(
+    socket: net.Socket,
+    clientMessage: SessionRegistrationRequest,
+    id: string,
+    supervisorId: string | undefined,
+    setId: (id: string | null) => void,
+  ): void {
+        setId(id);
+        const initialGroups = normalizeGroups(clientMessage.session.groups, clientMessage.session.group);
+        const legacyGroup = normalizeGroup(clientMessage.session.group ?? initialGroups.values().next().value);
+        const info: SessionInfo = {
+          ...clientMessage.session,
+          id,
+        };
+		setSessionGroups(info, initialGroups, legacyGroup);
+        this.sessions.set(id, {
+          socket,
+          info,
+          registrationGroup: typeof clientMessage.registrationGroup === "string"
+            ? normalizeGroup(clientMessage.registrationGroup) : legacyGroup,
+			...(typeof info.name === "string" && info.name.trim().length > 0
+				? { registrationName: info.name.trim() }
+				: {}),
+			...(typeof clientMessage.returnAddress === "string"
+				? { registrationReturnAddress: clientMessage.returnAddress }
+				: {}),
+          ...(supervisorId ? { supervisorId } : {}),
+          ...(supervisorId && this.sessions.get(supervisorId)?.registrationReturnAddress !== undefined
+            ? { supervisorReturnAddress: this.sessions.get(supervisorId)?.registrationReturnAddress }
+            : {}),
+          ...(typeof clientMessage.supervisorOwnerToken === "string"
+            ? { supervisorOwnerToken: clientMessage.supervisorOwnerToken }
+            : {}),
+          ...(clientMessage.acknowledgesReceipt === true ? { acknowledgesReceipt: true as const } : {}),
+        });
+
+        if (this.shutdownTimer) {
+          clearTimeout(this.shutdownTimer);
+          this.shutdownTimer = null;
+        }
+
+        const rejoined = this.sessions.get(id);
+        const consumedCapability =
+          supervisorId && isSupervisorRegistration(clientMessage.supervisor) ? clientMessage.supervisor.capability : undefined;
+        const completeRegistration = (held: readonly HeldWrite[] = []): void => {
+          // #3761: echoing the capability tells the client this broker understands `received`; an old broker never does.
+          writeMessageIfOpen(socket, {
+            type: "registered",
+            sessionId: id,
+            ...(supervisorId ? { supervisorSessionId: supervisorId } : {}),
+            ...(clientMessage.acknowledgesReceipt === true ? { acknowledgesReceipt: true as const } : {}),
+            acknowledgesPendingStageRoutes: true as const,
+            refusesPendingStageRoutesInPlace: true as const,
+            brokerStatus: true as const,
+            claimsWorkflowInvocations: true as const,
+            extendsSaves: true as const,
+            marksEndedChildren: true as const,
+            multiNodeRouting: this.multiNodeStatus,
+            protocol: { ...BROKER_PROTOCOL },
+          });
+          if (isAgentRecipient(info)) this.broadcastToMemberships({ type: "session_joined", session: info }, sessionGroups(info), id);
+          // #3761: messages written to this recipient's previous connection that it never confirmed saving go out again.
+          if (rejoined?.acknowledgesReceipt === true) {
+            const heldFrames = new Set(held.map((write) => write.message));
+            for (const frame of this.receipts.framesFor(deliveryTargetIdentity(rejoined))) {
+              if (!heldFrames.has(frame)) writeMessageIfOpen(socket, frame);
+            }
+          }
+          // Multi-node S5: frames written while registration waited for the presence lease follow `registered`.
+          flushHeldWrites(socket, held);
+          // #4751: a session back under its id takes up the asks it sent or was sent before it went away.
+          this.pendingQuestions.restoreDormant(id, rejoined?.registrationReturnAddress, (sessionId, returnAddress) =>
+            this.isConnectedAs(sessionId, returnAddress),
+          );
+          // What was held for it while it was away (replies, failed asks) is delivered once: a recipient that confirms
+          // saves releases each when saved, and its inbox shows a redelivered copy only once.
+          const returnAddress = rejoined?.registrationReturnAddress;
+          for (const held of this.pendingQuestions.heldForAsker(returnAddress)) {
+            writeMessageIfOpen(socket, { type: "message", from: held.from, message: held.message });
+            if (clientMessage.acknowledgesReceipt !== true)
+              this.pendingQuestions.releaseHeld(held.message.id, returnAddress);
+          }
+          // #3760: a restored subagent is back under the capability its owner reserved it with; the sends held
+          // for it while it was being restored go out now, once each and in the order they arrived.
+          const registered = info.name?.trim();
+          if (registered !== undefined && supervisorId !== undefined) {
+            this.pendingQuestions.forgetReleasedAsker(rejoined?.registrationReturnAddress);
+            // #4751: a released subagent back under its owner takes up the routes of its pending asks, including one
+            // whose reply is held for it, so their replies reach it as a live asker.
+            for (const question of this.pendingQuestions.takeParkedAskers(registered, supervisorId))
+              this.pendingQuestions.record(id, question.targetSessionId, question.messageId);
+            for (const route of this.releasedAskerReplies.takeChild(registered, supervisorId))
+              this.pendingQuestions.record(id, route.replierSessionId, route.questionId);
+            // #5004: held again under its own return address until it saved it, so a subagent that dies first gets it again.
+            const child = this.sessions.get(id);
+            if (child !== undefined)
+              for (const held of this.pendingQuestions.takeHeldForReleasedChild(registered, supervisorId))
+                deliverHeldToAsker(
+                  {
+                    asker: child,
+                    question: { senderSessionId: id, targetSessionId: held.from.id, messageId: held.message.replyTo ?? held.message.id },
+                    from: held.from,
+                    pending: this.pendingQuestions,
+                    write: writeMessageIfOpen,
+                    legacy: { type: "message", from: held.from, message: held.message },
+                  },
+                  held.message,
+                );
+            for (const question of this.pendingQuestions.takeParked(registered, supervisorId)) {
+              this.pendingQuestions.record(question.senderSessionId, id, question.messageId);
+              const asker = this.sessions.get(question.senderSessionId);
+              if (asker !== undefined) writeMessageIfOpen(asker.socket, {
+                type: "peer_rebound", replyTo: question.messageId, previousSessionId: question.targetSessionId, sessionId: id,
+              });
+            }
+          }
+          for (const send of this.restoringRecipients.consume(
+            consumedCapability,
+            registered
+              ? { childName: registered, groups: sessionGroups(info), ...(supervisorId ? { authorizedBy: supervisorId } : {}) }
+              : undefined,
+          ))
+            this.dispatchSend(send.socket, send.clientMessage, send.senderId);
+          // #4639: a subagent whose session dropped is back under its owner's authorization; its held sends follow.
+          if (registered !== undefined && supervisorId !== undefined)
+            for (const send of this.departedChildren.registered(registered, sessionGroups(info), supervisorId))
+              this.dispatchSend(send.socket, send.clientMessage, send.senderId);
+        };
+        // Multi-node S5: brokers on other hosts find this session through its presence lease, so registration
+        // completes once the lease is written (or bounded attempts found it still held elsewhere). The session is
+        // routable meanwhile, so its frames are held until `registered` is written.
+        const presence =
+          rejoined === undefined
+            ? undefined
+            : this.multiNode?.sessionRegistered(
+                rejoined,
+                consumedCapability === undefined && !info.name?.trim()
+                  ? undefined
+                  : {
+                      ...(consumedCapability === undefined ? {} : { capability: consumedCapability }),
+                      ...(info.name?.trim() ? { childName: info.name.trim() } : {}),
+                      groups: sessionGroups(info),
+                      ...(supervisorId ? { authorizedBy: supervisorId } : {}),
+                    },
+              );
+        if (presence === undefined) completeRegistration();
+        else {
+          holdWrites(socket);
+          void presence.then(() => {
+            const held = releaseHeldWrites(socket);
+            if (this.sessions.get(id) === rejoined) completeRegistration(held);
+            else discardHeldWrites(held);
+          });
+        }
+  }
+
   private handleMessage(
     socket: net.Socket,
     msg: JsonWireValue,
@@ -1873,7 +2110,7 @@ class IntercomBroker {
 			throw new Error("Invalid protocol range");
 		}
 
-        if (currentId) {
+        if (currentId || this.claimingSessionIds.has(socket)) {
           throw new Error("Received duplicate register message");
         }
         // #4538: a client that names no range is a 0.9.71-or-older client, which drops its connection over a frame
@@ -1899,157 +2136,40 @@ class IntercomBroker {
 
         this.openDeliveredMessages();
         // #3760: a restored or reconnected session keeps the id peers know when it is free; never a live one.
-        const id = this.sessionIdReclaim.grant(
+        const preferred = this.sessionIdReclaim.grant(
           clientMessage.preferredSessionId,
           clientMessage.returnAddress,
           (sessionId) => this.sessions.has(sessionId),
-        ) ?? randomUUID();
-        setId(id);
-        const initialGroups = normalizeGroups(clientMessage.session.groups, clientMessage.session.group);
-        const legacyGroup = normalizeGroup(clientMessage.session.group ?? initialGroups.values().next().value);
-        const info: SessionInfo = {
-          ...clientMessage.session,
-          id,
-        };
-		setSessionGroups(info, initialGroups, legacyGroup);
-        this.sessions.set(id, {
-          socket,
-          info,
-          registrationGroup: typeof clientMessage.registrationGroup === "string"
-            ? normalizeGroup(clientMessage.registrationGroup) : legacyGroup,
-			...(typeof info.name === "string" && info.name.trim().length > 0
-				? { registrationName: info.name.trim() }
-				: {}),
-			...(typeof clientMessage.returnAddress === "string"
-				? { registrationReturnAddress: clientMessage.returnAddress }
-				: {}),
-          ...(supervisorId ? { supervisorId } : {}),
-          ...(supervisorId && this.sessions.get(supervisorId)?.registrationReturnAddress !== undefined
-            ? { supervisorReturnAddress: this.sessions.get(supervisorId)?.registrationReturnAddress }
-            : {}),
-          ...(typeof clientMessage.supervisorOwnerToken === "string"
-            ? { supervisorOwnerToken: clientMessage.supervisorOwnerToken }
-            : {}),
-          ...(clientMessage.acknowledgesReceipt === true ? { acknowledgesReceipt: true as const } : {}),
-        });
-
-        if (this.shutdownTimer) {
-          clearTimeout(this.shutdownTimer);
-          this.shutdownTimer = null;
-        }
-
-        const rejoined = this.sessions.get(id);
-        const consumedCapability =
-          supervisorId && isSupervisorRegistration(clientMessage.supervisor) ? clientMessage.supervisor.capability : undefined;
-        const completeRegistration = (held: readonly HeldWrite[] = []): void => {
-          // #3761: echoing the capability tells the client this broker understands `received`; an old broker never does.
-          writeMessageIfOpen(socket, {
-            type: "registered",
-            sessionId: id,
-            ...(supervisorId ? { supervisorSessionId: supervisorId } : {}),
-            ...(clientMessage.acknowledgesReceipt === true ? { acknowledgesReceipt: true as const } : {}),
-            acknowledgesPendingStageRoutes: true as const,
-            refusesPendingStageRoutesInPlace: true as const,
-            brokerStatus: true as const,
-            claimsWorkflowInvocations: true as const,
-            extendsSaves: true as const,
-            marksEndedChildren: true as const,
-            multiNodeRouting: this.multiNodeStatus,
-            protocol: { ...BROKER_PROTOCOL },
-          });
-          if (isAgentRecipient(info)) this.broadcastToMemberships({ type: "session_joined", session: info }, sessionGroups(info), id);
-          // #3761: messages written to this recipient's previous connection that it never confirmed saving go out again.
-          if (rejoined?.acknowledgesReceipt === true) {
-            const heldFrames = new Set(held.map((write) => write.message));
-            for (const frame of this.receipts.framesFor(deliveryTargetIdentity(rejoined))) {
-              if (!heldFrames.has(frame)) writeMessageIfOpen(socket, frame);
-            }
-          }
-          // Multi-node S5: frames written while registration waited for the presence lease follow `registered`.
-          flushHeldWrites(socket, held);
-          // #4751: a session back under its id takes up the asks it sent or was sent before it went away.
-          this.pendingQuestions.restoreDormant(id, rejoined?.registrationReturnAddress, (sessionId, returnAddress) =>
-            this.isConnectedAs(sessionId, returnAddress),
-          );
-          // What was held for it while it was away (replies, failed asks) is delivered once: a recipient that confirms
-          // saves releases each when saved, and its inbox shows a redelivered copy only once.
-          const returnAddress = rejoined?.registrationReturnAddress;
-          for (const held of this.pendingQuestions.heldForAsker(returnAddress)) {
-            writeMessageIfOpen(socket, { type: "message", from: held.from, message: held.message });
-            if (clientMessage.acknowledgesReceipt !== true)
-              this.pendingQuestions.releaseHeld(held.message.id, returnAddress);
-          }
-          // #3760: a restored subagent is back under the capability its owner reserved it with; the sends held
-          // for it while it was being restored go out now, once each and in the order they arrived.
-          const registered = info.name?.trim();
-          if (registered !== undefined && supervisorId !== undefined) {
-            // #4751: a released subagent back under its owner takes up the routes of its pending asks, including one
-            // whose reply is held for it, so their replies reach it as a live asker.
-            for (const question of this.pendingQuestions.takeParkedAskers(registered, supervisorId))
-              this.pendingQuestions.record(id, question.targetSessionId, question.messageId);
-            for (const route of this.releasedAskerReplies.takeChild(registered, supervisorId))
-              this.pendingQuestions.record(id, route.replierSessionId, route.questionId);
-            // #5004: held again under its own return address until it saved it, so a subagent that dies first gets it again.
-            const child = this.sessions.get(id);
-            if (child !== undefined)
-              for (const held of this.pendingQuestions.takeHeldForReleasedChild(registered, supervisorId))
-                deliverHeldToAsker(
-                  {
-                    asker: child,
-                    question: { senderSessionId: id, targetSessionId: held.from.id, messageId: held.message.replyTo ?? held.message.id },
-                    from: held.from,
-                    pending: this.pendingQuestions,
-                    write: writeMessageIfOpen,
-                    legacy: { type: "message", from: held.from, message: held.message },
-                  },
-                  held.message,
-                );
-            for (const question of this.pendingQuestions.takeParked(registered, supervisorId)) {
-              this.pendingQuestions.record(question.senderSessionId, id, question.messageId);
-              const asker = this.sessions.get(question.senderSessionId);
-              if (asker !== undefined) writeMessageIfOpen(asker.socket, {
-                type: "peer_rebound", replyTo: question.messageId, previousSessionId: question.targetSessionId, sessionId: id,
-              });
-            }
-          }
-          for (const send of this.restoringRecipients.consume(
-            consumedCapability,
-            registered
-              ? { childName: registered, groups: sessionGroups(info), ...(supervisorId ? { authorizedBy: supervisorId } : {}) }
-              : undefined,
-          ))
-            this.dispatchSend(send.socket, send.clientMessage, send.senderId);
-          // #4639: a subagent whose session dropped is back under its owner's authorization; its held sends follow.
-          if (registered !== undefined && supervisorId !== undefined)
-            for (const send of this.departedChildren.registered(registered, sessionGroups(info), supervisorId))
-              this.dispatchSend(send.socket, send.clientMessage, send.senderId);
-        };
-        // Multi-node S5: brokers on other hosts find this session through its presence lease, so registration
-        // completes once the lease is written (or bounded attempts found it still held elsewhere). The session is
-        // routable meanwhile, so its frames are held until `registered` is written.
-        const presence =
-          rejoined === undefined
-            ? undefined
-            : this.multiNode?.sessionRegistered(
-                rejoined,
-                consumedCapability === undefined && !info.name?.trim()
-                  ? undefined
-                  : {
-                      ...(consumedCapability === undefined ? {} : { capability: consumedCapability }),
-                      ...(info.name?.trim() ? { childName: info.name.trim() } : {}),
-                      groups: sessionGroups(info),
-                      ...(supervisorId ? { authorizedBy: supervisorId } : {}),
-                    },
+        );
+        const multiNode = this.multiNode;
+        const returnAddress = clientMessage.returnAddress;
+        const registration: SessionRegistrationRequest = { ...clientMessage, session: clientMessage.session };
+        if (preferred !== undefined && multiNode !== undefined && typeof returnAddress === "string") {
+          // In multi-node mode the id carries authority on every broker (shared ask routes and known sessions name
+          // sessions by id), so it is granted only to the return address it is bound to in shared storage.
+          this.claimingSessionIds.add(socket);
+          void multiNode
+            .claimSessionId(preferred, returnAddress)
+            .then((claimed) => {
+              this.claimingSessionIds.delete(socket);
+              if (socket.destroyed || socket.writableEnded) return;
+              if (this.shuttingDown) {
+                writeMessageIfOpen(socket, RETIRING_REFUSAL);
+                socket.end();
+                return;
+              }
+              this.completeSessionRegistration(
+                socket,
+                registration,
+                claimed && !this.sessions.has(preferred) ? preferred : randomUUID(),
+                supervisorId,
+                setId,
               );
-        if (presence === undefined) completeRegistration();
-        else {
-          holdWrites(socket);
-          void presence.then(() => {
-            const held = releaseHeldWrites(socket);
-            if (this.sessions.get(id) === rejoined) completeRegistration(held);
-            else discardHeldWrites(held);
-          });
+            })
+            .catch((error: unknown) => socket.destroy(error instanceof Error ? error : new Error(String(error))));
+          break;
         }
+        this.completeSessionRegistration(socket, registration, preferred ?? randomUUID(), supervisorId, setId);
         break;
       }
 
@@ -2242,7 +2362,11 @@ class IntercomBroker {
           this.reserveReleasedChild(currentId, owner.registrationGroup, child);
           this.releasedAskerReplies.attach(child.childName, currentId);
           // #4751: a failed ask kept for the child wakes it again, so it is delivered.
-          if (child.wake && this.pendingQuestions.hasHeldForReleasedChild(child.childName, currentId))
+          if (
+            child.wake &&
+            (this.pendingQuestions.hasHeldForReleasedChild(child.childName, currentId) ||
+              this.pendingQuestions.hasHeldForReleasedAsker(child.childName, currentId))
+          )
             this.wakeRestoringRecipientOwner({ ownerSessionId: currentId, childName: child.childName });
           this.dispatchHeldSends(this.departedChildren.supersede(currentId, child.childName));
         }
@@ -2296,6 +2420,7 @@ class IntercomBroker {
         for (const childName of childNames) {
           this.releaseReservation(releasedReservationKey(childName), currentId, clientMessage.gone, clientMessage.refusal);
           this.failParkedQuestions(this.pendingQuestions.takeParked(childName, currentId), childName);
+          this.failParkedKept(currentId, childName);
           this.releasedAskerReplies.dropChild(childName, currentId);
         }
         writeMessageIfOpen(socket, { type: "released_children_ack", requestId: clientMessage.requestId });
@@ -2794,11 +2919,12 @@ class IntercomBroker {
    */
   private failReleasedAsksTo(target: SessionInfo, socket: net.Socket, reason: string, idPrefix: string): void {
     for (const route of this.releasedAskerReplies.takeForReplier(target.id)) {
-      this.handOffReleasedReply(
+      // #4996: handed to the owner once the departure in progress, if any, is saved; one id per ask (#5004).
+      this.afterDeparture(() => this.handOffReleasedReply(
         route,
         target,
         {
-          id: `${idPrefix}:${randomUUID()}`,
+          id: `${idPrefix}:${route.questionId}`,
           timestamp: Date.now(),
           replyTo: route.questionId,
           replyError: reason,
@@ -2807,7 +2933,7 @@ class IntercomBroker {
         socket,
         undefined,
         true,
-      );
+      ));
     }
   }
 
@@ -2840,7 +2966,8 @@ class IntercomBroker {
     } else if (ownerStillHolds) {
       this.releasedAskerReplies.restore(pending.route, pending.ownerSessionId);
     }
-    writeMessageIfOpen(pending.socket, {
+    // #4996: a replier is told its reply failed only once the departure in progress, if any, is saved.
+    this.writeAfterDeparture(pending.socket, {
       type: "delivery_failed",
       messageId,
       ...attempt,
@@ -2956,6 +3083,8 @@ class IntercomBroker {
           try {
             this.multiNode = await MultiNodeRouter.start({
               ...opened,
+              // #5038: a restarted broker serves the same socket; its previous instance's leases are retired at start.
+              instanceKey: SOCKET_PATH,
               host: {
                 sessions: this.sessions,
                 write: writeMessageIfOpen,
@@ -3214,6 +3343,37 @@ class IntercomBroker {
     });
   }
 
+  /** #4996: a released subagent's ask refused a reply route at capacity fails to the subagent, never silently. */
+  private failRefusedReleasedRoute(route: RefusedReleasedAskerRoute): void {
+    failRefusedReleasedAsk(route, {
+      pendingQuestions: this.pendingQuestions,
+      replier: this.sessions.get(route.replierSessionId)?.info,
+      askerReturnAddress:
+        this.sessions.get(route.askerSessionId)?.registrationReturnAddress ??
+        this.sessionIdReclaim.retiredReturnAddress(route.askerSessionId),
+      wake: (wake) => this.afterDeparture(() => this.wakeRestoringRecipientOwner(wake)),
+    });
+  }
+
+  /** #4996: asks the away recipient's full queue could not keep fail at once to their connected askers, never silently. */
+  private failAwayQueueFull(questions: readonly PendingQuestion[], recipient: SessionInfo): void {
+    const reason = awayQueueFullReason(recipient.name ?? recipient.id);
+    for (const question of questions) {
+      const asker = this.sessions.get(question.senderSessionId);
+      if (asker === undefined) continue;
+      // #5004: held until the asker saved it, like a reply, and sent once this departure is saved.
+      deliverAskFailure({
+        asker,
+        question,
+        from: recipient,
+        id: `away-queue-full:${question.messageId}`,
+        reason,
+        pending: this.pendingQuestions,
+        write: this.writeAfterDeparture,
+      });
+    }
+  }
+
   /** Whether `sessionId` is connected and proves the kept return address (an empty one proves nothing to match). */
   private isConnectedAs(sessionId: string, returnAddress: string): boolean {
     const session = this.sessions.get(sessionId);
@@ -3236,12 +3396,29 @@ class IntercomBroker {
         id: `ended:${question.messageId}`,
         reason: `Session "${from.name ?? from.id}" ended before replying`,
         pending: this.pendingQuestions,
-        write: writeMessageIfOpen,
+        write: this.writeAfterDeparture,
         legacy: {
           type: "peer_disconnected", replyTo: question.messageId, peerSessionId: question.targetSessionId,
           ...(peer?.name === undefined ? {} : { peerName: peer.name }),
         },
       });
+    }
+  }
+
+  /**
+   * #4992: the asks to the owner's released subagents that wait kept (an away asker's, or any after a broker restart)
+   * end with the owner, or with `childName` when it is dropped: each asker gets one failed-ask message, held until it
+   * saves it, and written now when it is connected.
+   */
+  private failParkedKept(ownerSessionId: string, childName?: string): void {
+    for (const held of this.pendingQuestions.failParkedKept(ownerSessionId, childName)) {
+      const asker = [...this.sessions.values()].find(
+        (session) => session.registrationReturnAddress === held.askerReturnAddress,
+      );
+      if (asker === undefined) continue;
+      // #4996: told once the departure in progress, if any, is saved.
+      this.writeAfterDeparture(asker.socket, { type: "message", from: held.from, message: held.message });
+      if (!asker.acknowledgesReceipt) this.pendingQuestions.releaseHeld(held.message.id, held.askerReturnAddress);
     }
   }
 
@@ -3253,6 +3430,39 @@ class IntercomBroker {
 
   /** `ended`: the session said goodbye, so it is not coming back; otherwise its connection only dropped. */
   private disconnectSession(sessionId: string, ended = false): void {
+    // A hosted session's departure joins its host's: its outcomes go out when the host's departure is saved.
+    if (this.departureOutcomes !== undefined) {
+      this.departSession(sessionId, ended);
+      return;
+    }
+    // #4996: what a departure keeps, holds and forgets durably (possibly thousands of asks) is one transaction. What it
+    // tells askers goes out only once that is saved: a crash before then undoes the decision, which the next broker
+    // makes again, so an asker is never told of an outcome that did not happen.
+    const outcomes: Array<() => void> = [];
+    this.departureOutcomes = outcomes;
+    try {
+      this.pendingQuestions.batch(() => this.departSession(sessionId, ended));
+    } finally {
+      this.departureOutcomes = undefined;
+    }
+    for (const tell of outcomes) tell();
+  }
+
+  /** #4996: what a departure tells askers, collected while it is saved; undefined outside a departure. */
+  private departureOutcomes: Array<() => void> | undefined;
+
+  /** #4996: tell an asker now, or, during a departure, once the departure is saved. */
+  private afterDeparture(tell: () => void): void {
+    if (this.departureOutcomes === undefined) tell();
+    else this.departureOutcomes.push(tell);
+  }
+
+  /** #4996: a frame to an asker, written once the departure in progress, if any, is saved. */
+  private readonly writeAfterDeparture = (socket: net.Socket, frame: BrokerMessage): void => {
+    this.afterDeparture(() => writeMessageIfOpen(socket, frame));
+  };
+
+  private departSession(sessionId: string, ended: boolean): void {
     const departed = this.sessions.get(sessionId);
     if (!departed) return;
     // #4642: the sessions a connection hosts leave with it, and a hosted session leaves its host's index.
@@ -3282,6 +3492,7 @@ class IntercomBroker {
       ...this.departedChildren.dropOwner(sessionId, departed.registrationReturnAddress),
     ];
     this.failParkedQuestions(this.pendingQuestions.takeParkedForOwner(sessionId));
+    this.failParkedKept(sessionId);
 
     // Each ask keeps its live record until what replaces it is written, so a crash in between loses none.
     const unanswered = this.pendingQuestions.takeForSender(sessionId, { keepLiveRecords: true });
@@ -3296,6 +3507,11 @@ class IntercomBroker {
         this.restoringRecipients.releasedOwner(departed.registrationName),
       );
       this.pendingQuestions.markAwayAsker(sessionId, departed.registrationReturnAddress);
+      this.pendingQuestions.keepReleasedAsker(
+        departed.registrationReturnAddress,
+        this.restoringRecipients.releasedOwner(departed.registrationName) ?? departed.supervisorId,
+        departed.registrationName,
+      );
       // A kept route rewrote its ask's live record; one it did not keep has no record left to wait on.
       this.pendingQuestions.forgetLive(unanswered.filter((question) => !this.releasedAskerReplies.holds(question)));
     } else if (departed.supervisorId === undefined && !ended) {
@@ -3319,11 +3535,13 @@ class IntercomBroker {
       this.pendingQuestions.parkTarget(sessionId, childName, releasedOwner);
     } else if (!ended && departed.supervisorId === undefined && departed.hostedBy === undefined) {
       // #4751: a recipient whose connection dropped without ending its session may restart; its asks stay pending.
-      // Each ask keeps its live record until its away record is written, so a crash in between loses none.
+      // Each ask keeps its live record until its away record is written, so a crash in between loses none. #4996: one
+      // its recipient's full away queue refuses fails to its connected asker at once.
       const askedOfIt = this.pendingQuestions.takeForTarget(sessionId, { keepLiveRecords: true });
       crashPoint(DEPARTURE_ASKS_TO_IT_TAKEN);
-      this.pendingQuestions.keepDormant(askedOfIt);
+      const refused = this.pendingQuestions.keepDormantForRecipient(askedOfIt);
       this.pendingQuestions.forgetLive(askedOfIt);
+      this.failAwayQueueFull(refused, departed.info);
     } else {
       if (ended) {
         // #4751: an away asker's ask to it fails with a message held until the asker is back; a session that ended
@@ -3340,6 +3558,7 @@ class IntercomBroker {
           this.pendingQuestions.dropAway(departed.registrationReturnAddress);
       }
       this.failParkedQuestions(this.pendingQuestions.takeForTarget(sessionId), departed.info);
+      if (ended) crashPoint(DEPARTURE_ASKS_TO_IT_FAILED);
     }
     // #4639: a subagent that left without being released: hold sends to it until it is back or its owner says why. An
     // owner already away, as a suspended workflow stage's session is, says so through its host session when it is back.
@@ -3381,7 +3600,7 @@ class IntercomBroker {
       clearTimeout(pending.timeout);
       this.pendingStageAcknowledgments.delete(requestId);
       this.releasePendingStageAcknowledgment(requestId);
-      writeMessageIfOpen(pending.senderSocket, {
+      this.writeAfterDeparture(pending.senderSocket, {
         type: "delivery_failed",
         messageId: pending.messageId,
         ...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
@@ -3484,16 +3703,21 @@ class IntercomBroker {
     void Promise.race([Promise.all([watchdogStopped, leasesGivenUp]), bound]).finally(() => this.exitAfterShutdown());
   }
 
-  private exitAfterShutdown(): never {
+  private async exitAfterShutdown(): Promise<never> {
+    // Windows named pipes are not path-unlinked on close, so a successor's pipe is never at risk.
+    if (process.platform === "win32") {
+      this.unlinkRuntimeFilesIfOwned();
+      this.server.close();
+      process.exit(0);
+    }
+    // Node unlinks a Unix socket path on server.close() even after a successor rebound that path. The close happens
+    // only under the socket lock every starting broker holds until it listens, and only while the pid file and the
+    // socket inode are still this broker's (#5040); otherwise process.exit closes the fd without unlinking the path.
+    const release = await acquireSocketLockWithin(SHUTDOWN_CLOSE_BOUND_MS);
     const ownsRuntime = this.readPidFile() === process.pid;
     this.unlinkRuntimeFilesIfOwned();
-    // Node unlinks a Unix socket path on server.close() even after a successor
-    // rebound that path. Skip close when we no longer own the pid or the socket
-    // path; process.exit still closes our fd. Windows named pipes are not
-    // path-unlinked this way.
-    if (process.platform === "win32" || (ownsRuntime && this.ownsSocketPath())) {
-      this.server.close();
-    }
+    if (release !== undefined && ownsRuntime && this.ownsSocketPath()) this.server.close();
+    release?.();
     process.exit(0);
   }
 }

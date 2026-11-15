@@ -501,6 +501,15 @@ class PooledRoutes {
 	}
 }
 
+/**
+ * Whether a newer attempt, or completion, replaced `work`, among the root's work items as the queue holds them: its
+ * item is gone, carries another generation, or completed.
+ */
+export function attemptSuperseded(items: readonly PoolWork[], work: Pick<PoolWork, "id" | "generation">): boolean {
+	const current = items.find((candidate) => candidate.id === work.id);
+	return current === undefined || current.generation !== work.generation || current.state === "completed";
+}
+
 /** Whether a worker holds an attempt, or has a claim in flight that may become one. */
 function holding(slot: WorkerSlot): boolean {
 	return slot.work !== undefined || slot.claiming === true;
@@ -2386,7 +2395,11 @@ export class PoolCoordinator {
 						const superseded = work !== undefined && !settled && (await this.superseded(work));
 						if (work !== undefined && exhausted && !superseded)
 							// The worker's exit is the fault; process groups it left running are a cleanup that failed after it.
-							this.failWork(work, this.retryLimit(work, "worker-lost", undefined, logPath, unconfirmed));
+							// Its attempts are counted from the work as the queue holds it, which carries its handoffs.
+							this.failWork(
+								work,
+								this.retryLimit(current ?? work, "worker-lost", undefined, logPath, unconfirmed),
+							);
 						// Workers that crash without work are a pool-wide fault. A child that lost its worker consumes its own
 						// attempts, so those replacements are bounded by the children and never count toward this limit. A
 						// worker that ended itself between children for its memory did not crash: it is replaced without
@@ -2510,7 +2523,7 @@ export class PoolCoordinator {
 								const fault = message.fault === undefined ? undefined : rehydrateError(message.fault);
 								this.failWork(
 									fenced,
-									this.retryLimit(fenced, fault === undefined ? "refused-stale" : "pool-fault", fault),
+									this.retryLimit(current, fault === undefined ? "refused-stale" : "pool-fault", fault),
 								);
 							}
 						}
@@ -2990,8 +3003,7 @@ export class PoolCoordinator {
 
 	/** Whether a newer attempt, or completion, replaced this one. */
 	private async superseded(work: PoolWork): Promise<boolean> {
-		const current = (await this.queue!.inspect(this.root!)).find((candidate) => candidate.id === work.id);
-		return current === undefined || current.generation !== work.generation || current.state === "completed";
+		return attemptSuperseded(await this.queue!.inspect(this.root!), work);
 	}
 
 	private assertPublished(work: PoolWork): void {

@@ -174,6 +174,15 @@ function leaseStore(records: Map<string, LeaseRecord>, nextOrder: { value: numbe
 						: [],
 				);
 		},
+		async retireHolder(holderId) {
+			let retired = 0;
+			for (const record of records.values()) {
+				if (holderId.length === 0 || record.holder?.holderId !== holderId) continue;
+				record.holder = undefined;
+				retired++;
+			}
+			return retired;
+		},
 	};
 }
 
@@ -304,6 +313,16 @@ function outboxStore(shared: OutboxState): OutboxStore {
 			record.claim = undefined;
 			record.state = "queued";
 			return { status: "released" };
+		},
+		async releaseClaimsOf(claimantId) {
+			let released = 0;
+			for (const record of shared.rows.values()) {
+				if (settled(record) || record.claim?.claimantId !== claimantId) continue;
+				record.claim = undefined;
+				record.state = "queued";
+				released++;
+			}
+			return released;
 		},
 		async markDelivered(claim) {
 			const record = heldClaim(claim);
@@ -627,6 +646,8 @@ interface PendingAskEntry {
 	targetSessionId: string;
 	readonly messageId: string;
 	park?: PendingAskPark;
+	replied?: true;
+	endedAt?: number;
 }
 
 const plainAsk = (entry: PendingAskEntry): PendingAsk => ({
@@ -656,6 +677,12 @@ function pendingAskStore(asks: PendingAskEntry[]): PendingAskStore {
 				ask.senderSessionId === route.replyTargetSessionId &&
 				ask.messageId === route.replyTo,
 		);
+	const endWhere = (selects: (ask: PendingAskEntry) => boolean) => {
+		const now = Date.now();
+		const ended = asks.filter((ask) => selects(ask) && ask.replied === undefined);
+		for (const ask of ended) ask.endedAt ??= now;
+		return { status: "listed" as const, asks: ended.map(plainAsk) };
+	};
 	return {
 		async record(ask) {
 			if (ask.senderSessionId.length === 0 || ask.targetSessionId.length === 0) return invalid("empty-session-id");
@@ -681,6 +708,14 @@ function pendingAskStore(asks: PendingAskEntry[]): PendingAskStore {
 			asks.splice(index, 1);
 			return { status: "cleared" };
 		},
+		async markReplied(route) {
+			const bad = invalidRoute(route);
+			if (bad !== undefined) return bad;
+			const index = reverseOf(route);
+			if (index < 0) return { status: "no-match" };
+			asks[index]!.replied = true;
+			return { status: "marked" };
+		},
 		async pruneSender(senderSessionId) {
 			if (senderSessionId.length === 0) return invalid("empty-session-id");
 			const before = asks.length;
@@ -701,6 +736,15 @@ function pendingAskStore(asks: PendingAskEntry[]): PendingAskStore {
 			asks.splice(0, asks.length, ...asks.filter((ask) => ask.targetSessionId !== targetSessionId));
 			return { status: "taken", asks: taken.map(plainAsk) };
 		},
+		async listForTarget(targetSessionId) {
+			if (targetSessionId.length === 0) return invalid("empty-session-id");
+			return {
+				status: "listed",
+				asks: asks
+					.filter((ask) => ask.targetSessionId === targetSessionId && ask.replied === undefined)
+					.map(plainAsk),
+			};
+		},
 		async parkForTarget(targetSessionId, park) {
 			if (targetSessionId.length === 0) return invalid("empty-session-id");
 			const bad = invalidPark(park);
@@ -717,7 +761,8 @@ function pendingAskStore(asks: PendingAskEntry[]): PendingAskStore {
 			if (targetSessionId.length === 0) return invalid("empty-session-id");
 			const bad = invalidPark(park);
 			if (bad !== undefined) return bad;
-			const rebound = asks.filter(parkedBy(park.ownerSessionId, park.reservationKey));
+			const parked = parkedBy(park.ownerSessionId, park.reservationKey);
+			const rebound = asks.filter((ask) => parked(ask) && ask.endedAt === undefined);
 			const result = rebound.map((ask) => ({
 				...plainAsk(ask),
 				targetSessionId,
@@ -736,6 +781,44 @@ function pendingAskStore(asks: PendingAskEntry[]): PendingAskStore {
 			const taken = asks.filter(matches);
 			asks.splice(0, asks.length, ...asks.filter((ask) => !matches(ask)));
 			return { status: "taken", asks: taken.map(plainAsk) };
+		},
+		async endForTarget(targetSessionId) {
+			if (targetSessionId.length === 0) return invalid("empty-session-id");
+			return endWhere((ask) => ask.targetSessionId === targetSessionId);
+		},
+		async endParked(ownerSessionId, reservationKey) {
+			if (ownerSessionId.length === 0) return invalid("empty-session-id");
+			if (reservationKey !== undefined && reservationKey.length === 0) return invalid("empty-reservation-key");
+			return endWhere(parkedBy(ownerSessionId, reservationKey));
+		},
+		async listEnded(olderThanMs) {
+			const now = Date.now();
+			return {
+				status: "listed",
+				asks: asks
+					.filter(
+						(ask) => ask.endedAt !== undefined && ask.replied === undefined && now - ask.endedAt >= olderThanMs,
+					)
+					.sort((left, right) => left.endedAt! - right.endedAt!)
+					.map(plainAsk),
+			};
+		},
+		async unmarkEnded(route) {
+			const bad = invalidRoute(route);
+			if (bad !== undefined) return bad;
+			const index = reverseOf(route);
+			if (index < 0) return { status: "no-match" };
+			delete asks[index]!.endedAt;
+			return { status: "marked" };
+		},
+		async listParked(ownerSessionId, reservationKey) {
+			if (ownerSessionId.length === 0) return invalid("empty-session-id");
+			if (reservationKey !== undefined && reservationKey.length === 0) return invalid("empty-reservation-key");
+			const parked = parkedBy(ownerSessionId, reservationKey);
+			return {
+				status: "listed",
+				asks: asks.filter((ask) => parked(ask) && ask.replied === undefined).map(plainAsk),
+			};
 		},
 	};
 }
@@ -921,7 +1004,16 @@ interface KnownRecord {
 	readonly recordedAt: number;
 }
 
-function knownSessionStore(known: Map<string, KnownRecord>, nextOrder: { value: number }): KnownSessionStore {
+interface BindingRecord {
+	readonly returnAddress: string;
+	readonly recordedAt: number;
+}
+
+function knownSessionStore(
+	known: Map<string, KnownRecord>,
+	nextOrder: { value: number },
+	bindings: Map<string, BindingRecord>,
+): KnownSessionStore {
 	return {
 		async record(session) {
 			if (session.targetIdentity.length === 0) return invalid("empty-target-identity");
@@ -954,7 +1046,36 @@ function knownSessionStore(known: Map<string, KnownRecord>, nextOrder: { value: 
 				}));
 			return { status: "found", sessions };
 		},
+		async bind(intercomSessionId, returnAddress, retentionMs) {
+			if (intercomSessionId.length === 0) return invalid("empty-session-id");
+			const held = bindings.get(intercomSessionId);
+			let holder = held !== undefined && isLive(held.recordedAt, retentionMs) ? held.returnAddress : undefined;
+			if (holder === undefined) {
+				const earliest = [...known.values()]
+					.filter(
+						(record) =>
+							record.session.intercomSessionId === intercomSessionId && isLive(record.recordedAt, retentionMs),
+					)
+					.sort((left, right) => left.order - right.order)[0];
+				holder = earliest === undefined ? returnAddress : (earliest.session.atomicSessionId ?? "");
+			}
+			if (holder !== returnAddress) {
+				if (held?.returnAddress !== holder)
+					bindings.set(intercomSessionId, { returnAddress: holder, recordedAt: Date.now() });
+				return { status: "refused", returnAddress: holder };
+			}
+			bindings.set(intercomSessionId, { returnAddress, recordedAt: Date.now() });
+			return { status: "bound" };
+		},
+		async binding(intercomSessionId, retentionMs) {
+			if (intercomSessionId.length === 0) return invalid("empty-session-id");
+			const held = bindings.get(intercomSessionId);
+			return held === undefined || !isLive(held.recordedAt, retentionMs)
+				? { status: "unbound" }
+				: { status: "bound", returnAddress: held.returnAddress };
+		},
 		async prune(olderThanMs) {
+			for (const [id, binding] of bindings) if (ageOf(binding.recordedAt) > olderThanMs) bindings.delete(id);
 			let removed = 0;
 			for (const [identity, record] of known) {
 				if (ageOf(record.recordedAt) > olderThanMs) {
@@ -1010,7 +1131,8 @@ export function openMemorySentMessageFixture(): Promise<SharedStoreFixture<SentM
 export function openMemoryKnownSessionFixture(): Promise<SharedStoreFixture<KnownSessionStore>> {
 	const known = new Map<string, KnownRecord>();
 	const nextOrder = { value: 1 };
-	return sharedFixture(() => knownSessionStore(known, nextOrder));
+	const bindings = new Map<string, BindingRecord>();
+	return sharedFixture(() => knownSessionStore(known, nextOrder, bindings));
 }
 
 interface MemorySubscription {

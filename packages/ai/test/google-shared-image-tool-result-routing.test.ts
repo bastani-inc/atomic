@@ -81,11 +81,11 @@ describe("google-shared image tool result routing", () => {
 		const model = makeModel("google-generative-ai", "google", "gemini-2.5-flash");
 		const contents = convertMessages(model, normalizeContext(makeContext(model)));
 
-		expect(contents).toHaveLength(5);
+		expect(contents).toHaveLength(4);
+		expect(contents[2].parts).toHaveLength(3);
 		expect(contents[2].parts?.every((part) => part.functionResponse)).toBe(true);
 		expect(contents[3].parts?.[0]?.text).toBe("Tool result image:");
 		expect(contents[3].parts?.[1]?.inlineData).toBeTruthy();
-		expect(contents[4].parts?.[0]?.functionResponse).toBeTruthy();
 	});
 
 	it("nests image tool results for Gemini 3 Google API models", () => {

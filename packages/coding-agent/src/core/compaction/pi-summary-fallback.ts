@@ -1,7 +1,7 @@
 import { normalizeContext, retryAssistantCall, uuidv7 } from "@bastani/pi-ai";
 import type { AssistantMessage, Usage } from "@bastani/pi-ai/compat";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { convertToLlm } from "../messages.ts";
+import { convertToLlm, toolBatchCutStart } from "../messages.ts";
 import {
 	buildSessionProjection,
 	type ProjectedSessionEntry,
@@ -117,15 +117,11 @@ function conversationMessages(entry: ProjectedSessionEntry): AgentMessage[] {
 	return entry.sourceEntry.type === "compaction" ? [] : entry.messages.filter((message) => message.role !== "system");
 }
 
-function firstRole(entry: ProjectedSessionEntry): AgentMessage["role"] | undefined {
-	return conversationMessages(entry)[0]?.role;
-}
-
 /**
  * The index the planned tail starts at, or undefined when that entry is not in the history.
  *
- * A tool call is never separated from its results: when the planned tail starts with tool results,
- * the cut moves back to the assistant message that owns them, so the pair stays together in the tail.
+ * A tool call is never separated from its results: when the planned tail starts with tool results or
+ * a message admitted mid-batch, the cut moves back to the assistant message that owns the batch.
  */
 function plannedCutIndex(
 	entries: ProjectedSessionEntry[],
@@ -135,10 +131,7 @@ function plannedCutIndex(
 	if (cut.firstKeptEntryId === null) return entries.length;
 	const index = entries.findIndex((entry) => entry.sourceEntry.id === cut.firstKeptEntryId);
 	if (index < 0) return undefined;
-	if (firstRole(entries[index]) !== "toolResult") return index;
-	let owner = index;
-	while (owner > start && firstRole(entries[owner]) !== "assistant") owner--;
-	return firstRole(entries[owner]) === "assistant" ? owner : index;
+	return toolBatchCutStart(entries, index, conversationMessages, start);
 }
 
 /** Pi's own cut: keep about `keepRecentTokens` of recent context, starting at a message that is not a tool result. */
@@ -196,7 +189,7 @@ function tokenCutIndex(
 		cut++;
 	while (cut > start && entries[cut - 1].sourceEntry.type !== "compaction" && entries[cut - 1].messages.length === 0)
 		cut--;
-	return cut;
+	return toolBatchCutStart(entries, cut, conversationMessages, start);
 }
 
 export function preparePiSummaryCompaction(

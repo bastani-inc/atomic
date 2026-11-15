@@ -100,13 +100,15 @@ export async function openSqlBrokerLeaseStore(options: IntercomBrokerStateOption
 	const dialect = dialectOf(database);
 	const { types, nowMs } = dialect;
 	const leaseAge = age(dialect);
-	await database.exec(`
+	// In a serial transaction, so brokers opening a new store at once take turns creating it (#5054).
+	const schema = `
 		CREATE TABLE IF NOT EXISTS ${table}(
 			kind TEXT NOT NULL, key TEXT NOT NULL, holder_id TEXT, fencing_token ${types.int},
 			last_token ${types.int} NOT NULL, subject_json TEXT, renewed_at ${types.int},
 			first_acquired_order ${types.int} NOT NULL, PRIMARY KEY(kind, key)
 		)
-	`);
+	`;
+	await database.transaction((tx) => tx.exec(schema));
 
 	const holderOf = (executor: SqliteExecutor, key: LeaseKey) =>
 		executor.get<HolderRow>(
@@ -223,6 +225,14 @@ export async function openSqlBrokerLeaseStore(options: IntercomBrokerStateOption
 				staleAfterMs,
 			);
 			return rows.map(stateFromRow);
+		},
+		async retireHolder(holderId) {
+			const { changes } = await database.run(
+				`UPDATE ${table} SET holder_id = NULL, fencing_token = NULL, subject_json = NULL, renewed_at = NULL
+				WHERE holder_id = ?`,
+				holderId,
+			);
+			return changes;
 		},
 	};
 }
