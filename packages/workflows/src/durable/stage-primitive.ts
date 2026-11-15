@@ -1090,12 +1090,15 @@ export function recordCachedStageWithTracker(
 	if (stageFailFastScope?.detached === true) tracker.detach(stageId);
 	const sourceParents = sourceStageId === undefined ? undefined : checkpoint.topology?.parentIds;
 	const run = store.run(runId);
+	// The record is this run's own, so its parent ids name nodes of this run, also those that have not replayed yet: a
+	// stage replays when it is created, which may precede the tool its first call follows (#4888).
 	const restored = sourceParents?.map(
 		(sourceId) =>
 			sourceToReplayedNodeIds?.get(sourceId) ??
-			run?.stages.find((stage) => stage.id === sourceId || stage.replayedFromStageId === sourceId)?.id,
+			run?.stages.find((stage) => stage.id === sourceId || stage.replayedFromStageId === sourceId)?.id ??
+			sourceId,
 	);
-	if (restored?.every((id): id is string => id !== undefined)) {
+	if (restored !== undefined) {
 		parentIds = restored;
 		tracker.replaceParents(stageId, parentIds);
 	} else if (stageFailFastScope !== undefined) {

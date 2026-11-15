@@ -6,6 +6,10 @@
  * - At onSpawn(stageId): snapshot current frontier as parents, store in stageParents
  * - At onSettle(stageId): remove stage's parents from frontier, add stageId to frontier
  * - getParents(stageId): return recorded parents
+ *
+ * A replayed stage may be given recorded parents that have not spawned yet: a stage created before a tool whose
+ * result its first call follows replays at creation, before that tool replays (#4888). Such a parent is consumed
+ * already, so it never enters the frontier, and it does not take its own descendant as a parent when it spawns.
  */
 
 export interface StageNode {
@@ -19,6 +23,10 @@ export class GraphFrontierTracker {
 	private stageParents: Map<string, string[]> = new Map();
 	private nodes: Map<string, StageNode> = new Map();
 	private detached: Set<string> = new Set();
+	/** Nodes a settled node already took as parents: settling later, they are not leaves. */
+	private consumed: Set<string> = new Set();
+	/** Parents a node was given before they spawned. */
+	private unspawnedParents: Set<string> = new Set();
 
 	/**
 	 * Call when ctx.stage(name) is invoked.
@@ -26,6 +34,18 @@ export class GraphFrontierTracker {
 	 */
 	onSpawn(stageId: string, stageName: string): string[] {
 		const parents = Array.from(this.frontier);
+		if (this.unspawnedParents.delete(stageId)) {
+			// Its recorded children replayed first: they come after it, so they are not its parents.
+			return this.spawn(
+				stageId,
+				stageName,
+				parents.filter((parentId) => !this.hasAncestor(parentId, stageId)),
+			);
+		}
+		return this.spawn(stageId, stageName, parents);
+	}
+
+	private spawn(stageId: string, stageName: string, parents: string[]): string[] {
 		this.assertAcyclicParents(stageId, parents);
 		this.stageParents.set(stageId, parents);
 
@@ -61,6 +81,7 @@ export class GraphFrontierTracker {
 		const parents = Array.from(parentIds);
 		this.assertAcyclicParents(stageId, parents);
 		this.stageParents.set(stageId, parents);
+		for (const parentId of parents) if (!this.nodes.has(parentId)) this.unspawnedParents.add(parentId);
 		const node = this.nodes.get(stageId);
 		if (node !== undefined) {
 			this.nodes.set(stageId, {
@@ -90,9 +111,10 @@ export class GraphFrontierTracker {
 		// Remove parents from frontier (they are now consumed)
 		for (const parentId of parents) {
 			this.frontier.delete(parentId);
+			this.consumed.add(parentId);
 		}
-		// Add this stage to the frontier
-		this.frontier.add(stageId);
+		// Add this stage to the frontier, unless a stage that settled first already took it as a parent
+		if (!this.consumed.has(stageId)) this.frontier.add(stageId);
 	}
 
 	/** Get all recorded nodes as an array. */
@@ -103,6 +125,19 @@ export class GraphFrontierTracker {
 	/** Get parent IDs for a stage. */
 	getParents(stageId: string): string[] {
 		return this.stageParents.get(stageId) ?? [];
+	}
+
+	private hasAncestor(nodeId: string, ancestorId: string): boolean {
+		const pending = [...this.getParents(nodeId)];
+		const visited = new Set<string>();
+		while (pending.length > 0) {
+			const parentId = pending.pop()!;
+			if (parentId === ancestorId) return true;
+			if (visited.has(parentId)) continue;
+			visited.add(parentId);
+			pending.push(...this.getParents(parentId));
+		}
+		return false;
 	}
 
 	private assertAcyclicParents(nodeId: string, parentIds: readonly string[]): void {
@@ -123,5 +158,7 @@ export class GraphFrontierTracker {
 		this.stageParents.clear();
 		this.nodes.clear();
 		this.detached.clear();
+		this.consumed.clear();
+		this.unspawnedParents.clear();
 	}
 }
