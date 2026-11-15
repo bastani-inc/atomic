@@ -25,6 +25,8 @@ interface Shape {
 	failAt: FailAt;
 	/** Arguments of the `start` tool: a fork that changes them no longer reaches the tool its stage follows. */
 	startArgs: Record<string, string>;
+	/** Whether the definition no longer calls `start`. */
+	removeStart?: boolean;
 }
 
 /**
@@ -40,7 +42,7 @@ function stagesBeforeTools(shape: Shape, name = "fork-stage-before-tool"): Workf
 		outputs: {},
 		run: async (ctx) => {
 			const agent = ctx.stage("agent");
-			await ctx.tool("start", shape.startArgs, async () => "started");
+			if (shape.removeStart !== true) await ctx.tool("start", shape.startArgs, async () => "started");
 			await agent.prompt("agent");
 			const review = ctx.stage("review");
 			await ctx.tool("check", {}, async () => "checked");
@@ -259,5 +261,137 @@ describe("a fork of a run whose stage is created before a tool (#4945)", () => {
 			fork.toolNodes.some((node) => node.name === "finish"),
 			false,
 		);
+	});
+});
+
+/** The run as its records rebuild it. */
+function durableView(backend: MemoryJournalBackend, runId: string): RunSnapshot | undefined {
+	const handle = backend.getWorkflow(runId);
+	assert.ok(handle, "the run is registered");
+	return durableWorkflowRunSnapshots(backend, handle).find((candidate) => candidate.id === runId);
+}
+
+const CHANGES = [
+	["changed", { startArgs: { changed: "yes" } }],
+	["removed", { startArgs: {}, removeStart: true }],
+] as const;
+
+describe("a resume whose definition changed the tool a replayed stage follows (#4945)", () => {
+	test.each(
+		(["review", "finish"] as const).flatMap((failAt) =>
+			CHANGES.flatMap(([change, edit]) =>
+				(["same id", "continuation"] as const).map((resume) => [failAt, change, resume, edit] as const),
+			),
+		),
+	)(
+		"a root workflow failed at %s with its tool %s fails loudly on a %s resume and stays readable (#4945)",
+		async (failAt, _change, resume, edit) => {
+			const backend = await createMemoryTestBackend();
+			const store = createStore();
+			const shape: Shape = { failAt, startArgs: {} };
+			const runId = testRunId(`resume-changed-tool-${failAt}`);
+			const failed = await runWith(stagesBeforeTools(shape), [stagesBeforeTools(shape)], backend, runId, shape, {
+				store,
+			});
+			assert.equal(failed.status, "failed");
+			const source = store.runs().find((candidate) => candidate.id === runId);
+			assert.ok(source);
+
+			const changed: Shape = { failAt: "none", ...edit };
+			const definition = stagesBeforeTools(changed);
+			const resumed = await runWith(definition, [definition], backend, runId, changed, {
+				...(resume === "continuation" ? { continuation: resumePoint(source, failAt) } : {}),
+			});
+			assert.equal(resumed.status, "failed", "the replayed agent stage follows a tool the run no longer reaches");
+			// A changed tool can also be caught first, where the run reaches it with another identity.
+			assert.match(resumed.error ?? "", /insufficient_state: replay topology mismatch for /);
+			// The records still rebuild the run, with the stage's recorded parent.
+			const view = durableView(backend, runId);
+			assert.ok(view, "the run's records rebuild it");
+			assert.ok(edges(view).includes("start -> agent"), edges(view).join(", "));
+		},
+	);
+
+	test.each(
+		(["review", "finish"] as const).flatMap((failAt) =>
+			CHANGES.map(([change, edit]) => [failAt, change, edit] as const),
+		),
+	)(
+		"a child workflow failed at %s with its tool %s fails its parent loudly on resume and stays readable (#4945)",
+		async (failAt, _change, edit) => {
+			const backend = await createMemoryTestBackend();
+			const shape: Shape = { failAt, startArgs: {} };
+			const child = (current: Shape) => stagesBeforeTools(current, "fork-stage-before-tool-child");
+			const runId = testRunId(`resume-changed-child-tool-${failAt}`);
+			const failed = await runWith(
+				inChild(child(shape)),
+				[inChild(child(shape)), child(shape)],
+				backend,
+				runId,
+				shape,
+			);
+			assert.equal(failed.status, "failed");
+
+			const changed: Shape = { failAt: "none", ...edit };
+			const resumed = await runWith(
+				inChild(child(changed)),
+				[inChild(child(changed)), child(changed)],
+				backend,
+				runId,
+				changed,
+			);
+			assert.equal(resumed.status, "failed");
+			assert.match(resumed.error ?? "", /insufficient_state: replay topology mismatch for stage "agent"/);
+			assert.ok(durableView(backend, runId), "the run's records rebuild it");
+		},
+	);
+
+	test.each(CHANGES)(
+		"a stage after parallel tools, with one of them %s, fails loudly on resume and stays readable (#4945)",
+		async (_change, edit) => {
+			const backend = await createMemoryTestBackend();
+			const parallel = (current: Shape, failZ: boolean) =>
+				workflow({
+					name: "fork-stage-before-parallel-tools",
+					description: "",
+					inputs: {},
+					outputs: {},
+					run: async (ctx) => {
+						const agent = ctx.stage("agent");
+						await Promise.all([
+							current.removeStart === true
+								? Promise.resolve()
+								: ctx.tool("start", current.startArgs, async () => "started"),
+							ctx.tool("other", {}, async () => "other"),
+						]);
+						await agent.prompt("agent");
+						await ctx.stage("z").prompt(failZ ? "review" : "z");
+						return {};
+					},
+				}) as WorkflowDefinition;
+			const runId = testRunId("resume-changed-parallel-tool");
+			const shape: Shape = { failAt: "review", startArgs: {} };
+			assert.equal((await runWith(parallel(shape, true), [], backend, runId, shape)).status, "failed");
+			const changed: Shape = { failAt: "none", ...edit };
+			const resumed = await runWith(parallel(changed, false), [], backend, runId, changed);
+			assert.equal(resumed.status, "failed");
+			assert.match(resumed.error ?? "", /insufficient_state: replay topology mismatch for stage "agent"/);
+			assert.ok(durableView(backend, runId), "the run's records rebuild it");
+		},
+	);
+
+	test("a resume with the same definition still completes, with the source's graph (#4945)", async () => {
+		const backend = await createMemoryTestBackend();
+		const shape: Shape = { failAt: "finish", startArgs: {} };
+		const runId = testRunId("resume-same-tool");
+		const expected = edges(await control(stagesBeforeTools({ failAt: "none", startArgs: {} }), []));
+		assert.equal((await runWith(stagesBeforeTools(shape), [], backend, runId, shape)).status, "failed");
+		shape.failAt = "none";
+		const resumed = await runWith(stagesBeforeTools(shape), [], backend, runId, shape);
+		assert.equal(resumed.status, "completed", resumed.error);
+		assert.deepEqual(edges(resumed), expected);
+		const view = durableView(backend, runId);
+		assert.ok(view);
+		assert.deepEqual(edges(view), expected);
 	});
 });

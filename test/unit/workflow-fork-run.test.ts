@@ -1817,6 +1817,79 @@ test("a fork without fromStage replays every recorded stage, so replacement inpu
 	);
 });
 
+/**
+ * A tool whose arguments come from the input, or from `state` for the default input, a stage after it, and a last tool
+ * that fails while `state.fails` holds.
+ */
+function taggedBuild(state: { tag: string; fails: boolean }) {
+	return workflow({
+		name: "fork-tagged-build",
+		description: "",
+		inputs: { tag: Type.String({ default: "v1" }) },
+		outputs: {},
+		run: async (ctx) => {
+			const tagged = await ctx.tool(
+				"tagged",
+				{ tag: ctx.inputs.tag === "v1" ? state.tag : ctx.inputs.tag },
+				async () => "tagged",
+			);
+			await ctx.stage("build").complete(`build ${tagged}`);
+			await ctx.tool("last", { tag: ctx.inputs.tag }, async () => {
+				if (state.fails) throw new Error("planned last failure");
+				return "last";
+			});
+			return {};
+		},
+	});
+}
+
+test("a resume whose tool arguments changed under a replayed stage fails loudly, unlike a fork with replacement inputs (#4945)", async () => {
+	const backend = await createMemoryTestBackend();
+	const state = { tag: "v1", fails: true };
+	const options = { durableBackend: backend, cwd: process.cwd(), adapters: complete([]) };
+	const runId = testRunId("resume-tagged-build");
+	const failed = await run(taggedBuild(state), { tag: "v1" }, { ...options, runId, store: createStore() });
+	assert.equal(failed.status, "failed");
+	// The same shape as the fork with replacement inputs above, as a resume: `tagged` runs with other arguments, so the
+	// replayed `build` would follow a tool the run no longer has.
+	state.tag = "v2";
+	state.fails = false;
+	const resumed = await run(taggedBuild(state), { tag: "v1" }, { ...options, runId, store: createStore() });
+	assert.equal(resumed.status, "failed");
+	assert.match(resumed.error ?? "", /insufficient_state: replay topology mismatch for stage "build"/);
+});
+
+test("a fork with replacement inputs keeps its copied tool parent only in its first execution (#4945)", async () => {
+	const backend = await createMemoryTestBackend();
+	const state = { tag: "v1", fails: false };
+	const options = { durableBackend: backend, cwd: process.cwd(), adapters: complete([]) };
+	const runId = testRunId("fork-tagged-build");
+	assert.equal(
+		(await run(taggedBuild(state), { tag: "v1" }, { ...options, runId, store: createStore() })).status,
+		"completed",
+	);
+	// The fork's first execution replays `build` under the copied `tagged`, and fails later in `last`.
+	state.fails = true;
+	const forked = await forkRun(runId, {
+		...options,
+		inputs: { tag: "v2" },
+		definition: taggedBuild(state),
+		store: createStore(),
+	});
+	const first = await forked.result;
+	assert.equal(first.status, "failed");
+	assert.match(first.error ?? "", /planned last failure/);
+	// A resume of the fork is a resume: the replayed `build` follows the copied `tagged`, which this run never ran.
+	state.fails = false;
+	const resumed = await run(
+		taggedBuild(state),
+		{ tag: "v2" },
+		{ ...options, runId: forked.runId, store: createStore() },
+	);
+	assert.equal(resumed.status, "failed");
+	assert.match(resumed.error ?? "", /insufficient_state: replay topology mismatch for stage "build"/);
+});
+
 test("a fork carries the source's workspace and snapshot bindings through its launch (#4321)", async () => {
 	const { backend, def, runId } = await linearSource("fork-bindings");
 	const binding = { remotes: ["git@github.com:acme/product.git"], head: "a1", tree: "t1", envHash: "e1" };

@@ -9,7 +9,7 @@ import {
 	withWorktreeRestoreNotices,
 	withWorktreeRootMappings,
 } from "@bastani/atomic";
-import { beginDurableWorkflowAttempt } from "../durable/attempt-identity.js";
+import { beginDurableWorkflowAttempt, forkCopiedNodeIds } from "../durable/attempt-identity.js";
 import { type DurableWorkflowBackend, pendingStageMessagesForDurableRun } from "../durable/backend.js";
 import type { DurableChildInvocation } from "../durable/boundary-topology.js";
 import { createDurableChildWorkflowPrimitive } from "../durable/child-primitive.js";
@@ -106,6 +106,7 @@ import { resolve_budget, type WorkflowBudget } from "../shared/budget.js";
 import type { RunUsageTree } from "../shared/budget-meter.js";
 import { appendRunStart } from "../shared/persistence-session-entries.js";
 import { coercePossibleStages } from "../shared/possible-stages.js";
+import { assertReplayedParentsMaterialised } from "../shared/replay-topology-failure.js";
 import { parseEvictWhenWaiting, type RunEvictionPolicy } from "../shared/run-eviction.js";
 import { RunEvictedError, RunEvictionConfigError, RunReplayError } from "../shared/run-eviction-errors.js";
 import { currentStageUiBroker } from "../shared/stage-ui-broker.js";
@@ -577,6 +578,8 @@ async function executeRun(
 	const runPossibleStages =
 		persistedPossibleStages ?? coercePossibleStages(rootBackend.getWorkflow(runId)?.possibleStages) ?? [];
 	const forkedFrom = rootBackend.getWorkflow(runId)?.forkedFrom;
+	const forkCopiedNodes = opts.parentRun === undefined ? forkCopiedNodeIds(rootBackend, runId) : new Set<string>();
+	const keepsForkCopiedParent = (parentId: string): boolean => forkCopiedNodes.has(parentId);
 	const runSnapshot: RunSnapshot = {
 		id: runId,
 		name: def.name,
@@ -780,6 +783,7 @@ async function executeRun(
 			if (cachedStageFailure !== undefined) throw cachedStageFailure;
 			assertFrontierConsumed();
 			replayIndex.assertProvisionalParentsAdmitted();
+			assertReplayedParentsMaterialised(runSnapshot, keepsForkCopiedParent);
 		},
 		recordRefusedCompletion: async (error) => {
 			const frontier = unconsumedToolFrontier(
@@ -1652,6 +1656,7 @@ async function executeRun(
 		if (returned.status === "completed") {
 			assertFrontierConsumed();
 			replayIndex.assertProvisionalParentsAdmitted();
+			assertReplayedParentsMaterialised(runSnapshot, keepsForkCopiedParent);
 		}
 		const recorded = activeStore.recordRunEnd(runId, returned.status, result, returned.error, returned.metadata);
 		// Durable identity must reach its terminal state even if the session journal fails.

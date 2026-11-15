@@ -202,6 +202,33 @@ export function attemptReachedCheckpoints(
 		const attempt = anchor(ownerRunId(checkpoint, rootRunId));
 		if (attempt === undefined || checkpointAttempt(checkpoint) === attempt) reached.add(nodeKey(checkpoint));
 	}
+	// A reached node's recorded parents are part of the run the attempt left, also those it did not run again: a stage
+	// that replays at creation keeps the tool its call followed, and a resume that no longer reaches that tool fails,
+	// but its records still name it (#4945). Of such a parent the records of its latest attempt are kept.
+	const nodeKeyById = new Map<string, string>();
+	const latestAttemptByKey = new Map<string, number>();
+	for (const checkpoint of nodes) {
+		const key = nodeKey(checkpoint);
+		const id = checkpoint.kind === "stage" ? checkpoint.topology?.stageId : checkpoint.topology?.nodeId;
+		if (id !== undefined) nodeKeyById.set(JSON.stringify([ownerRunId(checkpoint, rootRunId), id]), key);
+		latestAttemptByKey.set(key, Math.max(latestAttemptByKey.get(key) ?? 0, checkpointAttempt(checkpoint)));
+	}
+	const parentReached = new Set<string>();
+	let grew = true;
+	while (grew) {
+		grew = false;
+		for (const checkpoint of nodes) {
+			if (!reached.has(nodeKey(checkpoint))) continue;
+			const owner = ownerRunId(checkpoint, rootRunId);
+			for (const parentId of checkpoint.topology?.parentIds ?? []) {
+				const parentKey = nodeKeyById.get(JSON.stringify([owner, parentId]));
+				if (parentKey === undefined || reached.has(parentKey)) continue;
+				reached.add(parentKey);
+				parentReached.add(parentKey);
+				grew = true;
+			}
+		}
+	}
 	const shownRuns = new Map<string, boolean>();
 	const shown = (runId: string): boolean => {
 		const known = shownRuns.get(runId);
@@ -218,6 +245,8 @@ export function attemptReachedCheckpoints(
 			const attempt = anchor(owner);
 			if (!shown(owner) || !reached.has(nodeKey(checkpoint))) return false;
 			if (attempt === undefined || checkpointAttempt(checkpoint) === attempt) return true;
+			const key = nodeKey(checkpoint);
+			if (parentReached.has(key)) return checkpointAttempt(checkpoint) === latestAttemptByKey.get(key);
 			return (
 				checkpoint.kind === "stage" &&
 				(checkpoint.output !== undefined || checkpoint.topology?.boundary !== undefined)
@@ -235,4 +264,29 @@ function isGraphRecord(checkpoint: DurableCheckpoint): checkpoint is DurableStag
 /** A stage record's node: its replay key, and its prompt occurrence when it has one. */
 function stageNodeKey(checkpoint: DurableStageCheckpoint): string {
 	return JSON.stringify([checkpoint.replayKey, checkpoint.topology?.occurrenceKey ?? null]);
+}
+
+/**
+ * The nodes a fork's first execution may keep as recorded parents without running them again (#4321): a fork with
+ * replacement inputs replays every recorded stage, and a stage whose recorded parent is a tool the new inputs changed
+ * keeps that tool, which the fork copied, as its parent. Its records still name a recorded node, so the fork stays
+ * readable. Read before the execution registers: once any execution of the fork has recorded something, every record
+ * is not the fork's copy, and a later execution of the fork, like any other run, keeps none (#4945).
+ */
+export function forkCopiedNodeIds(
+	backend: Pick<DurableWorkflowBackend, "getWorkflow" | "listCheckpoints">,
+	runId: string,
+): ReadonlySet<string> {
+	const handle = backend.getWorkflow(runId);
+	if (handle?.forkedFrom === undefined) return new Set();
+	const checkpoints = backend.listCheckpoints(runId);
+	// The fork registered when it copied the source; an execution re-registers it and records after that.
+	if (checkpoints.some((checkpoint) => checkpoint.completedAt >= handle.createdAt)) return new Set();
+	const copied = new Set<string>();
+	for (const checkpoint of checkpoints) {
+		if (checkpoint.kind === "tool" && checkpoint.topology !== undefined) copied.add(checkpoint.topology.nodeId);
+		else if (checkpoint.kind === "stage" && checkpoint.topology !== undefined)
+			copied.add(checkpoint.topology.stageId);
+	}
+	return copied;
 }
