@@ -194,10 +194,11 @@ export interface SettleOtherBuildsOptions {
 async function settleOtherBuild(file: string, root: string, options: SettleOtherBuildsOptions): Promise<string[]> {
 	const deadline = Date.now() + (options.waitMs ?? BUILD_LOCK_WAIT_MS);
 	let told = false;
+	let stopped = false;
 	const wait = async (why: string): Promise<boolean> => {
-		if (Date.now() >= deadline) return false;
 		if (!told) options.onWait?.(`Waiting for ${why} of ${root} to end`);
 		told = true;
+		if (Date.now() >= deadline) return false;
 		await delay(BUILD_LOCK_POLL_MS, options.signal);
 		return true;
 	};
@@ -219,8 +220,12 @@ async function settleOtherBuild(file: string, root: string, options: SettleOther
 				`Another process (pid ${lock.pid}) still seemed to build ${root} after ${Math.round((options.waitMs ?? BUILD_LOCK_WAIT_MS) / 1000)} s; building it anyway.`,
 			];
 		}
-		const proven = (lock.steps ?? []).filter((step) => identity(step) === "same");
-		const orphans = [...proven, ...(process.platform === "win32" ? orphanedChildren(lock.steps ?? []) : [])];
+		const proven = stopped ? [] : (lock.steps ?? []).filter((step) => identity(step) === "same");
+		// Stopped once: the Windows scan lists every process, and a later look only waits on what could not be proven.
+		const orphans = stopped
+			? []
+			: [...proven, ...(process.platform === "win32" ? orphanedChildren(lock.steps ?? []) : [])];
+		stopped = true;
 		for (const step of orphans) killProcessTree(step.pid);
 		for (let waited = 0; waited < 25 && proven.some((step) => identity(step) === "same"); waited++) {
 			await delay(BUILD_LOCK_POLL_MS / 2, options.signal);
