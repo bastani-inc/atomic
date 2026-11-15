@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
-import type { AuthInteraction } from "@bastani/pi-ai";
-import type { Api, Model } from "@bastani/pi-ai/compat";
+import type { AuthInteraction } from "@bastani/atomic-ai";
+import type { Api, Model } from "@bastani/atomic-ai/compat";
 import type { AgentSession, ClearedQueue, CompactionReason } from "../../core/agent-session.js";
 import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../../core/agent-session-runtime.ts";
 import type {

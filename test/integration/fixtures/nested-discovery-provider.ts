@@ -2,7 +2,7 @@
 import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { CreateAgentSessionOptions, ExtensionAPI } from "@bastani/atomic";
-import { type AssistantMessage, createAssistantMessageEventStream, type JsonObject } from "@bastani/pi-ai/compat";
+import { type AssistantMessage, createAssistantMessageEventStream, type JsonObject } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 
 export default function (pi: ExtensionAPI): void {

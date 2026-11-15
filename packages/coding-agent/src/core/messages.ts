@@ -5,8 +5,8 @@
  * and provides a transformer to convert them to LLM-compatible messages.
  */
 
-import type { ImageContent, Message, TextContent, ToolResultMessage } from "@bastani/pi-ai/compat";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AgentMessage } from "@bastani/atomic-agent-core";
+import type { ImageContent, Message, TextContent, ToolResultMessage } from "@bastani/atomic-ai/compat";
 import { uniquifyToolCallIds } from "./context-tool-pairing.js";
 
 export const BRANCH_SUMMARY_PREFIX = `The following is a summary of a branch that this conversation came back from:
@@ -60,7 +60,7 @@ export interface BranchSummaryMessage {
 }
 
 // Extend CustomAgentMessages via declaration merging
-declare module "@earendil-works/pi-agent-core" {
+declare module "@bastani/atomic-agent-core" {
 	interface CustomAgentMessages {
 		bashExecution: BashExecutionMessage;
 		custom: CustomMessage;

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { afterEach, test } from "vitest";
 import type { ExtensionAPI } from "../../packages/coding-agent/src/core/extensions/index.js";
 import { markTrustedMandatoryRuntimeExtension } from "../../packages/coding-agent/src/core/mandatory-runtime-tools.js";

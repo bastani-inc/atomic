@@ -1,4 +1,4 @@
-import type { Usage } from "@bastani/pi-ai/compat";
+import type { Usage } from "@bastani/atomic-ai/compat";
 import { getCompactionDiagnosticsDir } from "../config.js";
 import { awaitedToolTurnEntryId } from "./agent-session-detached-tools.ts";
 import type {

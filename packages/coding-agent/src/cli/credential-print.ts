@@ -23,8 +23,8 @@
  */
 
 import { inspect } from "node:util";
-import type { Api, AuthType, Model } from "@bastani/pi-ai";
-import { ModelsError } from "@bastani/pi-ai";
+import type { Api, AuthType, Model } from "@bastani/atomic-ai";
+import { ModelsError } from "@bastani/atomic-ai";
 import { resolveCliModel, resolveModelReference } from "../core/model-resolver.ts";
 import type { ModelRuntime } from "../core/model-runtime.js";
 import { flushRawStdout, RawStdoutWriteError, writeRawStdoutOnce } from "../core/output-guard.ts";
@@ -467,7 +467,7 @@ export async function resolveCredentialForPrint(
 		// `checkAuth()` is the only non-mutating probe and cannot tell a candidate
 		// that will authenticate from one that will fail, which is what keeps
 		// exits 5 and 6 reachable. Nor does resolving without refreshing exist —
-		// `resolveStoredOAuth` in `@bastani/pi-ai` refreshes whenever the
+		// `resolveStoredOAuth` in `@bastani/atomic-ai` refreshes whenever the
 		// token falls inside `max(DEFAULT_OAUTH_MINIMUM_VALIDITY_MS,
 		// minOAuthValidityMs ?? 0)`, so omitting `minOAuthValidityMs` only lowers
 		// that window to five minutes and drops the post-refresh check exit 6 is

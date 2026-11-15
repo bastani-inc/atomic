@@ -1,5 +1,3 @@
-import { getCurrentSystemMessage, type SystemMessage } from "@bastani/pi-ai";
-import type { ToolCall } from "@bastani/pi-ai/compat";
 import type {
 	AfterToolCallResult,
 	AgentLoopTurnUpdate,
@@ -7,7 +5,9 @@ import type {
 	BeforeToolCallContext,
 	BeforeToolCallResult,
 	PrepareNextTurnContext,
-} from "@earendil-works/pi-agent-core";
+} from "@bastani/atomic-agent-core";
+import { getCurrentSystemMessage, type SystemMessage } from "@bastani/atomic-ai";
+import type { ToolCall } from "@bastani/atomic-ai/compat";
 import { normalizeToolResultImages } from "../utils/tool-result-images.js";
 import { committedContextMessages } from "./agent-session-background-compaction.ts";
 import { isDetachedToolCall } from "./agent-session-detached-tools.ts";

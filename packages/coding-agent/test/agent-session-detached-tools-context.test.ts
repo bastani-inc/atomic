@@ -3,7 +3,7 @@
  * only `cwd` once the call has detached or was started again after a restart.
  */
 import assert from "node:assert/strict";
-import { fauxAssistantMessage } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { afterEach, describe, test } from "vitest";
 import type { ExtensionToolContext, ToolDefinition } from "../src/core/extensions/index.js";

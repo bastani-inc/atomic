@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { type Api, calculateCost, type Model, type Usage } from "@bastani/pi-ai";
-import { getModels } from "@bastani/pi-ai/compat";
+import { type Api, calculateCost, type Model, type Usage } from "@bastani/atomic-ai";
+import { getModels } from "@bastani/atomic-ai/compat";
 import { describe, test } from "vitest";
 
 function requireModel(provider: "openai" | "openai-codex", id: string): Model<Api> {

@@ -921,7 +921,7 @@ The hold preserves content blocks, optional data, duplicate identities, raw text
 
 ### Agent and AgentState
 
-The `Agent` class (from `@earendil-works/pi-agent-core`) handles the core LLM interaction. Access it via `session.agent`.
+The `Agent` class (from [`@bastani/atomic-agent-core`](/libraries/agent-core)) handles the core LLM interaction. Access it via `session.agent`.
 
 ```typescript
 // Access current state
@@ -1141,7 +1141,7 @@ Moved to [SDK API reference](/sdk/reference#return-value).
 ## Complete Example
 
 ```typescript
-import { getModel } from "@bastani/pi-ai/compat";
+import { getModel } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import {
   AuthStorage,

@@ -5,6 +5,7 @@ import {
 	applyProviderRateLimitObservation,
 	observeProviderRateLimits,
 	type ResourceAdmission,
+	setProviderRequestGate,
 	withResourceAdmission,
 } from "@bastani/atomic";
 import { type SessionStore, StorageProvider } from "@bastani/atomic/storage";
@@ -43,6 +44,7 @@ import { AttemptFence, endedAttemptRefusal } from "./attempt-fence.js";
 import { AttemptRequests, workerRequestSender } from "./attempt-requests.js";
 import { POOL_COORDINATOR_ROLE, type PoolCoordinatorStart } from "./coordinator-protocol.js";
 import { loadWorkerDefinition } from "./definitions.js";
+import { fleetRateGate } from "./fleet-rate-limits.js";
 import { OUTAGE_HANDOFF_MS, retryWithinLease } from "./lease-outage.js";
 import { poolWorkerCommit } from "./pool-commit.js";
 import { POOLED_CUSTOM_PROMPT_UNAVAILABLE } from "./pooled-prompt-limits.js";
@@ -328,6 +330,11 @@ async function runWorker(start: WorkerStart): Promise<void> {
 	let recycled = false;
 	process.on("disconnect", () => process.exit(replies.rootLeaseLost || recycled || replies.retired ? 0 : 1));
 	const request = workerRequestSender(pending, (message, sent) => process.send?.(message, sent));
+	// #4768: a model call to a scope of the root's fleet-wide rate limits takes a token from the coordinator first.
+	if (start.rateScopes !== undefined && start.rateScopes.length > 0)
+		setProviderRequestGate(
+			fleetRateGate(start.rateScopes, (provider, model) => request({ kind: "rate-acquire", provider, model })),
+		);
 	const definitions = await Promise.all(start.definitions.map(loadWorkerDefinition));
 	const durableSelection = process.env[POOL_DURABLE_JOURNAL_ENV];
 	// Read once and removed, so the tools this worker starts do not inherit it.

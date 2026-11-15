@@ -1,4 +1,4 @@
-import { getSupportedThinkingLevels } from "@bastani/pi-ai/compat";
+import { getSupportedThinkingLevels } from "@bastani/atomic-ai/compat";
 import { crossProjectResumeMessage } from "../durable/resume-runtime.js";
 import {
 	canonicalDirectory,

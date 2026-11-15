@@ -1,4 +1,4 @@
-import { uuidv7 } from "@bastani/pi-ai";
+import { uuidv7 } from "@bastani/atomic-ai";
 import { randomUUID } from "crypto";
 import { SessionIdError } from "./session-manager-errors.js";
 import {

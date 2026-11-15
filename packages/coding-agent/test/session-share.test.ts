@@ -11,7 +11,7 @@ const childProcessMocks = vi.hoisted(() => ({
 
 vi.mock("node:child_process", () => childProcessMocks);
 
-import { Container } from "@earendil-works/pi-tui";
+import { Container } from "@bastani/atomic-tui";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 

@@ -1,4 +1,4 @@
-import { type Api, getModel, type Model } from "@bastani/pi-ai/compat";
+import { type Api, getModel, type Model } from "@bastani/atomic-ai/compat";
 import { describe, expect, test } from "vitest";
 import type { AtomicProviderCompat } from "../src/core/model-capabilities.ts";
 import { RpcClientApi, type RpcCommandBody } from "../src/modes/rpc/rpc-client-api.ts";

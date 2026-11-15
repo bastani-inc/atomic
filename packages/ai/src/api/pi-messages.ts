@@ -4,8 +4,7 @@
  * Streams pi's own message protocol directly to a backend: the request is a
  * single POST of `{ model, context, options }` to `<baseUrl>/messages`, the
  * response is an SSE stream of serialized assistant-message events plus a
- * terminal `done`/`error` event. This is the wire protocol spoken by the
- * Radius gateway, but any backend implementing it can be used, e.g. via a
+ * terminal `done`/`error` event. Any backend implementing it can be used through a
  * models.json custom provider with `"api": "pi-messages"`.
  */
 
@@ -28,7 +27,7 @@ import { appendAssistantMessageDiagnostic, createAssistantMessageDiagnostic } fr
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { headersToRecord, providerHeadersToRecord } from "../utils/headers.ts";
 import { getIdentityHeaders } from "../utils/identity.ts";
-import { getProviderEnvValue } from "../utils/provider-env.ts";
+import { getAtomicEnvValue } from "../utils/provider-env.ts";
 import { getRetryAfterMs } from "../utils/retry-hints.ts";
 import { ServerSentEventDecoder } from "../utils/sse.ts";
 import { createStreamDeadline, withStreamDeadline } from "../utils/stream-deadline.ts";
@@ -374,7 +373,7 @@ function resolveCacheRetention(cacheRetention?: CacheRetention, env?: ProviderEn
 		return cacheRetention;
 	}
 	// Backend defaults apply when unset; only the legacy env opt-in is mapped.
-	return getProviderEnvValue("PI_CACHE_RETENTION", env) === "long" ? "long" : undefined;
+	return getAtomicEnvValue("CACHE_RETENTION", env) === "long" ? "long" : undefined;
 }
 
 export const stream: StreamFunction<"pi-messages", PiMessagesOptions> = (

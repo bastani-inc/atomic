@@ -1,5 +1,5 @@
 import type { ReadonlyFooterDataProvider } from "@bastani/atomic";
-import type { TUI } from "@earendil-works/pi-tui";
+import type { TUI } from "@bastani/atomic-tui";
 import type { Store } from "../shared/store.js";
 import type { GraphTheme } from "./graph-theme.js";
 

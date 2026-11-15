@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { ClassifierContext, ClassifierResult } from "@bastani/pi-ai";
+import type { ClassifierContext, ClassifierResult } from "@bastani/atomic-ai";
 import { test } from "vitest";
 import { buildClassifierUnits, planClassifierRanges } from "../src/core/compaction/classifier-compaction.js";
 import { buildStructuredCompactionInput } from "../src/core/compaction/structured-compaction-input.js";

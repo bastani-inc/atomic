@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import { stripVTControlCharacters } from "node:util";
-import { CURSOR_MARKER, getKeybindings, setKeybindings, type TUI, visibleWidth } from "@earendil-works/pi-tui";
+import { CURSOR_MARKER, getKeybindings, setKeybindings, type TUI, visibleWidth } from "@bastani/atomic-tui";
 import { test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import {

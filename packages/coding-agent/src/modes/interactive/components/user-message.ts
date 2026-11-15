@@ -1,4 +1,4 @@
-import { Container, Markdown, type MarkdownTheme } from "@earendil-works/pi-tui";
+import { Container, Markdown, type MarkdownTheme } from "@bastani/atomic-tui";
 import type { MarkdownTransformer } from "../../../core/extensions/types.ts";
 import { stripTerminalControls } from "../../../utils/ansi.js";
 import { getMarkdownTheme, theme } from "../theme/theme.js";

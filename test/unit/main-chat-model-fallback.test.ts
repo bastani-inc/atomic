@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
-import { GitHubCopilotModelUnavailableError, getGitHubCopilotError, recordGitHubCopilotFailure } from "@bastani/pi-ai";
-import type { Api, AssistantMessage, Model } from "@bastani/pi-ai/compat";
-import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { ThinkingLevel } from "@bastani/atomic-agent-core";
+import {
+	GitHubCopilotModelUnavailableError,
+	getGitHubCopilotError,
+	recordGitHubCopilotFailure,
+} from "@bastani/atomic-ai";
+import type { Api, AssistantMessage, Model } from "@bastani/atomic-ai/compat";
 import { test } from "vitest";
 import {
 	_checkCompaction,

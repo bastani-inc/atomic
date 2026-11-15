@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
-import { CURSOR_MARKER, setKeybindings, visibleWidth } from "@earendil-works/pi-tui";
+import { CURSOR_MARKER, setKeybindings, visibleWidth } from "@bastani/atomic-tui";
 import { beforeAll, beforeEach, describe, test } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.js";
 import type { SessionEntry, SessionMessageEntry, SessionTreeNode } from "../src/core/session-manager.js";

@@ -10,7 +10,7 @@
  */
 
 import assert from "node:assert/strict";
-import { getKeybindings, setKeybindings } from "@earendil-works/pi-tui";
+import { getKeybindings, setKeybindings } from "@bastani/atomic-tui";
 import { afterAll, beforeAll, describe, test } from "vitest";
 import type { HostSessionPickerRow } from "../../packages/coding-agent/src/core/extensions/index.ts";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";

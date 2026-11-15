@@ -1,5 +1,5 @@
 // @ts-nocheck
-import type { EditorTheme } from "@earendil-works/pi-tui";
+import type { EditorTheme } from "@bastani/atomic-tui";
 import {
 	ChatSessionHost,
 	type ChatSessionHostOpts,

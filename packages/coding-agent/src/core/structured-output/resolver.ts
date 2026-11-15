@@ -1,4 +1,4 @@
-import { isModelType } from "@bastani/pi-ai";
+import { isModelType } from "@bastani/atomic-ai";
 import { DecisionConfigError, DecisionModelUnavailableError } from "../decision/errors.js";
 import type { DecisionModelSelectionOptions, StructuredOutputModel } from "./types.js";
 

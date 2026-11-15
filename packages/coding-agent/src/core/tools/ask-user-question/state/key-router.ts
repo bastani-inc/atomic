@@ -1,4 +1,4 @@
-import { Key, matchesKey } from "@earendil-works/pi-tui";
+import { Key, matchesKey } from "@bastani/atomic-tui";
 import type { QuestionAnswer } from "../tool/types.js";
 import { ROW_INTENT_META } from "./row-intent.ts";
 import type { QuestionnaireRuntime, QuestionnaireState } from "./state.ts";

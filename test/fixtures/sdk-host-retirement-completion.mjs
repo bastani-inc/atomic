@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { createAgentSession, createAgentSessionRuntime, createEventBus, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@bastani/atomic";
-import { createAssistantMessageEventStream, getModel } from "@bastani/pi-ai/compat";
+import { createAssistantMessageEventStream, getModel } from "@bastani/atomic-ai/compat";
 
 // #3105: real Node retirement/settlement proof without forced exit or private cleanup.
 const mode = process.argv[2];

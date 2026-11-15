@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ModelsError } from "@bastani/pi-ai";
+import { ModelsError } from "@bastani/atomic-ai";
 import { afterEach, describe, expect, test } from "vitest";
 import { type Args, parseArgs } from "../src/cli/args.ts";
 import { checkProviderAuth, createAuthCheckModelRuntime, getProviderCredential } from "../src/cli/auth-check.ts";

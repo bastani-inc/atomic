@@ -1,4 +1,4 @@
-import { type Component, Container, type Focusable, getKeybindings, Input, Spacer, Text } from "@earendil-works/pi-tui";
+import { type Component, Container, type Focusable, getKeybindings, Input, Spacer, Text } from "@bastani/atomic-tui";
 import { KeybindingsManager } from "../../../core/keybindings.ts";
 import type { SessionInfo, SessionListProgress } from "../../../core/session-manager.ts";
 import { assertSessionNotOpenElsewhere } from "../../../core/session-open-markers.ts";

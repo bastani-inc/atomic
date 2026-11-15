@@ -4,7 +4,7 @@ import type { DocumentContent } from "../types.ts";
  * The only document media type either serializer implements.
  *
  * `DocumentContent.mimeType` is typed as this literal, so a TypeScript caller cannot pass anything
- * else. This runtime check exists for the JavaScript callers `@bastani/pi-ai` also ships to, who
+ * else. This runtime check exists for the JavaScript callers `@bastani/atomic-ai` also ships to, who
  * get no compile-time narrowing: without it, a block labelled `text/plain` would be sent to
  * Anthropic as `media_type: "application/pdf"` and to Bedrock as `format: "pdf"`, because both
  * paths hardcode PDF rather than reading the field.

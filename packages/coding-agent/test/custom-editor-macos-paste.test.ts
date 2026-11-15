@@ -1,4 +1,4 @@
-import { type Terminal, TuiMainScreen } from "@earendil-works/pi-tui";
+import { type Terminal, TuiMainScreen } from "@bastani/atomic-tui";
 import { beforeAll, describe, expect, it } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import { CustomEditor } from "../src/modes/interactive/components/custom-editor.ts";

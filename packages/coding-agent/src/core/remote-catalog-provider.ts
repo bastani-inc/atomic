@@ -6,20 +6,22 @@ import {
 	type ModelType,
 	type Provider,
 	type RefreshModelsContext,
-} from "@bastani/pi-ai";
+} from "@bastani/atomic-ai";
+import {
+	buildModelsDevChatModels,
+	finalizeChatModels,
+	type ModelsDevCatalog,
+} from "@bastani/atomic-ai/utils/models-dev-catalog";
 import { VERSION } from "../config.js";
 import { fetchWithRetry } from "../utils/management-http.ts";
 import { getPiUserAgent } from "../utils/pi-user-agent.ts";
 
-const DEFAULT_CATALOG_BASE_URL = "https://pi.dev";
-const REMOTE_CATALOG_ATTEMPT_TIMEOUT_MS = 4_000;
+/** Where Atomic refreshes its model catalog: models.dev's public `api.json`. Override with `ATOMIC_MODEL_CATALOG_URL`. */
+export const DEFAULT_CATALOG_BASE_URL = "https://models.dev";
+/** One catalog download's deadline, body included. The catalog is a few megabytes. */
+const REMOTE_CATALOG_ATTEMPT_TIMEOUT_MS = 15_000;
 export const REMOTE_CATALOG_REFRESH_INTERVAL_MS = 4 * 60 * 60 * 1000;
-/**
- * Model types this client can consume. Sent as `?types=` so the catalog server
- * returns the full-type shard instead of the chat-only one served to clients
- * that predate model types. A server that ignores the parameter still returns
- * the chat-only shard, which this client handles unchanged.
- */
+/** Model types a refreshed catalog may carry. models.dev only yields chat models. */
 export const REMOTE_CATALOG_MODEL_TYPES: readonly ModelType[] = ["chat", "image", "classifier"];
 
 function isSupportedModelType(model: { type?: unknown }): boolean {
@@ -78,36 +80,104 @@ function mergeModels<TModel extends AnyModel>(baseline: readonly TModel[], dynam
 	return [...merged.values()];
 }
 
-function parseCatalog(providerId: string, value: unknown): AnyModel[] {
-	const entries = Array.isArray(value)
-		? value
-		: typeof value === "object" && value !== null && "models" in value && Array.isArray(value.models)
-			? value.models
-			: typeof value === "object" && value !== null
-				? Object.values(value)
-				: undefined;
-	if (!entries) throw new Error(`Invalid model catalog for provider "${providerId}"`);
-	return entries
-		.filter((entry): entry is Record<string, unknown> => typeof entry === "object" && entry !== null && "id" in entry)
-		.filter(isSupportedModelType)
-		.filter(hasOperationShape)
-		.map((model) => ({ ...model, provider: providerId }) as AnyModel);
+/** One download of models.dev's catalog, mapped to Atomic's chat models by provider. */
+interface RemoteCatalog {
+	readonly byProvider: ReadonlyMap<string, readonly AnyModel[]>;
+	readonly lastModified: number;
+	/** The response's ETag, sent as `if-none-match` on the next refresh. */
+	readonly etag?: string;
+	/** The server answered 304 to the stored ETag: the stored overlay is current. */
+	readonly notModified?: boolean;
 }
 
-/** Read a successful pi.dev catalog response. A missing or invalid Last-Modified header is 0. */
-async function readCatalog(
-	providerId: string,
-	response: Response,
-): Promise<{ models: AnyModel[]; lastModified: number; etag: string | undefined }> {
+/**
+ * Downloads `<catalogBaseUrl>/api.json` once for every provider that refreshes together: providers refresh in
+ * parallel, and they share the download while it is in flight, so a refresh of every provider costs one request.
+ */
+const inflightCatalogs = new Map<string, Promise<RemoteCatalog>>();
+
+/**
+ * The models.dev catalog, mapped with the same transform the build uses for the bundled catalog. With `etag`, the
+ * request revalidates it, and a 304 answer reports `notModified` instead of a catalog.
+ */
+export async function loadRemoteCatalog(
+	catalogBaseUrl: string,
+	signal: AbortSignal,
+	etag?: string,
+): Promise<RemoteCatalog> {
+	const key = `${catalogBaseUrl}\n${etag ?? ""}`;
+	let download = inflightCatalogs.get(key);
+	if (!download) {
+		// The download is shared, so it is bounded by its own deadline, not by one caller's signal.
+		download = downloadRemoteCatalog(catalogBaseUrl, etag);
+		inflightCatalogs.set(key, download);
+		const settled = download;
+		void settled
+			.catch(() => undefined)
+			.finally(() => {
+				if (inflightCatalogs.get(key) === settled) inflightCatalogs.delete(key);
+			});
+	}
+	return untilAborted(download, signal);
+}
+
+function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+	if (signal.aborted) return Promise.reject(signal.reason);
+	return new Promise<T>((resolve, reject) => {
+		const onAbort = () => reject(signal.reason);
+		signal.addEventListener("abort", onAbort, { once: true });
+		promise.then(
+			(value) => {
+				signal.removeEventListener("abort", onAbort);
+				resolve(value);
+			},
+			(error: unknown) => {
+				signal.removeEventListener("abort", onAbort);
+				reject(error);
+			},
+		);
+	});
+}
+
+/** Forget in-flight downloads, so the next refresh downloads again. For tests. */
+export function clearRemoteCatalogCache(): void {
+	inflightCatalogs.clear();
+}
+
+async function downloadRemoteCatalog(catalogBaseUrl: string, etag: string | undefined): Promise<RemoteCatalog> {
+	const url = new URL("api.json", catalogBaseUrl.endsWith("/") ? catalogBaseUrl : `${catalogBaseUrl}/`);
+	const headers: Record<string, string> = { accept: "application/json", "User-Agent": getPiUserAgent(VERSION) };
+	if (etag) headers["if-none-match"] = etag;
+	const response = await fetchWithRetry(
+		url,
+		{ headers },
+		{ attemptTimeoutMs: REMOTE_CATALOG_ATTEMPT_TIMEOUT_MS, timeoutMs: REMOTE_CATALOG_ATTEMPT_TIMEOUT_MS * 3 },
+	);
+	// A server without the catalog (404, 501) means no overlay, not a failed refresh: the bundled catalog stays.
+	if (response.status === 404 || response.status === 501) return { byProvider: new Map(), lastModified: 0 };
+	if (response.status === 304 && etag) return { byProvider: new Map(), lastModified: 0, etag, notModified: true };
+	if (!response.ok) throw new Error(`Model catalog request to ${url.origin} failed: ${response.status}`);
+	const data = (await response.json()) as ModelsDevCatalog;
+	if (typeof data !== "object" || data === null || Array.isArray(data)) {
+		throw new Error(`Model catalog from ${url.origin} is not a models.dev catalog`);
+	}
+	const byProvider = new Map<string, AnyModel[]>();
+	for (const model of finalizeChatModels(buildModelsDevChatModels(data))) {
+		const chat: AnyModel = { ...model, type: "chat" };
+		if (!hasOperationShape(chat)) continue;
+		const list = byProvider.get(model.provider) ?? [];
+		list.push(chat);
+		byProvider.set(model.provider, list);
+	}
 	const lastModified = Date.parse(response.headers.get("last-modified") ?? "");
 	return {
-		models: parseCatalog(providerId, await response.json()),
-		lastModified: Number.isNaN(lastModified) ? 0 : lastModified,
+		byProvider,
+		lastModified: Number.isNaN(lastModified) ? Date.now() : lastModified,
 		etag: response.headers.get("etag") ?? undefined,
 	};
 }
 
-/** Whether a pi.dev catalog is newer than the model data shipped with Atomic. */
+/** Whether a downloaded catalog is newer than the model data shipped with Atomic. */
 function isNewer(lastModified: number | undefined, localGeneratedAt: number | undefined): boolean {
 	return localGeneratedAt === undefined || (lastModified !== undefined && lastModified > localGeneratedAt);
 }
@@ -116,41 +186,13 @@ function remoteModels(entry: ModelsStoreEntry | undefined, localGeneratedAt: num
 	return entry && isNewer(entry.lastModified, localGeneratedAt) ? entry.models : [];
 }
 
-/**
- * Request one provider's catalog from pi.dev. The User-Agent carries the tracked pi version, and
- * pi.dev serves the newest catalog published for a minimum version at or below it. So a client
- * receives catalogs published after its release, and those catalogs must work with this client's
- * code.
- */
-function requestCatalog(
-	providerId: string,
-	catalogBaseUrl: string,
-	signal: AbortSignal,
-	validator?: string,
-): Promise<Response> {
-	const url = new URL(`/api/models/providers/${encodeURIComponent(providerId)}`, catalogBaseUrl);
-	url.searchParams.set("types", REMOTE_CATALOG_MODEL_TYPES.join(","));
-	return fetchWithRetry(
-		url,
-		{
-			headers: {
-				accept: "application/json",
-				"User-Agent": getPiUserAgent(VERSION),
-				...(validator ? { "if-none-match": validator } : {}),
-			},
-			signal,
-		},
-		{ attemptTimeoutMs: REMOTE_CATALOG_ATTEMPT_TIMEOUT_MS },
-	);
-}
-
 /** Replaces the catalog with a credential-specific model list. */
 export type PersonalizeCatalog = (
 	catalog: readonly AnyModel[],
 	context: RefreshModelsContext,
 ) => Promise<readonly AnyModel[]>;
 
-/** Add a persisted pi.dev catalog overlay to a static built-in provider. */
+/** Add a persisted overlay from the refreshed models.dev catalog to a static built-in provider. */
 export function withRemoteCatalog(
 	provider: Provider,
 	catalogBaseUrl: string = DEFAULT_CATALOG_BASE_URL,
@@ -189,7 +231,7 @@ export function withRemoteCatalog(
 				return;
 			}
 			if (!context.allowNetwork || context.signal.aborted) return;
-			// Skip the request if pi.dev was checked less than REMOTE_CATALOG_REFRESH_INTERVAL_MS ago.
+			// Skip the download if the catalog was checked less than REMOTE_CATALOG_REFRESH_INTERVAL_MS ago.
 			// An entry without lastModified (saved by an older version, or after a failed first request) is
 			// always refetched: remoteModels() ignores it, so waiting would leave the overlay empty.
 			if (
@@ -201,38 +243,31 @@ export function withRemoteCatalog(
 				return;
 			}
 
-			// Only revalidate when a cached body backs the validator, so a 304 can never
-			// leave the overlay empty.
-			const validator = stored && stored.models.length > 0 ? stored.etag : undefined;
-			const response = await requestCatalog(provider.id, catalogBaseUrl, context.signal, validator);
+			let catalog: RemoteCatalog;
+			try {
+				// Revalidate only a stored overlay: an ETag without its body cannot be reused on a 304.
+				const validator = stored?.etag && stored.models.length > 0 ? stored.etag : undefined;
+				catalog = await loadRemoteCatalog(catalogBaseUrl, context.signal, validator);
+			} catch (error) {
+				if (context.signal.aborted) return;
+				// The stored overlay stays; the next refresh after the interval tries again.
+				await context.publish({ persist: { ...(stored ?? { models: [] }), checkedAt: Date.now() } });
+				throw error;
+			}
 			if (context.signal.aborted) return;
-			const checkedAt = Date.now();
-			// Unchanged: dynamicModels already holds the stored overlay, so only the
-			// freshness window moves.
-			if (response.status === 304 && stored) {
-				await context.publish({ persist: { ...stored, checkedAt } });
+			if (catalog.notModified && stored) {
+				await context.publish({ persist: { ...stored, checkedAt: Date.now() } });
 				return;
 			}
-			if (response.status === 404 || response.status === 501) {
-				await context.publish({
-					persist: {
-						...(stored ?? { models: [] }),
-						checkedAt,
-						lastModified: 0,
-						etag: undefined,
-					},
-				});
-				return;
-			}
-			if (!response.ok) {
-				// Transient failure: the cached body and its validator stay valid, so keep the
-				// etag and let the next refresh revalidate instead of downloading the catalog.
-				await context.publish({ persist: { ...(stored ?? { models: [] }), checkedAt } });
-				throw new Error(`Model catalog request failed for ${provider.id}: ${response.status}`);
-			}
-			const catalog = await readCatalog(provider.id, response);
-			if (context.signal.aborted) return;
-			const entry: ModelsStoreEntry = { ...catalog, checkedAt };
+			const entry: ModelsStoreEntry = {
+				models: [...(catalog.byProvider.get(provider.id) ?? [])].map((model) => ({
+					...model,
+					provider: provider.id,
+				})),
+				lastModified: catalog.lastModified,
+				checkedAt: Date.now(),
+				...(catalog.etag ? { etag: catalog.etag } : {}),
+			};
 			const published = remoteModels(entry, localGeneratedAt);
 			await context.publish({
 				persist: entry,
@@ -246,10 +281,10 @@ export function withRemoteCatalog(
 
 /**
  * Like `withRemoteCatalog`, but on each network refresh the catalog (built-in models plus a newer
- * pi.dev catalog) is passed through `personalize` and the result is saved. The saved entry holds
- * the personalized list, not the pi.dev catalog, and replaces the catalog, including offline.
- * The refresh interval and etag revalidation are skipped. An empty list (nothing saved yet, or an
- * empty catalog saved by an older version after a failed or missing pi.dev catalog) falls back to
+ * refreshed catalog) is passed through `personalize` and the result is saved. The saved entry holds
+ * the personalized list, not the refreshed catalog, and replaces the catalog, including offline.
+ * The refresh interval is skipped. An empty list (nothing saved yet, or an empty catalog saved
+ * after a failed or missing catalog download) falls back to
  * the built-in models.
  */
 export function withPersonalizedCatalog(
@@ -284,11 +319,8 @@ export function withPersonalizedCatalog(
 
 			let remote: readonly AnyModel[] = [];
 			try {
-				const response = await requestCatalog(provider.id, catalogBaseUrl, context.signal);
-				if (response.ok) {
-					const catalog = await readCatalog(provider.id, response);
-					if (isNewer(catalog.lastModified, localGeneratedAt)) remote = catalog.models;
-				}
+				const catalog = await loadRemoteCatalog(catalogBaseUrl, context.signal);
+				if (isNewer(catalog.lastModified, localGeneratedAt)) remote = catalog.byProvider.get(provider.id) ?? [];
 			} catch {
 				remote = [];
 			}

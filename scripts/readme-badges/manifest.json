@@ -307,16 +307,6 @@
         "reason": "No reusable first-party compact vector was verified; use xAI rather than the unrelated X social-network mark."
       }
     },
-    "radius": {
-      "kind": "monogram",
-      "monogram": "R",
-      "source": {
-        "type": "Monogram fallback",
-        "brand": "https://radius.pi.dev/",
-        "guidelines": "https://radius.pi.dev/",
-        "reason": "Radius publishes no reusable compact logo or media kit."
-      }
-    },
     "antling": {
       "kind": "vector",
       "viewBox": "0 0 56 56",
@@ -881,14 +871,6 @@
           "alt": "xAI provider badge for Atomic",
           "icon": "xai",
           "path": "assets/readme-badges/providers/xai.svg"
-        },
-        {
-          "label": "Radius",
-          "slug": "radius",
-          "href": "https://radius.pi.dev/",
-          "alt": "Radius provider badge for Atomic",
-          "icon": "radius",
-          "path": "assets/readme-badges/providers/radius.svg"
         },
         {
           "label": "Ant Ling",

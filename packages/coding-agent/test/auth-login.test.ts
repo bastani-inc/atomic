@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { Model, ModelsRefreshResult, Provider } from "@bastani/pi-ai";
+import type { Model, ModelsRefreshResult, Provider } from "@bastani/atomic-ai";
 import { afterEach, describe, test, vi } from "vitest";
 import { runAuthLogin } from "../src/cli/auth-login.js";
 import type { LoginTerminal } from "../src/cli/auth-terminal.js";

@@ -1,5 +1,5 @@
-import type { Context, Model } from "@bastani/pi-ai";
-import { streamSimple } from "@bastani/pi-ai/compat";
+import type { Context, Model } from "@bastani/atomic-ai";
+import { streamSimple } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 function token(): string {

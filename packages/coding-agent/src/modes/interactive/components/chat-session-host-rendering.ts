@@ -1,4 +1,4 @@
-import { type Component, Spacer, Text, type TUI, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { type Component, Spacer, Text, type TUI, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import {
 	type ChatMessageEntry,
 	type ChatMessageRenderOptions,

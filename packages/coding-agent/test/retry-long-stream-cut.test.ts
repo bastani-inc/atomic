@@ -5,7 +5,7 @@ import {
 	GitHubCopilotRateLimitError,
 	GitHubCopilotStreamEndedEarlyError,
 	recordGitHubCopilotError,
-} from "@bastani/pi-ai";
+} from "@bastani/atomic-ai";
 import { describe, test } from "vitest";
 import { streamCutDurationMs } from "../src/core/model-fallback-failures.ts";
 import {

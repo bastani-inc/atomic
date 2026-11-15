@@ -1,6 +1,6 @@
 import { getMarkdownTheme, keyHintIfBound } from "@bastani/atomic";
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import { type Component, Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
+import type { AgentToolResult } from "@bastani/atomic-agent-core";
+import { type Component, Container, Markdown, Spacer, Text } from "@bastani/atomic-tui";
 import { isParentCancellation } from "../runs/shared/cancellation-recovery.js";
 import { formatDuration, formatTokens, formatUsage, shortenPath } from "../shared/formatters.js";
 import type { AgentProgress, Details } from "../shared/types.js";

@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
+export type { AgentMessage } from "@bastani/atomic-agent-core";
 export {
 	type Api,
 	type AssistantMessage,
@@ -10,8 +11,7 @@ export {
 	type Message,
 	type Model,
 	type OAuthSelectPrompt,
-} from "@bastani/pi-ai/compat";
-export type { AgentMessage } from "@earendil-works/pi-agent-core";
+} from "@bastani/atomic-ai/compat";
 export { default as chalk } from "chalk";
 export { fs, os, path };
 export type OAuthProviderId = string;
@@ -26,7 +26,7 @@ export type {
 	OverlayHandle,
 	OverlayOptions,
 	SlashCommand,
-} from "@earendil-works/pi-tui";
+} from "@bastani/atomic-tui";
 export {
 	CombinedAutocompleteProvider,
 	type Component,
@@ -46,7 +46,7 @@ export {
 	type TUI,
 	TuiMainScreen,
 	visibleWidth,
-} from "@earendil-works/pi-tui";
+} from "@bastani/atomic-tui";
 export { spawn, spawnSync } from "child_process";
 export {
 	APP_NAME,

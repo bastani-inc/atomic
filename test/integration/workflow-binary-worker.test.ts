@@ -60,7 +60,7 @@ function stageLauncher(root: string): { launcher: string; journal: string } {
 	]);
 	for (const file of ["native-modifiers", "native-module-path", "native-platform"])
 		copyFileSync(
-			join(repoRoot, "node_modules", "@earendil-works", "pi-tui", "dist", `${file}.js`),
+			join(repoRoot, "node_modules", "@bastani", "atomic-tui", "dist", `${file}.js`),
 			join(root, `${file}.js`),
 		);
 	const entryDir = join(root, "builtin", "workflows", "src");

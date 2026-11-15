@@ -7,6 +7,7 @@ import { rehydrateError, type SerializedError, serializeError } from "../shared/
 import type { PoolCoordinationStats, RunSnapshot } from "../shared/store-types.js";
 import type { WorkflowSerializableObject } from "../shared/types.js";
 import type { WorkerDefinitionSource } from "./definitions.js";
+import type { FleetRateLimits } from "./fleet-rate-types.js";
 import type { PoolDurableJournal } from "./pool-journal.js";
 import type { WorkerDeliver, WorkerRecipient } from "./protocol.js";
 import type { ResolvedCheckpointShipping } from "./public-options.js";
@@ -70,6 +71,10 @@ export interface SharedPoolCoordination {
 	readonly claimWindowMs: number;
 	/** Checkpoint shipping of the root's children (#4768); absent: every checkpoint commits to the shared journal. */
 	readonly checkpointShipping?: ResolvedCheckpointShipping;
+	/** The root's fleet-wide model rate limits (`workers.rateLimits`, #4768). */
+	readonly rateLimits?: FleetRateLimits;
+	/** Whether 429 cooldowns go to every host through the journal (`workers.shareCooldowns`, #4768). */
+	readonly shareCooldowns?: boolean;
 }
 
 interface PoolCoordinatorCommonOptions {

@@ -25,7 +25,7 @@ import {
 	type ProviderHeaders,
 	type SimpleStreamOptions,
 	type StreamOptions,
-} from "@bastani/pi-ai";
+} from "@bastani/atomic-ai";
 import { normalizeModelProvider } from "./azure-provider-compat.js";
 import { usesChatGptCodexTransport, withChatGptCodexTransportRouting } from "./fast-model-routing.ts";
 import { installCodexFastRouteWebSocketIdentity } from "./fast-model-routing-transport.ts";
@@ -101,7 +101,7 @@ export class ModelRuntimeStreaming {
 	 * header object it captures at construction, and `prepareRequest` rebuilds headers through
 	 * `mergeHeaders`, which copies — so a wrapper applied upstream is silently inert. The wrapper
 	 * decides from the final payload whether the request is priority, so a normal model still ends up
-	 * with `originator: pi` and no routing hint.
+	 * with `originator: atomic` and no routing hint.
 	 */
 	private withCodexRouting<TOptions extends StreamOptions>(model: Model<Api>, options: TOptions): TOptions {
 		model = this.transportModel(model);

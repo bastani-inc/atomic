@@ -1,5 +1,5 @@
 import { AuthStorage, ModelRuntime, SettingsManager } from "@bastani/atomic";
-import { createAssistantMessageEventStream } from "@bastani/pi-ai";
+import { createAssistantMessageEventStream } from "@bastani/atomic-ai";
 import { processInstance } from "./process-instance.js";
 
 /**

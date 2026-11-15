@@ -1,11 +1,5 @@
 import { existsSync } from "node:fs";
-import {
-	ProcessTerminal,
-	setCapabilityOverrides,
-	setKeybindings,
-	type TUI,
-	TuiMainScreen,
-} from "@earendil-works/pi-tui";
+import { ProcessTerminal, setCapabilityOverrides, setKeybindings, type TUI, TuiMainScreen } from "@bastani/atomic-tui";
 import { ENV_AGENT_DIR, getAgentDir, getEnvValue, getSettingsPath } from "../config.js";
 import type { ExtensionUIDialogOptions } from "../core/extensions/index.js";
 import { KeybindingsManager } from "../core/keybindings.ts";

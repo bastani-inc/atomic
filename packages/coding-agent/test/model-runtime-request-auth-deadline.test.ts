@@ -8,7 +8,7 @@ import {
 	type DeferredHandle,
 	type Model,
 	type ProviderStreams,
-} from "@bastani/pi-ai";
+} from "@bastani/atomic-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";

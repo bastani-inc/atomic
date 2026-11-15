@@ -1,4 +1,4 @@
-import { fauxAssistantMessage } from "@bastani/pi-ai";
+import { fauxAssistantMessage } from "@bastani/atomic-ai";
 import { describe, expect, it } from "vitest";
 import { createHarness } from "../harness.ts";
 

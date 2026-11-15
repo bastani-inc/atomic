@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import type { AgentSessionEvent } from "@bastani/atomic";
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import { type Component, Container, type Terminal, Text, type TUI, TuiMainScreen } from "@earendil-works/pi-tui";
+import type { AgentToolResult } from "@bastani/atomic-agent-core";
+import { type Component, Container, type Terminal, Text, type TUI, TuiMainScreen } from "@bastani/atomic-tui";
 import { describe, test } from "vitest";
 import { progressEmissionFor } from "../../packages/subagents/src/runs/inprocess/runner.ts";
 import type { AgentProgress, Details } from "../../packages/subagents/src/shared/types.js";

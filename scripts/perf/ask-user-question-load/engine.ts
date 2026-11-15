@@ -18,7 +18,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Markdown, setKeybindings } from "@earendil-works/pi-tui";
+import { Markdown, setKeybindings } from "@bastani/atomic-tui";
 import type { AgentSession } from "../../../packages/coding-agent/src/core/agent-session.js";
 import { setCallbackActivityReporter } from "../../../packages/coding-agent/src/core/callback-activity.js";
 import type { ExtensionUIContext } from "../../../packages/coding-agent/src/core/extensions/ui-types.js";

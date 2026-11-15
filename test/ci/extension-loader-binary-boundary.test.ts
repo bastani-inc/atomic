@@ -131,15 +131,15 @@ test(
 			const appBuild = spawnSyncCollect(appBuildCommand, { cwd: root });
 			assert.equal(appBuild.exitCode, 0, appBuild.stderr.toString());
 			copyFileSync(
-				join(root, "node_modules/@earendil-works/pi-tui/dist/native-modifiers.js"),
+				join(root, "node_modules/@bastani/atomic-tui/dist/native-modifiers.js"),
 				join(runtimeDir, "native-modifiers.js"),
 			);
 			copyFileSync(
-				join(root, "node_modules/@earendil-works/pi-tui/dist/native-module-path.js"),
+				join(root, "node_modules/@bastani/atomic-tui/dist/native-module-path.js"),
 				join(runtimeDir, "native-module-path.js"),
 			);
 			copyFileSync(
-				join(root, "node_modules/@earendil-works/pi-tui/dist/native-platform.js"),
+				join(root, "node_modules/@bastani/atomic-tui/dist/native-platform.js"),
 				join(runtimeDir, "native-platform.js"),
 			);
 

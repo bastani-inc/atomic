@@ -1,4 +1,4 @@
-import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@bastani/atomic-tui";
 import type { Theme } from "../../../../../modes/interactive/theme/theme.js";
 import { OVERLAY_ACTIVE_ROW_MARKER } from "../../../../extensions/ui-types.js";
 import { ROW_INTENT_META } from "../../state/row-intent.ts";

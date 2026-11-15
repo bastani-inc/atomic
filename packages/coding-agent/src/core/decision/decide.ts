@@ -1,4 +1,4 @@
-import { type ClassifierAnswer, containsKnownEnvCredential } from "@bastani/pi-ai";
+import { type ClassifierAnswer, containsKnownEnvCredential } from "@bastani/atomic-ai";
 import { type TSchema, Type } from "typebox";
 import { raceWithAbortSignal } from "../../utils/abort.js";
 import { type DecisionRunResult, decisionFailure, runDecision } from "../structured-output/index.js";

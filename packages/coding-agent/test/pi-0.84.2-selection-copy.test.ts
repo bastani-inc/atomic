@@ -1,5 +1,5 @@
 import { tmpdir } from "node:os";
-import { Text, type TuiAltScreen, VStack } from "@earendil-works/pi-tui";
+import { Text, type TuiAltScreen, VStack } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { createFullscreenTui } from "../src/modes/interactive/interactive-tui.ts";
 import { RecordingTerminal } from "./helpers/interactive-fullscreen-layout.ts";

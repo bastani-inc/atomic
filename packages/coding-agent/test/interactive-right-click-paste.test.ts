@@ -1,4 +1,4 @@
-import type { Component } from "@earendil-works/pi-tui";
+import type { Component } from "@bastani/atomic-tui";
 import { describe, expect, test, vi } from "vitest";
 
 const readClipboardText = vi.hoisted(() => vi.fn());

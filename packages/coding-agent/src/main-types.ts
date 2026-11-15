@@ -1,4 +1,4 @@
-import type { Terminal } from "@earendil-works/pi-tui";
+import type { Terminal } from "@bastani/atomic-tui";
 import type { InlineExtension } from "./core/extensions/types.ts";
 import type { InteractiveMode } from "./modes/index.ts";
 

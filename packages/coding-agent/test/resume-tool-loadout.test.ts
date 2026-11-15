@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { fauxAssistantMessage } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { afterEach, test } from "vitest";
 import type { ToolDefinition } from "../src/core/extensions/index.js";

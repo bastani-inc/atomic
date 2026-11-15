@@ -1,4 +1,4 @@
-import { modelsAreEqual } from "@bastani/pi-ai/compat";
+import { modelsAreEqual } from "@bastani/atomic-ai/compat";
 import { failureDebugFields, reportDebug } from "../../core/debug.ts";
 import { deduplicateDiagnostics } from "../../core/settings-diagnostics.ts";
 import { loadAllHighlightLanguages } from "../../utils/syntax-highlight.ts";

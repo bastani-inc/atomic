@@ -5,8 +5,8 @@
  * operation, and an ask becomes the stage's reply context.
  */
 import assert from "node:assert/strict";
-import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
-import type { AgentTool } from "@earendil-works/pi-agent-core";
+import type { AgentTool } from "@bastani/atomic-agent-core";
+import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { afterEach, test, vi } from "vitest";
 import type { ExtensionContext } from "../../packages/coding-agent/src/core/extensions/index.js";

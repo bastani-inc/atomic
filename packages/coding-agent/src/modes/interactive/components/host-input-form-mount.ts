@@ -1,4 +1,4 @@
-import type { TUI } from "@earendil-works/pi-tui";
+import type { TUI } from "@bastani/atomic-tui";
 import type { ExtensionUIContext, HostInputFormRequest } from "../../../core/extensions/ui-types.js";
 import type { KeybindingsManager } from "../../../core/keybindings.ts";
 import type { Theme } from "../theme/theme.js";

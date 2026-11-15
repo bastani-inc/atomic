@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { setImmediate as nextEventLoopTurn } from "node:timers/promises";
-import { fauxAssistantMessage } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
 import { test, vi } from "vitest";
 import { parseArgs } from "../src/cli/args.ts";
 import { _processAgentEvent } from "../src/core/agent-session-events.ts";

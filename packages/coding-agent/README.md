@@ -94,7 +94,6 @@ For each built-in provider, Atomic maintains a list of tool-capable models, upda
 - OpenRouter (browser PKCE, optional key minting)
 - Kimi Code (device authorization with token refresh)
 - xAI (Grok/X subscription)
-- Radius
 
 **API keys:**
 - Anthropic
@@ -118,7 +117,6 @@ For each built-in provider, Atomic maintains a list of tool-capable models, upda
 - ZAI Coding Plan (China)
 - OpenCode Zen
 - OpenCode Go
-- Radius
 - Hugging Face
 - Fireworks
 - Together AI
@@ -725,6 +723,6 @@ MIT
 
 ## See Also
 
-- [@bastani/pi-ai](https://www.npmjs.com/package/@bastani/pi-ai): Core LLM toolkit
-- [@earendil-works/pi-agent-core](https://www.npmjs.com/package/@earendil-works/pi-agent-core): Agent framework
-- [@earendil-works/pi-tui](https://www.npmjs.com/package/@earendil-works/pi-tui): Terminal UI components
+- [@bastani/atomic-ai](https://www.npmjs.com/package/@bastani/atomic-ai): Core LLM toolkit
+- [@bastani/atomic-agent-core](https://www.npmjs.com/package/@bastani/atomic-agent-core): Agent framework
+- [@bastani/atomic-tui](https://www.npmjs.com/package/@bastani/atomic-tui): Terminal UI components

@@ -2,8 +2,10 @@
  * npm registration preflight for `scripts/cut-release.ts`.
  *
  * `publish.yml` publishes a fixed payload from one tag: the eight native
- * platform packages, `@bastani/atomic-natives`, `@bastani/pi-ai`,
- * `@bastani/atomic-storage-libsql`, `@bastani/atomic-storage-postgres`, and `@bastani/atomic`. Its own
+ * platform packages, `@bastani/atomic-natives`, the forked pi packages (`@bastani/atomic-schema`,
+ * `@bastani/atomic-telemetry`, `@bastani/atomic-ai`, `@bastani/atomic-tui`, `@bastani/atomic-agent-core` and
+ * `@bastani/atomic-codemode`), `@bastani/atomic-storage-libsql`, `@bastani/atomic-storage-postgres`, and
+ * `@bastani/atomic`. Its own
  * `npm view` call is an *idempotency* check that runs after the binaries are
  * built — it skips a version that already exists. Nothing before that point
  * asks whether the package **name** exists at all, so a name npm has never seen
@@ -44,7 +46,7 @@ export const PUBLISH_WORKFLOW_PATH = ".github/workflows/publish.yml";
 export const PUBLISHER_NPM_REGISTRY = "https://registry.npmjs.org";
 
 /** Number of npm packages one release tag publishes; asserted against `publish.yml` by unit test. */
-export const RELEASE_PAYLOAD_PACKAGE_COUNT = 13;
+export const RELEASE_PAYLOAD_PACKAGE_COUNT = 18;
 
 const PACKAGES_ARRAY_RE = /^[ \t]*packages=\(([^)]*)\)[ \t]*$/gmu;
 const DEFERRED_ARRAY_RE = /^[ \t]*requires_registered_name=\(([^)]*)\)[ \t]*$/gmu;

@@ -12,7 +12,7 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "@bastani/atomic";
-import { getModel } from "@bastani/pi-ai/compat";
+import { getModel } from "@bastani/atomic-ai/compat";
 
 // Custom credential location with no custom models.json
 const modelRuntime = await ModelRuntime.create({

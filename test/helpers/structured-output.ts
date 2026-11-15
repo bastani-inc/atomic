@@ -8,8 +8,8 @@ import type {
 	Model,
 	SimpleStreamOptions,
 	TranscriptContext,
-} from "@bastani/pi-ai";
-import { createAssistantMessageEventStream, getCurrentTools } from "@bastani/pi-ai";
+} from "@bastani/atomic-ai";
+import { createAssistantMessageEventStream, getCurrentTools } from "@bastani/atomic-ai";
 import { type Static, type TSchema, Type } from "typebox";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
 import { ModelRegistry } from "../../packages/coding-agent/src/core/model-registry.js";

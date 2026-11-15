@@ -6,7 +6,7 @@ import {
 	type Terminal,
 	type TUI,
 	TuiMainScreen,
-} from "@earendil-works/pi-tui";
+} from "@bastani/atomic-tui";
 import { getAgentDir } from "../../config.js";
 import { runCallback, runSynchronousCallback } from "../../core/callback-activity.ts";
 import type { HostCustomUiState, HostCustomUiStateListener } from "../../core/extensions/index.js";

@@ -6,7 +6,7 @@ import {
 	Text,
 	type TUI,
 	truncateToWidth,
-} from "@earendil-works/pi-tui";
+} from "@bastani/atomic-tui";
 import { ansi256ToHex, fgAnsi, hexToRgb } from "../theme/color-utils.ts";
 import { theme } from "../theme/theme.js";
 

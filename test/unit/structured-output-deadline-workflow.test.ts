@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createStructuredOutputCapture, createStructuredOutputTool, type ModelRegistry } from "@bastani/atomic";
-import { createAssistantMessageEventStream } from "@bastani/pi-ai";
+import { createAssistantMessageEventStream } from "@bastani/atomic-ai";
 import { Type } from "typebox";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { stripWorkflowOnlyOptions } from "../../packages/workflows/src/runs/foreground/stage-runner-options.js";

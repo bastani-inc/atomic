@@ -39,8 +39,8 @@ import {
 	SettingsManager,
 	type ToolDefinition,
 } from "@bastani/atomic";
-import { fauxAssistantMessage, fauxText, fauxToolCall, registerFauxProvider } from "@bastani/pi-ai/compat";
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import type { AgentToolResult } from "@bastani/atomic-agent-core";
+import { fauxAssistantMessage, fauxText, fauxToolCall, registerFauxProvider } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { InMemoryCodingAgentModelsStore } from "../../../packages/coding-agent/src/core/models-store.js";
 import { MemorySessionStore } from "../../../packages/coding-agent/src/core/storage/session/memory-session-store.js";

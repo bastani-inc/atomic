@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { type AgentSession, SessionManager } from "@bastani/atomic";
-import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { test } from "vitest";
 import { createHarness, type Harness } from "../../packages/coding-agent/test/suite/harness.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";

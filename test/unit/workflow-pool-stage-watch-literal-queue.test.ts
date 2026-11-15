@@ -4,8 +4,8 @@
  * looks like a registered slash command.
  */
 import assert from "node:assert/strict";
-import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
-import type { AgentTool } from "@earendil-works/pi-agent-core";
+import type { AgentTool } from "@bastani/atomic-agent-core";
+import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { afterEach, test } from "vitest";
 import type { PromptTemplate } from "../../packages/coding-agent/src/core/prompt-templates.js";

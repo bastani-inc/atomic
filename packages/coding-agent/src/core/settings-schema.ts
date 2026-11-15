@@ -1,4 +1,4 @@
-import { ModelThinkingLevelSchema } from "@bastani/pi-ai/providers/model-schema";
+import { ModelThinkingLevelSchema } from "@bastani/atomic-ai/providers/model-schema";
 import { type Static, type TSchemaOptions, Type } from "typebox";
 import { SETTINGS_DEFAULTS } from "./settings-defaults.ts";
 

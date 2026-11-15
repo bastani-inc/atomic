@@ -3,7 +3,7 @@
  */
 
 import type { AgentSessionEvent, SessionManager, SessionWorkflowMetadata } from "@bastani/atomic";
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import type { AgentToolResult } from "@bastani/atomic-agent-core";
 import type { CandidateModelResolver } from "./model-resolution.js";
 
 /** The queueing surface of a stub test session: queued messages are read after the current prompt, steering first. */

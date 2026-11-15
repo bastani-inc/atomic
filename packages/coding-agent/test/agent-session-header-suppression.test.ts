@@ -1,4 +1,4 @@
-import type { Api, Model } from "@bastani/pi-ai";
+import type { Api, Model } from "@bastani/atomic-ai";
 import { describe, expect, it } from "vitest";
 import type { AgentSessionInternalSurface } from "../src/core/agent-session-methods.ts";
 import { _getRequiredRequestAuth } from "../src/core/agent-session-models.ts";

@@ -1,4 +1,4 @@
-import type { JsonValue } from "@bastani/pi-ai";
+import type { JsonValue } from "@bastani/atomic-ai";
 import { setTimeout as delay } from "node:timers/promises";
 import { RETRY_IDENTITY_MAX_REUSES, RETRY_IDENTITY_TTL_MS } from "./retry-identity.js";
 import { intercomRecoveryStoppedText, RECONNECT_DELAYS_MS } from "./retry-policy.js";
