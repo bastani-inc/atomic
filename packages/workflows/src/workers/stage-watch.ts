@@ -13,7 +13,7 @@ import type { Store } from "../shared/store.js";
 import { tracePooledWatch } from "./pooled-watch-trace.js";
 import type { DistributiveOmit, WorkerRequest, WorkerStageCommand } from "./protocol.js";
 import type { RemoteStageInbox } from "./remote-stage-inbox.js";
-import { StageDeliveryReceipts } from "./stage-delivery-receipts.js";
+import { DELIVERY_OP_ENTRY, StageDeliveryReceipts } from "./stage-delivery-receipts.js";
 import { runsWhilePaused } from "./stage-session-commands.js";
 import { appendCoalesced } from "./stage-watch-coalesce.js";
 import { runStageTaskAction, stageTaskSource, WatchedStageTasks } from "./stage-watch-tasks.js";
@@ -126,12 +126,7 @@ export async function admitStageUserMessage(
 	}
 }
 
-/**
- * Custom session entry recording that a delivery op's text entered the session. It is not
- * part of the model's context; a reconnecting handle reads it to redeliver only what a
- * replacement attempt does not hold (#3996).
- */
-export const DELIVERY_OP_ENTRY = "atomic-pooled-delivery-op";
+export { DELIVERY_OP_ENTRY };
 
 /** Event a watch carries when a delivery op's text entered the stage's session (#3996). */
 export const DELIVERY_RECEIPT_EVENT = "atomic_pooled_delivery_receipt";
@@ -551,18 +546,28 @@ export class WorkerStageWatches {
 	}
 
 	/**
-	 * The receipt book of a stage: it records an op in the stage's session once that delivery's
-	 * user message is in it, so a replacement attempt that replays the session knows it arrived.
+	 * The receipt book of a stage: it records an op in the stage's session with that delivery's
+	 * user message, so a replacement attempt that replays the session knows it arrived.
 	 */
 	private receiptsFor(handle: StageControlHandle): StageDeliveryReceipts {
 		let receipts = this.receipts.get(handle);
 		if (receipts === undefined) {
-			receipts = new StageDeliveryReceipts(handle, (op) => {
-				void handle.agentSession?.sessionManager.appendCustomEntry(DELIVERY_OP_ENTRY, { op }).catch(() => {});
-				// Watchers learn it arrived, so their outbox stops carrying it.
+			// Watchers learn it arrived, so their outbox stops carrying it: only once the session holds its receipt,
+			// or an attempt that ends first would leave the root without the text, or the replacement without the
+			// receipt that keeps it from taking the text twice (#4839).
+			const arrived = (op: DeliveryOpId) => {
 				for (const [id, watch] of this.watches)
 					if (watch.handle === handle)
 						this.record(id, { type: DELIVERY_RECEIPT_EVENT, op } as never as AgentSessionEvent);
+			};
+			receipts = new StageDeliveryReceipts(handle, (op, withMessage) => {
+				if (withMessage) return arrived(op);
+				// A receipt that could not join its message's write is written now; one that is never written is never
+				// announced, and the root sends the text again, to a replacement that holds no receipt for it.
+				void handle.agentSession?.sessionManager.appendCustomEntry(DELIVERY_OP_ENTRY, { op }).then(
+					() => arrived(op),
+					() => {},
+				);
 			});
 			this.receipts.set(handle, receipts);
 		}
