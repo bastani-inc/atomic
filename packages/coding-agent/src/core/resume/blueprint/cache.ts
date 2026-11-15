@@ -162,7 +162,14 @@ export async function blueprintCacheKeys(
 		const refusal = refuseBuild(setting.path);
 		if (refusal !== undefined) {
 			warnings.push(`cache path '${setting.path}' is omitted: ${refusal}`);
-		} else if (store !== undefined) {
+			continue;
+		}
+		if (await tracksFilesUnder(root, buildSegments(setting.path).join("/"))) {
+			warnings.push(
+				`cache path '${setting.path}' holds files Git tracks; only its untracked and ignored files are parked, and tracked files stay in the worktree`,
+			);
+		}
+		if (store !== undefined) {
 			builds.push({ ...member, path: join(seedDirectory(storeDir, repository), ...buildSegments(setting.path)) });
 		}
 	}
@@ -339,6 +346,16 @@ async function checkoutRemotes(root: string): Promise<readonly string[]> {
 		return (await readRepositoryConfig(root)).remotes;
 	} catch {
 		return [];
+	}
+}
+
+/** Whether Git tracks a file at or under the root-relative `path` of the checkout at `root`; false when it cannot tell. */
+async function tracksFilesUnder(root: string, path: string): Promise<boolean> {
+	try {
+		const { stdout } = await runGit(["ls-files", "-z", "--", `:(literal)${path}`], { cwd: root });
+		return stdout.length > 0;
+	} catch {
+		return false;
 	}
 }
 
