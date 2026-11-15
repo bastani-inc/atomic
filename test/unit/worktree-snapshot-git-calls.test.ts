@@ -132,11 +132,11 @@ describe("capture operation counts", () => {
 		const blobs = new MemorySnapshotBlobStore();
 		reset();
 		const first = captured(await captureWorktreeSnapshot(clone, { blobs }));
-		assert.equal(count("bundle"), 1);
+		assert.equal(count("bundle create"), 1);
 		sandbox.write(join(clone, "edit.txt"), "edit\n");
 		reset();
 		const second = captured(await captureWorktreeSnapshot(clone, { blobs, previous: first }));
-		assert.equal(count("bundle"), 0);
+		assert.equal(count("bundle create"), 0);
 		assert.deepEqual(second.bundle, first.bundle);
 		assert.equal(count("rev-list"), 1);
 	});
@@ -154,7 +154,7 @@ describe("capture operation counts", () => {
 			sandbox.write(join(clone, `edit-${edits++}.txt`), "a new tree each time\n");
 			reset();
 			await captureWorktreeSnapshot(clone, { previous });
-			return count("bundle");
+			return count("bundle create");
 		};
 		const bundle = first.bundle!;
 		assert.equal(await bundleCount({ ...first, bundle: { ...bundle, commits: [two, one] } }), 0);
