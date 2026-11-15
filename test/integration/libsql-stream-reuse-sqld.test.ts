@@ -118,3 +118,27 @@ withSqld(
 	},
 	60_000,
 );
+
+withSqld(
+	"against sqld, a kept stream sees a schema another connection changed, from its first statement after the change (#5151)",
+	async () => {
+		const kept = await openLibsqlDatabase({ url: url! });
+		const other = await openLibsqlDatabase({ url: url! });
+		const table = `schema_${randomBytes(6).toString("hex")}`;
+		try {
+			await other.exec(`CREATE TABLE ${table}(id INTEGER)`);
+			await other.run(`INSERT INTO ${table} VALUES (1)`);
+			assert.deepEqual(await kept.all(`SELECT * FROM ${table}`), [{ id: 1 }]);
+			await other.exec(`ALTER TABLE ${table} ADD COLUMN status TEXT DEFAULT 'ready'`);
+			assert.deepEqual(await kept.all(`SELECT * FROM ${table}`), [{ id: 1, status: "ready" }]);
+			await other.exec(`DROP TABLE ${table}`);
+			await other.exec(`CREATE TABLE ${table}(a INTEGER, b INTEGER, c INTEGER)`);
+			await kept.run(`INSERT INTO ${table} VALUES (?, ?, ?)`, 1, 2, 3);
+			assert.deepEqual(await other.all(`SELECT * FROM ${table}`), [{ a: 1, b: 2, c: 3 }]);
+		} finally {
+			await other.exec(`DROP TABLE IF EXISTS ${table}`).catch(() => {});
+			await other.close();
+			await kept.close();
+		}
+	},
+);

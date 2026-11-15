@@ -274,6 +274,13 @@ const STREAM_REUSE_MAX_AGE_MS = 60_000;
 const STREAM_CLOSE_WAIT_MS = 1_000;
 
 /**
+ * The statement a kept stream runs before each statement, in the same request, so its connection rereads a schema
+ * another connection changed (#5151). `PRAGMA schema_version` reads the cookie but does not reload the schema; a read of
+ * `sqlite_schema` does, and returns no row.
+ */
+const SCHEMA_CHECK = "SELECT 1 FROM sqlite_schema LIMIT 0";
+
+/**
  * What sqld answers, as plain text with HTTP 400, for a request whose baton it refuses when it looks the stream up,
  * before it runs any request of the pipeline (`stream::acquire` and `Guard::get_db` in sqld's
  * `hrana/http/stream.rs`): the stream was cleaned up after expiring, the baton was used already, or the stream was
@@ -370,6 +377,13 @@ class ReusedStream {
 				try {
 					const statement = new this.hrana.Stmt(sql);
 					statement.bindIndexes(/** @type {import("@libsql/hrana-client").InValue[]} */ ([...params]));
+					// A kept connection compiles a statement against the schema it read last, and SQLite rereads the schema
+					// only when a statement's transaction finds the schema cookie changed. A statement compiled against a
+					// stale schema expands `SELECT *` to the old columns, or fails to compile at all. Reading
+					// `sqlite_schema` first, in the same request, makes the connection reread a schema changed elsewhere.
+					// A new stream's connection reads the schema afresh.
+					const checked = fresh ? undefined : stream.query(new this.hrana.Stmt(SCHEMA_CHECK));
+					checked?.catch(() => {});
 					const rows = await stream.query(statement);
 					return {
 						columns: rows.columnNames.map((name) => name ?? ""),

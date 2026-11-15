@@ -76,7 +76,7 @@ interface Stream {
  * `closed-before`: the connection is closed without an answer before the request runs. `gateway-after`: the request
  * runs and commits, and a gateway in front of the server then answers HTTP `status` (502 by default) with an HTML
  * page instead. `busy`: the request's first
- * statement fails with `SQLITE_BUSY` without running, as sqld answers a writer that meets its checkpoint; the rest of
+ * statement other than a kept stream's read of `sqlite_schema` fails with `SQLITE_BUSY` without running, as sqld answers a writer that meets its checkpoint; the rest of
  * a batch runs as its conditions say. `stream-busy`: the request fails as a whole with `SQLITE_BUSY`, which ends its
  * stream and rolls back the stream's open transaction.
  */
@@ -213,11 +213,13 @@ export async function startFakeLibsqlServer(options: FakeLibsqlServerOptions = {
 
 	let busy = false;
 	const execute = (stream: Stream, stmt: HranaStmt): StmtResult => {
-		if (busy) {
+		const sql = stmt.sql ?? stream.sqls.get(stmt.sql_id ?? -1);
+		// The read of `sqlite_schema` a kept stream sends before its statement takes no write lock, so the server never
+		// answers it busy.
+		if (busy && !sql?.startsWith("SELECT 1 FROM sqlite_schema")) {
 			busy = false;
 			throw Object.assign(new Error("database is locked"), { errstr: "busy" });
 		}
-		const sql = stmt.sql ?? stream.sqls.get(stmt.sql_id ?? -1);
 		if (sql === undefined) throw Object.assign(new Error("SQL text not found"), { errstr: "error" });
 		const statement = database.prepare(sql);
 		statement.setReadBigInts(true);
