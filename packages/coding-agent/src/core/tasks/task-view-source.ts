@@ -239,8 +239,14 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 			if (!bound.ok) return { ok: false, error: { message: "Transcript unavailable" } };
 			const { session, taskId } = bound.value;
 			// A finished task keeps its history in its session store, not in memory (#5186).
-			if (session.loadEntries)
-				return session.loadEntries().then((entries) => transcriptView(session, taskId, entries, cursor));
+			if (session.loadHistory)
+				return session
+					.loadHistory()
+					.then((history) =>
+						history.unavailable === undefined
+							? transcriptView(session, taskId, history.entries, cursor)
+							: { ok: false, error: { message: history.unavailable } },
+					);
 			return transcriptView(session, taskId, session.getEntries(), cursor);
 		},
 		followTaskTranscript(id) {
@@ -311,7 +317,7 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 
 function taskTranscriptSourceLoads(task: Parameters<typeof taskTranscriptSource>[0]): boolean {
 	const bound = taskTranscriptSource(task);
-	return bound.ok && bound.value.session.loadEntries !== undefined;
+	return bound.ok && bound.value.session.loadHistory !== undefined;
 }
 
 /** The prompt and the last response in a task's own history. */

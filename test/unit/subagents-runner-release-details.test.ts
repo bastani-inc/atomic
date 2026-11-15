@@ -88,7 +88,7 @@ test(
 		// A settled child keeps its history in its session store and reads it back when asked (#5186).
 		assert.deepEqual(settledSource.getEntries(), []);
 		assert.deepEqual(
-			((await settledSource.loadEntries?.()) ?? []).flatMap((entry) =>
+			((await settledSource.loadHistory?.())?.entries ?? []).flatMap((entry) =>
 				entry.type === "message" ? [entry.message.role] : [],
 			),
 			["system", "user", "assistant"],

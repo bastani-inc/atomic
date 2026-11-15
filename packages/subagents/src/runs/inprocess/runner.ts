@@ -19,7 +19,9 @@ import {
 	getSkillCatalog,
 	isPathInside,
 	isSessionStartTimeoutError,
+	JsonlSessionStore,
 	type PackageSource,
+	type SessionEntry,
 	SessionManager,
 	type SessionStartError,
 	type SessionStats,
@@ -760,32 +762,74 @@ function sessionCommands(session: AgentSession, cwd: string): TranscriptCommands
 }
 
 /**
- * What a settled child keeps for task inspection: its session id and the commands it had when it settled, with no
- * reference back to the disposed session. The task owner holds the last bound source for as long as the task exists,
- * and keeps up to its finished-task retention of them, so the source keeps none of the child's history: it reads it from
- * the child's session store when asked (#5186).
+ * The entries of a child's own prompt and final answer, after the `inherited` entries its session opened with: what a
+ * task view still shows of a finished child whose saved history is gone.
  */
-function settledTranscript(manager: SessionManager, commands: TranscriptCommands | undefined): TranscriptSource {
+function promptAndAnswer(manager: SessionManager, inherited: number): SessionEntry[] {
+	const own = manager.getEntries().slice(inherited);
+	const prompt = own.find((entry) => entry.type === "message" && entry.message.role === "user");
+	const answer = own.findLast(
+		(entry) =>
+			entry.type === "message" &&
+			entry.message.role === "assistant" &&
+			entry.message.content.some((block) => block.type === "text" && block.text.trim()),
+	);
+	return [...(prompt ? [prompt] : []), ...(answer ? [answer] : [])];
+}
+
+/** Why a finished child's saved history could not be read, as a task view shows it. */
+function historyUnavailable(sessionFile: string | undefined, cause?: unknown): string {
+	if (sessionFile !== undefined && !existsSync(sessionFile))
+		return `History unavailable: the session file was moved or deleted (${sessionFile}).`;
+	return `History unavailable: ${cause instanceof Error ? cause.message : String(cause ?? "its session could not be read")}`;
+}
+
+/**
+ * What a settled child keeps for task inspection: its session id, its own prompt and answer, and the commands it had
+ * when it settled, with no reference back to the disposed session. The task owner holds the last bound source for as
+ * long as the task exists, and keeps up to its finished-task retention of them, so the source keeps none of the rest of
+ * the child's history: it reads it from the child's session when asked, and never writes to it (#5186).
+ */
+function settledTranscript(
+	manager: SessionManager,
+	commands: TranscriptCommands | undefined,
+	inherited: number,
+): TranscriptSource {
 	const sessionId = manager.getSessionId();
 	const sessionFile = manager.getSessionFile();
+	const kept = promptAndAnswer(manager, inherited);
 	// A child's own session file is read through a store opened for the read, so a finished child keeps no store of its
 	// own in memory; a session in a shared store, as a forked or resumed child's, is read from that store.
 	const store = sessionFile === undefined ? manager.getSessionStore() : undefined;
+	const read = async (): Promise<SessionEntry[]> => {
+		if (store) return [...(await store.load(sessionId)).entries];
+		const file = sessionFile!;
+		// Opening a store for a missing file's directory would create it; a read never writes.
+		if (!existsSync(file)) throw new Error(historyUnavailable(file));
+		const reader = await JsonlSessionStore.open(dirname(file), { exactDirectory: true, scanExisting: false });
+		try {
+			const snapshot = await reader.loadFile(file);
+			if (snapshot.header.id !== sessionId)
+				throw new Error(`History unavailable: its session file now belongs to another session (${file}).`);
+			return [...snapshot.entries];
+		} finally {
+			await reader.close();
+		}
+	};
 	return {
 		getSessionId: () => sessionId,
 		getEntries: () => [],
-		loadEntries: async () => {
+		loadHistory: async () => {
 			try {
-				if (store) return [...(await store.load(sessionId)).entries];
-				const reopened = await SessionManager.open(sessionFile!);
-				try {
-					return reopened.getEntries();
-				} finally {
-					await reopened.getSessionStore().close();
-				}
-			} catch {
-				// A store closed with its owner, or a session deleted since, has no history left to show.
-				return [];
+				return { entries: await read() };
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				return {
+					entries: kept,
+					unavailable: message.startsWith("History unavailable:")
+						? message
+						: historyUnavailable(sessionFile, error),
+				};
 			}
 		},
 		...(commands === undefined ? {} : { commands: () => commands }),
@@ -1392,6 +1436,8 @@ export class SubagentControlRuntime {
 		let effectiveModelId = candidateModelId;
 		let effectiveThinking = initialThinkingForAttempt(candidateModelId, configuredThinking);
 		let transcriptManager: SessionManager | undefined;
+		// How many entries the child's session held when it opened: a forked child's inherited history, not its own.
+		let openedEntryCount = 0;
 		let releasedAttempt = false;
 		// Open while this attempt's session lives: a status a disposed session writes late is not the task's.
 		let statusesOpen = true;
@@ -1657,6 +1703,7 @@ export class SubagentControlRuntime {
 			}
 			const sessionManager = await beforeStartDeadline(opening);
 			transcriptManager = sessionManager;
+			openedEntryCount = sessionManager.getEntries().length;
 			taskHooks?.bindTranscript?.(sessionManager);
 			const childSession = {
 				sessionId: sessionManager.getSessionId(),
@@ -2114,7 +2161,7 @@ export class SubagentControlRuntime {
 				taskHooks?.bindTranscript?.(
 					releasedAttempt
 						? releasedTranscript(transcriptManager.getSessionId(), keptCommands)
-						: settledTranscript(transcriptManager, keptCommands),
+						: settledTranscript(transcriptManager, keptCommands, openedEntryCount),
 				);
 			};
 			const disposal = (async (): Promise<SessionDisposal> => {

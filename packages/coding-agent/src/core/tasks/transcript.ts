@@ -37,8 +37,11 @@ export async function readTaskTranscript(
 	const bound = taskTranscriptSource(task);
 	if (!bound.ok) return bound;
 	const { session, taskId } = bound.value;
-	if (!session.loadEntries) return readTaskTranscriptSnapshot(task, cursor);
-	return taskTranscriptPage(taskId, session.getSessionId(), await session.loadEntries(), cursor);
+	if (!session.loadHistory) return readTaskTranscriptSnapshot(task, cursor);
+	const history = await session.loadHistory();
+	if (history.unavailable !== undefined)
+		return { ok: false, error: { code: "TranscriptUnavailable", message: history.unavailable } };
+	return taskTranscriptPage(taskId, session.getSessionId(), history.entries, cursor);
 }
 
 /** Synchronous history read lets an in-process viewer subscribe without an await gap. */

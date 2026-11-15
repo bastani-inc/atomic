@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import v8 from "node:v8";
@@ -78,7 +78,7 @@ test("a completed in-process child keeps its transcript but not its session (#36
 		assert.ok(session, "the child session was disposed");
 		// The retained transcript keeps none of the history in memory; it reads it from the child's store (#5186).
 		assert.deepEqual(retained?.getEntries(), [], "the retained transcript keeps no history in memory");
-		const texts = (await retained?.loadEntries?.())?.flatMap((entry) =>
+		const texts = (await retained?.loadHistory?.())?.entries.flatMap((entry) =>
 			entry.type === "message" ? [entry.message.role] : [],
 		);
 		assert.deepEqual(texts, ["user", "assistant"], "the retained transcript still shows the whole conversation");
@@ -169,6 +169,56 @@ test("a running and a completed in-process child offer their chat the child's ow
 		assert.ok(settled.length > 0, "the completed child's transcript replaced the live one");
 		for (const source of settled)
 			assert.equal(source.commands?.().cwd, childCwd, "the completed child's chat keeps the cwd it had");
+	} finally {
+		clearSubagentControls();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+function sessionFiles(root: string): string[] {
+	return readdirSync(root, { recursive: true, encoding: "utf8" }).filter((name) => name.endsWith(".jsonl"));
+}
+
+test("a finished child whose session file is gone still shows its prompt and answer, and reading it creates no file (#5186)", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-missing-history-"));
+	clearSubagentControls();
+	try {
+		let retained: TaskTranscriptSource | undefined;
+		let cleanup: Promise<Cleanup> | undefined;
+		const hooks: TaskExecutionHooks = {
+			signal: new AbortController().signal,
+			reportActivity() {},
+			bindTranscript(source) {
+				retained = source;
+			},
+			onExecution(execution) {
+				cleanup = execution.cleanup;
+			},
+			yieldTaskWait() {},
+			isParentObserving: () => false,
+		};
+		const result = await runSingleInProcess(root, analysisAgent(), "inspect the fixture", {
+			cwd: root,
+			runId: "completed-child-missing-history",
+			sessionDir: root,
+			taskExecution: hooks,
+			testSession: { output: "child answer" },
+		});
+		assert.equal(result.status, "ok");
+		await cleanup;
+		const [file] = sessionFiles(root);
+		assert.ok(file, "the child saved its session");
+		rmSync(join(root, file));
+
+		const history = await retained?.loadHistory?.();
+
+		assert.deepEqual(sessionFiles(root), [], "reading a missing history creates no session file");
+		assert.match(history?.unavailable ?? "", /moved or deleted/);
+		assert.deepEqual(
+			history?.entries.flatMap((entry) => (entry.type === "message" ? [entry.message.role] : [])),
+			["user", "assistant"],
+			"the prompt and the answer it kept are still shown",
+		);
 	} finally {
 		clearSubagentControls();
 		rmSync(root, { recursive: true, force: true });

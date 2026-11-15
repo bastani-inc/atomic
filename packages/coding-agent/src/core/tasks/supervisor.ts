@@ -60,12 +60,22 @@ export interface TaskTranscriptCommands {
 	readonly skillCommandsEnabled: boolean;
 }
 
+/** A finished task's history as {@link TaskTranscriptSource.loadHistory} reads it. */
+export type TaskTranscriptHistory =
+	| { readonly entries: ReturnType<SessionManager["getEntries"]>; readonly unavailable?: undefined }
+	| {
+			/** The task's own prompt and answer, which its transcript kept in memory. */
+			readonly entries: ReturnType<SessionManager["getEntries"]>;
+			/** Why its saved history could not be read, as a task view shows it. */
+			readonly unavailable: string;
+	  };
+
 export type TaskTranscriptSource = Pick<SessionManager, "getSessionId" | "getEntries"> & {
 	/**
 	 * A finished task's history, read from its session store when asked: such a transcript keeps none of it in memory,
 	 * and its `getEntries()` is empty. Absent where `getEntries()` holds the history (#5186).
 	 */
-	loadEntries?(): Promise<ReturnType<SessionManager["getEntries"]>>;
+	loadHistory?(): Promise<TaskTranscriptHistory>;
 	/** The session's commands now; a settled transcript keeps those it had when it settled. */
 	commands?(): TaskTranscriptCommands;
 	/** The live session's usage and footer data; absent from a transcript that has settled or been released. */
@@ -302,8 +312,10 @@ export async function loadTaskOwnTranscriptEntries(
 	const state = environment.tasks.get(task);
 	const source = state?.transcript;
 	if (!state || !source) return undefined;
-	const entries = source.loadEntries ? await source.loadEntries() : source.getEntries();
-	return entries.slice(state.inheritedEntryCount ?? 0);
+	if (!source.loadHistory) return source.getEntries().slice(state.inheritedEntryCount ?? 0);
+	const history = await source.loadHistory();
+	// What a transcript keeps when its saved history is gone is the task's own entries only.
+	return history.unavailable === undefined ? history.entries.slice(state.inheritedEntryCount ?? 0) : history.entries;
 }
 
 /** Promise rejections, setup throws and consumer exceptions may be arbitrary JavaScript values. */

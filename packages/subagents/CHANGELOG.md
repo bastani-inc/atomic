@@ -5,7 +5,7 @@
 ### Fixed
 
 - Fixed a long supervising session slowing down until new subagents failed to start with `session-start-timeout` in phase `setup` ([#5186](https://github.com/bastani-inc/atomic/issues/5186)). The cost of a session now follows the subagents running in it, not every one it ever launched:
-  - A finished subagent no longer keeps its whole history in memory, or the text of every skill file it loaded. `/tasks`, its transcript, its completion card and `resume` read its history back from its session file when they need it.
+  - A finished subagent no longer keeps its whole history in memory, or the text of every skill file it loaded. `/tasks`, its transcript, its completion card and `resume` read its history back from its session file when they need it. Reading it never writes: if the file was moved or deleted, `/tasks` and the completion card still show its prompt and answer, its transcript says the history is unavailable, and `resume` reports the missing file.
   - A finished subagent no longer leaves a 10-minute timer behind. The startup cleanup scans now run once per Atomic process, not once per subagent.
   - A finished subagent's output is no longer kept by its run after it has been delivered. Its result stays on disk with the run's artifacts.
   - Looking up a subagent by id no longer lists every run's children, and reading a task's record no longer copies the record of every task the session keeps.
