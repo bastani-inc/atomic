@@ -3,11 +3,11 @@ import { link, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "nod
 import { hostname } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { failureDebugFields, reportDebug } from "../debug.ts";
+import { processStartToken } from "../process-start-token.ts";
 import { isWorkspaceRestoreError } from "./errors.ts";
 import { nulFields, runGit } from "./git.ts";
 import { canonicalizeWorktreePath } from "./paths.ts";
 import { isDeniedSnapshotPath } from "./policy.ts";
-import { processStartToken } from "./process-start.ts";
 import { type RepositoryId, sharedRepositoryIdOf, sharedRepositoryIdsOf } from "./repository-identity.ts";
 import { pooledWorktreeStore, resetPooledWorktree, verifyWorktree } from "./restore.ts";
 import { lockShared, sharedClockNow } from "./shared-clock.ts";

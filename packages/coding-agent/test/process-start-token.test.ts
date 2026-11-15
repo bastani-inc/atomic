@@ -2,10 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { afterEach, describe, test } from "vitest";
-import {
-	processStartToken,
-	setNativeProcessCreationTimeForTesting,
-} from "../src/core/worktree-snapshot/process-start.js";
+import { processStartToken, setNativeProcessCreationTimeForTesting } from "../src/core/process-start-token.js";
 
 const windows = process.platform === "win32";
 /** A process id no live process has: Windows assigns multiples of four, Linux ids stay below 2^22. */
