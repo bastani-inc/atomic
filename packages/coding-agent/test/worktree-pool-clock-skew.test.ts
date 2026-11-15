@@ -97,10 +97,15 @@ function skewThisProcess(skewMs: number): void {
 	vi.spyOn(Date, "now").mockImplementation(() => now() + skewMs);
 }
 
-/** Asserts that no probe file of the filesystem's clock was left in `directory`. */
-function assertNoProbes(directory: string): void {
+/** The probe files of the filesystem's clock in `directory`. */
+function probes(directory: string): string[] {
+	return readdirSync(directory).filter((name) => name.startsWith(".clock-"));
+}
+
+/** Asserts that no probe file of the filesystem's clock was left in `directory`, beyond `leftBefore`. */
+function assertNoProbes(directory: string, leftBefore: readonly string[] = []): void {
 	assert.deepEqual(
-		readdirSync(directory).filter((name) => name.startsWith(".clock-")),
+		probes(directory).filter((name) => !leftBefore.includes(name)),
 		[],
 	);
 }
@@ -231,6 +236,8 @@ test(
 		assert.equal(first, "held");
 		await sleep(LEASE_REFRESHED_MS);
 		await kill();
+		// A holder killed during one of its lease refreshes leaves that refresh's probe.
+		const leftByHolder = probes(poolDirectory(snapshot));
 		skewThisProcess(-2 * 60_000);
 
 		// Right after the crash, the lease keeps the slot through its grace period.
@@ -239,7 +246,7 @@ test(
 		const resumed = await resumeSessionWorktree(s2, pool());
 		assert.equal(resumed.status === "restored" && resumed.mappings[0]!.to, slot(snapshot, 0));
 		assert.deepEqual(recordOf(snapshot, 0).holder, ownerOf(s2));
-		assertNoProbes(poolDirectory(snapshot));
+		assertNoProbes(poolDirectory(snapshot), leftByHolder);
 	},
 	TIMEOUT_MS,
 );
@@ -271,13 +278,15 @@ test(
 		assert.equal(first, "locked");
 		await sleep(2_500);
 		await kill();
+		// The holder refreshes its lock every second, each time through a probe: killed during one, it leaves it.
+		const leftByHolder = probes(sandbox.path("."));
 		skewThisProcess(-2 * 60_000);
 
 		await assert.rejects(lockShared(path, { realpath: false, stale: STALE_MS }), { code: "ELOCKED" });
 		backdate(`${path}.lock`, STALE_MS + 1_000);
 		const unlock = await lockShared(path, { realpath: false, stale: STALE_MS });
 		await unlock();
-		assertNoProbes(sandbox.path("."));
+		assertNoProbes(sandbox.path("."), leftByHolder);
 	},
 	TIMEOUT_MS,
 );
