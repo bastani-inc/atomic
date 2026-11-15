@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { BUILD_STEPS, MODEL_CATALOG_MAX_AGE_MS, shouldForce } from "./build.mjs";
+import { BUILD_STEPS, MODEL_CATALOG_MAX_AGE_MS, shouldForce, stepInputs } from "./build.mjs";
 import { decideStep, fingerprintOutputs, hashInputs, readStamp, writeStamp } from "./build-stamps.mjs";
 
 function workspace(t) {
@@ -148,6 +148,7 @@ test("a fetched snapshot is reused within its maximum age and refreshed once it 
 
 	assert.deepEqual(at(maxAgeMs), { reason: undefined, incremental: true });
 	assert.deepEqual(at(maxAgeMs + 1), { reason: "older than 24 h", incremental: true, stale: true });
+	assert.equal(at(-1).stale, true, "a stamp dated in the future, after the clock moved back, is stale");
 	const { builtAt: _, ...withoutTime } = stamp;
 	assert.equal(decideStep({ force: false, stamp: withoutTime, inputHash, outputs, maxAgeMs }).stale, true);
 	assert.equal(
@@ -164,6 +165,23 @@ test("--force, ATOMIC_BUILD_FORCE and CI force a full build", () => {
 	assert.equal(shouldForce([], { CI: "true" }), true);
 	assert.equal(shouldForce([], { CI: "false" }), false);
 	assert.equal(shouldForce([], { CI: "" }), false);
+});
+
+/** @param {import("./build.mjs").BuildStep} step */
+const inputPaths = (step) => stepInputs(step).map((input) => (typeof input === "string" ? input : input.path));
+
+test("every step hashes the tsconfig and bunfig files its compilers and bundlers read", () => {
+	for (const file of ["tsconfig.json", "tsconfig.base.json", "bunfig.toml"]) {
+		for (const step of BUILD_STEPS) assert.ok(inputPaths(step).includes(file), `${step.name} hashes ${file}`);
+	}
+	const piAi = BUILD_STEPS.find((step) => step.name === "pi-ai");
+	for (const file of ["tsconfig.json", "tsconfig.base.json", "tsconfig.build.json"]) {
+		assert.ok(piAi && inputPaths(piAi).includes(`packages/ai/${file}`), `pi-ai hashes packages/ai/${file}`);
+	}
+	const atomic = BUILD_STEPS.find((step) => step.name === "atomic");
+	for (const file of ["tsconfig.build.json", "tsconfig.workflows-types.json"]) {
+		assert.ok(atomic && inputPaths(atomic).includes(`packages/coding-agent/${file}`));
+	}
 });
 
 test("the Atomic package builds after the pi-ai and native steps whose outputs it consumes", () => {

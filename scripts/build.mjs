@@ -29,12 +29,17 @@ export const BUILD_CACHE_DIR = join(root, "node_modules", ".cache", "atomic-buil
  */
 export const MODEL_CATALOG_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
-/** Inputs of every step: the build tooling itself, the installed dependency tree and the shared compiler options. */
+/**
+ * Inputs of every step: the build tooling itself, the installed dependency tree, the shared compiler options,
+ * the root tsconfig.json that esbuild and Bun.build read for files without a closer one, and Bun's bunfig.toml.
+ */
 const SHARED_INPUTS = [
 	"package.json",
 	"package-lock.json",
 	"node_modules/.package-lock.json",
 	"tsconfig.base.json",
+	"tsconfig.json",
+	"bunfig.toml",
 	"scripts/build.mjs",
 	"scripts/build-stamps.mjs",
 	"scripts/package-files.mjs",
@@ -97,6 +102,7 @@ export const BUILD_STEPS = [
 			"packages/ai/package.json",
 			"packages/ai/tsconfig.base.json",
 			"packages/ai/tsconfig.build.json",
+			"packages/ai/tsconfig.json",
 		],
 		outputs: ["packages/ai/dist"],
 		scripts: [{ script: "check:model-data" }, { script: "build:tsc", tsc: true }, { script: "build:model-data" }],
@@ -139,6 +145,11 @@ export const BUILD_STEPS = [
 		after: ["pi-ai", "natives"],
 	},
 ];
+
+/** Every input of `step`, shared inputs first. @param {BuildStep} step */
+export function stepInputs(step) {
+	return [...SHARED_INPUTS, ...step.inputs];
+}
 
 /**
  * @param {string[]} args
@@ -203,7 +214,7 @@ export function build({ force }) {
 	for (const step of BUILD_STEPS) {
 		const stampPath = join(BUILD_CACHE_DIR, `${step.name}.stamp.json`);
 		const tsBuildInfo = join(BUILD_CACHE_DIR, `${step.name}.tsbuildinfo`);
-		const inputHash = hashInputs(root, [...SHARED_INPUTS, ...step.inputs], stepKeys(step, outputHashes));
+		const inputHash = hashInputs(root, stepInputs(step), stepKeys(step, outputHashes));
 		const stamp = readStamp(stampPath);
 		const decision = decideStep({
 			force,

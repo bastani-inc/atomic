@@ -163,7 +163,7 @@ export function removeStamp(path) {
  * `incremental` is true only when the previous outputs are intact, so incremental tool state
  * (such as a tsBuildInfo file) still describes them and may be reused. A step with `maxAgeMs`, whose
  * output also depends on data fetched from outside the repository, reruns once its stamp is older than
- * that, and `stale` is then true.
+ * that or dated after `now`, and `stale` is then true.
  * @param {{ force: boolean, stamp: Stamp | undefined, inputHash: string, outputs: { hash: string, missing: string[] }, maxAgeMs?: number, now?: number }} state
  * @returns {{ reason: string | undefined, incremental: boolean, stale?: true }}
  */
@@ -173,7 +173,9 @@ export function decideStep({ force, stamp, inputHash, outputs, maxAgeMs, now = D
 	if (outputs.missing.length > 0) return { reason: `missing output ${outputs.missing[0]}`, incremental: false };
 	if (stamp.outputHash !== outputs.hash) return { reason: "outputs changed since the last build", incremental: false };
 	if (stamp.inputHash !== inputHash) return { reason: "inputs changed", incremental: true };
-	if (maxAgeMs !== undefined && !(now - stamp.builtAt <= maxAgeMs)) {
+	// A stamp dated in the future (the clock moved back) is stale too, so it cannot stay fresh indefinitely.
+	const age = now - stamp.builtAt;
+	if (maxAgeMs !== undefined && !(age >= 0 && age <= maxAgeMs)) {
 		return { reason: `older than ${formatAge(maxAgeMs)}`, incremental: true, stale: true };
 	}
 	return { reason: undefined, incremental: true };
