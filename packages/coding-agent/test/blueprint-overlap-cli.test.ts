@@ -422,7 +422,8 @@ describe("a resume without a UI whose blueprint build runs behind the first turn
 			await until(() => ran().includes("started"), "the build to start");
 			killed.child.kill("SIGKILL");
 			await killed.exited;
-			const again = resume(recorded, "-p", "hello");
+			// The killed host may have held the settings lock, so the trust this run needs comes from --approve.
+			const again = resume(recorded, "--approve", "-p", "hello");
 			again.child.stdin.end();
 			await until(() => count("started") === 2, "the second build to start").catch((error: Error) => {
 				const state = again.child.exitCode === null ? "still running" : `exited ${again.child.exitCode}`;
