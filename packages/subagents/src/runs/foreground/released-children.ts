@@ -12,6 +12,7 @@ import {
 } from "@bastani/atomic";
 import type { ChildTaskCompletionRoute } from "../../../../coding-agent/src/core/tasks/child-command-owner.js";
 import type { SubagentReleased, SubagentReleasePolicy } from "../inprocess/runner.js";
+import { SUBAGENT_OWNER_GENERATION } from "./owner-generation.js";
 import { isReleasedChildError, ReleasedChildError } from "./released-child-errors.js";
 import {
 	releasedReplyTimeoutId,
@@ -35,6 +36,8 @@ import {
 	subagentChildRecordsAppended,
 } from "./subagent-child-records.js";
 import type { SubagentChildRestoreOutcome, SubagentChildResumeRequest } from "./subagent-child-restore.js";
+
+export { SUBAGENT_OWNER_GENERATION } from "./owner-generation.js";
 
 /** How long a background child waits on a detachable tool call inline before it is released (#4326). */
 export const SUBAGENT_RELEASE_AFTER_MS = 60_000;
@@ -60,8 +63,6 @@ export function subagentWakeNamespace(ownerSessionId: string): string {
 export function subagentWakeKey(ownerSessionId: string, childId: string): string {
 	return `${subagentWakeNamespace(ownerSessionId)}:${childId}`;
 }
-
-export const SUBAGENT_OWNER_GENERATION = randomUUID();
 
 const REDISPATCH_WAKE_PREFIX = "redispatch:";
 

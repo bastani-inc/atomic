@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
 	type AgentRehydrateError,
 	AgentWakeDispatcher,
@@ -6,7 +8,7 @@ import {
 	type DetachedToolResult,
 	type ExtensionContext,
 } from "@bastani/atomic";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { SUBAGENT_RELEASED_CHILD_WAKE_EVENT as INTERCOM_RELEASED_CHILD_WAKE_EVENT } from "../../packages/intercom/session-recovery.js";
 import { SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT } from "../../packages/subagents/src/intercom/supervisor-authorization.js";
@@ -29,6 +31,7 @@ import {
 	handleReleasedChildWakes,
 	interruptedByRestart,
 	lateToolResultMessage,
+	needsRedispatch,
 	pendingToolCalls,
 	planReleasedChildWake,
 	SUBAGENT_OWNER_GENERATION,
@@ -564,4 +567,58 @@ test("a broker notice whose wake fails is counted as an unobserved failure, not 
 test("Intercom and Subagents name the released-child wake event alike (#4326)", () => {
 	assert.equal(INTERCOM_RELEASED_CHILD_WAKE_EVENT, SUBAGENT_RELEASED_CHILD_WAKE_EVENT);
 	assert.equal(SUBAGENT_RELEASED_CHILD_WAKE_EVENT, "subagent:released-child-wake");
+});
+
+const RELEASED_CHILDREN_MODULE = "../../packages/subagents/src/runs/foreground/released-children.js";
+const OWNER_GENERATION_MODULE = fileURLToPath(
+	new URL("../../packages/subagents/src/runs/foreground/owner-generation.ts", import.meta.url),
+);
+
+function releasedRecordOf(ownerGeneration: string): SubagentChildRecord {
+	return {
+		version: 1,
+		childId: "reload:0",
+		owner: { kind: "session", sessionId: "owner" },
+		runId: "reload",
+		index: 0,
+		agent: "worker",
+		state: "terminal",
+		cwd: "/repo",
+		terminalStatus: SUBAGENT_CHILD_RELEASED_STATUS,
+		waitingOn: [{ toolCallId: "bash-1", toolName: "bash" }],
+		ownerGeneration,
+	} as SubagentChildRecord;
+}
+
+test("a reload of the extension in the same process is not a restart: a running call is neither interrupted nor started again (#4848)", async () => {
+	const record = releasedRecordOf(SUBAGENT_OWNER_GENERATION);
+	vi.resetModules();
+	const reloaded = (await import(
+		RELEASED_CHILDREN_MODULE
+	)) as typeof import("../../packages/subagents/src/runs/foreground/released-children.js");
+	assert.notEqual(reloaded.interruptedByRestart, interruptedByRestart, "the module was evaluated again");
+
+	assert.equal(reloaded.SUBAGENT_OWNER_GENERATION, SUBAGENT_OWNER_GENERATION, "the owner process is the same");
+	assert.equal(reloaded.interruptedByRestart(record)("bash-1"), false, "the call still runs in this process");
+	assert.equal(reloaded.needsRedispatch(record), false, "the call is not started a second time");
+});
+
+test("a new process is a restart: a call a child waited on in the earlier process is interrupted and started again (#4848)", () => {
+	const child = spawnSync(
+		process.execPath,
+		[
+			"--input-type=module",
+			"-e",
+			`const m = await import(${JSON.stringify(pathToFileURL(OWNER_GENERATION_MODULE).href)}); process.stdout.write(m.SUBAGENT_OWNER_GENERATION);`,
+		],
+		{ encoding: "utf8" },
+	);
+	assert.equal(child.status, 0, child.stderr);
+	const earlier = child.stdout.trim();
+	assert.ok(earlier.length > 0);
+	assert.notEqual(earlier, SUBAGENT_OWNER_GENERATION, "another process has another generation");
+
+	const record = releasedRecordOf(earlier);
+	assert.equal(interruptedByRestart(record)("bash-1"), true);
+	assert.equal(needsRedispatch(record), true);
 });
