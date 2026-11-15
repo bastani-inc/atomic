@@ -132,7 +132,11 @@ executorTest("fully cached repeated child replay reconciles each durable boundar
 		assert.equal(replayChild.parentRunId, rootId);
 		assert.equal(replayChild.parentStageId, boundary.id);
 		assert.equal(replayChild.rootRunId, rootId);
-		assert.deepEqual(withoutParentStageId(replayChild), withoutParentStageId(catalogChild));
+		// The replayed subtree's stages are marked replayed, so no budget meter charges them again (#5053).
+		assert.deepEqual(withoutParentStageId(replayChild), {
+			...withoutParentStageId(catalogChild),
+			stages: catalogChild.stages.map((stage) => ({ ...stage, replayed: true })),
+		});
 		assert.equal(Object.getPrototypeOf(replayChild), Object.prototype);
 		assert.equal(Array.isArray(replayChild.stages), true);
 		assert.equal(Array.isArray(replayChild.stages[0]?.parentIds), true);

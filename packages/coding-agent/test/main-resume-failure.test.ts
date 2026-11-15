@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdirSync, renameSync, rmSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { Terminal } from "@earendil-works/pi-tui";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
+import { renameReplacing } from "../src/core/rename-retry.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { resolveSessionStore } from "../src/core/session-storage.js";
 import { captureWorktreeSnapshot } from "../src/core/worktree-snapshot/capture.js";
@@ -74,7 +75,7 @@ async function sessionRecordedElsewhere(database: string, remotes?: readonly str
 	if (capture.status !== "captured") throw new Error(capture.status);
 	const snapshot = remotes === undefined ? capture.snapshot : { ...capture.snapshot, remotes: [...remotes] };
 	await manager.appendWorktreeSnapshot(clone, snapshot.id, snapshot);
-	renameSync(clone, sandbox.path("node-a-offline"));
+	renameReplacing(clone, sandbox.path("node-a-offline"));
 	return manager.getSessionId();
 }
 
