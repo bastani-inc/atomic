@@ -159,7 +159,6 @@ export class SessionManager {
 		this.fileEntries = [{ type: "session", ...header }, ...snapshot.entries];
 		this.sessionId = header.id;
 		this.lastSeq = snapshot.lastSeq;
-		this.unconfirmed.clear();
 		this.deletedFromStore = false;
 		this.sessionFile =
 			location ?? (this.store instanceof JsonlSessionStore ? this.store.locationFor(header) : undefined);
@@ -206,7 +205,6 @@ export class SessionManager {
 			),
 		];
 		this.lastSeq = 0;
-		this.unconfirmed.clear();
 		this.deletedFromStore = false;
 		this._buildIndex();
 		this.syncOpenMarker();
@@ -427,7 +425,7 @@ export class SessionManager {
 			try {
 				this.lastSeq = (await this.store.append(this.sessionId, entries, { expectSeq })).lastSeq;
 			} catch (error) {
-				if (error instanceof SessionNotFoundError && error.sessionId === this.sessionId) {
+				if (error instanceof SessionNotFoundError) {
 					this.deletedFromStore = true;
 					throw new SessionDeletedError(this.sessionId, { cause: error });
 				}
@@ -440,8 +438,6 @@ export class SessionManager {
 					? error
 					: new SessionConflictError(this.sessionId, expectSeq, this.lastSeq);
 			}
-			// The store was at `expectSeq`: no earlier append of unknown outcome was applied.
-			this.unconfirmed.clear();
 			this.applyAppended(entries);
 			return;
 		}
@@ -471,29 +467,25 @@ export class SessionManager {
 		error: unknown,
 		unknown: boolean,
 	): Promise<"saved" | "retry" | "conflict"> {
+		if (unknown) for (const entry of entries) this.unconfirmed.add(entry.id);
 		let snapshot: SessionSnapshot;
 		try {
 			snapshot = await this.store.load(this.sessionId);
 		} catch {
 			// Still unreadable: the next append, at the same `lastSeq`, finds out whether these entries were saved.
-			if (unknown) for (const entry of entries) this.unconfirmed.add(entry.id);
 			throw error;
 		}
 		const start = snapshot.entries.length - (snapshot.lastSeq - this.lastSeq);
 		const held = this.fileEntries.length - 1;
-		if (start !== held || (held > 0 && snapshot.entries[held - 1]?.id !== this.fileEntries[held]?.id)) throw error;
+		if (start !== held || (held > 0 && snapshot.entries[held - 1]!.id !== this.fileEntries[held]!.id)) throw error;
 		const own = new Map(entries.map((entry) => [entry.id, entry]));
 		const tail = snapshot.entries.slice(start).map((entry) => own.get(entry.id) ?? entry);
 		const saved = tail.some((entry) => own.has(entry.id));
-		const foreign = tail.some((entry) => !own.has(entry.id) && !this.unconfirmed.has(entry.id));
-		const leafId = this.leafId;
-		if (tail.length === entries.length && saved) {
-			this.applyAppended(entries);
-		} else if (tail.length > 0) {
-			this.fileEntries = [...this.fileEntries, ...tail];
-			this._buildIndex();
-			this.leafId = saved ? entries.at(-1)!.id : leafId;
-		}
+		const foreign = tail.some((entry) => !this.unconfirmed.has(entry.id));
+		const leafId = saved ? entries.at(-1)!.id : this.leafId;
+		this.fileEntries = [...this.fileEntries, ...tail];
+		this._buildIndex();
+		this.leafId = leafId;
 		this.lastSeq = snapshot.lastSeq;
 		this.unconfirmed.clear();
 		if (saved) return "saved";

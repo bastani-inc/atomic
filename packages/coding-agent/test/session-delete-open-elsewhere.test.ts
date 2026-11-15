@@ -55,7 +55,7 @@ describe("deleting a session open in another process (#4971)", () => {
 			try {
 				await assert.rejects(managerB.deleteSession(sessionId), (error: unknown) => {
 					assert.ok(error instanceof SessionOpenElsewhereError);
-					assert.match(error.message, /open in another process \(pid \d+ on .+\)/);
+					assert.match(error.message, /open in a running Atomic session \(pid \d+ on .+\)/);
 					return true;
 				});
 				assert.ok(

@@ -58,7 +58,7 @@ export class SessionOpenElsewhereError extends Error {
 
 	constructor(sessionId: string, holder: { readonly pid: number; readonly host: string }) {
 		super(
-			`Cannot delete session ${sessionId}: it is open in another process (pid ${holder.pid} on ${holder.host}). Close it there first.`,
+			`Cannot delete session ${sessionId}: it is open in a running Atomic session (pid ${holder.pid} on ${holder.host}). Close it there first.`,
 		);
 		this.name = "SessionOpenElsewhereError";
 		this.sessionId = sessionId;

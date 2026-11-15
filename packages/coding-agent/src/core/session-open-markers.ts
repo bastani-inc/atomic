@@ -1,15 +1,15 @@
 /**
- * Which sessions live processes have open (#4971): a process that runs a session keeps a small marker file for it
- * under the agent directory, `open-sessions/<session id>/<pid>-<nonce>.json`, refreshed on a heartbeat and removed when
- * the session closes or the process exits. Deleting a session that another process holds a fresh marker for is
- * refused. A marker is stale, and ignored, when its process on this host is gone or its heartbeat stopped, as for a
+ * Which sessions are running (#4971): a process that runs a session keeps a small marker file for it under the agent
+ * directory, `open-sessions/<session id>/<pid>-<nonce>.json`, refreshed on a heartbeat and removed when the session
+ * closes or the process exits. Deleting a session that has a fresh marker, from another process or from another
+ * session of the same process, is refused. A marker is stale, and ignored, when its process on this host is gone or its heartbeat stopped, as for a
  * process killed with SIGKILL or one on another host that shares the agent directory.
  */
 
 import { randomBytes } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { getAgentDir } from "../config.js";
 import { SessionOpenElsewhereError } from "./session-manager-errors.js";
 import { assertValidSessionId } from "./session-manager-validation.ts";
@@ -47,6 +47,7 @@ function markerDirectory(agentDir: string, sessionId: string): string | undefine
 }
 
 function writeMarker(path: string): void {
+	mkdirSync(dirname(path), { recursive: true });
 	writeFileSync(path, JSON.stringify({ pid: process.pid, host: hostname(), openedAt: new Date().toISOString() }));
 }
 
@@ -91,7 +92,6 @@ export function holdSessionOpenMarker(agentDir: string, sessionId: string): () =
 	if (marker === undefined) {
 		const path = join(directory, `${process.pid}-${PROCESS_NONCE}.json`);
 		try {
-			mkdirSync(directory, { recursive: true });
 			writeMarker(path);
 		} catch {
 			return () => {};
@@ -134,10 +134,10 @@ function processAlive(pid: number): boolean {
 }
 
 /**
- * Another live process that has `sessionId` open, or undefined when none does. Markers of this process are not
- * counted, and stale markers are removed.
+ * A running session, in another process or in this one, that has `sessionId` open, or undefined when none does.
+ * Stale markers are removed.
  */
-export function findSessionOpenElsewhere(agentDir: string, sessionId: string): SessionOpenHolder | undefined {
+export function findSessionOpenHolder(agentDir: string, sessionId: string): SessionOpenHolder | undefined {
 	const directory = markerDirectory(agentDir, sessionId);
 	if (directory === undefined) return undefined;
 	let names: string[];
@@ -147,8 +147,8 @@ export function findSessionOpenElsewhere(agentDir: string, sessionId: string): S
 		return undefined;
 	}
 	const host = hostname();
+	const ownName = `${process.pid}-${PROCESS_NONCE}.json`;
 	for (const name of names) {
-		if (name === `${process.pid}-${PROCESS_NONCE}.json`) continue;
 		const path = join(directory, name);
 		let holder: SessionOpenHolder;
 		let heartbeatAt: number;
@@ -161,8 +161,8 @@ export function findSessionOpenElsewhere(agentDir: string, sessionId: string): S
 			// Being written or removed right now, or not a marker.
 			continue;
 		}
-		const ownPidReused = holder.host === host && holder.pid === process.pid;
-		const gone = holder.host === host && (ownPidReused || !processAlive(holder.pid));
+		// With this process's pid but not its marker: an earlier process given the same pid.
+		const gone = holder.host === host && (holder.pid === process.pid ? name !== ownName : !processAlive(holder.pid));
 		if (gone || Date.now() - heartbeatAt > STALE_MS) {
 			removeMarker(path);
 			continue;
@@ -172,8 +172,8 @@ export function findSessionOpenElsewhere(agentDir: string, sessionId: string): S
 	return undefined;
 }
 
-/** Rejects with a {@link SessionOpenElsewhereError} when another live process has `sessionId` open (#4971). */
+/** Throws a {@link SessionOpenElsewhereError} when a running session has `sessionId` open (#4971). */
 export function assertSessionNotOpenElsewhere(sessionId: string, agentDir = getAgentDir()): void {
-	const holder = findSessionOpenElsewhere(agentDir, sessionId);
+	const holder = findSessionOpenHolder(agentDir, sessionId);
 	if (holder !== undefined) throw new SessionOpenElsewhereError(sessionId, holder);
 }

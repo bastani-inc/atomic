@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { hostname, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, beforeEach, describe, test } from "vitest";
+import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { SessionManager, SessionOpenElsewhereError } from "../src/core/session-manager.js";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
 import { bunExecutable } from "./cli-test-helpers.js";
@@ -114,4 +114,138 @@ describe("a session marked open by another process (#4971)", () => {
 		},
 		PROCESS_TIMEOUT_MS,
 	);
+});
+
+describe("a session open in this process (#4971)", () => {
+	let dir: string;
+	let sessionDir: string;
+	let agentDir: string;
+	let previousAgentDir: string | undefined;
+	const releases: (() => void)[] = [];
+
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "atomic-open-here-"));
+		sessionDir = join(dir, "sessions");
+		agentDir = join(dir, "agent");
+		mkdirSync(agentDir, { recursive: true });
+		previousAgentDir = process.env.ATOMIC_CODING_AGENT_DIR;
+		process.env.ATOMIC_CODING_AGENT_DIR = agentDir;
+	});
+
+	afterEach(() => {
+		for (const release of releases.splice(0)) release();
+		vi.useRealTimers();
+		if (previousAgentDir === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
+		else process.env.ATOMIC_CODING_AGENT_DIR = previousAgentDir;
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	async function saved(content: string): Promise<SessionManager> {
+		const manager = await SessionManager.create(dir, sessionDir);
+		await manager.appendMessage({ role: "user", content, timestamp: Date.now() });
+		return manager;
+	}
+
+	function hold(manager: SessionManager): () => void {
+		const release = manager.holdOpen();
+		releases.push(release);
+		return release;
+	}
+
+	const markersOf = (sessionId: string) => join(agentDir, "open-sessions", sessionId);
+
+	test("a session another running session holds is refused until every hold is released (#4971)", async () => {
+		const running = await saved("running");
+		const sameSession = await SessionManager.open(running.getSessionFile()!, sessionDir);
+		const deleter = await saved("deleter");
+		const releaseFirst = hold(running);
+		const releaseSecond = hold(sameSession);
+
+		await assert.rejects(deleter.deleteSession(running.getSessionId()), (error: unknown) => {
+			assert.ok(error instanceof SessionOpenElsewhereError);
+			assert.equal(error.name, "SessionOpenElsewhereError");
+			assert.equal(error.pid, process.pid);
+			assert.equal(error.host, hostname());
+			return true;
+		});
+		releaseFirst();
+		releaseFirst();
+		await assert.rejects(deleter.deleteSession(running.getSessionId()), SessionOpenElsewhereError);
+		releaseSecond();
+		assert.equal(existsSync(markersOf(running.getSessionId())), false);
+
+		await deleter.deleteSession(running.getSessionId());
+		assert.equal(existsSync(running.getSessionFile()!), false);
+	});
+
+	test("a running session's mark moves with it to the session it switches to (#4971)", async () => {
+		const running = await saved("first");
+		const first = running.getSessionId();
+		const deleter = await saved("deleter");
+		hold(running);
+
+		await running.newSession();
+		await running.appendMessage({ role: "user", content: "second", timestamp: Date.now() });
+
+		await deleter.deleteSession(first);
+		await assert.rejects(deleter.deleteSession(running.getSessionId()), SessionOpenElsewhereError);
+	});
+
+	test("an unsaved session leaves no mark (#4971)", async () => {
+		hold(SessionManager.inMemory(dir));
+		assert.equal(existsSync(join(agentDir, "open-sessions")), false);
+	});
+
+	test("the heartbeat keeps a running session's mark fresh, and writes it again when it was removed (#4971)", async () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+		const running = await saved("running");
+		const deleter = await saved("deleter");
+		hold(running);
+		const markers = markersOf(running.getSessionId());
+		const [marker] = readdirSync(markers);
+		const twoMinutesAgo = new Date(Date.now() - 120_000);
+		utimesSync(join(markers, marker!), twoMinutesAgo, twoMinutesAgo);
+
+		vi.advanceTimersByTime(15_000);
+		await assert.rejects(deleter.deleteSession(running.getSessionId()), SessionOpenElsewhereError);
+
+		rmSync(markers, { recursive: true });
+		vi.advanceTimersByTime(15_000);
+		await assert.rejects(deleter.deleteSession(running.getSessionId()), SessionOpenElsewhereError);
+	});
+
+	test("marks that name no running session are ignored and removed (#4971)", async () => {
+		const target = await saved("target");
+		const deleter = await saved("deleter");
+		const markers = markersOf(target.getSessionId());
+		mkdirSync(markers, { recursive: true });
+		const write = (name: string, content: string, age = 0) => {
+			writeFileSync(join(markers, name), content);
+			const at = new Date(Date.now() - age);
+			utimesSync(join(markers, name), at, at);
+		};
+		write("not-json.json", "{");
+		write("no-pid.json", JSON.stringify({ host: hostname() }));
+		write("no-host.json", JSON.stringify({ pid: process.pid }));
+		write("earlier-process.json", JSON.stringify({ pid: process.pid, host: hostname() }));
+		write("silent-host.json", JSON.stringify({ pid: 1, host: "another-host" }), 120_000);
+
+		await deleter.deleteSession(target.getSessionId());
+
+		assert.deepEqual(readdirSync(markers).sort(), ["no-host.json", "no-pid.json", "not-json.json"]);
+	});
+
+	test("a mark from another host counts while its heartbeat is fresh (#4971)", async () => {
+		const target = await saved("target");
+		const deleter = await saved("deleter");
+		const markers = markersOf(target.getSessionId());
+		mkdirSync(markers, { recursive: true });
+		writeFileSync(join(markers, "remote.json"), JSON.stringify({ pid: 999_999_999, host: "another-host" }));
+
+		await assert.rejects(deleter.deleteSession(target.getSessionId()), (error: unknown) => {
+			assert.ok(error instanceof SessionOpenElsewhereError);
+			assert.equal(error.host, "another-host");
+			return true;
+		});
+	});
 });
