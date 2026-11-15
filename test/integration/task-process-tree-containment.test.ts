@@ -1,0 +1,172 @@
+import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { test } from "vitest";
+import type { CommandIntent, OperationId, Result } from "../../packages/coding-agent/src/core/tasks/contracts.js";
+import { type TaskLease, TaskSupervisor } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
+import { fileExists, readText, sleep } from "../helpers/runtime.js";
+
+const posix = process.platform !== "win32";
+
+function value<T, E>(result: Result<T, E>): T {
+	assert.equal(result.ok, true, result.ok ? "accepted" : JSON.stringify(result.error));
+	return result.value;
+}
+function setup() {
+	const supervisor = new TaskSupervisor();
+	const scope = { kind: "session" as const, sessionId: crypto.randomUUID() };
+	const host = supervisor.bindHostSession({
+		scope,
+		authorizeLaunch() {},
+		createRunner() {
+			throw new Error("Command must not dispatch an agent");
+		},
+	});
+	return { supervisor, owner: value(supervisor.openTaskOwner(host, scope)) };
+}
+function alive(pid: number) {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch {
+		return false;
+	}
+}
+async function pidFrom(path: string, deadlineMs = 10_000): Promise<number> {
+	const deadline = Date.now() + deadlineMs;
+	while (!(await fileExists(path)) || (await readText(path)).trim() === "") {
+		assert.ok(Date.now() < deadline, `no PID written to ${path}`);
+		await sleep(10);
+	}
+	return Number((await readText(path)).trim());
+}
+/** Polls the task's cleanup until it settles to a final state, and returns it. */
+async function finalCleanup(supervisor: TaskSupervisor, task: TaskLease): Promise<string> {
+	const deadline = Date.now() + 30_000;
+	for (;;) {
+		const receipt = value(await supervisor.cancelTask(task, "user"));
+		if (receipt.cleanup.kind === "reaped" || receipt.cleanup.kind === "failed") return receipt.cleanup.kind;
+		assert.ok(Date.now() < deadline, `cleanup still ${receipt.cleanup.kind}`);
+		await sleep(10);
+	}
+}
+
+// Descendants that move to their own process group without starting a new session: GNU timeout calls setpgid, and so
+// does job control (`set -m`). Each writes the PID of the descendant that left the command's process group.
+const shapes = {
+	"timeout wrapper": (pidFile: string) =>
+		`timeout 300 sh -c 'echo $$ > "$1"; exec sleep 300' sh '${pidFile}' >/dev/null 2>&1`,
+	"set -m job": (pidFile: string) =>
+		`bash -c 'set -m; sleep 300 >/dev/null 2>&1 & echo $! > "$1"; wait' bash '${pidFile}'`,
+} as const;
+const ends = ["cancel", "execution-timeout", "owner-close"] as const;
+const cases = Object.keys(shapes).flatMap((shape) => ends.map((end) => ({ shape: shape as keyof typeof shapes, end })));
+
+test.runIf(posix).each(cases)(
+	"a descendant in its own process group ends on $end of a $shape command, and cleanup is reaped only once it is gone (#5057)",
+	async ({ shape, end }) => {
+		const directory = await mkdtemp(join(tmpdir(), "task-tree-5057-"));
+		const pidFile = join(directory, "pid");
+		const { supervisor, owner } = setup();
+		let descendant = 0;
+		try {
+			const intent: CommandIntent = {
+				kind: "command",
+				command: shapes[shape](pidFile),
+				terminal: { kind: "pipe" },
+				...(end === "execution-timeout" ? { executionTimeoutMs: 1500 } : {}),
+			};
+			const task = value(await supervisor.startCommandTask(owner, intent, "tree" as OperationId));
+			descendant = await pidFrom(pidFile);
+			assert.ok(alive(descendant));
+			let cleanup: string;
+			if (end === "owner-close") {
+				cleanup = value(await supervisor.closeTaskOwner(owner, "session-close")).tasks[0].cleanup.kind;
+			} else {
+				if (end === "execution-timeout") {
+					const settled = value(await supervisor.waitForTask(task, 20_000));
+					assert.ok(
+						settled.kind === "settled" &&
+							settled.result.kind === "cancelled" &&
+							settled.result.cause === "execution-timeout",
+						JSON.stringify(settled),
+					);
+				}
+				cleanup = await finalCleanup(supervisor, task);
+			}
+			assert.equal(cleanup, "reaped");
+			assert.equal(alive(descendant), false, "cleanup reported reaped while the descendant lives");
+		} finally {
+			if (descendant && alive(descendant)) process.kill(descendant, "SIGKILL");
+			await supervisor.closeTaskOwner(owner, "session-close");
+			await rm(directory, { recursive: true, force: true });
+		}
+	},
+	40_000,
+);
+
+test.runIf(posix)(
+	"a timeout-wrapped descendant of a PTY command ends on its execution timeout (#5057)",
+	async () => {
+		const directory = await mkdtemp(join(tmpdir(), "task-tree-pty-5057-"));
+		const pidFile = join(directory, "pid");
+		const { supervisor, owner } = setup();
+		let descendant = 0;
+		try {
+			const task = value(
+				await supervisor.startCommandTask(
+					owner,
+					{
+						kind: "command",
+						command: `timeout 300 sh -c 'echo $$ > "$1"; exec sleep 300' sh '${pidFile}'`,
+						terminal: { kind: "pty", columns: 80, rows: 24 },
+						executionTimeoutMs: 1500,
+					},
+					"pty-tree" as OperationId,
+				),
+			);
+			descendant = await pidFrom(pidFile);
+			const settled = value(await supervisor.waitForTask(task, 20_000));
+			assert.equal(settled.kind, "settled");
+			assert.equal(await finalCleanup(supervisor, task), "reaped");
+			assert.equal(alive(descendant), false, "cleanup reported reaped while the descendant lives");
+		} finally {
+			if (descendant && alive(descendant)) process.kill(descendant, "SIGKILL");
+			await supervisor.closeTaskOwner(owner, "session-close");
+			await rm(directory, { recursive: true, force: true });
+		}
+	},
+	40_000,
+);
+
+const hostDeaths = (["pipe", "pty"] as const).flatMap((terminal) =>
+	(["sigkill", "throw", "exit"] as const).map((how) => ({ terminal, how })),
+);
+test.runIf(posix).each(hostDeaths)(
+	"a $terminal shell and its descendants end within their execution timeout when the host dies by $how (#5057)",
+	async ({ terminal, how }) => {
+		const directory = await mkdtemp(join(tmpdir(), "task-host-death-5057-"));
+		const host = spawn(process.execPath, [resolve("test/fixtures/task-host-death.mjs"), directory, how, terminal], {
+			stdio: "ignore",
+		});
+		const exited = new Promise<void>((done) => host.once("exit", () => done()));
+		const pids: number[] = [];
+		try {
+			const ready = await pidFrom(join(directory, "ready"), 15_000);
+			pids.push(await pidFrom(join(directory, "shell")), await pidFrom(join(directory, "inner")));
+			if (how === "sigkill") host.kill("SIGKILL");
+			await exited;
+			// The command was started with a 2 s execution timeout before `ready`; allow a second for the kernel.
+			const deadline = ready + 3000;
+			while (pids.some(alive) && Date.now() < deadline) await sleep(20);
+			assert.deepEqual(pids.filter(alive), [], "processes outlived the host and their execution timeout");
+		} finally {
+			host.kill("SIGKILL");
+			for (const pid of pids) if (alive(pid)) process.kill(pid, "SIGKILL");
+			await rm(directory, { recursive: true, force: true });
+		}
+	},
+	30_000,
+);
