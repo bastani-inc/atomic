@@ -211,7 +211,10 @@ export function recordedCheckpoints(directory: string): number {
 	return observe(directory, (database) =>
 		Number(
 			database
-				.query("SELECT COUNT(*) AS count FROM wf_events WHERE json_extract(payload, '$.name') = 'checkpoint'")
+				// The tool's live record; a resumed attempt's replay of it is recorded under its own id (#4874).
+				.query(
+					"SELECT COUNT(*) AS count FROM wf_events WHERE json_extract(payload, '$.name') = 'checkpoint' AND json_extract(payload, '$.checkpointId') NOT LIKE '%tool-replay-meta:%'",
+				)
 				.get()!.count,
 		),
 	);

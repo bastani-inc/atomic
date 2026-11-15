@@ -47,7 +47,9 @@ async function planPart(
 	if (!hasDeletableLines(preparation)) return [];
 	const attempt = await planRegion(preparation);
 	if (attempt.kind === "planned") return validateDeletedRanges(attempt.ranges, preparation.region);
-	if (!isPolicyRefusal(attempt) || depth >= MAX_REFUSAL_SPLIT_DEPTH) return undefined;
+	// A part that fails for another reason stays undeleted; the other parts keep their plans (#4977).
+	if (!isPolicyRefusal(attempt)) return [];
+	if (depth >= MAX_REFUSAL_SPLIT_DEPTH) return undefined;
 	return planInParts(preparation, planRegion, depth + 1);
 }
 
@@ -73,8 +75,9 @@ async function planInParts(
  * Any other outcome, including an immediate input refusal, is returned as it is. A mid-stream
  * refusal is retried once. A retry that plans the region is returned; a retry that fails without
  * a refusal returns the original refusal, so the caller still falls back to a summary; a retry
- * that is refused again plans the region in parts. When the parts cannot be planned, or every part
- * is skipped, the retry's refusal is returned for the same fallback. Cancellation and the planning
+ * that is refused again plans the region in parts. A part that fails without a refusal is left
+ * undeleted while the other parts keep their deletions. When a part is still refused at the deepest
+ * split, or no part deletes anything, the retry's refusal is returned for the same fallback. Cancellation and the planning
  * time limit surface as a throw from `planRegion`.
  */
 export async function planWithRefusalRecovery(

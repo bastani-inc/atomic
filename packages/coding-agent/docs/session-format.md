@@ -504,7 +504,7 @@ for (const stage of stages.filter((session) => session.internal)) {
 - `setSessionFile(path)` - Switch to a JSONL file directly. For ID-based loading, use `SessionManager.open(store, sessionId)` to obtain a new manager.
 - `createBranchedSession(leafId)` - Extract a branch into a new session in the same store
 - `forkTo(cwd, targetStoreOrDir?, options?)` - Copy the conversation into a new session at the destination
-- `deleteSession(sessionId)` - Delete another session and its entries from the active store. Rejects for the session this manager has open; deleting an ID that is not in the store does nothing. `SessionStore.delete(sessionId)` is the unguarded store-level operation behind it.
+- `deleteSession(sessionId)` - Delete another session and its entries from the active store. Rejects for the session this manager has open, and with `SessionOpenElsewhereError` for a session another running Atomic session has open, in this process or another (a marker refreshed on a heartbeat: a row in a SQL store's `session_open` table, seen by every host sharing the store, or a file under the agent directory's `open-sessions` folder for JSONL sessions; a marker whose process ended or stopped refreshing for 60 seconds is ignored); deleting an ID that is not in the store does nothing. A session deleted while it runs fails its next save once with `SessionDeletedError` and saves nothing after that. `SessionStore.delete(sessionId)` is the unguarded store-level operation behind it.
 
 ### Instance Methods - Appending (all return a promise of the entry ID)
 - `appendMessage(message)` - Add message

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { SessionStore } from "@bastani/atomic/storage";
+import { stampCheckpointAttempt } from "../durable/attempt-identity.js";
 import type { DurableWorkflowBackend } from "../durable/backend.js";
 import type { PoolMutation } from "../durable/journal/pool-mutations.js";
 import { durableStageCheckpointMetadata } from "../durable/stage-topology.js";
@@ -35,16 +36,21 @@ export function workerSessionStore(input: {
 		if (boundary?.kind !== "stage" || !boundary.topology?.boundary)
 			throw new Error("Pool session has no owning boundary");
 		const prefix = boundary.topology.boundary.replayScope;
-		return {
-			...durableStageCheckpointMetadata(stage, durableRunTopology(run), run.stages.indexOf(stage)),
-			kind: "stage",
-			workflowId: input.root,
-			checkpointId: `${prefix}:session:${id}:${randomUUID()}`,
-			replayKey: `${prefix}:${stage.replayKey}`,
-			name: stage.name,
-			sessionId: id,
-			completedAt: Date.now(),
-		};
+		// Its id is new, so it is stamped with the root's attempt as every other checkpoint the worker commits (#4874).
+		return stampCheckpointAttempt<DurableStageCheckpoint>(
+			{
+				...durableStageCheckpointMetadata(stage, durableRunTopology(run), run.stages.indexOf(stage)),
+				kind: "stage",
+				workflowId: input.root,
+				checkpointId: `${prefix}:session:${id}:${randomUUID()}`,
+				replayKey: `${prefix}:${stage.replayKey}`,
+				name: stage.name,
+				sessionId: id,
+				completedAt: Date.now(),
+			},
+			input.backend.workflowAttempt?.(input.root) ?? 0,
+			undefined,
+		);
 	};
 	const write = async (mutation: PoolMutation) => {
 		const receipt = await input.commit(mutation);

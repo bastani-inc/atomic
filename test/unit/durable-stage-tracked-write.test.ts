@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { test } from "vitest";
 import { StorageUnavailableError } from "../../packages/coding-agent/src/core/storage/errors.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
+import { workflowAttemptOf } from "../../packages/workflows/src/durable/attempt-identity.js";
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { decodeStream, moduleDir, readStreamText, spawnProcess } from "../helpers/runtime.js";
@@ -93,7 +94,10 @@ for (const boundary of ["tool", "task", "prompt", "ui", "checkpoint", "finalize"
 		assert.equal(callbacks, 0);
 		if (boundary !== "finalize") assert.equal(observed, failure);
 		assert.equal(
-			backend.listCheckpoints(options.runId).some((checkpoint) => checkpoint.kind === "ui"),
+			// The resume's attempt record is a reserved ui-kind record, not a prompt answer (#4874).
+			backend
+				.listCheckpoints(options.runId)
+				.some((checkpoint) => checkpoint.kind === "ui" && workflowAttemptOf(checkpoint) === undefined),
 			false,
 		);
 		assert.equal(

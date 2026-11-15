@@ -108,6 +108,42 @@ describe("post-tool compaction preflight", () => {
 		expect(continueSpy).not.toHaveBeenCalled();
 		expect(harness.session.getLastAssistantText()).toBe("completed after compaction");
 	});
+	test("an overflow in the same millisecond as the post-tool boundary still recovers (#4977)", async () => {
+		// Every timestamp equal: only branch order can tell the overflow is newer than the boundary.
+		vi.useFakeTimers({ toFake: ["Date"], now: new Date("2026-11-15T00:00:00.000Z") });
+		try {
+			const harness = await createHarnessWithExtensions({
+				contextWindow: 1_000,
+				settings: {
+					compaction: { enabled: true, reserveTokens: 200, compression_ratio: 0.5, preserve_recent: 2 },
+				},
+				responses: [
+					{
+						toolCalls: [{ id: "call-same-ms", name: "large_result", args: {} }],
+						usage: { input: 700, output: 20, totalTokens: 720 },
+					},
+					{ stopReason: "error", error: "prompt is too long" },
+					"recovered after overflow",
+				],
+				baseToolsOverride: { large_result: largeResultTool },
+				extensionFactories: [compactOffline],
+			});
+			harnesses.push(harness);
+			await wireHarness(harness);
+
+			await harness.session.prompt(longPrompt);
+			await harness.session._awaitPendingPostCompactionContinuation();
+
+			expect(harness.eventsOfType("compaction_start").map((event) => event.reason)).toEqual([
+				"threshold",
+				"overflow",
+			]);
+			expect(harness.faux.callCount).toBe(3);
+			expect(harness.session.getLastAssistantText()).toBe("recovered after overflow");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 	test("records and clears the active reason for mid-turn post-tool compaction", async () => {
 		const gate = createPostToolCompactionGate();
 		const harness = await createHarnessWithExtensions({
@@ -358,17 +394,20 @@ describe("post-tool compaction preflight", () => {
 			extension: ((pi) => pi.on("session_before_compact", () => ({ cancel: true }))) satisfies ExtensionFactory,
 			aborted: true,
 			error: "cancelled",
+			failBoundaryWrite: false,
 		},
 		{
+			// Empty extension text now falls through to the planner (#4977); a boundary that cannot be
+			// written is still a failure.
 			name: "failure",
-			extension: ((pi) =>
-				pi.on("session_before_compact", () => ({ compactedText: "  \n" }))) satisfies ExtensionFactory,
+			extension: compactOffline,
 			aborted: false,
-			error: "No compacted text provided",
+			error: "session storage is unavailable",
+			failBoundaryWrite: true,
 		},
 	])(
 		"surfaces post-tool compaction $name without sending the follow-up request",
-		async ({ extension, aborted, error }) => {
+		async ({ extension, aborted, error, failBoundaryWrite }) => {
 			const harness = await createHarnessWithExtensions({
 				contextWindow: 1_000,
 				settings: {
@@ -386,6 +425,11 @@ describe("post-tool compaction preflight", () => {
 			});
 			harnesses.push(harness);
 			await wireHarness(harness);
+			if (failBoundaryWrite) {
+				harness.sessionManager.appendCompaction = async () => {
+					throw new Error("session storage is unavailable");
+				};
+			}
 
 			await harness.session.prompt(longPrompt);
 

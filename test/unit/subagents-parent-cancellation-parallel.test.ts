@@ -506,7 +506,9 @@ test("parallel executor attributes shared progress.md only to the first progress
 			undefined,
 			executorContext(root),
 		);
-		assert.equal(captured[0]?.path, join(root, "progress.md"));
+		const runId = result.details?.runId;
+		assert.ok(runId);
+		assert.equal(captured[0]?.path, join(root, "subagent-artifacts", "progress", runId, "progress.md"));
 		assert.equal(captured[1]?.path, undefined);
 		assert.ok(!result.isError && captured.every((row) => /Update progress at:/.test(row.task)));
 	} finally {
@@ -539,12 +541,12 @@ test("artifacts-disabled parallel cancel cites the surviving shared progress.md"
 			expandTilde: (value) => value,
 			discoverAgents: () => ({ agents: [{ ...sampleAgent(), defaultProgress: true }] }),
 			runtime: {
-				runSync: async (_cwd, _agents, agentName, task) => {
-					const progressPath = join(_cwd, "progress.md");
-					writeTextSync(progressPath, "# Progress\n\n- Shared parallel finding\n");
+				runSync: async (_cwd, _agents, agentName, task, options) => {
+					if (options.progressPath)
+						writeTextSync(options.progressPath, "# Progress\n\n- Shared parallel finding\n");
 					const recovered = recoverCancelledChildOutput({
-						progressPath,
-						progressArtifactPath: progressPath,
+						progressPath: options.progressPath,
+						progressArtifactPath: options.progressArtifactPath,
 						toolCount: 4,
 					});
 					return {
@@ -611,11 +613,10 @@ test("parallel cancel cites a precreated progress.md only because the file exist
 			expandTilde: (value) => value,
 			discoverAgents: () => ({ agents: [{ ...sampleAgent(), defaultProgress: true }] }),
 			runtime: {
-				runSync: async (_cwd, _agents, agentName, task) => {
-					const progressPath = join(_cwd, "progress.md");
+				runSync: async (_cwd, _agents, agentName, task, options) => {
 					const recovered = recoverCancelledChildOutput({
-						progressPath,
-						progressArtifactPath: progressPath,
+						progressPath: options.progressPath,
+						progressArtifactPath: options.progressArtifactPath,
 					});
 					return {
 						...cancelledExecutorResult(agentName, task),

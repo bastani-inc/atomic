@@ -37,7 +37,10 @@ async function createSavedSession(options: Parameters<typeof createHarness>[0] =
 		errors,
 		/** Roles of the messages reported as unsaved; undefined marks any other error. */
 		unsavedRoles: () => errors.map((error) => PERSISTENCE_ERROR.exec(error)?.[1]),
-		/** Append to the session file as a second writer: every later append of this session conflicts. */
+		/**
+		 * Append to the session file as a second writer: the session's next append fails with a conflict, once; later
+		 * appends go on after the second writer's entry (#4970).
+		 */
 		writeAsSecondWriter: async () => {
 			const other = await SessionManager.open(sessionManager.getSessionFile()!, sessionDir);
 			await other.appendCustomEntry("other-writer", {});
@@ -854,30 +857,25 @@ describe("AgentSession actionable boundaries", () => {
 				assert.equal(saved.harness.faux.state.callCount, 1);
 				assert.equal(saved.saveAttempts(PROTECTED_RECONCILIATION_CUSTOM_TYPE), 1, "the run retries no write");
 
-				// #3105: disposal makes one final write of the hidden turn and fails with only its cause.
-				await assert.rejects(settlesWithin(saved.harness.session.dispose()), (error) => {
-					assert.ok(error instanceof AggregateError);
-					assert.equal((error as { code?: unknown }).code, "ShutdownFailed");
-					assert.deepEqual(
-						error.errors.map((component: Error) => (component.cause as Error | undefined)?.name),
-						["SessionConflictError"],
-					);
-					return true;
-				});
+				// #3105: disposal makes one final write of the hidden turn. The conflict was reported once, when the run
+				// stopped, and the session took the second writer's entry in, so that write is saved (#4970).
+				await settlesWithin(saved.harness.session.dispose());
 				assert.equal(saved.saveAttempts(PROTECTED_RECONCILIATION_CUSTOM_TYPE), 2);
 				assert.deepEqual(saved.unsavedRoles(), ["custom"], "disposal reports no second error");
-				// The saved card keeps its recovery marker without a saved hidden turn, so a resume replays that turn.
+				// The saved card and its hidden turn are both saved, after the second writer's entry.
 				const reopened = await SessionManager.open(
 					saved.harness.sessionManager.getSessionFile()!,
 					saved.harness.sessionManager.getSessionDir(),
 				);
-				const customEntries = reopened.getEntries().filter((entry) => entry.type === "custom_message");
 				assert.deepEqual(
-					customEntries.map((entry) => [entry.customType, entry.protectedReconciliation]),
-					[[NOTICE, { delivery: "steer" }]],
+					reopened
+						.getEntries()
+						.flatMap((entry) =>
+							entry.type === "custom_message" || entry.type === "custom" ? [entry.customType] : [],
+						),
+					[NOTICE, "other-writer", PROTECTED_RECONCILIATION_CUSTOM_TYPE],
 				);
 			} finally {
-				// Disposal's rejection is asserted above; cleanup still removes the fixture.
 				await saved.cleanup().catch(() => {});
 			}
 		});

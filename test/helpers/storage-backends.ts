@@ -34,7 +34,12 @@ export interface StorageBackend {
 	readonly name: string;
 	/** Why this backend's rows do not run here, or undefined when they do. */
 	readonly skipReason: string | undefined;
-	openScope(): Promise<StorageBackendScope>;
+	/**
+	 * `facadeTables`: the scope also starts and ends without the tables the facade suite creates under fixed names. Only
+	 * that suite asks for it, so a scope another file opens on a shared server never drops a table the facade suite,
+	 * running beside it, is using.
+	 */
+	openScope(options?: { readonly facadeTables?: boolean }): Promise<StorageBackendScope>;
 	/** Runs `operation` while every rollback this backend's driver sends fails with `cause`. */
 	withRollbackFailure(cause: Error, operation: () => Promise<void>): Promise<void>;
 }
@@ -108,12 +113,13 @@ export const sqliteFileBackend: StorageBackend = {
 const FACADE_SUITE_TABLES = ["children", "parents", "items", "concurrent_items", "integers", "reals", "texts", "blobs"];
 
 /** Drops the scope's tables on a shared libSQL server; a table another still references is retried after it. */
-async function dropLibsqlScope(database: SqliteDatabase, prefix: string): Promise<void> {
+async function dropLibsqlScope(database: SqliteDatabase, prefix: string, facadeTables: boolean): Promise<void> {
+	const fixed = facadeTables ? FACADE_SUITE_TABLES : [];
 	const rows = await database.all(
-		`SELECT name FROM sqlite_master WHERE type = 'table' AND (substr(name, 1, length(?)) = ? OR name IN (${FACADE_SUITE_TABLES.map(() => "?").join(", ")}))`,
+		`SELECT name FROM sqlite_master WHERE type = 'table' AND (substr(name, 1, length(?)) = ? OR name IN (${fixed.map(() => "?").join(", ")}))`,
 		prefix,
 		prefix,
-		...FACADE_SUITE_TABLES,
+		...fixed,
 	);
 	let pending = rows.map((row) => String(row.name));
 	while (pending.length > 0) {
@@ -136,14 +142,14 @@ function libsqlServerBackend(): StorageBackend {
 	return {
 		name: "libSQL server (sqld)",
 		skipReason: "skipReason" in server ? server.skipReason : undefined,
-		async openScope() {
+		async openScope(options) {
 			if (!("url" in server)) throw new Error("the libSQL server backend is skipped here");
 			const { url } = server;
 			const prefix = scopePrefix();
 			const cleanup = async () => {
 				const database = await openLibsqlDatabase({ url });
 				try {
-					await dropLibsqlScope(database, prefix);
+					await dropLibsqlScope(database, prefix, options?.facadeTables === true);
 				} finally {
 					await database.close();
 				}
@@ -250,7 +256,7 @@ export const storageBackends: readonly StorageBackend[] = [sqliteFileBackend, li
 /** The facade suite's subject on `backend`: one connection, reopened as a fresh one on the same scope. */
 export function databaseSubject(backend: StorageBackend): WithSqliteDatabaseSubject {
 	return async (body) => {
-		const scope = await backend.openScope();
+		const scope = await backend.openScope({ facadeTables: true });
 		try {
 			let database = await scope.connect();
 			await body({

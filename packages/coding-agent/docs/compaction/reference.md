@@ -125,10 +125,10 @@ All background compaction errors extend `BackgroundCompactionError`, exported fr
 
 | Class | `code` | When | Fields | What to do |
 |---|---|---|---|---|
-| `BackgroundCompactionPlanningError` | `planner-failed` | Every planner and fallback model failed, or a `session_before_compact` handler returned empty text; `cause` holds the underlying error | `upToEntryId`, `attempt` | Nothing; Atomic retries with backoff. Check the compaction model and its credentials if it repeats |
+| `BackgroundCompactionPlanningError` | `planner-failed` | Every planner and fallback model failed; `cause` holds the underlying error | `upToEntryId`, `attempt` | Nothing; Atomic retries with backoff. Check the compaction model and its credentials if it repeats |
 | `BackgroundCompactionNotCompactableError` | `not-compactable` | The frozen history had too few compactable lines | `upToEntryId` | Nothing; a later turn tries again |
 | `BackgroundCompactionPersistError` | `result-persist-failed` | Saving the result to session storage failed; `cause` holds the storage error | `upToEntryId` | Check that session storage is writable; Atomic retries with backoff |
-| `BackgroundCompactionCommitError` | `commit-failed` | Applying a saved result as a boundary failed (the backup or the boundary write); `cause` holds the storage error. The turn continues without it | `upToEntryId`, `resultEntryId`, `attempt` | Check that session storage is writable; Atomic retries applying the same result with backoff, and a foreground compaction at the `reserveTokens` threshold or on overflow does not wait for the backoff. If the store reported an unknown outcome and the boundary was in fact written, the result counts as applied when the session is reopened |
+| `BackgroundCompactionCommitError` | `commit-failed` | Applying a saved result as a boundary failed (the boundary write; a failed backup is skipped); `cause` holds the storage error. The turn continues without it | `upToEntryId`, `resultEntryId`, `attempt` | Check that session storage is writable; Atomic retries applying the same result with backoff, and a foreground compaction at the `reserveTokens` threshold or on overflow does not wait for the backoff. If the store reported an unknown outcome and the boundary was in fact written, the result counts as applied when the session is reopened |
 | `BackgroundCompactionDiscardedError` | `result-discarded` | A saved result no longer fits the branch | `upToEntryId`, `reason`: `superseded`, `off-branch`, `context-edited` or `malformed` | Nothing; history is unchanged and a later turn compacts again if needed |
 | `BackgroundCompactionConfigError` | `invalid-setting` | `compaction.background` is not a boolean, or `compaction.backgroundThresholdPercent` is not a number above 0 and below 100 | `source` (`settings` or `sdk`), `field`, `reason` | Fix the named setting, for example in `/settings`. Until then background compaction is off; the session still starts and runs |
 
@@ -143,14 +143,14 @@ pi.on("session_before_compact", async (event) => {
   const { reason, parameters, preparation, branchEntries, signal } = event;
   if (signal.aborted) return { cancel: true };
 
-  // Optional offline override. It must contain non-whitespace text.
+  // Optional offline override. Empty or whitespace text counts as no override.
   if (reason === "manual" && branchEntries.length > 100) {
     return { compactedText: preparation.region.lines.slice(0, 40).join("\n") };
   }
 });
 ```
 
-`preparation` is a deep-frozen clone. An override changes only the compacted region text; Atomic retains the prepared boundary and persists the supplied text verbatim. Empty/whitespace text is rejected. The override path does not require provider credentials.
+`preparation` is a deep-frozen clone. An override changes only the compacted region text; Atomic retains the prepared boundary and persists the supplied text verbatim. Empty or whitespace text is no override: Atomic plans the region itself, as if the handler had returned nothing. The override path does not require provider credentials.
 
 For background compaction the hook runs when the task starts, with `reason: "threshold"` and `branchEntries` set to the frozen history the task compacts, not the whole branch. `session_compact` runs when the result is applied at a turn boundary.
 
