@@ -61,7 +61,7 @@ function materializeBase(commit: string): string {
 			.replaceAll(/from "(\.{1,2}\/[^"]+)"/g, (_match, specifier: string) => `from "${resolve(from, specifier)}"`)
 			.replaceAll(
 				'from "@bastani/atomic/storage"',
-				`from "${join(REPO, "packages/coding-agent/src/core/storage/index.ts")}"`,
+				() => `from "${join(REPO, "packages/coding-agent/src/core/storage/index.ts")}"`,
 			);
 		return { name: path.split("/").at(-1)!, rewritten };
 	});
