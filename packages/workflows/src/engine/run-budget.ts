@@ -1,5 +1,7 @@
 import {
 	type BudgetReport,
+	costFromUnits,
+	costUnits,
 	type EffectiveBudget,
 	enforceDurationBudget,
 	enforceUsageBudget,
@@ -113,11 +115,13 @@ export function createRunBudgetController(input: {
 	// #4859: charge each stage's growth, not the tree total. Replayed stages leave
 	// the meter on resume, so a total can fall below its baseline and hide new spend.
 	const stageMarks = new Map<string, UsageCounters>();
+	/** Growth per field since the last mark; `cost` is in whole cost units so many small charges sum exactly. */
 	const stageGrowth = (tree: RunUsageTree): Record<(typeof usageFields)[number], number> => {
 		const growth = mapFields(usageFields);
 		for (const [key, usage] of meter_stages(tree)) {
 			const mark = stageMarks.get(key);
-			for (const field of usageFields) growth[field] += Math.max(0, usage[field] - (mark?.[field] ?? 0));
+			for (const field of counterFields) growth[field] += Math.max(0, usage[field] - (mark?.[field] ?? 0));
+			growth.cost += Math.max(0, costUnits(usage.cost) - costUnits(mark?.cost ?? 0));
 			stageMarks.set(
 				key,
 				mark === undefined ? usage : mapFields(usageFields, (field) => Math.max(mark[field], usage[field])),
@@ -158,13 +162,15 @@ export function createRunBudgetController(input: {
 		const external = input.externalUsage?.();
 		if (external !== undefined) {
 			const growth = mapFields(usageFields, (field) => Math.max(0, external[field] - externalBaseline[field]));
+			const costGrowth = Math.max(0, costUnits(external.cost) - costUnits(externalBaseline.cost));
 			externalBaseline = mapFields(usageFields, (field) => Math.max(externalBaseline[field], external[field]));
-			for (const field of usageFields) delta[field] += growth[field];
+			for (const field of counterFields) delta[field] += growth[field];
+			delta.cost += costGrowth;
 		}
 		charged = {
 			baseline,
 			tokens: charged.tokens + delta.input + delta.output,
-			cost: charged.cost + delta.cost,
+			cost: costFromUnits(costUnits(charged.cost) + delta.cost),
 			perCounter: mapFields(counterFields, (field) => charged.perCounter[field] + delta[field]),
 			...(external !== undefined || previousAccounting?.externalBaseline !== undefined ? { externalBaseline } : {}),
 		};
@@ -198,6 +204,9 @@ export function createRunBudgetController(input: {
 		usage?: WorkflowModelUsage,
 		delivered = true,
 	): WorkflowBudgetExceededError => {
+		// The wrap-up turn ran after the last checkpoint: charge its stage growth now, before the stop
+		// is persisted. A resume treats every stage in the tree as already charged (#5053).
+		if (delivered && usageEnabled) measure();
 		updateState({
 			systemOwnedStop: true,
 			...(delivered ? { wrapUpDelivered: true, wrapUpCompleted: true } : {}),
