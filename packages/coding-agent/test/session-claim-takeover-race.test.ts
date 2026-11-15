@@ -1,5 +1,6 @@
 /**
- * Concurrent takeovers of a dead session claim (#5179): takeovers take turns under the owner-checked takeover mutex,
+ * Concurrent takeovers of a dead session claim (#5179): without the native advisory lock (#5193), takeovers take turns
+ * under the owner-checked directory takeover mutex,
  * and a dead claim is moved aside and removed only when the moved record is still the dead one, so at most one process
  * ever holds a session. Real child processes claim the session while this process is held at a check-then-act point.
  */
@@ -70,9 +71,13 @@ vi.mock("node:fs", async (importOriginal) => {
 });
 
 const { claimSession } = await import("../src/core/session-claims.ts");
+const { setNativeLocksForTesting } = await import("../src/core/lock-takeover.ts");
 const { SessionAlreadyOpenError } = await import("../src/core/session-manager-errors.ts");
 
 const SESSION_CLAIMS_MODULE = fileURLToPath(new URL("../src/core/session-claims.ts", import.meta.url));
+const LOCK_TAKEOVER_MODULE = fileURLToPath(new URL("../src/core/lock-takeover.ts", import.meta.url));
+/** Whether this process and the others it starts take over through the native advisory lock (#5193). */
+let native = false;
 /** How long another process may take to report how its claim went. */
 const CHILD_TIMEOUT_MS = 60_000;
 
@@ -87,6 +92,8 @@ beforeEach(() => {
 	sessionId = `race-${randomUUID()}`;
 	claimFile = join(agentDir, "session-claims", `${sessionId}.json`);
 	race.claimFile = claimFile;
+	native = false;
+	setNativeLocksForTesting(null);
 	race.beforeClaimRemoval = undefined;
 	race.beforeMutexRemoval = undefined;
 	mkdirSync(join(agentDir, "session-claims"), { recursive: true });
@@ -95,6 +102,7 @@ beforeEach(() => {
 
 afterEach(() => {
 	race.claimFile = undefined;
+	setNativeLocksForTesting(undefined);
 	while (releases.length > 0) releases.pop()?.();
 	for (const child of children.splice(0)) child.kill("SIGKILL");
 	rmSync(agentDir, { recursive: true, force: true });
@@ -122,6 +130,8 @@ function anotherProcessClaims(): () => Outcome | undefined {
 	const script = `
 		import { writeFileSync } from "node:fs";
 		import { claimSession } from ${JSON.stringify(SESSION_CLAIMS_MODULE)};
+		import { setNativeLocksForTesting } from ${JSON.stringify(LOCK_TAKEOVER_MODULE)};
+		if (!${native}) setNativeLocksForTesting(null);
 		let outcome;
 		try {
 			claimSession(${JSON.stringify(sessionId)}, { agentDir: ${JSON.stringify(agentDir)} });
@@ -236,19 +246,20 @@ describe("concurrent takeovers of a dead session claim (#5179)", () => {
 		assert.equal(existsSync(mutex), false);
 	});
 
-	test("a claim moved aside that is not the dead one is neither removed nor put back (#5179)", () => {
+	test("a claim moved aside that is not the dead one is linked back while no claim is in its place (#5193)", () => {
+		native = true;
+		setNativeLocksForTesting(undefined);
 		let live: Outcome[] = [];
 		race.beforeClaimRemoval = () => {
 			// Only a remover outside the takeover lock could swap the claim this late: another process claims it.
 			rmSync(claimFile);
 			live = outcomesOf([anotherProcessClaims()]);
 		};
-		thisProcessClaims();
+		assert.deepEqual(thisProcessClaims(), { held: false, error: "SessionAlreadyOpenError" });
 		assert.equal(live.length, 1);
 		assert.ok(live[0]!.held);
 		const asides = readdirSync(join(agentDir, "session-claims")).filter((name) => name.endsWith(".dead"));
-		assert.equal(asides.length, 1, "the claim that was moved is left aside");
-		const moved = JSON.parse(readFileSync(join(agentDir, "session-claims", asides[0]!), "utf8")) as { pid: number };
-		assert.equal(moved.pid, live[0]!.pid, "the live claim that was moved aside is not removed");
+		assert.deepEqual(asides, [], "the claim that was moved is not left aside");
+		assert.equal(claimHolderPid(), live[0]!.pid, "the live claim is back in place");
 	});
 });

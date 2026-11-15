@@ -9,6 +9,15 @@
  */
 export declare const __napiBindingTarget: 'native' | 'wasm32-wasi' | 'wasm32-wasip1' | undefined
 
+/**
+ * An exclusive advisory lock this process holds on an open file (#5193), released by {@link AdvisoryLock.release},
+ * when the object is collected, or by the kernel when this process dies.
+ */
+export declare class AdvisoryLock {
+  /** Releases the lock and closes its file; releasing it again does nothing. */
+  release(): void
+}
+
 export declare class HostSession {}
 
 export declare class OwnerLease {}
@@ -680,6 +689,12 @@ export interface PtyStartOptions {
   closeStdinAfterCommand?: boolean
 }
 
+/**
+ * Renames `from` to `to` only while nothing is at `to` (#5193): `false`, with nothing moved, when something is there,
+ * so a moved item is put back without ever replacing another. Throws on any other failure.
+ */
+export declare function renameNoReplace(from: string, to: string): boolean
+
 export interface ReportReceipt {
   reportId: string
   cursor: Cursor
@@ -815,6 +830,13 @@ export type TaskResult =
  * absent, making timer-driven termination unrepresentable.
  */
 export type TerminationCause = 'abort' | 'interrupt' | 'fail-fast-skip' | 'parent-shutdown'
+
+/**
+ * Takes the exclusive advisory lock of the file at `path` (#5193): `flock` on Unix, `LockFileEx` on Windows. The
+ * file is created when missing and never truncated or removed. Tried at once, then again until `waitMs` has passed;
+ * `null` while another holder keeps it. Throws when the file cannot be opened or locked.
+ */
+export declare function tryAdvisoryLock(path: string, waitMs: number): AdvisoryLock | null
 
 export type WaitOutcome =
   | { kind: 'settled'; taskId: string; result: TaskResult }

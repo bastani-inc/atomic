@@ -10,6 +10,7 @@ import {
 	type SubagentToolResult,
 } from "../../shared/types.js";
 import { inspectInProcessChildStatus } from "../inprocess/control-status.js";
+import { registerNamedRunWorktrees } from "./run-worktrees.js";
 import { createExecutionBurstDispatcher } from "./subagent-executor-burst.js";
 import { prepareExecutionContext, refuseSubagentChildDelegation } from "./subagent-executor-context.js";
 import { resolveRequestedCwd } from "./subagent-executor-cwd.js";
@@ -24,6 +25,7 @@ import {
 	type ResolvedExecutorDeps,
 	type SubagentParamsLike,
 } from "./subagent-executor-types.js";
+import { namedWorktreesByIndex, prepareNamedWorktrees } from "./subagent-executor-worktree.js";
 import {
 	controlSubagentChildren,
 	subagentChildrenAwaitingResume,
@@ -273,9 +275,13 @@ export function createSubagentExecutor(rawDeps: ExecutorDeps): {
 		const childRefusal = refuseSubagentChildDelegation(ctx, inferExecutionMode(params));
 		if (childRefusal) return childRefusal;
 
-		const built = prepareExecutionContext({ params: paramsWithResolvedCwd, ctx, signal, onUpdate, deps });
+		const named = prepareNamedWorktrees(paramsWithResolvedCwd, ctx.cwd);
+		if (named.error) return named.error;
+		const built = prepareExecutionContext({ params: named.params, ctx, signal, onUpdate, deps });
 		if (built.error) return built.error;
 		const prepared = built.prepared!;
+		// A named worktree is recorded with its child, like a `worktree: true` one, but never removed (#5202).
+		const namedWorktrees = registerNamedRunWorktrees(prepared.runId, namedWorktreesByIndex(prepared.effectiveParams));
 		try {
 			if (prepared.hasTasks && prepared.effectiveParams.tasks) {
 				const result = await runParallelPath(prepared.execData, deps);
@@ -288,6 +294,7 @@ export function createSubagentExecutor(rawDeps: ExecutorDeps): {
 		} catch (error) {
 			return toExecutionErrorResult(prepared.effectiveParams, error);
 		} finally {
+			namedWorktrees.release();
 			if (prepared.foregroundControl) {
 				clearPendingForegroundControlNotices(deps.state, prepared.runId);
 				deps.state.foregroundControls.delete(prepared.runId);

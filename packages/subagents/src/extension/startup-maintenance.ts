@@ -5,7 +5,8 @@ import { cleanupAllArtifactDirs, cleanupOldArtifacts, getArtifactsDir } from "..
 import type { SubagentState } from "../shared/types.js";
 
 export interface SubagentStartupMaintenance {
-	scheduleStartupCleanup(): void;
+	/** Schedules the startup scans; `onDone` runs once the deferred global scan has run. */
+	scheduleStartupCleanup(onDone?: () => void): void;
 	cleanupSessionArtifactsDeferred(ctx: ExtensionContext): void;
 	stop(): void;
 }
@@ -103,13 +104,13 @@ export function createSubagentStartupMaintenance(
 	};
 
 	return {
-		scheduleStartupCleanup() {
+		scheduleStartupCleanup(onDone) {
 			schedule(() => {
 				swallowCleanup(() => cleanupOldSubagentRuntimeDirs(options.artifactCleanupDays));
-				scheduleDelayed(
-					() => swallowCleanup(() => cleanupAllArtifactDirs(options.artifactCleanupDays, contextSessionsRoots)),
-					STARTUP_ARTIFACT_SCAN_DELAY_MS,
-				);
+				scheduleDelayed(() => {
+					swallowCleanup(() => cleanupAllArtifactDirs(options.artifactCleanupDays, contextSessionsRoots));
+					onDone?.();
+				}, STARTUP_ARTIFACT_SCAN_DELAY_MS);
 			});
 		},
 		cleanupSessionArtifactsDeferred(ctx) {
@@ -129,5 +130,52 @@ export function createSubagentStartupMaintenance(
 			for (const cancel of cancelTasks) cancel();
 			cancelTasks.clear();
 		},
+	};
+}
+
+/** Which session's maintenance runs the process's startup scans, which sessions wait to, and whether they ran. */
+interface StartupCleanupClaim {
+	holder?: SubagentStartupMaintenance;
+	readonly waiting: Set<SubagentStartupMaintenance>;
+	done: boolean;
+}
+
+const STARTUP_CLEANUP_CLAIM = Symbol.for("atomic.subagents.startupCleanupClaim");
+
+function startupCleanupClaim(): StartupCleanupClaim {
+	const scope = globalThis as { [STARTUP_CLEANUP_CLAIM]?: StartupCleanupClaim };
+	scope[STARTUP_CLEANUP_CLAIM] ??= { waiting: new Set(), done: false };
+	return scope[STARTUP_CLEANUP_CLAIM];
+}
+
+function holdStartupCleanup(claim: StartupCleanupClaim, maintenance: SubagentStartupMaintenance): void {
+	claim.holder = maintenance;
+	maintenance.scheduleStartupCleanup(() => {
+		claim.done = true;
+		claim.waiting.clear();
+		if (claim.holder === maintenance) claim.holder = undefined;
+	});
+}
+
+/**
+ * Schedules the startup scans with `maintenance` unless another session's maintenance already holds them or they
+ * already ran: they are process-wide housekeeping, so a supervisor launching hundreds of children runs them once, not
+ * once per child (#5186). Returns the release `maintenance` calls when it stops: a holder that stops before they ran
+ * hands them to a session still waiting for them.
+ */
+export function claimStartupCleanup(maintenance: SubagentStartupMaintenance): () => void {
+	const claim = startupCleanupClaim();
+	if (claim.done) return () => undefined;
+	if (claim.holder === undefined) holdStartupCleanup(claim, maintenance);
+	else claim.waiting.add(maintenance);
+	return () => {
+		claim.waiting.delete(maintenance);
+		if (claim.holder !== maintenance) return;
+		claim.holder = undefined;
+		if (claim.done) return;
+		const [next] = claim.waiting;
+		if (next === undefined) return;
+		claim.waiting.delete(next);
+		holdStartupCleanup(claim, next);
 	};
 }

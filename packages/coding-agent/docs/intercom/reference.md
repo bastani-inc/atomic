@@ -77,6 +77,12 @@ A reopened session or a restored background subagent registers under the Interco
 
 Each recipient gets its own direct send, with the same delivery, refusals, receipts, and reconnect retries as sending to it by name. A paused subagent's message is held for it exactly as a direct send to it would be. The result lists every recipient with its outcome: `delivered`, `queued`, `not delivered` with the reason, or `outcome unknown`. It is an error only when no recipient was reached. A glob that matches no visible session is an error that lists the closest visible names, and `subagents:` with no such child is an error too.
 
+A name glob that matches more than one session, `*` alone included, needs `broadcast: true`. Without it nothing is sent: the result is an error that lists every match, so you can send to one by its exact name or repeat the send with `broadcast: true`. A glob that matches exactly one session sends to it without the flag. `subagents:*`, `subagents:<runId>/*` and `workflow:` paths always reach every match and need no flag.
+
+```typescript
+intercom({ action: "send", to: "subagent-worker-*", message: "Scope changed", broadcast: true })
+```
+
 Patterns match only sessions you can already see in `intercom list`: they never reach outside your groups. `ask` and `replyTo` need one exact target, because a reply to a broadcast question would be ambiguous, so a pattern there is an error. Workflow-stage paths below keep their own pattern rules, including sticky delivery to future stages; plain session patterns match live sessions only.
 
 Workflow stages use the canonical `workflow:<rootRunId>/<segment>[/<segment>...]` path printed by `intercom list` and workflow status surfaces. An exact target works while the row is `PENDING` and after it becomes `RUNNING`. Each segment may be a stage name, run id, or glob: `*` matches one segment and may be embedded, while `**` matches any depth.
