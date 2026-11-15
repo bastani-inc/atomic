@@ -345,6 +345,8 @@ test("a worker that dies holding the last attempt of its child fails only that c
 			const worker = forked.at(-1)!;
 			if (attempt > 1) await worker.request({ kind: "ready" });
 			assert.ok((await worker.request({ kind: "claim" })).value, `attempt ${attempt} was claimed`);
+			// The worker confirms its claim, as a real worker's first heartbeat does: only then does losing it count (#5034).
+			await worker.request({ kind: "heartbeat", reports: [] });
 			worker.kill("SIGKILL");
 			if (attempt < 3) while (forked.length < attempt + 1) await delay(5);
 		}
