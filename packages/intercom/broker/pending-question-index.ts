@@ -32,7 +32,24 @@ export class PendingQuestionIndex {
   writeLive(question: PendingQuestion): void {
     const senderReturnAddress = this.returnAddressOf(question.senderSessionId);
     if (this.away === undefined || senderReturnAddress === undefined || senderReturnAddress === "") return;
-    this.away.recordLive(question, senderReturnAddress, this.returnAddressOf(question.targetSessionId) ?? "");
+    this.away.recordLive(
+      question,
+      senderReturnAddress,
+      this.returnAddressOf(question.targetSessionId) ?? "",
+      this.isMovable(question),
+    );
+  }
+
+  private isMovable: (question: PendingQuestion) => boolean = () => false;
+
+  /** #4997: a live route whose peers may each come back on another broker, which it then moves to with them. */
+  movableWhen(check: (question: PendingQuestion) => boolean): void {
+    this.isMovable = check;
+  }
+
+  /** #4997: the kept asks between two sessions that may each come back on another broker, so they move with them. */
+  movableDormant(): PendingQuestion[] {
+    return this.away?.movable() ?? [];
   }
 
   forgetLive(questions: readonly PendingQuestion[]): void {
@@ -77,11 +94,17 @@ export class PendingQuestionIndex {
    * Keep questions whose peer is away until it is back. #4950: without `senderReturnAddress` (their recipient is the one
    * away), each keeps its asker's return address now, so its failure reaches it even if this broker goes first.
    */
-  keepDormant(questions: readonly PendingQuestion[], senderReturnAddress?: string): void {
+  keepDormant(
+    questions: readonly PendingQuestion[],
+    senderReturnAddress?: string,
+    /** #4997: the questions that may follow their peers to another broker, published to the shared state. */
+    movable?: (question: PendingQuestion) => boolean,
+  ): void {
     if (questions.length === 0) return;
     this.awayAsks().keep(
       questions,
       senderReturnAddress ?? ((question) => this.returnAddressOf(question.senderSessionId)),
+      movable,
     );
   }
 
@@ -89,9 +112,17 @@ export class PendingQuestionIndex {
    * Keep questions whose recipient is away until it is back. Returns those refused because that recipient's away queue
    * is full; their askers are connected, and are told at once (#4996).
    */
-  keepDormantForRecipient(questions: readonly PendingQuestion[]): PendingQuestion[] {
+  keepDormantForRecipient(
+    questions: readonly PendingQuestion[],
+    /** #4997: as `keepDormant`'s. */
+    movable?: (question: PendingQuestion) => boolean,
+  ): PendingQuestion[] {
     // #4950: each keeps its asker's return address too, so its failure reaches it even if this broker goes first.
-    return this.awayAsks().keepForAwayRecipient(questions, (question) => this.returnAddressOf(question.senderSessionId));
+    return this.awayAsks().keepForAwayRecipient(
+      questions,
+      (question) => this.returnAddressOf(question.senderSessionId),
+      movable,
+    );
   }
 
   /** The asker is away now too: its questions kept for an away recipient wait for it under its return address (#4761). */
@@ -107,6 +138,16 @@ export class PendingQuestionIndex {
   /** A kept question answered through its released asker's owner no longer waits for its peers (#4765). */
   forgetDormant(question: PendingQuestion): void {
     this.away?.forget(question);
+  }
+
+  /** #4997: whether the question still waits here for an away peer. */
+  isDormant(question: PendingQuestion): boolean {
+    return this.away?.isKept(question) === true;
+  }
+
+  /** #4997: the kept question no longer waits here, as another store took it. Whether it was still kept. */
+  takeDormant(question: PendingQuestion): boolean {
+    return this.away?.forget(question) === true;
   }
 
   /** Whether `replierSessionId` answers the kept question `questionId`, whose asker is away (#4751). */
@@ -138,7 +179,14 @@ export class PendingQuestionIndex {
    * Kept questions to a recipient that ended or can no longer answer. Their askers are away, so each gets a failed-ask
    * message held until it is back (#4751).
    */
-  failDormantForTarget(target: SessionInfo, reason: string, idPrefix: string, targetReturnAddress?: string): void {
+  failDormantForTarget(
+    target: SessionInfo,
+    reason: string,
+    idPrefix: string,
+    targetReturnAddress?: string,
+    /** #4997: leave the asks that move to the shared state, which fails them there, once. */
+    skipMovable = false,
+  ): void {
     const { live } = this.awayAsks().failForTarget(
       target,
       reason,
@@ -146,6 +194,7 @@ export class PendingQuestionIndex {
       this.failsThroughOwner,
       targetReturnAddress,
       this.askerConnected,
+      skipMovable,
     );
     // #4950: a connected asker's question routes again, so the recipient's end fails it on that route as it does today.
     for (const question of live) this.record(question.senderSessionId, question.targetSessionId, question.messageId);
@@ -327,6 +376,13 @@ export class PendingQuestionIndex {
     this.writeLive(question);
   }
 
+  private answered: (question: PendingQuestion) => void = () => {};
+
+  /** #4997: told of each ask answered on its route here. */
+  onAnswered(listener: (question: PendingQuestion) => void): void {
+    this.answered = listener;
+  }
+
 	/** Authorize only the exact reverse route of a broker-recorded live ask. */
 	matchesReply(senderSessionId: string, targetSessionId: string, replyTo: string): boolean {
 		return (
@@ -347,6 +403,7 @@ export class PendingQuestionIndex {
     if (routes.length === 0) this.questions.delete(replyTo);
     // #4765: a released subagent's ask can be kept for its away recipient while it is live again; answered, it is not.
     this.away?.forget({ messageId: replyTo, senderSessionId: targetSessionId, targetSessionId: senderSessionId });
+    this.answered({ messageId: replyTo, senderSessionId: targetSessionId, targetSessionId: senderSessionId });
     return true;
   }
 

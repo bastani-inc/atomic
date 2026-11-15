@@ -1116,6 +1116,7 @@ class JournalProjection {
 			failureRecoverability: undefined,
 			failureDisposition: undefined,
 			failedToolNodeId: undefined,
+			failedToolUnrecorded: undefined,
 			status,
 			transitionClaimId: status === rec.handle.status ? rec.handle.transitionClaimId : crypto.randomUUID(),
 			updatedAt: Math.max(Date.now(), rec.handle.updatedAt + 1),
