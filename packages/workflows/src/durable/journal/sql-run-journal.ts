@@ -834,10 +834,11 @@ export class SqlRunJournal implements RunJournal {
 				: undefined;
 		if (type === RUN_EVENT_TYPES.statusChanged && !(payload instanceof StorageUnavailableError))
 			validateText("status", status!);
-		const worktreeSnapshots =
+		const carried =
 			type === RUN_EVENT_TYPES.checkpointRecorded
-				? ((event.payload as { readonly worktreeSnapshots?: readonly WorktreeSnapshot[] }).worktreeSnapshots ?? [])
-				: [];
+				? (event.payload as { readonly worktreeSnapshots?: readonly WorktreeSnapshot[] }).worktreeSnapshots
+				: undefined;
+		const worktreeSnapshots = Array.isArray(carried) ? carried : [];
 		return { key, type, payload, guard, status, worktreeSnapshots };
 	}
 

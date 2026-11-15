@@ -3,7 +3,7 @@ import { dialectOf, type StorageDialect, type StorageJsonSource, type StorageTri
 import { StorageWriteLockTimeoutError } from "../storage/errors.js";
 import { applyStorageMigrations } from "../storage/migrations.js";
 import { renderStorageIdentifiers, storageMigrationTable, validateStoragePrefix } from "../storage/prefix.js";
-import { type WorkspaceCollectionError, WorkspaceSnapshotError } from "./errors.ts";
+import type { WorkspaceCollectionError } from "./errors.ts";
 import type { SnapshotBlob, SnapshotBlobStore, WorktreeSnapshot } from "./types.ts";
 
 /** Every blob hash a snapshot needs to be restored: its chain's patches and its bundle. */
@@ -11,6 +11,17 @@ export function snapshotBlobHashes(snapshot: WorktreeSnapshot): string[] {
 	const hashes = snapshot.chain.flatMap((link) => (link.patch === null ? [] : [link.patch]));
 	if (snapshot.bundle) hashes.push(snapshot.bundle.blob);
 	return [...new Set(hashes)];
+}
+
+/**
+ * The blob hashes a recorded snapshot names, read as the reference index reads them: a write never fails on a record
+ * whose chain or bundle is not well formed, which references nothing it cannot read.
+ */
+function wellFormedBlobHashes(snapshot: WorktreeSnapshot): string[] {
+	const chain: readonly WorktreeSnapshot["chain"][number][] = Array.isArray(snapshot?.chain) ? snapshot.chain : [];
+	const hashes = chain.flatMap((link) => (typeof link?.patch === "string" ? [link.patch] : []));
+	if (typeof snapshot?.bundle?.blob === "string") hashes.push(snapshot.bundle.blob);
+	return hashes;
 }
 
 export class MemorySnapshotBlobStore implements SnapshotBlobStore {
@@ -1003,7 +1014,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 * them after.
 	 */
 	async assertStored(transaction: SqliteExecutor, snapshots: readonly WorktreeSnapshot[]): Promise<void> {
-		const hashes = [...new Set(snapshots.flatMap(snapshotBlobHashes))];
+		const hashes = [...new Set(snapshots.flatMap(wellFormedBlobHashes))];
 		if (hashes.length === 0) return;
 		const rows = await transaction.all<SqliteRow & { hash: string }>(
 			`SELECT hash FROM ${this.table} AS b WHERE hash IN (SELECT value FROM ${this.dialect.jsonValues("?")}) AND (chunks = 0 OR chunks = (SELECT COUNT(*) FROM ${this.tables.blobChunks} AS c WHERE c.hash = b.hash))${this.dialect.lockClause("share")}`,
@@ -1011,7 +1022,10 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		);
 		const stored = new Set(rows.map((row) => row.hash));
 		const missing = hashes.find((hash) => !stored.has(hash));
-		if (missing !== undefined) throw new WorkspaceSnapshotError("blobs-collected", missing);
+		if (missing === undefined) return;
+		// Loaded only when a write is refused, so the storage entry does not load the workspace error family.
+		const { WorkspaceSnapshotError } = await import("./errors.ts");
+		throw new WorkspaceSnapshotError("blobs-collected", missing);
 	}
 
 	/**

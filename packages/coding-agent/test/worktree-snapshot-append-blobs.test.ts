@@ -12,7 +12,8 @@ import {
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.ts";
 import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.ts";
 import { snapshotBlobHashes } from "../src/core/worktree-snapshot/blob-store.ts";
-import { captureWorktreeSnapshot } from "../src/core/worktree-snapshot/capture.ts";
+import { captureWorktreeSnapshot, recordWorktreeCapture } from "../src/core/worktree-snapshot/capture.ts";
+import { WorkspaceSnapshotError } from "../src/core/worktree-snapshot/errors.ts";
 import { collectSnapshotGarbage } from "../src/core/worktree-snapshot/garbage.ts";
 import { restoreWorktreeSnapshot } from "../src/core/worktree-snapshot/restore.ts";
 import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../src/core/worktree-snapshot/settings.ts";
@@ -108,11 +109,113 @@ test("appending a snapshot whose blobs were collected is refused and writes noth
 	const { deleted } = await collectSnapshotGarbage(store.snapshotBlobs, { graceSeconds: 0 });
 	assert.deepEqual(deleted, snapshotBlobHashes(capture.snapshot));
 
+	await manager.appendSessionInfo("an entry before the snapshot");
+	const append = store.append.bind(store);
+	let appends = 0;
+	store.append = (...args) => {
+		appends++;
+		return append(...args);
+	};
 	await assert.rejects(manager.appendWorktreeSnapshot(clone, capture.snapshot.id, capture.snapshot), {
 		name: "WorkspaceSnapshotError",
 		code: "blobs-collected",
 	});
+	assert.equal(appends, 1, "a refused append wrote nothing, so the manager does not reconcile and try again");
 	assert.equal(manager.getLatestWorktreeSnapshots().size, 0);
 	const reopened = await SessionManager.open(store, manager.getSessionId());
 	assert.equal(reopened.getLatestWorktreeSnapshots().size, 0, "the store holds no head");
+});
+
+/** Records `clone`'s capture with `recordWorktreeCapture`, counting captures and the appends that were tried. */
+async function recordCounting(manager: SessionManager, store: SqlSessionStore, clone: string) {
+	const counts = { captures: 0, appends: 0 };
+	const recorded = recordWorktreeCapture(
+		store.snapshotBlobs,
+		async () => {
+			counts.captures++;
+			return captureWorktreeSnapshot(clone, { blobs: store.snapshotBlobs });
+		},
+		async (result) => {
+			counts.appends++;
+			if (result.status !== "captured") throw new Error(`unexpected ${result.status}`);
+			await manager.appendWorktreeSnapshot(clone, result.snapshot.id, result.snapshot);
+		},
+	);
+	return { counts, recorded };
+}
+
+test("a capture whose blobs were collected is recorded after storing them again, without capturing again (#5077)", async () => {
+	const { clone, store, manager } = await openSession();
+	sandbox.write(join(clone, "a.txt"), "edit\n");
+	collectAfterBlobWrites(store, 1);
+	const { counts, recorded } = await recordCounting(manager, store, clone);
+	await recorded;
+	assert.deepEqual(counts, { captures: 1, appends: 2 });
+	assert.equal(manager.getLatestWorktreeSnapshots().size, 1);
+});
+
+test("a capture whose blobs are collected again after storing them again is captured once more and recorded (#5077)", async () => {
+	const { clone, store, manager } = await openSession();
+	sandbox.write(join(clone, "a.txt"), "edit\n");
+	collectAfterBlobWrites(store, 2);
+	const { counts, recorded } = await recordCounting(manager, store, clone);
+	await recorded;
+	assert.deepEqual(counts, { captures: 2, appends: 3 });
+	assert.equal(manager.getLatestWorktreeSnapshots().size, 1);
+});
+
+test("a capture whose blobs are always collected rejects with blobs-collected after one more capture (#5077)", async () => {
+	const { clone, store, manager } = await openSession();
+	sandbox.write(join(clone, "a.txt"), "edit\n");
+	collectAfterBlobWrites(store, Number.POSITIVE_INFINITY);
+	const { counts, recorded } = await recordCounting(manager, store, clone);
+	await assert.rejects(recorded, { name: "WorkspaceSnapshotError", code: "blobs-collected" });
+	assert.deepEqual(counts, { captures: 2, appends: 3 });
+	assert.equal(manager.getLatestWorktreeSnapshots().size, 0);
+});
+
+test("a record that fails for another reason is neither retried nor captured again (#5077)", async () => {
+	const { clone, store } = await openSession();
+	const failure = new Error("not a collection");
+	let captures = 0;
+	let records = 0;
+	await assert.rejects(
+		recordWorktreeCapture(
+			store.snapshotBlobs,
+			async () => {
+				captures++;
+				return captureWorktreeSnapshot(clone, { blobs: store.snapshotBlobs });
+			},
+			async () => {
+				records++;
+				throw failure;
+			},
+		),
+		(error) => error === failure,
+	);
+	assert.deepEqual([captures, records], [1, 1]);
+});
+
+test("an unchanged capture refused for collected blobs is captured again rather than stored again (#5077)", async () => {
+	const { clone, store } = await openSession();
+	const stored: number[] = [];
+	const blobs = Object.create(store.snapshotBlobs, {
+		putBlobs: { value: async (written: readonly unknown[]) => stored.push(written.length) },
+	}) as SqlSessionStore["snapshotBlobs"];
+	const results: string[] = [];
+	let refusals = 1;
+	await recordWorktreeCapture(
+		blobs,
+		async () => {
+			const capture = await captureWorktreeSnapshot(clone, { blobs: store.snapshotBlobs });
+			if (capture.status !== "captured") throw new Error("expected a capture");
+			return { status: "unchanged", snapshot: capture.snapshot, binding: capture.binding };
+		},
+		async (result) => {
+			results.push(result.status);
+			if (refusals-- > 0) throw new WorkspaceSnapshotError("blobs-collected", "hash");
+		},
+	);
+	assert.deepEqual(results, ["unchanged", "unchanged"]);
+	assert.deepEqual(stored, [], "an unchanged capture has no blobs of its own to store again");
 });
