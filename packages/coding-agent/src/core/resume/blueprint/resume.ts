@@ -20,12 +20,14 @@ import { type BlueprintNotice, blueprintNotices } from "./notices.ts";
 export interface BlueprintCheckout {
 	readonly root: string;
 	readonly remotes: readonly string[];
+	/** Settles once the checkout's files are in place, before which its blueprint runs nothing (#5099). */
+	readonly ready?: Promise<void>;
 }
 
 /** The repository a checkout belongs to for the build ledger: its sorted remotes, else its own root. */
 export function blueprintRepository(checkout: BlueprintCheckout): BlueprintRepository {
 	const identity = checkout.remotes.length === 0 ? checkout.root : [...checkout.remotes].sort().join("\n");
-	return { root: checkout.root, identity };
+	return { root: checkout.root, identity, ...(checkout.ready === undefined ? {} : { ready: checkout.ready }) };
 }
 
 /** A restore a session or run recorded: work under `from` continues under `to`. */

@@ -5,7 +5,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { releaseLock } from "../lock-release.ts";
-import { noteRestoreFetch, timeRestorePhase } from "../resume/timings.ts";
+import { deferRestorePhase, noteRestoreFetch, timeRestorePhase } from "../resume/timings.ts";
 import {
 	locateCheckout,
 	readRepositoryConfig,
@@ -42,6 +42,7 @@ import {
 	stagingWorktreeName,
 } from "./paths.ts";
 import { loadSnapshotPathPolicy } from "./policy.ts";
+import { holderRuns, type ProcessHolder, thisProcess } from "./process-holder.ts";
 import { assertUsableBundlePrerequisites, assertUsableSnapshotRecord, isAllowedRemote } from "./records.ts";
 import { checkoutStoreIdOf, sameRemote, sharedRepositoryIdsOf } from "./repository-identity.ts";
 import {
@@ -70,6 +71,14 @@ export interface RestoreWorktreeSnapshotOptions {
 	readonly storeDir?: string;
 	readonly onWarning?: (warning: WorktreeRestoreWarning) => void;
 	readonly signal?: AbortSignal;
+	/**
+	 * Takes the Git LFS download of an exact restore off the restore (#5099): the restore verifies and publishes the
+	 * worktree with its LFS files still holding pointers, then hands `pull` to this callback instead of downloading.
+	 * `pull` downloads the objects into `worktree` as the restore would have, and resolves to the files that still hold
+	 * pointers, for which the restore would have warned `lfs-objects-unavailable`. A degraded restore still downloads
+	 * before it records the tree it holds.
+	 */
+	readonly deferLfs?: (worktree: string, pull: () => Promise<readonly string[]>) => void;
 	/**
 	 * The Git this restore runs, with the environment it needs. Default: the Git every snapshot operation resolves,
 	 * provisioned when this machine has none.
@@ -1049,6 +1058,168 @@ async function pullLfsObjects(
 	return pointers;
 }
 
+/**
+ * The file in a restored worktree's own Git directory that says its LFS download has not completed (#5099): written
+ * before a worktree whose download is deferred is published, removed once every LFS file has its content, so a resume
+ * interrupted during the download leaves the next one a way to finish it.
+ */
+const LFS_PENDING_FILE = "atomic-lfs-pending.json";
+
+interface PendingLfs {
+	readonly head: string;
+	readonly tree: string;
+	readonly remotes: readonly string[];
+	/** The process downloading, while one is: its Git steps may leave locks behind if it is killed. */
+	readonly holder?: ProcessHolder;
+}
+
+/**
+ * How long a download whose process cannot be told from a later one given its id, where its start cannot be read,
+ * counts as running: past this its locks are its leftovers.
+ */
+const UNSTARTED_LFS_HOLDER_LIMIT_MS = 24 * 60 * 60_000;
+
+/** The marks of the worktrees this process is downloading into now. */
+const pullingHere = new Set<string>();
+
+/** `name` in the worktree's own Git directory. */
+async function worktreeGitPath(worktree: GitRunOptions, name: string): Promise<string> {
+	return resolve(worktree.cwd, await gitText(["rev-parse", "--path-format=absolute", "--git-path", name], worktree));
+}
+
+function pendingLfsPath(worktree: GitRunOptions): Promise<string> {
+	return worktreeGitPath(worktree, LFS_PENDING_FILE);
+}
+
+async function markLfsPending(worktree: GitRunOptions, pending: PendingLfs, snapshotId: string | null): Promise<void> {
+	const marker = await pendingLfsPath(worktree);
+	await writing(marker, snapshotId, () => writeFile(marker, JSON.stringify(pending)));
+}
+
+/** {@link pullLfsObjects} into a worktree marked pending, clearing the mark once no LFS file holds a pointer. */
+async function pullPendingLfs(worktree: GitRunOptions, pending: PendingLfs): Promise<string[]> {
+	const marker = await pendingLfsPath(worktree);
+	const waiting: PendingLfs = { head: pending.head, tree: pending.tree, remotes: pending.remotes };
+	pullingHere.add(marker);
+	try {
+		await writeFile(marker, JSON.stringify({ ...waiting, holder: thisProcess() }));
+		const pointers = await pullLfsObjects(worktree, pending.head, pending.tree, pending.remotes);
+		if (pointers.length === 0) await rm(marker, { force: true });
+		else await writeFile(marker, JSON.stringify(waiting));
+		return pointers;
+	} finally {
+		pullingHere.delete(marker);
+	}
+}
+
+/**
+ * Whether the download that `pending` names is still running, in this process or another, so nothing of it may be
+ * touched. A download whose process is gone may have left `HEAD.lock` or `index.lock` behind.
+ */
+async function lfsHolderRuns(marker: string, pending: PendingLfs): Promise<boolean> {
+	if (pullingHere.has(marker)) return true;
+	const holder = pending.holder;
+	if (holder === undefined) return false;
+	// This process, when it is not downloading into the worktree, stopped the download that names it.
+	if (holder.host === thisProcess().host && holder.pid === process.pid) return false;
+	const age = Date.now() - (await stat(marker)).mtimeMs;
+	return holderRuns(holder, age, UNSTARTED_LFS_HOLDER_LIMIT_MS);
+}
+
+function isPendingLfs(value: unknown): value is PendingLfs {
+	const pending = value as Partial<PendingLfs> | null;
+	return (
+		typeof pending?.head === "string" &&
+		/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(pending.head) &&
+		typeof pending.tree === "string" &&
+		/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(pending.tree) &&
+		Array.isArray(pending.remotes) &&
+		pending.remotes.every((remote) => typeof remote === "string" && isAllowedRemote(remote)) &&
+		(pending.holder === undefined ||
+			(typeof pending.holder?.host === "string" &&
+				Number.isSafeInteger(pending.holder.pid) &&
+				(pending.holder.start === undefined || typeof pending.holder.start === "string")))
+	);
+}
+
+/** How long a resume waits for another running process to finish a download it holds before it warns (#5099). */
+export const LFS_HOLDER_WAIT_MS = 10 * 60_000;
+/** How often a resume waiting for another process's download checks on it. */
+const LFS_HOLDER_POLL_MS = 250;
+
+/**
+ * The Git LFS download left unfinished in the restored worktree at `worktree` (#5099), by a resume that was interrupted
+ * or by another Atomic process still running it, or undefined when none is pending. The returned function finishes it
+ * and resolves to the files that still hold pointers, as a restore's download does: it waits for a running process to
+ * end its download, at most {@link LFS_HOLDER_WAIT_MS}, and takes over from one that stopped. A worktree whose `HEAD`
+ * moved since its restore, or whose mark cannot be read, is not changed: the function then rejects, saying to run
+ * `git lfs pull` there, and the mark is removed so this is said once.
+ */
+export async function pendingLfsDownload(
+	worktree: string,
+	options: { readonly signal?: AbortSignal } = {},
+): Promise<(() => Promise<readonly string[]>) | undefined> {
+	const git: GitRunOptions = { cwd: worktree, signal: options.signal };
+	const marker = await pendingLfsPath(git);
+	if ((await readPendingMark(marker)) === undefined) return undefined;
+	return () => finishPendingLfs(git, marker);
+}
+
+async function readPendingMark(marker: string): Promise<string | undefined> {
+	try {
+		return await readFile(marker, "utf8");
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+		throw error;
+	}
+}
+
+async function finishPendingLfs(git: GitRunOptions, marker: string): Promise<string[]> {
+	const waitingSince = Date.now();
+	for (;;) {
+		const text = await readPendingMark(marker);
+		// Its process finished the download: every LFS file has its content.
+		if (text === undefined) return [];
+		const pending = parsePendingLfs(text);
+		if (pending === undefined || !(await lfsHolderRuns(marker, pending)))
+			return takeOverPendingLfs(git, marker, pending);
+		if (Date.now() - waitingSince >= LFS_HOLDER_WAIT_MS) return remainingPointers(git.cwd, await lfsPaths(git));
+		await sleep(LFS_HOLDER_POLL_MS, undefined, { signal: git.signal });
+	}
+}
+
+async function takeOverPendingLfs(
+	git: GitRunOptions,
+	marker: string,
+	pending: PendingLfs | undefined,
+): Promise<string[]> {
+	// A download killed during its Git steps leaves their locks; nothing else takes them in a worktree with a mark.
+	if (pending?.holder !== undefined) {
+		for (const lock of ["HEAD.lock", "index.lock"]) await rm(await worktreeGitPath(git, lock), { force: true });
+	}
+	const head = await gitText(["rev-parse", "-q", "--verify", "HEAD^{commit}"], { ...git, allowExitCodes: [1] });
+	// A download cut off mid-pull leaves HEAD at the snapshot's commit, which it names while it runs.
+	if (
+		pending !== undefined &&
+		(head === pending.head || head === (await writeSnapshotCommit(git, pending.head, pending.tree)))
+	) {
+		return pullPendingLfs(git, pending);
+	}
+	await rm(marker, { force: true });
+	throw new Error(
+		"its LFS download was interrupted and the worktree changed since, so it was not repeated; run `git lfs pull` in it",
+	);
+}
+
+function parsePendingLfs(text: string): PendingLfs | undefined {
+	try {
+		const pending: unknown = JSON.parse(text);
+		return isPendingLfs(pending) ? pending : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 async function materialize(
 	git: GitRunOptions,
 	target: string,
@@ -1179,6 +1350,10 @@ async function restoreValidated(
 			warn,
 			signal,
 			verify: "tree",
+			// The download runs later, with the Git this restore runs.
+			deferLfs:
+				options.deferLfs &&
+				((worktree, pull) => options.deferLfs!(worktree, () => withWorktreeSnapshotGit(options.git, pull))),
 		});
 		if (snapshot) for (const warning of snapshotRestoreWarnings(snapshot)) warn(warning);
 		return {
@@ -1316,6 +1491,8 @@ export async function resetPooledWorktree(
 		const git: GitRunOptions = { cwd: scratch, signal, env: { GIT_DIR: store } };
 		await storeSnapshotObjects(git, store, binding, snapshot, patches, options.blobs, scratch);
 		await options.beforeReset();
+		// A download an interrupted resume left pending is the reset's to finish, or to leave pending again.
+		await rm(await pendingLfsPath({ cwd: slot, signal }), { force: true });
 		await timeRestorePhase("materialize", async () => {
 			const attributes = join(scratch, "empty-attributes");
 			await writing(attributes, snapshot.id, () => writeFile(attributes, ""));
@@ -1336,9 +1513,8 @@ export async function resetPooledWorktree(
 		const warnings = snapshotRestoreWarnings(snapshot);
 		if (snapshot.filters?.drivers.includes("lfs")) {
 			const worktree: GitRunOptions = { cwd: slot, signal };
-			const pointers = await timeRestorePhase("lfs", () =>
-				pullLfsObjects(worktree, snapshot.head, snapshot.tree, snapshot.remotes),
-			);
+			const pending: PendingLfs = { head: snapshot.head, tree: snapshot.tree, remotes: snapshot.remotes };
+			const pointers = await timeRestorePhase("lfs", () => pullPendingLfs(worktree, pending));
 			if (pointers.length > 0) warnings.unshift({ code: "lfs-objects-unavailable", paths: pointers });
 		}
 		await timeRestorePhase("verify", () =>
@@ -1749,6 +1925,8 @@ interface PublishWorktree {
 	readonly scratch: string;
 	readonly warn: (warning: WorktreeRestoreWarning) => void;
 	readonly signal: AbortSignal | undefined;
+	/** Where an exact restore hands its LFS download instead of running it (#5099). */
+	readonly deferLfs?: RestoreWorktreeSnapshotOptions["deferLfs"];
 	/**
 	 * What the staged worktree is checked against before it is moved to `path`: its HEAD and recomputed tree (`tree`),
 	 * or its HEAD alone (`head`), for a degraded restore whose content this host's filters may change.
@@ -1784,6 +1962,8 @@ function checkPathBudget(
  */
 async function publishWorktree(publish: PublishWorktree): Promise<string> {
 	const { git, store, storeDir, path, head, tree, snapshot, scratch, warn, signal } = publish;
+	// Only an exact restore defers its download: a degraded one records the tree it holds after it (#5099).
+	const deferred = publish.verify === "tree" ? publish.deferLfs : undefined;
 	let measured = tree;
 	const snapshotId = snapshot?.id ?? null;
 	await checkTarget(path, snapshotId);
@@ -1794,9 +1974,14 @@ async function publishWorktree(publish: PublishWorktree): Promise<string> {
 	await withRestoreRecord(storeDir, id, record, snapshotId, warn, signal, async (assertActive) => {
 		await timeRestorePhase("materialize", () => materialize(git, staging, head, tree, scratch, snapshotId, signal));
 		assertActive();
-		if (snapshot?.filters?.drivers.includes("lfs")) {
+		const lfs = snapshot?.filters?.drivers.includes("lfs") ? snapshot.remotes : undefined;
+		const pending: PendingLfs | undefined = lfs === undefined ? undefined : { head, tree, remotes: lfs };
+		// Marked before it is published, so a worktree whose deferred download never completed says so (#5099).
+		if (pending !== undefined && deferred !== undefined)
+			await markLfsPending({ cwd: staging, signal }, pending, snapshotId);
+		if (lfs !== undefined && deferred === undefined) {
 			const worktree: GitRunOptions = { cwd: staging, signal };
-			const pointers = await timeRestorePhase("lfs", () => pullLfsObjects(worktree, head, tree, snapshot.remotes));
+			const pointers = await timeRestorePhase("lfs", () => pullLfsObjects(worktree, head, tree, lfs));
 			if (pointers.length > 0) warn({ code: "lfs-objects-unavailable", paths: pointers });
 		}
 		measured = await timeRestorePhase("verify", () =>
@@ -1805,6 +1990,12 @@ async function publishWorktree(publish: PublishWorktree): Promise<string> {
 		assertActive();
 		await timeRestorePhase("publish", () => moveIntoPlace(publish, staging, createdTarget, snapshotId));
 		assertActive();
+		if (pending !== undefined && deferred !== undefined) {
+			deferred(
+				path,
+				deferRestorePhase("lfs", () => pullPendingLfs({ cwd: path, signal }, pending)),
+			);
+		}
 	});
 	return measured;
 }
