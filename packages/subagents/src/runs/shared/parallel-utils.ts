@@ -1,7 +1,10 @@
 import { isParentCancellation } from "./cancellation-recovery.js";
 
+/** Dispatches at most `limit` at a time, in order; `limit` lets a child record its run's limit as plain data (#4856). */
+export type ExecutionScheduler = ((dispatch: () => Promise<void>) => void) & { readonly limit?: number };
+
 /** A slot belongs to the dispatch lifetime, not its caller's observation. */
-export function createExecutionScheduler(limit: number): (dispatch: () => Promise<void>) => void {
+export function createExecutionScheduler(limit: number): ExecutionScheduler {
 	let active = 0;
 	const queued: Array<() => Promise<void>> = [];
 	const pump = (): void => {
@@ -15,10 +18,11 @@ export function createExecutionScheduler(limit: number): (dispatch: () => Promis
 			void dispatch().then(release, release);
 		}
 	};
-	return (dispatch) => {
+	const schedule = (dispatch: () => Promise<void>): void => {
 		queued.push(dispatch);
 		pump();
 	};
+	return Object.assign(schedule, { limit });
 }
 
 export async function mapConcurrent<T, R>(
