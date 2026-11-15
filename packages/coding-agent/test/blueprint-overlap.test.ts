@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
 import { Type } from "typebox";
@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, test } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
 import type { ToolDefinition } from "../src/core/extensions/index.ts";
+import { renameReplacing } from "../src/core/rename-retry.js";
 import {
 	awaitBlueprintReady,
 	BLUEPRINT_GATED_TOOLS,
@@ -98,7 +99,7 @@ async function recordedProject(afterGate = "", gone = true, name = "repo"): Prom
 	const capture = await captureWorktreeSnapshot(clone, { settings, blobs: store.snapshotBlobs });
 	if (capture.status !== "captured") throw new Error("the fixture's snapshot was not captured");
 	await manager.appendWorktreeSnapshot(clone, capture.snapshot.id, capture.snapshot);
-	if (gone) renameSync(clone, sandbox.path("node-a-gone"));
+	if (gone) renameReplacing(clone, sandbox.path("node-a-gone"));
 	return manager;
 }
 
