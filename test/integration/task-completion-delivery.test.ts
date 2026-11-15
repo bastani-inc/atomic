@@ -509,6 +509,8 @@ test("a persisted Intercom prelude cannot suppress a missing terminal notificati
 	const deliveries: string[] = [];
 	const session = {
 		sessionManager: manager,
+		// A restored notice delivered while idle is saved at once: nothing waits for the turn to end (#5047).
+		_pendingCustomMessages: [],
 		async sendCustomMessage(_message: object, options: { stageAdmissionKey: string; triggerTurn: boolean }) {
 			deliveries.push(options.stageAdmissionKey);
 			assert.equal(options.triggerTurn, false, "a restored notification never starts a turn (#3760)");
