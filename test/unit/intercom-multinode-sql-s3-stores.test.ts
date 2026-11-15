@@ -9,7 +9,7 @@ import { openSqlPendingAskStore } from "../../packages/intercom/broker/sql-pendi
 import { openSqlReleasedAskStore } from "../../packages/intercom/broker/sql-released-ask-store.js";
 import { openSqlRestoringReservationStore } from "../../packages/intercom/broker/sql-restoring-reservation-store.js";
 import { openSqlSentMessageAuthority } from "../../packages/intercom/broker/sql-sent-message-authority.js";
-import { loadFixtureStorageAdapter } from "../helpers/fixture-storage-adapter.js";
+import { useFixtureStorageAdapter } from "../helpers/fixture-storage-adapter.js";
 import {
 	type OpenSharedStoreFixture,
 	registerCrossNodeHeldRoundTripConformance,
@@ -52,10 +52,12 @@ function sharedFileFixture<Store>(
 	};
 }
 
+const fixtureAdapter = useFixtureStorageAdapter();
+
 const nodeSqlite: OpenConnection = (directory) => openNodeSqliteDatabase(join(directory, "intercom.sqlite"));
 
 const moduleSelectedAdapter: OpenConnection = async (directory) => {
-	const adapter = await loadFixtureStorageAdapter();
+	const adapter = fixtureAdapter();
 	assert.ok(adapter.openDatabase);
 	return adapter.openDatabase({ path: join(directory, "shared.sqlite") }, { agentDir: directory, domain: "sessions" });
 };

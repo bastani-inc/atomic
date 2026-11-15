@@ -5,7 +5,7 @@ import { test } from "vitest";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import type { OutboxStore } from "../../packages/intercom/broker/multinode-state-store.js";
 import { openSqlOutboxStore } from "../../packages/intercom/broker/sql-outbox-store.js";
-import { loadFixtureStorageAdapter } from "../helpers/fixture-storage-adapter.js";
+import { useFixtureStorageAdapter } from "../helpers/fixture-storage-adapter.js";
 import {
 	type OpenSharedStoreFixture,
 	registerCrossNodeRoundTripConformance,
@@ -40,13 +40,15 @@ function sharedOutboxFixture(
 	};
 }
 
+const fixtureAdapter = useFixtureStorageAdapter();
+
 const openNodeSqliteOutbox = sharedOutboxFixture("node-sqlite", "", (directory) =>
 	openNodeSqliteDatabase(join(directory, "shared.sqlite")),
 );
 
 const openAdapterOutbox = sharedOutboxFixture("adapter", "team_", async (directory) => {
 	const context = { agentDir: directory, domain: "sessions" } as const;
-	const adapter = await loadFixtureStorageAdapter();
+	const adapter = fixtureAdapter();
 	assert.ok(adapter.openDatabase);
 	return adapter.openDatabase({ path: join(directory, "shared.sqlite") }, context);
 });

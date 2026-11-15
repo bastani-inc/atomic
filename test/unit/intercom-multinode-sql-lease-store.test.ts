@@ -4,7 +4,7 @@ import { openNodeSqliteDatabase, type SqliteDatabase, type StorageOpenContext } 
 import { test } from "vitest";
 import type { BrokerLeaseStore } from "../../packages/intercom/broker/multinode-state-store.js";
 import { openSqlBrokerLeaseStore } from "../../packages/intercom/broker/sql-lease-store.js";
-import { loadFixtureStorageAdapter } from "../helpers/fixture-storage-adapter.js";
+import { useFixtureStorageAdapter } from "../helpers/fixture-storage-adapter.js";
 import {
 	registerBrokerLeaseStoreConformance,
 	type SharedStoreFixture,
@@ -34,6 +34,8 @@ async function sharedDatabaseFixture(
 	};
 }
 
+const fixtureAdapter = useFixtureStorageAdapter();
+
 registerBrokerLeaseStoreConformance(test, "node sqlite file shared by two connections", () =>
 	sharedDatabaseFixture("intercom-sql-leases-", "", (directory) =>
 		openNodeSqliteDatabase(join(directory, "shared.sqlite")),
@@ -43,7 +45,7 @@ registerBrokerLeaseStoreConformance(test, "node sqlite file shared by two connec
 registerBrokerLeaseStoreConformance(test, "module-selected SQLite adapter", () =>
 	sharedDatabaseFixture("intercom-adapter-leases-", "team_", async (directory) => {
 		const context: StorageOpenContext = { agentDir: directory, domain: "sessions" };
-		const adapter = await loadFixtureStorageAdapter();
+		const adapter = fixtureAdapter();
 		assert.ok(adapter.openDatabase);
 		return adapter.openDatabase({ path: join(directory, "shared.sqlite") }, context);
 	}),
