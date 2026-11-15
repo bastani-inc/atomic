@@ -29,6 +29,7 @@ export function isMessage(value: unknown): value is Message {
     && message.delivery !== "interrupt"
   ) return false;
   if (message.replyError !== undefined && typeof message.replyError !== "string") return false;
+  if (message.retryLater !== undefined && message.retryLater !== true) return false;
   if (message.source !== undefined && !isMessageSource(message.source)) return false;
   if (typeof message.content !== "object" || message.content === null) return false;
   const content = message.content as Record<string, unknown>;

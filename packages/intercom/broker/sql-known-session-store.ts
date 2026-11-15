@@ -1,4 +1,5 @@
 import { dialectOf, type SqliteRow, validateStoragePrefix } from "@bastani/atomic/storage";
+import { addMissingColumns } from "./sql-add-column.js";
 import type {
 	IntercomBrokerStateOptions,
 	KnownSessionBindingResult,
@@ -82,6 +83,11 @@ export async function openSqlKnownSessionStore({
 			CREATE INDEX IF NOT EXISTS ${bindings}_recorded ON ${bindings}(recorded_at);
 		`),
 	);
+	// #5154: added later: set, by store clock, once the session's broker was retired before it recorded the session
+	// leaving. An older broker ignores it, and its `record` leaves it set.
+	await addMissingColumns(database, table, { lost_at: types.int });
+	const columns = `target_identity, intercom_session_id, name_json, atomic_session_id, group_name, groups_json,
+					recipient_purpose, reply_capability, ${age} AS age_ms`;
 
 	return {
 		async record(session): Promise<KnownSessionRecordResult> {
@@ -101,7 +107,8 @@ export async function openSqlKnownSessionStore({
 					groups_json = excluded.groups_json,
 					recipient_purpose = excluded.recipient_purpose,
 					reply_capability = excluded.reply_capability,
-					recorded_at = excluded.recorded_at`,
+					recorded_at = excluded.recorded_at,
+					lost_at = NULL`,
 				session.targetIdentity,
 				session.intercomSessionId,
 				session.name === undefined ? null : JSON.stringify(session.name),
@@ -182,6 +189,26 @@ export async function openSqlKnownSessionStore({
 				olderThanMs,
 			);
 			return changes;
+		},
+		async markLost(targetIdentities): Promise<void> {
+			if (targetIdentities.length === 0) return;
+			await database.transaction(async (tx) => {
+				for (const identity of targetIdentities) {
+					await tx.run(
+						`UPDATE ${table} SET lost_at = ${nowMs} WHERE target_identity = ? AND lost_at IS NULL`,
+						identity,
+					);
+				}
+			});
+		},
+		async listLost(olderThanMs): Promise<KnownSessionState[]> {
+			const rows = await database.all<KnownRow>(
+				`SELECT ${columns} FROM ${table}
+				 WHERE lost_at IS NOT NULL AND ${greatest("0", `${nowMs} - lost_at`)} >= ?
+				 ORDER BY record_order`,
+				olderThanMs,
+			);
+			return rows.map(stateFromRow);
 		},
 	};
 }
