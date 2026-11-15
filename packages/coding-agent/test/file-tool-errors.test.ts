@@ -391,6 +391,7 @@ describe("guards across realms", () => {
 		assert.equal(isEditInputError({ name: "EditInputError", code: "edits-empty" }), true);
 		assert.equal(isEditMatchError({ name: "EditMatchError", code: "no-change" }), true);
 		assert.equal(isEditTargetError({ name: "EditTargetError", code: "target-inaccessible" }), true);
+		assert.equal(isEditTargetError({ name: "EditTargetError", code: "target-not-utf8" }), true);
 		assert.equal(isEditToolError({ name: "EditToolError", code: "text-not-found" }), true);
 		assert.equal(isEditToolError({ name: "EditMatchError", code: "text-not-unique" }), true);
 		assert.equal(isWriteSelectorError({ name: "WriteSelectorError", code: "unsupported-scheme" }), true);

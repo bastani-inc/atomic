@@ -50,6 +50,8 @@ describe("edit tool exactness (#4893)", () => {
 			assert.ok(isEditTargetError(error));
 			assert.equal(error.code, "target-not-utf8");
 			assert.equal(error.fields.path, path);
+			assert.equal(error.hint, "Edit the file with a tool that keeps its encoding, or convert it to UTF-8 first.");
+			assert.ok(error.cause instanceof TypeError);
 			assert.match(error.message, /latin1\.txt/);
 			assert.match(error.message, /UTF-8/);
 			return true;
@@ -85,6 +87,23 @@ describe("edit tool exactness (#4893)", () => {
 		assert.equal(readFileSync(path, "utf-8"), 'say("bye")  \nkeep  \n');
 	});
 
+	it("replaces only the matched part of plain ASCII lines in a fuzzy match (#4893)", async () => {
+		const path = writeTestFile("ascii.txt", "const a = 1;   \nnext line\n");
+
+		await edit(path, [{ oldText: "a = 1;\nnext", newText: "b = 2;\nNEXT" }]);
+
+		assert.equal(readFileSync(path, "utf-8"), "const b = 2;\nNEXT line\n");
+	});
+
+	it("strips trailing whitespace that shares a grapheme cluster with the last character (#4893)", async () => {
+		// U+0600 is a prepended concatenation mark: it and the space after it form one grapheme cluster.
+		const path = writeTestFile("prepend.txt", "a\u0600   \nb\n");
+
+		await edit(path, [{ oldText: "a\u0600\nb", newText: "c" }]);
+
+		assert.equal(readFileSync(path, "utf-8"), "c\n");
+	});
+
 	it("uses an exact unique match even when fuzzy matching would find two (#4893)", async () => {
 		const path = writeTestFile("exact.txt", "a  \nb\na\nb\n");
 
@@ -95,14 +114,16 @@ describe("edit tool exactness (#4893)", () => {
 
 	it("refuses a fuzzy match that starts or ends inside one original character (#4893)", async () => {
 		// U+FB00 normalises to "ff"; replacing only one of its f's would rewrite the other.
-		const path = writeTestFile("ligature.txt", "\uFB00 tail  \n");
+		const path = writeTestFile("ligature.txt", "say \uFB00 tail  \n");
 
-		await assert.rejects(edit(path, [{ oldText: "f tail", newText: "x" }]), (error: Error) => {
-			assert.ok(isEditMatchError(error));
-			assert.equal(error.code, "text-not-found");
-			return true;
-		});
-		assert.equal(readFileSync(path, "utf-8"), "\uFB00 tail  \n");
+		for (const oldText of ["f tail", "say f"]) {
+			await assert.rejects(edit(path, [{ oldText, newText: "x" }]), (error: Error) => {
+				assert.ok(isEditMatchError(error));
+				assert.equal(error.code, "text-not-found");
+				return true;
+			});
+		}
+		assert.equal(readFileSync(path, "utf-8"), "say \uFB00 tail  \n");
 	});
 
 	it("reports a whitespace-only oldText that only matches after normalisation as not found (#4893)", async () => {
