@@ -12,6 +12,10 @@ export type {
 	SqliteTransactionOptions,
 	SqliteValue,
 	StorageDescriptor,
+	StorageListenerState,
+	StorageNotificationEvent,
+	StorageNotificationSubscription,
+	StorageNotifications,
 	TransactionConcurrency,
 } from "./database.js";
 export * from "./dialect.js";

@@ -7,6 +7,7 @@ import type {
 	SqliteTransactionOptions,
 	SqliteValue,
 	StorageDescriptor,
+	StorageNotifications,
 	TransactionConcurrency,
 } from "./database.js";
 import { type StorageDialect, sqliteDialect } from "./dialect.js";
@@ -119,6 +120,11 @@ export interface SqliteDriver extends SqliteDriverExecutor {
 	 * a driver call fails because a value, row or response was too large for the backend (#4954).
 	 */
 	readonly payloadLimits?: StoragePayloadLimits;
+	/**
+	 * Optional. Wake-ups through the database, which the facade exposes as `SqliteDatabase.notifications`; the driver's
+	 * `close` stops its listening connection.
+	 */
+	readonly notifications?: StorageNotifications;
 }
 
 /**
@@ -316,9 +322,11 @@ class DriverDatabase implements SqliteDatabase {
 	private retryReported = false;
 	private readonly executor: SqliteExecutor;
 	readonly batch?: (statements: readonly SqliteStatement[], options?: SqliteBatchOptions) => Promise<SqliteRow[][]>;
+	readonly notifications?: StorageNotifications;
 
 	constructor(driver: SqliteDriver, redact: (text: string) => string) {
 		this.driver = driver;
+		if (driver.notifications !== undefined) this.notifications = driver.notifications;
 		this.redact = redact;
 		this.descriptor = { adapter: driver.descriptor.adapter, location: redact(driver.descriptor.location) };
 		this.dialect = driver.dialect ?? sqliteDialect;

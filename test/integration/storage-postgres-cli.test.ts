@@ -84,7 +84,7 @@ describe.skipIf(postgresSkipReason !== undefined)("atomic storage join against P
 						const status = await collectStorageStatus({ cwd: root, agentDir, probe: true });
 						const journal = status.domains.find((domain) => domain.domain === "journal");
 						assert.equal(journal?.probe?.connection.status, "ok", journal?.probe?.connection.detail);
-						assert.match(journal?.probe?.connection.detail ?? "", /PostgreSQL \d+/);
+						assert.match(journal?.probe?.connection.detail ?? "", /PostgreSQL \d+.*; wake-ups: LISTEN\/NOTIFY$/);
 						const printed = await storage(["status", "--json"]);
 						for (const text of [settings, joined.out, joined.err, printed.out, printed.err])
 							assert.ok(!text.includes(password));
