@@ -8,7 +8,7 @@ import { hostname } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import { AuthStorage, getAgentDir, ModelRuntime, SettingsManager } from "@bastani/atomic";
 import { workflow } from "@bastani/atomic/workflows";
-import { createAssistantMessageEventStream } from "@bastani/pi-ai";
+import { createAssistantMessageEventStream } from "@bastani/atomic-ai";
 import { Type } from "typebox";
 
 const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
