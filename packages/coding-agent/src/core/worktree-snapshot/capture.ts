@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import {
 	copyFile,
 	type FileHandle,
@@ -423,10 +424,9 @@ async function writeTreeThrough(
 		(await runGit([...config, "diff-files", "-z", "--name-only", "--no-renames"], git)).stdout,
 	);
 	const forceAdded = await how.forceAdded(git);
+	// An untracked repository inside the checkout is listed as its directory, ending in `/`: its files are not captured.
 	const untracked = [
-		...nulFields((await runGit(["ls-files", "-z", "--others", "--exclude-standard"], git)).stdout).filter(
-			(path) => !path.endsWith("/"),
-		),
+		...nulFields((await runGit(["ls-files", "-z", "--others", "--exclude-standard"], git)).stdout),
 		...forceAdded,
 	];
 	const omitted: Extract<WorktreeSnapshotOmission, { readonly path: string }>[] = [];
@@ -444,6 +444,10 @@ async function writeTreeThrough(
 		}
 		if (!tracked && !settings.includeUntracked) {
 			omitted.push({ reason: "untracked-excluded", path });
+			continue;
+		}
+		if (path.endsWith("/")) {
+			omitted.push({ reason: "nested-repository", path });
 			continue;
 		}
 		const bytes = await fileBytes(join(root, path));
@@ -483,6 +487,59 @@ async function fileBytes(path: string): Promise<number> {
 		}
 		throw unreadablePathError(path, error);
 	}
+}
+
+type PathOmission = Extract<WorktreeSnapshotOmission, { readonly path: string }>;
+
+/** How long checking the submodules of one capture may take; a submodule not checked by then is listed as unchecked. */
+export const SUBMODULE_CHECK_TIMEOUT_MS = 10_000;
+
+/**
+ * Submodules whose work a snapshot does not record: uncommitted changes or untracked files, or a checked-out commit
+ * that no remote-tracking ref of the submodule reaches. Only checkouts with a `.gitmodules` file are checked, and only
+ * submodules checked out here. A check that fails or runs past {@link SUBMODULE_CHECK_TIMEOUT_MS} lists its submodule
+ * as `submodule-unchecked` instead of failing the capture.
+ */
+async function submoduleOmissions(root: string, signal?: AbortSignal): Promise<PathOmission[]> {
+	if (!existsSync(join(root, ".gitmodules"))) return [];
+	const bounded = AbortSignal.any([AbortSignal.timeout(SUBMODULE_CHECK_TIMEOUT_MS), ...(signal ? [signal] : [])]);
+	const unchecked = (path: string, error: unknown): PathOmission[] => {
+		if (signal?.aborted) throw error;
+		return [{ reason: "submodule-unchecked", path }];
+	};
+	let paths: string[];
+	try {
+		const { stdout } = await runGit(
+			["config", "-z", "-f", ".gitmodules", "--get-regexp", "^submodule\\..*\\.path$"],
+			{ cwd: root, signal: bounded, allowExitCodes: [1] },
+		);
+		paths = nulFields(stdout).map((field) => field.slice(field.indexOf("\n") + 1));
+	} catch (error) {
+		return unchecked(".gitmodules", error);
+	}
+	const checkedOut = [...new Set(paths)].sort().filter((path) => {
+		const fromRoot = relative(root, resolve(root, path));
+		const inside = fromRoot !== "" && fromRoot !== ".." && !fromRoot.startsWith(`..${sep}`) && !isAbsolute(fromRoot);
+		return inside && existsSync(join(root, fromRoot, ".git"));
+	});
+	const results = await Promise.all(
+		checkedOut.map(async (path): Promise<PathOmission[]> => {
+			const git: GitRunOptions = { cwd: join(root, path), signal: bounded };
+			try {
+				const [status, unpushed] = await Promise.all([
+					runGit(["status", "--porcelain", "-z"], git),
+					runGit(["rev-list", "-n", "1", "HEAD", "--not", "--remotes"], git),
+				]);
+				return [
+					...(status.stdout.byteLength > 0 ? [{ reason: "submodule-changes" as const, path }] : []),
+					...(unpushed.stdout.byteLength > 0 ? [{ reason: "unpushed-submodule-commit" as const, path }] : []),
+				];
+			} catch (error) {
+				return unchecked(path, error);
+			}
+		}),
+	);
+	return results.flat();
 }
 
 interface RepositoryConfig {
@@ -686,7 +743,8 @@ async function captureCheckout(
 			resolve(defaultWorktreeSnapshotStoreDir()),
 			signal,
 		);
-		const omissions = pathOmissionKeys(state.omitted);
+		const pathOmissions = [...state.omitted, ...(await submoduleOmissions(root, signal))];
+		const omissions = pathOmissionKeys(pathOmissions);
 		if (
 			previous &&
 			previous.head === head &&
@@ -756,7 +814,7 @@ async function captureCheckout(
 			version: 1,
 			id: snapshotId(fields, omissions),
 			...fields,
-			omitted: [...state.omitted, ...history.omitted],
+			omitted: [...pathOmissions, ...history.omitted],
 			filters: await readFilters(root, config, signal),
 			capturedAt: new Date().toISOString(),
 		};
