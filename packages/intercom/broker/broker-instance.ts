@@ -7,8 +7,19 @@ import { getIntercomDirPath } from "./paths.js";
 
 /** Rounds the boot time where no boot id can be read, so two readings from one boot agree. */
 const BOOT_TIME_ROUNDING_MS = 60_000;
-/** A machine-id command that does not answer by then leaves the host without a machine id. */
-const MACHINE_ID_COMMAND_TIMEOUT_MS = 2_000;
+/**
+ * A machine-id or boot command that does not answer by then leaves the host without that fact. PowerShell can take
+ * a few seconds to start; the broker reads this once, as it starts.
+ */
+const HOST_COMMAND_TIMEOUT_MS = 10_000;
+/** Windows' boot time, to the microsecond, as WMI records it. */
+export const WINDOWS_BOOT_TIME_COMMAND = [
+	"powershell",
+	"-NoProfile",
+	"-NonInteractive",
+	"-Command",
+	"(Get-CimInstance -ClassName Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().ToString('o')",
+] as const;
 
 const orUndefined = (read: () => string | undefined): string | undefined => {
 	try {
@@ -39,7 +50,7 @@ export const systemSources = (configDir: string = getIntercomDirPath()): HostIde
 	run: (command, args) =>
 		execFileSync(command, [...args], {
 			encoding: "utf8",
-			timeout: MACHINE_ID_COMMAND_TIMEOUT_MS,
+			timeout: HOST_COMMAND_TIMEOUT_MS,
 			stdio: ["ignore", "pipe", "ignore"],
 			windowsHide: true,
 		}),
@@ -81,10 +92,28 @@ export function persistedMachineId(sources: HostIdentitySources): string | undef
 }
 
 /**
+ * What tells this boot apart from another of a machine with the same id, such as a clone of its image started at the
+ * same moment: macOS's random boot session id, Windows' precise boot time, elsewhere the boot minute. `undefined` on
+ * Windows when its boot time cannot be read.
+ */
+export function bootSession(sources: HostIdentitySources): string | undefined {
+	if (sources.platform === "darwin") {
+		const session = orUndefined(() => sources.run("sysctl", ["-n", "kern.bootsessionuuid"]));
+		if (session !== undefined) return `session-${session}`;
+	}
+	if (sources.platform === "win32") {
+		const [command, ...args] = WINDOWS_BOOT_TIME_COMMAND;
+		const bootTime = orUndefined(() => sources.run(command, args));
+		return bootTime === undefined ? undefined : `boot-${bootTime}`;
+	}
+	return `boot-${Math.round(sources.bootTimeMs / BOOT_TIME_ROUNDING_MS)}`;
+}
+
+/**
  * #5038: what tells this host apart from another with the same host name, such as a cloned VM or a container with a
  * fixed `--hostname` and the same home path, so that an earlier broker on this socket path can be checked by its pid.
  * On Linux, the kernel's boot id and this process's pid namespace. Elsewhere, the machine's id (the OS's, or one saved
- * in the config directory) with the boot time. `undefined` when there is no reliable id: an earlier instance is then
+ * in the config directory) with its `bootSession`. `undefined` when either is missing: an earlier instance is then
  * never retired early, and its leases go stale as before.
  */
 export function brokerHostIdentity(sources: HostIdentitySources = systemSources()): string | undefined {
@@ -94,8 +123,8 @@ export function brokerHostIdentity(sources: HostIdentitySources = systemSources(
 		return pidNamespace === undefined ? bootId : `${bootId}/${pidNamespace}`;
 	}
 	const machineId = osMachineId(sources) ?? persistedMachineId(sources);
-	if (machineId === undefined) return undefined;
-	return `${machineId}/boot-${Math.round(sources.bootTimeMs / BOOT_TIME_ROUNDING_MS)}`;
+	const session = machineId === undefined ? undefined : bootSession(sources);
+	return session === undefined ? undefined : `${machineId}/${session}`;
 }
 
 /** Whether a process with this id runs here; one this process may not signal still runs. */

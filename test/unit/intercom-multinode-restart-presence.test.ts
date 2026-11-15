@@ -11,6 +11,7 @@ import {
 	osMachineId,
 	persistedMachineId,
 	systemSources,
+	WINDOWS_BOOT_TIME_COMMAND,
 } from "../../packages/intercom/broker/broker-instance.js";
 import { MultiNodeRouter, type MultiNodeRouterOptions } from "../../packages/intercom/broker/multinode-router.js";
 import {
@@ -254,6 +255,9 @@ function fakeSources(
 
 const WINDOWS_REG = "reg query HKLM\\SOFTWARE\\Microsoft\\Cryptography /v MachineGuid";
 const MAC_IOREG = "ioreg -rd1 -c IOPlatformExpertDevice";
+const MAC_SESSION = "sysctl -n kern.bootsessionuuid";
+const WINDOWS_BOOT = WINDOWS_BOOT_TIME_COMMAND.join(" ");
+const BOOTED = "2026-11-15T04:00:00.1234560Z";
 
 test("on Linux a host is its boot id and process namespace (#5038)", () => {
 	const files = { "/proc/sys/kernel/random/boot_id": "boot-a\n", "/etc/machine-id": "ignored" };
@@ -262,15 +266,27 @@ test("on Linux a host is its boot id and process namespace (#5038)", () => {
 	assert.equal(brokerHostIdentity(fakeSources({ platform: "linux", files })), "boot-a");
 });
 
-test("off Linux a host is the OS machine id with its boot minute (#5038)", () => {
+test("off Linux a host is the OS machine id with its boot (#5038)", () => {
 	const windows = fakeSources({
 		platform: "win32",
 		commands: {
 			[WINDOWS_REG]:
 				"\r\nHKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Cryptography\r\n    MachineGuid    REG_SZ    guid-w\r\n",
+			[WINDOWS_BOOT]: `${BOOTED}\r\n`,
 		},
 	});
-	assert.equal(brokerHostIdentity(windows), "guid-w/boot-30");
+	assert.equal(brokerHostIdentity(windows), `guid-w/boot-${BOOTED}`);
+	assert.equal(
+		brokerHostIdentity(
+			fakeSources({ platform: "win32", commands: { [WINDOWS_REG]: "MachineGuid    REG_SZ    guid-w" } }),
+		),
+		undefined,
+	);
+	const session = fakeSources({
+		platform: "darwin",
+		commands: { [MAC_IOREG]: '"IOPlatformUUID" = "uuid-m"', [MAC_SESSION]: "session-a\n" },
+	});
+	assert.equal(brokerHostIdentity(session), "uuid-m/session-session-a");
 	const mac = fakeSources({
 		platform: "darwin",
 		commands: { [MAC_IOREG]: '+-o J316sAP  <class IOPlatformExpertDevice>\n    "IOPlatformUUID" = "uuid-m"\n' },
@@ -362,11 +378,33 @@ test("the real host's identity is stable (#5038)", () => {
 	}
 });
 
+test("clones with the same machine id started together are told apart by their boot (#5038)", () => {
+	const mac = (session: string) =>
+		brokerHostIdentity(
+			fakeSources({
+				platform: "darwin",
+				commands: { [MAC_IOREG]: '"IOPlatformUUID" = "cloned"', [MAC_SESSION]: session },
+			}),
+		);
+	assert.notEqual(mac("session-1"), mac("session-2"));
+	const windows = (booted: string) =>
+		brokerHostIdentity(
+			fakeSources({
+				platform: "win32",
+				commands: { [WINDOWS_REG]: "MachineGuid    REG_SZ    cloned", [WINDOWS_BOOT]: booted },
+			}),
+		);
+	assert.notEqual(windows("2026-11-15T04:00:00.1000000Z"), windows("2026-11-15T04:00:00.1000010Z"));
+});
+
 test("two machines with the same host name and boot minute but different machine ids never retire each other (#5038)", async () => {
 	const { start } = await crashedCluster();
 	const machine = (guid: string) =>
 		brokerHostIdentity(
-			fakeSources({ platform: "win32", commands: { [WINDOWS_REG]: `MachineGuid    REG_SZ    ${guid}` } }),
+			fakeSources({
+				platform: "win32",
+				commands: { [WINDOWS_REG]: `MachineGuid    REG_SZ    ${guid}`, [WINDOWS_BOOT]: BOOTED },
+			}),
 		);
 	assert.notEqual(machine("guid-1"), machine("guid-2"));
 	// Each sees the other's pid as exited, as a pid from another machine would be.
