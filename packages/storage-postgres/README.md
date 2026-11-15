@@ -37,7 +37,7 @@ chmod 600 ~/.atomic/postgres-password
 | `maxConnections` | no | Connections each process keeps open at most. Default 8. |
 | `statementTimeoutMs` | no | How long one statement may run before the server cancels it. Default 30000. |
 
-PostgreSQL 14 or newer is required. A URL that names no `sslmode` gets `sslmode=verify-full` when its host is not this machine, so the connection is encrypted and the server certificate is checked. Name a CA with `sslrootcert=/path/to/ca.pem` when the server's certificate is not signed by a CA Node trusts, or set `sslmode` yourself.
+PostgreSQL 14 or newer is required. A URL that names no `sslmode` gets `sslmode=verify-full` when its host is not this machine, so the connection is encrypted and the server certificate is checked. Name a CA with `sslrootcert=/path/to/ca.pem` when the server's certificate is not signed by a CA Node trusts, or set `sslmode` yourself. `sslmode` follows libpq: `verify-ca` checks the certificate's CA (`sslrootcert`, or else the CAs Node trusts) but not its host name, for a server reached by an address its certificate does not name; `prefer` and `allow` encrypt without checking the certificate; `disable` turns TLS off. `require` with `sslrootcert` acts as `verify-ca`; without it, `require` checks the certificate and its host name, as `verify-full` does, which is stricter than libpq. Parameter names are case-sensitive, as in libpq: a TLS parameter that is not lowercase, or an unknown `sslmode`, is refused.
 
 The adapter works through a transaction-mode connection pooler (PgBouncer, Supavisor, and the poolers of managed services): it sets nothing outside a transaction, takes no session locks, and uses no named prepared statements.
 

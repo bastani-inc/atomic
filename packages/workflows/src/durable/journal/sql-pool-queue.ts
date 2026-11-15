@@ -53,6 +53,7 @@ import {
 	poolUsageUpsert,
 	upsertPoolUsage,
 } from "./pool-stage-usage.js";
+import { fleetDrainsSchema } from "./sql-fleet.js";
 import {
 	isStaleLeaseError,
 	JournalError,
@@ -179,7 +180,16 @@ function withQueuedSnapshot(descriptor: PoolWorkDescriptor, queued: string): str
  */
 export type PoolClaimPlacement =
 	| { readonly kind: "unbound" }
-	| { readonly kind: "work"; readonly id: string; readonly generation: number };
+	| {
+			readonly kind: "work";
+			readonly id: string;
+			readonly generation: number;
+			/**
+			 * The worker host claiming, and the provider instance it runs on: the claim takes nothing once a fleet controller
+			 * asked either to drain, though the host has not read the drain yet (#5072).
+			 */
+			readonly host?: { readonly id: string; readonly providerId?: string | undefined };
+	  };
 /** A ready work item a worker host may choose, with the workspace binding its child carries, if any. */
 export interface PoolClaimCandidate {
 	readonly id: string;
@@ -376,6 +386,8 @@ export class SqlPoolQueue {
 			)`);
 			await tx.exec(poolUsageSchema(journal.runs, dialect));
 			await tx.exec(poolFenceSchema(journal.runs, dialect));
+			// A worker host's claims check the drains a fleet controller asked for (#5072).
+			await tx.exec(fleetDrainsSchema(journal.runs, dialect));
 			// Keyed by the run, not the pool row: a root records its binding's snapshot before it queues anything.
 			await tx.exec(`CREATE TABLE IF NOT EXISTS ${pool.rootSnapshots}(
 				root TEXT PRIMARY KEY REFERENCES ${journal.runs}(run_id) ON DELETE CASCADE,
@@ -1010,7 +1022,15 @@ export class SqlPoolQueue {
 				? { clause: "", args: [] }
 				: placement.kind === "unbound"
 					? { clause: `AND ${workspaceBinding(this.dialect)} IS NULL`, args: [] }
-					: { clause: "AND id = ? AND generation = ?", args: [placement.id, placement.generation] };
+					: {
+							clause: `AND id = ? AND generation = ? AND NOT EXISTS (SELECT 1 FROM ${this.journal.runs}_fleet_drains WHERE host = CAST(? AS TEXT) OR provider_id = CAST(? AS TEXT))`,
+							args: [
+								placement.id,
+								placement.generation,
+								placement.host?.id ?? null,
+								placement.host?.providerId ?? null,
+							],
+						};
 		// The ready row is chosen and taken in one statement, so workers racing for the oldest one never conflict: each
 		// takes whichever ready row is oldest when its batch runs.
 		return guardedPoolWrite(
