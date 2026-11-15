@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import type { WorktreeSnapshot } from "@bastani/atomic";
 import {
 	dialectOf,
 	openNodeSqliteDatabase,
@@ -707,7 +708,11 @@ export class SqlRunJournal implements RunJournal {
 		if (
 			batch &&
 			prepared.every(
-				(append) => append instanceof Error || (append.guard === undefined && typeof append.payload === "string"),
+				(append) =>
+					append instanceof Error ||
+					(append.guard === undefined &&
+						typeof append.payload === "string" &&
+						append.worktreeSnapshots.length === 0),
 			)
 		)
 			return this.operation(() => this.appendInOneRequest(batch, owned, prepared));
@@ -831,13 +836,18 @@ export class SqlRunJournal implements RunJournal {
 				: undefined;
 		if (type === RUN_EVENT_TYPES.statusChanged && !(payload instanceof StorageUnavailableError))
 			validateText("status", status!);
-		return { key, type, payload, guard, status };
+		const carried =
+			type === RUN_EVENT_TYPES.checkpointRecorded
+				? (event.payload as { readonly worktreeSnapshots?: readonly WorktreeSnapshot[] }).worktreeSnapshots
+				: undefined;
+		const worktreeSnapshots = Array.isArray(carried) ? carried : [];
+		return { key, type, payload, guard, status, worktreeSnapshots };
 	}
 
 	private async insert(
 		tx: SqliteExecutor,
 		owned: Lease,
-		{ key, type, payload, guard, status }: ReturnType<SqlRunJournal["prepare"]>,
+		{ key, type, payload, guard, status, worktreeSnapshots }: ReturnType<SqlRunJournal["prepare"]>,
 		expected?: number,
 	): Promise<AppendOutcome> {
 		await guard?.(tx, owned.runId);
@@ -849,6 +859,8 @@ export class SqlRunJournal implements RunJournal {
 			);
 			if (row) return { status: "exists", entry: entryFromRow(row) };
 		}
+		// A checkpoint records its worktree snapshots only while every blob they reference is still stored (#5077).
+		await this.snapshotBlobs.assertStored(tx, worktreeSnapshots);
 		const actual = await this.sequence(tx, owned.runId);
 		if (expected !== undefined && expected !== actual)
 			throw new JournalCasConflictError(owned.runId, expected, actual);

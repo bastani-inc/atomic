@@ -293,3 +293,81 @@ describe("a call made from inside a tool (#4309)", () => {
 		assert.equal(seenLength, "BEGIN\n".length + DEFAULT_MAX_RESULT_SIZE_CHARS + 1);
 	});
 });
+
+describe("a detached call whose provider gave it no id (#5056)", () => {
+	test("is started again after a restart under the id it ran with, and its result reaches the model (#5056)", async () => {
+		const tool = waitTool();
+		const { manager, store } = await persistedManager();
+		const first = await pool.harnessWith([tool.definition], manager);
+		first.session.setToolDetachment({ afterMs: 0 });
+		first.setResponses([waitForCiTurn("")]);
+		await first.session.prompt("watch ci");
+		const [detached] = first.session.takeDetachedToolCalls();
+		assert.ok(detached !== undefined);
+		assert.equal(detached.toolCallId, "call_1");
+		assert.deepEqual(
+			tool.calls.map((call) => call.id),
+			[detached.toolCallId],
+		);
+
+		const reopened = await pool.harnessWith(
+			[tool.definition],
+			await SessionManager.open(store, manager.getSessionId()),
+		);
+		const [restarted] = reopened.session.redispatchDetachedToolCalls();
+		assert.equal(restarted?.toolCallId, detached.toolCallId);
+		await untilStarted(tool, 2);
+		tool.finish(1, "ci passed on restart");
+		const requests: string[] = [];
+		reopened.setResponses([
+			(context) => {
+				requests.push(JSON.stringify(context.messages));
+				return fauxAssistantMessage("ci is green");
+			},
+		]);
+
+		await settlesWithin(reopened.session.resumeDetachedTurn([await restarted!.result]));
+
+		assert.deepEqual(toolResultIds(reopened.sessionManager), [detached.toolCallId]);
+		assert.equal(requests.length, 1);
+		assert.ok(requests[0]?.includes("ci passed on restart"));
+		assert.ok(!requests[0]?.includes("Tool execution was interrupted"));
+		assert.equal(getMessageText(reopened.session.messages.at(-1)), "ci is green");
+	});
+});
+
+describe("a detached call saved with an empty id before ids were assigned (#5056)", () => {
+	test("is started again under its derived id, shown as running, and paired with its result (#5056)", async () => {
+		const tool = waitTool();
+		const { manager, store } = await persistedManager();
+		await manager.appendMessage({ role: "user", content: "watch ci", timestamp: 1 });
+		await manager.appendMessage(waitForCiTurn(""));
+		const reopened = await pool.harnessWith(
+			[tool.definition],
+			await SessionManager.open(store, manager.getSessionId()),
+		);
+
+		const [restarted] = reopened.session.redispatchDetachedToolCalls();
+		assert.ok(restarted !== undefined);
+		assert.notEqual(restarted.toolCallId, "");
+		const running = JSON.stringify(reopened.session.messages);
+		assert.ok(!running.includes("Tool execution was interrupted"), "a call started again is running");
+		await untilStarted(tool);
+		assert.equal(tool.calls[0]?.id, restarted.toolCallId);
+		tool.finish(0, "ci passed on restart");
+		const requests: string[] = [];
+		reopened.setResponses([
+			(context) => {
+				requests.push(JSON.stringify(context.messages));
+				return fauxAssistantMessage("ci is green");
+			},
+		]);
+
+		await settlesWithin(reopened.session.resumeDetachedTurn([await restarted.result]));
+
+		assert.equal(requests.length, 1);
+		assert.ok(requests[0]?.includes("ci passed on restart"));
+		assert.ok(!requests[0]?.includes("Tool execution was interrupted"));
+		assert.equal(getMessageText(reopened.session.messages.at(-1)), "ci is green");
+	});
+});
