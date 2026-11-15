@@ -41,7 +41,7 @@ interface Plan {
 /** Which commit to refuse: the `nth` commit of attempt `attempt`, or the first whose id starts with `prefix`. */
 type Refusal =
 	| { readonly attempt: number; readonly nth: number }
-	| { readonly attempt: number; readonly prefix: string };
+	| { readonly attempt: number; readonly prefix: string; readonly times?: number };
 
 /**
  * The workflows refused writes are swept over. `full`: s1 → a ui prompt → t1 → t2 → s2 → a child workflow (c1, ct).
@@ -160,16 +160,18 @@ async function runWithRefusal(
 	let attempt = 0;
 	let commits = 0;
 	let refused: string | undefined;
+	let refusedCount = 0;
 	const instrument = (opened: JournalTestBackend): JournalTestBackend => {
 		const commit = opened.commitCheckpoint.bind(opened);
 		opened.commitCheckpoint = ((checkpoint: DurableCheckpoint, signal?: { readonly signal?: AbortSignal }) => {
 			commits += 1;
 			const hit =
-				refused === undefined &&
+				(refused === undefined || ("times" in refusal && refusedCount < (refusal.times ?? 1))) &&
 				attempt === refusal.attempt &&
 				("nth" in refusal ? commits === refusal.nth : checkpoint.checkpointId.startsWith(refusal.prefix));
 			if (hit) {
-				refused = checkpoint.checkpointId;
+				refusedCount += 1;
+				refused ??= checkpoint.checkpointId;
 				return Promise.reject(
 					new StorageUnavailableError(
 						{ adapter: "test", location: "refused" },
@@ -337,6 +339,23 @@ describe("a refused durable write leaves the run inspectable and resumable (#502
 			];
 			const { refused } = await runWithRefusal({ attempt, prefix: "tool-failure:" }, plans, { restart: true });
 			assert.match(refused ?? "", /^tool-failure:/);
+			store.clear();
+		}
+	});
+
+	test("a failed tool whose failure record is refused twice is run again on resume (#5027)", async () => {
+		for (const [attempt, restart] of [
+			[0, false],
+			[0, true],
+			[1, false],
+			[1, true],
+		] as const) {
+			const plans = [
+				{ failT2: true, failS2: false },
+				{ failT2: attempt === 1, failS2: false },
+			];
+			const { refused } = await runWithRefusal({ attempt, prefix: "tool-failure:", times: 2 }, plans, { restart });
+			assert.match(refused ?? "", /^tool-failure:/, `attempt ${attempt}, restart ${restart}`);
 			store.clear();
 		}
 	});
