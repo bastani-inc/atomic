@@ -71,7 +71,7 @@ function note(lines: readonly string[]): void {
  */
 function bindingLoads(): boolean {
 	if (!existsSync(NATIVE_ENTRY)) return false;
-	const probe = spawnSyncCollect([process.execPath, "-e", `require(${JSON.stringify(NATIVE_ENTRY)})`], {
+	const probe = spawnSyncCollect([process.execPath, "-e", "require(process.argv[1])", NATIVE_ENTRY], {
 		cwd: REPO_ROOT,
 	});
 	return probe.success;

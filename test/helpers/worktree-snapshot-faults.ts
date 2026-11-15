@@ -116,7 +116,8 @@ export function runningCommand(pidFile: string): { command: string; args: string
 		command: process.execPath,
 		args: [
 			"-e",
-			`const fs = require("node:fs"); fs.writeFileSync(${JSON.stringify(`${pidFile}.tmp`)}, String(process.pid)); fs.renameSync(${JSON.stringify(`${pidFile}.tmp`)}, ${JSON.stringify(pidFile)}); setTimeout(() => {}, 30_000);`,
+			'const fs = require("node:fs"); const pidFile = process.argv[1]; fs.writeFileSync(pidFile + ".tmp", String(process.pid)); fs.renameSync(pidFile + ".tmp", pidFile); setTimeout(() => {}, 30_000);',
+			pidFile,
 		],
 	};
 }
