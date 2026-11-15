@@ -147,6 +147,42 @@ describe("an LFS download an interrupted resume left pending (#5099)", () => {
 	test.each([
 		["a mark that is not JSON", () => "{"],
 		[
+			"a HEAD with text before it",
+			(head: string, tree: string, remote: string) => ({ head: `x${head}`, tree, remotes: [remote] }),
+		],
+		[
+			"a HEAD with text after it",
+			(head: string, tree: string, remote: string) => ({ head: `${head}x`, tree, remotes: [remote] }),
+		],
+		[
+			"a HEAD too short for an id",
+			(_: string, tree: string, remote: string) => ({ head: "a", tree, remotes: [remote] }),
+		],
+		[
+			"a HEAD of 64 other characters",
+			(_: string, tree: string, remote: string) => ({ head: "z".repeat(64), tree, remotes: [remote] }),
+		],
+		[
+			"a tree with text before it",
+			(head: string, tree: string, remote: string) => ({ head, tree: `x${tree}`, remotes: [remote] }),
+		],
+		[
+			"a tree with text after it",
+			(head: string, tree: string, remote: string) => ({ head, tree: `${tree}x`, remotes: [remote] }),
+		],
+		[
+			"a tree too short for an id",
+			(head: string, _: string, remote: string) => ({ head, tree: "a", remotes: [remote] }),
+		],
+		[
+			"a tree of 64 other characters",
+			(head: string, _: string, remote: string) => ({ head, tree: "z".repeat(64), remotes: [remote] }),
+		],
+		[
+			"a remote that is not a string",
+			(head: string, tree: string, remote: string) => ({ head, tree, remotes: [remote, 5] }),
+		],
+		[
 			"a HEAD that is not a commit id",
 			(_: string, tree: string, remote: string) => ({ head: "--all", tree, remotes: [remote] }),
 		],

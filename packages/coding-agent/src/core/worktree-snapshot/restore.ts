@@ -1095,8 +1095,8 @@ async function lfsHolderRuns(marker: string, pending: PendingLfs): Promise<boole
 	if (pullingHere.has(marker)) return true;
 	const holder = pending.holder;
 	if (holder === undefined) return false;
-	const self = thisProcess();
-	if (holder.host === self.host && holder.pid === self.pid && holder.start === self.start) return false;
+	// This process, when it is not downloading into the worktree, stopped the download that names it.
+	if (holder.host === thisProcess().host && holder.pid === process.pid) return false;
 	const age = Date.now() - (await stat(marker)).mtimeMs;
 	return holderRuns(holder, age, UNSTARTED_LFS_HOLDER_LIMIT_MS);
 }
@@ -1482,7 +1482,6 @@ export async function resetPooledWorktree(
 		if (snapshot.filters?.drivers.includes("lfs")) {
 			const worktree: GitRunOptions = { cwd: slot, signal };
 			const pending: PendingLfs = { head: snapshot.head, tree: snapshot.tree, remotes: snapshot.remotes };
-			await markLfsPending(worktree, pending, snapshot.id);
 			const pointers = await timeRestorePhase("lfs", () => pullPendingLfs(worktree, pending));
 			if (pointers.length > 0) warnings.unshift({ code: "lfs-objects-unavailable", paths: pointers });
 		}
