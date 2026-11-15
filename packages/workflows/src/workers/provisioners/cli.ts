@@ -6,7 +6,7 @@
  */
 
 import { type ChildProcess, spawn } from "node:child_process";
-import { configuredSecretRedactor } from "@bastani/atomic";
+import { configuredSecretRedactor, sliceHead } from "@bastani/atomic";
 import type { WorkerProvisionerErrorCode } from "./types.js";
 
 /** Most bytes of stdout a CLI may print: a scale set or a namespace of thousands of hosts fits. */
@@ -117,7 +117,7 @@ function detail(stderr: string, cut: boolean, call: CliCall, env: NodeJS.Process
 		.map((line) => line.trim())
 		.filter((line) => line !== "")
 		.join(" ");
-	return text.length > MAX_DETAIL_CHARS ? `${text.slice(0, MAX_DETAIL_CHARS)}…` : text;
+	return text.length > MAX_DETAIL_CHARS ? `${sliceHead(text, MAX_DETAIL_CHARS)}…` : text;
 }
 
 /**

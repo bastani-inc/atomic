@@ -314,7 +314,14 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 		backend: DurableWorkflowBackend,
 		stageId?: string,
 	):
-		| { ok: true; stageId?: string; toolNodeId?: string; retryToolNodes?: readonly ToolNodeSnapshot[] }
+		| {
+				ok: true;
+				stageId?: string;
+				toolNodeId?: string;
+				retryToolNodes?: readonly ToolNodeSnapshot[];
+				/** Resume from the run's durable records alone, without the live run as its continuation (#5027). */
+				fromRecords?: true;
+		  }
 		| { ok: false; message: string } {
 		const budgetExceededSource =
 			source.result?.status === "budget_exceeded" && source.budgetState?.systemOwnedStop === true;
@@ -332,6 +339,10 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 		const failedStageId = source.failedStageId ?? source.stages.find((stage) => stage.status === "failed")?.id;
 		if (failedStageId !== undefined) return { ok: true, stageId: failedStageId };
 		if (budgetExceededSource && source.stages.length === 0) return { ok: true };
+		// No node of the run failed and each one completed with its record: plain workflow code threw after them, or the
+		// store refused a record the attempt wrote between nodes. The run resumes from its records, as it does after a
+		// restart (#5027).
+		if (completedFromRecords(source, backend)) return { ok: true, fromRecords: true };
 		if (source.toolNodes.length > 0) return resolveToolResumeFrontier(source, backend);
 		return { ok: false, message: `insufficient_state: failed run ${source.id} does not identify a failed stage` };
 	}
@@ -396,14 +407,20 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 					...(options?.actor === undefined ? {} : { resumeActor: options.actor }),
 					...(options?.budget === undefined ? {} : { budget: options.budget }),
 					...(options?.acceptEntryChanges === true ? { acceptEntryChanges: true } : {}),
-					continuation: {
-						source,
-						...(resolvedStage.stageId === undefined ? {} : { resumeFromStageId: resolvedStage.stageId }),
-						...(resolvedStage.toolNodeId === undefined ? {} : { resumeFromToolNodeId: resolvedStage.toolNodeId }),
-						...(resolvedStage.retryToolNodes === undefined
-							? {}
-							: { retryToolNodes: resolvedStage.retryToolNodes }),
-					},
+					...(resolvedStage.fromRecords === true
+						? {}
+						: {
+								continuation: {
+									source,
+									...(resolvedStage.stageId === undefined ? {} : { resumeFromStageId: resolvedStage.stageId }),
+									...(resolvedStage.toolNodeId === undefined
+										? {}
+										: { resumeFromToolNodeId: resolvedStage.toolNodeId }),
+									...(resolvedStage.retryToolNodes === undefined
+										? {}
+										: { retryToolNodes: resolvedStage.retryToolNodes }),
+								},
+							}),
 				},
 			},
 			[resumableEntryFromHandle(handle)],
@@ -490,4 +507,25 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 			...(opts.reportWarning === undefined ? {} : { reportWarning: opts.reportWarning }),
 		}),
 	};
+}
+
+/**
+ * Whether no node of a failed run failed or stopped part-way: every stage completed (or a storage refusal kept it from
+ * starting), and every tool completed with its completion in the run's records (#5027).
+ */
+function completedFromRecords(source: RunSnapshot, backend: DurableWorkflowBackend): boolean {
+	return (
+		source.stages.length + source.toolNodes.length > 0 &&
+		// A stage a storage refusal kept from starting runs again as it would have.
+		source.stages.every(
+			(stage) =>
+				stage.status === "completed" ||
+				(stage.status === "pending" && source.failureCode === "storage_unavailable"),
+		) &&
+		source.toolNodes.every(
+			(tool) =>
+				(tool.status === "completed" || tool.status === "cached") &&
+				backend.getToolCheckpoint(source.id, tool.argsHash)?.topology?.nodeId === tool.id,
+		)
+	);
 }

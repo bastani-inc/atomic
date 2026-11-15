@@ -13,6 +13,7 @@ import { mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, statSync, writ
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { getAgentDir } from "../config.js";
+import { attachSessionClaim } from "./session-claims.ts";
 import { SessionOpenElsewhereError } from "./session-manager-errors.js";
 import type {
 	SessionOpenMarker,
@@ -117,6 +118,8 @@ interface HeldMarker {
 	readonly markers: SessionOpenMarkerStore;
 	readonly sessionId: string;
 	holds: number;
+	/** Releases the resume claim this marker took over (#5135), if any. */
+	readonly releaseClaim: (() => void) | undefined;
 }
 
 /** Markers this process holds, by store and then session id. */
@@ -165,7 +168,7 @@ export function holdSessionOpenMarker(
 	}
 	let marker = sessions.get(sessionId);
 	if (marker === undefined) {
-		marker = { markers, sessionId, holds: 0 };
+		marker = { markers, sessionId, holds: 0, releaseClaim: attachSessionClaim(sessionId) };
 		sessions.set(sessionId, marker);
 		heldCount++;
 		if (markers instanceof FileOpenMarkers) {
@@ -190,6 +193,7 @@ export function holdSessionOpenMarker(
 		if (--holding.holds > 0) return;
 		owner.delete(sessionId);
 		if (owner.size === 0) held.delete(markers);
+		holding.releaseClaim?.();
 		if (--heldCount === 0 && heartbeat !== undefined) {
 			clearInterval(heartbeat);
 			heartbeat = undefined;
