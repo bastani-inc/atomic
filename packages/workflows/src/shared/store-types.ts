@@ -762,6 +762,11 @@ export interface PoolCoordinationStats {
 	readonly since: number;
 	readonly requests: Readonly<Record<string, PoolCoordinationCount>>;
 	readonly writes: Readonly<Record<string, PoolCoordinationCount>>;
+	/**
+	 * Set when the root has fleet-wide rate limits (#4768): `"local-fallback"` while the journal does not answer and
+	 * this host meters model calls at its share of each limit instead; `"store"` otherwise.
+	 */
+	readonly rateLimit?: "store" | "local-fallback";
 }
 
 export interface RunPoolSnapshot {
