@@ -30,16 +30,17 @@ const OTHER_FIELD_NAME =
 /** Password-like names that also count capitalized after a lower-case letter or digit, as in `dbPassword`. */
 const CAMEL_CASE_PASSWORD_NAME = "(?:Password|Passwd|Pwd|Passphrase)";
 /**
- * Other names that count capitalized after a lower-case letter or digit: `Key` covers `openaiApiKey`,
- * `secretAccessKey` and `privateKey`, as `Token`, `Secret` and `Credentials` cover `githubToken`, `awsSecret` and
- * `dbCredentials`.
+ * Other names that count capitalized after a lower-case letter or digit, as in `githubToken`, `awsSecret` and
+ * `dbCredentials`. Only key names that name a credential count (`openaiApiKey`, `secretAccessKey`, `jwtSigningKey`),
+ * so `primaryKey`, `sortKey` or `cacheKey` stay as they are.
  */
-const CAMEL_CASE_FIELD_NAME = "(?:Token|Secret|Credentials?|Authorization|Key)";
+const CAMEL_CASE_FIELD_NAME =
+	"(?:Token|Secret|Credentials?|Authorization|(?:Api|Access|Secret|Private|Auth|Signing|Encryption|Client|Master|License)Key)";
 
 /**
  * A credential field name. A letter or digit may not come right before it, but `_` or `-` may, so `DB_PASSWORD` and
  * `GITHUB_TOKEN` count while `monkey` does not. A capitalized name also counts after a lower-case letter or digit, so
- * `authToken`, `openaiApiKey` and `dbPassword` count while `tokenizer` does not.
+ * `authToken`, `openaiApiKey` and `dbPassword` count while `tokenizer` and `primaryKey` do not.
  */
 function fieldName(names: string, camelCase: string): string {
 	return `(?:(?<![A-Za-z0-9])${caseless(`(?:x-)?${names}`)}|(?<=[a-z0-9])${camelCase})`;
@@ -78,15 +79,46 @@ function blockField(name: string): RegExp {
 const PASSWORD_NAME = fieldName(PASSWORD_FIELD_NAME, CAMEL_CASE_PASSWORD_NAME);
 const OTHER_NAME = fieldName(OTHER_FIELD_NAME, CAMEL_CASE_FIELD_NAME);
 
-/** How a match is redacted: the characters it keeps from its start, and what replaces the rest. */
-type Redaction = (match: RegExpExecArray) => { readonly keep: number; readonly replacement: string };
+/** A part of a match to replace: from `start` to `end`, offsets in the match, in order and not overlapping. */
+interface Replacement {
+	readonly start: number;
+	readonly end: number;
+	readonly replacement: string;
+}
 
-const WHOLE: Redaction = () => ({ keep: 0, replacement: REDACTED });
-const AFTER_SEPARATOR: Redaction = (match) => ({
-	keep: /[:=]/u.exec(match[0])!.index + 1,
-	replacement: ` ${REDACTED}`,
-});
-const BLOCK: Redaction = (match) => ({ keep: match[1]!.length, replacement: `\n  ${REDACTED}` });
+/** How a match is redacted: the parts of it to replace. */
+type Redaction = (match: RegExpExecArray) => readonly Replacement[];
+
+const WHOLE: Redaction = (match) => [{ start: 0, end: match[0].length, replacement: REDACTED }];
+const AFTER_SEPARATOR: Redaction = (match) => [
+	{ start: /[:=]/u.exec(match[0])!.index + 1, end: match[0].length, replacement: ` ${REDACTED}` },
+];
+const BLOCK: Redaction = (match) => [{ start: match[1]!.length, end: match[0].length, replacement: `\n  ${REDACTED}` }];
+
+/** A `Cookie` or `Set-Cookie` header, in any case, to the end of its line. */
+const COOKIE_HEADER = /(?<![A-Za-z0-9-])(set-)?cookie[ \t]*:[^\r\n]*/giu;
+
+/**
+ * The values of a cookie header's `name=value` pairs: every pair of a `Cookie` header, and only the first pair of a
+ * `Set-Cookie` header, whose other pairs are attributes such as `Path` and `Max-Age`. Names stay visible.
+ */
+const COOKIE_VALUES: Redaction = (match) => {
+	const header = match[0];
+	const replacements: Replacement[] = [];
+	let pairStart = header.indexOf(":") + 1;
+	for (;;) {
+		const semicolon = header.indexOf(";", pairStart);
+		const pairEnd = semicolon === -1 ? header.length : semicolon;
+		const equals = header.indexOf("=", pairStart);
+		if (equals !== -1 && equals < pairEnd) {
+			const value = header.slice(equals + 1, pairEnd).trimEnd();
+			if (value.trim() !== "")
+				replacements.push({ start: equals + 1, end: equals + 1 + value.length, replacement: REDACTED });
+		}
+		if (match[1] !== undefined || semicolon === -1) return replacements;
+		pairStart = semicolon + 1;
+	}
+};
 
 /**
  * Each pattern, in order, with how its matches are redacted. Blocks and password-like fields come first, so a later
@@ -94,6 +126,7 @@ const BLOCK: Redaction = (match) => ({ keep: match[1]!.length, replacement: `\n 
  */
 const STEPS: readonly (readonly [RegExp, Redaction])[] = [
 	[PRIVATE_KEY_BLOCK, WHOLE],
+	[COOKIE_HEADER, COOKIE_VALUES],
 	[blockField(PASSWORD_NAME), BLOCK],
 	[blockField(OTHER_NAME), BLOCK],
 	[new RegExp(credentialField(PASSWORD_NAME, String.raw`(?:SCHEME)?[^\r\n]+`), "gu"), AFTER_SEPARATOR],
@@ -127,12 +160,11 @@ function redactMatches(text: string, pattern: RegExp, redaction: Redaction): str
 	let redacted = "";
 	let copied = 0;
 	for (const match of plain.matchAll(pattern)) {
-		const { keep, replacement } = redaction(match);
-		const start = match.index + keep;
-		const end = match.index + match[0].length;
-		if (end <= start) continue;
-		redacted += text.slice(copied, at(start)) + replacement;
-		copied = at(end - 1) + 1;
+		for (const { start, end, replacement } of redaction(match)) {
+			if (end <= start) continue;
+			redacted += text.slice(copied, at(match.index + start)) + replacement;
+			copied = at(match.index + end - 1) + 1;
+		}
 	}
 	return redacted + text.slice(copied);
 }
@@ -140,7 +172,8 @@ function redactMatches(text: string, pattern: RegExp, redaction: Redaction): str
 /**
  * Redact what looks like a credential in `text`: user info in URLs (up to the last `@` of the authority), private key
  * blocks (PEM, OpenSSH and PGP), the value of a credential field in JSON (also JSON inside a JSON string), YAML (also a
- * block scalar), HTTP-header or env-style text, and well-known token shapes. An unquoted password-like value
+ * block scalar), HTTP-header or env-style text, cookie values in `Cookie` and `Set-Cookie` headers, and well-known token
+ * shapes. An unquoted password-like value
  * (`password`, `passwd`, `pwd`, `passphrase`, also `dbPassword`) is redacted to the end of its line. ANSI styling
  * anywhere in a field or token does not hide it. Every pattern is linear in the length of `text`.
  */

@@ -360,6 +360,9 @@ describe("credential shape coverage", () => {
 			"-----BEGIN A ".repeat(ADVERSARIAL_LENGTH / 13),
 			`-----BEGIN ${["PRIVATE", "KEY"].join(" ")}-----`.repeat(ADVERSARIAL_LENGTH / 27),
 			"aToken=".repeat(ADVERSARIAL_LENGTH / 7),
+			"cookie:".repeat(ADVERSARIAL_LENGTH / 7),
+			`Cookie: ${"a=;".repeat(ADVERSARIAL_LENGTH / 3)}`,
+			"Set-Cookie: x\n".repeat(ADVERSARIAL_LENGTH / 14),
 			`Authorization: ${"\u001b[1m".repeat(ADVERSARIAL_LENGTH / 4)}`,
 		]) {
 			const started = performance.now();
@@ -394,6 +397,46 @@ describe("credential field variants", () => {
 			assertGone(`dbPassword: correct horse ${PLAIN_SECRET}\nnext: kept`),
 			"dbPassword: [redacted]\nnext: kept",
 		);
+	});
+
+	test("ordinary key fields are left alone while credential key names are redacted", () => {
+		for (const name of ["primaryKey", "sortKey", "cacheKey", "foreignKey", "idempotencyKey", "partitionKey"]) {
+			for (const text of [`${name}: id`, `${name}=id`, `{"${name}":"id"}`])
+				assert.equal(redactCredentialShapes(text), text);
+		}
+		for (const name of [
+			"openaiApiKey",
+			"awsAccessKey",
+			"awsSecretKey",
+			"sshPrivateKey",
+			"jwtAuthKey",
+			"jwtSigningKey",
+			"dataEncryptionKey",
+			"oauthClientKey",
+			"kmsMasterKey",
+			"productLicenseKey",
+			"key",
+			"apikey",
+		]) {
+			assertGone(`${name}: ${PLAIN_SECRET}`);
+			assertGone(`{"${name}":"${PLAIN_SECRET}"}`);
+		}
+	});
+
+	test("cookie values are redacted and cookie names and attributes stay", () => {
+		assert.equal(
+			redactCredentialShapes(`Cookie: session=${PLAIN_SECRET}; theme=dark`),
+			"Cookie: session=[redacted]; theme=[redacted]",
+		);
+		assert.equal(
+			redactCredentialShapes(`set-cookie: sid=${PLAIN_SECRET}; Path=/; HttpOnly; Secure\nnext: kept`),
+			"set-cookie: sid=[redacted]; Path=/; HttpOnly; Secure\nnext: kept",
+		);
+		assert.equal(
+			redactCredentialShapes(`\u001b[1mSET-COOKIE\u001b[0m: \u001b[32msid=${PLAIN_SECRET}\u001b[0m; Max-Age=60`),
+			"\u001b[1mSET-COOKIE\u001b[0m: \u001b[32msid=[redacted]\u001b[0m; Max-Age=60",
+		);
+		assert.equal(redactCredentialShapes("cookies: 3 eaten"), "cookies: 3 eaten");
 	});
 
 	test("an escaped quote inside an escaped JSON value does not end it", () => {
