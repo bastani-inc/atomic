@@ -109,8 +109,10 @@ test("a recipient whose socket is backlogged gets presence after its backlog dra
 	await vi.advanceTimersByTimeAsync(PRESENCE_COALESCE_INTERVAL_MS);
 	assert.deepEqual(h.updates(), ["slow<-a:busy"]);
 
-	await vi.advanceTimersByTimeAsync(PRESENCE_MAX_DEFERRAL_MS);
-	assert.deepEqual(h.updates(), ["slow<-a:busy", "stuck<-a:busy"], "presence is never held back indefinitely");
+	await vi.advanceTimersByTimeAsync(PRESENCE_MAX_DEFERRAL_MS - PRESENCE_COALESCE_INTERVAL_MS * 5);
+	assert.deepEqual(h.updates(), ["slow<-a:busy"]);
+	await vi.advanceTimersByTimeAsync(PRESENCE_COALESCE_INTERVAL_MS);
+	assert.deepEqual(h.updates(), ["slow<-a:busy", "stuck<-a:busy"], "presence waits at most the deferral cap");
 });
 
 test("a flush writes gathered presence at once, and a session gone or out of the group by then is not announced (#5146)", async () => {
@@ -152,7 +154,9 @@ test("presence gathered for a session that disconnected, or for a replaced conne
 	await vi.advanceTimersByTimeAsync(PRESENCE_COALESCE_INTERVAL_MS);
 	assert.deepEqual(h.updates(), []);
 
-	h.fanout.queue(h.sessions.get("disposed")!, "a");
+	const disposed = connected("disposed", ["g"]);
+	h.sessions.set("disposed", disposed);
+	h.fanout.queue(disposed, "a");
 	h.fanout.dispose();
 	await vi.advanceTimersByTimeAsync(PRESENCE_COALESCE_INTERVAL_MS);
 	assert.deepEqual(h.updates(), []);

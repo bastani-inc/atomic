@@ -1,5 +1,4 @@
 import type net from "node:net";
-import { isAgentRecipient } from "../recipient-purpose.js";
 import type { BrokerMessage } from "../types.js";
 import { sessionsShareGroup } from "./group-membership.js";
 import type { BrokerConnectedSession } from "./send-handler.js";
@@ -50,8 +49,7 @@ export class PresenceFanout {
 	/** Tell `recipient` of `changedId`'s presence at the next flush. */
 	queue(recipient: BrokerConnectedSession, changedId: string): void {
 		let entry = this.pending.get(recipient.socket);
-		if (entry === undefined || entry.recipientId !== recipient.info.id) {
-			if (entry !== undefined) this.discard(entry);
+		if (entry === undefined) {
 			entry = { recipientId: recipient.info.id, socket: recipient.socket, changed: new Set(), since: this.now(), timer: undefined };
 			this.pending.set(recipient.socket, entry);
 			this.schedule(entry);
@@ -66,42 +64,36 @@ export class PresenceFanout {
 	flush(socket: net.Socket): void {
 		const entry = this.pending.get(socket);
 		if (entry === undefined) return;
-		this.discard(entry);
+		clearTimeout(entry.timer);
+		this.pending.delete(socket);
 		const recipient = this.sessions.get(entry.recipientId);
 		if (recipient === undefined || recipient.socket !== socket) return;
 		for (const changedId of entry.changed) {
 			const changed = this.sessions.get(changedId);
 			// A session that left, or no longer shares a group, was announced by `session_left` already.
-			if (changed === undefined || !isAgentRecipient(changed.info) || !sessionsShareGroup(changed.info, recipient.info)) continue;
+			if (changed === undefined || !sessionsShareGroup(changed.info, recipient.info)) continue;
 			this.write(socket, { type: "presence_update", session: changed.info });
 		}
 	}
 
 	/** Drop every presence gathered for `socket`, whose session has gone. */
 	forget(socket: net.Socket): void {
-		const entry = this.pending.get(socket);
-		if (entry !== undefined) this.discard(entry);
+		clearTimeout(this.pending.get(socket)?.timer);
+		this.pending.delete(socket);
 	}
 
 	/** Drop everything gathered, at broker shutdown. */
 	dispose(): void {
-		for (const entry of [...this.pending.values()]) this.discard(entry);
+		for (const entry of this.pending.values()) clearTimeout(entry.timer);
+		this.pending.clear();
 	}
 
 	private schedule(entry: PendingPresence): void {
 		entry.timer = setTimeout(() => {
-			entry.timer = undefined;
-			if (this.pending.get(entry.socket) !== entry) return;
 			const backlogged = entry.socket.writableLength > PRESENCE_BACKLOG_BYTES;
 			if (backlogged && this.now() - entry.since < PRESENCE_MAX_DEFERRAL_MS) this.schedule(entry);
 			else this.flush(entry.socket);
 		}, PRESENCE_COALESCE_INTERVAL_MS);
-		entry.timer.unref?.();
-	}
-
-	private discard(entry: PendingPresence): void {
-		if (entry.timer !== undefined) clearTimeout(entry.timer);
-		entry.timer = undefined;
-		if (this.pending.get(entry.socket) === entry) this.pending.delete(entry.socket);
+		entry.timer.unref();
 	}
 }
