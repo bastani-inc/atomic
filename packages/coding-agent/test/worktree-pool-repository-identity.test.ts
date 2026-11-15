@@ -39,6 +39,8 @@ useTemporaryAgentDir();
 const settings = DEFAULT_WORKTREE_SNAPSHOT_SETTINGS;
 /** The identity every remote-less checkout had before #4989: `sha24` of no remotes. */
 const EMPTY_IDENTITY = sha256Hex("").slice(0, 24) as RepositoryId;
+/** Normalizing three remotes of 100,000 slashes each takes well under this; a quadratic scan takes seconds. */
+const LINEAR_NORMALIZE_MS = 1_000;
 const SECRET = '{"token":"A-SECRET"}\n';
 
 let sandbox: GitSandbox;
@@ -319,6 +321,27 @@ describe("the identity a repository's checkouts share (#4989)", () => {
 		}
 		assert.equal(normalizeRemoteUrl("", root), "");
 		assert.equal(normalizeRemoteUrl(" /srv/repo.git\n", root), " /srv/repo.git\n");
+	});
+
+	test("a remote of many slashes normalizes in linear time, as before (code scanning #289, #290)", () => {
+		const slashes = "/".repeat(100_000);
+		const started = performance.now();
+		assert.equal(normalizeRemoteUrl(`https://github.com/${slashes}acme/widgets`), "https://github.com/acme/widgets");
+		assert.equal(
+			normalizeRemoteUrl(`https://github.com/acme/widgets${slashes}x`),
+			`https://github.com/acme/widgets${slashes}x`,
+		);
+		assert.equal(
+			normalizeRemoteUrl(`https://github.com/acme/widgets${slashes}.GIT${slashes}`),
+			"https://github.com/acme/widgets",
+		);
+		assert.ok(
+			performance.now() - started < LINEAR_NORMALIZE_MS,
+			`took ${Math.round(performance.now() - started)} ms`,
+		);
+		assert.equal(normalizeRemoteUrl("https://github.com/.git"), "https://github.com/.git");
+		assert.equal(normalizeRemoteUrl("https://github.com///.git//"), "https://github.com///.git//");
+		assert.equal(normalizeRemoteUrl("https://github.com/a/.git/"), "https://github.com/a");
 	});
 
 	test("remotes that name no one repository have no shared identity (#4989)", () => {

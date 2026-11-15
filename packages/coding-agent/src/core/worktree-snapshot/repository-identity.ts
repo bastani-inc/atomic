@@ -46,6 +46,18 @@ function isRelativePath(remote: string): boolean {
 }
 
 /**
+ * `path` without its leading and trailing slashes, in one scan from each end: a regular expression such as `/\/+$/`
+ * retries from every slash of a path of many slashes, in time quadratic in its length.
+ */
+function trimSlashes(path: string): string {
+	let start = 0;
+	let end = path.length;
+	while (start < end && path[start] === "/") start++;
+	while (end > start && path[end - 1] === "/") end--;
+	return path.slice(start, end);
+}
+
+/**
  * `remote` as the identity compares it: an HTTP(S) or Git remote, or an SSH one as the `git` user of hosting services,
  * becomes `https://<host>[:port]/<path>`, with the host lower-cased, any credentials and a default port dropped, and
  * slashes and a trailing `.git` trimmed from the path, so `git@github.com:o/r.git`, `ssh://git@GitHub.com/o/r` and
@@ -79,11 +91,8 @@ export function normalizeRemoteUrl(remote: string, root?: string): string {
 		host = scp[2]!;
 		path = scp[3]!;
 	}
-	const repository = path
-		.replace(/^\/+/, "")
-		.replace(/\/+$/, "")
-		.replace(/\.git$/i, "")
-		.replace(/\/+$/, "");
+	let repository = trimSlashes(path);
+	if (repository.toLowerCase().endsWith(".git")) repository = trimSlashes(repository.slice(0, -".git".length));
 	if (host === "" || repository === "") return remote;
 	return `https://${host.toLowerCase()}${port}/${repository}`;
 }
