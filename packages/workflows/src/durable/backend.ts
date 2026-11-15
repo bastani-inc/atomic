@@ -302,6 +302,14 @@ export interface DurableWorkflowBackend {
 	persistSummary?(workflowId: string, summary: string, summarizedThrough: number): Promise<boolean>;
 	/** Register or update a workflow's top-level metadata. */
 	commitWorkflowRegistration(handle: WorkflowRegistrationInput): Promise<void>;
+	/**
+	 * Update the top-level metadata of a run a resume claimed, only while it is still as the claim left it: `running`
+	 * under `modelOwner`. Its pending prompts and resumability stay as they are. False when another write changed it.
+	 */
+	commitClaimedWorkflowRegistration?(
+		handle: WorkflowRegistrationInput,
+		modelOwner: string | undefined,
+	): Promise<boolean>;
 	/** Persist one logical run's pending-stage transition under its durable owner. */
 	persistPendingStageMessages(
 		workflowId: string,

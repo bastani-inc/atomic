@@ -262,6 +262,30 @@ function holdClaim(backend: InMemoryDurableBackend) {
 	return { claimed: claimed.promise, release: () => release.resolve() };
 }
 
+/** Runs `write` once, as the executor a resume launched is about to register the run it claimed. */
+function beforeExecutorRegisters(
+	backend: InMemoryDurableBackend,
+	f: { readonly id: string; readonly deps: { readonly jobs: ReturnType<typeof createJobTracker> } },
+	write: () => Promise<void>,
+): void {
+	let done = false;
+	const before = async (): Promise<void> => {
+		if (done || !f.deps.jobs.has(f.id)) return;
+		done = true;
+		await write();
+	};
+	const register = backend.commitWorkflowRegistration.bind(backend);
+	backend.commitWorkflowRegistration = async (...args) => {
+		await before();
+		return await register(...args);
+	};
+	const registerClaimed = backend.commitClaimedWorkflowRegistration.bind(backend);
+	backend.commitClaimedWorkflowRegistration = async (...args) => {
+		await before();
+		return await registerClaimed(...args);
+	};
+}
+
 const RELEASED = { status: "paused", releasedModelOwner: "old-session", ownerLiveness: "alive" } as const;
 
 for (const [label, status, pendingPrompts, resumable] of [
@@ -315,16 +339,11 @@ for (const [kind, overrides, status] of [
 		const f = await fixture(backend, overrides);
 		const controller = new AbortController();
 		const reason = new Error("abort adoption");
-		const register = backend.commitWorkflowRegistration.bind(backend);
 		let aborted = false;
-		backend.commitWorkflowRegistration = async (...args) => {
-			// The executor's first write as it starts.
-			if (!aborted && f.deps.jobs.has(f.id)) {
-				aborted = true;
-				controller.abort(reason);
-			}
-			return await register(...args);
-		};
+		beforeExecutorRegisters(backend, f, async () => {
+			aborted = true;
+			controller.abort(reason);
+		});
 		const result = await resumeDurableWorkflow(f.id, { ...f.deps, signal: controller.signal }).catch(
 			(error) => error,
 		);
@@ -385,3 +404,67 @@ test("an abort after the adopted executor is admitted does not undo the resume (
 		await f.deps.jobs.get(f.id)?.promise;
 	}
 });
+
+for (const [kind, overrides] of [
+	["crashed", {}],
+	["released", RELEASED],
+] as const) {
+	test(`a pause written before the executor of a ${kind} run's adoption registers stops the executor and keeps the run paused (#5149)`, async () => {
+		const backend = await createMemoryTestBackend();
+		const f = await fixture(backend, { ...overrides, pendingPrompts: 1, resumable: true });
+		let wrote = false;
+		beforeExecutorRegisters(backend, f, async () => {
+			wrote = true;
+			await backend.commitWorkflowStatusTransition(f.id, ["running"], "paused", 1, true);
+		});
+		const result = await resumeDurableWorkflow(f.id, f.deps);
+		assert.equal(wrote, true);
+		assert.equal(result.ok, false);
+		if (!result.ok) assert.equal(result.reason, "stale");
+		await vi.waitFor(() => assert.equal(f.deps.jobs.has(f.id), false));
+		const handle = f.backend.getWorkflow(f.id);
+		assert.deepEqual(
+			{ status: handle?.status, pendingPrompts: handle?.pendingPrompts, resumable: handle?.resumable },
+			{ status: "paused", pendingPrompts: 1, resumable: true },
+		);
+	});
+
+	for (const [label, pendingPrompts, resumable] of [
+		["pending prompts", 0, undefined],
+		["resumability", undefined, false],
+	] as const) {
+		test(`the ${label} written before the executor of a ${kind} run's adoption registers are kept (#5149)`, async () => {
+			const backend = await createMemoryTestBackend();
+			const f = await fixture(backend, { ...overrides, pendingPrompts: 1, resumable: true });
+			let written: ReturnType<typeof backend.getWorkflow>;
+			beforeExecutorRegisters(backend, f, async () => {
+				await backend.commitWorkflowStatusTransition(f.id, ["running"], "running", pendingPrompts, resumable);
+				written = backend.getWorkflow(f.id);
+			});
+			const finish = Promise.withResolvers<void>();
+			const definition = workflow({
+				name: "adoption-startup",
+				description: "",
+				inputs: {},
+				outputs: {},
+				run: async () => {
+					await finish.promise;
+					return {};
+				},
+			});
+			try {
+				const result = await resumeDurableWorkflow(f.id, { ...f.deps, registry: createRegistry([definition]) });
+				assert.equal(result.ok, true);
+				const handle = f.backend.getWorkflow(f.id);
+				assert.ok(written);
+				assert.deepEqual(
+					{ status: handle?.status, pendingPrompts: handle?.pendingPrompts, resumable: handle?.resumable },
+					{ status: "running", pendingPrompts: written.pendingPrompts, resumable: written.resumable },
+				);
+			} finally {
+				finish.resolve();
+				await f.deps.jobs.get(f.id)?.promise;
+			}
+		});
+	}
+}

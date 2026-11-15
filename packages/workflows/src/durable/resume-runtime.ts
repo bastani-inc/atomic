@@ -35,7 +35,7 @@ import { isDurableWorkflowResumable } from "./resume-eligibility.js";
 import { claimsOf, hasActiveLiveRun, hasForkClaim, pendingResumes, unsettledResumeClaims } from "./run-claims.js";
 import { durableRunNotFoundError, formatRunNotFound } from "./run-not-found.js";
 import { availableRunDurableBackend } from "./run-owner-backend.js";
-import { restorePreconditionsChecked, resumeLaunchCwd } from "./run-restore-preconditions.js";
+import { restorePreconditionsChecked, resumeClaim, resumeLaunchCwd } from "./run-restore-preconditions.js";
 import { foreignInstanceMessage } from "./sdk-owner-release.js";
 import { canonicalDirectory, isSdkRunAdoptable } from "./sdk-recovery-scope.js";
 import { durableWaitingStages } from "./stage-primitive.js";
@@ -463,6 +463,7 @@ async function resumeDurableWorkflowClaimed(
 		};
 	}
 
+	let claimLost = false;
 	const resumeRunOpts: RunOpts = {
 		...deps.baseRunOpts,
 		...(handle.invocationCwd !== undefined ? { cwd: handle.invocationCwd } : {}),
@@ -473,6 +474,12 @@ async function resumeDurableWorkflowClaimed(
 		...(toolContinuation === undefined ? {} : { continuation: toolContinuation }),
 		...(snapshotJournal === undefined ? {} : { [restorePreconditionsChecked]: true as const }),
 		...(deps.baseRunOpts.cwd === undefined ? {} : { [resumeLaunchCwd]: deps.baseRunOpts.cwd }),
+		[resumeClaim]: {
+			modelOwner: adopting ? requestedOwner : handle.modelOwner,
+			onLost: () => {
+				claimLost = true;
+			},
+		},
 	};
 
 	// #5149: an abort before the executor is admitted suspends it without ending the run, so the claim can be undone.
@@ -550,10 +557,23 @@ async function resumeDurableWorkflowClaimed(
 			snapshot?.error,
 			`Workflow ${resolved.workflowId} ended before startup admission`,
 		);
+		const restoreSnapshot = (): void => {
+			if (sourceSnapshot === undefined) deps.baseRunOpts.store?.removeRun(accepted.runId);
+			else deps.baseRunOpts.store?.recordRunStart(sourceSnapshot);
+		};
+		// #5149: a run another write changed after the claim stays as that write left it; the executor took nothing up.
+		if (claimLost && !aborted) {
+			restoreSnapshot();
+			return {
+				ok: false,
+				reason: "stale",
+				message: `Workflow ${resolved.workflowId} changed while resume was pending; refresh the workflow list and try again.`,
+			};
+		}
 		if (!adopting && sourceSnapshot === undefined) deps.baseRunOpts.store?.removeRun(accepted.runId);
 		await rollbackStartup(() => {
-			if (adopting && sourceSnapshot === undefined) deps.baseRunOpts.store?.removeRun(accepted.runId);
-			if (sourceSnapshot !== undefined) deps.baseRunOpts.store?.recordRunStart(sourceSnapshot);
+			if (adopting) restoreSnapshot();
+			else if (sourceSnapshot !== undefined) deps.baseRunOpts.store?.recordRunStart(sourceSnapshot);
 		}, aborted);
 		if (aborted) throw deps.signal?.reason;
 		const drift = findWorkspaceError(admission.error, isWorkspaceDriftError);

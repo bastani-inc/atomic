@@ -934,6 +934,32 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			this.sequences.has(input.workflowId) ? E.statusChanged : E.runStarted,
 		);
 	}
+	commitClaimedWorkflowRegistration(
+		input: WorkflowRegistrationInput,
+		modelOwner: string | undefined,
+	): Promise<boolean> {
+		return this.serialize(input.workflowId, () => this.registerClaimed(input, modelOwner));
+	}
+	private *registerClaimed(input: WorkflowRegistrationInput, modelOwner: string | undefined): Operation<boolean> {
+		this.assertExecutionActive(true);
+		this.ensureOpen();
+		yield* this.ownership(input.workflowId);
+		yield* this.refresh(input.workflowId);
+		const draft = yield* this.draft(input.workflowId);
+		const claimed = draft.getWorkflow(input.workflowId);
+		if (claimed === undefined || claimed.status !== "running" || claimed.modelOwner !== modelOwner) return false;
+		draft.registerWorkflow(
+			{
+				...input,
+				status: "running",
+				resumable: claimed.resumable ?? input.resumable,
+				pendingPrompts: claimed.pendingPrompts,
+			},
+			true,
+		);
+		yield* this.snapshot(draft.getWorkflow(input.workflowId)!);
+		return true;
+	}
 	/**
 	 * Commits a checkpoint through the run's append queue: checkpoints queued back to back, as a fan-out's child
 	 * boundaries are, share one journal transaction instead of one each, so work queued behind a burst of them waits for
