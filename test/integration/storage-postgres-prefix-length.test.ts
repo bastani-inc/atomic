@@ -127,8 +127,13 @@ describe.skipIf(postgresSkipReason !== undefined)("Postgres storage prefix lengt
 				});
 				assert.equal(reserved.status, "reserved");
 				assert.ok((await createdIdentifiers(database)).includes(earlierIndex));
+				const indexOid = async (name: string) =>
+					(await database.get("SELECT to_regclass(?)::oid AS oid", name))?.oid;
+				const earlierOid = await indexOid(earlierIndex);
 
 				await openEveryStore(scope, prefix);
+				// Renamed in place, not rebuilt.
+				assert.equal(await indexOid(`${table}_wake`), earlierOid);
 				const suffixes = async () =>
 					(await createdIdentifiers(database)).map((name) => name.slice(prefix.length)).sort();
 				assert.deepEqual(await suffixes(), [...POSTGRES_STORAGE_IDENTIFIER_SUFFIXES].sort());
