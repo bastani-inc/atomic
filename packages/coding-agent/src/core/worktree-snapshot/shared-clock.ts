@@ -9,39 +9,26 @@
  */
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
-import { rm, stat, writeFile } from "node:fs/promises";
+import { open, stat, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import lockfile, { type LockOptions } from "proper-lockfile";
 
-/** How long a measured offset of a directory's filesystem clock is reused before it is measured again. */
-const OFFSET_REUSE_MS = 10_000;
-/** Times a probe file's name may hold: never a name the pool, restore or seed code reads. */
-const PROBE_PREFIX = ".clock-";
-
-const offsets = new Map<string, { offset: number; measured: number }>();
-
 /**
  * How far the clock of the filesystem holding `directory` runs ahead of this process's clock, in milliseconds: the
- * mtime the filesystem stamps on a file written in `directory` now, less this process's time now. Measured again
- * after {@link OFFSET_REUSE_MS}; 0, this process's own clock, when no file can be written there.
+ * mtime the filesystem stamps on a file created in `directory` now, less this process's time now. The probe file,
+ * `.clock-<random>.probe`, is removed at once. 0, this process's own clock, when no file can be created there.
  */
 export async function sharedClockOffset(directory: string): Promise<number> {
-	const cached = offsets.get(directory);
-	const now = Date.now();
-	if (cached !== undefined && now >= cached.measured && now - cached.measured < OFFSET_REUSE_MS) return cached.offset;
-	const probe = join(directory, `${PROBE_PREFIX}${randomUUID()}.probe`);
+	const probe = join(directory, `.clock-${randomUUID()}.probe`);
 	try {
 		const before = Date.now();
-		await writeFile(probe, "0", { mode: 0o600 });
+		await (await open(probe, "w")).close();
 		const { mtimeMs } = await stat(probe);
-		const after = Date.now();
-		const offset = mtimeMs - (before + after) / 2;
-		offsets.set(directory, { offset, measured: after });
-		return offset;
+		return mtimeMs - (before + Date.now()) / 2;
 	} catch {
-		return cached?.offset ?? 0;
+		return 0;
 	} finally {
-		await rm(probe, { force: true }).catch(() => {});
+		await unlink(probe).catch(() => {});
 	}
 }
 
@@ -52,16 +39,13 @@ export async function sharedClockNow(directory: string): Promise<number> {
 
 /**
  * How each lock file's mtime, in the filesystem's clock, reads in this process's clock, by lock file: the same mtime
- * always reads the same, so a holder finds the mtime it stamped unchanged even once the offset was measured again.
+ * always reads the same, so a holder finds the mtime it stamped unchanged, though the offset is measured anew each
+ * time. A lock's reading is dropped when the lock is removed.
  */
 const readings = new Map<string, { shared: number; local: number }>();
-/** Readings kept at most: older ones are dropped, as only the holder of a lock needs its own. */
-const MAX_READINGS = 1_024;
 
 function remember(path: string, shared: number, local: number): void {
-	readings.delete(path);
 	readings.set(path, { shared, local });
-	if (readings.size > MAX_READINGS) readings.delete(readings.keys().next().value!);
 }
 
 function sharedStat(path: fs.PathLike, callback: (error: NodeJS.ErrnoException | null, stats?: fs.Stats) => void) {

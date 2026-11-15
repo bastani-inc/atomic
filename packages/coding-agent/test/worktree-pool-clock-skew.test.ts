@@ -60,6 +60,7 @@ beforeEach(async () => {
 	store = await SqlSessionStore.open(database);
 });
 afterEach(async () => {
+	vi.restoreAllMocks();
 	while (cleanups.length > 0) await cleanups.pop()!();
 	while (opened.length > 0) await releaseSessionWorktrees(opened.pop()!);
 	await store.close();
@@ -89,6 +90,20 @@ globalThis.Date = class extends RealDate {
 	}
 };
 `;
+}
+
+/** Sets this process's clock `skewMs` off the real one, as on a reading host whose clock is off too. */
+function skewThisProcess(skewMs: number): void {
+	const now = Date.now.bind(Date);
+	vi.spyOn(Date, "now").mockImplementation(() => now() + skewMs);
+}
+
+/** Asserts that no probe file of the filesystem's clock was left in `directory`. */
+function assertNoProbes(directory: string): void {
+	assert.deepEqual(
+		readdirSync(directory).filter((name) => name.startsWith(".clock-")),
+		[],
+	);
 }
 
 type Child = ChildProcessByStdio<Writable, Readable, null>;
@@ -183,6 +198,7 @@ test(
 		const { first } = await holderChild(BEHIND_MS, slot(snapshot, 0), ownerOf(s1));
 		assert.equal(first, "held");
 		await sleep(LEASE_REFRESHED_MS);
+		skewThisProcess(2 * 60_000);
 
 		assert.deepEqual(await pooledWorktreeHolder(storeDir(), slot(snapshot, 0)), {
 			owner: ownerOf(s1),
@@ -191,6 +207,7 @@ test(
 		const resumed = await resumeSessionWorktree(s2, pool());
 		assert.equal(resumed.status === "restored" && resumed.mappings[0]!.to, slot(snapshot, 1));
 		assert.deepEqual(recordOf(snapshot, 0).holder, ownerOf(s1));
+		assertNoProbes(poolDirectory(snapshot));
 	},
 	TIMEOUT_MS,
 );
@@ -203,6 +220,7 @@ test(
 		assert.equal(first, "held");
 		await sleep(LEASE_REFRESHED_MS);
 		await kill();
+		skewThisProcess(-2 * 60_000);
 
 		// Right after the crash, the lease keeps the slot through its grace period.
 		assert.equal((await pooledWorktreeHolder(storeDir(), slot(snapshot, 0))).held, true);
@@ -210,6 +228,7 @@ test(
 		const resumed = await resumeSessionWorktree(s2, pool());
 		assert.equal(resumed.status === "restored" && resumed.mappings[0]!.to, slot(snapshot, 0));
 		assert.deepEqual(recordOf(snapshot, 0).holder, ownerOf(s2));
+		assertNoProbes(poolDirectory(snapshot));
 	},
 	TIMEOUT_MS,
 );
@@ -224,9 +243,11 @@ test(
 		const lines: string[] = [];
 		createInterface({ input: child.stdout }).on("line", (line) => lines.push(line));
 		await sleep(2_500);
+		skewThisProcess(2 * 60_000);
 
 		await assert.rejects(lockShared(path, { realpath: false, stale: STALE_MS }), { code: "ELOCKED" });
 		assert.deepEqual(lines, []);
+		assertNoProbes(sandbox.path("."));
 	},
 	TIMEOUT_MS,
 );
@@ -240,11 +261,13 @@ test(
 		assert.equal(first, "locked");
 		await sleep(2_500);
 		await kill();
+		skewThisProcess(-2 * 60_000);
 
 		await assert.rejects(lockShared(path, { realpath: false, stale: STALE_MS }), { code: "ELOCKED" });
 		backdate(`${path}.lock`, STALE_MS + 1_000);
 		const unlock = await lockShared(path, { realpath: false, stale: STALE_MS });
 		await unlock();
+		assertNoProbes(sandbox.path("."));
 	},
 	TIMEOUT_MS,
 );
