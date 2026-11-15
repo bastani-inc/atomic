@@ -178,7 +178,7 @@ describe("a stage created before the tool its call follows (#4888)", () => {
 		assert.deepEqual(replayRecords(backend, runId), []);
 	});
 
-	test("a fork of the run refuses the stage loudly instead of recording other parents (#4888)", async () => {
+	test("a fork of the run replays the stage with its recorded tool parent (#4945)", async () => {
 		const backend = await createMemoryTestBackend();
 		const sourceStore = createStore();
 		const state = { finishFails: true };
@@ -193,12 +193,12 @@ describe("a stage created before the tool its call follows (#4888)", () => {
 			source,
 			resumeFromToolNodeId: source.toolNodes.find((node) => node.name === "finish")!.id,
 		});
-		assert.equal(fork.status, "failed");
-		assert.match(fork.error ?? "", /insufficient_state: replay topology mismatch for stage "agent"/);
-		assert.deepEqual(replayRecords(backend, forkId), []);
-		assert.deepEqual(
-			fork.stages.filter((stage) => stage.name === "agent" && stage.parentIds.length === 0),
-			[],
-		);
+		assert.equal(fork.status, "completed", fork.error);
+		assert.equal(fork.stages.find((stage) => stage.name === "agent")?.replayed, true);
+		assert.deepEqual(edges(fork), ["agent -> finish", "start -> agent"]);
+		// The fork records the stage with the parent the source recorded: the `start` tool, under its stable id.
+		const parents = stageRecords(backend, forkId).map((record) => record.topology?.parentIds);
+		assert.ok(parents.length > 0);
+		for (const recorded of parents) assert.deepEqual(recorded, [failed.toolNodes[0]!.id]);
 	});
 });
