@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import type { JsonObject, JsonValue } from "@bastani/pi-ai";
-import type { AssistantMessage } from "@bastani/pi-ai/compat";
+import type { JsonObject, JsonValue } from "@bastani/atomic-ai";
+import type { AssistantMessage } from "@bastani/atomic-ai/compat";
 import { describe, it } from "vitest";
 import { type AgentSessionEvent, createTranscript } from "../../../src/index.ts";
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { Container, Text } from "@earendil-works/pi-tui";
+import type { AgentMessage } from "@bastani/atomic-agent-core";
+import { Container, Text } from "@bastani/atomic-tui";
 import { test } from "vitest";
 import type { MarkdownTransformer } from "../src/core/extensions/types.js";
 import type { SessionEntry } from "../src/core/session-manager.js";

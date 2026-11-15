@@ -4,7 +4,7 @@ import { mkdtempSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import type { TUI } from "@earendil-works/pi-tui";
+import type { TUI } from "@bastani/atomic-tui";
 import { afterAll, beforeAll, test, vi } from "vitest";
 import { noOpUIContext } from "../../packages/coding-agent/src/core/extensions/runner-ui.ts";
 import type { ExtensionUIContext } from "../../packages/coding-agent/src/core/extensions/types.ts";

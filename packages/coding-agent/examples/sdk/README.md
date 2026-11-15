@@ -32,7 +32,7 @@ bun examples/sdk/01-minimal.ts
 ## Quick Reference
 
 ```typescript
-import { getModel } from "@bastani/pi-ai/compat";
+import { getModel } from "@bastani/atomic-ai/compat";
 import {
   createAgentSession,
   DefaultResourceLoader,

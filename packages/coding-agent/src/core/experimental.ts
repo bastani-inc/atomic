@@ -1,4 +1,4 @@
-import type { ConstrainedSamplingConfig } from "@bastani/pi-ai/compat";
+import type { ConstrainedSamplingConfig } from "@bastani/atomic-ai/compat";
 import { APP_NAME, LEGACY_ENV_PREFIX } from "../config.js";
 
 export function areExperimentalFeaturesEnabled(): boolean {

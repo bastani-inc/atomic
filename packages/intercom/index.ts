@@ -1,6 +1,6 @@
 import { reportOwnedIntercomDiagnostic } from "./diagnostics.js";
 import { APP_NAME, type ExtensionAPI, type ExtensionContext, getEnvValue, type SessionStartEvent, sliceHead, type ToolDefinition } from "@bastani/atomic";
-import { Text } from "@earendil-works/pi-tui";
+import { Text } from "@bastani/atomic-tui";
 import { Type } from "typebox";
 import { getExtensionContextOwner } from "./context-owner.js";
 import { renderIntercomToolResult } from "./result-renderers.js";

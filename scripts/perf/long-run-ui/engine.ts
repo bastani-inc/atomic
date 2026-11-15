@@ -28,8 +28,8 @@ import {
 	SettingsManager,
 	type ToolDefinition,
 } from "@bastani/atomic";
-import { fauxAssistantMessage, fauxText, fauxToolCall, registerFauxProvider } from "@bastani/pi-ai/compat";
-import { setKeybindings } from "@earendil-works/pi-tui";
+import { fauxAssistantMessage, fauxText, fauxToolCall, registerFauxProvider } from "@bastani/atomic-ai/compat";
+import { setKeybindings } from "@bastani/atomic-tui";
 import { Type } from "typebox";
 import type { AgentSession } from "../../../packages/coding-agent/src/core/agent-session.js";
 import { WorkflowActivityHub } from "../../../packages/coding-agent/src/core/extensions/workflow-activity-hub.js";

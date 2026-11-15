@@ -1,4 +1,4 @@
-import { Markdown, type MarkdownTheme, visibleWidth } from "@earendil-works/pi-tui";
+import { Markdown, type MarkdownTheme, visibleWidth } from "@bastani/atomic-tui";
 import type { Theme } from "../../../../../../modes/interactive/theme/theme.js";
 import type { QuestionData } from "../../../tool/types.js";
 import { stripFenceMarkers } from "./preview-box-renderer.ts";

@@ -1,5 +1,5 @@
-import type { Api, AssistantMessage, ImageContent, Model, TextContent, Usage } from "@bastani/pi-ai/compat";
-import type { Agent, AgentEvent, AgentMessage, AgentTool, ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { Agent, AgentEvent, AgentMessage, AgentTool, ThinkingLevel } from "@bastani/atomic-agent-core";
+import type { Api, AssistantMessage, ImageContent, Model, TextContent, Usage } from "@bastani/atomic-ai/compat";
 import type { VerbatimCompactionResult } from "./compaction/index.ts";
 import type { UIPromptEndEvent, UIPromptStartEvent } from "./extensions/agent-events.ts";
 import type {

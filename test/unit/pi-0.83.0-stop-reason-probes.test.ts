@@ -16,11 +16,11 @@
  */
 
 import assert from "node:assert/strict";
-import { normalizeContext } from "@bastani/pi-ai";
-import { stream as streamAnthropicMessages } from "@bastani/pi-ai/api/anthropic-messages";
-import { stream as streamGoogleGenerativeAi } from "@bastani/pi-ai/api/google-generative-ai";
-import { stream as streamOpenAiCompletions } from "@bastani/pi-ai/api/openai-completions";
-import type { Api, AssistantMessage, Model, StopReason } from "@bastani/pi-ai/compat";
+import { normalizeContext } from "@bastani/atomic-ai";
+import { stream as streamAnthropicMessages } from "@bastani/atomic-ai/api/anthropic-messages";
+import { stream as streamGoogleGenerativeAi } from "@bastani/atomic-ai/api/google-generative-ai";
+import { stream as streamOpenAiCompletions } from "@bastani/atomic-ai/api/openai-completions";
+import type { Api, AssistantMessage, Model, StopReason } from "@bastani/atomic-ai/compat";
 import { afterEach, test, vi } from "vitest";
 
 afterEach(() => {

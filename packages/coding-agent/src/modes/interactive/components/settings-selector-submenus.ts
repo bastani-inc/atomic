@@ -1,4 +1,4 @@
-import type { Component, SelectItem, SelectListLayoutOptions, SettingItem } from "@earendil-works/pi-tui";
+import type { Component, SelectItem, SelectListLayoutOptions, SettingItem } from "@bastani/atomic-tui";
 import {
 	Container,
 	fuzzyFilter,
@@ -8,7 +8,7 @@ import {
 	SettingsList,
 	Spacer,
 	Text,
-} from "@earendil-works/pi-tui";
+} from "@bastani/atomic-tui";
 import { SETTINGS_DEFAULTS } from "../../../core/settings-defaults.ts";
 import type { WarningSettings } from "../../../core/settings-manager.ts";
 import {

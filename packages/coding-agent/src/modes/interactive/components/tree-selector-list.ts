@@ -1,4 +1,4 @@
-import { type Component, getKeybindings, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { type Component, getKeybindings, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import type { SessionTreeNode } from "../../../core/session-manager.ts";
 import { theme } from "../theme/theme.js";
 import { formatLabelTimestamp, getEntryDisplayText } from "./tree-selector-content.ts";

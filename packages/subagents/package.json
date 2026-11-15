@@ -34,22 +34,22 @@
   },
   "peerDependencies": {
     "@bastani/atomic": "*",
-    "@bastani/pi-ai": "*",
-    "@earendil-works/pi-agent-core": "^1.5.2",
-    "@earendil-works/pi-tui": "^1.5.2",
+    "@bastani/atomic-ai": "*",
+    "@bastani/atomic-agent-core": "*",
+    "@bastani/atomic-tui": "*",
     "typebox": "*"
   },
   "peerDependenciesMeta": {
     "@bastani/atomic": {
       "optional": true
     },
-    "@earendil-works/pi-agent-core": {
+    "@bastani/atomic-agent-core": {
       "optional": true
     },
-    "@bastani/pi-ai": {
+    "@bastani/atomic-ai": {
       "optional": true
     },
-    "@earendil-works/pi-tui": {
+    "@bastani/atomic-tui": {
       "optional": true
     }
   },

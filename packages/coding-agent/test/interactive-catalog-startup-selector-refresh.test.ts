@@ -1,6 +1,6 @@
-import type { ModelsRefreshOptions, ModelsRefreshResult } from "@bastani/pi-ai";
-import type { Api, Model } from "@bastani/pi-ai/compat";
-import type { TUI } from "@earendil-works/pi-tui";
+import type { ModelsRefreshOptions, ModelsRefreshResult } from "@bastani/atomic-ai";
+import type { Api, Model } from "@bastani/atomic-ai/compat";
+import type { TUI } from "@bastani/atomic-tui";
 import { describe, expect, it, vi } from "vitest";
 import type { ModelRuntime } from "../src/core/model-runtime.ts";
 import type { SettingsManager } from "../src/core/settings-manager.ts";

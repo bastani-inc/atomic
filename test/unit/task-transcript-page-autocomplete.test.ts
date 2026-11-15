@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { buildSkillCatalog, createSyntheticSourceInfo, getSkillCatalog, type Skill } from "@bastani/atomic";
-import { fauxAssistantMessage } from "@bastani/pi-ai/compat";
-import { getKeybindings } from "@earendil-works/pi-tui";
+import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
+import { getKeybindings } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import type { TaskTranscriptCommands } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
 import {

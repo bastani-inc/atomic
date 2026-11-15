@@ -1,4 +1,4 @@
-import type { Component, OverlayHandle, OverlayOptions, TUI } from "@earendil-works/pi-tui";
+import type { Component, OverlayHandle, OverlayOptions, TUI } from "@bastani/atomic-tui";
 import type { ExtensionUIContext } from "../../core/extensions/index.js";
 import type { WidgetScrollRequest, WidgetScrollState } from "../../core/extensions/ui-types.js";
 import { copyToClipboard } from "../../utils/clipboard.js";

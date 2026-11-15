@@ -16,7 +16,7 @@
  *   - github.com/bastani-inc/atomic packages/atomic-sdk/src/components/session-graph-panel.tsx
  *   - DESIGN.md §4 (Elevation), §5 (Components)
  */
-import type { Component } from "@earendil-works/pi-tui";
+import type { Component } from "@bastani/atomic-tui";
 import { GraphViewInputController } from "./graph-view-input.js";
 
 export type { GraphViewMode, GraphViewOpts } from "./graph-view-types.js";

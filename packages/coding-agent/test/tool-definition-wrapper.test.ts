@@ -1,4 +1,4 @@
-import type { AgentTool } from "@earendil-works/pi-agent-core";
+import type { AgentTool } from "@bastani/atomic-agent-core";
 import { Type } from "typebox";
 import { describe, expect, test } from "vitest";
 import { getAllTools } from "../src/core/agent-session-state.ts";

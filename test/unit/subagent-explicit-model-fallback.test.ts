@@ -9,14 +9,14 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getCurrentTools, getSystemMessageText } from "@bastani/pi-ai";
+import { getCurrentTools, getSystemMessageText } from "@bastani/atomic-ai";
 import {
 	type Api,
 	type AssistantMessage,
 	createAssistantMessageEventStream,
 	getModel,
 	type Model,
-} from "@bastani/pi-ai/compat";
+} from "@bastani/atomic-ai/compat";
 import { afterEach, test } from "vitest";
 import { createAgentSession } from "../../packages/coding-agent/src/core/sdk.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";

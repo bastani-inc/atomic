@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { fauxAssistantMessage, registerFauxProvider } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage, registerFauxProvider } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, expect, it } from "vitest";
 import { useTemporaryAgentDir } from "../../../../test/helpers/temporary-agent-dir.js";
 import type { AgentSession } from "../../src/core/agent-session.js";

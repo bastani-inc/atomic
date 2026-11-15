@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Container, stripTerminalSequences } from "@earendil-works/pi-tui";
+import { Container, stripTerminalSequences } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.ts";
 import "../src/modes/interactive/interactive-render-chat.ts";

@@ -4,8 +4,8 @@
  */
 import { join } from "node:path";
 import { monitorEventLoopDelay } from "node:perf_hooks";
-import { registerFauxProvider } from "@bastani/pi-ai/compat";
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import type { AgentToolResult } from "@bastani/atomic-agent-core";
+import { registerFauxProvider } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { AuthStorage } from "../../../packages/coding-agent/src/core/auth-storage.js";
 import type { ToolDefinition } from "../../../packages/coding-agent/src/core/extensions/index.js";

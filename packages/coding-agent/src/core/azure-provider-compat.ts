@@ -1,4 +1,4 @@
-import { type AnyModel, normalizeProviderId } from "@bastani/pi-ai";
+import { type AnyModel, normalizeProviderId } from "@bastani/atomic-ai";
 import type { Settings } from "./settings-types.ts";
 
 export const LEGACY_AZURE_PROVIDER = "azure-openai-responses";

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { bindOwnerTaskStore, ChatSessionHost, InteractiveMode } from "@bastani/atomic";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { Container, setKeybindings } from "@earendil-works/pi-tui";
+import type { AgentMessage } from "@bastani/atomic-agent-core";
+import { Container, setKeybindings } from "@bastani/atomic-tui";
 import { test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import {

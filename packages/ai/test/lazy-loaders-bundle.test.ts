@@ -54,7 +54,7 @@ function sourceSpecifier(relativePath: string): string {
 }
 
 it(
-	"a code-split Node bundle resolves stored Radius OAuth credentials and loads Bedrock from its own chunks",
+	"a code-split Node bundle resolves stored Kimi Code OAuth credentials and loads Bedrock from its own chunks",
 	() => {
 		const { root, bundleRoot, links } = bundleDirectory();
 		try {
@@ -67,17 +67,17 @@ import { registerLazyOAuthFlows } from ${sourceSpecifier("lazy-oauth.ts")};
 import { bedrockConverseStreamApi } from ${sourceSpecifier("api/bedrock-converse-stream.lazy.ts")};
 import { InMemoryCredentialStore } from ${sourceSpecifier("auth/credential-store.ts")};
 import { createModels } from ${sourceSpecifier("models.ts")};
-import { radiusProvider } from ${sourceSpecifier("providers/radius.ts")};
+import { kimiCodingProvider } from ${sourceSpecifier("providers/kimi-coding.ts")};
 registerLazyOAuthFlows();
 registerLazyBedrockProvider();
 globalThis.fetch = async () => { throw new Error("Unexpected network request"); };
 const credentials = new InMemoryCredentialStore();
-await credentials.modify("radius", async () => ({
+await credentials.modify("kimi-coding", async () => ({
 	type: "oauth", access: "fixture-token", refresh: "unused", expires: Date.now() + 3600000,
 }));
 const models = createModels({ credentials });
-models.setProvider(radiusProvider({ gateway: "https://radius.example" }));
-const auth = await models.getAuth("radius");
+models.setProvider(kimiCodingProvider());
+const auth = await models.getAuth("kimi-coding");
 // An aborted request: Bedrock's implementation and the AWS SDK load, nothing is sent.
 const model = { id: "fixture", name: "fixture", api: "bedrock-converse-stream", provider: "amazon-bedrock",
 	baseUrl: "https://bedrock.example", reasoning: false, input: ["text"], contextWindow: 1000, maxTokens: 100,
@@ -106,8 +106,8 @@ process.exit(0);
 			const chunks = readdirSync(outdir).filter((file) => file.endsWith(".js"));
 			const entryCode = readFileSync(join(outdir, "entry.js"), "utf8");
 			const allCode = chunks.map((file) => readFileSync(join(outdir, file), "utf8")).join("\n");
-			// The Bedrock implementation and the Radius flow are bundled, but outside the entry chunk.
-			for (const marker of ["ConverseStreamCommand", "Sign in with device code"]) {
+			// The Bedrock implementation and the Kimi Code flow are bundled, but outside the entry chunk.
+			for (const marker of ["ConverseStreamCommand", "Kimi Code token refresh aborted"]) {
 				assert.ok(allCode.includes(marker), `the bundle contains ${marker}`);
 				assert.ok(!entryCode.includes(marker), `${marker} is in a lazy chunk, not the entry chunk`);
 			}
@@ -130,7 +130,7 @@ process.on("exit", () => writeFileSync(${JSON.stringify(loadedFile)}, JSON.strin
 			});
 			assert.equal(run.status, 0, run.stderr);
 			assert.deepEqual(JSON.parse(run.stdout.trim().split(/\r?\n/).at(-1) ?? ""), {
-				auth: { auth: { apiKey: "fixture-token" }, source: "OAuth" },
+				auth: { auth: { headers: { Authorization: "Bearer fixture-token" } }, source: "OAuth" },
 				bedrock: "aborted",
 			});
 

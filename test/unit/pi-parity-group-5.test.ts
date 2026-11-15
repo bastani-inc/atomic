@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { AssistantMessage, Usage } from "@bastani/pi-ai/compat";
+import type { AssistantMessage, Usage } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, test } from "vitest";
 import { shouldRunFirstTimeSetup } from "../../packages/coding-agent/src/cli/startup-ui.ts";
 import type { AgentSession } from "../../packages/coding-agent/src/core/agent-session.ts";

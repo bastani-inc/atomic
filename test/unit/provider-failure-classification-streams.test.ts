@@ -1,14 +1,14 @@
 import "../helpers/provider-rate-limit-isolation.js";
 import assert from "node:assert/strict";
-import type { Model } from "@bastani/pi-ai";
-import { stream as streamAnthropicMessages } from "@bastani/pi-ai/api/anthropic-messages";
-import { stream as streamAzureOpenAIResponses } from "@bastani/pi-ai/api/azure-openai-responses";
-import { stream as streamMistral } from "@bastani/pi-ai/api/mistral-conversations";
-import { stream as streamOpenAICodexResponses } from "@bastani/pi-ai/api/openai-codex-responses";
-import { stream as streamOpenAICompletions } from "@bastani/pi-ai/api/openai-completions";
-import { stream as streamOpenAIResponses } from "@bastani/pi-ai/api/openai-responses";
-import { stream as streamPiMessages } from "@bastani/pi-ai/api/pi-messages";
-import { normalizeContext } from "@bastani/pi-ai/compat";
+import type { Model } from "@bastani/atomic-ai";
+import { stream as streamAnthropicMessages } from "@bastani/atomic-ai/api/anthropic-messages";
+import { stream as streamAzureOpenAIResponses } from "@bastani/atomic-ai/api/azure-openai-responses";
+import { stream as streamMistral } from "@bastani/atomic-ai/api/mistral-conversations";
+import { stream as streamOpenAICodexResponses } from "@bastani/atomic-ai/api/openai-codex-responses";
+import { stream as streamOpenAICompletions } from "@bastani/atomic-ai/api/openai-completions";
+import { stream as streamOpenAIResponses } from "@bastani/atomic-ai/api/openai-responses";
+import { stream as streamPiMessages } from "@bastani/atomic-ai/api/pi-messages";
+import { normalizeContext } from "@bastani/atomic-ai/compat";
 import { test } from "vitest";
 import { normalizeModelFailureSignal } from "../../packages/coding-agent/src/core/model-fallback-failures.js";
 

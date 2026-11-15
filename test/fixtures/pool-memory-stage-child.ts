@@ -2,7 +2,7 @@ import { appendFileSync } from "node:fs";
 import v8 from "node:v8";
 import vm from "node:vm";
 import { workflow } from "@bastani/atomic/workflows";
-import { createAssistantMessageEventStream } from "@bastani/pi-ai";
+import { createAssistantMessageEventStream } from "@bastani/atomic-ai";
 import { Type } from "typebox";
 import { poolStageOptions } from "./pool-stage-options.js";
 

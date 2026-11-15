@@ -71,8 +71,6 @@ updates:
           - dependency-name: "typescript"
           - dependency-name: "yaml"
           # pi packages/ai (typebox is also pinned via a root `overrides` entry)
-          - dependency-name: "@earendil-works/pi-schema"
-          - dependency-name: "@earendil-works/pi-telemetry"
           - dependency-name: "@anthropic-ai/sdk"
           - dependency-name: "@aws-sdk/client-bedrock-runtime"
           - dependency-name: "@google/genai"
@@ -85,9 +83,6 @@ updates:
           - dependency-name: "typebox"
           - dependency-name: "vitest"
           # pi packages/coding-agent
-          - dependency-name: "@earendil-works/pi-agent-core"
-          - dependency-name: "@earendil-works/pi-codemode"
-          - dependency-name: "@earendil-works/pi-tui"
           - dependency-name: "@silvia-odwyer/photon-node"
           - dependency-name: "@types/cross-spawn"
           - dependency-name: "@types/hosted-git-info"
@@ -102,6 +97,7 @@ updates:
           - dependency-name: "ignore"
           - dependency-name: "jiti"
           - dependency-name: "lovely-mermaid"
+          - dependency-name: "marked"
           - dependency-name: "minimatch"
           - dependency-name: "proper-lockfile"
           - dependency-name: "quickjs-wasi"

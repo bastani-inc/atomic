@@ -9,8 +9,10 @@ const REDACTED = "[redacted]";
  */
 const ANSI_SEQUENCE = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/gu;
 
-const PRIVATE_KEY_BLOCK =
-	/-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?(?:-----END (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----|$)/gu;
+/** The header of a private key block. {@link PRIVATE_KEY_BLOCK_VALUE} redacts it to its footer, or to the end. */
+const PRIVATE_KEY_BLOCK = /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----/gu;
+/** The footer of a private key block. */
+const PRIVATE_KEY_FOOTER = /-----END (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----/gu;
 
 /** `pattern` with each ASCII letter matching either case, so the rest of a regular expression can be case-sensitive. */
 function caseless(pattern: string): string {
@@ -48,13 +50,13 @@ const CREDENTIAL_AUTH_SCHEME = caseless("(?:bearer|basic|digest|token|apikey|oau
  * A quoted value runs to its closing quote, past backslash escapes and doubled quotes, or to the end of the line when
  * it is cut off. No alternative overlaps another, so a match never backtracks.
  */
-const QUOTED_VALUE = String.raw`"(?:\\.|""|[^"\\\n])*"?|'(?:\\.|''|[^'\\\n])*'?`;
+const QUOTED_VALUE = String.raw`"[^"\\\n]*(?:(?:\\.|"")[^"\\\n]*)*"?|'[^'\\\n]*(?:(?:\\.|'')[^'\\\n]*)*'?`;
 /**
  * A value quoted with escaped quotes, as in JSON inside a JSON string (`\"value\"`). Its escapes are escaped too: `\\`
  * followed by an escaped quote or backslash, or by another character, is one escape, so `\\\"` does not end it. A
  * value nested deeper runs to the next quote.
  */
-const ESCAPED_QUOTED_VALUE = String.raw`\\"(?:\\\\(?:\\["\\]|[^\\\n])|[^"\\\n])*(?:\\")?|\\{2,}"[^"\n]*"?`;
+const ESCAPED_QUOTED_VALUE = String.raw`\\"[^"\\\n]*(?:\\\\(?:\\["\\]|[^\\\n])[^"\\\n]*)*(?:\\")?|\\{2,}"[^"\n]*"?`;
 /** A YAML block indicator (`|`, `>-`, `|2+`) that ends its line: the value is the indented block below it. */
 const BLOCK_INDICATOR = String.raw`[|>][-+0-9]*[ \t]*(?=\r?\n|$)`;
 
@@ -74,9 +76,14 @@ interface UnquotedValues {
  */
 function credentialField(name: string, unquoted: UnquotedValues): RegExp {
 	const value = (run: string) => `(?:${QUOTED_VALUE}|${ESCAPED_QUOTED_VALUE}|${run})`;
-	const scheme = String.raw`(?:${CREDENTIAL_AUTH_SCHEME}\s+)?`;
+	const scheme = String.raw`(?:${CREDENTIAL_AUTH_SCHEME}[ \t]+)?`;
+	// A value stays on its line; only a bare `name:` that ends its line may have it alone on the next, indented line,
+	// as a YAML plain scalar does, which {@link continuedOnNextLine} checks.
+	const nextLine = String.raw`(?:\r?\n[ \t]+)?`;
+	// `=` is not `==`, `=>` or `=~`, and spaces after it are not followed by the next `NAME=` (`PASSWORD= PORT=8080`).
+	const equals = String.raw`=(?![=>~])(?:[ \t]+(?![A-Za-z_][\w.-]*=))?`;
 	return new RegExp(
-		String.raw`${name}(?:\\*["']\s*:\s*${value(unquoted.json)}|\s*:(?![ \t]*${BLOCK_INDICATOR})\s*${value(scheme + unquoted.bare)}|(?:\\*["'])?\s*=\s*${value(unquoted.env)})`,
+		String.raw`${name}(?:\\*["'][ \t]*:[ \t]*${value(unquoted.json)}|[ \t]*:(?![ \t]*${BLOCK_INDICATOR})[ \t]*${nextLine}${value(scheme + unquoted.bare)}|(?:\\*["'])?[ \t]*${equals}${value(unquoted.env)})`,
 		"gu",
 	);
 }
@@ -143,6 +150,23 @@ function isGenericType(text: string): boolean {
 /** A member access such as `this.token` or `process.env.TOKEN`: code, not a secret. */
 const MEMBER_ACCESS =
 	/^(?:this|self|process|window|globalThis|options|opts|config|props|state|params|args|ctx|context|req|request|res|response|input|data|env)(?:\.[A-Za-z_$][\w$]*)+$/u;
+/**
+ * A run of letters and digits that reads as random rather than as an identifier: three or more runs of digits between
+ * letters, as in a generated token. `sha256Hex` or `v1Beta2` is a name.
+ */
+const RANDOM_SEGMENT = /\d+[A-Za-z]+\d+[A-Za-z]+\d/u;
+
+/** Whether `value` is a member access whose names read as identifiers, as `data.apiKey` does and `data.<token>` not. */
+function isMemberAccess(value: string): boolean {
+	return MEMBER_ACCESS.test(value) && !RANDOM_SEGMENT.test(value);
+}
+
+/**
+ * A value that stands for one: an angle-bracketed description (`<set to the key 'password' in secret 'db'>`), a word
+ * that says the value is not shown or not set, or a run of masking characters.
+ */
+const PLACEHOLDER_VALUE =
+	/^(?:<[^<>\n]{1,200}>|\(?(?:not set|unset|none|empty|hidden|masked|redacted|required|optional)\)?|\*{3,}|•{3,}|x{3,}|X{3,}|\.{3}|…)$/u;
 /** A PascalCase type name, as in `SecretRef` or `AccessToken`. */
 const TYPE_NAME = /^(?:[A-Z][a-z]+)+$/u;
 /** A line of code that declares something, from its indentation: `interface`, `const`, `def`, `private` and so on. */
@@ -216,17 +240,58 @@ function holdsSecret(
 	password: boolean,
 ): boolean {
 	if (isGenericType(match.input.slice(valueStart, valueStart + MAX_GENERIC_LENGTH + 2))) return false;
+	if (/^<[^<>\n]{1,200}>/u.test(match.input.slice(valueStart, valueStart + 202))) return false;
+	if (PLACEHOLDER_VALUE.test(value.replace(/[,;.]$/u, ""))) return false;
 	const first = /[^\s,;)}\]]*/u.exec(value)![0];
 	const rest = value.slice(first.length).trim();
 	// Closing punctuation may follow, and a `:` after a parameter list (`def f(token: AuthToken):`).
 	if (!/^[,;)}\]]*:?$/u.test(rest)) return true;
 	if (LITERAL.test(first)) return false;
-	if (quotedName && /^-?\d+(?:\.\d+)?$/u.test(first)) return false;
+	// A number is a count or a duration, as in `"token": 3600`, but a password of digits is still one.
+	if (!password && quotedName && /^-?\d+(?:\.\d+)?$/u.test(first)) return false;
+	if (isMemberAccess(first)) return false;
 	if (password) return true;
-	if (MEMBER_ACCESS.test(first)) return false;
 	// An array type, `TokenSet[]`, ends its first word at `[`.
 	const typeName = first.endsWith("[") ? first.slice(0, -1) : first;
 	return !(TYPE_NAME.test(typeName) && inCodeContext(match));
+}
+
+/**
+ * Whether the value of a bare `name:` that ends its line, found alone on the next line, is that line's whole text and
+ * is indented deeper than the name, as a YAML plain scalar continues: `token:` followed by `  <value>`. Code on the next
+ * line, as after a Python `def f() -> Token:`, is not a value.
+ */
+function continuedOnNextLine(match: RegExpExecArray, valueOffset: number): boolean {
+	const input = match.input;
+	const lineStart = input.lastIndexOf("\n", match.index) + 1;
+	const valueStart = match.index + valueOffset;
+	const valueLineStart = input.lastIndexOf("\n", valueStart) + 1;
+	const valueLineEnd = input.indexOf("\n", valueStart);
+	const valueLine = input.slice(valueLineStart, valueLineEnd === -1 ? input.length : valueLineEnd).replace(/\r$/u, "");
+	const keyIndent = indentation(input.slice(lineStart, match.index));
+	return (
+		indentation(valueLine) > keyIndent &&
+		valueLine.trim() === match[0].slice(valueOffset).trim() &&
+		/^[^\s:=()]+$/u.test(valueLine.trim())
+	);
+}
+
+/** A sentence that ends inside a bare password value: `.`, `!` or `?`, then a capitalized word. */
+const SENTENCE_END = /[.!?](?=[ \t]+[A-Z][a-z])/u;
+/** Words of the prose that describes a password rather than holds one, as in `Password: must be 8+ characters`. */
+const PROSE_WORD =
+	/^(?:a|an|the|is|are|be|been|was|must|should|will|can|cannot|may|not|no|to|of|for|in|on|at|by|and|or|with|without|your|you|it|its|this|that|see|below|above|least|more|than|include|includes|contain|contains|characters?|letters?|digits?|numbers?|symbols?|long|minimum|maximum|required|optional|use|uses|set|stored|saved|sent|shown|hidden|empty)$/iu;
+/** Fewest words of a bare password value that can read as prose. */
+const MIN_PROSE_WORDS = 4;
+
+/**
+ * Whether a bare password value reads as prose about the password: four words or more, at least half of them words
+ * such as "must", "be" or "characters". A passphrase such as `correct horse battery staple` does not.
+ */
+function describesPassword(value: string): boolean {
+	const words = value.split(/[\s,;:()]+/u).filter((word) => word !== "");
+	if (words.length < MIN_PROSE_WORDS) return false;
+	return words.filter((word) => PROSE_WORD.test(word.replace(/[.!?]$/u, ""))).length * 2 >= words.length;
 }
 
 /** The value of a credential field: from its separator to its end, unless it holds no secret or names a flag. */
@@ -235,7 +300,23 @@ function fieldValue(password: boolean): Redaction {
 		const text = match[0];
 		const separator = /[:=]/u.exec(text)!.index;
 		const name = text.slice(0, separator);
+		// A name and separator in inline code, as in "Set `password:` in config.yaml", has no value.
+		if (match.input[match.index - 1] === "`" && text[separator + 1] === "`") return [];
+		const afterSeparator = text.slice(separator + 1);
+		// A value alone on the next line is replaced where it stands, keeping the line break and indentation.
+		let replaceFrom = separator + 1;
+		let replacement = ` ${REDACTED}`;
+		if (/^[ \t]*\r?\n/u.test(afterSeparator)) {
+			replaceFrom += /^\s*/u.exec(afterSeparator)![0].length;
+			replacement = REDACTED;
+			if (!continuedOnNextLine(match, replaceFrom)) return [];
+		}
 		let end = text.trimEnd().length;
+		// A bare password ends where a sentence does, as in `Password: x. Change it soon`.
+		if (password && text[separator] === ":" && !/^\s*["'\\]/u.test(afterSeparator)) {
+			const sentence = afterSeparator.search(SENTENCE_END);
+			if (sentence > 0) end = Math.min(end, separator + 1 + sentence);
+		}
 		// An unquoted password inside a parameter list ends at the next `,` or `)`, as `f(password: x, timeout = 30)`.
 		const unquoted = !/^\s*["'\\]/u.test(text.slice(separator + 1));
 		if (password && unquoted && openParameterList(match.input, match.index) !== undefined) {
@@ -243,11 +324,12 @@ function fieldValue(password: boolean): Redaction {
 			if (stop !== -1) end = separator + 1 + stop;
 		}
 		const value = text.slice(separator + 1, end).trimStart();
-		// A value redacted already stays as it is, unless it sits on the next line, as a key block under `key:` does.
-		if (value.startsWith(REDACTED) && !text.includes("\n")) return [];
+		// A value redacted already stays as it is.
+		if (value.startsWith(REDACTED)) return [];
+		if (password && text[separator] === ":" && !/^["'\\]/u.test(value) && describesPassword(value)) return [];
 		if (!holdsSecret(match, match.index + end - value.length, value, /["']/u.test(name), password)) return [];
 		if (ordinaryCamelCase(match.input, match.index, name)) return [];
-		return [{ start: separator + 1, end, replacement: ` ${REDACTED}` }];
+		return [{ start: replaceFrom, end, replacement }];
 	};
 }
 
@@ -257,7 +339,7 @@ const ORDINARY_KEY_PREFIX =
 
 /** A provider's `<word>Key` field (`openaiKey`, `stripeKey`): redacted when its value looks like a secret. */
 const PROVIDER_KEY_FIELD = new RegExp(
-	String.raw`(?<![A-Za-z0-9])([a-z][a-z0-9]*)Key(?:\\*["'])?\s*[:=]\s*(?:${QUOTED_VALUE}|[^\s,;}"'&]+)`,
+	String.raw`(?<![A-Za-z0-9])([a-z][a-z0-9]*)Key(?:\\*["'])?[ \t]*[:=][ \t]*(?:${QUOTED_VALUE}|[^\s,;}"'&]+)`,
 	"gu",
 );
 
@@ -327,29 +409,54 @@ const COOKIE_SEGMENT_END = /\n|(?<![A-Za-z0-9-])(?:set-)?cookie\\*["']?[ \t]*(?:
 const ARRAY_ELEMENT = /[ \t]*(?:"([^"\n]*)"|'([^'\n]*)')[ \t]*,?/duy;
 
 /**
- * What may come right before a lower-case `cookie:` header: the start of its line (the text before it starts with a
- * line break), a log prefix ending in `]`, or `>`, `<` or `*` of `curl -v`, `-H`, `headers:` or `{`.
+ * Where a header starts: the start of its line (the text before it starts with a line break), a log prefix ending in
+ * `]`, or `>`, `<` or `*` of `curl -v`, `-H`, `headers:` or `{`.
  */
 const COOKIE_HEADER_CONTEXT = /(?:\n[ \t]*|\][ \t]*|\s[<>*][ \t]*|\s-H[ \t]*|headers?[ \t]*:[ \t]*|\{[ \t]*)$/iu;
 
+/** Where a cookie header is read: as a header, where every value is redacted, or as prose or code. */
+type CookieContext = "header" | "prose";
+
+/** An example in prose: an opening parenthesis, as in `(e.g. Set-Cookie: lang=en-US)` or `(for example …`. */
+const EXAMPLE_CONTEXT = /\((?:[ \t]*(?:e\.g\.|i\.e\.|eg|ie|for example|for instance|such as|like)[,:]?)?[ \t]*$/iu;
+
 /**
- * Whether a bare cookie header at `index` of `input` is a header, and the quote that ends it: `""` for none, undefined
- * when it is not a header. A `Set-Cookie` header in any case, and a capitalized `Cookie`, are headers anywhere; a
- * lower-case `cookie:` only after a header context, or right after a quote, so `My favourite cookie: oatmeal=great`
- * stays prose. It looks at most 40 characters back.
+ * Whether a bare cookie header at `index` of `input` is read as a header, and the quote that ends it: `""` for none.
+ * One right after `"` or `'` is a header in a string, and one after a backtick is inline code in documentation. A
+ * `Set-Cookie` header in any case, and a capitalized `Cookie`, are headers anywhere else but in an example in
+ * parentheses, such as `(e.g. Set-Cookie: lang=en-US)`; a lower-case `cookie:` only where a header starts. It looks at
+ * most 40 characters back.
  */
-function headerQuote(input: string, index: number, anywhere: boolean): string | undefined {
+function headerQuote(
+	input: string,
+	index: number,
+	anywhere: boolean,
+): { readonly quote: string; readonly context: CookieContext } {
 	const before = index > 40 ? input.slice(index - 40, index) : `\n${input.slice(0, index)}`;
 	const quote = /["'`]$/u.exec(before)?.[0];
-	if (quote !== undefined) return quote;
-	return anywhere || COOKIE_HEADER_CONTEXT.test(before) ? "" : undefined;
+	if (quote !== undefined) return { quote, context: quote === "`" ? "prose" : "header" };
+	const header = anywhere ? !EXAMPLE_CONTEXT.test(before) : COOKIE_HEADER_CONTEXT.test(before);
+	return { quote: "", context: header ? "header" : "prose" };
+}
+
+/** A cookie value that stands for one in documentation: `value`, `<value>`, `...`, `xxx`, `***` or a variable. */
+const PLACEHOLDER_COOKIE = /^(?:value|<[^<>]*>|\.\.\.|…|x{3,}|X{3,}|\*{3,}|\$\{?[\w.]+\}?|\{\{?[\w. ]+\}?\})$/u;
+
+/**
+ * Whether a cookie value in prose or code looks generated: eight characters or more with a letter and a digit, and not
+ * a path. `dark`, `en-US` or `31536000` does not.
+ */
+function generatedCookieValue(value: string): boolean {
+	return value.length >= 8 && /[A-Za-z]/u.test(value) && /\d/u.test(value) && !value.includes("/");
 }
 
 /**
  * A cookie pair: its name, then after `=` a quoted value or an unquoted one (after any leading spaces, up to
- * whitespace, `,`, `;`, `"`, `\`, `}` or `)`), then the rest of the pair up to its `;` or `,`.
+ * whitespace, `,`, `;`, `"` or `)`, a `}` that ends it, as in `{cookie: sid=x}`, or a backslash that starts an escape
+ * such as `\n` or `\"`), then the rest of the pair up to its `;` or `,`.
  */
-const COOKIE_PAIR = /([^;,=]*)(?:=(?:"([^"]*)"?|([ \t]*[^;,\s"\\})]+)))?[^;,]*[;,]?/dgu;
+const COOKIE_PAIR =
+	/([^;,=]*)(?:=(?:"([^"]*)"?|([ \t]*(?=[^;,\s"\\)}]|\\(?![rntbfu"\\/])|\}(?=[^;,\s"\\)]))[^;,\s"\\)}]*(?:(?:\\(?![rntbfu"\\/])|\}(?=[^;,\s"\\)]))[^;,\s"\\)}]*)*)))?[^;,]*[;,]?/dgu;
 /** A cookie name a `,` of joined `Set-Cookie` headers is followed by when it starts another cookie. */
 const NEXT_COOKIE = /^ *[^;,= ]+=/u;
 
@@ -358,12 +465,15 @@ const NEXT_COOKIE = /^ *[^;,= ]+=/u;
  * header, and the first pair of each cookie of a `Set-Cookie` header, where a `,` followed by `name=` starts another
  * cookie (as fetch's `Headers.get` joins them) and the other pairs are attributes such as `Path` and `Expires`.
  */
-function cookieValues(segment: string, setCookie: boolean): [number, number][] {
+function cookieValues(segment: string, setCookie: boolean, context: CookieContext): [number, number][] {
 	const values: [number, number][] = [];
 	let first = true;
 	for (const pair of segment.matchAll(COOKIE_PAIR)) {
 		const value = pair.indices![2] ?? pair.indices![3];
-		if (value !== undefined && value[1] > value[0] && (first || !setCookie)) values.push(value);
+		const text = value === undefined ? "" : segment.slice(value[0], value[1]).trim();
+		const secret =
+			text !== "" && !PLACEHOLDER_COOKIE.test(text) && (context === "header" || generatedCookieValue(text));
+		if (value !== undefined && secret && (first || !setCookie)) values.push(value);
 		first = pair[0].endsWith(",") && NEXT_COOKIE.test(segment.slice(pair.index + pair[0].length));
 	}
 	return values;
@@ -376,8 +486,9 @@ function cookieReplacements(
 	end: number,
 	setCookie: boolean,
 	index: number,
+	context: CookieContext = "header",
 ): Replacement[] {
-	return cookieValues(input.slice(from, end), setCookie).map(([start, valueEnd]) => ({
+	return cookieValues(input.slice(from, end), setCookie, context).map(([start, valueEnd]) => ({
 		start: from + start - index,
 		end: from + valueEnd - index,
 		replacement: REDACTED,
@@ -424,12 +535,15 @@ const COOKIE_VALUES: Redaction = (match) => {
 	OPENING_QUOTE.lastIndex = from;
 	const opening = OPENING_QUOTE.exec(input)?.[0];
 	let quote: string | undefined;
+	let context: CookieContext = "header";
 	if (match[2] !== "" || match[3] !== ":") {
 		quote = opening?.at(-1);
 		from += opening?.length ?? 0;
+		// A property assigned in code, as `document.cookie = "theme=dark; path=/"`, is read as code.
+		if (match[2] === "" && input[match.index - 1] === ".") context = "prose";
 	} else {
 		const anywhere = setCookie || match[0].startsWith("C");
-		quote = headerQuote(input, match.index, anywhere);
+		({ quote, context } = headerQuote(input, match.index, anywhere));
 		// A lower-case `cookie: "…"` outside quotes is code, such as `{ cookie: "theme=dark" }`.
 		if (!anywhere && opening !== undefined) quote = undefined;
 	}
@@ -440,7 +554,7 @@ const COOKIE_VALUES: Redaction = (match) => {
 		if (closing !== -1) segmentEnd = from + closing;
 		while (segmentEnd > from && input[segmentEnd - 1] === "\\") segmentEnd--;
 	}
-	return cookieReplacements(input, from, segmentEnd, setCookie, match.index);
+	return cookieReplacements(input, from, segmentEnd, setCookie, match.index, context);
 };
 
 /** A `--cookie` or curl `-b` option and its cookies, quoted or not: `--cookie sid=X` or `-b "a=1; b=2"`. */
@@ -450,6 +564,14 @@ const COOKIE_OPTION = /(?<![\w-])(?:--cookie|-b)(?:=|[ \t]+)(?:"([^"\n]*)"?|'([^
 const COOKIE_OPTION_VALUES: Redaction = (match) => {
 	const [from, end] = match.indices![1] ?? match.indices![2] ?? match.indices![3]!;
 	return cookieReplacements(match.input, from, end, false, match.index);
+};
+
+/** A private key block, from its header to its footer, or to the end of the text when it has none. */
+const PRIVATE_KEY_BLOCK_VALUE: Redaction = (match) => {
+	PRIVATE_KEY_FOOTER.lastIndex = match.index + match[0].length;
+	const footer = PRIVATE_KEY_FOOTER.exec(match.input);
+	const end = footer === null ? match.input.length : footer.index + footer[0].length;
+	return [{ start: 0, end: end - match.index, replacement: REDACTED }];
 };
 
 /** Each non-empty capture group of a match, replaced. */
@@ -464,21 +586,54 @@ const GROUPS: Redaction = (match) =>
 
 /** An option's value, quoted (its quotes kept) or not. */
 const OPTION_VALUE_GROUPS = String.raw`(?:"([^"\n]*)"?|'([^'\n]*)'?|([^\s"'<>|]+))`;
+/**
+ * A value that starts with `-` and still reads as a secret rather than the next option: eight characters or more with
+ * a digit, a lower-case and an upper-case letter, as in `--password -<generated>`; `-h127.0.0.1` or `-v` does not.
+ */
+const DASHED_SECRET = String.raw`-(?=[^\s"'<>|]*\d)(?=[^\s"'<>|]*[a-z])(?=[^\s"'<>|]*[A-Z])[^-\s"'<>|][^\s"'<>|]{6}`;
 /** Option names whose value is a credential, as in `--password X`, `--db-password=X` or `--api-key X`. */
 const CREDENTIAL_OPTION = new RegExp(
-	String.raw`(?<![\w-])--?(?:[a-z0-9]+-)*(?:password|passwd|pass|token|secret|api-key|apikey|access-key|secret-key|client-secret|private-key|auth-token)(?:=|[ \t]+)(?![-<>|])${OPTION_VALUE_GROUPS}`,
+	String.raw`(?<![\w-])--?(?:[a-z0-9]+-)*(?:password|passwd|pass|token|secret|api-key|apikey|access-key|secret-key|client-secret|private-key|auth-token)(?:=|[ \t]+)(?:(?![-<>|])|(?=${DASHED_SECRET}))${OPTION_VALUE_GROUPS}`,
 	"dgiu",
 );
 /**
- * A MySQL-style password joined to `-p`: quoted, or unquoted, six characters or more, holding a digit or a symbol. A
- * port mapping (`-p8080:80`, `-p127.0.0.1:80:80/tcp`) or a path (`mkdir -p/tmp/a`) is not one.
+ * A MySQL-style password joined to `-p`: quoted, or unquoted, six characters or more, holding a digit or a symbol, or
+ * (group 4) of letters only. A port mapping (`-p8080:80`, `-p127.0.0.1:80:80/tcp`) or a path (`mkdir -p/tmp/a`) is not
+ * one.
  */
 const JOINED_PASSWORD_OPTION =
-	/(?<!\S)-p(?:"([^"\n]*)"?|'([^'\n]*)'?|(?![\d.:]+(?:\/[a-z]+)?(?![^\s'"]))(?![/.~])(?=[^\s'"]{6})([A-Za-z]*[^\sA-Za-z'"][^\s'"]*))/dgu;
-/** `curl -u user:password` and `--user user:password`; a numeric id pair such as `-u 1000:1000` is not one. */
-const USER_OPTION = /(?<![\w-])(?:-u|--user)(?:=|[ \t]+)["']?[^\s:"']+:(?!\d+(?![^\s"']))([^\s"']+)/dgu;
-/** A netrc entry, `[machine host] login user password secret` from the start of a line, on one line or several. */
-const NETRC_PASSWORD = /(?<![^\n])[ \t]*(?:machine[ \t]+\S+\s+)?login\s+\S+\s+password\s+(\S+)/dgu;
+	/(?<!\S)-p(?:"([^"\n]*)"?|'([^'\n]*)'?|(?![\d.:]+(?:\/[a-z]+)?(?![^\s'"]))(?![/.~])(?=[^\s'"]{6})([A-Za-z]*[^\sA-Za-z'"][^\s'"]*)|([A-Za-z]{6,})(?![^\s'"]))/dgu;
+/** A MySQL or MariaDB client, or a `-u` user option, before a `-p` on its line. */
+const MYSQL_CONTEXT = /(?:\b(?:mysql|mariadb)[\w-]*|(?<!\S)-u\S+)[^\n]*$/u;
+/** How far back on its line a MySQL client is looked for. */
+const MYSQL_CONTEXT_LENGTH = 200;
+
+/**
+ * The password of a `-p` option. One of letters only, which could as well be a flag such as `-pthread`, counts only
+ * after a MySQL or MariaDB client or a `-u` option on its line.
+ */
+const JOINED_PASSWORD: Redaction = (match) => {
+	if (match.indices![4] !== undefined) {
+		const before = match.input.slice(Math.max(0, match.index - MYSQL_CONTEXT_LENGTH), match.index);
+		if (!MYSQL_CONTEXT.test(before.slice(before.lastIndexOf("\n") + 1))) return [];
+	}
+	return GROUPS(match);
+};
+/** A registry login's `-p password`, as in `docker login -u bob -p X`: elsewhere `-p` is usually a port. */
+const REGISTRY_LOGIN_PASSWORD =
+	/\b(?:docker|podman|nerdctl|buildah|skopeo|oras|helm(?:[ \t]+registry)?)[ \t]+login\b[^\n]{0,200}?(?<!\S)-p[ \t]+(?:"([^"\n]*)"?|'([^'\n]*)'?|([^\s"']+))/dgu;
+/**
+ * `curl -u user:password`, `curl -uuser:password` and `--user user:password`; a numeric id pair such as
+ * `-u 1000:1000` is not one.
+ */
+const USER_OPTION = /(?<![\w-])(?:-u(?:=|[ \t]+)?|--user(?:=|[ \t]+))["']?[^\s:"']+:(?!\d+(?![^\s"']))([^\s"']+)/dgu;
+/**
+ * A netrc entry: `machine host` or `default`, then any of `login`, `account` and `port` in any order, then `password
+ * secret`, on one line or several; or, from the start of a line, `login user password secret` that ends its line or
+ * comes before another netrc keyword, so prose such as "login bob password reset failed" stays.
+ */
+const NETRC_PASSWORD =
+	/(?<![^\n])[ \t]*(?:(?:machine[ \t]+\S+|default)(?:\s+(?:login|account|port)\s+\S+)*\s+password\s+(\S+)|login\s+\S+\s+password[ \t]+(\S+)(?=[ \t]*(?:\r?\n|$|(?:machine|default|account|macdef)\s)))/dgu;
 
 /**
  * A token with a well-known prefix, such as `sk-…` or `token_…`. A snake_case or kebab-case name of three or more short
@@ -489,22 +644,35 @@ const IDENTIFIER_NAME = /^[a-z]{1,12}(?:[-_][a-z]{1,12}){2,}$/iu;
 const PREFIXED_TOKEN_VALUE: Redaction = (match) => (IDENTIFIER_NAME.test(match[0]) ? [] : WHOLE(match));
 
 const CREDENTIAL_SHAPES: readonly (readonly [RegExp, Redaction])[] = [
-	[/\bBearer\s+[\w.~+/-]+=*/giu, WHOLE],
+	[/\bBearer[ \t]+[\w.~+/-]+=*/giu, WHOLE],
 	[/\beyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]+/gu, WHOLE],
 	[/\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_\w{20,})/gu, WHOLE],
 	[PREFIXED_TOKEN, PREFIXED_TOKEN_VALUE],
 ];
 
 /**
- * A run of an env-style password: past a `;` unless the `;` ends a connection-string field, that is, comes before
- * another `Name=` (`User Id=`), the end of the line or the end of the text.
+ * Keywords of connection-string fields (ADO.NET, ODBC, JDBC, libpq, Azure Storage): a `;` before one of them ends a
+ * password, while a `;` before another `name=` is part of it, as in `Password=ab;cd=…`.
  */
-const ENV_RUN = String.raw`(?:[^\s;]|;(?![ \t]*(?:[A-Za-z_][\w .-]*=|\r?\n|$)))+`;
+const CONNECTION_KEYWORD = caseless(
+	String.raw`(?:server|data source|address|addr|network address|host|hostname|port|database|initial catalog|dbname|db|user ?id|uid|user ?name|user|pwd|password|encrypt|trust ?server ?certificate|trusted_connection|integrated security|persist security info|connect(?:ion)? ?timeout|timeout|command timeout|application ?name|app|application ?intent|multiple ?active ?result ?sets|multi ?subnet ?failover|pooling|min pool size|max pool size|provider|driver|dsn|attach ?db ?filename|authentication|workstation id|packet size|failover partner|charset|ssl ?mode|sslrootcert|sslcert|sslkey|options|schema|search_path|account ?name|account ?key|default ?endpoints ?protocol|endpoint ?suffix|blob ?endpoint|queue ?endpoint|table ?endpoint|file ?endpoint|shared ?access ?key ?name|shared ?access ?key|shared ?access ?signature|entity ?path|endpoint|tenant ?id|client ?id|column ?encryption ?setting|mars ?connection|language|current ?language)`,
+);
+
+/**
+ * A run of an env-style password: past a `;` unless the `;` ends a connection-string field, that is, comes before a
+ * connection-string keyword and `=` (`User Id=`), spaces and another `Name=`, the end of the line or the end of the
+ * text.
+ */
+const ENV_SEMICOLON = String.raw`;(?![ \t]*${CONNECTION_KEYWORD}[ \t]*=|[ \t]+[A-Za-z_][\w .-]*=|[ \t]*(?:\r?\n|$))`;
+// Unrolled, a run of other characters at a time and each split one way only, so a value megabytes long does not exhaust the regular expression's
+// backtracking stack.
+const ENV_RUN = String.raw`(?=[^\s;]|${ENV_SEMICOLON})[^\s;]*(?:${ENV_SEMICOLON}[^\s;]*)*`;
 
 /** How far the unquoted value of a password-like field runs. */
 const PASSWORD_VALUES: UnquotedValues = {
 	json: String.raw`[^\s,;}\]]+`,
-	bare: String.raw`[^\r\n]+`,
+	// Words separated by single spaces, as a passphrase is; two spaces or a tab end it, as between table columns.
+	bare: String.raw`\S+(?: \S+)*`,
 	env: String.raw`${ENV_RUN}(?:[ \t]+(?![A-Za-z_][\w.-]*=)${ENV_RUN})*`,
 };
 const OTHER_RUN = String.raw`[^\s,;}"'&]+`;
@@ -515,11 +683,12 @@ const OTHER_VALUES: UnquotedValues = { json: OTHER_RUN, bare: OTHER_RUN, env: OT
  * then password-like fields, so a later field on the same line does not end a password's value early.
  */
 const STEPS: readonly (readonly [RegExp, Redaction])[] = [
-	[PRIVATE_KEY_BLOCK, WHOLE],
+	[PRIVATE_KEY_BLOCK, PRIVATE_KEY_BLOCK_VALUE],
 	[COOKIE_HEADER, COOKIE_VALUES],
 	[COOKIE_OPTION, COOKIE_OPTION_VALUES],
 	[CREDENTIAL_OPTION, GROUPS],
-	[JOINED_PASSWORD_OPTION, GROUPS],
+	[JOINED_PASSWORD_OPTION, JOINED_PASSWORD],
+	[REGISTRY_LOGIN_PASSWORD, GROUPS],
 	[USER_OPTION, GROUPS],
 	[NETRC_PASSWORD, GROUPS],
 	[blockField(PASSWORD_NAME), BLOCK],
@@ -575,6 +744,30 @@ function redactMatches(text: string, pattern: RegExp, redaction: Redaction): str
 }
 
 /**
+ * {@link redactMatches} over `text`, or, when a pathological input (a value megabytes long) exhausts the regular
+ * expression's backtracking stack, over each of its lines, and any line that still does is redacted whole: a credential
+ * is never let through because the text was too large to read.
+ */
+function redactStep(text: string, pattern: RegExp, redaction: Redaction): string {
+	try {
+		return redactMatches(text, pattern, redaction);
+	} catch (error) {
+		if (!(error instanceof RangeError)) throw error;
+		return text
+			.split("\n")
+			.map((line) => {
+				try {
+					return redactMatches(line, pattern, redaction);
+				} catch (lineError) {
+					if (!(lineError instanceof RangeError)) throw lineError;
+					return REDACTED;
+				}
+			})
+			.join("\n");
+	}
+}
+
+/**
  * Redact what looks like a credential in `text`: user info in URLs (up to the last `@` of the authority), private key
  * blocks (PEM, OpenSSH and PGP), cookie values in `Cookie` and `Set-Cookie` headers and `cookie` fields, credentials
  * on a command line (`--password X`, `-p'X'`, `-u user:X`) or in a netrc entry, the value of a credential field in
@@ -586,7 +779,7 @@ function redactMatches(text: string, pattern: RegExp, redaction: Redaction): str
  */
 export function redactCredentialShapes(text: string): string {
 	return STEPS.reduce(
-		(masked, [pattern, redaction]) => redactMatches(masked, pattern, redaction),
+		(masked, [pattern, redaction]) => redactStep(masked, pattern, redaction),
 		redactUrlCredentials(text),
 	);
 }

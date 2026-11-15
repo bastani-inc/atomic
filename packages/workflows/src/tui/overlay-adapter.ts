@@ -11,7 +11,7 @@
  *   - src/tui/graph-view.ts
  *   - src/tui/workflow-attach-pane.ts
  *   - src/extension/wiring.ts  PiCustomOverlayOptions, PiOverlayHandle
- *   - @earendil-works/pi-tui dist/tui.d.ts  OverlayOptions, OverlayHandle
+ *   - @bastani/atomic-tui dist/tui.d.ts  OverlayOptions, OverlayHandle
  *   - @bastani/atomic docs/tui.md (overlay primitives)
  */
 

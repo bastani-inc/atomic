@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
 import type { WorktreeSnapshotEntry } from "../src/core/session-manager.ts";

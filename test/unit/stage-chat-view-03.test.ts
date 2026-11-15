@@ -1,4 +1,4 @@
-import { getKeybindings, setKeybindings, stripTerminalSequences } from "@earendil-works/pi-tui";
+import { getKeybindings, setKeybindings, stripTerminalSequences } from "@bastani/atomic-tui";
 import { describe, test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import type { PiCustomComponent } from "../../packages/workflows/src/extension/ui-surface.js";

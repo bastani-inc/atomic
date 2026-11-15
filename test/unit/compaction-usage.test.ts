@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { Usage } from "@bastani/pi-ai/compat";
+import type { Usage } from "@bastani/atomic-ai/compat";
 import { test } from "vitest";
 import { runVerbatimCompaction } from "../../packages/coding-agent/src/core/compaction/compaction-runner.js";
 import { preparation, runRequest, scriptedStream, testModel } from "./compaction-rung-support.js";

@@ -1,4 +1,4 @@
-import type { AssistantMessage } from "@bastani/pi-ai/compat";
+import type { AssistantMessage } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentSessionInternalSurface } from "../src/core/agent-session-methods.ts";
 import { createHarness, type Harness } from "./suite/harness.ts";

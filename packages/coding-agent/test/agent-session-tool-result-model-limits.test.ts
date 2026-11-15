@@ -3,7 +3,7 @@
  * declares no image limits at all (or only other limits) gets the defaults without failing the call.
  */
 import assert from "node:assert/strict";
-import { fauxAssistantMessage } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
 import { afterEach, test } from "vitest";
 import {
 	detachedResult,

@@ -11,9 +11,9 @@
  */
 
 import { createHash } from "node:crypto";
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import type { ImageContent, JsonValue, TextContent } from "@earendil-works/pi-ai";
-import { Container, Spacer, Text } from "@earendil-works/pi-tui";
+import type { AgentToolResult } from "@bastani/atomic-agent-core";
+import type { ImageContent, JsonValue, TextContent } from "@bastani/atomic-ai";
+import { Container, Spacer, Text } from "@bastani/atomic-tui";
 import type { TSchema } from "typebox";
 import type {
 	ToolAnnotations,

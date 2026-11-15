@@ -9,7 +9,7 @@
  */
 
 import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@bastani/atomic";
-import { CURSOR_MARKER, type Focusable, matchesKey, renderFakeCursor, visibleWidth } from "@earendil-works/pi-tui";
+import { CURSOR_MARKER, type Focusable, matchesKey, renderFakeCursor, visibleWidth } from "@bastani/atomic-tui";
 
 export default function (pi: ExtensionAPI) {
 	pi.registerCommand("overlay-test", {

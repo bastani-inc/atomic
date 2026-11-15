@@ -1,4 +1,4 @@
-import { renderLayoutFrame } from "@earendil-works/pi-tui/dist/layout.js";
+import { renderLayoutFrame } from "@bastani/atomic-tui/dist/layout.js";
 import type { ReactiveWidgetComponent } from "../../packages/coding-agent/src/core/extensions/reactive-widget.js";
 import { ScrollWidget } from "../../packages/coding-agent/src/modes/interactive/components/scroll-widget.js";
 

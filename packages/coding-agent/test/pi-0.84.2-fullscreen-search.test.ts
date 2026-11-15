@@ -10,7 +10,7 @@ import {
 	Text,
 	type TuiAltScreen,
 	VStack,
-} from "@earendil-works/pi-tui";
+} from "@bastani/atomic-tui";
 import Ajv2020 from "ajv/dist/2020";
 import { afterEach, beforeAll, describe, expect, test } from "vitest";
 import { getThemesDir } from "../src/config.ts";

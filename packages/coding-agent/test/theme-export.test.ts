@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { colorToHex, parseColor } from "@earendil-works/pi-tui";
+import { colorToHex, parseColor } from "@bastani/atomic-tui";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";

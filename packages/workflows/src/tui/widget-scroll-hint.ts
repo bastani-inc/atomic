@@ -1,5 +1,5 @@
 import { keybindingIdentity } from "@bastani/atomic";
-import { getKeybindings, type KeybindingsConfig, matchesKey } from "@earendil-works/pi-tui";
+import { getKeybindings, type KeybindingsConfig, matchesKey } from "@bastani/atomic-tui";
 
 // Distinct key ids can share raw control bytes or ESC-prefixed inputs.
 // Ask the parser in its current protocol/environment mode rather than equating

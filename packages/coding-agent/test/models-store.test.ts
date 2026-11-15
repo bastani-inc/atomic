@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Model } from "@bastani/pi-ai";
+import type { Model } from "@bastani/atomic-ai";
 import { afterEach, describe, expect, it } from "vitest";
 import { FileModelsStore } from "../src/core/models-store.ts";
 

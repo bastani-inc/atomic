@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
-import { getKeybindings, setKeybindings } from "@earendil-works/pi-tui";
+import { getKeybindings, setKeybindings } from "@bastani/atomic-tui";
 import { test, vi } from "vitest";
 import { closeSessionTasks, getAgentTaskHost } from "../../packages/coding-agent/src/core/agent-session-tasks.js";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";

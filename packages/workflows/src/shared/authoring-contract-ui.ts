@@ -1,7 +1,7 @@
 /** Workflow authoring UI, builder, run, and result contract types. */
 
 import type { AgentSessionEvent, KeybindingsManager, ModelRouterOutput, Theme } from "@bastani/atomic";
-import type { Component, OverlayHandle, OverlayOptions, TUI } from "@earendil-works/pi-tui";
+import type { Component, OverlayHandle, OverlayOptions, TUI } from "@bastani/atomic-tui";
 import type { TSchema } from "typebox";
 import type { RunJournalOption } from "../durable/journal/resolution.js";
 import type { WorkflowEventPrimitives } from "./authoring-contract-events.js";

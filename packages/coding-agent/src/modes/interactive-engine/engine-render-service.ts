@@ -1,4 +1,4 @@
-import type { Terminal, TUI } from "@earendil-works/pi-tui";
+import type { Terminal, TUI } from "@bastani/atomic-tui";
 import type { AgentSession } from "../../core/agent-session.js";
 import { runSynchronousCallback } from "../../core/callback-activity.ts";
 import type { CustomMessage } from "../../core/messages.ts";

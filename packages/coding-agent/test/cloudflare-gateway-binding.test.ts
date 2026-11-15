@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { streamSimple as anthropicMessagesStreamSimple } from "@bastani/pi-ai/api/anthropic-messages";
-import * as piAiCloudflareGatewayBinding from "@bastani/pi-ai/api/cloudflare-gateway-binding";
+import { streamSimple as anthropicMessagesStreamSimple } from "@bastani/atomic-ai/api/anthropic-messages";
+import * as piAiCloudflareGatewayBinding from "@bastani/atomic-ai/api/cloudflare-gateway-binding";
 import { describe, it } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.js";
 import { ModelRuntime } from "../src/core/model-runtime.js";

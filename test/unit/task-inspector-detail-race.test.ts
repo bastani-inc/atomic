@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
-import { getKeybindings, setKeybindings } from "@earendil-works/pi-tui";
+import { getKeybindings, setKeybindings } from "@bastani/atomic-tui";
 import { test, vi } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import { OwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";

@@ -217,11 +217,11 @@ test("root build runs the incremental build orchestrator", async () => {
 	assert.equal(manifest.scripts.build, "node scripts/build.mjs");
 });
 
-test("typecheck aliases the local pi-ai build before compiling dependents", async () => {
+test("typecheck builds the forked packages before compiling dependents", async () => {
 	const manifest = (await readJson(join(root, "package.json"))) as { scripts: Record<string, string> };
 	assert.equal(
 		manifest.scripts.typecheck,
-		"npm --workspace=@bastani/pi-ai run build && npm --workspace=@bastani/pi-ai run typecheck && node scripts/alias-pi-ai.mjs && node scripts/bun-typecheck.mjs && npm --workspace=@bastani/atomic run typecheck",
+		"npm --workspace=@bastani/atomic-schema --workspace=@bastani/atomic-telemetry run build && npm --workspace=@bastani/atomic-ai run build && npm --workspace=@bastani/atomic-ai run typecheck && npm --workspace=@bastani/atomic-tui --workspace=@bastani/atomic-agent-core --workspace=@bastani/atomic-codemode run build && node scripts/bun-typecheck.mjs && npm --workspace=@bastani/atomic run typecheck",
 	);
 });
 

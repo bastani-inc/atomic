@@ -5,8 +5,8 @@
  * and converting the ANSI output to HTML.
  */
 
-import type { ImageContent, TextContent } from "@bastani/pi-ai/compat";
-import type { Component } from "@earendil-works/pi-tui";
+import type { ImageContent, TextContent } from "@bastani/atomic-ai/compat";
+import type { Component } from "@bastani/atomic-tui";
 import { keyHint, keyText } from "../../modes/interactive/components/keybinding-hints.js";
 import type { Theme } from "../../modes/interactive/theme/theme.js";
 import type { ToolRenderContext, ToolRenderers } from "../extensions/types.ts";

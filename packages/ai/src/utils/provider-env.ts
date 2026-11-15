@@ -50,3 +50,11 @@ export function getProviderEnvValue(name: string, env?: ProviderEnv): string | u
 		undefined
 	);
 }
+
+/**
+ * Resolve a library setting from the environment: `ATOMIC_<name>` when set, else the legacy `PI_<name>`. Each name is
+ * looked up as `getProviderEnvValue()` does.
+ */
+export function getAtomicEnvValue(name: string, env?: ProviderEnv): string | undefined {
+	return getProviderEnvValue(`ATOMIC_${name}`, env) ?? getProviderEnvValue(`PI_${name}`, env);
+}

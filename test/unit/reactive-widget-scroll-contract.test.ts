@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { Text } from "@earendil-works/pi-tui";
+import { Text } from "@bastani/atomic-tui";
 import { afterEach, test } from "vitest";
 import { installReactiveWidget } from "../../packages/coding-agent/src/core/extensions/reactive-widget.js";
 import type { WidgetScrollState } from "../../packages/coding-agent/src/core/extensions/ui-types.js";

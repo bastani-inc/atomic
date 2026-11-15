@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Credential } from "@bastani/pi-ai";
+import type { Credential } from "@bastani/atomic-ai";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { AuthStorage, type AuthStorageBackend } from "../src/core/auth-storage.js";
 import { FileAuthStorageBackend, type LockResult } from "../src/core/auth-storage-backends.js";

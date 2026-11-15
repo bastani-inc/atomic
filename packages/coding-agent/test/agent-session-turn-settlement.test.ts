@@ -3,7 +3,7 @@
  * on a tool result settles it too, and a turn whose tool calls the loop continues past does not.
  */
 import assert from "node:assert/strict";
-import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { afterEach, describe, test } from "vitest";
 import type { ToolDefinition } from "../src/core/extensions/index.js";

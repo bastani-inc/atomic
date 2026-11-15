@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { Component } from "@earendil-works/pi-tui";
+import type { Component } from "@bastani/atomic-tui";
 import type { CustomMessage } from "../../core/messages.ts";
 import type { ToolExecutionComponent } from "../interactive/components/tool-execution.ts";
 import type { IsolatedInteractiveRuntime } from "./isolated-runtime.js";

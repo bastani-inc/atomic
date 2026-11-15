@@ -1,6 +1,6 @@
 import { existsSync, writeSync } from "node:fs";
 import { createInterface } from "node:readline";
-import { ProcessTerminal, setCapabilityOverrides, setKeybindings, TuiMainScreen } from "@earendil-works/pi-tui";
+import { ProcessTerminal, setCapabilityOverrides, setKeybindings, TuiMainScreen } from "@bastani/atomic-tui";
 import chalk from "chalk";
 import type { Args } from "./cli/args.ts";
 import { selectSession } from "./cli/session-picker.ts";

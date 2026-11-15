@@ -1,5 +1,5 @@
-import type { ImageContent, TextContent } from "@bastani/pi-ai/compat";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AgentMessage } from "@bastani/atomic-agent-core";
+import type { ImageContent, TextContent } from "@bastani/atomic-ai/compat";
 import { commitAdmittedCustomMessage, commitAdmittedCustomMessages } from "./agent-session-custom-message-commit.ts";
 import { forwardedMessageOptions, resolveWorkflowStageDeliveryTarget } from "./agent-session-delivery-forwarding.ts";
 import { holdsTurnsForDetachedResults } from "./agent-session-detached-tools.ts";

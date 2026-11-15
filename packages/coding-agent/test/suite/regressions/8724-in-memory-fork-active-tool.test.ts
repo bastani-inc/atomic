@@ -1,5 +1,5 @@
-import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai";
-import type { AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
+import type { AgentTool, AgentToolResult } from "@bastani/atomic-agent-core";
+import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import {

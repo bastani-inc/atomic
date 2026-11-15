@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { fauxAssistantMessage } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, test } from "vitest";
 import type { MessageEndEventResult } from "../../packages/coding-agent/src/core/extensions/event-results.js";
 import { createHarness, type Harness } from "../../packages/coding-agent/test/suite/harness.js";

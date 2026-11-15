@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import type { AssistantMessage } from "@bastani/pi-ai";
+import type { AssistantMessage } from "@bastani/atomic-ai";
 import { test, vi } from "vitest";
 import { DefaultResourceLoader } from "../../packages/coding-agent/src/core/resource-loader.js";
 import { createAgentSession } from "../../packages/coding-agent/src/core/sdk.js";

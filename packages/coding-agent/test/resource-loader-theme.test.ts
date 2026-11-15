@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resetCapabilitiesCache, setCapabilityOverrides } from "@earendil-works/pi-tui";
+import { resetCapabilitiesCache, setCapabilityOverrides } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, describe, it, vi } from "vitest";
 import { DefaultResourceLoader } from "../src/core/resource-loader.js";
 import { SettingsManager } from "../src/core/settings-manager.js";

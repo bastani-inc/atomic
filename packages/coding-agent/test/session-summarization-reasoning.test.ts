@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { getModel, streamSimple } from "@bastani/pi-ai/compat";
+import { getModel, streamSimple } from "@bastani/atomic-ai/compat";
 import { describe, it } from "vitest";
 import { generateSessionSummary } from "../src/core/compaction/session-summarization.js";
 import type { SessionEntry } from "../src/core/session-manager.js";

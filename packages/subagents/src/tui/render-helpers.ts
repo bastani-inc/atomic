@@ -1,5 +1,5 @@
 import type { Theme } from "@bastani/atomic";
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 
 function fuzzyScore(query: string, text: string): number {
 	const lq = query.toLowerCase();

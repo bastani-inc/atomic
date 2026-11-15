@@ -1,4 +1,4 @@
-import { stripTerminalSequences, type TuiAltScreen, visibleWidth } from "@earendil-works/pi-tui";
+import { stripTerminalSequences, type TuiAltScreen, visibleWidth } from "@bastani/atomic-tui";
 import { beforeAll, describe, expect, test, vi } from "vitest";
 import {
 	TRANSCRIPT_JUMP_TO_END_URL,

@@ -257,7 +257,7 @@ Registration is not provider validation. If a root schema is an `anyOf`/`oneOf` 
 ```typescript
 import { Type } from "typebox";
 import { StringEnum } from "@bastani/atomic";
-import { Text } from "@earendil-works/pi-tui";
+import { Text } from "@bastani/atomic-tui";
 
 pi.registerTool({
   name: "my_tool",
@@ -445,7 +445,7 @@ An active orchestrator may implement `prepareLoadout(loadout)`. The loadout list
 
 ### Fireworks deferred tool loading
 
-Extensions making requests directly through `@bastani/pi-ai` can use native deferred tool loading with Fireworks `anthropic-messages` models. Keep the discovery tool in `context.tools`. After the discovery tool result, append a chronological system message with `toolsAdded` (and `toolsRemoved` if needed) containing the newly loaded tool definitions. The provider serializes deferred definitions with `defer_loading` and inserts `tool_reference` content at the load point.
+Extensions making requests directly through `@bastani/atomic-ai` can use native deferred tool loading with Fireworks `anthropic-messages` models. Keep the discovery tool in `context.tools`. After the discovery tool result, append a chronological system message with `toolsAdded` (and `toolsRemoved` if needed) containing the newly loaded tool definitions. The provider serializes deferred definitions with `defer_loading` and inserts `tool_reference` content at the load point.
 
 Name the loader `ToolSearch` or `tool_search` to keep deferred schemas out of the initial prompt prefix. Other names work, but Fireworks includes the schemas in the prefix and loses that cache benefit. Fireworks GLM models and Kimi K3 still use Chat Completions; this feature does not change their routing.
 
@@ -649,7 +649,7 @@ Use `context.state` for cross-slot shared state. Keep slot-local caches on the r
 Renders the tool call or header:
 
 ```typescript
-import { Text } from "@earendil-works/pi-tui";
+import { Text } from "@bastani/atomic-tui";
 
 renderCall(args, theme, context) {
   const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);

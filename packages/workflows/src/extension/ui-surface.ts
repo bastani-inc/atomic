@@ -19,7 +19,7 @@ export interface PiUIDialogOptions {
 /**
  * Structural subset of pi-tui's `OverlayOptions` that this extension
  * consumes when mounting overlays via `ctx.ui.custom(factory, options)`.
- * Mirrors @earendil-works/pi-tui dist/tui.d.ts `OverlayOptions`.
+ * Mirrors @bastani/atomic-tui dist/tui.d.ts `OverlayOptions`.
  *
  * Only the fields actually forwarded by this extension are typed. Pi may
  * accept additional fields in the future; values pass through verbatim.
@@ -59,7 +59,7 @@ export interface PiCustomComponent {
 
 /**
  * Handle exposed by pi's TUI for controlling a live overlay. Mirrors the
- * shape from @earendil-works/pi-tui `OverlayHandle` — `setHidden(true)`
+ * shape from @bastani/atomic-tui `OverlayHandle` — `setHidden(true)`
  * temporarily hides the overlay (cheap to flip on/off, used for a
  * show/hide toggle), `hide()` permanently dismisses it.
  */
@@ -76,7 +76,7 @@ export interface PiOverlayHandle {
  * Options accepted by Pi/pi's real `ctx.ui.custom(factory, options)`
  * overlay primitive. Aligned with the shape documented in
  * `@bastani/atomic docs/tui.md` and
- * `@earendil-works/pi-tui dist/tui.d.ts`.
+ * `@bastani/atomic-tui dist/tui.d.ts`.
  *
  * Workflow pickers (`session-overlays.ts`, `inputs-overlay.ts`) mount
  * with `overlay: false`, which causes the host to REPLACE the editor

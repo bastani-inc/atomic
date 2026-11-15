@@ -1,6 +1,6 @@
 import { TRANSCRIPT_JUMP_TO_END_URL } from "@bastani/atomic";
 
-import { getKeybindings, setKeybindings, stripTerminalSequences } from "@earendil-works/pi-tui";
+import { getKeybindings, setKeybindings, stripTerminalSequences } from "@bastani/atomic-tui";
 import { describe, test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import { StageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.js";

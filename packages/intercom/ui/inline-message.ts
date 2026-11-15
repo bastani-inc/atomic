@@ -1,5 +1,5 @@
-import type { Component } from "@earendil-works/pi-tui";
-import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import type { Component } from "@bastani/atomic-tui";
+import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@bastani/atomic-tui";
 import type { Theme } from "@bastani/atomic";
 import type { SessionInfo, Message } from "../types.js";
 import { terminalSafeLabel, terminalSafeText } from "./terminal-text.js";

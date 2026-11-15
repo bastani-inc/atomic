@@ -1,6 +1,6 @@
-import { type Api, clampThinkingLevel, type Model } from "@bastani/pi-ai/compat";
-import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { setKeybindings } from "@earendil-works/pi-tui";
+import type { ThinkingLevel } from "@bastani/atomic-agent-core";
+import { type Api, clampThinkingLevel, type Model } from "@bastani/atomic-ai/compat";
+import { setKeybindings } from "@bastani/atomic-tui";
 import { beforeAll, expect, test, vi } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import { ThinkingSelectorComponent } from "../src/modes/interactive/components/thinking-selector.ts";

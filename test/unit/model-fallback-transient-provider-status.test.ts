@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
-import { stream as streamBedrock } from "@bastani/pi-ai/api/bedrock-converse-stream";
-import { type AssistantMessage, getModel, normalizeContext } from "@bastani/pi-ai/compat";
+import { stream as streamBedrock } from "@bastani/atomic-ai/api/bedrock-converse-stream";
+import { type AssistantMessage, getModel, normalizeContext } from "@bastani/atomic-ai/compat";
 import { afterEach, test } from "vitest";
 import { _isRetryableError } from "../../packages/coding-agent/src/core/agent-session-retry.js";
 import {

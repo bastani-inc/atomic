@@ -9,7 +9,7 @@ import {
 	createAssistantMessageEventStream,
 	type Model,
 	type SimpleStreamOptions,
-} from "@bastani/pi-ai";
+} from "@bastani/atomic-ai";
 import { afterEach, beforeEach, describe, it, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.js";
 import { createAgentSession } from "../src/core/sdk.js";

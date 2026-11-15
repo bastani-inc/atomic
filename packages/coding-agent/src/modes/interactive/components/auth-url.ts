@@ -1,4 +1,4 @@
-import { Container, hyperlink, Text, type TUI } from "@earendil-works/pi-tui";
+import { Container, hyperlink, Text, type TUI } from "@bastani/atomic-tui";
 import { copyToClipboard } from "../../../utils/clipboard.js";
 import { theme } from "../theme/theme.js";
 import { keyHint } from "./keybinding-hints.js";

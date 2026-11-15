@@ -26,7 +26,7 @@ import {
 	createSearchToolDefinition,
 	createWriteToolDefinition,
 } from "@bastani/atomic";
-import { Text } from "@earendil-works/pi-tui";
+import { Text } from "@bastani/atomic-tui";
 import { homedir } from "os";
 
 /**

@@ -1,7 +1,7 @@
 // @ts-nocheck
 
 import assert from "node:assert/strict";
-import type { Component, EditorTheme } from "@earendil-works/pi-tui";
+import type { Component, EditorTheme } from "@bastani/atomic-tui";
 import { beforeAll, test, vi } from "vitest";
 import {
 	VERBATIM_COMPACTION_PROMPT_VERSION,

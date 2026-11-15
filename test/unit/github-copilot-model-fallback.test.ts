@@ -17,9 +17,9 @@ import {
 	recordGitHubCopilotError,
 	recordGitHubCopilotFailure,
 	serializeGitHubCopilotError,
-} from "@bastani/pi-ai";
-import type { Api, AssistantMessage, Model } from "@bastani/pi-ai/compat";
-import { getModel, streamSimple } from "@bastani/pi-ai/compat";
+} from "@bastani/atomic-ai";
+import type { Api, AssistantMessage, Model } from "@bastani/atomic-ai/compat";
+import { getModel, streamSimple } from "@bastani/atomic-ai/compat";
 import { describe, test } from "vitest";
 import { _isFallbackableError, _isRetryableError } from "../../packages/coding-agent/src/core/agent-session-retry.js";
 import {

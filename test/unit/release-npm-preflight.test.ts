@@ -51,7 +51,12 @@ describe("scripts/release-npm-preflight.ts", () => {
 			"@bastani/atomic-natives-win32-arm64-msvc",
 			"@bastani/atomic-natives-win32-x64-msvc",
 			"@bastani/atomic-natives",
-			"@bastani/pi-ai",
+			"@bastani/atomic-schema",
+			"@bastani/atomic-telemetry",
+			"@bastani/atomic-ai",
+			"@bastani/atomic-tui",
+			"@bastani/atomic-agent-core",
+			"@bastani/atomic-codemode",
 			"@bastani/atomic-storage-libsql",
 			"@bastani/atomic-storage-postgres",
 			"@bastani/atomic",
@@ -73,6 +78,26 @@ describe("scripts/release-npm-preflight.ts", () => {
 			(name) => !name.startsWith(NATIVE_PLATFORM_PACKAGE_PREFIX),
 		);
 		assert.deepEqual([...payloadRoots].sort(), publishedWorkspaces.sort());
+	});
+
+	test("every payload package publishes after the payload packages it depends on (#5174)", async () => {
+		const order = parseReleasePayloadPackages(publishWorkflow);
+		let checked = 0;
+		for (const entry of readdirSync(join(root, "packages"), { withFileTypes: true })) {
+			const manifestPath = join(root, "packages", entry.name, "package.json");
+			if (!entry.isDirectory() || !existsSync(manifestPath)) continue;
+			const manifest = await readJson<{ name: string; dependencies?: Record<string, string> }>(manifestPath);
+			if (!order.includes(manifest.name)) continue;
+			for (const dependency of Object.keys(manifest.dependencies ?? {})) {
+				if (!order.includes(dependency)) continue;
+				assert.ok(
+					order.indexOf(dependency) < order.indexOf(manifest.name),
+					`${manifest.name} publishes before its dependency ${dependency}`,
+				);
+				checked += 1;
+			}
+		}
+		assert.ok(checked >= 8, `expected the forked packages' dependency edges, checked ${checked}`);
 	});
 
 	test("a payload array that is missing, doubled, empty, malformed, or duplicated is refused", () => {
@@ -206,7 +231,7 @@ describe("scripts/release-npm-preflight.ts", () => {
 				allowNew: false,
 			}),
 			(error: Error) => {
-				assert.match(error.message, /2 of 13 publish-payload packages are not registered on npm/u);
+				assert.match(error.message, /2 of 18 publish-payload packages are not registered on npm/u);
 				assert.match(error.message, /^ {2}- @bastani\/atomic-natives-win32-arm64-msvc$/mu);
 				assert.match(error.message, /^ {2}- @bastani\/atomic$/mu);
 				assert.match(error.message, /Re-run with --allow-new/u);
