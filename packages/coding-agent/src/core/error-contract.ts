@@ -112,7 +112,8 @@ function isDigits(value: string): boolean {
  * before the end of the URL in text and before the next `://`, and the user info then runs, as usual, to the last `@`
  * before the host's own `/`, `?` or `#`. When the authority up to `delimiter` could be a host (no `:`, or a `:` before
  * digits, as in `user:1234/5678@host` or `token/rest@host`), it counts only if that part holds no `.` and the host
- * after the `@` holds one, so `localhost:8080/a@b` and `example.com/user@example.org` stay as they are.
+ * after the `@` holds one, so `localhost:8080/a@b` and `example.com/user@example.org` stay as they are. A dotless host
+ * (`token/rest@gitlab/x`) counts when the user info has no port and the host is followed by a path.
  */
 function rawDelimiterUserInfoEnd(
 	text: string,
@@ -136,8 +137,11 @@ function rawDelimiterUserInfoEnd(
 		}
 		if (character === "@") lastAt = index;
 	}
-	if (lastAt === -1 || (hostLike && !text.slice(lastAt + 1, hostEnd).includes("."))) return -1;
-	return lastAt;
+	if (lastAt === -1) return -1;
+	if (!hostLike || text.slice(lastAt + 1, hostEnd).includes(".")) return lastAt;
+	// A dotless host counts only for user info without a port, not ending in `/`, before a host followed by a path.
+	const pathFollows = text[hostEnd] === "/" && hostEnd > lastAt + 1;
+	return colon === -1 && text[lastAt - 1] !== "/" && pathFollows ? lastAt : -1;
 }
 
 /** How a URL is percent-encoded once (`%3A`) or twice (`%253A`): the prefix of each encoded character. */

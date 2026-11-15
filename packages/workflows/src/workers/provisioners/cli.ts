@@ -20,21 +20,37 @@ const MAX_STDERR_BYTES = 1024 * 1024;
 const MAX_DETAIL_CHARS = 600;
 /** Names of environment variables and options whose values are treated as secrets. */
 const SECRET_NAME = /secret|token|passw|pwd|credential|api[-_]?key|access[-_]?key|private[-_]?key|signature|sas|auth/i;
-/** Words that make a `name=value` / `name: value` pair a secret's. */
-const SECRET_WORD = /secret|token|passw|pwd|credential|api[-_]?key|access[-_]?key|signature|sig/i;
-/** Longest name of a `name=value` pair that is checked for a secret's word: longer runs are not names. */
-const MAX_SECRET_NAME_LENGTH = 128;
+/** Words that make a `name=value` / `name: value` pair a secret's, wherever they appear in the name. */
+const SECRET_WORD = /secret|token|passw|pwd|credential|api[-_]?key|access[-_]?key/i;
+/** Words that make a pair a secret's only as a whole segment of its name, so `signal` or `assignment` do not. */
+const SECRET_SEGMENT = /^(?:sig|signature)$/i;
+
+/** Whether `name` names a secret: it holds a secret's word, or a `-`, `_` or camelCase segment that is one. */
+function isSecretName(name: string): boolean {
+	return (
+		SECRET_WORD.test(name) || name.split(/[-_]|(?<=[a-z0-9])(?=[A-Z])/u).some((part) => SECRET_SEGMENT.test(part))
+	);
+}
+
+/** A quoted value with its closing quote, or the start of an unquoted one. */
+const SECRET_PAIR_VALUE = String.raw`"[^"\n]*"?|'[^'\n]*'?|[^\s"',;&]+`;
 /**
- * A secret a CLI might print: a bearer token, a JWT, or a `name=value` / `name: value` pair with a secret's name. Each
- * pattern starts only where its run of word characters starts and bounds what it scans, so it is linear in the length
- * of the text, however long the runs of `-`, word characters or spaces it meets.
+ * A secret a CLI might print: a bearer token, a JWT, or a `name=value` / `name: value` pair with a secret's name, whose
+ * quoted value is redacted to its closing quote. Each pattern starts only where its run of name characters starts, and
+ * a name runs over a run at most twice, so they are linear in the length of the text, however long its runs of `-`,
+ * word characters or spaces.
  */
 const SECRET_TEXT: readonly [RegExp, (match: string, ...groups: string[]) => string][] = [
 	[/\bBearer\s+[^\s"',;]+/gi, () => "Bearer [redacted]"],
 	[/(?<![\w-])eyJ[\w-]+\.[\w-]+(?:\.[\w-]*)?/g, () => "[redacted]"],
 	[
-		new RegExp(String.raw`(?<![\w-])([\w-]{1,${MAX_SECRET_NAME_LENGTH}})(["']?\s*[:=]\s*["']?)[^\s"',;&]+`, "g"),
-		(match, name = "", separator = "") => (SECRET_WORD.test(name) ? `${name}${separator}[redacted]` : match),
+		new RegExp(String.raw`(?<![\w-])([\w-]+)(["']?\s*[:=]\s*)(${SECRET_PAIR_VALUE})`, "g"),
+		(match, name = "", separator = "", value = "") => {
+			if (!isSecretName(name)) return match;
+			const quote = /^["']/u.exec(value)?.[0] ?? "";
+			const closed = quote !== "" && value.length > 1 && value.endsWith(quote);
+			return `${name}${separator}${quote}[redacted]${closed ? quote : ""}`;
+		},
 	],
 ];
 /** Shorter values are not redacted where they appear: they would match ordinary words. */

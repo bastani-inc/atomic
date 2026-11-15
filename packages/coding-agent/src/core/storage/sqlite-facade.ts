@@ -190,10 +190,13 @@ function encodedForms(plain: string): string[] {
 	return forms;
 }
 
+/** A line of a multi-line secret that many secrets share, such as a PEM armor line (`-----BEGIN … KEY-----`). */
+const GENERIC_LINE = /^-----[A-Z0-9 ]+-----$|^[A-Za-z-]+: /u;
+
 /**
  * The forms a configured secret takes in output: trimmed, since a secret read from a file often ends with a line break
  * that the text around a printed secret need not repeat; each line of a multi-line secret, trimmed, that holds a letter
- * or digit; and the encodings of both. The secret as given holds its trimmed form, so overlapping matches still remove
+ * or digit and is not a line many secrets share (a PEM armor or header line); and the encodings of both. The secret as given holds its trimmed form, so overlapping matches still remove
  * it whole. Forms derived from the secret are kept only from {@link MIN_DERIVED_LENGTH} characters.
  */
 function secretForms(secret: string, minLength: number): string[] {
@@ -204,7 +207,7 @@ function secretForms(secret: string, minLength: number): string[] {
 		? trimmed
 				.split(/\r?\n/u)
 				.map((line) => line.trim())
-				.filter((line) => /[\p{L}\p{N}]/u.test(line))
+				.filter((line) => /[\p{L}\p{N}]/u.test(line) && !GENERIC_LINE.test(line))
 		: [];
 	const derived = [...lines, ...[trimmed, ...lines].flatMap(encodedForms)];
 	return [trimmed, ...derived.filter((form) => form.length >= derivedLength)];

@@ -700,6 +700,19 @@ describe("secret redaction (#4768)", () => {
 		}
 	});
 
+	test("secret words match whole name segments in CLI output", () => {
+		assert.equal(
+			redactSecrets("signal=SIGTERM design=ok assignment=3 x-amz-signature=abc sig=s", [], {}),
+			"signal=SIGTERM design=ok assignment=3 x-amz-signature=[redacted] sig=[redacted]",
+		);
+	});
+
+	test("long names and quoted values with spaces are redacted in CLI output", () => {
+		const secret = "Zq9vR2mXw7LpT4kN";
+		assert.equal(redactSecrets(`${"X".repeat(130)}_TOKEN=${secret}`, [], {}), `${"X".repeat(130)}_TOKEN=[redacted]`);
+		assert.equal(redactSecrets(`api_key: "${secret} more" next`, [], {}), 'api_key: "[redacted]" next');
+	});
+
 	test("redacts tokens a CLI prints (#4768)", () => {
 		const cases: [string, string][] = [
 			["Authorization: Bearer abc.def-ghi, next", "Authorization: Bearer [redacted], next"],

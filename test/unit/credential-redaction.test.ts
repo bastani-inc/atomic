@@ -623,3 +623,152 @@ describe("configured secret redaction", () => {
 		}
 	});
 });
+
+const OTHER_SECRET = "Yh3kW8pQz5RtV1mB";
+const MEBIBYTE = 1_048_576;
+
+describe("credential redaction in more contexts", () => {
+	function assertGone(text: string, ...secrets: string[]): string {
+		const redacted = redactCredentialShapes(text);
+		for (const secret of [PLAIN_SECRET, ...secrets]) {
+			assert.equal(redacted.includes(secret), false, `${JSON.stringify(text)} => ${JSON.stringify(redacted)}`);
+		}
+		return redacted;
+	}
+
+	function assertKept(text: string): void {
+		assert.equal(redactCredentialShapes(text), text);
+	}
+
+	test("redacting a megabyte of cookie headers stays linear", () => {
+		for (const input of [
+			`Cookie: ${"a;".repeat(MEBIBYTE / 2)}`,
+			`Cookie: ${";".repeat(MEBIBYTE)}=x`,
+			`Set-Cookie: a=b${", c".repeat(MEBIBYTE / 3)}`,
+			`set-cookie: ${"a=b, ".repeat(MEBIBYTE / 6)}`,
+			"\ncookie: x;".repeat(MEBIBYTE / 11),
+			`'cookie: ${"x; ".repeat(MEBIBYTE / 3)}`,
+		]) {
+			for (const redact of [redactCredentialShapes, redactSensitiveText]) {
+				const started = performance.now();
+				redact(input);
+				const elapsed = performance.now() - started;
+				assert.ok(elapsed < LINEAR_REDACTION_BUDGET_MS, `${redact.name} took ${Math.round(elapsed)} ms`);
+			}
+		}
+	});
+
+	test("cookies written as JSON or a dictionary are redacted", () => {
+		assert.equal(assertGone(`{"cookie":"sid=${PLAIN_SECRET}"}`), '{"cookie":"sid=[redacted]"}');
+		assert.equal(assertGone(`{'Cookie': 'sid=${PLAIN_SECRET}; a=b'}`), "{'Cookie': 'sid=[redacted]; a=[redacted]'}");
+		assertGone(`curl -H 'Cookie: sid=${PLAIN_SECRET}' https://x`);
+		assertGone(`> Cookie: sid=${PLAIN_SECRET}`);
+	});
+
+	test("every value of joined Set-Cookie headers is redacted", () => {
+		assert.equal(
+			assertGone(`set-cookie: a=${PLAIN_SECRET}; Path=/; HttpOnly, b=${OTHER_SECRET}; Path=/`, OTHER_SECRET),
+			"set-cookie: a=[redacted]; Path=/; HttpOnly, b=[redacted]; Path=/",
+		);
+		assert.equal(
+			assertGone(`Set-Cookie: a=${PLAIN_SECRET}; Expires=Wed, 21 Oct 2015 07:28:00 GMT; Path=/`),
+			"Set-Cookie: a=[redacted]; Expires=Wed, 21 Oct 2015 07:28:00 GMT; Path=/",
+		);
+		assert.equal(redactCredentialShapes('Set-Cookie: a="quoted"; Path=/'), 'Set-Cookie: a="[redacted]"; Path=/');
+	});
+
+	test("cookie-like prose and code stay unchanged", () => {
+		assertKept("My favourite cookie: oatmeal=great; chocolate=better");
+		assertKept('const c = { cookie: "theme=dark" }');
+	});
+
+	test("acronym-prefixed credential names are redacted", () => {
+		assertGone(`DBPassword=${PLAIN_SECRET}`);
+		assertGone(`{"SMTPPassword":"${PLAIN_SECRET}"}`);
+		assertGone(`JWTSecret: ${PLAIN_SECRET}`);
+	});
+
+	test("provider key names with secret-looking values are redacted", () => {
+		assertGone(`openaiKey: ${PLAIN_SECRET}`);
+		assertGone(`{"stripeKey":"${PLAIN_SECRET}"}`);
+		assertKept("licenseKey: see docs");
+		assertKept('{"idempotencyKey":"3f2a9c1e-77aa-4b1e-9d2f-0c1b2a3d4e5f","cacheKey":"k1"}');
+	});
+
+	test("YAML block scalars end where the indentation returns to the key", () => {
+		assertGone(`password: |\n\n  ${PLAIN_SECRET}`);
+		assert.equal(
+			redactCredentialShapes("db:\n  password: |\n    hunter2\n  user: bob\n  port: 5432"),
+			"db:\n  password: |\n    [redacted]\n  user: bob\n  port: 5432",
+		);
+	});
+
+	test("user info before a dotless host with a path is removed", () => {
+		assert.equal(redactUrlCredentials(`https://ab/${PLAIN_SECRET}@gitlab/x`), "https://gitlab/x");
+		for (const kept of ["https://registry/npm/@scope/pkg", "http://localhost:8080/foo@bar", "a://u/p@h x"]) {
+			assert.equal(redactUrlCredentials(kept), kept);
+		}
+	});
+
+	test("a hyperlink around a field name does not hide its value", () => {
+		assertGone(`\u001b]8;;http://x\u0007password\u001b]8;;\u0007: ${PLAIN_SECRET}`);
+	});
+
+	test("command-line and netrc credentials are redacted", () => {
+		assert.equal(assertGone(`mysql -u root --password ${PLAIN_SECRET} db`), "mysql -u root --password [redacted] db");
+		assert.equal(assertGone(`tool --password=${PLAIN_SECRET} -v`), "tool --password=[redacted] -v");
+		assert.equal(assertGone(`mysql -uroot -p'${PLAIN_SECRET}'`), "mysql -uroot -p'[redacted]'");
+		assert.equal(assertGone(`curl -u bob:${PLAIN_SECRET} https://x`), "curl -u bob:[redacted] https://x");
+		assert.equal(
+			assertGone(`machine api.example.com login bob password ${PLAIN_SECRET}`),
+			"machine api.example.com login bob password [redacted]",
+		);
+		for (const kept of ["gcc -pthread x.c", "tool --no-password --verbose", "cmd --token-file /run/token"]) {
+			assertKept(kept);
+		}
+	});
+
+	test("a password value stops at the end of its own value", () => {
+		assertKept('{"password":null,"email":"bob@example.com","id":7}');
+		assertKept('{"showPassword":false,"user":"bob","mode":"dark"}');
+		assert.equal(redactCredentialShapes('{"password":12,"id":7}'), '{"password":12,"id":7}');
+		assert.equal(
+			redactCredentialShapes("PASSWORD=x123 PORT=8080 HOST=localhost"),
+			"PASSWORD= [redacted] PORT=8080 HOST=localhost",
+		);
+		assert.equal(
+			redactCredentialShapes("PASSWORD=a b DB_PASSWORD=c"),
+			"PASSWORD= [redacted] DB_PASSWORD= [redacted]",
+		);
+		assert.equal(redactCredentialShapes("password: correct horse, battery"), "password: [redacted]");
+	});
+
+	test("ordinary identifiers named like credentials stay unchanged", () => {
+		for (const text of [
+			'{"Items":[1,2],"nextToken":"eyAiYSI6IDEgfQ","Count":2}',
+			"function f(cancelToken: CancelToken, timeout: number) {}",
+			"interface A { token: string; name: string }",
+			'{"isSecret":true,"name":"x"}',
+			"auth state hasToken=false user=bob",
+			"key_value_store_backend_config",
+			"const token = this.token",
+			"token: this.token,",
+		]) {
+			assertKept(text);
+		}
+		assertGone(`token_${PLAIN_SECRET}_x`);
+	});
+});
+
+describe("configured multi-line secrets", () => {
+	test("generic lines of a configured key do not redact text that quotes them", () => {
+		const header = ["-----BEGIN RSA", "PRIVATE KEY-----"].join(" ");
+		const footer = ["-----END RSA", "PRIVATE KEY-----"].join(" ");
+		const redact = configuredSecretRedactor([`${header}\nMIIEowIBAAKCAQEA${PLAIN_SECRET}\n${footer}\n`]);
+		assert.equal(
+			redact(`docs: a key starts with ${header} then base64`),
+			`docs: a key starts with ${header} then base64`,
+		);
+		assert.equal(redact(`leaked MIIEowIBAAKCAQEA${PLAIN_SECRET}`), "leaked [redacted]");
+	});
+});
