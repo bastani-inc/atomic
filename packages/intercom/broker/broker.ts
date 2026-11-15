@@ -2007,8 +2007,9 @@ class IntercomBroker {
           // saves releases each when saved, and its inbox shows a redelivered copy only once.
           const returnAddress = rejoined?.registrationReturnAddress;
           for (const held of this.pendingQuestions.heldForAsker(returnAddress)) {
-            writeMessageIfOpen(socket, { type: "message", from: held.from, message: held.message });
-            if (clientMessage.acknowledgesReceipt !== true)
+            const written = writeMessageIfOpen(socket, { type: "message", from: held.from, message: held.message });
+            // #5149: a socket that closed during registration keeps them held for its next connection.
+            if (written && clientMessage.acknowledgesReceipt !== true)
               this.pendingQuestions.releaseHeld(held.message.id, returnAddress);
           }
           // #3760: a restored subagent is back under the capability its owner reserved it with; the sends held
