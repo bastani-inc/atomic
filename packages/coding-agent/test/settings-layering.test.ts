@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import lockfile from "proper-lockfile";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { FileSettingsStorage, InMemorySettingsStorage } from "../src/core/settings-storage.ts";
@@ -171,6 +172,35 @@ describe("nested setters keep other processes' nested keys (#5049)", () => {
 		assert.deepEqual(readJson(globalPath).workflows, { paths: ["./wf"], autoAdvanceAfterSteer: false });
 	});
 
+	test("workflow paths set by a stale process keep another process's auto-advance (#5049)", async () => {
+		writeJson(globalPath, { workflows: { journal: { memory: true } } });
+		const first = SettingsManager.create(projectDir, agentDir);
+		const second = SettingsManager.create(projectDir, agentDir);
+
+		first.setAutoAdvanceAfterSteer(false);
+		await first.flush();
+		second.setWorkflowPaths(["./wf"]);
+		await second.flush();
+
+		assert.deepEqual(readJson(globalPath).workflows, {
+			journal: { memory: true },
+			autoAdvanceAfterSteer: false,
+			paths: ["./wf"],
+		});
+	});
+
+	test("warning settings write the keys they set and remove the keys they drop (#5049)", async () => {
+		const manager = SettingsManager.create(projectDir, agentDir);
+
+		manager.setWarnings({ anthropicExtraUsage: false });
+		await manager.flush();
+		assert.deepEqual(readJson(globalPath).warnings, { anthropicExtraUsage: false });
+
+		manager.setWarnings({});
+		await manager.flush();
+		assert.deepEqual(readJson(globalPath).warnings, {});
+	});
+
 	test("project workflow setters keep another process's project workflow keys (#5049)", async () => {
 		writeJson(atomicProjectPath, { workflows: { journal: { memory: true } } });
 		const first = SettingsManager.create(projectDir, agentDir);
@@ -235,6 +265,24 @@ describe("applyOverrides last for the run (#5049)", () => {
 	});
 });
 
+describe("settings files are read under the scope's write lock (#5049)", () => {
+	for (const scope of ["global", "project"] as const) {
+		test(`reading the ${scope} files waits for a writer holding the ${scope} lock (#5049)`, () => {
+			const path = scope === "global" ? globalPath : atomicProjectPath;
+			writeJson(globalPath, {});
+			writeJson(atomicProjectPath, {});
+			const storage = new FileSettingsStorage(projectDir, agentDir);
+			const release = lockfile.lockSync(path, { realpath: false });
+			try {
+				assert.throws(() => storage.readLayers(scope), { code: "ELOCKED" });
+			} finally {
+				release();
+			}
+			assert.deepEqual(storage.readLayers(scope), [{ path, content: "{}" }]);
+		});
+	}
+});
+
 describe("wrong-typed values are reported again after being fixed (#5049)", () => {
 	test("a value that becomes invalid again is reported again (#5049)", async () => {
 		writeJson(globalPath, { extensions: "./x.ts" });
@@ -264,7 +312,7 @@ describe("legacy skills.customDirectories entries are validated (#5049)", () => 
 
 		const manager = SettingsManager.fromStorage(storage);
 
-		assert.deepEqual(manager.getSkillPaths(), ["./a"]);
+		assert.deepEqual(manager.getGlobalSettings().skills, ["./a"]);
 		assert.deepEqual(
 			manager.drainErrors().map(({ invalidKey, error }) => ({ invalidKey, message: error.message })),
 			[

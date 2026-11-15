@@ -83,7 +83,11 @@ const SELF_VALIDATED_SETTINGS: ReadonlySet<string> = new Set([
 	"streamDeadlineMs",
 ]);
 
-/** Drop the wrong-typed entries of a deprecated object form's list fields, such as `skills.customDirectories[0]`. */
+/**
+ * Drop the wrong-typed entries of a deprecated object form's list fields, such as `skills.customDirectories[0]`. Runs
+ * after {@link hasWrongTypedLegacyFields} accepted the value, so a legacy form is an object and each of its list fields
+ * is a list.
+ */
 function dropWrongTypedLegacyEntries(
 	setting: string,
 	schema: SchemaNode,
@@ -91,12 +95,11 @@ function dropWrongTypedLegacyEntries(
 	invalid: InvalidSettingValue[],
 ): void {
 	const legacy = schema.anyOf?.find((member) => member.deprecated)?.properties ?? {};
-	if (jsonTypeOf(value) !== "object") return;
 	const fields = value as { [key: string]: JsonValue };
 	for (const [field, fieldSchema] of Object.entries(legacy)) {
 		const entries = fields[field];
-		if (!Array.isArray(entries) || !fieldSchema.items) continue;
-		const items = fieldSchema.items;
+		if (!Array.isArray(entries)) continue;
+		const items = fieldSchema.items!;
 		fields[field] = entries.filter((item, index) => {
 			if (hasType(items, item)) return true;
 			const key = `${setting}.${field}[${index}]`;
