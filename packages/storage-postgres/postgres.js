@@ -113,6 +113,12 @@ export const DEFAULT_SCHEMA = "atomic";
 const LEGACY_SCHEMA = "public";
 /** A table every release that used a database created in it: the migration ledger, the run journal, sessions, Intercom. */
 const LEGACY_MARKERS = "(atomic_migrations|wf_runs|session_sessions|intercom_leases)$";
+/**
+ * What the comment of each table `atomic storage migrate` leaves in `public` after moving the tables starts with (the
+ * coding agent's `postgres-schema.ts`): such a table fences an earlier release and holds nothing, so it never makes
+ * `public` the schema to use, as after the `atomic` schema was dropped to start over (#5218).
+ */
+const MOVED_FENCE_COMMENT = "atomic-moved-fence:";
 /** A schema name the adapter accepts: a lowercase identifier that needs no quotes. */
 const SCHEMA_NAME = /^[a-z_][a-z0-9_]{0,62}$/;
 
@@ -1116,11 +1122,13 @@ export async function openPostgresDatabase(options) {
 			`SELECT (SELECT count(*) FROM pg_catalog.pg_namespace WHERE nspname = ?) AS present,
 				(SELECT count(*) FROM pg_catalog.pg_namespace WHERE nspname = ?) AS preferred,
 				(SELECT count(*) FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-					WHERE n.nspname = ? AND c.relkind = 'r' AND c.relname ~ ?) AS legacy`,
+					WHERE n.nspname = ? AND c.relkind = 'r' AND c.relname ~ ?
+					AND coalesce(obj_description(c.oid, 'pg_class'), '') NOT LIKE ?) AS legacy`,
 			schema,
 			DEFAULT_SCHEMA,
 			LEGACY_SCHEMA,
 			LEGACY_MARKERS,
+			`${MOVED_FENCE_COMMENT}%`,
 		);
 		if (options.schema === undefined && Number(found?.preferred) === 0 && Number(found?.legacy) > 0)
 		{

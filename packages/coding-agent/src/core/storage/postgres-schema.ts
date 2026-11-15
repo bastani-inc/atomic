@@ -32,7 +32,10 @@ export interface PostgresSchemaMove {
 	readonly skipped: boolean;
 }
 
-/** What the comment of every fence table starts with, so a later move or check never takes one for Atomic's own. */
+/**
+ * What the comment of every fence table starts with, so a later move or check never takes one for Atomic's own, nor
+ * the PostgreSQL adapter, which keeps the same text as `MOVED_FENCE_COMMENT`, for an earlier release's tables.
+ */
 const FENCE_COMMENT = "atomic-moved-fence:";
 const MOVED_FENCE_FUNCTION = "atomic_moved_fence_fn";
 const MOVED_FENCE_TRIGGER = "atomic_moved_fence";

@@ -618,6 +618,24 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL owner and runtime 
 		});
 	});
 
+	test("a database whose atomic schema was dropped after the move starts afresh instead of reading the fences left in public (#5218)", async () => {
+		await withRoles(async (scope, roles) => {
+			await (await scope.open()).exec(`GRANT CREATE ON SCHEMA public TO ${roles.owner}`);
+			await openEveryStore(
+				() => scope.open({ url: roles.urls.owner, password: roles.passwords.owner, schema: "public" }),
+				PREFIX,
+			);
+			const migrated = await migrateAs(roles, "owner");
+			assert.equal(migrated.code, 0, migrated.err);
+			// The operator starts over: the moved tables go, the fences stay in public.
+			await (await roles.open("owner")).exec("DROP SCHEMA atomic CASCADE");
+			await openEveryStore(() => roles.open("owner"), PREFIX);
+			const reopened = await roles.open("owner");
+			assert.equal((await reopened.get("SELECT current_schema() AS schema"))?.schema, "atomic");
+			assert.deepEqual(await strayPostgresStorageTables(reopened), []);
+		});
+	});
+
 	test("three concurrent migrations of an earlier release's database move it once, and the others say so (#5218)", async () => {
 		await withRoles(async (scope, roles) => {
 			await (await scope.open()).exec(`GRANT CREATE ON SCHEMA public TO ${roles.owner}`);
