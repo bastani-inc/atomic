@@ -1103,12 +1103,20 @@ export async function awaitSubagentChildRestoration(
 	);
 	let active = owned.find((restoration) => addressesChild(restoration.record, target));
 	if (!active && owned.length > 0) {
-		// A child's pre-restart Intercom id is known only once its own session has been reopened.
-		const previousIds = await settleWithin(
-			Promise.all(owned.map((restoration) => restoration.previousIntercomId)),
+		// A child's pre-restart Intercom id is known only once its own session has been reopened. Each is matched as soon
+		// as it is known, so a sibling still reopening does not hide the child addressed (#5097).
+		active = await settleWithin(
+			new Promise<ActiveRestoration | undefined>((resolve) => {
+				let unresolved = owned.length;
+				for (const restoration of owned)
+					void restoration.previousIntercomId.then((previousIntercomId) => {
+						unresolved--;
+						if (addressesChild(restoration.record, target, previousIntercomId)) resolve(restoration);
+						else if (unresolved === 0) resolve(undefined);
+					});
+			}),
 			deadline - Date.now(),
 		);
-		active = owned.find((restoration, index) => addressesChild(restoration.record, target, previousIds?.[index]));
 	}
 	if (active) {
 		const label = active.record.intercomTarget ?? targetName.trim();
