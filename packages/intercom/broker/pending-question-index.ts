@@ -39,6 +39,11 @@ export class PendingQuestionIndex {
     for (const question of questions) this.away?.forgetLive(question);
   }
 
+  /** #4996: what `work` writes to the away store is one transaction, not one commit per write. */
+  batch<T>(work: () => T): T {
+    return this.away === undefined ? work() : this.away.batch(work);
+  }
+
   private awayAsks(): AwayAsks {
     if (this.away === undefined) {
       this.away = new AwayAsks();
@@ -78,6 +83,15 @@ export class PendingQuestionIndex {
       questions,
       senderReturnAddress ?? ((question) => this.returnAddressOf(question.senderSessionId)),
     );
+  }
+
+  /**
+   * Keep questions whose recipient is away until it is back. Returns those refused because that recipient's away queue
+   * is full; their askers are connected, and are told at once (#4996).
+   */
+  keepDormantForRecipient(questions: readonly PendingQuestion[]): PendingQuestion[] {
+    // #4950: each keeps its asker's return address too, so its failure reaches it even if this broker goes first.
+    return this.awayAsks().keepForAwayRecipient(questions, (question) => this.returnAddressOf(question.senderSessionId));
   }
 
   /** The asker is away now too: its questions kept for an away recipient wait for it under its return address (#4761). */

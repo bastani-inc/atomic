@@ -5,6 +5,7 @@ import { mkdtempSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterAll, beforeAll, test, vi } from "vitest";
 import { IntercomBrokerFixture } from "../helpers/intercom-broker-fixture.js";
 import { sleep } from "../helpers/runtime.js";
@@ -12,7 +13,8 @@ import { sleep } from "../helpers/runtime.js";
 const repoRoot = resolve(import.meta.dirname, "../..");
 const brokerFixture = new IntercomBrokerFixture(mkdtempSync(join(tmpdir(), "away-asks-")));
 brokerFixture.overrideAgentDir();
-const { getBrokerSocketPath } = await import("../../packages/intercom/broker/paths.js");
+const { getBrokerAwayAsksPath, getBrokerSocketPath } = await import("../../packages/intercom/broker/paths.js");
+const { AWAY_ASKS_PER_RECIPIENT_MAX } = await import("../../packages/intercom/broker/away-asks.js");
 const { getJitiCliPath } = await import("../../packages/intercom/broker/spawn.js");
 const { IntercomClient } = await import("../../packages/intercom/broker/client.js");
 const { HELD_FOR_AWAY_ASKER_TARGET } = await import("../../packages/intercom/broker/held-reply-targets.js");
@@ -339,6 +341,57 @@ test(
 );
 
 test(
+	"an ask to a recipient that goes away with a full queue fails to its asker at once, never dropped (#4996)",
+	async () => {
+		const asker = await connect("asker-full-queue-4996");
+		const recipientReturnAddress = randomUUID();
+		const recipient = await connect("recipient-full-queue-4996", { returnAddress: recipientReturnAddress });
+		const recipientId = idOf(recipient.client);
+		const questionId = randomUUID();
+		const asked = await asker.client.send("recipient-full-queue-4996", {
+			messageId: questionId,
+			text: "which port?",
+			expectsReply: true,
+		});
+		assert.equal(asked.delivered, true, asked.reason);
+		await vi.waitFor(() => assert.ok(recipient.received.some((message) => message.id === questionId)), WAIT);
+
+		// Other sessions' asks already fill the queue of asks waiting for this recipient's return.
+		const database = new DatabaseSync(getBrokerAwayAsksPath(brokerFixture.agentDir));
+		database.exec("PRAGMA busy_timeout = 5000");
+		database.exec("BEGIN IMMEDIATE");
+		const insert = database.prepare(
+			"INSERT INTO away_questions (message_id, sender_session_id, target_session_id, sender_return_address, kept_at) VALUES (?, ?, ?, ?, ?)",
+		);
+		for (let row = 0; row < AWAY_ASKS_PER_RECIPIENT_MAX; row++)
+			// Their askers are connected elsewhere (no away asker to hold a failure for), so the recipient's end later holds
+			// nothing for them: a thousand held failures would stall this shared broker for the tests that follow.
+			insert.run(randomUUID(), `other-asker-${row}`, recipientId, "", Date.now());
+		database.exec("COMMIT");
+		database.close();
+
+		await recipient.client.disconnect({ resumable: true });
+		await vi.waitFor(() => assert.ok(asker.received.some((message) => message.replyTo === questionId)), WAIT);
+		const failures = asker.received.filter((message) => message.replyTo === questionId);
+		assert.equal(failures.length, 1, "the asker is told once");
+		assert.match(
+			failures[0]?.replyError ?? "",
+			/recipient-full-queue-4996" went away and its queue of asks .* is full/,
+		);
+
+		// Nothing else arrives for it later: the recipient back finds no route to answer, and its end fails nothing again.
+		const recipientBack = await connect("recipient-full-queue-4996", {
+			returnAddress: recipientReturnAddress,
+			preferredSessionId: recipientId,
+		});
+		await recipientBack.client.disconnect();
+		await sleep(SETTLE_MS);
+		assert.equal(asker.received.filter((message) => message.replyTo === questionId).length, 1);
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
+
+test(
 	"a released subagent's ask to a recipient that went away first fails once after a broker crash before its own departure was handled (#4950)",
 	async () => {
 		const childName = "subagent-asker-crash-4950";
@@ -395,6 +448,86 @@ test(
 		});
 		await sleep(SETTLE_MS);
 		assert.deepEqual(childAgain.received, [], "a saved failure is delivered once");
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
+
+/**
+ * How long another session may wait on the broker while it fails a thousand away asks. Holding them is a few
+ * milliseconds of work in one transaction; one commit each took seconds on Windows, long enough for clients to time out.
+ */
+const BROKER_STAYS_RESPONSIVE_MS = 2_000;
+const AWAY_ASKERS = 1_000;
+
+test(
+	"a recipient that ends with a thousand away askers fails each once, and the broker keeps answering others (#4996)",
+	async () => {
+		const recipientReturnAddress = randomUUID();
+		const recipient = await connect("recipient-many-askers-4996", { returnAddress: recipientReturnAddress });
+		const recipientId = idOf(recipient.client);
+		const observer = await connect("observer-many-askers-4996");
+
+		// One asker asks, then closes: its ask waits for it, and so do those of the other away askers below.
+		const askerReturnAddress = randomUUID();
+		const asker = await connect("asker-many-askers-4996", { returnAddress: askerReturnAddress });
+		const askerId = idOf(asker.client);
+		const questionId = randomUUID();
+		const asked = await asker.client.send("recipient-many-askers-4996", {
+			messageId: questionId,
+			text: "which port?",
+			expectsReply: true,
+		});
+		assert.equal(asked.delivered, true, asked.reason);
+		await vi.waitFor(() => assert.ok(recipient.received.some((message) => message.id === questionId)), WAIT);
+		await asker.client.disconnect({ resumable: true });
+		await untilDeparted(observer.client, askerId);
+
+		const path = getBrokerAwayAsksPath(brokerFixture.agentDir);
+		const database = new DatabaseSync(path);
+		database.exec("PRAGMA busy_timeout = 5000");
+		database.exec("BEGIN IMMEDIATE");
+		const insert = database.prepare(
+			"INSERT INTO away_questions (message_id, sender_session_id, target_session_id, sender_return_address, kept_at) VALUES (?, ?, ?, ?, ?)",
+		);
+		for (let row = 1; row < AWAY_ASKERS; row++)
+			insert.run(randomUUID(), randomUUID(), recipientId, `away-asker-4996-${row}`, Date.now());
+		database.exec("COMMIT");
+
+		// The recipient ends for good while another session keeps asking the broker who is connected.
+		await recipient.client.disconnect();
+		let slowest = 0;
+		await vi.waitFor(async () => {
+			const started = performance.now();
+			const sessions = await observer.client.listSessions();
+			slowest = Math.max(slowest, performance.now() - started);
+			assert.ok(!sessions.some((session) => session.id === recipientId));
+		}, WAIT);
+		await sleep(SETTLE_MS);
+		const started = performance.now();
+		await observer.client.listSessions();
+		slowest = Math.max(slowest, performance.now() - started);
+		assert.ok(slowest < BROKER_STAYS_RESPONSIVE_MS, `the broker answered another session only after ${slowest} ms`);
+
+		// Each away asker has exactly one failure held for it.
+		const held = database
+			.prepare(
+				"SELECT asker_return_address AS asker, COUNT(*) AS failures FROM held_messages WHERE asker_return_address LIKE 'away-asker-4996-%' GROUP BY asker_return_address",
+			)
+			.all();
+		database.close();
+		assert.equal(held.length, AWAY_ASKERS - 1);
+		assert.ok(held.every((row) => row.failures === 1));
+
+		// The asker that comes back gets its failure once.
+		const back = await connect("asker-many-askers-4996", {
+			returnAddress: askerReturnAddress,
+			preferredSessionId: askerId,
+		});
+		await vi.waitFor(() => assert.equal(back.received.length, 1), WAIT);
+		assert.equal(back.received[0]?.replyTo, questionId);
+		assert.match(back.received[0]?.replyError ?? "", /ended before replying/);
+		await sleep(SETTLE_MS);
+		assert.equal(back.received.length, 1, "one failure, not more");
 	},
 	REAL_BROKER_TEST_TIMEOUT_MS,
 );
