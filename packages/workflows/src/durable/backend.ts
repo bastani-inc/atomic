@@ -299,6 +299,8 @@ export interface DurableWorkflowBackend {
 	workflowOwnership(
 		workflowId: string,
 	): "local" | "foreign" | "available" | Promise<"local" | "foreign" | "available">;
+	/** Whether an executor of this process runs `workflowId` (it holds the run's lease to execute it). */
+	hasWorkflowExecution?(workflowId: string): boolean;
 	persistSummary?(workflowId: string, summary: string, summarizedThrough: number): Promise<boolean>;
 	/** Register or update a workflow's top-level metadata. */
 	commitWorkflowRegistration(handle: WorkflowRegistrationInput): Promise<void>;

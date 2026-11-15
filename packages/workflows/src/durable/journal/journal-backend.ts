@@ -365,6 +365,8 @@ interface WorkflowLeaseExecution {
 	lease?: Lease;
 	users: number;
 	retired: boolean;
+	/** The execution took the run up (wrote it `running`), so an executor of this process runs it (#5167). */
+	running?: boolean;
 }
 
 /**
@@ -505,8 +507,6 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	/** Runs that kept only their own checkpoints while this backend owned them, and lack the rest until rebuilt. */
 	private readonly partialRuns = new Set<string>();
 	private timer: ReturnType<typeof setInterval> | undefined;
-	/** Runs whose lease this process took over from an owner that died, until the run is handed on or run here (#5167). */
-	private readonly orphanedOwners = new Set<string>();
 	private state: BackendState = "open";
 	private closing: Promise<void> | undefined;
 	/** Each run's renewal in flight; a run renews independently of every other run. */
@@ -838,14 +838,11 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		if (lost) throw lost;
 		const existing = this.leases.get(runId);
 		if (existing) return existing;
-		// #5167: an executor lease another process left unreleased and expired means the run's owner died.
-		const orphaned = yield* this.leaseOrphaned(runId);
 		const result = yield* invoke(() =>
 			this.journal.takeoverExpired(runId, this.holderId, FOREIGN_LIVE_WORKFLOW_WINDOW_MS),
 		);
 		if (result.status === "held") throw new JournalOwnershipError(runId, result.holderId);
 		this.leases.set(runId, result.lease);
-		if (orphaned) this.orphanedOwners.add(runId);
 		if (this.timer === undefined) {
 			this.timer = setInterval(() => {
 				void this.renewLeases().catch((error: Error) => console.error(error));
@@ -956,11 +953,10 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		};
 		yield* invoke(() => this.journal.createRun(header));
 		yield* this.ownership(input.workflowId);
-		// An executor registering the run runs it here: its owner is alive.
-		this.orphanedOwners.delete(input.workflowId);
 		yield* this.refresh(input.workflowId);
 		const draft = yield* this.draft(input.workflowId);
 		draft.registerWorkflow(input, true);
+		if (input.status === "running") this.takeUp(input.workflowId);
 		yield* this.snapshot(
 			draft.getWorkflow(input.workflowId)!,
 			this.sequences.has(input.workflowId) ? E.statusChanged : E.runStarted,
@@ -1001,6 +997,11 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			released,
 		);
 	}
+	/** Mark that the execution of `runId` in this context, if any, took the run up (#5167). */
+	private takeUp(runId: string): void {
+		const execution = this.executionContext.getStore()?.get(runId);
+		if (execution !== undefined) execution.running = true;
+	}
 	commitClaimedWorkflowRegistration(
 		input: WorkflowRegistrationInput,
 		modelOwner: string | undefined,
@@ -1015,7 +1016,6 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		const draft = yield* this.draft(input.workflowId);
 		const claimed = draft.getWorkflow(input.workflowId);
 		if (claimed === undefined || claimed.status !== "running" || claimed.modelOwner !== modelOwner) return false;
-		this.orphanedOwners.delete(input.workflowId);
 		draft.registerWorkflow(
 			{
 				...input,
@@ -1025,6 +1025,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			},
 			true,
 		);
+		this.takeUp(input.workflowId);
 		yield* this.snapshot(draft.getWorkflow(input.workflowId)!);
 		return true;
 	}
@@ -1136,13 +1137,13 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		)
 			return false;
 		// #5167: a pause leaves the run adoptable when its owner cannot resume it: a released run stays released, and a
-		// run whose owner's process died (read before this transition takes its expired lease) is released by that owner.
+		// running or failed run that nothing executes (no executor here, no live lease elsewhere) is released by its owner.
 		const release =
 			releasedModelOwner !== undefined || modelOwner !== undefined || status !== "paused"
 				? (releasedModelOwner ?? undefined)
 				: current.status === "paused"
 					? current.releasedModelOwner
-					: (yield* this.ownerDied(runId))
+					: (current.status === "running" || current.status === "failed") && !(yield* this.executing(runId))
 						? current.modelOwner
 						: undefined;
 		const draft = yield* this.draft(runId);
@@ -1153,11 +1154,10 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			(expectedUpdatedAt !== undefined && acquired.updatedAt !== expectedUpdatedAt)
 		)
 			return false;
-		// A run handed to a new owner is that owner's, which is alive.
-		if (modelOwner !== undefined) this.orphanedOwners.delete(runId);
 		const seq = this.sequences.get(runId) ?? 0;
 		draft.setWorkflowStatus(runId, status, pendingPrompts, resumable);
 		const { releasedModelOwner: _oldRelease, ...handle } = draft.getWorkflow(runId)!;
+		if (status === "running") this.takeUp(runId);
 		try {
 			yield* this.snapshot(
 				{
@@ -1178,19 +1178,14 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			throw error;
 		}
 	}
-	/**
-	 * Whether the run's owner died: its executor lease was left unreleased by another process and expired, whether this
-	 * process has since taken that lease over without running the run or not.
-	 */
-	private *ownerDied(runId: string): Operation<boolean> {
-		return this.leases.has(runId) ? this.orphanedOwners.has(runId) : yield* this.leaseOrphaned(runId);
-	}
-	private *leaseOrphaned(runId: string): Operation<boolean> {
+	/** Whether an executor runs `runId`: one of this process's, or another process's that holds a live lease on it. */
+	private *executing(runId: string): Operation<boolean> {
+		if (this.executions.get(runId)?.running === true) return true;
 		const lease = yield* invoke(() => this.journal.leaseState(runId));
 		return (
 			lease !== undefined &&
 			lease.holderId !== this.holderId &&
-			isWorkflowLeaseExpired(0, FOREIGN_LIVE_WORKFLOW_WINDOW_MS, lease.ageMs)
+			!isWorkflowLeaseExpired(0, FOREIGN_LIVE_WORKFLOW_WINDOW_MS, lease.ageMs)
 		);
 	}
 	private *promptChange<T>(
@@ -1849,7 +1844,6 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	}
 	private dropLease(runId: string): void {
 		this.leases.delete(runId);
-		this.orphanedOwners.delete(runId);
 		// Only the run's owner keeps it narrowed; the next full read of the run rebuilds every checkpoint.
 		if (this.ownCheckpoints.delete(runId)) this.partialRuns.add(runId);
 		if (this.leases.size === 0) {

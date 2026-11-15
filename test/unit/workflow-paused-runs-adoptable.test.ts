@@ -113,12 +113,36 @@ for (const [label, pendingPrompts, resumable] of [
 	});
 }
 
-test("a run its live owner pauses is not released (#5167)", async () => {
+test("a run its live owner's executor pauses is not released (#5167)", async () => {
 	const directory = makeTempDirectory("paused-adoptable-live-");
 	cleanups.push(() => removeTempDirectory(directory));
 	const backend = await openBackend(join(directory, "journal.sqlite"));
 	const workflowId = crypto.randomUUID();
-	await backend.commitWorkflowRegistration({
+	// The owner's executor registers the run, runs it here, and pauses it from within its execution.
+	await backend.withWorkflowLease(workflowId, async () => {
+		await backend.commitWorkflowRegistration({
+			workflowId,
+			name: definition.name,
+			inputs: {},
+			status: "running",
+			createdAt: 1,
+			updatedAt: 1,
+			invocationCwd: process.cwd(),
+			modelOwner: "live-session",
+			completedCheckpoints: 1,
+		});
+		assert.equal(await backend.commitWorkflowStatusTransition(workflowId, ["running"], "paused"), true);
+	});
+	assert.equal(backend.getWorkflow(workflowId)?.releasedModelOwner, undefined);
+});
+
+test("a run another process's live executor holds is not released by a pause elsewhere (#5167)", async () => {
+	const directory = makeTempDirectory("paused-adoptable-foreign-");
+	cleanups.push(() => removeTempDirectory(directory));
+	const path = join(directory, "journal.sqlite");
+	const owner = await openBackend(path);
+	const workflowId = crypto.randomUUID();
+	await owner.commitWorkflowRegistration({
 		workflowId,
 		name: definition.name,
 		inputs: {},
@@ -129,12 +153,20 @@ test("a run its live owner pauses is not released (#5167)", async () => {
 		modelOwner: "live-session",
 		completedCheckpoints: 1,
 	});
-	assert.equal(await backend.commitWorkflowStatusTransition(workflowId, ["running"], "paused"), true);
-	assert.equal(backend.getWorkflow(workflowId)?.releasedModelOwner, undefined);
-	assert.equal(await backend.workflowOwnership(workflowId), "local", "the live owner keeps its lease");
+	const finish = Promise.withResolvers<void>();
+	const executing = owner.withWorkflowLease(workflowId, () => finish.promise);
+	try {
+		const other = await openBackend(path);
+		assert.equal(await other.workflowOwnership(workflowId), "foreign");
+		await other.commitWorkflowStatusTransition(workflowId, ["running"], "paused").catch(() => false);
+		assert.equal(other.getWorkflow(workflowId)?.releasedModelOwner, undefined);
+	} finally {
+		finish.resolve();
+		await executing;
+	}
 });
 
-test("a run whose owner's executor stopped and released its lease is not released when paused (#5167)", async () => {
+test("a running run that no executor runs is released by its owner when paused, and its owner can still resume it (#5167)", async () => {
 	const directory = makeTempDirectory("paused-adoptable-stopped-");
 	cleanups.push(() => removeTempDirectory(directory));
 	const path = join(directory, "journal.sqlite");
@@ -154,7 +186,16 @@ test("a run whose owner's executor stopped and released its lease is not release
 	await owner.close();
 	const backend = await openBackend(path);
 	assert.equal(await backend.commitWorkflowStatusTransition(workflowId, ["running"], "paused"), true);
-	assert.equal(backend.getWorkflow(workflowId)?.releasedModelOwner, undefined);
+	assert.equal(backend.getWorkflow(workflowId)?.releasedModelOwner, "live-session");
+	const jobs = createJobTracker();
+	const resumed = await resumeDurableWorkflow(workflowId, {
+		registry: createRegistry([definition]),
+		durableBackend: backend,
+		jobs,
+		baseRunOpts: { store: createStore(), cwd: process.cwd(), modelOwner: "live-session" },
+	});
+	await jobs.get(workflowId)?.promise;
+	assert.equal(resumed.ok, true, resumed.message);
 });
 
 test("a failed run whose owner's process died is released by it when paused (#5167)", async () => {
@@ -198,21 +239,63 @@ test("a crashed run paused by a process that already took over its dead owner's 
 	assert.equal(adopted.result.ok, true, adopted.result.message);
 });
 
-test("a crashed run handed to a new owner is that owner's: its pause does not release it (#5167)", async () => {
+test("a crashed run handed to a new owner whose executor runs it is that owner's: its pause does not release it (#5167)", async () => {
 	const { workflowId, backend } = await orphanedRun();
-	assert.equal(
-		await backend.commitWorkflowStatusTransition(
-			workflowId,
-			["running"],
-			"running",
-			undefined,
-			undefined,
-			undefined,
-			"new-session",
-		),
-		true,
-	);
-	assert.equal(await backend.commitWorkflowStatusTransition(workflowId, ["running"], "paused"), true);
+	await backend.withWorkflowLease(workflowId, async () => {
+		assert.equal(
+			await backend.commitWorkflowStatusTransition(
+				workflowId,
+				["running"],
+				"running",
+				undefined,
+				undefined,
+				undefined,
+				"new-session",
+			),
+			true,
+		);
+		assert.equal(await backend.commitWorkflowStatusTransition(workflowId, ["running"], "paused"), true);
+	});
 	const handle = backend.getWorkflow(workflowId);
 	assert.deepEqual([handle?.modelOwner, handle?.releasedModelOwner], ["new-session", undefined]);
+});
+
+test("a crashed run paused after another process took over and cleanly released its dead owner's lease is still released (#5167)", async () => {
+	const { workflowId, path, backend } = await orphanedRun();
+	// Another session's process takes over the dead lease (a write, or an adoption it then aborted) and releases it.
+	const other = await openBackend(path);
+	await other.commitPendingPromptAdjustment(workflowId, 0);
+	await other.releaseWorkflow(workflowId);
+	assert.equal(await backend.commitWorkflowStatusTransition(workflowId, ["running"], "paused"), true);
+	assert.equal(backend.getWorkflow(workflowId)?.releasedModelOwner, "old-session");
+	const adopted = await adoptFromNewSession(path, workflowId);
+	assert.equal(adopted.result.ok, true, adopted.result.message);
+});
+
+test("a session whose process took over a crashed run's dead lease can adopt the run (#5167)", async () => {
+	const { workflowId, backend } = await orphanedRun();
+	// Answering a prompt of the crashed run takes its expired lease over in this process.
+	await backend.commitPendingPromptAdjustment(workflowId, 0);
+	assert.equal(await backend.workflowOwnership(workflowId), "local");
+	const jobs = createJobTracker();
+	const result = await resumeDurableWorkflow(workflowId, {
+		registry: createRegistry([definition]),
+		durableBackend: backend,
+		jobs,
+		baseRunOpts: { store: createStore(), cwd: process.cwd(), modelOwner: "new-session" },
+	});
+	await jobs.get(workflowId)?.promise;
+	assert.equal(result.ok, true, result.message);
+	assert.equal(backend.getWorkflow(workflowId)?.modelOwner, "new-session");
+});
+
+test("a crashed run paused while a resume of it is still deciding is released: nothing runs it yet (#5167)", async () => {
+	const { workflowId, path, backend } = await orphanedRun();
+	// A resume holds the run's execution scope while it decides, before it claims the run.
+	await backend.withWorkflowLease(workflowId, async () => {
+		assert.equal(await backend.commitWorkflowStatusTransition(workflowId, ["running"], "paused"), true);
+	});
+	assert.equal(backend.getWorkflow(workflowId)?.releasedModelOwner, "old-session");
+	const adopted = await adoptFromNewSession(path, workflowId);
+	assert.equal(adopted.result.ok, true, adopted.result.message);
 });
