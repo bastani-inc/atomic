@@ -333,3 +333,56 @@ test(
 	},
 	REAL_BROKERS_TEST_TIMEOUT_MS,
 );
+
+/** Longer than the ten minutes a released asker's question used to be kept. */
+const LONG_AFTER_RELEASE_MS = 11 * 60 * 1_000;
+
+/** Let the shared store's clock run past the release by `LONG_AFTER_RELEASE_MS` for this asker's question. */
+async function ageReleasedQuestion(released: ReleasedAsker): Promise<void> {
+	const shared = await harness.openSharedStorage("a");
+	await vi.waitFor(async () => {
+		const aged = await shared.run(
+			"UPDATE mn_intercom_released_asks SET expires_at = expires_at - ? WHERE question_id = ?",
+			LONG_AFTER_RELEASE_MS,
+			released.questionId,
+		);
+		assert.equal(aged.changes, 1, "the asker's broker kept its question");
+	}, WAIT);
+}
+
+test(
+	"a reply more than ten minutes after the release still reaches the released subagent's owner, once (#4852)",
+	async () => {
+		assert.ok(harness.multiNodeRouting, "the brokers share the database and route across nodes");
+		const released = await releaseAsker();
+		await ageReleasedQuestion(released);
+		const handoffs = recordHandoffs(released.owner);
+		const result = await replyTo(released, "config.ts");
+		assert.equal(result.delivered, true, JSON.stringify(result));
+		assert.deepEqual(
+			handoffs.map((handoff) => handoff.message.id),
+			[result.id],
+		);
+	},
+	REAL_BROKERS_TEST_TIMEOUT_MS,
+);
+
+test(
+	"a recipient that ends more than ten minutes after the release fails the released subagent's ask once, through its owner (#4852)",
+	async () => {
+		assert.ok(harness.multiNodeRouting, "the brokers share the database and route across nodes");
+		const released = await releaseAsker();
+		await ageReleasedQuestion(released);
+		const handoffs = recordHandoffs(released.owner);
+		await harness.disconnect(released.replier);
+		await vi.waitFor(() => assert.equal(handoffs.length, 1), WAIT);
+		const [handoff] = handoffs as [ReleasedChildReply];
+		assert.equal(handoff.childName, released.childName);
+		assert.equal(handoff.replyTo, released.questionId);
+		assert.equal(handoff.message.replyTo, released.questionId);
+		assert.equal(handoff.message.replyError, `Session "${released.replier.name}" ended before replying`);
+		await new Promise((resolve) => setTimeout(resolve, 1_000));
+		assert.equal(handoffs.length, 1, "the owner is handed the failure once");
+	},
+	REAL_BROKERS_TEST_TIMEOUT_MS,
+);

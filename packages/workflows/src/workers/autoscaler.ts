@@ -148,9 +148,13 @@ export function fleetTarget(policy: FleetPolicy, roots: readonly FleetRootDemand
  * - `target = clamp(minHosts, maxHosts, min(ceil(demand / workersPerHost), rateCapHosts))`.
  * - Hosts are added when there are fewer live and pending ones than `target`, and the queue has been deeper than
  *   `scaleUpQueueDepth` (or work is ready with no host at all) for `scaleUpDelayMs`; or at once below `minHosts`.
- * - A host is drained only when it held no child for `idleDrainMs` and the fleet is above `target`, oldest idle first.
+ * - A host is drained only when it held no child for `idleDrainMs` and the fleet is above `target`, oldest idle first and
+ *   then by id.
  * - A host that does not register within `bootTimeoutMs`, or that its provider reports failed, is removed; the first
  *   such failure is replaced at once, and each further one in a row waits {@link BOOT_BACKOFF}, doubling.
+ * - A host that registered since the last tick clears the failures before it. The failures seen in the same tick are
+ *   counted after that, whatever order the provider lists its hosts in: the tick sees them at `now`, no earlier than
+ *   the registration.
  * - A host that holds a child is never drained or removed, whatever its state.
  */
 export function planFleet(policy: FleetPolicy, observation: FleetObservation, state: FleetPolicyState): FleetPlan {
@@ -159,8 +163,10 @@ export function planFleet(policy: FleetPolicy, observation: FleetObservation, st
 	const idleSince: Record<string, number> = {};
 	const unregisteredSince: Record<string, number> = {};
 	const removedIds = new Set<string>();
-	let bootFailures = state.bootFailures;
-	let holdUntil = state.holdUntil;
+	// A host that booted since the last tick forgets the failures before it, whether or not it took work at once.
+	const booted = hosts.some((host) => host.registered && state.unregisteredSince[host.id] !== undefined);
+	let bootFailures = booted ? 0 : state.bootFailures;
+	let holdUntil = booted ? 0 : state.holdUntil;
 	const fail = () => {
 		bootFailures++;
 		holdUntil =
@@ -175,11 +181,6 @@ export function planFleet(policy: FleetPolicy, observation: FleetObservation, st
 	let pending = 0;
 	for (const host of hosts) {
 		const draining = host.draining || host.state === "draining";
-		// A host that booted since the last tick forgets the failures before it, whether or not it took work at once.
-		if (host.registered && state.unregisteredSince[host.id] !== undefined) {
-			bootFailures = 0;
-			holdUntil = 0;
-		}
 		if (host.leased > 0) {
 			// Busy: never touched. It counts as serving unless it is on its way out.
 			if (!draining && host.state !== "stopped" && host.state !== "failed") live++;
@@ -228,7 +229,7 @@ export function planFleet(policy: FleetPolicy, observation: FleetObservation, st
 	} else if (serving > target) {
 		const drainable = idle
 			.filter((host) => now - host.since >= policy.idleDrainMs)
-			.sort((a, b) => a.since - b.since)
+			.sort((a, b) => a.since - b.since || (a.id < b.id ? -1 : 1))
 			.slice(0, serving - target);
 		for (const host of drainable) {
 			actions.push({ kind: "mark-draining", id: host.id });

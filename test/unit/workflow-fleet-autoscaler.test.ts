@@ -455,6 +455,76 @@ test("an unregistered host keeps the boot failures before it (#4768)", () => {
 	assert.deepEqual(plan.state.unregisteredSince, { p: 0 });
 });
 
+/** The plan with its actions in a fixed order: they are independent provider calls, listed in the provider's order. */
+function canonical(plan: FleetPlan): FleetPlan {
+	return { ...plan, actions: plan.actions.toSorted((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))) };
+}
+
+test("a host that times out booting in the same tick another registers counts as a failure in either host order (#4832)", () => {
+	const policy = resolveFleetPolicy({
+		minHosts: 0,
+		maxHosts: 10,
+		workersPerHost: 1,
+		scaleUpQueueDepth: 0,
+		scaleUpDelayMs: 0,
+		bootTimeoutMs: 1_000,
+	});
+	const state = { ...INITIAL_FLEET_STATE, unregisteredSince: { a: 0, b: 0 } };
+	const timedOut = host("a", { registered: false });
+	const booted = host("b");
+	const forward = planFleet(policy, observe(2_000, [root(5)], [timedOut, booted]), state);
+	const backward = planFleet(policy, observe(2_000, [root(5)], [booted, timedOut]), state);
+	assert.deepEqual(canonical(forward), canonical(backward));
+	// The registration clears the failures before this tick; the failure seen in it still counts, replaced at once.
+	assert.equal(forward.state.bootFailures, 1);
+	assert.equal(forward.state.holdUntil, 2_000);
+	assert.deepEqual(removed(forward), ["a"]);
+	assert.deepEqual(scaleTargets(forward), [5]);
+});
+
+test("hosts idle since the same tick are drained by id, whatever order the provider lists them in (#4832)", () => {
+	const policy = { ...POLICY, idleDrainMs: 100 };
+	const state = { ...INITIAL_FLEET_STATE, idleSince: { a: 10, b: 10, c: 10 } };
+	for (const hosts of [
+		[host("a"), host("b"), host("c")],
+		[host("c"), host("b"), host("a")],
+		[host("b"), host("c"), host("a")],
+	]) {
+		assert.deepEqual(marked(planFleet(policy, observe(1_000, [root(4)], hosts), state)), ["a"]);
+		assert.deepEqual(marked(planFleet(policy, observe(1_000, [root(2)], hosts), state)), ["a", "b"]);
+	}
+});
+
+test("a host registered before the last tick does not clear the boot failures of another (#4832)", () => {
+	const state = { ...INITIAL_FLEET_STATE, unregisteredSince: { p: 0 }, bootFailures: 2, holdUntil: 50_000 };
+	const hosts = [host("old"), host("p", { registered: false, state: "pending" })];
+	const plan = planFleet(POLICY, observe(10, [], hosts), state);
+	assert.equal(plan.state.bootFailures, 2);
+	assert.equal(plan.state.holdUntil, 50_000);
+});
+
+test("the plan and the next state are the same for any order of the provider's host list (#4832)", () => {
+	for (let seed = 1; seed <= 300; seed++) {
+		const next = random(seed);
+		const policy = randomPolicy(next);
+		let state: FleetPolicyState = { ...INITIAL_FLEET_STATE, bootFailures: Math.floor(next() * 4) };
+		for (let tick = 0; tick < 12; tick++) {
+			const observation = randomObservation(next, 1_000_000 + tick * 100_000);
+			const plan = planFleet(policy, observation, state);
+			for (let shuffle = 0; shuffle < 3; shuffle++) {
+				const hosts = [...observation.hosts];
+				for (let index = hosts.length - 1; index > 0; index--) {
+					const other = Math.floor(next() * (index + 1));
+					[hosts[index], hosts[other]] = [hosts[other]!, hosts[index]!];
+				}
+				const permuted = planFleet(policy, { ...observation, hosts }, state);
+				assert.deepEqual(canonical(permuted), canonical(plan), `seed ${seed}, tick ${tick}`);
+			}
+			state = plan.state;
+		}
+	}
+});
+
 test("running children with no ready work never add hosts, even at a queue depth of 0 (#4768)", () => {
 	const policy = { ...POLICY, scaleUpQueueDepth: 0, scaleUpDelayMs: 0 };
 	const plans = ticks(policy, [
