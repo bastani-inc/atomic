@@ -31,6 +31,10 @@ import {
 	getTempRootDir,
 	resetSessionTempDirStateForTesting,
 } from "../src/core/tools/session-temp-dir.ts";
+import {
+	readWindowsDirectorySecurity,
+	setWindowsDirectorySecurityReaderForTesting,
+} from "../src/core/tools/windows-directory-security.ts";
 import { isPathInside } from "../src/utils/path-inside.js";
 
 const isPosix = process.platform !== "win32";
@@ -58,6 +62,7 @@ beforeEach(() => {
 
 afterEach(() => {
 	vi.restoreAllMocks();
+	setWindowsDirectorySecurityReaderForTesting(undefined);
 	resetSessionTempDirStateForTesting();
 });
 
@@ -245,5 +250,39 @@ describe("temporary extension install directories", () => {
 
 		vi.spyOn(process, "getuid").mockReturnValue(process.getuid!() + 1);
 		assert.throws(() => assertPrivateDirectory(own), /owned by another account/);
+	});
+
+	it.runIf(process.platform === "win32")(
+		"a directory already in use is not re-read from its security descriptor on every call",
+		() => {
+			let reads = 0;
+			setWindowsDirectorySecurityReaderForTesting((path) => {
+				reads++;
+				return readWindowsDirectorySecurity(path);
+			});
+			const dir = ensurePrivateTempDir("extensions");
+			writeFileSync(join(dir, "in-use.txt"), "");
+			const firstReads = reads;
+			assert.ok(firstReads > 0);
+
+			for (let call = 0; call < 5; call++) assert.equal(ensurePrivateTempDir("extensions"), dir);
+			assert.equal(reads, firstReads, "repeat calls cost no PowerShell security reads");
+		},
+	);
+
+	it.skipIf(!isPosix)("a directory already in use is checked again on every call", () => {
+		const dir = ensurePrivateTempDir("extensions");
+		chmodSync(dir, 0o770);
+		const reopened = ensurePrivateTempDir("extensions");
+		assert.notEqual(reopened, dir, "a directory opened up after first use is not returned again");
+		assertPrivateChain(reopened, sandbox);
+
+		const swapped = ensurePrivateTempDir("swapped");
+		rmSync(swapped, { recursive: true });
+		const elsewhere = mkdtempSync(join(sandbox, "swap-target-"));
+		symlinkSync(elsewhere, swapped, "dir");
+		const again = ensurePrivateTempDir("swapped");
+		assert.notEqual(again, swapped, "a directory replaced by a link after first use is not returned again");
+		assert.deepEqual(readdirSync(elsewhere), []);
 	});
 });
