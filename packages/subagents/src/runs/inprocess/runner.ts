@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, statSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import {
 	type AgentSession,
@@ -19,7 +20,6 @@ import {
 	getSkillCatalog,
 	isPathInside,
 	isSessionStartTimeoutError,
-	JsonlSessionStore,
 	type PackageSource,
 	type SessionEntry,
 	SessionManager,
@@ -785,6 +785,36 @@ function historyUnavailable(sessionFile: string | undefined, cause?: unknown): s
 }
 
 /**
+ * The entries of the session file `file` holds for `sessionId`, read without a store: a store takes the lock of the
+ * file's directory, which every child of a run saving there shares, so a task view reading a finished child's history
+ * would make them wait. The file is append-only JSON lines; a last line its writer has not finished is left out.
+ */
+async function readSessionFileEntries(file: string, sessionId: string): Promise<SessionEntry[]> {
+	let text: string;
+	try {
+		text = await readFile(file, "utf8");
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new Error(historyUnavailable(file));
+		throw error;
+	}
+	const lines = text.split("\n");
+	const header = JSON.parse(lines[0] ?? "") as { type?: string; id?: string };
+	if (header.type !== "session" || header.id !== sessionId)
+		throw new Error(`History unavailable: its session file now belongs to another session (${file}).`);
+	const entries: SessionEntry[] = [];
+	for (const [index, line] of lines.slice(1).entries()) {
+		if (!line.trim()) continue;
+		try {
+			entries.push(JSON.parse(line) as SessionEntry);
+		} catch (error) {
+			// Only the last line can be one its writer is still writing.
+			if (index < lines.length - 2) throw error;
+		}
+	}
+	return entries;
+}
+
+/**
  * What a settled child keeps for task inspection: its session id, its own prompt and answer, and the commands it had
  * when it settled, with no reference back to the disposed session. The task owner holds the last bound source for as
  * long as the task exists, and keeps up to its finished-task retention of them, so the source keeps none of the rest of
@@ -803,18 +833,7 @@ function settledTranscript(
 	const store = sessionFile === undefined ? manager.getSessionStore() : undefined;
 	const read = async (): Promise<SessionEntry[]> => {
 		if (store) return [...(await store.load(sessionId)).entries];
-		const file = sessionFile!;
-		// Opening a store for a missing file's directory would create it; a read never writes.
-		if (!existsSync(file)) throw new Error(historyUnavailable(file));
-		const reader = await JsonlSessionStore.open(dirname(file), { exactDirectory: true, scanExisting: false });
-		try {
-			const snapshot = await reader.loadFile(file);
-			if (snapshot.header.id !== sessionId)
-				throw new Error(`History unavailable: its session file now belongs to another session (${file}).`);
-			return [...snapshot.entries];
-		} finally {
-			await reader.close();
-		}
+		return readSessionFileEntries(sessionFile!, sessionId);
 	};
 	return {
 		getSessionId: () => sessionId,

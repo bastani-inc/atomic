@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import v8 from "node:v8";
 import vm from "node:vm";
+import lockfile from "proper-lockfile";
 import { test } from "vitest";
 import type { Cleanup } from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import type { TaskTranscriptSource } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
@@ -219,6 +220,58 @@ test("a finished child whose session file is gone still shows its prompt and ans
 			["user", "assistant"],
 			"the prompt and the answer it kept are still shown",
 		);
+	} finally {
+		clearSubagentControls();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("reading a finished child's history takes no lock, so it never waits on a child saving in its directory (#5186)", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-unlocked-history-"));
+	clearSubagentControls();
+	try {
+		let retained: TaskTranscriptSource | undefined;
+		let cleanup: Promise<Cleanup> | undefined;
+		const hooks: TaskExecutionHooks = {
+			signal: new AbortController().signal,
+			reportActivity() {},
+			bindTranscript(source) {
+				retained = source;
+			},
+			onExecution(execution) {
+				cleanup = execution.cleanup;
+			},
+			yieldTaskWait() {},
+			isParentObserving: () => false,
+		};
+		const result = await runSingleInProcess(root, analysisAgent(), "inspect the fixture", {
+			cwd: root,
+			runId: "completed-child-unlocked-history",
+			sessionDir: root,
+			taskExecution: hooks,
+			testSession: { output: "child answer" },
+		});
+		assert.equal(result.status, "ok");
+		await cleanup;
+		const [file] = sessionFiles(root);
+		assert.ok(file, "the child saved its session");
+		// A child saving in the same directory holds the session store's directory lock for as long as it writes.
+		const directory = dirname(join(root, file));
+		const release = await lockfile.lock(directory, { lockfilePath: join(directory, ".session.lock") });
+		try {
+			const history = await Promise.race([
+				retained?.loadHistory?.(),
+				new Promise<"waited">((resolve) => setTimeout(() => resolve("waited"), 500)),
+			]);
+			assert.ok(history !== "waited", "the read waited for the directory lock");
+			assert.equal(history?.unavailable, undefined);
+			assert.deepEqual(
+				history?.entries.flatMap((entry) => (entry.type === "message" ? [entry.message.role] : [])),
+				["user", "assistant"],
+			);
+		} finally {
+			await release();
+		}
 	} finally {
 		clearSubagentControls();
 		rmSync(root, { recursive: true, force: true });
