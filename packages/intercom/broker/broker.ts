@@ -3013,6 +3013,8 @@ class IntercomBroker {
           }
           // #4997: the asks a crashed or stopped broker left here between two top-level sessions move to the shared
           // state, as an away session's do, since either session may come back on another broker.
+          // The away store opens with the delivered-message authority, at the first registration otherwise.
+          this.openDeliveredMessages();
           void this.multiNode.publishAwayRoutes(this.pendingQuestions.movableDormant());
           if (this.shuttingDown) await this.multiNode.close().catch(() => {});
           this.multiNodeReason = undefined;
