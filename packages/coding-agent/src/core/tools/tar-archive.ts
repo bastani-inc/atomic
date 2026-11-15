@@ -68,7 +68,7 @@ function checksum(header: Buffer): { unsigned: number; signed: number } {
 /**
  * PAX records are `<length> <key>=<value>\n`. A record needs its separator and a non-empty `key=` after it, so a valid
  * one always ends past its length field and every iteration advances. A `size` must be plain decimal digits, as GNU tar
- * requires. Any other empty value removes its keyword, so the header's own field applies.
+ * requires. Any other empty value sets nothing, so the header's own field applies, as GNU tar reads it.
  */
 function parsePax(data: Buffer, label: string): Map<string, string> {
 	const records = new Map<string, string>();
@@ -83,8 +83,7 @@ function parsePax(data: Buffer, label: string): Map<string, string> {
 		const key = record.subarray(0, equals).toString("utf8");
 		const value = record.subarray(equals + 1, -1).toString("utf8");
 		if (key === "size" && !/^[0-9]+$/.test(value)) throw new Error(`Invalid PAX header in ${label}`);
-		if (value === "") records.delete(key);
-		else records.set(key, value);
+		if (value !== "") records.set(key, value);
 		offset += length;
 	}
 	return records;

@@ -92,6 +92,17 @@ describe("tar PAX values (#5120)", () => {
 		if (gnu) assert.deepEqual(gnu, { names });
 	});
 
+	it("keeps an earlier PAX path when a later record in the same header is empty, as GNU tar does (#5120)", () => {
+		const archive = archiveWithPax([
+			["path", "other.txt"],
+			["path", ""],
+		]);
+		const names = listTarMembers(archive, "t.tar").members.map((member) => member.name);
+		assert.deepEqual(names, ["other.txt"]);
+		const gnu = gnuList(archive);
+		if (gnu) assert.deepEqual(gnu, { names });
+	});
+
 	it("rewrites the member named by its header after an empty PAX path instead of adding a duplicate (#5120)", () => {
 		const archive = archiveWithPax([
 			["path", ""],
