@@ -13,7 +13,7 @@ import {
 	recordStageCheckpoint,
 } from "../durable/stage-primitive.js";
 import { durableStageCheckpointMetadata } from "../durable/stage-topology.js";
-import { promptOccurrenceIdentityError } from "../durable/stage-topology-validation.js";
+import { immutableStageGroupError, promptOccurrenceIdentityError } from "../durable/stage-topology-validation.js";
 import type { DurableStageCheckpoint, DurableStageRunTopology, DurableStageTopology } from "../durable/types.js";
 import { parseWorkflowChildResult } from "../durable/workflow-child-result.js";
 import type { ParallelFailFastScope, RunOpts } from "../runs/foreground/executor-types.js";
@@ -45,7 +45,10 @@ export function createDurableStageDeps(input: {
 	readonly beforeCheckpoint?: () => void | Promise<void>;
 	readonly recordLiveCheckpoint?: DurableStageDeps["recordLiveCheckpoint"];
 	readonly stageDirectories?: DurableStageDeps["stageDirectories"];
+	/** The run's own stage checkpoints from an earlier process, from the listing the run already makes. */
+	readonly priorStageCheckpoints: readonly DurableStageCheckpoint[];
 }): DurableStageDeps {
+	const priorSourceOrders = priorStageSourceOrders(input.priorStageCheckpoints);
 	return {
 		workflowId: input.run.id,
 		backend: input.backend,
@@ -57,10 +60,23 @@ export function createDurableStageDeps(input: {
 		replayKeyForCompletedStage: (stage) => input.completedReplayKeys.get(stage.id),
 		runTopology: durableRunTopology(input.run),
 		sourceOrderForStage: (stage) => {
+			// A stage re-run on resume keeps the source order its first attempt recorded, as it keeps its parents:
+			// cached siblings that replayed first now sit ahead of it in `run.stages` (#4871).
+			const prior = priorSourceOrders.get(stage.id);
+			if (prior !== undefined) return prior;
 			const order = input.run.stages.findIndex((candidate) => candidate.id === stage.id);
 			return order >= 0 ? order : undefined;
 		},
 	};
+}
+
+/** The source order this run's records from an earlier process hold for each stage, by stage id. */
+function priorStageSourceOrders(checkpoints: readonly DurableStageCheckpoint[]): ReadonlyMap<string, number> {
+	const orders = new Map<string, number>();
+	for (const { topology } of checkpoints) {
+		if (topology?.sourceOrder !== undefined) orders.set(topology.stageId, topology.sourceOrder);
+	}
+	return orders;
 }
 
 export function createDurableStageEndRecorder(input: {
@@ -193,10 +209,10 @@ export function createDurableCachedStageRecorder(input: {
 				);
 			}
 			const stage = input.store.run(input.run.id)?.stages.find((candidate) => candidate.replayKey === replayKey);
-			const persistence =
+			const replayRecord: DurableStageCheckpoint | undefined =
 				stage === undefined
 					? undefined
-					: input.backend.commitCheckpoint({
+					: {
 							kind: "stage",
 							workflowId: input.run.id,
 							// One record per attempt that replays the stage, so each attempt's reach is recorded (#4874).
@@ -209,7 +225,18 @@ export function createDurableCachedStageRecorder(input: {
 								durableRunTopology(input.run),
 								sourceOrder ?? input.run.stages.findIndex((candidate) => candidate.id === stage.id),
 							),
-						});
+						};
+			// A replay of this run's own record must not record the stage differently: a pool rejects such a record, and
+			// the run could no longer be replayed or inspected from its records (#4888). A record from before stages kept
+			// their source order is not compared, as its replay records the order it lacks.
+			const drift =
+				replayRecord !== undefined &&
+				checkpoint.topology?.run?.runId === input.run.id &&
+				checkpoint.topology.sourceOrder !== undefined
+					? immutableStageGroupError([checkpoint, replayRecord])
+					: undefined;
+			if (drift !== undefined) throw new DurableNestedTopologyError(`${drift} at ${replayKey}`);
+			const persistence = replayRecord === undefined ? undefined : input.backend.commitCheckpoint(replayRecord);
 			for (const childRun of cachedDescendants ?? []) {
 				const existingRun = input.store.run(childRun.id);
 				const isDirectChild =

@@ -227,11 +227,11 @@ describe("redactUrlCredentials", () => {
 		assert.ok(regexCharacters <= 4 * cases.reduce((sum, [input]) => sum + input.length, 0));
 	});
 
-	it("preserves scheme boundaries and authority delimiters in error details", () => {
+	it("redacts after any run of scheme characters and keeps authority delimiters in error details (#4833)", () => {
 		const cases = [
-			["1a://u:p@h x", "1a://u:p@h x"],
-			["1ſa://u:p@h x", "1ſa://u:p@h x"],
-			["1Ka://u:p@h x", "1Ka://u:p@h x"],
+			["1a://u:p@h x", "1a://h x"],
+			["1ſa://u:p@h x", "1ſa://h x"],
+			["1Ka://u:p@h x", "1Ka://h x"],
 			["a+1://u:p@h x", "a+1://h x"],
 			["a-1://u:p@h x", "a-1://h x"],
 			["+.-://u:p@h x", "+.-://u:p@h x"],

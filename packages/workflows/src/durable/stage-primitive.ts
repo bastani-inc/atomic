@@ -1097,25 +1097,21 @@ export function recordCachedStageWithTracker(
 	stageFailFastScope?: ParallelFailFastScope,
 	sourceToReplayedNodeIds?: Map<string, string>,
 ): void {
-	const sourceStageId = checkpoint.topology?.run?.runId === runId ? checkpoint.topology.stageId : undefined;
-	const stageId = sourceStageId ?? cachedStageId(runId, replayKey);
+	const sourceTopology = checkpoint.topology?.run?.runId === runId ? checkpoint.topology : undefined;
+	const stageId = sourceTopology?.stageId ?? cachedStageId(runId, replayKey);
 	let parentIds = tracker.onSpawn(stageId, name);
 	if (stageFailFastScope?.detached === true) tracker.detach(stageId);
-	const sourceParents = sourceStageId === undefined ? undefined : checkpoint.topology?.parentIds;
-	const run = store.run(runId);
-	const restored = sourceParents?.map(
-		(sourceId) =>
-			sourceToReplayedNodeIds?.get(sourceId) ??
-			run?.stages.find((stage) => stage.id === sourceId || stage.replayedFromStageId === sourceId)?.id,
-	);
-	if (restored?.every((id): id is string => id !== undefined)) {
-		parentIds = restored;
+	// The record is this run's own, and a replayed node of this run keeps its id, so the recorded parents name this
+	// run's nodes, also those that have not replayed yet: a stage replays when it is created, which may precede the
+	// tool its first call follows (#4888).
+	if (sourceTopology !== undefined) {
+		parentIds = [...sourceTopology.parentIds];
 		tracker.replaceParents(stageId, parentIds);
 	} else if (stageFailFastScope !== undefined) {
 		parentIds = [...(stageFailFastScope.parentIds ?? [])];
 		tracker.replaceParents(stageId, parentIds);
 	}
-	if (checkpoint.topology?.run?.runId === runId) sourceToReplayedNodeIds?.set(checkpoint.topology.stageId, stageId);
+	if (sourceTopology !== undefined) sourceToReplayedNodeIds?.set(sourceTopology.stageId, stageId);
 	recordCachedStageIntoStore(
 		store,
 		runId,

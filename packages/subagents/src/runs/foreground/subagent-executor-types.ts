@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext, SessionManager } from "@bastani/atomic";
-import type { AgentConfig, AgentScope } from "../../agents/agents.js";
+import type { AgentConfig, AgentDiscoveryOptions, AgentScope } from "../../agents/agents.js";
 import type { IntercomBridgeState } from "../../intercom/intercom-bridge.js";
 import type { ModelInfo } from "../../shared/model-info.js";
 import type {
@@ -85,7 +85,7 @@ export interface ExecutorDeps {
 	tempArtifactsDir: string;
 	getSubagentSessionRoot: (parentSessionFile: string | null, parentSessionId: string) => string;
 	expandTilde: (p: string) => string;
-	discoverAgents: (cwd: string, scope: AgentScope) => { agents: AgentConfig[] };
+	discoverAgents: (cwd: string, scope: AgentScope, options: AgentDiscoveryOptions) => { agents: AgentConfig[] };
 	allowMutatingManagementActions?: boolean;
 	/** Typed admission policy; when present it is authoritative over the legacy boolean. */
 	childPolicy?: ChildModePolicy;

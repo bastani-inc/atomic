@@ -1,4 +1,5 @@
 import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -146,6 +147,74 @@ describe("MCP OAuth sign-in", () => {
 				"issues:read issues:write",
 			]);
 			expect((await store.load())?.tokens?.scope).toBe("issues:read issues:write");
+		} finally {
+			await server.close();
+		}
+	});
+
+	/** Sign in to `server` with `store`; `opened` records the authorization URLs shown to the user. */
+	function signInTo(
+		server: Awaited<ReturnType<typeof startOAuthMcpServer>>,
+		store: ReturnType<McpOAuthCredentialStore["forServer"]>,
+		opened: URL[],
+		challenge?: OAuthChallenge,
+	) {
+		return signInMcpServer({
+			serverUrl: server.url,
+			store,
+			settings: {},
+			challenge,
+			prompt: {
+				showAuthorizationUrl: (url) => {
+					opened.push(url);
+					void fetch(url);
+				},
+				promptForRedirectUrl: (signal) =>
+					new Promise((resolve) => signal.addEventListener("abort", () => resolve(undefined), { once: true })),
+			},
+		});
+	}
+
+	it("signs in again with the stored refresh token, without the browser (#4916)", async () => {
+		const server = await startOAuthMcpServer();
+		try {
+			const store = new McpOAuthCredentialStore(new InMemoryAuthStorageBackend()).forServer("test", server.url);
+			const opened: URL[] = [];
+			await signInTo(server, store, opened);
+			await signInTo(server, store, opened);
+
+			expect(opened).toHaveLength(1);
+			expect(server.log.filter((entry) => entry.startsWith("token"))).toEqual(["token code", "token refresh"]);
+			expect((await store.load())?.tokens?.access_token).toBe("access-2");
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("keeps the registered client only while its redirect URI is free (#4916)", async () => {
+		const server = await startOAuthMcpServer();
+		try {
+			const store = new McpOAuthCredentialStore(new InMemoryAuthStorageBackend()).forServer("test", server.url);
+			const opened: URL[] = [];
+			// A step-up sign-in goes through the browser even with stored tokens.
+			const stepUp = { error: "insufficient_scope", scope: "issues:write" } as const;
+			await signInTo(server, store, opened);
+			await signInTo(server, store, opened, stepUp);
+			expect(server.registrations).toHaveLength(1);
+			expect((await store.load())?.clientInformation?.client_id).toBe("client-1");
+
+			// Another program holds the registered port, so the sign-in uses a new redirect URI and client.
+			const registered = new URL(opened[0].searchParams.get("redirect_uri") ?? "");
+			const blocker = createServer();
+			await new Promise<void>((resolve) => blocker.listen(Number(registered.port), "127.0.0.1", resolve));
+			try {
+				await signInTo(server, store, opened, stepUp);
+			} finally {
+				await new Promise((resolve) => blocker.close(resolve));
+			}
+			expect(server.registrations).toHaveLength(2);
+			expect(server.registrations[1].redirect_uris).not.toContain(registered.href);
+			expect((await store.load())?.tokens?.access_token).toBe("access-3");
 		} finally {
 			await server.close();
 		}

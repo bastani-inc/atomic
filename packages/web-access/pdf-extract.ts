@@ -7,7 +7,7 @@
 
 import { getDocumentProxy } from "unpdf";
 import { writeFile, mkdir } from "node:fs/promises";
-import { join, basename } from "node:path";
+import { join, basename, extname } from "node:path";
 import { homedir } from "node:os";
 
 export interface PDFExtractResult {
@@ -26,7 +26,9 @@ export interface PDFExtractOptions {
 const DEFAULT_MAX_PAGES = 100;
 /** pdf.js `VerbosityLevel.ERRORS`: suppresses warnings and info output. */
 const PDF_JS_VERBOSITY_ERRORS = 0;
-const DEFAULT_OUTPUT_DIR = join(homedir(), "Downloads");
+/** UTF-8 budget for the sanitised stem, leaving room for a `-N` suffix and `.md` within the 255-byte name limit. */
+const MAX_FILENAME_STEM_BYTES = 200;
+const MAX_FILENAME_STEM_CHARS = 100;
 
 /**
  * Extract text from a PDF buffer and save to markdown file
@@ -38,7 +40,7 @@ export async function extractPDFToMarkdown(
 ): Promise<PDFExtractResult> {
   const {
     maxPages = DEFAULT_MAX_PAGES,
-    outputDir = DEFAULT_OUTPUT_DIR,
+    outputDir = join(homedir(), "Downloads"),
     filename,
   } = options;
 
@@ -117,15 +119,11 @@ export async function extractPDFToMarkdown(
 
   const content = lines.join("\n");
 
-  // Generate output filename
-  const outputFilename = filename || sanitizeFilename(title) + ".md";
-  const outputPath = join(outputDir, outputFilename);
+  const extension = filename ? extname(filename) : ".md";
+  const stem = filename ? filename.slice(0, filename.length - extension.length) : sanitizeFilename(title);
 
-  // Ensure output directory exists
   await mkdir(outputDir, { recursive: true });
-
-  // Write file
-  await writeFile(outputPath, content, "utf-8");
+  const outputPath = await writeNewFile(outputDir, stem, extension, content);
 
   return {
     title,
@@ -167,17 +165,44 @@ function extractTitleFromURL(url: string): string {
 }
 
 /**
- * Sanitize string for use as filename
+ * Write `content` to a file that did not exist before: `<stem><ext>`, then `<stem>-2<ext>`, and so on.
+ * Exclusive creation means an existing file, or one another extraction just claimed, is never overwritten.
+ */
+async function writeNewFile(dir: string, stem: string, extension: string, content: string): Promise<string> {
+  for (let attempt = 1; ; attempt++) {
+    const path = join(dir, attempt === 1 ? `${stem}${extension}` : `${stem}-${attempt}${extension}`);
+    try {
+      await writeFile(path, content, { flag: "wx" });
+      return path;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    }
+  }
+}
+
+const WINDOWS_RESERVED_NAME = /^(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³])(\.|$)/i;
+
+/**
+ * Turn a title into a file name stem. Letters in any script are kept; only characters that are
+ * unsafe in paths on some platform (separators, `<>:"|?*`, control characters) are removed.
  */
 function sanitizeFilename(name: string): string {
-  return name
+  const cleaned = name
     .toLowerCase()
-    .replace(/[^a-z0-9\s-]/g, "")
-    .replace(/\s+/g, "-")
-    .replace(/-+/g, "-")
-    .slice(0, 100)
-    .replace(/^-|-$/g, "")
-    || "document";
+    .replace(/[<>:"/\\|?*\p{Cc}]/gu, "")
+    .replace(/[\s-]+/g, "-")
+    .replace(/^[-.]+/, "");
+  let stem = "";
+  let bytes = 0;
+  let chars = 0;
+  for (const char of cleaned) {
+    bytes += Buffer.byteLength(char);
+    if (bytes > MAX_FILENAME_STEM_BYTES || ++chars > MAX_FILENAME_STEM_CHARS) break;
+    stem += char;
+  }
+  stem = stem.replace(/[-.]+$/, "");
+  if (!stem) return "document";
+  return WINDOWS_RESERVED_NAME.test(stem) ? `${stem}-document` : stem;
 }
 
 /**

@@ -125,26 +125,6 @@ export function boundaryAttemptCheckpoint(input: {
 	};
 }
 
-/** Whether the run is in an attempt and an earlier one recorded the tool call `argsHash`. */
-export function recordedInEarlierAttempt(
-	backend: DurableWorkflowBackend,
-	workflowId: string,
-	argsHash: string,
-): boolean {
-	const attempt = durableWorkflowAttempt(backend, workflowId);
-	return (
-		attempt !== undefined &&
-		backend
-			.listCheckpoints(workflowId)
-			.some(
-				(checkpoint) =>
-					checkpoint.kind === "tool" &&
-					checkpoint.argsHash === argsHash &&
-					checkpointAttempt(checkpoint) < attempt,
-			)
-	);
-}
-
 /**
  * Record that an attempt of root run `workflowId` begins, before it writes anything else. A run without checkpoints
  * records none: its first attempt is the attempt every unstamped record belongs to, and a record would make a run with

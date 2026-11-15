@@ -1841,6 +1841,27 @@ describe("pending-stage bridge sticky delivery", () => {
 		patternHarness.dispose();
 	});
 
+	test("refuses a sticky send past the per-target limit with the limit, and a foreign group with its own reason (#4896)", async () => {
+		const harness = await stickyBridgeFixture(baseStage(), { possibleStages: ["orchestrator-*"] });
+		try {
+			for (let index = 1; index <= PENDING_STAGE_MESSAGE_LIMIT; index++) {
+				assert.equal((await harness.request(`cap-${index}`)).result?.outcome, "queued");
+			}
+			assert.deepEqual((await harness.request("cap-over")).result, {
+				outcome: "refused",
+				reason: `Pending stage message queue is full (limit ${PENDING_STAGE_MESSAGE_LIMIT}) for workflow:${ROOT_RUN_ID}/orchestrator-*`,
+			});
+			const foreign = await harness.request("foreign", {
+				group: "workflow:other-run",
+				target: `workflow:${ROOT_RUN_ID}/later`,
+			});
+			assert.equal(foreign.result?.outcome, "refused");
+			assert.match(foreign.result?.outcome === "refused" ? foreign.result.reason : "", /different intercom group/);
+		} finally {
+			harness.dispose();
+		}
+	});
+
 	test("queues an unresolved literal future-stage target (D3 name targets are sticky)", async () => {
 		// `orchestrator-9` is materialized nowhere; only the pattern appears in the scan,
 		// so the literal target is accepted speculatively as a sticky entry classified

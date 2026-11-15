@@ -30,7 +30,7 @@ import { field, hasProcessFailureEvidence, normalizeCode } from "../shared/workf
 
 export { sleepOrAbort } from "../runs/shared/retry.js";
 
-import { durableWorkflowAttempt, recordedInEarlierAttempt } from "./attempt-identity.js";
+import { durableWorkflowAttempt } from "./attempt-identity.js";
 import type { DurableWorkflowBackend } from "./backend.js";
 import { durableHash } from "./backend.js";
 import { recordThrowingToolFailure } from "./tool-failure-checkpoint.js";
@@ -543,14 +543,9 @@ async function executeLiveToolInvocation<T extends WorkflowSerializableValue>(
 	let callbackCompleted = false;
 	const cancelInvocation = async (cancellation: Error): Promise<never> => {
 		control.noteCancelled();
-		// Cancellation is inspection-only: resume must retry this ordinal.
-		if (
-			returnFailure ||
-			(isWorkflowToolAbortError(cancellation) && cancellation.scope === "node") ||
-			input.runFailing?.() === true ||
-			// An earlier attempt's record of this call would otherwise outlive this attempt's cancellation (#4874).
-			recordedInEarlierAttempt(input.backend, input.workflowId, argsHash)
-		) {
+		// Cancellation is inspection-only: resume must retry this ordinal. A call a node abort, or a run's quit or pause
+		// (#4878), stopped keeps its cancelled record.
+		if (returnFailure || isWorkflowToolAbortError(cancellation) || input.runFailing?.() === true) {
 			await recordCancelledToolInspection(live, startedAt, cancellation, attempts);
 		}
 		const endedAt = Date.now();
