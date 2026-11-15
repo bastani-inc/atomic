@@ -27,6 +27,17 @@ afterEach(async () => {
 	removeTempDirectory(directory);
 });
 
+/** A journal on its own database in the test directory, closed with that database after the test. */
+async function openJournal(name: string): Promise<SqlRunJournal> {
+	const database = await openNodeSqliteDatabase(join(directory, name));
+	const journal = await SqlRunJournal.open(database);
+	closers.push(async () => {
+		await journal.close();
+		await database.close();
+	});
+	return journal;
+}
+
 /** A root's pool in its journal's database, and a snapshot whose blob was stored and then collected with no grace. */
 async function rootPool() {
 	const database = await openNodeSqliteDatabase(join(directory, "journal.sqlite"));
@@ -98,8 +109,7 @@ test("a root holds its binding's snapshot only while every blob of it is stored 
 
 test("work claimed from a pool in another database than its root's journal loses a snapshot whose blobs were collected (#5077)", async () => {
 	const { queue, database, stored, gone } = await rootPool();
-	const rootJournal = await SqlRunJournal.open(await openNodeSqliteDatabase(join(directory, "root.sqlite")));
-	closers.push(() => rootJournal.close());
+	const rootJournal = await openJournal("root.sqlite");
 	const kept = textBlob("kept");
 	await rootJournal.snapshotBlobs.putBlobs([kept]);
 	const queued = async (id: string, snapshot: WorktreeSnapshot): Promise<PoolWork> => {
@@ -145,7 +155,11 @@ test("a root dispatches a snapshot only while its journal still holds every blob
 	const { stored, gone } = await rootPool();
 	const database = await openNodeSqliteDatabase(join(directory, "dispatching.sqlite"));
 	const journal = await SqlRunJournal.open(database);
-	closers.push(() => journal.close());
+	// Closed with its database, which Windows cannot delete while it is open.
+	closers.push(async () => {
+		await journal.close();
+		await database.close();
+	});
 	await journal.snapshotBlobs.putBlobs([textBlob("kept")]);
 	await ageBlobs(database, journal.snapshotBlobs.table, 10_000);
 	const reasons: Error[] = [];
@@ -198,8 +212,7 @@ test("a root that holds no snapshot holds nothing, and a claim checks only work 
 		"a claimed work row deleted meanwhile is not an error",
 	);
 	assert.deepEqual(await database.all("SELECT id FROM wf_runs_work"), []);
-	const rootJournal = await SqlRunJournal.open(await openNodeSqliteDatabase(join(directory, "root.sqlite")));
-	closers.push(() => rootJournal.close());
+	const rootJournal = await openJournal("root.sqlite");
 	const bare = { ...work, execution: {} } as PoolWork;
 	assert.equal(await claimedWithStoredSnapshot(queue, bare, rootJournal.snapshotBlobs), bare);
 });
