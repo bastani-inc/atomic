@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
-import { takeTakeoverMutex } from "./lock-takeover.ts";
+import { basename, dirname, join } from "node:path";
+import { processMayRun, takeTakeoverMutex } from "./lock-takeover.ts";
 import { lockHolder } from "./lock-wait.ts";
 import { processStartToken } from "./process-start-token.ts";
 import { renameReplacing } from "./rename-retry.ts";
@@ -22,6 +23,28 @@ interface LockHolderRecord {
 /** The file beside lock directory `lockPath` that names its holder. */
 export function lockHolderPath(lockPath: string): string {
 	return `${lockPath}.holder`;
+}
+
+/** How old a holder record's temporary file must be before it is judged left by a killed writer and removed. */
+export const HOLDER_TEMP_STALE_MS = 60_000;
+
+/**
+ * Removes the temporary files of holder records for the lock at `lockPath` that writers killed mid-write left, once
+ * they are {@link HOLDER_TEMP_STALE_MS} old. Called under the takeover mutex, after a takeover.
+ */
+function removeLeftoverHolderFiles(lockPath: string): void {
+	const directory = dirname(lockPath);
+	const prefix = `${basename(lockHolderPath(lockPath))}.`;
+	try {
+		for (const name of readdirSync(directory)) {
+			if (!name.startsWith(prefix) || !name.endsWith(".tmp")) continue;
+			const path = join(directory, name);
+			const stats = statSync(path, { throwIfNoEntry: false });
+			if (stats !== undefined && Date.now() - stats.mtimeMs > HOLDER_TEMP_STALE_MS) rmSync(path, { force: true });
+		}
+	} catch {
+		// Best effort: a leftover file is only clutter.
+	}
 }
 
 /**
@@ -68,25 +91,6 @@ function readHolderRecord(lockPath: string): LockHolderRecord | undefined {
 	}
 }
 
-/** Whether `pid` is a live process on this host; one this process may not signal (EPERM) still exists. */
-function processAlive(pid: number): boolean {
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch (error) {
-		return (error as NodeJS.ErrnoException).code === "EPERM";
-	}
-}
-
-/** Whether the holder `record` names may still run: by its pid and start, as session claims are judged. */
-function holderMayRun(record: LockHolderRecord): boolean {
-	// Another host's processes cannot be seen from here.
-	if (record.host !== hostname()) return true;
-	const started = record.started === undefined ? undefined : processStartToken(record.pid);
-	if (started !== undefined) return started === record.started;
-	return processAlive(record.pid);
-}
-
 /**
  * Removes the lock directory at `lockPath` when its holder is proven dead, so the next attempt to take it follows at
  * once; true when it did. Takeovers are serialized by a mutex of their own, and inside it the holder record and the
@@ -96,15 +100,17 @@ function holderMayRun(record: LockHolderRecord): boolean {
  */
 export function takeOverDeadHolder(lockPath: string): boolean {
 	const record = readHolderRecord(lockPath);
-	if (record === undefined || lockHolder(lockPath) !== record.lock || holderMayRun(record)) return false;
-	const release = takeTakeoverMutex(lockPath);
-	if (release === undefined) return false;
+	if (record === undefined || lockHolder(lockPath) !== record.lock || processMayRun(record)) return false;
+	const mutex = takeTakeoverMutex(lockPath);
+	if (mutex === undefined) return false;
 	try {
 		// Within the mutex, only this process moves the lock: if the dead holder's record and lock are still in place,
 		// no other process took the lock since they were judged.
 		const current = readHolderRecord(lockPath);
 		if (current === undefined || !sameRecord(current, record) || lockHolder(lockPath) !== record.lock) return false;
 		const aside = `${lockPath}.${randomUUID()}.dead`;
+		// A process paused here for long keeps its mutex while it runs; one that lost it moves nothing.
+		if (!mutex.owned()) return false;
 		try {
 			renameSync(lockPath, aside);
 		} catch {
@@ -112,9 +118,10 @@ export function takeOverDeadHolder(lockPath: string): boolean {
 		}
 		if (lockHolder(aside) !== record.lock) return false;
 		rmSync(aside, { recursive: true, force: true });
+		removeLeftoverHolderFiles(lockPath);
 		return true;
 	} finally {
-		release();
+		mutex.release();
 	}
 }
 

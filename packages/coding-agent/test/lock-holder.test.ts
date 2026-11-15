@@ -8,13 +8,20 @@ import {
 	readFileSync,
 	realpathSync,
 	rmSync,
+	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import lockfile from "proper-lockfile";
 import { afterEach, beforeEach, describe, it } from "vitest";
-import { clearLockHolder, lockHolderPath, recordLockHolder, takeOverDeadHolder } from "../src/core/lock-holder.ts";
+import {
+	clearLockHolder,
+	HOLDER_TEMP_STALE_MS,
+	lockHolderPath,
+	recordLockHolder,
+	takeOverDeadHolder,
+} from "../src/core/lock-holder.ts";
 import { lockHolder } from "../src/core/lock-wait.ts";
 import { processStartToken } from "../src/core/process-start-token.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
@@ -142,6 +149,21 @@ describe("taking over the lock of a dead holder (#5161)", () => {
 		rmSync(lockPath, { recursive: true });
 		writeRecord({ host: hostname(), pid: exitedPid(), lock: "1:2" });
 		assert.equal(takeOverDeadHolder(lockPath), false, "no lock to take over");
+	});
+
+	it("removes the temporary files killed writers left, once old, when it takes over (#5161)", () => {
+		mkdirSync(lockPath);
+		writeRecord({ host: hostname(), pid: exitedPid(), lock: lockHolder(lockPath) });
+		const old = `${lockHolderPath(lockPath)}.123.old.tmp`;
+		const recent = `${lockHolderPath(lockPath)}.456.recent.tmp`;
+		writeFileSync(old, "{");
+		writeFileSync(recent, "{");
+		const past = new Date(Date.now() - HOLDER_TEMP_STALE_MS - 1_000);
+		utimesSync(old, past, past);
+		assert.equal(takeOverDeadHolder(lockPath), true);
+		assert.equal(existsSync(old), false);
+		assert.equal(existsSync(recent), true, "a recent one may still be written");
+		assert.equal(existsSync(file), true, "other files stay");
 	});
 
 	it("does not name a holder for a lock directory that is not there (#5161)", () => {

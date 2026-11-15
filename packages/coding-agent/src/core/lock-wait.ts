@@ -1,6 +1,7 @@
 import type * as nodeFs from "node:fs";
-import { statSync } from "node:fs";
-import { guardLockRemoval } from "./lock-takeover.ts";
+import { guardLockRemoval, lockHolder } from "./lock-takeover.ts";
+
+export { lockHolder };
 
 /** How long any lock wait lasts in all while the lock keeps changing hands, unless its caller says otherwise. */
 export const LOCK_CONTENTION_WAIT_MS = 120_000;
@@ -33,17 +34,6 @@ export interface LockWait {
 	readonly stuck: (error: unknown) => Error;
 	/** The error when the lock kept changing hands for {@link LockWait.contentionWaitMs}. */
 	readonly contended: (error: unknown, waitedMs: number) => Error;
-}
-
-/** Which lock holds `lockPath` now, or undefined when none does or it is being removed. */
-export function lockHolder(lockPath: string): string | undefined {
-	try {
-		const stats = statSync(lockPath, { throwIfNoEntry: false });
-		return stats === undefined ? undefined : `${stats.ino}:${stats.birthtimeMs}`;
-	} catch {
-		// Windows refuses to stat a lock directory that is being removed: it is changing hands.
-		return undefined;
-	}
 }
 
 /**

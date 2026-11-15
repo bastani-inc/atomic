@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, it, vi } from "vitest";
 
 /**
@@ -21,6 +22,7 @@ import { afterEach, beforeEach, it, vi } from "vitest";
 const race = vi.hoisted(() => ({
 	beforeMutex: undefined as (() => void) | undefined,
 	beforeRename: undefined as (() => void) | undefined,
+	afterOwner: undefined as (() => void) | undefined,
 	rename: undefined as ((from: string, to: string) => void) | undefined,
 }));
 
@@ -41,12 +43,36 @@ vi.mock("node:fs", async (importOriginal) => {
 		}
 		return actual.mkdirSync(path, options as never);
 	}) as typeof actual.mkdirSync;
-	return { ...actual, default: { ...actual, renameSync, mkdirSync }, renameSync, mkdirSync };
+	const writeFileSync = ((path: string, ...rest: unknown[]) => {
+		actual.writeFileSync(path, ...(rest as [string]));
+		if (String(path).endsWith("owner")) {
+			const after = race.afterOwner;
+			race.afterOwner = undefined;
+			after?.();
+		}
+	}) as typeof actual.writeFileSync;
+	return {
+		...actual,
+		default: { ...actual, renameSync, mkdirSync, writeFileSync },
+		renameSync,
+		mkdirSync,
+		writeFileSync,
+	};
 });
 
 const { lockHolderPath, takeOverDeadHolder } = await import("../src/core/lock-holder.ts");
 const { takeoverMutexPath, TAKEOVER_MUTEX_STALE_MS } = await import("../src/core/lock-takeover.ts");
 const { lockHolder } = await import("../src/core/lock-wait.ts");
+
+const LOCK_HOLDER_MODULE = fileURLToPath(new URL("../src/core/lock-holder.ts", import.meta.url));
+
+/** Another process tries to take over the lock at `lockPath`, and says whether it did. */
+function anotherProcessTakesOver(): boolean {
+	const script = `import { takeOverDeadHolder } from ${JSON.stringify(LOCK_HOLDER_MODULE)}; console.log(takeOverDeadHolder(${JSON.stringify(lockPath)}));`;
+	const result = spawnSync("bun", ["--eval", script], { encoding: "utf8" });
+	assert.equal(result.status, 0, result.stderr);
+	return result.stdout.trim() === "true";
+}
 
 let directory: string;
 let lockPath: string;
@@ -151,4 +177,30 @@ it("does not take over a lock that is gone before it is moved aside (#5161)", ()
 	assert.equal(takeOverDeadHolder(lockPath), false);
 	assert.equal(existsSync(lockPath), false);
 	assert.deepEqual(asideNames(), []);
+});
+
+it("keeps the mutex of a takeover paused past its stale age, so no other process takes the lock over meanwhile (#5161)", () => {
+	let otherTookOver: boolean | undefined;
+	race.beforeRename = () => {
+		// This process is paused between its check and its move for longer than a mutex's stale age.
+		const old = new Date(Date.now() - TAKEOVER_MUTEX_STALE_MS - 1_000);
+		utimesSync(takeoverMutexPath(lockPath), old, old);
+		otherTookOver = anotherProcessTakesOver();
+	};
+	assert.equal(takeOverDeadHolder(lockPath), true);
+	assert.equal(otherTookOver, false, "a live process's mutex is never judged stale by its age");
+	assert.deepEqual(asideNames(), []);
+	assert.equal(existsSync(takeoverMutexPath(lockPath)), false);
+});
+
+it("moves nothing once another process owns the mutex it took (#5161)", () => {
+	race.afterOwner = () => {
+		writeFileSync(
+			join(takeoverMutexPath(lockPath), "owner"),
+			JSON.stringify({ host: hostname(), pid: 1, id: "other" }),
+		);
+	};
+	assert.equal(takeOverDeadHolder(lockPath), false);
+	assert.equal(lockHolder(lockPath), deadLock, "the lock stays in place");
+	assert.equal(existsSync(takeoverMutexPath(lockPath)), true, "another process's mutex is not released");
 });
