@@ -37,7 +37,14 @@ export class MemorySnapshotBlobStore implements SnapshotBlobStore {
  * these tables and never a journal or a session.
  */
 export interface SnapshotIndexTables {
+	/**
+	 * `(hash, bytes, data, created_at, chunks)`: one row per blob. A blob of at most {@link SNAPSHOT_BLOB_CHUNK_BYTES}
+	 * is in `data` (`chunks` 0, as every blob written before chunks was); a larger one has an empty `data` and its bytes
+	 * in `chunks` rows of {@link SnapshotIndexTables.blobChunks}.
+	 */
 	readonly blobs: string;
+	/** `(hash, idx, data)`: the chunks of each blob larger than {@link SNAPSHOT_BLOB_CHUNK_BYTES}, in order (#4954). */
+	readonly blobChunks: string;
 	/** `(run_id, hash)`: each blob a run's tool or stage checkpoints reference, once per run. */
 	readonly runRefs: string;
 	/** `(run_id, retained, seq)`: whether the run's latest status keeps its snapshots, from the event at `seq`. */
@@ -76,6 +83,7 @@ export function snapshotIndexTables(prefix = ""): SnapshotIndexTables {
 	const p = validateStoragePrefix(prefix);
 	return Object.freeze({
 		blobs: `${p}snapshot_blobs`,
+		blobChunks: `${p}snapshot_blob_chunks`,
 		runRefs: `${p}snapshot_run_refs`,
 		runState: `${p}snapshot_run_state`,
 		sessionRefs: `${p}snapshot_session_refs`,
@@ -86,6 +94,15 @@ export function snapshotIndexTables(prefix = ""): SnapshotIndexTables {
 		sources: `${p}snapshot_index_sources`,
 	});
 }
+
+/**
+ * The most bytes of a snapshot blob one row holds. A larger blob, such as the patch of a checkout with a large
+ * untracked file, is stored as rows of at most this size, written in one transaction: a libSQL server refuses a value
+ * or row over 5,000,000 bytes by default (sqld's `max_row_size`) and a response over 10 MB, so one row per blob failed
+ * on it below the documented `maxFileBytes` (#4954). A different size needs a different table name, because a blob's
+ * rows are addressed by their index.
+ */
+export const SNAPSHOT_BLOB_CHUNK_BYTES = 1024 * 1024;
 
 /** The schema domain of the blob table and its reference index, in the prefix's migration ledger. */
 export const SNAPSHOT_BLOB_DOMAIN = "snapshot-blobs";
@@ -606,6 +623,39 @@ function indexSources(prefix: string, t: SnapshotIndexTables, d: StorageDialect)
 	return [eventsSource, runsSource, entriesSource, workSource, rootSource];
 }
 
+/**
+ * Chunked blobs (#4954): the chunk table, the blob table's `chunks` column, 0 for a blob whose bytes are in its own row,
+ * as every blob written before it was, and the trigger that deletes a blob's chunks with it. Idempotent.
+ */
+async function addBlobChunks(
+	transaction: SqliteExecutor,
+	t: SnapshotIndexTables,
+	dialect: StorageDialect,
+): Promise<void> {
+	const { int, text, blob } = dialect.types;
+	await transaction.exec(
+		`CREATE TABLE IF NOT EXISTS ${t.blobChunks} (hash ${text} NOT NULL, idx ${int} NOT NULL, data ${blob} NOT NULL, PRIMARY KEY (hash, idx))${dialect.withoutRowidTableOptions}`,
+	);
+	const column = dialect.columnExists(t.blobs, "chunks");
+	if (!(await transaction.get(column.sql, ...column.params))) {
+		await transaction.exec(`ALTER TABLE ${t.blobs} ADD COLUMN chunks ${int} NOT NULL DEFAULT 0`);
+	}
+	// A deleted blob takes its chunks with it, in the statement that deletes it, whoever deletes it.
+	const trigger = dialect.schemaObjects([`${t.blobs}_chunks_delete`]);
+	if (await transaction.get(trigger.sql, ...trigger.params)) return;
+	await transaction.exec(
+		dialect.renderTrigger(
+			createTrigger(
+				`${t.blobs}_chunks_delete`,
+				"DELETE",
+				t.blobs,
+				[`DELETE FROM ${t.blobChunks} WHERE hash = OLD.hash`],
+				"OLD.chunks > 0",
+			),
+		),
+	);
+}
+
 /** Creates the blob table and the tables of its reference index that are missing. */
 async function createSnapshotIndexTables(
 	transaction: SqliteExecutor,
@@ -646,6 +696,7 @@ async function createSnapshotIndexTables(
 		INSERT INTO ${t.collection} (id) VALUES (1) ON CONFLICT DO NOTHING;
 		CREATE TABLE IF NOT EXISTS ${t.sources} (source ${text} PRIMARY KEY, watermark ${int} NOT NULL, backfilled_through ${int} NOT NULL)${keyed};
 	`);
+	await addBlobChunks(transaction, t, dialect);
 	await addSessionRefColumns(transaction, t, prefix, dialect);
 }
 
@@ -803,6 +854,8 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		const probes = [
 			...Object.values(t).map((table) => dialect.tableExists(table)),
 			dialect.columnExists(t.blobs, "created_at"),
+			dialect.columnExists(t.blobs, "chunks"),
+			dialect.schemaObjects([`${t.blobs}_chunks_delete`]),
 			...SESSION_REF_COLUMNS.map((column) => dialect.columnExists(t.sessionRefs, column)),
 		];
 		const found = await Promise.all(probes.map((probe) => database.get(probe.sql, ...probe.params)));
@@ -829,6 +882,12 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 									up: (transaction: SqliteExecutor, dialect: StorageDialect) =>
 										addSessionRefColumns(transaction, t, prefix, dialect),
 								},
+								// Chunked blobs (#4954); SQLite adds them in step 1, which runs every time.
+								{
+									version: 4,
+									up: (transaction: SqliteExecutor, dialect: StorageDialect) =>
+										addBlobChunks(transaction, t, dialect),
+								},
 							]
 						: []),
 				],
@@ -851,10 +910,30 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		await installMissingSources(transaction, t, prefix, dialect);
 	}
 
+	/**
+	 * Stores every blob, in one transaction, or restarts the age of one stored already. A blob larger than
+	 * {@link SNAPSHOT_BLOB_CHUNK_BYTES} is stored as chunk rows and a header row that names how many, so no statement
+	 * binds more than one chunk (#4954); the chunks of a blob stored already are not written again.
+	 */
 	async putBlobs(blobs: readonly SnapshotBlob[]): Promise<void> {
 		if (blobs.length === 0) return;
-		const sql = `INSERT INTO ${this.table} (hash, bytes, data, created_at) VALUES (?, ?, ?, ${this.dialect.nowSeconds}) ON CONFLICT(hash) DO UPDATE SET created_at = ${this.dialect.nowSeconds}`;
-		const statements = blobs.map((blob) => ({ sql, params: [blob.hash, blob.data.byteLength, blob.data] }));
+		const now = this.dialect.nowSeconds;
+		const header = `INSERT INTO ${this.table} (hash, bytes, data, created_at, chunks) VALUES (?, ?, ?, ${now}, ?) ON CONFLICT(hash) DO UPDATE SET created_at = ${now}`;
+		const chunk = `INSERT INTO ${this.tables.blobChunks} (hash, idx, data) SELECT ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM ${this.table} WHERE hash = ?) ON CONFLICT DO NOTHING`;
+		const statements: { sql: string; params: SqliteValue[] }[] = [];
+		for (const blob of blobs) {
+			const { hash, data } = blob;
+			if (data.byteLength <= SNAPSHOT_BLOB_CHUNK_BYTES) {
+				statements.push({ sql: header, params: [hash, data.byteLength, data, 0] });
+				continue;
+			}
+			const chunks = Math.ceil(data.byteLength / SNAPSHOT_BLOB_CHUNK_BYTES);
+			for (let index = 0; index < chunks; index++) {
+				const bytes = data.subarray(index * SNAPSHOT_BLOB_CHUNK_BYTES, (index + 1) * SNAPSHOT_BLOB_CHUNK_BYTES);
+				statements.push({ sql: chunk, params: [hash, index, bytes, hash] });
+			}
+			statements.push({ sql: header, params: [hash, data.byteLength, new Uint8Array(), chunks] });
+		}
 		if (this.database.batch) {
 			await this.database.batch(statements);
 			return;
@@ -863,9 +942,31 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			for (const statement of statements) await transaction.run(statement.sql, ...statement.params);
 		});
 	}
+	/**
+	 * The blob's bytes, read a chunk per statement when it has chunks, so no response holds more than one chunk. A
+	 * chunked blob whose chunks are not all there, as when a collection deleted it during the read, is not returned.
+	 */
 	async getBlob(hash: string): Promise<Uint8Array | undefined> {
-		const row = await this.database.get<{ data: Uint8Array }>(`SELECT data FROM ${this.table} WHERE hash = ?`, hash);
-		return row?.data;
+		const row = await this.database.get<SqliteRow & { data: Uint8Array; bytes: number; chunks: number }>(
+			`SELECT data, bytes, chunks FROM ${this.table} WHERE hash = ?`,
+			hash,
+		);
+		if (row === undefined) return undefined;
+		const chunks = Number(row.chunks);
+		if (chunks === 0) return row.data;
+		const data = new Uint8Array(Number(row.bytes));
+		let offset = 0;
+		for (let index = 0; index < chunks; index++) {
+			const chunk = await this.database.get<SqliteRow & { data: Uint8Array }>(
+				`SELECT data FROM ${this.tables.blobChunks} WHERE hash = ? AND idx = ?`,
+				hash,
+				index,
+			);
+			if (chunk === undefined || offset + chunk.data.byteLength > data.byteLength) return undefined;
+			data.set(chunk.data, offset);
+			offset += chunk.data.byteLength;
+		}
+		return offset === data.byteLength ? data : undefined;
 	}
 	/** Restarts the age of every stored hash in one statement on the database clock; false when any is missing. */
 	async refreshBlobs(hashes: readonly string[]): Promise<boolean> {
@@ -1094,11 +1195,14 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			checkout(session_id, start_seq, root, original) AS (
 				SELECT session_id, start_seq, root, current FROM walk AS last WHERE position = (SELECT max(other.position) FROM walk AS other WHERE other.session_id = last.session_id AND other.start_seq = last.start_seq AND other.root = last.root)
 			),
-			session_heads(session_id, snapshot_id, degraded_from, degraded_since, depth) AS (
-				SELECT branch.session_id, branch.snapshot_id, branch.degraded_from, branch.degraded_since, min(branch.depth) FROM branch JOIN checkout ON checkout.session_id = branch.session_id AND checkout.start_seq = branch.start_seq AND checkout.root = branch.root GROUP BY branch.session_id, branch.start_seq, checkout.original
+			session_heads(session_id, start_seq, original, depth) AS (
+				SELECT branch.session_id, branch.start_seq, checkout.original, min(branch.depth) FROM branch JOIN checkout ON checkout.session_id = branch.session_id AND checkout.start_seq = branch.start_seq AND checkout.root = branch.root GROUP BY branch.session_id, branch.start_seq, checkout.original
+			),
+			head_records(session_id, snapshot_id, degraded_from, degraded_since) AS (
+				SELECT branch.session_id, branch.snapshot_id, branch.degraded_from, branch.degraded_since FROM session_heads JOIN checkout ON checkout.session_id = session_heads.session_id AND checkout.start_seq = session_heads.start_seq AND checkout.original = session_heads.original JOIN branch ON branch.session_id = checkout.session_id AND branch.start_seq = checkout.start_seq AND branch.root = checkout.root AND branch.depth = session_heads.depth
 			)
-			SELECT session_id, snapshot_id FROM session_heads
-			UNION SELECT session_id, degraded_from FROM session_heads WHERE degraded_from IS NOT NULL AND (degraded_since IS NULL OR degraded_since > ${this.dialect.nowSeconds} - ${DEGRADED_PIN_SECONDS})`;
+			SELECT session_id, snapshot_id FROM head_records
+			UNION SELECT session_id, degraded_from FROM head_records WHERE degraded_from IS NOT NULL AND (degraded_since IS NULL OR degraded_since > ${this.dialect.nowSeconds} - ${DEGRADED_PIN_SECONDS})`;
 	}
 
 	/**
