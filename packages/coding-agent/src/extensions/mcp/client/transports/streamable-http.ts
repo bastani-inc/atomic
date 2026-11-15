@@ -31,8 +31,15 @@ export interface SseEvent {
 
 export interface ConsumeSseOptions {
 	maxEventBytes?: number;
-	onEvent(event: SseEvent): void;
-	/** Called for every `id` field, including events without data (for example resumption priming events). */
+	/**
+	 * Called for every event with data. `terminated` is false for the event pending when the stream ended, which
+	 * lacks its terminating blank line and may be cut off.
+	 */
+	onEvent(event: SseEvent, terminated: boolean): void;
+	/**
+	 * Called with the ID of every event terminated by a blank line, including events without data (for example
+	 * resumption priming events). An event cut off by the end of the stream never reports its ID.
+	 */
 	onId?(id: string): void;
 	/** Called for every valid `retry` field, in milliseconds. */
 	onRetry?(delayMs: number): void;
@@ -60,14 +67,19 @@ export async function consumeSseStream(stream: ReadableStream<Uint8Array>, optio
 	let dataBytes = 0;
 	const maxEventBytes = options.maxEventBytes ?? DEFAULT_MAX_MESSAGE_BYTES;
 
-	const dispatch = () => {
+	const dispatch = (terminated: boolean) => {
+		// An event's ID counts as received only once the whole event has arrived.
+		if (terminated && eventId !== undefined) options.onId?.(eventId);
 		if (dataLines.length === 0) {
 			eventName = undefined;
 			eventId = undefined;
 			return;
 		}
 		const data = dataLines.join("\n");
-		options.onEvent({ ...(eventName ? { event: eventName } : {}), data, ...(eventId ? { id: eventId } : {}) });
+		options.onEvent(
+			{ ...(eventName ? { event: eventName } : {}), data, ...(eventId ? { id: eventId } : {}) },
+			terminated,
+		);
 		eventName = undefined;
 		eventId = undefined;
 		dataLines = [];
@@ -76,7 +88,7 @@ export async function consumeSseStream(stream: ReadableStream<Uint8Array>, optio
 
 	const processLine = (line: string) => {
 		if (line === "") {
-			dispatch();
+			dispatch(true);
 			return;
 		}
 		if (line.startsWith(":")) return;
@@ -89,10 +101,8 @@ export async function consumeSseStream(stream: ReadableStream<Uint8Array>, optio
 			if (dataBytes > maxEventBytes) throw new Error(`MCP SSE event exceeds ${maxEventBytes} bytes`);
 			dataLines.push(value);
 		} else if (field === "event") eventName = value;
-		else if (field === "id" && !value.includes("\0")) {
-			eventId = value;
-			options.onId?.(value);
-		} else if (field === "retry" && /^\d+$/.test(value)) options.onRetry?.(Number(value));
+		else if (field === "id" && !value.includes("\0")) eventId = value;
+		else if (field === "retry" && /^\d+$/.test(value)) options.onRetry?.(Number(value));
 	};
 
 	// SSE lines end with CRLF, LF, or a lone CR.
@@ -138,7 +148,7 @@ export async function consumeSseStream(stream: ReadableStream<Uint8Array>, optio
 		consumeLines(tail);
 		// The last line needs no line break, and the end of the stream ends the pending event.
 		processLine(takePendingLine(""));
-		dispatch();
+		dispatch(false);
 	} catch (error) {
 		// Releasing the lock alone leaves the response open; the original error wins over a failed cancel.
 		await reader.cancel().catch(() => {});
@@ -430,14 +440,15 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 			onRetry: (delayMs) => {
 				cursor.retryMs = delayMs;
 			},
-			onEvent: (event) => {
+			onEvent: (event, terminated) => {
 				// Events without data prime resumption; other event types are not JSON-RPC.
 				if (!event.data.trim() || (event.event !== undefined && event.event !== "message")) return;
 				let message: JsonRpcMessage;
 				try {
 					message = parseJsonRpcMessage(JSON.parse(event.data));
 				} catch (error) {
-					this.emitError(error);
+					// An event the stream ended in the middle of is discarded; a resume replays it.
+					if (terminated) this.emitError(error);
 					return;
 				}
 				onMessage?.(message);
