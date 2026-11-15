@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import type { SqliteStatement } from "./database.js";
 
 /** The database engines a store's SQL is written for. */
@@ -346,10 +345,23 @@ const POSTGRES_IDENTIFIER_BYTES = 63;
 /** Hex digits of the hash that ends a shortened Postgres identifier. */
 const POSTGRES_IDENTIFIER_HASH_DIGITS = 8;
 
+const FNV_OFFSET = 0xcbf29ce484222325n;
+const FNV_PRIME = 0x100000001b3n;
+const U64 = (1n << 64n) - 1n;
+
+/**
+ * 64-bit FNV-1a of `name`'s characters, folded to `POSTGRES_IDENTIFIER_HASH_DIGITS` hex digits: computed in plain
+ * JavaScript so storage modules stay free of runtime-specific imports. Names are ASCII, written in store code.
+ */
+function identifierHash(name: string): string {
+	let hash = FNV_OFFSET;
+	for (let index = 0; index < name.length; index++) hash = ((hash ^ BigInt(name.charCodeAt(index))) * FNV_PRIME) & U64;
+	return ((hash ^ (hash >> 32n)) & 0xffffffffn).toString(16).padStart(POSTGRES_IDENTIFIER_HASH_DIGITS, "0");
+}
+
 function postgresIdentifier(name: string): string {
-	if (Buffer.byteLength(name) <= POSTGRES_IDENTIFIER_BYTES) return name;
-	const hash = createHash("sha256").update(name).digest("hex").slice(0, POSTGRES_IDENTIFIER_HASH_DIGITS);
-	return `${name.slice(0, POSTGRES_IDENTIFIER_BYTES - POSTGRES_IDENTIFIER_HASH_DIGITS - 1)}_${hash}`;
+	if (name.length <= POSTGRES_IDENTIFIER_BYTES) return name;
+	return `${name.slice(0, POSTGRES_IDENTIFIER_BYTES - POSTGRES_IDENTIFIER_HASH_DIGITS - 1)}_${identifierHash(name)}`;
 }
 
 function postgresSchemaObjects(names: readonly string[]): SqliteStatement {
