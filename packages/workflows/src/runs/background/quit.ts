@@ -3,10 +3,7 @@ import { isDurableWorkflowResumable } from "../../durable/resume-eligibility.js"
 import { recordRunTimingCheckpointAsync } from "../../durable/run-timing.js";
 import { TASK_RESULT_CHECKPOINT_CONTROL_PREFIX } from "../../durable/stage-primitive.js";
 import { availableStoreDurableBackend } from "../../durable/store-backend.js";
-import {
-	getLoadableDurableWorkflow,
-	transitionDurableWorkflowStatus,
-} from "../../durable/workflow-status-transition.js";
+import { getLoadableDurableWorkflow } from "../../durable/workflow-status-transition.js";
 import type { ToolAdmissionBoundary } from "../../engine/run-tool-admission-boundary.js";
 import {
 	toolControlRegistry as defaultToolControlRegistry,
@@ -433,13 +430,16 @@ async function markDurableQuit(
 	// transition must surface: swallowing it here would let quitRun
 	// advertise a newly resumable pause no future process could resume from.
 	// Existing durable progress remains resumable even when this transition fails.
-	const transitioned = await transitionDurableWorkflowStatus(
-		backend,
+	// The quitting session owns the run and stays, so its pause is not a release (#5167): `null` says so explicitly.
+	const transitioned = await backend.commitWorkflowStatusTransition(
 		runId,
 		["running", "paused"],
 		"paused",
 		undefined,
 		resumable,
+		undefined,
+		undefined,
+		null,
 	);
 	if (!transitioned) return "refused";
 	// Persist the exact accumulated run elapsed at quit time so a later durable
