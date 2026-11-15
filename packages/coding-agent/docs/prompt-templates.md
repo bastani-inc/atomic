@@ -67,6 +67,8 @@ Type `/` followed by the template name in the editor. Autocomplete shows availab
 /component Button "click handler" # Multiple arguments
 ```
 
+The template name ends at the first space, tab or line break, so arguments can also start on a new line (Shift+Enter). Line breaks inside the arguments are kept. The same applies to extension commands and `/skill:name` commands.
+
 ## Arguments
 
 Templates support positional arguments, defaults, and simple slicing:

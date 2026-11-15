@@ -67,6 +67,7 @@ export const WORKER_REQUEST_LANES: Readonly<Record<AnsweredWorkerRequest, Worker
 	delivery: "detached",
 	"delivery-ready": "detached",
 	place: "detached",
+	"rate-acquire": "detached",
 };
 
 /** Schedules one worker's requests by {@link WorkerRequestLane}; a request that fails releases its successors too. */
