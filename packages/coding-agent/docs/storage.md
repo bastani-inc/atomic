@@ -170,7 +170,7 @@ The first machine to join also needs `CREATE` on the schema, to create the table
 - **`StorageUnavailableError`** when the store opens: the server refused the password (`28P01`), the database does not exist (`3D000`), the role lacks a privilege it needs (`42501`), or the server is older than PostgreSQL 14. Atomic's tables need PostgreSQL 16: on 14 and 15 the adapter connects, but sessions and workflow runs fail to open.
 - **A certificate error** (`self-signed certificate in certificate chain`, `unable to get local issuer certificate`): the server's CA is not one Node.js trusts. Add `sslrootcert`, as in [TLS](#tls).
 - **`too many connections`** (`53300`): lower `maxConnections`, raise the server's `max_connections`, or put a [pooler](#connection-poolers) in front.
-- **`StorageTransientError` with code `lock-conflict` or `transaction-timeout`**: the server cancelled a transaction that waited too long for a lock or ran past `statementTimeoutMs`. Persistent ones point to an overloaded server.
+- **`StorageTransientError` with code `lock-conflict` or `transaction-timeout`**: the server cancelled a statement or transaction that waited too long for a lock or ran past `statementTimeoutMs`, and nothing it wrote was kept. Persistent ones point to an overloaded server.
 - **Connections dropped during a failover or a pooler restart** are reported as `StorageTransientError` with code `connection-lost`, as for [libSQL](#turso-and-libsql).
 
 ## Turso and libSQL

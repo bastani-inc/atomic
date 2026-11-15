@@ -24,6 +24,15 @@ import { makeTempDirectory, removeTempDirectory, writeTextSync } from "../helper
 
 /** A statement the facade gives up on only after its five runs and their backoff, about four seconds. */
 const TRANSIENT_RETRIES_TIMEOUT_MS = 20_000;
+/** The statement timeout of the autocommit timeout tests. */
+const AUTOCOMMIT_TIMEOUT_MS = 1000;
+/**
+ * The most five runs cancelled at `AUTOCOMMIT_TIMEOUT_MS`, and the facade's backoff between them (at most 4.5 s), may
+ * take; the client's own timer would end the first run only after `AUTOCOMMIT_TIMEOUT_MS` plus 5 s.
+ */
+const AUTOCOMMIT_RETRIES_BOUND_MS = 5 * (AUTOCOMMIT_TIMEOUT_MS + 1000) + 4500;
+/** How long a cancelled statement may take to leave pg_stat_activity. */
+const CANCEL_SETTLE_MS = 2000;
 
 function assertTransient(
 	error: unknown,
@@ -383,14 +392,90 @@ describe.skipIf(postgresSkipReason !== undefined)("Postgres storage adapter (#47
 		});
 	});
 
-	test("gives up on a statement outside a transaction that outlives its timeout, outcome unknown (#4793)", async () => {
+	test(
+		"the server cancels an autocommit read or write at statementTimeoutMs, and the write never lands (#4901)",
+		async () => {
+			await withPostgresDatabase(async ({ open, admin, name }) => {
+				const database = await open({ statementTimeoutMs: AUTOCOMMIT_TIMEOUT_MS });
+				await database.exec("CREATE TABLE items (id BIGINT)");
+				for (const call of [
+					() => database.get("SELECT pg_sleep(8)"),
+					() => database.run("INSERT INTO items(id) SELECT ? FROM pg_sleep(8)", 1),
+					() => database.exec("INSERT INTO items(id) SELECT 2 FROM pg_sleep(8)"),
+				]) {
+					const started = performance.now();
+					const error = await call().catch((caught) => caught);
+					assertTransient(error, "transaction-timeout", "not-applied");
+					// Each run is cancelled by the server at the timeout; the facade runs a not-applied call five times.
+					assert.equal(error.attempts, 5);
+					assert.ok(performance.now() - started < AUTOCOMMIT_RETRIES_BOUND_MS, `${performance.now() - started}`);
+				}
+				// Nothing still runs on the server, so no write can land after the failure was reported.
+				assert.deepEqual(
+					await admin.get(
+						"SELECT count(*) AS running FROM pg_stat_activity WHERE datname = ? AND state = 'active' AND query LIKE '%pg_sleep(8)%'",
+						name,
+					),
+					{ running: 0 },
+				);
+				assert.deepEqual(await database.all("SELECT id FROM items"), []);
+				// Every autocommit statement runs with the timeout, and the connections stay usable after the cancellations.
+				assert.deepEqual(await database.get("SELECT current_setting('statement_timeout') AS timeout"), {
+					timeout: "1s",
+				});
+				await database.run("INSERT INTO items(id) SELECT ? FROM pg_sleep(0.1)", 3);
+				await database.exec("INSERT INTO items(id) VALUES (4); INSERT INTO items(id) VALUES (5)");
+				await database.transaction((tx) => tx.run("INSERT INTO items(id) SELECT ? FROM pg_sleep(0.1)", 6));
+				assert.deepEqual(await database.all("SELECT id FROM items ORDER BY id"), [
+					{ id: 3 },
+					{ id: 4 },
+					{ id: 5 },
+					{ id: 6 },
+				]);
+			});
+		},
+		AUTOCOMMIT_RETRIES_BOUND_MS * 4,
+	);
+
+	test("runs statements that cannot run in a transaction block outside one (#4901)", async () => {
 		await withPostgresDatabase(async ({ open }) => {
-			const database = await open({ statementTimeoutMs: 100 });
-			const error = await database.get("SELECT pg_sleep(30)").catch((caught) => caught);
-			assertTransient(error, "connection-lost", "unknown");
+			const database = await open();
+			await database.exec("CREATE TABLE items (id BIGINT)");
+			await database.exec("VACUUM items");
+			await database.run("VACUUM items");
 			assert.deepEqual(await database.get("SELECT 1 AS one"), { one: 1 });
 		});
 	});
+
+	test(
+		"a statement the client gives up on is cancelled on the server, outcome unknown (#4901)",
+		async () => {
+			await withPostgresDatabase(async ({ open, admin, name }) => {
+				const holder = await open();
+				const database = await open({ statementTimeoutMs: 100 });
+				await holder.exec("CREATE TABLE items (id BIGINT)");
+				const running = async () =>
+					(
+						await admin.get<{ running: number }>(
+							"SELECT count(*) AS running FROM pg_stat_activity WHERE datname = ? AND state = 'active' AND query = 'VACUUM items'",
+							name,
+						)
+					)?.running;
+				await holder.transaction(async (tx) => {
+					// VACUUM cannot run in a transaction block, so only the client's timer bounds its wait for the lock.
+					await tx.exec("LOCK TABLE items IN ACCESS EXCLUSIVE MODE");
+					const error = await database.exec("VACUUM items").catch((caught) => caught);
+					assertTransient(error, "connection-lost", "unknown");
+					const deadline = performance.now() + CANCEL_SETTLE_MS;
+					while ((await running()) !== 0 && performance.now() < deadline)
+						await new Promise((resolve) => setTimeout(resolve, 50));
+					assert.equal(await running(), 0);
+				});
+				assert.deepEqual(await database.get("SELECT 1 AS one"), { one: 1 });
+			});
+		},
+		TRANSIENT_RETRIES_TIMEOUT_MS,
+	);
 
 	test("a connection the server ends during a transaction is lost, then replaced (#4793)", async () => {
 		await withPostgresDatabase(async ({ open, admin, name }) => {
