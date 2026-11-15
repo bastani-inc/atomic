@@ -9,6 +9,7 @@ import {
 } from "../workflow-stage-target.js";
 import { normalizeGroup, workflowInvocationRefusalFor } from "../group.js";
 import { isMessage } from "./client-message-validation.js";
+import { intercomMessageSizeError } from "../message-size.js";
 import {
 	resolveSessionTarget,
 	resolveSessionTargetByHostSessionId,
@@ -231,6 +232,11 @@ export function handleBrokerSend(
     write(socket, { type: "delivery_failed", messageId, attemptId, reason: "Invalid message format" });
     return;
   }
+  const sizeError = intercomMessageSizeError(message.content);
+  if (sizeError !== undefined) {
+    write(socket, { type: "delivery_failed", messageId, attemptId, reason: sizeError });
+    return;
+  }
   const hasRequirePendingReply = Object.prototype.hasOwnProperty.call(clientMessage, "requirePendingReply");
   if (hasRequirePendingReply && clientMessage.requirePendingReply !== true) {
     write(socket, { type: "delivery_failed", messageId, attemptId, reason: "Invalid requirePendingReply format" });
@@ -425,7 +431,7 @@ export function handleBrokerSend(
   // reply whose delivery failed can be sent again; the stage's inbox shows a reply once however often it arrives.
   const awayStageAsker =
     resolution.kind === "not_found" && workflowTarget === undefined && requirePendingReply &&
-    message.replyTo !== undefined && pendingQuestions.hasDormantReply(message.replyTo, fromSession.info.id) &&
+    message.replyTo !== undefined && pendingQuestions.hasDormantReply(message.replyTo, fromSession.info.id, fromSession.registrationReturnAddress) &&
     resolveWorkflowStageAlias?.(fromSession, trimmedTo) !== undefined;
   const stageTarget =
     resolution.kind === "not_found" && workflowTarget === undefined &&
@@ -464,7 +470,7 @@ export function handleBrokerSend(
   const awayAsker =
     routeRemote === undefined && resolution.kind === "not_found" && workflowTarget === undefined &&
     requirePendingReply && message.replyTo !== undefined
-      ? pendingQuestions.dormantReply(message.replyTo, fromSession.info.id)
+      ? pendingQuestions.dormantReply(message.replyTo, fromSession.info.id, fromSession.registrationReturnAddress)
       : undefined;
   // An asker already back under another Intercom id (its own session reconnected) is reached as before, by name.
   const askerBackElsewhere =

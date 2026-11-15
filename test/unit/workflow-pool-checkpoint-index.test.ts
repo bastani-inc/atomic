@@ -417,6 +417,9 @@ async function validateWithBoth(
 test("the indexed validator accepts and rejects exactly what the full-history validator does", async () => {
 	for (const seed of [1, 2, 3, 4, 5, 6, 7, 8]) {
 		const f = await journalFixture();
+		// Thousands of commits, each flushed to disk under the store's `synchronous=FULL`, took 30-34 s on a loaded
+		// Windows host. The validators' decisions, not durability, are under test: the connection skips the flush.
+		await f.database.exec("PRAGMA synchronous=OFF");
 		try {
 			const children = 6;
 			const g = generator(seed, children);

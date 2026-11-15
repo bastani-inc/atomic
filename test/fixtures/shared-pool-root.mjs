@@ -51,7 +51,13 @@ const placementCode = (error) => {
 
 const childPath = fileURLToPath(new URL("./shared-pool-child.ts", import.meta.url));
 const exportName =
-	{ bound: "boundChild", distributed: "distributedChild", typed: "typedFailureChild", remote: "remoteStageChild" }[scenario] ??
+	{
+		bound: "boundChild",
+		distributed: "distributedChild",
+		typed: "typedFailureChild",
+		remote: "remoteStageChild",
+		scale: "scaleChild",
+	}[scenario] ??
 	"sharedChild";
 // A journal whose server needs a token reads it from a file every host has (SHARED_POOL_TOKEN_FILE).
 const secrets =
@@ -86,7 +92,9 @@ const parent = workflow({
 								? { directory }
 								: scenario === "distributed"
 									? { index, workMs: Number(process.env.SHARED_POOL_WORK_MS ?? "5000") }
-									: { directory, index, hosts: 2 },
+									: scenario === "scale"
+										? { index, steps: Number(process.env.SHARED_POOL_STEPS ?? "10") }
+										: { directory, index, hosts: 2 },
 				}),
 			),
 		);
@@ -111,6 +119,9 @@ const options = {
 		count: Number(workers),
 		definitions: [{ path: childPath, exportName }],
 		...(process.env.SHARED_POOL_LEASE_MS === undefined ? {} : { leaseMs: Number(process.env.SHARED_POOL_LEASE_MS) }),
+		...(process.env.SHARED_POOL_STARTUP_TIMEOUT_MS === undefined
+			? {}
+			: { startupTimeoutMs: Number(process.env.SHARED_POOL_STARTUP_TIMEOUT_MS) }),
 	},
 	workers: {
 		placement: "shared",

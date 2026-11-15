@@ -30,6 +30,7 @@ import { type ClientIdentity, getIdentityHeaders } from "../utils/identity.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
+import { createStreamDeadline, withStreamDeadline } from "../utils/stream-deadline.ts";
 import { getSystemMessageText } from "../utils/text.ts";
 import { collapseSystemMessages, getCurrentTools, getInitialSystemMessage } from "../utils/transcript.ts";
 import type { GoogleApiThinkingLevel, ResolvedGoogleThinkingLevel } from "./google-shared.ts";
@@ -96,6 +97,7 @@ export const stream: StreamFunction<"google-vertex", GoogleVertexOptions> = (
 			stopReason: "pending",
 			timestamp: Date.now(),
 		};
+		const streamDeadline = createStreamDeadline(options?.streamDeadlineMs, options?.signal);
 
 		try {
 			const apiKey = options && resolveApiKey(options);
@@ -119,13 +121,20 @@ export const stream: StreamFunction<"google-vertex", GoogleVertexOptions> = (
 			if (nextParams !== undefined) {
 				params = nextParams as GenerateContentParameters;
 			}
-			const googleStream = await retryGoogleRequest(() => client.models.generateContentStream(params), options);
+			// The deadline signal aborts the SDK request, closing the connection when the stream stalls.
+			const requestParams: GenerateContentParameters = streamDeadline.signal
+				? { ...params, config: { ...params.config, abortSignal: streamDeadline.signal } }
+				: params;
+			const googleStream = await retryGoogleRequest(() => client.models.generateContentStream(requestParams), {
+				...options,
+				signal: streamDeadline.signal,
+			});
 
 			stream.push({ type: "start", partial: output });
 			let currentBlock: TextContent | ThinkingContent | null = null;
 			const blocks = output.content;
 			const blockIndex = () => blocks.length - 1;
-			for await (const chunk of googleStream) {
+			for await (const chunk of withStreamDeadline(googleStream, streamDeadline.deadlineMs, streamDeadline.abort)) {
 				await options?.onProviderStreamEvent?.(chunk, model);
 				// Vertex uses the same @google/genai GenerateContentResponse type as Gemini.
 				// responseId is documented there as an output-only identifier for each response.
@@ -312,6 +321,8 @@ export const stream: StreamFunction<"google-vertex", GoogleVertexOptions> = (
 			output.retryAfterMs = error instanceof Error ? getProviderRetryAfterMs(error) : undefined;
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
+		} finally {
+			streamDeadline.cleanup();
 		}
 	})();
 

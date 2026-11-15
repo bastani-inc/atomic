@@ -46,7 +46,11 @@ export interface RawLineRange {
 export interface NumberedRegion {
 	readonly __brand: "NumberedRegion";
 	lines: string[];
-	messageSpans?: { role: "user" | "assistant" | "tool"; start: number; end: number }[];
+	/**
+	 * Where each serialized message lies, as the serializer recorded it. Roles and message starts come
+	 * from here, never from body text. `previousSummary` marks the prior boundary's flat text.
+	 */
+	messageSpans?: { role: "user" | "assistant" | "tool"; start: number; end: number; previousSummary?: true }[];
 	headerLineNumbers: ReadonlySet<number>;
 	priorMarkerNs: ReadonlyMap<number, number>;
 	/** Optional future protected spans, expressed as one-based line numbers. */

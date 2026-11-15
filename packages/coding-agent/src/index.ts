@@ -1197,6 +1197,7 @@ export { pickWhimsicalWorkingMessage } from "./modes/interactive/whimsical-messa
 export { createChildProcessEnvironment, spawnProcess } from "./utils/child-process.ts";
 // Clipboard utilities
 export { copyToClipboard } from "./utils/clipboard.js";
+export { redactCredentialShapes } from "./utils/credential-redaction.js";
 export { parseFrontmatter, stripFrontmatter } from "./utils/frontmatter.ts";
 export {
 	isSafeFsWatchPathError,
@@ -1258,6 +1259,7 @@ export {
 	type ManagedToolTimeoutFields,
 } from "./utils/managed-tool-errors.ts";
 export { detectSupportedImageMimeTypeFromFile } from "./utils/mime.ts";
+export { isPathInside, type PathInsideApi } from "./utils/path-inside.ts";
 // Shell utilities
 export { getPowerShellConfig, getShellConfig } from "./utils/shell.ts";
 export {

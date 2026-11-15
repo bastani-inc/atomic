@@ -71,7 +71,7 @@ The SDK takes the same fields as `createAgentSession({ snapshots })` and workflo
 When a session resumes, Atomic checks every checkout the session recorded a snapshot for, not only the one that contains its working directory:
 
 - If the tree matches and `HEAD` is the recorded commit or a descendant of it, for example after you committed the recorded edits, the session resumes in place.
-- If the checkout that contains the session's working directory changed since its snapshot but is still the one the session worked in on this machine (its repository holds the snapshot's commit, or Atomic restored it here), the session continues in it as it is, without a notice. Nothing is restored for it. If looking for that checkout fails, the resume carries on with the restore described next.
+- If the checkout that contains the session's working directory changed since its snapshot but is still the one the session worked in on this machine (its repository holds the snapshot's commit or the session's [snapshot ref](#snapshot-refs-in-your-repository), or Atomic restored it here), the session continues in it as it is, without a notice. Another clone at the same path has neither, so it is restored as described below. Nothing is restored for it. If looking for that checkout fails, the resume carries on with the restore described next.
 - A session that an earlier resume moved into a restored worktree, and that has not worked in it since, returns to the checkout it was restored from when that checkout is on this machine again, with a notice that says whether it still matches the snapshot.
 - If another checkout drifted, or the checkout that contains the working directory does not exist on this machine, belongs to another clone, or is no longer a repository with commits, Atomic restores its snapshot automatically into a fresh worktree under `~/.atomic/agent/worktree-snapshots/worktrees/`, prints one line per restored checkout, and continues the session there. Your own checkout is never written to. The lines, and any restore warnings, appear at startup and after `/resume` or `/import` in the TUI, and the session records the warnings with each restore.
 - A checkout other than the one that contains the session's working directory never stops the resume. One the session worked in on this machine (a sibling worktree, for example) that changed since its snapshot continues as it is. One that is missing, or that another clone holds at its path, is restored into a fresh worktree when Git is available. One that cannot be checked or restored is left out, and a warning names its path, its snapshot and why. Each restored worktree then gets its [blueprints](/guides/resume-on-any-machine) built, and a blueprint step that fails never leaves a checkout out or removes its worktree: it is a warning, and the resume continues.
@@ -133,6 +133,24 @@ Each restored checkout gets one line with its restore phases in seconds: `fetch`
 ## Moving a session as a file
 
 `/export session.jsonl` writes the session with the patch and bundle content of its snapshots inline, each once, and reports how much it includes. `--import session.jsonl` and `/import` check every blob against its hash and store it in the target storage before the session is saved. `/share` leaves snapshot content out of the gist.
+
+## Snapshot refs in your repository
+
+Each snapshot is also a Git commit in the checkout's repository. Atomic keeps the latest one each session recorded of a checkout reachable from a ref, `refs/atomic/snapshots/<session-id>/<checkout>`, so `git gc` and `git maintenance` do not prune it. This is how a resume recognises your checkout as the one the session worked in, even after you changed it. A session's ref for a checkout:
+
+- moves to each new snapshot of that checkout, so it never keeps more than one snapshot commit alive per session and checkout;
+- is deleted when the session's work moves to a worktree restored from that checkout, or back from it, and records a snapshot there;
+- is deleted from every checkout on this machine when you delete the session from the session picker, `/resume`, or the SDK's `SessionManager.deleteSession`.
+
+The refs are outside `refs/heads` and `refs/tags`, so `git push`, `git push --all`, `git push --tags` and a snapshot's bundle never include them. `git push --mirror` pushes every ref and would push them, together with the snapshot commits, which contain your uncommitted changes except the files described in [What is left out](#what-is-left-out). They also appear in `git for-each-ref` and `git log --all`, as commits titled `Atomic worktree snapshot`. To exclude them from `git log --all`, use `git log --exclude='refs/atomic/*' --all`.
+
+A session deleted on another machine, or through `SessionStore.delete` in the SDK, leaves its refs here. Remove every Atomic snapshot ref of a repository with:
+
+```sh
+git for-each-ref --format='delete %(refname)' refs/atomic/snapshots/ | git update-ref --stdin
+```
+
+A session recorded by an older Atomic has no ref until its next turn records a snapshot of the checkout. Until then, if `git gc` pruned its snapshot commit, resuming it restores the checkout into a fresh worktree as for another clone.
 
 ## Retention and collection
 

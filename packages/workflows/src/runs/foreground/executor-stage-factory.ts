@@ -60,6 +60,7 @@ import type { RunStageResidency } from "./run-residency.js";
 import { StageAbortListeners } from "./stage-abort-listeners.js";
 import { recordStageSessionCompaction } from "./stage-background-compaction.js";
 import type { StageControlRegistry } from "./stage-control-registry.js";
+import { persistStageEndWhenRunEndsIt, runEndedInFlightStages } from "./stage-end-by-run-end.js";
 import { type IdleStage, stageIdleReleaser } from "./stage-idle-release.js";
 import {
 	createStageContext as createInnerStageContext,
@@ -139,6 +140,7 @@ export function createWorkflowStageFactory(input: {
 			kind: "stage",
 		});
 		const parentIds = options?.durableParentIds ?? replayDecision.parentIds;
+		const restoredDurableParents = options?.durableParentIds !== undefined;
 		if (!sameStringSet(parentIds, provisionalParentIds)) input.tracker.replaceParents(stageId, parentIds);
 		const replaySource = replayDecision.kind === "replay" ? replayDecision.source : undefined;
 		const executeReplaySource = replayDecision.kind === "execute" ? replayDecision.source : undefined;
@@ -625,34 +627,7 @@ export function createWorkflowStageFactory(input: {
 			return stageStartEntry;
 		};
 
-		const finalizeStageSnapshot = async (): Promise<boolean> => {
-			stageSessionHeartbeat.stop();
-			if (state.stageFinalized) return false;
-			if (stageSnapshot.endedAt !== undefined && isTerminalStage(stageSnapshot)) {
-				state.stageFinalized = true;
-				runtime.unregisterWorkflowExitCleanup();
-				stageFailFastScope?.activeStages.delete(stageId);
-				input.tracker.onSettle(stageId);
-				return false;
-			}
-			if (state.skippedForParallelFailFast) {
-				stageSnapshot.status = "skipped";
-				stageSnapshot.skippedReason = "fail-fast";
-			}
-			state.stageFinalized = true;
-			runtime.unregisterWorkflowExitCleanup();
-			stageSnapshot.endedAt = Date.now();
-			stageSnapshot.durationMs = elapsedStageMs(stageSnapshot, stageSnapshot.endedAt);
-			applyModelFallbackMeta(innerCtx.__modelFallbackMeta());
-			const artifacts = input.takeTerminalArtifacts?.(replayKey);
-			if (artifacts !== undefined && artifacts.length > 0) stageSnapshot.artifacts = artifacts;
-			input.activeStore.recordStageEnd(input.runId, stageSnapshot);
-			input.stageUiBroker.cancelStagePrompt(
-				input.runId,
-				stageId,
-				new Error(`atomic-workflows: stage ${stageId} completed with pending custom UI`),
-			);
-			input.stageUiBroker.clearStageStatuses(input.runId, stageId);
+		const persistStageEnd = async (): Promise<void> => {
 			if (input.opts.onStageEnd) {
 				await runCallback(
 					{ kind: "workflow.stage_adapter", name: `onStageEnd:${name}`, runId: input.runId, stageId },
@@ -695,6 +670,41 @@ export function createWorkflowStageFactory(input: {
 					...stageReplayFields(stageSnapshot),
 				});
 			}
+		};
+
+		const finalizeStageSnapshot = async (): Promise<boolean> => {
+			stageSessionHeartbeat.stop();
+			if (state.stageFinalized) return false;
+			if (stageSnapshot.endedAt !== undefined && isTerminalStage(stageSnapshot)) {
+				state.stageFinalized = true;
+				runtime.unregisterWorkflowExitCleanup();
+				stageFailFastScope?.activeStages.delete(stageId);
+				input.tracker.onSettle(stageId);
+				// Its run ended killed or cancelled and ended the stage in the store (#4875): record that end.
+				if (runEndedInFlightStages(input.activeStore, input.runId)) await persistStageEnd();
+				return false;
+			}
+			if (state.skippedForParallelFailFast) {
+				stageSnapshot.status = "skipped";
+				stageSnapshot.skippedReason = "fail-fast";
+			}
+			state.stageFinalized = true;
+			runtime.unregisterWorkflowExitCleanup();
+			stageSnapshot.endedAt = Date.now();
+			stageSnapshot.durationMs = elapsedStageMs(stageSnapshot, stageSnapshot.endedAt);
+			applyModelFallbackMeta(innerCtx.__modelFallbackMeta());
+			const artifacts = input.takeTerminalArtifacts?.(replayKey);
+			if (artifacts !== undefined && artifacts.length > 0) stageSnapshot.artifacts = artifacts;
+			input.activeStore.recordStageEnd(input.runId, stageSnapshot);
+			input.stageUiBroker.cancelStagePrompt(
+				input.runId,
+				stageId,
+				new Error(`atomic-workflows: stage ${stageId} completed with pending custom UI`),
+			);
+			input.stageUiBroker.clearStageStatuses(input.runId, stageId);
+			await persistStageEnd();
+			if (!isTerminalStage(stageSnapshot))
+				persistStageEndWhenRunEndsIt(input.activeStore, input.runId, stageSnapshot, persistStageEnd);
 			stageFailFastScope?.activeStages.delete(stageId);
 			input.tracker.onSettle(stageId);
 			return true;
@@ -898,7 +908,9 @@ export function createWorkflowStageFactory(input: {
 			options,
 			adapters: input.adapters,
 			hasContinuation: input.opts.continuation !== undefined,
-			hasScopedParents: stageFailFastScope?.parentIds !== undefined,
+			// Parents restored from the durable record are the stage's source parents: a cached sibling that
+			// replayed first has moved the frontier, so it must not replace them at prompt start (#4871).
+			hasScopedParents: stageFailFastScope?.parentIds !== undefined || restoredDurableParents,
 		});
 		const context = createStageContext({ runtime, runTrackedStageCall });
 		unreachableStageContexts.register(

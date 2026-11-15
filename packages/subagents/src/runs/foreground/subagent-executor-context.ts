@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionContext, SessionManager } from "@bastani/atomic";
 import { resolveExecutionAgentScope } from "../../agents/agent-scope.js";
-import type { AgentConfig } from "../../agents/agents.js";
+import { type AgentConfig, contextAgentDiscoveryOptions } from "../../agents/agents.js";
 import {
 	applyIntercomBridgeToAgent,
 	resolveIntercomBridge,
@@ -79,7 +79,8 @@ export function prepareExecutionContext(input: {
 	deps.state.currentSessionId = resolveCurrentSessionId(ctx.sessionManager);
 	const initialDiscoveryCwd =
 		(effectiveParams.tasks?.[0] as BurstTaskParam | undefined)?.[BURST_TASK_DISCOVERY_CWD] ?? effectiveCwd;
-	const discoveredAgents = deps.discoverAgents(initialDiscoveryCwd, scope).agents;
+	const discovery = contextAgentDiscoveryOptions(ctx);
+	const discoveredAgents = deps.discoverAgents(initialDiscoveryCwd, scope, discovery).agents;
 	let resolvedTaskAgents: AgentConfig[] | undefined;
 	if (effectiveParams.tasks?.some((task) => (task as BurstTaskParam)[BURST_TASK_DISCOVERY_CWD] !== undefined)) {
 		const agentsByCwd = new Map<string, AgentConfig[]>([[initialDiscoveryCwd, discoveredAgents]]);
@@ -89,7 +90,7 @@ export function prepareExecutionContext(input: {
 			const discoveryCwd = (task as BurstTaskParam)[BURST_TASK_DISCOVERY_CWD] ?? effectiveCwd;
 			let taskAgents = agentsByCwd.get(discoveryCwd);
 			if (!taskAgents) {
-				taskAgents = deps.discoverAgents(discoveryCwd, scope).agents;
+				taskAgents = deps.discoverAgents(discoveryCwd, scope, discovery).agents;
 				agentsByCwd.set(discoveryCwd, taskAgents);
 			}
 			const agent = taskAgents.find((candidate) => candidate.name === task.agent);
