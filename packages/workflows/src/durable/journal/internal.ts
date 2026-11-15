@@ -4,6 +4,8 @@ import type {
 	SqliteStatement,
 	SqliteTransactionOptions,
 	StorageDialect,
+	StorageNotificationSubscription,
+	StorageNotifications,
 } from "@bastani/atomic/storage";
 import {
 	type AppendOutcome,
@@ -116,6 +118,8 @@ export interface SqlPoolStorage {
 	readonly tables: Readonly<{ runs: string; events: string; leases: string }>;
 	/** The SQL dialect of the journal's database: the pool's statements ask it for what differs between engines. */
 	readonly dialect: StorageDialect;
+	/** Wake-ups through the journal's database, when it delivers them (Postgres): see {@link poolReadyChannel}. */
+	readonly notifications?: StorageNotifications;
 }
 
 /** The journal's runs table, after the prefix. */
@@ -130,6 +134,15 @@ export function poolSessionPrefix(storage: Pick<SqlPoolStorage, "tables" | "dial
 	const { runs } = storage.tables;
 	if (storage.dialect.maxIdentifierBytes === undefined || !runs.endsWith(RUNS_TABLE)) return `${runs}_pool_`;
 	return `${runs.slice(0, -RUNS_TABLE.length)}wf_ps_`;
+}
+
+/**
+ * The channel a pool write notifies, with the root's run id, when the transaction that made work ready or ended an
+ * attempt commits: `<prefix>pool_ready` (#5103).
+ */
+export function poolReadyChannel(storage: Pick<SqlPoolStorage, "tables">): string {
+	const { runs } = storage.tables;
+	return `${runs.endsWith(RUNS_TABLE) ? runs.slice(0, -RUNS_TABLE.length) : `${runs}_`}pool_ready`;
 }
 
 /** The storage errors that say the store did not take a write, rather than that the write itself was refused. */
@@ -196,6 +209,23 @@ export function sqlPoolWrites(journal: RunJournal): SharedStoreWrites | undefine
 
 export function sqlPoolStorage(journal: RunJournal): SqlPoolStorage | undefined {
 	return poolStorage.get(journal);
+}
+
+/**
+ * Calls `listener` with the root's run id each time a pool write on `journal` makes that root's work ready or ends one
+ * of its attempts, and with undefined when notifications may have been missed (#5103). Undefined when the journal's
+ * database delivers no notifications; callers keep polling either way.
+ */
+export function listenPoolReady(
+	journal: RunJournal,
+	listener: (root: string | undefined) => void,
+): StorageNotificationSubscription | undefined {
+	const storage = poolStorage.get(journal);
+	const notifications = storage?.notifications;
+	if (storage === undefined || notifications === undefined) return undefined;
+	return notifications.listen(poolReadyChannel(storage), (event) =>
+		listener(event.kind === "notification" ? event.payload : undefined),
+	);
 }
 
 /**

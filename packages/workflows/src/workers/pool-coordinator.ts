@@ -6,8 +6,8 @@ import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import { setDebugSetting, type WorktreeSnapshot } from "@bastani/atomic";
-import { JournalShardUnavailableError } from "@bastani/atomic/storage";
-import { observeSqlPoolTransactions, sqlPoolStorage } from "../durable/journal/internal.js";
+import { JournalShardUnavailableError, type StorageNotificationSubscription } from "@bastani/atomic/storage";
+import { listenPoolReady, observeSqlPoolTransactions, sqlPoolStorage } from "../durable/journal/internal.js";
 import { PoolRemoteJournal } from "../durable/journal/pool-remote-journal.js";
 import { resolveRunJournal } from "../durable/journal/resolution.js";
 import "../durable/journal/workflows-host-module.js";
@@ -656,6 +656,9 @@ export class PoolCoordinator {
 	/** The newest pool control committed, as pushed to ready workers. */
 	private committedControl?: PoolControl;
 	private recoveryTimer?: NodeJS.Timeout;
+	/** The shared pool's wake-ups from its journal (#5103), and the idle workers' pauses they end. */
+	private poolReady?: StorageNotificationSubscription;
+	private readonly readyWaiters = new Set<() => void>();
 	private flushTimer?: NodeJS.Timeout;
 	private lastFlushAt = 0;
 	private batchSequence = 0;
@@ -1174,7 +1177,7 @@ export class PoolCoordinator {
 
 	/** Starts the recovery of expired attempts, every {@link RECOVERY_INTERVAL_MS}. */
 	private startRecovery(): void {
-		this.recoveryTimer = setInterval(() => {
+		const recover = () => {
 			this.counters.enter("recovery");
 			void this.recoverExpired().catch(async (error: Error) => {
 				// A late root renewal stops nothing: the next recovery runs once it lands.
@@ -1184,7 +1187,36 @@ export class PoolCoordinator {
 				if (infrastructureFaultOf(error) === "storage_unavailable") return;
 				this.fail(error);
 			});
-		}, RECOVERY_INTERVAL_MS).unref();
+		};
+		this.recoveryTimer = setInterval(recover, RECOVERY_INTERVAL_MS).unref();
+		// A shared pool's journal on Postgres says when its root's work became ready or an attempt ended (#5103): an idle
+		// worker asks for work at once, and the root settles what another host's worker ended, instead of at their polls.
+		if (this.options?.shared === undefined || this.journal === undefined) return;
+		this.poolReady = listenPoolReady(this.journal, (root) => {
+			if (root !== undefined && root !== this.root) return;
+			if (root === undefined) for (const wake of [...this.readyWaiters]) wake();
+			else this.readyWaiters.values().next().value?.();
+			if (this.satellite !== undefined) return;
+			const recoverNow = () => {
+				this.nextRecoveryAt = 0;
+				recover();
+			};
+			if (this.recovering === undefined) recoverNow();
+			else void this.recovering.finally(recoverNow);
+		});
+	}
+
+	/** An idle worker of a shared pool waits this long before it asks again, or until its root's work changes (#5103). */
+	private idleClaimPause(): Promise<void> {
+		return new Promise((resolve) => {
+			const wake = () => {
+				clearTimeout(timer);
+				this.readyWaiters.delete(wake);
+				resolve();
+			};
+			const timer = setTimeout(wake, SHARED_IDLE_CLAIM_MS);
+			this.readyWaiters.add(wake);
+		});
 	}
 
 	/** Publishes a shared pool's configuration for worker hosts, and starts its relay and stage input passes. */
@@ -2565,7 +2597,7 @@ export class PoolCoordinator {
 						if (claimed === undefined) {
 							// An idle worker of a shared pool asks again only after a pause: the workers of every host ask the
 							// same journal, a network away (#4310).
-							if (options.shared !== undefined) await delay(SHARED_IDLE_CLAIM_MS);
+							if (options.shared !== undefined) await this.idleClaimPause();
 							return undefined;
 						}
 						slot.work = claimed.work;
@@ -3278,6 +3310,7 @@ export class PoolCoordinator {
 		this.placingSignal.abort();
 		clearInterval(this.ticker);
 		clearInterval(this.recoveryTimer);
+		this.poolReady?.close();
 		clearInterval(this.mirrorTimer);
 		clearInterval(this.statsTimer);
 		clearInterval(this.sharedTimer);

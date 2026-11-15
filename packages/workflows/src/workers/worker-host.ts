@@ -9,7 +9,8 @@ import {
 	resolveGitSync,
 	restoreRunWorktree,
 } from "@bastani/atomic";
-import type { StorageSelection } from "@bastani/atomic/storage";
+import type { StorageNotificationSubscription, StorageSelection } from "@bastani/atomic/storage";
+import { listenPoolReady } from "../durable/journal/internal.js";
 import { openSelectedRunJournal } from "../durable/journal/resolution.js";
 import type { SharedPoolFleet } from "../durable/journal/shared-pool-types.js";
 import { classifySharedStoreHealth, withinStatusBudget } from "../durable/journal/shared-store-health.js";
@@ -76,6 +77,11 @@ const HOST_REPORT_MS = 5_000;
  * work, when this host has no workers left: long enough that roots without work do not trade workers on every poll.
  */
 const IDLE_YIELD_MS = 5_000;
+/**
+ * The shortest time between two polls a wake-up from the journal starts (#5103): a root that queues many children at
+ * once costs a host one poll per this interval, not one per child.
+ */
+const HOST_WAKE_MIN_INTERVAL_MS = 100;
 /** How long a worker host waits for its git probe. */
 const GIT_PROBE_TIMEOUT_MS = 10_000;
 
@@ -262,6 +268,9 @@ class WorkerHost implements WorkflowWorkerHost {
 	/** When each root last gave up its workers, by `performance.now()`: it waits behind the roots it gave them to. */
 	private readonly yielded = new Map<string, number>();
 	private readonly timer: NodeJS.Timeout;
+	/** Wake-ups from a journal on Postgres when a root's work becomes ready (#5103), and when the last one polled. */
+	private readonly poolReady: StorageNotificationSubscription | undefined;
+	private wokenAt = Number.NEGATIVE_INFINITY;
 	private polling?: Promise<void>;
 	private stopping?: Promise<void>;
 	private draining = false;
@@ -303,6 +312,15 @@ class WorkerHost implements WorkflowWorkerHost {
 	) {
 		this.providerId = options.providerId ?? defaultProviderId(process.env);
 		this.timer = setInterval(() => this.tick(), HOST_POLL_MS);
+		// A root this host does not serve yet is attached to at once rather than at the next poll; a served root's own
+		// satellite hears its wake-ups itself.
+		this.poolReady = listenPoolReady(journal, (root) => {
+			if (root !== undefined && this.satellites.has(root)) return;
+			const now = performance.now();
+			if (now - this.wokenAt < HOST_WAKE_MIN_INTERVAL_MS) return;
+			this.wokenAt = now;
+			this.tick();
+		});
 	}
 
 	private emit(event: WorkflowWorkerHostEvent): void {
@@ -630,6 +648,7 @@ class WorkerHost implements WorkflowWorkerHost {
 		} finally {
 			// Ticks went on reporting the children the workers let go of while they wound down; polls ended at once.
 			clearInterval(this.timer);
+			this.poolReady?.close();
 			this.settleClosed();
 		}
 	}
