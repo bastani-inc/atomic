@@ -177,7 +177,7 @@
 		"type": "table",
 		"name": "intercom_outbox",
 		"tbl_name": "intercom_outbox",
-		"sql": "CREATE TABLE intercom_outbox(\n\t\t\tsequence INTEGER PRIMARY KEY AUTOINCREMENT,\n\t\t\tmessage_id TEXT NOT NULL UNIQUE,\n\t\t\ttarget_identity TEXT NOT NULL,\n\t\t\torigin_broker_id TEXT NOT NULL,\n\t\t\tdigest TEXT NOT NULL,\n\t\t\tframe_json TEXT NOT NULL,\n\t\t\tstate TEXT NOT NULL CHECK (state IN ('queued', 'claimed', 'delivered', 'failed')),\n\t\t\tclaim_attempts INTEGER NOT NULL DEFAULT 0,\n\t\t\tclaimant_id TEXT,\n\t\t\tclaim_token TEXT,\n\t\t\tclaim_renewed_at INTEGER,\n\t\t\tfailure_reason TEXT,\n\t\t\tsettled_at INTEGER\n\t\t, saving_at INTEGER)"
+		"sql": "CREATE TABLE intercom_outbox(\n\t\t\tsequence INTEGER PRIMARY KEY AUTOINCREMENT,\n\t\t\tmessage_id TEXT NOT NULL UNIQUE,\n\t\t\ttarget_identity TEXT NOT NULL,\n\t\t\torigin_broker_id TEXT NOT NULL,\n\t\t\tdigest TEXT NOT NULL,\n\t\t\tframe_json TEXT NOT NULL,\n\t\t\tstate TEXT NOT NULL CHECK (state IN ('queued', 'claimed', 'delivered', 'failed')),\n\t\t\tclaim_attempts INTEGER NOT NULL DEFAULT 0,\n\t\t\tclaimant_id TEXT,\n\t\t\tclaim_token TEXT,\n\t\t\tclaim_renewed_at INTEGER,\n\t\t\tfailure_reason TEXT,\n\t\t\tsettled_at INTEGER\n\t\t, saving_at INTEGER, queued_at INTEGER, frame_bytes INTEGER)"
 	},
 	{
 		"type": "table",
@@ -243,7 +243,7 @@
 		"type": "table",
 		"name": "team_intercom_outbox",
 		"tbl_name": "team_intercom_outbox",
-		"sql": "CREATE TABLE team_intercom_outbox(\n\t\t\tsequence INTEGER PRIMARY KEY AUTOINCREMENT,\n\t\t\tmessage_id TEXT NOT NULL UNIQUE,\n\t\t\ttarget_identity TEXT NOT NULL,\n\t\t\torigin_broker_id TEXT NOT NULL,\n\t\t\tdigest TEXT NOT NULL,\n\t\t\tframe_json TEXT NOT NULL,\n\t\t\tstate TEXT NOT NULL CHECK (state IN ('queued', 'claimed', 'delivered', 'failed')),\n\t\t\tclaim_attempts INTEGER NOT NULL DEFAULT 0,\n\t\t\tclaimant_id TEXT,\n\t\t\tclaim_token TEXT,\n\t\t\tclaim_renewed_at INTEGER,\n\t\t\tfailure_reason TEXT,\n\t\t\tsettled_at INTEGER\n\t\t, saving_at INTEGER)"
+		"sql": "CREATE TABLE team_intercom_outbox(\n\t\t\tsequence INTEGER PRIMARY KEY AUTOINCREMENT,\n\t\t\tmessage_id TEXT NOT NULL UNIQUE,\n\t\t\ttarget_identity TEXT NOT NULL,\n\t\t\torigin_broker_id TEXT NOT NULL,\n\t\t\tdigest TEXT NOT NULL,\n\t\t\tframe_json TEXT NOT NULL,\n\t\t\tstate TEXT NOT NULL CHECK (state IN ('queued', 'claimed', 'delivered', 'failed')),\n\t\t\tclaim_attempts INTEGER NOT NULL DEFAULT 0,\n\t\t\tclaimant_id TEXT,\n\t\t\tclaim_token TEXT,\n\t\t\tclaim_renewed_at INTEGER,\n\t\t\tfailure_reason TEXT,\n\t\t\tsettled_at INTEGER\n\t\t, saving_at INTEGER, queued_at INTEGER, frame_bytes INTEGER)"
 	},
 	{
 		"type": "table",

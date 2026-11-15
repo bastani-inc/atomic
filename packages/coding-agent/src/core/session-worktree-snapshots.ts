@@ -39,6 +39,7 @@ import { loadSnapshotPathPolicy } from "./worktree-snapshot/policy.ts";
 import {
 	admitPooledWorktree,
 	claimIdleWorktree,
+	confirmPooledWorktreeLease,
 	discardPooledWorktree,
 	evictIdleWorktrees,
 	holdRestoredWorktree,
@@ -58,6 +59,7 @@ import {
 	verifyWorktree,
 } from "./worktree-snapshot/restore.ts";
 import { adoptPrebuiltSeed } from "./worktree-snapshot/seeds.ts";
+import { keepSessionSnapshotCommit, releaseSessionSnapshotRefs } from "./worktree-snapshot/session-refs.ts";
 import type {
 	SnapshotBlob,
 	SnapshotBlobStore,
@@ -163,6 +165,11 @@ export class SessionWorktreeSnapshotRecorder {
 			}
 		}
 		for (const root of roots) {
+			// A pooled worktree this session no longer holds may be another session's work: never recorded as its (#4830).
+			if (!(await holdsSessionWorktree(this.deps.sessionManager, root))) {
+				this.report(new WorkspaceSnapshotError("pooled-worktree-lost", root));
+				continue;
+			}
 			const previous = this.deps.sessionManager.getLatestWorktreeSnapshots().get(root);
 			try {
 				const started = performance.now();
@@ -178,6 +185,7 @@ export class SessionWorktreeSnapshotRecorder {
 						undefined,
 						captureMs,
 					);
+					await keepLatestSnapshotCommit(this.deps.sessionManager, root, result.snapshot);
 				} else if (result.status === "unavailable") {
 					this.report(result.reason);
 				}
@@ -242,6 +250,52 @@ function isStorageFailure(error: unknown): boolean {
 	return false;
 }
 
+/**
+ * Keeps the commit of `snapshot`, the session's latest of the checkout at `root`, reachable from the session's ref in
+ * that repository, so `git gc` does not prune it and resume still recognises the checkout (#4923). The ref of each
+ * checkout the session's work in `root` came from through restores is released, as retention releases its snapshot.
+ */
+async function keepLatestSnapshotCommit(
+	sessionManager: SessionManager,
+	root: string,
+	snapshot: WorktreeSnapshot,
+): Promise<void> {
+	const sessionId = sessionManager.getSessionId();
+	await keepSessionSnapshotCommit(sessionId, root, snapshot.snapshot);
+	await releaseSessionSnapshotRefs(sessionId, restoredLineage(root, sessionManager.getWorktreeRootMappings()));
+}
+
+/**
+ * The other checkouts that restores connect `root` to: walking the mappings newest first, each one the work in a
+ * connected checkout was restored from or moved to.
+ */
+function restoredLineage(root: string, mappings: readonly WorktreeRootMapping[]): string[] {
+	const connected = new Set([resolve(root)]);
+	for (const mapping of [...mappings].reverse()) {
+		const from = resolve(mapping.from);
+		const to = resolve(mapping.to);
+		if (connected.has(from) || connected.has(to)) connected.add(from).add(to);
+	}
+	connected.delete(resolve(root));
+	return [...connected];
+}
+
+/**
+ * Deletes session `sessionId` from `store`, then the refs that kept its snapshot commits in the repositories of the
+ * checkouts it recorded on this node (#4923). Rejects as `store.delete` does; releasing the refs never fails it.
+ */
+export async function deleteSessionWithSnapshotRefs(
+	store: Pick<SessionStore, "load" | "delete">,
+	sessionId: string,
+): Promise<void> {
+	const roots = await store.load(sessionId).then(
+		({ entries }) => entries.flatMap((entry) => (entry.type === "worktree_snapshot" ? [entry.root] : [])),
+		() => [],
+	);
+	await store.delete(sessionId);
+	await releaseSessionSnapshotRefs(sessionId, new Set(roots));
+}
+
 async function nearestExisting(directory: string): Promise<string> {
 	for (let current = directory; ; current = resolve(current, "..")) {
 		try {
@@ -268,8 +322,57 @@ function holdFor(sessionManager: SessionManager, lease: WorktreeLease): void {
 }
 
 /**
- * Whether the worktree at `root` is a pooled slot that another session owns (#4748): this session must not continue
- * in it, and restores its checkout fresh as if the worktree were gone. Reads only; false for any unpooled path.
+ * The pooled worktrees, by canonical root, each session of this process holds no lease of though its record may still
+ * name it (#4830): its lease was lost to another holder, or holding it failed. The session no longer works in them.
+ */
+const forfeitedWorktrees = new Map<string, Set<string>>();
+
+function worktreeKey(root: string): string {
+	try {
+		return canonicalizeWorktreePath(root);
+	} catch {
+		return resolve(root);
+	}
+}
+
+function forfeit(sessionId: string, root: string): void {
+	const roots = forfeitedWorktrees.get(sessionId) ?? new Set();
+	roots.add(worktreeKey(root));
+	forfeitedWorktrees.set(sessionId, roots);
+}
+
+function forfeited(sessionId: string, root: string): boolean {
+	return forfeitedWorktrees.get(sessionId)?.has(worktreeKey(root)) === true;
+}
+
+/**
+ * Whether `lease`, held by `sessionManager`, still holds its slot (#4830). A lease whose slot another holder took is
+ * dropped, and its worktree forfeited: the session must not continue in it.
+ */
+async function keepsLease(sessionManager: SessionManager, lease: WorktreeLease): Promise<boolean> {
+	if (await confirmPooledWorktreeLease(lease)) return true;
+	const leases = sessionLeases.get(sessionManager) ?? [];
+	leases.splice(leases.indexOf(lease), 1);
+	forfeit(sessionManager.getSessionId(), lease.path);
+	reportDebug("storage", "worktree-pool-lease-lost", { path: lease.path });
+	return false;
+}
+
+/**
+ * Whether `sessionManager` may still work in the checkout at `root` (#4830): false for a pooled worktree whose lease it
+ * lost to another holder, or could not take, checked against the slot's record. True for any other checkout.
+ */
+async function holdsSessionWorktree(sessionManager: SessionManager, root: string): Promise<boolean> {
+	if (forfeited(sessionManager.getSessionId(), root)) return false;
+	const key = worktreeKey(root);
+	const lease = (sessionLeases.get(sessionManager) ?? []).find((held) => worktreeKey(held.path) === key);
+	return lease === undefined || (await keepsLease(sessionManager, lease));
+}
+
+/**
+ * Whether the worktree at `root` is a pooled slot that another session owns (#4748), or that session `sessionId`
+ * could not hold or lost while it was stalled (#4830): this session must not continue in it, and restores its checkout
+ * fresh as if the worktree were gone. Reads only; false for any unpooled path.
  */
 export async function pooledWorktreeOwnedElsewhere(
 	storeDir: string,
@@ -277,13 +380,16 @@ export async function pooledWorktreeOwnedElsewhere(
 	sessionId: string,
 ): Promise<boolean> {
 	const holder = await pooledWorktreeHolder(storeDir, root);
-	return holder !== "unpooled" && (holder.owner?.kind !== "session" || holder.owner.id !== sessionId);
+	if (holder === "unpooled") return false;
+	return holder.owner?.kind !== "session" || holder.owner.id !== sessionId || forfeited(sessionId, root);
 }
 
 /**
  * Makes `to`, the session a resume opened, hold every pooled worktree of its checkouts that it owns, then releases what
  * `from`, the session the resume restored on, held, when it is another object (#4748). A slot leased by a live process
- * of the same session stays with that process. Never throws: a resume continues without a lease.
+ * of the same session stays with that process. A lease `to` already holds is checked first: one whose slot another
+ * holder took is dropped (#4830). Never throws: a resume continues without a lease, and then treats each pooled
+ * worktree it could not hold as another session's, restoring it fresh instead of working in it unleased (#4830).
  */
 export async function holdSessionWorktrees(
 	from: SessionManager,
@@ -292,11 +398,22 @@ export async function holdSessionWorktrees(
 ): Promise<void> {
 	try {
 		const owner = sessionOwner(to);
-		const held = new Set((sessionLeases.get(to) ?? []).map((lease) => lease.path));
+		const held = new Set<string>();
+		for (const lease of [...(sessionLeases.get(to) ?? [])]) {
+			if (await keepsLease(to, lease)) held.add(lease.path);
+		}
 		for (const root of currentWorktreeSnapshots(to).keys()) {
 			if (held.has(root)) continue;
-			const lease = await holdRestoredWorktree(storeDir, root, owner);
-			if (lease !== undefined) holdFor(to, lease);
+			try {
+				const lease = await holdRestoredWorktree(storeDir, root, owner);
+				if (lease !== undefined) {
+					holdFor(to, lease);
+					forfeitedWorktrees.get(owner.id)?.delete(worktreeKey(root));
+				}
+			} catch (error) {
+				reportDebug("storage", "worktree-pool-hold-failed", { root, ...failureDebugFields(error) });
+				forfeit(owner.id, root);
+			}
 		}
 	} catch (error) {
 		reportDebug("storage", "worktree-pool-hold-failed", failureDebugFields(error));
