@@ -1,12 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
-import { uptime } from "node:os";
 import { dirname, join } from "node:path";
 import { getIntercomDirPath } from "./paths.js";
 
-/** Rounds the boot time where no boot id can be read, so two readings from one boot agree. */
-const BOOT_TIME_ROUNDING_MS = 60_000;
 /**
  * A machine-id or boot command that does not answer by then leaves the host without that fact. PowerShell can take
  * a few seconds to start; the broker reads this once, as it starts.
@@ -39,7 +36,6 @@ export interface HostIdentitySources {
 	/** Writes a file only this user may read, failing when it already exists. */
 	writeNewPrivateFile(path: string, content: string): void;
 	readonly configDir: string;
-	readonly bootTimeMs: number;
 }
 
 /** This host's real identity sources, saving a machine id under `configDir`. */
@@ -59,10 +55,9 @@ export const systemSources = (configDir: string = getIntercomDirPath()): HostIde
 		writeFileSync(path, content, { mode: 0o600, flag: "wx" });
 	},
 	configDir,
-	bootTimeMs: Date.now() - uptime() * 1000,
 });
 
-/** The OS's own id of this machine: the registry's MachineGuid, the IOPlatformUUID, or `/etc/machine-id`. */
+/** The OS's own id of this machine: the registry's MachineGuid on Windows, the IOPlatformUUID on macOS. */
 export function osMachineId(sources: HostIdentitySources): string | undefined {
 	if (sources.platform === "win32") {
 		const output = orUndefined(() =>
@@ -74,10 +69,7 @@ export function osMachineId(sources: HostIdentitySources): string | undefined {
 		const output = orUndefined(() => sources.run("ioreg", ["-rd1", "-c", "IOPlatformExpertDevice"]));
 		return output?.match(/"IOPlatformUUID"\s*=\s*"([^"]+)"/)?.[1];
 	}
-	return (
-		orUndefined(() => sources.readFile("/etc/machine-id")) ??
-		orUndefined(() => sources.readFile("/var/lib/dbus/machine-id"))
-	);
+	return undefined;
 }
 
 /** A random id saved once, readable only by this user, in the Atomic config directory. */
@@ -93,28 +85,28 @@ export function persistedMachineId(sources: HostIdentitySources): string | undef
 
 /**
  * What tells this boot apart from another of a machine with the same id, such as a clone of its image started at the
- * same moment: macOS's random boot session id, Windows' precise boot time, elsewhere the boot minute. `undefined` on
- * Windows when its boot time cannot be read.
+ * same moment: macOS's random boot session id, Windows' precise boot time. `undefined` where neither can be read,
+ * including every other platform: a boot time any coarser could be shared by clones started together.
  */
 export function bootSession(sources: HostIdentitySources): string | undefined {
 	if (sources.platform === "darwin") {
 		const session = orUndefined(() => sources.run("sysctl", ["-n", "kern.bootsessionuuid"]));
-		if (session !== undefined) return `session-${session}`;
+		return session === undefined ? undefined : `session-${session}`;
 	}
 	if (sources.platform === "win32") {
 		const [command, ...args] = WINDOWS_BOOT_TIME_COMMAND;
 		const bootTime = orUndefined(() => sources.run(command, args));
 		return bootTime === undefined ? undefined : `boot-${bootTime}`;
 	}
-	return `boot-${Math.round(sources.bootTimeMs / BOOT_TIME_ROUNDING_MS)}`;
+	return undefined;
 }
 
 /**
  * #5038: what tells this host apart from another with the same host name, such as a cloned VM or a container with a
  * fixed `--hostname` and the same home path, so that an earlier broker on this socket path can be checked by its pid.
- * On Linux, the kernel's boot id and this process's pid namespace. Elsewhere, the machine's id (the OS's, or one saved
- * in the config directory) with its `bootSession`. `undefined` when either is missing: an earlier instance is then
- * never retired early, and its leases go stale as before.
+ * Where the kernel's boot id can be read (Linux), it and this process's pid namespace. On macOS and Windows, the
+ * machine's id (the OS's, or one saved in the config directory) with its `bootSession`. `undefined` otherwise, or when
+ * any of these is missing: an earlier instance is then never retired early, and its leases go stale as before.
  */
 export function brokerHostIdentity(sources: HostIdentitySources = systemSources()): string | undefined {
 	const bootId = orUndefined(() => sources.readFile("/proc/sys/kernel/random/boot_id"));
@@ -122,9 +114,9 @@ export function brokerHostIdentity(sources: HostIdentitySources = systemSources(
 		const pidNamespace = orUndefined(() => sources.readLink("/proc/self/ns/pid"));
 		return pidNamespace === undefined ? bootId : `${bootId}/${pidNamespace}`;
 	}
-	const machineId = osMachineId(sources) ?? persistedMachineId(sources);
-	const session = machineId === undefined ? undefined : bootSession(sources);
-	return session === undefined ? undefined : `${machineId}/${session}`;
+	const session = bootSession(sources);
+	const machineId = session === undefined ? undefined : (osMachineId(sources) ?? persistedMachineId(sources));
+	return machineId === undefined ? undefined : `${machineId}/${session}`;
 }
 
 /** Whether a process with this id runs here; one this process may not signal still runs. */

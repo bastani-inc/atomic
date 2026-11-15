@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, readlinkSync, rmSync, statSync } from "node:fs";
-import { tmpdir, uptime } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "vitest";
 import {
@@ -220,7 +220,6 @@ interface FakeHost {
 	readonly files?: Record<string, string>;
 	readonly links?: Record<string, string>;
 	readonly commands?: Record<string, string>;
-	readonly bootTimeMs?: number;
 	readonly unwritable?: boolean;
 }
 
@@ -249,7 +248,6 @@ function fakeSources(
 			files.set(path, content);
 		},
 		configDir: "/config/intercom",
-		bootTimeMs: host.bootTimeMs ?? 1_800_000,
 	};
 }
 
@@ -289,26 +287,14 @@ test("off Linux a host is the OS machine id with its boot (#5038)", () => {
 		commands: { [MAC_IOREG]: '"IOPlatformUUID" = "uuid-m"', [MAC_SESSION]: "session-a\n" },
 	});
 	assert.equal(brokerHostIdentity(session), "uuid-m/session-session-a");
-	const mac = fakeSources({
+	const ioreg = fakeSources({
 		platform: "darwin",
-		commands: { [MAC_IOREG]: '+-o J316sAP  <class IOPlatformExpertDevice>\n    "IOPlatformUUID" = "uuid-m"\n' },
-		bootTimeMs: 1_805_000,
+		commands: {
+			[MAC_IOREG]: '+-o J316sAP  <class IOPlatformExpertDevice>\n    "IOPlatformUUID" = "uuid-m"\n',
+			[MAC_SESSION]: "s",
+		},
 	});
-	assert.equal(brokerHostIdentity(mac), "uuid-m/boot-30");
-	assert.equal(
-		brokerHostIdentity(fakeSources({ platform: "freebsd", files: { "/etc/machine-id": "mid\n" } })),
-		"mid/boot-30",
-	);
-	assert.equal(
-		brokerHostIdentity(fakeSources({ platform: "freebsd", files: { "/var/lib/dbus/machine-id": "dbus" } })),
-		"dbus/boot-30",
-	);
-	assert.equal(
-		brokerHostIdentity(
-			fakeSources({ platform: "freebsd", files: { "/etc/machine-id": "mid" }, bootTimeMs: 1_900_000 }),
-		),
-		"mid/boot-32",
-	);
+	assert.equal(brokerHostIdentity(ioreg), "uuid-m/session-s");
 	assert.equal(
 		osMachineId(fakeSources({ platform: "win32", commands: { [WINDOWS_REG]: "no guid here" } })),
 		undefined,
@@ -321,21 +307,42 @@ test("off Linux a host is the OS machine id with its boot (#5038)", () => {
 	assert.deepEqual(fakeSources({ platform: "darwin" }).runs, []);
 });
 
+test("without a per-boot random value a host has no identity, so nothing is retired early (#5038)", () => {
+	const guid = { [WINDOWS_REG]: "MachineGuid    REG_SZ    guid-w" };
+	const uuid = { [MAC_IOREG]: '"IOPlatformUUID" = "uuid-m"' };
+	// macOS whose sysctl fails, and Windows whose PowerShell fails, each with a machine id.
+	assert.equal(brokerHostIdentity(fakeSources({ platform: "darwin", commands: uuid })), undefined);
+	assert.equal(brokerHostIdentity(fakeSources({ platform: "win32", commands: guid })), undefined);
+	// Linux without a readable boot id, with a machine id the OS keeps anyway.
+	const machineIds = { "/etc/machine-id": "mid", "/var/lib/dbus/machine-id": "dbus" };
+	const links = { "/proc/self/ns/pid": "pid:[7]" };
+	assert.equal(brokerHostIdentity(fakeSources({ platform: "linux", files: machineIds, links })), undefined);
+	// FreeBSD and the rest have neither.
+	for (const platform of ["freebsd", "openbsd", "sunos", "aix"] as const) {
+		const host = fakeSources({ platform, files: machineIds, commands: { ...guid, ...uuid, [MAC_SESSION]: "s" } });
+		assert.equal(brokerHostIdentity(host), undefined, platform);
+		assert.equal(osMachineId(host), undefined, platform);
+		assert.deepEqual(host.runs, [], platform);
+		assert.equal(host.files.has(SAVED_ID_PATH), false, platform);
+	}
+});
+
 test("without an OS machine id a host keeps a random id saved once in the config directory (#5038)", () => {
-	const host = fakeSources({ platform: "darwin" });
+	const host = fakeSources({ platform: "darwin", commands: { [MAC_SESSION]: "s" } });
 	const first = brokerHostIdentity(host);
-	assert.match(first ?? "", /^[0-9a-f-]{36}\/boot-30$/);
+	assert.match(first ?? "", /^[0-9a-f-]{36}\/session-s$/);
 	assert.equal(brokerHostIdentity(host), first);
 	assert.equal(host.files.get(SAVED_ID_PATH), first?.split("/")[0]);
-	assert.notEqual(brokerHostIdentity(fakeSources({ platform: "darwin" })), first);
+	assert.notEqual(brokerHostIdentity(fakeSources({ platform: "darwin", commands: { [MAC_SESSION]: "s" } })), first);
 	assert.equal(persistedMachineId(fakeSources({ platform: "win32", files: { [SAVED_ID_PATH]: " kept\n" } })), "kept");
 });
 
 test("a host with no machine id it can read or save has no identity (#5038)", () => {
-	assert.equal(brokerHostIdentity(fakeSources({ platform: "win32", unwritable: true })), undefined);
+	const booted = { [WINDOWS_BOOT]: BOOTED };
+	assert.equal(brokerHostIdentity(fakeSources({ platform: "win32", commands: booted, unwritable: true })), undefined);
 });
 
-test("the real sources save a private machine id once, run commands and read this boot (#5038)", () => {
+test("the real sources save a private machine id once and run commands (#5038)", () => {
 	const dir = mkdtempSync(join(tmpdir(), "intercom-host-"));
 	try {
 		const sources = systemSources(join(dir, "nested", "intercom"));
@@ -347,7 +354,6 @@ test("the real sources save a private machine id once, run commands and read thi
 		assert.throws(() => sources.writeNewPrivateFile(path, "other"), { code: "EEXIST" });
 		assert.equal(readFileSync(path, "utf8"), id);
 		assert.equal(sources.run(process.execPath, ["-e", "process.stdout.write('out')"]), "out");
-		assert.ok(Math.abs(sources.bootTimeMs - (Date.now() - uptime() * 1000)) < 5_000);
 		if (process.platform === "linux")
 			assert.equal(sources.readLink("/proc/self/ns/pid"), readlinkSync("/proc/self/ns/pid"));
 	} finally {
