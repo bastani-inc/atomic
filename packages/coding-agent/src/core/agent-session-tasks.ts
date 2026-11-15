@@ -15,6 +15,7 @@ import { bindOwnerTaskStore, getOwnerTaskStore, OwnerTaskStore } from "./tasks/o
 import { taskOwnTranscriptEntries, taskTranscriptSource } from "./tasks/supervisor.js";
 import type { SupervisedCommandOwner } from "./tools/bash-pty-native.js";
 import { WorkflowStageAdmissionBoundary } from "./workflow-stage-admission.ts";
+import { recordParkedStageTasks } from "./workflow-stage-parked-tasks.ts";
 
 // Native owners identify live generations, never borrowed persisted storage.
 // Explicit workflow-stage owners remain borrowed across session replacement.
@@ -177,7 +178,7 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 			const watched = this._agentTaskHost?.watchOwnerTasks();
 			const kind = watched?.ok
 				? watched.value.snapshot.tasks.find((task) => task.ref.taskId === receipt.taskId)?.kind
-				: undefined;
+				: closingTaskKinds.get(this)?.get(receipt.taskId);
 			if (watched?.ok) watched.value.dispose();
 			this._agentTaskHost?.retainTaskRecord(receipt.taskId);
 			outbox.record(ref.ownerId, receipt, kind);
@@ -286,17 +287,31 @@ export function waitingUntilSettled(owner: SupervisedCommandOwner, detaches: boo
 	};
 }
 
+/** The kinds of a closing session's tasks, read before its close leaves its owner unreadable (#5079). */
+const closingTaskKinds = new WeakMap<AgentSession, ReadonlyMap<string, C.TaskRecord["kind"]>>();
+
 export async function closeSessionTasks(this: AgentSession): Promise<void> {
 	this._parentCommandTaskOwner?.unbind(this.sessionManager.getSessionId());
 	// Replacement stage sessions share generation lifetime; disposal is not stage closure. The session's own view of
 	// the stage's tasks ends with it: the stage opens a new one for each session.
-	if (stageTaskAdmission(this)) {
+	const stageAdmission = stageTaskAdmission(this);
+	if (stageAdmission) {
 		getOwnerTaskStore(this)?.dispose();
+		// A released stage's running shells, saved so that a restart before the stage wakes can tell it of them (#5079).
+		await recordParkedStageTasks(this.sessionManager, stageAdmission);
 		return;
 	}
 	this._taskAdmission?.seal();
 	const host = this._agentTaskHost;
+	const watched = host?.watchOwnerTasks();
+	if (watched?.ok) {
+		closingTaskKinds.set(this, new Map(watched.value.snapshot.tasks.map((task) => [task.ref.taskId, task.kind])));
+		watched.value.dispose();
+	}
 	const closed = await host?.close("session-close");
+	// The intents of the tasks the close cancelled are saved before the session's store closes, so the session's next
+	// open shows their notices (#5079).
+	await this._taskCompletionOutbox?.flush();
 	if (closed && !closed.ok) throw host!.closeError("session-close", closed.error);
 }
 

@@ -212,3 +212,28 @@ test("a refusal of a request an earlier attempt made rejects it without fencing 
 	h.receive({ id: 2, error: serializeError(refusal) });
 	assert.equal(h.state.attemptFenced, true);
 });
+
+test("each way a request's attempt differs from the held one keeps a pool fault from fencing the held attempt (#4822)", () => {
+	const refusal = new StorageTransientError(
+		{ adapter: "libsql", location: "http://127.0.0.1:1" },
+		{ code: "connection-refused", outcome: "not-applied", attempts: 1 },
+	);
+	const made = (h: ReturnType<typeof harness>, workId: string, generation: number) =>
+		h.pending.set(1, {
+			resolve: (value) => h.settled.push({ id: 1, value }),
+			reject: (error) => h.settled.push({ id: 1, error }),
+			attempt: { workId, generation },
+		});
+	// The worker holds no attempt, holds another work item, or another generation of the same one.
+	for (const [workId, generation, held] of [
+		["work", 4, "no attempt"],
+		["other", 4, attempt],
+		["work", 5, attempt],
+	] as const) {
+		const h = harness();
+		made(h, workId, generation);
+		h.receive({ id: 1, error: serializeError(refusal) }, held);
+		assert.equal(h.state.attemptFenced, false, `${workId}#${generation} against ${JSON.stringify(held)}`);
+		assert.equal(h.settled[0]?.error?.name, "StorageTransientError", "it rejects with the refusal itself");
+	}
+});
