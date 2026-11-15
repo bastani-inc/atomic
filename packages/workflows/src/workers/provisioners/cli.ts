@@ -41,10 +41,10 @@ const SECRET_PAIR_VALUE = String.raw`"[^"\n]*"?|'[^'\n]*'?|[^\s"',;&]+`;
  * word characters or spaces.
  */
 const SECRET_TEXT: readonly [RegExp, (match: string, ...groups: string[]) => string][] = [
-	[/\bBearer\s+[^\s"',;]+/gi, () => "Bearer [redacted]"],
+	[/\bBearer[ \t]+[^\s"',;]+/gi, () => "Bearer [redacted]"],
 	[/(?<![\w-])eyJ[\w-]+\.[\w-]+(?:\.[\w-]*)?/g, () => "[redacted]"],
 	[
-		new RegExp(String.raw`(?<![\w-])([\w-]+)(["']?\s*[:=]\s*)(${SECRET_PAIR_VALUE})`, "g"),
+		new RegExp(String.raw`(?<![\w-])([\w-]+)(["']?[ \t]*[:=][ \t]*)(${SECRET_PAIR_VALUE})`, "g"),
 		(match, name: string, separator: string, value: string) =>
 			isSecretName(name)
 				? `${name}${separator}${value.replace(/^(["']?)[\s\S]*?(\1?)$/u, "$1[redacted]$2")}`

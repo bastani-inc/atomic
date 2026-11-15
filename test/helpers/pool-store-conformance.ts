@@ -8,6 +8,7 @@ import { poolStageUsageKey } from "../../packages/workflows/src/durable/journal/
 import { SqlFleetStore } from "../../packages/workflows/src/durable/journal/sql-fleet.js";
 import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { openSqlPoolUsage } from "../../packages/workflows/src/durable/journal/sql-pool-usage.js";
+import { SqlRateBuckets } from "../../packages/workflows/src/durable/journal/sql-rate-buckets.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import { SqlSharedPool } from "../../packages/workflows/src/durable/journal/sql-shared-pool.js";
 import { isStaleLeaseError, type Lease, RUN_EVENT_TYPES } from "../../packages/workflows/src/durable/journal/types.js";
@@ -404,6 +405,45 @@ export function registerPoolStoreConformance(run_: Runner, name: string, openSco
 				],
 			);
 			await granted();
+		});
+
+		test("many hosts acquire from one rate bucket concurrently and never take more than it allows (#4768)", async (f) => {
+			// One token a minute: nothing refills during the test, so exactly the burst is granted across every host.
+			const shape = { intervalMs: 60_000, burst: 5 };
+			const failures: Error[] = [];
+			const hosts = await Promise.all(
+				Array.from({ length: 8 }, async () => SqlRateBuckets.open(await f.peer(failures))),
+			);
+			const outcomes = await Promise.all(
+				hosts.flatMap((store) => Array.from({ length: 3 }, () => store.acquire("anthropic", 1, shape))),
+			);
+			assert.equal(
+				outcomes.reduce((sum, outcome) => sum + outcome.granted, 0),
+				5,
+			);
+			for (const outcome of outcomes)
+				if (outcome.granted === 0) {
+					assert.ok(
+						"waitMs" in outcome && outcome.waitMs > 0 && outcome.waitMs <= 60_000,
+						JSON.stringify(outcome),
+					);
+					assert.equal(outcome.cooldownMs, 0);
+				}
+			assert.deepEqual(failures, []);
+		});
+
+		test("a 429 cooldown one host shares holds every host's acquires and reaches their polls (#4768)", async (f) => {
+			const one = await SqlRateBuckets.open(f.journal);
+			const other = await SqlRateBuckets.open(await f.peer());
+			await one.cooldown("anthropic/opus", 30_000);
+			// A bucket shaped after its cooldown was recorded keeps that cooldown.
+			const held = await other.acquire("anthropic/opus", 1, { intervalMs: 10, burst: 10 });
+			assert.ok("cooldownMs" in held && held.cooldownMs > 29_000 && held.cooldownMs <= 30_000, JSON.stringify(held));
+			await other.cooldown("anthropic/opus", 5);
+			const { cooldowns } = await other.poll();
+			assert.equal(cooldowns.length, 1);
+			assert.equal(cooldowns[0]?.scope, "anthropic/opus");
+			assert.ok(cooldowns[0]!.remainingMs > 29_000, String(cooldowns[0]?.remainingMs));
 		});
 
 		test("many hosts claim, commit and complete concurrently: no double claim, no lost settle (#5102)", async (f) => {

@@ -143,3 +143,43 @@ test("an ask's reply is a successful result carrying the replier's name and text
 		},
 	});
 });
+
+const failedAsk: ReleasedReplyOutcome = {
+	kind: "reply",
+	reply: {
+		replyTo: "q-1",
+		text: 'Session "boss" ended before replying',
+		replyError: 'Session "boss" ended before replying',
+	},
+};
+const failedResult = {
+	ok: true,
+	formatted: {
+		content: [{ type: "text", text: 'Failed: Session "boss" ended before replying' }],
+		details: { error: true, replyTo: "q-1" },
+		isError: true,
+	},
+};
+
+test("a released contact_supervisor decision request whose ask failed is a failure, not a supervisor reply (#5188)", () => {
+	const result = formatReleasedReply({
+		toolName: "contact_supervisor",
+		args: { reason: "need_decision" },
+		outcome: failedAsk,
+	});
+	assert.deepEqual(result, failedResult);
+});
+
+test("a released contact_supervisor interview whose ask failed is a failure and is never parsed as an answer (#5188)", () => {
+	const result = formatReleasedReply({
+		toolName: "contact_supervisor",
+		args: { reason: "interview_request", interview },
+		outcome: failedAsk,
+	});
+	assert.deepEqual(result, failedResult);
+});
+
+test("a failed ask is a failure for any tool that waits on a released reply, not only the known ones (#5188)", () => {
+	const result = formatReleasedReply({ toolName: "some_future_waiter", args: {}, outcome: failedAsk });
+	assert.deepEqual(result, failedResult);
+});

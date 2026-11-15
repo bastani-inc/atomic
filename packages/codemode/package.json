@@ -1,7 +1,7 @@
 {
 	"name": "@bastani/atomic-codemode",
 	"version": "0.0.0",
-	"description": "Sandboxed JavaScript execution where the only capability is calling injected tools",
+	"description": "Atomic's sandboxed JavaScript execution where the only capability is calling injected tools",
 	"type": "module",
 	"main": "./dist/index.js",
 	"types": "./dist/index.d.ts",
@@ -50,13 +50,13 @@
 		"prepublishOnly": "npm run clean && npm run build"
 	},
 	"keywords": [
-		"pi",
 		"codemode",
 		"sandbox",
 		"quickjs",
 		"wasm",
 		"cloudflare",
-		"durable-objects"
+		"durable-objects",
+		"atomic"
 	],
 	"author": "Earendil Works",
 	"license": "MIT",
@@ -71,7 +71,7 @@
 		"url": "git+https://github.com/bastani-inc/atomic.git",
 		"directory": "packages/codemode"
 	},
-	"homepage": "https://github.com/bastani-inc/atomic/tree/main/packages/codemode#readme",
+	"homepage": "https://docs.bastani.ai/libraries/codemode",
 	"bugs": {
 		"url": "https://github.com/bastani-inc/atomic/issues"
 	},

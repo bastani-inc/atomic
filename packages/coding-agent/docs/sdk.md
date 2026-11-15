@@ -921,7 +921,7 @@ The hold preserves content blocks, optional data, duplicate identities, raw text
 
 ### Agent and AgentState
 
-The `Agent` class (from `@bastani/atomic-agent-core`) handles the core LLM interaction. Access it via `session.agent`.
+The `Agent` class (from [`@bastani/atomic-agent-core`](/libraries/agent-core)) handles the core LLM interaction. Access it via `session.agent`.
 
 ```typescript
 // Access current state

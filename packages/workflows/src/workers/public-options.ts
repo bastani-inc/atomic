@@ -1,4 +1,5 @@
 import type { Workspace } from "@bastani/atomic";
+import type { FleetRateLimits } from "./fleet-rate-types.js";
 import type { WorkflowFleetOptions } from "./fleet-types.js";
 import type { WorkspaceBinding } from "./workspace-binding.js";
 
@@ -70,6 +71,18 @@ export interface WorkflowWorkerPlacementOptions {
 	 * one unless it passes it again, and a provisioner failure never fails or pauses the root.
 	 */
 	readonly provisioner?: WorkflowFleetOptions;
+	/**
+	 * Fleet-wide model rate limits (#4768), by provider id (`"anthropic"`) or `provider/model`: every host of the pool
+	 * draws its model calls of a scope from one token bucket in the shared journal. A call to a model counts against
+	 * both its provider's limit and its own when both are set. Unset: model calls are not metered across hosts. Saved
+	 * with the root; a resume may change them.
+	 */
+	readonly rateLimits?: FleetRateLimits;
+	/**
+	 * Share each 429 cooldown a host records with every host of the pool through the shared journal, so they all back
+	 * off until it ends (#4768). Default false: a cooldown holds back only the processes of the host that hit it.
+	 */
+	readonly shareCooldowns?: boolean;
 }
 
 /** Shared placement as a root records it: its workspace resolved to the binding's identity, without its provisioner. */
