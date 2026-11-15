@@ -9,7 +9,8 @@ import {
 	resolveGitSync,
 	restoreRunWorktree,
 } from "@bastani/atomic";
-import type { StorageSelection } from "@bastani/atomic/storage";
+import { isPostgresUrl, type StorageNotificationSubscription, type StorageSelection } from "@bastani/atomic/storage";
+import { listenPoolReady } from "../durable/journal/internal.js";
 import { openSelectedRunJournal } from "../durable/journal/resolution.js";
 import type { SharedPoolFleet } from "../durable/journal/shared-pool-types.js";
 import { classifySharedStoreHealth, withinStatusBudget } from "../durable/journal/shared-store-health.js";
@@ -39,6 +40,7 @@ import {
 } from "./placement-errors.js";
 import { PoolCoordinator } from "./pool-coordinator.js";
 import { poolDurableJournal, poolHostId, poolStateDirectory } from "./pool-journal.js";
+import { hostWakeUps } from "./pool-wake-ups.js";
 import { processContainmentAvailable } from "./public-pool.js";
 import { RestoreBackoff } from "./restore-backoff.js";
 import { sharedJournalSelection, sharedSelectionProblems } from "./shared-setup.js";
@@ -76,6 +78,11 @@ const HOST_REPORT_MS = 5_000;
  * work, when this host has no workers left: long enough that roots without work do not trade workers on every poll.
  */
 const IDLE_YIELD_MS = 5_000;
+/**
+ * The shortest time between two polls a wake-up from the journal starts (#5103): a root that queues many children at
+ * once costs a host one poll per this interval, not one per child.
+ */
+const HOST_WAKE_MIN_INTERVAL_MS = 100;
 /** How long a worker host waits for its git probe. */
 const GIT_PROBE_TIMEOUT_MS = 10_000;
 
@@ -262,6 +269,8 @@ class WorkerHost implements WorkflowWorkerHost {
 	/** When each root last gave up its workers, by `performance.now()`: it waits behind the roots it gave them to. */
 	private readonly yielded = new Map<string, number>();
 	private readonly timer: NodeJS.Timeout;
+	/** Wake-ups from a journal on Postgres when a root's work becomes ready (#5103). */
+	private readonly poolReady: StorageNotificationSubscription | undefined;
 	private polling?: Promise<void>;
 	private stopping?: Promise<void>;
 	private draining = false;
@@ -303,6 +312,16 @@ class WorkerHost implements WorkflowWorkerHost {
 	) {
 		this.providerId = options.providerId ?? defaultProviderId(process.env);
 		this.timer = setInterval(() => this.tick(), HOST_POLL_MS);
+		// A root this host does not serve yet is attached to at once rather than at the next poll; a served root's own
+		// satellite hears its wake-ups itself.
+		this.poolReady = listenPoolReady(
+			journal,
+			hostWakeUps(
+				(root) => this.satellites.has(root),
+				() => this.tick(),
+				HOST_WAKE_MIN_INTERVAL_MS,
+			),
+		);
 	}
 
 	private emit(event: WorkflowWorkerHostEvent): void {
@@ -555,6 +574,7 @@ class WorkerHost implements WorkflowWorkerHost {
 				workerEntry: this.options.workerEntry ?? defaultWorkerEntry(),
 				placement: {
 					host: this.hostId,
+					providerId: this.providerId,
 					...(this.options.placement?.prefer === undefined ? {} : { prefer: this.options.placement.prefer }),
 					restore: this.restorePort,
 					restoreBackoff: this.restoreBackoff,
@@ -630,6 +650,7 @@ class WorkerHost implements WorkflowWorkerHost {
 		} finally {
 			// Ticks went on reporting the children the workers let go of while they wound down; polls ended at once.
 			clearInterval(this.timer);
+			this.poolReady?.close();
 			this.settleClosed();
 		}
 	}
@@ -769,11 +790,9 @@ export async function readWorkflowWorkerFleet(
 	const selection = sharedJournalSelection(options.journal, { agentDir });
 	const [first, ...rest] = await sharedSelectionProblems(selection, agentDir);
 	if (first !== undefined) throw new SharedPoolSetupError("worker-host", [first, ...rest]);
+	const adapterSelection = selection as Extract<StorageSelection, { kind: "adapter" }>;
 	const read = async (): Promise<SharedPoolFleet> => {
-		const journal = await openSelectedRunJournal(
-			selection as Extract<StorageSelection, { kind: "adapter" }>,
-			agentDir,
-		);
+		const journal = await openSelectedRunJournal(adapterSelection, agentDir);
 		let fleet: SharedPoolFleet | undefined;
 		try {
 			// This journal serves the read alone, so it probes the store with a write that changes nothing (#4768).
@@ -805,7 +824,13 @@ export async function readWorkflowWorkerFleet(
 		return {
 			hosts: [],
 			roots: [],
-			fleet: { store: classifySharedStoreHealth({ hostsRegistered: false, readFailure: error as Error }) },
+			fleet: {
+				store: classifySharedStoreHealth({
+					hostsRegistered: false,
+					readFailure: error as Error,
+					...(isPostgresUrl(String(adapterSelection.options?.url)) ? { adapter: "postgres" } : {}),
+				}),
+			},
 		};
 	}
 }

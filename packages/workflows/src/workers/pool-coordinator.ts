@@ -5,9 +5,9 @@ import { appendFile, mkdir, rm, rmdir } from "node:fs/promises";
 import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
-import { setDebugSetting, type WorktreeSnapshot } from "@bastani/atomic";
-import { JournalShardUnavailableError } from "@bastani/atomic/storage";
-import { observeSqlPoolTransactions, sqlPoolStorage } from "../durable/journal/internal.js";
+import { type SnapshotBlobStore, setDebugSetting, type WorktreeSnapshot } from "@bastani/atomic";
+import { JournalShardUnavailableError, type StorageNotificationSubscription } from "@bastani/atomic/storage";
+import { listenPoolReady, observeSqlPoolTransactions, sqlPoolStorage } from "../durable/journal/internal.js";
 import { PoolRemoteJournal } from "../durable/journal/pool-remote-journal.js";
 import { resolveRunJournal } from "../durable/journal/resolution.js";
 import "../durable/journal/workflows-host-module.js";
@@ -83,6 +83,7 @@ import {
 	POOL_SUMMARY_INTERVAL_MS,
 } from "./coordinator-protocol.js";
 import type { WorkerDefinitionSource } from "./definitions.js";
+import { missingSnapshotBlob } from "./dispatch-snapshot.js";
 import { EndedWatches } from "./ended-watches.js";
 import {
 	type BoundWait,
@@ -104,6 +105,7 @@ import {
 } from "./placement-errors.js";
 import { PoolCoordinationCounters } from "./pool-coordination-stats.js";
 import { openDurableJournal, type PoolDurableJournal, poolWorkerEnvironment } from "./pool-journal.js";
+import { coordinatorWakeUps, IdleClaimPauses } from "./pool-wake-ups.js";
 import { configurePooledWatchTrace, tracePooledWatch } from "./pooled-watch-trace.js";
 import { appendProcessLog, logFailureOf } from "./process-log.js";
 import type {
@@ -501,6 +503,15 @@ class PooledRoutes {
 	}
 }
 
+/**
+ * Whether a newer attempt, or completion, replaced `work`, among the root's work items as the queue holds them: its
+ * item is gone, carries another generation, or completed.
+ */
+export function attemptSuperseded(items: readonly PoolWork[], work: Pick<PoolWork, "id" | "generation">): boolean {
+	const current = items.find((candidate) => candidate.id === work.id);
+	return current === undefined || current.generation !== work.generation || current.state === "completed";
+}
+
 /** Whether a worker holds an attempt, or has a claim in flight that may become one. */
 function holding(slot: WorkerSlot): boolean {
 	return slot.work !== undefined || slot.claiming === true;
@@ -537,6 +548,8 @@ interface WorkerSlot {
  */
 export interface SatellitePlacement {
 	readonly host: string;
+	/** The id the host's provisioner knows its instance by: a drain of the instance stops its claims (#5072). */
+	readonly providerId?: string | undefined;
 	/** The host's warm worktrees: the path of one whose current tree is the binding's, or undefined. */
 	readonly prefer?: WorkspacePreference;
 	/** The host's restore port, present only when one is configured and git is available. */
@@ -607,6 +620,21 @@ interface StageWatch {
  * receives activity summaries coalesced per work attempt at most every
  * {@link POOL_SUMMARY_INTERVAL_MS}, plus results and the lifecycle events that need its store.
  */
+
+/**
+ * `work` as claimed, without the worktree snapshot it carries when `blobs`, the root's journal's in another database
+ * than the pool's, no longer hold a blob of it (#5077); its row then carries none either. The pool's own database cannot
+ * check that as the work is queued, so a child never restores from a snapshot its blobs were collected from.
+ */
+export async function claimedWithStoredSnapshot(
+	queue: SqlPoolQueue,
+	work: PoolWork,
+	blobs: SnapshotBlobStore | undefined,
+): Promise<PoolWork> {
+	const snapshot = carriedSnapshot(work.execution);
+	if (blobs === undefined || snapshot === undefined) return work;
+	return (await missingSnapshotBlob(blobs, snapshot)) === undefined ? work : queue.dropWorkSnapshot(work);
+}
 export class PoolCoordinator {
 	private readonly children = new Set<ChildProcess>();
 	private readonly incarnations = new Map<string, ChildProcess>();
@@ -656,6 +684,9 @@ export class PoolCoordinator {
 	/** The newest pool control committed, as pushed to ready workers. */
 	private committedControl?: PoolControl;
 	private recoveryTimer?: NodeJS.Timeout;
+	/** The shared pool's wake-ups from its journal (#5103), and the idle workers' pauses they end. */
+	private poolReady?: StorageNotificationSubscription;
+	private readonly idlePauses = new IdleClaimPauses(SHARED_IDLE_CLAIM_MS);
 	private flushTimer?: NodeJS.Timeout;
 	private lastFlushAt = 0;
 	private batchSequence = 0;
@@ -1174,7 +1205,7 @@ export class PoolCoordinator {
 
 	/** Starts the recovery of expired attempts, every {@link RECOVERY_INTERVAL_MS}. */
 	private startRecovery(): void {
-		this.recoveryTimer = setInterval(() => {
+		const recover = () => {
 			this.counters.enter("recovery");
 			void this.recoverExpired().catch(async (error: Error) => {
 				// A late root renewal stops nothing: the next recovery runs once it lands.
@@ -1184,7 +1215,24 @@ export class PoolCoordinator {
 				if (infrastructureFaultOf(error) === "storage_unavailable") return;
 				this.fail(error);
 			});
-		}, RECOVERY_INTERVAL_MS).unref();
+		};
+		this.recoveryTimer = setInterval(recover, RECOVERY_INTERVAL_MS).unref();
+		// A shared pool's journal on Postgres says when its root's work became ready or an attempt ended (#5103): an idle
+		// worker asks for work at once, and the root settles what another host's worker ended, instead of at their polls.
+		if (this.options?.shared === undefined) return;
+		this.poolReady = listenPoolReady(
+			this.journal!,
+			coordinatorWakeUps({
+				root: () => this.root,
+				satellite: this.satellite !== undefined,
+				pauses: this.idlePauses,
+				recovering: () => this.recovering,
+				recover: () => {
+					this.nextRecoveryAt = 0;
+					recover();
+				},
+			}),
+		);
 	}
 
 	/** Publishes a shared pool's configuration for worker hosts, and starts its relay and stage input passes. */
@@ -2358,23 +2406,39 @@ export class PoolCoordinator {
 						// The third lost attempt of one child fails only that child: the pool and its other children keep
 						// running. Its work item ends failed in the same transaction, so no worker claims it again. A worker
 						// host never fails a child: it releases it, and the root's own pool counts its attempts.
+						// A worker that died before it confirmed its claim never ran the child: its attempt goes back as a
+						// handoff, which counts as none of the child's attempts (#5034).
+						const current = work === undefined ? undefined : await this.counted(work);
+						const unconfirmedClaim =
+							current !== undefined &&
+							current.state === "leased" &&
+							current.generation === work!.generation &&
+							this.handoffs(current) < MAX_CHILD_HANDOFFS &&
+							!(await this.queue!.confirmed(current));
 						const exhausted =
 							this.satellite === undefined &&
-							work !== undefined &&
-							this.attempts(await this.counted(work)) >= MAX_CHILD_ATTEMPTS;
+							current !== undefined &&
+							!unconfirmedClaim &&
+							this.attempts(current) >= MAX_CHILD_ATTEMPTS;
 						const queue = this.queue!;
 						const lease = this.lease!;
 						const attempt = work;
 						const settled =
 							attempt !== undefined &&
 							(await this.whileRootLate(queue, () =>
-								exhausted ? queue.failExited(lease, attempt) : queue.releaseExited(lease, attempt),
+								exhausted
+									? queue.failExited(lease, attempt)
+									: queue.releaseExited(lease, attempt, unconfirmedClaim ? { delayMs: 0 } : undefined),
 							));
 						// An exit whose attempt another one already replaced is not that child's failure: its owner keeps it.
 						const superseded = work !== undefined && !settled && (await this.superseded(work));
 						if (work !== undefined && exhausted && !superseded)
 							// The worker's exit is the fault; process groups it left running are a cleanup that failed after it.
-							this.failWork(work, this.retryLimit(work, "worker-lost", undefined, logPath, unconfirmed));
+							// Its attempts are counted from the work as the queue holds it, which carries its handoffs.
+							this.failWork(
+								work,
+								this.retryLimit(current ?? work, "worker-lost", undefined, logPath, unconfirmed),
+							);
 						// Workers that crash without work are a pool-wide fault. A child that lost its worker consumes its own
 						// attempts, so those replacements are bounded by the children and never count toward this limit. A
 						// worker that ended itself between children for its memory did not crash: it is replaced without
@@ -2498,7 +2562,7 @@ export class PoolCoordinator {
 								const fault = message.fault === undefined ? undefined : rehydrateError(message.fault);
 								this.failWork(
 									fenced,
-									this.retryLimit(fenced, fault === undefined ? "refused-stale" : "pool-fault", fault),
+									this.retryLimit(current, fault === undefined ? "refused-stale" : "pool-fault", fault),
 								);
 							}
 						}
@@ -2549,7 +2613,7 @@ export class PoolCoordinator {
 						if (claimed === undefined) {
 							// An idle worker of a shared pool asks again only after a pause: the workers of every host ask the
 							// same journal, a network away (#4310).
-							if (options.shared !== undefined) await delay(SHARED_IDLE_CLAIM_MS);
+							if (options.shared !== undefined) await this.idlePauses.pause();
 							return undefined;
 						}
 						slot.work = claimed.work;
@@ -2750,7 +2814,9 @@ export class PoolCoordinator {
 		if (satellite === undefined) {
 			const shared = this.options?.shared !== undefined;
 			const work = await queue.claim(lease, worker, definitions, leaseMs, shared ? { kind: "unbound" } : undefined);
-			return work === undefined ? undefined : { work };
+			// A journal in another database than the pool's holds the snapshot's blobs: they are checked as the work is claimed.
+			const blobs = this.remote === undefined ? undefined : this.durable?.snapshotBlobs;
+			return work === undefined ? undefined : { work: await claimedWithStoredSnapshot(queue, work, blobs) };
 		}
 		const backoff = satellite.restoreBackoff ?? this.restoreBackoff;
 		const chosen = await choosePlacement(
@@ -2765,6 +2831,8 @@ export class PoolCoordinator {
 			kind: "work",
 			id: candidate.id,
 			generation: candidate.generation,
+			// A host asked to drain claims nothing more, though it reads the drain only at its next poll (#5072).
+			host: { id: satellite.host, providerId: satellite.providerId },
 		});
 		if (work === undefined) return undefined;
 		if (this.closed) {
@@ -2978,8 +3046,7 @@ export class PoolCoordinator {
 
 	/** Whether a newer attempt, or completion, replaced this one. */
 	private async superseded(work: PoolWork): Promise<boolean> {
-		const current = (await this.queue!.inspect(this.root!)).find((candidate) => candidate.id === work.id);
-		return current === undefined || current.generation !== work.generation || current.state === "completed";
+		return attemptSuperseded(await this.queue!.inspect(this.root!), work);
 	}
 
 	private assertPublished(work: PoolWork): void {
@@ -3042,8 +3109,13 @@ export class PoolCoordinator {
 				if (work.epoch < lease.epoch) await this.releaseRetained(work);
 				// An attempt that changed hands since it was read (its worker's exit released it, its worker completed it,
 				// another worker claimed it) has nothing left to expire. Its fault is never the pool's: thrown from here it
-				// failed the whole pool, and so every unfinished child of the pool at once.
-				else await queue.expire(lease, work).catch(ignoreStaleWorkLease);
+				// failed the whole pool, and so every unfinished child of the pool at once. An attempt whose worker never
+				// confirmed its claim, as when the claim's answer was lost before the worker died, goes back as a handoff: no
+				// worker ever ran it, so it counts as none of the child's attempts (#5034).
+				else
+					await queue
+						.expire(lease, work, { handOffUnconfirmed: this.handoffs(work) < MAX_CHILD_HANDOFFS })
+						.catch(ignoreStaleWorkLease);
 			}
 			if (this.satellite === undefined && this.sharedPool !== undefined)
 				await this.settleShared(queue, lease, this.sharedPool, rows);
@@ -3257,6 +3329,7 @@ export class PoolCoordinator {
 		this.placingSignal.abort();
 		clearInterval(this.ticker);
 		clearInterval(this.recoveryTimer);
+		this.poolReady?.close();
 		clearInterval(this.mirrorTimer);
 		clearInterval(this.statsTimer);
 		clearInterval(this.sharedTimer);

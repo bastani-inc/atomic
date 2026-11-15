@@ -67,7 +67,7 @@ export class PoolRemoteJournal {
 			if (state === undefined) await tx.run(`DELETE FROM ${leases} WHERE run_id = ?`, root);
 			else
 				await tx.run(
-					`INSERT INTO ${leases}(run_id, holder_id, epoch, renewed_at) VALUES (?, ?, ?, CAST(unixepoch('subsec') * 1000 AS INTEGER) - ?)
+					`INSERT INTO ${leases}(run_id, holder_id, epoch, renewed_at) VALUES (?, ?, ?, ${this.storage.dialect.nowMs} - ?)
 					ON CONFLICT(run_id) DO UPDATE SET holder_id = excluded.holder_id, epoch = excluded.epoch, renewed_at = excluded.renewed_at`,
 					root,
 					state.holderId,
@@ -165,4 +165,19 @@ export function isRecordedCheckpointValue(stored: unknown, next: DurableCheckpoi
 			: retimed,
 		recorded,
 	);
+}
+
+/**
+ * Whether `stored` is `next` recorded without the worktree snapshots `next` carries: a checkpoint whose snapshot's
+ * blobs were collected before it reached the journal is recorded without them (#5077), and a resend or retry of the
+ * same checkpoint with them finds it so.
+ */
+export function isRecordedWithoutSnapshots(stored: unknown, next: DurableCheckpoint): boolean {
+	const carried = (next as { readonly worktreeSnapshots?: unknown }).worktreeSnapshots;
+	if (!Array.isArray(carried)) return false;
+	if ((stored as { readonly worktreeSnapshots?: unknown }).worktreeSnapshots !== undefined) return false;
+	const { worktreeSnapshots: _carried, ...bare } = next as DurableCheckpoint & {
+		readonly worktreeSnapshots?: unknown;
+	};
+	return isRecordedCheckpointValue(stored, bare as DurableCheckpoint);
 }

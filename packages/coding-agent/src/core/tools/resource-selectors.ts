@@ -1,8 +1,9 @@
-import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { deflateRawSync, gunzipSync, gzipSync, inflateRawSync } from "node:zlib";
 import { isPathInside } from "../../utils/path-inside.ts";
+import { resolvePhysicalPath } from "../../utils/physical-path.ts";
 import { readConflictUrl } from "./conflict-registry.ts";
 import { loadNativeSearchBinding } from "./search-native.ts";
 import { plainShellWordMask } from "./shell-plain-words.ts";
@@ -686,23 +687,11 @@ async function resolveViaRouter(
 	if (resolved) return resolved;
 	return resolveInternalSelector(value, cwd);
 }
-function nearestExistingAncestor(pathValue: string): string {
-	let current = pathValue;
-	while (!existsSync(current)) {
-		const parent = dirname(current);
-		if (parent === current) return current;
-		current = parent;
-	}
-	return current;
-}
-function realpathExisting(pathValue: string): string {
-	return realpathSync.native(nearestExistingAncestor(pathValue));
-}
 function resolveContainedPath(root: string, pathValue: string, label: string): string {
 	const lexicalRoot = resolve(root),
 		resolved = resolve(root, pathValue);
 	if (!isPathInside(lexicalRoot, resolved)) throw new Error(`${label} escapes the workspace: ${pathValue}`);
-	if (!isPathInside(realpathExisting(lexicalRoot), realpathExisting(resolved)))
+	if (!isPathInside(resolvePhysicalPath(lexicalRoot), resolvePhysicalPath(resolved)))
 		throw new Error(`${label} escapes the workspace: ${pathValue}`);
 	return resolved;
 }
@@ -1052,12 +1041,28 @@ function sqliteRowKey(db: SqliteDatabase, table: string): string[] {
 	return columns.length > 0 ? columns : ["rowid"];
 }
 /**
+ * The value a single-column key binds for `rowId`. A column with a type affinity converts the text itself when it
+ * compares, but a column declared without a type (or as BLOB) compares exactly, so a stored `2` never equals the text
+ * `'2'`: such a column binds a canonical number as a number.
+ */
+function sqliteSingleKeyValue(db: SqliteDatabase, table: string, column: string, rowId: string): SqliteValue {
+	const value = Number(rowId);
+	if (!Number.isFinite(value) || String(value) !== rowId) return rowId;
+	const type = (
+		(db.query(`pragma table_info(${quoteSqliteIdent(table)})`).all() as Array<{ name: string; type: string }>).find(
+			(row) => row.name === column,
+		)?.type ?? ""
+	).toUpperCase();
+	// SQLite's affinity rules: INT, then CHAR/CLOB/TEXT, then BLOB or no type, which is the only one without affinity.
+	return !/INT|CHAR|CLOB|TEXT/.test(type) && (type === "" || type.includes("BLOB")) ? value : rowId;
+}
+/**
  * Bind values for a row selector. A single-column key takes the selector text as its value; a composite key takes a
  * JSON array with one value per key column, in key order, such as `["acme",2]`. Anything else is refused, because
  * matching on part of a composite key would select several rows.
  */
-function sqliteRowKeyValues(key: string[], rowId: string, table: string): SqliteValue[] {
-	if (key.length === 1) return [rowId];
+function sqliteRowKeyValues(db: SqliteDatabase, key: string[], rowId: string, table: string): SqliteValue[] {
+	if (key.length === 1) return [sqliteSingleKeyValue(db, table, key[0] as string, rowId)];
 	let values: unknown;
 	try {
 		values = JSON.parse(rowId);
@@ -1126,7 +1131,7 @@ export function readSqliteSelector(selector: SqliteSelector): string {
 		const schemaRows = db.query(`pragma table_info(${quoteSqliteIdent(selector.table)})`).all();
 		if (selector.schema) return rowsToJsonLines(schemaRows);
 		const key = sqliteRowKey(db, selector.table);
-		const keyValues = selector.rowId ? sqliteRowKeyValues(key, selector.rowId, selector.table) : [];
+		const keyValues = selector.rowId ? sqliteRowKeyValues(db, key, selector.rowId, selector.table) : [];
 		const where = selector.rowId ? sqliteRowKeyWhere(key) : validateSqliteWhere(selector.where);
 		const order = formatSqliteOrder(selector.order);
 		const isQuery = selector.limit !== undefined || selector.offset !== undefined || selector.where || selector.order;
@@ -1185,6 +1190,53 @@ function stripJson5Comments(input: string): string {
 	}
 	return out;
 }
+const LOOSE_JSON_NUMBER = /0[xX][\da-fA-F]+|[\d.]+(?:[eE][+-]?\d+)?/y;
+const LOOSE_JSON_WORD = /[\w$]+/y;
+const LOOSE_JSON_KEY_COLON = /\s*:/y;
+/**
+ * JSON for the JSON5 forms SQLite writes accept: unquoted keys, single-quoted strings, a leading `+`, hex numbers and
+ * trailing commas. It walks tokens, so the text inside a string is never rewritten.
+ */
+function looseJsonToJson(input: string): string {
+	let out = "";
+	for (let i = 0; i < input.length; i++) {
+		const ch = input[i] as string;
+		if (ch === '"' || ch === "'") {
+			let body = "";
+			let j = i + 1;
+			for (; j < input.length && input[j] !== ch; j++) {
+				const c = input[j] as string;
+				if (c === "\\") {
+					const escaped = input[++j] as string;
+					body += escaped === "'" ? "'" : `\\${escaped}`;
+				} else body += c === '"' ? '\\"' : c;
+			}
+			out += `"${body}"`;
+			i = j;
+			continue;
+		}
+		// A `+` outside a string can only be a number sign; JSON has none.
+		if (ch === "+") continue;
+		if (/[\d.]/.test(ch)) {
+			LOOSE_JSON_NUMBER.lastIndex = i;
+			const number = (LOOSE_JSON_NUMBER.exec(input) as RegExpExecArray)[0];
+			out += /[xX]/.test(number) ? String(Number(number)) : number;
+			i += number.length - 1;
+			continue;
+		}
+		if (/[A-Za-z_$]/.test(ch)) {
+			LOOSE_JSON_WORD.lastIndex = i;
+			const word = (LOOSE_JSON_WORD.exec(input) as RegExpExecArray)[0];
+			LOOSE_JSON_KEY_COLON.lastIndex = i + word.length;
+			out += LOOSE_JSON_KEY_COLON.test(input) ? JSON.stringify(word) : word;
+			i += word.length - 1;
+			continue;
+		}
+		if ((ch === "}" || ch === "]") && out.trimEnd().endsWith(",")) out = out.trimEnd().slice(0, -1);
+		out += ch;
+	}
+	return out;
+}
 function parseLooseJsonObject(content: string): Record<string, SqliteValue> {
 	const trimmed = stripJson5Comments(content.trim());
 	if (!trimmed)
@@ -1195,15 +1247,7 @@ function parseLooseJsonObject(content: string): Record<string, SqliteValue> {
 	try {
 		parsed = JSON.parse(trimmed);
 	} catch {
-		const normalized = trimmed
-			.replace(/([{,]\s*)([A-Za-z_$][\w$]*)\s*:/g, '$1"$2":')
-			.replace(/:\s*\+(-?\d+(?:\.\d+)?)/g, ":$1")
-			.replace(
-				/(:\s*)0x[0-9a-fA-F]+/g,
-				(match, prefix: string) => `${prefix}${Number.parseInt(match.slice(prefix.length + 2), 16)}`,
-			)
-			.replace(/'([^'\\]*(?:\\.[^'\\]*)*)'/g, (_match, body: string) => JSON.stringify(body.replace(/\\'/g, "'")))
-			.replace(/,\s*([}\]])/g, "$1");
+		const normalized = looseJsonToJson(trimmed);
 		parsed = JSON.parse(normalized);
 	}
 	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
@@ -1225,7 +1269,7 @@ export function writeSqliteSelector(selector: SqliteSelector, content: string): 
 		try {
 			const table = selector.table;
 			const key = sqliteRowKey(db, table);
-			const keyValues = sqliteRowKeyValues(key, selector.rowId, table);
+			const keyValues = sqliteRowKeyValues(db, key, selector.rowId, table);
 			const where = sqliteRowKeyWhere(key);
 			const changes = runSingleRowWrite(
 				db,
@@ -1250,7 +1294,7 @@ export function writeSqliteSelector(selector: SqliteSelector, content: string): 
 		const table = selector.table;
 		const quotedTable = quoteSqliteIdent(table);
 		const key = sqliteRowKey(db, table);
-		const keyValues = selector.rowId ? sqliteRowKeyValues(key, selector.rowId, table) : [];
+		const keyValues = selector.rowId ? sqliteRowKeyValues(db, key, selector.rowId, table) : [];
 		const validColumns = new Set(sqliteTableColumns(db, table));
 		const [single = ""] = key;
 		if (!selector.rowId && key.length === 1 && Object.hasOwn(data, "id") && !Object.hasOwn(data, single)) {
@@ -1315,7 +1359,7 @@ export function searchSqliteSelector(
 	const db = new Database(selector.databasePath, { readonly: true });
 	try {
 		const key = sqliteRowKey(db, selector.table);
-		const keyValues = selector.rowId ? sqliteRowKeyValues(key, selector.rowId, selector.table) : [];
+		const keyValues = selector.rowId ? sqliteRowKeyValues(db, key, selector.rowId, selector.table) : [];
 		const where = selector.rowId ? sqliteRowKeyWhere(key) : validateSqliteWhere(selector.where);
 		const order = formatSqliteOrder(selector.order);
 		const limit = selector.sampleRows ?? selector.limit ?? 1000;

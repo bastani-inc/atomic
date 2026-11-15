@@ -40,6 +40,8 @@ export type WriteSelectorErrorCode =
 	| "conflict-markers-not-found"
 	| "conflict-target-invalid"
 	| "conflict-id-not-found"
+	| "conflict-stale"
+	| "conflict-not-utf8"
 	| "unsupported-scheme";
 
 const EDIT_TOOL_ERROR_HINTS: Readonly<Record<EditToolErrorCode, string>> = {
@@ -63,6 +65,8 @@ const WRITE_SELECTOR_ERROR_HINTS: Readonly<Record<WriteSelectorErrorCode, string
 	"conflict-markers-not-found": "Read conflict://* to list current conflicts; there are none under this directory.",
 	"conflict-target-invalid": "Write to conflict://<id> with a numeric id from conflict://*, or to conflict://*.",
 	"conflict-id-not-found": "Read conflict://* again and use one of the ids it lists.",
+	"conflict-stale": "Read conflict://* or the file with :conflicts again, then resolve the conflict as it is now.",
+	"conflict-not-utf8": "Resolve the conflict with a tool that keeps its encoding, or convert the file to UTF-8 first.",
 	"unsupported-scheme": "Write to a file path, an archive member, a SQLite selector, conflict:// or local://.",
 };
 

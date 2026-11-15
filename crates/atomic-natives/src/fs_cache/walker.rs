@@ -1,7 +1,7 @@
 // Parallel filesystem walk and entry collection.
 
 use std::{
-	path::Path,
+	path::{Path, PathBuf},
 	sync::{Arc, Mutex},
 };
 
@@ -60,12 +60,40 @@ pub fn build_walker(
 			.ignore(true)
 			.parents(true)
 			.require_git(false);
+		if let Some(cwd) = std::env::current_dir().ok().and_then(|cwd| global_ignore_dir(root, &cwd))
+		{
+			builder.current_dir(cwd);
+		}
 	} else {
 		// Disable all ignore sources for exhaustive filesystem traversal.
 		builder.git_ignore(false).git_exclude(false).git_global(false).ignore(false).parents(false);
 	}
 
 	builder
+}
+
+/// Spells `cwd` the way `root` is spelled, so the global gitignore matcher
+/// (rooted at the working directory, as in ripgrep) can strip it from walked
+/// paths. A canonicalized `\\?\C:\…` root, or a root reached through a
+/// symlink, otherwise never shares a prefix with the plain working directory
+/// and patterns containing a slash never match.
+///
+/// Returns `None` when `root` already starts with `cwd`, or when `cwd` has no
+/// spelling in `root`'s form, leaving the walker's default in place.
+fn global_ignore_dir(root: &Path, cwd: &Path) -> Option<PathBuf> {
+	if root.starts_with(cwd) {
+		return None;
+	}
+	let canonical_cwd = std::fs::canonicalize(cwd).ok()?;
+	let canonical_root = std::fs::canonicalize(root).ok()?;
+	let depth = canonical_root.strip_prefix(&canonical_cwd).ok()?.components().count();
+	let mut dir = root.to_path_buf();
+	for _ in 0..depth {
+		if !dir.pop() {
+			return None;
+		}
+	}
+	(std::fs::canonicalize(&dir).ok()? == canonical_cwd).then_some(dir)
 }
 
 struct EntryVisitor<'a> {
@@ -206,9 +234,79 @@ pub(crate) fn collect_entry(
 
 #[cfg(test)]
 mod tests {
-	use std::{fs, time::Duration};
+	use std::{fs, path::Path, time::Duration};
 
 	use crate::fs_cache::test_util::TempDirGuard;
+
+	/// Lays out a repository whose global excludes (`foo/**`, `deep/**/x.log`)
+	/// leave only `top.txt`, and returns the excludes file.
+	fn global_excludes_repo(repo: &Path, excludes_dir: &Path) -> std::path::PathBuf {
+		fs::create_dir_all(repo.join("deep/sub")).unwrap();
+		fs::create_dir_all(repo.join("foo")).unwrap();
+		for file in ["deep/x.log", "deep/sub/x.log", "foo/t.txt", "top.txt"] {
+			fs::write(repo.join(file), "x").unwrap();
+		}
+		let excludes = excludes_dir.join("global-excludes");
+		fs::write(&excludes, "deep/**/x.log\nfoo/**\n").unwrap();
+		excludes
+	}
+
+	/// Walks `root` with global excludes interpreted from the process working
+	/// directory `cwd`, the way `build_walker` resolves them.
+	fn walk_with_global_excludes(root: &Path, cwd: &Path, excludes: &Path) -> Vec<String> {
+		let mut builder = super::build_walker(root, true, true, true, false);
+		builder.current_dir(super::global_ignore_dir(root, cwd).unwrap_or_else(|| cwd.to_path_buf()));
+		assert!(builder.add_ignore(excludes).is_none());
+		let mut files: Vec<String> = builder
+			.build()
+			.filter_map(Result::ok)
+			.filter(|entry| entry.file_type().is_some_and(|kind| kind.is_file()))
+			.map(|entry| super::normalize_relative_path(root, entry.path()).into_owned())
+			.collect();
+		files.sort();
+		files
+	}
+
+	#[test]
+	fn global_excludes_apply_when_walking_from_the_working_directory_5068() {
+		let temp = TempDirGuard::new();
+		let repo = temp.path().join("repo");
+		let excludes = global_excludes_repo(&repo, temp.path());
+		assert_eq!(walk_with_global_excludes(&repo, &repo, &excludes), ["top.txt"]);
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn global_excludes_apply_through_a_symlinked_root_5068() {
+		let temp = TempDirGuard::new();
+		let repo = temp.path().join("repo");
+		let excludes = global_excludes_repo(&repo, temp.path());
+		let link = temp.path().join("link");
+		std::os::unix::fs::symlink(&repo, &link).unwrap();
+		let cwd = fs::canonicalize(&repo).unwrap();
+		assert_eq!(walk_with_global_excludes(&link, &cwd, &excludes), ["top.txt"]);
+		assert_eq!(super::global_ignore_dir(&link.join("deep"), &cwd), Some(link.clone()));
+	}
+
+	#[cfg(windows)]
+	#[test]
+	fn global_excludes_apply_to_a_verbatim_canonical_root_5068() {
+		let temp = TempDirGuard::new();
+		let repo = temp.path().join("repo");
+		let excludes = global_excludes_repo(&repo, temp.path());
+		let canonical = fs::canonicalize(&repo).unwrap();
+		assert!(canonical.to_string_lossy().starts_with(r"\\?\"));
+		assert_eq!(walk_with_global_excludes(&canonical, &repo, &excludes), ["top.txt"]);
+		assert_eq!(super::global_ignore_dir(&canonical.join("deep"), &repo), Some(canonical.clone()));
+	}
+
+	#[test]
+	fn global_ignore_dir_keeps_the_default_for_unrelated_roots_5068() {
+		let temp = TempDirGuard::new();
+		fs::create_dir_all(temp.path().join("a")).unwrap();
+		fs::create_dir_all(temp.path().join("b")).unwrap();
+		assert_eq!(super::global_ignore_dir(&temp.path().join("a"), &temp.path().join("b")), None);
+	}
 
 	#[test]
 	fn build_walker_skips_git_and_node_modules() {

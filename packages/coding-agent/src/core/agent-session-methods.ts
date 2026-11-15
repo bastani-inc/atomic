@@ -395,7 +395,10 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	/** Start again the detachable calls the transcript ends on without a result, with their original ids and arguments. */
 	redispatchDetachedToolCalls(): DetachedToolCall[];
 	/** Record detached calls' results; the turn that issued them continues once each of its detachable calls has one. */
-	resumeDetachedTurn(results: readonly DetachedToolResult[]): Promise<void>;
+	resumeDetachedTurn(
+		results: readonly DetachedToolResult[],
+		onRecorded?: (toolCallIds: readonly string[]) => void,
+	): Promise<void>;
 	_waitForExtensionStart(): Promise<void>;
 	extendResourcesFromExtensions(reason: "startup" | "reload"): Promise<void>;
 	buildExtensionResourcePaths(entries: ExtensionResourcePathEntry[]): ExtensionResourcePathResult[];
@@ -660,6 +663,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	readonly _messagesAwaitingPersistence: WeakMap<object, Promise<void>>;
 	readonly _messagesWithFailedPersistence: WeakSet<object>;
 	_persistenceFailure: string | undefined;
+	_turnStopReason: string | undefined;
 	_worktreeSnapshots: import("./session-worktree-snapshots.ts").SessionWorktreeSnapshotRecorder;
 	readonly _reissuedToolCallIds: Set<string>;
 	_lastAssistantToolResults: AgentMessage[];

@@ -18,7 +18,17 @@ export interface AgentWake {
  * Handles the wakes of one namespace: rehydrates the agent `wakeKey` names from storage and gives it `wakes`, in the
  * order they arrived. Called for one key at a time, so an agent is never rehydrated twice at once.
  */
-export type AgentWakeHandler = (wakeKey: string, wakes: readonly AgentWake[]) => Promise<void>;
+export type AgentWakeHandler = (wakeKey: string, wakes: readonly AgentWake[], slot: AgentWakeSlot) => Promise<void>;
+
+/** The namespace slot a handler call holds under `maxConcurrent`. */
+export interface AgentWakeSlot {
+	/**
+	 * Free the slot while `wait` settles, so other keys of the namespace run meanwhile, then take it back in turn, first
+	 * in, first out, before settling with `wait`'s outcome. For a handler waiting on something other than its own work,
+	 * such as a run's concurrency limit.
+	 */
+	outside<T>(wait: Promise<T>): Promise<T>;
+}
 
 /** The dispatcher's resident state, counted by tests and the idle-agents benchmark. */
 export interface AgentWakeDispatcherStats {
@@ -84,8 +94,9 @@ interface KeyState {
 	running: Pending[];
 }
 
+/** Times wakes on the monotonic clock, so a step of the wall clock neither delays nor hastens them (#5058). */
 const systemClock: AgentWakeClock = {
-	now: () => Date.now(),
+	now: () => performance.now(),
 	setTimer: (callback, delayMs) => setTimeout(callback, delayMs),
 	clearTimer: (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>),
 };
@@ -270,8 +281,32 @@ export class AgentWakeDispatcher {
 	private async drain(wakeKey: string, state: KeyState): Promise<void> {
 		const namespace = wakeKeyNamespace(wakeKey);
 		while (state.queue.length > 0) {
-			const slot = this.acquire(namespace);
-			const free = typeof slot === "function" ? slot : await slot;
+			const take = async (): Promise<() => void> => {
+				const slot = this.acquire(namespace);
+				return typeof slot === "function" ? slot : await slot;
+			};
+			const first = this.acquire(namespace);
+			let free: (() => void) | undefined = typeof first === "function" ? first : await first;
+			let outside = 0;
+			let done = false;
+			const handlerSlot: AgentWakeSlot = {
+				outside: async (wait) => {
+					if (outside++ === 0) {
+						free?.();
+						free = undefined;
+					}
+					try {
+						return await wait;
+					} finally {
+						if (--outside === 0) {
+							const taken = await take();
+							// The handler can end while its slot is out; the slot taken back then is freed at once.
+							if (done || outside > 0) taken();
+							else free = taken;
+						}
+					}
+				},
+			};
 			const batch = state.queue.splice(0);
 			state.running = batch;
 			const handler = this.handlers.get(namespace);
@@ -280,6 +315,7 @@ export class AgentWakeDispatcher {
 				await handler(
 					wakeKey,
 					batch.map((pending) => pending.wake),
+					handlerSlot,
 				);
 				for (const pending of batch) pending.resolve();
 			} catch (cause) {
@@ -290,7 +326,9 @@ export class AgentWakeDispatcher {
 				for (const pending of batch) pending.reject(failure);
 			} finally {
 				state.running = [];
-				free();
+				done = true;
+				free?.();
+				free = undefined;
 			}
 		}
 		this.keys.delete(wakeKey);

@@ -669,6 +669,8 @@ test.each(["preferred", "dist"])(
 			if (fixture) rmSync(fixture, { recursive: true, force: true });
 		}
 	},
+	// Session creation and the reload each load the shipped builtin packages; a reload re-evaluates them (#4986).
+	REAL_BUILTIN_RELOAD_TEST_TIMEOUT_MS,
 );
 
 const extensionToolNames = [

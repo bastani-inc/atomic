@@ -11,7 +11,12 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "vitest";
-import { renameReplacing, writeSettingsFile } from "../../packages/coding-agent/src/core/settings-storage.js";
+import {
+	RENAME_ATTEMPTS,
+	renameReplacing,
+	renameReplacingAsync,
+} from "../../packages/coding-agent/src/core/rename-retry.js";
+import { writeSettingsFile } from "../../packages/coding-agent/src/core/settings-storage.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 let root: string;
@@ -190,9 +195,9 @@ test("on Windows a rename blocked by another handle is retried, and anything els
 		);
 	}
 
-	const permanent = failing(Array.from({ length: 12 }, () => "EPERM"));
+	const permanent = failing(Array.from({ length: RENAME_ATTEMPTS + 2 }, () => "EPERM"));
 	assert.throws(() => renameReplacing("a", "b", "win32", permanent.rename), { code: "EPERM" });
-	assert.equal(permanent.calls.length, 10);
+	assert.equal(permanent.calls.length, RENAME_ATTEMPTS);
 
 	const other = failing(["ENOSPC"]);
 	assert.throws(() => renameReplacing("a", "b", "win32", other.rename), { code: "ENOSPC" });
@@ -209,4 +214,18 @@ test("on Windows a rename blocked by another handle is retried, and anything els
 	const elsewhere = failing(["EPERM"]);
 	assert.throws(() => renameReplacing("a", "b", "linux", elsewhere.rename), { code: "EPERM" });
 	assert.equal(elsewhere.calls.length, 1);
+});
+
+test("on Windows an asynchronous rename refused twice moves the directory on the third try, and elsewhere throws at once", async () => {
+	let calls = 0;
+	const refusedTwice = async () => {
+		calls++;
+		if (calls <= 2) throw Object.assign(new Error("EPERM"), { code: "EPERM" });
+	};
+	await renameReplacingAsync("staging", "store", "win32", refusedTwice);
+	assert.equal(calls, 3);
+
+	calls = 0;
+	await assert.rejects(renameReplacingAsync("staging", "store", "linux", refusedTwice), { code: "EPERM" });
+	assert.equal(calls, 1);
 });

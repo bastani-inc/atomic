@@ -4,7 +4,7 @@ import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteTransactionOption
 import { dialectOf, type StorageDialect } from "../dialect.js";
 import { SessionBlobError, StorageError, StorageInvalidTextError } from "../errors.js";
 import { applyStorageMigrations } from "../migrations.js";
-import { renderStorageIdentifiers, storageMigrationTable } from "../prefix.js";
+import { renderStorageIdentifiers, storageMigrationTable, validateStoragePrefix } from "../prefix.js";
 import { assertStorageSchemaVersion } from "../schema.js";
 import { sha256Hex } from "./blob-hash.js";
 import {
@@ -235,6 +235,8 @@ export class SqlSessionStore implements SessionStore {
 	private closed = false;
 	private readonly cwdMatcher?: SessionCwdMatcher;
 	readonly snapshotBlobs: SqlSnapshotBlobStore;
+	/** The blob table of this store's database, which appends check snapshot records against (#5077). */
+	private readonly blobTable: SqlSnapshotBlobStore;
 	/** Set by `open`, once the store exists (#4971). */
 	openMarkers!: SqlSessionOpenMarkers;
 	/** Session ids of each recently listed scope, valid while the store's change token is unchanged. */
@@ -261,6 +263,7 @@ export class SqlSessionStore implements SessionStore {
 		this.prefix = prefix ?? "";
 		this.cwdMatcher = cwdMatcher;
 		this.snapshotBlobs = snapshotBlobs;
+		this.blobTable = snapshotBlobs;
 		this.legacyBlobData = legacyBlobData;
 	}
 
@@ -268,6 +271,7 @@ export class SqlSessionStore implements SessionStore {
 		database: SqliteDatabase,
 		options: { readonly prefix?: string; readonly cwdMatcher?: SessionCwdMatcher } = {},
 	): Promise<SqlSessionStore> {
+		validateStoragePrefix(options.prefix, dialectOf(database).name);
 		const tables = renderStorageIdentifiers("sessions", SESSION_TABLES, options.prefix);
 		let legacyBlobData = false;
 		const createTables = async (tx: SqliteExecutor, dialect: StorageDialect) => {
@@ -399,6 +403,13 @@ export class SqlSessionStore implements SessionStore {
 		return this.database.transaction(async (tx) => {
 			const previous = await this.forWrite(tx, sessionId, options, true);
 			validateSessionEntries(entries);
+			// A new snapshot record is written only while every blob it references is still stored (#5077).
+			await this.blobTable.assertStored(
+				tx,
+				entries.flatMap((entry) =>
+					entry.type === "worktree_snapshot" && entry.snapshot !== undefined ? [entry.snapshot] : [],
+				),
+			);
 			const lastSeq = previous.last_seq + entries.length;
 			const texts = await this.saveSummary(
 				tx,

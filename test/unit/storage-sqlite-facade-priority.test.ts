@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
-import { createSqliteDatabase, type SqliteDriverResult, type SqliteStatement } from "@bastani/atomic/storage";
-import { test } from "vitest";
+import {
+	createSqliteDatabase,
+	type SqliteDriverResult,
+	type SqliteStatement,
+	STORAGE_PRIORITY_CALL_MAX_WAIT_MS,
+	STORAGE_QUEUED_CALL_MAX_WAIT_MS,
+	StorageUnavailableError,
+} from "@bastani/atomic/storage";
+import { test, vi } from "vitest";
+import { FLEET_HOST_LIVE_MS } from "../../packages/workflows/src/durable/journal/sql-fleet.js";
 
 const EMPTY: SqliteDriverResult = { columns: [], rows: [], changes: 0 };
 
@@ -150,4 +158,177 @@ test("closing waits for the call that is running before it closes the driver (#4
 	release();
 	await Promise.all([running, closing]);
 	assert.deepEqual(order, ["slow", "close"]);
+});
+
+/** A driver whose `execute` of "stuck" never settles until `settle()`, and whose other calls take `runMs` each. */
+function stuckDriver(runMs = 0) {
+	const ran: string[] = [];
+	let settle!: () => void;
+	const database = createSqliteDatabase({
+		descriptor: { adapter: "stuck", location: "memory" },
+		async execute(sql) {
+			if (sql === "stuck")
+				await new Promise<void>((resolve) => {
+					settle = resolve;
+				});
+			else await new Promise((resolve) => setTimeout(resolve, runMs));
+			ran.push(sql);
+			return EMPTY;
+		},
+		executeMultiple() {},
+		beginTransaction: () => assert.fail("no transaction"),
+		async batch(statements: readonly SqliteStatement[]) {
+			ran.push(statements.map((statement) => statement.sql).join("+"));
+			return statements.map(() => EMPTY);
+		},
+		close() {},
+	});
+	return { database, ran, settle: () => settle() };
+}
+
+function failure(call: Promise<unknown>): Promise<unknown> {
+	return call.then(
+		() => assert.fail("ran behind a stuck call"),
+		(error: unknown) => error,
+	);
+}
+
+test("behind a call that never settles, a priority call fails without running once that call has run STORAGE_PRIORITY_CALL_MAX_WAIT_MS, other calls once it has run STORAGE_QUEUED_CALL_MAX_WAIT_MS, and the queue serves calls again once it settles (#5114)", async () => {
+	vi.useFakeTimers();
+	try {
+		const { database, ran, settle } = stuckDriver();
+		const stuck = database.run("stuck");
+		const failed = new Map<string, unknown>();
+		void failure(database.batch!([{ sql: "renewal", params: [] }], { priority: true })).then((error) =>
+			failed.set("renewal", error),
+		);
+		void failure(database.run("write")).then((error) => failed.set("write", error));
+		await vi.advanceTimersByTimeAsync(STORAGE_PRIORITY_CALL_MAX_WAIT_MS - 1);
+		assert.equal(failed.size, 0, "the call ahead may still settle");
+		await vi.advanceTimersByTimeAsync(1);
+		const renewal = failed.get("renewal");
+		assert.ok(renewal instanceof StorageUnavailableError, String(renewal));
+		assert.match(renewal.message, /ran 10 seconds without settling, and did not run/);
+		assert.equal(failed.has("write"), false, "an ordinary call waits the longer bound");
+		await vi.advanceTimersByTimeAsync(STORAGE_QUEUED_CALL_MAX_WAIT_MS - STORAGE_PRIORITY_CALL_MAX_WAIT_MS - 1);
+		assert.equal(failed.has("write"), false);
+		await vi.advanceTimersByTimeAsync(1);
+		const write = failed.get("write");
+		assert.ok(write instanceof StorageUnavailableError, String(write));
+		assert.match(write.message, /ran 60 seconds without settling/);
+		settle();
+		await stuck;
+		await database.batch!([{ sql: "next", params: [] }], { priority: true });
+		assert.deepEqual(ran, ["stuck", "next"]);
+		await database.close();
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+test("a heartbeat behind a call that never settles fails in time to be tried again, and goes through, before the lease it renews expires (#5114)", async () => {
+	assert.ok(3 * STORAGE_PRIORITY_CALL_MAX_WAIT_MS <= FLEET_HOST_LIVE_MS, "the priority bound is a third of the lease");
+	vi.useFakeTimers();
+	try {
+		const { database, ran, settle } = stuckDriver();
+		const stuck = database.run("stuck");
+		const tries: number[] = [];
+		const start = Date.now();
+		/** How long a host waits before it tries a failed heartbeat again: its first retry wait, at most. */
+		const RETRY_MS = 1_000;
+		// A heartbeat as a worker host sends it: on the priority lane, tried again shortly after it fails.
+		const heartbeat = (async () => {
+			for (;;) {
+				tries.push(Date.now() - start);
+				try {
+					return await database.batch!([{ sql: "heartbeat", params: [] }], { priority: true });
+				} catch (error) {
+					assert.ok(error instanceof StorageUnavailableError);
+				}
+				await new Promise((resolve) => setTimeout(resolve, RETRY_MS));
+			}
+		})();
+		await vi.advanceTimersByTimeAsync(STORAGE_PRIORITY_CALL_MAX_WAIT_MS + RETRY_MS);
+		// The first try failed once the call ahead had run the priority bound; the second, behind a call that has already
+		// run it, fails at once.
+		assert.deepEqual(tries, [0, STORAGE_PRIORITY_CALL_MAX_WAIT_MS + RETRY_MS]);
+		settle();
+		await stuck;
+		await vi.advanceTimersByTimeAsync(RETRY_MS);
+		await heartbeat;
+		assert.ok(Date.now() - start < FLEET_HOST_LIVE_MS);
+		assert.deepEqual(ran, ["stuck", "heartbeat"]);
+		await database.close();
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+test("calls queued behind healthy work never fail, however long the queue: each call ahead gets the bounds from its own start (#5114)", async () => {
+	vi.useFakeTimers();
+	try {
+		/** Each call runs most of the priority bound, so the queue as a whole runs far longer than either bound. */
+		const RUN_MS = STORAGE_PRIORITY_CALL_MAX_WAIT_MS - 1_000;
+		const { database, ran } = stuckDriver(RUN_MS);
+		const calls = [
+			...Array.from({ length: 8 }, (_, index) => database.run(`write-${index}`)),
+			database.batch!([{ sql: "renewal", params: [] }], { priority: true }),
+		];
+		await vi.advanceTimersByTimeAsync(8 * RUN_MS);
+		await Promise.all(calls);
+		assert.deepEqual(ran, ["write-0", "renewal", ...Array.from({ length: 7 }, (_, index) => `write-${index + 1}`)]);
+		await database.close();
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+test("a call queued after the running call has run a while fails once that call has run its bound since it started, and at once when it already has (#5114)", async () => {
+	vi.useFakeTimers();
+	try {
+		const { database, settle } = stuckDriver();
+		const stuck = database.run("stuck");
+		await vi.advanceTimersByTimeAsync(STORAGE_QUEUED_CALL_MAX_WAIT_MS - 10_000);
+		const failed = new Map<string, unknown>();
+		const write = failure(database.run("write")).then((error) => failed.set("write", error));
+		await vi.advanceTimersByTimeAsync(10_000 - 1);
+		assert.equal(failed.has("write"), false, "the call ahead has not yet run the whole bound");
+		await vi.advanceTimersByTimeAsync(1);
+		await write;
+		assert.ok(failed.get("write") instanceof StorageUnavailableError);
+		const late = failure(database.run("late"));
+		const renewal = failure(database.batch!([{ sql: "renewal", params: [] }], { priority: true }));
+		await vi.advanceTimersByTimeAsync(0);
+		assert.ok((await late) instanceof StorageUnavailableError);
+		assert.ok((await renewal) instanceof StorageUnavailableError);
+		settle();
+		await stuck;
+		await database.close();
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+test("a priority call queued behind ordinary calls that wait on a call that never settles still fails at STORAGE_PRIORITY_CALL_MAX_WAIT_MS (#5114)", async () => {
+	vi.useFakeTimers();
+	try {
+		const { database, settle } = stuckDriver();
+		const stuck = database.run("stuck");
+		const failed = new Map<string, unknown>();
+		void failure(database.run("write")).then((error) => failed.set("write", error));
+		await vi.advanceTimersByTimeAsync(1_000);
+		void failure(database.batch!([{ sql: "renewal", params: [] }], { priority: true })).then((error) =>
+			failed.set("renewal", error),
+		);
+		await vi.advanceTimersByTimeAsync(STORAGE_PRIORITY_CALL_MAX_WAIT_MS - 1_000);
+		assert.ok(failed.get("renewal") instanceof StorageUnavailableError, "the renewal failed while its lease holds");
+		assert.equal(failed.has("write"), false, "the ordinary call still waits");
+		await vi.advanceTimersByTimeAsync(STORAGE_QUEUED_CALL_MAX_WAIT_MS - STORAGE_PRIORITY_CALL_MAX_WAIT_MS);
+		assert.ok(failed.get("write") instanceof StorageUnavailableError);
+		settle();
+		await stuck;
+		await database.close();
+	} finally {
+		vi.useRealTimers();
+	}
 });

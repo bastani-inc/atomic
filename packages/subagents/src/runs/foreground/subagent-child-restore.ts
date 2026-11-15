@@ -42,17 +42,27 @@ import {
 } from "../../shared/types.js";
 import { inheritedIntercomGroup } from "../shared/intercom-group.js";
 import { currentModelFullId } from "../shared/model-fallback.js";
+import { createExecutionScheduler, type ExecutionScheduler } from "../shared/parallel-utils.js";
 import { type OwnerlessChildLaunch, runOwnerlessChild, takeStoppedQueuedOwnerlessChild } from "./ownerless-children.js";
 import { formatReleasedReplyResults } from "./released-child-replies.js";
-import { interruptedByRestart, pendingToolCalls, planReleasedChildWake } from "./released-children.js";
+import {
+	interruptedByRestart,
+	interruptedStillRunningResult,
+	pendingToolCalls,
+	planReleasedChildWake,
+	SUBAGENT_OWNER_GENERATION,
+	savedToolResultIds,
+} from "./released-children.js";
 import { resumeRunWorktree } from "./run-worktrees.js";
 import { indexSubagentChildOwner, subagentChildRecordOf } from "./subagent-child-card-state.js";
 import { type ChildTargetHold, childHoldKey, holdChildTargets, takeEarlyChildHold } from "./subagent-child-hold.js";
 import { describeLostSubagentChild } from "./subagent-child-lost.js";
 import {
+	clearSubagentChildHeldToolResults,
 	createSubagentChildRecordSink,
 	findSubagentChildRecord,
 	heldTaskExpands,
+	holdInterruptedStillRunningCalls,
 	isRestorableSubagentChild,
 	readSubagentChildRecords,
 	recordSubagentChildGone,
@@ -61,6 +71,7 @@ import {
 	type SubagentChildLaunch,
 	type SubagentChildRecord,
 	type SubagentChildRecordSink,
+	type SubagentChildStillRunningCall,
 	subagentChildOwner,
 	subagentChildRecordsAppended,
 } from "./subagent-child-records.js";
@@ -72,7 +83,7 @@ import {
 	type QueuedSubagentChildStart,
 	runAgentTask,
 	subagentChildClosed,
-	subagentChildSchedule,
+	subagentRunSchedule,
 	takeStoppedQueuedSubagentChild,
 } from "./task-execution.js";
 
@@ -137,6 +148,11 @@ export interface SubagentChildResumeRequest {
 	/** Only `toolResults` woke the child: nothing is prompted unless a result came too late for its call. */
 	readonly promptless?: boolean;
 	readonly redispatch?: true;
+	/**
+	 * Leave the wake's dispatcher slot while `wait` settles: a relaunch whose run has no free slot waits for one outside
+	 * it, so other runs' wakes are not held behind it (#4856).
+	 */
+	readonly outsideWakeSlot?: (wait: Promise<void>) => Promise<void>;
 }
 
 export type SubagentChildRestoreOutcome =
@@ -369,6 +385,53 @@ async function continueChildWhereItWorked(
 	});
 }
 
+/**
+ * The calls a woken child is told are still running once its wake is delivered (#5014): those it was told so before
+ * whose results it has not received, and each pending call this wake answers "still running".
+ */
+function stillRunningAfterWake(
+	record: SubagentChildRecord,
+	delivered: readonly DetachedToolResult[],
+	answers: readonly DetachedToolResult[],
+): SubagentChildStillRunningCall[] {
+	const answered = (toolCallId: string) => delivered.some((result) => result.toolCallId === toolCallId);
+	const kept = (record.stillRunning ?? []).filter(
+		(call) => !answered(call.toolCallId) && !answers.some((answer) => answer.toolCallId === call.toolCallId),
+	);
+	const told = answers
+		.filter((answer) => !answered(answer.toolCallId) && !answer.isError)
+		.map((answer) => ({
+			toolCallId: answer.toolCallId,
+			toolName: answer.toolName,
+			ownerGeneration: SUBAGENT_OWNER_GENERATION,
+		}));
+	return [...kept, ...told];
+}
+
+/**
+ * The run's scheduler, for a wake that holds a dispatcher slot: a dispatch the run starts at once keeps that slot; one
+ * queued behind the run's limit leaves it while it waits and takes it back, in turn, before it starts (#4856).
+ */
+function waitingOutsideWakeSlot(
+	schedule: ExecutionScheduler,
+	outsideWakeSlot: (wait: Promise<void>) => Promise<void>,
+): ExecutionScheduler {
+	const gated = (dispatch: () => Promise<void>): void => {
+		const granted = Promise.withResolvers<void>();
+		let started = false;
+		let slotBack: Promise<void> | undefined;
+		schedule(async () => {
+			started = true;
+			granted.resolve();
+			if (slotBack !== undefined) await slotBack;
+			await dispatch();
+		});
+		// A run with a free slot started it synchronously, and the wake's slot stays with it.
+		if (!started) slotBack = outsideWakeSlot(granted.promise);
+	};
+	return schedule.limit === undefined ? gated : Object.assign(gated, { limit: schedule.limit });
+}
+
 async function relaunchChild(
 	deps: SubagentChildRestoreDeps,
 	ctx: ExtensionContext,
@@ -488,6 +551,25 @@ async function relaunchChild(
 		return unrestorable(
 			`the model it inherited from its parent when it was launched, ${inherited.model}, is no longer available`,
 		);
+	// Calls an earlier owner process told it are still running died with that process: held as interrupted (#5014).
+	if (record.stillRunning?.some((call) => call.ownerGeneration !== SUBAGENT_OWNER_GENERATION))
+		await holdInterruptedStillRunningCalls(
+			deps.pi,
+			record.owner.sessionId,
+			record.childId,
+			SUBAGENT_OWNER_GENERATION,
+			interruptedStillRunningResult,
+		);
+	// Read again: the owner's wakes may have held them first, after `record` was read.
+	const latest = subagentChildRecordOf(record.owner.sessionId, record.childId) ?? record;
+	// What its transcript already holds was delivered: a run that saved it stopped before it reported it (#5012).
+	const saved =
+		sessionManager && !fresh
+			? savedToolResultIds(sessionManager, [...(latest.heldToolResults ?? []), ...(resume?.toolResults ?? [])])
+			: [];
+	await clearSubagentChildHeldToolResults(deps.pi, record.owner.sessionId, record.childId, saved);
+	const unsaved = (results: readonly DetachedToolResult[]) =>
+		results.filter((result) => !saved.includes(result.toolCallId));
 	const childOptions = ctx.getChildSessionOptions?.({ tools: agent.tools });
 	const redispatch = resume?.redispatch === true && !fresh && sessionManager !== undefined;
 	const supervisorAuthorization =
@@ -503,10 +585,12 @@ async function relaunchChild(
 	}
 	const intercomGroup = launchIntercomGroup(record, ctx);
 	// A released child, or one results are held for, continues the turn it was waiting in before anything else (#4326).
-	const kept = record.heldToolResults ?? [];
+	const kept = unsaved(latest.heldToolResults ?? []);
 	const heldResults = [
 		...kept,
-		...(resume?.toolResults ?? []).filter((result) => !kept.some((held) => held.toolCallId === result.toolCallId)),
+		...unsaved(resume?.toolResults ?? []).filter(
+			(result) => !kept.some((held) => held.toolCallId === result.toolCallId),
+		),
 	];
 	const toolResults = sessionManager
 		? formatReleasedReplyResults(sessionManager, heldResults, deps.pi.events)
@@ -558,6 +642,7 @@ async function relaunchChild(
 			? {
 					resumeToolResults: wakePlan.resumeToolResults,
 					wakeToolResultIds: toolResults.map((result) => result.toolCallId),
+					stillRunning: stillRunningAfterWake(latest, toolResults, wakePlan.resumeToolResults),
 				}
 			: {}),
 		...(wakePlan?.skipPrompt ? { skipTaskPrompt: true } : {}),
@@ -589,8 +674,16 @@ async function relaunchChild(
 	ctx.orchestrationContext?.messageAdmission?.boundary.registerOwnedSubagentRun(record.runId);
 	const recordChild = createSubagentChildRecordSink(deps.pi, ctx);
 	const runtime = resolveSubagentExecutorRuntimeDeps(deps.runtime);
-	// It waits for a slot in its run, as its original launch did.
-	const schedule = subagentChildSchedule(record.runId, record.index);
+	// It waits for a slot in its run, as its original launch did: its own scheduler, a sibling's (#4856), or, with no
+	// child of the run holding one here, a new one under the run's recorded limit. The relaunch registers what it uses
+	// before anything else runs, so a sibling woken after it shares that one.
+	const runSchedule =
+		subagentRunSchedule(record.runId) ??
+		(record.runConcurrency === undefined ? undefined : createExecutionScheduler(record.runConcurrency));
+	const schedule =
+		runSchedule && resume?.outsideWakeSlot
+			? waitingOutsideWakeSlot(runSchedule, resume.outsideWakeSlot)
+			: runSchedule;
 	if (!host) {
 		// #3981: a queued child starts after its launch; by then model fallback can have retired the launching session, whose
 		// context throws on every read. The working directory is fixed at launch.
@@ -1010,12 +1103,20 @@ export async function awaitSubagentChildRestoration(
 	);
 	let active = owned.find((restoration) => addressesChild(restoration.record, target));
 	if (!active && owned.length > 0) {
-		// A child's pre-restart Intercom id is known only once its own session has been reopened.
-		const previousIds = await settleWithin(
-			Promise.all(owned.map((restoration) => restoration.previousIntercomId)),
+		// A child's pre-restart Intercom id is known only once its own session has been reopened. Each is matched as soon
+		// as it is known, so a sibling still reopening does not hide the child addressed (#5097).
+		active = await settleWithin(
+			new Promise<ActiveRestoration | undefined>((resolve) => {
+				let unresolved = owned.length;
+				for (const restoration of owned)
+					void restoration.previousIntercomId.then((previousIntercomId) => {
+						unresolved--;
+						if (addressesChild(restoration.record, target, previousIntercomId)) resolve(restoration);
+						else if (unresolved === 0) resolve(undefined);
+					});
+			}),
 			deadline - Date.now(),
 		);
-		active = owned.find((restoration, index) => addressesChild(restoration.record, target, previousIds?.[index]));
 	}
 	if (active) {
 		const label = active.record.intercomTarget ?? targetName.trim();

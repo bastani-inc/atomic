@@ -18,7 +18,7 @@ atomic storage join <url> --token-file <path>
 
 `atomic storage join` keeps sessions and workflow runs in the shared database, so both resume on any joined machine. `atomic team join` shares workflow runs and Intercom but keeps sessions on each machine, so with it only workflow runs resume elsewhere; to share sessions on a machine joined that way, run `atomic team leave` and then `atomic storage join`. See [Sharing storage across hosts](/storage#sharing-storage-across-hosts) for prefixes, tokens and `atomic storage status`.
 
-Keep snapshots on (`snapshots.enabled`, the default). A session records the state of each Git checkout it changes at the end of every turn that ran a file-writing tool, including uncommitted edits, untracked files and commits that were never pushed. That record lives in the shared storage, so a joined machine needs nothing else.
+Keep snapshots on (`snapshots.enabled`, the default). A session records the state of each Git checkout it changes at the end of every turn that ran a file-writing tool, including uncommitted edits, untracked files and commits that were never pushed. That record lives in the shared storage, so a joined machine needs nothing else. Work inside submodules and in untracked repositories nested in the checkout is not recorded. A resume names each such path in a warning (`nested-repository`, `submodule-changes`, `unpushed-submodule-commit`); commit and push that work to bring it along. See [What is left out](/worktree-snapshots#what-is-left-out).
 
 ## Resume a session
 
@@ -38,6 +38,16 @@ A `--session` id whose recorded directory does not exist on this machine, or tha
 An SDK `createAgentSession({ sessionManager })` call prepares a supplied session the same way before it starts, unless you pass `cwd` or `workspace`. That includes a session whose recorded directory exists on this machine but holds a different tree, for example a runner built from the same image: the session continues in a restored worktree, not in that directory.
 
 When the shared storage does not answer, `atomic --session`, `--resume`, `--continue` and `/resume` stop after 15 seconds with a retryable `ResumeCatalogTimeoutError` instead of waiting for the network to give up. Nothing was changed; resume again once `atomic storage status` reaches the database.
+
+### When the session is already open
+
+A session runs in one process at a time. `atomic --session`, `--resume` and `--continue` claim the session they open before they write to it or restore its checkouts. When another process on this machine still has the session open, the resume changes nothing and exits with code `75`:
+
+```text
+Error: Session <id> is already open in process <pid> on <host>. Nothing was changed. Close it there or wait for that process to exit, then resume again.
+```
+
+Interactive mode prints the same message before it starts. When several resumes of one session start at once, exactly one runs and the others exit this way. A claim left by a process that no longer runs, for example one killed with `SIGKILL`, is taken over by the next resume. The process is matched by its pid and, on Linux, by when it started, so a later process given the same pid does not count as the holder. Claims are files under `~/.atomic/agent/session-claims`, so they are seen by the processes that share that agent directory. If a process with another agent directory writes to the same session store at the same time, the run whose write conflicts stops with `Another process wrote to session <id> …` and exit code `1`; resume the session again to continue from what was saved.
 
 ## Wake a released subagent
 
@@ -211,6 +221,7 @@ Missing setup is checked in one pass before anything is restored: the storage ad
 | `ResumeCatalogUnavailableError` | `catalog-unavailable` | The shared storage could not be reached while looking the session or run up, for example because the connection was refused or broke. Retryable. Any other storage failure, such as a missing token file, is reported as that storage error itself. | Check connectivity with `atomic storage status` and resume again. |
 | `ResumeCatalogTimeoutError` | `catalog-timeout` | The shared storage did not answer the lookup within 15 seconds, for example during a network partition. `subject` is `session` or `run`. Retryable. A partition that starts later in the resume is reported when the connection gives up. | Check connectivity with `atomic storage status` and resume again. |
 | `WorkspaceDriftError` | `tree-drift` | A workflow run's recorded state cannot be rebuilt, for example because unpushed commits touch files that are never recorded (`.env`, keys), a snapshot blob is missing, or the disk is full. The message names what the restore could not do (the commits, blob, remote or full volume) and the fix. A session resume does not stop for these; it restores what it can, with a notice. | Do what the message says; for unpushed commits, push them from the original machine, or continue there. |
+| `WorkspaceRestoreError` | `path-too-long` | On Windows, a worktree root or its Git directory under the agent directory would be longer than Git for Windows accepts. Nothing is written. | Set `ATOMIC_CODING_AGENT_DIR` to a shorter directory. See [Long paths on Windows](#long-paths-on-windows). |
 | `WorkspaceRestoreError` | `invalid-snapshot` | A snapshot record names a remote with credentials, a Git remote helper (`ext::`), another scheme than `https`, `http`, `ssh`, `git` or `file`, or holds a value Atomic never writes. Nothing is fetched or run. | Resume only sessions and runs from storage you trust, or export the session again on the machine that recorded it. |
 
 Secret values never appear in these messages; they name the environment variable or file instead. The classes, their codes and the `isResume…Error` guards are exported from `@bastani/atomic`.
@@ -218,6 +229,18 @@ Secret values never appear in these messages; they name the environment variable
 ## Windows
 
 Sessions and workflow runs resume on Windows as they do elsewhere. Local workers are not available on Windows, because Atomic cannot contain their tool processes there: a run with `localWorkers` fails with `SharedPoolSetupError` (code `process-containment-unavailable`) before it starts, so resume pooled runs on Linux or macOS.
+
+### Long paths on Windows
+
+Atomic restores worktrees under the agent directory, `%USERPROFILE%\.atomic\agent` unless `ATOMIC_CODING_AGENT_DIR` names another one. Windows limits most paths to 260 characters (`MAX_PATH`), and Git for Windows refuses, even with `core.longpaths`, an object store (`worktree-snapshots\repositories\<id>.git`) longer than 220 characters, a worktree whose root is longer than 212, and a worktree whose own Git directory, under the store's `worktrees`, is longer than 247. Atomic keeps its own names short, opens its SQLite files, such as a worktree's writer lease, through the `\\?\` long-path form, and turns on `core.longpaths` in the Git object stores it creates, so files deep inside a restored worktree check out. With these, an agent directory of up to about 155 characters works.
+
+A deeper agent directory fails the restore before anything is written, with `WorkspaceRestoreError` code `path-too-long`. The message names the path that would be too long, the limit, and the agent directory. Move the agent directory to a shorter path, for example:
+
+```powershell
+$env:ATOMIC_CODING_AGENT_DIR = "C:\atomic\agent"
+```
+
+Earlier versions failed these restores with `unable to open database file (SQLite code 14)`. Worktrees they restored keep working; their staging directories, named `.staging-<id>`, are still recognized and cleaned up.
 
 ## Trust
 

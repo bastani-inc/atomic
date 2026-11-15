@@ -1,8 +1,12 @@
 import { ASK_REPLY_TIMEOUT_MS } from "../retry-policy.js";
-import type { PendingQuestion } from "./pending-question-index.js";
+import type { SessionInfo } from "../types.js";
+import type { PendingQuestion, PendingQuestionIndex } from "./pending-question-index.js";
 import { normalizeReservationTarget } from "./released-children.js";
 
 const DEFAULT_MAX_ROUTES = 10_000;
+
+/** #4996: why a released subagent's ask failed when the broker had no room left to route its reply. */
+export const RELEASED_REPLY_ROUTES_FULL_REASON = `The Intercom broker's released-subagent reply routes are full (limit ${DEFAULT_MAX_ROUTES}); this ask can no longer receive its reply`;
 
 export interface ReleasedAskerReplyRoute {
 	readonly questionId: string;
@@ -28,6 +32,15 @@ interface Entry {
 	readonly replierSessionId: string;
 	readonly expiresAt: number;
 	ownerSessionId: string | undefined;
+}
+
+/** #4996: a route refused at capacity, whose asker must be told its ask can no longer be answered. */
+export interface RefusedReleasedAskerRoute {
+	readonly questionId: string;
+	readonly askerSessionId: string;
+	readonly childName: string;
+	readonly replierSessionId: string;
+	readonly ownerSessionId: string | undefined;
 }
 
 /** #4829: what keeps a released asker's routes durably. */
@@ -82,6 +95,13 @@ export class ReleasedAskerReplies {
 		this.durable = store;
 	}
 
+	/** #4996: told of each route refused at capacity, so its asker is failed rather than left waiting. */
+	private refused: (route: RefusedReleasedAskerRoute) => void = () => {};
+
+	refuseWith(handler: (route: RefusedReleasedAskerRoute) => void): void {
+		this.refused = handler;
+	}
+
 	keep(
 		asker: { readonly sessionId: string; readonly childName: string },
 		questions: readonly PendingQuestion[],
@@ -105,7 +125,13 @@ export class ReleasedAskerReplies {
 				continue;
 			}
 			if (this.entries.size >= this.maxRoutes) {
-				this.recordOverflow();
+				this.recordOverflow({
+					questionId: question.messageId,
+					askerSessionId: asker.sessionId,
+					childName: asker.childName,
+					replierSessionId: question.targetSessionId,
+					ownerSessionId,
+				});
 				continue;
 			}
 			const entry: Entry = {
@@ -175,12 +201,20 @@ export class ReleasedAskerReplies {
 		);
 	}
 
+	/** Whether a route is kept for this question, owned or not: its durable record is this table's to forget. */
+	holds(question: PendingQuestion): boolean {
+		return [...(this.byQuestion.get(question.messageId) ?? [])].some(
+			(entry) =>
+				entry.askerSessionId === question.senderSessionId && entry.replierSessionId === question.targetSessionId,
+		);
+	}
+
 	/** A definitely refused handoff may be tried again; it keeps its original deadline. */
 	restore(route: ReleasedAskerReplyRoute, ownerSessionId: string | undefined): void {
 		this.expire();
 		if (route.expiresAt <= this.now()) return;
 		if (this.entries.size >= this.maxRoutes) {
-			this.recordOverflow();
+			this.recordOverflow({ ...route, ownerSessionId });
 			return;
 		}
 		const entry: Entry = { ...route, ownerSessionId, childKey: normalizeReservationTarget(route.childName) };
@@ -265,9 +299,10 @@ export class ReleasedAskerReplies {
 		this.byOwner.clear();
 	}
 
-	private recordOverflow(): void {
+	private recordOverflow(route: RefusedReleasedAskerRoute): void {
 		this.droppedRoutes += 1;
 		if (this.droppedRoutes === 1) this.onFirstOverflow();
+		this.refused(route);
 	}
 
 	private add(entry: Entry): void {
@@ -298,4 +333,62 @@ export class ReleasedAskerReplies {
 		removeFrom(this.byChild, entry.childKey, entry);
 		if (entry.ownerSessionId !== undefined) removeFrom(this.byOwner, entry.ownerSessionId, entry);
 	}
+}
+
+/**
+ * #4996: a released subagent's ask whose reply route the broker had no room for fails to the subagent, once: through its
+ * owner, which is woken for it, or, with no owner yet, held for it under its own return address.
+ */
+export function failRefusedReleasedAsk(
+	route: RefusedReleasedAskerRoute,
+	broker: {
+		readonly pendingQuestions: PendingQuestionIndex;
+		readonly replier: SessionInfo | undefined;
+		readonly askerReturnAddress: string | undefined;
+		readonly wake: (wake: { readonly ownerSessionId: string; readonly childName: string }) => void;
+	},
+	now = Date.now(),
+): void {
+	const question = {
+		messageId: route.questionId,
+		senderSessionId: route.askerSessionId,
+		targetSessionId: route.replierSessionId,
+	};
+	// Kept for an away recipient too, it would otherwise be answered or failed a second time.
+	broker.pendingQuestions.forgetDormant(question);
+	const from: SessionInfo = broker.replier ?? {
+		id: route.replierSessionId,
+		cwd: "",
+		model: "",
+		pid: 0,
+		startedAt: 0,
+		lastActivity: now,
+	};
+	const message = {
+		id: `released-routes-full:${route.questionId}`,
+		timestamp: now,
+		replyTo: route.questionId,
+		replyError: RELEASED_REPLY_ROUTES_FULL_REASON,
+		content: { text: RELEASED_REPLY_ROUTES_FULL_REASON },
+	};
+	if (route.ownerSessionId !== undefined) {
+		broker.pendingQuestions.holdForReleasedChild(route.childName, route.ownerSessionId, {
+			askerSessionId: route.askerSessionId,
+			from,
+			message,
+		});
+		broker.wake({ ownerSessionId: route.ownerSessionId, childName: route.childName });
+		return;
+	}
+	if (broker.askerReturnAddress === undefined || broker.askerReturnAddress === "") {
+		console.error(
+			`Intercom broker could not tell released subagent "${route.childName}" that its ask ${route.questionId} failed: ${RELEASED_REPLY_ROUTES_FULL_REASON}`,
+		);
+		return;
+	}
+	broker.pendingQuestions.holdForAwayAsker(
+		{ ...question, senderReturnAddress: broker.askerReturnAddress },
+		from,
+		message,
+	);
 }

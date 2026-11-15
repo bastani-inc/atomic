@@ -25,6 +25,7 @@ import {
 	type SessionStats,
 	SettingsManager,
 	type SubagentIntercomIdentity,
+	sliceHead,
 } from "@bastani/atomic";
 import {
 	type ChildIdentity,
@@ -1043,7 +1044,7 @@ function safeArgsPreview(args: unknown): string {
 	if (args === undefined) return "";
 	try {
 		const text = typeof args === "string" ? args : JSON.stringify(args);
-		return text.length > 200 ? `${text.slice(0, 200)}…` : text;
+		return text.length > 200 ? `${sliceHead(text, 200)}…` : text;
 	} catch {
 		return "";
 	}
@@ -1839,8 +1840,17 @@ export class SubagentControlRuntime {
 				}
 				if (!termination) {
 					unsent.task = undefined;
-					await session.resumeDetachedTurn(admitted.spec.resumeToolResults);
-					taskHooks?.toolResultsSaved?.(admitted.spec.resumeToolResults.map((result) => result.toolCallId));
+					// Reported as soon as they are saved: the turn they continue may never end in this process (#5012).
+					const reported = new Set<string>();
+					await session.resumeDetachedTurn(admitted.spec.resumeToolResults, (toolCallIds) => {
+						for (const toolCallId of toolCallIds) reported.add(toolCallId);
+						taskHooks?.toolResultsSaved?.(toolCallIds);
+					});
+					// The rest the transcript already held, or no longer waited on.
+					const rest = admitted.spec.resumeToolResults
+						.map((result) => result.toolCallId)
+						.filter((toolCallId) => !reported.has(toolCallId));
+					if (rest.length > 0) taskHooks?.toolResultsSaved?.(rest);
 				}
 				startBudget.end();
 			} else {

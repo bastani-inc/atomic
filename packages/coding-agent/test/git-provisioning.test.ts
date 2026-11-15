@@ -272,6 +272,22 @@ function treatFilesAsExecutable(): void {
 	});
 }
 
+/**
+ * Answer every later `stat` of `paths` with what it reports now, so the files stay unchanged as Atomic sees them. On
+ * Windows, a scanner or indexer can update a freshly written file's change time after the test wrote it. Atomic then
+ * correctly sees a changed git and probes it again.
+ */
+function freezeStats(...paths: string[]): void {
+	const actualStat = mocks.actualFs!.statSync as (
+		path: string,
+		options?: object,
+	) => import("node:fs").Stats | undefined;
+	const frozen = new Map(paths.map((path) => [path, actualStat(path)]));
+	mocks.statSync.mockImplementation((path: string, options?: object) =>
+		frozen.has(String(path)) ? frozen.get(String(path)) : actualStat(path, options),
+	);
+}
+
 function leftovers(): string[] {
 	const binDir = join(agentDir, "bin");
 	return existsSync(binDir) ? readdirSync(binDir).filter((name) => name !== "git") : [];
@@ -497,6 +513,9 @@ describe("git resolution (#4322)", () => {
 						"certs",
 						"ca-bundle.crt",
 					),
+					GIT_CONFIG_COUNT: "1",
+					GIT_CONFIG_KEY_0: "core.longpaths",
+					GIT_CONFIG_VALUE_0: "true",
 				}
 			: {
 					GIT_EXEC_PATH: join(layoutRoot, "libexec", "git-core"),
@@ -652,11 +671,12 @@ describe("git resolution (#4322)", () => {
 
 	it("caches the system probe per PATH", () => {
 		const systemGit = makeSystemGit("2.43.0");
+		const alternate = makeSystemGit("2.44.0");
+		freezeStats(systemGit, alternate);
 		usePath(join(systemGit, ".."));
 		tools.resolveGitSync();
 		tools.resolveGitSync();
 		tools.getGitStatus();
-		const alternate = makeSystemGit("2.44.0");
 		usePath(join(alternate, ".."));
 		assert.equal(tools.resolveGitSync().path, alternate);
 		usePath(join(systemGit, ".."));
@@ -671,6 +691,7 @@ describe("git resolution (#4322)", () => {
 		"probes an unchanged %s system git once while reusing portable git",
 		async (_problem, version, status) => {
 			const systemGit = makeSystemGit(version, status);
+			freezeStats(systemGit);
 			usePath(join(systemGit, ".."));
 			const portable = makeProvisionedGit();
 			const fetchMock = vi.spyOn(globalThis, "fetch");
@@ -1448,8 +1469,33 @@ describe("git resolution details (#4322)", () => {
 			GIT_EXEC_PATH: join(installDir, subfolder, "libexec", "git-core"),
 			GIT_TEMPLATE_DIR: join(installDir, subfolder, "share", "git-core", "templates"),
 			GIT_SSL_CAINFO: join(installDir, subfolder, "etc", "ssl", "certs", "ca-bundle.crt"),
+			GIT_CONFIG_COUNT: "1",
+			GIT_CONFIG_KEY_0: "core.longpaths",
+			GIT_CONFIG_VALUE_0: "true",
 		});
 		assert.equal(tools.getGitShellEnvironment({ Path: join(tempDir, "none") })?.pathEntry, join(installDir, "cmd"));
+	});
+
+	it("turns on long paths for the Windows distribution after the caller's own configuration (#4932)", () => {
+		mocks.platform.mockReturnValue("win32");
+		mocks.arch.mockReturnValue("x64");
+		writeGit(join(installDir, "cmd"), "git.exe", 0o644, "2.56.0");
+		markCurrentInstall();
+		const shell = tools.getGitShellEnvironment({
+			Path: join(tempDir, "none"),
+			GIT_CONFIG_COUNT: "1",
+			GIT_CONFIG_KEY_0: "user.name",
+			GIT_CONFIG_VALUE_0: "Someone",
+		});
+		assert.equal(shell?.env.GIT_CONFIG_COUNT, "2");
+		assert.equal(shell?.env.GIT_CONFIG_KEY_0, undefined);
+		assert.equal(shell?.env.GIT_CONFIG_KEY_1, "core.longpaths");
+		assert.equal(shell?.env.GIT_CONFIG_VALUE_1, "true");
+		for (const unusable of ["-1", "none"]) {
+			const env = tools.getGitShellEnvironment({ Path: join(tempDir, "none"), GIT_CONFIG_COUNT: unusable })?.env;
+			assert.equal(env?.GIT_CONFIG_COUNT, "1");
+			assert.equal(env?.GIT_CONFIG_KEY_0, "core.longpaths");
+		}
 	});
 
 	it("finds git.exe on a Windows PATH without an executable bit", async () => {

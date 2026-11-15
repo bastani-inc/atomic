@@ -15,6 +15,13 @@ import { DELIVERED_MESSAGE_TTL_MS } from "../retry-policy.js";
 export const DELIVERED_MESSAGE_MAX_ENTRIES = 10_000;
 /** Upper bound for persisted authority bytes (signatures are fixed-size HMAC digests). */
 export const DELIVERED_MESSAGE_MAX_BYTES = 64 * 1024 * 1024;
+/** How long a durable write waits for another connection's write lock before it fails. */
+const DATABASE_BUSY_TIMEOUT_MS = 5_000;
+/**
+ * #5096: how long `forget` waits for the write lock. SQLite calls are synchronous, so a delete waiting out the full
+ * busy timeout stalls the broker's event loop and every session on it; the delete is cleanup the broker retries.
+ */
+export const FORGET_BUSY_TIMEOUT_MS = 50;
 const AUTHORITY_KEY_BYTES = 32;
 const AUTHORITY_DIGEST_PATTERN = /^[a-f0-9]{64}$/u;
 
@@ -169,7 +176,7 @@ export class DeliveredMessageCache {
 			}
 			this.authorityKey = authorityKey;
 			database = new DatabaseSync(storagePath) as unknown as SqliteDatabase;
-			database.exec("PRAGMA busy_timeout = 5000");
+			database.exec(`PRAGMA busy_timeout = ${DATABASE_BUSY_TIMEOUT_MS}`);
 			database.exec("PRAGMA journal_mode = WAL");
 			database.exec("PRAGMA synchronous = FULL");
 			database.exec("PRAGMA trusted_schema = OFF");
@@ -362,9 +369,15 @@ export class DeliveredMessageCache {
 			}
 			return;
 		}
-		this.database
-			.prepare("DELETE FROM delivered_messages WHERE message_id = ? AND signature = ?")
-			.run(messageId, authority);
+		// A held write lock fails this delete in milliseconds rather than stalling the caller; the caller retries it.
+		this.database.exec(`PRAGMA busy_timeout = ${FORGET_BUSY_TIMEOUT_MS}`);
+		try {
+			this.database
+				.prepare("DELETE FROM delivered_messages WHERE message_id = ? AND signature = ?")
+				.run(messageId, authority);
+		} finally {
+			this.database.exec(`PRAGMA busy_timeout = ${DATABASE_BUSY_TIMEOUT_MS}`);
+		}
 		this.restrictArtifacts();
 	}
 

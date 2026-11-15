@@ -160,6 +160,8 @@ test("a child that lost its worker on every attempt fails with a retry limit nam
 		for (let attempt = 1; attempt <= MAX_CHILD_ATTEMPTS; attempt++) {
 			const claimed = (await worker.request({ kind: "claim" })).value as PoolWork;
 			assert.equal(claimed.generation, attempt);
+			// The worker confirms its claim, as a real worker's first heartbeat does: only then does losing it count (#5034).
+			await worker.request({ kind: "heartbeat", reports: [] });
 			const exited = forked.length;
 			worker.exit(1);
 			if (attempt < MAX_CHILD_ATTEMPTS) worker = await readyReplacement(exited);
@@ -648,6 +650,8 @@ test("a child that lost its worker on every attempt names the log that could not
 		await f.command({ kind: "enqueue", descriptor: f.descriptor, boundary: f.boundary });
 		for (let attempt = 1; attempt <= MAX_CHILD_ATTEMPTS; attempt++) {
 			await worker.request({ kind: "claim" });
+			// The worker confirms its claim, as a real worker's first heartbeat does: only then does losing it count (#5034).
+			await worker.request({ kind: "heartbeat", reports: [] });
 			const exited = forked.length;
 			worker.exit(1);
 			if (attempt < MAX_CHILD_ATTEMPTS) worker = await readyReplacement(exited);
@@ -843,6 +847,8 @@ test("workers lost while they held a child never count toward the pool's limit o
 		let worker = f.workers[0]!;
 		for (let attempt = 1; attempt <= MAX_CHILD_ATTEMPTS; attempt++) {
 			await worker.request({ kind: "claim" });
+			// The worker confirms its claim, as a real worker's first heartbeat does: only then does losing it count (#5034).
+			await worker.request({ kind: "heartbeat", reports: [] });
 			const exited = forked.length;
 			worker.exit(1);
 			worker = await readyReplacement(exited);
@@ -865,6 +871,8 @@ test("a child whose last worker left process groups running fails on losing it, 
 		let worker = f.workers[0]!;
 		for (let attempt = 1; attempt <= MAX_CHILD_ATTEMPTS; attempt++) {
 			await worker.request({ kind: "claim" });
+			// The worker confirms its claim, as a real worker's first heartbeat does: only then does losing it count (#5034).
+			await worker.request({ kind: "heartbeat", reports: [] });
 			const exited = forked.length;
 			worker.exit(1);
 			if (attempt < MAX_CHILD_ATTEMPTS) worker = await readyReplacement(exited);
@@ -880,3 +888,146 @@ test("a child whose last worker left process groups running fails on losing it, 
 		await f.close().catch(() => {});
 	}
 });
+
+/** Past this many recorded handoffs of one child, a handoff counts as one of its attempts. */
+const MAX_CHILD_HANDOFFS = 20;
+
+/** The child's work item: its state, generation and the generations handed off. */
+async function childWork(f: Fixture): Promise<[string, number, readonly number[]]> {
+	const [work] = await f.queue.inspect("root");
+	assert.ok(work);
+	return [work.state, work.generation, work.handoffs ?? []];
+}
+
+/** Records `count` earlier handoffs of the child, as `count` attempts the store's refusals handed on would have. */
+async function seedHandoffs(f: Fixture, count: number): Promise<void> {
+	const [work] = await f.queue.inspect("root");
+	assert.ok(work);
+	await f.database.run("UPDATE wf_runs_work SET generation = ? WHERE id = ?", count, work.id);
+	for (let generation = 1; generation <= count; generation++)
+		await f.database.run(
+			"INSERT INTO wf_runs_pool_operations(work, generation, operation, request, receipt) VALUES (?, ?, 'pool-handoff', 'pool-handoff', '{}')",
+			work.id,
+			generation,
+		);
+}
+
+test("a worker that exits before it confirms its claim spends none of its child's attempts, however often (#5034)", async () => {
+	const f = await fixture({ workers: 1 });
+	try {
+		let worker = f.workers[0]!;
+		// More unconfirmed exits than the child has attempts: none of them counts, so the child never fails.
+		for (let attempt = 1; attempt <= MAX_CHILD_ATTEMPTS + 1; attempt++) {
+			const claimed = (await worker.request({ kind: "claim" })).value as PoolWork;
+			assert.equal(claimed.generation, attempt);
+			const exited = forked.length;
+			worker.exit(1);
+			worker = await readyReplacement(exited);
+		}
+		assert.deepEqual(await childWork(f), ["ready", 4, [1, 2, 3, 4]]);
+		assert.deepEqual(f.events.filter(isEvent("work-failure")), [], "no child failed");
+		// Each went back claimable at once.
+		const next = (await worker.request({ kind: "claim" })).value as PoolWork;
+		assert.equal(next.generation, 5);
+	} finally {
+		await f.close();
+	}
+});
+
+test("an unconfirmed exit once the child has spent its other attempts does not fail it; the next confirmed one does (#5034)", async () => {
+	const f = await fixture({ workers: 1 });
+	try {
+		let worker = f.workers[0]!;
+		/** Claims the child, confirms the claim when `confirm`, and loses the worker. */
+		const lose = async (generation: number, confirm: boolean) => {
+			const claimed = (await worker.request({ kind: "claim" })).value as PoolWork;
+			assert.equal(claimed.generation, generation);
+			if (confirm) await worker.request({ kind: "heartbeat", reports: [] });
+			const exited = forked.length;
+			worker.exit(1);
+			worker = await readyReplacement(exited);
+		};
+		await lose(1, true);
+		await lose(2, true);
+		await lose(3, false);
+		assert.deepEqual(await childWork(f), ["ready", 3, [3]]);
+		assert.deepEqual(f.events.filter(isEvent("work-failure")), [], "the unconfirmed exit failed nothing");
+		await lose(4, true);
+		const error = rehydrateError((await f.next(isEvent("work-failure"))).error);
+		assert.ok(isWorkerRetryLimitError(error), String(error));
+		assert.equal(error.reason, "worker-lost");
+		assert.equal(error.attempts, MAX_CHILD_ATTEMPTS);
+		assert.deepEqual(await childWork(f), ["failed", 4, [3]]);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a child fenced at its attempt limit after an unconfirmed exit reports the attempts it spent, not its claims (#5034)", async () => {
+	const f = await fixture({ workers: 1 });
+	try {
+		let worker = f.workers[0]!;
+		assert.equal(((await worker.request({ kind: "claim" })).value as PoolWork).generation, 1);
+		const exited = forked.length;
+		worker.exit(1);
+		worker = await readyReplacement(exited);
+		for (let generation = 2; generation <= MAX_CHILD_ATTEMPTS + 1; generation++) {
+			assert.equal(((await worker.request({ kind: "claim" })).value as PoolWork).generation, generation);
+			await worker.request({ kind: "heartbeat", reports: [] });
+			await worker.request({ kind: "fenced" });
+		}
+		const error = rehydrateError((await f.next(isEvent("work-failure"))).error);
+		assert.ok(isWorkerRetryLimitError(error), String(error));
+		assert.equal(error.reason, "refused-stale");
+		assert.equal(error.attempts, MAX_CHILD_ATTEMPTS);
+		assert.deepEqual(await childWork(f), ["failed", MAX_CHILD_ATTEMPTS + 1, [1]]);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a worker that exits before it confirms its claim spends an attempt once the child's handoffs reach their limit (#5034)", async () => {
+	const f = await fixture({ workers: 1 });
+	try {
+		await seedHandoffs(f, MAX_CHILD_HANDOFFS);
+		const worker = f.workers[0]!;
+		const claimed = (await worker.request({ kind: "claim" })).value as PoolWork;
+		assert.equal(claimed.generation, MAX_CHILD_HANDOFFS + 1);
+		const exited = forked.length;
+		worker.exit(1);
+		await readyReplacement(exited);
+		const [state, generation, handoffs] = await childWork(f);
+		assert.deepEqual([state, generation, handoffs.length], ["ready", MAX_CHILD_HANDOFFS + 1, MAX_CHILD_HANDOFFS]);
+	} finally {
+		await f.close();
+	}
+});
+
+/** Leases the child's next generation to a worker this pool never started, its lease already lapsed. */
+async function leaseToLostWorker(f: Fixture): Promise<void> {
+	await f.database.run(
+		"UPDATE wf_runs_work SET state = 'leased', generation = generation + 1, worker = 'lost-worker', epoch = ?, expires_at = 0",
+		f.lease.epoch,
+	);
+}
+
+for (const earlier of [0, MAX_CHILD_HANDOFFS])
+	test(`recovery puts back a lapsed claim no worker confirmed as a handoff, until the handoffs reach their limit (#5034, ${earlier} earlier handoffs)`, async () => {
+		const f = await fixture({ workers: 1 });
+		try {
+			if (earlier > 0) await seedHandoffs(f, earlier);
+			await leaseToLostWorker(f);
+			let work = await childWork(f);
+			for (const deadline = Date.now() + RECOVERY_PASSES_MS; work[0] === "leased" && Date.now() < deadline; ) {
+				await delay(50);
+				work = await childWork(f);
+			}
+			// Below the limit the lapsed claim is a handoff; at it, the expiry counts and records none.
+			assert.deepEqual(
+				[work[0], work[1], work[2].length],
+				["ready", earlier + 1, earlier === 0 ? 1 : MAX_CHILD_HANDOFFS],
+			);
+		} finally {
+			await f.close();
+		}
+	});

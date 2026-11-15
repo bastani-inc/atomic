@@ -77,7 +77,7 @@ export async function readLiveBrokerNodes(
 	prefix: string | undefined,
 	staleAfterMs: number,
 ): Promise<string[] | undefined> {
-	const table = `${validateStoragePrefix(prefix)}intercom_leases`;
+	const table = `${validateStoragePrefix(prefix, dialectOf(database).name)}intercom_leases`;
 	const dialect = dialectOf(database);
 	const exists = dialect.tableExists(table);
 	if ((await database.get(exists.sql, ...exists.params)) === undefined) return undefined;
@@ -96,17 +96,19 @@ export async function readLiveBrokerNodes(
 /** Opens the S1 lease store on the shared database's `<prefix>intercom_leases` table; the database stays open. */
 export async function openSqlBrokerLeaseStore(options: IntercomBrokerStateOptions): Promise<BrokerLeaseStore> {
 	const { database } = options;
-	const table = `${validateStoragePrefix(options.prefix)}intercom_leases`;
+	const table = `${validateStoragePrefix(options.prefix, dialectOf(database).name)}intercom_leases`;
 	const dialect = dialectOf(database);
 	const { types, nowMs } = dialect;
 	const leaseAge = age(dialect);
-	await database.exec(`
+	// In a serial transaction, so brokers opening a new store at once take turns creating it (#5054).
+	const schema = `
 		CREATE TABLE IF NOT EXISTS ${table}(
 			kind TEXT NOT NULL, key TEXT NOT NULL, holder_id TEXT, fencing_token ${types.int},
 			last_token ${types.int} NOT NULL, subject_json TEXT, renewed_at ${types.int},
 			first_acquired_order ${types.int} NOT NULL, PRIMARY KEY(kind, key)
 		)
-	`);
+	`;
+	await database.transaction((tx) => tx.exec(schema));
 
 	const holderOf = (executor: SqliteExecutor, key: LeaseKey) =>
 		executor.get<HolderRow>(
@@ -223,6 +225,14 @@ export async function openSqlBrokerLeaseStore(options: IntercomBrokerStateOption
 				staleAfterMs,
 			);
 			return rows.map(stateFromRow);
+		},
+		async retireHolder(holderId) {
+			const { changes } = await database.run(
+				`UPDATE ${table} SET holder_id = NULL, fencing_token = NULL, subject_json = NULL, renewed_at = NULL
+				WHERE holder_id = ?`,
+				holderId,
+			);
+			return changes;
 		},
 	};
 }

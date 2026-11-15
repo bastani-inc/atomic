@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
+import { sliceHead } from "@bastani/atomic";
 import type {
 	StageOptions,
 	StagePromptOptions,
@@ -177,7 +178,7 @@ function truncateByBytes(text: string, maxBytes: number): { text: string; trunca
 			high = mid - 1;
 		}
 	}
-	return { text: text.slice(0, low), truncated: true };
+	return { text: sliceHead(text, low), truncated: true };
 }
 
 export function structuredTaskOutputText(value: unknown): string {
@@ -215,21 +216,34 @@ export function sharedTaskDefaultsFromOptions(
 	return withoutUndefinedProperties(taskDefaults);
 }
 
+/**
+ * Merge shared defaults (chain, parallel or input-level options) under a task's own options. Shared
+ * `modelConstraints` always become inherited constraints, so only a task's own provider lists replace the
+ * user's modelRouting provider settings; shared ones narrow on top of them (#5046).
+ */
+export function withSharedDefaults<T extends Partial<StageOptions>>(
+	defaults: Partial<StageOptions>,
+	own: Partial<StageOptions>,
+): T {
+	const { modelConstraints: shared, ...rest } = defaults;
+	return {
+		...rest,
+		...own,
+		...(shared === undefined
+			? {}
+			: {
+					inheritedModelConstraints: [
+						...(defaults.inheritedModelConstraints ?? []),
+						shared,
+						...(own.inheritedModelConstraints ?? []),
+					],
+				}),
+	} as T;
+}
+
 export function taskWithSharedDefaults(
 	taskOptions: WorkflowTaskOptions,
 	options: WorkflowChainOptions | WorkflowParallelOptions,
 ): WorkflowTaskExecutionOptions {
-	return {
-		...sharedTaskDefaultsFromOptions(options),
-		...withoutUndefinedProperties(taskOptions),
-		...(options.modelConstraints !== undefined && taskOptions.modelConstraints !== undefined
-			? {
-					inheritedModelConstraints: [
-						...(options.inheritedModelConstraints ?? []),
-						options.modelConstraints,
-						...(taskOptions.inheritedModelConstraints ?? []),
-					],
-				}
-			: {}),
-	} as WorkflowTaskExecutionOptions;
+	return withSharedDefaults(sharedTaskDefaultsFromOptions(options), withoutUndefinedProperties(taskOptions));
 }

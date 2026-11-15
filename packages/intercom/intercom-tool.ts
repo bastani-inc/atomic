@@ -5,6 +5,7 @@ import {
   isIntercomRoutingError,
   isProjectGroupError,
   isRetryableIntercomRoutingError,
+  sliceHead,
 } from "@bastani/atomic";
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
@@ -39,6 +40,7 @@ import { RetryIdentityReservations, type RetryIdentityAttempt, RetryTokenError }
 import { runIntercomOperation, type IntercomAttemptResult } from "./tool-retry.js";
 import { PendingSendTimeoutError } from "./broker/pending-send-registry.js";
 import { intercomMessageSizeError } from "./message-size.js";
+import { intercomScriptAccess, scriptSendOutcome, scriptSessionEntry, scriptWorkflowStage } from "./codemode-access.js";
 import {
   closeSessionNames,
   listIntercomChildren,
@@ -436,6 +438,7 @@ export function registerIntercomTool(pi: ExtensionAPI, deps: IntercomToolDeps): 
   pi.registerTool({
     name: "intercom",
     exposure: "model-only",
+    scriptAccess: intercomScriptAccess,
     detachable: (params) => (deps.mayAdmitReplyWait ?? deps.mayDetachReplyWait)?.() === true && intercomCallMayDetach(params),
     detachmentRequiresReady: true,
     label: "Intercom",
@@ -724,6 +727,13 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
 			  return {
 				content: [{ type: "text", text: `Your groups: ${ownGroups.join(", ")}\n\n${section}` }],
 				isError: false,
+				structuredContent: {
+					action: "list",
+					groups: ownGroups,
+					peekGroup: requestedGroup,
+					sessions: peeked.sessions.map((session) => scriptSessionEntry(session, mySessionId)),
+					workflowStages: peeked.workflowStages.map(scriptWorkflowStage),
+				},
 				details: {
 					group: ownGroups.at(-1),
 					groups: ownGroups,
@@ -751,6 +761,12 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
             return {
               content: [{ type: "text", text: `${currentSection}\n\n${otherSection}` }],
               isError: false,
+              structuredContent: {
+                action: "list",
+                groups: ownGroups,
+                sessions: ownSessions.map((session) => scriptSessionEntry(session, mySessionId)),
+                workflowStages: ownDirectory.workflowStages.map(scriptWorkflowStage),
+              },
               details: {
 				group: ownGroups.at(-1),
 				groups: ownGroups,
@@ -1457,6 +1473,10 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               const retained = retainInconclusiveRetry(retryIdentities, retryIdentity);
               retryIdentity = undefined;
               const errorText = result.reason ?? "Session may not exist or has disconnected.";
+              // #4997, #5101: not a final refusal: the reply may be authorized once the ask's route is restored.
+              const retryLater = result.reasonCode === "route_unavailable"
+                ? { reasonCode: result.reasonCode, retryLater: true as const }
+                : {};
               return {
                 content: [{
                   type: "text",
@@ -1464,10 +1484,11 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
                 }],
                 isError: true,
                 details: retryToken === undefined
-                  ? { messageId: result.id, delivered: false, reason: result.reason }
+                  ? { messageId: result.id, delivered: false, reason: result.reason, ...retryLater }
                   : {
                       delivered: false,
                       reason: result.reason,
+                      ...retryLater,
                       ...(retained.retryToken === undefined ? {} : { retryToken: retained.retryToken }),
                     },
               };
@@ -1514,10 +1535,22 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
         case "pending": {
           const pendingAsks = activeReplyTracker().listPending();
           const outbound = outboundAsks().pending();
+          const structuredContent = {
+            action: "pending",
+            inbound: pendingAsks.map(({ from, message, receivedAt }) => ({
+              messageId: message.id,
+              from: from.name || from.id,
+              fromSessionId: from.id,
+              receivedAt,
+              text: message.content.text,
+            })),
+            outbound: outbound.map(({ askId, to, askedAt }) => ({ askId, to, askedAt })),
+          };
           if (pendingAsks.length === 0 && outbound.length === 0) {
             return {
               content: [{ type: "text", text: "No unresolved inbound or outbound asks." }],
               isError: false,
+              structuredContent,
               details: { outbound: [] },
             };
           }
@@ -1527,20 +1560,21 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
           const sections: string[] = [];
           if (pendingAsks.length > 0) {
             const lines = pendingAsks.map(({ from, message, receivedAt }) => {
-              const preview = message.content.text.replace(/\s+/g, " ").slice(0, 80);
+              const preview = sliceHead(message.content.text.replace(/\s+/g, " "), 80);
               return `- ${from.name || from.id} · ${message.id} · ${elapsed(receivedAt)} · ${preview}`;
             });
             sections.push(`**Pending asks:**\n${lines.join("\n")}`);
           }
           if (outbound.length > 0) {
             const lines = outbound.map(({ askId, to, question, askedAt }) =>
-              `- ${askId} → ${to} · ${elapsed(askedAt)} · ${question.replace(/\s+/g, " ").slice(0, 80)}`
+              `- ${askId} → ${to} · ${elapsed(askedAt)} · ${sliceHead(question.replace(/\s+/g, " "), 80)}`
             );
             sections.push(`**Your asks awaiting a reply:**\n${lines.join("\n")}`);
           }
           return {
             content: [{ type: "text", text: sections.join("\n\n") }],
             isError: false,
+            structuredContent,
             details: { outbound: outbound.map(({ askId, to, askedAt }) => ({ askId, to, askedAt })) },
           };
         }
@@ -1588,6 +1622,13 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
                 text: `**Intercom Status:**\nConnected: Yes\nSession ID: ${mySessionId}\nGroups: ${ownGroups.join(", ")}\nActive visible sessions: ${sessions.length}${selectedSection}${multiNodeSection}\nYour asks awaiting a reply: ${outboundAsks().pending().length}`,
               }],
               isError: false,
+              structuredContent: {
+                action: "status",
+                sessionId: mySessionId ?? "",
+                groups: ownGroups,
+                sessions: (selectedGroupSessions ?? sessions).map((session) => scriptSessionEntry(session, mySessionId)),
+                outboundAsks: outboundAsks().pending().length,
+              },
               details: {
                 group: ownGroups.at(-1),
                 groups: ownGroups,
@@ -1639,7 +1680,8 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
         });
       }
       if (action !== "send" && action !== "ask" && action !== "reply") return executeAttempt(undefined, signal);
-      return runIntercomOperation(executeAttempt, (token) => retryIdentities.discard(token), signal);
+      const result = await runIntercomOperation(executeAttempt, (token) => retryIdentities.discard(token), signal);
+      return action === "send" && typeof to === "string" ? { ...result, structuredContent: scriptSendOutcome(to, result) } : result;
     },
     renderCall(args, theme) {
       const action = typeof args.action === "string" ? args.action : "intercom";

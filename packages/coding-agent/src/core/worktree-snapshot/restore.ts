@@ -4,11 +4,12 @@ import { lstat, mkdir, open, readdir, readFile, realpath, rename, rm, rmdir, sta
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
-import lockfile from "proper-lockfile";
+import { releaseLock } from "../lock-release.ts";
 import { noteRestoreFetch, timeRestorePhase } from "../resume/timings.ts";
 import {
 	locateCheckout,
 	readRepositoryConfig,
+	recordRestoredTree,
 	withScratchDirectory,
 	writeSnapshotCommit,
 	writeWorkingTree,
@@ -34,15 +35,21 @@ import {
 	runGit,
 	withWorktreeSnapshotGit,
 } from "./git.ts";
-import { canonicalizeWorktreePath, defaultWorktreeSnapshotStoreDir } from "./paths.ts";
+import {
+	assertRestorePathBudget,
+	canonicalizeWorktreePath,
+	defaultWorktreeSnapshotStoreDir,
+	stagingWorktreeName,
+} from "./paths.ts";
 import { loadSnapshotPathPolicy } from "./policy.ts";
 import { assertUsableBundlePrerequisites, assertUsableSnapshotRecord, isAllowedRemote } from "./records.ts";
-import { legacyRepositoryIdOf, repositoryIdOf, sameRemote } from "./repository-identity.ts";
+import { checkoutStoreIdOf, sameRemote, sharedRepositoryIdsOf } from "./repository-identity.ts";
 import {
 	DEFAULT_WORKTREE_SNAPSHOT_SETTINGS,
 	resolveWorktreeSnapshotSettings,
 	type WorktreeSnapshotSettingsInput,
 } from "./settings.ts";
+import { lockShared } from "./shared-clock.ts";
 import type {
 	SnapshotBlobStore,
 	WorkspaceBinding,
@@ -215,7 +222,7 @@ function withRepositoryLock<T>(
 			return await action();
 		} finally {
 			// A release that fails leaves a lock file nothing refreshes, which the next waiter takes once it is stale.
-			await unlock().catch(() => {});
+			await releaseLock(unlock, store);
 		}
 	});
 }
@@ -231,7 +238,7 @@ async function lockRepository(
 	for (;;) {
 		signal?.throwIfAborted();
 		try {
-			return await lockfile.lock(store, {
+			return await lockShared(store, {
 				realpath: false,
 				stale: REPOSITORY_LOCK_STALE_MS,
 				update: REPOSITORY_LOCK_UPDATE_MS,
@@ -274,11 +281,15 @@ function isRestoreRecord(value: unknown, storeDir: string, id: string): value is
 		!/^[0-9a-f]{24}\.git$/.test(basename(record.store))
 	)
 		return false;
-	const defaultStaging = join(storeDir, "worktrees", `.staging-${id}`);
-	const siblingStaging = join(dirname(record.target), `.${basename(record.target)}.atomic-restore-${id}`);
+	// Earlier versions named staging worktrees `.staging-<id>` and `.<target>.atomic-restore-<id>` (#5139).
+	const defaultStaging = [stagingWorktreeName(id), `.staging-${id}`].map((name) => join(storeDir, "worktrees", name));
+	const { staging, target } = record;
+	const siblingStaging = [stagingWorktreeName(id), `.atomic-restore-${id}`].map((suffix) =>
+		join(dirname(target), `.${basename(target)}${suffix}`),
+	);
 	return (
-		record.staging === siblingStaging ||
-		(record.staging === defaultStaging && dirname(record.target) === join(storeDir, "worktrees"))
+		siblingStaging.includes(staging) ||
+		(defaultStaging.includes(staging) && dirname(target) === join(storeDir, "worktrees"))
 	);
 }
 
@@ -384,7 +395,7 @@ async function sweepRestoreRecords(
 		let compromised: Error | undefined;
 		let warningPath = recordPath;
 		try {
-			release = await lockfile.lock(recordPath, {
+			release = await lockShared(recordPath, {
 				realpath: false,
 				stale: RESTORE_LOCK_STALE_MS,
 				update: RESTORE_LOCK_UPDATE_MS,
@@ -438,7 +449,7 @@ async function withRestoreRecord(
 	await writing(recordsDir, snapshotId, () => mkdir(recordsDir, { recursive: true }));
 	let compromised: Error | undefined;
 	const release = await writing(recordPath, snapshotId, () =>
-		lockfile.lock(recordPath, {
+		lockShared(recordPath, {
 			realpath: false,
 			stale: RESTORE_LOCK_STALE_MS,
 			update: RESTORE_LOCK_UPDATE_MS,
@@ -504,14 +515,42 @@ async function withRestoreRecord(
 }
 
 /**
- * The shared object store of the repository that `remotes` name, under `storeDir`: named after the normalized remotes
- * (#4748), so SSH and HTTPS checkouts of one repository share it, or after the remotes as spelled when only a store an
- * earlier version created that way exists.
+ * The object store, under `storeDir`, of the checkout at `root` whose remotes are `remotes`. Checkouts of one
+ * repository share it: it is named after the normalized remotes (#4748), relative paths resolved against `root`, so
+ * SSH and HTTPS checkouts of one repository share it, or after the remotes as spelled when only a store an earlier
+ * version created that way exists. A checkout whose remotes name no one repository, as one without remotes, has a
+ * store of its own (#4989). Undefined when that checkout's `root` is unknown: its store cannot be told apart from
+ * another repository's.
  */
-export function objectStorePath(storeDir: string, remotes: readonly string[]): string {
-	const store = join(storeDir, "repositories", `${repositoryIdOf(remotes)}.git`);
-	const legacy = join(storeDir, "repositories", `${legacyRepositoryIdOf(remotes)}.git`);
-	return existsSync(store) || !existsSync(legacy) ? store : legacy;
+export function objectStorePath(storeDir: string, remotes: readonly string[], root?: string): string | undefined {
+	const [current, legacy] = sharedRepositoryIdsOf(remotes, root);
+	const named = (repository: string) => join(storeDir, "repositories", `${repository}.git`);
+	if (current === undefined) {
+		return root === undefined || !isAbsolute(root) ? undefined : named(checkoutStoreIdOf(root));
+	}
+	if (legacy === undefined) return named(current);
+	return existsSync(named(current)) || !existsSync(named(legacy)) ? named(current) : named(legacy);
+}
+
+/**
+ * {@link objectStorePath} of the checkout a restore of `target` restores, its snapshot's when known; rejects with
+ * `commits-unavailable` when it has none, as for a binding of a checkout without remotes and no snapshot: no store can
+ * be its repository's (#4989).
+ */
+function restoreStorePath(
+	storeDir: string,
+	target: { readonly remotes: readonly string[]; readonly head: string },
+	checkout: { readonly id: string | null; readonly root: string | undefined },
+): string {
+	const store = objectStorePath(storeDir, target.remotes, checkout.root);
+	if (store !== undefined) return store;
+	throw new WorkspaceRestoreError("commits-unavailable", {
+		snapshotId: checkout.id,
+		head: target.head,
+		commits: [target.head],
+		remotes: [...target.remotes],
+		reason: "not-fetched",
+	});
 }
 
 /**
@@ -526,7 +565,7 @@ export async function storeCheckoutHead(
 	head: string,
 	signal?: AbortSignal,
 ): Promise<void> {
-	const store = objectStorePath(resolve(storeDir), remotes);
+	const store = restoreStorePath(resolve(storeDir), { remotes, head }, { id: null, root: checkout });
 	const git: GitRunOptions = { cwd: checkout, signal, env: { GIT_DIR: store } };
 	await withRepositoryLock(store, null, signal, async () => {
 		await ensureObjectStore(store, signal);
@@ -554,11 +593,12 @@ async function initializedStore(store: string): Promise<boolean> {
  * half-made store; a directory already there that is not one, as an older build may have left, is initialized in place.
  */
 async function ensureObjectStore(store: string, signal?: AbortSignal): Promise<void> {
-	if (await initializedStore(store)) return;
+	if (await initializedStore(store)) return enableLongPaths(store, signal);
 	const repositories = dirname(store);
 	const fresh = join(repositories, `.${basename(store)}.${process.pid}.init`);
 	try {
 		await runGit(["init", "-q", "--bare", fresh], { cwd: repositories, signal });
+		await enableLongPaths(fresh, signal);
 		try {
 			await rename(fresh, store);
 		} catch {
@@ -567,6 +607,21 @@ async function ensureObjectStore(store: string, signal?: AbortSignal): Promise<v
 	} finally {
 		await rm(fresh, { recursive: true, force: true });
 	}
+}
+
+/**
+ * On Windows, turns on `core.longpaths` in `store`'s configuration, which its worktrees share, so Git run in a restored
+ * worktree by the user or an agent handles that worktree's files past 260 characters as Atomic's own Git does (#5139).
+ * A store that has it is left alone, so its configuration is rewritten at most once; a failure to write it costs only
+ * that, since Atomic's own Git commands set it on their command lines. Run only under the store's repository lock.
+ */
+async function enableLongPaths(store: string, signal?: AbortSignal): Promise<void> {
+	if (process.platform !== "win32") return;
+	const config = join(store, "config");
+	const git: GitRunOptions = { cwd: store, signal, allowExitCodes: [1] };
+	const current = await runGit(["config", "--file", config, "--type=bool", "--get", "core.longpaths"], git);
+	if (current.stdout.toString("utf8").trim() === "true") return;
+	await runGit(["config", "--file", config, "core.longpaths", "true"], git).catch(() => signal?.throwIfAborted());
 }
 
 function bundlePrerequisites(bundle: Uint8Array): string[] {
@@ -1010,6 +1065,7 @@ async function materialize(
 	await runGit(["-c", `core.attributesFile=${attributes}`, "read-tree", "--reset", "-u", tree], neutral);
 	await runGit(["read-tree", head], neutral);
 	await runGit(["update-index", "-q", "--refresh"], { ...neutral, allowExitCodes: [1] });
+	await recordRestoredTree(neutral, tree);
 }
 
 /** Removes the restored worktree at `target` from the store `git` points at, then prunes what its removal left. */
@@ -1059,18 +1115,22 @@ export async function restoreWorktree(
 export async function restoreWorktreeAt(
 	target: WorkspaceBinding | WorktreeSnapshot,
 	slot: string,
-	options: Omit<RestoreWorktreeSnapshotOptions, "into"> = {},
+	options: Omit<RestoreWorktreeSnapshotOptions, "into"> & {
+		/** The root of the checkout a binding was recorded in, which its relative-path remotes are relative to (#4989). */
+		readonly root?: string;
+	} = {},
 ): Promise<RestoredWorktree> {
 	if (!isBinding(target)) {
 		throw new WorkspaceConfigError("sdk", "target", "a WorkspaceBinding or a WorktreeSnapshot");
 	}
-	return withWorktreeSnapshotGit(options.git, () => restoreValidated(target, options, slot));
+	return withWorktreeSnapshotGit(options.git, () => restoreValidated(target, options, slot, options.root));
 }
 
 async function restoreValidated(
 	target: WorkspaceBinding,
 	options: RestoreWorktreeSnapshotOptions,
 	slot: string | undefined,
+	root?: string,
 ): Promise<RestoredWorktree> {
 	const { signal } = options;
 	const snapshot = resolveSnapshot(target, options.snapshots);
@@ -1094,9 +1154,16 @@ async function restoreValidated(
 		warnings.push(warning);
 		options.onWarning?.(warning);
 	};
+	checkPathBudget(
+		storeDir,
+		() => restoreStorePath(storeDir, target, snapshot ?? { id: null, root }),
+		path,
+		options.into,
+		snapshotId,
+	);
 	await sweepRestoreRecords(storeDir, warn, signal);
 	return withScratchDirectory(async (scratch) => {
-		const store = objectStorePath(storeDir, target.remotes);
+		const store = restoreStorePath(storeDir, target, snapshot ?? { id: null, root });
 		const git: GitRunOptions = { cwd: scratch, signal, env: { GIT_DIR: store } };
 		await storeSnapshotObjects(git, store, target, snapshot, patches, options.blobs, scratch);
 		await publishWorktree({
@@ -1205,7 +1272,7 @@ export async function storeSnapshotTree(
 	const storeDir = resolve(options.storeDir ?? defaultWorktreeSnapshotStoreDir());
 	const patches = await snapshotPatches(snapshot, options.blobs);
 	return withScratchDirectory(async (scratch) => {
-		const store = objectStorePath(storeDir, snapshot.remotes);
+		const store = restoreStorePath(storeDir, snapshot, snapshot);
 		const git: GitRunOptions = { cwd: scratch, signal: options.signal, env: { GIT_DIR: store } };
 		await storeSnapshotObjects(git, store, binding, snapshot, patches, options.blobs, scratch);
 		return store;
@@ -1244,7 +1311,7 @@ export async function resetPooledWorktree(
 	assertUsableSnapshotRecord(binding, snapshot);
 	const patches = await snapshotPatches(snapshot, options.blobs);
 	// The slot's own store: one an earlier version named after the remotes as spelled stays the slot's (#4748).
-	const store = await linkedObjectStore(options.storeDir, slot, signal);
+	const store = await pooledWorktreeStore(options.storeDir, slot, signal);
 	return withScratchDirectory(async (scratch) => {
 		const git: GitRunOptions = { cwd: scratch, signal, env: { GIT_DIR: store } };
 		await storeSnapshotObjects(git, store, binding, snapshot, patches, options.blobs, scratch);
@@ -1264,6 +1331,7 @@ export async function resetPooledWorktree(
 			await runGit(["update-ref", "--no-deref", "HEAD", snapshot.head], neutral);
 			await runGit(["read-tree", "--reset", snapshot.head], neutral);
 			await runGit(["update-index", "-q", "--refresh"], { ...neutral, allowExitCodes: [1] });
+			await recordRestoredTree(neutral, snapshot.tree);
 		});
 		const warnings = snapshotRestoreWarnings(snapshot);
 		if (snapshot.filters?.drivers.includes("lfs")) {
@@ -1280,8 +1348,15 @@ export async function resetPooledWorktree(
 	});
 }
 
-/** The shared object store under `storeDir` that the restored worktree at `worktree` belongs to. */
-async function linkedObjectStore(storeDir: string, worktree: string, signal: AbortSignal | undefined): Promise<string> {
+/**
+ * The shared object store under `storeDir` that the restored worktree at `worktree` belongs to; rejects with
+ * `unsafe-target` when it belongs to none.
+ */
+export async function pooledWorktreeStore(
+	storeDir: string,
+	worktree: string,
+	signal: AbortSignal | undefined,
+): Promise<string> {
 	const store = resolve(
 		await gitText(["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: worktree, signal }),
 	);
@@ -1369,9 +1444,10 @@ async function restoreDegradedValidated(
 		warnings.push(warning);
 		options.onWarning?.(warning);
 	};
+	checkPathBudget(storeDir, () => restoreStorePath(storeDir, snapshot, snapshot), path, undefined, snapshot.id);
 	await sweepRestoreRecords(storeDir, warn, signal);
 	return withScratchDirectory(async (scratch) => {
-		const store = objectStorePath(storeDir, snapshot.remotes);
+		const store = restoreStorePath(storeDir, snapshot, snapshot);
 		const git: GitRunOptions = { cwd: scratch, signal, env: { GIT_DIR: store } };
 		const cause = {
 			cause: failure.code,
@@ -1461,14 +1537,46 @@ async function restoreDegradedValidated(
 			// check its HEAD and keep the checkout, recording the tree it holds.
 			verify: "head",
 		});
-		if (measured === degraded.tree) return { path, degraded, warnings };
-		// This host's checkout filters changed files: record what the worktree holds, and which files differ.
+		// This host's checkout filters may have changed files, and a case-insensitive file system may hold one file for
+		// paths that differ only in case: record what the worktree holds, and which files differ.
 		const differing = nulFields(
 			(await runGit(["diff-tree", "-r", "-z", "--name-only", "--no-renames", degraded.tree, measured], git)).stdout,
 		);
-		const missingPaths = [...new Set([...degraded.missingPaths, ...differing])].sort();
+		const folded = await caseFoldedPaths(git, degraded.tree, path);
+		const missingPaths = [...new Set([...degraded.missingPaths, ...differing, ...folded])].sort();
 		return { path, degraded: { ...degraded, tree: measured, missingPaths }, warnings };
 	});
+}
+
+/**
+ * The paths of `tree` that differ from another only in case (`dir/b.txt` and `Dir/b.txt`) where the worktree at `root`
+ * lacks one of them under its own spelling: a case-insensitive file system holds one file for them all, so none can be
+ * relied on (#4932).
+ */
+async function caseFoldedPaths(git: GitRunOptions, tree: string, root: string): Promise<string[]> {
+	const groups = new Map<string, string[]>();
+	for (const path of nulFields((await runGit(["ls-tree", "-r", "-z", "--name-only", tree], git)).stdout)) {
+		const key = path.toLowerCase();
+		groups.set(key, [...(groups.get(key) ?? []), path]);
+	}
+	const spelledAsRecorded = async (path: string) => {
+		const parts = path.split("/");
+		for (let index = 0; index < parts.length; index++) {
+			const names: string[] = await readdir(join(root, ...parts.slice(0, index))).catch(() => []);
+			if (!names.includes(parts[index]!)) return false;
+		}
+		return true;
+	};
+	const folded: string[] = [];
+	for (const group of groups.values()) {
+		if (group.length < 2) continue;
+		for (const path of group) {
+			if (await spelledAsRecorded(path)) continue;
+			folded.push(...group);
+			break;
+		}
+	}
+	return folded;
 }
 
 /** The commits `snapshot` recorded as not pushed: its bundle's, else those its omissions name, else its `HEAD`. */
@@ -1648,6 +1756,28 @@ interface PublishWorktree {
 	readonly verify: "tree" | "head";
 }
 
+/** The staging worktree of the restore `id` into `path`: under `storeDir`, or beside `path` when the caller chose it. */
+function stagingPath(storeDir: string, path: string, into: string | undefined, id: string): string {
+	return into === undefined
+		? join(storeDir, "worktrees", stagingWorktreeName(id))
+		: join(dirname(path), `.${basename(path)}${stagingWorktreeName(id)}`);
+}
+
+/**
+ * On Windows, fails a restore into `path` over the object store `store` names before it writes anything when a path it
+ * would create is longer than Git for Windows accepts (#5139). Staging names have one length, whatever the id.
+ */
+function checkPathBudget(
+	storeDir: string,
+	store: () => string,
+	path: string,
+	into: string | undefined,
+	snapshotId: string | null,
+): void {
+	const staging = stagingPath(storeDir, path, into, "0".repeat(12));
+	assertRestorePathBudget({ storeDir, store, staging, target: path, snapshotId });
+}
+
 /**
  * Checks `head` and `tree` out of `store` into a staging worktree, verifies it, and moves it to `path`, under a crash
  * record, so a final path never holds an unverified worktree.
@@ -1659,10 +1789,7 @@ async function publishWorktree(publish: PublishWorktree): Promise<string> {
 	await checkTarget(path, snapshotId);
 	const createdTarget = (await statIfPresent(path)) === undefined;
 	const id = randomUUID();
-	const staging =
-		publish.into === undefined
-			? join(storeDir, "worktrees", `.staging-${id}`)
-			: join(dirname(path), `.${basename(path)}.atomic-restore-${id}`);
+	const staging = stagingPath(storeDir, path, publish.into, id);
 	const record: RestoreRecord = { staging, target: path, store, createdTarget };
 	await withRestoreRecord(storeDir, id, record, snapshotId, warn, signal, async (assertActive) => {
 		await timeRestorePhase("materialize", () => materialize(git, staging, head, tree, scratch, snapshotId, signal));

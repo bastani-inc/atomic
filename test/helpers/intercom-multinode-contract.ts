@@ -308,6 +308,26 @@ export function registerBrokerLeaseStoreConformance(
 		assert.deepEqual(await targets(), ["target-2", "target-1"]);
 	});
 
+	check(
+		"retires every live lease of one holder at once, fencing it, and leaves other holders alone (#5038)",
+		async (connect) => {
+			const [a, b] = [await connect(), await connect()];
+			const member = await acquire(a, "broker-a", membership("broker-a"));
+			const hosted = await acquire(a, "broker-a");
+			const other = await acquire(b, "broker-b", presence(OTHER_RECIPIENT));
+			assert.equal(await b.retireHolder("broker-a"), 2);
+			assert.deepEqual(await b.read(member.key), { status: "missing" });
+			assert.deepEqual(await b.read(hosted.key), { status: "missing" });
+			assert.equal(expectStatus(await b.read(other.key), "found").lease.holderId, "broker-b");
+			const taken = await acquire(b, "broker-b");
+			assert.ok(taken.fencingToken > hosted.fencingToken);
+			assert.deepEqual(await a.renew(hosted), { status: "stale", currentFencingToken: taken.fencingToken });
+			assert.equal(await b.retireHolder("broker-a"), 0);
+			assert.equal(await b.retireHolder(""), 0);
+			assert.equal(expectStatus(await b.read(other.key), "found").lease.holderId, "broker-b");
+		},
+	);
+
 	check("rejects empty identifiers and a renewal subject for another key", async (connect) => {
 		const a = await connect();
 		const empty = (reason: string) => ({ status: "invalid", reason });
@@ -397,6 +417,31 @@ export function registerOutboxStoreConformance(
 		assert.deepEqual(ids(expectStatus(await b.listUndelivered(RECIPIENT), "listed").rows), ["m1", "m2"]);
 	});
 
+	check("releases every claim of one claimant at once so the queue can be claimed again (#5038)", async (connect) => {
+		const [a, b] = [await connect(), await connect()];
+		await insert(a, frameFor("m1", "first"));
+		await insert(a, frameFor("m2", "second"));
+		await insert(a, frameFor("m3", "other"), { targetIdentity: OTHER_RECIPIENT });
+		const [first] = await claimAll(a, "broker-dead");
+		await claimAll(b, "broker-b", LIVE_MS, OTHER_RECIPIENT);
+		const delivered = expectStatus(
+			await b.claim({ claimantId: "broker-b", targetIdentity: RECIPIENT, staleAfterMs: LIVE_MS }),
+			"held",
+		);
+		assert.equal(delivered.claimantId, "broker-dead");
+		assert.ok(first);
+		assert.equal(await b.releaseClaimsOf("broker-dead"), 2);
+		assert.deepEqual(await a.renewClaim(first.claim), { status: "stale" });
+		const again = await claimAll(b, "broker-b");
+		assert.deepEqual(ids(again), ["m1", "m2"]);
+		assert.equal(again[0]!.row.claimAttempts, 2);
+		assert.equal(expectStatus(await a.read("m3"), "found").row.state, "claimed");
+		assert.equal(await b.releaseClaimsOf("broker-dead"), 0);
+		await b.markDelivered(again[0]!.claim);
+		assert.equal(await b.releaseClaimsOf("broker-b"), 2);
+		assert.equal(expectStatus(await a.read("m1"), "found").row.state, "delivered");
+	});
+
 	check("stores and returns the delivery frame verbatim and detached", async (connect) => {
 		const [a, b] = [await connect(), await connect()];
 		const frame = richFrame("rich");
@@ -440,6 +485,50 @@ export function registerOutboxStoreConformance(
 		assert.deepEqual(ids(inFlight), ["z-9", "a-1", "m-5"]);
 		assert.ok(inFlight.every((row) => row.state === "claimed" && row.claimAttempts === 1));
 	});
+
+	check(
+		"counts a row's place among its recipient's undelivered rows as rows ahead of it are delivered or fail (#4896)",
+		async (connect) => {
+			const [a, b] = [await connect(), await connect()];
+			await insert(a, frameFor("p1", "one"));
+			await insert(b, frameFor("elsewhere", "other"), { targetIdentity: OTHER_RECIPIENT });
+			await insert(a, frameFor("p2", "two"));
+			await insert(b, frameFor("p3", "three"));
+			await insert(a, frameFor("p4", "four"));
+			const positions = async () =>
+				Promise.all(
+					["p1", "p2", "p3", "p4"].map(async (messageId) => {
+						const counted = await b.undeliveredPosition(RECIPIENT, messageId);
+						return counted.status === "positioned" ? counted.position : counted.status;
+					}),
+				);
+			assert.deepEqual(await positions(), [1, 2, 3, 4]);
+			assert.deepEqual(await a.undeliveredPosition(OTHER_RECIPIENT, "elsewhere"), {
+				status: "positioned",
+				position: 1,
+			});
+			assert.deepEqual(await a.undeliveredPosition(OTHER_RECIPIENT, "p2"), { status: "missing" });
+			const [first, second, third] = await claimAll(a, "broker-a");
+			assert.ok(first && second && third);
+			assert.deepEqual(await positions(), [1, 2, 3, 4], "a claimed row is still undelivered");
+			await a.markDelivered(first.claim);
+			assert.deepEqual(await positions(), ["missing", 1, 2, 3]);
+			await a.markFailed(third.claim, "refused");
+			assert.deepEqual(await positions(), ["missing", 1, "missing", 2]);
+			await a.releaseClaim(second.claim);
+			assert.deepEqual(await positions(), ["missing", 1, "missing", 2], "a released claim keeps its place");
+			assert.deepEqual(await b.undeliveredPosition(RECIPIENT, "unknown"), { status: "missing" });
+			assert.deepEqual(await b.undeliveredPosition("", "p2"), {
+				status: "invalid",
+				reason: "empty-target-identity",
+			});
+			assert.deepEqual(await b.undeliveredPosition(RECIPIENT, ""), {
+				status: "invalid",
+				reason: "empty-message-id",
+			});
+			assert.deepEqual(ids(expectStatus(await b.listUndelivered(RECIPIENT, 1), "listed").rows), ["p2"]);
+		},
+	);
 
 	check("keeps one claimant per recipient while its claims are live", async (connect) => {
 		const [a, b] = [await connect(), await connect()];
@@ -1194,6 +1283,29 @@ export function registerPendingAskStoreConformance(
 		assert.deepEqual(await b.matchesReply(reply("target", "sender", "q3")), { status: "no-match" });
 	});
 
+	check(
+		"does not record an ask again once it is answered or failed, but does once its route only moved (#4997)",
+		async (connect) => {
+			const [a, b] = [await connect(), await connect()];
+			assert.deepEqual(await a.record(ask("sender", "target", "q1")), { status: "recorded" });
+			assert.deepEqual(await b.clearReply(reply("target", "sender", "q1")), { status: "cleared" });
+			assert.deepEqual(await a.record(ask("sender", "target", "q1")), { status: "settled" });
+			assert.equal(await b.isSettled(reply("target", "sender", "q1")), true);
+			assert.equal(await b.isSettled(reply("target", "other-sender", "q1")), false);
+			assert.deepEqual(await b.matchesReply(reply("target", "sender", "q1")), { status: "no-match" });
+			// Settled even with no route recorded: another broker answered it from its own routes.
+			assert.deepEqual(await a.clearReply(reply("target", "sender", "q2")), { status: "no-match" });
+			assert.deepEqual(await b.record(ask("sender", "target", "q2")), { status: "settled" });
+			// Only the exact ask is settled.
+			assert.deepEqual(await b.record(ask("other-sender", "target", "q1")), { status: "recorded" });
+			assert.deepEqual(await a.record(ask("sender", "target", "q3")), { status: "recorded" });
+			assert.deepEqual(await b.releaseRoute(reply("target", "sender", "q3")), { status: "cleared" });
+			assert.deepEqual(await b.releaseRoute(reply("target", "sender", "q3")), { status: "no-match" });
+			assert.equal(await a.isSettled(reply("target", "sender", "q3")), false);
+			assert.deepEqual(await a.record(ask("sender", "target", "q3")), { status: "recorded" });
+		},
+	);
+
 	check("prunes a sender's asks and hands a target's asks over in insertion order", async (connect) => {
 		const [a, b] = [await connect(), await connect()];
 		await a.record(ask("sender", "target", "q1"));
@@ -1301,6 +1413,19 @@ export function registerPendingAskStoreConformance(
 		await a.parkForTarget("child-1", { ownerSessionId: "owner", reservationKey: "released:one" });
 		await a.parkForTarget("child-2", { ownerSessionId: "owner", reservationKey: "released:two" });
 		await a.parkForTarget("child-3", { ownerSessionId: "other-owner", reservationKey: "released:three" });
+		// #4992: listing leaves each ask for its own `clearReply`, once its asker's failure is queued.
+		assert.deepEqual(await b.listParked("owner"), {
+			status: "listed",
+			asks: [ask("asker", "child-1", "q1"), ask("asker", "child-2", "q2")],
+		});
+		assert.deepEqual(await b.listParked("owner", "released:two"), {
+			status: "listed",
+			asks: [ask("asker", "child-2", "q2")],
+		});
+		assert.deepEqual(await a.listForTarget("child-3"), { status: "listed", asks: [ask("asker", "child-3", "q3")] });
+		assert.deepEqual(await a.listForTarget(""), { status: "invalid", reason: "empty-session-id" });
+		assert.deepEqual(await a.listParked(""), { status: "invalid", reason: "empty-session-id" });
+		assert.deepEqual(await a.listParked("owner", ""), { status: "invalid", reason: "empty-reservation-key" });
 		assert.deepEqual(await b.takeParked("owner", "released:one"), {
 			status: "taken",
 			asks: [ask("asker", "child-1", "q1")],
@@ -1323,6 +1448,94 @@ export function registerPendingAskStoreConformance(
 		assert.deepEqual(await a.takeParked(""), empty("empty-session-id"));
 		assert.deepEqual(await a.takeParked("owner", ""), empty("empty-reservation-key"));
 		assert.deepEqual(await a.takeParked("other-owner"), { status: "taken", asks: [ask("asker", "child-3", "q3")] });
+	});
+
+	check(
+		"marks an ended target's unanswered asks once, until each is cleared or keeps only its route (#4992)",
+		async (connect) => {
+			const [a, b] = [await connect(), await connect()];
+			await a.record(ask("asker", "recipient", "q1"));
+			await a.record(ask("asker-2", "recipient", "q2"));
+			await a.record(ask("asker", "recipient", "q3"));
+			await a.record(ask("asker", "child", "q4"));
+			await a.record(ask("asker", "other-child", "q5"));
+			await a.parkForTarget("child", { ownerSessionId: "owner", reservationKey: "released:child" });
+			await a.parkForTarget("other-child", { ownerSessionId: "owner", reservationKey: "released:other" });
+			await a.markReplied(reply("recipient", "asker", "q3"));
+			assert.deepEqual(await b.listEnded(0), { status: "listed", asks: [] }, "nothing ended yet");
+
+			assert.deepEqual(await a.endForTarget("recipient"), {
+				status: "listed",
+				asks: [ask("asker", "recipient", "q1"), ask("asker-2", "recipient", "q2")],
+			});
+			assert.deepEqual(
+				await b.endForTarget("recipient"),
+				{
+					status: "listed",
+					asks: [ask("asker", "recipient", "q1"), ask("asker-2", "recipient", "q2")],
+				},
+				"ending again returns the same asks",
+			);
+			assert.deepEqual(await b.endParked("owner", "released:child"), {
+				status: "listed",
+				asks: [ask("asker", "child", "q4")],
+			});
+			assert.deepEqual(await b.listEnded(0), {
+				status: "listed",
+				asks: [ask("asker", "recipient", "q1"), ask("asker-2", "recipient", "q2"), ask("asker", "child", "q4")],
+			});
+			assert.deepEqual(await b.listEnded(60_000), { status: "listed", asks: [] }, "not ended long enough ago");
+			// An ended parked ask is not taken up again when its subagent registers again.
+			assert.deepEqual(
+				await a.rebindParked({ ownerSessionId: "owner", reservationKey: "released:child" }, "child-2"),
+				{
+					status: "rebound",
+					asks: [],
+				},
+			);
+
+			assert.deepEqual(await a.unmarkEnded(reply("recipient", "asker", "q1")), { status: "marked" });
+			assert.deepEqual(
+				await a.matchesReply(reply("recipient", "asker", "q1")),
+				{ status: "match" },
+				"its route stays",
+			);
+			assert.deepEqual(await a.clearReply(reply("recipient", "asker-2", "q2")), { status: "cleared" });
+			assert.deepEqual(await b.listEnded(0), { status: "listed", asks: [ask("asker", "child", "q4")] });
+			assert.deepEqual(await a.unmarkEnded(reply("nobody", "asker", "q1")), { status: "no-match" });
+			const empty = (reason: string) => ({ status: "invalid", reason });
+			assert.deepEqual(await a.endForTarget(""), empty("empty-session-id"));
+			assert.deepEqual(await a.endParked(""), empty("empty-session-id"));
+			assert.deepEqual(await a.endParked("owner", ""), empty("empty-reservation-key"));
+			assert.deepEqual(await a.unmarkEnded(reply("", "asker", "q1")), empty("empty-session-id"));
+		},
+	);
+
+	check("keeps a replied ask's route for its reply but no longer lists it as unanswered (#4992)", async (connect) => {
+		const [a, b] = [await connect(), await connect()];
+		await a.record(ask("asker", "recipient", "q1"));
+		await a.record(ask("asker-2", "recipient", "q2"));
+		await a.record(ask("asker", "child", "q3"));
+		await a.parkForTarget("child", { ownerSessionId: "owner", reservationKey: "released:child" });
+		assert.deepEqual(await b.markReplied(reply("recipient", "asker", "q1")), { status: "marked" });
+		assert.deepEqual(await b.markReplied(reply("child", "asker", "q3")), { status: "marked" });
+		assert.deepEqual(await b.markReplied(reply("recipient", "asker", "q3")), { status: "no-match" });
+		assert.deepEqual(await a.markReplied(reply("", "asker", "q1")), {
+			status: "invalid",
+			reason: "empty-session-id",
+		});
+		assert.deepEqual(await a.listForTarget("recipient"), {
+			status: "listed",
+			asks: [ask("asker-2", "recipient", "q2")],
+		});
+		assert.deepEqual(await a.listParked("owner"), { status: "listed", asks: [] });
+		assert.deepEqual(
+			await a.matchesReply(reply("recipient", "asker", "q1")),
+			{ status: "match" },
+			"the reply is still authorized",
+		);
+		assert.deepEqual(await a.clearReply(reply("recipient", "asker", "q1")), { status: "cleared" });
+		assert.deepEqual(await a.takeParked("owner"), { status: "taken", asks: [ask("asker", "child", "q3")] });
 	});
 }
 
@@ -1714,9 +1927,49 @@ export function registerKnownSessionStoreConformance(
 		assert.deepEqual(await a.lookup("recipient-session", LIVE_MS), { status: "found", sessions: [] });
 	});
 
+	check("grants an Intercom id, on any broker, only to the return address it is bound to", async (connect) => {
+		const [a, b] = [await connect(), await connect()];
+		assert.deepEqual(await a.binding("id-1", LIVE_MS), { status: "unbound" });
+		assert.deepEqual(await a.bind("id-1", "return-1", LIVE_MS), { status: "bound" });
+		assert.deepEqual(await b.bind("id-1", "return-2", LIVE_MS), { status: "refused", returnAddress: "return-1" });
+		assert.deepEqual(await b.bind("id-1", "return-1", LIVE_MS), { status: "bound" });
+		assert.deepEqual(await b.binding("id-1", LIVE_MS), { status: "bound", returnAddress: "return-1" });
+		assert.deepEqual(await b.bind("id-2", "", LIVE_MS), { status: "bound" });
+		assert.deepEqual(await a.bind("id-2", "return-1", LIVE_MS), { status: "refused", returnAddress: "" });
+	});
+
+	check("binds an id first to the return address of its earliest known record", async (connect) => {
+		const [a, b] = [await connect(), await connect()];
+		await a.record(known());
+		await a.record(known({ targetIdentity: OTHER_RECIPIENT, atomicSessionId: "atomic-other" }));
+		assert.deepEqual(await b.bind("recipient-session", "atomic-other", LIVE_MS), {
+			status: "refused",
+			returnAddress: "atomic-recipient",
+		});
+		assert.deepEqual(await b.bind("recipient-session", "atomic-recipient", LIVE_MS), { status: "bound" });
+		await a.record({ targetIdentity: THIRD_RECIPIENT, intercomSessionId: "bare", group: "team", groups: [] });
+		assert.deepEqual(await b.bind("bare", "return-1", LIVE_MS), { status: "refused", returnAddress: "" });
+		assert.deepEqual(await b.bind("expired", "return-1", EXPIRED_MS), { status: "bound" });
+	});
+
+	check("lets a binding older than the retention go, and prunes it", async (connect) => {
+		const [a, b] = [await connect(), await connect()];
+		await a.bind("id-1", "return-1", LIVE_MS);
+		assert.deepEqual(await b.binding("id-1", EXPIRED_MS), { status: "unbound" });
+		await b.prune(LIVE_MS);
+		assert.deepEqual(await b.binding("id-1", LIVE_MS), { status: "bound", returnAddress: "return-1" });
+		await b.prune(EXPIRED_MS);
+		assert.deepEqual(await a.binding("id-1", LIVE_MS), { status: "unbound" });
+		await a.bind("id-2", "return-1", LIVE_MS);
+		assert.deepEqual(await b.bind("id-2", "return-2", EXPIRED_MS), { status: "bound" });
+		assert.deepEqual(await a.binding("id-2", LIVE_MS), { status: "bound", returnAddress: "return-2" });
+	});
+
 	check("rejects empty identifiers", async (connect) => {
 		const a = await connect();
 		const empty = (reason: string) => ({ status: "invalid", reason });
+		assert.deepEqual(await a.bind("", "return-1", LIVE_MS), empty("empty-session-id"));
+		assert.deepEqual(await a.binding("", LIVE_MS), empty("empty-session-id"));
 		assert.deepEqual(await a.record(known({ targetIdentity: "" })), empty("empty-target-identity"));
 		assert.deepEqual(await a.record(known({ intercomSessionId: "" })), empty("empty-session-id"));
 		assert.deepEqual(await a.record(known({ group: "" })), empty("empty-group"));

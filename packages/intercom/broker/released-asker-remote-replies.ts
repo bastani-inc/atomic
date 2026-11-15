@@ -1,6 +1,7 @@
 import type { Message, SessionInfo } from "../types.js";
 import {
 	BROKER_LEASE_STALE_AFTER_MS,
+	holdsSessionId,
 	type IntercomBrokerStateStore,
 	KNOWN_SESSION_RETENTION_MS,
 	OUTBOX_CLAIM_STALE_AFTER_MS,
@@ -12,6 +13,7 @@ import {
 	type ReleasedAskClaim,
 	type ReleasedAskerReplyFrame,
 	type ReleasedAskRecord,
+	returnAddressOf,
 } from "./multinode-state-store.js";
 import { AWAY_ASK_RETENTION_MS } from "./away-asks.js";
 import { UNCERTAIN_RECEIPT_REASON } from "./recipient-receipts.js";
@@ -107,7 +109,10 @@ async function liveSession(
 /** The owner where it is connected now, or where it last was, so the reply waits there for it. */
 async function ownerOfSession(state: ReleasedReplyState, ownerSessionId: string): Promise<ReleasedReplyOwner | undefined> {
 	const live = await liveSession(state, (subject) => subject.session.id === ownerSessionId);
-	if (live !== undefined) return live;
+	// A presence or record under the owner's id bound to another return address is not the owner (multi-node binding).
+	if (live !== undefined && (await holdsSessionId(state.knownSessions, ownerSessionId, returnAddressOf(live.identity))))
+		return live;
+	// The first record under the id is the bound session's: its binding was taken from that record or before it.
 	const known = await state.knownSessions.lookup(ownerSessionId, KNOWN_SESSION_RETENTION_MS);
 	const session =
 		known.status === "found" ? known.sessions.find((candidate) => candidate.intercomSessionId === ownerSessionId) : undefined;
@@ -120,7 +125,8 @@ async function ownerOfSession(state: ReleasedReplyState, ownerSessionId: string)
  * None once the owner dropped it or left, another owner reserved its name, or it is gone, as for a route on the
  * asker's own broker.
  */
-async function ownerOfAsker(state: ReleasedReplyState, ask: ReleasedAsk): Promise<ReleasedReplyOwner | undefined> {
+/** The owner that holds the released asker now, where a reply to its question goes; none once it no longer holds it. */
+export async function ownerOfAsker(state: ReleasedReplyState, ask: ReleasedAsk): Promise<ReleasedReplyOwner | undefined> {
 	const read = await state.reservations.read(releasedReservationKey(ask.childName));
 	if (read.status === "active") {
 		const { reservation } = read;
@@ -274,26 +280,25 @@ export interface ReleasedTarget {
 
 /**
  * #4386: asks addressed to a departing session end with it, unless its owner released it: those are parked for the
- * owner, still answerable by the subagent, until it registers again on any node. A departing owner's parked asks end
- * with it, as its local parked questions do. Returns the asks that ended with it, whose askers must be told (#4842).
+ * owner, still answerable by the subagent, until it registers again on any node. Returns the asks that ended with it,
+ * whose askers must be told (#4842). #4992: they are still recorded, marked ended: each is removed once its failure is
+ * queued.
  */
 export async function settleAsksToDeparted(
 	state: Pick<IntercomBrokerStateStore, "pendingAsks">,
 	sessionId: string,
 	released: ReleasedTarget | undefined,
 ): Promise<PendingAsk[]> {
-	let ended: PendingAsk[] = [];
-	if (released === undefined) {
-		const taken = await state.pendingAsks.takeForTarget(sessionId);
-		if (taken.status === "taken") ended = taken.asks;
-	} else {
+	if (released !== undefined) {
 		await state.pendingAsks.parkForTarget(sessionId, {
 			ownerSessionId: released.ownerSessionId,
 			reservationKey: releasedReservationKey(released.childName),
 		});
+		return [];
 	}
-	await state.pendingAsks.takeParked(sessionId);
-	return ended;
+	// #4992: marked ended first, so another broker tells their askers should this one stop before it does.
+	const ended = await state.pendingAsks.endForTarget(sessionId);
+	return ended.status === "listed" ? ended.asks : [];
 }
 
 /** A released subagent registering again under the capability its owner issued. */

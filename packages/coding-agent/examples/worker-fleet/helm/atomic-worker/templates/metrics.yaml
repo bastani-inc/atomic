@@ -48,13 +48,15 @@ spec:
             - --listen
             - 0.0.0.0:9464
             - --db
-            - "{{ .Values.database }}"
+            - $(ATOMIC_DB)
             - --token-file
             - /run/secrets/atomic-db-token
             - --workers-per-host
             - "{{ .Values.workersPerHost }}"
             - --max-hosts
             - "{{ .Values.maxHosts }}"
+          env:
+            {{- include "atomic-worker.databaseEnv" . | nindent 12 }}
           ports:
             - name: metrics
               containerPort: 9464

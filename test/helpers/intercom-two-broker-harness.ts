@@ -18,7 +18,8 @@ import type { Message, SessionInfo, SupervisorRegistration } from "../../package
 import { IntercomBrokerFixture } from "./intercom-broker-fixture.js";
 import { removePath } from "./runtime.js";
 
-export type BrokerNode = "a" | "b";
+export type BrokerNode = "a" | "b" | "c";
+/** The two nodes every harness runs; `TwoBrokerHarnessOptions.nodes` adds a third. */
 export const BROKER_NODES: readonly BrokerNode[] = ["a", "b"];
 
 /** Table prefix of the one shared storage selection both nodes use. */
@@ -32,6 +33,8 @@ const repoRoot = resolve(import.meta.dirname, "../..");
 const extensionDir = join(repoRoot, "packages/intercom");
 const storageAdapterModule = join(repoRoot, "test/fixtures/storage-adapter.ts");
 const BROKER_READY_TIMEOUT_MS = 10_000;
+/** Generously more database calls than a broker's shared storage opening makes (its tables, columns and indexes). */
+const SHARED_STORAGE_OPENING_CALLS = 60;
 const CLIENT_DISCONNECT_TIMEOUT_MS = 5_000;
 const BROKER_SHUTDOWN_TIMEOUT_MS = 15_000;
 /** How long start() waits for a broker to write its lease before reporting single-node brokers. */
@@ -103,6 +106,8 @@ export interface TwoBrokerHarnessOptions {
 	readonly gatedStorageOpening?: BrokerNode;
 	/** Both brokers can park the shared-store write that records a registration (`holdRegistration`). */
 	readonly parkableRegistrations?: true;
+	/** The nodes to run, each with its own broker over the one shared storage; default `BROKER_NODES`. */
+	readonly nodes?: readonly BrokerNode[];
 }
 
 /** Whether a gated broker's shared storage opening waits, fails, or proceeds. */
@@ -150,26 +155,39 @@ async function tableExists(database: SqliteDatabase, table: string): Promise<boo
  */
 export class TwoBrokerHarness {
 	readonly sharedDatabasePath: string;
-	private readonly nodes: Record<BrokerNode, NodeState>;
+	private readonly nodes: Partial<Record<BrokerNode, NodeState>>;
+	private readonly nodeNames: readonly BrokerNode[];
 	private readonly databases: SqliteDatabase[] = [];
 	private probeDatabase: SqliteDatabase | undefined;
 	private advertised = false;
 
 	private constructor(
 		readonly root: string,
-		nodes: Record<BrokerNode, NodeState>,
+		nodes: Partial<Record<BrokerNode, NodeState>>,
 		private readonly gatedStorageOpening?: BrokerNode,
+		/**
+		 * How long a broker may take to open the shared storage: every call of the opening waits the configured database
+		 * delay, so a slow database extends it.
+		 */
+		private readonly sharedRoutingReadyTimeoutMs = BROKER_READY_TIMEOUT_MS,
 	) {
 		this.sharedDatabasePath = join(root, "shared.sqlite");
 		this.nodes = nodes;
+		this.nodeNames = Object.keys(nodes) as BrokerNode[];
+	}
+
+	private node(node: BrokerNode): NodeState {
+		const state = this.nodes[node];
+		if (state === undefined) throw new Error(`node ${node} is not part of this harness`);
+		return state;
 	}
 
 	static async start(options: TwoBrokerHarnessOptions = {}): Promise<TwoBrokerHarness> {
 		// Short root: a Unix socket path must fit in about 104 bytes.
 		const root = mkdtempSync(join(tmpdir(), "icmn-"));
 		const sharedDatabasePath = join(root, "shared.sqlite");
-		const nodes = {} as Record<BrokerNode, NodeState>;
-		for (const node of BROKER_NODES) {
+		const nodes: Partial<Record<BrokerNode, NodeState>> = {};
+		for (const node of options.nodes ?? BROKER_NODES) {
 			const agentDir = join(root, node);
 			mkdirSync(agentDir, { recursive: true });
 			const openGate = options.gatedStorageOpening === node ? join(root, STORAGE_OPEN_GATE) : undefined;
@@ -184,9 +202,14 @@ export class TwoBrokerHarness {
 				broker: undefined,
 			};
 		}
-		const harness = new TwoBrokerHarness(root, nodes, options.gatedStorageOpening);
+		const harness = new TwoBrokerHarness(
+			root,
+			nodes,
+			options.gatedStorageOpening,
+			BROKER_READY_TIMEOUT_MS + SHARED_STORAGE_OPENING_CALLS * (options.databaseCallDelayMs ?? 0),
+		);
 		try {
-			for (const node of BROKER_NODES) await harness.startBroker(node);
+			for (const node of harness.nodeNames) await harness.startBroker(node);
 			harness.advertised = await harness.probeMultiNodeRouting();
 		} catch (error) {
 			await harness.cleanup();
@@ -236,7 +259,7 @@ export class TwoBrokerHarness {
 	}
 
 	agentDir(node: BrokerNode): string {
-		return this.nodes[node].fixture.agentDir;
+		return this.node(node).fixture.agentDir;
 	}
 
 	socketPath(node: BrokerNode): string {
@@ -244,18 +267,19 @@ export class TwoBrokerHarness {
 	}
 
 	brokerPid(node: BrokerNode): number | undefined {
-		return this.nodes[node].broker?.pid;
+		return this.node(node).broker?.pid;
 	}
 
 	isBrokerRunning(node: BrokerNode): boolean {
-		const broker = this.nodes[node].broker;
+		const broker = this.node(node).broker;
 		return broker !== undefined && broker.exitCode === null && broker.signalCode === null;
 	}
 
-	async startBroker(node: BrokerNode): Promise<void> {
-		const state = this.nodes[node];
+	/** `env`: added to this start's broker environment only, as a crash point (`ATOMIC_INTERCOM_BROKER_CRASH_AT`). */
+	async startBroker(node: BrokerNode, env: Readonly<Record<string, string>> = {}): Promise<void> {
+		const state = this.node(node);
 		const broker = spawn(process.execPath, [getJitiCliPath(extensionDir), join(extensionDir, "broker/broker.ts")], {
-			env: { ...process.env, ATOMIC_CODING_AGENT_DIR: state.fixture.agentDir },
+			env: { ...process.env, ...env, ATOMIC_CODING_AGENT_DIR: state.fixture.agentDir },
 			stdio: "ignore",
 		});
 		state.broker = broker;
@@ -278,7 +302,7 @@ export class TwoBrokerHarness {
 						throw new Error(`broker ${node} has not opened multi-node routing`);
 					}
 				},
-				{ timeout: BROKER_READY_TIMEOUT_MS, interval: 20 },
+				{ timeout: this.sharedRoutingReadyTimeoutMs, interval: 20 },
 			);
 		}
 	}
@@ -318,7 +342,7 @@ export class TwoBrokerHarness {
 	}
 
 	async shutdownBroker(node: BrokerNode): Promise<void> {
-		const broker = this.nodes[node].broker;
+		const broker = this.node(node).broker;
 		if (!broker || broker.exitCode !== null || broker.signalCode !== null) return;
 		const exited = new Promise<void>((resolveExit, rejectExit) => {
 			broker.once("close", (code, signal) => {
@@ -350,7 +374,7 @@ export class TwoBrokerHarness {
 		}
 		await vi.waitFor(
 			() => {
-				const live = this.nodes[node].clients.filter((client) => !client.disconnected);
+				const live = this.node(node).clients.filter((client) => !client.disconnected);
 				if (live.length > 0) throw new Error(`clients of broker ${node} still connected: ${live.length}`);
 			},
 			{ timeout: BROKER_READY_TIMEOUT_MS, interval: 20 },
@@ -359,14 +383,14 @@ export class TwoBrokerHarness {
 
 	/** SIGKILL is a crash (leases and claims stay behind); SIGTERM is an orderly shutdown on POSIX (see `requestShutdown`). */
 	async stopBroker(node: BrokerNode, signal: "SIGTERM" | "SIGKILL"): Promise<void> {
-		const broker = this.nodes[node].broker;
+		const broker = this.node(node).broker;
 		if (!broker || broker.exitCode !== null || broker.signalCode !== null) return;
 		const closed = new Promise<void>((resolveClosed) => broker.once("close", () => resolveClosed()));
 		broker.kill(signal);
 		await closed;
 		await vi.waitFor(
 			() => {
-				const live = this.nodes[node].clients.filter((client) => !client.disconnected);
+				const live = this.node(node).clients.filter((client) => !client.disconnected);
 				if (live.length > 0) throw new Error(`clients of broker ${node} still connected: ${live.length}`);
 			},
 			{ timeout: BROKER_READY_TIMEOUT_MS, interval: 20 },
@@ -374,11 +398,11 @@ export class TwoBrokerHarness {
 	}
 
 	async ensureBrokersRunning(): Promise<void> {
-		for (const node of BROKER_NODES) if (!this.isBrokerRunning(node)) await this.startBroker(node);
+		for (const node of this.nodeNames) if (!this.isBrokerRunning(node)) await this.startBroker(node);
 	}
 
 	async connect(node: BrokerNode, name: string, options: TwoBrokerConnectOptions = {}): Promise<TwoBrokerClient> {
-		const state = this.nodes[node];
+		const state = this.node(node);
 		const group = options.group ?? "default";
 		const returnAddress = options.returnAddress ?? randomUUID();
 		const client = new IntercomClient(returnAddress, {
@@ -476,7 +500,7 @@ export class TwoBrokerHarness {
 
 	/** Disconnect every client on both nodes first, then stop the brokers, then remove the files. */
 	async cleanup(): Promise<void> {
-		const clients = BROKER_NODES.flatMap((node) => this.nodes[node].clients);
+		const clients = this.nodeNames.flatMap((node) => this.node(node).clients);
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		try {
 			await Promise.race([
@@ -490,7 +514,7 @@ export class TwoBrokerHarness {
 			]);
 		} finally {
 			clearTimeout(timer);
-			for (const node of BROKER_NODES) await this.nodes[node].fixture.cleanup();
+			for (const node of this.nodeNames) await this.node(node).fixture.cleanup();
 			await Promise.all(this.databases.splice(0).map((database) => database.close().catch(() => undefined)));
 			await removePath(this.root, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
 		}

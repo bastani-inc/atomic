@@ -39,7 +39,10 @@ function countingDriver(path: string) {
 	const priorities: boolean[] = [];
 	/** The longest text value any statement returned, and the most text one statement returned in all. */
 	const largest = { bytes: 0, response: 0 };
-	const hooks: { beforeBatch?: (connection: DatabaseSync) => void; afterCommit?: () => void } = {};
+	const hooks: {
+		beforeBatch?: (connection: DatabaseSync, statements: readonly SqliteStatement[]) => void;
+		afterCommit?: () => void;
+	} = {};
 	const execute = (sql: string, params: readonly unknown[]): SqliteDriverResult => {
 		const statement = connection.prepare(sql);
 		statement.setReadBigInts(true);
@@ -82,7 +85,7 @@ function countingDriver(path: string) {
 		batch(statements: readonly SqliteStatement[], options?: { readonly priority?: boolean }) {
 			requests.push("batch");
 			priorities.push(options?.priority === true);
-			hooks.beforeBatch?.(connection);
+			hooks.beforeBatch?.(connection, statements);
 			connection.exec("BEGIN IMMEDIATE");
 			let results: SqliteDriverResult[];
 			try {
@@ -416,6 +419,91 @@ test("a claim whose answer was lost hands out the row it took instead of taking 
 		await f.close();
 	}
 });
+
+test("a claim whose answer was lost and that commits late is handed out after a later attempt is fenced off, without a second claim (#5126)", async () => {
+	const f = await fixture();
+	try {
+		const other = poolWorkFixture("other");
+		await f.pool.enqueue(f.lease, other.work, other.boundary);
+		let lost: readonly SqliteStatement[] = [];
+		let batches = 0;
+		f.hooks.beforeBatch = (connection, statements) => {
+			batches++;
+			// The first claim's answer never arrives, and the server has not applied it yet.
+			if (batches === 1) {
+				lost = statements;
+				throw Object.assign(new Error("the request timed out"), { name: "TimeoutError" });
+			}
+			if (batches !== 2) return;
+			// The first claim commits late, and changes what the second attempt's fence decided on: it aborts.
+			connection.exec("BEGIN IMMEDIATE");
+			for (const { sql, params } of lost) connection.prepare(sql).all(...(params as never[]));
+			connection.exec("COMMIT");
+			const { name } = connection
+				.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE '%_pool_fence'")
+				.get() as { name: string };
+			connection.exec(`INSERT INTO ${name}(reason) VALUES (NULL)`);
+		};
+		const claimed = await f.pool.claim(f.lease, "host/w1", [work, other.work], 60_000);
+		assert.ok(claimed);
+		assert.equal(batches, 2);
+		const states = (await f.pool.inspect("root")).map((item) => [item.id === claimed.id, item.state, item.worker]);
+		assert.deepEqual(states.sort(), [
+			[false, "ready", null],
+			[true, "leased", "host/w1"],
+		]);
+	} finally {
+		await f.close();
+	}
+});
+
+for (const batched of [true, false])
+	test(`an expired claim its worker never confirmed goes back as a handoff, and its late confirmation is refused; a confirmed one counts (#5034, ${batched ? "batched" : "transactions"})`, async () => {
+		const f = await fixture(batched);
+		try {
+			// A claim whose worker never learned of it: no heartbeat, no commit under its generation.
+			const lost = await f.pool.claim(f.lease, "host/w1", [work], 60_000);
+			assert.ok(lost);
+			assert.equal(await f.pool.confirmed(lost), false);
+			// A lease that has not expired is left alone.
+			assert.equal(await f.pool.expire(f.lease, lost, { handOffUnconfirmed: true }), false);
+			f.connection.exec("UPDATE acme_wf_runs_work SET expires_at = 1");
+			assert.equal(await f.pool.expire(f.lease, lost, { handOffUnconfirmed: true }), true);
+			assert.deepEqual(
+				(await f.pool.inspect("root")).map((item) => [item.state, item.generation, item.handoffs]),
+				[["ready", 1, [1]]],
+			);
+			// The dead claim's confirmation arrives late: its generation no longer holds the work.
+			await assert.rejects(
+				f.pool.heartbeat(f.lease, lost, 60_000, f.usage.recording(f.lease, lost, [])),
+				StaleWorkLeaseError,
+			);
+			// The next claim is confirmed by its worker's heartbeat: its expiry counts as an attempt.
+			const confirmed = await f.pool.claim(f.lease, "host/w2", [work], 60_000);
+			assert.ok(confirmed);
+			assert.equal(confirmed.generation, 2);
+			await f.pool.heartbeat(f.lease, confirmed, 60_000, f.usage.recording(f.lease, confirmed, []));
+			assert.equal(await f.pool.confirmed(confirmed), true);
+			f.connection.exec("UPDATE acme_wf_runs_work SET expires_at = 1");
+			assert.equal(await f.pool.expire(f.lease, confirmed, { handOffUnconfirmed: true }), true);
+			assert.deepEqual(
+				(await f.pool.inspect("root")).map((item) => [item.state, item.generation, item.handoffs]),
+				[["ready", 2, [1]]],
+			);
+			// Past the handoff limit the caller asks for no handoff: an unconfirmed expiry then counts.
+			const past = await f.pool.claim(f.lease, "host/w3", [work], 60_000);
+			assert.ok(past);
+			assert.equal(past.generation, 3);
+			f.connection.exec("UPDATE acme_wf_runs_work SET expires_at = 1");
+			assert.equal(await f.pool.expire(f.lease, past), true);
+			assert.deepEqual(
+				(await f.pool.inspect("root")).map((item) => [item.state, item.generation, item.handoffs]),
+				[["ready", 3, [1]]],
+			);
+		} finally {
+			await f.close();
+		}
+	});
 
 /** A refusal as its typed error and reason, for comparing the batched path's refusals with the transactional path's. */
 const refusal = (reason: string) => (error: Error) =>

@@ -11,6 +11,12 @@ import { moduleDirFromMetaUrl } from "../../utils/split-launcher.ts";
 import { installHostModuleBridge } from "./host-module-bridge.ts";
 import { getVirtualModules, loadVirtualModules } from "./loader-host-modules.js";
 import { isNativeBuiltinExtensionPath } from "./native-builtin-entries.ts";
+import {
+	evaluateReloadableScript,
+	installReloadableScripts,
+	isReloadableScriptPath,
+	withReloadableScriptPrologue,
+} from "./reloadable-scripts.ts";
 import { createTypeScriptSourceSpecifierTransform } from "./ts-source-specifiers.js";
 import type { ExtensionFactory } from "./types.ts";
 
@@ -626,10 +632,13 @@ export const extensionLoaderTestHooks = {
 };
 
 /**
- * Extension paths already evaluated via native import() in this process. Bun on
- * Windows ignores the cache-busting query on file URLs, so re-loads of these
+ * Extension paths already evaluated via native import() in this process. A
+ * native import leaves the extension's whole module graph in the runtime's
+ * module registry: the cache-busting query reaches only the entry file (and Bun
+ * on Windows ignores even that), never its relative imports. Re-loads of these
  * paths (e.g. /reload) must go through jiti's transformed-import path to get a
- * fresh module evaluation.
+ * fresh evaluation of every file (#4986), which also keeps each reload's
+ * evaluation collectable instead of adding one registry entry per reload.
  */
 const nativelyImportedPaths = new Set<string>();
 
@@ -642,19 +651,32 @@ async function importExtensionModule(
 	const isWindows = process.platform === "win32";
 	const isSingleFileBuild = isBunBinary || isBundledBuild;
 	const createJitiImpl = await getCreateJiti();
+	// Import the real path so a symlinked entry (a pnpm store package) resolves its dependencies next to the real
+	// file; extensionPath stays the cache and graph key.
+	const importPath = canonicalizePath(extensionPath);
+	const transformSource = getTypeScriptSourceSpecifierTransform(createJitiImpl, cacheDir);
+	installReloadableScripts((id) => createJitiImpl(id, { moduleCache: false, fsCache: false }));
 	const jiti = createJitiImpl(resolutionBaseUrl(import.meta.url), {
 		moduleCache: false,
 		fsCache: false,
-		transform: getTypeScriptSourceSpecifierTransform(createJitiImpl, cacheDir),
+		transform: (options) => {
+			const { code } = transformSource(options);
+			return { code: withReloadableScriptPrologue(code, options.filename ?? "", options.source) };
+		},
 		...(forceTransformedImports ? { tryNative: false } : {}),
 		// A first native import can fall back to transformation too. Always share
 		// the live host instead of re-evaluating its graph through source aliases.
 		virtualModules: await getVirtualModules(),
 		...(!isSingleFileBuild ? { alias: getAliases() } : {}),
 	});
-	// Import the real path so a symlinked entry (a pnpm store package) resolves its dependencies next to the real
-	// file; extensionPath stays the cache and graph key.
-	const specifier = extensionImportSpecifier(canonicalizePath(extensionPath), cacheToken);
+	const specifier = extensionImportSpecifier(importPath, cacheToken);
+	// The runtime would keep a JavaScript entry it loads itself until the process exits, so jiti's transform
+	// evaluates it instead, as on every reload (#4988). Installed builtin bundles cannot change while Atomic runs,
+	// so they keep loading natively, with nothing to transpile.
+	const importEntry = () =>
+		isReloadableScriptPath(importPath) && !isNativeBuiltinExtensionPath(extensionPath)
+			? evaluateReloadableScript(jiti, importPath)
+			: jiti.import(specifier, { default: true });
 	// Transformed evaluations are the loads whose repeat cost is the Windows
 	// /reload regression, so they are also the loads whose file graph is
 	// recorded into a content-hash manifest. Without a transpile cache there is
@@ -662,15 +684,15 @@ async function importExtensionModule(
 	let module: unknown;
 	let recordedManifest: ExtensionGraphManifest | undefined;
 	if (forceTransformedImports && cacheDir !== undefined) {
-		const recorded = await recordExtensionGraph(extensionPath, cacheDir, () =>
-			jiti.import(specifier, { default: true }),
-		);
+		const recorded = await recordExtensionGraph(extensionPath, cacheDir, importEntry);
 		module = recorded.result;
 		recordedManifest = recorded.manifest;
 	} else {
-		module = await jiti.import(specifier, { default: true });
+		module = await importEntry();
 	}
-	if (isWindows && !forceTransformedImports) {
+	// jiti tries native imports first under Bun; under Node it transforms, except on Windows where re-loads keep
+	// using the transformed path and its retained-evaluation reuse.
+	if ((isWindows || jiti.options.tryNative) && !forceTransformedImports) {
 		nativelyImportedPaths.add(extensionPath);
 	}
 	let factory = module as ExtensionFactory;
@@ -737,13 +759,12 @@ export async function loadExtensionModule(
 		if (cachedFactory) return cachedFactory;
 	}
 
-	const isWindows = process.platform === "win32";
 	// Single-file builds (compiled binary or dev bundle) cannot alias host
 	// package specifiers to files on disk: extensions must share the live
 	// module instances baked into the build, so virtualModules is used instead
 	// (which requires jiti's transformed-import path).
 	// Every editable path retains the existing jiti/virtualModules behavior.
-	// Windows first-load fast path: native import() (jiti's default tryNative)
+	// First-load fast path: native import() (jiti's default tryNative under Bun)
 	// skips per-launch transpilation of the extension module graph. Re-loads of
 	// the same path fall back to transformed imports for fresh evaluation.
 	//
@@ -754,7 +775,7 @@ export async function loadExtensionModule(
 	// cost is correctness-driven and is paid interactively on every Windows
 	// `/reload`; removing it needs a content-hash-keyed evaluation cache or a
 	// narrower trigger, not a larger timeout.
-	const forceTransformedImports = isSingleFileBuild || (isWindows && nativelyImportedPaths.has(extensionPath));
+	const forceTransformedImports = isSingleFileBuild || nativelyImportedPaths.has(extensionPath);
 	const cacheDir = resolveTranspileCacheDir(agentDir ?? cacheToken?.agentDir);
 	if (forceTransformedImports) {
 		return loadTransformedExtensionModule(extensionPath, cacheToken, cacheDir);

@@ -267,6 +267,31 @@ test.skipIf(process.platform === "win32")(
 	BUDGET.timeoutMs,
 );
 
+for (const [mode, named, other] of [
+	["stale", /was refused by the root as stale/, /failed on a fault of the pool/],
+	["fault", /failed on a fault of the pool.*the store stayed busy/, /was refused by the root as stale/],
+] as const)
+	test.skipIf(process.platform === "win32")(
+		`a child whose every attempt ends fenced (${mode}) fails at its attempt limit with an error naming why (#4822)`,
+		async () => {
+			const result = await runOneChild(
+				"pool-crash-once-child.ts",
+				"crashOnceChild",
+				(_database, directory) => writeFileSync(join(directory, "fenced-mode"), mode),
+				fileURLToPath(new URL("../fixtures/pool-handoff-stub-worker.mjs", import.meta.url)),
+			);
+			assert.equal(result.outcome?.status, "rejected", JSON.stringify(result.outcome));
+			assert.match(result.outcome!.error!, /WorkerRetryLimitError/);
+			assert.match(result.outcome!.error!, named);
+			assert.doesNotMatch(result.outcome!.error!, other);
+			assert.deepEqual(
+				result.items.map((item) => [item.state, item.generation, item.handoffs ?? []]),
+				[["failed", 3, []]],
+			);
+		},
+		BUDGET.timeoutMs,
+	);
+
 /** The store refusing for a while: its write lock stayed busy. */
 const busy = () =>
 	new StorageUnavailableError(
@@ -315,6 +340,7 @@ test.skipIf(process.platform === "win32")(
 		/** Each commit a worker sent, with the attempt it was made for, in order. */
 		const sent: { generation: number | undefined; afterReplay: boolean }[] = [];
 		let replayClaimed = false;
+		let refusedCommits = 0;
 		const emit = ChildProcess.prototype.emit;
 		vi.spyOn(ChildProcess.prototype, "emit").mockImplementation(function (
 			this: ChildProcess,
@@ -339,7 +365,10 @@ test.skipIf(process.platform === "win32")(
 					this: SqlPoolQueue,
 					...args: Parameters<SqlPoolQueue["commit"]>
 				) {
-					if (args[1].generation === 1) throw busy();
+					if (args[1].generation === 1) {
+						refusedCommits++;
+						throw busy();
+					}
 					return commit.apply(this, args);
 				});
 				// While the first attempt resends its refused commit, its work lease is taken over: its heartbeat is
@@ -349,7 +378,7 @@ test.skipIf(process.platform === "win32")(
 					this: SqlPoolQueue,
 					...args: Parameters<SqlPoolQueue["heartbeat"]>
 				) {
-					if (args[1].generation === 1)
+					if (args[1].generation === 1 && refusedCommits > 0)
 						throw new StaleWorkLeaseError({
 							root: args[0].runId,
 							workId: args[1].id,
@@ -577,6 +606,109 @@ test.skipIf(process.platform === "win32")(
 		assert.deepEqual(
 			result.items.map((item) => [item.state, item.generation, item.handoffs]),
 			[["completed", 2, [1]]],
+		);
+	},
+	BUDGET.timeoutMs,
+);
+
+/** Records each worker process as it asks for work, so a test can kill the one whose claim it intercepts. */
+function trackClaimingWorkers(): { readonly latest: () => ChildProcess | undefined } {
+	let latest: ChildProcess | undefined;
+	const emit = ChildProcess.prototype.emit;
+	vi.spyOn(ChildProcess.prototype, "emit").mockImplementation(function (
+		this: ChildProcess,
+		event: string | symbol,
+		...args: unknown[]
+	) {
+		if (event === "message" && (args[0] as { kind?: string } | undefined)?.kind === "claim") latest = this;
+		return (emit as (this: ChildProcess, event: string | symbol, ...rest: unknown[]) => boolean).call(
+			this,
+			event,
+			...args,
+		);
+	} as never);
+	return { latest: () => latest };
+}
+
+test.skipIf(process.platform === "win32")(
+	"a claim whose answer was lost, followed by its worker's crash, spends none of the child's attempts, and the child completes on another worker (#5034)",
+	async () => {
+		let killed: number | undefined;
+		const result = await runOneChild(
+			"pool-checkpoint-child.ts",
+			"checkpointChild",
+			() => {
+				const workers = trackClaimingWorkers();
+				// The first claim takes the child, but its answer never reaches the worker, which then crashes: it never ran
+				// the child, and nothing of its claim is left for its exit to settle.
+				const claim = SqlPoolQueue.prototype.claim;
+				vi.spyOn(SqlPoolQueue.prototype, "claim").mockImplementation(async function (
+					this: SqlPoolQueue,
+					...args: Parameters<SqlPoolQueue["claim"]>
+				) {
+					const work = await claim.apply(this, args);
+					if (work !== undefined && killed === undefined) {
+						const worker = workers.latest();
+						assert.ok(worker?.pid !== undefined, "the claiming worker is known");
+						killed = worker.pid;
+						worker.kill("SIGKILL");
+						throw new StorageTransientError(
+							{ adapter: "libsql", location: "http://127.0.0.1:1" },
+							{ code: "connection-lost", outcome: "unknown", attempts: 1 },
+						);
+					}
+					return work;
+				});
+			},
+			undefined,
+			{ workers: 1, leaseMs: SHORT_LEASE_MS },
+		);
+		assert.ok(killed !== undefined);
+		assert.equal(result.outcome?.status, "completed", JSON.stringify(result));
+		// The unconfirmed claim's generation went back as a handoff: the child's attempt count is unchanged by it.
+		assert.deepEqual(
+			result.items.map((item) => [item.state, item.generation, item.handoffs]),
+			[["completed", 2, [1]]],
+		);
+	},
+	BUDGET.timeoutMs,
+);
+
+test.skipIf(process.platform === "win32")(
+	"a claim its worker confirmed, followed by that worker's crash, still spends one of the child's attempts (#5034)",
+	async () => {
+		let killed: number | undefined;
+		const result = await runOneChild(
+			"pool-checkpoint-child.ts",
+			"heldStageChild",
+			(_database, directory) => {
+				const workers = trackClaimingWorkers();
+				// The first attempt's heartbeat confirms its claim; its worker then crashes while its stage waits.
+				const heartbeat = SqlPoolQueue.prototype.heartbeat;
+				vi.spyOn(SqlPoolQueue.prototype, "heartbeat").mockImplementation(async function (
+					this: SqlPoolQueue,
+					...args: Parameters<SqlPoolQueue["heartbeat"]>
+				) {
+					const beat = await heartbeat.apply(this, args);
+					if (args[1].generation === 1 && killed === undefined && fileExistsSync(join(directory, "waiting"))) {
+						const worker = workers.latest();
+						assert.ok(worker?.pid !== undefined, "the claiming worker is known");
+						killed = worker.pid;
+						worker.kill("SIGKILL");
+						writeFileSync(join(directory, "release"), "");
+					}
+					return beat;
+				});
+			},
+			undefined,
+			{ workers: 1 },
+		);
+		assert.ok(killed !== undefined);
+		assert.equal(result.outcome?.status, "completed", JSON.stringify(result));
+		// The crashed attempt counts: no handoff was recorded for its generation.
+		assert.deepEqual(
+			result.items.map((item) => [item.state, item.generation, item.handoffs]),
+			[["completed", 2, undefined]],
 		);
 	},
 	BUDGET.timeoutMs,

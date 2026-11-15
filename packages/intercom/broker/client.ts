@@ -3,7 +3,7 @@ import net from "net";
 import { randomUUID } from "crypto";
 import { writeMessage, createMessageReader, type JsonWireValue } from "./framing.js";
 import { isBrokerStatusReport } from "./broker-status.js";
-import { getBrokerSocketPath } from "./paths.js";
+import { getAgentDir, getBrokerSocketPath } from "./paths.js";
 import type {
 	SessionInfo,
 	Message,
@@ -154,6 +154,8 @@ async function classifyRegistrationFailure(error: Error, socketPath: string): Pr
 }
 /** Extra wait past a broker hold, so the broker's own outcome for a held send always arrives first (#3760). */
 const HELD_SEND_GRACE_MS = 5000;
+/** #5145: how many outcomes a client remembers hearing, so a second copy of one is not heard again. */
+const HEARD_OUTCOMES_MAX = 1_000;
 
 export interface ExpectedRouting {
   readonly acrossMachines: boolean;
@@ -197,7 +199,10 @@ export interface IntercomClientOptions {
 	 * refuse one run's route on its own and keep the connection open for the others.
 	 */
 	readonly multiplexesPendingStageRoutes?: true;
-	/** Broker socket this client connects to; defaults to the one for the agent directory current when it is created (#4561). */
+	/**
+	 * Broker socket this client connects to; defaults to the one for the agent directory current when it is created
+	 * (#4561), looked up at each connection, since a broker that replaces another may record a different one (#5040).
+	 */
 	readonly brokerSocketPath?: string;
 }
 
@@ -454,9 +459,16 @@ export class IntercomClient extends EventEmitter {
 	private readonly preferredSessionId: string | undefined;
 	private readonly acknowledgesReceipt: boolean;
 	private readonly connectTimeoutMs: number;
-	private readonly brokerSocketPath: string;
+	private readonly explicitBrokerSocketPath: string | undefined;
+	private readonly brokerAgentDir: string;
 	/** #3761: the broker of the current registration echoed `acknowledgesReceipt`, so it understands `received`. */
 	private brokerAcknowledgesReceipt = false;
+	/**
+	 * #5145: the outcomes (replies and failed asks) this client already heard, by message id, and whether each was
+	 * confirmed saved. Every outcome of an ask carries the same id however often it is sent, so a second copy is not heard
+	 * again; one already saved is confirmed again. Bounded, oldest forgotten first.
+	 */
+	private readonly heardOutcomes = new Map<string, "heard" | "saved">();
 	/** The broker of the current registration answers a pending-stage route registration that carries a `requestId`. */
 	private brokerAcknowledgesPendingStageRoutes = false;
 	private readonly multiplexesPendingStageRoutes: boolean;
@@ -553,8 +565,13 @@ export class IntercomClient extends EventEmitter {
 		this.acknowledgesReceipt = options.acknowledgesReceipt === true;
 		this.connectTimeoutMs = options.connectTimeoutMs ?? BROKER_CONNECT_TIMEOUT_MS;
 		this.multiplexesPendingStageRoutes = options.multiplexesPendingStageRoutes === true;
-		this.brokerSocketPath = options.brokerSocketPath ?? getBrokerSocketPath();
+		this.explicitBrokerSocketPath = options.brokerSocketPath;
+		this.brokerAgentDir = getAgentDir();
 	}
+
+  private get brokerSocketPath(): string {
+    return this.explicitBrokerSocketPath ?? getBrokerSocketPath(process.platform, this.brokerAgentDir);
+  }
 
   private failPending(error: Error): void {
     this.pendingSends.rejectAll(error);
@@ -903,6 +920,10 @@ export class IntercomClient extends EventEmitter {
           : null;
         // #3761: a broker from before receipts never echoes the capability and drops a client that sends `received`.
         this.brokerAcknowledgesReceipt = this.acknowledgesReceipt && brokerMessage.acknowledgesReceipt === true;
+        // #5145: an outcome heard but not confirmed saved is sent again on this registration, to be saved this time.
+        for (const [messageId, heard] of this.heardOutcomes) {
+          if (heard === "heard" && this.acknowledgesReceipt) this.heardOutcomes.delete(messageId);
+        }
         this.brokerAcknowledgesPendingStageRoutes = brokerMessage.acknowledgesPendingStageRoutes === true;
         this.brokerRefusesPendingStageRoutesInPlace = brokerMessage.refusesPendingStageRoutesInPlace === true;
         this.brokerAnswersStatus = brokerMessage.brokerStatus === true;
@@ -1040,6 +1061,7 @@ export class IntercomClient extends EventEmitter {
         }
         // #4642: a message for a session this connection hosts goes to its own listeners, never to this session's.
         if (hostedRecipient !== undefined) this.emit("hosted_message", hostedRecipient, from, message, channel);
+        else if (this.heardOutcomeAgain(message)) break;
         else this.emit("message", from, message, channel);
         break;
       }
@@ -1289,11 +1311,14 @@ export class IntercomClient extends EventEmitter {
 		) {
 			throw new Error("Invalid delivery_failed message");
 		}
+		// #4997, #5101: carried apart from the wire `reasonCode`, so older clients, which validate it, are not refused it.
+		const routeUnavailable = brokerMessage.routeUnavailable === true && reasonCode === undefined;
 		const result: SendResult = {
 			id: messageId,
 			delivered: false,
 			reason,
 			...(reasonCode === undefined ? {} : { reasonCode }),
+			...(routeUnavailable ? { reasonCode: "route_unavailable" as const } : {}),
 			...(releasedReplyError === undefined ? {} : { error: rehydrateIntercomReleasedReplyError(releasedReplyError) }),
 			...(hostedSessionError === undefined ? {} : { error: rehydrateIntercomHostedSessionError(hostedSessionError) }),
 			...(recipientError === undefined
@@ -2060,7 +2085,27 @@ export class IntercomClient extends EventEmitter {
 	 */
 	acknowledgeReceived(messageId: string): void {
 		if (!this.brokerAcknowledgesReceipt) return;
+		if (this.heardOutcomes.has(messageId)) this.heardOutcomes.set(messageId, "saved");
 		writeMessage(this.requireActiveSocket(), { type: "received", messageId });
+	}
+
+	/**
+	 * #5145: whether `message` is an outcome this client already heard, so it is not heard twice. A copy of one already
+	 * saved is confirmed again, so the broker that sent it stops holding it.
+	 */
+	private heardOutcomeAgain(message: Message): boolean {
+		if (message.replyTo === undefined) return false;
+		const heard = this.heardOutcomes.get(message.id);
+		if (heard === undefined) {
+			this.heardOutcomes.set(message.id, "heard");
+			for (const oldest of this.heardOutcomes.keys()) {
+				if (this.heardOutcomes.size <= HEARD_OUTCOMES_MAX) break;
+				this.heardOutcomes.delete(oldest);
+			}
+			return false;
+		}
+		if (heard === "saved") this.acknowledgeReceived(message.id);
+		return true;
 	}
 
 	/**

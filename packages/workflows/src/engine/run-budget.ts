@@ -1,14 +1,18 @@
 import {
 	type BudgetReport,
+	costFromUnits,
+	costUnits,
 	type EffectiveBudget,
 	enforceDurationBudget,
 	enforceUsageBudget,
 } from "../shared/budget.js";
 import {
+	meter_replayed_stages,
 	meter_run,
 	meter_stages,
 	type RunMeters,
 	type RunUsageTree,
+	stage_replay_keys,
 	type UsageCounters,
 } from "../shared/budget-meter.js";
 import type {
@@ -72,6 +76,8 @@ export interface RunBudgetController {
 	readonly stopAtBoundary: (frontierStage?: string) => void;
 	readonly stopAtBoundaryAsync: (frontierStage?: string) => Promise<void>;
 	readonly awaitPendingWrapUp: () => Promise<WorkflowBudgetExceededError | undefined>;
+	/** Whether this budget, or its root's, would be exhausted once `pending` usage not yet in the run is charged. */
+	readonly exhaustedWith: (pending: WorkflowModelUsage) => boolean;
 }
 const withFrontier = (
 	report: BudgetReport,
@@ -113,17 +119,45 @@ export function createRunBudgetController(input: {
 	// #4859: charge each stage's growth, not the tree total. Replayed stages leave
 	// the meter on resume, so a total can fall below its baseline and hide new spend.
 	const stageMarks = new Map<string, UsageCounters>();
+	/** Growth per field since the last mark; `cost` is in whole cost units so many small charges sum exactly. */
 	const stageGrowth = (tree: RunUsageTree): Record<(typeof usageFields)[number], number> => {
 		const growth = mapFields(usageFields);
 		for (const [key, usage] of meter_stages(tree)) {
 			const mark = stageMarks.get(key);
-			for (const field of usageFields) growth[field] += Math.max(0, usage[field] - (mark?.[field] ?? 0));
+			for (const field of counterFields) growth[field] += Math.max(0, usage[field] - (mark?.[field] ?? 0));
+			growth.cost += Math.max(0, costUnits(usage.cost) - costUnits(mark?.cost ?? 0));
 			stageMarks.set(
 				key,
 				mark === undefined ? usage : mapFields(usageFields, (field) => Math.max(mark[field], usage[field])),
 			);
 		}
 		return growth;
+	};
+	// #5053: what each stage was charged, by replay key, persisted with the accounting. A replayed stage is charged only
+	// the spend its record lacks: a crash between a stage's completion record and the next accounting record would
+	// otherwise leave its spend uncharged. Records from before this keep the old rule: replayed stages are charged.
+	const chargesReplays = previousAccounting === undefined || previousAccounting.stageCharges !== undefined;
+	const stageCharges = new Map<string, UsageCounters>(Object.entries(previousAccounting?.stageCharges ?? {}));
+	const replayGrowth = (tree: RunUsageTree): Record<(typeof usageFields)[number], number> => {
+		const growth = mapFields(usageFields);
+		if (!chargesReplays) return growth;
+		for (const [replayKey, usage] of meter_replayed_stages(tree)) {
+			const mark = stageCharges.get(replayKey);
+			for (const field of counterFields) growth[field] += Math.max(0, usage[field] - (mark?.[field] ?? 0));
+			growth.cost += Math.max(0, costUnits(usage.cost) - costUnits(mark?.cost ?? 0));
+			stageCharges.set(
+				replayKey,
+				mark === undefined ? usage : mapFields(usageFields, (field) => Math.max(mark[field], usage[field])),
+			);
+		}
+		return growth;
+	};
+	/** A live stage's charges so far, under its replay key, so its replay after a crash charges only the rest. */
+	const recordLiveCharges = (tree: RunUsageTree): void => {
+		for (const [key, replayKey] of stage_replay_keys(tree)) {
+			const mark = stageMarks.get(key);
+			if (mark !== undefined) stageCharges.set(replayKey, mark);
+		}
 	};
 	const initialTree = previousAccounting && usageEnabled ? localUsageTree() : undefined;
 	// Stages already in the tree were charged by the execution being resumed.
@@ -154,19 +188,25 @@ export function createRunBudgetController(input: {
 		const meters = meter_run(tree, Date.now());
 		const current = { ...meters.perCounter, cost: meters.cost };
 		const delta = stageGrowth(tree);
+		const replayed = replayGrowth(tree);
+		for (const field of usageFields) delta[field] += replayed[field];
+		recordLiveCharges(tree);
 		baseline = mapFields(usageFields, (field) => Math.max(baseline[field], current[field]));
 		const external = input.externalUsage?.();
 		if (external !== undefined) {
 			const growth = mapFields(usageFields, (field) => Math.max(0, external[field] - externalBaseline[field]));
+			const costGrowth = Math.max(0, costUnits(external.cost) - costUnits(externalBaseline.cost));
 			externalBaseline = mapFields(usageFields, (field) => Math.max(externalBaseline[field], external[field]));
-			for (const field of usageFields) delta[field] += growth[field];
+			for (const field of counterFields) delta[field] += growth[field];
+			delta.cost += costGrowth;
 		}
 		charged = {
 			baseline,
 			tokens: charged.tokens + delta.input + delta.output,
-			cost: charged.cost + delta.cost,
+			cost: costFromUnits(costUnits(charged.cost) + delta.cost),
 			perCounter: mapFields(counterFields, (field) => charged.perCounter[field] + delta[field]),
 			...(external !== undefined || previousAccounting?.externalBaseline !== undefined ? { externalBaseline } : {}),
+			...(chargesReplays ? { stageCharges: Object.fromEntries(stageCharges) } : {}),
 		};
 		updateState({ accounting: charged });
 		return Object.assign(meters, { tokens: charged.tokens, cost: charged.cost, perCounter: charged.perCounter });
@@ -198,6 +238,9 @@ export function createRunBudgetController(input: {
 		usage?: WorkflowModelUsage,
 		delivered = true,
 	): WorkflowBudgetExceededError => {
+		// Charge the growth since the last checkpoint, such as a delivered wrap-up turn, before the stop is
+		// persisted: a resume treats every stage in the tree as already charged (#5053).
+		measure();
 		updateState({
 			systemOwnedStop: true,
 			...(delivered ? { wrapUpDelivered: true, wrapUpCompleted: true } : {}),
@@ -319,7 +362,8 @@ export function createRunBudgetController(input: {
 			throw finishWrapUp(frontierStage, undefined, undefined, false);
 		const registration = handlers.findLast((entry) => entry.frontierStage === frontierStage) ?? handlers.at(-1);
 		if (registration === undefined) {
-			if (root !== undefined) return root.deliverWrapUp(frontierStage);
+			// This budget's own exhaustion with no live stage to wrap up stops here; the root's is the root's (#5053).
+			if (root !== undefined && !ownEnabled) return root.deliverWrapUp(frontierStage);
 			throw finishWrapUp(frontierStage, undefined, undefined, false);
 		}
 		wrapUpPromise = registration.handler();
@@ -346,6 +390,16 @@ export function createRunBudgetController(input: {
 		}
 		return undefined;
 	};
+	const exhaustedWith = (pending: WorkflowModelUsage): boolean => {
+		if (root?.exhaustedWith(pending) === true) return true;
+		const meters = measure();
+		const tokens = meters.tokens + (pending.input ?? 0) + (pending.output ?? 0);
+		const cost = costFromUnits(costUnits(meters.cost) + costUnits(pending.cost ?? 0));
+		return (
+			enforceUsageBudget("tokens", tokens, budget.maxTokens, 0).kind === "exhausted" ||
+			enforceUsageBudget("cost", cost, budget.maxCost, 0).kind === "exhausted"
+		);
+	};
 	return {
 		enabled,
 		checkpoint,
@@ -356,5 +410,6 @@ export function createRunBudgetController(input: {
 		stopAtBoundary,
 		stopAtBoundaryAsync,
 		awaitPendingWrapUp,
+		exhaustedWith,
 	};
 }

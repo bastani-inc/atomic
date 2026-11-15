@@ -9,8 +9,10 @@ import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/s
 import { SqlSharedPool } from "../../packages/workflows/src/durable/journal/sql-shared-pool.js";
 import type { Lease, RunJournal } from "../../packages/workflows/src/durable/journal/types.js";
 import type { ProvisionedHost, WorkerHostProvisioner } from "../../packages/workflows/src/workers/autoscaler.js";
+import { INITIAL_FLEET_STATE, planFleet, resolveFleetPolicy } from "../../packages/workflows/src/workers/autoscaler.js";
 import {
 	checkFleetOptions,
+	DRAIN_CLEAR_MISSED_LISTINGS,
 	FleetController,
 	joinHosts,
 	startWorkflowFleetController,
@@ -398,7 +400,10 @@ test.skipIf(process.platform === "win32")(
 		await until("the instance's removal to be requested", () => removing.length > 0);
 		await sleep(3 * TICK_MS);
 		const store = await openStore();
-		assert.deepEqual((await store.snapshot()).drains, [{ host: "h1", providerId: "vm-1" }]);
+		assert.deepEqual(
+			(await store.snapshot()).drains.map(({ agoMs: _, ...drain }) => drain),
+			[{ host: "h1", providerId: "vm-1" }],
+		);
 		const restarted = await workerHost("h2", "vm-1");
 		await until("the restarted host to be asked to drain", () => restarted.events.length > 0, 10_000);
 		assert.deepEqual(restarted.events, [{ kind: "drain-requested" }]);
@@ -595,7 +600,11 @@ test("joinHosts matches provider hosts to registered hosts by provider id or hos
 				{ host: "h4", live: false, leased: 0 },
 				{ host: "other", providerId: "vm-9", live: true, leased: 0 },
 			],
-			drains: [{ host: "h1", providerId: "vm-1" }, { host: "h2" }, { host: "gone", providerId: "vm-3" }],
+			drains: [
+				{ host: "h1", providerId: "vm-1", agoMs: 0 },
+				{ host: "h2", agoMs: 0 },
+				{ host: "gone", providerId: "vm-3", agoMs: 0 },
+			],
 			leased: new Map([
 				["h1", 2],
 				["h4", 1],
@@ -604,21 +613,29 @@ test("joinHosts matches provider hosts to registered hosts by provider id or hos
 	);
 	assert.deepEqual(joined, [
 		{
-			view: { id: "vm-1", state: "running", since: 1, registered: true, leased: 2, draining: true },
+			view: { id: "vm-1", state: "running", since: 1, registered: true, leased: 2, draining: true, drained: false },
 			hostId: "h1",
 			drainHosts: ["h1"],
 		},
 		{
-			view: { id: "vm-2", state: "running", since: 2, registered: true, leased: 0, draining: true },
+			view: { id: "vm-2", state: "running", since: 2, registered: true, leased: 0, draining: true, drained: false },
 			hostId: "h2",
 			drainHosts: ["h2"],
 		},
 		{
-			view: { id: "vm-3", state: "pending", since: 3, registered: false, leased: 0, draining: true },
+			view: { id: "vm-3", state: "pending", since: 3, registered: false, leased: 0, draining: true, drained: true },
 			drainHosts: ["gone"],
 		},
 		{
-			view: { id: "vm-4", state: "running", since: 4, registered: false, leased: 1, draining: false },
+			view: {
+				id: "vm-4",
+				state: "running",
+				since: 4,
+				registered: false,
+				leased: 1,
+				draining: false,
+				drained: false,
+			},
 			hostId: "h4",
 			drainHosts: [],
 		},
@@ -638,7 +655,7 @@ test("joinHosts takes the live host of an instance whose worker restarted under 
 				{ host: "h2", providerId: "pod-1", live: true, leased: 2 },
 				{ host: "h3", providerId: "pod-3", live: true, leased: 4 },
 			],
-			drains: [{ host: "h1", providerId: "pod-1" }],
+			drains: [{ host: "h1", providerId: "pod-1", agoMs: 0 }],
 			leased: new Map([
 				["h1", 1],
 				["h2", 2],
@@ -648,20 +665,145 @@ test("joinHosts takes the live host of an instance whose worker restarted under 
 		},
 	);
 	assert.deepEqual(joined, {
-		view: { id: "pod-1", state: "running", since: 1, registered: true, leased: 3, draining: true },
+		view: { id: "pod-1", state: "running", since: 1, registered: true, leased: 3, draining: true, drained: false },
 		hostId: "h2",
 		drainHosts: ["h1"],
 	});
 	assert.deepEqual(
 		unregistered,
 		{
-			view: { id: "pod-5", state: "running", since: 5, registered: false, leased: 1, draining: false },
+			view: {
+				id: "pod-5",
+				state: "running",
+				since: 5,
+				registered: false,
+				leased: 1,
+				draining: false,
+				drained: false,
+			},
 			hostId: "h5",
 			drainHosts: [],
 		},
 		"a host the provider names holds its children while it is not registered",
 	);
 });
+
+test("a drained instance whose host is gone keeps the children of a live host no instance claims, so the planner never removes it (#4828)", () => {
+	// h1 ran without a provider id and restarted as h2 on vm-1, while the provider still names h1 for it.
+	const snapshot = {
+		roots: [],
+		hosts: [
+			{ host: "h1", live: false, leased: 0 },
+			{ host: "h2", live: true, leased: 1 },
+			{ host: "h3", providerId: "vm-3", live: true, leased: 2 },
+			{ host: "h4", live: true, leased: 0 },
+		],
+		drains: [{ host: "h1", providerId: "vm-1", agoMs: 0 }],
+		leased: new Map([
+			["h2", 1],
+			["h3", 2],
+		]),
+	};
+	const joined = joinHosts(
+		[
+			{ id: "vm-1", hostId: "h1", state: "running", since: 1 },
+			{ id: "vm-4", hostId: "h4", state: "running", since: 4 },
+			{ id: "vm-5", state: "pending", since: 5 },
+		],
+		snapshot,
+	);
+	assert.deepEqual(
+		joined.map((entry) => entry.view.leased),
+		[1, 0, 0],
+		"only the drained instance without a live host takes the unclaimed host's children",
+	);
+	const plan = planFleet(
+		resolveFleetPolicy({ idleDrainMs: 0 }),
+		{ now: 10, roots: [], hosts: joined.map((entry) => entry.view) },
+		INITIAL_FLEET_STATE,
+	);
+	assert.deepEqual(
+		plan.actions.filter((action) => action.kind === "remove"),
+		[],
+	);
+	// Once the unclaimed host holds no child, the drained instance is removed.
+	const idle = joinHosts([{ id: "vm-1", hostId: "h1", state: "running", since: 1 }], {
+		...snapshot,
+		leased: new Map([["h3", 2]]),
+	});
+	assert.equal(idle[0]?.view.leased, 0);
+});
+
+test.skipIf(process.platform === "win32")(
+	"a drained host without a provider id that restarts on its instance under a new host id is drained when the provider lists the new id (#4828)",
+	async () => {
+		let current = "h1";
+		const removing: string[] = [];
+		// The provider names the worker host on each instance, and accepts a removal that takes a while.
+		const provisioner: WorkerHostProvisioner = {
+			kind: "fake",
+			async list() {
+				return [{ id: "vm-1", hostId: current, state: "running", since: 0 }];
+			},
+			async scaleTo() {},
+			async drain(id) {
+				removing.push(id);
+			},
+		};
+		const first = await workerHost("h1");
+		await controller(provisioner, [], { idleDrainMs: 0 });
+		await first.host.closed;
+		assert.deepEqual(first.events, [{ kind: "drain-requested" }]);
+		await until("the instance's removal to be requested", () => removing.length > 0);
+		// Its agent directory was lost: it registers under a new host id, and the provider lists that id.
+		current = "h2";
+		const restarted = await workerHost("h2");
+		await until("the restarted host to be asked to drain", () => restarted.events.length > 0, 10_000);
+		assert.deepEqual(restarted.events, [{ kind: "drain-requested" }]);
+		const store = await openStore();
+		assert.deepEqual(
+			(await store.snapshot()).drains.map(({ agoMs: _, ...drain }) => drain),
+			[
+				{ host: "h1", providerId: "vm-1" },
+				{ host: "h2", providerId: "vm-1" },
+			],
+		);
+	},
+);
+
+test.skipIf(process.platform === "win32")(
+	"a drain survives a listing that briefly omits its instance, and is forgotten only after consecutive listings omit it (#4828)",
+	async () => {
+		const store = await openStore();
+		assert.deepEqual(await store.acquire("other", undefined, 60_000), { held: true, epoch: 1 });
+		assert.equal(await store.requestDrain({ holder: "other", epoch: 1 }, "h1", "vm-1"), true);
+		await store.release({ holder: "other", epoch: 1 });
+		// An eventually consistent list omits the running instance once, then lists it again.
+		let listed = true;
+		const provisioner = {
+			kind: "fake",
+			lists: 0,
+			async list(): Promise<readonly ProvisionedHost[]> {
+				provisioner.lists++;
+				if (provisioner.lists === 2) return [];
+				return listed ? [{ id: "vm-1", state: "running", since: 0 }] : [];
+			},
+			async scaleTo() {},
+			async drain() {},
+		};
+		await controller(provisioner);
+		await until("listings after the gap", () => provisioner.lists >= 2 + DRAIN_CLEAR_MISSED_LISTINGS);
+		assert.deepEqual(
+			(await store.snapshot()).drains.map(({ agoMs: _, ...drain }) => drain),
+			[{ host: "h1", providerId: "vm-1" }],
+		);
+		// The instance is gone: the drain is forgotten once enough listings in a row omit it.
+		listed = false;
+		const gone = provisioner.lists;
+		await until("the drain to be forgotten", async () => (await store.snapshot()).drains.length === 0);
+		assert.ok(provisioner.lists - gone >= DRAIN_CLEAR_MISSED_LISTINGS);
+	},
+);
 
 test.skipIf(process.platform === "win32")(
 	"the controller forgets the drain of an instance its provider no longer lists, so a new instance with that id serves (#4803)",
@@ -680,17 +822,23 @@ test.skipIf(process.platform === "win32")(
 				];
 			},
 			async scaleTo() {},
-			// The listed instance drained already: its removal starts, and never ends within the test.
-			drain: (id) => {
+			// The listed instance drained already: its removal is accepted, and it stays listed within the test.
+			async drain(id) {
 				removing.push(id);
-				return new Promise<never>(() => {});
 			},
 		};
 		const removing: string[] = [];
 		await controller(provisioner);
 		await until("the listed instance's removal to start", () => removing.length > 0);
-		assert.deepEqual(removing, ["vm-kept"]);
-		assert.deepEqual((await store.snapshot()).drains, [{ host: "h-kept", providerId: "vm-kept" }]);
+		await until(
+			"the unlisted instance's drain to be forgotten",
+			async () => (await store.snapshot()).drains.length === 1,
+		);
+		assert.deepEqual(
+			(await store.snapshot()).drains.map(({ agoMs: _, ...drain }) => drain),
+			[{ host: "h-kept", providerId: "vm-kept" }],
+		);
+		assert.deepEqual([...new Set(removing)], ["vm-kept"]);
 	},
 );
 
@@ -787,7 +935,10 @@ test.skipIf(process.platform === "win32")(
 		// The host reports and reads drain requests at least every 5 s.
 		await sleep(6_000);
 		assert.deepEqual(hostEvents, []);
-		assert.deepEqual((await store.snapshot()).drains, []);
+		assert.deepEqual(
+			(await store.snapshot()).drains.map(({ agoMs: _, ...drain }) => drain),
+			[],
+		);
 	},
 );
 

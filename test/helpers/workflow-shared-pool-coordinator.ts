@@ -236,6 +236,7 @@ export async function satellite(
 			options: { readonly signal: AbortSignal },
 		) => Promise<string | RestoredWorkspace>;
 		restoreBackoff?: RestoreBackoff;
+		providerId?: string;
 	},
 	failures: Error[] = [],
 	host = "host-b",

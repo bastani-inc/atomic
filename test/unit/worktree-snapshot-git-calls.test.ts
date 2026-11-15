@@ -231,7 +231,9 @@ describe("restore operation counts", () => {
 		const blobs = new MemorySnapshotBlobStore();
 		const snapshot = captured(await captureWorktreeSnapshot(clone, { blobs }));
 		const storeDir = sandbox.path("host");
-		const unreachable = [["ab"], ["a", "b"]];
+		// Absolute paths, which name one repository wherever the checkout is; a relative one names the path it resolves
+		// to from the checkout (#4989).
+		const unreachable = [[sandbox.path("ab")], [sandbox.path("a"), sandbox.path("b")]];
 		for (const remotes of unreachable) {
 			await assert.rejects(
 				restoreWorktreeSnapshot({ ...snapshot, remotes }, { blobs, storeDir }),
@@ -311,10 +313,7 @@ describe("cleanup failures never replace the primary error", () => {
 				const cleanup = error.cleanupCause;
 				assert.ok(isWorkspaceRestoreError(cleanup));
 				assert.equal(cleanup.code, "unwritable-path");
-				assert.ok(
-					cleanup.target?.startsWith(join(sandbox.root, ".restored-target.atomic-restore-")),
-					cleanup.target,
-				);
+				assert.ok(cleanup.target?.startsWith(join(sandbox.root, ".restored-target.s-")), cleanup.target);
 				assert.equal(cleanup.snapshotId, null);
 				assert.equal((cleanup.cause as NodeJS.ErrnoException).code, "EBUSY");
 				return true;

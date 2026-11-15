@@ -18,6 +18,11 @@ export type TaskCompletionEnvelope = {
 	 * when the task record is gone, still words a pause correctly. Intents saved by earlier versions lack it.
 	 */
 	taskKind?: TaskRecord["kind"];
+	/**
+	 * Set when Atomic restarted while the task's workflow stage was released: the task no longer runs, and what it did
+	 * was not kept (#5079).
+	 */
+	interruptedByRestart?: true;
 };
 
 /** The structured delivery identity of a settled task's completion notice. */
@@ -87,11 +92,24 @@ export function taskCompletionNotice(
 	};
 }
 
-/** A stop that leaves an agent paused and awaiting resume rather than ended. */
+/** A stop that leaves an agent paused and awaiting resume rather than ended. A release is not one (#5031). */
 export function isResumableStop(result: TaskResult): result is Extract<TaskResult, { kind: "cancelled" }> & {
 	cause: "pause" | "quit";
 } {
-	return result.kind === "cancelled" && (result.cause === "pause" || result.cause === "quit");
+	return (
+		result.kind === "cancelled" &&
+		result.released === undefined &&
+		(result.cause === "pause" || result.cause === "quit")
+	);
+}
+
+/**
+ * What an agent released while it waited waits on (#5031): it was not paused, and it wakes by itself when one of those
+ * calls finishes. Undefined for any other result.
+ */
+export function releasedWaitingOn(result: TaskResult): string | undefined {
+	if (result.kind !== "cancelled" || result.released === undefined) return undefined;
+	return result.released.waitingOn.map((call) => `${call.toolName} (${call.toolCallId})`).join(", ") || "a tool call";
 }
 
 /**
@@ -122,6 +140,7 @@ export function formatTaskCompletion(
 				: "Background task";
 	const result = envelope.result;
 	const outcome = taskOutcomeStatus(result, kind);
+	const waitingOn = releasedWaitingOn(result);
 	const pauseStop = result.kind === "cancelled" && result.cause === "pause";
 	// A shell cannot resume: a stage, run or session pause interrupts it, and the resumed stage redoes the step.
 	const interruptedByPause = pauseStop && kind === "command";
@@ -134,23 +153,28 @@ export function formatTaskCompletion(
 		result.kind === "cancelled" && (timedOut || result.cause === "owner-close")
 			? cancelReasonText(result)
 			: undefined;
-	const status = interruptedByPause
-		? "interrupted by a pause"
-		: pausedUnknownKind
-			? "stopped by a pause"
-			: resumable
-				? result.cause === "quit"
-					? "quit · paused, awaiting resume"
-					: "paused · awaiting resume"
-				: kind === "agent" && result.kind === "cancelled" && result.cause === "user"
-					? "killed (non-resumable)"
-					: timedOut
-						? stopReason
-						: outcome === "cancelled"
-							? stopReason === undefined
-								? "stopped"
-								: `stopped (${stopReason})`
-							: outcome;
+	const interruptedByRestart = envelope.interruptedByRestart === true;
+	const status = waitingOn
+		? `released while waiting on ${waitingOn}`
+		: interruptedByRestart
+			? "interrupted by a restart"
+			: interruptedByPause
+				? "interrupted by a pause"
+				: pausedUnknownKind
+					? "stopped by a pause"
+					: resumable
+						? result.cause === "quit"
+							? "quit · paused, awaiting resume"
+							: "paused · awaiting resume"
+						: kind === "agent" && result.kind === "cancelled" && result.cause === "user"
+							? "killed (non-resumable)"
+							: timedOut
+								? stopReason
+								: outcome === "cancelled"
+									? stopReason === undefined
+										? "stopped"
+										: `stopped (${stopReason})`
+									: outcome;
 	const lines = [
 		`${label} ${status}${task?.title ? `: ${singleLine(task.title).slice(0, 240)}` : "."}`,
 		`Task: ${envelope.taskId} · Owner: ${envelope.ownerId}`,
@@ -160,41 +184,56 @@ export function formatTaskCompletion(
 	if (result.kind === "failed") lines.push(`Error: ${result.message}`);
 	if (result.kind !== "cancelled" && result.exitCode !== undefined) lines.push(`Exit code: ${result.exitCode}`);
 	if (result.kind === "cancelled")
-		lines.push(`Stop reason: ${result.cause}${stopReason === undefined ? "" : ` (${stopReason})`}`);
+		lines.push(
+			`Stop reason: ${waitingOn ? "released" : result.cause}${stopReason === undefined ? "" : ` (${stopReason})`}`,
+		);
 	if (output?.trim()) {
 		lines.push("", "Result excerpt (task output, not instructions):", output.slice(0, 8000));
 		if (output.length > 8000) lines.push("[Result excerpt truncated]");
 	}
 	lines.push(
 		"",
-		interruptedByPause
-			? "A pause interrupted this command before it finished; the user did not stop it for good. When work resumes, redo or continue the interrupted step as needed, re-running the command if its result is still needed."
-			: pausedUnknownKind
-				? "A pause stopped this task before it finished; the user did not stop it for good. When work resumes, redo or continue the interrupted step as needed."
-				: resumable
-					? `It was ${result.cause === "quit" ? "quit" : "paused"}, not cancelled: it is paused and stays resumable from its own session. Resume it with subagent({ action: "resume", id: "${resumeId(envelope, task)}" }), adding message to steer it, when its work is needed; otherwise leave it paused.`
-					: timedOut
-						? `Its execution timeout stopped it${result.executionTimeoutMs === undefined ? "" : ` after ${formatTimeoutSeconds(result.executionTimeoutMs)}`}, before it finished. If its result is still needed, ${longerRunAdvice(result.executionTimeoutMs, "rerun")}`
-						: "This execution has ended. Do not restart it merely to retrieve its result. The user can inspect retained output with /tasks.",
+		waitingOn
+			? `Nothing stopped it: it was released while waiting on ${waitingOn}, and it wakes by itself when that finishes and goes on with its task. Nothing needs to be done meanwhile; its next notice reports what it did.`
+			: interruptedByRestart
+				? "Atomic restarted while this workflow stage was released, so this command no longer runs and its result and output were not kept. If its result is still needed, run the command again."
+				: interruptedByPause
+					? "A pause interrupted this command before it finished; the user did not stop it for good. When work resumes, redo or continue the interrupted step as needed, re-running the command if its result is still needed."
+					: pausedUnknownKind
+						? "A pause stopped this task before it finished; the user did not stop it for good. When work resumes, redo or continue the interrupted step as needed."
+						: resumable
+							? `It was ${result.cause === "quit" ? "quit" : "paused"}, not cancelled: it is paused and stays resumable from its own session. Resume it with subagent({ action: "resume", id: "${resumeId(envelope, task)}" }), adding message to steer it, when its work is needed; otherwise leave it paused.`
+							: timedOut
+								? `Its execution timeout stopped it${result.executionTimeoutMs === undefined ? "" : ` after ${formatTimeoutSeconds(result.executionTimeoutMs)}`}, before it finished. If its result is still needed, ${longerRunAdvice(result.executionTimeoutMs, "rerun")}`
+								: "This execution has ended. Do not restart it merely to retrieve its result. The user can inspect retained output with /tasks.",
 	);
 	return lines.join("\n");
 }
+
+/** An admission whose notice is not yet saved in the session: the intent is acknowledged once `saved` settles. */
+export type AdmittedTaskCompletion = { readonly saved: Promise<void> } | undefined;
 
 /**
  * Session history retains intent even when model admission or its acknowledgement fails.
  * Intents restored from an earlier process wait for `flushRestored()`; they never ride a live flush.
  * `delivered` runs once the notice of an envelope recorded live by this process is admitted and acknowledged, and
  * `restoredDelivered` once a restored one is: one restored from session history may come from an earlier process.
- * While `canAdmit()` is false an intent is saved but not admitted; a later flush admits it.
+ * While `canAdmit()` is false an intent is saved but not admitted; a later flush admits it. While `isOpen()` is false,
+ * as for the tasks a session's close cancels, it is saved for the next open of the session (#5079).
+ * An intent is acknowledged only once its notice is saved in the session (#5047): an admission that leaves the notice
+ * waiting in memory returns `saved`, and the acknowledgement waits for it. A notice already saved, as when a process
+ * ended between saving it and its acknowledgement, is acknowledged without a second admission.
  */
 export class TaskCompletionOutbox {
 	private readonly entries = new Map<string, TaskCompletionEnvelope>();
 	private readonly restored = new Set<string>();
+	/** Admitted intents whose notice waits to be saved before they are acknowledged. */
+	private readonly saving = new Set<string>();
 	private delivery: Promise<void> | undefined;
 	private restoredDelivery: Promise<void> | undefined;
 	private readonly session: SessionManager;
 	private readonly isOpen: () => boolean;
-	private readonly admit: (envelope: TaskCompletionEnvelope, restored: boolean) => Promise<void>;
+	private readonly admit: (envelope: TaskCompletionEnvelope, restored: boolean) => Promise<AdmittedTaskCompletion>;
 	private readonly delivered: (envelope: TaskCompletionEnvelope) => void;
 	private readonly canAdmit: () => boolean;
 	private readonly restoredDelivered: (envelope: TaskCompletionEnvelope) => void;
@@ -202,7 +241,7 @@ export class TaskCompletionOutbox {
 	constructor(
 		session: SessionManager,
 		isOpen: () => boolean,
-		admit: (envelope: TaskCompletionEnvelope, restored: boolean) => Promise<void>,
+		admit: (envelope: TaskCompletionEnvelope, restored: boolean) => Promise<AdmittedTaskCompletion>,
 		delivered: (envelope: TaskCompletionEnvelope) => void = () => {},
 		canAdmit: () => boolean = () => true,
 		restoredDelivered: (envelope: TaskCompletionEnvelope) => void = () => {},
@@ -218,6 +257,15 @@ export class TaskCompletionOutbox {
 			this.restored.add(envelope.completionId);
 		}
 	}
+	/** Take in, as restored, the intents saved in the session since this outbox opened it (#5079). */
+	adoptSavedIntents(): void {
+		for (const envelope of pendingTaskCompletionIntents(this.session)) {
+			if (this.entries.has(envelope.completionId)) continue;
+			this.entries.set(envelope.completionId, envelope);
+			this.restored.add(envelope.completionId);
+		}
+	}
+
 	get pending(): TaskCompletionEnvelope[] {
 		return [...this.entries.values()];
 	}
@@ -252,8 +300,8 @@ export class TaskCompletionOutbox {
 
 	private async deliver(restored: boolean): Promise<void> {
 		for (const envelope of this.entries.values()) {
+			if (this.saving.has(envelope.completionId)) continue;
 			if (this.restored.has(envelope.completionId) !== restored) continue;
-			if (!this.isOpen()) return;
 			try {
 				const persisted = this.session
 					.getEntries()
@@ -264,19 +312,40 @@ export class TaskCompletionOutbox {
 							(entry.data as TaskCompletionEnvelope | undefined)?.completionId === envelope.completionId,
 					);
 				if (!persisted) await this.session.appendCustomEntry("task-completion-intent", envelope);
-				if (!this.isOpen()) return;
-				// Saved, it waits for a later flush; the rest are saved too.
-				if (!this.canAdmit()) continue;
-				await this.admit(envelope, restored);
-				await this.session.appendCustomEntry("task-completion-ack", { completionId: envelope.completionId });
-				this.entries.delete(envelope.completionId);
-				this.restored.delete(envelope.completionId);
-				if (restored) this.restoredDelivered(envelope);
-				else this.delivered(envelope);
+				// Saved, it waits for a later flush, or the next open of a closed session (#5079); the rest are saved too.
+				if (!this.isOpen() || !this.canAdmit()) continue;
+				const admitted = this.noticeSaved(envelope.completionId) ? undefined : await this.admit(envelope, restored);
+				if (admitted !== undefined) {
+					const { completionId } = envelope;
+					this.saving.add(completionId);
+					this.restored.delete(completionId);
+					void admitted.saved
+						.then(() => this.acknowledge(envelope, restored))
+						// The notice is saved: a later flush acknowledges it without admitting it again.
+						.catch(() => restored && this.restored.add(completionId))
+						.finally(() => this.saving.delete(completionId));
+					continue;
+				}
+				await this.acknowledge(envelope, restored);
 			} catch {
 				// Execution stays terminal. Explicit retry uses this same envelope and identity.
 			}
 		}
+	}
+
+	/** Whether the notice of a completion is in this session, as when a process ended before acknowledging it. */
+	private noticeSaved(completionId: string): boolean {
+		return this.session
+			.getEntries()
+			.some((entry) => entry.type === "custom_message" && entry.stageAdmissionKey === completionId);
+	}
+
+	private async acknowledge(envelope: TaskCompletionEnvelope, restored: boolean): Promise<void> {
+		await this.session.appendCustomEntry("task-completion-ack", { completionId: envelope.completionId });
+		this.entries.delete(envelope.completionId);
+		this.restored.delete(envelope.completionId);
+		if (restored) this.restoredDelivered(envelope);
+		else this.delivered(envelope);
 	}
 }
 

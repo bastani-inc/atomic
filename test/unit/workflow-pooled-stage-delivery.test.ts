@@ -329,10 +329,10 @@ test("a pooled worker's stage on the root's host holds the root's route; one on 
 	assert.deepEqual(requests, [{ kind: "route", runId: CHILD }], "the root's route for the stage's run");
 	await routed.deliverPending(() => {}, { sessionId: "session-a", receivedMessageIds: [] });
 	assert.deepEqual(forwarded, ["session-a"], "the root's host drains it as well");
-	assert.equal(
+	assert.deepEqual(
 		store.run(CHILD)?.stages[0]?.intercomReceipts,
-		undefined,
-		"the root's drain records the receipts the worker forwards (#4505)",
+		{ sessionId: "session-a", messageIds: ["first"] },
+		"the stage keeps its own receipt as well, for a root drain the storage refused (#5023)",
 	);
 	for (const capability of [undefined, 7])
 		await assert.rejects(
@@ -642,14 +642,17 @@ function workerPorts(base: AgentSessionAdapter, overrides: Partial<WorkerStageAd
 	const store = createStore();
 	store.recordRunStart(childRun());
 	const requests: unknown[] = [];
+	/** The requests a storage outage may refuse without fencing the attempt. */
+	const outageTolerant: string[] = [];
 	const caughtUp: string[] = [];
 	const ports: WorkerStageAdapterPorts = {
 		base,
 		store,
 		inbox: new RemoteStageInbox(),
 		shared: { host: "host-b", routes: false },
-		request: async (message) => {
+		request: async (message, _deliver, tolerant) => {
 			requests.push(message);
+			if (tolerant === true) outageTolerant.push(message.kind);
 			return "capability";
 		},
 		published: () => undefined,
@@ -661,7 +664,7 @@ function workerPorts(base: AgentSessionAdapter, overrides: Partial<WorkerStageAd
 		root: ROOT,
 		...overrides,
 	};
-	return { ports, store, requests, caughtUp };
+	return { ports, store, requests, caughtUp, outageTolerant };
 }
 
 test("a worker's stage session on another host takes its queued messages, publishes them, and leaves the inbox when it closes (#4505)", async () => {
@@ -785,7 +788,7 @@ test("a worker's stage session on the root's host forwards to the root, and a st
 	// The root's host, in a pool that is not shared: no inbox and no workspace record.
 	const publication = Promise.withResolvers<void>();
 	let published: Promise<void> | undefined = publication.promise;
-	const { ports, store, requests } = workerPorts(base, {
+	const { ports, store, requests, outageTolerant } = workerPorts(base, {
 		inbox: undefined,
 		shared: undefined,
 		published: () => published,
@@ -808,9 +811,18 @@ test("a worker's stage session on the root's host forwards to the root, and a st
 			recipient: { sessionId: "session-unmanaged", receivedMessageIds: ["first"] },
 		},
 	]);
+	assert.deepEqual(
+		outageTolerant,
+		["delivery"],
+		"a root drain the storage refused leaves the attempt running, as the stage's receipt records it (#5023)",
+	);
 	assert.equal(created[0]!.options.orchestrationContext?.pendingStageDelivery?.routeCapability, "capability");
 	const stage = store.run(CHILD)?.stages[0];
-	assert.deepEqual([stage?.sessionId, stage?.intercomReceipts], [undefined, undefined]);
+	assert.deepEqual(
+		[stage?.sessionId, stage?.intercomReceipts],
+		[undefined, { sessionId: "session-unmanaged", messageIds: ["first"] }],
+		"the stage keeps its own receipt of what its session took (#5023)",
+	);
 	assert.deepEqual(received, ["first"]);
 	await session.dispose();
 	assert.deepEqual(closed, ["session-unmanaged"], "its session closes as the base's own");

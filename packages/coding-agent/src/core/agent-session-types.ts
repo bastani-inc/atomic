@@ -61,6 +61,24 @@ export type AgentSessionEvent =
 			cacheMiss?: import("./cache-stats.ts").CompactionCacheMiss;
 	  }
 	| {
+			/**
+			 * One model request made by a compaction run (planner, summary fallback, classifier, or a
+			 * retry of one), emitted when the request returns usage. Emitted for foreground and background
+			 * runs, including runs that later fail, so it charges each request exactly once (#5053).
+			 */
+			type: "compaction_usage";
+			reason: "manual" | "threshold" | "overflow";
+			usage: Usage;
+	  }
+	| {
+			/**
+			 * One model call made by a child session this session created through its child session options, such
+			 * as a subagent, or by one of that child's own children. `usage` is that one call's usage (#5053).
+			 */
+			type: "child_session_usage";
+			usage: Usage;
+	  }
+	| {
 			/** Background compaction changed state; `discarded` names a stored result dropped without a commit. */
 			type: "background_compaction";
 			compaction: import("./compaction/background-compaction.ts").SerializedBackgroundCompactionState;

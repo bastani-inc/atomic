@@ -35,6 +35,12 @@ export type RunBudgetAccountingState = Readonly<Record<"tokens" | "cost", number
 	readonly baseline: RunBudgetUsageBaseline;
 	readonly perCounter: RunMeterCounters;
 	readonly externalBaseline?: RunBudgetUsageBaseline;
+	/**
+	 * What this accounting charged for each stage, by replay key (#5053). A resume charges a replayed stage only the
+	 * spend its record lacks, so a stage completed after the last record is charged once. Absent from older records,
+	 * whose replayed stages are taken as charged.
+	 */
+	readonly stageCharges?: Readonly<Record<string, RunBudgetUsageBaseline>>;
 };
 export interface RunBudgetState
 	extends Partial<Record<"warned" | "wrapUpDelivered" | "wrapUpCompleted" | "systemOwnedStop", boolean>> {
@@ -201,7 +207,17 @@ export interface StageNotice {
 	readonly id: string;
 	readonly ts: number;
 	/** `decision`: the decision model judged the stage's readiness after a steer; `to` is the outcome, `meta` its summary. */
-	readonly kind: "model" | "thinking" | "compaction" | "tree" | "abort" | "mcp" | "cleanup" | "decision";
+	/** `undelivered`: a message sent to the stage never reached it before the stage finished; `to` is its text. */
+	readonly kind:
+		| "model"
+		| "thinking"
+		| "compaction"
+		| "tree"
+		| "abort"
+		| "mcp"
+		| "cleanup"
+		| "decision"
+		| "undelivered";
 	readonly from?: string;
 	readonly to: string;
 	readonly meta?: string;
