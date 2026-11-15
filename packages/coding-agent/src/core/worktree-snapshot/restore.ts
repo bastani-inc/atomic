@@ -36,7 +36,7 @@ import {
 import { canonicalizeWorktreePath, defaultWorktreeSnapshotStoreDir } from "./paths.ts";
 import { loadSnapshotPathPolicy } from "./policy.ts";
 import { assertUsableBundlePrerequisites, assertUsableSnapshotRecord, isAllowedRemote } from "./records.ts";
-import { legacyRepositoryIdOf, repositoryIdOf } from "./repository-identity.ts";
+import { legacyRepositoryIdOf, repositoryIdOf, sameRemote } from "./repository-identity.ts";
 import {
 	DEFAULT_WORKTREE_SNAPSHOT_SETTINGS,
 	resolveWorktreeSnapshotSettings,
@@ -740,14 +740,14 @@ async function configuredRemoteUrls(git: GitRunOptions): Promise<string[]> {
 /**
  * Gives a shared object store the remotes its snapshots record, in their recorded order (the first as `origin`, then
  * `origin-2`, …), so a capture in one of its worktrees records them too. Resolves whether the store's remotes are the
- * recorded ones. A store without recorded remotes, or with a remote that is not credential-free or not of a scheme a
+ * recorded ones, however each is spelled. A store without recorded remotes, or with a remote that is not credential-free or not of a scheme a
  * restore fetches over, is left without any, as before.
  */
 async function configureRecordedRemotes(git: GitRunOptions, remotes: readonly string[]): Promise<boolean> {
 	if (remotes.length === 0 || !remotes.every(isAllowedRemote)) return false;
 	let configured = await configuredRemoteUrls(git);
 	// A store holding the start of the recorded list was set up by a restore that stopped partway; finish it.
-	if (configured.length < remotes.length && configured.every((remote, index) => remote === remotes[index])) {
+	if (configured.length < remotes.length && configured.every((remote, index) => sameRemote(remote, remotes[index]!))) {
 		try {
 			for (let index = configured.length; index < remotes.length; index++) {
 				await runGit(["remote", "add", "--", index === 0 ? "origin" : `origin-${index + 1}`, remotes[index]!], git);
@@ -759,7 +759,9 @@ async function configureRecordedRemotes(git: GitRunOptions, remotes: readonly st
 		}
 		configured = await configuredRemoteUrls(git);
 	}
-	return configured.length === remotes.length && configured.every((remote, index) => remote === remotes[index]);
+	return (
+		configured.length === remotes.length && configured.every((remote, index) => sameRemote(remote, remotes[index]!))
+	);
 }
 
 /** Where a restore records commits a recorded remote has, as remote-tracking refs no remote's fetch ever prunes. */
@@ -1082,7 +1084,7 @@ async function storeSnapshotObjects(
 		const sameRemotes =
 			snapshot === null ||
 			(snapshot.remotes.length === target.remotes.length &&
-				snapshot.remotes.every((remote, index) => remote === target.remotes[index]));
+				snapshot.remotes.every((remote, index) => sameRemote(remote, target.remotes[index]!)));
 		const pushed =
 			(await configureRecordedRemotes(git, target.remotes)) && sameRemotes
 				? await pushedCommits(git, snapshot, target.head, fetched)
