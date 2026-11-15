@@ -7,12 +7,13 @@
 // root's journal recorded checkpoints, the shared store's CPU time, the shipping lag of each recorded checkpoint (when
 // the store recorded it after the step completed), and, with --kill-after-ms, the steps a replay ran again.
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { percentile, summarize } from "./stats.mjs";
+import { startTraceProxy } from "./trace-proxy.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const args = Object.fromEntries(
@@ -31,6 +32,9 @@ const shippingModes = (args.modes ?? "sync,ship").split(",").map((mode) => (mode
 const killAfter = args["kill-after-ms"] === undefined ? undefined : Number(args["kill-after-ms"]);
 const out = args.out ?? join(here, "results", `shipping-${store}-${Date.now()}.json`);
 const RUN_TIMEOUT_MS = Number(args["run-timeout-ms"] ?? 900_000);
+// --profile 1: what the store spent its time on, by statement (PostgreSQL's pg_stat_statements; for sqld, a proxy that
+// records every request).
+const profile = args.profile === "1";
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const adapters = {
 	sqld: fileURLToPath(new URL("../../../packages/storage-libsql/libsql.js", import.meta.url)),
@@ -84,6 +88,7 @@ async function openStore(work) {
 		spawnSync("docker", [
 			"run", "-d", "--rm", "--name", name, "-p", `127.0.0.1:${port}:5432`, "-e", "POSTGRES_HOST_AUTH_METHOD=trust",
 			"postgres:16", "-c", "max_connections=1000",
+			...(profile ? ["-c", "shared_preload_libraries=pg_stat_statements", "-c", "pg_stat_statements.track=all"] : []),
 		]);
 	const url =
 		store === "sqld" ? `http://127.0.0.1:${port}` : `postgres://postgres@127.0.0.1:${port}/postgres`;
@@ -96,14 +101,62 @@ async function openStore(work) {
 		await sleep(500);
 	}
 	await sleep(1000);
+	const psql = (sql) =>
+		spawnSync("docker", ["exec", name, "psql", "-U", "postgres", "-At", "-F", "\t", "-c", sql]).stdout.toString();
+	if (profile && store === "pg") psql("CREATE EXTENSION IF NOT EXISTS pg_stat_statements");
+	const traced = profile && store === "sqld" ? await startTraceProxy(port) : undefined;
 	return {
-		url,
+		url: traced === undefined ? url : `http://127.0.0.1:${traced.port}`,
+		/** Starts counting what the store does from now. */
+		resetProfile: () => {
+			if (store === "pg" && profile) psql("SELECT pg_stat_statements_reset()");
+			if (traced) traced.records.length = 0;
+		},
+		/** What the store spent its time on since {@link resetProfile}, by statement, busiest first. */
+		profile: () => {
+			if (!profile) return null;
+			if (store === "pg")
+				return Object.fromEntries(
+					["total_exec_time", "calls"].map((order) => [
+						order === "calls" ? "byCalls" : "byTime",
+						psql(
+							`SELECT calls, round(total_exec_time), rows, left(regexp_replace(query, '\\s+', ' ', 'g'), 160) FROM pg_stat_statements ORDER BY ${order} DESC LIMIT 40`,
+						)
+							.trim()
+							.split("\n")
+							.map((line) => {
+								const [calls, ms, rows, sql] = line.split("\t");
+								return { calls: Number(calls), ms: Number(ms), rows: Number(rows), sql };
+							}),
+					]),
+				);
+			const kinds = new Map();
+			for (const record of traced.records) {
+				const kind =
+					record.sql.filter((sql) => !/^(BEGIN|COMMIT|ROLLBACK)/i.test(sql)).slice(0, 2).join(" | ") || record.sql.join("|");
+				const entry = kinds.get(kind) ?? { requests: 0, statements: 0, ms: 0 };
+				entry.requests++;
+				entry.statements += record.sql.length;
+				entry.ms += record.answered - record.arrived;
+				kinds.set(kind, entry);
+			}
+			return {
+				requests: traced.records.length,
+				byKind: [...kinds]
+					.sort((a, b) => b[1].requests - a[1].requests)
+					.slice(0, 30)
+					.map(([kind, entry]) => ({ kind, ...entry, ms: Math.round(entry.ms) })),
+			};
+		},
 		// The container's CPU time: what the shared store spent serving the trial.
 		cpuMs: () => {
 			const stat = spawnSync("docker", ["exec", name, "cat", "/sys/fs/cgroup/cpu.stat"]).stdout.toString();
 			return Number(/usage_usec (\d+)/.exec(stat)?.[1] ?? 0) / 1000;
 		},
-		close: () => spawnSync("docker", ["rm", "-f", name]),
+		close: () => {
+			traced?.close();
+			spawnSync("docker", ["rm", "-f", name]);
+		},
 	};
 }
 
@@ -165,6 +218,7 @@ async function trial(hosts, shipping) {
 		const deadline = Date.now() + 180_000;
 		for (let index = 0; index < hosts; index++) await waitFor(join(work, `ready-${index}`), deadline, processes, log);
 		const resultFile = join(work, "result.json");
+		shared.resetProfile();
 		const cpuBefore = shared.cpuMs();
 		const rootLog = [];
 		const root = start(process.execPath, [join(here, "bench-root.mjs")], {
@@ -174,10 +228,12 @@ async function trial(hosts, shipping) {
 			ELASTIC_BENCH_HOST: "root",
 			ELASTIC_CHILDREN: String(children),
 			ELASTIC_STEPS: String(steps),
+			// --work-ms: how long each step's body runs, so a child outlives its shipping window.
+			ELASTIC_WORK_MS: String(args["work-ms"] ?? 0),
 			ELASTIC_ROOT_WORKERS: "1",
 			ELASTIC_RESULT_FILE: resultFile,
 			ELASTIC_SESSIONS: String(hosts * slots + 1),
-			...(killAfter === undefined ? {} : { ELASTIC_LEASE_MS: "8000" }),
+			...(killAfter === undefined ? {} : { ELASTIC_LEASE_MS: String(args["lease-ms"] ?? 8000) }),
 			...(shipping === "sync" ? {} : { ELASTIC_CHECKPOINT_SHIPPING: shipping }),
 		}, rootLog, work);
 		processes.push(root);
@@ -194,6 +250,7 @@ async function trial(hosts, shipping) {
 		const code = await Promise.race([exited, sleep(RUN_TIMEOUT_MS).then(() => "timeout")]);
 		clearTimeout(killer);
 		const cpuMs = shared.cpuMs() - cpuBefore;
+		const storeProfile = shared.profile();
 		if (code !== 0 || !existsSync(resultFile)) throw new Error(`root exited ${code}\n${rootLog.join("").slice(-6000)}`);
 		const result = JSON.parse(readFileSync(resultFile, "utf8"));
 		const events = await query(
@@ -217,6 +274,21 @@ async function trial(hosts, shipping) {
 				const child = line.split(":")[0];
 				replayedByChild.set(child, (replayedByChild.get(child) ?? 0) + count - 1);
 			}
+		// What the killed host held unshipped when it died, per attempt: its local journal, which nothing reopened.
+		const unshippedAtKill = [];
+		const killedShip = join(work, `host-${hosts - 1}`, "workflows", "pool", "ship");
+		if (killedAt !== undefined && existsSync(killedShip)) {
+			const { DatabaseSync } = await import("node:sqlite");
+			for (const file of readdirSync(killedShip, { recursive: true, encoding: "utf8" }).filter((name) =>
+				name.endsWith(".sqlite"),
+			)) {
+				const local = new DatabaseSync(join(killedShip, file), { readOnly: true });
+				for (const row of local.prepare("SELECT COUNT(*) AS n FROM ship_events GROUP BY work, generation").all())
+					unshippedAtKill.push(Number(row.n));
+				local.close();
+			}
+		}
+		const acknowledged = children * steps;
 		return {
 			store,
 			hosts,
@@ -230,12 +302,16 @@ async function trial(hosts, shipping) {
 				checkpointsPerSec: Math.round((recorded.length / (journalSpanMs / 1000)) * 10) / 10,
 			},
 			sharedStoreCpuMs: Math.round(cpuMs),
+			/** The store's CPU time per step the children took, each acknowledged with a checkpoint. */
+			storeCpuMsPerCheckpoint: Math.round((cpuMs / acknowledged) * 100) / 100,
+			storeProfile,
 			shippingLagMs: distribution(lags),
 			batches: { count: batches.length, events: distribution(batches.map((row) => Number(row.events))) },
 			replayed: {
 				steps: executions.length - perStep.size,
 				children: replayedByChild.size,
 				perChild: distribution([...replayedByChild.values()]),
+				unshippedAtKillPerAttempt: distribution(unshippedAtKill),
 			},
 		};
 	} finally {
