@@ -72,10 +72,7 @@ export function createDurableStageDeps(input: {
 			const prior = priorSourceOrders.get(stage.id);
 			if (prior !== undefined) return prior;
 			// A fork's fork point keeps the source order its source recorded, for the same reason (#5042).
-			const forkPoint =
-				stage.replayKey === undefined
-					? undefined
-					: forkPointStageTopology(input.backend, input.run.id, stage.replayKey);
+			const forkPoint = forkPointStageTopology(input.backend, input.run.id, stage.replayKey);
 			if (forkPoint?.stageId === stage.id && forkPoint.sourceOrder !== undefined) return forkPoint.sourceOrder;
 			const order = input.run.stages.findIndex((candidate) => candidate.id === stage.id);
 			return order >= 0 ? order : undefined;

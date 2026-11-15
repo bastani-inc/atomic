@@ -25,7 +25,7 @@ afterEach(() => {
 	configureCurrentTestStoreBackend(undefined);
 });
 
-type Shape = "stages" | "tools" | "tool-then-stages" | "child-stages" | "child-tools" | "beside-child";
+type Shape = "stages" | "tasks" | "tools" | "tool-then-stages" | "child-stages" | "child-tools" | "beside-child";
 let failing: string | undefined;
 
 function definitions(shape: Shape) {
@@ -34,10 +34,14 @@ function definitions(shape: Shape) {
 			if (failing === name) throw new Error(`planned ${name} failure`);
 			return name;
 		});
-	// `start → [a ‖ b] → finish → c`: by stages, by tools around stages created in parallel, or with both stages created
+	// `start → [a ‖ b] → finish → c`: by stages, by tasks, by tools around stages created in parallel, or with both stages created
 	// before the tool `start` (#4888).
 	const body = async (ctx: any, kind: string) => {
-		if (kind === "tool-then-stages") {
+		if (kind === "tasks") {
+			await ctx.task("start", { prompt: "start" });
+			await Promise.all([ctx.task("a", { prompt: "a" }), ctx.task("b", { prompt: "b" })]);
+			await ctx.task("finish", { prompt: "finish" });
+		} else if (kind === "tool-then-stages") {
 			await tool(ctx, "start");
 			await Promise.all([ctx.stage("a").prompt("a"), ctx.stage("b").prompt("b")]);
 			await tool(ctx, "finish");
@@ -168,7 +172,15 @@ async function fork(shape: Shape, backend: JournalTestBackend, runId: string, fr
 	return forked.runId;
 }
 
-for (const shape of ["stages", "tools", "tool-then-stages", "child-stages", "child-tools", "beside-child"] as const)
+for (const shape of [
+	"stages",
+	"tasks",
+	"tools",
+	"tool-then-stages",
+	"child-stages",
+	"child-tools",
+	"beside-child",
+] as const)
 	test(`a fork from each stage of a parallel ${shape} run keeps the source's parent edges (#5042)`, async () => {
 		const origin = await source(shape);
 		assert.ok(origin.points.length >= 3, JSON.stringify(origin.points));

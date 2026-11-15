@@ -75,12 +75,13 @@ import { WorkflowProjectNotTrustedError } from "./project-trust.js";
 import { FOREIGN_LIVE_WORKFLOW_WINDOW_MS } from "./resume-eligibility.js";
 import { claimsOf, hasForkClaim, hasResumeClaim, pendingForks } from "./run-claims.js";
 import { RUN_RESULT_CHECKPOINT_NAME } from "./run-result.js";
-import { forkPointCheckpointKey } from "./stage-topology.js";
+import { type ForkPointTopology, forkPointCheckpointKey } from "./stage-topology.js";
 import { durableStageGroupKey } from "./stage-topology-validation.js";
 import type {
 	DurableCheckpoint,
 	DurableStageCheckpoint,
 	DurableStageRunTopology,
+	DurableStageTopology,
 	DurableWorkflowHandle,
 	WorkflowForkedFrom,
 } from "./types.js";
@@ -150,6 +151,8 @@ interface ForkPointRecord {
 	readonly completedAt: number;
 	/** Sequence of the first event of the stage: the fork copies only events before it. */
 	readonly firstSeq: number;
+	/** The topology of that first event: the fork keeps the stage's place in the graph from it (#5042). */
+	readonly firstTopology: DurableStageTopology | undefined;
 }
 
 interface ForkSource {
@@ -329,11 +332,11 @@ function forkPointRecords(checkpoints: readonly CheckpointEvent[], rootRunId: st
 	const reached = attemptReachedCheckpoints(all, rootRunId, { rootReach: true });
 	const visible = reached === all ? undefined : new Set(reached);
 	const boundaries = new Map<string, string>();
-	const firstSeq = new Map<string, number>();
+	const first = new Map<string, CheckpointEvent & { readonly checkpoint: DurableStageCheckpoint }>();
 	for (const { seq, checkpoint } of checkpoints) {
 		if (checkpoint.kind !== "stage") continue;
 		const key = JSON.stringify([checkpoint.replayKey, checkpointAttempt(checkpoint)]);
-		if (!firstSeq.has(key)) firstSeq.set(key, seq);
+		if (!first.has(key)) first.set(key, { seq, checkpoint });
 		if (checkpoint.topology?.boundary !== undefined && !boundaries.has(checkpoint.replayKey))
 			boundaries.set(checkpoint.replayKey, checkpoint.name);
 	}
@@ -369,10 +372,14 @@ function forkPointRecords(checkpoints: readonly CheckpointEvent[], rootRunId: st
 			replayKey: checkpoint.replayKey,
 			sessionId,
 			completedAt: checkpoint.completedAt,
-			firstSeq: firstSeq.get(JSON.stringify([checkpoint.replayKey, checkpointAttempt(checkpoint)]))!,
+			...firstEvent(first.get(JSON.stringify([checkpoint.replayKey, checkpointAttempt(checkpoint)]))!),
 		});
 	}
 	return records;
+}
+
+function firstEvent(event: CheckpointEvent & { readonly checkpoint: DurableStageCheckpoint }) {
+	return { firstSeq: event.seq, firstTopology: event.checkpoint.topology };
 }
 
 function forkKeepsWorkspace(source: DurableWorkflowHandle, cwd: string): boolean {
@@ -826,14 +833,10 @@ function selectForkEvents(source: ForkSource, request: DurableForkRequest): Fork
 		handleAtCut = decodeJournalEventHandle(entry.event, handleAtCut) ?? handleAtCut;
 	}
 	const messageHandle = carryAll ? source.handle : (handleAtCut ?? source.handle);
-	const forkPoint = target === undefined ? undefined : forkPointTopologyRecord(source.checkpoints, target);
-	const kept = source.checkpoints.filter(keep);
+	const forkPoint = forkPointTopologyRecord(target, source.runId);
 	return {
 		...(target === undefined ? {} : { stagePath: target.stagePath }),
-		checkpoints: (forkPoint === undefined
-			? kept
-			: [...kept.filter(({ seq }) => seq < cut), forkPoint, ...kept.filter(({ seq }) => seq >= cut)]
-		).map((event) => event.checkpoint),
+		checkpoints: [...source.checkpoints.filter(keep).map((event) => event.checkpoint), ...forkPoint],
 		messageEvents: source.entries.filter(
 			(entry) =>
 				(entry.event.type === E.messageSettled || entry.event.type === E.messageDelivered) &&
@@ -844,36 +847,31 @@ function selectForkEvents(source: ForkSource, request: DurableForkRequest): Fork
 }
 
 /**
- * The fork point's place in the graph: the stage id, parents and source order the source recorded for it, as a run-level record the
- * fork's stage resumes with (`forkPointStageTopology`). The fork's events end before the fork point's first record, so
- * without it the stage would take the fork's frontier when it is created, which can hold a stage that ran beside it
- * (#5042). A child workflow's boundary records its parents with its own lifecycle, so its fork point has none.
+ * The fork point's place in the graph: the stage id, parents and source order the source recorded for it, as a run-level
+ * record the fork's stage resumes with (`forkPointStageTopology`). The fork's events end before the fork point's first
+ * record, so without it the stage would take the fork's frontier when it is created, which can hold a stage that ran
+ * beside it (#5042). A child workflow's boundary records its parents with its own lifecycle, so its fork point has none.
  */
-function forkPointTopologyRecord(
-	checkpoints: readonly CheckpointEvent[],
-	target: ForkPointRecord,
-): CheckpointEvent | undefined {
-	const first = checkpoints.find(({ seq }) => seq === target.firstSeq);
-	const checkpoint = first?.checkpoint;
-	if (checkpoint?.kind !== "stage" || checkpoint.topology === undefined || checkpoint.topology.boundary !== undefined)
-		return undefined;
-	const key = forkPointCheckpointKey(checkpoint.replayKey);
-	return {
-		seq: first!.seq,
-		checkpoint: {
+function forkPointTopologyRecord(target: ForkPointRecord | undefined, runId: string): DurableCheckpoint[] {
+	const topology = target?.firstTopology;
+	if (topology === undefined || topology.boundary !== undefined) return [];
+	const key = forkPointCheckpointKey(target!.replayKey);
+	const point: ForkPointTopology = {
+		stageId: topology.stageId,
+		parentIds: [...topology.parentIds],
+		sourceOrder: topology.sourceOrder,
+	};
+	return [
+		{
 			kind: "tool",
-			workflowId: checkpoint.workflowId,
+			workflowId: runId,
 			checkpointId: key,
 			name: key,
 			argsHash: key,
-			output: {
-				stageId: checkpoint.topology.stageId,
-				parentIds: [...checkpoint.topology.parentIds],
-				...(checkpoint.topology.sourceOrder === undefined ? {} : { sourceOrder: checkpoint.topology.sourceOrder }),
-			},
-			completedAt: checkpoint.completedAt,
+			output: point as unknown as WorkflowSerializableValue,
+			completedAt: target!.completedAt,
 		},
-	};
+	];
 }
 
 /**

@@ -13,6 +13,9 @@ import {
  */
 export const FORK_POINT_CHECKPOINT_SUFFIX = ":fork-point-topology";
 
+/** What a fork's fork point record holds: the stage's place in its source's graph. */
+export type ForkPointTopology = Pick<DurableStageTopology, "stageId" | "parentIds" | "sourceOrder" | "intercomGroup">;
+
 /** The key of the fork point record of the stage at `replayKey`. */
 export function forkPointCheckpointKey(replayKey: string): string {
 	return `${replayKey}${FORK_POINT_CHECKPOINT_SUFFIX}`;
@@ -27,24 +30,11 @@ export function forkPointCheckpointKey(replayKey: string): string {
 export function forkPointStageTopology(
 	backend: DurableWorkflowBackend,
 	workflowId: string,
-	replayKey: string,
-): DurableStageTopology | undefined {
-	const output = backend.getToolCheckpoint(workflowId, forkPointCheckpointKey(replayKey))?.output;
-	if (typeof output !== "object" || output === null || Array.isArray(output)) return undefined;
-	const { stageId, parentIds, sourceOrder } = output as {
-		readonly stageId?: unknown;
-		readonly parentIds?: unknown;
-		readonly sourceOrder?: unknown;
-	};
-	if (typeof stageId !== "string" || !Array.isArray(parentIds) || !parentIds.every((id) => typeof id === "string"))
-		return undefined;
-	return {
-		version: DURABLE_STAGE_TOPOLOGY_VERSION,
-		stageId,
-		parentIds: [...parentIds],
-		...(typeof sourceOrder === "number" ? { sourceOrder } : {}),
-		status: "pending",
-	};
+	replayKey: string | undefined,
+): ForkPointTopology | undefined {
+	return backend.getToolCheckpoint(workflowId, forkPointCheckpointKey(`${replayKey}`))?.output as
+		| ForkPointTopology
+		| undefined;
 }
 
 /** Find source identity for the latest active session at an exact replay key. */
