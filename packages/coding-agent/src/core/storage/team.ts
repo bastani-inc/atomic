@@ -203,10 +203,9 @@ function unreadableSettingsError(subject: string, cause: Error): TeamProfileErro
 
 function openGlobalSettings(cwd: string, agentDir: string): SettingsManager {
 	const manager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
-	// A wrong-typed value is ignored and reported at startup; only an unreadable file stops a command.
-	const failure = manager
-		.drainErrors()
-		.find(({ scope, invalidKey }) => scope === "global" && invalidKey === undefined);
+	// Project settings are not read here. A wrong-typed value is ignored and reported at startup; only an unreadable file
+	// stops a command.
+	const failure = manager.drainErrors().find(({ invalidKey }) => invalidKey === undefined);
 	if (failure !== undefined) {
 		const settingsPath = failure.path ?? settingsPathOf(agentDir);
 		if (isLocked(failure.error)) throw lockedError(settingsPath, failure.error, "Nothing was changed.");

@@ -51,14 +51,13 @@ export function resolveFallbackModel(
 		lookup.getModels(),
 		usable,
 	);
+	if (result.status === "not-found") return undefined;
 	const model =
 		result.status === "resolved"
 			? result.model
-			: result.status === "ambiguous"
-				? result.candidates.find((candidate) => candidate.provider === preferredProvider)
-				: undefined;
+			: result.candidates.find((candidate) => candidate.provider === preferredProvider);
 	if (!model || !usable(model.provider)) return undefined;
-	return { model, thinkingLevel: result.status === "not-found" ? undefined : result.thinkingLevel };
+	return { model, thinkingLevel: result.thinkingLevel };
 }
 
 /** Stable `provider/model:level` identity for one attempted fallback candidate. */

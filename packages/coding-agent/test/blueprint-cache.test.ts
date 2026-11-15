@@ -458,7 +458,9 @@ describe("resume.cache settings overrides (#4748)", () => {
 		write(at.agentDir, "settings.json", JSON.stringify({ resume: "cache everything", extensions: "./x.ts" }));
 		const keys = await keysOf(at);
 		assert.deepEqual(names(keys), ["git", "atomic"]);
-		assert.deepEqual(keys.warnings, [`${join(at.agentDir, "settings.json")}: "resume" must be object; ignoring it.`]);
+		assert.deepEqual(keys.warnings, [
+			`${join(at.agentDir, "settings.json")}: "resume" must be object, not string; ignoring it.`,
+		]);
 	});
 
 	test("a store path inside the worktree is refused with a warning (#4748)", async () => {

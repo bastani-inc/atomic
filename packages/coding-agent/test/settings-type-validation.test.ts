@@ -89,20 +89,102 @@ describe("settings type validation (#4902)", () => {
 		const errors = manager.drainErrors();
 		assert.deepEqual(
 			errors.map(({ path, error }) => ({ path, message: error.message })),
-			[{ path: globalPath, message: '"compaction" must be object; ignoring it.' }],
+			[{ path: globalPath, message: '"compaction" must be object, not string; ignoring it.' }],
 		);
 	});
 
 	test("wrong-typed list entries are dropped and the valid entries kept (#4902)", () => {
-		writeJson(globalPath, { fallbackModels: ["openai/gpt-4o", 4, "anthropic/claude-sonnet-4-5"] });
+		writeJson(globalPath, {
+			fallbackModels: ["openai/gpt-4o", 4, "anthropic/claude-sonnet-4-5"],
+			packages: ["npm:a", null, { source: "npm:b" }],
+		});
 
 		const manager = SettingsManager.create(projectDir, agentDir);
 
-		assert.deepEqual(manager.getFallbackModels(), ["openai/gpt-4o", "anthropic/claude-sonnet-4-5"]);
-		const errors = manager.drainErrors();
+		assert.deepEqual(manager.getGlobalSettings().fallbackModels, ["openai/gpt-4o", "anthropic/claude-sonnet-4-5"]);
+		assert.deepEqual(manager.getPackages(), ["npm:a", { source: "npm:b" }]);
 		assert.deepEqual(
-			errors.map(({ path, error }) => ({ path, message: error.message })),
-			[{ path: globalPath, message: '"fallbackModels[1]" must be string; ignoring it.' }],
+			manager.drainErrors().map(({ path, error, invalidKey }) => ({ path, invalidKey, message: error.message })),
+			[
+				{
+					path: globalPath,
+					invalidKey: "fallbackModels[1]",
+					message: '"fallbackModels[1]" must be string, not number; ignoring it.',
+				},
+				{
+					path: globalPath,
+					invalidKey: "packages[1]",
+					message: '"packages[1]" must be string or object, not null; ignoring it.',
+				},
+			],
+		);
+	});
+
+	test("the diagnostic names every type a setting accepts and the type it found (#4902)", () => {
+		writeJson(globalPath, { skills: 3, transport: 5, extensions: null, theme: "dark" });
+
+		const manager = SettingsManager.create(projectDir, agentDir);
+
+		assert.equal(manager.getTransport(), "auto");
+		assert.deepEqual(
+			manager.drainErrors().map(({ error }) => error.message),
+			[
+				'"transport" must be string, not number; ignoring it.',
+				'"extensions" must be array of string, not null; ignoring it.',
+				'"skills" must be array of string or object, not number; ignoring it.',
+			],
+		);
+	});
+
+	test("a right-typed word outside the allowed values is not a type error (#4902)", () => {
+		writeJson(globalPath, { transport: "pigeon" });
+
+		const manager = SettingsManager.create(projectDir, agentDir);
+
+		assert.deepEqual(manager.drainErrors(), []);
+		assert.equal(manager.getGlobalSettings().transport, "pigeon");
+	});
+
+	test("the legacy skills object keeps migrating when its fields have the right types (#4902)", () => {
+		writeJson(globalPath, { skills: { enableSkillCommands: false, customDirectories: ["./legacy-skills"] } });
+
+		const manager = SettingsManager.create(projectDir, agentDir);
+
+		assert.deepEqual(manager.drainErrors(), []);
+		assert.deepEqual(manager.getSkillPaths(), ["./legacy-skills"]);
+		assert.equal(manager.getEnableSkillCommands(), false);
+	});
+
+	test("fields inside a current object setting are left to the feature that reads them (#4902)", () => {
+		writeJson(globalPath, { storage: { path: 5 } });
+
+		const manager = SettingsManager.create(projectDir, agentDir);
+
+		assert.deepEqual(manager.drainErrors(), []);
+		assert.deepEqual(manager.getGlobalSettings().storage, { path: 5 });
+	});
+
+	test("a wrong-typed value in a legacy .pi settings file names that file (#4902)", () => {
+		const legacyProjectPath = join(projectDir, ".pi", "settings.json");
+		mkdirSync(join(projectDir, ".pi"), { recursive: true });
+		writeJson(legacyProjectPath, { prompts: "./prompts" });
+		writeJson(projectPath, { theme: "dark" });
+
+		const manager = SettingsManager.create(projectDir, agentDir);
+
+		assert.deepEqual(
+			manager.drainErrors().map(({ scope, path }) => ({ scope, path })),
+			[{ scope: "project", path: legacyProjectPath }],
+		);
+	});
+
+	test("in-memory settings report a wrong-typed value without a file (#4902)", () => {
+		const manager = SettingsManager.inMemory({ themes: "./themes" } as object);
+
+		assert.deepEqual(manager.getThemePaths(), []);
+		assert.deepEqual(
+			manager.drainErrors().map(({ scope, path, invalidKey }) => ({ scope, path, invalidKey })),
+			[{ scope: "global", path: undefined, invalidKey: "themes" }],
 		);
 	});
 
@@ -126,6 +208,37 @@ describe("settings type validation (#4902)", () => {
 		assert.deepEqual(manager.getFallbackModels(), []);
 	});
 
+	test("a reload reports a wrong-typed value that is new, in the scope that holds it (#4902)", async () => {
+		writeJson(globalPath, { fallbackModels: "openai/gpt-4o" });
+		const manager = SettingsManager.create(projectDir, agentDir);
+		manager.drainErrors();
+		writeJson(globalPath, { fallbackModels: "openai/gpt-4o", skills: 1 });
+		writeJson(projectPath, { prompts: 2 });
+
+		await manager.reload();
+
+		assert.deepEqual(
+			manager.drainErrors().map(({ scope, path, invalidKey }) => ({ scope, path, invalidKey })),
+			[
+				{ scope: "global", path: globalPath, invalidKey: "skills" },
+				{ scope: "project", path: projectPath, invalidKey: "prompts" },
+			],
+		);
+	});
+
+	test("trusting a project reports its wrong-typed values as project settings (#4902)", () => {
+		writeJson(projectPath, { extensions: "./x.ts" });
+		const manager = SettingsManager.create(projectDir, agentDir, { projectTrusted: false });
+		assert.deepEqual(manager.drainErrors(), []);
+
+		manager.setProjectTrusted(true);
+
+		assert.deepEqual(
+			manager.drainErrors().map(({ scope, path, invalidKey }) => ({ scope, path, invalidKey })),
+			[{ scope: "project", path: projectPath, invalidKey: "extensions" }],
+		);
+	});
+
 	test("list accessors ignore wrong-typed override values instead of throwing or spreading strings (#4902)", () => {
 		const manager = SettingsManager.inMemory();
 		const overrides: Record<string, object | string | number> = {
@@ -141,6 +254,13 @@ describe("settings type validation (#4902)", () => {
 		for (const [key, read] of Object.entries(LIST_SETTINGS)) {
 			assert.deepEqual(read(manager), [], key);
 		}
+	});
+
+	test("getPackages keeps only string sources and objects with a string source (#4902)", () => {
+		const manager = SettingsManager.inMemory();
+		manager.applyOverrides({ packages: ["npm:a", 3, null, { source: 4 }, { source: "npm:b" }] } as object);
+
+		assert.deepEqual(manager.getPackages(), ["npm:a", { source: "npm:b" }]);
 	});
 
 	test("list accessors keep only the string entries of a mixed array (#4902)", () => {

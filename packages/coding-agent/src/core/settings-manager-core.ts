@@ -61,10 +61,8 @@ export class SettingsManager {
 		this.globalSettingsLoadError = globalLoadError;
 		this.projectSettingsLoadError = projectLoadError;
 		this.errors = [...initialErrors];
-		for (const error of initialErrors) {
-			if (error.invalidKey !== undefined)
-				this.reportedInvalidSettings.add(SettingsManager.invalidSettingIdentity(error));
-		}
+		for (const error of initialErrors)
+			this.reportedInvalidSettings.add(SettingsManager.invalidSettingIdentity(error));
 		this.settings = this.mergeEffectiveSettings();
 		this.touchSplitAccessorMethods();
 	}
@@ -175,7 +173,7 @@ export class SettingsManager {
 		const invalid = load.invalid.map(
 			(value): SettingsError => ({
 				scope,
-				path: storage.getFieldPath?.(scope, value.key.replace(/\[\d+\]$/, "")),
+				path: storage.getFieldPath?.(scope, value.setting),
 				error: new Error(invalidSettingMessage(value)),
 				invalidKey: value.key,
 			}),
@@ -185,7 +183,7 @@ export class SettingsManager {
 	}
 
 	private static invalidSettingIdentity({ scope, path, error }: SettingsError): string {
-		return `${scope}\0${path ?? ""}\0${error.message}`;
+		return `${scope}\0${path}\0${error.message}`;
 	}
 
 	/** Record load-time validation errors, skipping wrong-typed values this manager already reported. */

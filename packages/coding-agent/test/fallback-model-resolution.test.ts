@@ -28,6 +28,8 @@ const CATALOG = [
 	model("openai", "gpt-4o"),
 	model("openrouter", "qwen/qwen3-coder:exacto"),
 	model("openrouter", "moonshotai/kimi-k2"),
+	model("openai", "shared-model"),
+	model("openrouter", "shared-model"),
 ];
 
 function runtime(authenticated: readonly string[] = ["anthropic", "openai", "openrouter"]) {
@@ -65,6 +67,24 @@ describe("fallbackModels resolution (#4902)", () => {
 		});
 	}
 
+	test("an invalid thinking suffix does not resolve to the model without it (#4902)", () => {
+		assert.equal(resolveFallbackModel("anthropic/claude-sonnet-4-5:bogus", runtime(), undefined), undefined);
+	});
+
+	test("a bare id several authenticated providers serve picks the preferred provider (#4902)", () => {
+		assert.equal(label(resolveFallbackModel("shared-model", runtime(), "openrouter")), "openrouter/shared-model:");
+		assert.equal(resolveFallbackModel("shared-model", runtime(), undefined), undefined);
+		assert.equal(resolveFallbackModel("shared-model", runtime(), "anthropic"), undefined);
+	});
+
+	test("the startup check prefers the default provider for an ambiguous bare id (#4902)", () => {
+		const settingsManager = SettingsManager.inMemory({ defaultProvider: "openai", fallbackModels: ["shared-model"] });
+
+		const { diagnostics } = buildSessionOptions(parseArgs([]), [], false, runtime(), settingsManager);
+
+		assert.deepEqual(diagnostics, []);
+	});
+
 	test("a fallback on a provider without credentials stays unusable (#4902)", () => {
 		assert.equal(resolveFallbackModel("openai/gpt-4o", runtime(["anthropic"]), undefined), undefined);
 	});
@@ -76,10 +96,13 @@ describe("fallbackModels resolution (#4902)", () => {
 
 		const { diagnostics } = buildSessionOptions(parseArgs([]), [], false, runtime(), settingsManager);
 
-		assert.deepEqual(
-			diagnostics.map(({ type, message }) => ({ type, names: message.includes('"nowhere/no-model"') })),
-			[{ type: "warning", names: true }],
-		);
+		assert.deepEqual(diagnostics, [
+			{
+				type: "warning",
+				message:
+					'fallbackModels setting entry "nowhere/no-model" does not match a model with configured credentials, so model fallback skips it. Use --list-models to see available models.',
+			},
+		]);
 	});
 
 	test("--fallback-models entries are checked in place of the setting (#4902)", () => {

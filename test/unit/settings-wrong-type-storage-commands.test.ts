@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { collectStorageStatus } from "../../packages/coding-agent/src/core/storage/storage-status.js";
-import { selectTeamProfile } from "../../packages/coding-agent/src/core/storage/team.js";
+import { leaveTeam, selectTeamProfile } from "../../packages/coding-agent/src/core/storage/team.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 let root: string;
@@ -35,6 +35,7 @@ test("storage status and the team profile read past a wrong-typed setting (#4902
 	const status = await collectStorageStatus({ cwd: root, agentDir, probe: false });
 	assert.ok(status);
 	assert.ok(selectTeamProfile({ cwd: root, agentDir }));
+	assert.deepEqual((await leaveTeam({ cwd: root, agentDir })).removed, []);
 });
 
 test("storage status still refuses a settings file it cannot parse (#4902)", async () => {
@@ -42,4 +43,5 @@ test("storage status still refuses a settings file it cannot parse (#4902)", asy
 
 	await assert.rejects(collectStorageStatus({ cwd: root, agentDir, probe: false }), /Cannot load settings/);
 	assert.throws(() => selectTeamProfile({ cwd: root, agentDir }), /settings/);
+	await assert.rejects(leaveTeam({ cwd: root, agentDir }), /settings/);
 });

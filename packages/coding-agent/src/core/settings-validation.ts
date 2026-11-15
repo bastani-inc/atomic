@@ -1,18 +1,21 @@
 import type { TSchema } from "typebox";
 import { SettingsSchema } from "./settings-schema.ts";
 
-/** A setting removed from a loaded file because its JSON type is not one the schema accepts. */
+/** A setting, or one of its list entries, removed from a loaded file because the schema does not accept its JSON type. */
 export interface InvalidSettingValue {
-	/** The dropped setting, such as `extensions`, or list entry, such as `extensions[2]`. */
+	/** The top-level setting, such as `extensions`. */
+	setting: string;
+	/** The removed value: the setting itself, or a list entry such as `extensions[2]`. */
 	key: string;
 	/** The JSON types the schema accepts there, such as `array of string`. */
 	expected: string;
+	/** The JSON type that was found, such as `string`. */
+	actual: string;
 }
 
 interface SchemaNode {
 	type?: string | string[];
 	const?: string | number | boolean | null;
-	enum?: (string | number | boolean | null)[];
 	anyOf?: SchemaNode[];
 	items?: SchemaNode;
 	properties?: Record<string, SchemaNode>;
@@ -27,56 +30,35 @@ function jsonTypeOf(value: JsonValue): string {
 	return typeof value;
 }
 
-/** Every JSON type the schema accepts, or `undefined` when it accepts any value. */
-function acceptedTypes(schema: SchemaNode): Set<string> | undefined {
-	if (schema.anyOf) {
-		const types = new Set<string>();
-		for (const member of schema.anyOf) {
-			const memberTypes = acceptedTypes(member);
-			if (!memberTypes) return undefined;
-			for (const type of memberTypes) types.add(type);
-		}
-		return types;
-	}
-	if (schema.const !== undefined) return new Set([jsonTypeOf(schema.const)]);
-	if (schema.enum) return new Set(schema.enum.map(jsonTypeOf));
-	if (schema.type === undefined) return undefined;
-	return new Set(Array.isArray(schema.type) ? schema.type : [schema.type]);
+/** Every JSON type the schema accepts. Every settings schema node is a union, a literal, or names its type. */
+function acceptedTypes(schema: SchemaNode): string[] {
+	if (schema.anyOf) return schema.anyOf.flatMap(acceptedTypes);
+	if (schema.const !== undefined) return [jsonTypeOf(schema.const)];
+	return [schema.type ?? []].flat();
 }
 
+/** Top-level settings and list entries never use `integer`; integer fields live inside objects, which are not checked. */
 function hasType(schema: SchemaNode, value: JsonValue): boolean {
-	const types = acceptedTypes(schema);
-	if (!types) return true;
-	const type = jsonTypeOf(value);
-	if (types.has(type)) return true;
-	return type === "number" && types.has("integer") && Number.isInteger(value);
+	return acceptedTypes(schema).includes(jsonTypeOf(value));
 }
 
 function describe(schema: SchemaNode): string {
-	const types = acceptedTypes(schema);
-	if (!types) return "any value";
-	return [...types]
-		.map((type) => (type === "array" && schema.items ? `array of ${describe(schema.items)}` : type))
-		.join(" or ");
+	const types = [...new Set(acceptedTypes(schema))];
+	return types.map((type) => (type === "array" ? `array of ${describe(arrayItems(schema))}` : type)).join(" or ");
+}
+
+function arrayItems(schema: SchemaNode): SchemaNode {
+	return schema.items ?? schema.anyOf!.find((member) => member.type === "array")!.items!;
 }
 
 /**
  * A deprecated object form, such as the legacy `skills: { customDirectories }`, is migrated into current settings by
  * code that trusts its field types, so its declared fields must have the right types too.
  */
-function hasWrongTypedLegacyFields(schema: SchemaNode, value: { [key: string]: JsonValue }): boolean {
-	const legacy = schema.anyOf?.find((member) => member.deprecated && member.properties);
-	return Object.entries(legacy?.properties ?? {}).some(
-		([key, field]) => Object.hasOwn(value, key) && !hasType(field, value[key]!),
-	);
-}
-
-function isObject(value: JsonValue): value is { [key: string]: JsonValue } {
-	return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function arrayItems(schema: SchemaNode): SchemaNode | undefined {
-	return schema.items ?? schema.anyOf?.find((member) => member.type === "array")?.items;
+function hasWrongTypedLegacyFields(schema: SchemaNode, value: JsonValue): boolean {
+	const legacy = schema.anyOf?.find((member) => member.deprecated)?.properties ?? {};
+	const fields = jsonTypeOf(value) === "object" ? (value as { [key: string]: JsonValue }) : {};
+	return Object.entries(legacy).some(([key, field]) => key in fields && !hasType(field, fields[key]!));
 }
 
 function collect(
@@ -84,22 +66,21 @@ function collect(
 	settings: { [key: string]: JsonValue },
 	invalid: InvalidSettingValue[],
 ): void {
-	for (const [key, schema] of Object.entries(properties)) {
-		if (!Object.hasOwn(settings, key)) continue;
-		const value = settings[key]!;
-		if (!hasType(schema, value) || (isObject(value) && hasWrongTypedLegacyFields(schema, value))) {
-			invalid.push({ key, expected: describe(schema) });
-			delete settings[key];
+	for (const [setting, schema] of Object.entries(properties)) {
+		if (!Object.hasOwn(settings, setting)) continue;
+		const value = settings[setting]!;
+		if (!hasType(schema, value) || hasWrongTypedLegacyFields(schema, value)) {
+			invalid.push({ setting, key: setting, expected: describe(schema), actual: jsonTypeOf(value) });
+			delete settings[setting];
 			continue;
 		}
-		const items = Array.isArray(value) ? arrayItems(schema) : undefined;
-		if (!Array.isArray(value) || !items) continue;
-		const kept = value.filter((item, index) => {
+		if (!Array.isArray(value)) continue;
+		const items = arrayItems(schema);
+		settings[setting] = value.filter((item, index) => {
 			if (hasType(items, item)) return true;
-			invalid.push({ key: `${key}[${index}]`, expected: describe(items) });
+			invalid.push({ setting, key: `${setting}[${index}]`, expected: describe(items), actual: jsonTypeOf(item) });
 			return false;
 		});
-		if (kept.length !== value.length) settings[key] = kept;
 	}
 }
 
@@ -111,10 +92,10 @@ function collect(
  */
 export function dropWrongTypedSettings(settings: Record<string, JsonValue>): InvalidSettingValue[] {
 	const invalid: InvalidSettingValue[] = [];
-	collect((SettingsSchema as TSchema & SchemaNode).properties ?? {}, settings, invalid);
+	collect((SettingsSchema as TSchema & SchemaNode).properties!, settings, invalid);
 	return invalid;
 }
 
-export function invalidSettingMessage({ key, expected }: InvalidSettingValue): string {
-	return `"${key}" must be ${expected}; ignoring it.`;
+export function invalidSettingMessage({ key, expected, actual }: InvalidSettingValue): string {
+	return `"${key}" must be ${expected}, not ${actual}; ignoring it.`;
 }

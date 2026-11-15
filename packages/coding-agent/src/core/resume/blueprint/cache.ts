@@ -232,7 +232,7 @@ function settingsCache(root: string, agentDir: string, warnings: string[]): read
 		if (path === undefined) continue;
 		if (invalidKey === undefined)
 			warnings.push(`${path} could not be read, so its resume.cache is ignored: ${error.message}`);
-		else if (invalidKey.startsWith("resume")) warnings.push(`${path}: ${error.message}`);
+		else if (invalidKey === "resume") warnings.push(`${path}: ${error.message}`);
 	}
 	return readCacheSetting(settings.getSettings().resume?.cache, warnings);
 }
