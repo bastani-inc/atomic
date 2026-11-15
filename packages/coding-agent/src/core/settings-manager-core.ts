@@ -15,7 +15,14 @@ import type {
 	SettingsScope,
 	SettingsStorage,
 } from "./settings-types.ts";
+import { dropWrongTypedSettings, type InvalidSettingValue, invalidSettingMessage } from "./settings-validation.ts";
 import { ownedSettingsManagers, recordSettingsWrite, settingsWriteOwner } from "./settings-write-ownership.ts";
+
+interface SettingsLoad {
+	settings: Settings;
+	invalid: InvalidSettingValue[];
+	error: Error | null;
+}
 
 export class SettingsManager {
 	/** A defensive snapshot of the effective merged settings. */
@@ -36,6 +43,8 @@ export class SettingsManager {
 	private projectSettingsLoadError: Error | null = null; // Track if project settings file had parse errors
 	private writeQueue: Promise<void> = Promise.resolve();
 	private errors: SettingsError[];
+	/** Wrong-typed values already reported, so a reload of an unchanged file does not report them again. */
+	private reportedInvalidSettings = new Set<string>();
 
 	private constructor(
 		storage: SettingsStorage,
@@ -53,6 +62,8 @@ export class SettingsManager {
 		this.globalSettingsLoadError = globalLoadError;
 		this.projectSettingsLoadError = projectLoadError;
 		this.errors = [...initialErrors];
+		for (const error of initialErrors)
+			this.reportedInvalidSettings.add(SettingsManager.invalidSettingIdentity(error));
 		this.settings = this.mergeEffectiveSettings();
 		this.touchSplitAccessorMethods();
 	}
@@ -88,7 +99,7 @@ export class SettingsManager {
 				error: globalLoad.error,
 			});
 		} else {
-			initialErrors.push(...SettingsManager.validateLoadedSettings("global", globalLoad.settings));
+			initialErrors.push(...SettingsManager.validateLoadedSettings(storage, "global", globalLoad));
 		}
 		if (projectLoad.error) {
 			initialErrors.push({
@@ -97,7 +108,7 @@ export class SettingsManager {
 				error: projectLoad.error,
 			});
 		} else {
-			initialErrors.push(...SettingsManager.validateLoadedSettings("project", projectLoad.settings));
+			initialErrors.push(...SettingsManager.validateLoadedSettings(storage, "project", projectLoad));
 		}
 
 		return new SettingsManager(
@@ -119,9 +130,13 @@ export class SettingsManager {
 		return SettingsManager.fromStorage(storage);
 	}
 
-	private static loadFromStorage(storage: SettingsStorage, scope: SettingsScope, projectTrusted = true): Settings {
+	private static loadFromStorage(
+		storage: SettingsStorage,
+		scope: SettingsScope,
+		projectTrusted = true,
+	): { settings: Settings; invalid: InvalidSettingValue[] } {
 		if (scope === "project" && !projectTrusted) {
-			return {};
+			return { settings: {}, invalid: [] };
 		}
 
 		let content: string | undefined;
@@ -131,27 +146,57 @@ export class SettingsManager {
 		});
 
 		if (!content) {
-			return {};
+			return { settings: {}, invalid: [] };
 		}
-		const settings = parseJsonFileContent(content) as Record<string, unknown>;
-		return SettingsManager.migrateSettings(settings);
+		const settings = parseJsonFileContent(content) as Parameters<typeof dropWrongTypedSettings>[0];
+		const invalid = dropWrongTypedSettings(settings);
+		return { settings: SettingsManager.migrateSettings(settings), invalid };
 	}
 
 	private static tryLoadFromStorage(
 		storage: SettingsStorage,
 		scope: SettingsScope,
 		projectTrusted = true,
-	): { settings: Settings; error: Error | null } {
+	): SettingsLoad {
 		try {
-			return { settings: SettingsManager.loadFromStorage(storage, scope, projectTrusted), error: null };
+			return { ...SettingsManager.loadFromStorage(storage, scope, projectTrusted), error: null };
 		} catch (error) {
 			if (isDecisionConfigError(error)) throw error;
-			return { settings: {}, error: error as Error };
+			return { settings: {}, invalid: [], error: error as Error };
 		}
 	}
 
-	private static validateLoadedSettings(scope: SettingsScope, settings: Settings): SettingsError[] {
-		return backgroundCompactionSettingErrors(settings.compaction).map((error) => ({ scope, error }));
+	private static validateLoadedSettings(
+		storage: SettingsStorage,
+		scope: SettingsScope,
+		load: SettingsLoad,
+	): SettingsError[] {
+		const invalid = load.invalid.map(
+			(value): SettingsError => ({
+				scope,
+				path: storage.getFieldPath?.(scope, value.setting),
+				error: new Error(invalidSettingMessage(value)),
+				invalidKey: value.key,
+			}),
+		);
+		const compaction = backgroundCompactionSettingErrors(load.settings.compaction).map((error) => ({ scope, error }));
+		return [...invalid, ...compaction];
+	}
+
+	private static invalidSettingIdentity({ scope, path, error }: SettingsError): string {
+		return `${scope}\0${path}\0${error.message}`;
+	}
+
+	/** Record load-time validation errors, skipping wrong-typed values this manager already reported. */
+	private recordValidationErrors(scope: SettingsScope, load: SettingsLoad): void {
+		for (const error of SettingsManager.validateLoadedSettings(this.storage, scope, load)) {
+			if (error.invalidKey !== undefined) {
+				const identity = SettingsManager.invalidSettingIdentity(error);
+				if (this.reportedInvalidSettings.has(identity)) continue;
+				this.reportedInvalidSettings.add(identity);
+			}
+			this.errors.push(error);
+		}
 	}
 
 	/** Migrate old settings format to new format */
@@ -268,9 +313,7 @@ export class SettingsManager {
 		if (projectLoad.error) {
 			this.recordError("project", projectLoad.error);
 		} else {
-			for (const { error } of SettingsManager.validateLoadedSettings("project", projectLoad.settings)) {
-				this.recordError("project", error);
-			}
+			this.recordValidationErrors("project", projectLoad);
 		}
 		this.settings = this.mergeEffectiveSettings();
 	}
@@ -281,9 +324,7 @@ export class SettingsManager {
 		if (!globalLoad.error) {
 			this.globalSettings = globalLoad.settings;
 			this.globalSettingsLoadError = null;
-			for (const { error } of SettingsManager.validateLoadedSettings("global", globalLoad.settings)) {
-				this.recordError("global", error);
-			}
+			this.recordValidationErrors("global", globalLoad);
 		} else {
 			this.globalSettingsLoadError = globalLoad.error;
 			this.recordError("global", globalLoad.error);
@@ -298,9 +339,7 @@ export class SettingsManager {
 		if (!projectLoad.error) {
 			this.projectSettings = projectLoad.settings;
 			this.projectSettingsLoadError = null;
-			for (const { error } of SettingsManager.validateLoadedSettings("project", projectLoad.settings)) {
-				this.recordError("project", error);
-			}
+			this.recordValidationErrors("project", projectLoad);
 		} else {
 			this.projectSettingsLoadError = projectLoad.error;
 			this.recordError("project", projectLoad.error);
@@ -320,6 +359,7 @@ export class SettingsManager {
 			[...this.errors],
 			this.projectTrusted,
 		);
+		candidate.reportedInvalidSettings = new Set(this.reportedInvalidSettings);
 		await candidate.reload();
 		return {
 			settingsManager: candidate,
@@ -339,6 +379,7 @@ export class SettingsManager {
 		this.globalSettingsLoadError = candidate.globalSettingsLoadError;
 		this.projectSettingsLoadError = candidate.projectSettingsLoadError;
 		this.errors = candidate.errors;
+		this.reportedInvalidSettings = candidate.reportedInvalidSettings;
 	}
 
 	/** Apply additional overrides on top of current settings */

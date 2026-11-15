@@ -1,4 +1,4 @@
-import type { ImageContent, ModelImageResizeOptions, TextContent } from "@bastani/pi-ai";
+import { type ImageContent, type ModelImageResizeOptions, type TextContent, toInlineImage } from "@bastani/pi-ai";
 import { processImage } from "./image-process.ts";
 
 export type ToolResultContent = TextContent | ImageContent;
@@ -42,8 +42,11 @@ export async function normalizeToolResultImages(
 			resizeOptions: options?.resizeOptions,
 		});
 		if (!processed.ok) {
-			// Keep a tool-produced image when its backend is unavailable or cannot decode it.
-			normalized.push(block);
+			// Keep an image the backend could not process only if providers accept its format; replace
+			// any other (an SVG, say) with a placeholder so it cannot fail later requests (#4908).
+			const inline = toInlineImage(block);
+			normalized.push(inline);
+			changed ||= inline !== block;
 			continue;
 		}
 

@@ -55,9 +55,7 @@ function fallbackContext() {
 		preferredProvider: "test",
 		sessionThinkingLevel: "off" as const,
 		registry: {
-			getAvailableSnapshot: () => [model, fallback],
-			getModel: (provider: string, id: string) =>
-				[model, fallback].find((candidate) => candidate.provider === provider && candidate.id === id),
+			getModels: () => [model, fallback],
 			hasConfiguredAuth: () => true,
 		},
 	};

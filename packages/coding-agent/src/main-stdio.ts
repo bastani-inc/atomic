@@ -100,10 +100,11 @@ export function collectSettingsDiagnostics(
 	settingsManager: SettingsManager,
 	context: string,
 ): AgentSessionRuntimeDiagnostic[] {
+	// A file-backed error names its file, so the startup lookup and runtime creation report it once after deduplication.
 	return settingsManager.drainErrors().map(({ scope, path, error }) => ({
 		type: "warning",
 		message: path
-			? `(${context}) Invalid settings file ${path}: ${error.message}`
+			? `Invalid settings file ${path}: ${error.message}`
 			: `(${context}, ${scope} settings) ${error.message}`,
 	}));
 }

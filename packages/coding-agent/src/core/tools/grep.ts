@@ -1,5 +1,4 @@
 import { stat as fsStat } from "node:fs/promises";
-import { createInterface } from "node:readline";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Text } from "@earendil-works/pi-tui";
 import { spawn } from "child_process";
@@ -7,6 +6,7 @@ import path from "path";
 import { type Static, Type } from "typebox";
 import { parenthesizedKeyHint } from "../../modes/interactive/components/keybinding-hints.js";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
+import { attachLineReader } from "../../utils/lines.ts";
 import type { ManagedToolError } from "../../utils/managed-tool-errors.ts";
 import { ensureTool } from "../../utils/tools-manager.ts";
 import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
@@ -395,7 +395,7 @@ export function createGrepToolDefinition(
 							stdio: ["ignore", "pipe", "pipe"],
 						});
 						const timeoutTimer = timeoutMs !== undefined ? setTimeout(() => stopChild(), timeoutMs) : undefined;
-						const rl = createInterface({ input: child.stdout });
+						let detachLines = () => {};
 						let stderr = "";
 						let matchCount = 0;
 						let matchLimitReached = false;
@@ -406,7 +406,7 @@ export function createGrepToolDefinition(
 
 						const cleanup = () => {
 							if (timeoutTimer) clearTimeout(timeoutTimer);
-							rl.close();
+							detachLines();
 							signal?.removeEventListener("abort", onAbort);
 						};
 						const stopChild = (dueToLimit = false) => {
@@ -524,7 +524,7 @@ export function createGrepToolDefinition(
 							if (matchCount >= effectiveLimit) limitHit = true;
 						};
 
-						rl.on("line", (line) => {
+						detachLines = attachLineReader(child.stdout, (line) => {
 							if (done || !line.trim() || (mode === "filesWithMatches" && matchCount >= effectiveLimit)) return;
 							let event: unknown;
 							try {
