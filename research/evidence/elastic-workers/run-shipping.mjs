@@ -394,6 +394,7 @@ async function trial(hosts, shipping) {
 		processes.push(root);
 		const exited = new Promise((resolve) => root.on("exit", (code, signal) => resolve(code ?? signal)));
 		const runStart = Date.now();
+		const runStartWall = runStart;
 		let killedAt;
 		let killed = hosts - 1;
 		const killer =
@@ -416,10 +417,19 @@ async function trial(hosts, shipping) {
 			shared.url,
 			`SELECT at, payload FROM ${prefix}wf_events WHERE type = 'CheckpointRecorded' AND key LIKE '%"tool"%'`,
 		);
-		const recorded = events.map((row) => ({ at: Number(row.at), completedAt: JSON.parse(String(row.payload)).completedAt }));
+		const recorded = events.map((row) => {
+			const payload = JSON.parse(String(row.payload));
+			return { at: Number(row.at), completedAt: payload.completedAt, host: payload.output?.host ?? null };
+		});
 		const ats = recorded.map((row) => row.at);
 		const journalSpanMs = Math.max(...ats) - Math.min(...ats);
 		const lags = recorded.map((row) => row.at - row.completedAt);
+		// The checkpoints that waited longest, by the host that ran their step, to tell a live host's overshoot from
+		// anything a killed host left behind.
+		const slowest = recorded
+			.map((row) => ({ host: row.host, lagMs: row.at - row.completedAt, completedAtMs: row.completedAt - runStartWall }))
+			.sort((a, b) => b.lagMs - a.lagMs)
+			.slice(0, 20);
 		const batches =
 			shipping === "sync"
 				? []
@@ -465,6 +475,7 @@ async function trial(hosts, shipping) {
 			storeCpuMsPerCheckpoint: Math.round((cpuMs / acknowledged) * 100) / 100,
 			storeProfile,
 			shippingLagMs: distribution(lags),
+			slowestCheckpoints: slowest,
 			batches: { count: batches.length, events: distribution(batches.map((row) => Number(row.events))) },
 			replayed: {
 				steps: executions.length - perStep.size,
