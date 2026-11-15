@@ -5,6 +5,7 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	readdirSync,
+	readFileSync,
 	realpathSync,
 	rmSync,
 	utimesSync,
@@ -23,6 +24,7 @@ const race = vi.hoisted(() => ({
 	beforeMutex: undefined as (() => void) | undefined,
 	beforeRename: undefined as (() => void) | undefined,
 	afterOwner: undefined as (() => void) | undefined,
+	afterMutexRefused: undefined as (() => void) | undefined,
 	rename: undefined as ((from: string, to: string) => void) | undefined,
 }));
 
@@ -40,6 +42,14 @@ vi.mock("node:fs", async (importOriginal) => {
 			const before = race.beforeMutex;
 			race.beforeMutex = undefined;
 			before?.();
+			try {
+				return actual.mkdirSync(path, options as never);
+			} catch (error) {
+				const after = race.afterMutexRefused;
+				race.afterMutexRefused = undefined;
+				after?.();
+				throw error;
+			}
 		}
 		return actual.mkdirSync(path, options as never);
 	}) as typeof actual.mkdirSync;
@@ -61,7 +71,7 @@ vi.mock("node:fs", async (importOriginal) => {
 });
 
 const { lockHolderPath, takeOverDeadHolder } = await import("../src/core/lock-holder.ts");
-const { takeoverMutexPath, TAKEOVER_MUTEX_STALE_MS } = await import("../src/core/lock-takeover.ts");
+const { takeoverMutexPath, takeTakeoverMutex, TAKEOVER_MUTEX_STALE_MS } = await import("../src/core/lock-takeover.ts");
 const { lockHolder } = await import("../src/core/lock-wait.ts");
 
 const LOCK_HOLDER_MODULE = fileURLToPath(new URL("../src/core/lock-holder.ts", import.meta.url));
@@ -203,4 +213,62 @@ it("moves nothing once another process owns the mutex it took (#5161)", () => {
 	assert.equal(takeOverDeadHolder(lockPath), false);
 	assert.equal(lockHolder(lockPath), deadLock, "the lock stays in place");
 	assert.equal(existsSync(takeoverMutexPath(lockPath)), true, "another process's mutex is not released");
+});
+
+/** A takeover mutex whose owner, a process that has exited, left it behind. */
+function deadOwnersMutex(id = "dead"): void {
+	mkdirSync(takeoverMutexPath(lockPath));
+	writeFileSync(
+		join(takeoverMutexPath(lockPath), "owner"),
+		JSON.stringify({ host: hostname(), pid: exitedPid(), id }),
+	);
+}
+
+function exitedPid(): number {
+	return Number(
+		spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], { encoding: "utf8" }).stdout,
+	);
+}
+
+it("takes the mutex at once when the one it found is gone before it is judged (#5161)", () => {
+	mkdirSync(takeoverMutexPath(lockPath));
+	race.afterMutexRefused = () => {
+		rmSync(takeoverMutexPath(lockPath), { recursive: true });
+	};
+	const mutex = takeTakeoverMutex(lockPath);
+	assert.ok(mutex);
+	assert.equal(mutex.owned(), true);
+	mutex.release();
+});
+
+it("never removes a mutex another process took after a dead owner's was judged (#5161)", () => {
+	deadOwnersMutex();
+	race.beforeRename = () => {
+		// Another process removed the dead owner's mutex and took a new one, made beside it so it has a new inode.
+		const fresh = `${takeoverMutexPath(lockPath)}.fresh`;
+		mkdirSync(fresh);
+		writeFileSync(join(fresh, "owner"), JSON.stringify({ host: hostname(), pid: process.pid, id: "live" }));
+		rmSync(takeoverMutexPath(lockPath), { recursive: true });
+		race.rename!(fresh, takeoverMutexPath(lockPath));
+	};
+	assert.equal(takeTakeoverMutex(lockPath), undefined);
+	const [aside, ...more] = asideNames();
+	assert.deepEqual(more, []);
+	assert.equal(
+		(JSON.parse(readFileSync(join(directory, aside!, "owner"), "utf8")) as { id: string }).id,
+		"live",
+		"the live mutex is left aside, not removed",
+	);
+});
+
+it("never removes a mutex whose owner changed after it was judged (#5161)", () => {
+	deadOwnersMutex();
+	race.beforeRename = () => {
+		writeFileSync(
+			join(takeoverMutexPath(lockPath), "owner"),
+			JSON.stringify({ host: hostname(), pid: process.pid, id: "live" }),
+		);
+	};
+	assert.equal(takeTakeoverMutex(lockPath), undefined);
+	assert.equal(asideNames().length, 1, "the mutex is left aside, not removed");
 });

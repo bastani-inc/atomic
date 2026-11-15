@@ -237,6 +237,12 @@ describe("the takeover mutex (#5161)", () => {
 		mutex.release();
 		mutexOf({ host: hostname(), pid: exitedPid(), started: 1, id: "malformed" });
 		assert.equal(takeTakeoverMutex(lockPath), undefined, "a malformed owner is no owner: the mutex is fresh");
+		rmSync(takeoverMutexPath(lockPath), { recursive: true });
+		mutexOf({ host: hostname(), pid: String(exitedPid()), id: "malformed" });
+		assert.equal(takeTakeoverMutex(lockPath), undefined, "an owner whose pid is not a number is no owner");
+		rmSync(takeoverMutexPath(lockPath), { recursive: true });
+		mutexOf({ host: hostname(), pid: exitedPid() });
+		assert.equal(takeTakeoverMutex(lockPath), undefined, "an owner without an id is no owner");
 	});
 
 	it("is not given up by a process that no longer owns it (#5161)", () => {
