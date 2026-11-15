@@ -21,6 +21,8 @@ import { sleep } from "../helpers/runtime.js";
 
 const PREFIX = "acme_";
 const TICK_MS = 100;
+/** How long a test waits for the controller's ticks to reach a state, however slowly they come under load. */
+const FLEET_TICKS_WAIT_MS = 10_000;
 const definition = { definition: "fixture/child", digest: "sha256:child" };
 const config = {
 	definitions: [],
@@ -394,7 +396,16 @@ test("a host that registers after the snapshot is not removed for a boot timeout
 			[],
 			{ bootTimeoutMs: 1, minHosts: 3 },
 		);
-		await sleep(5 * TICK_MS);
+		// Ticks, not time: under load five ticks' worth of time held fewer than the removal and the ticks after it.
+		await vi.waitFor(() => assert.ok(removed.length > 0, "the instance whose host never registered is removed"), {
+			timeout: FLEET_TICKS_WAIT_MS,
+			interval: 10,
+		});
+		const ticksAtRemoval = snapshots;
+		await vi.waitFor(() => assert.ok(snapshots >= ticksAtRemoval + 3, "three more ticks read the registry"), {
+			timeout: FLEET_TICKS_WAIT_MS,
+			interval: 10,
+		});
 		assert.deepEqual(removed, ["vm-3"], "only the instance whose host never registered is removed");
 		assert.deepEqual(
 			(await f.store.snapshot()).drains.filter((drain) => drain.providerId !== "vm-3"),
