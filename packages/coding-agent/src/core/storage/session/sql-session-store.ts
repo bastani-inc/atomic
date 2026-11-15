@@ -5,7 +5,7 @@ import { dialectOf, type StorageDialect } from "../dialect.js";
 import { SessionBlobError, StorageError, StorageInvalidTextError } from "../errors.js";
 import { applyStorageMigrations } from "../migrations.js";
 import { renderStorageIdentifiers, storageMigrationTable } from "../prefix.js";
-import { assertStorageSchemaVersion } from "../schema.js";
+import { assertStorageSchemaVersion, assertStoredSchemaVersion } from "../schema.js";
 import { sha256Hex } from "./blob-hash.js";
 import {
 	SessionConflictError,
@@ -357,18 +357,38 @@ export class SqlSessionStore implements SessionStore {
 			],
 			{ table: storageMigrationTable(options.prefix) },
 		);
-		// A domain of its own, so Atomic versions that do not know it keep opening the sessions tables (#4971).
+		// A domain of its own, so Atomic versions that do not know it keep opening the sessions tables (#4971). Its later
+		// steps must stay additive: a build that knows fewer of them accepts a newer version and keeps marking (#5065).
 		const presence = renderStorageIdentifiers("sessions", SESSION_PRESENCE_TABLES, options.prefix);
 		await applyStorageMigrations(
 			database,
 			SESSION_PRESENCE_DOMAIN,
-			[{ version: 1, up: (tx, dialect) => SqlSessionOpenMarkers.createTable(tx, dialect, presence.open) }],
-			{ table: storageMigrationTable(options.prefix) },
+			[
+				{ version: 1, up: (tx, dialect) => SqlSessionOpenMarkers.createTable(tx, dialect, presence.open) },
+				{ version: 2, up: (tx, dialect) => SqlSessionOpenMarkers.addSchemaVersion(tx, dialect, presence.open) },
+			],
+			{ table: storageMigrationTable(options.prefix), acceptNewer: true },
 		);
 		const blobs = await SqlSnapshotBlobStore.open(database, options.prefix);
 		const store = new SqlSessionStore(database, tables, options.prefix, options.cwdMatcher, blobs, legacyBlobData);
 		store.openMarkers = new SqlSessionOpenMarkers(database, presence.open, () => store.assertOpen());
 		return store;
+	}
+
+	/**
+	 * A transaction that first checks the sessions schema version again: a newer build may have upgraded the database
+	 * since this store opened it, and what it writes then is not this build's to read or write (#5065).
+	 */
+	private transaction<T>(body: (tx: SqliteExecutor) => Promise<T>, options: SqliteTransactionOptions): Promise<T> {
+		return this.database.transaction(async (tx) => {
+			await assertStoredSchemaVersion(
+				tx,
+				{ sql: `SELECT schema_version FROM ${this.tables.meta}` },
+				"sessions",
+				SESSION_SCHEMA_VERSION,
+			);
+			return body(tx);
+		}, options);
 	}
 
 	get descriptor(): StorageDescriptor {
@@ -379,7 +399,7 @@ export class SqlSessionStore implements SessionStore {
 		this.assertOpen();
 		validateSessionHeader(header);
 		validateSessionEntries(entries);
-		return this.database.transaction(async (tx) => {
+		return this.transaction(async (tx) => {
 			if (await tx.get(`SELECT id FROM ${this.tables.sessions} WHERE id = ?`, header.id)) {
 				throw new SessionExistsError(header.id);
 			}
@@ -396,7 +416,7 @@ export class SqlSessionStore implements SessionStore {
 	): Promise<{ readonly lastSeq: number }> {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
-		return this.database.transaction(async (tx) => {
+		return this.transaction(async (tx) => {
 			const previous = await this.forWrite(tx, sessionId, options, true);
 			validateSessionEntries(entries);
 			const lastSeq = previous.last_seq + entries.length;
@@ -419,7 +439,7 @@ export class SqlSessionStore implements SessionStore {
 	): Promise<{ readonly lastSeq: number }> {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
-		return this.database.transaction(async (tx) => {
+		return this.transaction(async (tx) => {
 			await this.forWrite(tx, sessionId, options);
 			validateSessionHeader(header);
 			validateSessionEntries(entries);
@@ -443,7 +463,7 @@ export class SqlSessionStore implements SessionStore {
 			);
 			if (row) announceHistoryLoad(row.last_seq);
 		}
-		return this.database.transaction((tx) => this.read(tx, sessionId), SESSION_TRANSACTION);
+		return this.transaction((tx) => this.read(tx, sessionId), SESSION_TRANSACTION);
 	}
 
 	async readHeader(sessionId: string): Promise<SessionRecordHeader | undefined> {
@@ -459,7 +479,7 @@ export class SqlSessionStore implements SessionStore {
 	async delete(sessionId: string): Promise<void> {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
-		await this.database.transaction(async (tx) => {
+		await this.transaction(async (tx) => {
 			await tx.run(`DELETE FROM ${this.tables.blobChunks} WHERE session_id = ?`, sessionId);
 			await tx.run(`DELETE FROM ${this.tables.blobs} WHERE session_id = ?`, sessionId);
 			await tx.run(`DELETE FROM ${this.tables.searchTexts} WHERE session_id = ?`, sessionId);
@@ -1017,6 +1037,17 @@ class SqlSessionOpenMarkers implements SessionOpenMarkerStore {
 		`);
 	}
 
+	/**
+	 * Each marker records the sessions schema version its process reads, so a build that upgrades the schema can tell
+	 * that a process which would misread the upgraded schema still has a session open (#5065). Null for markers of
+	 * builds before it. Additive, as every step of this domain must be.
+	 */
+	static async addSchemaVersion(tx: SqliteExecutor, dialect: StorageDialect, table: string): Promise<void> {
+		const probe = dialect.columnExists(table, "schema_version");
+		if ((await tx.get(probe.sql, ...probe.params)) === undefined)
+			await tx.exec(`ALTER TABLE ${table} ADD COLUMN schema_version ${dialect.types.int}`);
+	}
+
 	private readonly database: SqliteDatabase;
 	private readonly table: string;
 	private readonly assertOpen: () => void;
@@ -1032,13 +1063,14 @@ class SqlSessionOpenMarkers implements SessionOpenMarkerStore {
 		// The database's clock, not this host's: hosts whose clocks differ read the same heartbeat age.
 		const now = dialectOf(this.database).nowMs;
 		await this.database.run(
-			`INSERT INTO ${this.table} (session_id, token, pid, host, heartbeat_at) VALUES (?, ?, ?, ?, ${now})
+			`INSERT INTO ${this.table} (session_id, token, pid, host, heartbeat_at, schema_version) VALUES (?, ?, ?, ?, ${now}, ?)
 			 ON CONFLICT(session_id, token) DO UPDATE SET pid = excluded.pid, host = excluded.host,
-			 heartbeat_at = excluded.heartbeat_at`,
+			 heartbeat_at = excluded.heartbeat_at, schema_version = excluded.schema_version`,
 			sessionId,
 			marker.token,
 			marker.pid,
 			marker.host,
+			SESSION_SCHEMA_VERSION,
 		);
 	}
 

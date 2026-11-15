@@ -367,6 +367,34 @@ describe("a database written with chunked entries is refused by older builds (#4
 		});
 	});
 
+	test("a store opened before a newer build upgraded the database refuses to read or write it (#5065)", async () => {
+		await withNodeSqliteDatabase(async ({ database }) => {
+			const store = await SqlSessionStore.open(database);
+			await store.create(header(), [message("m", null, "kept")]);
+			// A newer build upgrades the schema while this store is open, as this build did to 0.9.87's.
+			await database.run("UPDATE session_meta SET schema_version = 3");
+			const refused = (error: unknown) => {
+				assert.ok(error instanceof StorageSchemaVersionError);
+				assert.deepEqual([error.domain, error.found, error.supported], ["sessions", 3, 2]);
+				return true;
+			};
+			await assert.rejects(store.load("session"), refused);
+			await assert.rejects(store.append("session", [message("n", "m", "more")], { expectSeq: 1 }), refused);
+			await assert.rejects(store.create(header("other"), [message("o", null, "new")]), refused);
+		});
+	});
+
+	test("an open-session marker records the schema version its process reads, for a later upgrade to check (#5065)", async () => {
+		await withNodeSqliteDatabase(async ({ database }) => {
+			const store = await SqlSessionStore.open(database);
+			await store.openMarkers!.put("session", { token: "t", pid: process.pid, host: "h" });
+			assert.deepEqual(
+				(await database.all("SELECT schema_version FROM session_open")).map((row) => Number(row.schema_version)),
+				[2],
+			);
+		});
+	});
+
 	test("a database an older build created is upgraded and keeps its sessions (#4954)", async () => {
 		await withNodeSqliteDatabase(async ({ database }) => {
 			await SqlSessionStore.open(database);

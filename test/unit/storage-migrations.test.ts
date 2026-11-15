@@ -17,6 +17,10 @@ import {
 	sqliteDialect,
 } from "@bastani/atomic/storage";
 import { afterEach, beforeEach, test } from "vitest";
+import {
+	SESSION_PRESENCE_DOMAIN,
+	SqlSessionStore,
+} from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 const { DatabaseSync: Database } = await import("node:sqlite");
@@ -309,5 +313,20 @@ test("concurrent SQLite migrators all finish with the schema made once (#4793)",
 		assert.deepEqual(await tables(databases[0]!), ["meta"]);
 	} finally {
 		await Promise.all(databases.map((database) => database.close()));
+	}
+});
+
+test("a newer build's session-presence version does not lock this build out of the sessions (#5065)", async () => {
+	const database = createSqliteDatabase(recordingDriver(path, ledgerDialect, []));
+	try {
+		await (await SqlSessionStore.open(database)).close();
+		// A newer build added a presence step this build does not know; presence is not needed to read or write sessions.
+		await database.run("INSERT INTO atomic_migrations VALUES (?, 3, 0)", SESSION_PRESENCE_DOMAIN);
+		const store = await SqlSessionStore.open(database);
+		await store.create({ id: "s", version: 3, createdAt: "2026-01-01T00:00:00.000Z", cwd: "/w" }, []);
+		assert.equal((await store.load("s")).lastSeq, 0);
+		await store.close();
+	} finally {
+		await database.close();
 	}
 });
