@@ -26,8 +26,6 @@ export interface FakeCloudHost {
 	readonly state?: string;
 	/** A pod phase the fake `kubectl` reports instead of the one its phase gives. */
 	readonly podPhase?: string;
-	/** A pod's `controller.kubernetes.io/pod-deletion-cost`. */
-	readonly cost?: number;
 }
 
 interface FakeCloudState {

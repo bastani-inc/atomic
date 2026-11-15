@@ -13,7 +13,7 @@ export function matchStagePathSegments(
 	patternSegments: readonly string[],
 	candidateSegments: readonly string[],
 ): boolean {
-	return matchSegmentsFrom(patternSegments, 0, candidateSegments, 0);
+	return matchSegments(patternSegments, candidateSegments);
 }
 
 /** Split an unprefixed stage path into its `/` segments. */
@@ -35,28 +35,39 @@ export function targetSegmentsInPossibleStages(
 	});
 }
 
-function matchSegmentsFrom(
-	pattern: readonly string[],
-	patternIndex: number,
-	candidate: readonly string[],
-	candidateIndex: number,
-): boolean {
-	let p = patternIndex;
-	let c = candidateIndex;
-	while (p < pattern.length) {
-		const segment = pattern[p]!;
-		if (segment === "**") {
-			for (let skip = c; skip <= candidate.length; skip += 1) {
-				if (matchSegmentsFrom(pattern, p + 1, candidate, skip)) return true;
-			}
-			return false;
+/**
+ * Iterative two-pointer glob over segments (#4843): `**` plays the role of a character-level
+ * `*` and every other segment consumes exactly one candidate segment. On a mismatch only the
+ * most recent `**` is retried one segment further, so consecutive `**` collapse naturally and
+ * the cost is O(pattern × candidate) segment comparisons instead of exponential.
+ */
+function matchSegments(pattern: readonly string[], candidate: readonly string[]): boolean {
+	let p = 0;
+	let c = 0;
+	let star = -1;
+	let mark = 0;
+	while (c < candidate.length) {
+		if (p < pattern.length && pattern[p] === "**") {
+			star = p;
+			mark = c;
+			p += 1;
+			continue;
 		}
-		if (c >= candidate.length) return false;
-		if (!matchSegmentGlob(segment, candidate[c]!)) return false;
-		p += 1;
-		c += 1;
+		if (p < pattern.length && matchSegmentGlob(pattern[p]!, candidate[c]!)) {
+			p += 1;
+			c += 1;
+			continue;
+		}
+		if (star >= 0) {
+			p = star + 1;
+			mark += 1;
+			c = mark;
+			continue;
+		}
+		return false;
 	}
-	return c === candidate.length;
+	while (p < pattern.length && pattern[p] === "**") p += 1;
+	return p === pattern.length;
 }
 
 function matchSegmentGlob(pattern: string, value: string): boolean {
