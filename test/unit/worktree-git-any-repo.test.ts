@@ -262,6 +262,24 @@ describe("gitWorktreeDir creates worktrees in empty and non-empty directories", 
 		}
 	});
 
+	test("a run started in a subdirectory named '..sub' works in that subdirectory of the worktree (#4836)", () => {
+		const root = createScratch();
+		try {
+			const repo = createGitRepo(root, "repo");
+			const dotted = join(repo, "..sub");
+			mkdirSync(dotted);
+			writeFileSync(join(dotted, "file.txt"), "dotted\n");
+			runGitChecked(repo, ["add", "."]);
+			runGitChecked(repo, ["commit", "-m", "dotted subdirectory"]);
+			const worktreeRoot = createNonEmptyRoot(root);
+			const setup = setupGitWorktree({ cwd: dotted, gitWorktreeDir: worktreeRoot });
+			assert.equal(setup.cwd, join(setup.worktreeRoot, "..sub"));
+			assert.equal(readFileSync(join(setup.cwd, "file.txt"), "utf8").replaceAll("\r\n", "\n"), "dotted\n");
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	test("rolls back the checkout when the base lacks the invoking subdirectory", () => {
 		const root = createScratch();
 		try {
