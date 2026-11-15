@@ -20,7 +20,12 @@ const usage = {
 	totalTokens: 0,
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 };
-type Turn = ["user", string] | ["assistant", string] | ["calls", string, string[]] | ["result", string, string];
+type Turn =
+	| ["user", string]
+	| ["assistant", string]
+	| ["calls", string, string[]]
+	| ["result", string, string]
+	| ["thinking level", string];
 
 function session(turns: Turn[]): SessionEntry[] {
 	return turns.map((turn, index) => {
@@ -33,6 +38,8 @@ function session(turns: Turn[]): SessionEntry[] {
 			timestamp: index,
 		};
 		switch (turn[0]) {
+			case "thinking level":
+				return { ...base, type: "thinking_level_change", thinkingLevel: turn[1] };
 			case "user":
 				return { ...base, message: { role: "user", content: turn[1], timestamp: index } };
 			case "assistant":
@@ -193,18 +200,19 @@ test("a refusal summary releases the oldest protected span past its share of the
 });
 
 test("a refusal summary keeps a parallel tool call with all its results in the tail (#4975)", async () => {
-	const turns: Turn[] = [["user", "Please fix the parser"]];
+	const turns: Turn[] = [["user", "<keepContext>\nREGION-SPAN\n</keepContext>\nPlease fix the parser"]];
 	for (let index = 0; index < 4; index++)
 		turns.push(["assistant", filler(20, `t${index}`)], ["user", `next ${index}`]);
 	turns.push(
 		["calls", `${KEEP.join("\n")}\nreading both files`, ["call-a", "call-b"]],
 		["result", "call-a", "contents of a"],
+		["thinking level", "high"],
 		["result", "call-b", "contents of b"],
 		["assistant", "both read"],
 	);
 	const path = session(turns);
 	const { preparation, result, contexts } = await compactAfterRefusal(path);
-	const callEntry = path.at(-4)?.id;
+	const callEntry = path.at(-5)?.id;
 	assert.equal(preparation.firstKeptEntryId, path.at(-2)?.id, "the planned tail starts at a tool result");
 	assert.equal(result.summaryFirstKeptEntryId, callEntry, "the cut moves back to the assistant that owns it");
 	const summarised = promptText(contexts[1]);
@@ -212,7 +220,8 @@ test("a refusal summary keeps a parallel tool call with all its results in the t
 	assert.ok(!summarised.includes("reading both files"), "the moved-back message is not summarised");
 	assert.ok(!summarised.includes("contents of a"));
 	assert.ok(!result.text.includes("NEVER-PUSH-TO-MAIN"), "a span kept in the tail is not repeated in the summary");
-	assert.deepEqual(result.keptRanges, []);
+	assert.ok(result.text.startsWith("[User]: <keepContext>\nREGION-SPAN\n</keepContext>\n\n"));
+	assert.equal(result.keptRanges.length, 1);
 });
 
 test("a refusal summary keeps exactly the planned tail when it starts a turn (#4975)", async () => {
@@ -220,13 +229,14 @@ test("a refusal summary keeps exactly the planned tail when it starts a turn (#4
 	for (let index = 0; index < 4; index++)
 		turns.push(["assistant", filler(20, `t${index}`)], ["user", `next ${index}`]);
 	turns.push(
-		["calls", "reading", ["call-a"]],
+		["calls", `${KEEP.join("\n")}\nreading`, ["call-a"]],
 		["result", "call-a", "contents of a"],
 		["user", "latest"],
 		["assistant", "ok"],
 	);
 	const path = session(turns);
 	const { preparation, result, contexts } = await compactAfterRefusal(path);
+	assert.ok(result.text.includes("NEVER-PUSH-TO-MAIN"), "a span in the last summarised message is kept");
 	assert.equal(result.summaryFirstKeptEntryId, preparation.firstKeptEntryId);
 	assert.equal(result.summaryFirstKeptEntryId, path.at(-2)?.id);
 	assert.ok(promptText(contexts[1]).includes("contents of a"));
