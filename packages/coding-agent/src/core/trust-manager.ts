@@ -5,6 +5,7 @@ import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAMES } from "../config.js";
 import { parseJsonFileContent } from "../utils/json.ts";
 import { canonicalizePath, getHomeDir, pathsEqual, resolvePath } from "../utils/paths.ts";
+import { releaseLockSync } from "./lock-release.ts";
 import { renameReplacing } from "./settings-storage.ts";
 
 export type ProjectTrustDecision = boolean | null;
@@ -251,7 +252,7 @@ function withTrustFileLock<T>(path: string, fn: () => T): T {
 	try {
 		return fn();
 	} finally {
-		release();
+		releaseLockSync(release, `${path}.lock`);
 	}
 }
 

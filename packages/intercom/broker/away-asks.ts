@@ -88,6 +88,20 @@ export class AwayAsks {
 				broker_instance TEXT NOT NULL,
 				held_at INTEGER NOT NULL
 			);
+			CREATE TABLE IF NOT EXISTS parked_targets (
+				owner_session_id TEXT NOT NULL,
+				child_name TEXT NOT NULL,
+				child_key TEXT NOT NULL,
+				target_session_id TEXT NOT NULL,
+				parked_at INTEGER NOT NULL,
+				PRIMARY KEY (owner_session_id, target_session_id)
+			);
+			CREATE TABLE IF NOT EXISTS released_askers (
+				asker_return_address TEXT PRIMARY KEY,
+				owner_session_id TEXT NOT NULL,
+				child_name TEXT NOT NULL,
+				kept_at INTEGER NOT NULL
+			);
 			CREATE TABLE IF NOT EXISTS held_messages (
 				message_id TEXT PRIMARY KEY,
 				asker_session_id TEXT NOT NULL,
@@ -215,6 +229,8 @@ export class AwayAsks {
 	private purge(): void {
 		const cutoff = this.now() - this.retentionMs;
 		this.statement("DELETE FROM away_questions WHERE kept_at < ?").run(cutoff);
+		this.statement("DELETE FROM parked_targets WHERE parked_at < ?").run(cutoff);
+		this.statement("DELETE FROM released_askers WHERE kept_at < ?").run(cutoff);
 		this.statement("DELETE FROM held_messages WHERE held_at < ?").run(cutoff);
 	}
 
@@ -451,6 +467,78 @@ export class AwayAsks {
 		return { failed, live };
 	}
 
+	/**
+	 * #4992: `targetSessionId` was a subagent `ownerSessionId` released as `childName`. The link outlives this broker,
+	 * so the asks to that session still end with its owner after a restart, and so do the ones whose asker is away.
+	 */
+	park(ownerSessionId: string, childName: string, targetSessionId: string): void {
+		this.statement(
+			"INSERT OR REPLACE INTO parked_targets (owner_session_id, child_name, child_key, target_session_id, parked_at) VALUES (?, ?, ?, ?, ?)",
+		).run(ownerSessionId, childName, childName.trim().toLowerCase(), targetSessionId, this.now());
+	}
+
+	/**
+	 * #4992: the owner left, or dropped `childName`: the kept asks to its released subagents end. Each asker gets a
+	 * failed-ask message held until it saves it, whether it is away or connected; the held messages are returned, so a
+	 * connected asker is written its own at once.
+	 */
+	failParked(
+		ownerSessionId: string,
+		childName: string | undefined,
+		reason: (childName: string, targetSessionId: string) => string,
+		idPrefix: string,
+	): Array<HeldAwayMessage & { readonly askerReturnAddress: string }> {
+		const targets =
+			childName === undefined
+				? this.statement(
+						"SELECT child_name, target_session_id FROM parked_targets WHERE owner_session_id = ? ORDER BY parked_at, rowid",
+					).all(ownerSessionId)
+				: this.statement(
+						"SELECT child_name, target_session_id FROM parked_targets WHERE owner_session_id = ? AND child_key = ? ORDER BY parked_at, rowid",
+					).all(ownerSessionId, childName.trim().toLowerCase());
+		const failed: Array<HeldAwayMessage & { readonly askerReturnAddress: string }> = [];
+		// #4996: one transaction, however many asks end with the owner.
+		this.batch(() => {
+		for (const target of targets) {
+			const targetSessionId = String(target.target_session_id);
+			const name = String(target.child_name);
+			const from: SessionInfo = { id: targetSessionId, name, cwd: "", model: "", pid: 0, startedAt: 0, lastActivity: this.now() };
+			const rows = this.statement(
+				"SELECT message_id, sender_session_id, sender_return_address FROM away_questions WHERE target_session_id = ? ORDER BY kept_at",
+			).all(targetSessionId);
+			for (const row of rows) {
+				const askerReturnAddress = typeof row.sender_return_address === "string" ? row.sender_return_address : "";
+				const question = {
+					messageId: String(row.message_id),
+					senderSessionId: String(row.sender_session_id),
+					targetSessionId,
+				};
+				// An asker with no return address cannot be told; its ask ends with the owner all the same.
+				if (askerReturnAddress === "") {
+					this.forget(question);
+					continue;
+				}
+				const text = reason(name, targetSessionId);
+				const message: Message = {
+					// #4996: one id per ask, so a failure decided again after a crash is held once.
+					id: `${idPrefix}:${question.messageId}`,
+					timestamp: this.now(),
+					replyTo: question.messageId,
+					replyError: text,
+					content: { text },
+				};
+				this.hold({ ...question, senderReturnAddress: askerReturnAddress }, from, message);
+				failed.push({ askerSessionId: question.senderSessionId, askerReturnAddress, from, message });
+			}
+			this.statement("DELETE FROM parked_targets WHERE owner_session_id = ? AND target_session_id = ?").run(
+				ownerSessionId,
+				targetSessionId,
+			);
+		}
+		});
+		return failed;
+	}
+
 	/** The asker that proves itself by its return address ended for good: nothing waits for it any more. */
 	drop(returnAddress: string | undefined): void {
 		if (returnAddress === undefined || returnAddress === "") return;
@@ -492,6 +580,52 @@ export class AwayAsks {
 		this.statement(
 			"DELETE FROM away_questions WHERE message_id = ? AND sender_session_id = ? AND target_session_id = ?",
 		).run(question.messageId, question.senderSessionId, question.targetSessionId);
+		const released = this.releasedAsker(question.senderReturnAddress);
+		if (released !== undefined) this.heldForReleasedAsker(released.ownerSessionId, released.childName);
+	}
+
+	private heldForReleasedAsker: (ownerSessionId: string, childName: string) => void = () => {};
+
+	/** #4992: told when a message is held for a released subagent, so its owner wakes it. */
+	onHeldForReleasedAsker(listener: (ownerSessionId: string, childName: string) => void): void {
+		this.heldForReleasedAsker = listener;
+	}
+
+	/**
+	 * #4992: the released subagent `childName`, which proves itself by `askerReturnAddress`, is kept by
+	 * `ownerSessionId`. The link outlives this broker, so a message held for the subagent after a restart still wakes it.
+	 */
+	keepReleasedAsker(askerReturnAddress: string, ownerSessionId: string, childName: string): void {
+		if (askerReturnAddress === "") return;
+		this.statement(
+			"INSERT OR REPLACE INTO released_askers (asker_return_address, owner_session_id, child_name, kept_at) VALUES (?, ?, ?, ?)",
+		).run(askerReturnAddress, ownerSessionId, childName, this.now());
+	}
+
+	/** #4992: the released subagent is back, or no longer kept: a message held for it no longer wakes it. */
+	forgetReleasedAsker(askerReturnAddress: string | undefined): void {
+		if (askerReturnAddress === undefined || askerReturnAddress === "") return;
+		this.statement("DELETE FROM released_askers WHERE asker_return_address = ?").run(askerReturnAddress);
+	}
+
+	/** #4992: the released subagent a message held for `askerReturnAddress` must wake, if it is one. */
+	releasedAsker(askerReturnAddress: string): { readonly ownerSessionId: string; readonly childName: string } | undefined {
+		const row = this.statement(
+			"SELECT owner_session_id, child_name FROM released_askers WHERE asker_return_address = ?",
+		).get(askerReturnAddress);
+		if (row === undefined) return undefined;
+		return { ownerSessionId: String(row.owner_session_id), childName: String(row.child_name) };
+	}
+
+	/** #4992: whether a message is held for a released subagent `ownerSessionId` keeps as `childName`. */
+	hasHeldForReleasedAsker(ownerSessionId: string, childName: string): boolean {
+		const key = childName.trim().toLowerCase();
+		for (const row of this.statement(
+			"SELECT r.child_name FROM released_askers r JOIN held_messages h ON h.asker_return_address = r.asker_return_address WHERE r.owner_session_id = ?",
+		).all(ownerSessionId)) {
+			if (String(row.child_name).trim().toLowerCase() === key) return true;
+		}
+		return false;
 	}
 
 	/** Whether `messageId` from `replierSessionId` is already held for its asker: a retried reply is answered held again. */

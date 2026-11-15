@@ -2308,6 +2308,70 @@ describe("a released asker's question lasts as long as the ask does (#4852)", ()
 		assert.equal(kept.status === "found" && kept.ask.state, "open");
 	});
 
+	test("a released asker's failure queued just before its broker stops still reaches the owner once (#4992)", async () => {
+		const shared = await cluster();
+		const a = await startNode(shared);
+		// The replier's broker stops right after queuing the failure, before it claims the question for it.
+		const b = await startNode(shared, (state) => ({
+			...state,
+			releasedAsks: {
+				...state.releasedAsks,
+				claim: async (claim) => {
+					if (claim.replyMessageId.startsWith("ended:")) throw new Error("broker stopped");
+					return state.releasedAsks.claim(claim);
+				},
+			},
+		}));
+		const owner = session("owner");
+		await register(a, owner);
+		const replier = session("replier");
+		await register(b, replier);
+		const { questionId } = await releaseChild(a, owner, "worker", replier);
+
+		await leave(b, replier);
+		await vi.waitFor(() => assert.equal(handoffsTo(owner).length, 1), { timeout: 2_000, interval: 5 });
+		const handoff = only(handoffsTo(owner), "handoffs");
+		assert.equal(handoff.replyTo, questionId);
+		assert.equal(handoff.message.replyError, 'Session "replier" ended before replying');
+		await flush();
+		assert.equal(handoffsTo(owner).length, 1, "the owner is told once");
+	});
+
+	test("a released asker's failure is queued for its offline owner even when the owner's queue is full (#4992)", async () => {
+		const shared = await cluster();
+		const a = await startNode(shared);
+		// The offline owner's queue is at its limit: the outbox takes only what is owed to an open ask.
+		const b = await startNode(shared, (state) => ({
+			...state,
+			outbox: {
+				...state.outbox,
+				enqueue: async (request) =>
+					request.owed === true
+						? state.outbox.enqueue(request)
+						: { status: "full", limit: 1_000, byteLimit: 64 * 1024 * 1024 },
+			},
+		}));
+		const replier = session("replier");
+		await register(b, replier);
+		const offline = session("offline-owner");
+		await a.state.knownSessions.record({
+			targetIdentity: deliveryTargetIdentity(offline),
+			intercomSessionId: offline.info.id,
+			name: "offline-owner",
+			group: CREW,
+			groups: [CREW],
+		});
+		const { questionId } = await releaseChild(a, offline, "waiting", replier);
+
+		await leave(b, replier);
+		await vi.waitFor(async () => {
+			const row = await b.state.outbox.read(`ended:${questionId}`);
+			assert.equal(row.status === "found" && row.row.targetIdentity, deliveryTargetIdentity(offline));
+		});
+		const held = await b.state.releasedAsks.lookup({ questionId, replierSessionId: replier.info.id });
+		assert.equal(held.status === "found" && held.ask.replyMessageId, `ended:${questionId}`);
+	});
+
 	test("a recipient that ends long after the release fails the released asker's question once, through its owner (#4852)", async () => {
 		const { a, b, owner, replier, child, questionId } = await releasedLongAgo();
 		await leave(b, replier);
