@@ -16,6 +16,11 @@ export interface WorkflowBudget {
 	readonly warnAtPercent?: number;
 }
 
+/** Exact threshold test: floating `reading / ceiling * 100` can round below `warnAtPercent` at the threshold. */
+function reachesWarnThreshold(reading: number, ceiling: number, warnAtPercent: number): boolean {
+	return ceiling > 0 && warnAtPercent > 0 && reading * 100 >= warnAtPercent * ceiling;
+}
+
 export type DurationBudgetCheck =
 	| { readonly kind: "continue"; readonly report: DurationBudgetReport; readonly warning: boolean }
 	| { readonly kind: "exhausted"; readonly report: DurationBudgetReport };
@@ -32,7 +37,7 @@ export function enforceDurationBudget(
 		percent: ceiling === 0 ? 0 : (reading / ceiling) * 100,
 	};
 	if (ceiling > 0 && reading >= ceiling) return { kind: "exhausted", report };
-	const warning = options.warned !== true && budget.warnAtPercent > 0 && report.percent >= budget.warnAtPercent;
+	const warning = options.warned !== true && reachesWarnThreshold(reading, ceiling, budget.warnAtPercent);
 	return { kind: "continue", report, warning };
 }
 export type UsageBudgetCheck =
@@ -47,7 +52,7 @@ export function enforceUsageBudget(
 ): UsageBudgetCheck {
 	const report: UsageBudgetReport = { dimension, reading, ceiling, percent: ceiling ? (reading / ceiling) * 100 : 0 };
 	if (ceiling > 0 && reading >= ceiling) return { kind: "exhausted", report };
-	const warning = options.warned !== true && warnAtPercent > 0 && report.percent >= warnAtPercent;
+	const warning = options.warned !== true && reachesWarnThreshold(reading, ceiling, warnAtPercent);
 	return { kind: "continue", report, warning };
 }
 /** A fully resolved budget. Create one only with {@link resolve_budget}. */

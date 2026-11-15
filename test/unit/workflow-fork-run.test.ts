@@ -1951,3 +1951,28 @@ test("listForkPoints reads entry ids from the session store it is given (#4321)"
 		for await (const _ of listForkPoints("", { durableBackend: backend })) assert.fail("no points");
 	}, ForkConfigError);
 });
+
+test("fork rejects replacement inputs that violate a string constraint (#4849)", async () => {
+	const { backend, runId } = await linearSource("fork-constrained-inputs");
+	const constrained = workflow({
+		name: "fork-linear",
+		description: "",
+		inputs: { objective: Type.String({ default: "first", minLength: 3 }) },
+		outputs: { review: Type.String() },
+		run: linearWorkflow({ prepare: 0, after: 0, completions: [] }).run,
+	});
+	const error = await forkRun(runId, {
+		fromStage: "implement",
+		inputs: { objective: "a" },
+		durableBackend: backend,
+		definition: constrained,
+	}).then(
+		() => assert.fail("fork must fail"),
+		(failure: Error) => failure,
+	);
+	assert.ok(isForkConfigError(error));
+	assert.equal(error.field, "inputs");
+	assert.ok(error.cause instanceof Error);
+	assert.match(error.cause.message, /objective: must not have fewer than 3 characters \(minLength 3\)/);
+	assert.equal((await backend.journal.listRuns()).length, 1);
+});
