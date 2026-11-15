@@ -56,10 +56,10 @@ export function processMayRun(record: ProcessRecord): boolean {
 /** Which directory `path` is now, or undefined when none is there or it is being removed. */
 export function lockHolder(lockPath: string): string | undefined {
 	try {
-		const stats = statSync(lockPath, { throwIfNoEntry: false });
-		return stats === undefined ? undefined : `${stats.ino}:${stats.birthtimeMs}`;
+		const stats = statSync(lockPath);
+		return `${stats.ino}:${stats.birthtimeMs}`;
 	} catch {
-		// Windows refuses to stat a lock directory that is being removed: it is changing hands.
+		// None is there, or, on Windows, it is being removed and refuses to be stat'ed: it is changing hands.
 		return undefined;
 	}
 }
