@@ -23,7 +23,11 @@ import type {
 	ToolCall,
 	TranscriptContext,
 } from "../types.ts";
-import { formatProviderError, normalizeProviderError } from "../utils/error-body.ts";
+import {
+	appendProviderResponseFailureDiagnostic,
+	formatProviderError,
+	normalizeProviderError,
+} from "../utils/error-body.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { providerHeadersToRecord } from "../utils/headers.ts";
 import { type ClientIdentity, getIdentityHeaders } from "../utils/identity.ts";
@@ -44,6 +48,7 @@ import {
 	resolveGoogleFunctionCallingMode,
 	resolveGoogleThinkingLevel,
 	retainThoughtSignature,
+	googleErrorStatus,
 	retryGoogleRequest,
 	supportsGoogleStrictToolSampling,
 	toGoogleSdkThinkingLevel,
@@ -318,6 +323,7 @@ export const stream: StreamFunction<"google-vertex", GoogleVertexOptions> = (
 		} catch (error) {
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
 			output.errorMessage = formatProviderError(normalizeProviderError(error));
+			appendProviderResponseFailureDiagnostic(output, error, googleErrorStatus(output.errorMessage));
 			output.retryAfterMs = error instanceof Error ? getProviderRetryAfterMs(error) : undefined;
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();

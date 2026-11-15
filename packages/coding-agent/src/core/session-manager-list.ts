@@ -164,13 +164,28 @@ async function mapSessionFilesCooperatively(
 	);
 }
 
+/**
+ * The content without a last line that has no newline after it and does not parse: a write that never finished, which
+ * the session store ignores too (#4993).
+ */
+function withoutTornLastLine(content: string): string {
+	const end = content.lastIndexOf("\n") + 1;
+	if (end === content.length) return content;
+	try {
+		JSON.parse(content.slice(end));
+		return content;
+	} catch {
+		return content.slice(0, end);
+	}
+}
+
 async function buildSessionInfo(
 	filePath: string,
 	signal?: AbortSignal,
 	fileStats?: Stats,
 ): Promise<SessionInfo | null> {
 	try {
-		const content = await readFile(filePath, { encoding: "utf8", signal });
+		const content = withoutTornLastLine(await readFile(filePath, { encoding: "utf8", signal }));
 		const entries = upgradeStoredSessionEntries(
 			content.length > COOPERATIVE_PARSE_CONTENT_BYTES
 				? await parseSessionEntriesCooperatively(content, signal)

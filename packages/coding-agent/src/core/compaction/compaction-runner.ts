@@ -11,7 +11,11 @@ import type { Api, Model, Usage } from "@bastani/pi-ai/compat";
 import type { StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { SessionEntry } from "../session-manager-types.ts";
 import { planClassifierRanges } from "./classifier-compaction.js";
-import { getKeptTailTokenEstimate, hasKeptTailTokenEstimate } from "./compaction-boundary.js";
+import {
+	getKeptTailFitTokenEstimate,
+	getKeptTailTokenEstimate,
+	hasKeptTailTokenEstimate,
+} from "./compaction-boundary.js";
 import type {
 	BorrowedPlanner,
 	CompactedTranscript,
@@ -213,7 +217,7 @@ function fitProtectionToWindow(
 ): NumberedRegion {
 	const region = preparation.region;
 	if (!Number.isFinite(limit) || region.protectedLineNumbers === undefined) return region;
-	const tailTokens = keptTail && hasKeptTailTokenEstimate(preparation) ? getKeptTailTokenEstimate(preparation) : 0;
+	const tailTokens = keptTail && hasKeptTailTokenEstimate(preparation) ? getKeptTailFitTokenEstimate(preparation) : 0;
 	const share = normalizeKeepContextShare(preparation.settings.keepContextShare);
 	const maxChars = Math.max(0, Math.floor((limit - tailTokens) * share)) * 4;
 	return releaseKeepContextSpans(region, targetKeepLines(preparation), share, maxChars);
@@ -228,9 +232,11 @@ function buildFreshContextWindow(preparation: VerbatimCompactionPreparation, har
 	// gate's problem, not a reason for this rung to discard more.
 	// A kept tail with no registered estimate (a directly constructed
 	// preparation) is dropped conservatively rather than assumed to fit (P1 #3010).
+	// The fit bound counts dense text such as CJK at a token per character, which
+	// the chars/4 tail estimate undercounts by up to four times (#4977).
 	const keptTail =
 		preparation.keptTailMessageCount === 0 ||
-		(hasKeptTailTokenEstimate(preparation) && getKeptTailTokenEstimate(preparation) <= limit);
+		(hasKeptTailTokenEstimate(preparation) && getKeptTailFitTokenEstimate(preparation) <= limit);
 	return {
 		transcript: buildFreshTranscript(preparation, fitProtectionToWindow(preparation, limit, keptTail)),
 		keptTail,
@@ -638,10 +644,12 @@ async function runCompactionLadder(
 				(context) => classify(selection.model, context, { signal: timeLimit.signal }),
 				plannerOptions,
 			);
-			return {
+			const result: CompactionRungResult = {
 				...plannedResult(preparation, ranges, undefined, plannerUsage, selection.fullId),
 				backend: "classifier",
 			};
+			backendFailure = exceedsHardLimit(result);
+			if (!backendFailure) return result;
 		} catch (error) {
 			if (signal?.aborted) throw new Error("Compaction cancelled");
 			backendFailure = timeLimit.expired()
@@ -661,10 +669,12 @@ async function runCompactionLadder(
 						diagnostics,
 					),
 			});
-			return {
+			const result: CompactionRungResult = {
 				...plannedResult(preparation, ranges, undefined, undefined, selection.fullId),
 				backend: "morph",
 			};
+			backendFailure = exceedsHardLimit(result);
+			if (!backendFailure) return result;
 		} catch (error) {
 			if (signal?.aborted) throw new Error("Compaction cancelled");
 			backendFailure = timeLimit.expired()
@@ -712,8 +722,19 @@ async function runCompactionLadder(
 			break;
 		}
 		if (signal?.aborted) throw new Error("Compaction cancelled");
-		if (attempt.kind === "planned") {
-			const plannerModel = borrowed ? borrowedIdentity(planner) : undefined;
+		const planned =
+			attempt.kind === "planned"
+				? plannedResult(
+						preparation,
+						attempt.ranges,
+						borrowed ? borrowedIdentity(planner) : undefined,
+						plannerUsage,
+						`${planner.model.provider}/${planner.model.id}`,
+					)
+				: undefined;
+		const overLimit = planned && exceedsHardLimit(planned);
+		if (planned && !overLimit) {
+			const plannerModel = planned.plannerModel;
 			if (plannerModel) {
 				// Best-effort: the durable entry already records the borrowed model;
 				// a sidecar write failure never affects compaction success.
@@ -725,16 +746,10 @@ async function runCompactionLadder(
 					...(plannerModel.thinkingLevel === undefined ? {} : { thinkingLevel: plannerModel.thinkingLevel }),
 				});
 			}
-			return plannedResult(
-				preparation,
-				attempt.ranges,
-				plannerModel,
-				plannerUsage,
-				`${planner.model.provider}/${planner.model.id}`,
-			);
+			return planned;
 		}
-		lastTerminal = attempt.outcome;
-		if (attempt.outcome.kind === "policyRefusal" && request.summaryEntries) {
+		lastTerminal = overLimit ?? (attempt.kind === "terminal" ? attempt.outcome : undefined);
+		if (lastTerminal?.kind === "policyRefusal" && request.summaryEntries) {
 			try {
 				const summary = await runPiSummaryFallback(request.summaryEntries, preparation.settings, planner, {
 					...plannerOptions,
