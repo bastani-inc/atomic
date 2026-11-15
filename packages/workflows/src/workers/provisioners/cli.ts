@@ -6,6 +6,7 @@
  */
 
 import { type ChildProcess, spawn } from "node:child_process";
+import { sliceHead } from "@bastani/atomic";
 import type { WorkerProvisionerErrorCode } from "./types.js";
 
 /** Most bytes of stdout a CLI may print: a scale set or a namespace of thousands of hosts fits. */
@@ -88,7 +89,7 @@ function detail(stderr: string, call: CliCall, env: NodeJS.ProcessEnv): string {
 		call.args,
 		env,
 	);
-	return text.length > MAX_DETAIL_CHARS ? `${text.slice(0, MAX_DETAIL_CHARS)}…` : text;
+	return text.length > MAX_DETAIL_CHARS ? `${sliceHead(text, MAX_DETAIL_CHARS)}…` : text;
 }
 
 /**

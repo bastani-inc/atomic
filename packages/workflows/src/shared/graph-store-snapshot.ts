@@ -1,3 +1,4 @@
+import { sliceHead } from "@bastani/atomic";
 import { flattenTruncatedString } from "./flat-string.js";
 import { indexRunFrom } from "./run-stage-index.js";
 import type {
@@ -23,7 +24,7 @@ function compactResultField(value: WorkflowSerializableValue | undefined): strin
 	if (value.length <= COMPACT_RESULT_FIELD_LIMIT) return value;
 	// Flattened, not just sliced: `graphSnapshot()` memoizes this projection, so a
 	// SlicedString here would keep the whole run result alive inside the store.
-	return flattenTruncatedString(value.slice(0, COMPACT_RESULT_FIELD_LIMIT));
+	return flattenTruncatedString(sliceHead(value, COMPACT_RESULT_FIELD_LIMIT));
 }
 
 function compactRunResult(

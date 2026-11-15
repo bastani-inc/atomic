@@ -25,6 +25,7 @@ import {
 	type SessionStats,
 	SettingsManager,
 	type SubagentIntercomIdentity,
+	sliceHead,
 } from "@bastani/atomic";
 import {
 	type ChildIdentity,
@@ -1043,7 +1044,7 @@ function safeArgsPreview(args: unknown): string {
 	if (args === undefined) return "";
 	try {
 		const text = typeof args === "string" ? args : JSON.stringify(args);
-		return text.length > 200 ? `${text.slice(0, 200)}…` : text;
+		return text.length > 200 ? `${sliceHead(text, 200)}…` : text;
 	} catch {
 		return "";
 	}

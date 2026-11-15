@@ -10,6 +10,7 @@
 import { createPrivateKey } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
+import { sliceHead } from "@bastani/atomic";
 import { redactSecrets, WorkerProvisionerError } from "./cli.js";
 import type { GitHubAppAuthOptions } from "./types.js";
 
@@ -236,7 +237,7 @@ export class GitHubAppCredentials {
 		const data = error.response?.data;
 		const detail = (text: string) => {
 			const redacted = redactSecrets(text, [], {});
-			return redacted.length > MAX_DETAIL_CHARS ? `${redacted.slice(0, MAX_DETAIL_CHARS)}…` : redacted;
+			return redacted.length > MAX_DETAIL_CHARS ? `${sliceHead(redacted, MAX_DETAIL_CHARS)}…` : redacted;
 		};
 		if (error.response === undefined || error.status === undefined)
 			return new WorkerProvisionerError(

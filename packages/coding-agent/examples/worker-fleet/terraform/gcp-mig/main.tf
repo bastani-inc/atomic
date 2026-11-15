@@ -8,14 +8,21 @@
 terraform {
   required_providers {
     google = { source = "hashicorp/google", version = "~> 6.0" }
+    random = { source = "hashicorp/random", version = "~> 3.6" }
   }
 }
 
 variable "project" {}
 variable "zone" { default = "us-central1-a" }
 variable "network" { default = "default" }
-variable "database" { default = "libsql://pool.example.turso.io" }
-variable "token_secret" { default = "atomic-db-token" }
+variable "database" {
+  default     = "libsql://pool.example.turso.io"
+  description = "The shared database when `postgres` is false"
+}
+variable "token_secret" {
+  default     = "atomic-db-token"
+  description = "The Secret Manager secret holding the database token, or the PostgreSQL password postgres.tf writes"
+}
 variable "token_command" {
   default     = null
   description = "Overrides how a VM prints the database token. Default: `gcloud secrets versions access` as the VM's service account"
@@ -46,6 +53,8 @@ resource "google_secret_manager_secret_iam_member" "workers_token" {
   secret_id = var.token_secret
   role      = "roles/secretmanager.secretAccessor"
   member    = google_service_account.workers.member
+  # With `postgres`, the secret is the password postgres.tf writes.
+  depends_on = [google_secret_manager_secret.postgres]
 }
 
 # The controller's identity.
@@ -85,8 +94,9 @@ resource "google_compute_instance_template" "workers" {
   }
   metadata = {
     user-data = templatefile("${path.module}/../cloud-init.yaml.tftpl", {
-      database = var.database
-      slots    = 4
+      database    = local.database
+      database_ca = local.database_ca
+      slots       = 4
       # The instance name, which the group's delete-instances takes.
       provider_id_command = "curl -s -H Metadata-Flavor:Google http://metadata.google.internal/computeMetadata/v1/instance/name"
       token_command       = local.token_command
