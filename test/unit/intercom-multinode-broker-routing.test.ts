@@ -1751,6 +1751,9 @@ test("a hold check whose read answers after the save cap has passed ends the rem
 		if (!answerPastCap || result.status !== "found" || result.row.state !== "claimed") return result;
 		// The read answers once the cap has passed, before the cap's own timer has run: a fresh report cannot hold.
 		vi.setSystemTime(Date.now() + RECIPIENT_SAVE_MAX_WAIT_MS);
+		// The cap is timed on the monotonic clock (#5058).
+		const elapsed = performance.now.bind(performance);
+		vi.spyOn(performance, "now").mockImplementation(() => elapsed() + RECIPIENT_SAVE_MAX_WAIT_MS);
 		return { ...result, row: { ...result.row, savingAgeMs: 0 } };
 	});
 	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"], shouldAdvanceTime: true });
@@ -1764,6 +1767,7 @@ test("a hold check whose read answers after the save cap has passed ends the rem
 		assert.deepEqual(holdsOf(sender, sent.id), []);
 	} finally {
 		spy.mockRestore();
+		vi.restoreAllMocks();
 		vi.useRealTimers();
 	}
 });
