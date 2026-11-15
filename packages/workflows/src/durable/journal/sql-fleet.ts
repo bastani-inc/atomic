@@ -311,8 +311,9 @@ export class SqlFleetStore {
 	}
 
 	/**
-	 * Whether a worker host on the instance `providerId`, or the host `host`, is in the registry now (#5072): a boot
-	 * timeout planned from an older snapshot is not acted on once its host registered.
+	 * Whether a worker host on the instance `providerId`, or the host `host`, reported within {@link FLEET_HOST_LIVE_MS}
+	 * by the database's clock (#5072): a boot timeout planned from an older snapshot is not acted on once its host
+	 * registered, while the stale row of a worker that died after it registered does not keep its instance.
 	 */
 	async registered(providerId: string, host?: string): Promise<boolean> {
 		const hosts = `${this.runs}_pool_hosts`;
@@ -320,9 +321,10 @@ export class SqlFleetStore {
 			async (executor) =>
 				(await tableExists(executor, hosts)) &&
 				(await executor.get(
-					`SELECT 1 AS held FROM ${hosts} WHERE provider_id = ? OR host = ? LIMIT 1`,
+					`SELECT 1 AS held FROM ${hosts} WHERE (provider_id = ? OR host = ?) AND ${STORE_NOW} - heartbeat_at <= ? LIMIT 1`,
 					providerId,
 					host ?? null,
+					FLEET_HOST_LIVE_MS,
 				)) !== undefined,
 		);
 	}

@@ -20,6 +20,7 @@ import {
 	planFleet,
 	resolveFleetPolicy,
 } from "./autoscaler.js";
+import { elapsedSince, type Instant, instant } from "./elapsed.js";
 import type {
 	ProvisionedHost,
 	WorkerHostProvisioner,
@@ -133,8 +134,8 @@ export class FleetController implements WorkflowFleetController {
 	private ticking?: Promise<void>;
 	/** Aborted when the running tick must stop acting: the lease was lost or may have expired, or the controller stops. */
 	private tickAbort = new AbortController();
-	/** When, by `performance.now()`, the lease was last taken or renewed, measured before the request. */
-	private renewedAt = 0;
+	/** When the lease was last taken or renewed, read on both clocks before the request. */
+	private renewedAt: Instant = { monotonic: 0, wall: 0 };
 	/** Listings in a row that omitted each drained instance, by the drained host id (#4828). */
 	private missed = new Map<string, number>();
 	private stopping?: Promise<void>;
@@ -220,9 +221,10 @@ export class FleetController implements WorkflowFleetController {
 	 * abort stops the controller acting on the call; a request the provider already received may still complete.
 	 */
 	private call<T>(run: (signal: AbortSignal) => Promise<T>): Promise<T> {
-		// A timer aborts the tick once the lease may have lapsed, but a controller whose event loop was blocked or whose VM
-		// was paused runs on before any timer fires: it checks the lease's age itself, right before the call (#5072).
-		if (performance.now() - this.renewedAt >= this.leaseMs - this.tickMs)
+		// A timer aborts the tick once the lease may have lapsed, but a controller whose event loop was blocked, whose VM
+		// was paused or whose machine slept runs on before any timer fires: it checks the lease's age itself, right before
+		// the call, by the longer of the monotonic and wall clocks (#5072).
+		if (elapsedSince(this.renewedAt) >= this.leaseMs - this.tickMs)
 			this.tickAbort.abort(new Error("The fleet controller may have lost its lease"));
 		this.tickAbort.signal.throwIfAborted();
 		const signal = AbortSignal.any([
@@ -239,7 +241,7 @@ export class FleetController implements WorkflowFleetController {
 	/** Takes or renews the lease; returns the fence while this controller holds it. */
 	private async lead(): Promise<FleetFence | undefined> {
 		this.store ??= await SqlFleetStore.open(this.journal);
-		const asked = performance.now();
+		const asked = instant();
 		const lease = await this.store.acquire(this.holder, this.epoch, this.leaseMs);
 		if (lease.held) this.renewedAt = asked;
 		if (!lease.held) {
@@ -347,11 +349,11 @@ export class FleetController implements WorkflowFleetController {
 	 */
 	private keepLeading(fence: FleetFence, tick: AbortController): NodeJS.Timeout {
 		const timer = setInterval(() => {
-			if (performance.now() - this.renewedAt >= this.leaseMs - this.tickMs) {
+			if (elapsedSince(this.renewedAt) >= this.leaseMs - this.tickMs) {
 				tick.abort(new Error("The fleet controller may have lost its lease"));
 				return;
 			}
-			const asked = performance.now();
+			const asked = instant();
 			void this.store!.acquire(this.holder, fence.epoch, this.leaseMs).then(
 				(lease) => {
 					if (lease.held && lease.epoch === fence.epoch) this.renewedAt = asked;
@@ -420,8 +422,16 @@ export class FleetController implements WorkflowFleetController {
 				return;
 			}
 			case "remove":
-				// A host that registered since the snapshot booted after all: it is not removed for a boot timeout (#5072).
-				if (action.reason === "boot-timeout" && (await store.registered(action.id, joined?.hostId))) return;
+				if (action.reason === "boot-timeout") {
+					// The instance is drained before it is checked once more and removed, so a host that registers on it from
+					// now on claims nothing. One that registered since the snapshot booted after all, and stays (#5072).
+					const host = joined?.hostId ?? `boot-timeout:${action.id}`;
+					await store.carryDrain(fence, host, action.id);
+					if (await store.registered(action.id, joined?.hostId)) {
+						await store.clearDrain(fence, host);
+						return;
+					}
+				}
 				// Its drains stay until the provider no longer lists it (#4803): a removal the provider accepted may take
 				// minutes, and a worker that restarts on the instance meanwhile must not take children.
 				await this.call((signal) => this.options.provisioner.drain(action.id, signal));

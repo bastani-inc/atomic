@@ -439,3 +439,108 @@ test("joinHosts says a drain is over only once no host on the instance is regist
 		],
 	);
 });
+
+test("an instance whose worker died after registering is removed for its boot timeout and replaced (#5072)", async () => {
+	const f = await fixture();
+	try {
+		// h1 registered on vm-1 once, then its process was killed: its row stays, and it never reports again.
+		await f.report("h1", "vm-1");
+		await f.sql(`UPDATE ${PREFIX}wf_runs_pool_hosts SET heartbeat_at = heartbeat_at - 3600000 WHERE host = 'h1'`);
+		const removed: string[] = [];
+		f.controller(
+			{
+				kind: "fake",
+				async list() {
+					return removed.includes("vm-1") ? [] : [{ id: "vm-1", state: "running", since: 0 }];
+				},
+				async scaleTo() {},
+				async drain(id) {
+					removed.push(id);
+				},
+			},
+			[],
+			{ bootTimeoutMs: 200, minHosts: 1 },
+		);
+		await sleep(30 * TICK_MS);
+		assert.deepEqual(removed, ["vm-1"]);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a controller whose machine slept past its lease makes no provider call, though the monotonic clock stopped (#5072)", async () => {
+	const f = await fixture();
+	const realNow = performance.now.bind(performance);
+	let suspended = 0;
+	const spy = vi.spyOn(performance, "now").mockImplementation(() => realNow() - suspended);
+	try {
+		await seedDrain(f.store, "h1", "vm-1");
+		const removed: string[] = [];
+		let lists = 0;
+		f.controller({
+			kind: "fake",
+			async list() {
+				lists++;
+				if (lists === 1) {
+					await f.sql(
+						`UPDATE ${PREFIX}wf_runs_fleet_controller SET holder = 'other', epoch = epoch + 1, renewed_at = CAST(unixepoch('subsec') * 1000 AS INTEGER), lease_ms = 600000`,
+					);
+					// A system suspend: nothing runs, and the wall and database clocks move on while CLOCK_MONOTONIC does not.
+					const start = realNow();
+					while (realNow() - start < 5 * TICK_MS) {
+						// suspended
+					}
+					suspended += realNow() - start;
+				}
+				return [{ id: "vm-1", state: "running", since: 0 }];
+			},
+			async scaleTo() {},
+			async drain(id) {
+				removed.push(id);
+			},
+		});
+		await sleep(10 * TICK_MS);
+		assert.deepEqual(removed, [], "a controller whose lease lapsed during a suspend makes no provider call");
+	} finally {
+		spy.mockRestore();
+		await f.close();
+	}
+});
+
+test("an instance removed for its boot timeout is drained first, so a host that registers on it meanwhile claims nothing (#5072)", async () => {
+	const f = await fixture();
+	try {
+		const { work, boundary } = poolWorkFixture("late");
+		await f.queue.enqueue(f.lease, work, boundary);
+		const [candidate] = await f.queue.readyCandidates(f.lease, [definition], 10);
+		assert.ok(candidate);
+		const claims: unknown[] = [];
+		f.controller(
+			{
+				kind: "fake",
+				async list() {
+					return claims.length > 0 ? [] : [{ id: "vm-1", hostId: "h1", state: "running", since: 0 }];
+				},
+				async scaleTo() {},
+				async drain() {
+					// The host on vm-1 registers and claims just as the provider is asked to delete it.
+					await f.report("h1", "vm-1");
+					claims.push(
+						await f.queue.claim(f.lease, "h1/worker-1", [definition], 60_000, {
+							kind: "work",
+							id: candidate.id,
+							generation: candidate.generation,
+							host: { id: "h1", providerId: "vm-1" },
+						}),
+					);
+				},
+			},
+			[],
+			{ bootTimeoutMs: 1 },
+		);
+		await sleep(10 * TICK_MS);
+		assert.deepEqual(claims, [undefined], "the host on the instance being removed claims nothing");
+	} finally {
+		await f.close();
+	}
+});
