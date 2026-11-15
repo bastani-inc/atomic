@@ -30,6 +30,7 @@ export type {
 	ToolNamespace,
 	ToolRendererResolver,
 	ToolRenderers,
+	ToolScriptAccess,
 } from "./core/extensions/tool-types.ts";
 export { resolveRestoredModelReference } from "./core/model-resolver-initial.ts";
 export * from "./core/resume/index.ts";

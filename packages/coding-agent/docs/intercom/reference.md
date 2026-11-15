@@ -237,6 +237,27 @@ An `idle` registration does not guarantee reply capability. Completed, failed, i
 
 Explicit selectors override the active turn: `to` selects a pending ask from that exact name/full session ID, and `replyTo` selects only that pending ask or the exact active ordinary message. Stale, unknown, or empty thread IDs fail without falling back. If both selectors are supplied, the sender must match the thread. If an ask is still open, inspect `pending` and reply using its exact message ID rather than replying implicitly to an unrelated notification. Multiple asks from the same sender require `replyTo`.
 
+### From codemode scripts
+
+[Codemode](/codemode) scripts can call `tools.intercom` with `list`, `status`, `pending`, and `send`. Each call goes through the same argument validation and permission hooks as a direct call, and resolves to a structured value:
+
+| Action | Resolves to |
+|---|---|
+| `list` (optional `group`) | `{ action, groups, peekGroup?, sessions, workflowStages }` |
+| `status` (optional `group`) | `{ action, sessionId, groups, sessions, outboundAsks }` |
+| `pending` | `{ action, inbound: [{ messageId, from, fromSessionId, receivedAt, text }], outbound: [{ askId, to, askedAt }] }` |
+| `send` | `{ action, target, outcome, messageId?, reason? }` |
+
+Each entry of `sessions` is `{ sessionId, name?, cwd, state, activity?, groups, replyCapability?, self }`, where `state` is `idle`, `busy`, or `unknown` and `activity` says what a busy session is doing. A `send` outcome is `delivered`, `queued`, `refused` (with the `reason`), `unknown` (do not resend it automatically), or `cancelled`; a refused send resolves with its outcome rather than throwing.
+
+From a script, `send` takes only an exact target: a live session name, a full session ID or unique 8-hex prefix, or a workflow stage path without `*` or `**`. A glob, `*`, or a `subagents:` target is refused, as is a send with `replyTo`. `ask`, `reply`, `cancel`, `join`, `leave`, and `groups` stay model-only: calling them from a script fails with a message to call the `intercom` tool directly.
+
+```js
+const { sessions } = await tools.intercom({ action: "list" });
+const workers = sessions.filter((session) => !session.self && session.cwd.endsWith("/api"));
+return Promise.all(workers.map((session) => tools.intercom({ action: "send", to: session.sessionId, message: "Rebase on main" })));
+```
+
 ### Attachments
 
 `send`, `ask`, and `reply` accept an `attachments` array of `{ type, name, content, language? }` objects where `type` is `"file"`, `"snippet"`, or `"context"`. Attachment content is included in the recipient's agent-visible message body. When a parent-targeted foreground `ask` is terminally handed off at the source, the same ordered attachment array is retained and rendered with the question for the launching parent; duplicate names and content are not rewritten. Attachments are supported in the protocol but not in the ALT+M compose overlay.

@@ -4,6 +4,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Added
+
+- Codemode scripts can call `intercom` with `list`, `status`, `pending`, and `send`. `list` and `status` resolve to session entries (`sessionId`, `name`, `cwd`, `state`, `groups`, `replyCapability`), and each `send` to its delivery outcome. Scripts may send only to exact targets: globs, `*`, `subagents:` targets and workflow path patterns are refused, and `ask`, `reply`, `join`, `leave` and the other actions fail with a pointer to the direct tool ([#5087](https://github.com/bastani-inc/atomic/issues/5087))
+
 ### Fixed
 
 - Fixed an Intercom ask that was lost when the broker crashed while it handled its asker's departure, for example a released subagent's between turns, or its recipient's: the broker removed the ask's saved record before it saved the ask again for the asker's return. After the restart the recipient's reply was refused with "Session not found", and if the recipient ended, the subagent never learned of it. The same applied to an ask whose recipient closed to be resumed: its asker was neither answered nor told the ask failed. The broker now removes the old record only after the new one is saved, so the asker gets its reply, or one failure, when both are back ([#4829](https://github.com/bastani-inc/atomic/issues/4829))
