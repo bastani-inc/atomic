@@ -1,5 +1,5 @@
 import { findExtensionStackMatches } from "../../core/crash-log.ts";
-import { killSupervisedProcessTrees } from "../../core/tasks/supervisor.ts";
+import { killSupervisedProcessTrees } from "../../core/tasks/supervisor.js";
 import { terminateInteractiveEngine } from "../interactive-engine/extension-ui-bridge.ts";
 import { isRpcRequestAcceptedFailure } from "../rpc/rpc-transport-error.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";

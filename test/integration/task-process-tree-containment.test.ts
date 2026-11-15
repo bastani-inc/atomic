@@ -11,9 +11,9 @@ import { fileExists, readText, sleep } from "../helpers/runtime.js";
 
 const posix = process.platform !== "win32";
 const python = posix && spawnSync("python3", ["-c", ""]).status === 0;
-/** Whether commands run in a cgroup of their own: Linux, where this process's cgroup is writable by its user. */
+/** Whether commands run in a cgroup of their own: on Linux, where this process's cgroup is writable by its user. */
 const delegatedCgroup = (() => {
-	if (process.platform !== "linux") return false;
+	if (process.platform !== "linux" || process.env.ATOMIC_TASK_CGROUP === "0") return false;
 	try {
 		const own = readFileSync("/proc/self/cgroup", "utf8").match(/^0::(.*)$/mu)?.[1];
 		if (!own) return false;
@@ -192,8 +192,13 @@ test.runIf(posix).each(hostDeaths)(
 				const [guardian] = guardianOf(host.pid ?? 0);
 				assert.ok(guardian, "no guardian found");
 				process.kill(guardian, "SIGKILL");
-				const deadline = Date.now() + 2000;
+				// Well inside the 2 s execution timeout, which would otherwise end the shell while the host still lives.
+				const deadline = Date.now() + 500;
 				while (!guardianOf(host.pid ?? 0).some((pid) => pid !== guardian) && Date.now() < deadline) await sleep(10);
+				assert.ok(
+					guardianOf(host.pid ?? 0).some((pid) => pid !== guardian),
+					"the host did not replace its guardian",
+				);
 			}
 			if (how === "sigkill" || how === "guardian-first") host.kill("SIGKILL");
 			await exited;
