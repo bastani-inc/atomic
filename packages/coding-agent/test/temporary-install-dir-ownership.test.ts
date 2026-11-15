@@ -1,7 +1,9 @@
 /**
- * Temporary extension installs (`-e npm:…`, `-e git:…`) live under the system
- * temp directory, so the directory holding them must belong to the current
- * account alone. Anything else found at that path is refused, never adopted.
+ * Temporary extension installs (`-e npm:…`, `-e git:…`) need a directory that
+ * belongs to the current account alone. A root other accounts cannot create
+ * is preferred; anything found at a candidate path that is not private to this
+ * account is refused (never adopted or repaired), and the next candidate is
+ * used, so a directory planted by someone else neither hijacks nor blocks them.
  */
 import assert from "node:assert/strict";
 import {
@@ -10,6 +12,7 @@ import {
 	lstatSync,
 	mkdirSync,
 	mkdtempSync,
+	readdirSync,
 	realpathSync,
 	rmSync,
 	statSync,
@@ -18,29 +21,32 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, it, vi } from "vitest";
+import { ENV_AGENT_DIR } from "../src/config.ts";
 import { getGitInstallPath, getNpmInstallRoot } from "../src/core/package-manager-paths.ts";
 import type { PackageLocationContext } from "../src/core/package-manager-types.ts";
 import { getTempRootDir, resetSessionTempDirStateForTesting } from "../src/core/tools/session-temp-dir.ts";
 import { isPathInside } from "../src/utils/path-inside.js";
 
 const isPosix = process.platform !== "win32";
-const envKeys = ["TMPDIR", "TEMP", "TMP"] as const;
-const savedEnv = new Map<string, string | undefined>();
+const envKeys = ["TMPDIR", "TEMP", "TMP", "XDG_RUNTIME_DIR", ENV_AGENT_DIR] as const;
+const savedEnv = new Map<string, string | undefined>(envKeys.map((key) => [key, process.env[key]]));
 let sandbox: string;
+let shared: string;
+let agentDir: string;
 let context: PackageLocationContext;
 
 beforeAll(() => {
 	sandbox = realpathSync(mkdtempSync(join(tmpdir(), "atomic-temp-install-owner-")));
-	context = { cwd: sandbox, agentDir: join(sandbox, "agent") } as PackageLocationContext;
 });
 
 beforeEach(() => {
-	// A fresh shared temp directory per test, so one test's state never leaks.
-	const shared = mkdtempSync(join(sandbox, "tmp-"));
-	for (const key of envKeys) {
-		if (!savedEnv.has(key)) savedEnv.set(key, process.env[key]);
-		process.env[key] = shared;
-	}
+	// A fresh shared temp directory and agent directory per test, and no runtime directory unless a test sets one.
+	shared = mkdtempSync(join(sandbox, "tmp-"));
+	for (const key of ["TMPDIR", "TEMP", "TMP"]) process.env[key] = shared;
+	agentDir = join(mkdtempSync(join(sandbox, "home-")), "agent");
+	process.env[ENV_AGENT_DIR] = agentDir;
+	delete process.env.XDG_RUNTIME_DIR;
+	context = { cwd: sandbox, agentDir } as PackageLocationContext;
 	resetSessionTempDirStateForTesting();
 });
 
@@ -50,72 +56,127 @@ afterEach(() => {
 });
 
 afterAll(() => {
-	for (const key of envKeys) {
-		const saved = savedEnv.get(key);
+	for (const [key, saved] of savedEnv) {
 		if (saved === undefined) delete process.env[key];
 		else process.env[key] = saved;
 	}
 	rmSync(sandbox, { recursive: true, force: true });
 });
 
+/** Every existing directory from `root` up to (not including) `stop` is a real directory private to this account. */
+function assertPrivateChain(root: string, stop: string): void {
+	let checked = 0;
+	for (let dir = root; isPathInside(stop, dir) && dir !== stop; dir = dirname(dir)) {
+		if (!existsSync(dir)) continue;
+		const stat = lstatSync(dir);
+		assert.ok(stat.isDirectory() && !stat.isSymbolicLink(), dir);
+		if (isPosix) {
+			assert.equal(stat.uid, process.getuid!(), dir);
+			assert.equal(stat.mode & 0o077, 0, `${dir} has no group or other access`);
+		}
+		checked++;
+	}
+	assert.ok(checked >= 1, `a private directory exists between ${stop} and ${root}`);
+}
+
+/** Make the agent cache unusable so the shared temp directory is the next candidate. */
+function plantAgentCacheLink(): string {
+	const elsewhere = mkdtempSync(join(sandbox, "agent-cache-target-"));
+	mkdirSync(join(agentDir, "cache"), { recursive: true });
+	symlinkSync(elsewhere, join(agentDir, "cache", "tmp"), "dir");
+	return elsewhere;
+}
+
 describe("temporary extension install directories", () => {
-	it("temporary extension installs use a directory only the current user owns", () => {
+	it.skipIf(!isPosix)("temporary extension installs prefer the per-user runtime directory", () => {
+		const runtime = mkdtempSync(join(sandbox, "run-"));
+		process.env.XDG_RUNTIME_DIR = runtime;
+
 		const root = getNpmInstallRoot(context, "temporary", true);
 
-		assert.ok(isPathInside(getTempRootDir(), root), `${root} is inside the per-user temp root`);
-		assert.ok(isPathInside(tmpdir(), root));
-		// Every directory already created between the per-user root and the install is private.
-		let checked = 0;
-		for (let dir = root; dir === getTempRootDir() || isPathInside(getTempRootDir(), dir); dir = dirname(dir)) {
-			if (!existsSync(dir)) continue;
-			const stat = lstatSync(dir);
-			assert.ok(stat.isDirectory() && !stat.isSymbolicLink(), dir);
-			if (isPosix) {
-				assert.equal(stat.uid, process.getuid!(), dir);
-				assert.equal(stat.mode & 0o077, 0, `${dir} has no group or other access`);
-			}
-			checked++;
-		}
-		assert.ok(checked >= 2, "the per-user root and the install directory parent exist");
+		assert.ok(isPathInside(runtime, root), `${root} is inside the runtime directory`);
+		assertPrivateChain(root, runtime);
+	});
+
+	it("without a runtime directory, temporary extension installs use the agent cache", () => {
+		const root = getNpmInstallRoot(context, "temporary", true);
+
+		assert.ok(isPathInside(agentDir, root), `${root} is inside the agent directory`);
+		assertPrivateChain(root, agentDir);
 	});
 
 	it("temporary git checkouts share the same per-user directory", () => {
+		const npm = getNpmInstallRoot(context, "temporary", true);
 		const checkout = getGitInstallPath(context, { host: "github.com", path: "owner/repo" }, "temporary");
-		assert.ok(isPathInside(getTempRootDir(), checkout));
+		assert.equal(dirname(dirname(dirname(dirname(checkout)))), dirname(dirname(npm)));
 	});
 
-	it.skipIf(!isPosix)("refuses a pre-existing directory owned by another account", () => {
+	it.skipIf(!isPosix)("a shared runtime directory is not used", () => {
+		const runtime = mkdtempSync(join(sandbox, "run-"));
+		chmodSync(runtime, 0o777);
+		process.env.XDG_RUNTIME_DIR = runtime;
+
+		const root = getNpmInstallRoot(context, "temporary", true);
+
+		assert.ok(!isPathInside(runtime, root));
+		assert.deepEqual(readdirSync(runtime), [], "nothing is created in it");
+	});
+
+	it.skipIf(!isPosix)("the shared temp directory is used when the agent cache is unusable", () => {
+		const elsewhere = plantAgentCacheLink();
+
+		const root = getNpmInstallRoot(context, "temporary", true);
+
+		assert.ok(isPathInside(getTempRootDir(), root), `${root} is inside the per-user temp root`);
+		assertPrivateChain(root, shared);
+		assert.deepEqual(readdirSync(elsewhere), [], "nothing is created through the planted link");
+	});
+
+	it.skipIf(!isPosix)("a pre-existing directory owned by another account is neither used nor blocking", () => {
+		plantAgentCacheLink();
 		const realUid = process.getuid!();
 		vi.spyOn(process, "getuid").mockReturnValue(realUid + 1);
 		resetSessionTempDirStateForTesting();
 		// The directory exists under the name the (other) account expects but is not owned by it.
-		mkdirSync(getTempRootDir(), { mode: 0o700 });
+		const planted = getTempRootDir();
+		mkdirSync(planted, { mode: 0o700 });
 
-		assert.throws(() => getNpmInstallRoot(context, "temporary", true), /owned by another account/);
+		const root = getNpmInstallRoot(context, "temporary", true);
+
+		assert.ok(!isPathInside(planted, root), `${root} is not inside the planted directory`);
+		assert.ok(isPathInside(shared, root));
+		assert.ok(statSync(dirname(dirname(root))).isDirectory());
+		assert.deepEqual(readdirSync(planted), [], "nothing is created in it");
 	});
 
-	it.skipIf(!isPosix)("refuses a symbolic link in place of the per-user directory", () => {
-		const elsewhere = join(sandbox, "planted");
-		mkdirSync(elsewhere, { mode: 0o700, recursive: true });
+	it.skipIf(!isPosix)("a symbolic link in place of the per-user directory is neither followed nor blocking", () => {
+		plantAgentCacheLink();
+		const elsewhere = mkdtempSync(join(sandbox, "planted-"));
 		symlinkSync(elsewhere, getTempRootDir(), "dir");
 
-		assert.throws(() => getNpmInstallRoot(context, "temporary", true), /symbolic link/);
-	});
-
-	it.skipIf(!isPosix)("refuses a group-writable directory instead of repairing it", () => {
-		mkdirSync(getTempRootDir(), { mode: 0o700 });
-		const extensions = join(getTempRootDir(), "extensions");
-		mkdirSync(extensions, { mode: 0o700 });
-		chmodSync(extensions, 0o770);
-
-		assert.throws(() => getNpmInstallRoot(context, "temporary", true), /accessible to other accounts/);
-		assert.equal(statSync(extensions).mode & 0o777, 0o770, "the refused directory is left as found");
-	});
-
-	it.runIf(process.platform === "win32")("uses the account's own temp directory on Windows", () => {
 		const root = getNpmInstallRoot(context, "temporary", true);
-		assert.ok(isPathInside(tmpdir(), root));
-		assert.ok(isPathInside(getTempRootDir(), root));
-		assert.ok(statSync(getTempRootDir()).isDirectory(), "the per-user root is created");
+
+		assert.ok(!isPathInside(getTempRootDir(), root));
+		assertPrivateChain(root, shared);
+		assert.deepEqual(readdirSync(elsewhere), [], "nothing is created through the planted link");
+	});
+
+	it.skipIf(!isPosix)("a group-writable directory is neither repaired nor blocking", () => {
+		plantAgentCacheLink();
+		mkdirSync(getTempRootDir(), { mode: 0o700 });
+		chmodSync(getTempRootDir(), 0o770);
+
+		const root = getNpmInstallRoot(context, "temporary", true);
+
+		assert.ok(!isPathInside(getTempRootDir(), root));
+		assertPrivateChain(root, shared);
+		assert.equal(statSync(getTempRootDir()).mode & 0o777, 0o770, "the refused directory is left as found");
+		assert.deepEqual(readdirSync(getTempRootDir()), []);
+	});
+
+	it.runIf(process.platform === "win32")("uses a directory inside the account's own profile on Windows", () => {
+		const root = getNpmInstallRoot(context, "temporary", true);
+		assert.ok(isPathInside(agentDir, root) || isPathInside(tmpdir(), root), root);
+		assert.ok(statSync(dirname(dirname(root))).isDirectory());
 	});
 });

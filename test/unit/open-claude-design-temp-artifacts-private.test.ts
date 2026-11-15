@@ -6,13 +6,16 @@ import { afterEach, beforeEach, test } from "vitest";
 import { resetSessionTempDirStateForTesting } from "../../packages/coding-agent/src/core/tools/session-temp-dir.ts";
 import { prepareArtifactDir } from "../../packages/workflows/builtin/open-claude-design-utils.js";
 
-const envKeys = ["TMPDIR", "TEMP", "TMP"] as const;
+const envKeys = ["TMPDIR", "TEMP", "TMP", "XDG_RUNTIME_DIR", "ATOMIC_CODING_AGENT_DIR"] as const;
 const savedEnv = new Map<string, string | undefined>(envKeys.map((key) => [key, process.env[key]]));
 let sandbox = "";
 
 beforeEach(() => {
 	sandbox = realpathSync(mkdtempSync(join(tmpdir(), "atomic-ocd-private-")));
-	for (const key of envKeys) process.env[key] = sandbox;
+	for (const key of ["TMPDIR", "TEMP", "TMP"]) process.env[key] = sandbox;
+	// This account's agent directory stand-in; no runtime directory.
+	process.env.ATOMIC_CODING_AGENT_DIR = join(sandbox, "home", "agent");
+	delete process.env.XDG_RUNTIME_DIR;
 	resetSessionTempDirStateForTesting();
 });
 

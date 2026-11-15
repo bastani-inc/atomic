@@ -4,7 +4,7 @@
 
 import * as os from "node:os";
 import * as path from "node:path";
-import { APP_NAME, resolvePrivateTempDirPath } from "@bastani/atomic";
+import { APP_NAME } from "@bastani/atomic";
 import type { ArtifactConfig, MaxOutputConfig } from "./types-results.js";
 
 // Constants
@@ -79,9 +79,6 @@ export const DEFAULT_RUNNING_CAPACITY = 1000;
  * directory. Only read by the guarded startup cleanup of their leftovers.
  */
 export const LEGACY_TEMP_ROOT_DIR = path.join(os.tmpdir(), `${APP_NAME}-subagents-${resolveTempScopeId()}`);
-/** Below the temp directory only the current account owns (see `ensurePrivateTempDir`). */
-export const TEMP_ROOT_DIR = resolvePrivateTempDirPath("subagents");
-export const TEMP_ARTIFACTS_DIR = path.join(TEMP_ROOT_DIR, "artifacts");
 export const SLASH_RESULT_TYPE = "subagent-slash-result";
 export const SLASH_SUBAGENT_REQUEST_EVENT = "subagent:slash:request";
 export const SLASH_SUBAGENT_STARTED_EVENT = "subagent:slash:started";

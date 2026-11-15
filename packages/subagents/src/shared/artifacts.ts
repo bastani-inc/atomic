@@ -1,15 +1,9 @@
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
-import {
-	assertPrivateDirectory,
-	ensurePrivateTempDir,
-	getAgentConfigPaths,
-	resolvePrivateTempDirPath,
-} from "@bastani/atomic";
+import { ensurePrivateTempDir, getAgentConfigPaths } from "@bastani/atomic";
 import { appendToActiveEventWriter } from "./event-jsonl-writer.js";
 import { publishFileExclusive, unlinkIfPresent } from "./exclusive-file-publication.js";
-import { type ArtifactPaths, TEMP_ARTIFACTS_DIR, TEMP_ROOT_DIR } from "./types.js";
+import type { ArtifactPaths } from "./types.js";
 
 const CLEANUP_MARKER_FILE = ".last-cleanup";
 const CLEANUP_LOCK_FILE = ".cleanup.lock";
@@ -24,22 +18,13 @@ export function getArtifactsDir(sessionFile: string | null): string {
 	return sessionlessArtifactsDir();
 }
 
-let refusedTempArtifactsFallback: string | undefined;
-
 /**
- * The session-less artifact directory, created private to this account before
- * anything (progress files, worktree diffs) is written below it. When the
- * per-user location cannot be trusted, a fresh owner-only `mkdtemp` directory
- * is used instead, so nothing is written into a directory someone else controls.
+ * The session-less artifact directory, created private to this account (see
+ * `ensurePrivateTempDir`) before anything — progress files, worktree diffs — is
+ * written below it, and checked again on every call.
  */
 function sessionlessArtifactsDir(): string {
-	try {
-		ensurePrivateTempDir(path.basename(TEMP_ROOT_DIR), path.basename(TEMP_ARTIFACTS_DIR));
-		return TEMP_ARTIFACTS_DIR;
-	} catch {
-		refusedTempArtifactsFallback ??= fs.mkdtempSync(path.join(os.tmpdir(), "atomic-subagent-artifacts-"));
-		return refusedTempArtifactsFallback;
-	}
+	return ensurePrivateTempDir("subagents", "artifacts");
 }
 
 export function getArtifactPaths(artifactsDir: string, runId: string, agent: string, index?: number): ArtifactPaths {
@@ -55,23 +40,7 @@ export function getArtifactPaths(artifactsDir: string, runId: string, agent: str
 }
 
 export function ensureArtifactsDir(dir: string): void {
-	if (dir === TEMP_ARTIFACTS_DIR) {
-		// The session-less default lives in the shared temp directory; only a
-		// directory this account owns privately is used (others are refused).
-		ensurePrivateTempDir(path.basename(TEMP_ROOT_DIR), path.basename(TEMP_ARTIFACTS_DIR));
-		return;
-	}
 	fs.mkdirSync(dir, { recursive: true });
-}
-
-/** True when the session-less artifact directory and its parents are private to this account. */
-function tempArtifactsDirIsPrivate(): boolean {
-	try {
-		for (const dir of [resolvePrivateTempDirPath(), TEMP_ROOT_DIR, TEMP_ARTIFACTS_DIR]) assertPrivateDirectory(dir);
-		return true;
-	} catch {
-		return false;
-	}
 }
 
 export function writeArtifact(filePath: string, content: string): void {
@@ -269,7 +238,11 @@ function cleanupSessionsRoot(sessionsBase: string, maxAgeDays: number): void {
 }
 
 export function cleanupAllArtifactDirs(maxAgeDays: number, sessionsRoots?: readonly string[]): void {
-	if (tempArtifactsDirIsPrivate()) cleanupOldArtifacts(TEMP_ARTIFACTS_DIR, maxAgeDays);
+	try {
+		cleanupOldArtifacts(sessionlessArtifactsDir(), maxAgeDays);
+	} catch {
+		// No private session-less artifact directory; there is nothing of ours to clean.
+	}
 
 	// Host-provided sessions roots keep isolated/programmatic agent directories from
 	// leaking into the real global (and legacy) session roots; only the env/global

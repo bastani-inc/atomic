@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
 import { Type } from "typebox";
-import { createChildProcessEnvironment, ensurePrivateTempDir, resolvePrivateTempDirPath } from "@bastani/atomic";
+import { createChildProcessEnvironment, ensurePrivateTempDir } from "@bastani/atomic";
 import type { WorkflowTaskResult } from "../src/shared/types.js";
 
 
@@ -119,14 +119,6 @@ export function joinResults(results: readonly WorkflowTaskResult[]): string {
 const TMP_ARTIFACT_DIR = "open-claude-design";
 
 /**
- * Temp base for run artifacts: below a temp directory only the current account
- * owns, never a fixed name another account could create first.
- */
-function tmpArtifactBase(): string {
-  return resolvePrivateTempDirPath(TMP_ARTIFACT_DIR);
-}
-
-/**
  * Compute (and best-effort create) a per-run artifact directory.
  * Prefers `<cwd>/.atomic/workflows/open-claude-design/<runId>` so the artifacts
  * stay next to the project and are discoverable by pi. Falls back to a
@@ -142,15 +134,16 @@ export function prepareArtifactDir(cwd = process.cwd()): {
   const runId = `${new Date().toISOString().replace(/[:.]/g, "-")}-${Math.random().toString(36).slice(2, 8)}`;
   // Under automated tests, prefer the OS tmpdir so a full `d.run()` does not
   // pollute the project's `specs/design/` tree with per-run artifact folders.
-  const tmpCandidate = join(tmpArtifactBase(), runId);
+  // The temp fallback lives below a directory only this account owns (see
+  // `ensurePrivateTempDir`), never a fixed name another account could create.
+  const tmpCandidate = (): string => join(ensurePrivateTempDir(TMP_ARTIFACT_DIR), runId);
   const candidates =
     process.env.NODE_ENV === "test"
       ? [tmpCandidate]
-      : [join(cwd, "specs", "design", runId), tmpCandidate];
-  for (const candidate of candidates) {
+      : [() => join(cwd, "specs", "design", runId), tmpCandidate];
+  for (const resolveCandidate of candidates) {
     try {
-      // Refuses (and so skips) a temp base that is not this account's own.
-      if (candidate === tmpCandidate) ensurePrivateTempDir(TMP_ARTIFACT_DIR);
+      const candidate = resolveCandidate();
       mkdirSync(candidate, { recursive: true });
       return {
         runId,
