@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added `AgentSession.getPersistenceFailure()`: after a run stopped because a message could not be saved, it returns the storage error and the messages the session holds in memory but could not save, so a caller can report them ([#5210](https://github.com/bastani-inc/atomic/issues/5210))
 - Added `modelCallUsage(event)`, which returns the usage of the one model call a session event reports (an assistant response, a compaction request, a child session's call, or a `usage` entry such as cache warming), or `undefined` for any other event ([#5053](https://github.com/bastani-inc/atomic/issues/5053))
 - Added `AgentSession.stopTurns(reason)`: while a reason is set, the session starts no further model call within a turn. Each tool call is answered as cancelled with that reason, and the run ends without polling steering or follow-ups, which wait for the next prompt. `stopTurns(undefined)` resumes normal turns. Workflow budgets use it to stop a stage at its cap ([#5053](https://github.com/bastani-inc/atomic/issues/5053))
 - Added the `child_session_usage` session event: a session reports each model call of a child session it created through its child session options, such as an in-process subagent, and of that child's own children, so an integration can charge a session's subagents' spend ([#5053](https://github.com/bastani-inc/atomic/issues/5053))
