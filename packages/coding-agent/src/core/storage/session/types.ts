@@ -76,18 +76,25 @@ export interface SessionOpenMarker {
 	readonly token: string;
 	readonly pid: number;
 	readonly host: string;
-	/** When the mark was last refreshed, in milliseconds since the epoch on the marking host's clock. */
-	readonly heartbeatAt: number;
+}
+
+/** A marker as a store lists it. */
+export interface SessionOpenMarkerAge extends SessionOpenMarker {
+	/**
+	 * How long ago, in milliseconds, the marker was last refreshed, by the store's own clock: every host reads one
+	 * clock, so a host whose clock is off does not take a live mark for a stale one.
+	 */
+	readonly ageMs: number;
 }
 
 /** Where a store keeps which running sessions have its sessions open, so that every host sharing it sees them (#4971). */
 export interface SessionOpenMarkerStore {
-	/** Adds `marker` to `sessionId`'s, or refreshes the one with its token. */
+	/** Adds `marker` to `sessionId`'s, or refreshes the one with its token, stamped with the store's clock. */
 	put(sessionId: string, marker: SessionOpenMarker): Promise<void>;
 	/** Removes `sessionId`'s marker with `token`, if there is one. */
 	remove(sessionId: string, token: string): Promise<void>;
 	/** `sessionId`'s markers, in no particular order. */
-	list(sessionId: string): Promise<readonly SessionOpenMarker[]>;
+	list(sessionId: string): Promise<readonly SessionOpenMarkerAge[]>;
 }
 
 export interface SessionStore {

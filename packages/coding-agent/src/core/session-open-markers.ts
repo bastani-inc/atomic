@@ -14,7 +14,12 @@ import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { getAgentDir } from "../config.js";
 import { SessionOpenElsewhereError } from "./session-manager-errors.js";
-import type { SessionOpenMarker, SessionOpenMarkerStore, SessionStore } from "./storage/session/types.js";
+import type {
+	SessionOpenMarker,
+	SessionOpenMarkerAge,
+	SessionOpenMarkerStore,
+	SessionStore,
+} from "./storage/session/types.js";
 
 /** How often a held marker's heartbeat is refreshed. */
 const HEARTBEAT_MS = 15_000;
@@ -67,7 +72,7 @@ class FileOpenMarkers implements SessionOpenMarkerStore {
 		}
 	}
 
-	async list(sessionId: string): Promise<readonly SessionOpenMarker[]> {
+	async list(sessionId: string): Promise<readonly SessionOpenMarkerAge[]> {
 		const directory = this.directory(sessionId);
 		let names: string[];
 		try {
@@ -81,7 +86,9 @@ class FileOpenMarkers implements SessionOpenMarkerStore {
 				const parsed = JSON.parse(readFileSync(path, "utf8")) as { pid?: unknown; host?: unknown };
 				if (typeof parsed.pid !== "number" || typeof parsed.host !== "string") return [];
 				const token = name.replace(/\.json$/, "");
-				return [{ token, pid: parsed.pid, host: parsed.host, heartbeatAt: statSync(path).mtimeMs }];
+				// The file system's clock stamps the file; files are shared only by hosts that share the agent directory.
+				const ageMs = Date.now() - statSync(path).mtimeMs;
+				return [{ token, pid: parsed.pid, host: parsed.host, ageMs }];
 			} catch {
 				// Being written or removed right now, or not a marker.
 				return [];
@@ -118,7 +125,7 @@ let heldCount = 0;
 let heartbeat: ReturnType<typeof setInterval> | undefined;
 
 function ownMarker(): SessionOpenMarker {
-	return { token: PROCESS_TOKEN, pid: process.pid, host: hostname(), heartbeatAt: Date.now() };
+	return { token: PROCESS_TOKEN, pid: process.pid, host: hostname() };
 }
 
 function refreshMarkers(): void {
@@ -217,7 +224,7 @@ export async function findSessionOpenHolder(
 		const gone =
 			marker.host === host &&
 			(marker.pid === process.pid ? marker.token !== PROCESS_TOKEN : !processAlive(marker.pid));
-		if (gone || Date.now() - marker.heartbeatAt > STALE_MS) {
+		if (gone || marker.ageMs > STALE_MS) {
 			await markers.remove(sessionId, marker.token).catch(() => {});
 			continue;
 		}

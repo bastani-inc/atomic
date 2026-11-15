@@ -321,7 +321,7 @@ describe("a session open on another host that shares a SQL store (#4971)", () =>
 			await target.appendMessage({ role: "user", content: "target", timestamp: Date.now() });
 			const deleter = await SessionManager.create(store, dir);
 			const sessionId = target.getSessionId();
-			const elsewhere = { token: "77-remote", pid: 77, host: "another-host", heartbeatAt: Date.now() };
+			const elsewhere = { token: "77-remote", pid: 77, host: "another-host" };
 			await store.openMarkers.put(sessionId, elsewhere);
 			await assert.rejects(deleter.deleteSession(sessionId), (error: unknown) => {
 				assert.ok(error instanceof SessionOpenElsewhereError);
@@ -330,13 +330,12 @@ describe("a session open on another host that shares a SQL store (#4971)", () =>
 			});
 			assert.equal(existsSync(join(dir, "open-sessions")), false, "no mark is a file");
 
-			await store.openMarkers.put(sessionId, { ...elsewhere, heartbeatAt: Date.now() - 120_000 });
-			await store.openMarkers.put(sessionId, {
-				token: "dead",
-				pid: 999_999_999,
-				host: hostname(),
-				heartbeatAt: Date.now(),
-			});
+			// Two minutes without a refresh, on the store's clock.
+			await database.run(
+				"UPDATE session_open SET heartbeat_at = heartbeat_at - 120000 WHERE token = ?",
+				"77-remote",
+			);
+			await store.openMarkers.put(sessionId, { token: "dead", pid: 999_999_999, host: hostname() });
 			await deleter.deleteSession(sessionId);
 			assert.deepEqual(await store.openMarkers.list(sessionId), []);
 		} finally {
@@ -345,6 +344,38 @@ describe("a session open on another host that shares a SQL store (#4971)", () =>
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
+
+	for (const skew of [-120_000, 120_000]) {
+		test(`a held mark counts when the reader's clock is ${skew > 0 ? "ahead of" : "behind"} the holder's by two minutes (#4971)`, async () => {
+			const dir = mkdtempSync(join(tmpdir(), "atomic-open-sql-"));
+			const database = await openNodeSqliteDatabase(join(dir, "shared.sqlite"));
+			const store = await SqlSessionStore.open(database);
+			const now = Date.now;
+			try {
+				const running = await SessionManager.create(store, dir);
+				await running.appendMessage({ role: "user", content: "running", timestamp: Date.now() });
+				const deleter = await SessionManager.create(store, dir);
+				// The holder writes its mark on a clock `skew` behind the reader's.
+				Date.now = () => now() - skew;
+				const release = running.holdOpen();
+				await vi.waitFor(async () =>
+					assert.equal((await store.openMarkers.list(running.getSessionId())).length, 1),
+				);
+				Date.now = now;
+				await assert.rejects(deleter.deleteSession(running.getSessionId()), SessionOpenElsewhereError);
+				// The reader's clock is ahead of the holder's by `skew`.
+				Date.now = () => now() + skew;
+				await assert.rejects(deleter.deleteSession(running.getSessionId()), SessionOpenElsewhereError);
+				Date.now = now;
+				await release();
+			} finally {
+				Date.now = now;
+				await store.close();
+				await database.close();
+				rmSync(dir, { recursive: true, force: true });
+			}
+		});
+	}
 
 	test("a running session's mark lives in the store while it is held (#4971)", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "atomic-open-sql-"));

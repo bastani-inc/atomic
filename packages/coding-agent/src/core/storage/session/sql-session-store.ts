@@ -27,6 +27,7 @@ import type {
 	SessionCwdMatcher,
 	SessionListQuery,
 	SessionOpenMarker,
+	SessionOpenMarkerAge,
 	SessionOpenMarkerStore,
 	SessionRecordHeader,
 	SessionSnapshot,
@@ -784,7 +785,7 @@ export class SqlSessionStore implements SessionStore {
 	}
 }
 
-type OpenMarkerRow = SqliteRow & { token: string; pid: number; host: string; heartbeat_at: number };
+type OpenMarkerRow = SqliteRow & { token: string; pid: number; host: string; age_ms: number };
 
 /** The running sessions that have a SQL store's sessions open, in a table every host sharing the store reads (#4971). */
 class SqlSessionOpenMarkers implements SessionOpenMarkerStore {
@@ -810,15 +811,16 @@ class SqlSessionOpenMarkers implements SessionOpenMarkerStore {
 
 	async put(sessionId: string, marker: SessionOpenMarker): Promise<void> {
 		this.assertOpen();
+		// The database's clock, not this host's: hosts whose clocks differ read the same heartbeat age.
+		const now = dialectOf(this.database).nowMs;
 		await this.database.run(
-			`INSERT INTO ${this.table} (session_id, token, pid, host, heartbeat_at) VALUES (?, ?, ?, ?, ?)
+			`INSERT INTO ${this.table} (session_id, token, pid, host, heartbeat_at) VALUES (?, ?, ?, ?, ${now})
 			 ON CONFLICT(session_id, token) DO UPDATE SET pid = excluded.pid, host = excluded.host,
 			 heartbeat_at = excluded.heartbeat_at`,
 			sessionId,
 			marker.token,
 			marker.pid,
 			marker.host,
-			marker.heartbeatAt,
 		);
 	}
 
@@ -827,17 +829,13 @@ class SqlSessionOpenMarkers implements SessionOpenMarkerStore {
 		await this.database.run(`DELETE FROM ${this.table} WHERE session_id = ? AND token = ?`, sessionId, token);
 	}
 
-	async list(sessionId: string): Promise<readonly SessionOpenMarker[]> {
+	async list(sessionId: string): Promise<readonly SessionOpenMarkerAge[]> {
 		this.assertOpen();
+		const now = dialectOf(this.database).nowMs;
 		const rows = await this.database.all<OpenMarkerRow>(
-			`SELECT token, pid, host, heartbeat_at FROM ${this.table} WHERE session_id = ?`,
+			`SELECT token, pid, host, ${now} - heartbeat_at AS age_ms FROM ${this.table} WHERE session_id = ?`,
 			sessionId,
 		);
-		return rows.map((row) => ({
-			token: row.token,
-			pid: Number(row.pid),
-			host: row.host,
-			heartbeatAt: Number(row.heartbeat_at),
-		}));
+		return rows.map((row) => ({ token: row.token, pid: Number(row.pid), host: row.host, ageMs: Number(row.age_ms) }));
 	}
 }
