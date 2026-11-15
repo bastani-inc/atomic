@@ -134,6 +134,16 @@ export class WorkflowStageAdmissionBoundary {
 		return this.taskHost;
 	}
 
+	/** Whether the stage is released: its task host waits for its next session (#5079). */
+	isParked(): boolean {
+		return this.parked;
+	}
+
+	/** Tells this stage generation in this process from one an earlier process ran (#5079). */
+	get attemptId(): string {
+		return this.stageAttemptId;
+	}
+
 	/** Task completions that arrived while the stage was parked, handed once to the session that binds next. */
 	takeParkedTaskSettlements(): ParkedTaskSettlement[] {
 		return this.parkedSettlements.splice(0);
