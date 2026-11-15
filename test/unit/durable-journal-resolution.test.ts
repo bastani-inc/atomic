@@ -64,7 +64,7 @@ test("explicit caller-owned connection wins and stays open", async () => {
 		const journal = await resolve({ journal: { database }, settings: conflicting });
 		assert.ok(journal instanceof SqlRunJournal);
 		await journal.close();
-		assert.equal((await database.get("SELECT schema_version FROM wf_meta"))?.schema_version, 1);
+		assert.equal((await database.get("SELECT schema_version FROM wf_meta"))?.schema_version, 2);
 	} finally {
 		await database.close();
 	}
