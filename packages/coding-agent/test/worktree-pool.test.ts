@@ -615,7 +615,10 @@ describe("worktree pool records and leases (#4748)", () => {
 		assert.match(repository, /^[0-9a-f]{24}$/);
 		assert.equal(lease.path, join(storeDir(), "worktrees", `${repository}-0`));
 		const record = JSON.parse(readFileSync(join(storeDir(), "pool", repository, "0.json"), "utf8")) as PoolSlotRecord;
+		// Each admission or claim names the take of the slot, so a holder that lost it can tell (#4830).
+		assert.match(record.tenancy ?? "", /^[0-9a-f-]{36}$/);
 		assert.deepEqual(record, {
+			tenancy: record.tenancy,
 			version: 1,
 			repository,
 			slot: 0,

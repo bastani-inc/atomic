@@ -1195,6 +1195,57 @@ test("a recipient that ends fails an ask from another node with the reason a loc
 	);
 });
 
+test("an asker that shares only one of its groups with an ended recipient gets its failure without a route reopened for it (#4842)", async () => {
+	const [a, b] = await cluster();
+	const asker = await a!.connect("asker", { groups: ["default", "elsewhere"] });
+	const recipient = await b!.connect("recipient");
+	const ask = message({ expectsReply: true });
+	a!.send(asker, "recipient", ask);
+	await waitFor(() => messageFrames(recipient, ask.id)[0]);
+	b!.router.received(recipient, ask.id);
+	assert.equal((await waitFor(() => outcomeOf(asker, ask.id))).type, "delivered");
+
+	b!.leave(recipient);
+	const failure = await waitFor(() =>
+		framesOf(asker).find((frame) => frame.type === "message" && frame.message.replyTo === ask.id),
+	);
+	assert.ok(failure.type === "message");
+	assert.equal(failure.message.replyError, 'Session "recipient" ended before replying');
+	// One shared group is enough: a late reply from the ended session is refused.
+	assert.deepEqual(
+		await a!.opened.state.pendingAsks.matchesReply({
+			replySenderSessionId: recipient.info.id,
+			replyTargetSessionId: asker.info.id,
+			replyTo: ask.id,
+		}),
+		{ status: "no-match" },
+	);
+});
+
+test("a recipient that ends still fails a known asker's ask after an ask whose asker is no longer known (#4842)", async () => {
+	const [a, b] = await cluster();
+	const asker = await a!.connect("asker");
+	const recipient = await b!.connect("recipient");
+	// An older ask whose asker is neither live nor remembered any more: no one can be told about it.
+	await b!.opened.state.pendingAsks.record({
+		senderSessionId: randomUUID(),
+		targetSessionId: recipient.info.id,
+		messageId: randomUUID(),
+	});
+	const ask = message({ expectsReply: true });
+	a!.send(asker, "recipient", ask);
+	await waitFor(() => messageFrames(recipient, ask.id)[0]);
+	b!.router.received(recipient, ask.id);
+	assert.equal((await waitFor(() => outcomeOf(asker, ask.id))).type, "delivered");
+
+	b!.leave(recipient);
+	const failure = await waitFor(() =>
+		framesOf(asker).find((frame) => frame.type === "message" && frame.message.replyTo === ask.id),
+	);
+	assert.ok(failure.type === "message");
+	assert.equal(failure.message.replyError, 'Session "recipient" ended before replying');
+});
+
 test("an asker that moved to its recipient's broker while away gets the failure there when the recipient ends (#4842)", async () => {
 	const [a, b] = await cluster();
 	const returnAddress = randomUUID();

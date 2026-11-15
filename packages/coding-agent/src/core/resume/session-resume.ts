@@ -37,6 +37,7 @@ import {
 	type VerifyWorktreeOptions,
 	verifyWorktree,
 } from "../worktree-snapshot/restore.ts";
+import { holdsSessionSnapshotRef } from "../worktree-snapshot/session-refs.ts";
 import type {
 	WorktreeRootMapping,
 	WorktreeSnapshot,
@@ -252,7 +253,8 @@ async function reuseLaunchCheckout(
 
 /**
  * Moves a session that a resume restored into a worktree, and that has not worked in it since, back to the checkout it
- * was restored from, when that checkout is on this node and its repository holds the snapshot's commit (#4660). The
+ * was restored from, when that checkout is on this node and its repository holds the snapshot's commit (#4660), or the
+ * session's snapshot ref for it (#4923). The
  * session continues there as the checkout is now, even when it changed since the snapshot. Undefined keeps the session
  * in its worktree: the worktree is not one Atomic restored, it changed or recorded another snapshot since, or the
  * checkout it came from is gone or is another clone.
@@ -273,7 +275,7 @@ async function returnToStartingCheckout(
 	if (isInside(storeDir, checkout) || !existsSync(cwd)) return undefined;
 	// When the checkout cannot be examined, the project the session started in is still where it goes back to.
 	const examined = await orFallBack(options, "return-to-checkout-verify", undefined, async () => ({
-		holdsCommit: await holdsSnapshotCommit(match.snapshot, checkout, options.signal),
+		holdsCommit: await workedInCheckout(match.snapshot, checkout, sessionManager.getSessionId(), options.signal),
 		matches: !(await worktreeNeedsRestore(match.snapshot, checkout, options)),
 	}));
 	if (examined !== undefined && !examined.holdsCommit) return undefined;
@@ -1033,6 +1035,22 @@ export async function holdsSnapshotCommit(
 }
 
 /**
+ * Whether session `sessionId` worked in the checkout at `root`: its repository holds the commit of `snapshot`, or,
+ * once `git gc` pruned that commit, keeps the session's snapshot ref for the checkout (#4923).
+ */
+async function workedInCheckout(
+	snapshot: WorktreeSnapshot,
+	root: string,
+	sessionId: string,
+	signal: AbortSignal | undefined,
+): Promise<boolean> {
+	return (
+		(await holdsSnapshotCommit(snapshot, root, signal)) ||
+		(await holdsSessionSnapshotRef(sessionId, snapshot, root, signal))
+	);
+}
+
+/**
  * Where a woken session continues. Each checkout it recorded that it worked in on this node stays as it is, since work
  * done in it after the release belongs to the session, and a blueprint build that failed or did not finish in a worktree
  * this node restored for it runs again. Every other checkout, as when it is missing or another clone sits at its path on another
@@ -1086,7 +1104,7 @@ export async function continueSessionWhereItWorked(
 /**
  * The roots of the `checkouts` a session recorded that are here as checkouts it worked in on this node, as it left them
  * or changed since: a worktree this node restored for it, or a checkout whose repository holds the commit of its latest
- * snapshot. A pooled worktree counts only while session `sessionId` owns it: another session that took the slot works
+ * snapshot or the session's snapshot ref for it (#4923). A pooled worktree counts only while session `sessionId` owns it: another session that took the slot works
  * in it now (#4748). The checkout the session works in counts only while its working directory `cwd` is here too.
  */
 async function checkoutsWorkedHere(
@@ -1102,13 +1120,14 @@ async function checkoutsWorkedHere(
 		if (!existsSync(isInside(root, cwd) ? cwd : root)) continue;
 		const holder = await pooledWorktreeHolder(storeDir, root);
 		if (holder !== "unpooled") {
-			// Slots share their repository's object store, so only the pool record tells whose work a slot holds.
-			const owned = holder.owner?.kind === "session" && holder.owner.id === sessionId;
+			// Slots share their repository's object store, so only the pool record tells whose work a slot holds, and a
+			// slot the session could not hold, or lost while stalled, is not its to continue in (#4830).
+			const owned = !(await pooledWorktreeOwnedElsewhere(storeDir, root, sessionId));
 			if (owned && !partial.has(resolve(root))) own.add(root);
 			continue;
 		}
 		const restoredHere = isInside(storeDir, root) && !partial.has(resolve(root));
-		if (restoredHere || (await holdsSnapshotCommit(snapshot, root, options.signal))) own.add(root);
+		if (restoredHere || (await workedInCheckout(snapshot, root, sessionId, options.signal))) own.add(root);
 	}
 	return own;
 }
