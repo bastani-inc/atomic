@@ -1,7 +1,9 @@
 import type { AgentSessionEvent } from "@bastani/atomic";
 import type {
+	ResumeClaim,
 	recordedInvocationCwd,
 	restorePreconditionsChecked,
+	resumeClaim,
 	resumeLaunchCwd,
 } from "../../durable/run-restore-preconditions.js";
 import type { ToolAdmissionBoundary } from "../../engine/run-tool-admission-boundary.js";
@@ -74,6 +76,7 @@ export interface RunOpts
 	[restorePreconditionsChecked]?: true;
 	[resumeLaunchCwd]?: string;
 	[recordedInvocationCwd]?: string;
+	[resumeClaim]?: ResumeClaim;
 	/**
 	 * Send this root run tree's console output to the workflow log instead of stderr (#4175). Its owner sets it when a
 	 * terminal UI shows that stderr in the chat; child runs inherit their root's decision.
