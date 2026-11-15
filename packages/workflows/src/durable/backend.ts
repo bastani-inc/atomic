@@ -313,7 +313,8 @@ export interface DurableWorkflowBackend {
 	/**
 	 * Undo an aborted adoption by `adopter`, merging into whatever was written since: only while `adopter` still owns
 	 * the run, the run goes back to `modelOwner` and `releasedModelOwner`, and back to `status` if it is still `running`
-	 * from the adoption. A pause, its pending prompts and its resumability stay. False when another owner has it.
+	 * from the adoption. A pause, its pending prompts and its resumability stay; a run left paused is released by
+	 * `modelOwner` when it was not already, so it stays adoptable. False when another owner has it.
 	 */
 	commitAdoptionRollback?(
 		workflowId: string,

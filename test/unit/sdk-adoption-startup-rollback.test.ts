@@ -508,15 +508,43 @@ for (const [kind, overrides, preClaim] of [
 					status,
 					pendingPrompts,
 					modelOwner: "old-session",
-					releasedModelOwner: kind === "released" ? "old-session" : undefined,
+					// A paused run whose owner is gone is released by it, so another session can adopt it.
+					releasedModelOwner: kind === "released" || status === "paused" ? "old-session" : undefined,
 				},
 			);
 			assert.equal(f.store.run(f.id), f.source);
 			// The adopting session holds no phantom run: its next resume is decided by the run, not refused as its own.
 			const again = await resumeDurableWorkflow(f.id, f.deps);
 			assert.doesNotMatch(again.message, /already running in this session/);
-			if (status !== "paused" || kind === "released") assert.equal(again.ok, true, again.message);
+			assert.equal(again.ok, true, again.message);
 			await f.deps.jobs.get(f.id)?.promise;
 		});
 	}
 }
+
+test("a crashed run paused during an aborted adoption's claim is released by its previous owner, so another session can adopt it (#5149)", async () => {
+	const backend = await createMemoryTestBackend();
+	const held = holdClaim(backend);
+	const f = await fixture(backend, { pendingPrompts: 1, resumable: true });
+	const controller = new AbortController();
+	const reason = new Error("abort adoption");
+	const pending = resumeDurableWorkflow(f.id, { ...f.deps, signal: controller.signal }).catch((error) => error);
+	await held.claimed;
+	controller.abort(reason);
+	await f.backend.commitWorkflowStatusTransition(f.id, ["running"], "paused", 1, true);
+	held.release();
+	assert.equal(await pending, reason);
+	await vi.waitFor(() => {
+		const handle = f.backend.getWorkflow(f.id);
+		assert.deepEqual(
+			[handle?.status, handle?.pendingPrompts, handle?.modelOwner, handle?.releasedModelOwner],
+			["paused", 1, "old-session", "old-session"],
+		);
+	});
+	const adopted = await resumeDurableWorkflow(f.id, {
+		...f.deps,
+		baseRunOpts: { ...f.deps.baseRunOpts, modelOwner: "third-session" },
+	});
+	assert.equal(adopted.ok, true, adopted.message);
+	await f.deps.jobs.get(f.id)?.promise;
+});

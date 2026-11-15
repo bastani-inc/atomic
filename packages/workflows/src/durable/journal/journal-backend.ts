@@ -979,15 +979,19 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		const current = this.projection.getWorkflow(runId);
 		if (current === undefined || current.modelOwner !== adopter) return false;
 		if (current.status !== "running" && current.status !== "paused") return false;
+		const restored = current.status === "running" ? status : current.status;
+		// #5149: a run left paused goes back released by its previous owner, as any paused run whose owner is gone, so
+		// another session can adopt it; a running one stays adoptable once its lease is free.
+		const released = restored === "paused" ? (releasedModelOwner ?? modelOwner) : releasedModelOwner;
 		return yield* this.transition(
 			runId,
 			[current.status],
-			current.status === "running" ? status : current.status,
+			restored,
 			undefined,
 			undefined,
 			current.updatedAt,
 			modelOwner,
-			releasedModelOwner,
+			released,
 		);
 	}
 	commitClaimedWorkflowRegistration(
