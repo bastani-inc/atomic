@@ -491,7 +491,7 @@ const JSON_PROVIDER_STATUS_PATTERN = /"status"\s*:\s*"([A-Z_]+)"/;
  * permanent HTTP status in the text names no transient kind (#4994).
  */
 function transientKindFromMessage(message: string): ModelFallbackFailureKind | undefined {
-	const leadingStatus = LEADING_HTTP_STATUS_PATTERN.exec(message.trim());
+	const leadingStatus = LEADING_HTTP_STATUS_PATTERN.exec(message);
 	const status = integerFrom(leadingStatus?.[1] ?? leadingStatus?.[2] ?? JSON_ERROR_CODE_PATTERN.exec(message)?.[1]);
 	const kind =
 		status === undefined

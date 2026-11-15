@@ -197,7 +197,15 @@ test.each([
 	["a prefixed status", "OpenAI API error (503): The model is currently unavailable."],
 	["a JSON error code", '{"error":{"code":503,"message":"The model is unavailable."}}'],
 	["a gRPC UNAVAILABLE status", '{"error":{"message":"The model is unavailable.","status":"UNAVAILABLE"}}'],
-	["an overloaded model", "The model is overloaded. Please try again later."],
+	[
+		"a JSON error code in a pretty-printed body",
+		'{\n  "error": {\n    "code": 503,\n    "message": "The model is unavailable."\n  }\n}',
+	],
+	[
+		"a provider status in a pretty-printed body",
+		'{\n  "error": {\n    "message": "The model is unavailable.",\n    "status": "UNAVAILABLE"\n  }\n}',
+	],
+	["an overloaded model", "The model is overloaded and unavailable. Please try again later."],
 ])("message text never condemns the model over %s (#4994)", (_label, errorMessage) => {
 	const message = { role: "assistant", stopReason: "error", errorMessage };
 
@@ -210,4 +218,47 @@ test("message text still names a missing model behind a permanent status (#4994)
 		const message = { role: "assistant", stopReason: "error", errorMessage };
 		assert.equal(normalizeModelFailureSignal(message).kind, "model_unavailable", errorMessage);
 	}
+});
+
+test("message text never reads a transient status as an auth failure (#4994)", () => {
+	assert.equal(
+		normalizeModelFailureSignal(new Error("503: authentication backend unavailable")).kind,
+		"provider_unavailable",
+	);
+});
+
+test("a provider status alone in the text is a transient failure (#4994)", () => {
+	const failure = new Error('{"error":{"status":"UNAVAILABLE","message":"Try again later."}}');
+
+	assert.equal(normalizeModelFailureSignal(failure).kind, "provider_unavailable");
+	assert.equal(isRetryableSameModelFailure(failure), true);
+});
+
+test.each([
+	["UNAVAILABLE", "provider_unavailable"],
+	["RESOURCE_EXHAUSTED", "rate_limit"],
+])("Google's %s provider status is a %s (#4994)", (code, kind) => {
+	assert.equal(normalizeModelFailureSignal({ code }).kind, kind);
+});
+
+test("a transient HTTP status in a failure diagnostic outranks model-condemning text (#4994)", () => {
+	const message = {
+		role: "assistant",
+		stopReason: "error",
+		errorMessage: "The model is unavailable",
+		diagnostics: [{ type: "provider_response_failure", details: { status: 503 } }],
+	};
+
+	assert.equal(normalizeModelFailureSignal(message).kind, "provider_unavailable");
+	assert.equal(isRetryableSameModelFailure(message), true);
+});
+
+test.each([
+	["a status that is not where the message starts", "The model gpt-9 was not found after 500 ms"],
+	["a status not followed by a separator", "503Service: the model is unavailable"],
+	["a permanent leading status", "400: The model gpt-9 was not found"],
+])("message text still names a missing model over %s (#4994)", (_label, errorMessage) => {
+	const message = { role: "assistant", stopReason: "error", errorMessage };
+
+	assert.equal(normalizeModelFailureSignal(message).kind, "model_unavailable");
 });
