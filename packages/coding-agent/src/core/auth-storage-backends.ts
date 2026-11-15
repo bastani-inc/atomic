@@ -11,7 +11,7 @@ import {
 	statSync,
 	writeFileSync,
 } from "fs";
-import { dirname, join } from "path";
+import { basename, dirname, join } from "path";
 import lockfile, { type LockOptions } from "proper-lockfile";
 import { getAgentDir } from "../config.js";
 import { normalizePath } from "../utils/paths.ts";
@@ -71,6 +71,19 @@ const REALPATH_ATTEMPTS = 20;
  * Bun's realpath can fail with ENOENT while another process renames the target into place, so ENOENT is retried
  * while the path still exists.
  */
+/**
+ * The path whose lock guards auth.json at `path`: the resolved file, or, before auth.json exists, its name in the
+ * resolved directory, so a first save is locked as well (#5161).
+ */
+function resolveAuthLockPath(path: string): string {
+	try {
+		return resolveExistingAuthPath(path);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException | null)?.code !== "ENOENT" || existsSync(path)) throw error;
+		return join(realpathSync(dirname(path)), basename(path));
+	}
+}
+
 function resolveExistingAuthPath(path: string): string {
 	for (let attempt = 1; ; attempt++) {
 		try {
@@ -213,11 +226,18 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 		}
 	}
 
+	/**
+	 * Creates an empty auth.json when there is none. The create is exclusive, so it never replaces a file another
+	 * process has just saved credentials to (#5161).
+	 */
 	private ensureFileExists(): void {
-		if (!existsSync(this.authPath)) {
-			writeFileSync(this.authPath, "{}", AUTH_FILE_WRITE_OPTIONS);
-			chmodSync(this.authPath, 0o600);
+		try {
+			writeFileSync(this.authPath, "{}", { ...AUTH_FILE_WRITE_OPTIONS, flag: "wx" });
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "EEXIST") return;
+			throw error;
 		}
+		chmodSync(this.authPath, 0o600);
 	}
 
 	private getRetryableLockErrorCode(error: unknown): "ELOCKED" | "EPERM" | undefined {
@@ -262,7 +282,7 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 	/** Takes the lock of the auth file `path`, waiting while other processes save to it (see {@link waitForLockSync}). */
 	private acquireLockSyncWithRetry(path: string): () => void {
 		// Lock the resolved file so symlinked aliases of auth.json share one lock (pi #11655).
-		const resolved = resolveExistingAuthPath(path);
+		const resolved = resolveAuthLockPath(path);
 		return waitForLockSync(
 			(fs) => lockfile.lockSync(resolved, { realpath: false, stale: AUTH_FILE_SYNC_LOCK_STALE_MS, fs }),
 			this.authFileLockWait(resolved, AUTH_FILE_SYNC_LOCK_WAIT_MS, AUTH_FILE_SYNC_LOCK_STALE_MS, () => true),
@@ -410,18 +430,12 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 
 		let release: (() => void) | undefined;
 		try {
-			if (existsSync(this.authPath)) {
-				release = this.acquireLockSyncWithRetry(this.authPath);
-			}
+			// The lock is taken even before auth.json exists, so a first save never overwrites another process's (#5161).
+			release = this.acquireLockSyncWithRetry(this.authPath);
 			const current = this.readMergedAuth();
 			const { result, next } = fn(current);
 			if (next !== undefined) {
-				if (!existsSync(this.authPath)) {
-					this.ensureFileExists();
-				}
-				if (!release) {
-					release = this.acquireLockSyncWithRetry(this.authPath);
-				}
+				this.ensureFileExists();
 				this.writeAtomic(next);
 			}
 			return result;
