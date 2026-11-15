@@ -32,12 +32,14 @@ test(
 	async () => {
 		const f = await fixture("root", undefined, { leaseMs: LEASE_MS, heartbeatMs: HEARTBEAT_MS });
 		try {
-			await f.finishing();
-			const stats = () => f.store.run("root")?.pool?.coordination;
-			await waitUntil(async () => (stats()?.requests.heartbeat?.count ?? 0) > 0, f.budget);
 			// The first heartbeat confirms the claim before the attempt starts (#5034), and the attempt reads pool control as
 			// it starts: the sample begins once the attempt is running.
-			await sleep(2 * HEARTBEAT_MS);
+			await f.finishing();
+			const stats = () => f.store.run("root")?.pool?.coordination;
+			// The pool publishes its counts every POOL_COORDINATION_STATS_INTERVAL_MS, so the counts seen now may predate the
+			// attempt's start-up control reads. The first sample is the next publication, which counts them.
+			const published = stats();
+			await waitUntil(async () => stats() !== published && (stats()?.requests.heartbeat?.count ?? 0) > 0, f.budget);
 			const firstSnapshot = stats()!;
 			const first = heartbeatTraffic(firstSnapshot);
 			await waitUntil(

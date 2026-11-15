@@ -109,6 +109,26 @@ export function collectSettingsDiagnostics(
 	}));
 }
 
+/**
+ * A warning when the global settings that decide project trust could not be read (#5161): "defaultProjectTrust" then
+ * falls back to "ask", so a project without a saved decision is treated as untrusted, which skips its project settings,
+ * extensions and blueprint builds. None when `--approve` or `--deny` decides trust for the run.
+ */
+export function unreadableTrustSettingsDiagnostics(
+	settingsManager: Pick<SettingsManager, "getGlobalSettingsLoadError">,
+	trustOverride: boolean | undefined,
+): AgentSessionRuntimeDiagnostic[] {
+	const error = settingsManager.getGlobalSettingsLoadError();
+	if (error === null || trustOverride !== undefined) return [];
+	const path = (error as Error & { path?: string }).path;
+	return [
+		{
+			type: "warning",
+			message: `Could not read the global settings${path ? ` ${path}` : ""} (${error.message}), so "defaultProjectTrust" falls back to "ask": a project without a saved trust decision is treated as untrusted, and its project settings, extensions and blueprint builds are skipped. Pass --approve to trust the project for this run.`,
+		},
+	];
+}
+
 export function reportDiagnostics(diagnostics: readonly AgentSessionRuntimeDiagnostic[]): void {
 	for (const diagnostic of diagnostics) {
 		const color = diagnostic.type === "error" ? chalk.red : diagnostic.type === "warning" ? chalk.yellow : chalk.dim;

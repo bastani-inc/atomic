@@ -482,7 +482,7 @@ describe("atomic team join, status and leave (#4320)", () => {
 				assert.deepEqual([failure.code, failure.retryable], ["settings-locked", true]);
 				assert.equal(
 					failure.hint,
-					"Nothing was changed. Run the command again in a few seconds; a lock left by a killed process expires after 10 seconds.",
+					"Nothing was changed: the previous selection and its token are kept. Run the command again in a few seconds; a lock left by a killed process expires after 10 seconds.",
 				);
 				assert.equal(failure.subject, join(agentDir, "settings.json"));
 				assert.equal(settingsText(), before);

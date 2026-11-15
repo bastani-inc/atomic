@@ -885,7 +885,7 @@ describe("result shapes and edge paths (#4320)", () => {
 		});
 	});
 
-	test("the profile ignores untrusted project settings and reports a held lock as retryable (#4320)", () => {
+	test("the profile ignores untrusted project settings and is read while another process holds the lock (#4320, #5161)", () => {
 		mkdirSync(join(project, ".atomic"), { recursive: true });
 		writeFileSync(join(project, ".atomic", "settings.json"), JSON.stringify({ sessions: { storage: { dir: "s" } } }));
 		new ProjectTrustStore(agentDir).set(project, false);
@@ -893,17 +893,10 @@ describe("result shapes and edge paths (#4320)", () => {
 		new ProjectTrustStore(agentDir).set(project, true);
 		assert.equal(selectTeamProfile({ agentDir, cwd: project }).profile, "custom");
 		writeSettings({ theme: "dark" });
+		// Reading settings never takes the write lock (#5161): saves replace the file whole, so a held lock never stops it.
 		const release = lockfile.lockSync(join(agentDir, "settings.json"), { realpath: false });
 		try {
-			const locked = failure(() => selectTeamProfile({ agentDir, cwd: project })) as TeamProfileError;
-			assert.deepEqual(
-				[locked.code, locked.subject, locked.retryable],
-				["settings-locked", "global settings", true],
-			);
-			assert.equal(
-				locked.hint,
-				"Nothing was read. Run the command again in a few seconds; a lock left by a killed process expires after 10 seconds.",
-			);
+			assert.equal(selectTeamProfile({ agentDir, cwd: project }).profile, "custom");
 		} finally {
 			release();
 		}

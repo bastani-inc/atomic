@@ -205,16 +205,18 @@ export class McpOAuthCredentialStore {
 		const hash = createHash("sha256").update(key).digest("hex").slice(0, 16);
 		const lockPath = join(this.lockDir, `mcp-auth-refresh-${hash}`);
 		const release = await waitForLock(
-			() =>
+			(fs) =>
 				lockfile.lock(lockPath, {
 					realpath: false,
 					stale: REFRESH_LOCK_STALE_MS,
+					fs,
 					retries: 0,
 					// The default throws from a timer. A lost lock at worst lets two refreshes overlap.
 					onCompromised: () => {},
 				}),
 			{
 				lockPath: `${lockPath}.lock`,
+				staleMs: REFRESH_LOCK_STALE_MS,
 				holderWaitMs: REFRESH_LOCK_WAIT_MS,
 				pollMinMs: REFRESH_LOCK_RETRY_MS,
 				pollMaxMs: REFRESH_LOCK_RETRY_MS,
