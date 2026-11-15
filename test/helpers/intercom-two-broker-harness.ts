@@ -279,10 +279,11 @@ export class TwoBrokerHarness {
 		return broker !== undefined && broker.exitCode === null && broker.signalCode === null;
 	}
 
-	async startBroker(node: BrokerNode): Promise<void> {
+	/** `env`: added to this start's broker environment only, as a crash point (`ATOMIC_INTERCOM_BROKER_CRASH_AT`). */
+	async startBroker(node: BrokerNode, env: Readonly<Record<string, string>> = {}): Promise<void> {
 		const state = this.node(node);
 		const broker = spawn(process.execPath, [getJitiCliPath(extensionDir), join(extensionDir, "broker/broker.ts")], {
-			env: { ...process.env, ...this.brokerEnv, ATOMIC_CODING_AGENT_DIR: state.fixture.agentDir },
+			env: { ...process.env, ...this.brokerEnv, ...env, ATOMIC_CODING_AGENT_DIR: state.fixture.agentDir },
 			stdio: "ignore",
 		});
 		state.broker = broker;
