@@ -221,7 +221,7 @@ Atomic rejects authorization responses whose `iss` names another issuer, before 
 An HTTP server can use your current provider login token instead of MCP OAuth:
 
 ```json
-{ "mcpServers": { "radius": { "url": "https://radius.example/mcp", "auth": { "provider": "radius" } } } }
+{ "mcpServers": { "gateway": { "url": "https://gateway.example/mcp", "auth": { "provider": "openrouter" } } } }
 ```
 
 Atomic reads the current token for every request and does not copy it into MCP credential storage. If the token is missing or rejected, run `/login <provider>` and retry the MCP call. `atomic mcp list` also sends the provider token, refreshing an expired login, and its sign-in hint for such a server names `/login <provider>`. `atomic mcp login` and `atomic mcp logout` do not apply to these servers; they point to `atomic auth login <provider>` and `atomic auth logout <provider>`, which work like `/login` and `/logout` in Atomic.

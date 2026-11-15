@@ -1,6 +1,6 @@
 import { createProvider, InMemoryModelsStore, type Model } from "@bastani/atomic-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { withRemoteCatalog } from "../src/core/remote-catalog-provider.ts";
+import { clearRemoteCatalogCache, withRemoteCatalog } from "../src/core/remote-catalog-provider.ts";
 import { makeRefreshContext } from "./helpers/refresh-context.ts";
 
 function model(id: string): Model<"openai-completions"> {
@@ -8,8 +8,8 @@ function model(id: string): Model<"openai-completions"> {
 		id,
 		name: id,
 		api: "openai-completions",
-		provider: "test-provider",
-		baseUrl: "https://example.test/v1",
+		provider: "groq",
+		baseUrl: "https://api.groq.com/openai/v1",
 		reasoning: false,
 		input: ["text"],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -21,7 +21,7 @@ function model(id: string): Model<"openai-completions"> {
 function testProvider() {
 	return withRemoteCatalog(
 		createProvider({
-			id: "test-provider",
+			id: "groq",
 			auth: { apiKey: { name: "Test", resolve: async () => ({ auth: {} }) } },
 			models: [model("static")],
 			api: {
@@ -37,12 +37,33 @@ function testProvider() {
 	);
 }
 
-afterEach(() => vi.restoreAllMocks());
+/** A models.dev `api.json` body listing one tool-capable Groq model. */
+function modelsDevBody(id: string): string {
+	return JSON.stringify({
+		groq: {
+			id: "groq",
+			models: {
+				[id]: {
+					id,
+					name: id,
+					tool_call: true,
+					modalities: { input: ["text"] },
+					limit: { context: 1000, output: 100 },
+				},
+			},
+		},
+	});
+}
+
+afterEach(() => {
+	vi.restoreAllMocks();
+	clearRemoteCatalogCache();
+});
 
 describe("remote catalog ETag revalidation", () => {
 	it("sends a stored ETag and keeps the cached body on an empty 304", async () => {
 		const responses = [
-			new Response(JSON.stringify({ dynamic: model("dynamic") }), {
+			new Response(modelsDevBody("dynamic"), {
 				headers: { "content-type": "application/json", etag: '"catalog-1"' },
 			}),
 			new Response(null, { status: 304 }),
@@ -69,7 +90,7 @@ describe("remote catalog ETag revalidation", () => {
 	it("does not send a validator without a cached body", async () => {
 		const fetchSpy = vi
 			.spyOn(globalThis, "fetch")
-			.mockResolvedValue(new Response(JSON.stringify({ dynamic: model("dynamic") }), { status: 200 }));
+			.mockResolvedValue(new Response(modelsDevBody("dynamic"), { status: 200 }));
 		const provider = testProvider();
 		const store = new InMemoryModelsStore();
 		await store.write(provider.id, { models: [], checkedAt: 0, etag: '"orphan"' });

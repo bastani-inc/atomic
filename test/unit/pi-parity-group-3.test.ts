@@ -62,7 +62,7 @@ describe("HTTP settings parity", () => {
 	});
 });
 
-test("models.json preserves mid-conversation tool compat and constructs configured Radius providers", async () => {
+test("models.json preserves mid-conversation tool compat and rejects the removed Radius provider (#5174)", async () => {
 	const dir = await tempDir();
 	const path = join(dir, "models.json");
 	await writeFile(
@@ -76,7 +76,6 @@ test("models.json preserves mid-conversation tool compat and constructs configur
 					compat: { supportsMidConvoSystemMessages: true, supportsMidConvoToolAdditions: true },
 					models: [{ id: "moonshot" }],
 				},
-				corporate: { name: "Corporate Radius", baseUrl: "https://radius.example/v1", oauth: "radius" },
 			},
 		}),
 	);
@@ -84,10 +83,17 @@ test("models.json preserves mid-conversation tool compat and constructs configur
 	const compat = runtime.getModels("kimi")[0]?.compat as OpenAICompletionsCompat | undefined;
 	assert.equal(compat?.supportsMidConvoSystemMessages, true);
 	assert.equal(compat?.supportsMidConvoToolAdditions, true);
-	const radius = runtime.getProvider("corporate");
-	assert.equal(radius?.id, "corporate");
-	assert.equal(radius?.name, "Corporate Radius");
-	assert.equal(radius?.baseUrl, "https://radius.example/v1");
+	assert.equal(runtime.getError(), undefined);
+
+	await writeFile(
+		path,
+		JSON.stringify({
+			providers: { corporate: { name: "Corporate Radius", baseUrl: "https://radius.example/v1", oauth: "radius" } },
+		}),
+	);
+	const removed = await ModelRuntime.create({ modelsPath: path });
+	assert.match(removed.getError() ?? "", /^Provider "radius" was removed from Atomic: /u);
+	assert.equal(removed.getProvider("corporate"), undefined);
 });
 
 test("project autoload:false is a delta over a global package including workflows", async () => {
