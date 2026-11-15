@@ -111,7 +111,7 @@ export function createDurableStageEndRecorder(input: {
 				// completion leaves the failed run naming no node to resume from (#5027). Its failure is recorded if the
 				// store takes it; the live run names the stage either way.
 				input.failStage(runId, snapshot, error);
-				await recordStageCheckpoint(input.deps, snapshot, { metadataOnly: true }).catch(() => {});
+				await recordStageCheckpoint(input.deps, snapshot).catch(() => {});
 				throw error;
 			}
 		}
@@ -297,15 +297,13 @@ export function createDurableCachedStageRecorder(input: {
 					? immutableStageGroupError([checkpoint, replayRecord])
 					: undefined;
 			if (drift !== undefined) throw new DurableNestedTopologyError(`${drift} at ${replayKey}`);
-			// Replaying this run's own record, the record only says that this attempt reached the stage, which a later record
-			// of the attempt says as well, so a refusal of it does not fail the attempt (#5027). A replay into another run
-			// writes that run's only record of the stage.
+			// The stage's output is already among this run's records (a fork holds a copy of its source's): this record only
+			// says that this attempt reached the stage, which a later record of the attempt says as well, so a refusal of
+			// it does not fail the attempt (#5027).
 			const persistence =
 				replayRecord === undefined
 					? undefined
-					: checkpoint.topology?.run?.runId === input.run.id
-						? input.backend.commitAdditiveCheckpointBestEffort(replayRecord).then(() => {})
-						: input.backend.commitCheckpoint(replayRecord);
+					: input.backend.commitAdditiveCheckpointBestEffort(replayRecord).then(() => {});
 			for (const childRun of cachedDescendants ?? []) {
 				const existingRun = input.store.run(childRun.id);
 				const isDirectChild =

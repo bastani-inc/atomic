@@ -681,10 +681,8 @@ function withRecordedFailedTool(
 	failedToolNodeId: string | undefined,
 	recorded: RunSnapshot | undefined,
 ): RunSnapshot | undefined {
-	if (source === undefined || failedToolNodeId === undefined) return source;
-	if (source.toolNodes.some((node) => node.id === failedToolNodeId)) return source;
-	const failed = recorded?.toolNodes.find(
-		(node) => node.id === failedToolNodeId && (node.status === "failed" || node.status === "cancelled"),
-	);
-	return failed === undefined ? source : { ...source, toolNodes: [...source.toolNodes, failed] };
+	const failed = recorded?.toolNodes.find((node) => node.id === failedToolNodeId);
+	if (source === undefined || failed === undefined || source.toolNodes.some((node) => node.id === failed.id))
+		return source;
+	return { ...source, toolNodes: [...source.toolNodes, failed] };
 }
