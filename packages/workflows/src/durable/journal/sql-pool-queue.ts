@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID } from "node:crypto";
-import type { WorktreeSnapshot } from "@bastani/atomic";
+import type { SnapshotBlobStore, WorktreeSnapshot } from "@bastani/atomic";
 import {
 	assertStorageSchemaVersion,
 	renderStorageIdentifiers,
@@ -162,6 +162,35 @@ function withQueuedSnapshot(descriptor: PoolWorkDescriptor, queued: string): str
 	const workspaceSnapshot =
 		descriptor.execution.workspaceSnapshot ?? (JSON.parse(queued) as PoolWorkDescriptor).execution.workspaceSnapshot;
 	return serializeJson({ ...descriptor, execution: { ...descriptor.execution, workspaceSnapshot } });
+}
+/** A `blobs-collected` WorkspaceSnapshotError, told by name so this module does not load the snapshot code. */
+function isBlobsCollected(error: unknown): boolean {
+	return (
+		error instanceof Error &&
+		error.name === "WorkspaceSnapshotError" &&
+		(error as Error & { readonly code?: string }).code === "blobs-collected"
+	);
+}
+/**
+ * Rejects with a `blobs-collected` WorkspaceSnapshotError when `blobs` no longer hold a blob of `snapshots`, restarting
+ * the age of each it holds as storing it again would (#5077).
+ */
+async function assertSnapshotBlobsHeld(
+	blobs: SnapshotBlobStore | undefined,
+	snapshots: readonly WorktreeSnapshot[],
+): Promise<void> {
+	if (blobs === undefined || snapshots.length === 0) return;
+	const { snapshotBlobHashes, WorkspaceSnapshotError } = await import("@bastani/atomic");
+	for (const hash of [...new Set(snapshots.flatMap((snapshot) => wellFormed(snapshot, snapshotBlobHashes)))])
+		if (!(await blobs.refreshBlobs([hash]))) throw new WorkspaceSnapshotError("blobs-collected", hash);
+}
+/** `snapshot`'s blob hashes, or none for a record that is not well formed. */
+function wellFormed(snapshot: WorktreeSnapshot, hashesOf: (snapshot: WorktreeSnapshot) => string[]): string[] {
+	try {
+		return hashesOf(snapshot);
+	} catch {
+		return [];
+	}
 }
 /** The worktree snapshots a checkpoint records, where it carries a well-formed list of them. */
 function carriedSnapshots(checkpoint: DurableCheckpoint): readonly WorktreeSnapshot[] {
@@ -1421,6 +1450,10 @@ export class SqlPoolQueue {
 		const remote = this.remote!;
 		await remote.fresh(lease);
 		const checkpoint = mutation.checkpoint;
+		// The journal holds the snapshot's blobs, which this database cannot check as it stages the checkpoint (#5077):
+		// they are checked here, and their age restarts, so collection keeps them while the checkpoint waits to be
+		// delivered for as long as the grace window. A checkpoint whose blobs are gone is refused before it is staged.
+		await assertSnapshotBlobsHeld(remote.journal.snapshotBlobs, carriedSnapshots(checkpoint));
 		const key = JSON.stringify([RUN_EVENT_TYPES.checkpointRecorded, checkpoint.kind, checkpoint.checkpointId]);
 		const reads = this.checkpoints.begin(lease.runId);
 		const [existing, view] = await Promise.all([
@@ -1512,8 +1545,21 @@ export class SqlPoolQueue {
 	/** Steps 2 and 3 of {@link commitRemote} for one accepted event. */
 	private async deliver(lease: Lease, held: OutboxRow): Promise<PoolCommitReceipt> {
 		const remote = this.remote!;
-		const checkpoint = JSON.parse(held.payload) as DurableCheckpoint;
-		const outcome = await remote.append(lease, held.event_key, checkpoint);
+		let checkpoint = JSON.parse(held.payload) as DurableCheckpoint;
+		let outcome: Awaited<ReturnType<PoolRemoteJournal["append"]>>;
+		try {
+			outcome = await remote.append(lease, held.event_key, checkpoint);
+		} catch (error) {
+			if (!isBlobsCollected(error)) throw error;
+			// Its snapshot's blobs were collected while it waited (#5077): the checkpoint is recorded without the snapshot,
+			// so the work's progress is kept and nothing held back stops the queue.
+			const { worktreeSnapshots: _collected, ...rest } = checkpoint as DurableCheckpoint & {
+				readonly worktreeSnapshots?: unknown;
+			};
+			checkpoint = rest as DurableCheckpoint;
+			process.emitWarning(error as Error);
+			outcome = await remote.append(lease, held.event_key, checkpoint);
+		}
 		const forget = (tx: SqliteExecutor) =>
 			tx.run(
 				`DELETE FROM ${this.outbox} WHERE work = ? AND generation = ? AND operation = ?`,

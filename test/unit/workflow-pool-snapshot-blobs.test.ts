@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, test, vi } from "vitest";
@@ -332,5 +333,101 @@ for (const subject of commitSubjects) {
 		await blobs.putBlobs([kept]);
 		await commit(2, [stored]);
 		assert.deepEqual(await keys(), ["2"]);
+	});
+}
+
+/** A root on `subject` whose pool is in another database, as a local pool over a remote journal keeps it. */
+async function rootWithSeparatePool(subject: (typeof commitSubjects)[number]) {
+	const database = await subject.open(join(directory, `remote-${subject.name}`));
+	const journal = await SqlRunJournal.open(database);
+	const backend = await JournalDurableBackend.open(journal, { ownsJournal: false });
+	const poolJournal = await openSqlRunJournal(join(directory, `pool-${subject.name}.sqlite`));
+	closers.push(async () => {
+		await poolJournal.close();
+		await backend.close();
+		await journal.close();
+		await database.close();
+	});
+	await backend.commitWorkflowRegistration({
+		workflowId: "root",
+		name: "root",
+		inputs: {},
+		createdAt: 0,
+		status: "running",
+	});
+	const acquired = await journal.acquire("root", backend.holderId);
+	if (acquired.status !== "acquired") assert.fail("No root lease");
+	const { lease } = acquired;
+	const remote = new PoolRemoteJournal(journal, sqlPoolStorage(poolJournal)!);
+	await remote.mirror(lease);
+	const open = () => openSqlPoolQueue(poolJournal, remote);
+	const queue = await open();
+	await queue.initialize(lease, 60_000);
+	const first = poolWorkFixture("a");
+	const sibling = poolWorkFixture("b");
+	await queue.enqueue(lease, first.work, first.boundary);
+	await queue.enqueue(lease, sibling.work, sibling.boundary);
+	const attempt = (await queue.claim(lease, "worker-1", [first.work], 60_000)) as PoolWork;
+	assert.equal(attempt.childRunId, first.work.childRunId);
+	const run = { ...first.boundary.topology!.boundary!.child };
+	const blobs = journal.snapshotBlobs;
+	const patch = textBlob("separate pool patch");
+	await blobs.putBlobs([patch]);
+	const snapshot = syntheticSnapshot("separate", [patch.hash]);
+	const checkpoint: DurableToolCheckpoint = {
+		kind: "tool",
+		workflowId: "root",
+		checkpointId: `${first.work.scope}:tool:1`,
+		name: "tool",
+		argsHash: `${first.work.scope}:args:1`,
+		output: { saved: 1 },
+		completedAt: 1,
+		topology: { version: 1, nodeId: "tool-1", parentIds: [], ordinal: 1, order: 1, run },
+		worktreeSnapshots: [snapshot],
+	};
+	const commit = () => queue.commit(lease, attempt, "op-1", { kind: "checkpoint", checkpoint });
+	const recorded = async () => {
+		const found: DurableToolCheckpoint[] = [];
+		for await (const entry of journal.read("root"))
+			if (entry.event.type === RUN_EVENT_TYPES.checkpointRecorded && entry.event.payload.kind === "tool")
+				found.push(entry.event.payload as unknown as DurableToolCheckpoint);
+		return found;
+	};
+	const claimSibling = async () =>
+		(await (await open()).claim(lease, `worker-${randomUUID()}`, [sibling.work], 60_000))?.childRunId;
+	return { lease, remote, open, blobs, commit, recorded, claimSibling, sibling };
+}
+
+for (const subject of commitSubjects) {
+	test(`a pool in another database than its root's journal on ${subject.name} refuses a checkpoint whose snapshot blobs are gone, and still hands out other work (#5077)`, async () => {
+		const { blobs, commit, recorded, claimSibling, sibling } = await rootWithSeparatePool(subject);
+		await collectSnapshotGarbage(blobs, { graceSeconds: 0 });
+
+		await assert.rejects(commit(), { name: "WorkspaceSnapshotError", code: "blobs-collected" });
+		assert.equal(await claimSibling(), sibling.work.childRunId, "nothing it held back keeps other work waiting");
+		assert.deepEqual(await recorded(), []);
+	});
+
+	test(`a checkpoint a pool in another database accepted, whose snapshot blobs are collected before it reaches ${subject.name}, is recorded without them and the queue goes on (#5077)`, async () => {
+		const { lease, remote, open, blobs, commit, recorded, claimSibling, sibling } =
+			await rootWithSeparatePool(subject);
+		const append = remote.append.bind(remote);
+		let unreachable = true;
+		vi.spyOn(remote, "append").mockImplementation(async (...args) => {
+			if (unreachable) {
+				unreachable = false;
+				throw new Error("journal unreachable");
+			}
+			return append(...args);
+		});
+		await assert.rejects(commit(), /journal unreachable/);
+		await collectSnapshotGarbage(blobs, { graceSeconds: 0 });
+
+		assert.equal(await (await open()).drainOutbox(lease), 1, "the accepted checkpoint is delivered");
+		assert.equal(await claimSibling(), sibling.work.childRunId);
+		const [checkpoint, ...rest] = await recorded();
+		assert.deepEqual(rest, []);
+		assert.equal(checkpoint?.checkpointId.endsWith(":tool:1"), true);
+		assert.equal(checkpoint?.worktreeSnapshots, undefined, "without the snapshot whose blobs are gone");
 	});
 }
