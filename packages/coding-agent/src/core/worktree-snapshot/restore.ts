@@ -1365,16 +1365,12 @@ async function restoreDegradedValidated(
 			// check its HEAD and keep the checkout, recording the tree it holds.
 			verify: "head",
 		});
+		// This host's checkout filters may have changed files, and a case-insensitive file system may hold one file for
+		// paths that differ only in case: record what the worktree holds, and which files differ.
+		const differing = nulFields(
+			(await runGit(["diff-tree", "-r", "-z", "--name-only", "--no-renames", degraded.tree, measured], git)).stdout,
+		);
 		const folded = await caseFoldedPaths(git, degraded.tree, path);
-		if (measured === degraded.tree && folded.length === 0) return { path, degraded, warnings };
-		// This host's checkout filters changed files: record what the worktree holds, and which files differ.
-		const differing =
-			measured === degraded.tree
-				? []
-				: nulFields(
-						(await runGit(["diff-tree", "-r", "-z", "--name-only", "--no-renames", degraded.tree, measured], git))
-							.stdout,
-					);
 		const missingPaths = [...new Set([...degraded.missingPaths, ...differing, ...folded])].sort();
 		return { path, degraded: { ...degraded, tree: measured, missingPaths }, warnings };
 	});
@@ -1391,22 +1387,11 @@ async function caseFoldedPaths(git: GitRunOptions, tree: string, root: string): 
 		const key = path.toLowerCase();
 		groups.set(key, [...(groups.get(key) ?? []), path]);
 	}
-	const listings = new Map<string, Promise<Set<string>>>();
-	const names = (directory: string) => {
-		let listing = listings.get(directory);
-		if (listing === undefined) {
-			listing = readdir(join(root, directory)).then(
-				(entries) => new Set(entries),
-				() => new Set<string>(),
-			);
-			listings.set(directory, listing);
-		}
-		return listing;
-	};
 	const spelledAsRecorded = async (path: string) => {
 		const parts = path.split("/");
 		for (let index = 0; index < parts.length; index++) {
-			if (!(await names(parts.slice(0, index).join("/"))).has(parts[index]!)) return false;
+			const names: string[] = await readdir(join(root, ...parts.slice(0, index))).catch(() => []);
+			if (!names.includes(parts[index]!)) return false;
 		}
 		return true;
 	};
