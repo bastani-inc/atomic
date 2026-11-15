@@ -1,4 +1,6 @@
-import { homedir } from "os";
+import { createHash } from "crypto";
+import { lstatSync, mkdirSync } from "fs";
+import { homedir, tmpdir } from "os";
 import { join } from "path";
 
 /**
@@ -93,13 +95,63 @@ export function getBrokerWatchdogLogPath(agentDir: string = getAgentDir()): stri
   return join(getIntercomDirPath(agentDir), "broker-watchdog.log");
 }
 
+/**
+ * The longest Unix socket path, in bytes, a listener can bind: `sun_path` holds 108 bytes on Linux and 104 on macOS and
+ * the BSDs, one of them the terminating NUL. Node 22 silently truncates a longer path and Node 24 refuses it (#5040).
+ */
+export function maxUnixSocketPathBytes(platform: NodeJS.Platform): number {
+  return platform === "linux" ? 107 : 103;
+}
+
+/** A Windows pipe name is at most 256 characters. */
+const MAX_PIPE_NAME_LENGTH = 256;
+
+function agentDirDigest(agentDir: string): string {
+  return createHash("sha256").update(agentDir).digest("hex").slice(0, 16);
+}
+
+/**
+ * The per-user directory a too-long socket path moves to: under `$XDG_RUNTIME_DIR` when set, else the temp directory.
+ * It is created owner-only, and used only while it is a real directory owned by this user that no one else can enter.
+ */
+function privateSocketDirectory(): string {
+  const uid = process.getuid?.();
+  const directory = join(process.env.XDG_RUNTIME_DIR || tmpdir(), `atomic-intercom-${uid ?? "user"}`);
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const stats = lstatSync(directory);
+  const problem = !stats.isDirectory()
+    ? "it is not a directory (or is a symbolic link)"
+    : uid !== undefined && stats.uid !== uid
+      ? `it is owned by uid ${stats.uid}, not ${uid}`
+      : uid !== undefined && (stats.mode & 0o077) !== 0
+        ? `its mode ${(stats.mode & 0o777).toString(8)} lets other users in (expected 700)`
+        : undefined;
+  if (problem !== undefined) {
+    throw new Error(`Intercom refuses the broker socket directory ${directory}: ${problem}`);
+  }
+  return directory;
+}
+
+/**
+ * Where the broker listens and every client connects. Each caller derives it here, so they always agree. A socket path
+ * longer than the platform allows moves to a per-user directory, named after a digest of the agent directory (#5040).
+ */
 export function getBrokerSocketPath(
   platform: NodeJS.Platform = process.platform,
   agentDir: string = getAgentDir(),
 ): string {
   if (platform === "win32") {
-    return `\\\\.\\pipe\\pi-intercom-${sanitizePipeSegment(agentDir)}`;
+    const pipe = `\\\\.\\pipe\\pi-intercom-${sanitizePipeSegment(agentDir)}`;
+    return pipe.length <= MAX_PIPE_NAME_LENGTH ? pipe : `\\\\.\\pipe\\pi-intercom-${agentDirDigest(agentDir)}`;
   }
 
-  return join(getIntercomDirPath(agentDir), "broker.sock");
+  const socketPath = join(getIntercomDirPath(agentDir), "broker.sock");
+  if (Buffer.byteLength(socketPath) <= maxUnixSocketPathBytes(platform)) return socketPath;
+  const shortPath = join(privateSocketDirectory(), `${agentDirDigest(agentDir)}.sock`);
+  if (Buffer.byteLength(shortPath) > maxUnixSocketPathBytes(platform)) {
+    throw new Error(
+      `Intercom broker socket paths ${socketPath} and ${shortPath} are both longer than the ${maxUnixSocketPathBytes(platform)} bytes a Unix socket path allows`,
+    );
+  }
+  return shortPath;
 }

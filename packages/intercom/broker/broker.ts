@@ -167,6 +167,25 @@ const MULTI_NODE_OFF_REASONS: Readonly<Record<string, string>> = {
   "domain-only-adapter": "the storage adapter has no openDatabase hook",
 };
 
+function socketPathInode(): number | undefined {
+  try {
+    return statSync(SOCKET_PATH).ino;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The socket lock, or undefined when a starting broker still holds it after `budgetMs`. */
+async function acquireSocketLockWithin(budgetMs: number): Promise<(() => void) | undefined> {
+  const acquiring = acquireSocketReplacementLock(SOCKET_REPLACEMENT_LOCK_PATH);
+  const release = await Promise.race([
+    acquiring,
+    new Promise<undefined>((resolve) => setTimeout(resolve, budgetMs).unref()),
+  ]);
+  if (release === undefined) void acquiring.then((late) => late());
+  return release;
+}
+
 function exitBecauseLiveBrokerOwnsSocket(): never {
   console.error(`Intercom broker not started: a live broker already answers on ${SOCKET_PATH}`);
   process.exit(0);
@@ -482,7 +501,14 @@ class IntercomBroker {
     this.server.once("error", onError);
     this.server.listen(SOCKET_PATH, () => {
       this.server.off("error", onError);
-      if (process.platform !== "win32") this.boundSocketInode = statSync(SOCKET_PATH).ino;
+      if (process.platform !== "win32") {
+        const inode = socketPathInode();
+        if (inode === undefined) {
+          this.rebindVanishedSocket(attempt);
+          return;
+        }
+        this.boundSocketInode = inode;
+      }
       this.releaseStartupLock();
       // The pid file takes over from the start-up announcement the moment the broker answers.
       retractBrokerStartAnnouncement();
@@ -494,13 +520,24 @@ class IntercomBroker {
     });
   }
 
+  /**
+   * #5040: the path this broker just bound is gone. The startup lock is still held, so no broker that takes it can have
+   * bound the path since; the server is closed while nothing is there for its close to unlink, and bound again.
+   */
+  private rebindVanishedSocket(attempt: number): void {
+    this.server.close();
+    if (attempt >= LISTEN_ATTEMPTS) {
+      console.error(`Intercom broker could not listen on ${SOCKET_PATH}: the socket vanished after it was bound`);
+      this.abandonStart();
+      process.exit(1);
+    }
+    console.error(`Intercom broker socket ${SOCKET_PATH} vanished after it was bound; binding it again`);
+    this.listen(attempt + 1);
+  }
+
   private ownsSocketPath(): boolean {
     if (this.boundSocketInode === undefined) return process.platform === "win32";
-    try {
-      return statSync(SOCKET_PATH).ino === this.boundSocketInode;
-    } catch {
-      return false;
-    }
+    return socketPathInode() === this.boundSocketInode;
   }
 
   /**
@@ -3469,19 +3506,24 @@ class IntercomBroker {
     // Give this broker's leases up so other brokers see its sessions offline at once, within a bound.
     const leasesGivenUp = this.multiNode?.close().catch(() => {}) ?? Promise.resolve();
     const bound = new Promise<void>((resolve) => setTimeout(resolve, SHUTDOWN_CLOSE_BOUND_MS).unref());
-    void Promise.race([Promise.all([watchdogStopped, leasesGivenUp]), bound]).finally(() => this.exitAfterShutdown());
+    void Promise.race([Promise.all([watchdogStopped, leasesGivenUp]), bound]).finally(() => void this.exitAfterShutdown());
   }
 
-  private exitAfterShutdown(): never {
+  private async exitAfterShutdown(): Promise<never> {
+    // Windows named pipes are not path-unlinked on close, so a successor's pipe is never at risk.
+    if (process.platform === "win32") {
+      this.unlinkRuntimeFilesIfOwned();
+      this.server.close();
+      process.exit(0);
+    }
+    // Node unlinks a Unix socket path on server.close() even after a successor rebound that path. The close happens
+    // only under the socket lock every starting broker holds until it listens, and only while the pid file and the
+    // socket inode are still this broker's (#5040); otherwise process.exit closes the fd without unlinking the path.
+    const release = await acquireSocketLockWithin(SHUTDOWN_CLOSE_BOUND_MS);
     const ownsRuntime = this.readPidFile() === process.pid;
     this.unlinkRuntimeFilesIfOwned();
-    // Node unlinks a Unix socket path on server.close() even after a successor
-    // rebound that path. Skip close when we no longer own the pid or the socket
-    // path; process.exit still closes our fd. Windows named pipes are not
-    // path-unlinked this way.
-    if (process.platform === "win32" || (ownsRuntime && this.ownsSocketPath())) {
-      this.server.close();
-    }
+    if (release !== undefined && ownsRuntime && this.ownsSocketPath()) this.server.close();
+    release?.();
     process.exit(0);
   }
 }

@@ -496,7 +496,7 @@ Async extension work (startup, inbound flushes, reconnects, overlays, and relays
 
 Runtime files live under the active agent directory. Atomic defaults to `~/.atomic/agent/intercom/`; setting `ATOMIC_CODING_AGENT_DIR` moves the broker socket, PID, spawn lock, Windows launcher, and config below that directory. The legacy `PI_CODING_AGENT_DIR` alias remains supported when the Atomic variable is unset. Legacy pi-compatible defaults use `~/.pi/agent/intercom/`.
 
-- `broker.sock` — Unix domain socket for communication (macOS/Linux only; Windows uses a named pipe instead)
+- `broker.sock` — Unix domain socket for communication (macOS/Linux only; Windows uses a named pipe instead). When this path would exceed the Unix socket path limit (107 bytes on Linux, 103 on macOS), the socket lives instead in an owner-only per-user directory, `atomic-intercom-<uid>/<digest of the agent directory>.sock` under `$XDG_RUNTIME_DIR` or the temp directory
 - `broker-launch.vbs` — Windows helper script used to launch the broker without a console window
 - `broker.pid` — Broker process ID
 - `delivered-messages.sqlite` — bounded durable authority containing keyed digests, never plaintext payloads
