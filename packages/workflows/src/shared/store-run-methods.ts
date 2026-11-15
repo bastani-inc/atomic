@@ -24,7 +24,6 @@ import type {
 } from "./store-types.js";
 import { accumulatePausedDurationMs, elapsedRunMs, elapsedStageMs, nextControlTimestamp } from "./timing.js";
 import type { WorkflowOutputValues } from "./types.js";
-import { workflowActivityNodeKey } from "./workflow-activity.js";
 
 type RunStoreMethods = Pick<
 	Store,
@@ -165,17 +164,18 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 			const run = context.findRun(runId);
 			if (!run) return false;
 			if (TERMINAL_STATUSES.has(run.status)) return false;
+			const endedAt = Date.now();
 			run.status = status;
-			run.endedAt = Date.now();
+			run.endedAt = endedAt;
 			if (run.phase !== undefined) {
 				run.phase = "ended";
-				run.phaseStartedAt = run.endedAt;
+				run.phaseStartedAt = endedAt;
 			}
 			if (run.pausedAt !== undefined) {
-				run.pausedDurationMs = accumulatePausedDurationMs(run.pausedDurationMs, run.pausedAt, run.endedAt);
+				run.pausedDurationMs = accumulatePausedDurationMs(run.pausedDurationMs, run.pausedAt, endedAt);
 				run.pausedAt = undefined;
 			}
-			run.durationMs = elapsedRunMs(run, run.endedAt);
+			run.durationMs = elapsedRunMs(run, endedAt);
 			if (result !== undefined && shouldStoreRunResult(status)) run.result = result;
 			const wasBlocked = run.blockedAt !== undefined || run.failureDisposition === "active_blocked";
 			delete run.blockedAt;
@@ -204,7 +204,7 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 				context.rejectPrompt(pending.id, `atomic-workflows: run ${runId} ended before prompt resolved`);
 			}
 			context.rejectAllStagePrompts(runId, run, `atomic-workflows: run ${runId} ended before prompt resolved`);
-			if (status === "killed" || status === "cancelled") endInFlightWork(context, run, status, error);
+			if (status === "killed" || status === "cancelled") endInFlightWork(context, run, status, endedAt, error);
 			context.bumpAndNotify({ runId });
 			return true;
 		},
@@ -425,12 +425,11 @@ function endInFlightWork(
 	context: StoreContext,
 	run: RunSnapshot,
 	status: "killed" | "cancelled",
+	endedAt: number,
 	error?: string,
 ): void {
-	const endedAt = run.endedAt ?? Date.now();
 	for (const stage of run.stages) {
 		if (!IN_FLIGHT_STAGE_STATUSES.has(stage.status)) continue;
-		context.observation.executingStageIds.delete(workflowActivityNodeKey(run.id, stage.id));
 		if (status === "killed") {
 			const message = error ?? "workflow killed";
 			Object.assign(stage, {
@@ -461,12 +460,9 @@ function endInFlightWork(
 	}
 	for (const node of run.toolNodes) {
 		if (node.status !== "running" && node.status !== "pending") continue;
-		context.observation.executingToolNodeIds.delete(workflowActivityNodeKey(run.id, node.id));
 		node.status = "cancelled";
-		if (node.endedAt === undefined) {
-			node.endedAt = endedAt;
-			if (node.startedAt !== undefined) node.durationMs = Math.max(0, endedAt - node.startedAt);
-		}
+		node.endedAt = endedAt;
+		if (node.startedAt !== undefined) node.durationMs = Math.max(0, endedAt - node.startedAt);
 		context.bumpAndNotify({ runId: run.id, toolNodeId: node.id });
 	}
 }

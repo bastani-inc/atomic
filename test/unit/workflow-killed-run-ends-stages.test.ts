@@ -136,6 +136,18 @@ const parallelWithChild = workflow({
 	},
 }) as WorkflowDefinition;
 
+const finishedThenRunning = workflow({
+	name: "killed-run-finished-then-running",
+	description: "",
+	inputs: {},
+	outputs: {},
+	run: async (ctx) => {
+		await ctx.stage("first").prompt("work");
+		await ctx.stage("second").prompt("work");
+		return {};
+	},
+}) as WorkflowDefinition;
+
 const sequential = workflow({
 	name: "killed-run-sequential",
 	description: "",
@@ -246,6 +258,28 @@ describe("a run that ends killed ends its in-flight stages (#4875)", () => {
 		const durable = durableStageStatuses(h.backend, h.runId);
 		assert.equal(durable.A, "failed");
 		assert.equal(durable.B, "failed");
+	});
+
+	test("killing a run keeps the stage it already finished completed and journals that end once (#4875)", async () => {
+		const h = await startDetached(finishedThenRunning);
+		h.sessions.release("first");
+		await h.sessions.started("second");
+
+		assert.equal((await killRun(h.runId, { store: h.store, cancellation: h.cancellation })).ok, true);
+		await h.settled();
+
+		const first = h.store.run(h.runId)?.stages.find((s) => s.name === "first");
+		assert.equal(first?.status, "completed");
+		assert.deepEqual(
+			h.persistence.entries
+				.filter((entry) => entry.type === "workflow.stage.end" && entry.payload.stageId === first?.id)
+				.map((entry) => entry.payload.status),
+			["completed"],
+		);
+		assert.deepEqual(replayedStageStatuses(h.persistence, h.store.run(h.runId)!), {
+			first: "completed: undefined",
+			second: "failed: workflow killed",
+		});
 	});
 
 	test("killing a run with one sequential stage ends that stage and journals its end (#4875)", async () => {
