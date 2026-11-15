@@ -258,6 +258,7 @@ export class SqlRunJournal implements RunJournal {
 			olderBuildLive: (executor) => olderBuildLive(executor, this.dialect, this.tables),
 			dialect: this.dialect,
 			adapter: database.descriptor.adapter,
+			...(database.notifications === undefined ? {} : { notifications: database.notifications }),
 		});
 		registerJournalKeyRangeRead(this, (runId, fromKey, toKey) =>
 			SqlRunJournal.readKeyRange(this, runId, fromKey, toKey),

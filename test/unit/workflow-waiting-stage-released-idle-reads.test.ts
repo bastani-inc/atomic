@@ -63,7 +63,7 @@ describe("a stage the run's idle scan released, read by its workflow (#4309)", (
 	test(
 		"agent and messages throw, model and thinkingLevel stay, readMessages() reads the store, and rehydrate() makes every read work again (#4309)",
 		async () => {
-			vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+			vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
 			const seen = counters();
 			const released = Promise.withResolvers<void>();
 			let whileReleased:
