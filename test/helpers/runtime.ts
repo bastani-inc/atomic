@@ -191,8 +191,16 @@ interface BunSpawnOptions {
 	detached?: boolean;
 }
 
+/**
+ * `"pipe"`, `"inherit"` and `"ignore"` are stdio modes, not text to feed the child. Writing them as input raced a
+ * child that never reads stdin: once it exited first, the write failed with EPIPE.
+ */
 function isStdinData(value: StdinOption): value is Buffer | Uint8Array | string {
-	return typeof value === "string" || ArrayBuffer.isView(value);
+	return ArrayBuffer.isView(value) || (typeof value === "string" && !isStdioMode(value));
+}
+
+function isStdioMode(value: string): value is "pipe" | "inherit" | "ignore" {
+	return value === "pipe" || value === "inherit" || value === "ignore";
 }
 
 function stdio(value: StdioOption, fallback: "pipe" | "inherit" | "ignore"): "pipe" | "inherit" | "ignore" {

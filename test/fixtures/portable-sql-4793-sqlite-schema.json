@@ -67,6 +67,12 @@
 	},
 	{
 		"type": "index",
+		"name": "intercom_session_bindings_recorded",
+		"tbl_name": "intercom_session_bindings",
+		"sql": "CREATE INDEX intercom_session_bindings_recorded ON intercom_session_bindings(recorded_at)"
+	},
+	{
+		"type": "index",
 		"name": "intercom_wakeups_broker",
 		"tbl_name": "intercom_wakeups",
 		"sql": "CREATE INDEX intercom_wakeups_broker ON intercom_wakeups (broker_id, id)"
@@ -145,6 +151,12 @@
 	},
 	{
 		"type": "index",
+		"name": "team_intercom_session_bindings_recorded",
+		"tbl_name": "team_intercom_session_bindings",
+		"sql": "CREATE INDEX team_intercom_session_bindings_recorded ON team_intercom_session_bindings(recorded_at)"
+	},
+	{
+		"type": "index",
 		"name": "team_intercom_wakeups_broker",
 		"tbl_name": "team_intercom_wakeups",
 		"sql": "CREATE INDEX team_intercom_wakeups_broker ON team_intercom_wakeups (broker_id, id)"
@@ -183,7 +195,7 @@
 		"type": "table",
 		"name": "intercom_pending_asks",
 		"tbl_name": "intercom_pending_asks",
-		"sql": "CREATE TABLE intercom_pending_asks(\n\t\t\t\t\"order\" INTEGER PRIMARY KEY AUTOINCREMENT,\n\t\t\t\tsender_session_id TEXT NOT NULL,\n\t\t\t\ttarget_session_id TEXT NOT NULL,\n\t\t\t\tmessage_id TEXT NOT NULL, park_owner TEXT, park_key TEXT,\n\t\t\t\tUNIQUE(sender_session_id, target_session_id, message_id)\n\t\t\t)"
+		"sql": "CREATE TABLE intercom_pending_asks(\n\t\t\t\t\"order\" INTEGER PRIMARY KEY AUTOINCREMENT,\n\t\t\t\tsender_session_id TEXT NOT NULL,\n\t\t\t\ttarget_session_id TEXT NOT NULL,\n\t\t\t\tmessage_id TEXT NOT NULL, park_owner TEXT, park_key TEXT, replied INTEGER, ended_at INTEGER,\n\t\t\t\tUNIQUE(sender_session_id, target_session_id, message_id)\n\t\t\t)"
 	},
 	{
 		"type": "table",
@@ -214,6 +226,12 @@
 		"name": "intercom_sent_messages",
 		"tbl_name": "intercom_sent_messages",
 		"sql": "CREATE TABLE intercom_sent_messages(\n\t\t\t\tmessage_id TEXT PRIMARY KEY,\n\t\t\t\tdigest TEXT NOT NULL,\n\t\t\t\ttarget_identity TEXT NOT NULL,\n\t\t\t\tquestion_route_json TEXT,\n\t\t\t\tstate TEXT NOT NULL CHECK (state IN ('reserved', 'accepted')),\n\t\t\t\trecorded_at INTEGER NOT NULL\n\t\t\t)"
+	},
+	{
+		"type": "table",
+		"name": "intercom_session_bindings",
+		"tbl_name": "intercom_session_bindings",
+		"sql": "CREATE TABLE intercom_session_bindings(\n\t\t\t\tintercom_session_id TEXT NOT NULL PRIMARY KEY,\n\t\t\t\treturn_address TEXT NOT NULL,\n\t\t\t\trecorded_at INTEGER NOT NULL\n\t\t\t)"
 	},
 	{
 		"type": "table",
@@ -249,7 +267,7 @@
 		"type": "table",
 		"name": "team_intercom_pending_asks",
 		"tbl_name": "team_intercom_pending_asks",
-		"sql": "CREATE TABLE team_intercom_pending_asks(\n\t\t\t\t\"order\" INTEGER PRIMARY KEY AUTOINCREMENT,\n\t\t\t\tsender_session_id TEXT NOT NULL,\n\t\t\t\ttarget_session_id TEXT NOT NULL,\n\t\t\t\tmessage_id TEXT NOT NULL, park_owner TEXT, park_key TEXT,\n\t\t\t\tUNIQUE(sender_session_id, target_session_id, message_id)\n\t\t\t)"
+		"sql": "CREATE TABLE team_intercom_pending_asks(\n\t\t\t\t\"order\" INTEGER PRIMARY KEY AUTOINCREMENT,\n\t\t\t\tsender_session_id TEXT NOT NULL,\n\t\t\t\ttarget_session_id TEXT NOT NULL,\n\t\t\t\tmessage_id TEXT NOT NULL, park_owner TEXT, park_key TEXT, replied INTEGER, ended_at INTEGER,\n\t\t\t\tUNIQUE(sender_session_id, target_session_id, message_id)\n\t\t\t)"
 	},
 	{
 		"type": "table",
@@ -280,6 +298,12 @@
 		"name": "team_intercom_sent_messages",
 		"tbl_name": "team_intercom_sent_messages",
 		"sql": "CREATE TABLE team_intercom_sent_messages(\n\t\t\t\tmessage_id TEXT PRIMARY KEY,\n\t\t\t\tdigest TEXT NOT NULL,\n\t\t\t\ttarget_identity TEXT NOT NULL,\n\t\t\t\tquestion_route_json TEXT,\n\t\t\t\tstate TEXT NOT NULL CHECK (state IN ('reserved', 'accepted')),\n\t\t\t\trecorded_at INTEGER NOT NULL\n\t\t\t)"
+	},
+	{
+		"type": "table",
+		"name": "team_intercom_session_bindings",
+		"tbl_name": "team_intercom_session_bindings",
+		"sql": "CREATE TABLE team_intercom_session_bindings(\n\t\t\t\tintercom_session_id TEXT NOT NULL PRIMARY KEY,\n\t\t\t\treturn_address TEXT NOT NULL,\n\t\t\t\trecorded_at INTEGER NOT NULL\n\t\t\t)"
 	},
 	{
 		"type": "table",
