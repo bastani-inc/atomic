@@ -289,7 +289,8 @@ describe.skipIf(postgresSkipReason !== undefined)("the reference index on Postgr
 				},
 			});
 			await SqlSnapshotBlobStore.open(recording);
-			assert.deepEqual(installs, Array(5).fill("atomic_migrations"));
+			// The five index sources and the chunk cleanup of chunked blobs (#4954), each under the migration lock.
+			assert.deepEqual(installs, Array(6).fill("atomic_migrations"));
 		});
 	});
 
