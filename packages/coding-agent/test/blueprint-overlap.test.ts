@@ -455,6 +455,38 @@ describe("resume.waitForBlueprint lets the first turn overlap the blueprint buil
 		assert.deepEqual(ran(), ["started", "built"]);
 	});
 
+	for (const wait of ["tools", "prompt"] as const) {
+		test(`resuming again during the build joins it instead of building again, with "${wait}" (#4748)`, async () => {
+			const first = ready(await prepareSessionResume(await recordedProject(), options("tools")));
+			await until(() => ran().includes("started"), "the build to start");
+			let settled = false;
+			const joining = prepareSessionResume(first.sessionManager, options(wait)).then((prepared) => {
+				settled = true;
+				return ready(prepared);
+			});
+			await new Promise((resolve) => setTimeout(resolve, 300));
+			assert.equal(settled, wait === "tools", "only a resume that waits for the build waits for the one it joins");
+			writeFileSync(gate(), "");
+			const joined = await joining;
+			await blueprintBuildsSettled();
+			assert.deepEqual(ran(), ["started", "built"], "one build ran");
+			assert.deepEqual(joined.blueprintNotices, []);
+			if (wait === "tools") assert.equal(joined.blueprintContext, BLUEPRINT_BUILDING_CONTEXT);
+			else assert.notEqual(joined.blueprintContext, BLUEPRINT_BUILDING_CONTEXT);
+		});
+	}
+
+	test("a resume that builds no blueprint does not join the build either (#4748)", async () => {
+		const first = ready(await prepareSessionResume(await recordedProject(), options("tools")));
+		await until(() => ran().includes("started"), "the build to start");
+		const skipped = ready(
+			await prepareSessionResume(first.sessionManager, { ...options("tools"), blueprints: "skip" }),
+		);
+		assert.equal(skipped.blueprintContext, undefined);
+		writeFileSync(gate(), "");
+		await blueprintBuildsSettled();
+	});
+
 	test('"tools" changes nothing when the resume restores no worktree or builds no blueprint (#4748)', async () => {
 		const kept = await recordedProject("", false);
 		const inPlace = ready(await prepareSessionResume(kept, options("tools")));

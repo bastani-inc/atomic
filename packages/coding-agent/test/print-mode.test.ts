@@ -763,3 +763,27 @@ describe("runPrintMode", () => {
 		assert.equal(process.listenerCount("SIGTERM"), listenersBefore);
 	});
 });
+
+describe("runPrintMode signals (#4748)", () => {
+	for (const [signal, code] of [
+		["SIGINT", 130],
+		["SIGTERM", 143],
+		...(process.platform === "win32" ? [] : ([["SIGHUP", 129]] as const)),
+	] as const) {
+		it(`${signal} disposes the runtime, stopping a build behind the first turn, and exits ${code}`, async () => {
+			const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+			const runtimeHost = createRuntimeHost(createAssistantMessage({ text: "done" }));
+			captureStdout();
+			const build = Promise.withResolvers<string | undefined>();
+			holdToolsUntilBuilt("print-session", build.promise);
+			const run = runPrintModeWithFakeHost(runtimeHost, { mode: "text", initialMessage: "hello" });
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			process.emit(signal);
+			await vi.waitFor(() => assert.deepEqual(exitSpy.mock.calls, [[code]]));
+			assert.equal(runtimeHost.dispose.mock.calls.length, 1);
+			build.resolve(undefined);
+			await run;
+			await awaitBlueprintReady("print-session");
+		});
+	}
+});
