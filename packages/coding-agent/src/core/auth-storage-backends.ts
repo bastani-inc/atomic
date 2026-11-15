@@ -47,8 +47,11 @@ const PROVIDER_LOCK_STALE_MS = 2 * OAUTH_REFRESH_TIMEOUT_MS + PROVIDER_LOCK_HEAR
 
 /** How long a commit waits for one other process to release the shared auth file lock. */
 const AUTH_FILE_LOCK_WAIT_MS = 30_000;
-/** How long a synchronous save waits for one other process to release the auth file lock. */
-const AUTH_FILE_SYNC_LOCK_WAIT_MS = 5_000;
+/**
+ * How long a synchronous save waits for one other process to release the auth file lock. Kept short: the wait blocks
+ * this process, so a lock it holds asynchronously stops being refreshed and would be taken over as stale.
+ */
+const AUTH_FILE_SYNC_LOCK_WAIT_MS = 200;
 const AUTH_FILE_LOCK_POLL_MIN_MS = 10;
 /** Low enough that a waiter which has backed off still competes with the processes polling at the minimum. */
 const AUTH_FILE_LOCK_POLL_MAX_MS = 50;

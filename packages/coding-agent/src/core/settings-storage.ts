@@ -23,8 +23,11 @@ import { renameReplacing } from "./rename-retry.ts";
 import { deepMergeSettings } from "./settings-merge.js";
 import type { Settings, SettingsFieldOrigin, SettingsLayer, SettingsScope, SettingsStorage } from "./settings-types.ts";
 
-/** How long a save waits for one other process to release a settings file's lock. */
-const SETTINGS_LOCK_WAIT_MS = 5_000;
+/**
+ * How long a save waits for one other process to release a settings file's lock. Kept short: the wait blocks this
+ * process, so a lock it holds asynchronously stops being refreshed and would be taken over as stale.
+ */
+const SETTINGS_LOCK_WAIT_MS = 200;
 const SETTINGS_LOCK_POLL_MIN_MS = 10;
 const SETTINGS_LOCK_POLL_MAX_MS = 50;
 
