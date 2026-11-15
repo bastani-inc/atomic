@@ -21,7 +21,11 @@ export function normalizeKeepContextShare(value: number | undefined): number {
 
 /** First line of the region's latest user message, taken from its message boundaries; undefined when it has none. */
 function latestUserHeaderLine(region: NumberedRegion): number | undefined {
-	return messageBoundaries(region.lines, region.messageSpans).findLast((boundary) => boundary.role === "user")?.line;
+	const boundaries = messageBoundaries(region.lines, region.messageSpans);
+	for (let index = boundaries.length - 1; index >= 0; index--) {
+		if (boundaries[index].role === "user") return boundaries[index].line;
+	}
+	return undefined;
 }
 
 /** Characters a line occupies in the region's text, its newline included. */
