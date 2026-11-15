@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { it } from "vitest";
+import { it, vi } from "vitest";
 import { type FileEntry, SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { StorageUnavailableError } from "../../packages/coding-agent/src/core/storage/session/errors.js";
 import { SessionFormatVersionError } from "../../packages/coding-agent/src/core/storage/session/jsonl-session-store.js";
@@ -142,11 +142,32 @@ it("writes format 4 and retains context on file, memory, fork and resume loads",
 	}
 });
 
-it("rejects a torn final record on file and fork loads and omits it from discovery", async () => {
+it("opens, forks and lists a session whose unfinished last line a crashed writer left (#4993)", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "session-torn-"));
+	const warnings = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+	try {
+		const path = join(directory, "torn.jsonl");
+		const message = { role: "user", content: "acknowledged", timestamp: 1 };
+		const saved = { type: "message", id: "m1", parentId: null, timestamp: "2026-10-15T00:00:01Z", message };
+		const content = `${JSON.stringify({ type: "session", version: 4, id: "torn", createdAt: "2026-10-15T00:00:00Z", cwd: directory })}\n${JSON.stringify(saved)}\n{"type":`;
+		await writeFile(path, content);
+		const opened = await SessionManager.open(path);
+		assert.equal(opened.getSessionId(), "torn");
+		assert.deepEqual(opened.buildSessionContext().messages, [message]);
+		assert.notEqual((await SessionManager.forkFrom(path, directory, directory)).getSessionId(), "torn");
+		assert.ok((await SessionManager.list(directory, directory)).some((session) => session.id === "torn"));
+		assert.equal(await readFile(path, "utf8"), content);
+	} finally {
+		warnings.mockRestore();
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+it("rejects a malformed complete final record on file and fork loads and omits it from discovery", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "session-torn-"));
 	try {
 		const path = join(directory, "torn.jsonl");
-		const content = `${JSON.stringify({ type: "session", version: 4, id: "torn", createdAt: "2026-10-15T00:00:00Z", cwd: directory })}\n{"type":`;
+		const content = `${JSON.stringify({ type: "session", version: 4, id: "torn", createdAt: "2026-10-15T00:00:00Z", cwd: directory })}\n{"type":\n`;
 		await writeFile(path, content);
 		await assert.rejects(async () => await SessionManager.open(path), StorageUnavailableError);
 		await assert.rejects(
