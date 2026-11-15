@@ -660,6 +660,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	readonly _messagesAwaitingPersistence: WeakMap<object, Promise<void>>;
 	readonly _messagesWithFailedPersistence: WeakSet<object>;
 	_persistenceFailure: string | undefined;
+	_turnStopReason: string | undefined;
 	_worktreeSnapshots: import("./session-worktree-snapshots.ts").SessionWorktreeSnapshotRecorder;
 	readonly _reissuedToolCallIds: Set<string>;
 	_lastAssistantToolResults: AgentMessage[];

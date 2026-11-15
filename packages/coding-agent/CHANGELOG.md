@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added `AgentSession.stopTurns(reason)`: while a reason is set, the session starts no further model call within a turn. Each tool call is answered as cancelled with that reason, and the turn ends without polling steering or follow-ups. `stopTurns(undefined)` resumes normal turns. Workflow budgets use it to stop a stage at its cap ([#5053](https://github.com/bastani-inc/atomic/issues/5053))
 - Added the `child_session_usage` session event: a session reports each model call of a child session it created through its child session options, such as an in-process subagent, and of that child's own children, so an integration can charge a session's subagents' spend ([#5053](https://github.com/bastani-inc/atomic/issues/5053))
 - Added the `compaction_usage` session event: each compaction model request (planner, classifier, summary fallback, and their retries) reports its usage as it returns, for foreground and background runs and runs that later fail, so an integration can charge every compaction request once ([#5053](https://github.com/bastani-inc/atomic/issues/5053))
 - Added `AgentWakeSlot`, the third argument of an `AgentWakeDispatcher` handler: `slot.outside(wait)` frees the handler's `maxConcurrent` slot while `wait` settles and takes it back in turn, so a handler waiting on something else does not hold up other keys ([#4856](https://github.com/bastani-inc/atomic/issues/4856))

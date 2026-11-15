@@ -74,6 +74,8 @@ export interface RunBudgetController {
 	readonly stopAtBoundary: (frontierStage?: string) => void;
 	readonly stopAtBoundaryAsync: (frontierStage?: string) => Promise<void>;
 	readonly awaitPendingWrapUp: () => Promise<WorkflowBudgetExceededError | undefined>;
+	/** Whether this budget, or its root's, would be exhausted once `pending` usage not yet in the run is charged. */
+	readonly exhaustedWith: (pending: WorkflowModelUsage) => boolean;
 }
 const withFrontier = (
 	report: BudgetReport,
@@ -355,6 +357,17 @@ export function createRunBudgetController(input: {
 		}
 		return undefined;
 	};
+	const exhaustedWith = (pending: WorkflowModelUsage): boolean => {
+		if (root?.exhaustedWith(pending) === true) return true;
+		if (!ownEnabled || !usageEnabled) return false;
+		const meters = measure();
+		const tokens = meters.tokens + (pending.input ?? 0) + (pending.output ?? 0);
+		const cost = costFromUnits(costUnits(meters.cost) + costUnits(pending.cost ?? 0));
+		return (
+			enforceUsageBudget("tokens", tokens, budget.maxTokens, 0).kind === "exhausted" ||
+			enforceUsageBudget("cost", cost, budget.maxCost, 0).kind === "exhausted"
+		);
+	};
 	return {
 		enabled,
 		checkpoint,
@@ -365,5 +378,6 @@ export function createRunBudgetController(input: {
 		stopAtBoundary,
 		stopAtBoundaryAsync,
 		awaitPendingWrapUp,
+		exhaustedWith,
 	};
 }

@@ -298,6 +298,17 @@ class AgentSessionBase {
 	get workspace(): import("./workspace/resolve.ts").BoundWorkspace | undefined {
 		return this._workspace;
 	}
+	/** Set by `stopTurns`: why the session starts no further model call within a turn. */
+	protected _turnStopReason: string | undefined = undefined;
+	/**
+	 * Stop starting model calls within a turn, or with `undefined` resume normally. While a reason is set, every tool
+	 * call is answered as cancelled with that reason without running and ends its batch, and a turn ends without
+	 * polling steering or follow-ups, so the current turn ends after the model call in flight. A new prompt still makes
+	 * its first model call. A workflow stage uses it to stop at its budget (#5053).
+	 */
+	stopTurns(reason: string | undefined): void {
+		this._turnStopReason = reason;
+	}
 	setCacheWarmingMode(mode: import("./settings-manager.ts").CacheWarmingMode): void {
 		this.settingsManager.setCacheWarmingMode(mode);
 		this._cacheWarmer?.onModeChanged();

@@ -264,10 +264,15 @@ class AttemptUsageWindow {
 		this.meaningful = true;
 	}
 
+	/** The usage seen so far, or undefined when nothing meaningful was seen. */
+	peek(): WorkflowModelUsage | undefined {
+		return this.meaningful ? { ...this.totals } : undefined;
+	}
+
 	/** Stop listening. Returns undefined when nothing meaningful was seen, so no `usage: undefined` enters the record. */
 	close(): WorkflowModelUsage | undefined {
 		this.unsubscribe();
-		return this.meaningful ? { ...this.totals } : undefined;
+		return this.peek();
 	}
 }
 
@@ -2222,6 +2227,16 @@ export class StageSessionController {
 		this.sessionInternalRetries = 0;
 		this.attemptUsage?.close();
 		this.attemptUsage = new AttemptUsageWindow(session);
+	}
+
+	/** Usage of the attempt in flight, before it is recorded in `modelAttempts`. */
+	inFlightAttemptUsage(): WorkflowModelUsage | undefined {
+		return this.attemptUsage?.peek();
+	}
+
+	/** Stop model calls within the current session's turns, or resume them with `undefined`. */
+	stopTurns(reason: string | undefined): void {
+		this.session?.stopTurns?.(reason);
 	}
 
 	/** Consume the current window exactly once; without an open window there is no usage to record. */

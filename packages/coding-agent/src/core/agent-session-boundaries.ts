@@ -127,6 +127,8 @@ export function _installAgentBoundaryHooks(this: AgentSession): void {
 		const previousDecision = await previousFinishTurn?.(turn, signal);
 		// #4226: end before steering is polled once a message of this run is known to be unsaved.
 		if (this._persistenceFailure !== undefined) return { action: "end" };
+		// A stopped session starts no further model call in this turn, not even for steering (#5053).
+		if (this._turnStopReason !== undefined) return { action: "end" };
 		if (previousDecision?.action === "end") return previousDecision;
 		if (extensionContinue || previousDecision?.action === "continue") return { action: "continue" };
 		return undefined;

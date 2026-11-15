@@ -70,6 +70,8 @@ async function checkToolCall(
 	// may wait for this tool to start.
 	await this._messagesAwaitingPersistence.get(assistantMessage)?.catch(() => {});
 	if (this._persistenceFailure !== undefined) return { block: true, reason: this._persistenceFailure };
+	if (this._turnStopReason !== undefined)
+		return { block: true, reason: `Cancelled: ${this._turnStopReason}`, terminate: true };
 	const sandboxDenial = workspaceSandboxDenial(this._workspace, toolCall.name);
 	if (sandboxDenial !== undefined) return { block: true, reason: sandboxDenial.message };
 	const blueprintWait = await waitForBlueprintBuild(this, toolCall, signal, waited);

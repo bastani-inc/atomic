@@ -1,4 +1,5 @@
 import { BUDGET_WRAP_UP_PROMPT, WorkflowBudgetExceededError } from "../../engine/run-budget.js";
+
 import { rebasedStageStartedAt } from "../../shared/timing.js";
 import type {
 	StageOptions,
@@ -34,6 +35,21 @@ import {
 	type StageReadinessDecision,
 } from "./readiness-decision.js";
 import type { StageAdapters } from "./stage-runner.js";
+
+const BUDGET_TURN_STOP_REASON = "the workflow budget is exhausted";
+
+/** A session event that reports the usage of a model call (#5053). */
+function isUsageEvent(event: {
+	readonly type?: unknown;
+	readonly message?: unknown;
+	readonly entry?: unknown;
+}): boolean {
+	if (event.type === "message_end")
+		return (event.message as { readonly role?: unknown } | undefined)?.role === "assistant";
+	if (event.type === "entry_appended")
+		return (event.entry as { readonly type?: unknown } | undefined)?.type === "usage";
+	return event.type === "compaction_usage" || event.type === "child_session_usage";
+}
 
 export interface TrackedStageCallOptions {
 	readonly eagerSession?: boolean;
@@ -222,6 +238,33 @@ export function createTrackedStageCaller(input: {
 		throw runtime.budget.finishWrapUp(runtime.name, summary, usage, summary !== undefined);
 	};
 
+	/**
+	 * Check the budget after every model call of this stage's turn, counting the call not yet recorded in the stage's
+	 * attempts. Once a call reaches the cap, the session starts no further model call in the turn: its tool calls are
+	 * answered as cancelled, the turn ends, and the stage's checkpoint then runs its single wrap-up (#5053). Returns
+	 * the release that lets the session's later turns run normally again.
+	 */
+	const stopTurnsAtBudget = (): (() => void) => {
+		let stopped = false;
+		let disposed = false;
+		const unsubscribe = runtime.innerCtx.subscribe((event) => {
+			if (stopped || !isUsageEvent(event)) return;
+			// The stage's own usage window hears this event after this listener; read it once both have run.
+			queueMicrotask(() => {
+				if (stopped || disposed) return;
+				const pending = runtime.innerCtx.__inFlightAttemptUsage?.();
+				if (pending === undefined || !runtime.budget.exhaustedWith(pending)) return;
+				stopped = true;
+				runtime.innerCtx.__stopTurns?.(BUDGET_TURN_STOP_REASON);
+			});
+		});
+		return () => {
+			disposed = true;
+			unsubscribe();
+			if (stopped) runtime.innerCtx.__stopTurns?.(undefined);
+		};
+	};
+
 	let slotUsers = 0;
 	let slotAcquisition: Promise<void> | undefined;
 	const holdSlot = async (): Promise<void> => {
@@ -291,6 +334,7 @@ export function createTrackedStageCaller(input: {
 		// This call's own classified failure, published for the run when a peer call still runs (#4450).
 		let stageFailure: WorkflowFailure | undefined;
 		const unregisterBudgetWrapUp = runtime.budget.registerWrapUp(runtime.name, deliverBudgetWrapUp);
+		const releaseBudgetTurnStop = runtime.budget.enabled ? stopTurnsAtBudget() : undefined;
 		if (trackStageLifecycle) lifecycleUsers += 1;
 		try {
 			let refreshedParentIds: readonly string[] | undefined;
@@ -558,6 +602,7 @@ export function createTrackedStageCaller(input: {
 			throw err;
 		} finally {
 			unregisterBudgetWrapUp();
+			releaseBudgetTurnStop?.();
 			if (trackStageLifecycle) lifecycleUsers -= 1;
 			const endsStage = trackStageLifecycle && lifecycleUsers === 0;
 			const leftToPeer = trackStageLifecycle && !endsStage;
