@@ -63,8 +63,8 @@ const scheduleTimeout: WakeUpPollScheduler = (callback, delayMs) => {
 
 async function createSchema(database: SqliteDatabase, table: string): Promise<void> {
 	const { types } = dialectOf(database);
-	await database.exec(
-		`CREATE TABLE IF NOT EXISTS ${table} (
+	// In a serial transaction, so brokers opening a new bus at once take turns creating it (#5054).
+	const schema = `CREATE TABLE IF NOT EXISTS ${table} (
 			id ${types.serialKey},
 			broker_id TEXT NOT NULL,
 			reason TEXT NOT NULL CHECK (reason IN ('outbox', 'outcome')),
@@ -72,8 +72,8 @@ async function createSchema(database: SqliteDatabase, table: string): Promise<vo
 			created_at ${types.int} NOT NULL
 		);
 		CREATE INDEX IF NOT EXISTS ${table}_broker ON ${table} (broker_id, id);
-		CREATE INDEX IF NOT EXISTS ${table}_created ON ${table} (created_at);`,
-	);
+		CREATE INDEX IF NOT EXISTS ${table}_created ON ${table} (created_at);`;
+	await database.transaction((tx) => tx.exec(schema));
 }
 
 async function openSchemaConnection(options: DatabaseWakeUpBusOptions, table: string): Promise<SqliteDatabase> {

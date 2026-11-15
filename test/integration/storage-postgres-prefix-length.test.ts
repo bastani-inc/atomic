@@ -49,13 +49,14 @@ const INTERCOM_STORES = [
 	openSqlKnownSessionStore,
 ] as const;
 
-/** Opens every store Atomic keeps on a PostgreSQL database: sessions, the run journal and the Intercom broker state. */
+/** Opens every store Atomic keeps on a PostgreSQL database: sessions, the run journal and the Intercom broker state, as a broker does. */
 async function openEveryStore(scope: PostgresScope, prefix: string): Promise<void> {
 	const database = await scope.open();
 	await (await SqlSessionStore.open(database, { prefix })).close();
 	await (await SqlRunJournal.open(database, { prefix })).close();
-	for (const open of INTERCOM_STORES) await open({ database, prefix });
-	await (await openDatabaseWakeUpBus({ openDatabase: () => scope.open(), prefix })).close();
+	const intercom = await openIntercomBrokerState({ prefix, openDatabase: () => scope.open() });
+	await intercom.bus.close();
+	await intercom.state.close();
 }
 
 /**

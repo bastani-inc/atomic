@@ -1,6 +1,6 @@
 import {
 	dialectOf,
-	type SqliteDatabase,
+	type StorageDialect,
 	type SqliteExecutor,
 	type SqliteRow,
 	validateStoragePrefix,
@@ -99,20 +99,17 @@ function invalidLease(lease: RestoringReservationLease): InvalidStateInput | und
  * created converges here, whichever name it holds: PostgreSQL renames the index, SQLite (which cannot) rebuilds it,
  * and an index an earlier broker recreated beside the new one is dropped.
  */
-async function renameWakeIndex(database: SqliteDatabase, table: string): Promise<void> {
-	const dialect = dialectOf(database);
+async function renameWakeIndex(tx: SqliteExecutor, dialect: StorageDialect, table: string): Promise<void> {
 	const index = `${table}_wake`;
 	const earlier = `${table}_wake_requested`.slice(0, dialect.name === "postgres" ? 63 : undefined);
-	await database.transaction(async (tx) => {
-		const probe = dialect.schemaObjects([earlier, index]);
-		const found = new Set((await tx.all(probe.sql, ...probe.params)).map((row) => row.name));
-		if (found.has(earlier)) {
-			if (dialect.name === "postgres" && !found.has(index))
-				await tx.exec(`ALTER INDEX IF EXISTS ${earlier} RENAME TO ${index}`);
-			else await tx.exec(`DROP INDEX IF EXISTS ${earlier}`);
-		}
-		await tx.exec(`CREATE INDEX IF NOT EXISTS ${index} ON ${table}(owner_broker_id) WHERE wake_requested = 1`);
-	});
+	const probe = dialect.schemaObjects([earlier, index]);
+	const found = new Set((await tx.all(probe.sql, ...probe.params)).map((row) => row.name));
+	if (found.has(earlier)) {
+		if (dialect.name === "postgres" && !found.has(index))
+			await tx.exec(`ALTER INDEX IF EXISTS ${earlier} RENAME TO ${index}`);
+		else await tx.exec(`DROP INDEX IF EXISTS ${earlier}`);
+	}
+	await tx.exec(`CREATE INDEX IF NOT EXISTS ${index} ON ${table}(owner_broker_id) WHERE wake_requested = 1`);
 }
 
 /**
@@ -165,10 +162,11 @@ export async function openSqlRestoringReservationStore({
 		wake_requested: wakeColumn,
 		wake_generation: wakeColumn,
 	});
-	await database.exec(
-		`CREATE INDEX IF NOT EXISTS ${table}_child ON ${table}(child_target) WHERE end_json IS NULL`,
-	);
-	await renameWakeIndex(database, table);
+	// In a serial transaction, so brokers opening a new store at once take turns creating them (#5054).
+	await database.transaction(async (tx) => {
+		await tx.exec(`CREATE INDEX IF NOT EXISTS ${table}_child ON ${table}(child_target) WHERE end_json IS NULL`);
+		await renameWakeIndex(tx, dialectOf(database), table);
+	});
 	const columns = `reservation_key, owner_session_id, owner_broker_id, child_name AS child_name_json, child_target,
 		targets_json, "group" AS reservation_group, dormant, wake, wake_generation, fencing_token, "order" AS reservation_order,
 		gone AS gone_json, end_json,

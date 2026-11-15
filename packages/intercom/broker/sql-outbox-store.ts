@@ -75,7 +75,8 @@ export async function openSqlOutboxStore(options: IntercomBrokerStateOptions): P
 	const table = `${validateStoragePrefix(options.prefix, dialectOf(database).name)}intercom_outbox`;
 	const { types, nowMs, greatest } = dialectOf(database);
 	const ageSince = (column: string) => greatest("0", `${nowMs} - ${column}`);
-	await database.exec(`
+	// In a serial transaction, so brokers opening a new store at once take turns creating it (#5054).
+	const schema = `
 		CREATE TABLE IF NOT EXISTS ${table}(
 			sequence ${types.serialKey},
 			message_id TEXT NOT NULL UNIQUE,
@@ -92,7 +93,8 @@ export async function openSqlOutboxStore(options: IntercomBrokerStateOptions): P
 			settled_at ${types.int}
 		);
 		CREATE INDEX IF NOT EXISTS ${table}_target ON ${table}(target_identity, state, sequence);
-	`);
+	`;
+	await database.transaction((tx) => tx.exec(schema));
 	// #3983: added later; a table from an older broker gets the column, and an older broker ignores it.
 	await addMissingColumns(database, table, { saving_at: types.int });
 	// #4896: when the row was queued and the size of its frame; rows an older broker wrote have neither.
