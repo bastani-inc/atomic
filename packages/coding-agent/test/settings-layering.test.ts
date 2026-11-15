@@ -343,20 +343,20 @@ describe("applyOverrides last for the run (#5049)", () => {
 	});
 });
 
-describe("settings files are read under the scope's write lock (#5049)", () => {
+describe("settings files are read without the scope's write lock (#5049, #5161)", () => {
 	for (const scope of ["global", "project"] as const) {
-		test(`reading the ${scope} files waits for a writer holding the ${scope} lock (#5049)`, () => {
+		test(`reading the ${scope} files goes on while a writer holds the ${scope} lock (#5161)`, () => {
 			const path = scope === "global" ? globalPath : atomicProjectPath;
 			writeJson(globalPath, {});
 			writeJson(atomicProjectPath, {});
 			const storage = new FileSettingsStorage(projectDir, agentDir);
 			const release = lockfile.lockSync(path, { realpath: false });
 			try {
-				assert.throws(() => storage.readLayers(scope), { code: "ELOCKED" });
+				// Saves replace the file whole with a rename, so a read never needs the lock.
+				assert.deepEqual(storage.readLayers(scope), [{ path, content: "{}" }]);
 			} finally {
 				release();
 			}
-			assert.deepEqual(storage.readLayers(scope), [{ path, content: "{}" }]);
 		});
 	}
 });

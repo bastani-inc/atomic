@@ -116,6 +116,8 @@ export function getProjectTrustOptions(cwd: string, options?: { includeSessionOn
 export const TRUST_LOCK_WAIT_MS = 5_000;
 const TRUST_LOCK_POLL_MIN_MS = 10;
 const TRUST_LOCK_POLL_MAX_MS = 50;
+/** How old a trust store lock must be before it is judged left by a killed process: proper-lockfile's default. */
+const TRUST_LOCK_STALE_MS = 10_000;
 
 /** A trust.json that exists but is not a valid trust store. */
 class CorruptTrustFileError extends Error {}
@@ -223,27 +225,31 @@ function acquireTrustLockSync(path: string): () => void {
 	const trustDir = dirname(path);
 	mkdirSync(trustDir, { recursive: true });
 	const lockPath = `${path}.lock`;
-	return waitForLockSync(() => lockfile.lockSync(trustDir, { realpath: false, lockfilePath: lockPath }), {
-		lockPath,
-		holderWaitMs: TRUST_LOCK_WAIT_MS,
-		pollMinMs: TRUST_LOCK_POLL_MIN_MS,
-		pollMaxMs: TRUST_LOCK_POLL_MAX_MS,
-		retryable: (error) => {
-			const code = (error as NodeJS.ErrnoException).code;
-			// Windows reports a lock directory another process is creating or removing as EPERM, as for auth.json.
-			return code === "ELOCKED" || (code === "EPERM" && process.platform === "win32");
+	return waitForLockSync(
+		(fs) => lockfile.lockSync(trustDir, { realpath: false, lockfilePath: lockPath, stale: TRUST_LOCK_STALE_MS, fs }),
+		{
+			lockPath,
+			staleMs: TRUST_LOCK_STALE_MS,
+			holderWaitMs: TRUST_LOCK_WAIT_MS,
+			pollMinMs: TRUST_LOCK_POLL_MIN_MS,
+			pollMaxMs: TRUST_LOCK_POLL_MAX_MS,
+			retryable: (error) => {
+				const code = (error as NodeJS.ErrnoException).code;
+				// Windows reports a lock directory another process is creating or removing as EPERM, as for auth.json.
+				return code === "ELOCKED" || (code === "EPERM" && process.platform === "win32");
+			},
+			stuck: (error) =>
+				new Error(
+					`Could not save the trust decision: ${path} is locked by another process (waited ${TRUST_LOCK_WAIT_MS / 1000} s)`,
+					{ cause: error },
+				),
+			contended: (error, waitedMs) =>
+				new Error(
+					`Could not save the trust decision: other processes kept saving to ${path} for ${Math.round(waitedMs / 1000)} s`,
+					{ cause: error },
+				),
 		},
-		stuck: (error) =>
-			new Error(
-				`Could not save the trust decision: ${path} is locked by another process (waited ${TRUST_LOCK_WAIT_MS / 1000} s)`,
-				{ cause: error },
-			),
-		contended: (error, waitedMs) =>
-			new Error(
-				`Could not save the trust decision: other processes kept saving to ${path} for ${Math.round(waitedMs / 1000)} s`,
-				{ cause: error },
-			),
-	});
+	);
 }
 
 function withTrustFileLock<T>(path: string, fn: () => T): T {
