@@ -3,6 +3,7 @@
 // to its coordinator, the fenced commit in the shared journal, and the worker's catch-up fold.
 // With `stageMs > 0` the child also runs one agent stage on a stub model that answers after `stageMs`, which adds
 // the stage's session writes; with `model` set to `provider/id` the stage runs on that real model instead.
+import { appendFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import { AuthStorage, getAgentDir, ModelRuntime, SettingsManager } from "@bastani/atomic";
@@ -83,7 +84,11 @@ export const benchChild = workflow({
 			for (let step = from; step < to; step++) {
 				if (ctx.inputs.workMs > 0) await delay(ctx.inputs.workMs);
 				const began = performance.now();
-				await ctx.tool(`step-${step}`, { step }, async () => ({ step, pad }));
+				await ctx.tool(`step-${step}`, { step }, async () => {
+					// ELASTIC_EXEC_LOG: every run of a step's body, so a benchmark counts the steps a replay ran again.
+					if (process.env.ELASTIC_EXEC_LOG) appendFileSync(process.env.ELASTIC_EXEC_LOG, `${ctx.inputs.index}:${step}\n`);
+					return { step, pad };
+				});
 				latencies.push(Math.round((performance.now() - began) * 100) / 100);
 			}
 		};
