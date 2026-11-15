@@ -4,6 +4,7 @@ import { createChildProcessEnvironment } from "@bastani/atomic";
 import type { ExtractedContent } from "./extract.js";
 import { flattenTruncatedString } from "./flat-string.js";
 import type { GitHubUrlInfo } from "./github-extract.js";
+import { isValidGitHubOwner, isValidGitHubRepo, isValidGitRef, isValidRepoPath } from "./github-config.js";
 
 const MAX_TREE_ENTRIES = 200;
 const MAX_INLINE_FILE_CHARS = 100_000;
@@ -29,7 +30,13 @@ export function showGhHint(): void {
 	}
 }
 
+/** Owner and repo names GitHub allows are already safe `gh api` path components. */
+function isValidRepository(owner: string, repo: string): boolean {
+	return isValidGitHubOwner(owner) && isValidGitHubRepo(repo);
+}
+
 export async function checkRepoSize(owner: string, repo: string): Promise<number | null> {
+	if (!isValidRepository(owner, repo)) return null;
 	if (!(await checkGhAvailable())) return null;
 
 	return new Promise((resolve) => {
@@ -54,7 +61,7 @@ async function getDefaultBranch(owner: string, repo: string): Promise<string | n
 				return;
 			}
 			const branch = stdout.trim();
-			resolve(branch || null);
+			resolve(isValidGitRef(branch) ? branch : null);
 		});
 	});
 }
@@ -139,8 +146,10 @@ export async function fetchViaApi(
 	info: GitHubUrlInfo,
 	sizeNote?: string,
 ): Promise<ExtractedContent | null> {
+	if (!isValidRepository(owner, repo)) return null;
 	const ref = info.ref || (await getDefaultBranch(owner, repo));
-	if (!ref) return null;
+	if (!ref || !isValidGitRef(ref) || !isValidRepoPath(info.path ?? "")) return null;
+	const apiRef = encodeURIComponent(ref);
 
 	const lines: string[] = [];
 	if (sizeNote) {
@@ -149,7 +158,8 @@ export async function fetchViaApi(
 	}
 
 	if (info.type === "blob" && info.path) {
-		const content = await fetchFileViaApi(owner, repo, info.path, ref);
+		const apiPath = info.path.split("/").map(encodeURIComponent).join("/");
+		const content = await fetchFileViaApi(owner, repo, apiPath, apiRef);
 		if (!content) return null;
 
 		lines.push(`## ${info.path}`);
@@ -169,8 +179,8 @@ export async function fetchViaApi(
 	}
 
 	const [tree, readme] = await Promise.all([
-		fetchTreeViaApi(owner, repo, ref),
-		fetchReadmeViaApi(owner, repo, ref),
+		fetchTreeViaApi(owner, repo, apiRef),
+		fetchReadmeViaApi(owner, repo, apiRef),
 	]);
 
 	if (!tree && !readme) return null;

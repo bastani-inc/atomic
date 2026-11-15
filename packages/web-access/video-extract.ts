@@ -94,9 +94,12 @@ const loadVideoConfig = createOwnerState<VideoConfig>(() => {
 	};
 });
 
+/**
+ * Resolve a local video path. Returns null for input that is not a local video file; throws when it is
+ * one that cannot be analysed because of the `video` settings.
+ */
 export function isVideoFile(input: string): VideoFileInfo | null {
 	const config = loadVideoConfig();
-	if (!config.enabled) return null;
 
 	const isFilePath = isAbsolute(input) || input.startsWith("./") || input.startsWith("../") || input.startsWith(".\\") || input.startsWith("..\\") || input.startsWith("file://");
 	if (!isFilePath) return null;
@@ -113,6 +116,7 @@ export function isVideoFile(input: string): VideoFileInfo | null {
 	const ext = extname(filePath).toLowerCase();
 	const mimeType = VIDEO_EXTENSIONS[ext];
 	if (!mimeType) return null;
+	if (!config.enabled) throw new Error(`${input}: video extraction is disabled (video.enabled)`);
 
 	const absolutePath = resolveFilePath(filePath);
 	if (!absolutePath) return null;
@@ -126,7 +130,9 @@ export function isVideoFile(input: string): VideoFileInfo | null {
 	if (!stat.isFile()) return null;
 
 	const maxBytes = config.maxSizeMB * 1024 * 1024;
-	if (stat.size > maxBytes) return null;
+	if (stat.size > maxBytes) {
+		throw new Error(`${input} exceeds the ${config.maxSizeMB} MB video limit (video.maxSizeMB)`);
+	}
 
 	return { absolutePath, mimeType, sizeBytes: stat.size };
 }
@@ -163,8 +169,14 @@ export async function extractVideo(
 	const displayName = basename(info.absolutePath);
 	const activityId = activityMonitor.logStart({ type: "fetch", url: `video:${displayName}` });
 
-	const result = await tryVideoGeminiApi(info, effectivePrompt, effectiveModel, signal)
-		?? await tryVideoGeminiWeb(info, effectivePrompt, effectiveModel, signal);
+	let apiError: string | null = null;
+	let result: ExtractedContent | null = null;
+	try {
+		result = await tryVideoGeminiApi(info, effectivePrompt, effectiveModel, signal);
+	} catch (err) {
+		apiError = err instanceof Error ? err.message : String(err);
+	}
+	result ??= await tryVideoGeminiWeb(info, effectivePrompt, effectiveModel, signal);
 
 	if (result) {
 		const thumbnail = await extractVideoFrame(info.absolutePath, 1, signal);
@@ -180,7 +192,10 @@ export async function extractVideo(
 		return null;
 	}
 
-	activityMonitor.logError(activityId, "all video extraction paths failed");
+	activityMonitor.logError(activityId, apiError ?? "all video extraction paths failed");
+	if (apiError) {
+		return { url: info.absolutePath, title: "", content: "", error: `Gemini API video analysis failed: ${apiError}` };
+	}
 	return null;
 }
 
@@ -278,8 +293,8 @@ async function tryVideoGeminiApi(
 			error: null,
 		};
 	} catch (err) {
-		if (shouldRethrow(err)) throw err;
-		return null;
+		const message = err instanceof Error ? err.message : String(err);
+		throw new Error(message.split(apiKey).join("[redacted]"));
 	} finally {
 		if (fileName) deleteGeminiFile(fileName, apiKey);
 	}
@@ -347,7 +362,7 @@ async function pollFileState(
 		if (signal?.aborted) throw new Error("Aborted");
 
 		const res = await fetch(`${API_BASE}/${fileName}?key=${apiKey}`, { signal });
-		if (!res.ok) throw new Error(`File state check failed: ${res.status}`);
+		if (!res.ok) throw new Error(`File state check failed: ${res.status} (${(await res.text()).slice(0, 200)})`);
 
 		const data = await res.json() as { state: string };
 		if (data.state === "ACTIVE") return;

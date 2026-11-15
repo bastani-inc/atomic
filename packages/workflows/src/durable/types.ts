@@ -172,6 +172,8 @@ export interface DurableToolCheckpoint {
 	readonly worktreeSnapshots?: readonly WorktreeSnapshot[];
 	/** Graph topology; reserved run-level checkpoints have no graph node. */
 	readonly topology?: DurableToolTopology;
+	/** The run's attempt this record was written in; absent before the run's first resume (#4874). */
+	readonly attempt?: number;
 }
 
 /** A `ctx.ui.*` user response cached durably. */
@@ -278,6 +280,12 @@ export interface DurableStageCheckpoint {
 	readonly topology?: DurableStageTopology;
 	/** Stage output text or structured result when the stage completed. */
 	readonly output?: WorkflowSerializableValue;
+	/**
+	 * The answer of a completed `ctx.ui` prompt node, recorded with its completion in this one checkpoint, so a
+	 * completed prompt is never recorded without its answer (#4941). A custom prompt's `undefined` answer has no
+	 * `response`. Absent on records written before it, and on stages that are not prompts.
+	 */
+	readonly promptAnswer?: { readonly response?: WorkflowSerializableValue };
 	/** Resumable Atomic/Pi session metadata for in-progress LM stages. */
 	readonly sessionId?: string;
 	readonly sessionFile?: string;
@@ -314,6 +322,8 @@ export interface DurableStageCheckpoint {
 	 * holds them: a resume continues the stage's turn from them instead of running the calls again.
 	 */
 	readonly waitResults?: readonly import("../shared/stage-wait.js").StageWaitToolResult[];
+	/** The run's attempt this record was written in; absent before the run's first resume (#4874). */
+	readonly attempt?: number;
 }
 
 /**

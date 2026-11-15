@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import {
 	copyFile,
@@ -236,20 +237,29 @@ async function indexSeedOf(userIndexPath: string): Promise<IndexSeed | null> {
 	}
 }
 
-/** The seed recorded next to `index`, when it is of this version; anything else reads as none. */
-async function recordedSeedOf(index: string): Promise<IndexSeed | null | undefined> {
+/**
+ * What is recorded next to a private index: the seed it was built from and the hash of its bytes. The record is written
+ * after the index, by whichever capture renamed it, so it vouches only for the exact index it names: a crash between
+ * the two writes, or captures in two processes renaming over each other, leave a record whose hash the index file no
+ * longer has, and the next capture reseeds.
+ */
+interface IndexRecord {
+	readonly version: number;
+	readonly seed: IndexSeed | null;
+	readonly index: string;
+}
+
+/** The record next to `index`, when it is of this version; anything else reads as none. */
+async function recordOf(index: string): Promise<IndexRecord | undefined> {
 	try {
-		const record = JSON.parse(await readFile(`${index}.json`, "utf8")) as {
-			readonly version?: number;
-			readonly seed?: IndexSeed | null;
-		};
-		return record.version === CAPTURE_INDEX_VERSION ? record.seed : undefined;
+		const record = JSON.parse(await readFile(`${index}.json`, "utf8")) as IndexRecord;
+		return record.version === CAPTURE_INDEX_VERSION ? record : undefined;
 	} catch {
 		return undefined;
 	}
 }
 
-function sameSeed(left: IndexSeed | null, right: IndexSeed | null | undefined): boolean {
+function sameSeed(left: IndexSeed | null, right: IndexSeed | null): boolean {
 	return JSON.stringify(left) === JSON.stringify(right);
 }
 
@@ -296,7 +306,9 @@ async function writeCapturedTree(
 		try {
 			const seed = await indexSeedOf(userIndexPath);
 			await mkdir(dirname(index), { recursive: true });
-			const reseed = !sameSeed(seed, await recordedSeedOf(index)) || !(await copyKeepingTime(index, working));
+			const record = await recordOf(index);
+			const reseed =
+				record === undefined || !sameSeed(seed, record.seed) || !(await copyRecorded(index, record.index, working));
 			if (reseed) {
 				await rm(working, { force: true });
 				await seedFromUserIndex(userIndexPath, working);
@@ -312,8 +324,13 @@ async function writeCapturedTree(
 					forceAdded: () => ignoredAdditionsToHead(checkout, signal),
 				},
 			);
-			if (reseed) await writeAtomically(`${index}.json`, JSON.stringify({ version: CAPTURE_INDEX_VERSION, seed }));
+			const written: IndexRecord = {
+				version: CAPTURE_INDEX_VERSION,
+				seed,
+				index: sha256Hex(await readFile(working)),
+			};
 			await rename(working, index);
+			await writeAtomically(`${index}.json`, JSON.stringify(written));
 			return state;
 		} catch {
 			const remove = (files: readonly string[]) =>
@@ -341,17 +358,30 @@ function usableOutside(root: string, index: string): boolean {
 	return fromRoot === ".." || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot);
 }
 
-/** Copies `from` to `to` with `from`'s modification time; false when `from` does not exist. */
-async function copyKeepingTime(from: string, to: string): Promise<boolean> {
+/**
+ * Copies `from` to `to` with `from`'s modification time; true when its bytes have the recorded `hash`, false when they
+ * do not, and the copy must be replaced, or `from` does not exist. Bytes and time are read through one handle, so a
+ * rename over `from` meanwhile cannot pair one file's bytes with another's time.
+ */
+async function copyRecorded(from: string, hash: string, to: string): Promise<boolean> {
+	let file: FileHandle;
 	try {
-		await copyFile(from, to);
+		file = await open(from, "r");
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
 		throw error;
 	}
-	const { atime, mtime } = await stat(from);
-	await utimes(to, atime, mtime);
-	return true;
+	let bytes: Buffer;
+	let times: { readonly atime: Date; readonly mtime: Date };
+	try {
+		times = await file.stat();
+		bytes = await file.readFile();
+	} finally {
+		await file.close();
+	}
+	await writeFile(to, bytes);
+	await utimes(to, times.atime, times.mtime);
+	return sha256Hex(bytes) === hash;
 }
 
 async function writeAtomically(file: string, data: string): Promise<void> {
@@ -632,6 +662,70 @@ async function deniedHistory(
 	};
 }
 
+/**
+ * Writes to `file` the bundle of `head` without the commits `boundary` reaches, under the bundle ref `HEAD`, through a
+ * temporary ref pinned to `head`: bundling the symbolic `HEAD` would take whatever commit it names by then (#4900).
+ * The ref is removed even when the capture is aborted.
+ */
+async function bundlePinned(
+	root: string,
+	head: string,
+	boundary: readonly string[],
+	file: string,
+	signal?: AbortSignal,
+): Promise<void> {
+	const ref = `refs/atomic/capture/${randomUUID()}`;
+	await runGit(["update-ref", "--no-deref", ref, head, ""], { cwd: root, signal });
+	try {
+		const input = `${[ref, ...boundary.map((commit) => `^${commit}`)].join("\n")}\n`;
+		await runGit(["bundle", "create", "-q", file, "--stdin"], { cwd: root, signal, input });
+	} finally {
+		await runGit(["update-ref", "--no-deref", "-d", ref, head], { cwd: root });
+	}
+}
+
+/**
+ * `data` with its single ref, which must be `head`, named `HEAD` as restores fetch it, or null when the bundle names
+ * another commit or more than one.
+ */
+function namedHead(
+	data: Uint8Array,
+	head: string,
+): { readonly data: Uint8Array; readonly prerequisites: string[] } | null {
+	const bytes = Buffer.from(data);
+	const end = bytes.indexOf("\n\n");
+	if (end < 0) return null;
+	const lines = bytes.subarray(0, end).toString("utf8").split("\n");
+	const refs = lines.filter((line) => !/^[#@-]/.test(line));
+	if (refs.length !== 1 || refs[0]!.split(" ", 1)[0] !== head) return null;
+	const header = lines.map((line) => (line === refs[0] ? `${head} HEAD` : line)).join("\n");
+	return {
+		data: new Uint8Array(Buffer.concat([Buffer.from(header, "utf8"), bytes.subarray(end)])),
+		prerequisites: lines.filter((line) => line.startsWith("-")).map((line) => line.slice(1).split(" ", 1)[0]!),
+	};
+}
+
+/**
+ * The bundle in `file` as stored, when Git reads its only head as `head` and it holds exactly `commits`, the commits
+ * checked against the deny-list; otherwise null.
+ */
+async function verifiedBundle(
+	root: string,
+	head: string,
+	commits: readonly string[],
+	file: string,
+	signal?: AbortSignal,
+): Promise<Uint8Array | null> {
+	const named = namedHead(new Uint8Array(await readFile(file)), head);
+	if (named === null) return null;
+	await writeFile(file, named.data);
+	if ((await gitText(["bundle", "list-heads", file], { cwd: root, signal })) !== `${head} HEAD`) return null;
+	const input = `${[head, ...named.prerequisites.map((commit) => `^${commit}`)].join("\n")}\n`;
+	const bundled = (await gitText(["rev-list", "--stdin"], { cwd: root, signal, input })).split("\n").filter(Boolean);
+	const checked = new Set(commits);
+	return bundled.length === checked.size && bundled.every((commit) => checked.has(commit)) ? named.data : null;
+}
+
 async function captureHistory(
 	checkout: Checkout,
 	settings: WorktreeSnapshotSettings,
@@ -640,9 +734,11 @@ async function captureHistory(
 	signal?: AbortSignal,
 ): Promise<HistoryCapture> {
 	const { root, head } = checkout;
-	const unpushed = (await gitText(["rev-list", head, "--not", "--remotes"], { cwd: root, signal }))
+	const listed = (await gitText(["rev-list", "--boundary", head, "--not", "--remotes"], { cwd: root, signal }))
 		.split("\n")
 		.filter(Boolean);
+	const unpushed = listed.filter((line) => !line.startsWith("-"));
+	const boundary = listed.filter((line) => line.startsWith("-")).map((line) => line.slice(1));
 	if (unpushed.length === 0) return { bundle: null, omitted: [] };
 	const sameHistory = (commits: readonly string[]) =>
 		previous?.head === head && commits.length === unpushed.length && commits.every((c, i) => c === unpushed[i]);
@@ -652,8 +748,10 @@ async function captureHistory(
 		return { bundle: null, omitted: [{ reason: "unpushed-history-denied", ...denied }] };
 	}
 	const file = join(scratch, "history.bundle");
-	await runGit(["bundle", "create", "-q", file, "HEAD", "--not", "--remotes"], { cwd: root, signal });
-	const data = new Uint8Array(await readFile(file));
+	await bundlePinned(root, head, boundary, file, signal);
+	const data = await verifiedBundle(root, head, unpushed, file, signal);
+	// Not the commits that were checked: record the snapshot without its history rather than store them (#4900).
+	if (data === null) return { bundle: null, omitted: [] };
 	if (data.byteLength > settings.maxSnapshotBytes) {
 		return { bundle: null, omitted: [{ reason: "bundle-over-cap", commits: unpushed, bytes: data.byteLength }] };
 	}
@@ -698,7 +796,8 @@ function snapshotId(
  * Records the state of the Git checkout containing `dir`. Resolves `unavailable` (with the typed reason) when Git is
  * missing, `dir` is outside a work tree, the repository has no commits, or a path the snapshot reads cannot be read,
  * and `unchanged` with `previous` when HEAD, the recomputed tree and the files it leaves out all equal it. Never
- * changes the user's index, refs or files.
+ * changes the user's index, refs or files, apart from a temporary ref under `refs/atomic/capture/` that bundling unpushed
+ * commits creates and removes.
  */
 export async function captureWorktreeSnapshot(
 	dir: string,

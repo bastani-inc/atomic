@@ -4,6 +4,13 @@ import type { Socket } from "net";
 export type JsonWireValue = string | number | boolean | null | JsonWireValue[] | { [key: string]: JsonWireValue };
 
 /**
+ * Largest frame payload a reader accepts. The largest legitimate frames (rosters, `list` replies, messages with
+ * attachment contents) are a few megabytes, so 64 MiB leaves ample headroom, including JSON escaping, while keeping
+ * a peer from making the reader buffer an arbitrary declared length.
+ */
+export const INTERCOM_MAX_FRAME_BYTES = 64 * 1024 * 1024;
+
+/**
  * Write a length-prefixed message to a socket.
  * Format: 4-byte big-endian length + JSON payload
  */
@@ -32,8 +39,10 @@ export function createMessageReader(
   let pending: Buffer[] = [];
   let pendingLength = 0;
   let awaitedLength = 0;
+  let rejected = false;
 
   return (data: Buffer) => {
+    if (rejected) return;
     if (pendingLength + data.length < awaitedLength) {
       pending.push(data);
       pendingLength += data.length;
@@ -46,7 +55,15 @@ export function createMessageReader(
 
     while (buffer.length >= 4) {
       const length = buffer.readUInt32BE(0);
-      
+      if (length > INTERCOM_MAX_FRAME_BYTES) {
+        // Reject on the header alone: the payload is never buffered, and the stream cannot be resynchronized.
+        rejected = true;
+        onError(new Error(
+          `Intercom frame of ${length} bytes exceeds the maximum Intercom frame size of ${INTERCOM_MAX_FRAME_BYTES} bytes`,
+        ));
+        return;
+      }
+
       if (buffer.length < 4 + length) {
         pending = [buffer];
         pendingLength = buffer.length;

@@ -11,6 +11,8 @@ export interface WorktreeInfo {
 	index: number;
 	nodeModulesLinked: boolean;
 	syntheticPaths: string[];
+	/** Setup steps that could not be done, such as copying `.worktreeinclude` files; the worktree works without them. */
+	setupWarnings?: string[];
 }
 
 export interface WorktreeDiff {
@@ -22,6 +24,12 @@ export interface WorktreeDiff {
 	insertions: number;
 	deletions: number;
 	patchPath: string;
+	/** The worktree the diff was captured from. */
+	worktreePath: string;
+	/** Why the diff could not be captured; the worktree is then kept with its work (#4876). */
+	captureError?: string;
+	/** The worktree's setup warnings. */
+	setupWarnings?: string[];
 }
 
 export interface WorktreeTaskCwdConflict {

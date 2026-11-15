@@ -139,14 +139,26 @@ export class FileSettingsStorage implements SettingsStorage {
 	}
 
 	getFieldOrigin(scope: SettingsScope, field: keyof Settings): SettingsFieldOrigin | undefined {
+		const index = this.fieldSourceIndex(scope, field);
+		if (index === undefined) return undefined;
+		return index === 0 ? "primary" : "legacy";
+	}
+
+	getFieldPath(scope: SettingsScope, field: string): string | undefined {
+		const index = this.fieldSourceIndex(scope, field);
+		return index === undefined
+			? undefined
+			: (scope === "global" ? this.globalReadPaths : this.projectReadPaths)[index];
+	}
+
+	/** Index of the first read path that sets the field, which is the one whose value takes effect. */
+	private fieldSourceIndex(scope: SettingsScope, field: string): number | undefined {
 		const readPaths = scope === "global" ? this.globalReadPaths : this.projectReadPaths;
 		for (const [index, readPath] of readPaths.entries()) {
 			if (!existsSync(readPath)) continue;
 			try {
 				const parsed = parseJsonFileContent(readFileSync(readPath, "utf-8")) as Settings;
-				if (Object.hasOwn(parsed, field)) {
-					return index === 0 ? "primary" : "legacy";
-				}
+				if (Object.hasOwn(parsed, field)) return index;
 			} catch {
 				return undefined;
 			}
