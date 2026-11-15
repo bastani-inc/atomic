@@ -44,8 +44,10 @@ export function createDurableStageDeps(input: {
 	readonly beforeCheckpoint?: () => void | Promise<void>;
 	readonly recordLiveCheckpoint?: DurableStageDeps["recordLiveCheckpoint"];
 	readonly stageDirectories?: DurableStageDeps["stageDirectories"];
+	/** The run's own stage checkpoints from an earlier process, from the listing the run already makes. */
+	readonly priorStageCheckpoints: readonly DurableStageCheckpoint[];
 }): DurableStageDeps {
-	const priorSourceOrders = priorStageSourceOrders(input.backend, input.run.id);
+	const priorSourceOrders = priorStageSourceOrders(input.priorStageCheckpoints);
 	return {
 		workflowId: input.run.id,
 		backend: input.backend,
@@ -68,10 +70,9 @@ export function createDurableStageDeps(input: {
 }
 
 /** The source order this run's records from an earlier process hold for each stage, by stage id. */
-function priorStageSourceOrders(backend: DurableWorkflowBackend, runId: string): ReadonlyMap<string, number> {
+function priorStageSourceOrders(checkpoints: readonly DurableStageCheckpoint[]): ReadonlyMap<string, number> {
 	const orders = new Map<string, number>();
-	for (const checkpoint of backend.listCheckpoints(runId)) {
-		const topology = checkpoint.kind === "stage" ? checkpoint.topology : undefined;
+	for (const { topology } of checkpoints) {
 		if (topology?.sourceOrder !== undefined) orders.set(topology.stageId, topology.sourceOrder);
 	}
 	return orders;
