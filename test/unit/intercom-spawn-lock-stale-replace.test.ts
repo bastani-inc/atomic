@@ -9,9 +9,12 @@ import { pathToFileURL } from "node:url";
 import { afterAll, describe, test } from "vitest";
 import { acquireSpawnLock, releaseSpawnLock, replaceStaleSpawnLock } from "../../packages/intercom/broker/spawn.js";
 import {
+	isAbandoned,
 	PARKED_FILE_MAX_AGE_MS,
+	processStart,
 	removeFileIfUnchanged,
-	takeOverStaleLock,
+	takeOverStaleLock as takeOverWith,
+	takeTokenTakeover,
 } from "../../packages/intercom/broker/stale-lock-file.js";
 import {
 	fileExistsSync,
@@ -233,7 +236,32 @@ describe("stale lock file removal (#5132)", () => {
 		assert.equal(fileExistsSync(path), false);
 		assert.equal(fileExistsSync(token), false);
 	});
+
+	test("a takeover token naming a running pid is its holder's unless that pid is known to have started at another time (#5220)", () => {
+		const { path, content } = staleLock();
+		const token = `${path}.takeover`;
+		const ownStart = processStart(process.pid);
+		writeTextSync(token, `${process.pid}\n${ownStart ?? ""}\n`);
+		takeOverStaleLock(path, content, token);
+		assert.equal(readTextSync(path, "utf8"), content, "a token whose holder still runs blocks the takeover");
+
+		// A process given the pid of a crashed holder started later; where no start can be read, the pid still runs.
+		writeTextSync(token, `${process.pid}\nanother start\n`);
+		takeOverStaleLock(path, content, token);
+		assert.equal(fileExistsSync(token), ownStart === undefined);
+		assert.equal(readTextSync(path, "utf8"), content);
+	});
 });
+
+/** Takes the abandoned lock at `path`, read as `inspected`, over through the takeover token `token`, as a broker does. */
+function takeOverStaleLock(path: string, inspected: string, token: string): void {
+	takeOverWith(
+		path,
+		inspected,
+		(current) => isAbandoned(path, current),
+		() => takeTokenTakeover(token),
+	);
+}
 
 /** Files other than the lock itself that a removal left beside it. */
 function leftovers(path: string): string[] {

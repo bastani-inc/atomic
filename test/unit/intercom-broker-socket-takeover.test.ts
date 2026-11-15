@@ -597,7 +597,7 @@ describe("socket replacement lock (#3505)", () => {
 		utimesSync(token, abandonedAt, abandonedAt);
 
 		const release = await acquireSocketReplacementLock(path);
-		assert.equal(readTextSync(path, "utf8"), `${process.pid}\n`);
+		assert.equal(Number.parseInt(readTextSync(path, "utf8"), 10), process.pid, "the lock names this broker");
 		assert.equal(fileExistsSync(token), false);
 		release();
 	});
@@ -607,7 +607,7 @@ describe("socket replacement lock (#3505)", () => {
 		writeTextSync(path, `${await deadPid()}\n`);
 
 		const release = await acquireSocketReplacementLock(path);
-		assert.equal(readTextSync(path, "utf8"), `${process.pid}\n`);
+		assert.equal(Number.parseInt(readTextSync(path, "utf8"), 10), process.pid, "the lock names this broker");
 		release();
 		assert.equal(fileExistsSync(path), false);
 	});

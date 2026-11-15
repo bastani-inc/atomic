@@ -5,7 +5,7 @@ import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { createRequire } from "module";
 import { isSocketAnswering } from "./socket-liveness.js";
-import { readFileOrUndefined, takeOverStaleLock } from "./stale-lock-file.js";
+import { createLockFile, readFileOrUndefined, takeOverStaleLock, unreadableLongEnough } from "./stale-lock-file.js";
 import { BROKER_READY_TIMEOUT_MS } from "./startup-timeout.js";
 import {
   BROKER_ANNOUNCE_PATH_ENV,
@@ -19,6 +19,7 @@ import {
   isBunBinary,
   isIntercomBrokerStopTimeoutError,
   processSharedStorageSelection,
+  takeTakeoverMutex,
 } from "@bastani/atomic";
 import { isBrokerStatusReport } from "./broker-status.js";
 import { BROKER_UPGRADE_STOP_TIMEOUT_MS, requestBrokerShutdown, waitForBrokerExit } from "./broker-stop.js";
@@ -754,29 +755,37 @@ export function acquireSpawnLock(lockPath: string = getBrokerSpawnLockPath()): s
   const maxRetries = 5;
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     const owner = `${process.pid}\n${Date.now()}\n`;
-    try {
-      writeFileSync(lockPath, owner, { flag: "wx" });
-      return owner;
-    } catch (error) {
-      if (!(error instanceof Error) || (error as NodeJS.ErrnoException).code !== "EEXIST") {
-        throw error;
-      }
-      // Unreadable lock contents are treated as stale so a new broker can start.
-      const inspected = readFileOrUndefined(lockPath);
-      if (!isSpawnLockContentStale(inspected ?? "")) return undefined;
-      replaceStaleSpawnLock(inspected, lockPath);
-    }
+    // Made complete, so a lock being taken is never seen empty and replaced as stale under its maker (#5220).
+    if (createLockFile(lockPath, owner)) return owner;
+    const inspected = readFileOrUndefined(lockPath);
+    if (!isSpawnLockReplaceable(inspected, lockPath)) return undefined;
+    replaceStaleSpawnLock(inspected, lockPath);
   }
   return undefined;
 }
 
 /**
- * Removes the spawn lock a spawner read as `inspected` and judged stale, so the next `wx` attempt can take it. Two
- * spawners that saw the same stale lock never both replace it: the lock is removed only while it is still the inspected
- * one (#5132). `inspected` is undefined when the lock could not be read.
+ * Whether the spawn lock read as `content` may be replaced: it is stale, and, when it records no spawner, it has been
+ * so long enough that no earlier version, which created a lock before writing it, is still writing it (#5220).
+ */
+function isSpawnLockReplaceable(content: string | undefined, lockPath: string): boolean {
+  if (!isSpawnLockContentStale(content ?? "")) return false;
+  return recordsSpawner(content ?? "") || unreadableLongEnough(lockPath);
+}
+
+/**
+ * Removes the spawn lock a spawner read as `inspected` and judged stale, so the next attempt can take it. Two spawners
+ * that saw the same stale lock never both replace it (#5132, #5220): the replacement runs under the takeover mutex, an
+ * operating-system advisory lock its holder's death releases (#5193), and inside it the lock is judged stale again and
+ * removed only while it is still the inspected one. `inspected` is undefined when the lock could not be read.
  */
 export function replaceStaleSpawnLock(inspected: string | undefined, lockPath: string = getBrokerSpawnLockPath()): void {
-  takeOverStaleLock(lockPath, inspected, `${lockPath}.takeover`);
+  takeOverStaleLock(
+    lockPath,
+    inspected,
+    (current) => isSpawnLockReplaceable(current, lockPath),
+    () => takeTakeoverMutex(lockPath),
+  );
 }
 
 function isProcessAlive(pid: number): boolean {
@@ -798,6 +807,12 @@ export function isSpawnLockStale(lockPath: string = getBrokerSpawnLockPath(), no
   }
   // Unreadable lock contents are treated as stale so a new broker can start.
   return isSpawnLockContentStale(readFileOrUndefined(lockPath) ?? "", nowMs);
+}
+
+/** Whether the spawn lock read as `content` names its spawner and when it was taken. */
+function recordsSpawner(content: string): boolean {
+  const [spawnerLine = "", createdAtLine = ""] = content.split("\n");
+  return Number.isFinite(Number.parseInt(spawnerLine, 10)) && Number.isFinite(Number.parseInt(createdAtLine, 10));
 }
 
 function isSpawnLockContentStale(content: string, nowMs: number = Date.now()): boolean {
