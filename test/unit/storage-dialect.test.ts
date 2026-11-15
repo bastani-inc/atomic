@@ -178,6 +178,38 @@ const renderings: readonly (readonly [string, (dialect: StorageDialect) => strin
 	],
 	["contains", (d) => d.contains("p", "'x'"), "instr(p, 'x') > 0", "strpos(p, 'x') > 0"],
 	["isDistinct", (d) => d.isDistinct("a", "'b'"), "a IS NOT 'b'", "a IS DISTINCT FROM 'b'"],
+	["isNotDistinct", (d) => d.isNotDistinct("worker", "?"), "worker IS ?", "worker IS NOT DISTINCT FROM ?"],
+	[
+		"jsonObject",
+		(d) =>
+			d.jsonObject([
+				["seq", "seq"],
+				["lastSeq", "CAST(? AS BIGINT)"],
+			]),
+		"json_object('seq', seq, 'lastSeq', CAST(? AS BIGINT))",
+		"json_build_object('seq', seq, 'lastSeq', CAST(? AS BIGINT))",
+	],
+	["jsonArray", (d) => d.jsonArray(["seq", "key"]), "json_array(seq, key)", "json_build_array(seq, key)"],
+	[
+		"jsonGroupArray",
+		(d) => d.jsonGroupArray("o.generation"),
+		"json_group_array(o.generation)",
+		"COALESCE(json_agg(o.generation), '[]'::json)",
+	],
+	[
+		"jsonGroupArray ordered",
+		(d) => d.jsonGroupArray("x", "seq"),
+		"json_group_array(x)",
+		"COALESCE(json_agg(x ORDER BY seq), '[]'::json)",
+	],
+	[
+		"jsonIndexText",
+		(d) => d.jsonIndexText("descriptor", "scope"),
+		"json_extract(descriptor, '$.scope')",
+		String.raw`((regexp_replace(descriptor, '(?<!\\)((?:\\\\)*)\\u(?:0000|[dD][89abcdefABCDEF][0-9a-fA-F]{2})', '\1\\ufffd', 'g'))::jsonb ->> 'scope')`,
+	],
+	["foreignKeysCheck", (d) => d.foreignKeysCheck.sql, "PRAGMA foreign_keys", "SELECT 1 AS foreign_keys"],
+	["abort", (d) => d.abort("it's"), "SELECT RAISE(ABORT, 'it''s')", "RAISE EXCEPTION 'it''s'"],
 	["literals", (d) => `${d.literals.true}|${d.literals.false}`, "1|0", "true|false"],
 	["flag", (d) => d.flag("a = 1"), "a = 1", "(a = 1)::int"],
 	[
@@ -240,11 +272,35 @@ test("JSON paths accept only identifier keys and at least one (#4793)", () => {
 	assert.equal(sqliteDialect.jsonText("c", "_a1"), "json_extract(c, '$._a1')");
 });
 
-test("a Postgres trigger function name longer than an identifier is refused, not truncated (#4793)", () => {
+test("a Postgres name longer than an identifier ends in a hash of the whole name, never truncated (#4793)", () => {
 	const trigger = { table: "t", timing: "AFTER", event: "INSERT", statements: ["DELETE FROM r"] } as const;
-	assert.throws(() => postgresDialect.renderTrigger({ ...trigger, name: "n".repeat(61) }), TypeError);
-	assert.match(postgresDialect.renderTrigger({ ...trigger, name: "n".repeat(60) }), /n{60}_fn\(\)/);
-	assert.match(sqliteDialect.renderTrigger({ ...trigger, name: "n".repeat(61) }), /n{61} AFTER/);
+	// Every name that fits renders as it always has.
+	assert.equal(postgresDialect.identifier("n".repeat(63)), "n".repeat(63));
+	assert.match(postgresDialect.renderTrigger({ ...trigger, name: "n".repeat(60) }), /FUNCTION n{60}_fn\(\)/);
+	assert.match(postgresDialect.renderTrigger({ ...trigger, name: "n".repeat(60) }), /TRIGGER n{60} AFTER/);
+	const long = `${"n".repeat(60)}_insert`;
+	const shortened = postgresDialect.identifier(long);
+	assert.equal(shortened.length, 63);
+	assert.match(shortened, /^n{54}_[0-9a-f]{8}$/);
+	assert.notEqual(
+		shortened,
+		postgresDialect.identifier(`${"n".repeat(60)}_update`),
+		"names that share a head stay apart",
+	);
+	const rendered = postgresDialect.renderTrigger({ ...trigger, name: long });
+	assert.ok(rendered.includes(`TRIGGER ${shortened} AFTER`));
+	assert.ok(rendered.includes(`FUNCTION ${postgresDialect.identifier(`${long}_fn`)}()`));
+	assert.equal(postgresDialect.dropTrigger(long, "t"), `DROP TRIGGER IF EXISTS ${shortened} ON t`);
+	assert.deepEqual(postgresDialect.tableExists(long).params, [shortened]);
+	assert.deepEqual(postgresDialect.columnExists(long, "c").params, [shortened, "c"]);
+	const probe = postgresDialect.schemaObjects(["a", long]);
+	assert.deepEqual(probe.params, ["a", "a", long, shortened]);
+	assert.match(probe.sql, /^SELECT v\.name FROM \(VALUES \(\?, \?\), \(\?, \?\)\) AS v\(name, physical\)/);
+	// SQLite keeps every name whole.
+	assert.equal(sqliteDialect.identifier(long), long);
+	assert.match(sqliteDialect.renderTrigger({ ...trigger, name: long }), new RegExp(`${long} AFTER`));
+	assert.equal(sqliteDialect.maxIdentifierBytes, undefined);
+	assert.equal(postgresDialect.maxIdentifierBytes, 63);
 });
 
 test("fencedPath mints the audited name itself (#4793)", () => {

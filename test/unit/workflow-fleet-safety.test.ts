@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import type { SqliteDatabase } from "@bastani/atomic/storage";
 import { test, vi } from "vitest";
 import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
 import { observeSqlPoolTransactions, sqlPoolStorage } from "../../packages/workflows/src/durable/journal/internal.js";
@@ -30,9 +31,29 @@ const config = {
 	claimWindowMs: 60_000,
 };
 
-async function fixture() {
+/**
+ * The journal's database: a libSQL file, or, while `FLEET_SAFETY_BACKEND` is `postgres` (as
+ * test/integration/workflow-fleet-safety-postgres.test.ts sets it), a PostgreSQL database of its own (#4793).
+ */
+async function openFleetDatabase(): Promise<{ readonly database: SqliteDatabase; close(): Promise<void> }> {
+	if (process.env.FLEET_SAFETY_BACKEND === "postgres") {
+		const { storageBackends } = await import("../helpers/storage-backends.js");
+		const scope = await storageBackends.find((backend) => backend.name === "Postgres")!.openScope();
+		return { database: await scope.connect(), close: () => scope.close() };
+	}
 	const directory = makeLibsqlDirectory();
 	const database = await openLibsqlDatabase({ url: pathToFileURL(join(directory, "journal.db")).href });
+	return {
+		database,
+		async close() {
+			await database.close();
+			await removeLibsqlDirectory(directory);
+		},
+	};
+}
+
+async function fixture() {
+	const { database, close } = await openFleetDatabase();
 	const journal = await SqlRunJournal.open(database, { prefix: PREFIX });
 	await journal.createRun({ runId: "root", name: "root", cwd: "", createdAt: 0, status: "running" });
 	const lease = ((await journal.acquire("root", "coordinator")) as { lease: Lease }).lease;
@@ -43,6 +64,8 @@ async function fixture() {
 	const store = await SqlFleetStore.open(journal);
 	const storage = sqlPoolStorage(journal)!;
 	const sql = (text: string) => storage.transaction((tx) => tx.run(text));
+	/** The database clock, in integer milliseconds, as SQL. */
+	const now = storage.dialect.nowMs;
 	const report = (host: string, providerId?: string, draining?: boolean) =>
 		shared.reportHost({
 			...(draining === undefined ? {} : { draining }),
@@ -64,6 +87,7 @@ async function fixture() {
 		shared,
 		store,
 		sql,
+		now,
 		report,
 		controller(provisioner: WorkerHostProvisioner, events: WorkflowFleetEvent[] = [], policy = {}) {
 			const started = new FleetController(journal, {
@@ -78,8 +102,7 @@ async function fixture() {
 		async close() {
 			for (const c of controllers) await c.stop();
 			await journal.close();
-			await database.close();
-			await removeLibsqlDirectory(directory);
+			await close();
 		},
 	};
 }
@@ -198,7 +221,7 @@ test("a controller stalled past its lease makes no provider call (#5072)", async
 				if (lists === 1) {
 					// Another controller takes over while this one is stalled (a VM pause, a long GC, a sync CLI call).
 					await f.sql(
-						`UPDATE ${PREFIX}wf_runs_fleet_controller SET holder = 'other', epoch = epoch + 1, renewed_at = CAST(unixepoch('subsec') * 1000 AS INTEGER), lease_ms = 600000`,
+						`UPDATE ${PREFIX}wf_runs_fleet_controller SET holder = 'other', epoch = epoch + 1, renewed_at = ${f.now}, lease_ms = 600000`,
 					);
 					const until = Date.now() + 5 * TICK_MS;
 					while (Date.now() < until) {
@@ -489,7 +512,7 @@ test("a controller whose machine slept past its lease makes no provider call, th
 				lists++;
 				if (lists === 1) {
 					await f.sql(
-						`UPDATE ${PREFIX}wf_runs_fleet_controller SET holder = 'other', epoch = epoch + 1, renewed_at = CAST(unixepoch('subsec') * 1000 AS INTEGER), lease_ms = 600000`,
+						`UPDATE ${PREFIX}wf_runs_fleet_controller SET holder = 'other', epoch = epoch + 1, renewed_at = ${f.now}, lease_ms = 600000`,
 					);
 					// A system suspend: nothing runs, and the wall and database clocks move on while CLOCK_MONOTONIC does not.
 					const start = realNow();
@@ -677,16 +700,14 @@ test("bootHold keeps an instance for a host that reports, registered after the s
 });
 
 test("bootHold finds an instance free in a journal that never ran a shared pool (#5072)", async () => {
-	const directory = makeLibsqlDirectory();
-	const database = await openLibsqlDatabase({ url: pathToFileURL(join(directory, "journal.db")).href });
+	const { database, close } = await openFleetDatabase();
 	const journal = await SqlRunJournal.open(database, { prefix: PREFIX });
 	try {
 		const store = await SqlFleetStore.open(journal);
 		assert.equal(await store.bootHold("vm-1", "h1", new Set()), "free");
 	} finally {
 		await journal.close();
-		await database.close();
-		await removeLibsqlDirectory(directory);
+		await close();
 	}
 });
 

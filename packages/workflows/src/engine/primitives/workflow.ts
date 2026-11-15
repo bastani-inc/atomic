@@ -118,7 +118,18 @@ export function createChildWorkflowRunner(input: {
 			}
 		}
 		const workspace = durableInvocation?.workspace;
-		await durableInvocation?.recordStart(boundary.parentIds, boundary.sourceOrder);
+		try {
+			await durableInvocation?.recordStart(boundary.parentIds, boundary.sourceOrder);
+		} catch (err) {
+			// The attempt fails at this boundary, so a resume starts from it, and the run's records show it failed when the
+			// store takes them now (#5027).
+			await boundary.fail(err);
+			await durableInvocation
+				?.recordStart(boundary.parentIds, boundary.sourceOrder)
+				.then(() => durableInvocation.recordTerminal("failed"))
+				.catch(() => {});
+			throw err;
+		}
 		let childRunId: string | undefined;
 		let detachParentAbort: (() => void) | undefined;
 		let childControllerForCleanup: AbortController | undefined;

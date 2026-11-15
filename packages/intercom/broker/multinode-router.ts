@@ -44,7 +44,8 @@ import {
 	reservationKeyFor,
 	returnAddressOf,
 } from "./multinode-state-store.js";
-import type { PendingQuestionIndex } from "./pending-question-index.js";
+import type { PendingQuestion, PendingQuestionIndex } from "./pending-question-index.js";
+import { ROUTE_UNAVAILABLE_REASON } from "./delivery-failure-reason.js";
 import { UNCERTAIN_RECEIPT_REASON } from "./recipient-receipts.js";
 import {
 	decideReleasedAskerReply,
@@ -98,6 +99,10 @@ export { readSharedStorageSetting } from "./shared-storage-setting.js";
 export const MULTI_NODE_OUTCOME_POLL_INTERVAL_MS = 5_000;
 export { OFFLINE_SESSION_TARGET };
 /** A send for another node while the shared database cannot be reached (spec §8, "Database unavailable"). */
+/** #4997: a broker that renewed its membership within this long, and has missed its renewals since, is down. */
+const ROUTE_HOLDER_DOWN_WINDOW_MS = 10 * 60_000;
+/** #4997: a broker that has not renewed its membership within this long has missed a renewal. */
+const BROKER_UNRESPONSIVE_AFTER_MS = (3 * BROKER_LEASE_RENEW_INTERVAL_MS) / 2;
 export const SHARED_STORAGE_UNAVAILABLE_REASON =
 	"Session not found on this node, and Intercom could not reach the shared storage database to look for it on other nodes. Try again once the database is available.";
 const MAX_HELD_SENDS = 256;
@@ -210,6 +215,8 @@ export interface MultiNodeRouterOptions {
 	readonly host: MultiNodeHost;
 	readonly brokerId?: string;
 	readonly nodeId?: string;
+	/** #4997: this broker's durable state on its host (`BrokerMembershipSubject.home`). */
+	readonly home?: string;
 	/**
 	 * #5038: what stays the same when this broker restarts (its socket path); with the node and host identity it
 	 * names the earlier instances, whose leases and claims this one retires as it starts once their process exited.
@@ -378,6 +385,11 @@ function forgottenSessionIdentities(id: string, group: string): readonly string[
 	return [JSON.stringify(["return", id, normalizeGroup(group)]), JSON.stringify(["session", id])];
 }
 
+/** #4997: one ask's route, as a set key. */
+function askKey(question: PendingQuestion): string {
+	return JSON.stringify([question.senderSessionId, question.targetSessionId, question.messageId]);
+}
+
 function sharesGroup(groups: ReadonlySet<string>, sender: SessionInfo): boolean {
 	const senderGroups = sessionGroups(sender);
 	return [...groups].some((group) => senderGroups.has(group));
@@ -385,6 +397,71 @@ function sharesGroup(groups: ReadonlySet<string>, sender: SessionInfo): boolean 
 
 export class MultiNodeRouter {
 	readonly brokerId: string;
+	private readonly home: string | undefined;
+
+	/**
+	 * #4997: whether a broker that may keep ask routes no other broker has is down: it renewed its membership within
+	 * `ROUTE_HOLDER_DOWN_WINDOW_MS` but has missed its renewals since, and no broker is back under its home.
+	 */
+	private async routeHolderDown(): Promise<boolean> {
+		const [recent, responsive] = await Promise.all([
+			this.state.leases.listLive("broker", ROUTE_HOLDER_DOWN_WINDOW_MS),
+			this.state.leases.listLive("broker", BROKER_UNRESPONSIVE_AFTER_MS),
+		]);
+		const homeOf = (lease: LeaseState) => (lease.subject.kind === "broker" ? lease.subject.home : undefined);
+		const answering = new Set(responsive.map((lease) => lease.holderId));
+		const homesBack = new Set(responsive.map(homeOf));
+		return recent.some((lease) => {
+			const home = homeOf(lease);
+			return home !== undefined && !answering.has(lease.holderId) && !homesBack.has(home);
+		});
+	}
+
+	/**
+	 * A reply no ask route authorizes: refused, as retryable while a broker that may keep its route is down (#4997).
+	 */
+	/**
+	 * #4997: whether the ask's route may be kept by a broker this one cannot reach: not answered or failed already, and
+	 * either both the asker and the replier were last present on one other broker (a route between them lives there
+	 * even before that broker is noticed down), or a broker that may keep routes is down (`routeHolderDown`).
+	 */
+	private async routeMayBeElsewhere(
+		request: RemoteSendRequest,
+		askerSessionId: string,
+		askerIdentity: string,
+	): Promise<boolean> {
+		const replyTo = request.message.replyTo;
+		if (replyTo === undefined) return false;
+		const route = { replySenderSessionId: request.from.info.id, replyTargetSessionId: askerSessionId, replyTo };
+		if (await this.state.pendingAsks.isSettled(route)) return false;
+		const holderOf = async (targetIdentity: string) => {
+			const read = await this.state.leases.read({ kind: "presence", targetIdentity });
+			return read.status === "found" ? read.lease.holderId : undefined;
+		};
+		const [askerHolder, replierHolder] = await Promise.all([
+			holderOf(askerIdentity),
+			holderOf(deliveryTargetIdentity(request.from)),
+		]);
+		if (askerHolder !== undefined && askerHolder !== this.brokerId && askerHolder === replierHolder) return true;
+		return this.routeHolderDown();
+	}
+
+	private async refuseUnauthorizedReply(
+		request: RemoteSendRequest,
+		asker: { readonly sessionId: string; readonly identity: string },
+	): Promise<void> {
+		if (!(await this.routeMayBeElsewhere(request, asker.sessionId, asker.identity).catch(() => false))) {
+			this.fail(request, "Pending question route does not authorize this public reply");
+			return;
+		}
+		this.host.write(request.socket, {
+			type: "delivery_failed",
+			messageId: request.message.id,
+			attemptId: request.attemptId,
+			reason: ROUTE_UNAVAILABLE_REASON,
+			routeUnavailable: true,
+		});
+	}
 	private readonly state: IntercomBrokerStateStore;
 	private readonly bus: WakeUpBus;
 	private readonly host: MultiNodeHost;
@@ -416,6 +493,8 @@ export class MultiNodeRouter {
 		this.host = options.host;
 		this.brokerId = options.brokerId ?? randomUUID();
 		this.nodeId = options.nodeId ?? hostname();
+		this.home = options.home;
+		this.host.pendingQuestions.onAnswered((question) => this.answeredHere(question));
 		// Without a key of its own, no earlier broker can be this one.
 		const hostIdentity = options.hostIdentity === undefined ? brokerHostIdentity() : options.hostIdentity;
 		this.instanceKey =
@@ -884,6 +963,8 @@ export class MultiNodeRouter {
 			// #4386: asks to a released subagent are parked instead; registering again on any node takes its presence over
 			// first, so its rebinding always finds them.
 			await this.serials.get(`reply:${sessionId}`);
+			// #4997: its kept asks that move to the shared state get there first, so they end there, once.
+			if (!away && !terminal) await this.moveAsksTo(session).catch((error: Error) => this.report(error));
 			const ending = (async () => ({
 				asks:
 					away || (terminal && released === undefined)
@@ -1397,6 +1478,167 @@ export class MultiNodeRouter {
 	}
 
 	/**
+	 * #4997: a reply to a session on this broker, whose ask this broker's own routes do not know: an ask delivered while
+	 * its peers were on different brokers, or kept while one was away, has its route in the shared state. Both peers are
+	 * here now, so the route becomes this broker's own, and the shared one is settled, so the ask has one outcome.
+	 */
+	/**
+	 * #4997: a reply to a session here that no route authorizes, here or in the shared state, while a broker that may
+	 * keep its ask's route is down, is refused as retryable rather than by the local path's final refusal. True when
+	 * the reply was answered.
+	 */
+	private async routeUnreachable(request: RemoteSendRequest, target: BrokerConnectedSession): Promise<boolean> {
+		const replyTo = request.message.replyTo;
+		if (!request.requirePendingReply || replyTo === undefined) return false;
+		if (this.host.pendingQuestions.matchesReply(request.from.info.id, target.info.id, replyTo)) return false;
+		// A retry of a reply already delivered here is answered by the local path.
+		if (this.host.deliveredMessages.lookupForTarget(request.message.id, request.signature, deliveryTargetIdentity(target)) !== "miss")
+			return false;
+		const asker = { sessionId: target.info.id, identity: deliveryTargetIdentity(target) };
+		if (!(await this.routeMayBeElsewhere(request, asker.sessionId, asker.identity).catch(() => false))) return false;
+		await this.refuseUnauthorizedReply(request, asker);
+		return true;
+	}
+
+	private async adoptSharedRouteWithin(request: RemoteSendRequest, target: BrokerConnectedSession): Promise<void> {
+		const late = { abandoned: false };
+		const adopted = this.adoptSharedRoute(request, target, late);
+		// A reply that must answer an open ask can only be authorized by the shared state when this broker's routes do not
+		// authorize it, so it waits for that state longer than a send the local path delivers anyway.
+		const boundMs = request.requirePendingReply ? PRESENCE_REGISTRATION_BOUND_MS : LOCAL_RETRY_LOOKUP_BOUND_MS;
+		let bound: ReturnType<typeof setTimeout> | undefined;
+		const expired = new Promise<"expired">((resolve) => {
+			bound = setTimeout(() => resolve("expired"), boundMs);
+			bound.unref?.();
+		});
+		try {
+			if ((await Promise.race([adopted, expired])) === "expired") {
+				// The send takes the local path now: a route found later is left where it is, for a retry to find.
+				late.abandoned = true;
+				adopted.catch((error: Error) => this.report(error));
+			}
+		} catch (error) {
+			this.report(error);
+		} finally {
+			clearTimeout(bound);
+		}
+	}
+
+	private async adoptSharedRoute(
+		request: RemoteSendRequest,
+		target: BrokerConnectedSession,
+		late: { readonly abandoned: boolean },
+	): Promise<void> {
+		const replyTo = request.message.replyTo;
+		const replySenderSessionId = request.from.info.id;
+		if (replyTo === undefined) return;
+		if (this.host.pendingQuestions.matchesReply(replySenderSessionId, target.info.id, replyTo)) return;
+		// An ask whose route is still moving there from this broker is in the shared state once that move is done.
+		await Promise.all([...this.settling]);
+		if (this.host.pendingQuestions.matchesReply(replySenderSessionId, target.info.id, replyTo)) return;
+		const route = { replySenderSessionId, replyTargetSessionId: target.info.id, replyTo };
+		if ((await this.state.pendingAsks.matchesReply(route)).status !== "match" || late.abandoned) return;
+		this.host.pendingQuestions.record(target.info.id, replySenderSessionId, replyTo);
+		await this.settleSharedRoute({ senderSessionId: target.info.id, targetSessionId: replySenderSessionId, messageId: replyTo });
+	}
+
+	/**
+	 * #4997: the session ended: its kept asks that move to the shared state get there first, so they fail there, once.
+	 * One the shared state does not take fails here, as on a single node.
+	 */
+	private async moveAsksTo(session: BrokerConnectedSession): Promise<void> {
+		const pending = this.host.pendingQuestions;
+		const moving = pending.movableDormant().filter((ask) => ask.targetSessionId === session.info.id);
+		await this.publishAwayRoutes(moving);
+		await Promise.all([...this.settling]);
+		if (!moving.some((ask) => pending.isDormant(ask))) return;
+		const reason = `Session "${session.info.name ?? session.info.id}" ended before replying`;
+		pending.failDormantForTarget(session.info, reason, "recipient-ended", session.registrationReturnAddress);
+	}
+
+	/**
+	 * #4997: a session that left without ending may come back on another broker, so the asks between it and a session
+	 * here, kept on this broker (durably, before this is called), move to the shared state, where either broker answers
+	 * and settles them. Each stays kept here until its shared route is written, so neither a crash nor a reply in
+	 * between finds no route; one this broker took up meanwhile (its peer came back here, or it was answered or failed
+	 * here) is this broker's alone, and its shared route is settled. One whose write fails stays here, to move later.
+	 */
+	publishAwayRoutes(questions: readonly PendingQuestion[]): Promise<void> {
+		if (questions.length === 0) return Promise.resolve();
+		let finished!: () => void;
+		const publishing = new Promise<void>((resolve) => {
+			finished = resolve;
+		});
+		this.settling.add(publishing);
+		void publishing.finally(() => this.settling.delete(publishing));
+		// One move at a time, so an ask two moves both see kept is written once and dropped here once.
+		this.serial("away-routes", async () => {
+			try {
+				for (const question of questions) {
+					if (!this.host.pendingQuestions.isDormant(question)) continue;
+					const ask = {
+						senderSessionId: question.senderSessionId,
+						targetSessionId: question.targetSessionId,
+						messageId: question.messageId,
+					};
+					const recorded = await this.state.pendingAsks.record(ask);
+					if (recorded.status === "invalid") continue;
+					// #4997: answered or failed on another broker while this one kept its copy: the copy goes.
+					if (recorded.status === "settled") {
+						this.host.pendingQuestions.takeDormant(question);
+						continue;
+					}
+					if (!this.host.pendingQuestions.takeDormant(question)) await this.settleSharedRoute(ask);
+				}
+			} finally {
+				finished();
+			}
+		});
+		return publishing;
+	}
+
+	/** #4997: asks this broker took up again, as both of their peers are here: their shared routes, if any, are settled. */
+	settleRestoredRoutes(questions: readonly PendingQuestion[]): void {
+		for (const question of questions) {
+			void this.settleSharedRoute(question).catch((error: Error) => this.report(error));
+		}
+	}
+
+	/**
+	 * The ask is this broker's own now: its shared route goes, without settling the ask, as the ask may move again. Its
+	 * answer here settles it in the shared state (`answeredHere`), so no copy of the route is recorded there again.
+	 */
+	private async settleSharedRoute(question: PendingQuestion): Promise<void> {
+		this.adopted.add(askKey(question));
+		await this.state.pendingAsks.releaseRoute({
+			replySenderSessionId: question.targetSessionId,
+			replyTargetSessionId: question.senderSessionId,
+			replyTo: question.messageId,
+		});
+	}
+
+	/** #4997: the asks this broker took over from the shared state, until they are answered here. */
+	private readonly adopted = new Set<string>();
+
+	/**
+	 * #4997: an ask this broker took over from the shared state was answered here: it is settled there too, so a copy
+	 * of its route that a stopped broker kept is not recorded again, and its recipient's end fails nothing.
+	 */
+	private answeredHere(question: PendingQuestion): void {
+		if (!this.adopted.delete(askKey(question))) return;
+		const settling = this.state.pendingAsks
+			.clearReply({
+				replySenderSessionId: question.targetSessionId,
+				replyTargetSessionId: question.senderSessionId,
+				replyTo: question.messageId,
+			})
+			.then(() => undefined)
+			.catch((error: Error) => this.report(error));
+		this.settling.add(settling);
+		void settling.finally(() => this.settling.delete(settling));
+	}
+
+	/**
 	 * #4386: a released asker that woke on this broker, under the id it asked with, resolves here, but its question to
 	 * this reply's sender is kept only in the shared state. The question, for a reply to it that this broker's own ask
 	 * routes do not answer: the reply goes to the asker's owner as on any other broker.
@@ -1534,6 +1776,7 @@ export class MultiNodeRouter {
 			const existing = await Promise.race([lookup, expired]);
 			if (existing === "expired") {
 				lookup.catch((error: Error) => this.report(error));
+				await this.adoptSharedRouteWithin(request, target);
 				request.notFound();
 				return;
 			}
@@ -1545,6 +1788,8 @@ export class MultiNodeRouter {
 			}
 			const moved = await Promise.race([released, expired]);
 			if (moved !== "expired" && moved !== undefined && (await this.routeReleasedReply(request, moved))) return;
+			await this.adoptSharedRouteWithin(request, target);
+			if (await this.routeUnreachable(request, target)) return;
 			request.notFound();
 		} finally {
 			clearTimeout(bound);
@@ -1649,7 +1894,7 @@ export class MultiNodeRouter {
 				})
 			).status === "match";
 		if (request.requirePendingReply && !correlatedReply) {
-			this.fail(request, "Pending question route does not authorize this public reply");
+			await this.refuseUnauthorizedReply(request, { sessionId: target.sessionId, identity: target.identity });
 			return;
 		}
 		const verticalReply =
@@ -2422,6 +2667,7 @@ export class MultiNodeRouter {
 			startedAt: Date.now(),
 			instanceKey: this.instanceKey,
 			pid: this.pid,
+			...(this.home === undefined ? {} : { home: this.home }),
 		};
 	}
 
