@@ -1,24 +1,17 @@
 import ignore, { type Ignore } from "ignore";
+import { stripBom } from "../utils/text.ts";
 
 /**
  * Git drops a line's trailing spaces unless the last one is escaped with a backslash. `ignore` decides whether a
  * pattern is anchored before stripping them, so `build/ ` would otherwise match at the root only.
  */
 function trimTrailingSpaces(line: string): string {
-	let lastSpace = -1;
-	for (let index = 0; index < line.length; index++) {
-		const char = line[index];
-		if (char === " ") {
-			if (lastSpace < 0) lastSpace = index;
-			continue;
-		}
-		if (char === "\\") {
-			index++;
-			if (index === line.length) return line;
-		}
-		lastSpace = -1;
-	}
-	return lastSpace < 0 ? line : line.slice(0, lastSpace);
+	let end = line.length;
+	while (line[end - 1] === " ") end--;
+	// The first trailing space stays when an odd number of backslashes escape it.
+	let backslashes = 0;
+	while (line[end - backslashes - 1] === "\\") backslashes++;
+	return line.slice(0, backslashes % 2 === 1 ? end + 1 : end);
 }
 
 /**
@@ -26,10 +19,8 @@ function trimTrailingSpaces(line: string): string {
  * a CRLF line ending, or unescaped trailing spaces.
  */
 export function gitignoreLines(content: string): string[] {
-	return content
-		.replace(/^\uFEFF/, "")
-		.split(/\r?\n/)
-		.map(trimTrailingSpaces);
+	return stripBom(content).split(/?
+/).map(trimTrailingSpaces);
 }
 
 /** A matcher for one `.gitignore`-syntax file whose rules match as Git matches them. */
@@ -68,8 +59,7 @@ export class NestedGitignore {
 
 	/** These rules plus `contents`, the ignore files of `dir` (relative to the walk root, `""` for the root). */
 	within(dir: string, contents: readonly string[]): NestedGitignore {
-		if (contents.length === 0) return this;
-		const base = dir === "" ? "" : `${dir.replace(/\/$/, "")}/`;
+		const base = dir === "" ? "" : `${dir}/`;
 		const matcher = ignore({ ignorecase: this.ignoreCase });
 		for (const content of contents) matcher.add(gitignoreLines(content));
 		return new NestedGitignore([...this.levels, { base, matcher }], this.ignoreCase);
@@ -77,17 +67,11 @@ export class NestedGitignore {
 
 	/** Whether `path`, relative to the walk root and ending in `/` for a directory, is ignored. */
 	ignores(path: string): boolean {
-		const parts = path.split("/");
-		const isDirectory = path.endsWith("/");
-		if (isDirectory) parts.pop();
-		let prefix = "";
-		for (let index = 0; index < parts.length; index++) {
-			prefix += parts[index];
-			const last = index === parts.length - 1;
-			if (this.excludesItself(last && !isDirectory ? prefix : `${prefix}/`)) return true;
-			prefix += "/";
+		// Git never looks inside an excluded directory, so each leading directory is checked before the path itself.
+		for (let end = path.indexOf("/"); end !== -1 && end < path.length - 1; end = path.indexOf("/", end + 1)) {
+			if (this.excludesItself(path.slice(0, end + 1))) return true;
 		}
-		return false;
+		return this.excludesItself(path);
 	}
 
 	private excludesItself(path: string): boolean {

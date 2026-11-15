@@ -24,10 +24,8 @@ function toPosixPath(p: string): string {
 function withIgnoreRules(rules: IgnoreMatcher, dir: string, rootDir: string): IgnoreMatcher {
 	const contents: string[] = [];
 	for (const filename of IGNORE_FILE_NAMES) {
-		const ignorePath = join(dir, filename);
-		if (!existsSync(ignorePath)) continue;
 		try {
-			contents.push(readFileSync(ignorePath, "utf-8"));
+			contents.push(readFileSync(join(dir, filename), "utf-8"));
 		} catch {}
 	}
 	return rules.within(toPosixPath(relative(rootDir, dir)), contents);
