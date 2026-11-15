@@ -134,6 +134,8 @@ for (const backend of storageBackends) {
 				const kept = textBlob("kept patch");
 				const orphan = textBlob("orphan patch");
 				const snapshot = syntheticSnapshot("snapshot", [kept.hash]);
+				// A snapshot is recorded only once its blobs are stored (#5077).
+				await journal.snapshotBlobs.putBlobs([kept, orphan]);
 				await journal.append(lease, statusEvent("parity", { status: "running" }, "RunStarted"));
 				// A status event stored in chunks keeps the fields the run state reads: the run stays resumable.
 				const failed = statusEvent("parity", { status: "failed" });
@@ -164,7 +166,6 @@ for (const backend of storageBackends) {
 				assert.equal(tail?.lastCheckpointAt, 7);
 				assert.equal((tail?.snapshot.event.payload as { error?: string } | undefined)?.error, largeText(3 * MB));
 
-				await journal.snapshotBlobs.putBlobs([kept, orphan]);
 				const expected = await fullScanRetainedHashes(journal, sessions);
 				assert.deepEqual([...expected], [kept.hash]);
 				await ageBlobs(database, journal.snapshotBlobs.table, 10_000);
