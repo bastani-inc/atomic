@@ -137,6 +137,8 @@ export function createTrackedStageCaller(input: {
 			if (signal.aborted) throw error;
 			decision = decisionModelGivesNoProbabilities(error) ? undefined : readinessFailureRecord(error);
 		}
+		// A decision that finishes after a pause or abort rejects as one cut off during the call.
+		signal.throwIfAborted();
 		if (runtime.state.userMessageSeq !== messageSeq) return "superseded";
 		runtime.state.latestUserMessage = undefined;
 		if (decision === undefined) return undefined;
