@@ -876,6 +876,40 @@ export function registerSessionStoreConformance(
 				assert.equal((await store.readHeader("session"))?.workflow?.stageName, "original");
 			});
 
+			check(
+				"keeps open-session markers every opener of the store sees, when it keeps any (#4971)",
+				async (store, reload) => {
+					const markers = store.openMarkers;
+					if (markers === undefined) return;
+					const marker = { token: "1234-abcd", pid: 1234, host: "host-a", heartbeatAt: 1_700_000_000_000 };
+					await markers.put("session", marker);
+					await markers.put("session", { ...marker, token: "5678-ef01", pid: 5678, host: "host-b" });
+					await markers.put("other", { ...marker, token: "9999-0000" });
+					await markers.put("session", { ...marker, heartbeatAt: marker.heartbeatAt + 15_000 });
+					store = await reload(store);
+					const reopened = store.openMarkers!;
+					const sorted = async (sessionId: string) =>
+						[...(await reopened.list(sessionId))].sort((a, b) => a.token.localeCompare(b.token));
+					assert.deepEqual(await sorted("session"), [
+						{ ...marker, heartbeatAt: marker.heartbeatAt + 15_000 },
+						{ ...marker, token: "5678-ef01", pid: 5678, host: "host-b" },
+					]);
+					await reopened.remove("session", "1234-abcd");
+					await reopened.remove("session", "missing");
+					assert.deepEqual(
+						(await sorted("session")).map((each) => each.token),
+						["5678-ef01"],
+					);
+					assert.deepEqual(
+						(await sorted("other")).map((each) => each.token),
+						["9999-0000"],
+					);
+					assert.deepEqual(await reopened.list("none"), []);
+					await store.close();
+					await assert.rejects(reopened.list("session"), StoreClosedError);
+				},
+			);
+
 			check("rejects every operation after close, including repeated close", async (store, reload) => {
 				await store.create(header(), []);
 				store = await reload(store);

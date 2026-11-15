@@ -70,8 +70,33 @@ export interface SessionBlob {
 	readonly bytes: number;
 }
 
+/** A running session's mark that it has a session open (#4971). */
+export interface SessionOpenMarker {
+	/** Tells apart the processes that mark one session, and a process from an earlier one given the same pid. */
+	readonly token: string;
+	readonly pid: number;
+	readonly host: string;
+	/** When the mark was last refreshed, in milliseconds since the epoch on the marking host's clock. */
+	readonly heartbeatAt: number;
+}
+
+/** Where a store keeps which running sessions have its sessions open, so that every host sharing it sees them (#4971). */
+export interface SessionOpenMarkerStore {
+	/** Adds `marker` to `sessionId`'s, or refreshes the one with its token. */
+	put(sessionId: string, marker: SessionOpenMarker): Promise<void>;
+	/** Removes `sessionId`'s marker with `token`, if there is one. */
+	remove(sessionId: string, token: string): Promise<void>;
+	/** `sessionId`'s markers, in no particular order. */
+	list(sessionId: string): Promise<readonly SessionOpenMarker[]>;
+}
+
 export interface SessionStore {
 	readonly descriptor: StorageDescriptor;
+	/**
+	 * Which running sessions have this store's sessions open (#4971). Absent when the store keeps none: markers are then
+	 * files under the agent directory, seen only by processes that share it.
+	 */
+	readonly openMarkers?: SessionOpenMarkerStore;
 	/**
 	 * Content-addressed blobs for `worktree_snapshot` entries, in the store's own storage. Absent when the store cannot
 	 * hold them; snapshots are then not recorded.

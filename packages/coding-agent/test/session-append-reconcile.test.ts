@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import { SessionDeletedError, SessionManager } from "../src/core/session-manager.js";
 import type { SessionEntry } from "../src/core/session-manager-types.js";
-import { StorageTransientError } from "../src/core/storage/errors.js";
+import { StorageTransientError, StorageUnavailableError } from "../src/core/storage/errors.js";
 import { SessionConflictError, SessionNotFoundError } from "../src/core/storage/session/errors.js";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
 import type { SessionStore } from "../src/core/storage/session/types.js";
@@ -94,6 +94,31 @@ describe("SessionManager appends after an unknown outcome (#4970)", () => {
 		assert.equal(appends() - before, 4);
 		assert.deepEqual(texts((await store.load(manager.getSessionId())).entries), ["one"]);
 		assert.deepEqual(texts(manager.getEntries()), ["one"]);
+	});
+
+	it("an append that failed with an error that does not say it wrote nothing is checked against the store (#4970)", async () => {
+		const store = new MemorySessionStore();
+		let commitThenFail = false;
+		const gateway: SessionStore = Object.assign(Object.create(store) as SessionStore, {
+			async append(...args: Parameters<SessionStore["append"]>) {
+				const result = await store.append(...args);
+				if (!commitThenFail) return result;
+				commitThenFail = false;
+				throw new StorageUnavailableError(store.descriptor, new Error("Server returned HTTP status 502"));
+			},
+		});
+		const manager = await SessionManager.create(gateway, "/project");
+		await manager.appendMessage(message("one"));
+
+		commitThenFail = true;
+		await manager.appendMessage(message("two"));
+		await manager.appendMessage(message("three"));
+		await manager.appendMessage(message("four"));
+
+		const stored = await store.load(manager.getSessionId());
+		assert.deepEqual(texts(stored.entries), ["one", "two", "three", "four"]);
+		assert.deepEqual(stored.entries, manager.getEntries());
+		assert.deepEqual(texts(manager.getBranch()), ["one", "two", "three", "four"]);
 	});
 
 	it("an append that failed without writing anything is not tried again (#4970)", async () => {

@@ -412,8 +412,8 @@ const CONNECTION_LOST = new Set(["ECONNRESET", "EPIPE", "ETIMEDOUT", "UND_ERR_SO
 
 /**
  * The failure, as one that passes, when the server ended the stream or transaction of a process that stalled, or the
- * connection to the server could not be made or broke; read from each error's `code` along the cause chain, never
- * from its message.
+ * connection to the server could not be made or broke, or something between answered HTTP 5xx; read from each error's
+ * `code`, `name` and `status` along the cause chain, never from its message.
  * @param {import("@bastani/atomic/storage").StorageFailureCause} failure
  * @returns {import("@bastani/atomic/storage").SqliteDriverTransientFailure | undefined}
  */
@@ -421,11 +421,15 @@ function transientFailure(failure) {
 	/** @type {unknown} */
 	let current = failure;
 	for (let depth = 0; depth < MAX_CAUSE_DEPTH && typeof current === "object" && current !== null; depth++) {
-		const { code, cause, name } = /** @type {{ readonly code?: unknown, readonly cause?: unknown, readonly name?: unknown }} */ (
+		const { code, cause, name, status } = /** @type {{ readonly code?: unknown, readonly cause?: unknown, readonly name?: unknown, readonly status?: unknown }} */ (
 			current
 		);
 		// A request abandoned after `REQUEST_TIMEOUT_MS`: the server may have applied it.
 		if (name === "TimeoutError") return { code: "connection-lost", outcome: "unknown" };
+		// An HTTP 5xx with no Hrana error in it, such as a gateway's 502 or 504: the request may have reached the server
+		// and been applied before the answer was lost (#4970).
+		if (name === "HttpServerError" && typeof status === "number" && status >= 500)
+			return { code: "connection-lost", outcome: "unknown" };
 		const ended = ENDED_BY_SERVER.get(code);
 		if (ended !== undefined) return { code: ended, outcome: "not-applied" };
 		if (NOT_SENT.has(code)) return { code: "connection-refused", outcome: "not-applied" };

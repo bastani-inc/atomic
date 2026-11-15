@@ -26,6 +26,8 @@ import type {
 	SessionBlob,
 	SessionCwdMatcher,
 	SessionListQuery,
+	SessionOpenMarker,
+	SessionOpenMarkerStore,
 	SessionRecordHeader,
 	SessionSnapshot,
 	SessionStore,
@@ -55,6 +57,10 @@ export const SESSION_TABLES = Object.freeze({
 	blobs: "blobs",
 	blobChunks: "blob_chunks",
 });
+
+/** The schema domain, in the prefix's migration ledger, of the table of open sessions (#4971). */
+export const SESSION_PRESENCE_DOMAIN = "session-presence";
+export const SESSION_PRESENCE_TABLES = Object.freeze({ open: "open" });
 
 type Tables = Readonly<Record<keyof typeof SESSION_TABLES, string>>;
 type HeaderRow = SqliteRow & { header_json: string; last_seq: number };
@@ -165,6 +171,8 @@ export class SqlSessionStore implements SessionStore {
 	private closed = false;
 	private readonly cwdMatcher?: SessionCwdMatcher;
 	readonly snapshotBlobs: SqlSnapshotBlobStore;
+	/** Set by `open`, once the store exists (#4971). */
+	openMarkers!: SqlSessionOpenMarkers;
 	/** Session ids of each recently listed scope, valid while the store's change token is unchanged. */
 	private readonly scopes = new Map<string, { readonly token: string | undefined; readonly ids: readonly string[] }>();
 	/** Listed summaries of sessions that still exist at the cached version; never more than the store holds. */
@@ -254,8 +262,18 @@ export class SqlSessionStore implements SessionStore {
 		await applyStorageMigrations(database, SESSION_DOMAIN, [{ version: 1, up: createTables }], {
 			table: storageMigrationTable(options.prefix),
 		});
+		// A domain of its own, so Atomic versions that do not know it keep opening the sessions tables (#4971).
+		const presence = renderStorageIdentifiers("sessions", SESSION_PRESENCE_TABLES, options.prefix);
+		await applyStorageMigrations(
+			database,
+			SESSION_PRESENCE_DOMAIN,
+			[{ version: 1, up: (tx, dialect) => SqlSessionOpenMarkers.createTable(tx, dialect, presence.open) }],
+			{ table: storageMigrationTable(options.prefix) },
+		);
 		const blobs = await SqlSnapshotBlobStore.open(database, options.prefix);
-		return new SqlSessionStore(database, tables, options.prefix, options.cwdMatcher, blobs, legacyBlobData);
+		const store = new SqlSessionStore(database, tables, options.prefix, options.cwdMatcher, blobs, legacyBlobData);
+		store.openMarkers = new SqlSessionOpenMarkers(database, presence.open, () => store.assertOpen());
+		return store;
 	}
 
 	get descriptor(): StorageDescriptor {
@@ -763,5 +781,63 @@ export class SqlSessionStore implements SessionStore {
 		} catch (cause) {
 			throw new StorageUnavailableError(this.descriptor, cause as Error);
 		}
+	}
+}
+
+type OpenMarkerRow = SqliteRow & { token: string; pid: number; host: string; heartbeat_at: number };
+
+/** The running sessions that have a SQL store's sessions open, in a table every host sharing the store reads (#4971). */
+class SqlSessionOpenMarkers implements SessionOpenMarkerStore {
+	static async createTable(tx: SqliteExecutor, dialect: StorageDialect, table: string): Promise<void> {
+		const { int, text } = dialect.types;
+		await tx.exec(`
+			CREATE TABLE IF NOT EXISTS ${table} (
+				session_id ${text} NOT NULL, token ${text} NOT NULL, pid ${int} NOT NULL, host ${text} NOT NULL,
+				heartbeat_at ${int} NOT NULL, PRIMARY KEY(session_id, token)
+			)${dialect.tableOptions};
+		`);
+	}
+
+	private readonly database: SqliteDatabase;
+	private readonly table: string;
+	private readonly assertOpen: () => void;
+
+	constructor(database: SqliteDatabase, table: string, assertOpen: () => void) {
+		this.database = database;
+		this.table = table;
+		this.assertOpen = assertOpen;
+	}
+
+	async put(sessionId: string, marker: SessionOpenMarker): Promise<void> {
+		this.assertOpen();
+		await this.database.run(
+			`INSERT INTO ${this.table} (session_id, token, pid, host, heartbeat_at) VALUES (?, ?, ?, ?, ?)
+			 ON CONFLICT(session_id, token) DO UPDATE SET pid = excluded.pid, host = excluded.host,
+			 heartbeat_at = excluded.heartbeat_at`,
+			sessionId,
+			marker.token,
+			marker.pid,
+			marker.host,
+			marker.heartbeatAt,
+		);
+	}
+
+	async remove(sessionId: string, token: string): Promise<void> {
+		this.assertOpen();
+		await this.database.run(`DELETE FROM ${this.table} WHERE session_id = ? AND token = ?`, sessionId, token);
+	}
+
+	async list(sessionId: string): Promise<readonly SessionOpenMarker[]> {
+		this.assertOpen();
+		const rows = await this.database.all<OpenMarkerRow>(
+			`SELECT token, pid, host, heartbeat_at FROM ${this.table} WHERE session_id = ?`,
+			sessionId,
+		);
+		return rows.map((row) => ({
+			token: row.token,
+			pid: Number(row.pid),
+			host: row.host,
+			heartbeatAt: Number(row.heartbeat_at),
+		}));
 	}
 }

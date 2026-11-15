@@ -86,6 +86,21 @@ test("a statement whose connection broke is not sent again: its outcome is unkno
 	assert.deepEqual(await database.all("SELECT n FROM events"), [{ n: 2 }]);
 });
 
+test("a write a gateway answered with HTTP 502 after the server applied it has an unknown outcome and is sent once (#4970)", async () => {
+	const fake = await server();
+	const database = await open(fake.url);
+	await database.exec("CREATE TABLE events(n INTEGER NOT NULL)");
+	const before = fake.pipelines.length;
+	fake.fail({ kind: "gateway-after" });
+	await assert.rejects(database.run("INSERT INTO events VALUES (1)"), (error: unknown) => {
+		assert.ok(error instanceof StorageTransientError);
+		assert.deepEqual([error.code, error.outcome, error.attempts], ["connection-lost", "unknown", 1]);
+		return true;
+	});
+	assert.equal(fake.pipelines.length, before + 1, "sent once");
+	assert.deepEqual(await database.all("SELECT n FROM events"), [{ n: 1 }]);
+});
+
 test("a failure that does not pass stays a plain StorageUnavailableError and is sent once (#4383)", async () => {
 	const fake = await server();
 	const database = await open(fake.url);

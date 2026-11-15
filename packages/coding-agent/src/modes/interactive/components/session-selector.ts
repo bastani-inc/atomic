@@ -186,7 +186,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 					result = { ok: true, method: "store" };
 				} else {
 					// #4971: the store delete above refuses this on its own; a file delete checks here.
-					assertSessionNotOpenElsewhere(session.id);
+					await assertSessionNotOpenElsewhere(session.id);
 					result = await deleteSessionFile(sessionPath);
 				}
 			} catch (error) {

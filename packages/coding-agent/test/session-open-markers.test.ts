@@ -6,7 +6,9 @@ import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { SessionManager, SessionOpenElsewhereError } from "../src/core/session-manager.js";
 import { assertSessionNotOpenElsewhere, holdSessionOpenMarker } from "../src/core/session-open-markers.js";
+import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
+import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.js";
 import { bunExecutable } from "./cli-test-helpers.js";
 
 const markersModule = resolve(import.meta.dirname, "../src/core/session-open-markers.ts");
@@ -15,7 +17,7 @@ const PROCESS_TIMEOUT_MS = 60_000;
 /** Another process that marks `sessionId` open under `agentDir`, as a running Atomic process does (#4971). */
 async function holdInAnotherProcess(agentDir: string, sessionId: string): Promise<ChildProcess> {
 	const script = `const { holdSessionOpenMarker } = await import(${JSON.stringify(markersModule)});
-holdSessionOpenMarker(${JSON.stringify(agentDir)}, ${JSON.stringify(sessionId)});
+holdSessionOpenMarker(${JSON.stringify(sessionId)}, { agentDir: ${JSON.stringify(agentDir)} });
 console.log("held");
 setInterval(() => {}, 1000);`;
 	const child = spawn(bunExecutable(), ["-e", script], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
@@ -122,7 +124,7 @@ describe("a session open in this process (#4971)", () => {
 	let sessionDir: string;
 	let agentDir: string;
 	let previousAgentDir: string | undefined;
-	const releases: (() => void)[] = [];
+	const releases: (() => Promise<void>)[] = [];
 
 	beforeEach(() => {
 		dir = mkdtempSync(join(tmpdir(), "atomic-open-here-"));
@@ -133,8 +135,8 @@ describe("a session open in this process (#4971)", () => {
 		process.env.ATOMIC_CODING_AGENT_DIR = agentDir;
 	});
 
-	afterEach(() => {
-		for (const release of releases.splice(0)) release();
+	afterEach(async () => {
+		for (const release of releases.splice(0)) await release();
 		vi.useRealTimers();
 		if (previousAgentDir === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
 		else process.env.ATOMIC_CODING_AGENT_DIR = previousAgentDir;
@@ -147,7 +149,7 @@ describe("a session open in this process (#4971)", () => {
 		return manager;
 	}
 
-	function hold(manager: SessionManager): () => void {
+	function hold(manager: SessionManager): () => Promise<void> {
 		const release = manager.holdOpen();
 		releases.push(release);
 		return release;
@@ -170,13 +172,13 @@ describe("a session open in this process (#4971)", () => {
 			assert.equal(error.host, hostname());
 			return true;
 		});
-		releaseFirst();
-		releaseFirst();
+		await releaseFirst();
+		await releaseFirst();
 		await assert.rejects(deleter.deleteSession(running.getSessionId()), SessionOpenElsewhereError);
 		const releaseOther = hold(sameSession);
-		releaseSecond();
+		await releaseSecond();
 		await assert.rejects(deleter.deleteSession(running.getSessionId()), SessionOpenElsewhereError);
-		releaseOther();
+		await releaseOther();
 		assert.equal(existsSync(markersOf(running.getSessionId())), false);
 
 		await deleter.deleteSession(running.getSessionId());
@@ -224,20 +226,20 @@ describe("a session open in this process (#4971)", () => {
 		const first = hold(await saved("first"));
 		const second = hold(await saved("second"));
 		assert.equal(vi.getTimerCount(), 1);
-		first();
+		await first();
 		assert.equal(vi.getTimerCount(), 1);
-		second();
+		await second();
 		assert.equal(vi.getTimerCount(), 0);
 	});
 
-	test("a session id that cannot name a directory gets no mark and is never found held (#4971)", () => {
-		const release = holdSessionOpenMarker(agentDir, "../escape");
-		release();
+	test("a session id that cannot name a directory gets no mark and is never found held (#4971)", async () => {
+		const release = holdSessionOpenMarker("../escape", { agentDir });
+		await release();
 		assert.equal(existsSync(join(agentDir, "open-sessions")), false);
 		assert.equal(existsSync(join(agentDir, "escape")), false);
 		mkdirSync(join(agentDir, "escape"), { recursive: true });
 		writeFileSync(join(agentDir, "escape", "x.json"), JSON.stringify({ pid: process.pid, host: "another-host" }));
-		assert.doesNotThrow(() => assertSessionNotOpenElsewhere("../escape", join(agentDir, "open-sessions")));
+		await assertSessionNotOpenElsewhere("../escape", { agentDir: join(agentDir, "open-sessions") });
 	});
 
 	// Signalling another user's process fails with EPERM on POSIX only; on Windows pid 1 does not exist.
@@ -287,5 +289,61 @@ describe("a session open in this process (#4971)", () => {
 			assert.equal(error.host, "another-host");
 			return true;
 		});
+	});
+});
+
+describe("a session open on another host that shares a SQL store (#4971)", () => {
+	test("the store's own marks are seen whatever the agent directory, and stale ones are removed (#4971)", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "atomic-open-sql-"));
+		const database = await openNodeSqliteDatabase(join(dir, "shared.sqlite"));
+		const store = await SqlSessionStore.open(database);
+		try {
+			const target = await SessionManager.create(store, dir);
+			await target.appendMessage({ role: "user", content: "target", timestamp: Date.now() });
+			const deleter = await SessionManager.create(store, dir);
+			const sessionId = target.getSessionId();
+			const elsewhere = { token: "77-remote", pid: 77, host: "another-host", heartbeatAt: Date.now() };
+			await store.openMarkers.put(sessionId, elsewhere);
+			await assert.rejects(deleter.deleteSession(sessionId), (error: unknown) => {
+				assert.ok(error instanceof SessionOpenElsewhereError);
+				assert.equal(error.host, "another-host");
+				return true;
+			});
+			assert.equal(existsSync(join(dir, "open-sessions")), false, "no mark is a file");
+
+			await store.openMarkers.put(sessionId, { ...elsewhere, heartbeatAt: Date.now() - 120_000 });
+			await store.openMarkers.put(sessionId, {
+				token: "dead",
+				pid: 999_999_999,
+				host: hostname(),
+				heartbeatAt: Date.now(),
+			});
+			await deleter.deleteSession(sessionId);
+			assert.deepEqual(await store.openMarkers.list(sessionId), []);
+		} finally {
+			await store.close();
+			await database.close();
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("a running session's mark lives in the store while it is held (#4971)", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "atomic-open-sql-"));
+		const database = await openNodeSqliteDatabase(join(dir, "shared.sqlite"));
+		const store = await SqlSessionStore.open(database);
+		try {
+			const running = await SessionManager.create(store, dir);
+			await running.appendMessage({ role: "user", content: "running", timestamp: Date.now() });
+			const release = running.holdOpen();
+			await vi.waitFor(async () => assert.equal((await store.openMarkers.list(running.getSessionId())).length, 1));
+			const [marker] = await store.openMarkers.list(running.getSessionId());
+			assert.deepEqual([marker!.pid, marker!.host], [process.pid, hostname()]);
+			await release();
+			assert.deepEqual(await store.openMarkers.list(running.getSessionId()), []);
+		} finally {
+			await store.close();
+			await database.close();
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });

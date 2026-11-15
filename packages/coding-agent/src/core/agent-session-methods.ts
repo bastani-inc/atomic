@@ -723,7 +723,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_runSystemPromptOptions?: NormalizedBuildSystemPromptOptions;
 	_lastAssistantMessage: AssistantMessage | undefined;
 	_tempStorageLease: import("./tools/session-temp-dir.ts").ProtectedPathLease | undefined;
-	_sessionOpenMarker: (() => void) | undefined;
+	_sessionOpenMarker: (() => Promise<void>) | undefined;
 	_workflowStageAdmission: import("./workflow-stage-admission.ts").WorkflowStageAdmissionBoundary | undefined;
 	_workflowStageAwaitingFirstPrompt: boolean;
 	_agentTaskHost: import("./tasks/agent-adapter.js").AgentTaskHost | undefined;

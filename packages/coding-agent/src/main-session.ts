@@ -56,7 +56,7 @@ type ResolvedSession =
 /** The `--resume` picker's delete: the id is checked, and a session open in another process refused (#4971), before the store is touched (#4326). */
 export async function deleteSessionFromPicker(store: SessionStore, id: string): Promise<void> {
 	assertValidSessionId(id);
-	assertSessionNotOpenElsewhere(id);
+	await assertSessionNotOpenElsewhere(id, { store });
 	await deleteSessionWithSnapshotRefs(store, id);
 }
 

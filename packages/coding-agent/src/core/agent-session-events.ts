@@ -774,11 +774,13 @@ export function closeAgentSession(
 		});
 		// Empty stored IDs have no provider cache key; empty-key cleanup would close other sessions' caches.
 		if (session.sessionId !== "") await attempt("provider", () => cleanupSessionResources(session.sessionId));
-		await attempt("storage", () => {
+		await attempt("storage", async () => {
 			session._tempStorageLease?.release();
 			session._tempStorageLease = undefined;
-			session._sessionOpenMarker?.();
+			const releaseOpenMarker = session._sessionOpenMarker;
 			session._sessionOpenMarker = undefined;
+			// Before the session store closes: a store keeps the mark in its own tables (#4971).
+			await releaseOpenMarker?.();
 		});
 		await attempt("session store", async () => {
 			const store = ownedSessionStores.get(session);

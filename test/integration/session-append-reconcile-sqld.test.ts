@@ -23,21 +23,24 @@ const serverUrl = process.env.ATOMIC_TEST_LIBSQL_URL;
 
 /**
  * An HTTP proxy in front of the server. While armed, the next request that carries a COMMIT is forwarded, its whole
- * response is read from the server (so the commit is applied), and the client's connection is then destroyed instead
- * of answered.
+ * response is read from the server (so the commit is applied), and the client's connection is then destroyed, or
+ * answered with a gateway's HTTP 502, instead.
  */
-async function startProxy(
-	target: URL,
-): Promise<{ url: string; dropNextCommit(): void; dropped(): number; close(): Promise<void> }> {
-	let armed = false;
+async function startProxy(target: URL): Promise<{
+	url: string;
+	dropNextCommit(answer?: "destroy" | "502"): void;
+	dropped(): number;
+	close(): Promise<void>;
+}> {
+	let armed: "destroy" | "502" | undefined;
 	let dropped = 0;
 	const server: Server = createServer((incoming, outgoing) => {
 		const chunks: Buffer[] = [];
 		incoming.on("data", (chunk: Buffer) => chunks.push(chunk));
 		incoming.on("end", () => {
 			const body = Buffer.concat(chunks);
-			const drop = armed && /"COMMIT"/i.test(body.toString("utf8"));
-			if (drop) armed = false;
+			const drop = armed !== undefined && /"COMMIT"/i.test(body.toString("utf8")) ? armed : undefined;
+			if (drop) armed = undefined;
 			const upstream = request(
 				{
 					host: target.hostname,
@@ -50,10 +53,11 @@ async function startProxy(
 					const answer: Buffer[] = [];
 					response.on("data", (chunk: Buffer) => answer.push(chunk));
 					response.on("end", () => {
-						if (drop) {
-							dropped++;
-							incoming.socket.destroy();
-							return;
+						if (drop) dropped++;
+						if (drop === "destroy") return void incoming.socket.destroy();
+						if (drop === "502") {
+							outgoing.writeHead(502, { "content-type": "text/html" });
+							return void outgoing.end("<html><body>502 Bad Gateway</body></html>");
 						}
 						outgoing.writeHead(response.statusCode ?? 502, response.headers);
 						outgoing.end(Buffer.concat(answer));
@@ -68,8 +72,8 @@ async function startProxy(
 	const { port } = server.address() as AddressInfo;
 	return {
 		url: `http://127.0.0.1:${port}`,
-		dropNextCommit: () => {
-			armed = true;
+		dropNextCommit: (answer = "destroy") => {
+			armed = answer;
 		},
 		dropped: () => dropped,
 		close: () =>
@@ -105,27 +109,31 @@ describe.skipIf(serverUrl === undefined)("a lost COMMIT response on a libSQL ser
 		await proxy?.close();
 	});
 
-	test("the append whose COMMIT response was lost is recognised as persisted and later appends succeed (#4970)", async () => {
-		const manager = await SessionManager.create(store, "/project");
-		await manager.appendMessage(message("one"));
+	for (const answer of ["destroy", "502"] as const) {
+		const how = answer === "destroy" ? "was lost" : "was a gateway's 502";
+		test(`the append whose COMMIT response ${how} is recognised as persisted and later appends succeed (#4970)`, async () => {
+			const manager = await SessionManager.create(store, "/project");
+			await manager.appendMessage(message("one"));
 
-		proxy.dropNextCommit();
-		await manager.appendMessage(message("two"));
-		assert.equal(proxy.dropped(), 1);
-		await manager.appendMessage(message("three"));
-		await manager.appendMessage(message("four"));
+			const dropped = proxy.dropped();
+			proxy.dropNextCommit(answer);
+			await manager.appendMessage(message("two"));
+			assert.equal(proxy.dropped(), dropped + 1);
+			await manager.appendMessage(message("three"));
+			await manager.appendMessage(message("four"));
 
-		const stored = await directStore.load(manager.getSessionId());
-		const texts = (entries: readonly SessionEntry[]) =>
-			entries.flatMap((entry) =>
-				entry.type === "message" && "content" in entry.message ? [entry.message.content] : [],
+			const stored = await directStore.load(manager.getSessionId());
+			const texts = (entries: readonly SessionEntry[]) =>
+				entries.flatMap((entry) =>
+					entry.type === "message" && "content" in entry.message ? [entry.message.content] : [],
+				);
+			assert.deepEqual(texts(stored.entries), ["one", "two", "three", "four"]);
+			assert.deepEqual(stored.entries, manager.getEntries());
+			assert.deepEqual(
+				manager.getBranch().map((entry) => entry.id),
+				stored.entries.map((entry) => entry.id),
 			);
-		assert.deepEqual(texts(stored.entries), ["one", "two", "three", "four"]);
-		assert.deepEqual(stored.entries, manager.getEntries());
-		assert.deepEqual(
-			manager.getBranch().map((entry) => entry.id),
-			stored.entries.map((entry) => entry.id),
-		);
-		await directStore.delete(manager.getSessionId());
-	});
+			await directStore.delete(manager.getSessionId());
+		});
+	}
 });

@@ -45,12 +45,18 @@ describe("deleting a session open in another process (#4971)", () => {
 		});
 	}
 
-	async function refusedWhileLiveThenAllowed(selection: string[], openManagerB: () => Promise<SessionManager>) {
+	async function refusedWhileLiveThenAllowed(
+		selection: string[],
+		openManagerB: () => Promise<SessionManager>,
+		options: { readonly agentDirB?: string } = {},
+	) {
 		const processA = startProcessA(selection);
 		let stopped = false;
 		try {
 			await processA.start();
 			const sessionId = (await processA.getState()).sessionId;
+			// Process B may run on another host, or under another agent directory, against the same store.
+			if (options.agentDirB !== undefined) process.env.ATOMIC_CODING_AGENT_DIR = options.agentDirB;
 			const managerB = await openManagerB();
 			try {
 				await assert.rejects(managerB.deleteSession(sessionId), (error: unknown) => {
@@ -89,6 +95,26 @@ describe("deleting a session open in another process (#4971)", () => {
 				await manager.appendMessage(message("process B"));
 				return manager;
 			});
+		},
+		REAL_CLI_TIMEOUT_MS,
+	);
+
+	test(
+		"a session in a shared SQL store is refused from a process with another agent directory (#4971)",
+		async () => {
+			const databasePath = join(dir, "sessions.sqlite");
+			const agentDirB = join(dir, "agent-b");
+			mkdirSync(agentDirB, { recursive: true });
+			await refusedWhileLiveThenAllowed(
+				["--session-store", databasePath],
+				async () => {
+					const store = await resolveSessionStore(dir, { sessionStore: { kind: "sqlite", path: databasePath } });
+					const manager = await SessionManager.create(store, dir);
+					await manager.appendMessage(message("process B"));
+					return manager;
+				},
+				{ agentDirB },
+			);
 		},
 		REAL_CLI_TIMEOUT_MS,
 	);
