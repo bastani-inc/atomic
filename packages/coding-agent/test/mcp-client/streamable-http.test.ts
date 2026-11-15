@@ -105,6 +105,38 @@ describe("consumeSseStream", () => {
 		assert.deepEqual(events, [{ id: "7", data: '{"one":\n1}' }]);
 	});
 
+	it("reports an event's ID when the event dispatches, never for an event cut off (#5019)", async () => {
+		const text = "id: 1\nretry: 250\nretry: x5\nretry: 5x\ndata: 9\n\nid: 2\ndata: half";
+		// The text arrives, then the connection breaks.
+		const brokenStream = () => {
+			let sent = false;
+			return new ReadableStream<Uint8Array>({
+				pull(controller) {
+					if (sent) controller.error(new Error("connection reset"));
+					else controller.enqueue(new TextEncoder().encode(text));
+					sent = true;
+				},
+			});
+		};
+		const calls: string[] = [];
+		await assert.rejects(
+			consumeSseStream(brokenStream(), {
+				onEvent: (event) => calls.push(`event ${event.data}`),
+				onId: (id) => calls.push(`id ${id}`),
+				onRetry: (delayMs) => calls.push(`retry ${delayMs}`),
+			}),
+			/connection reset/,
+		);
+		assert.deepEqual(calls, ["retry 250", "id 1", "event 9"]);
+		// Without ID and retry listeners, those fields are parsed and ignored.
+		const events: SseEvent[] = [];
+		await assert.rejects(
+			consumeSseStream(brokenStream(), { onEvent: (event) => events.push(event) }),
+			/connection reset/,
+		);
+		assert.deepEqual(events, [{ id: "1", data: "9" }]);
+	});
+
 	it("recognizes CR, LF, and CRLF line endings, including CRLF split across chunks (pi #11775)", async () => {
 		const encoder = new TextEncoder();
 		const parse = async (chunks: string[]) => {
