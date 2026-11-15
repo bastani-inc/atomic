@@ -73,6 +73,7 @@ import {
 	type SendClientMessage,
 	senderGroupIdentity,
 } from "./send-handler.js";
+import { deliverHeldToAsker } from "./ask-failures.js";
 import type { BrokerOutboundFrame } from "./socket-writes.js";
 import type { SupervisorChannelCache } from "./supervisor-channel.js";
 import type { WakeUpBus, WakeUpEvent, WakeUpSubscription } from "./wake-up-bus.js";
@@ -628,7 +629,18 @@ export class MultiNodeRouter {
 			};
 			const local = this.host.sessions.get(ask.senderSessionId);
 			if (local !== undefined) {
-				this.host.write(local.socket, frame);
+				// #5004: held until the asker saved it, like a reply.
+				deliverHeldToAsker(
+					{
+						asker: local,
+						question: ask,
+						from,
+						pending: this.host.pendingQuestions,
+						write: (socket, written) => this.host.write(socket, written),
+						legacy: frame,
+					},
+					frame.message,
+				);
 				await settled();
 				continue;
 			}

@@ -158,11 +158,16 @@ test("a failed child resumed and ended by ctx.exit keeps the run's nested histor
 	assert.deepEqual(nestedRuns(nested, runId), [["steady-child", "completed"]]);
 	assert.deepEqual(nestedRuns(durableNestedRunSnapshots(backend, runId), runId), [["steady-child", "completed"]]);
 
-	// Running the exited run once more refuses the skipped child as it would one that never failed, and reads the
-	// same history.
+	// Running the exited run once more refuses the skipped child as it would one that never failed. That attempt ends
+	// before it reaches the child's boundary, so its history, durable as live, holds only what it reached (#4874).
 	const again = await runAttempt();
 	assert.match(again.error ?? "", /no valid replayable child result/);
-	assert.deepEqual(boundaries(durableWorkflowRunSnapshots(backend, backend.getWorkflow(runId)!)[0]), boundaries(root));
+	const latest = durableWorkflowRunSnapshots(backend, backend.getWorkflow(runId)!)[0];
+	assert.deepEqual(
+		boundaries(latest),
+		again.stages.map((stage) => [stage.name, stage.status]),
+	);
+	assert.deepEqual(boundaries(latest), [["workflow:steady-child", "completed"]]);
 
 	const { runId: forkId } = await forkDurableRun(backend, {
 		source: "sdk",
@@ -173,7 +178,7 @@ test("a failed child resumed and ended by ctx.exit keeps the run's nested histor
 	});
 	const [forkRoot, ...forkNested] = durableWorkflowRunSnapshots(backend, backend.getWorkflow(forkId)!);
 	assert.equal(forkRoot?.id, forkId);
-	assert.deepEqual(boundaries(forkRoot), boundaries(root));
+	assert.deepEqual(boundaries(forkRoot), boundaries(latest));
 	assert.deepEqual(nestedRuns(forkNested, forkId), [["steady-child", "completed"]]);
 });
 

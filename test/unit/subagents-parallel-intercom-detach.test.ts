@@ -58,7 +58,6 @@ function input(runSync: Input["runtime"]["runSync"]): Input {
 			progress: false,
 			skills: false,
 		})),
-		firstProgressIndex: -1,
 		controlConfig: {
 			enabled: false,
 			needsAttentionAfterMs: 1,

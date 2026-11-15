@@ -11,12 +11,17 @@ import {
 	type SessionTextField,
 	StoreClosedError,
 } from "./errors.js";
+import { SESSION_SUMMARY_TEXT_CHARS } from "./session-summary.js";
 import { SESSION_FORMAT_VERSION, type SessionRecordHeader, type SessionStore, type SessionSummary } from "./types.js";
 
 export interface SessionStoreConformanceRunner {
 	describe(name: string, body: () => void): void;
-	it(name: string, body: () => Promise<void>): void;
+	/** `timeoutMs`, when given, is the case's own time limit: the cases that store tens of megabytes pass one. */
+	it(name: string, body: () => Promise<void>, timeoutMs?: number): void;
 }
+
+/** The time limit of a case that writes and reads tens of megabytes, as it takes over HTTP to a loaded server. */
+const LARGE_VALUE_TIMEOUT_MS = 300_000;
 
 export interface SessionStoreConformanceSubject {
 	store: SessionStore;
@@ -86,16 +91,21 @@ export function registerSessionStoreConformance(
 ): void {
 	for (const reopen of [false, true]) {
 		runner.describe(`${name}${reopen ? " (reopen)" : ""}`, () => {
-			const check = (title: string, body: (store: SessionStore, reload: Reload) => Promise<void>): void => {
-				runner.it(title, () =>
+			const check = (
+				title: string,
+				body: (store: SessionStore, reload: Reload) => Promise<void>,
+				timeoutMs?: number,
+			): void => {
+				const run = () =>
 					withSubject((subject) =>
 						body(subject.store, async (store) => {
 							if (!reopen) return store;
 							await store.close();
 							return subject.reopen();
 						}),
-					),
-				);
+					);
+				if (timeoutMs === undefined) runner.it(title, run);
+				else runner.it(title, run, timeoutMs);
 			};
 
 			check("creates atomically and rejects duplicate sessions without changing data", async (store, reload) => {
@@ -788,6 +798,44 @@ export function registerSessionStoreConformance(
 				},
 			);
 
+			check(
+				"stores a 10 MB entry and a session of more than 10 MB, loads them whole and lists them (#4954)",
+				async (store, reload) => {
+					const MB = 1_000_000;
+					// Multi-byte and astral characters land on chunk boundaries; the text is longer than any listing keeps.
+					const text = Array.from({ length: MB }, (_, index) => `line${index % 10} é😀\n`).join("");
+					const large = message("large", text);
+					await store.create(header(), [large]);
+					const replies: SessionEntry[] = Array.from({ length: 12 }, (_, index) => ({
+						...message(`reply-${index}`, `${index}`.repeat(MB)),
+						parentId: index === 0 ? "large" : `reply-${index - 1}`,
+					}));
+					for (const [index, reply] of replies.entries()) {
+						await store.append("session", [reply], { expectSeq: index + 1 });
+					}
+					store = await reload(store);
+					const loaded = await store.load("session");
+					assert.equal(loaded.lastSeq, 13);
+					assert.equal(loaded.entries.length, 13);
+					assert.ok(
+						JSON.stringify(loaded.entries) === JSON.stringify([large, ...replies]),
+						"every entry loads back exactly, in order",
+					);
+					const [summary] = await collect(store);
+					assert.equal(summary?.messageCount, 13);
+					assert.equal(summary?.firstMessage, text.slice(0, SESSION_SUMMARY_TEXT_CHARS));
+					assert.ok(summary?.searchText.startsWith(text.slice(0, SESSION_SUMMARY_TEXT_CHARS)));
+					assert.ok(summary?.searchText.endsWith("1".repeat(SESSION_SUMMARY_TEXT_CHARS)));
+					const small = message("small", "small");
+					await store.replace("session", header(), [small], { expectSeq: 13 });
+					store = await reload(store);
+					assert.deepEqual((await store.load("session")).entries, [small]);
+					await store.delete("session");
+					await assert.rejects(store.load("session"), notFound("session"));
+				},
+				LARGE_VALUE_TIMEOUT_MS,
+			);
+
 			check("rejects blob reads and writes after close (#4379)", async (store) => {
 				if (store.putBlob === undefined || store.getBlob === undefined) return;
 				await store.create(header(), []);
@@ -884,6 +932,48 @@ export function registerSessionStoreConformance(
 				assert.equal((await store.load("session")).entries[0]?.id, "first");
 				assert.equal((await store.readHeader("session"))?.workflow?.stageName, "original");
 			});
+
+			check(
+				"keeps open-session markers every opener of the store sees, when it keeps any (#4971)",
+				async (store, reload) => {
+					const markers = store.openMarkers;
+					if (markers === undefined) return;
+					const marker = { token: "1234-abcd", pid: 1234, host: "host-a" };
+					await markers.put("session", marker);
+					await markers.put("session", { ...marker, token: "5678-ef01", pid: 5678, host: "host-b" });
+					await markers.put("other", { ...marker, token: "9999-0000" });
+					await markers.put("session", { ...marker, pid: 4321 });
+					store = await reload(store);
+					const reopened = store.openMarkers!;
+					const sorted = async (sessionId: string) =>
+						[...(await reopened.list(sessionId))].sort((a, b) => a.token.localeCompare(b.token));
+					const listed = await sorted("session");
+					// Each marker's age is read on the store's clock, which stamped it just now.
+					for (const each of listed) assert.ok(each.ageMs >= 0 && each.ageMs < 60_000, String(each.ageMs));
+					assert.deepEqual(
+						listed.map(({ ageMs: _ageMs, ...rest }) => rest),
+						[
+							{ ...marker, pid: 4321 },
+							{ ...marker, token: "5678-ef01", pid: 5678, host: "host-b" },
+						],
+					);
+					await reopened.remove("session", "1234-abcd");
+					await reopened.remove("session", "missing");
+					assert.deepEqual(
+						(await sorted("session")).map((each) => each.token),
+						["5678-ef01"],
+					);
+					assert.deepEqual(
+						(await sorted("other")).map((each) => each.token),
+						["9999-0000"],
+					);
+					assert.deepEqual(await reopened.list("none"), []);
+					await store.close();
+					await assert.rejects(reopened.list("session"), StoreClosedError);
+					await assert.rejects(reopened.put("session", marker), StoreClosedError);
+					await assert.rejects(reopened.remove("session", "5678-ef01"), StoreClosedError);
+				},
+			);
 
 			check("rejects every operation after close, including repeated close", async (store, reload) => {
 				await store.create(header(), []);
