@@ -1184,6 +1184,7 @@ async function admitSlot(
 			{
 				storeDir,
 				remotes: snapshot.remotes,
+				root: snapshot.root,
 				lastState: { snapshotId: snapshot.id, head: snapshot.head, tree: snapshot.tree },
 				envHash: snapshot.envHash,
 			},
