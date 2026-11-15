@@ -47,6 +47,7 @@
 
 ### Fixed
 
+- The fetch tool refuses more reserved and non-public address ranges.
 - Fixed `search` and `find` reading the wrong file for a path containing brackets, such as a Next.js or SvelteKit route `app/[id]/page.tsx`: the brackets were read as a glob, so the tools matched `app/i/page.tsx` or `app/d/page.tsx` instead. A path that exists exactly as written is now used as that path, and a backslash makes a glob character literal (`app/\[id\]/*.tsx`) outside Windows ([#5177](https://github.com/bastani-inc/atomic/issues/5177))
 - Fixed two processes resuming the same session when they took over a dead session claim at once. A takeover lock was broken by its age alone, so a process paused for 10 seconds or more lost its lock mid-takeover, and a second process could remove the claim the first had just taken; a third could fail with a raw `ENOENT` instead of "Session is already open". Takeovers of a dead claim now use the same takeover lock as settings and credential locks, which is broken only once the process holding it is dead. The dead claim is moved aside and removed only if it is still the dead one ([#5179](https://github.com/bastani-inc/atomic/issues/5179))
 - Temporary lock-holder files (`settings.json.lock.holder.*.tmp`) left by a process killed while taking the settings lock are now removed once a minute old when a later process removes that lock as stale, as they already were after a dead holder's lock was taken over ([#5161](https://github.com/bastani-inc/atomic/issues/5161))
@@ -181,6 +182,7 @@
 - Fixed a worktree snapshot being recorded as a session's latest even though a snapshot collection had deleted its content between the capture and the record, which left a snapshot that could not be restored (`blob-missing`). Recording now checks that the content is still stored, stores it again and retries, then captures once more; if that fails too, nothing is recorded and the turn warns with `blobs-collected` ([#5077](https://github.com/bastani-inc/atomic/issues/5077))
 - Fixed git package sources with a long run of slashes, such as `git:example.com/a//…//b`, taking seconds to parse in `atomic install`, `update` and `remove`, and in startup package resolution: parse time grew with the square of the run. Parsing now takes time linear in the source length
 - Hardened settings against keys named `__proto__`, `constructor` or `prototype` in a settings file, an SDK `applyOverrides` value or a setter such as `setWarnings`: such keys are now ignored when settings are merged, overridden and saved, so they can no longer replace the prototype of a settings object
+- Fixed `truncateHead()` and `truncateTail()` reporting output as truncated by the line limit when only its trailing newline went over the byte limit, so tools such as `find`, `grep`, `ls`, `search` and `bash` showed a truncation notice when nothing was cut. A tail truncation that cuts the only kept line to fit the byte limit now reports `bytes` instead of `lines`
 
 ### Removed
 

@@ -56,6 +56,15 @@ test("a server retry hint is capped by maxRetryDelayMs, defaulting to 60 seconds
 	assert.equal(assistantRetryDelayMs({ ...policy, maxRetryDelayMs: 0, maxAgentDelayMs: 20_000 }, 1, message), 20_000);
 });
 
+test("an unset maxRetryDelayMs caps a server retry hint at 60 seconds, not at maxAgentDelayMs", () => {
+	const unset: RetryPolicy = { ...policy, maxRetryDelayMs: undefined, maxAgentDelayMs: 5000 };
+	assert.equal(assistantRetryDelayMs(unset, 1, failure("503 service unavailable", 45_000)), 45_000);
+	assert.equal(assistantRetryDelayMs(unset, 1, failure("503 service unavailable", 60_000)), 60_000);
+	assert.equal(assistantRetryDelayMs(unset, 1, failure("503 service unavailable", 60_001)), 60_000);
+	assert.equal(assistantRetryDelayMs({ ...unset, maxAgentDelayMs: 120_000 }, 1, failure("503 service unavailable", 90_000)), 60_000);
+	assert.equal(assistantRetryDelayMs(unset, 1, failure("503 service unavailable")), 2000);
+});
+
 test("a 5xx without a retry hint keeps the 2s/4s/8s backoff and the maxRetries limit (#3623)", async () => {
 	const outage = Array.from({ length: 10 }, () => failure("503 service unavailable"));
 	const { result, delays, calls } = await runRetries(outage);
