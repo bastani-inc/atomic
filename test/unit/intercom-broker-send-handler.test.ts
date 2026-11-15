@@ -1306,3 +1306,37 @@ test("explicit reply recipient binding is validated, retained in authority, and 
 	assert.equal(writes.filter((entry) => entry.socket === recipient.socket).length, 1);
 	assert.equal(send({ message: { ...message("unbound-reply"), replyTo: "ordinary-thread" } }).type, "delivered");
 });
+
+test("a reply the broker could not write to its asker leaves the ask unanswered, so its recipient leaving still fails it (#5095)", () => {
+	const asker = {} as net.Socket;
+	const target = {} as net.Socket;
+	const sessions = new Map<string, BrokerConnectedSession>([
+		["asker-unwritten", session("asker-unwritten", "asker", asker)],
+		["target-unwritten", session("target-unwritten", "target", target)],
+	]);
+	const pending = new PendingQuestionIndex();
+	const writes: BrokerMessage[] = [];
+	pending.record("asker-unwritten", "target-unwritten", "question-unwritten");
+	handleBrokerSend(
+		target,
+		{
+			type: "send",
+			to: "asker-unwritten",
+			requirePendingReply: true,
+			message: { ...message("reply-unwritten"), replyTo: "question-unwritten" },
+		},
+		"target-unwritten",
+		sessions,
+		new DeliveredMessageCache(),
+		(socket, frame) => {
+			writes.push(frame);
+			return socket !== asker;
+		},
+		new SupervisorChannelCache(),
+		pending,
+	);
+	assert.equal(writes.at(-1)?.type, "delivery_failed");
+	assert.deepEqual(pending.takeForTarget("target-unwritten"), [
+		{ senderSessionId: "asker-unwritten", targetSessionId: "target-unwritten", messageId: "question-unwritten" },
+	]);
+});
