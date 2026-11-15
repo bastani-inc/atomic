@@ -9,6 +9,7 @@ import type { DurableCheckpoint } from "../../packages/workflows/src/durable/typ
 import type { RunOpts } from "../../packages/workflows/src/runs/foreground/executor-types.js";
 import { StaleWorkLeaseError } from "../../packages/workflows/src/shared/worker-pool-errors.js";
 import {
+	BACKPRESSURE_SHARE,
 	CheckpointShipping,
 	RELEASE_FLUSH_ATTEMPTS,
 	type ShipDelivery,
@@ -243,6 +244,7 @@ function fakeShared() {
 }
 
 const SHIPPING = { intervalMs: 60_000, maxBatch: 2, maxLagMs: 1_000 } as const;
+const BACKPRESSURE_MS = SHIPPING.maxLagMs * BACKPRESSURE_SHARE;
 
 function shippingOf(
 	local: ShipShard,
@@ -330,7 +332,7 @@ test("the shared journal refusing a batch fences the attempt: its unshipped chec
 	assert.deepEqual(shared.recorded, []);
 });
 
-test("a delivery that fails is retried while commits go on, and a host lagging past maxLagMs claims nothing (#4768)", async () => {
+test("a delivery that fails is retried while commits go on, and a host held back by its lag claims nothing (#4768)", async () => {
 	const { shard: local, clock } = await shard();
 	const shared = fakeShared();
 	const shipping = shippingOf(local, shared.deliver, { now: () => clock.now });
@@ -339,13 +341,13 @@ test("a delivery that fails is retried while commits go on, and a host lagging p
 	shared.state.failWith = unreachable;
 	await shipping.commit(LEASE, checkpoint("a"), sharedCommit().commit);
 	await assert.rejects(shipping.flush(LEASE), unreachable);
-	clock.now = 500;
+	clock.now = BACKPRESSURE_MS - 1;
 	await shipping.hold(LEASE, LEASE_MS);
 	await shipping.commit(LEASE, checkpoint("b"), sharedCommit().commit);
-	assert.deepEqual(shipping.status(), { pending: 2, lagMs: 500, error: unreachable });
+	assert.deepEqual(shipping.status(), { pending: 2, lagMs: BACKPRESSURE_MS - 1, error: unreachable });
 	assert.equal(shipping.lagging(), false);
-	clock.now = SHIPPING.maxLagMs + 1;
-	assert.equal(shipping.lagging(), true, "the oldest checkpoint waited past maxLagMs");
+	clock.now = BACKPRESSURE_MS;
+	assert.equal(shipping.lagging(), true, "the oldest checkpoint reached the backpressure point");
 	shared.state.failWith = undefined;
 	await shipping.flushAll();
 	assert.deepEqual(shared.recorded, ["a", "b"].map(keyOf));
@@ -470,7 +472,7 @@ test("a stage checkpoint with a session never ships (#4768)", async () => {
 	assert.deepEqual(await local.pending(LEASE), []);
 });
 
-test("an attempt whose oldest unshipped checkpoint waited past maxLagMs accepts nothing more until it is shipped (#4768)", async () => {
+test("an attempt whose oldest unshipped checkpoint reached the backpressure point acknowledges no step until it is shipped (#4768)", async () => {
 	const { shard: local, clock } = await shard();
 	const shared = fakeShared();
 	const shipping = shippingOf(local, shared.deliver, { now: () => clock.now });
@@ -478,20 +480,30 @@ test("an attempt whose oldest unshipped checkpoint waited past maxLagMs accepts 
 	await shipping.commit(LEASE, checkpoint("a"), sharedCommit().commit);
 	const unreachable = new Error("shared store unreachable");
 	shared.state.failWith = unreachable;
-	clock.now = SHIPPING.maxLagMs;
+	clock.now = BACKPRESSURE_MS - 1;
 	await shipping.hold(LEASE, LEASE_MS);
-	assert.equal((await shipping.commit(LEASE, checkpoint("b"), sharedCommit().commit)).local, true, "within maxLagMs");
-	clock.now = SHIPPING.maxLagMs + 1;
+	assert.equal((await shipping.commit(LEASE, checkpoint("b"), sharedCommit().commit)).local, true, "before the point");
+	clock.now = BACKPRESSURE_MS;
 	await shipping.hold(LEASE, LEASE_MS);
-	await assert.rejects(shipping.commit(LEASE, checkpoint("c"), sharedCommit().commit), unreachable);
+	let answered = false;
+	const held = shipping.commit(LEASE, checkpoint("c"), sharedCommit().commit).then((receipt) => {
+		answered = true;
+		return receipt;
+	});
+	// The delivery keeps failing: the step waits, retried, instead of being acknowledged or failed.
+	await sleep(300);
+	assert.equal(answered, false, "the step is not acknowledged while what it would add to waits");
 	assert.deepEqual(
 		(await local.pending(LEASE)).map((event) => event.key),
 		["a", "b"].map(keyOf),
-		"the step past the window was not acknowledged",
 	);
 	shared.state.failWith = undefined;
-	await shipping.commit(LEASE, checkpoint("c"), sharedCommit().commit);
+	assert.equal((await held).local, true);
 	assert.deepEqual(shared.recorded, ["a", "b"].map(keyOf), "what waited too long shipped first");
+	assert.deepEqual(
+		(await local.pending(LEASE)).map((event) => event.key),
+		[keyOf("c")],
+	);
 });
 
 test("releasing an attempt ships what it accepted, retrying while the shared store is briefly unreachable (#4768)", async () => {
@@ -626,14 +638,14 @@ test("flushing every attempt ships each one, and reports the first failure after
 	assert.equal(shipping.status().pending, 1);
 });
 
-test("a host is lagging only once its oldest checkpoint waited longer than maxLagMs (#4768)", async () => {
+test("a host is lagging once its oldest checkpoint reached the backpressure point, a share of maxLagMs (#4768)", async () => {
 	const { shard: local, clock } = await shard();
 	const shipping = shippingOf(local, async () => {}, { now: () => clock.now });
 	await shipping.hold(LEASE, LEASE_MS);
 	clock.now = 100;
 	await shipping.commit(LEASE, checkpoint("a"), sharedCommit().commit);
-	clock.now = 100 + SHIPPING.maxLagMs;
-	assert.deepEqual(shipping.status(), { pending: 1, lagMs: SHIPPING.maxLagMs });
+	clock.now = 100 + BACKPRESSURE_MS - 1;
+	assert.deepEqual(shipping.status(), { pending: 1, lagMs: BACKPRESSURE_MS - 1 });
 	assert.equal(shipping.lagging(), false);
 	clock.now += 1;
 	assert.equal(shipping.lagging(), true);
@@ -658,4 +670,25 @@ test("a sealed batch stays the same batch until it is shipped, and later checkpo
 	);
 	assert.notEqual(next?.id, sealed.id);
 	assert.equal(await local.seal({ id: "unknown", generation: 1 }, 10), undefined);
+});
+
+test("a host ships at least every quarter of maxLagMs, whatever its interval, and attempts side by side (#4768)", async () => {
+	const { shard: local } = await shard();
+	const shared = fakeShared();
+	const shipping = new CheckpointShipping(local, {
+		intervalMs: 60_000,
+		maxBatch: 1_000,
+		maxLagMs: 200,
+		host: "host",
+		deliver: shared.deliver,
+	});
+	opened.push(shipping);
+	shipping.start();
+	const other = { ...LEASE, id: "work-2" };
+	await shipping.hold(LEASE, LEASE_MS);
+	await shipping.hold(other, LEASE_MS);
+	await shipping.commit(LEASE, checkpoint("a"), sharedCommit().commit);
+	await shipping.commit(other, checkpoint("b"), sharedCommit().commit);
+	for (let waited = 0; shared.recorded.length < 2 && waited < 5_000; waited += 10) await sleep(10);
+	assert.deepEqual(new Set(shared.recorded), new Set(["a", "b"].map(keyOf)));
 });

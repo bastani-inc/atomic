@@ -31,6 +31,18 @@ export const RELEASE_FLUSH_ATTEMPTS = 4;
 /** The first wait between those tries; each next one is twice as long. */
 export const RELEASE_FLUSH_RETRY_MS = 250;
 
+/**
+ * The share of `maxLagMs` past which an attempt acknowledges no new step until what it holds is shipped: the rest of
+ * the window is left for the delivery itself, so a checkpoint is shipped within `maxLagMs` of its step.
+ */
+export const BACKPRESSURE_SHARE = 0.5;
+/** A host ships at least this often within `maxLagMs`, whatever its `intervalMs`. */
+export const SHIPS_PER_LAG_WINDOW = 4;
+/** The first wait before a delivery that held an attempt back is tried again; each next one is twice as long. */
+const BACKPRESSURE_RETRY_MS = 100;
+/** The longest wait between those tries. */
+const BACKPRESSURE_RETRY_MAX_MS = 2_000;
+
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /** A local journal failure that sent an attempt back to committing every checkpoint to the shared journal. */
@@ -97,10 +109,14 @@ export class CheckpointShipping {
 		},
 	) {}
 
-	/** Ships every `intervalMs` until {@link close}. */
+	/**
+	 * Ships every `intervalMs`, or every {@link SHIPS_PER_LAG_WINDOW}th of `maxLagMs` when that is sooner, until
+	 * {@link close}.
+	 */
 	start(): void {
 		if (this.timer !== undefined || this.closed) return;
-		this.timer = setInterval(() => void this.shipAll().catch(() => {}), this.options.intervalMs);
+		const every = Math.min(this.options.intervalMs, Math.floor(this.options.maxLagMs / SHIPS_PER_LAG_WINDOW));
+		this.timer = setInterval(() => void this.shipAll().catch(() => {}), every);
 		this.timer.unref?.();
 	}
 
@@ -164,12 +180,7 @@ export class CheckpointShipping {
 			return commitShared();
 		}
 		const checkpoint = mutation.checkpoint;
-		// An attempt whose oldest unshipped checkpoint waited past `maxLagMs` accepts nothing more until it is shipped,
-		// so the steps a host's death leaves to run again stay within that window.
-		const behind = this.attempts.get(lease.id);
-		const oldest = behind?.accepted[0];
-		if (behind !== undefined && oldest !== undefined && this.now() - oldest > this.options.maxLagMs)
-			await this.flush(lease);
+		await this.catchUp(lease);
 		try {
 			const { accepted } = await this.shard.accept(
 				this.shard.root,
@@ -208,6 +219,32 @@ export class CheckpointShipping {
 		}
 	}
 
+	/**
+	 * Backpressure: an attempt whose oldest unshipped checkpoint waited {@link BACKPRESSURE_SHARE} of `maxLagMs`
+	 * acknowledges no new step until everything it holds is shipped, retrying a delivery that fails, so the steps a
+	 * host's death leaves to run again stay within that window. Rejects once the attempt is fenced or the host stops.
+	 */
+	private async catchUp(lease: AttemptLease): Promise<void> {
+		for (let tries = 0; ; tries++) {
+			const attempt = this.attempts.get(lease.id);
+			const oldest = attempt?.accepted[0];
+			if (attempt === undefined || oldest === undefined || this.now() - oldest < this.backpressureMs()) return;
+			if (attempt.fenced !== undefined) throw attempt.fenced;
+			if (this.closed) throw new Error("Checkpoint shipping stopped");
+			try {
+				await this.flush(lease);
+				return;
+			} catch {
+				if (attempt.fenced !== undefined) throw attempt.fenced;
+				await sleep(Math.min(BACKPRESSURE_RETRY_MAX_MS, BACKPRESSURE_RETRY_MS * 2 ** Math.min(tries, 10)));
+			}
+		}
+	}
+
+	private backpressureMs(): number {
+		return this.options.maxLagMs * BACKPRESSURE_SHARE;
+	}
+
 	/** Ships everything every attempt accepted: before a control revision is acknowledged, and before the host stops. */
 	async flushAll(): Promise<void> {
 		const failures: unknown[] = [];
@@ -229,9 +266,12 @@ export class CheckpointShipping {
 		return { pending, lagMs, ...(this.lastError === undefined ? {} : { error: this.lastError }) };
 	}
 
-	/** Whether the host is so far behind that it claims no new children until it catches up (`maxLagMs`). */
+	/**
+	 * Whether the host is so far behind that it claims no new children until it catches up: an attempt holds a
+	 * checkpoint as old as the backpressure point ({@link BACKPRESSURE_SHARE} of `maxLagMs`).
+	 */
 	lagging(): boolean {
-		return this.status().lagMs > this.options.maxLagMs;
+		return this.status().lagMs >= this.backpressureMs();
 	}
 
 	async close(): Promise<void> {
@@ -244,9 +284,13 @@ export class CheckpointShipping {
 		await this.shard.close();
 	}
 
+	/** Ships each attempt's next batch, the attempts' deliveries side by side. */
 	private async shipAll(): Promise<void> {
-		for (const attempt of [...this.attempts.values()])
-			if (attempt.accepted.length > 0 && attempt.fenced === undefined) await this.ship(attempt).catch(() => {});
+		await Promise.all(
+			[...this.attempts.values()]
+				.filter((attempt) => attempt.accepted.length > 0 && attempt.fenced === undefined)
+				.map((attempt) => this.ship(attempt).catch(() => {})),
+		);
 	}
 
 	/** Ships the attempt's next batch, after any shipment of the attempt still running. */
