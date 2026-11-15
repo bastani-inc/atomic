@@ -1168,10 +1168,25 @@ describe("parking a build path Git tracks files under (#4911)", () => {
 
 	test("the cache keys warn that only untracked and ignored files of a tracked build path are parked (#4911)", async () => {
 		const { clone } = await trackedDistCheckout();
+		sandbox.write(join(clone, "pkg", "lib", "index.js"), "committed\n");
+		sandbox.write(join(clone, ".atomic", "settings.json"), buildSettings(["dist", "node_modules", "pkg/lib"]));
+		await sandbox.commitAll(clone, "a nested tracked build path");
 		const keys = await blueprintCacheKeys(clone, { agentDir: agentDir(), storeDir: storeDir() });
-		const warning = keys.warnings.filter((text) => text.includes("Git tracks"));
-		assert.equal(warning.length, 1, keys.warnings.join("\n"));
-		assert.match(warning[0]!, /^cache path 'dist' holds files Git tracks/);
-		assert.match(warning[0]!, /only its untracked and ignored files are parked/);
+		const warnings = keys.warnings.filter((text) => text.includes("Git tracks"));
+		assert.equal(warnings.length, 2, keys.warnings.join("\n"));
+		assert.match(warnings[0]!, /^cache path 'dist' holds files Git tracks/);
+		assert.match(warnings[0]!, /only its untracked and ignored files are parked/);
+		assert.match(warnings[1]!, /^cache path 'pkg\/lib' holds files Git tracks/);
+
+		const plain = sandbox.path("plain");
+		sandbox.write(join(plain, ".atomic", "settings.json"), buildSettings(["dist"]));
+		sandbox.write(join(plain, "dist", "out.js"), "not in Git\n");
+		const outside = await blueprintCacheKeys(plain, { agentDir: agentDir(), storeDir: storeDir() });
+		assert.ok(outside.warnings.length > 0, "a checkout without Git warns that it has no remote");
+		assert.equal(
+			outside.warnings.filter((text) => text.includes("Git tracks")).length,
+			0,
+			outside.warnings.join("\n"),
+		);
 	});
 });
