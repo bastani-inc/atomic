@@ -8,6 +8,7 @@ This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani
 
 - Renamed the package from `@bastani/pi-ai` to `@bastani/atomic-ai`. It now depends on Atomic's forks `@bastani/atomic-schema` and `@bastani/atomic-telemetry` instead of pi's packages. Atomic's extension loader still resolves `@bastani/pi-ai`, `@earendil-works/pi-ai` and `@mariozechner/pi-ai` imports to it ([#5174](https://github.com/bastani-inc/atomic/issues/5174))
 - Requests now identify as Atomic by default: the default `User-Agent` is `atomic/<version>` (short form `atomic`), and the new `ATOMIC_ATTRIBUTION` attributes requests to Atomic for OpenRouter, NVIDIA and OpenCode. `PI_ATTRIBUTION` is deprecated and now equals `ATOMIC_ATTRIBUTION`. `ATOMIC_CACHE_RETENTION` and `ATOMIC_OAUTH_CALLBACK_HOST` replace `PI_CACHE_RETENTION` and `PI_OAUTH_CALLBACK_HOST`, which keep working as legacy names ([#5174](https://github.com/bastani-inc/atomic/issues/5174))
+- OpenAI Codex requests and the Codex browser sign-in send `originator: atomic`, xAI OAuth sends `referrer: atomic`, and Bedrock's user-agent pair is `atomic/<version>`, all instead of `pi`. The OAuth client IDs are unchanged; if Codex or xAI sign-in or requests start failing, these identifiers are the change to revert ([#5174](https://github.com/bastani-inc/atomic/issues/5174))
 
 ### Fixed
 
