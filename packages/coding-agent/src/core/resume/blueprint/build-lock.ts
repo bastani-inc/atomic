@@ -114,8 +114,9 @@ function identity(recorded: LockedProcess): "same" | "gone" | "unknown" {
 /**
  * On Windows, the processes left behind by `steps` whose step process itself has ended: Git for Windows' `bash.exe`
  * starts the shell as a child and may end without it, and nothing then ties that shell to a process tree. They are
- * found as processes whose parent has a step's id, started after the step and before any later process given that id,
- * and their own children. Only steps whose start was recorded are followed, so a step's identity was established.
+ * found as processes whose parent has a step's id, started after the step and before any later process given that id;
+ * stopping each stops its own children. Only steps whose start was recorded are followed. Each is returned with its
+ * start, so the wait for it to end follows that process, not a later one given its id.
  */
 function orphanedChildren(steps: readonly LockedProcess[]): LockedProcess[] {
 	const script =
@@ -139,28 +140,19 @@ function orphanedChildren(steps: readonly LockedProcess[]): LockedProcess[] {
 		.filter((fields) => fields.length === 3 && fields.every(Number.isFinite))
 		.map(([pid, parent, created]) => ({ pid: pid!, parent: parent!, created: created! }));
 	const found: LockedProcess[] = [];
-	type Parent = { readonly pid: number; readonly after: number; readonly before: number };
-	const window = (pid: number, after: number): Parent => ({
-		pid,
-		after,
-		// A process that holds the id now and started after `after` is a later one: only children older than it count.
-		before: processes.find((candidate) => candidate.pid === pid && candidate.created > after)?.created ?? Infinity,
-	});
-	let parents = steps
-		.filter((step) => step.start !== undefined && step.at !== undefined)
-		.map((step) => window(step.pid, step.at! - 1_000));
-	while (parents.length > 0) {
-		const children = processes.filter((candidate) =>
-			parents.some(
-				(parent) =>
-					candidate.parent === parent.pid &&
-					candidate.created >= parent.after &&
-					candidate.created < parent.before &&
-					!found.some((known) => known.pid === candidate.pid),
-			),
-		);
-		found.push(...children.map((child) => ({ pid: child.pid })));
-		parents = children.map((child) => window(child.pid, child.created));
+	// Only a step's direct children: stopping one stops its tree, and a descendant stopped on its own could already
+	// have ended, its id given to a process of the build that follows, before its separate stop ran.
+	for (const step of steps) {
+		if (step.start === undefined || step.at === undefined) continue;
+		const after = step.at - 1_000;
+		// A process that holds the id now and started after the step is a later one: only children older than it count.
+		const before = processes.find((candidate) => candidate.pid === step.pid && candidate.created > after)?.created;
+		for (const candidate of processes) {
+			if (candidate.parent !== step.pid || candidate.created < after) continue;
+			if (before !== undefined && candidate.created >= before) continue;
+			if (found.some((known) => known.pid === candidate.pid)) continue;
+			found.push(locked(candidate.pid));
+		}
 	}
 	return found;
 }
@@ -186,9 +178,10 @@ async function stopProven(
 	signal: AbortSignal | undefined,
 	extra: readonly LockedProcess[] = [],
 ): Promise<void> {
-	const proven = steps.filter((step) => identity(step) === "same");
-	for (const step of [...proven, ...extra]) killProcessTree(step.pid);
-	for (let waited = 0; waited < 25 && proven.some((step) => identity(step) === "same"); waited++) {
+	const proven = [...steps.filter((step) => identity(step) === "same"), ...extra];
+	for (const step of proven) killProcessTree(step.pid);
+	// Stopping is asynchronous on Windows: the next build starts only once they have ended, or after a bounded wait.
+	for (let waited = 0; waited < 50 && proven.some((step) => identity(step) === "same"); waited++) {
 		await delay(BUILD_LOCK_POLL_MS / 2, signal);
 	}
 }
