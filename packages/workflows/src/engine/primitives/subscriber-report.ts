@@ -135,6 +135,8 @@ export function createSubscriberReports(
 		{ readonly stage: string; readonly acquired: Promise<AcquirePostMortemStageHandleResult> }
 	>();
 	const turns = new Set<Promise<void>>();
+	/** Set once the run released or cancelled its reopened sessions: none may be reopened after that (#5168). */
+	let letGone = false;
 
 	const untilAdmitted = async (stage: string, send: AdmittedSend): Promise<DeliveredReport> => {
 		let admitted = false;
@@ -160,14 +162,18 @@ export function createSubscriberReports(
 	};
 
 	const letGo = async (waitForTurns: boolean): Promise<void> => {
+		letGone = true;
 		const owned = [...reopened.values()];
 		reopened.clear();
 		for (const { stage, acquired } of owned) {
 			try {
 				const result = await acquired;
 				if (!result.ok) continue;
-				if (waitForTurns) await turnEnded(result.lease.handle);
-				await result.lease.release();
+				try {
+					if (waitForTurns) await turnEnded(result.lease.handle);
+				} finally {
+					await result.lease.release();
+				}
 			} catch (error) {
 				failures.cleanupFailed(stage, error);
 			}
@@ -186,6 +192,9 @@ export function createSubscriberReports(
 			}
 			let owned = reopened.get(stage.id);
 			if (owned === undefined) {
+				// Nothing would release a session reopened after the run let its sessions go (#5168).
+				if (letGone)
+					throw new SubscriptionSubscriberUnavailableError(delivery.subscriptionId, stage.name, "closed");
 				owned = { stage: stage.name, acquired: acquirePostMortemStageHandle(runId, stage, deps) };
 				reopened.set(stage.id, owned);
 			}

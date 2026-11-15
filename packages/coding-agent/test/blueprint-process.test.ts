@@ -44,8 +44,15 @@ afterEach(() => {
 
 const path = (...segments: string[]) => join(sandbox, ...segments);
 
-function nodeProcess(script: string, overrides: Partial<LoggedProcess> = {}): LoggedProcess {
-	return { command: process.execPath, args: ["-e", script], cwd: sandbox, env: { ...process.env }, ...overrides };
+/** Runs `script` under Node; `scriptArgs` reach it as `process.argv[1]` onward, so paths never become source text. */
+function nodeProcess(script: string, overrides: Partial<LoggedProcess> = {}, scriptArgs: string[] = []): LoggedProcess {
+	return {
+		command: process.execPath,
+		args: ["-e", script, ...scriptArgs],
+		cwd: sandbox,
+		env: { ...process.env },
+		...overrides,
+	};
 }
 
 async function execute(
@@ -140,7 +147,7 @@ describe("running a logged process (#4588)", () => {
 
 	test("an already aborted signal rejects with its reason before anything starts (#4588)", async () => {
 		const reason = new Error("cancelled early");
-		const run = nodeProcess(`require("node:fs").writeFileSync(${JSON.stringify(path("started"))}, "")`);
+		const run = nodeProcess('require("node:fs").writeFileSync(process.argv[1], "")', {}, [path("started")]);
 		await assert.rejects(
 			execute(run, { timeoutMs: STEADY_TIMEOUT_MS, signal: AbortSignal.abort(reason) }),
 			(error: unknown) => error === reason,
@@ -154,12 +161,15 @@ describe("running a logged process (#4588)", () => {
 			'const { spawn } = require("node:child_process");',
 			'const fs = require("node:fs");',
 			`const child = spawn(process.execPath, ["-e", ${JSON.stringify(grandchild)}], { stdio: "ignore" });`,
-			`fs.writeFileSync(${JSON.stringify(path("grandchild.pid"))}, String(child.pid));`,
+			"fs.writeFileSync(process.argv[1], String(child.pid));",
 			"setInterval(() => {}, 1000);",
 		].join("\n");
 		const controller = new AbortController();
 		const reason = new Error("resume cancelled");
-		const pending = execute(nodeProcess(script), { timeoutMs: STEADY_TIMEOUT_MS, signal: controller.signal });
+		const pending = execute(nodeProcess(script, {}, [path("grandchild.pid")]), {
+			timeoutMs: STEADY_TIMEOUT_MS,
+			signal: controller.signal,
+		});
 		await waitFor(
 			() => existsSync(path("grandchild.pid")) && readFileSync(path("grandchild.pid"), "utf8") !== "",
 			"the grandchild starting",
