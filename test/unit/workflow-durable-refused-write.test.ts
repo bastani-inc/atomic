@@ -9,13 +9,15 @@ import type { DurableCheckpoint } from "../../packages/workflows/src/durable/typ
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { workflowResumeAction } from "../../packages/workflows/src/extension/workflow-tool-control.js";
 import { jobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
-import { store } from "../../packages/workflows/src/shared/store.js";
+import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
+import { createStore, store } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { INTERACTIVE_WORKFLOW_POLICY, type WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
 import { sleep } from "../helpers/runtime.js";
 import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
+import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 /**
  * One transient storage refusal of one durable record (#5027): whichever record it hits, in a first or a resumed
@@ -292,6 +294,47 @@ describe("a refused durable write leaves the run inspectable and resumable (#502
 			store.clear();
 		}
 	});
+});
+
+test("an answer no prompt node records is not lost to a refusal: the attempt fails instead (#5027)", async () => {
+	const backend = await createMemoryTestBackend();
+	const commit = backend.commitCheckpoint.bind(backend);
+	backend.commitCheckpoint = ((checkpoint: DurableCheckpoint, options?: { readonly signal?: AbortSignal }) =>
+		checkpoint.checkpointId.startsWith("ui:")
+			? Promise.reject(
+					new StorageUnavailableError({ adapter: "test", location: "refused" }, new Error("refused") as never),
+				)
+			: commit(checkpoint, options)) as typeof backend.commitCheckpoint;
+	let asked = 0;
+	const def = workflow({
+		name: "refused-answer",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (ctx) => {
+			await ctx.ui.confirm("go on?");
+			await ctx.tool("after", {}, async () => "after");
+			return {};
+		},
+	}) as WorkflowDefinition;
+	const ui = {
+		input: async () => "",
+		confirm: async () => {
+			asked += 1;
+			return true;
+		},
+		select: async <T extends string>(_: string, options: readonly T[]) => options[0]!,
+		editor: async () => "",
+		custom: async <T>() => undefined as T,
+	};
+	const result = await run(def, {}, { store: createStore(), durableBackend: backend, ui });
+	assert.equal(asked, 1);
+	assert.equal(result.status, "failed", "the run does not go on past an answer it could not record");
+	assert.match(result.error ?? "", /Storage unavailable/);
+	assert.equal(
+		backend.listCheckpoints(result.runId).some((checkpoint) => checkpoint.checkpointId.startsWith("tool:")),
+		false,
+	);
 });
 
 /** More than either attempt commits; a case past the last commit refuses nothing and must simply complete. */

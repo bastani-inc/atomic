@@ -92,7 +92,7 @@ export function createDurableStageEndRecorder(input: {
 	readonly user?: RunOpts["onStageEnd"];
 	readonly metadataOnly?: boolean;
 	/** Fail, in the live run, a completed stage whose record the store refused (#5027). */
-	readonly failStage?: (runId: string, snapshot: StageSnapshot, error: unknown) => void;
+	readonly failStage: (runId: string, snapshot: StageSnapshot, error: unknown) => void;
 }): (
 	runId: string,
 	snapshot: StageSnapshot,
@@ -106,7 +106,7 @@ export function createDurableStageEndRecorder(input: {
 					...(promptAnswer === undefined ? {} : { promptAnswer }),
 				});
 			} catch (error) {
-				if (input.failStage === undefined || snapshot.status !== "completed") throw error;
+				if (snapshot.status !== "completed") throw error;
 				// The attempt fails with the refusal, at this stage: a stage that reads as completed with no record of its
 				// completion leaves the failed run naming no node to resume from (#5027). Its failure is recorded if the
 				// store takes it; the live run names the stage either way.
