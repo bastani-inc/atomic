@@ -22,6 +22,7 @@ import {
 import { resolveAndValidateInputs } from "../runs/foreground/executor-inputs.js";
 import type { RunOpts } from "../runs/foreground/executor-types.js";
 import { isFullRunId, resolveRunIdTarget } from "../shared/run-id.js";
+import type { RunSnapshot } from "../shared/store-types.js";
 import type { WorkflowDefinition, WorkflowInputValues } from "../shared/types.js";
 import type { WorkflowRegistry } from "../workflows/registry.js";
 import { type DurableWorkflowBackend, resumableEntryFromHandle } from "./backend.js";
@@ -318,7 +319,11 @@ async function resumeDurableWorkflowClaimed(
 		(handle.failedToolNodeId !== undefined ||
 			/^atomic-workflows: ctx\.tool .* aborted by node abort$/s.test(handle.error ?? ""))
 	) {
-		const source = durableWorkflowRunSnapshots(backend, handle).find((run) => run.id === handle.workflowId);
+		const source = withRecordedFailedTool(
+			durableWorkflowRunSnapshots(backend, handle).find((run) => run.id === handle.workflowId),
+			handle.failedToolNodeId,
+			deps.baseRunOpts.store?.run(resolved.workflowId),
+		);
 		const frontier = source === undefined ? undefined : resolveToolResumeFrontier(source, backend);
 		if (frontier?.ok !== true)
 			return {
@@ -665,4 +670,21 @@ export async function prepareRuntimeDurableResumable(
 		if (resolved !== undefined && !("kind" in resolved)) await backend.hydrateWorkflow(resolved.workflowId);
 	}
 	return backend.listResumableWorkflows();
+}
+
+/**
+ * The run as its records show it, with the failed tool its failure names taken from the run's own record of its end
+ * when the store refused the tool's failure record (#5027): the tool is still the frontier the run resumes from.
+ */
+function withRecordedFailedTool(
+	source: RunSnapshot | undefined,
+	failedToolNodeId: string | undefined,
+	recorded: RunSnapshot | undefined,
+): RunSnapshot | undefined {
+	if (source === undefined || failedToolNodeId === undefined) return source;
+	if (source.toolNodes.some((node) => node.id === failedToolNodeId)) return source;
+	const failed = recorded?.toolNodes.find(
+		(node) => node.id === failedToolNodeId && (node.status === "failed" || node.status === "cancelled"),
+	);
+	return failed === undefined ? source : { ...source, toolNodes: [...source.toolNodes, failed] };
 }

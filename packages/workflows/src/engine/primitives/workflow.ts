@@ -118,7 +118,13 @@ export function createChildWorkflowRunner(input: {
 			}
 		}
 		const workspace = durableInvocation?.workspace;
-		await durableInvocation?.recordStart(boundary.parentIds, boundary.sourceOrder);
+		try {
+			await durableInvocation?.recordStart(boundary.parentIds, boundary.sourceOrder);
+		} catch (err) {
+			// The attempt fails at this boundary, so a resume starts from it (#5027).
+			await boundary.fail(err);
+			throw err;
+		}
 		let childRunId: string | undefined;
 		let detachParentAbort: (() => void) | undefined;
 		let childControllerForCleanup: AbortController | undefined;
@@ -126,8 +132,8 @@ export function createChildWorkflowRunner(input: {
 			if (boundary.replayedChild !== undefined) {
 				await Promise.resolve();
 				runtime.exit.throwIfWorkflowExitSelected();
-				await boundary.finalizeReplay();
 				await durableInvocation?.recordTerminal("completed", boundary.replayedChild);
+				await boundary.finalizeReplay();
 				return boundary.replayedChild as WorkflowChildResult<TChildOutputs>;
 			}
 
@@ -261,11 +267,12 @@ export function createChildWorkflowRunner(input: {
 					};
 			const workflowChild = workflowChildReplaySnapshot(childName, childResult);
 			const outputKeys = Object.keys(outputs);
+			// Recorded before the boundary completes: a terminal the store refuses fails the boundary instead (#5027).
+			await durableInvocation?.recordTerminal("completed", childResult);
 			await boundary.complete(
 				`Workflow "${child.name}" ${childRun.status} (runId: ${childRun.runId}; outputs: ${outputKeys.length > 0 ? outputKeys.join(", ") : "(none)"})`,
 				workflowChild,
 			);
-			await durableInvocation?.recordTerminal("completed", childResult);
 			return childResult;
 		} catch (err) {
 			// Suspension leaves the boundary untouched: quit owns the paused record and

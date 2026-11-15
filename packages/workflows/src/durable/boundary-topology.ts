@@ -199,7 +199,6 @@ export function prepareDurableChildInvocation(input: DurableBoundaryDescriptor):
 			if (status !== "completed" && output !== undefined) {
 				throw invalid(input, "failed or skipped boundary cannot persist a successful output");
 			}
-			terminalRecorded = true;
 			const terminalTopology = makeTopology(
 				input,
 				boundaryId,
@@ -222,6 +221,9 @@ export function prepareDurableChildInvocation(input: DurableBoundaryDescriptor):
 				endedAt: now,
 				completedAt: now,
 			});
+			// Only once stored: a terminal the store refused leaves the boundary to record the failure it then ends with
+			// (#5027).
+			terminalRecorded = true;
 		},
 	};
 }

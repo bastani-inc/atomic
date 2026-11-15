@@ -91,6 +91,8 @@ export function createDurableStageEndRecorder(input: {
 	readonly deps: DurableStageDeps;
 	readonly user?: RunOpts["onStageEnd"];
 	readonly metadataOnly?: boolean;
+	/** Fail, in the live run, a completed stage whose record the store refused (#5027). */
+	readonly failStage?: (runId: string, snapshot: StageSnapshot, error: unknown) => void;
 }): (
 	runId: string,
 	snapshot: StageSnapshot,
@@ -98,10 +100,20 @@ export function createDurableStageEndRecorder(input: {
 ) => Promise<void> {
 	return async (runId, snapshot, promptAnswer): Promise<void> => {
 		if (runId === input.rootRunId) {
-			await recordStageCheckpoint(input.deps, snapshot, {
-				metadataOnly: input.metadataOnly,
-				...(promptAnswer === undefined ? {} : { promptAnswer }),
-			});
+			try {
+				await recordStageCheckpoint(input.deps, snapshot, {
+					metadataOnly: input.metadataOnly,
+					...(promptAnswer === undefined ? {} : { promptAnswer }),
+				});
+			} catch (error) {
+				if (input.failStage === undefined || snapshot.status !== "completed") throw error;
+				// The attempt fails with the refusal, at this stage: a stage that reads as completed with no record of its
+				// completion leaves the failed run naming no node to resume from (#5027). Its failure is recorded if the
+				// store takes it; the live run names the stage either way.
+				input.failStage(runId, snapshot, error);
+				await recordStageCheckpoint(input.deps, snapshot, { metadataOnly: true }).catch(() => {});
+				throw error;
+			}
 		}
 		await input.user?.(runId, snapshot);
 	};
@@ -285,7 +297,15 @@ export function createDurableCachedStageRecorder(input: {
 					? immutableStageGroupError([checkpoint, replayRecord])
 					: undefined;
 			if (drift !== undefined) throw new DurableNestedTopologyError(`${drift} at ${replayKey}`);
-			const persistence = replayRecord === undefined ? undefined : input.backend.commitCheckpoint(replayRecord);
+			// Replaying this run's own record, the record only says that this attempt reached the stage, which a later record
+			// of the attempt says as well, so a refusal of it does not fail the attempt (#5027). A replay into another run
+			// writes that run's only record of the stage.
+			const persistence =
+				replayRecord === undefined
+					? undefined
+					: checkpoint.topology?.run?.runId === input.run.id
+						? input.backend.commitAdditiveCheckpointBestEffort(replayRecord).then(() => {})
+						: input.backend.commitCheckpoint(replayRecord);
 			for (const childRun of cachedDescendants ?? []) {
 				const existingRun = input.store.run(childRun.id);
 				const isDirectChild =

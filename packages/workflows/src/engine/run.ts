@@ -71,6 +71,7 @@ import {
 } from "../runs/foreground/executor-inputs.js";
 import {
 	appendRunEndWhenRecorded,
+	applyFailureToStage,
 	assertWorkflowCreatedExecution,
 	finalizeKilled,
 	finalizeKilledByFailure,
@@ -113,7 +114,7 @@ import { stageWaitToolResults } from "../shared/stage-wait.js";
 import { store as defaultStore } from "../shared/store.js";
 import { workflowObservationRuntime } from "../shared/store-factory.js";
 import { isTerminalRunStatus } from "../shared/store-internal.js";
-import type { RunSnapshot } from "../shared/store-types.js";
+import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
 import type {
 	StageContext,
 	StageOptions,
@@ -813,16 +814,23 @@ async function executeRun(
 			return cwd === undefined ? [] : [cwd];
 		},
 	});
+	/** Fail a stage the run counted as completed when the store refused its record (#5027). */
+	const failStageWithRefusedRecord = (stageRunId: string, stage: StageSnapshot, error: unknown): void => {
+		applyFailureToStage(stage, classifyExecutorFailure(error));
+		activeStore.recordStageEnd(stageRunId, stage);
+	};
 	const durableOnStageEnd = createDurableStageEndRecorder({
 		rootRunId: runId,
 		deps: durableStageDeps,
 		user: opts.onStageEnd,
+		failStage: failStageWithRefusedRecord,
 	});
 	const durableOnPromptNodeEnd = createDurableStageEndRecorder({
 		rootRunId: runId,
 		deps: durableStageDeps,
 		user: opts.onStageEnd,
 		metadataOnly: true,
+		failStage: failStageWithRefusedRecord,
 	});
 	const durableOnStageSession = createDurableStageSessionRecorder({
 		runId,
