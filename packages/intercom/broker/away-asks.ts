@@ -6,8 +6,18 @@ import { isMessage, isSessionInfo } from "./client-message-validation.js";
 import type { Message, SessionInfo } from "../types.js";
 import type { PendingQuestion } from "./pending-question-index.js";
 
-/** Most asks, and most held messages, kept for sessions that are away; the oldest go first beyond it. */
-export const AWAY_ASKS_MAX = 10_000;
+/**
+ * #4996: most asks kept for one away recipient. A further one is refused, and its connected asker told at once; nothing
+ * kept is evicted to make room. The bound is per recipient, as the shared outbox's is, so one recipient that never comes
+ * back cannot refuse every other session's asks for the whole retention. An away asker's own asks, and the replies held
+ * for it, need no bound of their own: they were already admitted as live asks, and each held reply replaces its ask.
+ */
+export const AWAY_ASKS_PER_RECIPIENT_MAX = 1_000;
+
+/** #4996: why an ask to a recipient that went away with a full queue was not kept for it. */
+export function awayQueueFullReason(recipientName: string): string {
+	return `Session "${recipientName}" went away and its queue of asks waiting for its return is full (limit ${AWAY_ASKS_PER_RECIPIENT_MAX}); this ask was not kept`;
+}
 /** An away session that has not come back within this long is treated as gone for good: what waits for it is dropped. */
 export const AWAY_ASK_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -33,7 +43,8 @@ interface Statement {
  * #4751: the asks a session sent or was sent while it is away (closed, restarting, or released between turns), and
  * the replies and failed-ask messages held for an away asker. An ask has no expiry, so these outlive the session's
  * connection and, when a path is given, the broker itself; they are dropped when the session ends for good or has
- * been away longer than {@link AWAY_ASK_RETENTION_MS}. Held messages carry their text: the file is owner-only.
+ * been away longer than {@link AWAY_ASK_RETENTION_MS}, never to make room (#4996). Held messages carry their text: the
+ * file is owner-only.
  */
 export class AwayAsks {
 	private readonly database: DatabaseSync;
@@ -177,12 +188,6 @@ export class AwayAsks {
 		const cutoff = this.now() - this.retentionMs;
 		this.statement("DELETE FROM away_questions WHERE kept_at < ?").run(cutoff);
 		this.statement("DELETE FROM held_messages WHERE held_at < ?").run(cutoff);
-		this.statement(
-			`DELETE FROM away_questions WHERE rowid NOT IN (SELECT rowid FROM away_questions ORDER BY kept_at DESC LIMIT ${AWAY_ASKS_MAX})`,
-		).run();
-		this.statement(
-			`DELETE FROM held_messages WHERE rowid NOT IN (SELECT rowid FROM held_messages ORDER BY held_at DESC LIMIT ${AWAY_ASKS_MAX})`,
-		).run();
 	}
 
 	/**
@@ -198,6 +203,32 @@ export class AwayAsks {
 		for (const question of questions)
 			insert.run(question.messageId, question.senderSessionId, question.targetSessionId, senderReturnAddress ?? "", at);
 		this.purge();
+	}
+
+	/**
+	 * Keep questions whose recipient is away until it is back, up to {@link AWAY_ASKS_PER_RECIPIENT_MAX} for each
+	 * recipient (#4996). Returns those refused: the caller fails each to its asker. One already kept is kept again.
+	 */
+	keepForAwayRecipient(questions: readonly PendingQuestion[]): PendingQuestion[] {
+		const count = this.statement("SELECT COUNT(*) AS kept FROM away_questions WHERE target_session_id = ?");
+		const already = this.statement(
+			"SELECT 1 FROM away_questions WHERE message_id = ? AND sender_session_id = ? AND target_session_id = ?",
+		);
+		const kept = new Map<string, number>();
+		const admitted: PendingQuestion[] = [];
+		const refused: PendingQuestion[] = [];
+		for (const question of questions) {
+			const target = question.targetSessionId;
+			const waiting = kept.get(target) ?? Number(count.get(target)?.kept);
+			if (already.get(question.messageId, question.senderSessionId, target) !== undefined) admitted.push(question);
+			else if (waiting >= AWAY_ASKS_PER_RECIPIENT_MAX) refused.push(question);
+			else {
+				admitted.push(question);
+				kept.set(target, waiting + 1);
+			}
+		}
+		this.keep(admitted);
+		return refused;
 	}
 
 	/**

@@ -49,6 +49,15 @@ export class PendingQuestionIndex {
     this.awayAsks().keep(questions, senderReturnAddress);
   }
 
+  /**
+   * Keep questions whose recipient is away until it is back. Returns those refused because that recipient's away queue
+   * is full; their askers are connected, and are told at once (#4996).
+   */
+  keepDormantForRecipient(questions: readonly PendingQuestion[]): PendingQuestion[] {
+    if (questions.length === 0) return [];
+    return this.awayAsks().keepForAwayRecipient(questions);
+  }
+
   /** The asker is away now too: its questions kept for an away recipient wait for it under its return address (#4761). */
   markAwayAsker(senderSessionId: string, senderReturnAddress: string | undefined): void {
     this.away?.markAsker(senderSessionId, senderReturnAddress);

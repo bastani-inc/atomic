@@ -5,6 +5,7 @@ import { mkdtempSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterAll, beforeAll, test, vi } from "vitest";
 import { IntercomBrokerFixture } from "../helpers/intercom-broker-fixture.js";
 import { sleep } from "../helpers/runtime.js";
@@ -12,7 +13,8 @@ import { sleep } from "../helpers/runtime.js";
 const repoRoot = resolve(import.meta.dirname, "../..");
 const brokerFixture = new IntercomBrokerFixture(mkdtempSync(join(tmpdir(), "away-asks-")));
 brokerFixture.overrideAgentDir();
-const { getBrokerSocketPath } = await import("../../packages/intercom/broker/paths.js");
+const { getBrokerAwayAsksPath, getBrokerSocketPath } = await import("../../packages/intercom/broker/paths.js");
+const { AWAY_ASKS_PER_RECIPIENT_MAX } = await import("../../packages/intercom/broker/away-asks.js");
 const { getJitiCliPath } = await import("../../packages/intercom/broker/spawn.js");
 const { IntercomClient } = await import("../../packages/intercom/broker/client.js");
 const { HELD_FOR_AWAY_ASKER_TARGET } = await import("../../packages/intercom/broker/held-reply-targets.js");
@@ -333,6 +335,55 @@ test(
 			[{ id: replyId, failed: false }],
 			"the child gets only the answer",
 		);
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
+
+test(
+	"an ask to a recipient that goes away with a full queue fails to its asker at once, never dropped (#4996)",
+	async () => {
+		const asker = await connect("asker-full-queue-4996");
+		const recipientReturnAddress = randomUUID();
+		const recipient = await connect("recipient-full-queue-4996", { returnAddress: recipientReturnAddress });
+		const recipientId = idOf(recipient.client);
+		const questionId = randomUUID();
+		const asked = await asker.client.send("recipient-full-queue-4996", {
+			messageId: questionId,
+			text: "which port?",
+			expectsReply: true,
+		});
+		assert.equal(asked.delivered, true, asked.reason);
+		await vi.waitFor(() => assert.ok(recipient.received.some((message) => message.id === questionId)), WAIT);
+
+		// Other sessions' asks already fill the queue of asks waiting for this recipient's return.
+		const database = new DatabaseSync(getBrokerAwayAsksPath(brokerFixture.agentDir));
+		database.exec("PRAGMA busy_timeout = 5000");
+		database.exec("BEGIN IMMEDIATE");
+		const insert = database.prepare(
+			"INSERT INTO away_questions (message_id, sender_session_id, target_session_id, sender_return_address, kept_at) VALUES (?, ?, ?, ?, ?)",
+		);
+		for (let row = 0; row < AWAY_ASKS_PER_RECIPIENT_MAX; row++)
+			insert.run(randomUUID(), `other-asker-${row}`, recipientId, randomUUID(), Date.now());
+		database.exec("COMMIT");
+		database.close();
+
+		await recipient.client.disconnect({ resumable: true });
+		await vi.waitFor(() => assert.ok(asker.received.some((message) => message.replyTo === questionId)), WAIT);
+		const failures = asker.received.filter((message) => message.replyTo === questionId);
+		assert.equal(failures.length, 1, "the asker is told once");
+		assert.match(
+			failures[0]?.replyError ?? "",
+			/recipient-full-queue-4996" went away and its queue of asks .* is full/,
+		);
+
+		// Nothing else arrives for it later: the recipient back finds no route to answer, and its end fails nothing again.
+		const recipientBack = await connect("recipient-full-queue-4996", {
+			returnAddress: recipientReturnAddress,
+			preferredSessionId: recipientId,
+		});
+		await recipientBack.client.disconnect();
+		await sleep(SETTLE_MS);
+		assert.equal(asker.received.filter((message) => message.replyTo === questionId).length, 1);
 	},
 	REAL_BROKER_TEST_TIMEOUT_MS,
 );

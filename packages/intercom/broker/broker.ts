@@ -118,7 +118,7 @@ import {
 } from "./group-membership.js";
 import { replyToList } from "./list-reply.js";
 import { type PendingQuestion, PendingQuestionIndex } from "./pending-question-index.js";
-import { AwayAsks } from "./away-asks.js";
+import { AwayAsks, awayQueueFullReason } from "./away-asks.js";
 import { TERMINAL_CHILD_ASK_REFUSAL } from "../recipient-purpose.js";
 import { type ReceiptSender, RecipientReceipts, UNCERTAIN_RECEIPT_REASON } from "./recipient-receipts.js";
 import { matchStagePathSegments } from "../workflow-stage-path-matching.js";
@@ -3197,6 +3197,22 @@ class IntercomBroker {
     });
   }
 
+  /** #4996: asks the away recipient's full queue could not keep fail at once to their connected askers, never silently. */
+  private failAwayQueueFull(questions: readonly PendingQuestion[], recipient: SessionInfo): void {
+    const reason = awayQueueFullReason(recipient.name ?? recipient.id);
+    for (const question of questions) {
+      const asker = this.sessions.get(question.senderSessionId);
+      if (asker === undefined) continue;
+      writeMessageIfOpen(asker.socket, messageFrameFor(asker, recipient, {
+        id: `away-queue-full:${question.messageId}`,
+        timestamp: Date.now(),
+        replyTo: question.messageId,
+        replyError: reason,
+        content: { text: reason },
+      }));
+    }
+  }
+
   private failParkedQuestions(questions: readonly PendingQuestion[], peerName?: string): void {
     for (const question of questions) {
       const asker = this.sessions.get(question.senderSessionId);
@@ -3275,7 +3291,8 @@ class IntercomBroker {
       this.pendingQuestions.parkTarget(sessionId, childName, releasedOwner);
     } else if (!ended && departed.supervisorId === undefined && departed.hostedBy === undefined) {
       // #4751: a recipient whose connection dropped without ending its session may restart; its asks stay pending.
-      this.pendingQuestions.keepDormant(this.pendingQuestions.takeForTarget(sessionId));
+      const refused = this.pendingQuestions.keepDormantForRecipient(this.pendingQuestions.takeForTarget(sessionId));
+      this.failAwayQueueFull(refused, departed.info);
     } else {
       if (ended) {
         // #4751: an away asker's ask to it fails with a message held until the asker is back; a session that ended
