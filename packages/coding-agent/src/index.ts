@@ -272,6 +272,7 @@ export {
 	type ParsedSkillBlock,
 	type PromptOptions,
 	parseSkillBlock,
+	type SessionAbortOptions,
 	type SessionCompactOptions,
 	type SessionRecoveryReport,
 	type SessionStats,

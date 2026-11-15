@@ -37,7 +37,9 @@ import { createRpcInputScheduler } from "./rpc-input-scheduler.ts";
 import { KeybindingsReloadCoordinator } from "./rpc-keybindings-reload.ts";
 import { RpcOutputBuffer } from "./rpc-output-buffer.ts";
 import { RpcResourceReadiness } from "./rpc-resource-readiness.ts";
+import { rpcShutdownErrorEvent } from "./rpc-responses.ts";
 import { RpcSessionBinding } from "./rpc-session-binding.ts";
+import { RPC_SHUTDOWN_FAILED_EXIT_CODE } from "./rpc-types.ts";
 
 // Re-export types for consumers
 export type {
@@ -46,6 +48,7 @@ export type {
 	RpcExtensionUIResponse,
 	RpcResponse,
 	RpcSessionState,
+	RpcShutdownErrorEvent,
 } from "./rpc-types.ts";
 
 export interface RpcModeOptions {
@@ -217,7 +220,14 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 		inputForm?.dispose();
 		projectTrust?.dispose();
 		outputBuffer.dispose();
-		await runtimeHost.dispose({ fromSignal: endsProcessOnly(cause) });
+		try {
+			await runtimeHost.dispose({ fromSignal: endsProcessOnly(cause) });
+		} catch (error) {
+			// Disposal attempted every cleanup step; report what failed and exit non-zero rather than rejecting
+			// unhandled inside a fire-and-forget shutdown (#5166).
+			exitCode = exitCode === 0 ? RPC_SHUTDOWN_FAILED_EXIT_CODE : exitCode;
+			output(rpcShutdownErrorEvent(error, exitCode));
+		}
 		if (signal !== "SIGTERM") {
 			await flushRawStdout();
 		}
