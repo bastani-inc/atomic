@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { readFileSync, readlinkSync } from "node:fs";
 import { afterEach, test } from "vitest";
+import { brokerHostIdentity, isProcessAlive } from "../../packages/intercom/broker/broker-instance.js";
 import { MultiNodeRouter, type MultiNodeRouterOptions } from "../../packages/intercom/broker/multinode-router.js";
 import {
 	BROKER_LEASE_STALE_AFTER_MS,
@@ -200,4 +203,21 @@ test("a broker started again on the same socket supersedes the instance before i
 	const { router: next } = await start({ instanceKey: socket, pid: DEAD_PID + 1, isProcessAlive: () => false });
 	assert.deepEqual(await leases.read({ kind: "broker", brokerId: previous.brokerId }), { status: "missing" });
 	assert.equal((await leases.read({ kind: "broker", brokerId: next.brokerId })).status, "found");
+});
+
+test("this host's identity is stable within a boot and names the boot and process namespace on Linux (#5038)", () => {
+	const identity = brokerHostIdentity();
+	assert.equal(brokerHostIdentity(), identity);
+	if (process.platform === "linux") {
+		const bootId = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+		assert.equal(identity, `${bootId}/${readlinkSync("/proc/self/ns/pid")}`);
+	} else assert.match(identity, /^boot-\d+$/);
+});
+
+test("a process counts as alive while it runs and dead once it exited (#5038)", async () => {
+	assert.equal(isProcessAlive(process.pid), true);
+	const child = spawn(process.execPath, ["-e", ""]);
+	const pid = child.pid!;
+	await new Promise((resolve) => child.once("exit", resolve));
+	assert.equal(isProcessAlive(pid), false);
 });
