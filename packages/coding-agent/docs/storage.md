@@ -214,7 +214,7 @@ Atomic's stores keep every value well under the smallest of these limits, so ses
 
 Blobs and entries written before this release stay in one row and are still read.
 
-**This upgrade is one way.** When this release opens a database, it upgrades the session schema to version 2. On SQLite and libSQL it does this in the sessions meta table; on PostgreSQL the migration ledger records it. Older Atomic builds then refuse the database with `StorageSchemaVersionError` instead of reading a large entry as a stub. Upgrade every host that shares a store together, before any of them opens it with this release. An older build that reads a large worktree snapshot through a workflow journal, without opening the session store, reports the snapshot as corrupt (`WorkspaceRestoreError` `blob-corrupt`), because it cannot read the snapshot's chunks.
+**This upgrade is one way.** When this release opens a database, it upgrades the session schema to version 2. On SQLite and libSQL it does this in the sessions meta table; on PostgreSQL the migration ledger records it. When it opens a workflow journal, it upgrades the journal schema (`wf_meta`) to version 2. Older Atomic builds then refuse the database with `StorageSchemaVersionError` (`JournalSchemaVersionError` for a journal) instead of reading a large entry as a stub or a large worktree snapshot as empty. Upgrade every host that shares a store together, before any of them opens it with this release.
 
 A value that is still too large for the backend fails with `StoragePayloadTooLargeError`. It is never reported as `StorageUnavailableError`, because retrying cannot help. See [Storage errors](#storage-errors).
 
@@ -800,7 +800,7 @@ Journal errors include:
 | `StaleLeaseError` | `code: "stale_lease"`, `runId`, `heldEpoch`, `currentEpoch`, `hint`. Stop writing under stale ownership. `isStaleLeaseError(error)` also recognizes one from another process. |
 | `JournalCasConflictError` | `runId`, `expectedSeq`, `actualSeq`. Reload the run before retrying a conflicting operation. |
 | `RunNotFoundError` | `runId`. Check the selected journal and ID. |
-| `JournalSchemaVersionError` | `domain`, `found`, `supported`. No automatic schema migration. |
+| `JournalSchemaVersionError` | `domain`, `found`, `supported`. A journal of the previous schema version, 1, is upgraded to version 2 when it is opened; a journal of a newer version, written by a newer Atomic, is refused. Upgrade every host that shares the journal together. |
 | `JournalInvalidTextError` | `field`, `reason`. Identifiers must be well-formed Unicode without NUL. JSON payload text is not restricted this way. |
 | `JournalCounterRangeError` | `runId`, `field`, `value`, `reason`. Sequence and epoch counters must remain non-negative safe integers. |
 | `JournalMetaCorruptError` | `path`, `rowCount`. Inspect or restore the affected database. |

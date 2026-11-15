@@ -2,8 +2,8 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import {
 	dialectOf,
 	openNodeSqliteDatabase,
+	RUN_JOURNAL_SCHEMA_VERSION_UNCHUNKED,
 	renderStorageIdentifiers,
-	runJournalTableDefinitions,
 	type SqliteDatabase,
 	type SqliteExecutor,
 	type SqliteRow,
@@ -14,6 +14,7 @@ import {
 	type StorageDialect,
 	type StorageFailureCause,
 	StorageUnavailableError,
+	upgradeRunJournalSchema,
 } from "@bastani/atomic/storage";
 import {
 	JOURNAL_READ_PAGE_CHARS,
@@ -232,12 +233,15 @@ export class SqlRunJournal implements RunJournal {
 		}
 		const versions = await database.all(`SELECT ${c.schemaVersion} FROM ${t.meta}`);
 		if (versions.length !== 1) return false;
+		// A journal of the previous version is upgraded under the write lock, once (#5065).
+		if (versions[0]![c.schemaVersion] === RUN_JOURNAL_SCHEMA_VERSION_UNCHUNKED) return false;
 		SqlRunJournal.assertSchemaVersion(versions[0]![c.schemaVersion]!);
 		return true;
 	}
 
-	private static assertSchemaVersion(found: SqliteValue): void {
-		if (found !== JOURNAL_SCHEMA_VERSION) throw new JournalSchemaVersionError(found);
+	private static assertSchemaVersion(found: SqliteValue, upgradable = false): void {
+		if (found === JOURNAL_SCHEMA_VERSION || (upgradable && found === RUN_JOURNAL_SCHEMA_VERSION_UNCHUNKED)) return;
+		throw new JournalSchemaVersionError(found);
 	}
 
 	private static async initialize(database: SqliteDatabase, t: Tables, prefix?: string): Promise<void> {
@@ -249,8 +253,9 @@ export class SqlRunJournal implements RunJournal {
 			if (versions.length > 1) throw new JournalMetaCorruptError(database.descriptor.location, versions.length);
 			if (versions.length === 0) {
 				await tx.run(`INSERT INTO ${t.meta} VALUES (?)`, JOURNAL_SCHEMA_VERSION);
-			} else SqlRunJournal.assertSchemaVersion(versions[0]![c.schemaVersion]!);
-			await tx.exec(runJournalTableDefinitions(prefix, dialect));
+			} else SqlRunJournal.assertSchemaVersion(versions[0]![c.schemaVersion]!, true);
+			// The tables, and a journal of the previous version upgraded so older builds refuse it (#5065).
+			await upgradeRunJournalSchema(tx, prefix, dialect);
 			// The snapshot blob table too, so a new journal takes the write lock once (#4325) and opens it lock-free.
 			await SqlSnapshotBlobStore.initialize(tx, prefix, dialect);
 		}, JOURNAL_WRITE_TRANSACTION);

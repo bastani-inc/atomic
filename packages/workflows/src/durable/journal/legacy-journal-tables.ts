@@ -1,13 +1,17 @@
 import {
 	dialectOf,
 	JOURNAL_COPIED_ALL_MARKER,
+	RUN_JOURNAL_SCHEMA_VERSION_UNCHUNKED,
 	renderStorageIdentifiers,
 	type SqliteDatabase,
 	type SqliteExecutor,
 	type SqliteRow,
 } from "@bastani/atomic/storage";
 import { JOURNAL_TRANSACTION } from "./internal.js";
-import { JOURNAL_COLUMNS as c, JOURNAL_SCHEMA_VERSION, JOURNAL_TABLES } from "./types.js";
+import { JOURNAL_COLUMNS as c, JOURNAL_TABLES } from "./types.js";
+
+/** The legacy tables' schema version, which never changes: they are read and never written. */
+const LEGACY_SCHEMA_VERSION = RUN_JOURNAL_SCHEMA_VERSION_UNCHUNKED;
 
 const CURRENT = renderStorageIdentifiers("journal", {
 	...JOURNAL_TABLES,
@@ -86,7 +90,7 @@ export class LegacyJournalRuns {
 				const versions = await tx.all<SqliteRow & { [c.schemaVersion]: number }>(
 					`SELECT ${c.schemaVersion} FROM ${JOURNAL_TABLES.meta}`,
 				);
-				if (versions.length !== 1 || Number(versions[0]![c.schemaVersion]) !== JOURNAL_SCHEMA_VERSION)
+				if (versions.length !== 1 || Number(versions[0]![c.schemaVersion]) !== LEGACY_SCHEMA_VERSION)
 					return undefined;
 				const copiedAll =
 					(await exists(tx, CURRENT.migrations)) &&

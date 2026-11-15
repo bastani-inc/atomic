@@ -24,7 +24,7 @@ import {
 } from "./journal-catalog.js";
 import { openNodeSqliteDatabase } from "./node-sqlite.js";
 import { renderStorageIdentifiers } from "./prefix.js";
-import { RUN_JOURNAL_SCHEMA_VERSION } from "./run-journal.js";
+import { RUN_JOURNAL_SCHEMA_VERSION, RUN_JOURNAL_SCHEMA_VERSION_UNCHUNKED } from "./run-journal.js";
 
 /** The journal store's directory under an agent directory: `<agent dir's parent>/workflows/journal`. */
 export function defaultJournalStoreDirectory(agentDir: string): string {
@@ -74,8 +74,33 @@ export function runJournalTableDefinitions(prefix = "", dialect: StorageDialect 
 }
 
 /**
- * Creates a SQL run journal's metadata and tables inside the caller's transaction when they are missing, and checks
- * that an existing journal has the supported schema version. Throws `StorageSchemaVersionError` otherwise.
+ * Upgrades a run journal of schema version 1 to version 2 inside the caller's transaction: its tables, and the meta row
+ * at version 2, so a build that knows only version 1 refuses the database instead of reading a chunked snapshot blob
+ * as empty (#5065). Idempotent.
+ */
+export async function upgradeRunJournalSchema(
+	tx: SqliteExecutor,
+	prefix = "",
+	dialect: StorageDialect = sqliteDialect,
+): Promise<void> {
+	const t = runJournalTables(prefix);
+	await tx.exec(runJournalTableDefinitions(prefix, dialect));
+	await tx.run(
+		`UPDATE ${t.meta} SET schema_version = ? WHERE schema_version = ?`,
+		RUN_JOURNAL_SCHEMA_VERSION,
+		RUN_JOURNAL_SCHEMA_VERSION_UNCHUNKED,
+	);
+}
+
+/** Whether a run journal of schema version `found` is one this build reads, after upgrading it when it is older. */
+export function isReadableRunJournalVersion(found: SqliteValue | undefined): boolean {
+	return found === RUN_JOURNAL_SCHEMA_VERSION || found === RUN_JOURNAL_SCHEMA_VERSION_UNCHUNKED;
+}
+
+/**
+ * Creates a SQL run journal's metadata and tables inside the caller's transaction when they are missing, upgrades a
+ * journal of the previous schema version, and checks that an existing journal has a supported schema version. Throws
+ * `StorageSchemaVersionError` otherwise.
  */
 export async function ensureRunJournalSchema(
 	tx: SqliteExecutor,
@@ -86,13 +111,13 @@ export async function ensureRunJournalSchema(
 	await tx.exec(`CREATE TABLE IF NOT EXISTS ${t.meta}(schema_version ${dialect.types.int} NOT NULL)`);
 	const versions = await tx.all<SqliteRow & { schema_version: SqliteValue }>(`SELECT schema_version FROM ${t.meta}`);
 	if (versions.length === 0) await tx.run(`INSERT INTO ${t.meta} VALUES (?)`, RUN_JOURNAL_SCHEMA_VERSION);
-	else if (versions.length > 1 || versions[0]!.schema_version !== RUN_JOURNAL_SCHEMA_VERSION)
+	else if (versions.length > 1 || !isReadableRunJournalVersion(versions[0]!.schema_version))
 		throw new StorageSchemaVersionError(
 			"journal",
 			versions.length > 1 ? `${versions.length} rows` : versions[0]!.schema_version,
 			RUN_JOURNAL_SCHEMA_VERSION,
 		);
-	await tx.exec(runJournalTableDefinitions(prefix, dialect));
+	await upgradeRunJournalSchema(tx, prefix, dialect);
 }
 
 /** Most journals one adoption follows through the run references it finds. */
@@ -207,7 +232,10 @@ export async function inspectJournalFile(path: string): Promise<JournalFileInspe
 					`SELECT schema_version FROM ${current ? TABLES.meta : "meta"}`,
 				);
 				const found = versions[0]?.schema_version;
-				if (versions.length !== 1 || found !== RUN_JOURNAL_SCHEMA_VERSION)
+				const readable = current
+					? isReadableRunJournalVersion(found)
+					: found === RUN_JOURNAL_SCHEMA_VERSION_UNCHUNKED;
+				if (versions.length !== 1 || !readable)
 					throw new JournalAdoptError({
 						code: "schema-version",
 						path: file,
@@ -530,8 +558,8 @@ async function ensureJournalTables(source: SqliteExecutor, target: SqliteExecuto
 	);
 	for (const definition of definitions)
 		await target.exec(definition.sql.replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS "));
-	const meta = await target.all(`SELECT schema_version FROM ${TABLES.meta}`);
-	if (meta.length === 0) await target.run(`INSERT INTO ${TABLES.meta} VALUES (?)`, RUN_JOURNAL_SCHEMA_VERSION);
+	// A source of the previous schema version gives the same tables: the target is upgraded either way.
+	await ensureRunJournalSchema(target);
 }
 
 /**

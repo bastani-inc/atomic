@@ -1,8 +1,15 @@
 import type { SnapshotBlobStore } from "../worktree-snapshot/types.ts";
 import type { StorageDescriptor } from "./database.js";
 
-/** The schema version of a SQL run journal's `meta` table that this Atomic reads and writes. */
-export const RUN_JOURNAL_SCHEMA_VERSION = 1;
+/**
+ * The schema version of a SQL run journal's `meta` table that this Atomic reads and writes. Version 2 stores a large
+ * snapshot blob in chunk rows behind a header row with empty data (#4954), which a build that knows only version 1
+ * would read as an empty blob (#5065), so opening a journal upgrades it to 2 and older builds refuse it with
+ * `StorageSchemaVersionError`.
+ */
+export const RUN_JOURNAL_SCHEMA_VERSION = 2;
+/** The run journal schema builds before chunked snapshot blobs wrote; this build upgrades it when it opens it. */
+export const RUN_JOURNAL_SCHEMA_VERSION_UNCHUNKED = 1;
 
 export const RUN_EVENT_TYPES = {
 	runStarted: "RunStarted",

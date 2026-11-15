@@ -287,6 +287,12 @@ interface IndexSource {
 	readonly rowwise?: readonly string[];
 	/** Clears the source's index rows when its triggers are installed again, so no stale row outlives its entry. */
 	readonly reset?: readonly string[];
+	/**
+	 * The progress row this build writes when it installs the source's triggers, and that no older build writes. Without
+	 * it, triggers of the source's names are an older build's, which index less, and this build installs its own and
+	 * indexes the table again (#5065).
+	 */
+	readonly version?: string;
 }
 
 interface SourceState {
@@ -599,6 +605,8 @@ function indexSources(prefix: string, t: SnapshotIndexTables, d: StorageDialect)
 		],
 		backfill: [],
 		rowwise: [...sessionLink(storedEntry), ...sessionRecord(storedEntry)],
+		// The triggers that index degraded pins (#4922). Older builds install theirs under the same names (#5065).
+		version: "session-entries@degraded-pins",
 		reset: [`DELETE FROM ${t.sessionLinks}`, `DELETE FROM ${t.sessionRefs}`, `DELETE FROM ${t.sessionRecords}`],
 	};
 	// What a shared-placement root carries to its children (#4503): the snapshot each queued pool work row carries, and
@@ -752,11 +760,18 @@ async function installSource(
 	source: IndexSource,
 ): Promise<void> {
 	for (const sql of source.reset ?? []) await transaction.run(sql);
+	// Triggers of these names that an older build installed are replaced, not kept (#5065).
+	for (const trigger of source.triggers) await transaction.exec(dialect.dropTrigger(trigger.name, trigger.table));
 	await transaction.exec(source.triggers.map((trigger) => dialect.renderTrigger(trigger)).join("\n"));
 	await transaction.run(
 		`INSERT INTO ${t.sources} (source, watermark, backfilled_through) SELECT ?, COALESCE(MAX(${dialect.rowOrder()}), 0), 0 FROM ${source.table} WHERE true ${REPLACE_PROGRESS}`,
 		source.name,
 	);
+	if (source.version !== undefined)
+		await transaction.run(
+			`INSERT INTO ${t.sources} (source, watermark, backfilled_through) VALUES (?, 0, 0) ${REPLACE_PROGRESS}`,
+			source.version,
+		);
 }
 
 /**
@@ -802,17 +817,21 @@ async function readSourceStates(
 		.filter((source) => present.has(source.table))
 		.map((source) => {
 			const row = progress.get(source.name);
+			// A source whose triggers an older build installed is indexed again by collection, as after an upgrade.
+			const foreign = row !== undefined && source.version !== undefined && !progress.has(source.version);
 			return {
 				source,
 				installed:
 					row !== undefined &&
+					!foreign &&
 					Number(row.watermark) >= 0 &&
 					source.triggers.every((trigger) => present.has(trigger.name)),
 				backfilled:
 					row !== undefined &&
+					!foreign &&
 					Number(row.watermark) >= 0 &&
 					Number(row.backfilled_through) >= Number(row.watermark),
-				deferred: row !== undefined && Number(row.watermark) === -1,
+				deferred: row !== undefined && (foreign || Number(row.watermark) === -1),
 			};
 		});
 }

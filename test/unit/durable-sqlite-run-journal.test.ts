@@ -202,7 +202,7 @@ test.each([
 					assert.equal(error.constructor, JournalSchemaVersionError);
 					assert.ok(error instanceof JournalSchemaVersionError);
 					assert.equal(error.found, found);
-					assert.equal(error.supported, 1);
+					assert.equal(error.supported, 2);
 					return true;
 				},
 			);
@@ -989,8 +989,8 @@ test("delete/recreate cycles durably fence every old handle without affecting ot
 	});
 });
 
-test("schema v1 exports stable names and stores event payloads as JSON text with required SQLite pragmas", async () => {
-	assert.equal(JOURNAL_SCHEMA_VERSION, 1);
+test("schema v2 exports stable names and stores event payloads as JSON text with required SQLite pragmas", async () => {
+	assert.equal(JOURNAL_SCHEMA_VERSION, 2);
 	assert.equal(JOURNAL_PAYLOAD_ENCODING, "json-text");
 	assert.deepEqual(Object.values(tableNames), ["meta", "runs", "events", "leases"]);
 	assert.deepEqual(Object.values(t), ["wf_meta", "wf_runs", "wf_events", "wf_leases"]);
@@ -1048,7 +1048,7 @@ test("schema v1 exports stable names and stores event payloads as JSON text with
 				["foreign_keys", 1],
 			] as const)
 				assert.equal(Object.values(db.get<Record<string, string | number>>(`PRAGMA ${pragma}`) ?? {})[0], value);
-			assert.equal(db.get<{ [c.schemaVersion]: number }>(`SELECT * FROM ${t.meta}`)?.[c.schemaVersion], 1);
+			assert.equal(db.get<{ [c.schemaVersion]: number }>(`SELECT * FROM ${t.meta}`)?.[c.schemaVersion], 2);
 			assert.equal(
 				db.get<{ [c.payload]: string }>(`SELECT ${c.payload} FROM ${t.events} WHERE ${c.seq} = 1`)?.[c.payload],
 				JSON.stringify(events[0]?.payload),
@@ -1074,14 +1074,14 @@ test("unknown schema versions fail with typed fields and are not migrated", asyn
 		await journal.close();
 		const db = new JournalTestDatabase(journal.path);
 		try {
-			for (const version of [0, 2, 999]) {
+			for (const version of [0, 3, 999]) {
 				db.run(`UPDATE ${t.meta} SET ${c.schemaVersion} = ?`, version);
 				await assert.rejects(
 					async () => await openSqlRunJournal(journal.path),
 					(error: Error) => {
 						assert.ok(error instanceof JournalSchemaVersionError);
 						assert.equal(error.found, version);
-						assert.equal(error.supported, 1);
+						assert.equal(error.supported, 2);
 						return true;
 					},
 				);

@@ -19,6 +19,7 @@ import type { StorageFailureCause } from "./errors.js";
 import {
 	discoverLegacyJournal,
 	ensureRunJournalSchema,
+	isReadableRunJournalVersion,
 	type JournalEventTableRow,
 	type JournalLeaseTableRow,
 	type JournalRunTableRow,
@@ -33,7 +34,7 @@ import {
 	type JournalShardRecord,
 } from "./journal-catalog.js";
 import { openNodeSqliteDatabase } from "./node-sqlite.js";
-import { RUN_EVENT_TYPES, RUN_JOURNAL_SCHEMA_VERSION } from "./run-journal.js";
+import { RUN_EVENT_TYPES } from "./run-journal.js";
 import {
 	readTransferDirectory,
 	StorageImportIncompleteError,
@@ -262,7 +263,7 @@ async function openExportSource(
 			return { path, reason: "it has no workflow runs in the current journal format", oldFormat: true };
 		}
 		const version = await schemaVersion(database, t);
-		if (version !== RUN_JOURNAL_SCHEMA_VERSION) {
+		if (!isReadableRunJournalVersion(version)) {
 			await closeExportSource({ database, snapshot: open === undefined });
 			return { path, reason: `unsupported journal schema version ${String(version)}`, oldFormat: false };
 		}

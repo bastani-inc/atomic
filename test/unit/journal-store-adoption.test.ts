@@ -175,7 +175,7 @@ test("inspection reads the schema version of a current or legacy journal and ref
 	raw(empty, "INSERT INTO wf_meta VALUES ('one')");
 	const text = await inspectJournalFile(empty).catch((error: Error) => error);
 	assert.ok(isJournalAdoptError(text));
-	assert.deepEqual([text.code, text.fields.found, text.fields.supported], ["schema-version", "one", 1]);
+	assert.deepEqual([text.code, text.fields.found, text.fields.supported], ["schema-version", "one", 2]);
 	raw(empty, "INSERT INTO wf_meta VALUES (1)");
 	const two = await inspectJournalFile(empty).catch((error: Error) => error);
 	assert.ok(isJournalAdoptError(two) && two.code === "schema-version");
@@ -656,7 +656,7 @@ test("consolidation into a new shard records its schema version once (#4325)", a
 				.prepare("SELECT schema_version FROM wf_meta")
 				.all()
 				.map((row) => row.schema_version),
-			[1],
+			[2],
 		);
 	} finally {
 		target.close();
