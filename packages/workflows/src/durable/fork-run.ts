@@ -75,6 +75,7 @@ import { WorkflowProjectNotTrustedError } from "./project-trust.js";
 import { FOREIGN_LIVE_WORKFLOW_WINDOW_MS } from "./resume-eligibility.js";
 import { claimsOf, hasForkClaim, hasResumeClaim, pendingForks } from "./run-claims.js";
 import { RUN_RESULT_CHECKPOINT_NAME } from "./run-result.js";
+import { forkPointCheckpointKey } from "./stage-topology.js";
 import { durableStageGroupKey } from "./stage-topology-validation.js";
 import type {
 	DurableCheckpoint,
@@ -825,15 +826,49 @@ function selectForkEvents(source: ForkSource, request: DurableForkRequest): Fork
 		handleAtCut = decodeJournalEventHandle(entry.event, handleAtCut) ?? handleAtCut;
 	}
 	const messageHandle = carryAll ? source.handle : (handleAtCut ?? source.handle);
+	const forkPoint = target === undefined ? undefined : forkPointTopologyRecord(source.checkpoints, target);
+	const kept = source.checkpoints.filter(keep);
 	return {
 		...(target === undefined ? {} : { stagePath: target.stagePath }),
-		checkpoints: source.checkpoints.filter(keep).map((event) => event.checkpoint),
+		checkpoints: (forkPoint === undefined
+			? kept
+			: [...kept.filter(({ seq }) => seq < cut), forkPoint, ...kept.filter(({ seq }) => seq >= cut)]
+		).map((event) => event.checkpoint),
 		messageEvents: source.entries.filter(
 			(entry) =>
 				(entry.event.type === E.messageSettled || entry.event.type === E.messageDelivered) &&
 				(carryAll || entry.seq < cut),
 		),
 		pendingStageMessages: messageHandle.pendingStageMessages ?? [],
+	};
+}
+
+/**
+ * The fork point's place in the graph: the stage id and parents the source recorded for it, as a run-level record the
+ * fork's stage resumes with (`forkPointStageTopology`). The fork's events end before the fork point's first record, so
+ * without it the stage would take the fork's frontier when it is created, which can hold a stage that ran beside it
+ * (#5042). A child workflow's boundary records its parents with its own lifecycle, so its fork point has none.
+ */
+function forkPointTopologyRecord(
+	checkpoints: readonly CheckpointEvent[],
+	target: ForkPointRecord,
+): CheckpointEvent | undefined {
+	const first = checkpoints.find(({ seq }) => seq === target.firstSeq);
+	const checkpoint = first?.checkpoint;
+	if (checkpoint?.kind !== "stage" || checkpoint.topology === undefined || checkpoint.topology.boundary !== undefined)
+		return undefined;
+	const key = forkPointCheckpointKey(checkpoint.replayKey);
+	return {
+		seq: first!.seq,
+		checkpoint: {
+			kind: "tool",
+			workflowId: checkpoint.workflowId,
+			checkpointId: key,
+			name: key,
+			argsHash: key,
+			output: { stageId: checkpoint.topology.stageId, parentIds: [...checkpoint.topology.parentIds] },
+			completedAt: checkpoint.completedAt,
+		},
 	};
 }
 

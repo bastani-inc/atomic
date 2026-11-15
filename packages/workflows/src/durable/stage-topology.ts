@@ -7,6 +7,35 @@ import {
 	type DurableStageTopology,
 } from "./types.js";
 
+/**
+ * The suffix of a fork's record of its fork point's place in the graph (#5042), under the stage's replay key so a stage in
+ * a child workflow keeps the record in the child's scope. A run-level record: it names no graph node of its own.
+ */
+export const FORK_POINT_CHECKPOINT_SUFFIX = ":fork-point-topology";
+
+/** The key of the fork point record of the stage at `replayKey`. */
+export function forkPointCheckpointKey(replayKey: string): string {
+	return `${replayKey}${FORK_POINT_CHECKPOINT_SUFFIX}`;
+}
+
+/**
+ * The stage id and parents a fork's source recorded for its fork point (#5042), as the topology the stage resumes with.
+ * The fork's events end before the fork point's first record; without these, the stage would take the frontier the
+ * fork has when it is created, which can hold a stage that ran beside it.
+ */
+export function forkPointStageTopology(
+	backend: DurableWorkflowBackend,
+	workflowId: string,
+	replayKey: string,
+): DurableStageTopology | undefined {
+	const output = backend.getToolCheckpoint(workflowId, forkPointCheckpointKey(replayKey))?.output;
+	if (typeof output !== "object" || output === null || Array.isArray(output)) return undefined;
+	const { stageId, parentIds } = output as { readonly stageId?: unknown; readonly parentIds?: unknown };
+	if (typeof stageId !== "string" || !Array.isArray(parentIds) || !parentIds.every((id) => typeof id === "string"))
+		return undefined;
+	return { version: DURABLE_STAGE_TOPOLOGY_VERSION, stageId, parentIds: [...parentIds], status: "pending" };
+}
+
 /** Find source identity for the latest active session at an exact replay key. */
 export function activeStageTopology(
 	backend: DurableWorkflowBackend,
