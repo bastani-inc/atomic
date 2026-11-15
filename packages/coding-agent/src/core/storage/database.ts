@@ -79,10 +79,54 @@ export type TransactionConcurrency =
 	| { readonly kind: "serial"; readonly domain?: string }
 	| { readonly kind: "fenced"; readonly audit: FencedPathId };
 
+/**
+ * What a database's listening connection is doing: `listening`, notifications arrive; `connecting`, it is not known yet;
+ * `unavailable`, none arrive, and pollers find the work: `pooler` when the endpoint is a transaction pooler (a
+ * notification sent through the database did not reach the listening session), `connection-failed` when the listening
+ * connection could not be opened or broke.
+ */
+export type StorageListenerState =
+	| { readonly status: "listening" }
+	| { readonly status: "connecting" }
+	| { readonly status: "unavailable"; readonly reason: "pooler" | "connection-failed" };
+
+/**
+ * `notification`: a transaction that ran `notify(channel, payload)` committed. `listening`: the listening connection
+ * began listening again after it was unavailable, so notifications sent meanwhile were lost.
+ */
+export type StorageNotificationEvent =
+	| { readonly kind: "notification"; readonly payload: string }
+	| { readonly kind: "listening" };
+
+export interface StorageNotificationSubscription {
+	/** Stops delivering events to this listener; idempotent. */
+	close(): void;
+}
+
+/**
+ * Wake-ups through the database (#5103): Postgres `LISTEN`/`NOTIFY`. A notification is only a hint that a poller would
+ * find the same work at its next poll; notifications are lost while the listening connection is down, and through a
+ * transaction pooler none arrive, so a store that sends them keeps its poll.
+ */
+export interface StorageNotifications {
+	/**
+	 * A statement that sends `payload` to the listeners of `channel` when the transaction it runs in commits, and never
+	 * when it rolls back: run it in the transaction of the write it announces. `channel` is a name such as
+	 * `<prefix>pool_ready`; the database shortens a long one the same way for `notify` and `listen`.
+	 */
+	notify(channel: string, payload: string): SqliteStatement;
+	/** Delivers `channel`'s events to `listener`, on one listening connection the database shares between channels. */
+	listen(channel: string, listener: (event: StorageNotificationEvent) => void): StorageNotificationSubscription;
+	/** Opens the listening connection when it is not open, and resolves with its state once the first attempt settled. */
+	state(): Promise<StorageListenerState>;
+}
+
 export interface SqliteDatabase extends SqliteExecutor {
 	readonly descriptor: StorageDescriptor;
 	/** The SQL dialect the database speaks; absent means SQLite. Read it through `dialectOf(database)`. */
 	readonly dialect?: StorageDialect;
+	/** Wake-ups through the database; present only on a database that delivers them (Postgres). */
+	readonly notifications?: StorageNotifications;
 	transaction<T>(
 		callback: (transaction: SqliteExecutor) => Promise<T>,
 		options?: SqliteTransactionOptions,

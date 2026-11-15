@@ -78,7 +78,10 @@ export interface FleetHostView {
 }
 
 export interface FleetObservation {
-	/** By `Date.now()`. */
+	/**
+	 * By the controller's monotonic clock, `performance.now()`: the policy's delays and timeouts are measured between
+	 * its own ticks, so a step of the wall clock neither removes booting hosts nor holds back a scale-up (#5058).
+	 */
 	readonly now: number;
 	readonly roots: readonly FleetRootDemand[];
 	readonly hosts: readonly FleetHostView[];

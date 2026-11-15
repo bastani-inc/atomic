@@ -7,6 +7,7 @@ import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import type { DurableWorkflowStatus, ResumableWorkflowEntry } from "../../packages/workflows/src/durable/types.js";
+import { dropLibsqlScope } from "../helpers/storage-backends.js";
 
 /**
  * The `/workflow resume` catalog on a real libSQL server (sqld) over HTTP, where each request runs on a new stream
@@ -75,6 +76,8 @@ describe.skipIf(serverUrl === undefined)("the workflow resume catalog on a libSQ
 				for (const id of [paused, replacing]) await writing.deleteWorkflow(id);
 			} finally {
 				for (const backend of backends) await backend.close();
+				// Tables left on the server slow every later request to it: sqld loads the whole schema for each (#4768).
+				await dropLibsqlScope(databases[0]!, prefix);
 				for (const database of databases) await database.close();
 			}
 		},

@@ -141,3 +141,108 @@ test("an index that keeps nothing for away sessions has no kept ask to hand a re
 	index.record("child", "recipient", "q1");
 	assert.equal(index.clearReply("recipient", "child", "q1"), true);
 });
+
+test("only the asked recipient's reply on its way keeps its ask from failing when that recipient ends (#5095)", () => {
+	const index = new PendingQuestionIndex();
+	const recipient: SessionInfo = { id: "recipient", cwd: "/", model: "m", pid: 1, startedAt: 0, lastActivity: 0 };
+	index.record("asker", "recipient", "answered");
+	index.record("asker", "recipient", "unanswered");
+	index.record("asker", "other", "answered");
+
+	assert.equal(index.markReplied("stranger", "asker", "answered"), false, "only the asked recipient answers");
+	assert.equal(index.markReplied("recipient", "asker", "answered"), true);
+	assert.deepEqual(index.takeForTarget("recipient", { ended: recipient }), [
+		route("asker", "recipient", "unanswered"),
+	]);
+	assert.deepEqual(
+		index.takeForTarget("other"),
+		[route("asker", "other", "answered")],
+		"another route is not answered",
+	);
+});
+
+test("a recipient that only drops takes its asks with it, replied or not, to wait for it (#5095)", () => {
+	const index = new PendingQuestionIndex();
+	index.record("asker", "recipient", "q");
+	index.markReplied("recipient", "asker", "q");
+	assert.deepEqual(index.takeForTarget("recipient"), [route("asker", "recipient", "q")]);
+	index.record("asker", "recipient", "q");
+	assert.deepEqual(index.takeForTarget("recipient"), [route("asker", "recipient", "q")], "no mark is left behind");
+});
+
+test("a reply the asker saved leaves nothing marked for a later ask with the same id (#5095)", () => {
+	const index = new PendingQuestionIndex();
+	index.record("asker", "recipient", "q");
+	assert.equal(index.markReplied("recipient", "asker", "q"), true);
+	assert.equal(index.clearReply("recipient", "asker", "q"), true);
+	index.record("asker", "recipient", "q");
+	assert.deepEqual(index.takeForTarget("recipient"), [route("asker", "recipient", "q")]);
+});
+
+test("an asker that leaves while its reply is on its way takes its ask with it unanswered, so the recipient ending later fails it (#5095)", () => {
+	const index = new PendingQuestionIndex();
+	index.record("asker", "recipient", "q");
+	assert.equal(index.markReplied("recipient", "asker", "q"), true);
+	assert.deepEqual(index.takeForSender("asker"), [route("asker", "recipient", "q")]);
+	// The asker is back and its ask routes again; its reply never reached it.
+	index.record("asker", "recipient", "q");
+	assert.deepEqual(index.takeForTarget("recipient"), [route("asker", "recipient", "q")]);
+});
+
+test("a recipient that ends while its reply is on its way fails the ask only if that reply never arrives (#5095)", () => {
+	const index = new PendingQuestionIndex();
+	const lost: Array<{ question: PendingQuestion; id: string; reason: string | undefined }> = [];
+	index.onReplyLost((question, held) => lost.push({ question, id: held.message.id, reason: held.message.replyError }));
+	const recipient: SessionInfo = {
+		id: "recipient",
+		name: "rec",
+		cwd: "/",
+		model: "m",
+		pid: 1,
+		startedAt: 0,
+		lastActivity: 0,
+	};
+	index.record("asker", "recipient", "saved");
+	index.record("asker", "recipient", "lost");
+	index.markReplied("recipient", "asker", "saved");
+	index.markReplied("recipient", "asker", "lost");
+	assert.deepEqual(index.takeForTarget("recipient", { ended: recipient }), []);
+	assert.equal(index.matchesReply("recipient", "asker", "lost"), false, "the ended recipient answers nothing more");
+	assert.deepEqual(index.takeForTarget("recipient", { ended: recipient }), []);
+
+	assert.equal(index.clearReply("recipient", "asker", "saved"), true, "a saved reply answers its ask");
+	index.unmarkReplied("recipient", "asker", "lost");
+	assert.deepEqual(lost, [
+		{
+			question: route("asker", "recipient", "lost"),
+			id: "ended:lost",
+			reason: 'Session "rec" ended before replying',
+		},
+	]);
+	index.unmarkReplied("recipient", "asker", "lost");
+	assert.equal(lost.length, 1, "it fails once");
+});
+
+test("saving a reply releases only the failures held for that ask from that recipient (#5095)", () => {
+	const index = new PendingQuestionIndex();
+	index.useAwayStore(new AwayAsks(), () => "asker-address");
+	const from = (id: string): SessionInfo => ({ id, cwd: "/", model: "m", pid: 1, startedAt: 0, lastActivity: 0 });
+	const hold = (id: string, replierId: string, replyTo: string, replyError?: string) =>
+		index.holdForAwayAsker(
+			{ ...route("asker", replierId, replyTo), senderReturnAddress: "asker-address" },
+			from(replierId),
+			{ id, timestamp: 1, replyTo, ...(replyError === undefined ? {} : { replyError }), content: { text: id } },
+		);
+	hold("ended:q", "recipient", "q", "ended");
+	hold("other-recipient:q", "other", "q", "ended");
+	hold("ended:other-q", "recipient", "other-q", "ended");
+	hold("held-reply", "recipient", "q");
+
+	index.releaseHeldFailures("q", "recipient", "asker-address");
+	assert.deepEqual(
+		index.heldForAsker("asker-address").map((held) => held.message.id),
+		["other-recipient:q", "ended:other-q", "held-reply"],
+	);
+	// An index that keeps nothing for away sessions has nothing to release.
+	assert.doesNotThrow(() => new PendingQuestionIndex().releaseHeldFailures("q", "recipient", "asker-address"));
+});

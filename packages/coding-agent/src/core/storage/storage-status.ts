@@ -378,6 +378,20 @@ async function postgresServerVersion(database: SqliteDatabase): Promise<string> 
 	return `PostgreSQL ${(row as SqliteRow & { version: string }).version}`;
 }
 
+/**
+ * How a Postgres database's wake-ups reach this process (#5103): through `LISTEN`, or by polling alone, and why. Undefined
+ * for a database without notifications.
+ */
+async function postgresWakeUps(database: SqliteDatabase): Promise<string | undefined> {
+	const state = await database.notifications?.state();
+	if (state === undefined) return undefined;
+	if (state.status === "listening") return "wake-ups: LISTEN/NOTIFY";
+	if (state.status === "connecting") return "wake-ups: connecting";
+	return state.reason === "pooler"
+		? "wake-ups: polling only, notifications do not pass the URL's transaction pooler (set listenUrl to a direct endpoint)"
+		: "wake-ups: polling only, the listen connection failed";
+}
+
 async function roundTrip(
 	open: () => Promise<SqliteDatabase>,
 	label: string,
@@ -401,9 +415,12 @@ async function roundTrip(
 				"Reading the server version",
 				timeoutMs,
 			).catch(() => undefined);
+			const wakeUps = await withTimeout(postgresWakeUps(opened), "Probing wake-ups", timeoutMs).catch(
+				() => undefined,
+			);
 			return {
 				status: "ok",
-				detail: `postgres ${postgres} answered in ${elapsed} ms${version === undefined ? "" : `, ${version}`}`,
+				detail: `postgres ${postgres} answered in ${elapsed} ms${version === undefined ? "" : `, ${version}`}${wakeUps === undefined ? "" : `; ${wakeUps}`}`,
 			};
 		}
 		return {
