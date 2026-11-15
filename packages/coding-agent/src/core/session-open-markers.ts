@@ -3,9 +3,9 @@
  * removed when the session closes or the process exits. A store that keeps markers (`SessionStore.openMarkers`, a table
  * in a SQL store) holds them, so every host and agent directory sharing the store sees them; for any other store they
  * are files under the agent directory, `open-sessions/<session id>/<token>.json`. Deleting a session that has a fresh
- * marker, from another process or from another session of the same process, is refused. A marker is stale, and
- * ignored, when its process on this host is gone or its heartbeat stopped, as for a process killed with SIGKILL or one
- * on another host.
+ * marker, from another process or from another session of the same process, is refused. A marker of a process on
+ * this host counts while that process runs, however long it was suspended; one of another host counts while its
+ * heartbeat is fresh, judged on the clock that stamps the marker (#5058): the store's, or the shared file system's.
  */
 
 import { randomBytes } from "node:crypto";
@@ -14,19 +14,32 @@ import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { getAgentDir } from "../config.js";
 import { SessionOpenElsewhereError } from "./session-manager-errors.js";
+import { sharedFilesystemNow } from "./shared-file-clock.ts";
 import type {
 	SessionOpenMarker,
 	SessionOpenMarkerAge,
 	SessionOpenMarkerStore,
 	SessionStore,
 } from "./storage/session/types.js";
+import { processStartToken } from "./worktree-snapshot/pool.ts";
 
 /** How often a held marker's heartbeat is refreshed. */
 const HEARTBEAT_MS = 15_000;
-/** How old a marker's heartbeat may be before the marker no longer counts. */
+/** How old the heartbeat of another host's marker may be before the marker no longer counts. */
 const STALE_MS = 4 * HEARTBEAT_MS;
-/** This process's markers: its pid, and a nonce that tells it from an earlier process given the same pid. */
-const PROCESS_TOKEN = `${process.pid}-${randomBytes(8).toString("hex")}`;
+/**
+ * How long a marker of this host that does not say when its holder started counts while a process with its pid runs: a
+ * later process may have been given the pid (#5058).
+ */
+const UNSTARTED_MARKER_LIMIT_MS = 24 * 60 * 60_000;
+const PROCESS_START = processStartToken(process.pid);
+/**
+ * This process's markers: its pid, a nonce that tells it from an earlier process given the same pid, and when it
+ * started, where that can be read, which tells it from a later one (#5058).
+ */
+const PROCESS_TOKEN = `${process.pid}-${randomBytes(8).toString("hex")}${PROCESS_START === undefined ? "" : `-${PROCESS_START}`}`;
+/** A marker token that names when its holder started. */
+const STARTED_TOKEN = /^\d+-[0-9a-f]{16}-([0-9a-f]{12})$/;
 /** The session ids a marker directory can be named after, as `assertValidSessionId` accepts them. */
 const VALID_SESSION_ID = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/;
 
@@ -80,14 +93,16 @@ class FileOpenMarkers implements SessionOpenMarkerStore {
 		} catch {
 			return [];
 		}
+		if (names.length === 0) return [];
+		// Ages on the clock that stamps the files, which hosts sharing the agent directory share (#5058).
+		const now = sharedFilesystemNow(dirname(directory));
 		return names.flatMap((name) => {
 			const path = join(directory, name);
 			try {
 				const parsed = JSON.parse(readFileSync(path, "utf8")) as { pid?: unknown; host?: unknown };
 				if (typeof parsed.pid !== "number" || typeof parsed.host !== "string") return [];
 				const token = name.replace(/\.json$/, "");
-				// The file system's clock stamps the file; files are shared only by hosts that share the agent directory.
-				const ageMs = Date.now() - statSync(path).mtimeMs;
+				const ageMs = Math.max(0, now - statSync(path).mtimeMs);
 				return [{ token, pid: parsed.pid, host: parsed.host, ageMs }];
 			} catch {
 				// Being written or removed right now, or not a marker.
@@ -209,6 +224,18 @@ function processAlive(pid: number): boolean {
 }
 
 /**
+ * Whether the holder of `marker`, a marker of this host, still runs (#5058): a process with its pid that started when
+ * the marker says, or, for a marker that does not say, any process with its pid for a day after its last heartbeat.
+ */
+function holderRuns(marker: SessionOpenMarkerAge): boolean {
+	if (marker.pid === process.pid) return marker.token === PROCESS_TOKEN;
+	const started = STARTED_TOKEN.exec(marker.token)?.[1];
+	const current = started === undefined ? undefined : processStartToken(marker.pid);
+	if (current !== undefined) return current === started;
+	return marker.ageMs <= UNSTARTED_MARKER_LIMIT_MS && processAlive(marker.pid);
+}
+
+/**
  * A running session, in another process or in this one, that has `sessionId` of `store` open, or undefined when none
  * does. Stale markers are removed.
  */
@@ -220,11 +247,8 @@ export async function findSessionOpenHolder(
 	const markers = markersFor(options.store, options.agentDir ?? getAgentDir());
 	const host = hostname();
 	for (const marker of await markers.list(sessionId)) {
-		// With this process's pid but not its token: an earlier process given the same pid.
-		const gone =
-			marker.host === host &&
-			(marker.pid === process.pid ? marker.token !== PROCESS_TOKEN : !processAlive(marker.pid));
-		if (gone || marker.ageMs > STALE_MS) {
+		// A process of this host is judged by whether it runs, never by its heartbeat, which a suspended one misses.
+		if (marker.host === host ? !holderRuns(marker) : marker.ageMs > STALE_MS) {
 			await markers.remove(sessionId, marker.token).catch(() => {});
 			continue;
 		}

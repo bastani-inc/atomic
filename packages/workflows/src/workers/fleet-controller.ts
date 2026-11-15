@@ -128,7 +128,10 @@ export class FleetController implements WorkflowFleetController {
 	private ticking?: Promise<void>;
 	/** Aborted when the running tick must stop acting: the lease was lost or may have expired, or the controller stops. */
 	private tickAbort = new AbortController();
-	/** When, by `Date.now()`, the lease was last taken or renewed, measured before the request. */
+	/**
+	 * When, by `performance.now()`, the lease was last taken or renewed, measured before the request: a step of the wall
+	 * clock never makes a controller that may have lost its lease act on (#5058).
+	 */
 	private renewedAt = 0;
 	/** Listings in a row that omitted each drained instance, by the drained host id (#4828). */
 	private missed = new Map<string, number>();
@@ -157,7 +160,7 @@ export class FleetController implements WorkflowFleetController {
 		this.policy = checked.policy;
 		this.tickMs = checked.tickMs;
 		this.leaseMs = 3 * this.tickMs;
-		this.backoff = new HostPollBackoff(() => Date.now(), Math.random, {
+		this.backoff = new HostPollBackoff(() => performance.now(), Math.random, {
 			firstMs: this.tickMs,
 			maxMs: PROVIDER_BACKOFF_MAX_MS,
 		});
@@ -230,7 +233,7 @@ export class FleetController implements WorkflowFleetController {
 	/** Takes or renews the lease; returns the fence while this controller holds it. */
 	private async lead(): Promise<FleetFence | undefined> {
 		this.store ??= await SqlFleetStore.open(this.journal);
-		const asked = Date.now();
+		const asked = performance.now();
 		const lease = await this.store.acquire(this.holder, this.epoch, this.leaseMs);
 		if (lease.held) this.renewedAt = asked;
 		if (!lease.held) {
@@ -271,7 +274,7 @@ export class FleetController implements WorkflowFleetController {
 			const snapshot = await store.snapshot();
 			await this.followDrains(fence, listed, snapshot);
 			const hosts = joinHosts(listed, snapshot);
-			const now = Date.now();
+			const now = performance.now();
 			const plan = planFleet(
 				this.policy,
 				{ now, roots: snapshot.roots, hosts: hosts.map((entry) => entry.view) },
@@ -338,11 +341,11 @@ export class FleetController implements WorkflowFleetController {
 	 */
 	private keepLeading(fence: FleetFence, tick: AbortController): NodeJS.Timeout {
 		const timer = setInterval(() => {
-			if (Date.now() - this.renewedAt >= this.leaseMs - this.tickMs) {
+			if (performance.now() - this.renewedAt >= this.leaseMs - this.tickMs) {
 				tick.abort(new Error("The fleet controller may have lost its lease"));
 				return;
 			}
-			const asked = Date.now();
+			const asked = performance.now();
 			void this.store!.acquire(this.holder, fence.epoch, this.leaseMs).then(
 				(lease) => {
 					if (lease.held && lease.epoch === fence.epoch) this.renewedAt = asked;
@@ -371,7 +374,7 @@ export class FleetController implements WorkflowFleetController {
 		const hosts = joinHosts(listed, snapshot);
 		const plan = planFleet(
 			{ ...this.policy, idleDrainMs: 0 },
-			{ now: Date.now(), roots: snapshot.roots, hosts: hosts.map((entry) => entry.view) },
+			{ now: performance.now(), roots: snapshot.roots, hosts: hosts.map((entry) => entry.view) },
 			this.state,
 		);
 		for (const action of plan.actions)
