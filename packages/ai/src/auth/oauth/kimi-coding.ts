@@ -18,6 +18,7 @@ import {
 } from "../oauth-refresh-errors.ts";
 import type { OAuthAuth, OAuthCredential, ProviderAuthInteraction } from "../types.ts";
 import { pollOAuthDeviceCodeFlow } from "./device-code.ts";
+import { refreshedOAuthCredential } from "./token-response.ts";
 import { trustedHttpUrl } from "./trusted-url.ts";
 
 const CLIENT_ID = "17e5f671-d194-4dfb-9706-5516cb48c098";
@@ -110,8 +111,16 @@ async function startDeviceAuthorization(oauthHost: string, signal: AbortSignal):
 	};
 }
 
-function parseTokenResponse(json: Record<string, unknown> | null, operation: string): TokenResponse {
+/** `presentedRefreshToken` is the token a refresh sends; Kimi may answer without a new one or without `expires_in`. */
+function parseTokenResponse(
+	json: Record<string, unknown> | null,
+	operation: string,
+	presentedRefreshToken?: string,
+): TokenResponse {
 	const accessToken = json?.access_token;
+	if (presentedRefreshToken !== undefined && json && typeof accessToken === "string" && accessToken) {
+		return refreshedOAuthCredential(accessToken, json, presentedRefreshToken, 0);
+	}
 	const refreshToken = json?.refresh_token;
 	const expiresIn = json?.expires_in;
 	if (
@@ -239,7 +248,7 @@ async function refreshToken(oauthHost: string, refreshTokenValue: string, signal
 		}
 
 		if (response.ok) {
-			return parseTokenResponse(await readJson(response), "refresh");
+			return parseTokenResponse(await readJson(response), "refresh", refreshTokenValue);
 		}
 
 		// Any answer, a 429 or 5xx included, means the request was delivered and may have rotated the token, so it

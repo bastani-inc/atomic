@@ -2,6 +2,7 @@ import type { Component } from "@earendil-works/pi-tui";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { KeybindingsManager, Theme } from "@bastani/atomic";
 import type { SessionInfo, WorkflowStageRosterEntry } from "../types.js";
+import { terminalSafeLabel } from "./terminal-text.js";
 
 function formatKeyLabel(key: string): string {
   return key
@@ -51,7 +52,7 @@ function sessionTitleLines(
   availableWidth: number,
   options?: { self?: boolean; sameCwd?: boolean },
 ): string[] {
-  const name = session.name || "Unnamed session";
+  const name = terminalSafeLabel(session.name || "Unnamed session");
   const tags = [options?.self ? "self" : undefined, options?.sameCwd ? "same cwd" : undefined]
     .filter((tag): tag is string => Boolean(tag));
   const suffix = tags.length ? ` [${tags.join(", ")}]` : "";
@@ -149,7 +150,7 @@ export class SessionListOverlay implements Component {
     for (const idLine of currentTitleLines.slice(1)) {
       lines.push(row(`  ${this.theme.fg("dim", idLine)}`));
     }
-    lines.push(row(`  ${this.theme.fg("dim", `${middleTruncate(this.currentSession.cwd, Math.max(8, contentWidth - 4))} • ${this.currentSession.model}`)}`));
+    lines.push(row(`  ${this.theme.fg("dim", `${middleTruncate(terminalSafeLabel(this.currentSession.cwd), Math.max(8, contentWidth - 4))} • ${terminalSafeLabel(this.currentSession.model)}`)}`));
     lines.push(row());
     lines.push(border(`├${"─".repeat(contentWidth)}┤`));
     lines.push(row(this.theme.bold(" Other Sessions")));
@@ -170,7 +171,7 @@ export class SessionListOverlay implements Component {
         const sameCwd = session.cwd === this.currentSession.cwd;
         const prefix = isSelected ? this.theme.fg("accent", "→ ") : "  ";
         const titleLines = sessionTitleLines(session, Math.max(1, contentWidth - 2), { sameCwd });
-        const pathText = `${middleTruncate(session.cwd, Math.max(8, contentWidth - 4))} • ${session.model}`;
+        const pathText = `${middleTruncate(terminalSafeLabel(session.cwd), Math.max(8, contentWidth - 4))} • ${terminalSafeLabel(session.model)}`;
 
         lines.push(row(`${prefix}${isSelected ? this.theme.fg("accent", titleLines[0]) : titleLines[0]}`));
         for (const idLine of titleLines.slice(1)) {
@@ -196,8 +197,8 @@ export class SessionListOverlay implements Component {
       lines.push(row());
       lines.push(row(this.theme.bold(" Workflow Stages")));
       for (const stage of visibleStages) {
-        lines.push(row(`  ${stage.stageName} [${stage.lifecycle.toUpperCase()}]`));
-        lines.push(row(`  ${this.theme.fg("dim", stage.target)}`));
+        lines.push(row(`  ${terminalSafeLabel(stage.stageName)} [${stage.lifecycle.toUpperCase()}]`));
+        lines.push(row(`  ${this.theme.fg("dim", terminalSafeLabel(stage.target))}`));
       }
       if (visibleStages.length < this.workflowStages.length) {
         lines.push(row(this.theme.fg("dim", ` ${visibleStages.length}/${this.workflowStages.length}`)));

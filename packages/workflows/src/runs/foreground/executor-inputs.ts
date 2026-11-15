@@ -15,7 +15,11 @@ export function resolveInputs(
 	schema: Readonly<Record<string, WorkflowInputSchema>>,
 	provided: Readonly<Record<string, unknown>>,
 ): ResolvedInputs {
-	const resolved: Record<string, WorkflowSerializableValue> = {};
+	// An own `__proto__` key (as `JSON.parse` produces) must stay an ordinary key
+	// that validation rejects, never the inputs' prototype, so what the run reads
+	// equals what is persisted. Collect into a null-prototype record and return
+	// a spread copy, which defines every key as an own property.
+	const resolved: Record<string, WorkflowSerializableValue> = Object.create(null);
 	for (const [key, value] of Object.entries(provided)) {
 		if (value !== undefined) resolved[key] = value as WorkflowSerializableValue;
 	}
@@ -41,7 +45,7 @@ export function resolveInputs(
 		}
 	}
 
-	return resolved;
+	return { ...resolved };
 }
 
 export function resolveInputConcurrency(
