@@ -42,8 +42,6 @@ export function observeJournalRead(journal: RunJournal): RunJournalReadObservati
 	const all = database.all.bind(database);
 	database.all = async <Row extends SqliteRow>(sql: string, ...values: readonly SqliteValue[]): Promise<Row[]> => {
 		const rows = await all<Row>(sql, ...values);
-		// A page's event sizes, read first to bound the page's bytes (#4954), are not entries read.
-		if (/^SELECT length\(/.test(sql)) return rows;
 		pageSizes.push(rows.length);
 		entriesRead += rows.length;
 		return rows;

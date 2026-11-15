@@ -233,9 +233,9 @@ for (const backend of storageBackends) {
 					await database.exec(`CREATE TABLE ${table} (data ${blob} NOT NULL)`);
 					// Over sqld's limit; SQLite and Postgres take it.
 					const value = new Uint8Array(6_000_000);
-					const write = database.run(`INSERT INTO ${table} VALUES (?)`, value);
+					const write = () => database.run(`INSERT INTO ${table} VALUES (?)`, value);
 					if (backend.name !== "libSQL server (sqld)") {
-						await write;
+						await write();
 						// A value the database computes over its own limit: SQLite's 1,000,000,000 bytes, Postgres's 1 GB.
 						const [computed, limitBytes] =
 							backend.name === "Postgres"
@@ -253,7 +253,7 @@ for (const backend of storageBackends) {
 						assert.deepEqual([error.kind, error.limitBytes, error.actualBytes], ["value", 5_000_000, 0]);
 						return true;
 					});
-					await assert.rejects(write, (error: unknown) => {
+					await assert.rejects(write(), (error: unknown) => {
 						assert.ok(error instanceof StoragePayloadTooLargeError);
 						assert.ok(!(error instanceof StorageUnavailableError));
 						assert.deepEqual(

@@ -31,6 +31,17 @@ test("payload limits are recognized from each driver's own codes, never from oth
 		payloadTooLargeKind(new Error("batch failed", { cause: failure({ code: "RESPONSE_TOO_LARGE" }) })),
 		"response",
 	);
+	// The message of `ARGS_INVALID` decides; a code alone, or a message that is not text, does not.
+	assert.equal(payloadTooLargeKind({ code: "ARGS_INVALID", message: 1 }), undefined);
+	assert.equal(payloadTooLargeKind({ message: "string or blob too big" }), undefined);
+	// Causes are followed eight deep, no further.
+	const wrapped = (depth: number) => {
+		let error: Error = failure({ code: "SQLITE_TOOBIG" });
+		for (let level = 0; level < depth; level++) error = new Error(`level ${level}`, { cause: error });
+		return error;
+	};
+	assert.equal(payloadTooLargeKind(wrapped(7)), "value");
+	assert.equal(payloadTooLargeKind(wrapped(8)), undefined);
 	assert.equal(payloadTooLargeKind(undefined), undefined);
 	assert.equal(payloadTooLargeKind("SQLITE_TOOBIG"), undefined);
 });

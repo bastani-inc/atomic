@@ -1054,12 +1054,10 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 					JSON.stringify(page.map((row) => row.hash)),
 					minimumAge,
 				);
-				if (rows.length > 0) {
-					await transaction.run(
-						`DELETE FROM ${t.blobChunks} WHERE hash IN (SELECT value FROM ${this.dialect.jsonValues("?")})`,
-						JSON.stringify(rows.map((row) => row.hash)),
-					);
-				}
+				await transaction.run(
+					`DELETE FROM ${t.blobChunks} WHERE hash IN (SELECT value FROM ${this.dialect.jsonValues("?")})`,
+					JSON.stringify(rows.map((row) => row.hash)),
+				);
 				return { page, deleted: rows.map((row) => row.hash) };
 			});
 			if (batch === undefined) {

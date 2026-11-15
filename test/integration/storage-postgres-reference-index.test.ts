@@ -305,7 +305,7 @@ describe.skipIf(postgresSkipReason !== undefined)("the reference index on Postgr
 			assert.equal(installed.length, 15);
 
 			// Forget that the triggers were installed, as a database migrated by a build before them would.
-			await database.run("DELETE FROM atomic_migrations WHERE domain = ? AND version = 2", SNAPSHOT_BLOB_DOMAIN);
+			await database.run("DELETE FROM atomic_migrations WHERE domain = ? AND version >= 2", SNAPSHOT_BLOB_DOMAIN);
 			await database.run("DELETE FROM snapshot_index_sources");
 			const again = await SqlSnapshotBlobStore.open(database);
 			await SqlSnapshotBlobStore.open(database);
@@ -318,7 +318,7 @@ describe.skipIf(postgresSkipReason !== undefined)("the reference index on Postgr
 			);
 			assert.deepEqual(
 				ledger.map((row) => Number(row.version)),
-				[1, 2],
+				[1, 2, 3],
 			);
 			await write(database, EARLY_WRITES);
 			await write(database, LATE_WRITES);

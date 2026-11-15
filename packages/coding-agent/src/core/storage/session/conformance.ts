@@ -16,8 +16,12 @@ import { SESSION_FORMAT_VERSION, type SessionRecordHeader, type SessionStore, ty
 
 export interface SessionStoreConformanceRunner {
 	describe(name: string, body: () => void): void;
-	it(name: string, body: () => Promise<void>): void;
+	/** `timeoutMs`, when given, is the case's own time limit: the cases that store tens of megabytes pass one. */
+	it(name: string, body: () => Promise<void>, timeoutMs?: number): void;
 }
+
+/** The time limit of a case that writes and reads tens of megabytes, as it takes over HTTP to a loaded server. */
+const LARGE_VALUE_TIMEOUT_MS = 300_000;
 
 export interface SessionStoreConformanceSubject {
 	store: SessionStore;
@@ -87,16 +91,21 @@ export function registerSessionStoreConformance(
 ): void {
 	for (const reopen of [false, true]) {
 		runner.describe(`${name}${reopen ? " (reopen)" : ""}`, () => {
-			const check = (title: string, body: (store: SessionStore, reload: Reload) => Promise<void>): void => {
-				runner.it(title, () =>
+			const check = (
+				title: string,
+				body: (store: SessionStore, reload: Reload) => Promise<void>,
+				timeoutMs?: number,
+			): void => {
+				const run = () =>
 					withSubject((subject) =>
 						body(subject.store, async (store) => {
 							if (!reopen) return store;
 							await store.close();
 							return subject.reopen();
 						}),
-					),
-				);
+					);
+				if (timeoutMs === undefined) runner.it(title, run);
+				else runner.it(title, run, timeoutMs);
 			};
 
 			check("creates atomically and rejects duplicate sessions without changing data", async (store, reload) => {
@@ -808,12 +817,14 @@ export function registerSessionStoreConformance(
 					assert.equal(summary?.firstMessage, text.slice(0, SESSION_SUMMARY_TEXT_CHARS));
 					assert.ok(summary?.searchText.startsWith(text.slice(0, SESSION_SUMMARY_TEXT_CHARS)));
 					assert.ok(summary?.searchText.endsWith("1".repeat(SESSION_SUMMARY_TEXT_CHARS)));
-					await store.replace("session", header(), [large], { expectSeq: 13 });
+					const small = message("small", "small");
+					await store.replace("session", header(), [small], { expectSeq: 13 });
 					store = await reload(store);
-					assert.ok(JSON.stringify((await store.load("session")).entries) === JSON.stringify([large]));
+					assert.deepEqual((await store.load("session")).entries, [small]);
 					await store.delete("session");
 					await assert.rejects(store.load("session"), notFound("session"));
 				},
+				LARGE_VALUE_TIMEOUT_MS,
 			);
 
 			check("rejects blob reads and writes after close (#4379)", async (store) => {

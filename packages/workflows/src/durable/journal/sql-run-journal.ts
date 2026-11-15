@@ -16,6 +16,7 @@ import {
 	StorageUnavailableError,
 } from "@bastani/atomic/storage";
 import {
+	JOURNAL_READ_PAGE_CHARS,
 	JOURNAL_READ_PAGE_SIZE,
 	JOURNAL_TRANSACTION,
 	JOURNAL_WRITE_TRANSACTION,
@@ -26,7 +27,6 @@ import {
 	type RunVersion,
 	registerJournalKeyRangeRead,
 	registerSqlPoolStorage,
-	rowsWithinReadPage,
 } from "./internal.js";
 import { isWorkflowLeaseExpired } from "./lease-expiry.js";
 import { LegacyJournalRuns, latestEventColumns, type RunVersionRow } from "./legacy-journal-tables.js";
@@ -81,6 +81,34 @@ function entryFromRow(row: EventRow): JournalEntry {
 		...(key === null ? {} : { key }),
 		event: { type: row[c.type], payload: JSON.parse(row[c.payload]) } as RunEvent,
 		at: Number(row[c.at]),
+	};
+}
+
+/**
+ * One page of events: the rows of `pageRows`, a query of the events table that ends in `ORDER BY <order> LIMIT ?`,
+ * cut after the row whose payload takes the page past {@link JOURNAL_READ_PAGE_CHARS}, so a page of large checkpoints
+ * stays under a libSQL server's 10 MB response limit (#4954). One statement, as before; the first row always comes
+ * back. `more` says whether rows may follow the page.
+ */
+async function readSizedPage(
+	database: SqliteDatabase,
+	pageRows: string,
+	order: string,
+	params: readonly SqliteValue[],
+): Promise<{ readonly page: JournalEntry[]; readonly more: boolean }> {
+	const rows = await database.all<EventRow & { fetched: number | bigint }>(
+		`SELECT * FROM (
+			SELECT page.*, sum(length(page.${c.payload})) OVER (ORDER BY page.${order}) - length(page.${c.payload}) AS before_chars,
+				count(*) OVER () AS fetched
+			FROM (${pageRows}) AS page
+		) AS sized WHERE before_chars < ? ORDER BY ${order}`,
+		...params,
+		JOURNAL_READ_PAGE_CHARS,
+	);
+	const fetched = Number(rows[0]?.fetched ?? 0);
+	return {
+		page: rows.map(entryFromRow),
+		more: rows.length > 0 && (rows.length < fetched || fetched === JOURNAL_READ_PAGE_SIZE),
 	};
 }
 
@@ -856,27 +884,12 @@ export class SqlRunJournal implements RunJournal {
 					const rows = (await legacy.events(this.database, runId, nextSeq, JOURNAL_READ_PAGE_SIZE)) as EventRow[];
 					return { page: rows.map(entryFromRow), more: rows.length === JOURNAL_READ_PAGE_SIZE };
 				}
-				// Events never change once appended, so the sizes read first describe the rows read next (#4954).
-				const sizes = await this.database.all<SqliteRow & { size: number | null }>(
-					`SELECT length(${c.payload}) AS size FROM ${this.tables.events} WHERE ${c.runId} = ? AND ${c.seq} >= ? ORDER BY ${c.seq} LIMIT ?`,
-					runId,
-					nextSeq,
-					JOURNAL_READ_PAGE_SIZE,
+				return readSizedPage(
+					this.database,
+					`SELECT * FROM ${this.tables.events} WHERE ${c.runId} = ? AND ${c.seq} >= ? ORDER BY ${c.seq} LIMIT ?`,
+					c.seq,
+					[runId, nextSeq, JOURNAL_READ_PAGE_SIZE],
 				);
-				const limit = rowsWithinReadPage(sizes);
-				const rows =
-					limit === 0
-						? []
-						: await this.database.all<EventRow>(
-								`SELECT * FROM ${this.tables.events} WHERE ${c.runId} = ? AND ${c.seq} >= ? ORDER BY ${c.seq} LIMIT ?`,
-								runId,
-								nextSeq,
-								limit,
-							);
-				return {
-					page: rows.map(entryFromRow),
-					more: rows.length === limit && (limit < sizes.length || sizes.length === JOURNAL_READ_PAGE_SIZE),
-				};
 			});
 			for (const entry of page) {
 				this.assertOpen();
@@ -933,23 +946,12 @@ export class SqlRunJournal implements RunJournal {
 		let after: string | undefined;
 		for (;;) {
 			const { page, more } = await journal.operation(async () => {
-				const range = `FROM ${journal.tables.events} WHERE ${c.runId} = ? AND ${c.key} ${after === undefined ? ">=" : ">"} ? AND ${c.key} < ? ORDER BY ${c.key} LIMIT ?`;
-				const sizes = await journal.database.all<SqliteRow & { size: number | null }>(
-					`SELECT length(${c.payload}) AS size ${range}`,
-					runId,
-					after ?? fromKey,
-					toKey,
-					JOURNAL_READ_PAGE_SIZE,
+				return readSizedPage(
+					journal.database,
+					`SELECT * FROM ${journal.tables.events} WHERE ${c.runId} = ? AND ${c.key} ${after === undefined ? ">=" : ">"} ? AND ${c.key} < ? ORDER BY ${c.key} LIMIT ?`,
+					c.key,
+					[runId, after ?? fromKey, toKey, JOURNAL_READ_PAGE_SIZE],
 				);
-				const limit = rowsWithinReadPage(sizes);
-				const rows =
-					limit === 0
-						? []
-						: await journal.database.all<EventRow>(`SELECT * ${range}`, runId, after ?? fromKey, toKey, limit);
-				return {
-					page: rows.map(entryFromRow),
-					more: rows.length === limit && (limit < sizes.length || sizes.length === JOURNAL_READ_PAGE_SIZE),
-				};
 			});
 			for (const entry of page) {
 				journal.assertOpen();
