@@ -61,13 +61,30 @@ function hasWrongTypedLegacyFields(schema: SchemaNode, value: JsonValue): boolea
 	return Object.entries(legacy).some(([key, field]) => key in fields && !hasType(field, fields[key]!));
 }
 
+/**
+ * Settings whose readers already reject a wrong type with their own typed error, so a mistake there fails the request
+ * instead of quietly switching to another model, provider, store or timeout.
+ */
+const SELF_VALIDATED_SETTINGS: ReadonlySet<string> = new Set([
+	"decisionModel",
+	"compactionModel",
+	"modelRouting",
+	"storage",
+	"sessions",
+	"workflows",
+	"snapshots",
+	"httpIdleTimeoutMs",
+	"websocketConnectTimeoutMs",
+	"streamDeadlineMs",
+]);
+
 function collect(
 	properties: Record<string, SchemaNode>,
 	settings: { [key: string]: JsonValue },
 	invalid: InvalidSettingValue[],
 ): void {
 	for (const [setting, schema] of Object.entries(properties)) {
-		if (!Object.hasOwn(settings, setting)) continue;
+		if (!Object.hasOwn(settings, setting) || SELF_VALIDATED_SETTINGS.has(setting)) continue;
 		const value = settings[setting]!;
 		if (!hasType(schema, value) || hasWrongTypedLegacyFields(schema, value)) {
 			invalid.push({ setting, key: setting, expected: describe(schema), actual: jsonTypeOf(value) });
