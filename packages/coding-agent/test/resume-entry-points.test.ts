@@ -1,15 +1,5 @@
 import assert from "node:assert/strict";
-import {
-	closeSync,
-	existsSync,
-	mkdirSync,
-	openSync,
-	readdirSync,
-	readFileSync,
-	renameSync,
-	rmSync,
-	writeFileSync,
-} from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fauxAssistantMessage, registerFauxProvider } from "@bastani/pi-ai/compat";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
@@ -25,6 +15,7 @@ import {
 import { createAgentSessionFromServices, createAgentSessionServices } from "../src/core/agent-session-services.js";
 import { AuthStorage } from "../src/core/auth-storage.js";
 import { ModelRuntime } from "../src/core/model-runtime.js";
+import { renameReplacing } from "../src/core/rename-retry.js";
 import {
 	blueprintBuildPending,
 	blueprintBuildSettled,
@@ -142,7 +133,7 @@ async function recordSessionWithSnapshot(
  */
 async function unsafeSessionRecordedElsewhere(selection: StorageSelection) {
 	const recorded = await recordSessionWithSnapshot(selection, {}, ["https://user:token@example.invalid/repo.git"]);
-	renameSync(recorded.clone, sandbox.path("node-a-offline"));
+	renameReplacing(recorded.clone, sandbox.path("node-a-offline"));
 	return recorded;
 }
 
@@ -161,7 +152,7 @@ function lastUnrestored(manager: SessionManager) {
 
 /** Node B's own clone of the session's repository at the session's recorded path, which never held node A's snapshot. */
 async function anotherCloneAtRecordedPath(clone: string): Promise<void> {
-	renameSync(clone, sandbox.path("node-a-offline"));
+	renameReplacing(clone, sandbox.path("node-a-offline"));
 	await sandbox.git(sandbox.root, "clone", "-q", sandbox.path("repo.git"), clone);
 	sandbox.write(join(clone, "README.md"), "node B's own checkout at the same path\n");
 }
@@ -169,7 +160,7 @@ async function anotherCloneAtRecordedPath(clone: string): Promise<void> {
 /** A session recorded "on node A" in `selection`, whose checkout then disappears from this machine. */
 async function sessionRecordedElsewhere(selection: StorageSelection, files: Record<string, string> = {}) {
 	const recorded = await recordSessionWithSnapshot(selection, files);
-	renameSync(recorded.clone, sandbox.path("node-a-offline"));
+	renameReplacing(recorded.clone, sandbox.path("node-a-offline"));
 	return recorded;
 }
 
@@ -287,7 +278,7 @@ describe("openCliSession (#4329)", () => {
 		const selection = sqliteSelection("shared");
 		const { sessionId } = await sessionRecordedElsewhere(selection);
 		const checkout = sandbox.path("node-b-checkout");
-		renameSync(sandbox.path("node-a-offline"), checkout);
+		renameReplacing(sandbox.path("node-a-offline"), checkout);
 		sandbox.write(join(checkout, "README.md"), "user edit\n");
 		const opened = await openCliSession(parseArgs(["--session", sessionId]), checkout, settings(), {
 			agentDir: sandbox.path("agent"),
@@ -336,7 +327,7 @@ describe("resume progress (#4660)", () => {
 		const selection = sqliteSelection("shared");
 		const { sessionId } = await sessionRecordedElsewhere(selection);
 		const checkout = sandbox.path("node-b-checkout");
-		renameSync(sandbox.path("node-a-offline"), checkout);
+		renameReplacing(sandbox.path("node-a-offline"), checkout);
 		sandbox.write(join(checkout, "README.md"), "user edit\n");
 		const { events, progress } = recordingProgress();
 		const opened = await openCliSession(parseArgs(["--session", sessionId]), checkout, settings(), {
@@ -650,7 +641,7 @@ describe("openCliSession edge cases (#4329)", () => {
 		const selection = sqliteSelection("shared");
 		const { sessionId } = await sessionRecordedElsewhere(selection, { "package-lock.json": "{}\n" });
 		const checkout = sandbox.path("node-b-checkout");
-		renameSync(sandbox.path("node-a-offline"), checkout);
+		renameReplacing(sandbox.path("node-a-offline"), checkout);
 		sandbox.write(join(checkout, "README.md"), "user edit\n");
 		const unsafe = await recordSessionWithSnapshot(
 			selection,
@@ -1230,7 +1221,7 @@ describe("AgentSessionRuntime.switchSession across nodes (#4329)", () => {
 		});
 		if (capture.status !== "captured") throw new Error(capture.status);
 		await manager.appendWorktreeSnapshot(clone, capture.snapshot.id, capture.snapshot);
-		renameSync(clone, sandbox.path("node-a-offline"));
+		renameReplacing(clone, sandbox.path("node-a-offline"));
 		const { runtime } = await runtimeOn(agentDir, { resume: { setupCommand: "true" } });
 
 		const woken = await runtime.rehydrate(manager.getSessionId());
@@ -1291,7 +1282,7 @@ describe("AgentSessionRuntime.switchSession across nodes (#4329)", () => {
 		const agentDir = sandbox.path("agent");
 		const { repoA, repoB, y } = await sessionsSharingACheckout();
 		sandbox.write(join(repoA, "written-after-the-release.txt"), "later\n");
-		renameSync(repoB, sandbox.path("repo-b-offline"));
+		renameReplacing(repoB, sandbox.path("repo-b-offline"));
 		await sandbox.git(sandbox.root, "clone", "-q", sandbox.path("repo-b.git"), repoB);
 		sandbox.write(join(repoB, "README.md"), "this node's own work\n");
 		const { runtime } = await runtimeOn(agentDir, {});
@@ -1309,7 +1300,7 @@ describe("AgentSessionRuntime.switchSession across nodes (#4329)", () => {
 
 	test("two sessions woken in one process each resolve a checkout both recorded into their own restore (#4329)", async () => {
 		const { repoB, x, y } = await sessionsSharingACheckout();
-		renameSync(repoB, sandbox.path("repo-b-offline"));
+		renameReplacing(repoB, sandbox.path("repo-b-offline"));
 		const { runtime } = await runtimeOn(sandbox.path("agent"), {});
 
 		const wokenX = await runtime.rehydrate(x);
@@ -1413,8 +1404,8 @@ describe("AgentSessionRuntime.switchSession across nodes (#4329)", () => {
 
 	test("rehydrating on the first node a session that worked on in node B's worktree continues from node B's work", async () => {
 		const { clone, sessionId, runtime, worktree } = await sessionEditedOnNodeB(sandbox.path("agent"));
-		renameSync(worktree, sandbox.path("node-b-offline"));
-		renameSync(sandbox.path("node-a-offline"), clone);
+		renameReplacing(worktree, sandbox.path("node-b-offline"));
+		renameReplacing(sandbox.path("node-a-offline"), clone);
 
 		const woken = await runtime.rehydrate(sessionId);
 

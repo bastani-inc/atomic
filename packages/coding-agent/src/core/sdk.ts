@@ -1,6 +1,12 @@
 import { basename, dirname, join, relative, sep } from "node:path";
 import { getOpenCodeSessionHeaders } from "@bastani/pi-ai";
-import { clampThinkingLevel, type Message, type ProviderHeaders, streamSimple } from "@bastani/pi-ai/compat";
+import {
+	clampThinkingLevel,
+	type Message,
+	type ProviderHeaders,
+	streamSimple,
+	type Usage,
+} from "@bastani/pi-ai/compat";
 import { getProviderEnvValue } from "@bastani/pi-ai/utils/provider-env";
 import { Agent, type AgentMessage, setDefaultStreamFn, type ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { getAgentDir } from "../config.js";
@@ -39,6 +45,7 @@ import {
 	withMandatoryResourceLoader,
 } from "./mandatory-resource-loader.ts";
 import { convertToLlm, repairOrphanToolResults } from "./messages.ts";
+import { modelCallUsage } from "./model-call-usage.ts";
 import { formatModelLabel } from "./model-label.ts";
 import { findInitialModel, resolveRestoredModelReference, uncachedCopilotModelHint } from "./model-resolver.ts";
 import { ModelRuntime } from "./model-runtime.js";
@@ -820,6 +827,12 @@ async function constructAgentSession(
 		workflows: () => session.extensionRunner.getProjectHistory().workflows(),
 	};
 	try {
+		// One sink per session, so every resolved child configuration carries the same callback identity.
+		const reportChildUsage = (usage: Usage): void =>
+			(session as unknown as import("./agent-session-methods.ts").AgentSessionInternalSurface)._emit({
+				type: "child_session_usage",
+				usage,
+			});
 		session = new AgentSession({
 			agent,
 			sessionManager,
@@ -857,6 +870,7 @@ async function constructAgentSession(
 						inheritedHistory: childHistory,
 						resourceAdmission: options.resourceAdmission,
 						workspace,
+						parentUsageSink: reportChildUsage,
 					},
 					child,
 					session.getAllTools().map((tool) => tool.name),
@@ -945,6 +959,7 @@ async function constructAgentSession(
 					code: "BuiltinUnavailable",
 				});
 		}
+		if (options.parentUsageSink !== undefined) forwardUsage(session, options.parentUsageSink);
 		if (!deferStart) await session.bindExtensions(options.extensionBindings ?? {});
 		return {
 			session,
@@ -956,4 +971,15 @@ async function constructAgentSession(
 	} catch (error) {
 		return rollbackStartup(session.extensionRunner, error instanceof Error ? error : new Error(String(error)));
 	}
+}
+
+/**
+ * Report each model call of `session` and of its own children to its parent: assistant responses, compaction
+ * requests, auxiliary usage entries (cache warming) and the calls its children report (#5053).
+ */
+function forwardUsage(session: AgentSession, sink: (usage: Usage) => void): void {
+	session.subscribe((event) => {
+		const usage = modelCallUsage(event);
+		if (usage !== undefined) sink(usage);
+	});
 }

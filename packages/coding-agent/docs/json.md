@@ -40,6 +40,7 @@ type AgentSessionEvent =
   | { type: "thinking_level_changed"; level: ThinkingLevel }
   | { type: "compaction_end"; reason: "manual" | "threshold" | "overflow"; result: VerbatimCompactionResult | undefined; aborted: boolean; willRetry: boolean; unresolvedOverflow?: boolean; errorMessage?: string }
   | { type: "compaction_usage"; reason: "manual" | "threshold" | "overflow"; usage: Usage }
+  | { type: "child_session_usage"; usage: Usage }
   | { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
   | { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
   | { type: "summarization_retry_scheduled"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
@@ -56,7 +57,7 @@ A resumed session whose blueprint build runs behind its first turn (see [Start t
 
 `notices` holds the warnings a resume that waits for the build prints, and is empty when the build finished cleanly. In text mode (`-p`) the same warnings go to stderr as `Warning: …` lines.
 
-`queue_update` emits the full pending steering and follow-up queues whenever they change. `session_info_changed`, `model_changed`, and `thinking_level_changed` report interactive session metadata changes. `compaction_start` and `compaction_end` cover manual and automatic verbatim line compaction: the model emits deleted ranges and Atomic mechanically reconstructs retained text. `compaction_usage` reports the usage of each compaction model request (planner, classifier, summary fallback, and retries) as it returns, including requests of a run that later fails, so summing it charges every compaction request once.
+`queue_update` emits the full pending steering and follow-up queues whenever they change. `session_info_changed`, `model_changed`, and `thinking_level_changed` report interactive session metadata changes. `compaction_start` and `compaction_end` cover manual and automatic verbatim line compaction: the model emits deleted ranges and Atomic mechanically reconstructs retained text. `compaction_usage` reports the usage of each compaction model request (planner, classifier, summary fallback, and retries) as it returns, including requests of a run that later fails, so summing it charges every compaction request once. `child_session_usage` reports one model call of a child session the session created, such as a subagent, or of that child's own children.
 
 `agent_end` closes one low-level agent run; retries, compaction recovery, or queued work may still continue. `agent_settled` means no automatic work remains for the session-level run. Its `aborted` field is `true` when the run was cancelled.
 

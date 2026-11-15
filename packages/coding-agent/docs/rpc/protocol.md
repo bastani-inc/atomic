@@ -1163,6 +1163,7 @@ Events are streamed to stdout as JSON lines. Most events do not include an `id`;
 | `compaction_start` | Verbatim line compaction begins |
 | `compaction_end` | Verbatim line compaction completes, including a background result applied at a turn boundary |
 | `compaction_usage` | One compaction model request returned usage |
+| `child_session_usage` | One model call of a child session, such as a subagent, returned usage |
 | `background_compaction` | Background compaction state changed |
 | `auto_retry_start` | Auto-retry begins (after transient error) |
 | `auto_retry_end` | Auto-retry completes (success or final failure) |
@@ -1389,6 +1390,14 @@ Emitted once for every model request a compaction run makes: each planner reques
 
 ```json
 {"type": "compaction_usage", "reason": "threshold", "usage": {"input": 5000, "output": 20, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 5020, "cost": {"input": 0.5, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0.5}}}
+```
+
+### child_session_usage
+
+Emitted on a session once for every model call of a child session it created, such as an in-process subagent, and of that child's own children: assistant responses, compaction requests and cache warming. `usage` is that one call's usage. A workflow stage charges these to its budget.
+
+```json
+{"type": "child_session_usage", "usage": {"input": 10, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 10, "cost": {"input": 2, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 2}}}
 ```
 
 ### background_compaction
