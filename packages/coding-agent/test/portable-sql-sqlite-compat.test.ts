@@ -306,7 +306,17 @@ test("an index table without restore links gains them when every table exists (#
 	);
 	assert.deepEqual(
 		columns.map((column) => column.name),
-		["session_id", "seq", "root", "snapshot_id", "prev_seq", "restore_from", "restore_to"],
+		[
+			"session_id",
+			"seq",
+			"root",
+			"snapshot_id",
+			"prev_seq",
+			"restore_from",
+			"restore_to",
+			"degraded_from",
+			"degraded_since",
+		],
 	);
 });
 
@@ -363,6 +373,7 @@ test("a store with a migration ledger records each step of the session and blob 
 		{ domain: "snapshot-blobs", version: 1 },
 		{ domain: "snapshot-blobs", version: 2 },
 		{ domain: "snapshot-blobs", version: 3 },
+		{ domain: "snapshot-blobs", version: 4 },
 	]);
 	await store.create(header("a"), [message("a1", null), message("a2", "a1")]);
 	const blob = await store.putBlob("a", new TextEncoder().encode("blob"));
@@ -370,6 +381,6 @@ test("a store with a migration ledger records each step of the session and blob 
 	const [listed] = await Array.fromAsync(store.list({}));
 	assert.equal(listed?.searchText, "a1 a2");
 	// A newer schema keeps every table this build knows, and is still refused.
-	await database.run("INSERT INTO team_atomic_migrations VALUES ('snapshot-blobs', 4, 0)");
+	await database.run("INSERT INTO team_atomic_migrations VALUES ('snapshot-blobs', 5, 0)");
 	await assert.rejects(SqlSessionStore.open(database, { prefix: "team_" }), StorageSchemaVersionError);
 });

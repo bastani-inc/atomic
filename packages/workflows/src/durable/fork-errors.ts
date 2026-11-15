@@ -5,6 +5,8 @@
  * serialize with `toJSON()` and come back as the same class through `rehydrateForkError`.
  */
 
+import { projectTrustInstruction } from "./project-trust.js";
+
 export type ForkErrorCode =
 	| "target-not-found"
 	| "definition-mismatch"
@@ -220,7 +222,11 @@ export class ForkTargetNotFoundError extends ForkError {
 	}
 }
 
-export type ForkDefinitionMismatchReason = "definition-unavailable" | "name-changed" | "inputs-incompatible";
+export type ForkDefinitionMismatchReason =
+	| "definition-unavailable"
+	| "name-changed"
+	| "inputs-incompatible"
+	| "project-not-trusted";
 
 /** The workflow definition cannot replay the source run. Nothing was written. */
 export class ForkDefinitionMismatchError extends ForkError {
@@ -233,6 +239,8 @@ export class ForkDefinitionMismatchError extends ForkError {
 	readonly reason: ForkDefinitionMismatchReason;
 	/** Name of the definition that was supplied or resolved, when one was. */
 	readonly definition?: string;
+	/** The untrusted project folder the workflow is defined in, for `project-not-trusted`. */
+	readonly projectDir?: string;
 
 	constructor(
 		input: {
@@ -240,6 +248,7 @@ export class ForkDefinitionMismatchError extends ForkError {
 			readonly workflow: string;
 			readonly reason: ForkDefinitionMismatchReason;
 			readonly definition?: string;
+			readonly projectDir?: string;
 		},
 		options?: { readonly cause?: Error },
 	) {
@@ -247,24 +256,35 @@ export class ForkDefinitionMismatchError extends ForkError {
 			"definition-unavailable": `workflow "${input.workflow}" of run ${input.runId} could not be resolved`,
 			"name-changed": `definition "${input.definition}" does not match workflow "${input.workflow}" of run ${input.runId}`,
 			"inputs-incompatible": `the recorded inputs of run ${input.runId} no longer satisfy workflow "${input.workflow}"`,
+			"project-not-trusted": `workflow "${input.workflow}" of run ${input.runId} is defined in ${input.projectDir}, which is not a trusted project`,
+		};
+		const hints: Record<ForkDefinitionMismatchReason, string> = {
+			"definition-unavailable": `Pass the "${input.workflow}" definition with the definition option, or register it in the registry option.`,
+			"name-changed": `Pass the "${input.workflow}" definition with the definition option, or register it in the registry option.`,
+			"inputs-incompatible": "Pass replacement inputs that satisfy the current definition with the inputs option.",
+			"project-not-trusted": `${projectTrustInstruction(input.projectDir ?? "")}, then fork again.`,
 		};
 		super({
 			name: "ForkDefinitionMismatchError",
 			code: "definition-mismatch",
 			what: "Fork definition mismatch",
 			subject: subjects[input.reason],
-			hint:
-				input.reason === "inputs-incompatible"
-					? "Pass replacement inputs that satisfy the current definition with the inputs option."
-					: `Pass the "${input.workflow}" definition with the definition option, or register it in the registry option.`,
+			hint: hints[input.reason],
 			retryable: false,
-			fields: { runId: input.runId, workflow: input.workflow, reason: input.reason, definition: input.definition },
+			fields: {
+				runId: input.runId,
+				workflow: input.workflow,
+				reason: input.reason,
+				definition: input.definition,
+				projectDir: input.projectDir,
+			},
 			cause: options?.cause,
 		});
 		this.runId = input.runId;
 		this.workflow = input.workflow;
 		this.reason = input.reason;
 		this.definition = input.definition;
+		this.projectDir = input.projectDir;
 	}
 }
 
@@ -1144,6 +1164,7 @@ const REHYDRATE: Record<ForkErrorName, Rehydrate> = {
 				workflow: text(f, "workflow"),
 				reason: text(f, "reason") as ForkDefinitionMismatchReason,
 				definition: optionalText(f, "definition"),
+				projectDir: optionalText(f, "projectDir"),
 			},
 			{ cause },
 		),

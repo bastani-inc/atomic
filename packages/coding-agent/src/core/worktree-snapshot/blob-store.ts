@@ -50,9 +50,12 @@ export interface SnapshotIndexTables {
 	/** `(run_id, retained, seq)`: whether the run's latest status keeps its snapshots, from the event at `seq`. */
 	readonly runState: string;
 	/**
-	 * `(session_id, seq, root, snapshot_id, prev_seq, restore_from, restore_to)`: one row per `worktree_snapshot`
-	 * session entry, with the `seq` of the nearest snapshot entry before it on its branch and, for the entry written
-	 * when a snapshot was restored into a new worktree, the root it moved from and to.
+	 * `(session_id, seq, root, snapshot_id, prev_seq, restore_from, restore_to, degraded_from, degraded_since)`: one row
+	 * per `worktree_snapshot` session entry, with the `seq` of the nearest snapshot entry before it on its branch and,
+	 * for the entry written when a snapshot was restored into a new worktree, the root it moved from and to. An entry of
+	 * a partly restored worktree names the snapshot it lacks in `degraded_from` (#4922), with `degraded_since`, on the
+	 * database clock, when the entries naming it began: the nearest snapshot entry before it's when that one names it
+	 * too, else when this entry was indexed.
 	 */
 	readonly sessionRefs: string;
 	/**
@@ -208,6 +211,14 @@ export function runningSnapshotCollectionsOn(descriptor: StorageDescriptor): Pro
  * the host process for all of them.
  */
 const yieldToEventLoop = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+/**
+ * How long the snapshot a resume restored only partly stays its checkout's restore target and is kept by collection
+ * (#4922). Resume and capture count it from the partial restore; collection, on the database clock, from the first
+ * session entry that names the snapshot, which never comes earlier.
+ */
+export const DEGRADED_RESTORE_RETENTION_DAYS = 30;
+const DEGRADED_PIN_SECONDS = DEGRADED_RESTORE_RETENTION_DAYS * 24 * 60 * 60;
 
 /** Blobs one collection batch examines and deletes in one write transaction. */
 export const SNAPSHOT_COLLECTION_BATCH = 256;
@@ -478,12 +489,26 @@ function indexSources(prefix: string, t: SnapshotIndexTables, d: StorageDialect)
 				`SELECT r.session_id, r.seq, ${d.jsonText(entry.column, "snapshotId")}, ${d.jsonAt(source, ...keys)} FROM ${rows} AS r${from} WHERE ${d.jsonAtIsText(source, ...keys)} AND ${isSnapshot}`,
 			);
 		const restored = `${d.jsonHasType("text", entry.column, "restore", "from")} AND ${d.jsonHasType("text", entry.column, "restore", "to")}`;
+		const pinned = d.jsonHasType("text", entry.column, "degradedFrom");
+		const degradedFrom = d.jsonText(entry.column, "degradedFrom");
+		// A pin began with the first entry naming its snapshot; entries that go on naming it keep that start (#4922).
+		const degradedSince = `COALESCE((SELECT earlier.degraded_since FROM ${t.sessionRefs} AS earlier WHERE earlier.session_id = r.session_id AND earlier.seq = parent.anchor_seq AND earlier.degraded_from = ${degradedFrom}), ${d.nowSeconds})`;
 		return [
 			d.insertOrReplace(
 				t.sessionRefs,
-				["session_id", "seq", "root", "snapshot_id", "prev_seq", "restore_from", "restore_to"],
+				[
+					"session_id",
+					"seq",
+					"root",
+					"snapshot_id",
+					"prev_seq",
+					"restore_from",
+					"restore_to",
+					"degraded_from",
+					"degraded_since",
+				],
 				["session_id", "seq"],
-				`SELECT r.session_id, r.seq, ${d.jsonText(entry.column, "root")}, ${d.jsonText(entry.column, "snapshotId")}, parent.anchor_seq, CASE WHEN ${restored} THEN ${d.jsonText(entry.column, "restore", "from")} END, CASE WHEN ${restored} THEN ${d.jsonText(entry.column, "restore", "to")} END FROM ${parentOf(rows)} WHERE ${isSnapshot}`,
+				`SELECT r.session_id, r.seq, ${d.jsonText(entry.column, "root")}, ${d.jsonText(entry.column, "snapshotId")}, parent.anchor_seq, CASE WHEN ${restored} THEN ${d.jsonText(entry.column, "restore", "from")} END, CASE WHEN ${restored} THEN ${d.jsonText(entry.column, "restore", "to")} END, CASE WHEN ${pinned} THEN ${degradedFrom} END, CASE WHEN ${pinned} THEN ${degradedSince} END FROM ${parentOf(rows)} WHERE ${isSnapshot}`,
 			),
 			record({ ...entry, element: "link" }, ["patch"], `, ${d.jsonEach(entry, "link", "snapshot", "chain")}`),
 			record(entry, ["snapshot", "bundle", "blob"]),
@@ -658,7 +683,7 @@ async function createSnapshotIndexTables(
 		CREATE TABLE IF NOT EXISTS ${t.runRefs} (run_id ${text} NOT NULL, hash ${text} NOT NULL, PRIMARY KEY (run_id, hash))${keyed};
 		CREATE INDEX IF NOT EXISTS ${t.runRefs}_hash ON ${t.runRefs} (hash);
 		CREATE TABLE IF NOT EXISTS ${t.runState} (run_id ${text} PRIMARY KEY, retained ${int} NOT NULL, seq ${int} NOT NULL)${keyed};
-		CREATE TABLE IF NOT EXISTS ${t.sessionRefs} (session_id ${text} NOT NULL, seq ${int} NOT NULL, root ${text} NOT NULL, snapshot_id ${text} NOT NULL, prev_seq ${int}, restore_from ${text}, restore_to ${text}, PRIMARY KEY (session_id, seq))${keyed};
+		CREATE TABLE IF NOT EXISTS ${t.sessionRefs} (session_id ${text} NOT NULL, seq ${int} NOT NULL, root ${text} NOT NULL, snapshot_id ${text} NOT NULL, prev_seq ${int}, restore_from ${text}, restore_to ${text}, degraded_from ${text}, degraded_since ${int}, PRIMARY KEY (session_id, seq))${keyed};
 		CREATE TABLE IF NOT EXISTS ${t.sessionLinks} (session_id ${text} NOT NULL, seq ${int} NOT NULL, entry_id ${text} NOT NULL, parent_id ${text}, anchor_seq ${int}, children ${int} NOT NULL, broken ${int} NOT NULL, PRIMARY KEY (session_id, seq))${strict};
 		CREATE INDEX IF NOT EXISTS ${t.sessionLinks}_entry ON ${t.sessionLinks} (session_id, entry_id);
 		CREATE INDEX IF NOT EXISTS ${t.sessionLinks}_leaves ON ${t.sessionLinks} (session_id, anchor_seq) WHERE children = 0 AND anchor_seq IS NOT NULL;
@@ -672,12 +697,33 @@ async function createSnapshotIndexTables(
 		CREATE TABLE IF NOT EXISTS ${t.sources} (source ${text} PRIMARY KEY, watermark ${int} NOT NULL, backfilled_through ${int} NOT NULL)${keyed};
 	`);
 	await addBlobChunks(transaction, t, dialect);
+	await addSessionRefColumns(transaction, t, prefix, dialect);
+}
+
+/** The columns of {@link SnapshotIndexTables.sessionRefs} that later builds added, with their types. */
+const SESSION_REF_COLUMNS = ["prev_seq", "restore_from", "restore_to", "degraded_from", "degraded_since"] as const;
+
+/**
+ * Adds the columns of the session references that an index written by an earlier build lacks. Adding any drops the
+ * session entries' triggers and marks their index for a rebuild, which collection runs before it deletes anything.
+ */
+async function addSessionRefColumns(
+	transaction: SqliteExecutor,
+	t: SnapshotIndexTables,
+	prefix: string,
+	dialect: StorageDialect,
+): Promise<void> {
+	const { int, text } = dialect.types;
+	const types: Record<(typeof SESSION_REF_COLUMNS)[number], string> = {
+		prev_seq: int,
+		restore_from: text,
+		restore_to: text,
+		degraded_from: text,
+		degraded_since: int,
+	};
 	let migrated = false;
-	for (const [name, type] of [
-		["prev_seq", int],
-		["restore_from", text],
-		["restore_to", text],
-	] as const) {
+	for (const name of SESSION_REF_COLUMNS) {
+		const type = types[name];
 		const column = dialect.columnExists(t.sessionRefs, name);
 		if (await transaction.get(column.sql, ...column.params)) continue;
 		await transaction.exec(`ALTER TABLE ${t.sessionRefs} ADD COLUMN ${name} ${type}`);
@@ -810,7 +856,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			dialect.columnExists(t.blobs, "created_at"),
 			dialect.columnExists(t.blobs, "chunks"),
 			dialect.schemaObjects([`${t.blobs}_chunks_delete`]),
-			...["prev_seq", "restore_from", "restore_to"].map((column) => dialect.columnExists(t.sessionRefs, column)),
+			...SESSION_REF_COLUMNS.map((column) => dialect.columnExists(t.sessionRefs, column)),
 		];
 		const found = await Promise.all(probes.map((probe) => database.get(probe.sql, ...probe.params)));
 		// A versioned database always checks its ledger: a newer schema with the same tables is refused, and a step it
@@ -830,8 +876,15 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 									up: (transaction: SqliteExecutor, dialect: StorageDialect) =>
 										installMissingSources(transaction, t, prefix, dialect),
 								},
+								// The pins of partly restored worktrees (#4922); SQLite adds them in step 1, which runs every time.
 								{
 									version: 3,
+									up: (transaction: SqliteExecutor, dialect: StorageDialect) =>
+										addSessionRefColumns(transaction, t, prefix, dialect),
+								},
+								// Chunked blobs (#4954); SQLite adds them in step 1, which runs every time.
+								{
+									version: 4,
 									up: (transaction: SqliteExecutor, dialect: StorageDialect) =>
 										addBlobChunks(transaction, t, dialect),
 								},
@@ -1120,16 +1173,17 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 * that share their latest snapshot are followed once. Roots are grouped into checkouts the way resume does: a root
 	 * a restore moved to is the root it moved from, taking the branch's restores from the newest back. Resume compares
 	 * canonical paths where this compares the recorded ones, so a checkout reached through a symbolic link can keep one
-	 * snapshot more than resume needs and never fewer.
+	 * snapshot more than resume needs and never fewer. A head that records a partly restored worktree also keeps the
+	 * snapshot it lacks, named in `degraded_from`, for {@link DEGRADED_RESTORE_RETENTION_DAYS} (#4922).
 	 */
 	private sessionHeads(): string {
 		const t = this.tables;
 		return `WITH RECURSIVE
 			open_anchors(session_id, seq) AS (SELECT DISTINCT session_id, anchor_seq FROM ${t.sessionLinks} WHERE children = 0 AND anchor_seq IS NOT NULL),
-			branch(session_id, start_seq, root, snapshot_id, restore_from, restore_to, prev_seq, depth) AS (
-				SELECT ref.session_id, ref.seq, ref.root, ref.snapshot_id, ref.restore_from, ref.restore_to, ref.prev_seq, 0 FROM open_anchors AS anchor JOIN ${t.sessionRefs} AS ref ON ref.session_id = anchor.session_id AND ref.seq = anchor.seq
+			branch(session_id, start_seq, root, snapshot_id, restore_from, restore_to, degraded_from, degraded_since, prev_seq, depth) AS (
+				SELECT ref.session_id, ref.seq, ref.root, ref.snapshot_id, ref.restore_from, ref.restore_to, ref.degraded_from, ref.degraded_since, ref.prev_seq, 0 FROM open_anchors AS anchor JOIN ${t.sessionRefs} AS ref ON ref.session_id = anchor.session_id AND ref.seq = anchor.seq
 				UNION ALL
-				SELECT branch.session_id, branch.start_seq, ref.root, ref.snapshot_id, ref.restore_from, ref.restore_to, ref.prev_seq, branch.depth + 1 FROM branch JOIN ${t.sessionRefs} AS ref ON ref.session_id = branch.session_id AND ref.seq = branch.prev_seq
+				SELECT branch.session_id, branch.start_seq, ref.root, ref.snapshot_id, ref.restore_from, ref.restore_to, ref.degraded_from, ref.degraded_since, ref.prev_seq, branch.depth + 1 FROM branch JOIN ${t.sessionRefs} AS ref ON ref.session_id = branch.session_id AND ref.seq = branch.prev_seq
 			),
 			walk(session_id, start_seq, root, current, position) AS (
 				SELECT DISTINCT session_id, start_seq, root, root, -1 FROM branch
@@ -1143,8 +1197,12 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			),
 			session_heads(session_id, start_seq, original, depth) AS (
 				SELECT branch.session_id, branch.start_seq, checkout.original, min(branch.depth) FROM branch JOIN checkout ON checkout.session_id = branch.session_id AND checkout.start_seq = branch.start_seq AND checkout.root = branch.root GROUP BY branch.session_id, branch.start_seq, checkout.original
+			),
+			head_records(session_id, snapshot_id, degraded_from, degraded_since) AS (
+				SELECT branch.session_id, branch.snapshot_id, branch.degraded_from, branch.degraded_since FROM session_heads JOIN checkout ON checkout.session_id = session_heads.session_id AND checkout.start_seq = session_heads.start_seq AND checkout.original = session_heads.original JOIN branch ON branch.session_id = checkout.session_id AND branch.start_seq = checkout.start_seq AND branch.root = checkout.root AND branch.depth = session_heads.depth
 			)
-			SELECT branch.session_id, branch.snapshot_id FROM session_heads JOIN checkout ON checkout.session_id = session_heads.session_id AND checkout.start_seq = session_heads.start_seq AND checkout.original = session_heads.original JOIN branch ON branch.session_id = checkout.session_id AND branch.start_seq = checkout.start_seq AND branch.root = checkout.root AND branch.depth = session_heads.depth`;
+			SELECT session_id, snapshot_id FROM head_records
+			UNION SELECT session_id, degraded_from FROM head_records WHERE degraded_from IS NOT NULL AND (degraded_since IS NULL OR degraded_since > ${this.dialect.nowSeconds} - ${DEGRADED_PIN_SECONDS})`;
 	}
 
 	/**

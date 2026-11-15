@@ -18,6 +18,19 @@ function formatBytes(bytes: number): string {
 	return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
 
+/**
+ * The longest prefix of `text` that fits in `maxBytes` of UTF-8, cut at a
+ * code-point boundary so no character is split (#4938).
+ */
+export function utf8Head(text: string, maxBytes: number): string {
+	const bytes = Buffer.from(text, "utf-8");
+	if (bytes.length <= maxBytes) return text;
+	let end = Math.max(0, maxBytes);
+	// Back up over UTF-8 continuation bytes (10xxxxxx) to the start of the cut character.
+	while (end > 0 && (bytes[end] & 0xc0) === 0x80) end--;
+	return bytes.subarray(0, end).toString("utf-8");
+}
+
 export function truncateOutput(
 	output: string,
 	config: Required<MaxOutputConfig>,
@@ -35,22 +48,8 @@ export function truncateOutput(
 		truncatedLines = lines.slice(0, config.lines);
 	}
 
-	let result = truncatedLines.join("\n");
-	if (Buffer.byteLength(result, "utf-8") > config.bytes) {
-		let low = 0;
-		let high = result.length;
-		while (low < high) {
-			const mid = Math.floor((low + high + 1) / 2);
-			if (Buffer.byteLength(result.slice(0, mid), "utf-8") <= config.bytes) {
-				low = mid;
-			} else {
-				high = mid - 1;
-			}
-		}
-		result = result.slice(0, low);
-	}
-
-	const keptLines = result.split("\n").length;
+	const result = utf8Head(truncatedLines.join("\n"), config.bytes);
+	const keptLines = result === "" ? 0 : result.split("\n").length;
 	const marker = `[TRUNCATED: showing first ${keptLines} of ${lines.length} lines, ${formatBytes(Buffer.byteLength(result))} of ${formatBytes(bytes)}${artifactPath ? ` - full output at ${artifactPath}` : ""}]\n`;
 
 	return {

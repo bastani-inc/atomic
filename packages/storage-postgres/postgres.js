@@ -1,4 +1,5 @@
 // @ts-check
+import { connect as connectSocket } from "node:net";
 import {
 	createSqliteDatabase,
 	postgresDialect,
@@ -34,11 +35,14 @@ const CONNECT_TIMEOUT_MS = 10_000;
 /** An idle connection is closed after this long. */
 const IDLE_TIMEOUT_MS = 10_000;
 /**
- * How much longer than the statement timeout a statement outside a transaction may take before the client gives up on
- * its connection: the server cancels a statement itself at the statement timeout, so this bounds only a server or a
- * network that stopped answering.
+ * How much longer than the statement timeout a statement may take before the client gives up on its connection and
+ * asks the server to cancel it: the server cancels a statement itself at the statement timeout, so this bounds only a
+ * server or a network that stopped answering, and a statement that cannot run in a transaction block.
  */
 const CLIENT_TIMEOUT_GRACE_MS = 5_000;
+/** The length and code of a protocol cancel request, which is sent on a connection of its own, without a startup. */
+const CANCEL_REQUEST_LENGTH = 16;
+const CANCEL_REQUEST_CODE = 80877102;
 /** The advisory lock a serial transaction takes when it names no domain: the whole database's. */
 const DATABASE_LOCK_SCOPE = "atomic";
 /** The oldest server major version the adapter supports. */
@@ -391,6 +395,9 @@ export async function openPostgresDatabase(options) {
 		connectionTimeoutMillis: CONNECT_TIMEOUT_MS,
 		idleTimeoutMillis: IDLE_TIMEOUT_MS,
 		keepAlive: true,
+		// Queries are written without waiting for the answer to the one before, so a statement outside a transaction
+		// sends its `BEGIN` and `COMMIT` in the same round trip; each query still ends with its own sync.
+		pipeline: true,
 		application_name: "atomic",
 		types: sqliteTypes(pg.types),
 	});
@@ -410,8 +417,33 @@ export async function openPostgresDatabase(options) {
 	};
 
 	/**
-	 * Runs `query` on `client`, closing the connection when it stops answering for `timeoutMs`, and reports a failure
-	 * that was not the server's answer, once the connection broke, as a lost connection.
+	 * Asks the server, on a connection of its own, to cancel the statement `client` runs, so a statement the client gave
+	 * up on stops rather than runs on. Resolves once the server, or a pooler that passes the request on, closed that
+	 * connection, or after `CLIENT_TIMEOUT_GRACE_MS` when it does not.
+	 * @param {PoolClient} client
+	 * @returns {Promise<void>}
+	 */
+	const cancel = (client) => {
+		const { processID, secretKey } = /** @type {PoolClient & { processID: number, secretKey: number }} */ (client);
+		const request = Buffer.alloc(CANCEL_REQUEST_LENGTH);
+		request.writeInt32BE(CANCEL_REQUEST_LENGTH, 0);
+		request.writeInt32BE(CANCEL_REQUEST_CODE, 4);
+		request.writeInt32BE(processID, 8);
+		request.writeInt32BE(secretKey, 12);
+		const host = connection.host ?? "localhost";
+		const port = connection.port ?? 5432;
+		const socket = host.startsWith("/") ? connectSocket(`${host}/.s.PGSQL.${port}`) : connectSocket(port, host);
+		socket.setTimeout(CLIENT_TIMEOUT_GRACE_MS, () => socket.destroy());
+		socket.on("error", () => socket.destroy());
+		socket.end(request);
+		return new Promise((resolve) => socket.once("close", () => resolve()));
+	};
+
+	/**
+	 * Runs `query` on `client`. When it has not finished after `timeoutMs`, the server is asked to cancel it, and the
+	 * connection is closed, after the request because a pooler forgets the connection's cancel key once it closes; the
+	 * call then fails as a lost connection, whatever the server answers late. A failure that was not the server's
+	 * answer, once the connection broke, is reported as a lost connection too.
 	 * @template T
 	 * @param {PoolClient} client
 	 * @param {() => Promise<T>} query
@@ -419,13 +451,17 @@ export async function openPostgresDatabase(options) {
 	 * @returns {Promise<T>}
 	 */
 	const watched = async (client, query, timeoutMs) => {
+		let expired = false;
 		const timer = setTimeout(() => {
+			expired = true;
 			lost.add(client);
-			client.connection.stream.destroy();
+			void cancel(client).then(() => client.connection.stream.destroy());
 		}, timeoutMs);
 		try {
 			return await query();
 		} catch (cause) {
+			if (expired)
+				throw new PostgresConnectionFailure("lost", new Error(`The server did not answer within ${timeoutMs} ms`));
 			// The server ends the connection after a FATAL error, and pg reports the end only later.
 			if (cause instanceof pg.DatabaseError && (cause.severity === "FATAL" || cause.severity === "PANIC"))
 				lost.add(client);
@@ -441,17 +477,29 @@ export async function openPostgresDatabase(options) {
 	 * @param {PoolClient} client
 	 * @param {string} sql
 	 * @param {readonly SqliteValue[]} params
+	 */
+	const statement = (client, sql, params) =>
+		client.query({ text: numberPlaceholders(sql), values: [...params], rowMode: "array" });
+
+	/**
+	 * @param {import("pg").QueryResult<SqliteValue[]>} result
+	 * @returns {SqliteDriverResult}
+	 */
+	const driverResult = (result) => ({
+		columns: result.fields.map((field) => field.name),
+		rows: result.rows,
+		changes: result.rowCount ?? 0,
+	});
+
+	/**
+	 * @param {PoolClient} client
+	 * @param {string} sql
+	 * @param {readonly SqliteValue[]} params
 	 * @param {number} timeoutMs
 	 * @returns {Promise<SqliteDriverResult>}
 	 */
-	const execute = async (client, sql, params, timeoutMs) => {
-		const result = await watched(
-			client,
-			() => client.query({ text: numberPlaceholders(sql), values: [...params], rowMode: "array" }),
-			timeoutMs,
-		);
-		return { columns: result.fields.map((field) => field.name), rows: result.rows, changes: result.rowCount ?? 0 };
-	};
+	const execute = async (client, sql, params, timeoutMs) =>
+		driverResult(await watched(client, () => statement(client, sql, params), timeoutMs));
 
 	/**
 	 * @param {PoolClient} client
@@ -477,6 +525,69 @@ export async function openPostgresDatabase(options) {
 		}
 	};
 	const clientTimeoutMs = statementTimeoutMs + CLIENT_TIMEOUT_GRACE_MS;
+	const setTimeoutSql = `SET LOCAL statement_timeout = ${statementTimeoutMs}`;
+
+	/**
+	 * Runs `bounded`, which runs a statement in a transaction with the statement timeout, or, when the statement cannot
+	 * run in a transaction block, `unbounded`, which runs it alone: the failed attempt rolled back without applying it.
+	 * The timeout is set in a transaction rather than on the connection, so a transaction-mode pooler can serve it.
+	 * @template T
+	 * @param {() => Promise<T>} bounded
+	 * @param {() => Promise<T>} unbounded
+	 */
+	const withTimeout = async (bounded, unbounded) => {
+		try {
+			return await bounded();
+		} catch (error) {
+			// SQLSTATE active_sql_transaction: the statement, such as `VACUUM`, cannot run inside a transaction block.
+			if (!(error instanceof pg.DatabaseError) || error.code !== "25001") throw error;
+			return unbounded();
+		}
+	};
+
+	/**
+	 * Runs one statement on `client` in a transaction of its own, which the server cancels at the statement timeout. The
+	 * pipelined connection writes the `BEGIN`, the statement and the `COMMIT` together, so this costs one round trip like
+	 * the statement alone. A statement that fails aborts the transaction, which the `COMMIT` then rolls back.
+	 * @param {PoolClient} client
+	 * @param {string} sql
+	 * @param {readonly SqliteValue[]} params
+	 */
+	const executeAutocommit = (client, sql, params) =>
+		withTimeout(
+			async () => {
+				const result = await watched(
+					client,
+					async () => {
+						// Every answer is awaited, so none is left to fail unheard; the first failure is the call's.
+						const answers = await Promise.allSettled([
+							client.query(`BEGIN; ${setTimeoutSql}`),
+							statement(client, sql, params),
+							client.query("COMMIT"),
+						]);
+						for (const answer of answers) if (answer.status === "rejected") throw answer.reason;
+						return /** @type {PromiseFulfilledResult<import("pg").QueryResult<SqliteValue[]>>} */ (answers[1]).value;
+					},
+					clientTimeoutMs,
+				);
+				return driverResult(result);
+			},
+			() => execute(client, sql, params, clientTimeoutMs),
+		);
+
+	/**
+	 * Runs the statements of `sql` on `client`. Postgres runs several statements sent together in one transaction, which
+	 * the timeout set first joins; the server cancels each statement at the statement timeout.
+	 * @param {PoolClient} client
+	 * @param {string} sql
+	 */
+	const executeMultipleAutocommit = async (client, sql) => {
+		if (isPragma(sql)) return;
+		await withTimeout(
+			() => executeMultiple(client, `${setTimeoutSql}; ${sql}`, clientTimeoutMs),
+			() => executeMultiple(client, sql, clientTimeoutMs),
+		);
+	};
 
 	const database = createSqliteDatabase({
 		descriptor: { adapter: "postgres", location: connectionString },
@@ -489,8 +600,8 @@ export async function openPostgresDatabase(options) {
 		transientFailure: transientFailureOf(pg.DatabaseError),
 		// Postgres's largest field is 1 GB less one byte (#4954).
 		payloadLimits: { value: 1_073_741_823 },
-		execute: (sql, params) => autocommit((client) => execute(client, sql, params, clientTimeoutMs)),
-		executeMultiple: (sql) => autocommit((client) => executeMultiple(client, sql, clientTimeoutMs)),
+		execute: (sql, params) => autocommit((client) => executeAutocommit(client, sql, params)),
+		executeMultiple: (sql) => autocommit((client) => executeMultipleAutocommit(client, sql)),
 		concurrentTransactions: true,
 		dialect: postgresDialect,
 		// The facade always says how the transaction excludes other writers.

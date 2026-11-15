@@ -1,6 +1,16 @@
 import assert from "node:assert/strict";
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, test } from "vitest";
@@ -174,11 +184,18 @@ describe("the shared store's cross-process lock and initialisation (#4951)", () 
 		const storeDir = sandbox.path("store");
 		await restoreWorktree(first!, { storeDir });
 		const config = join(objectStorePath(storeDir, first!.remotes), "config");
-		const past = new Date(Date.now() - 120_000);
+		// A whole second in the past, which every filesystem stores exactly, so a sub-millisecond rounding never differs.
+		const past = new Date(Math.floor(Date.now() / 1000) * 1000 - 120_000);
 		utimesSync(config, past, past);
+		const before = statSync(config, { bigint: true });
+		const content = readFileSync(config, "utf8");
 		const { path } = await restoreWorktree(second!, { storeDir });
 		assert.equal(await headOf(path), second!.head);
-		assert.equal(statSync(config).mtimeMs, past.getTime());
+		// Git rewrites a config through a lock file renamed over it: a new file, written now.
+		const after = statSync(config, { bigint: true });
+		assert.equal(after.ino, before.ino);
+		assert.equal(after.mtimeMs / 1000n, BigInt(past.getTime() / 1000));
+		assert.equal(readFileSync(config, "utf8"), content);
 	});
 
 	test("a restore waits for another process's repository lock, then restores (#4951)", async () => {

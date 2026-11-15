@@ -13,11 +13,18 @@ import {
 } from "../durable/stage-primitive.js";
 import { durableStageCheckpointMetadata } from "../durable/stage-topology.js";
 import { immutableStageGroupError, promptOccurrenceIdentityError } from "../durable/stage-topology-validation.js";
-import type { DurableStageCheckpoint, DurableStageRunTopology, DurableStageTopology } from "../durable/types.js";
+import type {
+	DurableCheckpoint,
+	DurableStageCheckpoint,
+	DurableStageRunTopology,
+	DurableStageTopology,
+} from "../durable/types.js";
 import { parseWorkflowChildResult } from "../durable/workflow-child-result.js";
+import type { DurablePromptStageAnswer } from "../runs/foreground/executor-prompt-nodes.js";
 import type { ParallelFailFastScope, RunOpts } from "../runs/foreground/executor-types.js";
 import type { Store } from "../shared/store.js";
 import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
+import type { WorkflowSerializableValue } from "../shared/types.js";
 import {
 	authoritativeWorkflowChildRunId,
 	type RunsById,
@@ -83,10 +90,17 @@ export function createDurableStageEndRecorder(input: {
 	readonly deps: DurableStageDeps;
 	readonly user?: RunOpts["onStageEnd"];
 	readonly metadataOnly?: boolean;
-}): (runId: string, snapshot: StageSnapshot) => Promise<void> {
-	return async (runId, snapshot): Promise<void> => {
+}): (
+	runId: string,
+	snapshot: StageSnapshot,
+	promptAnswer?: { readonly response?: WorkflowSerializableValue },
+) => Promise<void> {
+	return async (runId, snapshot, promptAnswer): Promise<void> => {
 		if (runId === input.rootRunId) {
-			await recordStageCheckpoint(input.deps, snapshot, { metadataOnly: input.metadataOnly });
+			await recordStageCheckpoint(input.deps, snapshot, {
+				metadataOnly: input.metadataOnly,
+				...(promptAnswer === undefined ? {} : { promptAnswer }),
+			});
 		}
 		await input.user?.(runId, snapshot);
 	};
@@ -127,6 +141,41 @@ export function createDurableStageTopologyResolver(
 		const index = indexes.get(replayKey) ?? 0;
 		indexes.set(replayKey, index + 1);
 		return queues.get(replayKey)?.[index];
+	};
+}
+
+/**
+ * What a prior process recorded, in `checkpoints` (the run's listing), for each completed prompt node of `workflowId`
+ * (#4941): the answer its completion record holds, or, for a record written before answers were recorded with it,
+ * whether anything of the run was recorded after it. Only then can the lost answer have reached anything; a record
+ * its attempt ended right after is safe to ask again.
+ */
+export function createDurablePromptAnswerResolver(
+	checkpoints: readonly DurableCheckpoint[],
+	workflowId: string,
+): (stageId: string) => DurablePromptStageAnswer | undefined {
+	const owned = checkpoints.filter(
+		(checkpoint): checkpoint is DurableCheckpoint & { kind: "stage" | "tool" } =>
+			(checkpoint.kind === "stage" || checkpoint.kind === "tool") &&
+			(checkpoint.topology?.run === undefined || checkpoint.topology.run.runId === workflowId),
+	);
+	const nodeId = (checkpoint: (typeof owned)[number]): string | undefined =>
+		checkpoint.kind === "stage" ? checkpoint.topology?.stageId : checkpoint.topology?.nodeId;
+	return (stageId) => {
+		let completed: number | undefined;
+		for (const [index, checkpoint] of owned.entries()) {
+			if (checkpoint.kind !== "stage" || checkpoint.topology?.stageId !== stageId) continue;
+			if (checkpoint.topology.status !== "completed") continue;
+			if (checkpoint.promptAnswer !== undefined) return { kind: "answered", answer: checkpoint.promptAnswer };
+			completed ??= index;
+		}
+		if (completed === undefined) return undefined;
+		// Run-level records name no node; they record no step that could have used the answer.
+		const laterRecorded = owned.slice(completed + 1).some((checkpoint) => {
+			const node = nodeId(checkpoint);
+			return node !== undefined && node !== stageId;
+		});
+		return { kind: "unanswered", laterRecorded };
 	};
 }
 

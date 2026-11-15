@@ -21,6 +21,7 @@ import { getToolListError } from "../core/settings-merge.js";
 import { StorageConfigError } from "../core/storage/errors.js";
 import { validateStoragePrefix } from "../core/storage/prefix.js";
 import type { StorageFlagArgument } from "../core/storage/process-selection.js";
+import { isValidThinkingLevel, VALID_THINKING_LEVELS } from "../core/thinking-levels.ts";
 
 export type Mode = "text" | "json" | "rpc";
 
@@ -80,11 +81,7 @@ export interface Args {
 	diagnostics: Array<{ type: "warning" | "error"; message: string }>;
 }
 
-const VALID_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
-
-export function isValidThinkingLevel(level: string): level is ThinkingLevel {
-	return VALID_THINKING_LEVELS.includes(level as ThinkingLevel);
-}
+export { isValidThinkingLevel };
 
 /**
  * Insert forced option arguments (e.g. a dedicated entry point's `--mode rpc`)

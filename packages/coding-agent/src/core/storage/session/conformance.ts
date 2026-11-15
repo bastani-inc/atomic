@@ -120,6 +120,15 @@ export function registerSessionStoreConformance(
 				assert.deepEqual(await store.load("session"), { header: header(), entries, lastSeq: 1 });
 			});
 
+			check("keeps U+2028 and U+2029 in entry text when the session is read back (#4957)", async (store, reload) => {
+				const entries = [message("first", "a\u2028b\u2029c"), message("second", "\u2029\u2028")];
+				await store.create(header(), entries.slice(0, 1));
+				store = await reload(store);
+				await store.append("session", entries.slice(1), { expectSeq: 1 });
+				store = await reload(store);
+				assert.deepEqual(await store.load("session"), { header: header(), entries, lastSeq: 2 });
+			});
+
 			check("preserves append order as the reopened leaf and allows shared entry IDs", async (store, reload) => {
 				const first = message("shared", "first");
 				const second = message("second", "second");
