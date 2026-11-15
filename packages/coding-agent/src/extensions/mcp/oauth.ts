@@ -555,7 +555,6 @@ export async function signInMcpServer(options: {
 		};
 		// A refresh keeps the granted scope; a server asking for more needs the browser flow.
 		const skipRefresh = stepUp;
-		const storedAccessToken = pending.load()?.tokens?.access_token;
 		const authorize = async () => {
 			if ((await authorizeMcp(provider, { ...flow, skipRefresh })) !== "AUTHORIZED") return false;
 			await complete();
@@ -563,13 +562,11 @@ export async function signInMcpServer(options: {
 		};
 		// Refresh tokens may rotate, so a refresh runs under the lock that connection refreshes take, and
 		// tokens another holder saved meanwhile are kept instead of refreshed again with a used refresh token.
-		const authorized =
-			skipRefresh || !pending.load()?.tokens?.refresh_token
-				? await authorize()
-				: await options.store.withRefreshLock(async () => {
-						const current = (await store.load())?.tokens?.access_token;
-						return (current !== undefined && current !== storedAccessToken) || (await authorize());
-					});
+		const authorized = skipRefresh
+			? await authorize()
+			: await options.store.withRefreshLock(
+					async () => (await store.load())?.tokens?.access_token !== stored?.tokens?.access_token || authorize(),
+				);
 		if (authorized) return;
 		if (!authorizationUrl) throw new Error("OAuth flow did not produce an authorization URL");
 
