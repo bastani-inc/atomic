@@ -118,6 +118,13 @@ export type CancelCause =
 	| "quit"
 	| "shutdown";
 export type OwnerCloseCause = "session-close" | "stage-close" | "app-shutdown";
+/** A tool call a released agent waits on. */
+export type ReleasedWaitingCall = { readonly toolCallId: string; readonly toolName: string };
+/**
+ * An agent released while it waited on tool calls that outlived its run (#5031). It ends its run resumably, as a
+ * pause does, but nothing paused it: it wakes by itself when one of these calls finishes.
+ */
+export type TaskReleased = { readonly waitingOn: readonly ReleasedWaitingCall[] };
 export type Cursor = { generation: Generation; sequence: Sequence };
 export type NativeTaskRef = { ownerId: OwnerId; taskId: TaskId; attemptId: AttemptId; generation: Generation };
 export type OutputRef = {
@@ -138,6 +145,8 @@ export type TaskResult =
 			ownerClose?: OwnerCloseCause;
 			/** The execution timeout that stopped it, in milliseconds, when `cause` is `execution-timeout`. */
 			executionTimeoutMs?: number;
+			/** Set when `cause` is `pause` because the agent was released while it waited, not paused (#5031). */
+			released?: TaskReleased;
 	  };
 export type Execution =
 	| { kind: "queued" }
