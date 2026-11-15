@@ -1,4 +1,4 @@
-import type { SqliteExecutor, SqliteStatement } from "@bastani/atomic/storage";
+import type { SqliteExecutor, SqliteStatement, StorageDialect } from "@bastani/atomic/storage";
 import { fold_usage } from "../../../builtin/verification-usage.js";
 import type { DurableCheckpoint } from "../types.js";
 
@@ -23,7 +23,7 @@ function addToTotals(totals: string, runs: string, work: string, sign: "" | "-",
 		const value = `(${sign}${row}.${total})`;
 		return `${total} = ${total} + ${value}, ${total}_err = ${total}_err + CASE WHEN abs(${total}) > abs(${value}) THEN (${total} - (${total} + ${value})) + ${value} ELSE (${value} - (${total} + ${value})) + ${total} END`;
 	});
-	return `UPDATE ${totals} SET ${assignments.join(", ")} WHERE root = (SELECT root FROM ${runs}_work WHERE id = ${work});`;
+	return `UPDATE ${totals} SET ${assignments.join(", ")} WHERE root = (SELECT root FROM ${runs}_work WHERE id = ${work})`;
 }
 
 /**
@@ -31,34 +31,56 @@ function addToTotals(totals: string, runs: string, work: string, sign: "" | "-",
  * its usage rows, from any connection; a root without a total row (a journal from before the totals table, or one
  * whose total a deletion invalidated) gets one from `SUM()` the next time its total is read.
  */
-export function poolUsageSchema(runs: string): string {
+export function poolUsageSchema(runs: string, dialect: StorageDialect): string {
 	const usage = poolUsageTable(runs);
 	const totals = poolUsageTotalsTable(runs);
 	const columns = POOL_USAGE_FIELDS.map((field) => field.toLowerCase());
+	const { int, real } = dialect.types;
+	const triggers = [
+		{
+			name: `${totals}_insert`,
+			table: usage,
+			timing: "AFTER",
+			event: "INSERT",
+			statements: [addToTotals(totals, runs, "NEW.work", "", "NEW")],
+		},
+		{
+			name: `${totals}_update`,
+			table: usage,
+			timing: "AFTER",
+			event: "UPDATE",
+			when: [...columns, "work"].map((column) => dialect.isDistinct(`OLD.${column}`, `NEW.${column}`)).join(" OR "),
+			statements: [
+				addToTotals(totals, runs, "OLD.work", "-", "OLD"),
+				addToTotals(totals, runs, "NEW.work", "", "NEW"),
+			],
+		},
+		{
+			name: `${totals}_delete`,
+			table: usage,
+			timing: "AFTER",
+			event: "DELETE",
+			statements: [`DELETE FROM ${totals} WHERE root = (SELECT root FROM ${runs}_work WHERE id = OLD.work)`],
+		},
+		{
+			name: `${totals}_work_delete`,
+			table: `${runs}_work`,
+			timing: "BEFORE",
+			event: "DELETE",
+			statements: [`DELETE FROM ${totals} WHERE root = OLD.root`],
+		},
+	] as const;
 	return `CREATE TABLE IF NOT EXISTS ${usage}(
 		work TEXT NOT NULL REFERENCES ${runs}_work(id) ON DELETE CASCADE,
-		generation INTEGER NOT NULL, key TEXT NOT NULL,
-		input REAL NOT NULL, output REAL NOT NULL, cacheread REAL NOT NULL, cachewrite REAL NOT NULL, cost REAL NOT NULL,
+		generation ${int} NOT NULL, key TEXT NOT NULL,
+		input ${real} NOT NULL, output ${real} NOT NULL, cacheread ${real} NOT NULL, cachewrite ${real} NOT NULL, cost ${real} NOT NULL,
 		PRIMARY KEY(work, generation, key)
 	);
 	CREATE TABLE IF NOT EXISTS ${totals}(
 		root TEXT PRIMARY KEY REFERENCES ${runs}_pool(root) ON DELETE CASCADE,
-		${columns.map((column) => `${column} REAL NOT NULL, ${column}_err REAL NOT NULL`).join(", ")}
+		${columns.map((column) => `${column} ${real} NOT NULL, ${column}_err ${real} NOT NULL`).join(", ")}
 	);
-	CREATE TRIGGER IF NOT EXISTS ${totals}_insert AFTER INSERT ON ${usage} BEGIN
-		${addToTotals(totals, runs, "NEW.work", "", "NEW")}
-	END;
-	CREATE TRIGGER IF NOT EXISTS ${totals}_update AFTER UPDATE ON ${usage}
-	WHEN ${columns.map((column) => `OLD.${column} IS NOT NEW.${column}`).join(" OR ")} OR OLD.work IS NOT NEW.work BEGIN
-		${addToTotals(totals, runs, "OLD.work", "-", "OLD")}
-		${addToTotals(totals, runs, "NEW.work", "", "NEW")}
-	END;
-	CREATE TRIGGER IF NOT EXISTS ${totals}_delete AFTER DELETE ON ${usage} BEGIN
-		DELETE FROM ${totals} WHERE root = (SELECT root FROM ${runs}_work WHERE id = OLD.work);
-	END;
-	CREATE TRIGGER IF NOT EXISTS ${totals}_work_delete BEFORE DELETE ON ${runs}_work BEGIN
-		DELETE FROM ${totals} WHERE root = OLD.root;
-	END;`;
+	${triggers.map((trigger) => dialect.renderTrigger(trigger)).join("\n")}`;
 }
 
 export function poolStageUsageKey(runId: string, stageId: string): string {
@@ -82,6 +104,7 @@ export function poolCheckpointUsage(checkpoint: DurableCheckpoint): { key: strin
 
 /** The statement that records `usage` under `key` for one attempt, keeping the larger of each field. */
 export function poolUsageUpsert(
+	dialect: StorageDialect,
 	runs: string,
 	work: string,
 	generation: number,
@@ -92,19 +115,20 @@ export function poolUsageUpsert(
 	const columns = POOL_USAGE_FIELDS.map((field) => field.toLowerCase());
 	return {
 		sql: `INSERT INTO ${table}(work, generation, key, ${columns.join(", ")}) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		 ON CONFLICT(work, generation, key) DO UPDATE SET ${columns.map((column) => `${column} = MAX(${table}.${column}, excluded.${column})`).join(", ")}`,
+		 ON CONFLICT(work, generation, key) DO UPDATE SET ${columns.map((column) => `${column} = ${dialect.greatest(`${table}.${column}`, `excluded.${column}`)}`).join(", ")}`,
 		params: [work, generation, key, ...POOL_USAGE_FIELDS.map((field) => usage[field])],
 	};
 }
 
 export async function upsertPoolUsage(
 	tx: SqliteExecutor,
+	dialect: StorageDialect,
 	runs: string,
 	work: string,
 	generation: number,
 	key: string,
 	usage: PoolUsage,
 ): Promise<void> {
-	const { sql, params } = poolUsageUpsert(runs, work, generation, key, usage);
+	const { sql, params } = poolUsageUpsert(dialect, runs, work, generation, key, usage);
 	await tx.run(sql, ...params);
 }
