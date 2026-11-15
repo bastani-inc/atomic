@@ -3,6 +3,7 @@ import {
 	type AgentRehydrateError,
 	type AgentTaskHost,
 	type AgentWakeDispatcher,
+	type AgentWakeSlot,
 	agentWakeDispatcher,
 	type ExtensionContext,
 	isStaleExtensionContextError,
@@ -159,9 +160,20 @@ export function bindReleasedChildWakes(
 		if (!isReleasedChildStopPending(key) && isRelaunchableChildRecord(latest)) return undefined;
 		return latest ?? record;
 	};
-	const restore = async (record: SubagentChildRecord, request: SubagentChildResumeRequest) => {
+	const restore = async (
+		record: SubagentChildRecord,
+		request: SubagentChildResumeRequest,
+		slot: AgentWakeSlot | undefined,
+	) => {
 		const key = subagentWakeKey(ownerSessionId, record.childId);
-		const outcome = await restoreSubagentChild(deps, ctx, record.childId, request, refuseRelaunch(record));
+		// #4856: while the child waits for its run's concurrency limit, it leaves its wake slot to other runs' children.
+		const outcome = await restoreSubagentChild(
+			deps,
+			ctx,
+			record.childId,
+			slot === undefined ? request : { ...request, outsideWakeSlot: (wait) => slot.outside(wait) },
+			refuseRelaunch(record),
+		);
 		if (outcome.kind === "unrestorable")
 			throw new ReleasedChildError("child-unrestorable", { childId: record.childId, reason: outcome.reason });
 		// Relaunched with its new run's record written, or not relaunched: what the wake carried stays held for resume.
@@ -175,18 +187,22 @@ export function bindReleasedChildWakes(
 	const disposeHandler = handleReleasedChildWakes(
 		ctx,
 		{
-			wake: async (record, decision) => {
+			wake: async (record, decision, slot) => {
 				const unsaved = decision.toolResults.filter(
 					(result) => !(record.heldToolResults ?? []).some((held) => held.toolCallId === result.toolCallId),
 				);
 				if (unsaved.length > 0) await holdResults(record, unsaved);
 				if (refuseRelaunch(record)() !== undefined) return;
 				if (record.intercomTarget !== undefined) void acknowledgeReleasedChildWake(events, record.intercomTarget);
-				await restore(record, {
-					prompt: SUBAGENT_RELEASED_WAKE_PROMPT,
-					toolResults: decision.toolResults,
-					...(decision.prompt ? {} : { promptless: true }),
-				});
+				await restore(
+					record,
+					{
+						prompt: SUBAGENT_RELEASED_WAKE_PROMPT,
+						toolResults: decision.toolResults,
+						...(decision.prompt ? {} : { promptless: true }),
+					},
+					slot,
+				);
 			},
 			hold: holdResults,
 			resume: async (record, request) => {
@@ -199,7 +215,8 @@ export function bindReleasedChildWakes(
 				settleReleasedChildRelaunch(subagentWakeKey(ownerSessionId, record.childId));
 				return outcome;
 			},
-			redispatch: (record) => restore(record, { prompt: SUBAGENT_RELEASED_WAKE_PROMPT, redispatch: true }),
+			redispatch: (record, slot) =>
+				restore(record, { prompt: SUBAGENT_RELEASED_WAKE_PROMPT, redispatch: true }, slot),
 			fail: (record, toolResults, failure) =>
 				recordSubagentChildWakeFailure(deps.pi, ownerSessionId, record.childId, toolResults, failure),
 		},
