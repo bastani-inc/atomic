@@ -19,8 +19,7 @@ function trimTrailingSpaces(line: string): string {
  * a CRLF line ending, or unescaped trailing spaces.
  */
 export function gitignoreLines(content: string): string[] {
-	return stripBom(content).split(/?
-/).map(trimTrailingSpaces);
+	return stripBom(content).split(/\r?\n/).map(trimTrailingSpaces);
 }
 
 /** A matcher for one `.gitignore`-syntax file whose rules match as Git matches them. */
@@ -65,19 +64,14 @@ export class NestedGitignore {
 		return new NestedGitignore([...this.levels, { base, matcher }], this.ignoreCase);
 	}
 
-	/** Whether `path`, relative to the walk root and ending in `/` for a directory, is ignored. */
+	/**
+	 * Whether `path`, relative to the walk root and ending in `/` for a directory, is ignored. The walk never enters an
+	 * ignored directory, as Git never does, so only the path itself is matched.
+	 */
 	ignores(path: string): boolean {
-		// Git never looks inside an excluded directory, so each leading directory is checked before the path itself.
-		for (let end = path.indexOf("/"); end !== -1 && end < path.length - 1; end = path.indexOf("/", end + 1)) {
-			if (this.excludesItself(path.slice(0, end + 1))) return true;
-		}
-		return this.excludesItself(path);
-	}
-
-	private excludesItself(path: string): boolean {
 		for (let index = this.levels.length - 1; index >= 0; index--) {
 			const { base, matcher } = this.levels[index] as Level;
-			if (!path.startsWith(base) || path === base) continue;
+			if (!path.startsWith(base)) continue;
 			const result = matcher.checkIgnore(path.slice(base.length));
 			if (result.ignored) return true;
 			if (result.unignored) return false;

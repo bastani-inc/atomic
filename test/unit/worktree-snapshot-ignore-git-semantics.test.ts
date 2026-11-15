@@ -120,6 +120,8 @@ const PATTERNS = [
 	"[A-Z]*",
 	"x.LOG",
 	"Notes.txt",
+	"c\\\\d ",
+	"c\\\\\\ ",
 ];
 const BASE_NAMES = ["a", "b", "A", "x.log", "X.LOG", "build", "Build", "a b", "#e", "!f", "g ", "[h]", "*i", "n?"];
 // Git for Windows reads `\` in a path as a separator, so names holding one are only portable elsewhere.
