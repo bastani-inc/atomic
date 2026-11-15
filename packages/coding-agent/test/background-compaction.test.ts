@@ -78,6 +78,7 @@ class Planner {
 			if (!this.#released) await new Promise<void>((resolve) => this.#releaseWaiters.push(resolve));
 			if (this.failures > 0) {
 				this.failures -= 1;
+				// No override: the model planner runs and fails on the scripted prose answer.
 				return { compactedText: "   " };
 			}
 			return this.text === undefined ? undefined : { compactedText: this.text };
@@ -467,7 +468,7 @@ describe("background compaction (#4330)", () => {
 		const planner = new Planner(true);
 		planner.failures = 1;
 		const harness = await createBackgroundHarness(
-			[...TRIGGER, { text: "still busy", usage: { input: 780, output: 10 } }],
+			[...TRIGGER, "not a deletion plan", { text: "still busy", usage: { input: 780, output: 10 } }],
 			planner,
 		);
 		harnesses.push(harness);
@@ -478,7 +479,8 @@ describe("background compaction (#4330)", () => {
 		assert.equal(failed.error.code, "planner-failed");
 		assert.equal(failed.error.attempt, 1);
 		assert.equal(failed.error.retryable, true);
-		assert.equal((failed.error.cause as Error).message, "No compacted text provided by extension");
+		// Empty extension text falls through to the model planner, which fails on its prose answer (#4977).
+		assert.equal((failed.error.cause as Error).message, "Compaction range planning returned malformed output");
 		assert.equal(failed.upToEntryId, planner.calls[0].branchIds.at(-1));
 		assert.equal(failed.startedAt, "2026-11-05T00:08:00.000Z");
 		assert.equal(resultEntries(harness.sessionManager).length, 0);
@@ -2032,7 +2034,7 @@ describe("background compaction commit failures (#4330)", () => {
 		assert.equal(discarded?.discarded?.fields.reason, "superseded");
 	});
 
-	test("a JSONL session whose backup fails reports the storage error as the cause", async () => {
+	test("a JSONL session whose backup fails still commits the result without a backup path (#4977)", async () => {
 		const directory = mkdtempSync(join(tmpdir(), "background-compaction-commit-failure-"));
 		try {
 			const sessionManager = await SessionManager.create(directory, join(directory, "sessions"));
@@ -2042,10 +2044,10 @@ describe("background compaction commit failures (#4330)", () => {
 				throw unavailable;
 			};
 			assert.equal(await promptAndCountRequests(harness, "next"), 1);
-			const state = harness.session.compaction;
-			assert.equal(state.error?.code, "commit-failed");
-			assert.equal(state.error?.cause, unavailable);
-			assert.equal(compactionEntries(harness.sessionManager).length, 0);
+			assert.equal(harness.session.compaction.error, undefined);
+			const [boundary] = compactionEntries(harness.sessionManager);
+			assert.ok(boundary);
+			assert.equal((boundary.details as { backupPath?: string }).backupPath, undefined);
 		} finally {
 			rmSync(directory, { recursive: true, force: true });
 		}

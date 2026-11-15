@@ -358,17 +358,20 @@ describe("post-tool compaction preflight", () => {
 			extension: ((pi) => pi.on("session_before_compact", () => ({ cancel: true }))) satisfies ExtensionFactory,
 			aborted: true,
 			error: "cancelled",
+			failBoundaryWrite: false,
 		},
 		{
+			// Empty extension text now falls through to the planner (#4977); a boundary that cannot be
+			// written is still a failure.
 			name: "failure",
-			extension: ((pi) =>
-				pi.on("session_before_compact", () => ({ compactedText: "  \n" }))) satisfies ExtensionFactory,
+			extension: compactOffline,
 			aborted: false,
-			error: "No compacted text provided",
+			error: "session storage is unavailable",
+			failBoundaryWrite: true,
 		},
 	])(
 		"surfaces post-tool compaction $name without sending the follow-up request",
-		async ({ extension, aborted, error }) => {
+		async ({ extension, aborted, error, failBoundaryWrite }) => {
 			const harness = await createHarnessWithExtensions({
 				contextWindow: 1_000,
 				settings: {
@@ -386,6 +389,11 @@ describe("post-tool compaction preflight", () => {
 			});
 			harnesses.push(harness);
 			await wireHarness(harness);
+			if (failBoundaryWrite) {
+				harness.sessionManager.appendCompaction = async () => {
+					throw new Error("session storage is unavailable");
+				};
+			}
 
 			await harness.session.prompt(longPrompt);
 
