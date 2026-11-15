@@ -751,6 +751,10 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       }
       const admission = inboundDeliveries.admit(record.from, record.message);
       if (admission.kind !== "reserved") continue;
+      if (outboundAsks.isLateFailure(record.from, record.message)) {
+        inboundDeliveries.commit(admission.reservation);
+        continue;
+      }
       const askReply = outboundAskFor(record.from, record.message);
       if (askReply !== undefined) void outboundAsks.settle(askReply.ask.askId, record.message.replyError === undefined ? "answered" : "failed");
       replyTracker.recordIncomingMessage(record.from, record.message);
@@ -816,6 +820,12 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     if (admission.kind !== "reserved") return;
     const reservation = admission.reservation;
     if (routeIncomingReply(replyWaiters.pending(), from, message)) {
+      inboundDeliveries.commit(reservation);
+      return;
+    }
+    // #4992: an ask has one outcome: a failure after its reply, or after another failure, is not shown.
+    if (outboundAsks.isLateFailure(from, message)) {
+      void durableInbox.handledWithoutCard(message.id);
       inboundDeliveries.commit(reservation);
       return;
     }
