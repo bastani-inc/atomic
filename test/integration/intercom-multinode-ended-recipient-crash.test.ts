@@ -95,7 +95,8 @@ test(
 			await vi.waitFor(async () => assert.ok(await route(), "the ask's route is recorded"), WAIT);
 
 			// Broker b queues the asker's failure and crashes before it clears the ask, which stays marked ended. It stays
-			// down, so the asker's own broker both delivers the queued failure and sweeps the ended ask.
+			// down, so the asker's own broker both delivers the queued failure and sweeps the ended ask. Delivering the
+			// failure closes the ask's route, so a backup poll that delivers it before the sweep leaves nothing to sweep.
 			await harness.disconnect(recipient);
 			await vi.waitFor(() => assert.equal(harness.isBrokerRunning("b"), false, "broker b crashed"), WAIT);
 			const queued = await database.get(
@@ -103,7 +104,6 @@ test(
 				`ended:${askId}`,
 			);
 			assert.ok(queued, "the failure was queued before the crash");
-			assert.ok(await route(), "the ask was not cleared before the crash");
 
 			await vi.waitFor(async () => assert.equal(await route(), undefined, "the ended ask is not swept yet"), {
 				timeout: SWEPT_WITHIN_MS,

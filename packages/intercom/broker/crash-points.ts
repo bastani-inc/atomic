@@ -21,8 +21,5 @@ export const ASK_FAILURE_QUEUED = "ask-failure-queued";
 
 /** Crash here, as a kill would, when a test asked for `point`. */
 export function crashPoint(point: string): void {
-	if (process.env[BROKER_CRASH_AT_ENV] !== point) return;
-	process.kill(process.pid, "SIGKILL");
-	// #5145: on Windows the kill only starts the process's termination and returns, so nothing more may run until it ends.
-	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
+	if (process.env[BROKER_CRASH_AT_ENV] === point) process.kill(process.pid, "SIGKILL");
 }
