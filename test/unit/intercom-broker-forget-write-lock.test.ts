@@ -122,6 +122,14 @@ async function connectedPair(label: string) {
 	return { owner, recipient, send };
 }
 
+async function waitUntil(predicate: () => boolean, timeoutMs = 15_000): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (!predicate()) {
+		if (Date.now() > deadline) throw new Error(`timed out waiting for the expected condition: ${brokerOutput}`);
+		await new Promise((resolveDelay) => setTimeout(resolveDelay, 50));
+	}
+}
+
 /** Whether the broker's durable delivered-message authority still holds a record for `messageId`. */
 function deliveredRecordExists(messageId: string): boolean {
 	const database = new DatabaseSync(getBrokerDeliveredMessagesPath(agentDir));
@@ -171,19 +179,17 @@ test("a recipient that disconnects while its delete is locked does not end the b
 		void recipient.disconnect();
 	});
 
-	const result = await send("disconnect-notice");
+	const sent = send("disconnect-notice");
+	await waitUntil(() => brokerOutput.includes("could not forget delivered message disconnect-notice"));
+	assert.equal(deliveredRecordExists("disconnect-notice"), true, "the locked delete has not landed yet");
+	// Released once the delete has failed, so a slow host's later retry does not block the broker again.
+	releaseLock();
+	const result = await sent;
 	assert.equal(result.delivered, false);
 	assert.match(result.reason ?? "", /disconnected/);
-	assert.match(brokerOutput, /could not forget delivered message disconnect-notice/);
-	assert.equal(deliveredRecordExists("disconnect-notice"), true, "the locked delete has not landed yet");
-	releaseLock();
 	await assertBrokerAlive();
 	// Nothing retries this message ID, so the broker's own retry removes the stale reservation.
-	const deadline = Date.now() + 15_000;
-	while (deliveredRecordExists("disconnect-notice") && Date.now() < deadline) {
-		await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
-	}
-	assert.equal(deliveredRecordExists("disconnect-notice"), false, "the failed delete is retried until it lands");
+	await waitUntil(() => !deliveredRecordExists("disconnect-notice"));
 }, 60_000);
 
 test("an acknowledgment timeout whose delete is locked does not end the broker (#5096)", async () => {
