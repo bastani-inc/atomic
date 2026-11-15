@@ -727,8 +727,14 @@ test("a fork of a workflow defined only in the source's project runs that defini
 });
 
 test("a fork written but unable to start reports why with a code and the next step that works here (#4321)", async () => {
-	const refuseStart = (backend: { commitWorkflowRegistration: (...args: never[]) => Promise<void> }) =>
+	// The fork's executor registers the run its resume claimed, so it writes through the claimed registration (#5149).
+	const refuseStart = (backend: {
+		commitWorkflowRegistration: (...args: never[]) => Promise<void>;
+		commitClaimedWorkflowRegistration: (...args: never[]) => Promise<boolean>;
+	}) => {
 		vi.spyOn(backend, "commitWorkflowRegistration").mockRejectedValue(new Error("registration refused"));
+		vi.spyOn(backend, "commitClaimedWorkflowRegistration").mockRejectedValue(new Error("registration refused"));
+	};
 	const discovered = await discoverableSource("fork-not-started");
 	try {
 		refuseStart(discovered.backend);

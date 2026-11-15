@@ -806,6 +806,8 @@ export async function openPostgresDatabase(options) {
 		execute: (sql, params) => autocommit((client) => executeAutocommit(client, sql, params)),
 		executeMultiple: (sql) => autocommit((client) => executeMultipleAutocommit(client, sql)),
 		concurrentTransactions: true,
+		// The connection is pipelined: a transaction's statements go out without waiting for the answers before them.
+		pipelinedTransactions: true,
 		dialect: postgresDialect,
 		// The facade always says how the transaction excludes other writers.
 		async beginTransaction(/** @type {import("@bastani/atomic/storage").SqliteDriverTransactionOptions} */ begin) {
@@ -818,7 +820,9 @@ export async function openPostgresDatabase(options) {
 			// and every row lock after them, wait at most `lockWaitMs`; the statement timeout starts after them.
 			const lock =
 				concurrency.kind !== "serial"
-					? ""
+					? concurrency.excludesSerial === true
+						? `SELECT pg_advisory_xact_lock_shared(${lockKey(DATABASE_LOCK_SCOPE)}); `
+						: ""
 					: concurrency.domain === undefined
 						? `SELECT pg_advisory_xact_lock(${lockKey(DATABASE_LOCK_SCOPE)}); `
 						: `SELECT pg_advisory_xact_lock_shared(${lockKey(DATABASE_LOCK_SCOPE)}), pg_advisory_xact_lock(${lockKey(concurrency.domain)}); `;
