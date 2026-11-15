@@ -127,18 +127,20 @@ function tokenFiles(): string[] {
 	return readdirSync(agentDir).filter((name) => name.startsWith(`${STORAGE_TOKEN_FILE}.`));
 }
 
+/** Settings managers read each settings file of a scope through `readLayers`. */
 function afterFirstSettingsRead(action: () => void): void {
-	const read = FileSettingsStorage.prototype.withLock;
+	const read = FileSettingsStorage.prototype.readLayers;
 	let fired = false;
-	vi.spyOn(FileSettingsStorage.prototype, "withLock").mockImplementation(function (
+	vi.spyOn(FileSettingsStorage.prototype, "readLayers").mockImplementation(function (
 		this: FileSettingsStorage,
 		...args
 	) {
-		read.apply(this, args);
+		const layers = read.apply(this, args);
 		if (!fired && args[0] === "global") {
 			fired = true;
 			action();
 		}
+		return layers;
 	});
 }
 

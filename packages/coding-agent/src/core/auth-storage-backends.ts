@@ -18,6 +18,7 @@ import { normalizePath } from "../utils/paths.ts";
 import { stripBom } from "../utils/text.ts";
 import type { AuthStorageData } from "./auth-storage.ts";
 import { normalizeProviderKeys } from "./azure-provider-compat.js";
+import { releaseLock, releaseLockSync } from "./lock-release.ts";
 
 export type LockResult<T> = {
 	result: T;
@@ -201,7 +202,7 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 				}
 			}
 		} finally {
-			await release().catch(() => undefined);
+			await releaseLock(release, providerPath);
 		}
 	}
 
@@ -321,9 +322,9 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 
 	deleteProvider(provider: string): string | undefined {
 		const paths = this.existingResolvedReadPaths();
-		const releases: Array<() => void> = [];
+		const releases: Array<{ path: string; release: () => void }> = [];
 		try {
-			for (const path of paths) releases.push(this.acquireLockSyncWithRetry(path));
+			for (const path of paths) releases.push({ path, release: this.acquireLockSyncWithRetry(path) });
 			for (const path of paths) {
 				const data = JSON.parse(stripBom(readFileSync(path, "utf-8"))) as AuthStorageData;
 				if (!(provider in data)) continue;
@@ -332,18 +333,19 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 			}
 			return this.readMergedAuth();
 		} finally {
-			for (const release of releases.reverse()) release();
+			for (const { path, release } of releases.reverse()) releaseLockSync(release, path);
 		}
 	}
 
 	async deleteProviderAsync(provider: string): Promise<string | undefined> {
 		const paths = this.existingResolvedReadPaths();
-		const releases: Array<() => Promise<void>> = [];
+		const releases: Array<{ path: string; release: () => Promise<void> }> = [];
 		try {
 			for (const path of paths) {
-				releases.push(
+				releases.push({
+					path,
 					// Lock the resolved file so symlinked aliases share one lock (pi #11655).
-					await lockfile.lock(resolveExistingAuthPath(path), {
+					release: await lockfile.lock(resolveExistingAuthPath(path), {
 						realpath: false,
 						// Keep layered-file deletion below the logout RPC's 30-second
 						// deadline even if every auth path is actively locked. A caller
@@ -352,7 +354,7 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 						retries: AUTH_DELETE_LOCK_RETRY_OPTIONS,
 						stale: 30000,
 					}),
-				);
+				});
 			}
 			for (const path of paths) {
 				const data = JSON.parse(stripBom(readFileSync(path, "utf-8"))) as AuthStorageData;
@@ -362,7 +364,7 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 			}
 			return this.readMergedAuth();
 		} finally {
-			for (const release of releases.reverse()) await release();
+			for (const { path, release } of releases.reverse()) await releaseLock(release, path);
 		}
 	}
 
@@ -388,7 +390,7 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 			return result;
 		} finally {
 			if (release) {
-				release();
+				releaseLockSync(release, this.authPath);
 			}
 		}
 	}
@@ -447,11 +449,7 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 			return result;
 		} finally {
 			if (release) {
-				try {
-					await release();
-				} catch {
-					// Ignore unlock errors when lock is compromised.
-				}
+				await releaseLock(release, this.authPath);
 			}
 		}
 	}
