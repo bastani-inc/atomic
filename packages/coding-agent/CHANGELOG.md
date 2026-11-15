@@ -35,6 +35,7 @@
 ### Fixed
 
 - Reading or writing a tar archive member selector (`foo.tar:member`, `foo.tgz:member`) no longer hangs Atomic on a malformed PAX header: a record without a length separator, with a zero or too-short length, or running past the header data is refused as `Invalid PAX header` ([#5108](https://github.com/bastani-inc/atomic/issues/5108))
+- Tar archive member selectors now read PAX headers as GNU tar does: a PAX `size` that is not plain decimal digits (such as `0x5`, `5e0`, ` 5` or empty) is refused as `Invalid PAX header` instead of being read loosely, and an empty PAX value such as `path=` falls back to the header's own field, so the member is listed under its header name and writing it replaces it instead of adding a duplicate ([#5120](https://github.com/bastani-inc/atomic/issues/5120))
 - Temporary extension installs and the GitHub clone cache now use directories only the current user owns
 - Displayed tool output no longer passes 8-bit control sequences or bidirectional overrides to the terminal
 - Fixed a failed lock release masking the result of the operation it guarded: a trust, settings, auth, MCP sign-in, package-install, blueprint-ledger, or worktree-snapshot write that succeeded is no longer reported as failed, and a write that failed reports its own error. The release failure is recorded in the debug log ([#5090](https://github.com/bastani-inc/atomic/issues/5090))
