@@ -58,7 +58,9 @@ While `codemode` is active, `codemode.mode` in [settings](/settings#tools) decid
 
 ### Model-only tools
 
-Model-only tools, such as `subagent`, `workflow`, `intercom`, and `ask_user_question`, are not in `tools` or `ALL_TOOLS`, and `searchTools()` never ranks them as matches. Scripts cannot call them, but the model can call them directly, so a missing entry does not mean the tool is unavailable. While such a tool is active, `searchTools()` and `describeTool()` answer its exact name, such as `searchTools("subagent")`, with a hint to call it directly. The hint does not make the tool callable from scripts.
+Model-only tools, such as `subagent`, `workflow`, and `ask_user_question`, are not in `tools` or `ALL_TOOLS`, and `searchTools()` never ranks them as matches. Scripts cannot call them, but the model can call them directly, so a missing entry does not mean the tool is unavailable. While such a tool is active, `searchTools()` and `describeTool()` answer its exact name, such as `searchTools("subagent")`, with a hint to call it directly. The hint does not make the tool callable from scripts.
+
+Some model-only tools let scripts use part of them. `intercom` is in `tools` with `list`, `status`, `pending`, and `send` to an exact target, each resolving to a structured value; its other actions, and sends to globs or `subagents:` targets, fail with a message to call the tool directly. See [Intercom from codemode scripts](/intercom/reference#from-codemode-scripts).
 
 ## Store values
 
