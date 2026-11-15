@@ -211,8 +211,10 @@ export async function planVerbatimCompaction(
 	if (!preparation) {
 		// Mid-turn threshold preflight needs the load-bearing planner fallback if
 		// a region exists, but a context that still fits is safe to send unchanged.
-		// True overflow and a hard-limit preflight have no such escape hatch.
-		const mustFreeContext = options.urgency === "load_bearing" && (options.reason === "overflow" || allowSmallRegion);
+		// A context known not to fit (overflow recovery, or a hard-limit preflight)
+		// has no such escape hatch; one that a committed background result already
+		// brought under the hard limit does (#4977).
+		const mustFreeContext = allowSmallRegion;
 		if (mustFreeContext) {
 			throw new Error(
 				"Context compaction found no compactable transcript entries; nothing more was safely deletable",

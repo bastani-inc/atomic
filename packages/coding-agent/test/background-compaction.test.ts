@@ -1778,6 +1778,143 @@ describe("background compaction task lifecycle (#4330)", () => {
 		assert.equal(end?.result?.compactedText.includes("[User]: small"), true);
 	});
 
+	test("a post-tool commit that brings the context under the hard limit does not clear a small remaining region (#4977)", async () => {
+		const planner = new Planner();
+		// Few long lines: the committed context sits between the threshold and the hard limit, and the
+		// region left for the foreground is below the planner minimum.
+		planner.text = Array.from({ length: 3 }, (_, line) => `[User]: kept ${line} ${"k".repeat(600)}`).join("\n");
+		const harness = await harnessFor([...TRIGGER, "after"], planner);
+		// A one-line prompt as large as `longPrompt` keeps the region left after the commit small.
+		await harness.session.prompt(longPrompt);
+		await harness.session.prompt(`${longPrompt.replaceAll("\n", " ")} second`);
+		await planner.called();
+		planner.release();
+		assert.equal((await harness.session.awaitBackgroundCompaction()).state, "ready");
+		planner.text = undefined;
+		const use = harness.session._useReadyBackgroundCompaction.bind(harness.session);
+		let committed: Awaited<ReturnType<typeof use>>;
+		harness.session._useReadyBackgroundCompaction = async (model) => {
+			committed = await use(model);
+			return committed;
+		};
+		await harness.session._preflightPostToolContext(oversizedContext());
+		harness.session._finishPostToolCompactionPreflight(harness.session.agent.state.messages.slice());
+
+		// The commit left the context over the 800-token threshold but under the 1,000-token window.
+		assert.equal(committed?.sufficient, false);
+		assert.ok((committed?.projectedTokens ?? 0) <= 1_000);
+		assert.equal(compactionEntries(harness.sessionManager).length, 1, "only the stored result; nothing was cleared");
+		const end = harness.eventsOfType("compaction_end").at(-1);
+		assert.equal(end?.background, true);
+		assert.equal(end?.errorMessage, undefined);
+	});
+
+	test("a foreground failure after a committed post-tool result reports that result and lets the turn continue (#4977)", async () => {
+		const planner = new Planner();
+		// The committed result leaves the context over the threshold but within the window.
+		planner.text = Array.from({ length: 3 }, (_, line) => `[User]: kept ${line} ${"k".repeat(600)}`).join("\n");
+		const harness = await ready([...TRIGGER, "after"], planner);
+		planner.text = "[User]: small";
+		const append = harness.sessionManager.appendCompaction.bind(harness.sessionManager);
+		let appends = 0;
+		harness.sessionManager.appendCompaction = async (...args) => {
+			appends += 1;
+			if (appends > 1) throw new Error("injected foreground boundary write failure");
+			return append(...args);
+		};
+
+		await harness.session._preflightPostToolContext(oversizedContext());
+		harness.session._finishPostToolCompactionPreflight(harness.session.agent.state.messages.slice());
+
+		assert.equal(compactionEntries(harness.sessionManager).length, 1);
+		const end = harness.eventsOfType("compaction_end").at(-1);
+		assert.equal(end?.background, true);
+		assert.ok(end?.result, "the committed background boundary is reported");
+		assert.match(end?.errorMessage ?? "", /injected foreground boundary write failure/);
+	});
+
+	test("a threshold compaction that fails after committing a ready result reports that result (#4977)", async () => {
+		const planner = new Planner();
+		planner.text = Array.from({ length: 200 }, (_, line) => `[User]: kept line ${line}`).join("\n");
+		let harness!: Harness;
+		harness = await createBackgroundHarness(
+			[
+				SEED,
+				{ toolCalls: [{ id: "call-a", name: "echo", args: {} }], usage: { input: 760, output: 10 } },
+				{
+					text: "over the hard threshold",
+					usage: { input: 850, output: 10 },
+					beforeEmit: async () => {
+						planner.release();
+						await harness.session.awaitBackgroundCompaction();
+						// No override: the model planner runs and fails on its prose answer.
+						planner.text = undefined;
+					},
+				},
+				"not a deletion plan",
+			],
+			planner,
+		);
+		harnesses.push(harness);
+		await harness.session.prompt(longPrompt);
+		await harness.session.prompt(`${longPrompt}\nsecond`);
+		await harness.session._awaitPendingPostCompactionContinuation();
+
+		assert.equal(compactionEntries(harness.sessionManager).length, 1, "the stored result stays committed");
+		const end = harness.eventsOfType("compaction_end").at(-1);
+		assert.equal(end?.reason, "threshold");
+		assert.equal(end?.background, true);
+		assert.ok(end?.result, "the committed background boundary is reported");
+		assert.match(
+			end?.errorMessage ?? "",
+			/^Auto-compaction failed: Compaction range planning returned malformed output/,
+		);
+	});
+
+	test("an overflow recovery that fails after committing a ready result still retries the turn (#4977)", async () => {
+		const planner = new Planner();
+		planner.text = Array.from({ length: 3 }, (_, line) => `[User]: kept ${line} ${"k".repeat(600)}`).join("\n");
+		let harness!: Harness;
+		harness = await createBackgroundHarness(
+			[
+				SEED,
+				{ toolCalls: [{ id: "call-a", name: "echo", args: {} }], usage: { input: 760, output: 10 } },
+				{
+					stopReason: "error",
+					error: "prompt is too long",
+					beforeEmit: async () => {
+						planner.release();
+						await harness.session.awaitBackgroundCompaction();
+						planner.text = "[User]: small";
+						const append = harness.sessionManager.appendCompaction.bind(harness.sessionManager);
+						let appends = 0;
+						harness.sessionManager.appendCompaction = async (...args) => {
+							appends += 1;
+							if (appends > 1) throw new Error("injected foreground boundary write failure");
+							return append(...args);
+						};
+					},
+				},
+				"recovered after the retry",
+			],
+			planner,
+		);
+		harnesses.push(harness);
+		await harness.session.prompt(longPrompt);
+		await harness.session.prompt(`${longPrompt}\nsecond`);
+		await harness.session._awaitPendingPostCompactionContinuation();
+
+		const end = harness.eventsOfType("compaction_end").at(-1);
+		assert.equal(end?.reason, "overflow");
+		assert.ok(end?.result, "the committed background boundary is reported");
+		assert.equal(end?.willRetry, true);
+		assert.match(
+			end?.errorMessage ?? "",
+			/^Context overflow recovery failed: injected foreground boundary write failure/,
+		);
+		assert.equal(harness.session.getLastAssistantText(), "recovered after the retry");
+	});
+
 	test("a background task can plan with the session model and records the planner's usage", async () => {
 		const planner = new Planner(true);
 		planner.text = undefined;
