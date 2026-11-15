@@ -2041,3 +2041,78 @@ test("an ask whose replier ends right after replying gets only the reply on anot
 	await new Promise((resolve) => setTimeout(resolve, 20 * BUS_POLL_INTERVAL_MS));
 	assert.deepEqual(failuresOf(asker, ask.id), [], "the reply is the ask's only outcome");
 });
+
+test("an away asker of a child that turned terminal and then ended gets only the terminal failure (#4992)", async () => {
+	const [a, b] = await cluster();
+	const returnAddress = randomUUID();
+	const asker = await a!.connect("asker", { returnAddress });
+	const child = await b!.connect("child");
+	const ask = await savedAsk(a!, asker, b!, child);
+	a!.sessions.delete(asker.info.id);
+	a!.router.sessionLeft(asker, undefined, false);
+	await waitOffline(b!, asker);
+	child.info.replyCapability = "terminal";
+	b!.router.sessionUpdated(child);
+	await vi.waitFor(async () => {
+		const row = await b!.opened.state.outbox.read(`terminal:${ask.id}`);
+		assert.equal(row.status, "found");
+	});
+	b!.leave(child);
+	await vi.waitFor(async () =>
+		assert.deepEqual(await a!.opened.state.pendingAsks.listForTarget(child.info.id), { status: "listed", asks: [] }),
+	);
+	assert.deepEqual(await b!.opened.state.outbox.read(`ended:${ask.id}`), { status: "missing" }, "not failed again");
+	const back = await a!.connect("asker", { returnAddress, id: asker.info.id });
+	await waitFor(() => (failuresOf(back, ask.id).length > 0 ? true : undefined));
+	await new Promise((resolve) => setTimeout(resolve, 10 * BUS_POLL_INTERVAL_MS));
+	assert.deepEqual(
+		failuresOf(back, ask.id).map((frame) => (frame.type === "message" ? frame.message.replyError : undefined)),
+		[TERMINAL_CHILD_ASK_REFUSAL],
+	);
+});
+
+test("a recipient that is only away keeps the asks from another node open (#4992)", async () => {
+	const [a, b] = await cluster();
+	const asker = await a!.connect("asker");
+	const recipient = await b!.connect("recipient");
+	const ask = await savedAsk(a!, asker, b!, recipient);
+	b!.sessions.delete(recipient.info.id);
+	b!.router.sessionLeft(recipient, undefined, false);
+	await waitOffline(a!, recipient);
+	await new Promise((resolve) => setTimeout(resolve, 10 * BUS_POLL_INTERVAL_MS));
+	assert.deepEqual(failuresOf(asker, ask.id), []);
+	assert.deepEqual(
+		await a!.opened.state.pendingAsks.matchesReply({
+			replySenderSessionId: recipient.info.id,
+			replyTargetSessionId: asker.info.id,
+			replyTo: ask.id,
+		}),
+		{ status: "match" },
+	);
+	assert.deepEqual(await a!.opened.state.pendingAsks.listEnded(0), { status: "listed", asks: [] });
+});
+
+test("an ask parked for a subagent Intercom no longer knows fails as sent by its session id when the owner ends (#4992)", async () => {
+	const [a, b] = await cluster();
+	const asker = await a!.connect("asker");
+	const owner = await b!.connect("owner");
+	const forgotten = randomUUID();
+	const ask = { senderSessionId: asker.info.id, targetSessionId: forgotten, messageId: randomUUID() };
+	await b!.opened.state.pendingAsks.record(ask);
+	await b!.opened.state.pendingAsks.parkForTarget(forgotten, {
+		ownerSessionId: owner.info.id,
+		reservationKey: releasedReservationKey("forgotten"),
+	});
+	b!.leave(owner);
+	const failure = await waitFor(() => failuresOf(asker, ask.messageId)[0]);
+	assert.ok(failure.type === "message");
+	assert.equal(failure.message.replyError, `Session "${forgotten}" ended before replying`);
+	assert.deepEqual(failure.from, {
+		id: forgotten,
+		cwd: "",
+		model: "",
+		pid: 0,
+		startedAt: 0,
+		lastActivity: failure.from.lastActivity,
+	});
+});
