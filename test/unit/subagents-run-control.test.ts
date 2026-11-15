@@ -3121,6 +3121,8 @@ test(
 			requestedModels: processWide.requestedModels,
 			launchHeartbeats: processWide.launchHeartbeats,
 			executionTimeouts: processWide.executionTimeouts,
+			// A retained released child keeps what it waits on for its notice; an evicted one keeps nothing (#5031).
+			releases: FINISHED_TASK_RETENTION,
 		});
 
 		const resumed = await h.call({ action: "resume", id: "retained0:0", message: "carry on" });
@@ -3294,6 +3296,11 @@ test("status names every call a released child waits on, and shows one stored wi
 	assert.equal(lines.length, 2, lines.join("\n"));
 	assert.match(lines[0] ?? "", /released · waiting on wait_for_ci \(ci-1\), deploy \(deploy-2\); it holds nothing/);
 	assert.match(lines[1] ?? "", /released · waiting; it holds nothing/);
+	// A released child is not paused and needs no resume (#5031).
+	assert.match(
+		lines[0] ?? "",
+		/it holds nothing and is not paused: it wakes by itself when that finishes.*needs no resume/,
+	);
 	assert.deepEqual(subagentChildrenAwaitingResume(h.ctx, "no-such-child:0"), []);
 });
 
@@ -3808,6 +3815,114 @@ test("a child of the earlier process whose call result is already held is woken 
 	await h.waitForLatest("heldrestart1:0", clearedOk);
 	assert.equal(h.runs.filter((run) => run.options.redispatchDetachedCalls).length, 0);
 	assert.equal(h.runs.filter((run) => run.task === lateToolResultMessage(green)).length, 1);
+});
+
+function wakeWith(h: Harness, dispatcher: AgentWakeDispatcher, childId: string, output: string): void {
+	void dispatcher
+		.deliver(subagentWakeKey(h.sessionManager.getSessionId(), childId), {
+			id: `tool-result:${childId}`,
+			kind: "tool-result",
+			toolResult: waitResult(output),
+		})
+		.catch((error) => dispatcher.reportUnobservedFailure(error));
+}
+
+async function releasedMember(
+	h: Harness,
+	runId: string,
+	index: number,
+	schedule: ReturnType<typeof createExecutionScheduler>,
+): Promise<SubagentChildRecord> {
+	h.releaseOriginal = true;
+	await settled(
+		h,
+		await h.admit(runId, schedule, { index, intercomSessionName: `subagent-worker-${runId}-${index}` }),
+	);
+	const released = await h.waitForLatest(
+		`${runId}:${index}`,
+		(record) => record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS,
+	);
+	h.releaseOriginal = false;
+	return released;
+}
+
+function wokenRuns(h: Harness, runId: string, index: number): Harness["runs"] {
+	return h.runs.filter(
+		(run) => run.options.runId === runId && (run.options.index ?? 0) === index && run.task !== ORIGINAL_TASK,
+	);
+}
+
+test("a released child woken while a sibling holds its run's only slot waits for that sibling to finish (#4856)", async () => {
+	const h = harness();
+	const dispatcher = bindProcessWakes(h);
+	const schedule = createExecutionScheduler(1);
+	const a = await releasedMember(h, "conc-live", 0, schedule);
+	const b = await h.admit("conc-live", schedule, { index: 1, intercomSessionName: "subagent-worker-conc-live-1" });
+	await h.waitForLatest("conc-live:1", (record) => record.launchLeafId !== undefined);
+
+	wakeWith(h, dispatcher, "conc-live:0", "CI green for A");
+	await sleep(150);
+	assert.deepEqual(wokenRuns(h, "conc-live", 0), [], "A waits while B holds the run's only slot");
+
+	await h.call({ action: "quit", id: "conc-live:1" });
+	await settled(h, b);
+	const woken = await h.waitForLatest("conc-live:0", (record) => record.taskId !== a.taskId && clearedOk(record));
+	assert.ok(woken.taskId);
+	assert.equal(wokenRuns(h, "conc-live", 0).length, 1, "A starts once B frees the slot");
+});
+
+test("released children of one run woken with no sibling running still take its concurrency limit's slots one at a time (#4856)", async () => {
+	const h = harness();
+	const dispatcher = bindProcessWakes(h);
+	const schedule = createExecutionScheduler(1);
+	await releasedMember(h, "conc-idle", 0, schedule);
+	await releasedMember(h, "conc-idle", 1, schedule);
+	const gates = [Promise.withResolvers<void>(), Promise.withResolvers<void>()] as const;
+	h.finishOn.set("CI green for 0", gates[0]);
+	h.finishOn.set("CI green for 1", gates[1]);
+
+	wakeWith(h, dispatcher, "conc-idle:0", "CI green for 0");
+	wakeWith(h, dispatcher, "conc-idle:1", "CI green for 1");
+	const started = () => [0, 1].filter((index) => wokenRuns(h, "conc-idle", index).length > 0);
+	const deadline = Date.now() + RECORD_WAIT_MS;
+	while (started().length === 0 && Date.now() < deadline) await sleep(10);
+	await sleep(150);
+	const [first] = started();
+	assert.equal(started().length, 1, "one woken child runs; the other waits for the run's only slot");
+	assert.ok(first !== undefined);
+
+	gates[first]?.resolve();
+	gates[1 - first]?.resolve();
+	for (const index of [0, 1])
+		await h.waitForLatest(
+			`conc-idle:${index}`,
+			(record) => wokenRuns(h, "conc-idle", index).length === 1 && clearedOk(record),
+		);
+});
+
+test("a woken child waiting for its run's slot leaves parallel.runningCapacity to another run's woken child, which starts at once (#4856)", async () => {
+	const h = harness();
+	h.deps.config.parallel = { runningCapacity: 1 };
+	const dispatcher = bindProcessWakes(h);
+	const runA = createExecutionScheduler(1);
+	await releasedMember(h, "hol-a", 0, runA);
+	const a1 = await h.admit("hol-a", runA, { index: 1, intercomSessionName: "subagent-worker-hol-a-1" });
+	await h.waitForLatest("hol-a:1", (record) => record.launchLeafId !== undefined);
+	await releasedMember(h, "hol-b", 0, createExecutionScheduler(1));
+
+	wakeWith(h, dispatcher, "hol-a:0", "CI green for A");
+	await sleep(150);
+	assert.deepEqual(wokenRuns(h, "hol-a", 0), [], "A waits while its sibling holds its run's only slot");
+	wakeWith(h, dispatcher, "hol-b:0", "CI green for B");
+	await h.waitForLatest("hol-b:0", () => wokenRuns(h, "hol-b", 0).length === 1);
+	assert.deepEqual(wokenRuns(h, "hol-a", 0), [], "A still waits for its run");
+
+	await h.call({ action: "quit", id: "hol-a:1" });
+	await settled(h, a1);
+	await h.waitForLatest("hol-a:0", (record) => wokenRuns(h, "hol-a", 0).length === 1 && clearedOk(record));
+	await h.waitForLatest("hol-b:0", (record) => clearedOk(record));
+	await dispatcher.whenIdle();
+	assert.equal(dispatcher.stats().running, 0);
 });
 
 /** A detached call of the child's last turn whose process died with the earlier owner (#4848). */

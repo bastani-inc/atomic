@@ -730,7 +730,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 			// A heartbeat the journal's outage refused keeps the attempt while its lease lasts; the next one that gets through
 			// renews it (#4768). Past the lease, another worker may hold the child, so the attempt ends as fenced.
 			leaseRenewedAt = performance.now();
-			const heartbeat = startWorkerHeartbeat(start.heartbeatMs, async () => {
+			const beat = async () => {
 				try {
 					offerControl(
 						(await request({ kind: "heartbeat", reports: usageReports() }, undefined, true)) as PoolControl,
@@ -742,7 +742,11 @@ async function runWorker(start: WorkerStart): Promise<void> {
 					replies.attemptFenced = true;
 					failPulse(workerRefusal(error as Error, { workId: work.id, generation: work.generation }).error);
 				}
-			});
+			};
+			// The first heartbeat confirms the claim before the child runs: only a confirmed claim counts as one of the
+			// child's attempts, so one whose answer this worker never got, or that it died before taking up, does not (#5034).
+			await beat();
+			const heartbeat = startWorkerHeartbeat(start.heartbeatMs, beat);
 			const activity = setInterval(() => {
 				stageWatches?.sweep();
 				publish();

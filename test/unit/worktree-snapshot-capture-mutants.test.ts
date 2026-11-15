@@ -133,7 +133,7 @@ describe("which files a capture sizes", () => {
 		assert.deepEqual(result.snapshot.omitted, [{ reason: "over-snapshot-cap", path: "zz.txt", bytes: 10 }]);
 	});
 
-	test("a nested repository inside the checkout is not a file of it: it is neither omitted for its directory size nor in the tree", async () => {
+	test("a nested repository inside the checkout is not a file of it: it is listed as a nested repository, never sized, and not in the tree (#4905)", async () => {
 		const { clone } = await sandbox.remoteWithClone("repo", { "a.txt": "a\n" });
 		const nested = join(clone, "vendor", "inner");
 		mkdirSync(nested, { recursive: true });
@@ -143,7 +143,7 @@ describe("which files a capture sizes", () => {
 		sandbox.write(join(clone, "b.txt"), "b");
 		const result = captured(await captureWorktreeSnapshot(clone, { settings: { maxFileBytes: 1 } }));
 		assert.deepEqual(await treePaths(clone, result.snapshot.tree), ["a.txt", "b.txt"]);
-		assert.deepEqual(result.snapshot.omitted, []);
+		assert.deepEqual(result.snapshot.omitted, [{ reason: "nested-repository", path: "vendor/inner/" }]);
 	});
 });
 
