@@ -230,6 +230,27 @@ describe("applyOverrides last for the run (#5049)", () => {
 		assert.equal(manager.getCompactionEnabled(), false);
 	});
 
+	test("changing an overridden setting replaces only that override (#5049)", () => {
+		const manager = SettingsManager.inMemory({ theme: "dark" });
+		manager.applyOverrides({
+			theme: "light",
+			compaction: { enabled: false, background: false },
+			workflows: ["./override-wf"],
+		});
+
+		manager.setTheme("solarized");
+		manager.setCompactionEnabled(true);
+		manager.setAutoAdvanceAfterSteer(false);
+
+		assert.equal(manager.getTheme(), "solarized");
+		assert.equal(manager.getCompactionEnabled(), true);
+		assert.equal(manager.getCompactionBackground(), false, "the other overridden compaction key stays");
+		assert.deepEqual(manager.getWorkflowPaths(), ["./override-wf"], "list-form workflow paths stay");
+
+		manager.setWorkflowPaths(["./wf"]);
+		assert.deepEqual(manager.getWorkflowPaths(), ["./wf"]);
+	});
+
 	test("overrides survive reload and prepared reloads (#5049)", async () => {
 		const manager = SettingsManager.inMemory({ theme: "dark" });
 		manager.applyOverrides({ theme: "light" });

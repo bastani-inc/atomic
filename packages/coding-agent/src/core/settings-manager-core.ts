@@ -425,15 +425,27 @@ export class SettingsManager {
 
 	/**
 	 * Apply additional overrides on top of current settings. They are never saved, and they keep applying over the
-	 * loaded settings after setting writes, `reload()` and project trust changes for the rest of the run.
+	 * loaded settings after setting writes, `reload()` and project trust changes for the rest of the run, until a setter
+	 * changes the same setting.
 	 */
 	applyOverrides(overrides: Partial<Settings>): void {
 		this.overrides.push(SettingsManager.migrateSettings(structuredClone(overrides) as Record<string, unknown>));
 		this.settings = this.mergeEffectiveSettings();
 	}
 
+	/** An explicit change to a setting replaces its override; overrides of other settings and keys stay. */
+	private dropOverride(field: keyof Settings, nestedKey?: string): void {
+		for (const overrides of this.overrides) {
+			const value: unknown = overrides[field];
+			if (nestedKey !== undefined && isPlainObject(value)) delete value[nestedKey];
+			else if (nestedKey === undefined || nestedEntries(field, value)[nestedKey] !== undefined)
+				delete overrides[field];
+		}
+	}
+
 	/** Mark a global field as modified during this session */
 	private markModified(field: keyof Settings, nestedKey?: string): void {
+		this.dropOverride(field, nestedKey);
 		this.modifiedFields.add(field);
 		if (nestedKey) {
 			if (!this.modifiedNestedFields.has(field)) {
@@ -452,6 +464,7 @@ export class SettingsManager {
 	/** Mark a project field as modified during this session */
 	private markProjectModified(field: keyof Settings, nestedKey?: string): void {
 		this.assertProjectTrustedForWrite();
+		this.dropOverride(field, nestedKey);
 		this.modifiedProjectFields.add(field);
 		if (nestedKey) {
 			if (!this.modifiedProjectNestedFields.has(field)) {
