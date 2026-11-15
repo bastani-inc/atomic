@@ -1,10 +1,16 @@
-import { type SessionStore, type SqliteDatabase, type SqliteExecutor, StorageProvider } from "@bastani/atomic/storage";
+import {
+	type SessionStore,
+	type SqliteDatabase,
+	type SqliteExecutor,
+	type StorageDialect,
+	StorageProvider,
+} from "@bastani/atomic/storage";
 import { boundaryTransitionError } from "../boundary-lifecycle.js";
 import { validateCheckpointInvocationFingerprint } from "../boundary-topology.js";
 import { directChildTopologyError, durableStageGroupKey, sameRun, sameStrings } from "../stage-topology-validation.js";
 import { DURABLE_TOOL_TOPOLOGY_VERSION, type DurableCheckpoint, type DurableStageCheckpoint } from "../types.js";
 import { parseWorkflowChildResult } from "../workflow-child-result.js";
-import type { SqlPoolStorage } from "./internal.js";
+import { poolSessionPrefix, type SqlPoolStorage } from "./internal.js";
 import { type IndexedStage, inKeyOrder, type PoolCheckpointSource } from "./pool-checkpoint-index.js";
 import type { PoolWork } from "./sql-pool-queue.js";
 
@@ -42,7 +48,7 @@ export type PoolMutation = PoolCheckpointMutation | PoolSessionAppend;
  */
 export async function validatePoolMutation(
 	tx: SqliteExecutor,
-	journal: SqlPoolStorage["tables"],
+	storage: Pick<SqlPoolStorage, "tables" | "dialect">,
 	root: string,
 	work: PoolWork,
 	mutation: PoolCheckpointMutation,
@@ -68,14 +74,14 @@ export async function validatePoolMutation(
 	if (mutation.kind !== "checkpoint" && checkpoint.kind !== "stage") throw new Error("Invalid pool session mutation");
 	if (mutation.kind === "checkpoint" && checkpoint.kind === "stage" && checkpoint.sessionId) {
 		const owner = await tx.get(
-			`SELECT work, replay_key FROM ${journal.runs}_pool_session_owners WHERE session = ?`,
+			`SELECT work, replay_key FROM ${poolSessionPrefix(storage)}session_owners WHERE session = ?`,
 			checkpoint.sessionId,
 		);
 		if (owner?.work !== work.id || owner.replay_key !== checkpoint.replayKey)
 			throw new Error("Pool session scope mismatch");
 	}
 	if (checkpoint.kind === "ui") return;
-	const view = await checkpoints.read(tx, journal.events);
+	const view = await checkpoints.read(tx, storage.tables.events);
 	const topology = checkpoint.topology;
 	const run = topology?.run;
 	if (!topology || !run || run.rootRunId !== root || run.runId === root)
@@ -168,9 +174,14 @@ function stagesExcept(entries: readonly IndexedStage[], checkpoint: DurableStage
 }
 
 /** The pool session tables under `prefix`, read and written in `tx`. */
-export async function poolTransactionSessionStore(tx: SqliteExecutor, prefix: string): Promise<SessionStore> {
+export async function poolTransactionSessionStore(
+	tx: SqliteExecutor,
+	dialect: StorageDialect,
+	prefix: string,
+): Promise<SessionStore> {
 	const database: SqliteDatabase = {
 		descriptor: { adapter: "pool-transaction", location: prefix },
+		dialect,
 		exec: (sql) => tx.exec(sql),
 		run: (sql, ...params) => tx.run(sql, ...params),
 		get: (sql, ...params) => tx.get(sql, ...params),
@@ -186,6 +197,7 @@ export async function poolTransactionSessionStore(tx: SqliteExecutor, prefix: st
 
 export async function applyPoolSession(
 	tx: SqliteExecutor,
+	dialect: StorageDialect,
 	prefix: string,
 	workId: string,
 	mutation: PoolSessionMutation | PoolSessionAppend,
@@ -193,7 +205,7 @@ export async function applyPoolSession(
 	store?: SessionStore,
 ): Promise<number> {
 	const write = (change: (sessions: SessionStore) => Promise<{ readonly lastSeq: number }>) =>
-		store === undefined ? withSessionStore(tx, prefix, change) : change(store).then((done) => done.lastSeq);
+		store === undefined ? withSessionStore(tx, dialect, prefix, change) : change(store).then((done) => done.lastSeq);
 	const owners = `${prefix}session_owners`;
 	if (mutation.kind === "session-append") {
 		if (typeof mutation.sessionId !== "string" || mutation.sessionId === "")
@@ -223,10 +235,11 @@ export async function applyPoolSession(
 
 async function withSessionStore(
 	tx: SqliteExecutor,
+	dialect: StorageDialect,
 	prefix: string,
 	write: (store: SessionStore) => Promise<{ readonly lastSeq: number }>,
 ): Promise<number> {
-	const store = await poolTransactionSessionStore(tx, prefix);
+	const store = await poolTransactionSessionStore(tx, dialect, prefix);
 	try {
 		return (await write(store)).lastSeq;
 	} finally {

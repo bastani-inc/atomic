@@ -1,4 +1,10 @@
-import type { SqliteExecutor, SqliteRow, SqliteStatement, SqliteTransactionOptions } from "@bastani/atomic/storage";
+import type {
+	SqliteExecutor,
+	SqliteRow,
+	SqliteStatement,
+	SqliteTransactionOptions,
+	StorageDialect,
+} from "@bastani/atomic/storage";
 import {
 	type AppendOutcome,
 	type JournalEntry,
@@ -108,6 +114,22 @@ export interface SqlPoolStorage {
 	read<T>(body: (executor: SqliteExecutor) => Promise<T>): Promise<T>;
 	withAppendGuard<T>(guard: JournalAppendGuard, action: () => Promise<T>): Promise<T>;
 	readonly tables: Readonly<{ runs: string; events: string; leases: string }>;
+	/** The SQL dialect of the journal's database: the pool's statements ask it for what differs between engines. */
+	readonly dialect: StorageDialect;
+}
+
+/** The journal's runs table, after the prefix. */
+const RUNS_TABLE = "wf_runs";
+
+/**
+ * The prefix of a pool's session tables: the pooled-stage session store's, and the pool's own `session_owners`.
+ * `<runs>_pool_`, except on a database whose identifiers are limited (Postgres), where the session store's own long
+ * names would not fit after it: `<prefix>wf_ps_` there, a name no released store used.
+ */
+export function poolSessionPrefix(storage: Pick<SqlPoolStorage, "tables" | "dialect">): string {
+	const { runs } = storage.tables;
+	if (storage.dialect.maxIdentifierBytes === undefined || !runs.endsWith(RUNS_TABLE)) return `${runs}_pool_`;
+	return `${runs.slice(0, -RUNS_TABLE.length)}wf_ps_`;
 }
 
 /** The storage errors that say the store did not take a write, rather than that the write itself was refused. */
