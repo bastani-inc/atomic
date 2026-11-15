@@ -162,3 +162,17 @@ export function uniquifyToolCallIds<TMessage extends AgentMessage>(messages: TMe
 	});
 	return changed ? uniquified : messages;
 }
+
+/**
+ * Give each tool call of `message` that has an empty or missing id the id `uniquifyToolCallIds` derives for it when
+ * `message` follows `history`, in place. Called as the turn ends, before its calls run, so the calls run, detach, are
+ * started again and record their results under that id, and the transcript stores it (#5056).
+ */
+export function assignMissingToolCallIds(history: readonly AgentMessage[], message: AgentMessage): void {
+	if (message.role !== "assistant" || !rawToolCallIds(message).includes("")) return;
+	const derived = rawToolCallIds(uniquifyToolCallIds([...history, message]).at(-1)!);
+	const blocks = (message as { content: unknown[] }).content.filter(isToolCallWithOptionalId);
+	blocks.forEach((block, index) => {
+		if ((block.id ?? "") === "") block.id = derived[index];
+	});
+}

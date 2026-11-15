@@ -28,6 +28,7 @@ import {
 	replacementAbortContent,
 } from "./agent-session-types.js";
 import { formatCodexProviderError } from "./codex-errors.ts";
+import { assignMissingToolCallIds } from "./context-tool-pairing.ts";
 import {
 	cancelSessionSubscriptions,
 	type SessionEventHandler,
@@ -123,6 +124,12 @@ export function _handleAgentEvent(this: AgentSession, received: AgentEvent): Pro
 	// #4226: a session that could not save a message stops the run that hit it; the next run tries again.
 	if (received.type === "agent_start") this._persistenceFailure = undefined;
 	if (consumePersistenceStopReply(this, received)) return;
+	if (received.type === "message_end" && received.message.role === "assistant") {
+		// Before the turn's calls run: they run, detach and are recorded under the id stored here (#5056).
+		const messages = this.agent.state.messages;
+		const index = messages.lastIndexOf(received.message);
+		assignMissingToolCallIds(index >= 0 ? messages.slice(0, index) : messages, received.message);
+	}
 	let event = withoutDetachedPlaceholders(this, received);
 	if (event === undefined) return;
 	if (event.type === "agent_end" && event.messages.some((message) => persistenceStopReplies.has(message))) {

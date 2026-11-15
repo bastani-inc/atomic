@@ -10,6 +10,7 @@ import type {
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { deliverHeldTaskCompletions } from "./agent-session-tasks.js";
 import { finalizeToolResult } from "./agent-session-tool-hooks.ts";
+import { uniquifyToolCallIds } from "./context-tool-pairing.ts";
 import { reportDebug } from "./debug.ts";
 import { type ErrorFieldValue, serializeErrorCause } from "./error-contract.ts";
 import type { ExtensionToolContext } from "./extensions/context-types.ts";
@@ -622,14 +623,22 @@ function reportStaleDetachedCall(
 
 /** Whether an assistant message of the session's history issued `toolCallId`, even one a compaction folded into text. */
 function wasIssued(session: AgentSession, toolCallId: string): boolean {
-	return session.sessionManager
+	const messages = session.sessionManager
 		.getBranch()
-		.some(
-			(entry) =>
-				entry.type === "message" &&
-				entry.message.role === "assistant" &&
-				entry.message.content.some((block) => block.type === "toolCall" && block.id === toolCallId),
-		);
+		.flatMap((entry) => (entry.type === "message" ? [entry.message as AgentMessage] : []));
+	return uniquifyToolCallIds(messages).some(
+		(message) =>
+			message.role === "assistant" &&
+			message.content.some((block) => block.type === "toolCall" && block.id === toolCallId),
+	);
+}
+
+/**
+ * The session's projected messages with the ids every request sees: a call saved without an id is known by the id
+ * `uniquifyToolCallIds` derives for it, so it is started again, held and answered under that id (#5056).
+ */
+function projectedMessages(projection: { readonly messages: AgentMessage[] }): AgentMessage[] {
+	return uniquifyToolCallIds(projection.messages);
 }
 
 /**
@@ -658,7 +667,7 @@ function trailingToolTurn(session: AgentSession): {
 } {
 	const none = { assistant: undefined, awaiting: new Set<string>() };
 	const projection = session.sessionManager.buildSessionProjection();
-	const messages = projection.messages;
+	const messages = projectedMessages(projection);
 	let index = messages.length - 1;
 	while (index >= 0 && messages[index]?.role !== "assistant") index--;
 	const assistant = messages[index] as AssistantMessage | undefined;
@@ -671,7 +680,8 @@ function trailingToolTurn(session: AgentSession): {
 	const awaiting = new Set(
 		assistant.content.flatMap((block) => (block.type === "toolCall" && !answered.has(block.id) ? [block.id] : [])),
 	);
-	const entryId = projection.entries.find((entry) => entry.messages.includes(assistant))?.sourceEntry.id;
+	const saved = projection.messages[index];
+	const entryId = projection.entries.find((entry) => entry.messages.includes(saved!))?.sourceEntry.id;
 	return { assistant, awaiting, ...(entryId === undefined ? {} : { entryId }) };
 }
 
@@ -954,9 +964,9 @@ export async function resumeDetachedTurn(this: AgentSession, results: readonly D
 		assistant?.content.flatMap((block) => (block.type === "toolCall" ? [[block.id, block] as const] : [])) ?? [],
 	);
 	const recorded = new Set(
-		this.sessionManager
-			.buildSessionProjection()
-			.messages.flatMap((message) => (message.role === "toolResult" ? [message.toolCallId] : [])),
+		projectedMessages(this.sessionManager.buildSessionProjection()).flatMap((message) =>
+			message.role === "toolResult" ? [message.toolCallId] : [],
+		),
 	);
 	const given = results.filter((result) => {
 		if (recorded.has(result.toolCallId)) return false;
