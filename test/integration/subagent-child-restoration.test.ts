@@ -24,6 +24,7 @@ import {
 	type SubagentChildRecord,
 } from "../../packages/subagents/src/runs/foreground/subagent-child-records.js";
 import {
+	awaitSubagentChildRestoration,
 	recordReportedGoneSubagentChildren,
 	restoredChildrenAwaitingIntercom,
 	restoreSubagentChild,
@@ -856,6 +857,55 @@ test("a child reported gone on one resume is neither retried nor reported again 
 		assert.equal(gone?.terminalStatus, "gone");
 		assert.equal(gone?.childSessionId, original.childSessionId, "the gone record keeps the child's identity");
 	} finally {
+		await resumedHost.close("session-close");
+		removeTempDirectory(cwd);
+	}
+});
+
+test("a restored child's pre-restart Intercom id is recognized while a sibling is still being restored (#5097)", async () => {
+	const cwd = makeTempDirectory("subagent-child-sibling-id-");
+	const resumedHost = taskHost("parent-after-restart");
+	const open = SessionManager.open.bind(SessionManager);
+	const slowSibling = Promise.withResolvers<SessionManager>();
+	try {
+		const parent = parentSession(cwd);
+		await launchInterruptedChild(cwd, parent, "known1");
+		await launchInterruptedChild(cwd, parent, "slow1");
+		const children = readSubagentChildRecords(parent.sessionManager.getEntries());
+		const known = children.get("known1:0")!;
+		const slow = children.get("slow1:0")!;
+		const previousIntercomId = randomUUID();
+		const childSession = await SessionManager.open(known.childSessionFile!, undefined, cwd);
+		await childSession.appendCustomEntry("intercom_session_identity", {
+			sessionId: known.childSessionId,
+			intercomSessionId: previousIntercomId,
+		});
+		// The known child never re-registers with Intercom, so its restoration settles with a refusal to send.
+		const emitted = parent.pi.events.emit.bind(parent.pi.events);
+		parent.pi.events.emit = (channel: string, data: unknown) => {
+			if (channel === SUBAGENT_AWAIT_INTERCOM_PEER_EVENT) {
+				(data as { completion?: Promise<boolean> }).completion = Promise.resolve(false);
+				return;
+			}
+			emitted(channel, data);
+		};
+		// The sibling's session does not reopen until the end of the test.
+		vi.spyOn(SessionManager, "open").mockImplementation(((...args: Parameters<typeof open>) =>
+			args[0] === (slow.childSessionFile as unknown) ? slowSibling.promise : open(...args)) as typeof open);
+
+		const restoring = restoreSubagentChildren(restoreDeps(parent, []), parent.ctx(resumedHost));
+		const refusal = await awaitSubagentChildRestoration(
+			parent.sessionManager.getSessionId(),
+			parent.sessionManager.getEntries(),
+			previousIntercomId,
+			RECORD_WAIT_MS,
+		);
+
+		assert.match(refusal ?? "", /subagent-worker-known1-1.*has not reconnected to Intercom/);
+		slowSibling.reject(new Error("the sibling's session is gone"));
+		await restoring;
+	} finally {
+		vi.restoreAllMocks();
 		await resumedHost.close("session-close");
 		removeTempDirectory(cwd);
 	}

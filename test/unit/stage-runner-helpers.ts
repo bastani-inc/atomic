@@ -175,27 +175,7 @@ export function makeMockSession(overrides: Partial<StageSessionRuntime> = {}): {
 	const emit = (event: { type: string; [k: string]: unknown }): void => {
 		for (const listener of listeners) listener(event);
 	};
-	emitMessageEndOnPush(session.messages, emit);
 	return { session, state, emit };
-}
-
-/**
- * Make a fake session's transcript behave like a real AgentSession's: each
- * assistant message admitted with `push` also reaches subscribers as
- * `message_end`, the provider usage event stage usage accounting reads (#5053).
- */
-export function emitMessageEndOnPush(
-	messages: StageSessionRuntime["messages"],
-	emit: (event: { type: string; [k: string]: unknown }) => void,
-): void {
-	Object.defineProperty(messages, "push", {
-		configurable: true,
-		value(...items: StageSessionRuntime["messages"]) {
-			const length = Array.prototype.push.apply(messages, items);
-			for (const message of items) if (message?.role === "assistant") emit({ type: "message_end", message });
-			return length;
-		},
-	});
 }
 
 export function flushMicrotasks(times = 8): Promise<void> {

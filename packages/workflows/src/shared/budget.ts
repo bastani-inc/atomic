@@ -21,13 +21,6 @@ function reachesWarnThreshold(reading: number, ceiling: number, warnAtPercent: n
 	return ceiling > 0 && warnAtPercent > 0 && reading * 100 >= warnAtPercent * ceiling;
 }
 
-/** Cost is summed and compared in 1e-10 currency units, so ten 0.1 calls read exactly 1. */
-const COST_UNITS_PER_CURRENCY = 1e10;
-/** A cost as whole 1e-10 currency units. */
-export const costUnits = (cost: number): number => Math.round(cost * COST_UNITS_PER_CURRENCY);
-/** Whole cost units back to currency. */
-export const costFromUnits = (units: number): number => units / COST_UNITS_PER_CURRENCY;
-
 export type DurationBudgetCheck =
 	| { readonly kind: "continue"; readonly report: DurationBudgetReport; readonly warning: boolean }
 	| { readonly kind: "exhausted"; readonly report: DurationBudgetReport };
@@ -58,11 +51,8 @@ export function enforceUsageBudget(
 	options: { readonly warned?: boolean } = {},
 ): UsageBudgetCheck {
 	const report: UsageBudgetReport = { dimension, reading, ceiling, percent: ceiling ? (reading / ceiling) * 100 : 0 };
-	// Cost compares in whole units: a float sum such as 0.9999999999999999 must reach a 1.00 cap.
-	const [exactReading, exactCeiling] =
-		dimension === "cost" ? [costUnits(reading), costUnits(ceiling)] : [reading, ceiling];
-	if (ceiling > 0 && exactReading >= exactCeiling) return { kind: "exhausted", report };
-	const warning = options.warned !== true && reachesWarnThreshold(exactReading, exactCeiling, warnAtPercent);
+	if (ceiling > 0 && reading >= ceiling) return { kind: "exhausted", report };
+	const warning = options.warned !== true && reachesWarnThreshold(reading, ceiling, warnAtPercent);
 	return { kind: "continue", report, warning };
 }
 /** A fully resolved budget. Create one only with {@link resolve_budget}. */

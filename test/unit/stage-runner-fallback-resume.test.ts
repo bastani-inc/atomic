@@ -26,7 +26,7 @@ import type {
 } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 import { createStageContext as createBaseStageContext } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 import { unresolvedContextOverflowFailure } from "../../packages/workflows/src/runs/foreground/stage-runner-unresolved-overflow.js";
-import { assistantMessageWithUsage, emitMessageEndOnPush, Type } from "./stage-runner-helpers.js";
+import { assistantMessageWithUsage, Type } from "./stage-runner-helpers.js";
 import { executeWorkflowDecision } from "./structured-output-workflow-fixture.js";
 
 let sessionStore: MemorySessionStore;
@@ -60,10 +60,6 @@ interface FakeSessionConfig {
 
 function makeFakeStageSession(config: FakeSessionConfig): StageSessionRuntime {
 	const messages: StageSessionRuntime["messages"] = [...(config.history ?? [])];
-	const listeners = new Set<(event: never) => void>();
-	emitMessageEndOnPush(messages, (event) => {
-		for (const listener of listeners) listener(event as never);
-	});
 	const base: StageSessionRuntime = {
 		async prompt(text: string) {
 			config.calls?.push({ kind: "prompt", text });
@@ -80,9 +76,8 @@ function makeFakeStageSession(config: FakeSessionConfig): StageSessionRuntime {
 		async followUp(text: string) {
 			config.calls?.push({ kind: "followUp", text });
 		},
-		subscribe(listener) {
-			listeners.add(listener as never);
-			return () => listeners.delete(listener as never);
+		subscribe() {
+			return () => {};
 		},
 		sessionFile: undefined,
 		sessionId: `fake-${crypto.randomUUID()}`,

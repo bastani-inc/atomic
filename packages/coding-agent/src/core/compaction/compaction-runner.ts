@@ -64,12 +64,6 @@ export interface CompactionPlanOptions {
 	sidecarDirectory?: SidecarDirectory;
 	retry?: RetryPolicy;
 	callbacks?: RetryCallbacks;
-	/**
-	 * Called once with the usage of every model request the run makes (planner, summary
-	 * fallback, classifier, retries and borrowed models), including requests of a run
-	 * that later fails, so a caller can charge each request exactly once (#5053).
-	 */
-	onUsage?: (usage: Usage) => void;
 }
 
 /** One compaction run's request. Urgency is required; there is no default. */
@@ -603,7 +597,6 @@ async function runCompactionLadder(
 		signal: timeLimit.signal,
 		onUsage: (usage: Usage) => {
 			plannerUsage = addUsage(plannerUsage, usage);
-			request.onUsage?.(usage);
 		},
 	};
 	// Credential waits count against the planning time limit too: each candidate's
