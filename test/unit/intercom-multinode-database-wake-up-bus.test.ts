@@ -10,8 +10,9 @@ import {
 	type WakeUpPollScheduler,
 } from "../../packages/intercom/broker/database-wake-up-bus.js";
 import type { WakeUpBus, WakeUpEvent } from "../../packages/intercom/broker/wake-up-bus.js";
+import { removeFixtureTree } from "../helpers/fixture-removal.js";
 import { registerWakeUpBusConformance, type WakeUpBusFixture } from "../helpers/intercom-multinode-contract.js";
-import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
+import { makeTempDirectory } from "../helpers/runtime.js";
 
 /** Short enough to keep the conformance cases quick, far below the suite's 5 s delivery bound. */
 const CONFORMANCE_POLL_INTERVAL_MS = 20;
@@ -22,6 +23,13 @@ interface SqliteFile {
 	readonly opened: Map<WakeUpBus, SqliteDatabase[]>;
 	connect(options?: { prefix?: string; schedule?: WakeUpPollScheduler }): Promise<WakeUpBus>;
 	close(): Promise<void>;
+}
+
+/** Awaits every connection's close, then removes the directory holding their file, then reports a failed close. */
+async function closeThenRemove(connections: readonly SqliteDatabase[], directory: string): Promise<void> {
+	const closes = await Promise.allSettled(connections.map((database) => database.close()));
+	removeFixtureTree(directory);
+	for (const close of closes) if (close.status === "rejected") throw close.reason;
 }
 
 function openSqliteFile(): SqliteFile {
@@ -49,7 +57,7 @@ function openSqliteFile(): SqliteFile {
 		async close() {
 			for (const bus of opened.keys()) await bus.close();
 			for (const connections of opened.values()) for (const database of connections) await database.close();
-			removeTempDirectory(directory);
+			removeFixtureTree(directory);
 		},
 	};
 }
@@ -274,7 +282,6 @@ test("database wake-up bus backs off exponentially while the database stays unav
 		]);
 		await bus.close();
 	} finally {
-		for (const database of connections) await database.close().catch(() => {});
-		removeTempDirectory(directory);
+		await closeThenRemove(connections, directory);
 	}
 });

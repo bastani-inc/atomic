@@ -143,13 +143,12 @@ export function selectRunsForPicker(
 /**
  * Re-anchor the selection on the previously selected run after rows were
  * re-derived, so a live status change that reorders rows never moves the
- * selection to a different run.
+ * selection to a different run. When the selected run is gone, the index is
+ * clamped to the nearest remaining row.
  */
 export function syncSessionPickerSelection(state: SessionPickerState, rows: readonly PickerRow[]): void {
-	if (state.selectedRunId !== undefined) {
-		const index = rows.findIndex((row) => row.run.id === state.selectedRunId);
-		if (index >= 0) state.selectedIndex = index;
-	}
+	const index = state.selectedRunId === undefined ? -1 : rows.findIndex((row) => row.run.id === state.selectedRunId);
+	state.selectedIndex = index >= 0 ? index : Math.max(0, Math.min(state.selectedIndex, rows.length - 1));
 	state.selectedRunId = rows[state.selectedIndex]?.run.id;
 }
 

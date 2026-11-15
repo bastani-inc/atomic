@@ -15,7 +15,7 @@ import type {
 	TaskRecord,
 	TaskResult,
 } from "../../packages/coding-agent/src/core/tasks/contracts.js";
-import { TaskSubscription, type TaskSupervisor } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
+import { TaskSupervisor } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
 import {
 	executeSupervisedCommand,
 	type SupervisedCommandOwner,
@@ -104,13 +104,14 @@ describe("a subagent's shells name the subagent that launched them (#4640)", () 
 		const host = ownerHost();
 		const owner = createChildCommandTaskOwner(() => host);
 		const child = await startAgent(host, "child-a");
-		const disposed = vi.spyOn(TaskSubscription.prototype, "dispose");
+		// Lookups read the owner's record index: they open no task watch at all (#5186).
+		const watched = vi.spyOn(TaskSupervisor.prototype, "watchOwnerTasks");
 		try {
 			owner.bind("child-a", route, new ChildTaskWaits());
 			owner.bind("child-b", route, new ChildTaskWaits());
-			assert.equal(disposed.mock.calls.length, 2);
+			assert.equal(watched.mock.calls.length, 0);
 		} finally {
-			disposed.mockRestore();
+			watched.mockRestore();
 		}
 		child.finish({ kind: "cancelled", cause: "user" });
 		await settled(host, child.taskId);

@@ -22,7 +22,9 @@
 // over; on the host SHARED_POOL_STUB_INTERCOM_PENDING_HOST names, no Intercom message is taken yet. A message id
 // "error-<detail>" fails in the session with that detail. On the host
 // SHARED_POOL_STUB_CLAIM_GATE_HOST names, the worker claims nothing until the file SHARED_POOL_STUB_CLAIM_GATE exists.
-// A stage input command for another attempt than the one the worker holds is answered `StaleAttempt`.
+// A stage input command for another attempt than the one the worker holds is answered `StaleAttempt`. With
+// SHARED_POOL_STUB_RATE=<provider>/<model>, once ready it asks the coordinator for a token of the fleet's rate limits
+// for that model (#4768) and logs the reply as `rate <host> <wait ms>`.
 import { appendFileSync, existsSync } from "node:fs";
 import { delimiter } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -173,6 +175,10 @@ async function followControl() {
 
 if (process.env.SHARED_POOL_STUB_HANG_HOST === host) await new Promise(() => setInterval(() => {}, 60_000));
 await request({ kind: "ready" });
+if (process.env.SHARED_POOL_STUB_RATE) {
+	const [provider, model] = process.env.SHARED_POOL_STUB_RATE.split("/");
+	appendFileSync(log, `rate ${host} ${await request({ kind: "rate-acquire", provider, model })}\n`);
+}
 // SHARED_POOL_STUB_EXIT_IDLE=1: the worker dies as soon as it is ready, before it claims anything.
 if (process.env.SHARED_POOL_STUB_EXIT_IDLE === "1") process.exit(1);
 for (;;) {

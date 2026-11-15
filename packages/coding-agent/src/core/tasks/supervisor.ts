@@ -1,4 +1,4 @@
-import { AsyncResource } from "node:async_hooks";
+import { AsyncLocalStorage, AsyncResource } from "node:async_hooks";
 import { isDeepStrictEqual } from "node:util";
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 import type * as native from "@bastani/atomic-natives";
@@ -60,7 +60,22 @@ export interface TaskTranscriptCommands {
 	readonly skillCommandsEnabled: boolean;
 }
 
+/** A finished task's history as {@link TaskTranscriptSource.loadHistory} reads it. */
+export type TaskTranscriptHistory =
+	| { readonly entries: ReturnType<SessionManager["getEntries"]>; readonly unavailable?: undefined }
+	| {
+			/** The task's own prompt and answer, which its transcript kept in memory. */
+			readonly entries: ReturnType<SessionManager["getEntries"]>;
+			/** Why its saved history could not be read, as a task view shows it. */
+			readonly unavailable: string;
+	  };
+
 export type TaskTranscriptSource = Pick<SessionManager, "getSessionId" | "getEntries"> & {
+	/**
+	 * A finished task's history, read from its session store when asked: such a transcript keeps none of it in memory,
+	 * and its `getEntries()` is empty. Absent where `getEntries()` holds the history (#5186).
+	 */
+	loadHistory?(): Promise<TaskTranscriptHistory>;
 	/** The session's commands now; a settled transcript keeps those it had when it settled. */
 	commands?(): TaskTranscriptCommands;
 	/** The live session's usage and footer data; absent from a transcript that has settled or been released. */
@@ -185,6 +200,8 @@ type OwnerState = {
 	host: HostState;
 	tasks: Map<C.TaskId, TaskLease>;
 	watches: Set<TaskSubscription>;
+	/** The owner's records as {@link TaskSupervisor.taskRecords} last drained them; created on first use. */
+	recordIndex?: { readonly lease: native.SubscriptionLease; snapshot: C.OwnerSnapshot };
 	settledTasks: Set<C.TaskId>;
 	quarantinedTasks: Set<C.TaskId>;
 	commandAdmissions: Set<Promise<void>>;
@@ -286,6 +303,19 @@ function clearTaskStatuses(state: TaskState): void {
 export function taskOwnTranscriptEntries(task: TaskLease): ReturnType<TaskTranscriptSource["getEntries"]> | undefined {
 	const state = environment.tasks.get(task);
 	return state?.transcript?.getEntries().slice(state.inheritedEntryCount ?? 0);
+}
+
+/** {@link taskOwnTranscriptEntries}, read from the task's session store when its transcript keeps none in memory. */
+export async function loadTaskOwnTranscriptEntries(
+	task: TaskLease,
+): Promise<ReturnType<TaskTranscriptSource["getEntries"]> | undefined> {
+	const state = environment.tasks.get(task);
+	const source = state?.transcript;
+	if (!state || !source) return undefined;
+	if (!source.loadHistory) return source.getEntries().slice(state.inheritedEntryCount ?? 0);
+	const history = await source.loadHistory();
+	// What a transcript keeps when its saved history is gone is the task's own entries only.
+	return history.unavailable === undefined ? history.entries.slice(state.inheritedEntryCount ?? 0) : history.entries;
 }
 
 /** Promise rejections, setup throws and consumer exceptions may be arbitrary JavaScript values. */
@@ -844,6 +874,15 @@ export function taskHostStateSizesForTesting(owner: OwnerLease) {
 		releases: state.launches.releases.size,
 	};
 }
+
+/**
+ * The async context of this module's load, outside every task. The record index's subscription lives as long as its
+ * owner; made in a task's context, it would keep that task's launch reachable for as long (#4326).
+ */
+const outsideAnyTask = AsyncLocalStorage.snapshot();
+
+/** The record index reads its subscription when asked; a change needs no wake. */
+function ignoreWake(): void {}
 
 /** The native binding, once a supervisor has loaded it. */
 let nativeBinding: typeof native | undefined;
@@ -1588,6 +1627,7 @@ export class TaskSupervisor {
 					watch.drain();
 					watch.dispose(false);
 				}
+				this.#disposeRecordIndex(state);
 				// No watcher is left to read the closed owner's records, and none can start: its launch metadata goes
 				// with it (#4451).
 				state.launches.routerSelections.clear();
@@ -1603,6 +1643,41 @@ export class TaskSupervisor {
 			if (failure) throw failure;
 		}
 		return result;
+	}
+	/**
+	 * The owner's current records of the tasks `ids` names, or of all its tasks. They are read from one subscription per owner, drained of
+	 * the changes since the last read, not from a snapshot of every task the owner keeps: a supervisor reads a task's
+	 * record at each launch, settlement and completion, and keeps up to its finished-task retention of them (#5186).
+	 */
+	taskRecords(owner: OwnerLease, ids?: ReadonlySet<C.TaskId>): readonly C.TaskRecord[] {
+		const current = this.#recordIndex(this.#owner(owner));
+		if (!current) return [];
+		return ids === undefined ? current.tasks : current.tasks.filter((task) => ids.has(task.ref.taskId));
+	}
+	#recordIndex(state: OwnerState): C.OwnerSnapshot | undefined {
+		if (!state.recordIndex) {
+			const watched = outsideAnyTask(() => this.#native.watchOwnerTasks(state.native, ignoreWake));
+			if (!watched.ok) return undefined;
+			state.recordIndex = { lease: watched.value.lease, snapshot: snapshot(watched.value.snapshot, state.launches) };
+		}
+		const index = state.recordIndex;
+		const drained = this.#native.drainOwnerTasks(index.lease);
+		if (!drained.ok) {
+			this.#disposeRecordIndex(state);
+			return undefined;
+		}
+		if (drained.value.snapshot) index.snapshot = snapshot(drained.value.snapshot, state.launches);
+		for (const value of drained.value.events) {
+			const applied = event(value, state.launches);
+			if (BigInt(applied.cursor.sequence) > BigInt(index.snapshot.cursor.sequence))
+				index.snapshot = applyEvent(index.snapshot, applied);
+		}
+		return index.snapshot;
+	}
+	#disposeRecordIndex(state: OwnerState): void {
+		const index = state.recordIndex;
+		state.recordIndex = undefined;
+		if (index) this.#native.disposeSubscription(index.lease);
 	}
 	reportSettledTasks(owner: OwnerLease): void {
 		const [watch] = this.#owner(owner).watches;

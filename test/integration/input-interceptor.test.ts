@@ -110,6 +110,23 @@ describe('installInputInterceptor — pi.on("input") wiring', () => {
 		assert.equal(commandCalls[0]!.args, "list");
 	});
 
+	for (const [label, separator] of [
+		["tab", "\t"],
+		["newline", "\n"],
+	] as const) {
+		test(`/workflow whose arguments follow a ${label} dispatches the registered handler (#5192)`, async () => {
+			const { pi, events, commandCalls } = buildMock();
+			factory(pi);
+
+			const handler = (events.get("input") ?? [])[0]!;
+			const ctx: PiCommandContext = { ui: { notify: () => undefined } };
+			const result = await handler({ text: `/workflow${separator}list`, source: "interactive" }, ctx);
+
+			assert.deepEqual(result, { action: "handled" });
+			assert.deepEqual(commandCalls, [{ name: "workflow", args: "list" }]);
+		});
+	}
+
 	test("regular chat text falls through (returns undefined, no command dispatched)", async () => {
 		const { pi, events, commandCalls } = buildMock();
 		factory(pi);

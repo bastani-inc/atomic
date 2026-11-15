@@ -5,7 +5,12 @@ import { appendFile, mkdir, rm, rmdir } from "node:fs/promises";
 import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
-import { type SnapshotBlobStore, setDebugSetting, type WorktreeSnapshot } from "@bastani/atomic";
+import {
+	type ProviderRateLimitObservation,
+	type SnapshotBlobStore,
+	setDebugSetting,
+	type WorktreeSnapshot,
+} from "@bastani/atomic";
 import { JournalShardUnavailableError, type StorageNotificationSubscription } from "@bastani/atomic/storage";
 import { listenPoolReady, observeSqlPoolTransactions, sqlPoolStorage } from "../durable/journal/internal.js";
 import { PoolRemoteJournal } from "../durable/journal/pool-remote-journal.js";
@@ -18,6 +23,7 @@ import {
 	type SqlPoolQueue,
 } from "../durable/journal/sql-pool-queue.js";
 import { openSqlPoolUsage, type PoolUsage, type SqlPoolUsage } from "../durable/journal/sql-pool-usage.js";
+import { SqlRateBuckets } from "../durable/journal/sql-rate-buckets.js";
 import {
 	type SharedPoolConfig,
 	SqlSharedPool,
@@ -85,6 +91,7 @@ import {
 import type { WorkerDefinitionSource } from "./definitions.js";
 import { missingSnapshotBlob } from "./dispatch-snapshot.js";
 import { EndedWatches } from "./ended-watches.js";
+import { FleetRateLimiter } from "./fleet-rate-limits.js";
 import {
 	type BoundWait,
 	boundWait,
@@ -672,6 +679,10 @@ export class PoolCoordinator {
 	private promptNodes = false;
 	/** Provider and model limits recorded anywhere in the pool, sent to every worker and the root (#4023). */
 	private readonly rateLimits = new RateLimitObservationSet();
+	/** The root's fleet-wide model rate limits and shared cooldowns, on a shared pool that sets them (#4768). */
+	private fleetRates?: FleetRateLimiter;
+	/** The fleet rate limits' mode last reported in the coordination stats. */
+	private reportedRateMode?: string;
 	private readonly rateLimitOutbox = new RateLimitObservationOutbox((observations) =>
 		this.shareRateLimits(observations),
 	);
@@ -796,8 +807,16 @@ export class PoolCoordinator {
 	}
 
 	private sendCoordinationStats(): void {
-		const stats = this.counters.sample(true);
-		if (stats !== undefined) this.port.send({ kind: "coordination", stats });
+		const mode = this.fleetRates?.mode;
+		const stats = this.counters.sample(mode === this.reportedRateMode);
+		this.reportedRateMode = mode;
+		if (stats !== undefined)
+			this.port.send({ kind: "coordination", stats: mode === undefined ? stats : { ...stats, rateLimit: mode } });
+	}
+
+	/** The fleet rate limits' mode, when the root sets any: `"local-fallback"` while the journal does not answer. */
+	get rateLimitMode(): "store" | "local-fallback" | undefined {
+		return this.fleetRates?.mode;
 	}
 
 	/** Closes the journal connection once the pool is closed and every command already received has settled. */
@@ -1004,7 +1023,10 @@ export class PoolCoordinator {
 		this.lease = lease;
 		const queue = await openSqlPoolQueue(this.journal, this.remote);
 		await this.whileRootLate(queue, () => queue.initialize(lease, COORDINATOR_LEASE_MS));
-		if (options.shared !== undefined) this.sharedPool ??= await SqlSharedPool.open(this.journal, queue);
+		if (options.shared !== undefined) {
+			this.sharedPool ??= await SqlSharedPool.open(this.journal, queue);
+			await this.startFleetRates();
+		}
 		// Events an earlier incarnation of this root accepted and never delivered reach the journal before any attempt runs.
 		await this.whileRootLate(queue, () => queue.drainOutbox(lease));
 		if (this.remote !== undefined) {
@@ -1253,6 +1275,8 @@ export class PoolCoordinator {
 			...(options.maxWorkerRssBytes === undefined ? {} : { maxWorkerRssBytes: options.maxWorkerRssBytes }),
 			claimWindowMs: options.shared.claimWindowMs,
 			...(this.promptNodes ? { promptNodes: true } : {}),
+			...(options.shared.rateLimits === undefined ? {} : { rateLimits: options.shared.rateLimits }),
+			...(options.shared.shareCooldowns === true ? { shareCooldowns: true } : {}),
 		};
 		await this.whileRootLate(this.queue!, () => shared.publishConfig(lease, config, this.budgetBlocked));
 		this.startSharedPasses();
@@ -1289,6 +1313,8 @@ export class PoolCoordinator {
 				stateDirectory: attachment.stateDirectory,
 				host: placement.host,
 				claimWindowMs: config.claimWindowMs,
+				...(config.rateLimits === undefined ? {} : { rateLimits: config.rateLimits }),
+				...(config.shareCooldowns === true ? { shareCooldowns: true } : {}),
 			},
 		};
 		configurePooledWatchTrace(traceAnchor(this.options), `satellite:${placement.host}`);
@@ -1297,6 +1323,7 @@ export class PoolCoordinator {
 		const queue = await openSqlPoolQueue(journal);
 		this.sharedPool = await SqlSharedPool.open(journal, queue);
 		this.queue = queue;
+		await this.startFleetRates();
 		this.sources = attachment.sources;
 		this.promptNodes = config.promptNodes === true;
 		if (this.closed) return;
@@ -2210,7 +2237,32 @@ export class PoolCoordinator {
 	private observeRateLimits(observations: WorkerRateLimits["observations"]): void {
 		if (!Array.isArray(observations)) return;
 		for (const observation of observations)
+			if (this.rateLimits.merge(observation)) {
+				this.rateLimitOutbox.offer(observation);
+				this.fleetRates?.shareCooldown(observation);
+			}
+	}
+
+	/** Cooldowns another host shared through the journal: applied on this host, never written back (#4768). */
+	private applyFleetCooldowns(observations: readonly ProviderRateLimitObservation[]): void {
+		for (const observation of observations)
 			if (this.rateLimits.merge(observation)) this.rateLimitOutbox.offer(observation);
+	}
+
+	/** Starts the root's fleet-wide rate limits on a shared pool that sets them (#4768); idempotent. */
+	private async startFleetRates(): Promise<void> {
+		const shared = this.options?.shared;
+		if (this.fleetRates !== undefined || shared === undefined || this.journal === undefined) return;
+		if (shared.rateLimits === undefined && shared.shareCooldowns !== true) return;
+		const store = await SqlRateBuckets.open(this.journal);
+		this.fleetRates = new FleetRateLimiter({
+			store,
+			limits: shared.rateLimits ?? {},
+			shareCooldowns: shared.shareCooldowns === true,
+			slots: this.options!.workers,
+			applyCooldowns: (observations) => this.applyFleetCooldowns(observations),
+		});
+		this.fleetRates.start();
 	}
 
 	private shareRateLimits(observations: WorkerRateLimits["observations"]): void {
@@ -2254,6 +2306,9 @@ export class PoolCoordinator {
 						: { stageStartMaxLoadPerCpu: options.stageStartMaxLoadPerCpu }),
 					...(options.maxWorkerRssBytes === undefined ? {} : { maxRssBytes: options.maxWorkerRssBytes }),
 					...(options.outageHandoffMs === undefined ? {} : { outageHandoffMs: options.outageHandoffMs }),
+					...(this.fleetRates === undefined || this.fleetRates.rateScopes.length === 0
+						? {}
+						: { rateScopes: this.fleetRates.rateScopes }),
 				}),
 			],
 			{
@@ -2532,6 +2587,11 @@ export class PoolCoordinator {
 					const leased = <T>(action: () => Promise<T>) =>
 						this.whileRootLate(queue, () => current(action), renewAttempt);
 					if (message.kind === "control") return leased(() => queue.control(lease));
+					// Never refused: a token the fleet cannot give in time is metered here, so no call fails on it (#4768).
+					if (message.kind === "rate-acquire")
+						return this.fleetRates === undefined
+							? 0
+							: this.fleetRates.acquire(message.provider, message.model).catch(() => 0);
 					if (message.kind === "fenced") {
 						const fenced = slot.work;
 						// The slot keeps the attempt until its release below is recorded: a store that refuses it leaves the
@@ -3334,6 +3394,7 @@ export class PoolCoordinator {
 		clearInterval(this.statsTimer);
 		clearInterval(this.sharedTimer);
 		this.rateLimitOutbox.close();
+		await this.fleetRates?.close();
 		let failure: unknown;
 		let stopping: { readonly child: ChildProcess; readonly log?: string }[] = [];
 		let confirmed: boolean[] = [];
