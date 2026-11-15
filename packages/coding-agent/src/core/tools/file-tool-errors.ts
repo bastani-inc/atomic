@@ -20,14 +20,15 @@ export type EditToolErrorCode =
 	| "text-not-unique"
 	| "edits-overlap"
 	| "no-change"
-	| "target-inaccessible";
+	| "target-inaccessible"
+	| "target-not-utf8";
 
 export type EditInputErrorCode = Extract<EditToolErrorCode, "edits-empty" | "old-text-empty">;
 export type EditMatchErrorCode = Extract<
 	EditToolErrorCode,
 	"text-not-found" | "text-not-unique" | "edits-overlap" | "no-change"
 >;
-export type EditTargetErrorCode = Extract<EditToolErrorCode, "target-inaccessible">;
+export type EditTargetErrorCode = Extract<EditToolErrorCode, "target-inaccessible" | "target-not-utf8">;
 
 /** Why a `write` to a resource selector failed. Codes are public API: never rename or reuse one. */
 export type WriteSelectorErrorCode =
@@ -48,6 +49,7 @@ const EDIT_TOOL_ERROR_HINTS: Readonly<Record<EditToolErrorCode, string>> = {
 	"edits-overlap": "Merge the overlapping edits into one edit, or target disjoint regions.",
 	"no-change": "Make newText differ from oldText, or drop the edit.",
 	"target-inaccessible": "Check that the file exists and is readable and writable, then retry.",
+	"target-not-utf8": "Edit the file with a tool that keeps its encoding, or convert it to UTF-8 first.",
 };
 
 const WRITE_SELECTOR_ERROR_HINTS: Readonly<Record<WriteSelectorErrorCode, string>> = {
@@ -68,7 +70,7 @@ const EDIT_MATCH_CODES: ReadonlySet<string> = new Set<EditMatchErrorCode>([
 	"edits-overlap",
 	"no-change",
 ]);
-const EDIT_TARGET_CODES: ReadonlySet<string> = new Set<EditTargetErrorCode>(["target-inaccessible"]);
+const EDIT_TARGET_CODES: ReadonlySet<string> = new Set<EditTargetErrorCode>(["target-inaccessible", "target-not-utf8"]);
 const EDIT_TOOL_CODES: ReadonlySet<string> = new Set([...EDIT_INPUT_CODES, ...EDIT_MATCH_CODES, ...EDIT_TARGET_CODES]);
 const WRITE_SELECTOR_CODES: ReadonlySet<string> = new Set(Object.keys(WRITE_SELECTOR_ERROR_HINTS));
 const ABORTED_CODES: ReadonlySet<string> = new Set(["aborted"]);
