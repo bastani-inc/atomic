@@ -202,7 +202,7 @@ test.each([
 					assert.equal(error.constructor, JournalSchemaVersionError);
 					assert.ok(error instanceof JournalSchemaVersionError);
 					assert.equal(error.found, found);
-					assert.equal(error.supported, 1);
+					assert.equal(error.supported, 2);
 					return true;
 				},
 			);
@@ -989,11 +989,18 @@ test("delete/recreate cycles durably fence every old handle without affecting ot
 	});
 });
 
-test("schema v1 exports stable names and stores event payloads as JSON text with required SQLite pragmas", async () => {
-	assert.equal(JOURNAL_SCHEMA_VERSION, 1);
+test("schema v2 exports stable names and stores event payloads as JSON text with required SQLite pragmas", async () => {
+	assert.equal(JOURNAL_SCHEMA_VERSION, 2);
 	assert.equal(JOURNAL_PAYLOAD_ENCODING, "json-text");
-	assert.deepEqual(Object.values(tableNames), ["meta", "runs", "events", "leases"]);
-	assert.deepEqual(Object.values(t), ["wf_meta", "wf_runs", "wf_events", "wf_leases"]);
+	assert.deepEqual(Object.values(tableNames), ["meta", "runs", "events", "leases", "event_chunks", "lease_builds"]);
+	assert.deepEqual(Object.values(t), [
+		"wf_meta",
+		"wf_runs",
+		"wf_events",
+		"wf_leases",
+		"wf_event_chunks",
+		"wf_lease_builds",
+	]);
 	assert.deepEqual(Object.values(c), [
 		"schema_version",
 		"run_id",
@@ -1008,6 +1015,7 @@ test("schema v1 exports stable names and stores event payloads as JSON text with
 		"type",
 		"payload",
 		"at",
+		"chunks",
 		"holder_id",
 		"renewed_at",
 	]);
@@ -1048,7 +1056,7 @@ test("schema v1 exports stable names and stores event payloads as JSON text with
 				["foreign_keys", 1],
 			] as const)
 				assert.equal(Object.values(db.get<Record<string, string | number>>(`PRAGMA ${pragma}`) ?? {})[0], value);
-			assert.equal(db.get<{ [c.schemaVersion]: number }>(`SELECT * FROM ${t.meta}`)?.[c.schemaVersion], 1);
+			assert.equal(db.get<{ [c.schemaVersion]: number }>(`SELECT * FROM ${t.meta}`)?.[c.schemaVersion], 2);
 			assert.equal(
 				db.get<{ [c.payload]: string }>(`SELECT ${c.payload} FROM ${t.events} WHERE ${c.seq} = 1`)?.[c.payload],
 				JSON.stringify(events[0]?.payload),
@@ -1056,7 +1064,7 @@ test("schema v1 exports stable names and stores event payloads as JSON text with
 			for (const [table, columns] of [
 				[t.meta, [c.schemaVersion]],
 				[t.runs, [c.runId, c.name, c.cwd, c.createdAt, c.status, c.headerJson]],
-				[t.events, [c.runId, c.seq, c.epoch, c.key, c.type, c.payload, c.at]],
+				[t.events, [c.runId, c.seq, c.epoch, c.key, c.type, c.payload, c.at, c.chunks]],
 				[t.leases, [c.runId, c.holderId, c.epoch, c.renewedAt]],
 			] as const)
 				assert.deepEqual(
@@ -1074,14 +1082,14 @@ test("unknown schema versions fail with typed fields and are not migrated", asyn
 		await journal.close();
 		const db = new JournalTestDatabase(journal.path);
 		try {
-			for (const version of [0, 2, 999]) {
+			for (const version of [0, 3, 999]) {
 				db.run(`UPDATE ${t.meta} SET ${c.schemaVersion} = ?`, version);
 				await assert.rejects(
 					async () => await openSqlRunJournal(journal.path),
 					(error: Error) => {
 						assert.ok(error instanceof JournalSchemaVersionError);
 						assert.equal(error.found, version);
-						assert.equal(error.supported, 1);
+						assert.equal(error.supported, 2);
 						return true;
 					},
 				);
@@ -1127,7 +1135,7 @@ test("seq at MAX_SAFE_INTEGER rejects its successor before changing any rows", a
 		const db = new JournalTestDatabase(journal.path);
 		try {
 			db.run(
-				`INSERT INTO ${t.events} VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO ${t.events}(run_id, seq, epoch, key, type, payload, at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 				header.runId,
 				Number.MAX_SAFE_INTEGER,
 				1,
@@ -1243,7 +1251,7 @@ test.each([
 		const db = new JournalTestDatabase(journal.path);
 		try {
 			db.run(
-				`INSERT INTO ${t.events} VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO ${t.events}(run_id, seq, epoch, key, type, payload, at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 				header.runId,
 				field === "seq" ? seed : 1,
 				field === "epoch" ? seed : 1,
@@ -1285,7 +1293,7 @@ test("safe integer boundary counters remain usable without an overflowing succes
 		try {
 			db.run(`UPDATE ${t.leases} SET ${c.epoch} = ?`, Number.MAX_SAFE_INTEGER - 1);
 			db.run(
-				`INSERT INTO ${t.events} VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO ${t.events}(run_id, seq, epoch, key, type, payload, at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 				header.runId,
 				Number.MAX_SAFE_INTEGER - 1,
 				Number.MAX_SAFE_INTEGER - 1,
@@ -1331,7 +1339,7 @@ test("zero database counters are valid for reads, replay and lease operations", 
 		try {
 			db.run(`UPDATE ${t.leases} SET ${c.epoch} = 0`);
 			db.run(
-				`INSERT INTO ${t.events} VALUES (?, 0, 0, ?, ?, ?, 0)`,
+				`INSERT INTO ${t.events}(run_id, seq, epoch, key, type, payload, at) VALUES (?, 0, 0, ?, ?, ?, 0)`,
 				header.runId,
 				"zero",
 				e.summaryRecorded,

@@ -171,8 +171,11 @@ interface SettingsManagerBasicAccessors {
 	 * repository-chosen command on a machine that never trusted the repository.
 	 */
 	getResumeSetupCommand(): string | undefined;
-	/** `resume.waitForBlueprint`: `"prompt"` (default) holds the session until the blueprint build ends; `"tools"` holds only tools. */
-	getResumeWaitForBlueprint(): "prompt" | "tools";
+	/**
+	 * `resume.waitForBlueprint`: `"prompt"` holds the session until the blueprint build ends; `"tools"` holds only its
+	 * tool calls. Unset, it is `"prompt"` for a session with a UI (`interactive`, the default) and `"tools"` without one.
+	 */
+	getResumeWaitForBlueprint(interactive?: boolean): "prompt" | "tools";
 	getRetryEnabled(): boolean;
 	setRetryEnabled(enabled: boolean): void;
 	getRetrySettings(): {
@@ -660,8 +663,10 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 		return command ? command : undefined;
 	},
 
-	getResumeWaitForBlueprint() {
-		return settingsInternals(this).settings.resume?.waitForBlueprint === "tools" ? "tools" : "prompt";
+	getResumeWaitForBlueprint(interactive = true) {
+		const configured = settingsInternals(this).settings.resume?.waitForBlueprint;
+		if (configured === "prompt" || configured === "tools") return configured;
+		return interactive ? "prompt" : "tools";
 	},
 
 	getRetryEnabled() {

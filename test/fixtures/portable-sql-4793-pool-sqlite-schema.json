@@ -153,7 +153,7 @@
 		"type": "table",
 		"name": "team_wf_runs_pool_hosts",
 		"tbl_name": "team_wf_runs_pool_hosts",
-		"sql": "CREATE TABLE team_wf_runs_pool_hosts(\n\t\t\t\t\thost TEXT PRIMARY KEY, labels TEXT NOT NULL, git TEXT NOT NULL, restore INTEGER NOT NULL,\n\t\t\t\t\tworkers INTEGER NOT NULL, max_workers INTEGER NOT NULL, heartbeat_at INTEGER NOT NULL,\n\t\t\t\t\troots TEXT NOT NULL DEFAULT '[]', slots_busy INTEGER, draining INTEGER NOT NULL DEFAULT 0, degraded TEXT\n\t\t\t\t, provider_id TEXT)"
+		"sql": "CREATE TABLE team_wf_runs_pool_hosts(\n\t\t\t\t\thost TEXT PRIMARY KEY, labels TEXT NOT NULL, git TEXT NOT NULL, restore INTEGER NOT NULL,\n\t\t\t\t\tworkers INTEGER NOT NULL, max_workers INTEGER NOT NULL, heartbeat_at INTEGER NOT NULL,\n\t\t\t\t\troots TEXT NOT NULL DEFAULT '[]', slots_busy INTEGER, draining INTEGER NOT NULL DEFAULT 0, degraded TEXT\n\t\t\t\t, provider_id TEXT, journal_schema INTEGER)"
 	},
 	{
 		"type": "table",
@@ -249,13 +249,25 @@
 		"type": "table",
 		"name": "team_wf_runs_work",
 		"tbl_name": "team_wf_runs_work",
-		"sql": "CREATE TABLE team_wf_runs_work(\n\t\t\t\t\tid TEXT PRIMARY KEY, root TEXT NOT NULL REFERENCES team_wf_runs_pool(root) ON DELETE CASCADE,\n\t\t\t\t\tboundary TEXT NOT NULL, descriptor TEXT NOT NULL, fingerprint TEXT NOT NULL,\n\t\t\t\t\tstate TEXT NOT NULL DEFAULT 'ready', generation INTEGER NOT NULL DEFAULT 0,\n\t\t\t\t\tworker TEXT, epoch INTEGER NOT NULL DEFAULT 0, expires_at INTEGER NOT NULL DEFAULT 0,\n\t\t\t\t\trenewed_at INTEGER NOT NULL DEFAULT 0,\n\t\t\t\t\tready_at INTEGER NOT NULL, UNIQUE(root, boundary)\n\t\t\t\t)"
+		"sql": "CREATE TABLE team_wf_runs_work(\n\t\t\t\t\tid TEXT PRIMARY KEY, root TEXT NOT NULL REFERENCES team_wf_runs_pool(root) ON DELETE CASCADE,\n\t\t\t\t\tboundary TEXT NOT NULL, descriptor TEXT NOT NULL, fingerprint TEXT NOT NULL,\n\t\t\t\t\tstate TEXT NOT NULL DEFAULT 'ready', generation INTEGER NOT NULL DEFAULT 0,\n\t\t\t\t\tworker TEXT, epoch INTEGER NOT NULL DEFAULT 0, expires_at INTEGER NOT NULL DEFAULT 0,\n\t\t\t\t\trenewed_at INTEGER NOT NULL DEFAULT 0,\n\t\t\t\t\tready_at INTEGER NOT NULL, inputs_chunks INTEGER NOT NULL DEFAULT 0, UNIQUE(root, boundary)\n\t\t\t\t)"
+	},
+	{
+		"type": "table",
+		"name": "team_wf_runs_work_input_chunks",
+		"tbl_name": "team_wf_runs_work_input_chunks",
+		"sql": "CREATE TABLE team_wf_runs_work_input_chunks(\n\t\t\t\twork TEXT NOT NULL REFERENCES team_wf_runs_work(id) ON DELETE CASCADE, idx INTEGER NOT NULL, data BLOB NOT NULL,\n\t\t\t\tPRIMARY KEY(work, idx)\n\t\t\t)"
+	},
+	{
+		"type": "table",
+		"name": "team_wf_runs_work_result_chunks",
+		"tbl_name": "team_wf_runs_work_result_chunks",
+		"sql": "CREATE TABLE team_wf_runs_work_result_chunks(\n\t\t\t\twork TEXT NOT NULL REFERENCES team_wf_runs_work_results(work) ON DELETE CASCADE, idx INTEGER NOT NULL, data BLOB NOT NULL,\n\t\t\t\tPRIMARY KEY(work, idx)\n\t\t\t)"
 	},
 	{
 		"type": "table",
 		"name": "team_wf_runs_work_results",
 		"tbl_name": "team_wf_runs_work_results",
-		"sql": "CREATE TABLE team_wf_runs_work_results(\n\t\t\t\t\twork TEXT PRIMARY KEY REFERENCES team_wf_runs_work(id) ON DELETE CASCADE, result TEXT NOT NULL\n\t\t\t\t)"
+		"sql": "CREATE TABLE team_wf_runs_work_results(\n\t\t\t\t\twork TEXT PRIMARY KEY REFERENCES team_wf_runs_work(id) ON DELETE CASCADE, result TEXT NOT NULL\n\t\t\t\t, chunks INTEGER NOT NULL DEFAULT 0)"
 	},
 	{
 		"type": "table",
@@ -303,7 +315,7 @@
 		"type": "table",
 		"name": "wf_runs_pool_hosts",
 		"tbl_name": "wf_runs_pool_hosts",
-		"sql": "CREATE TABLE wf_runs_pool_hosts(\n\t\t\t\t\thost TEXT PRIMARY KEY, labels TEXT NOT NULL, git TEXT NOT NULL, restore INTEGER NOT NULL,\n\t\t\t\t\tworkers INTEGER NOT NULL, max_workers INTEGER NOT NULL, heartbeat_at INTEGER NOT NULL,\n\t\t\t\t\troots TEXT NOT NULL DEFAULT '[]', slots_busy INTEGER, draining INTEGER NOT NULL DEFAULT 0, degraded TEXT\n\t\t\t\t, provider_id TEXT)"
+		"sql": "CREATE TABLE wf_runs_pool_hosts(\n\t\t\t\t\thost TEXT PRIMARY KEY, labels TEXT NOT NULL, git TEXT NOT NULL, restore INTEGER NOT NULL,\n\t\t\t\t\tworkers INTEGER NOT NULL, max_workers INTEGER NOT NULL, heartbeat_at INTEGER NOT NULL,\n\t\t\t\t\troots TEXT NOT NULL DEFAULT '[]', slots_busy INTEGER, draining INTEGER NOT NULL DEFAULT 0, degraded TEXT\n\t\t\t\t, provider_id TEXT, journal_schema INTEGER)"
 	},
 	{
 		"type": "table",
@@ -399,72 +411,84 @@
 		"type": "table",
 		"name": "wf_runs_work",
 		"tbl_name": "wf_runs_work",
-		"sql": "CREATE TABLE wf_runs_work(\n\t\t\t\t\tid TEXT PRIMARY KEY, root TEXT NOT NULL REFERENCES wf_runs_pool(root) ON DELETE CASCADE,\n\t\t\t\t\tboundary TEXT NOT NULL, descriptor TEXT NOT NULL, fingerprint TEXT NOT NULL,\n\t\t\t\t\tstate TEXT NOT NULL DEFAULT 'ready', generation INTEGER NOT NULL DEFAULT 0,\n\t\t\t\t\tworker TEXT, epoch INTEGER NOT NULL DEFAULT 0, expires_at INTEGER NOT NULL DEFAULT 0,\n\t\t\t\t\trenewed_at INTEGER NOT NULL DEFAULT 0,\n\t\t\t\t\tready_at INTEGER NOT NULL, UNIQUE(root, boundary)\n\t\t\t\t)"
+		"sql": "CREATE TABLE wf_runs_work(\n\t\t\t\t\tid TEXT PRIMARY KEY, root TEXT NOT NULL REFERENCES wf_runs_pool(root) ON DELETE CASCADE,\n\t\t\t\t\tboundary TEXT NOT NULL, descriptor TEXT NOT NULL, fingerprint TEXT NOT NULL,\n\t\t\t\t\tstate TEXT NOT NULL DEFAULT 'ready', generation INTEGER NOT NULL DEFAULT 0,\n\t\t\t\t\tworker TEXT, epoch INTEGER NOT NULL DEFAULT 0, expires_at INTEGER NOT NULL DEFAULT 0,\n\t\t\t\t\trenewed_at INTEGER NOT NULL DEFAULT 0,\n\t\t\t\t\tready_at INTEGER NOT NULL, inputs_chunks INTEGER NOT NULL DEFAULT 0, UNIQUE(root, boundary)\n\t\t\t\t)"
+	},
+	{
+		"type": "table",
+		"name": "wf_runs_work_input_chunks",
+		"tbl_name": "wf_runs_work_input_chunks",
+		"sql": "CREATE TABLE wf_runs_work_input_chunks(\n\t\t\t\twork TEXT NOT NULL REFERENCES wf_runs_work(id) ON DELETE CASCADE, idx INTEGER NOT NULL, data BLOB NOT NULL,\n\t\t\t\tPRIMARY KEY(work, idx)\n\t\t\t)"
+	},
+	{
+		"type": "table",
+		"name": "wf_runs_work_result_chunks",
+		"tbl_name": "wf_runs_work_result_chunks",
+		"sql": "CREATE TABLE wf_runs_work_result_chunks(\n\t\t\t\twork TEXT NOT NULL REFERENCES wf_runs_work_results(work) ON DELETE CASCADE, idx INTEGER NOT NULL, data BLOB NOT NULL,\n\t\t\t\tPRIMARY KEY(work, idx)\n\t\t\t)"
 	},
 	{
 		"type": "table",
 		"name": "wf_runs_work_results",
 		"tbl_name": "wf_runs_work_results",
-		"sql": "CREATE TABLE wf_runs_work_results(\n\t\t\t\t\twork TEXT PRIMARY KEY REFERENCES wf_runs_work(id) ON DELETE CASCADE, result TEXT NOT NULL\n\t\t\t\t)"
+		"sql": "CREATE TABLE wf_runs_work_results(\n\t\t\t\t\twork TEXT PRIMARY KEY REFERENCES wf_runs_work(id) ON DELETE CASCADE, result TEXT NOT NULL\n\t\t\t\t, chunks INTEGER NOT NULL DEFAULT 0)"
 	},
 	{
 		"type": "trigger",
 		"name": "team_wf_runs_pool_fence_abort",
 		"tbl_name": "team_wf_runs_pool_fence",
-		"sql": "CREATE TRIGGER team_wf_runs_pool_fence_abort BEFORE INSERT ON team_wf_runs_pool_fence BEGIN SELECT RAISE(ABORT, 'atomic-pool-fence'); END"
+		"sql": "CREATE TRIGGER team_wf_runs_pool_fence_abort BEFORE INSERT ON team_wf_runs_pool_fence BEGIN SELECT RAISE(ABORT, 'atomic-pool-fence') END"
 	},
 	{
 		"type": "trigger",
 		"name": "team_wf_runs_pool_usage_totals_delete",
 		"tbl_name": "team_wf_runs_pool_usage",
-		"sql": "CREATE TRIGGER team_wf_runs_pool_usage_totals_delete AFTER DELETE ON team_wf_runs_pool_usage BEGIN\n\t\tDELETE FROM team_wf_runs_pool_usage_totals WHERE root = (SELECT root FROM team_wf_runs_work WHERE id = OLD.work);\n\tEND"
+		"sql": "CREATE TRIGGER team_wf_runs_pool_usage_totals_delete AFTER DELETE ON team_wf_runs_pool_usage BEGIN DELETE FROM team_wf_runs_pool_usage_totals WHERE root = (SELECT root FROM team_wf_runs_work WHERE id = OLD.work) END"
 	},
 	{
 		"type": "trigger",
 		"name": "team_wf_runs_pool_usage_totals_insert",
 		"tbl_name": "team_wf_runs_pool_usage",
-		"sql": "CREATE TRIGGER team_wf_runs_pool_usage_totals_insert AFTER INSERT ON team_wf_runs_pool_usage BEGIN\n\t\tUPDATE team_wf_runs_pool_usage_totals SET input = input + (NEW.input), input_err = input_err + CASE WHEN abs(input) > abs((NEW.input)) THEN (input - (input + (NEW.input))) + (NEW.input) ELSE ((NEW.input) - (input + (NEW.input))) + input END, output = output + (NEW.output), output_err = output_err + CASE WHEN abs(output) > abs((NEW.output)) THEN (output - (output + (NEW.output))) + (NEW.output) ELSE ((NEW.output) - (output + (NEW.output))) + output END, cacheread = cacheread + (NEW.cacheread), cacheread_err = cacheread_err + CASE WHEN abs(cacheread) > abs((NEW.cacheread)) THEN (cacheread - (cacheread + (NEW.cacheread))) + (NEW.cacheread) ELSE ((NEW.cacheread) - (cacheread + (NEW.cacheread))) + cacheread END, cachewrite = cachewrite + (NEW.cachewrite), cachewrite_err = cachewrite_err + CASE WHEN abs(cachewrite) > abs((NEW.cachewrite)) THEN (cachewrite - (cachewrite + (NEW.cachewrite))) + (NEW.cachewrite) ELSE ((NEW.cachewrite) - (cachewrite + (NEW.cachewrite))) + cachewrite END, cost = cost + (NEW.cost), cost_err = cost_err + CASE WHEN abs(cost) > abs((NEW.cost)) THEN (cost - (cost + (NEW.cost))) + (NEW.cost) ELSE ((NEW.cost) - (cost + (NEW.cost))) + cost END WHERE root = (SELECT root FROM team_wf_runs_work WHERE id = NEW.work);\n\tEND"
+		"sql": "CREATE TRIGGER team_wf_runs_pool_usage_totals_insert AFTER INSERT ON team_wf_runs_pool_usage BEGIN UPDATE team_wf_runs_pool_usage_totals SET input = input + (NEW.input), input_err = input_err + CASE WHEN abs(input) > abs((NEW.input)) THEN (input - (input + (NEW.input))) + (NEW.input) ELSE ((NEW.input) - (input + (NEW.input))) + input END, output = output + (NEW.output), output_err = output_err + CASE WHEN abs(output) > abs((NEW.output)) THEN (output - (output + (NEW.output))) + (NEW.output) ELSE ((NEW.output) - (output + (NEW.output))) + output END, cacheread = cacheread + (NEW.cacheread), cacheread_err = cacheread_err + CASE WHEN abs(cacheread) > abs((NEW.cacheread)) THEN (cacheread - (cacheread + (NEW.cacheread))) + (NEW.cacheread) ELSE ((NEW.cacheread) - (cacheread + (NEW.cacheread))) + cacheread END, cachewrite = cachewrite + (NEW.cachewrite), cachewrite_err = cachewrite_err + CASE WHEN abs(cachewrite) > abs((NEW.cachewrite)) THEN (cachewrite - (cachewrite + (NEW.cachewrite))) + (NEW.cachewrite) ELSE ((NEW.cachewrite) - (cachewrite + (NEW.cachewrite))) + cachewrite END, cost = cost + (NEW.cost), cost_err = cost_err + CASE WHEN abs(cost) > abs((NEW.cost)) THEN (cost - (cost + (NEW.cost))) + (NEW.cost) ELSE ((NEW.cost) - (cost + (NEW.cost))) + cost END WHERE root = (SELECT root FROM team_wf_runs_work WHERE id = NEW.work) END"
 	},
 	{
 		"type": "trigger",
 		"name": "team_wf_runs_pool_usage_totals_update",
 		"tbl_name": "team_wf_runs_pool_usage",
-		"sql": "CREATE TRIGGER team_wf_runs_pool_usage_totals_update AFTER UPDATE ON team_wf_runs_pool_usage\n\tWHEN OLD.input IS NOT NEW.input OR OLD.output IS NOT NEW.output OR OLD.cacheread IS NOT NEW.cacheread OR OLD.cachewrite IS NOT NEW.cachewrite OR OLD.cost IS NOT NEW.cost OR OLD.work IS NOT NEW.work BEGIN\n\t\tUPDATE team_wf_runs_pool_usage_totals SET input = input + (-OLD.input), input_err = input_err + CASE WHEN abs(input) > abs((-OLD.input)) THEN (input - (input + (-OLD.input))) + (-OLD.input) ELSE ((-OLD.input) - (input + (-OLD.input))) + input END, output = output + (-OLD.output), output_err = output_err + CASE WHEN abs(output) > abs((-OLD.output)) THEN (output - (output + (-OLD.output))) + (-OLD.output) ELSE ((-OLD.output) - (output + (-OLD.output))) + output END, cacheread = cacheread + (-OLD.cacheread), cacheread_err = cacheread_err + CASE WHEN abs(cacheread) > abs((-OLD.cacheread)) THEN (cacheread - (cacheread + (-OLD.cacheread))) + (-OLD.cacheread) ELSE ((-OLD.cacheread) - (cacheread + (-OLD.cacheread))) + cacheread END, cachewrite = cachewrite + (-OLD.cachewrite), cachewrite_err = cachewrite_err + CASE WHEN abs(cachewrite) > abs((-OLD.cachewrite)) THEN (cachewrite - (cachewrite + (-OLD.cachewrite))) + (-OLD.cachewrite) ELSE ((-OLD.cachewrite) - (cachewrite + (-OLD.cachewrite))) + cachewrite END, cost = cost + (-OLD.cost), cost_err = cost_err + CASE WHEN abs(cost) > abs((-OLD.cost)) THEN (cost - (cost + (-OLD.cost))) + (-OLD.cost) ELSE ((-OLD.cost) - (cost + (-OLD.cost))) + cost END WHERE root = (SELECT root FROM team_wf_runs_work WHERE id = OLD.work);\n\t\tUPDATE team_wf_runs_pool_usage_totals SET input = input + (NEW.input), input_err = input_err + CASE WHEN abs(input) > abs((NEW.input)) THEN (input - (input + (NEW.input))) + (NEW.input) ELSE ((NEW.input) - (input + (NEW.input))) + input END, output = output + (NEW.output), output_err = output_err + CASE WHEN abs(output) > abs((NEW.output)) THEN (output - (output + (NEW.output))) + (NEW.output) ELSE ((NEW.output) - (output + (NEW.output))) + output END, cacheread = cacheread + (NEW.cacheread), cacheread_err = cacheread_err + CASE WHEN abs(cacheread) > abs((NEW.cacheread)) THEN (cacheread - (cacheread + (NEW.cacheread))) + (NEW.cacheread) ELSE ((NEW.cacheread) - (cacheread + (NEW.cacheread))) + cacheread END, cachewrite = cachewrite + (NEW.cachewrite), cachewrite_err = cachewrite_err + CASE WHEN abs(cachewrite) > abs((NEW.cachewrite)) THEN (cachewrite - (cachewrite + (NEW.cachewrite))) + (NEW.cachewrite) ELSE ((NEW.cachewrite) - (cachewrite + (NEW.cachewrite))) + cachewrite END, cost = cost + (NEW.cost), cost_err = cost_err + CASE WHEN abs(cost) > abs((NEW.cost)) THEN (cost - (cost + (NEW.cost))) + (NEW.cost) ELSE ((NEW.cost) - (cost + (NEW.cost))) + cost END WHERE root = (SELECT root FROM team_wf_runs_work WHERE id = NEW.work);\n\tEND"
+		"sql": "CREATE TRIGGER team_wf_runs_pool_usage_totals_update AFTER UPDATE ON team_wf_runs_pool_usage WHEN OLD.input IS NOT NEW.input OR OLD.output IS NOT NEW.output OR OLD.cacheread IS NOT NEW.cacheread OR OLD.cachewrite IS NOT NEW.cachewrite OR OLD.cost IS NOT NEW.cost OR OLD.work IS NOT NEW.work BEGIN UPDATE team_wf_runs_pool_usage_totals SET input = input + (-OLD.input), input_err = input_err + CASE WHEN abs(input) > abs((-OLD.input)) THEN (input - (input + (-OLD.input))) + (-OLD.input) ELSE ((-OLD.input) - (input + (-OLD.input))) + input END, output = output + (-OLD.output), output_err = output_err + CASE WHEN abs(output) > abs((-OLD.output)) THEN (output - (output + (-OLD.output))) + (-OLD.output) ELSE ((-OLD.output) - (output + (-OLD.output))) + output END, cacheread = cacheread + (-OLD.cacheread), cacheread_err = cacheread_err + CASE WHEN abs(cacheread) > abs((-OLD.cacheread)) THEN (cacheread - (cacheread + (-OLD.cacheread))) + (-OLD.cacheread) ELSE ((-OLD.cacheread) - (cacheread + (-OLD.cacheread))) + cacheread END, cachewrite = cachewrite + (-OLD.cachewrite), cachewrite_err = cachewrite_err + CASE WHEN abs(cachewrite) > abs((-OLD.cachewrite)) THEN (cachewrite - (cachewrite + (-OLD.cachewrite))) + (-OLD.cachewrite) ELSE ((-OLD.cachewrite) - (cachewrite + (-OLD.cachewrite))) + cachewrite END, cost = cost + (-OLD.cost), cost_err = cost_err + CASE WHEN abs(cost) > abs((-OLD.cost)) THEN (cost - (cost + (-OLD.cost))) + (-OLD.cost) ELSE ((-OLD.cost) - (cost + (-OLD.cost))) + cost END WHERE root = (SELECT root FROM team_wf_runs_work WHERE id = OLD.work); UPDATE team_wf_runs_pool_usage_totals SET input = input + (NEW.input), input_err = input_err + CASE WHEN abs(input) > abs((NEW.input)) THEN (input - (input + (NEW.input))) + (NEW.input) ELSE ((NEW.input) - (input + (NEW.input))) + input END, output = output + (NEW.output), output_err = output_err + CASE WHEN abs(output) > abs((NEW.output)) THEN (output - (output + (NEW.output))) + (NEW.output) ELSE ((NEW.output) - (output + (NEW.output))) + output END, cacheread = cacheread + (NEW.cacheread), cacheread_err = cacheread_err + CASE WHEN abs(cacheread) > abs((NEW.cacheread)) THEN (cacheread - (cacheread + (NEW.cacheread))) + (NEW.cacheread) ELSE ((NEW.cacheread) - (cacheread + (NEW.cacheread))) + cacheread END, cachewrite = cachewrite + (NEW.cachewrite), cachewrite_err = cachewrite_err + CASE WHEN abs(cachewrite) > abs((NEW.cachewrite)) THEN (cachewrite - (cachewrite + (NEW.cachewrite))) + (NEW.cachewrite) ELSE ((NEW.cachewrite) - (cachewrite + (NEW.cachewrite))) + cachewrite END, cost = cost + (NEW.cost), cost_err = cost_err + CASE WHEN abs(cost) > abs((NEW.cost)) THEN (cost - (cost + (NEW.cost))) + (NEW.cost) ELSE ((NEW.cost) - (cost + (NEW.cost))) + cost END WHERE root = (SELECT root FROM team_wf_runs_work WHERE id = NEW.work) END"
 	},
 	{
 		"type": "trigger",
 		"name": "team_wf_runs_pool_usage_totals_work_delete",
 		"tbl_name": "team_wf_runs_work",
-		"sql": "CREATE TRIGGER team_wf_runs_pool_usage_totals_work_delete BEFORE DELETE ON team_wf_runs_work BEGIN\n\t\tDELETE FROM team_wf_runs_pool_usage_totals WHERE root = OLD.root;\n\tEND"
+		"sql": "CREATE TRIGGER team_wf_runs_pool_usage_totals_work_delete BEFORE DELETE ON team_wf_runs_work BEGIN DELETE FROM team_wf_runs_pool_usage_totals WHERE root = OLD.root END"
 	},
 	{
 		"type": "trigger",
 		"name": "wf_runs_pool_fence_abort",
 		"tbl_name": "wf_runs_pool_fence",
-		"sql": "CREATE TRIGGER wf_runs_pool_fence_abort BEFORE INSERT ON wf_runs_pool_fence BEGIN SELECT RAISE(ABORT, 'atomic-pool-fence'); END"
+		"sql": "CREATE TRIGGER wf_runs_pool_fence_abort BEFORE INSERT ON wf_runs_pool_fence BEGIN SELECT RAISE(ABORT, 'atomic-pool-fence') END"
 	},
 	{
 		"type": "trigger",
 		"name": "wf_runs_pool_usage_totals_delete",
 		"tbl_name": "wf_runs_pool_usage",
-		"sql": "CREATE TRIGGER wf_runs_pool_usage_totals_delete AFTER DELETE ON wf_runs_pool_usage BEGIN\n\t\tDELETE FROM wf_runs_pool_usage_totals WHERE root = (SELECT root FROM wf_runs_work WHERE id = OLD.work);\n\tEND"
+		"sql": "CREATE TRIGGER wf_runs_pool_usage_totals_delete AFTER DELETE ON wf_runs_pool_usage BEGIN DELETE FROM wf_runs_pool_usage_totals WHERE root = (SELECT root FROM wf_runs_work WHERE id = OLD.work) END"
 	},
 	{
 		"type": "trigger",
 		"name": "wf_runs_pool_usage_totals_insert",
 		"tbl_name": "wf_runs_pool_usage",
-		"sql": "CREATE TRIGGER wf_runs_pool_usage_totals_insert AFTER INSERT ON wf_runs_pool_usage BEGIN\n\t\tUPDATE wf_runs_pool_usage_totals SET input = input + (NEW.input), input_err = input_err + CASE WHEN abs(input) > abs((NEW.input)) THEN (input - (input + (NEW.input))) + (NEW.input) ELSE ((NEW.input) - (input + (NEW.input))) + input END, output = output + (NEW.output), output_err = output_err + CASE WHEN abs(output) > abs((NEW.output)) THEN (output - (output + (NEW.output))) + (NEW.output) ELSE ((NEW.output) - (output + (NEW.output))) + output END, cacheread = cacheread + (NEW.cacheread), cacheread_err = cacheread_err + CASE WHEN abs(cacheread) > abs((NEW.cacheread)) THEN (cacheread - (cacheread + (NEW.cacheread))) + (NEW.cacheread) ELSE ((NEW.cacheread) - (cacheread + (NEW.cacheread))) + cacheread END, cachewrite = cachewrite + (NEW.cachewrite), cachewrite_err = cachewrite_err + CASE WHEN abs(cachewrite) > abs((NEW.cachewrite)) THEN (cachewrite - (cachewrite + (NEW.cachewrite))) + (NEW.cachewrite) ELSE ((NEW.cachewrite) - (cachewrite + (NEW.cachewrite))) + cachewrite END, cost = cost + (NEW.cost), cost_err = cost_err + CASE WHEN abs(cost) > abs((NEW.cost)) THEN (cost - (cost + (NEW.cost))) + (NEW.cost) ELSE ((NEW.cost) - (cost + (NEW.cost))) + cost END WHERE root = (SELECT root FROM wf_runs_work WHERE id = NEW.work);\n\tEND"
+		"sql": "CREATE TRIGGER wf_runs_pool_usage_totals_insert AFTER INSERT ON wf_runs_pool_usage BEGIN UPDATE wf_runs_pool_usage_totals SET input = input + (NEW.input), input_err = input_err + CASE WHEN abs(input) > abs((NEW.input)) THEN (input - (input + (NEW.input))) + (NEW.input) ELSE ((NEW.input) - (input + (NEW.input))) + input END, output = output + (NEW.output), output_err = output_err + CASE WHEN abs(output) > abs((NEW.output)) THEN (output - (output + (NEW.output))) + (NEW.output) ELSE ((NEW.output) - (output + (NEW.output))) + output END, cacheread = cacheread + (NEW.cacheread), cacheread_err = cacheread_err + CASE WHEN abs(cacheread) > abs((NEW.cacheread)) THEN (cacheread - (cacheread + (NEW.cacheread))) + (NEW.cacheread) ELSE ((NEW.cacheread) - (cacheread + (NEW.cacheread))) + cacheread END, cachewrite = cachewrite + (NEW.cachewrite), cachewrite_err = cachewrite_err + CASE WHEN abs(cachewrite) > abs((NEW.cachewrite)) THEN (cachewrite - (cachewrite + (NEW.cachewrite))) + (NEW.cachewrite) ELSE ((NEW.cachewrite) - (cachewrite + (NEW.cachewrite))) + cachewrite END, cost = cost + (NEW.cost), cost_err = cost_err + CASE WHEN abs(cost) > abs((NEW.cost)) THEN (cost - (cost + (NEW.cost))) + (NEW.cost) ELSE ((NEW.cost) - (cost + (NEW.cost))) + cost END WHERE root = (SELECT root FROM wf_runs_work WHERE id = NEW.work) END"
 	},
 	{
 		"type": "trigger",
 		"name": "wf_runs_pool_usage_totals_update",
 		"tbl_name": "wf_runs_pool_usage",
-		"sql": "CREATE TRIGGER wf_runs_pool_usage_totals_update AFTER UPDATE ON wf_runs_pool_usage\n\tWHEN OLD.input IS NOT NEW.input OR OLD.output IS NOT NEW.output OR OLD.cacheread IS NOT NEW.cacheread OR OLD.cachewrite IS NOT NEW.cachewrite OR OLD.cost IS NOT NEW.cost OR OLD.work IS NOT NEW.work BEGIN\n\t\tUPDATE wf_runs_pool_usage_totals SET input = input + (-OLD.input), input_err = input_err + CASE WHEN abs(input) > abs((-OLD.input)) THEN (input - (input + (-OLD.input))) + (-OLD.input) ELSE ((-OLD.input) - (input + (-OLD.input))) + input END, output = output + (-OLD.output), output_err = output_err + CASE WHEN abs(output) > abs((-OLD.output)) THEN (output - (output + (-OLD.output))) + (-OLD.output) ELSE ((-OLD.output) - (output + (-OLD.output))) + output END, cacheread = cacheread + (-OLD.cacheread), cacheread_err = cacheread_err + CASE WHEN abs(cacheread) > abs((-OLD.cacheread)) THEN (cacheread - (cacheread + (-OLD.cacheread))) + (-OLD.cacheread) ELSE ((-OLD.cacheread) - (cacheread + (-OLD.cacheread))) + cacheread END, cachewrite = cachewrite + (-OLD.cachewrite), cachewrite_err = cachewrite_err + CASE WHEN abs(cachewrite) > abs((-OLD.cachewrite)) THEN (cachewrite - (cachewrite + (-OLD.cachewrite))) + (-OLD.cachewrite) ELSE ((-OLD.cachewrite) - (cachewrite + (-OLD.cachewrite))) + cachewrite END, cost = cost + (-OLD.cost), cost_err = cost_err + CASE WHEN abs(cost) > abs((-OLD.cost)) THEN (cost - (cost + (-OLD.cost))) + (-OLD.cost) ELSE ((-OLD.cost) - (cost + (-OLD.cost))) + cost END WHERE root = (SELECT root FROM wf_runs_work WHERE id = OLD.work);\n\t\tUPDATE wf_runs_pool_usage_totals SET input = input + (NEW.input), input_err = input_err + CASE WHEN abs(input) > abs((NEW.input)) THEN (input - (input + (NEW.input))) + (NEW.input) ELSE ((NEW.input) - (input + (NEW.input))) + input END, output = output + (NEW.output), output_err = output_err + CASE WHEN abs(output) > abs((NEW.output)) THEN (output - (output + (NEW.output))) + (NEW.output) ELSE ((NEW.output) - (output + (NEW.output))) + output END, cacheread = cacheread + (NEW.cacheread), cacheread_err = cacheread_err + CASE WHEN abs(cacheread) > abs((NEW.cacheread)) THEN (cacheread - (cacheread + (NEW.cacheread))) + (NEW.cacheread) ELSE ((NEW.cacheread) - (cacheread + (NEW.cacheread))) + cacheread END, cachewrite = cachewrite + (NEW.cachewrite), cachewrite_err = cachewrite_err + CASE WHEN abs(cachewrite) > abs((NEW.cachewrite)) THEN (cachewrite - (cachewrite + (NEW.cachewrite))) + (NEW.cachewrite) ELSE ((NEW.cachewrite) - (cachewrite + (NEW.cachewrite))) + cachewrite END, cost = cost + (NEW.cost), cost_err = cost_err + CASE WHEN abs(cost) > abs((NEW.cost)) THEN (cost - (cost + (NEW.cost))) + (NEW.cost) ELSE ((NEW.cost) - (cost + (NEW.cost))) + cost END WHERE root = (SELECT root FROM wf_runs_work WHERE id = NEW.work);\n\tEND"
+		"sql": "CREATE TRIGGER wf_runs_pool_usage_totals_update AFTER UPDATE ON wf_runs_pool_usage WHEN OLD.input IS NOT NEW.input OR OLD.output IS NOT NEW.output OR OLD.cacheread IS NOT NEW.cacheread OR OLD.cachewrite IS NOT NEW.cachewrite OR OLD.cost IS NOT NEW.cost OR OLD.work IS NOT NEW.work BEGIN UPDATE wf_runs_pool_usage_totals SET input = input + (-OLD.input), input_err = input_err + CASE WHEN abs(input) > abs((-OLD.input)) THEN (input - (input + (-OLD.input))) + (-OLD.input) ELSE ((-OLD.input) - (input + (-OLD.input))) + input END, output = output + (-OLD.output), output_err = output_err + CASE WHEN abs(output) > abs((-OLD.output)) THEN (output - (output + (-OLD.output))) + (-OLD.output) ELSE ((-OLD.output) - (output + (-OLD.output))) + output END, cacheread = cacheread + (-OLD.cacheread), cacheread_err = cacheread_err + CASE WHEN abs(cacheread) > abs((-OLD.cacheread)) THEN (cacheread - (cacheread + (-OLD.cacheread))) + (-OLD.cacheread) ELSE ((-OLD.cacheread) - (cacheread + (-OLD.cacheread))) + cacheread END, cachewrite = cachewrite + (-OLD.cachewrite), cachewrite_err = cachewrite_err + CASE WHEN abs(cachewrite) > abs((-OLD.cachewrite)) THEN (cachewrite - (cachewrite + (-OLD.cachewrite))) + (-OLD.cachewrite) ELSE ((-OLD.cachewrite) - (cachewrite + (-OLD.cachewrite))) + cachewrite END, cost = cost + (-OLD.cost), cost_err = cost_err + CASE WHEN abs(cost) > abs((-OLD.cost)) THEN (cost - (cost + (-OLD.cost))) + (-OLD.cost) ELSE ((-OLD.cost) - (cost + (-OLD.cost))) + cost END WHERE root = (SELECT root FROM wf_runs_work WHERE id = OLD.work); UPDATE wf_runs_pool_usage_totals SET input = input + (NEW.input), input_err = input_err + CASE WHEN abs(input) > abs((NEW.input)) THEN (input - (input + (NEW.input))) + (NEW.input) ELSE ((NEW.input) - (input + (NEW.input))) + input END, output = output + (NEW.output), output_err = output_err + CASE WHEN abs(output) > abs((NEW.output)) THEN (output - (output + (NEW.output))) + (NEW.output) ELSE ((NEW.output) - (output + (NEW.output))) + output END, cacheread = cacheread + (NEW.cacheread), cacheread_err = cacheread_err + CASE WHEN abs(cacheread) > abs((NEW.cacheread)) THEN (cacheread - (cacheread + (NEW.cacheread))) + (NEW.cacheread) ELSE ((NEW.cacheread) - (cacheread + (NEW.cacheread))) + cacheread END, cachewrite = cachewrite + (NEW.cachewrite), cachewrite_err = cachewrite_err + CASE WHEN abs(cachewrite) > abs((NEW.cachewrite)) THEN (cachewrite - (cachewrite + (NEW.cachewrite))) + (NEW.cachewrite) ELSE ((NEW.cachewrite) - (cachewrite + (NEW.cachewrite))) + cachewrite END, cost = cost + (NEW.cost), cost_err = cost_err + CASE WHEN abs(cost) > abs((NEW.cost)) THEN (cost - (cost + (NEW.cost))) + (NEW.cost) ELSE ((NEW.cost) - (cost + (NEW.cost))) + cost END WHERE root = (SELECT root FROM wf_runs_work WHERE id = NEW.work) END"
 	},
 	{
 		"type": "trigger",
 		"name": "wf_runs_pool_usage_totals_work_delete",
 		"tbl_name": "wf_runs_work",
-		"sql": "CREATE TRIGGER wf_runs_pool_usage_totals_work_delete BEFORE DELETE ON wf_runs_work BEGIN\n\t\tDELETE FROM wf_runs_pool_usage_totals WHERE root = OLD.root;\n\tEND"
+		"sql": "CREATE TRIGGER wf_runs_pool_usage_totals_work_delete BEFORE DELETE ON wf_runs_work BEGIN DELETE FROM wf_runs_pool_usage_totals WHERE root = OLD.root END"
 	}
 ]

@@ -68,7 +68,7 @@ async function history(name: string, snapshots: number, events: number) {
 			await shared.journal.append(lease, checkpointEvent([syntheticSnapshot(blob.hash, [blob.hash])]));
 		await shared.database.run(
 			`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?)
-			INSERT INTO wf_events SELECT ?, (SELECT MAX(seq) FROM wf_events WHERE run_id = ?) + i, ?, NULL,
+			INSERT INTO wf_events(run_id, seq, epoch, key, type, payload, at) SELECT ?, (SELECT MAX(seq) FROM wf_events WHERE run_id = ?) + i, ?, NULL,
 				'CheckpointRecorded', json_object('kind', 'tool', 'checkpointId', 'padding-' || i), 0 FROM n`,
 			events / 2,
 			runId,

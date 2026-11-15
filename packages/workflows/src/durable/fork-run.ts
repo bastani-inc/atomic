@@ -35,6 +35,7 @@ import { workflowNamesEqual } from "../workflows/identity.js";
 import {
 	attemptReachedCheckpoints,
 	checkpointAttempt,
+	completedRunAttempt,
 	workflowAttemptCheckpoint,
 	workflowAttemptOf,
 } from "./attempt-identity.js";
@@ -818,6 +819,8 @@ function selectForkEvents(source: ForkSource, request: DurableForkRequest): Fork
 	const keep = ({ seq, checkpoint }: CheckpointEvent): boolean => {
 		// An attempt that began after the cut is not part of the fork (#4874).
 		if (seq >= cut) return carryAll && checkpoint.kind === "ui" && workflowAttemptOf(checkpoint) === undefined;
+		// A fork has not completed because its source did (#5133).
+		if (completedRunAttempt(checkpoint) !== undefined) return false;
 		if (target === undefined) return true;
 		if (checkpoint.kind === "tool") return checkpoint.name !== RUN_RESULT_CHECKPOINT_NAME;
 		if (checkpoint.kind === "ui") return true;

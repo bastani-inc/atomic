@@ -1,13 +1,14 @@
-import type {
-	AnyModel,
-	ClassifierContext,
-	ImageContent,
-	ImagesContext,
-	ModelType,
-	ModelTypeMap,
-	OpenAIImagesOptions,
-	TextContent,
-	Usage,
+import {
+	type AnyModel,
+	type ClassifierContext,
+	type ImageContent,
+	type ImagesContext,
+	isModelType,
+	type ModelType,
+	type ModelTypeMap,
+	type OpenAIImagesOptions,
+	type TextContent,
+	type Usage,
 } from "@bastani/pi-ai";
 import type { AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
 import {
@@ -23,6 +24,7 @@ import {
 import { ENV_CODEMODE_MAX_WORKERS, getCodemodeWorkerUrl, getEnvValue, getQuickJSWasmPath } from "../../config.js";
 import type { ExtensionToolContext } from "../../core/extensions/context-types.ts";
 import type { ToolNamespace } from "../../core/extensions/tool-types.ts";
+import { billedModelCost } from "../../core/model-routing-constraints.js";
 import type { SessionEntry } from "../../core/session-manager.ts";
 import { formatSize, sliceHead, sliceTail } from "../../core/tools/truncate.ts";
 import { combineUsage } from "../../core/usage-totals.ts";
@@ -202,7 +204,8 @@ export function toCodemodeModelInfo(model: AnyModel): Record<string, unknown> {
 		...("reasoning" in model ? { reasoning: model.reasoning } : {}),
 		...("contextWindow" in model ? { contextWindow: model.contextWindow } : {}),
 		...("maxTokens" in model ? { maxTokens: model.maxTokens } : {}),
-		cost: model.cost,
+		// A fast route is billed at its service tier's rates (#5156).
+		cost: isModelType(model, "chat") ? billedModelCost(model) : model.cost,
 	};
 }
 /** Separate text items and collect console calls after the script's other output. */
