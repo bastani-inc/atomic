@@ -1365,6 +1365,25 @@ export function registerReleasedAskStoreConformance(
 		});
 	});
 
+	check(
+		"lists the asks still open to a replier, oldest first, and none claimed or past their deadline (#4852)",
+		async (connect) => {
+			const [a, b] = [await connect(), await connect()];
+			await a.keep([asked("q1"), asked("q2"), asked("q3"), asked("q4", "other-replier")], KEEP_MS);
+			await a.keep([asked("lapsed")], -1);
+			await b.claim(by("q2", "reply-1"));
+			assert.deepEqual(await b.openForReplier("replier"), {
+				status: "listed",
+				asks: [
+					{ ...asked("q1"), state: "open" },
+					{ ...asked("q3"), state: "open" },
+				],
+			});
+			assert.deepEqual(await a.openForReplier("nobody"), { status: "listed", asks: [] });
+			assert.deepEqual(await a.openForReplier(""), { status: "invalid", reason: "empty-session-id" });
+		},
+	);
+
 	check("lets exactly one reply claim an ask, and answers that reply's retries", async (connect) => {
 		const [a, b] = [await connect(), await connect()];
 		await a.keep([asked("q1")], KEEP_MS);
