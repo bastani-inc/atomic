@@ -61,9 +61,11 @@ function killGroup(child, signal) {
 	} catch {}
 }
 
-async function waitFor(file, deadline, processes) {
+async function waitFor(file, deadline, processes, log) {
 	while (!existsSync(file)) {
-		for (const p of processes) if (p.exitCode !== null) throw new Error(`process exited (${p.exitCode}) before ${file}`);
+		for (const p of processes)
+			if (p.exitCode !== null)
+				throw new Error(`process exited (${p.exitCode}) before ${file}\n${log.join("").slice(-3000)}`);
 		if (Date.now() > deadline) throw new Error(`timed out waiting for ${file}`);
 		await sleep(100);
 	}
@@ -80,11 +82,11 @@ async function openStore(work) {
 		]);
 	else
 		spawnSync("docker", [
-			"run", "-d", "--rm", "--name", name, "-p", `127.0.0.1:${port}:5432`, "-e", "POSTGRES_PASSWORD=bench",
+			"run", "-d", "--rm", "--name", name, "-p", `127.0.0.1:${port}:5432`, "-e", "POSTGRES_HOST_AUTH_METHOD=trust",
 			"postgres:16", "-c", "max_connections=1000",
 		]);
 	const url =
-		store === "sqld" ? `http://127.0.0.1:${port}` : `postgres://postgres:bench@127.0.0.1:${port}/postgres`;
+		store === "sqld" ? `http://127.0.0.1:${port}` : `postgres://postgres@127.0.0.1:${port}/postgres`;
 	const ready = () =>
 		store === "sqld"
 			? fetch(`${url}/health`).then((response) => response.ok, () => false)
@@ -161,7 +163,7 @@ async function trial(hosts, shipping) {
 			);
 		}
 		const deadline = Date.now() + 180_000;
-		for (let index = 0; index < hosts; index++) await waitFor(join(work, `ready-${index}`), deadline, processes);
+		for (let index = 0; index < hosts; index++) await waitFor(join(work, `ready-${index}`), deadline, processes, log);
 		const resultFile = join(work, "result.json");
 		const cpuBefore = shared.cpuMs();
 		const root = start(process.execPath, [join(here, "bench-root.mjs")], {
@@ -260,3 +262,5 @@ for (const hosts of hostCounts)
 		writeFileSync(out, JSON.stringify({ store, slots, children, steps, killAfterMs: killAfter ?? null, trials }, null, 2));
 	}
 process.stderr.write(`wrote ${out}\n`);
+// An adapter's idle connections would keep the process alive.
+process.exit(0);
