@@ -14,10 +14,10 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
-import { createInterface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
 import lockfile from "proper-lockfile";
 import { createSessionCwdMatcher } from "../../../utils/canonical-path.ts";
+import { readLines } from "../../../utils/lines.js";
 import type { SessionEntry } from "../../session-manager-types.ts";
 import { validateSessionEntryStructure } from "./entry-structure.js";
 import {
@@ -660,11 +660,10 @@ export class JsonlSessionStore implements SessionStore {
 			witness = Buffer.from(Buffer.concat([witness, bytes]).subarray(-64));
 			terminated = bytes.at(-1) === 10;
 		});
-		const lines = createInterface({ input, crlfDelay: Infinity });
 		const entries: SessionEntry[] = [];
 		let first = true;
 		try {
-			for await (const line of lines) {
+			for await (const line of readLines(input)) {
 				if (first) {
 					first = false;
 					continue;
@@ -672,7 +671,6 @@ export class JsonlSessionStore implements SessionStore {
 				if (line.trim()) entries.push(JSON.parse(line) as SessionEntry);
 			}
 		} finally {
-			lines.close();
 			input.destroy();
 		}
 		if (!isCurrentSessionHeader(stored)) {
