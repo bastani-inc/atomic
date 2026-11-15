@@ -38,6 +38,8 @@ export const RELEASE_FLUSH_RETRY_MS = 250;
 export const BACKPRESSURE_SHARE = 0.5;
 /** A host ships at least this often within `maxLagMs`, whatever its `intervalMs`. */
 export const SHIPS_PER_LAG_WINDOW = 4;
+/** How many of its attempts' batches a host delivers at once on its interval. */
+export const SHIP_CONCURRENCY = 2;
 /** The first wait before a delivery that held an attempt back is tried again; each next one is twice as long. */
 const BACKPRESSURE_RETRY_MS = 100;
 /** The longest wait between those tries. */
@@ -284,13 +286,19 @@ export class CheckpointShipping {
 		await this.shard.close();
 	}
 
-	/** Ships each attempt's next batch, the attempts' deliveries side by side. */
+	/**
+	 * Ships each attempt's next batch, at most {@link SHIP_CONCURRENCY} deliveries at a time, so a host's shipping adds
+	 * few requests to the store's concurrent ones however many attempts it runs.
+	 */
 	private async shipAll(): Promise<void> {
-		await Promise.all(
-			[...this.attempts.values()]
-				.filter((attempt) => attempt.accepted.length > 0 && attempt.fenced === undefined)
-				.map((attempt) => this.ship(attempt).catch(() => {})),
+		const waiting = [...this.attempts.values()].filter(
+			(attempt) => attempt.accepted.length > 0 && attempt.fenced === undefined,
 		);
+		const lane = async () => {
+			for (let attempt = waiting.shift(); attempt !== undefined; attempt = waiting.shift())
+				await this.ship(attempt).catch(() => {});
+		};
+		await Promise.all(Array.from({ length: SHIP_CONCURRENCY }, lane));
 	}
 
 	/** Ships the attempt's next batch, after any shipment of the attempt still running. */

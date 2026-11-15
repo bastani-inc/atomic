@@ -12,6 +12,7 @@ import {
 	BACKPRESSURE_SHARE,
 	CheckpointShipping,
 	RELEASE_FLUSH_ATTEMPTS,
+	SHIP_CONCURRENCY,
 	type ShipDelivery,
 	type ShippingFallback,
 	shippableCheckpoint,
@@ -691,4 +692,33 @@ test("a host ships at least every quarter of maxLagMs, whatever its interval, an
 	await shipping.commit(other, checkpoint("b"), sharedCommit().commit);
 	for (let waited = 0; shared.recorded.length < 2 && waited < 5_000; waited += 10) await sleep(10);
 	assert.deepEqual(new Set(shared.recorded), new Set(["a", "b"].map(keyOf)));
+});
+
+test("a host delivers at most SHIP_CONCURRENCY of its attempts' batches at once (#4768)", async () => {
+	const { shard: local } = await shard();
+	const shared = fakeShared();
+	let inFlight = 0;
+	let most = 0;
+	const shipping = new CheckpointShipping(local, {
+		intervalMs: 50,
+		maxBatch: 1_000,
+		maxLagMs: 60_000,
+		host: "host",
+		deliver: async (attempt, batch) => {
+			most = Math.max(most, ++inFlight);
+			await sleep(30);
+			inFlight--;
+			await shared.deliver(attempt, batch);
+		},
+	});
+	opened.push(shipping);
+	const leases = Array.from({ length: 5 }, (_, index) => ({ ...LEASE, id: `work-${index}` }));
+	for (const lease of leases) {
+		await shipping.hold(lease, LEASE_MS);
+		await shipping.commit(lease, checkpoint(lease.id), sharedCommit().commit);
+	}
+	shipping.start();
+	for (let waited = 0; shared.recorded.length < 5 && waited < 5_000; waited += 10) await sleep(10);
+	assert.equal(shared.recorded.length, 5);
+	assert.equal(most, SHIP_CONCURRENCY);
 });
