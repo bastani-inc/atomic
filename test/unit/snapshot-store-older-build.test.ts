@@ -104,6 +104,27 @@ describe("an older build on a snapshot store this build wrote (#5065)", () => {
 		await journal.close();
 	});
 
+	test("a chunked blob stored through the sessions upgrades a journal an older build created (#5065)", async () => {
+		const database = await open();
+		// An older build created the journal first: its tables, at schema version 1.
+		await (await SqlRunJournal.open(database)).close();
+		await database.run("UPDATE wf_meta SET schema_version = 1");
+		// This build then opens only the session store and stores a chunked blob.
+		const sessions = await SqlSessionStore.open(database);
+		const blob = largeBlob();
+		await sessions.snapshotBlobs.putBlobs([blob]);
+
+		const read = await readAsRelease0987(database, blob.hash);
+
+		assert.ok(
+			"refused" in read,
+			`0.9.87 read the chunked blob as ${(read as { blob?: Uint8Array }).blob?.byteLength} bytes`,
+		);
+		const journal = await SqlRunJournal.open(database);
+		assert.deepEqual(await journal.snapshotBlobs.getBlob(blob.hash), blob.data);
+		await journal.close();
+	});
+
 	test("opening an older build's journal upgrades it, so that build then refuses it (#5065)", async () => {
 		const database = await open();
 		await (await SqlRunJournal.open(database)).close();

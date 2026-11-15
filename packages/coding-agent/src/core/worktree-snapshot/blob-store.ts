@@ -3,7 +3,7 @@ import { dialectOf, type StorageDialect, type StorageJsonSource, type StorageTri
 import { StorageWriteLockTimeoutError } from "../storage/errors.js";
 import { applyStorageMigrations } from "../storage/migrations.js";
 import { renderStorageIdentifiers, storageMigrationTable, validateStoragePrefix } from "../storage/prefix.js";
-import { RUN_JOURNAL_SCHEMA_VERSION } from "../storage/run-journal.js";
+import { RUN_JOURNAL_SCHEMA_VERSION, RUN_JOURNAL_SCHEMA_VERSION_UNCHUNKED } from "../storage/run-journal.js";
 import type { WorkspaceCollectionError } from "./errors.ts";
 import type { SnapshotBlob, SnapshotBlobStore, WorktreeSnapshot } from "./types.ts";
 
@@ -845,6 +845,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	private readonly dialect: StorageDialect;
 	/** The meta table of the run journal under the same prefix, which a chunked blob's write marks (#5065). */
 	private readonly journalMeta: string;
+	private readonly prefix: string;
 	readonly table: string;
 
 	private constructor(
@@ -853,7 +854,9 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		tables: SnapshotIndexTables,
 		sources: readonly IndexSource[],
 		journalMeta: string,
+		prefix: string,
 	) {
+		this.prefix = prefix;
 		this.database = database;
 		this.dialect = dialect;
 		this.tables = tables;
@@ -919,7 +922,14 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			);
 		}
 		const journalMeta = renderStorageIdentifiers("journal", { meta: "meta" }, prefix).meta;
-		const store = new SqlSnapshotBlobStore(database, dialect, t, indexSources(prefix, t, dialect), journalMeta);
+		const store = new SqlSnapshotBlobStore(
+			database,
+			dialect,
+			t,
+			indexSources(prefix, t, dialect),
+			journalMeta,
+			prefix,
+		);
 		await store.installIndex();
 		return store;
 	}
@@ -961,31 +971,38 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			}
 			statements.push({ sql: header, params: [hash, data.byteLength, new Uint8Array(), chunks] });
 		}
-		if (chunked) statements.unshift(...this.refuseOlderJournals());
-		if (this.database.batch) {
+		if (!chunked && this.database.batch) {
 			await this.database.batch(statements);
 			return;
 		}
+		// Loaded only when a chunked blob is written: the journal's schema module is not in the store's eager graph.
+		const journal = chunked ? await import("../storage/journal-adoption.js") : undefined;
 		await this.database.transaction(async (transaction) => {
+			if (journal) await this.refuseOlderJournals(transaction, journal.upgradeRunJournalSchema);
 			for (const statement of statements) await transaction.run(statement.sql, ...statement.params);
 		});
 	}
 	/**
-	 * Statements that give the run journal under this store's prefix a meta row at this build's version when it has
-	 * none, as a new journal's would be. Builds before chunked blobs read one as empty; they open a journal only at
-	 * the version they know, so a database holding one refuses them even where this build never opened a journal,
-	 * such as shared storage before any workflow run (#5065). A journal of an older version is left to the journal's
-	 * own upgrade.
+	 * Makes the run journal under this store's prefix one that builds before chunked blobs refuse, in the transaction
+	 * that writes a chunked blob: they read one as empty, and open a journal only at the version they know (#5065). A
+	 * database without a journal, such as shared storage before any workflow run, gets a meta row at this build's
+	 * version, as a new journal's would be. A journal an older build created, at the previous version, is upgraded by
+	 * the journal's own upgrade, so its tables are what this build's journal expects. A newer or damaged one is left to
+	 * the journal's open to refuse.
 	 */
-	private refuseOlderJournals(): { sql: string; params: SqliteValue[] }[] {
+	private async refuseOlderJournals(
+		transaction: SqliteExecutor,
+		upgrade: (transaction: SqliteExecutor, prefix: string, dialect: StorageDialect) => Promise<void>,
+	): Promise<void> {
 		const meta = this.journalMeta;
-		return [
-			{ sql: `CREATE TABLE IF NOT EXISTS ${meta}(schema_version ${this.dialect.types.int} NOT NULL)`, params: [] },
-			{
-				sql: `INSERT INTO ${meta} (schema_version) SELECT ${RUN_JOURNAL_SCHEMA_VERSION} WHERE NOT EXISTS (SELECT 1 FROM ${meta})`,
-				params: [],
-			},
-		];
+		await transaction.exec(`CREATE TABLE IF NOT EXISTS ${meta}(schema_version ${this.dialect.types.int} NOT NULL)`);
+		const versions = await transaction.all<SqliteRow & { schema_version: SqliteValue }>(
+			`SELECT schema_version FROM ${meta}`,
+		);
+		if (versions.length === 0)
+			await transaction.run(`INSERT INTO ${meta} (schema_version) VALUES (?)`, RUN_JOURNAL_SCHEMA_VERSION);
+		else if (versions.length === 1 && versions[0]!.schema_version === RUN_JOURNAL_SCHEMA_VERSION_UNCHUNKED)
+			await upgrade(transaction, this.prefix, this.dialect);
 	}
 
 	/**
