@@ -4,6 +4,8 @@ import {
 	captureWorktreeSnapshot,
 	isGitUnavailableError,
 	isWorkspaceGitError,
+	isWorkspaceSnapshotError,
+	type SnapshotBlob,
 	serializeWorkspaceError,
 	WorkspaceSnapshotError,
 	type WorktreeSnapshot,
@@ -92,10 +94,51 @@ export function createWorkflowSnapshotRecorder(input: {
 			await input.backend.commitCheckpoint(checkpoint, signal === undefined ? undefined : { signal });
 			return [];
 		}
+		const blobs = journal.snapshotBlobs;
 		return serializeRun(input.rootRunId, async () => {
 			signal?.throwIfAborted();
 			const latest = await snapshotAncestry(journal, input.rootRunId);
+			const commit = (snapshots: readonly WorktreeSnapshot[]) =>
+				input.backend.commitCheckpoint(
+					snapshots.length === 0 ? checkpoint : { ...checkpoint, worktreeSnapshots: [...snapshots] },
+					signal === undefined ? undefined : { signal },
+				);
+			// The journal refuses a checkpoint whose snapshot blobs a collection deleted after the capture stored them
+			// (#5077): store them again, then capture once more, and commit the checkpoint without snapshots if that
+			// fails too, so no checkpoint records a snapshot that cannot be restored.
+			let refused: Error | undefined;
+			const committed = async (snapshots: readonly WorktreeSnapshot[]) => {
+				try {
+					await commit(snapshots);
+					return true;
+				} catch (error) {
+					if (!isWorkspaceSnapshotError(error) || error.code !== "blobs-collected") throw error;
+					refused = error;
+					return false;
+				}
+			};
+			let captured = await captureAll(latest);
+			if (!(await committed(captured.snapshots))) {
+				await blobs.putBlobs(captured.blobs);
+				if (!(await committed(captured.snapshots))) {
+					captured = await captureAll(latest);
+					if (!(await committed(captured.snapshots))) {
+						report(refused!);
+						captured = { snapshots: [], blobs: captured.blobs };
+						await commit([]);
+					}
+				}
+			}
+			for (const snapshot of captured.snapshots) latest.set(snapshot.root, snapshot);
+			return captured.snapshots;
+		});
+
+		/** Captures each directory's checkout once, with the blobs each new snapshot stored. */
+		async function captureAll(
+			latest: Map<string, WorktreeSnapshot>,
+		): Promise<{ snapshots: WorktreeSnapshot[]; blobs: SnapshotBlob[] }> {
 			const snapshots: WorktreeSnapshot[] = [];
+			const stored: SnapshotBlob[] = [];
 			const workflowCwd = resolve(input.cwd());
 			for (const directory of new Set([workflowCwd, ...directories.map((path) => resolve(workflowCwd, path))])) {
 				try {
@@ -106,9 +149,10 @@ export function createWorkflowSnapshotRecorder(input: {
 					const capture = await captureWorktreeSnapshot(directory, {
 						settings: input.settings,
 						previous,
-						blobs: journal.snapshotBlobs,
+						blobs,
 						signal,
 					});
+					if (capture.status === "captured") stored.push(...capture.blobs);
 					if (capture.status === "captured" || capture.status === "unchanged") {
 						if (!snapshots.some((entry) => entry.root === capture.snapshot.root))
 							snapshots.push(capture.snapshot);
@@ -123,12 +167,7 @@ export function createWorkflowSnapshotRecorder(input: {
 				}
 			}
 			signal?.throwIfAborted();
-			await input.backend.commitCheckpoint(
-				snapshots.length === 0 ? checkpoint : { ...checkpoint, worktreeSnapshots: snapshots },
-				signal === undefined ? undefined : { signal },
-			);
-			for (const snapshot of snapshots) latest.set(snapshot.root, snapshot);
-			return snapshots;
-		});
+			return { snapshots, blobs: stored };
+		}
 	};
 }

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createBashToolDefinition } from "../src/core/tools/bash.js";
 import { createFindToolDefinition } from "../src/core/tools/find.js";
@@ -17,6 +17,17 @@ async function tempDir(): Promise<string> {
 	const dir = await mkdtemp(join(tmpdir(), "atomic-local-resource-"));
 	tempDirs.push(dir);
 	return dir;
+}
+
+/** Creates a symbolic link, or reports false where the platform refuses to (Windows without the privilege). */
+async function trySymlink(target: string, path: string, type?: "dir" | "file"): Promise<boolean> {
+	try {
+		await symlink(target, path, type);
+		return true;
+	} catch (error) {
+		if (process.platform === "win32" && (error as NodeJS.ErrnoException).code === "EPERM") return false;
+		throw error;
+	}
 }
 
 afterEach(async () => {
@@ -134,6 +145,99 @@ describe("local resource parity", () => {
 				{} as never,
 			),
 		).rejects.toThrow("escapes the workspace");
+	});
+
+	it("refuses local:// reads and writes through a dangling link to a path outside the workspace (#5045)", async (ctx) => {
+		const dir = await tempDir(),
+			outside = await tempDir();
+		if (!(await trySymlink(join(outside, "new.txt"), join(dir, "dangling"), "file"))) return ctx.skip();
+		await expect(
+			createReadToolDefinition(dir).execute(
+				"read-local-dangling",
+				{ path: "local://dangling" },
+				undefined,
+				undefined,
+				{} as never,
+			),
+		).rejects.toThrow("escapes the workspace");
+		await expect(
+			createToolDefinition("write", dir).execute(
+				"write-local-dangling",
+				{ path: "local://dangling", content: "nope" },
+				undefined,
+				undefined,
+				{} as never,
+			),
+		).rejects.toThrow("escapes the workspace");
+		await expect(readFile(join(outside, "new.txt"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+	});
+
+	it("refuses local:// writes below a dangling directory link that points outside the workspace (#5045)", async (ctx) => {
+		const dir = await tempDir(),
+			outside = await tempDir();
+		if (!(await trySymlink(join(outside, "missing-dir"), join(dir, "gone"), "dir"))) return ctx.skip();
+		await expect(
+			createToolDefinition("write", dir).execute(
+				"write-local-dangling-dir",
+				{ path: "local://gone/new.txt", content: "nope" },
+				undefined,
+				undefined,
+				{} as never,
+			),
+		).rejects.toThrow("escapes the workspace");
+		await expect(readFile(join(outside, "missing-dir", "new.txt"), "utf8")).rejects.toMatchObject({
+			code: "ENOENT",
+		});
+	});
+
+	it("refuses local:// writes through a dangling link whose target climbs out of a directory link with .. (#5045)", async (ctx) => {
+		const dir = await tempDir(),
+			outside = await tempDir();
+		await mkdir(join(outside, "a", "b"), { recursive: true });
+		if (!(await trySymlink(join(outside, "a", "b"), join(dir, "d"), "dir"))) return ctx.skip();
+		if (!(await trySymlink(["d", "..", "pwned.txt"].join(sep), join(dir, "L"), "file"))) return ctx.skip();
+		await expect(
+			createToolDefinition("write", dir).execute(
+				"write-local-dotdot",
+				{ path: "local://L", content: "nope" },
+				undefined,
+				undefined,
+				{} as never,
+			),
+		).rejects.toThrow("escapes the workspace");
+		await expect(readFile(join(outside, "a", "pwned.txt"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+		await expect(readFile(join(dir, "pwned.txt"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+	});
+
+	it("writes local:// through a dangling link whose target lies inside the workspace (#5045)", async (ctx) => {
+		const dir = await tempDir();
+		await mkdir(join(dir, "sub"));
+		if (!(await trySymlink(join("sub", "later.txt"), join(dir, "pending"), "file"))) return ctx.skip();
+		const write = await createToolDefinition("write", dir).execute(
+			"write-local-pending",
+			{ path: "local://pending", content: "inside\n" },
+			undefined,
+			undefined,
+			{} as never,
+		);
+		expect(text(write)).toBe(`Successfully wrote to ${join(dir, "pending")}`);
+		assert.equal(await readFile(join(dir, "sub", "later.txt"), "utf8"), "inside\n");
+	});
+
+	it("still refuses local:// paths below a live directory link outside the workspace (#5045)", async (ctx) => {
+		const dir = await tempDir(),
+			outside = await tempDir();
+		if (!(await trySymlink(outside, join(dir, "dirlink"), "dir"))) return ctx.skip();
+		await expect(
+			createToolDefinition("write", dir).execute(
+				"write-local-dirlink",
+				{ path: "local://dirlink/x.txt", content: "nope" },
+				undefined,
+				undefined,
+				{} as never,
+			),
+		).rejects.toThrow("escapes the workspace");
+		await expect(readFile(join(outside, "x.txt"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
 	});
 
 	it("emits find progress and rich details", async () => {
