@@ -244,6 +244,7 @@ Tools use `mcp__<server>__<tool>` names and default to `codemode` exposure. The 
 - After editing configuration, run `/reload` or restart Atomic. Use `/mcp reconnect my-server` to retry a connection and refresh tools.
 - For a missing tool, check server and per-tool exposure. `hidden` tools cannot be called; codemode or deferred tools need an active discovery tool.
 - For OAuth redirect failures, check `callbackPort` and `callbackUrl` against the registered URI. Over SSH, paste the complete redirected URL into the waiting sign-in prompt.
+- If `/mcp` shows a server as failed because its authorization server is temporarily unavailable, your sign-in is still valid. Atomic keeps the stored tokens and retries a few times; run `/mcp reconnect my-server` once the authorization server is back. Only a rejected or revoked sign-in asks you to sign in again.
 - For an issuer mismatch, check the authorization server's metadata and callback configuration before retrying. Do not disable issuer checks to accept an unexpected response.
 - For slow calls, adjust `timeout` in seconds. Progress resets this inactivity timer.
 
