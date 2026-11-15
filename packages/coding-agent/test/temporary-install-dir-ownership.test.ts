@@ -115,6 +115,7 @@ describe("temporary extension install directories", () => {
 	it.runIf(process.platform === "win32")("uses the account's own temp directory on Windows", () => {
 		const root = getNpmInstallRoot(context, "temporary", true);
 		assert.ok(isPathInside(tmpdir(), root));
-		assert.ok(statSync(dirname(root)).isDirectory());
+		assert.ok(isPathInside(getTempRootDir(), root));
+		assert.ok(statSync(getTempRootDir()).isDirectory(), "the per-user root is created");
 	});
 });

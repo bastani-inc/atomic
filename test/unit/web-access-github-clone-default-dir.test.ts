@@ -89,7 +89,7 @@ test("the GitHub clone cache defaults to a directory only the current user owns"
 	const clonePath = sandboxedDefaultClonePath();
 
 	const result = await extractGitHub("https://github.com/octo/widgets", undefined, true);
-	assert.equal(result?.error, null);
+	assert.equal(result?.error, null, JSON.stringify({ result, calls: boundary.calls, clonePath }));
 	assert.equal(cloneTargets().length, 1);
 	assert.ok(isInside(clonePath, cloneTargets()[0]!));
 	if (process.platform !== "win32") {
