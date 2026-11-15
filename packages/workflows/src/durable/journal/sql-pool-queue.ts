@@ -1434,7 +1434,6 @@ export class SqlPoolQueue {
 		};
 		const staged = await this.transaction(async (tx) => {
 			const { now, status } = await this.authority(tx, lease);
-			await this.lockRows(tx, this.work, "id = ? AND root = ?", token.id, lease.runId);
 			const row = await this.current(tx, lease, token);
 			if (row.epoch !== lease.epoch) throw staleWork(lease, token, "epoch-mismatch");
 			const previous = await tx.get<SqliteRow & { request: string; receipt: string }>(
@@ -1471,10 +1470,6 @@ export class SqlPoolQueue {
 					? undefined
 					: await applyPoolSession(tx, this.dialect, poolSessionPrefix(this.storage), row.id, mutation);
 			const billed = poolCheckpointUsage(checkpoint);
-			if (billed && !existing && this.rowLocks) {
-				const seed = poolUsageTotalsSeed(this.dialect, this.journal.runs, lease.runId);
-				await tx.run(seed.sql, ...seed.params);
-			}
 			if (billed && !existing)
 				await upsertPoolUsage(
 					tx,

@@ -237,8 +237,7 @@ export class SqlRunJournal implements RunJournal {
 		} catch (error) {
 			throw (await firstFailure()) ?? error;
 		}
-		const failure = await firstFailure();
-		if (failure !== undefined) throw failure;
+		// The transaction committed, so every statement in it succeeded.
 		return (await answers!).map((answer) => (answer as PromiseFulfilledResult<SqliteRow[]>).value);
 	}
 

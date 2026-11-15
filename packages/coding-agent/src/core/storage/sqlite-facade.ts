@@ -279,8 +279,8 @@ class PipelineQueue {
 			() => {},
 			() => {},
 		);
+		// A queue lasts one transaction, so it keeps every call it started.
 		this.started.add(settled);
-		void settled.then(() => this.started.delete(settled));
 		return result;
 	}
 
@@ -609,7 +609,6 @@ class DriverDatabase implements SqliteDatabase {
 			let committing: Promise<void> | undefined;
 			try {
 				result = await callback(handle);
-				active = false;
 				// A pipelined connection takes the commit behind statements the callback left unanswered, so locks they take
 				// are held for one round trip. The driver's commit fails when one of them failed, so nothing commits then;
 				// a statement that fails as transient after this point lets the transaction run again, having written nothing.
