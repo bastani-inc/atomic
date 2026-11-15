@@ -276,7 +276,9 @@ export class SqlRunJournal implements RunJournal {
 	 */
 	private static async initialized(database: SqliteDatabase, t: Tables): Promise<boolean> {
 		const dialect = dialectOf(database);
-		for (const table of [t.meta, t.runs, t.events, t.leases]) {
+		// Every table this build needs: a database holding only some of them, such as a sessions database a snapshot blob
+		// write marked with the journal meta (#5065), gets the rest created under the write lock.
+		for (const table of [t.meta, t.runs, t.events, t.leases, t.eventChunks, t.leaseBuilds]) {
 			const exists = dialect.tableExists(table);
 			if ((await database.get(exists.sql, ...exists.params)) === undefined) return false;
 		}

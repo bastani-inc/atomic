@@ -192,3 +192,26 @@ test("pool inputs and results stay whole while an older build is live, and an up
 	// Back at this build's version, so the backend's own writes as it closes go through.
 	sql("UPDATE wf_meta SET schema_version = 2");
 });
+
+test("a database with only the journal meta, as a snapshot blob write leaves it, opens as a full journal (#4965)", async () => {
+	sql("CREATE TABLE wf_meta(schema_version INTEGER NOT NULL)");
+	sql("INSERT INTO wf_meta VALUES (2)");
+	const { journal, lease } = await openWithRun();
+	await journal.append(lease, large("first"), { key: "first" });
+	assert.deepEqual((await journal.readKey("run", "first"))?.event, large("first"));
+	// The same with every table but the two this version adds.
+	await journal.close();
+	sql("DROP TABLE wf_event_chunks");
+	sql("DROP TABLE wf_lease_builds");
+	const reopened = await openSqlRunJournal(path);
+	closers.push(() => reopened.close());
+	await reopened.createRun({ runId: "second", name: "second", cwd: "/repo", createdAt: 1, status: "running" });
+	assert.equal((await reopened.acquire("second", "again")).status, "acquired");
+	const names = sql(
+		"SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('wf_event_chunks', 'wf_lease_builds') ORDER BY name",
+	);
+	assert.deepEqual(
+		names.map((row) => row.name),
+		["wf_event_chunks", "wf_lease_builds"],
+	);
+});
