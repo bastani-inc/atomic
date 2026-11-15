@@ -258,6 +258,10 @@ export type OutboxReadResult =
 	| { readonly status: "missing" }
 	| InvalidStateInput;
 export type OutboxListResult = { readonly status: "listed"; readonly rows: OutboxRow[] } | InvalidStateInput;
+export type OutboxPositionResult =
+	| { readonly status: "positioned"; readonly position: number }
+	| { readonly status: "missing" }
+	| InvalidStateInput;
 
 /** S2: the durable outbox, deduplicated by message id, with exclusive claim leases. */
 export interface OutboxStore {
@@ -289,8 +293,16 @@ export interface OutboxStore {
 	/** The recipient's broker refused the row; `reason` is reported to the sender verbatim. */
 	markFailed(claim: OutboxClaim, reason: string): Promise<OutboxFailedResult>;
 	read(messageId: string): Promise<OutboxReadResult>;
-	/** The recipient's `queued` and `claimed` rows in insertion order, without claiming them. */
-	listUndelivered(targetIdentity: string): Promise<OutboxListResult>;
+	/**
+	 * The recipient's `queued` and `claimed` rows in insertion order, without claiming them; with `limit`, only the
+	 * first `limit` of them.
+	 */
+	listUndelivered(targetIdentity: string, limit?: number): Promise<OutboxListResult>;
+	/**
+	 * #4896: where `messageId` stands in its recipient's undelivered rows, from 1 for the oldest, counted without
+	 * reading any row: `missing` when it is not one of them.
+	 */
+	undeliveredPosition(targetIdentity: string, messageId: string): Promise<OutboxPositionResult>;
 	/**
 	 * Delete `delivered` and `failed` rows settled more than `settledOlderThanMs` ago; returns the count. With
 	 * `queuedOlderThanMs`, first fail rows queued more than that long ago that no live claim holds, with

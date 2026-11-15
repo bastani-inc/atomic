@@ -6,22 +6,49 @@
  */
 
 import { type ChildProcess, spawn } from "node:child_process";
-import { sliceHead } from "@bastani/atomic";
+import { configuredSecretRedactor, sliceHead } from "@bastani/atomic";
 import type { WorkerProvisionerErrorCode } from "./types.js";
 
 /** Most bytes of stdout a CLI may print: a scale set or a namespace of thousands of hosts fits. */
 const MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
+/**
+ * Most bytes of a CLI's stderr kept for redaction. Past it the last, cut line is dropped, so a secret the cut splits
+ * never reaches an error.
+ */
+const MAX_STDERR_BYTES = 1024 * 1024;
 /** Most characters of a CLI's stderr an error keeps. */
 const MAX_DETAIL_CHARS = 600;
 /** Names of environment variables and options whose values are treated as secrets. */
 const SECRET_NAME = /secret|token|passw|pwd|credential|api[-_]?key|access[-_]?key|private[-_]?key|signature|sas|auth/i;
-/** A secret a CLI might print: a bearer token, a JWT, or a `name=value` / `name: value` pair with a secret's name. */
-const SECRET_TEXT: readonly [RegExp, string][] = [
-	[/\bBearer\s+[^\s"',;]+/gi, "Bearer [redacted]"],
-	[/\beyJ[\w-]+\.[\w-]+(?:\.[\w-]*)?/g, "[redacted]"],
+/** Words that make a `name=value` / `name: value` pair a secret's, wherever they appear in the name. */
+const SECRET_WORD = /secret|token|passw|pwd|credential|api[-_]?key|access[-_]?key/i;
+/** Words that make a pair a secret's only as a whole segment of its name, so `signal` or `assignment` do not. */
+const SECRET_SEGMENT = /^(?:sig|signature)$/i;
+
+/** Whether `name` names a secret: it holds a secret's word, or a `-`, `_` or camelCase segment that is one. */
+function isSecretName(name: string): boolean {
+	return (
+		SECRET_WORD.test(name) || name.split(/[-_]|(?<=[a-z0-9])(?=[A-Z])/u).some((part) => SECRET_SEGMENT.test(part))
+	);
+}
+
+/** A quoted value with its closing quote, or the start of an unquoted one. */
+const SECRET_PAIR_VALUE = String.raw`"[^"\n]*"?|'[^'\n]*'?|[^\s"',;&]+`;
+/**
+ * A secret a CLI might print: a bearer token, a JWT, or a `name=value` / `name: value` pair with a secret's name, whose
+ * quoted value is redacted to its closing quote. Each pattern starts only where its run of name characters starts, and
+ * a name runs over a run at most twice, so they are linear in the length of the text, however long its runs of `-`,
+ * word characters or spaces.
+ */
+const SECRET_TEXT: readonly [RegExp, (match: string, ...groups: string[]) => string][] = [
+	[/\bBearer\s+[^\s"',;]+/gi, () => "Bearer [redacted]"],
+	[/(?<![\w-])eyJ[\w-]+\.[\w-]+(?:\.[\w-]*)?/g, () => "[redacted]"],
 	[
-		/\b([\w-]*(?:secret|token|passw(?:or)?d?|pwd|credential|api[-_]?key|access[-_]?key|signature|sig)[\w-]*)(["']?\s*[:=]\s*["']?)[^\s"',;&]+/gi,
-		"$1$2[redacted]",
+		new RegExp(String.raw`(?<![\w-])([\w-]+)(["']?\s*[:=]\s*)(${SECRET_PAIR_VALUE})`, "g"),
+		(match, name: string, separator: string, value: string) =>
+			isSecretName(name)
+				? `${name}${separator}${value.replace(/^(["']?)[\s\S]*?(\1?)$/u, "$1[redacted]$2")}`
+				: match,
 	],
 ];
 /** Shorter values are not redacted where they appear: they would match ordinary words. */
@@ -62,33 +89,34 @@ function secretArguments(args: readonly string[]): string[] {
 	return values;
 }
 
-/** `text` with each secret value of `args` and the environment, and any text that looks like a secret, redacted. */
+/**
+ * `text` with each secret value of `args` and the environment, and any text that looks like a secret, redacted. A
+ * value is matched as Atomic's configured-secret redactor matches it: trimmed, line by line, and encoded.
+ */
 export function redactSecrets(text: string, args: readonly string[], env: NodeJS.ProcessEnv): string {
 	const values = [
 		...secretArguments(args),
 		...Object.entries(env)
 			.filter(([name]) => SECRET_NAME.test(name))
 			.map(([, value]) => value ?? ""),
-	]
-		.filter((value) => value.length >= MIN_SECRET_LENGTH)
-		.toSorted((a, b) => b.length - a.length);
-	let redacted = text;
-	for (const value of values) redacted = redacted.replaceAll(value, "[redacted]");
-	for (const [pattern, replacement] of SECRET_TEXT) redacted = redacted.replace(pattern, replacement);
+	];
+	let redacted = configuredSecretRedactor(values, { minLength: MIN_SECRET_LENGTH })(text);
+	for (const [pattern, replace] of SECRET_TEXT) redacted = redacted.replace(pattern, replace);
 	return redacted;
 }
 
-/** A CLI's stderr for an error message: its lines joined, redacted, and cut to {@link MAX_DETAIL_CHARS}. */
-function detail(stderr: string, call: CliCall, env: NodeJS.ProcessEnv): string {
-	const text = redactSecrets(
-		stderr
-			.split(/\r?\n/)
-			.map((line) => line.trim())
-			.filter((line) => line !== "")
-			.join(" "),
-		call.args,
-		env,
-	);
+/**
+ * A CLI's stderr for an error message: redacted whole, so a secret that spans lines is still found, then its lines
+ * trimmed and joined, and cut to {@link MAX_DETAIL_CHARS}. Stderr cut at {@link MAX_STDERR_BYTES} loses its last,
+ * partial line first.
+ */
+function detail(stderr: string, cut: boolean, call: CliCall, env: NodeJS.ProcessEnv): string {
+	const kept = cut ? stderr.slice(0, stderr.lastIndexOf("\n") + 1) : stderr;
+	const text = redactSecrets(kept, call.args, env)
+		.split(/\r?\n/)
+		.map((line) => line.trim())
+		.filter((line) => line !== "")
+		.join(" ");
 	return text.length > MAX_DETAIL_CHARS ? `${sliceHead(text, MAX_DETAIL_CHARS)}…` : text;
 }
 
@@ -135,6 +163,8 @@ export function runCli(call: CliCall, signal: AbortSignal): Promise<string> {
 		});
 		const stdout: Buffer[] = [];
 		const stderr: Buffer[] = [];
+		let stderrBytes = 0;
+		let stderrCut = false;
 		let stdoutBytes = 0;
 		child.stdout.on("data", (chunk: Buffer) => {
 			stdoutBytes += chunk.length;
@@ -147,7 +177,11 @@ export function runCli(call: CliCall, signal: AbortSignal): Promise<string> {
 			else stdout.push(chunk);
 		});
 		child.stderr.on("data", (chunk: Buffer) => {
-			if (stderr.length < 64) stderr.push(chunk);
+			if (stderrCut) return;
+			const kept = chunk.subarray(0, MAX_STDERR_BYTES - stderrBytes);
+			stderr.push(kept);
+			stderrBytes += kept.length;
+			stderrCut = kept.length < chunk.length;
 		});
 		child.on("error", (error: NodeJS.ErrnoException) =>
 			finish(() =>
@@ -165,7 +199,7 @@ export function runCli(call: CliCall, signal: AbortSignal): Promise<string> {
 			finish(() => {
 				if (exitCode === 0) return resolve(Buffer.concat(stdout).toString("utf8"));
 				const errorText = Buffer.concat(stderr).toString("utf8");
-				const text = detail(errorText, call, env);
+				const text = detail(errorText, stderrCut, call, env);
 				const auth = call.authFailure.test(errorText);
 				reject(
 					new WorkerProvisionerError(

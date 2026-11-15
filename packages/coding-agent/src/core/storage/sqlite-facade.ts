@@ -7,6 +7,7 @@ import type {
 	SqliteTransactionOptions,
 	SqliteValue,
 	StorageDescriptor,
+	StorageNotifications,
 	TransactionConcurrency,
 } from "./database.js";
 import { type StorageDialect, sqliteDialect } from "./dialect.js";
@@ -119,6 +120,11 @@ export interface SqliteDriver extends SqliteDriverExecutor {
 	 * a driver call fails because a value, row or response was too large for the backend (#4954).
 	 */
 	readonly payloadLimits?: StoragePayloadLimits;
+	/**
+	 * Optional. Wake-ups through the database, which the facade exposes as `SqliteDatabase.notifications`; the driver's
+	 * `close` stops its listening connection.
+	 */
+	readonly notifications?: StorageNotifications;
 }
 
 /**
@@ -164,31 +170,122 @@ interface Attempt {
 
 const REDACTED = "[redacted]";
 
+/** How {@link configuredSecretRedactor} matches the secrets it is given. */
+export interface ConfiguredSecretRedactorOptions {
+	/** Forms of a secret shorter than this are not redacted where they appear: they would match ordinary words. */
+	readonly minLength?: number;
+}
+
 /**
- * A redactor that replaces every non-empty secret, and its URI-encoded and URI-decoded forms, with `[redacted]`.
- * It makes one pass over the text, matching longer secrets first, so a secret that contains another is removed whole
- * and no replacement is scanned again. A `[redacted]` marker already in the text is kept as it is, so redacting twice
- * changes nothing, even for a secret that is part of the marker.
+ * Fewest characters of a form derived from a secret (a line of it, or an encoding) that is redacted, so short pieces
+ * of a secret do not match ordinary text. A secret itself is redacted at any length its caller allows.
  */
-export function redactSecrets(secrets: Iterable<string>): (text: string) => string {
-	const variants = new Set<string>();
-	for (const secret of secrets) {
-		variants.add(secret);
-		try {
-			variants.add(encodeURIComponent(secret));
-		} catch {}
-		try {
-			variants.add(decodeURIComponent(secret));
-		} catch {}
+const MIN_DERIVED_LENGTH = 6;
+/** Fewest base64 characters of a secret's encoding that are redacted, so short secrets do not match random base64. */
+const MIN_BASE64_LENGTH = 7;
+
+/**
+ * The base64 runs that appear wherever `secret`'s bytes are encoded, in standard and URL-safe alphabets: for each of
+ * the three alignments of its first byte in a 3-byte group, the characters that only its bits decide.
+ */
+function base64Forms(secret: string): string[] {
+	const bytes = Buffer.from(secret);
+	const forms: string[] = [];
+	for (let offset = 0; offset < 3; offset++) {
+		const encoded = Buffer.concat([Buffer.alloc(offset), bytes, Buffer.alloc(2)]).toString("base64");
+		const form = encoded.slice(Math.ceil((8 * offset) / 6), Math.floor((8 * (offset + bytes.length)) / 6));
+		if (form.length >= MIN_BASE64_LENGTH) forms.push(form, form.replaceAll("+", "-").replaceAll("/", "_"));
 	}
-	const ordered = [...variants].filter(Boolean).sort((first, second) => second.length - first.length);
-	if (ordered.length === 0) return (text) => text;
-	const pattern = new RegExp(ordered.map((secret) => secret.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&")).join("|"), "g");
+	return forms;
+}
+
+/** The JSON-escaped, URI-encoded, URI-decoded and base64 forms of `plain`. */
+function encodedForms(plain: string): string[] {
+	const forms = [JSON.stringify(plain).slice(1, -1), ...base64Forms(plain)];
+	try {
+		forms.push(encodeURIComponent(plain));
+	} catch {}
+	try {
+		forms.push(decodeURIComponent(plain));
+	} catch {}
+	return forms;
+}
+
+/** A line of a multi-line secret that many secrets share, such as a PEM armor line (`-----BEGIN … KEY-----`). */
+const GENERIC_LINE = /^-----[A-Z0-9 ]+-----$|^[A-Za-z-]+: /u;
+
+/**
+ * The forms a configured secret takes in output: trimmed, since a secret read from a file often ends with a line break
+ * that the text around a printed secret need not repeat; each line of a multi-line secret, trimmed, that holds a letter
+ * or digit and is not a line many secrets share (a PEM armor or header line); and the encodings of both. The secret as given holds its trimmed form, so overlapping matches still remove
+ * it whole. Forms derived from the secret are kept only from {@link MIN_DERIVED_LENGTH} characters.
+ */
+function secretForms(secret: string, minLength: number): string[] {
+	const trimmed = secret.trim();
+	if (trimmed.length < Math.max(1, minLength)) return [];
+	const derivedLength = Math.max(minLength, MIN_DERIVED_LENGTH);
+	const lines = trimmed.includes("\n")
+		? trimmed
+				.split(/\r?\n/u)
+				.map((line) => line.trim())
+				.filter((line) => /[\p{L}\p{N}]/u.test(line) && !GENERIC_LINE.test(line))
+		: [];
+	const derived = [...lines, ...[trimmed, ...lines].flatMap(encodedForms)];
+	return [trimmed, ...derived.filter((form) => form.length >= derivedLength)];
+}
+
+/** Every occurrence of each of `forms` in `text`, overlapping ones merged, as `[start, end)` ranges in order. */
+function secretRanges(text: string, forms: readonly string[]): [number, number][] {
+	const found: [number, number][] = [];
+	for (const form of forms) {
+		for (let at = text.indexOf(form); at !== -1; at = text.indexOf(form, at + 1)) found.push([at, at + form.length]);
+	}
+	found.sort((first, second) => first[0] - second[0]);
+	const merged: [number, number][] = [];
+	for (const [start, end] of found) {
+		const last = merged.at(-1);
+		if (last !== undefined && start < last[1]) last[1] = Math.max(last[1], end);
+		else merged.push([start, end]);
+	}
+	return merged;
+}
+
+/**
+ * A redactor that replaces each configured secret with `[redacted]`: its plain, trimmed and per-line forms, and their
+ * JSON-escaped, URI-encoded, URI-decoded and base64 forms. Occurrences that overlap, such as two secrets that share
+ * characters, are replaced together, so no part of either survives, and text around them is left as it is. A
+ * `[redacted]` marker already in the text is kept as it is, so redacting twice changes nothing.
+ */
+export function configuredSecretRedactor(
+	secrets: Iterable<string>,
+	options: ConfiguredSecretRedactorOptions = {},
+): (text: string) => string {
+	const forms = new Set<string>();
+	for (const secret of secrets) for (const form of secretForms(secret, options.minLength ?? 1)) forms.add(form);
+	const ordered = [...forms];
 	return (text) =>
 		text
 			.split(REDACTED)
-			.map((piece) => piece.replace(pattern, REDACTED))
+			.map((piece) => {
+				let redacted = "";
+				let copied = 0;
+				for (const [start, end] of secretRanges(piece, ordered)) {
+					redacted += piece.slice(copied, start) + REDACTED;
+					copied = end;
+				}
+				return redacted + piece.slice(copied);
+			})
 			.join(REDACTED);
+}
+
+/**
+ * A redactor that replaces every non-empty secret, and its trimmed, per-line, URI-encoded, URI-decoded, JSON-escaped
+ * and base64 forms, with `[redacted]`. Occurrences that overlap are replaced together, so a secret that contains or
+ * shares characters with another is removed whole. A `[redacted]` marker already in the text is kept as it is, so
+ * redacting twice changes nothing, even for a secret that is part of the marker.
+ */
+export function redactSecrets(secrets: Iterable<string>): (text: string) => string {
+	return configuredSecretRedactor(secrets);
 }
 
 function redactCause(cause: StorageFailureCause, redact: (text: string) => string): StorageFailureCause {
@@ -403,9 +500,11 @@ class DriverDatabase implements SqliteDatabase {
 	private retryReported = false;
 	private readonly executor: SqliteExecutor;
 	readonly batch?: (statements: readonly SqliteStatement[], options?: SqliteBatchOptions) => Promise<SqliteRow[][]>;
+	readonly notifications?: StorageNotifications;
 
 	constructor(driver: SqliteDriver, redact: (text: string) => string) {
 		this.driver = driver;
+		if (driver.notifications !== undefined) this.notifications = driver.notifications;
 		this.redact = redact;
 		this.descriptor = { adapter: driver.descriptor.adapter, location: redact(driver.descriptor.location) };
 		this.dialect = driver.dialect ?? sqliteDialect;

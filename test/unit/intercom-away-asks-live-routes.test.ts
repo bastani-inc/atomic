@@ -315,6 +315,35 @@ test("a recipient's end reports which kept asks it held for their askers and whi
 	assert.equal(store.question("q-live", "recipient"), undefined);
 });
 
+test("a broker that crashes after a recipient ended with its reply still unsaved fails the ask once the asker is back (#5095)", () => {
+	const path = fileIn();
+	const before = broker(path);
+	before.record("asker", "recipient", "unsaved");
+	before.record("asker", "recipient", "saved");
+	before.markReplied("recipient", "asker", "unsaved");
+	before.markReplied("recipient", "asker", "saved");
+	before.takeForTarget("recipient", { ended: info("recipient") });
+	before.clearReply("recipient", "asker", "saved");
+
+	const restarted = broker(path);
+	assert.deepEqual(
+		restarted.heldForAsker(ADDRESSES.asker).map((held) => held.message.id),
+		["ended:unsaved"],
+	);
+	// Its route is not also kept: the failure is the ask's one outcome.
+	assert.deepEqual(restarted.restoreDormant("asker", ADDRESSES.asker, connected("asker", "recipient")), []);
+	assert.deepEqual(restarted.restoreDormant("recipient", ADDRESSES.recipient, connected("asker", "recipient")), []);
+});
+
+test("an asker that cannot prove itself keeps nothing for a crash when its recipient ends with a reply on its way (#5095)", () => {
+	const path = fileIn();
+	const before = broker(path);
+	before.record("stranger", "recipient", "q");
+	before.markReplied("recipient", "stranger", "q");
+	assert.deepEqual(before.takeForTarget("recipient", { ended: info("recipient") }), []);
+	assert.deepEqual(broker(path).heldForAsker(undefined), []);
+});
+
 test("asks kept for an away peer are kept once, as movable when they may follow it to another broker (#4997)", () => {
 	const path = fileIn();
 	const first = broker(path);

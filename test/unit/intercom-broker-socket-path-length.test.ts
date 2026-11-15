@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 // `lstatSync`, `chmodSync` and `symlinkSync` have no equivalent in test/helpers/runtime.ts: the socket directory's
 // owner, mode and kind are what these tests pin.
+import { randomUUID } from "node:crypto";
 import { chmodSync, chownSync, existsSync, lstatSync, symlinkSync } from "node:fs";
 import net from "node:net";
 import { basename, dirname, join, sep } from "node:path";
@@ -45,6 +46,8 @@ const extensionDir = join(moduleDir(import.meta.url), "../../packages/intercom")
 const BROKER_BUDGET_MS = 10_000;
 
 const POLL_INTERVAL_MS = 20;
+/** How long one health request waits for the broker's reply before the wait asks again. */
+const HEALTH_REPLY_TIMEOUT_MS = 2_000;
 
 const unixOnly = process.platform === "win32" ? test.skip : test;
 
@@ -228,9 +231,41 @@ function spawnBroker(agentDir: string, preload?: string, env: Record<string, str
 	return { broker, stderr: readStreamText(broker.stderr) };
 }
 
+/**
+ * Whether the broker answers a health request on `socketPath`. A socket that accepts a connection may belong to a broker
+ * still starting, before it handles signals; one that answers a request has started.
+ */
+async function answersHealth(socketPath: string): Promise<boolean> {
+	if (!(await isSocketAnswering(socketPath))) return false;
+	return new Promise((resolve) => {
+		const requestId = randomUUID();
+		const socket = net.connect(socketPath);
+		let received = Buffer.alloc(0);
+		const finish = (answered: boolean) => {
+			clearTimeout(timer);
+			socket.destroy();
+			resolve(answered);
+		};
+		const timer = setTimeout(() => finish(false), HEALTH_REPLY_TIMEOUT_MS);
+		socket.on("error", () => finish(false));
+		socket.on("connect", () => {
+			const payload = Buffer.from(JSON.stringify({ type: "health", requestId }));
+			const header = Buffer.alloc(4);
+			header.writeUInt32BE(payload.length);
+			socket.write(Buffer.concat([header, payload]));
+		});
+		socket.on("data", (data) => {
+			received = Buffer.concat([received, data]);
+			if (received.length < 4 || received.length < received.readUInt32BE(0) + 4) return;
+			const reply = JSON.parse(received.subarray(4, received.readUInt32BE(0) + 4).toString("utf8"));
+			finish(reply.type === "health" && reply.requestId === requestId);
+		});
+	});
+}
+
 async function waitUntilAnswering(broker: SpawnedProcess, socketPath: string, stderr: Promise<string>): Promise<void> {
 	const deadline = performance.now() + BROKER_BUDGET_MS;
-	while (broker.exitCode === null && !(await isSocketAnswering(socketPath)) && performance.now() < deadline) {
+	while (broker.exitCode === null && !(await answersHealth(socketPath)) && performance.now() < deadline) {
 		await sleep(POLL_INTERVAL_MS);
 	}
 	if (broker.exitCode !== null) assert.fail(`the broker exited with ${broker.exitCode}:\n${await stderr}`);
@@ -259,7 +294,10 @@ unixOnly(
 	},
 );
 
-/** A preload that unlinks the socket path just before the broker's stat of it, `times` times. */
+/**
+ * A preload that unlinks the socket path just before the broker's stat of it, `times` times. The broker's next stat,
+ * of the socket it bound again, writes {@link reboundMarker}: the vanished socket is back and checked.
+ */
 function unlinkBoundSocketPreload(agentDir: string, socketPath: string, times: number): string {
 	const preload = join(agentDir, "unlink-bound-socket.mjs");
 	writeTextSync(
@@ -273,6 +311,9 @@ function unlinkBoundSocketPreload(agentDir: string, socketPath: string, times: n
 			`  if (unlinked < ${times} && path === ${JSON.stringify(socketPath)}) {`,
 			"    unlinked += 1;",
 			"    fs.unlinkSync(path);",
+			`  } else if (unlinked === ${times} && path === ${JSON.stringify(socketPath)}) {`,
+			"    unlinked += 1;",
+			`    fs.writeFileSync(${JSON.stringify(reboundMarker(agentDir))}, "");`,
 			"  }",
 			"  return statSync.call(this, path, ...rest);",
 			"};",
@@ -283,11 +324,23 @@ function unlinkBoundSocketPreload(agentDir: string, socketPath: string, times: n
 	return preload;
 }
 
+function reboundMarker(agentDir: string): string {
+	return join(agentDir, "socket-bound-again");
+}
+
 unixOnly("a broker whose just-bound socket vanishes binds it again instead of exiting (#5040)", async () => {
 	const agentDir = tempDir("ic5040-vanish-");
 	const socketPath = getBrokerSocketPath(process.platform, agentDir);
 	const { broker, stderr } = spawnBroker(agentDir, unlinkBoundSocketPreload(agentDir, socketPath, 1));
 
+	// The first bind answers too, until the preload unlinks it: a session connects only to the socket bound again.
+	const deadline = performance.now() + BROKER_BUDGET_MS;
+	while (broker.exitCode === null && !existsSync(reboundMarker(agentDir)) && performance.now() < deadline)
+		await sleep(POLL_INTERVAL_MS);
+	assert.ok(
+		existsSync(reboundMarker(agentDir)),
+		`the broker never bound its socket again:\n${broker.exitCode === null ? "" : await stderr}`,
+	);
 	await waitUntilAnswering(broker, socketPath, stderr);
 	const client = await connectSession(socketPath, agentDir);
 	const connected = client.isConnected();

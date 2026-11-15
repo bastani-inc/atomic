@@ -15,6 +15,7 @@ import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storag
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import { redirectOversizedToolResult } from "../../packages/coding-agent/src/core/tools/oversized-tool-result.js";
 import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
+import { dropLibsqlScope } from "../helpers/storage-backends.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 
 useTemporaryAgentDir();
@@ -46,16 +47,19 @@ const REAL_SERVER_BLOB_TIMEOUT_MS = 300_000;
 let database: SqliteDatabase;
 let store: SqlSessionStore;
 const created: string[] = [];
+const prefix = `blobs_${randomUUID().replaceAll("-", "_").slice(0, 12)}_`;
 beforeAll(async () => {
 	if (serverUrl === undefined) return;
 	const authToken = tokenFile === undefined ? undefined : readFileSync(tokenFile, "utf8").trim();
 	database = await openLibsqlDatabase({ url: serverUrl, ...(authToken === undefined ? {} : { authToken }) });
-	store = await SqlSessionStore.open(database, { prefix: `blobs_${randomUUID().replaceAll("-", "_").slice(0, 12)}_` });
+	store = await SqlSessionStore.open(database, { prefix });
 });
 afterAll(async () => {
 	if (serverUrl === undefined) return;
 	for (const id of created) await store.delete(id).catch(() => undefined);
 	await store.close();
+	// Tables left on the server slow every later request to it: sqld loads the whole schema for each (#4768).
+	await dropLibsqlScope(database, prefix);
 	await database.close();
 });
 

@@ -8,23 +8,31 @@
 # aws-actions/configure-aws-credentials.
 terraform {
   required_providers {
-    aws = { source = "hashicorp/aws", version = "~> 5.0" }
+    aws    = { source = "hashicorp/aws", version = "~> 5.0" }
+    http   = { source = "hashicorp/http", version = "~> 3.4" }
+    random = { source = "hashicorp/random", version = "~> 3.6" }
   }
 }
 
 variable "subnet_ids" { type = list(string) }
 variable "ami_id" { description = "An Ubuntu 24.04 AMI" }
-variable "database" { default = "libsql://pool.example.turso.io" }
+variable "database" {
+  default     = "libsql://pool.example.turso.io"
+  description = "The shared database when `postgres` is false"
+}
 variable "token_command" {
   default     = null
   description = "Overrides how an instance prints the database token. Default: `aws secretsmanager get-secret-value` with the instance profile"
 }
 variable "max_hosts" { default = 20 }
-variable "token_secret_arn" { description = "The Secrets Manager secret holding the database token" }
+variable "token_secret_arn" {
+  default     = null
+  description = "The Secrets Manager secret holding the database token when `postgres` is false"
+}
 
 locals {
   # The AWS CLI from its snap, then the instance profile through the default credential chain.
-  token_command = coalesce(var.token_command, "(command -v aws >/dev/null || snap install aws-cli --classic >/dev/null) && aws secretsmanager get-secret-value --secret-id ${var.token_secret_arn} --query SecretString --output text")
+  token_command = coalesce(var.token_command, "(command -v aws >/dev/null || snap install aws-cli --classic >/dev/null) && aws secretsmanager get-secret-value --region ${data.aws_region.current.name} --secret-id ${local.token_secret_arn} --query SecretString --output text")
 }
 
 # The workers' instance role: it reads the token secret and nothing else.
@@ -47,7 +55,7 @@ resource "aws_iam_role_policy" "workers_token" {
   role = aws_iam_role.workers.id
   policy = jsonencode({
     Version   = "2012-10-17"
-    Statement = [{ Effect = "Allow", Action = "secretsmanager:GetSecretValue", Resource = var.token_secret_arn }]
+    Statement = [{ Effect = "Allow", Action = "secretsmanager:GetSecretValue", Resource = local.token_secret_arn }]
   })
 }
 
@@ -67,8 +75,9 @@ resource "aws_launch_template" "workers" {
     http_tokens = "required"
   }
   user_data = base64encode(templatefile("${path.module}/../cloud-init.yaml.tftpl", {
-    database = var.database
-    slots    = 4
+    database    = local.database
+    database_ca = local.database_ca
+    slots       = 4
     # The instance id, through IMDSv2.
     provider_id_command = "curl -s -H \"X-aws-ec2-metadata-token: $(curl -s -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' http://169.254.169.254/latest/api/token)\" http://169.254.169.254/latest/meta-data/instance-id"
     token_command       = local.token_command

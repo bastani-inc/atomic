@@ -14,6 +14,11 @@ export interface PostgresDatabaseOptions {
 	maxConnections?: number;
 	/** How long one statement may run before the server cancels it, in milliseconds. Default 30000. */
 	statementTimeoutMs?: number;
+	/**
+	 * A direct (session) endpoint for the connection that listens for wake-ups, when `url` goes through a transaction
+	 * pooler. Default `url`. Without notifications, worker hosts and Intercom brokers find work by polling alone.
+	 */
+	listenUrl?: string;
 }
 
 export const DEFAULT_MAX_CONNECTIONS: 8;

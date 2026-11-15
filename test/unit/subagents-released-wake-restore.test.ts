@@ -101,7 +101,12 @@ interface Harness {
 	original: OriginalLaunch;
 	originalGate?: PromiseWithResolvers<void>;
 	/** Holds a woken run open, before ("before-save") or after ("after-save") its results are saved, until resolved. */
-	wokenGate?: { gate: PromiseWithResolvers<void>; at: "before-start" | "before-save" | "after-save" };
+	wokenGate?: {
+		gate: PromiseWithResolvers<void>;
+		at: "before-start" | "before-save" | "after-save";
+		/** Resolved once a woken run held before its session starts waits on `gate`. */
+		held?: PromiseWithResolvers<void>;
+	};
 	/** The calls the original launch is released waiting on. */
 	releasedWaits: readonly SubagentChildWaitingCall[];
 	/** When set, a woken run that is not stopped ends in an error, before it reports the results it saved. */
@@ -278,12 +283,20 @@ function harness(options: { stage?: boolean; sessionManager?: SessionManager } =
 				options.taskExecution?.toolResultsSaved?.(results.map((result) => result.toolCallId));
 			};
 			const woken = state.wokenGate;
-			if (woken?.at === "before-start") {
-				// Stopped before its session sent anything: what it was given stays unread, as the runner reports it.
+			// A promptless wake's run writes nothing into the child's transcript before the results it continues its turn
+			// with, but this stand-in's session prompts its task as a user turn before its gate. Held before its session
+			// starts, a stop leaves the transcript as the real run leaves it, whenever the stop comes.
+			const holdsBeforeSession =
+				woken?.at === "before-start" || (woken?.at === "before-save" && options.skipTaskPrompt === true);
+			if (woken && holdsBeforeSession) {
+				woken.held?.resolve();
 				await new Promise<void>((resolve) => {
 					void woken.gate.promise.then(resolve);
 					options.signal?.addEventListener("abort", () => resolve(), { once: true });
 				});
+			}
+			if (woken?.at === "before-start" || (holdsBeforeSession && options.signal?.aborted)) {
+				// Stopped before its session sent anything: what it was given stays unread, as the runner reports it.
 				return {
 					agent: agentName,
 					task,
@@ -1121,12 +1134,13 @@ async function wokenByResult(
 	runId: string,
 	result: DetachedToolResult,
 	at: "before-start" | "before-save" | "after-save",
-): Promise<{ record: SubagentChildRecord; gate: PromiseWithResolvers<void> }> {
+): Promise<{ record: SubagentChildRecord; gate: PromiseWithResolvers<void>; held: Promise<void> }> {
 	const record = await releasedChild(h, runId);
 	await endSessionOnPendingCall(record, h.releasedWaits);
 	await recordSubagentChildHeldToolResults(h.deps.pi, record.owner.sessionId, record.childId, [result]);
 	const gate = Promise.withResolvers<void>();
-	h.wokenGate = { gate, at };
+	const held = Promise.withResolvers<void>();
+	h.wokenGate = { gate, at, held };
 	const outcome = await restoreSubagentChild(h.deps, h.ctx, record.childId, {
 		prompt: SUBAGENT_RELEASED_WAKE_PROMPT,
 		toolResults: [result],
@@ -1135,7 +1149,7 @@ async function wokenByResult(
 	assert.equal(outcome.kind, "restored", JSON.stringify(outcome));
 	assert.ok(outcome.kind === "restored");
 	await h.waitForLatest(record.childId, (latest) => latest.state === "running" && latest.taskId === outcome.taskId);
-	return { record, gate };
+	return { record, gate, held: held.promise };
 }
 
 /** Stop the child with `action`, then resume it and let the resumed run finish. */
@@ -1200,7 +1214,12 @@ async function wokenWhileDeployRuns(
 	h: Harness,
 	runId: string,
 	at: "before-save" | "after-save",
-): Promise<{ record: SubagentChildRecord; gate: PromiseWithResolvers<void>; woken: RunSyncOptions }> {
+): Promise<{
+	record: SubagentChildRecord;
+	gate: PromiseWithResolvers<void>;
+	held: Promise<void>;
+	woken: RunSyncOptions;
+}> {
 	h.releasedWaits = [WAIT_CALL, DEPLOY_CALL];
 	const woke = await wokenByResult(h, runId, waitResult("ci-1 green"), at);
 	const woken = h.runs.at(-1)?.options;
@@ -1262,6 +1281,28 @@ function told(run: RunSyncOptions & { task: string }): string {
 test("a call a wake answered still running is reported interrupted when Atomic restarts before the woken child saved its results (#5014)", async () => {
 	const h = harness();
 	const { record } = await wokenWhileDeployRuns(h, "still-running-unsaved", "before-save");
+
+	await restartOwner(h, record.childId);
+	h.wokenGate = undefined;
+	const [outcome] = await restoreSubagentChildren(h.deps, h.ctx);
+	assert.equal(outcome?.kind, "restored", JSON.stringify(outcome));
+	const run = h.runs.at(-1);
+	assert.ok(run);
+
+	assert.deepEqual(run.options.resumeToolResults, [waitResult("ci-1 green"), interruptedDeploy()]);
+	assert.deepEqual(run.options.stillRunning, [], "deploy-2 is no longer tracked once it is reported interrupted");
+});
+
+test("a woken run that waits as long as it likes before saving its results has written nothing the restore reads as an answer (#5014)", async () => {
+	const h = harness();
+	const { record, held } = await wokenWhileDeployRuns(h, "still-running-waits", "before-save");
+	// Under load the restart came after the woken run's session had started: wait for the run to wait, then restart.
+	await held;
+	assert.ok(record.childSessionFile);
+	const transcript = (
+		await SessionManager.open(record.childSessionFile, undefined, record.cwd)
+	).buildSessionProjection().messages;
+	assert.equal(transcript.at(-1)?.role, "assistant", "a promptless wake writes nothing before the results it saves");
 
 	await restartOwner(h, record.childId);
 	h.wokenGate = undefined;
