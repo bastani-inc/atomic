@@ -336,6 +336,8 @@ export function collectWorktreeDiffs(
 		filesChanged: diff.filesChanged,
 		insertions: diff.insertions,
 		deletions: diff.deletions,
+		...(diff.captureError === undefined ? {} : { captureError: diff.captureError, worktreePath: diff.worktreePath }),
+		...(diff.setupWarnings === undefined ? {} : { setupWarnings: diff.setupWarnings }),
 	}));
 	const summary = formatWorktreeDiffSummary(diffs);
 	return { artifacts, ...(summary.length > 0 ? { summary } : {}) };

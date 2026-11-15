@@ -31,7 +31,9 @@ export type WorkspaceSnapshotErrorCode =
 	| "not-a-repository"
 	| "unborn-head"
 	| "blob-store-unsupported"
-	| "unreadable-path";
+	| "blob-store-failed"
+	| "unreadable-path"
+	| "pooled-worktree-lost";
 export type WorkspaceRestoreErrorCode =
 	| "snapshot-not-found"
 	| "blob-missing"
@@ -306,9 +308,17 @@ const SNAPSHOT_SUMMARIES: Record<WorkspaceSnapshotErrorCode, (subject: string) =
 			? 'Select a SQLite workflow journal, for example `"workflows": { "journal": { "path": "workflows/journal.sqlite" } }` in settings.json, to record snapshots.'
 			: 'Select a SQLite session store, for example `--session-store <path>` or `"sessions": { "storage": { "path": "sessions.sqlite" } }` in settings.json, to record snapshots.',
 	],
+	"blob-store-failed": (subject) => [
+		`Worktree snapshot not recorded: the ${subject} storage could not store or read its blobs`,
+		"The turn went on without a snapshot; the cause says why the storage failed (`atomic storage status` shows the store in use). The next turn that changes files tries again.",
+	],
 	"unreadable-path": (subject) => [
 		`Worktree snapshot unavailable: ${subject} cannot be read`,
 		`Make ${subject} readable by the current user (for example \`chmod u+rwX\` on it and its parent directories), replace a symbolic link that loops or points nowhere, or list the path in .gitignore or .atomic/snapshot-ignore, then retry.`,
+	],
+	"pooled-worktree-lost": (subject) => [
+		`Worktree snapshot unavailable: this session no longer holds the pooled worktree ${subject}, which another session may be working in now`,
+		"Stop changing files there, and resume this session (`/resume`) to restore its latest snapshot into a fresh worktree.",
 	],
 };
 
@@ -948,7 +958,14 @@ const CODES: Readonly<Record<WorkspaceErrorName, readonly WorkspaceErrorCode[]>>
 	WorkspaceError: [],
 	WorkspaceConfigError: ["invalid-setting"],
 	WorkspaceGitError: ["git-failed"],
-	WorkspaceSnapshotError: ["not-a-repository", "unborn-head", "blob-store-unsupported", "unreadable-path"],
+	WorkspaceSnapshotError: [
+		"not-a-repository",
+		"unborn-head",
+		"blob-store-unsupported",
+		"blob-store-failed",
+		"unreadable-path",
+		"pooled-worktree-lost",
+	],
 	WorkspaceRestoreError: [
 		"snapshot-not-found",
 		"blob-missing",

@@ -21,12 +21,47 @@ import {
 	EMPTY_SUBAGENT_SETTINGS,
 } from "./agent-types.js";
 
-export function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryResult {
+export interface AgentDiscoveryOptions {
+	/**
+	 * The project trust decision. When false, project agent definitions and the
+	 * project settings' agent overrides are not read.
+	 */
+	readonly projectTrusted: boolean;
+}
+
+/**
+ * The discovery options for a host context: its project trust decision, or
+ * trusted for a host without one.
+ */
+export function contextAgentDiscoveryOptions(ctx: { isProjectTrusted?: () => boolean }): AgentDiscoveryOptions {
+	return { projectTrusted: ctx.isProjectTrusted?.() ?? true };
+}
+
+/** Nothing of the project is read when it is not trusted. */
+function projectAgentSources(
+	cwd: string,
+	projectTrusted: boolean,
+): {
+	readDirs: string[];
+	preferredDir: string | null;
+	settingsPaths: string[];
+} {
+	const { readDirs, preferredDir } = resolveNearestProjectAgentDirs(cwd);
+	return projectTrusted
+		? { readDirs, preferredDir, settingsPaths: getProjectAgentSettingsPaths(cwd) }
+		: { readDirs: [], preferredDir, settingsPaths: [] };
+}
+
+export function discoverAgents(cwd: string, scope: AgentScope, options: AgentDiscoveryOptions): AgentDiscoveryResult {
 	const userDirOld = getUserAgentDirs();
 	const userDirNew = path.join(os.homedir(), ".agents");
-	const { readDirs: projectAgentDirs, preferredDir: projectAgentsDir } = resolveNearestProjectAgentDirs(cwd);
+	const {
+		readDirs: projectAgentDirs,
+		preferredDir: projectAgentsDir,
+		settingsPaths: projectSettingsPaths,
+	} = projectAgentSources(cwd, options.projectTrusted);
 	const userSettingsLoad = readMergedSubagentSettings(getUserAgentSettingsPaths());
-	const projectSettingsLoad = readMergedSubagentSettings(getProjectAgentSettingsPaths(cwd));
+	const projectSettingsLoad = readMergedSubagentSettings(projectSettingsPaths);
 	const userSettingsPath = userSettingsLoad.path ?? getUserAgentSettingsPath();
 	const projectSettingsPath = projectSettingsLoad.path ?? getProjectAgentSettingsPath(cwd);
 	const userSettings = scope === "project" ? EMPTY_SUBAGENT_SETTINGS : userSettingsLoad.settings;
@@ -52,7 +87,10 @@ export function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryRe
 	return { agents, projectAgentsDir };
 }
 
-export function discoverAgentsAll(cwd: string): {
+export function discoverAgentsAll(
+	cwd: string,
+	options: AgentDiscoveryOptions,
+): {
 	builtin: AgentConfig[];
 	user: AgentConfig[];
 	project: AgentConfig[];
@@ -64,9 +102,13 @@ export function discoverAgentsAll(cwd: string): {
 } {
 	const userDirOld = getUserAgentDirs();
 	const userDirNew = path.join(os.homedir(), ".agents");
-	const { readDirs: projectDirs, preferredDir: projectDir } = resolveNearestProjectAgentDirs(cwd);
+	const {
+		readDirs: projectDirs,
+		preferredDir: projectDir,
+		settingsPaths: projectSettingsPaths,
+	} = projectAgentSources(cwd, options.projectTrusted);
 	const userSettingsLoad = readMergedSubagentSettings(getUserAgentSettingsPaths());
-	const projectSettingsLoad = readMergedSubagentSettings(getProjectAgentSettingsPaths(cwd));
+	const projectSettingsLoad = readMergedSubagentSettings(projectSettingsPaths);
 	const userSettingsPath = userSettingsLoad.path ?? getUserAgentSettingsPath();
 	const projectSettingsPath = projectSettingsLoad.path ?? getProjectAgentSettingsPath(cwd);
 	const userSettings = userSettingsLoad.settings;

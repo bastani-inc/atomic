@@ -101,8 +101,7 @@ test("native refusal text cannot become a summary checkpoint and advances the la
 				preferredProvider: fallback.provider,
 				sessionThinkingLevel: "off",
 				registry: {
-					getAvailableSnapshot: () => [FAUX_MODEL, fallback],
-					getModel: (_provider, id) => (id === fallback.id ? fallback : FAUX_MODEL),
+					getModels: () => [FAUX_MODEL, fallback],
 					hasConfiguredAuth: () => true,
 				},
 			},

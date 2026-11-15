@@ -16,6 +16,7 @@ import {
 	type ConverseStreamCommandOutput,
 	type ConverseStreamMetadataEvent,
 	DocumentFormat,
+	type ImageBlock,
 	ImageFormat,
 	type Message,
 	type SystemContentBlock,
@@ -52,6 +53,7 @@ import type {
 } from "../types.ts";
 import { appendAssistantMessageDiagnostic } from "../utils/diagnostics.ts";
 import { assertSupportedDocumentMimeType } from "../utils/document-input.ts";
+import { type InlineImageMimeType, inlineImageMimeType, unsupportedImagePlaceholder } from "../utils/inline-images.ts";
 import { normalizeProviderError } from "../utils/error-body.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { providerHeadersToRecord } from "../utils/headers.ts";
@@ -1034,7 +1036,7 @@ function convertToolResultContent(content: (TextContent | ImageContent)[]): Tool
 	const result: ToolResultContentBlock[] = [];
 	for (const c of content) {
 		if (c.type === "image") {
-			result.push({ image: createImageBlock(c.mimeType, c.data) });
+			result.push(createImageBlock(c.mimeType, c.data));
 		} else {
 			const textBlock = createNonBlankTextBlock(c.text);
 			if (textBlock) result.push(textBlock);
@@ -1074,7 +1076,7 @@ function convertMessages(
 								break;
 							}
 							case "image":
-								content.push({ image: createImageBlock(c.mimeType, c.data) });
+								content.push(createImageBlock(c.mimeType, c.data));
 								break;
 							case "document":
 								content.push({ document: createDocumentBlock(c, content.length) });
@@ -1185,7 +1187,7 @@ function convertMessages(
 					if (split) {
 						errorImages.push(
 							{ text: split.caption },
-							...split.images.map((image) => ({ image: createImageBlock(image.mimeType, image.data) })),
+							...split.images.map((image) => createImageBlock(image.mimeType, image.data)),
 						);
 					}
 					j++;
@@ -1552,27 +1554,18 @@ function createDocumentBlock(block: DocumentContent, index: number) {
 	};
 }
 
-function createImageBlock(mimeType: string, data: string) {
-	let format: ImageFormat;
-	switch (mimeType) {
-		case "image/jpeg":
-		case "image/jpg":
-			format = ImageFormat.JPEG;
-			break;
-		case "image/png":
-			format = ImageFormat.PNG;
-			break;
-		case "image/gif":
-			format = ImageFormat.GIF;
-			break;
-		case "image/webp":
-			format = ImageFormat.WEBP;
-			break;
-		default:
-			throw new Error(`Unknown image type: ${mimeType}`);
-	}
+const BEDROCK_IMAGE_FORMATS: Record<InlineImageMimeType, ImageFormat> = {
+	"image/jpeg": ImageFormat.JPEG,
+	"image/png": ImageFormat.PNG,
+	"image/gif": ImageFormat.GIF,
+	"image/webp": ImageFormat.WEBP,
+};
 
-	return { source: { bytes: base64ToBytes(data) }, format };
+/** An image block, or the placeholder text when Bedrock does not accept the image's media type. */
+function createImageBlock(mimeType: string, data: string): { image: ImageBlock } | { text: string } {
+	const inlineMimeType = inlineImageMimeType(mimeType);
+	if (!inlineMimeType) return { text: unsupportedImagePlaceholder(mimeType) };
+	return { image: { source: { bytes: base64ToBytes(data) }, format: BEDROCK_IMAGE_FORMATS[inlineMimeType] } };
 }
 
 function base64ToBytes(data: string): Uint8Array {

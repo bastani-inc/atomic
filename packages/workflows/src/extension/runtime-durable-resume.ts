@@ -1,3 +1,4 @@
+import { getAgentDir, hasTrustRequiringProjectResources, ProjectTrustStore } from "@bastani/atomic";
 import type { DurableWorkflowBackend, DurableWorkflowCatalogEntries } from "../durable/backend.js";
 import { listOpenableCompletedWorkflows } from "../durable/completed-catalog.js";
 import {
@@ -6,6 +7,7 @@ import {
 } from "../durable/completed-inspection.js";
 import { type ForkConfigSource, type ForkError, isForkError } from "../durable/fork-errors.js";
 import { type ForkCarryMessages, forkDurableRun } from "../durable/fork-run.js";
+import { WorkflowProjectNotTrustedError } from "../durable/project-trust.js";
 import {
 	prepareRuntimeDurableResumable,
 	prepareTargetedDurableResumable,
@@ -16,6 +18,7 @@ import {
 } from "../durable/resume-runtime.js";
 import { hasActiveLiveRun } from "../durable/run-claims.js";
 import { availableRunDurableBackend } from "../durable/run-owner-backend.js";
+import { canonicalDirectory } from "../durable/sdk-recovery-scope.js";
 import { bindStoreDurableBackend, DurableBackendNotInitializedError } from "../durable/store-backend.js";
 import { inspectTargetedDurableWorkflow, type TargetedDurableInspection } from "../durable/targeted-inspection.js";
 import type { DurableWorkflowHandle, ResumableWorkflowEntry, WorkflowForkedFrom } from "../durable/types.js";
@@ -61,6 +64,8 @@ export interface ForkDurableWorkflowOptions {
 	readonly signal?: AbortSignal;
 	readonly onRunAccepted?: (runId: string) => void;
 	readonly validateSource?: (handle: DurableWorkflowHandle) => void;
+	/** Asks whether to trust the untrusted project folder the source run's workflow is defined in. */
+	readonly confirmProjectTrust?: (projectDir: string) => Promise<boolean>;
 }
 
 export interface DurableResumeRuntime {
@@ -81,6 +86,8 @@ export interface DurableResumeRuntime {
 			readonly onRunAccepted?: (runId: string) => void;
 			readonly onBeforeResume?: (runId: string, forkedFrom?: string) => Promise<void>;
 			readonly confirmCrossProjectFork?: (cwd: string) => Promise<boolean>;
+			/** Asks whether to trust the untrusted project folder the run's workflow is defined in. */
+			readonly confirmProjectTrust?: (projectDir: string) => Promise<boolean>;
 			readonly forkModelOwner?: string;
 			/** Resume a root whose worker entry modules were edited: see `RunOpts.acceptEntryChanges` (#4200). */
 			readonly acceptEntryChanges?: boolean;
@@ -118,6 +125,8 @@ export interface DurableResumeRuntimeDeps {
 	/** Reports a warning once; each shard of the journal store that cannot be opened is reported through it. */
 	readonly reportWarning?: (message: string) => void;
 	readonly getWorkflowHostModules?: import("./workflow-module-loader.js").WorkflowHostModuleProvider;
+	/** The project trust decision; an untrusted project's workflow modules are not discovered. */
+	readonly isProjectTrusted?: () => boolean;
 }
 
 export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): DurableResumeRuntime {
@@ -150,14 +159,33 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 		for (const id of ids) await (availableRunDurableBackend(deps.store, id) ?? backend).hydrateWorkflow(id);
 	};
 	let preparedCatalog: readonly ResumableWorkflowEntry[] = [];
-	const resolveDefinition = async (name: string, cwd: string | undefined) =>
-		deps.registry.get(name) ??
+	const discover = async (name: string, cwd: string, projectTrusted: boolean | undefined) =>
 		(
-			await discoverWorkflows({
-				cwd: cwd ?? deps.runtimeCwd,
-				getWorkflowHostModules: deps.getWorkflowHostModules,
-			})
+			await discoverWorkflows({ cwd, getWorkflowHostModules: deps.getWorkflowHostModules, projectTrusted })
 		).registry.get(name);
+	/**
+	 * This session decides for its own project. Another project's workflows load only once that project is trusted:
+	 * by its saved decision, or by the answer to `confirmProjectTrust`. A workflow that is not found without them in a
+	 * project that has project resources is refused with how to trust that project.
+	 */
+	const discoverDefinition = async (
+		name: string,
+		cwd: string | undefined,
+		confirmProjectTrust: ((projectDir: string) => Promise<boolean>) | undefined,
+	) => {
+		const discoveryCwd = cwd ?? deps.runtimeCwd;
+		if (canonicalDirectory(discoveryCwd) === canonicalDirectory(deps.runtimeCwd))
+			return discover(name, discoveryCwd, deps.isProjectTrusted?.());
+		if (new ProjectTrustStore(getAgentDir()).get(discoveryCwd) === true) return discover(name, discoveryCwd, true);
+		const outsideProject = await discover(name, discoveryCwd, false);
+		if (outsideProject !== undefined || !hasTrustRequiringProjectResources(discoveryCwd)) return outsideProject;
+		if (await confirmProjectTrust?.(discoveryCwd)) return discover(name, discoveryCwd, true);
+		throw new WorkflowProjectNotTrustedError(name, discoveryCwd);
+	};
+	const definitionResolver =
+		(confirmProjectTrust: ((projectDir: string) => Promise<boolean>) | undefined) =>
+		async (name: string, cwd: string | undefined) =>
+			deps.registry.get(name) ?? (await discoverDefinition(name, cwd, confirmProjectTrust));
 	const runtime: DurableResumeRuntime = {
 		durableBackend: selectedBackend,
 		async forkDurableWorkflow(sourceRunId, options) {
@@ -174,7 +202,7 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 					carryMessages: options.carryMessages ?? "before",
 					fromStage: options.fromStage,
 					inputs: options.inputs,
-					resolveDefinition,
+					resolveDefinition: definitionResolver(options.confirmProjectTrust),
 					sessionStore: deps.adapters?.sessionStore,
 					modelOwner: options.modelOwner,
 					signal: options.signal,
@@ -198,7 +226,7 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 			const from = `${fork.forkedFrom.runId}${fork.forkedFrom.stagePath === undefined ? "" : ` from stage "${fork.forkedFrom.stagePath}"`}`;
 			if (!resumed.ok) {
 				const next =
-					(await resolveDefinition(fork.definition.name, deps.runtimeCwd)) === undefined
+					(await definitionResolver(undefined)(fork.definition.name, deps.runtimeCwd)) === undefined
 						? `Workflow "${fork.definition.name}" is not defined in this directory, so /workflow resume cannot start the fork here; fork the source again with /workflow fork ${fork.forkedFrom.runId}.`
 						: `Resume it with /workflow resume ${fork.runId}.`;
 				return {
@@ -262,13 +290,7 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 						durableBackend: backend,
 						resolveDefinition:
 							options?.definition === undefined
-								? async (name, cwd) =>
-										(
-											await discoverWorkflows({
-												cwd: cwd ?? deps.runtimeCwd,
-												getWorkflowHostModules: deps.getWorkflowHostModules,
-											})
-										).registry.get(name)
+								? (name, cwd) => discoverDefinition(name, cwd, options?.confirmProjectTrust)
 								: async () => options.definition,
 						...(deps.jobs !== undefined ? { jobs: deps.jobs } : {}),
 					};

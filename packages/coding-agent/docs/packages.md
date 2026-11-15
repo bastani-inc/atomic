@@ -71,6 +71,8 @@ By default, `install` and `remove` write to user settings (`~/.atomic/agent/sett
 
 If a configured package fails to install at startup, for example because npm cannot reach the registry, Atomic warns about it, skips that package's resources, and keeps running. The warning names the `atomic remove` command that drops the package from settings. Atomic tries to install it again on the next start or `/reload`. `atomic install` and `atomic update --extensions` still report the failure and exit non-zero.
 
+Installs can run at the same time, for example several sessions starting together: installs of one package wait for each other, and every installed package stays in settings. If an install was interrupted, run `atomic install` or `atomic update --extensions` again; a git package left incomplete is cloned again. `atomic remove` also deletes an install directory left behind for a package that is not in your settings.
+
 To try a package without installing it, use `--extension` or `-e`. This installs to a temporary directory for the current run only:
 
 ```bash

@@ -82,10 +82,13 @@ test.each(["changed", "closure"])("%s definitions fail before launching workers 
 	const backend = await JournalDurableBackend.open(
 		await resolveRunJournal({ journal: { path: join(directory, "journal.sqlite") } }),
 	);
+	// The definition check runs after the pool starts its coordinator. Launching that coordinator as a process took 15-30 s
+	// on a loaded Windows host; in this process, it still reports every worker it would launch, which is what is checked.
 	const pool = new LocalWorkerPool(backend, {
 		journalPath: join(directory, "journal.sqlite"),
 		workers: 2,
 		definitions: [{ path, definition: child, exportName: "child" }],
+		coordinator: "in-process",
 	});
 	try {
 		const parent = workflow({

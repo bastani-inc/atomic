@@ -31,7 +31,11 @@ import { ownedSessionManagerStores } from "./core/session-lifecycle-work.ts";
 import { assertValidSessionId, SessionManager } from "./core/session-manager.ts";
 import { classifiedWorkflowMetadata, workflowSessionMetadataFromEnv } from "./core/session-manager-classification.ts";
 import { resolveSessionStore, selectSessionStorage } from "./core/session-storage.js";
-import { sessionContinuesIn, sessionRunsInRecordedCheckout } from "./core/session-worktree-snapshots.ts";
+import {
+	deleteSessionWithSnapshotRefs,
+	sessionContinuesIn,
+	sessionRunsInRecordedCheckout,
+} from "./core/session-worktree-snapshots.ts";
 import type { DefaultProjectTrust, SettingsManager } from "./core/settings-manager.ts";
 import { type StorageSelection, storageSelectionKey } from "./core/storage/provider.js";
 import { observeHistoryLoads } from "./core/storage/session/history-load-observer.ts";
@@ -51,7 +55,7 @@ type ResolvedSession =
 /** The `--resume` picker's delete: the id is checked before the store is touched (#4326). */
 export async function deleteSessionFromPicker(store: SessionStore, id: string): Promise<void> {
 	assertValidSessionId(id);
-	await store.delete(id);
+	await deleteSessionWithSnapshotRefs(store, id);
 }
 
 async function findLocalSessionByExactId(sessionId: string, cwd: string, store: SessionStore) {

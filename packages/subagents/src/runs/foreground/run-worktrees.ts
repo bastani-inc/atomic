@@ -53,7 +53,8 @@ const runs = new Map<string, RunWorktrees>();
 
 /**
  * Remove the run's worktrees once it returned and no execution holds them. A stopped child's worktree with unsaved work
- * is kept, so it can resume in it; a clean one is removed and resume recreates it.
+ * is kept, so it can resume in it; a clean one is removed and resume recreates it. A worktree whose edits could not be
+ * saved as a patch is kept too, and a later sweep tries again (#4876).
  */
 function sweep(run: RunWorktrees): void {
 	if (!run.returned || run.holds.size > 0) return;
@@ -64,11 +65,16 @@ function sweep(run: RunWorktrees): void {
 	);
 	if (removing.length > 0) {
 		const subset: WorktreeSetup = { ...run.setup, worktrees: removing };
+		const uncaptured = new Set<number>();
 		try {
-			if (run.diffs) diffWorktrees(subset, run.diffs.agents, run.diffs.diffsDir, run.diffs.patchPaths);
+			if (run.diffs) {
+				for (const diff of diffWorktrees(subset, run.diffs.agents, run.diffs.diffsDir, run.diffs.patchPaths))
+					if (diff.captureError !== undefined) uncaptured.add(diff.index);
+			}
 		} finally {
+			// cleanupWorktrees keeps a worktree whose capture failed.
 			cleanupWorktrees(subset);
-			for (const worktree of removing) run.removed.add(worktree.index);
+			for (const worktree of removing) if (!uncaptured.has(worktree.index)) run.removed.add(worktree.index);
 		}
 	}
 	if (run.setup.worktrees.every((worktree) => run.removed.has(worktree.index)) && runs.get(run.runId) === run)
