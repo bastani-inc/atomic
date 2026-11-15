@@ -137,11 +137,12 @@ export async function openSqlRestoringReservationStore({
 		wake_requested: wakeColumn,
 		wake_generation: wakeColumn,
 	});
-	await database.exec(
-		`CREATE INDEX IF NOT EXISTS ${table}_child ON ${table}(child_target) WHERE end_json IS NULL`,
-	);
-	await database.exec(
-		`CREATE INDEX IF NOT EXISTS ${table}_wake_requested ON ${table}(owner_broker_id) WHERE wake_requested = 1`,
+	// In a serial transaction, so brokers opening a new store at once take turns creating them (#5054).
+	await database.transaction((tx) =>
+		tx.exec(`
+			CREATE INDEX IF NOT EXISTS ${table}_child ON ${table}(child_target) WHERE end_json IS NULL;
+			CREATE INDEX IF NOT EXISTS ${table}_wake_requested ON ${table}(owner_broker_id) WHERE wake_requested = 1;
+		`),
 	);
 	const columns = `reservation_key, owner_session_id, owner_broker_id, child_name AS child_name_json, child_target,
 		targets_json, "group" AS reservation_group, dormant, wake, wake_generation, fencing_token, "order" AS reservation_order,

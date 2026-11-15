@@ -11,7 +11,8 @@ function isDuplicateColumn(error: unknown): boolean {
 
 /**
  * Adds each missing column of `columns` (name → definition after the name) to `table`, in order. A table from an older
- * broker gets the columns, and an older broker ignores them; another broker adding one meanwhile is not an error.
+ * broker gets the columns, and an older broker ignores them. Each column is probed and added in a serial transaction,
+ * so brokers opening the store at once take turns (#5054); an older broker adding one meanwhile is not an error.
  */
 export async function addMissingColumns(
 	database: SqliteDatabase,
@@ -21,9 +22,11 @@ export async function addMissingColumns(
 	const dialect = dialectOf(database);
 	for (const [column, definition] of Object.entries(columns)) {
 		const probe = dialect.columnExists(table, column);
-		if ((await database.all(probe.sql, ...probe.params)).length > 0) continue;
 		try {
-			await database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+			await database.transaction(async (tx) => {
+				if ((await tx.all(probe.sql, ...probe.params)).length > 0) return;
+				await tx.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+			});
 		} catch (error) {
 			if (!isDuplicateColumn(error)) throw error;
 		}

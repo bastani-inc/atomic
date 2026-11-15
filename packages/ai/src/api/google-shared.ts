@@ -242,8 +242,14 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 	};
 
 	const transformedMessages = transformMessages(conversation, model, normalizeToolCallId);
+	// Gemini < 3 image turns for the current tool-result batch, emitted after its function responses.
+	let pendingImageTurns: Content[] = [];
 
 	for (const msg of transformedMessages) {
+		if (msg.role !== "toolResult" && pendingImageTurns.length > 0) {
+			contents.push(...pendingImageTurns);
+			pendingImageTurns = [];
+		}
 		if (msg.role === "user") {
 			if (typeof msg.content === "string") {
 				contents.push({
@@ -373,15 +379,16 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 				});
 			}
 
-			// For Gemini < 3, add images in a separate user message
+			// For Gemini < 3, add images in a separate user message after the batch's function responses
 			if (hasImages && !modelSupportsMultimodalFunctionResponse) {
-				contents.push({
+				pendingImageTurns.push({
 					role: "user",
 					parts: [{ text: "Tool result image:" }, ...imageParts],
 				});
 			}
 		}
 	}
+	contents.push(...pendingImageTurns);
 
 	return contents;
 }
