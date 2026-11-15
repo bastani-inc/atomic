@@ -184,6 +184,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			[...localRuntime.diagnostics],
 			localRuntime.modelFallbackMessage,
 			localRuntime.modelFallbackReason,
+			true,
 		);
 		this.adoptSessionStores(localRuntime);
 		this.client = client;

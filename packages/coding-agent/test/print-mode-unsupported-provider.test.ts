@@ -17,7 +17,7 @@ function createRuntime(): {
 	const runtime = {
 		modelFallbackMessage: WARNING,
 		modelFallbackReason: "configured-provider-unsupported",
-		session: { prompt, bindExtensions },
+		session: { prompt, bindExtensions, sessionManager: { getSessionId: () => "unsupported-provider" } },
 		dispose,
 		setRebindSession: vi.fn(),
 	} as unknown as AgentSessionRuntime;

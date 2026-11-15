@@ -1,9 +1,11 @@
 import { getShellEnv } from "../utils/shell.ts";
 import { shellCommandPrefixFor } from "./agent-session-blueprint-environment.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
+import { blueprintSubject } from "./agent-session-tool-hooks.ts";
 import type { BashResult } from "./bash-executor.ts";
 import { executeBashWithOperations } from "./bash-executor.ts";
 import type { BashExecutionMessage } from "./messages.ts";
+import { blueprintBuildPending, blueprintBuildSettled } from "./resume/blueprint/barrier.ts";
 import { sessionGenerationClosing, trackSessionWork } from "./session-lifecycle-work.ts";
 import { type BashOperations, type BashOutputChannel, createLocalBashOperations } from "./tools/bash.js";
 import { applyBashSessionEnvironment, snapshotBashSessionEnvironment } from "./tools/bash-session-environment.ts";
@@ -34,6 +36,21 @@ async function executeBashOperation(
 	const controllers = this._bashAbortControllers.get(requestKey) ?? new Set<AbortController>();
 	controllers.add(abortController);
 	this._bashAbortControllers.set(requestKey, controllers);
+	// A user's shell command runs in the worktree too: it waits for a blueprint build still running there (#4748).
+	const subject = blueprintSubject(this);
+	if (blueprintBuildPending(subject)) {
+		try {
+			await blueprintBuildSettled(subject, abortController.signal);
+			abortController.signal.throwIfAborted();
+		} catch (error) {
+			if (!abortController.signal.aborted) throw error;
+			controllers.delete(abortController);
+			if (controllers.size === 0) this._bashAbortControllers.delete(requestKey);
+			const cancelled: BashResult = { output: "", exitCode: undefined, cancelled: true, truncated: false };
+			if (options?.recordResult !== false) await this.recordBashResult(command, cancelled, options);
+			return cancelled;
+		}
+	}
 	// Apply command prefix if configured (e.g., "shopt -s expand_aliases" for alias support)
 	const prefix = shellCommandPrefixFor(this, this.settingsManager.getShellCommandPrefix());
 	const shellPath = this.settingsManager.getShellPath();

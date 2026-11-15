@@ -203,7 +203,7 @@ const ResumeSettingsSchema = Type.Object({
 	waitForBlueprint: Type.Optional(
 		Type.Union([Type.Literal("prompt"), Type.Literal("tools")], {
 			description:
-				'When a resume restores a worktree, what waits for its blueprint build. "prompt" (default): the session opens once the build has finished. "tools": the session opens and the first request goes out while the build runs; tools that run project code or read the worktree wait for it.',
+				'When a resume restores a worktree, what waits for its blueprint build. "prompt": the session opens once the build has finished. "tools": the session opens and the first request goes out while the build runs; every tool call waits for it. Default: "prompt" in the interactive TUI, "tools" without a UI (-p, --mode json, --mode rpc, SDK sessions).',
 		}),
 	),
 	cache: Type.Optional(
