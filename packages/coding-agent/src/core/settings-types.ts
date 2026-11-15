@@ -39,6 +39,12 @@ export interface SettingsManagerCreateOptions {
 
 export type SettingsFieldOrigin = "primary" | "legacy";
 
+/** One settings file of a scope, as read from disk. */
+export interface SettingsLayer {
+	path: string;
+	content: string;
+}
+
 export interface SettingsStorage {
 	withLock(scope: SettingsScope, fn: (current: string | undefined) => string | undefined): void;
 	/**
@@ -52,6 +58,12 @@ export interface SettingsStorage {
 	getFieldOrigin?(scope: SettingsScope, field: keyof Settings): SettingsFieldOrigin | undefined;
 	/** The file whose value of a top-level field is in effect for the scope, when the storage is file-backed. */
 	getFieldPath?(scope: SettingsScope, field: string): string | undefined;
+	/**
+	 * The existing files of a layered scope, highest precedence first, read under the scope's lock. Each file is
+	 * validated and migrated on its own before the files are merged, so a rejected or legacy value in one file does not
+	 * hide or outrank a value in another. Storage without layers can omit this; `withLock` content is then one layer.
+	 */
+	readLayers?(scope: SettingsScope): SettingsLayer[];
 }
 
 export interface SettingsError {

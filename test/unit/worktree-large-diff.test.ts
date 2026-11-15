@@ -49,6 +49,17 @@ function inBun<T>(
 	return JSON.parse(result.stdout) as T;
 }
 
+/**
+ * The numstat scenario's cost is its real git children (about 25 of them, on a 400-file change), which took up to 34 s
+ * on Windows with twenty suites running at once.
+ */
+const MANY_FILES_SCENARIO_TIMEOUT_MS = 60_000;
+/**
+ * Copying 200 included files runs about 400 git children (each path component is checked against the index), which
+ * took up to 55 s on Windows with twenty suites running at once.
+ */
+const INCLUDE_SCENARIO_TIMEOUT_MS = 120_000;
+
 type Runtime = "Node" | "Bun";
 const cases: Array<{ runtime: Runtime; module: WorktreeModule }> = [
 	{ runtime: "Node", module: "subagents" },
@@ -93,7 +104,9 @@ describe.each(cases)("$module worktrees under $runtime", ({ runtime, module }) =
 			);
 	});
 
-	test("a .worktreeinclude file is copied into a new worktree when the ignored files list to over 1 MiB (#4876)", () => {
+	test("a .worktreeinclude file is copied into a new worktree when the ignored files list to over 1 MiB (#4876)", {
+		timeout: INCLUDE_SCENARIO_TIMEOUT_MS,
+	}, () => {
 		const root = tempRoot();
 		const result =
 			runtime === "Node"
@@ -105,14 +118,17 @@ describe.each(cases)("$module worktrees under $runtime", ({ runtime, module }) =
 		assert.equal(result.notIncludedCopied, false, "an ignored file .worktreeinclude does not name stays out");
 	});
 
-	// Writing thousands of files is slow on Windows; the git runner and its buffer are the same under Bun.
+	// The git runner and its buffer are the same under Bun.
 	test.runIf(runtime === "Node")(
 		"a worktree change of so many files that its numstat is over 1 MiB is saved in full (#4876)",
-		{ timeout: 120_000 },
+		{ timeout: MANY_FILES_SCENARIO_TIMEOUT_MS },
 		() => {
 			const result = runManyFilesScenario(tempRoot(), module);
 			assert.ok(result.numstatBytes > 1024 * 1024, "the numstat is over the 1 MiB output cap");
-			assert.match(result.summary, /Task 1 \(many\): 9000 files changed, \+9000 -0/);
+			assert.match(
+				result.summary,
+				new RegExp(`Task 1 \\(many\\): ${MANY_FILES} files changed, \\+${MANY_FILES} -0`),
+			);
 			assert.equal(result.patchApplied, true, "the patch applies to a clean checkout");
 			assert.equal(result.filesRestored, MANY_FILES, "the patch restores every file");
 			assert.equal(result.worktreeRemoved, true, "the captured worktree is removed");

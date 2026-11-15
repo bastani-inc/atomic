@@ -83,6 +83,32 @@ const SELF_VALIDATED_SETTINGS: ReadonlySet<string> = new Set([
 	"streamDeadlineMs",
 ]);
 
+/**
+ * Drop the wrong-typed entries of a deprecated object form's list fields, such as `skills.customDirectories[0]`. Runs
+ * after {@link hasWrongTypedLegacyFields} accepted the value, so a legacy form is an object and each of its list fields
+ * is a list.
+ */
+function dropWrongTypedLegacyEntries(
+	setting: string,
+	schema: SchemaNode,
+	value: JsonValue,
+	invalid: InvalidSettingValue[],
+): void {
+	const legacy = schema.anyOf?.find((member) => member.deprecated)?.properties ?? {};
+	const fields = value as { [key: string]: JsonValue };
+	for (const [field, fieldSchema] of Object.entries(legacy)) {
+		const entries = fields[field];
+		if (!Array.isArray(entries)) continue;
+		const items = fieldSchema.items!;
+		fields[field] = entries.filter((item, index) => {
+			if (hasType(items, item)) return true;
+			const key = `${setting}.${field}[${index}]`;
+			invalid.push({ setting, key, expected: describe(items), actual: jsonTypeOf(item) });
+			return false;
+		});
+	}
+}
+
 function collect(
 	properties: Record<string, SchemaNode>,
 	settings: { [key: string]: JsonValue },
@@ -96,7 +122,10 @@ function collect(
 			delete settings[setting];
 			continue;
 		}
-		if (!Array.isArray(value)) continue;
+		if (!Array.isArray(value)) {
+			dropWrongTypedLegacyEntries(setting, schema, value, invalid);
+			continue;
+		}
 		const items = arrayItems(schema);
 		settings[setting] = value.filter((item, index) => {
 			if (hasType(items, item)) return true;
