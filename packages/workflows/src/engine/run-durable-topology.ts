@@ -12,7 +12,7 @@ import {
 	recordStageCheckpoint,
 } from "../durable/stage-primitive.js";
 import { durableStageCheckpointMetadata } from "../durable/stage-topology.js";
-import { promptOccurrenceIdentityError } from "../durable/stage-topology-validation.js";
+import { immutableStageGroupError, promptOccurrenceIdentityError } from "../durable/stage-topology-validation.js";
 import type {
 	DurableCheckpoint,
 	DurableStageCheckpoint,
@@ -243,10 +243,10 @@ export function createDurableCachedStageRecorder(input: {
 				);
 			}
 			const stage = input.store.run(input.run.id)?.stages.find((candidate) => candidate.replayKey === replayKey);
-			const persistence =
+			const replayRecord: DurableStageCheckpoint | undefined =
 				stage === undefined
 					? undefined
-					: input.backend.commitCheckpoint({
+					: {
 							kind: "stage",
 							workflowId: input.run.id,
 							checkpointId: `${STAGE_REPLAY_METADATA_CHECKPOINT_PREFIX}${durableHash({ replayKey, stageId: stage.id, parentIds: stage.parentIds })}`,
@@ -258,7 +258,18 @@ export function createDurableCachedStageRecorder(input: {
 								durableRunTopology(input.run),
 								sourceOrder ?? input.run.stages.findIndex((candidate) => candidate.id === stage.id),
 							),
-						});
+						};
+			// A replay of this run's own record must not record the stage differently: a pool rejects such a record, and
+			// the run could no longer be replayed or inspected from its records (#4888). A record from before stages kept
+			// their source order is not compared, as its replay records the order it lacks.
+			const drift =
+				replayRecord !== undefined &&
+				checkpoint.topology?.run?.runId === input.run.id &&
+				checkpoint.topology.sourceOrder !== undefined
+					? immutableStageGroupError([checkpoint, replayRecord])
+					: undefined;
+			if (drift !== undefined) throw new DurableNestedTopologyError(`${drift} at ${replayKey}`);
+			const persistence = replayRecord === undefined ? undefined : input.backend.commitCheckpoint(replayRecord);
 			for (const childRun of cachedDescendants ?? []) {
 				const existingRun = input.store.run(childRun.id);
 				const isDirectChild =

@@ -32,6 +32,7 @@ import {
 	type StageControlRegistry,
 } from "../runs/foreground/stage-control-registry.js";
 import { stageQueuedUserMessageCount } from "../runs/foreground/stage-queued-user-messages.js";
+import { serializeError } from "../shared/error-codec.js";
 import { StageUiBroker } from "../shared/stage-ui-broker.js";
 import { createStore, type Store } from "../shared/store.js";
 import type { RunSnapshot } from "../shared/store-types.js";
@@ -41,6 +42,7 @@ import { admittedSessionAdapter } from "./admission-binding.js";
 import { AttemptFence, endedAttemptRefusal } from "./attempt-fence.js";
 import { POOL_COORDINATOR_ROLE, type PoolCoordinatorStart } from "./coordinator-protocol.js";
 import { loadWorkerDefinition } from "./definitions.js";
+import { OUTAGE_HANDOFF_MS, refusedForAWhile, retryWithinLease } from "./lease-outage.js";
 import { poolWorkerCommit } from "./pool-commit.js";
 import { POOLED_CUSTOM_PROMPT_UNAVAILABLE } from "./pooled-prompt-limits.js";
 import { completedAttemptResult, remoteStageInbox, workerStageAdapter } from "./pooled-stage-delivery.js";
@@ -253,24 +255,30 @@ export async function openWorkerJournals(
 		durableSelection === undefined
 			? undefined
 			: await openDurableJournal(JSON.parse(durableSelection) as PoolDurableJournal);
-	const poolJournal =
-		start.journalPath === undefined ? durable : await resolveRunJournal({ journal: { path: start.journalPath } });
-	if (poolJournal === undefined)
-		throw new WorkerPlacementConfigError(
-			"env",
-			POOL_DURABLE_JOURNAL_ENV,
-			"invalid-option",
-			"a shared pool's worker needs it",
-		);
-	const storage = sqlPoolStorage(poolJournal)!;
-	const sessions =
-		start.journalPath === undefined
-			? await openPoolSessions(storage)
-			: await new StorageProvider().openSessionStore(
-					{ kind: "sqlite", path: start.journalPath, prefix: `${storage.tables.runs}_pool_` },
-					{ agentDir: "", domain: "sessions" },
-				);
-	return { journal: durable ?? poolJournal, poolJournal, sessions };
+	// Closed again when the rest fails, so a worker that tries again while the store is busy holds no extra connection.
+	try {
+		const poolJournal =
+			start.journalPath === undefined ? durable : await resolveRunJournal({ journal: { path: start.journalPath } });
+		if (poolJournal === undefined)
+			throw new WorkerPlacementConfigError(
+				"env",
+				POOL_DURABLE_JOURNAL_ENV,
+				"invalid-option",
+				"a shared pool's worker needs it",
+			);
+		const storage = sqlPoolStorage(poolJournal)!;
+		const sessions =
+			start.journalPath === undefined
+				? await openPoolSessions(storage)
+				: await new StorageProvider().openSessionStore(
+						{ kind: "sqlite", path: start.journalPath, prefix: `${storage.tables.runs}_pool_` },
+						{ agentDir: "", domain: "sessions" },
+					);
+		return { journal: durable ?? poolJournal, poolJournal, sessions };
+	} catch (error) {
+		await durable?.close().catch(() => {});
+		throw error;
+	}
 }
 
 /** Entry of every local worker process; the same module also runs a pool's coordinator. */
@@ -324,10 +332,21 @@ async function runWorker(start: WorkerStart): Promise<void> {
 	/** Set once the worker ends between children to give its memory back; the pool starts a fresh one (#4197). */
 	let recycled = false;
 	process.on("disconnect", () => process.exit(replies.rootLeaseLost || recycled || replies.retired ? 0 : 1));
-	const request = (message: Request, deliver?: WorkerDeliver, outageTolerant = false): Promise<WorkerReply["value"]> =>
+	const request = (
+		message: Request,
+		deliver?: WorkerDeliver,
+		outageTolerant = false,
+		attempt?: { readonly workId: string; readonly generation: number },
+	): Promise<WorkerReply["value"]> =>
 		new Promise((resolve, reject) => {
 			const id = ++sequence;
-			pending.set(id, { resolve, reject, deliver, ...(outageTolerant ? { outageTolerant } : {}) });
+			pending.set(id, {
+				resolve,
+				reject,
+				deliver,
+				...(outageTolerant ? { outageTolerant } : {}),
+				...(attempt === undefined ? {} : { attempt }),
+			});
 			process.send?.({ ...message, id }, (error) => {
 				if (error) reject(error);
 			});
@@ -336,7 +355,13 @@ async function runWorker(start: WorkerStart): Promise<void> {
 	const durableSelection = process.env[POOL_DURABLE_JOURNAL_ENV];
 	// Read once and removed, so the tools this worker starts do not inherit it.
 	delete process.env[POOL_DURABLE_JOURNAL_ENV];
-	const { journal, poolJournal, sessions } = await openWorkerJournals(start, durableSelection);
+	// A worker starting while other hosts keep the shared store's write lock busy waits for it, as an idle worker waits
+	// out an outage, instead of exiting with the child it was started for (#4768): its coordinator's startup timeout
+	// still bounds the wait.
+	const { journal, poolJournal, sessions } = await retryWithinLease(
+		() => openWorkerJournals(start, durableSelection),
+		() => true,
+	);
 	const journalReads = new Set(["descriptor", "getRun", "listRuns", "read", "readKey", "leaseState", "close"]);
 	const readOnlyJournal = new Proxy(journal, {
 		get(target, key) {
@@ -358,9 +383,67 @@ async function runWorker(start: WorkerStart): Promise<void> {
 	// The root holds the checkpoints of every child of the pool; the worker keeps only those of the child it runs.
 	await reader.retainCheckpoints(start.root, NO_CHECKPOINTS);
 	configurePooledWatchTrace(start.journalPath ?? join(process.cwd(), "shared-pool"), `worker:${process.pid}`);
+	/** Set when the held attempt ends because the store kept refusing it: the pool hands its child on, uncounted. */
+	let handoff = false;
+	/** The store's refusal the held attempt ended on, for the pool to name when the child runs out of attempts. */
+	let attemptFault: Error | undefined;
+	/** The held attempt while it may still commit: none once its writes are cut off (#4768). */
+	let writableAttempt: PoolWork | undefined;
+	/** When the held attempt's lease was last renewed, by `performance.now()`: at its claim, then by each heartbeat. */
+	let leaseRenewedAt = 0;
+	const leaseLeft = () => start.leaseMs !== undefined && performance.now() - leaseRenewedAt < start.leaseMs;
+	/**
+	 * A request of the held attempt that a storage refusal does not end while the attempt's lease lasts: it is sent
+	 * again (#4768). Past the lease, the refusal ends the attempt as fenced, as any refusal did before.
+	 */
+	const attemptRequest = async (message: Request): Promise<WorkerReply["value"]> => {
+		// A commit belongs to the attempt that may still write, which outlasts the worker's hold on it while a fenced
+		// attempt's stage sessions close and write their last entries; any other request belongs to the attempt held.
+		const owner = () => (message.kind === "commit" ? writableAttempt : heldAttempt);
+		const held = owner();
+		const attempt = held === undefined ? undefined : { workId: held.id, generation: held.generation };
+		// Every send, the first included, is for the attempt that made the request, while it is still that attempt's to
+		// make: an ended attempt's write never reaches its replay (#4768).
+		const current = () => held !== undefined && owner() === held;
+		try {
+			return await retryWithinLease(
+				() => {
+					if (!current())
+						return Promise.reject(new WorkAttemptFencedError(attempt ?? { workId: "", generation: 0 }));
+					return request(message, undefined, true, attempt);
+				},
+				() => current() && leaseLeft(),
+				`a ${message.kind} request`,
+				start.outageHandoffMs ?? OUTAGE_HANDOFF_MS,
+			);
+		} catch (error) {
+			if (
+				infrastructureFaultOf(error) !== "storage_unavailable" ||
+				heldAttempt === undefined ||
+				heldAttempt !== held
+			)
+				throw error;
+			replies.attemptFenced = true;
+			attemptFault = error as Error;
+			// The store refused it for a while past the handoff bound, within the lease: another host may get through,
+			// so the child goes there without spending one of its attempts. A refusal no host gets through, or one past the
+			// lease, ends the attempt as a counted failure that names the refusal (#4768).
+			if (refusedForAWhile(error) && leaseLeft()) handoff = true;
+			throw workerRefusal(error as Error, attempt).error;
+		}
+	};
 	const commit = poolWorkerCommit({
-		send: async (mutation) =>
-			(await request({ kind: "commit", operation: randomUUID(), mutation })) as unknown as PoolCommitReceipt,
+		// One operation for every send of a commit: one the storage took before its answer was lost is not applied twice.
+		send: async (mutation) => {
+			const operation = randomUUID();
+			const held = writableAttempt;
+			return (await attemptRequest({
+				kind: "commit",
+				operation,
+				mutation,
+				...(held === undefined ? {} : { attempt: { id: held.id, generation: held.generation } }),
+			})) as unknown as PoolCommitReceipt;
+		},
 		catchUp: () => reader.catchUpWorkflow(start.root),
 	});
 	const reads = new Set([
@@ -499,6 +582,9 @@ async function runWorker(start: WorkerStart): Promise<void> {
 				continue;
 			}
 			replies.attemptFenced = false;
+			handoff = false;
+			attemptFault = undefined;
+			leaseRenewedAt = performance.now();
 			if (!work) {
 				if (replies.retired) break;
 				await delay(25 + Math.random() * 25);
@@ -513,6 +599,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 			const controller = new AbortController();
 			activeController = controller;
 			heldAttempt = work;
+			writableAttempt = work;
 			const store = createStore();
 			// Every write of this attempt goes through here. Once the attempt is ended at the pool, none goes further: a
 			// fenced attempt's stage session still closing would otherwise write into the attempt this worker serves next.
@@ -633,16 +720,16 @@ async function runWorker(start: WorkerStart): Promise<void> {
 			// control reaches the attempt between heartbeats.
 			// A heartbeat the journal's outage refused keeps the attempt while its lease lasts; the next one that gets through
 			// renews it (#4768). Past the lease, another worker may hold the child, so the attempt ends as fenced.
-			let renewedAt = performance.now();
+			leaseRenewedAt = performance.now();
 			const heartbeat = startWorkerHeartbeat(start.heartbeatMs, async () => {
 				try {
 					offerControl(
 						(await request({ kind: "heartbeat", reports: usageReports() }, undefined, true)) as PoolControl,
 					);
-					renewedAt = performance.now();
+					leaseRenewedAt = performance.now();
 				} catch (error) {
 					if (infrastructureFaultOf(error) !== "storage_unavailable") return failPulse(error as Error);
-					if (start.leaseMs !== undefined && performance.now() - renewedAt < start.leaseMs) return;
+					if (leaseLeft()) return;
 					replies.attemptFenced = true;
 					failPulse(workerRefusal(error as Error, { workId: work.id, generation: work.generation }).error);
 				}
@@ -700,7 +787,8 @@ async function runWorker(start: WorkerStart): Promise<void> {
 				await control.settled();
 				await publication;
 				// The last heartbeat records the attempt's final usage before it ends, and reads whether the pool quits.
-				const finalControl = (await request({ kind: "heartbeat", reports: usageReports() })) as PoolControl;
+				const finalControl = (await attemptRequest({ kind: "heartbeat", reports: usageReports() })) as PoolControl;
+				leaseRenewedAt = performance.now();
 				if (finalControl.state === "quit") {
 					await request({ kind: "controlled", revision: finalControl.revision });
 					return;
@@ -717,7 +805,8 @@ async function runWorker(start: WorkerStart): Promise<void> {
 				// still closing after the bound writes nothing more: its writes would land in the attempt served next.
 				await closeAttemptStages(stageControls, store, closingHeartbeat, start.heartbeatMs);
 				writable = false;
-				await request({ kind: "complete", result: completedAttemptResult(result, store) });
+				writableAttempt = undefined;
+				await attemptRequest({ kind: "complete", result: completedAttemptResult(result, store) });
 			} catch (error) {
 				if (!replies.attemptFenced) throw error;
 				// Its new owner, if any, replays the child; this worker ends the attempt and serves the next one.
@@ -739,7 +828,27 @@ async function runWorker(start: WorkerStart): Promise<void> {
 				// their session permits go back before this worker serves the replay, instead of when the worker exits.
 				await closeAttemptStages(stageControls, store, closingHeartbeat, start.heartbeatMs);
 				writable = false;
-				await request(fence.request());
+				writableAttempt = undefined;
+				const ended = fence.request();
+				const message = {
+					...ended,
+					...(ended.fault === undefined && attemptFault !== undefined
+						? { fault: serializeError(attemptFault) }
+						: {}),
+					...(handoff ? { handoff: true as const } : {}),
+				};
+				// The pool records the attempt's end in the store. A store that refuses it, unreachable or busy, is waited
+				// out as an idle worker waits out an outage: the worker lives on and sends the end again, instead of exiting
+				// as if it had crashed (#4768).
+				for (;;) {
+					try {
+						await request(message);
+						break;
+					} catch (error) {
+						if (infrastructureFaultOf(error) !== "storage_unavailable" || replies.rootLeaseLost) throw error;
+						await delay(IDLE_OUTAGE_RETRY_MS);
+					}
+				}
 			}
 			attemptAdmission.release();
 			// The attempt's prompt reservations end with it: a replay asks its pending prompts again (#3996), and the

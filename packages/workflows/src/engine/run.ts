@@ -78,7 +78,11 @@ import {
 	recordActiveBlockedFailure,
 	selectRunFailureDisposition,
 } from "../runs/foreground/executor-lifecycle.js";
-import { assertWorkflowRunOutputs, normalizeWorkflowRunOutput } from "../runs/foreground/executor-outputs.js";
+import {
+	applyWorkflowOutputDefaults,
+	assertWorkflowRunOutputs,
+	normalizeWorkflowRunOutput,
+} from "../runs/foreground/executor-outputs.js";
 import { buildPromptNodeUiAdapter } from "../runs/foreground/executor-prompt-nodes.js";
 import { createRunFinalizers } from "../runs/foreground/executor-run-finalizers.js";
 import { createStageScheduler } from "../runs/foreground/executor-scheduler.js";
@@ -1625,7 +1629,7 @@ async function executeRun(
 		const quitDuringSuccess = observedQuitCancellation() ?? observedTaskTailQuit;
 		if (quitDuringSuccess !== undefined) return suspendForGracefulQuit(quitDuringSuccess);
 
-		const result = normalizeWorkflowRunOutput(def.name, rawResult);
+		const result = applyWorkflowOutputDefaults(normalizeWorkflowRunOutput(def.name, rawResult), def.outputs);
 		assertWorkflowRunOutputs(def.name, result, def.outputs);
 		assertWorkflowCreatedExecution(runSnapshot, eventPrimitives.opened);
 		while (scheduler.isRunPaused()) await waitForRunRelease();
