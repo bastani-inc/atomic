@@ -360,12 +360,10 @@ type ExecutionSchedule = ExecutionScheduler;
 const runSchedules = new Map<string, Map<number, ExecutionSchedule>>();
 let scheduleCount = 0;
 
-/** The scheduler the child's run dispatched it on, while this process has it and the child can still resume. */
-export function subagentChildSchedule(runId: string, index: number): ExecutionSchedule | undefined {
-	return runSchedules.get(runId)?.get(index);
-}
-
-/** A scheduler a child of the run still holds in this process: a woken or resumed sibling waits for its slots (#4856). */
+/**
+ * The scheduler a child of the run still holds in this process, the child's own or a sibling's: a woken or resumed child
+ * waits for its slots (#4856).
+ */
 export function subagentRunSchedule(runId: string): ExecutionSchedule | undefined {
 	return runSchedules.get(runId)?.values().next().value;
 }
@@ -886,7 +884,13 @@ export async function runAgentTask(input: {
 export function subagentTaskRegistrySizes(): {
 	readonly queued: number;
 	readonly schedules: number;
+	readonly scheduledRuns: number;
 	readonly closing: number;
 } {
-	return { queued: queuedChildren.size, schedules: scheduleCount, closing: closingChildren.size };
+	return {
+		queued: queuedChildren.size,
+		schedules: scheduleCount,
+		scheduledRuns: runSchedules.size,
+		closing: closingChildren.size,
+	};
 }

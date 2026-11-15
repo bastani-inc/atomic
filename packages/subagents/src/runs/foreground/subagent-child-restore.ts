@@ -72,7 +72,6 @@ import {
 	type QueuedSubagentChildStart,
 	runAgentTask,
 	subagentChildClosed,
-	subagentChildSchedule,
 	subagentRunSchedule,
 	takeStoppedQueuedSubagentChild,
 } from "./task-execution.js";
@@ -580,7 +579,6 @@ async function relaunchChild(
 	// child of the run holding one here, a new one under the run's recorded limit. The relaunch registers what it uses
 	// before anything else runs, so a sibling woken after it shares that one.
 	const schedule =
-		subagentChildSchedule(record.runId, record.index) ??
 		subagentRunSchedule(record.runId) ??
 		(record.runConcurrency === undefined ? undefined : createExecutionScheduler(record.runConcurrency));
 	if (!host) {
