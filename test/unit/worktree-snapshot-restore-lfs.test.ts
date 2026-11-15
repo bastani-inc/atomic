@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { cpSync, mkdirSync, readFileSync, readlinkSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterEach, beforeEach, describe, test, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, test, vi } from "vitest";
 import type { SpawnRequest } from "../helpers/worktree-snapshot-faults.js";
 
 /**
@@ -69,22 +69,47 @@ const asUrl = (path: string): string => pathToFileURL(path).href;
 
 const pulls = (): string[] => lfs.pulls.map((request) => gitCommand(request.args).slice(1).join(" "));
 
-/** Two remotes that both hold the repository and the LFS object of `data.bin`, and a snapshot that names them in this order. */
-async function lfsSnapshotWithTwoRemotes() {
-	await sandbox.git(sandbox.root, "lfs", "install", "--skip-repo");
-	const { clone, remote } = await sandbox.remoteWithClone("repo", {
+/**
+ * Two remotes that both hold the repository and the LFS object of `data.bin`, and a snapshot that names them in this
+ * order. Restores only read them, so the tests share one, built in its own sandbox.
+ */
+async function lfsSnapshotWithTwoRemotes(shared: GitSandbox) {
+	const version = await shared.git(shared.root, "lfs", "version").catch((error: unknown) => {
+		throw new Error(
+			`These tests need git-lfs on PATH, and it could not be started: ${String(error)}. Install it with \`git lfs install\` available, for example \`sudo apt-get install git-lfs\`.`,
+		);
+	});
+	assert.match(version, /^git-lfs\//);
+	await shared.git(shared.root, "lfs", "install", "--skip-repo");
+	const { clone, remote } = await shared.remoteWithClone("repo", {
 		".gitattributes": "*.bin filter=lfs -text\n",
 		"data.bin": "LFS-CONTENT-123\n",
 	});
-	await sandbox.git(clone, "lfs", "push", "--all", "origin");
-	const mirror = sandbox.path("mirror.git");
-	await sandbox.git(sandbox.root, "clone", "-q", "--bare", remote, mirror);
+	await shared.git(clone, "lfs", "push", "--all", "origin");
+	const mirror = shared.path("mirror.git");
+	await shared.git(shared.root, "clone", "-q", "--bare", remote, mirror);
 	cpSync(join(remote, "lfs"), join(mirror, "lfs"), { recursive: true });
-	sandbox.write(join(clone, "notes.txt"), "notes\n");
+	shared.write(join(clone, "notes.txt"), "notes\n");
 	const blobs = new MemorySnapshotBlobStore();
 	const snapshot = { ...(await capture(clone, blobs)), remotes: [remote, mirror] };
 	assert.deepEqual(snapshot.filters?.drivers, ["lfs"]);
 	return { blobs, snapshot, remote, mirror };
+}
+
+/** Building the shared remotes runs about a dozen git and git-lfs children, slow on a loaded Windows host. */
+const SHARED_REMOTES_TIMEOUT_MS = 90_000;
+let sharedSandbox: GitSandbox;
+let twoRemotes: Awaited<ReturnType<typeof lfsSnapshotWithTwoRemotes>>;
+beforeAll(async () => {
+	sharedSandbox = new GitSandbox();
+	twoRemotes = await lfsSnapshotWithTwoRemotes(sharedSandbox);
+}, SHARED_REMOTES_TIMEOUT_MS);
+afterAll(() => sharedSandbox.dispose());
+
+/** The shared remotes and snapshot, with the LFS filters a restore in this test's sandbox needs. */
+async function sharedLfsSnapshot() {
+	await sandbox.git(sandbox.root, "lfs", "install", "--skip-repo");
+	return twoRemotes;
 }
 
 async function restoreCollectingWarnings(snapshot: WorktreeSnapshot, blobs: MemorySnapshotBlobStore) {
@@ -99,7 +124,7 @@ async function restoreCollectingWarnings(snapshot: WorktreeSnapshot, blobs: Memo
 
 describe("LFS restore timings (#4748)", () => {
 	test("an LFS restore reports its download as the LFS phase of the checkout restore it runs in (#4748)", async () => {
-		const { blobs, snapshot } = await lfsSnapshotWithTwoRemotes();
+		const { blobs, snapshot } = await sharedLfsSnapshot();
 		fakeLfs([]);
 		const recorder = new ResumeTimingsRecorder();
 		await recorder.run(() =>
@@ -126,7 +151,7 @@ describe("LFS restore timings (#4748)", () => {
 
 describe("which remotes an LFS restore pulls from (#4245)", () => {
 	test("the first recorded remote that has the objects ends the search, and the pull names it after `--`", async () => {
-		const { blobs, snapshot, remote } = await lfsSnapshotWithTwoRemotes();
+		const { blobs, snapshot, remote } = await sharedLfsSnapshot();
 		fakeLfs([]);
 		const { warnings } = await restoreCollectingWarnings(snapshot, blobs);
 		assert.deepEqual(pulls(), [`pull -- ${asUrl(remote)}`]);
@@ -137,7 +162,7 @@ describe("which remotes an LFS restore pulls from (#4245)", () => {
 	});
 
 	test("a remote that fails is followed by the next one, in the recorded order, with no warning when it succeeds", async () => {
-		const { blobs, snapshot, remote, mirror } = await lfsSnapshotWithTwoRemotes();
+		const { blobs, snapshot, remote, mirror } = await sharedLfsSnapshot();
 		fakeLfs([asUrl(remote)]);
 		const { warnings } = await restoreCollectingWarnings(snapshot, blobs);
 		assert.deepEqual(pulls(), [`pull -- ${asUrl(remote)}`, `pull -- ${asUrl(mirror)}`]);
@@ -148,7 +173,7 @@ describe("which remotes an LFS restore pulls from (#4245)", () => {
 	});
 
 	test("when every remote fails the pointer files are reported once, after each remote was tried", async () => {
-		const { blobs, snapshot, remote, mirror } = await lfsSnapshotWithTwoRemotes();
+		const { blobs, snapshot, remote, mirror } = await sharedLfsSnapshot();
 		fakeLfs([asUrl(remote), asUrl(mirror)]);
 		const { restored, warnings } = await restoreCollectingWarnings(snapshot, blobs);
 		assert.deepEqual(pulls(), [`pull -- ${asUrl(remote)}`, `pull -- ${asUrl(mirror)}`]);
@@ -160,7 +185,7 @@ describe("which remotes an LFS restore pulls from (#4245)", () => {
 	});
 
 	test("a remote that is a URL, not a path, is handed to Git LFS exactly as recorded", async () => {
-		const { blobs, snapshot, remote } = await lfsSnapshotWithTwoRemotes();
+		const { blobs, snapshot, remote } = await sharedLfsSnapshot();
 		const url = "https://example.invalid/team/repo.git";
 		fakeLfs([asUrl(remote)]);
 		await restoreCollectingWarnings({ ...snapshot, remotes: [remote, url] }, blobs);
@@ -168,7 +193,7 @@ describe("which remotes an LFS restore pulls from (#4245)", () => {
 	});
 
 	test("the download can never wait for a person: no terminal prompt, and ssh runs in batch mode", async () => {
-		const { blobs, snapshot } = await lfsSnapshotWithTwoRemotes();
+		const { blobs, snapshot } = await sharedLfsSnapshot();
 		fakeLfs([]);
 		await restoreCollectingWarnings(snapshot, blobs);
 		const [pull] = lfs.pulls;
@@ -196,22 +221,7 @@ describe("which remotes an LFS restore pulls from (#4245)", () => {
 
 describe("restoring real Git LFS content (#4245)", () => {
 	test("a file stored in LFS on the remote is restored with its content, with no warning, and the tree verifies", async () => {
-		const version = await sandbox.git(sandbox.root, "lfs", "version").catch((error: unknown) => {
-			throw new Error(
-				`These tests need git-lfs on PATH, and it could not be started: ${String(error)}. Install it with \`git lfs install\` available, for example \`sudo apt-get install git-lfs\`.`,
-			);
-		});
-		assert.match(version, /^git-lfs\//);
-		await sandbox.git(sandbox.root, "lfs", "install", "--skip-repo");
-		const { clone } = await sandbox.remoteWithClone("repo", {
-			".gitattributes": "*.bin filter=lfs -text\n",
-			"data.bin": "LFS-CONTENT-123\n",
-		});
-		await sandbox.git(clone, "lfs", "push", "--all", "origin");
-		sandbox.write(join(clone, "notes.txt"), "unrelated edit\n");
-		const blobs = new MemorySnapshotBlobStore();
-		const snapshot = await capture(clone, blobs);
-		assert.deepEqual(snapshot.filters?.drivers, ["lfs"]);
+		const { blobs, snapshot } = await sharedLfsSnapshot();
 		const warnings: WorktreeRestoreWarning[] = [];
 		const restored = await restoreWorktree(snapshot, {
 			blobs,
@@ -227,32 +237,59 @@ describe("restoring real Git LFS content (#4245)", () => {
 	});
 });
 
-/** A repository whose `data.bin` is stored in LFS and pushed, edited in the worktree with only the edit's object pushed. */
-async function lfsEditedSnapshot(
+/**
+ * A repository in `owner` whose `data.bin` is stored in LFS and pushed, edited in the worktree with only the edit's
+ * object pushed. `edited` is its snapshot; `withNeverPushed` adds `fresh.bin`, whose object is never pushed.
+ */
+async function lfsEditedSnapshots(
+	owner: GitSandbox,
 	extra: Record<string, string> = {},
 	pushed: readonly string[] = [],
 	prepare: (clone: string) => void = () => {},
 ) {
-	await sandbox.git(sandbox.root, "lfs", "install", "--skip-repo");
-	const { clone } = await sandbox.remoteWithClone("repo", {
+	await owner.git(owner.root, "lfs", "install", "--skip-repo");
+	const { clone } = await owner.remoteWithClone("repo", {
 		".gitattributes": "*.bin filter=lfs -text\n",
 		"data.bin": "ORIGINAL-CONTENT\n",
 	});
-	await sandbox.git(clone, "lfs", "push", "--all", "origin");
-	sandbox.write(join(clone, "data.bin"), "EDITED-CONTENT\n");
-	for (const [file, content] of Object.entries(extra)) sandbox.write(join(clone, file), content);
+	await owner.git(clone, "lfs", "push", "--all", "origin");
+	owner.write(join(clone, "data.bin"), "EDITED-CONTENT\n");
+	for (const [file, content] of Object.entries(extra)) owner.write(join(clone, file), content);
 	prepare(clone);
-	await sandbox.git(clone, "add", "-A");
+	await owner.git(clone, "add", "-A");
 	const objects = ["EDITED-CONTENT\n", ...pushed].map(sha256);
-	await sandbox.git(clone, "lfs", "push", "--object-id", "origin", ...objects);
-	await sandbox.git(clone, "reset", "-q");
+	await owner.git(clone, "lfs", "push", "--object-id", "origin", ...objects);
+	await owner.git(clone, "reset", "-q");
 	const blobs = new MemorySnapshotBlobStore();
-	return { blobs, snapshot: await capture(clone, blobs) };
+	const edited = await capture(clone, blobs);
+	const withNeverPushed = async () => {
+		owner.write(join(clone, "fresh.bin"), "NEVER-PUSHED\n");
+		return capture(clone, blobs);
+	};
+	return { blobs, edited, withNeverPushed };
 }
 
+/** Building the edited repository runs about a dozen git and git-lfs children, slow on a loaded Windows host. */
+const EDITED_REPOSITORY_TIMEOUT_MS = 90_000;
+
 describe("restoring LFS files that changed since HEAD (#4245)", () => {
+	let editedSandbox: GitSandbox;
+	let editedBlobs: MemorySnapshotBlobStore;
+	let edited: WorktreeSnapshot;
+	let neverPushed: WorktreeSnapshot;
+	beforeAll(async () => {
+		editedSandbox = new GitSandbox();
+		const built = await lfsEditedSnapshots(editedSandbox);
+		editedBlobs = built.blobs;
+		edited = built.edited;
+		neverPushed = await built.withNeverPushed();
+	}, EDITED_REPOSITORY_TIMEOUT_MS);
+	afterAll(() => editedSandbox.dispose());
+	/** The filters a restore in this test's sandbox needs. */
+	beforeEach(() => sandbox.git(sandbox.root, "lfs", "install", "--skip-repo"));
+
 	test("an edited LFS file whose new object is on the remote is restored with its content and no LFS warning", async () => {
-		const { blobs, snapshot } = await lfsEditedSnapshot();
+		const [blobs, snapshot] = [editedBlobs, edited];
 		const { restored, warnings } = await restoreCollectingWarnings(snapshot, blobs);
 		assert.equal(readFileSync(join(restored.path, "data.bin"), "utf8"), "EDITED-CONTENT\n");
 		assert.deepEqual(
@@ -271,8 +308,11 @@ describe("restoring LFS files that changed since HEAD (#4245)", () => {
 		"fetched content that only starts like a pointer is content, and a link named like an LFS file is left alone (symbolic links need a privilege on Windows)",
 		async () => {
 			const lookalike = `${LFS_POINTER_PREFIX}\n`.padEnd(1024, "x");
-			const { blobs, snapshot } = await lfsEditedSnapshot({ "lookalike.bin": lookalike }, [lookalike], (clone) =>
-				symlinkSync("missing-target", join(clone, "link.bin")),
+			const { blobs, edited: snapshot } = await lfsEditedSnapshots(
+				sandbox,
+				{ "lookalike.bin": lookalike },
+				[lookalike],
+				(clone) => symlinkSync("missing-target", join(clone, "link.bin")),
 			);
 			const { restored, warnings } = await restoreCollectingWarnings(snapshot, blobs);
 			assert.equal(readFileSync(join(restored.path, "lookalike.bin"), "utf8"), lookalike);
@@ -285,7 +325,7 @@ describe("restoring LFS files that changed since HEAD (#4245)", () => {
 	);
 
 	test("a new LFS file whose object was never pushed stays a pointer, and only it is reported", async () => {
-		const { blobs, snapshot } = await lfsEditedSnapshot({ "fresh.bin": "NEVER-PUSHED\n" });
+		const [blobs, snapshot] = [editedBlobs, neverPushed];
 		const { restored, warnings } = await restoreCollectingWarnings(snapshot, blobs);
 		assert.equal(readFileSync(join(restored.path, "data.bin"), "utf8"), "EDITED-CONTENT\n");
 		assert.ok(readFileSync(join(restored.path, "fresh.bin"), "utf8").startsWith(LFS_POINTER_PREFIX));
