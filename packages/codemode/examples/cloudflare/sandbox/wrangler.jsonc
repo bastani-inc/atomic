@@ -1,6 +1,6 @@
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "pi-codemode-sandbox",
+	"name": "atomic-codemode-sandbox",
 	"main": "src/index.ts",
 	"compatibility_date": "2026-04-22",
 	// Reached only through Durable Object bindings, never over HTTP.

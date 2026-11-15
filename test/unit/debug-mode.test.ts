@@ -342,7 +342,8 @@ describe("reportDebug (#4360)", () => {
 				cutKeyBlock: ["seen -----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEA", "seen [redacted]"],
 				labelledKeyBlock: [
 					"key:\n-----BEGIN EC PRIVATE KEY-----\nMHcCAQEE\n-----END EC PRIVATE KEY-----",
-					"key: [redacted]",
+					// The whole block is redacted; its label keeps its own line, as no value runs past a line break (#5142).
+					"key:\n[redacted]",
 				],
 				publicKey: [
 					"-----BEGIN PUBLIC KEY-----\nMIIBIjANBg\n-----END PUBLIC KEY-----",
