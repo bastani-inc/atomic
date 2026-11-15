@@ -58,9 +58,7 @@ import {
 } from "./worktree-snapshot/pool.ts";
 import {
 	defaultWorktreeSnapshotStoreDir,
-	isDegradableRestoreFailure,
 	removeRestoredWorktree,
-	restoreDegradedWorktree,
 	restoreDegradedWorktreeAt,
 	restoreWorktree,
 	restoreWorktreeAt,
@@ -972,8 +970,9 @@ export async function resumeSessionWorktree(
 
 /**
  * Restores a pinned `snapshot` (#4922): exactly, else `work`, the latest snapshot of its partly restored worktree, as
- * well as this host can, calling `restoredWork` when it does, else the best state of `snapshot` itself, as
- * {@link restoreBestWorktree} does; else nothing, resolving `unrestored` with the exact restore's failure.
+ * well as this host can, calling `restoredWork` when it does; else nothing, resolving `unrestored` with the exact
+ * restore's failure. `work` shares `snapshot`'s remotes, so a commit a degraded restore of `snapshot` could fall back to
+ * is one a degraded restore of `work` falls back to as well.
  */
 async function restorePinnedWorktree(
 	snapshot: WorktreeSnapshot,
@@ -981,29 +980,16 @@ async function restorePinnedWorktree(
 	options: RestoreBestWorktreeOptions,
 	restoredWork: (work: WorktreeSnapshot) => void,
 ): Promise<BestWorktreeRestore> {
-	const { restore = restoreWorktree, restoreDegraded = restoreDegradedWorktree, candidates, ...shared } = options;
+	const { restore = restoreWorktree, restoreDegraded: _degraded, candidates: _candidates, ...shared } = options;
 	try {
 		const exact = await restore(snapshot, shared);
 		return { status: "restored", path: exact.path, warnings: exact.warnings ?? [] };
 	} catch (error) {
 		if (options.signal?.aborted || !isRecoverableRestoreFailure(error)) throw error;
 		const best = await restoreBestWorktree(work, options);
-		if (best.status === "restored") {
-			restoredWork(work);
-			return best;
-		}
-		if (isDegradableRestoreFailure(error)) {
-			try {
-				const degraded = await restoreDegraded(snapshot, error, {
-					...shared,
-					...(candidates === undefined ? {} : { candidates }),
-				});
-				return { status: "restored", ...degraded };
-			} catch (degradedError) {
-				if (options.signal?.aborted || !isRecoverableRestoreFailure(degradedError)) throw degradedError;
-			}
-		}
-		return { status: "unrestored", reason: error };
+		if (best.status === "unrestored") return { status: "unrestored", reason: error };
+		restoredWork(work);
+		return best;
 	}
 }
 

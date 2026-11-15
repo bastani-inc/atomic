@@ -9,6 +9,8 @@ import type { WorktreeSnapshotEntry } from "../src/core/session-manager.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import {
 	DEGRADED_RESTORE_RETENTION_DAYS,
+	degradedRestorePin,
+	describeWorktreeRestoreStatus,
 	discardDegradedRestore,
 	SessionWorktreeSnapshotRecorder,
 } from "../src/core/session-worktree-snapshots.js";
@@ -176,8 +178,11 @@ describe("a degraded resume keeps the snapshot it could not restore fully (#4922
 				(notice) => notice.type === "info" && notice.message.startsWith("Also applied the work done"),
 			),
 		);
+		assert.ok(onC.notices.some((notice) => notice.message.includes("(from-b.txt)")));
 		const recorded = onC.sessionManager.getLatestWorktreeSnapshots().get(c.to)!;
 		assert.notEqual(recorded.id, a.snapshot.id, "the merged worktree is recorded at once");
+		const stored = new Set(await onC.sessionManager.getSessionStore().snapshotBlobs!.listBlobHashes());
+		assert.ok(snapshotBlobHashes(recorded).every((hash) => stored.has(hash)));
 		assert.equal(snapshotEntries(onC.sessionManager).at(-1)?.degradedFrom, undefined);
 	});
 
@@ -204,6 +209,7 @@ describe("a degraded resume keeps the snapshot it could not restore fully (#4922
 			(notice) => notice.type === "warning" && notice.message.startsWith("Did not apply"),
 		);
 		assert.ok(warning?.message.includes(`git diff ${c.degradedWork!.base} ${c.degradedWork!.commit}`));
+		assert.ok(warning?.message.includes(`Commit ${c.degradedWork!.commit!.slice(0, 12)} `));
 	});
 
 	test("a resume that still cannot reach the snapshot continues from the partly restored worktree's work, keeping the pin (#4922)", async () => {
@@ -244,9 +250,15 @@ describe("a degraded resume keeps the snapshot it could not restore fully (#4922
 		sandbox.write(join(b.to, "kept.txt"), "kept on machine B\n");
 
 		assert.deepEqual(await discardDegradedRestore(onB.sessionManager, { settings, root: sandbox.path("other") }), []);
+		assert.deepEqual(
+			await discardDegradedRestore(onB.sessionManager, { settings: { ...settings, enabled: false } }),
+			[],
+		);
+		assert.ok(describeWorktreeRestoreStatus(onB.sessionManager, b.to), "the partial restore is still reported");
 		assert.deepEqual(await discardDegradedRestore(onB.sessionManager, { settings, root: b.to }), [b.to]);
 		const discarded = snapshotEntries(onB.sessionManager).at(-1)!;
 		assert.equal(discarded.degradedFrom, undefined);
+		assert.equal(describeWorktreeRestoreStatus(onB.sessionManager, b.to), undefined);
 		assert.ok(discarded.snapshot !== undefined, "the worktree's changed state is recorded");
 		await collectSnapshotGarbage(onB.sessionManager.getSessionStore().snapshotBlobs, { graceSeconds: 0 });
 
@@ -283,13 +295,28 @@ describe("a degraded resume keeps the snapshot it could not restore fully (#4922
 		assert.ok(snapshotBlobHashes(a.snapshot).every((hash) => !stored.has(hash)));
 
 		// Resume and capture count them on this machine's clock, from the partial restore.
+		const pin = degradedRestorePin(onB.sessionManager, b.to)!;
+		const work = snapshotEntries(onB.sessionManager).at(-1)!.snapshotId;
+		vi.useFakeTimers({
+			toFake: ["Date"],
+			now: Date.parse(pin.since) + (DEGRADED_RESTORE_RETENTION_DAYS - 1) * 24 * 60 * 60 * 1000,
+		});
+		assert.equal(
+			degradedRestorePin(onB.sessionManager, b.to)?.snapshotId,
+			a.snapshot.id,
+			"the pin stands a day short",
+		);
 		vi.useFakeTimers({
 			toFake: ["Date"],
 			now: Date.now() + (DEGRADED_RESTORE_RETENTION_DAYS + 1) * 24 * 60 * 60 * 1000,
 		});
 		cleanups.push(() => vi.useRealTimers());
 		const again = ready(await prepareSessionResume(onB.sessionManager, options("machine-b")));
-		assert.ok(again.notices.some((notice) => notice.message.includes("is no longer kept")));
+		const lapsed = again.notices.find((notice) => notice.message.includes("is no longer kept"));
+		assert.equal(lapsed?.type, "warning");
+		assert.ok(lapsed?.message.includes(pin.since.slice(0, 10)));
+		assert.ok(lapsed?.message.includes(`from snapshot ${work.slice(0, 12)}`));
+		assert.equal(degradedRestorePin(again.sessionManager, b.to), undefined);
 		assert.equal(again.sessionManager.getCwd(), b.to);
 		await runTurn(again.sessionManager, b.to);
 		assert.equal(snapshotEntries(again.sessionManager).at(-1)?.degradedFrom, undefined);
@@ -419,5 +446,30 @@ describe("a degraded resume keeps the snapshot it could not restore fully (#4922
 		assert.deepEqual([noBase.outcome, noBase.paths], ["unavailable", []]);
 		assert.match(noBase.reason ?? "", /no record of the partial restore/);
 		assert.equal(readFileSync(join(b.to, "from-b.txt"), "utf8"), "done on machine B\n");
+	});
+
+	test("a resume on the degraded machine continues in the worktree the session worked in, as it is (#4922)", async () => {
+		const a = await machineA();
+		const { onB, b } = await degradedTurnOnB(a.manager, a.snapshot, a.pushed, (worktree) =>
+			sandbox.write(join(worktree, "from-b.txt"), "done on machine B\n"),
+		);
+		const mappings = onB.sessionManager.getWorktreeRootMappings().length;
+
+		const again = ready(await prepareSessionResume(onB.sessionManager, options("machine-b")));
+
+		assert.equal(again.sessionManager.getCwd(), b.to);
+		assert.equal(again.sessionManager.getWorktreeRootMappings().length, mappings);
+		assert.deepEqual(
+			again.notices.filter((notice) => notice.type === "warning"),
+			[],
+		);
+		assert.equal(readFileSync(join(b.to, "from-b.txt"), "utf8"), "done on machine B\n");
+	});
+
+	test("discardDegradedRestore reports a worktree it cannot record (#4922)", async () => {
+		const a = await machineA();
+		const { onB, b } = await degradedTurnOnB(a.manager, a.snapshot, a.pushed);
+		rmSync(b.to, { recursive: true, force: true });
+		await assert.rejects(discardDegradedRestore(onB.sessionManager, { settings }), /not-a-repository|repository/);
 	});
 });
