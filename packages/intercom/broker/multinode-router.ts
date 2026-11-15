@@ -521,7 +521,7 @@ export class MultiNodeRouter {
 						const { childName, authorizedBy } = consumed;
 						const registration =
 							childName !== undefined && authorizedBy !== undefined ? { childName, authorizedBy } : undefined;
-						if (registration !== undefined && entry.lease === undefined) entry.rebind = registration;
+						if (entry.lease === undefined) entry.rebind = registration;
 						entry.unfinished = {
 							consume: consumed,
 							mark: insertedBy,
@@ -589,10 +589,10 @@ export class MultiNodeRouter {
 			...(consumed.capability === undefined ? {} : { capability: consumed.capability }),
 		};
 		if (this.presence.get(session) !== entry) return ownOnly;
+		// A retried consume ends the same reservations: the mark is read once, as the registration began.
 		const { mark } = unfinished;
 		if (mark === undefined) return consumed;
 		try {
-			// A retried consume ends the same reservations: the mark is read once, as the registration began.
 			const insertedBy = await mark;
 			unfinished.consume = { ...consumed, insertedBy };
 		} catch (error) {

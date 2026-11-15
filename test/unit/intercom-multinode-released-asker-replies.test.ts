@@ -1988,6 +1988,7 @@ describe("an ask to a subagent that is then released keeps waiting for it across
 			assert.deepEqual(deliveredTo(), [], "nothing takes the queued message before the renewal");
 			vi.advanceTimersByTime(BROKER_LEASE_RENEW_INTERVAL_MS);
 			await vi.waitFor(() => assert.equal(deliveredTo().length, 1), waitFor);
+			assert.deepEqual(vi.mocked(console.error).mock.calls, [], "the takeover reports no error");
 		} finally {
 			vi.useRealTimers();
 		}
