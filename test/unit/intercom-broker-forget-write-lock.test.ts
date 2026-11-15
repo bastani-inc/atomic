@@ -122,6 +122,16 @@ async function connectedPair(label: string) {
 	return { owner, recipient, send };
 }
 
+/** Whether the broker's durable delivered-message authority still holds a record for `messageId`. */
+function deliveredRecordExists(messageId: string): boolean {
+	const database = new DatabaseSync(getBrokerDeliveredMessagesPath(agentDir));
+	try {
+		return database.prepare("SELECT 1 FROM delivered_messages WHERE message_id = ?").get(messageId) !== undefined;
+	} finally {
+		database.close();
+	}
+}
+
 async function assertBrokerAlive(): Promise<void> {
 	assert.equal(broker?.exitCode, null, `the broker stays up: ${brokerOutput}`);
 	const probe = new IntercomClient("forget-lock-probe");
@@ -164,9 +174,17 @@ test("a recipient that disconnects while its delete is locked does not end the b
 	const result = await send("disconnect-notice");
 	assert.equal(result.delivered, false);
 	assert.match(result.reason ?? "", /disconnected/);
+	assert.match(brokerOutput, /could not forget delivered message disconnect-notice/);
+	assert.equal(deliveredRecordExists("disconnect-notice"), true, "the locked delete has not landed yet");
 	releaseLock();
 	await assertBrokerAlive();
-});
+	// Nothing retries this message ID, so the broker's own retry removes the stale reservation.
+	const deadline = Date.now() + 15_000;
+	while (deliveredRecordExists("disconnect-notice") && Date.now() < deadline) {
+		await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
+	}
+	assert.equal(deliveredRecordExists("disconnect-notice"), false, "the failed delete is retried until it lands");
+}, 60_000);
 
 test("an acknowledgment timeout whose delete is locked does not end the broker (#5096)", async () => {
 	const { recipient, send } = await connectedPair("timeout");

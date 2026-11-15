@@ -159,11 +159,11 @@ const SOCKET_REPLACEMENT_LOCK_PATH = getBrokerSocketReplacementLockPath();
 
 const PENDING_STAGE_MESSAGE_TIMEOUT_MS = 10_000;
 /**
- * #5096: delays before retrying a delivered-message delete that failed, e.g. while another broker held the write
- * lock. Each attempt can block for the database busy timeout, so a lock that stays held is retried ever more rarely.
+ * #5096: delay before retrying a delivered-message delete that failed, e.g. while another broker held the write lock.
+ * Each attempt can block for the database busy timeout, so a retry waits at least that long and leaves the broker
+ * time to send the outcomes it owes (a departure's are sent only once its asks are saved).
  */
-const PENDING_FORGET_RETRY_MS = 1_000;
-const PENDING_FORGET_MAX_RETRY_MS = 30_000;
+const PENDING_FORGET_RETRY_MS = 5_000;
 const LISTEN_ATTEMPTS = 5;
 const LISTEN_RETRY_DELAY_MS = 100;
 const SOCKET_OWNERSHIP_CHECK_MS = 1_000;
@@ -451,7 +451,6 @@ class IntercomBroker {
   /** #5096: reservations whose delete failed, by message ID, retried until the delete lands. */
   private pendingForgets = new Map<string, string>();
   private pendingForgetTimer: NodeJS.Timeout | null = null;
-  private pendingForgetDelayMs = PENDING_FORGET_RETRY_MS;
 
   /**
    * Remove a reservation after a proven non-delivery without letting a failed delete escape (#5096).
@@ -459,20 +458,19 @@ class IntercomBroker {
    * `forget` is a durable SQLite DELETE that throws while another connection holds the write lock or the disk fails.
    * Its callers include timer callbacks and socket close handlers, where a throw is an uncaughtException that ends
    * the broker, and outcome paths whose sender must still hear `delivery_failed`. A failed delete is logged and
-   * retried later, so a stale reservation does not keep refusing the sender's retry as uncertain.
+   * retried later, so a stale reservation does not keep refusing the sender's retry as uncertain. Callers write the
+   * sender's outcome first, so it is not held behind the database busy timeout; the sender's retry is handled only
+   * after this synchronous delete, and a failed one is retried before the ID is looked up again.
    */
   private forgetDelivered(messageId: string, signature: string): void {
-    const alreadyPending = this.pendingForgets.get(messageId) === signature;
     this.pendingForgets.delete(messageId);
     try {
       this.deliveredMessages.forget(messageId, signature);
     } catch (error) {
       this.pendingForgets.set(messageId, signature);
-      if (!alreadyPending) {
-        console.error(
-          `Intercom broker could not forget delivered message ${messageId}; retrying: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
+      console.error(
+        `Intercom broker could not forget delivered message ${messageId}; retrying: ${error instanceof Error ? error.message : String(error)}`,
+      );
       this.schedulePendingForgets();
     }
   }
@@ -485,13 +483,10 @@ class IntercomBroker {
 
   private schedulePendingForgets(): void {
     if (this.pendingForgetTimer !== null || this.shuttingDown) return;
-    const delay = this.pendingForgetDelayMs;
     this.pendingForgetTimer = setTimeout(() => {
       this.pendingForgetTimer = null;
-      this.pendingForgetDelayMs = Math.min(delay * 2, PENDING_FORGET_MAX_RETRY_MS);
       for (const messageId of [...this.pendingForgets.keys()]) this.retryPendingForget(messageId);
-      if (this.pendingForgets.size === 0) this.pendingForgetDelayMs = PENDING_FORGET_RETRY_MS;
-    }, delay);
+    }, PENDING_FORGET_RETRY_MS);
     this.pendingForgetTimer.unref?.();
   }
   private supervisorChannel = new SupervisorChannelCache();
@@ -1630,13 +1625,13 @@ class IntercomBroker {
 		}
 		if (!writeMessageIfOpen(target.socket, frame)) {
 			if (confirmsSaves) this.receipts.drop(pending.messageId);
-			if (reservation === "recorded") this.forgetDelivered(pending.messageId, pending.signature);
 			writeMessageIfOpen(pending.senderSocket, {
 				type: "delivery_failed",
 				messageId: pending.messageId,
 				...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
 				reason: "Session not found",
 			});
+			if (reservation === "recorded") this.forgetDelivered(pending.messageId, pending.signature);
 			return;
 		}
 		if (!confirmsSaves) finish(target, sender);
@@ -1828,13 +1823,13 @@ class IntercomBroker {
 			const pending = this.pendingStageNotificationAcknowledgments.get(requestId);
 			if (pending === undefined) return;
 			this.pendingStageNotificationAcknowledgments.delete(requestId);
-			this.forgetDelivered(pending.messageId, pending.signature);
 			this.failPendingStageNotification(
 				pending.senderSocket,
 				pending.messageId,
 				pending.attemptId,
 				"Recipient did not acknowledge the pending-stage notification",
 			);
+			this.forgetDelivered(pending.messageId, pending.signature);
 		}, PENDING_STAGE_MESSAGE_TIMEOUT_MS);
 		this.pendingStageNotificationAcknowledgments.set(requestId, {
 			ownerSessionId: currentId,
@@ -1886,13 +1881,13 @@ class IntercomBroker {
 		clearTimeout(pending.timeout);
 		this.pendingStageNotificationAcknowledgments.delete(requestId);
 		if (!delivered) {
-			this.forgetDelivered(pending.messageId, pending.signature);
 			this.failPendingStageNotification(
 				pending.senderSocket,
 				pending.messageId,
 				pending.attemptId,
 				"Recipient did not admit the pending-stage notification",
 			);
+			this.forgetDelivered(pending.messageId, pending.signature);
 			return;
 		}
 		let accepted: ReturnType<DeliveredMessageCache["accept"]>;
@@ -3663,14 +3658,15 @@ class IntercomBroker {
 		if (pending.ownerSessionId !== sessionId && pending.recipientSessionId !== sessionId) continue;
 		clearTimeout(pending.timeout);
 		this.pendingStageNotificationAcknowledgments.delete(requestId);
+		if (pending.ownerSessionId !== sessionId) {
+			this.failPendingStageNotification(
+				pending.senderSocket,
+				pending.messageId,
+				pending.attemptId,
+				"Recipient disconnected before acknowledging the pending-stage notification",
+			);
+		}
 		this.forgetDelivered(pending.messageId, pending.signature);
-		if (pending.ownerSessionId === sessionId) continue;
-		this.failPendingStageNotification(
-			pending.senderSocket,
-			pending.messageId,
-			pending.attemptId,
-			"Recipient disconnected before acknowledging the pending-stage notification",
-		);
 	}
 	for (const [target, registration] of this.liveWorkflowStageRoutes) {
 		if (registration.sessionId === sessionId) this.liveWorkflowStageRoutes.delete(target);
