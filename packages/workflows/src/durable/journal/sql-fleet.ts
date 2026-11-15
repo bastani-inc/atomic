@@ -13,6 +13,13 @@ const STORE_NOW = "CAST(unixepoch('subsec') * 1000 AS INTEGER)";
 /** How long after its last report a registered worker host still counts as live: six of its 5 s reports. */
 export const FLEET_HOST_LIVE_MS = 30_000;
 
+/**
+ * How long after a drain request a controller may remove an instance whose host is still in the registry but holds no
+ * unexpired lease (#5072): a host that drained leaves the registry on its own, so this only bounds the wait for one that
+ * crashed or stalled mid-drain. Its workers claim nothing meanwhile, since claims check the drain.
+ */
+export const FLEET_DRAIN_TIMEOUT_MS = 300_000;
+
 /** Fleet events kept: older ones are deleted as new ones are recorded. */
 export const FLEET_EVENTS_KEPT = 1_000;
 
@@ -61,12 +68,30 @@ export interface FleetRegisteredHost {
 	readonly leased: number;
 }
 
+export interface FleetDrain {
+	readonly host: string;
+	readonly providerId?: string;
+	/** How long ago, by the database's clock, it was requested. */
+	readonly agoMs: number;
+}
+
 export interface FleetSnapshot {
 	readonly roots: readonly FleetRootRow[];
 	readonly hosts: readonly FleetRegisteredHost[];
-	readonly drains: readonly { readonly host: string; readonly providerId?: string }[];
-	/** Children held by each worker host id, registered or not. */
+	readonly drains: readonly FleetDrain[];
+	/**
+	 * Children held by each worker host id, registered or not. Work whose own lease and whose root's lease both expired
+	 * is left out (#5072): its root died, and nothing will run or settle it until the root resumes.
+	 */
 	readonly leased: ReadonlyMap<string, number>;
+}
+
+/**
+ * A leased row of `w` that may still be running: its work lease has not expired, or its root (lease `l`, pool `p`) still
+ * renews its own (#5072). A row missing its root's lease or pool counts.
+ */
+function liveLease(): string {
+	return `(w.expires_at >= ${STORE_NOW} OR l.renewed_at IS NULL OR p.timeout IS NULL OR ${STORE_NOW} - l.renewed_at <= p.timeout)`;
 }
 
 async function tableExists(executor: SqliteExecutor, name: string): Promise<boolean> {
@@ -84,7 +109,7 @@ async function rootDemand(executor: SqliteExecutor, storage: SqlPoolStorage): Pr
 		`SELECT s.root, s.config,
 		(s.budget_blocked = 1 OR r.status != 'running' OR ${STORE_NOW} - l.renewed_at > p.timeout) AS blocked,
 		(SELECT COUNT(*) FROM ${runs}_work w WHERE w.root = s.root AND w.state = 'ready') AS ready,
-		(SELECT COUNT(*) FROM ${runs}_work w WHERE w.root = s.root AND w.state = 'leased') AS leased
+		(SELECT COUNT(*) FROM ${runs}_work w WHERE w.root = s.root AND w.state = 'leased' AND ${liveLease()}) AS leased
 		FROM ${runs}_pool_shared s JOIN ${runs} r ON r.run_id = s.root
 		JOIN ${storage.tables.leases} l ON l.run_id = s.root AND l.epoch = s.epoch
 		JOIN ${runs}_pool p ON p.root = s.root
@@ -232,13 +257,15 @@ export class SqlFleetStore {
 
 	/**
 	 * Asks the registered host `host` to drain, under `fence`, only if it holds no child now: a host that took one since
-	 * the controller looked is left serving. Returns whether it was asked.
+	 * the controller looked is left serving. Work whose lease and root's lease both expired does not count (#5072). Returns whether it was asked.
 	 */
 	async requestDrain(fence: FleetFence, host: string, providerId: string): Promise<boolean> {
 		return this.storage.transaction(async (tx) => {
 			// A journal whose pool never queued work has no work table, and no lease.
 			const idle = (await tableExists(tx, `${this.runs}_work`))
-				? `AND NOT EXISTS (SELECT 1 FROM ${this.runs}_work WHERE state = 'leased' AND substr(worker, 1, length(?) + 1) = ? || '/')`
+				? `AND NOT EXISTS (SELECT 1 FROM ${this.runs}_work w LEFT JOIN ${this.storage.tables.leases} l ON l.run_id = w.root
+					LEFT JOIN ${this.runs}_pool p ON p.root = w.root
+					WHERE w.state = 'leased' AND substr(w.worker, 1, length(?) + 1) = ? || '/' AND ${liveLease()})`
 				: "AND ? IS NOT NULL AND ? IS NOT NULL";
 			const asked = await tx.run(
 				`INSERT INTO ${this.drains}(host, provider_id, requested_at) SELECT ?, ?, ${STORE_NOW}
@@ -283,6 +310,45 @@ export class SqlFleetStore {
 		);
 	}
 
+	/**
+	 * Whether a boot timeout planned from `known`, the registry hosts of an older snapshot, may still remove the instance
+	 * `providerId`, whose host the provider may name `host` (#5072). A host on it that registered since or reported
+	 * within {@link FLEET_HOST_LIVE_MS}, or that holds a live lease, makes it `occupied`; one that started draining makes
+	 * it `draining`, since the drain the controller wrote reached it. The stale row of a worker that died after it
+	 * registered, holding nothing, leaves it `free`.
+	 */
+	async bootHold(
+		providerId: string,
+		host: string | undefined,
+		known: ReadonlySet<string>,
+	): Promise<"free" | "occupied" | "draining"> {
+		const hosts = `${this.runs}_pool_hosts`;
+		return this.storage.read(async (executor) => {
+			if (!(await tableExists(executor, hosts))) return "free";
+			const rows = await executor.all<SqliteRow & { host: string; draining: number; ago: number }>(
+				`SELECT host, draining, ${STORE_NOW} - heartbeat_at AS ago FROM ${hosts} WHERE provider_id = ? OR host = ?`,
+				providerId,
+				host ?? null,
+			);
+			if (rows.some((row) => Number(row.draining) === 1)) return "draining";
+			if (rows.some((row) => !known.has(row.host) || Number(row.ago) <= FLEET_HOST_LIVE_MS)) return "occupied";
+			const holders = new Set(rows.map((row) => row.host));
+			if (host !== undefined) holders.add(host);
+			for (const holder of holders)
+				if (
+					(await executor.get(
+						`SELECT 1 AS held FROM ${this.runs}_work w LEFT JOIN ${this.storage.tables.leases} l ON l.run_id = w.root
+						LEFT JOIN ${this.runs}_pool p ON p.root = w.root
+						WHERE w.state = 'leased' AND substr(w.worker, 1, length(?) + 1) = ? || '/' AND ${liveLease()} LIMIT 1`,
+						holder,
+						holder,
+					)) !== undefined
+				)
+					return "occupied";
+			return "free";
+		});
+	}
+
 	/** The latest events, newest last. */
 	async recent(limit: number): Promise<readonly FleetEvent[]> {
 		const rows = await this.storage.read((executor) =>
@@ -310,15 +376,21 @@ export class SqlFleetStore {
 		const runs = this.runs;
 		return this.storage.read(async (executor) => {
 			const drains = (
-				await executor.all<SqliteRow & { host: string; provider_id: string | null }>(
-					`SELECT host, provider_id FROM ${this.drains} ORDER BY host`,
+				await executor.all<SqliteRow & { host: string; provider_id: string | null; ago: number }>(
+					`SELECT host, provider_id, ${STORE_NOW} - requested_at AS ago FROM ${this.drains} ORDER BY host`,
 				)
-			).map((row) => ({ host: row.host, ...(row.provider_id === null ? {} : { providerId: row.provider_id }) }));
+			).map((row) => ({
+				host: row.host,
+				...(row.provider_id === null ? {} : { providerId: row.provider_id }),
+				agoMs: Number(row.ago),
+			}));
 			if (!(await tableExists(executor, `${runs}_pool_shared`)))
 				return { roots: [], hosts: [], drains, leased: new Map() };
 			const roots = await rootDemand(executor, this.storage);
 			const leases = await executor.all<SqliteRow & { worker: string; count: number }>(
-				`SELECT worker, COUNT(*) AS count FROM ${runs}_work WHERE state = 'leased' GROUP BY worker`,
+				`SELECT w.worker, COUNT(*) AS count FROM ${runs}_work w
+				LEFT JOIN ${this.storage.tables.leases} l ON l.run_id = w.root LEFT JOIN ${runs}_pool p ON p.root = w.root
+				WHERE w.state = 'leased' AND ${liveLease()} GROUP BY w.worker`,
 			);
 			const heldBy = new Map<string, number>();
 			for (const row of leases) {

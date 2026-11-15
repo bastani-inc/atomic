@@ -20,7 +20,9 @@ import {
 	WorkspaceRestoreUnavailableError,
 	workspaceBindingIdentity,
 } from "../../packages/workflows/src/workers/placement-errors.js";
+import { sharedSelectionProblems } from "../../packages/workflows/src/workers/shared-setup.js";
 import type { WorkspaceBinding } from "../../packages/workflows/src/workers/workspace-binding.js";
+import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 /** A #3109 bound workspace carries more than the binding's identity: its branch, among others. */
 const binding: WorkspaceBinding & { readonly branch: string } = {
@@ -552,4 +554,39 @@ test("an error carries only what it was given: no cause own property without one
 	);
 	const staleCopy = acrossProcesses(stale) as StaleStageLeaseError;
 	assert.equal((staleCopy.cause as Error).message, "lease taken");
+});
+
+test("an unloadable adapter's install hint names the package for its database URL's scheme (#5113)", () => {
+	for (const [url, adapter] of [
+		["postgres://atomic@db.example.com/atomic", "@bastani/atomic-storage-postgres"],
+		["postgresql://atomic@db.example.com/atomic", "@bastani/atomic-storage-postgres"],
+		["libsql://pool.example.turso.io", "@bastani/atomic-storage-libsql"],
+		["https://pool.example.com", "@bastani/atomic-storage-libsql"],
+	] as const)
+		assert.equal(
+			sharedPoolProblems.adapterUnavailable("adapter", url).hint,
+			`Install it with \`atomic install npm:${adapter}\`, or fix the adapter path.`,
+			url,
+		);
+});
+
+test("a shared journal's setup check names the adapter package for the selection's URL, and libSQL's without one (#5113)", async () => {
+	const agentDir = makeTempDirectory("placement-5113-");
+	try {
+		const hints = async (options?: { readonly url: string }) =>
+			(
+				await sharedSelectionProblems(
+					{ kind: "adapter", module: "./missing-adapter.js", ...(options === undefined ? {} : { options }) },
+					agentDir,
+				)
+			).map((problem) => problem.hint);
+		assert.deepEqual(await hints({ url: "postgresql://atomic@db.example.com/atomic" }), [
+			"Install it with `atomic install npm:@bastani/atomic-storage-postgres`, or fix the adapter path.",
+		]);
+		assert.deepEqual(await hints(), [
+			"Install it with `atomic install npm:@bastani/atomic-storage-libsql`, or fix the adapter path.",
+		]);
+	} finally {
+		removeTempDirectory(agentDir);
+	}
 });
