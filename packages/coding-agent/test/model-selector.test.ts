@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import type { ModelsRefreshResult } from "@bastani/pi-ai";
-import { setKeybindings, type TUI } from "@earendil-works/pi-tui";
+import type { ModelsRefreshResult } from "@bastani/atomic-ai";
+import { setKeybindings, type TUI } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import { resolveCliModel } from "../src/core/model-resolver-cli.js";

@@ -1,4 +1,4 @@
-import type { Usage } from "@bastani/pi-ai";
+import type { Usage } from "@bastani/atomic-ai";
 import type { AgentSessionEvent } from "../core/agent-session.js";
 
 type WithoutPartial<T> = T extends { partial: unknown } ? Omit<T, "partial"> : T;

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { AssistantMessage } from "@bastani/pi-ai/compat";
+import type { AssistantMessage } from "@bastani/atomic-ai/compat";
 import { describe, it } from "vitest";
 import {
 	applyAssistantMessageDelta,

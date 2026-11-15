@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { AssistantMessage } from "@bastani/pi-ai/compat";
+import type { AssistantMessage } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentSession } from "../../src/core/agent-session.ts";
 import { MAX_OUTPUT_BUDGET_ERROR_CONTINUATION_ATTEMPTS } from "../../src/core/agent-session-auto-compaction.ts";

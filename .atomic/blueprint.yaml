@@ -31,9 +31,9 @@ knowledge:
       suites load the built packages.
   - name: build
     contents: |
-      `npm run build` (scripts/build.mjs) builds @bastani/pi-ai (fetching models.dev and the other
-      provider catalogs), aliases @earendil-works/pi-ai onto it, builds the native N-API module and
-      builds @bastani/atomic. It is incremental: each step is skipped while its inputs (sources,
+      `npm run build` (scripts/build.mjs) builds the forked pi packages in dependency order
+      (@bastani/atomic-schema, -telemetry, -ai, fetching models.dev and the other provider catalogs,
+      then -tui, -agent-core and -codemode), builds the native N-API module and builds @bastani/atomic. It is incremental: each step is skipped while its inputs (sources,
       lockfile, toolchain version, relevant environment) and outputs match its stamp in
       node_modules/.cache/atomic-build, so a rebuild with nothing changed takes well under a second.
       The fetched model catalog snapshot is reused for 24 hours unless packages/ai changes.

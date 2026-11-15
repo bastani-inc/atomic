@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { test, vi } from "vitest";
 import { waitingUntilSettled } from "../src/core/agent-session-tasks.js";
 import type { OperationId, TaskId, WaitId, WaitOutcome, YieldReason } from "../src/core/tasks/contracts.js";

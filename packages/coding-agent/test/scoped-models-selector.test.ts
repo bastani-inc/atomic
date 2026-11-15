@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { CURSOR_MARKER, setKeybindings } from "@earendil-works/pi-tui";
+import { CURSOR_MARKER, setKeybindings } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { KeybindingsManager, useWindowsKeybindings } from "../src/core/keybindings.js";
 import { ScopedModelsSelectorComponent } from "../src/modes/interactive/components/scoped-models-selector.ts";

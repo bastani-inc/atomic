@@ -15,7 +15,7 @@
  */
 
 import assert from "node:assert/strict";
-import { Container, visibleWidth } from "@earendil-works/pi-tui";
+import { Container, visibleWidth } from "@bastani/atomic-tui";
 import { test } from "vitest";
 import type { ExtensionUIContext } from "../../packages/coding-agent/src/core/extensions/index.ts";
 import type { CustomMessage } from "../../packages/coding-agent/src/core/messages.ts";

@@ -1,4 +1,4 @@
-import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { ThinkingLevel } from "@bastani/atomic-agent-core";
 import type { DefaultProjectTrust } from "../../../core/settings-manager.ts";
 
 export const THINKING_DESCRIPTIONS: Record<ThinkingLevel, string> = {

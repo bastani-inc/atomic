@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
-import type { AutocompleteProvider } from "@earendil-works/pi-tui";
+import type { AutocompleteProvider } from "@bastani/atomic-tui";
 import { beforeAll, test, vi } from "vitest";
 import type { AuthStatus } from "../src/core/provider-composer.ts";
 import type { OAuthSelectorComponent } from "../src/modes/interactive/components/oauth-selector.ts";

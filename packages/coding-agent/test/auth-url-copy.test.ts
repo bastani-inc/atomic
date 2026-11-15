@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { setKeybindings, type TUI } from "@earendil-works/pi-tui";
+import { setKeybindings, type TUI } from "@bastani/atomic-tui";
 import { beforeAll, beforeEach, describe, test, vi } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.js";
 import { McpManagerView } from "../src/extensions/mcp/ui.js";

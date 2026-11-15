@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { type Context, fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
+import { type Context, fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { afterEach, test, vi } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.js";

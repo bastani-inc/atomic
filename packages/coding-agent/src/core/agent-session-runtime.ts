@@ -1,9 +1,9 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { existsSync } from "node:fs";
 import { dirname } from "node:path";
-import { type AuthInteraction, drainPendingOAuthRotations, OAUTH_SHUTDOWN_DRAIN_MS } from "@bastani/pi-ai";
-import { type Api, type Model, modelsAreEqual } from "@bastani/pi-ai/compat";
-import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { ThinkingLevel } from "@bastani/atomic-agent-core";
+import { type AuthInteraction, drainPendingOAuthRotations, OAUTH_SHUTDOWN_DRAIN_MS } from "@bastani/atomic-ai";
+import { type Api, type Model, modelsAreEqual } from "@bastani/atomic-ai/compat";
 import { resolvePath } from "../utils/paths.ts";
 import { AgentRehydrateError, isLocalOnlySessionStorage } from "./agent-rehydrate-errors.ts";
 import type { AgentSession } from "./agent-session.js";

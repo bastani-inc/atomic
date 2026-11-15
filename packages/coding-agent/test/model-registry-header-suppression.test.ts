@@ -1,4 +1,4 @@
-import type { Api, Model } from "@bastani/pi-ai";
+import type { Api, Model } from "@bastani/atomic-ai";
 import { describe, expect, it } from "vitest";
 import { ModelRegistry } from "../src/core/model-registry.ts";
 import { fakeModelRuntime } from "./model-runtime-test-utils.ts";

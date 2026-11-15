@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import type { Model } from "@bastani/pi-ai/compat";
-import { getBuiltinModels, getBuiltinProviders } from "@bastani/pi-ai/providers/all";
+import type { Model } from "@bastani/atomic-ai/compat";
+import { getBuiltinModels, getBuiltinProviders } from "@bastani/atomic-ai/providers/all";
 import { describe, expect, test, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.js";
 import { ModelRegistry } from "../src/core/model-registry.js";
@@ -444,7 +444,7 @@ describe("default model selection", () => {
 						],
 					});
 				}
-				if (url.includes("/api/models/providers/")) return new Response("not found", { status: 404 });
+				if (url === "https://models.dev/api.json") return new Response("not found", { status: 404 });
 				throw new Error(`Unexpected fetch: ${url}`);
 			});
 

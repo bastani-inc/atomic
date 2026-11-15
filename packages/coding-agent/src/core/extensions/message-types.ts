@@ -1,4 +1,4 @@
-import type { Component } from "@earendil-works/pi-tui";
+import type { Component } from "@bastani/atomic-tui";
 import type { Theme } from "../../modes/interactive/theme/theme.js";
 import type { CustomMessage } from "../messages.ts";
 import type { CustomEntry } from "../session-manager.ts";

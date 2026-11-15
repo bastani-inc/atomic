@@ -1,5 +1,5 @@
 import { stripVTControlCharacters } from "node:util";
-import { getKeybindings, setKeybindings } from "@earendil-works/pi-tui";
+import { getKeybindings, setKeybindings } from "@bastani/atomic-tui";
 import { test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import type { StageChatViewOpts } from "../../packages/workflows/src/tui/stage-chat-view-types.js";

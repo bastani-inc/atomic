@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { ProgramStatus, Terminal } from "@earendil-works/pi-tui";
+import type { ProgramStatus, Terminal } from "@bastani/atomic-tui";
 import { test } from "vitest";
 import { WorkflowActivityHub } from "../../packages/coding-agent/src/core/extensions/workflow-activity-hub.js";
 import { ProgramStatusReporter } from "../../packages/coding-agent/src/modes/interactive/program-status-reporter.js";

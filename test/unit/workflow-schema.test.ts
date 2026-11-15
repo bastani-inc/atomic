@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { validateToolArguments } from "@bastani/pi-ai";
+import { validateToolArguments } from "@bastani/atomic-ai";
 import { Value } from "typebox/value";
 import { describe, test } from "vitest";
 import { WorkflowParametersSchema } from "../../packages/workflows/src/extension/workflow-schema.js";

@@ -15,7 +15,7 @@ export type { CacheWarmingDecisionEvent, CacheWarmingDecisionEventResult } from 
 
 import type { ExtensionContext } from "./context-types.ts";
 
-export type { AgentToolResult, AgentToolUpdateCallback, ToolExecutionMode } from "@earendil-works/pi-agent-core";
+export type { AgentToolResult, AgentToolUpdateCallback, ToolExecutionMode } from "@bastani/atomic-agent-core";
 export type { ExecOptions, ExecResult } from "../exec.ts";
 export type { AppKeybinding, KeybindingsManager } from "../keybindings.ts";
 export type { ScopedModel } from "../model-resolver.ts";

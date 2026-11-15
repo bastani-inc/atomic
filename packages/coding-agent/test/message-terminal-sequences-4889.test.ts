@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import type { AssistantMessage } from "@bastani/pi-ai/compat";
-import { type Component, type Terminal, TuiMainScreen } from "@earendil-works/pi-tui";
+import type { AssistantMessage } from "@bastani/atomic-ai/compat";
+import { type Component, type Terminal, TuiMainScreen } from "@bastani/atomic-tui";
 import { beforeAll, describe, test } from "vitest";
 import { createCustomMessage } from "../src/core/messages.ts";
 import { AssistantMessageComponent } from "../src/modes/interactive/components/assistant-message.ts";

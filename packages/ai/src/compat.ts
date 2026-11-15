@@ -4,8 +4,8 @@
  * the api-registry, generated catalog reads (`getModel`/`getModels`/
  * `getProviders`), per-API lazy stream wrappers, and image generation.
  *
- * Existing apps switch imports from "@bastani/pi-ai" to
- * "@bastani/pi-ai/compat" unchanged; new code uses `createModels()`
+ * Existing apps switch imports from "@bastani/atomic-ai" to
+ * "@bastani/atomic-ai/compat" unchanged; new code uses `createModels()`
  * and the provider factories. This module is deleted with the coding-agent
  * ModelManager migration.
  */
@@ -61,13 +61,13 @@ import type {
 } from "./types.ts";
 import { normalizeContext } from "./utils/transcript.ts";
 
-/** @deprecated Static catalog read. Use `getBuiltinModel` from "@bastani/pi-ai/providers/all" or `Models.getModel()`. */
+/** @deprecated Static catalog read. Use `getBuiltinModel` from "@bastani/atomic-ai/providers/all" or `Models.getModel()`. */
 export const getModel = getBuiltinModel;
 
-/** @deprecated Static catalog read. Use `getBuiltinModels` from "@bastani/pi-ai/providers/all" or `Models.getModels()`. */
+/** @deprecated Static catalog read. Use `getBuiltinModels` from "@bastani/atomic-ai/providers/all" or `Models.getModels()`. */
 export const getModels = getBuiltinModels;
 
-/** @deprecated Static catalog read. Use `getBuiltinProviders` from "@bastani/pi-ai/providers/all" or `Models.getProviders()`. */
+/** @deprecated Static catalog read. Use `getBuiltinProviders` from "@bastani/atomic-ai/providers/all" or `Models.getProviders()`. */
 export const getProviders = getBuiltinProviders;
 
 export type ApiStreamFunction = (

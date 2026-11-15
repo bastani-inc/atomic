@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getCurrentTools } from "@bastani/pi-ai";
+import { getCurrentTools } from "@bastani/atomic-ai";
 import { test, vi } from "vitest";
 import {
 	createAgentSession,
@@ -921,7 +921,7 @@ test.each(["omitted", "undefined", "manager", "relative"] as const)(
 	"workflow child configuration boundaries: %s",
 	async (mode) => {
 		const { buildRuntimeAdapters } = await import("../../packages/workflows/src/extension/wiring.js");
-		const { getModel } = await import("@bastani/pi-ai/compat");
+		const { getModel } = await import("@bastani/atomic-ai/compat");
 		const cwd = mkdtempSync(join(tmpdir(), "atomic-child-options-"));
 		const managerCwd = join(cwd, "manager");
 		mkdirSync(managerCwd);
@@ -999,7 +999,7 @@ test.each(["omitted", "undefined", "manager", "relative"] as const)(
 test.each([false, true])(
 	"subagent child uses the parent's model runtime and tool ceiling, fallback=%s",
 	async (fallback) => {
-		const { getModel, createAssistantMessageEventStream } = await import("@bastani/pi-ai/compat");
+		const { getModel, createAssistantMessageEventStream } = await import("@bastani/atomic-ai/compat");
 		const { AuthStorage, ModelRuntime } = await import("../../packages/coding-agent/src/index.js");
 		const { runSingleInProcess } = await import("../../packages/subagents/src/runs/foreground/inprocess-run-sync.js");
 		const { clearSubagentControls } = await import("../../packages/subagents/src/runs/inprocess/control-registry.js");
@@ -1267,7 +1267,7 @@ test.each(childHostBindingModes)(
 
 // #3105: the production controller must not launder fallback models into unrestricted primaries.
 test("workflow fallback replacement enforces the inherited gate but explicit primary remains valid", async () => {
-	const { getModel, createAssistantMessageEventStream } = await import("@bastani/pi-ai/compat");
+	const { getModel, createAssistantMessageEventStream } = await import("@bastani/atomic-ai/compat");
 	const { AuthStorage, ModelRuntime } = await import("../../packages/coding-agent/src/index.js");
 	const { buildRuntimeAdapters } = await import("../../packages/workflows/src/extension/wiring.js");
 	const { createStageContext } = await import("../../packages/workflows/src/runs/foreground/stage-runner.js");
@@ -1295,7 +1295,7 @@ test("workflow fallback replacement enforces the inherited gate but explicit pri
 			calls.push(model.id);
 			const stream = createAssistantMessageEventStream();
 			const fail = model.id === "primary";
-			const message: import("@bastani/pi-ai/compat").AssistantMessage = {
+			const message: import("@bastani/atomic-ai/compat").AssistantMessage = {
 				role: "assistant",
 				content: fail ? [] : [{ type: "text", text: model.id }],
 				api: model.api,

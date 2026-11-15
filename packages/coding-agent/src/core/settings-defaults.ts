@@ -1,4 +1,4 @@
-import { DEFAULT_MAX_AGENT_RETRY_DELAY_MS } from "@bastani/pi-ai/utils/retry";
+import { DEFAULT_MAX_AGENT_RETRY_DELAY_MS } from "@bastani/atomic-ai/utils/retry";
 
 /** Runtime defaults shared by settings accessors and the published JSON Schema. */
 export const SETTINGS_DEFAULTS = {

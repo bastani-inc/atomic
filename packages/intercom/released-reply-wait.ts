@@ -1,5 +1,5 @@
 import { markToolCallReadyForDetachment, toolCallNeedsDetachmentHandoff, type ExtensionAPI } from "@bastani/atomic";
-import type { JsonValue } from "@bastani/pi-ai";
+import type { JsonValue } from "@bastani/atomic-ai";
 import type { ReplyWait } from "./reply-waiter.ts";
 import type { BrokerMultiNodeStatus, Message } from "./types.js";
 

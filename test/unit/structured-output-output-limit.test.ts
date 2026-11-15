@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { Api, AssistantMessage, JsonObject, Model, SimpleStreamOptions } from "@bastani/pi-ai";
+import type { Api, AssistantMessage, JsonObject, Model, SimpleStreamOptions } from "@bastani/atomic-ai";
 import { Type } from "typebox";
 import { test, vi } from "vitest";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";

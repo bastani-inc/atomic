@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { renderToolOutputType } from "@earendil-works/pi-codemode/declarations";
+import { renderToolOutputType } from "@bastani/atomic-codemode/declarations";
 import { it } from "vitest";
 import { convertMcpResult, createMcpResultSchema } from "../../src/extensions/mcp/tools.js";
 

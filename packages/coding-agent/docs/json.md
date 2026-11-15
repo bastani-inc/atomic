@@ -69,7 +69,7 @@ Check `result` and `errorMessage` independently. Both can be present when the bo
 
 Compaction planning and branch summaries reuse the configured retry policy for transient provider failures. Their `summarization_retry_*` events expose scheduling, each restarted request (including whether it belongs to branch summarization or a compaction reason), and retry-loop completion to JSON, RPC, SDK, and interactive consumers.
 
-Base events come from `AgentEvent` in `@earendil-works/pi-agent-core` (installed as an Atomic dependency):
+Base events come from `AgentEvent` in `@bastani/atomic-agent-core` (installed as an Atomic dependency):
 
 ```typescript
 type AgentEvent =
@@ -101,7 +101,7 @@ A non-assistant message on this event is a protocol violation. Atomic throws rat
 
 ## Message Types
 
-Base messages come from `@bastani/pi-ai` (installed as an Atomic dependency):
+Base messages come from `@bastani/atomic-ai` (installed as an Atomic dependency):
 - `UserMessage`
 - `AssistantMessage`
 - `ToolResultMessage`

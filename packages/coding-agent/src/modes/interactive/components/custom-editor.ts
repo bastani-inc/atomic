@@ -9,7 +9,7 @@ import {
 	type TUI,
 	truncateToWidth,
 	visibleWidth,
-} from "@earendil-works/pi-tui";
+} from "@bastani/atomic-tui";
 import type { AppKeybinding, KeybindingsManager } from "../../../core/keybindings.ts";
 import { isPhysicalEscape } from "../interactive-key-identity.ts";
 import { theme } from "../theme/theme.js";

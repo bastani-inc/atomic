@@ -1,4 +1,4 @@
-import type { JsonValue } from "@bastani/pi-ai";
+import type { JsonValue } from "@bastani/atomic-ai";
 
 export type {
 	ReleasedReplyFormatRequest,

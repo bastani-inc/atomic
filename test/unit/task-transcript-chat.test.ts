@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
-import type { AssistantMessage } from "@bastani/pi-ai/compat";
-import { getKeybindings, setKeybindings } from "@earendil-works/pi-tui";
+import type { AssistantMessage } from "@bastani/atomic-ai/compat";
+import { getKeybindings, setKeybindings } from "@bastani/atomic-tui";
 import { test } from "vitest";
 import type { AgentSessionEvent } from "../../packages/coding-agent/src/core/agent-session.js";
 import {

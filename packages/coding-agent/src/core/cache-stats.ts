@@ -1,5 +1,5 @@
-import type { Api, Model } from "@bastani/pi-ai";
-import type { AssistantMessage } from "@bastani/pi-ai/compat";
+import type { Api, Model } from "@bastani/atomic-ai";
+import type { AssistantMessage } from "@bastani/atomic-ai/compat";
 import { getPromptCacheTtlMs } from "./cache-warmer.ts";
 import type { SessionEntry } from "./session-manager.ts";
 

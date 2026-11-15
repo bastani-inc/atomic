@@ -1,5 +1,5 @@
-import type { AutocompleteItem } from "@earendil-works/pi-tui";
-import { fuzzyFilter } from "@earendil-works/pi-tui";
+import type { AutocompleteItem } from "@bastani/atomic-tui";
+import { fuzzyFilter } from "@bastani/atomic-tui";
 import { compareProviders } from "../../core/preferred-providers.ts";
 import { type AuthSelectorProvider, formatAuthSelectorProviderType } from "./components/oauth-selector.ts";
 

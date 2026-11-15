@@ -8,7 +8,7 @@ import {
 	Spacer,
 	TruncatedText,
 	type TUI,
-} from "@earendil-works/pi-tui";
+} from "@bastani/atomic-tui";
 import type { ModelRuntime } from "../../../core/model-runtime.js";
 import { isPreferredProvider } from "../../../core/preferred-providers.ts";
 import type { AuthStatus } from "../../../core/provider-composer.ts";

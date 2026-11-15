@@ -29,7 +29,7 @@ assert.ok(!process.stdin.isTTY && !process.stdout.isTTY);
 const installedRoot = realpathSync(join(dirname(fileURLToPath(import.meta.url)), "node_modules"));
 for (const specifier of [
 	"@bastani/atomic",
-	"@bastani/pi-ai",
+	"@bastani/atomic-ai",
 	"@bastani/atomic/workflows",
 	"@bastani/atomic/workflows/builtin",
 	"@bastani/atomic/workflows/builtin/open-claude-design",
@@ -376,7 +376,7 @@ try {
 		// Production routing is essential: test hosts intentionally replace stage/subagent sessions.
 		process.env.NODE_ENV = "production";
 		delete process.env.NODE_TEST_CONTEXT;
-		const { createAssistantMessageEventStream, getCurrentTools, getModel } = await import("@bastani/pi-ai/compat");
+		const { createAssistantMessageEventStream, getCurrentTools, getModel } = await import("@bastani/atomic-ai/compat");
 		const model = { ...getModel("anthropic", "claude-sonnet-4-5"), provider: "packed-child", id: "fixture" };
 		let childCalls = 0;
 		const observed = [];
@@ -551,24 +551,24 @@ export default workflow({ name: "children", description: "children", inputs: {},
 	} else if (mode === "malformed-arguments") {
 		const atomicPackage = findPackageJSON("@bastani/atomic", import.meta.url);
 		assert.ok(atomicPackage);
-		const agentCorePackage = findPackageJSON("@earendil-works/pi-agent-core", atomicPackage);
+		const agentCorePackage = findPackageJSON("@bastani/atomic-agent-core", atomicPackage);
 		assert.ok(agentCorePackage, "Atomic must resolve an installed pi-agent-core");
-		const validatorPackage = findPackageJSON("@earendil-works/pi-ai", agentCorePackage);
-		assert.ok(validatorPackage, "pi-agent-core must resolve an installed @earendil-works/pi-ai");
+		const validatorPackage = findPackageJSON("@bastani/atomic-ai", agentCorePackage);
+		assert.ok(validatorPackage, "pi-agent-core must resolve an installed @bastani/atomic-ai");
 		assert.ok(
 			realpathSync(validatorPackage).startsWith(`${installedRoot}${sep}`),
 			"validator must come from the npm install",
 		);
 		const validator = JSON.parse(readFileSync(validatorPackage, "utf8"));
 		const shrinkwrap = JSON.parse(readFileSync(join(dirname(atomicPackage), "npm-shrinkwrap.json"), "utf8"));
-		assert.equal(validator.name, "@earendil-works/pi-ai");
+		assert.equal(validator.name, "@bastani/atomic-ai");
 		assert.equal(
 			validator.version,
-			shrinkwrap.packages["node_modules/@earendil-works/pi-ai"].version,
+			shrinkwrap.packages["node_modules/@bastani/atomic-ai"].version,
 			"pi-agent-core must use the published shrinkwrap validator",
 		);
-		const { Type } = await import("@bastani/pi-ai");
-		const { createAssistantMessageEventStream, getModel } = await import("@bastani/pi-ai/compat");
+		const { Type } = await import("@bastani/atomic-ai");
+		const { createAssistantMessageEventStream, getModel } = await import("@bastani/atomic-ai/compat");
 		const model = { ...getModel("anthropic", "claude-sonnet-4-5"), provider: "packed-malformed" };
 		const malformed = {
 			probe: 'Expected \',\' or \'}\' after property value in JSON at position 12\n\nReceived arguments:\n{"value":"a" "b"}',
@@ -659,7 +659,7 @@ export default workflow({ name: "children", description: "children", inputs: {},
 			await session.dispose();
 		}
 	} else if (mode === "prompt") {
-		const { createAssistantMessageEventStream, getModel } = await import("@bastani/pi-ai/compat");
+		const { createAssistantMessageEventStream, getModel } = await import("@bastani/atomic-ai/compat");
 		const mcpReceipt = join(root, "mcp-receipt.json");
 		const mcpFixture = join(root, "native-mcp-fixture.mjs");
 		writeFileSync(

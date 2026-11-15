@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import type { Terminal } from "@earendil-works/pi-tui";
-import { TuiMainScreen } from "@earendil-works/pi-tui";
+import type { Terminal } from "@bastani/atomic-tui";
+import { TuiMainScreen } from "@bastani/atomic-tui";
 import { test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import { CustomEditor } from "../../packages/coding-agent/src/modes/interactive/components/custom-editor.ts";

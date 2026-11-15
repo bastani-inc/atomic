@@ -6,7 +6,12 @@
 
 import "../helpers/provider-rate-limit-isolation.js";
 import assert from "node:assert/strict";
-import { type Api, type AssistantMessage, createAssistantMessageEventStream, type Model } from "@bastani/pi-ai/compat";
+import {
+	type Api,
+	type AssistantMessage,
+	createAssistantMessageEventStream,
+	type Model,
+} from "@bastani/atomic-ai/compat";
 import { afterEach, describe, test } from "vitest";
 import { createAgentSession } from "../../packages/coding-agent/src/core/sdk.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";

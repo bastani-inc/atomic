@@ -1,5 +1,5 @@
-import { Container, ScrollView, VStack } from "@earendil-works/pi-tui";
-import { LAYOUT_NODE, type StackLayoutNode } from "@earendil-works/pi-tui/dist/layout-node.js";
+import { Container, ScrollView, VStack } from "@bastani/atomic-tui";
+import { LAYOUT_NODE, type StackLayoutNode } from "@bastani/atomic-tui/dist/layout-node.js";
 import type { ScrollableWidgetComponent, WidgetScrollState } from "../../../core/extensions/ui-types.js";
 
 /** A native layout node, so the dock's final allocation also owns mouse bounds. */

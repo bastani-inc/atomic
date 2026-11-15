@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { type Component, Container, type Spacer, Text } from "@earendil-works/pi-tui";
+import { type Component, Container, type Spacer, Text } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";

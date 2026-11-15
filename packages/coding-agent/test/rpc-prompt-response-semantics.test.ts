@@ -3,14 +3,14 @@ import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import { Agent } from "@bastani/atomic-agent-core";
 import {
 	type Api,
 	type AssistantMessage,
 	createAssistantMessageEventStream,
 	getModel,
 	type Model,
-} from "@bastani/pi-ai/compat";
-import { Agent } from "@earendil-works/pi-agent-core";
+} from "@bastani/atomic-ai/compat";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
 import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";

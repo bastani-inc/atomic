@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { AgentSession } from "@bastani/atomic";
-import type { AssistantMessage } from "@bastani/pi-ai/compat";
+import type { AssistantMessage } from "@bastani/atomic-ai/compat";
 import { test } from "vitest";
 import {
 	closeWorkflowStageGeneration,

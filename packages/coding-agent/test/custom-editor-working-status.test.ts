@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { stripTerminalSequences, type Terminal, TuiMainScreen, visibleWidth } from "@earendil-works/pi-tui";
+import { stripTerminalSequences, type Terminal, TuiMainScreen, visibleWidth } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, describe, test } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import { AtomicWorkingLoader } from "../src/modes/interactive/components/atomic-working-status.ts";

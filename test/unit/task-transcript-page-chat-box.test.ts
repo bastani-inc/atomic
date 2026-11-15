@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import { stripVTControlCharacters } from "node:util";
-import { getKeybindings, setKeybindings, visibleWidth } from "@earendil-works/pi-tui";
+import { getKeybindings, setKeybindings, visibleWidth } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import type { AgentSessionEvent } from "../../packages/coding-agent/src/core/agent-session.js";
 import type { ReadonlyFooterDataProvider } from "../../packages/coding-agent/src/core/footer-data-provider.js";

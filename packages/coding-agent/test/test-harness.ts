@@ -10,6 +10,8 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { AgentTool } from "@bastani/atomic-agent-core";
+import { Agent } from "@bastani/atomic-agent-core";
 import type {
 	AssistantMessage,
 	AssistantMessageEvent,
@@ -23,10 +25,8 @@ import type {
 	ThinkingContent,
 	ToolCall,
 	Usage,
-} from "@bastani/pi-ai/compat";
-import { createAssistantMessageEventStream } from "@bastani/pi-ai/compat";
-import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { Agent } from "@earendil-works/pi-agent-core";
+} from "@bastani/atomic-ai/compat";
+import { createAssistantMessageEventStream } from "@bastani/atomic-ai/compat";
 import { AgentSession, type AgentSessionConfig, type AgentSessionEvent } from "../src/core/agent-session.js";
 import { AuthStorage } from "../src/core/auth-storage.js";
 import { ModelRuntime } from "../src/core/model-runtime.js";

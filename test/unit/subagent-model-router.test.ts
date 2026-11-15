@@ -13,7 +13,7 @@ import {
 	getCurrentTools,
 	type JsonObject,
 	type Model,
-} from "@bastani/pi-ai";
+} from "@bastani/atomic-ai";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { isDecisionModelUnavailableError } from "../../packages/coding-agent/src/core/decision/errors.js";
 import {

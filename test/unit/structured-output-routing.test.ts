@@ -7,9 +7,9 @@ import type {
 	JsonObject,
 	Model,
 	ModelsClassifierOptions,
-} from "@bastani/pi-ai";
-import { createAssistantMessageEventStream, getCurrentSystemPrompt, getCurrentTools } from "@bastani/pi-ai";
-import { builtinModels } from "@bastani/pi-ai/providers/all";
+} from "@bastani/atomic-ai";
+import { createAssistantMessageEventStream, getCurrentSystemPrompt, getCurrentTools } from "@bastani/atomic-ai";
+import { builtinModels } from "@bastani/atomic-ai/providers/all";
 import { Type } from "typebox";
 import { afterEach, test, vi } from "vitest";
 import {

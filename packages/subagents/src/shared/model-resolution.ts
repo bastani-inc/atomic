@@ -16,7 +16,7 @@
  */
 
 import { resolveFallbackModel } from "@bastani/atomic";
-import type { Api, Model } from "@bastani/pi-ai/compat";
+import type { Api, Model } from "@bastani/atomic-ai/compat";
 import { splitUnknownThinkingSuffix, THINKING_LEVELS, type ThinkingLevel } from "./model-info.js";
 
 /** Registry surface needed to resolve a candidate; satisfied by `ctx.modelRegistry`. */

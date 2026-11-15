@@ -28,7 +28,6 @@ export const BUILT_IN_PROVIDER_DISPLAY_NAMES: Record<string, string> = {
 	"qwen-token-plan-individual": "Qwen Token Plan (Individual)",
 	"qwen-token-plan-cn": "Qwen Token Plan (Team, China)",
 	"qwen-token-plan-individual-cn": "Qwen Token Plan (Individual, China)",
-	radius: "Radius",
 	openrouter: "OpenRouter",
 	together: "Together AI",
 	"vercel-ai-gateway": "Vercel AI Gateway",

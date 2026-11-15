@@ -18,7 +18,7 @@ import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { fileURLToPath } from "node:url";
-import { type Component, Container, ProcessTerminal, TUI } from "@earendil-works/pi-tui";
+import { type Component, Container, ProcessTerminal, TUI } from "@bastani/atomic-tui";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 

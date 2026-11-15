@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AgentMessage } from "@bastani/atomic-agent-core";
 import { test } from "vitest";
 import { _runAgentPrompt, prompt, sendUserMessage } from "../../packages/coding-agent/src/core/agent-session-prompt.js";
 import type {

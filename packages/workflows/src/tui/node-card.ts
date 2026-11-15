@@ -26,7 +26,7 @@
  */
 
 import { formatModelLabel, MODEL_LABEL_SEPARATOR } from "@bastani/atomic";
-import { stripTerminalSequences } from "@earendil-works/pi-tui";
+import { stripTerminalSequences } from "@bastani/atomic-tui";
 import {
 	pooledStageStartingText,
 	type StageDisplayStatus,

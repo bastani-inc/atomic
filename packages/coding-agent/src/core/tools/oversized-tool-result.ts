@@ -4,8 +4,8 @@ import { constants } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import { chmod, lstat, mkdir, open } from "node:fs/promises";
 import { join } from "node:path";
-import type { ImageContent, TextContent } from "@bastani/pi-ai/compat";
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import type { AgentToolResult } from "@bastani/atomic-agent-core";
+import type { ImageContent, TextContent } from "@bastani/atomic-ai/compat";
 import { getErrnoCode } from "./errno.ts";
 import { capPersistedText } from "./persisted-output-file.ts";
 import {

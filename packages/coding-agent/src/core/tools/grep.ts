@@ -1,6 +1,6 @@
 import { stat as fsStat } from "node:fs/promises";
-import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { Text } from "@earendil-works/pi-tui";
+import type { AgentTool } from "@bastani/atomic-agent-core";
+import { Text } from "@bastani/atomic-tui";
 import { spawn } from "child_process";
 import path from "path";
 import { type Static, Type } from "typebox";

@@ -1,4 +1,4 @@
-import type { Api, Model } from "@bastani/pi-ai/compat";
+import type { Api, Model } from "@bastani/atomic-ai/compat";
 import { describe, expect, test } from "vitest";
 import { normalizeGrammarToolCapability } from "../src/core/model-capabilities.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";

@@ -1,5 +1,5 @@
-import type { Api, Model, SimpleStreamOptions } from "@bastani/pi-ai/compat";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AgentMessage } from "@bastani/atomic-agent-core";
+import type { Api, Model, SimpleStreamOptions } from "@bastani/atomic-ai/compat";
 import { describe, expect, it, vi } from "vitest";
 import { DEFAULT_COMPACTION_SETTINGS, estimateContextTokens } from "../src/core/compaction/compaction.js";
 import {

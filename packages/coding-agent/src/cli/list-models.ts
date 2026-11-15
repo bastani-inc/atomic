@@ -2,8 +2,8 @@
  * List available models with optional fuzzy search
  */
 
-import type { Api, Model } from "@bastani/pi-ai/compat";
-import { fuzzyFilter } from "@earendil-works/pi-tui";
+import type { Api, Model } from "@bastani/atomic-ai/compat";
+import { fuzzyFilter } from "@bastani/atomic-tui";
 import chalk from "chalk";
 import { formatNoModelsAvailableMessage } from "../core/auth-guidance.ts";
 import { formatModelLabel, MODEL_LABEL_FIELD_SEPARATOR } from "../core/model-label.ts";

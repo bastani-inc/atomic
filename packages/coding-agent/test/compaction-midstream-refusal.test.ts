@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { AssistantMessage, Context } from "@bastani/pi-ai/compat";
+import type { AssistantMessage, Context } from "@bastani/atomic-ai/compat";
 import { test, vi } from "vitest";
 import {
 	type CompactionRungResult,

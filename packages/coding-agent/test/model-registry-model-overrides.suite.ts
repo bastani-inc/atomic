@@ -1,4 +1,4 @@
-import type { OpenAICompletionsCompat } from "@bastani/pi-ai/compat";
+import type { OpenAICompletionsCompat } from "@bastani/atomic-ai/compat";
 import { describe, expect, test } from "vitest";
 import { describeModelRegistry } from "./model-registry-fixtures.ts";
 import { createModelRegistry } from "./model-runtime-test-utils.ts";

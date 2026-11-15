@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync, rmSync } from "node:fs";
-import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { test } from "vitest";
 import { createCodemodeExtension } from "../../src/extensions/codemode/index.js";
 import { type JsonRpcRequest, LATEST_PROTOCOL_VERSION } from "../../src/extensions/mcp/client/index.js";

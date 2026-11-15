@@ -12,8 +12,8 @@ const selector = vi.hoisted(() => ({
 	stopped: 0,
 }));
 
-vi.mock("@earendil-works/pi-tui", async (importOriginal) => ({
-	...(await importOriginal<typeof import("@earendil-works/pi-tui")>()),
+vi.mock("@bastani/atomic-tui", async (importOriginal) => ({
+	...(await importOriginal<typeof import("@bastani/atomic-tui")>()),
 	ProcessTerminal: class {},
 	TuiMainScreen: class {
 		setClearOnShrink() {}

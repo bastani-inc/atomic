@@ -14,8 +14,8 @@
 
 import type { ExtensionAPI } from "@bastani/atomic";
 import { BorderedLoader, buildSessionContext, convertToLlm, serializeConversation } from "@bastani/atomic";
-import { uuidv7 } from "@bastani/pi-ai";
-import { complete, type Message } from "@bastani/pi-ai/compat";
+import { uuidv7 } from "@bastani/atomic-ai";
+import { complete, type Message } from "@bastani/atomic-ai/compat";
 
 const SYSTEM_PROMPT = `You are a context transfer assistant. Given a conversation history and the user's goal for a new thread, generate a focused prompt that:
 

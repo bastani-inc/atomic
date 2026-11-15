@@ -9,7 +9,7 @@ import type {
 	ScrollViewScrollbar,
 	TUI,
 	WheelScrollLines,
-} from "@earendil-works/pi-tui";
+} from "@bastani/atomic-tui";
 import type { Theme } from "../../modes/interactive/theme/theme.js";
 import type { ReadonlyFooterDataProvider } from "../footer-data-provider.ts";
 import type { Keybinding, KeybindingsManager } from "../keybindings.ts";

@@ -174,9 +174,9 @@ test("every step hashes the tsconfig and bunfig files its compilers and bundlers
 	for (const file of ["tsconfig.json", "tsconfig.base.json", "bunfig.toml"]) {
 		for (const step of BUILD_STEPS) assert.ok(inputPaths(step).includes(file), `${step.name} hashes ${file}`);
 	}
-	const piAi = BUILD_STEPS.find((step) => step.name === "pi-ai");
+	const ai = BUILD_STEPS.find((step) => step.name === "ai");
 	for (const file of ["tsconfig.json", "tsconfig.base.json", "tsconfig.build.json"]) {
-		assert.ok(piAi && inputPaths(piAi).includes(`packages/ai/${file}`), `pi-ai hashes packages/ai/${file}`);
+		assert.ok(ai && inputPaths(ai).includes(`packages/ai/${file}`), `ai hashes packages/ai/${file}`);
 	}
 	const atomic = BUILD_STEPS.find((step) => step.name === "atomic");
 	for (const file of ["tsconfig.build.json", "tsconfig.workflows-types.json"]) {
@@ -184,9 +184,16 @@ test("every step hashes the tsconfig and bunfig files its compilers and bundlers
 	}
 });
 
-test("the Atomic package builds after the pi-ai and native steps whose outputs it consumes", () => {
+test("each package builds after the forked packages and native step whose outputs it consumes", () => {
 	const names = BUILD_STEPS.map((step) => step.name);
-	assert.deepEqual(names, ["pi-ai-models", "pi-ai", "natives", "atomic"]);
+	assert.deepEqual(names, ["schema", "telemetry", "ai-models", "ai", "tui", "agent", "codemode", "natives", "atomic"]);
+	for (const step of BUILD_STEPS) {
+		for (const upstream of step.after ?? []) {
+			assert.ok(names.indexOf(upstream) < names.indexOf(step.name), `${step.name} builds after ${upstream}`);
+		}
+	}
+	assert.deepEqual(BUILD_STEPS.find((step) => step.name === "ai")?.after, ["schema", "telemetry"]);
+	assert.deepEqual(BUILD_STEPS.find((step) => step.name === "agent")?.after, ["ai", "schema"]);
 	const atomic = BUILD_STEPS.find((step) => step.name === "atomic");
-	assert.deepEqual(atomic?.after, ["pi-ai", "natives"]);
+	assert.deepEqual(atomic?.after, ["ai", "tui", "agent", "codemode", "natives"]);
 });

@@ -1,4 +1,5 @@
-import { normalizeContext } from "@bastani/pi-ai";
+import { normalizeContext } from "@bastani/atomic-ai";
+
 /**
  * Session summarization for the resume picker.
  *
@@ -7,10 +8,10 @@ import { normalizeContext } from "@bastani/pi-ai";
  * never re-enters model context: it exists only as picker metadata.
  */
 
-import { type ProviderHeaders, type RetryPolicy, retryAssistantCall, uuidv7 } from "@bastani/pi-ai";
-import type { Api, Model, SimpleStreamOptions, Usage } from "@bastani/pi-ai/compat";
-import { completeSimple } from "@bastani/pi-ai/compat";
-import type { StreamFn } from "@earendil-works/pi-agent-core";
+import type { StreamFn } from "@bastani/atomic-agent-core";
+import { type ProviderHeaders, type RetryPolicy, retryAssistantCall, uuidv7 } from "@bastani/atomic-ai";
+import type { Api, Model, SimpleStreamOptions, Usage } from "@bastani/atomic-ai/compat";
+import { completeSimple } from "@bastani/atomic-ai/compat";
 import { convertToLlm } from "../messages.ts";
 import type { SessionEntry } from "../session-manager.ts";
 import { prepareBranchEntries } from "./branch-summarization.ts";

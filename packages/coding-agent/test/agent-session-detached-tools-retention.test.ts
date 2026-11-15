@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import v8 from "node:v8";
 import vm from "node:vm";
-import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { afterEach, describe, test, vi } from "vitest";
 import type { DetachedToolCall } from "../src/core/agent-session-detached-tools.js";

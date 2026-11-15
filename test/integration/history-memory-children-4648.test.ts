@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { getCurrentSystemPrompt } from "@bastani/pi-ai";
+import { getCurrentSystemPrompt } from "@bastani/atomic-ai";
 import {
 	type FauxResponseFactory,
 	fauxAssistantMessage,
@@ -14,7 +14,7 @@ import {
 	registerFauxProvider,
 	type ToolCall,
 	type ToolResultMessage,
-} from "@bastani/pi-ai/compat";
+} from "@bastani/atomic-ai/compat";
 import { afterEach, test, vi } from "vitest";
 import { InMemoryCodingAgentModelsStore } from "../../packages/coding-agent/src/core/models-store.js";
 import {

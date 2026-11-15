@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { Key } from "@earendil-works/pi-tui";
+import { Key } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import {

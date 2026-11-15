@@ -11,7 +11,7 @@ describe("regression #1728 web-access native heavy import", () => {
 		const script = `
 const { default: webAccess } = await import(${JSON.stringify(extensionUrl)});
 const assert = (await import("node:assert/strict")).default;
-const { validateToolArguments } = await import("@earendil-works/pi-ai");
+const { validateToolArguments } = await import("@bastani/atomic-ai");
 const tools = new Map();
 const pi = {
   registerTool(tool) { tools.set(tool.name, tool); },

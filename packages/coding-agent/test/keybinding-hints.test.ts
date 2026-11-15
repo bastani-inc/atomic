@@ -1,4 +1,4 @@
-import { getKeybindings, setKeybindings } from "@earendil-works/pi-tui";
+import { getKeybindings, setKeybindings } from "@bastani/atomic-tui";
 import { afterEach, describe, expect, test } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import { keyHint, keyHintIfBound, keyText } from "../src/modes/interactive/components/keybinding-hints.ts";

@@ -75,7 +75,10 @@ const WORKFLOWS_VIRTUAL_MODULES: Record<string, unknown> = {
 	"typebox/value": TYPEBOX_VALUE_MODULE,
 };
 
-export type WorkflowHostModules = Record<"@bastani/atomic" | "@bastani/pi-ai" | "@bastani/pi-ai/providers/all", object>;
+export type WorkflowHostModules = Record<
+	"@bastani/atomic" | "@bastani/atomic-ai" | "@bastani/atomic-ai/providers/all",
+	object
+>;
 
 export type WorkflowHostModuleProvider = () => Promise<WorkflowHostModules>;
 

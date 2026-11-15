@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { fauxAssistantMessage, registerFauxProvider } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage, registerFauxProvider } from "@bastani/atomic-ai/compat";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
@@ -1471,7 +1471,7 @@ describe("createAgentSession with a session recorded on another node (#4329)", (
 		const store = await storeFor(selection);
 		const settingsManager = settings(appendLineCommand(marker, "ran"));
 		const { createAgentSession } = await import("../src/core/sdk.ts");
-		const { getModel } = await import("@bastani/pi-ai/compat");
+		const { getModel } = await import("@bastani/atomic-ai/compat");
 		const { session } = await createAgentSession({
 			agentDir,
 			model: getModel("anthropic", "claude-sonnet-4-5")!,
@@ -1495,7 +1495,7 @@ describe("createAgentSession with a session recorded on another node (#4329)", (
 		const restored = sandbox.path("restored-for-the-run");
 		sandbox.write(join(restored, "state.txt"), "in the run's restored worktree\n");
 		const { createAgentSession } = await import("../src/core/sdk.ts");
-		const { getModel } = await import("@bastani/pi-ai/compat");
+		const { getModel } = await import("@bastani/atomic-ai/compat");
 		const restore = {
 			from: recorded,
 			to: restored,
@@ -1524,7 +1524,7 @@ describe("createAgentSession with a session recorded on another node (#4329)", (
 		const { sessionId, clone } = await sessionRecordedElsewhere(selection);
 		const store = await storeFor(selection);
 		const { createAgentSession } = await import("../src/core/sdk.ts");
-		const { getModel } = await import("@bastani/pi-ai/compat");
+		const { getModel } = await import("@bastani/atomic-ai/compat");
 		setWorktreeSnapshotGit(async () => ({ path: sandbox.path("no-git"), env: {} }));
 		const { session } = await createAgentSession({
 			agentDir: sandbox.path("agent"),
@@ -1542,7 +1542,7 @@ describe("createAgentSession with a session recorded on another node (#4329)", (
 
 	const createOn = async (options: Partial<CreateAgentSessionOptions>) => {
 		const { createAgentSession } = await import("../src/core/sdk.ts");
-		const { getModel } = await import("@bastani/pi-ai/compat");
+		const { getModel } = await import("@bastani/atomic-ai/compat");
 		const { session } = await createAgentSession({
 			agentDir: sandbox.path("agent"),
 			model: getModel("anthropic", "claude-sonnet-4-5")!,

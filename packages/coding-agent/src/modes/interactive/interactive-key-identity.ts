@@ -1,4 +1,4 @@
-import { isKeyRelease, Key, matchesKey } from "@earendil-works/pi-tui";
+import { isKeyRelease, Key, matchesKey } from "@bastani/atomic-tui";
 
 /**
  * Physical key identity, independent of configured actions.
