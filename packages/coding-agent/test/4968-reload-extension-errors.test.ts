@@ -133,6 +133,26 @@ test("interactive /reload shows an extension that no longer loads under [Extensi
 	assert.deepEqual(hostErrors, []);
 });
 
+test("the interactive host leaves engine load errors to its resource diagnostics and still shows runtime errors (#4968)", async () => {
+	pair = await createEngineHostPair({});
+	const hostErrors: ExtensionError[] = [];
+	await pair.runtime.session.bindExtensions({
+		shutdownHandler: () => {},
+		onError: (error) => hostErrors.push(error),
+	});
+	const runtimeErrors = [
+		{ extensionPath: "session:reload", event: "reload", error: "queued prompt failed after reload" },
+		{ extensionPath: "/ext/tool.ts", event: "tool_call", error: "tool failed" },
+	];
+
+	pair.engineOutput({ type: "extension_error", extensionPath: "/ext/a.ts", event: "startup", error: "a broke" });
+	pair.engineOutput({ type: "extension_error", extensionPath: "/ext/b.ts", event: "reload", error: "b broke" });
+	for (const error of runtimeErrors) pair.engineOutput({ type: "extension_error", ...error });
+	await pair.drain();
+
+	assert.deepEqual(hostErrors, runtimeErrors);
+});
+
 test("an extension that registers one tool name twice gets a warning, and the second registration wins (#4968)", async () => {
 	const { loader, extensionPath } = createExtensionFixture(`
 		import { Type } from "typebox";
@@ -155,5 +175,29 @@ test("an extension that registers one tool name twice gets a warning, and the se
 	assert.equal(result.extensions[0]?.tools.get("twice")?.definition.description, "second");
 	assert.deepEqual(result.warnings, [
 		{ path: extensionPath, warning: 'registers tool "twice" more than once; the last registration is used.' },
+	]);
+});
+
+test("the duplicate-tool warning names every tool an extension registered twice (#4968)", async () => {
+	const { loader, extensionPath } = createExtensionFixture(`
+		import { Type } from "typebox";
+		const tool = (name) => ({
+			name,
+			label: name,
+			description: name,
+			parameters: Type.Object({}),
+			execute: async () => ({ content: [], details: {} }),
+		});
+		export default function (pi) {
+			for (const name of ["alpha", "beta", "alpha", "beta", "gamma"]) pi.registerTool(tool(name));
+		}
+	`);
+	await loader.reload();
+
+	assert.deepEqual(loader.getExtensions().warnings, [
+		{
+			path: extensionPath,
+			warning: 'registers tools "alpha", "beta" more than once; the last registration is used.',
+		},
 	]);
 });

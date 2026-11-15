@@ -233,10 +233,7 @@ export function createExtensionAPI(
 			const registration = { definition: captureRegistrationInvocation(tool), sourceInfo: extension.sourceInfo };
 			const nativeMcpIdentity = getNativeMcpToolIdentity(tool);
 			if (nativeMcpIdentity) markNativeMcpToolDefinition(registration.definition, nativeMcpIdentity);
-			if (
-				extension.tools.has(tool.name) ||
-				runtime.hasPendingResourceRegistration?.(extension, "tool", tool.name) === true
-			) {
+			if (extension.tools.has(tool.name)) {
 				extension.duplicateToolNames ??= new Set();
 				extension.duplicateToolNames.add(tool.name);
 			}
