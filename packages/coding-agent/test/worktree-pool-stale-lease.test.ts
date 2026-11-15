@@ -586,8 +586,11 @@ describe("checks of a pooled worktree's lease (#4830)", () => {
 			await releaseRestoredWorktree(lease);
 			const holder = await runningProcess();
 			await holder.stop();
+			// Linux counts starts in hundredths of a second: the next process starts in a later one.
+			await sleep(50);
 			// The holder crashed an hour ago and another process runs with its id now: its lease names the holder's start.
 			const reuser = await runningProcess();
+			assert.notEqual(reuser.start, holder.start);
 			const lock = leaseOf(reuser.pid, 60 * 60_000, holder.start);
 			assert.deepEqual(await pooledWorktreeHolder(storeDir(), lease.path), { owner: x, held: false });
 			assert.deepEqual(await evictIdleWorktrees(storeDir(), repository, { maxIdle: 0, settings }), [lease.path]);
