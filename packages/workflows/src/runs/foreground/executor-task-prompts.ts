@@ -215,21 +215,34 @@ export function sharedTaskDefaultsFromOptions(
 	return withoutUndefinedProperties(taskDefaults);
 }
 
+/**
+ * Merge shared defaults (chain, parallel or input-level options) under a task's own options. Shared
+ * `modelConstraints` always become inherited constraints, so only a task's own provider lists replace the
+ * user's modelRouting provider settings; shared ones narrow on top of them (#5046).
+ */
+export function withSharedDefaults<T extends Partial<StageOptions>>(
+	defaults: Partial<StageOptions>,
+	own: Partial<StageOptions>,
+): T {
+	const { modelConstraints: shared, ...rest } = defaults;
+	return {
+		...rest,
+		...own,
+		...(shared === undefined
+			? {}
+			: {
+					inheritedModelConstraints: [
+						...(defaults.inheritedModelConstraints ?? []),
+						shared,
+						...(own.inheritedModelConstraints ?? []),
+					],
+				}),
+	} as T;
+}
+
 export function taskWithSharedDefaults(
 	taskOptions: WorkflowTaskOptions,
 	options: WorkflowChainOptions | WorkflowParallelOptions,
 ): WorkflowTaskExecutionOptions {
-	return {
-		...sharedTaskDefaultsFromOptions(options),
-		...withoutUndefinedProperties(taskOptions),
-		...(options.modelConstraints !== undefined && taskOptions.modelConstraints !== undefined
-			? {
-					inheritedModelConstraints: [
-						...(options.inheritedModelConstraints ?? []),
-						options.modelConstraints,
-						...(taskOptions.inheritedModelConstraints ?? []),
-					],
-				}
-			: {}),
-	} as WorkflowTaskExecutionOptions;
+	return withSharedDefaults(sharedTaskDefaultsFromOptions(options), withoutUndefinedProperties(taskOptions));
 }

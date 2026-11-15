@@ -153,6 +153,12 @@ export interface CreateAgentSessionOptions {
 	resourceAdmissionSignal?: AbortSignal;
 	resourceAdmissionDelegated?: boolean;
 	/**
+	 * Receives the usage of every model call this session makes, and of every call its own child sessions report.
+	 * A parent's child session options set it, so the parent emits `child_session_usage` for each call a subagent
+	 * child makes and a workflow stage charges its subagents' spend (#5053).
+	 */
+	parentUsageSink?: (usage: import("@bastani/pi-ai/compat").Usage) => void;
+	/**
 	 * Internal: called with `true` when this session starts waiting for its resource-admission permit and `false` when
 	 * the wait ends, so an in-process subagent's start budget can tell that wait from the rest of its setup.
 	 */
