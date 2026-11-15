@@ -3,7 +3,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { OAuthSelectorComponent } from "../src/modes/interactive/components/oauth-selector.ts";
-import { openRouterGlow, radiusShimmer } from "../src/modes/interactive/components/provider-brand.ts";
+import { openRouterGlow } from "../src/modes/interactive/components/provider-brand.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
@@ -264,7 +264,6 @@ describe("OAuthSelectorComponent", () => {
 				modelRuntime: {
 					getOAuthProviderMetadata: () => [
 						{ id: "openrouter", name: "OpenRouter", isSubscription: false },
-						{ id: "radius", name: "Radius", isSubscription: false },
 						{ id: "anthropic", name: "Anthropic", isSubscription: true },
 					],
 					getApiKeyLoginProviderMetadata: () => [
@@ -277,18 +276,13 @@ describe("OAuthSelectorComponent", () => {
 		};
 
 		expect(getLoginProviderOptions.call(fakeThis).map(({ id, authType }) => `${id}:${authType}`)).toEqual([
-			"radius:oauth",
 			"openrouter:oauth",
 			"openrouter:api_key",
 			"anthropic:oauth",
 			"google:api_key",
 			"zai:api_key",
 		]);
-		expect(getLoginProviderOptions.call(fakeThis, "oauth").map(({ id }) => id)).toEqual([
-			"radius",
-			"openrouter",
-			"anthropic",
-		]);
+		expect(getLoginProviderOptions.call(fakeThis, "oauth").map(({ id }) => id)).toEqual(["openrouter", "anthropic"]);
 		expect(getLoginProviderOptions.call(fakeThis, "api_key").map(({ id }) => id)).toEqual([
 			"openrouter",
 			"google",
@@ -309,7 +303,6 @@ describe("OAuthSelectorComponent", () => {
 						{ id: "zai", name: "Z.AI" },
 						{ id: "openrouter", name: "OpenRouter" },
 						{ id: "anthropic", name: "Anthropic" },
-						{ id: "radius", name: "Radius" },
 					],
 					getApiKeyLoginProviderMetadata: () => [],
 					getOAuthProviderMetadata: () => [],
@@ -319,12 +312,7 @@ describe("OAuthSelectorComponent", () => {
 			},
 		};
 
-		expect(getLogoutProviderOptions.call(fakeThis).map(({ id }) => id)).toEqual([
-			"radius",
-			"openrouter",
-			"anthropic",
-			"zai",
-		]);
+		expect(getLogoutProviderOptions.call(fakeThis).map(({ id }) => id)).toEqual(["openrouter", "anthropic", "zai"]);
 	});
 
 	it("shows the brand style of a preferred partner only on its selected row", () => {
@@ -333,8 +321,8 @@ describe("OAuthSelectorComponent", () => {
 			"login",
 			fakeModelRuntime(),
 			[
-				{ id: "radius", name: "Radius", authType: "oauth" },
 				{ id: "openrouter", name: "OpenRouter", authType: "api_key" },
+				{ id: "anthropic", name: "Anthropic", authType: "oauth" },
 			],
 			() => {},
 			() => {},
@@ -344,15 +332,14 @@ describe("OAuthSelectorComponent", () => {
 		);
 		try {
 			const output = selector.render(120).join("\n");
-			expect(output).not.toContain(theme.fg("accent", "Radius"));
-			expect(output).toContain(theme.fg("text", "OpenRouter"));
-			expect(stripAnsi(output)).toContain("→ Radius");
+			expect(output).not.toContain(theme.fg("accent", "OpenRouter"));
+			expect(output).toContain(theme.fg("text", "Anthropic"));
+			expect(stripAnsi(output)).toContain("→ OpenRouter");
 
 			selector.handleInput("\x1b[B");
 			const moved = selector.render(120).join("\n");
-			expect(moved).toContain(theme.fg("text", "Radius"));
-			expect(moved).not.toContain(theme.fg("accent", "OpenRouter"));
-			expect(stripAnsi(moved)).toContain("→ OpenRouter");
+			expect(moved).toContain(theme.fg("text", "OpenRouter"));
+			expect(stripAnsi(moved)).toContain("→ Anthropic");
 		} finally {
 			selector.dispose();
 		}
@@ -395,7 +382,7 @@ describe("OAuthSelectorComponent", () => {
 				"login",
 				fakeModelRuntime(),
 				[
-					{ id: "radius", name: "Radius", authType: "oauth" },
+					{ id: "openrouter", name: "OpenRouter", authType: "oauth" },
 					{ id: "anthropic", name: "Anthropic", authType: "api_key" },
 				],
 				() => {},
@@ -440,7 +427,6 @@ describe("OAuthSelectorComponent", () => {
 			"login",
 			fakeModelRuntime(),
 			[
-				{ id: "radius", name: "Radius", authType: "oauth", subscription: false },
 				{ id: "openrouter", name: "OpenRouter", authType: "api_key" },
 				{ id: "anthropic", name: "Anthropic", authType: "api_key" },
 			],
@@ -449,15 +435,14 @@ describe("OAuthSelectorComponent", () => {
 		);
 
 		const output = stripAnsi(selector.render(120).join("\n"));
-		expect(output).toContain("→ Radius ✦ • not configured");
-		expect(output).toContain("  OpenRouter ✦ • not configured");
+		expect(output).toContain("→ OpenRouter ✦ • not configured");
 		expect(output).toContain("  Anthropic • not configured");
 	});
 
 	it("rebuilds the list on render only while a branded row is selected", () => {
 		const tui = { requestRender: () => {} } as unknown as TUI;
 		const providers = [
-			{ id: "radius", name: "Radius", authType: "oauth" as const },
+			{ id: "openrouter", name: "OpenRouter", authType: "oauth" as const },
 			{ id: "anthropic", name: "Anthropic", authType: "api_key" as const },
 		];
 		const countRebuilds = (selector: OAuthSelectorComponent, renders: number): number => {
@@ -498,14 +483,14 @@ describe("OAuthSelectorComponent", () => {
 		const withoutTui = new OAuthSelectorComponent(
 			"login",
 			fakeModelRuntime(),
-			[{ id: "radius", name: "Radius", authType: "oauth" }],
+			[{ id: "openrouter", name: "OpenRouter", authType: "oauth" }],
 			() => {},
 			() => {},
 		);
 		const withTui = new OAuthSelectorComponent(
 			"login",
 			fakeModelRuntime(),
-			[{ id: "radius", name: "Radius", authType: "oauth" }],
+			[{ id: "openrouter", name: "OpenRouter", authType: "oauth" }],
 			() => {},
 			() => {},
 			undefined,
@@ -529,7 +514,7 @@ describe("OAuthSelectorComponent", () => {
 			const selector = new OAuthSelectorComponent(
 				"login",
 				fakeModelRuntime(),
-				[{ id: "radius", name: "Radius", authType: "oauth" }],
+				[{ id: "openrouter", name: "OpenRouter", authType: "oauth" }],
 				() => {},
 				() => {},
 				undefined,
@@ -538,9 +523,9 @@ describe("OAuthSelectorComponent", () => {
 			);
 			try {
 				now.mockReturnValue(10_500);
-				expect(selector.render(120).join("\n")).toContain(radiusShimmer("Radius", 500));
+				expect(selector.render(120).join("\n")).toContain(openRouterGlow("OpenRouter", 500));
 				now.mockReturnValue(11_300);
-				expect(selector.render(120).join("\n")).toContain(radiusShimmer("Radius", 1_300));
+				expect(selector.render(120).join("\n")).toContain(openRouterGlow("OpenRouter", 1_300));
 			} finally {
 				selector.dispose();
 			}
@@ -650,7 +635,7 @@ describe("provider selectors opened by the interactive mode", () => {
 	});
 
 	function createHost(requestRender: () => void, created: Array<ReturnType<SelectorFactory>>): SelectorHost {
-		const options = [{ id: "radius", name: "Radius", authType: "oauth" as const }];
+		const options = [{ id: "openrouter", name: "OpenRouter", authType: "oauth" as const }];
 		return {
 			ui: { requestRender },
 			session: { modelRuntime: fakeModelRuntime() },

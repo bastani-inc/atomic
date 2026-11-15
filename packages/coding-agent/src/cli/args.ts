@@ -534,7 +534,7 @@ ${chalk.bold("Environment Variables:")}
   ${ENV_DEBUG.padEnd(32)} - Turn on debug mode when set to 1 (writes debug output to the /debug log)
   ${ENV_SELF_UPDATE_COMMAND.padEnd(32)} - Command ${APP_NAME} update runs to update ${APP_NAME} itself ({packageName}, {version}, {installSpec})
   ${ENV_TELEMETRY.padEnd(32)} - Override install telemetry when set to 1/true/yes or 0/false/no
-  ${ENV_SHARE_VIEWER_URL.padEnd(32)} - Base URL for /share command (default: https://pi.dev/session/)
+  ${ENV_SHARE_VIEWER_URL.padEnd(32)} - Base URL for /share command (default: https://bastani.ai/session/)
   PI_* aliases are also supported for app-specific variables above.
   ATOMIC_STORAGE                   - Storage selection JSON for sessions and workflow runs (overridden by --storage)
   ATOMIC_SESSIONS_STORAGE          - Session-only storage selection JSON (cannot be combined with ${ENV_SESSION_DIR})

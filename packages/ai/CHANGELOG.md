@@ -20,6 +20,10 @@ This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani
 - Fixed Anthropic, OpenAI Codex, OpenAI ChatGPT, Kimi Code, and Radius sign-ins asking you to run `/login` again after a token refresh whose response carries no new refresh token, which servers that don't rotate refresh tokens may send. The refresh now keeps the existing refresh token, and a response without `expires_in` takes its expiry from the access token's JWT `exp` claim or assumes one hour, instead of refreshing on every request ([#4959](https://github.com/bastani-inc/atomic/issues/4959))
 - Fixed Gemini 2.x on Google and Vertex rejecting a parallel tool batch when a result other than the last one contains an image: every function response of the batch now stays in one turn, in call order, and the image turns follow it ([#5048](https://github.com/bastani-inc/atomic/issues/5048))
 
+### Removed
+
+- Removed the `radius` provider, its OAuth flow and models, and the build-time fetch of its catalog from radius.pi.dev. The generic `pi-messages` API stays available for custom providers ([#5174](https://github.com/bastani-inc/atomic/issues/5174))
+
 ## [0.9.85] - 2026-11-13
 
 Dropped connections are retried automatically.

@@ -11,6 +11,7 @@ import { findPreferredAvailableModel } from "./model-resolver-defaults.ts";
 import { buildFallbackModel } from "./model-resolver-patterns.ts";
 import type { InitialModelResult, ScopedModel } from "./model-resolver-types.ts";
 import type { ModelRuntime } from "./model-runtime.js";
+import { removedProviderMessage } from "./removed-providers.ts";
 
 const CONFIGURED_DEFAULT_MODEL_UNAVAILABLE_MESSAGE =
 	"Configured default model is unavailable or unsupported. Update defaultProvider/defaultModel or use /model.";
@@ -128,6 +129,15 @@ export async function findInitialModel(options: {
 			if (perModel) thinkingLevel = perModel;
 			else if (defaultThinkingLevel) thinkingLevel = defaultThinkingLevel;
 			return { model, thinkingLevel, fallbackMessage: undefined };
+		}
+		const removed = removedProviderMessage(defaultProvider, 'settings.json "defaultProvider"');
+		if (removed) {
+			return {
+				model: undefined,
+				thinkingLevel: DEFAULT_THINKING_LEVEL,
+				fallbackMessage: removed,
+				fallbackReason: "configured-provider-unsupported",
+			};
 		}
 		if (!modelRuntime.getProvider(defaultProvider)) {
 			return {

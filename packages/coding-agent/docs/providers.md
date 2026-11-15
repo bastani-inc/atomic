@@ -31,9 +31,8 @@ Use `/login` in interactive mode, then select a provider:
 - Kimi Code
 - xAI (Grok/X subscription)
 - Meta (Muse subscription)
-- Radius
 
-Radius and OpenRouter, Atomic's preferred partners, come first in the `/login` and `/logout` provider lists and in the `/login <provider>` and `/logout <provider>` completions, marked with `✦`. All other providers follow alphabetically. In the lists, the selected Radius row shimmers in the Radius logo colors and the selected OpenRouter row glows in OpenRouter's brand color (lime on dark themes, violet on light themes).
+OpenRouter, Atomic's preferred partner, comes first in the `/login` and `/logout` provider lists and in the `/login <provider>` and `/logout <provider>` completions, marked with `✦`. All other providers follow alphabetically. In the lists, the selected OpenRouter row glows in OpenRouter's brand color (lime on dark themes, violet on light themes).
 
 Use `/login <provider>`, such as `/login openrouter` or `/login kimi-coding`, to go directly to a provider. Select subscription or API-key authentication when both are available.
 
@@ -296,11 +295,9 @@ Builtin workflows and subagents default to `model: "auto"`, selecting an availab
 
 Run `/login meta`, then select **Sign in with Meta** to open the device authorization flow. The login mints a Model API key that is re-minted automatically about once a day. `META_API_KEY` remains available through **Use an API key**.
 
-### Radius
+### Radius (removed)
 
-Radius is a dynamic `pi-messages` gateway. `/login radius` stores OAuth tokens in `auth.json`; its model catalog refreshes independently and is cached in `models-store.json`. API-key authentication is also available through `/login radius` or `RADIUS_API_KEY`. Custom Radius gateways can be declared in `models.json` with `"oauth": "radius"` and the gateway `baseUrl`.
-
-Once a fetched or cached Radius catalog is available, it replaces the bundled defaults. Models disabled by your organization no longer appear; an empty gateway catalog leaves no Radius models to select. Ask your organization owner to enable models if the list is empty.
+Atomic no longer ships the Radius provider: its gateway was operated by pi.dev, and Atomic does not contact pi's services. A `models.json` that configures `radius` or `"oauth": "radius"`, a `defaultProvider` of `radius`, or `--model radius/...` reports that the provider was removed. Remove those entries and pick another provider with `/login` and `/model`. A gateway that speaks the same `pi-messages` protocol can still be added as a custom provider with `"api": "pi-messages"`.
 
 ### OpenRouter
 
@@ -365,7 +362,6 @@ Catalog failures preserve the last usable models for each provider. See [catalog
 | ZAI Coding Plan (China)            | `ZAI_CODING_CN_API_KEY`                                                   | `zai-coding-cn`              |
 | OpenCode Zen                       | `OPENCODE_API_KEY`                                                        | `opencode`                   |
 | OpenCode Go                        | `OPENCODE_API_KEY`                                                        | `opencode-go`                |
-| Radius                             | `RADIUS_API_KEY`                                                          | `radius`                     |
 | Hugging Face                       | `HF_TOKEN`                                                                | `huggingface`                |
 | TypeSafe Jev                       | `TYPESAFE_API_KEY`                                                        | `typesafe`                   |
 | Morph                              | `MORPH_API_KEY`                                                           | `morph`                      |

@@ -367,7 +367,7 @@ export function expandTildePath(path: string): string {
 	return normalizePath(path);
 }
 
-const DEFAULT_SHARE_VIEWER_URL = "https://pi.dev/session/";
+const DEFAULT_SHARE_VIEWER_URL = "https://bastani.ai/session/";
 
 export const VERSION_ADOPTION_ENDPOINT =
 	"https://atomic-version-adoption.bastani-atomic.workers.dev/v1/version-adoption";

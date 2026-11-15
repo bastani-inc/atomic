@@ -16,6 +16,7 @@ import { stripJsonComments } from "../utils/json.ts";
 import { normalizePath } from "../utils/paths.ts";
 import { stripBom } from "../utils/text.ts";
 import { normalizeProviderKeys } from "./azure-provider-compat.js";
+import { removedProviderMessage } from "./removed-providers.ts";
 
 const SamplingParamsSchema = Type.Record(Type.String(), Type.Unknown());
 const SamplingParamsByThinkingLevelSchema = Type.Object(
@@ -117,7 +118,6 @@ const ProviderConfigSchema = Type.Object({
 				'API for the provider\'s models, such as "openai-completions", "openai-responses", "anthropic-messages", or "google-generative-ai".',
 		}),
 	),
-	oauth: Type.Optional(Type.Literal("radius", { description: "OAuth login flow. Requires baseUrl." })),
 	headers: Type.Optional(HeadersSchema),
 	compat: Type.Optional(ModelsJsonCompatSchema),
 	authHeader: Type.Optional(
@@ -163,6 +163,24 @@ function deepFreeze<T>(value: T): T {
 	return Object.freeze(value);
 }
 
+/** The error for a models.json that configures a removed provider: by its id, or through `"oauth": "radius"`. */
+function removedProvidersIn(parsed: unknown): string | undefined {
+	if (typeof parsed !== "object" || parsed === null || !("providers" in parsed)) return undefined;
+	const providers = parsed.providers;
+	if (typeof providers !== "object" || providers === null) return undefined;
+	for (const [providerId, provider] of Object.entries(providers)) {
+		const oauth =
+			typeof provider === "object" && provider !== null && "oauth" in provider ? provider.oauth : undefined;
+		const message =
+			removedProviderMessage(providerId, `models.json "providers.${providerId}"`) ??
+			(typeof oauth === "string"
+				? removedProviderMessage(oauth, `models.json "providers.${providerId}.oauth"`)
+				: undefined);
+		if (message) return message;
+	}
+	return undefined;
+}
+
 /** One immutable load of models.json. */
 export class ModelConfig {
 	private readonly providers: ReadonlyMap<string, ModelsJsonProvider>;
@@ -196,6 +214,9 @@ export class ModelConfig {
 				`Failed to parse models.json: ${error instanceof Error ? error.message : error}\n\nFile: ${path}`,
 			);
 		}
+
+		const removed = removedProvidersIn(parsed);
+		if (removed) return new ModelConfig(new Map(), `${removed}\n\nFile: ${path}`);
 
 		if (!validateModelsConfig.Check(parsed)) {
 			const errors =

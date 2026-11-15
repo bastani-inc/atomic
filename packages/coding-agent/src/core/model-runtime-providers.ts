@@ -1,13 +1,10 @@
 import type { Credential, Provider } from "@bastani/atomic-ai";
-import * as builtinProviderCatalog from "@bastani/atomic-ai/providers/all";
 import { type CopilotRoutingEnv, withCopilotEnvBaseUrl } from "@bastani/atomic-ai/providers/github-copilot-env";
-import type { ModelConfig } from "./model-config.ts";
 
-/** Rebuild the builtin layer, including configured Radius gateways. */
+/** Rebuild the builtin layer. */
 export function configureBuiltinProviders(
 	target: Map<string, Provider>,
 	defaults: ReadonlyMap<string, Provider>,
-	config: ModelConfig,
 	env: CopilotRoutingEnv = process.env,
 	getStoredCredential: (providerId: string) => Credential | undefined = () => undefined,
 ): void {
@@ -20,17 +17,5 @@ export function configureBuiltinProviders(
 			return credential?.type === "api_key" ? credential.key : undefined;
 		};
 		target.set(providerId, withCopilotEnvBaseUrl(provider, env, getStoredApiKey));
-	}
-	for (const providerId of config.getProviderIds()) {
-		const providerConfig = config.getProvider(providerId);
-		if (providerConfig?.oauth !== "radius" || !providerConfig.baseUrl) continue;
-		target.set(
-			providerId,
-			builtinProviderCatalog.radiusProvider({
-				id: providerId,
-				name: providerConfig.name ?? providerId,
-				gateway: providerConfig.baseUrl.replace(/\/v1\/?$/u, ""),
-			}),
-		);
 	}
 }

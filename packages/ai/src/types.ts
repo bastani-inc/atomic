@@ -105,7 +105,6 @@ export type KnownProvider =
 	| "openai-codex"
 	| "openai-decisions"
 	| "openai-images"
-	| "radius"
 	| "typesafe"
 	| "morph"
 	| "nvidia"

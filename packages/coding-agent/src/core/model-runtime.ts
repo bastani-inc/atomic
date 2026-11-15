@@ -226,7 +226,6 @@ export class ModelRuntime implements Models {
 				: new InMemoryCodingAgentModelsStore());
 		const builtinModelDataGeneratedAt = builtinProviderCatalog.getBuiltinModelDataGeneratedAt();
 		const providers = builtinProviderCatalog.builtinProviders().map((provider) => {
-			if (provider.id === "radius") return provider;
 			// OpenRouter narrows the catalog to the models, limits and prices of the user's key.
 			if (provider.id === "openrouter") {
 				return withPersonalizedCatalog(
@@ -250,7 +249,7 @@ export class ModelRuntime implements Models {
 			providers,
 			!isOfflineModeEnabled(),
 		);
-		runtime.configureRadiusProviders();
+		runtime.rebuildBuiltinProviders();
 		runtime.rebuildProviders();
 		const refreshFromNetwork = runtime.modelNetworkEnabled && options.allowModelNetwork === true;
 		const controller = refreshFromNetwork ? new AbortController() : undefined;
@@ -266,8 +265,8 @@ export class ModelRuntime implements Models {
 		}
 		return runtime;
 	}
-	private configureRadiusProviders(): void {
-		configureBuiltinProviders(this.builtins, this.defaultBuiltins, this.config, process.env, (providerId) =>
+	private rebuildBuiltinProviders(): void {
+		configureBuiltinProviders(this.builtins, this.defaultBuiltins, process.env, (providerId) =>
 			this.credentials.peek(providerId),
 		);
 	}
@@ -1251,7 +1250,7 @@ export class ModelRuntime implements Models {
 			return { aborted: true, errors: new Map<string, Error>() };
 		}
 		this.config = config;
-		this.configureRadiusProviders();
+		this.rebuildBuiltinProviders();
 		if (options.providers) options = { ...options, providers: options.providers.map(normalizeProviderId) };
 		if (options.providers) {
 			for (const providerId of new Set(options.providers)) this.recomposeProvider(providerId);

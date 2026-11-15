@@ -43,11 +43,6 @@ import {
 	validateGeneratedModelData,
 	validateModelDataDirectory,
 } from "./model-data.ts";
-import {
-	DEFAULT_RADIUS_GATEWAY,
-	getRadiusModelsFromConfig,
-	loadRadiusGatewayConfig,
-} from "../src/providers/radius-config.ts";
 import { OPENAI_MID_CONVO_EFFORT_MODEL_IDS } from "../src/providers/openai-mid-convo-effort.ts";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -1764,22 +1759,6 @@ async function fetchOpenRouterModels(): Promise<OpenRouterCatalog> {
 }
 
 
-async function fetchRadiusModels(): Promise<Model<"pi-messages">[]> {
-	try {
-		console.log("Fetching models from Radius API...");
-		const config = await withTransientRetries("https://radius.pi.dev/v1/config", (signal) =>
-			loadRadiusGatewayConfig(DEFAULT_RADIUS_GATEWAY, undefined, signal),
-		);
-		const models = getRadiusModelsFromConfig("radius", config);
-		if (models.length === 0) throw new Error("Radius API returned no models");
-		console.log(`Fetched ${models.length} models from Radius`);
-		return models;
-	} catch (error) {
-		console.error("Failed to fetch Radius models:", error);
-		if (generatorOptions.strict) throw error;
-		return [];
-	}
-}
 
 async function fetchAiGatewayModels(): Promise<{ chat: Model<any>[]; classifiers: ClassifierModel<"typesafe-system-one">[] }> {
 	try {
@@ -3230,15 +3209,13 @@ async function generateModels() {
 	// models.dev: Anthropic, Google, OpenAI, Groq, Cerebras, and others
 	// OpenRouter: its tool-capable routed catalog
 	// AI Gateway: OpenAI-compatible catalog with tool-capable models
-	// Radius: its unauthenticated public catalog; authenticated clients overlay it at runtime
 	const modelsDevModels = await loadModelsDevData();
 	const modelsDevClassifierModels = await loadModelsDevClassifierModels();
 	const openRouterCatalog = await fetchOpenRouterModels();
 	const aiGatewayCatalog = await fetchAiGatewayModels();
-	const radiusModels = await fetchRadiusModels();
 
 	// Combine chat models (models.dev has priority where sources overlap).
-	const allModels = [...modelsDevModels, ...openRouterCatalog.chat, ...aiGatewayCatalog.chat, ...radiusModels].filter(
+	const allModels = [...modelsDevModels, ...openRouterCatalog.chat, ...aiGatewayCatalog.chat].filter(
 		(model) =>
 			!(model.provider === "xai" && XAI_BUILTIN_EXCLUDED_MODEL_IDS.has(model.id)) &&
 			!((model.provider === "opencode" || model.provider === "opencode-go") && model.id === "gpt-5.3-codex-spark"),

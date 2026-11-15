@@ -94,7 +94,6 @@ For each built-in provider, Atomic maintains a list of tool-capable models, upda
 - OpenRouter (browser PKCE, optional key minting)
 - Kimi Code (device authorization with token refresh)
 - xAI (Grok/X subscription)
-- Radius
 
 **API keys:**
 - Anthropic
@@ -118,7 +117,6 @@ For each built-in provider, Atomic maintains a list of tool-capable models, upda
 - ZAI Coding Plan (China)
 - OpenCode Zen
 - OpenCode Go
-- Radius
 - Hugging Face
 - Fireworks
 - Together AI

@@ -26,13 +26,10 @@ These four values are the generic custom-provider APIs supported by `models.json
 | `baseUrl`        | API endpoint or gateway URL                                      |
 | `api`            | Generic custom-provider API type (see above)                     |
 | `apiKey`         | Optional API key (see value resolution below); omit when auth comes from `/login`, `auth.json`, or `--api-key` |
-| `oauth`          | Dynamic OAuth provider type. Currently `"radius"`; requires the gateway `baseUrl` |
 | `headers`        | Custom headers (see value resolution below)                      |
 | `authHeader`     | Set `true` to add `Authorization: Bearer <apiKey>` automatically |
 | `models`         | Array of model configurations                                    |
 | `modelOverrides` | Per-model overrides for matching built-in or extension-registered models on this provider |
-
-For a custom Radius gateway, set `"oauth": "radius"` and its `baseUrl`. Atomic uses Radius OAuth credentials and the gateway's dynamic `pi-messages` catalog.
 
 ### Value Resolution
 

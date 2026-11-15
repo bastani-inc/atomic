@@ -36,11 +36,6 @@
               "minLength": 1,
               "description": "API for the provider's models, such as \"openai-completions\", \"openai-responses\", \"anthropic-messages\", or \"google-generative-ai\"."
             },
-            "oauth": {
-              "type": "string",
-              "const": "radius",
-              "description": "OAuth login flow. Requires baseUrl."
-            },
             "headers": {
               "type": "object",
               "patternProperties": {

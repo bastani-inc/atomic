@@ -383,14 +383,9 @@ describe("post-login model refresh", () => {
 	for (const scenario of [
 		{ provider: "kimi-coding", name: "Kimi For Coding", authType: "api_key" as const, modelId: "kimi-for-coding" },
 		{ provider: "anthropic", name: "Anthropic", authType: "oauth" as const, modelId: "claude-opus-5-5" },
-		{ provider: "radius", name: "Radius", authType: "api_key" as const, modelId: "balanced" },
-		{ provider: "radius", name: "Radius", authType: "api_key" as const, modelId: "account-specific" },
 	]) {
 		it(`selects the ${scenario.provider} default immediately after ${scenario.authType} login`, async () => {
-			const model =
-				scenario.provider === "radius"
-					? { ...getModel("anthropic", "claude-opus-4-8")!, provider: "radius", id: scenario.modelId }
-					: getModel(scenario.provider, scenario.modelId);
+			const model = getModel(scenario.provider, scenario.modelId);
 			const refresh = vi.fn(async () => ({ aborted: false, errors: new Map() }));
 			const getAvailable = vi.fn(() => [model as Model<Api>]);
 			const setModel = vi.fn(async () => {});
