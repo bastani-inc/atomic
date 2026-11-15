@@ -38,6 +38,7 @@ import {
 } from "./git.ts";
 import { canonicalizeWorktreePath, defaultWorktreeSnapshotStoreDir } from "./paths.ts";
 import { loadSnapshotPathPolicy } from "./policy.ts";
+import { holderRuns, type ProcessHolder, thisProcess } from "./process-holder.ts";
 import { assertUsableBundlePrerequisites, assertUsableSnapshotRecord, isAllowedRemote } from "./records.ts";
 import { checkoutStoreIdOf, sameRemote, sharedRepositoryIdsOf } from "./repository-identity.ts";
 import {
@@ -1043,13 +1044,26 @@ interface PendingLfs {
 	readonly head: string;
 	readonly tree: string;
 	readonly remotes: readonly string[];
+	/** The process downloading, while one is: its Git steps may leave locks behind if it is killed. */
+	readonly holder?: ProcessHolder;
 }
 
-async function pendingLfsPath(worktree: GitRunOptions): Promise<string> {
-	return resolve(
-		worktree.cwd,
-		await gitText(["rev-parse", "--path-format=absolute", "--git-path", LFS_PENDING_FILE], worktree),
-	);
+/**
+ * How long a download whose process cannot be told from a later one given its id, where its start cannot be read,
+ * counts as running: past this its locks are its leftovers.
+ */
+const UNSTARTED_LFS_HOLDER_LIMIT_MS = 24 * 60 * 60_000;
+
+/** The marks of the worktrees this process is downloading into now. */
+const pullingHere = new Set<string>();
+
+/** `name` in the worktree's own Git directory. */
+async function worktreeGitPath(worktree: GitRunOptions, name: string): Promise<string> {
+	return resolve(worktree.cwd, await gitText(["rev-parse", "--path-format=absolute", "--git-path", name], worktree));
+}
+
+function pendingLfsPath(worktree: GitRunOptions): Promise<string> {
+	return worktreeGitPath(worktree, LFS_PENDING_FILE);
 }
 
 async function markLfsPending(worktree: GitRunOptions, pending: PendingLfs, snapshotId: string | null): Promise<void> {
@@ -1059,9 +1073,32 @@ async function markLfsPending(worktree: GitRunOptions, pending: PendingLfs, snap
 
 /** {@link pullLfsObjects} into a worktree marked pending, clearing the mark once no LFS file holds a pointer. */
 async function pullPendingLfs(worktree: GitRunOptions, pending: PendingLfs): Promise<string[]> {
-	const pointers = await pullLfsObjects(worktree, pending.head, pending.tree, pending.remotes);
-	if (pointers.length === 0) await rm(await pendingLfsPath(worktree), { force: true });
-	return pointers;
+	const marker = await pendingLfsPath(worktree);
+	const waiting: PendingLfs = { head: pending.head, tree: pending.tree, remotes: pending.remotes };
+	pullingHere.add(marker);
+	try {
+		await writeFile(marker, JSON.stringify({ ...waiting, holder: thisProcess() }));
+		const pointers = await pullLfsObjects(worktree, pending.head, pending.tree, pending.remotes);
+		if (pointers.length === 0) await rm(marker, { force: true });
+		else await writeFile(marker, JSON.stringify(waiting));
+		return pointers;
+	} finally {
+		pullingHere.delete(marker);
+	}
+}
+
+/**
+ * Whether the download that `pending` names is still running, in this process or another, so nothing of it may be
+ * touched. A download whose process is gone may have left `HEAD.lock` or `index.lock` behind.
+ */
+async function lfsHolderRuns(marker: string, pending: PendingLfs): Promise<boolean> {
+	if (pullingHere.has(marker)) return true;
+	const holder = pending.holder;
+	if (holder === undefined) return false;
+	const self = thisProcess();
+	if (holder.host === self.host && holder.pid === self.pid && holder.start === self.start) return false;
+	const age = Date.now() - (await stat(marker)).mtimeMs;
+	return holderRuns(holder, age, UNSTARTED_LFS_HOLDER_LIMIT_MS);
 }
 
 function isPendingLfs(value: unknown): value is PendingLfs {
@@ -1072,7 +1109,11 @@ function isPendingLfs(value: unknown): value is PendingLfs {
 		typeof pending.tree === "string" &&
 		/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(pending.tree) &&
 		Array.isArray(pending.remotes) &&
-		pending.remotes.every((remote) => typeof remote === "string" && isAllowedRemote(remote))
+		pending.remotes.every((remote) => typeof remote === "string" && isAllowedRemote(remote)) &&
+		(pending.holder === undefined ||
+			(typeof pending.holder?.host === "string" &&
+				Number.isSafeInteger(pending.holder.pid) &&
+				(pending.holder.start === undefined || typeof pending.holder.start === "string")))
 	);
 }
 
@@ -1096,6 +1137,11 @@ export async function pendingLfsDownload(
 		throw error;
 	}
 	const pending = parsePendingLfs(text);
+	if (pending !== undefined && (await lfsHolderRuns(marker, pending))) return undefined;
+	// A download killed during its Git steps leaves their locks; nothing else takes them in a worktree with a mark.
+	if (pending?.holder !== undefined) {
+		for (const lock of ["HEAD.lock", "index.lock"]) await rm(await worktreeGitPath(git, lock), { force: true });
+	}
 	const head = await gitText(["rev-parse", "-q", "--verify", "HEAD^{commit}"], { ...git, allowExitCodes: [1] });
 	// A download cut off mid-pull leaves HEAD at the snapshot's commit, which it names while it runs.
 	if (

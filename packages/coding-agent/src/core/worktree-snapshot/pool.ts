@@ -1,7 +1,5 @@
-import { createHash, randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { link, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
-import { hostname } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import lockfile from "proper-lockfile";
 import { failureDebugFields, reportDebug } from "../debug.ts";
@@ -9,9 +7,12 @@ import { isWorkspaceRestoreError } from "./errors.ts";
 import { nulFields, runGit } from "./git.ts";
 import { canonicalizeWorktreePath } from "./paths.ts";
 import { isDeniedSnapshotPath } from "./policy.ts";
+import { HOST, holderRuns as processHolderRuns, thisProcess } from "./process-holder.ts";
 import { type RepositoryId, sharedRepositoryIdOf, sharedRepositoryIdsOf } from "./repository-identity.ts";
 import { pooledWorktreeStore, resetPooledWorktree, verifyWorktree } from "./restore.ts";
 import type { SnapshotBlobStore, WorktreeRestoreWarning, WorktreeSnapshot, WorktreeSnapshotSettings } from "./types.ts";
+
+export { processStartToken } from "./process-holder.ts";
 
 /**
  * The per-machine pool of restored worktrees (#4748). A session resume restores into a slot at a stable path,
@@ -155,27 +156,7 @@ const heldSlots = new Map<string, HeldSlot>();
 /** The hold each lease of this process shares. */
 const leaseHolds = new WeakMap<WorktreeLease, HeldSlot>();
 const released = new WeakSet<WorktreeLease>();
-/** Names this host in lease names, so a process on the same host can tell whether a lease's holder still runs. */
-const HOST = createHash("sha256").update(hostname()).digest("hex").slice(0, 12);
-/**
- * When process `pid` of this host started, as `sha12` of the boot and the process's start time since boot, so a later
- * process given the same id is told apart (#4990); undefined where that cannot be read: without Linux's `/proc`, or
- * once the process is gone.
- */
-export function processStartToken(pid: number): string | undefined {
-	try {
-		const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-		// Fields after the command name, which may hold spaces and parentheses: the start time is the 22nd field.
-		const started = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
-		const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
-		if (started === undefined || !/^\d+$/.test(started) || boot === "") return undefined;
-		return createHash("sha256").update(`${boot}\n${started}`).digest("hex").slice(0, 12);
-	} catch {
-		return undefined;
-	}
-}
-
-const PROCESS_START = processStartToken(process.pid);
+const PROCESS_START = thisProcess().start;
 /**
  * Names this process's leases: its host and pid, a random part, as the pid alone could be reused by a later process,
  * and when this process started, where that can be read (#4990).
@@ -195,17 +176,9 @@ const LEASE_NAME = /^([0-9a-f]{12})-(\d+)-[0-9a-f]{8}(?:-([0-9a-f]{12}))?\.lease
  */
 function holderRuns(name: string, age: number): boolean {
 	const lease = LEASE_NAME.exec(name);
-	if (lease?.[1] !== HOST) return false;
-	const started = lease[3] === undefined ? undefined : processStartToken(Number(lease[2]));
-	if (started !== undefined) return started === lease[3];
-	// Without a start to compare, a process of that id is the holder only for so long (#4990).
-	if (age > UNSTARTED_LEASE_LIMIT_MS) return false;
-	try {
-		process.kill(Number(lease[2]), 0);
-		return true;
-	} catch (error) {
-		return (error as NodeJS.ErrnoException).code === "EPERM";
-	}
+	if (lease === null) return false;
+	const holder = { host: lease[1]!, pid: Number(lease[2]), ...(lease[3] === undefined ? {} : { start: lease[3] }) };
+	return processHolderRuns(holder, age, UNSTARTED_LEASE_LIMIT_MS);
 }
 
 function sameOwner(a: PoolOwner, b: PoolOwner): boolean {

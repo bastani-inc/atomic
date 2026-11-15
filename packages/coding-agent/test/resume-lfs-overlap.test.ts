@@ -361,4 +361,35 @@ describe("a multi-repository resume overlaps one repository's LFS download with 
 		},
 		OVERLAPPED_RESUME_TIMEOUT_MS,
 	);
+
+	test(
+		"the next resume clears the Git locks a download killed during its Git steps left, and finishes it (#5099)",
+		async () => {
+			const manager = await interruptedDuringLfs();
+			const worktree = manager.getWorktreeRootMappings().find((mapping) => mapping.from.endsWith("repo-b"))!.to;
+			// What a kill between the download's own Git steps leaves: their locks in the worktree's Git directory.
+			for (const lock of ["HEAD.lock", "index.lock"]) {
+				sandbox.write(await sandbox.git(worktree, "rev-parse", "--path-format=absolute", "--git-path", lock), "");
+			}
+
+			lfs.fault = undefined;
+			const prepared = ready(await prepareSessionResume(manager, options()));
+			assert.ok(
+				ran().includes(`started-b ${LFS_CONTENT}`),
+				`B's blueprint read the LFS content: ${ran().join(", ")}`,
+			);
+			assert.deepEqual(
+				prepared.notices.filter((notice) => /LFS/.test(notice.message) && notice.type === "warning"),
+				[],
+			);
+			const head = await sandbox.git(worktree, "rev-parse", "HEAD");
+			const recorded = manager.getWorktreeSnapshotRecords();
+			assert.ok(
+				[...recorded.values()].some((snapshot) => snapshot.head === head),
+				"HEAD is the snapshot's commit again",
+			);
+			await sandbox.git(worktree, "commit", "-q", "--allow-empty", "-m", "the index is not locked");
+		},
+		OVERLAPPED_RESUME_TIMEOUT_MS,
+	);
 });
