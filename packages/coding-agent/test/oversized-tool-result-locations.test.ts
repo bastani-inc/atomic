@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
+import { join } from "node:path";
 import { afterEach, test } from "vitest";
 import {
 	type PersistToolOutput,
@@ -16,6 +16,7 @@ import {
 import { capPersistedText } from "../src/core/tools/persisted-output-file.js";
 import { getTempRootDir } from "../src/core/tools/session-temp-dir.js";
 import { DEFAULT_MAX_RESULT_SIZE_CHARS, TOOL_RESULTS_SUBDIR } from "../src/core/tools/tool-limits.js";
+import { isPathInside } from "../src/utils/path-inside.js";
 
 const directories: string[] = [];
 afterEach(() => {
@@ -66,7 +67,7 @@ test("a session directory wins over persist (#4309, #4379)", async () => {
 
 	const path = await spilledTo({ sessionDir, persist });
 
-	assert.equal(relative(join(sessionDir, TOOL_RESULTS_SUBDIR), path).startsWith(".."), false);
+	assert.equal(isPathInside(join(sessionDir, TOOL_RESULTS_SUBDIR), path), true);
 	assert.deepEqual(stored, []);
 });
 
@@ -96,11 +97,11 @@ test("a failure to persist is the redirect's failure, not an unchanged result (#
 test("a session directory that is only whitespace, without persist, leaves the spill to the temp tree (#4309)", async () => {
 	const path = await spilledTo({ sessionDir: "   " });
 
-	assert.equal(relative(getTempRootDir(), path).startsWith(".."), false);
+	assert.equal(isPathInside(getTempRootDir(), path), true);
 });
 
 test("with neither a directory nor persist the spill goes to the temp tree (#4309)", async () => {
 	const path = await spilledTo({});
 
-	assert.equal(relative(getTempRootDir(), path).startsWith(".."), false);
+	assert.equal(isPathInside(getTempRootDir(), path), true);
 });

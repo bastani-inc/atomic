@@ -30,6 +30,7 @@ import { headersToRecord, providerHeadersToRecord } from "../utils/headers.ts";
 import { getIdentityHeaders } from "../utils/identity.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
 import { getRetryAfterMs } from "../utils/retry-hints.ts";
+import { ServerSentEventDecoder } from "../utils/sse.ts";
 import { createStreamDeadline, withStreamDeadline } from "../utils/stream-deadline.ts";
 import { ToolCallArgumentsStream } from "../utils/streaming-json.ts";
 import { ownedSlice } from "../utils/text.ts";
@@ -304,9 +305,8 @@ async function* readPiMessagesEvents(
 	stream: ReadableStream<Uint8Array>,
 	signal?: AbortSignal,
 ): AsyncGenerator<PiMessagesEvent> {
-	const decoder = new TextDecoder();
+	const decoder = new ServerSentEventDecoder();
 	const reader = stream.getReader();
-	let buffer = "";
 	const onAbort = () => {
 		void reader.cancel().catch(() => {});
 	};
@@ -317,28 +317,15 @@ async function* readPiMessagesEvents(
 			if (signal?.aborted) throw signal.reason ?? new Error("Request was aborted");
 			const { done, value } = await reader.read();
 			if (signal?.aborted) throw signal.reason ?? new Error("Request was aborted");
-			buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
-			buffer = buffer.replace(/\r\n/g, "\n");
-
-			let split = buffer.indexOf("\n\n");
-			while (split !== -1) {
-				const event = parsePiMessagesEvent(buffer.slice(0, split));
+			for (const sse of done ? decoder.end() : decoder.decode(value)) {
+				const event = parsePiMessagesEvent(sse.data);
 				if (event) {
 					yield event;
 				}
-				buffer = buffer.slice(split + 2);
-				split = buffer.indexOf("\n\n");
 			}
 
 			if (done) {
 				break;
-			}
-		}
-
-		if (buffer.trim()) {
-			const event = parsePiMessagesEvent(buffer);
-			if (event) {
-				yield event;
 			}
 		}
 	} finally {
@@ -350,13 +337,8 @@ async function* readPiMessagesEvents(
 	}
 }
 
-function parsePiMessagesEvent(raw: string): PiMessagesEvent | undefined {
-	const data = raw
-		.split("\n")
-		.find((line) => line.startsWith("data:"))
-		?.slice(5)
-		.trim();
-
+function parsePiMessagesEvent(sseData: string): PiMessagesEvent | undefined {
+	const data = sseData.trim();
 	return data && data !== "[DONE]" ? (JSON.parse(data) as PiMessagesEvent) : undefined;
 }
 

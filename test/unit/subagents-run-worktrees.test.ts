@@ -8,6 +8,7 @@ import {
 	readFileSync,
 	realpathSync,
 	rmSync,
+	symlinkSync,
 	unlinkSync,
 	writeFileSync,
 } from "node:fs";
@@ -179,4 +180,24 @@ test("after a restart, a resumed child's tracked and untracked edits are saved a
 	const patch = readFileSync(join(diffsDir, "task-0-worker.2.patch"), "utf8");
 	assert.match(patch, /\+resumed edit/, "the tracked edit is in the resumed execution's patch");
 	assert.match(patch, /new-file\.md[\s\S]*\+resumed untracked/, "the untracked file is in the patch");
+});
+
+test("cleanup unlinks a synthetic link named '..cache' before git removes the worktree (#4836)", () => {
+	const repo = repositoryWithSetupSources();
+	const { setup } = worktreeRun(repo);
+	const worktree = setup.worktrees[0]!;
+	const shared = join(repo, "shared-cache");
+	mkdirSync(shared);
+	writeFileSync(join(shared, "entry.txt"), "main checkout data\n");
+	const link = join(worktree.path, "..cache");
+	symlinkSync(shared, link, process.platform === "win32" ? "junction" : "dir");
+	// A locked worktree survives `git worktree remove --force`, so the links cleanup removed stay observable.
+	runGitChecked(repo, ["worktree", "lock", worktree.path]);
+	cleanups.push(() => runGitChecked(repo, ["worktree", "remove", "--force", "--force", worktree.path]));
+
+	cleanupWorktrees({ ...setup, worktrees: [{ ...worktree, syntheticPaths: ["..cache"] }] });
+
+	assert.equal(existsSync(worktree.path), true, "the locked worktree is still present");
+	assert.throws(() => lstatSync(link), { code: "ENOENT" }, "cleanup unlinked the '..cache' link");
+	assert.equal(readFileSync(join(shared, "entry.txt"), "utf8"), "main checkout data\n");
 });

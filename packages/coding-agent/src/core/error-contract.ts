@@ -34,24 +34,47 @@ export const MAX_GUARDED_CAUSE_DEPTH = 8;
 
 const SCHEME_LETTER = /[a-z]/iu;
 const SCHEME_CHARACTER = /[a-z\d+.-]/iu;
-const WORD_CHARACTER = /\w/iu;
 const WHITESPACE = /\s/u;
 
-export function redactUrlCredentials(text: string, context: "text" | "server-url" = "text"): string {
+/** The part of a URL's user info that redaction keeps: an `ssh://` user name when asked, otherwise nothing. */
+function keptUser(
+	text: string,
+	schemeStart: number,
+	schemeEnd: number,
+	lastAt: number,
+	options: UrlCredentialRedactionOptions,
+): string {
+	if (options.keepSshUser !== true || text.slice(schemeStart, schemeEnd).toLowerCase() !== "ssh") return "";
+	const user = text.slice(schemeEnd + 3, lastAt).split(":", 1)[0]!;
+	return user === "" ? "" : `${user}@`;
+}
+
+/** How {@link redactUrlCredentials} treats the user info it removes. */
+export interface UrlCredentialRedactionOptions {
+	/** Keep an `ssh://` user name, which names an account rather than a secret; its password is still removed. */
+	readonly keepSshUser?: boolean;
+}
+
+/**
+ * Remove the user info of every URL in `text`: everything from the scheme's `://` up to the last `@` of the
+ * authority, which ends at `/`, `?`, `#` or (in text) whitespace, so a password or token that contains `@` is removed
+ * whole. A URL's scheme is the run of scheme characters before `://`, from its first letter. The scan is linear in
+ * the length of `text`.
+ */
+export function redactUrlCredentials(
+	text: string,
+	context: "text" | "server-url" = "text",
+	options: UrlCredentialRedactionOptions = {},
+): string {
 	const parts: string[] = [];
 	let copiedThrough = 0;
 	let from = 0;
 	for (;;) {
 		const schemeEnd = text.indexOf("://", from);
 		if (schemeEnd === -1) return parts.join("") + text.slice(copiedThrough);
-		let hasScheme = false;
+		let schemeStart = -1;
 		for (let index = schemeEnd - 1; index >= 0 && SCHEME_CHARACTER.test(text[index]!); index--) {
-			if (
-				SCHEME_LETTER.test(text[index]!) &&
-				(context === "server-url" || index === 0 || !WORD_CHARACTER.test(text[index - 1]!))
-			) {
-				hasScheme = true;
-			}
+			if (SCHEME_LETTER.test(text[index]!)) schemeStart = index;
 		}
 		const authorityStart = schemeEnd + 3;
 		let lastAt = -1;
@@ -67,9 +90,10 @@ export function redactUrlCredentials(text: string, context: "text" | "server-url
 			}
 			if (character === "@") lastAt = index;
 		}
-		if (hasScheme && lastAt !== -1) {
-			if (context === "server-url") return text.slice(0, authorityStart) + text.slice(lastAt + 1);
-			parts.push(text.slice(copiedThrough, authorityStart));
+		if (schemeStart !== -1 && lastAt !== -1) {
+			const user = keptUser(text, schemeStart, schemeEnd, lastAt, options);
+			if (context === "server-url") return text.slice(0, authorityStart) + user + text.slice(lastAt + 1);
+			parts.push(text.slice(copiedThrough, authorityStart), user);
 			copiedThrough = lastAt + 1;
 		}
 		from = authorityStart;

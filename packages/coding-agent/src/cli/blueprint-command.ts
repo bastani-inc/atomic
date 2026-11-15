@@ -1,6 +1,7 @@
 /**
- * `atomic blueprint cache-key` prints the cache contract of a repository for a runner's cache action: the entries its
- * blueprint's `cache:` section declares, plus Atomic's Git object store and extension transpile cache (#4748).
+ * `atomic blueprint cache-key` prints the cache contract of a repository for a runner's cache action: the package stores
+ * its lockfiles name and the paths its `resume.cache` setting adds, plus Atomic's Git object store and extension
+ * transpile cache (#4748).
  * `atomic blueprint prebuild` builds a repository ahead of time into an idle worktree a later resume claims, and with
  * `--park` moves its build output where the cache contract's `build` entry saves it from.
  */
@@ -26,11 +27,13 @@ const HELP = `Usage:
 Commands:
   cache-key  Print the cache entries of the repository at [dir] (default: the current directory)
              for a runner's cache action such as actions/cache: a key, a restore prefix and the
-             paths of each. "stores" holds the package stores the blueprint's cache: section
-             declares, "build" its kind: build output, "git" Atomic's Git object store of the
-             repository, and "atomic" Atomic's extension transpile cache. Paths that could carry
-             credentials are left out with a warning on stderr. Atomic never uploads or downloads
-             caches; save them only from trusted default-branch jobs.
+             paths of each. "stores" holds the package stores detected from the repository's
+             lockfiles (npm, pnpm, Yarn, Bun, Cargo, uv, pip, Poetry, Go, Gradle, Maven) plus the
+             store paths of the resume.cache setting, "build" that setting's build paths, "git"
+             Atomic's Git object store of the repository, and "atomic" Atomic's extension
+             transpile cache. Paths that could carry credentials are left out with a warning on
+             stderr. Atomic never uploads or downloads caches; save them only from trusted
+             default-branch jobs.
   prebuild   Restore the committed HEAD of the repository at [dir] into a new restored worktree,
              build it with its blueprints (initialize and maintenance), and leave it idle, so a
              later resume of a session of the repository claims it ready-built. Only committed
@@ -41,7 +44,7 @@ Commands:
 Options:
   --format <format>  text (default), json, or github-output: <name>-key, <name>-restore-prefix and
                      <name>-paths lines to append to $GITHUB_OUTPUT
-  --park             (prebuild) Move the blueprint's kind: build output into the seed directory that
+  --park             (prebuild) Move the build paths of resume.cache into the seed directory that
                      the "build" cache entry saves, for a resume on another machine to adopt
   --approve, -a      (prebuild) Trust the project for this run`;
 
@@ -96,6 +99,8 @@ export interface BlueprintCommandOptions {
 	readonly agentDir: string;
 	/** What `~` in a cache path expands to. Default: the user's home directory. */
 	readonly home?: string;
+	/** The environment whose variables move package-manager stores. Default: this process's. */
+	readonly env?: Readonly<Record<string, string | undefined>>;
 	readonly stdout?: (text: string) => void;
 	readonly stderr?: (text: string) => void;
 }
@@ -119,6 +124,7 @@ export async function runBlueprintCommand(args: readonly string[], options: Blue
 		const keys = await blueprintCacheKeys(root, {
 			agentDir: options.agentDir,
 			...(options.home === undefined ? {} : { home: options.home }),
+			...(options.env === undefined ? {} : { env: options.env }),
 		});
 		for (const warning of keys.warnings) stderr(`Warning: ${warning}\n`);
 		stdout(formatBlueprintCacheKeys(keys, command.format));
@@ -178,7 +184,7 @@ async function prebuild(
 	if (outcome.parkMs !== null) {
 		stdout(
 			outcome.parked.length === 0
-				? "parked nothing: the blueprint declares no kind: build output that the build produced\n"
+				? "parked nothing: resume.cache declares no build path that the build produced\n"
 				: `parked ${outcome.parked.join(", ")} in ${(outcome.parkMs / 1000).toFixed(1)} s\n`,
 		);
 	}

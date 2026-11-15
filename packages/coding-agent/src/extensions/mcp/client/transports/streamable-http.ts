@@ -36,12 +36,22 @@ export interface ConsumeSseOptions {
 	onId?(id: string): void;
 	/** Called for every valid `retry` field, in milliseconds. */
 	onRetry?(delayMs: number): void;
+	/** Cancels the stream and rejects with an abort error, even when the stream's source ignores aborts. */
+	signal?: AbortSignal;
 }
 
 export async function consumeSseStream(stream: ReadableStream<Uint8Array>, options: ConsumeSseOptions): Promise<void> {
 	const reader = stream.getReader();
+	const { signal } = options;
+	const onAbort = () => {
+		reader.cancel().catch(() => {});
+	};
+	signal?.addEventListener("abort", onAbort);
 	const decoder = new TextDecoder();
-	let buffered = "";
+	// The incomplete line received so far, kept as pieces and joined once when its line break arrives, so a long
+	// line that arrives in many chunks is scanned and copied only once.
+	let pendingPieces: string[] = [];
+	let pendingBytes = 0;
 	let eventName: string | undefined;
 	let eventId: string | undefined;
 	let dataLines: string[] = [];
@@ -87,27 +97,32 @@ export async function consumeSseStream(stream: ReadableStream<Uint8Array>, optio
 
 	// SSE lines end with CRLF, LF, or a lone CR.
 	let skipLeadingLf = false;
-	const consumeLines = () => {
+	const takePendingLine = (rest: string) => {
+		pendingPieces.push(rest);
+		const line = pendingPieces.join("");
+		pendingPieces = [];
+		pendingBytes = 0;
+		return line;
+	};
+	// Scans only the newly decoded text; the incomplete line before it is never rescanned.
+	const consumeLines = (text: string) => {
 		let start = 0;
-		for (let i = 0; i < buffered.length; i++) {
-			const char = buffered[i];
-			if (char !== "\r" && char !== "\n") continue;
-			processLine(buffered.slice(start, i));
-			if (char === "\r") {
-				if (i + 1 < buffered.length) {
-					if (buffered[i + 1] === "\n") i++;
-				} else {
-					skipLeadingLf = true;
-				}
-			}
-			start = i + 1;
+		for (const lineBreak of text.matchAll(/\r\n?|\n/g)) {
+			processLine(takePendingLine(text.slice(start, lineBreak.index)));
+			start = lineBreak.index + lineBreak[0].length;
+			// A CR that ends the text may be the first half of a CRLF.
+			if (lineBreak[0] === "\r" && start === text.length) skipLeadingLf = true;
 		}
-		buffered = buffered.slice(start);
+		const rest = text.slice(start);
+		pendingPieces.push(rest);
+		pendingBytes += Buffer.byteLength(rest);
 	};
 
 	try {
 		while (true) {
 			const { done, value } = await reader.read();
+			// A cancelled read ends like the stream; the partial event must not be dispatched.
+			if (signal?.aborted) throw new McpAbortError();
 			if (done) break;
 			let text = decoder.decode(value, { stream: true });
 			// A CRLF split across chunks: the CR already ended the line, so drop the LF.
@@ -115,22 +130,21 @@ export async function consumeSseStream(stream: ReadableStream<Uint8Array>, optio
 				if (text.startsWith("\n")) text = text.slice(1);
 				skipLeadingLf = false;
 			}
-			buffered += text;
-			consumeLines();
-			if (Buffer.byteLength(buffered) > maxEventBytes)
-				throw new Error(`MCP SSE event exceeds ${maxEventBytes} bytes`);
+			consumeLines(text);
+			if (pendingBytes > maxEventBytes) throw new Error(`MCP SSE event exceeds ${maxEventBytes} bytes`);
 		}
 		let tail = decoder.decode();
 		if (skipLeadingLf && tail.startsWith("\n")) tail = tail.slice(1);
-		buffered += tail;
-		consumeLines();
-		if (buffered) processLine(buffered);
+		consumeLines(tail);
+		// The last line needs no line break, and the end of the stream ends the pending event.
+		processLine(takePendingLine(""));
 		dispatch();
 	} catch (error) {
 		// Releasing the lock alone leaves the response open; the original error wins over a failed cancel.
 		await reader.cancel().catch(() => {});
 		throw error;
 	} finally {
+		signal?.removeEventListener("abort", onAbort);
 		reader.releaseLock();
 	}
 }
@@ -315,7 +329,7 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 			return;
 		}
 		if (type === "text/event-stream" && response.body) {
-			void this.consumeResponseStream(response.body, message.id);
+			void this.consumeResponseStream(response.body, message.id, signal);
 			return;
 		}
 		await discard(response);
@@ -351,6 +365,8 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 		signal?: AbortSignal,
 	): Promise<Response> {
 		const onUnauthorized = this.options.authProvider?.onUnauthorized?.bind(this.options.authProvider);
+		// Aborting the request ends its fetch and response body, as closing the transport does.
+		const fetchSignal = signal ? AbortSignal.any([this.controller.signal, signal]) : this.controller.signal;
 		for (let attempt = 0; ; attempt++) {
 			const { headers, token } = await this.headers(init.headers);
 			if (signal?.aborted) throw new McpAbortError();
@@ -358,7 +374,7 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 				method,
 				headers,
 				body: init.body,
-				signal: this.controller.signal,
+				signal: fetchSignal,
 			});
 			if (attempt > 0 || !onUnauthorized || !needsAuthorization(response)) return response;
 			try {
@@ -402,9 +418,11 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 		stream: ReadableStream<Uint8Array>,
 		cursor: StreamCursor,
 		onMessage?: (message: JsonRpcMessage) => void,
+		signal?: AbortSignal,
 	): Promise<void> {
 		await consumeSseStream(stream, {
 			maxEventBytes: this.options.maxMessageBytes ?? DEFAULT_MAX_MESSAGE_BYTES,
+			signal,
 			onId: (id) => {
 				if (id !== cursor.lastEventId) cursor.advanced = true;
 				cursor.lastEventId = id;
@@ -431,9 +449,14 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 	/**
 	 * Read the SSE stream answering one request. When the stream ends or breaks before the response
 	 * arrives and the server assigned event IDs, resume it with GET and `Last-Event-ID`, as the
-	 * server may close response streams at will. Otherwise only this request fails.
+	 * server may close response streams at will. Otherwise only this request fails. Once the request settles
+	 * (`signal` aborts on answer, cancellation, or timeout), the stream is cancelled and never resumed.
 	 */
-	private async consumeResponseStream(body: ReadableStream<Uint8Array>, requestId: JsonRpcId): Promise<void> {
+	private async consumeResponseStream(
+		body: ReadableStream<Uint8Array>,
+		requestId: JsonRpcId,
+		signal: AbortSignal | undefined,
+	): Promise<void> {
 		const cursor: StreamCursor = { lastEventId: undefined, retryMs: undefined, advanced: false };
 		let answered = false;
 		const onMessage = (message: JsonRpcMessage) => {
@@ -444,7 +467,7 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 		for (let attempt = 0; ; ) {
 			if (stream) {
 				try {
-					await this.consumeSse(stream, cursor, onMessage);
+					await this.consumeSse(stream, cursor, onMessage, signal);
 					failure = undefined;
 				} catch (error) {
 					failure = error;
@@ -457,14 +480,14 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 			cursor.advanced = false;
 			if (!(await this.sleep(this.reconnectDelay(attempt++, cursor.retryMs)))) return;
 			try {
-				stream = await this.openSseStream(cursor.lastEventId);
+				stream = await this.openSseStream(cursor.lastEventId, signal);
 			} catch (error) {
 				failure = error;
 				if (!this.isRetryable(error)) break;
 				stream = undefined;
 			}
 		}
-		if (this.closed) return;
+		if (this.closed || signal?.aborted) return;
 		const reason = failure === undefined ? "stream ended without a response" : toError(failure).message;
 		this.emitMessage({
 			jsonrpc: "2.0",
@@ -508,13 +531,20 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 	}
 
 	/** Open a GET SSE stream. Resolves to undefined when the server answers 405 (no GET stream). */
-	private async openSseStream(lastEventId: string | undefined): Promise<ReadableStream<Uint8Array> | undefined> {
-		const response = await this.authorizedFetch("GET", {
-			headers: {
-				accept: "text/event-stream",
-				...(lastEventId === undefined ? {} : { "last-event-id": lastEventId }),
+	private async openSseStream(
+		lastEventId: string | undefined,
+		signal?: AbortSignal,
+	): Promise<ReadableStream<Uint8Array> | undefined> {
+		const response = await this.authorizedFetch(
+			"GET",
+			{
+				headers: {
+					accept: "text/event-stream",
+					...(lastEventId === undefined ? {} : { "last-event-id": lastEventId }),
+				},
 			},
-		});
+			signal,
+		);
 		if (response.status === 405) {
 			await discard(response);
 			return undefined;
