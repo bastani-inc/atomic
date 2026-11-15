@@ -7,7 +7,7 @@
  * next to the file, whose mtime the filesystem stamps, so holders stamp refresh times in the filesystem's clock and
  * readers measure ages in it.
  */
-import { randomUUID } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import * as fs from "node:fs";
 import { open, stat, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -16,10 +16,11 @@ import lockfile, { type LockOptions } from "proper-lockfile";
 /**
  * How far the clock of the filesystem holding `directory` runs ahead of this process's clock, in milliseconds: the
  * mtime the filesystem stamps on a file created in `directory` now, less this process's time now. The probe file,
- * `.clock-<random>.probe`, is removed at once. 0, this process's own clock, when no file can be created there.
+ * `.clock-<random hex>.probe`, is removed at once. 0, this process's own clock, when no file can be created there.
  */
 export async function sharedClockOffset(directory: string): Promise<number> {
-	const probe = join(directory, `.clock-${randomUUID()}.probe`);
+	// Random bytes, not a UUID: the probe's name never takes a UUID the caller's own records draw.
+	const probe = join(directory, `.clock-${randomBytes(8).toString("hex")}.probe`);
 	try {
 		const before = Date.now();
 		await (await open(probe, "w")).close();
