@@ -190,6 +190,32 @@ describe("tar member writes (#4906)", () => {
 		assert.deepEqual(names(appended), ["g", longName]);
 	});
 
+	it("rewrites a GNU member with a long name through a PAX path, keeping a 100-byte name in its header (#4906)", () => {
+		const longName = `x/${"y".repeat(120)}`;
+		const gnu = { name: longName.slice(0, 100), magic: "gnu" as const, gnuExtra: "1234" };
+		const archive = Buffer.concat([
+			member({ name: "././@LongLink", type: "L", magic: "gnu" }, `${longName}\0`),
+			member(gnu, "old"),
+			member({ name: "n".repeat(100), magic: "gnu", gnuExtra: "5678" }, "old"),
+			EOF,
+		]);
+		const written = writeTarMember(archive, longName, Buffer.from("new"), "t.tar");
+		const records = Buffer.from(paxRecord("path", longName));
+		const rest = writeTarMember(written, "n".repeat(100), Buffer.from("two"), "t.tar");
+		assert.deepEqual(
+			rest,
+			Buffer.concat([
+				header({ name: "././@PaxHeader", type: "x", size: records.length }),
+				pad(records),
+				header({ ...gnu, size: 3 }),
+				pad(Buffer.from("new")),
+				header({ name: "n".repeat(100), magic: "gnu", gnuExtra: "5678", size: 3 }),
+				pad(Buffer.from("two")),
+				EOF,
+			]),
+		);
+	});
+
 	it("clears a POSIX header's old prefix when it rewrites the name (#4906)", () => {
 		const dir = "d".repeat(20);
 		const name = `${"q".repeat(90)}.txt`;
@@ -203,6 +229,9 @@ describe("tar member writes (#4906)", () => {
 		["2", "symbolic link"],
 		["1", "hard link"],
 		["5", "directory"],
+		["3", "character device"],
+		["4", "block device"],
+		["6", "FIFO"],
 		["V", "type 'V' entry"],
 	])("refuses to overwrite a type %j member (#4906)", (type, description) => {
 		const archive = Buffer.concat([member({ name: "m", type }), EOF]);
@@ -264,6 +293,49 @@ describe("tar archive listing (#4906)", () => {
 		);
 	});
 
+	it("names a link by its GNU long link name header's member and lists an archive without an end marker (#4906)", () => {
+		const archive = Buffer.concat([
+			member({ name: "././@LongLink", type: "K" }, `${"t".repeat(120)}\0`),
+			member({ name: "link", type: "2", linkname: "t".repeat(100) }),
+			member({ name: "last" }, "x".repeat(BLOCK)),
+		]);
+		const listing = listTarMembers(archive, "t.tar");
+		assert.deepEqual(
+			listing.members.map((entry) => [entry.name, entry.type, entry.start]),
+			[
+				["link", "2", 0],
+				["last", "0", BLOCK * 3],
+			],
+		);
+		assert.equal(listing.end, archive.length);
+	});
+
+	it("reads empty and space-terminated numeric fields (#4906)", () => {
+		const block = header({ name: "a", size: 0 });
+		block.fill(0, 124, 136);
+		const spaced = header({ name: "b", size: 3 });
+		spaced.write(" 00000000003", 124);
+		for (const damaged of [block, spaced]) {
+			damaged.fill(0x20, 148, 156);
+			let sum = 0;
+			for (const byte of damaged) sum += byte;
+			damaged.write(`${sum.toString(8).padStart(6, "0")}\0 `, 148);
+		}
+		const listing = listTarMembers(Buffer.concat([block, spaced, pad(Buffer.from("bbb")), EOF]), "t.tar");
+		assert.deepEqual(
+			listing.members.map((entry) => [entry.name, entry.data.toString()]),
+			[
+				["a", ""],
+				["b", "bbb"],
+			],
+		);
+	});
+
+	it("refuses a negative PAX size (#4906)", () => {
+		const archive = Buffer.concat([paxMember(paxRecord("size", "-1"), { name: "a" }), EOF]);
+		assert.throws(() => listTarMembers(archive, "t.tar"), new Error("Truncated tar archive: t.tar"));
+	});
+
 	it("uses a PAX size record for the member's data length (#4906)", () => {
 		const data = "z".repeat(600);
 		const archive = Buffer.concat([
@@ -301,6 +373,11 @@ describe("tar archive listing (#4906)", () => {
 			"Invalid tar header checksum at offset 0: t.tar",
 		],
 		["a GNU sparse member", header({ name: "a", type: "S", size: 0 }), "Unsupported GNU sparse member in t.tar"],
+		[
+			"a non-octal checksum",
+			Buffer.from(header({ name: "a", size: 0 }).fill(0x7a, 148, 154)),
+			"Invalid tar header checksum in t.tar",
+		],
 	])("refuses %s (#4906)", (_case, bytes, message) => {
 		assert.throws(() => listTarMembers(bytes, "t.tar"), new Error(message));
 	});

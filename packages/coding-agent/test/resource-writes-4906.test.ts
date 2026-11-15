@@ -94,6 +94,15 @@ describe("conflict:// marker edge cases (#4906)", () => {
 		assert.equal(await readFile(file, "utf8"), "t\r\nend\r\n");
 	});
 
+	it("gives a two-way region an empty base (#4906)", async () => {
+		const dir = await tempDir();
+		const file = join(dir, "c.txt");
+		await writeFile(file, "head\n<<<<<<< a\no\n=======\nt\n>>>>>>> b\ntail\n");
+		assert.equal(await read(dir, "conflict://1/base"), "");
+		await write(dir, "conflict://1", "@base");
+		assert.equal(await readFile(file, "utf8"), "head\ntail\n");
+	});
+
 	it.each([
 		["eight", "<<<<<<<< x"],
 		["a label without a space", "<<<<<<<x"],
@@ -230,6 +239,15 @@ describe("SQLite row selectors use the complete primary key (#4906)", () => {
 		assert.ok(!one.includes("Grace"), one);
 	});
 
+	it("names rows of a table without a primary key by rowid in search results (#4906)", async () => {
+		const dir = await tempDir();
+		const db = new TestSqliteDatabase(join(dir, "data.sqlite"));
+		db.run("create table notes (body text)");
+		db.run("insert into notes values ('first'), ('second')");
+		db.close();
+		assert.equal(await search(dir, "second", "data.sqlite:notes"), 'data.sqlite:notes:2: {"body":"second"}');
+	});
+
 	it("explains how to select a composite-key row and validates the key values (#4906)", async () => {
 		const dir = await tempDir();
 		sqliteFixture(
@@ -257,11 +275,11 @@ describe("SQLite row selectors use the complete primary key (#4906)", () => {
 		db.run("create table pairs (a integer, b integer, id integer, primary key (a, b))");
 		db.close();
 		await write(dir, "data.sqlite:tags", "{id: 'x', label: 'X'}");
-		await write(dir, "data.sqlite:pairs", "{a: 1, b: 2, id: 9}");
+		await write(dir, "data.sqlite:pairs", "{b: 2, id: 9}");
 		const after = new TestSqliteDatabase(database);
 		try {
 			assert.deepEqual({ ...after.query("select slug, label from tags").all()[0] }, { slug: "x", label: "X" });
-			assert.deepEqual({ ...after.query("select a, b, id from pairs").all()[0] }, { a: 1, b: 2, id: 9 });
+			assert.deepEqual({ ...after.query("select a, b, id from pairs").all()[0] }, { a: null, b: 2, id: 9 });
 		} finally {
 			after.close();
 		}
@@ -417,6 +435,20 @@ describe("tar member writes keep every other member intact (#4906)", () => {
 			],
 		);
 		assert.equal(await read(dir, `bundle.tgz:${longPath}`), "long\n");
+	});
+
+	it("lists files but not directory entries or global PAX headers (#4906)", async () => {
+		const dir = await tempDir();
+		await writeFile(
+			join(dir, "bundle.tar"),
+			Buffer.concat([
+				tarMember({ name: "pax_global_header", type: "g" }, paxRecord("comment", "hi")),
+				tarMember({ name: "empty/", type: "5" }),
+				tarMember({ name: "a.txt" }, "a\n"),
+				Buffer.alloc(BLOCK * 2),
+			]),
+		);
+		assert.equal(await read(dir, "bundle.tar:"), "a.txt");
 	});
 
 	it("refuses to overwrite a symlink member and leaves the archive unchanged (#4906)", async () => {

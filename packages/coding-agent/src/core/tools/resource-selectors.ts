@@ -1255,15 +1255,8 @@ export function writeSqliteSelector(selector: SqliteSelector, content: string): 
 		const key = sqliteRowKey(db, table);
 		const keyValues = selector.rowId ? sqliteRowKeyValues(key, selector.rowId, table) : [];
 		const validColumns = new Set(sqliteTableColumns(db, table));
-		const [single] = key;
-		if (
-			!selector.rowId &&
-			key.length === 1 &&
-			single !== undefined &&
-			single !== "id" &&
-			Object.hasOwn(data, "id") &&
-			!Object.hasOwn(data, single)
-		) {
+		const [single = ""] = key;
+		if (!selector.rowId && key.length === 1 && Object.hasOwn(data, "id") && !Object.hasOwn(data, single)) {
 			data[single] = data.id;
 			delete data.id;
 		}
@@ -1331,7 +1324,7 @@ export function searchSqliteSelector(
 		const limit = selector.sampleRows ?? selector.limit ?? 1000;
 		const offset = selector.offset ?? 0;
 		const rowIdAlias = "__atomic_rowid__";
-		const usesRowid = key.length === 1 && key[0] === "rowid";
+		const usesRowid = key[0] === "rowid";
 		const selectList = usesRowid ? `rowid as ${quoteSqliteIdent(rowIdAlias)}, *` : "*";
 		const sql = [
 			`select ${selectList} from ${quoteSqliteIdent(selector.table)}`,
@@ -1348,7 +1341,7 @@ export function searchSqliteSelector(
 				const rowKey = usesRowid
 					? String(row[rowIdAlias] ?? offset + index + 1)
 					: sqliteRowKeyText(key, row, offset + index + 1);
-				if (usesRowid) delete row[rowIdAlias];
+				delete row[rowIdAlias];
 				return { row, key: rowKey };
 			})
 			.filter(({ row }) => matcher.test(JSON.stringify(row)))
