@@ -160,10 +160,9 @@ const SOCKET_REPLACEMENT_LOCK_PATH = getBrokerSocketReplacementLockPath();
 const PENDING_STAGE_MESSAGE_TIMEOUT_MS = 10_000;
 /**
  * #5096: delay before retrying a delivered-message delete that failed, e.g. while another broker held the write lock.
- * Each attempt can block for the database busy timeout, so a retry waits at least that long and leaves the broker
- * time to send the outcomes it owes (a departure's are sent only once its asks are saved).
+ * A delete waits only `FORGET_BUSY_TIMEOUT_MS` for the lock, so a retry costs the broker milliseconds.
  */
-const PENDING_FORGET_RETRY_MS = 5_000;
+const PENDING_FORGET_RETRY_MS = 1_000;
 const LISTEN_ATTEMPTS = 5;
 const LISTEN_RETRY_DELAY_MS = 100;
 const SOCKET_OWNERSHIP_CHECK_MS = 1_000;
@@ -458,9 +457,10 @@ class IntercomBroker {
    * `forget` is a durable SQLite DELETE that throws while another connection holds the write lock or the disk fails.
    * Its callers include timer callbacks and socket close handlers, where a throw is an uncaughtException that ends
    * the broker, and outcome paths whose sender must still hear `delivery_failed`. A failed delete is logged and
-   * retried later, so a stale reservation does not keep refusing the sender's retry as uncertain. Callers write the
-   * sender's outcome first, so it is not held behind the database busy timeout; the sender's retry is handled only
-   * after this synchronous delete, and a failed one is retried before the ID is looked up again.
+   * retried later, so a stale reservation does not keep refusing the sender's retry as uncertain. The delete waits
+   * only `FORGET_BUSY_TIMEOUT_MS` for the lock, so a held lock does not stall the broker. Callers write the sender's
+   * outcome first; the sender's retry is handled only after this synchronous delete, and a failed one is retried
+   * before the ID is looked up again.
    */
   private forgetDelivered(messageId: string, signature: string): void {
     this.pendingForgets.delete(messageId);
