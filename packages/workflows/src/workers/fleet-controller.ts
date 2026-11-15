@@ -49,6 +49,11 @@ const PROVIDER_CALL_TIMEOUT_MS = 120_000;
 const PROVIDER_BACKOFF_MAX_MS = 600_000;
 /** The longest the last pass of a stopping root's controller may take. */
 const FINAL_PASS_TIMEOUT_MS = 10_000;
+/**
+ * Listings in a row that must omit a drained instance before its drain is forgotten (#4828): an eventually consistent
+ * cloud list, or a provisioner that drops an instance in a state it does not map, can omit a running instance once.
+ */
+export const DRAIN_CLEAR_MISSED_LISTINGS = 3;
 /** Longest error text a fleet event keeps. */
 const ERROR_TEXT_MAX = 1_024;
 
