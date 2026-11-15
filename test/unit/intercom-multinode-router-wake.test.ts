@@ -181,10 +181,13 @@ async function startNode(
 		readonly holdGate?: Promise<void>;
 		/** Outbox rows are written only once this settles, as when the database is slow to answer. */
 		readonly enqueueGate?: Promise<void>;
+		/** The first reservation consumes fail, as on a transient database error. */
+		readonly consumeFailures?: number;
 	} = {},
 ): Promise<Node> {
 	const inner = await shared.connectState();
 	const spied: Spied = { requestWakeCalls: [], takeWakeCalls: [], heldListCalls: 0 };
+	let consumeFailures = options.consumeFailures ?? 0;
 	const state: IntercomBrokerStateStore = {
 		...inner,
 		leases: {
@@ -236,6 +239,10 @@ async function startNode(
 			},
 			renew: async (lease) =>
 				options.loseReservationRenewals === true ? { status: "renewed" } : inner.reservations.renew(lease),
+			consume: async (key, registered) => {
+				if (consumeFailures-- > 0) throw new Error("consume failed: shared database is busy");
+				return inner.reservations.consume(key, registered);
+			},
 		},
 	};
 	const innerBus = await shared.connectBus();
@@ -770,6 +777,36 @@ describe("router reservation consumption (#4326)", () => {
 			"the released child stays reserved, so a send wakes it",
 		);
 		assert.equal(await statusOf(node, ownKey), "consumed");
+	});
+
+	test("a consume retried after a store error ends the reservations the registration found, and leaves a released one its owner made after it began (#5138)", async () => {
+		vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+		try {
+			const node = await startNode(await cluster(), { consumeFailures: 1 });
+			const capability = `${randomUUID()}.capability`;
+			const ownKey = reservationKeyFor(capability);
+			const releasedKey = releasedReservationKey("child");
+			await reserveRaw(node, ownKey, false);
+			await node.router.sessionRegistered(session("child"), {
+				capability,
+				childName: "child",
+				groups: new Set([CREW]),
+				authorizedBy: "the-owner",
+			});
+			await flush();
+			assert.equal(await statusOf(node, ownKey), "active", "the failed consume ended nothing");
+			// The child is released again before the store recovers: its owner's new reservation is newer than the registration.
+			await reserveRaw(node, releasedKey, true, { owner: "the-owner" });
+			vi.advanceTimersByTime(BROKER_LEASE_RENEW_INTERVAL_MS);
+			await vi.waitFor(async () => assert.equal(await statusOf(node, ownKey), "consumed"), {
+				timeout: 2_000,
+				interval: 5,
+			});
+			assert.equal(await statusOf(node, releasedKey), "active", "the released child stays reserved");
+			assert.ok(vi.mocked(console.error).mock.calls.some(([text]) => String(text).includes("consume failed")));
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	test("a registration naming neither a capability nor a child consumes nothing and reports no error (#4326)", async () => {

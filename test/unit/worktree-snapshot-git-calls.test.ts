@@ -313,10 +313,7 @@ describe("cleanup failures never replace the primary error", () => {
 				const cleanup = error.cleanupCause;
 				assert.ok(isWorkspaceRestoreError(cleanup));
 				assert.equal(cleanup.code, "unwritable-path");
-				assert.ok(
-					cleanup.target?.startsWith(join(sandbox.root, ".restored-target.atomic-restore-")),
-					cleanup.target,
-				);
+				assert.ok(cleanup.target?.startsWith(join(sandbox.root, ".restored-target.s-")), cleanup.target);
 				assert.equal(cleanup.snapshotId, null);
 				assert.equal((cleanup.cause as NodeJS.ErrnoException).code, "EBUSY");
 				return true;

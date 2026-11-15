@@ -180,7 +180,7 @@ async function untilFiles(files: readonly string[], node: { run: Promise<NodeRun
 function halfRestored(worktrees: string): string[] {
 	if (!existsSync(worktrees)) return [];
 	return readdirSync(worktrees)
-		.filter((entry) => !entry.startsWith(".staging-"))
+		.filter((entry) => !entry.startsWith("."))
 		.map((entry) => join(worktrees, entry))
 		.filter((path) => {
 			try {

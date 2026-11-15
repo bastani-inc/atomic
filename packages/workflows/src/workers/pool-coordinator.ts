@@ -5,7 +5,7 @@ import { appendFile, mkdir, rm, rmdir } from "node:fs/promises";
 import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
-import { setDebugSetting, type WorktreeSnapshot } from "@bastani/atomic";
+import { type SnapshotBlobStore, setDebugSetting, type WorktreeSnapshot } from "@bastani/atomic";
 import { JournalShardUnavailableError, type StorageNotificationSubscription } from "@bastani/atomic/storage";
 import { listenPoolReady, observeSqlPoolTransactions, sqlPoolStorage } from "../durable/journal/internal.js";
 import { PoolRemoteJournal } from "../durable/journal/pool-remote-journal.js";
@@ -83,6 +83,7 @@ import {
 	POOL_SUMMARY_INTERVAL_MS,
 } from "./coordinator-protocol.js";
 import type { WorkerDefinitionSource } from "./definitions.js";
+import { missingSnapshotBlob } from "./dispatch-snapshot.js";
 import { EndedWatches } from "./ended-watches.js";
 import {
 	type BoundWait,
@@ -619,6 +620,21 @@ interface StageWatch {
  * receives activity summaries coalesced per work attempt at most every
  * {@link POOL_SUMMARY_INTERVAL_MS}, plus results and the lifecycle events that need its store.
  */
+
+/**
+ * `work` as claimed, without the worktree snapshot it carries when `blobs`, the root's journal's in another database
+ * than the pool's, no longer hold a blob of it (#5077); its row then carries none either. The pool's own database cannot
+ * check that as the work is queued, so a child never restores from a snapshot its blobs were collected from.
+ */
+export async function claimedWithStoredSnapshot(
+	queue: SqlPoolQueue,
+	work: PoolWork,
+	blobs: SnapshotBlobStore | undefined,
+): Promise<PoolWork> {
+	const snapshot = carriedSnapshot(work.execution);
+	if (blobs === undefined || snapshot === undefined) return work;
+	return (await missingSnapshotBlob(blobs, snapshot)) === undefined ? work : queue.dropWorkSnapshot(work);
+}
 export class PoolCoordinator {
 	private readonly children = new Set<ChildProcess>();
 	private readonly incarnations = new Map<string, ChildProcess>();
@@ -2798,7 +2814,9 @@ export class PoolCoordinator {
 		if (satellite === undefined) {
 			const shared = this.options?.shared !== undefined;
 			const work = await queue.claim(lease, worker, definitions, leaseMs, shared ? { kind: "unbound" } : undefined);
-			return work === undefined ? undefined : { work };
+			// A journal in another database than the pool's holds the snapshot's blobs: they are checked as the work is claimed.
+			const blobs = this.remote === undefined ? undefined : this.durable?.snapshotBlobs;
+			return work === undefined ? undefined : { work: await claimedWithStoredSnapshot(queue, work, blobs) };
 		}
 		const backoff = satellite.restoreBackoff ?? this.restoreBackoff;
 		const chosen = await choosePlacement(

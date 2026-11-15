@@ -344,7 +344,7 @@ async function collectAndFinalize() {
 }
 
 /**
- * Write requests one process sends to a database server at once, over every database it opened: the server takes its
+ * Write requests one process sends to one database server at once, over every database it opened there: the server takes its
  * write lock one writer at a time, so more requests in flight only lengthen the queue for it, and a process with many
  * workers would fill it. Batches that set `priority` do not count, so a lease renewal never waits behind them.
  */
@@ -419,26 +419,34 @@ function isTimeout(error) {
 	return false;
 }
 
-let writesInFlight = 0;
-/** @type {(() => void)[]} */
-const waitingWrites = [];
+/**
+ * Each server's write lane, by its location: the writes this process has in flight to it and those waiting for one of
+ * them to finish. A server that stops answering fills only its own lane, so writes to another server go on.
+ * @type {Map<string, { inFlight: number; waiting: (() => void)[] }>}
+ */
+const writeLanes = new Map();
 
 /**
- * Runs `operation` once fewer than `MAX_IN_FLIGHT_WRITES` other writes of this process are in flight.
+ * Runs `operation` once fewer than `MAX_IN_FLIGHT_WRITES` other writes of this process to the server at `location` are
+ * in flight.
  * @template T
+ * @param {string} location
  * @param {() => Promise<T>} operation
  * @returns {Promise<T>}
  */
-async function limitedWrite(operation) {
-	if (writesInFlight >= MAX_IN_FLIGHT_WRITES) await new Promise((resolve) => waitingWrites.push(() => resolve(undefined)));
-	else writesInFlight++;
+async function limitedWrite(location, operation) {
+	let lane = writeLanes.get(location);
+	if (!lane) writeLanes.set(location, (lane = { inFlight: 0, waiting: [] }));
+	const own = lane;
+	if (own.inFlight >= MAX_IN_FLIGHT_WRITES) await new Promise((resolve) => own.waiting.push(() => resolve(undefined)));
+	else own.inFlight++;
 	try {
 		return await operation();
 	} finally {
-		const next = waitingWrites.shift();
+		const next = own.waiting.shift();
 		// The slot passes straight to the next waiter, so a write arriving meanwhile cannot take it first.
 		if (next) next();
-		else writesInFlight--;
+		else if (--own.inFlight === 0) writeLanes.delete(location);
 	}
 }
 
@@ -677,7 +685,7 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 		...statements(connection, watch, waitForLock),
 		// One request for the whole batch, in a write transaction: the journal sends a batch of appends this way. Only
 		// its `BEGIN IMMEDIATE` waits for the write lock, so a batch the busy timeout ended wrote nothing (`lockBusy`). A
-		// server's batch counts against this process's writes in flight, unless it has priority.
+		// server's batch counts against this process's writes in flight to that server, unless it has priority.
 		batch: (batched, options) => {
 			const send = async () => {
 				const results = await (await connection()).batch(
@@ -703,7 +711,7 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 			// A server that answers busy ran nothing of the batch: it is sent again as main's other calls are, waiting
 			// outside this process's writes in flight; a caller's `lockWaitMs` waits longer on top of that.
 			return whileServerBusy(
-				() => (options?.priority === true ? sent() : limitedWrite(sent)),
+				() => (options?.priority === true ? sent() : limitedWrite(redacted, sent)),
 				() => true,
 			);
 		},
