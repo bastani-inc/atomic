@@ -20,7 +20,9 @@ import { makeTempDirectory, moduleDir, readJson, removeTempDirectory } from "../
 
 /**
  * Characterization of the worker pool's SQL on SQLite, pinned before its statements moved to the portable subset and
- * the storage dialect (#4793): the schema text stays byte-identical, so an older Atomic keeps sharing the database.
+ * the storage dialect (#4793): the schema stays what it was, so an older Atomic keeps sharing the database. Tables and
+ * indexes keep their text byte for byte; triggers, which the dialect now renders, keep it up to whitespace (a trigger is
+ * created only when its name is missing, so its text is never compared by any build).
  */
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -63,10 +65,30 @@ async function poolSchema(db: SqliteExecutor): Promise<SqliteRow[]> {
 	const rows = await db.all<SqliteRow & { tbl_name: string }>(
 		"SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name",
 	);
-	return rows.filter(
-		(row) =>
-			/^(team_)?wf_runs_/.test(row.tbl_name) && !NOT_OWNED.test(String(row.name)) && !NOT_OWNED.test(row.tbl_name),
-	);
+	return rows
+		.filter(
+			(row) =>
+				/^(team_)?wf_runs_/.test(row.tbl_name) &&
+				!NOT_OWNED.test(String(row.name)) &&
+				!NOT_OWNED.test(row.tbl_name),
+		)
+		.map(comparable);
+}
+
+/** A trigger's text up to whitespace; every other row as it is. */
+function comparable(row: SqliteRow): SqliteRow {
+	return row.type === "trigger"
+		? {
+				...row,
+				sql: String(row.sql)
+					.replace(/\s+/g, " ")
+					.replace(/; END$/, " END"),
+			}
+		: row;
+}
+
+async function pinnedSchema(): Promise<SqliteRow[]> {
+	return (await readJson<SqliteRow[]>(SCHEMA_FIXTURE)).map(comparable);
 }
 
 test("the SQLite schema of the worker pool's tables is byte-identical to the pinned one (#4793)", async () => {
@@ -74,7 +96,7 @@ test("the SQLite schema of the worker pool's tables is byte-identical to the pin
 	await openEveryPoolStore(db);
 	const schema = await poolSchema(db);
 	assert.ok(schema.length > 40, "every pool table, index and trigger was created");
-	assert.deepEqual(schema, await readJson<SqliteRow[]>(SCHEMA_FIXTURE));
+	assert.deepEqual(schema, await pinnedSchema());
 	// Opening again, as a second host does, changes nothing.
 	await openEveryPoolStore(db);
 	assert.deepEqual(await poolSchema(db), schema);
