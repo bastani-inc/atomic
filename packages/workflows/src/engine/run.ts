@@ -545,7 +545,7 @@ async function executeRun(
 				}
 			: undefined;
 	const durableAccounting =
-		hasBudgetDeclaration && opts.parentRun === undefined && opts.continuation === undefined && priorRun === undefined
+		hasBudgetDeclaration && opts.continuation === undefined && priorRun === undefined
 			? priorRunAccounting(durableBackend, runId)
 			: undefined;
 	const continuedBudgetState =

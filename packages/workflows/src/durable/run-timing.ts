@@ -74,6 +74,15 @@ export async function recordRunTimingCheckpointAsync(
 	return true;
 }
 
+/**
+ * Record only the run's budget accounting durably. A child workflow keeps no timing record of its own, but
+ * its own budget must resume from what it already charged (#5053).
+ */
+export async function recordRunUsageCheckpointAsync(backend: DurableWorkflowBackend, run: RunSnapshot): Promise<void> {
+	const checkpoint = runUsageCheckpoint(backend, run);
+	if (checkpoint !== undefined) await backend.commitCheckpoint(checkpoint);
+}
+
 function runTimingCheckpoint(
 	backend: DurableWorkflowBackend,
 	run: RunSnapshot,

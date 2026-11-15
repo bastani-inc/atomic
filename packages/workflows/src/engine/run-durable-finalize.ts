@@ -13,7 +13,7 @@
 
 import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { recordRunResultCheckpointAsync } from "../durable/run-result.js";
-import { recordRunTimingCheckpointAsync } from "../durable/run-timing.js";
+import { recordRunTimingCheckpointAsync, recordRunUsageCheckpointAsync } from "../durable/run-timing.js";
 import type { DurableWorkflowStatus } from "../durable/types.js";
 import { describeErrorWithCauses } from "../shared/error-with-causes.js";
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
@@ -44,7 +44,11 @@ export async function finalizeDurableTerminalStatus(input: DurableTerminalFinali
 }
 
 async function commitDurableTerminalStatus(input: DurableTerminalFinalizeInput): Promise<void> {
-	if (!input.isRoot) return;
+	if (!input.isRoot) {
+		// A child's own budget resumes from its durable accounting, so a resumed root cannot reset it (#5053).
+		await recordRunUsageCheckpointAsync(input.durableBackend, input.runSnapshot);
+		return;
+	}
 	const status = effectiveRunStatus(input.runSnapshot);
 	const isExitTerminal = input.runSnapshot.exited === true && status !== "running";
 	const isBlocked =
