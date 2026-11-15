@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox, loseSnapshotBlobs } from "../../../test/helpers/worktree-snapshot.js";
+import { renameReplacing } from "../src/core/rename-retry.js";
 import type { WorktreeSnapshotEntry } from "../src/core/session-manager.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { describeWorktreeRestoreStatus, worktreeRestoreNotices } from "../src/core/session-worktree-snapshots.js";
@@ -89,7 +90,7 @@ describe("a resume whose snapshot cannot be fully restored still opens the sessi
 		const { clone, pushed, head } = await editedClone();
 		const { manager, snapshot } = await recordSession(clone);
 		await loseSnapshotBlobs(manager.getSessionStore().snapshotBlobs as SqlSnapshotBlobStore, [snapshot.bundle!.blob]);
-		renameSync(clone, sandbox.path("machine-a-gone"));
+		renameReplacing(clone, sandbox.path("machine-a-gone"));
 
 		const prepared = ready(await prepareSessionResume(manager, options()));
 
@@ -121,7 +122,7 @@ describe("a resume whose snapshot cannot be fully restored still opens the sessi
 		assert.equal(second.snapshot.chain.length, 2);
 		await manager.appendWorktreeSnapshot(clone, second.snapshot.id, second.snapshot);
 		await loseSnapshotBlobs(blobs, [second.snapshot.chain[1]!.patch!]);
-		renameSync(clone, sandbox.path("machine-a-gone"));
+		renameReplacing(clone, sandbox.path("machine-a-gone"));
 
 		const prepared = ready(await prepareSessionResume(manager, options()));
 
@@ -158,7 +159,7 @@ describe("a resume whose snapshot cannot be fully restored still opens the sessi
 		await sandbox.git(clone, "commit", "-q", "-m", "unpushed commit");
 		const { manager, snapshot } = await recordSession(clone);
 		await loseSnapshotBlobs(manager.getSessionStore().snapshotBlobs as SqlSnapshotBlobStore, [snapshot.bundle!.blob]);
-		renameSync(clone, sandbox.path("machine-a-gone"));
+		renameReplacing(clone, sandbox.path("machine-a-gone"));
 
 		const prepared = ready(await prepareSessionResume(manager, options()));
 
@@ -179,7 +180,7 @@ describe("a resume whose snapshot cannot be fully restored still opens the sessi
 		const { manager, snapshot } = await recordSession(clone);
 		const blobs = manager.getSessionStore().snapshotBlobs as SqlSnapshotBlobStore;
 		await loseSnapshotBlobs(blobs, [snapshot.bundle!.blob]);
-		renameSync(clone, sandbox.path("machine-a-gone"));
+		renameReplacing(clone, sandbox.path("machine-a-gone"));
 		const prepared = ready(await prepareSessionResume(manager, options()));
 		const restored = prepared.sessionManager.getWorktreeRootMappings().at(-1)!;
 
@@ -200,7 +201,7 @@ describe("a resume whose snapshot cannot be fully restored still opens the sessi
 		const { clone } = await editedClone();
 		const { manager, snapshot } = await recordSession(clone);
 		await loseSnapshotBlobs(manager.getSessionStore().snapshotBlobs as SqlSnapshotBlobStore, [snapshot.bundle!.blob]);
-		renameSync(clone, sandbox.path("machine-a-gone"));
+		renameReplacing(clone, sandbox.path("machine-a-gone"));
 		const since = new Date().toISOString();
 		const prepared = ready(await prepareSessionResume(manager, options()));
 		const restored = prepared.sessionManager.getWorktreeRootMappings().at(-1)!;
@@ -240,7 +241,7 @@ describe("a resume whose snapshot cannot be fully restored still opens the sessi
 		const { lastSeq } = await store.load(manager.getSessionId());
 		await store.append(manager.getSessionId(), [ghost], { expectSeq: lastSeq });
 		const reopened = await SessionManager.open(store, manager.getSessionId());
-		renameSync(clone, sandbox.path("machine-a-gone"));
+		renameReplacing(clone, sandbox.path("machine-a-gone"));
 
 		const prepared = ready(await prepareSessionResume(reopened, options()));
 
@@ -261,7 +262,7 @@ describe("a resume whose snapshot cannot be fully restored still opens the sessi
 			const { manager, snapshot } = await recordSession(clone);
 			const unsafe = { ...snapshot, remotes: [remote] };
 			await manager.appendWorktreeSnapshot(clone, unsafe.id, unsafe);
-			renameSync(clone, sandbox.path("machine-a-gone"));
+			renameReplacing(clone, sandbox.path("machine-a-gone"));
 			await assert.rejects(prepareSessionResume(manager, options()), (error: unknown) => {
 				assert.ok(isWorkspaceRestoreError(error), String(error));
 				assert.deepEqual([error.code, error.reason], ["invalid-snapshot", "unsafe-remote"]);
@@ -279,7 +280,7 @@ describe("a resume whose snapshot cannot be fully restored still opens the sessi
 		await sandbox.git(clone, "push", "-q", "origin", "HEAD:main");
 		sandbox.write(join(clone, "README.md"), "edited on machine A\n");
 		const { manager } = await recordSession(clone);
-		renameSync(clone, sandbox.path("machine-a-gone"));
+		renameReplacing(clone, sandbox.path("machine-a-gone"));
 
 		const onB = ready(await prepareSessionResume(manager, options({ storeDir: sandbox.path("machine-b") })));
 		const b = onB.sessionManager.getWorktreeRootMappings().at(-1)!;
@@ -315,7 +316,7 @@ describe("a resume whose snapshot cannot be fully restored still opens the sessi
 		const blobs = manager.getSessionStore().snapshotBlobs as SqlSnapshotBlobStore;
 		const bundle = (await blobs.getBlob(snapshot.bundle!.blob))!;
 		await loseSnapshotBlobs(blobs, [snapshot.bundle!.blob]);
-		renameSync(clone, sandbox.path("machine-a-gone"));
+		renameReplacing(clone, sandbox.path("machine-a-gone"));
 		const first = ready(await prepareSessionResume(manager, options()));
 		assert.equal(first.sessionManager.getWorktreeRootMappings().at(-1)?.degraded?.stage, "closest-commit");
 
@@ -364,7 +365,7 @@ describe("a resume whose snapshot cannot be fully restored still opens the sessi
 		const { manager, snapshot } = await recordSession(clone);
 		assert.equal(snapshot.branch, "feature/c++");
 		await loseSnapshotBlobs(manager.getSessionStore().snapshotBlobs as SqlSnapshotBlobStore, [snapshot.bundle!.blob]);
-		renameSync(clone, sandbox.path("machine-a-gone"));
+		renameReplacing(clone, sandbox.path("machine-a-gone"));
 
 		const prepared = ready(await prepareSessionResume(manager, options()));
 
@@ -380,7 +381,7 @@ describe("a resume whose snapshot cannot be fully restored still opens the sessi
 		const blobs = manager.getSessionStore().snapshotBlobs as SqlSnapshotBlobStore;
 		const bundle = (await blobs.getBlob(snapshot.bundle!.blob))!;
 		await loseSnapshotBlobs(blobs, [snapshot.bundle!.blob]);
-		renameSync(clone, sandbox.path("machine-a-gone"));
+		renameReplacing(clone, sandbox.path("machine-a-gone"));
 		const first = ready(await prepareSessionResume(manager, options()));
 		const partial = first.sessionManager.getWorktreeRootMappings().at(-1)!;
 		sandbox.write(join(partial.to, "README.md"), "edited by hand in the partial worktree\n");
@@ -411,7 +412,7 @@ describe("a resume whose snapshot cannot be fully restored still opens the sessi
 				others.push(other);
 			}
 			await loseSnapshotBlobs(blobs, [snapshot.bundle!.blob]);
-			renameSync(clone, sandbox.path("machine-a-gone"));
+			renameReplacing(clone, sandbox.path("machine-a-gone"));
 			const first = ready(await prepareSessionResume(manager, options()));
 			const partial = first.sessionManager.getWorktreeRootMappings().find((mapping) => mapping.degraded)!;
 			for (const other of others) sandbox.write(join(other, "README.md"), "changed here since\n");
@@ -444,7 +445,7 @@ describe("a resume whose snapshot cannot be fully restored still opens the sessi
 				sandbox.globalConfig,
 				`${readFileSync(sandbox.globalConfig, "utf8")}[filter "mangle"]\n\tsmudge = sed s/alpha/omega/\n`,
 			);
-			renameSync(clone, sandbox.path("machine-a-gone"));
+			renameReplacing(clone, sandbox.path("machine-a-gone"));
 
 			const prepared = ready(await prepareSessionResume(manager, options()));
 
@@ -462,7 +463,7 @@ describe("a resume whose snapshot cannot be fully restored still opens the sessi
 		const { clone } = await editedClone();
 		const { manager, snapshot } = await recordSession(clone);
 		await loseSnapshotBlobs(manager.getSessionStore().snapshotBlobs as SqlSnapshotBlobStore, [snapshot.bundle!.blob]);
-		renameSync(clone, sandbox.path("machine-a-gone"));
+		renameReplacing(clone, sandbox.path("machine-a-gone"));
 		const prepared = ready(await prepareSessionResume(manager, options()));
 		const restored = prepared.sessionManager.getWorktreeRootMappings().at(-1)!;
 		const since = new Date(Date.now() + 1).toISOString();
@@ -500,7 +501,7 @@ describe("a degraded resume keeps the best state it reaches and reports it accur
 				sandbox.globalConfig,
 				`${readFileSync(sandbox.globalConfig, "utf8")}[filter "mangle"]\n\tsmudge = sed s/alpha/omega/\n`,
 			);
-			renameSync(clone, sandbox.path("machine-a-gone"));
+			renameReplacing(clone, sandbox.path("machine-a-gone"));
 
 			const prepared = ready(await prepareSessionResume(manager, options()));
 
@@ -537,7 +538,7 @@ describe("a degraded resume keeps the best state it reaches and reports it accur
 		await sandbox.git(clone, "checkout", "-q", "--detach", recorded);
 		await sandbox.git(clone, "commit", "-q", "--allow-empty", "-m", "the branch moved on");
 		await sandbox.git(clone, "push", "-q", "origin", "HEAD:main");
-		renameSync(clone, sandbox.path("machine-a-gone"));
+		renameReplacing(clone, sandbox.path("machine-a-gone"));
 
 		const prepared = ready(await prepareSessionResume(manager, options()));
 
@@ -556,7 +557,7 @@ describe("a degraded resume keeps the best state it reaches and reports it accur
 		assert.deepEqual([...snapshot.bundle!.commits].sort(), [first, second].sort());
 		await loseSnapshotBlobs(manager.getSessionStore().snapshotBlobs as SqlSnapshotBlobStore, [snapshot.bundle!.blob]);
 		await sandbox.git(clone, "push", "-q", "origin", `${first}:refs/heads/main`);
-		renameSync(clone, sandbox.path("machine-a-gone"));
+		renameReplacing(clone, sandbox.path("machine-a-gone"));
 
 		const prepared = ready(await prepareSessionResume(manager, options()));
 

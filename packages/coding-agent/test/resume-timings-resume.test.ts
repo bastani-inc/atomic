@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync, renameSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox, loseSnapshotBlobs } from "../../../test/helpers/worktree-snapshot.js";
+import { renameReplacing } from "../src/core/rename-retry.js";
 import { latestResumeTimings, RESUME_TIMINGS_TYPE } from "../src/core/resume/timings.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { describeLastCapture, SessionWorktreeSnapshotRecorder } from "../src/core/session-worktree-snapshots.js";
@@ -62,7 +63,7 @@ async function recordedProject(setup: { unpushed?: boolean; keep?: boolean } = {
 	const capture = await captureWorktreeSnapshot(clone, { settings, blobs: store.snapshotBlobs });
 	if (capture.status !== "captured") throw new Error(`capture ${capture.status}`);
 	await manager.appendWorktreeSnapshot(clone, capture.snapshot.id, capture.snapshot);
-	if (!setup.keep) renameSync(clone, sandbox.path("node-a-gone"));
+	if (!setup.keep) renameReplacing(clone, sandbox.path("node-a-gone"));
 	return { manager, snapshot: capture.snapshot, remote, blobs: store.snapshotBlobs as SqlSnapshotBlobStore };
 }
 
@@ -164,7 +165,7 @@ describe("resume timings of a real resume (#4748)", () => {
 	test("a checkout that could not be restored at all is not reported as restored (#4748)", async () => {
 		const { manager, remote, snapshot, blobs } = await recordedProject({ unpushed: true });
 		await loseSnapshotBlobs(blobs, [snapshot.bundle!.blob]);
-		renameSync(remote, `${remote}-gone`);
+		renameReplacing(remote, `${remote}-gone`);
 		const prepared = ready(await prepareSessionResume(manager, options()));
 		assert.equal(prepared.sessionManager.getWorktreeRootMappings().length, 0, "nothing was restored");
 		assert.equal(latestResumeTimings(prepared.sessionManager), undefined);
@@ -223,7 +224,7 @@ describe("capture timings (#4748)", () => {
 		assert.equal(describeLastCapture(manager, clone), `last capture took ${(ms! / 1000).toFixed(1)} s`);
 
 		// On another machine the capture is still the checkout's last, under the worktree it was restored into.
-		renameSync(clone, sandbox.path("node-a-gone"));
+		renameReplacing(clone, sandbox.path("node-a-gone"));
 		const prepared = ready(await prepareSessionResume(manager, options()));
 		const [restored] = prepared.sessionManager.getWorktreeRootMappings();
 		assert.ok(restored);

@@ -117,6 +117,8 @@ export interface SqlPoolStorage {
 	readonly tables: Readonly<{ runs: string; events: string; leases: string }>;
 	/** The SQL dialect of the journal's database: the pool's statements ask it for what differs between engines. */
 	readonly dialect: StorageDialect;
+	/** The database's adapter, as its descriptor names it, such as `"libsql"` or `"postgres"`. */
+	readonly adapter: string;
 }
 
 /** The journal's runs table, after the prefix. */
