@@ -38,6 +38,11 @@ export class PendingQuestionIndex {
     for (const question of questions) this.away?.forgetLive(question);
   }
 
+  /** #4996: what `work` writes to the away store is one transaction, not one commit per write. */
+  batch<T>(work: () => T): T {
+    return this.away === undefined ? work() : this.away.batch(work);
+  }
+
   private awayAsks(): AwayAsks {
     this.away ??= new AwayAsks();
     return this.away;

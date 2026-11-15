@@ -3258,6 +3258,11 @@ class IntercomBroker {
 
   /** `ended`: the session said goodbye, so it is not coming back; otherwise its connection only dropped. */
   private disconnectSession(sessionId: string, ended = false): void {
+    // #4996: what a departure keeps, holds and forgets durably (possibly thousands of asks) is one transaction.
+    this.pendingQuestions.batch(() => this.departSession(sessionId, ended));
+  }
+
+  private departSession(sessionId: string, ended: boolean): void {
     const departed = this.sessions.get(sessionId);
     if (!departed) return;
     // #4642: the sessions a connection hosts leave with it, and a hosted session leaves its host's index.

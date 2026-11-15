@@ -117,8 +117,7 @@ export class AwayAsks {
 		const foreign = this.statement("SELECT 1 FROM live_questions WHERE broker_instance <> ? LIMIT 1").get(this.instance);
 		const foreignHeld = this.statement("SELECT 1 FROM live_held WHERE broker_instance <> ? LIMIT 1").get(this.instance);
 		if (foreign === undefined && foreignHeld === undefined) return;
-		this.database.exec("BEGIN IMMEDIATE");
-		try {
+		this.batch(() => {
 			this.statement(
 				"INSERT OR REPLACE INTO away_questions (message_id, sender_session_id, target_session_id, sender_return_address, target_return_address, kept_at) SELECT message_id, sender_session_id, target_session_id, sender_return_address, target_return_address, recorded_at FROM live_questions WHERE broker_instance <> ?",
 			).run(this.instance);
@@ -127,6 +126,35 @@ export class AwayAsks {
 				"INSERT OR IGNORE INTO held_messages (message_id, asker_session_id, asker_return_address, replier_session_id, from_json, message_json, held_at) SELECT message_id, asker_session_id, asker_return_address, replier_session_id, from_json, message_json, held_at FROM live_held WHERE broker_instance <> ?",
 			).run(this.instance);
 			this.statement("DELETE FROM live_held WHERE broker_instance <> ?").run(this.instance);
+		});
+	}
+
+	private batchDepth = 0;
+
+	/**
+	 * #4996: run `work`'s writes as one transaction rather than one commit each, so a departure that holds or keeps many
+	 * asks does not stall the broker (each commit waits for the disk). A batch inside a batch joins it. What `work` wrote
+	 * before it threw is committed, as it was when each write committed on its own.
+	 */
+	batch<T>(work: () => T): T {
+		if (this.batchDepth > 0) return work();
+		this.database.exec("BEGIN IMMEDIATE");
+		this.batchDepth = 1;
+		let result: T;
+		try {
+			result = work();
+		} catch (error) {
+			this.batchDepth = 0;
+			this.commit();
+			throw error;
+		}
+		this.batchDepth = 0;
+		this.commit();
+		return result;
+	}
+
+	private commit(): void {
+		try {
 			this.database.exec("COMMIT");
 		} catch (error) {
 			this.database.exec("ROLLBACK");
@@ -204,12 +232,14 @@ export class AwayAsks {
 			"INSERT OR REPLACE INTO away_questions (message_id, sender_session_id, target_session_id, sender_return_address, kept_at) VALUES (?, ?, ?, ?, ?)",
 		);
 		const at = this.now();
-		for (const question of questions) {
-			const returnAddress =
-				typeof senderReturnAddress === "function" ? senderReturnAddress(question) : senderReturnAddress;
-			insert.run(question.messageId, question.senderSessionId, question.targetSessionId, returnAddress ?? "", at);
-		}
-		this.purge();
+		this.batch(() => {
+			for (const question of questions) {
+				const returnAddress =
+					typeof senderReturnAddress === "function" ? senderReturnAddress(question) : senderReturnAddress;
+				insert.run(question.messageId, question.senderSessionId, question.targetSessionId, returnAddress ?? "", at);
+			}
+			this.purge();
+		});
 	}
 
 	/**
@@ -301,6 +331,14 @@ export class AwayAsks {
 		returnAddress: string | undefined,
 		isConnected: (sessionId: string, returnAddress: string) => boolean,
 	): PendingQuestion[] {
+		return this.batch(() => this.restoreEach(sessionId, returnAddress, isConnected));
+	}
+
+	private restoreEach(
+		sessionId: string,
+		returnAddress: string | undefined,
+		isConnected: (sessionId: string, returnAddress: string) => boolean,
+	): PendingQuestion[] {
 		this.adoptLiveFromPreviousBrokers();
 		// An asker's routes come back only to the session that proves it is the asker (see `held`), under whatever id it
 		// registered with now; a recipient's come back to the id it is asked under, and, when the recipient's return
@@ -364,6 +402,17 @@ export class AwayAsks {
 		targetReturnAddress = "",
 		askerConnected: (question: PendingQuestion, returnAddress: string) => boolean,
 	): { failed: PendingQuestion[]; live: PendingQuestion[] } {
+		return this.batch(() => this.failEachForTarget(target, reason, idPrefix, failedElsewhere, targetReturnAddress, askerConnected));
+	}
+
+	private failEachForTarget(
+		target: SessionInfo,
+		reason: string,
+		idPrefix: string,
+		failedElsewhere: (question: PendingQuestion) => boolean,
+		targetReturnAddress: string,
+		askerConnected: (question: PendingQuestion, returnAddress: string) => boolean,
+	): { failed: PendingQuestion[]; live: PendingQuestion[] } {
 		const rows = this.statement(
 			`SELECT message_id, sender_session_id, sender_return_address FROM away_questions WHERE target_session_id = ? AND ${PROVEN_RECIPIENT} ORDER BY kept_at`,
 		).all(target.id, targetReturnAddress);
@@ -389,7 +438,7 @@ export class AwayAsks {
 				continue;
 			}
 			failed.push(question);
-			this.hold({ ...question, senderReturnAddress: returnAddress }, target, {
+			this.holdOne({ ...question, senderReturnAddress: returnAddress }, target, {
 				// Unguessable, so no other session can name it.
 				id: `${idPrefix}:${randomUUID()}`,
 				timestamp: this.now(),
@@ -398,6 +447,7 @@ export class AwayAsks {
 				content: { text: reason },
 			});
 		}
+		this.purge();
 		return { failed, live };
 	}
 
@@ -417,6 +467,17 @@ export class AwayAsks {
 		from: SessionInfo,
 		message: Message,
 	): void {
+		this.batch(() => {
+			this.holdOne(question, from, message);
+			this.purge();
+		});
+	}
+
+	private holdOne(
+		question: PendingQuestion & { readonly senderReturnAddress: string },
+		from: SessionInfo,
+		message: Message,
+	): void {
 		this.statement(
 			"INSERT OR IGNORE INTO held_messages (message_id, asker_session_id, asker_return_address, replier_session_id, from_json, message_json, held_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
 		).run(
@@ -431,7 +492,6 @@ export class AwayAsks {
 		this.statement(
 			"DELETE FROM away_questions WHERE message_id = ? AND sender_session_id = ? AND target_session_id = ?",
 		).run(question.messageId, question.senderSessionId, question.targetSessionId);
-		this.purge();
 	}
 
 	/** Whether `messageId` from `replierSessionId` is already held for its asker: a retried reply is answered held again. */
