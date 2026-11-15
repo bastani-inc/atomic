@@ -239,4 +239,33 @@ describe("workflow budget charges (#5053)", () => {
 		assert.equal(rootRun.budgetState?.systemOwnedStop, undefined, "the root was not stopped");
 		assert.doesNotThrow(() => root.rethrowIfSystemOwnedStop("p1"));
 	});
+
+	test("a child with no budget of its own hands a wrap-up to its root (#5053)", () => {
+		const rootRun: RunSnapshot = {
+			id: "root",
+			name: "root",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [{ ...pricedStage("spent", 0), modelAttempts: [{ model: "m", success: true, usage: { input: 30 } }] }],
+			startedAt: Date.now(),
+		};
+		const root = createRunBudgetController({
+			run: rootRun,
+			budget: resolve_budget({ run: { maxTokens: 22 } }),
+			usageTree: () => ({ run: rootRun }),
+		});
+		const childRun: RunSnapshot = { ...rootRun, id: "child", stages: [] };
+		const child = createRunBudgetController({
+			run: childRun,
+			budget: resolve_budget({}),
+			usageTree: () => ({ run: childRun }),
+			rootBudget: root,
+		});
+
+		assert.equal(root.checkpoint("c1").kind, "wrap_up");
+		assert.throws(() => child.deliverWrapUp("c1"), /tokens budget exceeded/);
+		assert.equal(rootRun.budgetState?.systemOwnedStop, true, "the root owns its own exhaustion");
+		assert.equal(childRun.budgetState, undefined);
+	});
 });
