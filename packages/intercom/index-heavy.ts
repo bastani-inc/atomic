@@ -74,6 +74,7 @@ import { ForegroundDetachHandoff, handleForegroundInboundDelivery } from "./fore
 import { routeIncomingReply } from "./reply-routing.js";
 import { routePeerDisconnect, type PeerDisconnectNotice } from "./peer-disconnect-routing.js";
 import { INBOUND_FLUSH_DELAY_MS, INBOUND_IDLE_RETRY_MS, type InboundMessageEntry, buildPresenceIdentity, formatAttachments, readChildOrchestratorMetadata, toError } from "./intercom-utils.js";
+import { boundReceivedMessage, receivedMessageExceedsBound } from "./received-message-bound.js";
 import { readSubagentMessageSource } from "./source-ownership.js";
 import {
   buildIncomingCustomMessage,
@@ -356,8 +357,10 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     createClient: (returnAddress) => new IntercomClient(returnAddress),
     cwd: () => getLiveContext()?.cwd ?? process.cwd(),
     relay: (from, message, channel) => {
-      const liveContext = getLiveContext();
-      if (liveContext) handleIncomingMessage(liveContext, from, message, channel);
+      inArrivalOrder(message, (bounded) => {
+        const liveContext = getLiveContext();
+        if (liveContext) handleIncomingMessage(liveContext, from, bounded, channel);
+      });
     },
   });
   let inboundFlushTimer: NodeJS.Timeout | null = null;
@@ -684,22 +687,51 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     if (ask !== undefined) return frameOutboundAskReply(rawEntry, ask);
     return isDeliveryFeedback(message) ? frameDeliveryFeedback(rawEntry) : frameHistoricalSupervisorUpdate(rawEntry);
   }
+  /** #4907: a received message too large for the context, saved to a file in this session's directory. */
+  function boundReceived(message: Message): Promise<Message> {
+    return boundReceivedMessage(message, () => {
+      const sessionManager = getLiveContext()?.sessionManager;
+      const sessionDir = sessionManager?.getSessionDir();
+      return {
+        sessionId: sessionManager?.getSessionId() ?? currentSessionId ?? `intercom-${process.pid}`,
+        ...(sessionDir ? { sessionDir } : {}),
+      };
+    });
+  }
+  let receivedBoundsInFlight = 0;
+  let receivedBoundsTail: Promise<void> = Promise.resolve();
+  /**
+   * #4907: hands each arriving message to `next` in arrival order once it is bounded. A message within the limit,
+   * with nothing ahead of it still being saved to a file, is handed over at once.
+   */
+  function inArrivalOrder(message: Message, next: (bounded: Message) => void, failed?: () => void): void {
+    if (receivedBoundsInFlight === 0 && !receivedMessageExceedsBound(message)) {
+      next(message);
+      return;
+    }
+    receivedBoundsInFlight += 1;
+    const bounded = receivedBoundsTail.then(() => boundReceived(message)).then(next, () => failed?.());
+    receivedBoundsTail = bounded.catch(() => {}).finally(() => { receivedBoundsInFlight -= 1; });
+  }
   /** #3761: save an arriving message, confirm it to the broker, then handle it; a copy already saved is only confirmed. */
   function receiveIncomingMessage(receiver: IntercomClient, from: SessionInfo, message: Message, channel?: "supervisor"): void {
     const generation = runtimeGeneration;
     // #3983: a save that waits (a pooled stage's journal commit behind other writers) keeps its sender waiting.
     const saving = setInterval(() => receiver.reportSaving(message.id), RECIPIENT_SAVING_REPORT_INTERVAL_MS);
     saving.unref?.();
-    const saved = durableInbox.receive(from, message, channel, () => {
-      clearInterval(saving);
-      receiver.acknowledgeReceived(message.id);
-    });
-    void saved.finally(() => clearInterval(saving)).catch(() => {});
-    void saved.then((arrival) => {
-      if (arrival !== "fresh") return;
-      const liveContext = getLiveContext(runtimeContext, generation);
-      if (liveContext) void handleIncomingMessage(liveContext, from, message, channel);
-    });
+    // #4907: a message too large for the context is saved and shown bounded; unconfirmed, the broker sends it again.
+    inArrivalOrder(message, (bounded) => {
+      const saved = durableInbox.receive(from, bounded, channel, () => {
+        clearInterval(saving);
+        receiver.acknowledgeReceived(message.id);
+      });
+      void saved.finally(() => clearInterval(saving)).catch(() => {});
+      void saved.then((arrival) => {
+        if (arrival !== "fresh") return;
+        const liveContext = getLiveContext(runtimeContext, generation);
+        if (liveContext) void handleIncomingMessage(liveContext, from, bounded, channel);
+      });
+    }, () => clearInterval(saving));
   }
   /**
    * #3761: decide about the saved messages a resumed session never showed with #3760's interrupted-card decision.
@@ -715,10 +747,11 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     const liveContext = getLiveContext();
     if (!liveContext) return [];
     replyTracker = bindWorkflowReplyTracker(liveContext, replyTracker);
-    const records = unconsumedIntercomInbox(sessionBranch()).map((record) => ({
+    // #4907: a message an earlier version saved whole is shown bounded.
+    const records = await Promise.all(unconsumedIntercomInbox(sessionBranch()).map(async (record) => ({
       record,
-      entry: buildInboundEntry(record.from, record.message, record.channel),
-    }));
+      entry: buildInboundEntry(record.from, await boundReceived(record.message), record.channel),
+    })));
     const plan = planIntercomRecoveryReplay(
       records.map(({ record, entry }) => ({
         entryId: record.message.id,
@@ -1000,15 +1033,16 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
 		const messageGeneration = runtimeGeneration;
 		const liveContext = client === nextClient ? getLiveContext() : null;
 		if (liveContext === null) return false;
-		const attachmentText = request.message.content.attachments?.length
-			? formatAttachments(request.message.content.attachments)
+		const message = await boundReceived(request.message);
+		const attachmentText = message.content.attachments?.length
+			? formatAttachments(message.content.attachments)
 			: "";
-		const bodyText = `${request.message.content.text}${attachmentText}`;
-		const replyCommand = config.replyHint && request.message.expectsReply
+		const bodyText = `${message.content.text}${attachmentText}`;
+		const replyCommand = config.replyHint && message.expectsReply
 			? `intercom({ action: "reply", message: "..." })`
 			: undefined;
-		const entry = { from: request.from, message: request.message, replyCommand, bodyText };
-		const admission = inboundDeliveries.admit(request.from, request.message);
+		const entry = { from: request.from, message, replyCommand, bodyText };
+		const admission = inboundDeliveries.admit(request.from, message);
 		if (admission.kind === "duplicate") return true;
 		if (admission.kind === "pending") {
 			return admission.completion.then(() => true, () => false);
@@ -1016,11 +1050,11 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
 		const reservation = admission.reservation;
 		const commit = (): void => { inboundDeliveries.commit(reservation); };
 		replyTracker = bindWorkflowReplyTracker(liveContext, replyTracker);
-		if (routeIncomingReply(replyWaiters.pending(), request.from, request.message)) {
+		if (routeIncomingReply(replyWaiters.pending(), request.from, message)) {
 			commit();
 			return true;
 		}
-		const replyContext = replyTracker.recordIncomingMessage(request.from, request.message);
+		const replyContext = replyTracker.recordIncomingMessage(request.from, message);
 		const release = createWorkflowStageDeliveryFailureHandler({
 			entry,
 			admission: inboundDeliveries,
@@ -1048,7 +1082,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
 			},
 			() => foregroundDetachHandoff.claim(
 				request.from,
-				request.message,
+				message,
 				messageGeneration,
 				() => Boolean(getLiveContext(liveContext, messageGeneration)),
 			),
@@ -2003,10 +2037,16 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
         // Only a message handed over while the stage is still starting is pre-start context. A drain can outlive
         // the startup (a pooled stage's root drain finishes in the background): what it hands over afterwards
         // takes the live path, with its own delivery mode and live framing.
-        (from, message) =>
-          started || startupDrained
-            ? handleIncomingMessage(ctx, from as SessionInfo, message as Message, undefined, false, true)
-            : handleIncomingMessage(ctx, from as SessionInfo, message as Message, undefined, true),
+        (from, held) => {
+          const deliver = (message: Message) =>
+            started || startupDrained
+              ? handleIncomingMessage(ctx, from as SessionInfo, message, undefined, false, true)
+              : handleIncomingMessage(ctx, from as SessionInfo, message, undefined, true);
+          // #4907: a held message too large for the context is saved to a file and shown bounded.
+          return receivedMessageExceedsBound(held as Message)
+            ? boundReceived(held as Message).then(deliver)
+            : deliver(held as Message);
+        },
         { sessionId: ctx.sessionManager.getSessionId(), receivedMessageIds },
       );
     };
