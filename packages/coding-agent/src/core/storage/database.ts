@@ -48,6 +48,20 @@ export interface SqliteTransactionOptions {
 	readonly concurrency?: TransactionConcurrency;
 }
 
+/** How one batch waits for a busy write lock, and whether it goes ahead of the database's queued calls. */
+export interface SqliteBatchOptions {
+	/**
+	 * How long a batch that found the database's write lock busy keeps sending again, with growing randomized waits
+	 * between tries. A busy batch wrote nothing, so sending it again is safe. Adapters without such a retry ignore it.
+	 */
+	readonly lockWaitMs?: number;
+	/**
+	 * Runs the batch before calls queued on this database that do not set it, and outside any limit the adapter puts on
+	 * concurrent writes: for small writes that must not wait behind others, such as a lease renewal.
+	 */
+	readonly priority?: boolean;
+}
+
 /**
  * An audited fenced write path. Only `fencedPath(name)` in `fenced-paths.ts` makes one; a plain string is not one. The
  * brand is a string key, not a unique symbol, so the published declarations and the sources stay one type.
@@ -78,6 +92,6 @@ export interface SqliteDatabase extends SqliteExecutor {
 	 * do. Resolves with each statement's rows. Present only when the driver can send a batch in one request, which
 	 * saves a round trip per statement against a remote database.
 	 */
-	batch?(statements: readonly SqliteStatement[]): Promise<SqliteRow[][]>;
+	batch?(statements: readonly SqliteStatement[], options?: SqliteBatchOptions): Promise<SqliteRow[][]>;
 	close(): Promise<void>;
 }

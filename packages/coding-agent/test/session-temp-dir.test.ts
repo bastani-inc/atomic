@@ -37,6 +37,7 @@ import {
 	windowsPrincipal,
 } from "../src/core/tools/session-temp-dir.ts";
 import { DEFAULT_MAX_RESULT_SIZE_CHARS, TOOL_RESULTS_SUBDIR } from "../src/core/tools/tool-limits.ts";
+import { isPathInside } from "../src/utils/path-inside.js";
 
 const isPosix = process.platform !== "win32";
 
@@ -74,8 +75,7 @@ beforeEach(() => {
 
 /** True when `child` resolves inside `parent`. */
 function isInside(parent: string, child: string): boolean {
-	const rel = relative(parent, child);
-	return rel.length > 0 && !rel.startsWith("..") && !rel.startsWith(`${sep}..`);
+	return relative(parent, child).length > 0 && isPathInside(parent, child);
 }
 
 /** Restore an env var to its exact prior state, including having been unset. */

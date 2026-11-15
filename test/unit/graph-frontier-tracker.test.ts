@@ -226,4 +226,44 @@ describe("GraphFrontierTracker — Phase C", () => {
 			assert.equal(tracker.getNodes().length, 2);
 		});
 	});
+
+	describe("a replayed node whose recorded parent spawns after it (#4888)", () => {
+		/**
+		 * After `prepare → setup`, two stages replay at creation with their recorded parents (`agent` after the tool
+		 * `start`, `review` after `agent`), before `start` replays; `finish` follows them.
+		 */
+		function replayStagesBeforeTheirTool(tracker: GraphFrontierTracker): { start: string[]; finish: string[] } {
+			tracker.onSpawn("prepare", "prepare");
+			tracker.onSettle("prepare");
+			tracker.onSpawn("setup", "setup");
+			tracker.onSettle("setup");
+			tracker.onSpawn("agent", "agent");
+			tracker.replaceParents("agent", ["tool:start"]);
+			tracker.onSettle("agent");
+			tracker.onSpawn("review", "review");
+			tracker.replaceParents("review", ["agent"]);
+			tracker.onSettle("review");
+			const start = tracker.onSpawn("tool:start", "start");
+			tracker.onSettle("tool:start");
+			const finish = tracker.onSpawn("tool:finish", "finish");
+			return { start, finish };
+		}
+
+		test("the parent takes only the nodes before it, and never enters the frontier (#4888)", () => {
+			const tracker = new GraphFrontierTracker();
+			assert.deepEqual(replayStagesBeforeTheirTool(tracker), { start: ["setup"], finish: ["review"] });
+			assert.deepEqual(tracker.getParents("agent"), ["tool:start"]);
+		});
+
+		test("reset forgets the parents that were taken (#4888)", () => {
+			const tracker = new GraphFrontierTracker();
+			replayStagesBeforeTheirTool(tracker);
+			tracker.reset();
+			tracker.onSpawn("other", "other");
+			tracker.onSettle("other");
+			assert.deepEqual(tracker.onSpawn("tool:start", "start"), ["other"]);
+			tracker.onSettle("tool:start");
+			assert.deepEqual(tracker.onSpawn("next", "next"), ["tool:start"]);
+		});
+	});
 });

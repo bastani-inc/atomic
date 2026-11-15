@@ -26,6 +26,11 @@ export class SessionIdReclaim {
 		}
 	}
 
+	/** The return address that last held the departed id `sessionId`, while this broker remembers it (#4829). */
+	retiredReturnAddress(sessionId: string): string | undefined {
+		return this.retired.get(sessionId);
+	}
+
 	/** The requested id when it can be granted, otherwise undefined (the caller assigns a fresh id). */
 	grant(
 		preferredSessionId: string | undefined,
