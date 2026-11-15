@@ -43,12 +43,23 @@ async function openJournal(): Promise<RunJournal> {
 	return journal;
 }
 
+/** Real milliseconds, on a clock the tests never fake. */
+function realMs(): number {
+	return Number(process.hrtime.bigint() / 1_000_000n);
+}
+
 async function until(what: string, check: () => boolean | Promise<boolean>, timeoutMs = 20_000): Promise<void> {
-	const deadline = performance.now() + timeoutMs;
+	const deadline = realMs() + timeoutMs;
 	while (!(await check())) {
-		if (performance.now() > deadline) assert.fail(`timed out waiting for ${what}`);
+		if (realMs() > deadline) assert.fail(`timed out waiting for ${what}`);
 		await sleep(20);
 	}
+}
+
+/** Stops this process's monotonic clock from now on, as a suspend of the system does; the wall clock runs on. */
+function suspendMonotonicClock(): void {
+	const stoppedAt = performance.now();
+	vi.spyOn(performance, "now").mockReturnValue(stoppedAt);
 }
 
 /** Steps this process's wall clock by `ms` from now on, as an NTP step would. */
@@ -60,51 +71,63 @@ function stepClock(ms: number): void {
 test.skipIf(process.platform === "win32")(
 	"a controller whose clock steps back stops acting before another controller takes its lease (#5058)",
 	async () => {
-		let release!: () => void;
-		const gate = new Promise<void>((resolve) => {
-			release = resolve;
-		});
-		let listSignal: AbortSignal | undefined;
-		const calls: string[] = [];
-		const provisioner: WorkerHostProvisioner = {
-			kind: "slow",
-			async list(signal) {
-				if (listSignal !== undefined) calls.push("list");
-				listSignal = signal;
-				await gate;
-				return [];
-			},
-			async scaleTo(target) {
-				calls.push(`scaleTo(${target})`);
-			},
-			async drain(id) {
-				calls.push(`drain(${id})`);
-			},
-		};
-		const a = new FleetController(await openJournal(), { provisioner, tickMs: TICK_MS, minHosts: 1 });
-		controllers.push(a);
-		await until("A to lead and list its hosts", () => listSignal !== undefined);
-		// A loses the database, so its renewals fail, while its provider calls still work; its clock steps back.
-		const store = (a as unknown as { store: SqlFleetStore }).store;
-		store.acquire = () => Promise.reject(new Error("database unreachable"));
-		const lostAt = performance.now();
-		stepClock(-STEP_BACK_MS);
-		let abortedAt: number | undefined;
-		listSignal!.addEventListener("abort", () => {
-			abortedAt = performance.now();
-		});
-
-		// The lease, on the database's clock, expires and B takes it over.
-		const b = await SqlFleetStore.open(await openJournal());
-		await until("B to take the lease", async () => (await b.acquire("B", undefined, LEASE_MS)).held);
-		assert.equal(listSignal!.aborted, true, "A aborted its provider call before B took the lease");
-		assert.ok(abortedAt! - lostAt < LEASE_MS, `A stopped within its lease (${abortedAt! - lostAt} ms)`);
-
-		release();
-		await sleep(5 * TICK_MS);
-		assert.deepEqual(calls, [], "A made no provider call after it may have lost the lease");
+		await losesItsLease(() => stepClock(-STEP_BACK_MS));
 	},
 );
+
+test.skipIf(process.platform === "win32")(
+	"a controller whose host is suspended past its lease stops acting before another controller takes its lease (#5058)",
+	async () => {
+		await losesItsLease(suspendMonotonicClock);
+	},
+);
+
+/** A controller that leads loses the database, then `clockFault` happens: it must stop acting before B takes the lease. */
+async function losesItsLease(clockFault: () => void): Promise<void> {
+	let release!: () => void;
+	const gate = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	let listSignal: AbortSignal | undefined;
+	const calls: string[] = [];
+	const provisioner: WorkerHostProvisioner = {
+		kind: "slow",
+		async list(signal) {
+			if (listSignal !== undefined) calls.push("list");
+			listSignal = signal;
+			await gate;
+			return [];
+		},
+		async scaleTo(target) {
+			calls.push(`scaleTo(${target})`);
+		},
+		async drain(id) {
+			calls.push(`drain(${id})`);
+		},
+	};
+	const a = new FleetController(await openJournal(), { provisioner, tickMs: TICK_MS, minHosts: 1 });
+	controllers.push(a);
+	await until("A to lead and list its hosts", () => listSignal !== undefined);
+	// A loses the database, so its renewals fail, while its provider calls still work; then its clock fails.
+	const store = (a as unknown as { store: SqlFleetStore }).store;
+	store.acquire = () => Promise.reject(new Error("database unreachable"));
+	const lostAt = realMs();
+	clockFault();
+	let abortedAt: number | undefined;
+	listSignal!.addEventListener("abort", () => {
+		abortedAt = realMs();
+	});
+
+	// The lease, on the database's clock, expires and B takes it over.
+	const b = await SqlFleetStore.open(await openJournal());
+	await until("B to take the lease", async () => (await b.acquire("B", undefined, LEASE_MS)).held);
+	assert.equal(listSignal!.aborted, true, "A aborted its provider call before B took the lease");
+	assert.ok(abortedAt! - lostAt < LEASE_MS, `A stopped within its lease (${abortedAt! - lostAt} ms)`);
+
+	release();
+	await sleep(5 * TICK_MS);
+	assert.deepEqual(calls, [], "A made no provider call after it may have lost the lease");
+}
 
 test.skipIf(process.platform === "win32")(
 	"a forward clock step does not remove a host that is still booting (#5058)",

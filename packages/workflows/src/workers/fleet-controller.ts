@@ -15,6 +15,7 @@ import {
 	planFleet,
 	resolveFleetPolicy,
 } from "./autoscaler.js";
+import { elapsedSince, type Instant, instant } from "./elapsed.js";
 import type {
 	ProvisionedHost,
 	WorkerHostProvisioner,
@@ -129,10 +130,10 @@ export class FleetController implements WorkflowFleetController {
 	/** Aborted when the running tick must stop acting: the lease was lost or may have expired, or the controller stops. */
 	private tickAbort = new AbortController();
 	/**
-	 * When, by `performance.now()`, the lease was last taken or renewed, measured before the request: a step of the wall
-	 * clock never makes a controller that may have lost its lease act on (#5058).
+	 * When the lease was last taken or renewed, measured before the request, on both clocks: neither a step back of the
+	 * wall clock nor a suspend of the system makes a controller that may have lost its lease act on (#5058).
 	 */
-	private renewedAt = 0;
+	private renewedAt: Instant = { monotonic: 0, wall: 0 };
 	/** Listings in a row that omitted each drained instance, by the drained host id (#4828). */
 	private missed = new Map<string, number>();
 	private stopping?: Promise<void>;
@@ -233,7 +234,7 @@ export class FleetController implements WorkflowFleetController {
 	/** Takes or renews the lease; returns the fence while this controller holds it. */
 	private async lead(): Promise<FleetFence | undefined> {
 		this.store ??= await SqlFleetStore.open(this.journal);
-		const asked = performance.now();
+		const asked = instant();
 		const lease = await this.store.acquire(this.holder, this.epoch, this.leaseMs);
 		if (lease.held) this.renewedAt = asked;
 		if (!lease.held) {
@@ -341,11 +342,11 @@ export class FleetController implements WorkflowFleetController {
 	 */
 	private keepLeading(fence: FleetFence, tick: AbortController): NodeJS.Timeout {
 		const timer = setInterval(() => {
-			if (performance.now() - this.renewedAt >= this.leaseMs - this.tickMs) {
+			if (elapsedSince(this.renewedAt) >= this.leaseMs - this.tickMs) {
 				tick.abort(new Error("The fleet controller may have lost its lease"));
 				return;
 			}
-			const asked = performance.now();
+			const asked = instant();
 			void this.store!.acquire(this.holder, fence.epoch, this.leaseMs).then(
 				(lease) => {
 					if (lease.held && lease.epoch === fence.epoch) this.renewedAt = asked;
