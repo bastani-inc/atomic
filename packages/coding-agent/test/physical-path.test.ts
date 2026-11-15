@@ -29,6 +29,14 @@ describe.skipIf(process.platform === "win32")(
 			assert.equal(resolvePhysicalPath(join(root, "alias", "dangling")), join(root, "real", "target"));
 		});
 
+		it("applies .. in a link target after resolving the directory link before it (#5045)", () => {
+			mkdirSync(join(root, "ws"));
+			mkdirSync(join(root, "outside", "a", "b"), { recursive: true });
+			symlinkSync(join(root, "outside", "a", "b"), join(root, "ws", "d"));
+			symlinkSync("d/../pwned.txt", join(root, "ws", "L"));
+			assert.equal(resolvePhysicalPath(join(root, "ws", "L")), join(root, "outside", "a", "pwned.txt"));
+		});
+
 		it("keeps missing components below a regular file and a missing path as spelled (#5045)", () => {
 			writeFileSync(join(root, "file"), "");
 			assert.equal(resolvePhysicalPath(join(root, "file", "below")), join(root, "file", "below"));

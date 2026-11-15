@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createBashToolDefinition } from "../src/core/tools/bash.js";
 import { createFindToolDefinition } from "../src/core/tools/find.js";
@@ -188,6 +188,25 @@ describe("local resource parity", () => {
 		await expect(readFile(join(outside, "missing-dir", "new.txt"), "utf8")).rejects.toMatchObject({
 			code: "ENOENT",
 		});
+	});
+
+	it("refuses local:// writes through a dangling link whose target climbs out of a directory link with .. (#5045)", async (ctx) => {
+		const dir = await tempDir(),
+			outside = await tempDir();
+		await mkdir(join(outside, "a", "b"), { recursive: true });
+		if (!(await trySymlink(join(outside, "a", "b"), join(dir, "d"), "dir"))) return ctx.skip();
+		if (!(await trySymlink(["d", "..", "pwned.txt"].join(sep), join(dir, "L"), "file"))) return ctx.skip();
+		await expect(
+			createToolDefinition("write", dir).execute(
+				"write-local-dotdot",
+				{ path: "local://L", content: "nope" },
+				undefined,
+				undefined,
+				{} as never,
+			),
+		).rejects.toThrow("escapes the workspace");
+		await expect(readFile(join(outside, "a", "pwned.txt"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+		await expect(readFile(join(dir, "pwned.txt"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
 	});
 
 	it("writes local:// through a dangling link whose target lies inside the workspace (#5045)", async (ctx) => {
