@@ -250,7 +250,7 @@ Output limits depend on the source:
 
 Successful reads include `details.meta.source` and `sourcePath`, plus `truncation` and `limits` when applicable.
 
-Atomic blocks private, localhost, and cloud-metadata URL targets, including alternative numeric IP spellings and IPv6 forms. Redirects are checked too. Use an accessible public URL rather than trying alternate spellings to bypass the restriction.
+Atomic blocks private, localhost, cloud-metadata, and other reserved or non-public URL targets (documentation, benchmarking, multicast and reserved ranges), including alternative numeric IP spellings and IPv6 forms. Redirects are checked too. Use an accessible public URL rather than trying alternate spellings to bypass the restriction.
 
 ## `ask_user_question`
 
