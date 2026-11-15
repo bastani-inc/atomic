@@ -42,6 +42,7 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 - Fixed held sends to departed children and sends waiting on a recipient's save being held longer, or released early, after a wall-clock step: their waits now use the monotonic clock ([#5058](https://github.com/bastani-inc/atomic/issues/5058))
 - Fixed a received Intercom message being added whole to the recipient's context and saved session: a message whose text and attachments total more than 50 KB, such as one from an older Atomic version without the send limits, is now saved to a file in the session's directory, and the recipient sees a short preview with the file's path, like an oversized tool result. Live, held, and resumed messages are all bounded ([#4907](https://github.com/bastani-inc/atomic/issues/4907))
 - Fixed Intercom message previews, pending-ask lists, recovered message bodies and restoring-recipient reasons cutting an emoji in half at the length limit, which showed up as `�` or a raw `\ud83d` escape. The broker log excerpt shown when the broker fails to start no longer opens with `�` ([#5097](https://github.com/bastani-inc/atomic/issues/5097))
+- Fixed replies held for an Intercom session from before the receipt protocol being dropped when its connection closed while it registered: they are now kept and delivered when it connects again ([#5149](https://github.com/bastani-inc/atomic/issues/5149))
 
 ## [0.9.87] - 2026-11-14
 

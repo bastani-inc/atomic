@@ -3,6 +3,7 @@ import type { WorktreeSnapshot } from "@bastani/atomic";
 import {
 	assertStoredSchemaVersion,
 	dialectOf,
+	type FencedPathId,
 	olderBuildLive,
 	openNodeSqliteDatabase,
 	RUN_JOURNAL_SCHEMA_VERSION_UNCHUNKED,
@@ -32,6 +33,7 @@ import {
 	JOURNAL_WRITE_TRANSACTION,
 	type JournalAppendGuard,
 	type JournalBatchAppend,
+	locksRows,
 	NON_SNAPSHOT_EVENT_TYPES,
 	type RunSnapshotTail,
 	type RunVersion,
@@ -252,6 +254,23 @@ export class SqlRunJournal implements RunJournal {
 								}
 							}),
 					}),
+			// A database that locks rows (PostgreSQL) runs the pool's audited hot paths as fenced transactions (#5102).
+			...(batch === undefined && locksRows(this.dialect)
+				? {
+						// Fenced on the schema version as a batch is: an optimistic plan reads nothing (#4965).
+						fenced: (statements, audit, excludesSerial) =>
+							this.operation(async () => {
+								try {
+									return (await this.fencedWrite([versionFence, ...statements], audit, excludesSerial)).slice(
+										1,
+									);
+								} catch (error) {
+									await this.assertVersion(this.database);
+									throw error;
+								}
+							}),
+					}
+				: {}),
 			read: (body) => this.operation(() => this.readSnapshot((executor) => body(this.versionChecked(executor)))),
 			withAppendGuard: (guard, action) => this.appendGuard.run(guard, action),
 			tables: this.tables,
@@ -264,6 +283,37 @@ export class SqlRunJournal implements RunJournal {
 		registerJournalKeyRangeRead(this, (runId, fromKey, toKey) =>
 			SqlRunJournal.readKeyRange(this, runId, fromKey, toKey),
 		);
+	}
+
+	/**
+	 * `statements` in order in one fenced transaction (#5102). They are sent together, without waiting for their answers,
+	 * and the commit behind them: a pipelined connection runs them in one round trip, so the rows their fences lock are
+	 * held only while the server runs them and commits. A failed statement fails the write with its own error, the first
+	 * in order; the ones after it fail only because it did.
+	 */
+	private async fencedWrite(
+		statements: readonly SqliteStatement[],
+		audit: FencedPathId,
+		excludesSerial = false,
+	): Promise<SqliteRow[][]> {
+		let answers: Promise<PromiseSettledResult<SqliteRow[]>[]> | undefined;
+		const firstFailure = async () =>
+			(await answers)?.find((answer): answer is PromiseRejectedResult => answer.status === "rejected")?.reason;
+		try {
+			await this.database.transaction(
+				async (tx) => {
+					answers = Promise.allSettled(statements.map((statement) => tx.all(statement.sql, ...statement.params)));
+				},
+				{
+					...JOURNAL_WRITE_TRANSACTION,
+					concurrency: excludesSerial ? { kind: "fenced", audit, excludesSerial } : { kind: "fenced", audit },
+				},
+			);
+		} catch (error) {
+			throw (await firstFailure()) ?? error;
+		}
+		// The transaction committed, so every statement in it succeeded.
+		return (await answers!).map((answer) => (answer as PromiseFulfilledResult<SqliteRow[]>).value);
 	}
 
 	static async open(database: SqliteDatabase, options: { readonly prefix?: string } = {}): Promise<SqlRunJournal> {
@@ -632,6 +682,19 @@ export class SqlRunJournal implements RunJournal {
 		return (await this.legacy.find(this.database, runId)) !== undefined;
 	}
 
+	/**
+	 * Before a write that changes who holds `runId`'s lease or at which epoch, on a database that locks rows: locks the
+	 * lease row, so the write waits for the pool's fenced writes under the lease, which key-share lock it, and every
+	 * later one sees the change (#5102). A renewal changes neither and takes no such lock.
+	 */
+	private async lockLease(tx: SqliteExecutor, runId: string): Promise<void> {
+		if (locksRows(this.dialect))
+			await tx.get(
+				`SELECT ${c.runId} FROM ${this.tables.leases} WHERE ${c.runId} = ?${this.dialect.lockClause("update")}`,
+				runId,
+			);
+	}
+
 	private async leaseRow(tx: SqliteExecutor, runId: string): Promise<LeaseRow | undefined> {
 		const row = await tx.get<LeaseRow>(`SELECT * FROM ${this.tables.leases} WHERE ${c.runId} = ?`, runId);
 		return row ? { ...row, [c.epoch]: journalCounter(runId, "epoch", row[c.epoch]) } : undefined;
@@ -670,6 +733,7 @@ export class SqlRunJournal implements RunJournal {
 		return this.operation(() =>
 			this.transaction(async (tx) => {
 				await this.requireRun(tx, runId);
+				await this.lockLease(tx, runId);
 				const current = await this.leaseRow(tx, runId);
 				if (current?.[c.holderId] === holderId)
 					return { status: "acquired", lease: { runId, holderId, epoch: current[c.epoch] } };
@@ -688,6 +752,7 @@ export class SqlRunJournal implements RunJournal {
 		return this.operation(() =>
 			this.transaction(async (tx) => {
 				await this.requireRun(tx, runId);
+				await this.lockLease(tx, runId);
 				const current = await this.leaseRow(tx, runId);
 				if (current?.[c.holderId] !== expectedHolder)
 					return {
@@ -728,6 +793,7 @@ export class SqlRunJournal implements RunJournal {
 		return this.operation(() =>
 			this.transaction(async (tx) => {
 				await this.requireRun(tx, runId);
+				await this.lockLease(tx, runId);
 				const current = await this.leaseRow(tx, runId);
 				if (current?.[c.holderId] === holderId)
 					return { status: "acquired", lease: { runId, holderId, epoch: current[c.epoch] } };
@@ -771,6 +837,7 @@ export class SqlRunJournal implements RunJournal {
 		const owned = { ...lease };
 		return this.operation(() =>
 			this.transaction(async (tx) => {
+				await this.lockLease(tx, owned.runId);
 				await this.checkLease(tx, owned);
 				await tx.run(
 					`UPDATE ${this.tables.leases} SET ${c.holderId} = ? WHERE ${c.runId} = ?`,
@@ -782,6 +849,13 @@ export class SqlRunJournal implements RunJournal {
 	}
 
 	private async sequence(tx: SqliteExecutor, runId: string): Promise<number> {
+		// Fenced pool commits append to the run without the database-wide lock, under its run row (#5102): an append
+		// takes the row first, so the run's next sequence is read after every commit that took it before.
+		if (locksRows(this.dialect))
+			await tx.get(
+				`SELECT ${c.runId} FROM ${this.tables.runs} WHERE ${c.runId} = ?${this.dialect.lockClause("update")}`,
+				runId,
+			);
 		const row = await tx.get<SqliteRow & { [c.seq]: number }>(
 			`SELECT COALESCE(MAX(${c.seq}), 0) AS ${c.seq} FROM ${this.tables.events} WHERE ${c.runId} = ?`,
 			runId,
@@ -1190,6 +1264,7 @@ export class SqlRunJournal implements RunJournal {
 
 	private async deleteRunData(tx: SqliteExecutor, runId: string): Promise<void> {
 		await this.legacy?.markDeleted(tx, runId);
+		await this.lockLease(tx, runId);
 		await this.leaseRow(tx, runId);
 		await tx.run(
 			`UPDATE ${this.tables.leases} SET ${c.holderId} = ? WHERE ${c.runId} = ?`,
