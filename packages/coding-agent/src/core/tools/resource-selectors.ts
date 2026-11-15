@@ -1069,7 +1069,7 @@ function sqliteRowKeyValues(key: string[], rowId: string, table: string): Sqlite
 	}
 	if (!Array.isArray(values) || values.length !== key.length)
 		throw new Error(
-			`SQLite table '${table}' has a composite primary key (${key.join(", ")}); select a row with a JSON array of all ${key.length} key values in key order, such as ${table}:${JSON.stringify(key.map((_, index) => (index === 0 ? "a" : index)))}`,
+			`SQLite table '${table}' has a composite primary key (${key.join(", ")}); select a row with a JSON array of all ${key.length} key values in that order`,
 		);
 	return values.map((value, index) => normalizeSqliteWriteValue(value, key[index] as string));
 }
@@ -1106,7 +1106,7 @@ function runSingleRowWrite(
 	}
 }
 function sqliteRowKeyText(key: string[], row: Record<string, unknown>, fallback: number): string {
-	if (key.length > 1) return JSON.stringify(key.map((column) => row[column] ?? null));
+	if (key.length > 1) return JSON.stringify(key.map((column) => row[column]));
 	return String(row[key[0] as string] ?? fallback);
 }
 export function readSqliteSelector(selector: SqliteSelector): string {

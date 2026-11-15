@@ -49,6 +49,11 @@ function octal(field: Buffer, what: string, label: string): number {
 	return text === "" ? 0 : Number.parseInt(text, 8);
 }
 
+/** POSIX ustar headers have a `prefix` field; GNU headers keep other data in those bytes. */
+function isPosixUstar(header: Buffer): boolean {
+	return header.subarray(257, 263).toString() === "ustar\0";
+}
+
 function checksum(header: Buffer): { unsigned: number; signed: number } {
 	let unsigned = 0,
 		signed = 0;
@@ -64,7 +69,7 @@ function parsePax(data: Buffer, label: string): Map<string, string> {
 	const records = new Map<string, string>();
 	for (let offset = 0; offset < data.length; ) {
 		const space = data.indexOf(0x20, offset);
-		const digits = data.subarray(offset, Math.max(offset, space)).toString("latin1");
+		const digits = data.subarray(offset, Math.max(offset, space)).toString();
 		const length = /^[1-9][0-9]*$/.test(digits) ? Number(digits) : 0;
 		const record = data.subarray(space + 1, offset + length);
 		const equals = record.indexOf(0x3d);
@@ -103,8 +108,7 @@ export function listTarMembers(buf: Buffer, label: string): TarListing {
 		if (type === "L") longName = cString(data);
 		else if (type === "x") pax = parsePax(data, label);
 		if (!EXTENSION_TYPES.has(type)) {
-			const prefix =
-				header.subarray(257, 263).toString("latin1") === "ustar\0" ? cString(header.subarray(345, 500)) : "";
+			const prefix = isPosixUstar(header) ? cString(header.subarray(345, 500)) : "";
 			const name = cString(header.subarray(0, 100));
 			members.push({
 				name: pax.get("path") ?? longName ?? (prefix ? `${prefix}/${name}` : name),
@@ -126,12 +130,12 @@ export function listTarMembers(buf: Buffer, label: string): TarListing {
 }
 
 function writeOctal(header: Buffer, value: number, offset: number, width: number): void {
-	header.write(`${value.toString(8).padStart(width - 1, "0")}\0`, offset, width, "latin1");
+	header.write(`${value.toString(8).padStart(width - 1, "0")}\0`, offset, width);
 }
 
 function sealHeader(header: Buffer): Buffer {
 	header.fill(0x20, 148, 156);
-	header.write(`${checksum(header).unsigned.toString(8).padStart(6, "0")}\0 `, 148, 8, "latin1");
+	header.write(`${checksum(header).unsigned.toString(8).padStart(6, "0")}\0 `, 148, 8);
 	return header;
 }
 
@@ -165,11 +169,11 @@ function memberBlocks(name: string, data: Buffer, template: TarMember | undefine
 		writeOctal(header, 0o644, 100, 8);
 		writeOctal(header, 0, 108, 8);
 		writeOctal(header, 0, 116, 8);
-		header.write("0", 156, "latin1");
-		header.write("ustar\0", 257, "latin1");
-		header.write("00", 263, "latin1");
+		header.write("0", 156);
+		header.write("ustar\0", 257);
+		header.write("00", 263);
 	}
-	const posix = header.subarray(257, 263).toString("latin1") === "ustar\0";
+	const posix = isPosixUstar(header);
 	const nameBytes = Buffer.from(name);
 	const split = posix || nameBytes.length <= 100 ? ustarSplit(nameBytes) : undefined;
 	header.fill(0, 0, 100);
@@ -184,15 +188,15 @@ function memberBlocks(name: string, data: Buffer, template: TarMember | undefine
 	if (records.length === 0) return blocks;
 	const pax = Buffer.from(records.map(([key, value]) => paxRecord(key, value)).join(""));
 	const paxHeader = Buffer.alloc(BLOCK);
-	paxHeader.write("././@PaxHeader", 0, "latin1");
+	paxHeader.write("././@PaxHeader", 0);
 	writeOctal(paxHeader, 0o644, 100, 8);
 	writeOctal(paxHeader, 0, 108, 8);
 	writeOctal(paxHeader, 0, 116, 8);
 	writeOctal(paxHeader, pax.length, 124, 12);
 	writeOctal(paxHeader, now, 136, 12);
-	paxHeader.write("x", 156, "latin1");
-	paxHeader.write("ustar\0", 257, "latin1");
-	paxHeader.write("00", 263, "latin1");
+	paxHeader.write("x", 156);
+	paxHeader.write("ustar\0", 257);
+	paxHeader.write("00", 263);
 	return [sealHeader(paxHeader), ...padded(pax), ...blocks];
 }
 

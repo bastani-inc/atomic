@@ -25,7 +25,7 @@ type ToolResult = { content: Array<{ type: string; text?: string }> };
 
 const textOf = (result: ToolResult) => result.content.map((item) => item.text ?? "").join("\n");
 
-async function run(tool: "read" | "write", dir: string, params: object): Promise<ToolResult> {
+async function run(tool: "read" | "write" | "search", dir: string, params: object): Promise<ToolResult> {
 	return createToolDefinition(tool, dir).execute(
 		tool,
 		params as never,
@@ -37,6 +37,8 @@ async function run(tool: "read" | "write", dir: string, params: object): Promise
 
 const write = (dir: string, path: string, content: string) => run("write", dir, { path, content });
 const read = async (dir: string, path: string) => textOf(await run("read", dir, { path }));
+const search = async (dir: string, pattern: string, paths: string) =>
+	textOf(await run("search", dir, { pattern, paths }));
 
 describe("conflict:// markers are exact marker lines (#4906)", () => {
 	it("keeps a markdown heading underline on theirs when resolved with @theirs (#4906)", async () => {
@@ -79,6 +81,38 @@ describe("conflict:// markers are exact marker lines (#4906)", () => {
 		await writeFile(file, `${ambiguous}<<<<<<< ours\nkeep\n=======\ndrop\n>>>>>>> theirs\n`);
 		await write(dir, "conflict://*", "@ours");
 		assert.equal(await readFile(file, "utf8"), `${ambiguous}keep\n`);
+	});
+});
+
+describe("conflict:// marker edge cases (#4906)", () => {
+	it("recognises CRLF marker lines and labels on every marker (#4906)", async () => {
+		const dir = await tempDir();
+		const file = join(dir, "c.txt");
+		await writeFile(file, "<<<<<<<\r\no\r\n||||||| base\r\nb\r\n======= mid\r\nt\r\n>>>>>>>\r\nend\r\n");
+		assert.equal(await read(dir, "conflict://1/base"), "b\r");
+		await write(dir, "conflict://1", "@theirs");
+		assert.equal(await readFile(file, "utf8"), "t\r\nend\r\n");
+	});
+
+	it.each([
+		["eight", "<<<<<<<< x"],
+		["a label without a space", "<<<<<<<x"],
+		["a tab", "<<<<<<<\tx"],
+	])("does not start a region at a start marker with %s (#4906)", async (_case, start) => {
+		const dir = await tempDir();
+		const file = join(dir, "c.txt");
+		const text = `${start}\no\n=======\nt\n>>>>>>> theirs\n`;
+		await writeFile(file, `${text}<<<<<<< a\nkeep\n=======\ndrop\n>>>>>>> b\n`);
+		await write(dir, "conflict://*", "@ours");
+		assert.equal(await readFile(file, "utf8"), `${text}keep\n`);
+	});
+
+	it("leaves a region holding another start marker and resolves the inner region (#4906)", async () => {
+		const dir = await tempDir();
+		const file = join(dir, "c.txt");
+		await writeFile(file, "<<<<<<< outer\nx\n<<<<<<< inner\no\n=======\nt\n>>>>>>> inner\n");
+		await write(dir, "conflict://*", "@theirs");
+		assert.equal(await readFile(file, "utf8"), "<<<<<<< outer\nx\nt\n");
 	});
 });
 
@@ -150,6 +184,89 @@ describe("SQLite row selectors use the complete primary key (#4906)", () => {
 		});
 	}
 
+	it("addresses composite keys in primary-key order, not column order (#4906)", async () => {
+		const dir = await tempDir();
+		const database = sqliteFixture(
+			dir,
+			"create table members (tenant text, id integer, name text, primary key (id, tenant))",
+			MEMBERS,
+		);
+		assert.equal(
+			textOf(await write(dir, 'data.sqlite:members:[1,"globex"]', "{name: 'Thompson'}")),
+			`Updated row '[1,"globex"]' in members`,
+		);
+		assert.equal(
+			textOf(await write(dir, 'data.sqlite:members:[1,"initech"]', "{name: 'Nobody'}")),
+			`No row updated for '[1,"initech"]' in members`,
+		);
+		assert.equal(
+			textOf(await write(dir, 'data.sqlite:members:[1,"initech"]', "")),
+			`No row deleted for '[1,"initech"]' in members`,
+		);
+		assert.equal(
+			textOf(await write(dir, 'data.sqlite:members:[2,"acme"]', "")),
+			`Deleted row '[2,"acme"]' in members`,
+		);
+		assert.deepEqual(sqliteRows(database), [
+			{ tenant: "acme", id: 1, name: "Ada" },
+			{ tenant: "acme", id: 3, name: "Linus" },
+			{ tenant: "globex", id: 1, name: "Thompson" },
+		]);
+	});
+
+	it("names composite-key rows in search results by their key array (#4906)", async () => {
+		const dir = await tempDir();
+		sqliteFixture(
+			dir,
+			"create table members (tenant text, id integer, name text, primary key (id, tenant))",
+			MEMBERS,
+		);
+		const found = await search(dir, "Grace|Ken", "data.sqlite:members");
+		assert.ok(found.includes('data.sqlite:members:[2,"acme"]:'), found);
+		assert.ok(found.includes('data.sqlite:members:[1,"globex"]:'), found);
+		assert.ok(!found.includes("Ada"), found);
+		const one = await search(dir, "a", 'data.sqlite:members:[1,"acme"]');
+		assert.ok(one.includes('data.sqlite:members:[1,"acme"]:'), one);
+		assert.ok(!one.includes("Grace"), one);
+	});
+
+	it("explains how to select a composite-key row and validates the key values (#4906)", async () => {
+		const dir = await tempDir();
+		sqliteFixture(
+			dir,
+			"create table members (tenant text, id integer, name text, primary key (tenant, id))",
+			MEMBERS,
+		);
+		await assert.rejects(
+			write(dir, "data.sqlite:members:acme", ""),
+			new Error(
+				"SQLite table 'members' has a composite primary key (tenant, id); select a row with a JSON array of all 2 key values in that order",
+			),
+		);
+		await assert.rejects(
+			write(dir, 'data.sqlite:members:["acme",[1]]', ""),
+			new Error("SQLite column 'id' only accepts JSON scalar values or null"),
+		);
+	});
+
+	it("still maps an inserted id onto a single differently named key, but not onto a composite key (#4906)", async () => {
+		const dir = await tempDir();
+		const database = join(dir, "data.sqlite");
+		const db = new TestSqliteDatabase(database);
+		db.run("create table tags (slug text primary key, label text)");
+		db.run("create table pairs (a integer, b integer, id integer, primary key (a, b))");
+		db.close();
+		await write(dir, "data.sqlite:tags", "{id: 'x', label: 'X'}");
+		await write(dir, "data.sqlite:pairs", "{a: 1, b: 2, id: 9}");
+		const after = new TestSqliteDatabase(database);
+		try {
+			assert.deepEqual({ ...after.query("select slug, label from tags").all()[0] }, { slug: "x", label: "X" });
+			assert.deepEqual({ ...after.query("select a, b, id from pairs").all()[0] }, { a: 1, b: 2, id: 9 });
+		} finally {
+			after.close();
+		}
+	});
+
 	it("refuses an update or delete that would change more than one row (#4906)", async () => {
 		const dir = await tempDir();
 		const database = join(dir, "data.sqlite");
@@ -157,7 +274,12 @@ describe("SQLite row selectors use the complete primary key (#4906)", () => {
 		db.run("create table notes (rowid text, body text)");
 		db.run("insert into notes values ('dup', 'a'), ('dup', 'b')");
 		db.close();
-		await assert.rejects(write(dir, "data.sqlite:notes:dup", "{body: 'x'}"), /2 rows/);
+		await assert.rejects(
+			write(dir, "data.sqlite:notes:dup", "{body: 'x'}"),
+			new Error(
+				"SQLite row selector 'dup' matches 2 rows in notes; refusing to change more than one row. Select the row by its complete primary key.",
+			),
+		);
 		await assert.rejects(write(dir, "data.sqlite:notes:dup", ""), /2 rows/);
 		const after = new TestSqliteDatabase(database);
 		try {
