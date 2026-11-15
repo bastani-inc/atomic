@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAMES } from "../config.js";
@@ -104,33 +105,124 @@ export function getProjectTrustOptions(cwd: string, options?: { includeSessionOn
 	return trustOptions;
 }
 
-function readTrustFile(path: string): TrustFile {
-	if (!existsSync(path)) {
-		return {};
+/** How long a save waits, with backoff, for another process to release the trust store lock. */
+export const TRUST_LOCK_WAIT_MS = 5_000;
+const TRUST_LOCK_POLL_MIN_MS = 10;
+const TRUST_LOCK_POLL_MAX_MS = 250;
+
+/**
+ * How long a read or a rename retries Windows sharing errors while another process replaces trust.json. Windows can
+ * refuse to open or replace a file for a moment while another handle to it closes.
+ */
+const TRUST_FILE_SHARING_RETRY_MS = 2_000;
+const WINDOWS_SHARING_CODES: ReadonlySet<string> = new Set(["EPERM", "EACCES", "EBUSY"]);
+
+const sleeper = new Int32Array(new SharedArrayBuffer(4));
+
+function sleepSync(ms: number): void {
+	// Callers of the trust store are synchronous; block this thread without spinning the CPU.
+	Atomics.wait(sleeper, 0, 0, ms);
+}
+
+function errorCode(error: unknown): string | undefined {
+	return error instanceof Error && "code" in error ? String(error.code) : undefined;
+}
+
+function isWindowsSharingError(error: unknown): boolean {
+	return process.platform === "win32" && WINDOWS_SHARING_CODES.has(errorCode(error) ?? "");
+}
+
+/** Runs `fn`, retrying Windows sharing errors with backoff until {@link TRUST_FILE_SHARING_RETRY_MS} pass. */
+function retryWindowsSharing<T>(fn: () => T): T {
+	const deadline = Date.now() + TRUST_FILE_SHARING_RETRY_MS;
+	for (let pollMs = TRUST_LOCK_POLL_MIN_MS; ; pollMs = Math.min(pollMs * 2, TRUST_LOCK_POLL_MAX_MS)) {
+		try {
+			return fn();
+		} catch (error) {
+			const remainingMs = deadline - Date.now();
+			if (!isWindowsSharingError(error) || remainingMs <= 0) throw error;
+			sleepSync(Math.min(pollMs, remainingMs));
+		}
+	}
+}
+
+/** A trust.json that exists but is not a valid trust store. */
+class CorruptTrustFileError extends Error {}
+
+/** The trust store files whose corruption this process has already reported, so each is reported once. */
+const reportedCorruptTrustFiles = new Set<string>();
+
+function reportCorruptTrustFile(path: string, error: Error): void {
+	if (reportedCorruptTrustFiles.has(path)) return;
+	reportedCorruptTrustFiles.add(path);
+	process.emitWarning(`${error.message}; it is treated as empty until a trust decision is saved`, {
+		code: "ATOMIC_TRUST_STORE_CORRUPT",
+	});
+}
+
+/**
+ * Reads trust.json without a lock: writers replace it whole with a rename, so a read sees the last complete file. A
+ * missing file is empty. A file that is not a valid trust store throws {@link CorruptTrustFileError}.
+ */
+function readTrustFileStrict(path: string): TrustFile {
+	let content: string;
+	try {
+		content = retryWindowsSharing(() => readFileSync(path, "utf-8"));
+	} catch (error) {
+		if (errorCode(error) === "ENOENT") return {};
+		throw error;
 	}
 
 	let parsed: unknown;
 	try {
-		parsed = parseJsonFileContent(readFileSync(path, "utf-8"));
+		parsed = parseJsonFileContent(content);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		throw new Error(`Failed to read trust store ${path}: ${message}`);
+		throw new CorruptTrustFileError(`Failed to read trust store ${path}: ${message}`);
 	}
 
 	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-		throw new Error(`Invalid trust store ${path}: expected an object`);
+		throw new CorruptTrustFileError(`Invalid trust store ${path}: expected an object`);
 	}
 
 	const data: TrustFile = {};
 	for (const [key, value] of Object.entries(parsed)) {
 		if (value !== true && value !== false && value !== null) {
-			throw new Error(`Invalid trust store ${path}: value for ${JSON.stringify(key)} must be true, false, or null`);
+			throw new CorruptTrustFileError(
+				`Invalid trust store ${path}: value for ${JSON.stringify(key)} must be true, false, or null`,
+			);
 		}
 		data[key] = value;
 	}
+	reportedCorruptTrustFiles.delete(path);
 	return data;
 }
 
+/** Reads trust.json for a caller that only reads: any failure is reported once and read as an empty store. */
+function readTrustFileForRead(path: string): TrustFile {
+	try {
+		return readTrustFileStrict(path);
+	} catch (error) {
+		reportCorruptTrustFile(path, error instanceof Error ? error : new Error(String(error)));
+		return {};
+	}
+}
+
+/**
+ * Reads trust.json under the writer lock before a save. A corrupt store is reported and replaced; a file that cannot
+ * be read at all fails the save rather than overwriting decisions that may still be there.
+ */
+function readTrustFileForWrite(path: string): TrustFile {
+	try {
+		return readTrustFileStrict(path);
+	} catch (error) {
+		if (!(error instanceof CorruptTrustFileError)) throw error;
+		reportCorruptTrustFile(path, error);
+		return {};
+	}
+}
+
+/** Replaces trust.json whole: a sibling temporary file renamed over it, so a crash leaves the old or the new file. */
 function writeTrustFile(path: string, data: TrustFile): void {
 	const sorted: TrustFile = {};
 	for (const key of Object.keys(data).sort()) {
@@ -139,40 +231,42 @@ function writeTrustFile(path: string, data: TrustFile): void {
 			sorted[key] = value;
 		}
 	}
-	mkdirSync(dirname(path), { recursive: true });
-	writeFileSync(path, `${JSON.stringify(sorted, null, 2)}\n`, "utf-8");
+	// Replace the file a symbolic link names, not the link.
+	const target = existsSync(path) ? realpathSync(path) : path;
+	const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
+	try {
+		writeFileSync(temporary, `${JSON.stringify(sorted, null, 2)}\n`, "utf-8");
+		retryWindowsSharing(() => renameSync(temporary, target));
+	} catch (error) {
+		rmSync(temporary, { force: true });
+		throw error;
+	}
 }
 
+/**
+ * Takes the trust store writer lock, waiting with backoff up to {@link TRUST_LOCK_WAIT_MS} for another process to
+ * release it. A lock its holder stopped refreshing is stale and taken over, as for auth.json.
+ */
 function acquireTrustLockSync(path: string): () => void {
 	const trustDir = dirname(path);
 	mkdirSync(trustDir, { recursive: true });
-	const maxAttempts = 10;
-	const delayMs = 20;
-	let lastError: unknown;
-
-	for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+	const deadline = Date.now() + TRUST_LOCK_WAIT_MS;
+	for (let pollMs = TRUST_LOCK_POLL_MIN_MS; ; pollMs = Math.min(pollMs * 2, TRUST_LOCK_POLL_MAX_MS)) {
 		try {
 			return lockfile.lockSync(trustDir, { realpath: false, lockfilePath: `${path}.lock` });
 		} catch (error) {
-			const code =
-				typeof error === "object" && error !== null && "code" in error
-					? String((error as { code?: unknown }).code)
-					: undefined;
-			if (code !== "ELOCKED" || attempt === maxAttempts) {
-				throw error;
+			const code = errorCode(error);
+			if (code !== "ELOCKED" && !isWindowsSharingError(error)) throw error;
+			const remainingMs = deadline - Date.now();
+			if (remainingMs <= 0) {
+				throw new Error(
+					`Could not save the trust decision: ${path} is locked by another process (waited ${TRUST_LOCK_WAIT_MS / 1000} s)`,
+					{ cause: error },
+				);
 			}
-			lastError = error;
-			const start = Date.now();
-			while (Date.now() - start < delayMs) {
-				// Sleep synchronously to avoid changing trust store callers to async.
-			}
+			sleepSync(Math.min(Math.round(pollMs * (1 + Math.random())), remainingMs));
 		}
 	}
-
-	if (lastError instanceof Error) {
-		throw lastError;
-	}
-	throw new Error("Failed to acquire trust store lock");
 }
 
 function withTrustFileLock<T>(path: string, fn: () => T): T {
@@ -264,10 +358,7 @@ export class ProjectTrustStore {
 	}
 
 	getEntry(cwd: string): ProjectTrustStoreEntry | null {
-		return withTrustFileLock(this.trustPath, () => {
-			const data = readTrustFile(this.trustPath);
-			return findNearestTrustEntry(data, cwd);
-		});
+		return findNearestTrustEntry(readTrustFileForRead(this.trustPath), cwd);
 	}
 
 	set(cwd: string, decision: ProjectTrustDecision): void {
@@ -276,7 +367,7 @@ export class ProjectTrustStore {
 
 	setMany(decisions: ProjectTrustUpdate[]): void {
 		withTrustFileLock(this.trustPath, () => {
-			const data = readTrustFile(this.trustPath);
+			const data = readTrustFileForWrite(this.trustPath);
 			for (const { path, decision } of decisions) {
 				const key = normalizeCwd(path);
 				for (const existingKey of findTrustFileKeys(data, key)) {
