@@ -126,9 +126,9 @@ export class StageDeliveryReceipts {
 				this.prompting = undefined;
 			}
 			// The receipt joins the session write of this message, decided as that write is made.
-			const message = event.message;
-			this.handle.agentSession?.sessionManager.appendWithMessage(message, () => {
-				const { op } = this.decide(message, true);
+			const start = event;
+			this.handle.agentSession?.sessionManager.appendWithMessage(start.message, () => {
+				const { op } = this.decide(start.message, true);
 				return op === undefined ? undefined : { customType: DELIVERY_OP_ENTRY, data: { op } };
 			});
 			return;
@@ -138,9 +138,9 @@ export class StageDeliveryReceipts {
 		if (op !== undefined) this.receipt(op, withMessage);
 	}
 
-	/** The op `message` carries: the next consumed queue item's, or the idle prompt's that started its turn. */
-	private decide(message: object, withMessage: boolean): MessageReceipt {
-		const known = this.decided.get(message);
+	/** The op the user message `input` carries: the next consumed queue item's, or the idle prompt's that started its turn. */
+	private decide(input: object, withMessage: boolean): MessageReceipt {
+		const known = this.decided.get(input);
 		if (known !== undefined) return known;
 		let op: DeliveryOpId | undefined;
 		if (this.consumed.length > 0) op = this.consumed.shift();
@@ -149,7 +149,7 @@ export class StageDeliveryReceipts {
 			this.prompted = undefined;
 		}
 		const decided = { op, withMessage };
-		this.decided.set(message, decided);
+		this.decided.set(input, decided);
 		return decided;
 	}
 }
