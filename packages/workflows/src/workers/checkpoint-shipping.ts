@@ -4,7 +4,7 @@ import type { AttemptLease } from "../durable/journal/sql-shared-pool.js";
 import { serializeJson } from "../durable/journal/values.js";
 import { assertWorkflowSerializableObject } from "../shared/serializable.js";
 import { StaleWorkLeaseError } from "../shared/worker-pool-errors.js";
-import type { ShipShard } from "./ship-shard.js";
+import { ShipIdentityConflictError, type ShipShard } from "./ship-shard.js";
 
 /**
  * Whether a host may keep `mutation` in its local journal and ship it later (#4768): a plain checkpoint, with no
@@ -84,7 +84,7 @@ export class CheckpointShipping {
 				checkpoint.completedAt,
 			));
 		} catch (error) {
-			if (error instanceof StaleWorkLeaseError || isIdentityConflict(error)) throw error;
+			if (error instanceof StaleWorkLeaseError || error instanceof ShipIdentityConflictError) throw error;
 			this.fallBack(lease.id, error as Error);
 			return commitShared();
 		}
@@ -114,10 +114,6 @@ export class CheckpointShipping {
 		this.syncOnly.add(workId);
 		this.onFallback({ workId, error });
 	}
-}
-
-function isIdentityConflict(error: unknown): boolean {
-	return error instanceof Error && error.message === "Pool checkpoint identity conflict";
 }
 
 /** The checkpoint as the JSON value the shared journal records, checked serializable as the shared commit checks it. */
