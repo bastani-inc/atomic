@@ -102,7 +102,8 @@ function hasUnsafeGitInstallPart(value: string, allowSlash: boolean): boolean {
 		if (!allowSlash && candidate.includes("/")) {
 			return true;
 		}
-		if (candidate.split("/").includes("..")) {
+		// "." and empty segments collapse the install directory onto a parent that holds other packages (#5055).
+		if (candidate.split("/").some((segment) => segment === "" || segment === "." || segment === "..")) {
 			return true;
 		}
 	}
@@ -113,7 +114,10 @@ function buildGitSource(args: { repo: string; host: string; path: string; ref?: 
 	if (args.path.startsWith("/")) {
 		return null;
 	}
-	const normalizedPath = args.path.replace(/\.git$/, "").replace(/^\/+/, "");
+	const normalizedPath = args.path
+		.replace(/\/+$/, "")
+		.replace(/\.git$/, "")
+		.replace(/^\/+/, "");
 	if (!args.host || !normalizedPath || normalizedPath.split("/").length < 2) {
 		return null;
 	}

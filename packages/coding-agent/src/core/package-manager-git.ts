@@ -214,6 +214,7 @@ async function updateGitCheckout(
 		source: targetDir,
 		message: `${targetDir} is not a complete git checkout (an earlier install may have been interrupted); cloning it again.`,
 	});
+	assertOwnGitInstallDir(source, targetDir);
 	rmSync(targetDir, { recursive: true, force: true });
 	await cloneGit(context, source, scope, targetDir, safeRef);
 }
@@ -252,6 +253,28 @@ async function isCompleteGitCheckout(context: PackageManagerContext, dir: string
 		);
 	if (!(await resolves("HEAD"))) return false;
 	return (await resolves("@{upstream}")) || (await resolves("refs/remotes/origin/HEAD"));
+}
+
+/**
+ * Throws unless removing `targetDir` removes only `source`'s own package: the source must name a full
+ * host/owner/repo directory, and that directory, unless it is a checkout itself, must hold no other package's
+ * checkout (#5055).
+ */
+function assertOwnGitInstallDir(source: GitSource, targetDir: string): void {
+	const pathSegments = source.path.split("/");
+	const namesOwnDir =
+		pathSegments.length >= 2 &&
+		[source.host, ...pathSegments].every((segment) => segment !== "" && segment !== "." && segment !== "..");
+	if (!namesOwnDir) {
+		throw new Error(`Refusing to remove ${targetDir}: it is not the install directory of ${source.repo}`);
+	}
+	if (!existsSync(targetDir) || existsSync(join(targetDir, ".git"))) return;
+	const nestedCheckout = readdirSync(targetDir, { recursive: true }).some(
+		(entry) => basename(String(entry)) === ".git",
+	);
+	if (nestedCheckout) {
+		throw new Error(`Refusing to remove ${targetDir}: it holds another package's checkout`);
+	}
 }
 
 /** Staging directories are named after their target so a later install of the same package can sweep them. */
@@ -420,6 +443,7 @@ export async function removeGit(context: PackageManagerContext, source: GitSourc
 	const targetDir = getGitInstallPath(context, source, scope);
 	if (!existsSync(dirname(targetDir))) return;
 	await withGitInstallLock(context, scope, targetDir, async () => {
+		assertOwnGitInstallDir(source, targetDir);
 		rmSync(targetDir, { recursive: true, force: true });
 		rmSync(getGitUpdateMarkerPath(targetDir), { force: true });
 	});
