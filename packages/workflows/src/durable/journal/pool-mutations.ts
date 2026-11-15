@@ -189,15 +189,19 @@ export async function applyPoolSession(
 	prefix: string,
 	workId: string,
 	mutation: PoolSessionMutation | PoolSessionAppend,
+	/** The session store to write through, when the caller holds one over `tx`; otherwise one is opened on `tx`. */
+	store?: SessionStore,
 ): Promise<number> {
+	const write = (change: (sessions: SessionStore) => Promise<{ readonly lastSeq: number }>) =>
+		store === undefined ? withSessionStore(tx, prefix, change) : change(store).then((done) => done.lastSeq);
 	const owners = `${prefix}session_owners`;
 	if (mutation.kind === "session-append") {
 		if (typeof mutation.sessionId !== "string" || mutation.sessionId === "")
 			throw new Error("Pool sessions require database identity");
 		const owner = await tx.get(`SELECT work FROM ${owners} WHERE session = ?`, mutation.sessionId);
 		if (owner?.work !== workId) throw new Error("Pool session scope mismatch");
-		return withSessionStore(tx, prefix, (store) =>
-			store.append(mutation.sessionId, mutation.entries, { expectSeq: mutation.expectSeq }),
+		return write((sessions) =>
+			sessions.append(mutation.sessionId, mutation.entries, { expectSeq: mutation.expectSeq }),
 		);
 	}
 	const { sessionId, replayKey } = mutation.checkpoint;
@@ -210,10 +214,10 @@ export async function applyPoolSession(
 		const owner = await tx.get(`SELECT work, replay_key FROM ${owners} WHERE session = ?`, sessionId);
 		if (owner?.work !== workId || owner.replay_key !== replayKey) throw new Error("Pool session scope mismatch");
 	}
-	return withSessionStore(tx, prefix, (store) =>
+	return write((sessions) =>
 		mutation.kind === "session-create"
-			? store.create(mutation.header, mutation.entries)
-			: store.replace(sessionId, mutation.header, mutation.entries, { expectSeq: mutation.expectSeq }),
+			? sessions.create(mutation.header, mutation.entries)
+			: sessions.replace(sessionId, mutation.header, mutation.entries, { expectSeq: mutation.expectSeq }),
 	);
 }
 

@@ -1,7 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { deflateRawSync, gunzipSync, gzipSync, inflateRawSync } from "node:zlib";
+import { isPathInside } from "../../utils/path-inside.ts";
 import { readConflictUrl } from "./conflict-registry.ts";
 import { loadNativeSearchBinding } from "./search-native.ts";
 import { plainShellWordMask } from "./shell-plain-words.ts";
@@ -685,10 +686,6 @@ async function resolveViaRouter(
 	if (resolved) return resolved;
 	return resolveInternalSelector(value, cwd);
 }
-function isContained(root: string, candidate: string): boolean {
-	const rel = relative(root, candidate);
-	return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
-}
 function nearestExistingAncestor(pathValue: string): string {
 	let current = pathValue;
 	while (!existsSync(current)) {
@@ -704,8 +701,8 @@ function realpathExisting(pathValue: string): string {
 function resolveContainedPath(root: string, pathValue: string, label: string): string {
 	const lexicalRoot = resolve(root),
 		resolved = resolve(root, pathValue);
-	if (!isContained(lexicalRoot, resolved)) throw new Error(`${label} escapes the workspace: ${pathValue}`);
-	if (!isContained(realpathExisting(lexicalRoot), realpathExisting(resolved)))
+	if (!isPathInside(lexicalRoot, resolved)) throw new Error(`${label} escapes the workspace: ${pathValue}`);
+	if (!isPathInside(realpathExisting(lexicalRoot), realpathExisting(resolved)))
 		throw new Error(`${label} escapes the workspace: ${pathValue}`);
 	return resolved;
 }

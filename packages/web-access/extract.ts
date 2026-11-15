@@ -2,6 +2,7 @@ import { Readability } from "@mozilla/readability";
 import { parseHTML } from "linkedom";
 import TurndownService from "turndown";
 import pLimit from "p-limit";
+import { isIPv4, isIPv6 } from "node:net";
 import { CONFIG_DIR_NAME } from "@bastani/atomic";
 import { activityMonitor } from "./activity.js";
 import { extractRSCContent } from "./rsc-extract.js";
@@ -17,6 +18,66 @@ const CONCURRENT_LIMIT = 3;
 
 const NON_RECOVERABLE_ERRORS = ["Unsupported content type", "Response too large"];
 const MIN_USEFUL_CONTENT = 500;
+const MAX_TEXT_RESPONSE_BYTES = 5 * 1024 * 1024;
+const MAX_PDF_RESPONSE_BYTES = 20 * 1024 * 1024;
+
+/**
+ * Read a response body, stopping (and closing the connection) as soon as it exceeds `maxBytes`.
+ * Returns null when the body is too large, whatever the response headers claimed.
+ */
+async function readBodyWithinLimit(response: Response, maxBytes: number): Promise<Uint8Array | null> {
+	if (!response.body) return new Uint8Array(0);
+	const reader = response.body.getReader();
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) {
+		total += chunk.value.byteLength;
+		if (total > maxBytes) {
+			await reader.cancel();
+			return null;
+		}
+		chunks.push(chunk.value);
+	}
+	const body = new Uint8Array(total);
+	let offset = 0;
+	for (const chunk of chunks) {
+		body.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	return body;
+}
+
+function responseTooLarge(sizeBytes: number, overLimit = false): string {
+	return `Response too large (${overLimit ? "over " : ""}${Math.round(sizeBytes / 1024 / 1024)}MB)`;
+}
+
+function isPrivateIPv4(address: string): boolean {
+	const [a, b] = address.split(".").map(Number);
+	return a === 0 || a === 10 || a === 127 ||
+		(a === 169 && b === 254) ||
+		(a === 172 && b >= 16 && b <= 31) ||
+		(a === 192 && b === 168);
+}
+
+/**
+ * True when a URL must not be handed to a third-party fallback service: it carries credentials or
+ * names a loopback, private, link-local, or intranet host that such a service could not reach anyway.
+ */
+function isPrivateUrl(url: string): boolean {
+	const parsed = new URL(url);
+	if (parsed.username || parsed.password) return true;
+	const host = parsed.hostname.replace(/[[\]]/g, "").replace(/\.$/, "");
+	if (isIPv6(host)) {
+		const mapped = host.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+		if (mapped) {
+			const high = parseInt(mapped[1], 16);
+			return isPrivateIPv4(`${high >> 8}.${high & 255}`);
+		}
+		return host === "::1" || host === "::" || /^f[cd]/.test(host) || /^fe[89ab]/.test(host);
+	}
+	if (isIPv4(host)) return isPrivateIPv4(host);
+	return !host.includes(".") || /\.(localhost|local|internal)$/.test(host);
+}
 
 function errorMessage(err: unknown): string {
 	return err instanceof Error ? err.message : String(err);
@@ -105,8 +166,10 @@ async function extractWithJinaReader(
 			return null;
 		}
 
-		const content = await res.text();
+		const body = await readBodyWithinLimit(res, MAX_TEXT_RESPONSE_BYTES);
 		activityMonitor.logComplete(activityId, res.status);
+		if (!body) return null;
+		const content = new TextDecoder().decode(body);
 
 		const contentStart = content.indexOf("Markdown Content:");
 		if (contentStart < 0) {
@@ -217,6 +280,8 @@ export async function extractContent(
 	if (signal?.aborted) return abortedResult(url);
 	if (!httpResult.error) return httpResult;
 	if (NON_RECOVERABLE_ERRORS.some(prefix => httpResult.error!.startsWith(prefix))) return httpResult;
+	// Remote fallbacks cannot reach local hosts; sending them the URL would only leak it.
+	if (isPrivateUrl(url)) return httpResult;
 
 	const jinaResult = await extractWithJinaReader(url, signal);
 	if (jinaResult) return jinaResult;
@@ -371,7 +436,7 @@ async function extractViaHttp(
 		const contentLengthHeader = response.headers.get("content-length");
 		const contentType = response.headers.get("content-type") || "";
 		const isPDFContent = isPDF(url, contentType);
-		const maxResponseSize = isPDFContent ? 20 * 1024 * 1024 : 5 * 1024 * 1024;
+		const maxResponseSize = isPDFContent ? MAX_PDF_RESPONSE_BYTES : MAX_TEXT_RESPONSE_BYTES;
 		if (contentLengthHeader) {
 			const contentLength = parseInt(contentLengthHeader, 10);
 			if (contentLength > maxResponseSize) {
@@ -380,15 +445,19 @@ async function extractViaHttp(
 					url,
 					title: "",
 					content: "",
-					error: `Response too large (${Math.round(contentLength / 1024 / 1024)}MB)`,
+					error: responseTooLarge(contentLength),
 				};
 			}
 		}
 
 		if (isPDFContent) {
 			try {
-				const buffer = await response.arrayBuffer();
-				const result = await extractPDFToMarkdown(buffer, url);
+				const body = await readBodyWithinLimit(response, maxResponseSize);
+				if (!body) {
+					activityMonitor.logComplete(activityId, response.status);
+					return { url, title: "", content: "", error: responseTooLarge(maxResponseSize, true) };
+				}
+				const result = await extractPDFToMarkdown(body.buffer as ArrayBuffer, url);
 				activityMonitor.logComplete(activityId, response.status);
 				return {
 					url,
@@ -417,7 +486,12 @@ async function extractViaHttp(
 			};
 		}
 
-		const text = await response.text();
+		const body = await readBodyWithinLimit(response, maxResponseSize);
+		if (!body) {
+			activityMonitor.logComplete(activityId, response.status);
+			return { url, title: "", content: "", error: responseTooLarge(maxResponseSize, true) };
+		}
+		const text = new TextDecoder().decode(body);
 		const isHTML = contentType.includes("text/html") || contentType.includes("application/xhtml+xml");
 
 		if (!isHTML) {

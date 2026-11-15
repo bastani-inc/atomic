@@ -37,8 +37,22 @@ const root = workflow({
 		for (const result of settled)
 			outcomes.push(
 				result.status === "fulfilled"
-					? { status: result.value.status, ...(result.value.outputs ?? {}), error: result.value.error?.message ?? null }
-					: { status: "rejected", error: result.reason?.message ?? String(result.reason), name: result.reason?.name },
+					? {
+							status: result.value.status,
+							...(result.value.outputs ?? {}),
+							error: result.value.error?.message ?? null,
+							detail: result.value.error ? JSON.stringify(result.value.error, Object.getOwnPropertyNames(result.value.error)).slice(0, 6000) : undefined,
+						}
+					: {
+							status: "rejected",
+							error: result.reason?.message ?? String(result.reason),
+							name: result.reason?.name,
+							detail: (() => {
+								const chain = [];
+								for (let e = result.reason, d = 0; e && d < 6; e = e.cause, d++) chain.push(`${e.name}: ${e.message}\n${e.stack ?? ""}`);
+								return chain.join("\n--cause--\n").slice(0, 8000);
+							})(),
+						},
 			);
 		return {};
 	},
