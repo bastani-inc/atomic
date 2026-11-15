@@ -225,6 +225,8 @@ async function executeQuitRunWithAction(
 		}
 	}
 	const toolHandles = controllableToolHandles(activeStore, toolControls, runId);
+	// Read before the abort: the cancelled record each aborted call leaves for inspection is not progress (#4878).
+	const hadDurableProgress = hasDurableQuitProgress(runId, durableBackend);
 	const abandonedTools = await abortInFlightTools(activeStore, toolHandles);
 	const cancelledTools = collectCancelledToolNodes(activeStore, toolHandles);
 	// A nested run whose tool was aborted has no paused stage of its own; mark it
@@ -245,15 +247,14 @@ async function executeQuitRunWithAction(
 		if (suspendedByAbort) await retire();
 	};
 	const needsProgressCheck = runtimeQuit !== undefined || (current.resumable === false && graph.nodes.length === 0);
-	const resumable = !needsProgressCheck || hasDurableQuitProgress(runId, durableBackend);
+	const resumable = !needsProgressCheck || hadDurableProgress;
 	// Existing checkpoints survive an unconfirmed transition; a fresh run cannot
 	// become resumable merely because its executor stopped locally.
-	if (runtimeQuit !== undefined)
-		publishLocalQuit(activeStore, runId, pausedRunIds, hasDurableQuitProgress(runId, durableBackend));
+	if (runtimeQuit !== undefined) publishLocalQuit(activeStore, runId, pausedRunIds, hadDurableProgress);
 	const settle = async (): Promise<DurableQuitOutcome> => {
 		const durableTransition = await markDurableQuit(runId, current, resumable, durableBackend);
 		if (durableTransition === "refused") {
-			if (suspendedByAbort) await publish(hasDurableQuitProgress(runId, durableBackend));
+			if (suspendedByAbort) await publish(hadDurableProgress);
 			return durableTransition;
 		}
 		await publish(resumable);
@@ -262,7 +263,7 @@ async function executeQuitRunWithAction(
 	try {
 		if ((await settle()) === "refused") return { ok: false, runId, reason: "already_ended" };
 	} catch (error) {
-		if (suspendedByAbort) await publish(hasDurableQuitProgress(runId, durableBackend));
+		if (suspendedByAbort) await publish(hadDurableProgress);
 		throw error;
 	}
 	const message =

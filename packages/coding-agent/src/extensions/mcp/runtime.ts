@@ -33,7 +33,11 @@ import {
 	StdioTransport,
 	StreamableHttpTransport,
 } from "./client/index.js";
-import { McpOAuthAuthorizationRequiredError, type OAuthChallenge } from "./client/oauth/index.js";
+import {
+	McpOAuthAuthorizationRequiredError,
+	type OAuthChallenge,
+	OAuthTemporarilyUnavailableError,
+} from "./client/oauth/index.js";
 import type { McpServerEntry } from "./config.ts";
 import type { McpServerLog } from "./log.ts";
 import {
@@ -85,12 +89,15 @@ function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
-/** Network failures and overloaded or restarting servers, which are worth another attempt. */
+/**
+ * Network failures and overloaded or restarting servers, which are worth another attempt. This
+ * includes an OAuth authorization server that failed to refresh the tokens for such a reason.
+ */
 function isTransientError(error: unknown): boolean {
 	if (error instanceof McpHttpError) {
 		return error.status === 408 || error.status === 429 || (error.status >= 500 && error.status !== 501);
 	}
-	return error instanceof TypeError;
+	return error instanceof TypeError || error instanceof OAuthTemporarilyUnavailableError;
 }
 
 function providerAuthName(entry: McpServerEntry): string | undefined {
