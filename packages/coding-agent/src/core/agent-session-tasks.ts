@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { hasToolDetachment, waitsOnDetachedResults } from "./agent-session-detached-tools.ts";
+import { pendingCustomMessageSaved } from "./agent-session-message-queue.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { hasUnreadProtectedCustomMessage } from "./agent-session-persistent-custom-messages.ts";
 import { getExtensionRuntimeEventBus } from "./extensions/loader-core.js";
@@ -72,7 +73,10 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 			const watched = host?.watchOwnerTasks();
 			const task = watched?.ok
 				? watched.value.snapshot.tasks.find(
-						(item) => item.ref.taskId === envelope.taskId && item.ref.ownerId === envelope.ownerId,
+						(item) =>
+							item.ref.taskId === envelope.taskId &&
+							item.ref.ownerId === envelope.ownerId &&
+							settledWithCompletion(host!, envelope),
 					)
 				: undefined;
 			if (watched?.ok) watched.value.dispose();
@@ -134,6 +138,9 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 					throw new Error("Task owner is closed");
 				}).completion;
 			}
+			// A restored notice admitted mid-turn waits in memory for the turn to end; it is acknowledged once saved (#5047).
+			const saved = restored ? pendingCustomMessageSaved(this, envelope.completionId) : undefined;
+			return saved === undefined ? undefined : { saved };
 		},
 		// Each notice holds its task's record until it is delivered, so a burst of finishes cannot evict what the
 		// notice is built from (#4385).
@@ -218,6 +225,16 @@ export function deliverHeldTaskCompletions(session: AgentSession): void {
 	if (outbox === undefined || outbox.pending.length === 0 || waitsOnDetachedResults(session)) return;
 	void outbox.flushRestored();
 	void outbox.flush();
+}
+
+/**
+ * Whether the owner's task with this id is the one that settled with this completion. Task ids restart with each
+ * process, so a restored completion may name the id of a new, unrelated task; its notice then renders from its envelope
+ * alone (#5047).
+ */
+function settledWithCompletion(host: AgentTaskHost, envelope: Pick<TaskCompletionEnvelope, "taskId" | "completionId">) {
+	const task = host.resolveTask(envelope.taskId);
+	return task.ok && host.ownerBinding.supervisor.taskCompletionId(task.value) === envelope.completionId;
 }
 
 function releaseDeliveredTaskRecord(
