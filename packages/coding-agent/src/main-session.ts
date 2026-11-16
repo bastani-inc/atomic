@@ -1,5 +1,5 @@
 import { existsSync, writeSync } from "node:fs";
-import { createInterface } from "node:readline";
+import { StringDecoder } from "node:string_decoder";
 import chalk from "chalk";
 import type { Args } from "./cli/args.ts";
 import { selectSession } from "./cli/session-picker.ts";
@@ -111,14 +111,20 @@ async function resolveSessionId(sessionArg: string, cwd: string, store: SessionS
 	return { type: "not_found", arg: sessionArg };
 }
 
-/**
- * Ask a yes/no startup question on the terminal; an empty answer is no. It takes the terminal from the early-input
- * capture while it asks, so type-ahead waits in the prompt as a draft instead of answering. An answer that is neither
- * yes nor no is kept for the draft too, and the question is asked again: text meant for the prompt never answers it.
- */
 export async function confirmStartupQuestion(
 	message: string,
-	io: { input: NodeJS.ReadableStream; output: NodeJS.WritableStream } = {
+	io: {
+		input: {
+			resume?(): void;
+			pause?(): void;
+			on(event: "data", listener: (chunk: Buffer | string) => void): void;
+			off?(event: "data", listener: (chunk: Buffer | string) => void): void;
+			removeListener(event: "data", listener: (chunk: Buffer | string) => void): void;
+		};
+		output: {
+			write(chunk: string): void;
+		};
+	} = {
 		input: process.stdin,
 		output: process.stdout,
 	},
@@ -126,9 +132,35 @@ export async function confirmStartupQuestion(
 	return withEarlyInputHeldForStartupDialog(
 		() =>
 			new Promise((resolve) => {
-				const rl = createInterface({ input: io.input, output: io.output });
+				const decoder = new StringDecoder("utf8");
+				let buffer = "";
+				let skipLeadingLf = false;
 				const ask = (prefix: string) => {
-					rl.question(`${prefix}${message} [y/N] `, (answer) => {
+					io.output.write(`${prefix}${message} [y/N] `);
+				};
+				const cleanup = () => {
+					if (io.input.off) io.input.off("data", onData);
+					else io.input.removeListener("data", onData);
+					io.input.pause?.();
+				};
+				const onData = (chunk: Buffer | string) => {
+					let text = typeof chunk === "string" ? chunk : decoder.write(chunk);
+					if (text.length === 0) return;
+					if (skipLeadingLf) {
+						skipLeadingLf = false;
+						if (text.startsWith("\n")) text = text.slice(1);
+						if (text.length === 0) return;
+					}
+					buffer += text;
+					while (true) {
+						const match = /\r\n|\r|\n/.exec(buffer);
+						if (!match || match.index === undefined) break;
+						const answer = buffer.slice(0, match.index);
+						const terminator = match[0];
+						buffer = buffer.slice(match.index + terminator.length);
+						if (terminator === "\r" && buffer.length === 0) {
+							skipLeadingLf = true;
+						}
 						const normalized = answer.trim().toLowerCase();
 						if (
 							normalized === "y" ||
@@ -137,15 +169,20 @@ export async function confirmStartupQuestion(
 							normalized === "n" ||
 							normalized === "no"
 						) {
-							rl.close();
+							const suffix = buffer.replace(/(?:\r\n|\r|\n)+$/, "").replace(/\r\n?/g, "\n");
+							buffer = "";
+							keepStartupDialogDraft(suffix);
+							cleanup();
 							resolve(normalized === "y" || normalized === "yes");
 							return;
 						}
 						keepStartupDialogDraft(answer);
 						ask("Answer y or n; your text is kept as a draft.\n");
-					});
+					}
 				};
 				ask("");
+				io.input.on("data", onData);
+				io.input.resume?.();
 			}),
 	);
 }
@@ -435,10 +472,6 @@ async function createSessionManagerWithStore(
 	return createProvisionalSession(store, cwd, parsed.sessionId);
 }
 
-/**
- * A startup question in its own screen. It takes the terminal from the early-input capture while open, keeps text
- * typed into it for the prompt's draft, and ignores Enter after typed text until ↑ or ↓ picks a choice.
- */
 function promptStartupSelector(
 	title: string,
 	options: readonly string[],

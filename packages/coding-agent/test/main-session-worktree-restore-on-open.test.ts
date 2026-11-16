@@ -14,19 +14,6 @@ import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../src/core/worktree-snapsho
 import { createSessionManager } from "../src/main-session.ts";
 
 const prompts = vi.hoisted(() => ({ asked: [] as string[] }));
-vi.mock("node:readline", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("node:readline")>();
-	return {
-		...actual,
-		createInterface: () => ({
-			question: (question: string, answer: (value: string) => void) => {
-				prompts.asked.push(question);
-				answer("y");
-			},
-			close() {},
-		}),
-	};
-});
 
 let sandbox: GitSandbox;
 let store: SqlSessionStore;
@@ -34,10 +21,29 @@ let database: Awaited<ReturnType<typeof openNodeSqliteDatabase>>;
 beforeEach(async () => {
 	sandbox = new GitSandbox();
 	prompts.asked.length = 0;
+	const originalStdoutWrite = process.stdout.write.bind(process.stdout);
+	vi.spyOn(process.stdout, "write").mockImplementation(((
+		chunk: string | Uint8Array,
+		encodingOrCallback?: BufferEncoding | ((error?: Error | null) => void),
+		callback?: (error?: Error | null) => void,
+	) => {
+		const text = typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
+		if (text.endsWith("[y/N] ")) {
+			prompts.asked.push(text);
+			queueMicrotask(() => {
+				process.stdin.emit("data", "y\n");
+			});
+			return true;
+		}
+		return typeof encodingOrCallback === "string"
+			? originalStdoutWrite(chunk, encodingOrCallback, callback)
+			: originalStdoutWrite(chunk, encodingOrCallback);
+	}) as typeof process.stdout.write);
 	database = await openNodeSqliteDatabase(sandbox.path("sessions.sqlite"));
 	store = await SqlSessionStore.open(database);
 });
 afterEach(async () => {
+	vi.restoreAllMocks();
 	await store.close();
 	await database.close();
 	sandbox.dispose();

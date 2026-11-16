@@ -19,8 +19,6 @@ export async function selectSession(
 	settingsManager: SettingsManager,
 	deleteSession?: (sessionId: string) => Promise<void>,
 ): Promise<SessionInfo | null> {
-	// The picker takes the terminal from the early-input capture: what was typed before it waits in the prompt as a
-	// draft instead of filtering the list or picking a session with its Enter.
 	return withEarlyInputHeldForStartupDialog(() =>
 		openSessionPicker(currentSessionsLoader, allSessionsLoader, settingsManager, deleteSession),
 	);

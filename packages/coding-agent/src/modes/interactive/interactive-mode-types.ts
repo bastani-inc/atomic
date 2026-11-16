@@ -46,10 +46,6 @@ export interface InteractiveModeOptions {
 	/** Initial interactive theme setting for this invocation (from --use-theme; never persisted). */
 	initialThemeSetting?: string;
 	holdTuiForStartupTrust?: boolean;
-	/**
-	 * The project trust prompt can still be shown at startup. Input typed before the interface painted then waits in
-	 * the editor as a draft instead of being sent: the user answers a security decision before anything is sent.
-	 */
 	startupTrustPromptPossible?: boolean;
 	/** Runtime was created without extension code; finish loading in the background after first paint. */
 	deferredExtensionLoad?: boolean;

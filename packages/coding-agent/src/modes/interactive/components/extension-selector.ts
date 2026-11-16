@@ -13,7 +13,6 @@ export interface ExtensionSelectorOptions {
 	tui?: TUI;
 	timeout?: number;
 	onToggleToolsExpanded?: () => void;
-	/** The option selected when the selector opens; the first one when not given. */
 	initialIndex?: number;
 }
 

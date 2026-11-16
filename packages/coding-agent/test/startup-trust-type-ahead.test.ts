@@ -7,13 +7,20 @@ import { afterEach, beforeEach, test, vi } from "vitest";
 import type { SettingsManager } from "../src/core/settings-manager.ts";
 import { getProjectTrustOptions } from "../src/core/trust-manager.ts";
 
-const screens = vi.hoisted(() => ({ created: [] as Array<{ setFocus: (component: unknown) => void }> }));
+const screens = vi.hoisted(() => ({
+	created: [] as Array<{ running: boolean; setFocus: (component: unknown) => void }>,
+}));
 
 vi.mock("@bastani/atomic-tui", async (importOriginal) => {
 	const original = await importOriginal<typeof import("@bastani/atomic-tui")>();
 	class FakeMainScreen extends original.Container {
-		start = vi.fn();
-		stop = vi.fn();
+		running = false;
+		start = vi.fn(() => {
+			this.running = true;
+		});
+		stop = vi.fn(() => {
+			this.running = false;
+		});
 		clear = vi.fn();
 		requestRender = vi.fn();
 		setFocus = vi.fn();
@@ -90,7 +97,6 @@ function trustOptions() {
 	}));
 }
 
-/** The component the standalone startup dialog focused, which receives the dialog's keys. */
 function dialog(): Component {
 	const screen = screens.created.at(-1);
 	assert.ok(screen, "a startup dialog is open");
@@ -118,7 +124,6 @@ test("type-ahead submitted before the startup trust prompt comes back as a draft
 
 	stdin.emit("reply with PONG\r");
 	const answer = showStartupSelector(settingsManager, TRUST_PROMPT, trustOptions());
-	// The dialog owns the terminal while it is open: its keys are not prompt text.
 	assert.equal(stdin.listeners.length, 0);
 	press(UP, UP, ENTER);
 	assert.equal((await answer)?.label, "Trust (this session only)");
@@ -151,6 +156,51 @@ test("keeps text typed before, during and after startup questions in order (#524
 		submissions: [],
 		heldForStartupDecision: true,
 	});
+});
+
+test("an unfinished captured prompt cannot answer a newly opened question (#5241)", async () => {
+	const stdin = new FakeStdin();
+	const capture = startEarlyInputCapture({ enabled: true, stdin, process: fakeProcess });
+	assert.ok(capture);
+	stdin.emit("hello");
+	const answer = showStartupSelector(settingsManager, TRUST_PROMPT, trustOptions());
+	const notice = dialog().render(120).join("\n");
+	press(ENTER);
+	await new Promise((resolve) => setTimeout(resolve, 40));
+	const answered = await settled(answer);
+	press(DOWN, UP, ENTER);
+	await answer;
+	assert.equal(answered, false);
+	assert.ok(notice.includes("your text is kept as a draft"));
+	assert.equal(consumeStartupInput(capture).text, "hello");
+});
+
+test("concurrent startup questions take turns reading keys and keep each character once (#5241)", async () => {
+	const stdin = new FakeStdin();
+	const capture = startEarlyInputCapture({ enabled: true, stdin, process: fakeProcess });
+	assert.ok(capture);
+	stdin.emit("a1\r");
+	const first = showStartupSelector(settingsManager, TRUST_PROMPT, trustOptions());
+	const second = showStartupSelector(settingsManager, TRUST_PROMPT, trustOptions());
+	const openedTogether = screens.created.length;
+	const dispatch = (...keys: string[]) => {
+		for (const key of keys) {
+			for (const screen of screens.created.filter((screen) => screen.running)) {
+				const target = vi.mocked(screen.setFocus).mock.calls.at(-1)?.[0] as Component;
+				target.handleInput?.(key);
+			}
+		}
+	};
+	dispatch("k7", DOWN, UP, ENTER);
+	await first;
+	const secondAnswered = await settled(second);
+	const captureReaders = stdin.listeners.length;
+	dispatch(DOWN, UP, ENTER);
+	await second;
+	assert.equal(openedTogether, 1);
+	assert.equal(secondAnswered, false);
+	assert.equal(captureReaders, 0);
+	assert.equal(consumeStartupInput(capture).text, "a1\nk7");
 });
 
 test("text typed into the startup trust prompt is kept and its Enter grants nothing", async () => {

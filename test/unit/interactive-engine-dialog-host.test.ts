@@ -1,9 +1,19 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import type { ExtensionUIContext } from "../../packages/coding-agent/src/core/extensions/index.ts";
+import { type HostInput, HostInputBridge } from "../../packages/coding-agent/src/core/extensions/host-input.ts";
+import type {
+	ExtensionUIContext,
+	LoadExtensionsResult,
+	ProjectTrustContext,
+} from "../../packages/coding-agent/src/core/extensions/index.ts";
+import { emitProjectTrustEvent } from "../../packages/coding-agent/src/core/extensions/runner-project-trust.ts";
 import { EngineDialogHostController } from "../../packages/coding-agent/src/modes/interactive-engine/engine-dialog-host.ts";
 import type { InteractiveEngineGenerationEnded } from "../../packages/coding-agent/src/modes/interactive-engine/engine-generation.ts";
 import type { IsolatedInteractiveRuntime } from "../../packages/coding-agent/src/modes/interactive-engine/isolated-runtime.ts";
+import {
+	createRpcExtensionUIContext,
+	type RpcPendingExtensionRequests,
+} from "../../packages/coding-agent/src/modes/rpc/rpc-extension-ui.ts";
 import type {
 	RpcExtensionUIRequest,
 	RpcExtensionUIResponse,
@@ -19,6 +29,7 @@ import { sleep } from "../helpers/runtime.js";
 
 interface Mount {
 	method: string;
+	timeout?: number;
 	resolve(value: unknown): void;
 	aborted: boolean;
 }
@@ -41,11 +52,11 @@ function harness(): Harness {
 	let handler: ((request: RpcExtensionUIRequest) => Promise<RpcExtensionUIResponse | undefined>) | undefined;
 	const state = { generation: 1 };
 
-	const mount = (method: string, signal: AbortSignal | undefined): Promise<unknown> =>
+	const mount = (method: string, opts?: { signal?: AbortSignal; timeout?: number }): Promise<unknown> =>
 		new Promise((resolve) => {
-			const record: Mount = { method, resolve, aborted: false };
+			const record: Mount = { method, timeout: opts?.timeout, resolve, aborted: false };
 			mounts.push(record);
-			signal?.addEventListener(
+			opts?.signal?.addEventListener(
 				"abort",
 				() => {
 					record.aborted = true;
@@ -57,10 +68,14 @@ function harness(): Harness {
 		});
 
 	const ui = {
-		select: (_title: string, _options: string[], opts?: { signal?: AbortSignal }) => mount("select", opts?.signal),
-		confirm: (_title: string, _message: string, opts?: { signal?: AbortSignal }) => mount("confirm", opts?.signal),
-		input: (_title: string, _placeholder?: string, opts?: { signal?: AbortSignal }) => mount("input", opts?.signal),
-		editor: (_title: string, _prefill?: string, opts?: { signal?: AbortSignal }) => mount("editor", opts?.signal),
+		select: (_title: string, _options: string[], opts?: { signal?: AbortSignal; timeout?: number }) =>
+			mount("select", opts),
+		confirm: (_title: string, _message: string, opts?: { signal?: AbortSignal; timeout?: number }) =>
+			mount("confirm", opts),
+		input: (_title: string, _placeholder?: string, opts?: { signal?: AbortSignal; timeout?: number }) =>
+			mount("input", opts),
+		editor: (_title: string, _prefill?: string, opts?: { signal?: AbortSignal; timeout?: number }) =>
+			mount("editor", opts),
 		notify: () => {},
 		setStatus: () => {},
 		setWidget: (key: string, lines: string[] | undefined) => {
@@ -269,4 +284,146 @@ test("disposing the controller releases every widget key it still owns", async (
 		["a", "b"],
 	);
 	assert.ok(h.widgetWrites.slice(-2).every((write) => write.cleared));
+});
+
+test("aborting or timing out an RPC dialog request cancels the exact host mount (#5241)", async () => {
+	const h = harness();
+	const pending: RpcPendingExtensionRequests = new Map();
+	const rawEngineUi = createRpcExtensionUIContext({
+		output: (event) => {
+			if (
+				typeof event === "object" &&
+				event !== null &&
+				(event as { type?: unknown }).type === "extension_ui_request"
+			) {
+				void h.send(event as RpcExtensionUIRequest);
+			}
+		},
+		pendingExtensionRequests: pending,
+	});
+	const presentationInput: HostInput = {
+		confirm: (title, message, options) => rawEngineUi.confirm(title, message, options),
+		select: (title, choices, options) => rawEngineUi.select(title, choices, options),
+		input: (title, placeholder, options) => rawEngineUi.input(title, placeholder, options),
+		editor: (title, initial, options) => rawEngineUi.editor(title, initial, options),
+		questionnaire: () => Promise.resolve({ answers: [], cancelled: true }),
+	};
+	const bridge = new HostInputBridge(
+		() => "session-1",
+		() => undefined,
+	);
+	bridge.bind(presentationInput);
+	const engineUi = bridge.wrap(rawEngineUi, presentationInput);
+
+	const abortOne = new AbortController();
+	const selectResult = assert.rejects(engineUi.select("DIALOG-ONE", ["a", "b"], { signal: abortOne.signal }), {
+		code: "HumanInputCancelled",
+	});
+	const timedInput = assert.rejects(engineUi.input("DIALOG-TIMED", undefined, { timeout: 10 }), {
+		code: "HumanInputCancelled",
+	});
+	const abortEditor = new AbortController();
+	const editorResult = assert.rejects(engineUi.editor("DIALOG-EDITOR", "draft", { signal: abortEditor.signal }), {
+		code: "HumanInputCancelled",
+	});
+	await sleep(0);
+	assert.equal(h.mounts.length, 3);
+
+	abortOne.abort();
+	abortEditor.abort();
+	await selectResult;
+	await timedInput;
+	await editorResult;
+	await sleep(0);
+
+	assert.equal(h.mounts[0]!.aborted, true);
+	assert.equal(h.mounts[1]!.aborted, true);
+	assert.equal(h.mounts[2]!.aborted, true);
+	assert.equal(h.mounts[1]!.timeout, 10);
+	assert.equal(
+		h.responses.every((response) => response === undefined),
+		true,
+	);
+
+	const open = h.send({ type: "extension_ui_request", id: "reused", method: "select", title: "keep", options: ["a"] });
+	await sleep(0);
+	await h.send({ type: "extension_ui_request", id: "reused", method: "cancel" });
+	await open;
+	assert.equal(h.mounts.at(-1)!.aborted, true);
+	h.controller.dispose();
+});
+
+test("settling or failing a project_trust handler aborts its abandoned dialogs while preserving caller options (#5241)", async () => {
+	const signals: Array<{ title: string; signal?: AbortSignal; timeout?: number }> = [];
+	const ctx: ProjectTrustContext = {
+		cwd: "/tmp/project",
+		mode: "tui",
+		hasUI: true,
+		ui: {
+			select: (title, _options, opts) => {
+				signals.push({ title, signal: opts?.signal, timeout: opts?.timeout });
+				return new Promise<string | undefined>((resolve, reject) => {
+					opts?.signal?.addEventListener(
+						"abort",
+						() => {
+							if (title === "DIALOG-ONE") reject(new Error("HumanInputCancelled"));
+							else resolve(undefined);
+						},
+						{ once: true },
+					);
+				});
+			},
+			confirm: () => Promise.resolve(false),
+			input: () => Promise.resolve(undefined),
+			notify: () => {},
+		},
+	};
+	const callerAbort = new AbortController();
+	const extensionsResult = {
+		extensions: [
+			{
+				path: "/tmp/ext.ts",
+				resolvedPath: "/tmp/ext.ts",
+				handlers: new Map([
+					[
+						"project_trust",
+						[
+							async (_event: unknown, trustCtx: ProjectTrustContext) => {
+								setTimeout(() => callerAbort.abort(), 5);
+								await Promise.all([
+									trustCtx.ui.select("DIALOG-ONE", ["a", "b"], {
+										timeout: 4000,
+										signal: callerAbort.signal,
+									}),
+									trustCtx.ui.select("DIALOG-TWO", ["c", "d"]),
+								]);
+								return { trusted: "yes" as const };
+							},
+						],
+					],
+				]),
+				tools: new Map(),
+				commands: new Map(),
+				shortcuts: new Map(),
+				flags: new Map(),
+				messageRenderers: new Map(),
+			},
+		],
+		errors: [],
+		runtime: {} as LoadExtensionsResult["runtime"],
+	} as unknown as LoadExtensionsResult;
+
+	const { result, errors } = await emitProjectTrustEvent(
+		extensionsResult,
+		{ type: "project_trust", cwd: "/tmp/project" },
+		ctx,
+	);
+
+	assert.equal(result, undefined);
+	assert.equal(errors.length, 1);
+	assert.match(errors[0]!.error, /HumanInputCancelled/);
+	assert.equal(signals.length, 2);
+	assert.equal(signals[0]!.timeout, 4000);
+	assert.equal(signals[0]!.signal?.aborted, true);
+	assert.equal(signals[1]!.signal?.aborted, true);
 });

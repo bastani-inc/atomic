@@ -211,7 +211,6 @@ export function attachInteractiveEngineResourceExtensionRefresh(mode: Interactiv
 	});
 }
 
-/** Shown when input typed before a startup decision waits in the editor instead of being sent. */
 export const STARTUP_DRAFT_HELD_NOTICE = "Your earlier input is in the prompt; press Enter to send it.";
 
 InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase): Promise<void> {
@@ -272,8 +271,6 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 		this.ui.requestRender();
 	});
 
-	// A startup decision (the project trust prompt) may have come between typing and now, or may still come: then
-	// what was typed, in the decision's dialog too, is only a draft, and the user sends it.
 	const startupInput = consumeStartupInput(this.options.startupInputCapture, {
 		startupDecisionPending: this.options.startupTrustPromptPossible,
 	});
@@ -323,7 +320,6 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 	}
 	this.showFullscreenModelScopeNotice();
 	if (startupInput.heldForStartupDecision && startupInput.text.length > 0) {
-		// The startup notices outlive the transcript rebuild that deferred extension loading does.
 		this.startupNoticesContainer.addChild(new Spacer(1));
 		this.startupNoticesContainer.addChild(new Text(theme.fg("dim", STARTUP_DRAFT_HELD_NOTICE), 1, 0));
 	}

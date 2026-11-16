@@ -20,6 +20,7 @@ export interface HostInputOptions {
 	signal: AbortSignal;
 	requestId: string;
 	sessionId: string;
+	timeout?: number;
 	workflowRunId?: string;
 	workflowStageId?: string;
 }
@@ -104,32 +105,48 @@ export class HostInputBridge {
 	}
 
 	wrap(ui: ExtensionUIContext, presentationHost?: HostInput, scope: WorkflowIdentity = {}): ExtensionUIContext {
+		const hostOptions = (
+			host: HostInput,
+			identity: HostInputOptions,
+			options: ExtensionUIDialogOptions | undefined,
+		): HostInputOptions =>
+			host === presentationHost && options?.timeout !== undefined
+				? { ...identity, timeout: options.timeout }
+				: identity;
 		const wrapped: ExtensionUIContext = {
 			...ui,
 			confirm: (title, message, options) =>
 				this.request(
-					(host, identity) => host.confirm(title, message, identity),
+					(host, identity) => host.confirm(title, message, hostOptions(host, identity, options)),
 					(value) => typeof value === "boolean",
 					{ ...options, ...scope, sessionId: scope.sessionId },
 				),
 			select: (title, choices, options) =>
 				this.request(
-					(host, identity) => host.select(title, choices, identity),
+					(host, identity) => host.select(title, choices, hostOptions(host, identity, options)),
 					(value) => value === undefined || (typeof value === "string" && choices.includes(value)),
 					{ ...options, ...scope, sessionId: scope.sessionId },
 				),
 			input: (title, placeholder, options) =>
-				this.request((host, identity) => host.input(title, placeholder, identity), validText, {
-					...options,
-					...scope,
-					sessionId: scope.sessionId,
-				}),
+				this.request(
+					(host, identity) => host.input(title, placeholder, hostOptions(host, identity, options)),
+					validText,
+					{
+						...options,
+						...scope,
+						sessionId: scope.sessionId,
+					},
+				),
 			editor: (title, initial, options) =>
-				this.request((host, identity) => host.editor(title, initial, identity), validText, {
-					...options,
-					...scope,
-					sessionId: scope.sessionId,
-				}),
+				this.request(
+					(host, identity) => host.editor(title, initial, hostOptions(host, identity, options)),
+					validText,
+					{
+						...options,
+						...scope,
+						sessionId: scope.sessionId,
+					},
+				),
 		};
 		questionnaires.set(wrapped, (params, signal, present) =>
 			this.request(

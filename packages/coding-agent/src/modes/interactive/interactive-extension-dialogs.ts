@@ -61,12 +61,16 @@ InteractiveModeBase.prototype.showExtensionSelector = function (
 				initialIndex: trustDecision ? safeTrustChoiceIndex(options) : undefined,
 			},
 		);
-		// Keys meant for the prompt must neither answer a trust decision nor be lost: typed text joins the draft.
 		const dialog = trustDecision
-			? new TrustDecisionSelector(selector, (text) => {
-					const current = this.editor.getExpandedText?.() ?? this.editor.getText();
-					this.editor.setText(current.length > 0 ? `${current}\n${text}` : text);
-				})
+			? new TrustDecisionSelector(
+					selector,
+					(text) => {
+						const current = this.editor.getExpandedText?.() ?? this.editor.getText();
+						this.editor.setText(current.length > 0 ? `${current}\n${text}` : text);
+					},
+					undefined,
+					{ enterArmed: this.editor.getText().length === 0 },
+				)
 			: selector;
 		this.pushExtensionDialog(dialog, blocked);
 	});

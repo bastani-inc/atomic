@@ -80,9 +80,7 @@ export function getProjectTrustParentPath(cwd: string): string | undefined {
 	return parentDir === trustPath ? undefined : parentDir;
 }
 
-/** The trust prompt's choice that trusts nothing and saves nothing, the safe default for a prompt answered by accident. */
 export const PROJECT_TRUST_SESSION_DISTRUST_LABEL = "Do not trust (this session only)";
-/** The trust prompt's choice that saves a decision not to trust the folder. */
 export const PROJECT_TRUST_DISTRUST_LABEL = "Do not trust";
 
 export function getProjectTrustOptions(cwd: string, options?: { includeSessionOnly?: boolean }): ProjectTrustOption[] {

@@ -12,6 +12,7 @@ import {
 	type FirstTimeSetupResult,
 } from "../modes/interactive/components/first-time-setup.ts";
 import {
+	isTrustDecision,
 	STARTUP_DECISION_TYPED_TEXT_NOTICE,
 	safeTrustChoiceIndex,
 	TrustDecisionSelector,
@@ -53,18 +54,18 @@ export function shouldRunFirstTimeSetup(settingsPath: string = getSettingsPath()
 }
 
 export async function showFirstTimeSetup(settingsManager: SettingsManager): Promise<void> {
-	return withEarlyInputHeldForStartupDialog(() => openFirstTimeSetup(settingsManager));
+	return withEarlyInputHeldForStartupDialog(({ hasUnfinishedInput }) =>
+		openFirstTimeSetup(settingsManager, hasUnfinishedInput),
+	);
 }
 
-function openFirstTimeSetup(settingsManager: SettingsManager): Promise<void> {
+function openFirstTimeSetup(settingsManager: SettingsManager, hasUnfinishedInput: boolean): Promise<void> {
 	const ui = createStartupTui(settingsManager);
 	return new Promise((resolve) => {
 		let settled = false;
-		let disposeSetup: (() => void) | undefined;
 		const finish = async (result: FirstTimeSetupResult | undefined) => {
 			if (settled) return;
 			settled = true;
-			disposeSetup?.();
 			if (result) {
 				settingsManager.setTheme(result.theme);
 				settingsManager.setEnableAnalytics(result.shareAnalytics);
@@ -72,8 +73,17 @@ function openFirstTimeSetup(settingsManager: SettingsManager): Promise<void> {
 			}
 			await clearStartupTui(ui);
 			ui.stop();
+			guarded.dispose();
 			resolve();
 		};
+		const guarded = new TrustDecisionSelector(
+			{ render: () => [], invalidate: () => {}, handleInput: () => {} },
+			keepStartupDialogDraft,
+			STARTUP_DECISION_TYPED_TEXT_NOTICE,
+			{ enterArmed: !hasUnfinishedInput },
+		);
+		ui.addChild(guarded);
+		ui.setFocus(guarded);
 		void (async () => {
 			ui.start();
 			const detectedTheme = await detectStartupTheme(ui);
@@ -91,11 +101,7 @@ function openFirstTimeSetup(settingsManager: SettingsManager): Promise<void> {
 					void finish(undefined);
 				},
 			});
-			// Keys meant for the prompt neither confirm the setup nor get lost: typed text joins the prompt's draft.
-			const guarded = new TrustDecisionSelector(setup, keepStartupDialogDraft, STARTUP_DECISION_TYPED_TEXT_NOTICE);
-			disposeSetup = () => guarded.dispose();
-			ui.addChild(guarded);
-			ui.setFocus(guarded);
+			guarded.setDecision(setup);
 			ui.requestRender();
 		})();
 	});
@@ -107,13 +113,16 @@ export async function showStartupSelector<T>(
 	options: Array<{ label: string; value: T }>,
 	dialogOptions?: ExtensionUIDialogOptions,
 ): Promise<T | undefined> {
-	return withEarlyInputHeldForStartupDialog(() => openStartupSelector(settingsManager, title, options, dialogOptions));
+	return withEarlyInputHeldForStartupDialog(({ hasUnfinishedInput }) =>
+		openStartupSelector(settingsManager, title, options, hasUnfinishedInput, dialogOptions),
+	);
 }
 
 function openStartupSelector<T>(
 	settingsManager: SettingsManager,
 	title: string,
 	options: Array<{ label: string; value: T }>,
+	hasUnfinishedInput: boolean,
 	dialogOptions?: ExtensionUIDialogOptions,
 ): Promise<T | undefined> {
 	return new Promise((resolve) => {
@@ -130,15 +139,14 @@ function openStartupSelector<T>(
 			}
 			settled = true;
 			dialogOptions?.signal?.removeEventListener("abort", abandon);
-			selector.dispose();
 			await clearStartupTui(ui);
 			ui.stop();
+			selector.dispose();
 			resolve(result);
 		};
 		const abandon = () => void finish(undefined);
 		dialogOptions?.signal?.addEventListener("abort", abandon, { once: true });
 
-		// Startup selectors all ask whether to trust code, so each is guarded like a trust decision.
 		const labels = options.map((option) => option.label);
 		const selector = new TrustDecisionSelector(
 			new ExtensionSelectorComponent(
@@ -149,6 +157,8 @@ function openStartupSelector<T>(
 				{ tui: ui, timeout: dialogOptions?.timeout, initialIndex: safeTrustChoiceIndex(labels) },
 			),
 			keepStartupDialogDraft,
+			isTrustDecision(labels) ? undefined : STARTUP_DECISION_TYPED_TEXT_NOTICE,
+			{ enterArmed: !hasUnfinishedInput },
 		);
 		ui.addChild(selector);
 		ui.setFocus(selector);
@@ -188,8 +198,15 @@ function openStartupInput(
 			settled = true;
 			dialogOptions?.signal?.removeEventListener("abort", abandon);
 			input.dispose();
+			const trailingInput = new TrustDecisionSelector(
+				{ render: () => [], invalidate: () => {}, handleInput: () => {} },
+				keepStartupDialogDraft,
+				STARTUP_DECISION_TYPED_TEXT_NOTICE,
+			);
+			ui.setFocus(trailingInput);
 			await clearStartupTui(ui);
 			ui.stop();
+			trailingInput.dispose();
 			resolve(result);
 		};
 		const abandon = () => void finish(undefined);

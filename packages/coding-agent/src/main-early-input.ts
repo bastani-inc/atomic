@@ -9,10 +9,6 @@ export interface EarlyInputState {
 export interface EarlyInputSnapshot {
 	text: string;
 	submissions: string[];
-	/**
-	 * A startup decision, such as the project trust prompt, took the terminal after this input was typed. The input
-	 * is then only a draft: what was submitted ahead of the decision is not sent until the user sends it again.
-	 */
 	heldForStartupDecision?: true;
 }
 
@@ -21,43 +17,45 @@ export interface EarlyInputCapture {
 }
 
 interface ActiveEarlyInputCapture {
-	pause(): void;
+	pause(): boolean;
 	resume(): void;
 	keepDraft(text: string): void;
 }
 
-/** The capture reading the terminal now, which a standalone startup dialog takes the terminal from. */
 let activeCapture: ActiveEarlyInputCapture | undefined;
-/** Text typed into a standalone startup dialog that the dialog did not use, kept as a draft for the prompt. */
 let startupDialogDrafts: string[] = [];
+let startupDialogQueue: Promise<void> | undefined;
 
-/**
- * Run a standalone startup dialog that reads the terminal itself. The early-input capture stops reading while it is
- * open, so the dialog's keys never become prompt text, and starts again once it closes. Everything captured so far is
- * held as a draft: the user has answered a decision since typing it and decides what to send.
- */
-export async function withEarlyInputHeldForStartupDialog<T>(run: () => Promise<T>): Promise<T> {
-	const capture = activeCapture;
-	capture?.pause();
+export async function withEarlyInputHeldForStartupDialog<T>(
+	run: (state: { hasUnfinishedInput: boolean }) => Promise<T>,
+): Promise<T> {
+	const previous = startupDialogQueue;
+	let release!: () => void;
+	const current = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	startupDialogQueue = current;
+	let capture: ActiveEarlyInputCapture | undefined;
 	try {
-		return await run();
+		if (previous) await previous;
+		capture = activeCapture;
+		const hasUnfinishedInput = capture?.pause() ?? startupDialogDrafts.length > 0;
+		return await run({ hasUnfinishedInput });
 	} finally {
-		if (capture !== undefined && activeCapture === capture) capture.resume();
+		if (startupDialogQueue === current) {
+			startupDialogQueue = undefined;
+			if (capture !== undefined && activeCapture === capture) capture.resume();
+		}
+		release();
 	}
 }
 
-/** Keep text typed into a standalone startup dialog that the dialog did not use, for the prompt's draft. */
 export function keepStartupDialogDraft(text: string): void {
 	if (text.length === 0) return;
 	if (activeCapture) activeCapture.keepDraft(text);
 	else startupDialogDrafts.push(text);
 }
 
-/**
- * What the user typed before the interface painted: the capture's input and any text typed into a startup dialog.
- * Once a startup decision came between, or is still to come (`startupDecisionPending`, the project trust prompt
- * shown inside the interface), all of it is one draft and nothing is submitted.
- */
 export function consumeStartupInput(
 	capture: EarlyInputCapture | undefined,
 	options: { readonly startupDecisionPending?: boolean } = {},
@@ -213,13 +211,15 @@ export function startEarlyInputCapture(options: StartEarlyInputCaptureOptions): 
 	};
 	const control: ActiveEarlyInputCapture = {
 		pause() {
-			if (consumed || paused) return;
+			const hasUnfinishedInput = state.text.length > 0 || (draftParts.at(-1)?.length ?? 0) > 0;
+			if (consumed || paused) return hasUnfinishedInput;
 			paused = true;
 			heldForStartupDecision = true;
 			detach();
 			clearPendingEscapeTimer();
 			state.pendingEscape = undefined;
 			stdin.setRawMode?.(wasRaw);
+			return hasUnfinishedInput;
 		},
 		resume() {
 			if (consumed || !paused) return;

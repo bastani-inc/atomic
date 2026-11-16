@@ -1,13 +1,3 @@
-/**
- * A selector for a trust decision, or another startup question or screen, that keys meant for the prompt cannot answer.
- *
- * Startup can show the "Trust project folder?" question while the user is already typing a prompt (#5227 review): a
- * slow first start paints it after the keys were sent. A plain selector drops the typed text and takes the Enter as a
- * choice, so the prompt is lost and the project is trusted by accident. This selector opens on the choice that trusts
- * and saves nothing, keeps typed text as a draft for the prompt, and ignores Enter after typed text until ↑ or ↓ shows
- * the user is answering the question.
- */
-
 import {
 	type Component,
 	Container,
@@ -19,20 +9,16 @@ import {
 import { PROJECT_TRUST_DISTRUST_LABEL, PROJECT_TRUST_SESSION_DISTRUST_LABEL } from "../../../core/trust-manager.ts";
 import { theme } from "../theme/theme.js";
 
-/** A startup screen or decision the guard wraps: it gets every key the guard does not keep as typed text. */
-export type GuardedDecision = Component & { handleInput(data: string): unknown; dispose?(): void };
+export type GuardedDecision = Component & { handleInput(data: string): void; dispose?(): void };
 
 export const TRUST_DECISION_TYPED_TEXT_NOTICE =
 	"Answer the trust question with ↑↓ and Enter; your text is kept as a draft.";
-/** The same notice for a startup question or screen that is not about trust. */
 export const STARTUP_DECISION_TYPED_TEXT_NOTICE = "Answer with ↑↓ and Enter; your text is kept as a draft.";
 
-/** Whether a selector's choices are a project trust decision. */
 export function isTrustDecision(labels: readonly string[]): boolean {
 	return labels.includes(PROJECT_TRUST_SESSION_DISTRUST_LABEL) || labels.includes(PROJECT_TRUST_DISTRUST_LABEL);
 }
 
-/** The choice a trust decision opens on: the one that trusts and saves nothing, else any refusal. */
 export function safeTrustChoiceIndex(labels: readonly string[]): number {
 	for (const safe of [PROJECT_TRUST_SESSION_DISTRUST_LABEL, PROJECT_TRUST_DISTRUST_LABEL, "No"]) {
 		const index = labels.indexOf(safe);
@@ -44,7 +30,6 @@ export function safeTrustChoiceIndex(labels: readonly string[]): number {
 const BRACKETED_PASTE_START = "\x1b[200~";
 const BRACKETED_PASTE_END = "\x1b[201~";
 
-/** The text a key press or paste types, or undefined for a key that types nothing (arrows, Enter, Esc, Ctrl+…). */
 function typedText(data: string): string | undefined {
 	const pasted = data.startsWith(BRACKETED_PASTE_START)
 		? normalizePastedText(data.slice(BRACKETED_PASTE_START.length).replace(BRACKETED_PASTE_END, ""))
@@ -58,22 +43,31 @@ function typedText(data: string): string | undefined {
 
 export class TrustDecisionSelector extends Container {
 	private draft = "";
-	private enterArmed = true;
+	private enterArmed: boolean;
 	private readonly notice = new Text("", 1, 0);
-	private readonly selector: GuardedDecision;
+	private selector: GuardedDecision;
 	private readonly keepDraft: (text: string) => void;
 	private readonly noticeText: string;
 
-	/** `keepDraft` receives the typed text once, when the selector is disposed. */
 	constructor(
 		selector: GuardedDecision,
 		keepDraft: (text: string) => void,
 		noticeText: string = TRUST_DECISION_TYPED_TEXT_NOTICE,
+		options: { enterArmed?: boolean } = {},
 	) {
 		super();
 		this.selector = selector;
 		this.keepDraft = keepDraft;
 		this.noticeText = noticeText;
+		this.enterArmed = options.enterArmed ?? true;
+		if (!this.enterArmed) this.showNotice();
+		this.addChild(selector);
+		this.addChild(this.notice);
+	}
+
+	setDecision(selector: GuardedDecision): void {
+		this.selector = selector;
+		this.clear();
 		this.addChild(selector);
 		this.addChild(this.notice);
 	}

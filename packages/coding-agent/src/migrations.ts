@@ -306,7 +306,6 @@ function migrateExtensionSystem(cwd: string, options?: { projectTrusted?: boolea
 	return warnings;
 }
 
-/** The terminal input the deprecation notice waits on. */
 type KeypressInput = Pick<NodeJS.ReadStream, "resume" | "pause" | "once"> & { setRawMode?(mode: boolean): unknown };
 
 /**
@@ -332,7 +331,6 @@ async function waitForDeprecationKeypress(warnings: string[], stdin: KeypressInp
 		stdin.once("data", (chunk: Buffer | string) => {
 			stdin.setRawMode?.(false);
 			stdin.pause();
-			// Any key closes the notice; text typed with it is kept for the prompt, never dropped.
 			const typed: EarlyInputState = { text: "", submissions: [] };
 			applyEarlyInputChunk(typed, chunk.toString());
 			keepStartupDialogDraft([...typed.submissions, typed.text].filter((part) => part.length > 0).join("\n"));

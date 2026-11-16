@@ -420,6 +420,26 @@ test("keeps earlier large pastes when trust-dialog text joins the editor draft (
 	assert.equal(editor.getExpandedText(), `${earlierText}\nmore prompt text`);
 });
 
+test("an unsent editor draft cannot answer a newly opened trust question (#5241)", async () => {
+	const { mode, editorContainer } = createMode({ holdTuiForStartupTrust: false });
+	await mode.init();
+	mode.editor.setText("hello");
+	const answer = mode.showExtensionSelector(TRUST_PROMPT, TRUST_OPTIONS);
+	const dialog = editorContainer.children.at(-1) as { handleInput(data: string): void };
+	let answered = false;
+	void answer.then(() => {
+		answered = true;
+	});
+	dialog.handleInput("\r");
+	await flush();
+	const answeredByDraft = answered;
+	dialog.handleInput("\x1b[A");
+	dialog.handleInput("\r");
+	await answer;
+	assert.equal(answeredByDraft, false);
+	assert.equal(mode.editor.getText(), "hello");
+});
+
 test("a trust prompt in the interface opens on the choice that trusts and saves nothing", async () => {
 	const { mode, editorContainer } = createMode({ holdTuiForStartupTrust: false });
 	await mode.init();
