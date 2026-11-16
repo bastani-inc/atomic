@@ -42,6 +42,7 @@ const EXPECTED_NATIVE_EXPORTS = [
 	"renameNoReplace",
 	"search",
 	"tryAdvisoryLock",
+	"windowsDirectorySecurity",
 ] as const;
 
 const requireNativeBinding = process.env.ATOMIC_REQUIRE_NATIVE_BINDING_SMOKE === "1";
