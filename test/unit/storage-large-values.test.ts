@@ -267,6 +267,34 @@ describe("a session store under a libSQL server's size limits (#4954)", () => {
 		});
 	});
 
+	test("sessions load on SQLite without octet_length, as on macOS 13 (#4954)", async () => {
+		const configured = new WeakSet<DatabaseSync>();
+		const prepare = DatabaseSync.prototype.prepare;
+		DatabaseSync.prototype.prepare = function (this: DatabaseSync, sql: string) {
+			if (!configured.has(this)) {
+				configured.add(this);
+				this.function("octet_length", (_value) => {
+					throw new Error("no such function: octet_length");
+				});
+			}
+			return prepare.call(this, sql);
+		} as typeof prepare;
+		try {
+			await withNodeSqliteDatabase(async ({ database }) => {
+				const store = await SqlSessionStore.open(database);
+				const entries = [
+					message("first", null, "short"),
+					message("large", "first", "😀".repeat(5000)),
+					message("last", "large", "short"),
+				];
+				await store.create(header(), entries);
+				assert.deepEqual((await store.load("session")).entries, entries);
+			});
+		} finally {
+			DatabaseSync.prototype.prepare = prepare;
+		}
+	});
+
 	test("a long session loads in time linear in its entries, not one scan of the rest per page (#4954)", async () => {
 		await withNodeSqliteDatabase(async ({ database }) => {
 			const store = await SqlSessionStore.open(database);
@@ -292,6 +320,72 @@ describe("a session store under a libSQL server's size limits (#4954)", () => {
 			assert.ok(scanned.calls <= 4 * entries.length, `${scanned.calls} entry lengths measured`);
 		});
 	});
+
+	test.each([
+		{ layout: "alternate with short entries", long: (index: number) => index % 2 === 0 },
+		{ layout: "follow one another", long: (_index: number) => true },
+	])(
+		"legacy entries longer than a page are measured a bounded number of times when they $layout (#4954)",
+		async ({ long }) => {
+			await withNodeSqliteDatabase(async ({ database }) => {
+				const store = await SqlSessionStore.open(database);
+				const entries = Array.from({ length: 40 }, (_, index) =>
+					message(
+						`m-${index}`,
+						index === 0 ? null : `m-${index - 1}`,
+						long(index) ? "x".repeat(1.3 * MiB) : "short",
+					),
+				);
+				await store.create(header(), entries);
+				for (const [index, entry] of entries.entries()) {
+					if (long(index)) {
+						await database.run(
+							"UPDATE session_entries SET entry_json = ?, chunks = 0 WHERE seq = ?",
+							JSON.stringify(entry),
+							index + 1,
+						);
+					}
+				}
+				await database.run("DELETE FROM session_entry_chunks");
+				const scanned = await countLongValuesMeasured(() => store.load("session"));
+				assert.deepEqual(scanned.result.entries, entries);
+				assert.ok(scanned.calls <= 4 * entries.length, `${scanned.calls} entry lengths measured`);
+			});
+		},
+	);
+
+	test.each([
+		{ entriesCount: 188, firstChars: 2.5 * MiB, maxStatements: 2 },
+		{ entriesCount: 1000, firstChars: 100, maxStatements: 1 },
+		{ entriesCount: 1024, firstChars: 100, maxStatements: 1 },
+	])(
+		"$entriesCount entries load without small fetch round trips (#4954)",
+		async ({ entriesCount, firstChars, maxStatements }) => {
+			await withNodeSqliteDatabase(async ({ database }) => {
+				const store = await SqlSessionStore.open(database);
+				const entries = Array.from({ length: entriesCount }, (_, index) =>
+					message(`m-${index}`, index === 0 ? null : `m-${index - 1}`, "x".repeat(index === 0 ? firstChars : 100)),
+				);
+				await store.create(header(), entries);
+				await database.run(
+					"UPDATE session_entries SET entry_json = ?, chunks = 0 WHERE seq = 1",
+					JSON.stringify(entries[0]),
+				);
+				let statements = 0;
+				const prepare = DatabaseSync.prototype.prepare;
+				DatabaseSync.prototype.prepare = function (this: DatabaseSync, sql: string) {
+					if (/SELECT[\s\S]*FROM session_entries[\s\S]*ORDER BY seq/.test(sql)) statements++;
+					return prepare.call(this, sql);
+				} as typeof prepare;
+				try {
+					assert.deepEqual((await store.load("session")).entries, entries);
+				} finally {
+					DatabaseSync.prototype.prepare = prepare;
+				}
+				assert.ok(statements <= maxStatements, `${statements} entry read statements`);
+			});
+		},
+	);
 
 	test("a long listing reads in time linear in its sessions, not one scan of the rest per page (#4954)", async () => {
 		await withNodeSqliteDatabase(async ({ database }) => {
@@ -631,6 +725,60 @@ describe("a database written with chunked entries is refused by older builds (#4
 			await first.create(header(), [message("m", null, "after")]);
 			assert.equal((await first.load("big")).entries.length, 1);
 			assert.equal((await Array.fromAsync(first.list({}))).length, 2);
+		});
+	});
+
+	test("chunked append and create replace leftover entry chunks at the written sequence (#4954)", async () => {
+		await withNodeSqliteDatabase(async ({ database }) => {
+			const store = await SqlSessionStore.open(database);
+			const kept = message("kept", null, "k".repeat(1.5 * MiB));
+			const replaced = message("replaced", "kept", "r".repeat(3 * MiB));
+			const appended = message("appended", "kept", "a".repeat(1.5 * MiB));
+			const recreated = message("recreated", null, "c".repeat(1.5 * MiB));
+			await store.create(header("session"), [kept, replaced]);
+			await store.create(header("deleted"), [replaced]);
+			await database.exec(`
+				DELETE FROM session_entries WHERE session_id = 'session' AND seq = 2;
+				DELETE FROM session_search_texts WHERE session_id = 'session' AND seq = 2;
+				UPDATE session_sessions SET last_seq = 1 WHERE id = 'session';
+				DELETE FROM session_entries WHERE session_id = 'deleted';
+				DELETE FROM session_search_texts WHERE session_id = 'deleted';
+				DELETE FROM session_sessions WHERE id = 'deleted';
+			`);
+
+			await store.append("session", [appended], { expectSeq: 1 });
+			await store.create(header("deleted"), [recreated]);
+
+			assert.deepEqual((await store.load("session")).entries, [kept, appended]);
+			assert.deepEqual((await store.load("deleted")).entries, [recreated]);
+			assert.equal(await count(database, "SELECT count(*) AS n FROM session_entry_chunks"), 6);
+		});
+	});
+
+	test("opening a store sweeps orphaned entry chunks and preserves live chunked entries (#4954)", async () => {
+		await withNodeSqliteDatabase(async ({ database }) => {
+			const store = await SqlSessionStore.open(database);
+			const live = message("live", null, "l".repeat(1.5 * MiB));
+			const small = message("small", "live", "small");
+			const orphaned = message("orphaned", "live", "o".repeat(2 * MiB));
+			await store.create(header("live"), [live, orphaned]);
+			await store.create(header("deleted"), [orphaned]);
+			await database.exec(`
+				DELETE FROM session_entries WHERE session_id = 'deleted';
+				DELETE FROM session_search_texts WHERE session_id = 'deleted';
+				DELETE FROM session_sessions WHERE id = 'deleted';
+			`);
+			await database.run(
+				"UPDATE session_entries SET entry_id = ?, entry_json = ?, chunks = 0 WHERE session_id = 'live' AND seq = 2",
+				small.id,
+				JSON.stringify(small),
+			);
+			assert.equal(await count(database, "SELECT count(*) AS n FROM session_entry_chunks"), 8);
+
+			const reopened = await SqlSessionStore.open(database);
+
+			assert.equal(await count(database, "SELECT count(*) AS n FROM session_entry_chunks"), 2);
+			assert.deepEqual((await reopened.load("live")).entries, [live, small]);
 		});
 	});
 });

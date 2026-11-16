@@ -62,6 +62,7 @@ export interface StorageDialect {
 	jsonHasType(type: StorageJsonType, column: string, ...path: readonly string[]): string;
 	/** A predicate: `column` holds well-formed JSON text. */
 	jsonValid(column: string): string;
+	textByteLength(expression: string): string;
 	/**
 	 * A table expression for `FROM`: the elements of the JSON array in `source`, a bound parameter (`?`) or a column whose
 	 * JSON text the store wrote, as one column named `value`. On Postgres the values are text. Use it once per query and
@@ -230,6 +231,7 @@ const namedPlaceholders = (names: readonly string[]) => names.map(() => "?").joi
 /** SQLite and libSQL: renders exactly the SQL the stores have always run, so schemas and statements stay unchanged. */
 export const sqliteDialect: StorageDialect = Object.freeze({
 	name: "sqlite",
+	textByteLength: (expression: string) => `length(CAST(${expression} AS BLOB))`,
 	types: Object.freeze({
 		int: "INTEGER",
 		real: "REAL",
@@ -435,6 +437,7 @@ function postgresSqliteJsonType(value: string): string {
  */
 export const postgresDialect: StorageDialect = Object.freeze({
 	name: "postgres",
+	textByteLength: (expression: string) => `octet_length(${expression})`,
 	types: Object.freeze({
 		int: "BIGINT",
 		real: "DOUBLE PRECISION",
