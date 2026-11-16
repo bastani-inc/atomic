@@ -199,6 +199,60 @@ describe("resume picker: one two-line design for sessions and workflow runs (#52
 		selector.dispose();
 	});
 
+	it("keeps a workflow row locked if refresh changes its catalog kind during deletion (#5256)", async () => {
+		const original = makeSession({ id: "run-a", path: "workflow-durable:run-a" });
+		const resumed: string[] = [];
+		let release!: () => void;
+		const deletion = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const selector = mount([original], { variant: "runs", onSelect: (row) => resumed.push(row.id) });
+		selector.getSessionList().onDeleteSession = async () => {
+			await deletion;
+		};
+		try {
+			selector.handleInput("\x04");
+			selector.handleInput("\r");
+			selector.getSessionList().setSessions([{ ...original, path: "workflow-completed:run-a" }], true);
+			const rendered = frame(selector);
+			assert.ok(
+				rendered.some((line) => line.includes("Deleting…")),
+				rendered.join("\n"),
+			);
+			assert.ok(!rendered.at(-2)!.includes("enter resume"), rendered.at(-2));
+			selector.handleInput("\r");
+			assert.deepEqual(resumed, []);
+		} finally {
+			release();
+			selector.dispose();
+		}
+
+		// Ordinary sessions keep path identity when IDs repeat across project folders
+		const firstFolder = makeSession({ id: "shared-id", cwd: "/work/a", path: "/work/a/shared-id.jsonl" });
+		const secondFolder = makeSession({ id: "shared-id", cwd: "/work/b", path: "/work/b/shared-id.jsonl" });
+		const resumedPaths: string[] = [];
+		let releaseSession!: () => void;
+		const sessionDeletion = new Promise<void>((resolve) => {
+			releaseSession = resolve;
+		});
+		const sessionSelector = mount([firstFolder, secondFolder], {
+			onSelect: (row) => resumedPaths.push(row.path),
+		});
+		sessionSelector.getSessionList().onDeleteSession = async () => {
+			await sessionDeletion;
+		};
+		try {
+			sessionSelector.handleInput("\x04");
+			sessionSelector.handleInput("\r");
+			sessionSelector.handleInput("\x1b[B");
+			sessionSelector.handleInput("\r");
+			assert.deepEqual(resumedPaths, ["/work/b/shared-id.jsonl"]);
+		} finally {
+			releaseSession();
+			sessionSelector.dispose();
+		}
+	});
+
 	it("space types into a non-empty search instead of previewing", () => {
 		const selector = mount([makeSession({ id: "a", firstMessage: "fix the login bug" })]);
 		for (const ch of "fix") selector.handleInput(ch);

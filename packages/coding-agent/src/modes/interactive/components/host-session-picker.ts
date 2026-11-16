@@ -8,7 +8,11 @@ import type {
 import type { SessionInfo } from "../../../core/session-manager.ts";
 import { SessionSelectorComponent } from "./session-selector.ts";
 
-const localDeleteContext = new AsyncLocalStorage<{ pickerId: symbol; path: string }>();
+const localDeleteContext = new AsyncLocalStorage<{
+	pickerId: symbol;
+	path: string;
+	deleteRequestId: number;
+}>();
 
 /** The subset of the host UI surface the picker mount needs. */
 export type HostSessionPickerUi = Pick<ExtensionUIContext, "custom" | "requestRender">;
@@ -63,7 +67,7 @@ export function hostSessionPickerPresentation(
 export interface HostSessionPickerMountDelegate {
 	onSelect(path: string): void;
 	onCancel(): void;
-	onDelete(path: string): void;
+	onDelete(path: string, deleteRequestId: number): void;
 }
 
 /** Owner-side control surface for a mounted host session picker. */
@@ -71,7 +75,7 @@ export interface HostSessionPickerMount {
 	/** Replace the rows; selection/search state is preserved by the selector. */
 	setRows(rows: SessionInfo[]): void;
 	/** Surface a transient error in the picker header. */
-	showError(message: string, deletePath?: string): void;
+	showError(message: string, deletePath?: string, deleteRequestId?: number): void;
 	/** Unmount without emitting `onCancel` (the owner already settled). */
 	close(): void;
 }
@@ -112,9 +116,16 @@ export function mountHostSessionPicker(
 	// the loader's resolution and the selector's write must re-assert itself
 	// BEHIND that write (continuations registered later run later).
 	let activeLoad: Promise<SessionInfo[]> | undefined;
-	let pendingDelete: { path: string; resolve: () => void } | undefined;
-	const finishDelete = (path?: string): void => {
-		if (!pendingDelete || (path !== undefined && pendingDelete.path !== path)) return;
+	let nextDeleteRequestId = 0;
+	let pendingDelete: { path: string; id: string; deleteRequestId: number; resolve: () => void } | undefined;
+	const finishDelete = (path?: string, deleteRequestId?: number): void => {
+		if (
+			!pendingDelete ||
+			(path !== undefined && pendingDelete.path !== path) ||
+			(deleteRequestId !== undefined && pendingDelete.deleteRequestId !== deleteRequestId)
+		) {
+			return;
+		}
 		const pending = pendingDelete;
 		pendingDelete = undefined;
 		pending.resolve();
@@ -153,13 +164,16 @@ export function mountHostSessionPicker(
 				);
 				// Owner-owned deletion: forward the confirmed request and keep the
 				// row until the owner replies with setRows (or showError).
-				selector.getSessionList().onDeleteSession = (path) =>
+				selector.getSessionList().onDeleteSession = (path, session) =>
 					new Promise<void>((resolve, reject) => {
-						pendingDelete = { path, resolve };
+						const deleteRequestId = ++nextDeleteRequestId;
+						pendingDelete = { path, id: session.id, deleteRequestId, resolve };
 						try {
-							delegate.onDelete(path);
+							delegate.onDelete(path, deleteRequestId);
 						} catch (error) {
-							pendingDelete = undefined;
+							if (pendingDelete?.deleteRequestId === deleteRequestId) {
+								pendingDelete = undefined;
+							}
 							reject(error);
 						}
 					});
@@ -202,7 +216,12 @@ export function mountHostSessionPicker(
 			if (closedBeforeMount || record?.settled) return;
 			currentRows = rows;
 			const pending = pendingDelete;
-			if (pending && !rows.some((row) => row.path === pending.path)) finishDelete(pending.path);
+			if (
+				pending &&
+				!rows.some((row) => (presentation.variant === "runs" ? row.id === pending.id : row.path === pending.path))
+			) {
+				finishDelete(pending.path);
+			}
 			// Pre-mount updates apply at mount via initialSessions/loadRows.
 			if (!record) return;
 			const mounted = record;
@@ -220,9 +239,11 @@ export function mountHostSessionPicker(
 				});
 			}
 		},
-		showError: (message, deletePath) => {
+		showError: (message, deletePath, deleteRequestId) => {
 			if (closedBeforeMount || record?.settled) return;
-			if (deletePath !== undefined) finishDelete(deletePath);
+			if (deletePath !== undefined && deleteRequestId !== undefined) {
+				finishDelete(deletePath, deleteRequestId);
+			}
 			if (!record) {
 				pendingErrors.push(message);
 				return;
@@ -271,17 +292,17 @@ export function openLocalHostSessionPicker(
 		{
 			onSelect: (path) => settle(path),
 			onCancel: () => settle(undefined),
-			onDelete: (path) => {
+			onDelete: (path, deleteRequestId) => {
 				const onDelete = request.onDelete;
 				if (!onDelete) {
-					mount.showError("Deletion is not supported for this picker", path);
+					mount.showError("Deletion is not supported for this picker", path, deleteRequestId);
 					return;
 				}
 				void Promise.resolve()
-					.then(() => localDeleteContext.run({ pickerId, path }, () => onDelete(path)))
+					.then(() => localDeleteContext.run({ pickerId, path, deleteRequestId }, () => onDelete(path)))
 					.catch((error: unknown) => {
 						const message = error instanceof Error ? error.message : String(error);
-						mount.showError(`Failed to delete: ${message}`, path);
+						mount.showError(`Failed to delete: ${message}`, path, deleteRequestId);
 					});
 			},
 		},
@@ -291,7 +312,8 @@ export function openLocalHostSessionPicker(
 		update: (sessions) => mount.setRows(sessions.map(sessionInfoFromPickerRow)),
 		error: (message) => {
 			const context = localDeleteContext.getStore();
-			mount.showError(message, context?.pickerId === pickerId ? context.path : undefined);
+			const activeContext = context?.pickerId === pickerId ? context : undefined;
+			mount.showError(message, activeContext?.path, activeContext?.deleteRequestId);
 		},
 		close: () => {
 			if (settled) return;

@@ -131,7 +131,13 @@ export type InteractiveEngineMessage =
 			canDelete?: boolean;
 	  }
 	| { type: "engine_session_picker_update"; componentId: string; sessions: HostSessionPickerRow[] }
-	| { type: "engine_session_picker_error"; componentId: string; message: string; deletePath?: string }
+	| {
+			type: "engine_session_picker_error";
+			componentId: string;
+			message: string;
+			deletePath?: string;
+			deleteRequestId?: number;
+	  }
 	| { type: "engine_session_picker_close"; componentId: string }
 	| {
 			type: "engine_input_form_open";
@@ -231,7 +237,7 @@ export type InteractiveEngineCommand =
 	| { type: "engine_render_dispose"; componentId: string }
 	| { type: "engine_session_picker_select"; componentId: string; path: string }
 	| { type: "engine_session_picker_cancel"; componentId: string }
-	| { type: "engine_session_picker_delete"; componentId: string; path: string }
+	| { type: "engine_session_picker_delete"; componentId: string; path: string; deleteRequestId?: number }
 	| { type: "engine_input_form_submit"; componentId: string; values: Record<string, string> }
 	| { type: "engine_input_form_cancel"; componentId: string };
 
@@ -705,6 +711,11 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 						componentId: value.componentId,
 						message: value.message,
 						...(typeof value.deletePath === "string" ? { deletePath: value.deletePath } : {}),
+						...(typeof value.deleteRequestId === "number" &&
+						Number.isSafeInteger(value.deleteRequestId) &&
+						value.deleteRequestId > 0
+							? { deleteRequestId: value.deleteRequestId }
+							: {}),
 					}
 				: undefined;
 		case "engine_session_picker_close":
@@ -794,7 +805,17 @@ export function parseInteractiveEngineCommand(line: string): InteractiveEngineCo
 		(value.type === "engine_session_picker_select" || value.type === "engine_session_picker_delete") &&
 		typeof value.path === "string"
 	) {
-		return { type: value.type, componentId: value.componentId, path: value.path };
+		return {
+			type: value.type,
+			componentId: value.componentId,
+			path: value.path,
+			...(value.type === "engine_session_picker_delete" &&
+			typeof value.deleteRequestId === "number" &&
+			Number.isSafeInteger(value.deleteRequestId) &&
+			value.deleteRequestId > 0
+				? { deleteRequestId: value.deleteRequestId }
+				: {}),
+		};
 	}
 	if (value.type === "engine_session_picker_cancel") return { type: value.type, componentId: value.componentId };
 	if (value.type === "engine_input_form_cancel") return { type: value.type, componentId: value.componentId };
