@@ -139,7 +139,12 @@ function createMode(options: { holdTuiForStartupTrust: boolean }): HeldMode {
 			getQuietStartup: () => false,
 			isProjectTrusted: () => trust.granted,
 		},
-		sessionManager: { getEntries: () => [], getLeafId: () => null, getCwd: () => projectDir },
+		sessionManager: {
+			getSessionId: () => "session-1",
+			getEntries: () => [],
+			getLeafId: () => null,
+			getCwd: () => projectDir,
+		},
 		getStartupIdentityText: () => "Atomic v0.0.0",
 		shouldShowStartupHeader: () => true,
 		showFullscreenModelScopeNotice: () => {},

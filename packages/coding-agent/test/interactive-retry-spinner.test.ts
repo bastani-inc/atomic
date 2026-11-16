@@ -6,6 +6,7 @@ import type { AgentSessionEvent } from "../src/core/agent-session.ts";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import type { AtomicWorkingLoader } from "../src/modes/interactive/components/atomic-working-status.ts";
 import type { CountdownTimer } from "../src/modes/interactive/components/countdown-timer.ts";
+import { WorkingRunMeter } from "../src/modes/interactive/components/working-run-meter.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 
@@ -25,6 +26,7 @@ afterEach(() => {
 function makeMode() {
 	return {
 		isInitialized: true,
+		workingRunMeter: new WorkingRunMeter(),
 		programStatus: { handleEvent: vi.fn() },
 		footer: { invalidate: () => {} },
 		defaultEditor: { onEscape: vi.fn() },

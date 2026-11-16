@@ -16,20 +16,23 @@ import type { FullscreenExitOutput, MermaidRenderingMode } from "../../core/sett
 import type { EarlyInputSnapshot } from "../../main-early-input.ts";
 import { readClipboardText } from "../../utils/clipboard.js";
 import { attachInteractiveEngineHost } from "../interactive-engine/extension-ui-bridge.ts";
-import type { RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
+import { RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
 import { KeybindingsReloadCoordinator } from "../rpc/rpc-keybindings-reload.ts";
+import { messageComponents, statusComponents } from "./chat-message-count.ts";
 import type { AtomicWorkingLoader } from "./components/atomic-working-status.ts";
+import { mainComposerHintSegments } from "./components/main-composer-keys.ts";
 import { createMermaidMarkdownTransformer } from "./components/mermaid.ts";
 import type { TranscriptOverlayReserve } from "./components/reserved-bottom-overlay.ts";
 import { WidgetContainer } from "./components/scroll-widget.js";
+import { WorkingRunMeter } from "./components/working-run-meter.ts";
 import {
 	type AgentSession,
 	type AgentSessionRuntime,
 	type AssistantMessage,
-	type AssistantMessageComponent,
+	AssistantMessageComponent,
 	type AutocompleteProvider,
 	type AutocompleteProviderFactory,
-	type BashExecutionComponent,
+	BashExecutionComponent,
 	type Component,
 	Container,
 	type CountdownTimer,
@@ -48,7 +51,7 @@ import {
 	setKeybindings,
 	setRegisteredThemes,
 	type Text,
-	type ToolExecutionComponent,
+	ToolExecutionComponent,
 	type TUI,
 	theme,
 	UsageMeterComponent,
@@ -86,6 +89,18 @@ const FULLSCREEN_TRANSCRIPT_SCROLL_ACTIONS = [
 ] as const;
 
 const FULLSCREEN_VIEWPORT_ACTIONS = FULLSCREEN_TRANSCRIPT_SCROLL_ACTIONS;
+
+export { messageComponents, statusComponents };
+
+export function isChatMessageComponent(child: Component): boolean {
+	return (
+		messageComponents.has(child) ||
+		child instanceof AssistantMessageComponent ||
+		child instanceof ToolExecutionComponent ||
+		child instanceof RemoteToolExecutionComponent ||
+		child instanceof BashExecutionComponent
+	);
+}
 
 export function isFullscreenViewportAction(data: string, keybindings: KeybindingsManager): boolean {
 	return FULLSCREEN_VIEWPORT_ACTIONS.some((action) => keybindings.matches(data, action));
@@ -485,6 +500,7 @@ export class InteractiveModeBase {
 	blockingInlineCustomUiDepth = 0;
 
 	navigationInlineCustomUiDepth = 0;
+	readonly workingRunMeter = new WorkingRunMeter();
 
 	deferredInlineCustomUiFocusDepth = 0;
 
@@ -695,6 +711,7 @@ export class InteractiveModeBase {
 			shouldHandleViewportInput: this.shouldHandleViewportInput,
 			onOverlayUnhandledInput: this.onOverlayUnhandledInput,
 			onOverlayInternalUiAction: this.onOverlayInternalUiAction,
+			messageCount: () => this.chatContainer?.children.filter(isChatMessageComponent).length ?? 0,
 			onInternalUiAction: () => {
 				this.jumpToTranscriptEnd();
 				return undefined;
@@ -726,6 +743,7 @@ export class InteractiveModeBase {
 		this.defaultEditor = new CustomEditor(this.ui, getEditorTheme(), this.keybindings, {
 			paddingX: editorPaddingX,
 			autocompleteMaxVisible,
+			topRuleLabel: () => this.sessionManager.getSessionName(),
 		});
 
 		this.editor = this.defaultEditor;
@@ -737,6 +755,8 @@ export class InteractiveModeBase {
 			this.footerDataProvider,
 			undefined,
 			() => this.navigationInlineCustomUiDepth > 0,
+			undefined,
+			() => mainComposerHintSegments(this.keybindings),
 		);
 		this.footerContainer = new Container();
 		this.footerContainer.addChild(this.footer);

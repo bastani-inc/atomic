@@ -105,7 +105,7 @@ Local copy operations require a working native clipboard or platform command. On
 
 ### TUI Fullscreen Viewport
 
-Interactive sessions use a fullscreen transcript. The wheel scrolls the region under the pointer; over the fixed editor, status, or footer it scrolls the transcript. When scrolled up, click "Jump to latest message" or use `tui.altScreen.bottom` to return to live output. Attached workflow chats and `/tasks` transcripts show the same jump row in their own view; other OSC 8 links open in the default handler.
+Interactive sessions use a fullscreen transcript. The wheel scrolls the region under the pointer; over the fixed editor, status, or footer it scrolls the transcript. When scrolled up, a pill above the composer reads "↓ jump to bottom", or "↓ N new messages" once new output arrives; click it or use `tui.altScreen.bottom` to return to live output. While scrolled up, the first line of the prompt that started the turn you are reading stays pinned at the top, marked `↑`. Attached workflow chats and `/tasks` transcripts show the same jump row in their own view; other OSC 8 links open in the default handler.
 
 Attached workflow stage chats and `/tasks` transcripts scroll the same way as the main transcript: the wheel follows `fullscreenWheelScrollLines`, Alt+wheel scrolls five times as far, `fullscreenScrollbar` controls their scrollbar, and `tui.altScreen.top`, `tui.altScreen.bottom`, `tui.altScreen.previousPrompt`, `tui.altScreen.nextPrompt`, `tui.altScreen.halfPageUp`, and `tui.altScreen.halfPageDown` act on them. In those views `pageUp` and `pageDown` always page the view, `tui.altScreen.lineUp` and `tui.altScreen.lineDown` do nothing, and the scrollbar shows the position but cannot be dragged.
 
@@ -246,7 +246,6 @@ The same keys move between the main chat, subagent chats, workflow graphs, stage
 | `app.list.peek` | `space` | Peek at the selected task |
 | `app.list.filter` | `/` | Filter the list by name |
 | `app.keys.help` | `?` | Show the keys of the current screen |
-| `app.agents.focus` | `down` | Focus the agent panel from an empty prompt |
 | `app.agents.chord` | `ctrl+x` | Start a background-work chord in the main chat |
 | `app.agents.stopAll` | `ctrl+k` | After the chord key: stop all background subagents and workflow runs (press twice to confirm) |
 | `app.tasks.open` | Unbound | Command-only `/tasks` route |

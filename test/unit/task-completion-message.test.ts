@@ -8,6 +8,7 @@ import {
 	isResumableStop,
 	type TaskCompletionEnvelope,
 	taskCompletionEnvelope,
+	taskCompletionNotice,
 } from "../../packages/coding-agent/src/core/tasks/completion.js";
 import type {
 	CancelCause,
@@ -15,7 +16,10 @@ import type {
 	Sequence,
 	SettlementReceipt,
 } from "../../packages/coding-agent/src/core/tasks/contracts.js";
-import { TaskCompletionMessage } from "../../packages/coding-agent/src/modes/interactive/components/task-completion-message.js";
+import {
+	completionNoticeFromDetails,
+	TaskCompletionMessage,
+} from "../../packages/coding-agent/src/modes/interactive/components/task-completion-message.js";
 import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { assertBackgroundFill } from "../helpers/background-fill.js";
 import { taskRecord } from "../helpers/task-record.js";
@@ -313,4 +317,54 @@ test.each([
 			}
 		}
 	}
+});
+
+test("a subagent's completion notice shows its result's headline and keeps the rest behind expand (#5224)", () => {
+	initTheme("dark");
+	const notice = {
+		title: "Subagent worker completed: inspect the sandbox",
+		preview: "PR #5221 open: atomic lock creation\nsecond line\nthird line\nfourth line",
+		taskId: "task-1",
+		status: "completed" as const,
+		model: "anthropic/claude-haiku-4-5",
+	};
+	const collapsed = stripVTControlCharacters(new TaskCompletionMessage(notice, false).render(100).join("\n"));
+	assert.match(collapsed, /⎿ PR #5221 open: atomic lock creation/);
+	assert.doesNotMatch(collapsed, /second line/);
+	assert.match(collapsed, /\/tasks to inspect/);
+	const expanded = stripVTControlCharacters(new TaskCompletionMessage(notice, true).render(100).join("\n"));
+	assert.match(expanded, /fourth line/);
+	const { model: _model, ...withoutModel } = notice;
+	const shell = { ...withoutModel, title: "Background shell completed", taskKind: "command" as const };
+	const shellText = stripVTControlCharacters(new TaskCompletionMessage(shell, false).render(100).join("\n"));
+	assert.match(shellText, /fourth line/);
+	assert.doesNotMatch(shellText, /PR #5221/);
+});
+
+test("completion notices distinguish agents without model metadata from shell output tails (#5243)", () => {
+	initTheme("dark");
+	const preview = Array.from({ length: 10 }, (_, index) => `line${index + 1}`).join("\n");
+	const agent = taskCompletionNotice(envelope, { kind: "agent", title: "worker" }, preview);
+	const agentText = stripVTControlCharacters(new TaskCompletionMessage(agent, false).render(100).join("\n"));
+	assert.match(agentText, /⎿ line1\s/);
+	assert.doesNotMatch(agentText, /line2/);
+	const restored = completionNoticeFromDetails({ notification: agent });
+	assert.ok(restored);
+	assert.equal(restored.taskKind, "agent");
+	assert.equal(
+		new TaskCompletionMessage(restored, false).render(100).join("\n"),
+		new TaskCompletionMessage(agent, false).render(100).join("\n"),
+	);
+	const shell = taskCompletionNotice({ ...envelope, taskKind: "command" }, undefined, preview);
+	const shellText = stripVTControlCharacters(new TaskCompletionMessage(shell, false).render(100).join("\n"));
+	assert.match(shellText, /⎿ line8\s/);
+	assert.match(shellText, /line10/);
+	assert.doesNotMatch(shellText, /line1\s/);
+	const longShell = taskCompletionNotice(
+		{ ...envelope, taskKind: "command" },
+		undefined,
+		`${"earlier output\n".repeat(1_000)}${preview}`,
+	);
+	assert.ok(longShell.preview.length <= 8_000);
+	assert.match(stripVTControlCharacters(new TaskCompletionMessage(longShell, false).render(100).join("\n")), /line10/);
 });

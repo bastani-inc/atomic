@@ -7,7 +7,7 @@ import { type TUI, TuiBase, type TuiStopOptions } from "./tui.ts";
 import { visibleWidth } from "./utils.ts";
 
 /** OSC 133 prompt markers at the start of a rendered line. Fullscreen uses them for prompt navigation. */
-const OSC133_ZONE_PREFIX = /^(?:\x1b\]133;[ABC](?:\x07|\x1b\\))+/;
+const OSC133_ZONE_PREFIX = /^(?:\x1b\]133;[ABC](?:;[^\x07\x1b]*)?(?:\x07|\x1b\\))+/;
 
 const KITTY_SEQUENCE_PREFIX = "\x1b_G";
 const MAX_RENDER_WRITE_CHARS = 1024 * 1024;
