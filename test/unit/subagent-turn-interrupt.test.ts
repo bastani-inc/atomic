@@ -26,7 +26,6 @@ function agent(): AgentConfig {
 	};
 }
 
-/** How long a condition may take to hold on a loaded runner; the test's own budget bounds it, not a fixed sleep. */
 const CONDITION_WAIT_MS = 20_000;
 
 async function until(predicate: () => boolean): Promise<void> {
@@ -88,7 +87,6 @@ test("Esc interrupts a subagent's turn and it waits for the next message in the 
 		assert.equal(typeof source.interruptTurn, "function", "a running subagent's chat can interrupt its turn");
 
 		await source.interruptTurn!();
-		// The turn ends asynchronously after the interrupt: wait for it rather than for a fixed time (#5224).
 		await until(() => source.isRunning?.() === false);
 		assert.equal(child.settled(), false, "the child did not end: it waits for the next message");
 
@@ -125,6 +123,33 @@ test("an interrupted subagent that is never messaged again still stops when aske
 		assert.notEqual(result.status, "ok", "a stop ends the waiting child");
 		assert.equal(child.settled(), true);
 	} finally {
+		clearSubagentControls();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("interrupting the next subagent turn also waits for another message before settling (#5224)", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-turn-interrupt-twice-"));
+	const stop = new AbortController();
+	const child = launch(root, stop.signal);
+	try {
+		await until(() => child.source()?.isRunning?.() === true);
+		const source = child.source()!;
+		await source.interruptTurn!();
+		await until(() => source.isRunning?.() === false);
+		const firstWake = child.queue()!.prompt("continue once");
+		await until(() => source.isRunning?.() === true);
+		await source.interruptTurn!();
+		await firstWake;
+		assert.equal(child.settled(), false, "the second interrupted turn still waits");
+		child.gate.resolve();
+		await child.queue()!.prompt("finish now");
+		const result = await child.result;
+		assert.equal(result.status, "ok");
+		assert.equal(result.finalOutput, "picker fixed");
+	} finally {
+		stop.abort("user");
+		await child.result;
 		clearSubagentControls();
 		rmSync(root, { recursive: true, force: true });
 	}
@@ -183,6 +208,69 @@ test(
 	LIVE_CHILD_TIMEOUT_MS,
 );
 
+test.each(["background work", "a queued message"] as const)(
+	"an interrupted subagent settles when %s wakes it before the interrupted prompt returns (#5224)",
+	async (wakeSource) => {
+		const env = await liveChildEnvironment(cleanups);
+		env.faux.setResponses([
+			fauxAssistantMessage([fauxToolCall("block", {}, { id: "block-early-wake" })], { stopReason: "toolUse" }),
+			fauxAssistantMessage("the early wake finished"),
+		]);
+		let source: TaskTranscriptSource | undefined;
+		const stop = new AbortController();
+		let settled = false;
+		const run = runSingleInProcess(env.root, agent(), "run until interrupted", {
+			...env.options("interrupt-early-wake", {
+				signal: stop.signal,
+				taskExecution: {
+					signal: stop.signal,
+					reportActivity() {},
+					bindTranscript(bound) {
+						source = bound;
+					},
+					onExecution() {},
+					yieldTaskWait() {},
+					isParentObserving: () => false,
+				},
+			}),
+		}).finally(() => {
+			settled = true;
+		});
+		let unsubscribe: (() => void) | undefined;
+		try {
+			await until(() => env.blockStarted());
+			const session = source!.chatSession as AgentSession;
+			const wake = Promise.withResolvers<void>();
+			if (wakeSource === "background work") {
+				unsubscribe = session.subscribe((event) => {
+					if (event.type !== "agent_settled") return;
+					unsubscribe?.();
+					void session
+						.sendCustomMessage(
+							{ customType: "background-task", content: "the shell finished", display: true },
+							{ triggerTurn: true },
+						)
+						.then(wake.resolve, wake.reject);
+				});
+			} else {
+				await session.steer("finish the queued request");
+				wake.resolve();
+			}
+			await source!.interruptTurn!();
+			await wake.promise;
+			await until(() => settled);
+			const result = await run;
+			assert.equal(result.status, "ok");
+			assert.equal(result.finalOutput, "the early wake finished");
+		} finally {
+			unsubscribe?.();
+			stop.abort("user");
+			await run;
+		}
+	},
+	LIVE_CHILD_TIMEOUT_MS,
+);
+
 test("an interrupted subagent woken by its own work settles once that turn ends, even if agent_end comes before idle (#5224)", async () => {
 	const listeners = new Set<(event: { type: string }) => void>();
 	let streaming = false;
@@ -202,7 +290,6 @@ test("an interrupted subagent woken by its own work settles once that turn ends,
 	const waiting = nextTurnSettled(session as never, [new AbortController().signal]).then(() => {
 		done = true;
 	});
-	// A background task's completion wakes the child: a turn runs, and its run closes only after agent_end.
 	streaming = true;
 	emit("agent_start");
 	emit("agent_end");

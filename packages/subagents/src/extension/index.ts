@@ -489,7 +489,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		};
 		let stopReleasedChildWakes: (() => void) | undefined;
 		let taskResumer: ReturnType<typeof bindSubagentTaskResumer> | undefined;
-		// A turn may launch children: the chat resumer is bound by then (#5224).
 		pi.on("agent_start", () => taskResumer?.ensure());
 		pi.on("session_start", (event, ctx) => {
 			if (!lifecycle.isCurrent()) return;

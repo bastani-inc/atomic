@@ -9,7 +9,7 @@ import {
 /**
  * Lets a finished child's chat continue it: a message sent there resumes the child in its own session, as
  * `subagent({ action: "resume", id, message })` does. A child stopped for good, or one this session did not launch,
- * keeps a read-only chat. Returns the unregister.
+ * keeps a read-only chat.
  */
 export function bindSubagentTaskResumer(
 	deps: SubagentChildRestoreDeps,
@@ -17,17 +17,12 @@ export function bindSubagentTaskResumer(
 ): { readonly ensure: () => void; readonly dispose: () => void } {
 	let unbind: (() => void) | undefined;
 	let disposed = false;
-	// The task owner may not be open yet when the session starts (the isolated engine opens it later, a reload is
-	// still closing the previous one): binding is retried whenever the session runs a turn, before it can launch a
-	// child, until it succeeds (#5224).
 	const ensure = () => {
 		if (disposed || unbind !== undefined) return;
 		try {
 			const supervisor = ctx.getAgentTaskHost?.()?.ownerBinding.supervisor;
 			if (supervisor !== undefined) unbind = bindTaskResumer(supervisor, resumer(deps, ctx));
-		} catch {
-			// Not open yet; the next turn tries again.
-		}
+		} catch {}
 	};
 	ensure();
 	return {
@@ -40,7 +35,6 @@ export function bindSubagentTaskResumer(
 }
 
 function resumer(deps: SubagentChildRestoreDeps, ctx: ExtensionContext): TaskResumer {
-	// A resumed child runs as a new task; the chat it was resumed from keeps reaching it through this.
 	const resumedFrom = new Map<string, string>();
 	const childOf = (taskId: TaskId) => subagentChildOfTask(ctx, taskId, resumedFrom.get(taskId));
 	return {

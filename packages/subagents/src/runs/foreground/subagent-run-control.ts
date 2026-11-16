@@ -130,7 +130,6 @@ function ownedRecords(ctx: ExtensionContext): Map<string, SubagentChildRecord> {
 export function subagentChildOfTask(
 	ctx: ExtensionContext,
 	taskId: string,
-	/** The child a chat already resumed: a resume gives it a new task, and its earlier chat still reaches it. */
 	childId?: string,
 ): { readonly childId: string; readonly readOnlyReason?: string } | undefined {
 	const records = [...ownedRecords(ctx).values()];

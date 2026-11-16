@@ -578,9 +578,10 @@ export function inProcessChildResourceLoaderOptions(input: {
 export function nextTurnSettled(
 	session: Pick<AgentSession, "subscribe" | "isStreaming">,
 	stops: readonly AbortSignal[],
+	options: { readonly waitForStart?: boolean } = {},
 ): Promise<void> {
 	return new Promise<void>((resolve) => {
-		let started = session.isStreaming;
+		let started = !options.waitForStart && session.isStreaming;
 		let unsubscribe = () => {};
 		const finish = () => {
 			unsubscribe();
@@ -591,9 +592,6 @@ export function nextTurnSettled(
 		for (const stop of stops) stop.addEventListener("abort", finish, { once: true });
 		unsubscribe = session.subscribe((event) => {
 			if (event.type === "agent_start") started = true;
-			// A run closes after its agent_end (a woken turn's run may still be closing then): the run's agent_settled,
-			// or an agent_end seen once it is idle, ends the wait. Waiting only on agent_end left a child woken by its
-			// own background work running forever (#5224).
 			else if (event.type === "agent_settled" && started && !session.isStreaming) finish();
 			else if (event.type === "agent_end" && started)
 				queueMicrotask(() => (session.isStreaming ? undefined : finish()));
@@ -1674,8 +1672,7 @@ export class SubagentControlRuntime {
 		const executionEnded = new AbortController();
 
 		let termination: TerminationCauseName | undefined;
-		// The user interrupted the child's turn from its chat: it waits for their next message instead of ending.
-		let turnInterruptedByUser = false;
+		let interruptedTurnSettlement: Promise<void> | undefined;
 		// The task and resume follow-ups the session has not been given yet; a stop before then keeps them for resume.
 		const unsent: UnsentInput = { task: admitted.spec.task, followUps: [...(admitted.spec.resumeFollowUps ?? [])] };
 		let terminating: Promise<void> | undefined;
@@ -1935,7 +1932,11 @@ export class SubagentControlRuntime {
 			const transcriptSession = session;
 			const interruptTurn = async (): Promise<void> => {
 				if (!transcriptSession.isStreaming || termination !== undefined) return;
-				turnInterruptedByUser = true;
+				interruptedTurnSettlement = nextTurnSettled(
+					transcriptSession,
+					[signals.abort, signals.interrupt, executionEnded.signal],
+					{ waitForStart: true },
+				);
 				await transcriptSession.interruptTurn();
 			};
 			// Snapshot at the public session-event boundary, never ahead of its queued events.
@@ -2135,9 +2136,10 @@ export class SubagentControlRuntime {
 					}
 				}
 			}
-			while (turnInterruptedByUser && termination === undefined) {
-				turnInterruptedByUser = false;
-				await nextTurnSettled(session, [signals.abort, signals.interrupt]);
+			while (interruptedTurnSettlement !== undefined && termination === undefined) {
+				const settlement = interruptedTurnSettlement;
+				interruptedTurnSettlement = undefined;
+				await settlement;
 			}
 			await terminating;
 			const stats = statsFor(session, admitted.identity.path);
