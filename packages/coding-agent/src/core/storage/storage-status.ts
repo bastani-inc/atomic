@@ -482,15 +482,14 @@ export function selectJournal(agentDir: string, settings: Settings): StorageSele
 	const journal = journalSetting(settings);
 	const value = journal ?? settings.storage;
 	if (value === undefined || selectsDefaultJournalStore(journal))
-		return { kind: "sharded", dir: defaultJournalStoreDirectory(agentDir) };
-	const selection = selectStorage(
-		value,
-		"settings",
-		journal !== undefined ? "workflows.journal" : "storage",
-		journal !== undefined ? defaultSessionDatabasePath(agentDir) : defaultSharedStoragePath(agentDir),
+		return { kind: "sharded", dir: defaultJournalStoreDirectory(agentDir, settings) };
+	const selection = selectStorage(value, "settings", journal !== undefined ? "workflows.journal" : "storage", () =>
+		journal !== undefined
+			? defaultSessionDatabasePath(agentDir, settings)
+			: defaultSharedStoragePath(agentDir, settings),
 	);
 	return selection.kind === "sqlite" && !isAbsolute(selection.path)
-		? { ...selection, path: join(storageHomeDir(agentDir), selection.path) }
+		? { ...selection, path: join(storageHomeDir(agentDir, settings), selection.path) }
 		: selection;
 }
 
@@ -518,16 +517,13 @@ export function selectIntercomStorage(
 	const processSelection = processSharedStorageSelection();
 	const value = sharedSelection(globalStorage, processSelection);
 	if (value === undefined) return undefined;
-	const storageHome = storageHomeDir(agentDir);
-	const selection = selectStorage(
-		value,
-		processSelection === undefined ? "settings" : "env",
-		"storage",
-		defaultSharedStoragePath(agentDir),
+	const settings = globalStorage === undefined ? undefined : { storage: globalStorage };
+	const selection = selectStorage(value, processSelection === undefined ? "settings" : "env", "storage", () =>
+		defaultSharedStoragePath(agentDir, settings),
 	);
 	if (selection.kind === "memory" || (selection.kind === "sqlite" && selection.path === ":memory:")) return undefined;
 	return selection.kind === "sqlite" && !isAbsolute(selection.path)
-		? { ...selection, path: resolvePath(selection.path, storageHome) }
+		? { ...selection, path: resolvePath(selection.path, storageHomeDir(agentDir, settings)) }
 		: selection;
 }
 
@@ -564,7 +560,7 @@ export async function collectStorageStatus(options: StorageStatusOptions): Promi
 	const project = manager.getProjectSettings();
 	const merged = manager.getSettings();
 	const notes: string[] = [];
-	const adoptionNotice = takeStorageAdoptionNotice(agentDir);
+	const adoptionNotice = takeStorageAdoptionNotice(agentDir, merged);
 	if (adoptionNotice !== undefined) notes.push(adoptionNotice);
 	const unappliedProject = projectTrusted
 		? {}

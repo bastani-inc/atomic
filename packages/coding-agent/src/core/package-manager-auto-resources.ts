@@ -21,6 +21,8 @@ import type {
 } from "./package-manager-types.ts";
 import type { SettingsManager } from "./settings-manager.ts";
 
+const USER_WORKFLOW_STORE_DIRS: ReadonlySet<string> = new Set(["journal", "pool", "runs"]);
+
 export async function collectProjectLocalResources(
 	sourceRoot: string,
 	accumulator: ResourceAccumulator,
@@ -224,7 +226,7 @@ export async function addAutoDiscoveredResources(
 		);
 		addResources(
 			"workflows",
-			await collectResourceFiles(join(configDir, "workflows"), "workflows"),
+			await collectResourceFiles(join(configDir, "workflows"), "workflows", USER_WORKFLOW_STORE_DIRS),
 			metadata,
 			userOverrides.workflows,
 			configDir,

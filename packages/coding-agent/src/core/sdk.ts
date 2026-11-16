@@ -347,16 +347,19 @@ async function constructAgentSession(
 	await modelRuntime.refresh({ allowNetwork: false });
 
 	const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);
+	const effectiveSettings = settingsManager.getSettings();
 	let sessionManager = suppliedSession;
 	if (!sessionManager) {
 		const sessionStore =
 			options.sessionStore ??
 			(options.storage === undefined
 				? undefined
-				: selectStorage(options.storage, "sdk", "storage", defaultSessionDatabasePath(agentDir)));
+				: selectStorage(options.storage, "sdk", "storage", () =>
+						defaultSessionDatabasePath(agentDir, effectiveSettings),
+					));
 		const store = await resolveSessionStore(cwd, {
 			agentDir,
-			settings: settingsManager.getSettings(),
+			settings: effectiveSettings,
 			sessionStore,
 		});
 		if (store !== options.sessionStore) acquisition.store = store;

@@ -870,12 +870,13 @@ export function leaveTeam(options: LeaveTeamOptions = {}): Promise<TeamLeaveResu
 	return leaveTeamWith(options);
 }
 
-function isLocalDefault(selection: StorageSelection, agentDir: string): boolean {
-	if (selection.kind === "sharded") return resolve(selection.dir) === resolve(defaultJournalStoreDirectory(agentDir));
+function isLocalDefault(selection: StorageSelection, agentDir: string, settings?: Settings): boolean {
+	if (selection.kind === "sharded")
+		return resolve(selection.dir) === resolve(defaultJournalStoreDirectory(agentDir, settings));
 	return (
 		selection.kind === "sqlite" &&
 		!selection.prefix &&
-		resolve(selection.path) === resolve(defaultSessionDatabasePath(agentDir))
+		resolve(selection.path) === resolve(defaultSessionDatabasePath(agentDir, settings))
 	);
 }
 
@@ -905,9 +906,9 @@ export function selectTeamProfile(options: TeamProfileOptions = {}): TeamProfile
 	const shared = intercom?.kind === "adapter" ? storageSelectionKey(intercom, agentDir) : undefined;
 	const sharesJournal = shared !== undefined && storageSelectionKey(journal, agentDir) === shared;
 	const profile: TeamProfileName =
-		isLocalDefault(sessions, agentDir) && isLocalDefault(journal, agentDir) && intercom === undefined
+		isLocalDefault(sessions, agentDir, merged) && isLocalDefault(journal, agentDir, merged) && intercom === undefined
 			? "individual"
-			: sharesJournal && isLocalDefault(sessions, agentDir)
+			: sharesJournal && isLocalDefault(sessions, agentDir, merged)
 				? "team"
 				: sharesJournal && storageSelectionKey(sessions, agentDir) === shared
 					? "ci"

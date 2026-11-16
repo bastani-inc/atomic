@@ -1150,7 +1150,8 @@ export async function main(argv: string[], options?: MainOptions) {
 	const scopedModels = [...session.scopedModels];
 	time("resolveModelScope");
 	const storageWarning = await sharedStorageWarning;
-	const storageAdoptionNotice = engineEnv.child === "1" ? undefined : takeStorageAdoptionNotice(agentDir);
+	const storageAdoptionNotice =
+		engineEnv.child === "1" ? undefined : takeStorageAdoptionNotice(agentDir, startupSettingsManager.getSettings());
 	const startupDiagnostics = deduplicateDiagnostics([
 		...startupSettingsDiagnostics,
 		...startupResumeDiagnostics(appMode, worktreeRestoreDiagnostics, engineEnv.child === "1"),

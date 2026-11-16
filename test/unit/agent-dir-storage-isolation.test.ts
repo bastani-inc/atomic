@@ -9,11 +9,20 @@ import {
 	storageHomeDir,
 } from "@bastani/atomic/storage";
 import { afterEach, beforeEach, test, vi } from "vitest";
+import { DefaultPackageManager } from "../../packages/coding-agent/src/core/package-manager.js";
 import { resolveSessionStore, selectSessionStorage } from "../../packages/coding-agent/src/core/session-storage.js";
-import { resetStorageHomeCacheForTests } from "../../packages/coding-agent/src/core/storage/file-identity.js";
-import { selectProcessStorage } from "../../packages/coding-agent/src/core/storage/process-selection.js";
+import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
+import {
+	isSameFile,
+	resetStorageHomeCacheForTests,
+} from "../../packages/coding-agent/src/core/storage/file-identity.js";
+import {
+	selectProcessStorage,
+	validateProcessStorage,
+} from "../../packages/coding-agent/src/core/storage/process-selection.js";
 import { collectStorageStatus } from "../../packages/coding-agent/src/core/storage/storage-status.js";
 import { buildSessionMemoryGuideline } from "../../packages/coding-agent/src/core/system-prompt.js";
+import { ProjectTrustStore } from "../../packages/coding-agent/src/core/trust-manager.js";
 import { atomicHome } from "../../packages/coding-agent/src/core/workspace/resolve.js";
 import { resolveBrokerStateSource } from "../../packages/intercom/broker/open-broker-state.js";
 import { resolveRunJournal, selectRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
@@ -561,6 +570,8 @@ test("workspace shared repository stores and worktrees follow the isolated stora
 	const legacyParent = join(root, "ws-legacy");
 	const legacyA1 = join(legacyParent, "a1");
 	const legacyA2 = join(legacyParent, "a2");
+	mkdirSync(join(legacyParent, "workflows"), { recursive: true });
+	writeFileSync(join(legacyParent, "workflows", "journal.sqlite"), "");
 	mkdirSync(join(legacyParent, "repos"), { recursive: true });
 	mkdirSync(legacyA1, { recursive: true });
 	mkdirSync(legacyA2, { recursive: true });
@@ -602,4 +613,252 @@ test("legacy worker host-id adoption and storage-home adoption select the same s
 	assert.equal(storageHomeDir(b1), b1);
 	assert.equal(storageHomeDir(b2ClaimedHostId), parent2);
 	assert.equal(poolHostId(b2ClaimedHostId), legacy2);
+});
+
+test("user workflow resource discovery skips top-level journal, pool, and runs store directories (#5242)", async () => {
+	const agentDir = join(root, "resource-agent");
+	const workflowsDir = join(agentDir, "workflows");
+	const flowPath = join(workflowsDir, "flow.ts");
+	mkdirSync(join(workflowsDir, "runs", "run-1"), { recursive: true });
+	mkdirSync(join(workflowsDir, "pool", "worker-logs"), { recursive: true });
+	mkdirSync(join(workflowsDir, "journal"), { recursive: true });
+	writeFileSync(flowPath, "export default {};\n");
+	writeFileSync(join(workflowsDir, "runs", "run-1", "notes.mjs"), "export default {};\n");
+	writeFileSync(join(workflowsDir, "runs", "run-1", "helper.ts"), "export const x = 1;\n");
+	writeFileSync(join(workflowsDir, "pool", "worker-logs", "x.js"), "export default {};\n");
+	writeFileSync(join(workflowsDir, "journal", "x.ts"), "export default {};\n");
+
+	const manager = new DefaultPackageManager({
+		cwd: project,
+		agentDir,
+		settingsManager: SettingsManager.inMemory(),
+	});
+	const resolved = await manager.resolve();
+	assert.deepEqual(
+		resolved.workflows.map((entry) => entry.path),
+		[flowPath],
+	);
+});
+
+test("generic parent directories such as repos, worktrees, unselected storage.sqlite, or bare workflows/runs and workflows/pool do not trigger legacy adoption (#5242)", async () => {
+	const genericParent = join(root, "generic-parent");
+	const a1 = join(genericParent, "a1");
+	mkdirSync(join(genericParent, "repos", "x", ".git"), { recursive: true });
+	mkdirSync(join(genericParent, "worktrees", "y"), { recursive: true });
+	mkdirSync(join(genericParent, "workflows", "runs", "run-1"), { recursive: true });
+	mkdirSync(join(genericParent, "workflows", "pool", "logs"), { recursive: true });
+	writeFileSync(join(genericParent, "storage.sqlite"), "");
+	writeFileSync(join(genericParent, "workflows", "runs", "run-1", "out.txt"), "artifact\n");
+	writeFileSync(join(genericParent, "workflows", "pool", "logs", "worker.log"), "log\n");
+	mkdirSync(a1, { recursive: true });
+
+	assert.equal(storageHomeDir(a1), a1);
+	assert.equal(existsSync(join(genericParent, "workflows", ".adopted-by")), false);
+	const status = await collectStorageStatus({ cwd: project, agentDir: a1, probe: false });
+	assert.deepEqual(status.notes, []);
+
+	const sharedParent = join(root, "empty-shared-parent");
+	const s1 = join(sharedParent, "s1");
+	const s2 = join(sharedParent, "s2");
+	mkdirSync(s1, { recursive: true });
+	mkdirSync(s2, { recursive: true });
+	writeFileSync(join(sharedParent, "storage.sqlite"), "");
+	assert.deepEqual(selectSessionStorage(project, { agentDir: s1, settings: { storage: {} } }), {
+		kind: "sqlite",
+		path: join(sharedParent, "storage.sqlite"),
+	});
+	assert.deepEqual(selectSessionStorage(project, { agentDir: s2, settings: { storage: {} } }), {
+		kind: "sqlite",
+		path: join(s2, "storage.sqlite"),
+	});
+});
+
+test("adoption honors effective merged settings from SDK in-memory settings and trusted project settings without pre-settling during process validation (#5242)", async () => {
+	const sdkParent = join(root, "sdk-settings-parent");
+	const a1 = join(sdkParent, "a1");
+	const a2 = join(sdkParent, "a2");
+	mkdirSync(a1, { recursive: true });
+	mkdirSync(a2, { recursive: true });
+	const seededSdkStore = await resolveSessionStore(project, {
+		agentDir: a1,
+		sessionStore: { kind: "sqlite", path: join(sdkParent, "team.sqlite") },
+	});
+	try {
+		await seededSdkStore.create(
+			{
+				id: "66666666-6666-4666-8666-666666666666",
+				version: 4,
+				createdAt: "2026-11-16T00:00:00.000Z",
+				cwd: project,
+			},
+			[],
+		);
+	} finally {
+		await seededSdkStore.close();
+	}
+	resetStorageHomeCacheForTests();
+
+	const inMemorySettings = { storage: { path: "team.sqlite" } };
+	const a1Store = await resolveSessionStore(project, { agentDir: a1, settings: inMemorySettings });
+	const a2Store = await resolveSessionStore(project, { agentDir: a2, settings: inMemorySettings });
+	try {
+		assert.equal(
+			(await a1Store.readHeader("66666666-6666-4666-8666-666666666666"))?.id,
+			"66666666-6666-4666-8666-666666666666",
+		);
+		assert.equal(await a2Store.readHeader("66666666-6666-4666-8666-666666666666"), undefined);
+	} finally {
+		await a1Store.close();
+		await a2Store.close();
+	}
+
+	const projParent = join(root, "proj-settings-parent");
+	const b1 = join(projParent, "b1");
+	const b2 = join(projParent, "b2");
+	const trustedProject = join(root, "trusted-project");
+	mkdirSync(b1, { recursive: true });
+	mkdirSync(b2, { recursive: true });
+	mkdirSync(join(trustedProject, ".atomic"), { recursive: true });
+	writeFileSync(
+		join(trustedProject, ".atomic", "settings.json"),
+		JSON.stringify({ storage: { path: "team.sqlite" } }),
+	);
+	new ProjectTrustStore(b1).set(trustedProject, true);
+	new ProjectTrustStore(b2).set(trustedProject, true);
+
+	const seededProjStore = await resolveSessionStore(trustedProject, {
+		agentDir: b1,
+		sessionStore: { kind: "sqlite", path: join(projParent, "team.sqlite") },
+	});
+	try {
+		await seededProjStore.create(
+			{
+				id: "77777777-7777-4777-8777-777777777777",
+				version: 4,
+				createdAt: "2026-11-16T00:00:00.000Z",
+				cwd: trustedProject,
+			},
+			[],
+		);
+	} finally {
+		await seededProjStore.close();
+	}
+	resetStorageHomeCacheForTests();
+
+	const b1Status = await collectStorageStatus({ cwd: trustedProject, agentDir: b1, probe: true });
+	assert.equal(
+		b1Status.domains.find((entry) => entry.domain === "sessions")?.selection,
+		`SQLite ${join(projParent, "team.sqlite")}`,
+	);
+	assert.ok(b1Status.notes.some((note) => /Adopted existing storage/.test(note)));
+
+	const b1Store = await resolveSessionStore(trustedProject, { agentDir: b1 });
+	const b2Store = await resolveSessionStore(trustedProject, { agentDir: b2 });
+	try {
+		assert.equal(
+			(await b1Store.readHeader("77777777-7777-4777-8777-777777777777"))?.id,
+			"77777777-7777-4777-8777-777777777777",
+		);
+		assert.equal(await b2Store.readHeader("77777777-7777-4777-8777-777777777777"), undefined);
+	} finally {
+		await b1Store.close();
+		await b2Store.close();
+	}
+
+	const journalParent = join(root, "journal-settings-parent");
+	const c1 = join(journalParent, "c1");
+	const c2 = join(journalParent, "c2");
+	mkdirSync(c1, { recursive: true });
+	mkdirSync(c2, { recursive: true });
+	writeFileSync(join(journalParent, "j.sqlite"), "");
+	assert.deepEqual(selectRunJournal({ agentDir: c1, settings: { workflows: { journal: { path: "j.sqlite" } } } }), {
+		kind: "sqlite",
+		path: join(journalParent, "j.sqlite"),
+	});
+	assert.deepEqual(selectRunJournal({ agentDir: c2, settings: { workflows: { journal: { path: "j.sqlite" } } } }), {
+		kind: "sqlite",
+		path: join(c2, "j.sqlite"),
+	});
+
+	const valParent = join(root, "val-parent");
+	const d1 = join(valParent, "d1");
+	mkdirSync(d1, { recursive: true });
+	const seededValStore = await resolveSessionStore(project, {
+		agentDir: d1,
+		sessionStore: { kind: "sqlite", path: join(valParent, "team.sqlite") },
+	});
+	try {
+		await seededValStore.create(
+			{
+				id: "88888888-8888-4888-8888-888888888888",
+				version: 4,
+				createdAt: "2026-11-16T00:00:00.000Z",
+				cwd: project,
+			},
+			[],
+		);
+	} finally {
+		await seededValStore.close();
+	}
+	resetStorageHomeCacheForTests();
+
+	vi.stubEnv("ATOMIC_STORAGE", JSON.stringify({ path: join(root, "abs-env.sqlite") }));
+	validateProcessStorage(d1);
+	vi.stubEnv("ATOMIC_STORAGE", "");
+	const d1Store = await resolveSessionStore(project, { agentDir: d1, settings: inMemorySettings });
+	try {
+		assert.equal(
+			(await d1Store.readHeader("88888888-8888-4888-8888-888888888888"))?.id,
+			"88888888-8888-4888-8888-888888888888",
+		);
+	} finally {
+		await d1Store.close();
+	}
+});
+
+test("an adopted parent store and legacy pool host id stay adopted when the agent directory is reopened through a symlink alias (#5242, #5219)", async () => {
+	const parent = join(root, "alias-parent");
+	const a1 = join(parent, "a1");
+	const a2 = join(parent, "a2");
+	const legacyHostId = "99999999-aaaa-4bbb-8ccc-dddddddddddd";
+	mkdirSync(join(parent, "workflows", "pool"), { recursive: true });
+	writeFileSync(join(parent, "workflows", "journal.sqlite"), "");
+	writeFileSync(join(parent, "workflows", "pool", "host-id"), `${legacyHostId}\n`);
+	mkdirSync(a1, { recursive: true });
+	mkdirSync(a2, { recursive: true });
+
+	const initialStore = await resolveSessionStore(project, { agentDir: a1, settings: {} });
+	try {
+		await initialStore.create(
+			{
+				id: "99999999-9999-4999-8999-999999999999",
+				version: 4,
+				createdAt: "2026-11-16T00:00:00.000Z",
+				cwd: project,
+			},
+			[],
+		);
+	} finally {
+		await initialStore.close();
+	}
+	writeFileSync(join(parent, "workflows", "pool", "host-id.adopted-by"), `${a1}\n`);
+
+	const link = join(root, "parent-link");
+	symlinkSync(parent, link, "junction");
+	resetStorageHomeCacheForTests();
+
+	const aliasedA1 = join(link, "a1");
+	const aliasedA2 = join(link, "a2");
+	assert.equal(isSameFile(storageHomeDir(aliasedA1), parent), true);
+	const aliasedStore = await resolveSessionStore(project, { agentDir: aliasedA1, settings: {} });
+	try {
+		assert.equal(
+			(await aliasedStore.readHeader("99999999-9999-4999-8999-999999999999"))?.id,
+			"99999999-9999-4999-8999-999999999999",
+		);
+	} finally {
+		await aliasedStore.close();
+	}
+	assert.equal(storageHomeDir(aliasedA2), aliasedA2);
+	assert.equal(poolHostId(aliasedA1), legacyHostId);
 });

@@ -7,12 +7,21 @@ import { fileURLToPath } from "node:url";
 const CONFIG_DIR_NAME = ".atomic";
 const ENV_AGENT_DIR = "ATOMIC_CODING_AGENT_DIR";
 const LEGACY_ENV_AGENT_DIR = "PI_CODING_AGENT_DIR";
-const WORKFLOW_STORE_ENTRIES = ["journal.sqlite", "journal", "pool", "runs"] as const;
-const HOME_STORE_ENTRIES = ["storage.sqlite", "repos", "worktrees"] as const;
+const ATOMIC_STORE_FILES = [
+	join("workflows", "journal.sqlite"),
+	join("workflows", "journal", "catalog.sqlite"),
+	join("workflows", "pool", "host-id"),
+] as const;
 const ADOPTION_CLAIM_FILE = ".adopted-by";
 const ADOPTION_NOTICE_SUFFIX = ".notified";
 const CLI_SELECTION = Symbol.for("@bastani/atomic/storage/cli-selection");
 const STORAGE_ENV_NAMES = ["ATOMIC_STORAGE", "ATOMIC_SESSIONS_STORAGE", "ATOMIC_WORKFLOWS_JOURNAL"] as const;
+
+export interface StorageHomeSettings {
+	readonly storage?: unknown;
+	readonly sessions?: { readonly storage?: unknown } | null;
+	readonly workflows?: { readonly journal?: unknown } | unknown[] | null;
+}
 
 interface SettledStorageHome {
 	readonly home: string;
@@ -164,8 +173,32 @@ function normalizeRelativeTarget(value: unknown): string | undefined {
 	return value;
 }
 
-function pushSelectionTargets(targets: Set<string>, selection: unknown): void {
+function selectsDefaultSharedStorage(selection: unknown): boolean {
+	if (selection === null || typeof selection !== "object" || Array.isArray(selection)) return false;
+	const record = selection as {
+		readonly path?: unknown;
+		readonly dir?: unknown;
+		readonly memory?: unknown;
+		readonly adapter?: unknown;
+		readonly database?: unknown;
+	};
+	if (
+		record.dir !== undefined ||
+		record.memory === true ||
+		record.adapter !== undefined ||
+		record.database !== undefined
+	) {
+		return false;
+	}
+	return record.path === undefined || record.path === "";
+}
+
+function pushSelectionTargets(targets: Set<string>, selection: unknown, isShared = false): void {
 	if (selection === null || typeof selection !== "object" || Array.isArray(selection)) return;
+	if (isShared && selectsDefaultSharedStorage(selection)) {
+		targets.add("storage.sqlite");
+		return;
+	}
 	const record = selection as { readonly path?: unknown; readonly dir?: unknown };
 	const pathTarget = normalizeRelativeTarget(record.path);
 	if (pathTarget !== undefined) targets.add(pathTarget);
@@ -173,35 +206,38 @@ function pushSelectionTargets(targets: Set<string>, selection: unknown): void {
 	if (dirTarget !== undefined) targets.add(dirTarget);
 }
 
-function configuredRelativeTargets(agentPath: string): readonly string[] {
+function pushSettingsTargets(targets: Set<string>, settings: StorageHomeSettings | null | undefined): void {
+	if (settings === undefined || settings === null || typeof settings !== "object" || Array.isArray(settings)) return;
+	pushSelectionTargets(targets, settings.storage, true);
+	if (settings.sessions !== null && typeof settings.sessions === "object" && !Array.isArray(settings.sessions)) {
+		pushSelectionTargets(targets, settings.sessions.storage);
+	}
+	if (settings.workflows !== null && typeof settings.workflows === "object" && !Array.isArray(settings.workflows)) {
+		pushSelectionTargets(targets, settings.workflows.journal);
+	}
+}
+
+function configuredRelativeTargets(agentPath: string, settings?: StorageHomeSettings): readonly string[] {
 	const targets = new Set<string>();
 	const cli = (globalThis as Record<symbol, { readonly value?: unknown } | undefined>)[CLI_SELECTION];
-	if (cli !== undefined) pushSelectionTargets(targets, cli.value);
+	if (cli !== undefined) pushSelectionTargets(targets, cli.value, true);
 	for (const envName of STORAGE_ENV_NAMES) {
 		const raw = process.env[envName];
 		if (raw === undefined || raw === "") continue;
 		try {
-			pushSelectionTargets(targets, JSON.parse(raw));
+			pushSelectionTargets(targets, JSON.parse(raw), envName === "ATOMIC_STORAGE");
 		} catch {}
+	}
+	if (settings !== undefined) {
+		pushSettingsTargets(targets, settings);
+		return [...targets];
 	}
 	const settingsPath = join(agentPath, "settings.json");
 	if (existsSync(settingsPath)) {
 		try {
 			const raw = readFileSync(settingsPath, "utf8");
-			const parsed = JSON.parse(raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw) as {
-				readonly storage?: unknown;
-				readonly sessions?: { readonly storage?: unknown } | null;
-				readonly workflows?: { readonly journal?: unknown } | unknown[] | null;
-			} | null;
-			if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
-				pushSelectionTargets(targets, parsed.storage);
-				if (parsed.sessions !== null && typeof parsed.sessions === "object" && !Array.isArray(parsed.sessions)) {
-					pushSelectionTargets(targets, parsed.sessions.storage);
-				}
-				if (parsed.workflows !== null && typeof parsed.workflows === "object" && !Array.isArray(parsed.workflows)) {
-					pushSelectionTargets(targets, parsed.workflows.journal);
-				}
-			}
+			const parsed = JSON.parse(raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw) as StorageHomeSettings | null;
+			pushSettingsTargets(targets, parsed);
 		} catch {}
 	}
 	return [...targets];
@@ -215,17 +251,8 @@ function isDirectory(path: string): boolean {
 	}
 }
 
-function hasWorkflowStoreEntries(workflowsDir: string): boolean {
-	for (const entry of WORKFLOW_STORE_ENTRIES) {
-		if (existsSync(join(workflowsDir, entry))) return true;
-	}
-	return false;
-}
-
 function hasOwnStoreEntries(agentPath: string, relativeTargets: readonly string[]): boolean {
-	const workflowsDir = join(agentPath, "workflows");
-	if (isDirectory(workflowsDir) && hasWorkflowStoreEntries(workflowsDir)) return true;
-	for (const entry of HOME_STORE_ENTRIES) {
+	for (const entry of ATOMIC_STORE_FILES) {
 		if (existsSync(join(agentPath, entry))) return true;
 	}
 	for (const target of relativeTargets) {
@@ -239,15 +266,12 @@ function hasParentStoreEntries(
 	parent: string,
 	agentPath: string,
 	parentWorkflows: string,
-	parentWorkflowsIsDir: boolean,
 	relativeTargets: readonly string[],
 ): boolean {
-	if (parentWorkflowsIsDir && !pathsEqual(parentWorkflows, agentPath) && hasWorkflowStoreEntries(parentWorkflows)) {
-		return true;
-	}
-	for (const entry of HOME_STORE_ENTRIES) {
-		const candidate = join(parent, entry);
-		if (!pathsEqual(candidate, agentPath) && existsSync(candidate)) return true;
+	if (!pathsEqual(parentWorkflows, agentPath)) {
+		for (const entry of ATOMIC_STORE_FILES) {
+			if (existsSync(join(parent, entry))) return true;
+		}
 	}
 	for (const target of relativeTargets) {
 		const candidate = resolve(parent, target);
@@ -262,7 +286,7 @@ function recordSettledStorageHome(fastKey: string, cacheKey: string, settled: Se
 	return settled;
 }
 
-function resolveStorageHomeEntry(agentDir?: string): SettledStorageHome {
+function resolveStorageHomeEntry(agentDir?: string, settings?: StorageHomeSettings): SettledStorageHome {
 	const rawHome = getHomeDir();
 	const rawAgentDir = agentDir ?? resolveConfiguredAgentDir(rawHome);
 	const fastKey = isAbsolute(rawAgentDir)
@@ -291,7 +315,7 @@ function resolveStorageHomeEntry(agentDir?: string): SettledStorageHome {
 		return recordSettledStorageHome(fastKey, cacheKey, createStorageHomeEntry(agentPath));
 	}
 
-	const relativeTargets = configuredRelativeTargets(agentPath);
+	const relativeTargets = configuredRelativeTargets(agentPath, settings);
 	if (hasOwnStoreEntries(agentPath, relativeTargets)) {
 		return recordSettledStorageHome(fastKey, cacheKey, createStorageHomeEntry(agentPath));
 	}
@@ -299,20 +323,20 @@ function resolveStorageHomeEntry(agentDir?: string): SettledStorageHome {
 	const parentWorkflows = join(parent, "workflows");
 	const parentWorkflowsIsDir = isDirectory(parentWorkflows);
 	const claim = join(parentWorkflows, ADOPTION_CLAIM_FILE);
-	if (parentWorkflowsIsDir) {
+	if (parentWorkflowsIsDir && !pathsEqual(parentWorkflows, agentPath)) {
 		const existingOwner = readClaimFile(claim);
 		if (existingOwner !== undefined) {
 			return recordSettledStorageHome(
 				fastKey,
 				cacheKey,
-				pathsEqual(existingOwner, agentPath)
+				sameDirectory(existingOwner, agentPath)
 					? createStorageHomeEntry(parent, claim)
 					: createStorageHomeEntry(agentPath),
 			);
 		}
 	}
 
-	if (!hasParentStoreEntries(parent, agentPath, parentWorkflows, parentWorkflowsIsDir, relativeTargets)) {
+	if (!hasParentStoreEntries(parent, agentPath, parentWorkflows, relativeTargets)) {
 		return recordSettledStorageHome(fastKey, cacheKey, createStorageHomeEntry(agentPath));
 	}
 
@@ -327,36 +351,36 @@ function resolveStorageHomeEntry(agentDir?: string): SettledStorageHome {
 	if (!parentWorkflowsIsDir) mkdirSync(parentWorkflows, { recursive: true });
 	claimFileAtomically(claim, `${preferredOwner}\n`);
 	const winner = readClaimFile(claim);
-	if (winner !== undefined && pathsEqual(winner, agentPath)) {
+	if (winner !== undefined && sameDirectory(winner, agentPath)) {
 		return recordSettledStorageHome(fastKey, cacheKey, createStorageHomeEntry(parent, claim));
 	}
 	return recordSettledStorageHome(fastKey, cacheKey, createStorageHomeEntry(agentPath));
 }
 
-export function storageHomeDir(agentDir?: string): string {
-	return resolveStorageHomeEntry(agentDir).home;
+export function storageHomeDir(agentDir?: string, settings?: StorageHomeSettings): string {
+	return resolveStorageHomeEntry(agentDir, settings).home;
 }
 
-export function workflowsStorageDir(agentDir?: string): string {
-	return resolveStorageHomeEntry(agentDir).workflowsDir;
+export function workflowsStorageDir(agentDir?: string, settings?: StorageHomeSettings): string {
+	return resolveStorageHomeEntry(agentDir, settings).workflowsDir;
 }
 
-export function defaultJournalStoreDirectory(agentDir: string): string {
-	return resolveStorageHomeEntry(agentDir).journalStoreDir;
+export function defaultJournalStoreDirectory(agentDir: string, settings?: StorageHomeSettings): string {
+	return resolveStorageHomeEntry(agentDir, settings).journalStoreDir;
 }
 
-export function defaultSessionDatabasePath(agentDir?: string): string {
-	return resolveStorageHomeEntry(agentDir).sessionDatabasePath;
+export function defaultSessionDatabasePath(agentDir?: string, settings?: StorageHomeSettings): string {
+	return resolveStorageHomeEntry(agentDir, settings).sessionDatabasePath;
 }
 
-export function defaultSharedStoragePath(agentDir?: string): string {
-	return resolveStorageHomeEntry(agentDir).sharedStoragePath;
+export function defaultSharedStoragePath(agentDir?: string, settings?: StorageHomeSettings): string {
+	return resolveStorageHomeEntry(agentDir, settings).sharedStoragePath;
 }
 
-export function takeStorageAdoptionNotice(agentDir?: string): string | undefined {
+export function takeStorageAdoptionNotice(agentDir?: string, settings?: StorageHomeSettings): string | undefined {
 	const rawHome = getHomeDir();
 	const targetAgentDir = normalizeAgentDirPath(agentDir ?? resolveConfiguredAgentDir(rawHome));
-	const entry = resolveStorageHomeEntry(targetAgentDir);
+	const entry = resolveStorageHomeEntry(targetAgentDir, settings);
 	if (entry.adoptedClaim === undefined) return undefined;
 	const noticeFile = `${entry.adoptedClaim}${ADOPTION_NOTICE_SUFFIX}`;
 	if (existsSync(noticeFile)) return undefined;

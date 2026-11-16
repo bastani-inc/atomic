@@ -60,13 +60,12 @@ function choose(
 	value: DomainSelection,
 	source: "cli" | "env",
 	field: string,
-	agentDir: string,
-	defaultPath: string,
+	baseDir: () => string,
+	defaultPath: () => string,
 ): ProcessStorageChoice {
-	const storageHome = storageHomeDir(agentDir);
 	const resolve = (path: string): string => {
 		try {
-			return resolvePath(path, storageHome);
+			return resolvePath(path, baseDir());
 		} catch {
 			throw new StorageConfigError(source, field, "invalid-path");
 		}
@@ -111,7 +110,11 @@ export function setCliStorageSelection(argument: StorageFlagArgument | undefined
 }
 
 /** Every set storage variable, parsed and checked even when another selection outranks it. */
-function environmentChoices(agentDir: string) {
+function environmentChoices(agentDir: string, settleStorageHome = true) {
+	const baseDir = () => (settleStorageHome ? storageHomeDir(agentDir) : agentDir);
+	const domainDefault = () => (settleStorageHome ? defaultSessionDatabasePath(agentDir) : agentDir);
+	const sharedDefault = () => (settleStorageHome ? defaultSharedStoragePath(agentDir) : agentDir);
+	const journalDefault = () => (settleStorageHome ? defaultJournalStoreDirectory(agentDir) : agentDir);
 	const read = (
 		field: string,
 		schema: typeof SessionStorageSelectionSchema | typeof StorageSelectionSchema,
@@ -121,23 +124,21 @@ function environmentChoices(agentDir: string) {
 		if (text === undefined) return undefined;
 		const value = parseSelection(text, schema, "env", field);
 		if (field === WORKFLOWS_JOURNAL_ENV && !("dir" in value) && selectsDefaultJournalStore(value))
-			return { selection: { kind: "sharded", dir: defaultJournalStoreDirectory(agentDir) }, source: "env", field };
-		return choose(value, "env", field, agentDir, defaultPath());
+			return { selection: { kind: "sharded", dir: journalDefault() }, source: "env", field };
+		return choose(value, "env", field, baseDir, defaultPath);
 	};
-	const domainDefault = () => defaultSessionDatabasePath(agentDir);
-	const sharedDefault = () => defaultSharedStoragePath(agentDir);
 	const team = environmentTeamProfile();
 	return {
 		sessions: read(SESSIONS_STORAGE_ENV, SessionStorageSelectionSchema, domainDefault),
 		journal: read(WORKFLOWS_JOURNAL_ENV, StorageSelectionSchema, domainDefault),
 		shared: read(STORAGE_ENV, StorageSelectionSchema, sharedDefault),
-		team: team === undefined ? undefined : choose(team, "env", TEAM_PROFILE_ENV, agentDir, sharedDefault()),
+		team: team === undefined ? undefined : choose(team, "env", TEAM_PROFILE_ENV, baseDir, sharedDefault),
 	};
 }
 
 /** Check every set storage variable, whether or not any selection uses it. */
 export function validateProcessStorage(agentDir: string): void {
-	environmentChoices(agentDir);
+	environmentChoices(agentDir, false);
 }
 
 /**
@@ -159,7 +160,13 @@ export function selectProcessStorage(
 		if (legacy !== undefined) {
 			throw new StorageConfigError("cli", `${cli.field}, ${legacyField}`, "conflicting-overrides");
 		}
-		return choose(cli.value, "cli", cli.field, agentDir, defaultSharedStoragePath(agentDir));
+		return choose(
+			cli.value,
+			"cli",
+			cli.field,
+			() => storageHomeDir(agentDir),
+			() => defaultSharedStoragePath(agentDir),
+		);
 	}
 	const domainField = domain === "sessions" ? SESSIONS_STORAGE_ENV : WORKFLOWS_JOURNAL_ENV;
 	const domainChoice = domain === "sessions" ? environment.sessions : environment.journal;

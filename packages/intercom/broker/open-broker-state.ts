@@ -52,12 +52,16 @@ export type BrokerStateSource =
 	| { readonly status: "off"; readonly reason: BrokerStateOffReason }
 	| { readonly status: "shared"; readonly source: SharedDatabaseSource };
 
-function resolveSettingsPath(path: string, agentDir: string): string {
+function resolveSettingsPath(
+	path: string,
+	agentDir: string,
+	storage: StorageSettingsSelection | undefined,
+): string {
 	if (path === "~") return homedir();
 	if (path.startsWith("~/") || (process.platform === "win32" && path.startsWith("~\\"))) {
 		return join(homedir(), path.slice(2));
 	}
-	return isAbsolute(path) ? path : resolve(storageHomeDir(agentDir), path);
+	return isAbsolute(path) ? path : resolve(storageHomeDir(agentDir, { storage }), path);
 }
 
 /**
@@ -69,11 +73,13 @@ export async function resolveBrokerStateSource(
 	agentDir: string,
 ): Promise<BrokerStateSource> {
 	if (value === undefined) return { status: "off", reason: "no-storage" };
-	const selection = selectStorage(value, "settings", "storage", defaultSharedStoragePath(agentDir));
+	const selection = selectStorage(value, "settings", "storage", () =>
+		defaultSharedStoragePath(agentDir, { storage: value }),
+	);
 	if (selection.kind === "memory") return { status: "off", reason: "memory" };
 	if (selection.kind === "sqlite") {
 		if (selection.path === "" || selection.path === ":memory:") return { status: "off", reason: "memory" };
-		const path = resolveSettingsPath(selection.path, agentDir);
+		const path = resolveSettingsPath(selection.path, agentDir, value);
 		validateStoragePrefix(selection.prefix);
 		return {
 			status: "shared",

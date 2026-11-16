@@ -24,6 +24,7 @@ export * from "./fenced-paths.js";
 export {
 	defaultSessionDatabasePath,
 	defaultSharedStoragePath,
+	type StorageHomeSettings,
 	storageHomeDir,
 	workflowsStorageDir,
 } from "./file-identity.js";

@@ -90,7 +90,9 @@ export function selectRunJournal(options: RunJournalResolutionOptions = {}): Sto
 			}
 			return journal;
 		}
-		return selectStorage(options.journal, "sdk", "journal", defaultSessionDatabasePath(agentDir));
+		return selectStorage(options.journal, "sdk", "journal", () =>
+			defaultSessionDatabasePath(agentDir, options.settings),
+		);
 	}
 	const processChoice = selectProcessStorage("journal", agentDir);
 	if (processChoice !== undefined) {
@@ -101,17 +103,16 @@ export function selectRunJournal(options: RunJournalResolutionOptions = {}): Sto
 	const journal = Array.isArray(workflows) ? undefined : workflows?.journal;
 	const value = journal !== undefined ? journal : options.settings?.storage;
 	if (value === undefined || selectsDefaultJournalStore(journal)) {
-		return { kind: "sharded", dir: defaultJournalStoreDirectory(agentDir) };
+		return { kind: "sharded", dir: defaultJournalStoreDirectory(agentDir, options.settings) };
 	}
-	const selection = selectStorage(
-		value,
-		"settings",
-		journal !== undefined ? "workflows.journal" : "storage",
-		journal !== undefined ? defaultSessionDatabasePath(agentDir) : defaultSharedStoragePath(agentDir),
+	const selection = selectStorage(value, "settings", journal !== undefined ? "workflows.journal" : "storage", () =>
+		journal !== undefined
+			? defaultSessionDatabasePath(agentDir, options.settings)
+			: defaultSharedStoragePath(agentDir, options.settings),
 	);
 	const resolved =
 		selection.kind === "sqlite" && !isAbsolute(selection.path)
-			? { ...selection, path: join(storageHomeDir(agentDir), selection.path) }
+			? { ...selection, path: join(storageHomeDir(agentDir, options.settings), selection.path) }
 			: selection;
 	origins.set(resolved, { source: "settings" });
 	return resolved;

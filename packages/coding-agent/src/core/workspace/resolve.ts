@@ -86,7 +86,7 @@ const LOCKFILES = [
 const pendingClones = new Map<string, Promise<void>>();
 const pendingWorktrees = new Map<string, Promise<void>>();
 
-/** Atomic's home directory (`~/.atomic`), the parent of the agent directory. */
+/** The agent directory's storage home: `~/.atomic` for the default agent directory, the custom agent directory itself, or the parent that directory adopted. */
 export function atomicHome(): string {
 	return storageHomeDir(getAgentDir());
 }

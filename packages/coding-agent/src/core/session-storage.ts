@@ -6,7 +6,12 @@ import { SettingsManager } from "./settings-manager.ts";
 import { SessionStorageSelectionSchema } from "./settings-schema.ts";
 import type { Settings } from "./settings-types.ts";
 import { StorageConfigError } from "./storage/errors.js";
-import { defaultSessionDatabasePath, defaultSharedStoragePath, storageHomeDir } from "./storage/file-identity.js";
+import {
+	defaultSessionDatabasePath,
+	defaultSharedStoragePath,
+	type StorageHomeSettings,
+	storageHomeDir,
+} from "./storage/file-identity.js";
 import { selectProcessStorage } from "./storage/process-selection.js";
 import { StorageProvider, type StorageSelection } from "./storage/provider.js";
 import { selectStorage } from "./storage/selection.js";
@@ -137,9 +142,9 @@ export function selectSessionStorage(
 		throw new StorageConfigError("settings", "sessions", "selection-object-required");
 	}
 	const value = settings.sessions?.storage !== undefined ? settings.sessions.storage : settings.storage;
-	if (value === undefined) return { kind: "sqlite", path: defaultSessionDatabasePath(agentDir) };
+	if (value === undefined) return { kind: "sqlite", path: defaultSessionDatabasePath(agentDir, settings) };
 	const field = settings.sessions?.storage !== undefined ? "sessions.storage" : "storage";
-	const selection = selectSessionSetting(value, field, agentDir);
+	const selection = selectSessionSetting(value, field, agentDir, settings);
 	sources.set(selection, { source: "settings", field });
 	return selection;
 }
@@ -153,20 +158,28 @@ export function selectSessionSetting(
 	value: NonNullable<NonNullable<Settings["sessions"]>["storage"]>,
 	field: "sessions.storage" | "storage",
 	agentDir: string,
+	settings?: StorageHomeSettings,
 ): StorageSelection {
 	if (!Value.Check(SessionStorageSelectionSchema, value) || (field === "storage" && "dir" in value)) {
 		throw new StorageConfigError("settings", field, "invalid-selection");
 	}
+	const effectiveSettings: StorageHomeSettings =
+		settings ?? (field === "storage" ? { storage: value } : { sessions: { storage: value } });
 	if ("dir" in value)
-		return { kind: "jsonl", dir: resolveStoragePath(value.dir, storageHomeDir(agentDir), "settings", field) };
-	const selection = selectStorage(
-		value,
-		"settings",
-		field,
-		field === "storage" ? defaultSharedStoragePath(agentDir) : defaultSessionDatabasePath(agentDir),
+		return {
+			kind: "jsonl",
+			dir: resolveStoragePath(value.dir, storageHomeDir(agentDir, effectiveSettings), "settings", field),
+		};
+	const selection = selectStorage(value, "settings", field, () =>
+		field === "storage"
+			? defaultSharedStoragePath(agentDir, effectiveSettings)
+			: defaultSessionDatabasePath(agentDir, effectiveSettings),
 	);
 	if (selection.kind === "sqlite" && !isAbsolute(selection.path)) {
-		return { ...selection, path: resolveStoragePath(selection.path, storageHomeDir(agentDir), "settings", field) };
+		return {
+			...selection,
+			path: resolveStoragePath(selection.path, storageHomeDir(agentDir, effectiveSettings), "settings", field),
+		};
 	}
 	return selection;
 }

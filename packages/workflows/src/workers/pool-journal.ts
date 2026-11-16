@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, linkSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { createChildProcessEnvironment } from "@bastani/atomic";
 import {
@@ -246,12 +246,29 @@ function readClaimPath(file: string): string | undefined {
 	}
 }
 
+function fileIdentity(path: string): string | undefined {
+	try {
+		const { dev, ino } = statSync(path, { bigint: true });
+		if (ino !== 0n) return `${dev}:${ino}`;
+		const real = realpathSync.native(path);
+		return `path:${process.platform === "win32" || process.platform === "darwin" ? real.toLowerCase() : real}`;
+	} catch {
+		return undefined;
+	}
+}
+
 function samePath(left: string, right: string): boolean {
 	const resolvedLeft = resolve(left);
 	const resolvedRight = resolve(right);
-	return process.platform === "win32"
-		? resolvedLeft.toLowerCase() === resolvedRight.toLowerCase()
-		: resolvedLeft === resolvedRight;
+	if (
+		process.platform === "win32"
+			? resolvedLeft.toLowerCase() === resolvedRight.toLowerCase()
+			: resolvedLeft === resolvedRight
+	) {
+		return true;
+	}
+	const identity = fileIdentity(left);
+	return identity !== undefined && identity === fileIdentity(right);
 }
 
 /**
