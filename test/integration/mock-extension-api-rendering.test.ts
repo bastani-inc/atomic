@@ -101,7 +101,11 @@ describe("MockExtensionAPI — slash command registration", () => {
 		);
 
 		const pause = (await cmd.options.getArgumentCompletions?.("pause -")) ?? [];
-		assert.ok(pause.some((c) => c.value === "pause -y "));
+		assert.ok(pause.some((c) => c.value === "pause --all "));
+		assert.equal(
+			pause.some((c) => c.label === "-y" || c.label === "--yes"),
+			false,
+		);
 
 		const quit = (await cmd.options.getArgumentCompletions?.("quit -")) ?? [];
 		assert.ok(quit.some((c) => c.value === "quit --all "));

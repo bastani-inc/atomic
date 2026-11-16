@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Breaking Changes
 
-- Removed `/workflow connect` and `/workflow attach`. `/workflows` opens the session's only run in its graph, or lists the runs, and `/workflows <run-id>` opens that run; Enter on a stage in the graph opens its chat. On a failed stage, Enter opens its failure detail; press `t` there for its chat. Launch, status and notice text now point to `/workflows`. Autocomplete offers `/workflows`, completes the session's run IDs as `/workflow connect` did, and omits both removed subcommands, including before workflow discovery finishes or when live completion is unavailable. The fallback also offers `/workflow fork` and `--from`. Completion no longer offers extra run IDs in stage arguments or repeats `--from`. Typing either removed command shows a one-line pointer and runs nothing. **Migration:** use `/workflows <run-id>` (or ↓ to the run in the agent panel) where you used `/workflow connect <run-id>`, and select the stage in that graph where you used `/workflow attach <run-id> <stage>` ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- Removed `/workflow connect` and `/workflow attach`. `/workflows` opens the session's only run in its graph, or lists the runs, and `/workflows <run-id>` opens that run; Enter on a stage in the graph opens its chat. On a failed stage, Enter opens its failure detail; press `t` there for its chat. Launch, status and notice text now point to `/workflows`. Autocomplete offers `/workflows`, completes the session's run IDs as `/workflow connect` did, and omits both removed subcommands, including before workflow discovery finishes or when live completion is unavailable. The fallback also offers `/workflow fork` and `--from`. Typing either removed command shows a one-line pointer and runs nothing. **Migration:** use `/workflows <run-id>` (or ↓ to the run in the agent panel) where you used `/workflow connect <run-id>`, and select the stage in that graph where you used `/workflow attach <run-id> <stage>` ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 
 ### Added
 
@@ -105,6 +105,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Fixed a pooled stage on a host that doesn't run its root keeping its Intercom inbox after its session failed to start: later messages to it were taken into the failed session instead of staying queued ([#5168](https://github.com/bastani-inc/atomic/issues/5168))
 - Fixed the workflow session picker showing no selected row when the selected run left the list and the list got shorter. The selection now moves to the nearest remaining run, so Enter acts on it without first moving the cursor.
 - Fixed `/workflow` commands whose arguments start after a tab or on a new line not being run ([#5192](https://github.com/bastani-inc/atomic/issues/5192))
+- `/workflow resume`, `/workflow pause` and `/workflow fork` completion no longer offers run IDs where a stage or message goes, and `fork` no longer offers `--from` twice ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 
 
 ## [0.9.86] - 2026-11-14

@@ -94,7 +94,11 @@ describe("getArgumentCompletions includes workflow names", () => {
 
 		const workflowCmd = commands.find((c) => c.name === "workflow");
 		const completions = workflowCmd!.options.getArgumentCompletions?.("pause -") ?? [];
-		assert.ok(completions.some((c) => c.value === "pause -y "));
+		assert.ok(completions.some((c) => c.value === "pause --all "));
+		assert.equal(
+			completions.some((c) => c.label === "-y" || c.label === "--yes"),
+			false,
+		);
 
 		const quitCompletions = workflowCmd!.options.getArgumentCompletions?.("quit -") ?? [];
 		assert.ok(quitCompletions.some((c) => c.value === "quit --all "));
@@ -122,7 +126,12 @@ describe("getArgumentCompletions includes workflow names", () => {
 		assert.equal(labels.includes("kill"), false);
 		assert.ok(labels.includes("pause"));
 		assert.equal(labels.includes("interrupt"), false);
-		assert.ok((getBundledWorkflowArgumentCompletions("pause -") ?? []).some((c) => c.value === "pause -y "));
+		const bundledPause = getBundledWorkflowArgumentCompletions("pause -") ?? [];
+		assert.ok(bundledPause.some((c) => c.value === "pause --all "));
+		assert.equal(
+			bundledPause.some((c) => c.label === "-y" || c.label === "--yes"),
+			false,
+		);
 
 		const workflowCommand = BUNDLED_EXTENSION_SLASH_COMMANDS.find((command) => command.name === "workflow");
 		assert.match(workflowCommand?.description ?? "", /quit/);

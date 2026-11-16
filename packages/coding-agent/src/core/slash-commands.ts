@@ -297,8 +297,6 @@ export function getBundledWorkflowArgumentCompletions(argumentPrefix: string): A
 		if (hasPositionalRunArgument(argumentPrefix)) return null;
 		return completeWorkflowToken(argumentPrefix, [
 			{ value: "--all ", label: "--all", description: "Pause all in-flight runs" },
-			{ value: "--yes ", label: "--yes", description: "Skip confirmation" },
-			{ value: "-y ", label: "-y", description: "Skip confirmation" },
 		]);
 	}
 	if (subcommand === "fork") {

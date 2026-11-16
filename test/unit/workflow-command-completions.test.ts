@@ -36,7 +36,7 @@ test.each(["resume", "pause"])("%s completes only the run argument, not the stag
 	if (command === "pause") {
 		assert.deepEqual(
 			complete("pause --")?.map((item) => item.value),
-			["pause --all ", "pause --yes "],
+			["pause --all "],
 		);
 	}
 });
@@ -68,4 +68,21 @@ test("fork offers one run argument and one --from flag, never run IDs as stages 
 	]) {
 		assert.equal(complete(partial), null, partial);
 	}
+});
+
+test("fork completes the run after --from and its stage (#5224)", () => {
+	const { id, complete } = completionFixture();
+	assert.deepEqual(
+		complete(`fork --from plan ${id.slice(0, 8)}`)?.map((item) => item.value),
+		[`fork --from plan ${id} `],
+	);
+	assert.deepEqual(
+		complete("fork --from plan ")?.map((item) => item.value),
+		[`fork --from plan ${id} `],
+	);
+	assert.deepEqual(
+		complete(`fork --from=plan ${id.slice(0, 8)}`)?.map((item) => item.value),
+		[`fork --from=plan ${id} `],
+	);
+	assert.equal(complete(`fork --from plan ${id} `), null);
 });

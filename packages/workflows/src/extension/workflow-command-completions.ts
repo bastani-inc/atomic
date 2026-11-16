@@ -85,16 +85,19 @@ export function workflowArgumentCompletions(
 		if (hasPositionalRunArgument(partial)) return null;
 		return completeToken(partial, [
 			{ value: "--all ", label: "--all", description: "Pause all in-flight runs" },
-			{ value: "--yes ", label: "--yes", description: "Skip confirmation" },
-			{ value: "-y ", label: "-y", description: "Skip confirmation" },
 			...runIdItems(activeStore),
 		]);
 	}
 	if (subcommand === "fork") {
-		if (parts.slice(1).some((token) => token === "--from" || token.startsWith("--from="))) return null;
+		const completed = partial.trimStart().split(/\s+/).slice(1, -1);
+		if (completed.at(-1) === "--from") return null;
+		const hasFrom = completed.some((token) => token === "--from" || token.startsWith("--from="));
+		const hasRun = completed.some((token, index) => !token.startsWith("-") && completed[index - 1] !== "--from");
 		return completeToken(partial, [
-			{ value: "--from ", label: "--from", description: "Dot path of the stage the fork re-runs from" },
-			...(hasPositionalRunArgument(partial) ? [] : runIdItems(activeStore)),
+			...(hasFrom
+				? []
+				: [{ value: "--from ", label: "--from", description: "Dot path of the stage the fork re-runs from" }]),
+			...(hasRun ? [] : runIdItems(activeStore)),
 		]);
 	}
 	if (subcommand === "quit") {

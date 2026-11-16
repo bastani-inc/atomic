@@ -71,7 +71,7 @@ test("bundled workflow fallback retains inspection, resume and run controls (#52
 		["res", ["resume "]],
 		["for", ["fork "]],
 		["fork -", ["fork --from "]],
-		["pause -", ["pause --all ", "pause --yes ", "pause -y "]],
+		["pause -", ["pause --all "]],
 		["quit -", ["quit --all "]],
 		["inputs fan", ["inputs fan-out-and-synthesize "]],
 	] as const) {
@@ -114,7 +114,7 @@ test.each(["/workflow pause a1b2c3d4 ", "/workflow pause a1b2c3d4 -", "/workflow
 	async (line) => {
 		assert.deepEqual(
 			(await suggest("/workflow pause --yes -"))?.items.map((item) => item.value),
-			["pause --yes --all ", "pause --yes --yes ", "pause --yes -y "],
+			["pause --yes --all "],
 		);
 		assert.equal(await suggest(line), null);
 	},
