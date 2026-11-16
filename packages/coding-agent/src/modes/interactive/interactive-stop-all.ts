@@ -46,7 +46,9 @@ export function createStopAllChord(
 		if (chordOpen) {
 			chordOpen = false;
 			if (!host.keybindings.matches(data, "app.agents.stopAll")) {
-				cancelPending();
+				// Another chord key starts the chord over; any other key calls a waiting stop-all off.
+				if (host.keybindings.matches(data, "app.agents.chord")) chordOpen = true;
+				else cancelPending();
 				return undefined;
 			}
 			if (!confirm.press("stop-all")) {
