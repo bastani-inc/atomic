@@ -144,33 +144,6 @@ export function brokerHostIdentity(sources: HostIdentitySources = systemSources(
 	return machineId === undefined ? undefined : `${machineId}/${session}`;
 }
 
-/** Milliseconds between the Windows file-time epoch (1601) and the Unix epoch. */
-const WINDOWS_FILE_TIME_EPOCH_MS = 11_644_473_600_000;
-
-/**
- * #5252: when process `pid` of this host started, in milliseconds since the epoch, so an earlier broker instance is told
- * apart from a later process the host gave its id; undefined where that cannot be read. Windows, which gives an exited
- * process's id to another within seconds when many start, is read with PowerShell. A process this one may not signal
- * belongs to another user, so it is no earlier instance of this user's broker: it counts as started now. Elsewhere ids
- * are handed out in sequence, and the start is not read.
- */
-export function processStartedAt(pid: number, sources: HostIdentitySources = systemSources()): number | undefined {
-	try {
-		process.kill(pid, 0);
-	} catch (error) {
-		return (error as NodeJS.ErrnoException).code === "EPERM" ? Date.now() : undefined;
-	}
-	if (sources.platform !== "win32" || !Number.isSafeInteger(pid) || pid <= 0) return undefined;
-	const output = hostCommandOutput(sources, "powershell", [
-		"-NoProfile",
-		"-NonInteractive",
-		"-Command",
-		`$p = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($p) { $p.StartTime.ToFileTimeUtc() }`,
-	]);
-	if (output === undefined || !/^[1-9]\d*$/.test(output)) return undefined;
-	return Number(BigInt(output) / 10_000n) - WINDOWS_FILE_TIME_EPOCH_MS;
-}
-
 /** Whether a process with this id runs here; one this process may not signal still runs. */
 export function isProcessAlive(pid: number): boolean {
 	try {

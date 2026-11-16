@@ -529,6 +529,8 @@ class IntercomBroker {
     this.sharedStorageSetting === undefined ? undefined : (request) => this.routeRemoteSend(request);
   private multiNode: MultiNodeRouter | undefined;
   private multiNodeStatus: "starting" | "on" | "off" | "unavailable" = "off";
+  /** #5252: multi-node routing starts once, when this broker first listens. */
+  private multiNodeStarted = false;
   /** Why multi-node routing is off or unavailable, for `broker_status` and the log. */
   private multiNodeReason: string | undefined = NO_SHARED_STORAGE_REASON;
   private multiNodeFirstAttempt: Promise<void> = Promise.resolve();
@@ -590,8 +592,7 @@ class IntercomBroker {
     writeFileSync(PID_PATH, String(process.pid));
     this.recordSocketPath();
     this.listen(1);
-    if (this.sharedStorageSetting !== undefined) this.startMultiNode(this.sharedStorageSetting);
-    else console.error(`Intercom multi-node routing is off: ${NO_SHARED_STORAGE_REASON}`);
+    if (this.sharedStorageSetting === undefined) console.error(`Intercom multi-node routing is off: ${NO_SHARED_STORAGE_REASON}`);
     process.on("SIGTERM", () => this.shutdown());
     process.on("SIGINT", () => this.shutdown());
   }
@@ -612,6 +613,11 @@ class IntercomBroker {
         this.boundSocketInode = inode;
       }
       this.releaseStartupLock();
+      // #5252: multi-node routing starts once this broker serves its socket, so its earlier instance is known not to.
+      if (this.sharedStorageSetting !== undefined && !this.multiNodeStarted) {
+        this.multiNodeStarted = true;
+        this.startMultiNode(this.sharedStorageSetting);
+      }
       // The pid file takes over from the start-up announcement the moment the broker answers.
       retractBrokerStartAnnouncement();
       console.log(`Intercom broker started (pid: ${process.pid})`);
@@ -3180,6 +3186,8 @@ class IntercomBroker {
               home: createHash("sha256").update(`${hostname()}\0${INTERCOM_DIR}`).digest("hex").slice(0, 32),
               // #5038: a restarted broker serves the same socket; its previous instance's leases are retired at start.
               instanceKey: SOCKET_PATH,
+              // #5252: started once this broker listens on that socket, which no live broker answered on as it started.
+              ownsInstanceSocket: true,
               host: {
                 sessions: this.sessions,
                 write: writeMessageIfOpen,
