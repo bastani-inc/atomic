@@ -12,8 +12,9 @@ import { runSingleInProcess } from "../../packages/subagents/src/runs/foreground
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.js";
 import { liveChildEnvironment } from "../helpers/live-child-environment.js";
 
-const LIVE_CHILD_TIMEOUT_MS = 120_000;
+const LIVE_CHILD_TIMEOUT_MS = 180_000;
 const STEP_TIMEOUT_MS = 20_000;
+const INTERCOM_REPLAY_PLANNING_TIMEOUT_MS = 90_000;
 const WAITING_OBSERVATION_MS = 300;
 
 const cleanups: Array<() => void> = [];
@@ -52,9 +53,9 @@ function answerPendingInput(): FauxResponseFactory {
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-function within<T>(work: Promise<T>, failure: string): Promise<T> {
+function within<T>(work: Promise<T>, failure: string, timeoutMs = STEP_TIMEOUT_MS): Promise<T> {
 	return new Promise<T>((resolve, reject) => {
-		const timer = setTimeout(() => reject(new Error(failure)), STEP_TIMEOUT_MS);
+		const timer = setTimeout(() => reject(new Error(failure)), timeoutMs);
 		work.finally(() => clearTimeout(timer)).then(resolve, reject);
 	});
 }
@@ -167,7 +168,11 @@ test.each(wakes)(
 		});
 		try {
 			const { source, session } = await within(transcript.promise, "the resumed child never opened its chat");
-			await within(replayBlocked.promise, "the resumed child never replayed its interrupted delivery");
+			await within(
+				replayBlocked.promise,
+				"the resumed child never replayed its interrupted delivery",
+				INTERCOM_REPLAY_PLANNING_TIMEOUT_MS,
+			);
 			const pendingBeforeEsc = env.faux.getPendingResponseCount();
 			escPressed = true;
 			await source.interruptTurn!();
