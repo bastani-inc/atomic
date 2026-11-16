@@ -1826,23 +1826,25 @@ test("a hold check whose read answers after the save cap has passed ends the rem
 });
 
 /**
- * Send and wait for the sender's outcome of that send, as the broker writes it: a flood of sends each polled for its
- * outcome took a timer tick apiece (about 16 ms on Windows) on top of the send itself.
+ * Run `act`, then resolve with `read()` once it is defined, checked as each frame is written to `session` rather than
+ * polled: a flood polled for its frames took a timer tick apiece (about 16 ms on Windows) on top of the work itself.
  */
-async function sendAndSettle(node: Node, from: BrokerConnectedSession, to: string, sent: Message) {
-	const socket = from.socket as FakeSocket;
-	const { promise, resolve, reject } = Promise.withResolvers<BrokerOutboundFrame>();
+async function whenWritten<T>(
+	session: BrokerConnectedSession,
+	read: () => T | undefined,
+	what: string,
+	act: () => void = () => {},
+): Promise<T> {
+	const socket = session.socket as FakeSocket;
+	const { promise, resolve, reject } = Promise.withResolvers<T>();
 	const check = () => {
-		const outcome = outcomeOf(from, sent.id);
-		if (outcome !== undefined) resolve(outcome);
+		const value = read();
+		if (value !== undefined) resolve(value);
 	};
-	const timer = setTimeout(
-		() => reject(new Error(`no outcome for ${sent.id} within ${CROSS_NODE_WAIT_MS} ms`)),
-		CROSS_NODE_WAIT_MS,
-	);
+	const timer = setTimeout(() => reject(new Error(`no ${what} within ${CROSS_NODE_WAIT_MS} ms`)), CROSS_NODE_WAIT_MS);
 	socket.written = check;
 	try {
-		node.send(from, to, sent);
+		act();
 		check();
 		return await promise;
 	} finally {
@@ -1850,6 +1852,25 @@ async function sendAndSettle(node: Node, from: BrokerConnectedSession, to: strin
 		socket.written = undefined;
 	}
 }
+
+/** Send and wait for the sender's outcome of that send, as the broker writes it. */
+function sendAndSettle(node: Node, from: BrokerConnectedSession, to: string, sent: Message) {
+	return whenWritten(
+		from,
+		() => outcomeOf(from, sent.id),
+		`outcome for ${sent.id}`,
+		() => node.send(from, to, sent),
+	);
+}
+
+/**
+ * #4896: the most one send queued for an offline session may take on a loaded CI host. It is a few database reads and
+ * one commit, which a Windows disk syncs in about 3 ms when idle and several times that beside other suites. A flood
+ * makes `OUTBOX_TARGET_MAX_ROWS` such sends one after another, so its budget is this per send, not a fixed total.
+ */
+const QUEUED_SEND_BUDGET_MS = 60;
+/** The flood's budget: every send it makes at `QUEUED_SEND_BUDGET_MS`, then its setup and its delivery, each a hop. */
+const FLOOD_BUDGET_MS = (OUTBOX_TARGET_MAX_ROWS + 1) * QUEUED_SEND_BUDGET_MS + 2 * CROSS_NODE_WAIT_MS;
 
 test(
 	"flooding an offline known session through another broker stops at the per-target outbox cap and keeps every queued message (#4896)",
@@ -1874,54 +1895,79 @@ test(
 			reasonOf(refused) ?? "",
 			/already has the most queued Intercom messages it accepts \(1000 messages or 64 MiB\)/,
 		);
+		// Nothing was written for it: no row, and no reservation of its id.
 		assert.deepEqual(await a!.opened.state.outbox.read(overflow.id), { status: "missing" });
+		assert.deepEqual(await a!.opened.state.sentMessages.lookup({ messageId: overflow.id, digest: "" }), {
+			status: "miss",
+		});
 
 		// Nothing already queued was lost: every message reaches the recipient when it returns.
+		const delivered = (session: BrokerConnectedSession) =>
+			framesOf(session).flatMap((frame) => (frame.type === "message" ? [frame.message.id] : []));
 		const back = await b!.connect("away", { returnAddress, id: recipient.info.id });
-		await waitFor(() =>
-			framesOf(back).filter((frame) => frame.type === "message").length === sentIds.length ? true : undefined,
+		await whenWritten(
+			back,
+			() => (delivered(back).length === sentIds.length ? true : undefined),
+			"delivery of every queued message",
 		);
-		assert.deepEqual(
-			framesOf(back).flatMap((frame) => (frame.type === "message" ? [frame.message.id] : [])),
-			sentIds,
-		);
+		assert.deepEqual(delivered(back), sentIds);
 	},
-	4 * CROSS_NODE_WAIT_MS,
+	FLOOD_BUDGET_MS,
 );
+
+/** A delivery frame of `text`, as an outbox row holds it. */
+function outboxFrame(id: string, text: string) {
+	return {
+		type: "message",
+		from: { id: "s", name: "s", cwd: "/", model: "m", pid: 1, startedAt: 1, lastActivity: 1 },
+		message: { id, timestamp: 1, content: { text } },
+	} as const;
+}
+
+function enqueueFrame(node: Node, id: string, text: string, targetIdentity = "away") {
+	return node.opened.state.outbox.enqueue({
+		targetIdentity,
+		originBrokerId: node.name,
+		digest: id,
+		frame: outboxFrame(id, text),
+	});
+}
 
 test("the per-target outbox byte cap refuses a frame that would pass it, across connections (#4896)", async () => {
 	const [a, b] = await cluster();
-	const frame = (id: string, text: string) =>
-		({
-			type: "message",
-			from: { id: "s", name: "s", cwd: "/", model: "m", pid: 1, startedAt: 1, lastActivity: 1 },
-			message: { id, timestamp: 1, content: { text } },
-		}) as const;
 	const big = "x".repeat(OUTBOX_TARGET_MAX_BYTES / 4);
-	const enqueue = (node: Node, id: string, text: string, targetIdentity = "away") =>
-		node.opened.state.outbox.enqueue({
-			targetIdentity,
-			originBrokerId: node.name,
-			digest: id,
-			frame: frame(id, text),
-		});
 	for (let index = 0; index < 3; index++)
-		assert.equal((await enqueue(index % 2 === 0 ? a! : b!, `big-${index}`, big)).status, "inserted");
-	assert.deepEqual(await enqueue(b!, "big-3", big), {
+		assert.equal((await enqueueFrame(index % 2 === 0 ? a! : b!, `big-${index}`, big)).status, "inserted");
+	assert.deepEqual(await enqueueFrame(b!, "big-3", big), {
 		status: "full",
 		limit: OUTBOX_TARGET_MAX_ROWS,
 		byteLimit: OUTBOX_TARGET_MAX_BYTES,
 	});
-	assert.equal((await enqueue(a!, "small", "fits")).status, "inserted");
+	assert.equal((await enqueueFrame(a!, "small", "fits")).status, "inserted");
 	// A frame that brings the target to exactly the byte cap is admitted; one more byte is not.
-	const frameBytes = (id: string, text: string) => Buffer.byteLength(JSON.stringify(frame(id, text)));
+	const frameBytes = (id: string, text: string) => Buffer.byteLength(JSON.stringify(outboxFrame(id, text)));
 	const used = 3 * frameBytes("big-0", big) + frameBytes("small", "fits");
 	const fill = "f".repeat(OUTBOX_TARGET_MAX_BYTES - used - frameBytes("exact", ""));
-	assert.equal((await enqueue(b!, "over-by-one", `${fill}x`)).status, "full");
-	assert.equal((await enqueue(b!, "exact", fill)).status, "inserted");
-	assert.equal((await enqueue(a!, "after-exact", "")).status, "full");
-	assert.equal((await enqueue(b!, "other-target", big, "elsewhere")).status, "inserted");
-	assert.equal((await enqueue(a!, "big-0", big)).status, "duplicate", "a retry of a queued row is still answered");
+	assert.equal((await enqueueFrame(b!, "over-by-one", `${fill}x`)).status, "full");
+	assert.equal((await enqueueFrame(b!, "exact", fill)).status, "inserted");
+	assert.equal((await enqueueFrame(a!, "after-exact", "")).status, "full");
+	assert.equal((await enqueueFrame(b!, "other-target", big, "elsewhere")).status, "inserted");
+	assert.equal(
+		(await enqueueFrame(a!, "big-0", big)).status,
+		"duplicate",
+		"a retry of a queued row is still answered",
+	);
+});
+
+test("rows an older broker queued without their frame size still count toward the byte cap, by their frames (#4896)", async () => {
+	const [a] = await cluster(1);
+	const big = "x".repeat(OUTBOX_TARGET_MAX_BYTES / 4);
+	for (let index = 0; index < 3; index++)
+		assert.equal((await enqueueFrame(a!, `big-${index}`, big)).status, "inserted");
+	// An older broker records no frame size.
+	await a!.database.run("UPDATE mn_intercom_outbox SET frame_bytes = NULL");
+	assert.equal((await enqueueFrame(a!, "big-3", big)).status, "full");
+	assert.equal((await enqueueFrame(a!, "small", "fits")).status, "inserted");
 });
 
 test(

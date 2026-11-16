@@ -1,8 +1,9 @@
 import type { Stats } from "node:fs";
-import { lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { failureDebugFields, reportDebug } from "../debug.ts";
 import { releaseLock } from "../lock-release.ts";
+import { renameWithRetry } from "../rename-retry.ts";
 import { timeRestorePhase } from "../resume/timings.ts";
 import { admitPooledWorktree, discardPooledWorktree, type PoolOwner, releaseRestoredWorktree } from "./pool.ts";
 import { type RepositoryId, sharedRepositoryIdOf } from "./repository-identity.ts";
@@ -85,7 +86,7 @@ export async function writeSeedManifest(storeDir: string, manifest: SeedManifest
 	const file = seedManifestPath(storeDir, manifest.repository);
 	await mkdir(dirname(file), { recursive: true });
 	await writeFile(`${file}.tmp`, JSON.stringify(manifest), { mode: 0o600 });
-	await rename(`${file}.tmp`, file);
+	await renameWithRetry(`${file}.tmp`, file);
 }
 
 /** Why no seed was adopted. */
@@ -249,7 +250,7 @@ async function moveSeeds(seeds: string, worktree: string, paths: readonly string
 				continue;
 			}
 			await mkdir(dirname(to), { recursive: true });
-			await rename(from, to);
+			await renameWithRetry(from, to);
 			moved.push(path);
 		} catch (error) {
 			reportDebug("storage", "worktree-seed-move-failed", { path, ...failureDebugFields(error) });
