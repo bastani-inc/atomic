@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
-import { type Component, getKeybindings, setKeybindings, type Terminal, TuiMainScreen } from "@bastani/atomic-tui";
-import type { Terminal as XtermInstance } from "@xterm/headless";
-import xterm from "@xterm/headless";
+import { type Component, getKeybindings, setKeybindings, TuiMainScreen } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
+import {
+	type AgentPanelRow,
+	renderAgentPanelRows,
+} from "../../packages/coding-agent/src/modes/interactive/components/agent-panel.js";
+import { SelectorState } from "../../packages/coding-agent/src/modes/interactive/components/selector.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
+import { themedAgentPanelStyle } from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.js";
 import type { PiCustomComponent, PiCustomOverlayFactoryTui } from "../../packages/workflows/src/extension/wiring.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import {
@@ -13,92 +17,7 @@ import {
 	type WorkflowsListingDefinition,
 } from "../../packages/workflows/src/tui/workflows-listing.js";
 
-const XtermTerminal = xterm.Terminal;
-
-class ScreenTerminal implements Terminal {
-	private readonly xterm: XtermInstance;
-	private inputHandler?: (data: string) => void;
-	readonly columns: number;
-	readonly rows: number;
-	readonly kittyProtocolActive = true;
-
-	constructor(columns: number, rows: number) {
-		this.columns = columns;
-		this.rows = rows;
-		this.xterm = new XtermTerminal({
-			cols: columns,
-			rows,
-			disableStdin: true,
-			allowProposedApi: true,
-		});
-	}
-
-	start(onInput: (data: string) => void): void {
-		this.inputHandler = onInput;
-	}
-
-	async drainInput(): Promise<void> {}
-
-	stop(): void {
-		this.inputHandler = undefined;
-	}
-
-	write(data: string): void {
-		this.xterm.write(data);
-	}
-
-	moveBy(lines: number): void {
-		if (lines > 0) this.xterm.write(`\x1b[${lines}B`);
-		else if (lines < 0) this.xterm.write(`\x1b[${-lines}A`);
-	}
-
-	hideCursor(): void {
-		this.xterm.write("\x1b[?25l");
-	}
-
-	showCursor(): void {
-		this.xterm.write("\x1b[?25h");
-	}
-
-	clearLine(): void {
-		this.xterm.write("\x1b[K");
-	}
-
-	clearFromCursor(): void {
-		this.xterm.write("\x1b[J");
-	}
-
-	clearScreen(): void {
-		this.xterm.write("\x1b[2J\x1b[H");
-	}
-
-	setTitle(title: string): void {
-		this.xterm.write(`\x1b]0;${title}\x07`);
-	}
-
-	setProgress(): void {}
-	setProgramStatus(): void {}
-
-	sendInput(data: string): void {
-		this.inputHandler?.(data);
-	}
-
-	async waitForRender(): Promise<void> {
-		await new Promise<void>((resolve) => process.nextTick(resolve));
-		await new Promise<void>((resolve) => setTimeout(resolve, 20));
-		await new Promise<void>((resolve) => this.xterm.write("", () => resolve()));
-	}
-
-	async flushAndGetViewport(): Promise<string[]> {
-		await new Promise<void>((resolve) => this.xterm.write("", () => resolve()));
-		const buffer = this.xterm.buffer.active;
-		const lines: string[] = [];
-		for (let i = 0; i < this.xterm.rows; i++) {
-			lines.push(buffer.getLine(buffer.viewportY + i)?.translateToString(true) ?? "");
-		}
-		return lines;
-	}
-}
+import { ScreenTerminal } from "../helpers/screen-terminal.js";
 
 let previousKeys: ReturnType<typeof getKeybindings>;
 beforeEach(() => {
@@ -249,16 +168,154 @@ test("/workflows scales visible rows with terminal height and clamps short termi
 	const standard = await mountAtRows(24);
 	const tall = await mountAtRows(40);
 	try {
-		const tinyText = stripVTControlCharacters(tiny.render(80).join("\n"));
+		const tinyLines = tiny.render(80);
+		const tinyText = stripVTControlCharacters(tinyLines.join("\n"));
 		const standardLines = standard.render(80);
 		const tallLines = tall.render(80);
-		assert.match(tinyText, /ralph · task 3/);
-		assert.doesNotMatch(tinyText, /ralph · task 4/);
+		assert.match(tinyText, /ralph · task 1/);
+		assert.doesNotMatch(tinyText, /ralph · task 2/);
+		assert.ok(standardLines.length > tinyLines.length);
 		assert.ok(tallLines.length > standardLines.length);
 		assert.ok(tallLines.length <= 40);
 	} finally {
 		tiny.dispose?.();
 		standard.dispose?.();
 		tall.dispose?.();
+	}
+});
+
+test("/workflows keeps title and search visible at 80x24 with footer and 12-run agent panel at every Down position (#5245)", async () => {
+	const terminal = new ScreenTerminal(80, 24);
+	const tui = new TuiMainScreen(terminal);
+	const runs = makeRuns(12);
+	const definitions = makeDefinitions(8);
+	const panelRows: AgentPanelRow[] = runs.map((run) => ({
+		id: `workflow:${run.id}`,
+		kind: "workflow",
+		state: "running",
+		name: run.name,
+		task: "stage plan",
+		elapsedMs: 1_000,
+		progress: { done: 0, total: 3 },
+	}));
+	let component: PiCustomComponent | undefined;
+
+	const pending = openWorkflowsListing(
+		{
+			custom: (factory) =>
+				new Promise<undefined>((resolve) => {
+					const created = factory(toOverlayTui(tui), undefined, undefined, () =>
+						resolve(undefined),
+					) as PiCustomComponent;
+					component = created;
+					const wrapped = toTuiComponent(created);
+					tui.addChild(wrapped);
+					tui.addChild({
+						render: (width: number) => [
+							"model-x • ~/project (main)".slice(0, width),
+							"status: ready".slice(0, width),
+						],
+						invalidate() {},
+					});
+					tui.addChild({
+						render: (width: number) => renderAgentPanelRows(panelRows, width, themedAgentPanelStyle(), {}),
+						invalidate() {},
+					});
+					tui.setFocus(wrapped);
+					tui.start();
+				}),
+		},
+		{
+			runs: () => runs,
+			definitions: () => definitions,
+		},
+	);
+
+	try {
+		await terminal.waitForRender();
+		for (let step = 0; step <= runs.length + definitions.length; step++) {
+			const viewport = (await terminal.flushAndGetViewport()).join("\n");
+			assert.match(viewport, /Workflows/, `expected title visible at step ${step}`);
+			assert.match(viewport, /Search…/, `expected search visible at step ${step}`);
+			assert.match(viewport, /❯/, `expected highlight visible at step ${step}`);
+			terminal.sendInput("\x1b[B");
+			await terminal.waitForRender();
+		}
+		terminal.sendInput("\x1b");
+		assert.equal(await pending, undefined);
+	} finally {
+		component?.dispose?.();
+		tui.stop();
+	}
+});
+
+test("/workflows updates its page size when the terminal shrinks from 40 to 24 rows (#5245)", async () => {
+	const state = new SelectorState({
+		items: [
+			{ id: "a", value: "a", label: "a" },
+			{ id: "b", value: "b", label: "b" },
+		],
+		maxVisible: 4,
+	});
+	state.setMaxVisible(Number.NaN);
+	state.setMaxVisible(Number.POSITIVE_INFINITY);
+	assert.equal(state.maxVisible, 4);
+	const terminal = new ScreenTerminal(80, 40);
+	const tui = new TuiMainScreen(terminal);
+	const runs = makeRuns(20);
+	const definitions = makeDefinitions(1);
+	let component: PiCustomComponent | undefined;
+
+	const pending = openWorkflowsListing(
+		{
+			custom: (factory) =>
+				new Promise<undefined>((resolve) => {
+					const created = factory(toOverlayTui(tui), undefined, undefined, () =>
+						resolve(undefined),
+					) as PiCustomComponent;
+					component = created;
+					const wrapped = toTuiComponent(created);
+					tui.addChild(wrapped);
+					tui.addChild({
+						render: (width: number) => ["model-x • ~/project (main)".slice(0, width)],
+						invalidate() {},
+					});
+					tui.setFocus(wrapped);
+					tui.start();
+				}),
+		},
+		{
+			runs: () => runs,
+			definitions: () => definitions,
+		},
+	);
+
+	try {
+		await terminal.waitForRender();
+		assert.ok(component);
+		for (let step = 0; step < 6; step++) {
+			terminal.sendInput("\x1b[B");
+			await terminal.waitForRender();
+		}
+		const beforeViewport = (await terminal.flushAndGetViewport()).join("\n");
+		assert.match(beforeViewport, /Workflows/);
+		assert.match(beforeViewport, /❯ ralph · task 7/);
+
+		terminal.resize(80, 24);
+		tui.requestRender(true);
+		await terminal.waitForRender();
+
+		const afterLines = component.render(80);
+		assert.ok(afterLines.length <= 22, `expected resized sheet <= 22 lines, got ${afterLines.length}`);
+		const afterViewport = (await terminal.flushAndGetViewport()).join("\n");
+		assert.match(afterViewport, /Workflows/);
+		assert.match(afterViewport, /Search…/);
+		assert.match(afterViewport, /❯ ralph · task 7/);
+
+		terminal.sendInput("\r");
+		assert.deepEqual(await pending, { kind: "run", runId: "run-07-0000" });
+	} finally {
+		component?.dispose?.();
+		tui.stop();
 	}
 });

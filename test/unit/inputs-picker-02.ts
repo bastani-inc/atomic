@@ -210,9 +210,9 @@ export function registerInputsPickerSuite2(): void {
 		assert.equal(sparse.verbose, false);
 	});
 
-	test("coerceValues parses JSON-shaped text values", () => {
+	test("coerceValues keeps JSON-shaped text values as literal strings (#5245)", () => {
 		const fields: WorkflowInputEntry[] = [{ name: "tags", type: "text", required: false }];
 		const out = coerceValues(fields, { tags: '["a","b"]' });
-		assert.deepEqual(out.tags, ["a", "b"]);
+		assert.equal(out.tags, '["a","b"]');
 	});
 }

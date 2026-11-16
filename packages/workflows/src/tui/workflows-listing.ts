@@ -1,25 +1,17 @@
-/**
- * The `/workflows` sheet: the session's runs and the registered workflow definitions in one list (#5224).
- *
- * Runs come first, newest first, as two-line rows: the workflow's name and label, then `status · stage n/m <stage> ·
- * elapsed · cost`, with a failed run's short reason in place of its stage. Definitions follow: the name, then its
- * description and an inputs summary. Enter on a run opens its graph; Enter on a definition starts it, which asks for
- * its inputs first. The rows are built by pure functions so the listing can be tested without a terminal.
- */
-
 import { Selector, type SelectorItem } from "@bastani/atomic";
 import { getKeybindings } from "@bastani/atomic-tui";
 import type { PiCustomComponent, PiCustomOverlayFactoryTui, PiCustomOverlayFunction } from "../extension/wiring.js";
+import { actionableReturnedStatusText, effectiveRunStatus } from "../shared/returned-run-status.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
+import { schemaIsRequired } from "../shared/schema-introspection.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
+import { sanitizeToolTitleText } from "../shared/tool-payload-bounds.js";
 import type { WorkflowInputSchemaMap } from "../shared/types.js";
 import { panelItemsFromSnapshot } from "./panel-runs.js";
 
-/** What a chosen row is: a run to open, or a definition to start. */
 export type WorkflowsListingTarget = { kind: "run"; runId: string } | { kind: "definition"; name: string };
 
-/** The parts of a registered definition the listing shows. */
 export interface WorkflowsListingDefinition {
 	readonly normalizedName: string;
 	readonly description: string;
@@ -38,7 +30,6 @@ const RUN_STATUS_TEXT: Readonly<Record<RunSnapshot["status"], string>> = {
 	failed: "failed",
 };
 
-/** `12m`, `2h 5m`, `45s`: how long something took or has run. */
 export function listingDuration(ms: number): string {
 	const seconds = Math.max(0, Math.round(ms / 1000));
 	if (seconds < 60) return `${seconds}s`;
@@ -49,7 +40,6 @@ export function listingDuration(ms: number): string {
 	return rest ? `${hours}h ${rest}m` : `${hours}h`;
 }
 
-/** `2h ago`, `yesterday`: when a finished run ended. */
 export function listingAgo(ms: number): string {
 	const minutes = Math.floor(Math.max(0, ms) / 60_000);
 	if (minutes < 1) return "just now";
@@ -60,20 +50,20 @@ export function listingAgo(ms: number): string {
 	return days === 1 ? "yesterday" : `${days}d ago`;
 }
 
-/** The first line of a failure, without a stack trace, kept short: what a failed row says went wrong. */
-export function shortFailureReason(run: Pick<RunSnapshot, "error" | "exitReason">): string | undefined {
-	const text = run.error ?? run.exitReason;
+export function shortFailureReason(
+	run: Pick<RunSnapshot, "error" | "exitReason" | "failureMessage" | "result">,
+): string | undefined {
+	const text = run.error ?? run.exitReason ?? run.failureMessage ?? actionableReturnedStatusText(run.result);
 	if (!text) return undefined;
 	const first =
 		text
-			.split("\n")
-			.map((line) => line.trim())
+			.split(/\r?\n/)
+			.map((line) => sanitizeToolTitleText(line).trim())
 			.find((line) => line.length > 0 && !/^at\s/.test(line)) ?? "";
 	const clean = first.replace(/^(Error|[A-Z][A-Za-z]*Error):\s*/, "");
 	return clean.length > 60 ? `${clean.slice(0, 59)}…` : clean || undefined;
 }
 
-/** `stage 3/5 implement`: the stage a run is on (or stopped at), counting stages that have settled. */
 export function runStageText(run: RunSnapshot): string | undefined {
 	const total = run.stages.length;
 	if (total === 0) return undefined;
@@ -81,37 +71,42 @@ export function runStageText(run: RunSnapshot): string | undefined {
 	const current = failed ?? run.stages.find((stage) => stage.status === "running") ?? undefined;
 	const settled = run.stages.filter((stage) => stage.status !== "pending" && stage.status !== "running").length;
 	const index = current ? run.stages.indexOf(current) + 1 : Math.min(total, settled);
-	return `stage ${index}/${total}${current ? ` ${current.name}` : ""}`;
+	const stageName = current ? sanitizeToolTitleText(current.name).trim() : "";
+	return `stage ${index}/${total}${stageName ? ` ${stageName}` : ""}`;
 }
 
-/** `$1.84`, from the run's budget accounting when it has any. */
 export function runCostText(run: RunSnapshot): string | undefined {
 	const cost = run.budgetState?.accounting?.cost;
 	return cost === undefined || cost <= 0 ? undefined : `$${cost.toFixed(2)}`;
 }
 
-/** What tells a run apart from other runs of its workflow: its label, else its first text input, else its short id. */
 export function runRowLabel(run: RunSnapshot): string {
-	if (run.label) return `${run.name} · ${run.label}`;
+	const name = sanitizeToolTitleText(run.name);
+	if (run.label) return `${name} · ${sanitizeToolTitleText(run.label)}`;
 	const input = Object.values(run.inputs).find((value) => typeof value === "string" && value.trim() !== "");
-	const detail = typeof input === "string" ? (input.split("\n")[0] ?? "").trim() : run.id.slice(0, 8);
-	return `${run.name} · ${detail.length > 40 ? `${detail.slice(0, 39)}…` : detail}`;
+	const rawDetail =
+		typeof input === "string"
+			? sanitizeToolTitleText(input.split(/\r?\n/)[0] ?? "").trim()
+			: sanitizeToolTitleText(run.id.slice(0, 8));
+	const detail = rawDetail.length > 40 ? `${rawDetail.slice(0, 39)}…` : rawDetail;
+	return `${name} · ${detail}`;
 }
 
-/**
- * A run's second line: `running · stage 3/5 implement · 12m · $1.84`, a failed run's `✗ <reason>`, or
- * `needs input · <question>` while it waits on one.
- */
-export function runRowDescription(run: RunSnapshot, now: number, question?: string): string {
+export function runRowDescription(
+	run: RunSnapshot,
+	now: number,
+	question?: string,
+	status: RunSnapshot["status"] = effectiveRunStatus(run),
+): string {
 	if (question !== undefined)
-		return ["needs input", question, listingDuration(elapsedRunMs(run, now)), runCostText(run)]
+		return ["needs input", sanitizeToolTitleText(question), listingDuration(elapsedRunMs(run, now)), runCostText(run)]
 			.filter((part): part is string => part !== undefined && part !== "")
 			.join(" · ");
-	const status = RUN_STATUS_TEXT[run.status];
-	const live = run.status === "running" || run.status === "pending" || run.status === "paused";
-	const reason = run.status === "failed" || run.status === "blocked" ? shortFailureReason(run) : undefined;
+	const statusText = RUN_STATUS_TEXT[status];
+	const live = status === "running" || status === "pending" || status === "paused";
+	const reason = status === "failed" || status === "blocked" ? shortFailureReason(run) : undefined;
 	const parts = [
-		status,
+		statusText,
 		runStageText(run),
 		live || run.endedAt === undefined ? undefined : listingAgo(now - run.endedAt),
 		listingDuration(elapsedRunMs(run, now)),
@@ -121,18 +116,12 @@ export function runRowDescription(run: RunSnapshot, now: number, question?: stri
 	return parts.filter((part): part is string => part !== undefined && part !== "").join(" · ");
 }
 
-/** `2 inputs (1 required)`, or `no inputs`. */
 export function inputsSummary(inputs: WorkflowInputSchemaMap): string {
 	const entries = Object.values(inputs);
 	if (entries.length === 0) return "no inputs";
-	const required = entries.filter((schema) => schemaRequired(schema)).length;
+	const required = entries.filter((schema) => schemaIsRequired(schema)).length;
 	const noun = entries.length === 1 ? "input" : "inputs";
 	return required ? `${entries.length} ${noun} (${required} required)` : `${entries.length} ${noun}`;
-}
-
-function schemaRequired(schema: WorkflowInputSchemaMap[string]): boolean {
-	const record = schema as { readonly required?: boolean; readonly default?: unknown };
-	return record.required === true && record.default === undefined;
 }
 
 const RUN_TONE: Partial<Record<RunSnapshot["status"], "accent" | "success" | "warning" | "error" | "muted">> = {
@@ -146,13 +135,11 @@ const RUN_TONE: Partial<Record<RunSnapshot["status"], "accent" | "success" | "wa
 	killed: "muted",
 };
 
-/** The listing's rows: runs (newest first), then definitions (by name). */
 export function workflowsListingItems(
 	runs: readonly RunSnapshot[],
 	definitions: readonly WorkflowsListingDefinition[],
 	now = Date.now(),
 ): SelectorItem<WorkflowsListingTarget>[] {
-	// The agent panel's view of each run says whether it waits on a question, and which.
 	const waiting = new Map(
 		panelItemsFromSnapshot(runs, now)
 			.filter((item) => item.state === "input")
@@ -161,40 +148,42 @@ export function workflowsListingItems(
 	const runItems = [...topLevelWorkflowRuns(runs)]
 		.sort((a, b) => b.startedAt - a.startedAt)
 		.map((run): SelectorItem<WorkflowsListingTarget> => {
+			const status = effectiveRunStatus(run);
 			const question = waiting.get(`run:${run.id}`);
+			const label = runRowLabel(run);
 			const tag =
 				question !== undefined
 					? "◆"
-					: run.status === "failed"
+					: status === "failed"
 						? "✗"
-						: run.status === "cancelled" || run.status === "killed"
+						: status === "cancelled" || status === "killed"
 							? "◼"
 							: undefined;
 			return {
 				id: `run:${run.id}`,
 				value: { kind: "run", runId: run.id },
-				label: runRowLabel(run),
-				description: runRowDescription(run, now, question),
+				label,
+				description: runRowDescription(run, now, question, status),
 				tag,
-				tagTone: question !== undefined ? "warning" : RUN_TONE[run.status],
+				tagTone: question !== undefined ? "warning" : RUN_TONE[status],
 				group: "Runs",
-				searchText: `${runRowLabel(run)} ${run.id} ${RUN_STATUS_TEXT[run.status]}`,
+				searchText: `${label} ${sanitizeToolTitleText(run.id)} ${RUN_STATUS_TEXT[status]}`,
 			};
 		});
 	const definitionItems = [...definitions]
 		.sort((a, b) => a.normalizedName.localeCompare(b.normalizedName))
-		.map(
-			(definition): SelectorItem<WorkflowsListingTarget> => ({
+		.map((definition): SelectorItem<WorkflowsListingTarget> => {
+			const label = sanitizeToolTitleText(definition.normalizedName);
+			const summary = sanitizeToolTitleText(definition.description.split(/\r?\n/)[0] ?? "").trim();
+			return {
 				id: `definition:${definition.normalizedName}`,
 				value: { kind: "definition", name: definition.normalizedName },
-				label: definition.normalizedName,
-				description: [definition.description.split("\n")[0]?.trim(), inputsSummary(definition.inputs)]
-					.filter(Boolean)
-					.join(" · "),
+				label,
+				description: [summary, inputsSummary(definition.inputs)].filter(Boolean).join(" · "),
 				group: "Definitions",
-				searchText: `${definition.normalizedName} ${definition.description}`,
-			}),
-		);
+				searchText: `${label} ${sanitizeToolTitleText(definition.description)}`,
+			};
+		});
 	return [...runItems, ...definitionItems];
 }
 
@@ -202,10 +191,23 @@ export interface WorkflowsListingUi {
 	custom?: PiCustomOverlayFunction;
 }
 
-/**
- * Mounts the `/workflows` sheet and resolves with the chosen row, or `undefined` on Esc. Resolves `undefined` at once
- * when there is no custom UI.
- */
+const LISTING_CLOCK_TICK_MS = 1_000;
+const SELECTOR_CHROME_ROWS = 12;
+const FOOTER_CHROME_ROWS = 2;
+const IDLE_AGENT_PANEL_ROWS = 4;
+const IDLE_AGENT_PANEL_OVERFLOW_ROWS = 1;
+const LISTING_CHROME_ROWS =
+	SELECTOR_CHROME_ROWS + FOOTER_CHROME_ROWS + IDLE_AGENT_PANEL_ROWS + IDLE_AGENT_PANEL_OVERFLOW_ROWS;
+
+function listingMaxVisible(tui: PiCustomOverlayFactoryTui): number {
+	const reportedRows = tui.terminal?.rows;
+	const terminalRows =
+		typeof reportedRows === "number" && Number.isFinite(reportedRows) && reportedRows > 0
+			? Math.floor(reportedRows)
+			: 24;
+	return Math.max(1, Math.floor((terminalRows - LISTING_CHROME_ROWS) / 2));
+}
+
 export function openWorkflowsListing(
 	ui: WorkflowsListingUi,
 	source: {
@@ -238,17 +240,14 @@ export function openWorkflowsListing(
 			const finish = (target: WorkflowsListingTarget | undefined): void => {
 				if (settle(target)) done(undefined);
 			};
-			const items = () => workflowsListingItems(source.runs(), source.definitions());
-			const reportedRows = tui.terminal?.rows;
-			const terminalRows =
-				typeof reportedRows === "number" && Number.isFinite(reportedRows) && reportedRows > 0
-					? Math.floor(reportedRows)
-					: 24;
+			let cachedRuns = source.runs();
+			let cachedDefinitions = source.definitions();
+			let currentNow = Date.now();
 			const selector = new Selector<WorkflowsListingTarget>({
 				title: "Workflows",
-				items: items(),
+				items: workflowsListingItems(cachedRuns, cachedDefinitions, currentNow),
 				layout: "two-line",
-				maxVisible: Math.max(3, Math.floor((terminalRows - 12) / 2)),
+				maxVisible: listingMaxVisible(tui),
 				search: true,
 				searchPlaceholder: "Search…",
 				emptyText: "No workflows in this session.",
@@ -262,17 +261,39 @@ export function openWorkflowsListing(
 			let movedSincePaint = false;
 			let itemsStale = false;
 			const refreshItems = (): void => {
-				if (!itemsStale) return;
-				itemsStale = false;
-				selector.setItems(items());
-				refreshedSincePaint = true;
+				if (itemsStale) {
+					itemsStale = false;
+					cachedRuns = source.runs();
+					cachedDefinitions = source.definitions();
+					currentNow = Date.now();
+					selector.setItems(workflowsListingItems(cachedRuns, cachedDefinitions, currentNow));
+					refreshedSincePaint = true;
+					return;
+				}
+				const now = Date.now();
+				if (now === currentNow || cachedRuns.length === 0) return;
+				currentNow = now;
+				const beforeId = selector.getSelected()?.id;
+				selector.setItems(workflowsListingItems(cachedRuns, cachedDefinitions, currentNow));
+				if (selector.getSelected()?.id !== beforeId) refreshedSincePaint = true;
 			};
-			release = source.subscribe?.(() => {
+			const tick = setInterval(() => {
+				if (cachedRuns.length > 0) tui.requestRender?.();
+			}, LISTING_CLOCK_TICK_MS);
+			tick.unref?.();
+			let unsubscribe: (() => void) | undefined;
+			release = () => {
+				clearInterval(tick);
+				unsubscribe?.();
+			};
+			unsubscribe = source.subscribe?.(() => {
 				itemsStale = true;
 				tui.requestRender?.();
 			});
+			if (settled) release();
 			return {
 				render: (width: number) => {
+					selector.setMaxVisible(listingMaxVisible(tui));
 					refreshItems();
 					const lines = selector.render(width);
 					paintedSelectionId = selector.getSelected()?.id;
@@ -281,6 +302,7 @@ export function openWorkflowsListing(
 					return lines;
 				},
 				handleInput: (data: string) => {
+					selector.setMaxVisible(listingMaxVisible(tui));
 					refreshItems();
 					const keys = getKeybindings();
 					const confirms =

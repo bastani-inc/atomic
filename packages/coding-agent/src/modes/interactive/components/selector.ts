@@ -158,7 +158,7 @@ const DESCRIPTION_GAP = 2;
 export class SelectorState<T> {
 	private currentItems: readonly SelectorItem<T>[];
 	readonly mode: "single" | "multi";
-	readonly maxVisible: number;
+	private _maxVisible: number;
 	private query = "";
 	private visible: SelectorItem<T>[];
 	private selected = 0;
@@ -168,13 +168,29 @@ export class SelectorState<T> {
 	constructor(options: Pick<SelectorOptions<T>, "items" | "mode" | "maxVisible" | "initialId" | "initialChecked">) {
 		this.currentItems = options.items;
 		this.mode = options.mode ?? "single";
-		this.maxVisible = Math.max(1, options.maxVisible ?? DEFAULT_MAX_VISIBLE);
+		const initialMaxVisible =
+			options.maxVisible !== undefined && Number.isFinite(options.maxVisible)
+				? Math.floor(options.maxVisible)
+				: DEFAULT_MAX_VISIBLE;
+		this._maxVisible = Math.max(1, initialMaxVisible);
 		this.visible = [...this.items];
 		for (const id of options.initialChecked ?? []) this.checked.add(id);
 		const initial =
 			options.initialId !== undefined ? this.visible.findIndex((item) => item.id === options.initialId) : -1;
 		const marked = this.visible.findIndex((item) => item.mark === "on" && !item.disabled);
 		this.selected = initial >= 0 ? initial : marked >= 0 ? marked : this.firstEnabled(0, 1);
+		this.scrollToSelected();
+	}
+
+	get maxVisible(): number {
+		return this._maxVisible;
+	}
+
+	setMaxVisible(maxVisible: number): void {
+		if (!Number.isFinite(maxVisible)) return;
+		const next = Math.max(1, Math.floor(maxVisible));
+		if (next === this._maxVisible) return;
+		this._maxVisible = next;
 		this.scrollToSelected();
 	}
 
@@ -427,6 +443,12 @@ export class Selector<T> implements Component, Focusable {
 		this.rowLines.clear();
 		this.mousePressed = undefined;
 		this.options.onSelectionChange?.(this.state.getSelected());
+	}
+
+	setMaxVisible(maxVisible: number): void {
+		this.state.setMaxVisible(maxVisible);
+		this.rowLines.clear();
+		this.mousePressed = undefined;
 	}
 
 	/** Set the search text as if typed. */

@@ -1,4 +1,5 @@
 import type { WorkflowInputEntry } from "../extension/render-result.js";
+import { sanitizeToolDisplayText, sanitizeToolTitleText } from "../shared/tool-payload-bounds.js";
 import { paint } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { renderCompactBandHeader } from "./header.js";
@@ -80,7 +81,7 @@ function renderWorkflowHeader(
 	const current = Math.min(fieldCount, Math.max(1, focusedIdx + 1));
 	return renderCompactBandHeader({
 		label: "WORKFLOW",
-		subtitle: workflowName,
+		subtitle: sanitizeToolTitleText(workflowName),
 		badges: fieldCount > 0 ? [{ text: `${current} / ${fieldCount}`, fg: theme.dim }] : [],
 		width,
 		theme,
@@ -109,10 +110,16 @@ function renderInputField(
 		theme,
 		contentWidth,
 	);
+	const top = renderFieldTop(field.name, invalid, boxWidth, borderColor, focused, theme);
+	const errorLines =
+		invalid !== null && !top.reasonShown
+			? wrapPlainText(`✗ ${sanitizeToolTitleText(invalid)}`, width).map((line) => paint(line, theme.error))
+			: [];
 	const lines = [
-		renderFieldTop(field.name, invalid, boxWidth, borderColor, focused, theme),
+		top.line,
 		...rows.map((row) => renderFieldRow(row, contentWidth, borderColor, theme)),
 		renderFieldBottom(boxWidth, borderColor),
+		...errorLines,
 		...renderFieldMeta(field, theme, width),
 	];
 	return lines;
@@ -128,16 +135,17 @@ function renderAskStyleInputBody(
 	width: number,
 ): string[] {
 	if (field.type === "select" && field.choices && field.choices.length > 0) {
-		const selected = Math.max(0, field.choices.indexOf(raw));
-		return field.choices.flatMap((choice, i) =>
-			renderAskChoiceRows(
+		const selected = field.choices.indexOf(raw);
+		return field.choices.flatMap((choice, i) => {
+			const safeChoice = sanitizeToolTitleText(choice);
+			return renderAskChoiceRows(
 				i + 1,
-				focused || i !== selected ? choice : `✓ ${choice}`,
+				focused || i !== selected ? safeChoice : `✓ ${safeChoice}`,
 				focused && i === selected,
 				theme,
 				width,
-			),
-		);
+			);
+		});
 	}
 
 	if (field.type === "boolean") {
@@ -173,21 +181,27 @@ function renderAskInputRows(
 	width: number,
 ): string[] {
 	const usable = Math.max(1, width);
+	const safePlaceholder = field.placeholder !== undefined ? sanitizeToolTitleText(field.placeholder) : undefined;
+	const clampedRawCaret = Math.max(0, Math.min(caret, raw.length));
 
 	if (field.type !== "text") {
-		return [renderInlineText(raw, focused, cursorOn, usable, theme, field.placeholder, raw === "", caret)];
+		const safeRaw = sanitizeToolTitleText(raw);
+		const safeCaret = sanitizeToolTitleText(raw.slice(0, clampedRawCaret)).length;
+		return [renderInlineText(safeRaw, focused, cursorOn, usable, theme, safePlaceholder, raw === "", safeCaret)];
 	}
 
 	const ROWS = 3;
 	if (raw === "") {
 		return [
-			renderInlineText("", focused, cursorOn, usable, theme, field.placeholder, true),
+			renderInlineText("", focused, cursorOn, usable, theme, safePlaceholder, true),
 			...Array.from({ length: ROWS - 1 }, () => padLine("", usable)),
 		];
 	}
 
-	const layout = layoutEditableText(raw, usable);
-	const safeCaret = clampGraphemeOffset(raw, caret);
+	const safeRaw = sanitizeToolDisplayText(raw);
+	const mappedCaret = sanitizeToolDisplayText(raw.slice(0, clampedRawCaret)).length;
+	const layout = layoutEditableText(safeRaw, usable);
+	const safeCaret = clampGraphemeOffset(safeRaw, mappedCaret);
 	let cursorRow = layout.length - 1;
 	for (let i = 0; i < layout.length; i++) {
 		const line = layout[i]!;
@@ -218,7 +232,7 @@ function renderAskInputRows(
 				cursorOn,
 				usable,
 				theme,
-				field.placeholder,
+				safePlaceholder,
 				false,
 				lineCaret,
 			),
@@ -248,7 +262,6 @@ export function renderInputsPicker(opts: InputsPickerRenderOpts): string[] {
 	return lines.map((line) => fitLine(line, width));
 }
 
-/** `╭ objective ✓ ───╮`, or `╭ max_loops ✗ must be a whole number ───╮`. */
 function renderFieldTop(
 	title: string,
 	invalid: string | null,
@@ -256,13 +269,37 @@ function renderFieldTop(
 	borderColor: string,
 	focused: boolean,
 	theme: GraphTheme,
-): string {
-	const labelText = paint(` ${title} `, focused ? theme.accent : theme.textMuted, { bold: focused });
-	const status = invalid === null ? paint("✓ ", theme.success) : paint(`✗ ${invalid} `, theme.error);
+): { line: string; reasonShown: boolean } {
+	const safeTitle = sanitizeToolTitleText(title);
 	const room = Math.max(0, width - 2);
+	const minTitleCols = Math.min(visibleWidth(safeTitle), 4);
+	if (invalid === null) {
+		const statusPlain = "✓ ";
+		const titleBudget = Math.max(1, room - visibleWidth(statusPlain) - 2);
+		const titleShown = truncateToWidth(safeTitle, titleBudget, "…");
+		const labelText = paint(` ${titleShown} `, focused ? theme.accent : theme.textMuted, { bold: focused });
+		const status = paint(statusPlain, theme.success);
+		const head = truncateToWidth(labelText + status, room, "…");
+		const fill = Math.max(0, room - visibleWidth(head));
+		return {
+			line: paint("╭", borderColor) + head + paint(`${"─".repeat(fill)}╮`, borderColor),
+			reasonShown: true,
+		};
+	}
+	const safeInvalid = sanitizeToolTitleText(invalid);
+	const fullStatusPlain = `✗ ${safeInvalid} `;
+	const reasonShown = minTitleCols + 2 + visibleWidth(fullStatusPlain) <= room;
+	const statusPlain = reasonShown ? fullStatusPlain : "✗ ";
+	const titleBudget = Math.max(1, room - visibleWidth(statusPlain) - 2);
+	const titleShown = truncateToWidth(safeTitle, titleBudget, "…");
+	const labelText = paint(` ${titleShown} `, focused ? theme.accent : theme.textMuted, { bold: focused });
+	const status = paint(statusPlain, theme.error);
 	const head = truncateToWidth(labelText + status, room, "…");
 	const fill = Math.max(0, room - visibleWidth(head));
-	return paint("╭", borderColor) + head + paint(`${"─".repeat(fill)}╮`, borderColor);
+	return {
+		line: paint("╭", borderColor) + head + paint(`${"─".repeat(fill)}╮`, borderColor),
+		reasonShown,
+	};
 }
 
 function renderFieldRow(row: string, contentWidth: number, borderColor: string, _theme: GraphTheme): string {
@@ -277,10 +314,9 @@ function renderFieldBottom(width: number, borderColor: string): string {
 
 function renderFieldMeta(field: WorkflowInputEntry, theme: GraphTheme, width: number): string[] {
 	const required = field.required ? "required" : "optional";
+	const safeDescription = field.description ? sanitizeToolTitleText(field.description) : "";
 	const text =
-		field.description && field.description.length > 0
-			? `${field.type} · ${required} · ${field.description}`
-			: `${field.type} · ${required}`;
+		safeDescription.length > 0 ? `${field.type} · ${required} · ${safeDescription}` : `${field.type} · ${required}`;
 	return wrapPlainText(text, width).map((line) => paintRequiredMetaLine(line, field.required === true, theme));
 }
 
@@ -300,7 +336,7 @@ function renderPickerSubmitControls(
 ): string[] {
 	const invalid = computeInvalid(fields, state.rawText);
 	return renderSubmitControls({
-		invalidFieldNames: invalid.map((i) => fields[i]!.name),
+		invalidFieldNames: invalid.map((i) => sanitizeToolTitleText(fields[i]!.name)),
 		submitFocused: state.focusedIdx === fields.length,
 		theme,
 		width,

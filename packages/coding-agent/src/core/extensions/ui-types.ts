@@ -174,8 +174,17 @@ export interface HostInputFormField {
 	required?: boolean;
 	choices?: string[];
 	placeholder?: string;
-	/** Raw, display-ready initial value. */
 	initialValue: string;
+	const?: string | number | boolean;
+	minimum?: number;
+	maximum?: number;
+	exclusiveMinimum?: number;
+	exclusiveMaximum?: number;
+	multipleOf?: number;
+	minLength?: number;
+	maxLength?: number;
+	pattern?: string;
+	format?: string;
 }
 
 /** Request for a host-owned inline input form. */

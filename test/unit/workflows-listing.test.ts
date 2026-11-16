@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
-import { getKeybindings, StdinBuffer, setKeybindings } from "@bastani/atomic-tui";
-import { afterEach, beforeEach, test } from "vitest";
+import { getKeybindings, StdinBuffer, setKeybindings, TuiMainScreen } from "@bastani/atomic-tui";
+import { Type } from "typebox";
+import { afterEach, beforeEach, test, vi } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
+import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import type { PiCustomComponent } from "../../packages/workflows/src/extension/wiring.js";
+import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import type { WorkflowInputSchemaMap } from "../../packages/workflows/src/shared/types.js";
 import {
@@ -15,6 +18,8 @@ import {
 	type WorkflowsListingDefinition,
 	workflowsListingItems,
 } from "../../packages/workflows/src/tui/workflows-listing.js";
+
+import { ScreenTerminal } from "../helpers/screen-terminal.js";
 
 let previousKeys: ReturnType<typeof getKeybindings>;
 beforeEach(() => {
@@ -115,15 +120,216 @@ test("a failed run names its failed stage and a short reason, never a stack trac
 	assert.match(stopped?.description ?? "", /^stopped/);
 });
 
-test("a definition's row summarises its inputs and how many are required (#5224)", () => {
+test("a definition's row summarises its inputs and how many are required (#5245/#5224)", () => {
 	assert.equal(inputsSummary({}), "no inputs");
-	const inputs = {
-		objective: { type: "string", required: true },
-		max_loops: { type: "number", default: 10 },
-	} as unknown as WorkflowInputSchemaMap;
-	assert.equal(inputsSummary(inputs), "2 inputs (1 required)");
-	const item = workflowsListingItems([], [definition("ralph", "iterate a fix\nmore detail", inputs)], NOW)[0];
-	assert.equal(item?.description, "iterate a fix · 2 inputs (1 required)");
+	const authored = workflow({
+		name: "ralph",
+		description: "iterate a fix\nmore detail",
+		inputs: {
+			objective: Type.String(),
+			confirm: Type.Boolean(),
+			note: Type.Optional(Type.String()),
+			max_loops: Type.Integer({ default: 10 }),
+		},
+		outputs: {},
+		run: async () => ({}),
+	});
+	assert.equal(inputsSummary(authored.inputs), "4 inputs (2 required)");
+	const item = workflowsListingItems([], [authored], NOW)[0];
+	assert.equal(item?.description, "iterate a fix · 4 inputs (2 required)");
+});
+
+test("/workflows uses effective run status for blocked runs and returned failures (#5245/#5224)", () => {
+	const store = createStore();
+	store.recordRunStart({ ...run({ id: "auth", status: "running", name: "needs-authorization" }) });
+	store.recordRunBlocked("auth", "Please sign in", {
+		failureKind: "auth",
+		failureRecoverability: "recoverable",
+		failureDisposition: "active_blocked",
+		failureMessage: "Please sign in",
+		resumable: true,
+	});
+	store.recordRunStart({ ...run({ id: "returned", status: "running", name: "deployment" }) });
+	store.recordRunEnd("returned", "completed", { status: "failed", summary: "Deployment did not finish" });
+	const items = workflowsListingItems(store.runs(), [], NOW);
+	const authItem = items.find((item) => item.id === "run:auth");
+	const returnedItem = items.find((item) => item.id === "run:returned");
+	assert.match(authItem?.description ?? "", /^blocked · .* · ✗ Please sign in$/);
+	assert.equal(authItem?.tagTone, "warning");
+	assert.match(authItem?.searchText ?? "", /\bblocked\b/);
+	assert.match(returnedItem?.description ?? "", /^failed · .* · ✗ Deployment did not finish$/);
+	assert.equal(returnedItem?.tag, "✗");
+	assert.equal(returnedItem?.tagTone, "error");
+	assert.match(returnedItem?.searchText ?? "", /\bfailed\b/);
+});
+
+test("/workflows sanitizes terminal control sequences in row text while preserving target ids (#5245)", async () => {
+	initTheme("dark");
+	const payload = "\x1b]52;c;QVVESVQ=\x07";
+	const runs = [
+		run({ id: "label-run", status: "running", name: "safe", label: `${payload}label` }),
+		run({ id: "input-run", status: "running", name: "safe", inputs: { objective: `${payload}input` } }),
+		run({ id: "name-run", status: "running", name: `${payload}name` }),
+		run({
+			id: "stage-run",
+			status: "running",
+			stages: [{ id: "s0", name: `${payload}stage`, status: "running" } as StageSnapshot],
+		}),
+		run({ id: "error-run", status: "failed", endedAt: NOW, error: `${payload}failure` }),
+		run({
+			id: "question-run",
+			status: "running",
+			stages: [
+				{
+					id: "s0",
+					name: "plan",
+					status: "running",
+					pendingPrompt: { kind: "select", message: `${payload}Approve?` },
+				} as unknown as StageSnapshot,
+			],
+		}),
+	];
+	const defs = [definition(`${payload}def`, `${payload}description`)];
+	const items = workflowsListingItems(runs, defs, NOW);
+	for (const item of items) {
+		assert.equal(item.label.includes(payload), false);
+		assert.equal((item.description ?? "").includes(payload), false);
+		assert.equal((item.searchText ?? "").includes(payload), false);
+	}
+	assert.deepEqual(items.at(-1)?.value, { kind: "definition", name: `${payload}def` });
+
+	const terminal = new ScreenTerminal(100, 30);
+	const writes: string[] = [];
+	const originalWrite = terminal.write.bind(terminal);
+	terminal.write = (data: string) => {
+		writes.push(data);
+		originalWrite(data);
+	};
+	const tui = new TuiMainScreen(terminal);
+	let component: PiCustomComponent | undefined;
+	const pending = openWorkflowsListing(
+		{
+			custom: (factory) =>
+				new Promise<undefined>((resolve) => {
+					component = factory(
+						{ terminal: { rows: terminal.rows }, requestRender: () => tui.requestRender() },
+						undefined,
+						undefined,
+						() => resolve(undefined),
+					) as PiCustomComponent;
+					tui.addChild({
+						render: (w: number) => component!.render(w),
+						handleInput: (d: string) => {
+							component!.handleInput?.(d);
+						},
+						invalidate: () => {
+							component!.invalidate?.();
+						},
+					});
+				}),
+		},
+		{ runs: () => runs, definitions: () => defs },
+	);
+	try {
+		tui.start();
+		await terminal.waitForRender();
+		assert.equal(
+			writes.some((chunk) => chunk.includes(payload)),
+			false,
+		);
+	} finally {
+		component?.dispose?.();
+		tui.stop();
+		await pending;
+	}
+});
+
+test("/workflows advances elapsed and relative-end labels on render without a store write (#5245)", async () => {
+	initTheme("dark");
+	let clockNow = 100_000;
+	const spy = vi.spyOn(Date, "now").mockImplementation(() => clockNow);
+	const runs = [
+		run({ id: "live", status: "running", startedAt: 90_000 }),
+		run({ id: "done", status: "completed", startedAt: 80_000, endedAt: 90_000 }),
+	];
+	let component: PiCustomComponent | undefined;
+	let renders = 0;
+	const pending = openWorkflowsListing(
+		{
+			custom: (factory) =>
+				new Promise<undefined>((resolve) => {
+					component = factory(
+						{
+							requestRender() {
+								renders++;
+							},
+							terminal: { rows: 40 },
+						},
+						undefined,
+						undefined,
+						() => resolve(undefined),
+					) as PiCustomComponent;
+				}),
+		},
+		{ runs: () => runs, definitions: () => [] },
+	);
+	try {
+		assert.ok(component);
+		const before = stripVTControlCharacters(component.render(100).join("\n"));
+		assert.match(before, /10s/);
+		assert.match(before, /just now/);
+		clockNow += 120_000;
+		component.handleInput?.("\x1b[B");
+		const after = stripVTControlCharacters(component.render(100).join("\n"));
+		assert.match(after, /2m\b/);
+		assert.match(after, /2m ago/);
+		clockNow += 60_000;
+		component.handleInput?.("\r");
+		assert.deepEqual(await pending, { kind: "run", runId: "done" });
+		assert.ok(renders > 0);
+	} finally {
+		component?.dispose?.();
+		spy.mockRestore();
+	}
+});
+
+test("/workflows guards confirmation when a clock advance drops the searched row before painting (#5245)", async () => {
+	initTheme("dark");
+	let clockNow = 100_000;
+	const spy = vi.spyOn(Date, "now").mockImplementation(() => clockNow);
+	const runs = [
+		run({ id: "expiring", status: "running", startedAt: 90_000 }),
+		run({ id: "fallback", status: "running", startedAt: 10_000, error: "timed out after 10s" }),
+	];
+	let component: PiCustomComponent | undefined;
+	let closed = 0;
+	const pending = openWorkflowsListing(
+		{
+			custom: (factory) =>
+				new Promise<undefined>((resolve) => {
+					component = factory({ requestRender() {}, terminal: { rows: 40 } }, undefined, undefined, () => {
+						closed++;
+						resolve(undefined);
+					}) as PiCustomComponent;
+				}),
+		},
+		{ runs: () => [runs[0]!, { ...runs[1]!, status: "failed", endedAt: 20_000 }], definitions: () => [] },
+	);
+	try {
+		assert.ok(component);
+		for (const key of "10s") component.handleInput?.(key);
+		assert.match(stripVTControlCharacters(component.render(120).join("\n")), /❯ ralph · expiring/);
+		clockNow += 120_000;
+		component.handleInput?.("\r");
+		assert.equal(closed, 0);
+		assert.match(stripVTControlCharacters(component.render(120).join("\n")), /❯ ralph · fallback/);
+		component.handleInput?.("\r");
+		assert.equal(closed, 1);
+		assert.deepEqual(await pending, { kind: "run", runId: "fallback" });
+	} finally {
+		component?.dispose?.();
+		spy.mockRestore();
+	}
 });
 
 test("runs of one workflow are told apart by their first input, and a run waiting on a question says so (#5224)", () => {
@@ -170,7 +376,9 @@ test("an open workflows sheet refreshes runs without losing its search or select
 			custom: (factory) =>
 				new Promise<undefined>((resolve) => {
 					mounted = Promise.resolve(
-						factory({ requestRender() {} }, undefined, undefined, () => resolve(undefined)),
+						factory({ requestRender() {}, terminal: { rows: 30 } }, undefined, undefined, () =>
+							resolve(undefined),
+						),
 					);
 				}),
 		},

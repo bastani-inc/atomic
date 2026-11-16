@@ -173,6 +173,16 @@ export interface PiHostInputFormField {
 	choices?: string[];
 	placeholder?: string;
 	initialValue: string;
+	const?: string | number | boolean;
+	minimum?: number;
+	maximum?: number;
+	exclusiveMinimum?: number;
+	exclusiveMaximum?: number;
+	multipleOf?: number;
+	minLength?: number;
+	maxLength?: number;
+	pattern?: string;
+	format?: string;
 }
 
 export interface PiHostInputFormRequest {

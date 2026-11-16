@@ -1,9 +1,3 @@
-/**
- * `/workflows`: the way into a session's workflow runs. It opens the only run's graph directly, lists several, and says
- * so when there are none. Anything that lists runs opens one through {@link openWorkflowRun}, so Esc at the graph's
- * top goes back to that list.
- */
-
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import type { Store } from "../shared/store.js";
 import { subscribeStoreInvalidation } from "../shared/store-observation.js";
@@ -81,8 +75,12 @@ export async function handleWorkflowsCommand(
 		openWorkflowRun(runs[0]!.id, ctx, deps);
 		return;
 	}
-	// Several runs, or none but definitions to start: the sheet of runs and definitions. Esc at a run's graph comes back.
-	const reopen = (): void => void handleWorkflowsCommand("", ctx, reporter, deps);
+	await showWorkflowsListing(ctx, deps);
+}
+
+async function showWorkflowsListing(ctx: PiCommandContext, deps: WorkflowsCommandDeps): Promise<void> {
+	const { store } = deps;
+	const reopen = (): void => void showWorkflowsListing(ctx, deps);
 	const picked = await openWorkflowsListing(ctx.ui, {
 		runs: () => store.runs(),
 		definitions: () => deps.definitions?.() ?? [],

@@ -90,6 +90,33 @@ describe("/workflows (#5224)", () => {
 		assert.equal(t.pickers.length, 2, "returning reopens the list");
 	});
 
+	it("returns to the sheet when only the opened run remains (#5245)", async () => {
+		const t = harness();
+		const store = createStore();
+		store.recordRunStart({ ...makeRun([]), id: "aaaaaaaa", startedAt: 1 });
+		store.recordRunStart({ ...makeRun([]), id: "bbbbbbbb", startedAt: 2 });
+		const pending = handleWorkflowsCommand("", t.ctx, t.reporter, {
+			overlay: t.overlay,
+			store,
+			definitions: () => [{ normalizedName: "deploy", description: "Deploy", inputs: {} }],
+		});
+		const component = t.pickers[0]({ requestRender() {} }, undefined, undefined, () => {});
+		component.render(100);
+		component.handleInput("\r");
+		await pending;
+		assert.equal(t.opened[0].runId, "bbbbbbbb");
+		store.removeRun("aaaaaaaa");
+		t.opened[0].options.onReturn();
+		await Promise.resolve();
+		assert.equal(t.opened.length, 1, "return must not open the same graph again");
+		assert.equal(t.pickers.length, 2);
+		const returned = t.pickers[1]({ requestRender() {} }, undefined, undefined, () => {});
+		assert.match(returned.render(100).join("\n"), /Definitions/);
+		returned.handleInput("\x1b");
+		returned.dispose?.();
+		component.dispose?.();
+	});
+
 	it("names a run directly, and refuses an unknown one with the session's runs", async () => {
 		const t = harness();
 		const first = "11111111-1111-4111-8111-111111111111";

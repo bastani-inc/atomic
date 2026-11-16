@@ -33,6 +33,15 @@ interface SchemaMeta {
 	readonly description?: string;
 	readonly anyOf?: readonly TSchema[];
 	readonly const?: unknown;
+	readonly minimum?: number;
+	readonly maximum?: number;
+	readonly exclusiveMinimum?: number;
+	readonly exclusiveMaximum?: number;
+	readonly multipleOf?: number;
+	readonly minLength?: number;
+	readonly maxLength?: number;
+	readonly pattern?: string;
+	readonly format?: string;
 }
 
 function meta(schema: TSchema): SchemaMeta {
@@ -90,6 +99,7 @@ export function schemaIsRequired(schema: TSchema): boolean {
 
 /** Derive the normalized input descriptor for a single named field. */
 export function deriveInputField(name: string, schema: TSchema): WorkflowInputEntry {
+	const m = meta(schema);
 	const choices = schemaChoices(schema);
 	const def = schemaDefault(schema);
 	const description = schemaDescription(schema);
@@ -101,6 +111,22 @@ export function deriveInputField(name: string, schema: TSchema): WorkflowInputEn
 	if (description !== undefined) entry.description = description;
 	if (def !== undefined) entry.default = def;
 	if (choices !== undefined) entry.choices = choices;
+	if (typeof m.const === "string" || typeof m.const === "number" || typeof m.const === "boolean") {
+		entry.const = m.const;
+	}
+	if (typeof m.minimum === "number" && Number.isFinite(m.minimum)) entry.minimum = m.minimum;
+	if (typeof m.maximum === "number" && Number.isFinite(m.maximum)) entry.maximum = m.maximum;
+	if (typeof m.exclusiveMinimum === "number" && Number.isFinite(m.exclusiveMinimum)) {
+		entry.exclusiveMinimum = m.exclusiveMinimum;
+	}
+	if (typeof m.exclusiveMaximum === "number" && Number.isFinite(m.exclusiveMaximum)) {
+		entry.exclusiveMaximum = m.exclusiveMaximum;
+	}
+	if (typeof m.multipleOf === "number" && Number.isFinite(m.multipleOf)) entry.multipleOf = m.multipleOf;
+	if (typeof m.minLength === "number" && Number.isFinite(m.minLength)) entry.minLength = m.minLength;
+	if (typeof m.maxLength === "number" && Number.isFinite(m.maxLength)) entry.maxLength = m.maxLength;
+	if (typeof m.pattern === "string") entry.pattern = m.pattern;
+	if (typeof m.format === "string") entry.format = m.format;
 	return entry;
 }
 

@@ -1,3 +1,5 @@
+import { type TSchema, Type } from "typebox";
+import { Value } from "typebox/value";
 import type { WorkflowInputEntry } from "../extension/render-result.js";
 import type { WorkflowInputValues, WorkflowSerializableValue } from "../shared/types.js";
 import type { GraphTheme } from "./graph-theme.js";
@@ -73,27 +75,20 @@ export function createInputsPickerState(
 	};
 }
 
-/**
- * Coerce the rawText map into typed values matching the declared schema.
- * Mirrors the `parseWorkflowArgs` JSON-tolerant logic for text/string
- * fields (so users can paste `["a","b"]` into a text box and have it land
- * as an array), and enforces numeric / boolean parsing for typed fields.
- *
- * Throws on hard parse failure for required fields; lenient on optional.
- * The picker only calls `coerceValues` after `validate` succeeds, so the
- * thrown branch is a defensive guard, not an expected path.
- */
 export function coerceValues(fields: readonly WorkflowInputEntry[], raw: Record<string, string>): WorkflowInputValues {
 	const out: Record<string, WorkflowSerializableValue> = {};
 	for (const f of fields) {
 		const v = raw[f.name] ?? "";
-		if (v === "" && !f.required) continue; // skip empty optionals
+		if (!f.required && v.trim() === "") continue;
 		switch (f.type) {
-			case "number":
-			case "integer": {
-				if (!f.required && v.trim() === "") break;
+			case "number": {
 				const n = Number(v);
 				if (Number.isFinite(n)) out[f.name] = n;
+				break;
+			}
+			case "integer": {
+				const n = Number(v);
+				if (Number.isInteger(n)) out[f.name] = n;
 				break;
 			}
 			case "boolean": {
@@ -102,36 +97,84 @@ export function coerceValues(fields: readonly WorkflowInputEntry[], raw: Record<
 				break;
 			}
 			case "select":
-				if (!f.required && v.trim() === "") break;
+			case "text":
+			case "string":
 				out[f.name] = v;
 				break;
 			default: {
-				// Try JSON for power users pasting structured data; otherwise treat
-				// as a literal string. Mirrors parseWorkflowArgs.
 				if ((v.startsWith("{") && v.endsWith("}")) || (v.startsWith("[") && v.endsWith("]"))) {
 					try {
 						out[f.name] = JSON.parse(v) as WorkflowSerializableValue;
 						break;
 					} catch {
-						// fall through
+						break;
 					}
 				}
 				out[f.name] = v;
+				break;
 			}
 		}
 	}
 	return out;
 }
 
-// ---------------------------------------------------------------------------
-// Validation
-// ---------------------------------------------------------------------------
+function firstSchemaError(def: TSchema, value: number | string, kind: string): string {
+	const first = [...Value.Errors(def, value)][0];
+	if (first === undefined) return `does not match ${kind} schema`;
+	switch (first.keyword) {
+		case "const":
+			return `must equal ${JSON.stringify(first.params.allowedValue)}`;
+		case "minLength":
+		case "maxLength":
+			return `${first.message} (${first.keyword} ${first.params.limit})`;
+		default:
+			return first.message;
+	}
+}
 
-/**
- * Return the reason why `field` is invalid for `value`, or `null` if valid.
- * Used both to flag fields on submit and to drive the dim state of the run
- * key hint.
- */
+function schemaConstraintReason(field: WorkflowInputEntry, value: number | string): string | null {
+	if (field.const !== undefined && value !== field.const) {
+		return `must equal ${JSON.stringify(field.const)}`;
+	}
+	if (field.type === "integer" || field.type === "number") {
+		if (typeof value !== "number") return null;
+		if (
+			field.minimum === undefined &&
+			field.maximum === undefined &&
+			field.exclusiveMinimum === undefined &&
+			field.exclusiveMaximum === undefined &&
+			field.multipleOf === undefined
+		) {
+			return null;
+		}
+		const opts = {
+			...(field.minimum !== undefined ? { minimum: field.minimum } : {}),
+			...(field.maximum !== undefined ? { maximum: field.maximum } : {}),
+			...(field.exclusiveMinimum !== undefined ? { exclusiveMinimum: field.exclusiveMinimum } : {}),
+			...(field.exclusiveMaximum !== undefined ? { exclusiveMaximum: field.exclusiveMaximum } : {}),
+			...(field.multipleOf !== undefined ? { multipleOf: field.multipleOf } : {}),
+		};
+		const schema = field.type === "integer" ? Type.Integer(opts) : Type.Number(opts);
+		return Value.Check(schema, value) ? null : firstSchemaError(schema, value, field.type);
+	}
+	if (typeof value !== "string") return null;
+	if (
+		field.minLength === undefined &&
+		field.maxLength === undefined &&
+		field.pattern === undefined &&
+		field.format === undefined
+	) {
+		return null;
+	}
+	const schema = Type.String({
+		...(field.minLength !== undefined ? { minLength: field.minLength } : {}),
+		...(field.maxLength !== undefined ? { maxLength: field.maxLength } : {}),
+		...(field.pattern !== undefined ? { pattern: field.pattern } : {}),
+		...(field.format !== undefined ? { format: field.format } : {}),
+	});
+	return Value.Check(schema, value) ? null : firstSchemaError(schema, value, "text");
+}
+
 export function invalidForField(field: WorkflowInputEntry, value: string, _idx: number): string | null {
 	const empty = value.trim() === "";
 	if (field.required && empty) {
@@ -140,11 +183,26 @@ export function invalidForField(field: WorkflowInputEntry, value: string, _idx: 
 		return "required";
 	}
 	if (empty) return null;
-	if (field.type === "select" && field.choices && !field.choices.includes(value)) return "not in choices";
-	if (field.type === "boolean" && parseBooleanInput(value) === undefined) return "must be on or off";
-	if (field.type === "integer" && !Number.isInteger(Number(value))) return "must be a whole number";
-	if (field.type === "number" && !Number.isFinite(Number(value))) return "must be a number";
-	return null;
+	if (field.type === "select") {
+		return (field.choices ?? []).includes(value) ? null : "not in choices";
+	}
+	if (field.type === "boolean") {
+		const parsed = parseBooleanInput(value);
+		if (parsed === undefined) return "must be on or off";
+		if (field.const !== undefined && parsed !== field.const) return `must equal ${JSON.stringify(field.const)}`;
+		return null;
+	}
+	if (field.type === "integer") {
+		const n = Number(value);
+		if (!Number.isInteger(n)) return "must be a whole number";
+		return schemaConstraintReason(field, n);
+	}
+	if (field.type === "number") {
+		const n = Number(value);
+		if (!Number.isFinite(n)) return "must be a number";
+		return schemaConstraintReason(field, n);
+	}
+	return schemaConstraintReason(field, value);
 }
 
 export function parseBooleanInput(value: string): boolean | undefined {

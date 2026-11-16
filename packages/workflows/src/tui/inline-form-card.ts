@@ -32,6 +32,7 @@
  */
 
 import type { WorkflowInputEntry } from "../extension/render-result.js";
+import { sanitizeToolDisplayText, sanitizeToolTitleText } from "../shared/tool-payload-bounds.js";
 import { paint } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { renderCompactBandHeader } from "./header.js";
@@ -139,7 +140,7 @@ function renderWorkflowHeader(
 	const current = Math.min(fieldCount, Math.max(1, focusedIdx + 1));
 	return renderCompactBandHeader({
 		label: "WORKFLOW",
-		subtitle: workflowName,
+		subtitle: sanitizeToolTitleText(workflowName),
 		badges: fieldCount > 0 ? [{ text: `${current} / ${fieldCount}`, fg: theme.dim }] : [],
 		width,
 		theme,
@@ -166,10 +167,17 @@ function renderField(
 	const contentWidth = Math.max(1, boxWidth - 2);
 	const borderColor = focused ? theme.accent : theme.borderDim;
 	const rows = renderAskStyleFieldBody(field, raw, focused ? caret : raw.length, focused, theme, contentWidth);
+	const invalid = invalidForField(field, raw, 0);
+	const top = renderFieldTop(field.name, invalid, boxWidth, borderColor, focused, theme);
+	const errorLines =
+		invalid !== null && !top.reasonShown
+			? wrapPlainText(`✗ ${sanitizeToolTitleText(invalid)}`, width).map((line) => paint(line, theme.error))
+			: [];
 	return [
-		renderFieldTop(field.name, invalidForField(field, raw, 0), boxWidth, borderColor, focused, theme),
+		top.line,
 		...rows.map((row) => renderFieldRow(row, contentWidth, borderColor)),
 		renderFieldBottom(boxWidth, borderColor),
+		...errorLines,
 		...renderFieldMeta(field, theme, width),
 	];
 }
@@ -183,16 +191,17 @@ function renderAskStyleFieldBody(
 	width: number,
 ): string[] {
 	if (field.type === "select" && field.choices && field.choices.length > 0) {
-		const selected = Math.max(0, field.choices.indexOf(raw));
-		return field.choices.flatMap((choice, i) =>
-			renderAskChoiceRows(
+		const selected = field.choices.indexOf(raw);
+		return field.choices.flatMap((choice, i) => {
+			const safeChoice = sanitizeToolTitleText(choice);
+			return renderAskChoiceRows(
 				i + 1,
-				focused || i !== selected ? choice : `✓ ${choice}`,
+				focused || i !== selected ? safeChoice : `✓ ${safeChoice}`,
 				focused && i === selected,
 				theme,
 				width,
-			),
-		);
+			);
+		});
 	}
 
 	if (field.type === "boolean") {
@@ -215,20 +224,19 @@ function renderAskStyleFieldBody(
 		];
 	}
 
-	return renderAskInputRows(raw, caret, focused, field.placeholder, theme, width);
+	return renderAskInputRows(field, raw, caret, focused, field.placeholder, theme, width);
 }
 
 function renderInlineSubmitControls(state: InlineFormState, theme: GraphTheme, width: number): string[] {
 	const invalid = computeInvalid(state.fields, state.rawText);
 	return renderSubmitControls({
-		invalidFieldNames: invalid.map((i) => state.fields[i]!.name),
+		invalidFieldNames: invalid.map((i) => sanitizeToolTitleText(state.fields[i]!.name)),
 		submitFocused: state.focusedIdx === state.fields.length,
 		theme,
 		width,
 	});
 }
 
-/** `╭ objective ✓ ───╮`, or `╭ max_loops ✗ must be a whole number ───╮`, from the start (#5224). */
 function renderFieldTop(
 	title: string,
 	invalid: string | null,
@@ -236,13 +244,37 @@ function renderFieldTop(
 	borderColor: string,
 	focused: boolean,
 	theme: GraphTheme,
-): string {
-	const labelText = paint(` ${title} `, focused ? theme.accent : theme.textMuted, { bold: focused });
-	const status = invalid === null ? paint("✓ ", theme.success) : paint(`✗ ${invalid} `, theme.error);
+): { line: string; reasonShown: boolean } {
+	const safeTitle = sanitizeToolTitleText(title);
 	const room = Math.max(0, width - 2);
+	const minTitleCols = Math.min(visibleWidth(safeTitle), 4);
+	if (invalid === null) {
+		const statusPlain = "✓ ";
+		const titleBudget = Math.max(1, room - visibleWidth(statusPlain) - 2);
+		const titleShown = truncateToWidth(safeTitle, titleBudget, "…");
+		const labelText = paint(` ${titleShown} `, focused ? theme.accent : theme.textMuted, { bold: focused });
+		const status = paint(statusPlain, theme.success);
+		const head = truncateToWidth(labelText + status, room, "…");
+		const fill = Math.max(0, room - visibleWidth(head));
+		return {
+			line: paint("╭", borderColor) + head + paint(`${"─".repeat(fill)}╮`, borderColor),
+			reasonShown: true,
+		};
+	}
+	const safeInvalid = sanitizeToolTitleText(invalid);
+	const fullStatusPlain = `✗ ${safeInvalid} `;
+	const reasonShown = minTitleCols + 2 + visibleWidth(fullStatusPlain) <= room;
+	const statusPlain = reasonShown ? fullStatusPlain : "✗ ";
+	const titleBudget = Math.max(1, room - visibleWidth(statusPlain) - 2);
+	const titleShown = truncateToWidth(safeTitle, titleBudget, "…");
+	const labelText = paint(` ${titleShown} `, focused ? theme.accent : theme.textMuted, { bold: focused });
+	const status = paint(statusPlain, theme.error);
 	const head = truncateToWidth(labelText + status, room, "…");
 	const fill = Math.max(0, room - visibleWidth(head));
-	return paint("╭", borderColor) + head + paint(`${"─".repeat(fill)}╮`, borderColor);
+	return {
+		line: paint("╭", borderColor) + head + paint(`${"─".repeat(fill)}╮`, borderColor),
+		reasonShown,
+	};
 }
 
 function renderFieldRow(row: string, contentWidth: number, borderColor: string): string {
@@ -257,10 +289,9 @@ function renderFieldBottom(width: number, borderColor: string): string {
 
 function renderFieldMeta(field: WorkflowInputEntry, theme: GraphTheme, width: number): string[] {
 	const required = field.required ? "required" : "optional";
+	const safeDescription = field.description ? sanitizeToolTitleText(field.description) : "";
 	const text =
-		field.description && field.description.length > 0
-			? `${field.type} · ${required} · ${field.description}`
-			: `${field.type} · ${required}`;
+		safeDescription.length > 0 ? `${field.type} · ${required} · ${safeDescription}` : `${field.type} · ${required}`;
 	return wrapPlainText(text, width).map((line) => paintRequiredMetaLine(line, field.required === true, theme));
 }
 
@@ -273,6 +304,7 @@ function paintRequiredMetaLine(line: string, required: boolean, theme: GraphThem
 }
 
 function renderAskInputRows(
+	field: WorkflowInputEntry,
 	raw: string,
 	caret: number,
 	focused: boolean,
@@ -281,17 +313,24 @@ function renderAskInputRows(
 	width: number,
 ): string[] {
 	const usable = Math.max(1, width);
+	const safePlaceholder = placeholder ? sanitizeToolTitleText(placeholder) : "";
 	if (raw === "") {
 		const value =
-			placeholder && placeholder.length > 0
-				? paint(placeholder, theme.dim) + (focused ? cursorBlock() : "")
+			safePlaceholder.length > 0
+				? paint(safePlaceholder, theme.dim) + (focused ? cursorBlock() : "")
 				: focused
 					? cursorBlock()
 					: "";
 		return [truncateToWidth(value, usable, "…")];
 	}
 
-	const layout = layoutTextField(raw, usable, caret);
+	const clampedRawCaret = Math.max(0, Math.min(caret, raw.length));
+	const safeRaw = field.type === "text" ? sanitizeToolDisplayText(raw) : sanitizeToolTitleText(raw);
+	const safeCaret =
+		field.type === "text"
+			? sanitizeToolDisplayText(raw.slice(0, clampedRawCaret)).length
+			: sanitizeToolTitleText(raw.slice(0, clampedRawCaret)).length;
+	const layout = layoutTextField(safeRaw, usable, safeCaret);
 	return layout.lines.map((line, row) =>
 		focused && row === layout.cursorRow
 			? renderCaretLine(line, layout.cursorOffset ?? line.length, usable, theme, theme.text)
@@ -329,12 +368,14 @@ function renderSubmittedLine(state: InlineFormState, theme: GraphTheme): string 
 }
 
 function composeCommand(state: InlineFormState): string {
-	const parts: string[] = [`/workflow ${state.workflowName}`];
+	const parts: string[] = [`/workflow ${sanitizeToolTitleText(state.workflowName)}`];
 	for (const f of state.fields) {
 		const v = state.rawText[f.name] ?? "";
 		if (v === "" && !f.required) continue;
-		const needsQuotes = /\s|=/.test(v);
-		parts.push(`${f.name}=${needsQuotes ? `"${v}"` : v}`);
+		const safeName = sanitizeToolTitleText(f.name);
+		const safeValue = sanitizeToolTitleText(v);
+		const needsQuotes = /\s|=/.test(safeValue);
+		parts.push(`${safeName}=${needsQuotes ? `"${safeValue}"` : safeValue}`);
 	}
 	return parts.join(" ");
 }

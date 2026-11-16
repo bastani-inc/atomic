@@ -188,7 +188,7 @@ Graph node cards show each model stage's effective model and thinking level abov
 /workflow quit <run-id|--all>
 /workflow resume <run-id> [stage-id-or-name] [message] [--accept-entry-changes]
 /workflow fork <run-id> [--from <stage-path>]
-/workflows [full-workflow-uuid]
+/workflows [run-id]
 /workflow reload
 ```
 
@@ -211,10 +211,10 @@ Surface behavior:
 
 - **Graph vs. stage chat** - Use `connect` for the workflow graph. Use `attach` when you want a chat pane for a specific stage.
 - **Run state** - The graph header puts the run's state before its stage counts and colors the ORCHESTRATOR pill to match: `↑ blocked`, followed by the exit reason when the workflow gave one and shortened to fit; `❚❚ paused`; or `○ quit`. A running run shows no state, including one you resumed. `↑ N` counts blocked stages. The stage switcher (`/`), `/workflow status`, and the `/workflow connect` picker show the same state.
-- **Going back** - In an attached stage chat, `←` on an empty prompt returns to the graph. A choice or yes/no question moves with `←`, so there `esc` returns to the graph; the question stays waiting. The graph has no prompt: `esc` goes back one level (it closes a stage's failure detail, a tool detail or the `?` overlay first), and at the top it returns to where you opened the graph from, such as main chat or the `/workflows` list. `←` does the same on a node with nothing to its left, and otherwise moves to that sibling. A custom question widget owns every key; `ctrl+c` closes the workflow view from it. `ctrl+x` does not navigate. See [Keybindings](/keybindings#navigation).
+- **Going back** - In an attached stage chat, `←` on an empty prompt returns to the graph. On a choice or yes/no question, `←` moves between the choices, so `esc` closes the question card back to the stage's prompt. The question stays waiting: `enter` on the empty prompt reopens it, and `←` on the empty prompt returns to the graph. The graph has no prompt: `esc` goes back one level (it closes a stage's failure detail, a tool detail or the `?` overlay first), and at the top it returns to where you opened the graph from, such as main chat or the `/workflows` list. `←` does the same on a node with nothing to its left, and otherwise moves to that sibling. A custom question widget owns every key; `ctrl+c` closes the workflow view from it. `ctrl+x` does not navigate. See [Keybindings](/keybindings#navigation).
 - **Graph keys** - The hint line under the graph lists exactly the keys that work on the focused node, and `?` lists them all. `↑↓←→` move, `enter` opens the focused node (a stage's chat, a tool's detail, or a failed stage's failure detail), `/` finds a stage, and `f` cycles a status filter (all, running, completed, failed) that dims the nodes it doesn't match without moving anything. On a running or waiting stage, `x` then `x` again within 3 seconds stops it so it can be resumed from its stage chat. A stopped stage or run shows `◼` in a muted colour; a failed one shows a red `✗`.
 - **Failed stages** - `enter` on a failed stage opens its failure detail: the stage, how long it ran, and a one-line reason. `r` retries the failed stage, keeping the completed ones; `f` forks the run into a new run, leaving the original unchanged; `t` opens the stage's transcript; `l` switches between the summary and the full log, including the error's code, hint and causes. A retry or fork shows its new run in the graph.
-- **Stage input label** - Attached stage chats show `[stage: name]` on the composer top rule, a mounted question's top rule, and awaiting-input prompt borders so you can tell which stage owns the input. Long names truncate with `…`. A subagent's transcript opened from `/tasks` labels its prompt `[subagent: name]` the same way.
+- **Stage input label** - An attached stage chat's composer rule names the stage and its state, such as `stage · implement · done`, and its placeholder reads `Message implement…` (`Answer implement…` while the stage waits on a question). Awaiting-input prompt cards show `[stage: name]` on their border. Long names truncate with `…`. A subagent's chat opened from `/tasks` names the subagent, its task and its state on its composer rule the same way.
 - **Draft preservation** - Leaving a stage preserves unsent composer and prompt drafts and keeps pending custom questions unresolved so they reappear when you attach again.
 - **Queued-message survival** - Detaching preserves queued steering and follow-up text. Reattach to see the pending messages; the graph shows their count as `✉ N queued`. Queues also survive model fallback and eligible post-mortem reopening. Custom session adapters must publish `queue_update` snapshots and expose pre-attachment queues as described in [authoring](/workflows/authoring#stage-follow-on-user-messages).
 - **Reserved keys** - `ctrl+d` and `q` do not navigate workflow surfaces; `ctrl+d` keeps its ordinary editor or prompt behavior where applicable, and `q` remains printable in text-owning prompts. In a stage chat with a prompt, `esc` only interrupts a running stage; in the graph it closes the stage switcher, a detail or the `?` overlay, then goes back to where the graph was opened from. `ctrl+c` and graph `h` close and hide as before.
@@ -235,7 +235,9 @@ Surface behavior:
 - **Runs** - newest first. Each row names the workflow and what tells the run apart (its label, else its first text input, else its short id), then its state: `running · stage 3/5 implement · 12m · $1.84`, `needs input · <question>` with `◆`, or a failed run's `✗` and one-line reason. Stopped runs show `◼`.
 - **Definitions** - every registered workflow, with its description and how many inputs it takes (`4 inputs (2 required)`).
 
-Run rows update while the sheet is open, keeping your search and selected run. Type to search. Enter on a run opens its graph, and `esc` at the graph's top comes back to the sheet; Enter on a definition starts it, asking for its inputs first. `esc` closes the sheet. With no runs and no definitions, or without an interactive terminal, it says `No workflows in this session.` or prints the run list. `/workflow resume` keeps the cross-session resume picker described below.
+Run rows update while the sheet is open, keeping your search and selected run. Type to search. Enter on a run opens its graph, and `esc` at the graph's top comes back to the sheet; Enter on a definition starts it, asking for its inputs first. `esc` clears a typed search first; with an empty search it closes the sheet. With no runs and no definitions, or without an interactive terminal, it says `No workflows in this session.` or prints the run list. `/workflow resume` keeps the cross-session resume picker described below.
+
+The inputs form shows `✓` for a ready field or `✗` with the reason it needs attention, including declared number limits and text constraints. A select or boolean without a default starts unchosen. Required fields must be answered; an optional field left blank or filled only with whitespace is omitted so its default can apply. Text stays literal, even when it looks like JSON. Use Tab to move between fields and the submit button, Enter to continue or run, and Esc to cancel.
 
 At the supported 40-column terminal minimum, attached stage chats keep the `← return to graph` hint. The TUI may truncate provider/model context to make room, but it keeps that context separate from the hierarchy hint so the controls stay readable.
 
@@ -680,9 +682,9 @@ Fresh completed inspection does not currently persist the workflow's declared ro
 ```text
 /workflow resume                          # Mixed picker: resumable + completed
 /workflow resume <full-workflow-uuid> # Resume unfinished work or open completed detail/chat
-/workflows                               # Alias for the same mixed picker
-/workflows <full-workflow-uuid>        # Alias for targeted resume/open
 ```
+
+`/workflows` is not an alias for this picker: it lists only the current session's runs and definitions, and `/workflows <run-id>` opens a run from this session.
 
 Targets resolve across top-level live, resumable durable, and completed entries as one namespace using full UUIDs or unique 8-hex prefixes. Exact loadable paused live targets retain direct in-session precedence. Prefixes require successful catalog discovery and reject collisions. A root appearing in both resumable and read-only history remains resumable. Nested child runs remain excluded from this top-level resume namespace.
 

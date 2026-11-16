@@ -1,6 +1,8 @@
 import type { WorkflowInputEntry } from "../extension/render-result.js";
+import { sanitizeToolDisplayText, sanitizeToolTitleText } from "../shared/tool-payload-bounds.js";
 import { BOLD, hexBg, hexToAnsi, paint, RESET } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
+import { parseBooleanInput } from "./inputs-picker-types.js";
 import {
 	formatReviewValue,
 	renderWrappedPrefixedLines,
@@ -56,9 +58,21 @@ export function renderAskChoiceRows(
 export function renderSubmitReview(opts: SubmitPaneRenderOpts): string[] {
 	const { workflowName, fields, rawText, theme, width } = opts;
 	const out: string[] = [paint("Review your inputs", theme.accent, { bold: true }), ""];
-	out.push(truncateToWidth(paint("/workflow ", theme.dim) + paint(workflowName, theme.text), width, "…"));
+	out.push(
+		truncateToWidth(
+			paint("/workflow ", theme.dim) + paint(sanitizeToolTitleText(workflowName), theme.text),
+			width,
+			"…",
+		),
+	);
 	for (const field of fields) {
-		out.push(truncateToWidth(paint(" ● ", theme.dim) + paint(field.name, theme.textMuted), width, "…"));
+		out.push(
+			truncateToWidth(
+				paint(" ● ", theme.dim) + paint(sanitizeToolTitleText(field.name), theme.textMuted),
+				width,
+				"…",
+			),
+		);
 		out.push(...renderReviewValueRows(field, rawText[field.name] ?? "", theme, width));
 	}
 	return out;
@@ -140,9 +154,9 @@ function renderReviewValueRows(field: WorkflowInputEntry, raw: string, theme: Gr
 
 function formatFieldReviewValue(field: WorkflowInputEntry, raw: string): string {
 	if (field.type === "boolean") {
-		const normalized = raw.trim().toLowerCase();
-		if (normalized.length === 0) return formatReviewValue(raw);
-		return normalized === "true" || normalized === "1" ? "on" : "off";
+		if (raw.trim().length === 0) return formatReviewValue("");
+		const parsed = parseBooleanInput(raw);
+		if (parsed !== undefined) return parsed ? "on" : "off";
 	}
-	return formatReviewValue(raw);
+	return formatReviewValue(sanitizeToolDisplayText(raw));
 }
