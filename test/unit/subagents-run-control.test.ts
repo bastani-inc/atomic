@@ -464,6 +464,10 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 			};
 		}
 		const gate = [...state.finishOn].find(([marker]) => task.includes(marker))?.[1];
+		// The scripted session has no turn to continue with the tool results a woken or resumed run carries, so its prompt
+		// gate cannot hold such a run: a gated one waits before it starts instead, where it has saved none of them, until
+		// its gate opens or it is stopped (#5012).
+		if (gate && options.resumeToolResults?.length) await openedOrStopped(gate.promise, options.signal);
 		const onSession = state.onSession ? { onSession: state.onSession } : {};
 		const disposeGate = state.disposeGate;
 		const dispose = gate && disposeGate ? { dispose: () => disposeGate.promise } : {};
@@ -504,6 +508,15 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 		removeTempDirectory(cwd);
 	});
 	return state;
+}
+
+/** Settles once `gate` opens or `signal` aborts, as a run's stop aborts it. */
+function openedOrStopped(gate: Promise<void>, signal: AbortSignal | undefined): Promise<void> {
+	return new Promise((resolve) => {
+		if (signal?.aborted) return resolve();
+		signal?.addEventListener("abort", () => resolve(), { once: true });
+		void gate.then(resolve);
+	});
 }
 
 /** Discovery as the default scope does it: a project agent shadows a user agent of the same name in `both`. */
