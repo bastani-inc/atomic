@@ -3,17 +3,9 @@ import type { Theme } from "../../../../../modes/interactive/theme/theme.js";
 import { singleLineDisplayText } from "../../../../../utils/terminal-text.ts";
 import type { StatefulView } from "../stateful-view.ts";
 
-/**
- * Per-tick projection of TabBar state. The selector
- * (`selectTabBarProps`) hoists every render-time derivation
- * (`allAnswered`, `answered`, `isActive`, `submitActive`) into props so
- * `render()` is pure styling. Replaces the prior `setConfig(TabBarConfig)`
- * snowflake and the inline `+ 1` magic at `props-adapter.ts:127`.
- */
 export interface TabBarProps {
 	/** One per author-defined question, in order. */
 	tabs: ReadonlyArray<{ label: string; answered: boolean; active: boolean }>;
-	/** Submit-tab state. `allAnswered` drives the success/dim color picker. */
 	submit: { active: boolean; allAnswered: boolean };
 }
 
