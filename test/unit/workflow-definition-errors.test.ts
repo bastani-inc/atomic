@@ -86,6 +86,7 @@ describe("workflow definition errors before launch (#5224)", () => {
 		assert.match(shown, /Fix the file, then run \/workflow reload/);
 		assert.doesNotMatch(shown, /at importWorkflow/, "no stack frame, even in the details");
 		assert.match(shown, /2 stack frames hidden/);
+		assert.equal(shown.match(/Unexpected token/g)?.length, 1, "the reason is shown once");
 	});
 
 	it('drops discovery\'s `Failed to import "<file>":` prefix from the reason, since the row names the file', () => {

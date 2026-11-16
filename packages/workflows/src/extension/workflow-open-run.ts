@@ -47,7 +47,9 @@ export interface WorkflowsCommandDeps {
  */
 export function formatInvalidDefinitionDetails(definition: WorkflowsListingInvalidDefinition): string {
 	const { kept, frames } = withoutStackFrames(definition.message);
-	const detail = kept.filter((line) => line.trim() !== definition.reason && line.trim() !== "").slice(0, 8);
+	// The first message line is the reason, already shown (without the file the row names).
+	const first = kept.findIndex((line) => line.trim() !== "");
+	const detail = kept.filter((line, index) => index !== first && line.trim() !== "").slice(0, 8);
 	const lines = [`✗ Workflow "${definition.name}" could not be loaded (${definition.code})`, ""];
 	if (definition.source !== undefined) lines.push(`file    ${definition.source}`);
 	lines.push(`reason  ${definition.reason}`);
