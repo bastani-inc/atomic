@@ -132,7 +132,10 @@ export function _handleAgentEvent(this: AgentSession, received: AgentEvent): Pro
 	}
 	let event = withoutDetachedPlaceholders(this, received);
 	if (event === undefined) return;
-	if (event.type === "agent_start") this._undeliveredAgentStarts += 1;
+	if (event.type === "agent_start") {
+		this._undeliveredAgentStarts += 1;
+		this._awaitingStartAfterInterrupt = false;
+	}
 	if (event.type === "agent_end" && event.messages.some((message) => persistenceStopReplies.has(message))) {
 		event = { ...event, messages: event.messages.filter((message) => !persistenceStopReplies.has(message)) };
 	}
@@ -578,6 +581,7 @@ export function _replaceMessageInPlace(this: AgentSession, target: AgentMessage,
 export async function _emitExtensionEvent(this: AgentSession, event: AgentEvent): Promise<void> {
 	if (event.type === "agent_start") {
 		if (this._agentRunAbortRequested && !this._admittedRecoveryTurn) this.agent.abort();
+		this._startAbortedForInterrupt = this._abortPreparedRunAtStart;
 		if (this._abortPreparedRunAtStart) {
 			this._abortPreparedRunAtStart = false;
 			this.agent.abort();

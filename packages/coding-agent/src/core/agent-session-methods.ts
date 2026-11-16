@@ -620,6 +620,8 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	/** The current turn was ended by {@link interruptTurn}: a child's message admission stays open after it. */
 	_turnInterruptedByUser: boolean;
 	_abortPreparedRunAtStart: boolean;
+	_startAbortedForInterrupt: boolean;
+	_awaitingStartAfterInterrupt: boolean;
 	_undeliveredAgentStarts: number;
 	/** A child whose turn the user interrupted waits here: the next message it receives starts its next turn. */
 	_awaitingMessageAfterInterrupt: boolean;

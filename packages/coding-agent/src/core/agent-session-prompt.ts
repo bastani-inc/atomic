@@ -632,6 +632,7 @@ export async function _runAgentPrompt(
 		);
 		return;
 	}
+	let nativeRunStarted = false;
 	// Any run that starts ends the gap before a fresh stage's first prompt (#3919).
 	this._workflowStageAwaitingFirstPrompt = false;
 	if (this._activePromptCount === 0 && !this.isStreaming) {
@@ -737,6 +738,7 @@ export async function _runAgentPrompt(
 		this._pendingToolNames.clear();
 		reportDispatch?.("started");
 		const turn = this.agent.prompt(messages);
+		nativeRunStarted = true;
 		releasePreparation();
 		if (this.isStreaming) promptStarted?.();
 		await turn;
@@ -757,6 +759,7 @@ export async function _runAgentPrompt(
 		await this._awaitPendingPostCompactionContinuation();
 		await runBeforeSettleContinuations(this);
 	} finally {
+		if (preparation && !nativeRunStarted) this._abortPreparedRunAtStart = false;
 		releasePreparation();
 		if (ownsPreparation && !preparation) this._isPreparingRun = false;
 		this._runSystemPromptOptions = undefined;
@@ -865,8 +868,9 @@ async function settleSubagentMessages(session: AgentSession): Promise<void> {
 	);
 	// #5224: a turn the user interrupted from the child's chat is not the child's end. Its admission stays open for the
 	// next message, which starts a turn; the child's execution ending seals it.
-	if (session._turnInterruptedByUser) {
+	if (session._turnInterruptedByUser || session._awaitingStartAfterInterrupt) {
 		session._turnInterruptedByUser = false;
+		session._awaitingStartAfterInterrupt = true;
 		session._awaitingMessageAfterInterrupt = true;
 		return;
 	}

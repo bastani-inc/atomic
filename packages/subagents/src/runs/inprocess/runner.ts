@@ -581,6 +581,7 @@ export function nextTurnSettled(
 	options: {
 		readonly waitForStart?: boolean;
 		readonly skipStarts?: number;
+		readonly skipStart?: () => boolean;
 		readonly subscribeDrained?: (listener: () => void) => () => void;
 	} = {},
 ): Promise<void> {
@@ -600,7 +601,7 @@ export function nextTurnSettled(
 		unsubscribe = session.subscribe((event) => {
 			if (event.type === "agent_start") {
 				if (startsToSkip > 0) startsToSkip -= 1;
-				else started = true;
+				else if (options.skipStart?.() !== true) started = true;
 			} else if (options.subscribeDrained === undefined) {
 				if (event.type === "agent_settled" && started && !session.isStreaming) finish();
 				else if (event.type === "agent_end" && started)
@@ -1956,13 +1957,8 @@ export class SubagentControlRuntime {
 					[signals.abort, signals.interrupt, executionEnded.signal],
 					{
 						waitForStart: true,
-						skipStarts:
-							(transcriptSession._undeliveredAgentStarts ?? 0) +
-							(prepared !== undefined &&
-							transcriptSession.isStreaming &&
-							!transcriptSession.agent.state.isStreaming
-								? 1
-								: 0),
+						skipStarts: transcriptSession._undeliveredAgentStarts ?? 0,
+						skipStart: () => transcriptSession._startAbortedForInterrupt === true,
 						...(prepared === undefined
 							? {}
 							: {
@@ -2053,8 +2049,13 @@ export class SubagentControlRuntime {
 			const taskDispatched = new Promise<void>((resolve) => {
 				markTaskDispatched = () => resolve();
 			});
+			let artifactJsonlPath = admitted.spec.artifactJsonlPath;
 			unsubscribe = session.subscribe((event) => {
-				writeEvent(admitted.spec.artifactJsonlPath, event);
+				try {
+					writeEvent(artifactJsonlPath, event);
+				} catch {
+					artifactJsonlPath = undefined;
+				}
 				if (event.type === "message_start" && event.message.role === "assistant")
 					observedStreamingMessage = beginStreamingAssistantMessage(event.message);
 				else if (event.type === "message_update" && observedStreamingMessage)

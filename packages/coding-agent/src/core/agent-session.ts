@@ -190,6 +190,8 @@ class AgentSessionBase {
 	protected _stopAfterTurnBlockedContinuation = false;
 	protected _turnInterruptedByUser = false;
 	protected _abortPreparedRunAtStart = false;
+	readonly _startAbortedForInterrupt: boolean = false;
+	protected _awaitingStartAfterInterrupt = false;
 	readonly _undeliveredAgentStarts: number = 0;
 	protected _awaitingMessageAfterInterrupt = false;
 	protected _disposed = false;
