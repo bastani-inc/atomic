@@ -63,6 +63,7 @@ export { AgentTaskHost, type AgentTaskHostBinding, type AgentTaskRunnerFactory }
 export {
 	type AgentPanelActionResult,
 	type AgentPanelItem,
+	type AgentPanelOpenOptions,
 	type AgentPanelSession,
 	type AgentPanelSource,
 	type AgentPanelSourceRegistration,

@@ -295,7 +295,7 @@ test("mounted inspector inherits render settings and toggles only the host tool 
 	let settingsReads = 0;
 	let gets = 0;
 	const sets: boolean[] = [];
-	let completion: Promise<void> | undefined;
+	let completion: Promise<unknown> | undefined;
 	try {
 		await fixture.start("Bridge chat");
 		const session = SessionManager.inMemory();

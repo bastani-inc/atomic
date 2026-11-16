@@ -274,16 +274,18 @@ test("a chat's footer follows the session it is given, and counts the tasks of i
 		hostOptions({ footerData: FOOTER_DATA, getChatBoxSession: () => current, getTaskSource: () => undefined }),
 	);
 	try {
-		assert.deepEqual(text(withSource.renderFooter(80)).split("\n"), [
+		// A chat lists its own active tasks below its footer as agent-panel rows (#5224).
+		const rows = (footer: string) => footer.split("\n").map((line) => line.replace(/ {2,}/g, "  ").trimEnd());
+		assert.deepEqual(rows(text(withSource.renderFooter(80))), [
 			`first-model • ${BOX_FOOTER_CWD}`,
-			"Tasks  1 local agent running · /tasks",
+			"  ∀ worker  Footer count  running",
 		]);
 		for (const host of [bare, empty])
 			assert.deepEqual(text(host.renderFooter(80)).split("\n"), [`first-model • ${BOX_FOOTER_CWD}`]);
 		current = boxSession("second-model");
-		assert.deepEqual(text(withSource.renderFooter(80)).split("\n"), [
+		assert.deepEqual(rows(text(withSource.renderFooter(80))), [
 			`second-model • ${BOX_FOOTER_CWD}`,
-			"Tasks  1 local agent running · /tasks",
+			"  ∀ worker  Footer count  running",
 		]);
 	} finally {
 		withSource.dispose();
@@ -308,7 +310,7 @@ test("a chat that has an agent session counts the tasks of that session's own st
 		}),
 	);
 	try {
-		assert.match(text(host.renderFooter(80)), /Tasks {2}1 local agent running/);
+		assert.match(text(host.renderFooter(80)), /∀ worker {2}Owned by the session/);
 	} finally {
 		host.dispose();
 		await owned.dispose();
@@ -329,7 +331,7 @@ test("a chat that does not own its running session never offers to interrupt it,
 	const borrowed = new ChatSessionHost(hostOptions({ footerData: FOOTER_DATA, getChatBoxSession: () => session }));
 	const owned = new ChatSessionHost(hostOptions({ footerData: FOOTER_DATA, getAgentSession: () => session as never }));
 	try {
-		assert.deepEqual(text(borrowed.renderFooter(80)).split("\n"), ["working"]);
+		assert.deepEqual(borrowed.renderFooter(80), []);
 		assert.match(text(owned.renderFooter(80)), /esc to interrupt/);
 		session = boxSession("busy-model");
 		assert.deepEqual(text(borrowed.renderFooter(80)).split("\n"), [`busy-model • ${BOX_FOOTER_CWD}`]);

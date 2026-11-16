@@ -160,13 +160,15 @@ export function renderBoardRow(row: TaskBoardRow, selected: boolean, width: numb
 	const nameColumn = Math.min(NAME_COLUMN, Math.max(6, Math.floor((width - 6) / 3)));
 	const name = truncateToWidth(rowName(row), nameColumn - 1);
 	const namePadded = name + " ".repeat(Math.max(1, nameColumn - visibleWidth(name)));
-	let task = rowTask(row);
-	if (row.kind === "item" && row.item.progress && state !== "input")
-		task = `${task} · ${row.item.progress.done}/${row.item.progress.total}`;
-	const reason = row.kind === "item" && state === "failed" && row.item.reason ? ` · ${row.item.reason}` : "";
+	const progress =
+		row.kind === "item" && row.item.progress && state !== "input"
+			? `${row.item.kind === "workflow" ? "stage " : ""}${row.item.progress.done}/${row.item.progress.total}`
+			: "";
+	const reason = row.kind === "item" && state === "failed" && row.item.reason ? row.item.reason : "";
+	const task = [rowTask(row), progress, reason].filter(Boolean).join(" · ");
 	const meta = width < 40 ? "" : rowMeta(row);
 	const fixed = 2 + 2 + nameColumn + (meta ? 2 + visibleWidth(meta) : 0);
-	const taskText = truncateToWidth(task + reason, Math.max(1, width - fixed));
+	const taskText = truncateToWidth(task, Math.max(1, width - fixed));
 	const gap = Math.max(1, width - 2 - 2 - nameColumn - visibleWidth(taskText) - visibleWidth(meta));
 	const finished = stateGroup(state) === "done";
 	const nameText = selected ? theme.bold(namePadded) : finished ? theme.fg("muted", namePadded) : namePadded;

@@ -272,7 +272,7 @@ export function agentPanelKeys(selected: AgentPanelRow | undefined): NavKey[] {
 					{ action: "app.list.open", label: "open" },
 					{ action: "app.list.stop", label: isFinishedPanelRow(selected) ? "dismiss" : "stop" },
 				]),
-		{ keys: "esc", label: "back to prompt" },
+		{ keys: "esc/←", label: "back to prompt" },
 		{ action: "app.keys.help", label: "keys" },
 	];
 }
@@ -298,8 +298,10 @@ export class AgentPanelFocus {
 		this.keepInView();
 	}
 	/** Focus starts on the first row below `main`, as ↓ from the prompt moves one step. */
-	enter(): void {
-		this.selectedId = this.rows[0]?.id ?? AGENT_PANEL_MAIN_ID;
+	enter(selectId?: string): void {
+		this.selectedId = this.rows.some((row) => row.id === selectId)
+			? (selectId as string)
+			: (this.rows[0]?.id ?? AGENT_PANEL_MAIN_ID);
 		this.keepInView();
 	}
 	selected(): AgentPanelRow | undefined {
@@ -338,7 +340,8 @@ export class AgentPanelFocus {
 		}
 		const stopKey = this.keys.matches(data, "app.list.stop");
 		if (!stopKey) this.stopConfirm.reset();
-		if (is(data, "escape")) {
+		// Esc and ← go back one level, to the prompt the panel was focused from.
+		if (is(data, "escape") || is(data, "left")) {
 			this.actions.close();
 			return true;
 		}

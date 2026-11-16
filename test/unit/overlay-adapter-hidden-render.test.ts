@@ -68,8 +68,14 @@ async function registerIsolatedTests(): Promise<void> {
 		"../../packages/coding-agent/src/core/model-label.js"
 	);
 	// The stage's input label is the shared chat-input label (#4640).
-	const { applyInputLabelToEditorTopRule, buildInputLabel, INPUT_LABEL_MIN_COLUMNS, inputLabelMarker, ruleOpenColor } =
-		await import("../../packages/coding-agent/src/modes/interactive/components/input-label.js");
+	const {
+		applyAttachedComposer,
+		applyInputLabelToEditorTopRule,
+		buildInputLabel,
+		INPUT_LABEL_MIN_COLUMNS,
+		inputLabelMarker,
+		ruleOpenColor,
+	} = await import("../../packages/coding-agent/src/modes/interactive/components/input-label.js");
 	// Pending-input labels cut long prompts with the shared surrogate-safe slice (#5097).
 	const { sliceHead } = await import("../../packages/coding-agent/src/core/tools/truncate.js");
 	// The graph shares the navigation hint line, key overlay and two-press confirmation (#5224).
@@ -80,6 +86,7 @@ async function registerIsolatedTests(): Promise<void> {
 		ChatSessionHost: TestComponent,
 		formatModelLabel,
 		MODEL_LABEL_SEPARATOR,
+		applyAttachedComposer,
 		applyInputLabelToEditorTopRule,
 		buildInputLabel,
 		INPUT_LABEL_MIN_COLUMNS,

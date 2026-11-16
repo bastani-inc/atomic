@@ -10,6 +10,7 @@ import {
 } from "@bastani/atomic-tui";
 import type { KeybindingsManager } from "../../../core/keybindings.ts";
 import type { PromptRoute, TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
+import { liveElapsedMs } from "../../../core/tasks/live-elapsed.ts";
 import { OwnerTaskStore } from "../../../core/tasks/owner-store.js";
 import { ownerTaskViewSource, type TaskViewSource } from "../../../core/tasks/task-view-source.js";
 import { theme } from "../theme/theme.js";
@@ -139,12 +140,12 @@ export class TaskInspector implements Component {
 	private helpOpen = false;
 	/** Where ← from an open task chat goes: the list, the task's detail page, or out to whatever opened the inspector. */
 	private chatFrom: "list" | "detail" | "caller" = "detail";
+	/** The inspector closed by going back one level (← or ↓ in a chat opened by the caller), not by Ctrl+C. */
+	closedByBack = false;
 	/** What ← from a chat opened by the caller names, such as `main chat`. */
 	private callerLabel = "back";
 	/** Typed shell input per task, kept when the reader leaves the input and restored when they return. */
 	private readonly inputDrafts = new Map<TaskId, string>();
-	/** When each running task was first seen, so elapsed times advance between the task's own reports. */
-	private readonly liveSince = new Map<TaskId, number>();
 	/** The open transcript of the selected task, on the shared chat stack. */
 	private transcript?: TaskTranscriptPage;
 	private status = "";
@@ -170,6 +171,8 @@ export class TaskInspector implements Component {
 	private releaseBoardSource?: () => void;
 	/** Items dismissed with `x` after they finished, so the list leaves them out. */
 	private readonly dismissedItems = new Set<string>();
+	/** Whether the reader or the caller has chosen a row, so new rows from a source don't move the selection. */
+	private selectionChosen = false;
 	private readonly unsubscribe: () => void;
 	private readonly transcriptEnvironment: () => TaskTranscriptEnvironment | undefined;
 	constructor(
@@ -249,6 +252,7 @@ export class TaskInspector implements Component {
 	private readonly requestRender: () => void;
 	private readonly close: () => void;
 	open(id?: TaskId): void {
+		if (id !== undefined) this.selectionChosen = true;
 		this.navigation.open(id);
 	}
 	/**
@@ -256,6 +260,7 @@ export class TaskInspector implements Component {
 	 * one level back to `backLabel`, instead of showing the task's list or detail page.
 	 */
 	openChat(id: TaskId, backLabel = "main chat"): void {
+		this.selectionChosen = true;
 		this.navigation.open(id);
 		if (this.navigation.selectedTaskId !== id) return;
 		this.chatFrom = "caller";
@@ -275,6 +280,9 @@ export class TaskInspector implements Component {
 			this.requestRender();
 		});
 		this.refreshOrder();
+		// Until the reader picks a row, the list starts on its first row, which may now be another source's waiting run.
+		const first = this.boardRows()[0];
+		if (!this.selectionChosen && first !== undefined) this.navigation.select(first.id);
 		this.requestRender();
 		return () => {
 			if (this.boardSource !== source) return;
@@ -459,6 +467,7 @@ export class TaskInspector implements Component {
 	}
 	/** Every key belongs to the inspector except the host's thinking toggle when it leaves that alone. */
 	handleInput(data: string): boolean {
+		this.selectionChosen = true;
 		return this.route(data) || !isHostThinkingToggle(data);
 	}
 	private route(data: string): boolean {
@@ -551,6 +560,7 @@ export class TaskInspector implements Component {
 		// ← on an empty prompt, or at the start of a typed one (kept for the return), goes back one level.
 		if (keys.matches(data, "app.nav.back") && transcript.cursorAtStart()) {
 			if (this.chatFrom === "caller") {
+				this.closedByBack = true;
 				this.close();
 				return true;
 			}
@@ -560,6 +570,12 @@ export class TaskInspector implements Component {
 			if (this.chatFrom === "list") this.navigation.focus = { kind: "tasks" };
 			else void this.loadDetail();
 			this.requestRender();
+			return true;
+		}
+		// Opened from the agent panel, ↓ on an empty prompt goes to the panel too, as it does from the main chat.
+		if (this.chatFrom === "caller" && keys.matches(data, "app.agents.focus") && !transcript.hasDraft()) {
+			this.closedByBack = true;
+			this.close();
 			return true;
 		}
 		if (isNavHelpKey(keys, data) && !transcript.hasDraft()) {
@@ -580,6 +596,8 @@ export class TaskInspector implements Component {
 	 */
 	private handleBoardInput(data: string): boolean {
 		const keys = getKeybindings();
+		// A one-off notice, such as "Sent to …", lasts until the next key.
+		this.status = "";
 		if (this.filtering) {
 			if (matchesKey(data, "escape")) {
 				this.filtering = false;
@@ -736,14 +754,8 @@ export class TaskInspector implements Component {
 	/** The waiting first press of `x`, as the line under the list shows it. */
 	/** A running task's elapsed time advances between its own reports, from when this view first saw it running. */
 	private withLiveElapsed(task: TaskRecord): TaskRecord {
-		if (task.execution.kind !== "running") {
-			this.liveSince.delete(task.ref.taskId);
-			return task;
-		}
-		const now = Date.now();
-		const since = this.liveSince.get(task.ref.taskId) ?? now - (task.metrics?.elapsedMs ?? 0);
-		this.liveSince.set(task.ref.taskId, since);
-		return { ...task, metrics: { ...task.metrics, elapsedMs: Math.max(task.metrics?.elapsedMs ?? 0, now - since) } };
+		const elapsedMs = liveElapsedMs(task.ref.taskId, task.metrics?.elapsedMs, task.execution.kind === "running");
+		return elapsedMs === task.metrics?.elapsedMs ? task : { ...task, metrics: { ...task.metrics, elapsedMs } };
 	}
 	private stopNotice(): string {
 		const finished = this.navigation.finishedWhileArmed;
@@ -785,7 +797,11 @@ export class TaskInspector implements Component {
 				...renderNavKeyOverlay("keys · task chat", TASK_CHAT_OVERLAY_KEYS, width, style, getKeybindings()),
 			].slice(0, Math.max(1, budget));
 		const back = this.chatFrom === "caller" ? this.callerLabel : this.chatFrom === "list" ? "tasks" : "task";
-		const hint = renderNavHintLine(taskChatKeys(back, transcript.interruptible()), width, style, getKeybindings());
+		const chatKeys = taskChatKeys(back, transcript.interruptible());
+		// From the agent panel, ↓ returns there as well.
+		if (this.chatFrom === "caller" && back === "agents")
+			chatKeys.splice(1, 0, { action: "app.agents.focus", label: "agents" });
+		const hint = renderNavHintLine(chatKeys, width, style, getKeybindings());
 		const footer = [...(notes ? [fitWidth(theme.fg("dim", notes))] : []), hint];
 		const failure = this.failureNotice ? [fitWidth(theme.fg("warning", this.failureNotice))] : [];
 		const statusRows = this.taskStatusRows(width);
@@ -899,7 +915,9 @@ export class TaskInspector implements Component {
 		const edge = theme.fg("borderMuted", "▔".repeat(Math.max(1, width)));
 		const header = ` ${theme.bold("Tasks")}${counts ? `  ${theme.fg("muted", counts)}` : ""}`;
 		const filterRow = this.filtering
-			? [` ${theme.fg("accent", "⌕")} ${this.filterInput.render(Math.max(1, width - 4))[0] ?? ""}`]
+			? [
+					` ${theme.fg("accent", "⌕")} ${(this.filterInput.render(Math.max(1, width - 2))[0] ?? "").replace(/^> /, "")}`,
+				]
 			: this.filter
 				? [theme.fg("muted", ` ⌕ ${taskDisplayText(this.filter)}`)]
 				: [];
@@ -976,9 +994,18 @@ export class TaskInspector implements Component {
 		const notice = this.failureNotice || this.stopNotice() || this.status;
 		const footer = [...(notice ? [theme.fg("warning", clip(notice))] : []), hint];
 		const head = [edge, clip(header), ...filterRow.map(clip)];
-		const room = Math.max(1, budget - head.length - footer.length);
-		const start = selectedLine < 0 ? 0 : Math.max(0, Math.min(selectedLine - 1, body.length - room));
-		return [...head, ...body.slice(start, start + room).map(clip), ...footer];
+		const window = (room: number) => {
+			const above = room > 1 ? 1 : 0;
+			const start = selectedLine < 0 ? 0 : Math.max(0, Math.min(selectedLine - above, body.length - room));
+			return body.slice(start, start + room).map(clip);
+		};
+		// A short viewport keeps the rows around the selection first, then the hint line, then the header.
+		const lineBudget = Math.max(1, budget);
+		if (lineBudget < head.length + footer.length + 1) {
+			const hint = lineBudget >= 2 ? footer.slice(-1) : [];
+			return [...window(Math.max(1, lineBudget - hint.length)), ...hint].slice(0, lineBudget);
+		}
+		return [...head, ...window(lineBudget - head.length - footer.length), ...footer];
 	}
 	private renderAll(width: number): string[] {
 		const task = this.selected();

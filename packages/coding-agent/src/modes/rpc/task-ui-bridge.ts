@@ -98,8 +98,8 @@ export async function showTaskInspector(
 	ui: TaskInspectorUi,
 	store: OwnerTaskStore,
 	taskId?: string,
-	options: { readonly chat?: boolean; readonly board?: TaskBoardSource } = {},
-): Promise<void> {
+	options: { readonly chat?: boolean; readonly backLabel?: string; readonly board?: TaskBoardSource } = {},
+): Promise<"back" | "closed"> {
 	let requestRender = () => {};
 	let finishView = () => {};
 	let closed = false;
@@ -148,7 +148,7 @@ export async function showTaskInspector(
 					if (pendingChat !== undefined) {
 						const chat = pendingChat;
 						pendingChat = undefined;
-						inspector.openChat(chat);
+						inspector.openChat(chat, options.backLabel);
 						// A task that is gone opens nothing: close instead of showing the list.
 						if (!inspector.fullscreen) {
 							closed = true;
@@ -203,4 +203,5 @@ export async function showTaskInspector(
 	} finally {
 		inspector?.dispose();
 	}
+	return inspector?.closedByBack === true ? "back" : "closed";
 }

@@ -146,7 +146,12 @@ export function bindAgentPanel(
  * The focused panel, in the prompt's place: ↓ on an empty prompt opens it. Enter or → opens a subagent's or shell's
  * chat, or a workflow run's graph; `x` twice stops; Esc (or ↑ past `main`) returns to the prompt.
  */
-export async function showAgentPanel(session: AgentPanelSession & object, ui: TaskInspectorUi): Promise<void> {
+export async function showAgentPanel(
+	session: AgentPanelSession & object,
+	ui: TaskInspectorUi,
+	/** The row to select, as when coming back to the panel from that row's chat or graph. */
+	selectId?: string,
+): Promise<void> {
 	const state = panelState(session);
 	const store = getOwnerTaskStore(session);
 	const style = themedAgentPanelStyle();
@@ -163,12 +168,19 @@ export async function showAgentPanel(session: AgentPanelSession & object, ui: Ta
 				const focus = new AgentPanelFocus(keys, {
 					open(row) {
 						const taskId = panelTaskId(row);
+						// One level down; going back from there returns to this panel with the row still selected.
+						const back = () => showAgentPanel(session, ui, row.id);
 						if (taskId !== undefined && store !== undefined)
-							next = () => showTaskInspector(ui, store, taskId, { chat: true });
+							next = async () => {
+								if (
+									(await showTaskInspector(ui, store, taskId, { chat: true, backLabel: "agents" })) === "back"
+								)
+									await back();
+							};
 						else {
 							state.viewed.add(row.id);
 							next = async () => {
-								openAgentPanelItem(session, row.id);
+								openAgentPanelItem(session, row.id, { onReturn: () => void back() });
 							};
 						}
 						finish();
@@ -193,7 +205,7 @@ export async function showAgentPanel(session: AgentPanelSession & object, ui: Ta
 					close: finish,
 				});
 				focus.update(agentPanelRows(session));
-				focus.enter();
+				focus.enter(selectId);
 				const unsubscribe = subscribeAgentPanel(session, () => {
 					focus.update(agentPanelRows(session));
 					tui.requestRender();

@@ -166,14 +166,10 @@ export function buildGraphOverlayAdapter(
 	// the chat scrollback, producing visible duplicates.
 	let currentHandle: PiOverlayHandle | null = null;
 	let mounted = false;
-	/** Where the current open said Esc at the graph's top goes back to. */
-	let returnTo: (() => void) | undefined;
-	const goBack = (): void => {
-		const back = returnTo;
-		returnTo = undefined;
-		hideMounted();
-		back?.();
-	};
+	/** Where the current open goes back to once the graph hides, such as the list it was picked from. */
+	let pendingReturn: (() => void) | undefined;
+	/** Esc at the graph's top: hide it; {@link hideMounted} then returns to the view that opened it. */
+	const goBack = (): void => hideMounted();
 	let finishMounted: (() => void) | null = null;
 	// Repaints the mounted overlay through its factory TUI. Needed on the
 	// hidden→visible flip: store updates while hidden intentionally skip
@@ -266,6 +262,10 @@ export function buildGraphOverlayAdapter(
 	 */
 	function hideMounted(): void {
 		observedUi?.setStatus?.(MAIN_CHAT_INPUT_STATUS_KEY, undefined);
+		// One level back: to the view that opened the graph, once it is out of the way.
+		const onReturn = pendingReturn;
+		pendingReturn = undefined;
+		if (onReturn) queueMicrotask(onReturn);
 		if (currentHandle) {
 			currentView?.setVisible(false);
 			currentHandle.setHidden(true);
@@ -329,7 +329,7 @@ export function buildGraphOverlayAdapter(
 		stageRunId?: string,
 		openOptions?: GraphOverlayOpenOptions,
 	): void {
-		returnTo = openOptions?.onReturn;
+		pendingReturn = openOptions?.onReturn;
 		const ui = surface?.ui ?? pi.ui;
 		observeHostCustomUi(ui);
 
@@ -376,6 +376,8 @@ export function buildGraphOverlayAdapter(
 			const finish = (): void => {
 				if (settled) return;
 				settled = true;
+				// Closing the workflow view (Ctrl+C) returns to the main chat, not to the view that opened it.
+				pendingReturn = undefined;
 				observedUi?.setStatus?.(MAIN_CHAT_INPUT_STATUS_KEY, undefined);
 				currentView?.dispose();
 				currentView = null;
