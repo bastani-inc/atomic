@@ -10,10 +10,10 @@ import {
 	statSync,
 	writeFileSync,
 } from "node:fs";
+import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, normalize, parse, posix, relative, resolve, sep, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createModuleRequire } from "../../utils/module-require.ts";
 
 const CONFIG_DIR_NAME = ".atomic";
 const ENV_AGENT_DIR = "ATOMIC_CODING_AGENT_DIR";
@@ -209,13 +209,17 @@ export function claimFileAtomically(file: string, contents: string): boolean {
 			if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
 		}
 		if (renameClaimWithoutReplacing === undefined) {
-			try {
-				const binding = createModuleRequire(import.meta.url)("@bastani/atomic-natives") as {
-					renameNoReplace?: (from: string, to: string) => boolean;
-				};
-				renameClaimWithoutReplacing = binding.renameNoReplace ?? null;
-			} catch {
-				renameClaimWithoutReplacing = null;
+			renameClaimWithoutReplacing = null;
+			for (const anchor of [import.meta.url, process.execPath]) {
+				try {
+					const binding = createRequire(anchor)("@bastani/atomic-natives") as {
+						renameNoReplace?: (from: string, to: string) => boolean;
+					};
+					if (typeof binding.renameNoReplace === "function") {
+						renameClaimWithoutReplacing = binding.renameNoReplace;
+						break;
+					}
+				} catch {}
 			}
 		}
 		if (renameClaimWithoutReplacing !== null) return renameClaimWithoutReplacing(staged, file);
@@ -548,17 +552,19 @@ function storageHomeDecisionFile(agentPath: string): string {
 }
 
 function isDefaultStorageHome(home: string, configuredHome: string): boolean {
-	return (
-		sameDirectory(home, configuredHome) ||
-		(basename(canonicalPath(home)) === CONFIG_DIR_NAME && isDirectory(join(home, "agent")))
-	);
+	if (sameDirectory(home, configuredHome)) return true;
+	const agent = join(home, "agent");
+	if (basename(canonicalPath(home)) !== CONFIG_DIR_NAME || !isDirectory(agent)) return false;
+	const decision = readStorageHomeDecision(storageHomeDecisionFile(agent));
+	if (decision !== undefined) return decision.defaultHome === true || decision.parentOwner !== undefined;
+	return hasParentStoreEntries(home, agent, configuredRelativeTargets(agent, getHomeDir(), undefined, false));
 }
 
 function defaultHomeForAgent(agentPath: string, configuredHome: string): string | undefined {
 	if (sameDirectory(agentPath, join(configuredHome, "agent"))) return configuredHome;
 	const physical = canonicalPath(agentPath);
 	const parent = dirname(physical);
-	return basename(physical) === "agent" && basename(parent) === CONFIG_DIR_NAME ? parent : undefined;
+	return basename(physical) === "agent" && isDefaultStorageHome(parent, configuredHome) ? parent : undefined;
 }
 
 function readStorageHomeDecision(file: string): StorageHomeDecision | undefined {

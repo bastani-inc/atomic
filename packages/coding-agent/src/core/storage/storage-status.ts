@@ -560,8 +560,7 @@ export async function collectStorageStatus(options: StorageStatusOptions): Promi
 	const project = manager.getProjectSettings();
 	const merged = manager.getSettings();
 	const notes: string[] = [];
-	const adoptionNotice = takeStorageAdoptionNotice(agentDir, merged);
-	if (adoptionNotice !== undefined) notes.push(adoptionNotice);
+	let usesLocalStorage = false;
 	const unappliedProject = projectTrusted
 		? {}
 		: SettingsManager.create(cwd, agentDir, { projectTrusted: true }).getProjectSettings();
@@ -634,6 +633,8 @@ export async function collectStorageStatus(options: StorageStatusOptions): Promi
 					? selectSessionStorage(cwd, { agentDir, settings: merged })
 					: selectJournal(agentDir, merged);
 			const selection = chosen as StorageSelection;
+			if (selection.kind === "sqlite" || selection.kind === "jsonl" || selection.kind === "sharded")
+				usesLocalStorage = true;
 			let journalStore: JournalStoreStatus | undefined;
 			const probe = await probeOnce(
 				domain,
@@ -672,6 +673,7 @@ export async function collectStorageStatus(options: StorageStatusOptions): Promi
 						: "off: the shared storage selection is in memory",
 			});
 		} else {
+			if (resolved.kind === "sqlite") usesLocalStorage = true;
 			let liveBrokers: string[] | undefined;
 			const control = options.control;
 			const probe = await probeOnce(
@@ -720,6 +722,10 @@ export async function collectStorageStatus(options: StorageStatusOptions): Promi
 		});
 	}
 
+	if (usesLocalStorage) {
+		const adoptionNotice = takeStorageAdoptionNotice(agentDir, merged);
+		if (adoptionNotice !== undefined) notes.unshift(adoptionNotice);
+	}
 	return {
 		agentDir,
 		cwd,
