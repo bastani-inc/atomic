@@ -632,7 +632,6 @@ export async function _runAgentPrompt(
 		);
 		return;
 	}
-	let nativeRunStarted = false;
 	// Any run that starts ends the gap before a fresh stage's first prompt (#3919).
 	this._workflowStageAwaitingFirstPrompt = false;
 	if (this._activePromptCount === 0 && !this.isStreaming) {
@@ -738,7 +737,6 @@ export async function _runAgentPrompt(
 		this._pendingToolNames.clear();
 		reportDispatch?.("started");
 		const turn = this.agent.prompt(messages);
-		nativeRunStarted = true;
 		releasePreparation();
 		if (this.isStreaming) promptStarted?.();
 		await turn;
@@ -759,7 +757,6 @@ export async function _runAgentPrompt(
 		await this._awaitPendingPostCompactionContinuation();
 		await runBeforeSettleContinuations(this);
 	} finally {
-		if (preparation && !nativeRunStarted) this._abortPreparedRunAtStart = false;
 		releasePreparation();
 		if (ownsPreparation && !preparation) this._isPreparingRun = false;
 		this._runSystemPromptOptions = undefined;
@@ -815,6 +812,7 @@ async function finishAgentRun(session: AgentSession): Promise<void> {
 		}
 		if (session._subagentMessageAdmission) await settleSubagentMessages(session);
 	} finally {
+		session._abortPreparedRunAtStart = false;
 		session._activePromptCount -= 1;
 		// Runs deferred by agent_settled handlers start only after every settled handler completed.
 		// Guarded because prompt-handshake suites drive this function on a synthetic session.

@@ -16,6 +16,7 @@ import { liveChildEnvironment } from "../helpers/live-child-environment.js";
 const LIVE_CHILD_TIMEOUT_MS = 120_000;
 const CONDITION_WAIT_MS = 20_000;
 const NOTE = "context note written while the disk is full";
+const BUSY_NOTE = "context note written while the session file is busy";
 const cleanups: Array<() => void> = [];
 
 afterEach(() => {
@@ -30,6 +31,19 @@ class FullDiskStore extends MemorySessionStore {
 		if (this.full && entries.some((entry) => JSON.stringify(entry).includes(NOTE))) {
 			this.rejected += 1;
 			return Promise.reject(Object.assign(new Error("ENOSPC: no space left on device, write"), { code: "ENOSPC" }));
+		}
+		return super.append(sessionId, entries, options);
+	}
+}
+
+class BusyStore extends MemorySessionStore {
+	failuresLeft = 0;
+	rejected = 0;
+	override append(sessionId: string, entries: readonly SessionEntry[], options: SessionWriteOptions) {
+		if (this.failuresLeft > 0 && entries.some((entry) => JSON.stringify(entry).includes(BUSY_NOTE))) {
+			this.failuresLeft -= 1;
+			this.rejected += 1;
+			return Promise.reject(Object.assign(new Error("EBUSY: resource busy or locked, write"), { code: "EBUSY" }));
 		}
 		return super.append(sessionId, entries, options);
 	}
@@ -156,6 +170,134 @@ test.each(["with Esc during preparation", "without a second Esc"] as const)(
 			releasePreparation.resolve();
 			stop.abort("user");
 			await run.catch(() => undefined);
+		}
+	},
+	LIVE_CHILD_TIMEOUT_MS,
+);
+
+const SAVE_FAILURE_CASES = [
+	{ name: "transient-esc", esc: true, failedSaves: 1 },
+	{ name: "nofail-esc", esc: true, failedSaves: 0 },
+	{ name: "transient-noesc", esc: false, failedSaves: 1 },
+	{ name: "persistent-esc", esc: true, failedSaves: Number.POSITIVE_INFINITY },
+] as const;
+
+test.each(SAVE_FAILURE_CASES)(
+	"an Esc while an interrupted subagent's woken turn starts leaves it waiting, even if a save in that turn's preparation fails ($name) (#5246)",
+	async ({ name, esc, failedSaves }) => {
+		const env = await liveChildEnvironment(cleanups);
+		env.faux.setResponses([
+			fauxAssistantMessage([fauxToolCall("block", {}, { id: `block-${name}` })], { stopReason: "toolUse" }),
+			fauxAssistantMessage("the first reply"),
+			fauxAssistantMessage("the second reply"),
+			fauxAssistantMessage("the third reply"),
+		]);
+		const store = new BusyStore();
+		const preparing = Promise.withResolvers<void>();
+		const releasePreparation = Promise.withResolvers<void>();
+		let holdPreparation = false;
+		const holdWokenTurn = (pi: ExtensionAPI) => {
+			pi.on("before_agent_start", async () => {
+				if (!holdPreparation) return;
+				holdPreparation = false;
+				preparing.resolve();
+				await releasePreparation.promise;
+			});
+		};
+		let source: TaskTranscriptSource | undefined;
+		const stop = new AbortController();
+		let settled = false;
+		let settledRuns = 0;
+		let endedTurns = 0;
+		const run = runSingleInProcess(env.root, agent(), "run until interrupted", {
+			...env.options(`preparation-save-failure-${name}`, {
+				signal: stop.signal,
+				sessionManager: await SessionManager.create(store, env.root),
+				resourceLoaderInheritanceSnapshot: { extensionFactories: [holdWokenTurn] },
+				taskExecution: {
+					signal: stop.signal,
+					reportActivity() {},
+					bindTranscript(bound) {
+						if (source !== undefined || bound.chatSession === undefined) return;
+						source = bound;
+						(bound.chatSession as AgentSession).subscribe((event) => {
+							if (event.type === "agent_settled") settledRuns += 1;
+							if (event.type === "agent_end") endedTurns += 1;
+						});
+					},
+					onExecution() {},
+					yieldTaskWait() {},
+					isParentObserving: () => false,
+				},
+			}),
+		}).finally(() => {
+			settled = true;
+		});
+		let waking: Promise<void> | undefined;
+		let interrupting: Promise<void> | undefined;
+		try {
+			await until(() => env.blockStarted());
+			const session = source!.chatSession as AgentSession;
+			await source!.interruptTurn!();
+			await until(() => settledRuns === 1 && !source!.isRunning?.());
+			assert.equal(settled, false);
+			const textsBefore = assistantTexts(session).length;
+			holdPreparation = true;
+			waking = session.sendCustomMessage(
+				{ customType: "intercom", content: "carry on", display: true },
+				{ triggerTurn: true },
+			);
+			await preparing.promise;
+			assert.equal(source!.isRunning?.(), true);
+			assert.equal(session.agent.state.isStreaming, false);
+			await session.sendCustomMessage(
+				{ customType: "note", content: BUSY_NOTE, display: false },
+				{ triggerTurn: false },
+			);
+			if (esc) interrupting = source!.interruptTurn!();
+			const endedBeforeRelease = endedTurns;
+			store.failuresLeft = failedSaves;
+			releasePreparation.resolve();
+			await Promise.allSettled([interrupting, waking]);
+			if (!esc) {
+				await until(() => settled);
+				assert.equal(store.rejected, 1, "the woken turn's preparation failed to save once");
+				const result = await run;
+				assert.deepEqual(assistantTexts(session).slice(textsBefore), ["the first reply"]);
+				assert.equal(result.status, "ok");
+				assert.equal(result.finalOutput, "the first reply", "a woken turn that recovers completes the task");
+				return;
+			}
+			// The woken turn starts once its input is saved, and the Esc aborts that start; while every save fails it never starts.
+			const startedAfterRelease = failedSaves === Number.POSITIVE_INFINITY ? 0 : 1;
+			await until(
+				() =>
+					settled ||
+					(settledRuns === 2 && endedTurns - endedBeforeRelease >= startedAfterRelease && !source!.isRunning?.()),
+			);
+			store.failuresLeft = 0;
+			assert.equal(store.rejected > 0, failedSaves > 0);
+			assert.deepEqual(
+				assistantTexts(session).slice(textsBefore),
+				startedAfterRelease === 1 ? [""] : [],
+				"the turn the Esc interrupted does not answer",
+			);
+			assert.equal(settled, false, "an Esc while the woken turn starts leaves the child waiting");
+			await session.sendCustomMessage(
+				{ customType: "intercom", content: "finish the task", display: true },
+				{ triggerTurn: true },
+			);
+			await until(() => settled);
+			const result = await run;
+			const answered = assistantTexts(session).slice(textsBefore + startedAfterRelease);
+			assert.ok(answered.length > 0, "the next message is answered");
+			assert.ok(!answered.includes(""), "no turn after the interrupted one is aborted by its Esc");
+			assert.equal(result.status, "ok");
+			assert.equal(result.finalOutput, answered.at(-1));
+		} finally {
+			releasePreparation.resolve();
+			stop.abort("user");
+			await Promise.allSettled([run, waking, interrupting]);
 		}
 	},
 	LIVE_CHILD_TIMEOUT_MS,
