@@ -11,27 +11,18 @@ import { workflowPolicyFromContext } from "./workflow-policy.js";
 import { overlaySurfaceFromContext, resolveRunId } from "./workflow-targets.js";
 
 export interface OpenWorkflowRunOptions {
-	/** Where Esc at the graph's top goes back to, such as the list the run was picked from; main chat otherwise. */
 	readonly onReturn?: () => void;
-	/** Open directly on this stage's chat. */
 	readonly stageId?: string;
-	/** The run that owns `stageId`, when it is a child run's stage. */
 	readonly stageRunId?: string;
 }
 
 export interface WorkflowsCommandDeps {
 	readonly overlay: GraphOverlayPort;
 	readonly store: Store;
-	/** The registered workflow definitions the `/workflows` sheet lists below the runs. */
 	readonly definitions?: () => readonly WorkflowsListingDefinition[];
-	/** Starts a definition chosen in the sheet, asking for its inputs first. */
 	readonly startDefinition?: (name: string) => Promise<void>;
 }
 
-/**
- * Open a run's graph in the session's workflow pane. Returns false without opening anything when the session has no
- * interactive surface to show it on.
- */
 export function openWorkflowRun(
 	runId: string,
 	ctx: Pick<PiCommandContext, "ui" | "hasUI">,
@@ -44,7 +35,6 @@ export function openWorkflowRun(
 	return true;
 }
 
-/** `/workflows [run]`. */
 export async function handleWorkflowsCommand(
 	args: string,
 	ctx: PiCommandContext,
@@ -75,12 +65,20 @@ export async function handleWorkflowsCommand(
 		openWorkflowRun(runs[0]!.id, ctx, deps);
 		return;
 	}
-	await showWorkflowsListing(ctx, deps);
+	await showWorkflowsListing(ctx, reporter, deps);
 }
 
-async function showWorkflowsListing(ctx: PiCommandContext, deps: WorkflowsCommandDeps): Promise<void> {
+async function showWorkflowsListing(
+	ctx: PiCommandContext,
+	reporter: WorkflowCommandReporter,
+	deps: WorkflowsCommandDeps,
+): Promise<void> {
 	const { store } = deps;
-	const reopen = (): void => void showWorkflowsListing(ctx, deps);
+	const reopen = (): void => {
+		showWorkflowsListing(ctx, reporter, deps).catch((error: unknown) =>
+			reporter.error(`/workflows failed: ${error instanceof Error ? error.message : String(error)}`),
+		);
+	};
 	const picked = await openWorkflowsListing(ctx.ui, {
 		runs: () => store.runs(),
 		definitions: () => deps.definitions?.() ?? [],

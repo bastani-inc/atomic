@@ -199,10 +199,19 @@ export interface WorkflowsListingUi {
 }
 
 const LISTING_CLOCK_TICK_MS = 1_000;
+const TRANSCRIPT_MIN_ROWS = 1;
+const USAGE_METER_ROWS = 1;
 const FOOTER_CHROME_ROWS = 2;
+const WIDGET_SPACER_ROWS = 1;
 const IDLE_AGENT_PANEL_ROWS = 4;
 const IDLE_AGENT_PANEL_OVERFLOW_ROWS = 1;
-const BELOW_SHEET_ROWS = FOOTER_CHROME_ROWS + IDLE_AGENT_PANEL_ROWS + IDLE_AGENT_PANEL_OVERFLOW_ROWS;
+const BELOW_SHEET_ROWS =
+	TRANSCRIPT_MIN_ROWS +
+	USAGE_METER_ROWS +
+	FOOTER_CHROME_ROWS +
+	WIDGET_SPACER_ROWS +
+	IDLE_AGENT_PANEL_ROWS +
+	IDLE_AGENT_PANEL_OVERFLOW_ROWS;
 const LISTING_HINT_OPTIONS = { search: true, confirmLabel: "open", cancelLabel: "close" };
 
 function listingAvailableRows(tui: PiCustomOverlayFactoryTui): number {
@@ -305,10 +314,11 @@ export function openWorkflowsListing(
 			let cachedRuns = source.runs();
 			let cachedDefinitions = source.definitions();
 			let currentNow = Date.now();
+			let items = workflowsListingItems(cachedRuns, cachedDefinitions, currentNow);
 			const style = themeSelectorStyle();
 			const search = new Input({ prompt: "⌕ ", placeholder: "Search…", placeholderStyle: style.dim });
 			const selector = new SelectorState<WorkflowsListingTarget>({
-				items: workflowsListingItems(cachedRuns, cachedDefinitions, currentNow),
+				items,
 				maxVisible: Math.max(1, Math.floor((listingAvailableRows(tui) - 2) / 2)),
 			});
 			const handleSelectionInput = (data: string): void => {
@@ -337,25 +347,39 @@ export function openWorkflowsListing(
 			let refreshedSincePaint = true;
 			let movedSincePaint = false;
 			let itemsStale = false;
+			const sameIds = (
+				before: readonly SelectorItem<WorkflowsListingTarget>[],
+				after: readonly SelectorItem<WorkflowsListingTarget>[],
+			): boolean => before.length === after.length && before.every((item, index) => item.id === after[index]?.id);
+			const refreshClock = (): boolean => {
+				const now = Date.now();
+				if (Math.abs(now - currentNow) < LISTING_CLOCK_TICK_MS || cachedRuns.length === 0) return false;
+				currentNow = now;
+				const next = workflowsListingItems(cachedRuns, cachedDefinitions, currentNow);
+				const unchanged =
+					sameIds(items, next) && items.every((item, index) => item.description === next[index]?.description);
+				if (unchanged) return false;
+				items = next;
+				const before = selector.getVisible();
+				selector.setItems(items);
+				if (!sameIds(before, selector.getVisible())) refreshedSincePaint = true;
+				return true;
+			};
 			const refreshItems = (): void => {
 				if (itemsStale) {
 					itemsStale = false;
 					cachedRuns = source.runs();
 					cachedDefinitions = source.definitions();
 					currentNow = Date.now();
-					selector.setItems(workflowsListingItems(cachedRuns, cachedDefinitions, currentNow));
+					items = workflowsListingItems(cachedRuns, cachedDefinitions, currentNow);
+					selector.setItems(items);
 					refreshedSincePaint = true;
 					return;
 				}
-				const now = Date.now();
-				if (now === currentNow || cachedRuns.length === 0) return;
-				currentNow = now;
-				const beforeId = selector.getSelected()?.id;
-				selector.setItems(workflowsListingItems(cachedRuns, cachedDefinitions, currentNow));
-				if (selector.getSelected()?.id !== beforeId) refreshedSincePaint = true;
+				refreshClock();
 			};
 			const tick = setInterval(() => {
-				if (cachedRuns.length > 0) tui.requestRender?.();
+				if (refreshClock()) tui.requestRender?.();
 			}, LISTING_CLOCK_TICK_MS);
 			tick.unref?.();
 			let unsubscribe: (() => void) | undefined;
@@ -368,7 +392,7 @@ export function openWorkflowsListing(
 				tui.requestRender?.();
 			});
 			if (settled) release();
-			return {
+			const component: PiCustomComponent & { focused: boolean } = {
 				render: (width: number) => {
 					refreshItems();
 					const availableRows = listingAvailableRows(tui);
@@ -404,7 +428,14 @@ export function openWorkflowsListing(
 				},
 				invalidate: () => search.invalidate(),
 				dispose: () => finish(undefined),
+				get focused() {
+					return search.focused;
+				},
+				set focused(value: boolean) {
+					search.focused = value;
+				},
 			};
+			return component;
 		};
 		try {
 			void Promise.resolve(

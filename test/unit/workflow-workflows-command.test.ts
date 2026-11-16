@@ -117,6 +117,41 @@ describe("/workflows (#5224)", () => {
 		component.dispose?.();
 	});
 
+	it("reports a definition that fails to start from a reopened sheet instead of leaving its error unhandled (#5245)", async () => {
+		const t = harness();
+		const unhandled = [];
+		const onUnhandled = (reason) => unhandled.push(reason);
+		process.on("unhandledRejection", onUnhandled);
+		try {
+			const store = createStore();
+			store.recordRunStart({ ...makeRun([]), id: "aaaaaaaa", startedAt: 1 });
+			store.recordRunStart({ ...makeRun([]), id: "bbbbbbbb", startedAt: 2 });
+			const pending = handleWorkflowsCommand("", t.ctx, t.reporter, {
+				overlay: t.overlay,
+				store,
+				definitions: () => [{ normalizedName: "deploy", description: "Deploy", inputs: {} }],
+				startDefinition: async () => {
+					throw new Error("start failed");
+				},
+			});
+			const first = t.pickers[0]({ requestRender() {} }, undefined, undefined, () => {});
+			first.render(100);
+			first.handleInput("\r");
+			await pending;
+			t.opened[0].options.onReturn();
+			await Promise.resolve();
+			const reopened = t.pickers[1]({ requestRender() {} }, undefined, undefined, () => {});
+			for (const char of "deploy") reopened.handleInput(char);
+			reopened.render(100);
+			reopened.handleInput("\r");
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			assert.deepEqual(unhandled, []);
+			assert.deepEqual(t.messages.error, ["/workflows failed: start failed"]);
+		} finally {
+			process.off("unhandledRejection", onUnhandled);
+		}
+	});
+
 	it("names a run directly, and refuses an unknown one with the session's runs", async () => {
 		const t = harness();
 		const first = "11111111-1111-4111-8111-111111111111";

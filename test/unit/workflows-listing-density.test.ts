@@ -39,7 +39,11 @@ test("workflow sheet uses every fitting row at 80x24 with a footer and populated
 		{},
 	);
 	assert.equal(panel.length, 5);
-	const externalRows = panel.length + 2;
+	const transcriptRow = 1;
+	const usageRow = 1;
+	const footerRows = 2;
+	const spacerRow = 1;
+	const externalRows = transcriptRow + usageRow + footerRows + spacerRow + panel.length;
 	let component: PiCustomComponent | undefined;
 	const pending = openWorkflowsListing(
 		{
@@ -60,7 +64,7 @@ test("workflow sheet uses every fitting row at 80x24 with a footer and populated
 				.map((line) => stripVTControlCharacters(line.replace(/\x1b_pi:[^\x07]*\x07/g, "")));
 			const visible: number = lines.filter((line) => labels.has(line.trim().replace(/^❯\s+/, ""))).length;
 			const chrome: number = lines.length - visible * 2;
-			assert.ok(visible >= 6, `step ${step}: only ${visible} rows visible`);
+			assert.ok(visible >= 5, `step ${step}: only ${visible} rows visible`);
 			assert.ok(lines.length + externalRows <= 24, `step ${step}: content exceeds terminal height`);
 			assert.equal(visible, Math.floor((24 - externalRows - chrome) / 2), `step ${step}: unused row space`);
 			assert.match(lines[0]!, /Workflows.*Search…/);
