@@ -80,6 +80,11 @@ export function getProjectTrustParentPath(cwd: string): string | undefined {
 	return parentDir === trustPath ? undefined : parentDir;
 }
 
+/** The trust prompt's choice that trusts nothing and saves nothing, the safe default for a prompt answered by accident. */
+export const PROJECT_TRUST_SESSION_DISTRUST_LABEL = "Do not trust (this session only)";
+/** The trust prompt's choice that saves a decision not to trust the folder. */
+export const PROJECT_TRUST_DISTRUST_LABEL = "Do not trust";
+
 export function getProjectTrustOptions(cwd: string, options?: { includeSessionOnly?: boolean }): ProjectTrustOption[] {
 	const trustPath = getProjectTrustPath(cwd);
 	const trustOptions: ProjectTrustOption[] = [
@@ -101,13 +106,13 @@ export function getProjectTrustOptions(cwd: string, options?: { includeSessionOn
 		trustOptions.push({ label: "Trust (this session only)", trusted: true, updates: [] });
 	}
 	trustOptions.push({
-		label: "Do not trust",
+		label: PROJECT_TRUST_DISTRUST_LABEL,
 		trusted: false,
 		updates: [{ path: trustPath, decision: false }],
 		savedPath: trustPath,
 	});
 	if (options?.includeSessionOnly) {
-		trustOptions.push({ label: "Do not trust (this session only)", trusted: false, updates: [] });
+		trustOptions.push({ label: PROJECT_TRUST_SESSION_DISTRUST_LABEL, trusted: false, updates: [] });
 	}
 	return trustOptions;
 }

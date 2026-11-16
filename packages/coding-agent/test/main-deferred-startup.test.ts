@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -52,7 +52,6 @@ function baseStartupCaptureInput(
 			session: undefined,
 		},
 		sessionCwd,
-		projectTrustStore: { get: () => null },
 		resolvedExtensionPathCount: 0,
 		resolvedResourcePathCount: 0,
 		deprecationWarningCount: 0,
@@ -209,6 +208,17 @@ describe("computeStartupInputCaptureEnabled", () => {
 			}
 		},
 	);
+
+	it("captures startup input while a project trust prompt is still to be answered", () => {
+		const input = baseStartupCaptureInput();
+		mkdirSync(join(input.sessionCwd, ".atomic", "workflows"), { recursive: true });
+		writeFileSync(join(input.sessionCwd, ".atomic", "workflows", "check.ts"), "export default {};\n");
+		try {
+			assert.equal(computeStartupInputCaptureEnabled(input), true);
+		} finally {
+			removeTempDir(input.sessionCwd);
+		}
+	});
 
 	it("does not start pre-session input capture for resume picker startup", () => {
 		const input = baseStartupCaptureInput();

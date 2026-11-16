@@ -4,12 +4,17 @@ import { ENV_AGENT_DIR, getAgentDir, getEnvValue, getSettingsPath } from "../con
 import type { ExtensionUIDialogOptions } from "../core/extensions/index.js";
 import { KeybindingsManager } from "../core/keybindings.ts";
 import type { SettingsManager } from "../core/settings-manager.ts";
+import { keepStartupDialogDraft, withEarlyInputHeldForStartupDialog } from "../main-early-input.ts";
 import { ExtensionInputComponent } from "../modes/interactive/components/extension-input.ts";
 import { ExtensionSelectorComponent } from "../modes/interactive/components/extension-selector.ts";
 import {
 	FirstTimeSetupComponent,
 	type FirstTimeSetupResult,
 } from "../modes/interactive/components/first-time-setup.ts";
+import {
+	safeTrustChoiceIndex,
+	TrustDecisionSelector,
+} from "../modes/interactive/components/trust-decision-selector.ts";
 import {
 	detectTerminalThemeForAuto,
 	initTheme,
@@ -92,6 +97,15 @@ export async function showStartupSelector<T>(
 	options: Array<{ label: string; value: T }>,
 	dialogOptions?: ExtensionUIDialogOptions,
 ): Promise<T | undefined> {
+	return withEarlyInputHeldForStartupDialog(() => openStartupSelector(settingsManager, title, options, dialogOptions));
+}
+
+function openStartupSelector<T>(
+	settingsManager: SettingsManager,
+	title: string,
+	options: Array<{ label: string; value: T }>,
+	dialogOptions?: ExtensionUIDialogOptions,
+): Promise<T | undefined> {
 	return new Promise((resolve) => {
 		if (dialogOptions?.signal?.aborted) {
 			resolve(undefined);
@@ -114,12 +128,17 @@ export async function showStartupSelector<T>(
 		const abandon = () => void finish(undefined);
 		dialogOptions?.signal?.addEventListener("abort", abandon, { once: true });
 
-		const selector = new ExtensionSelectorComponent(
-			title,
-			options.map((option) => option.label),
-			(option) => void finish(options.find((entry) => entry.label === option)?.value),
-			() => void finish(undefined),
-			{ tui: ui, timeout: dialogOptions?.timeout },
+		// Startup selectors all ask whether to trust code, so each is guarded like a trust decision.
+		const labels = options.map((option) => option.label);
+		const selector = new TrustDecisionSelector(
+			new ExtensionSelectorComponent(
+				title,
+				labels,
+				(option) => void finish(options.find((entry) => entry.label === option)?.value),
+				() => void finish(undefined),
+				{ tui: ui, timeout: dialogOptions?.timeout, initialIndex: safeTrustChoiceIndex(labels) },
+			),
+			keepStartupDialogDraft,
 		);
 		ui.addChild(selector);
 		ui.setFocus(selector);
@@ -128,6 +147,17 @@ export async function showStartupSelector<T>(
 }
 
 export async function showStartupInput(
+	settingsManager: SettingsManager,
+	title: string,
+	placeholder?: string,
+	dialogOptions?: ExtensionUIDialogOptions,
+): Promise<string | undefined> {
+	return withEarlyInputHeldForStartupDialog(() =>
+		openStartupInput(settingsManager, title, placeholder, dialogOptions),
+	);
+}
+
+function openStartupInput(
 	settingsManager: SettingsManager,
 	title: string,
 	placeholder?: string,

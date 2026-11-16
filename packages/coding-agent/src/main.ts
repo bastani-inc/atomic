@@ -551,7 +551,6 @@ export async function main(argv: string[], options?: MainOptions) {
 				stdinIsTTY: process.stdin.isTTY === true,
 				parsed,
 				sessionCwd,
-				projectTrustStore,
 				resolvedExtensionPathCount: resolvedExtensionPaths?.length ?? 0,
 				resolvedResourcePathCount:
 					(resolvedSkillPaths?.length ?? 0) +
@@ -1202,20 +1201,20 @@ export async function main(argv: string[], options?: MainOptions) {
 			console.log(chalk.dim(`Model scope: ${formatScopedModelList(scopedModels)} ${chalk.gray("(ctrl+p cycle)")}`));
 		}
 
+		const startupTrustPromptPossible = computeStartupTrustPromptPossible({
+			projectTrustOverride: parsed.projectTrustOverride,
+			hasTrustInputs: hasProjectTrustInputs(sessionCwd),
+			storedProjectTrust: projectTrustStore.get(sessionCwd),
+			defaultProjectTrust: startupDefaultProjectTrust,
+		});
 		const interactiveMode = new InteractiveMode(runtime, {
 			migratedProviders,
 			startupDiagnostics,
 			resumeNotices: worktreeRestoreDiagnostics,
 			modelFallbackMessage,
 			autoTrustOnReloadCwd,
-			holdTuiForStartupTrust:
-				isolateInteractiveHost &&
-				computeStartupTrustPromptPossible({
-					projectTrustOverride: parsed.projectTrustOverride,
-					hasTrustInputs: hasProjectTrustInputs(sessionCwd),
-					storedProjectTrust: projectTrustStore.get(sessionCwd),
-					defaultProjectTrust: startupDefaultProjectTrust,
-				}),
+			holdTuiForStartupTrust: isolateInteractiveHost && startupTrustPromptPossible,
+			startupTrustPromptPossible,
 			initialMessage,
 			initialImages,
 			initialMessages: parsed.messages,

@@ -1,5 +1,6 @@
 import { showStartupInput, showStartupSelector } from "../../cli/startup-ui.ts";
 import { AtomicWorkingLoader } from "./components/atomic-working-status.ts";
+import { isTrustDecision, safeTrustChoiceIndex, TrustDecisionSelector } from "./components/trust-decision-selector.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
 	type Component,
@@ -40,13 +41,14 @@ InteractiveModeBase.prototype.showExtensionSelector = function (
 
 		const finish = (option: string | undefined) => {
 			opts?.signal?.removeEventListener("abort", onAbort);
-			selector.dispose();
-			this.removeExtensionDialog(selector);
+			dialog.dispose();
+			this.removeExtensionDialog(dialog);
 			resolve(option);
 		};
 		const onAbort = () => finish(undefined);
 		opts?.signal?.addEventListener("abort", onAbort, { once: true });
 
+		const trustDecision = isTrustDecision(options);
 		const selector = new ExtensionSelectorComponent(
 			title,
 			options,
@@ -56,9 +58,17 @@ InteractiveModeBase.prototype.showExtensionSelector = function (
 				tui: this.ui,
 				timeout: opts?.timeout,
 				onToggleToolsExpanded: () => this.toggleToolOutputExpansion(),
+				initialIndex: trustDecision ? safeTrustChoiceIndex(options) : undefined,
 			},
 		);
-		this.pushExtensionDialog(selector, blocked);
+		// Keys meant for the prompt must neither answer a trust decision nor be lost: typed text joins the draft.
+		const dialog = trustDecision
+			? new TrustDecisionSelector(selector, (text) => {
+					const current = this.editor.getText();
+					this.editor.setText(current.length > 0 ? `${current}\n${text}` : text);
+				})
+			: selector;
+		this.pushExtensionDialog(dialog, blocked);
 	});
 };
 

@@ -13,6 +13,8 @@ export interface ExtensionSelectorOptions {
 	tui?: TUI;
 	timeout?: number;
 	onToggleToolsExpanded?: () => void;
+	/** The option selected when the selector opens; the first one when not given. */
+	initialIndex?: number;
 }
 
 export class ExtensionSelectorComponent extends Container {
@@ -40,6 +42,9 @@ export class ExtensionSelectorComponent extends Container {
 		this.onCancelCallback = onCancel;
 		this.onToggleToolsExpanded = opts?.onToggleToolsExpanded;
 		this.baseTitle = title;
+		if (opts?.initialIndex !== undefined) {
+			this.selectedIndex = Math.max(0, Math.min(options.length - 1, opts.initialIndex));
+		}
 
 		this.addChild(new DynamicBorder());
 		this.addChild(new Spacer(1));
