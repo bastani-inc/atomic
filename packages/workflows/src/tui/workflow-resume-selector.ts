@@ -1,4 +1,4 @@
-import type { SessionInfo } from "@bastani/atomic";
+import { type SessionInfo, sliceHead } from "@bastani/atomic";
 import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { isWorkflowRunResumable } from "../durable/resume-eligibility.js";
 import type { DurableWorkflowDeleteOutcome } from "../durable/retention-policy.js";
@@ -121,7 +121,7 @@ function shortReason(text: string | undefined): string | undefined {
 			.find((line) => line.length > 0 && !/^at\s/.test(line)) ?? "";
 	const clean = first.replace(/^(Error|[A-Z][A-Za-z]*Error):\s*/, "");
 	if (!clean) return undefined;
-	return clean.length > 60 ? `${clean.slice(0, 59)}…` : clean;
+	return clean.length > 60 ? `${sliceHead(clean, 59)}…` : clean;
 }
 
 /** `stage 3/5 implement`: the stage a run is on or stopped at. */

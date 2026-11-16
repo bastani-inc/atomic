@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Workflow resume picker failure summaries no longer split Unicode characters when shortening a long error message ([#5256](https://github.com/bastani-inc/atomic/pull/5256)).
+
 ## [0.9.88] - 2026-11-16
 
 ### Breaking Changes

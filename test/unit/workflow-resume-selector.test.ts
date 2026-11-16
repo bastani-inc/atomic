@@ -368,6 +368,19 @@ describe("workflow resume picker rows: a title and one detail line (#5224)", () 
 		assert.equal(byId.get("bad-run")?.detail, "failed · 2 checkpoints · 1m ago · ✗ gate failed: 2 jobs");
 	});
 
+	test("keeps Unicode intact when shortening a workflow failure reason (#5256)", () => {
+		const prefix = "x".repeat(58);
+		const [item] = workflowResumeSelectorItems(
+			[],
+			[{ ...entry("unicode-failure", "failed"), error: `Error: ${prefix}🚀 retry failed` }],
+			[],
+			undefined,
+			undefined,
+			NOW,
+		);
+		assert.ok(item?.session.detail?.endsWith(`✗ ${prefix}…`));
+	});
+
 	test("a saved run's detail says how far it got and whether it waits on an answer", () => {
 		const saved = { ...entry("saved-run", "paused", NOW - 120_000), completedCheckpoints: 4, pendingPrompts: 1 };
 		const [item] = workflowResumeSelectorItems([], [saved], [], undefined, undefined, NOW);
