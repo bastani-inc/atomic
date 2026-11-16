@@ -3,12 +3,18 @@ import { mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from "fs";
 import { basename, dirname, join } from "path";
 import {
   createLockFile,
+  type HolderState,
   holderRecord,
+  holderState,
   isAbandoned,
+  ownIdentity,
   pidOf,
+  processState,
   readFileOrUndefined,
   removeFileIfUnchanged,
   removeLeftoverParkedFiles,
+  unknownHolderAdvice,
+  unknownHolderWaitedOut,
 } from "./stale-lock-file.js";
 
 const SOCKET_REPLACEMENT_LOCK_POLL_MS = 20;
@@ -30,6 +36,15 @@ export interface SocketReplacementLock {
    * that finds it false has lost the lock, or may share it, and must not act.
    */
   held(): boolean;
+}
+
+/** The error a broker gives up with on a lock whose holder it cannot check: it names the lock and the fix. */
+export class SocketLockHolderUnknownError extends Error {
+  override readonly name = "SocketLockHolderUnknownError";
+}
+
+function refuse(path: string): never {
+  throw new SocketLockHolderUnknownError(unknownHolderAdvice(path));
 }
 
 function sleep(ms: number): Promise<void> {
@@ -70,21 +85,51 @@ function stagingPrefix(lockPath: string): string {
  * grace. True when it is in place.
  */
 function createGeneration(lockPath: string, generation: number, record: string): boolean {
-  const staging = join(dirname(lockPath), `${stagingPrefix(lockPath)}${process.pid}-${randomUUID()}`);
+  const staging = join(dirname(lockPath), `${stagingPrefix(lockPath)}${ownIdentity()}-${randomUUID()}`);
   try {
     mkdirSync(staging);
     writeFileSync(join(staging, "owner"), record);
     renameSync(staging, generationPath(lockPath, generation));
     return true;
   } catch {
-    rmSync(staging, { recursive: true, force: true });
+    removeDirectory(staging);
     return false;
   }
 }
 
-/** Whether a generation read as `record` leaves the lock free: released, or held by a process that is gone. */
-function generationFree(path: string, record: string): boolean {
-  return record === RELEASED || isAbandoned(path, record);
+/** Removes the directory at `path` and what it holds; one already gone, or refilled meanwhile, is left. */
+function removeDirectory(path: string): void {
+  try {
+    rmSync(path, { recursive: true, force: true });
+  } catch {
+    // ENOTEMPTY or ENOENT: another process put something there or removed it meanwhile; a leftover is only clutter.
+  }
+}
+
+/** The prefix of directories a removal moved generations to. */
+function trashPrefix(lockPath: string): string {
+  return `${basename(lockPath)}.trash-`;
+}
+
+/**
+ * Removes generation `generation` (#5220): it is first moved whole to a name of its own, and only then emptied and
+ * removed. Removed in place, it would be an empty directory for a moment, onto which a broker with an older judgment
+ * can move a generation it made (a rename replaces an empty directory), making the removal fail. Moved first, the
+ * generation is never empty at its own name.
+ */
+function removeGeneration(lockPath: string, generation: number): void {
+  const trash = join(dirname(lockPath), `${trashPrefix(lockPath)}${randomUUID()}`);
+  try {
+    renameSync(generationPath(lockPath, generation), trash);
+  } catch {
+    return; // Gone already.
+  }
+  removeDirectory(trash);
+}
+
+/** How a generation read as `record` holds the lock: released counts as abandoned. */
+function generationState(path: string, record: string): HolderState {
+  return record === RELEASED ? "abandoned" : holderState(path, record);
 }
 
 /**
@@ -92,15 +137,18 @@ function generationFree(path: string, record: string): boolean {
  * while making a generation. Only the holder of the latest generation calls this.
  */
 function removeLeftovers(lockPath: string, generation: number): void {
-  for (const older of generations(lockPath)) {
-    if (older < generation) rmSync(generationPath(lockPath, older), { recursive: true, force: true });
-  }
-  const prefix = stagingPrefix(lockPath);
+  for (const older of generations(lockPath)) if (older < generation) removeGeneration(lockPath, older);
+  const staging = stagingPrefix(lockPath);
+  const trash = trashPrefix(lockPath);
   for (const name of readdirSync(dirname(lockPath))) {
-    if (!name.startsWith(prefix)) continue;
-    const pid = Number.parseInt(name.slice(prefix.length), 10);
-    if (Number.isFinite(pid) && isAbandoned(lockPath, `${pid}\n`)) {
-      rmSync(join(dirname(lockPath), name), { recursive: true, force: true });
+    // A generation moved aside holds nothing; one left by a removal that was killed is removed here.
+    if (name.startsWith(trash)) removeDirectory(join(dirname(lockPath), name));
+    if (!name.startsWith(staging)) continue;
+    // `<pid>.<start>.<host>-<uuid>`: a staging directory of a process that is gone, never one still being made.
+    const [pid = "", start = "", host = ""] = name.slice(staging.length).split("-")[0]?.split(".") ?? [];
+    const parsed = Number.parseInt(pid, 10);
+    if (Number.isFinite(parsed) && processState(parsed, start, host, true) === "abandoned") {
+      removeDirectory(join(dirname(lockPath), name));
     }
   }
 }
@@ -113,13 +161,18 @@ function takeoverTokens(lockPath: string): string[] {
     .map((name) => join(dirname(lockPath), name));
 }
 
-/** Whether a broker that may still act holds a takeover token: its holder runs, or it cannot be shown to be gone. */
-function liveTakeoverToken(lockPath: string, own?: string): boolean {
-  return takeoverTokens(lockPath).some((token) => {
-    if (token === own) return false;
+/**
+ * A takeover token held by a broker that may still act, as `[path, content, state]`: its holder runs, or cannot be
+ * checked; undefined when there is none.
+ */
+function liveTakeoverToken(lockPath: string): readonly [string, string, HolderState] | undefined {
+  for (const token of takeoverTokens(lockPath)) {
     const content = readFileOrUndefined(token);
-    return content !== undefined && !isAbandoned(token, content);
-  });
+    if (content === undefined) continue;
+    const state = holderState(token, content);
+    if (state !== "abandoned") return [token, content, state];
+  }
+  return undefined;
 }
 
 /**
@@ -183,7 +236,10 @@ export async function acquireSocketReplacementLock(
         await sleep(SOCKET_REPLACEMENT_LOCK_POLL_MS);
         continue;
       }
-      if (!generationFree(join(generationPath(lockPath, latest), "owner"), content)) {
+      const owner = join(generationPath(lockPath, latest), "owner");
+      const state = generationState(owner, content);
+      if (state !== "abandoned") {
+        if (state === "unknown" && unknownHolderWaitedOut(owner, content)) refuse(owner);
         await waiting();
         continue;
       }
@@ -195,7 +251,7 @@ export async function acquireSocketReplacementLock(
         break;
       }
       // A later generation was taken meanwhile: this one, made from an older judgment, holds nothing.
-      rmSync(generationPath(lockPath, next), { recursive: true, force: true });
+      removeGeneration(lockPath, next);
     }
     await sleep(SOCKET_REPLACEMENT_LOCK_POLL_MS);
   }
@@ -211,17 +267,24 @@ export async function acquireSocketReplacementLock(
     // Best effort: a parked file is only clutter.
   }
   const held = () =>
-    holdsGeneration() && readFileOrUndefined(lockPath) === record && !liveTakeoverToken(lockPath);
+    holdsGeneration() && readFileOrUndefined(lockPath) === record && liveTakeoverToken(lockPath) === undefined;
   // The single lock file earlier versions take, and then no broker of an earlier version still replacing one: a broker
   // holding a takeover token may yet move that file, so this one waits, holding both, until none does.
   for (;;) {
     if (readFileOrUndefined(lockPath) !== record && !createLockFile(lockPath, record)) {
       const holder = readFileOrUndefined(lockPath);
-      if (holder !== undefined && isAbandoned(lockPath, holder)) replaceAbandonedLegacy(lockPath, holder, record);
-      else await waiting();
+      const state = holder === undefined ? "held" : holderState(lockPath, holder);
+      if (holder !== undefined && state === "abandoned") {
+        replaceAbandonedLegacy(lockPath, holder, record);
+        continue;
+      }
+      if (state === "unknown" && unknownHolderWaitedOut(lockPath, holder)) refuse(lockPath);
+      await waiting();
       continue;
     }
     if (held()) break;
+    const token = liveTakeoverToken(lockPath);
+    if (token?.[2] === "unknown" && unknownHolderWaitedOut(token[0], token[1])) refuse(token[0]);
     await waiting();
   }
   let released = false;
@@ -233,9 +296,7 @@ export async function acquireSocketReplacementLock(
     // Its own generation is removed once the released one is in place, so a broker that idles out leaves one released
     // generation (#4727). That one stays: removed, numbering would start again, and a broker paused with a judgment of
     // an older generation could then take one that looks like the latest.
-    if (createGeneration(lockPath, generation + 1, RELEASED)) {
-      rmSync(generationPath(lockPath, generation), { recursive: true, force: true });
-    }
+    if (createGeneration(lockPath, generation + 1, RELEASED)) removeGeneration(lockPath, generation);
   };
   return Object.assign(release, { held });
 }

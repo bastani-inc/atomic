@@ -201,7 +201,8 @@ async function acquireSocketLockWithin(budgetMs: number): Promise<SocketReplacem
   // A lock taken after the budget is never released by hand: the broker exits at once, and a lock whose holder is dead
   // is taken over.
   return Promise.race([
-    acquireSocketReplacementLock(SOCKET_REPLACEMENT_LOCK_PATH),
+    // A holder that cannot be checked is refused (#5220): the broker exits without closing, as on a timeout.
+    acquireSocketReplacementLock(SOCKET_REPLACEMENT_LOCK_PATH).catch(() => undefined),
     new Promise<undefined>((resolve) => setTimeout(resolve, budgetMs).unref()),
   ]);
 }
@@ -579,9 +580,16 @@ class IntercomBroker {
    * it (#4409). Brokers start one at a time under the socket lock, so one that yields never claims the pid file.
    */
   async start(): Promise<void> {
-    const startupLock = await acquireSocketReplacementLock(SOCKET_REPLACEMENT_LOCK_PATH, {
-      onWait: () => console.error(`Intercom broker waiting for another broker starting on ${SOCKET_PATH}`),
-    });
+    let startupLock: SocketReplacementLock;
+    try {
+      startupLock = await acquireSocketReplacementLock(SOCKET_REPLACEMENT_LOCK_PATH, {
+        onWait: () => console.error(`Intercom broker waiting for another broker starting on ${SOCKET_PATH}`),
+      });
+    } catch (error) {
+      // #5220: a lock held by a process this broker cannot check; the message names the lock and the fix.
+      console.error(`Intercom broker not started: ${error instanceof Error ? error.message : String(error)}`);
+      process.exit(1);
+    }
     this.releaseStartupLock = startupLock;
     this.holdsStartupLock = startupLock.held;
     // Read again under the lock: a broker that started meanwhile may have recorded a socket of its own.

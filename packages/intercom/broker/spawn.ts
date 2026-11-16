@@ -10,7 +10,9 @@ import {
   createLockFile,
   readFileOrUndefined,
   takeOverStaleLock,
-  writerGone,
+  unknownHolderAdvice,
+  unknownHolderWaitedOut,
+  writerState,
 } from "./stale-lock-file.js";
 import { BROKER_READY_TIMEOUT_MS } from "./startup-timeout.js";
 import {
@@ -822,7 +824,19 @@ function isSpawnLockReplaceable(written: string | undefined, lockPath: string): 
   // A last line not yet terminated is still being written, where the lock could not be linked into place whole.
   const content = completeLines(written) ?? "";
   if (!isSpawnLockContentStale(content)) return false;
-  return recordsSpawner(content) || writerGone(lockPath, written);
+  if (recordsSpawner(content)) return true;
+  const writer = writerState(lockPath, written);
+  // A writer that cannot be checked is waited on, and then refused with a warning naming the lock and the fix.
+  if (writer === "unknown" && unknownHolderWaitedOut(lockPath, written)) warnUnknownSpawnLockHolder(lockPath);
+  return writer === "abandoned";
+}
+
+const warnedUnknownHolder = new Set<string>();
+
+function warnUnknownSpawnLockHolder(lockPath: string): void {
+  if (warnedUnknownHolder.has(lockPath)) return;
+  warnedUnknownHolder.add(lockPath);
+  process.emitWarning(unknownHolderAdvice(lockPath));
 }
 
 /**

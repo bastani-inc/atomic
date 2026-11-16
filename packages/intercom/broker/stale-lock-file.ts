@@ -1,7 +1,19 @@
-import { randomUUID } from "crypto";
-import { linkSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "fs";
+import { createHash, randomUUID } from "crypto";
+import {
+  closeSync,
+  linkSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+  writeSync,
+} from "fs";
+import { hostname } from "os";
 import { basename, dirname, join } from "path";
-import { noProcessHasOpen } from "./open-file-check.js";
 
 /**
  * A parked file is renamed, read and removed at once, so one parked longer than this was left by a process that
@@ -56,18 +68,72 @@ export function createLockFile(path: string, content: string): boolean {
 
 /**
  * Creates `path` holding `content` where no hard link can be made: created and then written, so a reader may see it
- * empty or partly written for a moment. Each record ends its lines with a newline, and readers judge a record whose
- * last line is unterminated, or that is empty, as still being written while any process has it open (see
- * {@link writerGone}).
+ * empty or partly written for a moment. Before the first byte is written, an intent marker is created beside it whose
+ * name holds the file's identity and this process's (see {@link intentPrefix}), so a reader can always tell whose
+ * record is being written, and whether that writer is gone, by its identity rather than by time or a scan of open
+ * files (#5220). The marker is removed once the record is complete.
  */
 function createExclusively(path: string, content: string): boolean {
+  let fd: number;
   try {
-    writeFileSync(path, content, { flag: "wx" });
-    return true;
+    fd = openSync(path, "wx");
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
     throw error;
   }
+  const intent = `${intentPrefix(path, fileIdentity(path))}${ownIdentity()}`;
+  try {
+    writeFileSync(intent, "");
+    writeSync(fd, content);
+  } finally {
+    closeSync(fd);
+  }
+  // Left behind when this process is killed meanwhile, it names a dead writer, and the next takeover removes it.
+  removeFile(intent);
+  return true;
+}
+
+/** The identity of the file at `path`, which no other file shares while it exists: its inode, or file index on Windows. */
+function fileIdentity(path: string): string | undefined {
+  try {
+    return statSync(path, { bigint: true }).ino.toString();
+  } catch {
+    return undefined;
+  }
+}
+
+/** The prefix of the intent markers of the file at `path` with identity `file`: `<path>.writing.<file>.`. */
+function intentPrefix(path: string, file: string | undefined): string {
+  return `${path}.writing.${file ?? "unknown"}.`;
+}
+
+let ownHost: string | undefined;
+
+/**
+ * What tells this host, and on Linux this pid namespace, apart from another sharing the agent directory, such as a
+ * container or another machine: a pid recorded elsewhere cannot be checked here.
+ */
+export function hostIdentity(): string {
+  if (ownHost === undefined) {
+    let source = `host:${hostname()}`;
+    if (process.platform === "linux") {
+      try {
+        const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf-8").trim();
+        source = `linux:${boot}:${readlinkSync("/proc/self/ns/pid")}`;
+      } catch {
+        // No /proc: the host name stands for the host.
+      }
+    }
+    ownHost = createHash("sha256").update(source).digest("hex").slice(0, 12);
+  }
+  return ownHost;
+}
+
+/** This process as an intent marker names it: `<pid>.<start or x>.<host>`. */
+export function ownIdentity(): string {
+  const start = processStart(process.pid);
+  const token = start === undefined ? "x" : createHash("sha256").update(start).digest("hex").slice(0, 12);
+  return `${process.pid}.${token}.${hostIdentity()}`;
 }
 
 /** `content` without a last line that is not yet terminated, as a record still being written ends. */
@@ -145,48 +211,125 @@ export function processStart(pid: number): string | undefined {
   }
 }
 
-/** What a lock or token of this process records: its pid and, where it can be read, when it started. */
+/** What a lock or token of this process records: its pid, when it started where that can be read, and its host. */
 export function holderRecord(): string {
-  return `${process.pid}\n${processStart(process.pid) ?? ""}\n`;
+  return `${process.pid}\n${processStart(process.pid) ?? ""}\n${hostIdentity()}\n`;
 }
 
 /**
- * A lock or token read as `content` was left by a crashed process once its pid is dead, or runs another process
- * that started at another time than the one it records (#5220), or once it stayed unreadable past the grace period. A
- * start that cannot be read now never makes a running pid another process, as for #5164.
+ * How a lock or record read as `written` is held: by a process that still runs, by one that is gone (`abandoned`), or
+ * by one this process cannot check (`unknown`): on another host or in another pid namespace, or, for a record that names
+ * no holder and has no intent marker (see {@link createExclusively}), written by an earlier version or another user.
  */
-export function isAbandoned(path: string, written: string | undefined): boolean {
+export type HolderState = "held" | "abandoned" | "unknown";
+
+/** Whether the process named `pid`, recorded with start `start` and host `host`, still runs, as far as can be told. */
+export function processState(pid: number, start: string, host: string, hashedStart: boolean): HolderState {
+  if (host !== "" && host !== hostIdentity()) return "unknown";
+  if (!isProcessAlive(pid)) return "abandoned";
+  if (start === "" || start === "x") return "held";
+  const started = processStart(pid);
+  if (started === undefined) return "held";
+  const now = hashedStart ? createHash("sha256").update(started).digest("hex").slice(0, 12) : started;
+  return now === start ? "held" : "abandoned";
+}
+
+/**
+ * How the lock at `path`, read as `written`, is held (#5220). A record that names its holder is judged by that holder:
+ * its pid, its start where it can be read (a start that cannot be read now never makes a running pid another process,
+ * as for #5164), and its host. A record that names none, empty or part-written, is judged by its writer, which the
+ * intent marker created before its first byte names; never by its age or by scanning which processes have it open.
+ */
+export function holderState(path: string, written: string | undefined): HolderState {
   const content = completeLines(written);
   const pid = pidOf(content);
   if (pid !== undefined) {
-    if (!isProcessAlive(pid)) return true;
-    const recorded = content?.split("\n")[1] ?? "";
-    if (recorded === "") return false;
-    const started = processStart(pid);
-    return started !== undefined && started !== recorded;
+    const [, start = "", host = ""] = (content ?? "").split("\n");
+    return processState(pid, start, host, false);
   }
-  return writerGone(path, written);
+  return writerState(path, written);
+}
+
+/** Whether a lock or token read as `written` was left by a process that is gone. */
+export function isAbandoned(path: string, written: string | undefined): boolean {
+  return holderState(path, written) === "abandoned";
 }
 
 /**
- * Whether the lock at `path`, read as `written` and recording no holder, empty or part-written, was left by a process
- * that died while writing it (#5220): no process has it open, and it is still exactly as read. Its writer holds it open
- * from creating it to finishing it, so this needs no time grace, which could not tell a stalled writer from a dead one.
+ * How the lock at `path`, read as `written` and recording no holder, is held: by the writer its intent marker names.
+ * Without a marker for this very file, it was written by an earlier version, which leaves none, or by another user, and
+ * its writer cannot be checked.
  */
+export function writerState(path: string, written: string | undefined): HolderState {
+  const file = fileIdentity(path);
+  if (written === undefined || file === undefined) return "held";
+  const prefix = basename(intentPrefix(path, file));
+  const states: HolderState[] = [];
+  for (const name of readdirSync(dirname(path))) {
+    if (!name.startsWith(prefix)) continue;
+    const [pid, start, host] = name.slice(prefix.length).split(".");
+    const parsed = Number.parseInt(pid ?? "", 10);
+    states.push(Number.isFinite(parsed) ? processState(parsed, start ?? "", host ?? "", true) : "unknown");
+  }
+  if (states.includes("held")) return "held";
+  if (states.length === 0 || states.includes("unknown")) return "unknown";
+  // Its writer is gone: abandoned while it is still exactly as read.
+  return readFileOrUndefined(path) === written && fileIdentity(path) === file ? "abandoned" : "held";
+}
+
+/** Whether the lock at `path`, read as `written` and recording no holder, was left by a writer that is gone. */
 export function writerGone(path: string, written: string | undefined): boolean {
-  if (written === undefined || !noProcessHasOpen(path)) return false;
-  return readFileOrUndefined(path) === written;
+  return writerState(path, written) === "abandoned";
+}
+
+/** How long a holder that cannot be checked is waited on before it is refused with a warning. */
+let unknownHolderWaitMs = 30_000;
+
+/** Shortens the wait on a holder that cannot be checked, for a test. */
+export function setUnknownHolderWaitForTesting(ms: number | undefined): void {
+  unknownHolderWaitMs = ms ?? 30_000;
+  unknownSince.clear();
+}
+
+const unknownSince = new Map<string, number>();
+
+/** What to do about a lock whose holder cannot be checked: remove it, or give it to this user. */
+export function unknownHolderAdvice(path: string): string {
+  return `The lock ${path} names a holder this process cannot check: a process on another host or in another container sharing this agent directory, a process of another user, or a version that left it part-written (#5220). If no such process uses the lock, remove ${path}, or give it to your user (for example \`sudo chown $USER ${path}\`).`;
+}
+
+/**
+ * Records that the lock at `path`, read as `written`, has a holder this process cannot check; true once it has been
+ * waited on for the bound, when the caller refuses it. A holder that changes starts the wait again.
+ */
+export function unknownHolderWaitedOut(path: string, written: string | undefined): boolean {
+  const key = `${path}\0${written ?? ""}`;
+  const since = unknownSince.get(key);
+  if (since === undefined) {
+    unknownSince.set(key, Date.now());
+    return false;
+  }
+  return Date.now() - since >= unknownHolderWaitMs;
 }
 
 /**
  * Removes the files a crashed process parked beside `lockPath` while it removed that lock or its takeover token, or
  * left while making one: those whose content names a dead holder, and those that name none once parked longer than
- * {@link PARKED_FILE_MAX_AGE_MS}. A file that names a live holder is left, however old (#5220).
+ * {@link PARKED_FILE_MAX_AGE_MS}, and the intent markers of writers that are gone. A file that names a live holder is
+ * left, however old (#5220).
  */
 export function removeLeftoverParkedFiles(lockPath: string): void {
   const directory = dirname(lockPath);
   const prefix = `${basename(lockPath)}.`;
   for (const name of readdirSync(directory)) {
+    const intent = /^(.*)\.writing\.([^.]+)\.(\d+)\.([^.]+)\.([^.]+)$/.exec(name);
+    if (name.startsWith(prefix) && intent !== null) {
+      // An intent marker of a writer that is gone is only clutter once its file is gone or replaced; while that file
+      // is in place, the marker is what shows it abandoned.
+      const gone = processState(Number(intent[3]), intent[4] ?? "", intent[5] ?? "", true) === "abandoned";
+      if (gone && fileIdentity(join(directory, intent[1] ?? "")) !== intent[2]) removeFile(join(directory, name));
+      continue;
+    }
     const parkedAt = name.startsWith(prefix) ? PARKED_SUFFIX.exec(name)?.[1] : undefined;
     if (parkedAt === undefined) continue;
     const path = join(directory, name);
