@@ -1,17 +1,28 @@
 import assert from "node:assert/strict";
+import { chmodSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { pathToFileURL } from "node:url";
+import { tryAdvisoryLock } from "@bastani/atomic-natives";
 import { afterEach, test, vi } from "vitest";
 import { StorageUnavailableError } from "../../packages/coding-agent/src/core/storage/errors.js";
 import {
 	openNodeSqliteDatabase,
+	sqliteOpenLockPath,
 	wrapNodeSqliteDatabase,
 } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import {
 	switchToWriteAheadLog,
 	switchToWriteAheadLogSync,
 } from "../../packages/coding-agent/src/core/storage/write-ahead-log.js";
-import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
+import {
+	decodeStream,
+	makeTempDirectory,
+	readStreamText,
+	removeTempDirectory,
+	sleep,
+	spawnProcess,
+} from "../helpers/runtime.js";
 import { holdSqliteWriteLock } from "../helpers/sqlite-lock-holder.js";
 
 const directories: string[] = [];
@@ -340,3 +351,93 @@ for (const [name, run] of [
 		assert.equal(gaveUp.elapsedMs, TRUNCATE_CAP_MS);
 	});
 }
+
+test("connections hold a shared open lock while open, release it on close or kill, and create none for untouched read-only files (#5317)", async () => {
+	const directory = makeTempDirectory("atomic-open-lock-");
+	directories.push(directory);
+	const untouchedPath = join(directory, "untouched.sqlite");
+	const raw = new DatabaseSync(untouchedPath);
+	raw.exec("CREATE TABLE items(v INTEGER)");
+	raw.close();
+	const untouchedReader = await openNodeSqliteDatabase(untouchedPath, { readOnly: true });
+	assert.equal(existsSync(sqliteOpenLockPath(untouchedPath)), false);
+	assert.equal(existsSync(`${untouchedPath}-holders`), false);
+	await untouchedReader.close();
+
+	const path = join(directory, "managed.sqlite");
+	const first = await openNodeSqliteDatabase(path);
+	const lockPath = sqliteOpenLockPath(path);
+	assert.equal(existsSync(lockPath), true);
+	assert.equal(tryAdvisoryLock(lockPath, 0), null, "held shared while first connection is open");
+	const second = await openNodeSqliteDatabase(path, { readOnly: true });
+	const rawWrapped = new DatabaseSync(path);
+	const wrapped = wrapNodeSqliteDatabase(rawWrapped);
+	await first.close();
+	assert.equal(tryAdvisoryLock(lockPath, 0), null, "still held while second and wrapped connections remain open");
+	await second.close();
+	assert.equal(tryAdvisoryLock(lockPath, 0), null, "still held while wrapped facade remains open");
+	await wrapped.close();
+	rawWrapped.close();
+	assert.equal(existsSync(lockPath), false, "no -open.lock is left after the last connection closes");
+
+	const uriConn = await openNodeSqliteDatabase(pathToFileURL(path).href, { readOnly: true });
+	assert.equal(tryAdvisoryLock(lockPath, 0), null, "file: URI connection holds the shared open lock");
+	await uriConn.close();
+	assert.equal(existsSync(lockPath), false);
+
+	const corruptPath = join(directory, "corrupt.sqlite");
+	writeFileSync(corruptPath, "not a sqlite database");
+	await assert.rejects(openNodeSqliteDatabase(corruptPath));
+	assert.equal(existsSync(sqliteOpenLockPath(corruptPath)), false, "failed open releases and removes its open lock");
+
+	if (process.platform !== "win32" && process.getuid?.() !== 0) {
+		const roDir = join(directory, "readonly-dir");
+		const roDbPath = join(roDir, "ro.sqlite");
+		const roSetup = await openNodeSqliteDatabase(roDbPath);
+		await roSetup.exec("CREATE TABLE items(v INTEGER); INSERT INTO items(v) VALUES (42);");
+		await roSetup.exec("PRAGMA journal_mode=DELETE");
+		await roSetup.close();
+		chmodSync(roDbPath, 0o444);
+		chmodSync(roDir, 0o555);
+		try {
+			const roReader = await openNodeSqliteDatabase(roDbPath, { readOnly: true });
+			try {
+				assert.deepEqual(await roReader.all("SELECT v FROM items"), [{ v: 42 }]);
+			} finally {
+				await roReader.close();
+			}
+		} finally {
+			chmodSync(roDir, 0o755);
+			chmodSync(roDbPath, 0o644);
+		}
+	}
+
+	const child = spawnProcess(
+		[
+			process.execPath,
+			"-e",
+			`const { trySharedAdvisoryLock } = require(${JSON.stringify(join(process.cwd(), "packages/natives/native/index.js"))});
+			const lock = trySharedAdvisoryLock(process.argv[1], 0);
+			if (!lock) process.exit(1);
+			process.stdout.write("locked\\n");
+			setInterval(() => {}, 60_000);`,
+			lockPath,
+		],
+		{ stdout: "pipe", stderr: "pipe" },
+	);
+	const stderr = readStreamText(child.stderr);
+	const reader = decodeStream(child.stdout!).getReader();
+	let output = "";
+	while (!output.includes("\n")) {
+		const chunk = await reader.read();
+		if (chunk.done) assert.fail(`child exited before locking: ${await stderr}`);
+		output += chunk.value;
+	}
+	reader.releaseLock();
+	assert.equal(tryAdvisoryLock(lockPath, 0), null, "child process holds the shared open lock");
+	child.kill("SIGKILL");
+	await child.exited;
+	const recovered = tryAdvisoryLock(lockPath, 5_000);
+	assert.ok(recovered !== null, "kernel releases the shared open lock when the holder is killed");
+	recovered.release();
+});

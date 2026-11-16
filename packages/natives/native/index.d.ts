@@ -849,6 +849,13 @@ export type TerminationCause = 'abort' | 'interrupt' | 'fail-fast-skip' | 'paren
  */
 export declare function tryAdvisoryLock(path: string, waitMs: number): AdvisoryLock | null
 
+/**
+ * Takes a shared advisory lock on the file at `path` (#5317): `flock` on Unix, `LockFileEx` on Windows. The file is
+ * created when missing and reopened if unlinked while acquiring the lock. Tried at once, then again until `waitMs`
+ * has passed; `null` while an exclusive holder keeps it.
+ */
+export declare function trySharedAdvisoryLock(path: string, waitMs: number): AdvisoryLock | null
+
 export type WaitOutcome =
   | { kind: 'settled'; taskId: string; result: TaskResult }
   | { kind: 'yielded'; taskId: string; waitId: string; reason: YieldReason }

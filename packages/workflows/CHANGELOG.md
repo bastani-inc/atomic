@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed checkpoint shipping leaving a root's local checkpoint journal on a host that was down when the root's run ended, for example after a crash: it stayed on disk until that root resumed on the host again. The host now removes it the next time a worker host starts or a shared pool opens on the same shared journal, with any checkpoints it never shipped, which the ended run no longer accepts. It keeps the local journals of runs that are still running or paused, and any local journal a pool or a SQLite connection opened through Atomic on the host has open, including one opened while the journal is being removed. A pool that closes after its run ended no longer removes its local journal while such a connection has it open, and retiring a local journal with unshipped checkpoints keeps it in write-ahead log mode. A connection of another program, or of an earlier Atomic release, is noticed while it holds a SQLite lock on the journal and, on Linux and macOS, while a process of the same user has the file open ([#5317](https://github.com/bastani-inc/atomic/issues/5317))
+
 ## [0.9.88] - 2026-11-16
 
 ### Breaking Changes

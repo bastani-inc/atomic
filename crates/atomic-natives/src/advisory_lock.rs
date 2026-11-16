@@ -14,10 +14,64 @@ use napi_derive::napi;
 /// How long a waiting taker sleeps between tries of a lock another process holds.
 const RETRY_INTERVAL: Duration = Duration::from_millis(5);
 
-/// Takes the exclusive advisory lock of the file at `path`, created when missing and never truncated: tried at once,
-/// then again until `wait` has passed. `None` while another open file holds it. The lock lasts as long as the returned
-/// file is open, and the kernel releases it when its holder dies.
-pub fn try_lock_file(path: &Path, wait: Duration) -> io::Result<Option<File>> {
+#[cfg(unix)]
+fn lock_matches_path(file: &File, path: &Path) -> bool {
+	use std::os::unix::fs::MetadataExt;
+	let Ok(held) = file.metadata() else {
+		return false;
+	};
+	let Ok(current) = std::fs::metadata(path) else {
+		return false;
+	};
+	held.dev() == current.dev() && held.ino() == current.ino()
+}
+
+#[cfg(windows)]
+fn file_id(file: &File) -> Option<(u32, u32, u32)> {
+	use std::os::windows::io::AsRawHandle;
+	use windows_sys::Win32::Storage::FileSystem::{
+		BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+	};
+	let mut info = BY_HANDLE_FILE_INFORMATION::default();
+	let ok = unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) };
+	if ok == 0 || info.nNumberOfLinks == 0 {
+		return None;
+	}
+	Some((info.dwVolumeSerialNumber, info.nFileIndexHigh, info.nFileIndexLow))
+}
+
+#[cfg(windows)]
+fn lock_matches_path(file: &File, path: &Path) -> bool {
+	use std::os::windows::fs::OpenOptionsExt;
+	let Some(held) = file_id(file) else {
+		return false;
+	};
+	let Ok(current) = OpenOptions::new().access_mode(0).open(path) else {
+		return false;
+	};
+	file_id(&current) == Some(held)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn lock_matches_path(_file: &File, path: &Path) -> bool {
+	std::fs::metadata(path).is_ok()
+}
+
+#[cfg(windows)]
+fn is_delete_pending(error: &io::Error) -> bool {
+	error.kind() == io::ErrorKind::PermissionDenied
+}
+
+#[cfg(not(windows))]
+fn is_delete_pending(_error: &io::Error) -> bool {
+	false
+}
+
+fn try_lock_with(
+	path: &Path,
+	wait: Duration,
+	lock: fn(&File) -> Result<(), TryLockError>,
+) -> io::Result<Option<File>> {
 	let mut options = OpenOptions::new();
 	options.read(true).write(true).create(true).truncate(false);
 	#[cfg(unix)]
@@ -25,13 +79,26 @@ pub fn try_lock_file(path: &Path, wait: Duration) -> io::Result<Option<File>> {
 		use std::os::unix::fs::OpenOptionsExt;
 		options.mode(0o600);
 	}
-	let file = options.open(path)?;
 	let deadline = Instant::now() + wait;
+	let mut file: Option<File> = None;
 	loop {
-		match file.try_lock() {
-			Ok(()) => return Ok(Some(file)),
-			Err(TryLockError::WouldBlock) => {},
-			Err(TryLockError::Error(error)) => return Err(error),
+		if file.is_none() {
+			match options.open(path) {
+				Ok(opened) => file = Some(opened),
+				Err(error) if is_delete_pending(&error) => {},
+				Err(error) => return Err(error),
+			}
+		}
+		if let Some(current) = &file {
+			match lock(current) {
+				Ok(()) if lock_matches_path(current, path) => return Ok(file),
+				Ok(()) => {
+					file = None;
+					continue;
+				},
+				Err(TryLockError::WouldBlock) => {},
+				Err(TryLockError::Error(error)) => return Err(error),
+			}
 		}
 		let now = Instant::now();
 		if now >= deadline {
@@ -39,6 +106,17 @@ pub fn try_lock_file(path: &Path, wait: Duration) -> io::Result<Option<File>> {
 		}
 		thread::sleep(RETRY_INTERVAL.min(deadline - now));
 	}
+}
+
+/// Takes the exclusive advisory lock of the file at `path`, created when missing and never truncated: tried at once,
+/// then again until `wait` has passed. `None` while another open file holds it. The lock lasts as long as the returned
+/// file is open, and the kernel releases it when its holder dies.
+pub fn try_lock_file(path: &Path, wait: Duration) -> io::Result<Option<File>> {
+	try_lock_with(path, wait, File::try_lock)
+}
+
+pub fn try_lock_file_shared(path: &Path, wait: Duration) -> io::Result<Option<File>> {
+	try_lock_with(path, wait, File::try_lock_shared)
 }
 
 /// Renames `from` to `to` only while nothing is at `to`: false, with nothing moved, when something is.
@@ -148,6 +226,16 @@ impl AdvisoryLock {
 #[napi(js_name = "tryAdvisoryLock")]
 pub fn try_advisory_lock(path: String, wait_ms: u32) -> napi::Result<Option<AdvisoryLock>> {
 	let file = try_lock_file(Path::new(&path), Duration::from_millis(u64::from(wait_ms)))
+		.map_err(napi_error)?;
+	Ok(file.map(|file| AdvisoryLock { file: Some(file) }))
+}
+
+/// Takes a shared advisory lock on the file at `path` (#5317): `flock` on Unix, `LockFileEx` on Windows. The file is
+/// created when missing and reopened if unlinked while acquiring the lock. Tried at once, then again until `waitMs`
+/// has passed; `null` while an exclusive holder keeps it.
+#[napi(js_name = "trySharedAdvisoryLock")]
+pub fn try_shared_advisory_lock(path: String, wait_ms: u32) -> napi::Result<Option<AdvisoryLock>> {
+	let file = try_lock_file_shared(Path::new(&path), Duration::from_millis(u64::from(wait_ms)))
 		.map_err(napi_error)?;
 	Ok(file.map(|file| AdvisoryLock { file: Some(file) }))
 }

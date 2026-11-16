@@ -3242,6 +3242,33 @@ export class SqlPoolQueue {
 				)) !== undefined,
 		);
 	}
+	async endedShipRoots(
+		roots: readonly string[],
+		works: readonly string[],
+	): Promise<{ readonly roots: ReadonlySet<string>; readonly works: ReadonlySet<string> }> {
+		const running = `status IN ('pending', 'running', 'paused')`;
+		const listed = `IN (SELECT value FROM ${this.dialect.jsonValues("?")})`;
+		return this.storage.read(async (executor) => {
+			const live = async (sql: string, ids: readonly string[]): Promise<ReadonlySet<string>> =>
+				ids.length === 0
+					? new Set()
+					: new Set(
+							(await executor.all<SqliteRow & { id: string }>(sql, JSON.stringify(ids))).map((row) => row.id),
+						);
+			const liveRoots = await live(
+				`SELECT run_id AS id FROM ${this.journal.runs} WHERE ${running} AND run_id ${listed}`,
+				roots,
+			);
+			const liveWorks = await live(
+				`SELECT w.id AS id FROM ${this.work} w JOIN ${this.journal.runs} r ON r.run_id = w.root WHERE r.${running} AND w.id ${listed}`,
+				works,
+			);
+			return {
+				roots: new Set(roots.filter((root) => !liveRoots.has(root))),
+				works: new Set(works.filter((work) => !liveWorks.has(work))),
+			};
+		});
+	}
 }
 
 /** The journal key a checkpoint's event is recorded under. */

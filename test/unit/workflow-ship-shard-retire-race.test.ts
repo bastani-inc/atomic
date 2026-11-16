@@ -108,6 +108,7 @@ test("a retire that finds a checkpoint left to ship keeps the journal, and the n
 		await first.accept(ROOT, LEASE_1, "unshipped", "{}", 1);
 		await first.close({ retire: true });
 		assert.ok(existsSync(path), "a journal with a checkpoint left to ship is kept");
+		assert.equal(readFileSync(path)[WRITE_VERSION_OFFSET], 2, "a kept journal stays in write-ahead log mode (#5317)");
 
 		const next = await ShipShard.open(path, ROOT);
 		try {

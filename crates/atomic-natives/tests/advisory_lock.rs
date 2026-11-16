@@ -12,10 +12,12 @@ use std::{
 
 use atomic_natives::advisory_lock::{
 	rename_no_replace, rename_no_replace_napi, try_advisory_lock, try_lock_file,
+	try_lock_file_shared, try_shared_advisory_lock,
 };
 
 /// Set in the child process that takes the lock at this path and holds it until it is killed.
 const HOLD_ENV: &str = "ATOMIC_ADVISORY_LOCK_TEST_HOLD";
+const HOLD_SHARED_ENV: &str = "ATOMIC_SHARED_ADVISORY_LOCK_TEST_HOLD";
 
 fn scratch() -> PathBuf {
 	static NEXT: AtomicUsize = AtomicUsize::new(0);
@@ -108,6 +110,15 @@ fn a_lock_in_a_missing_directory_is_an_error_not_contention_5193() {
 /// Not a test of its own: the child process of the kill test, which holds the lock until it is killed.
 #[test]
 fn advisory_lock_holder_child() {
+	if let Some(path) = std::env::var_os(HOLD_SHARED_ENV) {
+		let _held = try_lock_file_shared(PathBuf::from(path).as_path(), Duration::ZERO)
+			.unwrap()
+			.expect("the child takes the shared lock");
+		println!("held");
+		loop {
+			thread::sleep(Duration::from_secs(60));
+		}
+	}
 	let Some(path) = std::env::var_os(HOLD_ENV) else { return };
 	let _held = try_lock_file(PathBuf::from(path).as_path(), Duration::ZERO)
 		.unwrap()
@@ -165,5 +176,62 @@ fn renames_only_while_nothing_is_at_the_target_5193() {
 	assert!(!rename_no_replace(&file, &taken).unwrap(), "a file at the target is never replaced");
 	assert_eq!(fs::read_to_string(&taken).unwrap(), "live");
 	assert!(rename_no_replace(&dir.join("missing"), &dir.join("elsewhere")).is_err());
+	fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn shared_locks_coexist_and_refuse_exclusive_lock_until_all_release_or_die_5317() {
+	let dir = scratch();
+	let path = dir.join("open.lock");
+	let first = try_shared_advisory_lock(path.to_string_lossy().into_owned(), 0)
+		.unwrap()
+		.expect("first shared holder");
+	let second = try_lock_file_shared(&path, Duration::ZERO).unwrap().expect("second shared holder");
+	let mut child = Command::new(std::env::current_exe().unwrap())
+		.args(["--exact", "advisory_lock_holder_child", "--nocapture", "--test-threads=1"])
+		.env(HOLD_SHARED_ENV, &path)
+		.stdout(Stdio::piped())
+		.stderr(Stdio::null())
+		.spawn()
+		.unwrap();
+	let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+	assert!(lines.any(|line| line.is_ok_and(|line| line.trim_end().ends_with("held"))));
+	assert!(try_lock_file(&path, Duration::ZERO).unwrap().is_none());
+	let mut first = first;
+	first.release();
+	assert!(try_lock_file(&path, Duration::ZERO).unwrap().is_none());
+	drop(second);
+	assert!(try_lock_file(&path, Duration::ZERO).unwrap().is_none());
+	child.kill().unwrap();
+	child.wait().unwrap();
+	let exclusive = try_lock_file(&path, Duration::from_secs(10))
+		.unwrap()
+		.expect("exclusive lock succeeds once all shared holders release or die");
+	assert!(try_lock_file_shared(&path, Duration::ZERO).unwrap().is_none());
+	drop(exclusive);
+	fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn lock_reopens_current_path_when_previous_file_was_unlinked_5317() {
+	let dir = scratch();
+	let path = dir.join("unlinked.lock");
+	let exclusive = try_lock_file(&path, Duration::ZERO).unwrap().expect("initial holder");
+	let lock_path = path.clone();
+	let waiter = thread::spawn(move || {
+		try_lock_file_shared(&lock_path, Duration::from_secs(10))
+			.unwrap()
+			.expect("waiter locks replacement file")
+	});
+	thread::sleep(Duration::from_millis(20));
+	fs::remove_file(&path).unwrap();
+	drop(exclusive);
+	let shared = waiter.join().unwrap();
+	assert!(path.is_file(), "reopened replacement lock file exists at path");
+	assert!(
+		try_lock_file(&path, Duration::ZERO).unwrap().is_none(),
+		"shared lock is held on the file currently at path"
+	);
+	drop(shared);
 	fs::remove_dir_all(dir).unwrap();
 }

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `trySharedAdvisoryLock(path, waitMs)`: takes a shared operating-system advisory lock on `path` (`flock` on Unix, `LockFileEx` on Windows), waiting up to `waitMs` while an exclusive holder keeps it, and returns an `AdvisoryLock` or `null`. Both `tryAdvisoryLock` and `trySharedAdvisoryLock` reopen `path` when the file was unlinked while acquiring the lock, and treat a delete-pending file on Windows as contention until `waitMs` expires ([#5317](https://github.com/bastani-inc/atomic/issues/5317)).
+
 ## [0.9.88] - 2026-11-16
 
 ### Added

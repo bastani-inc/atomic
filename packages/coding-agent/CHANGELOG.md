@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `openNodeSqliteDatabase` and `wrapNodeSqliteDatabase` connections hold a shared lock on `<file>-open.lock` while they are open, `file:` URIs included, so Atomic removes a local checkpoint journal only when none of them has it open. A read-only connection takes the lock only beside a database that has a `<file>-holders` directory, a `<file>-open.lock` or a `<file>.lock` file, and goes without it where it cannot create the lock file, such as in a read-only directory ([#5317](https://github.com/bastani-inc/atomic/issues/5317))
+
 ## [0.9.88] - 2026-11-16
 
 Atomic runs on its own libraries, workflows scale out to worker fleets on libSQL or PostgreSQL, and every screen shares one set of keys.
