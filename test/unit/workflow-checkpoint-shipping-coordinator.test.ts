@@ -255,6 +255,8 @@ test("renewing an attempt after a late root lease renewal refreshes its local ch
 		});
 		assert.equal(c2.error, undefined);
 		assert.equal((c2.value as { local?: boolean }).local, true);
+		// A whole shipping interval passes before the shared journal is read.
+		await sleep(2_100);
 		assert.equal(await journal.readKey("root", checkpointKey(toolCheckpoint(held, child, "c2", 2))), undefined);
 		const flushed = await worker.request({ kind: "controlled", revision: 0 });
 		assert.equal(flushed.error, undefined);
@@ -328,6 +330,8 @@ test("a shippable checkpoint whose local lease expired while the attempt still o
 		});
 		assert.equal(c0.error, undefined);
 		assert.equal((c0.value as { local?: boolean }).local, true);
+		// A whole shipping interval passes before the shared journal is read.
+		await sleep(2_100);
 		assert.equal(await journal.readKey("root", checkpointKey(toolCheckpoint(held, child, "c0", 0))), undefined);
 		const flushed = await worker.request({ kind: "controlled", revision: 0 });
 		assert.equal(flushed.error, undefined);
