@@ -1,4 +1,4 @@
-import { mkdir, rename, writeFile } from "node:fs/promises";
+import { mkdir, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { CONFIG_DIR_NAME } from "@bastani/atomic";
 import { prepareInspectionStoreSnapshot, readInspectionStoreSnapshot } from "../shared/inspection-store-snapshot.js";
@@ -8,6 +8,9 @@ import { StatusSnapshotSerializer } from "./status-snapshot-serializer.js";
 
 const DEFAULT_STATUS_SUBPATH = join(CONFIG_DIR_NAME, "workflows", "status.json");
 const STATUS_WRITE_INTERVAL_MS = 250;
+const RENAME_RETRY_DELAYS_MS = [5, 10, 20, 40, 80];
+const RETRYABLE_RENAME_CODES: ReadonlySet<string> = new Set(["EPERM", "EACCES", "EBUSY"]);
+const STATUS_WRITE_QUEUE_KEY = Symbol.for("atomic-workflows/status-write-queue@1");
 
 export interface StatusWriterOpts {
 	projectRoot?: string;
@@ -27,7 +30,31 @@ export function resolveStatusFilePath(
 	return join(root, DEFAULT_STATUS_SUBPATH);
 }
 
-const pathWrites = new Map<string, Promise<void>>();
+const processState = globalThis as typeof globalThis & {
+	[STATUS_WRITE_QUEUE_KEY]?: Map<string, Promise<void>>;
+};
+processState[STATUS_WRITE_QUEUE_KEY] ??= new Map<string, Promise<void>>();
+const pathWrites = processState[STATUS_WRITE_QUEUE_KEY];
+
+function isRetryableRenameError(err: unknown): boolean {
+	if (err === null || typeof err !== "object" || !("code" in err)) return false;
+	return typeof err.code === "string" && RETRYABLE_RENAME_CODES.has(err.code);
+}
+
+async function renameStatusFile(tmpPath: string, targetPath: string): Promise<void> {
+	for (let attempt = 0; ; attempt++) {
+		try {
+			await rename(tmpPath, targetPath);
+			return;
+		} catch (err: unknown) {
+			const delayMs = RENAME_RETRY_DELAYS_MS[attempt];
+			if (delayMs === undefined || !isRetryableRenameError(err)) {
+				throw err;
+			}
+			await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+		}
+	}
+}
 
 export function atomicWriteJson(path: string, content: string | Iterable<string>): Promise<void> {
 	const targetPath = resolve(path);
@@ -35,8 +62,13 @@ export function atomicWriteJson(path: string, content: string | Iterable<string>
 	const current = previous.then(async () => {
 		await mkdir(dirname(targetPath), { recursive: true });
 		const tmpPath = `${targetPath}.tmp`;
-		await writeFile(tmpPath, content, "utf8");
-		await rename(tmpPath, targetPath);
+		try {
+			await writeFile(tmpPath, content, "utf8");
+			await renameStatusFile(tmpPath, targetPath);
+		} catch (err) {
+			await unlink(tmpPath).catch(() => {});
+			throw err;
+		}
 	});
 	const settled = current.then(
 		() => {},
@@ -66,8 +98,9 @@ export function createStatusWriter(
 	let writing = false;
 	let initialWrite = true;
 	let pending = initialWrite;
+	let changeSeq = 0;
 	let drainPromise: Promise<void> | null = null;
-	let inFlightWrite: Promise<void> | null = null;
+	let inFlightWrite: Promise<boolean> | null = null;
 	const serializer = new StatusSnapshotSerializer();
 
 	function recordWriteError(err: unknown): void {
@@ -82,24 +115,29 @@ export function createStatusWriter(
 		});
 	}
 
-	async function writeOnce(): Promise<void> {
+	async function writeOnce(): Promise<boolean> {
 		pending = false;
 		try {
 			await mkdir(dirname(filePath), { recursive: true });
-			if (!active) return;
+			if (!active) return false;
 			await prepareInspectionStoreSnapshot(store);
-			if (!active) return;
+			if (!active) return false;
 			pending = false;
 			const content = await serializer.serialize(readInspectionStoreSnapshot(store));
-			if (!active) return;
+			if (!active) return false;
 			await atomicWriteJson(filePath, content);
 			lastErrorMessage = null;
+			return true;
 		} catch (err: unknown) {
-			if (active) recordWriteError(err);
+			if (active) {
+				pending = true;
+				recordWriteError(err);
+			}
+			return false;
 		}
 	}
 
-	function runWriteOnce(): Promise<void> {
+	function runWriteOnce(): Promise<boolean> {
 		inFlightWrite ??= writeOnce().finally(() => {
 			inFlightWrite = null;
 		});
@@ -133,6 +171,7 @@ export function createStatusWriter(
 	}
 
 	const unsubscribeStore = store.subscribeInvalidation(() => {
+		changeSeq++;
 		pending = true;
 		void ensureDrain();
 	});
@@ -143,13 +182,23 @@ export function createStatusWriter(
 
 	return {
 		async flush() {
+			let failedAttempts = 0;
 			while (active && (pending || inFlightWrite !== null)) {
+				const seqBefore = changeSeq;
+				let ok: boolean;
 				if (inFlightWrite !== null) {
-					await inFlightWrite;
-				} else if (pending) {
+					ok = await inFlightWrite;
+				} else {
 					initialWrite = false;
-					await runWriteOnce();
+					ok = await runWriteOnce();
 				}
+				failedAttempts = ok ? 0 : failedAttempts + 1;
+				if (!ok && (failedAttempts >= 2 || changeSeq === seqBefore)) {
+					break;
+				}
+			}
+			if (active && pending) {
+				void ensureDrain();
 			}
 		},
 		unsubscribe() {

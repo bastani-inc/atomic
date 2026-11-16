@@ -1,10 +1,20 @@
 import assert from "node:assert/strict";
+import { BackgroundCompactionPersistError } from "@bastani/atomic";
+import { StoragePayloadTooLargeError, StorageRollbackError, StorageUnavailableError } from "@bastani/atomic/storage";
+import {
+	type Component,
+	stripTerminalSequences,
+	type Terminal,
+	TuiMainScreen,
+	visibleWidth,
+} from "@bastani/atomic-tui";
 import { test, vi } from "vitest";
 import { inspectRun } from "../../packages/workflows/src/runs/background/run-inspect.js";
 import { MAX_CAUSE_DEPTH } from "../../packages/workflows/src/shared/error-cause-chain.js";
 import { type SerializedError, serializeError } from "../../packages/workflows/src/shared/error-codec.js";
 import type { StageSnapshot, ToolNodeSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import * as toolPayloadBounds from "../../packages/workflows/src/shared/tool-payload-bounds.js";
+import { typedFailureDetail } from "../../packages/workflows/src/shared/typed-failure-detail.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import type { GraphViewOpts } from "../../packages/workflows/src/tui/graph-view-types.js";
 import { renderNodeCard } from "../../packages/workflows/src/tui/node-card.js";
@@ -363,10 +373,275 @@ test("failure logs render the deepest recorded cause and omit bare child heading
 		const logLines = stageFailureLogLines({ error: "failed", failureDetail: detail });
 		for (let index = 0; index < logLines.length; index++) {
 			const line = logLines[index]!;
-			if (/^\s*(caused by:|during cleanup:)$/.test(line)) {
+			if (/^\s*(caused by:|during rollback:|during cleanup:)$/.test(line)) {
 				const next = logLines[index + 1];
 				assert.ok(next !== undefined && next.trim().length > 0, `dangling heading at line ${index}: ${line}`);
-				assert.equal(/^\s*(caused by:|during cleanup:)$/.test(next), false);
+				assert.equal(/^\s*(caused by:|during rollback:|during cleanup:)$/.test(next), false);
+			}
+		}
+	}
+});
+
+test("failure logs omit bare child headings when the character budget runs out right after a heading (#5234)", () => {
+	for (const [memberLength, rootLength] of [
+		[469, 11],
+		[470, 3],
+	] as const) {
+		const detail: SerializedError = {
+			name: "AggregateError",
+			message: "r".repeat(rootLength),
+			fields: {},
+			errors: Array.from({ length: 10 }, (_, index) => ({
+				name: "Error",
+				message: `member-${index}-`.padEnd(memberLength, "m"),
+				fields: {},
+				cause: { name: "CauseError", message: `cause-${index}-`.padEnd(memberLength, "c"), fields: {} },
+				cleanupCause: { name: "CleanupError", message: `cleanup-${index}`, fields: {} },
+			})),
+		};
+		const lines = stageFailureLogLines({
+			error: "Error: build failed",
+			failureMessage: "Error: build failed",
+			failureDetail: detail,
+		});
+		for (let index = 0; index < lines.length; index++) {
+			const match = /^(\s*)(caused by:|during rollback:|during cleanup:)$/.exec(lines[index]!);
+			if (match === null) continue;
+			const next = lines[index + 1];
+			const childShown =
+				next !== undefined && next.trim().length > 0 && next.length - next.trimStart().length > match[1]!.length;
+			const truncatedChild = next !== undefined && next.trim() === TOOL_PAYLOAD_TRUNCATION_MARKER;
+			assert.ok(childShown || truncatedChild, `dangling heading at line ${index}: ${lines[index]}`);
+		}
+	}
+});
+
+test("failure logs preserve the stage message share when the error tree is large and cap detail-less messages at 4 KB (#5234)", () => {
+	const failureDetail: SerializedError = {
+		name: "AggregateError",
+		code: "E_AGGREGATE",
+		message: "many steps failed",
+		fields: {},
+		errors: Array.from({ length: 31 }, (_, index) => ({
+			name: "Error",
+			code: `E_STEP_${index}`,
+			message: `step ${index} failed: `.padEnd(512, "x"),
+			fields: {},
+		})),
+	};
+	const message = "Error: build failed in packages/workflows";
+	const lines = stageFailureLogLines({ error: message, failureMessage: message, failureDetail });
+	assert.equal(lines[0], message);
+	assert.ok(lines.some((line) => line.includes("E_AGGREGATE")));
+
+	const hugeMessage = "E".repeat(2_000_000);
+	const detailLess = stageFailureLogLines({ error: hugeMessage, failureMessage: hugeMessage }).join("\n");
+	assert.ok(detailLess.endsWith(TOOL_PAYLOAD_TRUNCATION_MARKER));
+	assert.ok(detailLess.length <= 4_096);
+});
+
+test("failure logs keep the root error code and hint when both the stack and structured detail exceed 128 rows (#5234)", () => {
+	const stack = `Error: build failed\n${Array.from({ length: 400 }, (_, index) => `    at frame${index} (f.ts:${index}:1)`).join("\n")}`;
+	const detail: SerializedError = {
+		name: "AggregateError",
+		code: "E_ROOT",
+		message: `root aggregate ${"r".repeat(120)}`,
+		hint: `ROOT-HINT ${"h".repeat(120)}`,
+		fields: {},
+		errors: Array.from({ length: 31 }, (_, index) => ({
+			name: "TypeError",
+			code: `E_M${index}`,
+			message: `member ${index} ${"m".repeat(120)}`,
+			hint: `member hint ${index} ${"k".repeat(120)}`,
+			fields: {},
+		})),
+	};
+	const stage: StageSnapshot = {
+		...makeStage("verify"),
+		status: "failed",
+		error: stack,
+		failureMessage: stack,
+		failureDetail: detail,
+		startedAt: 1,
+		endedAt: 2,
+	};
+	for (const width of [40, 80, 120]) {
+		const rows = renderStageFailureDetailLines(stage, { theme: defaultTheme, width, logs: true }).map(
+			stripTerminalSequences,
+		);
+		assert.ok(rows.length <= 3 + 256, `expected <= 259 rows at width ${width}, got ${rows.length}`);
+		const text = rows.join("\n");
+		assert.ok(text.includes("build failed"), `missing message head at width ${width}`);
+		assert.ok(text.includes("E_ROOT"), `missing E_ROOT at width ${width}`);
+		assert.ok(text.includes("ROOT-HINT"), `missing ROOT-HINT at width ${width}`);
+	}
+});
+
+test("failure log view preserves leading indentation for stack frames and nested causes (#5234)", () => {
+	const message = "Error: build failed\n    at main (a.ts:1:1)\n        at inner (b.ts:2:2)";
+	const stage: StageSnapshot = {
+		...makeStage("verify"),
+		status: "failed",
+		error: message,
+		failureMessage: message,
+		failureDetail: {
+			name: "AggregateError",
+			code: "E_ROOT",
+			message: "two steps failed",
+			fields: {},
+			cause: { name: "Error", message: "cause of root", fields: {} },
+			errors: [
+				{
+					name: "TypeError",
+					code: "E_A",
+					message: "step a",
+					fields: {},
+					cause: { name: "Error", message: "cause of a", fields: {} },
+				},
+			],
+		},
+	};
+	const rows = renderStageFailureDetailLines(stage, { theme: defaultTheme, width: 120, logs: true }).map(
+		stripTerminalSequences,
+	);
+	const leadingSpaces = (needle: string): number => {
+		const row = rows.find((candidate) => candidate.includes(needle));
+		assert.ok(row !== undefined, `missing row containing ${needle}`);
+		return row.length - row.trimStart().length;
+	};
+	assert.equal(leadingSpaces("at main") - leadingSpaces("Error: build failed"), 4);
+	assert.equal(leadingSpaces("at inner") - leadingSpaces("at main"), 4);
+	assert.equal(leadingSpaces("Error: cause of a") - leadingSpaces("TypeError (E_A): step a"), 2);
+});
+
+test("failure logs render a storage error's rollbackCause and extra envelope fields (#5234)", () => {
+	const rollbackFailure = new StoragePayloadTooLargeError(1_024, 2_048, {
+		kind: "value",
+		descriptor: { adapter: "sqlite", location: "journal.sqlite" },
+	});
+	const rollbackError = new StorageRollbackError(
+		new StorageUnavailableError({ adapter: "sqlite", location: "journal.sqlite" }, new Error("commit failed")),
+		rollbackFailure,
+	);
+	const compactionError = new BackgroundCompactionPersistError({ upToEntryId: "u3" }, { cause: rollbackError });
+	const detail = typedFailureDetail(compactionError);
+	assert.ok(detail !== undefined);
+	assert.deepEqual(detail.extra, { phase: "persist" });
+	const stage: StageSnapshot = {
+		...makeStage("verify"),
+		status: "failed",
+		error: "stage failed",
+		failureMessage: "stage failed",
+		failureDetail: detail,
+	};
+	const lines = stageFailureLogLines(stage);
+	assert.ok(lines.some((line) => line.includes('"phase":"persist"')));
+	const rollbackHeadingIndex = lines.findIndex((line) => line.trim() === "during rollback:");
+	assert.ok(rollbackHeadingIndex >= 0, "expected during rollback: heading");
+	assert.ok(lines[rollbackHeadingIndex + 1]?.includes("StoragePayloadTooLargeError (payload-too-large)"));
+	const rendered = renderStageFailureDetailLines(stage, { theme: defaultTheme, width: 120, logs: true })
+		.map(stripTerminalSequences)
+		.join("\n");
+	assert.ok(rendered.includes('"phase":"persist"'));
+	assert.ok(rendered.includes("during rollback:"));
+	assert.ok(rendered.includes("StoragePayloadTooLargeError (payload-too-large)"));
+});
+
+test("mark-led failure text stays within terminal width across summary, log and TUI overlay rendering (#5234)", () => {
+	for (const width of [40, 80, 120]) {
+		const room = width - 2;
+		const fill = (budget: number) =>
+			`\u0e48\u093F ${"中".repeat(Math.floor((budget - 2) / 2))}${"a".repeat(
+				Math.max(0, budget - 1 - 2 * Math.floor((budget - 2) / 2)),
+			)}`;
+		const logStage: StageSnapshot = {
+			...makeStage("verify"),
+			status: "failed",
+			startedAt: 1,
+			endedAt: 2,
+			error: `first line\n${fill(room)}\n中${"\u0903".repeat(room - 1)}`,
+			failureMessage: `first line\n${fill(room)}\n中${"\u0903".repeat(room - 1)}`,
+		};
+		const reasonRoom = Math.max(1, room - 9);
+		const summaryStage: StageSnapshot = {
+			...makeStage("verify"),
+			status: "failed",
+			startedAt: 1,
+			endedAt: 2,
+			error: fill(reasonRoom),
+			failureMessage: fill(reasonRoom),
+		};
+		for (const row of renderStageFailureDetailLines(summaryStage, { theme: defaultTheme, width, logs: false })) {
+			assert.ok(visibleWidth(row) <= width, `summary row width ${visibleWidth(row)} > ${width}`);
+		}
+		for (const row of renderStageFailureDetailLines(logStage, { theme: defaultTheme, width, logs: true })) {
+			assert.ok(visibleWidth(row) <= width, `log row width ${visibleWidth(row)} > ${width}`);
+		}
+	}
+
+	const makeTerminal = (columns: number, rows: number): Terminal => ({
+		start() {},
+		stop() {},
+		async drainInput() {},
+		setProgress() {},
+		setProgramStatus() {},
+		write() {},
+		get columns() {
+			return columns;
+		},
+		get rows() {
+			return rows;
+		},
+		get kittyProtocolActive() {
+			return false;
+		},
+		moveBy() {},
+		hideCursor() {},
+		showCursor() {},
+		clearLine() {},
+		clearFromCursor() {},
+		clearScreen() {},
+		setTitle() {},
+	});
+	const emptyChild: Component = {
+		render: () => [],
+		invalidate() {},
+	};
+
+	for (const message of [
+		`\u0e48${"\u093F".repeat(60)}`,
+		"\u0301\u093F".repeat(30),
+		`ok\n\u0e48${"\u093F".repeat(60)}`,
+	]) {
+		for (const keys of [["\r"], ["\r", "l"]]) {
+			const stage: StageSnapshot = {
+				...makeStage("verify"),
+				status: "failed",
+				startedAt: 1,
+				endedAt: 2,
+				error: message,
+				failureMessage: message,
+			};
+			const view = graphFor(stage);
+			const tui = new TuiMainScreen(makeTerminal(80, 40));
+			tui.addChild(emptyChild);
+			const overlay: Component = {
+				render: (w: number) => view.render(w),
+				invalidate() {},
+			};
+			try {
+				tui.start();
+				tui.showOverlay(overlay, { width: "100%", anchor: "top-left" } as never);
+				(tui as unknown as { doRender(): void }).doRender();
+				for (const key of keys) view.handleInput(key);
+				assert.doesNotThrow(() => {
+					(tui as unknown as { doRender(): void }).doRender();
+				});
+			} finally {
+				try {
+					tui.stop();
+				} catch {}
+				view.dispose();
 			}
 		}
 	}

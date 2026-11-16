@@ -6,6 +6,7 @@ import { makeRun, makeStage } from "./overlay-graph-helpers.js";
 
 let writeFileHook: ((path: string, content: string | Iterable<string>) => Promise<void>) | undefined;
 let renameHook: ((oldPath: string, newPath: string) => Promise<void>) | undefined;
+let unlinkHook: ((path: string) => Promise<void>) | undefined;
 
 vi.mock("node:fs/promises", async (importOriginal) => {
 	const fs = await importOriginal<typeof import("node:fs/promises")>();
@@ -17,6 +18,9 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 		},
 		rename: async (oldPath: string, newPath: string) => {
 			await renameHook?.(oldPath, newPath);
+		},
+		unlink: async (path: string) => {
+			await unlinkHook?.(path);
 		},
 	};
 });
@@ -132,5 +136,193 @@ test("serializes overlapping status writes when a writer is replaced mid-write (
 		replacement?.unsubscribe();
 		writeFileHook = undefined;
 		renameHook = undefined;
+	}
+});
+
+test("serializes overlapping status writes across two reloaded module instances (#5234)", async () => {
+	vi.resetModules();
+	const firstModule = await import("../../packages/workflows/src/extension/status-writer.js");
+	vi.resetModules();
+	const secondModule = await import("../../packages/workflows/src/extension/status-writer.js");
+	assert.notEqual(firstModule.createStatusWriter, secondModule.createStatusWriter);
+
+	const store = createStore();
+	store.recordRunStart({ ...makeRun([makeStage("stage")]), id: "live", status: "running" });
+	let activeAtomicWrites = 0;
+	let maxActiveAtomicWrites = 0;
+	let writeCount = 0;
+	const stagedByPath = new Map<string, string>();
+	const publishedByPath = new Map<string, string>();
+	let notifyFirstWriteStarted: (() => void) | undefined;
+	const firstWriteStarted = new Promise<void>((resolve) => {
+		notifyFirstWriteStarted = resolve;
+	});
+	let releaseFirstWrite: (() => void) | undefined;
+	const firstWriteGate = new Promise<void>((resolve) => {
+		releaseFirstWrite = resolve;
+	});
+	writeFileHook = async (path, content) => {
+		activeAtomicWrites++;
+		maxActiveAtomicWrites = Math.max(maxActiveAtomicWrites, activeAtomicWrites);
+		const text = typeof content === "string" ? content : Array.from(content).join("");
+		stagedByPath.set(path, text);
+		writeCount++;
+		if (writeCount === 1) {
+			notifyFirstWriteStarted?.();
+			await firstWriteGate;
+		}
+	};
+	renameHook = async (oldPath, newPath) => {
+		const staged = stagedByPath.get(oldPath);
+		if (staged === undefined) {
+			throw Object.assign(new Error(`ENOENT: no such file or directory, rename '${oldPath}' -> '${newPath}'`), {
+				code: "ENOENT",
+			});
+		}
+		stagedByPath.delete(oldPath);
+		publishedByPath.set(newPath, staged);
+		activeAtomicWrites--;
+	};
+	const config = {
+		maxDepth: 4,
+		defaultConcurrency: 4,
+		persistRuns: true,
+		resumeInFlight: "ask" as const,
+		statusFile: true,
+		statusFilePath: "status-reload.json",
+	};
+	const oldWriter = firstModule.createStatusWriter(store, config);
+	let newWriter: ReturnType<typeof secondModule.createStatusWriter> | undefined;
+	try {
+		await firstWriteStarted;
+		newWriter = secondModule.createStatusWriter(store, {
+			...config,
+			statusFilePath: "./status-reload.json",
+		});
+		store.recordRunEnd("live", "completed", { ok: true });
+		for (let turn = 0; turn < 5; turn++) {
+			await new Promise<void>((resolve) => setTimeout(resolve, 0));
+		}
+		assert.equal(maxActiveAtomicWrites, 1);
+		releaseFirstWrite?.();
+		await oldWriter.flush();
+		oldWriter.unsubscribe();
+		await newWriter.flush();
+		assert.equal(maxActiveAtomicWrites, 1);
+		assert.deepEqual(
+			store.notices().filter((notice) => notice.message.includes("status file write failed")),
+			[],
+		);
+		const published = JSON.parse(publishedByPath.get(resolve("status-reload.json")) ?? "{}") as {
+			runs: Array<{ id: string; status: string }>;
+		};
+		assert.equal(published.runs[0]?.status, "completed");
+	} finally {
+		releaseFirstWrite?.();
+		oldWriter.unsubscribe();
+		newWriter?.unsubscribe();
+		writeFileHook = undefined;
+		renameHook = undefined;
+		unlinkHook = undefined;
+	}
+});
+
+test("keeps pending after deduplicated EPERM failures, cleans up tmp, and rewrites on the next drain without another store change (#5234)", async () => {
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+	vi.resetModules();
+	const { createStatusWriter } = await import("../../packages/workflows/src/extension/status-writer.js");
+	const store = createStore();
+	store.recordRunStart({ ...makeRun([makeStage("stage")]), id: "live", status: "running" });
+	const stagedByPath = new Map<string, string>();
+	const publishedByPath = new Map<string, string>();
+	let failRename = true;
+	writeFileHook = async (path, content) => {
+		const text = typeof content === "string" ? content : Array.from(content).join("");
+		stagedByPath.set(path, text);
+	};
+	renameHook = async (oldPath, newPath) => {
+		if (failRename) {
+			throw Object.assign(new Error("EPERM: operation not permitted, rename"), { code: "EPERM" });
+		}
+		const staged = stagedByPath.get(oldPath);
+		assert.notEqual(staged, undefined);
+		stagedByPath.delete(oldPath);
+		publishedByPath.set(newPath, staged!);
+	};
+	unlinkHook = async (path) => {
+		stagedByPath.delete(path);
+	};
+	const targetPath = resolve("status-eperm-drain.json");
+	const tmpPath = `${targetPath}.tmp`;
+	const writer = createStatusWriter(store, {
+		maxDepth: 4,
+		defaultConcurrency: 4,
+		persistRuns: true,
+		resumeInFlight: "ask",
+		statusFile: true,
+		statusFilePath: "status-eperm-drain.json",
+	});
+	try {
+		await vi.advanceTimersByTimeAsync(200);
+		assert.equal(stagedByPath.has(tmpPath), false);
+		assert.equal(store.notices().filter((notice) => notice.message.includes("status file write failed")).length, 1);
+		await vi.advanceTimersByTimeAsync(450);
+		assert.equal(stagedByPath.has(tmpPath), false);
+		assert.equal(store.notices().filter((notice) => notice.message.includes("status file write failed")).length, 1);
+		assert.equal(publishedByPath.has(targetPath), false);
+
+		failRename = false;
+		await vi.advanceTimersByTimeAsync(300);
+		assert.equal(stagedByPath.has(tmpPath), false);
+		const published = JSON.parse(publishedByPath.get(targetPath) ?? "{}") as {
+			runs: Array<{ id: string; status: string }>;
+		};
+		assert.equal(published.runs[0]?.id, "live");
+		assert.equal(published.runs[0]?.status, "running");
+	} finally {
+		writer.unsubscribe();
+		await vi.runAllTimersAsync();
+		writeFileHook = undefined;
+		renameHook = undefined;
+		unlinkHook = undefined;
+		vi.useRealTimers();
+	}
+});
+
+test("runs a status write queued behind a failed write for the same path (#5234)", async () => {
+	vi.resetModules();
+	const { atomicWriteJson } = await import("../../packages/workflows/src/extension/status-writer.js");
+	let writeCalls = 0;
+	const stagedByPath = new Map<string, string>();
+	const publishedByPath = new Map<string, string>();
+	writeFileHook = async (path, content) => {
+		writeCalls++;
+		await new Promise<void>((resolve) => setTimeout(resolve, 5));
+		if (writeCalls === 1) {
+			throw Object.assign(new Error("EIO: i/o error, write"), { code: "EIO" });
+		}
+		const text = typeof content === "string" ? content : Array.from(content).join("");
+		stagedByPath.set(path, text);
+	};
+	renameHook = async (oldPath, newPath) => {
+		const staged = stagedByPath.get(oldPath);
+		assert.notEqual(staged, undefined);
+		stagedByPath.delete(oldPath);
+		publishedByPath.set(newPath, staged!);
+	};
+	unlinkHook = async (path) => {
+		stagedByPath.delete(path);
+	};
+	try {
+		const first = atomicWriteJson("queue-failure/status.json", '{"writer":1}');
+		const second = atomicWriteJson("queue-failure/status.json", '{"writer":2}');
+		await assert.rejects(first, /EIO/);
+		await second;
+		assert.equal(writeCalls, 2);
+		assert.equal(publishedByPath.get(resolve("queue-failure/status.json")), '{"writer":2}');
+	} finally {
+		writeFileHook = undefined;
+		renameHook = undefined;
+		unlinkHook = undefined;
 	}
 });

@@ -1,17 +1,70 @@
 import assert from "node:assert/strict";
+import v8 from "node:v8";
+import vm from "node:vm";
 import { test, vi } from "vitest";
 import { createToolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
+import { prepareTopLevelExpandedSnapshots } from "../../packages/workflows/src/extension/workflow-targets.js";
 import { makeExecuteWorkflowTool } from "../../packages/workflows/src/extension/workflow-tool.js";
 import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
 import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
+import * as inspectionStoreSnapshot from "../../packages/workflows/src/shared/inspection-store-snapshot.js";
 import {
 	expandedInspectionRun,
 	prepareInspectionStoreSnapshot,
 } from "../../packages/workflows/src/shared/inspection-store-snapshot.js";
 import { StageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { makeRun, makeStage } from "./overlay-graph-helpers.js";
+
+const expansionCounter = vi.hoisted(() => ({
+	perMacrotask: [] as number[],
+	open: false,
+	active: false,
+	rawSetImmediate: globalThis.setImmediate,
+}));
+
+vi.mock("../../packages/workflows/src/shared/inspection-store-snapshot.js", async (importOriginal) => {
+	const actual =
+		await importOriginal<typeof import("../../packages/workflows/src/shared/inspection-store-snapshot.js")>();
+	return {
+		...actual,
+		expandedInspectionRun: (...args: Parameters<typeof actual.expandedInspectionRun>) => {
+			if (expansionCounter.active) {
+				if (!expansionCounter.open) {
+					expansionCounter.open = true;
+					expansionCounter.perMacrotask.push(0);
+					expansionCounter.rawSetImmediate(() => {
+						expansionCounter.open = false;
+					});
+				}
+				expansionCounter.perMacrotask[expansionCounter.perMacrotask.length - 1]!++;
+			}
+			return actual.expandedInspectionRun(...args);
+		},
+	};
+});
+
+function resolveCollect(): () => void {
+	const existing = (globalThis as { gc?: () => void }).gc;
+	if (typeof existing === "function") return existing;
+	v8.setFlagsFromString("--expose-gc");
+	try {
+		return vm.runInNewContext("gc") as () => void;
+	} finally {
+		v8.setFlagsFromString("--no-expose-gc");
+	}
+}
+
+const collect = resolveCollect();
+const nextTurn = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+function holdWeakly(read: () => RunSnapshot | undefined): WeakRef<RunSnapshot> {
+	const run = read();
+	assert.ok(run !== undefined);
+	return new WeakRef(run);
+}
 
 test("notices preserve unchanged inspection runs and expanded views without reading payloads (#5234)", () => {
 	const store = createStore();
@@ -101,26 +154,39 @@ test("cold status preparation yields between bounded batches and preserves chang
 			id: `run-${index}`,
 		});
 	}
-	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	const pendingImmediates: Array<() => void> = [];
+	const immediateSpy = vi.spyOn(globalThis, "setImmediate").mockImplementation(((
+		callback: (...args: unknown[]) => void,
+		...args: unknown[]
+	) => {
+		pendingImmediates.push(() => callback(...args));
+		return 0 as unknown as NodeJS.Immediate;
+	}) as typeof setImmediate);
+	const flushNextImmediate = async () => {
+		const next = pendingImmediates.shift();
+		assert.ok(next !== undefined, "expected a queued immediate yield");
+		next();
+		await Promise.resolve();
+	};
 	try {
 		const preparation = prepareInspectionStoreSnapshot(store);
-		assert.equal(payloadReads, 0, "cold status preparation starts off the caller's turn");
-		await vi.advanceTimersToNextTimerAsync();
-		assert.ok(payloadReads <= 32, `one timer advance materialized ${payloadReads} runs`);
+		assert.equal(payloadReads, 16, "cold status preparation builds the first batch before yielding");
+		await flushNextImmediate();
+		assert.ok(payloadReads <= 32, `one immediate advance materialized ${payloadReads} runs`);
 		store.recordStageEnd("run-0", { ...makeStage("stage"), status: "failed", error: "changed during preparation" });
 		store.removeRun("run-17");
-		await vi.runAllTimersAsync();
+		while (pendingImmediates.length > 0) await flushNextImmediate();
 		await preparation;
 		assert.deepEqual(store.inspectionSnapshot!(), store.snapshot());
 		const after = payloadReads;
 		await prepareInspectionStoreSnapshot(store);
-		assert.equal(vi.getTimerCount(), 0, "warm status preparation schedules no work");
+		assert.equal(pendingImmediates.length, 0, "warm status preparation schedules no work");
 		assert.equal(payloadReads, after);
 		store.clear();
 		await prepareInspectionStoreSnapshot(store);
 		assert.deepEqual(store.inspectionSnapshot!().runs, []);
 	} finally {
-		vi.useRealTimers();
+		immediateSpy.mockRestore();
 	}
 });
 
@@ -218,19 +284,20 @@ test.each([false, true])(
 				stageUiBroker: new StageUiBroker(store),
 			},
 		);
-		const originalSetTimeout = globalThis.setTimeout;
+		const originalSetImmediate = globalThis.setImmediate;
 		let maxSliceReads = 0;
 		let addedDuringYield = false;
+		let compactResultReads = 0;
 		const flushSlice = () => {
 			maxSliceReads = Math.max(maxSliceReads, sliceReads);
 			sliceReads = 0;
 		};
-		const timerSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((
-			callback: () => void,
-			delay?: number,
+		const immediateSpy = vi.spyOn(globalThis, "setImmediate").mockImplementation(((
+			callback: (...args: unknown[]) => void,
+			...args: unknown[]
 		) => {
 			flushSlice();
-			return originalSetTimeout(() => {
+			return originalSetImmediate(() => {
 				if (!addedDuringYield) {
 					addedDuringYield = true;
 					if (clearDuringYield) store.clear();
@@ -249,14 +316,20 @@ test.each([false, true])(
 								},
 							]),
 							id: `run-${index}`,
+							result: {
+								get summary() {
+									compactResultReads++;
+									return `summary-${index}`;
+								},
+							},
 						});
 					}
 				}
 				flushSlice();
-				callback();
+				callback(...args);
 				flushSlice();
-			}, delay);
-		}) as typeof setTimeout);
+			});
+		}) as typeof setImmediate);
 		try {
 			const result = await execute({ action: "status" }, {} as never);
 			flushSlice();
@@ -264,9 +337,118 @@ test.each([false, true])(
 			assert.equal(result.action, "status");
 			const expectedCount = clearDuringYield ? 40 : 80;
 			if (result.action === "status") assert.equal(result.runs.length, expectedCount);
-			assert.equal(totalReads, expectedCount);
+			assert.equal(totalReads, clearDuringYield ? 56 : 80);
+			assert.equal(compactResultReads, 80);
+			compactResultReads = 0;
+			store.graphSnapshot();
+			assert.equal(compactResultReads, 0, "compact graph projections were warmed during preparation batches");
 		} finally {
-			timerSpy.mockRestore();
+			immediateSpy.mockRestore();
 		}
 	},
 );
+
+test("status listing expands at most 16 uncached top-level runs per macrotask and performs zero yields when warm (#5234)", async () => {
+	assert.equal(typeof inspectionStoreSnapshot.expandedInspectionRun, "function");
+	const store = createStore();
+	for (let index = 0; index < 100; index++) {
+		store.recordRunStart({ ...makeRun([makeStage("stage")]), id: `run-${index}` });
+	}
+	const runtime = createExtensionRuntime();
+	const execute = makeExecuteWorkflowTool(
+		runtime,
+		() => undefined,
+		() => {},
+		{
+			store,
+			jobs: createJobTracker(),
+			toolControlRegistry: createToolControlRegistry(),
+			stageControlRegistry: createStageControlRegistry(),
+			stageUiBroker: new StageUiBroker(store),
+		},
+	);
+	const origSetImmediate = globalThis.setImmediate;
+	const origSetTimeout = globalThis.setTimeout;
+	const countYields = async <T>(fn: () => Promise<T>): Promise<{ result: T; yields: number }> => {
+		let yields = 0;
+		const immSpy = vi.spyOn(globalThis, "setImmediate").mockImplementation(((
+			cb: (...args: unknown[]) => void,
+			...args: unknown[]
+		) => {
+			yields++;
+			return origSetImmediate(cb, ...args);
+		}) as typeof setImmediate);
+		const tmSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((
+			cb: (...args: unknown[]) => void,
+			delay?: number,
+			...args: unknown[]
+		) => {
+			yields++;
+			return origSetTimeout(cb, delay, ...args);
+		}) as typeof setTimeout);
+		try {
+			const result = await fn();
+			return { result, yields };
+		} finally {
+			immSpy.mockRestore();
+			tmSpy.mockRestore();
+		}
+	};
+
+	expansionCounter.active = true;
+	expansionCounter.open = false;
+	try {
+		const prep = await countYields(() => prepareInspectionStoreSnapshot(store));
+		assert.ok(prep.yields <= Math.ceil(100 / 16) - 1, `cold preparation yields: ${prep.yields}`);
+
+		expansionCounter.perMacrotask.length = 0;
+		expansionCounter.open = false;
+		const coldExpansion = await countYields(() => prepareTopLevelExpandedSnapshots(store));
+		assert.equal(coldExpansion.result.length, 100);
+		assert.equal(
+			expansionCounter.perMacrotask.reduce((sum, count) => sum + count, 0),
+			100,
+		);
+		assert.ok(
+			expansionCounter.perMacrotask.every((count) => count <= 16),
+			`expansions per macrotask: ${expansionCounter.perMacrotask.join(", ")}`,
+		);
+		assert.ok(
+			expansionCounter.perMacrotask.length <= Math.ceil(100 / 16),
+			`cold expansion macrotasks: ${expansionCounter.perMacrotask.length}`,
+		);
+		assert.ok(coldExpansion.yields <= Math.ceil(100 / 16), `cold expansion yields: ${coldExpansion.yields}`);
+
+		expansionCounter.perMacrotask.length = 0;
+		expansionCounter.open = false;
+		const warm = await countYields(() => execute({ action: "status" }, {} as never));
+		assert.equal(warm.result.action, "status");
+		assert.deepEqual(expansionCounter.perMacrotask, [100]);
+		assert.equal(warm.yields, 0, `warm listing yields: ${warm.yields}`);
+	} finally {
+		expansionCounter.active = false;
+		expansionCounter.open = false;
+	}
+});
+
+test("clearing the store releases the cached graph snapshot and its projections (#5234)", async () => {
+	const store = createStore();
+	store.recordRunStart({ ...makeRun([makeStage("stage")]), id: "cleared-run" });
+	const projected = holdWeakly(() => store.graphSnapshot().runs[0]);
+	await nextTurn();
+	store.clear();
+	await nextTurn();
+	collect();
+	collect();
+	assert.equal(projected.deref(), undefined, "the cleared run's graph projection is still reachable");
+});
+
+test("control: a live run's graph projection stays reachable (#5234)", async () => {
+	const store = createStore();
+	store.recordRunStart({ ...makeRun([makeStage("stage")]), id: "live-run" });
+	const projected = holdWeakly(() => store.graphSnapshot().runs[0]);
+	await nextTurn();
+	collect();
+	collect();
+	assert.notEqual(projected.deref(), undefined);
+});

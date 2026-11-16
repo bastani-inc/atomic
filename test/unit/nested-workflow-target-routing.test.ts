@@ -3,9 +3,9 @@ import { Key } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import {
+	prepareTopLevelExpandedSnapshots,
 	resolveControlNodeTarget,
 	resolveStageTarget,
-	topLevelExpandedSnapshots,
 } from "../../packages/workflows/src/extension/workflow-targets.js";
 import { makeExecuteWorkflowTool } from "../../packages/workflows/src/extension/workflow-tool.js";
 import { renderWorkflowToolContent } from "../../packages/workflows/src/extension/workflow-tool-content.js";
@@ -696,7 +696,7 @@ describe("nested workflow stage target routing", () => {
 		assert.equal(transcript.action === "transcript" ? transcript.entries[0]?.text : undefined, expected);
 	});
 
-	test("top-level expanded listings exclude both child and grandchild implementation runs", () => {
+	test("top-level expanded listings exclude both child and grandchild implementation runs", async () => {
 		store.recordRunStart(
 			run({
 				id: fixtureRunId("grandchild-run"),
@@ -709,7 +709,7 @@ describe("nested workflow stage target routing", () => {
 		);
 
 		assert.deepEqual(
-			topLevelExpandedSnapshots().map((snapshot) => snapshot.id),
+			(await prepareTopLevelExpandedSnapshots()).map((snapshot) => snapshot.id),
 			[fixtureRunId("root-run")],
 		);
 	});

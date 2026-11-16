@@ -255,16 +255,18 @@ export function createStoreContext(state: StoreState = createStoreState()): Stor
 		for (;;) {
 			inspectionBuilder ??= new GraphStoreSnapshotBuilder({ fullPayloads: true });
 			const builder = inspectionBuilder;
-			const unhandled = state.runs.filter((run) => !builder.hasRun(run));
+			const unhandled = state.runs.filter((run) => !builder.hasRun(run) || !graphBuilder.hasRun(run));
 			if (unhandled.length === 0) return;
 			for (const run of unhandled) {
-				if (builder.hasRun(run)) continue;
-				if (prepared % 16 === 0) {
-					await new Promise<void>((resolve) => setTimeout(resolve, 0));
+				if (builder.hasRun(run) && graphBuilder.hasRun(run)) continue;
+				if (prepared >= 16) {
+					prepared = 0;
+					await new Promise<void>((resolve) => setImmediate(resolve));
 					if (inspectionBuilder !== builder) break;
 				}
 				if (findRun(run.id) === run) {
-					builder.buildRun(run);
+					if (!builder.hasRun(run)) builder.buildRun(run);
+					if (!graphBuilder.hasRun(run)) graphBuilder.buildRun(run);
 					prepared++;
 				}
 			}

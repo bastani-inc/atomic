@@ -7,6 +7,7 @@ import {
 } from "../shared/expanded-workflow-graph.js";
 import {
 	expandedInspectionRun,
+	hasExpandedInspectionRun,
 	prepareInspectionStoreSnapshot,
 	readInspectionStoreSnapshot,
 } from "../shared/inspection-store-snapshot.js";
@@ -53,21 +54,21 @@ export function inFlightRunCount(): number {
 
 const EXPANSION_BATCH_SIZE = 16;
 
-export function topLevelExpandedSnapshots(activeStore: Store = store) {
-	const snapshot = readInspectionStoreSnapshot(activeStore);
-	return topLevelWorkflowRuns(snapshot.runs).map((run) => expandedInspectionRun(snapshot, run.id)!);
-}
-
 export async function prepareTopLevelExpandedSnapshots(activeStore: Store = store): Promise<RunSnapshot[]> {
 	await prepareInspectionStoreSnapshot(activeStore);
 	const snapshot = readInspectionStoreSnapshot(activeStore);
 	const runs = topLevelWorkflowRuns(snapshot.runs);
 	const expanded: RunSnapshot[] = [];
-	for (let index = 0; index < runs.length; index++) {
-		if (index > 0 && index % EXPANSION_BATCH_SIZE === 0) {
-			await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	let uncached = 0;
+	for (const run of runs) {
+		if (!hasExpandedInspectionRun(snapshot, run.id)) {
+			if (uncached >= EXPANSION_BATCH_SIZE) {
+				uncached = 0;
+				await new Promise<void>((resolve) => setImmediate(resolve));
+			}
+			uncached++;
 		}
-		const candidate = expandedInspectionRun(snapshot, runs[index]!.id);
+		const candidate = expandedInspectionRun(snapshot, run.id);
 		if (candidate !== undefined) expanded.push(candidate);
 	}
 	return expanded;

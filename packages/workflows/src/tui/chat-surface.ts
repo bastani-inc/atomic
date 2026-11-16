@@ -431,6 +431,8 @@ function stageGlyph(status: ProgressCell["status"]): string {
 			return "●";
 		case "paused":
 			return "❚❚";
+		case "blocked":
+			return "↑";
 		case "failed":
 			return "✗";
 		case "awaiting_input":
@@ -453,6 +455,7 @@ function stageColor(status: ProgressCell["status"], theme: GraphTheme): string {
 		case "running":
 			return hexToAnsi(theme.warning);
 		case "paused":
+		case "blocked":
 			return hexToAnsi(theme.warning);
 		case "failed":
 			return hexToAnsi(theme.error);

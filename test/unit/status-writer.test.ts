@@ -25,6 +25,23 @@ import {
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { WorkflowRuntimeConfig } from "../../packages/workflows/src/shared/types.js";
 
+let renameInterceptor:
+	| ((oldPath: string, newPath: string, originalRename: typeof import("node:fs/promises").rename) => Promise<void>)
+	| undefined;
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+	const fs = await importOriginal<typeof import("node:fs/promises")>();
+	return {
+		...fs,
+		rename: async (oldPath: string, newPath: string) => {
+			if (renameInterceptor) {
+				return renameInterceptor(oldPath, newPath, fs.rename);
+			}
+			return fs.rename(oldPath, newPath);
+		},
+	};
+});
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -84,6 +101,7 @@ describe("atomicWriteJson", () => {
 	});
 
 	afterEach(async () => {
+		renameInterceptor = undefined;
 		await rm(tmpDir, { recursive: true, force: true });
 	});
 
@@ -130,6 +148,31 @@ describe("atomicWriteJson", () => {
 			await assert.rejects(stat(`${path}.tmp`));
 			const parsed = JSON.parse(await readFile(path, "utf8")) as { writer: number; items: string[] };
 			assert.deepEqual(parsed, { writer: 2, items: ["final"] });
+		},
+	);
+	test.each(["EPERM", "EACCES", "EBUSY"])(
+		"retries rename on transient %s and removes tmp on final failure (#5234)",
+		async (code) => {
+			const path = join(tmpDir, `retry-${code}.json`);
+			let attempts = 0;
+			renameInterceptor = async (oldPath, newPath, originalRename) => {
+				attempts++;
+				if (attempts === 1) {
+					throw Object.assign(new Error(`${code}: rename refused '${oldPath}' -> '${newPath}'`), { code });
+				}
+				return originalRename(oldPath, newPath);
+			};
+			await atomicWriteJson(path, '{"retried":true}');
+			assert.equal(attempts, 2);
+			assert.equal(await readFile(path, "utf8"), '{"retried":true}');
+			await assert.rejects(stat(`${path}.tmp`));
+
+			const failingPath = join(tmpDir, `fail-${code}.json`);
+			renameInterceptor = async (oldPath, newPath) => {
+				throw Object.assign(new Error(`EXDEV: cross-device link '${oldPath}' -> '${newPath}'`), { code: "EXDEV" });
+			};
+			await assert.rejects(atomicWriteJson(failingPath, '{"failed":true}'), /EXDEV/);
+			await assert.rejects(stat(`${failingPath}.tmp`));
 		},
 	);
 });
@@ -187,6 +230,7 @@ describe("createStatusWriter — statusFile:true", () => {
 	});
 
 	afterEach(async () => {
+		renameInterceptor = undefined;
 		await rm(tmpDir, { recursive: true, force: true });
 	});
 
@@ -449,5 +493,42 @@ describe("createStatusWriter — statusFile:true", () => {
 
 		const raw = await readFile(expectedPath, "utf8");
 		assert.ok(JSON.parse(raw));
+	});
+
+	test("retries a rename failing once with EPERM so the file becomes current without another store change and no tmp remains (#5234)", async () => {
+		const filePath = join(tmpDir, "eperm-once.json");
+		const store = createStore();
+		let renameCalls = 0;
+		renameInterceptor = async (oldPath, newPath, originalRename) => {
+			renameCalls++;
+			if (renameCalls === 1) {
+				throw Object.assign(new Error(`EPERM: operation not permitted, rename '${oldPath}' -> '${newPath}'`), {
+					code: "EPERM",
+				});
+			}
+			return originalRename(oldPath, newPath);
+		};
+		const writer = createStatusWriter(store, makeConfig({ statusFilePath: filePath }));
+		store.recordRunStart({
+			id: "r-eperm",
+			name: "wf",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [],
+			startedAt: 1000,
+		});
+
+		await writer.flush();
+		writer.unsubscribe();
+
+		assert.ok(renameCalls >= 2);
+		const parsed = JSON.parse(await readFile(filePath, "utf8")) as {
+			runs: Array<{ id: string; status: string }>;
+		};
+		assert.equal(parsed.runs[0]?.id, "r-eperm");
+		assert.equal(parsed.runs[0]?.status, "running");
+		assert.equal(store.notices().filter((n) => n.message.includes("status file write failed")).length, 0);
+		await assert.rejects(stat(`${filePath}.tmp`));
 	});
 });

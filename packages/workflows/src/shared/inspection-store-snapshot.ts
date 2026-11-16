@@ -45,6 +45,13 @@ export function readInspectionStoreSnapshot(store: Store, runId?: string): Store
 	return store.inspectionSnapshot?.(runId) ?? store.snapshot();
 }
 
+export function hasExpandedInspectionRun(snapshot: StoreSnapshot, runId: string): boolean {
+	const run = findSnapshotRun(snapshot.runs, runId);
+	if (run === undefined || !Object.isFrozen(run)) return false;
+	const known = expandedRuns.get(run);
+	return known !== undefined && dependenciesUnchanged(snapshot, known);
+}
+
 export function expandedInspectionRun(snapshot: StoreSnapshot, runId: string): RunSnapshot | undefined {
 	const run = findSnapshotRun(snapshot.runs, runId);
 	if (run === undefined) return undefined;

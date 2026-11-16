@@ -139,13 +139,20 @@ export function wrapPlainText(text: string, width: number): string[] {
 			} else if (line.length === 0) {
 				line = word;
 				lineWidth = wordWidth;
-			} else if (lineWidth + 1 + wordWidth <= budget) {
-				line += ` ${word}`;
-				lineWidth += 1 + wordWidth;
 			} else {
-				out.push(line);
-				line = word;
-				lineWidth = wordWidth;
+				const candidate = `${line} ${word}`;
+				const candidateWidth =
+					graphemes(` ${word}`)[0] !== " " || word.includes("\x1b")
+						? visibleWidth(candidate)
+						: lineWidth + 1 + wordWidth;
+				if (candidateWidth <= budget) {
+					line = candidate;
+					lineWidth = candidateWidth;
+				} else {
+					out.push(line);
+					line = word;
+					lineWidth = wordWidth;
+				}
 			}
 		}
 		if (line.length > 0) out.push(line);
