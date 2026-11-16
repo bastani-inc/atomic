@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed Atomic exiting with `child-record-unreadable` ("which is not open in this process") when a workflow stage that had launched a background subagent finished, failed or had its run ended. Closing the stage reads each child's latest record to record it `stage-closed`. That record was read only through the copies of the stage's session registered for it, which are held weakly and which a later copy of the session can replace, while the error escaped from the stage's close listener and ended the process. The stage now also reads its children's records through its own session, and ends a child from the record that session holds when the copy that saved a newer one is gone. A child it can read no record of is counted as a record that could not be saved, and the stage's other children still end. Nothing that goes wrong while a stage closes ends the process or fails the close.
+
 ## [0.9.88] - 2026-11-16
 
 ### Added

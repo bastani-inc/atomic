@@ -483,6 +483,22 @@ function asRecordFailure(record: SubagentChildRecord, error: Error): ReleasedChi
 	return isReleasedChildError(error) ? error : recordAppendFailure(record, error);
 }
 
+/** Why a closing workflow stage could not record a child `stage-closed`, as a failure its owner is told of. */
+function stageCloseFailure(ownerSessionId: string, childId: string | undefined, error: unknown): ReleasedChildError {
+	const cause = error instanceof Error ? error : new Error(String(error));
+	if (isReleasedChildError(cause)) return cause;
+	return new ReleasedChildError(
+		"record-append-failed",
+		{
+			ownerSessionId,
+			...(childId === undefined ? {} : { childId }),
+			state: "terminal",
+			terminalStatus: SUBAGENT_CHILD_STAGE_CLOSED_STATUS,
+		},
+		{ cause },
+	);
+}
+
 /** Append `record`, already observed as its child's full latest record, and point the index at its entry. */
 async function appendObserved(pi: Pick<ExtensionAPI, "appendEntry">, record: SubagentChildRecord): Promise<void> {
 	try {
@@ -555,19 +571,43 @@ export function watchWorkflowStageSubagentChildren(
 	const owner = subagentChildOwner(ctx);
 	const sessionManager = ctx.sessionManager;
 	const endedForGood = () => admission.extensionState.has(WORKFLOW_STAGE_CLOSED_FOR_GOOD_STATE);
+	const latestOf = (childId: string, persisted: SubagentChildRecord | undefined) => {
+		try {
+			return subagentChildRecordOf(owner.sessionId, childId) ?? persisted;
+		} catch (error) {
+			// The copy of the stage's session that saved the latest record is not open in this process any more: the stage
+			// is closed for good, so the record its own session holds ends the child just as well.
+			if (persisted === undefined) throw error;
+			return persisted;
+		}
+	};
+	// Never throws: it runs in the close signal's abort listener and in the stage runner's close, where an error would
+	// end the whole process or fail the stage's close. A child it cannot end is counted as a record not saved.
 	const end = (childId: string, persisted?: SubagentChildRecord) => {
-		const latest = subagentChildRecordOf(owner.sessionId, childId) ?? persisted;
-		if (!endedForGood() || latest?.owner?.sessionId !== owner.sessionId || !endsWithStage(latest)) return;
-		void appendInOrder(pi, { ...latest, terminalStatus: SUBAGENT_CHILD_STAGE_CLOSED_STATUS });
-		// It can no longer resume, so its worktree is no longer kept for it.
-		unparkRunWorktree(latest.runId, latest.index);
+		try {
+			const latest = latestOf(childId, persisted);
+			if (!endedForGood() || latest?.owner?.sessionId !== owner.sessionId || !endsWithStage(latest)) return;
+			void appendInOrder(pi, { ...latest, terminalStatus: SUBAGENT_CHILD_STAGE_CLOSED_STATUS });
+			// It can no longer resume, so its worktree is no longer kept for it.
+			unparkRunWorktree(latest.runId, latest.index);
+		} catch (error) {
+			observeChildRecordFailure(owner.sessionId, stageCloseFailure(owner.sessionId, childId, error));
+		}
 	};
 	const watched: StageChildren = { closeSignal, endedForGood, end };
 	stageChildren.set(closeSignal, watched);
 	stageSessionsInProcess.add(owner.sessionId);
 	const endAll = () => {
 		if (!endedForGood()) return;
-		const persisted = readSubagentChildRecords(sessionManager.getEntries(), owner.sessionId);
+		let persisted = new Map<string, SubagentChildRecord>();
+		try {
+			// Readers are held weakly and a later copy of the session can take their place, so the stage's own session,
+			// which this watch keeps, reads its children's records for as long as the stage can still end them.
+			registerSubagentChildRecordReader(sessionManager);
+			persisted = readSubagentChildRecords(sessionManager.getEntries(), owner.sessionId);
+		} catch (error) {
+			observeChildRecordFailure(owner.sessionId, stageCloseFailure(owner.sessionId, undefined, error));
+		}
 		for (const childId of new Set([...persisted.keys(), ...subagentChildIdsOf(owner.sessionId)]))
 			end(childId, persisted.get(childId));
 	};
