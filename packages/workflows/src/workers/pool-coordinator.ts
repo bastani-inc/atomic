@@ -1250,10 +1250,19 @@ export class PoolCoordinator {
 				"unsupported-option",
 				'a pool whose root journal is in another database stages and delivers its checkpoints itself; use checkpointShipping "sync", or keep the root journal in the shared database',
 			);
-		const shard = await ShipShard.open(
-			shipShardPath(shared.stateDirectory, durableJournalIdentity(durable), root),
-			root,
-		);
+		let shard: ShipShard;
+		try {
+			shard = await ShipShard.open(
+				shipShardPath(shared.stateDirectory, durableJournalIdentity(durable), root),
+				root,
+			);
+		} catch (error) {
+			this.port.send({
+				kind: "health",
+				message: `checkpoint shipping: the local journal could not open for root ${root}, which commits every checkpoint to the shared journal on this host from now on: ${(error as Error).message}`,
+			});
+			return undefined;
+		}
 		return new CheckpointShipping(shard, ({ workId, error }) =>
 			this.port.send({
 				kind: "health",
@@ -2725,7 +2734,7 @@ export class PoolCoordinator {
 						}
 						slot.work = claimed.work;
 						slot.worktree = claimed.worktree;
-						await this.shipping?.hold(claimed.work, options.leaseMs);
+						if (this.shipping !== undefined) await this.shipping.hold(claimed.work, options.leaseMs);
 						if (this.satellite !== undefined) this.claimLog.push(claimed.work);
 						// Views of the work on another host's attempt reconnect to this worker's (#4391).
 						for (const id of this.remoteWatches.takenOver(claimed.work.id))
@@ -2747,7 +2756,7 @@ export class PoolCoordinator {
 						const record = this.usageLedger!.recording(lease, held, message.reports);
 						const beat = await leased(() => queue.heartbeat(lease, held, options.leaseMs, record));
 						extensions.adopt(beat.work);
-						await this.shipping?.hold(beat.work, options.leaseMs);
+						if (this.shipping !== undefined) await this.shipping.hold(beat.work, options.leaseMs);
 						this.noteUsage(beat.recorded);
 						return beat.control;
 					}
@@ -2756,7 +2765,7 @@ export class PoolCoordinator {
 						held.expiresAt - Date.now() <= options.leaseMs / 2
 							? await leased(() => extensions.extend(held))
 							: held;
-					if (work !== held) await this.shipping?.hold(work, options.leaseMs);
+					if (work !== held && this.shipping !== undefined) await this.shipping.hold(work, options.leaseMs);
 					if (message.kind === "activity") {
 						for (const run of message.runs) slot.runs.add(run.id);
 						return this.publish(work, message.runs);

@@ -72,7 +72,7 @@ export class CheckpointShipping {
 		mutation: PoolMutation,
 		commitShared: () => Promise<PoolCommitReceipt>,
 	): Promise<PoolCommitReceipt> {
-		if (!shippableCheckpoint(mutation) || this.syncOnly.has(lease.id)) return commitShared();
+		if (!shippableCheckpoint(mutation) || this.syncOnly.has(lease.id)) return this.deliver(lease, commitShared);
 		const checkpoint = mutation.checkpoint;
 		let localSeq: number;
 		try {
@@ -86,15 +86,9 @@ export class CheckpointShipping {
 		} catch (error) {
 			if (error instanceof StaleWorkLeaseError || error instanceof ShipIdentityConflictError) throw error;
 			this.fallBack(lease.id, error as Error);
-			return commitShared();
+			return this.deliver(lease, commitShared);
 		}
-		let receipt: PoolCommitReceipt;
-		try {
-			receipt = await commitShared();
-		} catch (error) {
-			if (error instanceof StaleWorkLeaseError) await this.shard.fence(lease).catch(() => {});
-			throw error;
-		}
+		const receipt = await this.deliver(lease, commitShared);
 		try {
 			await this.shard.shipped(lease, localSeq);
 		} catch (error) {
@@ -107,6 +101,18 @@ export class CheckpointShipping {
 	close(): Promise<void> {
 		this.syncOnly.clear();
 		return this.shard.close();
+	}
+
+	private async deliver(
+		lease: AttemptLease,
+		commitShared: () => Promise<PoolCommitReceipt>,
+	): Promise<PoolCommitReceipt> {
+		try {
+			return await commitShared();
+		} catch (error) {
+			if (error instanceof StaleWorkLeaseError) await this.shard.fence(lease).catch(() => {});
+			throw error;
+		}
 	}
 
 	private fallBack(workId: string, error: Error): void {
