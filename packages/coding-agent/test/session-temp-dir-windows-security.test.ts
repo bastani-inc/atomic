@@ -737,14 +737,18 @@ describe("windows temp directories verified off the main thread (#5285)", () => 
 	);
 
 	it.skipIf(!isWindows)(
-		"a burst of new session spills reads the private root once without blocking the main thread (#5285)",
+		"a burst of new session temp directories reads the private root once without blocking the main thread (#5285)",
 		async () => {
 			const reads: string[] = [];
 			setWindowsDirectorySecurityReaderForTesting((path, options) => {
 				reads.push(path);
 				return readWindowsDirectorySecurityAsync(path, options);
 			});
-			const blockedMs = await longestMainThreadBlockMs(spillBurst);
+			const blockedMs = await longestMainThreadBlockMs(async () => {
+				for (let session = 0; session < SESSION_BURST; session++) {
+					await getSessionTempDirAsync(`burst-${session}`);
+				}
+			});
 
 			assert.deepEqual(reads, [getTempRootDir()], "only the private root is read, once");
 			assert.ok(blockedMs < MAIN_THREAD_BLOCK_LIMIT_MS, `the main thread was blocked for ${blockedMs} ms`);
