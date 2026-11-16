@@ -48,7 +48,7 @@ import {
 	KeybindingsManager,
 	type Loader,
 	type LoaderIndicatorOptions,
-	type Spacer,
+	Spacer,
 	setKeybindings,
 	setRegisteredThemes,
 	type Text,
@@ -706,7 +706,8 @@ export class InteractiveModeBase {
 			shouldHandleViewportInput: this.shouldHandleViewportInput,
 			onOverlayUnhandledInput: this.onOverlayUnhandledInput,
 			onOverlayInternalUiAction: this.onOverlayInternalUiAction,
-			messageCount: () => this.chatContainer?.children.length ?? 0,
+			// Spacers between messages are not messages.
+			messageCount: () => this.chatContainer?.children.filter((child) => !(child instanceof Spacer)).length ?? 0,
 			onInternalUiAction: () => {
 				this.jumpToTranscriptEnd();
 				return undefined;

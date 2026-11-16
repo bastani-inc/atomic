@@ -13,10 +13,8 @@ export interface MeteredMessage {
 	readonly content?: readonly unknown[] | string;
 }
 
-/** Output tokens of a message: its reported usage, or an estimate of about four characters per token while none is. */
-export function meteredOutputTokens(message: MeteredMessage): number {
-	const reported = message.usage?.output;
-	if (typeof reported === "number" && reported > 0) return reported;
+/** Output tokens a message's content amounts to, at about four characters per token. */
+export function estimatedOutputTokens(message: MeteredMessage): number {
 	const content = message.content;
 	if (typeof content === "string") return Math.ceil(content.length / 4);
 	let characters = 0;
@@ -28,6 +26,17 @@ export function meteredOutputTokens(message: MeteredMessage): number {
 		if (part.arguments !== undefined) characters += JSON.stringify(part.arguments)?.length ?? 0;
 	}
 	return Math.ceil(characters / 4);
+}
+
+/**
+ * Output tokens of a message. A finished message reports its usage; a streaming one may report only what the provider
+ * counted when it started, so it counts as the larger of that and its estimate.
+ */
+export function meteredOutputTokens(message: MeteredMessage, streaming = false): number {
+	const reported = message.usage?.output;
+	const known = typeof reported === "number" && reported > 0 ? reported : 0;
+	if (known > 0 && !streaming) return known;
+	return Math.max(known, estimatedOutputTokens(message));
 }
 
 /**
@@ -54,7 +63,7 @@ export class WorkingRunMeter {
 	/** The assistant message being streamed changed. */
 	streaming(message: MeteredMessage): void {
 		if (message.role !== "assistant") return;
-		this.streamingTokens = meteredOutputTokens(message);
+		this.streamingTokens = meteredOutputTokens(message, true);
 	}
 
 	/** An assistant message finished; its usage replaces its estimate. */

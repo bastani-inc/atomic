@@ -332,7 +332,8 @@ export class FooterComponent implements Component {
 			typeof this.session.sessionManager.getSessionName === "function"
 				? this.session.sessionManager.getSessionName()
 				: undefined;
-		if (sessionName) pwd += ` • ${sessionName}`;
+		// The main composer names the session in its top rule; other chats name it here.
+		if (sessionName && !this.hintSegments) pwd += ` • ${sessionName}`;
 
 		const modelLabel = state.model
 			? formatModelLabel(state.model, {

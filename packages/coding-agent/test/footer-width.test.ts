@@ -187,6 +187,28 @@ describe("FooterComponent model label", () => {
 		);
 	});
 });
+describe("FooterComponent composer hints (#5224)", () => {
+	beforeAll(() => {
+		initTheme(undefined, false);
+	});
+	const session = () =>
+		createSession({ sessionName: "shipping fix-first", provider: "anthropic", modelId: "claude-sonnet-4-5" });
+
+	it("the main composer's keys follow the model line, and its session title moves to the prompt's rule", () => {
+		const footer = new FooterComponent(session(), createFooterData(1), undefined, undefined, undefined, () => [
+			"↓ 2 agents",
+			"? keys",
+		]);
+		const line = stripAnsi(footer.render(200)[0] ?? "");
+		assert.match(line, / · ↓ 2 agents · \? keys$/);
+		assert.doesNotMatch(line, /shipping fix-first/);
+	});
+
+	it("a chat without composer hints still names its session in the footer", () => {
+		const line = stripAnsi(new FooterComponent(session(), createFooterData(1)).render(200)[0] ?? "");
+		assert.match(line, /shipping fix-first/);
+	});
+});
 describe("FooterComponent width handling", () => {
 	beforeAll(() => {
 		initTheme(undefined, false);

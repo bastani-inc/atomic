@@ -53,6 +53,13 @@ describe("working line time and tokens (#5224)", () => {
 		assert.equal(meter.snapshot(), undefined);
 	});
 
+	test("a streaming message counts its content even when the provider reported a start-of-stream count", () => {
+		const meter = new WorkingRunMeter(() => 0);
+		meter.start();
+		meter.streaming({ role: "assistant", usage: { output: 3 }, content: [{ type: "text", text: "x".repeat(800) }] });
+		assert.equal(meter.snapshot()?.outputTokens, 200);
+	});
+
 	test("the working line keeps Atomic's ∀ and its message, with the run's time and tokens after it", () => {
 		const line = new AtomicWorkingStatusComponent({
 			message: "Working…",
