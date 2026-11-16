@@ -1,5 +1,6 @@
 import { Markdown, type MarkdownTheme, visibleWidth } from "@bastani/atomic-tui";
 import type { Theme } from "../../../../../../modes/interactive/theme/theme.js";
+import { terminalDisplayText } from "../../../../../../utils/terminal-text.ts";
 import type { QuestionData } from "../../../tool/types.js";
 import { stripFenceMarkers } from "./preview-box-renderer.ts";
 
@@ -37,7 +38,7 @@ export class MarkdownContentCache {
 		this.previewTexts = new Map();
 		for (let i = 0; i < question.options.length; i++) {
 			const raw = question.options[i]?.preview;
-			if (raw && raw.length > 0) this.previewTexts.set(i, raw);
+			if (raw && raw.length > 0) this.previewTexts.set(i, terminalDisplayText(raw));
 		}
 		this.markdownCache = new Map();
 	}
