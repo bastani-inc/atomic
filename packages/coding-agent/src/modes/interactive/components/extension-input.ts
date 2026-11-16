@@ -70,6 +70,10 @@ export class ExtensionInputComponent extends Container implements Focusable {
 		this.addChild(new DynamicBorder());
 	}
 
+	getValue(): string {
+		return this.input.getValue();
+	}
+
 	handleInput(keyData: string): boolean {
 		const kb = getKeybindings();
 		if (kb.matches(keyData, "tui.select.confirm") || keyData === "\n") {

@@ -91,6 +91,8 @@ For the JSONL file format and SessionManager API, see [Session Format](/session-
 
 `/resume` opens an interactive session picker for the current project. `atomic -r` opens the same picker at startup.
 
+Text typed before a startup picker or question appears waits in the prompt as a draft. If you were typing an unfinished line, its Enter does not pick a session or submit an empty startup input. Press ↑ or ↓ to choose in the picker, or type into its search field, before confirming. In a startup text input, type your answer and press Enter. An answer left in a cancelled or timed-out text input joins your draft. At the "Fork this session into current directory? [y/N]" question, answer `y` or `n` explicitly if you were typing a prompt or an earlier line was kept as a draft. After startup, review the draft and press Enter to send it.
+
 Each session records the working directory it was created in and never changes it. Atomic runs a session in its working directory, so tools, `@path` references, project configuration, and context files resolve from there.
 
 | Entry point | Working directory |

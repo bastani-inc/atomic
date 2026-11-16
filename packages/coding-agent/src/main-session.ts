@@ -1,12 +1,11 @@
 import { existsSync, writeSync } from "node:fs";
-import { createInterface } from "node:readline";
-import { ProcessTerminal, setCapabilityOverrides, setKeybindings, TuiMainScreen } from "@bastani/atomic-tui";
+import { StringDecoder } from "node:string_decoder";
 import chalk from "chalk";
 import type { Args } from "./cli/args.ts";
 import { selectSession } from "./cli/session-picker.ts";
 import { createStartupProgress, type StartupProgress } from "./cli/startup-progress.ts";
+import { showStartupSelector } from "./cli/startup-ui.ts";
 import { getAgentDir } from "./config.js";
-import { KeybindingsManager } from "./core/keybindings.ts";
 import {
 	RESUME_CATALOG_TIMEOUT_MS,
 	resumeLookupError,
@@ -44,7 +43,7 @@ import { observeHistoryLoads } from "./core/storage/session/history-load-observe
 import type { SessionStore } from "./core/storage/session/types.js";
 import type { ProjectTrustStore } from "./core/trust-manager.ts";
 import type { AppMode } from "./main-app-mode.ts";
-import { ExtensionSelectorComponent } from "./modes/interactive/components/extension-selector.ts";
+import { keepStartupDialogDraft, withEarlyInputHeldForStartupDialog } from "./main-early-input.ts";
 import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.js";
 import { isSessionIdPrefix, resolveSessionIdTargetAcrossScopes } from "./session-id-target.js";
 import { createSessionCwdMatcher, resolvePath } from "./utils/paths.ts";
@@ -112,18 +111,88 @@ async function resolveSessionId(sessionArg: string, cwd: string, store: SessionS
 	return { type: "not_found", arg: sessionArg };
 }
 
-/** Prompt user for yes/no confirmation */
-async function promptConfirm(message: string): Promise<boolean> {
-	return new Promise((resolve) => {
-		const rl = createInterface({
-			input: process.stdin,
-			output: process.stdout,
-		});
-		rl.question(`${message} [y/N] `, (answer) => {
-			rl.close();
-			resolve(answer.toLowerCase() === "y" || answer.toLowerCase() === "yes");
-		});
-	});
+export async function confirmStartupQuestion(
+	message: string,
+	io: {
+		input: {
+			resume?(): void;
+			pause?(): void;
+			on(event: "data", listener: (chunk: Buffer | string) => void): void;
+			off?(event: "data", listener: (chunk: Buffer | string) => void): void;
+			removeListener(event: "data", listener: (chunk: Buffer | string) => void): void;
+		};
+		output: {
+			write(chunk: string): void;
+		};
+	} = {
+		input: process.stdin,
+		output: process.stdout,
+	},
+): Promise<boolean> {
+	return withEarlyInputHeldForStartupDialog(
+		({ hasUnfinishedInput }) =>
+			new Promise((resolve) => {
+				const decoder = new StringDecoder("utf8");
+				let requiresExplicitAnswer = hasUnfinishedInput;
+				let buffer = "";
+				let skipLeadingLf = false;
+				const ask = (prefix: string) => {
+					io.output.write(`${prefix}${message} [y/N] `);
+				};
+				const cleanup = () => {
+					if (io.input.off) io.input.off("data", onData);
+					else io.input.removeListener("data", onData);
+					io.input.pause?.();
+				};
+				const onData = (chunk: Buffer | string) => {
+					let text = typeof chunk === "string" ? chunk : decoder.write(chunk);
+					if (text.length === 0) return;
+					if (skipLeadingLf) {
+						skipLeadingLf = false;
+						if (text.startsWith("\n")) text = text.slice(1);
+						if (text.length === 0) return;
+					}
+					buffer += text;
+					while (true) {
+						const match = /\r\n|\r|\n/.exec(buffer);
+						if (!match || match.index === undefined) break;
+						const answer = buffer.slice(0, match.index);
+						const terminator = match[0];
+						buffer = buffer.slice(match.index + terminator.length);
+						if (terminator === "\r" && buffer.length === 0) {
+							skipLeadingLf = true;
+						}
+						const normalized = answer.trim().toLowerCase();
+						if (
+							normalized === "y" ||
+							normalized === "yes" ||
+							(normalized === "" && !requiresExplicitAnswer) ||
+							normalized === "n" ||
+							normalized === "no"
+						) {
+							let end = buffer.length;
+							while (end > 0) {
+								const code = buffer.charCodeAt(end - 1);
+								if (code !== 10 && code !== 13) break;
+								end -= 1;
+							}
+							const suffix = buffer.slice(0, end).replace(/\r\n?/g, "\n");
+							buffer = "";
+							keepStartupDialogDraft(suffix);
+							cleanup();
+							resolve(normalized === "y" || normalized === "yes");
+							return;
+						}
+						requiresExplicitAnswer = true;
+						keepStartupDialogDraft(answer);
+						ask("Answer y or n; your text is kept as a draft.\n");
+					}
+				};
+				ask("");
+				io.input.on("data", onData);
+				io.input.resume?.();
+			}),
+	);
 }
 
 export class SessionSelectorConflictError extends Error {
@@ -357,7 +426,7 @@ async function createSessionManagerWithStore(
 					return opened;
 				}
 				console.log(chalk.yellow(`Session found in different project: ${resolved.cwd}`));
-				const shouldFork = await promptConfirm("Fork this session into current directory?");
+				const shouldFork = await confirmStartupQuestion("Fork this session into current directory?");
 				if (!shouldFork) {
 					console.log(chalk.dim("Aborted."));
 					process.exit(0);
@@ -417,35 +486,11 @@ function promptStartupSelector(
 	options: readonly string[],
 	settingsManager: SettingsManager,
 ): Promise<string | undefined> {
-	setCapabilityOverrides(settingsManager.getTerminalCapabilityOverrides());
-	initTheme(settingsManager.getTheme());
-	setKeybindings(KeybindingsManager.create());
-
-	return new Promise((resolve) => {
-		const ui = new TuiMainScreen(new ProcessTerminal(), settingsManager.getShowHardwareCursor(), getAgentDir());
-		ui.setClearOnShrink(settingsManager.getClearOnShrink());
-
-		let settled = false;
-		const finish = (result: string | undefined) => {
-			if (settled) {
-				return;
-			}
-			settled = true;
-			ui.stop();
-			resolve(result);
-		};
-
-		const selector = new ExtensionSelectorComponent(
-			title,
-			[...options],
-			(option) => finish(option),
-			() => finish(undefined),
-			{ tui: ui },
-		);
-		ui.addChild(selector);
-		ui.setFocus(selector);
-		ui.start();
-	});
+	return showStartupSelector(
+		settingsManager,
+		title,
+		options.map((option) => ({ label: option, value: option })),
+	);
 }
 
 export async function promptForMissingSessionCwd(

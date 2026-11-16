@@ -54,13 +54,18 @@ On Windows, ALT+Z lends the terminal to an interactive PowerShell subshell. Type
 
 ## Startup typing
 
-On normal interactive TTY startup, Atomic captures raw keyboard input before deferred resources finish loading and until the TUI input handler mounts. It replays text typed before the prompt box is ready into the editor.
+In an interactive terminal, you can type while Atomic starts, before the prompt box is ready.
 
-- Enter-submitted ordinary prompts wait for the prompt loop to become ready.
-- Command-like submissions such as `/settings` or `!pwd` replay as standalone editor submissions through normal command routing.
-- Later submissions wait behind a captured command and replay in input order. Ordinary prompts cannot overtake commands, and commands are not merged with following prompts.
+When no startup screen needs an answer:
+- Enter-submitted ordinary prompts wait until the session is ready.
+- Command-like submissions such as `/settings` or `!pwd` run as separate editor submissions through normal command routing.
+- Later submissions wait behind an earlier command and run in input order. Ordinary prompts cannot overtake commands, and commands are not merged with following prompts.
 
-Startup work that can affect correctness stays synchronous and does not use this capture. This includes project trust prompts, resume/session selectors, cross-project session confirmations, explicit resource flags, metadata commands, non-TTY input, and explicit provider/model selection.
+When a startup screen appears, including project trust, first-time setup, the resume picker or a cross-project fork question, your earlier text waits in the prompt as a draft. Text typed into a screen that does not use text joins that draft, with line breaks between typed lines. Text left in a startup input that you cancel, or that times out, also joins the draft. Nothing is sent until you review the draft and press Enter after startup.
+
+Enter or a custom prompt-submit key ending an unfinished prompt does not answer the screen. Use ↑ or ↓ to choose in a selector; the resume picker and text input also accept Enter after you start typing into them. Answer a fork question with `y` or `n` explicitly if you were typing a prompt or an earlier line was kept as a draft.
+
+Startup typing does not apply to non-TTY input, print or RPC mode, or metadata commands such as `--help` and `--list-models`.
 
 ## Slash Commands
 

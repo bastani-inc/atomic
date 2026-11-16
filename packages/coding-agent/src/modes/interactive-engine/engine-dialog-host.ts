@@ -51,6 +51,8 @@ async function handleRequest(
 		case "set_editor_text":
 			ui.setEditorText(request.text);
 			return undefined;
+		case "cancel":
+			return undefined;
 	}
 }
 
@@ -115,6 +117,14 @@ export class EngineDialogHostController {
 	}
 
 	private async handle(request: RpcExtensionUIRequest): Promise<RpcExtensionUIResponse | undefined> {
+		if (request.method === "cancel") {
+			const record = this.records.get(request.id);
+			if (record?.generation === this.runtime.getEngineGeneration()) {
+				this.records.delete(request.id);
+				record.abort.abort();
+			}
+			return undefined;
+		}
 		if (request.method === "setWidget") {
 			if (request.widgetLines === undefined) this.widgetOwners.delete(request.widgetKey);
 			else this.widgetOwners.set(request.widgetKey, this.runtime.getEngineGeneration());
@@ -123,6 +133,7 @@ export class EngineDialogHostController {
 		if (!MOUNTING_METHODS.has(request.method)) return handleRequest(this.ui, request, undefined);
 		const abort = new AbortController();
 		const generation = this.runtime.getEngineGeneration();
+		this.records.get(request.id)?.abort.abort();
 		this.records.set(request.id, { generation, abort });
 		let response: RpcExtensionUIResponse | undefined;
 		try {
