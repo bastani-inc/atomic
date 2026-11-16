@@ -153,12 +153,17 @@ function startRoot(
 	);
 }
 
-async function until(what: string, s: Scenario, check: () => boolean, watched: readonly BudgetedProcess[]) {
-	while (!check()) {
+async function until(
+	what: string,
+	s: Scenario,
+	check: () => boolean | Promise<boolean>,
+	watched: readonly BudgetedProcess[],
+) {
+	while (!(await check())) {
 		for (const watchedProcess of watched)
 			if (watchedProcess.process.exitCode !== null)
 				assert.fail(
-					`a process ended (${watchedProcess.process.exitCode}) while waiting for ${what}:\n${await watchedProcess.stderr}`,
+					`process ${watchedProcess.process.pid} ended (${watchedProcess.process.exitCode}, signal=${watchedProcess.process.signalCode}, budgetExpired=${watchedProcess.budgetExpired}) while waiting for ${what}:\n${await watchedProcess.stderr}`,
 				);
 		if (Date.now() >= s.deadline) assert.fail(`timed out waiting for ${what}`);
 		await sleep(50);
@@ -346,7 +351,7 @@ test.skipIf(process.platform === "win32")(
 			root = startRoot(s, 3, 20_000, {
 				...markers,
 				SHARED_POOL_LEASE_MS: String(TAKEOVER_LEASE_MS),
-				SHARED_POOL_CHECKPOINT_SHIPPING: JSON.stringify({ intervalMs: 60_000, maxBatch: 1_000, maxLagMs: 600_000 }),
+				SHARED_POOL_CHECKPOINT_SHIPPING: JSON.stringify({ intervalMs: 100, maxBatch: 1_000, maxLagMs: 600_000 }),
 			});
 			await until(
 				"node B to ship its stage and wait before its local-only checkpoint",
@@ -356,7 +361,7 @@ test.skipIf(process.platform === "win32")(
 			);
 			nodeC = startNode(s, "C", 2, markers);
 			await until(
-				"node C to be ready before blocking journal writes",
+				"node C to be ready before node B is killed",
 				s,
 				() => nodeC!.stdout.some((line) => line.startsWith("ready ")),
 				[nodeB.process, nodeC.process, root],
@@ -367,25 +372,63 @@ test.skipIf(process.platform === "win32")(
 				.at(-1)!;
 			const beforeKill = await openLibsqlDatabase({ url: s.url });
 			try {
-				await beforeKill.transaction(async (tx) => {
-					await tx.run(`UPDATE ${PREFIX}wf_runs_ship_batches SET host = host WHERE host = ?`, "B");
-					writeFileSync(join(s.directory, `accept-B-${index}`), "");
-					await until(
-						"node B to acknowledge its local-only checkpoint",
-						s,
-						() => readdirSync(s.directory).includes(`working-B-${index}`),
-						[nodeB!.process, nodeC!.process, root!],
+				await beforeKill.run(
+					`CREATE TRIGGER worker_cli_ships_nothing_from_b BEFORE INSERT ON ${PREFIX}wf_runs_ship_batches WHEN NEW.host = 'B'
+					BEGIN SELECT RAISE(ABORT, 'node B ships nothing until it is killed'); END`,
+				);
+				const held = await beforeKill.get<{ id: string; renewed_at: number }>(
+					`SELECT id, renewed_at FROM ${PREFIX}wf_runs_work WHERE root = ? AND worker LIKE 'B/%'`,
+					s.root,
+				);
+				assert.ok(held);
+				const renews = async () => {
+					const current = await beforeKill.get<{ renewed_at: number }>(
+						`SELECT renewed_at FROM ${PREFIX}wf_runs_work WHERE id = ? AND worker LIKE 'B/%'`,
+						held.id,
 					);
-					assert.ok(readdirSync(s.directory).includes(`unshipped-B-${index}`));
-					killGroup(nodeB!.process);
-					await nodeB!.process.process.exited;
-					assert.deepEqual(
-						await tx.all(
-							`SELECT key FROM ${PREFIX}wf_events WHERE json_extract(payload, '$.name') = 'unshipped' AND json_extract(payload, '$.output') = 'B'`,
-						),
-						[],
-					);
-				});
+					return current !== undefined && current.renewed_at > held.renewed_at;
+				};
+				await until("node B to renew its lease while shipping is blocked", s, renews, [
+					nodeB.process,
+					nodeC.process,
+					root,
+				]);
+				writeFileSync(join(s.directory, `accept-B-${index}`), "");
+				await until(
+					"node B to acknowledge its local-only checkpoint",
+					s,
+					() => readdirSync(s.directory).includes(`working-B-${index}`),
+					[nodeB.process, nodeC.process, root],
+				);
+				assert.ok(readdirSync(s.directory).includes(`unshipped-B-${index}`));
+				const accepted = await beforeKill.get<{ renewed_at: number }>(
+					`SELECT renewed_at FROM ${PREFIX}wf_runs_work WHERE id = ? AND worker LIKE 'B/%'`,
+					held.id,
+				);
+				assert.ok(accepted);
+				await until(
+					"node B to renew its lease after accepting its local-only checkpoint",
+					s,
+					async () => {
+						const current = await beforeKill.get<{ renewed_at: number }>(
+							`SELECT renewed_at FROM ${PREFIX}wf_runs_work WHERE id = ? AND worker LIKE 'B/%'`,
+							held.id,
+						);
+						return current !== undefined && current.renewed_at > accepted.renewed_at;
+					},
+					[nodeB.process, nodeC.process, root],
+				);
+				killGroup(nodeB.process);
+				await nodeB.process.process.exited;
+				assert.equal(nodeB.process.process.signalCode, "SIGKILL");
+				assert.equal(nodeB.process.budgetExpired, false);
+				assert.deepEqual(
+					await beforeKill.all(
+						`SELECT key FROM ${PREFIX}wf_events WHERE json_extract(payload, '$.name') = 'unshipped' AND json_extract(payload, '$.output') = 'B'`,
+					),
+					[],
+				);
+				await beforeKill.run("DROP TRIGGER worker_cli_ships_nothing_from_b");
 			} finally {
 				await beforeKill.close();
 			}
