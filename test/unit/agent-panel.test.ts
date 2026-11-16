@@ -148,6 +148,22 @@ test("single-cell panel frames avoid repeated grapheme segmentation (#5239)", ()
 	}
 });
 
+test("repeated single-cell animation frames reuse their measured line widths (#5239)", () => {
+	initTheme("dark");
+	const rows = [{ ...ROWS[0]!, task: "steadyframe7392" }];
+	for (let frame = 0; frame < 10; frame++) renderAgentPanelRows(rows, 120, plain, { frame });
+	const replace = vi.spyOn(String.prototype, "replace");
+	try {
+		for (let frame = 0; frame < 20; frame++) renderAgentPanelRows(rows, 120, plain, { frame });
+		assert.equal(
+			replace.mock.contexts.filter((text) => typeof text === "string" && text.includes("steadyframe7392")).length,
+			0,
+		);
+	} finally {
+		replace.mockRestore();
+	}
+});
+
 test("single-cell rendering still clamps styles that add visible text (#5239)", () => {
 	const expanded: AgentPanelStyle = { ...plain, muted: (text) => `[${text}]`, accent: (text) => `界${text}` };
 	for (const width of [40, 60, 80, 120]) {
