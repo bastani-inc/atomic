@@ -228,6 +228,8 @@ export class SessionList implements Component, Focusable {
 			}));
 		}
 		this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.filteredSessions.length - 1));
+		// A preview shows the selected row; with no rows left there is nothing to preview.
+		if (this.filteredSessions.length === 0) this.previewOpen = false;
 	}
 
 	private setConfirmingDeleteSession(session: SessionInfo | null): void {
@@ -591,7 +593,7 @@ export class SessionList implements Component, Focusable {
 		}
 		// Down arrow
 		else if (kb.matches(keyData, "tui.select.down")) {
-			this.selectedIndex = Math.min(this.filteredSessions.length - 1, this.selectedIndex + 1);
+			this.selectedIndex = Math.max(0, Math.min(this.filteredSessions.length - 1, this.selectedIndex + 1));
 		}
 		// Page up - jump up by maxVisible items
 		else if (kb.matches(keyData, "tui.select.pageUp")) {
@@ -599,10 +601,16 @@ export class SessionList implements Component, Focusable {
 		}
 		// Page down - jump down by maxVisible items
 		else if (kb.matches(keyData, "tui.select.pageDown")) {
-			this.selectedIndex = Math.min(this.filteredSessions.length - 1, this.selectedIndex + this.maxVisible);
+			this.selectedIndex = Math.max(
+				0,
+				Math.min(this.filteredSessions.length - 1, this.selectedIndex + this.maxVisible),
+			);
 		}
-		// Enter
-		else if (kb.matches(keyData, "tui.select.confirm")) {
+		// Enter, or → while it does not move the cursor through search text
+		else if (
+			kb.matches(keyData, "tui.select.confirm") ||
+			(kb.matches(keyData, "app.list.open") && !this.searchInput.getValue())
+		) {
 			const selected = this.filteredSessions[this.selectedIndex];
 			if (selected && this.onSelect) {
 				this.onSelect(selected.session);
