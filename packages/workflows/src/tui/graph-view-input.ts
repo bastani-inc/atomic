@@ -146,12 +146,15 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 			return true;
 		}
 		const name = this._stageDetailStage()?.name ?? detail.stageId;
-		if (matchesKey(data, "r") && this.stageActions?.retry) {
-			this._runStageAction(this.stageActions.retry(detail.runId, detail.stageId), `Retrying ${name}\u2026`);
+		const actions = this.stageActions;
+		const retry = actions?.retry;
+		if (matchesKey(data, "r") && retry) {
+			this._runStageAction(() => retry.call(actions, detail.runId, detail.stageId), `Retrying ${name}\u2026`);
 			return true;
 		}
-		if (matchesKey(data, "f") && this.stageActions?.fork) {
-			this._runStageAction(this.stageActions.fork(detail.runId, detail.stageId), `Forking the run\u2026`);
+		const fork = actions?.fork;
+		if (matchesKey(data, "f") && fork) {
+			this._runStageAction(() => fork.call(actions, detail.runId, detail.stageId), `Forking the run\u2026`);
 			return true;
 		}
 		if (matchesKey(data, "t") && this.onStageAttach) {
@@ -172,10 +175,26 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 	}
 
 	/** Show an action's progress, then its result, on the hint line; a new run the action started is shown. */
-	private _runStageAction(result: Promise<GraphStageActionResult>, progress: string): void {
+	private _runStageAction(action: () => Promise<GraphStageActionResult>, progress: string): void {
+		if (this.stageActionPending) return;
+		this.stageActionPending = true;
 		this.graphNotice = { text: progress, tone: "info", until: Date.now() + 60_000 };
+		let result: Promise<GraphStageActionResult>;
+		try {
+			result = Promise.resolve(action());
+		} catch (error: unknown) {
+			this.stageActionPending = false;
+			this.graphNotice = {
+				text: error instanceof Error ? error.message : String(error),
+				tone: "error",
+				until: Date.now() + GRAPH_NOTICE_MS,
+			};
+			this.requestRender?.();
+			return;
+		}
 		void result.then(
 			(outcome) => {
+				this.stageActionPending = false;
 				this.graphNotice = {
 					text: outcome.message,
 					tone: outcome.ok ? "info" : "error",
@@ -188,6 +207,7 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 				this.requestRender?.();
 			},
 			(error: unknown) => {
+				this.stageActionPending = false;
 				this.graphNotice = {
 					text: error instanceof Error ? error.message : String(error),
 					tone: "error",
@@ -203,6 +223,7 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 		const stage = this.cachedLayout[this.focusedIndex]?.stage;
 		const target = this._stageChatTarget(stage);
 		if (!this._focusedStageStoppable() || stage === undefined || target === undefined) return true;
+		if (this.stageActionPending) return true;
 		const key = `${target.runId}\u0000${target.stageId}`;
 		if (!this.stopConfirm.press(key)) {
 			this.graphNotice = {
@@ -214,11 +235,16 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 		}
 		this.graphNotice = null;
 		const stop = this.stageActions?.stop;
-		if (stop) this._runStageAction(stop(target.runId, target.stageId), `Stopping ${stage.name}\u2026`);
+		if (stop)
+			this._runStageAction(
+				() => stop.call(this.stageActions, target.runId, target.stageId),
+				`Stopping ${stage.name}\u2026`,
+			);
 		return true;
 	}
 
 	private readonly stopConfirm = new TwoPressConfirm();
+	private stageActionPending = false;
 
 	/** One page is the visible body, less a row of overlap for continuity. */
 	private _toolDetailPageRows(): number {

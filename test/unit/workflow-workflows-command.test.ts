@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { handleWorkflowsCommand, openWorkflowRun } from "../../packages/workflows/src/extension/workflow-open-run.js";
+import { createStore } from "../../packages/workflows/src/shared/store.js";
 import * as h from "./overlay-graph-helpers.js";
 
 const { makeStage, makeRun, makeStore } = h;
@@ -17,16 +18,22 @@ function storeWith(runIds) {
 }
 
 function harness() {
+	initTheme("dark");
 	const opened = [];
 	const messages = { info: [], error: [] };
 	const pickers = [];
 	const ctx = {
 		hasUI: true,
 		ui: {
-			custom: (factory) => {
-				pickers.push(factory);
-				return Promise.resolve(undefined);
-			},
+			custom: (factory) =>
+				new Promise((resolve) => {
+					pickers.push((tui, theme, keys, done) =>
+						factory(tui, theme, keys, (result) => {
+							done(result);
+							resolve(result);
+						}),
+					);
+				}),
 		},
 	};
 	const overlay = {
@@ -64,6 +71,7 @@ describe("/workflows (#5224)", () => {
 		assert.equal(t.pickers.length, 1, "several runs open a list");
 		assert.equal(t.opened.length, 0);
 		const component = t.pickers[0]({ requestRender() {} }, undefined, undefined, () => {});
+		component.render(100);
 		component.handleInput("\r");
 		await pending;
 		assert.equal(t.opened.length, 1, "Enter on a row opens that run's graph");
@@ -144,4 +152,36 @@ describe("/workflows (#5224)", () => {
 		assert.equal(t.opened[0].options.onReturn, onReturn);
 		assert.equal(openWorkflowRun("run-1", { ui: {} }, { overlay: t.overlay }), false);
 	});
+});
+
+it("does not start a zero-input definition when the painted runs disappear (#5245/#5224)", async () => {
+	const t = harness();
+	const store = createStore();
+	store.recordRunStart({ ...makeRun([]), id: "aaaaaaaa", startedAt: 1 });
+	store.recordRunStart({ ...makeRun([]), id: "bbbbbbbb", startedAt: 2 });
+	const started = [];
+	const pending = handleWorkflowsCommand("", t.ctx, t.reporter, {
+		overlay: t.overlay,
+		store,
+		definitions: () => [{ normalizedName: "deploy", description: "Deploy without inputs", inputs: {} }],
+		startDefinition: async (name) => {
+			started.push(name);
+		},
+	});
+	const component = t.pickers[0]({ requestRender() {} }, undefined, undefined, () => {});
+	try {
+		assert.match(component.render(100).join("\n"), /bbbbbbbb/);
+		store.removeRun("bbbbbbbb");
+		store.removeRun("aaaaaaaa");
+		component.handleInput("\r");
+		await Promise.resolve();
+		assert.deepEqual(started, []);
+		assert.deepEqual(t.opened, []);
+		component.render(100);
+		component.handleInput("\r");
+		await pending;
+		assert.deepEqual(started, ["deploy"]);
+	} finally {
+		component.dispose?.();
+	}
 });

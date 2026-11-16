@@ -103,7 +103,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Fixed a pooled stage on a host that doesn't run its root keeping its Intercom inbox after its session failed to start: later messages to it were taken into the failed session instead of staying queued ([#5168](https://github.com/bastani-inc/atomic/issues/5168))
 - Fixed the workflow session picker showing no selected row when the selected run left the list and the list got shorter. The selection now moves to the nearest remaining run, so Enter acts on it without first moving the cursor.
 - Fixed `/workflow` commands whose arguments start after a tab or on a new line not being run ([#5192](https://github.com/bastani-inc/atomic/issues/5192))
-- Fixed the open `/workflows` sheet keeping stale run states and omitting newly started runs. Updates preserve the search and selected run ([#5245](https://github.com/bastani-inc/atomic/pull/5245))
+- Fixed the open `/workflows` sheet keeping stale run states and omitting newly started runs. Updates preserve the search and selected run. If that run leaves the list, Enter waits until the replacement highlight is displayed instead of opening another run or starting a workflow you did not choose ([#5245](https://github.com/bastani-inc/atomic/pull/5245))
+- Fixed `/workflows` hanging when a host cannot mount its custom UI, and browsing the sheet marking an idle session as blocked ([#5245](https://github.com/bastani-inc/atomic/pull/5245))
+- Fixed paused runs in `/workflows` counting the current pause toward elapsed time ([#5245](https://github.com/bastani-inc/atomic/pull/5245))
+- Fixed boolean workflow inputs such as `on`, `1` and `TRUE` displaying or toggling inconsistently with their submitted value in the picker and inline form ([#5245](https://github.com/bastani-inc/atomic/pull/5245))
+- Fixed repeated retry or fork keys in a failed stage's detail starting duplicate actions while the first action is still pending ([#5245](https://github.com/bastani-inc/atomic/pull/5245))
 
 
 ### Removed
