@@ -694,9 +694,7 @@ function startPrivateRootVerification(): void {
 		if (ownerRoot !== undefined) ensureOwnedDirectory(ownerRoot);
 	} catch {}
 	try {
-		const cacheDir = join(getAgentDir(), "cache");
-		mkdirSync(cacheDir, { recursive: true, mode: SESSION_TEMP_DIR_MODE });
-		ensureOwnedDirectory(join(cacheDir, "tmp"), true);
+		verifyOwnedDirectory(join(getAgentDir(), "cache", "tmp"), undefined, true);
 	} catch {}
 }
 

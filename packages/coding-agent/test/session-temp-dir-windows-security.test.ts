@@ -11,12 +11,13 @@ import {
 	mkdtempSync,
 	readFileSync,
 	realpathSync,
+	renameSync,
 	rmSync,
 	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, join, sep } from "node:path";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, it } from "vitest";
@@ -451,33 +452,54 @@ const BACKGROUND_EXIT_BOUND_MS = 8_000;
 const SECURITY_MODULE = join(moduleDir(import.meta.url), "..", "src", "core", "tools", "windows-directory-security.ts");
 const FAKE_READ_SECONDS = 0.3;
 
+type FakePowerShellMode = "answer" | "hang" | "garbage" | "fail";
+
 interface FakePowerShell {
-	launches(): Array<{ pid: number; path: string }>;
+	launches(): Array<{ pid: number; host: string; path: string }>;
+	argumentsOf(host: string): string[];
 	restore(): void;
 }
 
-function installFakePowerShell(mode: "answer" | "hang"): FakePowerShell {
-	const bin = mkdtempSync(join(tmpdir(), "atomic-fake-pwsh-"));
-	const log = join(bin, "launches.log");
-	writeFileSync(log, "");
-	const script = [
+function fakeHostScript(host: string, mode: FakePowerShellMode, bin: string): string {
+	const descriptor = `printf '%s\\n%s\\n%s\\n%s' '${CURRENT_SID}' '${CURRENT_SID}' 'D:(A;OICI;FA;;;${CURRENT_SID})' 'Allow;${CURRENT_SID}'`;
+	const body: Record<FakePowerShellMode, string[]> = {
+		answer: [`sleep ${FAKE_READ_SECONDS}`, descriptor],
+		hang: ["exec sleep 60"],
+		garbage: ["printf 'not a descriptor'"],
+		fail: [descriptor, "exit 1"],
+	};
+	return [
 		"#!/bin/sh",
-		`echo "$$ $ATOMIC_SECURITY_QUERY_PATH" >> '${log}'`,
-		mode === "hang" ? "exec sleep 60" : `sleep ${FAKE_READ_SECONDS}`,
-		`printf '%s\\n%s\\n%s\\n%s' '${CURRENT_SID}' '${CURRENT_SID}' 'D:(A;OICI;FA;;;${CURRENT_SID})' 'Allow;${CURRENT_SID}'`,
+		`echo "$$ ${host} $ATOMIC_SECURITY_QUERY_PATH" >> '${join(bin, "launches.log")}'`,
+		`printf '%s\\n' "$@" > '${join(bin, `${host}.args`)}'`,
+		...body[mode],
 	].join("\n");
-	writeFileSync(join(bin, "powershell.exe"), `${script}\n`, { mode: 0o755 });
+}
+
+function installFakePowerShell(mode: FakePowerShellMode, pwshMode: FakePowerShellMode = mode): FakePowerShell {
+	const bin = mkdtempSync(join(tmpdir(), "atomic-fake-pwsh-"));
+	writeFileSync(join(bin, "launches.log"), "");
+	for (const [host, hostMode] of [
+		["powershell.exe", mode],
+		["pwsh.exe", pwshMode],
+	] as const) {
+		writeFileSync(join(bin, host), `${fakeHostScript(host, hostMode, bin)}\n`, { mode: 0o755 });
+	}
 	const savedPath = process.env.PATH;
 	process.env.PATH = `${bin}${delimiter}${savedPath ?? ""}`;
 	return {
 		launches: () =>
-			readFileSync(log, "utf8")
+			readFileSync(join(bin, "launches.log"), "utf8")
 				.split("\n")
 				.filter((line) => line.length > 0)
 				.map((line) => {
-					const separator = line.indexOf(" ");
-					return { pid: Number(line.slice(0, separator)), path: line.slice(separator + 1) };
+					const [pid, host, ...path] = line.split(" ");
+					return { pid: Number(pid), host: host ?? "", path: path.join(" ") };
 				}),
+		argumentsOf: (host) =>
+			readFileSync(join(bin, `${host}.args`), "utf8")
+				.split("\n")
+				.slice(0, -1),
 		restore() {
 			process.env.PATH = savedPath;
 			rmSync(bin, { recursive: true, force: true });
@@ -555,6 +577,9 @@ describe("asynchronous windows directory security reader (#5285)", () => {
 			fake.launches().map((launch) => launch.path),
 			[dir],
 		);
+		const [noProfile, nonInteractive, command, script] = fake.argumentsOf("powershell.exe");
+		assert.deepEqual([noProfile, nonInteractive, command], ["-NoProfile", "-NonInteractive", "-Command"]);
+		assert.match(script ?? "", /Get-Acl -LiteralPath \$env:ATOMIC_SECURITY_QUERY_PATH/);
 		assert.ok(blockedMs < MAIN_THREAD_BLOCK_LIMIT_MS, `the main thread was blocked for ${blockedMs} ms`);
 	});
 
@@ -602,6 +627,54 @@ describe("asynchronous windows directory security reader (#5285)", () => {
 		assert.equal(fake.launches().length, 1);
 	});
 
+	it.skipIf(isWindows)("does not start a read whose signal already aborted (#5285)", async () => {
+		fake = installFakePowerShell("answer");
+		const controller = new AbortController();
+		controller.abort();
+		assert.equal(await readWindowsDirectorySecurityAsync(dir, { signal: controller.signal }), undefined);
+		assert.deepEqual(fake.launches(), []);
+	});
+
+	it.skipIf(isWindows)(
+		"refuses the output of a PowerShell host that failed and tries the next one (#5285)",
+		async () => {
+			fake = installFakePowerShell("fail", "answer");
+			assert.equal((await readWindowsDirectorySecurityAsync(dir))?.ownerSid, CURRENT_SID);
+			assert.deepEqual(
+				fake.launches().map((launch) => launch.host),
+				["powershell.exe", "pwsh.exe"],
+			);
+		},
+	);
+
+	it.skipIf(isWindows)("tries the next PowerShell host after unparseable output (#5285)", async () => {
+		fake = installFakePowerShell("garbage", "answer");
+		assert.equal((await readWindowsDirectorySecurityAsync(dir))?.ownerSid, CURRENT_SID);
+		assert.deepEqual(
+			fake.launches().map((launch) => launch.host),
+			["powershell.exe", "pwsh.exe"],
+		);
+	});
+
+	it.skipIf(isWindows)("shares the read started after an abandoned one with every later caller (#5285)", async () => {
+		fake = installFakePowerShell("hang");
+		const abandon = new AbortController();
+		const abandoned = readWindowsDirectorySecurityAsync(dir, { signal: abandon.signal });
+		await waitFor(() => fake?.launches().length === 1);
+		abandon.abort();
+		assert.equal(await abandoned, undefined);
+
+		const stop = new AbortController();
+		const second = readWindowsDirectorySecurityAsync(dir, { signal: stop.signal });
+		await waitFor(() => fake?.launches().length === 2);
+		await sleep(50);
+		const third = readWindowsDirectorySecurityAsync(dir, { signal: stop.signal });
+		await sleep(50);
+		assert.equal(fake.launches().length, 2, "a later caller joins the read in flight");
+		stop.abort();
+		assert.deepEqual(await Promise.all([second, third]), [undefined, undefined]);
+	});
+
 	it.skipIf(isWindows)(
 		"refuses an unverified directory synchronously without reading it, and adopts it once the background read verified it (#5285)",
 		async () => {
@@ -615,6 +688,28 @@ describe("asynchronous windows directory security reader (#5285)", () => {
 			assert.equal(fake.launches().length, 1, "the synchronous check started the read the asynchronous one joined");
 		},
 	);
+
+	it.skipIf(isWindows)("a read the process awaits keeps it alive until the read answers (#5285)", async () => {
+		fake = installFakePowerShell("answer");
+		const probe = join(dir, "probe.mjs");
+		writeFileSync(
+			probe,
+			[
+				`const { readWindowsDirectorySecurityAsync } = await import(${JSON.stringify(pathToFileURL(SECURITY_MODULE).href)});`,
+				`readWindowsDirectorySecurityAsync(${JSON.stringify(dir)}).then((security) => process.stdout.write(String(security?.ownerSid)));`,
+			].join("\n"),
+		);
+		for (const runtime of [[bunExecutable()], [process.execPath, "--experimental-strip-types", "--no-warnings"]]) {
+			const child = spawnProcess([...runtime, probe], { stdout: "pipe", stderr: "pipe" });
+			const [exitCode, stdout, stderr] = await Promise.all([
+				child.exited,
+				readStreamText(child.stdout),
+				readStreamText(child.stderr),
+			]);
+			assert.equal(exitCode, 0, `${runtime[0]}: ${stderr}`);
+			assert.equal(stdout, CURRENT_SID, `${runtime[0]} exited before the read answered`);
+		}
+	});
 
 	it.skipIf(isWindows)("a background read does not keep a finished process alive (#5285)", async () => {
 		fake = installFakePowerShell("hang");
@@ -648,6 +743,54 @@ describe("asynchronous windows directory security reader (#5285)", () => {
 		}
 	});
 
+	it("does not cache a directory replaced while it was read (#5285)", async () => {
+		const reads: string[] = [];
+		setWindowsDirectorySecurityReaderForTesting(async (path) => {
+			reads.push(path);
+			if (reads.length === 1) {
+				renameSync(path, `${path}-verified`);
+				mkdirSync(path);
+			}
+			return security();
+		});
+		assert.equal(await verifyWindowsDirectorySecurityAsync(dir), "its ownership could not be verified");
+		assert.equal(await verifyWindowsDirectorySecurityAsync(dir), undefined);
+		assert.deepEqual(reads, [dir, dir], "the directory found after the read is read again");
+		rmSync(`${dir}-verified`, { recursive: true, force: true });
+	});
+
+	it("does not cache a verification that a state reset overtook (#5285)", async () => {
+		let release: () => void = () => {};
+		const released = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		setWindowsDirectorySecurityReaderForTesting(async () => {
+			await released;
+			return security();
+		});
+		const overtaken = verifyWindowsDirectorySecurityAsync(dir);
+		resetWindowsDirectorySecurityStateForTesting();
+		let reads = 0;
+		setWindowsDirectorySecurityReaderForTesting(() => {
+			reads += 1;
+			return security();
+		});
+		release();
+		assert.equal(await overtaken, "its ownership could not be verified");
+		assert.equal(await verifyWindowsDirectorySecurityAsync(dir), undefined);
+		assert.equal(reads, 1, "the overtaken verification left nothing cached");
+	});
+
+	it("refuses a missing directory synchronously without starting a read (#5285)", () => {
+		let reads = 0;
+		setWindowsDirectorySecurityReaderForTesting(() => {
+			reads += 1;
+			return security();
+		});
+		assert.equal(verifyWindowsDirectorySecurity(join(dir, "missing")), "its ownership could not be verified");
+		assert.equal(reads, 0);
+	});
+
 	it("never caches a refusal or a failed read (#5285)", async () => {
 		const reads: string[] = [];
 		let descriptor: WindowsDirectorySecurity | undefined = security({ ownerSid: FOREIGN_SID });
@@ -678,7 +821,7 @@ describe("windows temp directories verified off the main thread (#5285)", () => 
 		mkdirSync(join(sandbox, "agent"));
 		for (const key of envKeys) savedEnv.set(key, process.env[key]);
 		process.env.TMPDIR = process.env.TEMP = process.env.TMP = join(sandbox, "tmp");
-		process.env.ATOMIC_CODING_AGENT_DIR = join(sandbox, "agent");
+		process.env.ATOMIC_CODING_AGENT_DIR = join(sandbox, "home", "agent");
 		resetSessionTempDirStateForTesting();
 	});
 
@@ -762,25 +905,57 @@ describe("windows temp directories verified off the main thread (#5285)", () => 
 			return security();
 		});
 		if (!isWindows) simulateWindows();
-
-		setActiveSessionTempId("prewarmed-session");
+		const agentDir = process.env.ATOMIC_CODING_AGENT_DIR ?? "";
 		const ownerRoot = getTempRootDir();
-		const cacheRoot = join(process.env.ATOMIC_CODING_AGENT_DIR ?? "", "cache", "tmp");
-		await waitFor(() => reads.includes(ownerRoot) && reads.includes(cacheRoot));
+		const cacheRoot = join(agentDir, "cache", "tmp");
+
+		setActiveSessionTempId("first-session");
+		await waitFor(() => reads.includes(ownerRoot));
+		assert.equal(existsSync(agentDir), false, "session start never creates the agent directory's cache");
+
+		mkdirSync(cacheRoot, { recursive: true });
+		setActiveSessionTempId("prewarmed-session");
+		await waitFor(() => reads.includes(cacheRoot));
 		await waitFor(() => {
 			try {
 				getSessionTempDir("prewarmed-session");
-				return true;
+				return ensurePrivateTempDir("extensions").startsWith(`${cacheRoot}${sep}`);
 			} catch {
 				return false;
 			}
 		});
 
 		const settledReads = reads.length;
-		const dir = getSessionTempDir("prewarmed-session");
-		assert.ok(dir.startsWith(ownerRoot));
-		assert.ok(ensurePrivateTempDir("extensions").startsWith(cacheRoot));
+		assert.ok(getSessionTempDir("prewarmed-session").startsWith(`${ownerRoot}${sep}`));
+		assert.ok(ensurePrivateTempDir("extensions").startsWith(`${cacheRoot}${sep}`));
+		assert.deepEqual(reads.slice(0, 2).sort(), [cacheRoot, ownerRoot].sort());
 		assert.equal(reads.length, settledReads, "nothing is read again once the roots are verified");
+	});
+
+	it.skipIf(isWindows)("session start creates and reads nothing on POSIX (#5285)", () => {
+		let reads = 0;
+		setWindowsDirectorySecurityReaderForTesting(() => {
+			reads += 1;
+			return security();
+		});
+		setActiveSessionTempId("posix-session");
+		assert.equal(existsSync(getTempRootDir()), false);
+		assert.equal(existsSync(join(process.env.ATOMIC_CODING_AGENT_DIR ?? "", "cache")), false);
+		assert.equal(reads, 0);
+	});
+
+	it("an asynchronous caller gets the refusal of an untrusted root and falls back past it (#5285)", async () => {
+		setWindowsDirectorySecurityReaderForTesting(async () => security({ ownerSid: FOREIGN_SID }));
+		if (!isWindows) simulateWindows();
+
+		await assert.rejects(
+			getSessionTempDirAsync("foreign-root"),
+			(error: unknown) =>
+				error instanceof TempDirRefusedError && error.message.includes("it is owned by another account"),
+		);
+		const fallback = await ensurePrivateTempDirAsync("extensions");
+		assert.equal(fallback.startsWith(`${getTempRootDir()}${sep}`), false);
+		assert.equal(fallback.startsWith(`${join(process.env.ATOMIC_CODING_AGENT_DIR ?? "", "cache")}${sep}`), false);
 	});
 
 	it("a synchronous caller falls back while the private root is still being verified, and uses the root on a later call (#5285)", async () => {
