@@ -764,6 +764,7 @@ export {
 	SessionManager,
 	type SessionMessageEntry,
 	type SessionNameState,
+	type SessionOpenOptions,
 	type SessionProjection,
 	type SessionSummaryEntry,
 	type SessionTreeNode,
