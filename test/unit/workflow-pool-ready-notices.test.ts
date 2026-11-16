@@ -257,6 +257,31 @@ test("resuming changes the ready mark even if no work changed while paused (#523
 	}
 });
 
+test.each(["exited", "unplaced"] as const)(
+	"releasing an %s claim changes the ready mark even when the ready time stays unchanged (#5230)",
+	async (kind) => {
+		const f = await fixture();
+		try {
+			await f.pool.enqueue(f.lease, work, boundary);
+			const before = await f.pool.readyMark("root");
+			assert.ok(before !== undefined);
+			const held = await f.pool.claim(f.lease, "worker", [work], 60_000);
+			assert.ok(held);
+			assert.equal(await f.pool.readyMark("root"), undefined);
+			assert.equal(
+				await (kind === "exited" ? f.pool.releaseExited(f.lease, held) : f.pool.releaseUnplaced(f.lease, held)),
+				true,
+			);
+			const released = await f.pool.readyMark("root");
+			assert.ok(released !== undefined);
+			assert.notEqual(released, before, "another host's next ready probe must discover the released child");
+			assert.ok(await f.pool.claim(f.lease, "replacement", [work], 60_000));
+		} finally {
+			await f.close();
+		}
+	},
+);
+
 test("a pool's ready mark shows claimable work, and changes as work becomes ready or is claimed (#5230)", async () => {
 	const f = await fixture();
 	try {

@@ -562,6 +562,12 @@ export class SqlPoolQueue {
 				);
 				pool.outboxPending = (await tx.get(`SELECT 1 AS held FROM ${pool.outbox} LIMIT 1`)) !== undefined;
 			}
+			await ensureStorageSchema(tx, dialect, { ledger, domain: "pool-ready", revision: 1 }, () =>
+				tx.exec(`CREATE TABLE IF NOT EXISTS ${pool.roots}_ready(
+					root TEXT PRIMARY KEY REFERENCES ${pool.roots}(root) ON DELETE CASCADE,
+					revision ${int} NOT NULL DEFAULT 0
+				)`),
+			);
 			// The ledger and watermarks a shipping root's hosts write (#4768): a domain of their own, so a pool set up before
 			// them gets them once, and a current one runs no DDL.
 			await ensureStorageSchema(tx, dialect, { ledger, domain: "pool-ship", revision: 1 }, () =>
@@ -1522,26 +1528,28 @@ export class SqlPoolQueue {
 			...(row.workspace === null ? {} : { workspace: JSON.parse(String(row.workspace)) as WorkspaceBinding }),
 		}));
 	}
-	/**
-	 * How much of `root`'s work is claimable now, as a mark that changes when work becomes ready or is claimed: the count
-	 * of ready rows past their ready time and the latest of those times, read through the ready index. A host whose store
-	 * sends no wake-ups reads it while its workers are idle, instead of each worker asking for work (#5230).
-	 */
 	async readyMark(root: string): Promise<string | undefined> {
 		const row = await (this.storage.peek ?? this.storage.read)((executor) =>
 			executor.get<
-				SqliteRow & { ready: number | bigint; latest: number | bigint | null; revision: number | bigint | null }
+				SqliteRow & {
+					ready: number | bigint;
+					latest: number | bigint | null;
+					readiness: number | bigint | null;
+					revision: number | bigint | null;
+				}
 			>(
 				`SELECT COUNT(*) AS ready, MAX(ready_at) AS latest,
+				(SELECT revision FROM ${this.roots}_ready WHERE root = ?) AS readiness,
 				(SELECT revision FROM ${this.roots}_control WHERE root = ?) AS revision
 				FROM ${this.work} WHERE root = ? AND state = 'ready' AND ready_at <= ${this.now}`,
+				root,
 				root,
 				root,
 			),
 		);
 		return row === undefined || Number(row.ready) === 0
 			? undefined
-			: `${row.ready}:${row.latest}:${row.revision ?? 0}`;
+			: `${row.ready}:${row.latest}:${row.readiness ?? 0}:${row.revision ?? 0}`;
 	}
 	/**
 	 * Fails ready work of this root incarnation that no worker may take, as bound work no capable host claimed within
@@ -2981,6 +2989,11 @@ export class SqlPoolQueue {
 		return this.storage.notifications?.notify(poolReadyChannel(this.storage), root);
 	}
 	private async notifyReady(tx: SqliteExecutor, root: string): Promise<void> {
+		await tx.run(
+			`INSERT INTO ${this.roots}_ready(root, revision) VALUES (?, 1)
+			ON CONFLICT(root) DO UPDATE SET revision = ${this.roots}_ready.revision + 1`,
+			root,
+		);
 		const notice = this.readyNotice(root);
 		if (notice !== undefined) await tx.run(notice.sql, ...notice.params);
 	}
