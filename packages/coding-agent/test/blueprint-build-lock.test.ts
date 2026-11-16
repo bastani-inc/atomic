@@ -16,7 +16,10 @@ import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { takeTakeoverMutex } from "../src/core/lock-takeover.ts";
-import { setNativeProcessCreationTimeForTesting } from "../src/core/process-start-token.ts";
+import {
+	setNativeProcessCreationTimeForTesting,
+	setProcessCreationTimeQueryForTesting,
+} from "../src/core/process-start-token.ts";
 import { buildLockPath, settleOtherBuilds, withBuildLocks } from "../src/core/resume/blueprint/build-lock.ts";
 import { runLoggedProcess } from "../src/core/resume/blueprint/process.ts";
 import { processStartToken } from "../src/core/worktree-snapshot/pool.ts";
@@ -35,6 +38,7 @@ const processScans = () =>
 		.length;
 
 const POWERSHELL_READS_TIMEOUT_MS = 60_000;
+const SLOW_QUERY_MS = 2_000;
 
 let dir: string;
 const children: ChildProcess[] = [];
@@ -42,6 +46,7 @@ beforeEach(() => {
 	dir = mkdtempSync(join(tmpdir(), "atomic-build-lock-"));
 });
 afterEach(() => {
+	setProcessCreationTimeQueryForTesting(undefined);
 	setNativeProcessCreationTimeForTesting(undefined);
 	for (const child of children.splice(0)) if (child.exitCode === null) child.kill("SIGKILL");
 	rmSync(dir, { recursive: true, force: true });
@@ -193,6 +198,56 @@ describe("blueprint build locks (#4748)", () => {
 				assert.equal(lock?.start, own, "the build names this process's start");
 				setNativeProcessCreationTimeForTesting(undefined);
 				assert.equal(step?.start, processStartToken(step!.pid), "and its running step's");
+				writeFileSync(gate, "");
+				await run;
+			});
+			closeSync(fd);
+		},
+		POWERSHELL_READS_TIMEOUT_MS,
+	);
+
+	test.skipIf(process.platform !== "win32")(
+		"without the native module, a step that ended before its start was read is not listed again (#5315)",
+		async () => {
+			setNativeProcessCreationTimeForTesting(null);
+			setProcessCreationTimeQueryForTesting({
+				file: process.execPath,
+				args: () => ["-e", `setTimeout(() => console.log("132000000000000000"), ${SLOW_QUERY_MS})`],
+			});
+			const log = join(dir, "step.log");
+			const fd = openSync(log, "a");
+			const gate = join(dir, "gate");
+			const recorded = () => {
+				try {
+					return lockOf() as { steps: { pid: number; start?: string }[] };
+				} catch {
+					return undefined;
+				}
+			};
+			await withBuildLocks(dir, [root()], async () => {
+				const quick = { command: process.execPath, args: ["-e", ""], cwd: dir, env: process.env };
+				await runLoggedProcess(quick, { fd, path: log }, { timeoutMs: 30_000 });
+				const waiting = {
+					command: process.execPath,
+					args: [
+						"-e",
+						'const fs=require("fs");const t=setInterval(()=>{if(fs.existsSync(process.argv[1]))clearInterval(t)},20)',
+						gate,
+					],
+					cwd: dir,
+					env: process.env,
+				};
+				const run = runLoggedProcess(waiting, { fd, path: log }, { timeoutMs: 30_000 });
+				const deadline = Date.now() + 30_000;
+				while (recorded()?.steps.some((step) => step.start !== undefined) !== true && Date.now() < deadline) {
+					await new Promise((resolve) => setTimeout(resolve, 20));
+				}
+				await new Promise((resolve) => setTimeout(resolve, SLOW_QUERY_MS));
+				assert.deepEqual(
+					recorded()?.steps.map((step) => step.start !== undefined),
+					[true],
+					"only the running step is listed, with its start",
+				);
 				writeFileSync(gate, "");
 				await run;
 			});

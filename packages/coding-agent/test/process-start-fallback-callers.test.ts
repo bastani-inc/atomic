@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, test } from "vitest";
+import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { processStartToken, setNativeProcessCreationTimeForTesting } from "../src/core/process-start-token.ts";
 import { claimSession, prepareSessionClaim } from "../src/core/session-claims.ts";
 import {
@@ -90,6 +90,27 @@ describe("callers reading starts without the native module (#5315)", () => {
 			cleanups.push(holdSessionOpenMarker(ownSession, { agentDir }));
 			const [name] = readdirSync(join(agentDir, "open-sessions", ownSession));
 			assert.match(name ?? "", new RegExp(`^${process.pid}-[0-9a-f]{16}-${own}\\.json$`));
+		},
+		POWERSHELL_READS_TIMEOUT_MS,
+	);
+
+	test.skipIf(!windows)(
+		"an open marker written before this process's start was read keeps its name until it is released (#5315)",
+		async () => {
+			vi.resetModules();
+			const fresh = await import("../src/core/process-start-token.ts");
+			const freshMarkers = await import("../src/core/session-open-markers.ts");
+			fresh.setNativeProcessCreationTimeForTesting(null);
+			cleanups.push(() => fresh.setNativeProcessCreationTimeForTesting(undefined));
+			const sessionId = "44444444-4444-4444-8444-444444444444";
+			const markers = join(agentDir, "open-sessions", sessionId);
+
+			const release = freshMarkers.holdSessionOpenMarker(sessionId, { agentDir });
+			assert.match(readdirSync(markers)[0] ?? "", new RegExp(`^${process.pid}-[0-9a-f]{16}\\.json$`));
+			await freshMarkers.prepareSessionOpenMarkers();
+			await release();
+
+			assert.equal(existsSync(markers), false, "the marker it wrote is the one it removed");
 		},
 		POWERSHELL_READS_TIMEOUT_MS,
 	);

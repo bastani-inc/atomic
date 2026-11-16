@@ -22,7 +22,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { setNativeLocksForTesting, TAKEOVER_MUTEX_STALE_MS, takeTakeoverMutex } from "../src/core/lock-takeover.ts";
 import { processStartToken } from "../src/core/process-start-token.ts";
-import { attachSessionClaim, claimSession } from "../src/core/session-claims.ts";
+import { attachSessionClaim, claimSession, prepareSessionClaim } from "../src/core/session-claims.ts";
 import { SESSION_ALREADY_OPEN_EXIT_CODE, SessionAlreadyOpenError } from "../src/core/session-manager-errors.ts";
 import { holdSessionOpenMarker } from "../src/core/session-open-markers.ts";
 
@@ -105,6 +105,13 @@ describe("session claims (#5135)", () => {
 		release();
 		assert.equal(existsSync(claimFile(sessionId)), false);
 		assert.deepEqual(readdirSync(join(agentDir, "session-claims")), [], "no staging file is left behind");
+	});
+
+	test("preparing the claim of a session nobody claimed, or whose claim cannot be read, never throws (#5315)", async () => {
+		const sessionId = newSessionId();
+		await prepareSessionClaim(sessionId, { agentDir });
+		mkdirSync(claimFile(sessionId), { recursive: true });
+		await prepareSessionClaim(sessionId, { agentDir });
 	});
 
 	test("a second claim by the holding process keeps the claim (#5135)", () => {
