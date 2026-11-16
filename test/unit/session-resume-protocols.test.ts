@@ -100,7 +100,7 @@ test("resume retains open deliveries and removes settled cards while preserving 
 	assert.equal(delivery.admit({ id: "from" } as never, { id: "message-1" } as never).kind, "duplicate");
 });
 
-test("resume keeps only contributors to a child's latest merged record without rewriting its entries (#5249)", () => {
+test("resume keeps child insertion order and merged state without rewriting its entries (#5249)", () => {
 	const s = session();
 	const first = s.custom("subagent-child", {
 		version: 1,
@@ -146,7 +146,7 @@ test("resume keeps only contributors to a child's latest merged record without r
 	assert.deepEqual(merge(kept), merge(s.entries));
 	assert.equal(
 		kept.some((e) => e.id === first),
-		false,
+		true,
 	);
 	assert.equal(
 		kept.some((e) => e.id === latest),
@@ -174,5 +174,16 @@ test("resume keeps in-flight workflow runs but drops completed workflow lifecycl
 	assert.equal(
 		resume.state.some(({ entry }) => entry.type === "custom" && (entry.data as { runId?: string })?.runId === "done"),
 		false,
+	);
+});
+
+test("resume preserves parked tasks whose entry id is an unusual valid string (#5249)", () => {
+	const s = session();
+	s.custom("workflow-stage-parked-tasks", { attemptId: "attempt", tasks: [{ ownerId: "owner", taskId: "task" }] });
+	s.entries[0]!.id = "__proto__";
+	const resumed = s.resume();
+	assert.equal(
+		resumed.state.some((held) => held.entry.id === "__proto__"),
+		true,
 	);
 });

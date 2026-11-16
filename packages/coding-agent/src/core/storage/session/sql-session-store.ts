@@ -1173,24 +1173,19 @@ export class SqlSessionStore implements SessionStore {
 				index = undefined;
 				for (let after = 0; after < Number(row.last_seq); ) {
 					const rows = await this.database.all<SqliteRow & { seq: number; entry_id: string; chunks: number }>(
-						`SELECT seq,entry_id,chunks,${select} FROM ${this.tables.entries} WHERE session_id = ? AND seq > ? AND seq <= ? ORDER BY seq LIMIT 512`,
+						`WITH encoded AS MATERIALIZED (
+ SELECT seq,entry_id,chunks,entry_json FROM ${this.tables.entries} WHERE session_id = ? AND seq > ? AND seq <= ? ORDER BY seq LIMIT 512
+ ), payloads AS MATERIALIZED (
+ SELECT seq,entry_id,chunks,CASE WHEN chunks=0 THEN entry_json ELSE ${this.dialect.name === "sqlite" ? `(SELECT group_concat(text, '') FROM (SELECT CAST(data AS TEXT) AS text FROM ${this.tables.entryChunks} WHERE session_id = ? AND seq=encoded.seq ORDER BY idx))` : `(SELECT convert_from(string_agg(data, ''::bytea ORDER BY idx),'UTF8') FROM ${this.tables.entryChunks} WHERE session_id = ? AND seq=encoded.seq)`} END AS entry_json FROM encoded
+ ) SELECT seq,entry_id,chunks,${select} FROM payloads ORDER BY seq`,
 						sessionId,
 						after,
 						row.last_seq,
+						sessionId,
 					);
 					if (rows.length === 0) break;
 					const batch: SessionEntry[] = [];
 					for (const projected of rows) {
-						if (Number(projected.chunks) > 0) {
-							const json = await this.readEntryChunks(
-								this.database,
-								sessionId,
-								Number(projected.seq),
-								Number(projected.chunks),
-							);
-							batch.push(JSON.parse(json) as SessionEntry);
-							continue;
-						}
 						const parsed: Record<string, unknown> = { id: projected.entry_id };
 						const decode = (value: SqliteValue | undefined) =>
 							typeof value === "string" && (value.startsWith("{") || value.startsWith("["))

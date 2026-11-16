@@ -22,11 +22,12 @@ type ResumeJump = readonly [startSeq: number, endSeq: number, parentSeq: number]
 type ResumeCompaction = readonly [seq: number, firstKeptSeq: number, coveredSeq: number];
 
 export interface SessionResumeIndex {
-	readonly version: 2;
+	readonly version: 3;
 	readonly needsBranchRebuild?: boolean;
 	readonly epoch: string;
 	readonly latest: Readonly<Record<string, readonly number[]>>;
 	readonly fields: Readonly<Record<string, readonly (readonly [number, readonly string[]])[]>>;
+	readonly firstChildren: Readonly<Record<string, number>>;
 	readonly models: readonly (readonly [number, string])[];
 	readonly assistants: readonly number[];
 	readonly admissions: readonly string[];
@@ -230,11 +231,12 @@ function isChildState(data: Record<string, unknown>): boolean {
 }
 type ResumeProtocolIndex = Pick<
 	SessionResumeIndex,
-	"latest" | "fields" | "admissions" | "delivered" | "settled" | "pending" | "parks" | "intents"
+	"latest" | "fields" | "firstChildren" | "admissions" | "delivered" | "settled" | "pending" | "parks" | "intents"
 >;
 class ResumeProtocols {
 	readonly latest: Record<string, readonly number[]>;
 	readonly fields: Record<string, readonly (readonly [number, readonly string[]])[]>;
+	readonly firstChildren: Record<string, number>;
 	readonly admissions: Set<string>;
 	readonly delivered: Set<string>;
 	readonly settled: Set<string>;
@@ -244,6 +246,7 @@ class ResumeProtocols {
 	constructor(previous?: ResumeProtocolIndex) {
 		this.latest = { ...previous?.latest };
 		this.fields = { ...previous?.fields };
+		this.firstChildren = { ...previous?.firstChildren };
 		this.admissions = new Set(previous?.admissions ?? []);
 		this.delivered = new Set(previous?.delivered ?? []);
 		this.settled = new Set(previous?.settled ?? []);
@@ -331,11 +334,12 @@ class ResumeProtocols {
 				const held = record(task);
 				return `${text(held.ownerId) ?? ""}/${text(held.taskId) ?? ""}`;
 			});
-			if (remaining.length > 0) this.parks[entry.id] = { seq, remaining, notified: [] };
+			if (remaining.length > 0) this.parks[`park:${entry.id}`] = { seq, remaining, notified: [] };
 		}
 	}
 	private child(data: Record<string, unknown>, seq: number): void {
 		const key = `${text(record(data.owner).sessionId) ?? ""}:${data.childId}`;
+		if (this.firstChildren[key] === undefined) this.firstChildren[key] = seq;
 		const seen = new Set(Object.keys(data));
 		const kept: (readonly [number, readonly string[]])[] = [[seq, [...seen]]];
 		for (const [at, keys] of [...(this.fields[key] ?? [])].reverse()) {
@@ -388,6 +392,7 @@ class ResumeProtocols {
 		return {
 			latest: this.latest,
 			fields: this.fields,
+			firstChildren: this.firstChildren,
 			admissions: [...this.admissions],
 			delivered: [...this.delivered],
 			settled: [...this.settled],
@@ -488,7 +493,7 @@ export function foldSessionResume(
 		lastId = entry.id;
 	}
 	return {
-		version: 2,
+		version: 3,
 		...(needsBranchRebuild ? { needsBranchRebuild: true } : {}),
 		epoch: previous?.epoch ?? crypto.randomUUID(),
 		...protocols.serialize(),
@@ -513,7 +518,7 @@ export function isSessionResumeIndex(value: unknown, lastSeq: number): value is 
 	if (value === null || typeof value !== "object") return false;
 	const index = value as Partial<SessionResumeIndex>;
 	return (
-		index.version === 2 &&
+		index.version === 3 &&
 		!index.needsBranchRebuild &&
 		typeof index.epoch === "string" &&
 		index.seq === lastSeq &&
@@ -608,6 +613,7 @@ export function stateSeqsBefore(index: SessionResumeIndex, fromSeq: number): num
 			key.startsWith("model-transition:") ? seqs.filter((seq) => onBranch(ranges, seq)) : seqs,
 		),
 		...Object.values(index.fields).flatMap((items) => items.map(([at]) => at)),
+		...Object.values(index.firstChildren),
 		...Object.values(index.pending),
 		...Object.values(index.parks).flatMap((park) => [park.seq, ...park.notified]),
 	];

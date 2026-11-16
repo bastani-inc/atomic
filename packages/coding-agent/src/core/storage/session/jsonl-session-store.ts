@@ -89,6 +89,7 @@ type JsonValue = SessionJsonValue;
 
 interface JsonlIndex {
 	readonly identity: string;
+	readonly birthtimeNs: string;
 	readonly headerStamp: string;
 	readonly fileSize: number;
 	readonly mtimeNs: string;
@@ -487,7 +488,12 @@ export class JsonlSessionStore implements SessionStore {
 		const identity = `${stats.dev}:${stats.ino}`;
 		const headerStamp = JSON.stringify(header);
 		const cached = this.indexes.get(path) ?? (await readSidecar(path));
-		if (cached !== undefined && cached.identity === identity && cached.headerStamp === headerStamp) {
+		if (
+			cached !== undefined &&
+			cached.identity === identity &&
+			cached.birthtimeNs === String(stats.birthtimeNs) &&
+			cached.headerStamp === headerStamp
+		) {
 			const fileSize = Number(stats.size);
 			if (
 				cached.fileSize === fileSize &&
@@ -521,7 +527,8 @@ export class JsonlSessionStore implements SessionStore {
 
 	private async buildIndex(path: string, headerStamp: string, stats: BigIntStats): Promise<JsonlIndex> {
 		const identity = `${stats.dev}:${stats.ino}`;
-		const epoch = fileEpoch(identity, headerStamp);
+		const birthtimeNs = String(stats.birthtimeNs);
+		const epoch = fileEpoch(`${identity}:${birthtimeNs}`, headerStamp);
 		const topology = await this.foldFile(path, epoch, () => true);
 		const ranges =
 			topology.index.jumps.length === 0 ? undefined : branchRanges(topology.index, topology.index.leafSeq);
@@ -531,6 +538,7 @@ export class JsonlSessionStore implements SessionStore {
 				: await this.foldFile(path, epoch, (seq) => ranges.some(([low, high]) => seq >= low && seq <= high));
 		return {
 			identity,
+			birthtimeNs,
 			headerStamp,
 			fileSize: Number(stats.size),
 			mtimeNs: String(stats.mtimeNs),
@@ -1458,6 +1466,7 @@ async function writeSidecar(path: string, jsonl: JsonlIndex): Promise<boolean> {
 	const body = JSON.stringify({
 		version: JSONL_INDEX_VERSION,
 		identity: jsonl.identity,
+		birthtimeNs: jsonl.birthtimeNs,
 		headerStamp: jsonl.headerStamp,
 		fileSize: jsonl.fileSize,
 		mtimeNs: jsonl.mtimeNs,
@@ -1500,6 +1509,7 @@ async function readSidecar(path: string): Promise<JsonlIndex | undefined> {
 	if (
 		stored.version !== JSONL_INDEX_VERSION ||
 		typeof stored.identity !== "string" ||
+		typeof stored.birthtimeNs !== "string" ||
 		typeof stored.headerStamp !== "string" ||
 		typeof stored.fileSize !== "number" ||
 		typeof stored.mtimeNs !== "string" ||
@@ -1514,6 +1524,7 @@ async function readSidecar(path: string): Promise<JsonlIndex | undefined> {
 	if (spans.length % 2 !== 0 || !isSessionResumeIndex(stored.index, spans.length / 2)) return undefined;
 	return {
 		identity: stored.identity,
+		birthtimeNs: stored.birthtimeNs,
 		headerStamp: stored.headerStamp,
 		fileSize: stored.fileSize,
 		mtimeNs: stored.mtimeNs,

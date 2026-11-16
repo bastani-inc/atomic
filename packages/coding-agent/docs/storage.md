@@ -826,6 +826,8 @@ A custom `SessionStore` can implement these optional methods to avoid loading wh
 | `readResume(id, leafId?)` | One consistent snapshot containing the header, selected branch from its compaction boundary, live state, omitted totals, recovery ids, `lastSeq`, `lastEntryId`, `leafId` and `epoch`. |
 | `findEntrySeq(id, entryId)` | The entry's sequence, or `undefined` if it is absent. |
 
+Adapters may mark a read-only database facade with `readOnly: true` so Atomic avoids optional cleanup writes.
+
 Sequences count entries from 1. `readResume.branch` contains `{ seq, entry }` records; `state` also records `onBranch`. Returned entries keep their original content, ids and parent ids. `epoch` identifies a session generation: keep it unchanged on append, change it on replacement or recreation, and return it from every range read. Writes with an `epoch` must reject a different generation with `SessionConflictError`, even when the sequence count matches. Atomic also rejects a range hydration from a different generation instead of merging two histories. `SessionResume`, `SessionRecoveryState` and the range and compaction types are exported from `@bastani/atomic/storage`.
 
 Atomic uses `readResume` when available. A custom store without it keeps working and resumes sessions whole. First-party stores implement all five methods. An older SQL session needs one lazy, paged metadata scan to build its index; a read-only store remembers the result for that process. JSONL stores save a checksummed `.idx` sidecar with an atomic rename and rebuild it when the session file changes.

@@ -221,6 +221,32 @@ describe("SqlSessionStore tail reads (#5249)", () => {
 		assert.equal(await onDatabase(path, hasResumeIndex), false);
 	});
 
+	it("projects legacy chunked transcript metadata without returning its omitted payload (#5249)", async () => {
+		const path = databasePath();
+		const entries = compactedEntries(40);
+		const first = entries[0]!;
+		assert.equal(first.type, "message");
+		if (first.type === "message" && first.message.role === "user")
+			first.message.content = "🙂long omitted body".repeat(100_000);
+		await writeSession(path, entries);
+		await onDatabase(path, dropResumeIndex);
+		const { database, rows } = countingRows(await openNodeSqliteDatabase(path));
+		const store = await SqlSessionStore.open(database);
+		try {
+			const resumed = await store.readResume("session");
+			assert.equal(resumed.branch.length, 4);
+			assert.ok(rows() < entries.length);
+			assert.equal(
+				resumed.state.some((held) => held.entry.id === "e1"),
+				false,
+			);
+			assert.equal(resumed.omitted.userMessages, 37);
+		} finally {
+			await store.close();
+			await database.close();
+		}
+	});
+
 	it("rebuilds the index after an earlier build appends without it (#5249)", async () => {
 		const path = databasePath();
 		const entries = compactedEntries(40);
