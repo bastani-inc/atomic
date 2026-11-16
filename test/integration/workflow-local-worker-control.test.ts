@@ -242,7 +242,10 @@ test(
 				await f.until(() => f.acknowledged().includes(1), "the idle worker acknowledges the pause");
 				const claims = f.count("claim");
 				await sleep(QUIET_WINDOW_MS);
-				assert.equal(f.count("claim"), claims, "a paused worker claims nothing");
+				assert.ok(
+					f.count("claim") <= claims + Math.ceil(QUIET_WINDOW_MS / IDLE_CLAIM_FALLBACK_MS),
+					"a paused worker asks for work only once per idle bound, so the pool can still retire it (#5230)",
+				);
 				f.push({ state: "running", revision: 2 });
 				await f.until(
 					() => f.acknowledged().includes(2) && f.count("claim") > claims,
@@ -300,6 +303,36 @@ test(
 				assert.ok(
 					f.count("claim") <= claims + 1,
 					"a stopped worker asks for no more work than its claim in flight",
+				);
+			},
+		);
+	},
+	REAL_WORKER_TEST_TIMEOUT_MS,
+);
+
+test(
+	"a paused idle worker of the root's host is still retired by the pool within the idle bound (#5230)",
+	async () => {
+		let paused = false;
+		await withRealWorker(
+			{
+				child: "pool-heartbeat-child",
+				heartbeatMs: 600_000,
+				released: true,
+				answer: (request) => (request.kind === "claim" && paused ? { retire: true } : undefined),
+			},
+			async (f) => {
+				await f.until(() => f.count("complete") > 0, "the child completes");
+				f.push({ state: "paused", revision: 1 });
+				await f.until(() => f.acknowledged().includes(1), "the idle worker acknowledges the pause");
+				paused = true;
+				const pausedAt = performance.now();
+				const [code] = await f.exited;
+				const retiredAfter = performance.now() - pausedAt;
+				assert.equal(code, 0, `a retired worker ends cleanly: ${f.stderr()}`);
+				assert.ok(
+					retiredAfter < IDLE_CLAIM_FALLBACK_MS + IDLE_CONTROL_BOUND_MS,
+					`retired after ${retiredAfter} ms`,
 				);
 			},
 		);

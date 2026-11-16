@@ -1303,6 +1303,16 @@ export class PoolCoordinator {
 		this.idleClaims.wakeAll();
 	}
 
+	/**
+	 * Fewer attempts wait released than the pool runs extra workers for: the idle workers' claims answer now, so each asks
+	 * again and an extra one is retired as promptly as before its claims paused (#5230).
+	 */
+	private retireWaiting(): void {
+		const options = this.options;
+		if (options === undefined || this.waitingReserve.size <= Math.min(this.places.waiting, options.workers)) return;
+		this.idleClaims.wakeAll();
+	}
+
 	/** Starts the recovery of expired attempts, every {@link RECOVERY_INTERVAL_MS}. */
 	private startRecovery(): void {
 		const recover = () => {
@@ -2514,6 +2524,7 @@ export class PoolCoordinator {
 				this.slots.delete(slot);
 				this.places.end(slot);
 				this.gateOpened();
+				this.retireWaiting();
 				this.endStageWatches((watch) => watch.slot === slot, "worker_exited");
 				for (const settle of slot.stageCommands.values()) settle(undefined);
 				slot.stageCommands.clear();
@@ -2727,6 +2738,7 @@ export class PoolCoordinator {
 							slot.worktree = undefined;
 							this.places.end(slot);
 							this.gateOpened();
+							this.retireWaiting();
 						};
 						// Its current owner keeps superseded work. Work still leased to this attempt was refused by the root,
 						// or its run failed on a fault of the pool: it is released for replay and counts as a failed attempt,
@@ -2845,8 +2857,12 @@ export class PoolCoordinator {
 					}
 					const held = slot.work;
 					if (!held) throw new Error("Worker has no active attempt");
-					if (message.kind === "place")
-						return message.op === "release" ? this.releasePlace(slot) : this.places.reacquire(slot);
+					if (message.kind === "place") {
+						if (message.op === "release") return this.releasePlace(slot);
+						const granted = await this.places.reacquire(slot);
+						this.retireWaiting();
+						return granted;
+					}
 					// The heartbeat renews the attempt, records its usage and reads pool control in one transaction.
 					if (message.kind === "heartbeat") {
 						const record = this.usageLedger!.recording(lease, held, message.reports);
@@ -2969,6 +2985,7 @@ export class PoolCoordinator {
 					slot.worktree = undefined;
 					this.places.end(slot);
 					this.gateOpened();
+					this.retireWaiting();
 					await this.sendResult(work.id);
 				};
 				const handled = this.counters.within(message.kind, () =>

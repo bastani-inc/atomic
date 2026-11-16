@@ -47,6 +47,7 @@ import { loadWorkerDefinition } from "./definitions.js";
 import { fleetRateGate } from "./fleet-rate-limits.js";
 import { OUTAGE_HANDOFF_MS, retryWithinLease } from "./lease-outage.js";
 import { poolWorkerCommit } from "./pool-commit.js";
+import { IDLE_CLAIM_FALLBACK_MS } from "./pool-wake-ups.js";
 import { POOLED_CUSTOM_PROMPT_UNAVAILABLE } from "./pooled-prompt-limits.js";
 import { completedAttemptResult, remoteStageInbox, workerStageAdapter } from "./pooled-stage-delivery.js";
 import { configurePooledWatchTrace } from "./pooled-watch-trace.js";
@@ -532,12 +533,17 @@ async function runWorker(start: WorkerStart): Promise<void> {
 				// waits out the worker's idle pause in the coordinator, which wake-ups end early. Neither control nor the
 				// journal is read before it: control arrives pushed or with the claim's attempt, and the journal is caught up
 				// once the claim found work. A paused or quit worker of the root's host waits for the push that changes it.
+				// It still asks once per IDLE_CLAIM_FALLBACK_MS, refused while the pool does not run, so the pool can retire it.
 				if (controlPushed && control.state !== "running") {
-					await new Promise<void>((resolve) => {
-						controlChanged = resolve;
+					const waited = await new Promise<boolean>((resolve) => {
+						const timer = setTimeout(() => resolve(true), IDLE_CLAIM_FALLBACK_MS);
+						controlChanged = () => {
+							clearTimeout(timer);
+							resolve(false);
+						};
 					});
 					controlChanged = undefined;
-					continue;
+					if (!waited) continue;
 				}
 				work = (await request({ kind: "claim" })) as PoolWork | undefined;
 			} catch (error) {
