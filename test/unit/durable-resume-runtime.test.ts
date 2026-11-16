@@ -504,7 +504,7 @@ describe("resumeDurableWorkflow", () => {
 		if (!result.ok) {
 			assert.equal(result.reason, "not_resumable");
 			assert.match(result.message, /already running/);
-			assert.match(result.message, /\/workflow connect/);
+			assert.match(result.message, /\/workflows/);
 			assert.match(result.message, /\/workflow quit/);
 			assert.doesNotMatch(result.message, /\/workflow kill/);
 		}

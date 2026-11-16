@@ -90,14 +90,13 @@ Named workflow runs execute in the background. After launch you get the full run
 ```text
 /workflow status <run-id>         # inspect one run's progress
 /workflow status                  # list this session's active and terminal runs
-/workflow connect <run-id>        # see agents working; chat with or steer each stage (F2 also opens latest)
-/workflow attach <run-id> <stage> # chat with one stage
+/workflows <run-id>                # see agents working; chat with or steer each stage (F2 also opens latest)
 /workflow pause <run-id>          # pause resumably
 /workflow resume <run-id> "go"    # send a steer message and resume
 /workflow quit <run-id>           # pause gracefully and keep the run resumable
 ```
 
-The below-editor `BACKGROUND` panel uses two lines per ordinary card at 80 columns and wider: the status glyph and full id are on the first line, and the workflow name plus mode/progress/elapsed metadata are on the second. A unique pending question adds a quoted one-line preview and `Answer: /workflow connect <full-run-id>`. Below 80 columns it collapses to a count-only line. In chat surfaces, a full id wraps onto continuation lines at narrow widths instead of being cut, and the surrounding border remains intact.
+The below-editor `BACKGROUND` panel uses two lines per ordinary card at 80 columns and wider: the status glyph and full id are on the first line, and the workflow name plus mode/progress/elapsed metadata are on the second. A unique pending question adds a quoted one-line preview and `Answer: /workflows <full-run-id>`. Below 80 columns it collapses to a count-only line. In chat surfaces, a full id wraps onto continuation lines at narrow widths instead of being cut, and the surrounding border remains intact.
 
 Human-in-the-loop prompts (`ctx.ui.input`, `confirm`, `select`, `editor`) surface in the graph viewer, not as chat modals — connect to the run to answer them. The BACKGROUND preview does not change that answering path.
 

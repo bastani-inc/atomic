@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Removed `/workflow connect` and `/workflow attach`. `/workflows` opens the session's only run in its graph, or lists the runs, and `/workflows <run-id>` opens that run; Enter on a stage in the graph opens its chat. Launch, status and notice text now point to `/workflows`. Typing either removed command shows a one-line pointer and runs nothing. **Migration:** use `/workflows <run-id>` (or ↓ to the run in the agent panel) where you used `/workflow connect <run-id>`, and open a stage with Enter in that graph where you used `/workflow attach <run-id> <stage>` ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+
 ### Added
 
 - Added `idleExitMs`, `onEvent` and an optional `journal` (default: the journal this machine selects) to `startWorkflowWorkerHost`, with `host.closed` and `host.stats().degraded`, and `readWorkflowWorkerFleet()`, which lists a shared journal's worker hosts and root queues. A host whose polls of the journal fail keeps its running children and polls again after 1 s, doubling up to 30 s. `workflows.workers` in settings gives roots the workflow tool starts shared placement ([#4768](https://github.com/bastani-inc/atomic/issues/4768))

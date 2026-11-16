@@ -72,7 +72,7 @@ describe("MockExtensionAPI — slash command registration", () => {
 		const cmd = getCommand(mock.commands, "workflow")!;
 		const completions = (await cmd.options.getArgumentCompletions?.("")) ?? [];
 		const labels = completions.map((c) => c.label);
-		for (const sub of ["list", "status", "connect", "pause", "quit", "resume", "inputs"]) {
+		for (const sub of ["list", "status", "pause", "quit", "resume", "inputs"]) {
 			assert.ok(labels.includes(sub));
 		}
 		assert.equal(labels.includes("kill"), false);
@@ -433,11 +433,11 @@ describe("renderResult — all action branches", () => {
 		assert.match(out, /fan-out-and-synthesize/);
 		assert.match(out, /prompt/);
 		// The connect hint styles its dim prefix and accent id as separate spans,
-		// so the styled string carries escape codes between "connect " and the id.
+		// so the styled string carries escape codes between "/workflows " and the id.
 		// Assert the hint against the plain render; the styled one is still what
 		// the width check below measures.
 		const plain = renderResult(result, { width, runInputs: { prompt: "map the repo" }, plain: true });
-		assert.match(plain, /\/workflow connect abcdef123456/);
+		assert.match(plain, /\/workflows abcdef123456/);
 		for (const line of out.split("\n")) {
 			assert.ok(
 				visibleWidth(line) <= width,

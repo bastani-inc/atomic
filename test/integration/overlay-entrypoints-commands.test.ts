@@ -344,7 +344,7 @@ describe("/workflow resume — overlay integration", () => {
 		}
 	});
 
-	test("resume of an actively-running run is refused (use /workflow connect)", async () => {
+	test("resume of an actively-running run is refused (use /workflows, #5224)", async () => {
 		const runId = testRunId(`test-active-run-${Date.now()}`);
 
 		singletonStore.recordRunStart({
@@ -369,7 +369,7 @@ describe("/workflow resume — overlay integration", () => {
 		assert.equal(customCalls.length, 0);
 		const joined = messages.join("\n");
 		assert.match(joined, /already running/);
-		assert.match(joined, /\/workflow connect/);
+		assert.match(joined, /\/workflows /);
 	});
 
 	test("resume uses the real command ctx.ui when top-level pi.ui is absent", async () => {
@@ -406,7 +406,7 @@ describe("/workflow resume — overlay integration", () => {
 });
 
 // ---------------------------------------------------------------------------
-// /workflow pause + /workflow attach + paused-resume — integration
+// /workflow pause + paused-resume — integration
 // ---------------------------------------------------------------------------
 
 describe("/workflow pause — top-level command", () => {
@@ -463,7 +463,7 @@ describe("/workflow resume — paused vs non-paused branching", () => {
 	});
 });
 
-describe("/workflow attach — top-level command", () => {
+describe("/workflows and the removed /workflows — top-level commands", () => {
 	// Hermetic durable backend: without this, tests that fall back to durable
 	// discovery scan the real ~/.atomic/workflow-durable directory, which can
 	// hold tens of thousands of files on dev machines and blow the 5s timeout.
@@ -471,7 +471,7 @@ describe("/workflow attach — top-level command", () => {
 		setDurableBackend(await createMemoryTestBackend());
 	});
 	afterEach(() => setDurableBackend(undefined));
-	test("attach <runId> opens the overlay", async () => {
+	test("/workflows <runId> opens the overlay (#5224)", async () => {
 		singletonStore.clear();
 		const runId = testRunId(`test-attach-${Date.now()}`);
 		singletonStore.recordRunStart({
@@ -485,22 +485,43 @@ describe("/workflow attach — top-level command", () => {
 		});
 		const { pi, commands, customCalls } = buildMockPi();
 		factory(pi);
-		const wfCmd = commands.workflow!;
 		const { ctx } = buildPrintCtx();
-		await wfCmd.options.handler(`attach ${runId}`, ctx);
+		await commands.workflows!.options.handler(runId, ctx);
 		assert.ok(customCalls.length >= 1);
 		assert.equal(customCalls[0]!.options.overlay, true);
 	});
 
-	test("attach <unknown> prints not-found and does not open the overlay", async () => {
+	test("/workflows <unknown> prints not-found and does not open the overlay (#5224)", async () => {
 		singletonStore.clear();
 		const { pi, commands, customCalls } = buildMockPi();
 		factory(pi);
-		const wfCmd = commands.workflow!;
 		const { ctx, messages } = buildPrintCtx();
 		const unknownRunId = testRunId("not-a-run");
-		await wfCmd.options.handler(`attach ${unknownRunId}`, ctx);
+		await commands.workflows!.options.handler(unknownRunId, ctx);
 		assert.match(messages.join("\n"), /Run not found/);
+		assert.equal(customCalls.length, 0);
+	});
+
+	test("the removed /workflows and /workflows point to /workflows and open nothing (#5224)", async () => {
+		singletonStore.clear();
+		const runId = testRunId(`test-removed-${Date.now()}`);
+		singletonStore.recordRunStart({
+			id: runId,
+			name: "removed-wf",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [],
+			startedAt: Date.now(),
+		});
+		const { pi, commands, customCalls } = buildMockPi();
+		factory(pi);
+		const wfCmd = commands.workflow!;
+		for (const subcommand of ["attach", "connect"]) {
+			const { ctx, messages } = buildPrintCtx();
+			await wfCmd.options.handler(`${subcommand} ${runId}`, ctx);
+			assert.match(messages.join("\n"), new RegExp(`\`/workflow ${subcommand}\` was removed: use \`/workflows\``));
+		}
 		assert.equal(customCalls.length, 0);
 	});
 

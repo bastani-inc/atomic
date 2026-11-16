@@ -65,7 +65,7 @@ export interface WorkflowAttachPaneOpts {
 	footerData?: ReadonlyFooterDataProvider;
 	/**
 	 * Optional override: pre-select chat mode for a stage on construction.
-	 * Used by `/workflow attach <runId> <stageId>` so the popup opens
+	 * Used to open a stage chat directly, so the popup opens
 	 * directly on the node's chat.
 	 */
 	initialAttachStageId?: string;

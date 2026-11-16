@@ -19,8 +19,6 @@ function completeToken(argumentText: string, candidates: PiArgumentCompletion[])
 
 function adminCompletions(): PiArgumentCompletion[] {
 	return [
-		{ value: "connect ", label: "connect", description: "Attach to a run (picker if no id)" },
-		{ value: "attach ", label: "attach", description: "Open the in-place attach pane on a node" },
 		{ value: "list ", label: "list", description: "List registered workflows" },
 		{ value: "status ", label: "status", description: "List current-session active and retained terminal runs" },
 		{ value: "pause ", label: "pause", description: "Pause a run" },
@@ -53,7 +51,7 @@ export function workflowArgumentCompletionsNeedWorkflowResources(partial: string
 	const subcommand = parts[0] ?? "";
 	if (!partial.includes(" ")) return true;
 	if (!subcommand || subcommand === "inputs") return true;
-	if (["status", "connect", "resume", "attach", "pause", "quit", "reload", "fork"].includes(subcommand)) {
+	if (["status", "resume", "pause", "quit", "reload", "fork"].includes(subcommand)) {
 		return false;
 	}
 	return true;
@@ -71,7 +69,7 @@ export function workflowArgumentCompletions(
 		return completeToken(partial, [...adminCompletions(), ...workflows()]);
 	}
 	if (subcommand === "inputs") return completeToken(partial, workflows());
-	if (["status", "connect", "resume", "attach"].includes(subcommand)) {
+	if (["status", "resume"].includes(subcommand)) {
 		return completeToken(partial, runIdItems(activeStore));
 	}
 	if (subcommand === "pause") {

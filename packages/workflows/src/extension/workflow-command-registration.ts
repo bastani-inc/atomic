@@ -65,7 +65,7 @@ export function registerWorkflowSlashCommand(
 		"workflow",
 		{
 			description:
-				"Run or inspect Atomic workflows. Usage: /workflow <name> [key=value…] | /workflow [list|status|connect|attach|quit|pause|resume|inputs|reload] [args] | /workflow fork <run> [--from <stage>]",
+				"Run or inspect Atomic workflows. Usage: /workflow <name> [key=value…] | /workflow [list|status|quit|pause|resume|inputs|reload] [args] | /workflow fork <run> [--from <stage>]",
 			handler: (args, ctx) => workflowSlashHandler(args, ctx, pi, deps),
 			getArgumentCompletions: (
 				partial: string,
@@ -138,14 +138,13 @@ async function workflowSlashHandler(
 
 	const parts = tokenizeWorkflowArgs(args);
 	const subcommand = parts[0] ?? "";
-	if (["connect", "attach", "resume"].includes(subcommand)) {
-		await handleRunControlCommand(
-			subcommand as "connect" | "attach" | "resume",
-			parts.slice(1),
-			ctx,
-			reporter,
-			deps.runControl,
-		);
+	if (subcommand === "connect" || subcommand === "attach") {
+		// Removed (#5224): runs and their stages open from `/workflows`, the agent panel and `/tasks`.
+		reporter.info(removedWorkflowSubcommandNotice(subcommand));
+		return;
+	}
+	if (subcommand === "resume") {
+		await handleRunControlCommand(subcommand, parts.slice(1), ctx, reporter, deps.runControl);
 		return;
 	}
 	if (!subcommand || subcommand === "list") {
@@ -358,4 +357,9 @@ export function parseWorkflowForkArgs(
 	const [first, ...rest] = issues;
 	if (first !== undefined) return new ForkConfigError({ source: "cli", issues: [first, ...rest] });
 	return { runId: positional[0]!, ...(fromStage === undefined ? {} : { fromStage }) };
+}
+
+/** The one-line notice a removed `/workflow connect` or `/workflow attach` shows instead of running anything. */
+export function removedWorkflowSubcommandNotice(subcommand: "connect" | "attach"): string {
+	return `\`/workflow ${subcommand}\` was removed: use \`/workflows\`, or \u2193 to the agent panel.`;
 }

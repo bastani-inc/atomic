@@ -59,7 +59,8 @@ describe("getArgumentCompletions includes workflow names", () => {
 
 		assert.ok(labels.includes("list"));
 		assert.ok(labels.includes("status"));
-		assert.ok(labels.includes("connect"));
+		assert.equal(labels.includes("connect"), false, "removed (#5224)");
+		assert.equal(labels.includes("attach"), false, "removed (#5224)");
 		assert.ok(labels.includes("pause"));
 		assert.equal(labels.includes("interrupt"), false);
 		assert.ok(labels.includes("quit"));

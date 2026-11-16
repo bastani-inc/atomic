@@ -719,7 +719,7 @@ function alreadyRunningResult(name: string, workflowId: string, store: RunOpts["
 		reason: "not_resumable",
 		message: `Workflow "${name}" (${workflowId}) is already running${
 			here ? " in this session" : " in another session"
-		}. See agents working and chat with or steer each stage using \`/workflow connect ${workflowId}\`; use \`/workflow quit ${workflowId}\` to pause the run for later resume.`,
+		}. See agents working and chat with or steer each stage using \`/workflows ${workflowId}\`; use \`/workflow quit ${workflowId}\` to pause the run for later resume.`,
 	};
 }
 
