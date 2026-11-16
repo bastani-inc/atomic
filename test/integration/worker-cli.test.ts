@@ -343,6 +343,12 @@ test.skipIf(process.platform === "win32")(
 				[nodeB.process, root],
 			);
 			nodeC = startNode(s, "C", 2, markers);
+			await until(
+				"node C to be ready before blocking journal writes",
+				s,
+				() => nodeC!.stdout.some((line) => line.startsWith("ready ")),
+				[nodeB.process, nodeC.process, root],
+			);
 			const index = readdirSync(s.directory)
 				.find((name) => name.startsWith("ready-B-"))!
 				.split("-")
