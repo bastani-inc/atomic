@@ -103,6 +103,8 @@ function segmentWithMarkers(
 /**
  * Represents a chunk of text for word-wrap layout.
  * Tracks both the text content and its position in the original line.
+ * `text` is the line from `startIndex` to `endIndex`, except for a grapheme cluster wider than the wrap width: its
+ * chunk spans the whole cluster but its text is clipped to the width.
  */
 export interface TextChunk {
 	text: string;
@@ -171,8 +173,22 @@ export function wordWrapLine(line: string, maxWidth: number, preSegmented?: Intl
 		}
 
 		if (gWidth > maxWidth) {
-			// Single atomic segment wider than maxWidth (e.g. paste marker
-			// in a narrow terminal). Re-wrap it at grapheme granularity.
+			if (!isPasteMarker(grapheme)) {
+				// A grapheme cluster cannot be broken: it takes a line of its own, clipped to the width. The chunk still
+				// spans the whole cluster, so cursor movement and editing treat it as one unit.
+				chunks.push({
+					text: clipGraphemeToWidth(grapheme, maxWidth),
+					startIndex: charIndex,
+					endIndex: charIndex + grapheme.length,
+				});
+				chunkStart = charIndex + grapheme.length;
+				currentWidth = 0;
+				wrapOppIndex = -1;
+				continue;
+			}
+
+			// A paste marker wider than maxWidth (e.g. in a narrow terminal) is re-wrapped at grapheme granularity.
+			// Its characters are ASCII, one column each, so the re-wrap does not come back here.
 
 			// The segment remains logically atomic for cursor
 			// movement / editing — the split is purely visual for word-wrap layout.
@@ -209,10 +225,45 @@ export function wordWrapLine(line: string, maxWidth: number, preSegmented?: Intl
 		}
 	}
 
-	// Push final chunk.
-	chunks.push({ text: line.slice(chunkStart), startIndex: chunkStart, endIndex: line.length });
+	// Push final chunk, unless a clipped cluster ended the line and already took the last chunk.
+	if (chunkStart < line.length || chunks.length === 0) {
+		chunks.push({ text: line.slice(chunkStart), startIndex: chunkStart, endIndex: line.length });
+	}
 
 	return chunks;
+}
+
+/**
+ * The longest prefix of a grapheme cluster, cut between code points, that is at most `maxWidth` columns wide. It is
+ * empty when even the first code point is wider. `grapheme` must be wider than `maxWidth`.
+ */
+function clipGraphemeToWidth(grapheme: string, maxWidth: number): string {
+	// Code-unit offset after each code point, so no cut splits a surrogate pair.
+	const codePointEnds: number[] = [];
+	for (let i = 0; i < grapheme.length; ) {
+		i += grapheme.codePointAt(i)! > 0xffff ? 2 : 1;
+		codePointEnds.push(i);
+	}
+	const fits = (codePoints: number): boolean =>
+		visibleWidth(grapheme.slice(0, codePointEnds[codePoints - 1])) <= maxWidth;
+
+	// A longer prefix of a cluster is almost always at least as wide. Gallop and then bisect for a prefix that fits
+	// followed by a code point that does not, so a cluster of n code points is measured O(log n) times, not n.
+	let fitting = 0;
+	let overflowing = codePointEnds.length;
+	for (let step = 1; fitting + step < overflowing; step *= 2) {
+		if (!fits(fitting + step)) {
+			overflowing = fitting + step;
+			break;
+		}
+		fitting += step;
+	}
+	while (overflowing - fitting > 1) {
+		const middle = (fitting + overflowing) >>> 1;
+		if (fits(middle)) fitting = middle;
+		else overflowing = middle;
+	}
+	return fitting === 0 ? "" : grapheme.slice(0, codePointEnds[fitting - 1]);
 }
 
 // Kitty CSI-u sequences for printable keys, including optional shifted/base codepoints.
