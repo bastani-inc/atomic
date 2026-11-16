@@ -321,30 +321,52 @@ test.skipIf(process.platform === "win32")(
 );
 
 test.skipIf(process.platform === "win32")(
-	"with checkpoint shipping, a node killed with SIGKILL mid-child is replaced from what it shipped: no step it shipped runs again and no checkpoint is recorded twice (#4768)",
+	"with checkpoint shipping, a killed node's shipped steps do not rerun and its accepted unshipped step runs again (#4768)",
 	async () => {
 		const s = scenario("worker-cli-shipping", TAKEOVER_BUDGET.waitMs);
+		const markers = { SHARED_POOL_WORK_MARKERS: s.directory, SHARED_POOL_REPLAY_MARKERS: s.directory };
 		let nodeB: Node | undefined;
 		let nodeC: Node | undefined;
 		let root: BudgetedProcess | undefined;
 		try {
-			nodeB = startNode(s, "B", 1, { SHARED_POOL_WORK_MARKERS: s.directory });
+			nodeB = startNode(s, "B", 1, markers);
 			await until("node B to be ready", s, () => nodeB!.stdout.length > 0, [nodeB.process]);
-			// Shipping only when a child's stage commits or the child ends: what node B accepted after that is lost with it.
 			root = startRoot(s, 3, 20_000, {
+				...markers,
 				SHARED_POOL_LEASE_MS: String(TAKEOVER_LEASE_MS),
-				SHARED_POOL_CHECKPOINT_SHIPPING: JSON.stringify({ intervalMs: 60_000, maxBatch: 1_000 }),
+				SHARED_POOL_CHECKPOINT_SHIPPING: JSON.stringify({ intervalMs: 60_000, maxBatch: 1_000, maxLagMs: 600_000 }),
 			});
-			nodeC = startNode(s, "C", 2);
+			nodeC = startNode(s, "C", 2, markers);
 			await until(
 				"node B to work on a child",
 				s,
 				() => readdirSync(s.directory).some((name) => name.startsWith("working-B-")),
 				[nodeB.process, nodeC.process, root],
 			);
+			const index = readdirSync(s.directory)
+				.find((name) => name.startsWith("working-B-"))!
+				.split("-")
+				.at(-1)!;
+			assert.ok(readdirSync(s.directory).includes(`unshipped-B-${index}`));
+			const beforeKill = await openLibsqlDatabase({ url: s.url });
+			try {
+				assert.deepEqual(
+					await beforeKill.all(
+						`SELECT key FROM ${PREFIX}wf_events WHERE json_extract(payload, '$.name') = 'unshipped' AND json_extract(payload, '$.output') = 'B'`,
+					),
+					[],
+				);
+			} finally {
+				await beforeKill.close();
+			}
 			killGroup(nodeB.process);
 			await nodeB.process.process.exited;
 			await expectExitedCleanly(root);
+			const executions = readdirSync(s.directory).filter(
+				(name) => name.startsWith("unshipped-") && name.endsWith(`-${index}`),
+			);
+			assert.equal(executions.length, 2, `the locally accepted step ran again: ${JSON.stringify(executions)}`);
+			assert.ok(executions.some((name) => !name.startsWith("unshipped-B-")));
 			const outcome = await readJson<Outcome>(join(s.directory, "outcome-start.json"));
 			assert.equal(outcome.status, "completed", JSON.stringify(outcome));
 			for (const child of outcome.children) assert.equal(child.status, "completed", JSON.stringify(child));

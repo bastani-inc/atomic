@@ -214,6 +214,22 @@ test("shipped checkpoints are forgotten, and a fenced or superseded attempt's ar
 	assert.deepEqual(await local.pending(LEASE), []);
 });
 
+test("a delayed lease renewal of an older generation cannot discard the current attempt's checkpoints (#4768)", async () => {
+	const { shard: local } = await shard();
+	await local.hold(LEASE, LEASE_MS);
+	const current = { ...LEASE, generation: LEASE.generation + 1, worker: "host/2" };
+	await local.hold(current, LEASE_MS);
+	await local.accept(ROOT, current, "k1", "{}", 1);
+	await refused(local.hold(LEASE, LEASE_MS), "generation-mismatch");
+	assert.deepEqual(
+		(await local.pending(current)).map((event) => event.key),
+		["k1"],
+		"the current attempt's acknowledged checkpoint is still pending",
+	);
+	assert.equal((await local.accept(ROOT, current, "k2", "{}", 1)).accepted, true);
+	await refused(local.accept(ROOT, LEASE, "k3", "{}", 1), "generation-mismatch");
+});
+
 /** A shared commit that records what it was asked, answering `receipt` or failing with `failure`. */
 function sharedCommit(outcome: { receipt?: PoolCommitReceipt; failure?: Error } = {}) {
 	const calls: number[] = [];

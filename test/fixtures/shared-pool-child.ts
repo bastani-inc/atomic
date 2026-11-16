@@ -96,6 +96,12 @@ export const distributedChild = workflow({
 		const first = await ctx.tool("first", { index: ctx.inputs.index }, async () => ({ ...processIdentity(), host: host() }));
 		const stage = ctx.stage("agent", (await poolStageOptions(ctx.cwd ?? process.cwd(), false, "never")) as never);
 		await stage.complete("Reply with your PID.");
+		const replayMarkers = process.env.SHARED_POOL_REPLAY_MARKERS;
+		if (replayMarkers !== undefined)
+			await ctx.tool("unshipped", { index: ctx.inputs.index }, async () => {
+				writeFileSync(join(replayMarkers, `unshipped-${host()}-${ctx.inputs.index}`), "");
+				return host();
+			});
 		await ctx.tool("work", { index: ctx.inputs.index }, async () => {
 			// SHARED_POOL_WORK_MARKERS names a directory where the step says it started, for a test that faults it (#4768).
 			const markers = process.env.SHARED_POOL_WORK_MARKERS;
