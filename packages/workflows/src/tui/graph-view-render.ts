@@ -1,5 +1,6 @@
 import { renderNavKeyOverlay } from "@bastani/atomic";
 import type { RunSnapshot } from "../shared/store-types.js";
+import { elapsedRunMs } from "../shared/timing.js";
 import { fillBackground, hexBg, hexToAnsi, RESET } from "./color-utils.js";
 import { GraphViewGraphRenderer } from "./graph-view-graph-render.js";
 import { GRAPH_HEADER_ROWS, GraphViewLayout, graphLayoutNaturalHeight } from "./graph-view-layout.js";
@@ -8,7 +9,7 @@ import type { GraphViewOpts } from "./graph-view-types.js";
 import { renderHeader, renderOutlinePill } from "./header.js";
 import { isKeybindingsLike } from "./keybindings-adapter.js";
 import { NODE_H } from "./layout.js";
-import { buildRunOutcome, renderRunOutcome } from "./run-outcome.js";
+import { renderRunOutcome } from "./run-outcome.js";
 import { runStateColor, runStateIndicator } from "./run-state-indicator.js";
 import { renderStageFailureDetailLines } from "./stage-failure-detail.js";
 import { renderSwitcher } from "./switcher.js";
@@ -56,7 +57,13 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 	/** A failed stage's detail, rebuilt when its stage snapshot, the log toggle or the width changes. */
 	private stageDetailFrame: { frame: ToolDetailFrame; stage: object; logs: boolean } | null = null;
 	/** The run details, rebuilt when the run snapshot, the log toggle, the selection or the width changes. */
-	private runDetailFrame: { frame: ToolDetailFrame; run: object; logs: boolean; selected: number } | null = null;
+	private runDetailFrame: {
+		frame: ToolDetailFrame;
+		run: object;
+		logs: boolean;
+		selected: number;
+		elapsedSecond: number;
+	} | null = null;
 	constructor(opts: GraphViewOpts) {
 		super(opts);
 		this.graphLayout = new GraphViewLayout({
@@ -234,24 +241,25 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 		const run = this._currentRenderRun();
 		if (detail === null || run === null) return null;
 		const safeWidth = Math.max(1, Math.floor(width));
+		const outcome = this._runOutcomeFor(run);
+		const selected = this._resolveRunDetailSelection(outcome.blockers);
+		// The headline's elapsed time keeps counting while the run goes on, between snapshots.
+		const elapsedMs = elapsedRunMs(run, Date.now());
+		const elapsedSecond = Math.floor(elapsedMs / 1000);
 		const cached = this.runDetailFrame;
 		if (
 			cached !== null &&
 			cached.frame.width === safeWidth &&
 			cached.run === run &&
 			cached.logs === detail.logs &&
-			cached.selected === detail.selected
+			cached.selected === selected &&
+			cached.elapsedSecond === elapsedSecond
 		)
 			return cached.frame;
-		// The graph snapshot keeps only a compact result; the details show every declared output.
-		const fullResult = this.store.run(run.id)?.result;
-		const outcomeRun = fullResult === undefined || fullResult === run.result ? run : { ...run, result: fullResult };
-		const rendered = renderRunOutcome(buildRunOutcome(outcomeRun), {
-			theme: this.graphTheme,
-			width: safeWidth,
-			logs: detail.logs,
-			selected: detail.selected,
-		});
+		const rendered = renderRunOutcome(
+			{ ...outcome, elapsedMs },
+			{ theme: this.graphTheme, width: safeWidth, logs: detail.logs, selected },
+		);
 		const frame: ToolDetailFrame = {
 			width: safeWidth,
 			blockWidth: safeWidth,
@@ -259,7 +267,7 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 			lines: rendered.lines,
 			...(rendered.selectedRow === undefined ? {} : { selectedRow: rendered.selectedRow }),
 		};
-		this.runDetailFrame = { frame, run, logs: detail.logs, selected: detail.selected };
+		this.runDetailFrame = { frame, run, logs: detail.logs, selected, elapsedSecond };
 		return frame;
 	}
 

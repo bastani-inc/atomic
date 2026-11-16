@@ -7,6 +7,7 @@
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import type { Store } from "../shared/store.js";
 import { subscribeStoreInvalidation } from "../shared/store-observation.js";
+import { inertDisplayLine, inertDisplayText } from "../tui/display-text.js";
 import { deriveGraphTheme } from "../tui/graph-theme.js";
 import type { GraphOverlayPort } from "../tui/overlay-adapter.js";
 import { withoutStackFrames } from "../tui/run-outcome.js";
@@ -46,12 +47,15 @@ export interface WorkflowsCommandDeps {
  * without stack frames, and how to fix it.
  */
 export function formatInvalidDefinitionDetails(definition: WorkflowsListingInvalidDefinition): string {
-	const { kept, frames } = withoutStackFrames(definition.message);
+	const { kept, frames } = withoutStackFrames(inertDisplayText(definition.message));
 	// The first message line is the reason, already shown (without the file the row names).
 	const first = kept.findIndex((line) => line.trim() !== "");
 	const detail = kept.filter((line, index) => index !== first && line.trim() !== "").slice(0, 8);
-	const lines = [`✗ Workflow "${definition.name}" could not be loaded (${definition.code})`, ""];
-	if (definition.source !== undefined) lines.push(`file    ${definition.source}`);
+	const lines = [
+		`✗ Workflow "${inertDisplayLine(definition.name)}" could not be loaded (${inertDisplayLine(definition.code)})`,
+		"",
+	];
+	if (definition.source !== undefined) lines.push(`file    ${inertDisplayLine(definition.source)}`);
 	lines.push(`reason  ${definition.reason}`);
 	for (const line of detail) lines.push(`        ${line}`);
 	if (frames > 0) lines.push(`        (${frames} stack ${frames === 1 ? "frame" : "frames"} hidden)`);

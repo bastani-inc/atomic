@@ -16,6 +16,7 @@ import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
 import type { WorkflowInputSchemaMap } from "../shared/types.js";
+import { inertDisplayLine } from "./display-text.js";
 import { panelItemsFromSnapshot } from "./panel-runs.js";
 import { summarizeFailureText } from "./run-outcome.js";
 
@@ -54,6 +55,14 @@ function withoutSourcePrefix(reason: string, source: string | undefined): string
 	return reason.startsWith(prefix) && reason.length > prefix.length ? reason.slice(prefix.length) : reason;
 }
 
+/** A stable row id from the definition's file and code; repeats of one pair are numbered in their order. */
+function invalidDefinitionId(definition: WorkflowsListingInvalidDefinition, seen: Map<string, number>): string {
+	const key = `invalid-definition:${definition.code}:${definition.source ?? definition.name}`;
+	const count = seen.get(key) ?? 0;
+	seen.set(key, count + 1);
+	return count === 0 ? key : `${key}#${count}`;
+}
+
 /** The definitions discovery could not load, from its diagnostics. */
 export function invalidDefinitionsFromDiagnostics(
 	diagnostics: readonly {
@@ -66,8 +75,8 @@ export function invalidDefinitionsFromDiagnostics(
 	return diagnostics
 		.filter((diagnostic) => diagnostic.level === "error" && FAILED_TO_LOAD_CODES.has(diagnostic.code))
 		.map((diagnostic) => ({
-			name: definitionNameFromSource(diagnostic.source, diagnostic.code),
-			...(diagnostic.source === undefined ? {} : { source: diagnostic.source }),
+			name: inertDisplayLine(definitionNameFromSource(diagnostic.source, diagnostic.code)),
+			...(diagnostic.source === undefined ? {} : { source: inertDisplayLine(diagnostic.source) }),
 			code: diagnostic.code,
 			reason: withoutSourcePrefix(summarizeFailureText(diagnostic.message).reason, diagnostic.source),
 			message: diagnostic.message,
@@ -237,6 +246,8 @@ export function workflowsListingItems(
 				searchText: `${runRowLabel(run)} ${run.id} ${RUN_STATUS_TEXT[run.status]}`,
 			};
 		});
+	// A broken definition's row keeps its id while other diagnostics come and go, so the selection stays on it.
+	const seenInvalidIds = new Map<string, number>();
 	const definitionItems = [
 		...definitions.map(
 			(definition): SelectorItem<WorkflowsListingTarget> => ({
@@ -251,8 +262,8 @@ export function workflowsListingItems(
 			}),
 		),
 		...invalidDefinitions.map(
-			(definition, index): SelectorItem<WorkflowsListingTarget> => ({
-				id: `invalid-definition:${index}:${definition.source ?? definition.name}`,
+			(definition): SelectorItem<WorkflowsListingTarget> => ({
+				id: invalidDefinitionId(definition, seenInvalidIds),
 				value: { kind: "invalid-definition", definition },
 				label: definition.name,
 				description: `failed to load · ${definition.reason}`,

@@ -23,7 +23,7 @@ import type {
 } from "../shared/store-types.js";
 import type { WorkflowOutputValues } from "../shared/types.js";
 import { deriveGraphThemeFromPiTheme, type GraphTheme } from "../tui/graph-theme.js";
-import { buildRunOutcome, summarizeFailureText } from "../tui/run-outcome.js";
+import { buildRunOutcome, outputValueLine, summarizeFailureText } from "../tui/run-outcome.js";
 import { renderWorkflowNoticeCard, type WorkflowNoticeTone } from "../tui/workflow-notice-card.js";
 import type { ExtensionAPI, PiMessageRenderComponent, PiMessageRenderer } from "./index.js";
 import { createLifecycleNoticeDelivery } from "./lifecycle-notification-delivery.js";
@@ -885,8 +885,9 @@ function lifecycleNoticeHint(details: WorkflowLifecycleNoticeDetails): string {
 /** Where the run's details and full log live, for the notices that have an outcome to look at. */
 function lifecycleOutcomeHints(details: WorkflowLifecycleNoticeDetails): string[] {
 	if (details.scope !== "run") return [];
-	if (details.kind === "completed") return ["/workflows, then o: run details"];
-	if (details.kind === "failed" || details.kind === "blocked") return ["full log: /workflows, then o and l"];
+	if (details.kind === "completed") return [`/workflows ${details.runId}, then o: run details`];
+	if (details.kind === "failed" || details.kind === "blocked")
+		return [`full log: /workflows ${details.runId}, then o and l`];
 	return [];
 }
 
@@ -894,12 +895,7 @@ function formatCardOutputs(result: WorkflowOutputValues | undefined): string | u
 	if (result === undefined) return undefined;
 	const entries = Object.entries(result);
 	if (entries.length === 0) return undefined;
-	const text = entries
-		.map(([key, value]) => {
-			const shown = typeof value === "string" ? (value.split(/\r?\n/)[0] ?? "") : JSON.stringify(value);
-			return `${key}: ${shown}`;
-		})
-		.join(" \u00b7 ");
+	const text = entries.map(([key, value]) => `${key}: ${outputValueLine(value)}`).join(" \u00b7 ");
 	return truncateSnippet(text);
 }
 

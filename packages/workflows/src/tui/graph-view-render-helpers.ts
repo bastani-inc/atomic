@@ -123,7 +123,7 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 		if (this.runDetail !== null) {
 			const blockers = this.runDetail.logs ? 0 : this._runDetailBlockers().length;
 			return [
-				{ keys: "esc/\u2190", label: "back to graph" },
+				{ keys: "esc", label: "back to graph" },
 				...(blockers > 1 ? [{ keys: "\u2191\u2193", label: "select" }] : []),
 				...(blockers > 0 ? [{ keys: "\u21b5", label: "open" }] : []),
 				{ keys: "l", label: this.runDetail.logs ? "summary" : "logs" },

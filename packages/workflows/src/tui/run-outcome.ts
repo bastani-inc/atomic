@@ -6,9 +6,15 @@
 
 import { stripVTControlCharacters } from "node:util";
 import type { WorkflowArtifact } from "../shared/authoring-contract-stage.js";
+import {
+	actionableReturnedStatusText,
+	effectiveRunStatus,
+	structuredRecoverableWorkflowFailure,
+} from "../shared/returned-run-status.js";
 import type { RunSnapshot, StageSnapshot, ToolNodeSnapshot } from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
 import { BOLD, hexToAnsi, RESET } from "./color-utils.js";
+import { inertDisplayLine, inertDisplayText } from "./display-text.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { stageFailureLogLines } from "./stage-failure-detail.js";
 import { fmtDuration } from "./status-helpers.js";
@@ -68,6 +74,8 @@ export interface RunOutcome {
 const NO_REASON = "No reason was recorded.";
 const STACK_FRAME = /^\s*at\s+\S/;
 const MAX_EVENTS = 12;
+/** The most wrapped lines one output, reason or exit value takes in the run details. */
+const MAX_VALUE_LINES = 3;
 
 /** A failure's first message line, without a generic `Error:` prefix, and how many stack frames it hid. */
 export function summarizeFailureText(text: string | undefined): { reason: string; frames: number } {
@@ -76,7 +84,7 @@ export function summarizeFailureText(text: string | undefined): { reason: string
 	const first = lines.map((line) => line.trim()).find((line) => line.length > 0 && !STACK_FRAME.test(line));
 	if (first === undefined) return { reason: NO_REASON, frames };
 	const reason = first.replace(/^(?:Uncaught\s+)?Error:\s*/, "").trim();
-	return { reason: reason.length > 0 ? reason : first, frames };
+	return { reason: inertDisplayLine(reason.length > 0 ? reason : first), frames };
 }
 
 /** A failure's lines without its stack frames, and how many frames were dropped. */
@@ -86,8 +94,9 @@ export function withoutStackFrames(text: string): { kept: string[]; frames: numb
 	return { kept, frames: lines.length - kept.length };
 }
 
+/** The state every other surface shows: a returned blocked or failed status and a recoverable block count. */
 function outcomeState(run: RunSnapshot): RunOutcomeState {
-	switch (run.status) {
+	switch (effectiveRunStatus(run)) {
 		case "completed":
 		case "skipped":
 			return "completed";
@@ -109,19 +118,20 @@ function isWaiting(stage: StageSnapshot): boolean {
 	return stage.status === "awaiting_input" || stage.pendingPrompt !== undefined || stage.inputRequest !== undefined;
 }
 
-function oneLine(value: unknown): string {
-	if (typeof value === "string") return value.split(/\r?\n/)[0] ?? "";
+/** A declared output's value on one line: a string's first line, otherwise compact JSON. */
+export function outputValueLine(value: unknown): string {
+	if (typeof value === "string") return inertDisplayLine(value.split(/\r?\n/)[0] ?? "");
 	try {
-		return JSON.stringify(value) ?? String(value);
+		return inertDisplayLine(JSON.stringify(value) ?? String(value));
 	} catch {
-		return String(value);
+		return inertDisplayLine(String(value));
 	}
 }
 
 function outputsOf(run: RunSnapshot): RunOutcomeOutput[] {
 	const result = run.result;
 	if (result === undefined || result === null || typeof result !== "object") return [];
-	return Object.entries(result).map(([key, value]) => ({ key, value: oneLine(value) }));
+	return Object.entries(result).map(([key, value]) => ({ key: inertDisplayLine(key), value: outputValueLine(value) }));
 }
 
 function artifactDetail(artifact: WorkflowArtifact): string | undefined {
@@ -142,9 +152,9 @@ function artifactsOf(run: RunSnapshot): RunOutcomeArtifact[] {
 			const detail = artifactDetail(artifact);
 			return {
 				kind: artifact.kind,
-				path: artifact.path,
-				stage: stage.name,
-				...(detail === undefined ? {} : { detail }),
+				path: inertDisplayLine(artifact.path),
+				stage: inertDisplayLine(stage.name),
+				...(detail === undefined ? {} : { detail: inertDisplayLine(detail) }),
 			};
 		}),
 	);
@@ -164,8 +174,9 @@ function blockersOf(run: RunSnapshot, state: RunOutcomeState): RunOutcomeBlocker
 				kind: "awaiting_input",
 				node: "stage",
 				id: stage.id,
-				name: stage.name,
-				reason: question?.split(/\r?\n/)[0] ?? "Waiting for your answer.",
+				name: inertDisplayLine(stage.name),
+				reason:
+					question === undefined ? "Waiting for your answer." : inertDisplayLine(question.split(/\r?\n/)[0] ?? ""),
 				action: "enter answer in the stage chat",
 			});
 		} else if (stage.status === "failed") {
@@ -173,7 +184,7 @@ function blockersOf(run: RunSnapshot, state: RunOutcomeState): RunOutcomeBlocker
 				kind: "failed",
 				node: "stage",
 				id: stage.id,
-				name: stage.name,
+				name: inertDisplayLine(stage.name),
 				reason: stageReason(stage),
 				action: "enter retry, fork, transcript or logs",
 			});
@@ -182,7 +193,7 @@ function blockersOf(run: RunSnapshot, state: RunOutcomeState): RunOutcomeBlocker
 				kind: "blocked",
 				node: "stage",
 				id: stage.id,
-				name: stage.name,
+				name: inertDisplayLine(stage.name),
 				reason: stageReason(stage),
 				action: "enter open the stage chat to resume it",
 			});
@@ -194,7 +205,7 @@ function blockersOf(run: RunSnapshot, state: RunOutcomeState): RunOutcomeBlocker
 			kind: "failed",
 			node: "tool",
 			id: tool.id,
-			name: tool.name,
+			name: inertDisplayLine(tool.name),
 			reason: summarizeFailureText(tool.error).reason,
 			action: "enter open the tool's detail",
 		});
@@ -203,26 +214,27 @@ function blockersOf(run: RunSnapshot, state: RunOutcomeState): RunOutcomeBlocker
 }
 
 function stageEndEvent(stage: StageSnapshot): Omit<RunOutcomeEvent, "at"> | undefined {
+	const name = inertDisplayLine(stage.name);
 	switch (stage.status) {
 		case "completed":
-			return { tone: "success", text: `${stage.name} completed` };
+			return { tone: "success", text: `${name} completed` };
 		case "failed":
-			return { tone: "error", text: `${stage.name} failed: ${stageReason(stage)}` };
+			return { tone: "error", text: `${name} failed: ${stageReason(stage)}` };
 		case "skipped":
-			return { tone: "muted", text: `${stage.name} skipped` };
+			return { tone: "muted", text: `${name} skipped` };
 		case "blocked":
-			return { tone: "warning", text: `${stage.name} blocked: ${stageReason(stage)}` };
+			return { tone: "warning", text: `${name} blocked: ${stageReason(stage)}` };
 		default:
 			return undefined;
 	}
 }
 
 /** The run's own end; a failure's reason is on the Reason line above, so it is not repeated here. */
-function runEndText(run: RunSnapshot, state: RunOutcomeState): string {
-	if (state === "failed") return `${run.name} failed`;
-	if (state === "stopped") return `${run.name} stopped`;
-	if (state === "blocked") return `${run.name} ended blocked`;
-	return `${run.name} completed`;
+function runEndText(name: string, state: RunOutcomeState): string {
+	if (state === "failed") return `${name} failed`;
+	if (state === "stopped") return `${name} stopped`;
+	if (state === "blocked") return `${name} ended blocked`;
+	return `${name} completed`;
 }
 
 function eventsOf(run: RunSnapshot, state: RunOutcomeState): RunOutcomeEvent[] {
@@ -232,26 +244,28 @@ function eventsOf(run: RunSnapshot, state: RunOutcomeState): RunOutcomeEvent[] {
 		if (at === undefined) return;
 		events.push({ at, ...event, order: order++ });
 	};
-	push(run.startedAt, { tone: "info", text: `${run.name} started` });
+	const runName = inertDisplayLine(run.name);
+	push(run.startedAt, { tone: "info", text: `${runName} started` });
 	for (const stage of run.stages) {
-		push(stage.startedAt, { tone: "info", text: `${stage.name} started` });
+		push(stage.startedAt, { tone: "info", text: `${inertDisplayLine(stage.name)} started` });
 		const end = stageEndEvent(stage);
 		if (end !== undefined) push(stage.endedAt, end);
 	}
 	for (const tool of run.toolNodes) {
-		push(tool.startedAt, { tone: "info", text: `${tool.name} started` });
-		if (tool.status === "completed") push(tool.endedAt, { tone: "success", text: `${tool.name} completed` });
+		const toolName = inertDisplayLine(tool.name);
+		push(tool.startedAt, { tone: "info", text: `${toolName} started` });
+		if (tool.status === "completed") push(tool.endedAt, { tone: "success", text: `${toolName} completed` });
 		else if (tool.status === "failed")
-			push(tool.endedAt, { tone: "error", text: `${tool.name} failed: ${summarizeFailureText(tool.error).reason}` });
-		else if (tool.status === "cancelled") push(tool.endedAt, { tone: "muted", text: `${tool.name} stopped` });
+			push(tool.endedAt, { tone: "error", text: `${toolName} failed: ${summarizeFailureText(tool.error).reason}` });
+		else if (tool.status === "cancelled") push(tool.endedAt, { tone: "muted", text: `${toolName} stopped` });
 	}
-	push(run.pausedAt, { tone: "warning", text: `${run.name} ${run.quitAt !== undefined ? "stopped" : "paused"}` });
+	push(run.pausedAt, { tone: "warning", text: `${runName} ${run.quitAt !== undefined ? "stopped" : "paused"}` });
 	if (run.resumedAt !== undefined && (run.pausedAt === undefined || run.resumedAt > run.pausedAt))
-		push(run.resumedAt, { tone: "info", text: `${run.name} resumed` });
+		push(run.resumedAt, { tone: "info", text: `${runName} resumed` });
 	if (state === "completed" || state === "failed" || state === "blocked" || (state === "stopped" && !run.quitAt))
 		push(run.endedAt, {
 			tone: state === "failed" ? "error" : state === "completed" ? "success" : "muted",
-			text: runEndText(run, state),
+			text: runEndText(runName, state),
 		});
 	events.sort((a, b) => a.at - b.at || a.order - b.order);
 	return events.map(({ order: _order, ...event }) => event);
@@ -260,19 +274,22 @@ function eventsOf(run: RunSnapshot, state: RunOutcomeState): RunOutcomeEvent[] {
 /** Everything the run detail shows, from the run's snapshot alone. */
 export function buildRunOutcome(run: RunSnapshot, now = Date.now()): RunOutcome {
 	const state = outcomeState(run);
+	// A run that returned a failed or blocked status says why in its own result; a recoverable block carries its error.
 	const failureText =
 		run.error ??
 		run.failureMessage ??
 		run.stages.find((stage) => stage.id === run.failedStageId)?.error ??
-		run.stages.find((stage) => stage.status === "failed")?.error;
+		run.stages.find((stage) => stage.status === "failed")?.error ??
+		structuredRecoverableWorkflowFailure(run)?.error ??
+		actionableReturnedStatusText(run.result);
 	const reason = state === "failed" || state === "blocked" ? summarizeFailureText(failureText).reason : undefined;
 	return {
 		runId: run.id,
-		name: run.name,
+		name: inertDisplayLine(run.name),
 		state,
 		elapsedMs: elapsedRunMs(run, now),
 		...(reason === undefined ? {} : { reason }),
-		...(run.exitReason === undefined ? {} : { exitReason: run.exitReason }),
+		...(run.exitReason === undefined ? {} : { exitReason: inertDisplayLine(run.exitReason) }),
 		outputs: outputsOf(run),
 		artifacts: artifactsOf(run),
 		blockers: blockersOf(run, state),
@@ -285,19 +302,27 @@ export function buildRunOutcome(run: RunSnapshot, now = Date.now()): RunOutcome 
 export function runOutcomeLogLines(run: RunSnapshot): string[] {
 	const lines: string[] = [];
 	const message = run.failureMessage ?? run.error;
-	if (message) lines.push(...message.split(/\r?\n/));
+	if (message) lines.push(...inertDisplayText(message).split(/\r?\n/));
 	// A node that failed with the run's own message adds nothing the run's lines don't already show.
 	const repeatsRun = (text: string | undefined): boolean => message !== undefined && text?.trim() === message.trim();
 	for (const stage of run.stages) {
 		if (stage.status !== "failed" && stage.status !== "blocked") continue;
 		if (repeatsRun(stage.failureMessage ?? stage.error) && stage.failureDetail === undefined) continue;
 		if (lines.length > 0) lines.push("");
-		lines.push(`${stage.name}:`, ...stageFailureLogLines(stage).map((line) => (line ? `  ${line}` : line)));
+		lines.push(
+			`${inertDisplayLine(stage.name)}:`,
+			...stageFailureLogLines(stage).map((line) => (line ? `  ${inertDisplayLine(line)}` : line)),
+		);
 	}
 	for (const tool of run.toolNodes) {
 		if (tool.status !== "failed" || tool.error === undefined || repeatsRun(tool.error)) continue;
 		if (lines.length > 0) lines.push("");
-		lines.push(`${tool.name}:`, ...tool.error.split(/\r?\n/).map((line) => `  ${line}`));
+		lines.push(
+			`${inertDisplayLine(tool.name)}:`,
+			...inertDisplayText(tool.error)
+				.split(/\r?\n/)
+				.map((line) => `  ${line}`),
+		);
 	}
 	if (lines.length === 0) lines.push("No log was recorded for this run.");
 	return lines;
@@ -391,13 +416,17 @@ export function renderRunOutcome(
 	const section = (title: string): string => fit(`${indent}${paint(t?.textMuted, title, true)}`);
 	const keyed = (key: string, keyWidth: number, value: string, valueColor?: string): string[] => {
 		const valueRoom = Math.max(1, room - keyWidth - 2);
-		return wrapPlainText(value, valueRoom)
-			.slice(0, 3)
-			.map((part, index) =>
-				fit(
-					`${indent}${paint(t?.textMuted, (index === 0 ? key : "").padEnd(keyWidth))}  ${paint(valueColor ?? t?.text, part)}`,
-				),
-			);
+		const wrapped = wrapPlainText(value, valueRoom);
+		const parts = wrapped.slice(0, MAX_VALUE_LINES);
+		// A value cut at its last shown line says so instead of ending mid-thought.
+		if (wrapped.length > MAX_VALUE_LINES)
+			parts[MAX_VALUE_LINES - 1] =
+				`${truncateToWidth(parts[MAX_VALUE_LINES - 1] ?? "", Math.max(1, valueRoom - 1), "")}\u2026`;
+		return parts.map((part, index) =>
+			fit(
+				`${indent}${paint(t?.textMuted, (index === 0 ? key : "").padEnd(keyWidth))}  ${paint(valueColor ?? t?.text, part)}`,
+			),
+		);
 	};
 
 	const glyph = STATE_GLYPH[outcome.state];

@@ -31,6 +31,7 @@ import type {
 import type { WorkflowDetails, WorkflowInputValues, WorkflowOutputValues } from "../shared/types.js";
 import { renderRoundedBox } from "../tui/chat-surface.js";
 import { renderDispatchConfirm } from "../tui/dispatch-confirm.js";
+import { inertDisplayText } from "../tui/display-text.js";
 import { deriveGraphTheme } from "../tui/graph-theme.js";
 import { renderRunDetail } from "../tui/run-detail.js";
 import { withoutStackFrames } from "../tui/run-outcome.js";
@@ -340,7 +341,8 @@ function renderNotice(title: string, message: string, opts: RenderResultOpts | u
 	const contentWidth = width && width > 0 ? Math.max(1, width - 4) : undefined;
 	return renderRoundedBox({
 		title,
-		bodyLines: noticeBodyLines(message, contentWidth),
+		// Notices quote run names, errors and results, which are untrusted: they are shown, never obeyed.
+		bodyLines: noticeBodyLines(inertDisplayText(message), contentWidth),
 		theme,
 		width,
 	});

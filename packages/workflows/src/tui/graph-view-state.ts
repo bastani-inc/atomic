@@ -17,7 +17,7 @@ import { ANIMATION_TICK_MS } from "./graph-view-constants.js";
 import type { GraphStageActions, GraphViewMode, GraphViewOpts } from "./graph-view-types.js";
 import { computeLayout, type LayoutNode, NODE_H, NODE_W } from "./layout.js";
 import { nodeCardHeight } from "./node-card.js";
-import { buildRunOutcome, type RunOutcomeBlocker } from "./run-outcome.js";
+import { buildRunOutcome, type RunOutcome, type RunOutcomeBlocker } from "./run-outcome.js";
 import type { SwitcherState } from "./switcher.js";
 
 /** The `f` status filter, in the order `f` cycles it. */
@@ -52,8 +52,15 @@ export interface GraphStageDetail {
 export interface GraphRunDetail {
 	/** Whether the full log is shown instead of the summary. */
 	logs: boolean;
-	/** The selected blocker, which Enter opens. */
+	/** The selected blocker's row, which Enter opens. */
 	selected: number;
+	/** The selected blocker itself, so the selection stays on it while the run's blockers change under it. */
+	selectedKey?: string;
+}
+
+/** A blocker's identity across snapshots. */
+function blockerKey(blocker: RunOutcomeBlocker): string {
+	return `${blocker.node}:${blocker.id}`;
 }
 
 export interface GraphStageCounts {
@@ -155,6 +162,8 @@ export abstract class GraphViewState {
 	protected runDetailReturn: GraphRunDetail | null = null;
 	/** Scroll the selected blocker into view on the next frame. */
 	protected runDetailRevealSelected = false;
+	/** The run details' outcome, built once per run snapshot rather than once per frame or key. */
+	private runOutcomeCache: { readonly run: RunSnapshot; readonly outcome: RunOutcome } | null = null;
 	/** The `f` status filter. */
 	protected statusFilter: GraphStatusFilter = "all";
 	/** Whether the `?` key overlay is open. */
@@ -570,10 +579,48 @@ export abstract class GraphViewState {
 		return true;
 	}
 
+	/**
+	 * The run details' outcome for `run`, built once per snapshot. The graph snapshot keeps only a compact result, so the
+	 * declared outputs come from the store's own run, a lookup rather than a snapshot.
+	 */
+	protected _runOutcomeFor(run: RunSnapshot): RunOutcome {
+		const cached = this.runOutcomeCache;
+		if (cached !== null && cached.run === run) return cached.outcome;
+		const fullResult = this.store.run(run.id)?.result;
+		const outcomeRun = fullResult === undefined || fullResult === run.result ? run : { ...run, result: fullResult };
+		const outcome = buildRunOutcome(outcomeRun);
+		this.runOutcomeCache = { run, outcome };
+		return outcome;
+	}
+
 	/** The blockers the run details list, in their order, from the latest snapshot. */
-	protected _runDetailBlockers(): readonly RunOutcomeBlocker[] {
-		const run = this._getCurrentRun();
-		return run === null ? [] : buildRunOutcome(run).blockers;
+	protected _runDetailBlockers(run: RunSnapshot | null = this._getCurrentRun()): readonly RunOutcomeBlocker[] {
+		return run === null ? [] : this._runOutcomeFor(run).blockers;
+	}
+
+	/**
+	 * The selected blocker's row in `blockers`: the blocker the selection was on, wherever it moved; otherwise the same
+	 * row, kept in range. The selection then follows that blocker.
+	 */
+	protected _resolveRunDetailSelection(blockers: readonly RunOutcomeBlocker[]): number {
+		const detail = this.runDetail;
+		if (detail === null || blockers.length === 0) return 0;
+		const kept =
+			detail.selectedKey === undefined
+				? -1
+				: blockers.findIndex((blocker) => blockerKey(blocker) === detail.selectedKey);
+		detail.selected = kept >= 0 ? kept : Math.max(0, Math.min(detail.selected, blockers.length - 1));
+		detail.selectedKey = blockerKey(blockers[detail.selected]!);
+		return detail.selected;
+	}
+
+	/** Move the run details' selection by `delta` rows, and keep it on the blocker it lands on. */
+	protected _moveRunDetailSelection(blockers: readonly RunOutcomeBlocker[], delta: number): void {
+		const detail = this.runDetail;
+		if (detail === null || blockers.length === 0) return;
+		const from = this._resolveRunDetailSelection(blockers);
+		detail.selected = Math.max(0, Math.min(blockers.length - 1, from + delta));
+		detail.selectedKey = blockerKey(blockers[detail.selected]!);
 	}
 
 	/** Back to the run details a detail was opened from, if it was. */

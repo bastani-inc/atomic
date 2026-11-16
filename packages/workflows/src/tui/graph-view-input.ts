@@ -175,7 +175,10 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 		return true;
 	}
 
-	/** The run details: ↑↓ pick a blocker, Enter opens it, `l` toggles the full log, Esc or ← go back to the graph. */
+	/**
+	 * The run details: ↑↓ pick a blocker, Enter or → opens it, `l` toggles the full log, and Esc goes back to the graph.
+	 * ← is not a back key here: it does nothing, so it never leaves the view by surprise.
+	 */
 	private _handleRunDetailInput(data: string): boolean {
 		const detail = this.runDetail;
 		if (detail === null) return false;
@@ -188,7 +191,7 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 			if (wheelDelta.rows !== 0) this._scrollGraphVertically(wheelDelta.rows);
 			return true;
 		}
-		if (matchesKey(data, Key.escape) || this._matchesNavAction(data, APP_ACTION.navBack)) {
+		if (matchesKey(data, Key.escape)) {
 			this._closeRunDetail();
 			return true;
 		}
@@ -204,17 +207,17 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 		const blockers = detail.logs ? [] : this._runDetailBlockers();
 		if (blockers.length > 0) {
 			if (matchesKey(data, Key.down)) {
-				detail.selected = Math.min(blockers.length - 1, detail.selected + 1);
+				this._moveRunDetailSelection(blockers, 1);
 				this.runDetailRevealSelected = true;
 				return true;
 			}
 			if (matchesKey(data, Key.up)) {
-				detail.selected = Math.max(0, detail.selected - 1);
+				this._moveRunDetailSelection(blockers, -1);
 				this.runDetailRevealSelected = true;
 				return true;
 			}
 			if (matchesKey(data, Key.enter) || matchesKey(data, Key.right)) {
-				const blocker = blockers[Math.min(detail.selected, blockers.length - 1)]!;
+				const blocker = blockers[this._resolveRunDetailSelection(blockers)]!;
 				if (this._focusBlockerNode(blocker.node, blocker.id)) {
 					this._activateFocusedNode();
 					// A stage chat leaves the graph; only a detail over it comes back to the run details.
