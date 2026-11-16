@@ -214,12 +214,23 @@ async function withProcessRepositoryLock<T>(store: string, action: () => Promise
 const REPOSITORY_LOCK_STALE_MS = 30_000;
 const REPOSITORY_LOCK_UPDATE_MS = 10_000;
 const REPOSITORY_LOCK_POLL_MS = 50;
+/** How long, on Windows, the repository lock is tried again while its directory is refused with EPERM. */
+export const REPOSITORY_LOCK_REFUSED_MS = 10_000;
+
+/**
+ * Whether creating the lock directory failed only for a moment: Windows refuses with EPERM to create a directory
+ * another process has just removed while a third still has it open, as other waiters' checks of the lock do.
+ */
+function refusedForAMoment(error: unknown): boolean {
+	return (error as NodeJS.ErrnoException).code === "EPERM" && process.platform === "win32";
+}
 
 /**
  * Serializes work on one shared object store, in this process and across processes (#4951): creating the store,
  * configuring its remotes, fetching into it and updating its refs. Git's own locks fail rather than wait, so two
  * processes doing either at once would fail one of them. Waiters in this process queue behind each other; across
- * processes, the store's lock file `<store>.lock` is polled until it is free or its holder stopped refreshing it.
+ * processes, the store's lock file `<store>.lock` is polled until it is free or its holder stopped refreshing it. On
+ * Windows a lock directory refused with EPERM is polled too, for up to {@link REPOSITORY_LOCK_REFUSED_MS} on end.
  */
 function withRepositoryLock<T>(
 	store: string,
@@ -246,6 +257,7 @@ async function lockRepository(
 ): Promise<() => Promise<void>> {
 	const repositories = dirname(store);
 	await writing(repositories, snapshotId, () => mkdir(repositories, { recursive: true }));
+	let refusedSince: number | undefined;
 	for (;;) {
 		signal?.throwIfAborted();
 		try {
@@ -258,8 +270,16 @@ async function lockRepository(
 				onCompromised: () => {},
 			});
 		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== "ELOCKED")
+			if (refusedForAMoment(error)) {
+				refusedSince ??= Date.now();
+				// A refusal that lasts is a directory this process may not write to.
+				if (Date.now() - refusedSince >= REPOSITORY_LOCK_REFUSED_MS)
+					throw unwritablePathError(`${store}.lock`, snapshotId, error);
+			} else if ((error as NodeJS.ErrnoException).code === "ELOCKED") {
+				refusedSince = undefined;
+			} else {
 				throw unwritablePathError(`${store}.lock`, snapshotId, error);
+			}
 		}
 		await sleep(REPOSITORY_LOCK_POLL_MS);
 	}
