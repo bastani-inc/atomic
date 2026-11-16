@@ -549,9 +549,11 @@ function checkoutRecords(
 	now = Date.now(),
 ): Map<string, CheckoutRecord> {
 	const checkouts = new Map<string, CheckoutRecord>();
+	const originals = new Map<string, string>();
 	for (const entry of sessionManager.getBranch()) {
 		if (entry.type !== "worktree_snapshot") continue;
-		const original = originalRoot(entry.root, mappings);
+		const original = originals.get(entry.root) ?? originalRoot(entry.root, mappings);
+		originals.set(entry.root, original);
 		const previous = checkouts.get(original)?.pin;
 		let pin: DegradedRestorePin | undefined;
 		const carried = entry.restore?.degradedWork;
