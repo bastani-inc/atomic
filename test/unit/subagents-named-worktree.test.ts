@@ -427,6 +427,31 @@ test("a branch name that git expands, such as @{-1}, is refused before launch (#
 	);
 });
 
+test("a launch waits out another launch's worktree add rather than show git failing to read its locked marker (#5202)", async () => {
+	const repo = makeRepo();
+	const expected = join(repo, ".atomic", "worktrees", "feat+busy");
+	git(repo, "worktree", "add", "-q", "-b", "feat/busy", expected);
+	// Mid-add, git has a `locked` marker another git command can find and then fail to read: a directory fails the
+	// same read on every platform, until the other add is done and it vanishes.
+	const marker = join(repo, ".git", "worktrees", "feat+busy", "locked");
+	mkdirSync(marker);
+	const otherAdd = spawnProcess(
+		[
+			bunExecutable(),
+			"-e",
+			`setTimeout(() => require("node:fs").rmSync(${JSON.stringify(marker)}, { recursive: true }), 1500)`,
+		],
+		{ cwd: repo, stdout: "ignore", stderr: "ignore" },
+	);
+	const harness = makeHarness(repo);
+
+	const result = await harness.execute({ agent: "worker", task: "t", worktree: { branch: "feat/busy" } });
+	await otherAdd.exited;
+
+	assert.equal(result.isError, undefined, text(result));
+	assert.equal(harness.launches[0]?.cwd, expected, "the other launch's worktree is reused");
+});
+
 /** Several processes, each checking out the same new branches at once; spawning a process is the structural cost. */
 const CONCURRENT_LAUNCHES_TIMEOUT_MS = 120_000;
 const RACE_ROUNDS = 8;
