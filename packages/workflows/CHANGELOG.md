@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Workflow discovery checks the bundled workflows once per process. Startup checked them twice, and `/workflow reload` and every `/workflow resume` of a durable run checked them again, each time reading and scanning their sources: about 180 ms on Windows and 120 ms on Linux ([#5319](https://github.com/bastani-inc/atomic/issues/5319))
+
 ## [0.9.88] - 2026-11-16
 
 ### Breaking Changes
