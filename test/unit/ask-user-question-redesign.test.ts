@@ -129,6 +129,8 @@ describe("ask_user_question dialog (#5224)", () => {
 		assert.equal(rows[first + 2], "  2. [ ] workflows");
 		assert.equal(rows[first + 3], "         Workflow engine");
 		assert.ok(rows.includes("  3. Next"), rows.join("\n"));
+		// Chat about this is numbered after Next, never alongside it.
+		assert.ok(rows.includes("  4. Chat about this"), rows.join("\n"));
 		dialog.press(" ");
 		assert.ok(dialog.inner().includes("❯ 1. [✔] coding-agent"), dialog.inner().join("\n"));
 	});

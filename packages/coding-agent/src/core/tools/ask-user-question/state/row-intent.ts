@@ -108,7 +108,7 @@ export const ROW_INTENT_META: Record<RowKind, RowIntentMeta> = {
 		label: "Next",
 		reserved: true,
 		livesInMainList: true,
-		numbered: false,
+		numbered: true,
 		activatesInputMode: false,
 		blocksMultiToggle: true,
 		autoSubmitsInMulti: true,

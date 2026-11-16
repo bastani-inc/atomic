@@ -30,9 +30,8 @@ export function chatNumberingFor(items: readonly WrappingSelectItem[]): {
 	offset: number;
 	total: number;
 } {
-	// Count only the visible-numbered rows. The Next sentinel renders without a number
-	// (see MultiSelectView), so it must NOT advance the chat row's number — otherwise
-	// chat reads as "6." next to options labeled 1-4. Sourced from `ROW_INTENT_META[kind].numbered`
+	// Count only the visible-numbered rows, Next included (MultiSelectView numbers it after the
+	// options), so chat follows the last number shown. Sourced from `ROW_INTENT_META[kind].numbered`
 	// so adding a new non-numbered kind is a single META edit.
 	const count = items.filter((i) => ROW_INTENT_META[i.kind].numbered).length;
 	return { offset: count, total: count + 1 };
