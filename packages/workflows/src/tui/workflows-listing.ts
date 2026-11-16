@@ -285,6 +285,7 @@ export function openWorkflowsListing(
 		readonly runs: () => readonly RunSnapshot[];
 		readonly definitions: () => readonly WorkflowsListingDefinition[];
 		readonly subscribe?: (listener: () => void) => () => void;
+		readonly initialId?: string;
 	},
 ): Promise<WorkflowsListingTarget | undefined> {
 	return new Promise((resolve) => {
@@ -319,6 +320,7 @@ export function openWorkflowsListing(
 			const search = new Input({ prompt: "⌕ ", placeholder: "Search…", placeholderStyle: style.dim });
 			const selector = new SelectorState<WorkflowsListingTarget>({
 				items,
+				initialId: source.initialId,
 				maxVisible: Math.max(1, Math.floor((listingAvailableRows(tui) - 2) / 2)),
 			});
 			const handleSelectionInput = (data: string): void => {

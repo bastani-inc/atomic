@@ -105,6 +105,7 @@ const FULLSCREEN_OVERLAY_OPTIONS: PiOverlayOptions = {
 	margin: 0,
 };
 
+const STORE_RENDER_FRAME_MS = 16;
 const MAIN_CHAT_INPUT_STATUS_KEY = `${WORKFLOW_STATUS_KEY}:main-chat-input`;
 const MAIN_CHAT_INPUT_STATUS = "Main chat needs input — exit graph to answer.";
 
@@ -127,7 +128,7 @@ export interface BuildGraphOverlayAdapterOpts {
 	stageUiBroker?: StageUiBroker;
 	/** Optional clock injection for deterministic attach-pane transition tests. */
 	now?: () => number;
-	/** Stop, retry and fork controls the graph offers on a focused stage. */
+
 	stageActions?: import("./graph-view-types.js").GraphStageActions;
 	/** Terminal output seam used to test raw overlay control sequences. */
 	terminalOutput?: OverlayTerminalOutput;
@@ -161,10 +162,14 @@ export function buildGraphOverlayAdapter(
 	// the chat scrollback, producing visible duplicates.
 	let currentHandle: PiOverlayHandle | null = null;
 	let mounted = false;
-	/** Where the current open goes back to once the graph hides, such as the list it was picked from. */
-	let pendingReturn: (() => void) | undefined;
-	/** Esc at the graph's top: hide it; {@link hideMounted} then returns to the view that opened it. */
-	const goBack = (): void => hideMounted();
+
+	let returnTo: (() => void) | undefined;
+	const goBack = (): void => {
+		const back = returnTo;
+		returnTo = undefined;
+		hideMounted();
+		back?.();
+	};
 	let finishMounted: (() => void) | null = null;
 	// Repaints the mounted overlay through its factory TUI. Needed on the
 	// hidden→visible flip: store updates while hidden intentionally skip
@@ -257,10 +262,6 @@ export function buildGraphOverlayAdapter(
 	 */
 	function hideMounted(): void {
 		observedUi?.setStatus?.(MAIN_CHAT_INPUT_STATUS_KEY, undefined);
-		// One level back: to the view that opened the graph, once it is out of the way.
-		const onReturn = pendingReturn;
-		pendingReturn = undefined;
-		if (onReturn) queueMicrotask(onReturn);
 		if (currentHandle) {
 			currentView?.setVisible(false);
 			currentHandle.setHidden(true);
@@ -285,8 +286,8 @@ export function buildGraphOverlayAdapter(
 
 	function makeComponent(view: WorkflowAttachPane, tui: PiCustomOverlayFactoryTui): PiCustomComponent {
 		requestMountedRender = () => tui.requestRender?.();
+		let pendingStoreFrame: ReturnType<typeof setTimeout> | null = null;
 		const onStoreUpdate = (): void => {
-			const snapshot = readGraphStoreSnapshot(store);
 			// Always invalidate retained view state so a later reopen renders the
 			// current snapshot — but while the overlay is hidden, never ask the
 			// host to render (#1856): each hidden-overlay render request became
@@ -294,8 +295,15 @@ export function buildGraphOverlayAdapter(
 			// scrollback to the bottom.
 			view.invalidate();
 			if (currentHandle?.isHidden() === true) return;
-			refocusVisibleOverlayForAwaitingInput(snapshot);
-			tui.requestRender?.();
+			if (currentHandle !== null && !currentHandle.isFocused()) {
+				refocusVisibleOverlayForAwaitingInput(readGraphStoreSnapshot(store));
+			}
+			if (pendingStoreFrame !== null) return;
+			pendingStoreFrame = setTimeout(() => {
+				pendingStoreFrame = null;
+				if (currentView !== view || currentHandle?.isHidden() === true) return;
+				tui.requestRender?.();
+			}, STORE_RENDER_FRAME_MS);
 		};
 		const unsubscribe = subscribeStoreInvalidation(store, onStoreUpdate);
 		return {
@@ -311,6 +319,8 @@ export function buildGraphOverlayAdapter(
 				if (currentView === view) clearHostCustomUiObservation();
 				remoteTerminalControl = null;
 				requestMountedRender = null;
+				if (pendingStoreFrame !== null) clearTimeout(pendingStoreFrame);
+				pendingStoreFrame = null;
 				unsubscribe();
 				view.dispose();
 			},
@@ -324,7 +334,7 @@ export function buildGraphOverlayAdapter(
 		stageRunId?: string,
 		openOptions?: GraphOverlayOpenOptions,
 	): void {
-		pendingReturn = openOptions?.onReturn;
+		returnTo = openOptions?.onReturn;
 		const ui = surface?.ui ?? pi.ui;
 		observeHostCustomUi(ui);
 
@@ -371,8 +381,6 @@ export function buildGraphOverlayAdapter(
 			const finish = (): void => {
 				if (settled) return;
 				settled = true;
-				// Closing the workflow view (Ctrl+C) returns to the main chat, not to the view that opened it.
-				pendingReturn = undefined;
 				observedUi?.setStatus?.(MAIN_CHAT_INPUT_STATUS_KEY, undefined);
 				currentView?.dispose();
 				currentView = null;

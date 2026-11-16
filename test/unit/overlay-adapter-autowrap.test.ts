@@ -63,7 +63,7 @@ async function registerIsolatedTests(): Promise<void> {
 	} = await import("../../packages/coding-agent/src/modes/interactive/components/input-label.js");
 	// Pending-input labels cut long prompts with the shared surrogate-safe slice (#5097).
 	const { sliceHead } = await import("../../packages/coding-agent/src/core/tools/truncate.js");
-	// The graph shares the navigation hint line, key overlay and two-press confirmation (#5224).
+
 	const navKeys = await import("../../packages/coding-agent/src/modes/interactive/components/nav-keys.js");
 	mock.module("@bastani/atomic", () => ({
 		...navKeys,

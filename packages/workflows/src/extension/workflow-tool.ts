@@ -32,9 +32,9 @@ import { buildWorkflowStatusListing, setWorkflowStatusRenderRuns } from "./workf
 import {
 	isResolvedRunId,
 	isWorkflowStageToolContext,
+	prepareTopLevelExpandedSnapshots,
 	resolveRunId,
 	resolveToolRunTarget,
-	topLevelExpandedSnapshots,
 } from "./workflow-targets.js";
 import { workflowAnswerAction } from "./workflow-tool-answer.js";
 import { stripModelInputFields, workflowGetResult } from "./workflow-tool-content.js";
@@ -291,20 +291,16 @@ export function makeExecuteWorkflowTool(
 					setWorkflowStatusRenderRuns(detailResult, store.graphSnapshot().runs);
 					return detailResult;
 				}
+				const expandedSnapshots = await awaitRequest(prepareTopLevelExpandedSnapshots(store));
 				const capturedRuns = store.graphSnapshot().runs;
 				const statusByRunId = new Map(capturedRuns.map((run) => [run.id, run.status]));
-				const listing = buildWorkflowStatusListing(
-					topLevelExpandedSnapshots(store),
-					args.statusFilter ?? "all",
-					Date.now(),
-					{
-						toolControlRegistry,
-						durableBackend: availableStoreDurableBackend(store),
-						allRuns: store.runs(),
-						owningRunStatus: (owningRunId) => statusByRunId.get(owningRunId),
-						resolveBoundarySegments: (runId) => workflowBoundarySegments(capturedRuns, runId),
-					},
-				);
+				const listing = buildWorkflowStatusListing(expandedSnapshots, args.statusFilter ?? "all", Date.now(), {
+					toolControlRegistry,
+					durableBackend: availableStoreDurableBackend(store),
+					allRuns: store.runs(),
+					owningRunStatus: (owningRunId) => statusByRunId.get(owningRunId),
+					resolveBoundarySegments: (runId) => workflowBoundarySegments(capturedRuns, runId),
+				});
 				const result = {
 					action: "status" as const,
 					filter: listing.filter,

@@ -163,7 +163,7 @@ Graph node cards show each model stage's effective model and thinking level abov
 /workflow inputs <name>
 /workflow <name> --help
 /workflow <name> [key=value ...]
-/workflows [run-id]                     # the session's runs: the only run's graph, or a list
+/workflows [run-id] [stage-id-or-name]  # the session's runs: only run's graph, stage chat, or list
 /workflow pause [run-id|--all] [stage-id-or-name]
 /workflow status [run-id]
 /workflow status --all
@@ -178,7 +178,7 @@ Common controls:
 
 ```text
 /workflow status                       # list retained active and terminal runs
-/workflows <run-id>                    # graph viewer, including terminal runs
+/workflows [run-id] [stage]            # open a run's graph or stage chat, or choose from session runs
 /workflow pause <run-id>               # pause resumably
 /workflow pause <run-id> <stage>       # pause one stage; the others keep running
 /workflow resume <run-id> [stage] msg  # forward a steer message and resume
@@ -190,13 +190,13 @@ Common controls:
 
 Surface behavior:
 
-- **Graph vs. stage chat** - `/workflows` opens the graph (or ↓ to the run in the agent panel). Press Enter on a stage to open its chat. On a failed stage, Enter opens its failure detail; press `t` there for its chat. `/workflow connect` and `/workflow attach` were removed; typing either shows a one-line pointer to `/workflows`.
-- **Run state** - The graph header puts the run's state before its stage counts and colors the ORCHESTRATOR pill to match: `↑ blocked`, followed by the exit reason when the workflow gave one and shortened to fit; `❚❚ paused`; or `○ quit`. A running run shows no state, including one you resumed. `↑ N` counts blocked stages. The stage switcher (`/`), `/workflow status`, and the `/workflows` sheet show the same state.
-- **Going back** - In an attached stage chat, `←` on an empty prompt returns to the graph. On a choice or yes/no question, `←` moves between the choices, so `esc` closes the question card back to the stage's prompt. The question stays waiting: `enter` on the empty prompt reopens it, and `←` on the empty prompt returns to the graph. The graph has no prompt: `esc` goes back one level (it closes a stage's failure detail, a tool detail or the `?` overlay first), and at the top it returns to where you opened the graph from, such as main chat or the `/workflows` list. `←` does the same on a node with nothing to its left, and otherwise moves to that sibling. A custom question widget owns every key; `ctrl+c` closes the workflow view from it. `ctrl+x` does not navigate. See [Keybindings](/keybindings#navigation).
-- **Graph keys** - The hint line under the graph lists exactly the keys that work on the focused node, and `?` lists them all. `↑↓←→` move, `enter` opens the focused node (a stage's chat, a tool's detail, or a failed stage's failure detail), `/` finds a stage, and `f` cycles a status filter (all, running, completed, failed) that dims the nodes it doesn't match without moving anything. On a running or waiting stage, `x` then `x` again within 3 seconds stops it so it can be resumed from its stage chat. A stopped stage or run shows `◼` in a muted colour; a failed one shows a red `✗`.
-- **Failed stages** - `enter` on a failed stage opens its failure detail: the stage, how long it ran, and a one-line reason. `r` retries the failed stage, keeping the completed ones; `f` forks the run into a new run, leaving the original unchanged; `t` opens the stage's transcript; `l` switches between the summary and the full log, including the error's code, hint and causes. A retry or fork shows its new run in the graph.
-- **Stage input label** - An attached stage chat's composer rule names the stage and its state, such as `stage · implement · done`, and its placeholder reads `Message implement…` (`Answer implement…` while the stage waits on a question). Awaiting-input prompt cards show `[stage: name]` on their border, and so does the top rule of a mounted custom question. Long names truncate with `…`. A subagent's chat opened from `/tasks` names the subagent, its task and its state on its composer rule the same way.
-- **Draft preservation** - Leaving a stage preserves unsent composer and prompt drafts and keeps pending custom questions unresolved so they reappear when you attach again.
+- **Graph vs. stage chat** - `/workflows` opens the graph (or ↓ to the run in the agent panel), and `/workflows <run-id> <stage>` opens a stage's chat directly. In the graph, press Enter on a stage to open its chat. On a failed stage, Enter opens its failure detail; press `t` there for its chat. `/workflow connect` and `/workflow attach` were removed; typing either shows a one-line pointer to `/workflows`.
+- **Run state** - The graph header puts the run's state before its stage counts and colors the ORCHESTRATOR pill to match: `↑ blocked`, followed by the exit reason when the workflow gave one and shortened to fit; `❚❚ paused`; or `○ quit`. A running run shows no state, including one you resumed. `↑ N` counts blocked stages. The stage switcher (`/`), `/workflow status`, and the `/workflows` picker show the same state.
+- **Going back** - In an attached stage chat, `←` on an empty prompt (or at the start of a typed prompt, preserving the draft) returns to the graph. A choice or yes/no question uses `←` to move between answers; `esc` closes that question back to the stage's prompt and leaves it waiting (Enter on the empty prompt reopens it). The graph has no prompt: `esc` goes back one level (it closes a stage's failure detail, a tool detail or the `?` overlay first), and at the top it returns to where you opened the graph from, such as main chat or the `/workflows` list. `←` only moves to a previous sibling. It does nothing at the leftmost node or inside a detail; only Esc goes back. A custom question widget owns every key; `ctrl+c` closes the workflow view from it. `ctrl+x` does not navigate. See [Keybindings](/keybindings#navigation).
+- **Graph keys** - The hint line under the graph lists exactly the keys that work on the focused node, and `?` lists them all. `↑↓←→` move, `enter` opens the focused node (a stage's chat, a tool's detail, or a failed stage's failure detail), `/` finds a stage, and `f` cycles a status filter (all, running, stopped, completed, failed) that dims the nodes it doesn't match without moving anything. On a running stage, `x` then `x` again within 3 seconds stops it so it can be resumed from its stage chat. A stopped stage or run shows `◼` in a muted colour; a failed one shows a red `✗`. The `/workflow status` header counts killed and cancelled runs under `◼`, and failed runs under `✗`.
+- **Failed stages** - `enter` on a failed stage opens its failure detail with the stage, elapsed time and a short reason. `r` retries in place, keeping completed work. `f` asks for confirmation, then forks from that stage into a new run. The confirmation names completed tool steps that will run again and warns if the source must first stop resumably. Enter confirms; Esc cancels. `t` opens the transcript; `l` toggles the error log, including error codes, hints and causes. Long reasons and logs are truncated. Retry keeps focus on the same stage and reports another failure. Fork opens the new run.
+- **Stage input label** - Attached stage chats show `[stage: name]` on the composer top rule, a mounted question's top rule, and awaiting-input prompt borders so you can tell which stage owns the input. Long names truncate with `…`. A subagent's transcript opened from `/tasks` labels its prompt `[subagent: name]` the same way.
+- **Draft preservation** - Leaving a stage or opening another run preserves unsent composer and prompt drafts and keeps pending custom questions unresolved so they reappear when you attach again.
 - **Queued-message survival** - Detaching preserves queued steering and follow-up text. Reattach to see the pending messages; the graph shows their count as `✉ N queued`. Queues also survive model fallback and eligible post-mortem reopening. Custom session adapters must publish `queue_update` snapshots and expose pre-attachment queues as described in [authoring](/workflows/authoring#stage-follow-on-user-messages).
 - **Reserved keys** - `ctrl+d` and `q` do not navigate workflow surfaces; `ctrl+d` keeps its ordinary editor or prompt behavior where applicable, and `q` remains printable in text-owning prompts. In a stage chat with a prompt, `esc` only interrupts a running stage; in the graph it closes the stage switcher, a detail or the `?` overlay, then goes back to where the graph was opened from. `ctrl+c` and graph `h` close and hide as before.
 - **Wheel and trackpad** - While the workflow graph is active, vertical wheel/trackpad gestures pan it up and down, and horizontal gestures pan wide graphs left and right when the terminal exposes horizontal wheel events. Focused graph and stage-chat overlays receive those gestures through the fullscreen application route, so scrolling stays inside the active workflow surface instead of falling through to terminal or main-chat scrollback.
@@ -554,7 +554,7 @@ Focus a tool node and press Enter, click it, or select it from the switcher to o
 
 The card starts collapsed, showing the last visual rows. Press `app.tools.expand`, normally Ctrl+O, to see the full bounded result and available callback source. Inspection never executes the callback or reads a source file.
 
-The statusline shows the resolved key with `expand` or `collapse`, including remapped keys, alongside return and scroll hints. It omits that hint when expansion is unbound. Scroll with `↑`/`↓`, `PageUp`/`PageDown`, `Home`/`End`, the wheel, or the scrollbar. Escape or `←` returns to the graph. This view offers no chat attachment, steering, pause, or resume.
+The statusline shows the resolved key with `expand` or `collapse`, including remapped keys, alongside return and scroll hints. It omits that hint when expansion is unbound. Scroll with `↑`/`↓`, `PageUp`/`PageDown`, `Home`/`End`, the wheel, or the scrollbar. Escape returns to the graph; `←` does nothing in this detail. This view offers no chat attachment, steering, pause, or resume.
 
 The footer shows `Took` or `Elapsed`; cached results are labelled. Truncation is marked with `… [truncated]`. Unrenderable values show placeholders rather than a complete result. Durable checkpoints retain the actual output.
 
@@ -662,6 +662,8 @@ Fresh completed inspection does not currently persist the workflow's declared ro
 ```text
 /workflow resume                          # Mixed picker: resumable + completed
 /workflow resume <full-workflow-uuid> # Resume unfinished work or open completed detail/chat
+/workflows                               # Open this session's run list or only run's graph
+/workflows <full-workflow-uuid> [stage]  # Open a session run's graph or stage chat without resuming it
 ```
 
 `/workflows` is not an alias for this picker: it lists only the current session's runs and definitions, and `/workflows <run-id>` opens a run from this session.
