@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, test, vi } from "vitest";
-import { type TwoBrokerClient, TwoBrokerHarness } from "../helpers/intercom-two-broker-harness.js";
+import {
+	BROKER_START_ALLOWANCE_MS,
+	TWO_BROKER_HARNESS_START_TIMEOUT_MS,
+	type TwoBrokerClient,
+	TwoBrokerHarness,
+} from "../helpers/intercom-two-broker-harness.js";
 import { sleep } from "../helpers/runtime.js";
 
 /** Spawning two real broker processes (and restarting one) is the structural cost of this suite. */
-const REAL_BROKERS_HOOK_TIMEOUT_MS = 60_000;
+const REAL_BROKERS_HOOK_TIMEOUT_MS = TWO_BROKER_HARNESS_START_TIMEOUT_MS;
 /**
  * #5038: once a session re-registers on its restarted broker, a send from the other broker reaches it within a few
  * seconds, far inside the 30 s window the crashed instance's presence lease would otherwise stay live.
@@ -13,7 +18,8 @@ const REAL_BROKERS_HOOK_TIMEOUT_MS = 60_000;
 const RESTARTED_DELIVERY_BOUND_MS = 5_000;
 /** Settle time after delivery in which a duplicate frame would have arrived. */
 const DUPLICATE_WINDOW_MS = 1_000;
-const TEST_TIMEOUT_MS = 60_000;
+/** A restart of one broker, then the scenario's own sends and waits. */
+const TEST_TIMEOUT_MS = BROKER_START_ALLOWANCE_MS + 60_000;
 
 let harness: TwoBrokerHarness;
 

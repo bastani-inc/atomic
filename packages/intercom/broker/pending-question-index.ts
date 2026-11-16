@@ -378,6 +378,42 @@ export class PendingQuestionIndex {
     return true;
   }
 
+  /**
+   * #5252: asks written to their recipient whose write is not confirmed yet, by message id. Their route opens with the
+   * confirmation, but the recipient can read the ask and answer it first: the broker can read that reply before the
+   * confirmation reaches it.
+   */
+  private readonly unconfirmedAsks = new Map<string, { readonly route: PendingQuestion; readonly waiters: (() => void)[] }>();
+
+  /**
+   * #5252: an ask from `senderSessionId` is being written to `targetSessionId`; until the returned function runs, once
+   * the write settled (after its route opened, or did not), a reply to it waits instead of being refused.
+   */
+  beginAskWrite(senderSessionId: string, targetSessionId: string, messageId: string): () => void {
+    const pending = { route: { senderSessionId, targetSessionId, messageId }, waiters: [] as (() => void)[] };
+    this.unconfirmedAsks.set(messageId, pending);
+    return () => {
+      if (this.unconfirmedAsks.get(messageId) === pending) this.unconfirmedAsks.delete(messageId);
+      for (const decideAgain of pending.waiters.splice(0)) decideAgain();
+    };
+  }
+
+  /**
+   * #5252: when the ask `messageId` from `senderSessionId` to `replierSessionId` is still being written, run
+   * `decideAgain` once that write settled and return true; otherwise return false, and the caller decides now.
+   */
+  whenAskWritten(senderSessionId: string, replierSessionId: string, messageId: string, decideAgain: () => void): boolean {
+    const pending = this.unconfirmedAsks.get(messageId);
+    if (
+      pending === undefined ||
+      pending.route.senderSessionId !== senderSessionId ||
+      pending.route.targetSessionId !== replierSessionId
+    )
+      return false;
+    pending.waiters.push(decideAgain);
+    return true;
+  }
+
   record(senderSessionId: string, targetSessionId: string, messageId: string): void {
     const routes = this.questions.get(messageId) ?? [];
     if (routes.some((route) => route.senderSessionId === senderSessionId && route.targetSessionId === targetSessionId)) return;

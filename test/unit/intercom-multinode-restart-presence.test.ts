@@ -6,10 +6,12 @@ import { join } from "node:path";
 import { afterEach, test } from "vitest";
 import {
 	brokerHostIdentity,
+	HOST_COMMAND_ATTEMPTS,
 	type HostIdentitySources,
 	isProcessAlive,
 	osMachineId,
 	persistedMachineId,
+	processStartedAt,
 	systemSources,
 	WINDOWS_BOOT_TIME_COMMAND,
 } from "../../packages/intercom/broker/broker-instance.js";
@@ -130,6 +132,8 @@ async function crashedCluster() {
 			nodeId: NODE,
 			hostIdentity: HOST,
 			isProcessAlive: (pid) => pid !== DEAD_PID,
+			// This host reads no process starts unless a test says it does.
+			processStartedAt: () => null,
 			...options,
 			host: {
 				sessions: new Map(),
@@ -195,6 +199,59 @@ test("an earlier instance whose process still runs is not retired (#5038)", asyn
 	assert.equal(await stateOf(outbox, "claimed-by-crashed"), "claimed");
 });
 
+test("an earlier instance whose process id a process started after it now holds is retired (#5252)", async () => {
+	const { start } = await crashedCluster();
+	// The killed broker recorded its start at 1; the host gave its process id to a process that started at 5000.
+	const { leases, outbox } = await start({
+		instanceKey: SOCKET,
+		isProcessAlive: () => true,
+		processStartedAt: (pid) => (pid === DEAD_PID ? 5_000 : undefined),
+	});
+	assert.equal(await holderOf(leases, "hosted-by-crashed"), "missing");
+	assert.deepEqual(await leases.read({ kind: "broker", brokerId: "crashed" }), { status: "missing" });
+	assert.equal(await stateOf(outbox, "claimed-by-crashed"), "queued");
+
+	// One whose process started before it recorded its start is still that instance, and is left alone.
+	const { start: startAgain } = await crashedCluster();
+	const { leases: kept } = await startAgain({
+		instanceKey: SOCKET,
+		isProcessAlive: () => true,
+		processStartedAt: (pid) => (pid === DEAD_PID ? 0 : undefined),
+	});
+	assert.equal(await holderOf(kept, "hosted-by-crashed"), "crashed");
+});
+
+test("an earlier instance whose pid's start cannot be read is not taken for it, as when a short-lived process held the pid (#5252)", async () => {
+	const { start } = await crashedCluster();
+	// The process the host gave the killed broker's pid is gone before its start can be read.
+	const { leases } = await start({
+		instanceKey: SOCKET,
+		isProcessAlive: () => true,
+		processStartedAt: () => undefined,
+	});
+	assert.equal(await holderOf(leases, "hosted-by-crashed"), "missing");
+	assert.deepEqual(await leases.read({ kind: "broker", brokerId: "crashed" }), { status: "missing" });
+});
+
+test("a Windows process's start is read as its creation time, and a process of another platform's is not read (#5252)", () => {
+	const startOf = (pid: number) =>
+		[
+			"powershell",
+			"-NoProfile",
+			"-NonInteractive",
+			"-Command",
+			`$p = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($p -and -not $p.HasExited) { $p.StartTime.ToFileTimeUtc() }`,
+		].join(" ");
+	// 2026-11-15T04:00:00.000Z as a Windows file time (100 ns since 1601).
+	const windows = fakeSources({ platform: "win32", commands: { [startOf(process.pid)]: "134391888000000000\r\n" } });
+	assert.equal(processStartedAt(process.pid, windows), Date.parse("2026-11-15T04:00:00.000Z"));
+	// One whose start PowerShell does not answer is unknown.
+	assert.equal(processStartedAt(process.pid, fakeSources({ platform: "win32", commands: {} })), undefined);
+	const linux = fakeSources({ platform: "linux" });
+	assert.equal(processStartedAt(process.pid, linux), null);
+	assert.deepEqual(linux.runs, []);
+});
+
 test("a broker on another socket, or without an instance key, leaves a live broker's leases alone (#5038)", async () => {
 	const { start } = await crashedCluster();
 	const { leases: elsewhere } = await start({ instanceKey: "/elsewhere/broker.sock" });
@@ -220,6 +277,8 @@ interface FakeHost {
 	readonly files?: Record<string, string>;
 	readonly links?: Record<string, string>;
 	readonly commands?: Record<string, string>;
+	/** How many times each command times out before it answers, as PowerShell can on a loaded host. */
+	readonly timeouts?: Record<string, number>;
 	readonly unwritable?: boolean;
 }
 
@@ -229,6 +288,7 @@ function fakeSources(
 ): HostIdentitySources & { readonly files: Map<string, string>; readonly runs: string[] } {
 	const files = new Map(Object.entries(host.files ?? {}));
 	const runs: string[] = [];
+	const timedOut = new Map<string, number>();
 	const missing = (what: string): never => {
 		throw Object.assign(new Error(`${what} missing`), { code: "ENOENT" });
 	};
@@ -240,7 +300,12 @@ function fakeSources(
 		readLink: (path) => host.links?.[path] ?? missing(path),
 		run: (command, args) => {
 			runs.push(command);
-			return host.commands?.[[command, ...args].join(" ")] ?? missing(command);
+			const line = [command, ...args].join(" ");
+			if ((timedOut.get(line) ?? 0) < (host.timeouts?.[line] ?? 0)) {
+				timedOut.set(line, (timedOut.get(line) ?? 0) + 1);
+				throw Object.assign(new Error(`${command} timed out`), { code: "ETIMEDOUT" });
+			}
+			return host.commands?.[line] ?? missing(command);
 		},
 		writeNewPrivateFile: (path, content) => {
 			if (host.unwritable === true) missing(path);
@@ -305,6 +370,23 @@ test("off Linux a host is the OS machine id with its boot (#5038)", () => {
 		"tight",
 	);
 	assert.deepEqual(fakeSources({ platform: "darwin" }).runs, []);
+});
+
+test("a host command that times out once, as PowerShell can on a loaded host, is run again, so every broker of the host reads one identity (#5252)", () => {
+	const commands = {
+		[WINDOWS_REG]: "MachineGuid    REG_SZ    guid-w",
+		[WINDOWS_BOOT]: BOOTED,
+	};
+	const steady = brokerHostIdentity(fakeSources({ platform: "win32", commands }));
+	assert.equal(steady, `guid-w/boot-${BOOTED}`);
+	for (const slow of [WINDOWS_BOOT, WINDOWS_REG]) {
+		const loaded = fakeSources({ platform: "win32", commands, timeouts: { [slow]: HOST_COMMAND_ATTEMPTS - 1 } });
+		assert.equal(brokerHostIdentity(loaded), steady, slow);
+	}
+	// One that never answers still leaves the host without that fact, after its attempts.
+	const hung = fakeSources({ platform: "win32", commands, timeouts: { [WINDOWS_BOOT]: HOST_COMMAND_ATTEMPTS } });
+	assert.equal(brokerHostIdentity(hung), undefined);
+	assert.equal(hung.runs.filter((command) => command === WINDOWS_BOOT_TIME_COMMAND[0]).length, HOST_COMMAND_ATTEMPTS);
 });
 
 test("without a per-boot random value a host has no identity, so nothing is retired early (#5038)", () => {
