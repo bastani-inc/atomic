@@ -125,6 +125,7 @@ export class CheckpointShipping {
 	/** How long recent deliveries took: a running average, and the latest times for their 95th percentile. */
 	private deliveryEwmaMs: number | undefined;
 	private readonly deliverySamples: number[] = [];
+	private deliveryP95Ms = 0;
 	private lastError: Error | undefined;
 	private closed = false;
 
@@ -297,9 +298,7 @@ export class CheckpointShipping {
 	/** The larger of the recent average and 95th percentile delivery time; undefined before any delivery. */
 	private deliveryEstimateMs(): number | undefined {
 		if (this.deliveryEwmaMs === undefined) return undefined;
-		const sorted = [...this.deliverySamples].sort((left, right) => left - right);
-		const p95 = sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * 0.95) - 1)]!;
-		return Math.max(this.deliveryEwmaMs, p95);
+		return Math.max(this.deliveryEwmaMs, this.deliveryP95Ms);
 	}
 
 	private noteDelivery(ms: number): void {
@@ -309,6 +308,8 @@ export class CheckpointShipping {
 				: this.deliveryEwmaMs + DELIVERY_EWMA_WEIGHT * (ms - this.deliveryEwmaMs);
 		this.deliverySamples.push(ms);
 		if (this.deliverySamples.length > DELIVERY_SAMPLES) this.deliverySamples.shift();
+		const sorted = [...this.deliverySamples].sort((left, right) => left - right);
+		this.deliveryP95Ms = sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * 0.95) - 1)]!;
 	}
 
 	/**
