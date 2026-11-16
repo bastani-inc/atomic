@@ -1,4 +1,5 @@
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
+import { parseSlashCommand } from "../../core/slash-commands.js";
 import { getOwnerTaskStore } from "../../core/tasks/owner-store.js";
 import { yieldToEventLoop } from "../../utils/event-loop.ts";
 import {
@@ -228,10 +229,14 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 			return;
 		}
 		try {
-			// Handle commands
-			if (text === "/tasks" || text.startsWith("/tasks ")) {
+			// Built-in commands split their name from their arguments at the first
+			// whitespace, the same way prompt templates, skills and extension commands do.
+			const { name: command, args } = text.startsWith("/") ? parseSlashCommand(text) : { name: "", args: "" };
+			const argument = args.trim() || undefined;
+			const bare = (name: string) => command === name && args === "";
+			if (command === "tasks") {
 				if (this.runtimeHost instanceof IsolatedInteractiveRuntime) {
-					await this.runtimeHost.openTaskInspector(text.slice(6).trim() || undefined);
+					await this.runtimeHost.openTaskInspector(argument);
 					return;
 				}
 				if (!getOwnerTaskStore(this.session)) this.session.getAgentTaskHost();
@@ -252,122 +257,121 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 						notify: ui.notify,
 					},
 					store,
-					text.slice(6).trim() || undefined,
+					argument,
 				);
 				return;
 			}
-			if (text === "/settings") {
+			if (bare("settings")) {
 				this.showSettingsSelector();
 				this.editor.setText("");
 				return;
 			}
-			if (text === "/scoped-models") {
+			if (bare("scoped-models")) {
 				this.editor.setText("");
 				await this.ensureDeferredStartupComplete();
 				this.showModelsSelector();
 				return;
 			}
-			if (text === "/model" || text.startsWith("/model ")) {
-				const searchTerm = text.startsWith("/model ") ? text.slice(7).trim() : undefined;
+			if (command === "model") {
 				this.editor.setText("");
 				await this.ensureDeferredStartupComplete();
-				await this.handleModelCommand(searchTerm);
+				await this.handleModelCommand(argument);
 				return;
 			}
-			if (text === "/thinking" || text.startsWith("/thinking ")) {
+			if (command === "thinking") {
 				this.editor.setText("");
 				await this.ensureDeferredStartupComplete();
-				await this.handleThinkingCommand(text.startsWith("/thinking ") ? text.slice(10).trim() : undefined);
+				await this.handleThinkingCommand(argument);
 				return;
 			}
-			if (text === "/export" || text.startsWith("/export ")) {
+			if (command === "export") {
 				await this.handleExportCommand(text);
 				this.editor.setText("");
 				return;
 			}
-			if (text === "/import" || text.startsWith("/import ")) {
+			if (command === "import") {
 				await this.handleImportCommand(text);
 				this.editor.setText("");
 				return;
 			}
-			if (text === "/share") {
+			if (bare("share")) {
 				await this.handleShareCommand();
 				this.editor.setText("");
 				return;
 			}
-			if (text === "/copy") {
+			if (bare("copy")) {
 				await this.handleCopyCommand();
 				this.editor.setText("");
 				return;
 			}
-			if (text === "/name" || text.startsWith("/name ")) {
+			if (command === "name") {
 				await this.handleNameCommand(text);
 				this.editor.setText("");
 				return;
 			}
-			if (text === "/session") {
+			if (bare("session")) {
 				this.handleSessionCommand();
 				this.editor.setText("");
 				return;
 			}
-			if (text === "/session snapshot") {
+			if (command === "session" && args === "snapshot") {
 				this.editor.setText("");
 				await this.handleSessionSnapshotCommand();
 				return;
 			}
-			if (text === "/tools") {
+			if (bare("tools")) {
 				this.editor.setText("");
 				await this.handleToolsCommand();
 				return;
 			}
-			if (text === "/changelog") {
+			if (bare("changelog")) {
 				this.handleChangelogCommand();
 				this.editor.setText("");
 				return;
 			}
-			if (text === "/hotkeys") {
+			if (bare("hotkeys")) {
 				this.handleHotkeysCommand();
 				this.editor.setText("");
 				return;
 			}
-			if (text === "/fork") {
+			if (bare("fork")) {
 				this.showUserMessageSelector();
 				this.editor.setText("");
 				return;
 			}
-			if (text === "/clone") {
+			if (bare("clone")) {
 				this.editor.setText("");
 				await this.handleCloneCommand();
 				return;
 			}
-			if (text === "/tree") {
+			if (bare("tree")) {
 				this.showTreeSelector();
 				this.editor.setText("");
 				return;
 			}
-			if (text === "/trust") {
+			if (bare("trust")) {
 				this.showTrustSelector();
 				this.editor.setText("");
 				return;
 			}
-			if (/^\/login(?:\s|$)/.test(text)) {
+			if (command === "login") {
 				this.editor.setText("");
-				await this.handleLoginCommand(text.slice("/login".length).trim() || undefined);
+				await this.handleLoginCommand(argument);
 				return;
 			}
-			if (/^\/logout(?:\s|$)/.test(text)) {
+			if (command === "logout") {
 				this.editor.setText("");
-				await this.showOAuthSelector("logout", text.slice("/logout".length).trim() || undefined);
+				await this.showOAuthSelector("logout", argument);
 				return;
 			}
-			if (text === "/new") {
+			if (bare("new")) {
 				this.editor.setText("");
 				await this.handleClearCommand();
 				return;
 			}
-			if (/^\/compact(?:\s|$)/.test(text)) {
+			if (command === "compact") {
 				this.editor.setText("");
-				if (text !== "/compact") {
+				if (args !== "") {
 					this.showWarning("Usage: /compact");
 					return;
 				}
@@ -382,33 +386,33 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 				await this.handleCompactCommand();
 				return;
 			}
-			if (text === "/reload") {
+			if (bare("reload")) {
 				this.editor.setText("");
 				await this.ensureDeferredStartupComplete();
 				await this.handleReloadCommand();
 				return;
 			}
-			if (text === "/debug") {
+			if (bare("debug")) {
 				this.handleDebugCommand();
 				this.editor.setText("");
 				return;
 			}
-			if (text === "/arminsayshi") {
+			if (bare("arminsayshi")) {
 				this.handleArminSaysHi();
 				this.editor.setText("");
 				return;
 			}
-			if (text === "/dementedelves") {
+			if (bare("dementedelves")) {
 				this.handleDementedDelves();
 				this.editor.setText("");
 				return;
 			}
-			if (text === "/resume") {
+			if (bare("resume")) {
 				this.showSessionSelector();
 				this.editor.setText("");
 				return;
 			}
-			if (text === "/quit" || text === "/exit") {
+			if (bare("quit") || bare("exit")) {
 				this.editor.setText("");
 				await this.shutdown();
 				return;
