@@ -7,6 +7,27 @@ import { processStartToken, setNativeProcessCreationTimeForTesting } from "../sr
 const windows = process.platform === "win32";
 /** A process id no live process has: Windows assigns multiples of four, Linux ids stay below 2^22. */
 const MISSING_PID = 2 ** 22 + 7;
+const READ_DEADLINE_MS = 30_000;
+
+function sleep(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function watchEventLoop(): { stop(): number } {
+	let last = performance.now();
+	let longestStallMs = 0;
+	const timer = setInterval(() => {
+		const now = performance.now();
+		longestStallMs = Math.max(longestStallMs, now - last);
+		last = now;
+	}, 5);
+	return {
+		stop: () => {
+			clearInterval(timer);
+			return Math.max(longestStallMs, performance.now() - last);
+		},
+	};
+}
 
 async function runningChild() {
 	const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
@@ -70,6 +91,39 @@ describe("the start of a process of this host (#5141)", () => {
 				assert.equal(processStartToken(child.pid), native);
 				assert.equal(processStartToken(process.pid), processStartToken(process.pid));
 				assert.equal(processStartToken(MISSING_PID), undefined);
+			} finally {
+				await child.stop();
+			}
+		},
+		60_000,
+	);
+
+	test.skipIf(!windows)(
+		"without the native module, reading a start never holds up the event loop (#5315)",
+		async () => {
+			const child = await runningChild();
+			try {
+				const native = processStartToken(child.pid);
+				setNativeProcessCreationTimeForTesting(null);
+				const loop = watchEventLoop();
+				const started = performance.now();
+				let start = processStartToken(child.pid);
+				const heldMs = performance.now() - started;
+				while (start === undefined && performance.now() - started < READ_DEADLINE_MS) {
+					await sleep(10);
+					start = processStartToken(child.pid);
+				}
+				const readMs = performance.now() - started;
+				const longestStallMs = loop.stop();
+				assert.equal(start, native);
+				assert.ok(
+					heldMs < readMs / 2,
+					`the read held the main thread for ${Math.round(heldMs)} ms of its ${Math.round(readMs)} ms`,
+				);
+				assert.ok(
+					longestStallMs < readMs / 2,
+					`the event loop stalled for ${Math.round(longestStallMs)} ms of the read's ${Math.round(readMs)} ms`,
+				);
 			} finally {
 				await child.stop();
 			}
