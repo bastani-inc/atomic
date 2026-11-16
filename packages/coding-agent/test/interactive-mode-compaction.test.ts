@@ -21,6 +21,7 @@ import {
 	CompactionBoundaryMessageComponent,
 	compactionBoundaryFromMessage,
 } from "../src/modes/interactive/components/compaction-boundary-message.js";
+import { WorkingRunMeter } from "../src/modes/interactive/components/working-run-meter.js";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
 import { getMarkdownTheme, initTheme, theme } from "../src/modes/interactive/theme/theme.js";
 import { createHarness, getUserTexts } from "./suite/harness.js";
@@ -134,6 +135,7 @@ function makeMode(messages: AgentMessage[] = persistedContextMessages, showCache
 		resourceDisclosureContainer,
 		startupNoticesContainer,
 		pendingTools: new Map(),
+		workingRunMeter: new WorkingRunMeter(),
 		compactionQueuedMessages: [] as Array<{ text: string; mode: "steer" | "followUp" }>,
 		manualCompactionTakeoverPending: false,
 		get compactionActive() {
