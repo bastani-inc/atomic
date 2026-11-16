@@ -154,6 +154,19 @@ export type { AppMode } from "./main-app-mode.ts";
 export { resolveExcludedToolsForAppMode } from "./main-app-mode.ts";
 export type { MainOptions } from "./main-types.ts";
 
+function sessionFallbackModelDiagnostics(
+	parsed: Args,
+	session: Pick<AgentSession, "settingsManager" | "modelRuntime" | "model">,
+): AgentSessionRuntimeDiagnostic[] {
+	const model = session.model;
+	return unresolvedFallbackModelDiagnostics(
+		parsed,
+		session.settingsManager,
+		session.modelRuntime,
+		model && !isUnknownModel(model) ? model.provider : session.settingsManager.getDefaultProvider(),
+	);
+}
+
 function collectExtensionLoadDiagnostics(
 	extensions: LoadExtensionsResult,
 	interactive = false,
@@ -1062,14 +1075,7 @@ export async function main(argv: string[], options?: MainOptions) {
 						}
 						await created.session.completeStartupResources(finalServices.resourceLoader);
 						if (appMode !== "interactive") {
-							finalServices.diagnostics.push(
-								...unresolvedFallbackModelDiagnostics(
-									parsed,
-									settingsManager,
-									modelRuntime,
-									created.session.model?.provider ?? settingsManager.getDefaultProvider(),
-								),
-							);
+							finalServices.diagnostics.push(...sessionFallbackModelDiagnostics(parsed, created.session));
 						}
 						const completedDiagnostics = deduplicateDiagnostics(finalServices.diagnostics);
 						services.diagnostics = completedDiagnostics;
@@ -1100,16 +1106,7 @@ export async function main(argv: string[], options?: MainOptions) {
 				await created.session.setThinkingLevel(created.session.thinkingLevel);
 			}
 			if (!deferModelScopeDiagnostics && !isolateInteractiveHost) {
-				diagnostics.push(
-					...unresolvedFallbackModelDiagnostics(
-						parsed,
-						settingsManager,
-						modelRuntime,
-						created.session.model && !isUnknownModel(created.session.model)
-							? created.session.model.provider
-							: settingsManager.getDefaultProvider(),
-					),
-				);
+				diagnostics.push(...sessionFallbackModelDiagnostics(parsed, created.session));
 			}
 			return {
 				...created,
@@ -1204,12 +1201,7 @@ export async function main(argv: string[], options?: MainOptions) {
 			deferInteractiveEngineResources: deferredExtensionLoad,
 			onStartupReload: deferredExtensionLoad
 				? async (reloadedSession) => {
-						const fallbackDiagnostics = unresolvedFallbackModelDiagnostics(
-							parsed,
-							reloadedSession.settingsManager,
-							reloadedSession.modelRuntime,
-							reloadedSession.model?.provider ?? reloadedSession.settingsManager.getDefaultProvider(),
-						);
+						const fallbackDiagnostics = sessionFallbackModelDiagnostics(parsed, reloadedSession);
 						const patterns = parsed.models ?? reloadedSession.settingsManager.getEnabledModels();
 						if (!patterns || patterns.length === 0) {
 							reportDiagnostics(fallbackDiagnostics);
@@ -1261,13 +1253,7 @@ export async function main(argv: string[], options?: MainOptions) {
 			deferredModelScopePreserveThinking: parsed.thinking !== undefined,
 			deferredFallbackModelCheck:
 				deferredExtensionLoad && !isolateInteractiveHost
-					? (session) =>
-							unresolvedFallbackModelDiagnostics(
-								parsed,
-								session.settingsManager,
-								session.modelRuntime,
-								session.model?.provider ?? session.settingsManager.getDefaultProvider(),
-							)
+					? (session) => sessionFallbackModelDiagnostics(parsed, session)
 					: undefined,
 			terminal: options?.internalInteractiveHarness?.terminal,
 		});

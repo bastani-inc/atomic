@@ -49,6 +49,7 @@ async function completeDeferredStartup(mode: { options: InteractiveMode["options
 		reload: async () => {},
 		resourceLoader: { getThemes: () => ({ themes: [] }) },
 		getToolStatus: () => ({ missing: [] }),
+		...mode.session,
 	});
 	const harness = Object.assign(
 		{
@@ -311,12 +312,14 @@ describe("applyDeferredModelScope", () => {
 					throw new Error("model selection failed");
 				}),
 			};
+			const deferredFallbackModelCheck = vi.fn(() =>
+				unresolvedFallbackModelDiagnostics(parsed, settingsManager, modelRuntime, session.model?.provider),
+			);
 			const mode = {
 				options: {
 					deferredModelScopePatterns: selection === "scope" ? ["extension-provider/shared-model"] : undefined,
 					modelFallbackMessage: selection === "restore" ? "Could not restore saved model" : undefined,
-					deferredFallbackModelCheck: () =>
-						unresolvedFallbackModelDiagnostics(parsed, settingsManager, modelRuntime, session.model?.provider),
+					deferredFallbackModelCheck,
 				},
 				session,
 				sessionManager: {
@@ -335,7 +338,68 @@ describe("applyDeferredModelScope", () => {
 
 			assert.equal(session.setModel.mock.calls.length, 1);
 			assert.equal(session.model?.provider, "initial-provider");
+			assert.equal(deferredFallbackModelCheck.mock.calls.length, 1);
 			assert.deepEqual(showError.mock.calls, [["Extension loading failed: model selection failed"]]);
+			assert.deepEqual(
+				showWarning.mock.calls.map(([message]) => message.match(/entry "([^"]+)"/)?.[1]),
+				["ghost/no-model"],
+			);
+		});
+	}
+
+	for (const failureStep of ["bind", "completeStartup", "reload"] as const) {
+		it(`still reports invalid fallback entries once when deferred ${failureStep} fails (#5247)`, async () => {
+			const registry = await createInMemoryModelRegistry(AuthStorage.inMemory());
+			registerExtensionModel(registry, "initial-provider", "primary-model");
+			const modelRuntime = getModelRuntime(registry);
+			const settingsManager = SettingsManager.inMemory({
+				fallbackModels: ["initial-provider/primary-model", "ghost/no-model"],
+			});
+			const parsed = parseArgs([]);
+			const showWarning = vi.fn();
+			const showError = vi.fn();
+			const session = {
+				model: registry.find("initial-provider", "primary-model"),
+				modelRuntime,
+				settingsManager,
+				reload:
+					failureStep === "reload"
+						? vi.fn(async () => {
+								throw new Error("reload failed");
+							})
+						: vi.fn(async () => {}),
+			};
+			const deferredFallbackModelCheck = vi.fn(() =>
+				unresolvedFallbackModelDiagnostics(parsed, settingsManager, modelRuntime, session.model?.provider),
+			);
+			const mode = {
+				options: { deferredFallbackModelCheck },
+				bindCurrentSessionExtensions:
+					failureStep === "bind"
+						? async () => {
+								throw new Error("bind failed");
+							}
+						: async () => {},
+				runtimeHost:
+					failureStep === "completeStartup"
+						? {
+								completeStartup: async () => {
+									throw new Error("completeStartup failed");
+								},
+								services: { diagnostics: [] },
+							}
+						: undefined,
+				session,
+				sessionManager: { buildSessionContext: () => ({ messages: [] }) },
+				settingsManager,
+				showWarning,
+				showError,
+			};
+
+			await completeDeferredStartup(mode);
+
+			assert.equal(deferredFallbackModelCheck.mock.calls.length, 1);
+			assert.deepEqual(showError.mock.calls, [[`Extension loading failed: ${failureStep} failed`]]);
 			assert.deepEqual(
 				showWarning.mock.calls.map(([message]) => message.match(/entry "([^"]+)"/)?.[1]),
 				["ghost/no-model"],
@@ -578,8 +642,10 @@ describe("retryDeferredModelRestore", () => {
 		const showWarning = vi.fn();
 		const mode = {
 			options: { modelFallbackMessage: "Could not restore saved model" },
+			settingsManager: SettingsManager.inMemory(),
 			sessionManager: {
 				buildSessionContext: () => ({
+					messages: [],
 					model: { provider: exactModel.provider, modelId: exactModel.id },
 				}),
 			},
@@ -600,5 +666,95 @@ describe("retryDeferredModelRestore", () => {
 		expect(mode.session.modelRuntime.getAvailableSnapshot).not.toHaveBeenCalled();
 		expect(setModel).not.toHaveBeenCalled();
 		expect(showWarning).toHaveBeenCalledWith("Could not restore saved model", undefined);
+	});
+
+	it("retries the configured default or keeps an already-selected model when a message-less session's saved model is gone (#5247)", async () => {
+		const credentials = AuthStorage.inMemory({
+			"github-copilot": { type: "api_key", key: "test-key" },
+		});
+		const registry = await createInMemoryModelRegistry(credentials);
+		registerExtensionModel(registry, "deferred-extension", "deferred-model");
+		const modelRuntime = getModelRuntime(registry);
+		const settingsManager = SettingsManager.inMemory({
+			defaultProvider: "deferred-extension",
+			defaultModel: "deferred-model",
+			defaultThinkingLevel: "high",
+		});
+		const expectedDefault = registry.find("deferred-extension", "deferred-model");
+		assert.ok(expectedDefault);
+
+		const setModelPending = vi.fn();
+		const setThinkingPending = vi.fn();
+		const warnPending = vi.fn();
+		await InteractiveMode.prototype.retryDeferredModelRestore.call({
+			options: { modelFallbackMessage: genericUnsupportedWarning },
+			settingsManager,
+			sessionManager: {
+				buildSessionContext: () => ({
+					messages: [],
+					model: { provider: "gone-provider", modelId: "old-model" },
+				}),
+			},
+			session: {
+				model: { ...claudeModel, provider: "unknown", id: "unknown", api: "unknown" },
+				modelRuntime,
+				setModel: setModelPending,
+				setThinkingLevel: setThinkingPending,
+			},
+			showWarning: warnPending,
+		} as never);
+		expect(setModelPending).toHaveBeenCalledWith(expectedDefault);
+		expect(setThinkingPending).toHaveBeenCalledWith("high");
+		expect(warnPending).not.toHaveBeenCalled();
+
+		const setModelReady = vi.fn();
+		const warnReady = vi.fn();
+		await InteractiveMode.prototype.retryDeferredModelRestore.call({
+			options: { modelFallbackMessage: genericUnsupportedWarning },
+			settingsManager,
+			sessionManager: {
+				buildSessionContext: () => ({
+					messages: [],
+					model: { provider: "gone-provider", modelId: "old-model" },
+				}),
+			},
+			session: {
+				model: expectedDefault,
+				modelRuntime,
+				setModel: setModelReady,
+				setThinkingLevel: vi.fn(),
+			},
+			showWarning: warnReady,
+		} as never);
+		expect(setModelReady).not.toHaveBeenCalled();
+		expect(warnReady).not.toHaveBeenCalled();
+
+		for (const context of [
+			{
+				messages: [{ role: "user", content: "hello", timestamp: 1 }],
+				model: { provider: "gone-provider", modelId: "old-model" },
+			},
+			{
+				messages: [],
+				model: { provider: "github-copilot", modelId: "uncached-copilot-fast" },
+			},
+		]) {
+			const setModelPreserved = vi.fn();
+			const warnPreserved = vi.fn();
+			await InteractiveMode.prototype.retryDeferredModelRestore.call({
+				options: { modelFallbackMessage: "Could not restore saved model" },
+				settingsManager,
+				sessionManager: { buildSessionContext: () => context },
+				session: {
+					model: { ...claudeModel, provider: "unknown", id: "unknown", api: "unknown" },
+					modelRuntime,
+					setModel: setModelPreserved,
+					setThinkingLevel: vi.fn(),
+				},
+				showWarning: warnPreserved,
+			} as never);
+			expect(setModelPreserved).not.toHaveBeenCalled();
+			expect(warnPreserved).toHaveBeenCalledWith("Could not restore saved model", undefined);
+		}
 	});
 });

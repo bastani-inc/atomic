@@ -53,7 +53,6 @@ export interface InteractiveModeOptions {
 	deferredModelScopePatterns?: string[];
 	/** Preserve an explicit CLI thinking level when applying deferred model-scope suffixes. */
 	deferredModelScopePreserveThinking?: boolean;
-	/** Fallback chain entries checked again after deferred extension load registers providers. */
 	deferredFallbackModelCheck?: (
 		session: Pick<AgentSession, "settingsManager" | "modelRuntime" | "model">,
 	) => AgentSessionRuntimeDiagnostic[];

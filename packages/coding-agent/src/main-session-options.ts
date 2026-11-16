@@ -8,8 +8,7 @@ import type { CreateAgentSessionOptions } from "./core/sdk.ts";
 import type { SettingsManager } from "./core/settings-manager.ts";
 
 /**
- * The fallback chain the CLI arguments give a session: `[]` for none, the `--fallback-models` list, or `undefined` to
- * follow the `fallbackModels` setting. A model named with --model runs as named: it falls back only to the models
+ * A model named with --model runs as named: it falls back only to the models
  * --fallback-models names, never to the settings fallbackModels, user or project, as a subagent launched on a named
  * model does (#4223). --no-fallback turns fallback off for any session. Child sessions inherit this chain.
  */
@@ -20,11 +19,7 @@ export function cliFallbackChain(parsed: Args): string[] | undefined {
 	return undefined;
 }
 
-/**
- * One warning per distinct entry of the session's fallback chain that names no model with configured credentials;
- * the chain skips it. Run it only once extensions have registered their providers, or an extension's model is
- * reported as missing.
- */
+/** One warning per distinct fallback entry that names no model with configured credentials; the chain skips it. */
 export function unresolvedFallbackModelDiagnostics(
 	parsed: Args,
 	settingsManager: SettingsManager,

@@ -195,3 +195,84 @@ test(
 	},
 	REAL_STARTUP_RPC_TIMEOUT_MS,
 );
+
+test(
+	"startup trust uses the configured default provider for bare fallback ids when the session stays on the unknown placeholder (#5247)",
+	async () => {
+		const root = mkdtempSync(join(tmpdir(), "atomic-startup-fallback-placeholder-"));
+		const cwd = join(root, "project");
+		const agentDir = join(root, "agent");
+		mkdirSync(join(cwd, ".atomic", "extensions"), { recursive: true });
+		mkdirSync(agentDir, { recursive: true });
+		writeFileSync(join(cwd, ".atomic", "extensions", "noop.ts"), "export default function() {}\n");
+		writeFileSync(
+			join(agentDir, "auth.json"),
+			JSON.stringify({
+				"github-copilot": { type: "api_key", key: "local-test-key" },
+				openai: { type: "api_key", key: "local-test-key" },
+			}),
+		);
+		writeFileSync(
+			join(agentDir, "settings.json"),
+			JSON.stringify({
+				defaultProvider: "github-copilot",
+				defaultModel: "not-in-copilot-cache",
+				fallbackModels: ["gpt-5.3-codex", "ghost/no-model", "ghost/no-model"],
+				defaultProjectTrust: "ask",
+			}),
+		);
+		const trustPrompt = Promise.withResolvers<RpcExtensionUIRequest>();
+		const invalidWarning = Promise.withResolvers<void>();
+		const client = new RpcClient({
+			cliPath,
+			cwd,
+			runtimeExecutable: bunExecutable(),
+			args: [
+				"--no-session",
+				"--offline",
+				"--no-skills",
+				"--no-themes",
+				"--no-prompt-templates",
+				"--no-context-files",
+			],
+			env: { ATOMIC_CODING_AGENT_DIR: agentDir, PI_CODING_AGENT_DIR: "" },
+			interactiveEngine: {
+				onDiagnostic: ({ message }) => {
+					if (message.includes('fallbackModels setting entry "ghost/no-model"')) invalidWarning.resolve();
+				},
+			},
+		});
+		client.onExtensionUIRequest((request) => {
+			if (request.method === "select") trustPrompt.resolve(request);
+		});
+		try {
+			await client.start();
+			const request = await trustPrompt.promise;
+			assert.doesNotMatch(client.getStderr(), /fallbackModels setting entry/);
+			await client.respondExtensionUI({
+				type: "extension_ui_response",
+				id: request.id,
+				value: "Trust (this session only)",
+			});
+			await client.waitForInteractiveEngineResources();
+			await invalidWarning.promise;
+			const after = await client.getState();
+			assert.equal(after.model?.provider, "unknown");
+			assert.equal(after.model?.id, "unknown");
+			const available = await client.getAvailableModels();
+			const runtimeView = { getModels: () => available, hasConfiguredAuth: () => true };
+			assert.equal(resolveFallbackModel("gpt-5.3-codex", runtimeView, after.model?.provider), undefined);
+			const fallback = resolveFallbackModel("gpt-5.3-codex", runtimeView, "github-copilot");
+			assert.equal(fallback?.model.provider, "github-copilot");
+			assert.equal(fallback?.model.id, "gpt-5.3-codex");
+			assert.deepEqual(
+				[...client.getStderr().matchAll(/fallbackModels setting entry "([^"]+)"/g)].map((match) => match[1]),
+				["ghost/no-model"],
+			);
+		} finally {
+			await client.stop();
+			rmSync(root, { recursive: true, force: true });
+		}
+	},
+	REAL_STARTUP_RPC_TIMEOUT_MS,
+);

@@ -11,6 +11,7 @@ import {
 	resolveModelScopeWithDiagnostics,
 	resolveRestoredModelReference,
 	setRegisteredThemes,
+	uncachedCopilotModelHint,
 } from "./interactive-mode-deps.ts";
 import { releaseStartupChatOutput } from "./interactive-startup-chat-container.ts";
 import { reportUnavailableTools } from "./interactive-unavailable-tools.ts";
@@ -52,6 +53,14 @@ InteractiveModeBase.prototype.ensureDeferredStartupComplete = async function (
  * the same post-load UI wiring as /reload and discloses loaded resources.
  */
 InteractiveModeBase.prototype.completeDeferredStartup = async function (this: InteractiveModeBase): Promise<void> {
+	let fallbackModelsChecked = false;
+	const checkFallbackModels = () => {
+		if (fallbackModelsChecked) return;
+		fallbackModelsChecked = true;
+		for (const diagnostic of this.options.deferredFallbackModelCheck?.(this.session) ?? []) {
+			this.showWarning(diagnostic.message);
+		}
+	};
 	try {
 		await this.bindCurrentSessionExtensions();
 		const completedStartupTrust = Boolean(await this.runtimeHost?.completeStartup?.());
@@ -82,9 +91,7 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function (this: In
 			}
 			await this.retryDeferredModelRestore(this.startupNoticesContainer);
 		} finally {
-			for (const diagnostic of this.options.deferredFallbackModelCheck?.(this.session) ?? []) {
-				this.showWarning(diagnostic.message);
-			}
+			checkFallbackModels();
 		}
 		this.showLoadedResources({
 			force: true,
@@ -114,6 +121,7 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function (this: In
 		}
 		this.deferredStartupPending = false;
 		this.showError(`Extension loading failed: ${error instanceof Error ? error.message : String(error)}`);
+		checkFallbackModels();
 		// The RESOURCES disclosure will not render; surface the held warning.
 		void this.maybeWarnAboutAnthropicSubscriptionAuth(undefined, this.startupNoticesContainer);
 	} finally {
@@ -171,10 +179,8 @@ InteractiveModeBase.prototype.retryDeferredModelRestore = async function (
 	const preliminaryFallbackMessage = this.options.modelFallbackMessage;
 	if (!preliminaryFallbackMessage) return;
 
-	const savedModel = this.sessionManager.buildSessionContext().model;
-	if (!savedModel && this.session.model && this.session.modelRuntime.hasConfiguredAuth(this.session.model.provider)) {
-		return;
-	}
+	const sessionContext = this.sessionManager.buildSessionContext();
+	const savedModel = sessionContext.model;
 	if (savedModel) {
 		const restoredModel = await resolveRestoredModelReference(
 			savedModel.provider,
@@ -185,7 +191,15 @@ InteractiveModeBase.prototype.retryDeferredModelRestore = async function (
 			await this.session.setModel(restoredModel);
 			return;
 		}
-		this.showWarning(preliminaryFallbackMessage, targetContainer);
+		if (
+			sessionContext.messages.length > 0 ||
+			uncachedCopilotModelHint(savedModel.provider, savedModel.modelId, this.session.modelRuntime)
+		) {
+			this.showWarning(preliminaryFallbackMessage, targetContainer);
+			return;
+		}
+	}
+	if (this.session.model && this.session.modelRuntime.hasConfiguredAuth(this.session.model.provider)) {
 		return;
 	}
 
