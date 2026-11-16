@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- A fast foreground shell command no longer delivers a stray `Background shell completed` notice after its own result when the command exits before Atomic has finished starting it. The model was shown the command's result a second time, as a background shell's, in chats and workflow stages alike ([#5333](https://github.com/bastani-inc/atomic/pull/5333))
 - On Windows, concurrent resumes and `atomic blueprint prebuild` runs no longer fail or treat an idle pooled worktree or parked prebuild seed as dirty or unavailable when a pool or seed lock directory was just removed while another process was still checking it. Windows refuses to create that lock directory again with `EPERM` for a moment; the pool and seed locks now retry that refusal for up to 10 seconds of continuous refusals, as the shared object store's repository lock does, while a lock another process holds still reports as busy and a directory that refuses writes for 10 seconds continuously is still reported ([#5320](https://github.com/bastani-inc/atomic/issues/5320))
 
 ## [0.9.88] - 2026-11-16
