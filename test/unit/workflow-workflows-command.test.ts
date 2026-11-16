@@ -173,8 +173,9 @@ describe("/workflows (#5224)", () => {
 			definitions: () => [{ normalizedName: "ralph", description: "iterate a fix", inputs: {} }],
 		});
 		await Promise.resolve();
-		const component = t.pickers[0]({ requestRender() {} }, undefined, undefined, () => {});
+		const component = t.pickers[0]({ requestRender() {}, terminal: { rows: 40 } }, undefined, undefined, () => {});
 		const text = component.render(100).join("\n");
+		assert.ok(text.indexOf("Definitions") >= 0, "the viewport fits both groups");
 		assert.ok(text.indexOf("Runs") < text.indexOf("Definitions"), "runs come first");
 		component.handleInput("\x1b");
 		await pending;
