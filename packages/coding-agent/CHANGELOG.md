@@ -20,7 +20,7 @@
 - `/resume`, `/tree` and `atomic config` keep their headers, search boxes and scroll hints within the terminal width after a narrow resize, avoiding oversized-line errors ([#5256](https://github.com/bastani-inc/atomic/pull/5256)).
 - Sessions with cyclic parent links, such as imported session headers, remain visible in threaded resume history instead of disappearing ([#5256](https://github.com/bastani-inc/atomic/pull/5256)).
 - The MCP manager refreshes empty-state messages and action hints with live menu changes, including when a server is removed while its menu is open ([#5256](https://github.com/bastani-inc/atomic/pull/5256)).
-- A session or workflow row being deleted cannot be resumed, renamed or deleted again while the operation is pending. Other rows can still be resumed, cancellation remains available, and failed deletions can be retried ([#5256](https://github.com/bastani-inc/atomic/pull/5256)).
+- A session or workflow row being deleted cannot be resumed, renamed or deleted again while the operation is pending. Other rows can still be resumed, cancellation remains available, failed deletions can be retried, and the active session is not offered for deletion ([#5256](https://github.com/bastani-inc/atomic/pull/5256)).
 - Resume previews keep the end of long paths and mark shortened titles and summaries with an ellipsis instead of silently cutting them ([#5256](https://github.com/bastani-inc/atomic/pull/5256)).
 
 ## [0.9.88] - 2026-11-16

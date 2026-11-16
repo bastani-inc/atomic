@@ -542,7 +542,7 @@ export class SessionList implements Component, Focusable {
 		}
 		if (selected && this.canRename && !selectedDeleting)
 			entries.push({ action: "app.session.rename", label: "rename" });
-		if (selected && this.canDelete && !this.deletingSessionPath)
+		if (selected && this.canDelete && !this.deletingSessionPath && !this.isCurrentSession(selected.session))
 			entries.push({ action: "app.session.delete", label: "delete" });
 		entries.push({ keys: "type", label: "to search" });
 		const cancel = navActionText(kb, "tui.select.cancel").split("/")[0] || "esc";

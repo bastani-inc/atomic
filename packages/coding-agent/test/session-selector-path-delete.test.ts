@@ -107,6 +107,27 @@ describe("session selector path/delete interactions", () => {
 		// session selector uses the global theme instance
 		initTheme("dark");
 	});
+	it("does not offer deletion for the active session (#5256)", () => {
+		const sessions = [makeSession({ id: "active" }), makeSession({ id: "other" })];
+		const selector = new SessionSelectorComponent(
+			async () => sessions,
+			async () => sessions,
+			() => {},
+			() => {},
+			() => {},
+			() => {},
+			{ keybindings, initialSessions: sessions, deleteSession: async () => {} },
+			{ id: "active", directory: dirname(sessions[0]!.path) },
+		);
+		try {
+			assert.doesNotMatch(stripAnsi(selector.render(300).at(-2) ?? ""), /ctrl\+d delete/);
+			selector.handleInput("\x1b[B");
+			assert.match(stripAnsi(selector.render(300).at(-2) ?? ""), /ctrl\+d delete/);
+		} finally {
+			selector.dispose();
+		}
+	});
+
 	it("deletes a SQLite session through its selected store after confirmation", async () => {
 		const directory = mkdtempSync(join(tmpdir(), "session-selector-sqlite-"));
 		tempDirs.push(directory);
