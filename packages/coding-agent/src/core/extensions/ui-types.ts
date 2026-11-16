@@ -166,6 +166,15 @@ export type HostCustomUiStateListener = (state: HostCustomUiState) => void;
 /** Supported field kinds for the host-native input form. */
 export type HostInputFormFieldType = "string" | "text" | "number" | "integer" | "boolean" | "select";
 
+/** A JSON value, as a host input form field's {@link HostInputFormField.schema} holds. */
+export type HostInputFormJson =
+	| string
+	| number
+	| boolean
+	| null
+	| readonly HostInputFormJson[]
+	| { readonly [key: string]: HostInputFormJson };
+
 /** JSON-safe field descriptor for {@link ExtensionUIContext.hostInputForm}. */
 export interface HostInputFormField {
 	name: string;
@@ -185,6 +194,7 @@ export interface HostInputFormField {
 	maxLength?: number;
 	pattern?: string;
 	format?: string;
+	schema?: { readonly [key: string]: HostInputFormJson };
 }
 
 /** Request for a host-owned inline input form. */

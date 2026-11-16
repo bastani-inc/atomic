@@ -51,6 +51,14 @@ import { getWorkflowStatusRenderRuns } from "./workflow-status-summary.js";
  * canonical `RunSnapshot` shape directly; the intermediate `runs` projection
  * is gone. */
 
+export type WorkflowInputJson =
+	| string
+	| number
+	| boolean
+	| null
+	| readonly WorkflowInputJson[]
+	| { readonly [key: string]: WorkflowInputJson };
+
 export interface WorkflowInputEntry {
 	name: string;
 	type: string;
@@ -69,6 +77,7 @@ export interface WorkflowInputEntry {
 	maxLength?: number;
 	pattern?: string;
 	format?: string;
+	schema?: { readonly [key: string]: WorkflowInputJson };
 }
 
 /**

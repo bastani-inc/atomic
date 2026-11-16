@@ -51,6 +51,7 @@ export async function openHostInputsForm(
 		...(field.maxLength !== undefined ? { maxLength: field.maxLength } : {}),
 		...(field.pattern !== undefined ? { pattern: field.pattern } : {}),
 		...(field.format !== undefined ? { format: field.format } : {}),
+		...(field.schema !== undefined ? { schema: field.schema } : {}),
 	}));
 	try {
 		const raw = await open.call(ui, {

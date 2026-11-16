@@ -1,4 +1,5 @@
 import type { ChatMessageRenderOptions, ChatSessionViewportSettings } from "@bastani/atomic";
+import type { WorkflowInputJson } from "./render-result.js";
 
 // ---------------------------------------------------------------------------
 // UI adapter — maps pi ctx.ui dialog surface to WorkflowUIAdapter
@@ -183,6 +184,7 @@ export interface PiHostInputFormField {
 	maxLength?: number;
 	pattern?: string;
 	format?: string;
+	schema?: { readonly [key: string]: WorkflowInputJson };
 }
 
 export interface PiHostInputFormRequest {

@@ -127,6 +127,11 @@ export function deriveInputField(name: string, schema: TSchema): WorkflowInputEn
 	if (typeof m.maxLength === "number" && Number.isFinite(m.maxLength)) entry.maxLength = m.maxLength;
 	if (typeof m.pattern === "string") entry.pattern = m.pattern;
 	if (typeof m.format === "string") entry.format = m.format;
+	if (entry.type === "unknown" || entry.type === "object" || entry.type === "array") {
+		try {
+			entry.schema = JSON.parse(JSON.stringify(schema)) as WorkflowInputEntry["schema"];
+		} catch {}
+	}
 	return entry;
 }
 

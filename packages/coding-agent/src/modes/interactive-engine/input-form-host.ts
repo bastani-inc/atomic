@@ -36,6 +36,14 @@ export class InputFormHostController {
 			this.mounted.delete(message.componentId);
 			return;
 		}
+		if (message.type === "engine_input_form_refused") {
+			this.runtime.sendEngineCommand({
+				type: "engine_input_form_error",
+				componentId: message.componentId,
+				message: "The host could not read this input form.",
+			});
+			return;
+		}
 		if (message.type === "engine_input_form_open") {
 			this.open(message.componentId, {
 				title: message.title,

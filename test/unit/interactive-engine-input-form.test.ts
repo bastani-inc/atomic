@@ -147,14 +147,32 @@ describe("engine input form protocol", () => {
 			values: { prompt: "x", enabled: "true" },
 		} as const;
 		assert.deepEqual(parseInteractiveEngineCommand(serializeInteractiveEngineFrame(submit)), submit);
-		assert.equal(
+		assert.deepEqual(
 			parseInteractiveEngineMessage(
 				JSON.stringify({ ...open, fields: [{ name: "x", type: "wat", initialValue: "" }] }),
 			),
-			undefined,
+			{ type: "engine_input_form_refused", componentId: "f1" },
 		);
 		assert.equal(parseInteractiveEngineCommand(JSON.stringify({ ...submit, values: { prompt: 1 } })), undefined);
 	});
+});
+
+test("a form the host cannot read fails its open instead of leaving it waiting (#5245)", async () => {
+	const bridge = makeBridge();
+	const result = bridge.child.open({
+		title: "demo",
+		fields: [{ name: "prompt", type: "string", initialValue: "", description: 7 as unknown as string }],
+	});
+	const settled = await Promise.race([
+		result.then(
+			() => "resolved",
+			(error: Error) => error.message,
+		),
+		sleep(200).then(() => "pending"),
+	]);
+	assert.equal(settled, "The host could not read this input form.");
+	assert.equal(bridge.mounts.length, 0);
+	bridge.controller.dispose();
 });
 
 describe("host-native input form", () => {

@@ -136,6 +136,7 @@ export type InteractiveEngineMessage =
 			heading?: string;
 			submitLabel?: string;
 	  }
+	| { type: "engine_input_form_refused"; componentId: string }
 	| { type: "engine_input_form_close"; componentId: string };
 /**
  * The host is quitting because the user asked to, not because a signal ended the
@@ -223,7 +224,8 @@ export type InteractiveEngineCommand =
 	| { type: "engine_session_picker_cancel"; componentId: string }
 	| { type: "engine_session_picker_delete"; componentId: string; path: string }
 	| { type: "engine_input_form_submit"; componentId: string; values: Record<string, string> }
-	| { type: "engine_input_form_cancel"; componentId: string };
+	| { type: "engine_input_form_cancel"; componentId: string }
+	| { type: "engine_input_form_error"; componentId: string; message: string };
 
 const ACTIVITY_KINDS: readonly CallbackActivityKind[] = [
 	"extension.hook",
@@ -439,6 +441,7 @@ function parseInputFormFields(value: JsonValue | undefined): HostInputFormField[
 			maxLength,
 			pattern,
 			format,
+			schema,
 		} = entry;
 		if (
 			typeof name !== "string" ||
@@ -476,6 +479,7 @@ function parseInputFormFields(value: JsonValue | undefined): HostInputFormField[
 		if (maxLength !== undefined && (typeof maxLength !== "number" || !Number.isFinite(maxLength))) return undefined;
 		if (pattern !== undefined && typeof pattern !== "string") return undefined;
 		if (format !== undefined && typeof format !== "string") return undefined;
+		if (schema !== undefined && !isJsonObject(schema)) return undefined;
 		fields.push({
 			name,
 			type: type as HostInputFormField["type"],
@@ -494,6 +498,7 @@ function parseInputFormFields(value: JsonValue | undefined): HostInputFormField[
 			...(typeof maxLength === "number" ? { maxLength } : {}),
 			...(typeof pattern === "string" ? { pattern } : {}),
 			...(typeof format === "string" ? { format } : {}),
+			...(schema !== undefined && isJsonObject(schema) ? { schema: schema as HostInputFormField["schema"] } : {}),
 		});
 	}
 	return fields;
@@ -739,8 +744,9 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 				? { type: value.type, componentId: value.componentId }
 				: undefined;
 		case "engine_input_form_open": {
+			if (typeof value.componentId !== "string") return undefined;
 			const fields = parseInputFormFields(value.fields);
-			return typeof value.componentId === "string" && typeof value.title === "string" && fields
+			return typeof value.title === "string" && fields
 				? {
 						type: value.type,
 						componentId: value.componentId,
@@ -749,7 +755,7 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 						...(typeof value.heading === "string" ? { heading: value.heading } : {}),
 						...(typeof value.submitLabel === "string" ? { submitLabel: value.submitLabel } : {}),
 					}
-				: undefined;
+				: { type: "engine_input_form_refused", componentId: value.componentId };
 		}
 		default:
 			return undefined;
@@ -822,6 +828,8 @@ export function parseInteractiveEngineCommand(line: string): InteractiveEngineCo
 	}
 	if (value.type === "engine_session_picker_cancel") return { type: value.type, componentId: value.componentId };
 	if (value.type === "engine_input_form_cancel") return { type: value.type, componentId: value.componentId };
+	if (value.type === "engine_input_form_error" && typeof value.message === "string")
+		return { type: value.type, componentId: value.componentId, message: value.message };
 	if (value.type === "engine_input_form_submit") {
 		const values = parseStringRecord(value.values);
 		return values ? { type: value.type, componentId: value.componentId, values } : undefined;

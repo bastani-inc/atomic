@@ -65,18 +65,45 @@ function sanitizeSingleLine(value: string): string {
 	return sanitizeDisplayText(value).replace(/\n/g, " ");
 }
 
-function firstSchemaError(def: TSchema, value: number | string, kind: string): string {
-	const first = [...Value.Errors(def, value)][0];
+const INVALID_PATTERN = "invalid pattern in the workflow schema";
+
+function firstSchemaError(def: TSchema, value: unknown, kind: string): string {
+	const errors = [...Value.Errors(def, value)];
+	const depth = (path: string): number => path.split("/").length;
+	const first = errors.reduce<(typeof errors)[number] | undefined>(
+		(best, error) => (best === undefined || depth(error.schemaPath) < depth(best.schemaPath) ? error : best),
+		undefined,
+	);
 	if (first === undefined) return `does not match ${kind} schema`;
+	const where = first.instancePath ? `${first.instancePath} ` : "";
 	switch (first.keyword) {
 		case "const":
-			return `must equal ${JSON.stringify(first.params.allowedValue)}`;
+			return `${where}must equal ${JSON.stringify(first.params.allowedValue)}`;
 		case "minLength":
 		case "maxLength":
-			return `${first.message} (${first.keyword} ${first.params.limit})`;
+			return `${where}${first.message} (${first.keyword} ${first.params.limit})`;
 		default:
-			return first.message;
+			return `${where}${first.message}`;
 	}
+}
+
+function checkSchema(schema: TSchema, value: unknown, kind: string): string | undefined {
+	try {
+		return Value.Check(schema, value) ? undefined : firstSchemaError(schema, value, kind);
+	} catch (error) {
+		return error instanceof SyntaxError ? INVALID_PATTERN : undefined;
+	}
+}
+
+function schemaValue(schema: TSchema, text: string): unknown {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(text);
+	} catch {
+		return text;
+	}
+	if (checkSchema(schema, parsed, "value") === undefined) return parsed;
+	return checkSchema(schema, text, "value") === undefined ? text : parsed;
 }
 
 function schemaConstraintReason(field: HostInputFormField, value: number | string): string | undefined {
@@ -102,7 +129,7 @@ function schemaConstraintReason(field: HostInputFormField, value: number | strin
 			...(field.multipleOf !== undefined ? { multipleOf: field.multipleOf } : {}),
 		};
 		const schema = field.type === "integer" ? Type.Integer(opts) : Type.Number(opts);
-		return Value.Check(schema, value) ? undefined : firstSchemaError(schema, value, field.type);
+		return checkSchema(schema, value, field.type);
 	}
 	if (typeof value !== "string") return undefined;
 	if (
@@ -119,7 +146,7 @@ function schemaConstraintReason(field: HostInputFormField, value: number | strin
 		...(field.pattern !== undefined ? { pattern: field.pattern } : {}),
 		...(field.format !== undefined ? { format: field.format } : {}),
 	});
-	return Value.Check(schema, value) ? undefined : firstSchemaError(schema, value, "text");
+	return checkSchema(schema, value, "text");
 }
 
 /** Host-owned form: all key handling and mutable editing state stay in the terminal process. */
@@ -136,6 +163,7 @@ export class HostInputFormComponent implements Component, Focusable {
 	private readonly delegate: HostInputFormDelegate;
 	private focusedIndex: number;
 	private invalid = new Set<number>();
+	private readonly reasons: Array<{ value: string; reason: string | undefined } | undefined> = [];
 	private _focused = true;
 
 	constructor(
@@ -170,8 +198,8 @@ export class HostInputFormComponent implements Component, Focusable {
 					cursorLine: lastLineIdx,
 					cursorCol: (initialLines[lastLineIdx] ?? "").length,
 				});
-				editor.onChange = (text) => {
-					this.values[index] = text;
+				editor.onChange = () => {
+					this.values[index] = editor.getExpandedText();
 				};
 				editor.disableSubmit = true;
 				return editor;
@@ -184,7 +212,7 @@ export class HostInputFormComponent implements Component, Focusable {
 			return input;
 		});
 		const firstInvalid = this.fields.findIndex(
-			(field, index) => this.invalidReason(field, this.values[index]!) !== undefined,
+			(_field, index) => this.invalidReason(index, this.currentValue(index)) !== undefined,
 		);
 		this.focusedIndex = firstInvalid >= 0 ? firstInvalid : 0;
 		this.syncFocus();
@@ -362,12 +390,8 @@ export class HostInputFormComponent implements Component, Focusable {
 			}
 			return;
 		}
-		const beforeText = editor instanceof Input ? editor.getValue() : editor.getExpandedText();
 		editor.handleInput(data);
-		const afterText = editor instanceof Input ? editor.getValue() : editor.getExpandedText();
-		if (afterText !== beforeText) {
-			this.values[fieldIndex] = afterText;
-		}
+		this.values[fieldIndex] = editor instanceof Input ? editor.getValue() : editor.getExpandedText();
 	}
 
 	private handleSelect(data: string, field: HostInputFormField): void {
@@ -434,7 +458,7 @@ export class HostInputFormComponent implements Component, Focusable {
 	private submit(): void {
 		this.invalid = new Set<number>();
 		for (let index = 0; index < this.fields.length; index += 1)
-			if (this.invalidReason(this.fields[index]!, this.currentValue(index))) this.invalid.add(index);
+			if (this.invalidReason(index, this.currentValue(index))) this.invalid.add(index);
 		if (this.invalid.size > 0) {
 			this.focusedIndex = this.invalid.values().next().value ?? 0;
 			this.syncFocus();
@@ -447,7 +471,15 @@ export class HostInputFormComponent implements Component, Focusable {
 		this.delegate.onSubmit(values);
 	}
 
-	private invalidReason(field: HostInputFormField, value: string): string | undefined {
+	private invalidReason(index: number, value: string): string | undefined {
+		const cached = this.reasons[index];
+		if (cached?.value === value) return cached.reason;
+		const reason = this.computeInvalidReason(this.fields[index]!, value);
+		this.reasons[index] = { value, reason };
+		return reason;
+	}
+
+	private computeInvalidReason(field: HostInputFormField, value: string): string | undefined {
 		const empty = value.trim() === "";
 		if (field.required && empty) {
 			if (field.type === "select") return "choose one";
@@ -455,6 +487,10 @@ export class HostInputFormComponent implements Component, Focusable {
 			return "required";
 		}
 		if (empty) return undefined;
+		if (field.schema !== undefined) {
+			const schema = field.schema as TSchema;
+			return checkSchema(schema, schemaValue(schema, value), "value");
+		}
 		if (field.type === "select") {
 			return (field.choices ?? []).includes(value) ? undefined : "not in choices";
 		}
@@ -500,7 +536,7 @@ export class HostInputFormComponent implements Component, Focusable {
 		cw: number,
 	): { line: string; wrappedInvalid?: string } {
 		const safeName = sanitizeSingleLine(field.name);
-		const invalid = this.invalidReason(field, this.currentValue(index));
+		const invalid = this.invalidReason(index, this.currentValue(index));
 		const safeInvalid = invalid !== undefined ? sanitizeSingleLine(invalid) : undefined;
 		const requiredness = field.required ? "required" : "optional";
 		const statusPlain = safeInvalid === undefined ? "✓" : `✗ ${safeInvalid}`;

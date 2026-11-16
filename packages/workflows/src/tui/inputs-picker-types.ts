@@ -7,12 +7,6 @@ import type { GraphTheme } from "./graph-theme.js";
 export interface InputsPickerState {
 	/** Index of the currently-focused field. */
 	focusedIdx: number;
-	/**
-	 * Raw string the user has typed/selected for each field, keyed by name.
-	 * Booleans store `"true"` / `"false"`; numbers store their text form;
-	 * selects store the chosen choice; text/string store the literal value.
-	 * `coerceValues()` converts these into typed objects at submit time.
-	 */
 	rawText: Record<string, string>;
 	/**
 	 * Set of field indices that failed validation on the most recent submit
@@ -41,16 +35,6 @@ export interface InputsPickerRenderOpts {
 // State construction + value coercion
 // ---------------------------------------------------------------------------
 
-/**
- * Seed `rawText` from declared defaults plus any values the user already
- * passed as key=value tokens. Nothing else is chosen for the user: a select
- * or boolean without a default starts unset, as text and numbers do, so a
- * required one must be answered and an optional one is omitted (#5224).
- */
-/**
- * A field's starting text in every inputs form: the value passed on the command line, else the declared default,
- * else nothing. A select or boolean is never preset to its first choice or to off (#5224).
- */
 export function initialInputText(field: WorkflowInputEntry, prefilled: WorkflowInputValues): string {
 	if (prefilled[field.name] !== undefined) return String(prefilled[field.name]);
 	if (field.default !== undefined) return String(field.default);
@@ -101,35 +85,56 @@ export function coerceValues(fields: readonly WorkflowInputEntry[], raw: Record<
 			case "string":
 				out[f.name] = v;
 				break;
-			default: {
-				if ((v.startsWith("{") && v.endsWith("}")) || (v.startsWith("[") && v.endsWith("]"))) {
-					try {
-						out[f.name] = JSON.parse(v) as WorkflowSerializableValue;
-						break;
-					} catch {
-						break;
-					}
-				}
-				out[f.name] = v;
+			default:
+				out[f.name] = structuredValue(f, v);
 				break;
-			}
 		}
 	}
 	return out;
 }
 
-function firstSchemaError(def: TSchema, value: number | string, kind: string): string {
-	const first = [...Value.Errors(def, value)][0];
+const INVALID_PATTERN = "invalid pattern in the workflow schema";
+
+function firstSchemaError(def: TSchema, value: unknown, kind: string): string {
+	const errors = [...Value.Errors(def, value)];
+	const depth = (path: string): number => path.split("/").length;
+	const first = errors.reduce<(typeof errors)[number] | undefined>(
+		(best, error) => (best === undefined || depth(error.schemaPath) < depth(best.schemaPath) ? error : best),
+		undefined,
+	);
 	if (first === undefined) return `does not match ${kind} schema`;
+	const where = first.instancePath ? `${first.instancePath} ` : "";
 	switch (first.keyword) {
 		case "const":
-			return `must equal ${JSON.stringify(first.params.allowedValue)}`;
+			return `${where}must equal ${JSON.stringify(first.params.allowedValue)}`;
 		case "minLength":
 		case "maxLength":
-			return `${first.message} (${first.keyword} ${first.params.limit})`;
+			return `${where}${first.message} (${first.keyword} ${first.params.limit})`;
 		default:
-			return first.message;
+			return `${where}${first.message}`;
 	}
+}
+
+function checkSchema(schema: TSchema, value: unknown, kind: string): string | null {
+	try {
+		return Value.Check(schema, value) ? null : firstSchemaError(schema, value, kind);
+	} catch (error) {
+		return error instanceof SyntaxError ? INVALID_PATTERN : null;
+	}
+}
+
+function structuredValue(field: WorkflowInputEntry, text: string): WorkflowSerializableValue {
+	const schema = field.schema as TSchema | undefined;
+	const looksLikeJson = (text.startsWith("{") && text.endsWith("}")) || (text.startsWith("[") && text.endsWith("]"));
+	if (schema === undefined && !looksLikeJson) return text;
+	let parsed: WorkflowSerializableValue;
+	try {
+		parsed = JSON.parse(text) as WorkflowSerializableValue;
+	} catch {
+		return text;
+	}
+	if (schema === undefined || checkSchema(schema, parsed, "value") === null) return parsed;
+	return checkSchema(schema, text, "value") === null ? text : parsed;
 }
 
 function schemaConstraintReason(field: WorkflowInputEntry, value: number | string): string | null {
@@ -155,7 +160,7 @@ function schemaConstraintReason(field: WorkflowInputEntry, value: number | strin
 			...(field.multipleOf !== undefined ? { multipleOf: field.multipleOf } : {}),
 		};
 		const schema = field.type === "integer" ? Type.Integer(opts) : Type.Number(opts);
-		return Value.Check(schema, value) ? null : firstSchemaError(schema, value, field.type);
+		return checkSchema(schema, value, field.type);
 	}
 	if (typeof value !== "string") return null;
 	if (
@@ -172,10 +177,20 @@ function schemaConstraintReason(field: WorkflowInputEntry, value: number | strin
 		...(field.pattern !== undefined ? { pattern: field.pattern } : {}),
 		...(field.format !== undefined ? { format: field.format } : {}),
 	});
-	return Value.Check(schema, value) ? null : firstSchemaError(schema, value, "text");
+	return checkSchema(schema, value, "text");
 }
 
+const reasons = new WeakMap<WorkflowInputEntry, { value: string; reason: string | null }>();
+
 export function invalidForField(field: WorkflowInputEntry, value: string, _idx: number): string | null {
+	const cached = reasons.get(field);
+	if (cached?.value === value) return cached.reason;
+	const reason = fieldReason(field, value);
+	reasons.set(field, { value, reason });
+	return reason;
+}
+
+function fieldReason(field: WorkflowInputEntry, value: string): string | null {
 	const empty = value.trim() === "";
 	if (field.required && empty) {
 		if (field.type === "select") return "choose one";
@@ -183,6 +198,7 @@ export function invalidForField(field: WorkflowInputEntry, value: string, _idx: 
 		return "required";
 	}
 	if (empty) return null;
+	if (field.schema !== undefined) return checkSchema(field.schema as TSchema, structuredValue(field, value), "value");
 	if (field.type === "select") {
 		return (field.choices ?? []).includes(value) ? null : "not in choices";
 	}

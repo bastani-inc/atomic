@@ -8,6 +8,7 @@ import {
 interface ActiveForm {
 	settled: boolean;
 	resolve: (values: Record<string, string> | undefined) => void;
+	reject: (error: Error) => void;
 }
 
 /** Child-side owner for host-native input forms. */
@@ -23,21 +24,29 @@ export class EngineInputFormService {
 		if (signal?.aborted) return Promise.resolve(undefined);
 		const componentId = `input_form_${++this.nextId}`;
 		let resolveResult!: (values: Record<string, string> | undefined) => void;
-		const result = new Promise<Record<string, string> | undefined>((resolve) => {
+		let rejectResult!: (error: Error) => void;
+		const result = new Promise<Record<string, string> | undefined>((resolve, reject) => {
 			resolveResult = resolve;
+			rejectResult = reject;
 		});
 		const onAbort = () => {
 			this.send({ type: "engine_input_form_close", componentId });
 			record.resolve(undefined);
 		};
+		const settle = (): boolean => {
+			if (record.settled) return false;
+			record.settled = true;
+			signal?.removeEventListener("abort", onAbort);
+			this.active.delete(componentId);
+			return true;
+		};
 		const record: ActiveForm = {
 			settled: false,
 			resolve: (values) => {
-				if (record.settled) return;
-				record.settled = true;
-				signal?.removeEventListener("abort", onAbort);
-				this.active.delete(componentId);
-				resolveResult(values);
+				if (settle()) resolveResult(values);
+			},
+			reject: (error) => {
+				if (settle()) rejectResult(error);
 			},
 		};
 		signal?.addEventListener("abort", onAbort, { once: true });
@@ -60,6 +69,7 @@ export class EngineInputFormService {
 		if (!record) return true;
 		if (command.type === "engine_input_form_submit") record.resolve(command.values);
 		else if (command.type === "engine_input_form_cancel") record.resolve(undefined);
+		else if (command.type === "engine_input_form_error") record.reject(new Error(command.message));
 		return true;
 	}
 
