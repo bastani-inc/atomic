@@ -47,6 +47,8 @@ export class WorkflowAttachPane implements Component {
 	private stageUiBroker: StageUiBroker | undefined;
 	private onClose: () => void;
 	private onHide?: () => void;
+	private onBack?: () => void;
+	private stageActions?: WorkflowAttachPaneOpts["stageActions"];
 	private hostRequestRender?: () => void;
 	private hostRequestFocus?: () => void;
 	private piTui?: TUI;
@@ -98,6 +100,8 @@ export class WorkflowAttachPane implements Component {
 		this.stageUiBroker = opts.stageUiBroker;
 		this.onClose = opts.onClose;
 		this.onHide = opts.onHide;
+		this.onBack = opts.onBack;
+		this.stageActions = opts.stageActions;
 		this.hostRequestRender = opts.requestRender;
 		this.hostRequestFocus = opts.requestFocus;
 		this.piTui = opts.piTui;
@@ -139,8 +143,12 @@ export class WorkflowAttachPane implements Component {
 					suppressInitialPromptSubmit: true,
 				}),
 			onDetach: () => {
-				if (this.onHide) this.onHide();
+				if (this.onBack) this.onBack();
+				else if (this.onHide) this.onHide();
 			},
+			stageActions: this.stageActions,
+			// A retry or fork shows its new run here; the graph that asked is replaced, so wait for its handler to end.
+			onShowRun: (runId) => queueMicrotask(() => this.retarget(runId)),
 			initialFocusedStageId,
 			initialFocusedRunId,
 			piTui: this.piTui,

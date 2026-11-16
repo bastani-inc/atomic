@@ -542,6 +542,32 @@ describe("saving a child's latest record as one entry (#4395)", () => {
 		assert.throws(() => subagentChildRecordOf(ownerSessionId, "ix-reader:0"), isReleasedChildError);
 	});
 
+	test("a record stays readable from another open copy of its owner's session once the copy that saved it is collected (#5252)", async () => {
+		const store = new MemorySessionStore();
+		const cwd = makeTempDirectory("child-index-reader-");
+		cleanups.push(() => removeTempDirectory(cwd));
+		const writers = trackCollection();
+		// The copy that saves the record, as a stage's session before its process restarts; nothing keeps it open after.
+		const { ownerSessionId, saved } = await (async () => {
+			const writer = await SessionManager.create(store, cwd);
+			writers.track(writer);
+			const record_ = record(writer, { childId: "ix-collected-writer:0" });
+			const entryId = await writer.appendCustomEntry(SUBAGENT_CHILD_RECORD_TYPE, record_);
+			registerSubagentChildRecordReader(writer);
+			observeSubagentChildRecord(record_, false, { entryId, sessionId: writer.getSessionId() });
+			return { ownerSessionId: writer.getSessionId(), saved: record_ };
+		})();
+		// The same session opened again while the first copy is still in memory, as the resumed stage opens it.
+		const reopened = await SessionManager.open(store, ownerSessionId, cwd);
+		registerSubagentChildRecordReader(reopened);
+
+		await collectEverythingTracked(writers);
+		assert.equal(writers.collected(), 1, "the copy that saved the record was collected");
+
+		assert.deepEqual(subagentChildRecordOf(ownerSessionId, "ix-collected-writer:0"), saved);
+		assert.equal(reopened.getSessionId(), ownerSessionId);
+	});
+
 	test("a reader that fails is not taken for one that does not hold the record", async () => {
 		const owner = session();
 		const ownerSessionId = owner.getSessionId();

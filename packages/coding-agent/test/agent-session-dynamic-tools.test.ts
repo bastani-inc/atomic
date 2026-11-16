@@ -8,6 +8,13 @@ import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
+import { isSyntheticPath } from "../src/core/source-info.ts";
+
+const NO_BUILTINS = { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false } as const;
+
+function packageExtensionPaths(extensionsResult: { extensions: ReadonlyArray<{ path: string }> }): string[] {
+	return extensionsResult.extensions.map((extension) => extension.path).filter((path) => !isSyntheticPath(path));
+}
 
 describe("AgentSession dynamic tool registration", () => {
 	let tempDir: string;
@@ -35,14 +42,16 @@ describe("AgentSession dynamic tool registration", () => {
 			extensionFactories: [() => {}],
 		});
 		await resourceLoader.reload();
-		const { session } = await createAgentSession({
+		const { session, extensionsResult } = await createAgentSession({
 			cwd: tempDir,
 			agentDir,
 			model: getModel("anthropic", "claude-sonnet-4-5")!,
 			settingsManager,
 			sessionManager: SessionManager.inMemory(),
 			resourceLoader,
+			builtins: NO_BUILTINS,
 		});
+		expect(packageExtensionPaths(extensionsResult)).toEqual([]);
 		try {
 			await session.bindExtensions({});
 			const context = session.extensionRunner.createContext();
@@ -72,14 +81,16 @@ describe("AgentSession dynamic tool registration", () => {
 			extensionFactories: [() => {}],
 		});
 		await resourceLoader.reload();
-		const { session } = await createAgentSession({
+		const { session, extensionsResult } = await createAgentSession({
 			cwd: tempDir,
 			agentDir,
 			model: getModel("anthropic", "claude-sonnet-4-5")!,
 			settingsManager,
 			sessionManager: SessionManager.inMemory(),
 			resourceLoader,
+			builtins: NO_BUILTINS,
 		});
+		expect(packageExtensionPaths(extensionsResult)).toEqual([]);
 		try {
 			await session.bindExtensions({});
 			const context = session.extensionRunner.createContext();
@@ -120,14 +131,16 @@ describe("AgentSession dynamic tool registration", () => {
 		});
 		await resourceLoader.reload();
 
-		const { session } = await createAgentSession({
+		const { session, extensionsResult } = await createAgentSession({
 			cwd: tempDir,
 			agentDir,
 			model: getModel("anthropic", "claude-sonnet-4-5")!,
 			settingsManager,
 			sessionManager,
 			resourceLoader,
+			builtins: NO_BUILTINS,
 		});
+		expect(packageExtensionPaths(extensionsResult)).toEqual([]);
 
 		// #3105: factory startup is eager; later binding must not register a second tool.
 		expect(session.getAllTools().filter((tool) => tool.name === "dynamic_tool")).toHaveLength(1);
@@ -172,7 +185,7 @@ describe("AgentSession dynamic tool registration", () => {
 		});
 		await resourceLoader.reload();
 
-		const { session } = await createAgentSession({
+		const { session, extensionsResult } = await createAgentSession({
 			cwd: tempDir,
 			agentDir,
 			model: getModel("anthropic", "claude-sonnet-4-5")!,
@@ -191,7 +204,9 @@ describe("AgentSession dynamic tool registration", () => {
 					}),
 				},
 			],
+			builtins: NO_BUILTINS,
 		});
+		expect(packageExtensionPaths(extensionsResult)).toEqual([]);
 
 		const sdkTool = session.getAllTools().find((tool) => tool.name === "sdk_tool");
 		expect(sdkTool?.sourceInfo).toMatchObject({
@@ -232,14 +247,16 @@ describe("AgentSession dynamic tool registration", () => {
 		});
 		await resourceLoader.reload();
 
-		const { session } = await createAgentSession({
+		const { session, extensionsResult } = await createAgentSession({
 			cwd: tempDir,
 			agentDir,
 			model: getModel("anthropic", "claude-sonnet-4-5")!,
 			settingsManager,
 			sessionManager,
 			resourceLoader,
+			builtins: NO_BUILTINS,
 		});
+		expect(packageExtensionPaths(extensionsResult)).toEqual([]);
 
 		await session.bindExtensions({});
 

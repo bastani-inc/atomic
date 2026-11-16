@@ -133,7 +133,7 @@ save "cli-started-live-provider"
 # 2. Launch the parked 1-minute-cadence run. Last thing typed before the cards.
 type_command "/workflow $WORKFLOW_NAME"
 await "started in background" "the run to be dispatched" 120
-RUN_ID="$(capture_scrollback | grep -oE '/workflow connect [0-9a-f]{8}' | tail -1 | awk '{print $3}')"
+RUN_ID="$(capture_scrollback | grep -oE '/workflows [0-9a-f]{8}' | tail -1 | awk '{print $2}')"
 if [[ -z "$RUN_ID" ]]; then
 	echo "heartbeat live evidence: the CLI rendered no dispatched run id" >&2
 	capture_scrollback >"$ARTIFACTS/failure-no-run-id.txt"

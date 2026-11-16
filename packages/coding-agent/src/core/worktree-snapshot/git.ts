@@ -1,13 +1,14 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+import { type ChildProcess, type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { accessSync, constants, existsSync, statSync } from "node:fs";
 import { isAbsolute, join, relative, sep } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { getBinDir } from "../../config.js";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { createGitEnvironment } from "../../utils/git-env.ts";
 import { isGitProvisionError } from "../../utils/git-errors.ts";
-import { killProcessTree } from "../../utils/shell.ts";
 import { redactUrlCredentials } from "../error-contract.ts";
+import { containProcessTree, type ProcessTreeContainment } from "../process-tree-containment.ts";
 import {
 	GitUnavailableError,
 	gitInstallCommand,
@@ -171,14 +172,9 @@ async function configuresSshCommand(options: GitRunOptions): Promise<boolean> {
 /** Kills `child`, and with it the ssh or helper processes it started when it leads its own session. */
 /** How long an aborted Git command is waited for after it was killed, before its abort is reported anyway. */
 const ABORTED_GIT_EXIT_WAIT_MS = 10_000;
+const PROCESS_TREE_POLL_MS = 5;
 
 function killChild(child: ChildProcessWithoutNullStreams, detached: boolean): void {
-	// Git starts helpers of its own, such as a fetch's `upload-pack` in the source repository and `index-pack` in the
-	// target: on Windows, killing `git.exe` alone leaves them running and holding both directories (#4748).
-	if (process.platform === "win32" && child.pid !== undefined) {
-		killProcessTree(child.pid);
-		return;
-	}
 	if (detached && child.pid !== undefined) {
 		try {
 			process.kill(-child.pid, "SIGKILL");
@@ -189,6 +185,82 @@ function killChild(child: ChildProcessWithoutNullStreams, detached: boolean): vo
 		return;
 	}
 	child.kill("SIGKILL");
+}
+
+function running(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function treeRunning(tree: ProcessTreeContainment | undefined): boolean {
+	try {
+		return tree !== undefined && tree.activeProcesses() > 0;
+	} catch {
+		return false;
+	}
+}
+
+function taskkillTree(pid: number, deadline: number): Promise<number[]> {
+	return new Promise((resolve) => {
+		let output = "";
+		let taskkill: ChildProcess;
+		try {
+			taskkill = spawn(
+				join(process.env.SystemRoot || "C:\\Windows", "System32", "taskkill.exe"),
+				["/F", "/T", "/PID", String(pid)],
+				{ stdio: ["ignore", "pipe", "ignore"], windowsHide: true, env: createChildProcessEnvironment() },
+			);
+		} catch {
+			resolve([]);
+			return;
+		}
+		const done = () => {
+			clearTimeout(bound);
+			const killed = output.split(/\r?\n/).map((line) => Number(/\d+/.exec(line)?.[0]));
+			resolve(killed.filter((id) => Number.isInteger(id) && id !== process.pid));
+		};
+		const bound = setTimeout(done, Math.max(0, deadline - Date.now()));
+		taskkill.stdout?.on("data", (chunk: Buffer) => {
+			output += chunk.toString("utf8");
+		});
+		taskkill.once("close", done);
+		taskkill.once("error", done);
+	});
+}
+
+async function stopCommand(
+	child: ChildProcessWithoutNullStreams,
+	detached: boolean,
+	tree: ProcessTreeContainment | undefined,
+): Promise<void> {
+	const deadline = Date.now() + ABORTED_GIT_EXIT_WAIT_MS;
+	let closed = false;
+	const close = () => {
+		closed = true;
+	};
+	child.once("close", close);
+	child.once("error", close);
+	let killed: number[] = [];
+	if (tree?.terminate() !== true) {
+		if (process.platform === "win32" && child.pid !== undefined) killed = await taskkillTree(child.pid, deadline);
+		else killChild(child, detached);
+	}
+	while (Date.now() < deadline && !(closed && !treeRunning(tree) && !killed.some(running))) {
+		await sleep(PROCESS_TREE_POLL_MS);
+	}
+	tree?.close();
+}
+
+async function endTree(tree: ProcessTreeContainment | undefined): Promise<void> {
+	if (treeRunning(tree) && tree?.terminate()) {
+		const deadline = Date.now() + ABORTED_GIT_EXIT_WAIT_MS;
+		while (Date.now() < deadline && treeRunning(tree)) await sleep(PROCESS_TREE_POLL_MS);
+	}
+	tree?.close();
 }
 
 /**
@@ -279,6 +351,7 @@ export async function runGit(args: readonly string[], options: GitRunOptions): P
 			reject(spawnFailure(error as NodeJS.ErrnoException));
 			return;
 		}
+		const tree = child.pid === undefined ? undefined : containProcessTree(child.pid);
 		const stdout: Buffer[] = [];
 		const stderr: Buffer[] = [];
 		let settled = false;
@@ -286,14 +359,7 @@ export async function runGit(args: readonly string[], options: GitRunOptions): P
 			if (settled) return;
 			settled = true;
 			// Rejects once the process has ended, so nothing it started still works in its directories.
-			const ended = () => {
-				clearTimeout(bound);
-				reject(options.signal?.reason);
-			};
-			const bound = setTimeout(ended, ABORTED_GIT_EXIT_WAIT_MS);
-			child.once("close", ended);
-			child.once("error", ended);
-			killChild(child, detached);
+			void stopCommand(child, detached, tree).then(() => reject(options.signal?.reason));
 		};
 		options.signal?.addEventListener("abort", onAbort, { once: true });
 		const finish = (action: () => void) => {
@@ -304,7 +370,12 @@ export async function runGit(args: readonly string[], options: GitRunOptions): P
 		};
 		child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
 		child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
-		child.on("error", (error: NodeJS.ErrnoException) => finish(() => reject(spawnFailure(error))));
+		child.on("error", (error: NodeJS.ErrnoException) =>
+			finish(() => {
+				tree?.close();
+				reject(spawnFailure(error));
+			}),
+		);
 		child.stdin.on("error", exitStatusReportsClosedInput);
 		child.on("close", (code) =>
 			finish(() => {
@@ -313,16 +384,18 @@ export async function runGit(args: readonly string[], options: GitRunOptions): P
 					stderr: Buffer.concat(stderr).toString("utf8"),
 					exitCode: code ?? -1,
 				};
-				if (code === 0 || (code !== null && options.allowExitCodes?.includes(code))) resolve(result);
-				else
-					reject(
-						new WorkspaceGitError({
-							operation: gitOperation(args),
-							cwd: options.cwd,
-							exitCode: code,
-							detail: firstLine(result.stderr),
-						}),
-					);
+				void endTree(tree).then(() => {
+					if (code === 0 || (code !== null && options.allowExitCodes?.includes(code))) resolve(result);
+					else
+						reject(
+							new WorkspaceGitError({
+								operation: gitOperation(args),
+								cwd: options.cwd,
+								exitCode: code,
+								detail: firstLine(result.stderr),
+							}),
+						);
+				});
 			}),
 		);
 		child.stdin.end(options.input === undefined ? undefined : options.input);

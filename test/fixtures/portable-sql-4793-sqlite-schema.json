@@ -37,6 +37,12 @@
 	},
 	{
 		"type": "index",
+		"name": "intercom_outbox_target_bytes",
+		"tbl_name": "intercom_outbox",
+		"sql": "CREATE INDEX intercom_outbox_target_bytes ON intercom_outbox(target_identity, state, frame_bytes)"
+	},
+	{
+		"type": "index",
 		"name": "intercom_pending_asks_target",
 		"tbl_name": "intercom_pending_asks",
 		"sql": "CREATE INDEX intercom_pending_asks_target ON intercom_pending_asks(target_session_id, \"order\")"
@@ -124,6 +130,12 @@
 		"name": "team_intercom_outbox_target",
 		"tbl_name": "team_intercom_outbox",
 		"sql": "CREATE INDEX team_intercom_outbox_target ON team_intercom_outbox(target_identity, state, sequence)"
+	},
+	{
+		"type": "index",
+		"name": "team_intercom_outbox_target_bytes",
+		"tbl_name": "team_intercom_outbox",
+		"sql": "CREATE INDEX team_intercom_outbox_target_bytes ON team_intercom_outbox(target_identity, state, frame_bytes)"
 	},
 	{
 		"type": "index",
