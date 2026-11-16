@@ -15,6 +15,7 @@ import {
 	workspace,
 } from "../../packages/coding-agent/src/core/workspace/index.ts";
 import { closeAfter, withRepositoryLock } from "../../packages/coding-agent/src/core/workspace/lease.ts";
+import { keptExitedPid } from "../helpers/exited-process.ts";
 import {
 	createRepository,
 	git,
@@ -110,10 +111,16 @@ describe("workspace writer lease (#3109)", () => {
 
 	test("takes over a lease whose process exited on this host (#3109)", async () => {
 		const worktree = await boundWorktree("stale");
-		plantHolder(worktree, { pid: exitedPid(), host: hostname() });
-		const lease = await acquireWorkspaceWriterLease({ worktree }, { owner: "recovered" });
-		assert.equal(lease.holder.owner, "recovered");
-		await lease.release();
+		// A holder is named by its pid alone, so a later process given that pid would hold the lease: none is given it.
+		const exited = await keptExitedPid();
+		try {
+			plantHolder(worktree, { pid: exited.pid, host: hostname() });
+			const lease = await acquireWorkspaceWriterLease({ worktree }, { owner: "recovered" });
+			assert.equal(lease.holder.owner, "recovered");
+			await lease.release();
+		} finally {
+			await exited.release();
+		}
 	});
 
 	test("takes over a lease an earlier process left with this process's pid, as after a container restart (#3109)", async () => {
@@ -155,9 +162,14 @@ describe("workspace writer lease (#3109)", () => {
 		const ancient = await rejection(acquireWorkspaceWriterLease({ worktree }, { owner: "skewed" }));
 		assert.ok(isWorkspaceBindingError(ancient));
 		assert.equal(ancient.code, "writer-conflict");
-		plantHolder(worktree, { pid: exitedPid(), host: hostname(), acquiredAt: "2999-01-01T00:00:00.000Z" });
-		const future = await acquireWorkspaceWriterLease({ worktree }, { owner: "skewed" });
-		await future.release();
+		const exited = await keptExitedPid();
+		try {
+			plantHolder(worktree, { pid: exited.pid, host: hostname(), acquiredAt: "2999-01-01T00:00:00.000Z" });
+			const future = await acquireWorkspaceWriterLease({ worktree }, { owner: "skewed" });
+			await future.release();
+		} finally {
+			await exited.release();
+		}
 	});
 
 	test("a released or superseded lease never removes its successor (#3109)", async () => {

@@ -15,6 +15,7 @@ import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import lockfile from "proper-lockfile";
 import { afterEach, beforeEach, describe, it } from "vitest";
+import { exitedProcess, keptExitedPid } from "../../../test/helpers/exited-process.js";
 import {
 	clearLockHolder,
 	HOLDER_TEMP_STALE_MS,
@@ -115,11 +116,17 @@ describe("taking over the lock of a dead holder (#5161)", () => {
 		assert.equal(existsSync(lockPath), true);
 	});
 
-	it("takes over a lock whose exited holder recorded no start (#5161)", () => {
+	it("takes over a lock whose exited holder recorded no start (#5161)", async () => {
 		mkdirSync(lockPath);
-		writeRecord({ host: hostname(), pid: exitedPid(), lock: lockHolder(lockPath) });
-		assert.equal(takeOverDeadHolder(lockPath), true);
-		assert.equal(existsSync(lockPath), false);
+		// Without a start, a later process given the holder's pid could not be told from it, so none is given it meanwhile.
+		const exited = await keptExitedPid();
+		try {
+			writeRecord({ host: hostname(), pid: exited.pid, lock: lockHolder(lockPath) });
+			assert.equal(takeOverDeadHolder(lockPath), true);
+			assert.equal(existsSync(lockPath), false);
+		} finally {
+			await exited.release();
+		}
 	});
 
 	it("keeps a lock whose holder this process may not signal, which still runs (#5161)", (context) => {
@@ -153,7 +160,7 @@ describe("taking over the lock of a dead holder (#5161)", () => {
 
 	it("removes the temporary files killed writers left, once old, when it takes over (#5161)", () => {
 		mkdirSync(lockPath);
-		writeRecord({ host: hostname(), pid: exitedPid(), lock: lockHolder(lockPath) });
+		writeRecord({ host: hostname(), ...exitedProcess(), lock: lockHolder(lockPath) });
 		const old = `${lockHolderPath(lockPath)}.123.old.tmp`;
 		const recent = `${lockHolderPath(lockPath)}.456.recent.tmp`;
 		writeFileSync(old, "{");

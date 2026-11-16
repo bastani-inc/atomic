@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { test, vi } from "vitest";
+import { keptExitedPid } from "../helpers/exited-process.js";
 import { createProcessSuspender } from "../helpers/process-suspension.js";
 import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
 
@@ -120,11 +121,13 @@ test(
 	async () => {
 		const suspender = await createProcessSuspender();
 		try {
-			const child = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
-			const pid = child.pid;
-			assert.ok(pid !== undefined);
-			await new Promise((resolve) => child.once("exit", resolve));
-			await assert.rejects(suspender.suspend(pid));
+			// A later process given the pid would be suspended, whatever it is, so none is given it.
+			const exited = await keptExitedPid();
+			try {
+				await assert.rejects(suspender.suspend(exited.pid));
+			} finally {
+				await exited.release();
+			}
 		} finally {
 			await suspender.close();
 		}
