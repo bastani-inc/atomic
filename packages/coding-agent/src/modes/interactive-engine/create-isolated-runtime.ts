@@ -54,17 +54,13 @@ export async function createIsolatedInteractiveRuntime(options: {
 			...(options.parsed.apiKey ? { apiKey: options.parsed.apiKey } : {}),
 		},
 	});
-	try {
-		await client.start();
-	} catch (error) {
-		try {
-			await client.stop();
-		} finally {
-			await options.localRuntime.dispose();
-		}
-		throw error;
-	}
-	isolatedRuntime = new IsolatedInteractiveRuntime(options.localRuntime, options.createRuntime, client);
+	// The host paints and takes input while the engine child loads: its readiness gates only what needs the engine.
+	isolatedRuntime = new IsolatedInteractiveRuntime(
+		options.localRuntime,
+		options.createRuntime,
+		client,
+		client.start(),
+	);
 	isolatedRuntime.setEngineCallbackActive(callbackActive);
 	for (const diagnostic of pendingDiagnostics) isolatedRuntime.emitDiagnostic(diagnostic);
 	return isolatedRuntime;
