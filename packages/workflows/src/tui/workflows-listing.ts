@@ -1,5 +1,12 @@
-import { Selector, type SelectorItem } from "@bastani/atomic";
-import { getKeybindings } from "@bastani/atomic-tui";
+import {
+	renderNavHintLine,
+	type SelectorItem,
+	SelectorState,
+	type SelectorStyle,
+	selectorHintEntries,
+	themeSelectorStyle,
+} from "@bastani/atomic";
+import { getKeybindings, Input, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import type { PiCustomComponent, PiCustomOverlayFactoryTui, PiCustomOverlayFunction } from "../extension/wiring.js";
 import { actionableReturnedStatusText, effectiveRunStatus } from "../shared/returned-run-status.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
@@ -192,20 +199,75 @@ export interface WorkflowsListingUi {
 }
 
 const LISTING_CLOCK_TICK_MS = 1_000;
-const SELECTOR_CHROME_ROWS = 12;
 const FOOTER_CHROME_ROWS = 2;
 const IDLE_AGENT_PANEL_ROWS = 4;
 const IDLE_AGENT_PANEL_OVERFLOW_ROWS = 1;
-const LISTING_CHROME_ROWS =
-	SELECTOR_CHROME_ROWS + FOOTER_CHROME_ROWS + IDLE_AGENT_PANEL_ROWS + IDLE_AGENT_PANEL_OVERFLOW_ROWS;
+const BELOW_SHEET_ROWS = FOOTER_CHROME_ROWS + IDLE_AGENT_PANEL_ROWS + IDLE_AGENT_PANEL_OVERFLOW_ROWS;
+const LISTING_HINT_OPTIONS = { search: true, confirmLabel: "open", cancelLabel: "close" };
 
-function listingMaxVisible(tui: PiCustomOverlayFactoryTui): number {
+function listingAvailableRows(tui: PiCustomOverlayFactoryTui): number {
 	const reportedRows = tui.terminal?.rows;
 	const terminalRows =
 		typeof reportedRows === "number" && Number.isFinite(reportedRows) && reportedRows > 0
 			? Math.floor(reportedRows)
 			: 24;
-	return Math.max(1, Math.floor((terminalRows - LISTING_CHROME_ROWS) / 2));
+	return Math.max(3, terminalRows - BELOW_SHEET_ROWS);
+}
+
+function renderListingSearch(search: Input, style: SelectorStyle, width: number): string {
+	const raw = search.getValue();
+	const safe = sanitizeToolTitleText(raw);
+	if (raw === safe) return search.render(width)[0] ?? "";
+	const display = new Input({ prompt: "⌕ ", placeholder: "Search…", placeholderStyle: style.dim });
+	display.setValue(safe);
+	Reflect.set(display, "cursor", sanitizeToolTitleText(raw.slice(0, search.getCursor())).length);
+	display.focused = search.focused;
+	return display.render(width)[0] ?? "";
+}
+
+function renderCompactListing(
+	state: SelectorState<WorkflowsListingTarget>,
+	search: Input,
+	style: SelectorStyle,
+	width: number,
+): string[] {
+	const visible = state.getVisible();
+	const top = state.getTop();
+	const end = Math.min(visible.length, top + state.maxVisible);
+	const page = visible.slice(top, end);
+	const groups = new Set(page.map((item) => item.group).filter((group) => group !== undefined));
+	const singleGroup = !state.getQuery() && groups.size === 1 ? page[0]?.group : undefined;
+	const title = `  ${style.bold(style.text("Workflows"))}${singleGroup ? style.muted(` · ${singleGroup}`) : ""}  `;
+	const range = visible.length > 0 ? style.dim(`  ${top + 1}-${end}/${visible.length}`) : "";
+	const searchWidth = Math.max(1, width - visibleWidth(title) - visibleWidth(range));
+	const lines = [title + renderListingSearch(search, style, searchWidth) + range];
+	if (page.length === 0) {
+		const empty = state.getQuery()
+			? `No matches for "${sanitizeToolTitleText(state.getQuery())}"`
+			: "No workflows in this session.";
+		lines.push(`  ${style.dim(truncateToWidth(empty, Math.max(1, width - 2)))}`);
+	}
+	let lastGroup: string | undefined;
+	for (let index = 0; index < page.length; index++) {
+		const item = page[index]!;
+		if (groups.size > 1 && !state.getQuery() && item.group !== lastGroup && item.group !== undefined)
+			lines.push(`  ${style.bold(style.muted(truncateToWidth(item.group, Math.max(1, width - 2))))}`);
+		lastGroup = item.group;
+		const selected = top + index === state.getSelectedIndex();
+		const lead = selected ? ` ${style.accent(style.bold("❯ "))}` : "   ";
+		const tagWidth = item.tag ? visibleWidth(item.tag) + 2 : 0;
+		const label = truncateToWidth(item.label, Math.max(1, width - 3 - tagWidth));
+		let line = lead + (selected ? style.accent(style.bold(label)) : style.text(label));
+		if (item.tag)
+			line +=
+				" ".repeat(Math.max(2, width - 3 - visibleWidth(label) - visibleWidth(item.tag))) +
+				style.tone(item.tagTone ?? "muted", item.tag);
+		lines.push(line);
+		lines.push(`   ${style.muted(truncateToWidth(item.description ?? "", Math.max(1, width - 3)))}`);
+	}
+	const hints = selectorHintEntries(state, LISTING_HINT_OPTIONS).filter((entry) => entry.label !== "to search");
+	lines.push(renderNavHintLine(hints, width, style, getKeybindings()));
+	return lines.map((line) => truncateToWidth(line, width));
 }
 
 export function openWorkflowsListing(
@@ -243,19 +305,34 @@ export function openWorkflowsListing(
 			let cachedRuns = source.runs();
 			let cachedDefinitions = source.definitions();
 			let currentNow = Date.now();
-			const selector = new Selector<WorkflowsListingTarget>({
-				title: "Workflows",
+			const style = themeSelectorStyle();
+			const search = new Input({ prompt: "⌕ ", placeholder: "Search…", placeholderStyle: style.dim });
+			const selector = new SelectorState<WorkflowsListingTarget>({
 				items: workflowsListingItems(cachedRuns, cachedDefinitions, currentNow),
-				layout: "two-line",
-				maxVisible: listingMaxVisible(tui),
-				search: true,
-				searchPlaceholder: "Search…",
-				emptyText: "No workflows in this session.",
-				confirmLabel: "open",
-				cancelLabel: "close",
-				onSelect: (item) => finish(item.value),
-				onCancel: () => finish(undefined),
+				maxVisible: Math.max(1, Math.floor((listingAvailableRows(tui) - 2) / 2)),
 			});
+			const handleSelectionInput = (data: string): void => {
+				const keys = getKeybindings();
+				if (keys.matches(data, "tui.select.up")) selector.move(-1);
+				else if (keys.matches(data, "tui.select.down")) selector.move(1);
+				else if (keys.matches(data, "tui.select.pageUp")) selector.page(-1);
+				else if (keys.matches(data, "tui.select.pageDown")) selector.page(1);
+				else if (keys.matches(data, "tui.select.cancel")) {
+					if (selector.getQuery() && data !== "\x03") {
+						search.setValue("");
+						selector.setQuery("");
+					} else finish(undefined);
+				} else if (
+					keys.matches(data, "tui.select.confirm") ||
+					(keys.matches(data, "app.list.open") && !selector.getQuery())
+				) {
+					const selected = selector.getSelected();
+					if (selected) finish(selected.value);
+				} else {
+					search.handleInput(data);
+					selector.setQuery(search.getValue());
+				}
+			};
 			let paintedSelectionId: string | undefined;
 			let refreshedSincePaint = true;
 			let movedSincePaint = false;
@@ -293,34 +370,39 @@ export function openWorkflowsListing(
 			if (settled) release();
 			return {
 				render: (width: number) => {
-					selector.setMaxVisible(listingMaxVisible(tui));
 					refreshItems();
-					const lines = selector.render(width);
+					const availableRows = listingAvailableRows(tui);
+					let maxVisible = Math.max(1, Math.floor((availableRows - 2) / 2));
+					selector.setMaxVisible(maxVisible);
+					let lines = renderCompactListing(selector, search, style, width);
+					while (lines.length > availableRows && maxVisible > 1) {
+						selector.setMaxVisible(--maxVisible);
+						lines = renderCompactListing(selector, search, style, width);
+					}
 					paintedSelectionId = selector.getSelected()?.id;
 					refreshedSincePaint = false;
 					movedSincePaint = false;
 					return lines;
 				},
 				handleInput: (data: string) => {
-					selector.setMaxVisible(listingMaxVisible(tui));
 					refreshItems();
 					const keys = getKeybindings();
 					const confirms =
 						keys.matches(data, "tui.select.confirm") ||
-						(keys.matches(data, "app.list.open") && !selector.state.getQuery());
+						(keys.matches(data, "app.list.open") && !selector.getQuery());
 					if (!confirms) {
-						selector.handleInput(data);
+						handleSelectionInput(data);
 						movedSincePaint = true;
 					} else if (
 						!refreshedSincePaint ||
 						(!movedSincePaint && selector.getSelected()?.id === paintedSelectionId)
 					) {
-						selector.handleInput(data);
+						handleSelectionInput(data);
 					}
 					tui.requestRender?.();
 					return true;
 				},
-				invalidate: () => selector.invalidate(),
+				invalidate: () => search.invalidate(),
 				dispose: () => finish(undefined),
 			};
 		};
