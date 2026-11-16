@@ -553,8 +553,17 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		readonly stopped?: { readonly reason: BudgetStop; readonly cursor: string };
 	}> {
 		const detail = await requireWorkflows().getRun(runId);
-		const lines = start === undefined ? searchLines(`history://workflows/${runId}`, runLines(detail), request) : [];
-		budget.spend(lines.reduce((sum, line) => sum + lineBytes(line), 0));
+		const lines: string[] = [];
+		if (start === undefined || start.stage === 0) {
+			const skipped = start?.seq ?? 0;
+			const own = searchLines(`history://workflows/${runId}`, runLines(detail), request).slice(skipped);
+			for (const [index, line] of own.entries()) {
+				if (!budget.fits(lineBytes(line)))
+					return { lines, unreadable: 0, stopped: { reason: "byte", cursor: `0.${skipped + index}` } };
+				lines.push(line);
+				budget.spend(lineBytes(line));
+			}
+		}
 		const store = projectStore();
 		let unreadable = 0;
 		for (const [index, stage] of detail.stages.entries()) {

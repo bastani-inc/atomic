@@ -512,8 +512,15 @@ export async function searchSession(search: SessionSearchRequest): Promise<Sessi
 			started = true;
 			if (prefilter !== undefined && coverage !== undefined && pos <= coverage.indexedSeq) {
 				const through = Math.min(segment.end, coverage.indexedSeq);
-				const seqs = await index!.candidates(place.sessionId, prefilter, pos, through, CANDIDATE_PAGE);
+				const seqs = await index!
+					.candidates(place.sessionId, prefilter, pos, through, CANDIDATE_PAGE)
+					.catch(() => undefined);
 				budget.takeRows(1);
+				if (seqs === undefined) {
+					coverage = undefined;
+					indexing = false;
+					continue;
+				}
 				for (const seq of seqs) {
 					const spent = budget.spent();
 					if (spent) return finish({ reason: spent, resumeSeq: seq });

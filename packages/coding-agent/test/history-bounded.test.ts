@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, it } from "vitest";
+import type { WorkflowRunDetail } from "../src/core/extensions/workflow-run-control.js";
 import type { SessionEntry } from "../src/core/session-manager-types.js";
 import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteValue } from "../src/core/storage/database.js";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
@@ -14,7 +15,11 @@ import {
 	type SessionRecordHeader,
 	type SessionStore,
 } from "../src/core/storage/session/types.js";
-import { createHistoryRouter, type HistoryBudget } from "../src/core/tools/history-protocol.js";
+import {
+	createHistoryRouter,
+	type HistoryBudget,
+	type WorkflowRunHistory,
+} from "../src/core/tools/history-protocol.js";
 import { createReadToolDefinition } from "../src/core/tools/read.js";
 import type { InternalResourceContext, InternalSearchRequest } from "../src/core/tools/resource-selectors.js";
 import { createSearchToolDefinition } from "../src/core/tools/search.js";
@@ -417,6 +422,94 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 			assert.equal(second, first);
 			assert.ok(entryRows() - before <= 6, `the second search read ${entryRows() - before} stored entries`);
 			assert.ok((await read("history://sessions/big:1500-1500")).includes("zephyr-needle at 1500"));
+		} finally {
+			await close();
+		}
+	});
+
+	it("stops a search of a workflow run at its byte budget and continues where it stopped (#5250)", async () => {
+		const detail: WorkflowRunDetail = {
+			runId: "run-many",
+			name: "many-stages",
+			status: "completed",
+			startedAt: BASE,
+			inputs: {},
+			stages: Array.from({ length: 120 }, (_, index) => ({
+				id: `s${index}`,
+				name: `build-step-${index}`,
+				status: "completed" as const,
+			})),
+		};
+		const workflows: WorkflowRunHistory = {
+			listRuns: async () => [
+				{
+					runId: "run-many",
+					name: "many-stages",
+					status: "completed",
+					startedAt: BASE,
+					elapsedMs: 1,
+					activeStages: [],
+					awaitingInputCount: 0,
+					awaitingInput: [],
+				},
+			],
+			getRun: async () => detail,
+		};
+		const router = createHistoryRouter({
+			cwd: PROJECT,
+			sessionStore: () => undefined,
+			workflows: () => workflows,
+			budget: { bytes: 1_500 },
+		});
+		const rows: string[] = [];
+		let url: string | undefined = "history://workflows/run-many";
+		for (let calls = 0; url !== undefined && calls < 50; calls++) {
+			const output =
+				(await router.search?.(url, {
+					pattern: "build-step",
+					ignoreCase: false,
+					literal: false,
+					contextBefore: 0,
+					contextAfter: 0,
+				})) ?? "";
+			assert.ok(Buffer.byteLength(output) <= 1_500, `output of ${Buffer.byteLength(output)} bytes`);
+			rows.push(...output.split("\n").filter((line) => /^history:\/\/workflows\/run-many:[1-9]\d*: /.test(line)));
+			url = continuation(output);
+		}
+		assert.equal(url, undefined, "the search finishes");
+		assert.deepEqual(
+			rows.map((row) => /build-step-(\d+)/.exec(row)?.[1]),
+			Array.from({ length: 120 }, (_, index) => String(index)),
+		);
+	});
+
+	it("scans a session when its index cannot be queried (#5250)", async () => {
+		const { store, close } = await openSql(dir);
+		try {
+			await store.create(
+				header("big"),
+				numbered(400, (seq) => (seq === 321 ? "a rare token here" : `filler ${seq}`)),
+			);
+			const { router, request } = historyOver(store);
+			assert.match((await router.search?.("history://sessions/big", request("rare token"))) ?? "", /big:321: /);
+			const index = store.searchIndex!;
+			const broken = new Proxy(store, {
+				get(target, key) {
+					if (key === "searchIndex")
+						return {
+							coverage: index.coverage.bind(index),
+							extend: index.extend.bind(index),
+							candidates: async () => {
+								throw new Error("the index is unreadable");
+							},
+						};
+					const value = Reflect.get(target, key, target);
+					return typeof value === "function" ? value.bind(target) : value;
+				},
+			});
+			const found =
+				(await historyOver(broken).router.search?.("history://sessions/big", request("rare token"))) ?? "";
+			assert.match(found, /^history:\/\/sessions\/big:321: a rare token here$/m);
 		} finally {
 			await close();
 		}
