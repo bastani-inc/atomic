@@ -187,3 +187,17 @@ test("resume preserves parked tasks whose entry id is an unusual valid string (#
 		true,
 	);
 });
+
+test("resume reduces pooled delivery receipts to their op ids (#5249)", () => {
+	const s = session();
+	s.custom("atomic-pooled-delivery-op", { op: "first" });
+	s.custom("atomic-pooled-delivery-op", { op: 7 });
+	s.custom("atomic-pooled-delivery-op", { op: "second" });
+	s.custom("atomic-pooled-delivery-op", { op: "first" });
+	const resume = s.resume();
+	assert.deepEqual(resume.recovery.deliveryOpIds, ["first", "second"]);
+	assert.equal(
+		resume.state.some(({ entry }) => entry.type === "custom" && entry.customType === "atomic-pooled-delivery-op"),
+		false,
+	);
+});

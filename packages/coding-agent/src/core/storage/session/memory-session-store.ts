@@ -39,6 +39,7 @@ import type {
 	SessionSummary,
 	SessionTail,
 	SessionWriteOptions,
+	SessionWriteResult,
 	StorageDescriptor,
 } from "./types.js";
 import { matchesSessionIdPrefix } from "./types.js";
@@ -249,13 +250,14 @@ export class MemorySessionStore implements SessionStore {
 		return { adapter: "memory", location: ":memory:" };
 	}
 
-	async create(header: SessionRecordHeader, entries: readonly SessionEntry[]): Promise<{ readonly lastSeq: number }> {
+	async create(header: SessionRecordHeader, entries: readonly SessionEntry[]): Promise<SessionWriteResult> {
 		this.assertOpen();
 		validateSessionHeader(header);
 		validateSessionEntries(entries);
 		if (this.records.has(header.id)) throw new SessionExistsError(header.id);
-		this.records.set(header.id, this.encodeSession(header, entries));
-		return { lastSeq: entries.length };
+		const record = this.encodeSession(header, entries);
+		this.records.set(header.id, record);
+		return { lastSeq: entries.length, epoch: record.index.epoch };
 	}
 
 	async append(
@@ -317,14 +319,15 @@ export class MemorySessionStore implements SessionStore {
 		header: SessionRecordHeader,
 		entries: readonly SessionEntry[],
 		options: SessionWriteOptions,
-	): Promise<{ readonly lastSeq: number }> {
+	): Promise<SessionWriteResult> {
 		const previous = this.forWrite(sessionId, options);
 		validateSessionHeader(header);
 		validateSessionEntries(entries);
 		if (header.id !== sessionId) throw new SessionIdMismatchError(sessionId, header.id);
-		this.records.set(sessionId, this.encodeSession(header, entries));
+		const record = this.encodeSession(header, entries);
+		this.records.set(sessionId, record);
 		await this.removeSpillFile(sessionId, previous);
-		return { lastSeq: entries.length };
+		return { lastSeq: entries.length, epoch: record.index.epoch };
 	}
 
 	async load(sessionId: string): Promise<SessionSnapshot> {
@@ -694,7 +697,10 @@ export class MemorySessionStore implements SessionStore {
 		if (!record) throw new SessionNotFoundError(sessionId);
 		if (expected !== undefined && record !== expected)
 			throw new SessionConflictError(sessionId, options.expectSeq, record.lastSeq);
-		if (options.expectSeq !== record.lastSeq) {
+		if (
+			options.expectSeq !== record.lastSeq ||
+			(options.epoch !== undefined && record.index.epoch !== options.epoch)
+		) {
 			throw new SessionConflictError(sessionId, options.expectSeq, record.lastSeq);
 		}
 		return record;

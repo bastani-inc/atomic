@@ -22,6 +22,7 @@ import type {
 	SessionSummary,
 	SessionTail,
 	SessionWriteOptions,
+	SessionWriteResult,
 	StorageDescriptor,
 } from "./types.js";
 import { matchesSessionIdPrefix } from "./types.js";
@@ -74,7 +75,7 @@ export class LegacySessionStore implements SessionStore {
 		return this.inner.snapshotBlobs;
 	}
 
-	create(header: SessionRecordHeader, entries: readonly SessionEntry[]): Promise<{ readonly lastSeq: number }> {
+	create(header: SessionRecordHeader, entries: readonly SessionEntry[]): Promise<SessionWriteResult> {
 		return this.inner.create(header, entries);
 	}
 
@@ -92,7 +93,7 @@ export class LegacySessionStore implements SessionStore {
 		header: SessionRecordHeader,
 		entries: readonly SessionEntry[],
 		options: SessionWriteOptions,
-	): Promise<{ readonly lastSeq: number }> {
+	): Promise<SessionWriteResult> {
 		await this.convert(sessionId);
 		return this.inner.replace(sessionId, header, entries, options);
 	}

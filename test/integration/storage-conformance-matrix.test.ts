@@ -150,9 +150,17 @@ for (const backend of storageBackends) {
 					data: { sessionId: header.id },
 				},
 				{
+					type: "custom",
+					customType: "atomic-pooled-delivery-op",
+					id: "receipt",
+					parentId: "identity",
+					timestamp: header.createdAt,
+					data: { op: "delivered-op" },
+				},
+				{
 					type: "custom_message",
 					id: "ask",
-					parentId: "identity",
+					parentId: "receipt",
 					timestamp: header.createdAt,
 					customType: "intercom_message",
 					content: "old body".repeat(500),
@@ -186,6 +194,7 @@ for (const backend of storageBackends) {
 			);
 			const { resume: _resume, ...summary } = JSON.parse(row!.summary_state) as Record<string, unknown>;
 			await database.run(`UPDATE ${table} SET summary_state = ? WHERE id = ?`, JSON.stringify(summary), header.id);
+			assert.deepEqual(expected.recovery.deliveryOpIds, ["delivered-op"]);
 			assert.deepEqual(await store.readResume(header.id), expected);
 			await store.close();
 		} finally {

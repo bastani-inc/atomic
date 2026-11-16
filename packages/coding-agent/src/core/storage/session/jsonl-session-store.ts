@@ -66,6 +66,7 @@ import type {
 	SessionSummary,
 	SessionTail,
 	SessionWriteOptions,
+	SessionWriteResult,
 	StorageDescriptor,
 } from "./types.js";
 import { matchesSessionIdPrefix } from "./types.js";
@@ -98,6 +99,7 @@ interface JsonlIndex {
 	readonly terminated: boolean;
 	readonly torn: boolean;
 	readonly spans: readonly number[];
+	readonly ids: readonly number[];
 	readonly index: SessionResumeIndex;
 	readonly sidecarSize: number;
 }
@@ -108,7 +110,7 @@ interface IndexedSession {
 	readonly jsonl: JsonlIndex;
 }
 
-export const JSONL_INDEX_VERSION = 1;
+export const JSONL_INDEX_VERSION = 2;
 const SIDECAR_SUFFIX = ".idx";
 const SIDECAR_REFRESH_BYTES = 1024 * 1024;
 const INDEX_BATCH_ENTRIES = 512;
@@ -258,7 +260,7 @@ export class JsonlSessionStore implements SessionStore {
 		header: SessionRecordHeader,
 		entries: readonly SessionEntry[],
 		location?: string,
-	): Promise<{ readonly lastSeq: number }> {
+	): Promise<SessionWriteResult> {
 		return this.run(async () => {
 			validateSessionHeader(header);
 			validateSessionEntries(entries);
@@ -280,8 +282,9 @@ export class JsonlSessionStore implements SessionStore {
 					if (cause.code !== "ENOENT") throw cause;
 				});
 			}
-			await this.remember(path, this.contentState(header, entries, payload));
-			return { lastSeq: entries.length };
+			const state = this.contentState(header, entries, payload);
+			const stats = await this.remember(path, state);
+			return { lastSeq: entries.length, epoch: epochOf(stats, state.headerStamp) };
 		}, true);
 	}
 
@@ -335,18 +338,17 @@ export class JsonlSessionStore implements SessionStore {
 		header: SessionRecordHeader,
 		entries: readonly SessionEntry[],
 		options: SessionWriteOptions,
-	): Promise<{ readonly lastSeq: number }> {
+	): Promise<SessionWriteResult> {
 		return this.run(async () => {
 			const { path } = await this.forWrite(sessionId, options);
 			validateSessionHeader(header);
 			validateSessionEntries(entries);
 			if (header.id !== sessionId) throw new SessionIdMismatchError(sessionId, header.id);
-			await this.commit(path, header, entries);
-			return { lastSeq: entries.length };
+			return { lastSeq: entries.length, epoch: await this.commit(path, header, entries) };
 		});
 	}
 
-	private async commit(path: string, header: SessionRecordHeader, entries: readonly SessionEntry[]): Promise<void> {
+	private async commit(path: string, header: SessionRecordHeader, entries: readonly SessionEntry[]): Promise<string> {
 		await this.forgetIndex(path);
 		const payload = this.encode(header, entries);
 		const temporary = `${path}.${randomUUID()}.tmp`;
@@ -358,7 +360,8 @@ export class JsonlSessionStore implements SessionStore {
 				if (cause.code !== "ENOENT") throw cause;
 			});
 		}
-		await this.remember(path, this.contentState(header, entries, payload));
+		const state = this.contentState(header, entries, payload);
+		return epochOf(await this.remember(path, state), state.headerStamp);
 	}
 
 	load(sessionId: string): Promise<SessionSnapshot> {
@@ -528,7 +531,7 @@ export class JsonlSessionStore implements SessionStore {
 	private async buildIndex(path: string, headerStamp: string, stats: BigIntStats): Promise<JsonlIndex> {
 		const identity = `${stats.dev}:${stats.ino}`;
 		const birthtimeNs = String(stats.birthtimeNs);
-		const epoch = fileEpoch(`${identity}:${birthtimeNs}`, headerStamp);
+		const epoch = epochOf(stats, headerStamp);
 		const topology = await this.foldFile(path, epoch, () => true);
 		const ranges =
 			topology.index.jumps.length === 0 ? undefined : branchRanges(topology.index, topology.index.leafSeq);
@@ -547,6 +550,7 @@ export class JsonlSessionStore implements SessionStore {
 			terminated: folded.terminated,
 			torn: folded.torn,
 			spans: folded.spans,
+			ids: folded.ids,
 			index: folded.index,
 			sidecarSize: 0,
 		};
@@ -559,12 +563,14 @@ export class JsonlSessionStore implements SessionStore {
 	): Promise<{
 		readonly index: SessionResumeIndex;
 		readonly spans: number[];
+		readonly ids: number[];
 		readonly size: number;
 		readonly terminated: boolean;
 		readonly torn: boolean;
 	}> {
 		let index: SessionResumeIndex = { ...foldSessionResume(undefined, [], undefined, activeSeq), epoch };
 		const spans: number[] = [];
+		const hashes: number[] = [];
 		const ids = new Map<string, number>();
 		let batch: SessionEntry[] = [];
 		const flush = () => {
@@ -579,6 +585,7 @@ export class JsonlSessionStore implements SessionStore {
 			if (!text.trim()) return;
 			const entry = JSON.parse(text) as SessionEntry;
 			spans.push(start, start + line.length);
+			hashes.push(idHash(entry.id));
 			batch.push(entry);
 			ids.set(entry.id, spans.length / 2);
 			if (batch.length >= INDEX_BATCH_ENTRIES) flush();
@@ -609,19 +616,20 @@ export class JsonlSessionStore implements SessionStore {
 		const rest = parts.length === 0 ? undefined : Buffer.concat(parts);
 		if (rest === undefined || header) {
 			flush();
-			return { index, spans, size: position, terminated: rest === undefined, torn: false };
+			return { index, spans, ids: hashes, size: position, terminated: rest === undefined, torn: false };
 		}
 		const unterminated = parseUnterminated(rest.toString("utf8"));
 		if (unterminated === undefined) {
 			flush();
 			reportTornLine(path);
-			return { index, spans, size: lineStart, terminated: true, torn: true };
+			return { index, spans, ids: hashes, size: lineStart, terminated: true, torn: true };
 		}
 		spans.push(lineStart, position);
+		hashes.push(idHash(unterminated.id));
 		batch.push(unterminated);
 		ids.set(unterminated.id, spans.length / 2);
 		flush();
-		return { index, spans, size: position, terminated: false, torn: false };
+		return { index, spans, ids: hashes, size: position, terminated: false, torn: false };
 	}
 
 	private async catchUp(path: string, cached: JsonlIndex, stats: BigIntStats): Promise<JsonlIndex | undefined> {
@@ -674,6 +682,7 @@ export class JsonlSessionStore implements SessionStore {
 			terminated: appended.length === 0 ? cached.terminated : terminated,
 			torn,
 			spans,
+			ids: [...cached.ids, ...entries.map((entry) => idHash(entry.id))],
 			index,
 		};
 	}
@@ -727,6 +736,7 @@ export class JsonlSessionStore implements SessionStore {
 			terminated: true,
 			torn: false,
 			spans,
+			ids: [...cached.ids, ...entries.map((entry) => idHash(entry.id))],
 			index: await this.foldAppended(path, cached, entries),
 		};
 		if (next.size - next.sidecarSize >= SIDECAR_REFRESH_BYTES) await this.keepIndex(path, next);
@@ -770,28 +780,10 @@ export class JsonlSessionStore implements SessionStore {
 	private async seqInFile(path: string, jsonl: JsonlIndex, entryId: string): Promise<number | undefined> {
 		const total = jsonl.spans.length / 2;
 		if (jsonl.index.lastId === entryId && jsonl.index.seq === total) return total;
-		const needle = Buffer.from(`"id":${JSON.stringify(entryId)}`);
-		const file = await open(path, "r");
-		try {
-			let last = total;
-			let window = READ_GAP_BYTES;
-			while (last >= 1) {
-				let first = last;
-				while (first > 1 && spanEnd(jsonl, last) - spanStart(jsonl, first - 1) <= window) first -= 1;
-				window = Math.min(SCAN_WINDOW_BYTES, window * 2);
-				const from = spanStart(jsonl, first);
-				const bytes = await readFrom(file, from, spanEnd(jsonl, last) - from);
-				for (let seq = last; seq >= first; seq--) {
-					const line = bytes.subarray(spanStart(jsonl, seq) - from, spanEnd(jsonl, seq) - from);
-					if (line.indexOf(needle) === -1) continue;
-					if ((JSON.parse(line.toString("utf8")) as SessionEntry).id === entryId) return seq;
-				}
-				last = first - 1;
-			}
-		} finally {
-			await file.close();
-		}
-		return undefined;
+		const hash = idHash(entryId);
+		const candidates: number[] = [];
+		for (let seq = 1; seq <= total; seq++) if (jsonl.ids[seq - 1] === hash) candidates.push(seq);
+		return (await this.entriesAt(path, jsonl, candidates)).findLast((held) => held.entry.id === entryId)?.seq;
 	}
 
 	private async readPersisted(path: string, stored?: StoredSessionHeader): Promise<SessionSnapshot> {
@@ -1285,7 +1277,7 @@ export class JsonlSessionStore implements SessionStore {
 		path: string,
 		state: Omit<SessionFileState, "stamp" | "identity" | "size">,
 		size?: number,
-	): Promise<void> {
+	): Promise<BigIntStats> {
 		const stats = await stat(path, { bigint: true });
 		this.fileStates.set(path, {
 			...state,
@@ -1293,6 +1285,7 @@ export class JsonlSessionStore implements SessionStore {
 			identity: `${stats.dev}:${stats.ino}`,
 			size: size ?? Number(stats.size),
 		});
+		return stats;
 	}
 
 	/**
@@ -1365,7 +1358,10 @@ export class JsonlSessionStore implements SessionStore {
 				this.fileStates.set(path, state);
 			}
 		}
-		if (state.lastSeq !== options.expectSeq)
+		if (
+			state.lastSeq !== options.expectSeq ||
+			(options.epoch !== undefined && epochOf(stats, JSON.stringify(header)) !== options.epoch)
+		)
 			throw new SessionConflictError(sessionId, options.expectSeq, state.lastSeq);
 		return { path, state };
 	}
@@ -1402,8 +1398,28 @@ function spanEnd(jsonl: JsonlIndex, seq: number): number {
 	return jsonl.spans[2 * (seq - 1) + 1] as number;
 }
 
-function fileEpoch(identity: string, headerStamp: string): string {
-	return `${identity}:${createHash("sha256").update(headerStamp).digest("hex").slice(0, 16)}`;
+function idHash(id: string): number {
+	let hash = 0x811c9dc5;
+	for (let index = 0; index < id.length; index++) hash = Math.imul(hash ^ id.charCodeAt(index), 0x01000193);
+	return hash >>> 0;
+}
+
+function encodeIdHashes(hashes: readonly number[]): string {
+	const bytes = Buffer.allocUnsafe(hashes.length * 4);
+	for (const [index, hash] of hashes.entries()) bytes.writeUInt32LE(hash, index * 4);
+	return bytes.toString("base64");
+}
+
+function decodeIdHashes(text: string): number[] | undefined {
+	const bytes = Buffer.from(text, "base64");
+	if (bytes.length % 4 !== 0) return undefined;
+	const hashes: number[] = [];
+	for (let offset = 0; offset < bytes.length; offset += 4) hashes.push(bytes.readUInt32LE(offset));
+	return hashes;
+}
+
+function epochOf(stats: BigIntStats, headerStamp: string): string {
+	return `${stats.dev}:${stats.ino}:${stats.birthtimeNs}:${createHash("sha256").update(headerStamp).digest("hex").slice(0, 16)}`;
 }
 
 async function readFrom(
@@ -1475,6 +1491,7 @@ async function writeSidecar(path: string, jsonl: JsonlIndex): Promise<boolean> {
 		terminated: jsonl.terminated,
 		torn: jsonl.torn,
 		spans: encodeDeltas(jsonl.spans),
+		ids: encodeIdHashes(jsonl.ids),
 		index: jsonl.index,
 	});
 	const sidecar = `${path}${SIDECAR_SUFFIX}`;
@@ -1517,11 +1534,18 @@ async function readSidecar(path: string): Promise<JsonlIndex | undefined> {
 		typeof stored.witness !== "string" ||
 		typeof stored.terminated !== "boolean" ||
 		typeof stored.torn !== "boolean" ||
-		typeof stored.spans !== "string"
+		typeof stored.spans !== "string" ||
+		typeof stored.ids !== "string"
 	)
 		return undefined;
 	const spans = decodeDeltas(stored.spans);
-	if (spans.length % 2 !== 0 || !isSessionResumeIndex(stored.index, spans.length / 2)) return undefined;
+	const ids = decodeIdHashes(stored.ids);
+	if (
+		spans.length % 2 !== 0 ||
+		ids?.length !== spans.length / 2 ||
+		!isSessionResumeIndex(stored.index, spans.length / 2)
+	)
+		return undefined;
 	return {
 		identity: stored.identity,
 		birthtimeNs: stored.birthtimeNs,
@@ -1533,6 +1557,7 @@ async function readSidecar(path: string): Promise<JsonlIndex | undefined> {
 		terminated: stored.terminated,
 		torn: stored.torn,
 		spans,
+		ids,
 		index: stored.index,
 		sidecarSize: stored.size,
 	};

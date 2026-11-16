@@ -385,6 +385,59 @@ describe("bounded JSONL session reads (#5249)", () => {
 		await writer.close();
 	});
 
+	it("finds entries whatever whitespace, key order or escapes their id uses (#5249)", async () => {
+		const directory = temporaryDirectory();
+		const entries = [
+			user("early", null, "early", 0),
+			user("spaced", "early", "spaced", 1),
+			user("reordered", "spaced", "reordered", 2),
+			user("escaped", "reordered", "escaped", 3),
+			user("last", "escaped", "last", 4),
+		];
+		const writer = await jsonlStore(directory);
+		const path = writer.locationFor(header);
+		await writer.create(header, entries);
+		await writer.close();
+		const { id: _id, ...rest } = entries[2]!;
+		writeFileSync(
+			path,
+			readFileSync(path, "utf8")
+				.replace('"id":"spaced"', '"id" : "spaced"')
+				.replace(JSON.stringify(entries[2]), JSON.stringify({ ...rest, id: "reordered" }))
+				.replace('"id":"escaped"', '"id":"\\u0065scaped"'),
+		);
+		const reader = await jsonlStore(directory);
+		assert.deepEqual((await reader.load("session")).entries, entries);
+		for (const [i, entry] of entries.entries()) assert.equal(await reader.findEntrySeq("session", entry.id), i + 1);
+		assert.equal(await reader.findEntrySeq("session", "missing"), undefined);
+		assert.equal((await reader.readResume("session", "spaced")).leafId, "spaced");
+		assert.deepEqual(
+			withoutEpoch(await reader.readResume("session", "escaped")),
+			withoutEpoch(sessionResumeOf(header, entries, "escaped")),
+		);
+
+		const boundary: SessionEntry = {
+			type: "compaction",
+			id: "boundary",
+			parentId: "last",
+			timestamp: at(5),
+			summary: "summary",
+			tokensBefore: 10,
+			firstKeptEntryId: "spaced",
+			details: { strategy: "verbatim-lines", backend: "summary" },
+		};
+		const other = await jsonlStore(directory);
+		await other.load("session");
+		await other.append("session", [boundary], { expectSeq: entries.length });
+		await other.close();
+		const all = [...entries, boundary];
+		const resumed = await reader.readResume("session");
+		assert.equal(resumed.compaction?.firstKeptSeq, 2);
+		assert.deepEqual(withoutEpoch(resumed), withoutEpoch(sessionResumeOf(header, all)));
+		assert.equal((await reader.findLatestCompaction("session", "boundary"))?.retainedStartSeq, 2);
+		await reader.close();
+	});
+
 	it("rebuilds its resume state when an append continues an earlier entry (#5249)", async () => {
 		const directory = temporaryDirectory();
 		const entries = compacted(20);

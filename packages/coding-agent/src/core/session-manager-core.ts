@@ -427,18 +427,23 @@ export class SessionManager {
 			const opened = await SessionManager.open(sessionFile, this.sessionDir, this.cwd);
 			this.store = opened.store;
 			this.restore(
-				{ header: opened.recordHeader(), entries: opened.getEntries(), lastSeq: opened.lastSeq },
+				{
+					header: opened.recordHeader(),
+					entries: opened.getEntries(),
+					lastSeq: opened.lastSeq,
+					epoch: opened.historyEpoch,
+				},
 				opened.sessionFile,
 			);
 		});
 	}
 
 	private async initialize(): Promise<void> {
-		this.lastSeq = (
-			await (this.store instanceof JsonlSessionStore
-				? this.store.create(this.recordHeader(), this.getEntries(), this.sessionFile)
-				: this.store.create(this.recordHeader(), this.getEntries()))
-		).lastSeq;
+		const created = await (this.store instanceof JsonlSessionStore
+			? this.store.create(this.recordHeader(), this.getEntries(), this.sessionFile)
+			: this.store.create(this.recordHeader(), this.getEntries()));
+		this.lastSeq = created.lastSeq;
+		this.historyEpoch = created.epoch;
 		this.entrySeqs = new Map(this.getEntries().map((entry, i) => [entry.id, i + 1]));
 		this.lastEntryId = this.getEntries().at(-1)?.id ?? null;
 	}
@@ -480,7 +485,7 @@ export class SessionManager {
 			this.byId.clear();
 			this.labelsById.clear();
 			this.labelTimestampsById.clear();
-			this.restore({ header: record, entries: [], lastSeq: result.lastSeq }, location);
+			this.restore({ header: record, entries: [], lastSeq: result.lastSeq, epoch: result.epoch }, location);
 			return this.sessionFile;
 		});
 	}
@@ -495,8 +500,10 @@ export class SessionManager {
 			const header: SessionHeader = { ...previous, internal: true, workflow: validWorkflow };
 			const result = await this.store.replace(this.sessionId, this.recordHeader(header), this.getEntries(), {
 				expectSeq: this.lastSeq,
+				...(this.historyEpoch === undefined ? {} : { epoch: this.historyEpoch }),
 			});
 			this.lastSeq = result.lastSeq;
+			this.historyEpoch = result.epoch;
 			this.fileEntries[0] = header;
 		});
 	}
@@ -566,7 +573,7 @@ export class SessionManager {
 			if (removeProvisionalRecord) await this.store.delete(this.sessionId);
 			this.store = store;
 			this.sessionDir = store instanceof JsonlSessionStore ? store.descriptor.location : "";
-			this.restore({ header, entries, lastSeq: result.lastSeq });
+			this.restore({ header, entries, lastSeq: result.lastSeq, epoch: result.epoch });
 		});
 	}
 
@@ -1267,18 +1274,12 @@ export class SessionManager {
 						? createSessionFilePath(this.sessionDir, record.createdAt, record.id)
 						: store.locationFor(record)
 					: undefined;
-			const lastSeq = (
-				await (store instanceof JsonlSessionStore
-					? store.create(record, entries, location)
-					: store.create(record, entries))
-			).lastSeq;
+			const created = await (store instanceof JsonlSessionStore
+				? store.create(record, entries, location)
+				: store.create(record, entries));
 			await copySessionBlobs(this.store, this.sessionId, store, record.id, hashes);
 			this.store = store;
-			this.fileEntries = result.fileEntries;
-			this.sessionId = header.id;
-			this.lastSeq = lastSeq;
-			this.sessionFile = location;
-			this._buildIndex();
+			this.restore({ header: record, entries, lastSeq: created.lastSeq, epoch: created.epoch }, location);
 			return this.sessionFile;
 		});
 	}

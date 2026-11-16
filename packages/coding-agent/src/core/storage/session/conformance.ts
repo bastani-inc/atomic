@@ -247,7 +247,7 @@ export function registerSessionStoreConformance(
 
 			check("creates atomically and rejects duplicate sessions without changing data", async (store, reload) => {
 				const entries = [message("first", "hello")];
-				assert.deepEqual(await store.create(header(), entries), { lastSeq: 1 });
+				assert.equal((await store.create(header(), entries)).lastSeq, 1);
 				store = await reload(store);
 				await assert.rejects(store.create({ ...header(), cwd: "changed" }, []), (error: Error) => {
 					assert.ok(error instanceof SessionExistsError);
@@ -323,7 +323,7 @@ export function registerSessionStoreConformance(
 					workflow: { runId: "run", stageId: "stage", stageName: " Stage " },
 				};
 				const entries = [message("new", "new"), message("last", "last")];
-				assert.deepEqual(await store.replace("session", replacement, entries, { expectSeq: 1 }), { lastSeq: 2 });
+				assert.equal((await store.replace("session", replacement, entries, { expectSeq: 1 })).lastSeq, 2);
 				store = await reload(store);
 				assert.deepEqual(await store.readHeader("session"), replacement);
 				assert.deepEqual(await store.load("session"), { header: replacement, entries, lastSeq: 2 });
@@ -745,7 +745,7 @@ export function registerSessionStoreConformance(
 
 			check("preserves empty values, duplicate entries and absent optional fields", async (store, reload) => {
 				const emptyHeader = { ...header(""), cwd: "", createdAt: "2026-10-15T01:00+01:00" };
-				assert.deepEqual(await store.create(emptyHeader, []), { lastSeq: 0 });
+				assert.equal((await store.create(emptyHeader, [])).lastSeq, 0);
 				assert.deepEqual(await store.append("", [], { expectSeq: 0 }), { lastSeq: 0 });
 				store = await reload(store);
 				const [summary] = await collect(store, { cwd: "" });
@@ -761,7 +761,7 @@ export function registerSessionStoreConformance(
 				await store.append("", [entry, entry], { expectSeq: 0 });
 				store = await reload(store);
 				assert.deepEqual((await store.load("")).entries, [entry, entry]);
-				assert.deepEqual(await store.replace("", emptyHeader, [], { expectSeq: 2 }), { lastSeq: 0 });
+				assert.equal((await store.replace("", emptyHeader, [], { expectSeq: 2 })).lastSeq, 0);
 			});
 
 			check("rejects invalid structural text atomically with NUL precedence", async (store, reload) => {
@@ -1042,7 +1042,7 @@ export function registerSessionStoreConformance(
 				await assert.rejects(store.load("session"), notFound("session"));
 				assert.equal(await store.readHeader("session"), undefined);
 				assert.deepEqual(await collect(store), []);
-				assert.deepEqual(await store.create(header(), []), { lastSeq: 0 });
+				assert.equal((await store.create(header(), [])).lastSeq, 0);
 			});
 
 			check("detaches input and returned records, headers and summaries", async (store, reload) => {
@@ -1351,6 +1351,94 @@ export function registerSessionStoreConformance(
 					await store.delete("session");
 					await store.create(header(), entries);
 					assert.notEqual((await store.readResume("session")).epoch, replacement.epoch);
+				},
+			);
+
+			check(
+				"rejects an append or replace carrying a replaced generation's epoch at the same sequence count (#5249)",
+				async (store, reload) => {
+					const original = [message("first", "first"), { ...message("second", "second"), parentId: "first" }];
+					await store.create(header(), original);
+					store = await reload(store);
+					assert.ok(store.readRange);
+					const opened = (await store.readRange("session", 1, 0)).epoch;
+					assert.ok(opened);
+					const replaced = await store.replace(
+						"session",
+						header(),
+						[message("other", "other"), { ...message("next", "next"), parentId: "other" }],
+						{ expectSeq: 2 },
+					);
+					store = await reload(store);
+					const conflict = (error: Error) => error instanceof SessionConflictError;
+					await assert.rejects(
+						store.append("session", [{ ...message("late", "late"), parentId: "second" }], {
+							expectSeq: 2,
+							epoch: opened,
+						}),
+						conflict,
+					);
+					await assert.rejects(
+						store.replace("session", header(), original, { expectSeq: 2, epoch: opened }),
+						conflict,
+					);
+					assert.deepEqual(
+						(await store.load("session")).entries.map((entry) => entry.id),
+						["other", "next"],
+					);
+					assert.ok(replaced.epoch);
+					await store.append("session", [{ ...message("after", "after"), parentId: "next" }], {
+						expectSeq: 2,
+						epoch: replaced.epoch,
+					});
+					assert.equal((await store.load("session")).lastSeq, 3);
+				},
+			);
+
+			check("create and replace resolve the epoch later range reads report (#5249)", async (store, reload) => {
+				const created = await store.create(header(), [message("first", "first")]);
+				store = await reload(store);
+				assert.ok(store.readRange && created.epoch);
+				assert.equal((await store.readRange("session", 1, 1)).epoch, created.epoch);
+				await store.append("session", [{ ...message("second", "second"), parentId: "first" }], {
+					expectSeq: 1,
+					epoch: created.epoch,
+				});
+				const replaced = await store.replace("session", header(), [message("only", "only")], {
+					expectSeq: 2,
+					epoch: created.epoch,
+				});
+				assert.ok(replaced.epoch);
+				assert.notEqual(replaced.epoch, created.epoch);
+				store = await reload(store);
+				assert.equal((await store.readRange!("session", 1, 1)).epoch, replaced.epoch);
+				await store.append("session", [{ ...message("third", "third"), parentId: "only" }], {
+					expectSeq: 1,
+					epoch: replaced.epoch,
+				});
+				assert.equal((await store.readResume!("session")).epoch, replaced.epoch);
+			});
+
+			check(
+				"readResume reports pooled delivery receipt ids from before the compaction (#5249)",
+				async (store, reload) => {
+					const entries = chained([
+						tailEntry.user("root"),
+						tailEntry.custom("receipt", "atomic-pooled-delivery-op", { op: "delivered-op" }),
+						tailEntry.custom("ignored", "atomic-pooled-delivery-op", { op: 3 }),
+						tailEntry.user("kept"),
+						tailEntry.compaction("boundary", "kept"),
+						tailEntry.custom("later", "atomic-pooled-delivery-op", { op: "later-op" }),
+					]);
+					await store.create(header(), entries);
+					store = await reload(store);
+					assert.ok(store.readResume);
+					const resumed = await store.readResume("session");
+					assert.deepEqual(resumed.recovery.deliveryOpIds, ["delivered-op", "later-op"]);
+					assert.equal(
+						[...resumed.state, ...resumed.branch].some(({ entry }) => entry.id === "receipt"),
+						false,
+					);
 				},
 			);
 

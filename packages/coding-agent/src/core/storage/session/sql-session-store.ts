@@ -52,6 +52,7 @@ import type {
 	SessionSummary,
 	SessionTail,
 	SessionWriteOptions,
+	SessionWriteResult,
 	StorageDescriptor,
 } from "./types.js";
 import { validateSessionEntries, validateSessionHeader, validateSessionText } from "./validation.js";
@@ -474,7 +475,7 @@ export class SqlSessionStore implements SessionStore {
 		return { ...this.database.descriptor, ...(this.prefix === "" ? {} : { prefix: this.prefix }) };
 	}
 
-	async create(header: SessionRecordHeader, entries: readonly SessionEntry[]): Promise<{ readonly lastSeq: number }> {
+	async create(header: SessionRecordHeader, entries: readonly SessionEntry[]): Promise<SessionWriteResult> {
 		this.assertOpen();
 		validateSessionHeader(header);
 		validateSessionEntries(entries);
@@ -482,9 +483,9 @@ export class SqlSessionStore implements SessionStore {
 			if (await tx.get(`SELECT id FROM ${this.tables.sessions} WHERE id = ?`, header.id)) {
 				throw new SessionExistsError(header.id);
 			}
-			const texts = await this.saveSummary(tx, header.id, { header, entries, lastSeq: entries.length });
+			const { texts, epoch } = await this.saveSummary(tx, header.id, { header, entries, lastSeq: entries.length });
 			await this.insertEntries(tx, header.id, entries, 0, texts);
-			return { lastSeq: entries.length };
+			return { lastSeq: entries.length, epoch };
 		}, SESSION_TRANSACTION);
 	}
 
@@ -496,7 +497,7 @@ export class SqlSessionStore implements SessionStore {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
 		return this.transaction(async (tx) => {
-			const previous = await this.forWrite(tx, sessionId, options, true);
+			const { row: previous, state: summaryState } = await this.forWrite(tx, sessionId, options, true);
 			validateSessionEntries(entries);
 			// A new snapshot record is written only while every blob it references is still stored (#5077).
 			await this.blobTable.assertStored(
@@ -506,8 +507,7 @@ export class SqlSessionStore implements SessionStore {
 				),
 			);
 			const lastSeq = previous.last_seq + entries.length;
-			const summaryState = JSON.parse(previous.summary_state) as StoredSummaryState;
-			const texts = await this.saveSummary(
+			const { texts } = await this.saveSummary(
 				tx,
 				sessionId,
 				{ header: JSON.parse(previous.header_json) as SessionRecordHeader, entries, lastSeq },
@@ -524,7 +524,7 @@ export class SqlSessionStore implements SessionStore {
 		header: SessionRecordHeader,
 		entries: readonly SessionEntry[],
 		options: SessionWriteOptions,
-	): Promise<{ readonly lastSeq: number }> {
+	): Promise<SessionWriteResult> {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
 		return this.transaction(async (tx) => {
@@ -535,9 +535,9 @@ export class SqlSessionStore implements SessionStore {
 			await tx.run(`DELETE FROM ${this.tables.searchTexts} WHERE session_id = ?`, sessionId);
 			await tx.run(`DELETE FROM ${this.tables.entryChunks} WHERE session_id = ?`, sessionId);
 			await tx.run(`DELETE FROM ${this.tables.entries} WHERE session_id = ?`, sessionId);
-			const texts = await this.saveSummary(tx, sessionId, { header, entries, lastSeq: entries.length });
+			const { texts, epoch } = await this.saveSummary(tx, sessionId, { header, entries, lastSeq: entries.length });
 			await this.insertEntries(tx, sessionId, entries, 0, texts);
-			return { lastSeq: entries.length };
+			return { lastSeq: entries.length, epoch };
 		}, SESSION_TRANSACTION);
 	}
 
@@ -1123,6 +1123,10 @@ export class SqlSessionStore implements SessionStore {
 						["id", "replyTo", "expectsReply"].map((key) => [key, j("data", "message", key)] as const),
 					),
 				],
+				[
+					"op",
+					`CASE WHEN ${this.dialect.jsonHasType("text", "entry_json", "data", "op")} THEN ${j("data", "op")} END`,
+				],
 				["owner", j("data", "owner")],
 				["tasks", j("data", "tasks")],
 				["groups", j("data", "groups")],
@@ -1418,33 +1422,31 @@ export class SqlSessionStore implements SessionStore {
 		sessionId: string,
 		options: SessionWriteOptions,
 		includeSummaryState: true,
-	): Promise<SummaryStateRow>;
+	): Promise<{ readonly row: SummaryStateRow; readonly state: StoredSummaryState }>;
 	private forWrite(
 		tx: SqliteExecutor,
 		sessionId: string,
 		options: SessionWriteOptions,
 		includeSummaryState?: false,
-	): Promise<HeaderRow>;
+	): Promise<{ readonly row: HeaderRow; readonly state?: StoredSummaryState }>;
 	private async forWrite(
 		tx: SqliteExecutor,
 		sessionId: string,
 		options: SessionWriteOptions,
 		includeSummaryState = false,
-	): Promise<HeaderRow> {
+	): Promise<{ readonly row: HeaderRow; readonly state?: StoredSummaryState }> {
 		const row = await tx.get<HeaderRow>(
 			`SELECT header_json, last_seq${includeSummaryState || options.epoch !== undefined ? ", summary_state" : ""}
 			 FROM ${this.tables.sessions} WHERE id = ?`,
 			sessionId,
 		);
 		if (!row) throw new SessionNotFoundError(sessionId);
-		if (
-			row.last_seq !== options.expectSeq ||
-			(options.epoch !== undefined &&
-				(JSON.parse(String(row.summary_state)) as StoredSummaryState).epoch !== options.epoch)
-		) {
+		const state =
+			row.summary_state === undefined ? undefined : (JSON.parse(String(row.summary_state)) as StoredSummaryState);
+		if (row.last_seq !== options.expectSeq || (options.epoch !== undefined && state?.epoch !== options.epoch)) {
 			throw new SessionConflictError(sessionId, options.expectSeq, row.last_seq);
 		}
-		return row;
+		return { row, state };
 	}
 
 	private async appendedResume(
@@ -1490,7 +1492,7 @@ export class SqlSessionStore implements SessionStore {
 		snapshot: SessionSnapshot,
 		previous?: SessionSummaryState,
 		appendedResume?: SessionResumeIndex,
-	): Promise<readonly SessionSummaryText[]> {
+	): Promise<{ readonly texts: readonly SessionSummaryText[]; readonly epoch: string }> {
 		const { header, lastSeq } = snapshot;
 		const { state: listed, texts } = applySessionSummaryEntries(previous, snapshot.entries);
 		const resume = previous === undefined ? foldSessionResume(undefined, snapshot.entries) : appendedResume;
@@ -1525,7 +1527,7 @@ export class SqlSessionStore implements SessionStore {
 			this.encode(state),
 			newRevision(),
 		);
-		return texts;
+		return { texts, epoch };
 	}
 
 	private async insertEntries(

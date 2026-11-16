@@ -340,7 +340,7 @@ describe("a released session's history leaves process memory (#4502)", () => {
 		await assert.rejects(store.load("gone"), (error: Error) => error instanceof SessionNotFoundError);
 
 		const replacement = entries("r", 2);
-		assert.deepEqual(await store.replace("kept", header("kept"), replacement, { expectSeq: 20 }), { lastSeq: 2 });
+		assert.equal((await store.replace("kept", header("kept"), replacement, { expectSeq: 20 })).lastSeq, 2);
 		assert.equal(spillFileSizes().length, 1);
 		assert.deepEqual(await store.load("kept"), { header: header("kept"), entries: replacement, lastSeq: 2 });
 		assert.deepEqual(store.historyBytes(), {

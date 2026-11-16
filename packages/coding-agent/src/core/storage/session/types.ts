@@ -108,6 +108,7 @@ export interface SessionCompactionPoint {
 export interface SessionRecoveryState {
 	readonly admissionKeys: readonly string[];
 	readonly intercomDeliveredIds: readonly string[];
+	readonly deliveryOpIds?: readonly string[];
 }
 
 export interface SessionResume {
@@ -156,6 +157,11 @@ export function matchesSessionIdPrefix(id: string, prefix: string | undefined): 
 export interface SessionWriteOptions {
 	readonly epoch?: string;
 	readonly expectSeq: number;
+}
+
+export interface SessionWriteResult {
+	readonly lastSeq: number;
+	readonly epoch?: string;
 }
 
 /** A blob a session holds: the lowercase hex SHA-256 of its bytes, and how many bytes it has. */
@@ -211,7 +217,7 @@ export interface SessionStore {
 	putBlob?(sessionId: string, data: Uint8Array): Promise<SessionBlob>;
 	/** The bytes the session stored under `hash`, or `undefined` when it holds none. Absent with `putBlob`. */
 	getBlob?(sessionId: string, hash: string): Promise<Uint8Array | undefined>;
-	create(header: SessionRecordHeader, entries: readonly SessionEntry[]): Promise<{ readonly lastSeq: number }>;
+	create(header: SessionRecordHeader, entries: readonly SessionEntry[]): Promise<SessionWriteResult>;
 	append(
 		sessionId: string,
 		entries: readonly SessionEntry[],
@@ -222,7 +228,7 @@ export interface SessionStore {
 		header: SessionRecordHeader,
 		entries: readonly SessionEntry[],
 		options: SessionWriteOptions,
-	): Promise<{ readonly lastSeq: number }>;
+	): Promise<SessionWriteResult>;
 	load(sessionId: string): Promise<SessionSnapshot>;
 
 	readTail?(sessionId: string, fromSeq: number): Promise<SessionTail>;

@@ -17,12 +17,13 @@ import { validateSessionText } from "./validation.js";
 const LEAF_MOVE_TYPE = "atomic.leaf";
 const TASK_COMPLETION_INTENT_TYPE = "task-completion-intent";
 const TASK_COMPLETION_ACK_TYPE = "task-completion-ack";
+const DELIVERY_OP_TYPE = "atomic-pooled-delivery-op";
 
 type ResumeJump = readonly [startSeq: number, endSeq: number, parentSeq: number];
 type ResumeCompaction = readonly [seq: number, firstKeptSeq: number, coveredSeq: number];
 
 export interface SessionResumeIndex {
-	readonly version: 3;
+	readonly version: 4;
 	readonly needsBranchRebuild?: boolean;
 	readonly epoch: string;
 	readonly latest: Readonly<Record<string, readonly number[]>>;
@@ -32,6 +33,7 @@ export interface SessionResumeIndex {
 	readonly assistants: readonly number[];
 	readonly admissions: readonly string[];
 	readonly delivered: readonly string[];
+	readonly deliveryOps: readonly string[];
 	readonly settled: readonly string[];
 	readonly pending: Readonly<Record<string, number>>;
 	readonly parks: Readonly<
@@ -231,7 +233,16 @@ function isChildState(data: Record<string, unknown>): boolean {
 }
 type ResumeProtocolIndex = Pick<
 	SessionResumeIndex,
-	"latest" | "fields" | "firstChildren" | "admissions" | "delivered" | "settled" | "pending" | "parks" | "intents"
+	| "latest"
+	| "fields"
+	| "firstChildren"
+	| "admissions"
+	| "delivered"
+	| "deliveryOps"
+	| "settled"
+	| "pending"
+	| "parks"
+	| "intents"
 >;
 class ResumeProtocols {
 	readonly latest: Record<string, readonly number[]>;
@@ -239,6 +250,7 @@ class ResumeProtocols {
 	readonly firstChildren: Record<string, number>;
 	readonly admissions: Set<string>;
 	readonly delivered: Set<string>;
+	readonly deliveryOps: Set<string>;
 	readonly settled: Set<string>;
 	readonly pending: Record<string, number>;
 	readonly parks: Record<string, { seq: number; remaining: readonly string[]; notified: readonly number[] }>;
@@ -249,6 +261,7 @@ class ResumeProtocols {
 		this.firstChildren = { ...previous?.firstChildren };
 		this.admissions = new Set(previous?.admissions ?? []);
 		this.delivered = new Set(previous?.delivered ?? []);
+		this.deliveryOps = new Set(previous?.deliveryOps ?? []);
 		this.settled = new Set(previous?.settled ?? []);
 		this.pending = { ...previous?.pending };
 		this.parks = { ...previous?.parks };
@@ -302,6 +315,7 @@ class ResumeProtocols {
 		const validLatest = isLatestProtocol(kind, data, branchActive);
 		if (validLatest) this.keepLatest(`${kind}:${text(data.sessionId) ?? text(data.id) ?? ""}`, seq);
 		if (kind === "subagent-child" && isChildState(data)) this.child(data, seq);
+		if (kind === DELIVERY_OP_TYPE && typeof data.op === "string") this.deliveryOps.add(data.op);
 
 		if (branchActive && kind === "intercom_inbox" && typeof record(data.message).id === "string") {
 			const id = String(record(data.message).id);
@@ -395,6 +409,7 @@ class ResumeProtocols {
 			firstChildren: this.firstChildren,
 			admissions: [...this.admissions],
 			delivered: [...this.delivered],
+			deliveryOps: [...this.deliveryOps],
 			settled: [...this.settled],
 			pending: this.pending,
 			parks: this.parks,
@@ -493,7 +508,7 @@ export function foldSessionResume(
 		lastId = entry.id;
 	}
 	return {
-		version: 3,
+		version: 4,
 		...(needsBranchRebuild ? { needsBranchRebuild: true } : {}),
 		epoch: previous?.epoch ?? crypto.randomUUID(),
 		...protocols.serialize(),
@@ -518,8 +533,9 @@ export function isSessionResumeIndex(value: unknown, lastSeq: number): value is 
 	if (value === null || typeof value !== "object") return false;
 	const index = value as Partial<SessionResumeIndex>;
 	return (
-		index.version === 3 &&
+		index.version === 4 &&
 		!index.needsBranchRebuild &&
+		Array.isArray(index.deliveryOps) &&
 		typeof index.epoch === "string" &&
 		index.seq === lastSeq &&
 		typeof index.leafSeq === "number" &&
@@ -795,7 +811,11 @@ export function sessionResumeFrom(
 			returned.map((held) => held.entry),
 			returned.some((held) => held.seq === index.latestAssistantSeq),
 		),
-		recovery: { admissionKeys: index.admissions, intercomDeliveredIds: index.delivered },
+		recovery: {
+			admissionKeys: index.admissions,
+			intercomDeliveredIds: index.delivered,
+			deliveryOpIds: index.deliveryOps,
+		},
 	};
 }
 
