@@ -1,13 +1,21 @@
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getModel } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, expect, it } from "vitest";
+import { removeTestDirectory } from "../../../test/helpers/test-directory-removal.js";
 import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
+import { isSyntheticPath } from "../src/core/source-info.ts";
 import { type BashOperations, createBashTool } from "../src/core/tools/bash.ts";
+
+const NO_BUILTINS = { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false } as const;
+
+function packageExtensionPaths(extensionsResult: { extensions: ReadonlyArray<{ path: string }> }): string[] {
+	return extensionsResult.extensions.map((extension) => extension.path).filter((path) => !isSyntheticPath(path));
+}
 
 const roots: string[] = [];
 const model = getModel("anthropic", "claude-sonnet-4-5")!;
@@ -55,19 +63,16 @@ async function createSession(options: { persisted?: boolean; stage?: string } = 
 		thinkingLevel: "high",
 		sessionManager,
 		orchestrationContext,
+		builtins: NO_BUILTINS,
 	});
+	expect(packageExtensionPaths(result.extensionsResult)).toEqual([]);
 	return { ...result, cwd, agentDir };
 }
 
 afterEach(() => {
-	// Retry, then give up: reclaiming an OS temp dir is never the assertion.
 	for (const root of roots.splice(0)) {
 		if (!existsSync(root)) continue;
-		try {
-			rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
-		} catch {
-			// Left for the OS to reclaim.
-		}
+		removeTestDirectory(root, { retries: 20, retryDelayMs: 50 });
 	}
 });
 
@@ -127,13 +132,15 @@ describe("session-aware bash environment", () => {
 		const sessionFile = created.getSessionFile();
 		if (!sessionFile) throw new Error("persisted session fixture did not create a file");
 		const resumed = await SessionManager.open(sessionFile, join(agentDir, "sessions"));
-		const { session } = await createAgentSession({
+		const { session, extensionsResult } = await createAgentSession({
 			cwd,
 			agentDir,
 			model,
 			thinkingLevel: "medium",
 			sessionManager: resumed,
+			builtins: NO_BUILTINS,
 		});
+		expect(packageExtensionPaths(extensionsResult)).toEqual([]);
 		const bash = session.agent.state.tools.find((tool) => tool.name === "bash")!;
 		const lines = text(await bash.execute("resumed", { command: printSessionEnvironment }))
 			.trim()
@@ -174,7 +181,7 @@ describe("session-aware bash environment", () => {
 			],
 		});
 		await resourceLoader.reload();
-		const { session } = await createAgentSession({
+		const { session, extensionsResult } = await createAgentSession({
 			cwd,
 			agentDir,
 			model,
@@ -182,7 +189,9 @@ describe("session-aware bash environment", () => {
 			settingsManager,
 			resourceLoader,
 			sessionManager: SessionManager.inMemory(cwd),
+			builtins: NO_BUILTINS,
 		});
+		expect(packageExtensionPaths(extensionsResult)).toEqual([]);
 		const bash = session.agent.state.tools.find((tool) => tool.name === "factory_bash")!;
 		await bash.execute("factory-1", {
 			command: "ignored",

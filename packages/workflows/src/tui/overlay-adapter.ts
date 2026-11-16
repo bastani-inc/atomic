@@ -79,7 +79,7 @@ export interface GraphOverlayOpenOptions {
  * `close()`      — permanently dismiss.
  *
  * Optional `stageId` and owning `stageRunId` (on `open`) open directly on
- * that exact stage-chat node — used by `/workflow attach <runId> <stageId>`
+ * that exact stage-chat node — used to open a stage chat directly
  * and the picker overlay's connect-to-stage flow.
  */
 export interface GraphOverlayPort {

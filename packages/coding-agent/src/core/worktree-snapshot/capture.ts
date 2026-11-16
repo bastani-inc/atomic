@@ -8,7 +8,6 @@ import {
 	mkdtemp,
 	open,
 	readFile,
-	rename,
 	rm,
 	stat,
 	utimes,
@@ -16,6 +15,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { renameWithRetry } from "../rename-retry.ts";
 import { snapshotBlobHashes } from "./blob-store.ts";
 import { computeEnvironmentHash, sha256Hex, snapshotBlob } from "./env-hash.ts";
 import {
@@ -347,7 +347,7 @@ async function writeCapturedTree(
 				seed,
 				index: sha256Hex(await readFile(working)),
 			};
-			await rename(working, index);
+			await renameWithRetry(working, index, { signal });
 			await writeAtomically(`${index}.json`, JSON.stringify(written));
 			return state;
 		} catch {
@@ -406,7 +406,7 @@ async function writeAtomically(file: string, data: string): Promise<void> {
 	const temporary = `${file}.${process.pid}.tmp`;
 	await writeFile(temporary, data);
 	try {
-		await rename(temporary, file);
+		await renameWithRetry(temporary, file);
 	} catch (error) {
 		// Windows refuses to replace a file another process has open, which concurrent captures do.
 		await rm(temporary, { force: true }).catch(() => undefined);

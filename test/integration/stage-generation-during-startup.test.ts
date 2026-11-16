@@ -106,7 +106,7 @@ test("a user message sent while the stage's session starts leaves the stage's to
 	let sent: Promise<unknown> | undefined;
 	const fixture = await runStage((handle) => {
 		// Queued, so the stage's own prompt takes it into its turn, as the pooled stage did.
-		sent = handle.steer("/workflow attach some-run work-0");
+		sent = handle.steer("/workflows some-run work-0");
 	});
 	await sent;
 

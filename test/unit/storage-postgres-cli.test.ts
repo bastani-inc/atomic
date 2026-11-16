@@ -220,9 +220,13 @@ interface FakeOpen {
  * password it was given (from `context.secret` or `options.password`), refuses `refused` hosts, never answers `hang`
  * hosts, and answers `SELECT 1` and a server-version query.
  */
-function installFakePostgres(): { readonly opens: () => FakeOpen[] } {
+function installFakePostgres(options?: { readonly loadDelayMs?: number }): { readonly opens: () => FakeOpen[] } {
 	const directory = join(root, "fake-postgres");
 	const log = join(root, "fake-postgres.log");
+	const loadDelay =
+		options?.loadDelayMs === undefined
+			? ""
+			: `await new Promise((resolve) => setTimeout(resolve, ${options.loadDelayMs}));\n`;
 	mkdirSync(directory, { recursive: true });
 	writeFileSync(
 		join(directory, "package.json"),
@@ -236,7 +240,7 @@ function installFakePostgres(): { readonly opens: () => FakeOpen[] } {
 	writeFileSync(
 		join(directory, "postgres.js"),
 		`import { appendFileSync } from "node:fs";
-const log = ${JSON.stringify(log)};
+${loadDelay}const log = ${JSON.stringify(log)};
 export default {
 	atomicStorageAdapter: 1,
 	liveSecrets: ["password"],
@@ -486,6 +490,27 @@ describe("atomic storage status for a Postgres selection (#4793)", () => {
 		const journal = status.domains.find((domain) => domain.domain === "journal");
 		assert.equal(journal?.probe?.connection.status, "failed");
 		assert.match(journal?.probe?.connection.detail ?? "", /^The database did not answer within 0\.1 s/);
+		assert.ok(Date.now() - started < 10_000);
+	});
+
+	test("a slow adapter load still fails the check within the probe timeout when the server does not answer (#4793)", async () => {
+		const SLOW_ADAPTER_LOAD_MS = 500;
+		const PROBE_TIMEOUT_MS = 100;
+		const fake = installFakePostgres({ loadDelayMs: SLOW_ADAPTER_LOAD_MS });
+		selectPostgres("hang");
+		const started = Date.now();
+		const status = await collectStorageStatus({
+			cwd: project,
+			agentDir,
+			probe: true,
+			probeTimeoutMs: PROBE_TIMEOUT_MS,
+		});
+		const sessions = status.domains.find((domain) => domain.domain === "sessions");
+		const journal = status.domains.find((domain) => domain.domain === "journal");
+		assert.equal(sessions?.probe?.adapter?.loaded, true);
+		assert.equal(journal?.probe?.connection.status, "failed");
+		assert.match(journal?.probe?.connection.detail ?? "", /^The database did not answer within 0\.1 s/);
+		assert.equal(fake.opens().length, 1);
 		assert.ok(Date.now() - started < 10_000);
 	});
 });

@@ -1,6 +1,7 @@
+import assert from "node:assert/strict";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fauxAssistantMessage, registerFauxProvider } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AgentSession } from "../../../src/core/agent-session.ts";
@@ -12,6 +13,7 @@ import {
 } from "../../../src/core/agent-session-runtime.ts";
 import { AuthStorage } from "../../../src/core/auth-storage.ts";
 import { SessionManager } from "../../../src/core/session-manager.ts";
+import { isSyntheticPath } from "../../../src/core/source-info.ts";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionFactory } from "../../../src/index.ts";
 
 function getText(message: AgentSession["messages"][number]): string {
@@ -24,6 +26,14 @@ function getText(message: AgentSession["messages"][number]): string {
 				.filter((part): part is { type: "text"; text: string } => part.type === "text")
 				.map((part) => part.text)
 				.join("");
+}
+
+function packageExtensionDirs(session: AgentSession): string[] {
+	return session.resourceLoader
+		.getExtensions()
+		.extensions.map((extension) => extension.path)
+		.filter((path) => !isSyntheticPath(path))
+		.map((path) => basename(dirname(path)));
 }
 
 describe("regression #2860: replaced session callbacks", () => {
@@ -53,6 +63,7 @@ describe("regression #2860: replaced session callbacks", () => {
 				agentDir: tempDir,
 				authStorage,
 				resourceLoaderOptions: {
+					builtinPackagePaths: [],
 					extensionFactories: [
 						(pi: ExtensionAPI) => {
 							pi.registerProvider(faux.getModel().provider, {
@@ -135,6 +146,7 @@ describe("regression #2860: replaced session callbacks", () => {
 				rmSync(tempDir, { recursive: true, force: true });
 			}
 		});
+		assert.deepEqual(packageExtensionDirs(runtime.session), ["intercom"]);
 
 		return { runtime, faux };
 	}

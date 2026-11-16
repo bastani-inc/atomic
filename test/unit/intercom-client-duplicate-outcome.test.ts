@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, test, vi } from "vitest";
+import { removeTestDirectory } from "../helpers/test-directory-removal.js";
 
 const agentDir = mkdtempSync(join(tmpdir(), "icm-"));
 const previousAgentDir = process.env.ATOMIC_CODING_AGENT_DIR;
@@ -16,7 +17,7 @@ const { IntercomClient } = await import("../../packages/intercom/broker/client.j
 afterAll(() => {
 	if (previousAgentDir === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
 	else process.env.ATOMIC_CODING_AGENT_DIR = previousAgentDir;
-	rmSync(agentDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
+	removeTestDirectory(agentDir, { retries: 20, retryDelayMs: 50 });
 });
 
 const RECIPIENT = {

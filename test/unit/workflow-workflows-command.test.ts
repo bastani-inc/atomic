@@ -174,6 +174,20 @@ describe("/workflows (#5224)", () => {
 		assert.equal(t.messages.info.length, 1);
 	});
 
+	it("prints retained runs when the host cannot mount the session sheet (#5245)", async () => {
+		const t = harness();
+		await handleWorkflowsCommand("", { hasUI: true, ui: {} }, t.reporter, {
+			overlay: t.overlay,
+			store: storeWith(["run-1", "run-2"]),
+			definitions: () => [{ normalizedName: "deploy", description: "Deploy", inputs: {} }],
+		});
+		assert.equal(t.messages.info.length, 1);
+		assert.match(t.messages.info[0], /wf-run-1/);
+		assert.match(t.messages.info[0], /wf-run-2/);
+		assert.deepEqual(t.opened, []);
+		assert.deepEqual(t.pickers, []);
+	});
+
 	it("with no runs but registered definitions opens the sheet, and Enter on a definition starts it", async () => {
 		initTheme("dark");
 		const t = harness();
@@ -220,9 +234,10 @@ describe("/workflows (#5224)", () => {
 	it("openWorkflowRun passes the opener's way back to the graph", () => {
 		const t = harness();
 		const onReturn = () => {};
-		assert.equal(openWorkflowRun("run-1", t.ctx, { overlay: t.overlay }, { onReturn }), true);
+		openWorkflowRun("run-1", t.ctx, { overlay: t.overlay }, { onReturn });
 		assert.equal(t.opened[0].options.onReturn, onReturn);
-		assert.equal(openWorkflowRun("run-1", { ui: {} }, { overlay: t.overlay }), false);
+		openWorkflowRun("run-1", { ui: {} }, { overlay: t.overlay });
+		assert.equal(t.opened[1].surface, undefined, "without its own surface the session's is used");
 	});
 });
 

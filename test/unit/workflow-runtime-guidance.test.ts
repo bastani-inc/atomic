@@ -96,6 +96,11 @@ test("keeps estimates honest and preserves approval boundaries", async () => {
 	}
 });
 
+test("post-mortem chat guidance uses /workflows and stage selection (#5224)", () => {
+	assert.match(guidance, /Open `\/workflows <run>` and select the stage for user-driven post-mortem chat/);
+	assert.doesNotMatch(guidance, /\/workflow (?:attach|connect)\b/);
+});
+
 test("tool description inherits limits without offering a routine budget choice", () => {
 	assert.ok(
 		guidance.includes(

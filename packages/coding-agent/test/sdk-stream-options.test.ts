@@ -16,6 +16,7 @@ import { createAgentSession } from "../src/core/sdk.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { type Settings, SettingsManager } from "../src/core/settings-manager.js";
 
+import { linkSharedTranspileCache } from "./helpers/shared-transpile-cache.ts";
 import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.js";
 
 describe("createAgentSession stream options", () => {
@@ -29,6 +30,7 @@ describe("createAgentSession stream options", () => {
 		agentDir = join(tempDir, "agent");
 		mkdirSync(cwd, { recursive: true });
 		mkdirSync(agentDir, { recursive: true });
+		linkSharedTranspileCache(agentDir);
 	});
 	afterEach(() => {
 		vi.restoreAllMocks();

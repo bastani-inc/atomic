@@ -47,7 +47,7 @@ export const CHAT_SURFACE_CUSTOM_TYPE = "workflows:chat-surface";
 /**
  * Dispatch confirm after `/workflow <name> …`. Renders a single tagged
  * card carrying the runId, workflow name, inputs, and a `● running`
- * badge, plus one `/workflow connect <id>` hint row. See
+ * badge, plus one `/workflows <id>` hint row. See
  * `src/tui/dispatch-confirm.ts` for the visual contract.
  */
 export interface DispatchPayload {

@@ -138,20 +138,28 @@ async function rootFixture(scope: PoolStoreScope) {
 }
 
 export function registerPoolStoreConformance(run_: Runner, name: string, openScope: () => Promise<PoolStoreScope>) {
-	const test = (title: string, body: (f: Awaited<ReturnType<typeof rootFixture>>) => Promise<void>) =>
-		run_(title, async () => {
-			const scope = await openScope();
-			try {
-				const f = await rootFixture(scope);
+	const test = (
+		title: string,
+		body: (f: Awaited<ReturnType<typeof rootFixture>>) => Promise<void>,
+		timeoutMs?: number,
+	) =>
+		run_(
+			title,
+			async () => {
+				const scope = await openScope();
 				try {
-					await body(f);
+					const f = await rootFixture(scope);
+					try {
+						await body(f);
+					} finally {
+						await f.close();
+					}
 				} finally {
-					await f.close();
+					await scope.close();
 				}
-			} finally {
-				await scope.close();
-			}
-		});
+			},
+			timeoutMs,
+		);
 
 	describe(name, () => {
 		test("control revisions survive reopening and close admission without deleting work", async (f) => {
@@ -284,6 +292,36 @@ export function registerPoolStoreConformance(run_: Runner, name: string, openSco
 				await projection.close();
 			}
 		});
+
+		test("1000 commits of 256 KiB checkpoints, one after another, all commit and read back intact", async (f) => {
+			await f.pool.enqueue(f.lease, work, boundary);
+			const attempt = await f.pool.claim(f.lease, "worker", [definition], 60_000);
+			assert.ok(attempt);
+			// Each commit past the 64 a queue keeps of its own reads the root's checkpoints since its watermark, 16 MiB
+			// of them here: no value, row or response of that read may pass a libSQL server's limits.
+			const sized = (step: number) => ({ ...toolCheckpointOf({ work, boundary }, step), output: largeOutput(step) });
+			const seqs: number[] = [];
+			for (let step = 0; step < 1000; step++) {
+				const receipt = await f.pool
+					.commit(f.lease, attempt, `step-${step}`, { kind: "checkpoint", checkpoint: sized(step) })
+					.catch((error: Error) => assert.fail(`commit ${step + 1} of 1000 failed: ${error.message}`));
+				seqs.push(receipt.seq!);
+			}
+			assert.deepEqual(
+				seqs,
+				seqs.map((_, index) => seqs[0]! + index),
+				"each commit recorded the next event",
+			);
+			let read = 0;
+			for await (const entry of (await f.peer()).read("root")) {
+				// The child's boundary start, which queueing it recorded, comes first.
+				if (entry.event.type !== RUN_EVENT_TYPES.checkpointRecorded || entry.event.payload.kind !== "tool")
+					continue;
+				assert.deepEqual(entry.event.payload, sized(read), `checkpoint ${read} reads back intact`);
+				read++;
+			}
+			assert.equal(read, 1000);
+		}, 600_000);
 
 		test("a completed child keeps its result and fences later writes", async (f) => {
 			await f.pool.enqueue(f.lease, work, boundary);
@@ -614,6 +652,12 @@ function toolCheckpointOf(item: ReturnType<typeof poolWorkFixture>, step: number
 			run: { ...item.boundary.topology!.boundary!.child },
 		},
 	};
+}
+
+/** A tool output of about 256 KiB, its text distinct for each `step`. */
+function largeOutput(step: number): { readonly step: number; readonly text: string } {
+	const unit = `${step}:"quoted" \\ é;`;
+	return { step, text: unit.repeat(Math.ceil((256 * 1024) / unit.length)).slice(0, 256 * 1024) };
 }
 
 /** The root's events: one per key, numbered 1 to their count, with `count` checkpoints when given. */

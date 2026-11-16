@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, describe, test } from "vitest";
+import { removeTestDirectory } from "../helpers/test-directory-removal.js";
 
 const agentDir = mkdtempSync(join(tmpdir(), "icv-"));
 const previousAgentDir = process.env.ATOMIC_CODING_AGENT_DIR;
@@ -38,7 +39,7 @@ afterAll(() => {
 	else process.env.ATOMIC_CODING_AGENT_DIR = previousAgentDir;
 	if (previousLegacyAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 	else process.env.PI_CODING_AGENT_DIR = previousLegacyAgentDir;
-	rmSync(agentDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
+	removeTestDirectory(agentDir, { retries: 20, retryDelayMs: 50 });
 });
 
 type Frame = Record<string, unknown> & { type?: string };

@@ -85,13 +85,12 @@ For natural-language launches, Atomic decides between inline work and a workflow
 
 ### Monitor and steer a run
 
-Named workflow runs execute in the background. After launch you get the full run id; user-facing workflow surfaces show that complete UUID. You can still type the full id or a unique short prefix to inspect, connect, pause, quit, or resume a run. Ambiguous prefixes are reported rather than selecting a run arbitrarily.
+Named workflow runs execute in the background. After launch you get the full run id; user-facing workflow surfaces show that complete UUID. You can still type the full id or a unique short prefix to inspect, open (`/workflows <id>`), pause, quit, or resume a run. Ambiguous prefixes are reported rather than selecting a run arbitrarily.
 
 ```text
 /workflow status <run-id>         # inspect one run's progress
 /workflow status                  # list this session's active and terminal runs
-/workflow connect <run-id>        # see agents working; chat with or steer each stage (F2 also opens latest)
-/workflow attach <run-id> <stage> # chat with one stage
+/workflows <run-id>                # see agents working; chat with or steer each stage (F2 also opens latest)
 /workflow pause <run-id>          # pause resumably
 /workflow resume <run-id> "go"    # send a steer message and resume
 /workflow quit <run-id>           # pause gracefully and keep the run resumable
@@ -99,7 +98,7 @@ Named workflow runs execute in the background. After launch you get the full run
 
 Each run has a row in the agent panel below the prompt with its stage progress, current stage and elapsed time; a waiting question shows on the row. Press ↓ on an empty prompt and Enter on the run's row to open its graph.
 
-Human-in-the-loop prompts (`ctx.ui.input`, `confirm`, `select`, `editor`) surface in the graph viewer, not as chat modals — connect to the run to answer them. The agent panel row shows that a run waits, and Enter on it opens the graph.
+Human-in-the-loop prompts (`ctx.ui.input`, `confirm`, `select`, `editor`) surface in the graph viewer, not as chat modals. Open `/workflows <run-id>` and select the waiting node to answer them. The agent panel row shows that a run waits, and Enter on it opens the graph.
 
 Atomic also posts main-chat lifecycle notices when a run completes, fails, or awaits input. If you answer a workflow prompt in the graph or attached stage chat, the main chat receives a display-only answer summary for audit; it does not wake the model, enter LLM context, or answer later prompts. See [Workflow Operations](/workflows/operations) for the full run-control reference.
 

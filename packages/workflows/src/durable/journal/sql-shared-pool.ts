@@ -8,9 +8,11 @@ import {
 } from "@bastani/atomic/storage";
 import type { SerializedError } from "../../shared/error-codec.js";
 import { StaleStageLeaseError } from "../../workers/placement-errors.js";
+import type { ResolvedCheckpointShipping } from "../../workers/public-options.js";
 import type { WorkspaceBinding } from "../../workers/workspace-binding.js";
 import { poolSchemaLedger, type SqlPoolStorage, sqlPoolStorage, sqlPoolWrites } from "./internal.js";
 import { guardedPoolWrite } from "./pool-guarded-write.js";
+import { poolSchemaPresent } from "./pool-schema-probe.js";
 import type {
 	SharedPoolFleet,
 	SharedPoolFleetStatus,
@@ -67,6 +69,7 @@ export interface SharedPoolConfig {
 	readonly stageStartMaxLoadPerCpu?: number;
 	readonly maxWorkerRssBytes?: number;
 	readonly claimWindowMs: number;
+	readonly checkpointShipping?: ResolvedCheckpointShipping;
 	/** Children raise `ctx.ui` prompts for the root to answer, on whichever host runs them. */
 	readonly promptNodes?: boolean;
 	/** Fleet-wide model rate limits by provider or `provider/model` (#4768). */
@@ -196,9 +199,7 @@ export class SqlSharedPool {
 		const { int } = dialect.types;
 		// A current schema runs no DDL, so a role with only DML privileges opens it (#5218).
 		const schema = { ledger: poolSchemaLedger(storage), domain: "shared-pool", revision: 1 };
-		await storage.transaction((tx) =>
-			ensureStorageSchema(tx, dialect, schema, async () => {
-				await tx.exec(`
+		const tables = `
 				CREATE TABLE IF NOT EXISTS ${pool.shared}(
 					root TEXT PRIMARY KEY REFERENCES ${runs}_pool(root) ON DELETE CASCADE, config TEXT NOT NULL,
 					epoch ${int} NOT NULL, budget_blocked ${int} NOT NULL DEFAULT 0${dialect.rowOrderColumn}
@@ -237,10 +238,24 @@ export class SqlSharedPool {
 					recorded_at ${int} NOT NULL, PRIMARY KEY(host, binding)${dialect.rowOrderColumn}
 				);
 				${fleetDrainsSchema(runs, dialect)};
-			`);
+			`;
+		const statusColumns = Object.entries(hostStatusColumns(dialect));
+		// A schema that is current opens with reads alone: a write transaction here would hold a shared server's write
+		// lock for a round trip per statement (#4768).
+		if (
+			await poolSchemaPresent(
+				storage,
+				[tables],
+				statusColumns.map(([column]) => [pool.hosts, column] as const),
+			)
+		)
+			return pool;
+		await storage.transaction((tx) =>
+			ensureStorageSchema(tx, dialect, schema, async () => {
+				await tx.exec(tables);
 				// A registry an older version created lacks the status and provider id columns; its hosts go on writing
 				// without them.
-				for (const [column, type] of Object.entries(hostStatusColumns(dialect))) {
+				for (const [column, type] of statusColumns) {
 					const present = dialect.columnExists(pool.hosts, column);
 					if (!(await tx.get(present.sql, ...present.params)))
 						await tx.exec(`ALTER TABLE ${pool.hosts} ADD COLUMN ${column} ${type}`);
