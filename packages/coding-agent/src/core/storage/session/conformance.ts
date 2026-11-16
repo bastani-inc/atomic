@@ -1156,7 +1156,6 @@ export function registerSessionStoreConformance(
 					toolResults: 0,
 					totalMessages: 4,
 					toolCalls: 1,
-					latestAssistantUsage: tailUsage(512),
 				});
 				assert.deepEqual(await store.append("session", [message("after", "after")], { expectSeq: 16 }), {
 					lastSeq: 17,

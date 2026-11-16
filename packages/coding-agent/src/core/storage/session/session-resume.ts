@@ -633,14 +633,17 @@ export function omittedTotals(
 	index: SessionResumeIndex,
 	fromSeq: number,
 	returned: Iterable<SessionEntry>,
+	latestReturned = index.latestAssistantSeq !== undefined && index.latestAssistantSeq >= fromSeq,
 ): SessionHistoryTotals {
 	let totals: SessionHistoryTotals = { ...index.totals };
 	for (const entry of returned) totals = addEntryToHistoryTotals(totals, entry, -1);
 	const { latestAssistantUsage: _latest, ...rest } = totals;
-	return index.latestAssistantSeq !== undefined &&
-		index.latestAssistantSeq < fromSeq &&
-		index.totals.latestAssistantUsage !== undefined
-		? { ...rest, latestAssistantUsage: index.totals.latestAssistantUsage }
+	return index.latestAssistantSeq !== undefined && !latestReturned && index.totals.latestAssistantUsage !== undefined
+		? {
+				...rest,
+				latestAssistantUsage: index.totals.latestAssistantUsage,
+				latestAssistantSeq: index.latestAssistantSeq,
+			}
 		: rest;
 }
 
@@ -665,7 +668,13 @@ export function sessionTailFrom(
 		fromSeq,
 		entries,
 		state: stateEntries,
-		omitted: omittedTotals(index, fromSeq, [...state.map(({ entry }) => entry), ...entries]),
+		omitted: omittedTotals(
+			index,
+			fromSeq,
+			[...state.map(({ entry }) => entry), ...entries],
+			(index.latestAssistantSeq !== undefined && index.latestAssistantSeq >= fromSeq) ||
+				state.some((held) => held.seq === index.latestAssistantSeq),
+		),
 		lastSeq: index.seq,
 	};
 }
@@ -784,6 +793,7 @@ export function sessionResumeFrom(
 			index,
 			branch[0]?.seq ?? index.seq + 1,
 			returned.map((held) => held.entry),
+			returned.some((held) => held.seq === index.latestAssistantSeq),
 		),
 		recovery: { admissionKeys: index.admissions, intercomDeliveredIds: index.delivered },
 	};

@@ -36,6 +36,7 @@ export function getSessionStats(this: AgentSession): SessionStats {
 	const totals = createUsageTotals();
 	addHistoryUsageToTotals(totals, omitted, true);
 	let latestAssistantUsage: Usage | undefined = omitted?.latestAssistantUsage;
+	let latestAssistantSeq = omitted?.latestAssistantSeq ?? -1;
 	for (const entry of this.sessionManager.getEntries()) {
 		if (
 			(entry.type === "usage" ||
@@ -58,7 +59,11 @@ export function getSessionStats(this: AgentSession): SessionStats {
 			const assistant = message as AssistantMessage;
 			toolCalls += assistant.content.filter((content) => content.type === "toolCall").length;
 			addUsageToTotals(totals, assistant.usage);
-			latestAssistantUsage = assistant.usage;
+			const seq = this.sessionManager.getEntrySeq?.(entry.id) ?? Number.MAX_SAFE_INTEGER;
+			if (seq >= latestAssistantSeq) {
+				latestAssistantUsage = assistant.usage;
+				latestAssistantSeq = seq;
+			}
 		}
 	}
 

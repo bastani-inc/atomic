@@ -54,6 +54,7 @@ export interface SessionHistoryTotals {
 	readonly toolCalls: number;
 
 	readonly latestAssistantUsage?: Usage;
+	readonly latestAssistantSeq?: number;
 }
 
 export interface SessionStoredEntry {

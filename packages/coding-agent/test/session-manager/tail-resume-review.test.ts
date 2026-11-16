@@ -190,3 +190,49 @@ test("refreshing a resumed mirror reads only the new seq range and rejects branc
 	assert.equal(await partial.refreshFromStore(), false);
 	assert.equal(partial.getLeafId(), "later");
 });
+
+test("resume preserves the latest session-wide usage even when it came from an abandoned branch (#5249)", async () => {
+	const assistant = (id: string, parentId: string, tokens: number): SessionEntry => ({
+		type: "message",
+		id,
+		parentId,
+		timestamp: stamp,
+		message: {
+			role: "assistant",
+			content: [],
+			provider: "test",
+			model: "model",
+			api: "anthropic-messages",
+			usage: {
+				input: tokens,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: tokens,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: 1,
+		},
+	});
+	const entries: SessionEntry[] = [
+		user("u", null),
+		boundary("c", "u", null),
+		assistant("a", "c", 1),
+		user("b", "u"),
+		assistant("b-reply", "b", 17),
+		{ type: "custom", customType: "atomic.leaf", id: "move", parentId: "a", timestamp: stamp },
+	];
+	const { open, store } = await fixture(entries);
+	const partial = await open();
+	const full = await SessionManager.open(store, "session");
+	const { getSessionStats } = await import("../../src/core/agent-session-export.ts");
+	const stats = (manager: SessionManager) =>
+		getSessionStats.call({
+			sessionManager: manager,
+			sessionId: "session",
+			sessionFile: undefined,
+			getContextUsage: () => undefined,
+		} as never);
+	assert.deepEqual(stats(partial), stats(full));
+});
