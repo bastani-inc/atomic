@@ -920,13 +920,15 @@ function selectForkEvents(source: ForkSource, request: DurableForkRequest): Fork
 		request.fromStage !== undefined &&
 		(target === undefined ||
 			(request.expectedStageId !== undefined && target.firstTopology?.stageId !== request.expectedStageId))
-	)
+	) {
+		const validTargets = [...records, ...unfinished];
 		throw new ForkTargetNotFoundError({
 			runId: source.runId,
 			fromStage: request.fromStage,
-			validStagePaths: records.map((record) => record.stagePath),
-			totalValidStagePaths: records.length,
+			validStagePaths: validTargets.map((record) => record.stagePath),
+			totalValidStagePaths: validTargets.length,
 		});
+	}
 	const cut = target?.firstSeq ?? Number.POSITIVE_INFINITY;
 	const carryAll = request.carryMessages === "all";
 	const prefix = source.checkpoints.filter((event) => event.seq < cut);

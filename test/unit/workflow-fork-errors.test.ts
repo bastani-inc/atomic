@@ -74,8 +74,8 @@ test("ForkTargetNotFoundError renders the paths it lists as a stable message and
 	assertCases([
 		{
 			error: new ForkTargetNotFoundError({ runId, fromStage: "x.y", validStagePaths: many }),
-			message: `Fork target not found: stage "x.y" in run ${runId} (target-not-found). Pass one of: ${listed} (and 2 more); listForkPoints("${runId}") lists them all.`,
-			hint: `Pass one of: ${listed} (and 2 more); listForkPoints("${runId}") lists them all.`,
+			message: `Fork target not found: stage "x.y" in run ${runId} (target-not-found). Pass one of: ${listed} (and 2 more); listForkPoints("${runId}") lists completed stages.`,
+			hint: `Pass one of: ${listed} (and 2 more); listForkPoints("${runId}") lists completed stages.`,
 			fields: { runId, fromStage: "x.y", validStagePaths: many.slice(0, 10), totalValidStagePaths: 12 },
 		},
 		{
@@ -85,20 +85,20 @@ test("ForkTargetNotFoundError renders the paths it lists as a stable message and
 				validStagePaths: ["a", "b"],
 				totalValidStagePaths: 5,
 			}),
-			message: `Fork target not found: stage "x" in run ${runId} (target-not-found). Pass one of: a, b (and 3 more); listForkPoints("${runId}") lists them all.`,
-			hint: `Pass one of: a, b (and 3 more); listForkPoints("${runId}") lists them all.`,
+			message: `Fork target not found: stage "x" in run ${runId} (target-not-found). Pass one of: a, b (and 3 more); listForkPoints("${runId}") lists completed stages.`,
+			hint: `Pass one of: a, b (and 3 more); listForkPoints("${runId}") lists completed stages.`,
 			fields: { runId, fromStage: "x", validStagePaths: ["a", "b"], totalValidStagePaths: 5 },
 		},
 		{
 			error: new ForkTargetNotFoundError({ runId, fromStage: "x", validStagePaths: ["a"] }),
-			message: `Fork target not found: stage "x" in run ${runId} (target-not-found). Pass one of: a; listForkPoints("${runId}") lists them all.`,
-			hint: `Pass one of: a; listForkPoints("${runId}") lists them all.`,
+			message: `Fork target not found: stage "x" in run ${runId} (target-not-found). Pass one of: a; listForkPoints("${runId}") lists completed stages.`,
+			hint: `Pass one of: a; listForkPoints("${runId}") lists completed stages.`,
 			fields: { runId, fromStage: "x", validStagePaths: ["a"], totalValidStagePaths: 1 },
 		},
 		{
 			error: new ForkTargetNotFoundError({ runId, fromStage: "x", validStagePaths: [] }),
-			message: `Fork target not found: stage "x" in run ${runId} (target-not-found). The run has no completed stage to fork from yet; listForkPoints("${runId}") lists stages once they complete.`,
-			hint: `The run has no completed stage to fork from yet; listForkPoints("${runId}") lists stages once they complete.`,
+			message: `Fork target not found: stage "x" in run ${runId} (target-not-found). The run has no eligible stage to fork from yet; listForkPoints("${runId}") lists completed stages.`,
+			hint: `The run has no eligible stage to fork from yet; listForkPoints("${runId}") lists completed stages.`,
 			fields: { runId, fromStage: "x", validStagePaths: [], totalValidStagePaths: 0 },
 		},
 	]);

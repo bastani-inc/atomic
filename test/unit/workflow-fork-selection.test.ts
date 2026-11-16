@@ -472,6 +472,21 @@ test("confirming a fork still targets the failed stage after a same-named siblin
 	assert.equal(backend.getWorkflow(outcome.runId)?.forkedFrom?.stagePath, latest?.stagePath);
 });
 
+test("an unknown fork target lists eligible unfinished stages as well as completed ones (#5234)", async () => {
+	const backend = await createMemoryTestBackend();
+	const sourceId = testRunId("fork-valid-unfinished");
+	await register(backend, sourceId, { status: "failed" });
+	await commit(backend, [
+		stage(sourceId, "plan", "plan", "plan:1", { output: "ok", ...topo("plan", "completed") }),
+		stage(sourceId, "verify", "verify", "verify:1", topo("verify", "failed")),
+	]);
+	await assert.rejects(forkDurableRun(backend, { ...request(sourceId), fromStage: "missing" }), {
+		name: "ForkTargetNotFoundError",
+		validStagePaths: ["plan", "verify"],
+		totalValidStagePaths: 2,
+	});
+});
+
 test("a fork from a completed stage is unchanged by unfinished-stage targets (#5224)", async () => {
 	const backend = await createMemoryTestBackend();
 	const sourceId = testRunId("fork-completed-same");
