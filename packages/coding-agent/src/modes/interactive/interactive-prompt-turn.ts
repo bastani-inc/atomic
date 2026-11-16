@@ -23,6 +23,9 @@ InteractiveModeBase.prototype.runUserPromptTurn = async function (
 	// Show the working spinner immediately on submit so there is no visible gap
 	// while prompt preflight runs before the agent emits `agent_start`. The
 	// ownership flag keeps deferred startup from tearing it down mid-way.
+	if (!this.session.isStreaming) {
+		this.workingRunMeter.stop();
+	}
 	this.promptTurnWorkingLoaderActive = true;
 	this.showWorkingLoaderNow();
 	const deferredStartupNeedsPromptGate = this.deferredStartupPending || this.deferredStartupPromise !== undefined;
@@ -84,6 +87,7 @@ InteractiveModeBase.prototype.runUserPromptTurn = async function (
 		// handled slash command) never emits `agent_end`, so clear the pre-shown
 		// spinner here when idle to avoid a lingering indicator.
 		if (!this.session.isStreaming) {
+			this.workingRunMeter.stop();
 			this.stopWorkingLoader();
 		}
 	}

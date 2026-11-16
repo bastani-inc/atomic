@@ -90,18 +90,18 @@ test("a stage chat paints the scrollbar fullscreenScrollbar asks for (#4521)", a
 test("a stage chat scrolled up shows the shared jump-to-latest row and still reaches its first row (#4521)", async () => {
 	const chat = await scrollableStageChat({ fullscreenWheelScrollLines: 3 });
 	try {
-		assert.ok(chat.text().every((line) => !line.includes("Jump to latest message")));
+		assert.ok(chat.text().every((line) => !line.includes("jump to bottom")));
 		chat.view.handleInput(WHEEL_UP);
-		assert.ok(chat.text().some((line) => line.includes("↓ Jump to latest message · ctrl+end")));
+		assert.ok(chat.text().some((line) => line.includes("↓ jump to bottom · ctrl+end")));
 		chat.view.handleInput("\x1b[1;5H");
 		const top = chat.text();
 		assert.ok(
 			top.some((line) => line.includes("parity-msg-0")),
 			"the first message is reachable",
 		);
-		assert.ok(top.some((line) => line.includes("Jump to latest message")));
+		assert.ok(top.some((line) => line.includes("jump to bottom")));
 		chat.view.handleInput("\x1b[1;5F");
-		assert.ok(chat.text().every((line) => !line.includes("Jump to latest message")));
+		assert.ok(chat.text().every((line) => !line.includes("jump to bottom")));
 	} finally {
 		chat.dispose();
 	}

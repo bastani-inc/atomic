@@ -306,7 +306,7 @@ test("every prompt and navigation row remains reachable in a one-row viewport", 
 	const layout: WorkflowWidgetRowLayout = { runs: [] };
 	const raw = buildThemedWidgetLines(snapshot, undefined, 120, now, layout);
 	assert.ok(raw.some((line) => line.includes("Approve the one-row prompt?")));
-	assert.ok(raw.some((line) => line.includes(`/workflow connect ${uuid(1)}`)));
+	assert.ok(raw.some((line) => line.includes(`/workflows ${uuid(1)}`)));
 	assert.ok(layout.runs[0]);
 	assert.ok(layout.runs[0]!.end > layout.runs[0]!.start);
 	const viewport = new WorkflowWidgetViewport(
@@ -322,7 +322,7 @@ test("every prompt and navigation row remains reachable in a one-row viewport", 
 		viewport.scroll(1);
 	}
 	assert.ok([...seen].some((line) => line.includes("Approve the one-row prompt?")));
-	assert.ok([...seen].some((line) => line.includes(`/workflow connect ${uuid(1)}`)));
+	assert.ok([...seen].some((line) => line.includes(`/workflows ${uuid(1)}`)));
 });
 
 test("multi-root prompt and connect pairs stay inside their owning layout ranges", () => {
@@ -382,15 +382,13 @@ test("multi-root prompt and connect pairs stay inside their owning layout ranges
 			const card = lines.slice(range.start, range.end);
 			const index = Number(range.id.slice(-1));
 			const prompt = `Approve root ${index}?`;
-			const connect = `Answer: /workflow connect ${range.id}`;
+			const connect = `Answer: /workflows ${range.id}`;
 			assert.equal(
 				card.some((line) => line.includes(range.id)),
 				true,
 				range.id,
 			);
-			const actionRows = card.filter(
-				(line) => line.includes(`"${prompt}"`) || line.includes("Answer: /workflow connect"),
-			);
+			const actionRows = card.filter((line) => line.includes(`"${prompt}"`) || line.includes("Answer: /workflows"));
 			if (waiting.has(index)) {
 				assert.equal(actionRows.length, 2, range.id);
 				assert.equal(
@@ -411,13 +409,13 @@ test("multi-root prompt and connect pairs stay inside their owning layout ranges
 					range.id,
 				);
 				assert.equal(
-					card.some((line) => line.includes("Answer: /workflow connect")),
+					card.some((line) => line.includes("Answer: /workflows")),
 					false,
 					range.id,
 				);
 			}
 			for (const [lineIndex, line] of card.entries()) {
-				if (!line.includes("Answer: /workflow connect")) continue;
+				if (!line.includes("Answer: /workflows")) continue;
 				const absolute = range.start + lineIndex;
 				assert.equal(answerOwners.has(absolute), false, `answer row ${absolute} reused`);
 				answerOwners.set(absolute, range.id);

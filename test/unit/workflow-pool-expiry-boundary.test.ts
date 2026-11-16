@@ -17,7 +17,7 @@ import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 /**
  * A work lease is current through the millisecond it expires at and stale from the next one (#4327). Every database
- * connection's clock (`unixepoch`) is pinned to the test's, so an attempt's operations run exactly at its expiry.
+ * connection's clock is pinned to the test's, so an attempt's operations run exactly at its expiry.
  */
 
 const NOW = 1_800_000_000_000;
@@ -45,6 +45,7 @@ vi.mock("node:sqlite", async (importOriginal) => {
 		constructor(...args: ConstructorParameters<typeof actual.DatabaseSync>) {
 			super(...args);
 			this.function("unixepoch", { varargs: true }, () => Date.now() / 1_000);
+			this.function("julianday", { varargs: true }, () => Date.now() / 86_400_000 + 2_440_587.5);
 		}
 	}
 	return { ...actual, DatabaseSync: DateClockedDatabase };
@@ -116,6 +117,43 @@ test("an attempt is current, renewable, and may commit, report usage and complet
 		f.expireAt(NOW);
 		await f.pool.complete(f.lease, f.attempt, { runId: work.childRunId, status: "completed" });
 	} finally {
+		await f.backend.close();
+		await f.journal.close();
+		if (connection.isOpen) connection.close();
+		removeTempDirectory(directory);
+	}
+});
+
+test("a claim and every renewal record an expiry one whole lease after the renewal they record, on a clock that moves while they write", async () => {
+	const directory = makeTempDirectory("pool-lease-length-");
+	let now = NOW;
+	vi.spyOn(Date, "now").mockImplementation(() => now++);
+	const connection = new DatabaseSync(join(directory, "journal.sqlite"));
+	const f = await claimed(connection);
+	try {
+		const ledger = await openSqlPoolUsage(f.journal);
+		const recorded = async () => {
+			const { renewedAt, expiresAt } = (await f.pool.inspect("root"))[0]!;
+			return expiresAt - renewedAt;
+		};
+		const claim = await recorded();
+		await f.pool.renew(f.lease, f.attempt, 60_000);
+		const renew = await recorded();
+		await f.pool.extend(f.lease, f.attempt, 60_000);
+		const extend = await recorded();
+		await f.pool.heartbeat(
+			f.lease,
+			f.attempt,
+			60_000,
+			ledger.recording(f.lease, f.attempt, [{ key: "stage", usage }]),
+		);
+		const heartbeat = await recorded();
+		assert.deepEqual(
+			{ claim, renew, extend, heartbeat },
+			{ claim: 60_000, renew: 60_000, extend: 60_000, heartbeat: 60_000 },
+		);
+	} finally {
+		vi.restoreAllMocks();
 		await f.backend.close();
 		await f.journal.close();
 		if (connection.isOpen) connection.close();

@@ -1509,6 +1509,15 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	hasWorkflowExecution(runId: string): boolean {
 		return this.executions.has(runId);
 	}
+	/**
+	 * Notes a checkpoint the run recorded through another journal that this backend's journal does not hold yet: a pooled
+	 * worker's checkpoint its host accepted and will ship to the root's journal (#4768). Reads find it from now on, as if
+	 * it were folded; the event, once shipped and folded, is the same checkpoint and changes nothing.
+	 */
+	noteRecordedCheckpoint(checkpoint: DurableCheckpoint): void {
+		validateCheckpointInvocationFingerprint(checkpoint);
+		if (this.keepsCheckpoint(checkpoint.workflowId, checkpoint)) this.projection.recordCheckpoint(checkpoint);
+	}
 	async catchUpWorkflow(runId: string): Promise<void> {
 		await this.serialize(runId, () => this.extend(runId), false);
 	}

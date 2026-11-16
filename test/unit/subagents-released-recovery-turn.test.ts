@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import type { DetachedToolResult } from "@bastani/atomic";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { afterEach, test } from "vitest";
+import type { AgentSession } from "../../packages/coding-agent/src/core/agent-session.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
+import type { TaskTranscriptSource } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.ts";
 import { runSingleInProcess } from "../../packages/subagents/src/runs/foreground/inprocess-run-sync.ts";
 import { SUBAGENT_STILL_RUNNING_RESULT } from "../../packages/subagents/src/runs/foreground/released-children.ts";
@@ -18,6 +20,7 @@ const LIVE_CHILD_TIMEOUT_MS = 120_000;
 const RECONCILIATION = "atomic:protected-streaming-reconciliation";
 const REPLAY_NOTICE = "session-recovery-replay";
 const INTERRUPTED_TEXT = "A message that arrived just before its owner died.";
+const RESUMED_COMPLETION_TIMEOUT_MS = 20_000;
 
 const cleanups: Array<() => void> = [];
 afterEach(() => {
@@ -221,6 +224,133 @@ test(
 
 		assert.equal(forked.status, "ok");
 		assert.deepEqual(await transcriptAfterLaunch(store, sessionId), ["user prompt", "assistant reply"]);
+	},
+	LIVE_CHILD_TIMEOUT_MS,
+);
+
+function within<T>(work: Promise<T>, ms: number, failure: string): Promise<T> {
+	return new Promise<T>((resolve, reject) => {
+		const timer = setTimeout(() => reject(new Error(failure)), ms);
+		work.finally(() => clearTimeout(timer)).then(resolve, reject);
+	});
+}
+
+function resumeOnReplayAlone(
+	env: Awaited<ReturnType<typeof liveChildEnvironment>>,
+	store: MemorySessionStore,
+	sessionId: string,
+	runId: string,
+) {
+	const stop = new AbortController();
+	const chat = Promise.withResolvers<TaskTranscriptSource>();
+	const blocks = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+	let bound = false;
+	let blocked = 0;
+	const run = SessionManager.open(store, sessionId).then((sessionManager) =>
+		runSingleInProcess(env.root, agent, "Resume", {
+			...env.options(runId, {
+				signal: stop.signal,
+				sessionManager,
+				resumeSession: true,
+				skipTaskPrompt: true,
+				taskExecution: {
+					signal: stop.signal,
+					reportActivity() {},
+					bindTranscript(source) {
+						const session = source.chatSession as AgentSession | undefined;
+						if (bound || session === undefined) return;
+						bound = true;
+						session.subscribe((event) => {
+							if (event.type === "tool_execution_start" && event.toolName === "block")
+								blocks[blocked++]?.resolve();
+						});
+						chat.resolve(source);
+					},
+					onExecution() {},
+					yieldTaskWait() {},
+					isParentObserving: () => false,
+				},
+			}),
+		}),
+	);
+	return {
+		run,
+		chat: chat.promise,
+		blockStarted: (index: number) => blocks[index]!.promise,
+		stop: () => stop.abort("user"),
+	};
+}
+
+test(
+	"a child woken with nothing but the delivery its recovery replays reads it and completes (#5246)",
+	async () => {
+		const env = await liveChildEnvironment(cleanups);
+		const { store, sessionId } = await finishedWithInterruptedDelivery(env, "replay-alone");
+		env.faux.setResponses([fauxAssistantMessage("Read the message.")]);
+		const resumed = resumeOnReplayAlone(env, store, sessionId, "replay-alone");
+		try {
+			const result = await within(resumed.run, RESUMED_COMPLETION_TIMEOUT_MS, "the resumed child never completed");
+			assert.equal(result.status, "ok");
+			assert.deepEqual(await transcriptAfterLaunch(store, sessionId), [
+				"replayed on resume",
+				"read the replayed delivery",
+				"assistant reply",
+			]);
+		} finally {
+			resumed.stop();
+			await resumed.run.catch(() => undefined);
+		}
+	},
+	LIVE_CHILD_TIMEOUT_MS,
+);
+
+test.each([
+	{ interrupts: 1, times: "once" },
+	{ interrupts: 2, times: "twice" },
+])(
+	"a child interrupted $times while it reads the delivery its recovery replays answers its next message and completes (#5246)",
+	async ({ interrupts }) => {
+		const env = await liveChildEnvironment(cleanups);
+		const runId = `replay-interrupted-${interrupts}`;
+		const { store, sessionId } = await finishedWithInterruptedDelivery(env, runId);
+		env.faux.setResponses([
+			...Array.from({ length: interrupts }, (_, index) =>
+				fauxAssistantMessage([fauxToolCall("block", {}, { id: `block-${index + 1}` })], { stopReason: "toolUse" }),
+			),
+			fauxAssistantMessage("Finished after the interrupt."),
+		]);
+		const resumed = resumeOnReplayAlone(env, store, sessionId, runId);
+		try {
+			const chat = await within(
+				resumed.chat,
+				RESUMED_COMPLETION_TIMEOUT_MS,
+				"the resumed child never opened its chat",
+			);
+			const session = chat.chatSession as AgentSession;
+			for (let index = 0; index < interrupts; index++) {
+				await within(
+					resumed.blockStarted(index),
+					RESUMED_COMPLETION_TIMEOUT_MS,
+					`the resumed child never started turn ${index + 1}`,
+				);
+				await chat.interruptTurn!();
+				await session.sendCustomMessage(
+					{ customType: "intercom_message", content: `Message ${index + 1}`, display: true },
+					{ triggerTurn: true },
+				);
+			}
+			const result = await within(
+				resumed.run,
+				RESUMED_COMPLETION_TIMEOUT_MS,
+				"the interrupted child never answered its next message",
+			);
+			assert.equal(result.status, "ok");
+			assert.match(result.finalOutput ?? "", /Finished after the interrupt\./);
+			assert.equal(env.faux.getPendingResponseCount(), 0, "every turn the messages started was answered");
+		} finally {
+			resumed.stop();
+			await resumed.run.catch(() => undefined);
+		}
 	},
 	LIVE_CHILD_TIMEOUT_MS,
 );

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { type ChildProcess, spawn } from "node:child_process";
+import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
 	closeSync,
@@ -14,11 +14,24 @@ import {
 } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, test } from "vitest";
+import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { takeTakeoverMutex } from "../src/core/lock-takeover.ts";
 import { buildLockPath, settleOtherBuilds, withBuildLocks } from "../src/core/resume/blueprint/build-lock.ts";
 import { runLoggedProcess } from "../src/core/resume/blueprint/process.ts";
 import { processStartToken } from "../src/core/worktree-snapshot/pool.ts";
+
+// Process creation is real; spawnSync is only watched, to tell when a build lock lists this host's processes.
+vi.mock("node:child_process", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:child_process")>();
+	return { ...actual, spawnSync: vi.fn(actual.spawnSync) };
+});
+
+/** How many times this host's processes were listed to find the orphans of a dead build's steps. */
+const processScans = () =>
+	vi
+		.mocked(spawnSync)
+		.mock.calls.filter(([, args]) => Array.isArray(args) && args.some((arg) => String(arg).includes("Win32_Process")))
+		.length;
 
 let dir: string;
 const children: ChildProcess[] = [];
@@ -50,11 +63,13 @@ function exited(child: ChildProcess): Promise<void> {
 		: new Promise((resolve) => child.once("exit", () => resolve()));
 }
 
-/** The id of a process that has ended. */
-async function deadPid(): Promise<number> {
-	const child = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
+/** A process that has ended, as a lock records it: its id, and its start where that is readable. */
+async function deadProcess(): Promise<{ pid: number; start?: string }> {
+	const child = spawn(process.execPath, ["-e", "process.stdin.resume()"], { stdio: ["pipe", "ignore", "ignore"] });
+	const start = processStartToken(child.pid!);
+	child.stdin!.end();
 	await exited(child);
-	return child.pid!;
+	return start === undefined ? { pid: child.pid! } : { pid: child.pid!, start };
 }
 
 /** How a lock names this machine: `sha12` of its host name. */
@@ -123,7 +138,7 @@ describe("blueprint build locks (#4748)", () => {
 		"the step processes of a build whose process died are stopped when proven to be its steps, and its lock removed",
 		async () => {
 			const orphan = sleeper();
-			writeLock({ pid: await deadPid(), steps: [{ pid: orphan.pid, start: processStartToken(orphan.pid!) }] });
+			writeLock({ ...(await deadProcess()), steps: [{ pid: orphan.pid, start: processStartToken(orphan.pid!) }] });
 			assert.deepEqual(await settle([root()]), []);
 			assert.throws(() => process.kill(orphan.pid!, 0), "the step had ended when the wait returned");
 			await exited(orphan);
@@ -133,7 +148,7 @@ describe("blueprint build locks (#4748)", () => {
 
 	test("a process that only has a recorded step's id, with no start to prove it is that step, is never stopped", async () => {
 		const unrelated = sleeper();
-		writeLock({ pid: await deadPid(), steps: [{ pid: unrelated.pid }] });
+		writeLock({ ...(await deadProcess()), steps: [{ pid: unrelated.pid }] });
 		const waits: string[] = [];
 		const warnings = await settle([root()], {
 			waitMs: 600,
@@ -147,9 +162,27 @@ describe("blueprint build locks (#4748)", () => {
 		assert.equal(existsSync(buildLockPath(dir, root())), false);
 	});
 
+	test.skipIf(processStartToken(process.pid) === undefined)(
+		"a dead build whose process id a later process was given is told apart by its recorded start, and not waited for",
+		async () => {
+			const { start } = await deadProcess();
+			const later = sleeper();
+			writeLock({ pid: later.pid, start, steps: [] });
+			const waits: string[] = [];
+			const warnings = await settle([root()], {
+				waitMs: 600,
+				onWait: (_root, message) => waits.push(message),
+			});
+			assert.deepEqual(warnings, []);
+			assert.deepEqual(waits, []);
+			assert.equal(later.signalCode, null, "the later process given the id still runs");
+			assert.equal(existsSync(buildLockPath(dir, root())), false);
+		},
+	);
+
 	test("a process with a recorded step's id but another start is never stopped", async () => {
 		const later = sleeper();
-		writeLock({ pid: await deadPid(), steps: [{ pid: later.pid, start: "000000000000" }] });
+		writeLock({ ...(await deadProcess()), steps: [{ pid: later.pid, start: "000000000000" }] });
 		await settle([root()], { waitMs: 600 });
 		assert.equal(later.exitCode, null);
 		assert.equal(later.signalCode, null, "the later process given the id still runs");
@@ -205,7 +238,7 @@ describe("blueprint build locks (#4748)", () => {
 	);
 
 	test("a build whose dead process recorded its steps without their start is reported, as they may still run", async () => {
-		writeLock({ pid: await deadPid(), steps: [{ pid: await deadPid() }] });
+		writeLock({ ...(await deadProcess()), steps: [{ pid: (await deadProcess()).pid }] });
 		const warnings = await settle([root()], { waitMs: 300 });
 		assert.equal(warnings.length, 1);
 		assert.match(warnings[0]!, /was interrupted, and processes it started could not be identified/);
@@ -213,7 +246,7 @@ describe("blueprint build locks (#4748)", () => {
 	});
 
 	test("a build whose dead process recorded the start of each step it ran leaves nothing to report", async () => {
-		writeLock({ pid: await deadPid(), steps: [{ pid: await deadPid(), start: "000000000000" }] });
+		writeLock({ ...(await deadProcess()), steps: [{ pid: (await deadProcess()).pid, start: "000000000000" }] });
 		assert.deepEqual(await settle([root()], { waitMs: 300 }), []);
 	});
 
@@ -290,7 +323,7 @@ describe("blueprint build locks (#4748)", () => {
 	test("several unproven steps are named in the warning, after the wait for an earlier build is shown", async () => {
 		const first = sleeper();
 		const second = sleeper();
-		writeLock({ pid: await deadPid(), steps: [{ pid: first.pid }, { pid: second.pid }] });
+		writeLock({ ...(await deadProcess()), steps: [{ pid: first.pid }, { pid: second.pid }] });
 		const waits: string[] = [];
 		const warnings = await settle([root()], {
 			waitMs: 300,
@@ -315,12 +348,41 @@ describe("blueprint build locks (#4748)", () => {
 	});
 
 	/**
+	 * On Windows, keeps process `pid`'s id from any later process until the returned function is called, by holding a
+	 * handle to the process: Windows gives an ended process's id to another process only once no handle to it is open,
+	 * and Node closes its own as the process exits.
+	 */
+	async function keepProcessId(pid: number): Promise<() => Promise<void>> {
+		const holder = spawn(
+			join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+			[
+				"-NoProfile",
+				"-NonInteractive",
+				"-Command",
+				`$ErrorActionPreference = 'Stop'; $p = [System.Diagnostics.Process]::GetProcessById(${pid}); $null = $p.Handle; [Console]::Out.WriteLine('held'); $null = [Console]::In.ReadLine()`,
+			],
+			{ stdio: ["pipe", "pipe", "ignore"], windowsHide: true },
+		);
+		children.push(holder);
+		await new Promise<void>((resolve, reject) => {
+			holder.stdout!.once("data", () => resolve());
+			holder.once("exit", (code) => reject(new Error(`no handle to process ${pid} could be held (exit ${code})`)));
+		});
+		return async () => {
+			holder.stdin!.end();
+			await exited(holder);
+		};
+	}
+
+	/**
 	 * A step process that started a child and then ended, as Git for Windows' `bash.exe` does when its host is killed:
 	 * the child keeps the ended step's id as its parent. Resolves the step as a lock records it, and the orphaned child.
+	 * With `keepId`, no later process is given the step's id until `releaseId` resolves.
 	 */
-	async function stepThatLeftAnOrphan(): Promise<{
+	async function stepThatLeftAnOrphan(keepId = false): Promise<{
 		step: { pid: number; start?: string; at: number };
 		orphan: number;
+		releaseId: () => Promise<void>;
 	}> {
 		const at = Date.now();
 		const step = spawn(
@@ -335,9 +397,10 @@ describe("blueprint build locks (#4748)", () => {
 			step.stdout!.once("data", (data) => resolve(Number(String(data).trim()))),
 		);
 		const recorded = { pid: step.pid!, start: processStartToken(step.pid!), at };
+		const releaseId = keepId ? await keepProcessId(step.pid!) : async () => {};
 		step.stdin!.write("\n");
 		await exited(step);
-		return { step: recorded, orphan };
+		return { step: recorded, orphan, releaseId };
 	}
 
 	const runs = (pid: number) => {
@@ -356,7 +419,7 @@ describe("blueprint build locks (#4748)", () => {
 			const bystander = sleeper();
 			try {
 				assert.equal(runs(orphan), true, "the step's child outlived it");
-				writeLock({ pid: await deadPid(), steps: [step] });
+				writeLock({ ...(await deadProcess()), steps: [step] });
 				assert.deepEqual(await settle([root()]), []);
 				assert.equal(runs(orphan), false, "the orphan had ended when the wait returned");
 				assert.equal(bystander.exitCode, null, "a process that is no child of the step still runs");
@@ -369,15 +432,34 @@ describe("blueprint build locks (#4748)", () => {
 	test.skipIf(process.platform !== "win32")(
 		"on Windows, the orphaned child of a step recorded without its start is never stopped, and the build is reported",
 		async () => {
-			const { step, orphan } = await stepThatLeftAnOrphan();
+			// The step's id is kept from later processes: with no start recorded, a later process given it could not be
+			// told from the step, and the build would rightly be reported as one that may still run (#5274).
+			const { step, orphan, releaseId } = await stepThatLeftAnOrphan(true);
 			try {
-				writeLock({ pid: await deadPid(), steps: [{ pid: step.pid, at: step.at }] });
+				writeLock({ ...(await deadProcess()), steps: [{ pid: step.pid, at: step.at }] });
 				const warnings = await settle([root()], { waitMs: 300 });
 				assert.match(warnings[0] ?? "", /could not be identified/);
 				assert.equal(runs(orphan), true, "an orphan of an unproven step still runs");
 			} finally {
+				await releaseId();
 				if (runs(orphan)) process.kill(orphan);
 			}
+		},
+	);
+
+	test.skipIf(process.platform !== "win32")(
+		"on Windows, this host's processes are listed for a dead build's orphans only when one of its steps recorded its start",
+		async () => {
+			const before = processScans();
+			writeLock({ ...(await deadProcess()), steps: [{ pid: (await deadProcess()).pid, at: Date.now() }] });
+			await settle([root()], { waitMs: 300 });
+			writeLock({ ...(await deadProcess()), steps: [] });
+			await settle([root()], { waitMs: 300 });
+			assert.equal(processScans() - before, 0, "no step could be followed, so nothing was listed");
+			const step = { pid: (await deadProcess()).pid, start: "000000000000", at: Date.now() };
+			writeLock({ ...(await deadProcess()), steps: [step] });
+			await settle([root()], { waitMs: 300 });
+			assert.equal(processScans() - before, 1, "a step that recorded its start is followed");
 		},
 	);
 
@@ -386,7 +468,7 @@ describe("blueprint build locks (#4748)", () => {
 		async () => {
 			const { step, orphan } = await stepThatLeftAnOrphan();
 			try {
-				writeLock({ pid: await deadPid(), steps: [{ ...step, at: step.at + 60_000 }] });
+				writeLock({ ...(await deadProcess()), steps: [{ ...step, at: step.at + 60_000 }] });
 				await settle([root()], { waitMs: 300 });
 				assert.equal(runs(orphan), true);
 			} finally {

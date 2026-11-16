@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
+import { renameWithRetry } from "../../packages/coding-agent/src/core/rename-retry.ts";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.ts";
 import {
 	releaseSessionWorktrees,
@@ -64,7 +65,7 @@ async function recordedSnapshot(): Promise<{ snapshot: WorktreeSnapshot; clone: 
 	sandbox.write(join(clone, "file.txt"), "recorded\n");
 	const capture = await captureWorktreeSnapshot(clone, { settings, blobs: store.snapshotBlobs });
 	if (capture.status !== "captured") throw new Error("expected a snapshot");
-	renameSync(clone, sandbox.path("away"));
+	await renameWithRetry(clone, sandbox.path("away"));
 	return { snapshot: capture.snapshot, clone };
 }
 

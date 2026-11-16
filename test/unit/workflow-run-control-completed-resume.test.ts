@@ -1566,7 +1566,7 @@ describe("/workflow resume completed target", () => {
 		}
 	});
 
-	test("keeps recoverable failed and active-running explicit behavior unchanged", async () => {
+	test("keeps recoverable resumes and points active runs at /workflows (#5224)", async () => {
 		const backend = await createMemoryTestBackend();
 		setDurableBackend(backend);
 		store.recordRunStart({
@@ -1626,6 +1626,8 @@ describe("/workflow resume completed target", () => {
 		assert.match(failedResult.messages.join("\n"), /continued failed workflow/);
 		assert.match(blockedResult.messages.join("\n"), /continued failed workflow/);
 		assert.equal(blockedResult.errors.length, 0);
-		assert.match(runningResult.errors.join("\n"), /already running.*connect/i);
+		assert.deepEqual(runningResult.errors, [
+			`Workflow ${testRunId("running-live")} is already running in this session. Open it with \`/workflows ${testRunId("running-live")}\` instead of resuming.`,
+		]);
 	});
 });

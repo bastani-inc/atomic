@@ -254,7 +254,7 @@ describe("installWorkflowLifecycleNotifications", () => {
 		});
 
 		assert.match(text, /Workflow "release \\"canary\\"" needs input/);
-		assert.match(text, /Respond: \/workflow connect/);
+		assert.match(text, /Respond: \/workflows/);
 		assert.match(text, /workflow\(\{ action: "answer"/);
 		assert.ok(text.includes(`runId: ${JSON.stringify(runId)}`));
 		assert.ok(text.includes(`stageId: ${JSON.stringify(stageId)}`));

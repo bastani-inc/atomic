@@ -605,7 +605,7 @@ test("/workflow fork completes the subcommand, --from and run ids, and nothing e
 });
 
 test("completing a run-targeting subcommand never loads workflow resources, and a workflow name does (#4321)", () => {
-	for (const subcommand of ["status", "connect", "resume", "attach", "pause", "quit", "reload", "fork"]) {
+	for (const subcommand of ["status", "resume", "pause", "quit", "reload", "fork"]) {
 		assert.equal(workflowArgumentCompletionsNeedWorkflowResources(`${subcommand} `), false, subcommand);
 		assert.equal(workflowArgumentCompletionsNeedWorkflowResources(`${subcommand} abc`), false, subcommand);
 		assert.equal(

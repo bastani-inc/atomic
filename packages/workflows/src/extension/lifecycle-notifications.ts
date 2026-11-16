@@ -310,8 +310,6 @@ export function installWorkflowLifecycleNotifications(options: WorkflowLifecycle
 		if (state.deliveredInputPrompts.has(key)) return;
 
 		state.deliveredInputPrompts.add(key);
-		// See stage-level awaiting-input handling above: prompt state remains visible
-		// through workflow status/connect surfaces instead of the main chat context.
 	};
 
 	const emitBudgetWarningOnce = (run: RunSnapshot): void => {
@@ -430,13 +428,13 @@ export function formatWorkflowLifecycleNoticeText(details: WorkflowLifecycleNoti
 	}
 	const prompt = details.promptMessage ? ` Prompt: ${details.promptMessage}` : "";
 	if (details.scope === "run") {
-		return `？ Workflow "${workflowName}" needs input (run ${details.runId}).${prompt} Respond: /workflow connect ${details.runId} to answer this run-level prompt.`;
+		return `？ Workflow "${workflowName}" needs input (run ${details.runId}).${prompt} Respond: /workflows ${details.runId} to answer this run-level prompt.`;
 	}
 	const stage = details.stageName ?? details.stageId ?? "unknown";
 	const responseHint =
 		details.stageId && details.promptId
-			? `/workflow connect ${details.runId} or workflow({ action: "answer", runId: ${jsonString(details.runId)}, stageId: ${jsonString(details.stageId)}, promptId: ${jsonString(details.promptId)}, response: ... })`
-			: `/workflow connect ${details.runId}`;
+			? `/workflows ${details.runId} or workflow({ action: "answer", runId: ${jsonString(details.runId)}, stageId: ${jsonString(details.stageId)}, promptId: ${jsonString(details.promptId)}, response: ... })`
+			: `/workflows ${details.runId}`;
 	return `？ Workflow "${workflowName}" needs input (run ${details.runId}, stage ${stage}).${prompt} Respond: ${responseHint}.`;
 }
 
@@ -834,7 +832,7 @@ function lifecycleNoticeHeadline(details: WorkflowLifecycleNoticeDetails): strin
 }
 
 function lifecycleNoticeHint(details: WorkflowLifecycleNoticeDetails): string {
-	if (details.kind === "awaiting_input") return `/workflow connect ${details.runId}`;
+	if (details.kind === "awaiting_input") return `/workflows ${details.runId}`;
 	if (details.kind === "paused" || details.kind === "quit") return `/workflow resume ${details.runId}`;
 	if (details.kind === "blocked" && details.budgetExceeded === true) return `/workflow resume ${details.runId}`;
 	return `/workflow status ${details.runId}`;

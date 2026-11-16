@@ -11,7 +11,7 @@
  */
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -35,6 +35,7 @@ import {
 import { isRetryableSameModelFailure } from "../../packages/workflows/src/runs/shared/model-fallback-failures.js";
 import { IntercomWireProxy, type WireFrame } from "../helpers/intercom-wire-proxy.js";
 import { sleep } from "../helpers/runtime.js";
+import { removeTestDirectory } from "../helpers/test-directory-removal.js";
 
 vi.mock("../../packages/intercom/broker/broker-routing.js", () => ({
 	queryBrokerRouting: async () => ({ acrossMachines: false, hasSharedStorage: false, protocol: { min: 1, max: 3 } }),
@@ -149,8 +150,8 @@ afterAll(async () => {
 	if (originalAgentDir === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
 	else process.env.ATOMIC_CODING_AGENT_DIR = originalAgentDir;
 	if (originalLegacyAgentDir !== undefined) process.env.PI_CODING_AGENT_DIR = originalLegacyAgentDir;
-	rmSync(brokerAgentDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
-	rmSync(frontAgentDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
+	removeTestDirectory(brokerAgentDir, { retries: 20, retryDelayMs: 50 });
+	removeTestDirectory(frontAgentDir, { retries: 20, retryDelayMs: 50 });
 });
 
 function runIdFor(scope: string, index: number): string {

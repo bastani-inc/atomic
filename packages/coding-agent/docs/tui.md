@@ -408,9 +408,59 @@ Moved to [TUI API reference](/tui/reference#when-this-matters).
 
 These patterns cover the most common UI needs in extensions. **Copy these patterns instead of building from scratch.**
 
-### Pattern 1: Selection Dialog (SelectList)
+### Pattern 1: Selection Dialog (Selector)
 
-For letting users pick from a list of options. Use `SelectList` from `@bastani/atomic-tui` with `DynamicBorder` for framing.
+For letting users pick from a list, use `Selector` from `@bastani/atomic`. It is the picker behind `/model`, `/login`, `/logout`, `/thinking`, `/trust`, `/scoped-models` and extension `select` and `confirm` dialogs, so your dialog looks and behaves like them: a title, an optional type-to-search box, one- or two-line rows with dim descriptions and right-aligned tags, `↑ N more` / `↓ N more` scroll indicators, an empty state, and one hint line that lists exactly the keys that work.
+
+```typescript
+import { DynamicBorder, Selector } from "@bastani/atomic";
+
+const choice = await ctx.ui.custom<string | null>((tui, _theme, _kb, done) => {
+  const selector = new Selector<string>({
+    title: "Pick a preset",
+    search: true,                         // typing filters; esc clears the search, then cancels
+    items: [
+      { id: "fast", value: "fast", label: "fast", description: "small model, low effort", mark: "on", tag: "current" },
+      { id: "deep", value: "deep", label: "deep", description: "large model, high effort", mark: "off" },
+    ],
+    onSelect: (item) => done(item.value),
+    onCancel: () => done(null),
+  });
+  const border = new DynamicBorder();
+  return {
+    render: (width) => [...border.render(width), ...selector.render(width)],
+    invalidate: () => selector.invalidate(),
+    handleInput: (data) => {
+      selector.handleInput(data);
+      tui.requestRender();
+    },
+  };
+});
+```
+
+Selector uses ↑↓ to select (wrapping) and pgup/pgdn to page. Enter chooses, and → chooses when the search is empty. Esc clears the search before it cancels, and ctrl+c always cancels. Options worth knowing:
+
+| Option | Effect |
+| --- | --- |
+| `layout: "two-line"` | Each description goes on the line under its label, for rows like sessions or runs. |
+| `mode: "multi"` | Checkboxes: space toggles, enter calls `onConfirm` with the checked rows. |
+| `numbered: true` | Rows are numbered; without a search box, digits 1–9 choose a row directly, or toggle it with `mode: "multi"`. |
+| `onPreview` | Space previews the selected row; the hint shows `space preview`. |
+| `onSelectionChange` | Reports the selected row when navigation or filtering changes its identity, or `undefined` when no enabled row matches. |
+| `extraKeys` | Keys of your own, each with a hint and an `enabled(item)` check, so a key that does nothing for the selected row is not shown. |
+| `group` on items | Rows with the same group are listed under a section label (hidden while searching). |
+| `disabled` on items | Drawn dim, skipped by ↑↓ and never chosen by enter or a mouse click. |
+| `mark` on items | `"on"`/`"off"` draw `●`/`○` for the current value; `"checked"`/`"unchecked"` draw `[✓]`/`[ ]` for a row enter switches on and off. |
+| `labelStyle` on items | Paints the label yourself, told whether the row is selected. |
+| `subtitle` | Dim text under the title; each `\n` starts a line and long lines wrap. |
+
+Without a search box, `?` shows the picker's keys and `j`/`k` move like ↓/↑. Mouse input does not change or choose a row while this help is open. `setNotice({ text, tone })` shows a one-line status, such as a refresh result, under the list.
+
+Use `setItems()` to replace row data. When external data used by a custom `style` or an extra key's `enabled` callback changes, call `selector.invalidate()` before requesting a render. A row's `labelStyle` still runs on each render, so animated labels can update without replacing the rows.
+
+### Pattern 1b: Selection Dialog (SelectList)
+
+The lower-level `SelectList` from `@bastani/atomic-tui` is still available when you need a bare list inside your own layout, such as autocomplete rows. Frame it with `DynamicBorder`.
 
 ```typescript
 import type { ExtensionAPI } from "@bastani/atomic";

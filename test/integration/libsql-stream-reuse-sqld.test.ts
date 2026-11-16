@@ -20,17 +20,35 @@ const withSqld = test.skipIf(url === undefined || url === "");
 /** sqld expires a stream idle this long; waiting past it proves a statement meets a stream the server expired. */
 const SQLD_STREAM_EXPIRY_MS = 10_000;
 
-/** Counts the pipeline requests sent and those that continue a stream, by the baton their bodies carry. */
-function countRequests(): { sent: number; continued: number } {
-	const counts = { sent: 0, continued: 0 };
+/**
+ * Whether a pipeline answer failed its last request, the statement, with `SQLITE_BUSY`. sqld answers a write that meets
+ * its checkpoint so, without running it and keeping the stream, and the adapter sends the statement again (#4817).
+ */
+function answeredBusy(body: string): boolean {
+	try {
+		const { results } = JSON.parse(body) as { results?: { type?: string; error?: { code?: string } }[] };
+		const last = results?.at(-1);
+		return last?.type === "error" && last.error?.code === "SQLITE_BUSY";
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Counts the pipeline requests sent, those that continue a stream, by the baton their bodies carry, and those whose
+ * statement the server answered busy.
+ */
+function countRequests(): { sent: number; continued: number; busy: number } {
+	const counts = { sent: 0, continued: 0, busy: 0 };
 	const real = globalThis.fetch;
 	vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
 		const request = new Request(input, init);
-		if (request.method === "POST" && /\/pipeline$/.test(new URL(request.url).pathname)) {
-			counts.sent++;
-			if (/"baton":"/.test(await request.clone().text())) counts.continued++;
-		}
-		return real(request);
+		if (request.method !== "POST" || !/\/pipeline$/.test(new URL(request.url).pathname)) return real(request);
+		counts.sent++;
+		if (/"baton":"/.test(await request.clone().text())) counts.continued++;
+		const response = await real(request);
+		if (answeredBusy(await response.clone().text())) counts.busy++;
+		return response;
 	});
 	return counts;
 }
@@ -46,8 +64,15 @@ withSqld("against sqld, statements outside a transaction continue one stream (#5
 			await database.run(`INSERT INTO ${table} VALUES (?)`, n);
 			await database.get(`SELECT COUNT(*) AS count FROM ${table}`);
 		}
-		assert.equal(counts.sent - before.sent, 40, "one request per statement");
-		assert.equal(counts.continued - before.continued, 39, "every statement after the first continued its stream");
+		// A statement sqld answered busy, as it answers a write that meets its checkpoint, is sent again on the same
+		// stream: one more request, which continues the stream as well.
+		const busy = counts.busy - before.busy;
+		assert.equal(counts.sent - before.sent, 40 + busy, "one request per statement, and one per busy answer");
+		assert.equal(
+			counts.continued - before.continued,
+			39 + busy,
+			"every request after the first continued its stream",
+		);
 		const row = await database.get<{ count: bigint }>(`SELECT COUNT(*) AS count FROM ${table}`);
 		assert.equal(Number(row?.count), 20);
 	} finally {

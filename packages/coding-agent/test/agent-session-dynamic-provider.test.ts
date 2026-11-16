@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,6 +10,9 @@ import type { ExtensionFactory } from "../src/core/sdk.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
+import { isSyntheticPath } from "../src/core/source-info.ts";
+
+const NO_BUILTINS = { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false } as const;
 
 describe("AgentSession dynamic provider registration", () => {
 	let tempDir: string;
@@ -39,7 +43,7 @@ describe("AgentSession dynamic provider registration", () => {
 		});
 		await resourceLoader.reload();
 
-		const { session } = await createAgentSession({
+		const { session, extensionsResult } = await createAgentSession({
 			cwd: tempDir,
 			agentDir,
 			model: getModel("anthropic", "claude-sonnet-4-5")!,
@@ -47,7 +51,12 @@ describe("AgentSession dynamic provider registration", () => {
 			sessionManager,
 			authStorage,
 			resourceLoader,
+			builtins: NO_BUILTINS,
 		});
+		assert.deepEqual(
+			extensionsResult.extensions.map((extension) => extension.path).filter((path) => !isSyntheticPath(path)),
+			[],
+		);
 
 		return session;
 	}

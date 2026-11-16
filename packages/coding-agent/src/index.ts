@@ -32,6 +32,7 @@ export type {
 	ToolRenderers,
 	ToolScriptAccess,
 } from "./core/extensions/tool-types.ts";
+export { type TakeoverMutex, takeTakeoverMutex } from "./core/lock-takeover.ts";
 export { resolveRestoredModelReference } from "./core/model-resolver-initial.ts";
 export * from "./core/resume/index.ts";
 export type { UsageEntry } from "./core/session-manager.ts";
@@ -1186,6 +1187,7 @@ export {
 	LoginDialogComponent,
 	ModelSelectorComponent,
 	OAuthSelectorComponent,
+	PLAIN_SELECTOR_STYLE,
 	type RenderDiffOptions,
 	rawKeyHint,
 	renderChatMessageEntry,
@@ -1194,12 +1196,20 @@ export {
 	ScrollableChatTranscriptComponent,
 	ScrollableComponentViewport,
 	type ScrollableComponentViewportOptions,
+	Selector,
+	type SelectorExtraKey,
+	type SelectorItem,
+	type SelectorOptions,
+	SelectorState,
+	type SelectorStyle,
+	type SelectorTone,
 	SessionSelectorComponent,
 	type SettingsCallbacks,
 	type SettingsConfig,
 	SettingsSelectorComponent,
 	ShowImagesSelectorComponent,
 	SkillInvocationMessageComponent,
+	selectorHintEntries,
 	ThemeSelectorComponent,
 	ThinkingSelectorComponent,
 	ToolExecutionComponent,
@@ -1207,6 +1217,7 @@ export {
 	TRANSCRIPT_JUMP_TO_END_URL,
 	TranscriptFollowIndicator,
 	TreeSelectorComponent,
+	themeSelectorStyle,
 	truncateToVisualLines,
 	UsageMeterComponent,
 	UserMessageComponent,

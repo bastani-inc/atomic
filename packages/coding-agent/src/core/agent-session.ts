@@ -133,7 +133,7 @@ class AgentSessionBase {
 	protected _steeringMessages: string[] = [];
 	protected _followUpMessages: string[] = [];
 	protected _interruptDeliveryQueue: Promise<void> = Promise.resolve();
-	protected _pendingInterruptDeliveries = 0;
+	readonly _pendingInterruptDeliveries: number = 0;
 	protected _activeInterruptQueueHold: InterruptQueueHold | undefined = undefined;
 	protected _queuedMessagesPaused = false;
 	protected _queuedMessagesPauseAbortBoundary: Promise<void> | undefined = undefined;
@@ -155,7 +155,7 @@ class AgentSessionBase {
 	protected _activeInterruptAbortMessage: string | undefined = undefined;
 	/** Priority input cancels the native operation, not the host-owned task. */
 	protected _priorityInterruptPending = false;
-	protected _activePromptCount = 0;
+	readonly _activePromptCount: number = 0;
 	protected _isPreparingRun: false | "user" | "custom" = false;
 	/** Prompts between their start and `_isPreparingRun`, so tree navigation cannot rebuild their context. */
 	protected _promptPreflightCount = 0;
@@ -170,6 +170,7 @@ class AgentSessionBase {
 	}> = [];
 	protected _compactionAbortController: AbortController | undefined = undefined;
 	protected _compactionReason: import("./agent-session-types.js").CompactionReason | undefined = undefined;
+	protected _compactionStartedAt: number | undefined = undefined;
 	protected _manualCompactionPromise: Promise<VerbatimCompactionResult> | undefined = undefined;
 	protected _autoCompactionAbortController: AbortController | undefined = undefined;
 	/** Resolves when the current automatic compaction has settled. */
@@ -189,6 +190,10 @@ class AgentSessionBase {
 	/** A positive stop callback keeps queued work pending until an explicit new run. */
 	protected _stopAfterTurnBlockedContinuation = false;
 	protected _turnInterruptedByUser = false;
+	protected _abortPreparedRunAtStart = false;
+	readonly _startAbortedForInterrupt: boolean = false;
+	protected _awaitingStartAfterInterrupt = false;
+	readonly _undeliveredAgentStarts: number = 0;
 	protected _awaitingMessageAfterInterrupt = false;
 	protected _disposed = false;
 	protected _branchSummaryAbortController: AbortController | undefined = undefined;

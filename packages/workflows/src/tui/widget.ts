@@ -317,7 +317,7 @@ function countBadges(counts: RunCounts, theme: GraphTheme): FlatBandBadge[] {
 	// question-mark status glyph, then keep ↵ as the attach/respond action hint.
 	if (counts.awaiting > 0) {
 		badges.push({
-			text: `${statusIcon("awaiting_input")} ↵ ${counts.awaiting} needs attention (attach to workflow with \`/workflow connect\`)`,
+			text: `${statusIcon("awaiting_input")} ↵ ${counts.awaiting} needs attention (open with \`/workflows\`)`,
 			fg: theme.info,
 		});
 	}
@@ -411,7 +411,7 @@ function renderAwaitingPromptLine(message: string, bodyWidth: number, theme: Gra
 }
 
 function renderAwaitingActionLines(visibleRunId: string, bodyWidth: number, theme: GraphTheme | undefined): string[] {
-	const prefix = "     Answer: /workflow connect ";
+	const prefix = "     Answer: /workflows ";
 	const rows = wrapIdentifierLines(visibleRunId, bodyWidth, prefix, "      ");
 	return rows.map((row) => {
 		const text = `${row.prefix}${row.chunk}`;

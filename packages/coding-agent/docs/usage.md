@@ -20,7 +20,7 @@ The interface has four main areas:
 - **Startup header** - shortcuts plus named lists of loaded context files, prompt templates, skills, and extensions; use the expand-tools shortcut (Ctrl+O by default) to switch those lists to source paths
 - **Messages** - user messages, assistant responses, tool calls, tool results, notifications, errors, and extension UI
 - **Editor** - where you type; border color indicates the current thinking level
-- **Footer** - token/cache usage, cost, and context usage above the editor; below it, the current model, reasoning level, working directory, Git branch, and session name while the agent is idle, or `esc to interrupt` while it works (a turn, compaction, automatic retry, or `!` command)
+- **Footer** - token/cache usage, cost, and context usage above the editor; below it, the current model, reasoning level, working directory, Git branch, and session name while the agent is idle, or the bound interrupt key while it works (a turn, compaction, automatic retry, or `!` command). Press `?` on an empty prompt for the main chat's key overview
 
 The editor can be replaced temporarily by built-in UI such as `/settings` or by custom extension UI.
 
@@ -30,7 +30,9 @@ The startup animation shows Atomic's identity. Press any key, including Ctrl+C, 
 
 Startup lists loaded context files, skills, prompts, and extensions by name. Custom themes are not listed; choose them in `/settings`. Duplicate local extension names include path information. Expand the startup disclosure to see source paths.
 
-While the agent works, `∀` pulses beside a working message. Retry, fallback, compaction, cancellation, and error messages take precedence; approval prompts hide ordinary activity. Set `ATOMIC_REDUCED_MOTION=1` for a static indicator or `NO_COLOR` for activity without foreground colors. Extensions can [customize the indicator](/tui#pattern-4b-working-indicator-customization).
+While the agent works, `∀` pulses beside a working message, followed by the current run's elapsed time and output tokens. A new run starts a fresh meter; steering keeps the current run's meter. Retry, fallback, compaction, cancellation, and error messages take precedence; approval prompts hide ordinary activity. Set `ATOMIC_REDUCED_MOTION=1` for a static indicator or `NO_COLOR` for activity without foreground colors. Elapsed time still updates once per second with reduced motion. Extensions can [customize the indicator](/tui#pattern-4b-working-indicator-customization).
+
+Compaction uses a still `∀` mark with elapsed time and the cancel key. Opening a chat during compaction shows the time since that compaction began. Afterwards, `∀ Context compacted` shows estimated message-token counts before and after; use the expand key, normally Ctrl+O, to read the summary and the context size before compaction, which can differ from the message-token estimate.
 
 ### Editor Features
 
@@ -70,7 +72,7 @@ Type `/` in the editor to open command completion. Extensions can register custo
 | `/model` | Switch models and automatically save the startup default |
 | `/thinking` | Switch thinking level and automatically save the startup default |
 | `/scoped-models` | Enable/disable models for CTRL+P cycling |
-| `/workflow` | List/run workflows; manage runs (connect/inspect/pause/quit/resume); reload workflow resources |
+| `/workflow` | List/run workflows; inspect, pause, quit, or resume runs; reload workflow resources |
 | `/settings` | Theme, message delivery, transport, and other preferences |
 | `/resume` | Pick from previous sessions |
 | `/new` | Start a new session |
@@ -100,7 +102,7 @@ You can submit messages while the agent is still working:
 - **Ctrl+C** clears the editor first when it has text. With an empty editor, it aborts active/queued work and pauses queued messages in place. They remain queued, in their original per-queue order, until you submit the next ordinary chat message; that submission resumes the chat and makes each queued item eligible once. After the abort settles, Ctrl+C on an empty editor shows "Press Ctrl+C again to exit" without releasing the hold, and a second press within 0.8 s exits.
 - **ALT+Up** explicitly retrieves queued messages back to the editor without aborting active work or resuming a paused session. Even when retrieval empties the queue, the pause remains active until the next ordinary submission. It restores exactly what the session still held when it handled the key press: a message queued an instant earlier comes back, and one the agent has already taken into its turn does not come back a second time. If the engine process cannot be reached, nothing is removed and Atomic shows an error.
 
-Each queue preserves submission order, and steering messages take priority over follow-ups. Messages submitted during compaction keep their queue type and join that queue when compaction finishes or is cancelled, even if the agent is still working. Prompt templates and skills wait the same way. Slash commands that do not send a prompt, such as `/settings`, `/tasks`, `/model` and extension commands like `/workflow connect`, run immediately during compaction. A message that such a command sends, for example through `pi.sendUserMessage()`, also waits until compaction ends. It is shown as queued, goes out once, and keeps its place after the messages typed before the command. **ALT+Up** and Ctrl+C return it to the editor like the rest of the queue.
+Each queue preserves submission order, and steering messages take priority over follow-ups. Messages submitted during compaction keep their queue type and join that queue when compaction finishes or is cancelled, even if the agent is still working. Prompt templates and skills wait the same way. Slash commands that do not send a prompt, such as `/settings`, `/tasks`, `/model` and extension commands like `/workflows`, run immediately during compaction. A message that such a command sends, for example through `pi.sendUserMessage()`, also waits until compaction ends. It is shown as queued, goes out once, and keeps its place after the messages typed before the command. **ALT+Up** and Ctrl+C return it to the editor like the rest of the queue.
 
 Messages you submit while Atomic is still preparing a prompt, while it waits to retry a failed request, or while extensions finish handling the end of a run are queued the same way. They show as queued at once and join the run at its next turn boundary, in the order you submitted them. If the agent refuses one, Atomic returns the text to the editor, or keeps it queued, and shows the error.
 

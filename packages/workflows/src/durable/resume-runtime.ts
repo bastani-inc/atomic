@@ -153,7 +153,7 @@ export async function resumeDurableWorkflow(
 	const id = target !== undefined && !("kind" in target) ? target.workflowId : workflowId;
 	const handle = backend.getWorkflow(id);
 	if (handle?.status === "running" && hasActiveLiveRun(deps.baseRunOpts.store, id))
-		return alreadyRunningResult(handle.name, id, deps.baseRunOpts.store);
+		return alreadyRunningResult(handle.name, id);
 	if (hasForkClaim(backend, id))
 		return {
 			ok: false,
@@ -228,7 +228,7 @@ async function resumeDurableWorkflowClaimed(
 		const direct = backend.getWorkflow(workflowId);
 		if (direct !== undefined && direct.status === "running") {
 			if (hasActiveLiveRun(deps.baseRunOpts.store, direct.workflowId)) {
-				return alreadyRunningResult(direct.name, direct.workflowId, deps.baseRunOpts.store);
+				return alreadyRunningResult(direct.name, direct.workflowId);
 			}
 			if ((await backend.workflowOwnership(direct.workflowId)) === "foreign") {
 				return foreignRunningResult(direct.name, direct.workflowId);
@@ -273,7 +273,7 @@ async function resumeDurableWorkflowClaimed(
 
 	if (handle.status === "running") {
 		if (hasActiveLiveRun(deps.baseRunOpts.store, resolved.workflowId)) {
-			return alreadyRunningResult(handle.name, resolved.workflowId, deps.baseRunOpts.store);
+			return alreadyRunningResult(handle.name, resolved.workflowId);
 		}
 		if ((await backend.workflowOwnership(handle.workflowId)) === "foreign") {
 			return foreignRunningResult(handle.name, resolved.workflowId);
@@ -711,15 +711,11 @@ function foreignRunningResult(name: string, workflowId: string): ResumeDurableRe
 	};
 }
 
-function alreadyRunningResult(name: string, workflowId: string, store: RunOpts["store"]): ResumeDurableResult {
-	const current = store?.run(workflowId);
-	const here = current !== undefined && current.endedAt === undefined;
+function alreadyRunningResult(name: string, workflowId: string): ResumeDurableResult {
 	return {
 		ok: false,
 		reason: "not_resumable",
-		message: `Workflow "${name}" (${workflowId}) is already running${
-			here ? " in this session" : " in another session"
-		}. See agents working and chat with or steer each stage using \`/workflow connect ${workflowId}\`; use \`/workflow quit ${workflowId}\` to pause the run for later resume.`,
+		message: `Workflow "${name}" (${workflowId}) is already running in this session. See agents working and chat with or steer each stage using \`/workflows ${workflowId}\`; use \`/workflow quit ${workflowId}\` to pause the run for later resume.`,
 	};
 }
 

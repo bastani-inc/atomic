@@ -83,6 +83,9 @@ class RecordingTerminal implements Terminal {
 			sessionFile: mode?.session.sessionFile,
 			modelProvider: mode?.session.model?.provider,
 			modelId: mode?.session.model?.id,
+			thinkingLevel: mode?.session.thinkingLevel,
+			deferredStartupThinkingLevel: mode?.options.deferredStartupThinkingLevel,
+			deferredSavedThinkingLevel: mode?.options.deferredSavedThinkingLevel,
 			modelFallbackMessage: runtime?.modelFallbackMessage,
 			modelFallbackReason: runtime?.modelFallbackReason,
 			expandKeys: mode?.keybindings.getKeys("app.tools.expand"),
@@ -201,6 +204,10 @@ async function runHost(): Promise<void> {
 									: undefined,
 							}),
 							(error: Error) => report({ type: "diagnostic", message: `Engine binding failed: ${error.message}` }),
+						);
+						void created.runtimeHost.waitUntilResourcesReady().then(
+							() => report({ type: "engine_resources_ready" }),
+							(error: Error) => report({ type: "engine_resources_failed", message: error.message }),
 						);
 					}
 					created.session.subscribe((event) => report({ type: "session_event", eventType: event.type }));

@@ -18,7 +18,14 @@ const RETRY_INTERVAL: Duration = Duration::from_millis(5);
 /// then again until `wait` has passed. `None` while another open file holds it. The lock lasts as long as the returned
 /// file is open, and the kernel releases it when its holder dies.
 pub fn try_lock_file(path: &Path, wait: Duration) -> io::Result<Option<File>> {
-	let file = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path)?;
+	let mut options = OpenOptions::new();
+	options.read(true).write(true).create(true).truncate(false);
+	#[cfg(unix)]
+	{
+		use std::os::unix::fs::OpenOptionsExt;
+		options.mode(0o600);
+	}
+	let file = options.open(path)?;
 	let deadline = Instant::now() + wait;
 	loop {
 		match file.try_lock() {
@@ -113,9 +120,7 @@ fn platform_rename_no_replace(_from: &Path, _to: &Path) -> io::Result<()> {
 }
 
 fn napi_error(error: io::Error) -> napi::Error {
-	let code =
-		error.raw_os_error().map_or_else(|| format!("{:?}", error.kind()), |code| code.to_string());
-	napi::Error::new(napi::Status::GenericFailure, format!("{error} (os error {code})"))
+	napi::Error::new(napi::Status::GenericFailure, error.to_string())
 }
 
 /// An exclusive advisory lock this process holds on an open file (#5193), released by {@link AdvisoryLock.release},
