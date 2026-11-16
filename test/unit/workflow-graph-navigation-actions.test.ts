@@ -311,6 +311,34 @@ describe("workflow graph navigation and stage actions (#5224)", () => {
 		},
 	);
 
+	it("a retained graph can show a newly forked run after being hidden and shown (#5234)", async () => {
+		const snap = makeSnap([stage("verify", "failed")]);
+		snap.runs.push({ ...snap.runs[0], id: "run-2" });
+		const pane = new WorkflowAttachPane({
+			store: makeStore(snap),
+			runId: "run-1",
+			graphTheme: defaultTheme,
+			piKeybindings: makeFakeKeybindings(),
+			onClose: () => {},
+			stageActions: {
+				forkTarget: async () => ({ ok: true, stagePath: "verify", rerunToolSteps: 0, live: false }),
+				fork: async () => ({ ok: true, message: "forked", runId: "run-2" }),
+			},
+		});
+		try {
+			pane.setVisible(false);
+			pane.setVisible(true);
+			pane.handleInput(ENTER);
+			pane.handleInput("f");
+			await settle();
+			pane.handleInput(ENTER);
+			await settle();
+			assert.equal(pane._runId, "run-2");
+		} finally {
+			pane.dispose();
+		}
+	});
+
 	it("stopping another stage cannot overlap an unfinished retry (#5234)", async () => {
 		const retried = Promise.withResolvers<GraphStageActionResult>();
 		const retry = vi.fn(() => retried.promise);

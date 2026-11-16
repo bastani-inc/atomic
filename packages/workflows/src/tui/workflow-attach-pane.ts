@@ -138,8 +138,7 @@ export class WorkflowAttachPane implements Component {
 		}
 	}
 	private _buildGraphView(initialFocusedStageId?: string, initialFocusedRunId?: string): GraphView {
-		const generation = this.attachmentGeneration;
-		return new GraphView({
+		const view: GraphView = new GraphView({
 			mode: "overlay",
 			runId: this.runId,
 			store: this.store,
@@ -156,12 +155,20 @@ export class WorkflowAttachPane implements Component {
 			},
 			stageActions: this.stageActions,
 			// A retry or fork shows its new run here; the graph that asked is replaced, so wait for its handler to end.
-			onShowRun: (runId, carry) =>
+			onShowRun: (runId, carry) => {
+				const generation = this.attachmentGeneration;
 				queueMicrotask(() => {
-					if (generation !== this.attachmentGeneration || this.mode !== "graph" || !this.visible) return;
+					if (
+						this.graphView !== view ||
+						generation !== this.attachmentGeneration ||
+						this.mode !== "graph" ||
+						!this.visible
+					)
+						return;
 					this.pendingGraphCarry = carry;
 					this.retarget(runId);
-				}),
+				});
+			},
 			carry: this._takeGraphCarry(),
 			initialFocusedStageId,
 			initialFocusedRunId,
@@ -176,6 +183,7 @@ export class WorkflowAttachPane implements Component {
 				this.hostRequestRender?.();
 			},
 		});
+		return view;
 	}
 	/**
 	 * Pending-message count for a stage, read straight from the registry so the
