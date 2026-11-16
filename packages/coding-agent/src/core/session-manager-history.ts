@@ -370,10 +370,6 @@ export function getSessionLeafId(entries: readonly SessionEntry[]): string | nul
 	return buildSessionIndex(entries).leafId;
 }
 
-/**
- * The branch from the root to `fromId`. `links` names, for an entry whose parent is not held, the held entry before it
- * on its branch: a session read from its latest compaction holds only the state entries of the history before (#5249).
- */
 export function getBranchPath(
 	fromId: string | null | undefined,
 	byId: ReadonlyMap<string, SessionEntry>,

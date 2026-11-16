@@ -76,7 +76,7 @@ export type TaskTranscriptSource = Pick<SessionManager, "getSessionId" | "getEnt
 	 * and its `getEntries()` is empty. Absent where `getEntries()` holds the history (#5186).
 	 */
 	loadHistory?(): Promise<TaskTranscriptHistory>;
-	/** Reads the history a live session resumed from its latest compaction was opened without (#5249). */
+
 	loadFullHistory?(): Promise<void>;
 	/** The session's commands now; a settled transcript keeps those it had when it settled. */
 	commands?(): TaskTranscriptCommands;
@@ -230,7 +230,7 @@ type TaskState = {
 	kind?: "command";
 	execution?: Promise<C.Result<C.Cleanup, C.ReportError>>;
 	transcript?: TaskTranscriptSource;
-	/** The last entry the task's session held when it was first bound, null for none: what it inherited ends there. */
+
 	inherited?: { readonly throughId: string | null };
 	/** Extension `setStatus` writes of the task's own session; they never reach the host's footer. */
 	statuses: Map<string, string>;
@@ -307,10 +307,6 @@ function clearTaskStatuses(state: TaskState): void {
 	notifyStatusListeners(state);
 }
 
-/**
- * The entries after the last one `inherited` names, by id rather than by count: a session resumed from its latest
- * compaction holds fewer entries than its store, and holds more once it reads the rest (#5249).
- */
 function entriesAfterInherited(
 	entries: ReturnType<TaskTranscriptSource["getEntries"]>,
 	inherited: TaskState["inherited"],

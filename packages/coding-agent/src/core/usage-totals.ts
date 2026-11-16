@@ -22,10 +22,18 @@ export function addUsageToTotals(totals: UsageTotals, usage: Usage): void {
 	totals.cost += usage.cost.total;
 }
 
-/** Adds the usage of history a session was opened without, as `SessionManager.getOmittedHistoryTotals()` gives it (#5249). */
-export function addHistoryUsageToTotals(totals: UsageTotals, history: SessionHistoryTotals | undefined): void {
+export function addHistoryUsageToTotals(
+	totals: UsageTotals,
+	history: SessionHistoryTotals | undefined,
+	includeAuxiliary = false,
+): void {
 	if (history === undefined) return;
-	for (const part of [history.assistant, history.toolResult, history.summaries]) {
+	for (const part of [
+		history.assistant,
+		history.toolResult,
+		history.summaries,
+		...(includeAuxiliary && history.auxiliary ? [history.auxiliary] : []),
+	]) {
 		totals.input += part.input;
 		totals.output += part.output;
 		totals.cacheRead += part.cacheRead;

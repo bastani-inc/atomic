@@ -34,7 +34,7 @@ export function getSessionStats(this: AgentSession): SessionStats {
 	let totalMessages = omitted?.totalMessages ?? 0;
 	let toolCalls = omitted?.toolCalls ?? 0;
 	const totals = createUsageTotals();
-	addHistoryUsageToTotals(totals, omitted);
+	addHistoryUsageToTotals(totals, omitted, true);
 	let latestAssistantUsage: Usage | undefined = omitted?.latestAssistantUsage;
 	for (const entry of this.sessionManager.getEntries()) {
 		if (

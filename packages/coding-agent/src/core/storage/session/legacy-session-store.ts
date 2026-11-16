@@ -8,7 +8,7 @@ import { openNodeSqliteDatabase } from "../node-sqlite.js";
 import { SessionExistsError, SessionNotFoundError } from "./errors.js";
 import { type JsonlSessionFile, JsonlSessionStore } from "./jsonl-session-store.js";
 import { latestLegacyMessageTime, summarizeLegacySession } from "./legacy-session-summary.js";
-import { findSessionCompaction, readSessionRange, readSessionTail } from "./session-resume.js";
+import { findSessionCompaction, readSessionRange, readSessionTail, sessionResumeOf } from "./session-resume.js";
 import { summarizeSession } from "./session-summary.js";
 import type {
 	SessionBlob,
@@ -16,6 +16,7 @@ import type {
 	SessionEntryRange,
 	SessionListQuery,
 	SessionRecordHeader,
+	SessionResume,
 	SessionSnapshot,
 	SessionStore,
 	SessionSummary,
@@ -114,6 +115,20 @@ export class LegacySessionStore implements SessionStore {
 	async findLatestCompaction(sessionId: string, leafId?: string): Promise<SessionCompactionPoint | undefined> {
 		await this.convert(sessionId);
 		return findSessionCompaction(this.inner, sessionId, leafId);
+	}
+
+	async readResume(sessionId: string, leafId?: string): Promise<SessionResume> {
+		await this.convert(sessionId);
+		if (this.inner.readResume) return this.inner.readResume(sessionId, leafId);
+		const snapshot = await this.inner.load(sessionId);
+		return sessionResumeOf(snapshot.header, snapshot.entries, leafId);
+	}
+	async findEntrySeq(sessionId: string, entryId: string): Promise<number | undefined> {
+		await this.convert(sessionId);
+		if (this.inner.findEntrySeq) return this.inner.findEntrySeq(sessionId, entryId);
+		const entries = (await this.inner.load(sessionId)).entries;
+		const index = entries.findLastIndex((e) => e.id === entryId);
+		return index < 0 ? undefined : index + 1;
 	}
 
 	async readHeader(sessionId: string): Promise<SessionRecordHeader | undefined> {

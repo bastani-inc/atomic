@@ -1,4 +1,4 @@
-import type { SessionEntry, SessionManager } from "./session-manager.ts";
+import type { SessionManager } from "./session-manager.ts";
 import type { TaskCompletionEnvelope } from "./tasks/completion.js";
 import type { OwnerId, Sequence, TaskId } from "./tasks/contracts.js";
 import type { WorkflowStageAdmissionBoundary } from "./workflow-stage-admission.ts";
@@ -43,11 +43,6 @@ export async function recordTasksInterruptedByRestart(
 		Partial<Pick<SessionManager, "loadFullHistory">>,
 	attemptId: string | undefined,
 ): Promise<number> {
-	const releasedEarlier = (entry: SessionEntry) =>
-		entry.type === "custom" &&
-		entry.customType === PARKED_STAGE_TASKS_TYPE &&
-		(entry.data as ParkedStageTasks).attemptId !== attemptId;
-	if (sessionManager.getEntries().some(releasedEarlier)) await sessionManager.loadFullHistory?.();
 	const entries = sessionManager.getEntries();
 	const interrupted: TaskCompletionEnvelope[] = [];
 	for (const [index, entry] of entries.entries()) {

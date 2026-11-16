@@ -73,6 +73,8 @@ export type {
 	SessionCompactionPoint,
 	SessionEntryRange,
 	SessionHistoryTotals,
+	SessionRecoveryState,
+	SessionResume,
 	SessionStateEntry,
 	SessionStore,
 	SessionStoredEntry,

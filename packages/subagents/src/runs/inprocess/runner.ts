@@ -1576,7 +1576,7 @@ export class SubagentControlRuntime {
 		let effectiveModelId = candidateModelId;
 		let effectiveThinking = initialThinkingForAttempt(candidateModelId, configuredThinking);
 		let transcriptManager: SessionManager | undefined;
-		// The last entry the child's session held when it opened: a forked child's inherited history ends there.
+
 		let openedThroughId: string | null = null;
 		let releasedAttempt = false;
 		let unsavedAnswer: AssistantMessage | undefined;
@@ -1967,6 +1967,7 @@ export class SubagentControlRuntime {
 				model: effectiveModelId === undefined ? undefined : splitKnownThinkingSuffix(effectiveModelId).baseModel,
 				thinking: effectiveThinking,
 				leafId: sessionManager.getLeafId(),
+				leafSeq: sessionManager.getLeafId() === null ? 0 : sessionManager.getEntrySeq(sessionManager.getLeafId()!),
 			};
 			taskHooks?.bindChildLaunch?.(childLaunch);
 			admitted.spec.onChildLaunch?.(childLaunch);

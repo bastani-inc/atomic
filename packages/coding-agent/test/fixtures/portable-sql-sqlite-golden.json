@@ -1123,7 +1123,7 @@
 				"has_name": 0,
 				"summary": null,
 				"summarized_through_id": null,
-				"summary_state": "{\"messageCount\":1,\"firstMessage\":\"a1\",\"hasName\":false,\"latestMessageTime\":0,\"resume\":{\"seq\":1,\"lastId\":\"a1\",\"leafSeq\":1,\"jumps\":[],\"compactions\":[],\"intents\":[],\"state\":\"\",\"lastStateSeq\":0,\"totals\":{\"assistant\":{\"input\":0,\"output\":0,\"cacheRead\":0,\"cacheWrite\":0,\"cost\":0},\"toolResult\":{\"input\":0,\"output\":0,\"cacheRead\":0,\"cacheWrite\":0,\"cost\":0},\"summaries\":{\"input\":0,\"output\":0,\"cacheRead\":0,\"cacheWrite\":0,\"cost\":0},\"userMessages\":1,\"assistantMessages\":0,\"toolResults\":0,\"totalMessages\":1,\"toolCalls\":0}}}"
+				"summary_state": "{\"messageCount\":1,\"firstMessage\":\"a1\",\"hasName\":false,\"latestMessageTime\":0}"
 			},
 			{
 				"id": "b",
@@ -1139,7 +1139,7 @@
 				"has_name": 0,
 				"summary": null,
 				"summarized_through_id": null,
-				"summary_state": "{\"messageCount\":1,\"firstMessage\":\"b1\",\"hasName\":false,\"latestMessageTime\":0,\"resume\":{\"seq\":1,\"lastId\":\"b1\",\"leafSeq\":1,\"jumps\":[],\"compactions\":[],\"intents\":[],\"state\":\"\",\"lastStateSeq\":0,\"totals\":{\"assistant\":{\"input\":0,\"output\":0,\"cacheRead\":0,\"cacheWrite\":0,\"cost\":0},\"toolResult\":{\"input\":0,\"output\":0,\"cacheRead\":0,\"cacheWrite\":0,\"cost\":0},\"summaries\":{\"input\":0,\"output\":0,\"cacheRead\":0,\"cacheWrite\":0,\"cost\":0},\"userMessages\":1,\"assistantMessages\":0,\"toolResults\":0,\"totalMessages\":1,\"toolCalls\":0}}}"
+				"summary_state": "{\"messageCount\":1,\"firstMessage\":\"b1\",\"hasName\":false,\"latestMessageTime\":0}"
 			}
 		],
 		"blobs": [

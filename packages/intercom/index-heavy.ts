@@ -1980,7 +1980,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
           if (!isProjectGroupError(error)) throw error;
           sessionHomeGroup = null;
         }
-        inboundDeliveries.restore(value.sessionManager.getBranch());
+        inboundDeliveries.restore(value.sessionManager.getBranch(),value.sessionManager.getSessionRecoveryState?.().admissionKeys.filter(key=>key.startsWith("intercom:")).map(key=>key.slice("intercom:".length)));
       }
       runtimeContext = value;
     },
@@ -2034,11 +2034,11 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     let startupDrained = false;
     let redrainRequested = false;
     const deliverPending = async (started = false): Promise<void> => {
-      const receivedMessageIds = ctx.sessionManager.getBranch().flatMap((entry) => {
+      const receivedMessageIds = [...(ctx.sessionManager.getSessionRecoveryState?.().intercomDeliveredIds ?? []),...ctx.sessionManager.getBranch().flatMap((entry) => {
         if (entry.type !== "custom_message" || entry.customType !== "intercom_message") return [];
         const id = (entry.details as { message?: { id?: string } } | undefined)?.message?.id;
         return typeof id === "string" ? [id] : [];
-      });
+      })];
       await pendingStageDelivery.deliverPending(
         // Only a message handed over while the stage is still starting is pre-start context. A drain can outlive
         // the startup (a pooled stage's root drain finishes in the background): what it hands over afterwards

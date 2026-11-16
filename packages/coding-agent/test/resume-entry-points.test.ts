@@ -1076,10 +1076,6 @@ describe("AgentSessionRuntime.switchSession across nodes (#4329)", () => {
 		});
 	}
 
-	/**
-	 * Runs every session read of `store` through `around`: a whole load, and the latest compaction and tail reads a
-	 * resume makes instead (#5249).
-	 */
 	function aroundReads(store: SessionStore, around: <T>(read: () => Promise<T>) => Promise<T>): void {
 		const load = store.load.bind(store);
 		store.load = (id) => around(() => load(id));
@@ -1090,7 +1086,6 @@ describe("AgentSessionRuntime.switchSession across nodes (#4329)", () => {
 			store.findLatestCompaction = (id, leafId) => around(() => findLatestCompaction.call(store, id, leafId));
 	}
 
-	/** Makes the runtime's store look like `adapter` and delays each session read by `delayMs` of timer time. */
 	function slowStore(runtime: AgentSessionRuntime, adapter: string, delayMs: number): SessionStore {
 		const store = runtime.session.sessionManager.getSessionStore();
 		const descriptor = { ...store.descriptor, adapter };

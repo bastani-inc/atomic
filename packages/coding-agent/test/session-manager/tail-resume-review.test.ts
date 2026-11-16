@@ -1,0 +1,177 @@
+import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import * as crypto from "crypto";
+import { afterEach, test, vi } from "vitest";
+
+vi.mock("crypto", async () => {
+	const actual = await vi.importActual<typeof import("crypto")>("crypto");
+	return { ...actual, randomUUID: vi.fn(actual.randomUUID) };
+});
+
+import { SessionManager } from "../../src/core/session-manager.ts";
+import type { CompactionEntry, SessionEntry } from "../../src/core/session-manager-types.ts";
+import { generateId } from "../../src/core/session-manager-validation.ts";
+import { openNodeSqliteDatabase } from "../../src/core/storage/node-sqlite.ts";
+import { sessionTailOf } from "../../src/core/storage/session/session-resume.ts";
+import { SqlSessionStore } from "../../src/core/storage/session/sql-session-store.ts";
+
+const stamp = "2026-11-16T00:00:00.000Z";
+const cleanups: (() => Promise<void>)[] = [];
+afterEach(async () => {
+	for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+});
+function user(id: string, parentId: string | null): SessionEntry {
+	return { type: "message", id, parentId, timestamp: stamp, message: { role: "user", content: id, timestamp: 1 } };
+}
+function boundary(id: string, parentId: string, firstKeptEntryId: string | null): CompactionEntry {
+	return {
+		type: "compaction",
+		id,
+		parentId,
+		timestamp: stamp,
+		summary: "summary",
+		tokensBefore: 100,
+		firstKeptEntryId,
+		details: { strategy: "verbatim-lines", backend: "summary" },
+	};
+}
+async function fixture(entries: SessionEntry[]) {
+	const dir = await mkdtemp(join(tmpdir(), "tail-review-"));
+	cleanups.push(() => rm(dir, { recursive: true, force: true, maxRetries: 10 }));
+	const db = await openNodeSqliteDatabase(join(dir, "s.sqlite"));
+	cleanups.push(() => db.close());
+	const store = await SqlSessionStore.open(db);
+	cleanups.push(() => store.close());
+	const header = { id: "session", version: 4 as const, createdAt: stamp, cwd: dir };
+	await store.create(header, entries);
+	return { store, header, open: () => SessionManager.open(store, "session", undefined, { history: "tail" }) };
+}
+
+test("keeps the model inferred from an assistant before the compaction (#5249)", async () => {
+	const zero = {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: 0,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	};
+	const entries: SessionEntry[] = [
+		user("u", null),
+		{
+			type: "message",
+			id: "a",
+			parentId: "u",
+			timestamp: stamp,
+			message: {
+				role: "assistant",
+				content: [],
+				provider: "test",
+				model: "inferred",
+				api: "anthropic-messages",
+				usage: zero,
+				stopReason: "stop",
+				timestamp: 1,
+			},
+		},
+		user("kept", "a"),
+		boundary("c", "kept", "kept"),
+	];
+	const { open, store } = await fixture(entries);
+	assert.deepEqual(
+		(await open()).buildSessionContext(),
+		(await SessionManager.open(store, "session")).buildSessionContext(),
+	);
+});
+
+test("branching to held state and pre-boundary kept messages restores their complete context (#5249)", async () => {
+	const entries: SessionEntry[] = [
+		user("u", null),
+		{ type: "thinking_level_change", id: "thinking", parentId: "u", timestamp: stamp, thinkingLevel: "high" },
+		user("kept", "thinking"),
+		boundary("c", "kept", "kept"),
+		user("after", "c"),
+	];
+	const { open, store } = await fixture(entries);
+	for (const target of ["thinking", "kept"]) {
+		const partial = await open();
+		const full = await SessionManager.open(store, "session");
+		await partial.recordBranch(target);
+		await full.branch(target);
+		assert.deepEqual(partial.buildSessionContext(), full.buildSessionContext());
+	}
+});
+
+test("hydration rejects a same-length replacement instead of merging session generations (#5249)", async () => {
+	const entries = [user("u", null), user("kept", "u"), boundary("c", "kept", "kept")];
+	const { open, store, header } = await fixture(entries);
+	const partial = await open();
+	await store.replace("session", header, [user("new", null), user("new2", "new"), user("new3", "new2")], {
+		expectSeq: 3,
+	});
+	await assert.rejects(partial.loadFullHistory(), { name: "SessionConflictError" });
+});
+
+test("resume excludes abandoned branches after the active boundary (#5249)", async () => {
+	const entries: SessionEntry[] = [
+		user("u", null),
+		boundary("c", "u", null),
+		user("a", "c"),
+		user("b", "u"),
+		user("b2", "b"),
+		{ type: "custom", customType: "atomic.leaf", id: "move", parentId: "a", timestamp: stamp },
+	];
+	const { open, store } = await fixture(entries);
+	const partial = await open();
+	assert.equal(
+		partial.getEntries().some((e) => e.id === "b" || e.id === "b2"),
+		false,
+	);
+	const id = await partial.appendMessage({ role: "user", content: "new", timestamp: 1 });
+	assert.equal(id.length, 36);
+	await partial.loadFullHistory();
+	assert.deepEqual(partial.getEntries(), (await store.load("session")).entries);
+});
+
+test("settled heartbeats and delivery cards do not grow the resumed state (#5249)", async () => {
+	const counts = [];
+	for (const n of [10, 100]) {
+		const entries: SessionEntry[] = [user("u", null)];
+		for (let i = 0; i < n; i++) {
+			const id = `card${i}`;
+			const parentId = entries.at(-1)!.id;
+			entries.push({
+				type: "custom_message",
+				id,
+				parentId,
+				timestamp: stamp,
+				customType: "task-heartbeat",
+				content: "heartbeat".repeat(100),
+				display: true,
+				protectedReconciliation: { delivery: "followUp" },
+			});
+			entries.push({
+				type: "custom_message",
+				id: `done${i}`,
+				parentId: id,
+				timestamp: stamp,
+				customType: "atomic:protected-streaming-reconciliation",
+				content: "heartbeat".repeat(100),
+				display: false,
+				details: { protectedReconciliationOf: id },
+			});
+		}
+		entries.push(boundary("c", entries.at(-1)!.id, null));
+		const header = { id: "s", version: 4 as const, createdAt: stamp, cwd: "/p" };
+		counts.push(sessionTailOf(header, entries, entries.length).state.length);
+	}
+	assert.deepEqual(counts, [0, 0]);
+});
+
+test("partial session ids cannot reuse a short id hidden in omitted history (#5249)", () => {
+	const uuid = "deadbeef-0000-4000-8000-000000000001";
+	vi.mocked(crypto.randomUUID).mockReturnValueOnce(uuid);
+	assert.equal(generateId({ has: () => false, preferFullIds: true }), uuid);
+});

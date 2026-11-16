@@ -1864,7 +1864,6 @@ export async function sessionContinuesIn(store: SessionStore, sessionId: string,
 	return snapshotsContinueIn(stored.header.cwd, stored.entries, cwd);
 }
 
-/** {@link sessionContinuesIn} for a session `sessionManager` holds, read from its latest compaction or whole (#5249). */
 export function sessionManagerContinuesIn(
 	sessionManager: Pick<SessionManager, "getHeader" | "getEntries">,
 	cwd: string,
@@ -1882,10 +1881,6 @@ function snapshotsContinueIn(recordedCwd: string, entries: readonly SessionEntry
 	return canonicalizeWorktreePath(mapped) === canonicalizeWorktreePath(cwd);
 }
 
-/**
- * A stored session's header and worktree snapshot entries, all of them and those on the branch it reopens on, read
- * with the entries that hold its state rather than its whole history (#5249).
- */
 async function storedSnapshotEntries(
 	store: SessionStore,
 	sessionId: string,
@@ -1908,7 +1903,6 @@ function restoreMappings(branch: readonly SessionEntry[]): WorktreeRootMapping[]
 	return branch.flatMap((entry) => (entry.type === "worktree_snapshot" && entry.restore ? [entry.restore] : []));
 }
 
-/** The restores and current snapshots of `branch`, given the session's `entries`, as resume finds them. */
 function storedBranchSnapshots(
 	entries: readonly SessionEntry[],
 	branch: readonly SessionEntry[],
@@ -1937,7 +1931,6 @@ export async function sessionRunsInRecordedCheckout(store: SessionStore, session
 	return snapshotsRunInRecordedCheckout(header.cwd, entries, branch);
 }
 
-/** {@link sessionRunsInRecordedCheckout} for a session `sessionManager` holds (#5249). */
 export function sessionManagerRunsInRecordedCheckout(
 	sessionManager: Pick<SessionManager, "getHeader" | "getEntries" | "getBranch">,
 ): boolean {

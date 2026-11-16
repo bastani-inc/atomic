@@ -19,7 +19,12 @@ export function storedTranscript(session: StageSessionRuntime): StageSessionRunt
  */
 export function storedEntryCount(session: StageSessionRuntime): number | undefined {
 	const stored = storedEntries(session);
-	return stored === undefined ? undefined : stored.fromSeq - 1 + stored.entries.length;
+	const manager = asAgentSession(session)?.sessionManager;
+	return typeof manager?.getLastSeq === "function"
+		? manager.getLastSeq()
+		: stored === undefined
+			? undefined
+			: stored.fromSeq - 1 + stored.entries.length;
 }
 
 /** Whether the store gained an assistant message after its first `entryCount` entries, when it was counted at all. */
@@ -28,15 +33,14 @@ export function storedAssistantMessageSince(session: StageSessionRuntime, entryC
 	const stored = storedEntries(session);
 	return (
 		stored?.entries
-			.slice(Math.max(0, entryCount - (stored.fromSeq - 1)))
+			.filter(
+				(entry, i) =>
+					(asAgentSession(session)?.sessionManager.getEntrySeq?.(entry.id) ?? stored.fromSeq + i) > entryCount,
+			)
 			.some((entry) => entry.type === "message" && entry.message.role === "assistant") === true
 	);
 }
 
-/**
- * The entries the session holds from the first seq it holds every entry from: a session resumed from its latest
- * compaction holds only state before it, and the rest once it reads it (#5249).
- */
 function storedEntries(
 	session: StageSessionRuntime,
 ): { readonly fromSeq: number; readonly entries: readonly SessionEntry[] } | undefined {

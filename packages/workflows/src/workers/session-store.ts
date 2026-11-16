@@ -78,6 +78,12 @@ export function workerSessionStore(input: {
 				}
 			: {}),
 		load: (id) => input.reader.load(id),
+		...(input.reader.readResume
+			? { readResume: (id: string, leafId?: string) => input.reader.readResume!(id, leafId) }
+			: {}),
+		...(input.reader.findEntrySeq
+			? { findEntrySeq: (id: string, entryId: string) => input.reader.findEntrySeq!(id, entryId) }
+			: {}),
 		...(input.reader.readTail !== undefined &&
 		input.reader.readRange !== undefined &&
 		input.reader.findLatestCompaction !== undefined

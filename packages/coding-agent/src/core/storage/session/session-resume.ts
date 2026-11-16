@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { AssistantMessage, Usage } from "@bastani/atomic-ai/compat";
 import type { CompactionEntry, SessionEntry } from "../../session-manager-types.ts";
 import type {
@@ -5,8 +6,10 @@ import type {
 	SessionEntryRange,
 	SessionHistoryTotals,
 	SessionRecordHeader,
+	SessionResume,
 	SessionStateEntry,
 	SessionStore,
+	SessionStoredEntry,
 	SessionTail,
 	SessionUsageTotals,
 } from "./types.js";
@@ -15,35 +18,37 @@ import { validateSessionText } from "./validation.js";
 const LEAF_MOVE_TYPE = "atomic.leaf";
 const TASK_COMPLETION_INTENT_TYPE = "task-completion-intent";
 const TASK_COMPLETION_ACK_TYPE = "task-completion-ack";
-const BACKGROUND_COMPACTION_RESULT_TYPE = "atomic:background-compaction-result";
 
-/**
- * Entries `startSeq` through `endSeq` whose parent is not the entry stored just before each but `parentSeq`, the same
- * for all of them: a branch point, or a run of entries that start trees of their own.
- */
 type ResumeJump = readonly [startSeq: number, endSeq: number, parentSeq: number];
-/** A verbatim compaction boundary, with the seqs of its first kept and last covered entries, -1 when it has none. */
 type ResumeCompaction = readonly [seq: number, firstKeptSeq: number, coveredSeq: number];
 
-/**
- * What a store keeps about a session so that a resume reads its tail without its history (#5249): its branch points,
- * compaction boundaries, latest name and summary, open task completions and usage totals, all bounded by how often
- * those happen rather than by how long the session is. Parent seqs are -1 for an entry the session does not hold.
- */
 export interface SessionResumeIndex {
-	/** The last seq this index covers. */
+	readonly version: 2;
+	readonly needsBranchRebuild?: boolean;
+	readonly epoch: string;
+	readonly latest: Readonly<Record<string, readonly number[]>>;
+	readonly fields: Readonly<Record<string, readonly (readonly [number, readonly string[]])[]>>;
+	readonly models: readonly (readonly [number, string])[];
+	readonly assistants: readonly number[];
+	readonly admissions: readonly string[];
+	readonly delivered: readonly string[];
+	readonly pending: Readonly<Record<string, number>>;
+	readonly parks: Readonly<
+		Record<
+			string,
+			{ readonly seq: number; readonly remaining: readonly string[]; readonly notified: readonly number[] }
+		>
+	>;
 	readonly seq: number;
 	readonly lastId: string | null;
-	/** The seq the session continues from; 0 before its first entry, -1 when a leaf move names no entry. */
 	readonly leafSeq: number;
 	readonly jumps: readonly ResumeJump[];
 	readonly compactions: readonly ResumeCompaction[];
 	readonly nameSeq?: number;
 	readonly summarySeq?: number;
-	/** Task completion intents without an acknowledgement, by completion id. */
 	readonly intents: readonly (readonly [completionId: string, seq: number])[];
-	/** The seqs of the entries that hold state, in increasing order, as base-36 differences joined by `.`. */
 	readonly state: string;
+	readonly universal: readonly number[];
 	readonly lastStateSeq: number;
 	readonly totals: SessionHistoryTotals;
 	readonly latestAssistantSeq?: number;
@@ -72,7 +77,6 @@ function addUsage(totals: SessionUsageTotals, usage: Usage, sign: 1 | -1): Sessi
 	};
 }
 
-/** `value` when it is usage a total can add: an index is written with every store write, so no entry may break it. */
 function countedUsage(value: unknown): Usage | undefined {
 	if (value === null || typeof value !== "object") return undefined;
 	const usage = value as Partial<Usage>;
@@ -83,12 +87,16 @@ function countedUsage(value: unknown): Usage | undefined {
 		: undefined;
 }
 
-/** `totals` with what `entry` adds to a session's usage figures, or with it taken away for a `sign` of -1. */
 export function addEntryToHistoryTotals(
 	totals: SessionHistoryTotals,
 	entry: SessionEntry,
 	sign: 1 | -1 = 1,
 ): SessionHistoryTotals {
+	if (entry.type === "usage") {
+		const usage = countedUsage(entry.usage);
+		return usage ? { ...totals, auxiliary: addUsage(totals.auxiliary ?? ZERO_USAGE, usage, sign) } : totals;
+	}
+
 	if (entry.type === "compaction" || entry.type === "branch_summary" || entry.type === "session_summary") {
 		const usage = countedUsage(entry.usage);
 		return usage ? { ...totals, summaries: addUsage(totals.summaries, usage, sign) } : totals;
@@ -133,35 +141,33 @@ function completionIdOf(entry: SessionEntry): string | undefined {
 	return typeof completionId === "string" ? completionId : undefined;
 }
 
-/**
- * Whether a resume can leave `entry` out when it comes before the tail it reads (#5249): messages other than system
- * messages, compactions, branch summaries, context edits and retired context compactions only give the history the
- * latest boundary replaces, and the index keeps their usage, the latest name and summary, and the task completions
- * still open. Background compaction results before the tail are covered by the boundary the tail starts from.
- */
 export function isSessionHistoryEntry(entry: SessionEntry): boolean {
-	switch (entry.type) {
-		case "message":
-			return entry.message.role !== "system";
-		case "compaction":
-		case "branch_summary":
-		case "context_edit":
-		case "context_compaction":
-		case "session_info":
-		case "session_summary":
-			return true;
-		case "custom":
-			return (
-				entry.customType === TASK_COMPLETION_INTENT_TYPE ||
-				entry.customType === TASK_COMPLETION_ACK_TYPE ||
-				entry.customType === BACKGROUND_COMPACTION_RESULT_TYPE
-			);
-		default:
-			return false;
-	}
+	return !(
+		entry.type === "model_change" ||
+		entry.type === "thinking_level_change" ||
+		entry.type === "worktree_snapshot" ||
+		(entry.type === "message" && entry.message?.role === "system") ||
+		(entry.type === "custom" &&
+			[
+				"atomic.tool-deactivation",
+				"codemode-store",
+				"event_subscription",
+				"event_subscription_processed",
+				"event_subscription_child",
+				"intercom_released_reply_wait",
+			].includes(entry.customType))
+	);
 }
 
-/** Ids `entries` refer to that are neither in them nor the entry `previous` ends with: a store resolves them first. */
+function record(value: unknown): Record<string, unknown> {
+	return value !== null && typeof value === "object" && !Array.isArray(value)
+		? (value as Record<string, unknown>)
+		: {};
+}
+function text(value: unknown): string | undefined {
+	return typeof value === "string" ? value : undefined;
+}
+
 export function foreignResumeIds(previous: SessionResumeIndex, entries: readonly SessionEntry[]): string[] {
 	const own = new Set(entries.map((entry) => entry.id));
 	const foreign = new Set<string>();
@@ -178,15 +184,35 @@ export function foreignResumeIds(previous: SessionResumeIndex, entries: readonly
 	return [...foreign];
 }
 
-/**
- * The index of a session after `entries` are stored past `previous` (from scratch when undefined). `seqOf` gives the
- * seq of an earlier entry by id, for those {@link foreignResumeIds} names.
- */
 export function foldSessionResume(
 	previous: SessionResumeIndex | undefined,
 	entries: readonly SessionEntry[],
 	seqOf: (id: string) => number | undefined = () => undefined,
+	activeSeq?: (seq: number) => boolean,
 ): SessionResumeIndex {
+	if (previous === undefined && activeSeq === undefined && entries.length > 0) {
+		const ids = new Map(entries.map((entry, i) => [entry.id, { entry, seq: i + 1 }]));
+		const last = entries.at(-1)!;
+		let leaf = last.type === "custom" && last.customType === LEAF_MOVE_TYPE ? last.parentId : last.id;
+		const active = new Set<number>();
+		while (leaf) {
+			const held = ids.get(leaf);
+			if (!held || active.has(held.seq)) break;
+			active.add(held.seq);
+			leaf = held.entry.parentId;
+		}
+		activeSeq = (seq) => active.has(seq);
+	}
+	const latest: Record<string, readonly number[]> = { ...previous?.latest };
+	const fields: Record<string, readonly (readonly [number, readonly string[]])[]> = { ...previous?.fields };
+	const models = [...(previous?.models ?? [])];
+	const assistants = [...(previous?.assistants ?? [])];
+	const admissions = new Set(previous?.admissions ?? []);
+	const delivered = new Set(previous?.delivered ?? []);
+	const pending: Record<string, number> = { ...previous?.pending };
+	const parks: Record<string, { seq: number; remaining: readonly string[]; notified: readonly number[] }> = {
+		...previous?.parks,
+	};
 	let seq = previous?.seq ?? 0;
 	let lastId = previous?.lastId ?? null;
 	let leafSeq = previous?.leafSeq ?? 0;
@@ -195,17 +221,29 @@ export function foldSessionResume(
 	let nameSeq = previous?.nameSeq;
 	let summarySeq = previous?.summarySeq;
 	const intents = new Map(previous?.intents ?? []);
+	const universal = [...(previous?.universal ?? [])];
 	let state = previous?.state ?? "";
 	let lastStateSeq = previous?.lastStateSeq ?? 0;
 	let totals = previous?.totals ?? EMPTY_SESSION_HISTORY_TOTALS;
 	let latestAssistantSeq = previous?.latestAssistantSeq;
+	let needsBranchRebuild = previous?.needsBranchRebuild ?? false;
 	const own = new Map<string, number>(lastId === null ? [] : [[lastId, seq]]);
 	const resolve = (id: string | null | undefined): number =>
 		typeof id === "string" ? (own.get(id) ?? seqOf(id) ?? -1) : -1;
+	const keepLatest = (key: string, at: number) => {
+		latest[key] = [at];
+	};
+	const settle = (key: string) => {
+		delete pending[key];
+	};
 	for (const entry of entries) {
+		const data = record(
+			entry.type === "custom" ? entry.data : entry.type === "custom_message" ? entry.details : undefined,
+		);
 		const parentSeq = entry.parentId === null ? 0 : resolve(entry.parentId);
 		seq++;
 		if (parentSeq !== seq - 1) {
+			if (previous !== undefined && activeSeq === undefined) needsBranchRebuild = true;
 			const last = jumps.at(-1);
 			if (last !== undefined && last[1] === seq - 1 && last[2] === parentSeq)
 				jumps[jumps.length - 1] = [last[0], seq, parentSeq];
@@ -222,12 +260,138 @@ export function foldSessionResume(
 		if (entry.type === "session_info") nameSeq = seq;
 		else if (entry.type === "session_summary") summarySeq = seq;
 		else if (entry.type === "branch_summary") summarySeq = undefined;
+		const branchActive = activeSeq?.(seq) ?? true;
+		if (branchActive && entry.type === "message" && entry.message?.role === "toolResult")
+			settle(`wait:${entry.message.toolCallId}`);
 		const completionId = completionIdOf(entry);
 		if (completionId !== undefined && entry.type === "custom") {
-			if (entry.customType === TASK_COMPLETION_INTENT_TYPE) intents.set(completionId, seq);
-			else if (entry.customType === TASK_COMPLETION_ACK_TYPE) intents.delete(completionId);
+			if (entry.customType === TASK_COMPLETION_INTENT_TYPE) {
+				intents.set(completionId, seq);
+				const task = `${text(data.ownerId) ?? ""}/${text(data.taskId) ?? ""}`;
+				for (const [key, park] of Object.entries(parks))
+					if (park.remaining.includes(task)) {
+						const remaining = park.remaining.filter((id) => id !== task);
+						if (remaining.length === 0) delete parks[key];
+						else parks[key] = { ...park, remaining, notified: [...park.notified, seq] };
+					}
+			} else if (entry.customType === TASK_COMPLETION_ACK_TYPE) intents.delete(completionId);
 		}
+		if (entry.type === "model_change") models.push([seq, `${entry.provider}/${entry.modelId}`]);
+		if (entry.type === "message" && entry.message?.role === "assistant") {
+			const key = `${entry.message.provider}/${entry.message.model}`;
+			const ranges = branchRanges({ jumps }, parentSeq);
+			const effective = models.findLast(([at]) => onBranch(ranges, at));
+			if (effective?.[1] !== key) {
+				models.push([seq, key]);
+				keepLatest(`model-transition:${seq}`, seq);
+			}
+			if (branchActive) assistants.splice(0, assistants.length, seq);
+		}
+		if (entry.type === "label") keepLatest(`label:${entry.targetId}`, seq);
+		if (entry.type === "custom") {
+			const kind = entry.customType;
+			if (branchActive && ["intercom_inbox", "intercom_received"].includes(kind)) {
+				const message = record(data.message);
+				if (message.expectsReply !== true && typeof message.replyTo === "string")
+					pending[`reply:${message.replyTo}`] = seq;
+			}
+			if (kind === "intercom_session_identity" && !latest[`identity-first:${text(data.sessionId) ?? ""}`])
+				keepLatest(`identity-first:${text(data.sessionId) ?? ""}`, seq);
+			if (
+				[
+					"intercom_session_identity",
+					"intercom_session_memberships",
+					"workspace_binding",
+					"subagent-slash-final-snapshot",
+					"resume_timings",
+					"web-search-results",
+				].includes(kind)
+			)
+				keepLatest(`${kind}:${text(data.sessionId) ?? text(data.id) ?? ""}`, seq);
+			if (
+				kind === "subagent-child" &&
+				data.version === 1 &&
+				typeof data.childId === "string" &&
+				typeof data.runId === "string" &&
+				typeof data.index === "number" &&
+				typeof data.agent === "string" &&
+				typeof data.cwd === "string" &&
+				(data.state === "running" || data.state === "terminal")
+			) {
+				const key = `${text(record(data.owner).sessionId) ?? ""}:${data.childId}`;
+				const seen = new Set(Object.keys(data));
+				const kept: (readonly [number, readonly string[]])[] = [[seq, [...seen]]];
+				for (const [at, keys] of [...(fields[key] ?? [])].reverse()) {
+					if (keys.some((k) => !seen.has(k))) {
+						kept.push([at, keys]);
+						for (const k of keys) seen.add(k);
+					}
+				}
+				fields[key] = kept.reverse();
+			}
+			if (branchActive && kind === "intercom_inbox" && typeof record(data.message).id === "string") {
+				const id = String(record(data.message).id);
+				if (!delivered.has(id)) pending[`inbox:${id}`] = seq;
+			}
+			if (branchActive && (kind === "intercom_received" || kind === "intercom_inbox_handled")) {
+				const id = text(data.messageId) ?? text(record(data.message).id);
+				if (id) settle(`inbox:${id}`);
+			}
+			if (branchActive && kind === "intercom_ask" && typeof data.askId === "string")
+				pending[`ask:${data.askId}`] = seq;
+			if (branchActive && kind === "intercom_ask_settled" && typeof data.askId === "string") {
+				settle(`ask:${data.askId}`);
+				settle(`reply:${data.askId}`);
+			}
+			if (branchActive && kind === "intercom_sent" && typeof record(data.message).replyTo === "string")
+				settle(`inbound:${record(data.message).replyTo}`);
+			if (
+				(kind === "workflow.run.start" || kind === "workflow.stage.start" || kind === "workflow.stage.end") &&
+				typeof data.runId === "string"
+			) {
+				const key = `run:${data.runId}`;
+				latest[key] = [...(latest[key] ?? []), seq];
+			}
+			if (kind === "workflow.run.end" && typeof data.runId === "string") delete latest[`run:${data.runId}`];
+			if (branchActive && kind === "intercom_reply_wait" && typeof data.toolCallId === "string")
+				pending[`wait:${data.toolCallId}`] = seq;
+			if (kind === "workflow-stage-parked-tasks" && Array.isArray(data.tasks)) {
+				const remaining = data.tasks.map((task) => {
+					const held = record(task);
+					return `${text(held.ownerId) ?? ""}/${text(held.taskId) ?? ""}`;
+				});
+				if (remaining.length > 0) parks[entry.id] = { seq, remaining, notified: [] };
+			}
+		}
+		if (entry.type === "custom_message") {
+			if (branchActive && entry.stageAdmissionKey) admissions.add(entry.stageAdmissionKey);
+			const reconciled = text(data.protectedReconciliationOf);
+			if (branchActive && reconciled) settle(`protected:${reconciled}`);
+			if (branchActive && entry.protectedReconciliation) pending[`protected:${entry.id}`] = seq;
+			if (entry.stageAdmissionKey && intents.has(entry.stageAdmissionKey))
+				pending[`notice:${entry.stageAdmissionKey}`] = seq;
+			if (branchActive && entry.customType === "blueprint-context") keepLatest("blueprint-context", seq);
+			if (entry.customType === "subagent-slash-result") keepLatest(`slash:${text(data.requestId) ?? entry.id}`, seq);
+			if (branchActive && entry.customType === "intercom_message") {
+				const message = record(data.message);
+				const id = text(message.id);
+				if (id) {
+					delivered.add(id);
+					settle(`inbox:${id}`);
+					if (message.expectsReply === true && data.historyOnly !== true) pending[`inbound:${id}`] = seq;
+				}
+				if (message.expectsReply !== true && typeof message.replyTo === "string")
+					pending[`reply:${message.replyTo}`] = seq;
+			}
+		}
+		if (entry.type === "custom" && entry.customType === TASK_COMPLETION_ACK_TYPE && completionId)
+			settle(`notice:${completionId}`);
 		if (!isSessionHistoryEntry(entry)) {
+			if (
+				(entry.type === "worktree_snapshot" && entry.snapshot !== undefined) ||
+				(entry.type === "custom" && entry.customType.startsWith("event_subscription"))
+			)
+				universal.push(seq);
 			const delta = (seq - lastStateSeq).toString(36);
 			state = state === "" ? delta : `${state}.${delta}`;
 			lastStateSeq = seq;
@@ -240,6 +404,17 @@ export function foldSessionResume(
 		lastId = entry.id;
 	}
 	return {
+		version: 2,
+		...(needsBranchRebuild ? { needsBranchRebuild: true } : {}),
+		epoch: previous?.epoch ?? randomUUID(),
+		latest,
+		fields,
+		models,
+		assistants,
+		admissions: [...admissions],
+		delivered: [...delivered],
+		pending,
+		parks,
 		seq,
 		lastId,
 		leafSeq,
@@ -249,17 +424,20 @@ export function foldSessionResume(
 		...(summarySeq !== undefined ? { summarySeq } : {}),
 		intents: [...intents],
 		state,
+		universal,
 		lastStateSeq,
 		totals,
 		...(latestAssistantSeq !== undefined ? { latestAssistantSeq } : {}),
 	};
 }
 
-/** Whether `value` is an index this build wrote for a session whose last seq is `lastSeq`. */
 export function isSessionResumeIndex(value: unknown, lastSeq: number): value is SessionResumeIndex {
 	if (value === null || typeof value !== "object") return false;
 	const index = value as Partial<SessionResumeIndex>;
 	return (
+		index.version === 2 &&
+		!index.needsBranchRebuild &&
+		typeof index.epoch === "string" &&
 		index.seq === lastSeq &&
 		typeof index.leafSeq === "number" &&
 		Array.isArray(index.jumps) &&
@@ -272,8 +450,7 @@ export function isSessionResumeIndex(value: unknown, lastSeq: number): value is 
 	);
 }
 
-/** The seq ranges, newest first, of the branch that ends at `leafSeq`. */
-export function branchRanges(index: SessionResumeIndex, leafSeq: number): (readonly [number, number])[] {
+export function branchRanges(index: Pick<SessionResumeIndex, "jumps">, leafSeq: number): (readonly [number, number])[] {
 	const ranges: (readonly [number, number])[] = [];
 	const jumps = index.jumps;
 	let high = leafSeq;
@@ -308,7 +485,6 @@ function onBranch(ranges: readonly (readonly [number, number])[], seq: number): 
 	return ranges.some(([low, high]) => seq >= low && seq <= high);
 }
 
-/** The branch entry right after `seq`, which is on the branch, up to `limit`. */
 function nextOnBranch(ranges: readonly (readonly [number, number])[], seq: number, limit: number): number {
 	let next = limit;
 	for (const [low, high] of ranges) {
@@ -318,7 +494,6 @@ function nextOnBranch(ranges: readonly (readonly [number, number])[], seq: numbe
 	return next;
 }
 
-/** Where the latest compaction boundary on the branch to `leafSeq` is, by the rule `buildContextEntries` replays. */
 export function latestCompactionOf(
 	index: SessionResumeIndex,
 	leafSeq: number,
@@ -343,25 +518,33 @@ export function latestCompactionOf(
 	return undefined;
 }
 
-/**
- * The seqs before `fromSeq` whose entries a tail read returns as state, in increasing order: every entry that is not
- * history, and the latest name, summary and open task completion intents among the history.
- */
 export function stateSeqsBefore(index: SessionResumeIndex, fromSeq: number): number[] {
-	const retained = [index.nameSeq, index.summarySeq, ...index.intents.map(([, seq]) => seq)];
+	const ranges = branchRanges(index, index.leafSeq);
+	const lastAssistant = index.assistants.findLast((at) => onBranch(ranges, at));
+	const retained = [
+		index.nameSeq,
+		index.summarySeq,
+		lastAssistant,
+		...index.intents.map(([, seq]) => seq),
+		...Object.entries(index.latest).flatMap(([key, seqs]) =>
+			key.startsWith("model-transition:") ? seqs.filter((seq) => onBranch(ranges, seq)) : seqs,
+		),
+		...Object.values(index.fields).flatMap((items) => items.map(([at]) => at)),
+		...Object.values(index.pending),
+		...Object.values(index.parks).flatMap((park) => [park.seq, ...park.notified]),
+	];
 	const seqs = new Set(retained.filter((seq): seq is number => seq !== undefined && seq < fromSeq));
 	let seq = 0;
 	if (index.state !== "") {
 		for (const delta of index.state.split(".")) {
 			seq += Number.parseInt(delta, 36);
 			if (seq >= fromSeq) break;
-			seqs.add(seq);
+			if (onBranch(ranges, seq) || index.universal.includes(seq)) seqs.add(seq);
 		}
 	}
 	return [...seqs].sort((left, right) => left - right);
 }
 
-/** What the entries a tail read returns add to the session's totals, taken from the index's totals. */
 export function omittedTotals(
 	index: SessionResumeIndex,
 	fromSeq: number,
@@ -377,7 +560,6 @@ export function omittedTotals(
 		: rest;
 }
 
-/** A tail read built from the state entries a store selected and its index. */
 export function sessionTailFrom(
 	index: SessionResumeIndex,
 	header: SessionRecordHeader,
@@ -393,6 +575,9 @@ export function sessionTailFrom(
 	}));
 	return {
 		header,
+		epoch: index.epoch,
+		lastEntryId: index.lastId,
+		seqs: entries.map((_, i) => fromSeq + i),
 		fromSeq,
 		entries,
 		state: stateEntries,
@@ -401,7 +586,6 @@ export function sessionTailFrom(
 	};
 }
 
-/** The tail read of a session a store holds whole (#5249). */
 export function sessionTailOf(
 	header: SessionRecordHeader,
 	entries: readonly SessionEntry[],
@@ -413,7 +597,6 @@ export function sessionTailOf(
 	return sessionTailFrom(index, header, start, state, entries.slice(start - 1));
 }
 
-/** The range read of a session a store holds whole (#5249). */
 export function sessionRangeOf(entries: readonly SessionEntry[], startSeq: number, endSeq: number): SessionEntryRange {
 	const start = Math.max(1, startSeq);
 	return {
@@ -423,7 +606,6 @@ export function sessionRangeOf(entries: readonly SessionEntry[], startSeq: numbe
 	};
 }
 
-/** The latest compaction of a session a store holds whole (#5249). */
 export function sessionCompactionOf(
 	entries: readonly SessionEntry[],
 	leafId?: string,
@@ -449,14 +631,12 @@ export function sessionCompactionOf(
 	};
 }
 
-/** `store.readTail`, or the same read from a whole load on a store without it (#5249). */
 export async function readSessionTail(store: SessionStore, sessionId: string, fromSeq: number): Promise<SessionTail> {
 	if (store.readTail !== undefined) return store.readTail(sessionId, fromSeq);
 	const { header, entries } = await store.load(sessionId);
 	return sessionTailOf(header, entries, fromSeq);
 }
 
-/** `store.readRange`, or the same read from a whole load on a store without it (#5249). */
 export async function readSessionRange(
 	store: SessionStore,
 	sessionId: string,
@@ -467,7 +647,6 @@ export async function readSessionRange(
 	return sessionRangeOf((await store.load(sessionId)).entries, startSeq, endSeq);
 }
 
-/** `store.findLatestCompaction`, or the same lookup from a whole load on a store without it (#5249). */
 export async function findSessionCompaction(
 	store: SessionStore,
 	sessionId: string,
@@ -476,4 +655,89 @@ export async function findSessionCompaction(
 	if (store.findLatestCompaction !== undefined) return store.findLatestCompaction(sessionId, leafId);
 	if (leafId !== undefined) validateSessionText("entry.id", leafId);
 	return sessionCompactionOf((await store.load(sessionId)).entries, leafId);
+}
+
+export function sessionResumePlan(index: SessionResumeIndex, leafSeq = index.leafSeq) {
+	const compaction = latestCompactionOf(index, leafSeq);
+	const from =
+		compaction === undefined
+			? 1
+			: Math.min(compaction.retainedStartSeq, compaction.coveredThroughSeq ?? compaction.retainedStartSeq);
+	const ranges = branchRanges(index, leafSeq);
+	const branch = ranges
+		.map(([a, b]) => [Math.max(a, from), b] as const)
+		.filter(([a, b]) => a <= b)
+		.reverse();
+	const inTail = (seq: number) => branch.some(([a, b]) => seq >= a && seq <= b);
+	const state = stateSeqsBefore(index, Number.MAX_SAFE_INTEGER).filter((seq) => !inTail(seq));
+	return { leafSeq, compaction, branch, state };
+}
+
+export function sessionResumeFrom(
+	index: SessionResumeIndex,
+	header: SessionRecordHeader,
+	branch: readonly SessionStoredEntry[],
+	state: readonly SessionStoredEntry[],
+	leafId: string | null,
+): SessionResume {
+	const ranges = branchRanges(index, index.leafSeq);
+	const plan = sessionResumePlan(index);
+	const boundary =
+		plan.compaction === undefined ? undefined : branch.find((held) => held.seq === plan.compaction!.seq)?.entry;
+	const returned = [...state, ...branch].sort((a, b) => a.seq - b.seq);
+	return {
+		header,
+		lastSeq: index.seq,
+		lastEntryId: index.lastId,
+		epoch: index.epoch,
+		leafId,
+		...(boundary?.type === "compaction" && plan.compaction && leafId
+			? { compaction: { ...plan.compaction, entry: boundary, leafId, lastSeq: index.seq } }
+			: {}),
+		branch,
+		state: state.map((held) => ({ ...held, onBranch: onBranch(ranges, held.seq) })),
+		omitted: omittedTotals(
+			index,
+			branch[0]?.seq ?? index.seq + 1,
+			returned.map((held) => held.entry),
+		),
+		recovery: { admissionKeys: index.admissions, intercomDeliveredIds: index.delivered },
+	};
+}
+
+export function sessionResumeOf(
+	header: SessionRecordHeader,
+	entries: readonly SessionEntry[],
+	leafId?: string,
+	index = foldSessionResume(undefined, entries),
+): SessionResume {
+	const leafSeq = leafId === undefined ? index.leafSeq : entries.findLastIndex((e) => e.id === leafId) + 1;
+	const ranges = branchRanges(index, leafSeq);
+	const selected =
+		leafSeq === index.leafSeq
+			? index
+			: {
+					...foldSessionResume(
+						undefined,
+						entries,
+						() => undefined,
+						(seq) => onBranch(ranges, seq),
+					),
+					leafSeq,
+					epoch: index.epoch,
+				};
+	const plan = sessionResumePlan(selected);
+	const branch = plan.branch.flatMap(([a, b]) => entries.slice(a - 1, b).map((entry, i) => ({ seq: a + i, entry })));
+	const state = plan.state.map((seq) => ({ seq, entry: entries[seq - 1]! }));
+	return sessionResumeFrom(selected, header, branch, state, leafSeq > 0 ? entries[leafSeq - 1]!.id : null);
+}
+
+export function resumeIndexNeedsRefold(previous: SessionResumeIndex, entries: readonly SessionEntry[]): boolean {
+	return entries.some((entry, i) => entry.parentId !== (i === 0 ? previous.lastId : entries[i - 1]!.id));
+}
+export function refoldSessionResume(
+	previous: SessionResumeIndex,
+	entries: readonly SessionEntry[],
+): SessionResumeIndex {
+	return { ...foldSessionResume(undefined, entries), epoch: previous.epoch };
 }

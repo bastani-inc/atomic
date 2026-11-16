@@ -94,15 +94,15 @@ import {
 } from "./storage/session/errors.js";
 import { JsonlSessionStore } from "./storage/session/jsonl-session-store.js";
 import { MemorySessionStore, markPrivateMemorySessionStore } from "./storage/session/memory-session-store.js";
-import { readSessionRange, sessionCompactionOf, sessionTailOf } from "./storage/session/session-resume.js";
+import { readSessionRange } from "./storage/session/session-resume.js";
 import type {
 	SessionBlob,
-	SessionCompactionPoint,
 	SessionHistoryTotals,
 	SessionRecordHeader,
+	SessionRecoveryState,
+	SessionResume,
 	SessionSnapshot,
 	SessionStore,
-	SessionTail,
 } from "./storage/session/types.js";
 import { WorkspaceConfigError } from "./worktree-snapshot/errors.ts";
 import type { WorktreeRootMapping, WorktreeSnapshot, WorktreeUnrestored } from "./worktree-snapshot/types.ts";
@@ -130,47 +130,18 @@ async function resolveSessionStore(cwd: string): Promise<SessionStore> {
 	return (await import("./session-storage.js")).resolveSessionStore(cwd);
 }
 
-/** What opening a stored session read: the whole session, or its tail from the latest compaction (#5249). */
-type OpenedSession = { readonly snapshot: SessionSnapshot } | { readonly tail: SessionTail };
-
-/**
- * The first seq a tail read holds for `point`: the boundary's retained start, or the last entry it covers when that
- * comes first, so that the context the session replays is all held.
- */
-function tailStartSeq(point: SessionCompactionPoint | undefined): number {
-	return point === undefined ? 1 : Math.min(point.retainedStartSeq, point.coveredThroughSeq ?? point.retainedStartSeq);
-}
-
-/**
- * Reads `sessionId` as `options` asks. A store that reads a tail without its history is asked for the latest
- * compaction and the tail from it, and a session that changed between the two reads is read whole. A store that holds
- * whole sessions, as JSONL files or in memory, is read once and its tail taken from that read.
- */
+type OpenedSession = { readonly snapshot: SessionSnapshot } | { readonly resume: SessionResume };
 async function readStoredSession(
 	store: SessionStore,
 	sessionId: string,
 	options: SessionOpenOptions | undefined,
 ): Promise<OpenedSession> {
-	if (options?.history !== "tail") return { snapshot: await store.load(sessionId) };
-	if (
-		store instanceof JsonlSessionStore ||
-		store instanceof MemorySessionStore ||
-		store.readTail === undefined ||
-		store.readRange === undefined ||
-		store.findLatestCompaction === undefined
-	) {
-		const snapshot = await store.load(sessionId);
-		const fromSeq = tailStartSeq(sessionCompactionOf(snapshot.entries));
-		return fromSeq <= 1 ? { snapshot } : { tail: sessionTailOf(snapshot.header, snapshot.entries, fromSeq) };
-	}
-	const point = await store.findLatestCompaction(sessionId);
-	const tail = await store.readTail(sessionId, tailStartSeq(point));
-	if (point !== undefined && tail.lastSeq !== point.lastSeq) return { snapshot: await store.load(sessionId) };
-	return { tail };
+	if (options?.history === "tail" && store.readResume) return { resume: await store.readResume(sessionId) };
+	return { snapshot: await store.load(sessionId) };
 }
 
 function openedHeader(opened: OpenedSession): SessionRecordHeader {
-	return "snapshot" in opened ? opened.snapshot.header : opened.tail.header;
+	return "snapshot" in opened ? opened.snapshot.header : opened.resume.header;
 }
 
 /** A custom entry written with a message, in the same store write (see `SessionManager.appendWithMessage`). */
@@ -205,13 +176,17 @@ export class SessionManager {
 	private labelTimestampsById: Map<string, string> = new Map();
 	private leafId: string | null = null;
 	private readonly historyIndex = new SessionHistoryIndex();
-	/** The first seq from which every entry is held; above 1 for a session read from its latest compaction (#5249). */
+
 	private historyStartSeq = 1;
-	/** How many entries before `historyStartSeq` are held, right after the header: those that hold session state. */
-	private heldStateEntries = 0;
-	/** What the entries before `historyStartSeq` that are not held add to the session's usage and message counts. */
+
+	private entrySeqs = new Map<string, number>();
+	private historyEpoch: string | undefined;
+	private lastEntryId: string | null = null;
+	private compactionSeq = 0;
+	private recoveryState: SessionRecoveryState = { admissionKeys: [], intercomDeliveredIds: [] };
+
 	private omittedTotals: SessionHistoryTotals | undefined;
-	/** For a held entry whose parent is not held, the held entry before it on the active branch. */
+
 	private branchLinks: ReadonlyMap<string, string> | undefined;
 	private historyLoad: Promise<void> | undefined;
 
@@ -238,6 +213,7 @@ export class SessionManager {
 
 	private restore(snapshot: SessionSnapshot, location?: string): void {
 		this.restoreHistory(snapshot.header, snapshot.entries, snapshot.lastSeq, location);
+		this.historyEpoch = snapshot.epoch;
 	}
 
 	private restoreOpened(opened: OpenedSession, location?: string): void {
@@ -245,24 +221,26 @@ export class SessionManager {
 			this.restore(opened.snapshot, location);
 			return;
 		}
-		const { tail } = opened;
-		const onBranch = tail.state.filter((held) => held.onBranch).map((held) => held.entry);
-		const first = tail.entries[0];
-		const chain = first === undefined ? onBranch : [...onBranch, first];
+		const resume = opened.resume;
+		const held = [...resume.state, ...resume.branch].sort((a, b) => a.seq - b.seq);
 		this.restoreHistory(
-			tail.header,
-			[...tail.state.map((held) => held.entry), ...tail.entries],
-			tail.lastSeq,
+			resume.header,
+			held.map(({ entry }) => entry),
+			resume.lastSeq,
 			location,
-			tail.fromSeq > 1
-				? {
-						fromSeq: tail.fromSeq,
-						heldState: tail.state.length,
-						omitted: tail.omitted,
-						links: new Map(chain.slice(1).map((entry, index) => [entry.id, chain[index]!.id])),
-					}
-				: undefined,
 		);
+		this.entrySeqs = new Map(held.map(({ seq, entry }) => [entry.id, seq]));
+		this.historyEpoch = resume.epoch;
+		this.lastEntryId = resume.lastEntryId;
+		this.compactionSeq = resume.compaction?.seq ?? 0;
+		this.recoveryState = resume.recovery;
+		this.historyStartSeq = held.length < resume.lastSeq ? (resume.branch[0]?.seq ?? resume.lastSeq + 1) : 1;
+		if (held.length < resume.lastSeq && this.historyStartSeq === 1) this.historyStartSeq = 2;
+		this.omittedTotals = held.length < resume.lastSeq ? resume.omitted : undefined;
+		const path = [...resume.state.filter((e) => e.onBranch), ...resume.branch].sort((a, b) => a.seq - b.seq);
+		this.branchLinks = new Map(path.slice(1).map((held, i) => [held.entry.id, path[i]!.entry.id]));
+		this.leafId = resume.leafId;
+		Object.assign(this.byId, { preferFullIds: !this.hasFullHistory() });
 	}
 
 	private restoreHistory(
@@ -282,7 +260,11 @@ export class SessionManager {
 		this.lastSeq = lastSeq;
 		this.deletedFromStore = false;
 		this.historyStartSeq = partial?.fromSeq ?? 1;
-		this.heldStateEntries = partial?.heldState ?? 0;
+		this.entrySeqs = new Map(entries.map((entry, i) => [entry.id, i + 1]));
+		this.lastEntryId = entries.at(-1)?.id ?? null;
+		this.historyEpoch = undefined;
+		this.compactionSeq = 0;
+		this.recoveryState = { admissionKeys: [], intercomDeliveredIds: [] };
 		this.omittedTotals = partial?.omitted;
 		this.branchLinks = partial?.links;
 		this.historyLoad = undefined;
@@ -292,15 +274,10 @@ export class SessionManager {
 		this.syncOpenMarker();
 	}
 
-	/** Whether every entry of the session is held, rather than its tail from the latest compaction (#5249). */
 	hasFullHistory(): boolean {
 		return this.historyStartSeq <= 1;
 	}
 
-	/**
-	 * Reads the entries before the latest compaction a session was opened without, so that `getEntries()`, `getTree()`
-	 * and the rest see its whole history (#5249). Resolves at once when every entry is held.
-	 */
 	loadFullHistory(): Promise<void> {
 		if (this.historyStartSeq <= 1) return Promise.resolve();
 		this.historyLoad ??= this.readHistory().finally(() => {
@@ -310,34 +287,61 @@ export class SessionManager {
 	}
 
 	private async readHistory(): Promise<void> {
-		const { store, sessionId, historyStartSeq } = this;
-		const range = await readSessionRange(store, sessionId, 1, historyStartSeq - 1);
-		if (this.store !== store || this.sessionId !== sessionId || this.historyStartSeq !== historyStartSeq) return;
+		const { store, sessionId, historyEpoch } = this;
+		const watermark = this.lastSeq;
+		const held = new Map(this.getEntries().map((entry) => [this.entrySeqs.get(entry.id)!, entry]));
+		const missing: number[] = [];
+		for (let seq = 1; seq <= watermark; seq++) if (!held.has(seq)) missing.push(seq);
+		for (let i = 0; i < missing.length; ) {
+			const start = missing[i]!;
+			let end = start;
+			while (i + 1 < missing.length && missing[i + 1] === end + 1 && end - start < 4095) {
+				i++;
+				end++;
+			}
+			const range = await readSessionRange(store, sessionId, start, end);
+			if (historyEpoch !== undefined && range.epoch !== historyEpoch)
+				throw new SessionConflictError(sessionId, watermark, range.lastSeq);
+			for (const [j, entry] of range.entries.entries()) held.set(range.seqs?.[j] ?? start + j, entry);
+			i++;
+		}
+		if (this.store !== store || this.sessionId !== sessionId || this.historyEpoch !== historyEpoch) return;
 		const leafId = this.leafId;
-		this.fileEntries = [this.fileEntries[0]!, ...range.entries, ...this.fileEntries.slice(1 + this.heldStateEntries)];
+		for (const entry of this.getEntries()) held.set(this.entrySeqs.get(entry.id)!, entry);
+		const ordered = [...held].sort((a, b) => a[0] - b[0]);
+		this.fileEntries = [this.fileEntries[0]!, ...ordered.map(([, entry]) => entry)];
+		this.entrySeqs = new Map(ordered.map(([seq, entry]) => [entry.id, seq]));
 		this.historyStartSeq = 1;
-		this.heldStateEntries = 0;
 		this.omittedTotals = undefined;
 		this.branchLinks = undefined;
 		this._buildIndex();
 		this.leafId = leafId;
 	}
 
-	/**
-	 * @internal The seq from which every entry is held, 1 when the whole session is, and the held entries from there on
-	 * in store order (#5249).
-	 */
+	getEntrySeq(id: string): number | undefined {
+		return this.entrySeqs.get(id);
+	}
+	getLastSeq(): number {
+		return this.lastSeq;
+	}
+	getSessionRecoveryState(): SessionRecoveryState {
+		return this.recoveryState;
+	}
+	async findEntrySeq(id: string): Promise<number | undefined> {
+		const held = this.entrySeqs.get(id);
+		if (held !== undefined) return held;
+		if (this.store.findEntrySeq) return this.store.findEntrySeq(this.sessionId, id);
+		await this.loadFullHistory();
+		return this.entrySeqs.get(id);
+	}
+
 	getHeldTail(): { readonly fromSeq: number; readonly entries: readonly SessionEntry[] } {
 		return {
 			fromSeq: this.historyStartSeq,
-			entries: this.fileEntries.slice(1 + this.heldStateEntries) as SessionEntry[],
+			entries: this.getEntries().filter((entry) => (this.entrySeqs.get(entry.id) ?? 0) >= this.historyStartSeq),
 		};
 	}
 
-	/**
-	 * What the entries a session was opened without add to its usage and message counts, or undefined when every entry
-	 * is held (#5249). Usage figures add it to what the held entries add.
-	 */
 	getOmittedHistoryTotals(): SessionHistoryTotals | undefined {
 		return this.omittedTotals;
 	}
@@ -385,7 +389,6 @@ export class SessionManager {
 		];
 		this.lastSeq = 0;
 		this.historyStartSeq = 1;
-		this.heldStateEntries = 0;
 		this.omittedTotals = undefined;
 		this.branchLinks = undefined;
 		this._buildIndex();
@@ -415,6 +418,8 @@ export class SessionManager {
 				? this.store.create(this.recordHeader(), this.getEntries(), this.sessionFile)
 				: this.store.create(this.recordHeader(), this.getEntries()))
 		).lastSeq;
+		this.entrySeqs = new Map(this.getEntries().map((entry, i) => [entry.id, i + 1]));
+		this.lastEntryId = this.getEntries().at(-1)?.id ?? null;
 	}
 
 	private async storeForNewSession(): Promise<SessionStore> {
@@ -482,6 +487,7 @@ export class SessionManager {
 		this.labelsById = index.labelsById;
 		this.labelTimestampsById = index.labelTimestampsById;
 		this.leafId = index.leafId;
+		Object.assign(this.byId, { preferFullIds: !this.hasFullHistory() });
 	}
 
 	isPersisted(): boolean {
@@ -612,7 +618,12 @@ export class SessionManager {
 		for (let attempt = 1; ; attempt++) {
 			const expectSeq = this.lastSeq;
 			try {
-				this.lastSeq = (await this.store.append(this.sessionId, entries, { expectSeq })).lastSeq;
+				this.lastSeq = (
+					await this.store.append(this.sessionId, entries, {
+						expectSeq,
+						...(this.historyEpoch === undefined ? {} : { epoch: this.historyEpoch }),
+					})
+				).lastSeq;
 			} catch (error) {
 				if (error instanceof SessionNotFoundError) {
 					this.deletedFromStore = true;
@@ -629,7 +640,9 @@ export class SessionManager {
 	}
 
 	private applyAppended(entries: readonly SessionEntry[]): void {
-		for (const entry of entries) {
+		for (const [position, entry] of entries.entries()) {
+			this.entrySeqs.set(entry.id, this.lastSeq - entries.length + position + 1);
+			this.lastEntryId = entry.id;
 			this.fileEntries.push(entry);
 			this.byId.set(entry.id, entry);
 			this.historyIndex.appended(entry, this.byId);
@@ -664,13 +677,19 @@ export class SessionManager {
 			throw error;
 		}
 		const stored = this.lastSeq > 0 ? read.entries : [undefined, ...read.entries];
-		const lastHeld = this.fileEntries.length > 1 ? this.fileEntries.at(-1)!.id : undefined;
-		if (stored[0]?.id !== lastHeld) throw error;
+		const lastHeld = this.lastEntryId ?? undefined;
+		if (
+			stored[0]?.id !== lastHeld ||
+			(this.historyEpoch !== undefined && "epoch" in read && read.epoch !== this.historyEpoch)
+		)
+			throw error;
 		const own = new Map(entries.map((entry) => [entry.id, entry]));
 		const tail = (stored.slice(1) as SessionEntry[]).map((entry) => own.get(entry.id) ?? entry);
 		const saved = tail.some((entry) => own.has(entry.id));
 		const foreign = tail.some((entry) => !this.unconfirmed.has(entry.id));
 		const leafId = saved ? entries.at(-1)!.id : this.leafId;
+		for (const [i, entry] of tail.entries()) this.entrySeqs.set(entry.id, this.lastSeq + i + 1);
+		this.lastEntryId = tail.at(-1)?.id ?? this.lastEntryId;
 		this.fileEntries = [...this.fileEntries, ...tail];
 		this._buildIndex();
 		this.leafId = leafId;
@@ -700,7 +719,7 @@ export class SessionManager {
 					: createModelChangeEntry(model.provider, model.modelId, this.byId, this.leafId);
 			const thinkingEntry = createThinkingLevelChangeEntry(
 				thinkingLevel,
-				{ has: (id) => id === modelEntry?.id || this.byId.has(id) },
+				{ has: (id) => id === modelEntry?.id || this.byId.has(id), preferFullIds: !this.hasFullHistory() },
 				modelEntry?.id ?? this.leafId,
 			);
 			await this._appendEntries(modelEntry === undefined ? [thinkingEntry] : [modelEntry, thinkingEntry]);
@@ -722,7 +741,7 @@ export class SessionManager {
 							createCustomEntry(
 								custom.customType,
 								custom.data,
-								{ has: (id) => id === entry.id || this.byId.has(id) },
+								{ has: (id) => id === entry.id || this.byId.has(id), preferFullIds: !this.hasFullHistory() },
 								entry.id,
 							),
 						],
@@ -1038,10 +1057,6 @@ export class SessionManager {
 		});
 	}
 
-	/**
-	 * The entry `id`, read with the rest of the history first when the session was opened from its latest compaction
-	 * and does not hold it (#5249); a `SessionEntryError` when the session has no such entry.
-	 */
 	private async requireEntry(id: string): Promise<SessionEntry> {
 		if (!this.byId.has(id)) await this.loadFullHistory();
 		const entry = this.byId.get(id);
@@ -1146,10 +1161,20 @@ export class SessionManager {
 		return buildSessionTree(this.getEntries(), this.labelsById, this.labelTimestampsById);
 	}
 
+	private async requireBranchTarget(id: string): Promise<void> {
+		const seq = this.entrySeqs.get(id);
+		if (
+			!this.hasFullHistory() &&
+			(seq === undefined || seq < this.compactionSeq || !this.getBranch().some((entry) => entry.id === id))
+		)
+			await this.loadFullHistory();
+		await this.requireEntry(id);
+	}
+
 	/** Start a new branch from an earlier entry. */
 	branch(branchFromId: string): Promise<void> {
 		return this.runMutation(async () => {
-			await this.requireEntry(branchFromId);
+			await this.requireBranchTarget(branchFromId);
 			this.leafId = branchFromId;
 		});
 	}
@@ -1167,7 +1192,7 @@ export class SessionManager {
 	 */
 	recordBranch(branchFromId: string | null): Promise<void> {
 		return this.runMutation(async () => {
-			if (branchFromId !== null) await this.requireEntry(branchFromId);
+			if (branchFromId !== null) await this.requireBranchTarget(branchFromId);
 			await this._appendEntry(createCustomEntry(LEAF_MOVE_ENTRY_TYPE, undefined, this.byId, branchFromId));
 			this.leafId = branchFromId;
 		});
@@ -1183,7 +1208,7 @@ export class SessionManager {
 		fromId?: string,
 	): Promise<string> {
 		return this.runMutation(async () => {
-			if (branchFromId !== null) await this.requireEntry(branchFromId);
+			if (branchFromId !== null) await this.requireBranchTarget(branchFromId);
 			const entry: BranchSummaryEntry = createBranchSummaryEntry(
 				branchFromId,
 				fromId ?? this.leafId ?? "root",
@@ -1328,7 +1353,12 @@ export class SessionManager {
 		});
 	}
 
-	static async open(path: string, sessionDir?: string, cwdOverride?: string): Promise<SessionManager>;
+	static async open(
+		path: string,
+		sessionDir?: string,
+		cwdOverride?: string,
+		options?: SessionOpenOptions,
+	): Promise<SessionManager>;
 	static async open(
 		store: SessionStore,
 		sessionId: string,
@@ -1360,9 +1390,12 @@ export class SessionManager {
 		const path = resolvePath(pathOrStore);
 		const directory = directoryOrId ?? dirname(path);
 		const store = await JsonlSessionStore.open(dirname(path), { exactDirectory: true, scanExisting: false });
-		let snapshot: SessionSnapshot;
+		let opened: OpenedSession;
 		try {
-			snapshot = await store.loadFile(path);
+			opened =
+				options?.history === "tail"
+					? await readStoredSession(store, (await store.readHeaderFile(path)).id, options)
+					: { snapshot: await store.loadFile(path) };
 		} catch (error) {
 			if (!(error instanceof StorageUnavailableError) || (error.cause as NodeJS.ErrnoException).code !== "ENOENT")
 				throw error;
@@ -1371,8 +1404,8 @@ export class SessionManager {
 			manager.sessionFile = path;
 			return manager;
 		}
-		const manager = new SessionManager(store, cwdOverride ?? snapshot.header.cwd, directory);
-		manager.restore(snapshot, path);
+		const manager = new SessionManager(store, cwdOverride ?? openedHeader(opened).cwd, directory);
+		manager.restoreOpened(opened, path);
 		return manager;
 	}
 
@@ -1415,10 +1448,6 @@ export class SessionManager {
 		});
 	}
 
-	/**
-	 * @internal An unsaved session holding this one's header and active branch. A branch this manager reads from the
-	 * latest compaction keeps its links to the state entries held from before it (#5249).
-	 */
 	inMemoryBranch(cwd: string): SessionManager {
 		const header = this.getHeader();
 		if (!header) throw new Error("Session header is missing");

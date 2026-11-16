@@ -9,7 +9,7 @@ import type { VerbatimCompactionDetails } from "../../src/core/compaction/compac
 import { SessionManager } from "../../src/core/session-manager.ts";
 import { openNodeSqliteDatabase } from "../../src/core/storage/node-sqlite.js";
 import { SqlSessionStore } from "../../src/core/storage/session/sql-session-store.js";
-import type { SessionStore, SessionTail } from "../../src/core/storage/session/types.js";
+import type { SessionResume, SessionStore } from "../../src/core/storage/session/types.js";
 import { pendingTaskCompletionIntents } from "../../src/core/tasks/completion.ts";
 
 const details: VerbatimCompactionDetails = {
@@ -48,7 +48,7 @@ function assistant(text: string, tokens: number): AssistantMessage {
 		],
 		api: "anthropic-messages",
 		provider: "anthropic",
-		model: `model-${text}`,
+		model: "test-model",
 		usage: usage(tokens),
 		stopReason: "toolUse",
 		timestamp: 1,
@@ -75,7 +75,6 @@ async function sqlStore(): Promise<SessionStore> {
 	return store;
 }
 
-/** A session with `history` turns before a compaction that keeps its last user message, and state among them. */
 async function compactedSession(store: SessionStore, history = 4): Promise<{ id: string; firstPreTail: string }> {
 	const manager = await SessionManager.create(store, "/project");
 	await manager.appendModelChange("anthropic", "first-model");
@@ -83,7 +82,7 @@ async function compactedSession(store: SessionStore, history = 4): Promise<{ id:
 	const firstPreTail = await manager.appendMessage({ role: "user", content: "first", timestamp: 1 });
 	await manager.appendLabelChange(firstPreTail, "start");
 	await manager.appendSessionInfo("named");
-	await manager.appendCustomEntry("extension.state", { step: 1 });
+	await manager.appendCustomEntry("workspace_binding", { step: 1 });
 	await manager.appendCustomEntry("task-completion-intent", { completionId: "settled" });
 	await manager.appendCustomEntry("task-completion-ack", { completionId: "settled" });
 	await manager.appendCustomEntry("task-completion-intent", { completionId: "open" });
@@ -129,9 +128,9 @@ describe("SessionManager resume from the latest compaction (#5249)", () => {
 		expect(tail.getBranch().some((entry) => entry.type === "thinking_level_change")).toBe(true);
 		expect(pendingTaskCompletionIntents(tail)).toEqual(pendingTaskCompletionIntents(full));
 		expect(pendingTaskCompletionIntents(tail).map((intent) => intent.completionId)).toEqual(["open"]);
-		expect(tail.getEntries().some((entry) => entry.type === "custom" && entry.customType === "extension.state")).toBe(
-			true,
-		);
+		expect(
+			tail.getEntries().some((entry) => entry.type === "custom" && entry.customType === "workspace_binding"),
+		).toBe(true);
 		const { contextUsage: _tailContext, ...tailStats } = stats(tail);
 		const { contextUsage: _fullContext, ...fullStats } = stats(full);
 		expect(tailStats).toEqual(fullStats);
@@ -141,18 +140,18 @@ describe("SessionManager resume from the latest compaction (#5249)", () => {
 		const read = async (history: number) => {
 			const store = await sqlStore();
 			const { id } = await compactedSession(store, history);
-			const tails: SessionTail[] = [];
+			const tails: SessionResume[] = [];
 			const counting: SessionStore = Object.assign(Object.create(store) as SessionStore, {
 				load: () => Promise.reject(new Error("a resume must not load the whole session")),
-				readTail: async (sessionId: string, fromSeq: number) => {
-					const tail = await store.readTail!(sessionId, fromSeq);
+				readResume: async (sessionId: string) => {
+					const tail = await store.readResume!(sessionId);
 					tails.push(tail);
 					return tail;
 				},
 			});
 			const manager = await SessionManager.open(counting, id, undefined, { history: "tail" });
 			expect(tails).toHaveLength(1);
-			return { entries: manager.getEntries().length, read: tails[0]!.state.length + tails[0]!.entries.length };
+			return { entries: manager.getEntries().length, read: tails[0]!.state.length + tails[0]!.branch.length };
 		};
 		const short = await read(4);
 		const long = await read(200);

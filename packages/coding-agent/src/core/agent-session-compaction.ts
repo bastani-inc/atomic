@@ -45,13 +45,10 @@ import { createSummarizationRetryCallbacks } from "./summarization-retry.ts";
 import { createHistoryRouter, transcriptEntryLines } from "./tools/history-protocol.ts";
 import { historyEntryLineCount, renderHistoryTranscript } from "./tools/history-transcript.ts";
 
-/** How many entries one read of the history a session was opened without takes while counting its transcript lines. */
 const HISTORY_LINE_READ_ENTRIES = 4096;
 
-/** Transcript lines of the entries before each manager's held tail, counted once per tail it holds (#5249). */
 const earlierHistoryLines = new WeakMap<SessionManager, { readonly key: string; readonly lines: Promise<number> }>();
 
-/** The transcript lines the entries before `fromSeq` render to, read a page at a time and not kept. */
 async function countEarlierHistoryLines(manager: SessionManager, fromSeq: number): Promise<number> {
 	let lines = 0;
 	for (let start = 1; start < fromSeq; start += HISTORY_LINE_READ_ENTRIES) {
@@ -62,14 +59,11 @@ async function countEarlierHistoryLines(manager: SessionManager, fromSeq: number
 	return lines;
 }
 
-/**
- * This session's own history layout, or undefined when it has no history a `read` could open. A session opened from
- * its latest compaction counts the lines of the history before it without holding that history (#5249).
- */
 async function historyLocation(session: AgentSession): Promise<CompactionBoundaryControl["history"]> {
 	const manager = session.sessionManager;
 	const header = manager.getHeader();
 	if (!header || !manager.isPersisted()) return undefined;
+	await manager.loadFullHistory();
 	const { fromSeq, entries } = manager.getHeldTail();
 	let earlier = 0;
 	if (fromSeq > 1) {

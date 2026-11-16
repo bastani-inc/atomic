@@ -50,13 +50,7 @@ export interface NewSessionOptions {
 	workflow?: SessionWorkflowMetadata;
 }
 
-/** How much of a stored session opening it reads (#5249). */
 export interface SessionOpenOptions {
-	/**
-	 * `"tail"` reads the session from its latest compaction boundary: the entries that hold its state, and the active
-	 * branch from the boundary's retained start, with older entries read when `loadFullHistory()` asks for them.
-	 * `"full"`, the default, reads every entry.
-	 */
 	readonly history?: "full" | "tail";
 }
 
@@ -400,4 +394,8 @@ export type ReadonlySessionManager = Pick<
 	| "hasFullHistory"
 	| "loadFullHistory"
 	| "getOmittedHistoryTotals"
+	| "getEntrySeq"
+	| "findEntrySeq"
+	| "getLastSeq"
+	| "getSessionRecoveryState"
 >;

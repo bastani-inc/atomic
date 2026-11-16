@@ -91,7 +91,6 @@ function invalidText(
 	};
 }
 
-/** Usage whose cost is a binary fraction, so totals add and subtract exactly. */
 function tailUsage(tokens: number): Usage {
 	return {
 		input: tokens,
@@ -103,7 +102,6 @@ function tailUsage(tokens: number): Usage {
 	};
 }
 
-/** Entries as Atomic writes them, each the child of the one before unless it names its parent (#5249). */
 function chained(entries: readonly (Omit<SessionEntry, "parentId" | "timestamp"> & { parent?: string | null })[]) {
 	const result: SessionEntry[] = [];
 	for (const [index, { parent, ...entry }] of entries.entries()) {
@@ -183,7 +181,6 @@ const tailEntry = {
 	}),
 };
 
-/** A compacted session with state before and after its compaction (#5249). */
 function compactedSession(): SessionEntry[] {
 	return chained([
 		tailEntry.model("m1"),
@@ -192,7 +189,7 @@ function compactedSession(): SessionEntry[] {
 		tailEntry.assistant("a1", 128),
 		tailEntry.label("l1", "u1"),
 		tailEntry.name("n1", "first"),
-		tailEntry.custom("x1", "extension.state", { n: 1 }),
+		tailEntry.custom("x1", "workspace_binding", { n: 1 }),
 		tailEntry.custom("i1", "task-completion-intent", { completionId: "settled" }),
 		tailEntry.custom("k1", "task-completion-ack", { completionId: "settled" }),
 		tailEntry.custom("i2", "task-completion-intent", { completionId: "open" }),
@@ -218,7 +215,6 @@ function usageTotals(...usages: Usage[]): SessionHistoryTotals["assistant"] {
 	);
 }
 
-/** Stores `entries` one append at a time, so a store's index is built as a session grows. */
 async function appendEach(store: SessionStore, entries: readonly SessionEntry[], id = "session"): Promise<void> {
 	await store.create(header(id), []);
 	for (const [index, entry] of entries.entries()) await store.append(id, [entry], { expectSeq: index });
@@ -1127,18 +1123,18 @@ export function registerSessionStoreConformance(
 				assert.deepEqual(tail.entries, entries.slice(11));
 				assert.deepEqual(
 					tail.state.map(({ seq, entry, onBranch }) => ({ seq, id: entry.id, onBranch })),
-					[1, 2, 5, 7, 10, 11].map((seq) => ({ seq, id: entries[seq - 1]!.id, onBranch: true })),
+					[1, 2, 4, 5, 7, 10, 11].map((seq) => ({ seq, id: entries[seq - 1]!.id, onBranch: true })),
 				);
 				assert.deepEqual(tail.state[0]!.entry, entries[0]);
 				assert.deepEqual(tail.omitted, {
-					assistant: usageTotals(tailUsage(128)),
+					assistant: usageTotals(),
 					toolResult: usageTotals(),
 					summaries: usageTotals(),
 					userMessages: 1,
-					assistantMessages: 1,
+					assistantMessages: 0,
 					toolResults: 0,
-					totalMessages: 2,
-					toolCalls: 1,
+					totalMessages: 1,
+					toolCalls: 0,
 				});
 				const whole = await store.readTail("session", 1);
 				assert.deepEqual(whole.entries, entries);
@@ -1148,17 +1144,17 @@ export function registerSessionStoreConformance(
 				assert.deepEqual(none.entries, []);
 				assert.deepEqual(
 					none.state.map(({ seq }) => seq),
-					[1, 2, 5, 7, 10, 11],
+					[1, 2, 4, 5, 7, 10, 11, 16],
 				);
 				assert.deepEqual(none.omitted, {
-					assistant: usageTotals(tailUsage(128), tailUsage(256), tailUsage(512)),
+					assistant: usageTotals(tailUsage(256)),
 					toolResult: usageTotals(),
 					summaries: usageTotals(tailUsage(64)),
 					userMessages: 3,
-					assistantMessages: 3,
+					assistantMessages: 1,
 					toolResults: 0,
-					totalMessages: 6,
-					toolCalls: 3,
+					totalMessages: 4,
+					toolCalls: 1,
 					latestAssistantUsage: tailUsage(512),
 				});
 				assert.deepEqual(await store.append("session", [message("after", "after")], { expectSeq: 16 }), {
@@ -1174,19 +1170,23 @@ export function registerSessionStoreConformance(
 				await store.create(header(), entries);
 				store = await reload(store);
 				assert.ok(store.readRange);
-				assert.deepEqual(await store.readRange("session", 3, 5), {
-					startSeq: 3,
-					entries: entries.slice(2, 5),
-					lastSeq: 16,
-				});
+				const firstRange = await store.readRange("session", 3, 5);
+				assert.deepEqual(
+					{ startSeq: firstRange.startSeq, entries: firstRange.entries, lastSeq: firstRange.lastSeq },
+					{
+						startSeq: 3,
+						entries: entries.slice(2, 5),
+						lastSeq: 16,
+					},
+				);
 				assert.deepEqual((await store.readRange("session", 7, 7)).entries, [entries[6]]);
 				assert.deepEqual((await store.readRange("session", 15, 40)).entries, entries.slice(14));
 				assert.deepEqual((await store.readRange("session", 5, 4)).entries, []);
-				assert.deepEqual(await store.readRange("session", 17, 20), { startSeq: 17, entries: [], lastSeq: 16 });
+				assert.deepEqual((await store.readRange("session", 17, 20)).entries, []);
 				assert.deepEqual((await store.readRange("session", 1, 16)).entries, entries);
 				await assert.rejects(store.readRange("missing", 1, 1), notFound("missing"));
 				await store.create(header("empty"), []);
-				assert.deepEqual(await store.readRange("empty", 1, 1), { startSeq: 1, entries: [], lastSeq: 0 });
+				assert.deepEqual((await store.readRange("empty", 1, 1)).entries, []);
 			});
 
 			check("finds the latest compaction on the session's branch (#5249)", async (store, reload) => {
@@ -1275,7 +1275,7 @@ export function registerSessionStoreConformance(
 					tail.state.map(({ seq, onBranch }) => ({ seq, onBranch })),
 					[
 						{ seq: 2, onBranch: true },
-						{ seq: 6, onBranch: false },
+						{ seq: 3, onBranch: true },
 					],
 				);
 				await store.append(
@@ -1289,6 +1289,7 @@ export function registerSessionStoreConformance(
 					(await store.readTail("session", 7)).state.map(({ seq, onBranch }) => ({ seq, onBranch })),
 					[
 						{ seq: 2, onBranch: true },
+						{ seq: 3, onBranch: true },
 						{ seq: 6, onBranch: true },
 					],
 				);

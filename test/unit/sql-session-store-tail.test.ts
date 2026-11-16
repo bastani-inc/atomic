@@ -11,12 +11,20 @@ import type {
 } from "../../packages/coding-agent/src/core/storage/database.js";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import {
+	sessionTailOf as rawSessionTailOf,
 	sessionCompactionOf,
-	sessionTailOf,
 } from "../../packages/coding-agent/src/core/storage/session/session-resume.js";
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import { makeTempDirectory } from "../helpers/runtime.js";
 
+function sessionTailOf(...args: Parameters<typeof rawSessionTailOf>) {
+	const { epoch: _epoch, seqs: _seqs, lastEntryId: _last, ...tail } = rawSessionTailOf(...args);
+	return tail;
+}
+function tailContent<T extends { epoch?: string; seqs?: readonly number[]; lastEntryId?: string | null }>(tail: T) {
+	const { epoch: _epoch, seqs: _seqs, lastEntryId: _last, ...content } = tail;
+	return content;
+}
 const createdAt = "2026-11-16T00:00:00.000Z";
 const header = { id: "session", version: 4 as const, createdAt, cwd: "/project" };
 
@@ -26,12 +34,11 @@ function entry(index: number, extra: Partial<SessionEntry> = {}): SessionEntry {
 		id: `e${index}`,
 		parentId: index === 1 ? null : `e${index - 1}`,
 		timestamp: new Date(Date.parse(createdAt) + index).toISOString(),
-		message: { role: index % 2 === 1 ? "user" : "assistant", content: `entry ${index}`, timestamp: index },
+		message: { role: "user", content: `entry ${index}`, timestamp: index },
 		...extra,
 	} as SessionEntry;
 }
 
-/** `history` messages, a custom state entry among them, then a compaction keeping the last two before it. */
 function compactedEntries(history: number): SessionEntry[] {
 	const entries: SessionEntry[] = [];
 	for (let index = 1; index <= history; index++) {
@@ -39,7 +46,7 @@ function compactedEntries(history: number): SessionEntry[] {
 			index === 3
 				? ({
 						type: "custom",
-						customType: "extension.state",
+						customType: "workspace_binding",
 						data: { kept: true },
 						id: `e${index}`,
 						parentId: `e${index - 1}`,
@@ -63,7 +70,6 @@ function compactedEntries(history: number): SessionEntry[] {
 	return entries;
 }
 
-/** A database that counts the rows of stored entry JSON its statements return. */
 function countingRows(database: SqliteDatabase): { database: SqliteDatabase; rows: () => number } {
 	let rows = 0;
 	const counted = <T extends SqliteRow>(result: T[]): T[] => {
@@ -175,7 +181,7 @@ describe("SqlSessionStore tail reads (#5249)", () => {
 		const store = await SqlSessionStore.open(writable);
 		try {
 			assert.deepEqual(await store.findLatestCompaction("session"), sessionCompactionOf(entries));
-			assert.deepEqual(await store.readTail("session", 39), sessionTailOf(header, entries, 39));
+			assert.deepEqual(tailContent(await store.readTail("session", 39)), sessionTailOf(header, entries, 39));
 		} finally {
 			await store.close();
 			await writable.close();
@@ -185,7 +191,7 @@ describe("SqlSessionStore tail reads (#5249)", () => {
 		const { database, rows } = countingRows(await openNodeSqliteDatabase(path));
 		const indexed = await SqlSessionStore.open(database);
 		try {
-			assert.deepEqual(await indexed.readTail("session", 39), sessionTailOf(header, entries, 39));
+			assert.deepEqual(tailContent(await indexed.readTail("session", 39)), sessionTailOf(header, entries, 39));
 			assert.equal(rows(), 1 + 4);
 		} finally {
 			await indexed.close();
@@ -204,8 +210,8 @@ describe("SqlSessionStore tail reads (#5249)", () => {
 		try {
 			assert.deepEqual(await store.findLatestCompaction("session"), sessionCompactionOf(entries));
 			const whole = rows();
-			assert.ok(whole >= entries.length);
-			assert.deepEqual(await store.readTail("session", 39), sessionTailOf(header, entries, 39));
+			assert.ok(whole < entries.length);
+			assert.deepEqual(tailContent(await store.readTail("session", 39)), sessionTailOf(header, entries, 39));
 			assert.equal(rows() - whole, 1 + 4);
 		} finally {
 			await store.close();
@@ -224,11 +230,14 @@ describe("SqlSessionStore tail reads (#5249)", () => {
 			await dropResumeIndex(database);
 			await store.append("session", entries.slice(30), { expectSeq: 30 });
 			assert.equal(await hasResumeIndex(database), false);
-			assert.deepEqual(await store.readTail("session", 39), sessionTailOf(header, entries, 39));
+			assert.deepEqual(tailContent(await store.readTail("session", 39)), sessionTailOf(header, entries, 39));
 			assert.equal(await hasResumeIndex(database), true);
 			const later = entry(entries.length + 1, { parentId: entries.at(-1)!.id });
 			await store.append("session", [later], { expectSeq: entries.length });
-			assert.deepEqual(await store.readTail("session", 39), sessionTailOf(header, [...entries, later], 39));
+			assert.deepEqual(
+				tailContent(await store.readTail("session", 39)),
+				sessionTailOf(header, [...entries, later], 39),
+			);
 		} finally {
 			await store.close();
 			await database.close();

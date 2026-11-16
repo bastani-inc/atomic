@@ -102,7 +102,6 @@ function physicalLineCount(line: string): number {
 	return line.split("\n").length;
 }
 
-/** How many lines `entry` adds to the transcript `renderHistoryTranscript` renders. */
 export function historyEntryLineCount(entry: SessionEntry): number {
 	return entryLines(entry).reduce((sum, line) => sum + physicalLineCount(line), 0);
 }

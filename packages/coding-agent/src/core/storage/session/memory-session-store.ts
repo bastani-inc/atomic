@@ -10,7 +10,20 @@ import {
 	StorageUnavailableError,
 	StoreClosedError,
 } from "./errors.js";
-import { sessionCompactionOf, sessionRangeOf, sessionTailOf } from "./session-resume.js";
+import {
+	foldSessionResume,
+	foreignResumeIds,
+	isSessionResumeIndex,
+	latestCompactionOf,
+	refoldSessionResume,
+	resumeIndexNeedsRefold,
+	type SessionResumeIndex,
+	sessionResumeFrom,
+	sessionResumeOf,
+	sessionResumePlan,
+	sessionTailFrom,
+	stateSeqsBefore,
+} from "./session-resume.js";
 import { summarizeSession } from "./session-summary.js";
 import type {
 	SessionBlob,
@@ -19,8 +32,10 @@ import type {
 	SessionEntryRange,
 	SessionListQuery,
 	SessionRecordHeader,
+	SessionResume,
 	SessionSnapshot,
 	SessionStore,
+	SessionStoredEntry,
 	SessionSummary,
 	SessionTail,
 	SessionWriteOptions,
@@ -33,6 +48,9 @@ const utf8Encoder = new TextEncoder();
 const utf8Decoder = new TextDecoder();
 const COMMA = 0x2c;
 const NO_ENTRIES = new Uint8Array(0);
+export const SPILL_BLOCK_BYTES = 64 * 1024;
+const FNV_OFFSET = 0x811c9dc5;
+const SCAN_WINDOW_BYTES = 1024 * 1024;
 
 interface StoredSession {
 	readonly header: Uint8Array;
@@ -49,6 +67,21 @@ interface StoredSession {
 	spilledChecksum: number;
 	/** The release writing its entries to its file now; a load, a delete or another release waits for it. */
 	spilling: Promise<void> | undefined;
+	readonly starts: number[];
+	totalBytes: number;
+	index: SessionResumeIndex;
+	blocks: number[];
+}
+
+interface HeldBytes {
+	readonly record: StoredSession;
+	readonly directory: SessionHistoryDirectory | undefined;
+	readonly file: number;
+	readonly spilledBytes: number;
+	readonly blocks: readonly number[];
+	readonly chunks: readonly Uint8Array[];
+	readonly lastSeq: number;
+	readonly totalBytes: number;
 }
 
 const privateStores = new WeakSet<MemorySessionStore>();
@@ -74,6 +107,11 @@ export interface SessionHistoryDirectory {
 	write(file: number, data: Uint8Array, previous?: { readonly file: number; readonly bytes: number }): Promise<void>;
 	/** The whole content of the file. */
 	read(file: number): Promise<Uint8Array>;
+	readRange?(
+		file: number,
+		position: number,
+		length: number,
+	): Promise<{ readonly bytes: Uint8Array; readonly size: number }>;
 	/** Removes the file; a file already gone is not a failure. */
 	removeFile(file: number): Promise<void>;
 	/** Removes the directory and every file in it; a directory already gone is not a failure. */
@@ -227,9 +265,42 @@ export class MemorySessionStore implements SessionStore {
 	): Promise<{ readonly lastSeq: number }> {
 		const record = this.forWrite(sessionId, options);
 		validateSessionEntries(entries);
-		if (entries.length > 0) this.addChunk(record.entries, this.encodeEntries(entries));
+		if (entries.length === 0) return { lastSeq: record.lastSeq };
+		const index = this.appendedIndex(record, entries);
+		const encoded = this.encodeEntries(entries);
+		this.addChunk(record.entries, encoded.bytes);
+		let position = record.totalBytes === 0 ? 0 : record.totalBytes + 1;
+		for (const length of encoded.lengths) {
+			record.starts.push(position);
+			position += length + 1;
+		}
+		record.totalBytes = position - 1;
 		record.lastSeq += entries.length;
+		record.index = index;
 		return { lastSeq: record.lastSeq };
+	}
+
+	private appendedIndex(record: StoredSession, entries: readonly SessionEntry[]): SessionResumeIndex {
+		const previous = record.index;
+		if (resumeIndexNeedsRefold(previous, entries)) return foldSessionResume(previous, entries);
+		const seqs = new Map<string, number>();
+		let unresolved = false;
+		for (const id of foreignResumeIds(previous, entries)) {
+			const seq = record.spilling === undefined ? heldSeqOf(record, id) : undefined;
+			if (seq !== undefined) seqs.set(id, seq);
+			else if (record.spilling !== undefined || record.directory !== undefined) unresolved = true;
+		}
+		const index = foldSessionResume(previous, entries, (id) => seqs.get(id));
+		return unresolved ? { ...index, needsBranchRebuild: true } : index;
+	}
+
+	private async resumeIndex(sessionId: string, record: StoredSession): Promise<SessionResumeIndex | undefined> {
+		if (isSessionResumeIndex(record.index, record.lastSeq)) return record.index;
+		const snapshot = await this.decode(sessionId, record);
+		if (snapshot === undefined || this.records.get(sessionId) !== record || record.lastSeq !== snapshot.lastSeq)
+			return undefined;
+		record.index = refoldSessionResume(record.index, snapshot.entries);
+		return record.index;
 	}
 
 	/** Add an append's chunk to the session's buffers. A merge that fails leaves them as they were. */
@@ -263,17 +334,217 @@ export class MemorySessionStore implements SessionStore {
 	}
 
 	async readTail(sessionId: string, fromSeq: number): Promise<SessionTail> {
-		const { header, entries } = await this.load(sessionId);
-		return sessionTailOf(header, entries, fromSeq);
+		for (;;) {
+			const record = await this.settledRecord(sessionId);
+			const index = await this.resumeIndex(sessionId, record);
+			if (index === undefined) continue;
+			const start = Math.max(1, fromSeq);
+			const read = await this.entriesAt(sessionId, record, [
+				...stateSeqsBefore(index, start),
+				...seqRange(start, index.seq),
+			]);
+			if (read === undefined) continue;
+			const state = read.filter((held) => held.seq < start);
+			const tail = read.filter((held) => held.seq >= start).map((held) => held.entry);
+			return sessionTailFrom(index, decodeHeader(record), start, state, tail);
+		}
 	}
 
 	async readRange(sessionId: string, startSeq: number, endSeq: number): Promise<SessionEntryRange> {
-		return sessionRangeOf((await this.load(sessionId)).entries, startSeq, endSeq);
+		for (;;) {
+			const record = await this.settledRecord(sessionId);
+			const index = await this.resumeIndex(sessionId, record);
+			if (index === undefined) continue;
+			const start = Math.max(1, startSeq);
+			const seqs = seqRange(start, Math.min(endSeq, index.seq));
+			const read = await this.entriesAt(sessionId, record, seqs);
+			if (read === undefined) continue;
+			return {
+				startSeq: start,
+				entries: read.map((held) => held.entry),
+				lastSeq: index.seq,
+				epoch: index.epoch,
+				seqs,
+				lastEntryId: index.lastId,
+			};
+		}
 	}
 
 	async findLatestCompaction(sessionId: string, leafId?: string): Promise<SessionCompactionPoint | undefined> {
 		if (leafId !== undefined) validateSessionText("entry.id", leafId);
-		return sessionCompactionOf((await this.load(sessionId)).entries, leafId);
+		for (;;) {
+			const record = await this.settledRecord(sessionId);
+			const index = await this.resumeIndex(sessionId, record);
+			if (index === undefined) continue;
+			const leafSeq =
+				leafId === undefined ? index.leafSeq : ((await this.seqOfEntry(sessionId, record, leafId)) ?? -1);
+			const point = latestCompactionOf(index, leafSeq);
+			if (point === undefined) return undefined;
+			const read = await this.entriesAt(sessionId, record, [...new Set([point.seq, leafSeq])].sort(bySeq));
+			if (read === undefined) continue;
+			const boundary = read.find((held) => held.seq === point.seq)?.entry;
+			const leaf = read.find((held) => held.seq === leafSeq)?.entry;
+			if (boundary?.type !== "compaction" || leaf === undefined) return undefined;
+			return { ...point, entry: boundary, leafId: leaf.id, lastSeq: index.seq };
+		}
+	}
+
+	async readResume(sessionId: string, leafId?: string): Promise<SessionResume> {
+		if (leafId !== undefined) validateSessionText("entry.id", leafId);
+		for (;;) {
+			const record = await this.settledRecord(sessionId);
+			const index = await this.resumeIndex(sessionId, record);
+			if (index === undefined) continue;
+			const leafSeq =
+				leafId === undefined ? index.leafSeq : ((await this.seqOfEntry(sessionId, record, leafId)) ?? 0);
+			if (leafSeq !== index.leafSeq) {
+				const snapshot = await this.decode(sessionId, record);
+				if (snapshot === undefined) continue;
+				return { ...sessionResumeOf(snapshot.header, snapshot.entries, leafId), epoch: index.epoch };
+			}
+			const plan = sessionResumePlan(index);
+			const branchSeqs = plan.branch.flatMap(([low, high]) => seqRange(low, high));
+			const read = await this.entriesAt(sessionId, record, [...new Set([...branchSeqs, ...plan.state])].sort(bySeq));
+			if (read === undefined) continue;
+			const inBranch = new Set(branchSeqs);
+			const branch = read.filter((held) => inBranch.has(held.seq));
+			const state = read.filter((held) => !inBranch.has(held.seq));
+			const leaf = leafSeq > 0 ? (branch.find((held) => held.seq === leafSeq)?.entry.id ?? null) : null;
+			return sessionResumeFrom(index, decodeHeader(record), branch, state, leaf);
+		}
+	}
+
+	async findEntrySeq(sessionId: string, entryId: string): Promise<number | undefined> {
+		validateSessionText("entry.id", entryId);
+		for (;;) {
+			const record = await this.settledRecord(sessionId);
+			const seq = await this.seqOfEntry(sessionId, record, entryId);
+			if (this.records.get(sessionId) === record) return seq;
+		}
+	}
+
+	private async settledRecord(sessionId: string): Promise<StoredSession> {
+		for (;;) {
+			const record = this.stored(sessionId);
+			if (!record) throw new SessionNotFoundError(sessionId);
+			if (record.spilling === undefined) return record;
+			await settled(record.spilling);
+		}
+	}
+
+	private held(record: StoredSession): HeldBytes {
+		return {
+			record,
+			directory: record.directory,
+			file: record.file,
+			spilledBytes: record.spilledBytes,
+			blocks: [...record.blocks],
+			chunks: [...record.entries],
+			lastSeq: record.lastSeq,
+			totalBytes: record.totalBytes,
+		};
+	}
+
+	private spanOf(held: HeldBytes, first: number, last: number): readonly [number, number] {
+		const starts = held.record.starts;
+		return [starts[first - 1] as number, last < held.lastSeq ? (starts[last] as number) - 1 : held.totalBytes];
+	}
+
+	private async entriesAt(
+		sessionId: string,
+		record: StoredSession,
+		seqs: readonly number[],
+	): Promise<SessionStoredEntry[] | undefined> {
+		if (record.spilling !== undefined || this.records.get(sessionId) !== record) return undefined;
+		const held = this.held(record);
+		const runs = runsOf(seqs.filter((seq) => seq >= 1 && seq <= held.lastSeq));
+		const entries: SessionStoredEntry[] = [];
+		for (const [first, last] of runs) {
+			const [start, end] = this.spanOf(held, first, last);
+			let bytes: Uint8Array;
+			try {
+				bytes = await this.bytesOf(sessionId, held, start, end);
+			} catch (error) {
+				this.assertOpen();
+				if (this.records.get(sessionId) !== record || record.file !== held.file) return undefined;
+				throw error;
+			}
+			const parsed = this.parseRun(sessionId, held, bytes);
+			if (parsed.length !== last - first + 1)
+				throw new SessionSpillError("spill-corrupt", {
+					directory: held.directory?.path ?? "",
+					sessionId,
+					bytes: held.spilledBytes,
+				});
+			for (const [offset, entry] of parsed.entries()) entries.push({ seq: first + offset, entry });
+		}
+		return entries;
+	}
+
+	private parseRun(sessionId: string, held: HeldBytes, bytes: Uint8Array): SessionEntry[] {
+		try {
+			return parseEntries(bytes);
+		} catch (cause) {
+			if (!(cause instanceof SyntaxError) || held.directory === undefined) throw cause;
+			throw new SessionSpillError(
+				"spill-corrupt",
+				{ directory: held.directory.path, sessionId, bytes: held.spilledBytes },
+				{ cause },
+			);
+		}
+	}
+
+	private async bytesOf(sessionId: string, held: HeldBytes, start: number, end: number): Promise<Uint8Array> {
+		const parts: Uint8Array[] = [];
+		const heldStart = held.directory === undefined ? 0 : held.spilledBytes + 1;
+		if (held.directory !== undefined && start < held.spilledBytes) {
+			parts.push(await readSpilledRange(held, sessionId, start, Math.min(end, held.spilledBytes)));
+			if (end > held.spilledBytes) parts.push(Uint8Array.of(COMMA));
+		}
+		if (end > heldStart) parts.push(heldSlice(held.chunks, Math.max(start, heldStart) - heldStart, end - heldStart));
+		return parts.length === 1 ? (parts[0] as Uint8Array) : concatBytes(parts);
+	}
+
+	private async seqOfEntry(sessionId: string, record: StoredSession, entryId: string): Promise<number | undefined> {
+		for (;;) {
+			while (record.spilling !== undefined) await settled(record.spilling);
+			const held = this.held(record);
+			try {
+				return await this.scanForEntry(sessionId, held, entryId);
+			} catch (error) {
+				this.assertOpen();
+				if (this.records.get(sessionId) === record && record.file === held.file) throw error;
+				if (this.records.get(sessionId) !== record) return undefined;
+			}
+		}
+	}
+
+	private async scanForEntry(sessionId: string, held: HeldBytes, entryId: string): Promise<number | undefined> {
+		if (held.record.index.lastId === entryId && held.record.index.seq === held.lastSeq) return held.lastSeq;
+		const needle = utf8Encoder.encode(`"id":${JSON.stringify(entryId)}`);
+		let last = held.lastSeq;
+		let window = SPILL_BLOCK_BYTES;
+		while (last >= 1) {
+			let first = last;
+			while (first > 1) {
+				const [start] = this.spanOf(held, first - 1, last);
+				const [, end] = this.spanOf(held, last, last);
+				if (end - start > window) break;
+				first -= 1;
+			}
+			window = Math.min(SCAN_WINDOW_BYTES, window * 2);
+			const [start, end] = this.spanOf(held, first, last);
+			const bytes = Buffer.from(await this.bytesOf(sessionId, held, start, end));
+			for (let seq = last; seq >= first; seq--) {
+				const [entryStart, entryEnd] = this.spanOf(held, seq, seq);
+				const line = bytes.subarray(entryStart - start, entryEnd - start);
+				if (line.indexOf(needle) === -1) continue;
+				const entry = this.parseRun(sessionId, held, line)[0];
+				if (entry?.id === entryId) return seq;
+			}
+			last = first - 1;
+		}
+		return undefined;
 	}
 
 	async readHeader(sessionId: string): Promise<SessionRecordHeader | undefined> {
@@ -418,9 +689,11 @@ export class MemorySessionStore implements SessionStore {
 		return this.records.get(sessionId);
 	}
 
-	private forWrite(sessionId: string, options: SessionWriteOptions): StoredSession {
+	private forWrite(sessionId: string, options: SessionWriteOptions, expected?: StoredSession): StoredSession {
 		const record = this.stored(sessionId);
 		if (!record) throw new SessionNotFoundError(sessionId);
+		if (expected !== undefined && record !== expected)
+			throw new SessionConflictError(sessionId, options.expectSeq, record.lastSeq);
 		if (options.expectSeq !== record.lastSeq) {
 			throw new SessionConflictError(sessionId, options.expectSeq, record.lastSeq);
 		}
@@ -474,6 +747,7 @@ export class MemorySessionStore implements SessionStore {
 						? (chunks[0] as Uint8Array)
 						: joinChunks(chunks);
 			await directory.write(file, data, previous);
+			record.blocks = extendBlocks(record.blocks, record.spilledBytes, data);
 			record.directory = directory;
 			record.file = file;
 			record.spilledBytes += data.byteLength;
@@ -509,20 +783,40 @@ export class MemorySessionStore implements SessionStore {
 	}
 
 	private encodeSession(header: SessionRecordHeader, entries: readonly SessionEntry[]): StoredSession {
+		const encoded = entries.length === 0 ? undefined : this.encodeEntries(entries);
+		const starts: number[] = [];
+		let position = 0;
+		for (const length of encoded?.lengths ?? []) {
+			starts.push(position);
+			position += length + 1;
+		}
 		return {
 			header: this.encode(() => JSON.stringify(header)),
-			entries: entries.length === 0 ? [] : [this.encodeEntries(entries)],
+			entries: encoded === undefined ? [] : [encoded.bytes],
 			lastSeq: entries.length,
 			directory: undefined,
 			file: 0,
 			spilledBytes: 0,
-			spilledChecksum: 0x811c9dc5,
+			spilledChecksum: FNV_OFFSET,
 			spilling: undefined,
+			starts,
+			totalBytes: Math.max(0, position - 1),
+			index: foldSessionResume(undefined, entries),
+			blocks: [],
 		};
 	}
 
-	private encodeEntries(entries: readonly SessionEntry[]): Uint8Array {
-		return this.encode(() => JSON.stringify(entries).slice(1, -1));
+	private encodeEntries(entries: readonly SessionEntry[]): {
+		readonly bytes: Uint8Array;
+		readonly lengths: readonly number[];
+	} {
+		let lengths: number[] = [];
+		const bytes = this.encode(() => {
+			const lines = entries.map((entry) => JSON.stringify(entry));
+			lengths = lines.map((line) => Buffer.byteLength(line, "utf8"));
+			return lines.join(",");
+		});
+		return { bytes, lengths };
 	}
 
 	private encode(text: () => string): Uint8Array {
@@ -649,4 +943,121 @@ function joinEntries(record: StoredSession): Uint8Array {
 	const joined = joinChunks(record.entries);
 	record.entries.splice(0, record.entries.length, joined);
 	return joined;
+}
+
+function bySeq(left: number, right: number): number {
+	return left - right;
+}
+
+function seqRange(first: number, last: number): number[] {
+	return last < first ? [] : Array.from({ length: last - first + 1 }, (_, offset) => first + offset);
+}
+
+function runsOf(seqs: readonly number[]): (readonly [number, number])[] {
+	const runs: [number, number][] = [];
+	for (const seq of [...new Set(seqs)].sort(bySeq)) {
+		const last = runs.at(-1);
+		if (last !== undefined && last[1] === seq - 1) last[1] = seq;
+		else runs.push([seq, seq]);
+	}
+	return runs;
+}
+
+function concatBytes(parts: readonly Uint8Array[]): Uint8Array {
+	const joined = new Uint8Array(parts.reduce((sum, part) => sum + part.byteLength, 0));
+	let offset = 0;
+	for (const part of parts) {
+		joined.set(part, offset);
+		offset += part.byteLength;
+	}
+	return joined;
+}
+
+function heldSlice(chunks: readonly Uint8Array[], start: number, end: number): Uint8Array {
+	const parts: Uint8Array[] = [];
+	let offset = 0;
+	for (const [index, chunk] of chunks.entries()) {
+		if (index > 0) {
+			if (offset >= start && offset < end) parts.push(Uint8Array.of(COMMA));
+			offset += 1;
+		}
+		const chunkEnd = offset + chunk.byteLength;
+		if (chunkEnd > start && offset < end)
+			parts.push(chunk.subarray(Math.max(start, offset) - offset, Math.min(end, chunkEnd) - offset));
+		offset = chunkEnd;
+		if (offset >= end) break;
+	}
+	return parts.length === 1 ? (parts[0] as Uint8Array) : concatBytes(parts);
+}
+
+function extendBlocks(blocks: readonly number[], filled: number, data: Uint8Array): number[] {
+	const next = [...blocks];
+	let position = filled;
+	for (let offset = 0; offset < data.byteLength; ) {
+		const within = position % SPILL_BLOCK_BYTES;
+		const take = Math.min(SPILL_BLOCK_BYTES - within, data.byteLength - offset);
+		const previous = within === 0 ? FNV_OFFSET : (next.pop() as number);
+		next.push(checksum(data.subarray(offset, offset + take), previous));
+		position += take;
+		offset += take;
+	}
+	return next;
+}
+
+async function readSpilledRange(held: HeldBytes, sessionId: string, start: number, end: number): Promise<Uint8Array> {
+	const directory = held.directory as SessionHistoryDirectory;
+	const fields = { directory: directory.path, sessionId, bytes: held.spilledBytes };
+	if (directory.readRange === undefined) {
+		const whole = await readSpillFile(directory, held.file, sessionId, held.spilledBytes);
+		for (let block = 0; block < held.blocks.length; block++) verifyBlock(held, sessionId, whole, block, 0);
+		return whole.subarray(start, end);
+	}
+	const first = Math.floor(start / SPILL_BLOCK_BYTES);
+	const last = Math.floor((end - 1) / SPILL_BLOCK_BYTES);
+	const from = first * SPILL_BLOCK_BYTES;
+	const to = Math.min(held.spilledBytes, (last + 1) * SPILL_BLOCK_BYTES);
+	let read: { readonly bytes: Uint8Array; readonly size: number };
+	try {
+		read = await directory.readRange(held.file, from, to - from);
+	} catch (cause) {
+		const errno = getErrnoCode(cause);
+		throw new SessionSpillError(
+			errno === "ENOENT" ? "spill-missing" : "spill-read-failed",
+			{ ...fields, errno },
+			{ cause },
+		);
+	}
+	if (read.size !== held.spilledBytes || read.bytes.byteLength !== to - from)
+		throw new SessionSpillError(read.size < held.spilledBytes ? "spill-missing" : "spill-corrupt", {
+			...fields,
+			foundBytes: read.size,
+		});
+	for (let block = first; block <= last; block++) verifyBlock(held, sessionId, read.bytes, block, from);
+	return read.bytes.subarray(start - from, end - from);
+}
+
+function verifyBlock(held: HeldBytes, sessionId: string, bytes: Uint8Array, block: number, from: number): void {
+	const start = block * SPILL_BLOCK_BYTES - from;
+	const end = Math.min(held.spilledBytes, (block + 1) * SPILL_BLOCK_BYTES) - from;
+	if (checksum(bytes.subarray(start, end)) !== held.blocks[block])
+		throw new SessionSpillError("spill-corrupt", {
+			directory: held.directory?.path ?? "",
+			sessionId,
+			bytes: held.spilledBytes,
+		});
+}
+
+function heldSeqOf(record: StoredSession, entryId: string): number | undefined {
+	if (record.index.lastId === entryId) return record.index.seq;
+	const heldStart = record.directory === undefined ? 0 : record.spilledBytes + 1;
+	const needle = Buffer.from(`"id":${JSON.stringify(entryId)}`);
+	for (let seq = record.lastSeq; seq >= 1; seq--) {
+		const start = record.starts[seq - 1] as number;
+		if (start < heldStart) return undefined;
+		const end = seq < record.lastSeq ? (record.starts[seq] as number) - 1 : record.totalBytes;
+		const bytes = Buffer.from(heldSlice(record.entries, start - heldStart, end - heldStart));
+		if (bytes.indexOf(needle) === -1) continue;
+		if ((parseEntries(bytes)[0] as SessionEntry | undefined)?.id === entryId) return seq;
+	}
+	return undefined;
 }
