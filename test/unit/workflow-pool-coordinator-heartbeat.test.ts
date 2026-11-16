@@ -4,12 +4,13 @@ import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, test, vi } from "vitest";
 import { isDebugEnabled } from "../../packages/coding-agent/src/core/debug.js";
 import { setDebugSetting } from "../../packages/coding-agent/src/core/debug-setting.js";
-import type { PoolWork } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
+import { type PoolWork, SqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { rehydrateError } from "../../packages/workflows/src/shared/error-codec.js";
 import { isStaleWorkLeaseError } from "../../packages/workflows/src/shared/worker-pool-errors.js";
 import { POOL_COORDINATION_STATS_INTERVAL_MS } from "../../packages/workflows/src/workers/coordinator-protocol.js";
 import { PoolCoordinator } from "../../packages/workflows/src/workers/pool-coordinator.js";
 import { POOL_DURABLE_JOURNAL_ENV } from "../../packages/workflows/src/workers/pool-journal.js";
+import { IdleClaimBackoff, IdleReadyProbe } from "../../packages/workflows/src/workers/pool-wake-ups.js";
 import { workerRefusal } from "../../packages/workflows/src/workers/worker-refusal.js";
 import type { FakeWorker } from "../helpers/fake-pool-worker.js";
 import {
@@ -21,6 +22,7 @@ import {
 import { poolWorkFixture } from "../helpers/pool-journal.js";
 
 const forked = vi.hoisted((): FakeWorker[] => []);
+const sqliteReads = vi.hoisted(() => ({ enabled: false, count: 0 }));
 
 vi.mock("node:child_process", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:child_process")>();
@@ -47,12 +49,29 @@ vi.mock("node:sqlite", async (importOriginal) => {
 			this.function("unixepoch", { varargs: true }, () => Date.now() / 1_000);
 			this.function("julianday", { varargs: true }, () => Date.now() / 86_400_000 + 2_440_587.5);
 		}
+
+		override prepare(...args: Parameters<InstanceType<typeof actual.DatabaseSync>["prepare"]>) {
+			const statement = super.prepare(...args);
+			const counted = <T extends typeof statement.get | typeof statement.all>(method: T): T =>
+				new Proxy(method, {
+					apply(target, _receiver, parameters) {
+						if (sqliteReads.enabled) sqliteReads.count++;
+						return Reflect.apply(target, statement, parameters);
+					},
+				});
+			statement.get = counted(statement.get);
+			statement.all = counted(statement.all);
+			return statement;
+		}
 	}
 	return { ...actual, DatabaseSync: DateClockedDatabase };
 });
 
 afterEach(() => {
 	vi.useRealTimers();
+	vi.restoreAllMocks();
+	sqliteReads.enabled = false;
+	sqliteReads.count = 0;
 	forked.length = 0;
 });
 
@@ -131,6 +150,15 @@ test("pool control is pushed to ready workers once per revision and reconciled i
 	const f = await coordinatorFixture();
 	try {
 		const [holder, idle] = f.workers as [FakeWorker, FakeWorker];
+		const committed = { kind: "pool-control", control: { state: "running", revision: 1 } };
+		for (const worker of [holder, idle])
+			assert.deepEqual(
+				worker.pushed,
+				[committed],
+				"a worker is pushed the committed control as it becomes ready (#5230)",
+			);
+		holder.pushed.length = 0;
+		idle.pushed.length = 0;
 		await holder.request({ kind: "claim" });
 		const pausing = f.command({ kind: "control", state: "paused" });
 		while (holder.pushed.length === 0 || idle.pushed.length === 0) await delay(5);
@@ -152,12 +180,10 @@ test("pool control is pushed to ready workers once per revision and reconciled i
 		while (idle.killedWith === undefined) await delay(5);
 		assert.equal(idle.killedWith, "SIGKILL", "a worker the push cannot reach is stopped and replaced");
 		while (forked.length < 3) await delay(5);
-		// The replacement reads pool control before it claims, as a starting worker does, and acknowledges it.
 		const replacement = forked[2]!;
 		await replacement.request({ kind: "ready" });
-		assert.deepEqual((await replacement.request({ kind: "control" })).value, { state: "running", revision: 3 });
+		assert.deepEqual(replacement.pushed, [{ kind: "pool-control", control: { state: "running", revision: 3 } }]);
 		await replacement.request({ kind: "controlled", revision: 3 });
-		assert.deepEqual(replacement.pushed, [], "a worker that was not ready when control changed was not pushed it");
 		await holder.request({ kind: "controlled", revision: 3 });
 		assert.equal(await resuming, 0);
 	} finally {
@@ -192,14 +218,23 @@ test("a worker that is not ready yet is not pushed control, and a pause committe
 		const pausing = f.command({ kind: "control", state: "paused" });
 		await ready.request({ kind: "controlled", revision: 1 });
 		assert.equal(await pausing, 0, "only the ready worker is waited for");
-		assert.deepEqual(ready.pushed, [], "the pause committed while preparing is not pushed a second time");
+		assert.deepEqual(
+			ready.pushed,
+			[{ kind: "pool-control", control: { state: "paused", revision: 1 } }],
+			"the pause committed while preparing is pushed once, as the worker became ready (#5230), and not a second time",
+		);
 		const resuming = f.command({ kind: "control", state: "running" });
-		while (ready.pushed.length === 0) await delay(5);
-		assert.deepEqual(ready.pushed, [{ kind: "pool-control", control: { state: "running", revision: 2 } }]);
+		while (ready.pushed.length < 2) await delay(5);
+		assert.deepEqual(ready.pushed[1], { kind: "pool-control", control: { state: "running", revision: 2 } });
 		await ready.request({ kind: "controlled", revision: 2 });
 		await resuming;
-		assert.deepEqual(starting.pushed, [], "a starting worker reads control itself before it claims");
+		assert.deepEqual(starting.pushed, [], "a worker that is not ready yet is pushed nothing");
 		await starting.request({ kind: "ready" });
+		assert.deepEqual(
+			starting.pushed,
+			[{ kind: "pool-control", control: { state: "running", revision: 2 } }],
+			"it is pushed the committed control as it becomes ready (#5230)",
+		);
 	} finally {
 		await f.close();
 	}
@@ -213,6 +248,31 @@ test("a budget notice holds claims until the root lifts it (#4313)", async () =>
 		assert.equal((await worker.request({ kind: "claim" })).value, undefined, "an exhausted budget claims nothing");
 		f.notice({ kind: "budget", blocked: false });
 		assert.notEqual((await worker.request({ kind: "claim" })).value, undefined, "the queued child is claimed after");
+	} finally {
+		await f.close();
+	}
+});
+
+const GATE_WAKE_BOUND_MS = 250;
+
+test("a claim the budget held back answers as soon as the budget lifts, not at the end of its idle pause (#5230)", async () => {
+	const f = await coordinatorFixture({ workers: 1 });
+	try {
+		const [worker] = f.workers as [FakeWorker];
+		f.notice({ kind: "budget", blocked: true });
+		for (let index = 0; index < 6; index++) assert.equal((await worker.request({ kind: "claim" })).value, undefined);
+		const held = worker.request({ kind: "claim" });
+		await delay(50);
+		const liftedAt = performance.now();
+		f.notice({ kind: "budget", blocked: false });
+		assert.equal((await held).value, undefined);
+		const answeredAfter = performance.now() - liftedAt;
+		assert.ok(answeredAfter < GATE_WAKE_BOUND_MS, `answered ${answeredAfter} ms after the budget lifted`);
+		assert.notEqual(
+			(await worker.request({ kind: "claim" })).value,
+			undefined,
+			"the queued child is claimed at once",
+		);
 	} finally {
 		await f.close();
 	}
@@ -437,6 +497,121 @@ test("a coordinator that closes before it served any root closes cleanly, and se
 	await coordinator.stopSatellite();
 	await coordinator.shutdown();
 	await assert.rejects(coordinator.attachSatellite({} as never), { message: "Local worker pool is closed" });
+});
+
+async function clockedIdleRecovery() {
+	vi.useFakeTimers({ toFake: ["Date", "performance", "setInterval", "clearInterval"] });
+	vi.spyOn(IdleReadyProbe.prototype, "tick").mockResolvedValue();
+	const RECOVERY_ONLY_IDLE_PAUSE_MS = 60_000;
+	let pauses = 0;
+	vi.spyOn(IdleClaimBackoff.prototype, "next").mockImplementation(() => {
+		pauses++;
+		return RECOVERY_ONLY_IDLE_PAUSE_MS;
+	});
+	const claims: Promise<PoolWork | undefined>[] = [];
+	const claim = SqlPoolQueue.prototype.claim;
+	vi.spyOn(SqlPoolQueue.prototype, "claim").mockImplementation(function (this: SqlPoolQueue, ...args) {
+		const pending = claim.call(this, ...args);
+		claims.push(pending);
+		return pending;
+	});
+	let reading = 0;
+	const inspect = SqlPoolQueue.prototype.inspect;
+	const scans = vi.spyOn(SqlPoolQueue.prototype, "inspect").mockImplementation(async function (
+		this: SqlPoolQueue,
+		root,
+	) {
+		reading++;
+		try {
+			const rows = await inspect.call(this, root);
+			vi.advanceTimersByTime(1);
+			return rows;
+		} finally {
+			reading--;
+		}
+	});
+	const f = await coordinatorFixture({ workers: 1 });
+	const origin = performance.now();
+	const held = (await f.queue.claim(f.lease, "remote-worker", [f.descriptor], LEASE_MS))!;
+	const worker = f.workers[0]!;
+	let running = true;
+	let replies = 0;
+	let claimed: PoolWork | undefined;
+	let loop = Promise.resolve();
+	return {
+		...f,
+		held,
+		scans,
+		claimed: () => claimed,
+		async idle() {
+			loop = (async () => {
+				while (running) {
+					const reply = await worker.request({ kind: "claim" });
+					replies++;
+					assert.equal(reply.error, undefined);
+					if (reply.value !== undefined) {
+						claimed = reply.value as PoolWork;
+						return;
+					}
+				}
+			})();
+			while (pauses === 0) await delay(1);
+		},
+		async advanceTo(at: number) {
+			const beforeReplies = replies;
+			const beforePauses = pauses;
+			vi.advanceTimersByTime(origin + at - performance.now());
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			while (reading > 0) await delay(1);
+			await Promise.all(claims);
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			if (replies > beforeReplies) while (pauses === beforePauses && claimed === undefined) await delay(1);
+		},
+		async close() {
+			running = false;
+			sqliteReads.enabled = false;
+			vi.useRealTimers();
+			await f.close();
+			await loop;
+		},
+	};
+}
+
+test.each([
+	{ delayMs: 100, discoverAt: 1_000, claimAt: 1_000 },
+	{ delayMs: 1_300, discoverAt: 1_000, claimAt: 1_500 },
+])("recovery wakes a delayed handoff within its existing period ($delayMs ms delay) (#5230)", async (row) => {
+	const f = await clockedIdleRecovery();
+	try {
+		await f.idle();
+		await f.queue.releaseExited(f.lease, f.held, { delayMs: row.delayMs });
+		await f.advanceTo(row.discoverAt);
+		if (row.claimAt > row.discoverAt) {
+			assert.equal(f.claimed(), undefined, "the pending handoff is not claimable yet");
+			await f.advanceTo(row.claimAt);
+		}
+		assert.equal(f.claimed()?.id, f.held.id, "recovery wakes the parked idle claim without a maturity notification");
+	} finally {
+		await f.close();
+	}
+});
+
+test("an empty queue keeps its existing counted recovery reads per minute (#5230)", async () => {
+	const f = await clockedIdleRecovery();
+	try {
+		await f.queue.complete(f.lease, f.held, { runId: f.held.childRunId, status: "completed", result: {} });
+		await f.idle();
+		const scans = f.scans.mock.calls.length;
+		sqliteReads.count = 0;
+		sqliteReads.enabled = true;
+		for (let tick = 1; tick <= 120; tick++) await f.advanceTo(tick * 500);
+		const EMPTY_QUEUE_PASSES_PER_MINUTE = 60;
+		const EMPTY_QUEUE_READS_PER_MINUTE = 120;
+		assert.equal(f.scans.mock.calls.length - scans, EMPTY_QUEUE_PASSES_PER_MINUTE);
+		assert.equal(sqliteReads.count, EMPTY_QUEUE_READS_PER_MINUTE);
+	} finally {
+		await f.close();
+	}
 });
 
 test("a root's pool without shared placement keeps its budget block to itself, publishing it nowhere (#4310)", async () => {

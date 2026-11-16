@@ -42,6 +42,8 @@ const RUN_TIMEOUT_MS = Number(args["run-timeout-ms"] ?? 900_000);
 // --profile 1: what the store spent its time on, by statement (PostgreSQL's pg_stat_statements; for sqld, a proxy that
 // records every request).
 const profile = args.profile === "1";
+const idleProbe = Number(args["idle-probe"] ?? 0);
+const idleSettleMs = Number(args["idle-settle-ms"] ?? 10_000);
 // The classes below need more of each statement than the trace keeps by default.
 if (profile) process.env.TRACE_WORDS ??= "40";
 const listen = args.listen;
@@ -169,6 +171,7 @@ async function openStore(work) {
 			: undefined;
 	return {
 		url: traced === undefined ? url : `http://${listen ?? "127.0.0.1"}:${traced.port}`,
+		requests: () => (traced === undefined ? null : traced.records.length),
 		/** Starts counting what the store does from now. */
 		resetProfile: () => {
 			if (store === "pg" && profile) psql("SELECT pg_stat_statements_reset()");
@@ -189,12 +192,14 @@ async function openStore(work) {
 					});
 				return { classes: classTotals(statements.map((row) => ({ sql: row.sql, calls: row.calls, statements: row.calls, ms: row.ms }))), top: statements.slice(0, 40) };
 			}
-			// A request counts toward the class of its first statement past transaction control.
 			return {
 				requests: traced.records.length,
+				streamProbes: traced.records.filter((record) => record.sql.some((sql) => /sqlite_schema LIMIT 0/.test(sql))).length,
 				classes: classTotals(
 					traced.records.map((record) => ({
-						sql: record.sql.find((sql) => !/^(BEGIN|COMMIT|ROLLBACK|SET)\b/i.test(sql)) ?? record.sql.join(" "),
+						sql:
+							record.sql.find((sql) => !/^(BEGIN|COMMIT|ROLLBACK|SET)\b/i.test(sql) && !/sqlite_schema LIMIT 0/.test(sql)) ??
+							record.sql.join(" "),
 						calls: 1,
 						statements: record.sql.length,
 						ms: record.answered - record.arrived,
@@ -374,6 +379,7 @@ async function trial(hosts, shipping) {
 			}
 		}
 		const resultFile = join(work, "result.json");
+		const phaseFile = join(work, "phases");
 		shared.resetProfile();
 		const cpuBefore = shared.cpuMs();
 		const rootLog = [];
@@ -391,6 +397,13 @@ async function trial(hosts, shipping) {
 			ELASTIC_SESSIONS: String(hosts * slots + 1),
 			...(killAfter === undefined ? {} : { ELASTIC_LEASE_MS: String(args["lease-ms"] ?? 8000) }),
 			...(shipping === "sync" ? {} : { ELASTIC_CHECKPOINT_SHIPPING: shipping }),
+			...(idleProbe > 0
+				? {
+						ELASTIC_IDLE_PROBE: String(idleProbe),
+						ELASTIC_IDLE_SETTLE_MS: String(idleSettleMs),
+						ELASTIC_PHASE_FILE: phaseFile,
+					}
+				: {}),
 		}, rootLog, work);
 		processes.push(root);
 		const exited = new Promise((resolve) => root.on("exit", (code, signal) => resolve(code ?? signal)));
@@ -408,10 +421,36 @@ async function trial(hosts, shipping) {
 						killed = busiestHost(work, hosts - remoteHosts);
 						killTree(processes[killed].pid);
 					}, killAfter);
+		const phases = {};
+		let mainCpuMs;
+		let mainProfile;
+		let mainRequests;
+		let idleProfile;
+		let watching = idleProbe > 0;
+		const phaseWatch = (async () => {
+			while (watching) {
+				const lines = existsSync(phaseFile) ? readFileSync(phaseFile, "utf8").trim().split("\n").filter(Boolean) : [];
+				for (const line of lines) {
+					const [name, at] = line.split(" ");
+					if (phases[name] !== undefined) continue;
+					phases[name] = { at: Number(at), cpuMs: shared.cpuMs() - cpuBefore, requests: shared.requests() };
+					if (name === "main-done") {
+						mainCpuMs = phases[name].cpuMs;
+						mainProfile = shared.profile();
+						mainRequests = phases[name].requests;
+						shared.resetProfile();
+					}
+					if (name === "probe-start") idleProfile = shared.profile();
+				}
+				await sleep(50);
+			}
+		})();
 		const code = await Promise.race([exited, sleep(RUN_TIMEOUT_MS).then(() => "timeout")]);
+		watching = false;
+		await phaseWatch;
 		clearTimeout(killer);
-		const cpuMs = shared.cpuMs() - cpuBefore;
-		const storeProfile = shared.profile();
+		const cpuMs = mainCpuMs ?? shared.cpuMs() - cpuBefore;
+		const storeProfile = mainProfile ?? shared.profile();
 		if (code !== 0 || !existsSync(resultFile)) {
 			// What was left unfinished, and what the hosts said, to tell a stuck child from a stuck root.
 			const work = await query(
@@ -483,6 +522,34 @@ async function trial(hosts, shipping) {
 			}
 		}
 		const acknowledged = children * steps;
+		const idle =
+			phases["main-done"] === undefined || phases["probe-start"] === undefined
+				? null
+				: (() => {
+						const settled = phases["probe-start"];
+						const done = phases["main-done"];
+						const seconds = (settled.at - done.at) / 1000;
+						const probes = (result.probes ?? []).filter((probe) => probe.startedAt !== null);
+						const latencies = probes.map((probe) => probe.startedAt - probe.enqueuedAt);
+						const byPlacement = {};
+						for (const probe of probes) {
+							const placement =
+								probe.host === "root" ? "root host" : Number(probe.host?.slice(1)) < 100 ? "store VM" : "other VMs";
+							(byPlacement[placement] ??= []).push(probe.startedAt - probe.enqueuedAt);
+						}
+						return {
+							settleMs: settled.at - done.at,
+							storeCpuMsPerSec: Math.round((settled.cpuMs - done.cpuMs) / seconds),
+							storeRequestsPerSec: idleProfile?.requests === undefined ? null : Math.round(idleProfile.requests / seconds),
+							storeProfile: idleProfile ?? null,
+							claimLatencyMs: distribution(latencies),
+							claimLatencyByPlacementMs: Object.fromEntries(
+								Object.entries(byPlacement).map(([placement, values]) => [placement, distribution(values)]),
+							),
+							probes: result.probes,
+						};
+					})();
+		const mainWallMs = phases["main-done"] === undefined ? result.wallMs : phases["main-done"].at - result.began;
 		return {
 			store,
 			hosts,
@@ -497,6 +564,10 @@ async function trial(hosts, shipping) {
 				checkpointsPerSec: Math.round((recorded.length / (journalSpanMs / 1000)) * 10) / 10,
 			},
 			sharedStoreCpuMs: Math.round(cpuMs),
+			mainWallMs,
+			storeCpuMsPerSec: Math.round(cpuMs / (mainWallMs / 1000)),
+			storeRequests: mainRequests ?? shared.requests(),
+			idle,
 			/** The store's CPU time per step the children took, each acknowledged with a checkpoint. */
 			storeCpuMsPerCheckpoint: Math.round((cpuMs / acknowledged) * 100) / 100,
 			storeProfile,

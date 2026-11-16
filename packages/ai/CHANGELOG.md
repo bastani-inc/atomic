@@ -4,6 +4,8 @@ This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani
 
 ## [Unreleased]
 
+## [0.9.88-alpha.1] - 2026-11-16
+
 ### Changed
 
 - Renamed the package from `@bastani/pi-ai` to `@bastani/atomic-ai`. It now depends on Atomic's forks `@bastani/atomic-schema` and `@bastani/atomic-telemetry` instead of pi's packages. Atomic's extension loader still resolves `@bastani/pi-ai`, `@earendil-works/pi-ai` and `@mariozechner/pi-ai` imports to it ([#5174](https://github.com/bastani-inc/atomic/issues/5174))

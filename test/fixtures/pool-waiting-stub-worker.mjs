@@ -50,7 +50,7 @@ function request(message) {
 }
 
 function record(event, extra = {}) {
-	if (log !== undefined) appendFileSync(log, `${JSON.stringify({ event, pid: process.pid, ...extra })}\n`);
+	if (log !== undefined) appendFileSync(log, `${JSON.stringify({ event, pid: process.pid, at: Date.now(), ...extra })}\n`);
 }
 
 /** The child's run as a worker publishes it: one stage, waiting released for a tool result. */

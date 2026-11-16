@@ -127,6 +127,32 @@ test("a queue created before background shipping can ship after reopening (#4768
 	assert.deepEqual(recorded, [checkpoint]);
 });
 
+test("a queue created before ready marks gets them when it reopens on a shared libSQL journal (#5230)", async () => {
+	const journal = await sharedJournal();
+	await openSqlPoolQueue(journal);
+	await sqlPoolStorage(journal)!.transaction(async (tx) => {
+		await tx.exec(
+			"DROP TRIGGER acme_wf_runs_pool_ready_insert; DROP TRIGGER acme_wf_runs_pool_ready_update; DROP TABLE acme_wf_runs_pool_ready",
+		);
+	});
+	const queue = await openSqlPoolQueue(journal);
+	await journal.createRun({ runId: "root", name: "root", cwd: "/repo", createdAt: 1, status: "running" });
+	const acquired = await journal.acquire("root", "holder");
+	if (acquired.status !== "acquired") assert.fail("root lease was not acquired");
+	const lease = acquired.lease;
+	await queue.initialize(lease, 60_000);
+	const { work, boundary } = poolWorkFixture();
+	await queue.enqueue(lease, work, boundary);
+	const queued = await queue.readyMark("root");
+	assert.ok(queued !== undefined, "queued work is ready");
+	const attempt = await queue.claim(lease, "worker", [work], 60_000);
+	assert.ok(attempt);
+	assert.equal(await queue.releaseUnplaced(lease, attempt), true);
+	const released = await queue.readyMark("root");
+	assert.ok(released !== undefined);
+	assert.notEqual(released, queued, "releasing the work advances the ready mark");
+});
+
 test("a host opens the shared pool's registry, fleet, rate buckets and usage without a write transaction once their tables exist (#4768)", async () => {
 	const journal = await sharedJournal();
 	const queue = await openSqlPoolQueue(journal);

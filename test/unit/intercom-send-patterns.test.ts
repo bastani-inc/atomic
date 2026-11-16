@@ -526,6 +526,85 @@ describe("intercom send to name patterns and subagents (#4752)", () => {
 	);
 });
 
+describe("a broadcast to hundreds of sessions reaches every one", () => {
+	/** The incident's scale: one glob broadcast matched 232 sessions. */
+	const RECIPIENTS = 200;
+	/** A loaded broker answers one session list at a time, each after this long. */
+	const LOADED_LIST_SERVICE_MS = 20;
+	/** A list the loaded broker has not answered by then fails, as the client's own list timeout fails it. */
+	const LOADED_LIST_TIMEOUT_MS = 1_000;
+
+	test(
+		"a broadcast matching 200 sessions on a loaded broker reaches all 200, looking up the session list once",
+		async () => {
+			const group = `many-${randomUUID()}`;
+			const sender = await connect("many-lead", { group });
+			const inboxes = Array.from({ length: RECIPIENTS }, (): string[] => []);
+			const recipients = await Promise.all(
+				inboxes.map((received, index) => connect(`subagent-lane-${index}`, { group, received })),
+			);
+			const listSessions = sender.listSessions.bind(sender);
+			let lists = 0;
+			let answered: Promise<unknown> = Promise.resolve();
+			sender.listSessions = (...args) => {
+				lists += 1;
+				const asked = Date.now();
+				const answer = answered.then(async () => {
+					if (Date.now() - asked > LOADED_LIST_TIMEOUT_MS) throw new Error("List sessions timeout");
+					await new Promise((resolve) => setTimeout(resolve, LOADED_LIST_SERVICE_MS));
+					return listSessions(...args);
+				});
+				answered = answer.catch(() => undefined);
+				return answer;
+			};
+			const send = sender.send.bind(sender);
+			let inFlight = 0;
+			let peakInFlight = 0;
+			sender.send = async (...args) => {
+				inFlight += 1;
+				peakInFlight = Math.max(peakInFlight, inFlight);
+				try {
+					return await send(...args);
+				} finally {
+					inFlight -= 1;
+				}
+			};
+			const tool = registerTool(sender);
+
+			const result = await tool.execute(
+				"many",
+				{ action: "send", to: "subagent-lane-*", message: "scope changed", broadcast: true },
+				undefined,
+				undefined,
+				contextFor("many-host"),
+			);
+
+			assert.equal(result.isError, false, text(result));
+			const outcomes = result.details?.recipients ?? [];
+			assert.deepEqual(
+				outcomes.filter((recipient) => recipient.outcome !== "delivered").map((recipient) => recipient.reason),
+				[],
+				"no recipient is missed",
+			);
+			assert.deepEqual(
+				outcomes.map((recipient) => recipient.target).sort(),
+				recipients.map((recipient) => recipient.sessionId).sort(),
+			);
+			assert.match(text(result), new RegExp(`reached ${RECIPIENTS} of ${RECIPIENTS} recipients`));
+			assert.equal(lists, 1, "one pattern send looks up the session list once");
+			assert.ok(
+				peakInFlight > 1 && peakInFlight < RECIPIENTS / 4,
+				`sends run a bounded few at a time (${peakInFlight})`,
+			);
+			await waitFor(
+				() => inboxes.every((inbox) => inbox.length === 1),
+				"every matched session receives the broadcast",
+			);
+		},
+		REAL_BROKER_TEST_TIMEOUT_MS,
+	);
+});
+
 describe("intercom name-glob sends need broadcast to reach several sessions (#5202)", () => {
 	test(
 		"a glob that matches several sessions is refused without broadcast, listing the matches, and delivered with it (#5202)",

@@ -1,6 +1,6 @@
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { disposeRemoteRenderers } from "../interactive-engine/remote-renderer.ts";
-import { Container } from "./interactive-mode-deps.ts";
+import { type Component, Container } from "./interactive-mode-deps.ts";
 
 /**
  * Holds startup chat output off-screen until the resource disclosure slot has
@@ -9,6 +9,44 @@ import { Container } from "./interactive-mode-deps.ts";
  */
 export class StartupChatContainer extends Container {
 	private startupOutputReleased = false;
+	private counted: { children: Component[]; length: number; count: number } | undefined;
+	private readonly isCounted: (child: Component) => boolean;
+
+	constructor(isCounted: (child: Component) => boolean = () => false) {
+		super();
+		this.isCounted = isCounted;
+	}
+
+	countedChildren(): number {
+		const counted = this.counted;
+		if (counted?.children === this.children && counted.length === this.children.length) return counted.count;
+		let count = 0;
+		for (const child of this.children) if (this.isCounted(child)) count += 1;
+		this.counted = { children: this.children, length: this.children.length, count };
+		return count;
+	}
+
+	override addChild(component: Component): void {
+		const counted = this.current();
+		super.addChild(component);
+		if (counted) this.recount(counted, this.isCounted(component) ? 1 : 0);
+	}
+
+	override removeChild(component: Component): void {
+		const counted = this.current();
+		const length = this.children.length;
+		super.removeChild(component);
+		if (counted && this.children.length < length) this.recount(counted, this.isCounted(component) ? -1 : 0);
+	}
+
+	private current(): { children: Component[]; length: number; count: number } | undefined {
+		const counted = this.counted;
+		return counted?.children === this.children && counted.length === this.children.length ? counted : undefined;
+	}
+
+	private recount(counted: { count: number }, change: number): void {
+		this.counted = { children: this.children, length: this.children.length, count: counted.count + change };
+	}
 
 	releaseStartupOutput(): void {
 		this.startupOutputReleased = true;
@@ -23,6 +61,7 @@ export class StartupChatContainer extends Container {
 	override clear(): void {
 		disposeRemoteRenderers(this.children);
 		super.clear();
+		this.counted = { children: this.children, length: 0, count: 0 };
 	}
 }
 
