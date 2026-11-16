@@ -1,5 +1,6 @@
-import { type Component, Container, type Input, Spacer, Text, truncateToWidth } from "@bastani/atomic-tui";
+import { type Component, Container, Input, Spacer, Text, truncateToWidth } from "@bastani/atomic-tui";
 import type { Theme } from "../../../../modes/interactive/theme/theme.js";
+import { terminalDisplayText } from "../../../../utils/terminal-text.ts";
 import { fieldTone, styleFieldTone } from "../state/selectors/field-tone.ts";
 import { formatAnswerScalar } from "../tool/format-answer.ts";
 import type { QuestionData } from "../tool/types.js";
@@ -65,6 +66,7 @@ export interface QuestionTabStrategyConfig {
 }
 
 export class QuestionTabStrategy implements TabContentStrategy {
+	private readonly notesDisplayInput = new Input();
 	/** chatRow(1) inside the frame + the hint line (1) = 2 rendered rows. */
 	readonly footerRowCount = 2;
 
@@ -79,11 +81,11 @@ export class QuestionTabStrategy implements TabContentStrategy {
 		const question = this.config.questions[state.currentTab];
 		// In multi-question mode the tab bar already shows the header; suppress the inline badge.
 		if (!this.config.isMulti && question?.header && question.header.length > 0) {
-			out.push(new Text(this.config.theme.bg("selectedBg", ` ${question.header} `), 0, 0));
+			out.push(new Text(this.config.theme.bg("selectedBg", ` ${terminalDisplayText(question.header)} `), 0, 0));
 			out.push(new Spacer(1));
 		}
 		if (question) {
-			out.push(new Text(this.config.theme.bold(question.question), 0, 0));
+			out.push(new Text(this.config.theme.bold(terminalDisplayText(question.question)), 0, 0));
 			out.push(new Spacer(1));
 		}
 		return out;
@@ -102,7 +104,19 @@ export class QuestionTabStrategy implements TabContentStrategy {
 		// Notes mode open means the notes field has focus, so this resolves to `editing`.
 		const tone = fieldTone(state.notesVisible, state.notesDraft);
 		const notesField: Component = {
-			render: (width) => notesInput.render(width).map((line) => styleFieldTone(theme, tone, line)),
+			render: (width) => {
+				const raw = notesInput.getValue();
+				const safe = terminalDisplayText(raw);
+				let display = notesInput;
+				if (safe !== raw) {
+					display = this.notesDisplayInput;
+					display.setValue(safe);
+					display.focused = notesInput.focused;
+					const cursor = terminalDisplayText(raw.slice(0, notesInput.getCursor())).length;
+					Reflect.set(display, "cursor", Math.min(cursor, safe.length));
+				}
+				return display.render(width).map((line) => styleFieldTone(theme, tone, line));
+			},
 			invalidate: () => notesInput.invalidate(),
 		};
 		return [new Text(theme.fg("muted", NOTES_HEADER), 0, 0), notesField, new Spacer(1)];
@@ -146,14 +160,18 @@ export class SubmitTabStrategy implements TabContentStrategy {
 			const q = this.config.questions[i];
 			const a = state.answers.get(i);
 			if (!a) continue;
-			const label = q.header && q.header.length > 0 ? q.header : `Q${i + 1}`;
-			const answerText = formatAnswerScalar(a, "summary");
+			const label = terminalDisplayText(q.header && q.header.length > 0 ? q.header : `Q${i + 1}`);
+			const answerText = terminalDisplayText(formatAnswerScalar(a, "summary"));
 			c.addChild(new Text(this.config.theme.fg("muted", ` ● ${label}`), 1, 0));
 			const { theme } = this.config;
 			c.addChild(new Text(`   ${theme.fg("muted", "→")} ${styleFieldTone(theme, "answered", answerText)}`, 1, 0));
 			if (a.notes && a.notes.length > 0) {
 				c.addChild(
-					new Text(`     ${theme.fg("muted", "notes:")} ${styleFieldTone(theme, "answered", a.notes)}`, 1, 0),
+					new Text(
+						`     ${theme.fg("muted", "notes:")} ${styleFieldTone(theme, "answered", terminalDisplayText(a.notes))}`,
+						1,
+						0,
+					),
 				);
 			}
 		}
@@ -169,7 +187,7 @@ export class SubmitTabStrategy implements TabContentStrategy {
 		for (let i = 0; i < this.config.questions.length; i++) {
 			const q = this.config.questions[i];
 			if (!state.answers.has(i)) {
-				missing.push(q.header && q.header.length > 0 ? q.header : `Q${i + 1}`);
+				missing.push(terminalDisplayText(q.header && q.header.length > 0 ? q.header : `Q${i + 1}`));
 			}
 		}
 		const promptText =
@@ -182,7 +200,6 @@ export class SubmitTabStrategy implements TabContentStrategy {
 		if (this.config.submitPicker) {
 			out.push(this.config.submitPicker);
 		} else {
-			// Padding when the picker isn't wired — keeps rendered row count at footerRowCount=5.
 			out.push(new Spacer(1));
 			out.push(new Spacer(1));
 		}
@@ -201,11 +218,15 @@ export class SubmitTabStrategy implements TabContentStrategy {
 export function buildHintText(question: QuestionData | undefined, isMulti: boolean, state: DialogState): string {
 	// While the notes field is open, enter and esc both close it and keep the note.
 	if (state.notesVisible) return [HINT_PART_NOTES_TYPE, HINT_PART_NOTES_CLOSE].join(" · ");
-	const parts: string[] = [HINT_PART_NAV, question?.multiSelect === true ? HINT_PART_TOGGLE : HINT_PART_ENTER];
-	if (question && question.multiSelect !== true && state.focusedOptionHasPreview) {
+	const onOption = question !== undefined && !state.chatFocused && state.optionIndex < question.options.length;
+	const parts: string[] = [
+		HINT_PART_NAV,
+		question?.multiSelect === true && onOption ? HINT_PART_TOGGLE : HINT_PART_ENTER,
+	];
+	if (question && question.multiSelect !== true && onOption && !state.inputMode && state.focusedOptionHasPreview) {
 		parts.push(HINT_PART_NOTES);
 	}
-	if (isMulti) parts.push(HINT_PART_TAB);
+	if (isMulti && (!state.inputMode || state.chatFocused)) parts.push(HINT_PART_TAB);
 	parts.push(HINT_PART_CANCEL);
 	return parts.join(" · ");
 }

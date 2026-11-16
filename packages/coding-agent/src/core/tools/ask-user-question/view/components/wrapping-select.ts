@@ -1,5 +1,6 @@
 import type { Component } from "@bastani/atomic-tui";
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@bastani/atomic-tui";
+import { terminalDisplayText } from "../../../../../utils/terminal-text.ts";
 import { OVERLAY_ACTIVE_ROW_MARKER } from "../../../../extensions/ui-types.js";
 import { ROW_INTENT_META } from "../../state/row-intent.ts";
 import { type FieldTone, fieldTone, rowTone } from "../../state/selectors/field-tone.ts";
@@ -17,8 +18,6 @@ import { type FieldTone, fieldTone, rowTone } from "../../state/selectors/field-
  *   (label is "Type something."). Renders as inline `Input` when active.
  * - `chat`: the abandon-questionnaire escape-hatch row (label is "Chat about this").
  *   Renders as inline `Input` when active.
- * - `next`: the explicit commit-and-advance row appended to multi-select questions
- *   (label is "Next"). Renders without a number / checkbox.
  */
 export type WrappingSelectItem =
 	| { kind: "option"; label: string; description?: string }
@@ -91,7 +90,11 @@ export class WrappingSelect implements Component {
 		theme: WrappingSelectTheme,
 		options: WrappingSelectOptions = {},
 	) {
-		this.items = items;
+		this.items = items.map((item) => ({
+			...item,
+			label: terminalDisplayText(item.label),
+			...(item.description === undefined ? {} : { description: terminalDisplayText(item.description) }),
+		}));
 		this.maxVisible = Math.max(1, maxVisible);
 		this.theme = theme;
 		this.inlineInputEnabled = options.inlineInputEnabled !== false;
@@ -130,7 +133,7 @@ export class WrappingSelect implements Component {
 			return;
 		}
 		this.confirmedIndex = Math.max(0, Math.min(index, this.items.length - 1));
-		this.confirmedLabelOverride = labelOverride;
+		this.confirmedLabelOverride = labelOverride === undefined ? undefined : terminalDisplayText(labelOverride);
 	}
 
 	setInputBuffer(text: string): void {
@@ -232,7 +235,7 @@ export class WrappingSelect implements Component {
 		const confirmedValue = index === this.confirmedIndex ? (this.confirmedLabelOverride ?? "") : "";
 		const value = this.inputBuffer.trim().length > 0 ? this.inputBuffer : confirmedValue;
 		const tone = fieldTone(false, value);
-		const text = tone === "placeholder" ? item.label : value;
+		const text = tone === "placeholder" ? item.label : terminalDisplayText(value);
 		const mark = confirmedValue.length > 0 && value === confirmedValue ? WrappingSelect.CONFIRMED_MARK : "";
 		const fitted = truncateToWidth(text, Math.max(1, contentWidth - visibleWidth(mark)), "…");
 		return [this.theme.field(tone, `${rowPrefix}${fitted}${mark}`)];
@@ -268,9 +271,11 @@ export class WrappingSelect implements Component {
 	}
 
 	private inputTextWithCursor(): string {
-		const cursor = this.clampInputCursor(this.inputCursor ?? this.inputBuffer.length);
-		const before = this.inputBuffer.slice(0, cursor);
-		const after = this.inputBuffer.slice(cursor);
+		const rawCursor = this.clampInputCursor(this.inputCursor ?? this.inputBuffer.length);
+		const text = terminalDisplayText(this.inputBuffer);
+		const cursor = Math.min(terminalDisplayText(this.inputBuffer.slice(0, rawCursor)).length, text.length);
+		const before = text.slice(0, cursor);
+		const after = text.slice(cursor);
 		const [at = ""] = Array.from(after);
 		if (at === "") {
 			return `${before}${WrappingSelect.CURSOR_INVERSE_START} ${WrappingSelect.CURSOR_INVERSE_END}`;

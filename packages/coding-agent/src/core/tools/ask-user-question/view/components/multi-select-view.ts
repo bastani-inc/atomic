@@ -1,5 +1,6 @@
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@bastani/atomic-tui";
 import type { Theme } from "../../../../../modes/interactive/theme/theme.js";
+import { terminalDisplayText } from "../../../../../utils/terminal-text.ts";
 import { OVERLAY_ACTIVE_ROW_MARKER } from "../../../../extensions/ui-types.js";
 import { ROW_INTENT_META } from "../../state/row-intent.ts";
 import { rowTone, styleFieldTone } from "../../state/selectors/field-tone.ts";
@@ -41,7 +42,14 @@ export class MultiSelectView implements StatefulView<MultiSelectViewProps> {
 
 	constructor(theme: Theme, question: QuestionData) {
 		this.theme = theme;
-		this.question = question;
+		this.question = {
+			...question,
+			options: question.options.map((option) => ({
+				...option,
+				label: terminalDisplayText(option.label),
+				description: terminalDisplayText(option.description),
+			})),
+		};
 		this.props = { rows: [], nextActive: false, nextLabel: ROW_INTENT_META.next.label };
 	}
 
@@ -117,8 +125,6 @@ export class MultiSelectView implements StatefulView<MultiSelectViewProps> {
 		// Canonical prefix for OPTION rows: INACTIVE_POINTER + numberWidth digits + NUMBER_SEPARATOR
 		// + UNCHECKED + BOX_LABEL_GAP. State-independent because ACTIVE/INACTIVE pointer share
 		// visibleWidth, CHECKED/UNCHECKED share visibleWidth, and numberWidth is constant per question.
-		// The Next sentinel uses a bare `pointer + "Next"` shape — its width never exceeds this prefix
-		// at any reasonable terminal width, so it's safe to leave it out of the canonical computation.
 		const numberWidth = String(this.question.options.length + 1).length;
 		return (
 			visibleWidth(INACTIVE_POINTER) + numberWidth + visibleWidth(`${NUMBER_SEPARATOR}${UNCHECKED}${BOX_LABEL_GAP}`)

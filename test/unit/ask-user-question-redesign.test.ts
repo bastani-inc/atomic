@@ -145,6 +145,15 @@ describe("ask_user_question dialog (#5224)", () => {
 		assert.ok(rows[row + 1]?.includes("nav | main"), rows.join("\n"));
 	});
 
+	test("side-by-side previews start at a 68-column terminal after frame padding (#5244)", () => {
+		for (const width of [67, 68]) {
+			const dialog = open(THREE, width);
+			dialog.press(TAB, TAB);
+			const firstOption = dialog.inner().find((line) => line.startsWith("❯ 1. Sidebar"));
+			assert.equal(firstOption?.includes("┌"), width === 68);
+		}
+	});
+
 	test("hint lines list exactly the keys of each step", () => {
 		const dialog = open(THREE);
 		assert.equal(dialog.hint(), "↑↓ select · enter choose · tab next question · esc cancel");
@@ -170,6 +179,24 @@ describe("ask_user_question dialog (#5224)", () => {
 		assert.equal(dialog.hint(40), "↑↓ · enter · n · tab · esc");
 		dialog.press("n");
 		assert.equal(dialog.hint(), "type a note · enter/esc close notes");
+	});
+
+	test("hint lines follow the focused option, Next, chat and custom answer rows (#5244)", () => {
+		const multi = open(THREE);
+		multi.press(TAB, DOWN, DOWN);
+		assert.equal(multi.hint(), "↑↓ select · enter choose · tab next question · esc cancel");
+		multi.press(DOWN);
+		assert.equal(multi.hint(), "↑↓ select · enter choose · tab next question · esc cancel");
+		multi.press(TAB);
+		assert.equal(multi.hint(), "↑↓ select · enter choose · n add notes · tab next question · esc cancel");
+		multi.press("\x1b[A");
+		assert.equal(multi.hint(), "↑↓ select · enter choose · tab next question · esc cancel");
+
+		const custom = open(THREE);
+		custom.press(DOWN, DOWN);
+		assert.equal(custom.hint(), "↑↓ select · enter choose · esc cancel");
+		custom.press(TAB);
+		assert.match(custom.inner()[0] ?? "", /1\/3$/);
 	});
 
 	test("enter answers and moves on; esc cancels the whole dialog", () => {

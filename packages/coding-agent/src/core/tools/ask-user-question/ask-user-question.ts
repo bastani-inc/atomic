@@ -1,4 +1,5 @@
 import { Container, type OverlayOptions, Text } from "@bastani/atomic-tui";
+import { terminalDisplayText } from "../../../utils/terminal-text.ts";
 import { experimentalToolSamplingProperty } from "../../experimental.ts";
 import { getHostQuestionnaire } from "../../extensions/host-input.js";
 import type { ToolDefinition } from "../../extensions/types.ts";
@@ -73,9 +74,8 @@ export const askUserQuestionToolSystemPromptContribution = Object.freeze({
 	] as const),
 } as const);
 
-/** What the transcript row remembers between its call and result renders. */
 interface AskUserQuestionRenderState {
-	/** A one-question answer, shown on the call line in place of the question list. */
+	callComponent?: Text;
 	summary?: string;
 }
 
@@ -115,36 +115,39 @@ Preview content is rendered as markdown in a monospace box. Multi-line text with
 		...experimentalToolSamplingProperty(),
 		parameters: QuestionParamsSchema,
 
-		// One line per question in the transcript; a single answered question folds into the call line.
 		renderCall(args, theme, context) {
 			const state = context.state as AskUserQuestionRenderState;
 			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
 			const params = args as unknown as QuestionParams;
-			text.setText(state.summary ?? theme.fg("toolTitle", summarizeQuestions(params)));
+			state.callComponent = text;
+			text.setText(
+				state.summary === undefined
+					? theme.fg("toolTitle", summarizeQuestions(params))
+					: terminalDisplayText(state.summary),
+			);
 			return text;
 		},
 		renderResult(result, _options, theme, context) {
 			const state = context.state as AskUserQuestionRenderState;
 			const container = new Container();
 			const details = result.details as QuestionnaireResult | undefined;
+			const params = context.args as unknown as QuestionParams;
+			const setSummary = (summary: string | undefined) => {
+				state.summary = summary;
+				state.callComponent?.setText(summary ?? theme.fg("toolTitle", summarizeQuestions(params)));
+			};
 			if (!details || !Array.isArray(details.answers) || details.error || context.isError) {
-				if (state.summary !== undefined) {
-					state.summary = undefined;
-					context.invalidate();
-				}
+				setSummary(undefined);
 				const text = result.content
-					.map((part) => (part.type === "text" ? part.text : ""))
+					.map((part) => (part.type === "text" ? terminalDisplayText(part.text) : ""))
 					.filter(Boolean)
 					.join("\n");
 				if (text) container.addChild(new Text(theme.fg("muted", text), 0, 0));
 				return container;
 			}
-			const lines = summarizeAnswers(context.args as unknown as QuestionParams, details);
+			const lines = summarizeAnswers(params, details);
 			const summary = lines.length === 1 ? lines[0] : undefined;
-			if (summary !== state.summary) {
-				state.summary = summary;
-				context.invalidate();
-			}
+			setSummary(summary);
 			if (summary === undefined)
 				for (const line of lines) container.addChild(new Text(theme.fg("muted", line), 0, 0));
 			return container;

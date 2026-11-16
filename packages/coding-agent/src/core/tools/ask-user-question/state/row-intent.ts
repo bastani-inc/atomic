@@ -40,10 +40,6 @@ export const SENTINEL_KINDS: readonly SentinelKind[] = ["other", "chat", "next"]
  * - `livesInMainList` — true iff the row appears in `itemsByTab[i]`. Chat
  *   lives in its own `chatList` (`questionnaire-session.ts:95`) so its row
  *   never enters the main list.
- * - `numbered` — true iff the row contributes to the main-list numbering
- *   offset that `chatNumberingFor` reads. Multi-select Next is the only
- *   numberable=false row that lives in the list; chat is numbered=true but
- *   `livesInMainList=false` so the flag is moot for chat.
  * - `activatesInputMode` — true iff focusing the row should toggle
  *   `state.inputMode = true` and hydrate that row's shared inline-input
  *   owner. Read by `state-reducer.ts` `nav` / `focus_options` /

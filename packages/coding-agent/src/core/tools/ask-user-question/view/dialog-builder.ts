@@ -189,7 +189,8 @@ export class DialogView implements StatefulView<DialogProps> {
 		}
 		lines.push(edge(`╰${"─".repeat(Math.max(0, width - 2))}╯`));
 		const hint = fitHintText(strategy.hintText(state), Math.max(1, width - 2));
-		lines.push(truncateToWidth(`  ${theme.fg("dim", hint)}`, width, ""));
+		const hintLine = `  ${theme.fg("dim", hint)}`;
+		lines.push(visibleWidth(hintLine) > width ? truncateToWidth(hintLine, width, "") : hintLine);
 
 		// Residual rows equalize total height across tabs and strategies; rendered AFTER the hint line. Headings count
 		// too: a question that wraps onto more lines than another must not change the dialog's height.

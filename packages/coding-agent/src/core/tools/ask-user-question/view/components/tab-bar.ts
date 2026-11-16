@@ -1,5 +1,6 @@
 import { truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import type { Theme } from "../../../../../modes/interactive/theme/theme.js";
+import { terminalDisplayText } from "../../../../../utils/terminal-text.ts";
 import type { StatefulView } from "../stateful-view.ts";
 
 /**
@@ -43,7 +44,7 @@ export class TabBar implements StatefulView<TabBarProps> {
 		const step = (label: string, active: boolean, done: boolean): string =>
 			active ? theme.bg("selectedBg", theme.fg("text", label)) : theme.fg(done ? "success" : "muted", label);
 		const steps = [
-			...this.props.tabs.map((tab) => step(tab.label, tab.active, tab.answered)),
+			...this.props.tabs.map((tab) => step(terminalDisplayText(tab.label), tab.active, tab.answered)),
 			step("Review", this.props.submit.active, this.props.submit.allAnswered),
 		].join(theme.fg("dim", " ── "));
 		const activeIndex = this.props.tabs.findIndex((tab) => tab.active);
@@ -51,8 +52,9 @@ export class TabBar implements StatefulView<TabBarProps> {
 		const answered = this.props.tabs.filter((tab) => tab.answered).length;
 		const count = activeIndex >= 0 ? `${activeIndex + 1}/${total}` : `${answered}/${total} answered`;
 		const room = width - visibleWidth(count) - 2;
-		const left = truncateToWidth(steps, Math.max(1, room), "…");
+		const left = visibleWidth(steps) > Math.max(1, room) ? truncateToWidth(steps, Math.max(1, room), "…") : steps;
 		const gap = Math.max(2, width - visibleWidth(left) - visibleWidth(count));
-		return [truncateToWidth(left + " ".repeat(gap) + theme.fg("muted", count), width, "")];
+		const line = left + " ".repeat(gap) + theme.fg("muted", count);
+		return [visibleWidth(line) > width ? truncateToWidth(line, width, "") : line];
 	}
 }
