@@ -615,7 +615,7 @@ describe("agent-decided workflow execution guidance", () => {
 	test("documents positive workflow communication and control guidance", () => {
 		for (const phrase of [
 			"In interactive chat, named workflow launches run in the background",
-			"`/workflow connect <run>`",
+			"`/workflows`",
 			"see agents working",
 			"chat with and steer each stage",
 			"Inspection and control calls",

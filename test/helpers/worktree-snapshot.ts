@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.ts";
@@ -15,6 +15,7 @@ import {
 	runGit,
 	setWorktreeSnapshotGit,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/git.ts";
+import { removeTestDirectory } from "./test-directory-removal.js";
 
 /** The error code for a path below a regular file: POSIX systems say ENOTDIR, Windows reports the path as missing. */
 export const BELOW_FILE_ERRNO = process.platform === "win32" ? "ENOENT" : "ENOTDIR";
@@ -63,6 +64,14 @@ export function assertCaptureUnreadable(result: WorktreeSnapshotCapture, path: s
 	assert.equal(result.status, "unavailable");
 	assertUnreadablePath((result as Extract<WorktreeSnapshotCapture, { status: "unavailable" }>).reason, path, errno);
 }
+
+/**
+ * Windows can keep a restored worktree busy for seconds after the processes that worked in it ended, while the search
+ * indexer, an antivirus scan or a terminated build step's handles still hold it. A removal it refuses is tried again,
+ * 50 ms later each time, for about 20 seconds while the next tests run.
+ */
+const SANDBOX_REMOVAL_RETRIES = 28;
+const SANDBOX_REMOVAL_RETRY_DELAY_MS = 50;
 
 /**
  * Disposable Git repositories whose commands all go through the snapshot runner with an isolated global config, so
@@ -126,6 +135,9 @@ export class GitSandbox {
 
 	dispose(): void {
 		this.restoreResolver();
-		rmSync(this.root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+		removeTestDirectory(this.root, {
+			retries: SANDBOX_REMOVAL_RETRIES,
+			retryDelayMs: SANDBOX_REMOVAL_RETRY_DELAY_MS,
+		});
 	}
 }

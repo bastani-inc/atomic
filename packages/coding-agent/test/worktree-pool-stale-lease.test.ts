@@ -23,6 +23,7 @@ import { afterEach, beforeEach, describe, test } from "vitest";
 import { bunExecutable } from "../../../test/helpers/runtime.js";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
+import { renameWithRetry } from "../src/core/rename-retry.ts";
 import { SessionManager } from "../src/core/session-manager.js";
 import {
 	releaseSessionWorktrees,
@@ -92,7 +93,7 @@ async function recordedSnapshot(): Promise<{ snapshot: WorktreeSnapshot; clone: 
 	sandbox.write(join(clone, "file.txt"), "recorded\n");
 	const capture = await captureWorktreeSnapshot(clone, { settings, blobs: store.snapshotBlobs });
 	if (capture.status !== "captured") throw new Error(`capture ${capture.status}`);
-	renameSync(clone, sandbox.path(`away-${Date.now()}`));
+	await renameWithRetry(clone, sandbox.path(`away-${Date.now()}`));
 	return { snapshot: capture.snapshot, clone };
 }
 

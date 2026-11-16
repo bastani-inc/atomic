@@ -74,8 +74,11 @@ const entries = new Map<string, SubagentChildIndexEntry>();
  * record of its child is saved and found.
  */
 const unsavedRecords = new Map<string, SubagentChildRecord>();
-/** The sessions full records are read from, by session id; held weakly, so a closed session is not kept alive. */
-const readers = new Map<string, WeakRef<RecordReader>>();
+/**
+ * The open copies of each session that full records are read from, by session id, the preferred first; held weakly, so
+ * a closed copy is not kept alive. Another copy of the session stays a reader for when that one is collected (#5252).
+ */
+const readers = new Map<string, WeakRef<RecordReader>[]>();
 const childIdsByTaskId = new Map<string, string>();
 const watchers = new Map<string, Set<WeakRef<object>>>();
 const invalidators = new WeakMap<object, () => void>();
@@ -110,11 +113,34 @@ function notify(key: string): void {
 	}
 }
 
-/** Read full records of `sessionManager`'s session from it; `replace` makes it the reader even if one is registered. */
+/** The open copies of a session's records, the preferred first; copies that were collected are forgotten. */
+function readersOf(sessionId: string): RecordReader[] {
+	const refs = readers.get(sessionId);
+	if (refs === undefined) return [];
+	const live: RecordReader[] = [];
+	const kept = refs.filter((ref) => {
+		const reader = ref.deref();
+		if (reader !== undefined) live.push(reader);
+		return reader !== undefined;
+	});
+	if (kept.length === 0) readers.delete(sessionId);
+	else if (kept.length !== refs.length) readers.set(sessionId, kept);
+	return live;
+}
+
+/**
+ * Read full records of `sessionManager`'s session from it. A reader registered before is still preferred, and this one
+ * is read once that one is collected; `replace` makes it the only reader.
+ */
 export function registerSubagentChildRecordReader(sessionManager: RecordReader, replace = false): void {
 	const sessionId = sessionManager.getSessionId();
-	if (!replace && readers.get(sessionId)?.deref() !== undefined) return;
-	readers.set(sessionId, new WeakRef(sessionManager));
+	if (replace) {
+		readers.set(sessionId, [new WeakRef(sessionManager)]);
+		return;
+	}
+	const live = readersOf(sessionId);
+	if (live.includes(sessionManager)) return;
+	readers.set(sessionId, [...(readers.get(sessionId) ?? []), new WeakRef(sessionManager)]);
 }
 
 function projectionOf(
@@ -144,10 +170,14 @@ function projectionOf(
 
 function savedRecordOf(entry: SubagentChildIndexEntry): SubagentChildRecord {
 	const sessionId = entry.recordedIn ?? entry.ownerSessionId;
-	const reader = sessionId === undefined ? undefined : readers.get(sessionId)?.deref();
-	const saved = entry.entryId === undefined ? undefined : reader?.getEntry(entry.entryId);
-	const data = saved !== undefined && isSubagentChildRecord(saved) ? saved.data : undefined;
-	if (data?.childId === entry.childId) return data;
+	const entryId = entry.entryId;
+	if (sessionId !== undefined && entryId !== undefined) {
+		for (const reader of readersOf(sessionId)) {
+			const saved = reader.getEntry(entryId);
+			const data = saved !== undefined && isSubagentChildRecord(saved) ? saved.data : undefined;
+			if (data?.childId === entry.childId) return data;
+		}
+	}
 	throw new ReleasedChildError("child-record-unreadable", {
 		childId: entry.childId,
 		...(entry.ownerSessionId === undefined ? {} : { ownerSessionId: entry.ownerSessionId }),
@@ -223,7 +253,7 @@ function indexTaskId(record: SubagentChildRecord): void {
  */
 export function findAppendedSubagentChildRecord(record: SubagentChildRecord): SubagentChildRecordLocation | undefined {
 	const sessionId = record.owner?.sessionId;
-	const reader = sessionId === undefined ? undefined : readers.get(sessionId)?.deref();
+	const reader = sessionId === undefined ? undefined : readersOf(sessionId)[0];
 	if (sessionId === undefined || reader === undefined) return undefined;
 	let entry = reader.getLeafEntry();
 	for (let depth = 0; entry !== undefined && depth < APPENDED_ENTRY_SEARCH_DEPTH; depth++) {

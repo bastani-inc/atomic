@@ -3,7 +3,12 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, test, vi } from "vitest";
 import { LOST_RECIPIENT_AFTER_ENV } from "../../packages/intercom/broker/lost-recipients.js";
 import { OUTBOX_BACKUP_POLL_INTERVAL_MS } from "../../packages/intercom/broker/multinode-state-store.js";
-import { type TwoBrokerClient, TwoBrokerHarness } from "../helpers/intercom-two-broker-harness.js";
+import {
+	type TwoBrokerClient,
+	TwoBrokerHarness,
+	type TwoBrokerHarnessOptions,
+	twoBrokerHarnessStartTimeoutMs,
+} from "../helpers/intercom-two-broker-harness.js";
 import { sleep } from "../helpers/runtime.js";
 
 /**
@@ -12,15 +17,22 @@ import { sleep } from "../helpers/runtime.js";
  * once that it is unavailable; one that comes back within the bound still answers.
  */
 
-/** Spawning, killing and restarting real broker processes is the structural cost of this suite. */
-const REAL_BROKERS_HOOK_TIMEOUT_MS = 60_000;
 /** The brokers' shortened lost-recipient bound (`LOST_RECIPIENT_UNAVAILABLE_AFTER_MS` is minutes). */
 const LOST_AFTER_MS = 3_000;
-/** A lost recipient is noticed at the first backup poll past the bound. */
-const TOLD_WITHIN_MS = LOST_AFTER_MS + OUTBOX_BACKUP_POLL_INTERVAL_MS + 15_000;
-const TEST_TIMEOUT_MS = 60_000 + 2 * TOLD_WITHIN_MS;
 /** Every shared database call waits this long, so a kill within 100 ms lands before the departure's first write. */
 const DATABASE_CALL_DELAY_MS = 250;
+const HARNESS_OPTIONS: TwoBrokerHarnessOptions = {
+	databaseCallDelayMs: DATABASE_CALL_DELAY_MS,
+	brokerEnv: { [LOST_RECIPIENT_AFTER_ENV]: String(LOST_AFTER_MS) },
+};
+/** Spawning, killing and restarting real broker processes is the structural cost of this suite. */
+const REAL_BROKERS_HOOK_TIMEOUT_MS = twoBrokerHarnessStartTimeoutMs(HARNESS_OPTIONS);
+/** A lost recipient is noticed at the first backup poll past the bound. */
+const TOLD_WITHIN_MS = LOST_AFTER_MS + OUTBOX_BACKUP_POLL_INTERVAL_MS + 15_000;
+/** Each scenario restarts broker b on the slow database. */
+const BROKER_RESTART_MS = twoBrokerHarnessStartTimeoutMs({ ...HARNESS_OPTIONS, nodes: ["b"] });
+/** A broker restart, the scenario's own work, and up to two waits for an outcome. */
+const TEST_TIMEOUT_MS = BROKER_RESTART_MS + 60_000 + 2 * TOLD_WITHIN_MS;
 const WAIT = { timeout: 45_000, interval: 25 };
 /** How long an outcome that must not arrive twice is given to show up. */
 const SETTLE_MS = 1_500;
@@ -28,10 +40,7 @@ const SETTLE_MS = 1_500;
 let harness: TwoBrokerHarness;
 
 beforeAll(async () => {
-	harness = await TwoBrokerHarness.start({
-		databaseCallDelayMs: DATABASE_CALL_DELAY_MS,
-		brokerEnv: { [LOST_RECIPIENT_AFTER_ENV]: String(LOST_AFTER_MS) },
-	});
+	harness = await TwoBrokerHarness.start(HARNESS_OPTIONS);
 }, REAL_BROKERS_HOOK_TIMEOUT_MS);
 afterAll(() => harness?.cleanup(), REAL_BROKERS_HOOK_TIMEOUT_MS);
 beforeEach(() => harness.ensureBrokersRunning(), REAL_BROKERS_HOOK_TIMEOUT_MS);

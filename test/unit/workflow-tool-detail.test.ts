@@ -511,7 +511,7 @@ describe("tool graph inspection", () => {
 		for (const [status, marker] of [
 			["failed", "✗"],
 			["cached", "↻"],
-			["cancelled", "⊘"],
+			["cancelled", "◼"],
 			["pending", "○"],
 		] as const) {
 			const rendered = renderToolDetail(tool({ status, args: undefined }), { width: 80 });
@@ -1292,7 +1292,7 @@ describe("tool graph inspection", () => {
 		});
 		assert.equal(unbound.handleInput("\r"), true);
 		const collapsed = visibleText(unbound.render(120));
-		assert.match(collapsed, /esc back to graph/);
+		assert.match(collapsed, /esc\/← back to graph/);
 		assert.match(collapsed, /↑↓ pgup\/pgdn scroll/);
 		assert.doesNotMatch(collapsed, /ctrl\+o expand|alt\+e expand/);
 		assert.doesNotMatch(collapsed, / · \s+expand/);

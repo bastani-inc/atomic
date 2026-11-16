@@ -32,7 +32,7 @@ test("graph chrome fills every cell even when run names and footer hints truncat
 	}
 });
 
-test("workflow connect picker fills selected, filter, section and empty-state interiors", async () => {
+test("/workflows run picker fills selected, filter, section and empty-state interiors", async () => {
 	for (const bg of ["#1e1e2e", "#eff1f5"]) {
 		const theme = deriveGraphTheme({ bg });
 		for (const width of [40, 64, 120]) {

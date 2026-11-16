@@ -50,7 +50,7 @@ async function openPoolSessionStore(journal: Parameters<typeof sqlPoolStorage>[0
 	if (storage === undefined) return undefined;
 	const prefix = poolSessionPrefix(storage);
 	const exists = storage.dialect.tableExists(`${prefix}session_owners`);
-	const owners = await storage.transaction((tx) => tx.get(exists.sql, ...exists.params));
+	const owners = await storage.read((executor) => executor.get(exists.sql, ...exists.params));
 	if (owners === undefined) return undefined;
 	return openPoolSessions(storage);
 }
@@ -58,6 +58,9 @@ async function openPoolSessionStore(journal: Parameters<typeof sqlPoolStorage>[0
 /**
  * The pooled-stage session store over a journal's own connection, for a pool whose tables live in that journal: the
  * local SQLite journal it shares, or a shared journal every host opens (#4310). The caller owns the returned store.
+ * A read outside the store's transactions is a read of the journal (`SqlPoolStorage.read`), which never takes the
+ * write lock: a store's open probes its schema with a dozen such reads, and every pooled child opens one in a fresh
+ * worker, so as write transactions they queued every other host's writes behind them on a shared server.
  */
 export async function openPoolSessions(storage: SqlPoolStorage): Promise<SessionStore> {
 	const prefix = poolSessionPrefix(storage);
@@ -66,8 +69,8 @@ export async function openPoolSessions(storage: SqlPoolStorage): Promise<Session
 		dialect: storage.dialect,
 		exec: (sql) => storage.transaction((tx) => tx.exec(sql)),
 		run: (sql, ...params) => storage.transaction((tx) => tx.run(sql, ...params)),
-		get: (sql, ...params) => storage.transaction((tx) => tx.get(sql, ...params)),
-		all: (sql, ...params) => storage.transaction((tx) => tx.all(sql, ...params)),
+		get: (sql, ...params) => storage.read((executor) => executor.get(sql, ...params)),
+		all: (sql, ...params) => storage.read((executor) => executor.all(sql, ...params)),
 		transaction: (body) => storage.transaction(body),
 		close: async () => {},
 	};
