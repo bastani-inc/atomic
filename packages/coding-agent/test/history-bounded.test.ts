@@ -769,7 +769,7 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 			const collected: string[] = [];
 			let url: string | undefined = "history://sessions/big";
 			for (let calls = 0; url !== undefined && calls < 10; calls++) {
-				const out = (await router.search?.(url, request("intra-hit-\\d+"))) ?? "";
+				const out: string = (await router.search?.(url, request("intra-hit-\\d+"))) ?? "";
 				for (const match of out.matchAll(/^history:\/\/sessions\/big:1: (intra-hit-\d+)$/gm)) {
 					collected.push(match[1]!);
 				}
@@ -1639,7 +1639,9 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 					id: "u1",
 					parentId: null,
 					timestamp: new Date(BASE).toISOString(),
-					source: "cache",
+					kind: "compaction",
+					provider: "anthropic",
+					model: "claude",
 					usage: {
 						input: 1,
 						output: 1,
@@ -1648,7 +1650,26 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 						totalTokens: 2,
 						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 					},
-				} as SessionEntry,
+				},
+			],
+			context_compaction: [
+				{
+					type: "context_compaction",
+					id: "cc1",
+					parentId: null,
+					timestamp: new Date(BASE).toISOString(),
+					promptVersion: 1,
+					deletedTargets: [{ kind: "entry", entryId: "a" }],
+					protectedEntryIds: [],
+					stats: {
+						objectsBefore: 2,
+						objectsAfter: 1,
+						objectsDeleted: 1,
+						tokensBefore: 10,
+						tokensAfter: 5,
+						percentReduction: 50,
+					},
+				},
 			],
 		} satisfies Record<SessionEntry["type"], SessionEntry[]>;
 
@@ -1795,7 +1816,8 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 			const seenCapHits: string[] = [];
 			let capUrl: string | undefined = "history://sessions/ml-big";
 			for (let calls = 0; capUrl !== undefined && calls < 10; calls++) {
-				const out = (await capBounded.router.search?.(capUrl, capBounded.request("(?m)^slice2-hit-\\d+"))) ?? "";
+				const out: string =
+					(await capBounded.router.search?.(capUrl, capBounded.request("(?m)^slice2-hit-\\d+"))) ?? "";
 				for (const match of out.matchAll(/^history:\/\/sessions\/ml-big:1: (slice2-hit-\d+) /gm)) {
 					seenCapHits.push(match[1]!);
 				}
