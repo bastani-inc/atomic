@@ -2,7 +2,7 @@ import type { SessionEntry } from "../../session-manager-types.ts";
 import { SqlSnapshotBlobStore, snapshotIndexTables } from "../../worktree-snapshot/blob-store.ts";
 import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteTransactionOptions, SqliteValue } from "../database.js";
 import { dialectOf, type StorageDialect } from "../dialect.js";
-import { SessionBlobError, StorageError, StorageInvalidTextError } from "../errors.js";
+import { SessionBlobError, StorageError, StorageInvalidTextError, StorageSchemaVersionError } from "../errors.js";
 import { applyStorageMigrations } from "../migrations.js";
 import { renderStorageIdentifiers, storageMigrationTable, validateStoragePrefix } from "../prefix.js";
 import { assertStorageSchemaVersion, assertStoredSchemaVersion } from "../schema.js";
@@ -409,7 +409,7 @@ export class SqlSessionStore implements SessionStore {
 		 * Long entries in chunks (#4954): the entry chunks table and the entries table's `chunks` column, 0 for an entry
 		 * stored whole, as every entry written before it was. Older builds read and write these tables unchanged, so the
 		 * sessions meta stays where it is until the first chunked entry (`insertEntries`). Setup is idempotent and runs
-		 * when the current tables or columns are missing.
+		 * when the open finds the schema not current (`currentSchema`).
 		 */
 		const addEntryChunks = async (tx: SqliteExecutor, dialect: StorageDialect) => {
 			const { int, text, blob } = dialect.types;
@@ -427,8 +427,11 @@ export class SqlSessionStore implements SessionStore {
 		};
 		const presence = renderStorageIdentifiers("sessions", SESSION_PRESENCE_TABLES, options.prefix);
 		// A SQLite schema records no ledger, so its idempotent setup would run, under the write lock, at every open. A
-		// schema that is current already opens with reads alone: on a server many processes share, each open otherwise
-		// held the write lock for a dozen round trips while every other writer waited (#4768).
+		// schema that is current skips it: on a server many processes share, each open otherwise held the write lock for a
+		// dozen round trips while every other writer waited (#4768). Such an open writes only when it finds entry chunks
+		// an older process left behind, which it removes in one transaction that checks the schema version first (#5065).
+		// The removal is housekeeping, since no read reaches those rows and a chunked write first deletes its key's rows,
+		// so a connection that refuses writes still opens; a newer schema is still refused.
 		const current = await SqlSessionStore.currentSchema(database, tables, presence.open);
 		if (current !== undefined) {
 			legacyBlobData = current.legacyBlobData;
@@ -436,7 +439,21 @@ export class SqlSessionStore implements SessionStore {
 				database.readOnly !== true &&
 				(await database.get(`SELECT 1 FROM (${orphanedEntryKeys}) AS orphaned LIMIT 1`)) !== undefined
 			)
-				await database.transaction(removeOrphanedEntryChunks);
+				await database
+					.transaction(async (tx) => {
+						await assertStoredSchemaVersion(
+							tx,
+							{ sql: `SELECT schema_version FROM ${tables.meta}` },
+							"sessions",
+							SESSION_SCHEMA_VERSION,
+							"schema_version",
+							SESSION_SCHEMA_VERSION_UNCHUNKED,
+						);
+						await removeOrphanedEntryChunks(tx);
+					})
+					.catch((error: Error) => {
+						if (error instanceof StorageSchemaVersionError) throw error;
+					});
 		} else {
 			await applyStorageMigrations(
 				database,
@@ -467,9 +484,10 @@ export class SqlSessionStore implements SessionStore {
 	}
 
 	/**
-	 * What the open's setup would find, read without the write lock, when the setup would change nothing: every table
-	 * and column of both domains exists and the sessions meta holds only versions this build supports. Undefined otherwise, and
-	 * always on a database with versioned migrations, whose ledger the setup checks.
+	 * What the open's setup would find, read without the write lock, when its schema steps would change nothing: every
+	 * table and column of both domains exists and the sessions meta holds only versions this build supports. Undefined
+	 * otherwise, and always on a database with versioned migrations, whose ledger the setup checks. Leftover entry
+	 * chunks are not part of the schema: the open removes them separately.
 	 */
 	private static async currentSchema(
 		database: SqliteDatabase,
@@ -490,7 +508,10 @@ export class SqlSessionStore implements SessionStore {
 		const versions = await database.all(`SELECT schema_version FROM ${tables.meta}`);
 		if (
 			versions.length === 0 ||
-			versions.some((row) => row.schema_version !== 1 && row.schema_version !== SESSION_SCHEMA_VERSION)
+			versions.some(
+				(row) =>
+					row.schema_version !== SESSION_SCHEMA_VERSION_UNCHUNKED && row.schema_version !== SESSION_SCHEMA_VERSION,
+			)
 		)
 			return undefined;
 		const legacy = dialect.columnExists(tables.blobs, "data");

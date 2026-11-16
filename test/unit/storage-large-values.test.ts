@@ -2,9 +2,12 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { describe, test } from "vitest";
 import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.js";
-import type { SqliteDatabase, SqliteRow } from "../../packages/coding-agent/src/core/storage/database.js";
+import type { SqliteDatabase, SqliteRow, SqliteValue } from "../../packages/coding-agent/src/core/storage/database.js";
 import { StorageError, StorageSchemaVersionError } from "../../packages/coding-agent/src/core/storage/errors.js";
-import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
+import {
+	openNodeSqliteDatabase,
+	wrapNodeSqliteDatabase,
+} from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { assertStorageSchemaVersion } from "../../packages/coding-agent/src/core/storage/schema.js";
 import {
 	SESSION_SUMMARY_TEXT_CHARS,
@@ -297,6 +300,69 @@ describe("a session store under a libSQL server's size limits (#4954)", () => {
 			assert.equal(
 				await count(writable, "SELECT count(*) AS n FROM session_entry_chunks"),
 				chunksBefore - Number(orphan),
+			);
+		});
+	});
+
+	test.each([false, true])(
+		"session stores open on a wrapped read-only connection with orphan chunks present=%s (#4954)",
+		async (orphan) => {
+			await withNodeSqliteDatabase(async (subject) => {
+				const database = subject.database;
+				const store = await SqlSessionStore.open(database);
+				const entries = [message("large", null, "x".repeat(2 * MiB))];
+				await store.create(header(), entries);
+				if (orphan) {
+					await database.run(
+						"INSERT INTO session_entry_chunks (session_id, seq, idx, data) VALUES (?, ?, ?, ?)",
+						"deleted-session",
+						1,
+						0,
+						new Uint8Array([1, 2, 3]),
+					);
+				}
+				const chunksBefore = await count(database, "SELECT count(*) AS n FROM session_entry_chunks");
+				const connection = new DatabaseSync(database.descriptor.location, { readOnly: true });
+				try {
+					const readOnly = wrapNodeSqliteDatabase(connection);
+					const reader = await SqlSessionStore.open(readOnly);
+					assert.deepEqual((await reader.load("session")).entries, entries);
+					assert.equal(await count(readOnly, "SELECT count(*) AS n FROM session_entry_chunks"), chunksBefore);
+					await readOnly.close();
+				} finally {
+					connection.close();
+				}
+			});
+		},
+	);
+
+	test("opening a store leaves chunk rows alone once a newer build has upgraded the sessions schema (#5065)", async () => {
+		await withNodeSqliteDatabase(async ({ database }) => {
+			const store = await SqlSessionStore.open(database);
+			await store.create(header(), [message("large", null, "x".repeat(2 * MiB))]);
+			await database.run(
+				"INSERT INTO session_entry_chunks (session_id, seq, idx, data) VALUES (?, ?, ?, ?)",
+				"newer-build",
+				1,
+				0,
+				new Uint8Array([1, 2, 3]),
+			);
+			const get = database.get.bind(database);
+			database.get = (async (sql: string, ...params: SqliteValue[]) => {
+				const row = await get(sql, ...params);
+				if (sql.includes("AS orphaned")) await database.run("UPDATE session_meta SET schema_version = 3");
+				return row;
+			}) as typeof database.get;
+			try {
+				await SqlSessionStore.open(database).catch((error: Error) => {
+					assert.ok(error instanceof StorageSchemaVersionError, String(error));
+				});
+			} finally {
+				database.get = get;
+			}
+			assert.equal(
+				await count(database, "SELECT count(*) AS n FROM session_entry_chunks WHERE session_id = 'newer-build'"),
+				1,
 			);
 		});
 	});

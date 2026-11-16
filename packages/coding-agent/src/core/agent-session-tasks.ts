@@ -128,7 +128,7 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 			const deliver = () =>
 				this.sendCustomMessage(
 					message,
-					restored
+					restored || !task
 						? { triggerTurn: false, stageAdmissionKey: envelope.completionId }
 						: { triggerTurn: true, persistWhenStreaming: true, stageAdmissionKey: envelope.completionId },
 				);
@@ -139,7 +139,7 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 				}).completion;
 			}
 			// A restored notice admitted mid-turn waits in memory for the turn to end; it is acknowledged once saved (#5047).
-			const saved = restored ? pendingCustomMessageSaved(this, envelope.completionId) : undefined;
+			const saved = restored || !task ? pendingCustomMessageSaved(this, envelope.completionId) : undefined;
 			return saved === undefined ? undefined : { saved };
 		},
 		// Each notice holds its task's record until it is delivered, so a burst of finishes cannot evict what the

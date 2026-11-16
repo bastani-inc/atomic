@@ -1,4 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
+import { sqliteDialect } from "../../packages/coding-agent/src/core/storage/dialect.js";
 
 /**
  * Now on the database clock, in milliseconds: the system clock SQLite reads, which the node-sqlite writers' queue
@@ -8,7 +9,7 @@ import { DatabaseSync } from "node:sqlite";
 export function databaseNow(): number {
 	const clock = new DatabaseSync(":memory:");
 	try {
-		return Number(clock.prepare("SELECT CAST(unixepoch('subsec') * 1000 AS INTEGER) AS now").get()!.now);
+		return Number(clock.prepare(`SELECT ${sqliteDialect.nowMs} AS now`).get()!.now);
 	} finally {
 		clock.close();
 	}
@@ -29,7 +30,7 @@ export function freezeDatabaseClock(nowMs: number): FrozenDatabaseClock {
 	let current = nowMs;
 	const prepare = DatabaseSync.prototype.prepare;
 	DatabaseSync.prototype.prepare = function (this: DatabaseSync, sql: string) {
-		return prepare.call(this, sql.includes("unixepoch(") ? `SELECT ${current} AS now` : sql);
+		return prepare.call(this, sql === `SELECT ${sqliteDialect.nowMs} AS now` ? `SELECT ${current} AS now` : sql);
 	} as typeof prepare;
 	return {
 		set: (next) => {
