@@ -183,7 +183,7 @@ describe("StageChatView overlay custom UI", () => {
 		const second = view.render(100).map(stripAnsi);
 		const labeled = first.filter((line) => line.includes("[stage: review-a]"));
 		assert.equal(labeled.length, 1, `expected one stage label:\n${first.join("\n")}`);
-		assert.match(labeled[0]!, /^\[stage: review-a\]─+$/);
+		assert.match(labeled[0]!, /^╭\[stage: review-a\]─+╮$/);
 		assert.equal(visibleWidth(labeled[0]!), 100);
 		assert.equal(
 			second.filter((line) => line.includes("[stage: review-a]")).length,

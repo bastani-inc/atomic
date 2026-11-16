@@ -6,6 +6,8 @@ import type { HostInputFormField } from "../../packages/coding-agent/src/core/ex
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import { HostInputFormComponent } from "../../packages/coding-agent/src/modes/interactive/components/host-input-form.ts";
 import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
+import type { WorkflowInputEntry } from "../../packages/workflows/src/extension/render-result.ts";
+import { openHostInputsForm } from "../../packages/workflows/src/tui/host-input-form.ts";
 
 class QuietTerminal implements Terminal {
 	columns = 100;
@@ -92,4 +94,45 @@ test("↓ on an unchosen select picks the first choice, and ↑ the last (#5224)
 	const up = form([{ name: "mode", type: "select", required: true, choices: ["a", "b", "c"], initialValue: "" }]);
 	up.component.handleInput("\x1b[A");
 	assert.match(up.text(), /● c/);
+});
+
+test("whitespace-only optional integer, number, and select fields in the host form are omitted from workflow values (#5245)", async () => {
+	const fields: WorkflowInputEntry[] = [
+		{ name: "retries", type: "integer" },
+		{ name: "budget", type: "number" },
+		{ name: "mode", type: "select", choices: ["fast", "careful"] },
+	];
+	let rendered = "";
+	const result = await openHostInputsForm(
+		{
+			hostInputForm: (request) =>
+				new Promise((resolve) => {
+					const component = new HostInputFormComponent(
+						new TuiMainScreen(new QuietTerminal()),
+						theme,
+						new KeybindingsManager(),
+						request,
+						{
+							onSubmit: (values) => resolve(values),
+							onCancel: () => resolve(undefined),
+						},
+					);
+					component.handleInput(" ");
+					component.handleInput("\t");
+					component.handleInput(" ");
+					rendered = component
+						.render(90)
+						.map((line) => stripVTControlCharacters(line))
+						.join("\n");
+					component.handleInput("\t");
+					component.handleInput("\t");
+					component.handleInput("\r");
+				}),
+		},
+		{ workflowName: "ralph", fields, prefilled: { mode: " " } },
+	);
+	assert.match(rendered, /retries +optional · ✓/);
+	assert.match(rendered, /budget +optional · ✓/);
+	assert.match(rendered, /mode +optional · ✓/);
+	assert.deepEqual(result, { kind: "run", values: {} });
 });

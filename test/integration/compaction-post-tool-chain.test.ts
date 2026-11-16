@@ -173,7 +173,7 @@ test("post-tool preflight: every model fails, the turn still completes on the fr
 				.render(200)
 				.join("\n"),
 		);
-		assert.ok(rendered.includes("✻ Context cleared (compaction degraded)"), rendered);
+		assert.ok(rendered.includes("∀ Context cleared (compaction degraded)"), rendered);
 
 		// 7-8: exactly one follow-up chat request, and it finished the original turn.
 		assert.equal(traffic.chat.length, 2);

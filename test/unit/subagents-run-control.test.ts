@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentSession, DetachedToolCall, DetachedToolResult, ExtensionContext } from "@bastani/atomic";
-import { afterEach, test } from "vitest";
+import { afterEach, test, vi } from "vitest";
 import {
 	AgentWakeDispatcher,
 	agentWakeDispatcher,
@@ -464,6 +464,11 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 			};
 		}
 		const gate = [...state.finishOn].find(([marker]) => task.includes(marker))?.[1];
+		// The scripted session saves the tool results a woken or resumed run carries before its prompt gate, as a real
+		// session saves them before it continues their turn, so that gate cannot hold such a run before it saved them: a
+		// gated one waits before it starts instead, where it has saved none of them, until its gate opens or it is stopped
+		// (#5012).
+		if (gate && options.resumeToolResults?.length) await openedOrStopped(gate.promise, options.signal);
 		const onSession = state.onSession ? { onSession: state.onSession } : {};
 		const disposeGate = state.disposeGate;
 		const dispose = gate && disposeGate ? { dispose: () => disposeGate.promise } : {};
@@ -504,6 +509,15 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 		removeTempDirectory(cwd);
 	});
 	return state;
+}
+
+/** Settles once `gate` opens or `signal` aborts, as a run's stop aborts it. */
+function openedOrStopped(gate: Promise<void>, signal: AbortSignal | undefined): Promise<void> {
+	return new Promise((resolve) => {
+		if (signal?.aborted) return resolve();
+		signal?.addEventListener("abort", () => resolve(), { once: true });
+		void gate.then(resolve);
+	});
 }
 
 /** Discovery as the default scope does it: a project agent shadows a user agent of the same name in `both`. */
@@ -1770,14 +1784,14 @@ async function restoreStartedChild(
 	runId: string,
 	options: Partial<RunSyncOptions>,
 	launchAgent?: AgentConfig,
-	beforeRestore?: () => void,
+	beforeRestore?: () => void | Promise<void>,
 ): Promise<{ task: string; options: RunSyncOptions; agent: AgentConfig | undefined; taskId: string }> {
 	await h.admit(runId, undefined, options, launchAgent);
 	const record = await h.waitForLatest(`${runId}:0`, (candidate) => candidate.launchLeafId !== undefined);
 	await h.closeOwnerAndReopen("session-close");
 	await sleep(50);
 	assert.equal(h.latest(record.childId)?.state, "running", "closing its owner records nothing terminal");
-	beforeRestore?.();
+	await beforeRestore?.();
 	const [outcome] = await restoreSubagentChildren(h.deps, h.ctx);
 	assert.ok(outcome?.kind === "restored", JSON.stringify(outcome));
 	const restarted = h.runs.at(-1);
@@ -1880,7 +1894,9 @@ function startedOn(h: Harness, childId: string, taskId: string): { model?: strin
 		.getEntries()
 		.filter(isSubagentChildRecord)
 		.map((entry) => entry.data as SubagentChildRecord)
-		.find((record) => record.childId === childId && record.taskId === taskId && record.launchLeafId !== undefined);
+		.findLast(
+			(record) => record.childId === childId && record.taskId === taskId && record.launchLeafId !== undefined,
+		);
 	assert.ok(started, `the launch of ${childId} as ${taskId} never recorded what it started on`);
 	return {
 		...(started.launchModel ? { model: started.launchModel } : {}),
@@ -1986,6 +2002,107 @@ test("a started child restored after a restart keeps its own model and thinking 
 		thinking: "high",
 	});
 	assert.equal(restarted.options.currentModel, "anthropic/claude-sonnet");
+});
+
+test("restoring a compacted forked child keeps launch-relative model changes without loading its transcript (#5249)", async () => {
+	const h = harness();
+	usableModels(h, [sonnet, haiku]);
+	await h.sessionManager.appendModelChange(sonnet.provider, sonnet.id);
+	await h.sessionManager.appendThinkingLevelChange("high");
+	const forked = await forkFromParentConversation(h);
+	let childId: string | undefined;
+	const original = SessionManager.prototype.loadFullHistory;
+	const hydrate = vi.spyOn(SessionManager.prototype, "loadFullHistory").mockImplementation(function (
+		this: SessionManager,
+	) {
+		if (this.getSessionId() === childId) throw new Error("compacted child history must stay unloaded");
+		return original.call(this);
+	});
+	try {
+		const restarted = await restoreStartedChild(
+			h,
+			"compacted-model",
+			{ ...admittedOnSonnetHigh, sessionManager: forked },
+			undefined,
+			async () => {
+				const record = h.latest("compacted-model:0");
+				assert.ok(record?.childSessionId);
+				assert.equal(record.launchLeafId, forked.getLeafId());
+				const source = record.childSessionFile
+					? await SessionManager.open(record.childSessionFile, undefined, record.cwd)
+					: await SessionManager.open(h.sessionManager.getSessionStore(), record.childSessionId, record.cwd);
+				await source.appendMessage({ role: "user", content: "old turn", timestamp: 1 });
+				await source.appendModelChange(haiku.provider, haiku.id);
+				await source.appendThinkingLevelChange("low");
+				await source.appendCompaction("summary", null, 100, {
+					strategy: "verbatim-lines",
+					promptVersion: 6,
+					parameters: { compression_ratio: 0.5, preserve_recent: 0, query: "" },
+					stats: {
+						linesBefore: 1,
+						linesDeleted: 1,
+						linesKept: 0,
+						rangeCount: 1,
+						tokensBefore: 100,
+						tokensAfter: 10,
+						percentReduction: 90,
+					},
+					rung: "planned",
+				});
+				childId = source.getSessionId();
+			},
+		);
+		assert.deepEqual(startedOn(h, "compacted-model:0", restarted.taskId), {
+			model: `${haiku.provider}/${haiku.id}`,
+			thinking: "low",
+		});
+
+		await h.sessionManager.appendModelChange(haiku.provider, haiku.id);
+		await h.sessionManager.appendThinkingLevelChange("low");
+		const inheritedFork = await forkFromParentConversation(h);
+		const inheritedRestarted = await restoreStartedChild(
+			h,
+			"compacted-inherited-model",
+			{ ...admittedOnSonnetHigh, sessionManager: inheritedFork },
+			undefined,
+			async () => {
+				const record = h.latest("compacted-inherited-model:0");
+				assert.ok(record?.childSessionId);
+				const { launchLeafSeq: _seq, ...legacyRecord } = record;
+				await h.sessionManager.appendCustomEntry(SUBAGENT_CHILD_RECORD_TYPE, {
+					...legacyRecord,
+					launchModel: `${sonnet.provider}/${sonnet.id}`,
+					launchThinkingLevel: "high",
+				});
+				const source = record.childSessionFile
+					? await SessionManager.open(record.childSessionFile, undefined, record.cwd)
+					: await SessionManager.open(h.sessionManager.getSessionStore(), record.childSessionId, record.cwd);
+				await source.appendMessage({ role: "user", content: "old turn", timestamp: 1 });
+				await source.appendCompaction("summary", null, 100, {
+					strategy: "verbatim-lines",
+					promptVersion: 6,
+					parameters: { compression_ratio: 0.5, preserve_recent: 0, query: "" },
+					stats: {
+						linesBefore: 1,
+						linesDeleted: 1,
+						linesKept: 0,
+						rangeCount: 1,
+						tokensBefore: 100,
+						tokensAfter: 10,
+						percentReduction: 90,
+					},
+					rung: "planned",
+				});
+				childId = source.getSessionId();
+			},
+		);
+		assert.deepEqual(startedOn(h, "compacted-inherited-model:0", inheritedRestarted.taskId), {
+			model: `${sonnet.provider}/${sonnet.id}`,
+			thinking: "high",
+		});
+	} finally {
+		hydrate.mockRestore();
+	}
 });
 
 test("a never-started queued child admitted outside any Intercom group stays out of the group its parent joined later (#3784)", async () => {
@@ -2961,7 +3078,7 @@ test("a resume's message is delivered as written, whether or not the child had h
 	const held = (await h.launch("literal2")).record;
 	h.onSession = undefined;
 	const session = await live.promise;
-	const steer = "/workflow attach run-1";
+	const steer = "/workflows run-1";
 	await session.steer(steer);
 	await h.closeOwnerAndReopen("session-close");
 	await h.waitForLatest(held.childId, (candidate) => candidate.heldMessages !== undefined);
@@ -4076,6 +4193,8 @@ test("after an owner restart, a reply to a released child's ask wakes it with th
 	);
 	assert.ok(woken.taskId);
 	await settled(h, woken.taskId);
+	// It continued the turn with both results and finished, and its record no longer holds the reply.
+	await h.waitForLatest(`${runId}:0`, (record) => record.taskId === woken.taskId && clearedOk(record));
 
 	const wake = h.runs.find((run) => run.options.resumeToolResults !== undefined);
 	assert.ok(wake, "the reply wakes the child");
@@ -4106,7 +4225,10 @@ test("after an owner restart, a resume before the ask's reply keeps the ask wait
 	bindProcessWakes(h);
 
 	const resumed = await h.call({ action: "resume", id: `${runId}:0`, message: "carry on" });
-	await settled(h, resumedTaskId(resumed));
+	const taskId = resumedTaskId(resumed);
+	await settled(h, taskId);
+	// It continued the turn with those results and finished, holding none of them.
+	await h.waitForLatest(`${runId}:0`, (record) => record.taskId === taskId && clearedOk(record));
 
 	const run = h.runs.find((item) => item.options.resumeToolResults !== undefined);
 	assert.ok(run);
@@ -4129,7 +4251,10 @@ test("after an owner restart, a paused released child waiting only on a detached
 	bindProcessWakes(h);
 
 	const resumed = await h.call({ action: "resume", id: `${runId}:0`, message: "carry on" });
-	await settled(h, resumedTaskId(resumed));
+	const taskId = resumedTaskId(resumed);
+	await settled(h, taskId);
+	// It continued the turn with those results and finished, holding none of them.
+	await h.waitForLatest(`${runId}:0`, (record) => record.taskId === taskId && clearedOk(record));
 
 	const run = h.runs.find((item) => item.options.resumeToolResults !== undefined);
 	assert.ok(run, "the resume continues the turn the call was made in");
@@ -4717,11 +4842,15 @@ test("a result batched with a resume is kept for the child when the resumed run 
 	// The resumed run is paused before it saved the result.
 	await h.waitForLatest(childId, (record) => record.state === "running");
 	await h.call({ action: "pause", id: childId });
-	await h.waitForLatest(childId, (record) => record.terminalStatus === "paused");
+	const paused = await h.waitForLatest(childId, (record) => record.terminalStatus === "paused");
 	h.finishOn.clear();
 
 	await h.call({ action: "resume", id: childId });
-	await h.waitForLatest(childId, (record) => h.runs.length === 3 && record.state === "terminal");
+	// That run continues the turn with the result and finishes, and the record no longer holds it.
+	await h.waitForLatest(
+		childId,
+		(record) => h.runs.length === 3 && record.taskId !== paused.taskId && clearedOk(record),
+	);
 
 	assert.deepEqual(h.runs.at(-1)?.options.resumeToolResults, [green], "the resume after the pause hands it over");
 });

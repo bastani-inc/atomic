@@ -36,6 +36,22 @@ test("a statement outside a transaction that the server answered busy runs again
 	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), 1);
 });
 
+test("a statement the server answered busy on the reused stream runs again on that stream, opening no other (#5151)", async () => {
+	const fake = await server();
+	const database = await open(fake.url);
+	await database.exec("CREATE TABLE events(n INTEGER NOT NULL)");
+	await database.run("INSERT INTO events VALUES (1)");
+	fake.fail(BUSY);
+	await database.run("INSERT INTO events VALUES (2)");
+	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), 2);
+	const second = fake.pipelines.filter((pipeline) => pipeline.sql.includes("INSERT INTO events VALUES (2)"));
+	assert.deepEqual(
+		second.map((pipeline) => pipeline.continuesStream),
+		[true, true],
+		"answered busy on the kept stream, then sent again on it",
+	);
+});
+
 test("a server busy for a moment is asked again within a few short waits", async () => {
 	const fake = await server();
 	const database = await open(fake.url);

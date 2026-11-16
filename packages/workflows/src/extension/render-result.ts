@@ -53,19 +53,34 @@ import { getWorkflowStatusRenderRuns } from "./workflow-status-summary.js";
  * canonical `RunSnapshot` shape directly; the intermediate `runs` projection
  * is gone. */
 
+export type WorkflowInputJson =
+	| string
+	| number
+	| boolean
+	| null
+	| readonly WorkflowInputJson[]
+	| { readonly [key: string]: WorkflowInputJson };
+
 export interface WorkflowInputEntry {
 	name: string;
 	type: string;
 	description?: string;
 	required?: boolean;
 	default?: unknown;
-	/**
-	 * Allowed values when `type` is `"select"` — surfaces in the picker as a
-	 * radio row and in the pretty inputs listing as a `values:` line.
-	 */
 	choices?: readonly string[];
-	/** Optional hint shown when the field is empty in the interactive picker. */
 	placeholder?: string;
+	const?: string | number | boolean;
+	minimum?: number;
+	maximum?: number;
+	exclusiveMinimum?: number;
+	exclusiveMaximum?: number;
+	multipleOf?: number;
+	minLength?: number;
+	maxLength?: number;
+	pattern?: string;
+	format?: string;
+	schema?: { readonly [key: string]: WorkflowInputJson };
+	validationDeferred?: boolean;
 }
 
 /**

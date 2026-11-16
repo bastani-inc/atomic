@@ -116,7 +116,10 @@ export function runOwnerlessChild(input: {
 		[input.options.signal, input.ownerSignal, stopper.signal].filter((candidate) => candidate !== undefined),
 	);
 	let childSession: Pick<SubagentChildRecordInput, "childSessionId" | "childSessionFile"> = {};
-	let childLaunch: Pick<SubagentChildRecordInput, "launchModel" | "launchThinkingLevel" | "launchLeafId"> = {};
+	let childLaunch: Pick<
+		SubagentChildRecordInput,
+		"launchModel" | "launchThinkingLevel" | "launchLeafId" | "launchLeafSeq"
+	> = {};
 	let stoppedBeforeDispatch = false;
 	const forked = input.forked ?? (input.options.sessionManager !== undefined && input.options.resumeSession !== true);
 	const record = (
@@ -220,6 +223,7 @@ export function runOwnerlessChild(input: {
 						...(started.model ? { launchModel: started.model } : {}),
 						...(started.thinking ? { launchThinkingLevel: started.thinking } : {}),
 						launchLeafId: started.leafId,
+						launchLeafSeq: started.leafSeq,
 					};
 					record("running");
 				},

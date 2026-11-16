@@ -1,6 +1,10 @@
-import { modelsAreEqual } from "@bastani/atomic-ai/compat";
+import type { ThinkingLevel } from "@bastani/atomic-agent-core";
+import { type Api, type Model, modelsAreEqual } from "@bastani/atomic-ai/compat";
 import { failureDebugFields, reportDebug } from "../../core/debug.ts";
+import { DEFAULT_THINKING_LEVEL } from "../../core/defaults.ts";
+import { formatModelLabel } from "../../core/model-label.ts";
 import { deduplicateDiagnostics } from "../../core/settings-diagnostics.ts";
+import { recordStartupThinkingLevel } from "../../core/startup-thinking-level.ts";
 import { loadAllHighlightLanguages } from "../../utils/syntax-highlight.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
@@ -11,6 +15,7 @@ import {
 	resolveModelScopeWithDiagnostics,
 	resolveRestoredModelReference,
 	setRegisteredThemes,
+	uncachedCopilotModelHint,
 } from "./interactive-mode-deps.ts";
 import { releaseStartupChatOutput } from "./interactive-startup-chat-container.ts";
 import { reportUnavailableTools } from "./interactive-unavailable-tools.ts";
@@ -52,6 +57,14 @@ InteractiveModeBase.prototype.ensureDeferredStartupComplete = async function (
  * the same post-load UI wiring as /reload and discloses loaded resources.
  */
 InteractiveModeBase.prototype.completeDeferredStartup = async function (this: InteractiveModeBase): Promise<void> {
+	let fallbackModelsChecked = false;
+	const checkFallbackModels = () => {
+		if (fallbackModelsChecked) return;
+		fallbackModelsChecked = true;
+		for (const diagnostic of this.options.deferredFallbackModelCheck?.(this.session) ?? []) {
+			this.showWarning(diagnostic.message);
+		}
+	};
 	try {
 		await this.bindCurrentSessionExtensions();
 		const completedStartupTrust = Boolean(await this.runtimeHost?.completeStartup?.());
@@ -74,12 +87,16 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function (this: In
 		await this.themeController.applyFromSettings();
 		this.setupAutocompleteProvider();
 		this.setupExtensionShortcuts(this.session.extensionRunner);
-		if (completedStartupTrust) {
-			showSessionNotices(this, this.runtimeHost?.services.diagnostics);
-		} else {
-			await applyDeferredModelScope(this);
+		try {
+			if (completedStartupTrust) {
+				showSessionNotices(this, this.runtimeHost?.services.diagnostics);
+			} else {
+				await applyDeferredModelScope(this);
+			}
+			await this.retryDeferredModelRestore(this.startupNoticesContainer);
+		} finally {
+			checkFallbackModels();
 		}
-		await this.retryDeferredModelRestore(this.startupNoticesContainer);
 		this.showLoadedResources({
 			force: true,
 			showDiagnosticsWhenQuiet: true,
@@ -108,6 +125,7 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function (this: In
 		}
 		this.deferredStartupPending = false;
 		this.showError(`Extension loading failed: ${error instanceof Error ? error.message : String(error)}`);
+		checkFallbackModels();
 		// The RESOURCES disclosure will not render; surface the held warning.
 		void this.maybeWarnAboutAnthropicSubscriptionAuth(undefined, this.startupNoticesContainer);
 	} finally {
@@ -122,9 +140,7 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function (this: In
 
 export async function applyDeferredModelScope(mode: InteractiveModeBase): Promise<void> {
 	const patterns = mode.options.deferredModelScopePatterns;
-	if (!patterns || patterns.length === 0) {
-		return;
-	}
+	if (!patterns || patterns.length === 0) return;
 
 	const { scopedModels, diagnostics } = await resolveModelScopeWithDiagnostics(patterns, mode.session.modelRuntime);
 	for (const diagnostic of deduplicateDiagnostics(diagnostics)) {
@@ -136,30 +152,48 @@ export async function applyDeferredModelScope(mode: InteractiveModeBase): Promis
 		return;
 	}
 
-	const currentModel = mode.session.model;
-	if (currentModel && scopedModels.some((scoped) => modelsAreEqual(scoped.model, currentModel))) {
-		return;
-	}
-
 	const savedProvider = mode.settingsManager.getDefaultProvider();
 	const savedModelId = mode.settingsManager.getDefaultModel();
 	const savedModel =
 		savedProvider && savedModelId ? mode.session.modelRuntime.getModel(savedProvider, savedModelId) : undefined;
 	const preferred = savedModel ? scopedModels.find((scoped) => modelsAreEqual(scoped.model, savedModel)) : undefined;
 	const nextScopedModel = preferred ?? scopedModels[0];
+	const currentModel = mode.session.model;
+	if (currentModel && modelsAreEqual(currentModel, nextScopedModel.model)) {
+		return;
+	}
 	if (mode.session.modelRuntime.hasConfiguredAuth(nextScopedModel.model.provider)) {
 		await mode.session.setModel(nextScopedModel.model);
-		if (nextScopedModel.thinkingLevel && !mode.options.deferredModelScopePreserveThinking) {
-			await mode.session.setThinkingLevel(nextScopedModel.thinkingLevel);
-		}
+		await mode.session.setThinkingLevel(
+			startupThinkingLevel(mode, nextScopedModel.model, false, nextScopedModel.thinkingLevel),
+		);
 	}
 }
 
-/**
- * Session-restored models and complete settings defaults may depend on an
- * extension provider. Re-evaluate them after deferred registration finishes,
- * then surface only the final warning state.
- */
+function startupThinkingLevel(
+	mode: InteractiveModeBase,
+	model: Model<Api>,
+	continued: boolean,
+	scopedThinkingLevel?: ThinkingLevel,
+): ThinkingLevel {
+	return (
+		mode.options.deferredStartupThinkingLevel ??
+		scopedThinkingLevel ??
+		(continued ? undefined : mode.settingsManager.getModelThinkingLevel(model.provider, model.id)) ??
+		mode.settingsManager.getDefaultThinkingLevel() ??
+		DEFAULT_THINKING_LEVEL
+	);
+}
+
+async function selectStartupModel(mode: InteractiveModeBase, model: Model<Api>, continued: boolean): Promise<void> {
+	await mode.session.setModel(model);
+	await mode.session.setThinkingLevel(startupThinkingLevel(mode, model, continued));
+	const savedThinkingLevel = mode.options.deferredSavedThinkingLevel;
+	if (savedThinkingLevel !== undefined) {
+		await recordStartupThinkingLevel(mode.sessionManager, savedThinkingLevel, mode.session.thinkingLevel);
+	}
+}
+
 InteractiveModeBase.prototype.retryDeferredModelRestore = async function (
 	this: InteractiveModeBase,
 	targetContainer?: Container,
@@ -167,10 +201,10 @@ InteractiveModeBase.prototype.retryDeferredModelRestore = async function (
 	const preliminaryFallbackMessage = this.options.modelFallbackMessage;
 	if (!preliminaryFallbackMessage) return;
 
-	const savedModel = this.sessionManager.buildSessionContext().model;
-	if (!savedModel && this.session.model && this.session.modelRuntime.hasConfiguredAuth(this.session.model.provider)) {
-		return;
-	}
+	const sessionContext = this.sessionManager.buildSessionContext();
+	const savedModel = sessionContext.model;
+	const continued = sessionContext.messages.length > 0;
+	let restoreFailure: string | undefined;
 	if (savedModel) {
 		const restoredModel = await resolveRestoredModelReference(
 			savedModel.provider,
@@ -178,32 +212,47 @@ InteractiveModeBase.prototype.retryDeferredModelRestore = async function (
 			this.session.modelRuntime,
 		);
 		if (restoredModel && this.session.modelRuntime.hasConfiguredAuth(restoredModel.provider)) {
-			await this.session.setModel(restoredModel);
+			const selectedModel = this.session.model;
+			if (!selectedModel || !modelsAreEqual(selectedModel, restoredModel)) {
+				await selectStartupModel(this, restoredModel, continued);
+			}
 			return;
 		}
-		this.showWarning(preliminaryFallbackMessage, targetContainer);
+		if (continued) {
+			if (uncachedCopilotModelHint(savedModel.provider, savedModel.modelId, this.session.modelRuntime)) {
+				this.showWarning(preliminaryFallbackMessage, targetContainer);
+				return;
+			}
+			restoreFailure = `Could not restore model ${formatModelLabel({ provider: savedModel.provider, id: savedModel.modelId })}`;
+		}
+	}
+	const currentModel = this.session.model;
+	if (currentModel && this.session.modelRuntime.hasConfiguredAuth(currentModel.provider)) {
+		if (restoreFailure) {
+			this.showWarning(`${restoreFailure}. Using ${currentModel.provider}/${currentModel.id}`, targetContainer);
+		}
 		return;
 	}
 
-	const defaultProvider = this.settingsManager.getDefaultProvider();
-	const defaultModelId = this.settingsManager.getDefaultModel();
-	if (defaultProvider && defaultModelId) {
-		const result = await findInitialModel({
-			scopedModels: [],
-			isContinuing: false,
-			defaultProvider,
-			defaultModelId,
-			defaultThinkingLevel: this.settingsManager.getDefaultThinkingLevel(),
-			modelRuntime: this.session.modelRuntime,
-		});
-		if (result.model) {
-			await this.session.setModel(result.model);
-			await this.session.setThinkingLevel(result.thinkingLevel);
-			return;
+	const result = await findInitialModel({
+		scopedModels: [],
+		isContinuing: false,
+		defaultProvider: this.settingsManager.getDefaultProvider(),
+		defaultModelId: this.settingsManager.getDefaultModel(),
+		defaultThinkingLevel: this.settingsManager.getDefaultThinkingLevel(),
+		modelThinkingLevels: this.settingsManager.getAllModelThinkingLevels(),
+		modelRuntime: this.session.modelRuntime,
+	});
+	if (result.model) {
+		await selectStartupModel(this, result.model, continued);
+		if (restoreFailure) {
+			this.showWarning(`${restoreFailure}. Using ${result.model.provider}/${result.model.id}`, targetContainer);
 		}
-		this.showWarning(result.fallbackMessage ?? formatNoModelsAvailableMessage(), targetContainer);
 		return;
 	}
-
-	this.showWarning(preliminaryFallbackMessage, targetContainer);
+	const unavailableMessage =
+		result.fallbackReason === "configured-provider-unsupported"
+			? result.fallbackMessage
+			: (restoreFailure ?? result.fallbackMessage);
+	this.showWarning(unavailableMessage ?? formatNoModelsAvailableMessage(), targetContainer);
 };

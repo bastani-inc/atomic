@@ -4,7 +4,8 @@ import { stripTerminalControls } from "../../../utils/ansi.js";
 import { getMarkdownTheme, theme } from "../theme/theme.js";
 import { createMarkdownTransform } from "./markdown-transform.ts";
 
-const OSC133_ZONE_START = "\x1b]133;A\x07";
+export const USER_PROMPT_ZONE_START = "\x1b]133;A;atomic=user\x07";
+const OSC133_ZONE_START = USER_PROMPT_ZONE_START;
 const OSC133_ZONE_END = "\x1b]133;B\x07";
 const OSC133_ZONE_FINAL = "\x1b]133;C\x07";
 

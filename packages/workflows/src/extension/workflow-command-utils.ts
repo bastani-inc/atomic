@@ -117,6 +117,10 @@ export function tokenizeWorkflowArgs(args: string): string[] {
 		const ch = args[i]!;
 		if (quote !== undefined) {
 			buf += ch;
+			if (quote === '"' && ch === "\\" && i + 1 < args.length) {
+				buf += args[++i];
+				continue;
+			}
 			if (ch === quote) quote = undefined;
 			continue;
 		}

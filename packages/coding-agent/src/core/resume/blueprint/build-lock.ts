@@ -3,14 +3,20 @@
  * its steps start in `<storeDir>/blueprint-builds/locks/<root key>.json`. A later build of the same worktree in another
  * process waits while that process runs, and stops the step processes a process that died without stopping them (a
  * SIGKILL) left behind, so two builds never run in one worktree at once.
+ *
+ * One process at a time settles and builds a worktree: it holds the lock's takeover mutex, an advisory lock the kernel
+ * releases when its holder dies (#5193), from before it looks at the lock until its build settled. A process that
+ * looked while another was between looking and its first step, before that one's lock was written, would otherwise
+ * build beside it.
  */
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { accessSync, constants, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { killProcessTree } from "../../../utils/shell.ts";
+import { type TakeoverMutex, takeTakeoverMutex } from "../../lock-takeover.ts";
 import { processStartToken } from "../../worktree-snapshot/pool.ts";
 import { rootKey } from "./ledger.ts";
 import { stepProcessWatcher } from "./process.ts";
@@ -115,10 +121,12 @@ function identity(recorded: LockedProcess): "same" | "gone" | "unknown" {
  * On Windows, the processes left behind by `steps` whose step process itself has ended: Git for Windows' `bash.exe`
  * starts the shell as a child and may end without it, and nothing then ties that shell to a process tree. They are
  * found as processes whose parent has a step's id, started after the step and before any later process given that id;
- * stopping each stops its own children. Only steps whose start was recorded are followed. Each is returned with its
- * start, so the wait for it to end follows that process, not a later one given its id.
+ * stopping each stops its own children. Only steps whose start was recorded are followed, and without one the host's
+ * processes are not listed. Each is returned with its start, so the wait for it to end follows that process, not a
+ * later one given its id.
  */
 function orphanedChildren(steps: readonly LockedProcess[]): LockedProcess[] {
+	if (!steps.some((step) => step.start !== undefined && step.at !== undefined)) return [];
 	const script =
 		"Get-CimInstance Win32_Process | ForEach-Object { '{0} {1} {2}' -f $_.ProcessId, $_.ParentProcessId, ([DateTimeOffset]$_.CreationDate).ToUnixTimeMilliseconds() }";
 	const shell = join(
@@ -201,13 +209,14 @@ export interface SettleOtherBuildsOptions {
  * Waits until no other process of this host builds the worktree whose lock is `file`, for at most `options.waitMs`.
  * A process proven to be the build's holder is waited for. The step processes of a holder that died are stopped, with
  * their process trees, only when each is proven to be the step the lock recorded (its recorded start matches);
- * a process whose identity cannot be proven is never stopped, and while one may still run the wait goes on. Returns
- * the warnings for the user: the wait timed out, a step may still run, or the lock could not be read.
+ * a process whose identity cannot be proven is never stopped, and while one may still run the wait goes on. First the
+ * worktree's build mutex is taken ({@link takeBuildMutex}), waited for while another process holds it. Returns the
+ * warnings for the user: the wait timed out, a step may still run, or the lock could not be read; and the mutex, which
+ * the caller holds until its build settled.
  */
-async function settleOtherBuild(file: string, root: string, options: SettleOtherBuildsOptions): Promise<string[]> {
+async function settleOtherBuild(file: string, root: string, options: SettleOtherBuildsOptions): Promise<SettledBuild> {
 	const deadline = Date.now() + (options.waitMs ?? BUILD_LOCK_WAIT_MS);
 	let told = false;
-	let stopped = false;
 	const wait = async (why: string): Promise<boolean> => {
 		if (!told) options.onWait?.(root, `Waiting for ${why} of ${root} to end`);
 		told = true;
@@ -215,6 +224,31 @@ async function settleOtherBuild(file: string, root: string, options: SettleOther
 		await delay(BUILD_LOCK_POLL_MS, options.signal);
 		return true;
 	};
+	let mutex = takeBuildMutex(file);
+	while (mutex === undefined && (await wait("another Atomic process's blueprint build"))) mutex = takeBuildMutex(file);
+	try {
+		const warnings = await settleLock(file, root, options, wait);
+		// Without the mutex, the process that holds it builds, though it may not have written its lock yet.
+		if (mutex !== undefined || warnings.length > 0) return { warnings, mutex };
+		const waited = Math.round((options.waitMs ?? BUILD_LOCK_WAIT_MS) / 1000);
+		return {
+			warnings: [`Another process still seemed to build ${root} after ${waited} s; building it anyway.`],
+			mutex,
+		};
+	} catch (error) {
+		mutex?.release();
+		throw error;
+	}
+}
+
+/** {@link settleOtherBuild} of the lock at `file`, waiting with `wait`: the warnings for the user. */
+async function settleLock(
+	file: string,
+	root: string,
+	options: SettleOtherBuildsOptions,
+	wait: (why: string) => Promise<boolean>,
+): Promise<string[]> {
+	let stopped = false;
 	for (;;) {
 		const read = readLockFile(file);
 		if (read.kind === "none") return [];
@@ -263,31 +297,80 @@ async function settleOtherBuild(file: string, root: string, options: SettleOther
 	}
 }
 
+/** What settling another process's build of one worktree left: the warnings, and the mutex held for this build. */
+interface SettledBuild {
+	readonly warnings: string[];
+	/** Undefined when another process kept it past the wait, and this one builds anyway. */
+	readonly mutex: TakeoverMutex | undefined;
+}
+
+/** Holds nothing: where the lock's directory cannot be made or written to, there is nothing to lock either. */
+const UNLOCKABLE: TakeoverMutex = { owned: () => true, release: () => {} };
+
+/**
+ * Takes the takeover mutex of the build lock at `file` without waiting (#5193), held from before another process's
+ * build is settled until this process's build settled: undefined while another process holds it. A lock whose
+ * directory cannot be made or written to could not be written either, and a lock that cannot be written never stops a
+ * build.
+ */
+function takeBuildMutex(file: string): TakeoverMutex | undefined {
+	try {
+		mkdirSync(dirname(file), { recursive: true });
+		accessSync(dirname(file), constants.W_OK);
+	} catch {
+		return UNLOCKABLE;
+	}
+	return takeTakeoverMutex(file, 0);
+}
+
+/** Other processes' builds of a set of worktrees, settled ({@link settleOtherBuilds}). */
+export interface SettledBuilds {
+	/** The warnings for the user: a wait timed out, a step may still run, or a lock could not be read. */
+	readonly warnings: string[];
+	/** Lets other processes build the worktrees again: called once this process's build of them settled. */
+	release(): void;
+}
+
 /**
  * Waits until no other process of this host builds any of the worktrees at `roots`, stopping what the builds of
- * processes that died left running where that is proven to be theirs. Resolves the warnings for the user; only
- * `options.signal` aborting rejects.
+ * processes that died left running where that is proven to be theirs, and keeps other processes from building them
+ * until {@link SettledBuilds.release}: the caller builds them, under {@link withBuildLocks}, and then releases them.
+ * The kernel releases them too if this process dies. Resolves the warnings for the user; only `options.signal`
+ * aborting rejects.
  */
 export async function settleOtherBuilds(
 	storeDir: string,
 	roots: readonly string[],
 	options: SettleOtherBuildsOptions = {},
-): Promise<string[]> {
+): Promise<SettledBuilds> {
 	const warnings: string[] = [];
-	const seen = new Set<string>();
+	const held: TakeoverMutex[] = [];
+	const release = () => {
+		for (const mutex of held.splice(0)) mutex.release();
+	};
+	const files = new Map<string, string>();
 	for (const root of roots) {
 		const file = buildLockPath(storeDir, root);
-		if (seen.has(file)) continue;
-		seen.add(file);
-		warnings.push(...(await settleOtherBuild(file, root, options)));
+		if (!files.has(file)) files.set(file, root);
 	}
-	return warnings;
+	try {
+		// In one order in every process, so two processes building overlapping worktrees never wait on each other.
+		for (const file of [...files.keys()].sort()) {
+			const settled = await settleOtherBuild(file, files.get(file)!, options);
+			if (settled.mutex !== undefined) held.push(settled.mutex);
+			warnings.push(...settled.warnings);
+		}
+	} catch (error) {
+		release();
+		throw error;
+	}
+	return { warnings, release };
 }
 
 /**
  * Runs `build` of the worktrees at `roots` under their build locks: from the first step process `build` starts until it
  * settles, records this process and the step processes that run. Callers settle other processes' builds of them first
- * ({@link settleOtherBuilds}).
+ * ({@link settleOtherBuilds}), and release them once this resolves.
  * A lock that cannot be written never stops the build.
  */
 export async function withBuildLocks<T>(

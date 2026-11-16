@@ -309,11 +309,10 @@ export async function startFakeLibsqlServer(options: FakeLibsqlServerOptions = {
 		response.end(JSON.stringify(body));
 	};
 
-	/** Waits while another stream's transaction is open, as sqld queues a writer behind the lock holder. */
-	const turn = async (stream: Stream | undefined) => {
+	const turn = async (stream: Stream | undefined, abandoned: () => boolean) => {
 		for (;;) {
 			sweep();
-			if (owner === undefined || owner === stream) return;
+			if (abandoned() || owner === undefined || owner === stream) return;
 			await new Promise((resolve) => setTimeout(resolve, 5));
 		}
 	};
@@ -350,7 +349,9 @@ export async function startFakeLibsqlServer(options: FakeLibsqlServerOptions = {
 			response.writeHead(400, { "content-type": "text/plain" });
 			return void response.end("Received a baton that has already been used");
 		}
-		await turn(existing);
+		const abandoned = () => socket.destroyed || response.destroyed || response.writableEnded;
+		await turn(existing, abandoned);
+		if (abandoned()) return;
 		if (typeof body.baton === "string" && (existing === undefined || !streams.has(existing))) {
 			if (sql.length > 0) expiredStatements++;
 			return answer(response, 400, {

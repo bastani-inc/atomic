@@ -45,7 +45,12 @@ export function renderBorderedBox(
 	const top = colorFn(`┌${"─".repeat(dashSpan)}┐`);
 	const out: string[] = [top];
 	for (const line of lines) {
-		const padded = truncateToWidth(line, contentInner, "", true);
+		const lineWidth = visibleWidth(line);
+		const styledUnicode = line.includes("\x1b") && /[^\x00-\x7f]/.test(line);
+		const padded =
+			lineWidth > contentInner || styledUnicode
+				? truncateToWidth(line, contentInner, "", true)
+				: line + " ".repeat(contentInner - lineWidth);
 		out.push(`${colorFn("│")}${pad}${padded}${pad}${colorFn("│")}`);
 	}
 	if (hidden > 0) {

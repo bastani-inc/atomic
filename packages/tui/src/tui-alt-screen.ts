@@ -71,8 +71,8 @@ const FOCUS_IN = "\x1b[I";
 const FOCUS_OUT = "\x1b[O";
 const BEGIN_SYNCHRONIZED_OUTPUT = "\x1b[?2026h";
 const END_SYNCHRONIZED_OUTPUT = "\x1b[?2026l";
-const OSC133_ZONE_PREFIX = /^(?:\x1b\]133;[ABC](?:\x07|\x1b\\))+/;
-const OSC133_PROMPT_START = /^\x1b\]133;A(?:\x07|\x1b\\)/;
+const OSC133_ZONE_PREFIX = /^(?:\x1b\]133;[ABC](?:;[^\x07\x1b]*)?(?:\x07|\x1b\\))+/;
+const OSC133_PROMPT_START = /^\x1b\]133;A(?:;[^\x07\x1b]*)?(?:\x07|\x1b\\)/;
 const PAGE_SCROLL_OVERLAP = 4;
 const ALT_WHEEL_SCROLL_MULTIPLIER = 5;
 const MAX_CACHED_OFFSCREEN_KITTY_IMAGES = 16;
@@ -185,6 +185,7 @@ export interface TuiAltScreenOptions {
 	 * primary scroll view while that view is scrolled away from its end.
 	 */
 	scrollToEndIndicator?: () => string;
+	scrollPinnedPrompt?: { isPrompt: (row: string) => boolean; render: (promptRow: string) => string };
 	/** Open an OSC 8 hyperlink activated with a primary-button click. */
 	openUrl?: (url: string) => void;
 	/** Handle an unmodified secondary-button press for clipboard paste. Currently enabled on Windows only. */
@@ -248,6 +249,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private readonly searchCurrentMatchStyle: (text: string) => string;
 	private readonly searchNavigationButtonStyle: (text: string, hovered: boolean) => string;
 	private readonly scrollToEndIndicator?: () => string;
+	private readonly scrollPinnedPrompt?: TuiAltScreenOptions["scrollPinnedPrompt"];
 	private readonly openUrl?: (url: string) => void;
 	private readonly onRightClickPaste?: () => void;
 	private copyOnSelect: boolean;
@@ -275,6 +277,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.searchCurrentMatchStyle = options.searchCurrentMatchStyle ?? ((text) => `\x1b[1;7m${text}\x1b[22;27m`);
 		this.searchNavigationButtonStyle = options.searchNavigationButtonStyle ?? ((text) => text);
 		this.scrollToEndIndicator = options.scrollToEndIndicator;
+		this.scrollPinnedPrompt = options.scrollPinnedPrompt;
 		this.openUrl = options.openUrl;
 		this.onRightClickPaste = options.onRightClickPaste;
 		this.copyOnSelect = options.copyOnSelect ?? true;
@@ -671,6 +674,12 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		}
 		scrollView.scrollTo(target, { disableFollow: true });
 		return scrollView.scrollTop !== before;
+	}
+
+	private isCurrentSearchMatchOnRow(row: number): boolean {
+		const search = this.activeSearch;
+		const selected = search && search.selectedIndex >= 0 ? search.matches[search.selectedIndex] : undefined;
+		return selected?.segments.some((segment) => segment.row === row) ?? false;
 	}
 
 	/** Show a transient message in the alternate-screen flash stack. */
@@ -1690,6 +1699,32 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		return result;
 	}
 
+	private compositeScrollPinnedPrompt(screen: string[], layout: LayoutFrame, width: number): string[] {
+		if (!this.scrollPinnedPrompt) return screen;
+		const scrollView = layout.primaryScrollView ?? this.implicitScrollView;
+		if (!scrollView.followEnd || scrollView.isFollowingEnd || scrollView.scrollTop <= 0) return screen;
+		if (this.isCurrentSearchMatchOnRow(scrollView.scrollTop)) return screen;
+		const box = getScrollViewBox(layout, scrollView);
+		const clip = box?.clip;
+		const lines = box?.scrollContentLines;
+		if (!clip || !lines || clip.width <= 0 || clip.height < 2) return screen;
+		const pin = this.scrollPinnedPrompt;
+		const promptRow = turnPromptAbove(lines, scrollView.scrollTop, pin.isPrompt);
+		if (promptRow === undefined) return screen;
+		const row = clip.y;
+		if (row >= screen.length || isImageLine(screen[row] ?? "")) return screen;
+		const scrollbarColumn = getScrollbarGeometry(box)?.column;
+		const rightEdge = scrollbarColumn ?? clip.x + clip.width;
+		const available = Math.max(0, rightEdge - clip.x);
+		const text = truncateToWidth(pin.render(promptRow), available, "");
+		const textWidth = visibleWidth(text);
+		if (textWidth === 0) return screen;
+		const padded = text + " ".repeat(Math.max(0, available - textWidth));
+		const result = [...screen];
+		result[row] = compositeTuiLine(result[row] ?? "", padded, clip.x, available, width);
+		return result;
+	}
+
 	protected override doRender(): void {
 		if (this.stopped || !this.altScreenActive) return;
 		const width = Math.max(1, this.terminal.columns);
@@ -1703,6 +1738,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		let screen = this.resolveFakeCursors(nextLayout.lines.map((line) => line.replace(OSC133_ZONE_PREFIX, "")));
 		screen = this.applySearchHighlights(screen, nextLayout);
 		screen = this.compositeScrollToEndIndicator(screen, nextLayout, width);
+		screen = this.compositeScrollPinnedPrompt(screen, nextLayout, width);
 		screen = this.compositeOverlays(screen, width, height);
 		if (screen.length > height) screen = screen.slice(screen.length - height);
 		screen = this.applySelection(screen, nextLayout);
@@ -1795,4 +1831,20 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.previousScreenHeight = height;
 		this.currentLayout = nextLayout;
 	}
+}
+
+export function turnPromptAbove(
+	lines: readonly string[],
+	top: number,
+	isPrompt: (row: string) => boolean,
+): string | undefined {
+	for (let start = Math.min(top, lines.length - 1); start >= 0; start--) {
+		if (!isPrompt(lines[start] ?? "")) continue;
+		for (let row = start; row < top; row++) {
+			const text = (lines[row] ?? "").replace(OSC133_ZONE_PREFIX, "");
+			if (text.replace(/\x1b\[[0-9;]*m/g, "").trim()) return text;
+		}
+		return undefined;
+	}
+	return undefined;
 }

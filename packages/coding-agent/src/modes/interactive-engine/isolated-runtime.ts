@@ -134,6 +134,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	/** Whether the engine's session waits out an automatic retry's backoff; the engine's state snapshot omits it. */
 	private retrying = false;
 	private compactionReason: CompactionReason | undefined;
+	private compactionStartedAt: number | undefined;
 	private readonly activeBashRequestIds = new Map<string | symbol, string>();
 	private steeringMessages: string[] = [];
 	private followUpMessages: string[] = [];
@@ -216,6 +217,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				this.compacting = false;
 				this.retrying = false;
 				this.compactionReason = undefined;
+				this.compactionStartedAt = undefined;
 				this.pendingQueueClear = undefined;
 				this.engineCallbackActive = false;
 				this.health.markCooperativeAbortSettled();
@@ -315,6 +317,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			) {
 				await super.switchSession(state.sessionId, {
 					sessionDirectory: state.sessionLocation ? dirname(state.sessionLocation) : undefined,
+					history: "tail",
 				});
 				if (generation !== undefined && !this.isCurrentResourceGeneration(generation)) return;
 			}
@@ -349,6 +352,9 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			this.streaming = state.isStreaming;
 			this.compacting = state.isCompacting;
 			this.compactionReason = state.isCompacting ? state.compactionReason : undefined;
+			this.compactionStartedAt = state.isCompacting
+				? (state.compactionStartedAt ?? this.compactionStartedAt ?? Date.now())
+				: undefined;
 			this.queuePause.synchronize(state.queuedMessagesPaused === true);
 			this.replaceModelFallback(state.modelFallbackMessage, state.modelFallbackReason);
 			await this.refreshSessionView();
@@ -653,6 +659,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			await super.switchSession(sessionId, {
 				cwdOverride: options?.cwdOverride,
 				sessionDirectory: options?.sessionDirectory,
+				history: options?.history ?? "full",
 			});
 			await this.initializeFromEngine();
 			if (options?.withSession) await options.withSession(this.session.createReplacedSessionContext());
@@ -667,6 +674,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		if (super.session.sessionManager.isPersisted())
 			await super.switchSession(state.sessionId, {
 				sessionDirectory: state.sessionLocation ? dirname(state.sessionLocation) : undefined,
+				history: "tail",
 			});
 		else await this.resetUnpersistedSessionView();
 		await this.initializeFromEngine();
@@ -686,6 +694,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			await super.switchSession(state.sessionId, {
 				cwdOverride,
 				sessionDirectory: state.sessionLocation ? dirname(state.sessionLocation) : undefined,
+				history: "tail",
 			});
 		await this.initializeFromEngine();
 		return { cancelled: false };
@@ -709,6 +718,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		if (super.session.sessionManager.isPersisted())
 			await super.switchSession(state.sessionId, {
 				sessionDirectory: state.sessionLocation ? dirname(state.sessionLocation) : undefined,
+				history: "tail",
 			});
 		await this.initializeFromEngine();
 		return { cancelled: false, selectedText };
@@ -758,6 +768,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			isStreaming: { configurable: true, get: () => this.streaming },
 			isCompacting: { configurable: true, get: () => this.compacting },
 			compactionReason: { configurable: true, get: () => this.compactionReason },
+			compactionStartedAt: { configurable: true, get: () => this.compactionStartedAt },
 			isBashRunning: { configurable: true, get: () => this.activeBashRequestIds.size > 0 },
 			isRetrying: { configurable: true, get: () => this.retrying },
 			sessionName: { configurable: true, get: () => this.remoteSessionName },
@@ -1227,13 +1238,20 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private async refreshSessionView(): Promise<void> {
 		const session = super.session;
 		const currentManager = session.sessionManager;
-		const refreshed = currentManager.isPersisted()
-			? await SessionManager.open(
-					currentManager.getSessionStore(),
-					currentManager.getSessionId(),
-					currentManager.getCwd(),
-				)
-			: await this.openUnpersistedSessionView(currentManager);
+		const unchanged =
+			currentManager.isPersisted() &&
+			typeof currentManager.refreshFromStore === "function" &&
+			(await currentManager.refreshFromStore());
+		const refreshed = unchanged
+			? currentManager
+			: currentManager.isPersisted()
+				? await SessionManager.open(
+						currentManager.getSessionStore(),
+						currentManager.getSessionId(),
+						currentManager.getCwd(),
+						{ history: "tail" },
+					)
+				: await this.openUnpersistedSessionView(currentManager);
 		Object.defineProperty(session, "sessionManager", { configurable: true, value: refreshed });
 		this.patchSessionManager(refreshed);
 		session.agent.state.messages = refreshed.buildSessionContext().messages;
@@ -1283,10 +1301,12 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			case "compaction_start":
 				this.compacting = true;
 				this.compactionReason = event.reason;
+				this.compactionStartedAt = Date.now();
 				break;
 			case "compaction_end":
 				this.compacting = false;
 				this.compactionReason = undefined;
+				this.compactionStartedAt = undefined;
 				if (!event.aborted && event.errorMessage === undefined) this.sessionStats.refresh();
 				break;
 			case "auto_retry_start":

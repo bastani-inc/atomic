@@ -25,6 +25,12 @@
 	},
 	{
 		"type": "index",
+		"name": "team_wf_runs_ship_batches_work",
+		"tbl_name": "team_wf_runs_ship_batches",
+		"sql": "CREATE INDEX team_wf_runs_ship_batches_work ON team_wf_runs_ship_batches(work, generation)"
+	},
+	{
+		"type": "index",
 		"name": "team_wf_runs_stage_inputs_pending",
 		"tbl_name": "team_wf_runs_stage_inputs",
 		"sql": "CREATE INDEX team_wf_runs_stage_inputs_pending ON team_wf_runs_stage_inputs(work, state)"
@@ -76,6 +82,12 @@
 		"name": "wf_runs_resource_permits_state",
 		"tbl_name": "wf_runs_resource_permits",
 		"sql": "CREATE INDEX wf_runs_resource_permits_state ON wf_runs_resource_permits(state)"
+	},
+	{
+		"type": "index",
+		"name": "wf_runs_ship_batches_work",
+		"tbl_name": "wf_runs_ship_batches",
+		"sql": "CREATE INDEX wf_runs_ship_batches_work ON wf_runs_ship_batches(work, generation)"
 	},
 	{
 		"type": "index",
@@ -175,6 +187,12 @@
 	},
 	{
 		"type": "table",
+		"name": "team_wf_runs_pool_ready",
+		"tbl_name": "team_wf_runs_pool_ready",
+		"sql": "CREATE TABLE team_wf_runs_pool_ready(\n\t\t\t\t\troot TEXT PRIMARY KEY REFERENCES team_wf_runs_pool(root) ON DELETE CASCADE,\n\t\t\t\t\trevision INTEGER NOT NULL DEFAULT 0\n\t\t\t\t)"
+	},
+	{
+		"type": "table",
 		"name": "team_wf_runs_pool_restore_backoffs",
 		"tbl_name": "team_wf_runs_pool_restore_backoffs",
 		"sql": "CREATE TABLE team_wf_runs_pool_restore_backoffs(\n\t\t\t\t\thost TEXT NOT NULL, binding TEXT NOT NULL, until INTEGER NOT NULL, failure TEXT NOT NULL,\n\t\t\t\t\trecorded_at INTEGER NOT NULL, PRIMARY KEY(host, binding)\n\t\t\t\t)"
@@ -226,6 +244,18 @@
 		"name": "team_wf_runs_resource_permits",
 		"tbl_name": "team_wf_runs_resource_permits",
 		"sql": "CREATE TABLE team_wf_runs_resource_permits(ticket INTEGER PRIMARY KEY AUTOINCREMENT, operation TEXT UNIQUE NOT NULL,\n\t\t\t\troot TEXT NOT NULL, holder TEXT NOT NULL, kind TEXT NOT NULL, state TEXT NOT NULL, reason TEXT, owner TEXT, attempt TEXT, process_identity TEXT, root_epoch INTEGER, granted_at INTEGER)"
+	},
+	{
+		"type": "table",
+		"name": "team_wf_runs_ship_batches",
+		"tbl_name": "team_wf_runs_ship_batches",
+		"sql": "CREATE TABLE team_wf_runs_ship_batches(\n\t\t\t\tbatch TEXT PRIMARY KEY, work TEXT NOT NULL REFERENCES team_wf_runs_work(id) ON DELETE CASCADE,\n\t\t\t\tgeneration INTEGER NOT NULL, worker TEXT, epoch INTEGER NOT NULL, host TEXT NOT NULL,\n\t\t\t\tfirst_local_seq INTEGER NOT NULL, last_local_seq INTEGER NOT NULL, events INTEGER NOT NULL,\n\t\t\t\tshipped_at INTEGER NOT NULL\n\t\t\t)"
+	},
+	{
+		"type": "table",
+		"name": "team_wf_runs_ship_watermarks",
+		"tbl_name": "team_wf_runs_ship_watermarks",
+		"sql": "CREATE TABLE team_wf_runs_ship_watermarks(\n\t\t\t\twork TEXT PRIMARY KEY REFERENCES team_wf_runs_work(id) ON DELETE CASCADE, generation INTEGER NOT NULL,\n\t\t\t\thost TEXT NOT NULL, last_local_seq INTEGER NOT NULL, last_event_key TEXT NOT NULL,\n\t\t\t\tshipped_at INTEGER NOT NULL\n\t\t\t)"
 	},
 	{
 		"type": "table",
@@ -337,6 +367,12 @@
 	},
 	{
 		"type": "table",
+		"name": "wf_runs_pool_ready",
+		"tbl_name": "wf_runs_pool_ready",
+		"sql": "CREATE TABLE wf_runs_pool_ready(\n\t\t\t\t\troot TEXT PRIMARY KEY REFERENCES wf_runs_pool(root) ON DELETE CASCADE,\n\t\t\t\t\trevision INTEGER NOT NULL DEFAULT 0\n\t\t\t\t)"
+	},
+	{
+		"type": "table",
 		"name": "wf_runs_pool_restore_backoffs",
 		"tbl_name": "wf_runs_pool_restore_backoffs",
 		"sql": "CREATE TABLE wf_runs_pool_restore_backoffs(\n\t\t\t\t\thost TEXT NOT NULL, binding TEXT NOT NULL, until INTEGER NOT NULL, failure TEXT NOT NULL,\n\t\t\t\t\trecorded_at INTEGER NOT NULL, PRIMARY KEY(host, binding)\n\t\t\t\t)"
@@ -391,6 +427,18 @@
 	},
 	{
 		"type": "table",
+		"name": "wf_runs_ship_batches",
+		"tbl_name": "wf_runs_ship_batches",
+		"sql": "CREATE TABLE wf_runs_ship_batches(\n\t\t\t\tbatch TEXT PRIMARY KEY, work TEXT NOT NULL REFERENCES wf_runs_work(id) ON DELETE CASCADE,\n\t\t\t\tgeneration INTEGER NOT NULL, worker TEXT, epoch INTEGER NOT NULL, host TEXT NOT NULL,\n\t\t\t\tfirst_local_seq INTEGER NOT NULL, last_local_seq INTEGER NOT NULL, events INTEGER NOT NULL,\n\t\t\t\tshipped_at INTEGER NOT NULL\n\t\t\t)"
+	},
+	{
+		"type": "table",
+		"name": "wf_runs_ship_watermarks",
+		"tbl_name": "wf_runs_ship_watermarks",
+		"sql": "CREATE TABLE wf_runs_ship_watermarks(\n\t\t\t\twork TEXT PRIMARY KEY REFERENCES wf_runs_work(id) ON DELETE CASCADE, generation INTEGER NOT NULL,\n\t\t\t\thost TEXT NOT NULL, last_local_seq INTEGER NOT NULL, last_event_key TEXT NOT NULL,\n\t\t\t\tshipped_at INTEGER NOT NULL\n\t\t\t)"
+	},
+	{
+		"type": "table",
 		"name": "wf_runs_stage_inputs",
 		"tbl_name": "wf_runs_stage_inputs",
 		"sql": "CREATE TABLE wf_runs_stage_inputs(\n\t\t\t\t\troot TEXT NOT NULL, run_id TEXT NOT NULL, stage_id TEXT NOT NULL, seq INTEGER NOT NULL,\n\t\t\t\t\twork TEXT NOT NULL REFERENCES wf_runs_work(id) ON DELETE CASCADE, kind TEXT NOT NULL, op TEXT NOT NULL,\n\t\t\t\t\tpayload TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending', receipt TEXT,\n\t\t\t\t\tcreated_at INTEGER NOT NULL, settled_at INTEGER,\n\t\t\t\t\tPRIMARY KEY(root, run_id, stage_id, seq), UNIQUE(root, run_id, stage_id, op)\n\t\t\t\t)"
@@ -439,6 +487,18 @@
 	},
 	{
 		"type": "trigger",
+		"name": "team_wf_runs_pool_ready_insert",
+		"tbl_name": "team_wf_runs_work",
+		"sql": "CREATE TRIGGER team_wf_runs_pool_ready_insert AFTER INSERT ON team_wf_runs_work WHEN NEW.state = 'ready' BEGIN INSERT INTO team_wf_runs_pool_ready(root, revision) VALUES (NEW.root, 1) ON CONFLICT(root) DO UPDATE SET revision = revision + 1 END"
+	},
+	{
+		"type": "trigger",
+		"name": "team_wf_runs_pool_ready_update",
+		"tbl_name": "team_wf_runs_work",
+		"sql": "CREATE TRIGGER team_wf_runs_pool_ready_update AFTER UPDATE ON team_wf_runs_work WHEN NEW.state = 'ready' BEGIN INSERT INTO team_wf_runs_pool_ready(root, revision) VALUES (NEW.root, 1) ON CONFLICT(root) DO UPDATE SET revision = revision + 1 END"
+	},
+	{
+		"type": "trigger",
 		"name": "team_wf_runs_pool_usage_totals_delete",
 		"tbl_name": "team_wf_runs_pool_usage",
 		"sql": "CREATE TRIGGER team_wf_runs_pool_usage_totals_delete AFTER DELETE ON team_wf_runs_pool_usage BEGIN DELETE FROM team_wf_runs_pool_usage_totals WHERE root = (SELECT root FROM team_wf_runs_work WHERE id = OLD.work) END"
@@ -466,6 +526,18 @@
 		"name": "wf_runs_pool_fence_abort",
 		"tbl_name": "wf_runs_pool_fence",
 		"sql": "CREATE TRIGGER wf_runs_pool_fence_abort BEFORE INSERT ON wf_runs_pool_fence BEGIN SELECT RAISE(ABORT, 'atomic-pool-fence') END"
+	},
+	{
+		"type": "trigger",
+		"name": "wf_runs_pool_ready_insert",
+		"tbl_name": "wf_runs_work",
+		"sql": "CREATE TRIGGER wf_runs_pool_ready_insert AFTER INSERT ON wf_runs_work WHEN NEW.state = 'ready' BEGIN INSERT INTO wf_runs_pool_ready(root, revision) VALUES (NEW.root, 1) ON CONFLICT(root) DO UPDATE SET revision = revision + 1 END"
+	},
+	{
+		"type": "trigger",
+		"name": "wf_runs_pool_ready_update",
+		"tbl_name": "wf_runs_work",
+		"sql": "CREATE TRIGGER wf_runs_pool_ready_update AFTER UPDATE ON wf_runs_work WHEN NEW.state = 'ready' BEGIN INSERT INTO wf_runs_pool_ready(root, revision) VALUES (NEW.root, 1) ON CONFLICT(root) DO UPDATE SET revision = revision + 1 END"
 	},
 	{
 		"type": "trigger",

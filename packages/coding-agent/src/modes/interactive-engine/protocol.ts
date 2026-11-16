@@ -1,3 +1,4 @@
+import type { TuiMode } from "@bastani/atomic-tui";
 import type { CallbackActivity, CallbackActivityKind } from "../../core/callback-activity.ts";
 import { parseSerializedDecisionError, type SerializedDecisionError } from "../../core/decision/errors.js";
 import type { UIPromptEndEvent, UIPromptStartEvent } from "../../core/extensions/agent-events.ts";
@@ -136,6 +137,7 @@ export type InteractiveEngineMessage =
 			heading?: string;
 			submitLabel?: string;
 	  }
+	| { type: "engine_input_form_refused"; componentId: string }
 	| { type: "engine_input_form_close"; componentId: string };
 /**
  * The host is quitting because the user asked to, not because a signal ended the
@@ -187,6 +189,11 @@ export type InteractiveEngineCommand =
 			width: number;
 			rows: number;
 			renderSettings?: EngineHostRenderSettings;
+			/**
+			 * The host renderer's mode, which the component's engine TUI reports as `mode`. Optional: a host that
+			 * predates the field omits it, and the engine TUI keeps reporting "regular".
+			 */
+			hostMode?: TuiMode;
 	  }
 	| { type: "engine_custom_input"; componentId: string; requestId: number; data: string }
 	| { type: "engine_custom_copy_result"; componentId: string; requestId: number; error?: string }
@@ -223,7 +230,8 @@ export type InteractiveEngineCommand =
 	| { type: "engine_session_picker_cancel"; componentId: string }
 	| { type: "engine_session_picker_delete"; componentId: string; path: string }
 	| { type: "engine_input_form_submit"; componentId: string; values: Record<string, string> }
-	| { type: "engine_input_form_cancel"; componentId: string };
+	| { type: "engine_input_form_cancel"; componentId: string }
+	| { type: "engine_input_form_error"; componentId: string; message: string };
 
 const ACTIVITY_KINDS: readonly CallbackActivityKind[] = [
 	"extension.hook",
@@ -421,7 +429,26 @@ function parseInputFormFields(value: JsonValue | undefined): HostInputFormField[
 	const fields: HostInputFormField[] = [];
 	for (const entry of value) {
 		if (!isJsonObject(entry)) return undefined;
-		const { name, type, description, required, choices, placeholder, initialValue } = entry;
+		const {
+			name,
+			type,
+			description,
+			required,
+			choices,
+			placeholder,
+			initialValue,
+			const: constVal,
+			minimum,
+			maximum,
+			exclusiveMinimum,
+			exclusiveMaximum,
+			multipleOf,
+			minLength,
+			maxLength,
+			pattern,
+			format,
+			schema,
+		} = entry;
 		if (
 			typeof name !== "string" ||
 			!INPUT_FORM_FIELD_TYPES.includes(type as HostInputFormField["type"]) ||
@@ -433,6 +460,32 @@ function parseInputFormFields(value: JsonValue | undefined): HostInputFormField[
 		if (choices !== undefined && (!Array.isArray(choices) || !choices.every((choice) => typeof choice === "string")))
 			return undefined;
 		if (placeholder !== undefined && typeof placeholder !== "string") return undefined;
+		if (
+			constVal !== undefined &&
+			typeof constVal !== "string" &&
+			typeof constVal !== "number" &&
+			typeof constVal !== "boolean"
+		)
+			return undefined;
+		if (minimum !== undefined && (typeof minimum !== "number" || !Number.isFinite(minimum))) return undefined;
+		if (maximum !== undefined && (typeof maximum !== "number" || !Number.isFinite(maximum))) return undefined;
+		if (
+			exclusiveMinimum !== undefined &&
+			(typeof exclusiveMinimum !== "number" || !Number.isFinite(exclusiveMinimum))
+		)
+			return undefined;
+		if (
+			exclusiveMaximum !== undefined &&
+			(typeof exclusiveMaximum !== "number" || !Number.isFinite(exclusiveMaximum))
+		)
+			return undefined;
+		if (multipleOf !== undefined && (typeof multipleOf !== "number" || !Number.isFinite(multipleOf)))
+			return undefined;
+		if (minLength !== undefined && (typeof minLength !== "number" || !Number.isFinite(minLength))) return undefined;
+		if (maxLength !== undefined && (typeof maxLength !== "number" || !Number.isFinite(maxLength))) return undefined;
+		if (pattern !== undefined && typeof pattern !== "string") return undefined;
+		if (format !== undefined && typeof format !== "string") return undefined;
+		if (schema !== undefined && !isJsonObject(schema)) return undefined;
 		fields.push({
 			name,
 			type: type as HostInputFormField["type"],
@@ -441,6 +494,17 @@ function parseInputFormFields(value: JsonValue | undefined): HostInputFormField[
 			...(typeof required === "boolean" ? { required } : {}),
 			...(Array.isArray(choices) ? { choices: choices as string[] } : {}),
 			...(typeof placeholder === "string" ? { placeholder } : {}),
+			...(constVal !== undefined ? { const: constVal } : {}),
+			...(typeof minimum === "number" ? { minimum } : {}),
+			...(typeof maximum === "number" ? { maximum } : {}),
+			...(typeof exclusiveMinimum === "number" ? { exclusiveMinimum } : {}),
+			...(typeof exclusiveMaximum === "number" ? { exclusiveMaximum } : {}),
+			...(typeof multipleOf === "number" ? { multipleOf } : {}),
+			...(typeof minLength === "number" ? { minLength } : {}),
+			...(typeof maxLength === "number" ? { maxLength } : {}),
+			...(typeof pattern === "string" ? { pattern } : {}),
+			...(typeof format === "string" ? { format } : {}),
+			...(schema !== undefined && isJsonObject(schema) ? { schema: schema as HostInputFormField["schema"] } : {}),
 		});
 	}
 	return fields;
@@ -686,8 +750,9 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 				? { type: value.type, componentId: value.componentId }
 				: undefined;
 		case "engine_input_form_open": {
+			if (typeof value.componentId !== "string") return undefined;
 			const fields = parseInputFormFields(value.fields);
-			return typeof value.componentId === "string" && typeof value.title === "string" && fields
+			return typeof value.title === "string" && fields
 				? {
 						type: value.type,
 						componentId: value.componentId,
@@ -696,7 +761,7 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 						...(typeof value.heading === "string" ? { heading: value.heading } : {}),
 						...(typeof value.submitLabel === "string" ? { submitLabel: value.submitLabel } : {}),
 					}
-				: undefined;
+				: { type: "engine_input_form_refused", componentId: value.componentId };
 		}
 		default:
 			return undefined;
@@ -742,6 +807,7 @@ export function parseInteractiveEngineCommand(line: string): InteractiveEngineCo
 		typeof value.rows === "number"
 	) {
 		const renderSettings = parseEngineHostRenderSettings(value.renderSettings);
+		const hostMode = value.hostMode === "fullscreen" || value.hostMode === "regular" ? value.hostMode : undefined;
 		return {
 			type: value.type,
 			componentId: value.componentId,
@@ -749,6 +815,7 @@ export function parseInteractiveEngineCommand(line: string): InteractiveEngineCo
 			width: value.width,
 			rows: value.rows,
 			...(renderSettings === undefined ? {} : { renderSettings }),
+			...(hostMode === undefined ? {} : { hostMode }),
 		};
 	}
 	if (value.type === "engine_custom_input" && typeof value.requestId === "number" && typeof value.data === "string")
@@ -769,6 +836,8 @@ export function parseInteractiveEngineCommand(line: string): InteractiveEngineCo
 	}
 	if (value.type === "engine_session_picker_cancel") return { type: value.type, componentId: value.componentId };
 	if (value.type === "engine_input_form_cancel") return { type: value.type, componentId: value.componentId };
+	if (value.type === "engine_input_form_error" && typeof value.message === "string")
+		return { type: value.type, componentId: value.componentId, message: value.message };
 	if (value.type === "engine_input_form_submit") {
 		const values = parseStringRecord(value.values);
 		return values ? { type: value.type, componentId: value.componentId, values } : undefined;

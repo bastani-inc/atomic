@@ -61,6 +61,8 @@ ctx.sessionManager.getBranch()        // Current branch
 ctx.sessionManager.getLeafId()        // Current leaf entry ID
 ```
 
+A resumed compacted session starts from its latest compaction. Before an extension that Atomic does not bundle starts, Atomic reads the session's whole history, so `getEntries()` and `getTree()` return every entry. `ctx.sessionManager.hasFullHistory()` tells whether every entry is held, and `await ctx.sessionManager.loadFullHistory()` reads the rest when it is not.
+
 ### ctx.modelRegistry / ctx.model / ctx.scopedModels
 
 Access models, auth state, and provider-aware requests.
@@ -900,7 +902,7 @@ pi.registerShortcut("ctrl+shift+p", {
 });
 ```
 
-Set `preferEditor: true` to skip a shortcut when another resolved editor binding uses that key. Omitting it preserves the usual extension conflict policy. Optional `keybinding` selects the keys for an existing named action from `keybindings.json` instead of the literal registration key; an empty action binding disables it. The builtin workflow extension uses `app.workflows.scrollUp` and `app.workflows.scrollDown` with `preferEditor: true`, so custom Vim editor bindings take precedence.
+Set `preferEditor: true` to skip a shortcut when another resolved editor binding uses that key. Omitting it preserves the usual extension conflict policy. Optional `keybinding` selects the keys for an existing named action from `keybindings.json` instead of the literal registration key; an empty action binding disables it.
 
 ### pi.registerFlag(name, options)
 

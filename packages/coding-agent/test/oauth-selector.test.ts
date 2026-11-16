@@ -1,4 +1,4 @@
-import { setKeybindings, type TUI } from "@bastani/atomic-tui";
+import { setKeybindings, type TUI, visibleWidth } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
@@ -334,12 +334,12 @@ describe("OAuthSelectorComponent", () => {
 			const output = selector.render(120).join("\n");
 			expect(output).not.toContain(theme.fg("accent", "OpenRouter"));
 			expect(output).toContain(theme.fg("text", "Anthropic"));
-			expect(stripAnsi(output)).toContain("→ OpenRouter");
+			expect(stripAnsi(output)).toContain("❯ OpenRouter");
 
 			selector.handleInput("\x1b[B");
 			const moved = selector.render(120).join("\n");
 			expect(moved).toContain(theme.fg("text", "OpenRouter"));
-			expect(stripAnsi(moved)).toContain("→ Anthropic");
+			expect(stripAnsi(moved)).toContain("❯ Anthropic");
 		} finally {
 			selector.dispose();
 		}
@@ -362,8 +362,8 @@ describe("OAuthSelectorComponent", () => {
 		);
 		try {
 			const lines = selector.render(120).map(stripAnsi);
-			expect(lines.some((line) => line.includes("→ OpenRouter ✦ · account"))).toBe(true);
-			expect(lines.some((line) => line.includes("  OpenRouter ✦ · API key"))).toBe(true);
+			expect(lines.some((line) => line.includes(" ❯ OpenRouter ✦ · account"))).toBe(true);
+			expect(lines.some((line) => line.includes("   OpenRouter ✦ · API key"))).toBe(true);
 		} finally {
 			selector.dispose();
 		}
@@ -435,47 +435,37 @@ describe("OAuthSelectorComponent", () => {
 		);
 
 		const output = stripAnsi(selector.render(120).join("\n"));
-		expect(output).toContain("→ OpenRouter ✦ • not configured");
-		expect(output).toContain("  Anthropic • not configured");
+		expect(output).toMatch(/^ ❯ OpenRouter ✦ +not configured$/m);
+		expect(output).toMatch(/^ {3}Anthropic +not configured$/m);
 	});
 
-	it("rebuilds the list on render only while a branded row is selected", () => {
-		const tui = { requestRender: () => {} } as unknown as TUI;
-		const providers = [
-			{ id: "openrouter", name: "OpenRouter", authType: "oauth" as const },
-			{ id: "anthropic", name: "Anthropic", authType: "api_key" as const },
-		];
-		const countRebuilds = (selector: OAuthSelectorComponent, renders: number): number => {
-			const updateList = vi.spyOn(selector as unknown as { updateList(): void }, "updateList");
-			updateList.mockClear();
-			for (let render = 0; render < renders; render++) selector.render(120);
-			return updateList.mock.calls.length;
-		};
-		const animated = new OAuthSelectorComponent(
+	it("uses the shared selector: search box, right-aligned status, and a hint of exactly its keys (#5224)", () => {
+		const onCancel = vi.fn();
+		const selector = new OAuthSelectorComponent(
 			"login",
 			fakeModelRuntime(),
-			providers,
+			[
+				{ id: "openrouter", name: "OpenRouter", authType: "api_key" },
+				{ id: "anthropic", name: "Anthropic", authType: "api_key" },
+			],
 			() => {},
-			() => {},
-			undefined,
-			"",
-			tui,
+			onCancel,
 		);
-		const withoutTui = new OAuthSelectorComponent(
-			"login",
-			fakeModelRuntime(),
-			providers,
-			() => {},
-			() => {},
-		);
-		try {
-			expect(countRebuilds(animated, 3)).toBe(3);
-			expect(countRebuilds(withoutTui, 3)).toBe(0);
+		const hint = () => stripAnsi(selector.render(120).at(-2) ?? "").trim();
+		const output = stripAnsi(selector.render(120).join("\n"));
+		expect(output).toContain("│ ⌕ ");
+		expect(output).toMatch(/^ ❯ OpenRouter ✦ {2,}not configured$/m);
+		expect(hint()).toBe("↑↓ select · enter choose · type to search · esc cancel");
 
-			animated.handleInput("\x1b[B");
-			expect(countRebuilds(animated, 3)).toBe(0);
-		} finally {
-			animated.dispose();
+		selector.handleInput("zzz");
+		expect(stripAnsi(selector.render(120).join("\n"))).toContain('No matches for "zzz"');
+		expect(hint()).toBe("type to search · esc clear");
+		selector.handleInput("\x1b");
+		expect(onCancel).not.toHaveBeenCalled();
+		selector.handleInput("\x1b");
+		expect(onCancel).toHaveBeenCalledOnce();
+		for (const width of [40, 80, 160]) {
+			for (const line of selector.render(width)) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
 		}
 	});
 
@@ -548,17 +538,18 @@ describe("OAuthSelectorComponent", () => {
 			() => {},
 			() => {},
 		);
-		const notConfigured = theme.fg("muted", " • not configured");
+		const notConfigured = theme.fg("muted", "not configured");
 
 		const output = selector.render(120).join("\n");
 
 		expect(output).toContain(
-			theme.fg("accent", "OpenRouter") + theme.fg("muted", " ✦") + theme.fg("accent", " · account") + notConfigured,
+			theme.fg("accent", "OpenRouter") + theme.fg("muted", " ✦") + theme.fg("accent", " · account"),
 		);
 		expect(output).toContain(
-			theme.fg("text", "OpenRouter") + theme.fg("muted", " ✦") + theme.fg("text", " · API key") + notConfigured,
+			theme.fg("text", "OpenRouter") + theme.fg("muted", " ✦") + theme.fg("text", " · API key"),
 		);
-		expect(output).toContain(theme.fg("text", "Anthropic") + notConfigured);
+		expect(output).toContain(theme.fg("text", "Anthropic"));
+		expect(output.split("\n").filter((line) => line.endsWith(notConfigured))).toHaveLength(3);
 	});
 
 	describe("OpenRouter glow", () => {

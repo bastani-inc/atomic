@@ -37,7 +37,7 @@ import {
 	topLevelExpandedSnapshots,
 } from "./workflow-targets.js";
 import { workflowAnswerAction } from "./workflow-tool-answer.js";
-import { workflowGetResult } from "./workflow-tool-content.js";
+import { stripModelInputFields, workflowGetResult } from "./workflow-tool-content.js";
 import {
 	workflowPauseAction,
 	workflowQuitAction,
@@ -224,10 +224,14 @@ export function makeExecuteWorkflowTool(
 				}));
 				return { action: "models", models };
 			}
-			case "list":
-			case "inputs": {
+			case "list": {
 				await ensureWorkflowResourcesVisible();
 				return awaitRequest(getRuntime().dispatch(args, { policy, signal }));
+			}
+			case "inputs": {
+				await ensureWorkflowResourcesVisible();
+				const result = await awaitRequest(getRuntime().dispatch(args, { policy, signal }));
+				return result.action === "inputs" ? { ...result, inputs: stripModelInputFields(result.inputs) } : result;
 			}
 			case "run": {
 				await ensureWorkflowResourcesVisible();

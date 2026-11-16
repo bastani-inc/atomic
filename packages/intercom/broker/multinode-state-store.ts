@@ -896,6 +896,13 @@ export interface IntercomBrokerStateStore {
 	readonly releasedAsks: ReleasedAskStore;
 	readonly sentMessages: SentMessageAuthority;
 	readonly knownSessions: KnownSessionStore;
+	/**
+	 * A send's `sentMessages.reserve` and `outbox.enqueue` as one write, so a queued send costs one commit, not two. A
+	 * conflicting reservation is answered `conflict`, and a recipient whose queue is full is answered `full` with
+	 * nothing written: no row, and no reservation, an earlier attempt's included. Optional: without it, the broker
+	 * reserves, enqueues, and forgets the reservation of a send the full queue refused.
+	 */
+	reserveAndEnqueue?(reservation: SentMessageReservation, request: OutboxEnqueueRequest): Promise<OutboxEnqueueResult>;
 	close(): Promise<void>;
 }
 

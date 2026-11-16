@@ -13,8 +13,15 @@ import {
 	type Lease,
 	RUN_EVENT_TYPES,
 	StaleLeaseError,
+	StorageUnavailableError,
 } from "../../packages/workflows/src/durable/journal/types.js";
 import type { DurableStageCheckpoint, DurableToolCheckpoint } from "../../packages/workflows/src/durable/types.js";
+import { infrastructureFaultOf } from "../../packages/workflows/src/shared/workflow-infrastructure-error.js";
+import {
+	IdleClaimBackoff,
+	IdleClaimWaits,
+	IdleReadyProbe,
+} from "../../packages/workflows/src/workers/pool-wake-ups.js";
 import { staleWorkLease } from "../helpers/pool-errors.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
 import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
@@ -574,6 +581,260 @@ test("a slow journal read does not make the pool's copy of the lease look newer 
 		// The lease was sampled before the 400 ms wait, so the copy is at least that old, never fresher.
 		assert.ok(Number(copy!.age) >= 380, `the copy of the lease is ${copy!.age} ms old, 400 ms after it was read`);
 	} finally {
+		await f.close();
+	}
+});
+
+test("a recovered remote journal claim passes a coalesced wake to another long-idle worker (#5230)", async () => {
+	const f = await fixture();
+	const first = poolWorkFixture("first");
+	const second = poolWorkFixture("second");
+	const waits = new IdleClaimWaits();
+	let running = true;
+	let checkedEmpty = 0;
+	let refused = 0;
+	const claimed: string[] = [];
+	const workers = ["worker-first", "worker-second"].map(async (worker) => {
+		const backoff = new IdleClaimBackoff(() => 0);
+		for (let index = 0; index < 8; index++) backoff.next();
+		while (running) {
+			const taken = await waits.claim(backoff, async () => {
+				const result = await f.pool.claim(f.lease, worker, [first.work], 60_000, undefined, () => {
+					refused++;
+					backoff.reset();
+				});
+				if (result === undefined) checkedEmpty++;
+				return result;
+			});
+			if (taken !== undefined) {
+				claimed.push(taken.id);
+				return;
+			}
+		}
+	});
+	try {
+		while (checkedEmpty < 2) await sleep(1);
+		await f.pool.enqueue(f.lease, first.work, first.boundary);
+		await f.pool.enqueue(f.lease, second.work, second.boundary);
+		const outage = vi.spyOn(f.durable, "append").mockRejectedValue(new Error("journal unavailable"));
+		await assert.rejects(f.pool.commit(f.lease, f.attempt, "create", sessionMutation), /journal unavailable/);
+		waits.wakeOne();
+		while (refused < 2) await sleep(1);
+		outage.mockRestore();
+		const RECOVERY_BOUND_MS = 300;
+		const recoveredAt = performance.now();
+		while (claimed.length < 2 && performance.now() - recoveredAt < RECOVERY_BOUND_MS) await sleep(5);
+		assert.equal(
+			claimed.length,
+			2,
+			"both idle workers claim after one readiness notice and repeated delivery refusals",
+		);
+		assert.equal(new Set(claimed).size, 2);
+	} finally {
+		running = false;
+		vi.restoreAllMocks();
+		waits.wakeAll();
+		await Promise.all(workers);
+		await f.close();
+	}
+});
+
+test("a claim held back by undelivered remote journal events resets its idle pause so recovery claims promptly (#5230)", async () => {
+	const f = await fixture();
+	const other = poolWorkFixture("other");
+	const waits = new IdleClaimWaits();
+	let probeTimer: NodeJS.Timeout | undefined;
+	try {
+		await f.pool.enqueue(f.lease, other.work, other.boundary);
+		const outage = vi.spyOn(f.durable, "append").mockRejectedValue(new Error("journal unavailable"));
+		await assert.rejects(f.pool.commit(f.lease, f.attempt, "create", sessionMutation), /journal unavailable/);
+		const probe = new IdleReadyProbe({
+			waits,
+			notified: async () => false,
+			mark: () => f.pool.readyMark("root"),
+		});
+		probeTimer = setInterval(() => void probe.tick(), 250);
+		const backoff = new IdleClaimBackoff();
+		for (let index = 0; index < 8; index++) backoff.next();
+		let blocked = 0;
+		let refused = 0;
+		const claimed: { at: number; id: string }[] = [];
+		const worker = (async () => {
+			for (;;) {
+				const taken = await waits.claim(backoff, () =>
+					f.pool.claim(f.lease, "worker-other", [other.work], 60_000, undefined, () => {
+						blocked++;
+						backoff.reset();
+					}),
+				);
+				if (taken !== undefined) {
+					claimed.push({ at: performance.now(), id: taken.id });
+					return;
+				}
+				refused++;
+			}
+		})();
+		await sleep(300);
+		const recoveredAt = performance.now();
+		outage.mockRestore();
+		await worker;
+		assert.ok(blocked > 0);
+		assert.ok(refused > 0);
+		assert.ok(
+			claimed[0]!.at - recoveredAt < 300,
+			`ready work waited ${Math.round(claimed[0]!.at - recoveredAt)} ms after the journal recovered`,
+		);
+		const blockedAfterDrain = blocked;
+		assert.equal(
+			await f.pool.claim(f.lease, "worker-none", [other.work], 60_000, undefined, () => {
+				blocked++;
+			}),
+			undefined,
+		);
+		assert.equal(blocked, blockedAfterDrain);
+	} finally {
+		clearInterval(probeTimer);
+		vi.restoreAllMocks();
+		await f.close();
+	}
+});
+
+test("a claim checks the outbox again after refreshing the remote lease mirror (#5230)", async () => {
+	const f = await fixture();
+	const other = poolWorkFixture("other");
+	const fresh = f.remote.fresh.bind(f.remote);
+	const freshReached = Promise.withResolvers<void>();
+	const freshProceed = Promise.withResolvers<void>();
+	let claimingDuringFresh: ReturnType<typeof f.pool.claim> | undefined;
+	try {
+		await f.pool.enqueue(f.lease, other.work, other.boundary);
+		vi.spyOn(f.remote, "fresh").mockImplementationOnce(async (...args) => {
+			freshReached.resolve();
+			await freshProceed.promise;
+			return fresh(...args);
+		});
+		let blocked = 0;
+		claimingDuringFresh = f.pool.claim(f.lease, "worker-fresh", [other.work], 60_000, undefined, () => {
+			blocked++;
+		});
+		await freshReached.promise;
+		vi.spyOn(f.durable, "append").mockRejectedValue(new Error("journal unavailable"));
+		await assert.rejects(f.pool.commit(f.lease, f.attempt, "create", sessionMutation), /journal unavailable/);
+		freshProceed.resolve();
+		assert.equal(await claimingDuringFresh, undefined);
+		assert.equal(blocked, 1);
+	} finally {
+		freshProceed.resolve();
+		vi.restoreAllMocks();
+		await claimingDuringFresh?.catch(() => {});
+		await f.close();
+	}
+});
+
+test("an unavailable remote journal with a pending outbox row bounds idle claim retries while append-only refusals retry promptly (#5230)", async () => {
+	const workers = 4;
+	const outageMs = 3_000;
+	const IDLE_OUTAGE_RETRY_MS = 1_000;
+	const APPEND_ONLY_BOUND_MS = 1_000;
+	const RECOVERY_BOUND_MS = 1_200;
+	const f = await fixture();
+	const other = poolWorkFixture("other");
+	const waits = new IdleClaimWaits();
+	let running = true;
+	let loops: Promise<void>[] = [];
+	const counts = { getRun: 0, leaseState: 0, append: 0, readKey: 0, checks: 0 };
+	try {
+		await f.pool.enqueue(f.lease, other.work, other.boundary);
+		let fullOutage = false;
+		const unavailable = () =>
+			Promise.reject(
+				fullOutage
+					? new StorageUnavailableError(
+							{ adapter: "remote", location: "memory" },
+							new Error("journal unavailable"),
+						)
+					: new Error("journal unavailable"),
+			);
+		vi.spyOn(f.durable, "append").mockImplementation(() => {
+			counts.append++;
+			return unavailable();
+		});
+		await assert.rejects(f.pool.commit(f.lease, f.attempt, "create", sessionMutation), /journal unavailable/);
+		for (const key of Object.keys(counts) as (keyof typeof counts)[]) counts[key] = 0;
+		const claimed: { at: number; id: string }[] = [];
+		loops = Array.from({ length: workers }, async (_, index) => {
+			const backoff = new IdleClaimBackoff();
+			for (let step = 0; step < 8; step++) backoff.next();
+			while (running) {
+				let taken: Awaited<ReturnType<typeof f.pool.claim>>;
+				try {
+					taken = await waits.claim(backoff, () => {
+						counts.checks++;
+						return f.pool.claim(f.lease, `worker-${index}`, [other.work], 60_000, undefined, (error) => {
+							if (infrastructureFaultOf(error) === "storage_unavailable") throw error;
+							backoff.reset();
+						});
+					});
+				} catch (error) {
+					if (infrastructureFaultOf(error) !== "storage_unavailable") throw error;
+					await sleep(IDLE_OUTAGE_RETRY_MS);
+					continue;
+				}
+				if (taken !== undefined) {
+					claimed.push({ at: performance.now(), id: taken.id });
+					return;
+				}
+			}
+		});
+		const appendOnlyStartedAt = performance.now();
+		while (counts.append < 15 && performance.now() - appendOnlyStartedAt < APPEND_ONLY_BOUND_MS) await sleep(5);
+		const appendOnlyAppends = counts.append;
+		assert.ok(
+			appendOnlyAppends >= 15,
+			`expected 25-50 ms append-only retries, got ${appendOnlyAppends} in ${APPEND_ONLY_BOUND_MS}ms`,
+		);
+		fullOutage = true;
+		vi.spyOn(f.durable, "getRun").mockImplementation(() => {
+			counts.getRun++;
+			return unavailable();
+		});
+		vi.spyOn(f.durable, "leaseState").mockImplementation(() => {
+			counts.leaseState++;
+			return unavailable();
+		});
+		vi.spyOn(f.durable, "readKey").mockImplementation(() => {
+			counts.readKey++;
+			return unavailable();
+		});
+		await sleep(60);
+		for (const key of Object.keys(counts) as (keyof typeof counts)[]) counts[key] = 0;
+		const startedAt = performance.now();
+		await sleep(outageMs);
+		const elapsedS = (performance.now() - startedAt) / 1000;
+		const snapshot = { ...counts };
+		const recoveredAt = performance.now();
+		vi.restoreAllMocks();
+		while (claimed.length === 0 && performance.now() - recoveredAt < 1_500) await sleep(10);
+		running = false;
+		waits.wakeAll();
+		await Promise.all(loops);
+		const journalRequests = snapshot.getRun + snapshot.leaseState + snapshot.append + snapshot.readKey;
+		assert.ok(
+			journalRequests <= workers * elapsedS * 1.5,
+			`expected at most ~1 journal request per claim per second, got ${journalRequests} in ${elapsedS.toFixed(2)}s`,
+		);
+		assert.equal(snapshot.getRun, 0);
+		assert.equal(snapshot.leaseState, 0);
+		assert.equal(claimed.length, 1);
+		assert.ok(
+			claimed[0]!.at - recoveredAt < RECOVERY_BOUND_MS,
+			`ready work waited ${Math.round(claimed[0]!.at - recoveredAt)} ms after the journal recovered`,
+		);
+	} finally {
+		running = false;
+		waits.wakeAll();
+		vi.restoreAllMocks();
+		await Promise.all(loops);
 		await f.close();
 	}
 });

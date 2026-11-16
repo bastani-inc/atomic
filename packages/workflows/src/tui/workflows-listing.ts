@@ -1,20 +1,19 @@
-/**
- * The `/workflows` sheet: the session's runs and the registered workflow definitions in one list (#5224).
- *
- * Runs come first, newest first, as two-line rows: the workflow's name and label, then `status · stage n/m <stage> ·
- * elapsed · cost`, with a failed run's short reason in place of its stage. Definitions follow: the name, then its
- * description and an inputs summary. Enter on a run opens its graph; Enter on a definition starts it, which asks for
- * its inputs first. A definition that failed to load is listed with them as `✗` and its one-line reason; Enter on it
- * explains what failed instead of starting it. The rows are built by pure functions so the listing can be tested
- * without a terminal.
- */
-
-import { Selector, type SelectorItem } from "@bastani/atomic";
-import { getKeybindings } from "@bastani/atomic-tui";
+import {
+	renderNavHintLine,
+	type SelectorItem,
+	SelectorState,
+	type SelectorStyle,
+	selectorHintEntries,
+	themeSelectorStyle,
+} from "@bastani/atomic";
+import { getKeybindings, Input, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import type { PiCustomComponent, PiCustomOverlayFactoryTui, PiCustomOverlayFunction } from "../extension/wiring.js";
+import { actionableReturnedStatusText, effectiveRunStatus } from "../shared/returned-run-status.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
+import { schemaIsRequired } from "../shared/schema-introspection.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
+import { sanitizeToolTitleText } from "../shared/tool-payload-bounds.js";
 import type { WorkflowInputSchemaMap } from "../shared/types.js";
 import { inertDisplayLine } from "./display-text.js";
 import { panelItemsFromSnapshot } from "./panel-runs.js";
@@ -83,7 +82,6 @@ export function invalidDefinitionsFromDiagnostics(
 		}));
 }
 
-/** The parts of a registered definition the listing shows. */
 export interface WorkflowsListingDefinition {
 	readonly normalizedName: string;
 	readonly description: string;
@@ -102,7 +100,6 @@ const RUN_STATUS_TEXT: Readonly<Record<RunSnapshot["status"], string>> = {
 	failed: "failed",
 };
 
-/** `12m`, `2h 5m`, `45s`: how long something took or has run. */
 export function listingDuration(ms: number): string {
 	const seconds = Math.max(0, Math.round(ms / 1000));
 	if (seconds < 60) return `${seconds}s`;
@@ -113,7 +110,6 @@ export function listingDuration(ms: number): string {
 	return rest ? `${hours}h ${rest}m` : `${hours}h`;
 }
 
-/** `2h ago`, `yesterday`: when a finished run ended. */
 export function listingAgo(ms: number): string {
 	const minutes = Math.floor(Math.max(0, ms) / 60_000);
 	if (minutes < 1) return "just now";
@@ -124,20 +120,20 @@ export function listingAgo(ms: number): string {
 	return days === 1 ? "yesterday" : `${days}d ago`;
 }
 
-/** The first line of a failure, without a stack trace, kept short: what a failed row says went wrong. */
-export function shortFailureReason(run: Pick<RunSnapshot, "error" | "exitReason">): string | undefined {
-	const text = run.error ?? run.exitReason;
+export function shortFailureReason(
+	run: Pick<RunSnapshot, "error" | "exitReason" | "failureMessage" | "result">,
+): string | undefined {
+	const text = run.error ?? run.exitReason ?? run.failureMessage ?? actionableReturnedStatusText(run.result);
 	if (!text) return undefined;
 	const first =
 		text
-			.split("\n")
-			.map((line) => line.trim())
+			.split(/\r?\n/)
+			.map((line) => sanitizeToolTitleText(line).trim())
 			.find((line) => line.length > 0 && !/^at\s/.test(line)) ?? "";
 	const clean = first.replace(/^(Error|[A-Z][A-Za-z]*Error):\s*/, "");
 	return clean.length > 60 ? `${clean.slice(0, 59)}…` : clean || undefined;
 }
 
-/** `stage 3/5 implement`: the stage a run is on (or stopped at), counting stages that have settled. */
 export function runStageText(run: RunSnapshot): string | undefined {
 	const total = run.stages.length;
 	if (total === 0) return undefined;
@@ -145,37 +141,42 @@ export function runStageText(run: RunSnapshot): string | undefined {
 	const current = failed ?? run.stages.find((stage) => stage.status === "running") ?? undefined;
 	const settled = run.stages.filter((stage) => stage.status !== "pending" && stage.status !== "running").length;
 	const index = current ? run.stages.indexOf(current) + 1 : Math.min(total, settled);
-	return `stage ${index}/${total}${current ? ` ${current.name}` : ""}`;
+	const stageName = current ? sanitizeToolTitleText(current.name).trim() : "";
+	return `stage ${index}/${total}${stageName ? ` ${stageName}` : ""}`;
 }
 
-/** `$1.84`, from the run's budget accounting when it has any. */
 export function runCostText(run: RunSnapshot): string | undefined {
 	const cost = run.budgetState?.accounting?.cost;
 	return cost === undefined || cost <= 0 ? undefined : `$${cost.toFixed(2)}`;
 }
 
-/** What tells a run apart from other runs of its workflow: its label, else its first text input, else its short id. */
 export function runRowLabel(run: RunSnapshot): string {
-	if (run.label) return `${run.name} · ${run.label}`;
+	const name = sanitizeToolTitleText(run.name);
+	if (run.label) return `${name} · ${sanitizeToolTitleText(run.label)}`;
 	const input = Object.values(run.inputs).find((value) => typeof value === "string" && value.trim() !== "");
-	const detail = typeof input === "string" ? (input.split("\n")[0] ?? "").trim() : run.id.slice(0, 8);
-	return `${run.name} · ${detail.length > 40 ? `${detail.slice(0, 39)}…` : detail}`;
+	const rawDetail =
+		typeof input === "string"
+			? sanitizeToolTitleText(input.split(/\r?\n/)[0] ?? "").trim()
+			: sanitizeToolTitleText(run.id.slice(0, 8));
+	const detail = rawDetail.length > 40 ? `${rawDetail.slice(0, 39)}…` : rawDetail;
+	return `${name} · ${detail}`;
 }
 
-/**
- * A run's second line: `running · stage 3/5 implement · 12m · $1.84`, a failed run's `✗ <reason>`, or
- * `needs input · <question>` while it waits on one.
- */
-export function runRowDescription(run: RunSnapshot, now: number, question?: string): string {
+export function runRowDescription(
+	run: RunSnapshot,
+	now: number,
+	question?: string,
+	status: RunSnapshot["status"] = effectiveRunStatus(run),
+): string {
 	if (question !== undefined)
-		return ["needs input", question, listingDuration(elapsedRunMs(run, now)), runCostText(run)]
+		return ["needs input", sanitizeToolTitleText(question), listingDuration(elapsedRunMs(run, now)), runCostText(run)]
 			.filter((part): part is string => part !== undefined && part !== "")
 			.join(" · ");
-	const status = RUN_STATUS_TEXT[run.status];
-	const live = run.status === "running" || run.status === "pending" || run.status === "paused";
-	const reason = run.status === "failed" || run.status === "blocked" ? shortFailureReason(run) : undefined;
+	const statusText = RUN_STATUS_TEXT[status];
+	const live = status === "running" || status === "pending" || status === "paused";
+	const reason = status === "failed" || status === "blocked" ? shortFailureReason(run) : undefined;
 	const parts = [
-		status,
+		statusText,
 		runStageText(run),
 		live || run.endedAt === undefined ? undefined : listingAgo(now - run.endedAt),
 		listingDuration(elapsedRunMs(run, now)),
@@ -185,18 +186,12 @@ export function runRowDescription(run: RunSnapshot, now: number, question?: stri
 	return parts.filter((part): part is string => part !== undefined && part !== "").join(" · ");
 }
 
-/** `2 inputs (1 required)`, or `no inputs`. */
 export function inputsSummary(inputs: WorkflowInputSchemaMap): string {
 	const entries = Object.values(inputs);
 	if (entries.length === 0) return "no inputs";
-	const required = entries.filter((schema) => schemaRequired(schema)).length;
+	const required = entries.filter((schema) => schemaIsRequired(schema)).length;
 	const noun = entries.length === 1 ? "input" : "inputs";
 	return required ? `${entries.length} ${noun} (${required} required)` : `${entries.length} ${noun}`;
-}
-
-function schemaRequired(schema: WorkflowInputSchemaMap[string]): boolean {
-	const record = schema as { readonly required?: boolean; readonly default?: unknown };
-	return record.required === true && record.default === undefined;
 }
 
 const RUN_TONE: Partial<Record<RunSnapshot["status"], "accent" | "success" | "warning" | "error" | "muted">> = {
@@ -210,14 +205,12 @@ const RUN_TONE: Partial<Record<RunSnapshot["status"], "accent" | "success" | "wa
 	killed: "muted",
 };
 
-/** The listing's rows: runs (newest first), then definitions (by name). */
 export function workflowsListingItems(
 	runs: readonly RunSnapshot[],
 	definitions: readonly WorkflowsListingDefinition[],
 	now = Date.now(),
 	invalidDefinitions: readonly WorkflowsListingInvalidDefinition[] = [],
 ): SelectorItem<WorkflowsListingTarget>[] {
-	// The agent panel's view of each run says whether it waits on a question, and which.
 	const waiting = new Map(
 		panelItemsFromSnapshot(runs, now)
 			.filter((item) => item.state === "input")
@@ -226,41 +219,42 @@ export function workflowsListingItems(
 	const runItems = [...topLevelWorkflowRuns(runs)]
 		.sort((a, b) => b.startedAt - a.startedAt)
 		.map((run): SelectorItem<WorkflowsListingTarget> => {
+			const status = effectiveRunStatus(run);
 			const question = waiting.get(`run:${run.id}`);
+			const label = inertDisplayLine(runRowLabel(run));
 			const tag =
 				question !== undefined
 					? "◆"
-					: run.status === "failed"
+					: status === "failed"
 						? "✗"
-						: run.status === "cancelled" || run.status === "killed"
+						: status === "cancelled" || status === "killed"
 							? "◼"
 							: undefined;
 			return {
 				id: `run:${run.id}`,
 				value: { kind: "run", runId: run.id },
-				label: runRowLabel(run),
-				description: runRowDescription(run, now, question),
+				label,
+				description: inertDisplayLine(runRowDescription(run, now, question, status)),
 				tag,
-				tagTone: question !== undefined ? "warning" : RUN_TONE[run.status],
+				tagTone: question !== undefined ? "warning" : RUN_TONE[status],
 				group: "Runs",
-				searchText: `${runRowLabel(run)} ${run.id} ${RUN_STATUS_TEXT[run.status]}`,
+				searchText: `${label} ${sanitizeToolTitleText(run.id)} ${RUN_STATUS_TEXT[status]}`,
 			};
 		});
-	// A broken definition's row keeps its id while other diagnostics come and go, so the selection stays on it.
 	const seenInvalidIds = new Map<string, number>();
 	const definitionItems = [
-		...definitions.map(
-			(definition): SelectorItem<WorkflowsListingTarget> => ({
+		...definitions.map((definition): SelectorItem<WorkflowsListingTarget> => {
+			const label = inertDisplayLine(sanitizeToolTitleText(definition.normalizedName));
+			const summary = inertDisplayLine(sanitizeToolTitleText(definition.description.split(/\r?\n/)[0] ?? "")).trim();
+			return {
 				id: `definition:${definition.normalizedName}`,
 				value: { kind: "definition", name: definition.normalizedName },
-				label: definition.normalizedName,
-				description: [definition.description.split("\n")[0]?.trim(), inputsSummary(definition.inputs)]
-					.filter(Boolean)
-					.join(" · "),
+				label,
+				description: [summary, inputsSummary(definition.inputs)].filter(Boolean).join(" · "),
 				group: "Definitions",
-				searchText: `${definition.normalizedName} ${definition.description}`,
-			}),
-		),
+				searchText: `${label} ${sanitizeToolTitleText(definition.description)}`,
+			};
+		}),
 		...invalidDefinitions.map(
 			(definition): SelectorItem<WorkflowsListingTarget> => ({
 				id: invalidDefinitionId(definition, seenInvalidIds),
@@ -281,10 +275,87 @@ export interface WorkflowsListingUi {
 	custom?: PiCustomOverlayFunction;
 }
 
-/**
- * Mounts the `/workflows` sheet and resolves with the chosen row, or `undefined` on Esc. Resolves `undefined` at once
- * when there is no custom UI.
- */
+const LISTING_CLOCK_TICK_MS = 1_000;
+const TRANSCRIPT_MIN_ROWS = 1;
+const USAGE_METER_ROWS = 1;
+const FOOTER_CHROME_ROWS = 2;
+const WIDGET_SPACER_ROWS = 1;
+const IDLE_AGENT_PANEL_ROWS = 4;
+const IDLE_AGENT_PANEL_OVERFLOW_ROWS = 1;
+const BELOW_SHEET_ROWS =
+	TRANSCRIPT_MIN_ROWS +
+	USAGE_METER_ROWS +
+	FOOTER_CHROME_ROWS +
+	WIDGET_SPACER_ROWS +
+	IDLE_AGENT_PANEL_ROWS +
+	IDLE_AGENT_PANEL_OVERFLOW_ROWS;
+const LISTING_HINT_OPTIONS = { search: true, confirmLabel: "open", cancelLabel: "close" };
+
+function listingAvailableRows(tui: PiCustomOverlayFactoryTui): number {
+	const reportedRows = tui.terminal?.rows;
+	const terminalRows =
+		typeof reportedRows === "number" && Number.isFinite(reportedRows) && reportedRows > 0
+			? Math.floor(reportedRows)
+			: 24;
+	return Math.max(3, terminalRows - BELOW_SHEET_ROWS);
+}
+
+function renderListingSearch(search: Input, style: SelectorStyle, width: number): string {
+	const raw = search.getValue();
+	const safe = sanitizeToolTitleText(raw);
+	if (raw === safe) return search.render(width)[0] ?? "";
+	const display = new Input({ prompt: "⌕ ", placeholder: "Search…", placeholderStyle: style.dim });
+	display.setValue(safe);
+	Reflect.set(display, "cursor", sanitizeToolTitleText(raw.slice(0, search.getCursor())).length);
+	display.focused = search.focused;
+	return display.render(width)[0] ?? "";
+}
+
+function renderCompactListing(
+	state: SelectorState<WorkflowsListingTarget>,
+	search: Input,
+	style: SelectorStyle,
+	width: number,
+): string[] {
+	const visible = state.getVisible();
+	const top = state.getTop();
+	const end = Math.min(visible.length, top + state.maxVisible);
+	const page = visible.slice(top, end);
+	const groups = new Set(page.map((item) => item.group).filter((group) => group !== undefined));
+	const singleGroup = !state.getQuery() && groups.size === 1 ? page[0]?.group : undefined;
+	const title = `  ${style.bold(style.text("Workflows"))}${singleGroup ? style.muted(` · ${singleGroup}`) : ""}  `;
+	const range = visible.length > 0 ? style.dim(`  ${top + 1}-${end}/${visible.length}`) : "";
+	const searchWidth = Math.max(1, width - visibleWidth(title) - visibleWidth(range));
+	const lines = [title + renderListingSearch(search, style, searchWidth) + range];
+	if (page.length === 0) {
+		const empty = state.getQuery()
+			? `No matches for "${sanitizeToolTitleText(state.getQuery())}"`
+			: "No workflows in this session.";
+		lines.push(`  ${style.dim(truncateToWidth(empty, Math.max(1, width - 2)))}`);
+	}
+	let lastGroup: string | undefined;
+	for (let index = 0; index < page.length; index++) {
+		const item = page[index]!;
+		if (groups.size > 1 && !state.getQuery() && item.group !== lastGroup && item.group !== undefined)
+			lines.push(`  ${style.bold(style.muted(truncateToWidth(item.group, Math.max(1, width - 2))))}`);
+		lastGroup = item.group;
+		const selected = top + index === state.getSelectedIndex();
+		const lead = selected ? ` ${style.accent(style.bold("❯ "))}` : "   ";
+		const tagWidth = item.tag ? visibleWidth(item.tag) + 2 : 0;
+		const label = truncateToWidth(item.label, Math.max(1, width - 3 - tagWidth));
+		let line = lead + (selected ? style.accent(style.bold(label)) : style.text(label));
+		if (item.tag)
+			line +=
+				" ".repeat(Math.max(2, width - 3 - visibleWidth(label) - visibleWidth(item.tag))) +
+				style.tone(item.tagTone ?? "muted", item.tag);
+		lines.push(line);
+		lines.push(`   ${style.muted(truncateToWidth(item.description ?? "", Math.max(1, width - 3)))}`);
+	}
+	const hints = selectorHintEntries(state, LISTING_HINT_OPTIONS).filter((entry) => entry.label !== "to search");
+	lines.push(renderNavHintLine(hints, width, style, getKeybindings()));
+	return lines.map((line) => truncateToWidth(line, width));
+}
+
 export function openWorkflowsListing(
 	ui: WorkflowsListingUi,
 	source: {
@@ -319,36 +390,116 @@ export function openWorkflowsListing(
 			const finish = (target: WorkflowsListingTarget | undefined): void => {
 				if (settle(target)) done(undefined);
 			};
-			const items = () =>
-				workflowsListingItems(source.runs(), source.definitions(), Date.now(), source.invalidDefinitions?.() ?? []);
-			const selector = new Selector<WorkflowsListingTarget>({
-				title: "Workflows",
-				items: items(),
-				layout: "two-line",
-				search: true,
-				searchPlaceholder: "Search…",
-				emptyText: "No workflows in this session.",
-				confirmLabel: "open",
-				cancelLabel: "close",
-				onSelect: (item) => finish(item.value),
-				onCancel: () => finish(undefined),
+			let cachedRuns = source.runs();
+			let cachedDefinitions = source.definitions();
+			let cachedInvalidDefinitions = source.invalidDefinitions?.() ?? [];
+			let currentNow = Date.now();
+			let items = workflowsListingItems(cachedRuns, cachedDefinitions, currentNow, cachedInvalidDefinitions);
+			const style = themeSelectorStyle();
+			const search = new Input({ prompt: "⌕ ", placeholder: "Search…", placeholderStyle: style.dim });
+			const selector = new SelectorState<WorkflowsListingTarget>({
+				items,
+				maxVisible: Math.max(1, Math.floor((listingAvailableRows(tui) - 2) / 2)),
 			});
-			let paintedSelectionId: string | undefined;
-			let itemsStale = false;
-			const refreshItems = (): void => {
-				if (!itemsStale) return;
-				itemsStale = false;
-				selector.setItems(items());
+			const handleSelectionInput = (data: string): void => {
+				const keys = getKeybindings();
+				if (keys.matches(data, "tui.select.up")) selector.move(-1);
+				else if (keys.matches(data, "tui.select.down")) selector.move(1);
+				else if (keys.matches(data, "tui.select.pageUp")) selector.page(-1);
+				else if (keys.matches(data, "tui.select.pageDown")) selector.page(1);
+				else if (keys.matches(data, "tui.select.cancel")) {
+					if (selector.getQuery() && data !== "\x03") {
+						search.setValue("");
+						selector.setQuery("");
+					} else finish(undefined);
+				} else if (
+					keys.matches(data, "tui.select.confirm") ||
+					(keys.matches(data, "app.list.open") && !selector.getQuery())
+				) {
+					const selected = selector.getSelected();
+					if (selected) finish(selected.value);
+				} else {
+					search.handleInput(data);
+					selector.setQuery(search.getValue());
+				}
 			};
-			release = source.subscribe?.(() => {
+			let paintedSelectionId: string | undefined;
+			let refreshedSincePaint = true;
+			let movedSincePaint = false;
+			let itemsStale = false;
+			const sameIds = (
+				before: readonly SelectorItem<WorkflowsListingTarget>[],
+				after: readonly SelectorItem<WorkflowsListingTarget>[],
+			): boolean => before.length === after.length && before.every((item, index) => item.id === after[index]?.id);
+			const sameDescriptions = (
+				before: readonly SelectorItem<WorkflowsListingTarget>[],
+				after: readonly SelectorItem<WorkflowsListingTarget>[],
+			): boolean =>
+				sameIds(before, after) && before.every((item, index) => item.description === after[index]?.description);
+			const visiblePage = (): SelectorItem<WorkflowsListingTarget>[] => {
+				const visible = selector.getVisible();
+				const top = selector.getTop();
+				return visible.slice(top, top + selector.maxVisible);
+			};
+			const refreshClock = (fromTick = false): boolean => {
+				const now = Date.now();
+				if ((!fromTick && Math.abs(now - currentNow) < LISTING_CLOCK_TICK_MS) || cachedRuns.length === 0)
+					return false;
+				currentNow = now;
+				const next = workflowsListingItems(cachedRuns, cachedDefinitions, currentNow, cachedInvalidDefinitions);
+				if (sameDescriptions(items, next)) return false;
+				items = next;
+				const before = selector.getVisible();
+				const beforePage = visiblePage();
+				selector.setItems(items);
+				if (!sameIds(before, selector.getVisible())) {
+					refreshedSincePaint = true;
+					return true;
+				}
+				return !sameDescriptions(beforePage, visiblePage());
+			};
+			const refreshItems = (): void => {
+				if (itemsStale) {
+					itemsStale = false;
+					cachedRuns = source.runs();
+					cachedDefinitions = source.definitions();
+					cachedInvalidDefinitions = source.invalidDefinitions?.() ?? [];
+					currentNow = Date.now();
+					items = workflowsListingItems(cachedRuns, cachedDefinitions, currentNow, cachedInvalidDefinitions);
+					selector.setItems(items);
+					refreshedSincePaint = true;
+					return;
+				}
+				refreshClock();
+			};
+			const tick = setInterval(() => {
+				if (refreshClock(true)) tui.requestRender?.();
+			}, LISTING_CLOCK_TICK_MS);
+			tick.unref?.();
+			let unsubscribe: (() => void) | undefined;
+			release = () => {
+				clearInterval(tick);
+				unsubscribe?.();
+			};
+			unsubscribe = source.subscribe?.(() => {
 				itemsStale = true;
 				tui.requestRender?.();
 			});
-			return {
+			if (settled) release();
+			const component: PiCustomComponent & { focused: boolean } = {
 				render: (width: number) => {
 					refreshItems();
-					const lines = selector.render(width);
+					const availableRows = listingAvailableRows(tui);
+					let maxVisible = Math.max(1, Math.floor((availableRows - 2) / 2));
+					selector.setMaxVisible(maxVisible);
+					let lines = renderCompactListing(selector, search, style, width);
+					while (lines.length > availableRows && maxVisible > 1) {
+						selector.setMaxVisible(--maxVisible);
+						lines = renderCompactListing(selector, search, style, width);
+					}
 					paintedSelectionId = selector.getSelected()?.id;
+					refreshedSincePaint = false;
+					movedSincePaint = false;
 					return lines;
 				},
 				handleInput: (data: string) => {
@@ -356,14 +507,29 @@ export function openWorkflowsListing(
 					const keys = getKeybindings();
 					const confirms =
 						keys.matches(data, "tui.select.confirm") ||
-						(keys.matches(data, "app.list.open") && !selector.state.getQuery());
-					if (!confirms || selector.getSelected()?.id === paintedSelectionId) selector.handleInput(data);
+						(keys.matches(data, "app.list.open") && !selector.getQuery());
+					if (!confirms) {
+						handleSelectionInput(data);
+						movedSincePaint = true;
+					} else if (
+						!refreshedSincePaint ||
+						(!movedSincePaint && selector.getSelected()?.id === paintedSelectionId)
+					) {
+						handleSelectionInput(data);
+					}
 					tui.requestRender?.();
 					return true;
 				},
-				invalidate: () => selector.invalidate(),
+				invalidate: () => search.invalidate(),
 				dispose: () => finish(undefined),
+				get focused() {
+					return search.focused;
+				},
+				set focused(value: boolean) {
+					search.focused = value;
+				},
 			};
+			return component;
 		};
 		try {
 			void Promise.resolve(

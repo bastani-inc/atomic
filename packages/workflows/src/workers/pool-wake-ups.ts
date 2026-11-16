@@ -1,35 +1,167 @@
-/**
- * What a shared pool does with the wake-ups its journal sends on Postgres (#5103). A wake-up names the root whose
- * work became ready or whose attempt ended, or is undefined when wake-ups may have been missed. It only ends a wait
- * early: every poll it shortens still runs.
- */
+export const IDLE_CLAIM_FIRST_PAUSE_MS = 25;
+export const IDLE_CLAIM_FALLBACK_MS = 2_000;
 
-/** The pauses of a pool's idle workers between asks for work, which a wake-up of their root ends early. */
-export class IdleClaimPauses {
-	private readonly waiting = new Set<() => void>();
+export class IdleClaimBackoff {
+	private step = 0;
+	private carriedWake?: { readonly signal: AbortSignal | undefined; readonly release: () => void };
 
-	constructor(private readonly pauseMs: number) {}
+	constructor(private readonly random: () => number = Math.random) {}
 
-	/** Resolves after the pause, or once a wake-up ends it. */
-	pause(): Promise<void> {
-		return new Promise((resolve) => {
-			const end = () => {
-				clearTimeout(timer);
-				this.waiting.delete(end);
-				resolve();
-			};
-			const timer = setTimeout(end, this.pauseMs);
-			this.waiting.add(end);
-		});
+	next(): number {
+		const base = IDLE_CLAIM_FIRST_PAUSE_MS * 2 ** Math.min(this.step, 16);
+		this.step++;
+		return Math.min(IDLE_CLAIM_FALLBACK_MS, base * (1 + this.random()));
 	}
 
-	/**
-	 * A wake-up of `root`, this pool's own: one pause ends for a wake-up naming it, since one child became ready or one
-	 * attempt ended; every pause ends when wake-ups may have been missed. Another root's wake-up ends none.
-	 */
+	reset(): void {
+		this.step = 0;
+	}
+
+	takeWake(): boolean {
+		const carried = this.carriedWake;
+		if (carried === undefined) return false;
+		carried.signal?.removeEventListener("abort", carried.release);
+		this.carriedWake = undefined;
+		return true;
+	}
+
+	carryWake(signal: AbortSignal | undefined, wake: () => void): void {
+		const release = () => {
+			if (this.takeWake()) wake();
+		};
+		this.carriedWake = { signal, release };
+		signal?.addEventListener("abort", release, { once: true });
+		if (signal?.aborted) release();
+	}
+}
+
+class IdleClaimTicket {
+	woken = false;
+	private end?: () => void;
+
+	get pausing(): boolean {
+		return this.end !== undefined;
+	}
+
+	wake(): void {
+		this.woken = true;
+		this.end?.();
+	}
+
+	pause(ms: number, signal?: AbortSignal): Promise<void> {
+		if (this.woken || signal?.aborted === true) return Promise.resolve();
+		return new Promise((resolve) => {
+			const timer = setTimeout(() => this.end?.(), ms);
+			const abort = () => this.end?.();
+			signal?.addEventListener("abort", abort, { once: true });
+			this.end = () => {
+				clearTimeout(timer);
+				signal?.removeEventListener("abort", abort);
+				this.end = undefined;
+				resolve();
+			};
+		});
+	}
+}
+
+export class IdleClaimWaits {
+	private readonly tickets = new Set<IdleClaimTicket>();
+
+	async claim<T>(
+		backoff: IdleClaimBackoff,
+		check: (found: () => void) => Promise<T | undefined>,
+		signal?: AbortSignal,
+	): Promise<T | undefined> {
+		const ticket = new IdleClaimTicket();
+		this.tickets.add(ticket);
+		let carried = backoff.takeWake();
+		const found = () => {
+			backoff.reset();
+			const passWake = ticket.woken || carried;
+			carried = false;
+			ticket.woken = false;
+			if (this.tickets.delete(ticket) && passWake) this.wakeOne();
+		};
+		const abort = () => {
+			if (this.tickets.delete(ticket) && (ticket.woken || carried)) this.wakeOne();
+		};
+		signal?.addEventListener("abort", abort, { once: true });
+		if (signal?.aborted) abort();
+		try {
+			const claimed = await check(found);
+			if (claimed !== undefined) {
+				found();
+				return claimed;
+			}
+			if (!signal?.aborted) this.tickets.add(ticket);
+			await ticket.pause(backoff.next(), signal);
+			if (!signal?.aborted && (ticket.woken || carried)) backoff.carryWake(signal, () => this.wakeOne());
+			return undefined;
+		} catch (error) {
+			if (this.tickets.delete(ticket) && (ticket.woken || carried)) this.wakeOne();
+			throw error;
+		} finally {
+			signal?.removeEventListener("abort", abort);
+			this.tickets.delete(ticket);
+		}
+	}
+
+	get pausing(): boolean {
+		for (const ticket of this.tickets) if (ticket.pausing && !ticket.woken) return true;
+		return false;
+	}
+
 	wake(woken: string | undefined, root: string | undefined): void {
-		if (woken === undefined) for (const end of [...this.waiting]) end();
-		else if (woken === root) this.waiting.values().next().value?.();
+		if (woken === undefined) this.wakeAll();
+		else if (woken === root) this.wakeOne();
+	}
+
+	wakeOne(): void {
+		let checking: IdleClaimTicket | undefined;
+		for (const ticket of this.tickets) {
+			if (ticket.woken) continue;
+			if (ticket.pausing) {
+				ticket.wake();
+				return;
+			}
+			checking ??= ticket;
+		}
+		checking?.wake();
+	}
+
+	wakeAll(): void {
+		for (const ticket of [...this.tickets]) ticket.wake();
+	}
+}
+
+export const IDLE_READY_PROBE_MS = 250;
+
+export interface IdleReadyProbeTarget {
+	readonly waits: IdleClaimWaits;
+	readonly notified: () => Promise<boolean>;
+	readonly mark: () => Promise<string | undefined>;
+}
+
+export class IdleReadyProbe {
+	private last: string | undefined;
+	private reading = false;
+
+	constructor(private readonly target: IdleReadyProbeTarget) {}
+
+	async tick(): Promise<void> {
+		if (this.reading || !this.target.waits.pausing) return;
+		this.reading = true;
+		try {
+			if (await this.target.notified().catch(() => false)) {
+				this.last = undefined;
+				return;
+			}
+			const mark = await this.target.mark().catch(() => this.last);
+			if (mark !== undefined && mark !== this.last) this.target.waits.wakeOne();
+			this.last = mark;
+		} finally {
+			this.reading = false;
+		}
 	}
 }
 
@@ -39,7 +171,7 @@ export interface CoordinatorWakeUpTarget {
 	readonly root: () => string | undefined;
 	/** Whether the coordinator is a worker host's satellite rather than the root's own pool. */
 	readonly satellite: boolean;
-	readonly pauses: IdleClaimPauses;
+	readonly pauses: IdleClaimWaits;
 	/** The recovery pass in progress, if any. */
 	readonly recovering: () => Promise<void> | undefined;
 	/** Runs a recovery pass now, which settles what other hosts' workers ended. */

@@ -127,6 +127,10 @@ handleInput(data: string): boolean {
 - With modifiers: `Key.ctrl("c")`, `Key.shift("tab")`, `Key.alt("left")`, `Key.ctrlShift("p")`
 - String format also works: `"enter"`, `"ctrl+c"`, `"shift+tab"`, `"ctrl+shift+p"`
 
+For custom text inputs, use `decodePrintableKey(data)` from `@bastani/atomic-tui` to decode printable Kitty CSI-u and modifyOtherKeys sequences. It returns `undefined` for plain text and non-text keys, so handle ordinary printable text separately.
+
+For bracketed paste, remove the paste markers and pass the content to `normalizePastedText(content)` from the same package. It restores tmux-encoded control bytes, normalizes CRLF and CR to newlines, expands tabs to four spaces, and removes C0 control bytes other than newlines.
+
 ## Line Width
 
 **Critical:** Each line from `render()` must not exceed the `width` parameter.
@@ -302,6 +306,10 @@ await ctx.ui.custom((tui, theme, keybindings, done) => {
 
 Only autowrap control is exposed. Atomic restores the mode when the component hides, closes, or is disposed, and after an engine crash or restart. Fullscreen mode retains its baseline mouse and autowrap behavior. On non-isolated hosts the setter may be absent; only write escape sequences directly when your component owns the real terminal.
 
+### Renderer mode in an isolated component
+
+`tui.mode` is `"fullscreen"` when Atomic paints on the alternate screen and `"regular"` on the main-screen fallback, which Atomic uses under `TERM=dumb`, in CI, and without a TTY. In isolated mode a `ctx.ui.custom()` component or component-factory widget runs in the engine child, and `tui.mode` reports the host's renderer: each frame the host asks for carries its mode, and Atomic invalidates the component when the mode changes. Before the host has asked the engine for any frame, `tui.mode` is `"regular"`, so read it in `render()` rather than only in the factory.
+
 ### Host-native session picker
 
 Use `ctx.ui.hostSessionPicker(request)` for responsive session-list navigation and search, including when an extension is busy. Send JSON-safe rows, update or close the picker, and handle selection, cancellation, and confirmed Ctrl+D deletion through the API.
@@ -328,21 +336,40 @@ const path = await picker.result;    // selected row's path, or undefined on can
 
 ### Host-native input form
 
-Use `ctx.ui.hostInputForm(request)` for a structured inline form in the editor slot. It supports Tab/Shift+Tab, arrows, text editing, configured keybindings, Enter, Escape, and Ctrl+C, including under engine isolation.
+Use `ctx.ui.hostInputForm(request)` for a structured inline form in the editor slot. It supports Tab/Shift+Tab, arrows, text editing, configured keybindings, Enter, Escape, and Ctrl+C, including under engine isolation. The promise rejects if the host cannot read the form, with "The host could not read this input form."
 
 ```typescript
-const values = await ctx.ui.hostInputForm?.({
-  title: "Release",
-  fields: [
-    { name: "version", type: "string", required: true, initialValue: "" },
-    { name: "channel", type: "select", choices: ["stable", "beta"], initialValue: "stable" },
-  ],
-});
-if (values === undefined) return; // Escape, Ctrl+C, teardown, or close
+try {
+  const values = await ctx.ui.hostInputForm?.({
+    title: "Release",
+    fields: [
+      { name: "version", type: "string", required: true, initialValue: "" },
+      { name: "channel", type: "select", choices: ["stable", "beta"], initialValue: "stable" },
+    ],
+  });
+  if (values === undefined) return;
+} catch (error) {
+  ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+}
 ```
 
-Field types are `string`, `text`, `number`, `integer`, `boolean`, and `select`. Initial and returned values are raw strings; the caller owns domain coercion. Every current interactive Atomic host exposes the optional capability, while headless RPC and print surfaces omit it. Keep a legacy fallback only when compatibility with older hosts is required.
+Field types are `string`, `text`, `number`, `integer`, `boolean`, and `select`. Initial and returned values are raw strings; the caller owns domain coercion.
 
-Each field's header shows whether its value is ready: `✓`, or `✗` with the reason (`required`, `choose one`, `choose on or off`, `must be a whole number`, `must be a number`, `must be on or off`). Enter on the submit button runs only when every field is ready. A boolean accepts `true`, `false`, `on`, `off`, `1` or `0`; anything else is refused rather than read as off.
+A field can also carry constraints, which decide whether its value is ready. When `schema` is present, it replaces all other checks, including the field type and select choices:
+
+| Field | Applies to | Checks |
+|---|---|---|
+| `const` | all but `select` | the value equals it (a `boolean` compares on or off) |
+| `minimum`, `maximum` | `number`, `integer` | inclusive bounds |
+| `exclusiveMinimum`, `exclusiveMaximum` | `number`, `integer` | exclusive bounds |
+| `multipleOf` | `number`, `integer` | the value is a multiple of it |
+| `minLength`, `maxLength` | `string`, `text` | length in characters |
+| `pattern` | `string`, `text` | a regular expression, compiled with the `u` flag |
+| `format` | `string`, `text` | a JSON Schema format such as `email`, `uuid` or `date-time` |
+| `schema` | any | a JSON Schema the value must match: the text is read as JSON when that value matches the schema, otherwise as the string itself |
+
+Every current interactive Atomic host exposes the optional capability, while headless RPC and print surfaces omit it. Keep a legacy fallback only when compatibility with older hosts is required.
+
+Each field's header shows whether its value is ready: `✓`, or `✗` with the reason (`required`, `choose one`, `choose on or off`, `must be a whole number`, `must be a number`, `must be on or off`, `not in choices`, `must equal <value>`, the broken constraint such as `must be >= 1` or `must not have more than 100 characters (maxLength 100)`, or `invalid pattern in the workflow schema` when a `pattern` does not compile). Enter on the submit button runs only when every field is ready. A boolean accepts `true`, `false`, `on`, `off`, `1` or `0`; anything else is refused rather than read as off.
 
 `/workflow <name>` uses this input form.

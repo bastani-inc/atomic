@@ -8,7 +8,6 @@ import {
 	mkdirSync,
 	readdirSync,
 	readFileSync,
-	renameSync,
 	rmSync,
 	statSync,
 	utimesSync,
@@ -20,6 +19,7 @@ import { afterEach, beforeEach, describe, test } from "vitest";
 import { bunExecutable, sleep } from "../../../test/helpers/runtime.js";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
+import { renameWithRetry } from "../src/core/rename-retry.ts";
 import {
 	type PreparedSessionResume,
 	type PrepareSessionResumeOptions,
@@ -116,7 +116,7 @@ async function twoSnapshots(edit?: (clone: string) => void) {
 	sandbox.write(join(clone, "file.txt"), "B\n");
 	edit?.(clone);
 	const b = await capture(clone);
-	renameSync(clone, sandbox.path("repo-away"));
+	await renameWithRetry(clone, sandbox.path("repo-away"));
 	return { a, b, clone };
 }
 
@@ -485,7 +485,7 @@ describe("claim candidates and failures (#4748)", () => {
 		sandbox.write(join(clone, "file.txt"), "B\n");
 		sandbox.write(join(clone, "model.bin"), "LFS-MODEL-2\n");
 		const b = await capture(clone);
-		renameSync(clone, sandbox.path("repo-away"));
+		await renameWithRetry(clone, sandbox.path("repo-away"));
 		await idleSlotOfX(a, clone);
 		assert.equal(readFileSync(join(slot(a, 0), "data.bin"), "utf8"), "LFS-CONTENT-1\n");
 
@@ -618,7 +618,7 @@ describe("tracked files snapshots omit (#4897)", () => {
 		const a = await capture(clone);
 		sandbox.write(join(clone, "README.md"), "B\n");
 		const b = await capture(clone);
-		renameSync(clone, sandbox.path("omitting-away"));
+		await renameWithRetry(clone, sandbox.path("omitting-away"));
 		const x = await idleSlotOfX(a, clone);
 		return { a, b, x };
 	}
@@ -757,8 +757,8 @@ describe("pooled resume edges (#4748)", () => {
 		}
 		const launch = sandbox.path("launch");
 		cpSync(main, launch, { recursive: true });
-		renameSync(main, sandbox.path("main-away"));
-		renameSync(sibling, sandbox.path("sibling-away"));
+		await renameWithRetry(main, sandbox.path("main-away"));
+		await renameWithRetry(sibling, sandbox.path("sibling-away"));
 		const first = await resume(x);
 		const mainSlot = first.sessionManager.getCwd();
 		const siblingSlot = first.sessionManager

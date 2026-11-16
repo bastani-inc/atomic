@@ -21,7 +21,6 @@ function supportedType(type: string): PiHostInputFormField["type"] {
 	}
 }
 
-/** Adapt workflow schemas to the host-owned, raw-string form capability. */
 export async function openHostInputsForm(
 	ui: HostInputsFormUi,
 	options: {
@@ -32,6 +31,7 @@ export async function openHostInputsForm(
 ): Promise<InputsPickerResult | { kind: "unsupported" }> {
 	const open = ui.hostInputForm;
 	if (typeof open !== "function") return { kind: "unsupported" };
+	if (options.fields.some((field) => field.validationDeferred === true)) return { kind: "unsupported" };
 	const prefilled = options.prefilled ?? {};
 	const fields: PiHostInputFormField[] = options.fields.map((field) => ({
 		name: field.name,
@@ -41,6 +41,17 @@ export async function openHostInputsForm(
 		...(field.required !== undefined ? { required: field.required } : {}),
 		...(field.choices !== undefined ? { choices: [...field.choices] } : {}),
 		...(field.placeholder !== undefined ? { placeholder: field.placeholder } : {}),
+		...(field.const !== undefined ? { const: field.const } : {}),
+		...(field.minimum !== undefined ? { minimum: field.minimum } : {}),
+		...(field.maximum !== undefined ? { maximum: field.maximum } : {}),
+		...(field.exclusiveMinimum !== undefined ? { exclusiveMinimum: field.exclusiveMinimum } : {}),
+		...(field.exclusiveMaximum !== undefined ? { exclusiveMaximum: field.exclusiveMaximum } : {}),
+		...(field.multipleOf !== undefined ? { multipleOf: field.multipleOf } : {}),
+		...(field.minLength !== undefined ? { minLength: field.minLength } : {}),
+		...(field.maxLength !== undefined ? { maxLength: field.maxLength } : {}),
+		...(field.pattern !== undefined ? { pattern: field.pattern } : {}),
+		...(field.format !== undefined ? { format: field.format } : {}),
+		...(field.schema !== undefined ? { schema: field.schema } : {}),
 	}));
 	try {
 		const raw = await open.call(ui, {

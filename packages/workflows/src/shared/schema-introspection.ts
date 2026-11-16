@@ -1,15 +1,3 @@
-/**
- * schema-introspection — single adapter between TypeBox input/output schemas
- * and the normalized field descriptor (`WorkflowInputEntry`) consumed by
- * the inputs picker UI, validation, dispatch, and render paths.
- *
- * Authors declare inputs/outputs with TypeBox schemas (`Type.String`,
- * `Type.Number`, `Type.Union([...literals])`, …). The many UI/render/dispatch
- * surfaces still want a flat `{ type, choices?, default?, required?,
- * description? }` view; rather than rewrite all of them, they derive that view
- * from a TypeBox schema through this module.
- */
-
 import {
 	IsAny,
 	IsArray,
@@ -19,13 +7,13 @@ import {
 	IsNumber,
 	IsObject,
 	IsOptional,
+	IsRefine,
 	IsString,
 	IsUnion,
 	type TSchema,
 } from "typebox";
 import type { WorkflowInputEntry } from "../extension/render-result.js";
 
-/** Field-kind label used by the input picker and validation. */
 export type SchemaFieldKind = "text" | "number" | "integer" | "boolean" | "select" | "object" | "array" | "unknown";
 
 interface SchemaMeta {
@@ -33,20 +21,36 @@ interface SchemaMeta {
 	readonly description?: string;
 	readonly anyOf?: readonly TSchema[];
 	readonly const?: unknown;
+	readonly minimum?: number;
+	readonly maximum?: number;
+	readonly exclusiveMinimum?: number;
+	readonly exclusiveMaximum?: number;
+	readonly multipleOf?: number;
+	readonly minLength?: number;
+	readonly maxLength?: number;
+	readonly pattern?: string;
+	readonly format?: string;
 }
 
 function meta(schema: TSchema): SchemaMeta {
 	return schema as unknown as SchemaMeta;
 }
 
-/** True when every member of a union is a string literal. */
 function isStringLiteralUnion(schema: TSchema): boolean {
 	if (!IsUnion(schema)) return false;
 	const members = meta(schema).anyOf ?? [];
 	return members.length > 0 && members.every((m) => IsLiteralString(m));
 }
 
-/** Map a TypeBox schema to its field-kind label. */
+function hasRefine(value: unknown, seen = new Set<object>()): boolean {
+	if (typeof value !== "object" || value === null) return false;
+	if (seen.has(value)) return false;
+	seen.add(value);
+	if (IsRefine(value)) return true;
+	if (Array.isArray(value)) return value.some((item) => hasRefine(item, seen));
+	return Object.values(value).some((item) => hasRefine(item, seen));
+}
+
 export function schemaFieldKind(schema: TSchema): SchemaFieldKind {
 	if (isStringLiteralUnion(schema)) return "select";
 	if (IsLiteralString(schema)) return "text";
@@ -60,36 +64,26 @@ export function schemaFieldKind(schema: TSchema): SchemaFieldKind {
 	return "unknown";
 }
 
-/** Declared default value (`schema.default`), or undefined when none. */
 export function schemaDefault(schema: TSchema): unknown {
 	return meta(schema).default;
 }
 
-/** Declared description, or undefined. */
 export function schemaDescription(schema: TSchema): string | undefined {
 	return meta(schema).description;
 }
 
-/** Allowed string values for a string-literal union, else undefined. */
 export function schemaChoices(schema: TSchema): readonly string[] | undefined {
 	if (!isStringLiteralUnion(schema)) return undefined;
 	const members = meta(schema).anyOf ?? [];
 	return members.map((m) => String(meta(m).const));
 }
 
-/**
- * A field is "required" in the picker/validation sense — i.e. the caller MUST
- * supply it — when it is neither wrapped in `Type.Optional(...)` nor carries a
- * `default`. A defaulted input is a required KEY at the type level (it is always
- * present after defaults are applied) but the user need not provide it, so it is
- * reported as not-required here.
- */
 export function schemaIsRequired(schema: TSchema): boolean {
 	return !IsOptional(schema) && schemaDefault(schema) === undefined;
 }
 
-/** Derive the normalized input descriptor for a single named field. */
 export function deriveInputField(name: string, schema: TSchema): WorkflowInputEntry {
+	const m = meta(schema);
 	const choices = schemaChoices(schema);
 	const def = schemaDefault(schema);
 	const description = schemaDescription(schema);
@@ -101,10 +95,39 @@ export function deriveInputField(name: string, schema: TSchema): WorkflowInputEn
 	if (description !== undefined) entry.description = description;
 	if (def !== undefined) entry.default = def;
 	if (choices !== undefined) entry.choices = choices;
+	if (typeof m.const === "string" || typeof m.const === "number" || typeof m.const === "boolean") {
+		entry.const = m.const;
+	}
+	if (typeof m.minimum === "number" && Number.isFinite(m.minimum)) entry.minimum = m.minimum;
+	if (typeof m.maximum === "number" && Number.isFinite(m.maximum)) entry.maximum = m.maximum;
+	if (typeof m.exclusiveMinimum === "number" && Number.isFinite(m.exclusiveMinimum)) {
+		entry.exclusiveMinimum = m.exclusiveMinimum;
+	}
+	if (typeof m.exclusiveMaximum === "number" && Number.isFinite(m.exclusiveMaximum)) {
+		entry.exclusiveMaximum = m.exclusiveMaximum;
+	}
+	if (typeof m.multipleOf === "number" && Number.isFinite(m.multipleOf)) entry.multipleOf = m.multipleOf;
+	if (typeof m.minLength === "number" && Number.isFinite(m.minLength)) entry.minLength = m.minLength;
+	if (typeof m.maxLength === "number" && Number.isFinite(m.maxLength)) entry.maxLength = m.maxLength;
+	if (typeof m.pattern === "string") entry.pattern = m.pattern;
+	if (typeof m.format === "string") entry.format = m.format;
+	if (hasRefine(schema)) {
+		entry.validationDeferred = true;
+	}
+	if (entry.type === "unknown" || entry.type === "object" || entry.type === "array") {
+		try {
+			entry.schema = JSON.parse(
+				JSON.stringify(schema, function (this: object, key, value: unknown) {
+					return key === "~refine" && IsRefine(this) ? undefined : value;
+				}),
+			) as WorkflowInputEntry["schema"];
+		} catch {
+			entry.validationDeferred = true;
+		}
+	}
 	return entry;
 }
 
-/** Derive descriptors for an entire declared input map (preserving order). */
 export function deriveInputFields(schema: Readonly<Record<string, TSchema>>): WorkflowInputEntry[] {
 	return Object.entries(schema).map(([name, s]) => deriveInputField(name, s));
 }

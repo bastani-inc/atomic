@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { connect, createServer, type Server, type Socket } from "node:net";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, test } from "vitest";
+import { renameWithRetry } from "../../packages/coding-agent/src/core/rename-retry.ts";
 import { type FakeLibsqlServer, startFakeLibsqlServer } from "../helpers/fake-libsql-server.js";
 import { bunExecutable, makeTempDirectory, moduleDir, removeTempDirectory } from "../helpers/runtime.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
@@ -214,7 +215,7 @@ describe("multi-node wake of a released session (#4329)", () => {
 			nodeA.child.kill("SIGKILL");
 			assert.equal((await nodeA.run).signal, "SIGKILL");
 			const offline = join(root, "node-a-offline");
-			renameSync(clone, offline);
+			await renameWithRetry(clone, offline);
 			assert.equal(existsSync(clone), false);
 			const expected = treeDigest(offline);
 			const wakeArgs = {
@@ -306,7 +307,7 @@ describe("multi-node wake of a released session (#4329)", () => {
 			nodeA.child.kill("SIGKILL");
 			assert.equal((await nodeA.run).signal, "SIGKILL");
 			const offline = join(root, "agent-repo-offline");
-			renameSync(clone, offline);
+			await renameWithRetry(clone, offline);
 			assert.equal(existsSync(clone), false);
 			const expected = treeDigest(offline);
 			const wakeArgs = {

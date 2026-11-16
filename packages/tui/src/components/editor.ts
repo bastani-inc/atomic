@@ -2,6 +2,7 @@ import type { AutocompleteProvider, AutocompleteSuggestions } from "../autocompl
 import { getKeybindings } from "../keybindings.ts";
 import { decodePrintableKey, matchesKey } from "../keys.ts";
 import { KillRing } from "../kill-ring.ts";
+import { normalizePastedText } from "../paste.ts";
 import {
 	type Component,
 	CURSOR_MARKER,
@@ -16,6 +17,7 @@ import {
 	autocompleteBoundaryRegex,
 	autocompleteSeparatorRegex,
 	cjkBreakRegex,
+	clipGraphemeToWidth,
 	getGraphemeSegmenter,
 	getWordSegmenter,
 	isWhitespaceChar,
@@ -103,6 +105,8 @@ function segmentWithMarkers(
 /**
  * Represents a chunk of text for word-wrap layout.
  * Tracks both the text content and its position in the original line.
+ * `text` is the line from `startIndex` to `endIndex`, except for a grapheme cluster wider than the wrap width: its
+ * chunk spans the whole cluster but its text is clipped to the width.
  */
 export interface TextChunk {
 	text: string;
@@ -171,8 +175,22 @@ export function wordWrapLine(line: string, maxWidth: number, preSegmented?: Intl
 		}
 
 		if (gWidth > maxWidth) {
-			// Single atomic segment wider than maxWidth (e.g. paste marker
-			// in a narrow terminal). Re-wrap it at grapheme granularity.
+			if (!isPasteMarker(grapheme)) {
+				// A grapheme cluster cannot be broken: it takes a line of its own, clipped to the width. The chunk still
+				// spans the whole cluster, so cursor movement and editing treat it as one unit.
+				chunks.push({
+					text: clipGraphemeToWidth(grapheme, maxWidth),
+					startIndex: charIndex,
+					endIndex: charIndex + grapheme.length,
+				});
+				chunkStart = charIndex + grapheme.length;
+				currentWidth = 0;
+				wrapOppIndex = -1;
+				continue;
+			}
+
+			// A paste marker wider than maxWidth (e.g. in a narrow terminal) is re-wrapped at grapheme granularity.
+			// Its characters are ASCII, one column each, so the re-wrap does not come back here.
 
 			// The segment remains logically atomic for cursor
 			// movement / editing — the split is purely visual for word-wrap layout.
@@ -209,8 +227,10 @@ export function wordWrapLine(line: string, maxWidth: number, preSegmented?: Intl
 		}
 	}
 
-	// Push final chunk.
-	chunks.push({ text: line.slice(chunkStart), startIndex: chunkStart, endIndex: line.length });
+	// Push final chunk, unless a clipped cluster ended the line and already took the last chunk.
+	if (chunkStart < line.length || chunks.length === 0) {
+		chunks.push({ text: line.slice(chunkStart), startIndex: chunkStart, endIndex: line.length });
+	}
 
 	return chunks;
 }
@@ -315,6 +335,11 @@ export class Editor implements Component, Focusable {
 
 	// Store last render geometry for cursor navigation and mouse hit-testing.
 	private lastWidth: number = 80;
+	/**
+	 * Columns a row offers its text and the cursor after a line's last character: one more than the layout width,
+	 * from the column the layout leaves free or from the right padding, except in a one-column editor without padding.
+	 */
+	private lastCursorRowWidth = 81;
 	private renderedVisibleLineCount = 1;
 	private renderedAutocompleteHeight = 0;
 
@@ -534,6 +559,7 @@ export class Editor implements Component, Focusable {
 
 		// Store for cursor navigation (must match wrapping width)
 		this.lastWidth = layoutWidth;
+		this.lastCursorRowWidth = paddingX > 0 ? contentWidth + 1 : contentWidth;
 
 		// Layout the text
 		const layoutLines = this.layoutText(layoutWidth);
@@ -1088,9 +1114,27 @@ export class Editor implements Component, Focusable {
 					}
 				}
 			}
+
+			const lastRow = layoutLines[layoutLines.length - 1]!;
+			if (isCurrentLine && this.cursorNeedsOwnRow(i, lastRow.text)) {
+				layoutLines[layoutLines.length - 1] = { text: lastRow.text, hasCursor: false };
+				layoutLines.push({ text: "", hasCursor: true, cursorPos: 0 });
+			}
 		}
 
 		return layoutLines;
+	}
+
+	/**
+	 * Whether the cursor sits after the last character of logical line `lineIndex` while that line's last row, showing
+	 * `lastRowText`, leaves no cell for it. The cursor then takes a row of its own below, as in a terminal.
+	 */
+	private cursorNeedsOwnRow(lineIndex: number, lastRowText: string): boolean {
+		return (
+			lineIndex === this.state.cursorLine &&
+			this.state.cursorCol >= (this.state.lines[lineIndex] ?? "").length &&
+			visibleWidth(lastRowText) >= this.lastCursorRowWidth
+		);
 	}
 
 	getText(): string {
@@ -1274,26 +1318,7 @@ export class Editor implements Component, Focusable {
 
 		this.pushUndoSnapshot();
 
-		// Some terminals (e.g. tmux popups with extended-keys-format=csi-u) re-encode
-		// control bytes inside bracketed paste as CSI-u Ctrl+<letter> sequences
-		// (ESC [ <codepoint> ; 5 u). Decode those back to their literal byte so the
-		// per-char filter below preserves newlines instead of stripping ESC and
-		// leaking the printable tail (e.g. "[106;5u") into the editor.
-		const decodedText = pastedText.replace(/\x1b\[(\d+);5u/g, (match, code) => {
-			const cp = Number(code);
-			if (cp >= 97 && cp <= 122) return String.fromCharCode(cp - 96);
-			if (cp >= 65 && cp <= 90) return String.fromCharCode(cp - 64);
-			return match;
-		});
-
-		// Clean the pasted text: normalize line endings, expand tabs
-		const cleanText = this.normalizeText(decodedText);
-
-		// Filter out non-printable characters except newlines
-		let filteredText = cleanText
-			.split("")
-			.filter((char) => char === "\n" || char.charCodeAt(0) >= 32)
-			.join("");
+		let filteredText = normalizePastedText(pastedText);
 
 		// If pasting a file path (starts with /, ~, or .) and the character before
 		// the cursor is a word character, prepend a space for better readability
@@ -1849,6 +1874,7 @@ export class Editor implements Component, Focusable {
 		for (let i = 0; i < this.state.lines.length; i++) {
 			const line = this.state.lines[i] || "";
 			const lineVisWidth = visibleWidth(line);
+			let lastRowText = line;
 			if (line.length === 0) {
 				// Empty line still takes one visual line
 				visualLines.push({ logicalLine: i, startCol: 0, length: 0 });
@@ -1864,6 +1890,11 @@ export class Editor implements Component, Focusable {
 						length: chunk.endIndex - chunk.startIndex,
 					});
 				}
+				lastRowText = chunks[chunks.length - 1]!.text;
+			}
+			// The row layoutText gives a cursor that finds no cell after the last character.
+			if (this.cursorNeedsOwnRow(i, lastRowText)) {
+				visualLines.push({ logicalLine: i, startCol: line.length, length: 0 });
 			}
 		}
 

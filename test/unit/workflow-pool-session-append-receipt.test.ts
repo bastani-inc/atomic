@@ -35,6 +35,7 @@ function heldCatchUp() {
 			started.fire();
 			await released.fired;
 		},
+		noteLocal: () => assert.fail("no checkpoint here is accepted locally"),
 	});
 	return { sent, started, released, commit, catchUps: () => catchUps };
 }
