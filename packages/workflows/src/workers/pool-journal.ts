@@ -146,6 +146,10 @@ export function coordinationPath(durable: PoolDurableJournal): string {
 	return join(poolStateDirectory(durable.agentDir), `${identity.slice(0, 24)}.sqlite`);
 }
 
+export function durableJournalIdentity(durable: PoolDurableJournal): string {
+	return databaseIdentity(decodeSelection(durable.selection), durable.agentDir);
+}
+
 /** The name of {@link coordinationPath}'s database, which a root records so a resume can tell it is still the same. */
 export function coordinationDatabase(durable: PoolDurableJournal): string {
 	return basename(coordinationPath(durable), ".sqlite");

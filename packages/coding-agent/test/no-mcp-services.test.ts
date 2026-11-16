@@ -7,6 +7,7 @@ import { getBuiltinPackageLocations } from "../src/core/builtin-packages.ts";
 import type { ExtensionContext } from "../src/core/extensions/index.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
+import { linkSharedTranspileCache } from "./helpers/shared-transpile-cache.ts";
 
 it("keeps --no-mcp disabled through CLI service composition, reload and child inheritance", async () => {
 	const cwd = mkdtempSync(join(tmpdir(), "atomic-no-mcp-services-"));
@@ -15,6 +16,7 @@ it("keeps --no-mcp disabled through CLI service composition, reload and child in
 	const entry = join(mcp.packageDir, "index.ts");
 	let context: ExtensionContext | undefined;
 	try {
+		linkSharedTranspileCache(agentDir);
 		const services = await createAgentSessionServices({
 			cwd,
 			agentDir,

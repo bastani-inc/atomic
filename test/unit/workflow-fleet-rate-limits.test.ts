@@ -23,6 +23,7 @@ import {
 	observationScope,
 	rateScopesFor,
 } from "../../packages/workflows/src/workers/fleet-rate-limits.js";
+import { databaseNow } from "../helpers/database-clock.js";
 import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
 
 const directories: string[] = [];
@@ -116,22 +117,39 @@ test("rate limits are checked, shaped and matched by provider and provider/model
 test("the journal's buckets grant a burst, then refuse with the wait, and a cooldown holds every acquire (#4768)", async () => {
 	const store = await SqlRateBuckets.open(await journal());
 	const shape: RateBucketShape = { intervalMs: 60_000, burst: 2 };
+	// Waits run on the database's clock: each is measured against the time that clock says passed, however slowly a
+	// loaded host runs the test.
+	const granting = databaseNow();
 	assert.deepEqual(await store.acquire("p", 2, shape), { granted: 2 });
 	const refused = await store.acquire("p", 1);
-	assert.ok("waitMs" in refused && refused.waitMs > 59_000 && refused.waitMs <= 60_000, JSON.stringify(refused));
+	const refusedBy = databaseNow();
+	assert.ok(
+		"waitMs" in refused && refused.waitMs >= 60_000 - (refusedBy - granting) && refused.waitMs <= 60_000,
+		JSON.stringify({ refused, elapsedMs: refusedBy - granting }),
+	);
 	// A scope nobody configured is not limited.
 	assert.deepEqual(await store.acquire("other", 5), { granted: 5 });
+	const recording = databaseNow();
 	await store.cooldown("q", 30_000);
 	const held = await store.acquire("q", 1, { intervalMs: 10, burst: 5 });
-	assert.ok("cooldownMs" in held && held.cooldownMs > 29_000, JSON.stringify(held));
+	const heldBy = databaseNow();
+	assert.ok(
+		"cooldownMs" in held && held.cooldownMs >= 30_000 - (heldBy - recording) && held.cooldownMs <= 30_000,
+		JSON.stringify({ held, elapsedMs: heldBy - recording }),
+	);
 	// A shorter cooldown never shortens a running one.
 	await store.cooldown("q", 10);
 	const polled = await store.poll();
+	const polledBy = databaseNow();
 	assert.deepEqual(
 		polled.cooldowns.map((c) => c.scope),
 		["q"],
 	);
-	assert.ok(polled.cooldowns[0]!.remainingMs > 29_000);
+	const { remainingMs } = polled.cooldowns[0]!;
+	assert.ok(
+		remainingMs >= 30_000 - (polledBy - recording) && remainingMs <= held.cooldownMs,
+		JSON.stringify({ remainingMs, elapsedMs: polledBy - recording, held }),
+	);
 	assert.equal(polled.liveHosts, 0);
 });
 

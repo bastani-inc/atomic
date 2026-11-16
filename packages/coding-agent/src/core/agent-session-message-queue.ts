@@ -33,7 +33,12 @@ import {
 import type { SendMessageOptions, SendMessagesOptions } from "./extensions/index.js";
 import type { CustomMessage, StageAdmittedCustomMessage } from "./messages.ts";
 import { withOwnResourceAdmission } from "./resource-admission-scope.ts";
-import { assertSessionOpen, sessionLifetime, trackSessionWork } from "./session-lifecycle-work.ts";
+import {
+	assertSessionOpen,
+	sessionGenerationClosing,
+	sessionLifetime,
+	trackSessionWork,
+} from "./session-lifecycle-work.ts";
 import { settingsWriteOwner } from "./settings-write-ownership.ts";
 import { parseSlashCommand } from "./slash-commands.js";
 
@@ -370,7 +375,20 @@ export function _enqueueInterruptCustomMessage<T>(
 		}),
 	);
 	this._interruptDeliveryQueue = delivery.catch(() => undefined);
-	return delivery;
+	return delivery.finally(async () => {
+		const liveOwner = resolveWorkflowStageDeliveryTarget(this);
+		if (
+			liveOwner._subagentMessageAdmission?.isOpen() &&
+			liveOwner._pendingInterruptDeliveries === 0 &&
+			liveOwner._activePromptCount === 0 &&
+			!liveOwner.isStreaming &&
+			!liveOwner._disposed &&
+			!sessionGenerationClosing.has(liveOwner) &&
+			!sessionLifetime(liveOwner).aborted
+		) {
+			await liveOwner._runAgentContinuation(async () => {}, "settle");
+		}
+	});
 }
 
 async function sendInterruptCustomMessageUnlocked<T>(
@@ -402,6 +420,7 @@ async function sendInterruptCustomMessageUnlocked<T>(
 		session._queueAgentMessage(message, "steer");
 		return;
 	}
+	session._abortPreparedRunAtStart = false;
 	await session.agent.prompt(message);
 }
 

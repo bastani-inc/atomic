@@ -707,6 +707,12 @@ export function handleBrokerSend(
 				resolveWorkflowStageAlias,
 			);
 		};
+		// #5252: the ask this replies to is written, but its write is not confirmed yet: its route opens then.
+		if (
+			message.replyTo !== undefined &&
+			pendingQuestions.whenAskWritten(target.info.id, fromSession.info.id, message.replyTo, decideAgain)
+		)
+			return;
 		if (
 			pendingQuestions.whenRestored(target.info.id, decideAgain) ||
 			pendingQuestions.whenRestored(fromSession.info.id, decideAgain)
@@ -983,9 +989,12 @@ export function handleBrokerSend(
       return;
     }
     if (writeConfirmed !== undefined) {
+      const askWritten =
+        message.expectsReply === true ? pendingQuestions.beginAskWrite(fromSession.info.id, target.info.id, message.id) : undefined;
       writeConfirmed(target.socket, outbound, (written) => {
         if (written) finishDelivery(target, senderWaiting);
         else failDelivery();
+        askWritten?.();
       });
       return;
     }

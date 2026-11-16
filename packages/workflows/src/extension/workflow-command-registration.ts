@@ -2,7 +2,6 @@ import { ForkConfigError } from "../durable/fork-errors.js";
 import { inspectRun } from "../runs/background/status.js";
 import { renderInputsSchema } from "../shared/render-inputs-schema.js";
 import { resolveRunIndicatorStatuses } from "../shared/run-indicator-status.js";
-import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import { schemaIsRequired } from "../shared/schema-introspection.js";
 import type { WorkflowExecutionPolicy } from "../shared/types.js";
 import { emitChatSurface } from "../tui/chat-surface-message.js";
@@ -16,6 +15,8 @@ import type { ExtensionAPI, PiArgumentCompletionResult, PiCommandContext } from 
 import type { WorkflowInputEntry, WorkflowToolResult } from "./render-result.js";
 import type { ExtensionRuntime } from "./runtime.js";
 import {
+	completeToken,
+	runIdItems,
 	workflowArgumentCompletions,
 	workflowArgumentCompletionsNeedWorkflowResources,
 } from "./workflow-command-completions.js";
@@ -34,6 +35,7 @@ import {
 	type WorkflowCommandHandler,
 	type WorkflowCommandOutputDetails,
 } from "./workflow-command-utils.js";
+import { handleWorkflowsCommand } from "./workflow-open-run.js";
 import { captureWorkflowOwnerResources, type WorkflowOwnerResources } from "./workflow-owner-resources.js";
 import { workflowPolicyFromContext } from "./workflow-policy.js";
 import { projectTrustConfirmation } from "./workflow-project-trust.js";
@@ -65,7 +67,7 @@ export function registerWorkflowSlashCommand(
 		"workflow",
 		{
 			description:
-				"Run or inspect Atomic workflows. Usage: /workflow <name> [key=value…] | /workflow [list|status|connect|attach|quit|pause|resume|inputs|reload] [args] | /workflow fork <run> [--from <stage>]",
+				"Run or inspect Atomic workflows. Usage: /workflow <name> [key=value…] | /workflow [list|status|quit|pause|resume|inputs|reload] [args] | /workflow fork <run> [--from <stage>]",
 			handler: (args, ctx) => workflowSlashHandler(args, ctx, pi, deps),
 			getArgumentCompletions: (
 				partial: string,
@@ -82,17 +84,16 @@ export function registerWorkflowSlashCommand(
 		pi,
 		"workflows",
 		{
-			description: "Browse running and completed workflows. Usage: /workflows [run-id]",
-			handler: (args, ctx) => {
-				// The session's workflows view: a run's graph, or the run picker when there is more than one. Never the
-				// durable resume picker, which `/workflow resume` keeps (#5224).
-				const target = args.trim();
+			description: "Browse workflow runs. Usage: /workflows [run-id]",
+			handler: async (args, ctx) => {
+				// The session's workflows view: a run's graph, or a list when there are several. Never the durable resume
+				// picker, which `/workflow resume` keeps (#5224).
 				const owner = deps.owner ?? captureWorkflowOwnerResources();
-				const runs = topLevelWorkflowRuns(owner.store.runs());
-				const only = target.length === 0 && runs.length === 1 ? runs[0]?.id : undefined;
-				const run = target.length > 0 ? target : only;
-				return workflowSlashHandler(run === undefined ? "attach" : `attach ${run}`, ctx, pi, deps);
+				const reporter = createWorkflowCommandReporter(ctx, workflowPolicyFromContext(ctx), pi);
+				await handleWorkflowsCommand(args, ctx, reporter, { overlay: deps.runControl.overlay, store: owner.store });
 			},
+			getArgumentCompletions: (partial) =>
+				/\s/.test(partial.trimStart()) ? null : completeToken(partial, runIdItems(owner.store)),
 		},
 		workflowCommands,
 	);
@@ -141,14 +142,12 @@ async function workflowSlashHandler(
 
 	const parts = tokenizeWorkflowArgs(args);
 	const subcommand = parts[0] ?? "";
-	if (["connect", "attach", "resume"].includes(subcommand)) {
-		await handleRunControlCommand(
-			subcommand as "connect" | "attach" | "resume",
-			parts.slice(1),
-			ctx,
-			reporter,
-			deps.runControl,
-		);
+	if (subcommand === "connect" || subcommand === "attach") {
+		reporter.info(removedWorkflowSubcommandNotice(subcommand));
+		return;
+	}
+	if (subcommand === "resume") {
+		await handleRunControlCommand(subcommand, parts.slice(1), ctx, reporter, deps.runControl);
 		return;
 	}
 	if (!subcommand || subcommand === "list") {
@@ -361,4 +360,8 @@ export function parseWorkflowForkArgs(
 	const [first, ...rest] = issues;
 	if (first !== undefined) return new ForkConfigError({ source: "cli", issues: [first, ...rest] });
 	return { runId: positional[0]!, ...(fromStage === undefined ? {} : { fromStage }) };
+}
+
+export function removedWorkflowSubcommandNotice(subcommand: "connect" | "attach"): string {
+	return `\`/workflow ${subcommand}\` was removed: use \`/workflows\`, or \u2193 to the agent panel.`;
 }

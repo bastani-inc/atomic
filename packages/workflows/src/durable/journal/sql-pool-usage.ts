@@ -2,6 +2,7 @@ import { ensureStorageSchema, type SqliteExecutor, type SqliteRow, type StorageD
 import { StaleWorkLeaseError, type StaleWorkLeaseReason } from "../../shared/worker-pool-errors.js";
 import { locksRows, poolSchemaLedger, type SqlPoolStorage, sqlPoolStorage } from "./internal.js";
 import { isWorkflowLeaseExpired } from "./lease-expiry.js";
+import { poolSchemaPresent } from "./pool-schema-probe.js";
 import {
 	POOL_USAGE_FIELDS as FIELDS,
 	type PoolUsage,
@@ -62,8 +63,11 @@ export class SqlPoolUsage {
 		read: SqlPoolStorage["read"],
 		journal: SqlPoolStorage["tables"],
 		dialect: StorageDialect,
+		/** The tables exist already, as a read without the write lock found: the open writes nothing (#4768). */
+		present = false,
 	): Promise<SqlPoolUsage> {
 		const usage = new SqlPoolUsage(transaction, read, journal, dialect);
+		if (present) return usage;
 		// A current schema runs no DDL, so a role with only DML privileges opens it (#5218).
 		const schema = { ledger: poolSchemaLedger({ tables: journal }), domain: "pool-usage", revision: 1 };
 		await transaction((tx) =>
@@ -199,5 +203,7 @@ export async function openSqlPoolUsage(journal: RunJournal): Promise<SqlPoolUsag
 	const storage = sqlPoolStorage(journal);
 	if (!storage) throw new Error("Worker pool requires a SQL run journal");
 	await openSqlPoolQueue(journal);
-	return SqlPoolUsage.open(storage.transaction, storage.read, storage.tables, storage.dialect);
+	// A schema that is current opens with reads alone, without a shared server's write lock (#4768).
+	const present = await poolSchemaPresent(storage, [poolUsageSchema(storage.tables.runs, storage.dialect)]);
+	return SqlPoolUsage.open(storage.transaction, storage.read, storage.tables, storage.dialect, present);
 }

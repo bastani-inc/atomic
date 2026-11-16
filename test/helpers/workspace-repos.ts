@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
@@ -7,6 +7,7 @@ import {
 	setWorkspaceGitExecutableResolver,
 } from "../../packages/coding-agent/src/core/workspace/git.ts";
 import { worktreeAdderRecord } from "../../packages/coding-agent/src/core/workspace/resolve.ts";
+import { removeTestDirectory } from "./test-directory-removal.js";
 
 /** Run git for test setup only; product code goes through the workspace git runner. */
 export function git(cwd: string, ...args: string[]): string {
@@ -58,11 +59,9 @@ export function workspaceSandbox(prefix: string): WorkspaceSandboxDirs {
 		cleanup() {
 			if (previous === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
 			else process.env.ATOMIC_CODING_AGENT_DIR = previous;
-			rmSync(root, {
-				recursive: true,
-				force: true,
-				maxRetries: SANDBOX_REMOVAL_RETRIES,
-				retryDelay: SANDBOX_REMOVAL_RETRY_DELAY_MS,
+			removeTestDirectory(root, {
+				retries: SANDBOX_REMOVAL_RETRIES,
+				retryDelayMs: SANDBOX_REMOVAL_RETRY_DELAY_MS,
 			});
 		},
 	};

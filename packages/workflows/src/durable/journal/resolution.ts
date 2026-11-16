@@ -24,7 +24,7 @@ export interface RunJournalSettings {
 				/** Shared placement of the pooled children of roots `/workflow run` starts (#4768). */
 				workers?: Pick<
 					import("../../workers/public-options.js").WorkflowWorkerPlacementOptions,
-					"placement" | "claimWindowMs"
+					"placement" | "claimWindowMs" | "checkpointShipping"
 				>;
 				admission?: import("../../workers/public-options.js").WorkflowAdmissionOptions;
 				/** Whether the decision model may decide a stage's readiness after a steer. Default: true. */

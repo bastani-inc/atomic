@@ -1,11 +1,13 @@
+import assert from "node:assert/strict";
 import { readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { registerFauxProvider } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, expect, it } from "vitest";
 import { createAgentSessionFromServices, createAgentSessionServices } from "../src/core/agent-session-runtime.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
+import { isSyntheticPath } from "../src/core/source-info.ts";
 
 describe("interrupted tool-call session recovery", () => {
 	const cleanups: Array<() => Promise<void> | void> = [];
@@ -26,7 +28,7 @@ describe("interrupted tool-call session recovery", () => {
 			cwd: tempDir,
 			agentDir: tempDir,
 			authStorage,
-			resourceLoaderOptions: { noSkills: true, noPromptTemplates: true, noThemes: true },
+			resourceLoaderOptions: { builtinPackagePaths: [], noSkills: true, noPromptTemplates: true, noThemes: true },
 		});
 		services.modelRuntime.registerProvider(faux.getModel().provider, {
 			baseUrl: faux.getModel().baseUrl,
@@ -65,6 +67,14 @@ describe("interrupted tool-call session recovery", () => {
 			model: faux.getModel(),
 		});
 		cleanups.push(async () => session.dispose());
+		assert.deepEqual(
+			session.resourceLoader
+				.getExtensions()
+				.extensions.map((extension) => extension.path)
+				.filter((path) => !isSyntheticPath(path))
+				.map((path) => basename(dirname(path))),
+			["intercom"],
+		);
 
 		expect(session.messages.map((message) => message.role)).toEqual(["assistant", "toolResult"]);
 		expect(session.messages[1]).toMatchObject({

@@ -54,40 +54,29 @@ describe("/workflow run-control chat commands", () => {
 		},
 	);
 
-	test.sequential("/workflow connect no-custom-UI fallback includes older retained terminal runs", async () => {
+	test.sequential("/workflows without a custom UI lists runs, including older retained terminal runs (#5224)", async () => {
 		const oldEndedAt = Date.now() - 2 * 60 * 60 * 1000;
 		recordTerminalRun("old-connect-terminal-run", "completed", {
 			name: "old-connect-terminal",
 			startedAt: oldEndedAt - 5_000,
 			endedAt: oldEndedAt,
 		});
-
-		const { workflowCmd } = await registerWorkflowCommand();
-		const { ctx, messages } = buildCtx();
-
-		await workflowCmd.options.handler("connect", ctx);
-
-		const joined = messages.join("\n");
-		assert.match(joined, /old-connect-terminal/);
-		assert.match(joined, /Picker requires an interactive UI surface/);
-	});
-
-	test.sequential("/workflow attach no-custom-UI fallback includes older retained terminal runs", async () => {
-		const oldEndedAt = Date.now() - 2 * 60 * 60 * 1000;
 		recordTerminalRun("old-attach-terminal-run", "failed", {
 			name: "old-attach-terminal",
 			startedAt: oldEndedAt - 5_000,
 			endedAt: oldEndedAt,
 		});
 
-		const { workflowCmd } = await registerWorkflowCommand();
+		const { commands } = await registerWorkflowCommand();
+		const workflowsCmd = commands.find((c) => c.name === "workflows");
+		assert.ok(workflowsCmd);
 		const { ctx, messages } = buildCtx();
 
-		await workflowCmd.options.handler("attach", ctx);
+		await workflowsCmd.options.handler("", ctx);
 
 		const joined = messages.join("\n");
+		assert.match(joined, /old-connect-terminal/);
 		assert.match(joined, /old-attach-terminal/);
-		assert.match(joined, /Picker requires an interactive UI surface/);
 	});
 
 	test.sequential("top-level /workflow quit <id> pauses and preserves resumability without confirmation", async () => {

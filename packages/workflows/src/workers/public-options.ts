@@ -45,6 +45,51 @@ export const DEFAULT_POOLED_STAGE_START_MAX_LOAD_PER_CPU = 3;
 export const DEFAULT_PLACEMENT_CLAIM_WINDOW_MS = 60_000;
 
 /**
+ * How a shared root's worker hosts record their children's checkpoints (#4768). `"sync"` commits each checkpoint to
+ * the shared journal before the step returns. An object first records each checkpoint in a local journal on the host,
+ * and in this release still ships it to the shared journal before the step returns. Its limits are validated and saved
+ * with the root, and take effect only with background shipping.
+ */
+export type CheckpointShippingOption = "sync" | CheckpointShippingOptions;
+
+export interface CheckpointShippingOptions {
+	/** How often, in milliseconds, a host ships in the background: an integer from 100 to 60 000. Default 2 000. */
+	readonly intervalMs?: number;
+	/** The most checkpoints one background shipment carries: an integer from 1 to 1 000. Default 64. */
+	readonly maxBatch?: number;
+	/**
+	 * How far, in milliseconds, background shipping may fall behind before the host claims no new children: an integer
+	 * from 1 000 to 600 000. Default 30 000.
+	 */
+	readonly maxLagMs?: number;
+}
+
+/** Checkpoint shipping with every value resolved, as a root publishes it to its hosts. */
+export interface ResolvedCheckpointShipping {
+	readonly intervalMs: number;
+	readonly maxBatch: number;
+	readonly maxLagMs: number;
+}
+
+export const CHECKPOINT_SHIPPING_LIMITS = {
+	intervalMs: { min: 100, max: 60_000, default: 2_000 },
+	maxBatch: { min: 1, max: 1_000, default: 64 },
+	maxLagMs: { min: 1_000, max: 600_000, default: 30_000 },
+} as const;
+
+/** `option` with defaults filled in, or undefined for `"sync"` (and unset). */
+export function resolveCheckpointShipping(
+	option: CheckpointShippingOption | undefined,
+): ResolvedCheckpointShipping | undefined {
+	if (option === undefined || option === "sync") return undefined;
+	return {
+		intervalMs: option.intervalMs ?? CHECKPOINT_SHIPPING_LIMITS.intervalMs.default,
+		maxBatch: option.maxBatch ?? CHECKPOINT_SHIPPING_LIMITS.maxBatch.default,
+		maxLagMs: option.maxLagMs ?? CHECKPOINT_SHIPPING_LIMITS.maxLagMs.default,
+	};
+}
+
+/**
  * Where a root's pooled children run (#4310). `placement: "shared"` keeps the pool's work queue, leases, admission state
  * and stage inputs in the root's journal, which must be a shared journal every host opens through a storage adapter
  * (libSQL/Turso), so worker hosts started with `startWorkflowWorkerHost` on other machines run the root's children, and
@@ -64,6 +109,11 @@ export interface WorkflowWorkerPlacementOptions {
 	 * with `WorkspaceRestoreUnavailableError`. Default {@link DEFAULT_PLACEMENT_CLAIM_WINDOW_MS}.
 	 */
 	readonly claimWindowMs?: number;
+	/**
+	 * How worker hosts record the children's checkpoints (#4768). Default `"sync"`. Saved with the root; a resume may
+	 * change it.
+	 */
+	readonly checkpointShipping?: CheckpointShippingOption;
 	/**
 	 * Adds and removes worker hosts for the journal's shared roots while this root runs (#4768): the root runs a fleet
 	 * controller with this provisioner and policy, one of the journal's controllers, of which one is active at a time.
