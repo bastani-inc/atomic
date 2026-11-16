@@ -29,7 +29,7 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@bastani/atomic-tui";
-import { getGlobalTheme } from "../theme/global-theme.js";
+import { getGlobalTheme } from "../theme/global-theme.ts";
 import { theme } from "../theme/theme.js";
 import {
 	type NavKey,
@@ -566,6 +566,10 @@ export class Selector<T> implements Component, Focusable {
 
 	getSelected(): SelectorItem<T> | undefined {
 		return this.state.getSelected();
+	}
+
+	retrySelection(): void {
+		this.closed = false;
 	}
 
 	/** Replace the rows, keeping the search and the selected row; see {@link SelectorState.setItems}. */

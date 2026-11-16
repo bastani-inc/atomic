@@ -424,6 +424,7 @@ InteractiveModeBase.prototype.showThinkingSelector = function (this: Interactive
 				await this.selectThinkingLevel(level);
 				done();
 			} catch (error) {
+				selector.selector.retrySelection();
 				this.showError(error instanceof Error ? error.message : String(error));
 			}
 		};
