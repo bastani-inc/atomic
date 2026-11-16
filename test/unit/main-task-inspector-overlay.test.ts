@@ -282,7 +282,7 @@ for (const isolated of [false, true]) {
 			}
 			const picker = await host.paint();
 			assert.ok(picker.length <= 12 && picker.length < host.terminal.rows);
-			assert.match(stripVTControlCharacters(picker.join("\n")), /Background tasks/);
+			assert.match(stripVTControlCharacters(picker.join("\n")), /^ Tasks\b/m);
 			const pickerScrollTop = host.scroll.scrollTop;
 			for (const key of MAIN_VIEWPORT_KEYS) {
 				await host.input(key);
@@ -299,7 +299,9 @@ for (const isolated of [false, true]) {
 				assert.doesNotMatch(stripVTControlCharacters(frame.join("\n")), /MAIN-CHAT/);
 				return stripVTControlCharacters(frame.join("\n"));
 			};
-			await host.input(" "); // Space peeks at the task: fullscreen detail (#5224)
+			await host.input(" "); // Space peeks at the task in a card under its row (#5224)
+			assert.equal(host.tui.hasOverlay(), false, "a peek stays inline");
+			await host.input(" "); // Space again opens its fullscreen detail page
 			assert.equal(host.tui.hasOverlay(), true);
 			assert.match(await assertFrame(), /Inspect transcript/);
 			const scrollTop = host.scroll.scrollTop;
@@ -371,6 +373,7 @@ for (const isolated of [false, true]) {
 			// Restore the first detail action after the arrow-key checks.
 			await host.input("\x1b");
 			await host.input(" ");
+			await host.input(" ");
 			await host.input("\x05");
 			assert.match(await assertFrame(), /^Transcript/);
 			assert.match(await assertFrame(), /CHILD-MESSAGE-49/, "the transcript opens at its latest message (#4521)");
@@ -398,7 +401,7 @@ for (const isolated of [false, true]) {
 			assert.match(await assertFrame(), /Inspect transcript/);
 			await host.input("\x1b");
 			assert.equal(host.tui.hasOverlay(), false);
-			assert.match(stripVTControlCharacters((await host.paint()).join("\n")), /Background tasks/);
+			assert.match(stripVTControlCharacters((await host.paint()).join("\n")), /^ Tasks\b/m);
 			assert.ok((await host.paint()).length <= 12);
 			await host.input("\x1b");
 			await host.completion;
@@ -460,7 +463,7 @@ for (const [isolated, completeOlderFirst] of [
 			await host.paint();
 			assert.ok(host.frame().includes(context), host.frame());
 			assert.ok(host.frame().includes("MCP: 0/1 servers"));
-			assert.ok(host.frame().includes("0 active · 0 total"));
+			assert.ok(host.frame().includes("No background work"));
 			Object.defineProperty(host.session, "isStreaming", { value: true, configurable: true });
 			await host.paint();
 			// The identity line is idle information (#4690); under navigation a running turn shows only that it works.
@@ -534,8 +537,8 @@ for (const [isolated, completeOlderFirst] of [
 				[completeOlderFirst ? "second" : "first"],
 				"dispatched Enter answers only the visible surviving approval",
 			);
-			assert.match(host.frame(), /Background tasks/, "the pending navigation owner must resume, not main chat");
-			assert.match(stripVTControlCharacters((await host.paint()).join("\n")), /Background tasks/);
+			assert.match(host.frame(), /^ Tasks\b/m, "the pending navigation owner must resume, not main chat");
+			assert.match(stripVTControlCharacters((await host.paint()).join("\n")), /^ Tasks\b/m);
 			assert.equal(host.statuses.get(key), undefined);
 			adapter.open(null);
 			await flush();
@@ -543,9 +546,10 @@ for (const [isolated, completeOlderFirst] of [
 			adapter.close();
 			await flush();
 			assert.equal(host.statuses.get(key), undefined);
+			await host.input(" ");
 			assert.match(stripVTControlCharacters((await host.input(" ")).join("\n")), /Inspect transcript/);
 			await host.input("\x1b");
-			assert.match(host.frame(), /Background tasks/);
+			assert.match(host.frame(), /^ Tasks\b/m);
 			assert.equal(host.editor.getText(), "");
 			assert.equal(host.hostFallbacks, 0);
 			await host.input("\x1b");
@@ -596,11 +600,12 @@ for (const isolated of [false, true]) {
 			const navigation = showEngineTaskInspector(host.session, { custom });
 			await flush();
 			await host.paint();
-			assert.match(host.frame(), /Background tasks/);
+			assert.match(host.frame(), /^ Tasks\b/m);
 			assert.equal(source.getHostCustomUiState().blockingInlineCustomUiNeedsInput, true);
+			await host.input(" ");
 			assert.match(stripVTControlCharacters((await host.input(" ")).join("\n")), /Inspect transcript/);
 			await host.input("\x1b");
-			assert.match(host.frame(), /Background tasks/);
+			assert.match(host.frame(), /^ Tasks\b/m);
 			await host.input("ordinary text");
 			assert.equal(host.editor.getText(), "Unsent main draft");
 			await host.input("\x1b");
@@ -720,8 +725,8 @@ for (const isolated of [false, true]) {
 				const evidence = JSON.stringify({ afterAbort, afterEnter, answered, survivorFocus, resumedFocus });
 				assert.ok(survivorFocus.includes(labels[survivor]), evidence);
 				assert.ok(survivorFrame.includes(labels[survivor]), evidence);
-				assert.match(resumedFrame, /Background tasks/, evidence);
-				assert.match(resumedFocus, /Background tasks/, evidence);
+				assert.match(resumedFrame, /^ Tasks\b/m, evidence);
+				assert.match(resumedFocus, /^ Tasks\b/m, evidence);
 				assert.ok(
 					afterAbort.every(
 						(state) => state.blockingInlineCustomUiDepth === 2 && state.blockingInlineCustomUiNeedsInput === true,
@@ -827,12 +832,13 @@ for (const isolated of [false, true]) {
 					}
 					if (transcript) {
 						await host.input(" ");
+						await host.input(" ");
 						await host.input("\x05");
 					}
 					if (!questionFirst) await openQuestion();
 					assert.match(
 						stripVTControlCharacters((await host.paint()).join("\n")),
-						transcript ? /^Transcript/ : /Background tasks/,
+						transcript ? /^Transcript/ : /^ Tasks\b/m,
 					);
 					if (transcript) {
 						await host.input("\x1b");
@@ -847,7 +853,7 @@ for (const isolated of [false, true]) {
 						assert.match(stripVTControlCharacters((await host.paint()).join("\n")), /Inspect transcript/);
 						await host.input("\x1b");
 						assert.equal(settled, false, "detail Escape must not cancel the questionnaire");
-						assert.match(stripVTControlCharacters((await host.paint()).join("\n")), /Background tasks/);
+						assert.match(stripVTControlCharacters((await host.paint()).join("\n")), /^ Tasks\b/m);
 					}
 					await host.input("\x1b");
 					assert.equal(settled, false, "task Escape must not cancel the pending questionnaire");

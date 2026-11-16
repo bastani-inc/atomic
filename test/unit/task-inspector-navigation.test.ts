@@ -91,17 +91,21 @@ test("Enter on a /tasks row opens its chat, Space opens its detail, and ← unwi
 		assert.match(h.text(), /^Transcript · worker/, "Enter opens the chat directly");
 		assert.match(h.text(), /← tasks · pgup\/pgdn scroll/, "the hint names where ← goes");
 		h.inspector.handleInput(LEFT);
-		assert.match(h.text(), /Background tasks/, "← from a chat opened from the list returns to the list");
+		assert.match(h.text(), /^ Tasks\b/m, "← from a chat opened from the list returns to the list");
 		h.inspector.handleInput(SPACE);
 		await flush();
-		assert.match(h.text(), /› Inspect transcript/, "Space peeks at the task's detail page");
+		assert.match(h.text(), /╭─ worker /, "Space peeks at the task in a card under its row");
+		assert.match(h.text(), /^ Tasks\b/m, "the peek keeps the list");
+		h.inspector.handleInput(SPACE);
+		await flush();
+		assert.match(h.text(), /› Inspect transcript/, "Space again opens the task's detail page");
 		h.inspector.handleInput(ENTER);
 		await flush();
 		assert.match(h.text(), /← task · pgup\/pgdn scroll/, "a chat opened from the detail page names it");
 		h.inspector.handleInput(LEFT);
 		assert.match(h.text(), /› Inspect transcript/);
 		h.inspector.handleInput(LEFT);
-		assert.match(h.text(), /Background tasks/);
+		assert.match(h.text(), /^ Tasks\b/m);
 		h.inspector.handleInput(LEFT);
 		assert.equal(h.closed(), 1, "← on the list closes it");
 	} finally {
@@ -120,7 +124,7 @@ test("← at the start of a typed prompt leaves the chat and keeps the draft for
 		assert.match(h.text(), /^Transcript/, "← inside the text moves the cursor");
 		h.inspector.handleInput("\x1b[H");
 		h.inspector.handleInput(LEFT);
-		assert.match(h.text(), /Background tasks/, "← at the start of the prompt leaves");
+		assert.match(h.text(), /^ Tasks\b/m, "← at the start of the prompt leaves");
 		h.inspector.handleInput(ENTER);
 		await flush();
 		assert.match(h.text(), /half a thought/, "the draft comes back");
@@ -134,7 +138,10 @@ test("every /tasks hint names exactly its live keys, ← included (#5224)", asyn
 	try {
 		await withTranscript(h, "Hinted");
 		const last = () => h.text().split("\n").at(-1);
-		assert.equal(last(), "  ↑↓ select · enter/→ open · space peek · x stop · esc/← back · ? keys");
+		assert.equal(last(), "  ↑↓ select · space peek · enter/→ open · x stop · / filter · esc/← back · ? keys");
+		h.inspector.handleInput(SPACE);
+		await flush();
+		assert.equal(last(), "  ↑↓ select · space details · enter/→ open · x stop · / filter · esc close peek · ? keys");
 		h.inspector.handleInput(SPACE);
 		await flush();
 		assert.equal(last(), "  ↑↓ actions · enter/→ select · x stop · pgup/pgdn scroll · esc/← back to list · ? keys");
@@ -197,6 +204,7 @@ test("shell input: Esc keeps it and its text, ← on empty input returns to the 
 	}));
 	try {
 		h.inspector.handleInput(SPACE);
+		h.inspector.handleInput(SPACE);
 		await flush();
 		h.inspector.handleInput("\x1b[B");
 		h.inspector.handleInput("\x1b[B");
@@ -209,7 +217,8 @@ test("shell input: Esc keeps it and its text, ← on empty input returns to the 
 		assert.match(h.text(), /yes/, "Esc does not clear it");
 		for (let i = 0; i < 3; i++) h.inspector.handleInput("\x7f");
 		h.inspector.handleInput(LEFT);
-		assert.match(h.text(), /Background tasks/, "← on an empty input returns to the list");
+		assert.match(h.text(), /^ Tasks\b/m, "← on an empty input returns to the list");
+		h.inspector.handleInput(SPACE);
 		h.inspector.handleInput(SPACE);
 		await flush();
 		h.inspector.handleInput("\x1b[B");
@@ -250,7 +259,7 @@ test("a finished subagent's chat stays live and a message resumes it; one stoppe
 		await h.type("ignored");
 		assert.doesNotMatch(h.text(), /ignored/, "a read-only chat takes no typing");
 		h.inspector.handleInput(LEFT);
-		assert.match(h.text(), /Background tasks/, "← still works");
+		assert.match(h.text(), /^ Tasks\b/m, "← still works");
 	} finally {
 		unbind();
 		await h.dispose();

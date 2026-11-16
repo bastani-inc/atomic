@@ -283,7 +283,7 @@ test("? opens the task list's key overlay and Esc closes it, keeping the list op
 		assert.equal(fixture.store.tasks[0]?.execution.kind, "running", "keys wait while the overlay is open");
 		inspector.handleInput("\x1b");
 		assert.doesNotMatch(frame(), /keys · tasks/);
-		assert.match(frame(), /Background tasks/);
+		assert.match(frame(), /^ Tasks\b/m);
 		assert.equal(closed, 0);
 	} finally {
 		inspector.dispose();

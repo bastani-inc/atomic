@@ -91,6 +91,8 @@ export type TaskBoardSource = {
 	open?(id: string): void;
 	stop?(id: string): Promise<{ ok: true } | { ok: false; reason: string }>;
 	answer?(id: string, text: string): Promise<{ ok: true } | { ok: false; reason: string }>;
+	/** Records an `x` dismissal of a finished row (`task:<id>` for a task), so every view of the source leaves it out. */
+	dismiss?(id: string): void;
 };
 function detailKeys(): NavKey[] {
 	return [
@@ -208,6 +210,7 @@ export class TaskInspector implements Component {
 			},
 			dismiss: (task) => {
 				dismissedTasks(this.store).add(task.ref.taskId);
+				this.boardSource?.dismiss?.(`task:${task.ref.taskId}`);
 				this.refreshOrder();
 				if (this.navigation.focus.kind === "detail") this.navigation.focus = { kind: "tasks" };
 				this.requestRender();
@@ -624,7 +627,7 @@ export class TaskInspector implements Component {
 						? this.peekChoices(row)[Number(data) - 1]
 						: undefined;
 				if (choice !== undefined) {
-					this.reply.setValue(choice);
+					for (const char of choice) this.reply.handleInput(char);
 					return true;
 				}
 				if (!matchesKey(data, "up") && !matchesKey(data, "down")) {
@@ -658,6 +661,7 @@ export class TaskInspector implements Component {
 		if (keys.matches(data, "app.list.stop")) {
 			if (rowFinished(row)) {
 				this.dismissedItems.add(row.id);
+				this.boardSource?.dismiss?.(row.id);
 				this.refreshOrder();
 			} else if (this.navigation.stopConfirm.press(row.id as TaskId)) void this.stopItem(row);
 			else {
@@ -929,7 +933,7 @@ export class TaskInspector implements Component {
 				body.push(renderBoardRow(row, isSelected, width - 1).replace(/^/, " "));
 				if (isSelected && this.peekId === row.id) {
 					const replyLines = this.peekReplies(row)
-						? [`${theme.fg("accent", "❯")} ${this.reply.render(Math.max(1, width - 10))[0] ?? ""}`]
+						? [`${theme.fg("accent", "❯")} ${(this.reply.render(Math.max(1, width - 8))[0] ?? "").replace(/^> /, "")}`]
 						: [];
 					body.push(
 						...renderPeekCard(rowName(row), this.peekContent(row), replyLines, Math.max(10, width - 3)).map(

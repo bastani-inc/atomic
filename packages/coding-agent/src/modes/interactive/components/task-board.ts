@@ -1,28 +1,14 @@
 import { truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
+import type { AgentPanelItem } from "../../../core/tasks/agent-panel-source.ts";
 import type { TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
 import { theme } from "../theme/theme.js";
 import { taskDisplayText, taskDuration, taskLabel, taskState } from "./task-row.js";
 
-/**
- * The states a /tasks row can show, shared by task records (subagents and shells) and items another source lists,
- * such as workflow runs. They match the agent panel's states.
- */
-export type TaskBoardState = "running" | "queued" | "input" | "paused" | "stopping" | "done" | "failed" | "stopped";
+/** The states a /tasks row can show, the agent panel's: task records map onto them. */
+export type TaskBoardState = AgentPanelItem["state"];
 
-/** A row that is not a task record, such as a workflow run: what the list and its peek card show of it. */
-export type TaskBoardItem = {
-	readonly id: string;
-	readonly kind: "agent" | "shell" | "workflow";
-	readonly state: TaskBoardState;
-	readonly name: string;
-	readonly task: string;
-	readonly elapsedMs?: number;
-	readonly tokens?: number;
-	readonly progress?: { readonly done: number; readonly total: number };
-	readonly question?: string;
-	readonly choices?: readonly string[];
-	readonly reason?: string;
-};
+/** A row that is not a task record, such as a workflow run: an agent panel item. */
+export type TaskBoardItem = AgentPanelItem;
 
 /** One row of /tasks: a task record from the task store, or an item another source lists. */
 export type TaskBoardRow =
@@ -83,7 +69,8 @@ export function rowName(row: TaskBoardRow): string {
 }
 
 export function rowTask(row: TaskBoardRow): string {
-	if (row.kind === "item") return taskDisplayText(row.item.task);
+	if (row.kind === "item")
+		return taskDisplayText(row.item.state === "input" && row.item.question ? row.item.question : row.item.task);
 	if (row.task.attention.kind === "input-needed") return taskDisplayText(row.task.attention.prompt);
 	return taskDisplayText(row.task.title || taskLabel(row.task));
 }

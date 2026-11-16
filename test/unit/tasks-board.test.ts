@@ -1,0 +1,240 @@
+import assert from "node:assert/strict";
+import { stripVTControlCharacters } from "node:util";
+import { getKeybindings, setKeybindings } from "@bastani/atomic-tui";
+import { afterEach, beforeEach, test } from "vitest";
+import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
+import type { AgentPanelItem } from "../../packages/coding-agent/src/core/tasks/agent-panel-source.js";
+import { ownerTaskViewSource } from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
+import {
+	TaskInspector,
+	type TaskBoardSource,
+} from "../../packages/coding-agent/src/modes/interactive/components/task-inspector.js";
+import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
+import { taskFixture } from "../helpers/task-projection.js";
+
+const ESC = "\x1b";
+const ENTER = "\r";
+const SPACE = " ";
+const DOWN = "\x1b[B";
+
+let previousKeys: ReturnType<typeof getKeybindings>;
+beforeEach(() => {
+	initTheme("dark");
+	previousKeys = getKeybindings();
+	setKeybindings(new KeybindingsManager());
+});
+afterEach(() => {
+	setKeybindings(previousKeys);
+});
+
+async function flush(): Promise<void> {
+	for (let i = 0; i < 5; i++) await new Promise<void>((resolve) => setImmediate(resolve));
+}
+
+/** A workflow-run source like the one the workflows extension registers, recording what /tasks asks of it. */
+function runSource(items: AgentPanelItem[]) {
+	const listeners = new Set<() => void>();
+	const calls = { opened: [] as string[], stopped: [] as string[], answered: [] as [string, string][], dismissed: [] as string[] };
+	const source: TaskBoardSource = {
+		items: () => items,
+		subscribe: (listener) => {
+			listeners.add(listener);
+			return () => listeners.delete(listener);
+		},
+		open: (id) => calls.opened.push(id),
+		stop: async (id) => {
+			calls.stopped.push(id);
+			return { ok: true };
+		},
+		answer: async (id, text) => {
+			calls.answered.push([id, text]);
+			return { ok: true };
+		},
+		dismiss: (id) => calls.dismissed.push(id),
+	};
+	return { source, calls, emit: () => listeners.forEach((listener) => listener()) };
+}
+
+const waitingRun: AgentPanelItem = {
+	id: "run:ralph",
+	kind: "workflow",
+	state: "input",
+	name: "ralph",
+	task: "stage plan",
+	question: "Approve this plan?",
+	choices: ["Yes", "No, revise", "Stop the run"],
+	elapsedMs: 180_000,
+	progress: { done: 1, total: 5 },
+};
+const failedRun: AgentPanelItem = {
+	id: "run:review",
+	kind: "workflow",
+	state: "failed",
+	name: "review-pr",
+	task: "stage verify",
+	reason: "gate failed: 2 jobs",
+	elapsedMs: 240_000,
+};
+
+async function harness(items: AgentPanelItem[] = []) {
+	const fixture = taskFixture();
+	let closed = 0;
+	const inspector = new TaskInspector(
+		ownerTaskViewSource(fixture.store),
+		() => {},
+		() => {
+			closed++;
+		},
+	);
+	const runs = runSource(items);
+	inspector.setBoardSource(runs.source);
+	const text = (width = 100, rows = 24) =>
+		inspector
+			.renderViewport(width, rows)
+			.map((line) => stripVTControlCharacters(line).trimEnd())
+			.join("\n");
+	return {
+		fixture,
+		inspector,
+		runs,
+		text,
+		closed: () => closed,
+		async dispose() {
+			inspector.dispose();
+			await fixture.dispose();
+		},
+	};
+}
+
+test("/tasks groups subagents, shells and workflow runs as Needs input, Working and Done, with counts (#5224)", async () => {
+	const h = await harness([waitingRun, failedRun]);
+	try {
+		await h.fixture.start("Spawn lock fix");
+		const text = h.text();
+		const lines = text.split("\n");
+		assert.match(lines[0] ?? "", /^▔+$/, "the sheet's top edge");
+		assert.equal(lines[1], " Tasks  1 needs input · 1 working · 1 done");
+		const groups = ["   Needs input", "   Working", "   Done"].map((title) => lines.indexOf(title));
+		assert.ok(groups.every((index) => index > 0), text);
+		assert.deepEqual(
+			[...groups].sort((a, b) => a - b),
+			groups,
+			"Needs input, then Working, then Done",
+		);
+		assert.match(text, /◆ ralph +Approve this plan\? +waiting 3m 0s/);
+		assert.match(text, /∀ worker +Spawn lock fix/, "a working row shows Atomic's ∀");
+		assert.match(text, /✗ review-pr +stage verify · gate failed: 2 jobs +failed · 4m 0s/);
+		assert.match(lines.at(-1) ?? "", /^ {2}↑↓ select · space peek · enter\/→ open · x stop · \/ filter · esc\/← back · \? keys$/);
+	} finally {
+		await h.dispose();
+	}
+});
+
+test("Space peeks at a waiting run's question; a number picks a choice and Enter sends it (#5224)", async () => {
+	const h = await harness([waitingRun]);
+	try {
+		h.inspector.handleInput(SPACE);
+		let text = h.text();
+		assert.match(text, /╭─ ralph ─/);
+		assert.match(text, /│ Approve this plan\?/);
+		assert.match(text, /│ 1 Yes/);
+		assert.match(text, /│ 3 Stop the run/);
+		assert.match(text, /│ ❯/, "a reply input");
+		assert.match(text.split("\n").at(-1) ?? "", /1-3 choose · enter send · esc close/);
+		h.inspector.handleInput("2");
+		assert.match(h.text(), /│ ❯ No, revise/);
+		h.inspector.handleInput(ENTER);
+		await flush();
+		assert.deepEqual(h.runs.calls.answered, [["run:ralph", "No, revise"]]);
+		text = h.text();
+		assert.doesNotMatch(text, /╭─ ralph/, "the card closes once the answer is sent");
+		assert.match(text, /Sent to ralph/);
+	} finally {
+		await h.dispose();
+	}
+});
+
+test("Esc closes a peek without leaving /tasks, and typed reply text is answered as typed (#5224)", async () => {
+	const h = await harness([waitingRun]);
+	try {
+		h.inspector.handleInput(SPACE);
+		for (const ch of "go ahead") h.inspector.handleInput(ch);
+		h.inspector.handleInput(ESC);
+		assert.doesNotMatch(h.text(), /╭─ ralph/);
+		assert.equal(h.closed(), 0, "Esc closed the card, not /tasks");
+		h.inspector.handleInput(SPACE);
+		assert.doesNotMatch(h.text(), /go ahead/, "a closed card starts empty");
+		for (const ch of "go ahead") h.inspector.handleInput(ch);
+		h.inspector.handleInput(ENTER);
+		await flush();
+		assert.deepEqual(h.runs.calls.answered, [["run:ralph", "go ahead"]]);
+	} finally {
+		await h.dispose();
+	}
+});
+
+test("Enter on a workflow row opens it through its source and closes /tasks; x x stops it; x dismisses a finished one (#5224)", async () => {
+	const running: AgentPanelItem = { id: "run:build", kind: "workflow", state: "running", name: "build", task: "stage compile" };
+	const h = await harness([running, failedRun]);
+	try {
+		h.inspector.handleInput("x");
+		assert.match(h.text(), /Press x again within 3s to stop build/);
+		assert.deepEqual(h.runs.calls.stopped, []);
+		h.inspector.handleInput("x");
+		await flush();
+		assert.deepEqual(h.runs.calls.stopped, ["run:build"]);
+		h.inspector.handleInput(DOWN);
+		assert.match(h.text(), /x dismiss/, "a finished row's x dismisses it");
+		h.inspector.handleInput("x");
+		assert.deepEqual(h.runs.calls.dismissed, ["run:review"]);
+		assert.doesNotMatch(h.text(), /review-pr/);
+		h.inspector.handleInput(ENTER);
+		assert.deepEqual(h.runs.calls.opened, ["run:build"]);
+		assert.equal(h.closed(), 1, "opening a run's graph leaves /tasks");
+	} finally {
+		await h.dispose();
+	}
+});
+
+test("/ filters rows by name or task, Enter keeps the filter, Esc clears it (#5224)", async () => {
+	const h = await harness([waitingRun, failedRun]);
+	try {
+		await h.fixture.start("Spawn lock fix");
+		h.inspector.handleInput("/");
+		assert.match(h.text().split("\n").at(-1) ?? "", /type filter · enter done · esc clear/);
+		for (const ch of "spawn") h.inspector.handleInput(ch);
+		let text = h.text();
+		assert.match(text, /Spawn lock fix/);
+		assert.doesNotMatch(text, /ralph|review-pr/);
+		h.inspector.handleInput(ENTER);
+		text = h.text();
+		assert.match(text, / ⌕ spawn/, "the filter stays shown after Enter");
+		assert.doesNotMatch(text, /ralph/);
+		h.inspector.handleInput("/");
+		h.inspector.handleInput(ESC);
+		text = h.text();
+		assert.match(text, /ralph/);
+		assert.match(text, /review-pr/);
+		h.inspector.handleInput("/");
+		for (const ch of "zzz") h.inspector.handleInput(ch);
+		assert.match(h.text(), /Nothing matches "zzz"\./);
+	} finally {
+		await h.dispose();
+	}
+});
+
+test("a source's change repaints /tasks, and its rows render at 80 and 160 columns (#5224)", async () => {
+	const items: AgentPanelItem[] = [waitingRun];
+	const h = await harness(items);
+	try {
+		items.push(failedRun);
+		h.runs.emit();
+		for (const width of [80, 160]) {
+			const lines = h.text(width).split("\n");
+			assert.ok(lines.every((line) => line.length <= width), `no line is wider than ${width}`);
+			assert.match(lines.join("\n"), /review-pr/);
+		}
+	} finally {
+		await h.dispose();
+	}
+});

@@ -1,10 +1,19 @@
 import { truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import type { AgentSession } from "../../core/agent-session.js";
 import type { ExtensionUIContext } from "../../core/extensions/index.js";
+import {
+	agentPanelItems,
+	agentPanelTaskId,
+	answerAgentPanelItem,
+	dismissedAgentPanelItems,
+	openAgentPanelItem,
+	stopAgentPanelItem,
+	subscribeAgentPanel,
+} from "../../core/tasks/agent-panel-source.ts";
 import type { TaskId } from "../../core/tasks/contracts.js";
 import { getOwnerTaskStore, type OwnerTaskStore } from "../../core/tasks/owner-store.js";
 import { ChatSessionHost } from "../interactive/components/chat-session-host.ts";
-import { TaskInspector } from "../interactive/components/task-inspector.js";
+import { type TaskBoardSource, TaskInspector } from "../interactive/components/task-inspector.js";
 import { type TaskTranscriptEnvironment, themedChatHostStyle } from "../interactive/components/task-transcript-page.ts";
 import { isPhysicalCtrlC } from "../interactive/interactive-key-identity.ts";
 import { getEditorTheme } from "../interactive/theme/theme.js";
@@ -48,6 +57,25 @@ export function engineTaskInspectorUi(
 	};
 }
 
+/**
+ * The /tasks rows of `session` that are not its own tasks, such as workflow runs, read through the agent panel so
+ * /tasks and the panel always agree, with their open, stop and answer actions and the panel's dismissals.
+ */
+export function agentPanelBoardSource(session: AgentSession): TaskBoardSource {
+	return {
+		items: () => agentPanelItems(session).filter((item) => agentPanelTaskId(item.id) === undefined),
+		subscribe: (listener) => subscribeAgentPanel(session, listener),
+		open: (id) => {
+			openAgentPanelItem(session, id);
+		},
+		stop: (id) => stopAgentPanelItem(session, id),
+		answer: (id, text) => answerAgentPanelItem(session, id, text),
+		dismiss: (id) => {
+			dismissedAgentPanelItems(session).add(id);
+		},
+	};
+}
+
 export async function showEngineTaskInspector(
 	session: AgentSession,
 	ui: TaskInspectorUi,
@@ -59,7 +87,7 @@ export async function showEngineTaskInspector(
 	// The agent panel lists the same tasks; it steps aside while the inspector owns the prompt's place.
 	setAgentPanelVisible(session, false);
 	try {
-		await showTaskInspector(ui, store, taskId);
+		await showTaskInspector(ui, store, taskId, { board: agentPanelBoardSource(session) });
 	} finally {
 		setAgentPanelVisible(session, true);
 	}
@@ -70,7 +98,7 @@ export async function showTaskInspector(
 	ui: TaskInspectorUi,
 	store: OwnerTaskStore,
 	taskId?: string,
-	options: { readonly chat?: boolean } = {},
+	options: { readonly chat?: boolean; readonly board?: TaskBoardSource } = {},
 ): Promise<void> {
 	let requestRender = () => {};
 	let finishView = () => {};
@@ -91,6 +119,7 @@ export async function showTaskInspector(
 		undefined,
 		() => environment,
 	);
+	if (options.board) inspector.setBoardSource(options.board);
 	if (options.chat && taskId !== undefined) {
 		// The chat needs its environment, which the first mount below creates; open it once the mount exists.
 		pendingChat = taskId as TaskId;

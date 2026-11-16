@@ -76,8 +76,8 @@ test("workflow compact picker retains exact owner context through empty, live an
 		assert.ok(empty.includes(context), empty);
 		assert.ok(empty.includes("MCP: 0/1 servers"), empty);
 		assert.doesNotMatch(empty, /main session status/);
-		assert.match(empty, /Background tasks[\s\S]*0 active · 0 total/);
-		assert.match(empty, /Background agents and shells will appear here\./);
+		assert.match(empty, /^ Tasks\b[\s\S]*No background work/m);
+		assert.match(empty, /Subagents, shells and workflow runs appear here\./);
 		assert.doesNotMatch(empty, /hidden parent chrome|Main chat needs input — exit graph to answer\./);
 		Object.defineProperty(session, "isStreaming", { value: true, configurable: true });
 		// The identity line is idle information (#4690): a running owner shows that it works, never an interrupt
@@ -121,7 +121,7 @@ test("workflow compact picker retains exact owner context through empty, live an
 		assert.deepEqual(state.steerCalls, []);
 		const prompt = makePendingPrompt({ kind: "confirm", message: "Genuine stage approval" });
 		assert.equal(store.recordStagePendingPrompt("picker-run", "stage-a", prompt), true);
-		assert.match(render(), /Background tasks/, "prompt arrival must not reinterpret task navigation keys");
+		assert.match(render(), /^ Tasks\b/m, "prompt arrival must not reinterpret task navigation keys");
 		for (const [width, height] of [
 			[31, 9],
 			[12, 3],
