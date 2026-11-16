@@ -149,7 +149,10 @@ export class HuggingFaceSearch extends Container implements Focusable {
 			entries.push({ action: "tui.select.confirm", label: "download" });
 		}
 		entries.push({ keys: "type", label: "to search" });
-		entries.push({ action: "tui.select.cancel", label: "back" });
+		entries.push({
+			keys: navActionText(this.keybindings, "tui.select.cancel").split("/")[0] || "esc",
+			label: "back",
+		});
 		return entries;
 	}
 

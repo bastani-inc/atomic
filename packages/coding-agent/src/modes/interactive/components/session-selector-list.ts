@@ -50,6 +50,19 @@ function cleanText(text: string): string {
 	return cleaned;
 }
 
+const FITTED_TEXT_CACHE_SIZE = 4096;
+const fittedTextCache = new Map<string, string>();
+
+function fitText(text: string, room: number): string {
+	const key = `${room}\u0000${text}`;
+	const cached = fittedTextCache.get(key);
+	if (cached !== undefined) return cached;
+	const fitted = truncateToWidth(text, room, "…");
+	if (fittedTextCache.size >= FITTED_TEXT_CACHE_SIZE) fittedTextCache.clear();
+	fittedTextCache.set(key, fitted);
+	return fitted;
+}
+
 /** `2h ago`, `just now`. */
 function ageText(date: Date): string {
 	const short = formatSessionDate(date);
@@ -141,6 +154,7 @@ export class SessionList implements Component, Focusable {
 	private canDelete = true;
 	private canRename = false;
 	private previewOpen = false;
+	private detailCache = new WeakMap<SessionInfo, { key: string; line: string }>();
 	private noticeProvider?: () => SessionListNotice | undefined;
 
 	// Focusable implementation - propagate to searchInput for IME cursor positioning
@@ -371,7 +385,7 @@ export class SessionList implements Component, Focusable {
 			const lead = ` ${cursor}`;
 			const indent = visibleWidth(lead);
 			const titleRoom = Math.max(1, width - indent - visibleWidth(prefix) - 1);
-			const title = truncateToWidth(sessionRowTitle(session), titleRoom, "…");
+			const title = fitText(sessionRowTitle(session), titleRoom);
 			let color: "error" | "warning" | "accent" | "success" | null = null;
 			if (isConfirmingDelete) color = "error";
 			else if (this.isCurrentSession(session)) color = "accent";
@@ -399,9 +413,18 @@ export class SessionList implements Component, Focusable {
 	 * folder or session path loses its start, never its end, and a summary takes only what the paths leave.
 	 */
 	private rowDetail(session: SessionInfo, room: number): string {
-		if (session.detail !== undefined) return truncateToWidth(cleanText(session.detail), room, "…");
+		if (session.detail !== undefined) return fitText(cleanText(session.detail), room);
 		const sep = " · ";
 		const head = `${ageText(session.modified)}${sep}${session.messageCount} ${session.messageCount === 1 ? "message" : "messages"}`;
+		const key = `${room}\u0000${head}\u0000${this.showCwd}\u0000${this.showPath}\u0000${session.summary ?? ""}`;
+		const cached = this.detailCache.get(session);
+		if (cached?.key === key) return cached.line;
+		const line = this.fitDetail(session, room, head, sep);
+		this.detailCache.set(session, { key, line });
+		return line;
+	}
+
+	private fitDetail(session: SessionInfo, room: number, head: string, sep: string): string {
 		const paths: string[] = [];
 		if (this.showCwd && session.cwd) paths.push(shortenPath(session.cwd));
 		if (this.showPath) paths.push(shortenPath(session.path));
