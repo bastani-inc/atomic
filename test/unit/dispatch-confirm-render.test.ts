@@ -46,7 +46,7 @@ describe("renderDispatchConfirm — themed", () => {
 
 		// Guidance preserves the complete actionable id and explains the graph in
 		// plain language without attach/detach jargon.
-		assert.match(plain, /▸ \/workflow connect 0391c9c1-aaaa-bbbb-cccc-dddddddddddd\s+see agents working/);
+		assert.match(plain, /▸ \/workflows 0391c9c1-aaaa-bbbb-cccc-dddddddddddd\s+see agents working/);
 		assert.match(plain, /chat with and steer each stage/);
 		assert.doesNotMatch(plain, /attach|detach/i);
 		// Legacy chrome MUST be gone.
@@ -81,7 +81,7 @@ describe("renderDispatchConfirm — themed", () => {
 		assert.match(lines[3]!, /prompt="explore the codebase"/);
 		assert.match(lines[3]!, /max_branches=4/);
 		assert.match(lines.join("\n"), /● running/);
-		assert.match(lines.join("\n"), /▸ \/workflow connect be3181c1-aaaa-bbbb-cccc-dddddddddddd/);
+		assert.match(lines.join("\n"), /▸ \/workflows be3181c1-aaaa-bbbb-cccc-dddddddddddd/);
 	});
 
 	test("narrow terminal → rounded card remains width-safe", () => {
@@ -96,7 +96,7 @@ describe("renderDispatchConfirm — themed", () => {
 		assert.match(lines.join("\n"), /be3181c1-aaaa-bbbb-cccc-dddddddddddd/);
 		assert.match(lines.join("\n"), /● running/);
 		assert.match(lines.join("\n"), /prompt=/);
-		assert.match(lines.join("\n"), /▸ \/workflow connect be3181c1-aaaa-bbbb-cccc-dddddddddddd/);
+		assert.match(lines.join("\n"), /▸ \/workflows be3181c1-aaaa-bbbb-cccc-dddddddddddd/);
 	});
 
 	test("every terminal width preserves the complete connect id and rounded-box edges", () => {
@@ -119,12 +119,12 @@ describe("renderDispatchConfirm — themed", () => {
 				else assert.match(line, /^│.*│$/, `width ${width}, row ${index}: side edges`);
 			}
 
-			const hintStart = lines.findIndex((line) => line.includes("/workflow connect"));
+			const hintStart = lines.findIndex((line) => line.includes("/workflows"));
 			assert.notEqual(hintStart, -1, `width ${width}: connect hint missing`);
 			let reassembledId = "";
 			for (const boxedLine of lines.slice(hintStart, -1)) {
 				let content = boxedLine.slice(1, -1).trim();
-				if (content.startsWith("▸ /workflow connect ")) content = content.slice("▸ /workflow connect ".length);
+				if (content.startsWith("▸ /workflows ")) content = content.slice("▸ /workflows ".length);
 				else if (content.startsWith("see agents")) break;
 				const suffixAt = content.indexOf("  see agents");
 				if (suffixAt >= 0) content = content.slice(0, suffixAt);
@@ -149,7 +149,7 @@ describe("renderDispatchConfirm — themed", () => {
 		assert.match(plain, /5b91ee54-aaaa-bbbb-cccc-dddddddddddd/);
 		assert.match(plain, /primer/);
 		assert.match(plain, /● running/);
-		assert.match(plain, /▸ \/workflow connect 5b91ee54-aaaa-bbbb-cccc-dddddddddddd/);
+		assert.match(plain, /▸ \/workflows 5b91ee54-aaaa-bbbb-cccc-dddddddddddd/);
 		// No legacy `(none)` placeholder.
 		assert.doesNotMatch(stripAnsi(out), /\(none\)/);
 	});
@@ -208,7 +208,7 @@ describe("renderDispatchConfirm — plain", () => {
 		assert.match(out, /prompt="hello"/);
 
 		// All workflows explain how to see agents and chat with/steer stages.
-		assert.match(out, /▸ \/workflow connect abc12345-aaaa-bbbb-cccc-dddddddddddd\s+see agents working/);
+		assert.match(out, /▸ \/workflows abc12345-aaaa-bbbb-cccc-dddddddddddd\s+see agents working/);
 		assert.match(out, /chat with and steer each stage/);
 		assert.doesNotMatch(out, /attach|detach/i);
 		assert.doesNotMatch(out, /▸ \/workflow status/);
@@ -230,7 +230,7 @@ describe("renderDispatchConfirm — plain", () => {
 		});
 		assert.match(out, /5b91ee54-aaaa-bbbb-cccc-dddddddddddd/);
 		assert.match(out, new RegExp(`${statusIcon("running")} {2}primer {2}${statusIcon("running")} running`));
-		assert.match(out, /▸ \/workflow connect 5b91ee54-aaaa-bbbb-cccc-dddddddddddd/);
+		assert.match(out, /▸ \/workflows 5b91ee54-aaaa-bbbb-cccc-dddddddddddd/);
 	});
 });
 

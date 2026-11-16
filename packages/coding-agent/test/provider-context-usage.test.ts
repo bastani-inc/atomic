@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,6 +11,9 @@ import { createAgentSession } from "../src/core/sdk.ts";
 import { getLatestCompactionBoundaryEntry, SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { createInMemoryModelRegistry } from "./model-runtime-test-utils.ts";
+
+const NO_BUILTINS = { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false } as const;
+
 import { createTestResourceLoader } from "./utilities.ts";
 import { appendTestCompaction } from "./verbatim-compaction-test-helpers.ts";
 
@@ -84,7 +88,7 @@ describe("provider-bound context usage", () => {
 
 		const authStorage = AuthStorage.inMemory();
 		await authStorage.modify(model.provider, async () => ({ type: "api_key", key: "test-key" }));
-		const { session } = await createAgentSession({
+		const { session, extensionsResult } = await createAgentSession({
 			cwd,
 			model,
 			authStorage,
@@ -92,7 +96,12 @@ describe("provider-bound context usage", () => {
 			settingsManager: SettingsManager.inMemory(),
 			sessionManager,
 			resourceLoader: createTestResourceLoader(),
+			builtins: NO_BUILTINS,
 		});
+		assert.deepEqual(
+			extensionsResult.extensions.map((extension) => extension.path),
+			[],
+		);
 
 		try {
 			expect(session.agent.transformContext).toBeDefined();

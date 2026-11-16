@@ -4,6 +4,27 @@ import type { Store } from "../shared/store.js";
 import type { GraphTheme } from "./graph-theme.js";
 
 export type GraphViewMode = "overlay" | "widget";
+
+/** What a graph action on a stage reports back: shown on the hint line for a moment. */
+export interface GraphStageActionResult {
+	readonly ok: boolean;
+	readonly message: string;
+	/** The run a retry or fork started, which the graph then shows. */
+	readonly runId?: string;
+}
+
+/**
+ * Run controls the graph offers on a focused stage. Each is optional: a host that cannot perform one leaves it out,
+ * and the graph neither offers nor advertises its key.
+ */
+export interface GraphStageActions {
+	/** Stop the stage so it can be resumed later (`x x`). */
+	stop?(runId: string, stageId: string): Promise<GraphStageActionResult>;
+	/** Continue a failed run from this failed stage: completed stages are kept and the stage runs again (`r`). */
+	retry?(runId: string, stageId: string): Promise<GraphStageActionResult>;
+	/** Fork the run into a new run that keeps its completed stages; the source run is never changed (`f`). */
+	fork?(runId: string, stageId: string): Promise<GraphStageActionResult>;
+}
 /**
  * Terminal geometry exposed to GraphView. The renderer reads only `rows`;
  * the attach shell may pass its full host TUI because it satisfies this slice.
@@ -21,7 +42,7 @@ export interface GraphViewOpts {
 	/**
 	 * Invoked when the user presses `h` inside the pane. Hides without
 	 * unmounting (overlay-adapter calls `setHidden(true)`). Re-open via
-	 * `F2` or `/workflow connect <id>`.
+	 * `F2` or `/workflows`.
 	 */
 	onHide?: () => void;
 	/**
@@ -31,11 +52,14 @@ export interface GraphViewOpts {
 	 */
 	onStageAttach?: (runId: string, stageId: string) => void;
 	/**
-	 * Invoked when the user presses the graph's back key. Returns to main
-	 * chat by hiding the popup with `setHidden(true)`. Falls back to `onHide`
-	 * when unset.
+	 * Invoked when Esc (or ← with nothing to the left) pops the graph itself: back to where it was opened from, main
+	 * chat unless the opener said otherwise. Falls back to `onHide` when unset.
 	 */
 	onDetach?: () => void;
+	/** Stop, retry and fork controls for a focused stage. */
+	stageActions?: GraphStageActions;
+	/** Show another run in this graph, such as the run a retry or fork started. */
+	onShowRun?: (runId: string) => void;
 	/**
 	 * When provided, GraphView restores focus to this stage on construction.
 	 * `initialFocusedRunId` disambiguates identical local stage IDs in nested runs.

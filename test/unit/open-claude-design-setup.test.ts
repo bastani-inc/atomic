@@ -161,7 +161,7 @@ describe("open-claude-design setup", () => {
 			assert.doesNotMatch(message, /regeneration|budget|max_refinements/i);
 			assert.ok(message.includes("/tmp/run/preview.html"));
 			assert.ok(message.includes("file:///tmp/run/preview.html"));
-			assert.ok(message.includes("/workflow connect"));
+			assert.ok(message.includes("/workflows"));
 			// The user is the only thing that ends the review, so the gate they read
 			// beforehand has to say how, and what it costs them.
 			assert.match(message, /YOU end the review/);

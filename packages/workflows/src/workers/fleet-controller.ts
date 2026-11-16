@@ -4,6 +4,7 @@ import { getAgentDir, sliceHead } from "@bastani/atomic";
 import type { StorageSelection } from "@bastani/atomic/storage";
 import { openSelectedRunJournal } from "../durable/journal/resolution.js";
 import {
+	bootTimeoutDrainHost,
 	FLEET_DRAIN_TIMEOUT_MS,
 	type FleetFence,
 	type FleetSnapshot,
@@ -432,11 +433,16 @@ export class FleetController implements WorkflowFleetController {
 					// The instance is drained before it is checked once more and removed, so a host that registers on it from
 					// now on claims nothing. One that registered since the snapshot, reports, or holds a child booted after
 					// all, and stays. One that already read the drain finishes it: the planner removes the instance once that
-					// host leaves (#5072).
-					const host = joined?.hostId ?? `boot-timeout:${action.id}`;
-					await store.carryDrain(fence, host, action.id);
+					// host leaves (#5072). The drain that names the removal comes first: once it is written, a removal cut off
+					// before its provider call, by a lease that may have lapsed or by a stop, is finished by whichever
+					// controller leads next, as {@link joinHosts} says.
+					const drained = [
+						bootTimeoutDrainHost(action.id),
+						...(joined?.hostId === undefined ? [] : [joined.hostId]),
+					];
+					for (const host of drained) await store.carryDrain(fence, host, action.id);
 					const hold = await store.bootHold(action.id, joined?.hostId, known);
-					if (hold === "occupied") await store.clearDrain(fence, host);
+					if (hold === "occupied") for (const host of drained) await store.clearDrain(fence, host);
 					if (hold !== "free") return;
 				}
 				// Its drains stay until the provider no longer lists it (#4803): a removal the provider accepted may take
@@ -493,7 +499,9 @@ export interface JoinedHost {
  *
  * A drained instance has `drained` once no host on it is in the registry, since a host leaves the registry when its
  * drain ends, or {@link FLEET_DRAIN_TIMEOUT_MS} after its latest drain request: a host that only stopped reporting has
- * not drained (#5072).
+ * not drained (#5072). An instance drained for its boot timeout has `drained` too once no host on it is live or
+ * draining, as the removal's own check would find it free: a removal cut off after it wrote the drain is then finished
+ * at the next tick, by this controller or the one that takes over, not after the drain timeout.
  */
 export function joinHosts(listed: readonly ProvisionedHost[], snapshot: FleetSnapshot): JoinedHost[] {
 	let unclaimed = 0;
@@ -517,6 +525,9 @@ export function joinHosts(listed: readonly ProvisionedHost[], snapshot: FleetSna
 		const orphaned = drainHosts.length > 0 && registered?.live !== true ? unclaimed : 0;
 		const left = !snapshot.hosts.some((host) => holders.has(host.host));
 		const timedOut = drains.length > 0 && Math.min(...drains.map((drain) => drain.agoMs)) >= FLEET_DRAIN_TIMEOUT_MS;
+		const bootTimedOut =
+			drainHosts.includes(bootTimeoutDrainHost(provided.id)) &&
+			matching.every((host) => !host.live && host.draining !== true);
 		const leased = [...holders].reduce((total, host) => total + (snapshot.leased.get(host) ?? 0), orphaned);
 		return {
 			view: {
@@ -526,7 +537,7 @@ export function joinHosts(listed: readonly ProvisionedHost[], snapshot: FleetSna
 				registered: registered?.live === true,
 				leased,
 				draining: drainHosts.length > 0,
-				drained: (drainHosts.length > 0 || provided.state === "draining") && (left || timedOut),
+				drained: (drainHosts.length > 0 || provided.state === "draining") && (left || timedOut || bootTimedOut),
 			},
 			...(hostId === undefined ? {} : { hostId }),
 			drainHosts,

@@ -334,6 +334,8 @@ function failingAlters(db: SqliteDatabase, failure: Error): SqliteDatabase {
 
 test("a column another broker added meanwhile is not an error in Postgres's wording either (#4793)", async () => {
 	const db = await database();
+	// Another broker opened the store first, so its columns exist although this broker's probe does not see them.
+	await openSqlOutboxStore({ database: db, prefix: "" });
 	const postgres = new Error('column "saving_at" of relation "intercom_outbox" already exists');
 	await openSqlOutboxStore({ database: failingAlters(db, postgres), prefix: "" });
 	const other = new Error('relation "intercom_outbox" already exists');
