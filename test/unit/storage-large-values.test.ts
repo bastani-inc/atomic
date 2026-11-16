@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { DatabaseSync } from "node:sqlite";
 import { describe, test } from "vitest";
 import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.js";
 import type { SqliteDatabase, SqliteRow } from "../../packages/coding-agent/src/core/storage/database.js";
@@ -187,7 +188,68 @@ describe("a session store under a libSQL server's size limits (#4954)", () => {
 			assert.deepEqual(limited.refused, []);
 		});
 	});
+
+	test("a long session loads in time linear in its entries, not one scan of the rest per page (#4954)", async () => {
+		await withNodeSqliteDatabase(async ({ database }) => {
+			const store = await SqlSessionStore.open(database);
+			const entries = Array.from({ length: 3000 }, (_, index) =>
+				message(`m-${index}`, index === 0 ? null : `m-${index - 1}`, `${index} `.repeat(2_000)),
+			);
+			await store.create(header(), entries);
+			const scanned = await countLongValuesMeasured(() => store.load("session"));
+			assert.equal(scanned.result.entries.length, entries.length);
+			assert.ok(scanned.calls <= 8 * entries.length, `${scanned.calls} entry lengths measured`);
+		});
+	});
+
+	test("a long listing reads in time linear in its sessions, not one scan of the rest per page (#4954)", async () => {
+		await withNodeSqliteDatabase(async ({ database }) => {
+			const store = await SqlSessionStore.open(database);
+			const sessions = 600;
+			for (let index = 0; index < sessions; index++) {
+				const id = `s-${index}`;
+				await store.create(header(id), [message(`${id}-1`, null, "x".repeat(SESSION_SUMMARY_TEXT_CHARS))]);
+			}
+			const scanned = await countLongValuesMeasured(() => list(store));
+			assert.equal(scanned.result.length, sessions);
+			assert.ok(scanned.calls <= 20 * sessions, `${scanned.calls} listing lengths measured`);
+		});
+	});
 });
+
+/** Values this long are rows' JSON rather than column names or keys, so their measurements count rows read. */
+const LONG_VALUE_CHARS = 10_000;
+
+/**
+ * Runs `body` with SQLite's `length()` replaced, on every connection, by one that counts the long values it measures:
+ * the session store measures each row it reads for paging, so the count is the rows `body`'s statements scanned.
+ */
+async function countLongValuesMeasured<T>(
+	body: () => Promise<T>,
+): Promise<{ readonly result: T; readonly calls: number }> {
+	let calls = 0;
+	const counting = new WeakSet<DatabaseSync>();
+	const prepare = DatabaseSync.prototype.prepare;
+	DatabaseSync.prototype.prepare = function (this: DatabaseSync, sql: string) {
+		if (!counting.has(this)) {
+			counting.add(this);
+			this.function("length", { deterministic: true }, (value) => {
+				if (value === null) return null;
+				if (typeof value === "string") {
+					if (value.length >= LONG_VALUE_CHARS) calls++;
+					return [...value].length;
+				}
+				return value instanceof Uint8Array ? value.byteLength : String(value).length;
+			});
+		}
+		return prepare.call(this, sql);
+	} as typeof prepare;
+	try {
+		return { result: await body(), calls };
+	} finally {
+		DatabaseSync.prototype.prepare = prepare;
+	}
+}
 
 describe("listing text is bounded the same way by every store (#4954)", () => {
 	const summary = (text: string) =>
@@ -320,8 +382,7 @@ describe("workflow journal reads under a libSQL server's size limits (#4954)", (
 describe("a database written with chunked entries is refused by older builds (#4954)", () => {
 	/**
 	 * What an older build checks when it opens the session tables of a SQLite or libSQL database: every row of the
-	 * sessions meta table must hold the one schema version it knows, 1. Postgres records the step in its migration
-	 * ledger, which older builds check instead.
+	 * sessions meta table must hold the one schema version it knows, 1. Builds before 2 check the same row on Postgres.
 	 */
 	async function openAsOlderBuild(database: SqliteDatabase): Promise<void> {
 		const rows = await database.all<SqliteRow & { schema_version: number }>(
@@ -396,17 +457,43 @@ describe("a database written with chunked entries is refused by older builds (#4
 		});
 	});
 
-	test("a database an older build created is upgraded and keeps its sessions (#4954)", async () => {
+	test("a database without chunked entries stays readable by older builds (#4954)", async () => {
+		await withNodeSqliteDatabase(async ({ database }) => {
+			const store = await SqlSessionStore.open(database);
+			await store.create(header(), [message("m", null, "x".repeat(SESSION_ENTRY_CHUNK_BYTES / 4))]);
+			await store.append("session", [message("n", "m", "more")], { expectSeq: 1 });
+			await openAsOlderBuild(database);
+			await SqlSessionStore.open(database);
+			await openAsOlderBuild(database);
+			assert.equal((await store.load("session")).entries.length, 2);
+		});
+	});
+
+	test("an older build's database keeps its version and sessions until a chunked entry is written (#4954)", async () => {
 		await withNodeSqliteDatabase(async ({ database }) => {
 			await SqlSessionStore.open(database);
 			await database.exec("UPDATE session_meta SET schema_version = 1");
 			const store = await SqlSessionStore.open(database);
+			await store.create(header(), [message("m", null, "kept")]);
+			await openAsOlderBuild(database);
+			await store.append("session", [message("big", "m", "x".repeat(2 * MiB))], { expectSeq: 1 });
 			assert.deepEqual(
 				(await database.all("SELECT schema_version FROM session_meta")).map((row) => Number(row.schema_version)),
 				[2],
 			);
-			await store.create(header(), [message("m", null, "kept")]);
-			assert.equal((await store.load("session")).entries.length, 1);
+			await assert.rejects(openAsOlderBuild(database), StorageSchemaVersionError);
+			assert.equal((await store.load("session")).entries.length, 2);
+		});
+	});
+
+	test("a store opened at version 1 keeps working after another store writes the first chunked entry (#4954)", async () => {
+		await withNodeSqliteDatabase(async ({ database }) => {
+			const first = await SqlSessionStore.open(database);
+			const second = await SqlSessionStore.open(database);
+			await second.create(header("big"), [message("b", null, "x".repeat(2 * MiB))]);
+			await first.create(header(), [message("m", null, "after")]);
+			assert.equal((await first.load("big")).entries.length, 1);
+			assert.equal((await Array.fromAsync(first.list({}))).length, 2);
 		});
 	});
 });
