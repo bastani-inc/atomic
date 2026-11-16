@@ -5,6 +5,7 @@ import {
 	agentPanelItems,
 	dismissedAgentPanelItems,
 	openAgentPanelItem,
+	sampleAgentPanelSources,
 	sourceError,
 	stopAgentPanelItem,
 	subscribeAgentPanel,
@@ -260,7 +261,7 @@ export function bindAgentPanel(
 	const refresh = () => {
 		if (disposed) return;
 		if (!visible) {
-			agentPanelItems(session, state.onSourceError);
+			sampleAgentPanelSources(session, state.onSourceError);
 			unmount();
 			return;
 		}

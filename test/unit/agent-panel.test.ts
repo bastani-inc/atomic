@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
 import { matchesKey, visibleWidth } from "@bastani/atomic-tui";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import {
 	type AgentPanelItem,
@@ -125,6 +125,36 @@ test("panel colors and running glyphs follow theme, color and motion changes aft
 		if (reducedMotion === undefined) delete process.env.ATOMIC_REDUCED_MOTION;
 		else process.env.ATOMIC_REDUCED_MOTION = reducedMotion;
 		setThemeInstance(previous);
+	}
+});
+
+test("single-cell panel frames avoid repeated grapheme segmentation (#5239)", () => {
+	initTheme("dark");
+	const segment = vi.spyOn(Intl.Segmenter.prototype, "segment");
+	try {
+		for (let frame = 0; frame < 10; frame++) {
+			segment.mockClear();
+			const lines = renderAgentPanelRows(
+				[{ ...ROWS[0]!, name: "cost7391", task: `frame cost probe 7391-${frame}` }],
+				120,
+				plain,
+				{ frame },
+			);
+			assert.equal(segment.mock.calls.filter(([text]) => text.includes("frame cost probe 7391")).length, 0);
+			assert.equal(visibleWidth(lines[0]!), 120);
+		}
+	} finally {
+		segment.mockRestore();
+	}
+});
+
+test("single-cell rendering still clamps styles that add visible text (#5239)", () => {
+	const expanded: AgentPanelStyle = { ...plain, muted: (text) => `[${text}]`, accent: (text) => `界${text}` };
+	for (const width of [40, 60, 80, 120]) {
+		for (const selectedId of [undefined, ROWS[0]!.id]) {
+			const lines = renderAgentPanelRows([ROWS[0]!], width, expanded, { selectedId });
+			assert.ok(lines.every((line) => visibleWidth(line) <= width));
+		}
 	}
 });
 

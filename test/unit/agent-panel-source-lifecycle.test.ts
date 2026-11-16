@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { test } from "vitest";
+import { stripVTControlCharacters } from "node:util";
+import { test, vi } from "vitest";
 import { createExtensionRuntime } from "../../packages/coding-agent/src/core/extensions/loader-runtime.js";
 import {
 	type AgentPanelItem,
@@ -7,10 +8,138 @@ import {
 	agentPanelItems,
 	subscribeAgentPanel,
 } from "../../packages/coding-agent/src/core/tasks/agent-panel-source.js";
+import { bindOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
 import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
-import { agentPanelRows, bindAgentPanel } from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.js";
+import {
+	agentPanelRows,
+	bindAgentPanel,
+	setAgentPanelVisible,
+} from "../../packages/coding-agent/src/modes/rpc/agent-panel-bridge.js";
+import { taskFixture } from "../helpers/task-projection.js";
 
 initTheme("dark");
+
+test("read-time source elapsed values are exact on first display and after a hidden period (#5239)", async () => {
+	let now = 1000;
+	const date = vi.spyOn(Date, "now").mockImplementation(() => now);
+	const startedAt = now;
+	const hub = new AgentPanelSourceHub();
+	let notify = () => {};
+	hub.register({
+		items: () => [
+			{
+				id: "run:clock",
+				kind: "workflow",
+				state: "running",
+				name: "clock",
+				task: "build",
+				elapsedMs: now - startedAt,
+			},
+		],
+		subscribe(listener) {
+			notify = listener;
+			return () => {};
+		},
+	});
+	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
+	let widget: { render(width: number): string[] } | undefined;
+	now += 9000;
+	const unbind = bindAgentPanel(session, {
+		setWidget(_key, factory) {
+			widget = typeof factory === "function" ? factory({ requestRender() {} } as never, theme) : undefined;
+		},
+		requestRender() {},
+	});
+	try {
+		assert.equal(agentPanelRows(session)[0]?.elapsedMs, now - startedAt);
+		assert.match(stripVTControlCharacters(widget!.render(80).join("\n")), /9s$/);
+		setAgentPanelVisible(session, false);
+		now += 10_000;
+		notify();
+		await Promise.resolve();
+		now += 10_000;
+		setAgentPanelVisible(session, true);
+		assert.equal(agentPanelRows(session)[0]?.elapsedMs, now - startedAt);
+		assert.match(stripVTControlCharacters(widget!.render(80).join("\n")), /29s$/);
+	} finally {
+		unbind();
+		hub.dispose();
+		date.mockRestore();
+	}
+});
+
+test("a source applies all pending changes before returning its notified snapshot (#5239)", () => {
+	const hub = new AgentPanelSourceHub();
+	let generation = 0;
+	let pending = 0;
+	let notify = () => {};
+	hub.register({
+		items() {
+			if (pending > 0) {
+				generation += pending;
+				pending = 0;
+				notify();
+			}
+			return [
+				{ id: "run:pending", kind: "workflow", state: "running", name: "job", task: `generation ${generation}` },
+			];
+		},
+		subscribe(listener) {
+			notify = listener;
+			return () => {};
+		},
+	});
+	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
+	try {
+		agentPanelItems(session);
+		pending = 3;
+		notify();
+		assert.equal(agentPanelRows(session)[0]?.task, "generation 3");
+		assert.equal(pending, 0);
+		assert.equal(agentPanelRows(session)[0]?.task, "generation 3");
+	} finally {
+		hub.dispose();
+	}
+});
+
+test("hidden panel refreshes sample extension sources without rebuilding background task rows (#5239)", async () => {
+	const fixture = taskFixture();
+	await fixture.start();
+	const hub = new AgentPanelSourceHub();
+	let notify = () => {};
+	let reads = 0;
+	hub.register({
+		items() {
+			reads++;
+			return [{ id: "run:sample", kind: "workflow", state: "running", name: "job", task: "build" }];
+		},
+		subscribe(listener) {
+			notify = listener;
+			return () => {};
+		},
+	});
+	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
+	bindOwnerTaskStore(session, fixture.store);
+	const taskReads = vi.spyOn(fixture.store, "backgroundTasks", "get");
+	const unbind = bindAgentPanel(session, { setWidget() {}, requestRender() {} });
+	try {
+		setAgentPanelVisible(session, false);
+		taskReads.mockClear();
+		reads = 0;
+		notify();
+		await Promise.resolve();
+		assert.equal(taskReads.mock.calls.length, 0);
+		assert.equal(reads, 1);
+		setAgentPanelVisible(session, true);
+		assert.equal(taskReads.mock.calls.length, 1);
+		assert.equal(reads, 1);
+	} finally {
+		unbind();
+		taskReads.mockRestore();
+		hub.dispose();
+		await fixture.dispose();
+	}
+});
 
 test("a source that returns a pre-change snapshot and notifies inside items() renders the new rows while an always-notifying source still quiesces (#5224)", async () => {
 	let generation = 0;

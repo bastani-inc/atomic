@@ -4,6 +4,7 @@
  * items, as the workflows extension adds runs, with `pi.registerAgentPanelSource()`.
  */
 
+import { types } from "node:util";
 import type { TaskId, TaskRecord } from "./contracts.js";
 import { getOwnerTaskStore, watchOwnerTaskStoreBinding } from "./owner-store.js";
 import { ownerTaskViewSource, type TaskViewSource } from "./task-view-source.js";
@@ -117,17 +118,20 @@ export class AgentPanelSourceHub {
 				if (this.regIds.get(source) === regId) this.regIds.delete(source);
 				return { dispose() {} };
 			}
-			const result: unknown = subscribe.call(source, () => {
-				if (this.sources.get(source) !== cleanup) return;
-				version.current++;
-				this.notify();
-			});
+			const result: unknown = Reflect.apply(subscribe, source, [
+				() => {
+					if (this.sources.get(source) !== cleanup) return;
+					version.current++;
+					this.notify();
+				},
+			]);
 			if (drainThenable(result) || typeof result !== "function") {
 				if (this.regIds.get(source) === regId) this.regIds.delete(source);
 				return { dispose() {} };
 			}
 			unsubscribe = result as () => void;
-		} catch {
+		} catch (error) {
+			drainCaught(error);
 			if (this.regIds.get(source) === regId) this.regIds.delete(source);
 			return { dispose() {} };
 		}
@@ -195,7 +199,8 @@ function hubOf(session: AgentPanelSession): AgentPanelSourceHub | undefined {
 		const hub: unknown = session.extensionRunner?.getAgentPanelSourceHub?.();
 		if (drainThenable(hub)) return undefined;
 		return hub as AgentPanelSourceHub | undefined;
-	} catch {
+	} catch (error) {
+		drainCaught(error);
 		return undefined;
 	}
 }
@@ -292,25 +297,119 @@ export function taskPanelItems(
 const reportedSources = new WeakSet<AgentPanelSource>();
 
 export function sourceError(error: unknown): Error {
-	try {
-		if (typeof error === "string") return new Error(error || "Agent panel source failed.");
-		const message = error instanceof Error ? String(error.message) : String(error);
-		return new Error(message || "Agent panel source failed.");
-	} catch {
-		return new Error("Agent panel source failed.");
+	if (typeof error === "string") return new Error(error || "Agent panel source failed.");
+	if ((typeof error === "object" && error !== null) || typeof error === "function") {
+		drainCaught(error);
+		let message: unknown;
+		try {
+			message = (error as { readonly message?: unknown }).message;
+		} catch (thrown) {
+			drainCaught(thrown);
+			return new Error("Agent panel source failed.");
+		}
+		drainCaught(message);
+		return new Error(typeof message === "string" && message.length > 0 ? message : "Agent panel source failed.");
 	}
+	return new Error(String(error) || "Agent panel source failed.");
 }
 
-function drainThenable(value: unknown): boolean {
+const drainedPromises = new WeakSet<Promise<unknown>>();
+
+function drainCaught(value: unknown, seen?: Set<object>): void {
+	drainThenable(value, seen);
+}
+
+function drainThenable(value: unknown, seen?: Set<object>): boolean {
 	if ((typeof value !== "object" && typeof value !== "function") || value === null) return false;
-	try {
-		const then = (value as { readonly then?: unknown }).then;
-		if (typeof then !== "function") return false;
-		void Promise.resolve(value).catch(() => {});
-		return true;
-	} catch {
+	if (types.isPromise(value)) {
+		if (drainedPromises.has(value)) return true;
+		drainedPromises.add(value);
+		try {
+			Promise.prototype.then.call(
+				value,
+				(result: unknown) => drainCaught(result),
+				(error: unknown) => drainCaught(error),
+			);
+		} catch (error) {
+			drainCaught(error, seen ?? new Set([value]));
+		}
 		return true;
 	}
+	if (seen?.has(value)) return true;
+	seen?.add(value);
+	let then: unknown;
+	try {
+		then = (value as { readonly then?: unknown }).then;
+	} catch (error) {
+		drainCaught(error, seen ?? new Set([value]));
+		return true;
+	}
+	if (typeof then !== "function") {
+		if (typeof then === "object" && then !== null) {
+			drainCaught(then, seen ?? new Set([value]));
+		}
+		return false;
+	}
+	const visited = seen ?? new Set([value]);
+	const discard = (result: unknown) => drainCaught(result, visited);
+	try {
+		drainCaught(Reflect.apply(then, value, [discard, discard]), visited);
+	} catch (error) {
+		drainCaught(error, visited);
+	}
+	return true;
+}
+
+interface SettledSourceResult {
+	readonly value: unknown;
+}
+
+function settleSourceResult(value: unknown): Promise<SettledSourceResult> {
+	return new Promise<SettledSourceResult>((resolve, reject) => {
+		const pending = new Set<object>();
+		const settle = (result: unknown): void => {
+			if ((typeof result !== "object" && typeof result !== "function") || result === null) {
+				resolve({ value: result });
+				return;
+			}
+			if (pending.has(result)) {
+				reject(new TypeError("Agent panel source returned a cyclic thenable."));
+				return;
+			}
+			pending.add(result);
+			let settled = false;
+			const accept = (next: unknown) => {
+				if (settled) {
+					drainCaught(next);
+					return;
+				}
+				settled = true;
+				settle(next);
+			};
+			const fail = (error: unknown) => {
+				drainCaught(error);
+				if (settled) return;
+				settled = true;
+				reject(error);
+			};
+			try {
+				if (types.isPromise(result)) {
+					Promise.prototype.then.call(result, accept, fail);
+					return;
+				}
+				const then = (result as { readonly then?: unknown }).then;
+				if (typeof then !== "function") {
+					drainCaught(then);
+					resolve({ value: result });
+					return;
+				}
+				drainCaught(Reflect.apply(then, result, [accept, fail]));
+			} catch (error) {
+				fail(error);
+			}
+		};
+		settle(value);
+	});
 }
 
 function safelyCall(callback: () => unknown): boolean {
@@ -318,7 +417,8 @@ function safelyCall(callback: () => unknown): boolean {
 		const result = callback();
 		drainThenable(result);
 		return true;
-	} catch {
+	} catch (error) {
+		drainCaught(error);
 		return false;
 	}
 }
@@ -349,21 +449,25 @@ function readPanelField(item: object, key: PropertyKey): unknown {
 function readPanelProgress(value: unknown): AgentPanelItem["progress"] | false {
 	if (value === undefined) return undefined;
 	if (drainThenable(value) || typeof value !== "object" || value === null) return false;
-	const done = readPanelField(value, "done");
-	const total = readPanelField(value, "total");
+	const done = (value as { readonly done?: unknown }).done;
+	drainThenable(done);
+	const total = (value as { readonly total?: unknown }).total;
+	drainThenable(total);
 	return isFiniteNonNegative(done) && isFiniteNonNegative(total) ? { done, total } : false;
 }
 
 function readPanelChoices(value: unknown): string[] | false | undefined {
 	if (value === undefined) return undefined;
 	if (drainThenable(value) || !Array.isArray(value)) return false;
-	const length = readPanelField(value, "length");
+	const length = value.length;
+	drainThenable(length);
 	if (!isNonNegativeInteger(length)) return false;
 	const count = Math.min(length, MAX_PANEL_CHOICES);
 	const choices: string[] = [];
 	let valid = length <= MAX_PANEL_CHOICES;
 	for (let index = 0; index < count; index++) {
-		const choice = readPanelField(value, index);
+		const choice: unknown = value[index];
+		drainThenable(choice);
 		if (typeof choice === "string") choices.push(choice);
 		else valid = false;
 	}
@@ -372,19 +476,35 @@ function readPanelChoices(value: unknown): string[] | false | undefined {
 
 function validateItem(raw: unknown, readAt: number): AgentPanelItem | undefined {
 	if (drainThenable(raw) || typeof raw !== "object" || raw === null) return undefined;
-	const id = readPanelField(raw, "id");
-	const kind = readPanelField(raw, "kind");
-	const state = readPanelField(raw, "state");
-	const name = readPanelField(raw, "name");
-	const task = readPanelField(raw, "task");
-	const elapsedMs = readPanelField(raw, "elapsedMs");
-	const tokens = readPanelField(raw, "tokens");
-	const progress = readPanelProgress(readPanelField(raw, "progress"));
-	const question = readPanelField(raw, "question");
-	const choices = readPanelChoices(readPanelField(raw, "choices"));
-	const reason = readPanelField(raw, "reason");
-	const queued = readPanelField(raw, "queued");
-	const endedAt = readPanelField(raw, "endedAt");
+	const row = raw as Partial<Record<keyof AgentPanelItem, unknown>>;
+	const id = row.id;
+	drainThenable(id);
+	const kind = row.kind;
+	drainThenable(kind);
+	const state = row.state;
+	drainThenable(state);
+	const name = row.name;
+	drainThenable(name);
+	const task = row.task;
+	drainThenable(task);
+	const elapsedMs = row.elapsedMs;
+	drainThenable(elapsedMs);
+	const tokens = row.tokens;
+	drainThenable(tokens);
+	const rawProgress = row.progress;
+	drainThenable(rawProgress);
+	const progress = readPanelProgress(rawProgress);
+	const question = row.question;
+	drainThenable(question);
+	const rawChoices = row.choices;
+	drainThenable(rawChoices);
+	const choices = readPanelChoices(rawChoices);
+	const reason = row.reason;
+	drainThenable(reason);
+	const queued = row.queued;
+	drainThenable(queued);
+	const endedAt = row.endedAt;
+	drainThenable(endedAt);
 
 	if (
 		typeof id !== "string" ||
@@ -429,7 +549,9 @@ function validateItem(raw: unknown, readAt: number): AgentPanelItem | undefined 
 	if (reason !== undefined) item.reason = reason;
 	if (queued !== undefined) item.queued = queued;
 	if (endedAt !== undefined) item.endedAt = endedAt;
-	itemSampleTimes.set(item, readAt);
+	if (elapsedMs !== undefined && (state === "running" || state === "input" || state === "stopping")) {
+		itemSampleTimes.set(item, readAt);
+	}
 	return item;
 }
 
@@ -451,7 +573,7 @@ function readPanelIterable(rawItems: object): readonly unknown[] {
 	if (typeof iterate !== "function") {
 		throw new TypeError("Agent panel source items must be an iterable object.");
 	}
-	const iterator: unknown = iterate.call(rawItems);
+	const iterator: unknown = Reflect.apply(iterate, rawItems, []);
 	if (drainThenable(iterator) || typeof iterator !== "object" || iterator === null) {
 		throw new TypeError("Agent panel source iterator must be synchronous.");
 	}
@@ -459,18 +581,20 @@ function readPanelIterable(rawItems: object): readonly unknown[] {
 	if (typeof next !== "function") throw new TypeError("Invalid agent panel source iterator.");
 	const rows: unknown[] = [];
 	while (rows.length <= MAX_PANEL_SOURCE_ITEMS) {
-		const step: unknown = next.call(iterator);
+		const step: unknown = Reflect.apply(next, iterator, []);
 		if (drainThenable(step) || typeof step !== "object" || step === null) {
 			throw new TypeError("Agent panel source iterator steps must be synchronous objects.");
 		}
-		const done = readPanelField(step, "done");
+		const done = (step as { readonly done?: unknown }).done;
 		if (drainThenable(done)) throw new TypeError("Agent panel source iterator state must be synchronous.");
 		if (done) return rows;
-		rows.push(readPanelField(step, "value"));
+		const value = (step as { readonly value?: unknown }).value;
+		drainThenable(value);
+		rows.push(value);
 	}
 	safelyCall(() => {
 		const close = readPanelField(iterator, "return");
-		if (typeof close === "function") return close.call(iterator);
+		if (typeof close === "function") return Reflect.apply(close, iterator, []);
 	});
 	return rows;
 }
@@ -482,7 +606,7 @@ function readSourceSnapshot(source: AgentPanelSource): SourceCacheEntry {
 		if (typeof itemsMethod !== "function") {
 			throw new TypeError("Agent panel source items must be a function.");
 		}
-		const rawItems: unknown = itemsMethod.call(source);
+		const rawItems: unknown = Reflect.apply(itemsMethod, source, []);
 		if (drainThenable(rawItems) || typeof rawItems !== "object" || rawItems === null) {
 			throw new TypeError("Agent panel source items must be an iterable object.");
 		}
@@ -490,7 +614,8 @@ function readSourceSnapshot(source: AgentPanelSource): SourceCacheEntry {
 		const seenIds = new Set<string>();
 		let validationError: Error | undefined;
 		const rawRows: readonly unknown[] = Array.isArray(rawItems) ? rawItems : readPanelIterable(rawItems);
-		const length = readPanelField(rawRows, "length");
+		const length = rawRows.length;
+		drainThenable(length);
 		if (!isNonNegativeInteger(length)) throw new TypeError("Invalid agent panel source length.");
 		if (length > MAX_PANEL_SOURCE_ITEMS) {
 			validationError = new Error(`Agent panel source exceeds ${MAX_PANEL_SOURCE_ITEMS} items.`);
@@ -501,6 +626,7 @@ function readSourceSnapshot(source: AgentPanelSource): SourceCacheEntry {
 			try {
 				validated = validateItem(rawRows[index], readAt);
 			} catch (error) {
+				drainCaught(error);
 				validationError ??= sourceError(error);
 				continue;
 			}
@@ -573,6 +699,13 @@ function dismissedTaskIds(session: object): ReadonlySet<TaskId> {
 		if (taskId !== undefined) ids.add(taskId);
 	}
 	return ids;
+}
+
+export function sampleAgentPanelSources(
+	session: AgentPanelSession & object,
+	onSourceError?: (error: Error) => void,
+): void {
+	for (const source of hubOf(session)?.all() ?? []) sourceItems(source, onSourceError);
 }
 
 export function agentPanelItems(
@@ -654,7 +787,7 @@ function sourceOf(session: AgentPanelSession & object, id: string): AgentPanelSo
 }
 
 function normalizeActionResult(result: unknown): AgentPanelActionResult {
-	if (drainThenable(result) || typeof result !== "object" || result === null) {
+	if (typeof result !== "object" || result === null) {
 		return { ok: false, reason: sourceError(result).message };
 	}
 	const candidate = result as { readonly ok?: unknown; readonly reason?: unknown };
@@ -691,8 +824,9 @@ export function openAgentPanelItem(
 						},
 					};
 		bumpSourceVersion(source);
-		return safelyCall(() => open.call(source, id, wrappedOptions));
-	} catch {
+		return safelyCall(() => Reflect.apply(open, source, [id, wrappedOptions]));
+	} catch (error) {
+		drainCaught(error);
 		return false;
 	}
 }
@@ -722,9 +856,9 @@ export async function stopAgentPanelItem(
 		if (source === undefined || typeof stop !== "function") {
 			return { ok: false, reason: "This item cannot be stopped from here." };
 		}
-		const result = await stop.call(source, id);
+		const result = await settleSourceResult(Reflect.apply(stop, source, [id]));
 		bumpSourceVersion(source);
-		return normalizeActionResult(result);
+		return normalizeActionResult(result.value);
 	} catch (error) {
 		return { ok: false, reason: sourceError(error).message };
 	}
@@ -744,9 +878,9 @@ export async function answerAgentPanelItem(
 		if (source === undefined || typeof answer !== "function") {
 			return { ok: false, reason: "This item cannot be answered from here." };
 		}
-		const result = await answer.call(source, id, text);
+		const result = await settleSourceResult(Reflect.apply(answer, source, [id, text]));
 		bumpSourceVersion(source);
-		return normalizeActionResult(result);
+		return normalizeActionResult(result.value);
 	} catch (error) {
 		return { ok: false, reason: sourceError(error).message };
 	}

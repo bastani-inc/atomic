@@ -42,6 +42,8 @@ export interface AgentPanelStyle extends NavKeyStyle {
 const FINISHED: ReadonlySet<AgentPanelState> = new Set(["done", "failed", "stopped"]);
 const NON_PRINTABLE_ASCII = /[^\x20-\x7e]/;
 const NON_SINGLE_CELL = /[^\x20-\x7e\u00b7\u25b0\u25b1\u2193]/;
+const NON_SINGLE_CELL_LINE = /[^\x20-\x7e·▰▱↓∀◆‖○◼✓✗●❯]/;
+const SGR_SEQUENCE = /\x1b\[[\d;:]*m/g;
 const BARS_16 = Array.from({ length: 17 }, (_, filled) => "▰".repeat(filled) + "▱".repeat(16 - filled));
 let glyphThemeRef: ReturnType<typeof getGlobalTheme>;
 let glyphNoColor: string | undefined;
@@ -95,6 +97,8 @@ function fitToWidth(text: string, maxWidth: number): { readonly text: string; re
 
 function clampLine(line: string, maxWidth: number): string {
 	if (maxWidth <= 0) return "";
+	const plain = line.replace(SGR_SEQUENCE, "");
+	if (!NON_SINGLE_CELL_LINE.test(plain) && plain.length <= maxWidth) return line;
 	let clamped = line;
 	for (let limit = maxWidth; visibleWidth(clamped) > maxWidth && limit > 0; limit--) {
 		clamped = truncateToWidth(line, limit);
