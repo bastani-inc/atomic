@@ -359,6 +359,78 @@ test("the pausing claim of a worker that exited ends at once, and a wake-up goes
 	assert.equal(waits.pausing, false);
 });
 
+test("a worker that exits during its store check cannot consume a live worker's wake-up (#5230)", async () => {
+	const waits = new IdleClaimWaits();
+	const exited = new AbortController();
+	let finishDead!: () => void;
+	const dead = waits.claim(
+		steady(),
+		() =>
+			new Promise<undefined>((resolve) => {
+				finishDead = () => resolve(undefined);
+			}),
+		exited.signal,
+	);
+	let finishLive!: () => void;
+	let liveEnded = false;
+	const live = waits
+		.claim(
+			steady(),
+			() =>
+				new Promise<undefined>((resolve) => {
+					finishLive = () => resolve(undefined);
+				}),
+		)
+		.then(() => {
+			liveEnded = true;
+		});
+	exited.abort();
+	waits.wake("root", "root");
+	finishLive();
+	await vi.advanceTimersByTimeAsync(0);
+	assert.equal(liveEnded, true, "the only wake-up reaches the live claim while the dead check is still pending");
+	finishDead();
+	await Promise.all([dead, live]);
+	assert.equal(vi.getTimerCount(), 0);
+});
+
+test("a worker exiting between its woken reply and next claim passes the wake-up to a live worker (#5230)", async () => {
+	const waits = new IdleClaimWaits();
+	const exited = new AbortController();
+	const first = waits.claim(steady(), async () => undefined, exited.signal);
+	const liveEnded = paused(waits);
+	await vi.advanceTimersByTimeAsync(0);
+	waits.wake("root", "root");
+	await first;
+	assert.equal(liveEnded(), false, "the first worker carries the wake-up across its IPC round trip");
+	exited.abort();
+	await vi.advanceTimersByTimeAsync(0);
+	assert.equal(liveEnded(), true, "the wake-up is handed on when its worker will not claim again");
+	assert.equal(vi.getTimerCount(), 0);
+});
+
+test("a claim whose store check fails passes its wake-up to another idle worker (#5230)", async () => {
+	const waits = new IdleClaimWaits();
+	let failCheck!: (error: Error) => void;
+	const failed = waits.claim(
+		steady(),
+		() =>
+			new Promise<undefined>((_resolve, reject) => {
+				failCheck = reject;
+			}),
+	);
+	waits.wake("root", "root");
+	const liveEnded = paused(waits);
+	await vi.advanceTimersByTimeAsync(0);
+	const failure = new Error("store temporarily unavailable");
+	const rejected = assert.rejects(failed, failure);
+	failCheck(failure);
+	await rejected;
+	await vi.advanceTimersByTimeAsync(0);
+	assert.equal(liveEnded(), true, "one failed check does not strand the other worker until its idle timeout");
+	assert.equal(vi.getTimerCount(), 0);
+});
+
 test("a host without wake-ups reads its root's ready mark while a worker idles, and a changed mark wakes one (#5230)", async () => {
 	const pool = idlePool(2);
 	let notified = false;

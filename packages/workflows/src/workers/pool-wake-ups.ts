@@ -19,11 +19,7 @@ export const IDLE_CLAIM_FALLBACK_MS = 2_000;
  */
 export class IdleClaimBackoff {
 	private step = 0;
-	/**
-	 * A wake-up ended the worker's last claim, which found no work: its next claim, the worker's answer to that wake-up,
-	 * passes the wake-up on when it finds work, as a claim woken while it checked does.
-	 */
-	carriesWake = false;
+	private carriedWake?: { readonly signal: AbortSignal | undefined; readonly release: () => void };
 
 	constructor(private readonly random: () => number = Math.random) {}
 
@@ -36,6 +32,23 @@ export class IdleClaimBackoff {
 
 	reset(): void {
 		this.step = 0;
+	}
+
+	takeWake(): boolean {
+		const carried = this.carriedWake;
+		if (carried === undefined) return false;
+		carried.signal?.removeEventListener("abort", carried.release);
+		this.carriedWake = undefined;
+		return true;
+	}
+
+	carryWake(signal: AbortSignal | undefined, wake: () => void): void {
+		const release = () => {
+			if (this.takeWake()) wake();
+		};
+		this.carriedWake = { signal, release };
+		signal?.addEventListener("abort", release, { once: true });
+		if (signal?.aborted) release();
 	}
 }
 
@@ -96,20 +109,28 @@ export class IdleClaimWaits {
 	): Promise<T | undefined> {
 		const ticket = new IdleClaimTicket();
 		this.tickets.add(ticket);
-		const carried = backoff.carriesWake;
-		backoff.carriesWake = false;
+		const carried = backoff.takeWake();
+		const abort = () => {
+			this.tickets.delete(ticket);
+			if (ticket.woken || carried) this.wakeOne();
+		};
+		signal?.addEventListener("abort", abort, { once: true });
+		if (signal?.aborted) abort();
 		try {
 			const claimed = await check();
 			if (claimed !== undefined) {
 				backoff.reset();
-				this.tickets.delete(ticket);
-				if (ticket.woken || carried) this.wakeOne();
+				if (this.tickets.delete(ticket) && (ticket.woken || carried)) this.wakeOne();
 				return claimed;
 			}
 			await ticket.pause(backoff.next(), signal);
-			backoff.carriesWake = ticket.woken;
+			if (!signal?.aborted && ticket.woken) backoff.carryWake(signal, () => this.wakeOne());
 			return undefined;
+		} catch (error) {
+			if (this.tickets.delete(ticket) && (ticket.woken || carried)) this.wakeOne();
+			throw error;
 		} finally {
+			signal?.removeEventListener("abort", abort);
 			this.tickets.delete(ticket);
 		}
 	}

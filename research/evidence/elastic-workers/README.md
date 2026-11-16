@@ -186,7 +186,7 @@ Discarded: a second 32-host pair (r6, r7). Both builds' runs failed children the
 
 ### What changed
 
-- **Idle store load fell 2–4×.** PG16: 210–377 → 99–139 ms CPU per second at 16 hosts, 435 → 211 at 32. sqld: 374–630 → 183–213 at 16 hosts, 415–416 → 278–289 at 32; requests 471–869 → 184–190 per second at 16 hosts, 530–534 → 238–241 at 32. The `pool_control` reads (about 60–90 per second) and the catch-up reads are gone. Version checks while idle fell 3–4× (PG16 × 32: 632 → 187 per second).
+- **Idle store CPU fell 1.4–3.7× across comparable pairs.** PG16: 210–377 → 99–139 ms CPU per second at 16 hosts, 435 → 211 at 32. sqld: 374–630 → 183–213 at 16 hosts, 415–416 → 278–289 at 32; requests 471–869 → 184–190 per second at 16 hosts, 530–534 → 238–241 at 32. The `pool_control` reads (about 60–90 per second) and the catch-up reads are gone. Version checks while idle fell 3–4× (PG16 × 32: 632 → 187 per second).
 - **Claim latency p99 fell; p50 held.** PG16: p99 1.1–1.3 s → 235–431 ms, p50 74–119 → 74–224 ms (the 224 ms is PG16 × 32 sync, whose "before" run has no probe figures). sqld: p99 664–884 ms (one 7.3 s) → 339–802 ms, p50 261–370 → 216–334 ms. Without notifications, sqld's latency is bounded by the 250 ms ready probe rather than a 500 ms pause.
 - **Fan-out costs are within run-to-run noise.** The two 16-host "before" runs of each case differ by up to 50% in CPU per checkpoint; the "after" runs fall inside or below that range, except sqld × 32 ship (single runs: 9.77 → 12.11 ms, 105 → 71 checkpoints per second), which the discarded rerun could not confirm or refute.
 
