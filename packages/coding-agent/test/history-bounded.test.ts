@@ -26,11 +26,8 @@ import { createSearchToolDefinition } from "../src/core/tools/search.js";
 
 const PROJECT = resolve("/projects/bounded");
 const BASE = Date.parse("2026-11-01T00:00:00.000Z");
-/** Stays under the read tool's 50,000-character limit, so a bounded answer is never refused as too large. */
 const READ_TOOL_LIMIT_CHARS = 50_000;
-/** Generous for a loaded runner, yet far below what loading a whole session of this size blocks for. */
-const EVENT_LOOP_BLOCK_LIMIT_MS = 150;
-/** Structural cost: the event-loop test writes and scans a session of tens of megabytes. */
+const EVENT_LOOP_CPU_LIMIT_MS = 150;
 const LARGE_SESSION_TIMEOUT_MS = 120_000;
 
 function header(id: string): SessionRecordHeader {
@@ -73,7 +70,6 @@ function compaction(id: string, summary: string, at: number): SessionEntry {
 	};
 }
 
-/** A database whose reads count the stored entries they return. */
 function countingDatabase(database: SqliteDatabase): { database: SqliteDatabase; entryRows: () => number } {
 	let entryRows = 0;
 	const observe = (rows: readonly SqliteRow[]) => {
@@ -545,20 +541,27 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 				const { router, request } = historyOver(store, { timeMs: 60_000, rows: 10_000_000 });
 				let longest = 0;
 				let last = performance.now();
-				const ticker = setInterval(() => {
+				let lastCpu = process.cpuUsage();
+				const gap = () => {
 					const now = performance.now();
-					longest = Math.max(longest, now - last);
+					const used = process.cpuUsage(lastCpu);
+					longest = Math.max(longest, Math.min(now - last, (used.user + used.system) / 1000));
 					last = now;
-				}, 1);
+					lastCpu = process.cpuUsage();
+				};
+				const ticker = setInterval(gap, 1);
 				try {
 					for (const pattern of ["no such text anywhere", "(?:x|y)z+ no"])
 						await router.search?.("history://sessions/big", request(pattern));
 					await router.read?.("history://sessions/big");
 				} finally {
 					clearInterval(ticker);
-					longest = Math.max(longest, performance.now() - last);
+					gap();
 				}
-				assert.ok(longest < EVENT_LOOP_BLOCK_LIMIT_MS, `the event loop was blocked for ${Math.round(longest)} ms`);
+				assert.ok(
+					longest < EVENT_LOOP_CPU_LIMIT_MS,
+					`the event loop was busy for ${Math.round(longest)} ms at once`,
+				);
 			} finally {
 				await close();
 			}

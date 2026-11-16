@@ -26,7 +26,7 @@ const PART_CHARS = 4_096;
 const PART_OVERLAP = 512;
 const MAX_PARTS = 250;
 const MAX_LITERAL_CHARS = 200;
-const BATCH_CHARS = 16_384;
+const BATCH_CHARS = 32_768;
 const CANDIDATE_ROWS = 256;
 
 interface SearchDoc {
