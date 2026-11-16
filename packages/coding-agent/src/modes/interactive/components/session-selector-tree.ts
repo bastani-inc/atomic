@@ -26,6 +26,18 @@ function sessionPathKey(session: SessionInfo): string {
 	return key;
 }
 
+function removeParentCycles(parents: Map<SessionTreeNode, SessionTreeNode>): void {
+	const visitedFrom = new Map<SessionTreeNode, SessionTreeNode>();
+	for (const origin of parents.keys()) {
+		let node: SessionTreeNode | undefined = origin;
+		while (node && !visitedFrom.has(node)) {
+			visitedFrom.set(node, origin);
+			node = parents.get(node);
+		}
+		if (node && visitedFrom.get(node) === origin) parents.delete(node);
+	}
+}
+
 /**
  * Build a tree structure from sessions based on parentSessionPath.
  * Returns root nodes sorted by modified date (descending).
@@ -45,11 +57,18 @@ export function buildSessionTree(sessions: SessionInfo[]): SessionTreeNode[] {
 		return byKey.get(getSessionPathKey(parentPath));
 	};
 
-	const roots: SessionTreeNode[] = [];
+	const parents = new Map<SessionTreeNode, SessionTreeNode>();
 	for (const node of nodes) {
 		const parentPath = node.session.parentSessionPath;
 		const parent = parentPath ? parentOf(parentPath) : undefined;
-		if (parent && parent !== node) parent.children.push(node);
+		if (parent && parent !== node) parents.set(node, parent);
+	}
+	removeParentCycles(parents);
+
+	const roots: SessionTreeNode[] = [];
+	for (const node of nodes) {
+		const parent = parents.get(node);
+		if (parent) parent.children.push(node);
 		else roots.push(node);
 	}
 

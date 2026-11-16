@@ -51,6 +51,26 @@ describe("resume picker cost follows what changed, not how many sessions there a
 		assert.equal(realpathCalls(), 0);
 	});
 
+	it.each([1, 2, 3])("keeps imported sessions visible through a %i-node parent cycle (#5256)", (length) => {
+		const rows = sessions(length + 2, (index) =>
+			index < length
+				? `/tmp/resume-cost/s-${(index + 1) % length}.jsonl`
+				: index === length
+					? "/tmp/resume-cost/s-0.jsonl"
+					: undefined,
+		);
+		for (const ordered of [rows, [...rows].reverse()]) {
+			const flat = flattenSessionTree(buildSessionTree(ordered));
+			assert.equal(flat.length, rows.length);
+			assert.deepEqual(new Set(flat.map((node) => node.session.id)), new Set(rows.map((row) => row.id)));
+			const parent = flat.find((node) => node.session.id === "s-0");
+			const child = flat.find((node) => node.session.id === `s-${length}`);
+			assert.ok(parent && child);
+			assert.equal(child.depth, parent.depth + 1);
+		}
+		assert.equal(realpathCalls(), 0);
+	});
+
 	it("resolves another spelling of a parent once per session, and a rebuild only resolves the parent again", () => {
 		const rows = sessions(1000, (index) => (index === 5 ? "/tmp/resume-cost/./s-4.jsonl" : undefined));
 		buildSessionTree(rows);
