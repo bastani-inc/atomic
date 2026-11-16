@@ -482,6 +482,40 @@ test("joinHosts says a drain is over only once no host on the instance is regist
 	);
 });
 
+test("joinHosts says an instance drained for its boot timeout is drained once no host on it is live or draining (#5072)", () => {
+	const listed = ["vm-a", "vm-b", "vm-c", "vm-d"].map((id) => ({ id, state: "running" as const, since: 0 }));
+	const joined = joinHosts(listed, {
+		roots: [],
+		hosts: [
+			// The worker on vm-a died before its boot timeout.
+			{ host: "ha", providerId: "vm-a", live: false, leased: 0 },
+			// The host on vm-b read the drain, then stopped reporting in the middle of it.
+			{ host: "hb", providerId: "vm-b", live: false, leased: 0, draining: true },
+			// The host on vm-c reports.
+			{ host: "hc", providerId: "vm-c", live: true, leased: 0 },
+			// The host on vm-d was drained while idle, then stopped reporting.
+			{ host: "hd", providerId: "vm-d", live: false, leased: 0 },
+		],
+		drains: [
+			{ host: "boot-timeout:vm-a", providerId: "vm-a", agoMs: 0 },
+			{ host: "ha", providerId: "vm-a", agoMs: 0 },
+			{ host: "boot-timeout:vm-b", providerId: "vm-b", agoMs: 0 },
+			{ host: "boot-timeout:vm-c", providerId: "vm-c", agoMs: 0 },
+			{ host: "hd", providerId: "vm-d", agoMs: 0 },
+		],
+		leased: new Map(),
+	});
+	assert.deepEqual(
+		joined.map((entry) => [entry.view.id, entry.view.drained]),
+		[
+			["vm-a", true],
+			["vm-b", false],
+			["vm-c", false],
+			["vm-d", false],
+		],
+	);
+});
+
 test("an instance whose worker died after registering is removed for its boot timeout and replaced (#5072)", async () => {
 	const f = await fixture();
 	try {

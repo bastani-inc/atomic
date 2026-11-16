@@ -97,6 +97,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Fixed a pooled stage on a host that doesn't run its root keeping its Intercom inbox after its session failed to start: later messages to it were taken into the failed session instead of staying queued ([#5168](https://github.com/bastani-inc/atomic/issues/5168))
 - Fixed the workflow session picker showing no selected row when the selected run left the list and the list got shorter. The selection now moves to the nearest remaining run, so Enter acts on it without first moving the cursor.
 - Fixed `/workflow` commands whose arguments start after a tab or on a new line not being run ([#5192](https://github.com/bastani-inc/atomic/issues/5192))
+- Fixed a fleet controller keeping an instance whose worker died after registering for 5 minutes instead of removing it for its boot timeout, when the removal was cut off after it asked the instance to drain: a busy or paused controller's lease could lapse, or the controller could stop, just before its provider call. The drain now names the boot-timeout removal, so the next tick, or the controller that takes over, removes the instance once no host on it reports or is draining. A controller whose lease may have lapsed still makes no provider call ([#5072](https://github.com/bastani-inc/atomic/issues/5072))
 
 
 ## [0.9.86] - 2026-11-14
