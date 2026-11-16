@@ -125,3 +125,63 @@ test.each(["not a directory", "already open"] as const)(
 		}
 	},
 );
+
+test("closing while the checkpoint shard opens releases its ownership before the pool finishes preparing (#4768)", async () => {
+	const directory = makeTempDirectory("shipping-open-close-");
+	const stateDirectory = join(directory, "state");
+	const journal = await resolveRunJournal({ journal: { path: join(directory, "shared.sqlite") } });
+	const host = openCoordinator();
+	const opened = Promise.withResolvers<void>();
+	const release = Promise.withResolvers<void>();
+	const open = ShipShard.open.bind(ShipShard);
+	let owner: ShipShard | undefined;
+	let shardPath: string | undefined;
+	const opening = vi.spyOn(ShipShard, "open").mockImplementation(async (...args) => {
+		owner = await open(...args);
+		shardPath = args[0];
+		opened.resolve();
+		await release.promise;
+		return owner;
+	});
+	try {
+		await journal.createRun({ runId: "root", name: "root", cwd: directory, createdAt: 0, status: "running" });
+		const acquired = await journal.acquire("root", "holder");
+		assert.equal(acquired.status, "acquired");
+		if (acquired.status !== "acquired") assert.fail("root lease was not acquired");
+		const preparing = host.command({
+			kind: "prepare",
+			root: "root",
+			lease: acquired.lease,
+			options: {
+				durable: poolDurableJournal(journal),
+				shared: {
+					stateDirectory,
+					host: "host-a",
+					claimWindowMs: 60_000,
+					checkpointShipping: { intervalMs: 2_000, maxBatch: 64, maxLagMs: 30_000 },
+				},
+				workers: 1,
+				leaseMs: 60_000,
+				heartbeatMs: 15_000,
+				startupTimeoutMs: 30_000,
+				workerEntry: "fake-worker",
+			},
+		});
+		const settled = Promise.allSettled([preparing]);
+		await opened.promise;
+		await host.command({ kind: "close" });
+		release.resolve();
+		await settled;
+		assert.ok(shardPath !== undefined);
+		const replacement = await open(shardPath, "root");
+		await replacement.close();
+	} finally {
+		release.resolve();
+		opening.mockRestore();
+		await owner?.close();
+		await host.command({ kind: "close" });
+		await host.coordinator.shutdown();
+		await journal.close();
+		removeTempDirectory(directory);
+	}
+});
