@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Snapshot collection no longer holds a SQLite or libSQL database's write lock for seconds while it records the age of worktree-snapshot blobs stored before blobs had one. It stamped up to 256 of them in one transaction, whatever their size, and stamping rewrites each blob whole, so one 256 MiB blob held the lock for 3 to 6 seconds on Windows and every other write to the store waited. A transaction now stamps at most 16 MiB of blobs. A larger blob is moved into 1 MiB chunks, 16 MiB per transaction, and stays readable throughout; a collection stopped part way finishes the move next time and leaves no chunks behind. As storing a snapshot over 1 MiB already does, moving one marks the journal so that builds from before chunked blobs refuse the database
+- Snapshot collection no longer holds a SQLite or libSQL database's write lock for seconds while it records the age of worktree-snapshot blobs stored before blobs had one. It stamped up to 256 of them in one transaction, whatever their size, and stamping rewrites each blob whole, so one 256 MiB blob held the lock for 3 to 6 seconds on Windows and every other write to the store waited. A transaction now stamps at most 16 MiB of blobs. A larger blob is moved into 1 MiB chunks, 16 MiB per transaction, and stays readable throughout; a collection stopped part way finishes the move next time and leaves no chunks behind. As storing a snapshot over 1 MiB already does, moving one marks the journal so that builds from before chunked blobs refuse the database ([#5327](https://github.com/bastani-inc/atomic/pull/5327))
 
 ## [0.9.88] - 2026-11-16
 
