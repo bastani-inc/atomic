@@ -67,7 +67,7 @@ test("task picker and detail show exact navigation hints and action rows (#4521)
 	const h = await host();
 	try {
 		await h.fixture.start("Footer task");
-		assert.ok(h.lines().includes("  ↑↓ select · enter/→ open · space peek · x stop · esc/← close · ? keys"));
+		assert.ok(h.lines().includes("  ↑↓ select · enter/→ open · space peek · x stop · esc/← back · ? keys"));
 		assert.doesNotMatch(h.lines().join("\n"), /› Inspect transcript/);
 		await peek(h.inspector);
 		assert.match(h.lines().join("\n"), /› Inspect transcript/);
@@ -208,7 +208,7 @@ test("settled tasks do not offer a stop shortcut (#4521)", async () => {
 		await h.fixture.settle();
 		await flush();
 		const footer = h.lines().at(-1) ?? "";
-		assert.equal(footer, "  ↑↓ select · enter/→ open · space peek · x dismiss · esc/← close · ? keys");
+		assert.equal(footer, "  ↑↓ select · enter/→ open · space peek · x dismiss · esc/← back · ? keys");
 		await peek(h.inspector);
 		assert.equal(
 			h.lines().at(-1),
@@ -223,7 +223,7 @@ test("configured stop shortcut is shown on picker and detail instead of x (#4521
 	const h = await host(undefined, new KeybindingsManager({ "app.list.stop": "ctrl+k" }));
 	try {
 		await h.fixture.start("Configured stop");
-		assert.match(h.lines().at(-1) ?? "", /ctrl\+k stop · esc\/← close/);
+		assert.match(h.lines().at(-1) ?? "", /ctrl\+k stop · esc\/← back/);
 		await peek(h.inspector);
 		assert.match(h.lines().at(-1) ?? "", /ctrl\+k stop · pgup\/pgdn scroll/);
 		assert.doesNotMatch(h.lines().at(-1) ?? "", /x stop/);

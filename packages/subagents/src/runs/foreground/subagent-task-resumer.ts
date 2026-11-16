@@ -1,6 +1,10 @@
 import { bindTaskResumer, type ExtensionContext, type TaskId, type TaskResumer } from "@bastani/atomic";
 import type { SubagentChildRestoreDeps } from "./subagent-child-restore.js";
-import { controlSubagentChildren, subagentChildOfTask } from "./subagent-run-control.js";
+import {
+	controlSubagentChildren,
+	subagentChildOfTask,
+	subagentChildrenAwaitingResume,
+} from "./subagent-run-control.js";
 
 /**
  * Lets a finished child's chat continue it: a message sent there resumes the child in its own session, as
@@ -39,6 +43,23 @@ function resumer(deps: SubagentChildRestoreDeps, ctx: ExtensionContext): TaskRes
 			const child = subagentChildOfTask(ctx, taskId);
 			if (child === undefined) return "This subagent is no longer kept; its chat is read-only.";
 			return child.readOnlyReason;
+		},
+		stop(taskId: TaskId) {
+			const child = subagentChildOfTask(ctx, taskId);
+			if (child === undefined || child.readOnlyReason !== undefined) return undefined;
+			// `quit` stops it and keeps it resumable, as a quit workflow run is.
+			return controlSubagentChildren(deps, ctx, { action: "quit", id: child.childId }).then((result) =>
+				result.isError
+					? {
+							ok: false as const,
+							reason: result.content.map((part) => (part.type === "text" ? part.text : "")).join(" "),
+						}
+					: { ok: true as const },
+			);
+		},
+		isStopped(taskId: TaskId) {
+			const child = subagentChildOfTask(ctx, taskId);
+			return child !== undefined && subagentChildrenAwaitingResume(ctx, child.childId).length > 0;
 		},
 		async resume(taskId: TaskId, message: string) {
 			const child = subagentChildOfTask(ctx, taskId);

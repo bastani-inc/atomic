@@ -140,6 +140,11 @@ export interface StageChatViewContext {
 	mountedCustomUi: MountedStageCustomUi | null;
 	mountingRequestId: string | null;
 	promptState: PromptCardState | null;
+	/**
+	 * A choice or yes/no question the reader closed with Esc: it stays pending, the chat's own prompt shows, and Enter on
+	 * that empty prompt reopens it (#5224).
+	 */
+	dismissedPromptId: string | null;
 	promptEditor: EditorComponent | null;
 	promptEditorPromptId: string | null;
 	promptEditorSubmitFromEnter: boolean;

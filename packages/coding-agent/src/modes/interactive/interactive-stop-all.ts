@@ -10,6 +10,8 @@ export interface StopAllChordHost {
 	stopAll(): Promise<StopAllBackgroundOutcome>;
 	showStatus(message: string): void;
 	showWarning(message: string): void;
+	/** Removes the "press again" notice once the stop-all is called off. */
+	clearStatus(): void;
 }
 
 /**
@@ -32,9 +34,18 @@ export function createStopAllChord(
 			chordOpen = false;
 			return undefined;
 		}
+		// Any key other than the chord calls a waiting stop-all off, and its notice with it.
+		const cancelPending = () => {
+			if (confirm.pending() === undefined) return;
+			confirm.reset();
+			host.clearStatus();
+		};
 		if (chordOpen) {
 			chordOpen = false;
-			if (!host.keybindings.matches(data, "app.agents.stopAll")) return undefined;
+			if (!host.keybindings.matches(data, "app.agents.stopAll")) {
+				cancelPending();
+				return undefined;
+			}
 			if (!confirm.press("stop-all")) {
 				host.showStatus(
 					`Press ${chordText()} again within 3s to stop all background subagents, shells and workflow runs`,
@@ -52,6 +63,7 @@ export function createStopAllChord(
 			return { consume: true };
 		}
 		if (host.keybindings.matches(data, "app.agents.chord")) chordOpen = true;
+		else cancelPending();
 		return undefined;
 	};
 }

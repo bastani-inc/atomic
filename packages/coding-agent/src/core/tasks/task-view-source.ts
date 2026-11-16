@@ -107,6 +107,8 @@ export interface TaskViewSource {
 	 * a message resumes it. Absent where finished tasks cannot be resumed from a view.
 	 */
 	taskReadOnlyReason?(id: TaskId): string | undefined;
+	/** Whether a subagent was stopped resumably and a message would resume it. */
+	taskStopped?(id: TaskId): boolean;
 	/** What a chat of an agent task completes: its session's cwd and skill commands. Absent where unknown. */
 	taskCommands?(id: TaskId): TaskCommandCatalog | undefined | Promise<TaskCommandCatalog | undefined>;
 }
@@ -134,6 +136,7 @@ export function launchedTaskViewSource(source: TaskViewSource, launcher: TaskId)
 	const taskCommands = root.taskCommands;
 	const interruptTask = root.interruptTask;
 	const taskReadOnlyReason = root.taskReadOnlyReason;
+	const taskStopped = root.taskStopped;
 	const view: TaskViewSource = {
 		get tasks() {
 			return launched(root.tasks);
@@ -162,6 +165,7 @@ export function launchedTaskViewSource(source: TaskViewSource, launcher: TaskId)
 			: { sendTaskMessage: (id: TaskId, text: string) => sendTaskMessage.call(root, id, text) }),
 		...(taskCommands === undefined ? {} : { taskCommands: (id: TaskId) => taskCommands.call(root, id) }),
 		...(interruptTask === undefined ? {} : { interruptTask: (id: TaskId) => interruptTask.call(root, id) }),
+		...(taskStopped === undefined ? {} : { taskStopped: (id: TaskId) => taskStopped.call(root, id) }),
 		...(taskReadOnlyReason === undefined
 			? {}
 			: { taskReadOnlyReason: (id: TaskId) => taskReadOnlyReason.call(root, id) }),
@@ -208,6 +212,12 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 				: { ok: false, error: { message: result.error.message } };
 		},
 		async cancelTask(id) {
+			// A subagent stops resumably: its chat then says "Stopped · send to resume" (#5224).
+			const resumable = taskResumer(store.supervisor)?.stop?.(id);
+			if (resumable !== undefined) {
+				const stopped = await resumable;
+				return stopped.ok ? { ok: true, value: undefined } : { ok: false, error: { message: stopped.reason } };
+			}
 			const task = lease(id);
 			if (!task.ok) return { ok: false, error: { message: task.error.message } };
 			const result = await store.supervisor.cancelTask(task.value, "user");
@@ -309,6 +319,9 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 			} catch (error) {
 				return { ok: false, error: { message: error instanceof Error ? error.message : String(error) } };
 			}
+		},
+		taskStopped(id) {
+			return taskResumer(store.supervisor)?.isStopped?.(id) === true;
 		},
 		taskReadOnlyReason(id) {
 			const record = store.tasks.find((candidate) => candidate.ref.taskId === id);

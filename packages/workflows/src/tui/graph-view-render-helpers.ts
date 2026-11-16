@@ -77,8 +77,8 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 		// ← leaves too when the focused node has nothing to its left, and the hint says so only then.
 		const backKey = this._hasSiblingBefore() ? "esc" : "esc/←";
 		const withBack = (keys: ReadonlyArray<{ key: string; label: string }>) =>
-			keys.map((hint) => (hint.key === "esc" && hint.label === "main chat" ? { ...hint, key: backKey } : hint));
-		const fullHierarchyHint = `${backKey} main chat`;
+			keys.map((hint) => (hint.key === "esc" && hint.label === "back" ? { ...hint, key: backKey } : hint));
+		const fullHierarchyHint = `${backKey} back`;
 		// A focused tool node has no stage chat, but Enter now opens its read-only
 		// detail, so it keeps an activation hint of its own instead of losing the
 		// `↵` affordance entirely the way an unfocusable node does. Both lookups

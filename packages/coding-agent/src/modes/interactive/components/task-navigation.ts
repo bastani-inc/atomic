@@ -37,6 +37,8 @@ export class TaskNavigation {
 	 * key, so a second `x` never dismisses a row whose finished state the reader has not seen.
 	 */
 	finishedWhileArmed?: TaskRecord;
+	/** The press after a {@link finishedWhileArmed} task finished was swallowed; the next one dismisses it. */
+	finishedAcknowledged = false;
 
 	private keys: KeybindingsManager;
 	private actions: TaskNavigationActions;
@@ -58,6 +60,7 @@ export class TaskNavigation {
 		if (settled !== undefined) {
 			this.stopConfirm.reset();
 			this.finishedWhileArmed = settled;
+			this.finishedAcknowledged = false;
 		}
 	}
 
@@ -71,7 +74,15 @@ export class TaskNavigation {
 		if (!task) return;
 		if (action === "transcript") return this.actions.transcript(task);
 		if (task.execution.kind === "settled") {
-			if (action === "cancel") this.actions.dismiss(task);
+			if (action !== "cancel") return;
+			// The second press meant for a stop arrives after the task finished on its own: it only acknowledges the
+			// notice, so a row is never dismissed by a press aimed at a running task.
+			if (this.finishedWhileArmed?.ref.taskId === task.ref.taskId && !this.finishedAcknowledged) {
+				this.finishedAcknowledged = true;
+				return;
+			}
+			this.finishedWhileArmed = undefined;
+			this.actions.dismiss(task);
 			return;
 		}
 		if (action === "question" && task.attention.kind === "input-needed")

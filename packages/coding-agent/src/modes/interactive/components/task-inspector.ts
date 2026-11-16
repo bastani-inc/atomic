@@ -64,7 +64,7 @@ function listKeys(): NavKey[] {
 		{ action: "app.list.open", label: "open" },
 		{ action: "app.list.peek", label: "peek" },
 		{ action: "app.list.stop", label: "stop" },
-		{ keys: escAndBack(), label: "close" },
+		{ keys: escAndBack(), label: "back" },
 		{ action: "app.keys.help", label: "keys" },
 	];
 }
@@ -369,7 +369,8 @@ export class TaskInspector implements Component {
 	}
 	private route(data: string): boolean {
 		this.failureNotice = "";
-		this.navigation.finishedWhileArmed = undefined;
+		// The finished-while-armed notice stays through the stop key's presses and leaves with any other key.
+		if (!getKeybindings().matches(data, "app.list.stop")) this.navigation.finishedWhileArmed = undefined;
 		if (this.helpOpen) {
 			// The overlay is a dialog: Esc or `?` closes it, and other keys wait until it is closed.
 			if (matchesKey(data, "escape") || isNavHelpKey(getKeybindings(), data)) this.helpOpen = false;
@@ -504,7 +505,7 @@ export class TaskInspector implements Component {
 		const finished = this.navigation.finishedWhileArmed;
 		if (finished !== undefined) {
 			const key = getKeybindings().getKeys("app.list.stop")[0] ?? "x";
-			return `${taskDisplayText(finished.title || taskLabel(finished))} finished; press ${key} to dismiss`;
+			return `${taskDisplayText(finished.title || taskLabel(finished))} finished · ${key} to dismiss`;
 		}
 		const pending = this.navigation.stopConfirm.pending();
 		if (pending === undefined) return "";

@@ -13,6 +13,13 @@ export interface TaskResumer {
 		taskId: TaskId,
 		message: string,
 	): Promise<{ readonly ok: true } | { readonly ok: false; readonly reason: string }>;
+	/**
+	 * Stops a running task so that it stays resumable, as `x x` and Ctrl+X Ctrl+K do. `undefined` when this task is not
+	 * one the resumer stops, and its owner cancels it as usual.
+	 */
+	stop?(taskId: TaskId): Promise<{ readonly ok: true } | { readonly ok: false; readonly reason: string }> | undefined;
+	/** Whether the task was stopped resumably and waits for a message to resume it. */
+	isStopped?(taskId: TaskId): boolean;
 }
 
 const resumers = new WeakMap<object, TaskResumer>();

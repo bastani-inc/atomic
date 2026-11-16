@@ -76,6 +76,15 @@ InteractiveModeBase.prototype.setupKeyHandlers = async function (this: Interacti
 					: stopAllBackgroundWork(this.session),
 			showStatus: (message) => this.showStatus(message),
 			showWarning: (message) => this.showWarning(message),
+			clearStatus: () => {
+				const text = this.lastStatusText;
+				if (text === undefined) return;
+				this.chatContainer.removeChild(text);
+				if (this.lastStatusSpacer) this.chatContainer.removeChild(this.lastStatusSpacer);
+				this.lastStatusText = undefined;
+				this.lastStatusSpacer = undefined;
+				this.ui.requestRender();
+			},
 		}),
 	);
 	// Set up handlers on defaultEditor - they use this.editor for text access

@@ -302,10 +302,14 @@ export function editorRuleColor(
 }
 
 /** The key that returns from a stage chat to its graph, as its hints name it. */
-export function backToGraphKey(ctx: Pick<StageChatViewContext, "piKeybindings" | "promptState">): string {
+export function backToGraphKey(
+	ctx: Pick<StageChatViewContext, "piKeybindings" | "promptState"> &
+		Partial<Pick<StageChatViewContext, "dismissedPromptId">>,
+): string {
 	const keybindings = isKeybindingsLike(ctx.piKeybindings) ? ctx.piKeybindings : undefined;
-	// Choices and yes/no questions move with ← and have no prompt to type into, so Esc returns from them.
-	const kind = ctx.promptState?.prompt.kind;
-	if (kind !== undefined && kind !== "input" && kind !== "editor") return "esc";
-	return navKeyLabel(keybindings, APP_ACTION.navBack, "←") || "←";
+	// Choices and yes/no questions move with ←: Esc closes the question to the chat's prompt, then ← leaves.
+	const kind = ctx.promptState?.prompt.id === ctx.dismissedPromptId ? undefined : ctx.promptState?.prompt.kind;
+	const back = navKeyLabel(keybindings, APP_ACTION.navBack, "←") || "←";
+	if (kind !== undefined && kind !== "input" && kind !== "editor") return `esc, ${back}`;
+	return back;
 }

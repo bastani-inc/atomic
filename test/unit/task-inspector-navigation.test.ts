@@ -134,7 +134,7 @@ test("every /tasks hint names exactly its live keys, ← included (#5224)", asyn
 	try {
 		await withTranscript(h, "Hinted");
 		const last = () => h.text().split("\n").at(-1);
-		assert.equal(last(), "  ↑↓ select · enter/→ open · space peek · x stop · esc/← close · ? keys");
+		assert.equal(last(), "  ↑↓ select · enter/→ open · space peek · x stop · esc/← back · ? keys");
 		h.inspector.handleInput(SPACE);
 		await flush();
 		assert.equal(last(), "  ↑↓ actions · enter/→ select · x stop · pgup/pgdn scroll · esc/← back to list · ? keys");
@@ -147,7 +147,7 @@ test("every /tasks hint names exactly its live keys, ← included (#5224)", asyn
 	}
 });
 
-test("an armed stop whose task finishes is disarmed with a notice; x then dismisses it (#5224)", async () => {
+test("an armed stop whose task finishes is disarmed, the next x only acknowledges it, and a later x dismisses (#5224)", async () => {
 	const h = await harness();
 	try {
 		await h.fixture.start("Racing task");
@@ -155,7 +155,10 @@ test("an armed stop whose task finishes is disarmed with a notice; x then dismis
 		assert.match(h.text(), /Press x again within 3s to stop Racing task/);
 		await h.fixture.settle();
 		h.fixture.store.drain();
-		assert.match(h.text(), /Racing task finished; press x to dismiss/);
+		assert.match(h.text(), /Racing task finished · x to dismiss/);
+		h.inspector.handleInput("x");
+		assert.match(h.text(), /Racing task/, "the press meant as the stop's second press keeps the row");
+		assert.equal(h.fixture.store.backgroundTasks.length, 1);
 		h.inspector.handleInput("x");
 		assert.doesNotMatch(h.text(), /Racing task/, "the finished row is dismissed");
 		assert.equal(h.fixture.store.backgroundTasks.length, 1, "dismissing hides the row, not the task");
@@ -248,6 +251,47 @@ test("a finished subagent's chat stays live and a message resumes it; one stoppe
 		assert.doesNotMatch(h.text(), /ignored/, "a read-only chat takes no typing");
 		h.inspector.handleInput(LEFT);
 		assert.match(h.text(), /Background tasks/, "← still works");
+	} finally {
+		unbind();
+		await h.dispose();
+	}
+});
+
+test("x x stops a subagent resumably: its chat says 'Stopped · send to resume' and a message resumes it (#5224)", async () => {
+	const h = await harness();
+	const stops: string[] = [];
+	const resumed: string[] = [];
+	let stopped = false;
+	const unbind = bindTaskResumer(h.fixture.supervisor, {
+		readOnlyReason: () => undefined,
+		stop(id) {
+			stops.push(id);
+			stopped = true;
+			return Promise.resolve({ ok: true as const });
+		},
+		isStopped: () => stopped,
+		async resume(_id, message) {
+			resumed.push(message);
+			stopped = false;
+			return { ok: true };
+		},
+	});
+	try {
+		await withTranscript(h, "Stoppable task");
+		h.inspector.handleInput("x");
+		h.inspector.handleInput("x");
+		await flush();
+		assert.equal(stops.length, 1, "the stop goes through the resumable stop, not a cancellation");
+		assert.equal(h.fixture.runners[0]?.context.signal.aborted, false);
+		await h.fixture.settle();
+		h.inspector.handleInput(ENTER);
+		await flush();
+		assert.match(h.text(), /Stopped · send to resume/);
+		await h.type("go on");
+		h.inspector.handleInput(ENTER);
+		await flush();
+		assert.deepEqual(resumed, ["go on"], "only an explicit message resumes it");
+		assert.doesNotMatch(h.text(), /Stopped · send to resume/);
 	} finally {
 		unbind();
 		await h.dispose();

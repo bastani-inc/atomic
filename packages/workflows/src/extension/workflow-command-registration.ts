@@ -2,6 +2,7 @@ import { ForkConfigError } from "../durable/fork-errors.js";
 import { inspectRun } from "../runs/background/status.js";
 import { renderInputsSchema } from "../shared/render-inputs-schema.js";
 import { resolveRunIndicatorStatuses } from "../shared/run-indicator-status.js";
+import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import { schemaIsRequired } from "../shared/schema-introspection.js";
 import type { WorkflowExecutionPolicy } from "../shared/types.js";
 import { emitChatSurface } from "../tui/chat-surface-message.js";
@@ -81,10 +82,16 @@ export function registerWorkflowSlashCommand(
 		pi,
 		"workflows",
 		{
-			description: "List retained workflow runs or open one by id. Usage: /workflows [run-id]",
+			description: "Browse running and completed workflows. Usage: /workflows [run-id]",
 			handler: (args, ctx) => {
+				// The session's workflows view: a run's graph, or the run picker when there is more than one. Never the
+				// durable resume picker, which `/workflow resume` keeps (#5224).
 				const target = args.trim();
-				return workflowSlashHandler(target.length === 0 ? "resume" : `resume ${target}`, ctx, pi, deps);
+				const owner = deps.owner ?? captureWorkflowOwnerResources();
+				const runs = topLevelWorkflowRuns(owner.store.runs());
+				const only = target.length === 0 && runs.length === 1 ? runs[0]?.id : undefined;
+				const run = target.length > 0 ? target : only;
+				return workflowSlashHandler(run === undefined ? "attach" : `attach ${run}`, ctx, pi, deps);
 			},
 		},
 		workflowCommands,

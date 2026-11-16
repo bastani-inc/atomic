@@ -133,6 +133,7 @@ function chordHost(chordAllowed = true) {
 		},
 		showStatus: (message: string) => statuses.push(message),
 		showWarning: (message: string) => warnings.push(message),
+		clearStatus: () => statuses.push("<cleared>"),
 	};
 	return {
 		host,
@@ -183,6 +184,25 @@ test("the chord works in every view; any other key ends it, and a dialog that bi
 	dialogListener(CTRL_X);
 	assert.equal(dialogListener(CTRL_K), undefined);
 	assert.equal(dialog.stops(), 0);
+});
+
+test("any key but the stop-all key calls a waiting stop-all off and clears its notice (#5224)", async () => {
+	let now = 0;
+	const h = chordHost();
+	const listener = createStopAllChord(h.host, () => now);
+	listener(CTRL_X);
+	listener(CTRL_K);
+	assert.match(h.statuses.at(-1) ?? "", /again within 3s/);
+	listener(CTRL_X);
+	assert.equal(listener("a"), undefined, "the key still reaches the prompt");
+	assert.equal(h.statuses.at(-1), "<cleared>", "the notice is cleared");
+	now += 1000;
+	listener(CTRL_X);
+	listener(CTRL_K);
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	assert.equal(h.stops(), 0, "the next chord arms again instead of stopping");
+	listener("b");
+	assert.equal(h.statuses.at(-1), "<cleared>");
 });
 
 test("a stop-all that cannot stop everything says what is left (#5224)", () => {
@@ -285,7 +305,7 @@ test("an empty task list offers only the keys that do something (#5224)", () => 
 	try {
 		for (const width of [160, 80]) {
 			const lines = inspector.renderViewport(width, 12).map((line) => stripVTControlCharacters(line));
-			assert.equal(lines.at(-1), "  esc/← close · ? keys");
+			assert.equal(lines.at(-1), "  esc/← back · ? keys");
 		}
 	} finally {
 		inspector.dispose();

@@ -105,6 +105,9 @@ function withoutExtensionStatuses(data: ReadonlyFooterDataProvider): ReadonlyFoo
 	};
 }
 
+/** A subagent stopped resumably (`x x`, Ctrl+X Ctrl+K): a message resumes it, and never anything else. */
+export const STOPPED_NOTE = "Stopped · send to resume";
+
 /** Printable text, Enter, Backspace or Delete: keys that type into or send the prompt. */
 function isTyping(data: string): boolean {
 	if (matchesKey(data, "enter") || matchesKey(data, "backspace") || matchesKey(data, "delete")) return true;
@@ -125,7 +128,8 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 	private loadStatus = "Loading transcript…";
 	/** Loading and failure notes, then why the chat is read-only when it is. */
 	get status(): string {
-		return [this.loadStatus, this.readOnlyReason() ?? ""].filter(Boolean).join(" · ");
+		const stopped = this.source.taskStopped?.(this.taskId) === true ? STOPPED_NOTE : "";
+		return [this.loadStatus, this.readOnlyReason() ?? stopped].filter(Boolean).join(" · ");
 	}
 	set status(value: string) {
 		this.loadStatus = value;
