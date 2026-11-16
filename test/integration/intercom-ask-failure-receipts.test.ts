@@ -467,12 +467,15 @@ for (const [mode, when] of ASKER_DIES.entries()) {
 		async () => {
 			const outcomes: string[] = [];
 			const outcomeMsByIteration: number[] = [];
+			// Sees which sessions the broker still lists, so the asker comes back only once both departures were handled.
+			const observer = await connect(`observer-${mode}-5095`, { returnAddress: randomUUID() });
 			for (let iteration = 0; iteration < ASKER_DIES_ITERATIONS; iteration++) {
 				const label = `asker-dies-${mode}-${iteration}-5095`;
 				const askerAddress = { name: `asker-${label}`, returnAddress: randomUUID() };
 				const asker = await connect(askerAddress.name, askerAddress);
 				const askerId = idOf(asker.client);
 				const recipient = await connect(`recipient-${label}`, { returnAddress: randomUUID() });
+				const recipientId = idOf(recipient.client);
 				const questionId = randomUUID();
 				const asked = await asker.client.send(`recipient-${label}`, {
 					messageId: questionId,
@@ -490,7 +493,12 @@ for (const [mode, when] of ASKER_DIES.entries()) {
 				if (mode !== 0) socket?.destroy();
 				void recipient.client.disconnect().catch(() => undefined);
 				await replying;
-				// Its process restarts, as p28 does, after both departures were handled.
+				// Its process restarts, as p28 does, after both departures were handled: on a loaded host the broker can
+				// take longer than the restart to handle them, so wait for it to list neither session.
+				await vi.waitFor(async () => {
+					const listed = (await observer.client.listSessions()).map((session) => session.id);
+					assert.ok(!listed.includes(askerId) && !listed.includes(recipientId), "both departures were handled");
+				}, WAIT);
 				await sleep(ASKER_RESTART_MS);
 				const back = await connect(askerAddress.name, { ...askerAddress, preferredSessionId: askerId });
 				const backAt = Date.now();
