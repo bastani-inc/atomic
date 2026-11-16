@@ -311,6 +311,9 @@ export class ResourceList implements Component, Focusable {
 	}
 	invalidate(): void {}
 	render(width: number): string[] {
+		return this.renderList(width).map((line) => (visibleWidth(line) > width ? truncateToWidth(line, width) : line));
+	}
+	private renderList(width: number): string[] {
 		const lines = [...this.renderSearch(width), ""];
 		if (this.filteredItems.length === 0) {
 			const query = this.searchInput.getValue().trim();

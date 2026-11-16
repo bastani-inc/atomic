@@ -122,6 +122,6 @@ export class SessionSelectorHeader implements Component {
 		lines.push(
 			`  ${theme.fg("dim", fitHeaderText('re:<pattern> for a regex · "phrase" for an exact match', inner))}`,
 		);
-		return lines;
+		return lines.map((line) => (visibleWidth(line) > width ? truncateToWidth(line, width) : line));
 	}
 }

@@ -45,7 +45,7 @@ export class SearchLine implements Component, Focusable {
 			` ${border(`╭${"─".repeat(boxWidth - 2)}╮`)}`,
 			` ${border("│ ")}${content}${pad}${border(" │")}`,
 			` ${border(`╰${"─".repeat(boxWidth - 2)}╯`)}`,
-		];
+		].map((line) => (visibleWidth(line) > width ? truncateToWidth(line, width) : line));
 	}
 
 	handleInput(_keyData: string): boolean {

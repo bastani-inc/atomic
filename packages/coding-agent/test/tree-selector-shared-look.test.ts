@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { setKeybindings, stripTerminalSequences } from "@bastani/atomic-tui";
+import { setKeybindings, stripTerminalSequences, visibleWidth } from "@bastani/atomic-tui";
 import { beforeAll, beforeEach, describe, it } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import type { SessionMessageEntry, SessionTreeNode } from "../src/core/session-manager.ts";
@@ -74,6 +74,25 @@ describe("/tree on the shared picker look (#5224)", () => {
 		selector.handleInput("T");
 		footer = stripTerminalSequences(list.render(120).at(-1) ?? "").trim();
 		assert.match(footer, /↑ \d+ more · label times$/);
+	});
+
+	it("keeps search boxes inside the terminal after a narrow resize (#5256)", () => {
+		const selector = new TreeSelectorComponent(
+			chain(3),
+			"u2",
+			30,
+			() => {},
+			() => {},
+		);
+		selector.focused = true;
+		for (const query of ["", "message 1"]) {
+			for (const key of query) selector.handleInput(key);
+			for (const width of [1, 2, 8, 10, 20, 40]) {
+				for (const line of selector.render(width)) {
+					assert.ok(visibleWidth(line) <= width, `${width}: ${JSON.stringify(line)}`);
+				}
+			}
+		}
 	});
 
 	it("the search box shows what was typed", () => {

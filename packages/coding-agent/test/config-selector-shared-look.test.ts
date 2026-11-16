@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { setKeybindings, stripTerminalSequences } from "@bastani/atomic-tui";
+import { setKeybindings, stripTerminalSequences, visibleWidth } from "@bastani/atomic-tui";
 import { beforeAll, beforeEach, describe, it } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import type { SettingsManager } from "../src/core/settings-manager.ts";
@@ -64,6 +64,19 @@ describe("package and resource picker on the shared look (#5224)", () => {
 		const last = render(list).at(-1)!;
 		assert.ok(!/\(\d+\/\d+\)/.test(last), last);
 		assert.match(last.trim(), /^↓ \d+ more$/);
+	});
+
+	it("fits the search box, scrolling hints and empty states after a narrow resize (#5256)", () => {
+		const list = new ResourceList(groups(40), {} as SettingsManager, "/cwd", "/agent", 20);
+		for (let index = 0; index < 18; index++) list.handleInput("\x1b[B");
+		for (const query of ["", "missing-resource"]) {
+			for (const key of query) list.handleInput(key);
+			for (const width of [1, 2, 8, 10, 20, 40]) {
+				for (const line of list.render(width)) {
+					assert.ok(visibleWidth(line) <= width, `${width}: ${JSON.stringify(line)}`);
+				}
+			}
+		}
 	});
 
 	it("esc clears a search before it closes", () => {

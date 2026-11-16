@@ -224,6 +224,17 @@ describe("resume picker: one two-line design for sessions and workflow runs (#52
 		);
 	});
 
+	it("keeps resume headers inside the terminal after a narrow resize (#5256)", () => {
+		const selector = mount([makeSession({ id: "a" })]);
+		selector.handleInput(" ");
+		for (const width of [1, 2, 8, 10, 20, 40]) {
+			for (const line of selector.render(width)) {
+				assert.ok(visibleWidth(line) <= width, `${width}: ${JSON.stringify(line)}`);
+			}
+		}
+		selector.dispose();
+	});
+
 	for (const width of [80, 160]) {
 		it(`never draws past ${width} columns, with long titles, summaries and paths`, () => {
 			const selector = mount([
