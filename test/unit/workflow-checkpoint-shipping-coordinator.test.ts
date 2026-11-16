@@ -269,7 +269,8 @@ test("a shippable checkpoint whose local lease expired while the attempt still o
 		assert.equal(claim.error, undefined);
 		const held = claim.value as PoolWork;
 		const pinnedWallClock = Date.now();
-		await sleep(leaseMs + 200);
+		// Past the local lease and through a pass of the pool's recovery, which runs at least once a second.
+		await sleep(leaseMs + 1_200);
 		const dateSpy = vi.spyOn(Date, "now").mockReturnValue(pinnedWallClock);
 		try {
 			const c0 = await worker.request({
