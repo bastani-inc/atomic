@@ -174,7 +174,7 @@ describe("TuiAltScreen", () => {
 		const rows = [`${mark}› first prompt`, "a1", "a2", "a3", `${mark}› second prompt`, "b1", "b2", "b3", "b4", "b5"];
 		const terminal = new VirtualTerminal(30, 6);
 		const tui = new TuiAltScreen(terminal, undefined, undefined, {
-			scrollPinnedPrompt: (row) => `pinned: ${row}`,
+			scrollPinnedPrompt: { isPrompt: (row) => row.startsWith(mark), render: (row) => `pinned: ${row}` },
 		});
 		const transcript = new ScrollView(new Text(rows.join("\n"), 0, 0), { follow: "end", primary: true });
 		tui.setLayoutRoot(

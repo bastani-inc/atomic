@@ -13,7 +13,7 @@ import { stripOsc133Marks, stripOverlayActiveRowMarker } from "../../core/extens
 import { isLifecycleTimingEnabled, markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { copyToClipboard } from "../../utils/clipboard.js";
 import { openBrowser } from "../../utils/open-browser.ts";
-import { jumpToLatestLabel, NewMessageCounter, pinnedPromptLine } from "./components/jump-to-latest.ts";
+import { jumpToLatestLabel, NewMessageCounter, PINNED_PROMPT } from "./components/jump-to-latest.ts";
 import { keyDisplayText } from "./components/keybinding-hints.js";
 import { TRANSCRIPT_JUMP_TO_END_URL } from "./components/transcript-follow-indicator.ts";
 import { compositeOverlayLine } from "./overlay-line-composite.ts";
@@ -643,7 +643,7 @@ export function createFullscreenTui(options: InteractiveTuiOptions): TuiAltScree
 				const label = ` ${jumpToLatestLabel(tui.newMessages.count, keyDisplayText("tui.altScreen.bottom") ?? "")} `;
 				return theme.bg("selectedBg", theme.fg("text", label));
 			},
-			scrollPinnedPrompt: pinnedPromptLine,
+			scrollPinnedPrompt: PINNED_PROMPT,
 			openUrl: (url) =>
 				handleUrlActivation(url, {
 					onOverlayInternalUiAction: options.onOverlayInternalUiAction,

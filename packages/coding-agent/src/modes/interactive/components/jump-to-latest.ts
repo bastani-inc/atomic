@@ -1,5 +1,6 @@
 import { stripVTControlCharacters } from "node:util";
 import { theme } from "../theme/theme.js";
+import { USER_PROMPT_ZONE_START } from "./user-message.ts";
 
 /**
  * Counts what arrived in a transcript since the reader scrolled away from its live end. Observe it on every frame:
@@ -34,3 +35,11 @@ export function pinnedPromptLine(promptRow: string): string {
 	const text = stripVTControlCharacters(promptRow).trim();
 	return `${theme.fg("dim", "↑ ")}${theme.fg("muted", text)}`;
 }
+
+/** Whether a transcript row starts a user prompt's zone, as `UserMessageComponent` marks it. */
+export function isUserPromptRow(row: string): boolean {
+	return row.startsWith(USER_PROMPT_ZONE_START);
+}
+
+/** The main chat's pinned-prompt rule, for `TuiAltScreen`. */
+export const PINNED_PROMPT = { isPrompt: isUserPromptRow, render: pinnedPromptLine } as const;

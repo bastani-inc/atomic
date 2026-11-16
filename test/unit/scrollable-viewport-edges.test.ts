@@ -286,12 +286,10 @@ test("an auto scrollbar needs content that overflows, and hidden mode never pain
 });
 
 test("a scrolled-up transcript pins its turn's prompt in a row of its own, and only while scrolled up (#5224)", () => {
-	const rows = [
-		`${PROMPT_MARK}first prompt`,
-		...numbered(20, "a"),
-		`${PROMPT_MARK}second prompt`,
-		...numbered(20, "b"),
-	];
+	const USER_MARK = "\x1b]133;A;atomic=user\x07";
+	// An answer is a zone too (`PROMPT_MARK`); only a user prompt is pinned.
+	const answer = (prefix: string) => numbered(20, prefix).map((row, i) => (i === 0 ? `${PROMPT_MARK}${row}` : row));
+	const rows = [`${USER_MARK}first prompt`, ...answer("a"), `${USER_MARK}second prompt`, ...answer("b")];
 	const { view, paint } = viewport(rows, { pinnedPrompt: (row) => `PIN ${row}` }, 6);
 	// Following the end: nothing pinned.
 	assert.ok(!paint().some((line) => line.startsWith("PIN")));

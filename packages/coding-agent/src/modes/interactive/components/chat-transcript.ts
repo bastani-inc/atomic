@@ -7,10 +7,11 @@ import {
 	type ScrollViewScrollbar,
 	Spacer,
 	truncateToWidth,
+	turnPromptAbove,
 	visibleWidth,
 	type WheelScrollLines,
 } from "@bastani/atomic-tui";
-import type { NewMessageCounter } from "./jump-to-latest.ts";
+import { isUserPromptRow, type NewMessageCounter } from "./jump-to-latest.ts";
 import { WheelScrollAccelerator } from "./wheel-scroll-accelerator.ts";
 
 /**
@@ -270,8 +271,7 @@ function disposeComponent(component: Component | undefined): void {
 export const ALT_WHEEL_SCROLL_MULTIPLIER = 5;
 /** How long an `"auto"` scrollbar stays visible after the last scroll. */
 export const SCROLLBAR_HIDE_DELAY_MS = 1000;
-const OSC133_PROMPT_START = /^\x1b\]133;A(?:\x07|\x1b\\)/;
-const OSC133_ZONE_PREFIX = /^(?:\x1b\]133;[ABC](?:\x07|\x1b\\))+/;
+const OSC133_PROMPT_START = /^\x1b\]133;A(?:;[^\x07\x1b]*)?(?:\x07|\x1b\\)/;
 const SCROLLBAR_THUMB = "┃";
 const SCROLLBAR_TRACK = "│";
 const SCROLLBAR_CELL_RESET = "\x1b[0m\x1b]8;;\x07";
@@ -704,9 +704,8 @@ export class ScrollableComponentViewport implements Component {
 	private pinnedPromptRow(componentRows: ComponentRows[], width: number, start: number): string | undefined {
 		const style = this.options.pinnedPrompt;
 		if (!style) return undefined;
-		const raw = this.renderVisibleRows(componentRows, width, 0, start + 1);
-		const rows = raw.map((row) => row.replace(OSC133_ZONE_PREFIX, ""));
-		const text = turnPromptAbove(raw, rows, start);
+		const rows = this.renderVisibleRows(componentRows, width, 0, start + 1);
+		const text = turnPromptAbove(rows, start, isUserPromptRow);
 		return text === undefined ? undefined : style(withoutTerminalControl(text));
 	}
 
@@ -726,22 +725,6 @@ export class ScrollableComponentViewport implements Component {
 			return;
 		}
 	}
-}
-
-/**
- * The first line of the prompt that started the turn shown from `top` on, when that line is above `top`: the nearest
- * OSC 133 `A` mark at or above `top`, then its first non-blank row. Undefined while that line is in view.
- */
-function turnPromptAbove(raw: readonly string[], rows: readonly string[], top: number): string | undefined {
-	for (let mark = Math.min(top, raw.length - 1); mark >= 0; mark--) {
-		if (!OSC133_PROMPT_START.test(raw[mark] ?? "")) continue;
-		for (let row = mark; row < top; row++) {
-			const text = rows[row] ?? "";
-			if (text.replace(/\x1b\[[0-9;]*m/g, "").trim()) return text;
-		}
-		return undefined;
-	}
-	return undefined;
 }
 
 /** One rendered frame's row layout, as the viewport measured it. */

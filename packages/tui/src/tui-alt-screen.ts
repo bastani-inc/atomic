@@ -71,8 +71,8 @@ const FOCUS_IN = "\x1b[I";
 const FOCUS_OUT = "\x1b[O";
 const BEGIN_SYNCHRONIZED_OUTPUT = "\x1b[?2026h";
 const END_SYNCHRONIZED_OUTPUT = "\x1b[?2026l";
-const OSC133_ZONE_PREFIX = /^(?:\x1b\]133;[ABC](?:\x07|\x1b\\))+/;
-const OSC133_PROMPT_START = /^\x1b\]133;A(?:\x07|\x1b\\)/;
+const OSC133_ZONE_PREFIX = /^(?:\x1b\]133;[ABC](?:;[^\x07\x1b]*)?(?:\x07|\x1b\\))+/;
+const OSC133_PROMPT_START = /^\x1b\]133;A(?:;[^\x07\x1b]*)?(?:\x07|\x1b\\)/;
 const PAGE_SCROLL_OVERLAP = 4;
 const ALT_WHEEL_SCROLL_MULTIPLIER = 5;
 const MAX_CACHED_OFFSCREEN_KITTY_IMAGES = 16;
@@ -186,11 +186,11 @@ export interface TuiAltScreenOptions {
 	 */
 	scrollToEndIndicator?: () => string;
 	/**
-	 * Render the turn's prompt pinned to the first row of a follow-end primary scroll view while it is scrolled away
-	 * from its end and the prompt that started the turn at its top (the nearest OSC 133 `A` row above it) has scrolled
-	 * out of view. Receives that prompt row without its OSC 133 marks.
+	 * Pin the prompt that started the turn at the top of a follow-end primary scroll view over its first row while the
+	 * view is scrolled away from its end and that prompt has scrolled out of view. `isPrompt` recognizes a prompt's
+	 * first row by its raw text, OSC 133 marks included; `render` styles the prompt's first non-blank row.
 	 */
-	scrollPinnedPrompt?: (promptRow: string) => string;
+	scrollPinnedPrompt?: { isPrompt: (row: string) => boolean; render: (promptRow: string) => string };
 	/** Open an OSC 8 hyperlink activated with a primary-button click. */
 	openUrl?: (url: string) => void;
 	/** Handle an unmodified secondary-button press for clipboard paste. Currently enabled on Windows only. */
@@ -254,7 +254,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private readonly searchCurrentMatchStyle: (text: string) => string;
 	private readonly searchNavigationButtonStyle: (text: string, hovered: boolean) => string;
 	private readonly scrollToEndIndicator?: () => string;
-	private readonly scrollPinnedPrompt?: (promptRow: string) => string;
+	private readonly scrollPinnedPrompt?: TuiAltScreenOptions["scrollPinnedPrompt"];
 	private readonly openUrl?: (url: string) => void;
 	private readonly onRightClickPaste?: () => void;
 	private copyOnSelect: boolean;
@@ -1711,28 +1711,15 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		const clip = box?.clip;
 		const lines = box?.scrollContentLines;
 		if (!clip || !lines || clip.width <= 0 || clip.height < 2) return screen;
-		// The turn at the top starts at the nearest prompt mark at or above it; its first non-blank row is pinned only
-		// while that row is above the viewport.
-		let promptRow: string | undefined;
-		const top = scrollView.scrollTop;
-		for (let mark = Math.min(top, lines.length - 1); mark >= 0; mark--) {
-			if (!OSC133_PROMPT_START.test(lines[mark] ?? "")) continue;
-			for (let row = mark; row < top; row++) {
-				const text = (lines[row] ?? "").replace(OSC133_ZONE_PREFIX, "");
-				if (text.replace(/\x1b\[[0-9;]*m/g, "").trim()) {
-					promptRow = text;
-					break;
-				}
-			}
-			break;
-		}
+		const pin = this.scrollPinnedPrompt;
+		const promptRow = turnPromptAbove(lines, scrollView.scrollTop, pin.isPrompt);
 		if (promptRow === undefined) return screen;
 		const row = clip.y;
 		if (row >= screen.length || isImageLine(screen[row] ?? "")) return screen;
 		const scrollbarColumn = getScrollbarGeometry(box)?.column;
 		const rightEdge = scrollbarColumn ?? clip.x + clip.width;
 		const available = Math.max(0, rightEdge - clip.x);
-		const text = truncateToWidth(this.scrollPinnedPrompt(promptRow), available, "");
+		const text = truncateToWidth(pin.render(promptRow), available, "");
 		const textWidth = visibleWidth(text);
 		if (textWidth === 0) return screen;
 		const padded = text + " ".repeat(Math.max(0, available - textWidth));
@@ -1847,4 +1834,25 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.previousScreenHeight = height;
 		this.currentLayout = nextLayout;
 	}
+}
+
+/**
+ * The first non-blank row of the prompt that started the turn shown from `top` on, while it lies above `top`: the
+ * nearest prompt row at or above `top`, then its first row with text. Undefined when that row is in view or no prompt
+ * lies above.
+ */
+export function turnPromptAbove(
+	lines: readonly string[],
+	top: number,
+	isPrompt: (row: string) => boolean,
+): string | undefined {
+	for (let start = Math.min(top, lines.length - 1); start >= 0; start--) {
+		if (!isPrompt(lines[start] ?? "")) continue;
+		for (let row = start; row < top; row++) {
+			const text = (lines[row] ?? "").replace(OSC133_ZONE_PREFIX, "");
+			if (text.replace(/\x1b\[[0-9;]*m/g, "").trim()) return text;
+		}
+		return undefined;
+	}
+	return undefined;
 }
