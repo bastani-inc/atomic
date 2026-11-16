@@ -11,6 +11,7 @@ import {
   pidOf,
   processState,
   readFileOrUndefined,
+  removeDeadWritingMarkers,
   removeFileIfUnchanged,
   removeLeftoverParkedFiles,
   unknownHolderAdvice,
@@ -186,12 +187,16 @@ function replaceAbandonedLegacy(lockPath: string, holder: string, record: string
   const token = `${lockPath}.takeover-${pidOf(holder) ?? "unreadable"}`;
   if (!createLockFile(token, record)) {
     const tokenHolder = readFileOrUndefined(token);
-    if (tokenHolder !== undefined && isAbandoned(token, tokenHolder)) removeFileIfUnchanged(token, tokenHolder);
+    if (tokenHolder !== undefined && isAbandoned(token, tokenHolder)) {
+      removeDeadWritingMarkers(token);
+      removeFileIfUnchanged(token, tokenHolder);
+    }
     return;
   }
   try {
     if (readFileOrUndefined(token) !== record || readFileOrUndefined(lockPath) !== holder) return;
     if (!isAbandoned(lockPath, holder)) return;
+    removeDeadWritingMarkers(lockPath);
     removeFileIfUnchanged(lockPath, holder);
   } finally {
     removeFileIfUnchanged(token, record);

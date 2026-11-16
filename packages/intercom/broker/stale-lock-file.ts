@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "crypto";
 import {
   closeSync,
+  fstatSync,
   linkSync,
   openSync,
   readdirSync,
@@ -68,43 +69,93 @@ export function createLockFile(path: string, content: string): boolean {
 
 /**
  * Creates `path` holding `content` where no hard link can be made: created and then written, so a reader may see it
- * empty or partly written for a moment. Before the first byte is written, an intent marker is created beside it whose
- * name holds the file's identity and this process's (see {@link intentPrefix}), so a reader can always tell whose
- * record is being written, and whether that writer is gone, by its identity rather than by time or a scan of open
- * files (#5220). The marker is removed once the record is complete.
+ * empty or partly written for a moment (#5220). First, before the file exists, this writer creates a marker beside it
+ * whose name holds its identity and a nonce (see {@link writingMarkerPrefix}); once it has created the file, it binds
+ * the marker to that file by adding the file's identity to the marker's name. A reader judges a record that is not
+ * complete by the markers bound to it, by their writers' identity, never by time or a scan of open files; and while a
+ * marker is not yet bound, its writer may be the creator of any file there, so a live one keeps the record. The marker
+ * is removed once the record is complete, or at once when the file exists already.
  */
 function createExclusively(path: string, content: string): boolean {
+  const marker = `${writingMarkerPrefix(path)}${ownIdentity()}.${randomUUID().slice(0, 8)}`;
+  writeFileSync(marker, "");
   let fd: number;
   try {
     fd = openSync(path, "wx");
   } catch (error) {
+    removeFile(marker);
     if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
     throw error;
   }
-  const intent = `${intentPrefix(path, fileIdentity(path))}${ownIdentity()}`;
+  let bound = marker;
   try {
-    writeFileSync(intent, "");
+    const stats = fstatSync(fd, { bigint: true });
+    bound = `${marker}.${stats.ino}-${stats.birthtimeNs}`;
+    renameSync(marker, bound);
     writeSync(fd, content);
   } finally {
     closeSync(fd);
   }
   // Left behind when this process is killed meanwhile, it names a dead writer, and the next takeover removes it.
-  removeFile(intent);
+  removeFile(bound);
   return true;
 }
 
-/** The identity of the file at `path`, which no other file shares while it exists: its inode, or file index on Windows. */
+/**
+ * The identity of the file at `path`: its inode (file index on Windows) and when it was created, so a file given the
+ * inode of a removed one is still another file.
+ */
 function fileIdentity(path: string): string | undefined {
   try {
-    return statSync(path, { bigint: true }).ino.toString();
+    const stats = statSync(path, { bigint: true });
+    return `${stats.ino}-${stats.birthtimeNs}`;
   } catch {
     return undefined;
   }
 }
 
-/** The prefix of the intent markers of the file at `path` with identity `file`: `<path>.writing.<file>.`. */
-function intentPrefix(path: string, file: string | undefined): string {
-  return `${path}.writing.${file ?? "unknown"}.`;
+/**
+ * The prefix of the markers of writers of the record at `path`: `<path>.writing.`, then `<pid>.<start>.<host>.<nonce>`,
+ * and, once the writer has created the file, `.<file identity>`.
+ */
+function writingMarkerPrefix(path: string): string {
+  return `${path}.writing.`;
+}
+
+/** A writing marker's name after {@link writingMarkerPrefix}: its writer's pid, start and host, and its file if bound. */
+const WRITING_MARKER = /^(\d+)\.([^.]+)\.([^.]+)\.[0-9a-f]{8}(?:\.(\d+-\d+))?$/;
+
+interface WritingMarker {
+  readonly path: string;
+  readonly state: HolderState;
+  /** The identity of the file its writer created, once bound. */
+  readonly file: string | undefined;
+}
+
+/** The writing markers of the record at `path`. */
+function writingMarkers(path: string): WritingMarker[] {
+  const prefix = basename(writingMarkerPrefix(path));
+  const found: WritingMarker[] = [];
+  for (const name of readdirSync(dirname(path))) {
+    if (!name.startsWith(prefix)) continue;
+    const parsed = WRITING_MARKER.exec(name.slice(prefix.length));
+    const state = parsed === null ? "unknown" : processState(Number(parsed[1]), parsed[2] ?? "", parsed[3] ?? "", true);
+    found.push({ path: join(dirname(path), name), state, file: parsed?.[4] });
+  }
+  return found;
+}
+
+/**
+ * Removes the markers of writers of the record at `path` that are gone, which only a process holding the takeover of
+ * that record does, before it removes the record: a marker left behind could otherwise be taken for the writer of a
+ * record made later at the same path.
+ */
+export function removeDeadWritingMarkers(path: string): void {
+  const file = fileIdentity(path);
+  for (const marker of writingMarkers(path)) {
+    // Bound to the record being taken over, or never bound: its writer is gone, and it holds nothing.
+    if (marker.state === "abandoned" && (marker.file === undefined || marker.file === file)) removeFile(marker.path);
+  }
 }
 
 let ownHost: string | undefined;
@@ -256,23 +307,20 @@ export function isAbandoned(path: string, written: string | undefined): boolean 
 }
 
 /**
- * How the lock at `path`, read as `written` and recording no holder, is held: by the writer its intent marker names.
- * Without a marker for this very file, it was written by an earlier version, which leaves none, or by another user, and
- * its writer cannot be checked.
+ * How the lock at `path`, read as `written` and recording no holder, empty or part-written, is held (#5220). A writer of
+ * this version creates its marker before the file and binds it to the file once created. The record is held while a
+ * marker bound to it, or a marker not yet bound, names a writer that runs; it was left by a writer that is gone when
+ * every marker bound to it names one that is gone. Otherwise its writer cannot be checked: an earlier version, which
+ * leaves no marker, made it, or this version's writer was killed between creating the file and binding its marker.
  */
 export function writerState(path: string, written: string | undefined): HolderState {
   const file = fileIdentity(path);
   if (written === undefined || file === undefined) return "held";
-  const prefix = basename(intentPrefix(path, file));
-  const states: HolderState[] = [];
-  for (const name of readdirSync(dirname(path))) {
-    if (!name.startsWith(prefix)) continue;
-    const [pid, start, host] = name.slice(prefix.length).split(".");
-    const parsed = Number.parseInt(pid ?? "", 10);
-    states.push(Number.isFinite(parsed) ? processState(parsed, start ?? "", host ?? "", true) : "unknown");
-  }
-  if (states.includes("held")) return "held";
-  if (states.length === 0 || states.includes("unknown")) return "unknown";
+  const markers = writingMarkers(path).filter((marker) => marker.file === undefined || marker.file === file);
+  if (markers.some((marker) => marker.state === "held")) return "held";
+  if (markers.some((marker) => marker.state === "unknown")) return "unknown";
+  const bound = markers.filter((marker) => marker.file === file);
+  if (bound.length === 0) return "unknown";
   // Its writer is gone: abandoned while it is still exactly as read.
   return readFileOrUndefined(path) === written && fileIdentity(path) === file ? "abandoned" : "held";
 }
@@ -293,9 +341,22 @@ export function setUnknownHolderWaitForTesting(ms: number | undefined): void {
 
 const unknownSince = new Map<string, number>();
 
-/** What to do about a lock whose holder cannot be checked: remove it, or give it to this user. */
+/** What to do about a lock whose holder cannot be checked, naming why it cannot be: remove it, or give it to this user. */
 export function unknownHolderAdvice(path: string): string {
-  return `The lock ${path} names a holder this process cannot check: a process on another host or in another container sharing this agent directory, a process of another user, or a version that left it part-written (#5220). If no such process uses the lock, remove ${path}, or give it to your user (for example \`sudo chown $USER ${path}\`).`;
+  const markers = writingMarkers(path);
+  const why =
+    markers.some((marker) => marker.state === "unknown") || recordsForeignHolder(path)
+      ? "it names a process on another host or in another container sharing this agent directory, which cannot be checked from here"
+      : markers.some((marker) => marker.file === undefined && marker.state === "abandoned")
+        ? "it was left empty by a process killed just after creating it, before it recorded that the file was its own"
+        : "it was left empty or part-written by an earlier version of Atomic, which does not record its writer";
+  return `The lock ${path} is held by a process this one cannot check: ${why} (#5220). If no such process is using it, remove ${path}, or, if another user (as \`sudo atomic\`) left it, give it to your user (for example \`sudo chown $USER ${path}\`).`;
+}
+
+/** Whether the record at `path` names a holder on another host or in another pid namespace. */
+function recordsForeignHolder(path: string): boolean {
+  const host = (completeLines(readFileOrUndefined(path)) ?? "").split("\n")[2] ?? "";
+  return host !== "" && host !== hostIdentity();
 }
 
 /**
@@ -315,21 +376,14 @@ export function unknownHolderWaitedOut(path: string, written: string | undefined
 /**
  * Removes the files a crashed process parked beside `lockPath` while it removed that lock or its takeover token, or
  * left while making one: those whose content names a dead holder, and those that name none once parked longer than
- * {@link PARKED_FILE_MAX_AGE_MS}, and the intent markers of writers that are gone. A file that names a live holder is
- * left, however old (#5220).
+ * {@link PARKED_FILE_MAX_AGE_MS}. A file that names a live holder is left, however old (#5220).
  */
 export function removeLeftoverParkedFiles(lockPath: string): void {
   const directory = dirname(lockPath);
   const prefix = `${basename(lockPath)}.`;
   for (const name of readdirSync(directory)) {
-    const intent = /^(.*)\.writing\.([^.]+)\.(\d+)\.([^.]+)\.([^.]+)$/.exec(name);
-    if (name.startsWith(prefix) && intent !== null) {
-      // An intent marker of a writer that is gone is only clutter once its file is gone or replaced; while that file
-      // is in place, the marker is what shows it abandoned.
-      const gone = processState(Number(intent[3]), intent[4] ?? "", intent[5] ?? "", true) === "abandoned";
-      if (gone && fileIdentity(join(directory, intent[1] ?? "")) !== intent[2]) removeFile(join(directory, name));
-      continue;
-    }
+    // Writing markers are removed only by the takeover of their record (removeDeadWritingMarkers), never here.
+    if (name.startsWith(`${prefix}writing.`) || name.includes(".writing.")) continue;
     const parkedAt = name.startsWith(prefix) ? PARKED_SUFFIX.exec(name)?.[1] : undefined;
     if (parkedAt === undefined) continue;
     const path = join(directory, name);
@@ -367,6 +421,9 @@ export function takeOverStaleLock(
     removeLeftoverParkedFiles(lockPath);
     const current = readFileOrUndefined(lockPath);
     if (current !== inspected || !isStale(current) || !takeover.owned()) return;
+    // The dead writers' markers go first: killed in between, this leaves a record without a marker, which is refused
+    // rather than taken, never a marker that a later record could be taken for.
+    removeDeadWritingMarkers(lockPath);
     removeFileIfUnchanged(lockPath, inspected);
   } finally {
     takeover.release();

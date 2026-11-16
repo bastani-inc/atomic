@@ -806,8 +806,12 @@ export function acquireSpawnLock(lockPath: string = getBrokerSpawnLockPath()): s
   const maxRetries = 5;
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     const owner = `${process.pid}\n${Date.now()}\n`;
-    // Made complete, so a lock being taken is never seen empty and replaced as stale under its maker (#5220).
-    if (createLockFile(lockPath, owner)) return owner;
+    // Made complete, so a lock being taken is never seen empty and replaced as stale under its maker (#5220). Read back
+    // before it is relied on: a lock this spawner made and that was replaced meanwhile is not its own.
+    if (createLockFile(lockPath, owner)) {
+      if (ownsSpawnLock(owner, lockPath)) return owner;
+      continue;
+    }
     const inspected = readFileOrUndefined(lockPath);
     if (!isSpawnLockReplaceable(inspected, lockPath)) return undefined;
     replaceStaleSpawnLock(inspected, lockPath);
