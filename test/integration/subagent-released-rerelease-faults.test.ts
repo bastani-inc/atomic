@@ -28,10 +28,11 @@ const SOURCE_ALIASES = JSON.stringify({
 const REAL_BROKERS_HOOK_TIMEOUT_MS = TWO_BROKER_HARNESS_START_TIMEOUT_MS;
 /**
  * Structural: the first process to load the owner's sources compiles hundreds of subagent, Intercom and session files
- * through jiti into the run's compile cache. Six loaded runs on one Windows host took longer than two minutes for it
- * (#5252), so it is done once before the scenario, while the brokers start, and every owner loads from that cache.
+ * through jiti into the run's compile cache. It takes well under a minute on an idle machine; with six runs of the
+ * load-sensitive suites sharing one Windows host it took longer than five minutes (#5252). It is done once before the
+ * scenario, while the brokers start, and every owner loads from that cache.
  */
-const OWNER_SOURCES_COMPILE_ALLOWANCE_MS = 300_000;
+const OWNER_SOURCES_COMPILE_ALLOWANCE_MS = 600_000;
 /** The brokers and the owner's sources are made ready together. */
 const SUITE_SETUP_TIMEOUT_MS = Math.max(REAL_BROKERS_HOOK_TIMEOUT_MS, OWNER_SOURCES_COMPILE_ALLOWANCE_MS) + 30_000;
 /**
