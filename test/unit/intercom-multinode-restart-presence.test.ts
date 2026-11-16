@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { afterEach, test } from "vitest";
 import {
 	brokerHostIdentity,
+	HOST_COMMAND_ATTEMPTS,
 	type HostIdentitySources,
 	isProcessAlive,
 	osMachineId,
@@ -250,6 +251,8 @@ interface FakeHost {
 	readonly files?: Record<string, string>;
 	readonly links?: Record<string, string>;
 	readonly commands?: Record<string, string>;
+	/** How many times each command times out before it answers, as PowerShell can on a loaded host. */
+	readonly timeouts?: Record<string, number>;
 	readonly unwritable?: boolean;
 }
 
@@ -259,6 +262,7 @@ function fakeSources(
 ): HostIdentitySources & { readonly files: Map<string, string>; readonly runs: string[] } {
 	const files = new Map(Object.entries(host.files ?? {}));
 	const runs: string[] = [];
+	const timedOut = new Map<string, number>();
 	const missing = (what: string): never => {
 		throw Object.assign(new Error(`${what} missing`), { code: "ENOENT" });
 	};
@@ -270,7 +274,12 @@ function fakeSources(
 		readLink: (path) => host.links?.[path] ?? missing(path),
 		run: (command, args) => {
 			runs.push(command);
-			return host.commands?.[[command, ...args].join(" ")] ?? missing(command);
+			const line = [command, ...args].join(" ");
+			if ((timedOut.get(line) ?? 0) < (host.timeouts?.[line] ?? 0)) {
+				timedOut.set(line, (timedOut.get(line) ?? 0) + 1);
+				throw Object.assign(new Error(`${command} timed out`), { code: "ETIMEDOUT" });
+			}
+			return host.commands?.[line] ?? missing(command);
 		},
 		writeNewPrivateFile: (path, content) => {
 			if (host.unwritable === true) missing(path);
@@ -335,6 +344,23 @@ test("off Linux a host is the OS machine id with its boot (#5038)", () => {
 		"tight",
 	);
 	assert.deepEqual(fakeSources({ platform: "darwin" }).runs, []);
+});
+
+test("a host command that times out once, as PowerShell can on a loaded host, is run again, so every broker of the host reads one identity (#5252)", () => {
+	const commands = {
+		[WINDOWS_REG]: "MachineGuid    REG_SZ    guid-w",
+		[WINDOWS_BOOT]: BOOTED,
+	};
+	const steady = brokerHostIdentity(fakeSources({ platform: "win32", commands }));
+	assert.equal(steady, `guid-w/boot-${BOOTED}`);
+	for (const slow of [WINDOWS_BOOT, WINDOWS_REG]) {
+		const loaded = fakeSources({ platform: "win32", commands, timeouts: { [slow]: HOST_COMMAND_ATTEMPTS - 1 } });
+		assert.equal(brokerHostIdentity(loaded), steady, slow);
+	}
+	// One that never answers still leaves the host without that fact, after its attempts.
+	const hung = fakeSources({ platform: "win32", commands, timeouts: { [WINDOWS_BOOT]: HOST_COMMAND_ATTEMPTS } });
+	assert.equal(brokerHostIdentity(hung), undefined);
+	assert.equal(hung.runs.filter((command) => command === WINDOWS_BOOT_TIME_COMMAND[0]).length, HOST_COMMAND_ATTEMPTS);
 });
 
 test("without a per-boot random value a host has no identity, so nothing is retired early (#5038)", () => {

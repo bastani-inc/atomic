@@ -9,6 +9,12 @@ import { getIntercomDirPath } from "./paths.js";
  * a few seconds to start; the broker reads this once, as it starts.
  */
 const HOST_COMMAND_TIMEOUT_MS = 10_000;
+/**
+ * #5252: how many times a host command that failed to answer is run before the host is left without that fact. A
+ * loaded host can keep PowerShell from answering once; a broker that misses its host's identity has another instance key
+ * than the instance before it, and cannot supersede it after that instance was killed.
+ */
+export const HOST_COMMAND_ATTEMPTS = 3;
 /** Windows' boot time, to the microsecond, as WMI records it. */
 export const WINDOWS_BOOT_TIME_COMMAND = [
 	"powershell",
@@ -25,6 +31,22 @@ const orUndefined = (read: () => string | undefined): string | undefined => {
 		return undefined;
 	}
 };
+
+/**
+ * A host command's output, run up to `HOST_COMMAND_ATTEMPTS` times while it fails to answer; undefined once it never
+ * did. A command that is not installed is not run again.
+ */
+function hostCommandOutput(sources: HostIdentitySources, command: string, args: readonly string[]): string | undefined {
+	for (let attempt = 1; attempt <= HOST_COMMAND_ATTEMPTS; attempt++) {
+		try {
+			const output = sources.run(command, args).trim();
+			if (output !== "") return output;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+		}
+	}
+	return undefined;
+}
 
 /** What the identity sources read from the host; tests pass fakes. */
 export interface HostIdentitySources {
@@ -60,13 +82,16 @@ export const systemSources = (configDir: string = getIntercomDirPath()): HostIde
 /** The OS's own id of this machine: the registry's MachineGuid on Windows, the IOPlatformUUID on macOS. */
 export function osMachineId(sources: HostIdentitySources): string | undefined {
 	if (sources.platform === "win32") {
-		const output = orUndefined(() =>
-			sources.run("reg", ["query", "HKLM\\SOFTWARE\\Microsoft\\Cryptography", "/v", "MachineGuid"]),
-		);
+		const output = hostCommandOutput(sources, "reg", [
+			"query",
+			"HKLM\\SOFTWARE\\Microsoft\\Cryptography",
+			"/v",
+			"MachineGuid",
+		]);
 		return output?.match(/MachineGuid\s+REG_SZ\s+(\S+)/)?.[1];
 	}
 	if (sources.platform === "darwin") {
-		const output = orUndefined(() => sources.run("ioreg", ["-rd1", "-c", "IOPlatformExpertDevice"]));
+		const output = hostCommandOutput(sources, "ioreg", ["-rd1", "-c", "IOPlatformExpertDevice"]);
 		return output?.match(/"IOPlatformUUID"\s*=\s*"([^"]+)"/)?.[1];
 	}
 	return undefined;
@@ -90,12 +115,12 @@ export function persistedMachineId(sources: HostIdentitySources): string | undef
  */
 export function bootSession(sources: HostIdentitySources): string | undefined {
 	if (sources.platform === "darwin") {
-		const session = orUndefined(() => sources.run("sysctl", ["-n", "kern.bootsessionuuid"]));
+		const session = hostCommandOutput(sources, "sysctl", ["-n", "kern.bootsessionuuid"]);
 		return session === undefined ? undefined : `session-${session}`;
 	}
 	if (sources.platform === "win32") {
 		const [command, ...args] = WINDOWS_BOOT_TIME_COMMAND;
-		const bootTime = orUndefined(() => sources.run(command, args));
+		const bootTime = hostCommandOutput(sources, command, args);
 		return bootTime === undefined ? undefined : `boot-${bootTime}`;
 	}
 	return undefined;
