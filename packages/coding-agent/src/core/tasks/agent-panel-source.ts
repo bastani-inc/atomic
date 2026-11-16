@@ -95,11 +95,16 @@ export class AgentPanelSourceHub {
 			safelyCall(unsubscribe);
 		};
 		try {
-			unsubscribe = source.subscribe(() => {
+			const result: unknown = source.subscribe(() => {
 				if (this.sources.get(source) !== cleanup) return;
 				bumpSourceVersion(source);
 				this.notify();
 			});
+			if (drainThenable(result) || typeof result !== "function") {
+				if (this.regIds.get(source) === regId) this.regIds.delete(source);
+				return { dispose() {} };
+			}
+			unsubscribe = result as () => void;
 		} catch {
 			if (this.regIds.get(source) === regId) this.regIds.delete(source);
 			return { dispose() {} };
@@ -162,7 +167,9 @@ export interface AgentPanelSession {
 
 function hubOf(session: AgentPanelSession): AgentPanelSourceHub | undefined {
 	try {
-		return session.extensionRunner?.getAgentPanelSourceHub?.();
+		const hub: unknown = session.extensionRunner?.getAgentPanelSourceHub?.();
+		if (drainThenable(hub)) return undefined;
+		return hub as AgentPanelSourceHub | undefined;
 	} catch {
 		return undefined;
 	}
@@ -251,10 +258,22 @@ export function sourceError(error: unknown): Error {
 	}
 }
 
-function safelyCall(callback: () => void | PromiseLike<void>): boolean {
+function drainThenable(value: unknown): boolean {
+	if ((typeof value !== "object" && typeof value !== "function") || value === null) return false;
+	try {
+		const then = (value as { readonly then?: unknown }).then;
+		if (typeof then !== "function") return false;
+		void Promise.resolve(value).catch(() => {});
+		return true;
+	} catch {
+		return true;
+	}
+}
+
+function safelyCall(callback: () => unknown): boolean {
 	try {
 		const result = callback();
-		if (result !== undefined) void Promise.resolve(result).catch(() => {});
+		drainThenable(result);
 		return true;
 	} catch {
 		return false;
@@ -288,7 +307,7 @@ function isNonNegativeInteger(value: unknown): value is number {
 }
 
 function validateItem(raw: unknown): AgentPanelItem | undefined {
-	if (typeof raw !== "object" || raw === null) return undefined;
+	if (drainThenable(raw) || typeof raw !== "object" || raw === null) return undefined;
 	const item = raw as Record<string, unknown>;
 	const id = item.id;
 	const kind = item.kind;
@@ -304,14 +323,20 @@ function validateItem(raw: unknown): AgentPanelItem | undefined {
 	const queued = item.queued;
 	const endedAt = item.endedAt;
 
+	for (const field of [id, kind, state, name, task, elapsedMs, tokens, question, reason, queued, endedAt]) {
+		drainThenable(field);
+	}
+
 	let progress: { readonly done: number; readonly total: number } | undefined;
 	let progressValid = true;
 	if (progressRaw !== undefined) {
-		if (typeof progressRaw !== "object" || progressRaw === null) {
+		if (drainThenable(progressRaw) || typeof progressRaw !== "object" || progressRaw === null) {
 			progressValid = false;
 		} else {
 			const done = (progressRaw as { readonly done?: unknown }).done;
 			const total = (progressRaw as { readonly total?: unknown }).total;
+			drainThenable(done);
+			drainThenable(total);
 			if (!isFiniteNonNegative(done) || !isFiniteNonNegative(total)) {
 				progressValid = false;
 			} else {
@@ -323,16 +348,17 @@ function validateItem(raw: unknown): AgentPanelItem | undefined {
 	let choices: string[] | undefined;
 	let choicesValid = true;
 	if (choicesRaw !== undefined) {
-		if (typeof choicesRaw !== "object" || choicesRaw === null) {
+		if (drainThenable(choicesRaw) || typeof choicesRaw !== "object" || choicesRaw === null) {
 			choicesValid = false;
 		} else {
 			choices = [];
 			for (const choice of choicesRaw as Iterable<unknown>) {
 				if (typeof choice !== "string") {
+					drainThenable(choice);
 					choicesValid = false;
-					break;
+				} else if (choicesValid) {
+					choices.push(choice);
 				}
-				choices.push(choice);
 			}
 		}
 	}
@@ -379,14 +405,14 @@ function readSourceCache(source: AgentPanelSource): SourceCacheEntry {
 	const cached = sourceCache.get(source);
 	if (cached !== undefined && cached.version === version) return cached;
 	try {
-		const rawItems = source.items();
-		if (typeof rawItems !== "object" || rawItems === null) {
+		const rawItems: unknown = source.items();
+		if (drainThenable(rawItems) || typeof rawItems !== "object" || rawItems === null) {
 			throw new TypeError("Agent panel source items must be an iterable object.");
 		}
 		const items: AgentPanelItem[] = [];
 		const seenIds = new Set<string>(["main"]);
 		let validationError: Error | undefined;
-		for (const raw of rawItems) {
+		for (const raw of rawItems as Iterable<unknown>) {
 			const validated = validateItem(raw);
 			if (validated === undefined) {
 				validationError ??= new Error("Invalid agent panel item.");
@@ -519,12 +545,15 @@ function sourceOf(session: AgentPanelSession & object, id: string): AgentPanelSo
 }
 
 function normalizeActionResult(result: unknown): AgentPanelActionResult {
-	if (typeof result !== "object" || result === null) {
+	if (drainThenable(result) || typeof result !== "object" || result === null) {
 		return { ok: false, reason: sourceError(result).message };
 	}
 	const candidate = result as { readonly ok?: unknown; readonly reason?: unknown };
-	if (candidate.ok === true) return { ok: true };
+	const ok = candidate.ok;
+	drainThenable(ok);
+	if (ok === true) return { ok: true };
 	const reason = candidate.reason;
+	drainThenable(reason);
 	return {
 		ok: false,
 		reason: typeof reason === "string" ? reason : sourceError(reason).message,

@@ -248,11 +248,12 @@ export async function showAgentPanel(
 	};
 	const store = getOwnerTaskStore(session);
 	const style = themedAgentPanelStyle();
-	let currentRows = agentPanelRows(session);
-	if (currentRows.length === 0) return;
+	let currentRows: AgentPanelRow[] = [];
 	let next: (() => Promise<void>) | undefined;
 	state.open = true;
 	try {
+		currentRows = agentPanelRows(session);
+		if (currentRows.length === 0) return;
 		state.setVisible?.(false);
 		await ui.custom<void>(
 			(tui, _theme, keybindings, done) => {
@@ -402,11 +403,12 @@ export async function showAgentPanel(
 			{ overlay: false, purpose: "navigation", handlesCtrlC: true, deferInlineCustomUiFocus: true },
 		);
 	} finally {
-		state.open = false;
 		try {
 			state.setVisible?.(true);
 		} catch (error) {
 			report(error);
+		} finally {
+			state.open = false;
 		}
 	}
 	await next?.();

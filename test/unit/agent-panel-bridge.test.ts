@@ -90,6 +90,27 @@ function createPanelUi(
 	return ui;
 }
 
+test("a source that reopens the panel while listing rows cannot mount a second panel (#5239)", async () => {
+	const hub = new AgentPanelSourceHub();
+	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
+	const ui = createPanelUi({ onMount: (_component, done) => done() });
+	let nested: Promise<void> | undefined;
+	let reentered = false;
+	hub.register({
+		items: () => {
+			if (!reentered) {
+				reentered = true;
+				nested = showAgentPanel(session, ui);
+			}
+			return [healthyRow];
+		},
+		subscribe: () => () => {},
+	});
+	await showAgentPanel(session, ui);
+	await nested;
+	assert.equal(ui.mounts, 1);
+});
+
 test("showAgentPanel stop chain normalizes non-string reasons, strips terminal controls, and catches rejections (#5239)", async () => {
 	const reasons: unknown[] = [
 		Symbol("stop-symbol"),

@@ -655,3 +655,69 @@ test("source items are validated and copied once per source change version and i
 	assert.equal(itemCalls, 2);
 	assert.equal(choiceReads, 2);
 });
+
+test("async items and subscribe callbacks that return rejected promises are drained and never cause unhandled rejections (#5239)", async () => {
+	const { hub, session } = panelFixture();
+	const unhandled: unknown[] = [];
+	const onUnhandled = (reason: unknown) => unhandled.push(reason);
+	process.on("unhandledRejection", onUnhandled);
+	try {
+		hub.register({
+			items: () => [{ ...healthyItem, id: "run:async-sub" }],
+			subscribe: (async () => {
+				throw new Error("async subscribe failed");
+			}) as unknown as () => () => void,
+		});
+		hub.register({
+			items: (async () => {
+				throw new Error("async items failed");
+			}) as unknown as () => readonly AgentPanelItem[],
+			subscribe: () => () => {},
+		});
+		hub.register({
+			items: () => [
+				Promise.reject(new Error("async item element")) as unknown as AgentPanelItem,
+				{
+					...healthyItem,
+					id: "run:async-fields",
+					progress: Promise.reject(new Error("async progress")) as unknown as {
+						done: number;
+						total: number;
+					},
+					choices: Array.from(
+						{ length: 70 },
+						() => Promise.reject(new Error("async choice")) as unknown as string,
+					),
+				},
+			],
+			subscribe: () => () => {},
+		});
+		const reports: string[] = [];
+		const items = agentPanelItems(session, (error) => reports.push(error.message));
+		hub.register({
+			items: () => [{ ...healthyItem, id: "run:async-reason" }],
+			subscribe: () => () => {},
+			stop: async () => ({
+				ok: false as const,
+				reason: Promise.reject(new Error("async stop reason")) as unknown as string,
+			}),
+			answer: async () => ({
+				ok: false as const,
+				reason: Promise.reject(new Error("async answer reason")) as unknown as string,
+			}),
+		});
+		const stopped = await stopAgentPanelItem(session, "run:async-reason");
+		const answered = await answerAgentPanelItem(session, "run:async-reason", "ok");
+		assert.equal(stopped.ok, false);
+		assert.equal(answered.ok, false);
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.deepEqual(
+			items.map((item) => item.id),
+			[healthyItem.id],
+		);
+		assert.equal(reports.length, 2);
+		assert.deepEqual(unhandled, []);
+	} finally {
+		process.off("unhandledRejection", onUnhandled);
+	}
+});
