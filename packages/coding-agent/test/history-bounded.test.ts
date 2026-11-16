@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { PerformanceObserver } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, it } from "vitest";
 import type { WorkflowRunDetail } from "../src/core/extensions/workflow-run-control.js";
@@ -42,32 +43,65 @@ const EVENT_LOOP_CPU_LIMIT_MS = 120;
 const LARGE_SESSION_TIMEOUT_MS = 120_000;
 const INDEX_BUILD_ENTRIES = 6_000;
 const INDEX_BUILD_BLOCK_LIMIT_MS = 10;
-const INDEX_BUILD_STALLS_ALLOWED = 3;
+const STALLS_ALLOWED = 3;
+const STALL_CEILING_MS = 100;
+const PACED_SESSIONS = 40;
+const SLOW_INDEX_QUERY_MS = 4;
+const PACED_TURN_LIMIT_MS = 3 * SLOW_INDEX_QUERY_MS;
 
 function cpuMs(): number {
 	const used = typeof process.threadCpuUsage === "function" ? process.threadCpuUsage() : process.cpuUsage();
 	return (used.user + used.system) / 1000;
 }
 
-function watchEventLoopTurns(): () => number[] {
-	const turns: number[] = [];
+interface Interval {
+	readonly start: number;
+	readonly end: number;
+}
+
+function overlapMs(turn: Interval, pauses: readonly Interval[]): number {
+	return pauses.reduce(
+		(sum, pause) => sum + Math.max(0, Math.min(turn.end, pause.end) - Math.max(turn.start, pause.start)),
+		0,
+	);
+}
+
+function watchEventLoopTurns(): () => Promise<number[]> {
+	const turns: (Interval & { readonly cpu: number })[] = [];
+	const collections: Interval[] = [];
+	const collected = (entries: readonly PerformanceEntry[]) => {
+		for (const entry of entries) collections.push({ start: entry.startTime, end: entry.startTime + entry.duration });
+	};
+	const observer = new PerformanceObserver((list) => collected(list.getEntries()));
+	observer.observe({ entryTypes: ["gc"] });
 	let watching = true;
 	let last = performance.now();
 	let lastCpu = cpuMs();
 	const turn = () => {
 		const now = performance.now();
 		const cpu = cpuMs();
-		turns.push(Math.min(now - last, cpu - lastCpu));
+		turns.push({ start: last, end: now, cpu: cpu - lastCpu });
 		last = now;
 		lastCpu = cpu;
 		if (watching) setImmediate(turn);
 	};
 	setImmediate(turn);
-	return () => {
+	return async () => {
 		watching = false;
 		turn();
-		return turns;
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		collected(observer.takeRecords());
+		observer.disconnect();
+		return turns.map((item) => Math.max(0, Math.min(item.end - item.start, item.cpu) - overlapMs(item, collections)));
 	};
+}
+
+function assertFewStalls(turns: readonly number[], limitMs: number, what: string): void {
+	const stalls = turns.filter((ms) => ms > limitMs).sort((a, b) => b - a);
+	assert.ok(
+		stalls.length <= STALLS_ALLOWED && (stalls[0] ?? 0) < STALL_CEILING_MS,
+		`${what} held the event loop for more than ${limitMs} ms ${stalls.length} times in ${turns.length} turns: ${stalls.slice(0, 8).map(Math.round).join(", ")} ms`,
+	);
 }
 
 function header(id: string): SessionRecordHeader {
@@ -140,6 +174,36 @@ function countingDatabase(database: SqliteDatabase): { database: SqliteDatabase;
 		},
 	});
 	return { database: counted, entryRows: () => entryRows };
+}
+
+function busyFor(ms: number): void {
+	const until = performance.now() + ms;
+	while (performance.now() < until) Math.sqrt(until);
+}
+
+function withSlowIndexQueries(store: SessionStore): { readonly store: SessionStore; readonly queries: () => number } {
+	const index = store.searchIndex!;
+	let queries = 0;
+	const slowIndex = new Proxy(index, {
+		get(target, key) {
+			const value = Reflect.get(target, key, target);
+			if (key === "coverage" || key === "candidates")
+				return (...args: unknown[]) => {
+					queries++;
+					busyFor(SLOW_INDEX_QUERY_MS);
+					return (value as (...args: unknown[]) => unknown).apply(target, args);
+				};
+			return typeof value === "function" ? value.bind(target) : value;
+		},
+	});
+	const slowStore = new Proxy(store, {
+		get(target, key) {
+			if (key === "searchIndex") return slowIndex;
+			const value = Reflect.get(target, key, target);
+			return typeof value === "function" ? value.bind(target) : value;
+		},
+	});
+	return { store: slowStore, queries: () => queries };
 }
 
 function abortingAfterFirstIndexInsert(database: SqliteDatabase, controller: AbortController): SqliteDatabase {
@@ -1978,16 +2042,12 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 				try {
 					found = (await router.search?.("history://sessions/long", request("no such needle"))) ?? "";
 				} finally {
-					turns = stopWatching();
+					turns = await stopWatching();
 				}
 				assert.doesNotMatch(found, /budget ran out/);
 				const coverage = await store.searchIndex?.coverage("long", HISTORY_TEXT_FORMAT);
 				assert.equal(coverage?.indexedSeq, INDEX_BUILD_ENTRIES, "the search indexed the whole session");
-				const stalls = turns.filter((ms) => ms > INDEX_BUILD_BLOCK_LIMIT_MS).sort((a, b) => b - a);
-				assert.ok(
-					stalls.length <= INDEX_BUILD_STALLS_ALLOWED,
-					`indexing held the event loop for more than ${INDEX_BUILD_BLOCK_LIMIT_MS} ms ${stalls.length} times in ${turns.length} turns: ${stalls.slice(0, 8).map(Math.round).join(", ")} ms`,
-				);
+				assertFewStalls(turns, INDEX_BUILD_BLOCK_LIMIT_MS, "indexing");
 			} finally {
 				await store.close();
 				await database.close();
@@ -1995,6 +2055,35 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 		},
 		LARGE_SESSION_TIMEOUT_MS,
 	);
+
+	it("yields the event loop between the sessions and index queries of a multi-session search (#5250)", async () => {
+		const { store, close } = await openSql(dir);
+		try {
+			for (let index = 1; index <= PACED_SESSIONS; index++)
+				await store.create(
+					header(`paced-${index}`),
+					numbered(3, (seq) => `paced entry ${index}.${seq}`),
+				);
+			const url = `history://sessions?limit=${PACED_SESSIONS}`;
+			const warm = historyOver(store, { timeMs: 60_000 });
+			await warm.router.search?.(url, warm.request("text that no entry holds"));
+			const slow = withSlowIndexQueries(store);
+			const { router, request } = historyOver(slow.store, { timeMs: 60_000 });
+			const stopWatching = watchEventLoopTurns();
+			let found: string;
+			let turns: number[];
+			try {
+				found = (await router.search?.(url, request("text that no entry holds"))) ?? "";
+			} finally {
+				turns = await stopWatching();
+			}
+			assert.equal(found, "", "the search covered every session without stopping");
+			assert.ok(slow.queries() >= 2 * PACED_SESSIONS, `the search made ${slow.queries()} index queries`);
+			assertFewStalls(turns, PACED_TURN_LIMIT_MS, "the search");
+		} finally {
+			await close();
+		}
+	});
 
 	it(
 		"never blocks the event loop for long while searching a large session (#5250)",

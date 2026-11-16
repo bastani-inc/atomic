@@ -996,8 +996,10 @@ class SessionSearcher {
 	async run(): Promise<SessionSearchResult> {
 		const segments = this.segments();
 		this.coveredFromSeq = segments[0]?.start ?? this.search.fromSeq;
+		await this.search.budget.pace();
 		this.search.budget.holdProgressFloor();
 		await this.start();
+		await this.search.budget.pace();
 		if (this.startTimedOut) {
 			return this.finish({
 				reason: "time",
@@ -1167,6 +1169,7 @@ class SessionSearcher {
 			seqs = undefined;
 		}
 		budget.takeRows(1);
+		await budget.pace();
 		if (seqs === undefined) {
 			this.coverage = undefined;
 			this.indexing = false;
