@@ -1530,20 +1530,23 @@ export class SqlPoolQueue {
 		}));
 	}
 	async readyMark(root: string): Promise<string | undefined> {
+		const readiness = this.rowLocks
+			? "bit_xor(hash_record_extended(ROW(xmin, ctid), 0))"
+			: `(SELECT revision FROM ${this.roots}_ready WHERE root = ?)`;
 		const row = await (this.storage.peek ?? this.storage.read)((executor) =>
 			executor.get<
 				SqliteRow & {
 					ready: number | bigint;
 					latest: number | bigint | null;
-					readiness: number | bigint | null;
+					readiness: number | bigint | string | null;
 					revision: number | bigint | null;
 				}
 			>(
 				`SELECT COUNT(*) AS ready, MAX(ready_at) AS latest,
-				(SELECT revision FROM ${this.roots}_ready WHERE root = ?) AS readiness,
+				${readiness} AS readiness,
 				(SELECT revision FROM ${this.roots}_control WHERE root = ?) AS revision
-				FROM ${this.work} WHERE root = ? AND state = 'ready' AND ready_at <= ${this.now}`,
-				root,
+				FROM ${this.work} WHERE root = ? AND state = 'ready' AND ready_at <= (SELECT ${this.now})`,
+				...(this.rowLocks ? [] : [root]),
 				root,
 				root,
 			),
@@ -2991,16 +2994,12 @@ export class SqlPoolQueue {
 	}
 	private async notifyReady(tx: SqliteExecutor, root: string): Promise<void> {
 		const notice = this.readyNotice(root);
-		const advance = `INSERT INTO ${this.roots}_ready(root, revision) VALUES (?, 1)
-			ON CONFLICT(root) DO UPDATE SET revision = ${this.roots}_ready.revision + 1`;
-		if (this.rowLocks && notice !== undefined) {
-			await tx.run(
-				`WITH pool_ready_revision AS (${advance} RETURNING revision) ${notice.sql}`,
-				root,
-				...notice.params,
-			);
+		if (this.rowLocks) {
+			if (notice !== undefined) await tx.run(notice.sql, ...notice.params);
 			return;
 		}
+		const advance = `INSERT INTO ${this.roots}_ready(root, revision) VALUES (?, 1)
+			ON CONFLICT(root) DO UPDATE SET revision = ${this.roots}_ready.revision + 1`;
 		await Promise.all([
 			tx.run(advance, root),
 			...(notice === undefined ? [] : [tx.run(notice.sql, ...notice.params)]),

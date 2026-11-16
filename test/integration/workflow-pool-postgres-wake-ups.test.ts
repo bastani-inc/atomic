@@ -119,30 +119,32 @@ async function listening(scope: PostgresScope): Promise<void> {
 }
 
 describe.skipIf(postgresSkipReason !== undefined)("worker pool wake-ups on Postgres (#5103)", () => {
-	test("readiness revision and wake-up share one PostgreSQL statement on enqueue and release (#5230)", async () => {
+	test("ready-work wake-ups write no separate readiness rows on PostgreSQL (#5230)", async () => {
 		await withPostgresDatabase(async (scope) => {
 			const f = await rootAndHost(scope);
 			try {
 				await listening(scope);
-				const assertSingleReadyStatement = () => {
-					const ready = f.statements.filter((sql) => sql.includes(`${PREFIX}wf_runs_pool_ready`));
-					assert.equal(ready.length, 1);
-					assert.ok(ready[0]!.includes("pg_notify"), "the revision and its notification use one command");
+				const assertNoticeWithoutReadyWrite = () => {
+					assert.equal(f.statements.filter((sql) => sql.includes(`${PREFIX}wf_runs_pool_ready`)).length, 0);
+					assert.equal(f.statements.filter((sql) => sql.includes("pg_notify")).length, 1);
 				};
 				f.statements.length = 0;
 				let since = performance.now();
 				await f.pool.enqueue(f.lease, work, boundary);
-				assertSingleReadyStatement();
+				assertNoticeWithoutReadyWrite();
 				await f.wakeAfter(since);
 				const before = await f.pool.readyMark("root");
 				const held = await f.pool.claim(f.lease, "worker", [definition], 60_000);
 				assert.ok(held);
 				f.statements.length = 0;
 				since = performance.now();
-				assert.equal(await f.pool.releaseExited(f.lease, held), true);
-				assertSingleReadyStatement();
+				assert.equal(await f.pool.releaseUnplaced(f.lease, held), true);
+				assertNoticeWithoutReadyWrite();
 				await f.wakeAfter(since);
-				assert.notEqual(await f.pool.readyMark("root"), before);
+				const returned = await f.pool.readyMark("root");
+				assert.notEqual(returned, before, "a generation rewind still changes the ready-row identity");
+				assert.equal(await f.pool.releaseUnplaced(f.lease, held), false);
+				assert.equal(await f.pool.readyMark("root"), returned, "a stale refusal leaves ready identities unchanged");
 			} finally {
 				await f.close();
 			}
