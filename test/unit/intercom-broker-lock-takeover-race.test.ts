@@ -1,13 +1,3 @@
-/**
- * Brokers taking the socket-replacement lock over from a crashed broker, while each is paused at the points the
- * operating system can pause it (#5220). Each broker is a real process that takes the lock, holds it while checking
- * every 50 ms that the lock is still its own, and releases it. A broker that held the lock while another did, or that
- * lost its lock while it believed it held it, could unlink another broker's socket.
- *
- * The pauses are injected by a preload that delays `fs` calls on the lock's files, named by environment variables,
- * as the replay of the review did.
- */
-
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { join } from "node:path";
@@ -30,17 +20,11 @@ afterEach(() => {
 	for (const broker of brokers.splice(0)) broker.kill();
 });
 
-/** No live process has a pid this large: the crashed broker that held the lock, and a taker that crashed meanwhile. */
 const DEAD_HOLDER = 2147483641;
 const DEAD_TAKER = 2147483642;
 
-/** Long enough for every broker of a scenario to take, hold and release the lock in turn, on a loaded runner. */
 const SCENARIO_TIMEOUT_MS = 120_000;
 
-/**
- * Delays `renameSync` around a move of the lock (`VP_LOCK_PARK` before, `VP_LOCK_CMP` after) or of a takeover token
- * of an earlier protocol (`VP_TOK_PARK`, `VP_TOK_CMP`), and moving a lock generation into place (`VP_GEN_LINK`).
- */
 const PRELOAD = `
 const fs = require("node:fs");
 const { syncBuiltinESMExports } = require("node:module");
@@ -60,11 +44,9 @@ fs.renameSync = (from, to) => {
 syncBuiltinESMExports();
 `;
 
-/** The lock module of the current version, and of the version released before #5220. */
 const CURRENT = "../../packages/intercom/broker/socket-replacement-lock.ts";
 const PREVIOUS = "../fixtures/intercom-socket-lock-main/socket-replacement-lock.ts";
 
-/** A broker: takes the lock, holds it for `HOLD_MS` while checking it is still its own, and releases it. */
 function brokerScript(lockPath: string, events: string, version: string): string {
 	const lockModule = pathToFileURL(join(moduleDir(import.meta.url), version)).href;
 	const jiti = pathToFileURL(createRequire(import.meta.url).resolve("jiti")).href;
@@ -85,8 +67,6 @@ while (Date.now() < end && !lost) {
 	if (!own()) { lost = true; log("lost"); }
 	await new Promise((resolve) => setTimeout(resolve, 50));
 }
-// It stops acting before it gives the lock up: logged after, another broker taking the freed lock at once would seem
-// to overlap it, as a broker of the previous version did on a loaded Windows runner.
 log("released");
 lock();
 `;
@@ -94,11 +74,9 @@ lock();
 
 interface BrokerPlan {
 	readonly name: string;
-	/** How long after the previous broker this one starts. */
 	readonly startAfterMs: number;
 	readonly holdMs: number;
 	readonly delays?: Readonly<Record<string, number>>;
-	/** The version of the broker: the current one unless given. */
 	readonly version?: string;
 }
 
@@ -108,7 +86,6 @@ interface Event {
 	readonly event: "held" | "lost" | "released";
 }
 
-/** Runs the brokers of `plans` on a lock a crashed broker left, with a crashed taker's token beside it. */
 async function runBrokers(
 	scenario: string,
 	plans: readonly BrokerPlan[],
@@ -147,7 +124,6 @@ async function runBrokers(
 		.sort((a, b) => a.at - b.at);
 }
 
-/** The brokers that held the lock at once, and those that lost it while they believed they held it. */
 function violations(events: readonly Event[]): { readonly overlaps: string[]; readonly lost: string[] } {
 	const holding = new Set<string>();
 	const overlaps: string[] = [];
@@ -171,8 +147,6 @@ describe("brokers taking over the socket lock of a crashed broker (#5220)", () =
 	test(
 		"three brokers, one paused clearing a crashed taker's token and one paused moving the lock, take the lock one at a time and none loses it (#5220)",
 		async () => {
-			// The review's replay: B3 pauses inside the removal of the crashed taker's token, B1 inside the removal of
-			// the crashed broker's lock, and B2 arrives while both are paused.
 			const events = await runBrokers("three-paused", [
 				{ name: "B3", startAfterMs: 0, holdMs: 4_000, delays: { VP_TOK_PARK: 1_500, VP_TOK_CMP: 3_000 } },
 				{ name: "B1", startAfterMs: 200, holdMs: 3_000, delays: { VP_LOCK_PARK: 4_000, VP_LOCK_CMP: 2_000 } },
@@ -189,9 +163,6 @@ describe("brokers taking over the socket lock of a crashed broker (#5220)", () =
 	test(
 		"a broker of the previous version paused while replacing a crashed broker's lock never shares the lock with a current one (#5220)",
 		async () => {
-			// O1, of the version released before #5220, takes its takeover token for the crashed lock, re-reads it and
-			// pauses before moving it aside, and again after moving it; N, current, arrives during the first pause, and
-			// O2, of the previous version, during the second.
 			const events = await runBrokers(
 				"mixed-versions",
 				[

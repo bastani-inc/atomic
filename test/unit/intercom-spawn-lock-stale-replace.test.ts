@@ -1,7 +1,5 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-// `readdirSync` has no equivalent in test/helpers/runtime.ts: the spawners report readiness as files in one directory.
-// The `fs` module object lets one test take the lock's path between a rename and its put-back.
 import fsModule, { readdirSync } from "node:fs";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { basename, dirname, join } from "node:path";
@@ -162,7 +160,6 @@ describe("stale lock file removal (#5132)", () => {
 		const { path, content } = staleLock();
 		const live = `${process.pid}\n${Date.now()}\n`;
 		writeTextSync(path, live);
-		// The path is taken again before the moved lock can be put back, as by a third process.
 		const third = `${process.pid}\nthird\n`;
 		const renameSync = fsModule.renameSync;
 		let moved = false;
@@ -224,7 +221,6 @@ describe("stale lock file removal (#5132)", () => {
 		assert.equal(isAbandoned(path, `${process.pid}\n${ownStart ?? ""}\n`), false);
 		assert.equal(isAbandoned(path, `${UNSIGNALLABLE_PID}\n`), false, "a live process this user may not signal");
 		assert.equal(isAbandoned(path, "2147483646\n"), true);
-		// A process given the pid of a crashed holder started later; where no start can be read, the pid still runs.
 		assert.equal(isAbandoned(path, `${process.pid}\nanother start\n`), ownStart !== undefined);
 	});
 });

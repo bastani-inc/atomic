@@ -669,7 +669,6 @@ export async function upgradeBroker(
       throw error;
     }
     if (lockLost) {
-      // #5220: another spawner replaced the lock, which had aged out; it starts the successor, not this one.
       lockPassedOn = true;
       throw failed("start", new Error("The broker spawn lock was taken over by another process while the older broker exited."));
     }
@@ -729,27 +728,19 @@ function checkSocketConnectable(): Promise<boolean> {
 function handSpawnLockToBroker(pid: number | undefined, owner: string): boolean {
   if (pid === undefined) return false;
   const lockPath = getBrokerSpawnLockPath();
-  // Under the takeover mutex, so a spawner that judged the lock stale cannot replace it between the check and the write.
   return underSpawnLockMutex(lockPath, false, () => {
     if (!ownsSpawnLock(owner, lockPath)) return false;
     try {
       appendFileSync(lockPath, `${pid}\n`);
       return true;
     } catch {
-      // The startup error must still reach the caller; an unrecorded lock is released like any other.
       return false;
     }
   });
 }
 
-/** How long a holder of the spawn lock waits for a takeover of it in progress, which takes milliseconds, to end. */
 const SPAWN_LOCK_MUTEX_WAIT_MS = 2_000;
 
-/**
- * Runs `act` while this process holds the takeover mutex of the spawn lock at `lockPath` (#5220), which every stale
- * replacement of it holds too: a holder writing or removing its lock and a spawner replacing the lock as stale take
- * turns, so each finds the lock as the other left it. `busy` is the result while the mutex stays held elsewhere.
- */
 function underSpawnLockMutex<T>(lockPath: string, busy: T, act: () => T): T {
   const mutex = takeTakeoverMutex(lockPath, SPAWN_LOCK_MUTEX_WAIT_MS);
   if (mutex === undefined) return busy;
@@ -765,10 +756,8 @@ const SPAWN_LOCK_RENEW_AFTER_MS = 10_000;
 
 /**
  * Write the held spawn lock again with the current time, so a long wait never makes it look stale; returns the header
- * that now proves ownership, or undefined once the lock is no longer this spawner's: it aged out and another spawner
- * replaced it, and this one must stop acting as its owner (#5220). The lock is checked and written under the takeover
- * mutex, so it is never written over a lock another spawner took. A write that fails, as when another process is
- * reading the lock on Windows, or a mutex held elsewhere, is tried again on the next call.
+ * that now proves ownership. A write that fails, as when another process is reading the lock on Windows, is tried
+ * again on the next call.
  */
 export function renewSpawnLock(
   owner: string,
@@ -805,11 +794,15 @@ function ownsSpawnLock(owner: string, lockPath: string = getBrokerSpawnLockPath(
 export function acquireSpawnLock(lockPath: string = getBrokerSpawnLockPath()): string | undefined {
   const maxRetries = 5;
   for (let attempt = 0; attempt < maxRetries; attempt++) {
-    const owner = `${process.pid}\n${Date.now()}\n`;
-    // Made complete, so a lock being taken is never seen empty and replaced as stale under its maker (#5220). Read back
-    // before it is relied on: a lock this spawner made and that was replaced meanwhile is not its own.
+    const writtenAt = Date.now();
+    const owner = `${process.pid}\n${writtenAt}\n`;
     if (createLockFile(lockPath, owner)) {
-      if (ownsSpawnLock(owner, lockPath)) return owner;
+      if (ownsSpawnLock(owner, lockPath)) {
+        const nowMs = Date.now();
+        if (nowMs - writtenAt < SPAWN_LOCK_RENEW_AFTER_MS) return owner;
+        const renewed = renewSpawnLock(owner, nowMs, lockPath);
+        if (renewed !== undefined && renewed !== owner) return renewed;
+      }
       continue;
     }
     const inspected = readFileOrUndefined(lockPath);
@@ -820,7 +813,6 @@ export function acquireSpawnLock(lockPath: string = getBrokerSpawnLockPath()): s
 }
 
 function isSpawnLockReplaceable(written: string | undefined, lockPath: string): boolean {
-  // A last line not yet terminated is still being written, where the lock could not be linked into place whole.
   const content = completeLines(written) ?? "";
   if (!isSpawnLockContentStale(content)) return false;
   const writer = writerState(lockPath, written) ?? (recordsSpawner(content) ? "abandoned" : "unknown");
@@ -837,10 +829,9 @@ function warnUnknownSpawnLockHolder(lockPath: string): void {
 }
 
 /**
- * Removes the spawn lock a spawner read as `inspected` and judged stale, so the next attempt can take it. Two spawners
- * that saw the same stale lock never both replace it (#5132, #5220): the replacement runs under the takeover mutex, an
- * operating-system advisory lock its holder's death releases (#5193), and inside it the lock is judged stale again and
- * removed only while it is still the inspected one. `inspected` is undefined when the lock could not be read.
+ * Removes the spawn lock a spawner read as `inspected` and judged stale, so the next `wx` attempt can take it. Two
+ * spawners that saw the same stale lock never both replace it: the lock is removed only while it is still the inspected
+ * one (#5132). `inspected` is undefined when the lock could not be read.
  */
 export function replaceStaleSpawnLock(inspected: string | undefined, lockPath: string = getBrokerSpawnLockPath()): void {
   takeOverStaleLock(
@@ -872,7 +863,6 @@ export function isSpawnLockStale(lockPath: string = getBrokerSpawnLockPath(), no
   return isSpawnLockContentStale(readFileOrUndefined(lockPath) ?? "", nowMs);
 }
 
-/** Whether the spawn lock read as `content` names its spawner and when it was taken. */
 function recordsSpawner(content: string): boolean {
   const [spawnerLine = "", createdAtLine = ""] = content.split("\n");
   return Number.isFinite(Number.parseInt(spawnerLine, 10)) && Number.isFinite(Number.parseInt(createdAtLine, 10));
@@ -892,15 +882,11 @@ function isSpawnLockContentStale(content: string, nowMs: number = Date.now()): b
 /** Removes the lock only while it is still the one `owner` wrote; a spawner that replaced a stale lock keeps its own. */
 export function releaseSpawnLock(owner: string, lockPath: string = getBrokerSpawnLockPath()): void {
   if (!ownsSpawnLock(owner, lockPath)) return;
-  // Under the takeover mutex, so a lock another spawner took after this one's aged out is never removed (#5220). A
-  // lock left while the mutex stays held elsewhere goes stale once this process is gone.
   underSpawnLockMutex(lockPath, undefined, () => {
     if (!ownsSpawnLock(owner, lockPath)) return;
     try {
       unlinkSync(lockPath);
-    } catch {
-      // Another cleanup path may already have removed the lock.
-    }
+    } catch {}
   });
 }
 

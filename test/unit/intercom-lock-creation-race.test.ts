@@ -1,23 +1,13 @@
-/**
- * Intercom's spawn lock and broker socket-replacement lock are taken by creating a file that records the holder (#5220).
- * A file created and then written is seen empty in between, and an empty lock reads as one left by a crashed process:
- * another process judged it stale and replaced it while its creator, paused between the two steps, went on to believe
- * it held the lock. On a loaded Windows runner that pause is long enough for two spawners to own one lock. These
- * tests pause a creator at that point, as the operating system can, and let another process take the lock meanwhile.
- */
-
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { afterAll, afterEach, describe, test, vi } from "vitest";
 import { makeTempDirectory, removeTempDirectory, writeTextSync } from "../helpers/runtime.js";
 
-/** The lock being made, and what another process does while this one is paused making it (#5220). */
 const race = vi.hoisted(() => ({
 	lockPath: undefined as string | undefined,
 	whileMaking: undefined as (() => void) | undefined,
 }));
 
-/** Runs the pause hook once, when this process makes the lock at `path`. */
 function pauseMaking(path: unknown): void {
 	if (race.lockPath === undefined || String(path) !== race.lockPath) return;
 	const hook = race.whileMaking;
@@ -27,7 +17,6 @@ function pauseMaking(path: unknown): void {
 
 vi.mock("fs", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("fs")>();
-	// A file created with "wx" exists empty until it is written: the pause falls between the two.
 	const writeFileSync = ((path, data, options) => {
 		const flag = typeof options === "object" && options !== null ? options.flag : undefined;
 		if (flag !== "wx" || race.whileMaking === undefined || String(path) !== race.lockPath) {
@@ -42,12 +31,10 @@ vi.mock("fs", async (importOriginal) => {
 			actual.closeSync(fd);
 		}
 	}) as typeof actual.writeFileSync;
-	// A lock linked into place appears complete: the pause falls just after it appears.
 	const linkSync = ((existing, path) => {
 		actual.linkSync(existing, path);
 		pauseMaking(path);
 	}) as typeof actual.linkSync;
-	// Where no hard link can be made (FAT), a lock is created and then written: the pause falls between the two.
 	const openSync = ((path: import("fs").PathLike, flags?: import("fs").OpenMode, mode?: import("fs").Mode | null) => {
 		const fd = (actual.openSync as (...args: unknown[]) => number)(path, flags, mode);
 		if (flags === "wx") pauseMaking(path);
@@ -75,14 +62,12 @@ afterEach(() => {
 
 let lockCount = 0;
 
-/** A spawn lock whose spawner is long gone: no live process has a pid this large. */
 function staleSpawnLock(): string {
 	const path = join(tempDir, `broker.spawn.lock-${lockCount++}`);
 	writeTextSync(path, `2147483646\n${Date.now()}\n`);
 	return path;
 }
 
-/** Longer than the grace an unreadable broker lock gets before it counts as left by a crashed process. */
 const LONG_PAUSE_MS = 5_000;
 
 describe("a lock is never taken from the process making it (#5220)", () => {
@@ -126,7 +111,6 @@ describe("a lock is never taken from the process making it (#5220)", () => {
 		};
 		let other: Promise<() => void> | undefined;
 		race.whileMaking = () => {
-			// The pause outlasts the grace an unreadable lock gets, as a stalled process on a loaded runner can.
 			const paused = new Date(Date.now() - LONG_PAUSE_MS);
 			if (existsSync(path)) utimesSync(path, paused, paused);
 			other = take("other");
@@ -135,7 +119,6 @@ describe("a lock is never taken from the process making it (#5220)", () => {
 		const mine = take("this");
 		assert.ok(other !== undefined, "the other broker tried while this one was paused");
 		const first = await Promise.race([mine, other]);
-		// Give the broker still waiting time to poll the lock again and take it if it ever judges it stale.
 		await new Promise((resolve) => setTimeout(resolve, 200));
 		assert.equal(holders.size, 1, `one broker holds the lock: ${[...holders].join(",")}`);
 		first();

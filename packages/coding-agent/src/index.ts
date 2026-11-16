@@ -32,7 +32,6 @@ export type {
 	ToolRenderers,
 	ToolScriptAccess,
 } from "./core/extensions/tool-types.ts";
-// Intercom's spawn lock is taken over under the same advisory lock as every other lock takeover (#5220).
 export { type TakeoverMutex, takeTakeoverMutex } from "./core/lock-takeover.ts";
 export { resolveRestoredModelReference } from "./core/model-resolver-initial.ts";
 export * from "./core/resume/index.ts";

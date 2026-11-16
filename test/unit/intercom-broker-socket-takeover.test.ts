@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-// `statSync` has no equivalent in test/helpers/runtime.ts: the socket file is read directly.
 import { statSync } from "node:fs";
 import net from "node:net";
 import { join } from "node:path";
@@ -60,7 +59,6 @@ const YIELD_ATTEMPTS = 8;
 
 const POLL_INTERVAL_MS = 20;
 
-/** Longer than the 1 s grace after which earlier versions took a lock that stayed empty. */
 const STILL_WRITING_MS = 1_500;
 
 /** Long enough for the lock's 20 ms poll to retry many times, while a live holder still holds it. */
@@ -530,7 +528,6 @@ describe("spawn lock staleness (#3505)", () => {
 	});
 });
 
-/** This host as lock files record it, and the wait on an unknown holder, where this version has them (#5220). */
 const lockFileSeams = staleLockFile as Partial<{
 	hostIdentity: () => string;
 	setUnknownHolderWaitForTesting: (ms: number | undefined) => void;
@@ -573,7 +570,6 @@ describe("socket replacement lock (#3505)", () => {
 
 	test("a lock still unreadable only briefly is waited on, not taken over (#5132)", async () => {
 		const path = lockPath();
-		// A broker of an earlier version creates its lock and then writes it, holding it open: empty for a moment.
 		const writer = spawnProcess(
 			[
 				process.execPath,
@@ -598,11 +594,9 @@ describe("socket replacement lock (#3505)", () => {
 
 		const first = await Promise.race([waitNoticed.then(() => "waiting"), acquiring.then(() => "taken over")]);
 		assert.equal(first, "waiting");
-		// The lock is polled again meanwhile; a slower machine polls it less often, which the assertions allow.
 		await sleep(LIVE_HOLDER_OBSERVATION_MS);
 		assert.equal(waits, 1, "the wait is announced once");
 		assert.equal(readTextSync(path, "utf8"), "", "the lock still being written is left in place");
-		// The writer finishes it, still running: it is its holder's.
 		while (readTextSync(path, "utf8") === "") await sleep(POLL_INTERVAL_MS);
 		assert.equal(Number.parseInt(readTextSync(path, "utf8"), 10), writer.pid, "the writer's lock is left in place");
 
@@ -613,22 +607,26 @@ describe("socket replacement lock (#3505)", () => {
 		release();
 	});
 
-	test("an unreadable lock left by a broker killed while writing it is recovered (#5132, #5220)", async () => {
+	test("an empty lock with a dead bound marker is refused with advice, never taken (#5132, #5220)", async () => {
 		const path = lockPath();
 		writeTextSync(path, "");
-		// The marker a broker creates for a lock it cannot link into place whole, bound to the file: here, a dead one's.
 		const file = statSync(path, { bigint: true });
 		const marker = `${path}.writing.${await deadPid()}.x.${hostIdentity()}.0badc0de.${file.ino}-${file.birthtimeNs}`;
 		writeTextSync(marker, "");
-
-		const release = await acquireSocketReplacementLock(path);
-		assert.equal(Number.parseInt(readTextSync(path, "utf8"), 10), process.pid, "the lock names this broker");
-		release();
+		setUnknownHolderWaitForTesting(0);
+		try {
+			await assert.rejects(
+				() => acquireSocketReplacementLock(path),
+				(error: Error) => error.message.includes(path) && error.message.includes("remove"),
+			);
+		} finally {
+			setUnknownHolderWaitForTesting(undefined);
+		}
+		assert.equal(readTextSync(path, "utf8"), "", "the lock is left as it was");
 	});
 
 	test("an unreadable lock whose writer cannot be checked is refused with advice, never taken (#5220)", async () => {
 		const path = lockPath();
-		// Left empty by a broker of an earlier version or of another user: no marker names its writer.
 		writeTextSync(path, "");
 		setUnknownHolderWaitForTesting(0);
 		try {
@@ -640,6 +638,111 @@ describe("socket replacement lock (#3505)", () => {
 			setUnknownHolderWaitForTesting(undefined);
 		}
 		assert.equal(readTextSync(path, "utf8"), "", "the lock is left as it was");
+	});
+
+	test("an abandoned lock whose takeover token cannot be checked is refused with advice, and a live token yields to timers (#5220)", async () => {
+		const dead = await deadPid();
+		const unknownLock = lockPath();
+		const unknownToken = `${unknownLock}.takeover-${dead}`;
+		const unknownReady = `${unknownLock}.ready`;
+		const unknownStarted = `${unknownLock}.started`;
+		writeTextSync(unknownLock, `${dead}\n`);
+		writeTextSync(unknownToken, "");
+		const unstick = spawnProcess(
+			[
+				process.execPath,
+				"-e",
+				`const { existsSync, writeFileSync, rmSync } = require("node:fs");
+				writeFileSync(${JSON.stringify(unknownReady)}, "");
+				const poll = setInterval(() => {
+					if (existsSync(${JSON.stringify(unknownStarted)})) {
+						clearInterval(poll);
+						setTimeout(() => {
+							rmSync(${JSON.stringify(unknownToken)}, { force: true });
+							rmSync(${JSON.stringify(unknownLock)}, { force: true });
+							process.exit(0);
+						}, ${STILL_WRITING_MS});
+					}
+				}, ${POLL_INTERVAL_MS});`,
+			],
+			{ stdout: "ignore" },
+		);
+		setUnknownHolderWaitForTesting(0);
+		try {
+			while (!fileExistsSync(unknownReady)) await sleep(POLL_INTERVAL_MS);
+			writeTextSync(unknownStarted, "");
+			await assert.rejects(
+				() => acquireSocketReplacementLock(unknownLock),
+				(error: Error) => error.message.includes(unknownToken) && error.message.includes("remove"),
+			);
+			assert.equal(readTextSync(unknownToken, "utf8"), "", "the takeover token is left as it was");
+		} finally {
+			setUnknownHolderWaitForTesting(undefined);
+			unstick.kill();
+			await unstick.exited;
+			removePathSync(unknownReady, { force: true });
+			removePathSync(unknownStarted, { force: true });
+		}
+
+		const liveLock = lockPath();
+		const liveToken = `${liveLock}.takeover-${dead}`;
+		const liveReady = `${liveLock}.ready`;
+		const liveStarted = `${liveLock}.started`;
+		const liveWaiting = `${liveLock}.waiting`;
+		writeTextSync(liveLock, `${dead}\n`);
+		writeTextSync(liveToken, `${process.pid}\n`);
+		const releaser = spawnProcess(
+			[
+				process.execPath,
+				"-e",
+				`const { existsSync, writeFileSync, rmSync } = require("node:fs");
+				writeFileSync(${JSON.stringify(liveReady)}, "");
+				const clear = () => {
+					rmSync(${JSON.stringify(liveToken)}, { force: true });
+					rmSync(${JSON.stringify(liveLock)}, { force: true });
+					process.exit(0);
+				};
+				let fallback;
+				const poll = setInterval(() => {
+					if (fallback === undefined && existsSync(${JSON.stringify(liveStarted)})) {
+						fallback = setTimeout(clear, ${STILL_WRITING_MS});
+					}
+					if (existsSync(${JSON.stringify(liveWaiting)})) {
+						clearInterval(poll);
+						if (fallback !== undefined) clearTimeout(fallback);
+						setTimeout(clear, ${LIVE_HOLDER_OBSERVATION_MS});
+					}
+				}, ${POLL_INTERVAL_MS});`,
+			],
+			{ stdout: "ignore" },
+		);
+		let ticks = 0;
+		let timer: ReturnType<typeof setInterval> | undefined;
+		let waited = false;
+		try {
+			while (!fileExistsSync(liveReady)) await sleep(POLL_INTERVAL_MS);
+			timer = setInterval(() => {
+				ticks++;
+			}, POLL_INTERVAL_MS);
+			writeTextSync(liveStarted, "");
+			const release = await acquireSocketReplacementLock(liveLock, {
+				onWait: () => {
+					waited = true;
+					writeTextSync(liveWaiting, "");
+				},
+			});
+			assert.equal(Number.parseInt(readTextSync(liveLock, "utf8"), 10), process.pid, "the lock names this broker");
+			release();
+		} finally {
+			if (timer !== undefined) clearInterval(timer);
+			releaser.kill();
+			await releaser.exited;
+			removePathSync(liveReady, { force: true });
+			removePathSync(liveStarted, { force: true });
+			removePathSync(liveWaiting, { force: true });
+		}
+		assert.equal(waited, true, "waiting on a live takeover token is announced");
+		assert.ok(ticks > 0, "timers keep firing while waiting on a live takeover token");
 	});
 
 	test("parked copies of the socket lock are removed by the next holder only when their holder is gone (#5220)", async () => {

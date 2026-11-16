@@ -15,7 +15,6 @@ function removeFile(path: string): void {
   try {
     unlinkSync(path);
   } catch {
-    // Already removed.
   }
 }
 
@@ -29,12 +28,6 @@ function createExclusively(path: string): boolean {
   }
 }
 
-/**
- * Serializes stale-socket replacement across brokers, so a broker that probed the socket as stale cannot unlink a
- * socket another broker bound in the meantime: the holder re-probes before it unlinks. A live holder's lock is never
- * taken; an abandoned one is. Resolves with the release function, which removes the lock only while this process
- * holds it.
- */
 export async function acquireSocketReplacementLock(
   lockPath: string,
   { onWait }: SocketReplacementLockOptions = {},
@@ -43,8 +36,6 @@ export async function acquireSocketReplacementLock(
   while (!createExclusively(lockPath)) {
     const holder = readFileOrUndefined(lockPath);
     if (isAbandoned(lockPath, holder)) {
-      // Only the waiter holding the takeover token for that holder removes its lock, and only while it is still
-      // the abandoned one, so a lock written since is never removed.
       takeOverStaleLock(lockPath, holder, `${lockPath}.takeover-${pidOf(holder) ?? "unreadable"}`);
     } else if (!announcedWait) {
       announcedWait = true;

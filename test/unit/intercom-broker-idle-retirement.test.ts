@@ -147,11 +147,6 @@ test(
 	REAL_BROKER_IDLE_RETIREMENT_TIMEOUT_MS,
 );
 
-/**
- * What a broker that idled out leaves in the intercom directory: only the released marker of the socket lock
- * (#4727, #5220). The marker stays so that the lock's generations never start again from one, which would let a broker
- * paused with a judgment of an older generation take the lock while another holds it.
- */
 function assertOnlyReleasedMarker(agentDir: string): void {
 	const intercomDir = join(agentDir, "intercom");
 	const left = readdirSync(intercomDir);
@@ -162,7 +157,6 @@ function assertOnlyReleasedMarker(agentDir: string): void {
 	assert.equal(readFileSync(join(intercomDir, marker, "owner"), "utf8"), "released\n");
 }
 
-/** Spawn and idle-out cycles after which the released markers must still not have grown. */
 const IDLE_OUT_CYCLES = 5;
 
 test(

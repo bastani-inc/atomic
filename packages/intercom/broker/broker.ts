@@ -201,7 +201,6 @@ async function acquireSocketLockWithin(budgetMs: number): Promise<SocketReplacem
   // A lock taken after the budget is never released by hand: the broker exits at once, and a lock whose holder is dead
   // is taken over.
   return Promise.race([
-    // A holder that cannot be checked is refused (#5220): the broker exits without closing, as on a timeout.
     acquireSocketReplacementLock(SOCKET_REPLACEMENT_LOCK_PATH).catch(() => undefined),
     new Promise<undefined>((resolve) => setTimeout(resolve, budgetMs).unref()),
   ]);
@@ -536,7 +535,6 @@ class IntercomBroker {
   private shuttingDown = false;
   /** Held from before this broker writes its pid file until it listens or gives up starting. */
   private releaseStartupLock: () => void = () => {};
-  /** Whether this broker still holds the socket lock it took to start (#5220). */
   private holdsStartupLock: () => boolean = () => false;
 
   constructor() {
@@ -586,7 +584,6 @@ class IntercomBroker {
         onWait: () => console.error(`Intercom broker waiting for another broker starting on ${SOCKET_PATH}`),
       });
     } catch (error) {
-      // #5220: a lock held by a process this broker cannot check; the message names the lock and the fix.
       console.error(`Intercom broker not started: ${error instanceof Error ? error.message : String(error)}`);
       process.exit(1);
     }
@@ -609,7 +606,6 @@ class IntercomBroker {
   }
 
   private listen(attempt: number): void {
-    // Bound only while the startup lock is still this broker's alone (#5220).
     if (!this.holdsStartupLock()) {
       this.exitHavingLostStartupLock();
       return;
@@ -644,7 +640,6 @@ class IntercomBroker {
    * bound the path since; the server is closed while nothing is there for its close to unlink, and bound again.
    */
   private rebindVanishedSocket(attempt: number): void {
-    // Its close unlinks whatever is at the path: only while no other broker can have bound it (#5220).
     if (!this.holdsStartupLock()) {
       this.exitHavingLostStartupLock();
       return;
@@ -694,8 +689,6 @@ class IntercomBroker {
       this.listen(attempt + 1);
       return;
     }
-    // The startup lock is still held, so no other broker has bound the stale socket since it was probed. A broker that
-    // lost it (#5220) never removes the socket: another broker may have bound it.
     if (!this.holdsStartupLock()) {
       this.exitHavingLostStartupLock();
       return;
@@ -717,7 +710,6 @@ class IntercomBroker {
     }
   }
 
-  /** #5220: a broker that no longer holds the socket lock alone never touches the socket; the next spawn starts one. */
   private exitHavingLostStartupLock(): void {
     console.error(`Intercom broker not started: it lost the socket lock for ${SOCKET_PATH} while starting`);
     this.abandonStart();

@@ -1,33 +1,17 @@
-/**
- * A spawn-lock holder that writes its lock again (renews it) or removes it races a spawner replacing the lock as stale
- * once it has aged out (#5220). Each test pauses one process between its check and its write, as the operating system
- * can, and lets the others act meanwhile; afterwards at most one spawner may hold the lock, and a holder that lost it
- * must find that out at its next renewal. Spawners are in-process calls; the takeover mutex conflicts between them as it
- * does between processes.
- */
-
 import assert from "node:assert/strict";
 import { closeSync, openSync, readdirSync, utimesSync, writeSync } from "node:fs";
 import { basename, join } from "node:path";
 import { afterAll, afterEach, describe, test, vi } from "vitest";
 import { makeTempDirectory, readTextSync, removeTempDirectory, writeTextSync } from "../helpers/runtime.js";
 
-/** The spawn lock under test, and what other processes do while this one is paused (#5220). */
 const race = vi.hoisted(() => ({
 	lockPath: undefined as string | undefined,
-	/** Just before a file is renamed onto the lock: a renewal writing it again. */
 	beforeRenameOnto: undefined as (() => void) | undefined,
-	/** Just before the lock is renamed aside: a stale replacement moving it. */
 	beforeRenameAway: undefined as (() => void) | undefined,
-	/** Just before a file moved aside is linked back to the lock's path. */
 	beforePutBack: undefined as (() => void) | undefined,
-	/** The error a hard link to the lock's path fails with, as on a file system without hard links. */
 	linkError: undefined as string | undefined,
-	/** How often `/proc` was listed, as a scan of other processes' open files does. */
 	procListings: 0,
-	/** A user id reported for the lock instead of its own, as for a lock another user left. */
 	foreignUid: undefined as number | undefined,
-	/** Runs once just after this process creates the lock's file, before it has written anything into it. */
 	afterCreating: undefined as (() => void) | undefined,
 	afterBinding: undefined as (() => void) | undefined,
 }));
@@ -119,13 +103,8 @@ const { acquireSpawnLock, BROKER_SPAWN_LOCK_MAX_AGE_MS, renewSpawnLock } = await
 const staleLockFile: Record<string, unknown> = await import("../../packages/intercom/broker/stale-lock-file.js");
 const { statSync: realStat } = await vi.importActual<typeof import("node:fs")>("node:fs");
 
-/** This host as the lock files record it; absent from versions that did not record it. */
 const ownHost = () => (staleLockFile.hostIdentity as (() => string) | undefined)?.() ?? "unknown-host";
 
-/**
- * The marker a writer creates, before the file, for a lock it cannot link into place whole: its name holds the writer's
- * pid, start and host and a nonce of its own, and, once the file exists, the file's identity (#5220).
- */
 function writingMarker(path: string, pid: number, host = ownHost(), file = fileIdentity(path)): string {
 	const nonce = Math.random().toString(16).slice(2, 10).padEnd(8, "0");
 	const marker = `${path}.writing.${pid}.x.${host}.${nonce}${file === undefined ? "" : `.${file}`}`;
@@ -133,7 +112,6 @@ function writingMarker(path: string, pid: number, host = ownHost(), file = fileI
 	return marker;
 }
 
-/** The identity a writing marker binds to: the file's inode and when it was created. */
 function fileIdentity(path: string): string | undefined {
 	try {
 		const stats = realStat(path, { bigint: true });
@@ -143,14 +121,12 @@ function fileIdentity(path: string): string | undefined {
 	}
 }
 
-/** The marker an earlier build of this pull request created after the file, named by the file's inode. */
 function inodeWritingMarker(path: string, pid: number): string {
 	const marker = `${path}.writing.${realStat(path, { bigint: true }).ino}.${pid}.x.${ownHost()}`;
 	writeTextSync(marker, "");
 	return marker;
 }
 
-/** The warnings this process emitted while `act` ran. */
 function warningsDuring(act: () => void): string[] {
 	const warnings: string[] = [];
 	const spy = vi.spyOn(process, "emitWarning").mockImplementation((warning) => {
@@ -164,7 +140,6 @@ function warningsDuring(act: () => void): string[] {
 	return warnings;
 }
 
-/** The wait on a holder that cannot be checked, shortened for a test where this version has one. */
 function shortenUnknownHolderWait(): void {
 	(staleLockFile.setUnknownHolderWaitForTesting as ((ms: number | undefined) => void) | undefined)?.(0);
 }
@@ -186,17 +161,12 @@ afterEach(() => {
 
 let lockCount = 0;
 
-/** Longer than the 1 s grace after which earlier versions took a lock that stayed part-written. */
 const WRITER_STALL_MS = 1_500;
 
 function sleepSync(ms: number): void {
 	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-/**
- * A spawn lock this process holds but has not renewed for longer than the backstop, as a holder paused that long
- * leaves it: any spawner judges it stale. Returns the lock's path and the header that proves the holder owns it.
- */
 function agedOwnLock(): { readonly path: string; readonly owner: string } {
 	const path = join(tempDir, `broker.spawn.lock-${lockCount++}`);
 	const owner = `${process.pid}\n${Date.now() - BROKER_SPAWN_LOCK_MAX_AGE_MS - 1_000}\n`;
@@ -205,7 +175,6 @@ function agedOwnLock(): { readonly path: string; readonly owner: string } {
 	return { path, owner };
 }
 
-/** Whether the holder still holds the lock by its own account: its next renewal does not report it lost. */
 function holderStillOwns(owner: string | undefined, path: string): boolean {
 	if (owner === undefined) return false;
 	return renewSpawnLock(owner, Date.now() + BROKER_SPAWN_LOCK_MAX_AGE_MS, path) !== undefined;
@@ -233,11 +202,9 @@ describe("a spawn-lock holder and a spawner replacing its aged lock (#5220)", ()
 		let renewed: string | undefined = owner;
 		let third: string | undefined;
 		race.beforeRenameAway = () => {
-			// The taker has judged the lock stale and is about to move it aside; the holder wakes up and renews it.
 			renewed = renewSpawnLock(owner, Date.now(), path);
 		};
 		race.beforePutBack = () => {
-			// The taker found it moved the holder's fresh lock and puts it back; a third spawner gets there first.
 			third = acquireSpawnLock(path);
 		};
 
@@ -280,8 +247,6 @@ describe("a spawn lock on a file system without hard links (#5220)", () => {
 
 	test("a lock still being written is not replaced, however long its writer stalls and however old FAT makes it look (#5220)", () => {
 		const path = join(tempDir, `broker.spawn.lock-${lockCount++}`);
-		// A live spawner on FAT created the lock and has written only part of it, and stalls there for longer than any
-		// grace. FAT keeps times to two seconds, so the lock can look two seconds old as it is created.
 		const writer = openSync(path, "wx");
 		try {
 			writingMarker(path, process.pid);
@@ -297,14 +262,16 @@ describe("a spawn lock on a file system without hard links (#5220)", () => {
 		}
 	});
 
-	test("a live writer keeps an aged lock whose spawner header is already complete (#5220)", () => {
+	test("a completed aged header with a live-looking leftover marker is replaced without retaining its old owner (#5220)", () => {
 		const path = join(tempDir, `broker.spawn.lock-${lockCount++}`);
-		const partial = `${process.pid}\n${Date.now() - BROKER_SPAWN_LOCK_MAX_AGE_MS - 1_000}\n`;
-		writeTextSync(path, partial);
+		const aged = `${process.pid}\n${Date.now() - BROKER_SPAWN_LOCK_MAX_AGE_MS - 1_000}\n`;
+		writeTextSync(path, aged);
 		writingMarker(path, process.pid);
 
-		assert.equal(acquireSpawnLock(path), undefined, "the writer has not finished publishing its record");
-		assert.equal(readTextSync(path, "utf8"), partial, "the writer's file is untouched");
+		const replacement = acquireSpawnLock(path);
+		assert.ok(replacement !== undefined, "a leftover marker cannot keep an aged complete header");
+		assert.equal(renewSpawnLock(aged, Date.now(), path), undefined, "the replaced writer no longer owns the lock");
+		assert.ok(readTextSync(path, "utf8").startsWith(replacement));
 	});
 
 	test("a lock left part-written by a spawner killed while writing it is replaced (#5220)", () => {
@@ -328,7 +295,6 @@ describe("a spawn lock on a file system without hard links (#5220)", () => {
 
 	test("a lock being written in another container or on another host is never taken, and is refused with advice (#5220)", () => {
 		const path = join(tempDir, `broker.spawn.lock-${lockCount++}`);
-		// Written part-way by a process this one cannot see: its pid here is no process at all.
 		writeTextSync(path, "2147483646\n17");
 		writingMarker(path, 2147483646, "0123456789ab");
 		shortenUnknownHolderWait();
@@ -343,9 +309,32 @@ describe("a spawn lock on a file system without hard links (#5220)", () => {
 		);
 	});
 
+	test("a foreign unbound marker never blocks a complete dead spawner record (#5220)", () => {
+		const path = join(tempDir, `broker.spawn.lock-${lockCount++}`);
+		writeTextSync(path, `2147483645\n${Date.now()}\n`);
+		writeTextSync(`${path}.writing.2147483646.x.0123456789ab.12345678`, "");
+
+		const owner = acquireSpawnLock(path);
+		assert.ok(owner !== undefined);
+		assert.ok(readTextSync(path, "utf8").startsWith(owner));
+	});
+
+	test("an empty lock blocked by a foreign marker names that marker in recovery advice (#5220)", () => {
+		const path = join(tempDir, `broker.spawn.lock-${lockCount++}`);
+		const marker = `${path}.writing.2147483646.x.0123456789ab.12345678`;
+		writeTextSync(path, "");
+		writeTextSync(marker, "");
+		shortenUnknownHolderWait();
+
+		const warnings = warningsDuring(() => {
+			for (let attempt = 0; attempt < 3; attempt++) assert.equal(acquireSpawnLock(path), undefined);
+		});
+		assert.ok(warnings.some((warning) => warning.includes(`remove ${marker}`)));
+		assert.equal(readTextSync(path, "utf8"), "");
+	});
+
 	test("a part-written lock another user left is refused with advice instead of waited on forever (#5220)", () => {
 		const path = join(tempDir, `broker.spawn.lock-${lockCount++}`);
-		// Left part-written by a process of another user, as a broker run under sudo killed mid-write.
 		writeTextSync(path, "2147483646\n17");
 		race.lockPath = path;
 		race.foreignUid = 0;
@@ -366,8 +355,6 @@ describe("a spawn lock on a file system without hard links (#5220)", () => {
 		race.linkError = "EPERM";
 		let other: string | undefined;
 		race.afterCreating = () => {
-			// The file this spawner just created has the inode of a file a writer killed earlier left, whose marker stays,
-			// in the form of each build: by inode, and bound to the file's identity.
 			inodeWritingMarker(path, 2147483646);
 			writingMarker(path, 2147483646);
 			other = acquireSpawnLock(path);
@@ -397,15 +384,36 @@ describe("a spawn lock on a file system without hard links (#5220)", () => {
 		});
 	}
 
-	test("an empty lock whose only marker names a writer killed before writing it is taken (#5220)", () => {
+	test("a matching dead marker never abandons an earlier version's empty lock when file identity repeats (#5220)", () => {
 		const path = join(tempDir, `broker.spawn.lock-${lockCount++}`);
-		// The writer made its marker and the file, bound the marker to it, and was killed before writing anything.
 		writeTextSync(path, "");
 		writingMarker(path, 2147483646);
+		shortenUnknownHolderWait();
+		const holderState = staleLockFile.holderState as (path: string, written: string) => string;
+		const isAbandoned = staleLockFile.isAbandoned as (path: string, written: string) => boolean;
 
-		const owner = acquireSpawnLock(path);
-		assert.ok(owner !== undefined, "the spawner takes the abandoned lock");
-		assert.ok(readTextSync(path, "utf8").startsWith(owner));
+		assert.equal(holderState(path, ""), "unknown");
+		const warnings = warningsDuring(() => {
+			for (let attempt = 0; attempt < 3; attempt++) assert.equal(acquireSpawnLock(path), undefined);
+		});
+		assert.equal(readTextSync(path, "utf8"), "");
+		assert.ok(warnings.some((warning) => warning.includes(path) && warning.includes("killed")));
+
+		const token = `${path}.takeover-2147483646`;
+		writeTextSync(token, "");
+		writingMarker(token, 2147483646);
+		assert.equal(isAbandoned(token, ""), false);
+		assert.equal(readTextSync(token, "utf8"), "");
+	});
+
+	test("a matching dead marker never abandons an earlier version's live partial record (#5220)", () => {
+		const path = join(tempDir, `broker.spawn.lock-${lockCount++}`);
+		const partial = `${process.pid}\n17`;
+		writeTextSync(path, partial);
+		writingMarker(path, 2147483646);
+
+		assert.equal(acquireSpawnLock(path), undefined);
+		assert.equal(readTextSync(path, "utf8"), partial);
 	});
 
 	test("an empty lock with no marker is refused with advice that names an earlier version (#5220)", () => {
@@ -430,7 +438,6 @@ describe("a spawn lock on a file system without hard links (#5220)", () => {
 		race.linkError = "EPERM";
 		const removeFileIfUnchanged = staleLockFile.removeFileIfUnchanged as (path: string, inspected: string) => boolean;
 
-		// A judge that read a stale lock moves aside what is there now: a live lock, which it must not keep.
 		assert.equal(removeFileIfUnchanged(path, "2147483646\n17\n"), false);
 		assert.equal(readTextSync(path, "utf8"), live, "the live lock is back in place");
 		assert.equal(acquireSpawnLock(path), undefined, "and still held");
