@@ -87,7 +87,6 @@ export function createGraphStageActions(deps: GraphStageActionDeps): GraphStageA
 			const runtime = deps.runtime();
 			if (runtime === undefined) return { ok: false, message: "Workflows are not ready in this session yet." };
 			try {
-				// A run still live in this session holds its records; stop it, resumably, before copying them.
 				if (hasActiveLiveRun(owner.store, rootRunId)) {
 					const quit = await quitRun(rootRunId, { ...owner, awaitSettlement: true, actor: "user" });
 					if (!quit.ok) return { ok: false, message: `Could not stop the run to fork it: ${quitRefusal(quit)}` };

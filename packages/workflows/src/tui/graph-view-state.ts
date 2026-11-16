@@ -32,7 +32,6 @@ export function stageMatchesStatusFilter(stage: StageSnapshot, filter: GraphStat
 		case "running":
 			return stage.status === "running" || stage.status === "awaiting_input" || stage.status === "blocked";
 		case "stopped":
-			// A paused or suspended stage can be resumed; a cancelled tool was stopped for good.
 			return stage.status === "paused" || stage.status === "suspended" || stage.toolStatus === "cancelled";
 		case "completed":
 			return stage.status === "completed";
@@ -41,12 +40,11 @@ export function stageMatchesStatusFilter(stage: StageSnapshot, filter: GraphStat
 	}
 }
 
-/** A one-line message on the notice row above the hint line, until `until`. */
 export interface GraphNotice {
 	readonly text: string;
 	readonly tone: "info" | "error";
 	readonly until: number;
-	/** The first `x` press's prompt, which goes away when focus moves off its stage. */
+
 	readonly arm?: boolean;
 }
 
@@ -113,9 +111,9 @@ export abstract class GraphViewState {
 	protected onDetach?: () => void;
 	protected stageActions?: GraphStageActions;
 	protected onShowRun?: GraphViewOpts["onShowRun"];
-	/** A fork from the open failure detail's stage, waiting for Enter or Esc. */
-	protected forkConfirm: { rootRunId: string; stageId: string; nodeId: string; name: string } | null = null;
-	/** A retried stage, watched so its failing again is said on the notice row. */
+
+	protected forkConfirm: { rootRunId: string; stageId: string; name: string } | null = null;
+
 	protected retryWatch: { nodeId: string; failedAt: number | undefined; sawRetry: boolean } | null = null;
 	protected initialFocusedStageId?: string;
 	protected initialFocusedRunId?: string;
@@ -607,7 +605,6 @@ export abstract class GraphViewState {
 		return this.toolDetail !== null || this.stageDetail !== null;
 	}
 
-	/** Say when a retried stage fails again; stop watching once it completes or is gone. */
 	private _syncRetryWatch(): void {
 		const watch = this.retryWatch;
 		if (watch === null) return;

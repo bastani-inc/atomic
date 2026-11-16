@@ -71,6 +71,7 @@ export interface StoreContext {
 	readonly observation: WorkflowObservationRuntime;
 	snapshot(): StoreSnapshot;
 	graphSnapshot(): StoreSnapshot;
+	inspectionSnapshot(): StoreSnapshot;
 	graphRun(runId: string): RunSnapshot | undefined;
 	/** `change` scopes observation to one run or node; pass it only when nothing outside it changed. */
 	notify(change?: WorkflowObservationChange): void;
@@ -232,6 +233,9 @@ export function createStoreContext(state: StoreState = createStoreState()): Stor
 	let cachedGraphVersion = -1;
 	let cachedGraphSnapshot: StoreSnapshot | undefined;
 	const graphBuilder = new GraphStoreSnapshotBuilder();
+	let inspectionBuilder: GraphStoreSnapshotBuilder | undefined;
+	let inspectionVersion = -1;
+	let inspectionView: StoreSnapshot | undefined;
 	const observation = new WorkflowObservationRuntime(
 		{ all: () => state.runs, find: findRun, position: (runId) => runPosition(state, runId) },
 		bumpAndNotify,
@@ -241,6 +245,15 @@ export function createStoreContext(state: StoreState = createStoreState()): Stor
 		return JSON.parse(
 			JSON.stringify({ runs: state.runs, notices: state.notices, version: state.version }),
 		) as StoreSnapshot;
+	}
+
+	function inspectionSnapshot(): StoreSnapshot {
+		if (inspectionView === undefined || inspectionVersion !== state.version) {
+			inspectionBuilder ??= new GraphStoreSnapshotBuilder({ fullPayloads: true });
+			inspectionView = inspectionBuilder.build(state.runs, state.notices, state.version);
+			inspectionVersion = state.version;
+		}
+		return inspectionView;
 	}
 
 	function graphSnapshot(): StoreSnapshot {
@@ -265,6 +278,12 @@ export function createStoreContext(state: StoreState = createStoreState()): Stor
 
 	function notify(change?: WorkflowObservationChange): void {
 		graphBuilder.markChanged(change);
+		inspectionBuilder?.markChanged(change);
+		if (change === undefined) {
+			inspectionBuilder = undefined;
+			inspectionView = undefined;
+			inspectionVersion = -1;
+		}
 		if (batchDepth > 0) {
 			batchedNotification = true;
 			if (change === undefined) batchedChanges = undefined;
@@ -429,6 +448,7 @@ export function createStoreContext(state: StoreState = createStoreState()): Stor
 		observation,
 		snapshot,
 		graphSnapshot,
+		inspectionSnapshot,
 		graphRun,
 		notify,
 		batch,

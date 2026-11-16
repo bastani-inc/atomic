@@ -128,8 +128,7 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 		const back: NavKey = { keys: "esc", label: "back" };
 		const open: NavKey[] = openLabel ? [{ keys: "\u21b5", label: compact ? "open" : openLabel }] : [];
 		const move: NavKey[] = moveKeys ? [{ keys: moveKeys, label: "move" }] : [];
-		// What the focused stage and the view's state make possible comes before the always-available keys, so a
-		// narrow hint line drops `/ stages` and `h hide` first; compact, it also comes ahead of opening and moving.
+
 		const stop = this._focusedStageStoppable()
 			? [this._actionKey(APP_ACTION.listStop, "x", compact ? "stop" : "stop stage")]
 			: [];
@@ -172,8 +171,7 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 		const hintsBudget = Math.max(0, width - leftEdgePad - pillW - rightEdgePad);
 		const keybindings = this._navKeybindings();
 		const taken = new Set<string>();
-		// Full labels while the keys that never drop (all but `/ stages`, `f filter: all` and `h hide`) fit; compact ones
-		// otherwise, so the keys for this stage stay on screen.
+
 		const fits = (entries: readonly NavKey[]): boolean => {
 			const taken = new Set<string>();
 			const kept = entries.filter(

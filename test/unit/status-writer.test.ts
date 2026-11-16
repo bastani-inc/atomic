@@ -16,7 +16,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, test } from "vitest";
+import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import {
 	atomicWriteJson,
 	createStatusWriter,
@@ -170,6 +170,46 @@ describe("createStatusWriter — statusFile:true", () => {
 
 	afterEach(async () => {
 		await rm(tmpDir, { recursive: true, force: true });
+	});
+
+	test("coalesces full status serialization off the mutation path without dropping raw fields (#5234)", async () => {
+		const filePath = join(tmpDir, "coalesced.json");
+		const store = createStore();
+		const snapshots = vi.spyOn(store, "snapshot");
+		const inspectionReads = vi.fn(() => store.inspectionSnapshot!());
+		const serializations = vi.spyOn(JSON, "stringify");
+		const writer = createStatusWriter(
+			{ ...store, inspectionSnapshot: inspectionReads },
+			makeConfig({ statusFilePath: filePath }),
+		);
+		try {
+			for (let update = 0; update < 50; update++) {
+				store.recordRunStart({
+					id: `run-${update}`,
+					name: "cost",
+					inputs: { raw: "input" },
+					status: "running",
+					startedAt: 1,
+					toolNodes: [],
+					stages: [],
+				});
+			}
+			assert.equal(snapshots.mock.calls.length, 0);
+			assert.equal(inspectionReads.mock.calls.length, 0, "mutations only schedule serialization");
+			assert.equal(serializations.mock.calls.length, 0, "mutations never serialize the status payload");
+			await writer.flush();
+			assert.equal(snapshots.mock.calls.length, 0);
+			assert.equal(inspectionReads.mock.calls.length, 1, "one full view serves the whole burst");
+			assert.equal(serializations.mock.calls.length, 0, "serialization runs outside the main thread");
+			const content = JSON.parse(await readFile(filePath, "utf8"));
+			assert.equal(content.runs.length, 50);
+			assert.deepEqual(content.runs[0].inputs, { raw: "input" });
+		} finally {
+			await writer.flush();
+			writer.unsubscribe();
+			snapshots.mockRestore();
+			serializations.mockRestore();
+		}
 	});
 
 	test("creates status file on store update", async () => {

@@ -168,7 +168,12 @@ function compactRun(
 	run: RunSnapshot,
 	stages: StageSnapshot[] = run.stages.map(compactStage),
 	toolNodes: ToolNodeSnapshot[] = run.toolNodes.map(compactToolNode),
+	full = false,
 ): RunSnapshot {
+	if (full) {
+		const copy = structuredClone({ ...run, stages: [], toolNodes: [] });
+		return { ...copy, stages, toolNodes };
+	}
 	const {
 		inputs: _inputs,
 		result: sourceResult,
@@ -252,8 +257,8 @@ function isSettledStage(stage: StageSnapshot): boolean {
 	return stage.status === "completed" || stage.status === "failed" || stage.status === "skipped";
 }
 
-function projectStage(stage: StageSnapshot): ProjectedStage {
-	const compact = compactStage(stage);
+function projectStage(stage: StageSnapshot, full = false): ProjectedStage {
+	const compact = full ? structuredClone(stage) : compactStage(stage);
 	deepFreezeGraphValue(compact);
 	return {
 		shape: sourceShape(stage),
@@ -276,8 +281,8 @@ function stageUnchanged(stage: StageSnapshot, projected: ProjectedStage): boolea
 	);
 }
 
-function projectToolNode(node: ToolNodeSnapshot): ProjectedToolNode {
-	const compact = compactToolNode(node);
+function projectToolNode(node: ToolNodeSnapshot, full = false): ProjectedToolNode {
+	const compact = full ? structuredClone(node) : compactToolNode(node);
 	deepFreezeGraphValue(compact);
 	return { shape: sourceShape(node), parentCount: node.parentIds.length, compact };
 }
@@ -286,8 +291,11 @@ function toolNodeUnchanged(node: ToolNodeSnapshot, projected: ProjectedToolNode)
 	return sameSourceShape(node, projected.shape) && node.parentIds.length === projected.parentCount;
 }
 
-/** Freezes a compact run whose stages and tool nodes are frozen already, without walking or freezing their arrays. */
-function freezeCompactRun(run: RunSnapshot): void {
+function freezeCompactRun(run: RunSnapshot, full = false): void {
+	if (full) {
+		Object.freeze(run.stages);
+		Object.freeze(run.toolNodes);
+	}
 	for (const [key, value] of Object.entries(run)) {
 		if (key === "stages" || key === "toolNodes") markPublishedSnapshotArray(value as readonly object[]);
 		else deepFreezeGraphValue(value);
@@ -295,29 +303,6 @@ function freezeCompactRun(run: RunSnapshot): void {
 	Object.freeze(run);
 }
 
-/**
- * Builds the frozen graph projection of a store incrementally (#4009, #4642).
- *
- * `createGraphStoreSnapshot` re-projects and re-freezes every run on each store version, so a
- * pooled fan-out with hundreds of child runs paid for all of them on every publication. This
- * builder keeps the frozen run, stage and tool-node projections of the previous build and
- * reuses each one whose source is unchanged. Its output is equal, field for field and in key
- * order, to `createGraphStoreSnapshot` over the same state; unchanged runs, stages and tool
- * nodes are additionally the same frozen objects as in the previous build.
- *
- * A source counts as unchanged when it is the same object holding the same own fields by
- * identity, its in-place grown arrays have the same length and tail, and no store change
- * scoped to it (`markChanged`) arrived since the previous build. A change scoped to a run
- * re-projects that run's own fields and checks each of its stages that way, one scoped to a
- * stage or tool node re-projects that node, and an unscoped one re-projects everything, which
- * keeps in-place edits of nested values made through store methods visible.
- *
- * A stage that had completed, failed or been skipped when it was projected is settled: its fields are not checked
- * again until a change scoped to it, to its run, or to the whole store arrives. Executor code edits a settled stage
- * only next to a store method scoped to that stage, so a change scoped to another stage, which a long run makes
- * thousands of times, costs the stages it names and the ones still running rather than every stage the run finished
- * (#4642). Stages still running are checked field by field on every build, as before.
- */
 /** The builder that built each graph snapshot, so derived views can reuse what they derived from its earlier ones. */
 const snapshotLineages = new WeakMap<StoreSnapshot, object>();
 
@@ -330,6 +315,12 @@ export function graphSnapshotLineage(snapshot: StoreSnapshot): object | undefine
 }
 
 export class GraphStoreSnapshotBuilder {
+	private readonly full: boolean;
+
+	constructor(options: { readonly fullPayloads?: boolean } = {}) {
+		this.full = options.fullPayloads ?? false;
+	}
+
 	/** By run id; an unscoped change drops them all, so a removed run's payloads do not outlive it. */
 	private projected = new Map<string, ProjectedRun>();
 	private readonly changedRuns = new Set<string>();
@@ -442,7 +433,7 @@ export class GraphStoreSnapshotBuilder {
 		const appendedFrom = sources.length;
 		const compactStages = previous.stages.slice();
 		for (const position of changed) {
-			const stage = projectStage(sources[position]!);
+			const stage = projectStage(sources[position]!, this.full);
 			projected.stages[position] = stage;
 			compactStages[position] = stage.compact;
 			if (stage.settled) projected.unsettled.delete(position);
@@ -450,7 +441,7 @@ export class GraphStoreSnapshotBuilder {
 		}
 		for (let position = sources.length; position < run.stages.length; position++) {
 			const source = run.stages[position]!;
-			const stage = projectStage(source);
+			const stage = projectStage(source, this.full);
 			sources.push(source);
 			projected.stages.push(stage);
 			compactStages.push(stage.compact);
@@ -459,7 +450,7 @@ export class GraphStoreSnapshotBuilder {
 			else projected.stagePositions.set(source.id, position);
 		}
 		const compact: RunSnapshot = { ...previous, stages: compactStages };
-		freezeCompactRun(compact);
+		freezeCompactRun(compact, this.full);
 		indexRunFrom(compact, previous, changed, appendedFrom);
 		projected.compact = compact;
 		return projected;
@@ -480,7 +471,7 @@ export class GraphStoreSnapshotBuilder {
 		for (const stage of run.stages) {
 			let projected = previousStages.get(stage);
 			if (projected === undefined || changedStages?.has(stage.id) === true || !stageUnchanged(stage, projected))
-				projected = projectStage(stage);
+				projected = projectStage(stage, this.full);
 			previousStages.set(stage, projected);
 			const position = stages.length;
 			stageSources.push(stage);
@@ -496,12 +487,12 @@ export class GraphStoreSnapshotBuilder {
 		for (const node of run.toolNodes) {
 			let projected = toolNodes.get(node) ?? previous?.toolNodes.get(node);
 			if (projected === undefined || changedToolNodes?.has(node.id) === true || !toolNodeUnchanged(node, projected))
-				projected = projectToolNode(node);
+				projected = projectToolNode(node, this.full);
 			toolNodes.set(node, projected);
 			compactToolNodes.push(projected.compact);
 		}
-		const compact = compactRun(run, compactStages, compactToolNodes);
-		freezeCompactRun(compact);
+		const compact = compactRun(run, compactStages, compactToolNodes, this.full);
+		freezeCompactRun(compact, this.full);
 		return {
 			source: run,
 			shape: sourceShape(run),

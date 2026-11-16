@@ -80,10 +80,6 @@ export interface OverlayPiSurface {
  */
 /** How a caller opens the graph: where Esc at the graph's top goes back to. */
 export interface GraphOverlayOpenOptions {
-	/**
-	 * Called after the graph hides when Esc pops the graph itself, so the view that
-	 * opened it, such as a workflow list, can show again. Without it the graph returns to main chat.
-	 */
 	readonly onReturn?: () => void;
 }
 

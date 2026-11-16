@@ -6,22 +6,20 @@ import type { GraphTheme } from "./graph-theme.js";
 
 export type GraphViewMode = "overlay" | "widget";
 
-/** Where a fork from a stage starts, or why it can't. */
 export type GraphForkTargetResult =
 	| {
 			readonly ok: true;
 			readonly stagePath: string;
-			/** Completed tool steps at or after the stage that the fork runs again. */
+
 			readonly rerunToolSteps: number;
-			/** Whether the source is still live in this session, so forking stops it first. */
+
 			readonly live: boolean;
 	  }
 	| { readonly ok: false; readonly message: string };
 
-/** What a graph that shows another run in its place hands to the new one. */
 export interface GraphViewCarry {
 	readonly notice?: { readonly text: string; readonly tone: "info" | "error" };
-	/** Graph node id to focus, when the new run has it. */
+
 	readonly focusStageId?: string;
 }
 
@@ -42,10 +40,7 @@ export interface GraphStageActions {
 	stop?(runId: string, stageId: string): Promise<GraphStageActionResult>;
 	/** Continue a failed run from this failed stage: completed stages are kept and the stage runs again (`r`). */
 	retry?(runId: string, stageId: string): Promise<GraphStageActionResult>;
-	/**
-	 * Where a fork from this stage of root run `rootRunId` would start, and what it reruns: asked before `f` forks, so
-	 * the user confirms (#5224).
-	 */
+
 	forkTarget?(rootRunId: string, stageId: string): Promise<GraphForkTargetResult>;
 	fork?(rootRunId: string, stageId: string): Promise<GraphStageActionResult>;
 }
@@ -79,9 +74,9 @@ export interface GraphViewOpts {
 	onDetach?: () => void;
 	/** Stop, retry and fork controls for a focused stage. */
 	stageActions?: GraphStageActions;
-	/** Show another run in this graph, such as the run a fork started, carrying the message and focus across. */
+
 	onShowRun?: (runId: string, carry?: GraphViewCarry) => void;
-	/** A message and focus carried over from the graph this one replaced. */
+
 	carry?: GraphViewCarry;
 	/**
 	 * When provided, GraphView restores focus to this stage on construction.

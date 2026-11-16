@@ -129,14 +129,13 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 		if (detail === null) return false;
 		const confirm = this.forkConfirm;
 		if (confirm !== null) {
-			// The one-line fork confirmation owns the keys until it is answered.
 			if (matchesKey(data, Key.enter) && this.stageActions?.fork) {
 				this.forkConfirm = null;
 				this._runStageAction(
 					this.stageActions.fork(confirm.rootRunId, confirm.stageId),
 					`Forking from ${confirm.name}\u2026`,
 					{
-						nodeId: confirm.nodeId,
+						focusStageId: detail.stageId,
 					},
 				);
 			} else if (matchesKey(data, Key.escape)) {
@@ -164,21 +163,20 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 		}
 		const stage = this._stageDetailStage();
 		const name = stage?.name ?? detail.stageId;
-		// One action at a time: a second `r` or `f` while the first is in flight does nothing.
+
 		if ((matchesKey(data, "r") || matchesKey(data, "f")) && this.stageActionInFlight) return true;
 		if (matchesKey(data, "r") && this.stageActions?.retry) {
 			const failedAt = stage?.endedAt;
 			this._runStageAction(this.stageActions.retry(detail.runId, detail.stageId), `Retrying ${name}\u2026`, {
-				nodeId: detail.nodeId,
+				focusStageId: detail.stageId,
 				onSameRun: () => {
-					// Stay on the stage and say if it fails again.
 					this.retryWatch = { nodeId: detail.nodeId, failedAt, sawRetry: false };
 				},
 			});
 			return true;
 		}
 		if (matchesKey(data, "f") && this._forkAvailable()) {
-			this._askForkConfirmation(detail.stageId, detail.nodeId, name);
+			this._askForkConfirmation(detail.stageId, name);
 			return true;
 		}
 		if (matchesKey(data, "t") && this.onStageAttach) {
@@ -202,7 +200,7 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 	private _runStageAction(
 		result: Promise<GraphStageActionResult>,
 		progress: string,
-		options: { readonly nodeId?: string; readonly onSameRun?: () => void } = {},
+		options: { readonly focusStageId?: string; readonly onSameRun?: () => void } = {},
 	): void {
 		this.graphNotice = { text: progress, tone: "info", until: Date.now() + 60_000 };
 		this.stageActionInFlight = true;
@@ -214,9 +212,8 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 				const notice = { text: outcome.message, tone: outcome.ok ? ("info" as const) : ("error" as const) };
 				this.graphNotice = { ...notice, until: Date.now() + GRAPH_NOTICE_MS };
 				if (outcome.ok && outcome.runId !== undefined && outcome.runId !== this.runId) {
-					// Another run (a fork) is shown in its place, keeping the message and the stage in focus.
 					this._closeStageDetail();
-					this.onShowRun?.(outcome.runId, { notice, focusStageId: options.nodeId });
+					this.onShowRun?.(outcome.runId, { notice, focusStageId: options.focusStageId });
 				} else if (outcome.ok) {
 					options.onSameRun?.();
 				}
@@ -237,13 +234,11 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 
 	private stageActionInFlight = false;
 
-	/** Whether `f` can fork: the host forks, and the graph knows its root run. */
 	private _forkAvailable(): boolean {
 		return this.stageActions?.fork !== undefined && this.stageActions.forkTarget !== undefined && this.runId !== null;
 	}
 
-	/** Look up where a fork from the stage starts, then ask, on one line, before forking. */
-	private _askForkConfirmation(stageId: string, nodeId: string, name: string): void {
+	private _askForkConfirmation(stageId: string, name: string): void {
 		const rootRunId = this.runId;
 		const detail = this.stageDetail;
 		const lookup = this.stageActions?.forkTarget;
@@ -273,7 +268,7 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 							? ""
 							: ` and ${target.rerunToolSteps} completed tool step${target.rerunToolSteps === 1 ? "" : "s"}`;
 					const stop = target.live ? " Stops this run first, resumably." : "";
-					this.forkConfirm = { rootRunId, stageId, nodeId, name };
+					this.forkConfirm = { rootRunId, stageId, name };
 					this.graphNotice = {
 						text: `Fork from ${name}: reruns it${tools} in a new run.${stop}`,
 						tone: "info",
@@ -323,7 +318,6 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 
 	private readonly stopConfirm = new TwoPressConfirm();
 
-	/** Call off a first `x`, and the prompt it showed, once the stage it named is no longer the focused one. */
 	private _disarmStop(): void {
 		this.stopConfirm.reset();
 		if (this.graphNotice?.arm === true) this.graphNotice = null;

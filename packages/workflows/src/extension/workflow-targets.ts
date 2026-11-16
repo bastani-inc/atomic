@@ -5,6 +5,7 @@ import {
 	expandWorkflowGraph,
 	stageMatchesExpandedIdentifier,
 } from "../shared/expanded-workflow-graph.js";
+import { expandedInspectionRun, readInspectionStoreSnapshot } from "../shared/inspection-store-snapshot.js";
 import {
 	isFullRunId,
 	isResolvedRunId,
@@ -47,15 +48,8 @@ export function inFlightRunCount(): number {
 }
 
 export function topLevelExpandedSnapshots(activeStore: Store = store) {
-	const snapshot = activeStore.snapshot();
-	return topLevelWorkflowRuns(snapshot.runs).map((run) => {
-		const graph = expandWorkflowGraph(snapshot, run.id);
-		return {
-			...structuredClone(run),
-			stages: graph.stages.map((stage) => structuredClone(stage)),
-			toolNodes: graph.tools.map((tool) => structuredClone(tool)),
-		};
-	});
+	const snapshot = readInspectionStoreSnapshot(activeStore);
+	return topLevelWorkflowRuns(snapshot.runs).map((run) => expandedInspectionRun(snapshot, run.id)!);
 }
 
 export function allStageConflictMessage(action: "pause" | "quit"): string {

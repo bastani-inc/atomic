@@ -395,6 +395,7 @@ export interface Store {
 	 * direct mutation of values returned by `runs()` would leave this cache stale.
 	 */
 	graphSnapshot(): StoreSnapshot;
+	inspectionSnapshot?(): StoreSnapshot;
 	/**
 	 * The run of `graphSnapshot()` with this id, without projecting the other runs of a store
 	 * version that has no graph snapshot yet (#4009).

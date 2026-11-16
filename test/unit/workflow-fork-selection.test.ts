@@ -313,6 +313,42 @@ test("the graph fork confirmation counts tool calls once across replay and exclu
 	});
 });
 
+test("a loaded graph fork lookup reads only new journal events and keeps record order across clock changes (#5234)", async () => {
+	const backend = await createMemoryTestBackend();
+	const sourceId = testRunId("fork-lookup-tail");
+	await register(backend, sourceId, { status: "failed" });
+	await commit(backend, [
+		stage(sourceId, "plan", "plan", "plan:1", { output: "ok", completedAt: 100, ...topo("plan-id", "completed") }),
+		stage(sourceId, "verify-start", "verify", "verify:1", { completedAt: 5, ...topo("verify-id", "running") }),
+		tool(sourceId, "inside", {
+			completedAt: 3,
+			topology: { version: 1, nodeId: "tool:inside", parentIds: [], ordinal: 1, order: 1 },
+		}),
+		stage(sourceId, "verify-failed", "verify", "verify:1", { completedAt: 1, ...topo("verify-id", "failed") }),
+	]);
+	const reads = vi.spyOn(backend.journal, "read");
+	assert.deepEqual(await durableForkTarget(backend, sourceId, "verify-id"), {
+		stagePath: "verify",
+		completed: false,
+		rerunToolSteps: 1,
+	});
+	assert.ok(
+		reads.mock.calls.every(([, fromSeq]) => (fromSeq ?? 1) > 1),
+		"a loaded lookup never replays the journal from its start",
+	);
+	await backend.retainCheckpoints(sourceId, { ids: [], prefixes: [] });
+	reads.mockClear();
+	assert.deepEqual(await durableForkTarget(backend, sourceId, "verify-id"), {
+		stagePath: "verify",
+		completed: false,
+		rerunToolSteps: 1,
+	});
+	assert.ok(
+		reads.mock.calls.some(([, fromSeq]) => (fromSeq ?? 1) === 1),
+		"a narrowed view loads the missing records instead of using an incomplete projection",
+	);
+});
+
 test("a failed nested workflow boundary is a fork target in the graph (#5234)", async () => {
 	const backend = await createMemoryTestBackend();
 	const store = createStore();

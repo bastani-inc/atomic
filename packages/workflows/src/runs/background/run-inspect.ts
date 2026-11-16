@@ -15,7 +15,7 @@ import {
 	isImpossibleRootLiveness,
 } from "../../engine/run-liveness.js";
 import type { ToolControlRegistry } from "../../engine/run-tool-control-registry.js";
-import { expandWorkflowGraph } from "../../shared/expanded-workflow-graph.js";
+import { expandedInspectionRun, readInspectionStoreSnapshot } from "../../shared/inspection-store-snapshot.js";
 import { type StagePredictionStatus, stagePredictionStatus } from "../../shared/possible-stage-prediction.js";
 import {
 	actionableReturnedStatusText,
@@ -33,6 +33,7 @@ import { store as defaultStore } from "../../shared/store.js";
 import type { RunSnapshot, RunStatus } from "../../shared/store-types.js";
 import type { WorkflowInputValues, WorkflowOutputValues } from "../../shared/types.js";
 import { workflowIdentity } from "../../shared/workflow-identity.js";
+import { findSnapshotRun } from "../../shared/workflow-run-ownership.js";
 import { expandedControlRunIds } from "./workflow-lifecycle-aggregate.js";
 
 /**
@@ -118,10 +119,10 @@ export function inspectRun(
 		return { ok: false, runId, reason: "not_found" };
 	}
 
-	// Deep copy so callers cannot mutate the store via the snapshot.
-	const copy = structuredClone(candidate);
-	const expandedGraph = expandWorkflowGraph(activeStore.snapshot(), copy.id);
-	const expandedStages = expandedGraph.stages;
+	const snapshot = readInspectionStoreSnapshot(activeStore);
+	const copy = findSnapshotRun(snapshot.runs, candidate.id)!;
+	const expanded = expandedInspectionRun(snapshot, copy.id)!;
+	const expandedStages = expanded.stages;
 	const now = opts?.now ?? Date.now();
 	const hasActiveControlNode = hasActiveTaskCheckpointControl(
 		expandedControlRunIds(activeStore, copy.id).flatMap((id) =>
@@ -150,8 +151,8 @@ export function inspectRun(
 		resumedAt: copy.resumedAt,
 		accumulatedDurationMs: copy.accumulatedDurationMs,
 		inputs: copy.inputs,
-		stages: expandedStages.map((stage) => structuredClone(stage)),
-		tools: expandedGraph.tools.map((tool) => structuredClone(tool)),
+		stages: expandedStages,
+		tools: expanded.toolNodes,
 		...boundStickyDeliveryStates(
 			stickyStageDeliveryStatuses(
 				activeStore.runs(),

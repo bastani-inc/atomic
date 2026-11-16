@@ -19,15 +19,17 @@
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { CONFIG_DIR_NAME } from "@bastani/atomic";
+import { readInspectionStoreSnapshot } from "../shared/inspection-store-snapshot.js";
 import type { Store } from "../shared/store.js";
-import type { StoreSnapshot } from "../shared/store-types.js";
 import type { WorkflowRuntimeConfig } from "../shared/types.js";
+import { StatusSnapshotSerializer } from "./status-snapshot-serializer.js";
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 const DEFAULT_STATUS_SUBPATH = join(CONFIG_DIR_NAME, "workflows", "status.json");
+const STATUS_WRITE_INTERVAL_MS = 16;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -88,19 +90,6 @@ export async function atomicWriteJson(path: string, content: string): Promise<vo
 // Factory
 // ---------------------------------------------------------------------------
 
-/**
- * Create a status writer that flushes StoreSnapshot to a JSON file on every
- * store update.
- *
- * Returns a no-op writer when config.statusFile is false.
- *
- * @example
- * ```ts
- * const writer = createStatusWriter(store, runtimeConfig, { projectRoot: process.cwd() });
- * // ... later on shutdown:
- * writer.unsubscribe();
- * ```
- */
 export function createStatusWriter(
 	store: Store,
 	config: WorkflowRuntimeConfig,
@@ -118,8 +107,9 @@ export function createStatusWriter(
 
 	let active = true;
 	let writing = false;
-	let pendingContent: string | null = null;
+	let pending = false;
 	let drainPromise: Promise<void> | null = null;
+	const serializer = new StatusSnapshotSerializer();
 
 	function recordWriteError(err: unknown): void {
 		const msg = err instanceof Error ? err.message : String(err);
@@ -138,15 +128,19 @@ export function createStatusWriter(
 		if (writing) return;
 		writing = true;
 		try {
-			while (active && pendingContent !== null) {
-				const content = pendingContent;
-				pendingContent = null;
+			while (active && pending) {
+				await new Promise<void>((resolve) => setTimeout(resolve, STATUS_WRITE_INTERVAL_MS));
+				if (!active) break;
+				pending = false;
 				try {
+					await mkdir(dirname(filePath), { recursive: true });
+					if (!active) break;
+					const content = await serializer.serialize(readInspectionStoreSnapshot(store));
+					if (!active) break;
 					await atomicWriteJson(filePath, content);
-					// Clear error dedup on successful write.
 					lastErrorMessage = null;
 				} catch (err: unknown) {
-					recordWriteError(err);
+					if (active) recordWriteError(err);
 				}
 			}
 		} finally {
@@ -157,26 +151,27 @@ export function createStatusWriter(
 	function ensureDrain(): Promise<void> {
 		drainPromise ??= drainWrites().finally(() => {
 			drainPromise = null;
-			if (active && pendingContent !== null) void ensureDrain();
+			if (active && pending) void ensureDrain();
 		});
 		return drainPromise;
 	}
 
-	const unsubscribeStore = store.subscribe((snap: StoreSnapshot) => {
-		pendingContent = JSON.stringify(snap, null, 2);
+	const unsubscribeStore = store.subscribeInvalidation(() => {
+		pending = true;
 		void ensureDrain();
 	});
 
 	return {
 		async flush() {
-			while (active && (pendingContent !== null || drainPromise !== null)) {
+			while (active && (pending || drainPromise !== null)) {
 				await ensureDrain();
 			}
 		},
 		unsubscribe() {
 			active = false;
-			pendingContent = null;
+			pending = false;
 			unsubscribeStore();
+			serializer.close();
 		},
 	};
 }

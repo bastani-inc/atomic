@@ -1408,6 +1408,17 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	listCheckpoints(runId: string) {
 		return this.projection.listCheckpoints(runId);
 	}
+	async readCheckpointSequence(runId: string): Promise<readonly DurableCheckpoint[] | undefined> {
+		if (
+			this.projection.getWorkflow(runId) === undefined ||
+			this.summarized.has(runId) ||
+			this.lacksChildCheckpoints(runId) ||
+			this.checkpointSelections.has(runId)
+		)
+			return undefined;
+		await this.catchUpWorkflow(runId);
+		return this.projection.recordedCheckpoints(runId);
+	}
 	/** One stage checkpoint by id, for callers that would otherwise scan `listCheckpoints` per lookup. */
 	getStageCheckpoint(runId: string, checkpointId: string) {
 		return this.projection.getStageCheckpoint(runId, checkpointId);

@@ -49,7 +49,7 @@ export class WorkflowAttachPane implements Component {
 	private onHide?: () => void;
 	private onBack?: () => void;
 	private stageActions?: WorkflowAttachPaneOpts["stageActions"];
-	/** The message and focus a graph that showed another run hands to the graph built for it. */
+
 	private pendingGraphCarry: import("./graph-view-types.js").GraphViewCarry | undefined;
 	private _takeGraphCarry(): import("./graph-view-types.js").GraphViewCarry | undefined {
 		const carry = this.pendingGraphCarry;

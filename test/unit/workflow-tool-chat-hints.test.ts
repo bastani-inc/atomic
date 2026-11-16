@@ -9,13 +9,12 @@ import type { StageSnapshot, ToolNodeSnapshot } from "../../packages/workflows/s
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import { defaultTheme, visibleText } from "./overlay-graph-helpers.js";
 
-/** A lone node has nowhere to move, so the footer lists no arrows (#5224). */
 const STAGE_FOOTER = "esc back  ·  ↵ open stage chat  ·  / stages";
 /** A focused tool node activates its read-only detail with the same key. */
 const TOOL_FOOTER = "esc back  ·  ↵ open tool detail  ·  / stages";
 /** Nothing focused can be activated: the `↵` segment drops out entirely. */
 const NO_ACTIVATION_FOOTER = "esc back  ·  / stages";
-/** In a tool → stage chain, the footer lists only the arrow that moves from the focused node. */
+
 const CHAIN_TOOL_FOOTER = "esc back  ·  ↵ open tool detail  ·  ↓ move  ·  / stages";
 const CHAIN_STAGE_FOOTER = "esc back  ·  ↵ open stage chat  ·  ↑ move  ·  / stages";
 const STAGE_SWITCHER = "↑↓ select · ↵ open stage chat · esc close";

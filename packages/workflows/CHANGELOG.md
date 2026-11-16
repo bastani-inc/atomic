@@ -29,7 +29,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Enter on a failed stage opens its failure detail: a one-line reason instead of the raw error, with `r` to retry the stage, `f` to confirm a new run starting from that stage, `t` for the transcript and `l` for the full log ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - Stopped stages and runs show a muted `◼` instead of `⊘`, so they no longer look like failures or skips ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - `/workflows` with no runs shows a dismissible "No workflows in this session." sheet. Returning from a graph to its run list preserves the selected row ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
-- The workflow graph caches navigation and layout indexes, draws only visible nodes and edges, and combines status bursts into one frame. Queued-message badges reuse the current snapshot instead of reading the store once per stage. Idle failure confirmations no longer trigger repeated paints.
+- The workflow graph caches navigation and layout indexes, draws only visible nodes and edges, and combines status bursts into one frame. Queued-message badges reuse the current snapshot instead of reading the store once per stage. Idle failure confirmations no longer trigger repeated paints. Status polling reuses full raw views instead of repeatedly copying every stage's history, and optional status-file writes serialize off the UI thread without dropping output fields.
 
 ### Fixed
 

@@ -311,6 +311,61 @@ describe("workflow graph navigation and stage actions (#5224)", () => {
 		},
 	);
 
+	it("a fork keeps a nested failed stage focused when its child run gets a new identity (#5234)", async () => {
+		const snap = makeSnap([]);
+		snap.runs = ["1", "2"].flatMap((suffix) => {
+			const runId = `run-${suffix}`;
+			const childId = `child-${suffix}`;
+			return [
+				{
+					...h.makeRun([
+						stage("pre", "completed"),
+						stage(
+							"boundary",
+							"completed",
+							{ workflowChildRun: { alias: "child", workflow: "child", runId: childId } },
+							["pre"],
+						),
+					]),
+					id: runId,
+				},
+				{
+					...h.makeRun([stage("verify", "failed", { error: "boom" })]),
+					id: childId,
+					name: "child",
+					parentRunId: runId,
+					parentStageId: "boundary",
+					rootRunId: runId,
+					status: "completed",
+				},
+			];
+		});
+		const pane = new WorkflowAttachPane({
+			store: makeStore(snap),
+			runId: "run-1",
+			graphTheme: defaultTheme,
+			piKeybindings: makeFakeKeybindings(),
+			onClose: () => {},
+			stageActions: {
+				forkTarget: async () => ({ ok: true, stagePath: "child.verify", rerunToolSteps: 0, live: false }),
+				fork: async () => ({ ok: true, message: "forked", runId: "run-2" }),
+			},
+		});
+		try {
+			pane.handleInput(DOWN);
+			pane.handleInput(ENTER);
+			assert.match(stripAnsi(pane.render(160).join("\n")), /Reason\s+boom/);
+			pane.handleInput("f");
+			await settle();
+			pane.handleInput(ENTER);
+			await settle();
+			assert.equal(pane._runId, "run-2");
+			assert.match(stripAnsi(pane.render(160).join("\n")), /open failure detail/);
+		} finally {
+			pane.dispose();
+		}
+	});
+
 	it("a retained graph can show a newly forked run after being hidden and shown (#5234)", async () => {
 		const snap = makeSnap([stage("verify", "failed")]);
 		snap.runs.push({ ...snap.runs[0], id: "run-2" });

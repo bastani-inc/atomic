@@ -51,7 +51,6 @@ export function openWorkflowRun(
 }
 
 export interface WorkflowsCommandOptions {
-	/** The run the list selects when it opens: the one a graph returning to it was opened from. */
 	readonly selectRunId?: string;
 }
 
@@ -93,12 +92,11 @@ export async function handleWorkflowsCommand(
 		return reporter.info(renderSessionList(store.runs(), { theme, includeAll: true }));
 	const picked = await openSessionPicker(ctx.ui, store, theme, "connect", options.selectRunId);
 	if (picked.kind !== "connect") return;
-	// Back from the graph, the list opens again on the run it was opened from.
+
 	const reopen = (): void => void handleWorkflowsCommand("", ctx, reporter, deps, { selectRunId: picked.runId });
 	openWorkflowRun(picked.runId, ctx, deps, { onReturn: reopen });
 }
 
-/** The small sheet an empty `/workflows` shows in place of the editor, until Esc closes it. */
 function showWorkflowsEmptySheet(custom: PiCustomOverlayFunction, theme: GraphTheme): Promise<void> {
 	return new Promise<void>((resolve) => {
 		let settled = false;

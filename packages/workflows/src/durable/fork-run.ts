@@ -380,15 +380,8 @@ function forkPointRecords(checkpoints: readonly CheckpointEvent[], rootRunId: st
 	return records;
 }
 
-/** Stage statuses a stage that started but did not finish may be forked from: never one still running or waiting. */
 const UNFINISHED_FORK_TARGET_STATUSES: ReadonlySet<string> = new Set(["failed", "blocked", "paused", "suspended"]);
 
-/**
- * Stages of a run that started but never finished and ended failed, blocked or stopped, each with a dot path that
- * continues the occurrence numbering of the completed stages: the other stages `fromStage` may name (#5224). A fork
- * from one cuts at its first record, so it and everything after it run again from scratch. `listForkPoints` does not
- * list them.
- */
 function unfinishedForkTargetRecords(
 	checkpoints: readonly CheckpointEvent[],
 	rootRunId: string,
@@ -440,7 +433,6 @@ function unfinishedForkTargetRecords(
 	return records;
 }
 
-/** A stage `fromStage` may name: completed stages by path, then stages that stopped unfinished (#5224). */
 function forkTargetRecords(
 	checkpoints: readonly CheckpointEvent[],
 	rootRunId: string,
@@ -541,27 +533,32 @@ async function loadPoolSession(sessions: SourceSessions, sessionId: string, cont
 	}
 }
 
-/** A stage a fork can start from, found by the graph's stage id: its `fromStage` path and what forking from it reruns. */
 export interface DurableForkTarget {
 	readonly stagePath: string;
-	/** Whether the stage completed; otherwise it stopped unfinished, and the fork reruns it from scratch. */
+
 	readonly completed: boolean;
-	/** Completed `ctx.tool` steps recorded at or after the stage's first record: the fork runs each of them again. */
+
 	readonly rerunToolSteps: number;
 }
 
-/**
- * The `fromStage` path of the stage with graph id `stageId` in root run `runId`, a completed stage or one that
- * stopped unfinished, with the completed tool steps a fork from it runs again; undefined when no fork can start there
- * (#5224). Read-only.
- */
 export async function durableForkTarget(
 	backend: DurableWorkflowBackend,
 	runId: string,
 	stageId: string,
 	options: Pick<ForkSourceOptions, "rootRunOf"> = {},
 ): Promise<DurableForkTarget | undefined> {
-	const source = await readForkSource(forkJournal(backend), runId, options.rootRunOf);
+	const journalBackend = forkJournal(backend);
+	const handle = backend.getWorkflow(runId);
+	const loaded =
+		isFullRunId(runId) && (handle?.rootWorkflowId === undefined || handle.rootWorkflowId === runId)
+			? await inJournal(journalBackend.journal, { runId, phase: "read" }, () =>
+					journalBackend.readCheckpointSequence(runId),
+				)
+			: undefined;
+	const source =
+		loaded === undefined
+			? await readForkSource(journalBackend, runId, options.rootRunOf)
+			: { runId, checkpoints: loaded.map((checkpoint, seq) => ({ seq, checkpoint })) };
 	const { completed, unfinished } = forkTargetRecords(source.checkpoints, source.runId);
 	const byStage = (record: ForkPointRecord) => record.firstTopology?.stageId === stageId;
 	const record = completed.findLast(byStage) ?? unfinished.findLast(byStage);
