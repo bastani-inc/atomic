@@ -75,6 +75,15 @@ interface SettledStorageHome {
 
 const fastStorageHomes = new Map<string, SettledStorageHome>();
 const settledStorageHomes = new Map<string, SettledStorageHome>();
+let lastStorageHome:
+	| {
+			readonly platform: NodeJS.Platform;
+			readonly rawHome: string;
+			readonly rawAgentDir: string;
+			readonly cwd: string | undefined;
+			readonly entry: SettledStorageHome;
+	  }
+	| undefined;
 
 /**
  * What a file is, whatever path names it: its device and inode (a hard link shares both, a symlink resolves to them),
@@ -432,6 +441,7 @@ function canClaimParentStore(parent: string, agentPath: string, defaultAgent: st
 }
 
 function recordSettledStorageHome(fastKey: string, cacheKey: string, settled: SettledStorageHome): SettledStorageHome {
+	lastStorageHome = undefined;
 	settledStorageHomes.set(cacheKey, settled);
 	fastStorageHomes.set(fastKey, settled);
 	return settled;
@@ -440,11 +450,26 @@ function recordSettledStorageHome(fastKey: string, cacheKey: string, settled: Se
 function resolveStorageHomeEntry(agentDir?: string, settings?: StorageHomeSettings): SettledStorageHome {
 	const rawHome = getHomeDir();
 	const rawAgentDir = agentDir ?? resolveConfiguredAgentDir(rawHome);
-	const fastKey = isAbsolute(rawAgentDir)
-		? `${process.platform}\0${rawHome}\0${rawAgentDir}`
-		: `${process.platform}\0${rawHome}\0${process.cwd()}\0${rawAgentDir}`;
+	const platform = process.platform;
+	const cwd = isAbsolute(rawAgentDir) ? undefined : process.cwd();
+	const last = lastStorageHome;
+	if (
+		last !== undefined &&
+		last.platform === platform &&
+		last.rawHome === rawHome &&
+		last.rawAgentDir === rawAgentDir &&
+		last.cwd === cwd &&
+		(!last.entry.provisionalWithoutSettings || settings === undefined)
+	) {
+		return last.entry;
+	}
+	const fastKey =
+		cwd === undefined ? `${platform}\0${rawHome}\0${rawAgentDir}` : `${platform}\0${rawHome}\0${cwd}\0${rawAgentDir}`;
 	const fastHit = fastStorageHomes.get(fastKey);
-	if (fastHit !== undefined && (!fastHit.provisionalWithoutSettings || settings === undefined)) return fastHit;
+	if (fastHit !== undefined && (!fastHit.provisionalWithoutSettings || settings === undefined)) {
+		lastStorageHome = { platform, rawHome, rawAgentDir, cwd, entry: fastHit };
+		return fastHit;
+	}
 
 	const agentPath = normalizeAgentDirPath(rawAgentDir);
 	const defaultHome = normalizeAgentDirPath(join(rawHome, CONFIG_DIR_NAME));
@@ -602,4 +627,5 @@ export function takeStorageAdoptionNotice(agentDir?: string, settings?: StorageH
 export function resetStorageHomeCacheForTests(): void {
 	fastStorageHomes.clear();
 	settledStorageHomes.clear();
+	lastStorageHome = undefined;
 }

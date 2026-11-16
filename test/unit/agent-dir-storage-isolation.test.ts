@@ -1000,7 +1000,7 @@ test("cross-domain process environment variables and settings-blind lookups do n
 	const c1 = join(parent3, "c1");
 	mkdirSync(c1, { recursive: true });
 	writeFileSync(join(parent3, "late-settings.sqlite"), "");
-	assert.equal(storageHomeDir(c1), c1);
+	for (let lookup = 0; lookup < 3; lookup++) assert.equal(storageHomeDir(c1), c1);
 	assert.deepEqual(
 		selectSessionStorage(project, { agentDir: c1, settings: { storage: { path: "late-settings.sqlite" } } }),
 		{

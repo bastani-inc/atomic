@@ -138,6 +138,7 @@ function environmentChoices(agentDir: string, settleStorageHome = true) {
 		journal: read(WORKFLOWS_JOURNAL_ENV, StorageSelectionSchema, domainDefault),
 		shared: read(STORAGE_ENV, StorageSelectionSchema, sharedDefault),
 		team: team === undefined ? undefined : choose(team, "env", TEAM_PROFILE_ENV, baseDir, sharedDefault),
+		teamValue: team,
 	};
 }
 
@@ -217,7 +218,7 @@ export function selectProcessStorage(
 	if (validated.shared !== undefined) {
 		return resolveEnv(STORAGE_ENV, StorageSelectionSchema, sharedDefault);
 	}
-	const team = environmentTeamProfile();
+	const team = validated.teamValue;
 	return team === undefined ? undefined : choose(team, "env", TEAM_PROFILE_ENV, baseDir, sharedDefault);
 }
 
