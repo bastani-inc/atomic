@@ -3,7 +3,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, test } from "vitest";
-import { bunExecutable, moduleDir, readStreamText, spawnProcess, spawnSyncCollect } from "../helpers/runtime.js";
+import { bunExecutable, moduleDir, readStreamText, spawnProcess } from "../helpers/runtime.js";
 
 const repoRoot = join(moduleDir(import.meta.url), "../..");
 const packageDir = join(repoRoot, "packages/coding-agent");
@@ -18,46 +18,26 @@ const agentDir = join(foreignCwd, "agent");
  * is killed so it does not outlive the test.
  */
 const CLI_EXIT_LIMIT_MS = 90_000;
-/** Structural: a `tsc` build of the whole coding-agent package, which a loaded Windows run took most of a minute for. */
-const TSC_BUILD_ALLOWANCE_MS = 180_000;
 /** One CLI run from the sources. */
 const SOURCE_CLI_TEST_TIMEOUT_MS = CLI_EXIT_LIMIT_MS + 30_000;
-/** A `tsc` build, then three CLI runs from its output. */
-const BUILT_CLI_TEST_TIMEOUT_MS = TSC_BUILD_ALLOWANCE_MS + 3 * CLI_EXIT_LIMIT_MS;
+/** Structural: copying the package's build output, thousands of files, which a loaded Windows host is slow to write. */
+const DIST_COPY_ALLOWANCE_MS = 60_000;
+/** A copy of the build output, then three CLI runs from it. */
+const BUILT_CLI_TEST_TIMEOUT_MS = DIST_COPY_ALLOWANCE_MS + 3 * CLI_EXIT_LIMIT_MS;
 
 afterAll(() => {
 	rmSync(fixtureRoot, { recursive: true, force: true });
 	rmSync(foreignCwd, { recursive: true, force: true });
 });
 
-function compileFixture(): void {
-	const result = spawnSyncCollect({
-		cmd: [
-			bunExecutable(),
-			"x",
-			"--bun",
-			"--no-install",
-			"tsc",
-			"-p",
-			join(packageDir, "tsconfig.build.json"),
-			"--outDir",
-			distDir,
-		],
-		cwd: repoRoot,
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	assert.equal(result.exitCode, 0, `${result.stdout.toString()}\n${result.stderr.toString()}`);
-
-	cpSync(join(packageDir, "src/modes/interactive/theme"), join(distDir, "modes/interactive/theme"), {
-		recursive: true,
-		filter: (source) => !source.endsWith(".ts"),
-	});
-	cpSync(join(packageDir, "src/modes/interactive/assets"), join(distDir, "modes/interactive/assets"), {
-		recursive: true,
-	});
-	// #3105: the built CLI includes every shipped builtin, not only Intercom.
-	cpSync(join(packageDir, "dist/builtin"), join(distDir, "builtin"), { recursive: true });
+/**
+ * The built CLI is the package's own build output (`npm run build`, which also ships every builtin, #3105), copied to
+ * a tree of its own. Compiling the package again here instead ran a second `tsc` of the whole package per run, which a
+ * loaded host took minutes for, and which its memory limit killed when six runs shared one Linux host (#5252).
+ */
+function buildFixture(): void {
+	assert.ok(existsSync(join(packageDir, "dist/cli.js")), "build the package first: npm run build");
+	cpSync(join(packageDir, "dist"), distDir, { recursive: true });
 	mkdirSync(agentDir, { recursive: true });
 
 	// The standalone build copies package metadata into dist beside app.js. Running
@@ -137,7 +117,7 @@ describe("coding-agent asset paths", () => {
 	test(
 		"starts the built CLI from a foreign cwd when dist also contains package.json",
 		async () => {
-			compileFixture();
+			buildFixture();
 			assert.equal(existsSync(join(distDir, "modes/interactive/theme/dark.json")), true);
 
 			const result = await runCli(join(distDir, "cli.js"));

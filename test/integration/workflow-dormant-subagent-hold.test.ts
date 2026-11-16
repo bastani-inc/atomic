@@ -11,6 +11,10 @@ import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-
 import registerSubagentExtension from "../../packages/subagents/src/extension/index.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
 import {
+	WORKFLOW_DORMANT_RUN_SUBAGENT_HOLD_EVENT,
+	type WorkflowDormantRunSubagentHoldRequest,
+} from "../../packages/subagents/src/runs/foreground/subagent-child-hold.js";
+import {
 	createSubagentChildRecordSink,
 	readSubagentChildRecords,
 	type SubagentChildRecord,
@@ -46,11 +50,13 @@ const REAL_BROKER_TEST_TIMEOUT_MS = 90_000;
 const BROKER_START_WAIT_MS = 40_000;
 /** Starting the broker waits for it, then has room to fail with its own message. */
 const BROKER_START_HOOK_TIMEOUT_MS = BROKER_START_WAIT_MS + 5_000;
-const RECORD_WAIT_MS = 5_000;
+/** Waits for a condition the test caused (a record saved, a hold handed over, a revocation answered): load only slows them. */
+const CONDITION_WAIT_MS = REAL_BROKER_TEST_TIMEOUT_MS / 3;
+const RECORD_WAIT_MS = CONDITION_WAIT_MS;
 const SETTLE_MS = 400;
 const HELD_PROBE_MS = 150;
-const HOLD_IN_PLACE_MS = 10_000;
-const REVOKE_WAIT_MS = 10_000;
+const HOLD_IN_PLACE_MS = CONDITION_WAIT_MS;
+const REVOKE_WAIT_MS = CONDITION_WAIT_MS;
 
 function taskHost(owner: string): AgentTaskHost {
 	return new AgentTaskHost({
@@ -237,9 +243,17 @@ async function restartedLauncher(run: InterruptedRun) {
 		],
 		intercom: intercomLightweight,
 	});
+	// The workflows extension asks the subagents extension to hold the run's subagents; each answer says when its holds
+	// are in place at the broker. Read once the run was examined: the subagents extension answers as the request is made.
+	const holdRequests: WorkflowDormantRunSubagentHoldRequest[] = [];
+	launcher.events.on(WORKFLOW_DORMANT_RUN_SUBAGENT_HOLD_EVENT, (payload) => {
+		holdRequests.push(payload as WorkflowDormantRunSubagentHoldRequest);
+	});
 	await launcher.start();
 	assert.ok(dormant);
 	await dormant.settled();
+	// Wait for the broker to hold the subagents, however long a loaded host takes, instead of probing against a deadline.
+	await Promise.all(holdRequests.map(async (request) => (await request.completion)?.ready));
 	return {
 		launcher,
 		async stop() {
