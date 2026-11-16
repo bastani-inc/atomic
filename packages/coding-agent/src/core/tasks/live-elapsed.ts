@@ -2,10 +2,12 @@ const seen = new Map<string, { readonly since: number; frozen?: number }>();
 const frozenTasks = new Set<string>();
 const MAX_FINISHED_TASKS = 2048;
 
-/**
- * `reportedMs` advanced by the time since the task was first seen running. Once it stops running, the time it reached
- * stays (or `reportedMs`, when the task reports more).
- */
+export function isRunningTaskClock(kindOrState: string): boolean {
+	return (
+		kindOrState === "running" || kindOrState === "cancelling" || kindOrState === "input" || kindOrState === "stopping"
+	);
+}
+
 export function liveElapsedMs(
 	taskId: string,
 	reportedMs: number | undefined,
@@ -34,16 +36,10 @@ export function liveElapsedMs(
 	return Math.max(reportedMs ?? 0, now - entry.since);
 }
 
-/** Records the running state of every task in `tasks` now: a task that just stopped keeps the time it reached. */
 export function observeTaskClocks(
 	tasks: readonly { ref: { taskId: string }; execution: { kind: string }; metrics?: { elapsedMs?: number } }[],
 	now = Date.now(),
 ): void {
 	for (const task of tasks)
-		liveElapsedMs(
-			task.ref.taskId,
-			task.metrics?.elapsedMs,
-			task.execution.kind === "running" || task.execution.kind === "cancelling",
-			now,
-		);
+		liveElapsedMs(task.ref.taskId, task.metrics?.elapsedMs, isRunningTaskClock(task.execution.kind), now);
 }

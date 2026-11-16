@@ -7,7 +7,7 @@ import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import type { RunSnapshot, RunStatus, StageSnapshot, StoreSnapshot, WorkflowNotice } from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
 import { sanitizeToolDisplayText } from "../shared/tool-payload-bounds.js";
-import { findSnapshotRun, findSnapshotStage } from "../shared/workflow-run-ownership.js";
+import { findSnapshotRun, findSnapshotStage, isPublishedSnapshotArray } from "../shared/workflow-run-ownership.js";
 import { pendingInputAffordance, stripTerminalControls } from "./pending-input-affordance.js";
 
 const REASON_WIDTH = 120;
@@ -87,26 +87,47 @@ interface CachedPanelRun {
 	readonly item: AgentPanelItem;
 }
 
-const snapshotItems = new WeakMap<StoreSnapshot, readonly CachedPanelRun[]>();
+const snapshotItems = new WeakMap<object, readonly CachedPanelRun[]>();
+
+function isPublishedGraphRuns(runs: readonly RunSnapshot[]): boolean {
+	if (runs.length === 0 || !Object.isFrozen(runs)) return false;
+	for (const run of runs) {
+		if (!Object.isFrozen(run) || !isPublishedSnapshotArray(run.stages) || !isPublishedSnapshotArray(run.toolNodes)) {
+			return false;
+		}
+	}
+	return true;
+}
 
 function toStoreSnapshot(runsOrSnapshot: readonly RunSnapshot[] | StoreSnapshot): {
 	readonly snapshot: StoreSnapshot;
-	readonly cacheable: boolean;
+	readonly cacheKey: object | undefined;
 } {
-	const snapshot = Array.isArray(runsOrSnapshot)
-		? { runs: runsOrSnapshot as readonly RunSnapshot[], notices: EMPTY_NOTICES, version: 0 }
-		: (runsOrSnapshot as StoreSnapshot);
-	if (graphSnapshotLineage(snapshot) !== undefined) return { snapshot, cacheable: true };
-	return { snapshot: { ...snapshot, runs: snapshot.runs.map((run) => ({ ...run })) }, cacheable: false };
+	if (Array.isArray(runsOrSnapshot)) {
+		const runs = runsOrSnapshot as readonly RunSnapshot[];
+		if (isPublishedGraphRuns(runs)) {
+			return {
+				snapshot: { runs, notices: EMPTY_NOTICES, version: 0 },
+				cacheKey: runs,
+			};
+		}
+		return {
+			snapshot: { runs: runs.map((run) => ({ ...run })), notices: EMPTY_NOTICES, version: 0 },
+			cacheKey: undefined,
+		};
+	}
+	const snapshot = runsOrSnapshot as StoreSnapshot;
+	if (graphSnapshotLineage(snapshot) !== undefined) return { snapshot, cacheKey: snapshot.runs };
+	return { snapshot: { ...snapshot, runs: snapshot.runs.map((run) => ({ ...run })) }, cacheKey: undefined };
 }
 
 export function panelItemsFromSnapshot(
 	runsOrSnapshot: readonly RunSnapshot[] | StoreSnapshot,
 	now = Date.now(),
 ): AgentPanelItem[] {
-	const { snapshot, cacheable } = toStoreSnapshot(runsOrSnapshot);
-	if (cacheable) {
-		const cached = snapshotItems.get(snapshot);
+	const { snapshot, cacheKey } = toStoreSnapshot(runsOrSnapshot);
+	if (cacheKey !== undefined) {
+		const cached = snapshotItems.get(cacheKey);
 		if (cached !== undefined) {
 			return cached.map(({ run, item }) => {
 				const elapsedMs = elapsedRunMs(run, run.endedAt ?? now);
@@ -162,8 +183,8 @@ export function panelItemsFromSnapshot(
 		return { run, item };
 	});
 
-	if (cacheable) {
-		snapshotItems.set(snapshot, built);
+	if (cacheKey !== undefined) {
+		snapshotItems.set(cacheKey, built);
 	}
 	return built.map(({ item }) => item);
 }

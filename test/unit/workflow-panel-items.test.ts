@@ -147,7 +147,7 @@ test("nested, dynamic and fan-out runs match the expanded graph's stage progress
 		),
 	);
 	const initialGraph = expandWorkflowGraph(store.graphSnapshot(), "root");
-	const [initialItem] = panelItemsFromSnapshot(store.graphSnapshot());
+	const [initialItem] = panelItemsFromSnapshot(store.runs());
 	assert.deepEqual(initialItem?.progress, {
 		done: initialGraph.stages.filter((s) => s.status === "completed").length,
 		total: initialGraph.stages.length,
@@ -163,7 +163,7 @@ test("nested, dynamic and fan-out runs match the expanded graph's stage progress
 		return { stageIds: ["step-3"] };
 	});
 	const updatedGraph = expandWorkflowGraph(store.graphSnapshot(), "root");
-	const [updatedItem] = panelItemsFromSnapshot(store.graphSnapshot());
+	const [updatedItem] = panelItemsFromSnapshot(store.runs());
 	assert.deepEqual(updatedItem?.progress, { done: 2, total: updatedGraph.stages.length });
 	assert.deepEqual(updatedItem?.progress, { done: 2, total: 5 });
 	assert.equal(updatedItem?.task, "stage step-3");
@@ -200,10 +200,11 @@ test("nested, dynamic and fan-out runs match the expanded graph's stage progress
 		}),
 	);
 	const fanoutGraph = expandWorkflowGraph(fanoutStore.graphSnapshot(), "fanout-root");
-	const [fanoutItem] = panelItemsFromSnapshot(fanoutStore.graphSnapshot());
+	const [fanoutItem] = panelItemsFromSnapshot(fanoutStore.runs());
 	assert.deepEqual(fanoutItem?.progress, { done: 3, total: fanoutGraph.stages.length });
 	assert.deepEqual(fanoutItem?.progress, { done: 3, total: 5 });
 	assert.equal(fanoutItem?.task, "stage merge");
+	assert.deepEqual(panelItemsFromSnapshot(fanoutStore.graphSnapshot())[0]?.progress, { done: 3, total: 5 });
 });
 
 test("a tools-only completed run omits empty stage progress and never renders a 0/0 bar (#5224)", () => {
@@ -326,15 +327,34 @@ test("cached snapshot projection does not rescan stages across frames and reflec
 	);
 	store.recordRunStart(run("large", "running", stages, { startedAt: 1_000 }));
 	const snapshot = store.graphSnapshot();
-	const first = panelItemsFromSnapshot(snapshot, 5_000);
+	const runs = snapshot.runs;
+	let statusReads = 0;
+	const countedStages = (runs[0]!.stages as StageSnapshot[]).map((s) => {
+		const currentStatus = s.status;
+		return Object.freeze(
+			Object.defineProperty({ ...s }, "status", {
+				enumerable: true,
+				get() {
+					statusReads++;
+					return currentStatus;
+				},
+			}),
+		);
+	});
+	(runs[0]!.stages as StageSnapshot[]).splice(0, countedStages.length, ...countedStages);
+	const first = panelItemsFromSnapshot(runs, 5_000);
+	const readsAfterFirst = statusReads;
+	assert.ok(readsAfterFirst > 0);
 	assert.equal(first[0]?.elapsedMs, 4_000);
 	assert.deepEqual(first[0]?.progress, { done: 199, total: 200 });
 	for (let frame = 1; frame <= 20; frame++) {
-		const next = panelItemsFromSnapshot(snapshot, 5_000 + frame * 1_000);
+		const next = panelItemsFromSnapshot(runs, 5_000 + frame * 1_000);
 		assert.equal(next[0]?.elapsedMs, 4_000 + frame * 1_000);
 		assert.deepEqual(next[0]?.progress, { done: 199, total: 200 });
 		assert.equal(next[0]?.progress, first[0]?.progress);
 	}
+	assert.equal(statusReads, readsAfterFirst);
+	assert.equal(panelItemsFromSnapshot(snapshot, 30_000)[0]?.progress, first[0]?.progress);
 
 	const a = stage("a", "completed");
 	const b = stage("b", "completed", { parentIds: ["a"] });

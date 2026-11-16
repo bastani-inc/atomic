@@ -10,7 +10,7 @@ import {
 } from "@bastani/atomic-tui";
 import type { KeybindingsManager } from "../../../core/keybindings.ts";
 import type { PromptRoute, TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
-import { liveElapsedMs } from "../../../core/tasks/live-elapsed.ts";
+import { isRunningTaskClock, liveElapsedMs } from "../../../core/tasks/live-elapsed.js";
 import { OwnerTaskStore } from "../../../core/tasks/owner-store.js";
 import { ownerTaskViewSource, type TaskViewSource } from "../../../core/tasks/task-view-source.js";
 import { theme } from "../theme/theme.js";
@@ -499,10 +499,12 @@ export class TaskInspector implements Component {
 	get fullscreen(): boolean {
 		return this.navigation.focus.kind === "detail" || this.navigation.focus.kind === "stdin";
 	}
-	/** The waiting first press of `x`, as the line under the list shows it. */
-	/** A running task's elapsed time advances between its own reports, on the clock every view shares. */
 	private withLiveElapsed(task: TaskRecord): TaskRecord {
-		const elapsedMs = liveElapsedMs(task.ref.taskId, task.metrics?.elapsedMs, task.execution.kind === "running");
+		const elapsedMs = liveElapsedMs(
+			task.ref.taskId,
+			task.metrics?.elapsedMs,
+			isRunningTaskClock(task.execution.kind),
+		);
 		if (elapsedMs === undefined) return task;
 		return { ...task, metrics: { ...task.metrics, elapsedMs } };
 	}

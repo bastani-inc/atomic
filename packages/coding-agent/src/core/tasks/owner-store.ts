@@ -9,7 +9,7 @@ import type {
 	WaitError,
 	WatchError,
 } from "./contracts.js";
-import { liveElapsedMs } from "./live-elapsed.js";
+import { observeTaskClocks } from "./live-elapsed.js";
 import type { OwnerLease, TaskLease, TaskSubscription, TaskSupervisor } from "./supervisor.js";
 
 /** Activity previews are bounded independently of authoritative session history. */
@@ -116,19 +116,12 @@ export class OwnerTaskStore {
 		for (const event of events)
 			if (event.payload.kind === "task-settled" && !this.settlements.has(event.payload.ref.taskId))
 				this.settlements.set(event.payload.ref.taskId, BigInt(event.cursor.sequence));
-		const now = Date.now();
+		let changedClocks: TaskRecord[] | undefined;
 		for (const task of snapshot.tasks) {
 			const previous = this.records.get(task.ref.taskId);
-			if (
-				previous?.execution.kind !== task.execution.kind ||
-				previous?.metrics?.elapsedMs !== task.metrics?.elapsedMs
-			) {
-				liveElapsedMs(
-					task.ref.taskId,
-					task.metrics?.elapsedMs,
-					task.execution.kind === "running" || task.execution.kind === "cancelling",
-					now,
-				);
+			if (previous?.execution.kind !== task.execution.kind) {
+				changedClocks ??= [];
+				changedClocks.push(task);
 			}
 			if (isBackground(task.observation) || isBackground(previous?.observation))
 				this.backgroundIds.add(task.ref.taskId);
@@ -147,6 +140,7 @@ export class OwnerTaskStore {
 					followBottom: true,
 				});
 		}
+		if (changedClocks !== undefined) observeTaskClocks(changedClocks);
 		this.notify();
 	}
 	/** A task absent from the authoritative projection was evicted by its owner (#4385): keep none of its view state. */

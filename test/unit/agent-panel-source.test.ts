@@ -466,6 +466,264 @@ test("malformed source items and non-iterable item lists are dropped and reporte
 	assert.equal(reports.length, 6);
 });
 
+for (const tokenPayload of [
+	{ label: "CSI escape", value: "\x1b[2J\x1b[H" },
+	{ label: "OSC escape", value: "\x1b]0;pwned\x07" },
+] as const) {
+	test(`isolated ${tokenPayload.label} token payload is rejected and reported once (#5224, #5239)`, () => {
+		const isolatedHub = new AgentPanelSourceHub();
+		const isolatedSession = { extensionRunner: { getAgentPanelSourceHub: () => isolatedHub } };
+		isolatedHub.register({
+			items: () => [{ ...healthyItem, id: "run:isolated-token", tokens: tokenPayload.value as unknown as number }],
+			subscribe: () => () => {},
+		});
+		const tokenReports: string[] = [];
+		assert.deepEqual(
+			agentPanelItems(isolatedSession, (error) => tokenReports.push(error.message)),
+			[],
+		);
+		assert.equal(tokenReports.length, 1);
+	});
+}
+
+test("isolated newline queued payload is rejected and reported once (#5224, #5239)", () => {
+	const isolatedHub = new AgentPanelSourceHub();
+	const isolatedSession = { extensionRunner: { getAgentPanelSourceHub: () => isolatedHub } };
+	isolatedHub.register({
+		items: () => [{ ...healthyItem, id: "run:isolated-queued", queued: "1\n2" as unknown as number }],
+		subscribe: () => () => {},
+	});
+	const queuedReports: string[] = [];
+	assert.deepEqual(
+		agentPanelItems(isolatedSession, (error) => queuedReports.push(error.message)),
+		[],
+	);
+	assert.equal(queuedReports.length, 1);
+});
+
+test("non-integer token counts are rejected while integer token counts are kept (#5224, #5239)", () => {
+	const tokenHub = new AgentPanelSourceHub();
+	const tokenSession = { extensionRunner: { getAgentPanelSourceHub: () => tokenHub } };
+	tokenHub.register({
+		items: () => [
+			{ ...healthyItem, id: "ext:float-tokens", tokens: 0.1 + 0.2 },
+			{ ...healthyItem, id: "ext:exp-tokens", tokens: 1e-7 },
+			{ ...healthyItem, id: "ext:int-tokens", tokens: 812 },
+		],
+		subscribe: () => () => {},
+	});
+	const tokenReports: string[] = [];
+	assert.deepEqual(
+		agentPanelItems(tokenSession, (error) => tokenReports.push(error.message)).map((item) => item.id),
+		["ext:int-tokens"],
+	);
+	assert.equal(tokenReports.length, 1);
+});
+
+test("a malformed or throwing item only hides that row while keeping valid neighbors and indexing array choices (#5224, #5239)", () => {
+	const hub = new AgentPanelSourceHub();
+	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
+	const arrayWithoutIterator = ["yes", "no"];
+	Object.defineProperty(arrayWithoutIterator, Symbol.iterator, {
+		value() {
+			throw new Error("choices iterator must not be called");
+		},
+	});
+	const mutatingLengthChoices: string[] = ["first", "second"];
+	Object.defineProperty(mutatingLengthChoices, 0, {
+		enumerable: true,
+		get() {
+			if (mutatingLengthChoices.length < 10) mutatingLengthChoices.push("extra");
+			return "first";
+		},
+	});
+	const infiniteChoices = {
+		*[Symbol.iterator]() {
+			while (true) yield "forever";
+		},
+	};
+	const throwingProgressItem = Object.defineProperty({ ...healthyItem, id: "ext:throw-progress" }, "progress", {
+		get() {
+			throw new Error("progress getter boom");
+		},
+	});
+	const throwingDoneItem = {
+		...healthyItem,
+		id: "ext:throw-done",
+		progress: Object.defineProperty({ done: 0, total: 2 }, "done", {
+			get() {
+				throw new Error("done getter boom");
+			},
+		}),
+	};
+	const throwingChoiceElem = ["ok", "bad"];
+	Object.defineProperty(throwingChoiceElem, 1, {
+		enumerable: true,
+		get() {
+			throw new Error("choice element boom");
+		},
+	});
+	hub.register({
+		items: () => [
+			{ ...healthyItem, id: "ext:first", name: "first" },
+			{ ...healthyItem, id: "ext:obj-choices", state: "input", choices: {} as unknown as readonly string[] },
+			{
+				...healthyItem,
+				id: "ext:inf-choices",
+				state: "input",
+				choices: infiniteChoices as unknown as readonly string[],
+			},
+			throwingProgressItem,
+			throwingDoneItem,
+			{ ...healthyItem, id: "ext:throw-choice", state: "input", choices: throwingChoiceElem },
+			{
+				...healthyItem,
+				id: "ext:no-iter",
+				state: "input",
+				tokens: 812,
+				choices: arrayWithoutIterator,
+			},
+			{
+				...healthyItem,
+				id: "ext:mut-len",
+				state: "input",
+				choices: mutatingLengthChoices,
+			},
+			{ ...healthyItem, id: "ext:last", name: "last" },
+		],
+		subscribe: () => () => {},
+	});
+	const reports: string[] = [];
+	const items = agentPanelItems(session, (error) => reports.push(error.message));
+	assert.deepEqual(
+		items.map((item) => item.id),
+		["ext:first", "ext:no-iter", "ext:mut-len", "ext:last"],
+	);
+	assert.deepEqual(items[1]?.choices, ["yes", "no"]);
+	assert.equal(items[1]?.tokens, 812);
+	assert.deepEqual(items[2]?.choices, ["first", "second"]);
+	assert.equal(reports.length, 1);
+});
+
+test("extension items with task: ids are rejected and never routed to source actions (#5224, #5239)", async () => {
+	const hub = new AgentPanelSourceHub();
+	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
+	const calls: string[] = [];
+	hub.register({
+		items: () => [
+			{ ...healthyItem, id: "task:forged", name: "forged" },
+			{ ...healthyItem, id: "ext:real", name: "real" },
+		],
+		subscribe: () => () => {},
+		open(id) {
+			calls.push(`open:${id}`);
+		},
+		stop: async (id) => {
+			calls.push(`stop:${id}`);
+			return { ok: true };
+		},
+		answer: async (id, text) => {
+			calls.push(`answer:${id}:${text}`);
+			return { ok: true };
+		},
+	});
+	const reports: string[] = [];
+	const items = agentPanelItems(session, (error) => reports.push(error.message));
+	assert.deepEqual(
+		items.map((item) => item.id),
+		["ext:real"],
+	);
+	assert.equal(reports.length, 1);
+	assert.equal(openAgentPanelItem(session, "task:forged"), false);
+	assert.equal((await stopAgentPanelItem(session, "task:forged")).ok, false);
+	assert.equal((await answerAgentPanelItem(session, "task:forged", "hi")).ok, false);
+	assert.deepEqual(calls, []);
+});
+
+test("sources that notify synchronously inside items() or before throwing quiesce without microtask livelock (#5224, #5239)", async () => {
+	const hub = new AgentPanelSourceHub();
+	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
+	let returningCalls = 0;
+	let throwingCalls = 0;
+	let emitReturning = () => {};
+	let emitThrowing = () => {};
+	hub.register({
+		items() {
+			returningCalls++;
+			emitReturning();
+			return [{ ...healthyItem, id: "ext:self-notify" }];
+		},
+		subscribe(listener) {
+			emitReturning = listener;
+			return () => {};
+		},
+	});
+	hub.register({
+		items() {
+			throwingCalls++;
+			emitThrowing();
+			throw new Error("notify then fail");
+		},
+		subscribe(listener) {
+			emitThrowing = listener;
+			return () => {};
+		},
+	});
+	let scheduled = false;
+	let refreshes = 0;
+	const unsub = subscribeAgentPanel(session, () => {
+		if (scheduled || refreshes >= 25) return;
+		scheduled = true;
+		queueMicrotask(() => {
+			scheduled = false;
+			refreshes++;
+			agentPanelItems(session);
+		});
+	});
+	try {
+		const initial = agentPanelItems(session);
+		assert.deepEqual(
+			initial.map((item) => item.id),
+			["ext:self-notify"],
+		);
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+		assert.equal(returningCalls, 1);
+		assert.equal(throwingCalls, 1);
+		assert.equal(refreshes, 1);
+	} finally {
+		unsub();
+	}
+});
+
+test("source notifications do not poll hub watchers across subscribed sessions (#5224, #5239)", () => {
+	const hub = new AgentPanelSourceHub();
+	let hubLookups = 0;
+	const session = {
+		extensionRunner: {
+			getAgentPanelSourceHub() {
+				hubLookups++;
+				return hub;
+			},
+		},
+	};
+	let emit = () => {};
+	hub.register({
+		items: () => [healthyItem],
+		subscribe(listener) {
+			emit = listener;
+			return () => {};
+		},
+	});
+	const unsub = subscribeAgentPanel(session, () => {});
+	try {
+		hubLookups = 0;
+		for (let i = 0; i < 50; i++) emit();
+		assert.equal(hubLookups, 0);
+	} finally {
+		unsub();
+	}
+});
+
 test("duplicate item ids and reserved task ids are deduplicated, reported once, and never hijack actions (#5239)", async () => {
 	const fixture = taskFixture();
 	try {
@@ -614,13 +872,14 @@ test("source items are validated and copied once per source change version and i
 	let choiceReads = 0;
 	let notifySource = () => {};
 	let label = "v1";
-	const choices = {
-		*[Symbol.iterator]() {
+	const choices = ["alpha", "beta"];
+	Object.defineProperty(choices, 0, {
+		enumerable: true,
+		get() {
 			choiceReads++;
-			yield "alpha";
-			yield "beta";
+			return "alpha";
 		},
-	};
+	});
 	hub.register({
 		items() {
 			itemCalls++;
@@ -674,9 +933,30 @@ test("async items and subscribe callbacks that return rejected promises are drai
 			}) as unknown as () => readonly AgentPanelItem[],
 			subscribe: () => () => {},
 		});
+		const thenProperty = "then";
 		hub.register({
 			items: () => [
 				Promise.reject(new Error("async item element")) as unknown as AgentPanelItem,
+				Object.assign(Promise.reject(new Error("async valid-looking row")), healthyItem, {
+					id: "run:async-valid-row",
+				}) as unknown as AgentPanelItem,
+				{
+					...healthyItem,
+					id: "run:async-valid-progress",
+					progress: Object.assign(Promise.reject(new Error("async valid-looking progress")), {
+						done: 0,
+						total: 1,
+					}) as unknown as { done: number; total: number },
+				},
+				{
+					...healthyItem,
+					id: "run:async-valid-choices",
+					choices: Object.defineProperty(["yes", "no"], thenProperty, {
+						get() {
+							throw new Error("choices then getter failed");
+						},
+					}),
+				},
 				{
 					...healthyItem,
 					id: "run:async-fields",

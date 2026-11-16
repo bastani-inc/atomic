@@ -1,5 +1,10 @@
-import { agentPanelTaskId } from "../../../core/tasks/agent-panel-source.ts";
-import { liveElapsedMs } from "../../../core/tasks/live-elapsed.ts";
+import {
+	type AgentPanelItem,
+	type AgentPanelState,
+	agentPanelItemReadAt,
+	agentPanelTaskId,
+} from "../../../core/tasks/agent-panel-source.ts";
+import { isRunningTaskClock, liveElapsedMs } from "../../../core/tasks/live-elapsed.js";
 /**
  * The agent panel below the main chat's prompt: one row per running or recent subagent, workflow run and background
  * shell. Unfocused it is a quiet status block; ↓ on an empty prompt focuses it, and then it is a list like every other
@@ -7,7 +12,6 @@ import { liveElapsedMs } from "../../../core/tasks/live-elapsed.ts";
  */
 
 import { truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
-import type { AgentPanelItem, AgentPanelState } from "../../../core/tasks/agent-panel-source.ts";
 import type { TaskId } from "../../../core/tasks/contracts.js";
 import { atomicWorkingGlyph } from "./atomic-working-status.ts";
 import { type NavKey, type NavKeybindings, type NavKeyStyle, renderNavHintLine, TwoPressConfirm } from "./nav-keys.ts";
@@ -59,7 +63,8 @@ export function formatPanelElapsed(ms: number): string {
 /** `96.1k`, `1.2M`, `812`: a token count as the panel shows it. */
 export function formatPanelTokens(tokens: number): string {
 	if (!Number.isFinite(tokens) || tokens < 0) return "0";
-	if (tokens < 1000) return String(tokens);
+	const rounded = Math.round(tokens);
+	if (rounded < 1000) return String(rounded);
 	const units = ["k", "M", "B", "T", "Q"];
 	let amount = tokens / 1000;
 	let unit = 0;
@@ -85,6 +90,7 @@ export function panelProgressBar(done: number, total: number, cells = 16): strin
  */
 export class AgentPanelModel {
 	private readonly finishedAt = new Map<string, number>();
+	private readonly readAt = new WeakMap<AgentPanelRow, number>();
 	private readonly now: () => number;
 	constructor(now: () => number = Date.now) {
 		this.now = now;
@@ -108,9 +114,20 @@ export class AgentPanelModel {
 			}
 			let item = row;
 			if (state !== "queued") {
-				const taskId = agentPanelTaskId(row.id) ?? row.id;
-				const elapsedMs = liveElapsedMs(taskId, row.elapsedMs, !finished && state !== "paused", now);
-				if (elapsedMs !== undefined && elapsedMs !== row.elapsedMs) item = { ...row, elapsedMs };
+				const taskId = agentPanelTaskId(row.id);
+				const running = isRunningTaskClock(state);
+				if (taskId !== undefined) {
+					const elapsedMs = liveElapsedMs(taskId, row.elapsedMs, running, now);
+					if (elapsedMs !== undefined && elapsedMs !== row.elapsedMs) item = { ...row, elapsedMs };
+				} else if (running && row.elapsedMs !== undefined) {
+					let since = agentPanelItemReadAt(row) ?? this.readAt.get(row);
+					if (since === undefined) {
+						since = now;
+						this.readAt.set(row, since);
+					}
+					const elapsedMs = row.elapsedMs + Math.max(0, now - since);
+					if (elapsedMs !== row.elapsedMs) item = { ...row, elapsedMs };
+				}
 			}
 			const rank = state === "input" ? 0 : state === "running" ? 1 : finished ? 3 : 2;
 			groups[rank].push(item);

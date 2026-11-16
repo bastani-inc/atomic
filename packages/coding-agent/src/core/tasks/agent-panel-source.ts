@@ -68,6 +68,11 @@ const hubWatchers = new Set<(notifiedHub?: AgentPanelSourceHub) => void>();
 let nextSourceVersion = 1;
 const sourceVersions = new WeakMap<AgentPanelSource, number>();
 
+function notifyHubWatchers(notifiedHub?: AgentPanelSourceHub): void {
+	if (hubWatchers.size === 0) return;
+	for (const watcher of [...hubWatchers]) safelyCall(() => watcher(notifiedHub));
+}
+
 function bumpSourceVersion(source: AgentPanelSource): void {
 	sourceVersions.set(source, ++nextSourceVersion);
 }
@@ -118,6 +123,7 @@ export class AgentPanelSourceHub {
 		reportedSources.delete(source);
 		bumpSourceVersion(source);
 		previous?.();
+		notifyHubWatchers(this);
 		this.notify();
 		return {
 			dispose: () => {
@@ -126,6 +132,7 @@ export class AgentPanelSourceHub {
 				this.regIds.delete(source);
 				bumpSourceVersion(source);
 				cleanup();
+				notifyHubWatchers(this);
 				this.notify();
 			},
 		};
@@ -146,17 +153,17 @@ export class AgentPanelSourceHub {
 			this.regIds.clear();
 			for (const source of sources) bumpSourceVersion(source);
 			for (const cleanup of cleanups) cleanup();
+			notifyHubWatchers(this);
 			this.notify();
 			this.listeners.clear();
 		} finally {
 			this.disposing = false;
 		}
 		queueMicrotask(() => {
-			for (const watcher of [...hubWatchers]) safelyCall(() => watcher(undefined));
+			notifyHubWatchers(undefined);
 		});
 	}
 	private notify(): void {
-		for (const watcher of [...hubWatchers]) safelyCall(() => watcher(this));
 		for (const listener of [...this.listeners]) safelyCall(listener);
 	}
 }
@@ -223,27 +230,45 @@ export function taskPanelItems(
 	source: Pick<TaskViewSource, "backgroundTasks">,
 	dismissed: ReadonlySet<TaskId>,
 	options: { readonly topLevelOnly?: boolean } = {},
-) {
+): AgentPanelItem[] {
 	const topLevelOnly = options.topLevelOnly ?? true;
-	return source.backgroundTasks
-		.filter((task) => !dismissed.has(task.ref.taskId) && (!topLevelOnly || task.parentTaskId === undefined))
-		.map((task): AgentPanelItem => {
-			const state = taskState(task);
-			const question = task.attention.kind === "input-needed" ? task.attention.prompt : undefined;
-			return {
-				id: `${taskPrefix}${task.ref.taskId}`,
-				kind: task.kind === "agent" ? "agent" : "shell",
-				state,
-				name: task.kind === "agent" ? (task.agentName ?? "agent") : "shell",
-				task: shortTaskTitle(task.title || ""),
-				...(task.metrics?.elapsedMs === undefined ? {} : { elapsedMs: task.metrics.elapsedMs }),
-				...(task.metrics?.tokenCount === undefined ? {} : { tokens: task.metrics.tokenCount }),
-				...(question ? { question } : {}),
-				...(state === "failed" && task.execution.kind === "settled" && task.execution.result.kind === "failed"
-					? { reason: task.execution.result.message.split("\n")[0] ?? "" }
-					: {}),
-			};
-		});
+	const hasDismissed = dismissed.size > 0;
+	const items: AgentPanelItem[] = [];
+	for (const task of source.backgroundTasks) {
+		if ((topLevelOnly && task.parentTaskId !== undefined) || (hasDismissed && dismissed.has(task.ref.taskId))) {
+			continue;
+		}
+		const state = taskState(task);
+		const item: {
+			id: string;
+			kind: AgentPanelItem["kind"];
+			state: AgentPanelState;
+			name: string;
+			task: string;
+			elapsedMs?: number;
+			tokens?: number;
+			question?: string;
+			reason?: string;
+		} = {
+			id: `${taskPrefix}${task.ref.taskId}`,
+			kind: task.kind === "agent" ? "agent" : "shell",
+			state,
+			name: task.kind === "agent" ? (task.agentName ?? "agent") : "shell",
+			task: shortTaskTitle(task.title || ""),
+		};
+		const elapsedMs = task.metrics?.elapsedMs;
+		if (elapsedMs !== undefined) item.elapsedMs = elapsedMs;
+		const tokens = task.metrics?.tokenCount;
+		if (tokens !== undefined) item.tokens = tokens;
+		if (task.attention.kind === "input-needed" && task.attention.prompt) {
+			item.question = task.attention.prompt;
+		}
+		if (state === "failed" && task.execution.kind === "settled" && task.execution.result.kind === "failed") {
+			item.reason = task.execution.result.message.split("\n")[0] ?? "";
+		}
+		items.push(item);
+	}
+	return items;
 }
 
 const reportedSources = new WeakSet<AgentPanelSource>();
@@ -286,28 +311,67 @@ function reportSourceOnce(source: AgentPanelSource, error: Error, onError?: (err
 	safelyCall(() => onError(error));
 }
 
-const VALID_KINDS: ReadonlySet<AgentPanelItem["kind"]> = new Set(["agent", "shell", "workflow"]);
-const VALID_STATES: ReadonlySet<AgentPanelState> = new Set([
-	"running",
-	"queued",
-	"input",
-	"paused",
-	"stopping",
-	"done",
-	"failed",
-	"stopped",
-]);
-
 function isFiniteNonNegative(value: unknown): value is number {
 	return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 
 function isNonNegativeInteger(value: unknown): value is number {
-	return isFiniteNonNegative(value) && Number.isInteger(value);
+	return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
+function drainReadFields(
+	raw: unknown,
+	id: unknown,
+	kind: unknown,
+	state: unknown,
+	name: unknown,
+	task: unknown,
+	elapsedMs: unknown,
+	tokens: unknown,
+	progressRaw: unknown,
+	question: unknown,
+	choicesRaw: unknown,
+	reason: unknown,
+	queued: unknown,
+	endedAt: unknown,
+): undefined {
+	drainThenable(raw);
+	drainThenable(id);
+	drainThenable(kind);
+	drainThenable(state);
+	drainThenable(name);
+	drainThenable(task);
+	drainThenable(elapsedMs);
+	drainThenable(tokens);
+	drainThenable(question);
+	drainThenable(reason);
+	drainThenable(queued);
+	drainThenable(endedAt);
+	if (!drainThenable(progressRaw) && typeof progressRaw === "object" && progressRaw !== null) {
+		try {
+			drainThenable((progressRaw as { readonly done?: unknown }).done);
+		} catch {}
+		try {
+			drainThenable((progressRaw as { readonly total?: unknown }).total);
+		} catch {}
+	}
+	if (!drainThenable(choicesRaw) && Array.isArray(choicesRaw)) {
+		const len = choicesRaw.length;
+		for (let i = 0; i < len; i++) {
+			try {
+				drainThenable(choicesRaw[i]);
+			} catch {}
+		}
+	}
+	return undefined;
 }
 
 function validateItem(raw: unknown): AgentPanelItem | undefined {
-	if (drainThenable(raw) || typeof raw !== "object" || raw === null) return undefined;
+	if (typeof raw !== "object" || raw === null) {
+		drainThenable(raw);
+		return undefined;
+	}
+	const rawThenable = drainThenable(raw);
 	const item = raw as Record<string, unknown>;
 	const id = item.id;
 	const kind = item.kind;
@@ -323,73 +387,160 @@ function validateItem(raw: unknown): AgentPanelItem | undefined {
 	const queued = item.queued;
 	const endedAt = item.endedAt;
 
-	for (const field of [id, kind, state, name, task, elapsedMs, tokens, question, reason, queued, endedAt]) {
-		drainThenable(field);
+	if (
+		rawThenable ||
+		typeof id !== "string" ||
+		id.length === 0 ||
+		id === "main" ||
+		id.startsWith(taskPrefix) ||
+		(kind !== "agent" && kind !== "shell" && kind !== "workflow") ||
+		(state !== "running" &&
+			state !== "queued" &&
+			state !== "input" &&
+			state !== "paused" &&
+			state !== "stopping" &&
+			state !== "done" &&
+			state !== "failed" &&
+			state !== "stopped") ||
+		typeof name !== "string" ||
+		typeof task !== "string" ||
+		(elapsedMs !== undefined && !isFiniteNonNegative(elapsedMs)) ||
+		(tokens !== undefined && !isNonNegativeInteger(tokens)) ||
+		(queued !== undefined && !isNonNegativeInteger(queued)) ||
+		(endedAt !== undefined && !isFiniteNonNegative(endedAt)) ||
+		(question !== undefined && typeof question !== "string") ||
+		(reason !== undefined && typeof reason !== "string")
+	) {
+		return drainReadFields(
+			raw,
+			id,
+			kind,
+			state,
+			name,
+			task,
+			elapsedMs,
+			tokens,
+			progressRaw,
+			question,
+			choicesRaw,
+			reason,
+			queued,
+			endedAt,
+		);
 	}
 
 	let progress: { readonly done: number; readonly total: number } | undefined;
-	let progressValid = true;
 	if (progressRaw !== undefined) {
 		if (drainThenable(progressRaw) || typeof progressRaw !== "object" || progressRaw === null) {
-			progressValid = false;
-		} else {
-			const done = (progressRaw as { readonly done?: unknown }).done;
-			const total = (progressRaw as { readonly total?: unknown }).total;
+			return drainReadFields(
+				raw,
+				id,
+				kind,
+				state,
+				name,
+				task,
+				elapsedMs,
+				tokens,
+				progressRaw,
+				question,
+				choicesRaw,
+				reason,
+				queued,
+				endedAt,
+			);
+		}
+		const done = (progressRaw as { readonly done?: unknown }).done;
+		const total = (progressRaw as { readonly total?: unknown }).total;
+		if (!isFiniteNonNegative(done) || !isFiniteNonNegative(total)) {
 			drainThenable(done);
 			drainThenable(total);
-			if (!isFiniteNonNegative(done) || !isFiniteNonNegative(total)) {
-				progressValid = false;
-			} else {
-				progress = { done, total };
-			}
+			return drainReadFields(
+				raw,
+				id,
+				kind,
+				state,
+				name,
+				task,
+				elapsedMs,
+				tokens,
+				progressRaw,
+				question,
+				choicesRaw,
+				reason,
+				queued,
+				endedAt,
+			);
 		}
+		progress = { done, total };
 	}
 
 	let choices: string[] | undefined;
-	let choicesValid = true;
 	if (choicesRaw !== undefined) {
-		if (drainThenable(choicesRaw) || typeof choicesRaw !== "object" || choicesRaw === null) {
-			choicesValid = false;
-		} else {
-			choices = [];
-			for (const choice of choicesRaw as Iterable<unknown>) {
-				if (typeof choice !== "string") {
-					drainThenable(choice);
-					choicesValid = false;
-				} else if (choicesValid) {
-					choices.push(choice);
+		if (drainThenable(choicesRaw) || !Array.isArray(choicesRaw)) {
+			return drainReadFields(
+				raw,
+				id,
+				kind,
+				state,
+				name,
+				task,
+				elapsedMs,
+				tokens,
+				undefined,
+				question,
+				choicesRaw,
+				reason,
+				queued,
+				endedAt,
+			);
+		}
+		const len = choicesRaw.length;
+		choices = new Array<string>(len);
+		for (let i = 0; i < len; i++) {
+			const choice: unknown = choicesRaw[i];
+			if (typeof choice !== "string") {
+				drainThenable(choice);
+				for (let j = i + 1; j < len; j++) {
+					try {
+						drainThenable(choicesRaw[j]);
+					} catch {}
 				}
+				return undefined;
 			}
+			choices[i] = choice;
 		}
 	}
 
-	if (!progressValid || !choicesValid) return undefined;
-	if (typeof id !== "string" || id.length === 0 || id === "main") return undefined;
-	if (typeof kind !== "string" || !VALID_KINDS.has(kind as AgentPanelItem["kind"])) return undefined;
-	if (typeof state !== "string" || !VALID_STATES.has(state as AgentPanelState)) return undefined;
-	if (typeof name !== "string" || typeof task !== "string") return undefined;
-	if (elapsedMs !== undefined && !isFiniteNonNegative(elapsedMs)) return undefined;
-	if (tokens !== undefined && !isFiniteNonNegative(tokens)) return undefined;
-	if (queued !== undefined && !isNonNegativeInteger(queued)) return undefined;
-	if (endedAt !== undefined && !isFiniteNonNegative(endedAt)) return undefined;
-	if (question !== undefined && typeof question !== "string") return undefined;
-	if (reason !== undefined && typeof reason !== "string") return undefined;
-
-	return {
+	const validated: {
+		id: string;
+		kind: AgentPanelItem["kind"];
+		state: AgentPanelState;
+		name: string;
+		task: string;
+		elapsedMs?: number;
+		tokens?: number;
+		progress?: { readonly done: number; readonly total: number };
+		question?: string;
+		choices?: readonly string[];
+		reason?: string;
+		queued?: number;
+		endedAt?: number;
+	} = {
 		id,
-		kind: kind as AgentPanelItem["kind"],
-		state: state as AgentPanelState,
+		kind,
+		state,
 		name,
 		task,
-		...(elapsedMs === undefined ? {} : { elapsedMs }),
-		...(tokens === undefined ? {} : { tokens }),
-		...(progress === undefined ? {} : { progress }),
-		...(question === undefined ? {} : { question }),
-		...(choices === undefined ? {} : { choices }),
-		...(reason === undefined ? {} : { reason }),
-		...(queued === undefined ? {} : { queued }),
-		...(endedAt === undefined ? {} : { endedAt }),
 	};
+	if (elapsedMs !== undefined) validated.elapsedMs = elapsedMs;
+	if (tokens !== undefined) validated.tokens = tokens;
+	if (progress !== undefined) validated.progress = progress;
+	if (question !== undefined) validated.question = question;
+	if (choices !== undefined) validated.choices = choices;
+	if (reason !== undefined) validated.reason = reason;
+	if (queued !== undefined) validated.queued = queued;
+	if (endedAt !== undefined) validated.endedAt = endedAt;
+	return validated;
 }
 
 interface SourceCacheEntry {
@@ -399,21 +550,33 @@ interface SourceCacheEntry {
 }
 
 const sourceCache = new WeakMap<AgentPanelSource, SourceCacheEntry>();
+const itemReadAt = new WeakMap<AgentPanelItem, number>();
+
+export function agentPanelItemReadAt(item: AgentPanelItem): number | undefined {
+	return itemReadAt.get(item);
+}
 
 function readSourceCache(source: AgentPanelSource): SourceCacheEntry {
 	const version = sourceVersions.get(source) ?? 0;
 	const cached = sourceCache.get(source);
 	if (cached !== undefined && cached.version === version) return cached;
+	const readAt = Date.now();
 	try {
 		const rawItems: unknown = source.items();
 		if (drainThenable(rawItems) || typeof rawItems !== "object" || rawItems === null) {
 			throw new TypeError("Agent panel source items must be an iterable object.");
 		}
 		const items: AgentPanelItem[] = [];
-		const seenIds = new Set<string>(["main"]);
+		const seenIds = new Set<string>();
 		let validationError: Error | undefined;
 		for (const raw of rawItems as Iterable<unknown>) {
-			const validated = validateItem(raw);
+			let validated: AgentPanelItem | undefined;
+			try {
+				validated = validateItem(raw);
+			} catch (error) {
+				validationError ??= sourceError(error);
+				continue;
+			}
 			if (validated === undefined) {
 				validationError ??= new Error("Invalid agent panel item.");
 				continue;
@@ -423,13 +586,22 @@ function readSourceCache(source: AgentPanelSource): SourceCacheEntry {
 				continue;
 			}
 			seenIds.add(validated.id);
+			itemReadAt.set(validated, readAt);
 			items.push(validated);
 		}
-		const entry: SourceCacheEntry = { version, items, error: validationError };
+		const entry: SourceCacheEntry = {
+			version: sourceVersions.get(source) ?? 0,
+			items,
+			error: validationError,
+		};
 		sourceCache.set(source, entry);
 		return entry;
 	} catch (error) {
-		const entry: SourceCacheEntry = { version, items: [], error: sourceError(error) };
+		const entry: SourceCacheEntry = {
+			version: sourceVersions.get(source) ?? 0,
+			items: [],
+			error: sourceError(error),
+		};
 		sourceCache.set(source, entry);
 		return entry;
 	}
@@ -446,6 +618,7 @@ export function agentPanelTaskId(id: string): TaskId | undefined {
 }
 
 const dismissedBySession = new WeakMap<object, Set<string>>();
+const EMPTY_TASK_IDS: ReadonlySet<TaskId> = new Set();
 
 export function dismissedAgentPanelItems(session: object): Set<string> {
 	let dismissed = dismissedBySession.get(session);
@@ -456,20 +629,13 @@ export function dismissedAgentPanelItems(session: object): Set<string> {
 	return dismissed;
 }
 
-function dismissedTaskIds(session: object): Set<TaskId> {
+function dismissedTaskIds(session: object): ReadonlySet<TaskId> {
+	const dismissed = dismissedAgentPanelItems(session);
+	if (dismissed.size === 0) return EMPTY_TASK_IDS;
 	const ids = new Set<TaskId>();
-	for (const id of dismissedAgentPanelItems(session)) {
+	for (const id of dismissed) {
 		const taskId = agentPanelTaskId(id);
 		if (taskId !== undefined) ids.add(taskId);
-	}
-	return ids;
-}
-
-function reservedTaskIds(session: object): Set<string> {
-	const ids = new Set<string>(["main"]);
-	const store = getOwnerTaskStore(session);
-	if (store !== undefined) {
-		for (const task of store.tasks) ids.add(`${taskPrefix}${task.ref.taskId}`);
 	}
 	return ids;
 }
@@ -479,14 +645,24 @@ export function agentPanelItems(
 	onSourceError?: (error: Error) => void,
 ): AgentPanelItem[] {
 	const dismissed = dismissedAgentPanelItems(session);
+	const hasDismissed = dismissed.size > 0;
 	const store = getOwnerTaskStore(session);
 	const sources = hubOf(session)?.all() ?? [];
-	if (store === undefined && dismissed.size === 0 && sources.length === 1) {
-		return sourceItems(sources[0]!, onSourceError).slice();
+	if (sources.length === 0) {
+		return store === undefined ? [] : taskPanelItems(ownerTaskViewSource(store), dismissedTaskIds(session));
 	}
-	const tasks = store === undefined ? [] : taskPanelItems(ownerTaskViewSource(store), dismissedTaskIds(session));
-	const seenIds = reservedTaskIds(session);
-	for (const task of tasks) seenIds.add(task.id);
+	if (sources.length === 1) {
+		const rawExtensions = sourceItems(sources[0]!, onSourceError);
+		const extensions = hasDismissed ? rawExtensions.filter((item) => !dismissed.has(item.id)) : rawExtensions;
+		if (store === undefined) {
+			return hasDismissed ? (extensions as AgentPanelItem[]) : extensions.slice();
+		}
+		const tasks = taskPanelItems(ownerTaskViewSource(store), dismissedTaskIds(session));
+		if (extensions.length === 0) return tasks;
+		if (tasks.length === 0) return hasDismissed ? (extensions as AgentPanelItem[]) : extensions.slice();
+		return [...extensions, ...tasks];
+	}
+	const seenIds = new Set<string>();
 	const extensions: AgentPanelItem[] = [];
 	for (const source of sources) {
 		for (const item of sourceItems(source, onSourceError)) {
@@ -495,10 +671,12 @@ export function agentPanelItems(
 				continue;
 			}
 			seenIds.add(item.id);
-			if (!dismissed.has(item.id)) extensions.push(item);
+			if (!hasDismissed || !dismissed.has(item.id)) extensions.push(item);
 		}
 	}
-	return [...extensions, ...tasks];
+	if (store === undefined) return extensions;
+	const tasks = taskPanelItems(ownerTaskViewSource(store), dismissedTaskIds(session));
+	return tasks.length === 0 ? extensions : [...extensions, ...tasks];
 }
 
 export function subscribeAgentPanel(session: AgentPanelSession & object, listener: () => void): () => void {
@@ -531,13 +709,9 @@ export function subscribeAgentPanel(session: AgentPanelSession & object, listene
 }
 
 function sourceOf(session: AgentPanelSession & object, id: string): AgentPanelSource | undefined {
-	if (typeof id !== "string" || id.length === 0 || id === "main") return undefined;
-	const seenIds = reservedTaskIds(session);
-	if (seenIds.has(id)) return undefined;
+	if (typeof id !== "string" || id.length === 0 || id === "main" || id.startsWith(taskPrefix)) return undefined;
 	for (const source of hubOf(session)?.all() ?? []) {
 		for (const item of sourceItems(source)) {
-			if (seenIds.has(item.id)) continue;
-			seenIds.add(item.id);
 			if (item.id === id) return source;
 		}
 	}
