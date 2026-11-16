@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Starting Atomic no longer reads and scans every bundled workflow's source twice before the first request; bundled workflows are registered without the zero-stage check, which can never fire for them
+
 ## [0.9.88] - 2026-11-16
 
 ### Breaking Changes

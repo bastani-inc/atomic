@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Added
+
+- `ATOMIC_STARTUP_TRACE` names a file to which Atomic appends each startup milestone (process start, first paint, engine ready, first provider request) with its wall-clock time; an interactive session's engine writes to the same file
+
+### Changed
+
+- Interactive startup no longer waits for its engine: the first frame, with an editor that takes input, appears while the engine still loads, and a host on a terminal starts the engine as it starts itself, so a prompt typed at launch goes out sooner. On Linux the standalone binary paints its first frame in about 320 ms instead of 1,080 ms and the npm package in about 1,030 ms instead of 1,700 ms
+- The standalone binary for the build's own platform (Linux x64, Windows x64) ships a bytecode cache of its application bundle, so every process it starts, including `-p`, `--mode rpc`, subagents and workflow workers, loads in about 150 ms instead of 360 ms
+
+### Fixed
+
+- A prompt typed while Atomic starts is no longer sent twice on Windows: a stray cursor report reached the startup input as F3, left a "C" in the editor and sent it with the next prompt. F1–F5 and Page Up/Down sent as `ESC [ [ …` no longer type a letter into the startup input
+- Keys typed while Atomic started are no longer lost when a startup dialog (project trust, dirty checkout, first-run setup) takes the terminal: they are captured as the draft, and keys typed once the dialog holds the terminal reach the dialog
+
 ## [0.9.88] - 2026-11-16
 
 Atomic runs on its own libraries, workflows scale out to worker fleets on libSQL or PostgreSQL, and every screen shares one set of keys.
