@@ -303,4 +303,115 @@ describe("scoped models selector", () => {
 		selector.handleInput("\x1b");
 		assert.equal(cancellations, 1);
 	});
+
+	it("ignores the displayed thinking level when filtering and bulk-clearing models (#5237)", async () => {
+		harness = await createHarness({
+			models: [
+				{ id: "gpt-5", name: "GPT-5", reasoning: true },
+				{ id: "o3", name: "o3", reasoning: true },
+				{ id: "claude-opus", name: "Claude Opus", reasoning: true },
+				{ id: "gemini-pro", name: "Gemini Pro", reasoning: true },
+				{ id: "mistral-medium", name: "Mistral Medium", reasoning: true },
+			],
+		});
+		const provider = harness.models[0].provider;
+		let latestEnabledIds: string[] | null = null;
+		const selector = new ScopedModelsSelectorComponent(
+			{
+				allModels: [...harness.models],
+				enabledModelIds: null,
+				thinkingLevelFor: () => "medium",
+			},
+			{
+				onChange: (enabledModelIds) => {
+					latestEnabledIds = enabledModelIds;
+				},
+				onCancel: () => {},
+			},
+		);
+
+		selector.handleInput("medium");
+
+		const filteredOutput = stripAnsi(selector.render(120).join("\n"));
+		assert.ok(filteredOutput.includes(`${provider}/mistral-medium  medium`), filteredOutput);
+		assert.ok(!filteredOutput.includes(`${provider}/gpt-5`), filteredOutput);
+		assert.ok(!filteredOutput.includes(`${provider}/o3`), filteredOutput);
+
+		selector.handleInput("\x18");
+
+		assert.deepEqual(latestEnabledIds, [
+			`${provider}/gpt-5`,
+			`${provider}/o3`,
+			`${provider}/claude-opus`,
+			`${provider}/gemini-pro`,
+		]);
+	});
+
+	it("deduplicates enabled model IDs on construction and update so toggling disables the model (#5237)", async () => {
+		harness = await createHarness({
+			models: [
+				{ id: "model-a", name: "Model A" },
+				{ id: "model-b", name: "Model B" },
+			],
+		});
+		const provider = harness.models[0].provider;
+		const modelA = `${provider}/model-a`;
+		const changes: Array<string[] | null> = [];
+		const selector = new ScopedModelsSelectorComponent(
+			{
+				allModels: [...harness.models],
+				enabledModelIds: [modelA, modelA],
+			},
+			{
+				onChange: (enabledModelIds) => {
+					changes.push(enabledModelIds);
+				},
+				onCancel: () => {},
+			},
+		);
+
+		const initialLines = stripAnsi(selector.render(120).join("\n")).split("\n");
+		assert.equal(initialLines.filter((line) => line.includes(modelA)).length, 1);
+		assert.ok(initialLines.some((line) => line.includes("1/2 enabled")));
+
+		selector.handleInput("\r");
+		assert.deepEqual(changes, [[]]);
+
+		selector.updateModels([...harness.models], [modelA, modelA]);
+		const updatedLines = stripAnsi(selector.render(120).join("\n")).split("\n");
+		assert.equal(updatedLines.filter((line) => line.includes(modelA)).length, 1);
+		assert.ok(updatedLines.some((line) => line.includes("1/2 enabled")));
+
+		selector.handleInput("\r");
+		assert.deepEqual(changes, [[], []]);
+	});
+
+	it("keeps enter toggle and esc cancel in narrow hints instead of ctrl+x clear (#5237)", async () => {
+		const selector = await createSelector([
+			{ id: "model-a", name: "Model A", enabled: true },
+			{ id: "model-b", name: "Model B", enabled: false },
+		]);
+
+		for (let width = 27; width <= 41; width++) {
+			const hint = stripAnsi(selector.render(width).at(-2) ?? "").trim();
+			assert.ok(hint.includes("enter toggle"), `missing enter toggle at width ${width}: ${hint}`);
+			assert.ok(hint.includes("esc cancel"), `missing esc cancel at width ${width}: ${hint}`);
+		}
+
+		for (let width = 42; width <= 54; width++) {
+			const hint = stripAnsi(selector.render(width).at(-2) ?? "").trim();
+			assert.ok(hint.includes("enter toggle"), `missing enter toggle at width ${width}: ${hint}`);
+			assert.ok(hint.includes("esc cancel"), `missing esc cancel at width ${width}: ${hint}`);
+			if (!hint.includes("ctrl+x clear")) {
+				assert.ok(hint.includes("ctrl+a all"), `dropped ctrl+a all before ctrl+x clear at width ${width}: ${hint}`);
+			}
+		}
+
+		selector.handleInput("model");
+		for (let width = 30; width <= 40; width++) {
+			const hint = stripAnsi(selector.render(width).at(-2) ?? "").trim();
+			assert.ok(hint.includes("enter toggle"), `missing enter toggle at width ${width}: ${hint}`);
+			assert.ok(hint.includes("esc clear"), `missing esc clear at width ${width}: ${hint}`);
+		}
+	});
 });

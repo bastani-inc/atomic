@@ -102,7 +102,10 @@ describe("extension selector", () => {
 		selector.handleInput("\r");
 		assert.deepEqual(onSelect.mock.calls, [["No"]]);
 		selector.handleInput("\x1b");
-		assert.equal(onCancel.mock.calls.length, 1);
+		assert.equal(onCancel.mock.calls.length, 0);
+		const cancelled = choose(["Yes", "No", "Later"]);
+		cancelled.selector.handleInput("\x1b");
+		assert.equal(cancelled.onCancel.mock.calls.length, 1);
 	});
 
 	it("shows the first title line as the title and the rest as dim lines under it (#5224)", () => {

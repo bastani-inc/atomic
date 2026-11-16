@@ -273,7 +273,7 @@ or task detail before leaving task focus. Unbound actions have no key hint.
 
 ### Scoped Models Selector
 
-Used inside the scoped models selector (opened via `/scoped-models`). Enter switches the selected model on or off, typing filters, and Esc clears the search before it closes the selector. Changes are saved automatically.
+Used inside the scoped models selector (opened via `/scoped-models`). Enter switches the selected model on or off, typing filters, and Esc clears the search before it closes the selector. Search matches model and provider names, not the reasoning level shown beside a model. Changes are saved automatically.
 
 | Keybinding id | Default | Description |
 |--------|---------|-------------|

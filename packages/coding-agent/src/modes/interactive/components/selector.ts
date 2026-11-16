@@ -22,12 +22,14 @@ import {
 	fuzzyFilter,
 	getKeybindings,
 	Input,
+	sliceByColumn,
 	type TuiMouseEvent,
 	type TuiMouseEventResult,
 	truncateToWidth,
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@bastani/atomic-tui";
+import { getGlobalTheme } from "../theme/global-theme.js";
 import { theme } from "../theme/theme.js";
 import {
 	type NavKey,
@@ -67,6 +69,7 @@ export interface SelectorItem<T> {
 	readonly group?: string;
 	/** Extra text type-to-search matches against, beside the label and description. */
 	readonly searchText?: string;
+	readonly searchTextMode?: "extend" | "replace";
 }
 
 /** A key a particular picker adds, such as ←→ for the reasoning effort in the model picker. */
@@ -113,6 +116,7 @@ export interface SelectorOptions<T> {
 	readonly extraKeys?: readonly SelectorExtraKey<T>[];
 	/** Single-select: the chosen row. */
 	readonly onSelect?: (item: SelectorItem<T>) => void;
+	readonly closeOnSelect?: boolean;
 	/** Multi-select: the checked rows, in list order. */
 	readonly onConfirm?: (items: readonly SelectorItem<T>[]) => void;
 	readonly onCancel?: () => void;
@@ -160,7 +164,7 @@ const DESCRIPTION_GAP = 2;
 
 /** Filtering, selection and checked state of a picker, without rendering. */
 export class SelectorState<T> {
-	items: readonly SelectorItem<T>[];
+	private _items: readonly SelectorItem<T>[];
 	readonly mode: "single" | "multi";
 	readonly maxVisible: number;
 	private query = "";
@@ -172,21 +176,26 @@ export class SelectorState<T> {
 	private searchTexts = new WeakMap<SelectorItem<T>, string>();
 	private visibleStats?: {
 		items: readonly SelectorItem<T>[];
-		enabledCount: number;
-		hasRadioMarks: boolean;
+		stats: Readonly<{ enabledCount: number; hasRadioMarks: boolean }>;
 	};
 
 	constructor(options: Pick<SelectorOptions<T>, "items" | "mode" | "maxVisible" | "initialId" | "initialChecked">) {
-		this.items = options.items;
+		this._items = Object.freeze([...options.items]);
 		this.mode = options.mode ?? "single";
 		this.maxVisible = Math.max(1, options.maxVisible ?? DEFAULT_MAX_VISIBLE);
 		this.visible = [...this.items];
 		for (const id of options.initialChecked ?? []) this.checked.add(id);
 		const initial =
-			options.initialId !== undefined ? this.visible.findIndex((item) => item.id === options.initialId) : -1;
+			options.initialId !== undefined
+				? this.visible.findIndex((item) => item.id === options.initialId && !item.disabled)
+				: -1;
 		const marked = this.visible.findIndex((item) => item.mark === "on" && !item.disabled);
 		this.selected = initial >= 0 ? initial : marked >= 0 ? marked : this.firstEnabled(0, 1);
 		this.scrollToSelected();
+	}
+
+	get items(): readonly SelectorItem<T>[] {
+		return this._items;
 	}
 
 	getRevision(): number {
@@ -202,16 +211,17 @@ export class SelectorState<T> {
 		return this.visible;
 	}
 
-	getVisibleStats(): { enabledCount: number; hasRadioMarks: boolean } {
-		if (this.visibleStats?.items === this.visible) return this.visibleStats;
+	getVisibleStats(): Readonly<{ enabledCount: number; hasRadioMarks: boolean }> {
+		if (this.visibleStats?.items === this.visible) return this.visibleStats.stats;
 		let enabledCount = 0;
 		let hasRadioMarks = false;
 		for (const item of this.visible) {
 			if (!item.disabled) enabledCount++;
 			if (item.mark === "on" || item.mark === "off") hasRadioMarks = true;
 		}
-		this.visibleStats = { items: this.visible, enabledCount, hasRadioMarks };
-		return this.visibleStats;
+		const stats = Object.freeze({ enabledCount, hasRadioMarks });
+		this.visibleStats = { items: this.visible, stats };
+		return stats;
 	}
 
 	getSelectedIndex(): number {
@@ -245,7 +255,7 @@ export class SelectorState<T> {
 		this.searchTexts = new WeakMap();
 		const browsed = this.visible[this.selected]?.id;
 		const position = this.selected;
-		this.items = items;
+		this._items = Object.freeze([...items]);
 		this.visible = this.query ? this.filter(this.query) : [...this.items];
 		const find = (id: string | undefined) =>
 			id === undefined ? -1 : this.visible.findIndex((item) => item.id === id && !item.disabled);
@@ -264,7 +274,8 @@ export class SelectorState<T> {
 		const previous = this.visible[this.selected]?.id;
 		this.query = query;
 		this.visible = query ? this.filter(query) : [...this.items];
-		const kept = previous === undefined ? -1 : this.visible.findIndex((item) => item.id === previous);
+		const kept =
+			previous === undefined ? -1 : this.visible.findIndex((item) => item.id === previous && !item.disabled);
 		// A new query highlights its best match; clearing it returns to the row that was selected.
 		this.selected = query ? this.firstEnabled(0, 1) : kept >= 0 ? kept : this.firstEnabled(0, 1);
 		this.top = 0;
@@ -273,6 +284,7 @@ export class SelectorState<T> {
 
 	/** Move by `delta` rows, wrapping at the ends and skipping disabled rows. */
 	move(delta: number): void {
+		if (!Number.isInteger(delta) || delta === 0) return;
 		const count = this.visible.length;
 		if (count === 0) return;
 		this.revision++;
@@ -303,7 +315,8 @@ export class SelectorState<T> {
 	}
 
 	select(index: number): void {
-		if (index < 0 || index >= this.visible.length || this.visible[index]?.disabled) return;
+		if (!Number.isInteger(index) || index < 0 || index >= this.visible.length || this.visible[index]?.disabled)
+			return;
 		this.revision++;
 		this.selected = index;
 		this.scrollToSelected();
@@ -319,7 +332,10 @@ export class SelectorState<T> {
 		return fuzzyFilter([...this.items], query, (item) => {
 			let text = this.searchTexts.get(item);
 			if (text === undefined) {
-				text = [item.label, item.description ?? "", item.tag ?? "", item.searchText ?? ""].join(" ");
+				text =
+					item.searchTextMode === "replace"
+						? (item.searchText ?? "")
+						: [item.label, item.description ?? "", item.tag ?? "", item.searchText ?? ""].join(" ");
 				this.searchTexts.set(item, text);
 			}
 			return text;
@@ -328,6 +344,9 @@ export class SelectorState<T> {
 
 	private firstEnabled(from: number, direction: 1 | -1): number {
 		for (let index = from; index >= 0 && index < this.visible.length; index += direction) {
+			if (!this.visible[index]?.disabled) return index;
+		}
+		for (let index = from - direction; index >= 0 && index < this.visible.length; index -= direction) {
 			if (!this.visible[index]?.disabled) return index;
 		}
 		return Math.max(0, Math.min(from, this.visible.length - 1));
@@ -354,12 +373,12 @@ export function selectorHintEntries<T>(
 		| "extraKeys"
 		| "keybindings"
 	>,
-): NavKey[] {
+): SelectorHintEntry[] {
 	const keybindings = options.keybindings ?? getKeybindings();
 	const selected = state.getSelected();
 	const { enabledCount } = state.getVisibleStats();
 	const multi = state.mode === "multi";
-	const entries: NavKey[] = [];
+	const entries: SelectorHintEntry[] = [];
 	if (enabledCount > 1) {
 		const up = navActionText(keybindings, "tui.select.up");
 		const down = navActionText(keybindings, "tui.select.down");
@@ -370,18 +389,26 @@ export function selectorHintEntries<T>(
 	if (!multi && selected && options.onPreview)
 		entries.push({ keys: "space", label: options.previewLabel ?? "preview" });
 	if (multi ? state.getChecked().length > 0 || selected !== undefined : selected) {
-		entries.push({ action: "tui.select.confirm", label: options.confirmLabel ?? (multi ? "confirm" : "choose") });
+		entries.push({
+			action: "tui.select.confirm",
+			label: options.confirmLabel ?? (multi ? "confirm" : "choose"),
+			role: "confirm",
+		});
 	}
 	for (const extra of options.extraKeys ?? []) {
-		if (extra.enabled?.(selected) ?? true) entries.push(extra.hint);
+		if (extra.enabled?.(selected) ?? true) entries.push({ ...extra.hint, role: "extra" });
 	}
 	if (options.search) entries.push({ keys: "type", label: "to search" });
 	else if (options.numbered && enabledCount > 0) entries.push({ keys: enabledCount > 1 ? "1-9" : "1", label: "pick" });
 	const cancel = firstKey(keybindings, "tui.select.cancel") || "esc";
-	entries.push({ keys: cancel, label: state.getQuery() ? "clear" : (options.cancelLabel ?? "cancel") });
+	entries.push({
+		keys: cancel,
+		label: state.getQuery() ? "clear" : (options.cancelLabel ?? "cancel"),
+		role: "cancel",
+	});
 	if (!options.search) {
 		const help = navActionText(keybindings, "app.keys.help");
-		if (help) entries.push({ keys: help, label: "keys" });
+		if (help) entries.push({ action: "app.keys.help", label: "keys" });
 	}
 	return entries;
 }
@@ -393,22 +420,33 @@ export function selectorHintEntries<T>(
  */
 const HINT_DROP_ORDER = ["to search", "keys", "pick", "preview", "select"];
 
+export interface SelectorHintEntry extends NavKey {
+	readonly role?: "confirm" | "cancel" | "extra";
+}
+
 /** Drop hint entries, least needed first, until the line fits `room` columns. */
-export function fitHintEntries(entries: readonly NavKey[], room: number, keybindings: NavKeybindings): NavKey[] {
+export function fitHintEntries(
+	entries: readonly SelectorHintEntry[],
+	room: number,
+	keybindings: NavKeybindings,
+): SelectorHintEntry[] {
 	const text = (entry: NavKey) =>
 		`${entry.action !== undefined ? navActionText(keybindings, entry.action) : (entry.keys ?? "")} ${entry.label}`;
 	const kept = [...entries];
 	const width = () => visibleWidth(kept.map(text).join(" · "));
-	// How to choose and how to leave stay, whatever label the picker gives enter.
-	const essential = (entry: NavKey) =>
-		entry.action === "tui.select.confirm" || ["cancel", "clear", "choose", "confirm"].includes(entry.label);
+	const essential = (entry: SelectorHintEntry) =>
+		entry.role !== "extra" &&
+		(entry.role === "confirm" || entry.role === "cancel" || entry.action === "tui.select.confirm");
 	while (kept.length > 1 && width() > room) {
-		const byOrder = HINT_DROP_ORDER.map((label) => kept.findIndex((entry) => entry.label === label)).find(
-			(index) => index >= 0,
-		);
+		const byOrder = HINT_DROP_ORDER.map((label) =>
+			kept.findIndex((entry) => !essential(entry) && entry.label === label),
+		).find((index) => index >= 0);
 		// A picker's own keys go last first, so the first ones it lists stay longest.
 		const other = kept.findLastIndex((entry) => !essential(entry) && !HINT_DROP_ORDER.includes(entry.label));
-		const drop = byOrder ?? (other >= 0 ? other : kept.findIndex((entry) => entry.label !== "cancel"));
+		const nonEssential = kept.findIndex((entry) => !essential(entry));
+		const drop =
+			byOrder ??
+			(other >= 0 ? other : nonEssential >= 0 ? nonEssential : kept.findIndex((entry) => entry.role !== "cancel"));
 		if (drop < 0) break;
 		kept.splice(drop, 1);
 	}
@@ -418,6 +456,16 @@ export function fitHintEntries(entries: readonly NavKey[], room: number, keybind
 function firstKey(keybindings: NavKeybindings, action: string): string {
 	const key = keybindings.getKeys?.(action)?.[0];
 	return key ? navKeyText(key) : "";
+}
+
+function clipSelectorLine(line: string, width: number): string {
+	let clipped = visibleWidth(line) > width ? truncateToWidth(line, width) : line;
+	let room = width;
+	while (visibleWidth(clipped) > width && room > 0) {
+		room = Math.max(0, room - Math.max(1, visibleWidth(clipped) - width));
+		clipped = sliceByColumn(clipped, 0, room, true);
+	}
+	return clipped;
 }
 
 /** The picker component: state, rendering and keys. */
@@ -433,11 +481,15 @@ export class Selector<T> implements Component, Focusable {
 	private notice?: { text: string; tone: SelectorTone };
 	/** Rendered line index of each visible row, from the last render, for mouse hits. */
 	private rowLines = new Map<number, number>();
-	private mousePressed?: number;
+	private rowLinesWidth?: number;
+	private mousePressed?: string;
+	private closed = false;
+	private selectedId?: string;
 	private _focused = false;
 	private cachedRender?: {
 		width: number;
 		revision: number;
+		theme: ReturnType<typeof getGlobalTheme>;
 		keybindings: NavKeybindings;
 		bindingKeys: string;
 		inputValue?: string;
@@ -459,6 +511,7 @@ export class Selector<T> implements Component, Focusable {
 				this.state.setQuery(options.initialQuery);
 			}
 		}
+		this.selectedId = this.state.getSelected()?.id;
 	}
 
 	get focused(): boolean {
@@ -491,7 +544,7 @@ export class Selector<T> implements Component, Focusable {
 		this.cachedRender = undefined;
 		this.input = this.createInput();
 		this.state.setQuery("");
-		this.options.onSelectionChange?.(this.state.getSelected());
+		this.notifySelectionChange();
 	}
 
 	setTitle(title: string | undefined): void {
@@ -518,6 +571,7 @@ export class Selector<T> implements Component, Focusable {
 	/** Replace the rows, keeping the search and the selected row; see {@link SelectorState.setItems}. */
 	setItems(items: readonly SelectorItem<T>[], preferId?: string): void {
 		this.state.setItems(items, preferId);
+		this.notifySelectionChange();
 	}
 
 	/** Set the search text as if typed. */
@@ -525,7 +579,7 @@ export class Selector<T> implements Component, Focusable {
 		this.cachedRender = undefined;
 		this.input?.setValue(query);
 		this.state.setQuery(query);
-		this.options.onSelectionChange?.(this.state.getSelected());
+		this.notifySelectionChange();
 	}
 
 	invalidate(): void {
@@ -534,6 +588,7 @@ export class Selector<T> implements Component, Focusable {
 	}
 
 	handleInput(data: string): void {
+		if (this.closed) return;
 		this.cachedRender = undefined;
 		const kb = this.options.keybindings ?? getKeybindings();
 		if (this.showingHelp) {
@@ -549,9 +604,14 @@ export class Selector<T> implements Component, Focusable {
 		else if (!this.input && data === "\x1b[F") this.state.edge("last");
 		else if (kb.matches(data, "tui.select.cancel")) {
 			if (this.state.getQuery() && !isCtrlC(data)) this.clearSearch();
-			else this.options.onCancel?.();
+			else {
+				this.closed = true;
+				this.mousePressed = undefined;
+				this.options.onCancel?.();
+			}
 			return;
 		} else if (this.runExtraKey(kb, data, selected)) {
+			this.notifySelectionChange();
 			return;
 		} else if (
 			kb.matches(data, "tui.select.confirm") ||
@@ -577,45 +637,45 @@ export class Selector<T> implements Component, Focusable {
 			this.input.handleInput(data);
 			this.state.setQuery(this.input.getValue());
 		} else return;
-		if (this.state.getSelected()?.id !== selected?.id) this.options.onSelectionChange?.(this.state.getSelected());
+		this.notifySelectionChange();
 	}
 
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
-		if (this.showingHelp) return { handled: true };
+		if (this.closed || this.showingHelp) return { handled: true };
+		if (this.rowLinesWidth !== event.width) this.render(event.width);
 		if (event.type === "wheel" && event.wheelDelta) {
-			const before = this.state.getSelectedIndex();
+			const before = this.state.getSelected()?.id;
 			this.state.move(event.wheelDelta < 0 ? -1 : 1);
-			const changed = this.state.getSelectedIndex() !== before;
-			if (changed) this.options.onSelectionChange?.(this.state.getSelected());
-			return { handled: true, render: changed };
+			this.notifySelectionChange();
+			return { handled: true, render: this.state.getSelected()?.id !== before };
 		}
 		if (event.button !== "left" || (event.type !== "press" && event.type !== "click")) return undefined;
 		const index = [...this.rowLines.entries()].find(([, line]) => line === event.y)?.[0];
-		if (index === undefined) return undefined;
-		const item = this.state.getVisible()[index];
-		if (!item || item.disabled) {
+		const item = index === undefined ? undefined : this.state.getVisible()[index];
+		if (!item || item.disabled || index === undefined) {
 			this.mousePressed = undefined;
-			return { handled: true };
+			return index === undefined ? undefined : { handled: true };
 		}
 		if (event.type === "press") {
-			this.mousePressed = index;
+			this.mousePressed = item.id;
 			this.state.select(index);
-			this.options.onSelectionChange?.(this.state.getSelected());
+			this.notifySelectionChange();
 			return { handled: true, focus: true };
 		}
-		const clicked = this.mousePressed ?? index;
+		const pressed = this.mousePressed;
 		this.mousePressed = undefined;
-		this.state.select(clicked);
-		if (this.state.mode === "multi") {
-			const item = this.state.getSelected();
-			if (item) this.state.toggle(item.id);
-		} else this.confirm();
+		if (pressed !== item.id) return { handled: true };
+		this.state.select(index);
+		this.notifySelectionChange();
+		if (this.state.mode === "multi") this.state.toggle(item.id);
+		else this.confirm();
 		return { handled: true };
 	}
 
 	render(width: number): string[] {
 		const keybindings = this.options.keybindings ?? getKeybindings();
 		const revision = this.state.getRevision();
+		const activeTheme = getGlobalTheme();
 		const inputValue = this.input?.getValue();
 		const inputCursor = this.input?.getCursor();
 		const inputFocused = this.input?.focused;
@@ -637,6 +697,7 @@ export class Selector<T> implements Component, Focusable {
 		if (
 			cached?.width === width &&
 			cached.revision === revision &&
+			cached.theme === activeTheme &&
 			cached.keybindings === keybindings &&
 			cached.bindingKeys === bindingKeys &&
 			cached.inputValue === inputValue &&
@@ -645,6 +706,7 @@ export class Selector<T> implements Component, Focusable {
 		) {
 			return cached.lines;
 		}
+		this.rowLinesWidth = width;
 		if (this.showingHelp) {
 			this.rowLines.clear();
 			const title = this.options.helpTitle ?? this.title ?? "keys";
@@ -654,7 +716,7 @@ export class Selector<T> implements Component, Focusable {
 				width,
 				this.style,
 				this.options.keybindings ?? getKeybindings(),
-			);
+			).map((line) => clipSelectorLine(line, width));
 		}
 		const lines: string[] = [];
 		const inner = Math.max(1, width - 2);
@@ -682,10 +744,11 @@ export class Selector<T> implements Component, Focusable {
 				keybindings,
 			),
 		);
-		const rendered = lines.map((line) => (visibleWidth(line) > width ? truncateToWidth(line, width) : line));
+		const rendered = lines.map((line) => clipSelectorLine(line, width));
 		this.cachedRender = {
 			width,
 			revision,
+			theme: activeTheme,
 			keybindings,
 			bindingKeys,
 			inputValue,
@@ -697,7 +760,7 @@ export class Selector<T> implements Component, Focusable {
 	}
 
 	private helpEntries(): NavKey[] {
-		const entries = selectorHintEntries(this.state, this.options).filter((entry) => entry.label !== "keys");
+		const entries = selectorHintEntries(this.state, this.options).filter((entry) => entry.action !== "app.keys.help");
 		return entries;
 	}
 
@@ -713,21 +776,35 @@ export class Selector<T> implements Component, Focusable {
 		return false;
 	}
 
+	private notifySelectionChange(): void {
+		const item = this.state.getSelected();
+		if (item?.id === this.selectedId) return;
+		this.selectedId = item?.id;
+		this.options.onSelectionChange?.(item);
+	}
+
 	private confirm(): void {
+		if (this.closed) return;
 		if (this.state.mode === "multi") {
+			this.closed = true;
+			this.mousePressed = undefined;
 			this.options.onConfirm?.(this.state.getChecked());
 			return;
 		}
 		const item = this.state.getSelected();
-		if (item) this.options.onSelect?.(item);
+		if (!item) return;
+		if (this.options.closeOnSelect !== false) this.closed = true;
+		this.mousePressed = undefined;
+		this.options.onSelect?.(item);
 	}
 
 	private pickNumber(index: number): void {
 		const item = this.state.getVisible()[index];
 		if (!item || item.disabled) return;
 		this.state.select(index);
+		this.notifySelectionChange();
 		if (this.state.mode === "multi") this.state.toggle(item.id);
-		else this.options.onSelect?.(item);
+		else this.confirm();
 	}
 
 	private renderSearch(width: number): string[] {
@@ -774,10 +851,17 @@ export class Selector<T> implements Component, Focusable {
 			this.rowLines.set(index, firstLine + lines.length);
 			const parts = this.rowParts(item, index, isSelected, numbered, numberWidth, hasMarks, multi);
 			const indent = visibleWidth(parts.lead);
-			const tag = item.tag ? this.style.tone(item.tagTone ?? "muted", item.tag) : "";
-			const tagWidth = item.tag ? visibleWidth(item.tag) + 2 : 0;
+			const labelRoom = Math.max(1, width - indent - 1);
+			const label = visibleWidth(item.label) > labelRoom ? truncateToWidth(item.label, labelRoom) : item.label;
+			const tagRoom = Math.max(0, width - indent - visibleWidth(label) - 3);
+			const tagText = item.tag
+				? visibleWidth(item.tag) > tagRoom
+					? truncateToWidth(item.tag, tagRoom)
+					: item.tag
+				: "";
+			const tag = tagText ? this.style.tone(item.tagTone ?? "muted", tagText) : "";
+			const tagWidth = tagText ? visibleWidth(tagText) + 2 : 0;
 			const room = Math.max(1, width - indent - tagWidth - 1);
-			const label = visibleWidth(item.label) > room ? truncateToWidth(item.label, room) : item.label;
 			let line = parts.lead + parts.label(label);
 			let used = indent + visibleWidth(label);
 			if (item.description && !twoLine) {

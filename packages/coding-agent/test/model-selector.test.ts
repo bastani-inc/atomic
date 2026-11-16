@@ -400,4 +400,203 @@ describe("model selector", () => {
 			selector.dispose();
 		});
 	});
+
+	it("does not match the shown thinking level or current tag when searching (#5237)", async () => {
+		harness = await createHarness({
+			models: [
+				{ id: "gpt-5", name: "GPT 5", reasoning: true },
+				{ id: "o3", name: "O3", reasoning: true },
+				{ id: "mistral-medium", name: "Mistral Medium", reasoning: true },
+				{ id: "default-target", name: "Default Target", reasoning: true },
+			],
+		});
+		const currentModel = harness.getModel("gpt-5")!;
+		const provider = currentModel.provider;
+		harness.settingsManager.setDefaultModelAndProvider(provider, "default-target");
+		const selector = new ModelSelectorComponent(
+			createFakeTui(),
+			currentModel,
+			harness.settingsManager,
+			harness.session.modelRuntime,
+			[],
+			() => {},
+			() => {},
+			undefined,
+			"medium",
+		);
+
+		for (const char of "medium") selector.handleInput(char);
+		assert.deepEqual(
+			selector.selector.state.getVisible().map((item) => item.value.id),
+			["mistral-medium"],
+		);
+
+		selector.selector.clearSearch();
+		for (const char of "current") selector.handleInput(char);
+		assert.deepEqual(
+			selector.selector.state.getVisible().map((item) => item.value.id),
+			[],
+		);
+
+		selector.selector.clearSearch();
+		for (const char of "default") selector.handleInput(char);
+		assert.deepEqual(
+			selector.selector.state.getVisible().map((item) => item.value.id),
+			["default-target"],
+		);
+		selector.dispose();
+	});
+
+	it("hints ←→ effort only when the selected model supports more than one thinking level (#5237)", async () => {
+		harness = await createHarness({
+			models: [
+				{ id: "multi-level", name: "Multi Level", reasoning: true },
+				{ id: "single-level", name: "Single Level", reasoning: true },
+				{ id: "plain-model", name: "Plain Model", reasoning: false },
+			],
+		});
+		const modelRuntime = harness.session.modelRuntime;
+		const baseModels = modelRuntime.getAvailableSnapshot();
+		const models = baseModels.map((model) =>
+			model.id === "single-level"
+				? {
+						...model,
+						thinkingLevelMap: {
+							off: null,
+							minimal: null,
+							low: null,
+							medium: null,
+							high: "high" as const,
+						},
+					}
+				: model,
+		);
+		vi.spyOn(modelRuntime, "getAvailableSnapshot").mockReturnValue(models);
+		const onSelect = vi.fn();
+		const selector = new ModelSelectorComponent(
+			createFakeTui(),
+			models[0],
+			harness.settingsManager,
+			modelRuntime,
+			[],
+			onSelect,
+			() => {},
+			undefined,
+			"medium",
+		);
+
+		assert.ok(stripAnsi(selector.render(120).join("\n")).includes("←→ effort"));
+		selector.handleInput("\x1b[B");
+		assert.equal(stripAnsi(selector.render(120).join("\n")).includes("←→ effort"), false);
+		selector.handleInput("\x1b[C");
+		selector.handleInput("\x1b[B");
+		assert.equal(stripAnsi(selector.render(120).join("\n")).includes("←→ effort"), false);
+		selector.handleInput("\x1b[A");
+		selector.handleInput("\r");
+		assert.equal(onSelect.mock.calls.length, 1);
+		assert.equal(onSelect.mock.calls[0]?.[0]?.id, "single-level");
+		assert.equal(onSelect.mock.calls[0]?.length, 1);
+		selector.dispose();
+	});
+
+	it("clamps or drops a stale ←→ effort choice when catalog refresh changes supported levels (#5237)", async () => {
+		harness = await createHarness({
+			models: [
+				{ id: "alpha-1", name: "Alpha 1", reasoning: true },
+				{ id: "alpha-2", name: "Alpha 2", reasoning: true },
+			],
+		});
+		const { promise, resolve } = Promise.withResolvers<ModelsRefreshResult>();
+		const modelRuntime = harness.session.modelRuntime;
+		const baseSnapshot = modelRuntime.getAvailableSnapshot();
+		const initialAlpha1 = { ...baseSnapshot[0]!, thinkingLevelMap: { xhigh: "xhigh" as const } };
+		const initialAlpha2 = baseSnapshot[1]!;
+		vi.spyOn(modelRuntime, "getAvailableSnapshot").mockReturnValue([initialAlpha1, initialAlpha2]);
+		vi.spyOn(modelRuntime, "refresh").mockReturnValue(promise);
+		const onSelect = vi.fn();
+		const selector = new ModelSelectorComponent(
+			createFakeTui(),
+			initialAlpha1,
+			harness.settingsManager,
+			modelRuntime,
+			[],
+			onSelect,
+			() => {},
+			undefined,
+			"high",
+		);
+
+		selector.handleInput("\x1b[C");
+		assert.ok(stripAnsi(selector.render(120).join("\n")).includes("alpha-1  xhigh"));
+
+		const refreshedAlpha1 = { ...baseSnapshot[0]!, thinkingLevelMap: undefined };
+		const refreshedAlpha2 = { ...baseSnapshot[1]!, reasoning: false };
+		vi.spyOn(modelRuntime, "getAvailableSnapshot").mockReturnValue([refreshedAlpha1, refreshedAlpha2]);
+		vi.spyOn(modelRuntime, "getModel").mockImplementation((_provider, id) =>
+			id === "alpha-1" ? refreshedAlpha1 : id === "alpha-2" ? refreshedAlpha2 : undefined,
+		);
+
+		resolve({ aborted: false, errors: new Map() });
+		await vi.waitFor(() => {
+			assert.ok(stripAnsi(selector.render(120).join("\n")).includes("Model catalogs refreshed."));
+		});
+
+		const renderedAfterRefresh = stripAnsi(selector.render(120).join("\n"));
+		assert.equal(renderedAfterRefresh.includes("alpha-1  xhigh"), false);
+		assert.ok(renderedAfterRefresh.includes("alpha-1  high"));
+
+		selector.handleInput("\x1b[C");
+		assert.ok(stripAnsi(selector.render(120).join("\n")).includes("alpha-1  high"));
+
+		selector.handleInput("\r");
+		assert.equal(onSelect.mock.calls.length, 1);
+		assert.equal(onSelect.mock.calls[0]?.[0]?.id, "alpha-1");
+		assert.equal(onSelect.mock.calls[0]?.[1], "high");
+		selector.dispose();
+	});
+
+	it("rebuilds only the stepped row on ←→ and caches per-model metadata across rebuilds (#5237)", async () => {
+		harness = await createHarness({
+			models: Array.from({ length: 15 }, (_, index) => ({
+				id: `alpha-${String(index).padStart(2, "0")}`,
+				name: `Alpha ${index} [custom]`,
+				reasoning: true,
+			})),
+		});
+		const levelSpy = vi.spyOn(harness.settingsManager, "getModelThinkingLevel");
+		levelSpy.mockClear();
+		const selector = new ModelSelectorComponent(
+			createFakeTui(),
+			harness.getModel("alpha-00"),
+			harness.settingsManager,
+			harness.session.modelRuntime,
+			[],
+			() => {},
+			() => {},
+			undefined,
+			"medium",
+		);
+		selector.render(120);
+		assert.equal(
+			levelSpy.mock.calls.some(([, modelId]) => modelId === "alpha-14"),
+			false,
+		);
+
+		const beforeItems = [...selector.selector.state.getVisible()];
+		levelSpy.mockClear();
+
+		selector.handleInput("\x1b[C");
+		selector.render(120);
+
+		const afterItems = selector.selector.state.getVisible();
+		assert.notEqual(afterItems[0], beforeItems[0]);
+		assert.equal(afterItems[1], beforeItems[1]);
+		assert.equal(afterItems[2], beforeItems[2]);
+		assert.ok(afterItems[0]?.label.endsWith("  high"));
+		assert.ok(
+			levelSpy.mock.calls.every(([, modelId]) => modelId === "alpha-00"),
+			`expected getModelThinkingLevel only for alpha-00, got ${JSON.stringify(levelSpy.mock.calls)}`,
+		);
+		selector.dispose();
+	});
 });

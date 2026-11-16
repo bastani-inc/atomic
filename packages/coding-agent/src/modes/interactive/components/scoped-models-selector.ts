@@ -126,20 +126,23 @@ export class ScopedModelsSelectorComponent extends FramedSelector<string> {
 			maxVisible: 8,
 			emptyText: "No models available",
 			confirmLabel: "toggle",
+			closeOnSelect: false,
 			extraKeys,
 			onSelect: (item) => self().toggleModel(item.value),
 			onCancel: callbacks.onCancel,
 		});
 		this.callbacks = callbacks;
 		this.thinkingLevelFor = config.thinkingLevelFor;
-		this.enabledIds = config.enabledModelIds === null ? null : [...config.enabledModelIds];
+		this.enabledIds = config.enabledModelIds === null ? null : [...new Set(config.enabledModelIds)];
 		this.setModels(config.allModels);
 		if (config.refreshStatus) this.setRefreshStatus(config.refreshStatus, "muted");
 		this.refresh();
 	}
 
 	updateModels(models: readonly Model<Api>[], enabledModelIds?: string[] | null): void {
-		if (enabledModelIds !== undefined) this.enabledIds = enabledModelIds === null ? null : [...enabledModelIds];
+		if (enabledModelIds !== undefined) {
+			this.enabledIds = enabledModelIds === null ? null : [...new Set(enabledModelIds)];
+		}
 		this.setModels(models);
 		this.refresh();
 	}
@@ -193,6 +196,7 @@ export class ScopedModelsSelectorComponent extends FramedSelector<string> {
 				mark: enabled ? "checked" : "unchecked",
 				tag: model ? undefined : "unavailable",
 				searchText: this.modelMetadata.get(id)?.searchText ?? id,
+				searchTextMode: "replace",
 				labelStyle: model
 					? undefined
 					: (text, selected) =>
