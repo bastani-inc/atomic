@@ -143,20 +143,24 @@ If Atomic exits while work is in flight, for example while background subagents 
 
 Non-interactive runs such as `atomic -p` do not recover interrupted work. It stays pending until the session is next resumed interactively.
 
+Each session is a two-line row: its name or first message, then its age, message count, folder (when listing all folders) and summary. The line at the bottom of the picker lists the keys that work at that moment. `/workflow resume` uses the same picker for workflow runs.
+
 In the picker you can:
 
-- search by typing
+- search by typing; Esc clears the search, and a second Esc closes the picker
+- preview the selected session with Space (on an empty search), and close the preview with Space or Esc
+- switch between this folder and all folders with Tab
 - toggle path display with CTRL+P
 - toggle sort mode with CTRL+S
 - filter to named sessions with CTRL+N
 - rename with CTRL+R
-- delete with CTRL+D, then confirm
+- delete with CTRL+D, then confirm with Enter (Esc keeps the session)
 
 JSONL stores use the `trash` CLI when available. Database stores delete the selected session record, not the database.
 
 ### Session summaries
 
-Each row shows a short generated description of what the session was about in its own column, beside the session name or first message, so you can recognize a conversation without opening it. Atomic writes one after the agent goes idle, using the model the session is already configured with, and saves it as a `session_summary` entry in the selected store.
+Each row shows a short generated description of what the session was about on its second line, after the age and message count, so you can recognize a conversation without opening it. Atomic writes one after the agent goes idle, using the model the session is already configured with, and saves it as a `session_summary` entry in the selected store.
 
 A summary describes the conversation up to a specific message and remains visible as newer messages arrive. A later branch summary retires it. "No summary available." means no summary has been generated for the current branch, generation failed, or it is still in flight. The session name and first message are never displaced by a summary, and the column only appears once at least one listed session has a summary. Summaries are also searchable along with the rest of the session text.
 
