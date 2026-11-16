@@ -302,6 +302,8 @@ describe("WorkflowAttachPane", () => {
 		});
 
 		pane.handleInput(Key.ctrl("x"));
+		assert.equal(hidden, 0, "Ctrl+X no longer navigates");
+		pane.handleInput("\x1b");
 
 		assert.equal(hidden, 1);
 		assert.equal(pane._mode, "graph");

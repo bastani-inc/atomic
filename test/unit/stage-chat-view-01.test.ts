@@ -126,7 +126,7 @@ describe("StageChatView", () => {
 		assert.equal(renders, 2);
 		view.dispose();
 	});
-	test("Ctrl+X leaves before a conflicting tools-expand action can consume it", () => {
+	test("Ctrl+X no longer leaves a stage chat; ← on an empty prompt does (#5224)", () => {
 		const store = createStore();
 		setupRun(store, "run-1", "stage-a");
 		const { handle } = makeHandle();
@@ -151,8 +151,10 @@ describe("StageChatView", () => {
 		});
 
 		assert.equal(view.handleInput("\x18"), true);
+		assert.equal(detached, 0, "Ctrl+X is only the remapped tools-expand action now");
+		assert.equal(expanded, false);
+		assert.equal(view.handleInput("\x1b[D"), true);
 		assert.equal(detached, 1);
-		assert.equal(expanded, true);
 		view.dispose();
 	});
 
@@ -222,7 +224,7 @@ describe("StageChatView", () => {
 		view.dispose();
 	});
 
-	test("restores prompt-card input drafts after Ctrl+X detach and reattach", async () => {
+	test("restores prompt-card input drafts after the chat closes and reattaches (#5224)", async () => {
 		const store = createStore();
 		setupRun(store, "run-1", "stage-a");
 		const prompt = makePendingPrompt({ initial: "seed" });
@@ -244,8 +246,10 @@ describe("StageChatView", () => {
 		});
 
 		for (const ch of "-draft") firstView.handleInput(ch);
-		firstView.handleInput("\x18");
-		assert.equal(detached, 1);
+		// ← with an answer typed moves the caret; it never leaves and drops the answer.
+		firstView.handleInput("\x1b[D");
+		firstView.handleInput("\x1b[C");
+		assert.equal(detached, 0);
 		assert.equal(store.runs()[0]?.stages[0]?.pendingPrompt?.id, prompt.id);
 		firstView.dispose();
 
@@ -265,13 +269,13 @@ describe("StageChatView", () => {
 
 		reattachedView.handleInput("\r");
 		assert.equal(await pending, "seed-draft");
-		assert.equal(detached, 2);
+		assert.equal(detached, 1);
 		assert.equal(store.runs()[0]?.stages[0]?.pendingPrompt, undefined);
 		assert.equal(store.getStagePromptDraft("run-1", "stage-a", prompt.id), undefined);
 		reattachedView.dispose();
 	});
 
-	test("Ctrl+X detach leaves a prompt-card input pending and unresolved", async () => {
+	test("← on an empty answer leaves a prompt-card input pending and unresolved (#5224)", async () => {
 		const store = createStore();
 		setupRun(store, "run-1", "stage-a");
 		const prompt = makePendingPrompt();
@@ -296,8 +300,10 @@ describe("StageChatView", () => {
 			onClose: () => {},
 		});
 
-		for (const ch of "draft") view.handleInput(ch);
 		view.handleInput("\x18");
+		await flush();
+		assert.equal(detached, 0, "Ctrl+X does not navigate");
+		view.handleInput("\x1b[D");
 		await flush();
 		assert.equal(detached, 1);
 		assert.equal(settled, false);

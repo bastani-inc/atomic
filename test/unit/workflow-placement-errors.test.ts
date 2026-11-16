@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { SHARED_STORAGE_JOIN_HINT } from "../../packages/coding-agent/src/core/storage/errors.js";
 import {
 	gitInstallCommand,
 	isSharedPoolSetupError,
@@ -321,7 +320,7 @@ test("setup problems name each missing piece and how to supply it (#4310)", () =
 	assert.deepEqual(sharedPoolProblems.sharedJournalRequired("a memory journal", undefined), {
 		code: "shared-journal-required",
 		subject: "a shared journal (this node's journal is a memory journal, which other hosts cannot open)",
-		hint: `Join this node to the shared storage with \`${SHARED_STORAGE_JOIN_HINT}\`, or select the journal through a storage adapter every host opens, such as { adapter: "@bastani/atomic-storage-libsql", options: { url } }.`,
+		hint: 'Join this node to the shared database with `atomic storage join <postgres-url> --password-file <path>` for PostgreSQL or `atomic team join <url> --token-file <path>` for libSQL / Turso, or pass the database to `atomic worker` with --db; an SDK caller selects the journal through a storage adapter every host opens, such as { adapter: "@bastani/atomic-storage-postgres", options: { url } } or { adapter: "@bastani/atomic-storage-libsql", options: { url } }.',
 		fields: { selection: "a memory journal" },
 	});
 	assert.deepEqual(sharedPoolProblems.adapterUnavailable("./adapter.js"), {

@@ -282,7 +282,7 @@ export function getBundledWorkflowArgumentCompletions(argumentPrefix: string): A
 	const parts = argumentPrefix.trim().split(/\s+/).filter(Boolean);
 	const subcommand = parts[0] ?? "";
 	const workflowItems = bundledWorkflowNameItems();
-	if (!argumentPrefix.includes(" ")) {
+	if (!/\s/.test(argumentPrefix)) {
 		return completeWorkflowToken(argumentPrefix, [...WORKFLOW_ADMIN_COMPLETIONS, ...workflowItems]);
 	}
 	if (subcommand === "inputs") return completeWorkflowToken(argumentPrefix, workflowItems);

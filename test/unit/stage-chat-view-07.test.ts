@@ -203,7 +203,7 @@ describe("StageChatView", () => {
 				true,
 			);
 			assert.equal(
-				lines.some((line) => line.includes("ctrl+x")),
+				lines.some((line) => line.includes("← graph") || line.includes("← return to graph")),
 				true,
 			);
 		} finally {
@@ -447,7 +447,7 @@ describe("StageChatView", () => {
 
 		const lines = view.render(120).map(stripAnsi);
 		const hintIndex = expectRightAlignedReturnHint(lines, 120);
-		assert.match(lines[hintIndex] ?? "", /openai-codex\/gpt-5\.5 {2}high .*ctrl\+x return to graph/);
+		assert.match(lines[hintIndex] ?? "", /openai-codex\/gpt-5\.5 {2}high .*← return to graph/);
 		assert.notEqual(lines[hintIndex]?.trim(), RETURN_HINT_TEXT);
 		view.dispose();
 	});
@@ -481,10 +481,10 @@ describe("StageChatView", () => {
 		const footer = view
 			.render(40)
 			.map(stripAnsi)
-			.find((line) => line.includes("ctrl+x return to graph"));
-		assert.match(footer ?? "", /\sctrl\+x return to graph$/);
+			.find((line) => line.includes("← return to graph"));
+		assert.match(footer ?? "", /\s← return to graph$/);
 		assert.equal(footer?.length, 40);
-		assert.doesNotMatch(footer ?? "", /clactrl\+x/);
+		assert.doesNotMatch(footer ?? "", /cla←/);
 		view.dispose();
 	});
 

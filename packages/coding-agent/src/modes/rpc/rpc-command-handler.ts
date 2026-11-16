@@ -7,6 +7,7 @@ import { setDebugSetting } from "../../core/debug-setting.ts";
 import { KeybindingsManager } from "../../core/keybindings.ts";
 import { SessionManager } from "../../core/session-manager.ts";
 import { getSkillCatalog } from "../../core/skill-catalog.ts";
+import { stopAllBackgroundWork } from "../../core/tasks/stop-all.ts";
 import { RpcBashRequestOwners } from "./rpc-bash-request-owners.ts";
 import { outputExtensionLoadErrors } from "./rpc-extension-load-errors.ts";
 import type { RpcExtensionUICapabilities, RpcPendingExtensionRequests } from "./rpc-extension-ui.ts";
@@ -126,6 +127,9 @@ export function createRpcCommandHandler({
 					(error: Error) => ui.notify(error.message, "error"),
 				);
 				return createRpcSuccessResponse(id, command.type);
+			}
+			case "stop_all_background": {
+				return createRpcSuccessResponse(id, command.type, await stopAllBackgroundWork(session));
 			}
 			case "prompt": {
 				const finishCommand = beginCommand?.();

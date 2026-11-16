@@ -108,7 +108,7 @@ test("opening a transcript receives the final message queued during its history 
 		assert.equal(listenersAtFinal, 0);
 		assert.ok(oldPage.value.items.every((item) => item.source.entryId !== finalId));
 
-		inspector.handleInput("\r");
+		inspector.handleInput(" ");
 		await flush();
 		finalDuringRead = "FINAL-AT-HISTORY-BOUNDARY";
 		inspector.handleInput("\r");
@@ -117,7 +117,7 @@ test("opening a transcript receives the final message queued during its history 
 		assert.equal((rendered(inspector).match(/FINAL-AT-HISTORY-BOUNDARY/g) ?? []).length, 1);
 		await fixture.settle();
 		assert.equal((rendered(inspector).match(/FINAL-AT-HISTORY-BOUNDARY/g) ?? []).length, 1);
-		inspector.handleInput("\x1b");
+		inspector.handleInput("\x1b[D");
 		assert.equal(listeners.size, 0);
 	} finally {
 		inspector.dispose();

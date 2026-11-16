@@ -742,6 +742,15 @@ export declare function startWorkflowWorkerHost(
 	options: import("./workers/worker-host-types.js").WorkflowWorkerHostOptions,
 ): Promise<import("./workers/worker-host-types.js").WorkflowWorkerHost>;
 /**
+ * Sets up or upgrades the tables of a shared journal and of every worker pool store beside it, as `atomic storage
+ * migrate` does (#5218): run as the database's owner role, so worker hosts and roots with a runtime role run no DDL.
+ * Default journal: the one this machine selects for workflow runs. Running it again on a current schema changes nothing.
+ */
+export declare function migrateWorkflowStorage(options?: {
+	readonly journal?: import("./workers/worker-host-types.js").SharedJournalSelection;
+	readonly agentDir?: string;
+}): Promise<void>;
+/**
  * The worker hosts registered in a shared journal and the pool stats of the running or paused roots they serve, with the
  * fleet's queue and the shared store's state (#4768). Default journal: the one this machine selects for workflow runs.
  * Setup problems reject; a store that cannot be read, or does not answer within 5 s, resolves with `fleet.store.state`

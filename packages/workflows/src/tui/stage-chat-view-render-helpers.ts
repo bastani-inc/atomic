@@ -143,7 +143,7 @@ export function renderHintsForPrompt(kind: PendingPrompt["kind"], theme: GraphTh
 		return `${paint("enter", theme.textMuted, { bold: true })} Submit · ${paint("ctrl+c", theme.textMuted, { bold: true })} Skip`;
 	}
 	if (kind === "custom") {
-		return `${paint("ctrl+x", theme.textMuted, { bold: true })} Return to graph · ${paint("ctrl+c", theme.textMuted, { bold: true })} Close`;
+		return `${paint("ctrl+c", theme.textMuted, { bold: true })} Close`;
 	}
-	return `${paint("enter", theme.textMuted, { bold: true })} Select · ${paint("ctrl+c", theme.textMuted, { bold: true })} Skip`;
+	return `${paint("enter", theme.textMuted, { bold: true })} Select · ${paint("esc", theme.textMuted, { bold: true })} Close · ${paint("ctrl+c", theme.textMuted, { bold: true })} Skip`;
 }

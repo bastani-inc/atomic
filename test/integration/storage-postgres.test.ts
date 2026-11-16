@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { connect, createServer, type Socket } from "node:net";
 import { join } from "node:path";
 import { inspect } from "node:util";
 import {
@@ -21,10 +20,21 @@ import {
 	postgresUrlFor,
 	withPostgresDatabase,
 } from "../helpers/postgres-database.js";
+import {
+	postgresTestUsesTls,
+	proxiedUrl,
+	startPostgresProxy,
+	writeProxyCertificates,
+} from "../helpers/postgres-proxy.js";
 import { makeTempDirectory, removeTempDirectory, writeTextSync } from "../helpers/runtime.js";
 
 /** A statement the facade gives up on only after its five runs and their backoff, about four seconds. */
 const TRANSIENT_RETRIES_TIMEOUT_MS = 20_000;
+/**
+ * The SQLSTATE mapping test raises nine transient failures twice, each retried with the facade's backoff, then six
+ * fatal ones: about 35 s against a managed server in another region (#5218), so four times the retries' bound.
+ */
+const SQLSTATE_MAPPING_TIMEOUT_MS = TRANSIENT_RETRIES_TIMEOUT_MS * 4;
 /** The statement timeout of the autocommit timeout tests. */
 const AUTOCOMMIT_TIMEOUT_MS = 1000;
 /**
@@ -41,28 +51,20 @@ const STALL_MARKER = "/* stall */";
 type ProxyControl = "hold" | "release" | "stall" | undefined;
 
 /**
- * A TCP proxy to `target` that passes each connection's traffic on, except as `control` decides from each chunk the
+ * A proxy to the test server that passes each connection's traffic on, except as `control` decides from each chunk the
  * client sends: `"hold"` keeps the server's answers back, `"release"` passes the held ones on and stops holding, and
- * `"stall"` drops every later answer, as a network that stopped answering would.
+ * `"stall"` drops every later answer, as a network that stopped answering would. On a TLS-only server it terminates the
+ * client's TLS with `certificate` and speaks TLS to the server (#5218); `url` gives the client's URL for it.
  */
 async function startProxy(
-	target: URL,
 	control: (clientText: string) => ProxyControl,
-): Promise<{ port: number; close(): Promise<void> }> {
-	const sockets = new Set<Socket>();
-	const server = createServer((client) => {
-		const upstream = connect(Number(target.port || 5432), target.hostname);
+): Promise<{ port: number; url(databaseUrl: string): string; close(): Promise<void> }> {
+	const directory = makeTempDirectory("atomic-pg-proxy-");
+	const certificate = postgresTestUsesTls() ? writeProxyCertificates(directory) : undefined;
+	const proxy = await startPostgresProxy(certificate, (client, upstream, first) => {
 		let stalled = false;
 		let held: Buffer[] | undefined;
-		for (const socket of [client, upstream]) {
-			sockets.add(socket);
-			socket.on("error", () => {});
-			socket.on("close", () => {
-				client.destroy();
-				upstream.destroy();
-			});
-		}
-		client.on("data", (chunk: Buffer) => {
+		const fromClient = (chunk: Buffer) => {
 			const decision = control(chunk.toString("latin1"));
 			if (decision === "stall") stalled = true;
 			else if (decision === "hold") held ??= [];
@@ -71,23 +73,22 @@ async function startProxy(
 				held = undefined;
 			}
 			upstream.write(chunk);
-		});
+		};
+		fromClient(first);
+		client.on("data", fromClient);
 		upstream.on("data", (chunk: Buffer) => {
 			if (stalled) return;
 			if (held !== undefined) held.push(chunk);
 			else client.write(chunk);
 		});
 	});
-	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-	const address = server.address();
-	assert.ok(address !== null && typeof address === "object");
 	return {
-		port: address.port,
-		close: () =>
-			new Promise<void>((resolve) => {
-				for (const socket of sockets) socket.destroy();
-				server.close(() => resolve());
-			}),
+		port: proxy.port,
+		url: (databaseUrl) => proxiedUrl(databaseUrl, proxy.port, certificate?.ca),
+		async close() {
+			await proxy.close();
+			removeTempDirectory(directory);
+		},
 	};
 }
 
@@ -422,7 +423,7 @@ describe.skipIf(postgresSkipReason !== undefined)("Postgres storage adapter (#47
 				}
 			});
 		},
-		TRANSIENT_RETRIES_TIMEOUT_MS * 2,
+		SQLSTATE_MAPPING_TIMEOUT_MS,
 	);
 
 	test("an exec outside a transaction that may have applied reports an unknown outcome (#4793)", async () => {
@@ -509,14 +510,12 @@ describe.skipIf(postgresSkipReason !== undefined)("Postgres storage adapter (#47
 		async () => {
 			await withPostgresDatabase(async ({ open, admin, name, url }) => {
 				// The marker on its own, not after `SET LOCAL`, is the attempt outside a transaction block.
-				const proxy = await startProxy(new URL(url), (text) =>
+				const proxy = await startProxy((text) =>
 					text.includes(STALL_MARKER) && !text.includes("SET LOCAL") ? "stall" : undefined,
 				);
 				try {
 					const holder = await open();
-					const proxied = new URL(url);
-					proxied.host = `127.0.0.1:${proxy.port}`;
-					const database = await open({ url: proxied.href, statementTimeoutMs: 100, maxConnections: 1 });
+					const database = await open({ url: proxy.url(url), statementTimeoutMs: 100, maxConnections: 1 });
 					await holder.exec("CREATE TABLE items (id BIGINT)");
 					const running = async () =>
 						(
@@ -551,7 +550,7 @@ describe.skipIf(postgresSkipReason !== undefined)("Postgres storage adapter (#47
 		await withPostgresDatabase(async ({ open, url }) => {
 			// The server's answers are held from the BEGIN until the COMMIT arrives, so a client that waited for the
 			// answer to its BEGIN before sending the rest would never get one.
-			const proxy = await startProxy(new URL(url), (text) =>
+			const proxy = await startProxy((text) =>
 				text.includes("COMMIT")
 					? "release"
 					: text.includes("BEGIN; SET LOCAL statement_timeout")
@@ -559,9 +558,7 @@ describe.skipIf(postgresSkipReason !== undefined)("Postgres storage adapter (#47
 						: undefined,
 			);
 			try {
-				const proxied = new URL(url);
-				proxied.host = `127.0.0.1:${proxy.port}`;
-				const database = await open({ url: proxied.href, statementTimeoutMs: 100 });
+				const database = await open({ url: proxy.url(url), statementTimeoutMs: 100 });
 				assert.deepEqual(await database.get("SELECT ?::int AS answer", 42), { answer: 42 });
 			} finally {
 				await proxy.close();

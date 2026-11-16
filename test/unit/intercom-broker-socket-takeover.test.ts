@@ -38,17 +38,20 @@ const extensionDir = join(moduleDir(import.meta.url), "../../packages/intercom")
 /** The first spawn attempt gives up this quickly, standing in for the production 5 s wait. */
 const FIRST_SPAWN_READY_TIMEOUT_MS = 300;
 
-/** The later spawn attempt, standing in for a reconnect, outlasts the whole scenario. */
-const LATER_SPAWN_READY_TIMEOUT_MS = 20_000;
+/**
+ * How long one real broker process may take to start, bind or exit. Each start runs node and jiti and transforms the
+ * broker sources; on a loaded machine one start has taken more than 10 s, so this leaves several times that.
+ */
+const BROKER_BUDGET_MS = 60_000;
+
+/** The later spawn attempt, standing in for a reconnect, waits as long as one broker start may take. */
+const LATER_SPAWN_READY_TIMEOUT_MS = BROKER_BUDGET_MS;
+
+/** A test that starts brokers waits on a few of them in sequence, each within BROKER_BUDGET_MS. */
+const BROKER_TEST_TIMEOUT_MS = 4 * BROKER_BUDGET_MS;
 
 /** How long a second broker is given to appear, if the spawn logic were to start one, while the first is held. */
 const SECOND_BROKER_GRACE_MS = 1_500;
-
-/** One real broker start (node, jiti and module loading) is far below this even under load. */
-const BROKER_BUDGET_MS = 10_000;
-
-/** Time for a spawned child to be running before the socket it should yield to starts answering. */
-const CHILD_RUNNING_MS = 250;
 
 /** The spawner may notice the answering socket before the exit; repeating makes the exit-first order near certain. */
 const YIELD_ATTEMPTS = 8;
@@ -93,28 +96,22 @@ function holdFirstBrokerPreload(): string {
 	].join("\n");
 }
 
-type SpawnModule = typeof import("../../packages/intercom/broker/spawn.js");
-type PathsModule = typeof import("../../packages/intercom/broker/paths.js");
-type ClientModule = typeof import("../../packages/intercom/broker/client.js");
-
-let spawnModule: SpawnModule;
-let pathsModule: PathsModule;
-let IntercomClient: ClientModule["IntercomClient"];
-let socketPath: string;
-let intercomDir: string;
-let pidPath: string;
+/*
+ * Imported after ATOMIC_CODING_AGENT_DIR is set, at the top level rather than in a hook: spawn.ts and client.ts load
+ * all of @bastani/atomic, which a loaded machine can take minutes to transform. A hook would time out and skip every
+ * test; collecting the file has no timeout, and a failed import fails the file.
+ */
+const pathsModule = await import("../../packages/intercom/broker/paths.js");
+const spawnModule = await import("../../packages/intercom/broker/spawn.js");
+const { IntercomClient } = await import("../../packages/intercom/broker/client.js");
+const socketPath = pathsModule.getBrokerSocketPath();
+const intercomDir = pathsModule.getIntercomDirPath();
+const pidPath = pathsModule.getBrokerPidPath();
 
 const directBrokerPids: number[] = [];
-const liveClients: InstanceType<ClientModule["IntercomClient"]>[] = [];
+const liveClients: InstanceType<typeof IntercomClient>[] = [];
 
-beforeAll(async () => {
-	// Imported after ATOMIC_CODING_AGENT_DIR is set: these modules resolve their paths on load.
-	pathsModule = await import("../../packages/intercom/broker/paths.js");
-	spawnModule = await import("../../packages/intercom/broker/spawn.js");
-	({ IntercomClient } = await import("../../packages/intercom/broker/client.js"));
-	socketPath = pathsModule.getBrokerSocketPath();
-	intercomDir = pathsModule.getIntercomDirPath();
-	pidPath = pathsModule.getBrokerPidPath();
+beforeAll(() => {
 	makeDirectorySync(gateDir, { recursive: true });
 	writeTextSync(preloadFile, holdFirstBrokerPreload());
 });
@@ -176,6 +173,7 @@ async function terminate(pid: number): Promise<void> {
 	await waitUntil(() => !isAlive(pid), BROKER_BUDGET_MS);
 }
 
+// Terminating each broker left running waits for it within BROKER_BUDGET_MS.
 afterEach(async () => {
 	for (const client of liveClients.splice(0)) {
 		try {
@@ -190,7 +188,7 @@ afterEach(async () => {
 	for (const pid of pids) await terminate(pid);
 	removePathSync(intercomDir, { recursive: true, force: true, ...CLEANUP_RETRIES });
 	for (const file of [startsFile, firstStartMarker, gateFile]) removePathSync(file, { force: true });
-});
+}, BROKER_TEST_TIMEOUT_MS);
 
 afterAll(() => {
 	if (previousAgentDirEnv.atomic === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
@@ -200,7 +198,7 @@ afterAll(() => {
 	removeTempDirectory(agentDir);
 });
 
-function newClient(): InstanceType<ClientModule["IntercomClient"]> {
+function newClient(): InstanceType<typeof IntercomClient> {
 	const client = new IntercomClient();
 	client.on("error", () => {});
 	liveClients.push(client);
@@ -234,7 +232,7 @@ function spawnBrokerDirectly() {
 	return broker;
 }
 
-describe("a slow-starting broker beside a live one", () => {
+describe("a slow-starting broker beside a live one", { timeout: BROKER_TEST_TIMEOUT_MS }, () => {
 	const unixOnly = process.platform === "win32" ? test.skip : test;
 
 	test("(#3505) a session stays listed and reachable when a later spawn attempt runs while the first broker is still starting", async () => {
@@ -274,7 +272,7 @@ describe("a slow-starting broker beside a live one", () => {
 		const sessionListed = (await observer.listSessions()).some(({ id }) => id === session.sessionId);
 		const payload = "delivered through broker.sock";
 		const sendResult = await observer.send(session.sessionId ?? "", { text: payload });
-		await waitUntil(() => received.length > 0, POLL_INTERVAL_MS * 50);
+		await waitUntil(() => received.length > 0, BROKER_BUDGET_MS);
 
 		assert.deepEqual(
 			{
@@ -326,7 +324,7 @@ describe("a slow-starting broker beside a live one", () => {
 			assert.match(stderr, /a live broker already answers/u);
 			const connectionsBeforeProbe = connections;
 			assert.equal(await isSocketAnswering(socketPath), true);
-			await waitUntil(() => connections > connectionsBeforeProbe, POLL_INTERVAL_MS * 50);
+			await waitUntil(() => connections > connectionsBeforeProbe, BROKER_BUDGET_MS);
 			assert.ok(connections > connectionsBeforeProbe, "the socket path no longer leads to the live broker");
 			assert.notEqual(recordedBrokerPid(), challenger.pid, "the yielding broker must not claim the pid file");
 		} finally {
@@ -336,15 +334,21 @@ describe("a slow-starting broker beside a live one", () => {
 
 	unixOnly("(#3505) a spawn succeeds when its broker exits cleanly because a live broker answers", async () => {
 		const handoffGate = join(gateDir, "handoff");
-		const exitsOnGate = `const fs = require("fs"); setInterval(() => { if (fs.existsSync(${JSON.stringify(handoffGate)})) process.exit(0); }, 2);`;
+		const childRunning = join(gateDir, "running");
+		const exitsOnGate = `const fs = require("fs"); fs.writeFileSync(${JSON.stringify(childRunning)}, ""); setInterval(() => { if (fs.existsSync(${JSON.stringify(handoffGate)})) process.exit(0); }, 2);`;
 		for (let attempt = 0; attempt < YIELD_ATTEMPTS; attempt++) {
 			removePathSync(handoffGate, { force: true });
+			removePathSync(childRunning, { force: true });
 			const spawned = spawnModule.spawnBrokerIfNeeded(
 				process.execPath,
 				["-e", exitsOnGate],
 				LATER_SPAWN_READY_TIMEOUT_MS,
 			);
-			await sleep(CHILD_RUNNING_MS);
+			// The socket the child yields to starts answering only once the child runs.
+			assert.ok(
+				await waitUntil(() => fileExistsSync(childRunning), BROKER_BUDGET_MS),
+				"the spawned child never ran",
+			);
 			const liveBroker = await listenOnBrokerSocket();
 			writeTextSync(handoffGate, "");
 			try {

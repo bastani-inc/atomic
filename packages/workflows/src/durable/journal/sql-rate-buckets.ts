@@ -1,5 +1,5 @@
-import { fencedPath, type SqliteRow, type SqliteStatement } from "@bastani/atomic/storage";
-import { type SqlPoolStorage, sqlPoolStorage } from "./internal.js";
+import { ensureStorageSchema, fencedPath, type SqliteRow, type SqliteStatement } from "@bastani/atomic/storage";
+import { poolSchemaLedger, type SqlPoolStorage, sqlPoolStorage } from "./internal.js";
 import { poolWriteBatch } from "./pool-guarded-write.js";
 import { FLEET_HOST_LIVE_MS } from "./sql-fleet.js";
 import type { RunJournal } from "./types.js";
@@ -48,11 +48,15 @@ export class SqlRateBuckets {
 		if (storage === undefined) throw new Error("Fleet rate limits require a SQL run journal");
 		const store = new SqlRateBuckets(storage);
 		const { int, real } = storage.dialect.types;
+		// A current schema runs no DDL, so a role with only DML privileges opens it (#5218).
+		const schema = { ledger: poolSchemaLedger(storage), domain: "rate-buckets", revision: 1 };
 		await storage.transaction((tx) =>
-			tx.exec(`CREATE TABLE IF NOT EXISTS ${store.table}(
+			ensureStorageSchema(tx, storage.dialect, schema, () =>
+				tx.exec(`CREATE TABLE IF NOT EXISTS ${store.table}(
 				scope TEXT PRIMARY KEY, tat ${int} NOT NULL, interval_ms ${real} NOT NULL, burst ${int} NOT NULL,
 				cooldown_until ${int} NOT NULL DEFAULT 0, kind TEXT, updated_at ${int}
 			)`),
+			),
 		);
 		return store;
 	}
