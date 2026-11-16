@@ -207,6 +207,9 @@
 - Fixed model fallback treating an account that is out of credit as briefly rate limited: errors such as Anthropic's "Your credit balance is too low", OpenAI's "check your plan and billing details", OpenRouter's "Insufficient credits", DeepSeek's "Insufficient Balance" and xAI's spending-limit error cost one failed request every short cooldown before falling back, and some were not fallen back from at all. They now count as an exhausted quota, so the session falls back to the next model straight away instead of retrying the account that has no credit
 - Fixed `truncateHead()` and `truncateTail()` reporting output as truncated by the line limit when only its trailing newline went over the byte limit, so tools such as `find`, `grep`, `ls`, `search` and `bash` showed a truncation notice when nothing was cut. A tail truncation that cuts the only kept line to fit the byte limit now reports `bytes` instead of `lines`
 
+- Fixed slow navigation in `/tasks` when a session has many background tasks, while keeping task updates and elapsed times live ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- Fixed long cursor-marker sequences and heavily padded editor lines stalling attached subagent and workflow chat composers ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+
 ### Removed
 
 - Removed the Radius provider, which was operated by pi.dev. A `models.json` that configures `radius` or `"oauth": "radius"`, a `defaultProvider` of `radius`, or `--model radius/...` now reports that the provider was removed ([#5174](https://github.com/bastani-inc/atomic/issues/5174))
