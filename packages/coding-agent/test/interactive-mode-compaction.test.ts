@@ -1016,7 +1016,6 @@ describe("compaction boundary component", () => {
 		const collapsedRaw = component.render(200).join("\n");
 		const collapsed = stripVTControlCharacters(collapsedRaw);
 		expect(collapsedRaw).toContain(theme.fg("customMessageLabel", theme.bold("Context compacted")));
-		// One line (#5224): Atomic's logo mark, what changed, and the key that shows the summary.
 		expect(collapsed).toMatch(/∀ Context compacted · 100 → \S+ tokens · ctrl\+o for summary/);
 		expect(collapsed).not.toContain("Compacted from");
 		expect(collapsed).not.toContain("retained");

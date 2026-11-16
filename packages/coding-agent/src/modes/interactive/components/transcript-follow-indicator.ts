@@ -8,7 +8,6 @@ const FULL_RESET = "\x1b[0m";
 export interface TranscriptFollowIndicatorOptions {
 	isFollowing: () => boolean;
 	keyLabel: () => string;
-	/** Messages that arrived since the reader scrolled up; the pill counts them when there are some. */
 	newCount?: () => number;
 }
 

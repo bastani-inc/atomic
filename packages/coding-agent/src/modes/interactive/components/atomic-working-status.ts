@@ -47,16 +47,10 @@ export interface AtomicWorkingStatusOptions {
 	spinnerColor?: (text: string) => string;
 	spinnerBoldColor?: (text: string) => string;
 	messageColor?: (text: string) => string;
-	/** The run's time and tokens, shown after the message as `(2m 14s · ↓ 18.4k tokens)`. */
 	meta?: WorkingRunSnapshot;
-	/**
-	 * Shows Atomic's logo mark, a still bold accent `∀`, instead of the animated spinner. Compaction uses it, so it
-	 * never reads as ordinary work.
-	 */
 	logo?: boolean;
 }
 
-/** Atomic's logo mark as one inline cell: a still, bold accent `∀`, plain under NO_COLOR. */
 export function atomicLogoMark(palette?: AtomicWorkingPalette | (() => AtomicWorkingPalette)): string {
 	return noColorRequested() ? "∀" : emphasize(colorizePhase(ATOMIC_WORKING_PHASES.indexOf("accent"), "∀", palette));
 }
@@ -281,17 +275,12 @@ export class AtomicWorkingLoader implements Component {
 		this.metaTimer = undefined;
 	}
 
-	/**
-	 * Shows the run's time and tokens after the message. Under reduced motion the spinner holds still, so a once-a-second
-	 * tick keeps the time current; otherwise the spinner's own frames repaint it.
-	 */
 	setMeta(meta: (() => WorkingRunSnapshot | undefined) | undefined): void {
 		this.meta = meta;
 		this.armMetaTimer();
 		this.ui.requestRender();
 	}
 
-	/** Shows the still logo mark instead of the spinner; the time after the message keeps ticking once a second. */
 	setLogo(logo: boolean): void {
 		this.logo = logo;
 		if (logo && this.timer) {

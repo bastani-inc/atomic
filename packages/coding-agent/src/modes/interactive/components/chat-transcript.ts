@@ -323,7 +323,6 @@ export interface ScrollableComponentViewportOptions {
 	readonly scrollbar?: () => ScrollViewScrollbar | undefined;
 	/** Painted in the last row while the viewport is scrolled away from its live end. */
 	readonly followIndicator?: Pick<Component, "render">;
-	/** Styles the pinned prompt row shown at the top while scrolled up; without it nothing is pinned. */
 	readonly pinnedPrompt?: (promptRow: string) => string;
 	readonly observeFollowing?: (following: boolean) => void;
 	/** Asked to repaint when an `"auto"` scrollbar hides. */
@@ -584,7 +583,6 @@ export class ScrollableComponentViewport implements Component {
 			this.scrollFromBottom > 0 && start > 0 && this.visibleRows - indicator.length > 2
 				? this.pinnedPromptRow(componentRows, start)
 				: undefined;
-		// The pinned prompt takes its own row, so the transcript below it loses none.
 		const pin = pinned === undefined ? [] : [truncateToWidth(pinned, contentWidth, "")];
 		const contentRows = this.visibleRows - indicator.length - pin.length;
 		const visible = [
@@ -732,10 +730,6 @@ export class ScrollableComponentViewport implements Component {
 		});
 	}
 
-	/**
-	 * The prompt of the turn at the top of the viewport, styled by `pinnedPrompt`: the nearest OSC 133 `A` row above
-	 * the first visible row, while it has scrolled out of view.
-	 */
 	private pinnedPromptRow(componentRows: ComponentRows[], start: number): string | undefined {
 		const style = this.options.pinnedPrompt;
 		if (!style) return undefined;

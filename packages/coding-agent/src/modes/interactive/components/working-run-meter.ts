@@ -1,19 +1,15 @@
-/** What a working line reports about the run it belongs to. */
 export interface WorkingRunSnapshot {
 	readonly elapsedMs: number;
 	readonly outputTokens: number;
-	/** A short note after the time, such as `esc to cancel`. */
 	readonly note?: string;
 }
 
-/** The parts of an assistant message the meter reads: its usage once known, its content while it streams. */
 export interface MeteredMessage {
 	readonly role: string;
 	readonly usage?: { readonly output?: number } | undefined;
 	readonly content?: readonly unknown[] | string;
 }
 
-/** Output tokens a message's content amounts to, at about four characters per token. */
 export function estimatedOutputTokens(message: MeteredMessage): number {
 	const content = message.content;
 	if (typeof content === "string") return Math.ceil(content.length / 4);
@@ -28,10 +24,6 @@ export function estimatedOutputTokens(message: MeteredMessage): number {
 	return Math.ceil(characters / 4);
 }
 
-/**
- * Output tokens of a message. A finished message reports its usage; a streaming one may report only what the provider
- * counted when it started, so it counts as the larger of that and its estimate.
- */
 export function meteredOutputTokens(message: MeteredMessage, streaming = false): number {
 	const reported = message.usage?.output;
 	const known = typeof reported === "number" && reported > 0 ? reported : 0;
@@ -39,10 +31,6 @@ export function meteredOutputTokens(message: MeteredMessage, streaming = false):
 	return Math.max(known, estimatedOutputTokens(message));
 }
 
-/**
- * Counts one run of the agent for its working line: the time since the run started and the output tokens its
- * assistant messages produced, the finished ones by their reported usage and the one streaming now by its estimate.
- */
 export class WorkingRunMeter {
 	private startedAt: number | undefined;
 	private settledTokens = 0;
@@ -53,27 +41,23 @@ export class WorkingRunMeter {
 		this.now = now;
 	}
 
-	/** A new run starts: time and tokens count from zero. */
 	start(): void {
 		this.startedAt = this.now();
 		this.settledTokens = 0;
 		this.streamingTokens = 0;
 	}
 
-	/** The assistant message being streamed changed. */
 	streaming(message: MeteredMessage): void {
 		if (message.role !== "assistant") return;
 		this.streamingTokens = meteredOutputTokens(message, true);
 	}
 
-	/** An assistant message finished; its usage replaces its estimate. */
 	settled(message: MeteredMessage): void {
 		if (message.role !== "assistant") return;
 		this.settledTokens += meteredOutputTokens(message);
 		this.streamingTokens = 0;
 	}
 
-	/** The run ended; nothing is reported until the next one starts. */
 	stop(): void {
 		this.startedAt = undefined;
 	}
@@ -87,7 +71,6 @@ export class WorkingRunMeter {
 	}
 }
 
-/** `3s`, `2m 14s`, `1h 5m`. */
 export function formatWorkingElapsed(ms: number): string {
 	const seconds = Math.floor(Math.max(0, ms) / 1000);
 	if (seconds < 60) return `${seconds}s`;
@@ -96,16 +79,13 @@ export function formatWorkingElapsed(ms: number): string {
 	return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
-/** `950`, `18.4k`, `1.2M`. */
 export function formatWorkingTokens(tokens: number): string {
 	if (tokens < 1000) return `${tokens}`;
-	if (tokens < 1_000_000) return `${(tokens / 1000).toFixed(tokens < 100_000 ? 1 : 0)}k`;
+	if (tokens < 999_500) return `${(tokens / 1000).toFixed(tokens < 99_950 ? 1 : 0)}k`;
 	return `${(tokens / 1_000_000).toFixed(1)}M`;
 }
 
-/** The parenthesised part of a working line: `2m 14s · ↓ 18.4k tokens`, or only the time before any token. */
 export function formatWorkingMeta(snapshot: WorkingRunSnapshot): string {
-	// A run that has just started has nothing to report yet.
 	if (snapshot.elapsedMs < 1000 && snapshot.outputTokens <= 0 && !snapshot.note) return "";
 	const parts = [formatWorkingElapsed(snapshot.elapsedMs)];
 	if (snapshot.outputTokens > 0) parts.push(`↓ ${formatWorkingTokens(snapshot.outputTokens)} tokens`);
@@ -113,7 +93,6 @@ export function formatWorkingMeta(snapshot: WorkingRunSnapshot): string {
 	return parts.join(" · ");
 }
 
-/** A compaction's status after its message: how long it has run and the key that cancels it. */
 export function compactionMeta(startedAt: number, cancelKey: string | undefined, now = Date.now()): WorkingRunSnapshot {
 	return {
 		elapsedMs: Math.max(0, now - startedAt),

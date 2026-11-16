@@ -140,7 +140,6 @@ export interface InteractiveTuiOptions {
 	 * Defaults to Atomic's clipboard implementation and platform diagnostics.
 	 */
 	copySelection?: (text: string) => Promise<boolean | string>;
-	/** Items in the transcript, so the jump-to-latest pill can count what arrived while the reader scrolled up. */
 	messageCount?: () => number;
 }
 
@@ -385,7 +384,6 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 		(this as unknown as TuiOverlayCompositingInternals).compositeLineAt = compositeOverlayLine;
 	}
 
-	/** Counts what arrives while the reader is scrolled up, for the jump-to-latest pill. */
 	readonly newMessages = new NewMessageCounter();
 	messageCount: (() => number) | undefined;
 

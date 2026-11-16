@@ -20,14 +20,8 @@ import {
 	themeBold,
 } from "./render-status-progress.js";
 
-/** Tool calls a running block lists; older ones fold into `… +N tool uses`. */
 export const RUNNING_BLOCK_RECENT_TOOLS = 3;
 
-/**
- * One foreground or background child in main chat. While it runs: what it is, its last few tool calls, and one line
- * with its time and tokens. Once settled: one line naming the outcome and time, and the result's headline. The full
- * prompt, every tool call and the whole result stay behind the expand key.
- */
 export function renderSingleCompact(
 	d: Details,
 	r: Details["results"][number],
@@ -45,13 +39,14 @@ export function renderSingleCompact(
 	const glyph = resultGlyph(r, output, theme, isRunning, pulseFrame);
 
 	if (isRunning && r.progress) {
-		// The call heading above already reads `Agent(<name> · <task>)`; the block lists what the child is doing.
-		const recent = r.progress.recentTools.slice(-RUNNING_BLOCK_RECENT_TOOLS);
+		const hasCurrentTool = Boolean(r.progress.currentTool);
+		const recentLimit = RUNNING_BLOCK_RECENT_TOOLS - (hasCurrentTool ? 1 : 0);
+		const recent = recentLimit > 0 ? r.progress.recentTools.slice(-recentLimit) : [];
 		const current = compactCurrentActivity(r.progress, now);
-		const shownTools = recent.length + (r.progress.currentTool ? 1 : 0);
 		const toolLines = recent.map((tool) => (tool.args ? `${tool.tool}: ${tool.args}` : tool.tool));
-		const lines = [...toolLines.slice(r.progress.currentTool ? 1 : 0), current];
-		const folded = Math.max(0, r.progress.toolCount - shownTools);
+		const displayed = hasCurrentTool ? [...toolLines, current] : toolLines;
+		const lines = hasCurrentTool ? displayed : [...displayed, current];
+		const folded = Math.max(0, r.progress.toolCount - displayed.length);
 		if (folded > 0)
 			c.addChild(new Text(truncLine(theme.fg("dim", `  ⎿  … +${formatToolUseStat(folded)}`), width), 0, 0));
 		lines.forEach((line, index) => {

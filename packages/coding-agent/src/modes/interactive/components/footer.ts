@@ -332,7 +332,6 @@ export class FooterComponent implements Component {
 			typeof this.session.sessionManager.getSessionName === "function"
 				? this.session.sessionManager.getSessionName()
 				: undefined;
-		// The main composer names the session in its top rule; other chats name it here.
 		if (sessionName && !this.hintSegments) pwd += ` • ${sessionName}`;
 
 		const modelLabel = state.model
@@ -352,8 +351,6 @@ export class FooterComponent implements Component {
 				: `${this.renderStyle.dim(modelLabel)} ${this.renderStyle.dim("•")} ${this.renderStyle.muted(pwd)}`;
 			if (areExperimentalFeaturesEnabled()) statusText += ` ${this.renderStyle.warning("xp")}`;
 			if (isDebugEnabled()) statusText += ` ${this.renderStyle.warning("debug")}`;
-			// The composer's own keys follow, joined with ` · `, so one line names everything this prompt offers. They
-			// stay whole on a narrow terminal: the model line and directory shorten first.
 			const hints = (this.hintSegments?.() ?? [])
 				.map((segment) => `${this.renderStyle.dim(" · ")}${this.renderStyle.muted(segment)}`)
 				.join("");

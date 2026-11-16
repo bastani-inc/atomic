@@ -15,7 +15,7 @@ import { createMarkdownTransform } from "./components/markdown-transform.ts";
 import { createMermaidMarkdownTransformer } from "./components/mermaid.ts";
 import { ThemedText } from "./components/themed-text.js";
 import { appendNewChildrenBeforeAttachedChild } from "./interactive-child-ordering.ts";
-import { InteractiveModeBase } from "./interactive-mode-base.ts";
+import { InteractiveModeBase, statusComponents } from "./interactive-mode-base.ts";
 import {
 	type AgentMessage,
 	APP_NAME,
@@ -115,6 +115,7 @@ InteractiveModeBase.prototype.showStatus = function (
 	if (persist) message = appendBoundedStderr("", message);
 	const spacer = new Spacer(1);
 	const text = new Text(theme.fg("dim", message), 1, 0);
+	statusComponents.add(text);
 	this.chatContainer.addChild(spacer);
 	this.chatContainer.addChild(text);
 	this.lastStatusSpacer = persist ? undefined : spacer;

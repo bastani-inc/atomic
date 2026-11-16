@@ -127,7 +127,6 @@ for (const themeName of ["dark", "light"] as const) {
 						state === "pending" || state === "partial" ? "toolPendingBg" : "toolSuccessBg",
 					);
 					const text = stripVTControlCharacters(lines.join("\n"));
-					// Count the tool heading, `Agent(…)` (#5224), not anything inside the expanded task text.
 					assert.equal(text.match(/^ +Agent\(/gm)?.length, 1, `${state} width ${width}:\n${text}`);
 					if (state !== "pending") assert.equal(text.match(/\/tasks/g)?.length, 1);
 					if (state === "expanded") assert.match(text.replace(/\s/g, ""), /task-fixture/);

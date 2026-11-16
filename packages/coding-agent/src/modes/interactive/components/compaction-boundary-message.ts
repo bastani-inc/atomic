@@ -78,8 +78,6 @@ export class CompactionBoundaryMessageComponent extends Box {
 		const content = new Container();
 		const tokensBefore = this.view.tokensBefore ?? this.view.stats.tokensBefore;
 		const tokenStr = tokensBefore.toLocaleString();
-		// Atomic's logo mark heads the boundary, so it never reads as ordinary work. The fresh rung destroyed the
-		// compactable conversation; say so plainly.
 		const title =
 			this.view.rung === "fresh"
 				? "Context cleared (compaction degraded)"

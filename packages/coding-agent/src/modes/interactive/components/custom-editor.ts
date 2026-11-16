@@ -21,7 +21,6 @@ export interface CustomEditorOptions extends EditorOptions {
 	placeholder?: string | (() => string);
 	/** Render the streaming working status in the editor's top border. */
 	embedWorkingStatus?: boolean;
-	/** Text right-aligned in the prompt's top rule, such as the session title. */
 	topRuleLabel?: () => string | undefined;
 }
 
@@ -67,7 +66,6 @@ export class CustomEditor extends Editor {
 		this.embedWorkingStatus = options?.embedWorkingStatus ?? false;
 	}
 
-	/** Names something in the prompt's top rule, right-aligned, such as the session title. */
 	setTopRuleLabel(label: (() => string | undefined) | undefined): void {
 		this.topRuleLabel = label;
 	}
@@ -172,7 +170,6 @@ export class CustomEditor extends Editor {
 		);
 	}
 
-	/** The plain top rule, carrying the top-rule label when it has one; a scrolled `↑ N more` rule keeps its indicator. */
 	private renderLabeledTopRule(line: string, width: number): string {
 		const label = this.topRuleLabel?.()?.trim();
 		const plain = line.replace(ANSI_ESCAPE_PATTERN, "");
@@ -284,7 +281,6 @@ export class CustomEditor extends Editor {
 			// Fall through to editor handling for delete-char-forward when not empty
 		}
 
-		// `?` on an empty prompt opens the key overlay; anywhere else it is just a character.
 		if (
 			this.getText().length === 0 &&
 			!this.isShowingAutocomplete() &&

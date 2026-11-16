@@ -364,7 +364,10 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		}
 		const session = follow?.session?.subscribe === undefined ? undefined : follow.session;
 		this.chat.replaceMessages(page.value.messages);
-		this.chat.hydrateCompactionStatus(page.value.compactionReason);
+		this.chat.hydrateCompactionStatus(
+			page.value.compactionReason,
+			page.value.compactionStartedAt ?? session?.chatSession?.compactionStartedAt,
+		);
 		this.cursor = page.value.nextCursor;
 		this.status = "";
 		if (session === this.followed) return;

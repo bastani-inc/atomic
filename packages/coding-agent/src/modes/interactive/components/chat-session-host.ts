@@ -272,14 +272,20 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	 * no-op unless this host is actively showing a compaction label, so unrelated
 	 * workflow delivery busy state is preserved.
 	 */
-	hydrateCompactionStatus(reason: CompactionReason | undefined): void {
+	hydrateCompactionStatus(reason: CompactionReason | undefined, startedAt?: number): void {
 		const compactionReason = reason === "branchSummary" ? undefined : reason;
 		if (compactionReason === undefined) {
+			this.state.compactionStartedAt = undefined;
 			if (!this.state.compacting) return;
 			this.state.compacting = false;
 			this.state.statusMessage = "";
 		} else {
 			this.state.compacting = true;
+			this.state.compactionStartedAt =
+				startedAt ??
+				this.state.getAgentSession?.()?.compactionStartedAt ??
+				this.state.getChatBoxSession?.()?.compactionStartedAt ??
+				Date.now();
 			this.state.sdkBusy = true;
 			this.state.statusMessage = compactionStatusMessage(compactionReason);
 		}

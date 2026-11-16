@@ -26,7 +26,6 @@ describe("jump to latest (#5224)", () => {
 		assert.equal(counter.count, 0);
 		counter.observe(false, 15);
 		assert.equal(counter.count, 3);
-		// Following again resets the count.
 		counter.observe(true, 15);
 		assert.equal(counter.count, 0);
 		counter.observe(false, 16);

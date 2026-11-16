@@ -145,7 +145,10 @@ export function initializeStageChatView(ctx: StageChatViewContext, opts: StageCh
  */
 function rehydrateCompactionStatus(ctx: StageChatViewContext): void {
 	const session = liveHandle(ctx)?.agentSession;
-	ctx.chatHost.hydrateCompactionStatus(session?.isCompacting === true ? session.compactionReason : undefined);
+	ctx.chatHost.hydrateCompactionStatus(
+		session?.isCompacting === true ? session.compactionReason : undefined,
+		session?.isCompacting === true ? session.compactionStartedAt : undefined,
+	);
 }
 
 /**

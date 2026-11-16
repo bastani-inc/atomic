@@ -72,11 +72,8 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	interruptFailureMessage: string | undefined;
 	workingMessage: string | undefined;
 	workingFrame = 0;
-	/** What arrived while the reader was scrolled up, for the jump-to-latest pill. */
 	readonly newMessages = new NewMessageCounter();
-	/** When the running compaction started, for the time its status shows. */
 	compactionStartedAt: number | undefined;
-	/** Time and output tokens of the chat's current run, for the working line. */
 	readonly workingRunMeter = new WorkingRunMeter();
 	workingLifecycleActive: boolean;
 	workingLifecycleGeneration = 0;
@@ -95,6 +92,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	/** Keeps input queued while automatic compaction hands off to a manual request. */
 	manualCompactionTakeoverPending = false;
 	animationTimer: ReturnType<typeof setInterval> | undefined;
+	metaTimer: ReturnType<typeof setInterval> | undefined;
 	renderThrottleTimer: ReturnType<typeof setTimeout> | undefined;
 	bodyViewport: ScrollableComponentViewport;
 	transcriptComponent: ChatTranscriptComponent<ChatSessionHostEntry<TExtraEntry>>;

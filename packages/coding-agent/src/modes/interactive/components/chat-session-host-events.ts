@@ -192,9 +192,11 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 			state.compactionPromptStarted?.();
 			break;
 		case "agent_end": {
+			state.workingRunMeter.stop();
 			const manualTakeoverPending = state.manualCompactionTakeoverPending;
 			state.sdkBusy = manualTakeoverPending;
 			state.compacting = manualTakeoverPending;
+			if (!manualTakeoverPending) state.compactionStartedAt = undefined;
 			state.workingMessage = undefined;
 			state.liveChat.clearPendingTools();
 			if (!manualTakeoverPending) state.statusMessage = "";
@@ -213,6 +215,7 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 			break;
 		case "turn_end":
 			state.compacting = state.manualCompactionTakeoverPending;
+			if (!state.manualCompactionTakeoverPending) state.compactionStartedAt = undefined;
 			state.workingMessage = undefined;
 			stopChatSessionWorkingLifecycle(state);
 			changed = true;
@@ -245,7 +248,10 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 		case "compaction_start": {
 			const compaction = event as Extract<AgentSessionEvent, { type: "compaction_start" }>;
 			state.compacting = true;
-			state.compactionStartedAt = Date.now();
+			state.compactionStartedAt =
+				state.getAgentSession?.()?.compactionStartedAt ??
+				state.getChatBoxSession?.()?.compactionStartedAt ??
+				Date.now();
 			state.sdkBusy = true;
 			state.statusMessage = compactionStatusMessage(compaction.reason);
 			// The animation timer this event starts would otherwise swallow the
@@ -265,6 +271,12 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 				state.manualCompactionTakeoverPending = false;
 			}
 			state.compacting = manualTakeoverPending;
+			state.compactionStartedAt = manualTakeoverPending
+				? (state.getAgentSession?.()?.compactionStartedAt ??
+					state.getChatBoxSession?.()?.compactionStartedAt ??
+					state.compactionStartedAt ??
+					Date.now())
+				: undefined;
 			state.sdkBusy = manualTakeoverPending || compaction.midTurn === true;
 			if (!manualTakeoverPending) state.statusMessage = compaction.errorMessage ?? "";
 			if (compaction.midTurn !== true || compaction.aborted || compaction.errorMessage) {
@@ -328,6 +340,7 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 			if (!fallback.success) {
 				state.sdkBusy = false;
 				state.compacting = false;
+				state.compactionStartedAt = undefined;
 			}
 			stopChatSessionWorkingLifecycle(state);
 			changed = true;
@@ -340,6 +353,7 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 			if (!retry.success) {
 				state.sdkBusy = false;
 				state.compacting = false;
+				state.compactionStartedAt = undefined;
 			}
 			stopChatSessionWorkingLifecycle(state);
 			changed = true;
@@ -349,6 +363,7 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 			const continueError = event as Extract<AgentSessionEvent, { type: "agent_continue_error" }>;
 			state.sdkBusy = false;
 			state.compacting = false;
+			state.compactionStartedAt = undefined;
 			state.statusMessage = continueError.errorMessage;
 			state.workingMessage = undefined;
 			stopChatSessionWorkingLifecycle(state);

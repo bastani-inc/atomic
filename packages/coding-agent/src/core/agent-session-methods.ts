@@ -152,6 +152,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	readonly retryAttempt: number;
 	readonly isCompacting: boolean;
 	readonly compactionReason?: import("./agent-session-types.js").CompactionReason;
+	readonly compactionStartedAt?: number;
 	readonly messages: AgentMessage[];
 	readonly steeringMode: "all" | "one-at-a-time";
 	readonly followUpMode: "all" | "one-at-a-time";
@@ -495,6 +496,7 @@ export interface AgentSessionPublicSurface
 		| "retryAttempt"
 		| "isCompacting"
 		| "compactionReason"
+		| "compactionStartedAt"
 		| "messages"
 		| "steeringMode"
 		| "followUpMode"
@@ -647,6 +649,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_autoCompactionAbortController: AbortController | undefined;
 	_autoCompactionCompletion: Promise<void> | undefined;
 	_compactionReason: import("./agent-session-types.js").CompactionReason | undefined;
+	_compactionStartedAt: number | undefined;
 	_overflowRecoveryAttempted: boolean;
 	_recoverableLengthRecoveryAttempted: boolean;
 	_contextOverflowUnresolved: boolean;

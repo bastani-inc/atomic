@@ -185,11 +185,6 @@ export interface TuiAltScreenOptions {
 	 * primary scroll view while that view is scrolled away from its end.
 	 */
 	scrollToEndIndicator?: () => string;
-	/**
-	 * Pin the prompt that started the turn at the top of a follow-end primary scroll view over its first row while the
-	 * view is scrolled away from its end and that prompt has scrolled out of view. `isPrompt` recognizes a prompt's
-	 * first row by its raw text, OSC 133 marks included; `render` styles the prompt's first non-blank row.
-	 */
 	scrollPinnedPrompt?: { isPrompt: (row: string) => boolean; render: (promptRow: string) => string };
 	/** Open an OSC 8 hyperlink activated with a primary-button click. */
 	openUrl?: (url: string) => void;
@@ -1698,11 +1693,6 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		return result;
 	}
 
-	/**
-	 * Pins the prompt of the turn at the top of the viewport over its first row. Only a row whose prompt lies above the
-	 * viewport is covered, and that row shows again one row further down, so no line stays hidden: at the very top
-	 * there is no prompt above, and following the end shows no pin.
-	 */
 	private compositeScrollPinnedPrompt(screen: string[], layout: LayoutFrame, width: number): string[] {
 		if (!this.scrollPinnedPrompt) return screen;
 		const scrollView = layout.primaryScrollView ?? this.implicitScrollView;
@@ -1836,11 +1826,6 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	}
 }
 
-/**
- * The first non-blank row of the prompt that started the turn shown from `top` on, while it lies above `top`: the
- * nearest prompt row at or above `top`, then its first row with text. Undefined when that row is in view or no prompt
- * lies above.
- */
 export function turnPromptAbove(
 	lines: readonly string[],
 	top: number,

@@ -269,6 +269,7 @@ export async function abortChatSessionCompaction<TExtraEntry extends ChatTranscr
 			// A host without an abort command also has no engine completion to clear
 			// this local indicator.
 			state.compacting = false;
+			state.compactionStartedAt = undefined;
 			state.sdkBusy = false;
 		} else {
 			await state.commands.abortCompaction();

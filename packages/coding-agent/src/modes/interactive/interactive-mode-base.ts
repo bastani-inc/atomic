@@ -90,6 +90,7 @@ const FULLSCREEN_TRANSCRIPT_SCROLL_ACTIONS = [
 ] as const;
 
 const FULLSCREEN_VIEWPORT_ACTIONS = FULLSCREEN_TRANSCRIPT_SCROLL_ACTIONS;
+export const statusComponents = new WeakSet<Component>();
 
 export function isFullscreenViewportAction(data: string, keybindings: KeybindingsManager): boolean {
 	return FULLSCREEN_VIEWPORT_ACTIONS.some((action) => keybindings.matches(data, action));
@@ -489,7 +490,6 @@ export class InteractiveModeBase {
 	blockingInlineCustomUiDepth = 0;
 
 	navigationInlineCustomUiDepth = 0;
-	/** Time and output tokens of the agent's current run, for the working line. */
 	readonly workingRunMeter = new WorkingRunMeter();
 
 	deferredInlineCustomUiFocusDepth = 0;
@@ -530,7 +530,6 @@ export class InteractiveModeBase {
 		return this.runtimeHost.session as AgentSession & AgentSessionQueuePauseControl;
 	}
 
-	/** Rows the agent panel lists below the main composer: the session's active background agents and shells. */
 	mainComposerAgentRows(): number {
 		return (getOwnerTaskStore(this.session)?.backgroundTasks ?? []).filter(isActiveBackgroundTask).length;
 	}
@@ -706,8 +705,9 @@ export class InteractiveModeBase {
 			shouldHandleViewportInput: this.shouldHandleViewportInput,
 			onOverlayUnhandledInput: this.onOverlayUnhandledInput,
 			onOverlayInternalUiAction: this.onOverlayInternalUiAction,
-			// Spacers between messages are not messages.
-			messageCount: () => this.chatContainer?.children.filter((child) => !(child instanceof Spacer)).length ?? 0,
+			messageCount: () =>
+				this.chatContainer?.children.filter((child) => !(child instanceof Spacer) && !statusComponents.has(child))
+					.length ?? 0,
 			onInternalUiAction: () => {
 				this.jumpToTranscriptEnd();
 				return undefined;

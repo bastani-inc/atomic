@@ -72,14 +72,16 @@ export function renderChatSessionWorkingStatus<TExtraEntry extends ChatTranscrip
 	const useCallerStyling =
 		!palette && state.style.workingIndicatorUseGlobalTheme !== true && process.env.NO_COLOR === undefined;
 	if (state.compacting) {
+		const startedAt =
+			state.compactionStartedAt ??
+			state.getAgentSession?.()?.compactionStartedAt ??
+			state.getChatBoxSession?.()?.compactionStartedAt ??
+			Date.now();
 		return new WorkingStatusComponent({
 			frame: state.workingFrame,
 			logo: true,
 			message: state.statusMessage || "Compacting context...",
-			meta: compactionMeta(
-				state.compactionStartedAt ?? Date.now(),
-				state.getActionKeyDisplay?.("app.interrupt") ?? "esc",
-			),
+			meta: compactionMeta(startedAt, state.getActionKeyDisplay?.("app.interrupt") ?? "esc"),
 			palette,
 			spinnerColor: useCallerStyling ? (text) => state.style.accent(text) : undefined,
 			spinnerBoldColor: useCallerStyling ? (text) => state.style.accentBold(text) : undefined,

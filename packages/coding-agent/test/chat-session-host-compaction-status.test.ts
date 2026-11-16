@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import type { EditorTheme } from "@bastani/atomic-tui";
 import { type Component, Text } from "@bastani/atomic-tui";
-import { describe, expect, it, test } from "vitest";
+import { describe, expect, it, test, vi } from "vitest";
 import type { CompactionReason } from "../src/core/agent-session.ts";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
 import { ChatSessionHost } from "../src/modes/interactive/components/chat-session-host.ts";
@@ -195,6 +195,50 @@ test("branch-summary hydration leaves the ordinary working spinner available", (
 	assert.match(rendered, /Working\.\.\./);
 	assert.doesNotMatch(rendered, /summarizing branch…/);
 	host.dispose();
+});
+
+test("hydrated compaction clock uses active session start timestamp and clears stale start (#5243)", () => {
+	vi.useFakeTimers();
+	try {
+		vi.setSystemTime(10_000);
+		const compactionStartedAt: number | undefined = 4_000;
+		const sessionHost = makeHost({
+			getAgentSession: () => ({ compactionStartedAt }) as never,
+		});
+		sessionHost.hydrateCompactionStatus("threshold");
+		assert.match(sessionHost.renderWorkingStatus(100).join("\n"), /Auto-compacting\.\.\. \(6s · esc to cancel\)/);
+		sessionHost.dispose();
+
+		const chatBoxHost = makeHost({
+			getChatBoxSession: () => ({ compactionStartedAt: 3_000 }) as never,
+		});
+		chatBoxHost.hydrateCompactionStatus("manual");
+		assert.match(chatBoxHost.renderWorkingStatus(100).join("\n"), /Compacting context\.\.\. \(7s · esc to cancel\)/);
+		chatBoxHost.dispose();
+
+		const explicitHost = makeHost();
+		explicitHost.applyAgentEvent({ type: "compaction_start", reason: "manual" });
+		vi.setSystemTime(25_000);
+		explicitHost.applyAgentEvent({
+			type: "compaction_end",
+			reason: "manual",
+			result: undefined,
+			aborted: false,
+			willRetry: false,
+		});
+		explicitHost.hydrateCompactionStatus(undefined);
+		explicitHost.hydrateCompactionStatus("overflow", 22_000);
+		assert.match(
+			explicitHost.renderWorkingStatus(100).join("\n"),
+			/Context overflow detected\. Auto-compacting\.\.\. \(3s · esc to cancel\)/,
+		);
+		vi.setSystemTime(27_000);
+		explicitHost.hydrateCompactionStatus("manual");
+		assert.match(explicitHost.renderWorkingStatus(100).join("\n"), /Compacting context\.\.\. \(0s · esc to cancel\)/);
+		explicitHost.dispose();
+	} finally {
+		vi.useRealTimers();
+	}
 });
 
 for (const sessionId of ["shared-archive-id", ""]) {

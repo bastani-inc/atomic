@@ -371,6 +371,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 		}
 
 		case "agent_end": {
+			this.workingRunMeter.stop();
 			const compactionInProgress = this.compactionActive;
 			if (!compactionInProgress && this.settingsManager.getShowTerminalProgress()) {
 				this.ui.terminal.setProgress(false);

@@ -41,7 +41,6 @@ describe("main composer top rule (#5224)", () => {
 			const top = stripTerminalSequences(lines[0] ?? "");
 			assert.equal(visibleWidth(lines[0] ?? ""), width);
 			assert.ok(top.endsWith(" shipping fix-first ─"), top);
-			// The bottom rule stays plain.
 			const bottom = lines.findLast((line) => /^─+$/.test(stripTerminalSequences(line)));
 			assert.ok(bottom !== undefined);
 		});

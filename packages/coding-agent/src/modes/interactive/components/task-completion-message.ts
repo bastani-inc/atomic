@@ -54,7 +54,6 @@ export class TaskCompletionMessage implements Component {
 			this.notice.status === "completed" ? "success" : this.notice.status === "failed" ? "error" : "warning";
 		const icon = this.notice.status === "completed" ? "✓" : "✗";
 		const preview = wrapTextWithAnsi(clean(this.notice.preview), Math.max(1, width - 2));
-		// A subagent's notice shows its result's headline; a shell's shows the last lines it wrote. Expanding shows more.
 		const agent = this.notice.model !== undefined || this.notice.thinking !== undefined;
 		const limit = this.expanded ? 20 : agent ? 1 : 3;
 		const expand =

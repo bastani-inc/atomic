@@ -16,9 +16,7 @@ export interface WorkingStatusComponentOptions {
 	spinnerBoldColor?: (text: string) => string;
 	palette?: AtomicWorkingPalette | (() => AtomicWorkingPalette);
 	messageColor?: (text: string) => string;
-	/** The run's time and tokens, shown after the message. */
 	meta?: WorkingRunSnapshot;
-	/** Atomic's still logo mark instead of the spinner, as compaction shows. */
 	logo?: boolean;
 }
 

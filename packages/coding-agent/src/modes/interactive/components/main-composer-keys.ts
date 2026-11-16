@@ -2,15 +2,11 @@ import type { Component } from "@bastani/atomic-tui";
 import { theme } from "../theme/theme.js";
 import { isNavHelpKey, type NavKey, type NavKeybindings, navActionText, renderNavKeyOverlay } from "./nav-keys.ts";
 
-/** What the main composer knows when it names its keys. */
 export interface MainComposerKeyState {
-	/** Rows the agent panel lists; `↓` reaches them only when there are some. */
 	readonly agentRows: number;
-	/** Whether the chat's agent is working, so Esc interrupts it. */
 	readonly working: boolean;
 }
 
-/** `↓ 3 agents`, `↓ 1 agent`. */
 function agentsSegment(keybindings: NavKeybindings | undefined, rows: number): string | undefined {
 	if (rows <= 0) return undefined;
 	const key = navActionText(keybindings, "app.agents.focus");
@@ -18,10 +14,6 @@ function agentsSegment(keybindings: NavKeybindings | undefined, rows: number): s
 	return `${key} ${rows} ${rows === 1 ? "agent" : "agents"}`;
 }
 
-/**
- * The segments the main composer adds to its footer line, after `esc to interrupt` or the model line: the agent
- * panel when it has rows, then the key overlay. An unbound action shows nothing, so the line never names a dead key.
- */
 export function mainComposerHintSegments(
 	keybindings: NavKeybindings | undefined,
 	state: Pick<MainComposerKeyState, "agentRows">,
@@ -34,7 +26,6 @@ export function mainComposerHintSegments(
 	return segments;
 }
 
-/** Every key of the main composer, as the `?` overlay lists them. */
 export function mainComposerKeys(state: MainComposerKeyState): NavKey[] {
 	return [
 		{ keys: "enter", label: "send the prompt" },
@@ -50,7 +41,6 @@ export function mainComposerKeys(state: MainComposerKeyState): NavKey[] {
 	];
 }
 
-/** The `?` overlay of the main composer; Esc or `?` closes it. */
 export class MainComposerKeyOverlay implements Component {
 	private readonly keybindings: NavKeybindings | undefined;
 	private readonly state: () => MainComposerKeyState;

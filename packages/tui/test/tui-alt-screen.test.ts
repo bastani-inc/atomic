@@ -186,22 +186,18 @@ describe("TuiAltScreen", () => {
 		tui.start();
 		await terminal.waitForRender();
 		const view = () => terminal.getViewport().map((line) => line.trimEnd());
-		// Following the end: no pin.
 		assert.ok(!view().some((line) => line.startsWith("pinned:")), view().join("\n"));
 
-		// Scrolled up so the second prompt is above the top: it is pinned over the first row.
 		transcript.scrollTo(5);
 		tui.requestRender();
 		await terminal.waitForRender();
 		assert.deepStrictEqual(view().slice(0, 4), ["pinned: › second prompt", "b2", "b3", "b4"]);
 
-		// One row further up, the second prompt itself is the top row, so nothing is pinned and b1 shows again.
 		transcript.scrollTo(4);
 		tui.requestRender();
 		await terminal.waitForRender();
 		assert.deepStrictEqual(view().slice(0, 2), ["› second prompt", "b1"]);
 
-		// Inside the first turn its prompt is pinned, and the covered row shows one row further up.
 		transcript.scrollTo(2);
 		tui.requestRender();
 		await terminal.waitForRender();
@@ -211,13 +207,11 @@ describe("TuiAltScreen", () => {
 		await terminal.waitForRender();
 		assert.deepStrictEqual(view().slice(0, 2), ["pinned: › first prompt", "a2"]);
 
-		// At the very top nothing lies above, so nothing is pinned and the first row is visible.
 		transcript.scrollTo(0);
 		tui.requestRender();
 		await terminal.waitForRender();
 		assert.strictEqual(view()[0], "› first prompt");
 
-		// Back at the end the pin disappears.
 		transcript.scrollToEnd();
 		tui.requestRender();
 		await terminal.waitForRender();

@@ -330,7 +330,6 @@ test("a subagent's completion notice shows its result's headline and keeps the r
 	assert.match(collapsed, /\/tasks to inspect/);
 	const expanded = stripVTControlCharacters(new TaskCompletionMessage(notice, true).render(100).join("\n"));
 	assert.match(expanded, /fourth line/);
-	// A shell's notice keeps its last three lines.
 	const { model: _model, ...shell } = notice;
 	const shellText = stripVTControlCharacters(new TaskCompletionMessage(shell, false).render(100).join("\n"));
 	assert.match(shellText, /third line/);
