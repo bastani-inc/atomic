@@ -93,11 +93,6 @@ export interface BrokerMembershipSubject {
 	readonly instanceKey?: string;
 	/** #5038: the broker's process id, checked on its host before a later instance supersedes it. */
 	readonly pid?: number;
-	/**
-	 * #5252: when the broker's process started (`processStartToken`), so a later process the host gave the same `pid`
-	 * is not taken for it. Absent from older brokers and where the start cannot be read.
-	 */
-	readonly processStart?: string;
 }
 
 /** Recipient presence: which broker currently hosts the recipient's socket. */

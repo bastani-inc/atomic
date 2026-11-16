@@ -33,7 +33,6 @@ export type {
 	ToolScriptAccess,
 } from "./core/extensions/tool-types.ts";
 export { resolveRestoredModelReference } from "./core/model-resolver-initial.ts";
-export { processStartToken } from "./core/process-start-token.ts";
 export * from "./core/resume/index.ts";
 export type { UsageEntry } from "./core/session-manager.ts";
 export { resolveSessionStore } from "./core/session-storage.js";
