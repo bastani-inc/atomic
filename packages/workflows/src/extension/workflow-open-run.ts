@@ -35,19 +35,18 @@ export interface WorkflowsCommandDeps {
 }
 
 /**
- * Open a run's graph in the session's workflow pane. Returns false without opening anything when the session has no
- * interactive surface to show it on.
+ * Open a run's graph in the session's workflow pane, on the command's own surface when it has one and the session's
+ * otherwise.
  */
 export function openWorkflowRun(
 	runId: string,
-	ctx: Pick<PiCommandContext, "ui" | "hasUI">,
+	ctx: Pick<PiCommandContext, "ui">,
 	deps: Pick<WorkflowsCommandDeps, "overlay">,
 	options: OpenWorkflowRunOptions = {},
-): boolean {
-	const surface = overlaySurfaceFromContext(ctx);
-	if (surface === undefined) return false;
-	deps.overlay.open(runId, surface, options.stageId, options.stageRunId, { onReturn: options.onReturn });
-	return true;
+): void {
+	deps.overlay.open(runId, overlaySurfaceFromContext(ctx), options.stageId, options.stageRunId, {
+		onReturn: options.onReturn,
+	});
 }
 
 /** `/workflows [run]`. */
@@ -59,7 +58,7 @@ export async function handleWorkflowsCommand(
 ): Promise<void> {
 	const { store } = deps;
 	const theme = deriveGraphTheme({});
-	const interactive = workflowPolicyFromContext(ctx).allowInputPicker && overlaySurfaceFromContext(ctx) !== undefined;
+	const interactive = workflowPolicyFromContext(ctx).allowInputPicker;
 	const target = args.trim();
 	if (target.length > 0) {
 		const resolved = resolveRunId(target, store);
@@ -81,6 +80,8 @@ export async function handleWorkflowsCommand(
 		openWorkflowRun(runs[0]!.id, ctx, deps);
 		return;
 	}
+	if (typeof ctx.ui?.custom !== "function")
+		return reporter.info(renderSessionList(store.runs(), { theme, includeAll: true }));
 	// Several runs, or none but definitions to start: the sheet of runs and definitions. Esc at a run's graph comes back.
 	const reopen = (): void => void handleWorkflowsCommand("", ctx, reporter, deps);
 	const picked = await openWorkflowsListing(ctx.ui, {
