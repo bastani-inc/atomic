@@ -115,11 +115,11 @@ async function run(deliveryMs: number, attempts: number, maxBatch: number, inMem
 	return { worstLagMs, mostHeld, steps: acknowledged.size, batchSizes };
 }
 
-async function runControlled(deliveryMs: number, attempts: number, maxBatch: number) {
+async function withControlledTime<T>(work: () => Promise<T>, budgetMs = CASE_TIMEOUT_MS): Promise<T> {
 	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "performance"] });
 	try {
 		let settled = false;
-		const result = run(deliveryMs, attempts, maxBatch, true);
+		const result = work();
 		const observed = result.then(
 			() => {
 				settled = true;
@@ -128,7 +128,7 @@ async function runControlled(deliveryMs: number, attempts: number, maxBatch: num
 				settled = true;
 			},
 		);
-		for (let elapsed = 0; !settled && elapsed < CASE_TIMEOUT_MS; elapsed += STEP_MS)
+		for (let elapsed = 0; !settled && elapsed < budgetMs; elapsed += STEP_MS)
 			await vi.advanceTimersByTimeAsync(STEP_MS);
 		assert.ok(settled, "shipping finishes within the simulated delivery budget");
 		await observed;
@@ -148,7 +148,7 @@ describe("checkpoint shipping against a store with slow deliveries (#4768)", () 
 			test(
 				`deliveries of ${deliveryMs} ms, ${attempts} attempts, maxBatch ${maxBatch}: no checkpoint waits longer than maxLagMs to be shipped (#4768)`,
 				async () => {
-					const { worstLagMs, steps } = await runControlled(deliveryMs, attempts, maxBatch);
+					const { worstLagMs, steps } = await withControlledTime(() => run(deliveryMs, attempts, maxBatch, true));
 					assert.ok(steps > attempts, "the attempts took steps");
 					assert.ok(worstLagMs <= MAX_LAG_MS, `worst lag ${Math.round(worstLagMs)} ms`);
 				},
@@ -158,7 +158,7 @@ describe("checkpoint shipping against a store with slow deliveries (#4768)", () 
 			test(
 				`deliveries of ${deliveryMs} ms, ${attempts} attempts, maxBatch ${maxBatch}: a delivery longer than half of maxLagMs makes steps wait instead of piling up (#4768)`,
 				async () => {
-					const { mostHeld } = await runControlled(deliveryMs, attempts, maxBatch);
+					const { mostHeld } = await withControlledTime(() => run(deliveryMs, attempts, maxBatch, true));
 					// Each step waits for the one before it to be shipped: an attempt holds at most the one it just took.
 					assert.ok(mostHeld <= 1, `an attempt held ${mostHeld} unshipped checkpoints`);
 				},
@@ -245,31 +245,8 @@ async function runSizeDependent(maxBatch: number) {
 	return { worstLagMs, urgentDeliveries, stepsAfterUrgent: acknowledgedAfterUrgent.size, batchSizes };
 }
 
-async function runSizeDependentControlled(maxBatch: number) {
-	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "performance"] });
-	try {
-		let settled = false;
-		const result = runSizeDependent(maxBatch);
-		const observed = result.then(
-			() => {
-				settled = true;
-			},
-			() => {
-				settled = true;
-			},
-		);
-		for (let elapsed = 0; !settled && elapsed < CASE_TIMEOUT_MS; elapsed += STEP_MS)
-			await vi.advanceTimersByTimeAsync(STEP_MS);
-		assert.ok(settled, "shipping finishes within the simulated delivery budget");
-		await observed;
-		return await result;
-	} finally {
-		vi.useRealTimers();
-	}
-}
-
 test("deliveries of 150 ms plus 0.6 ms per checkpoint keep checkpoints within maxLagMs after urgent catch-up (#5194)", async () => {
-	const { worstLagMs, stepsAfterUrgent, batchSizes } = await runSizeDependentControlled(8);
+	const { worstLagMs, stepsAfterUrgent, batchSizes } = await withControlledTime(() => runSizeDependent(8));
 	const urgentBatchSizes = batchSizes.filter((size) => size > 8);
 	assert.ok(urgentBatchSizes.length >= 3, `expected urgent catch-up deliveries, got ${urgentBatchSizes.length}`);
 	assert.ok(
@@ -282,4 +259,111 @@ test("deliveries of 150 ms plus 0.6 ms per checkpoint keep checkpoints within ma
 	);
 	assert.ok(stepsAfterUrgent >= 1_200, "checkpoints were acknowledged after the first urgent catch-up");
 	assert.ok(worstLagMs <= MAX_LAG_MS, `worst lag ${Math.round(worstLagMs)} ms`);
+});
+
+const ADAPTIVE_MAX_LAG_MS = 4_000;
+const ADAPTIVE_MAX_BATCH = 16;
+
+interface TrafficPhase {
+	readonly durationMs: number;
+	readonly latencyMs: number;
+	readonly checkpointMs: number;
+	readonly quiet?: boolean;
+}
+
+async function runTraffic(phases: readonly TrafficPhase[]) {
+	const shard = await ShipShard.open(":memory:", ROOT);
+	opened.push(shard);
+	const acknowledged = new Map<string, { readonly at: number; readonly phase: number }>();
+	const recorded = new Map<string, number>();
+	const deliveries: { readonly size: number; readonly phase: number }[] = [];
+	const steps = phases.map(() => 0);
+	const worstLagMs = phases.map(() => 0);
+	let phase = 0;
+	const shipping = new CheckpointShipping(shard, {
+		intervalMs: 2_000,
+		maxBatch: ADAPTIVE_MAX_BATCH,
+		maxLagMs: ADAPTIVE_MAX_LAG_MS,
+		host: "host",
+		deliver: async (_attempt, batch) => {
+			const beganInPhase = phase;
+			const store = phases[beganInPhase]!;
+			await waitForTimer(store.latencyMs + store.checkpointMs * batch.events.length);
+			deliveries.push({ size: batch.events.length, phase: beganInPhase });
+			for (const event of batch.events) {
+				assert.equal(recorded.has(event.key), false, "each checkpoint is delivered once");
+				recorded.set(event.key, performance.now());
+			}
+		},
+	});
+	opened.push(shipping);
+	shipping.start();
+	const lease = { id: "work-0", generation: 1, worker: "host/1", epoch: 1 };
+	await shipping.hold(lease, LEASE_MS);
+	let nextStep = 0;
+	for (const traffic of phases) {
+		const began = performance.now();
+		while (performance.now() - began < traffic.durationMs) {
+			const count = traffic.quiet ? (Math.floor((performance.now() - began) / STEP_MS) % 20 === 0 ? 1 : 0) : 12;
+			for (let index = 0; index < count; index++) {
+				const id = `traffic:${nextStep++}`;
+				await shipping.commit(lease, checkpoint(id), async () => assert.fail("a plain checkpoint ships"));
+				acknowledged.set(JSON.stringify(["CheckpointRecorded", "tool", `scope:${id}`]), {
+					at: performance.now(),
+					phase,
+				});
+				steps[phase]!++;
+			}
+			await waitForTimer(STEP_MS);
+		}
+		await shipping.flushAll();
+		phase++;
+	}
+	for (const [key, accepted] of acknowledged) {
+		const at = recorded.get(key);
+		assert.ok(at !== undefined, `${key} was shipped`);
+		worstLagMs[accepted.phase] = Math.max(worstLagMs[accepted.phase]!, at - accepted.at);
+	}
+	assert.equal(shipping.status().pending, 0, "all acknowledged checkpoints shipped");
+	return { steps, worstLagMs, deliveries };
+}
+
+test("catch-up scheduling adapts to slower normal deliveries before a new burst (#5194)", async () => {
+	const { steps, worstLagMs, deliveries } = await withControlledTime(
+		() =>
+			runTraffic([
+				{ durationMs: 20_000, latencyMs: 20, checkpointMs: 0.05 },
+				{ durationMs: 10_000, latencyMs: 1_000, checkpointMs: 0.6, quiet: true },
+				{ durationMs: 30_000, latencyMs: 1_000, checkpointMs: 0.6 },
+			]),
+		90_000,
+	);
+	assert.ok(deliveries.filter((batch) => batch.phase === 0 && batch.size > ADAPTIVE_MAX_BATCH).length >= 2);
+	assert.ok(deliveries.filter((batch) => batch.phase === 1 && batch.size <= ADAPTIVE_MAX_BATCH).length >= 8);
+	assert.ok(steps[2]! >= 5_000, "the burst continued after normal deliveries timed the slower store");
+	assert.ok(worstLagMs[2]! <= ADAPTIVE_MAX_LAG_MS, `burst lag ${Math.round(worstLagMs[2]!)} ms`);
+});
+
+test("high-latency catch-up batches do not charge request latency per checkpoint (#5194)", async () => {
+	const { steps, worstLagMs, deliveries } = await withControlledTime(
+		() => runTraffic([{ durationMs: 40_000, latencyMs: 1_000, checkpointMs: 0.6 }]),
+		60_000,
+	);
+	const warmedCatchUps = deliveries.filter((batch) => batch.size > ADAPTIVE_MAX_BATCH).slice(2);
+	assert.ok(worstLagMs[0]! <= ADAPTIVE_MAX_LAG_MS, `worst lag ${Math.round(worstLagMs[0]!)} ms`);
+	assert.ok(steps[0]! >= 10_000, `only ${steps[0]} steps used the delivery window`);
+	assert.ok(
+		warmedCatchUps.some((batch) => batch.size >= 800),
+		"catch-up batches use the available lag window",
+	);
+});
+
+test("timed catch-up deliveries keep a fast producer moving within the lag target (#5194)", async () => {
+	const { steps, worstLagMs, deliveries } = await withControlledTime(
+		() => runTraffic([{ durationMs: 40_000, latencyMs: 150, checkpointMs: 0.6 }]),
+		60_000,
+	);
+	assert.ok(deliveries.filter((batch) => batch.size > ADAPTIVE_MAX_BATCH).length >= 3);
+	assert.ok(worstLagMs[0]! <= ADAPTIVE_MAX_LAG_MS, `worst lag ${Math.round(worstLagMs[0]!)} ms`);
+	assert.ok(steps[0]! >= 30_000, `only ${steps[0]} steps used the delivery window`);
 });

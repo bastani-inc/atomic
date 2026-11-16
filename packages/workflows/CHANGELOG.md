@@ -98,10 +98,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Fixed a pooled stage on a host that doesn't run its root keeping its Intercom inbox after its session failed to start: later messages to it were taken into the failed session instead of staying queued ([#5168](https://github.com/bastani-inc/atomic/issues/5168))
 - Fixed the workflow session picker showing no selected row when the selected run left the list and the list got shorter. The selection now moves to the nearest remaining run, so Enter acts on it without first moving the cursor.
 - Fixed `/workflow` commands whose arguments start after a tab or on a new line not being run ([#5192](https://github.com/bastani-inc/atomic/issues/5192))
-- Fixed checkpoint shipping acknowledging more steps locally after a direct shared-journal commit lost its work or root lease, including a root lease released without changing its epoch. Ownership-loss refusals fence that attempt without fencing a replacement generation. Delayed releases and renewals from an older attempt no longer remove the replacement's acknowledged checkpoints. An expired but unreplaced work lease, or a late renewal of the same root lease, keeps acknowledged checkpoints and allows direct commits and shipping to retry after renewal ([#4768](https://github.com/bastani-inc/atomic/issues/4768))
-- Fixed a worker host hanging during shutdown when a deadline-triggered checkpoint flush still had another batch pending ([#4768](https://github.com/bastani-inc/atomic/issues/4768))
-- Fixed checkpoint shipping reporting checkpoints as pending after they had shipped or their attempt was fenced or replaced. A late local acknowledgement no longer keeps the host from claiming new children ([#4768](https://github.com/bastani-inc/atomic/issues/4768))
-- Fixed checkpoint shipping starting catch-up too late when larger batches take longer to deliver. Catch-up scheduling now learns their delivery times separately from normal batches ([#4768](https://github.com/bastani-inc/atomic/issues/4768))
 
 
 ## [0.9.86] - 2026-11-14

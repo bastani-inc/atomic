@@ -275,7 +275,12 @@ test("a shippable checkpoint whose local lease expired while the attempt still o
 	mkdirSync(stateDirectory);
 	const journal = await resolveRunJournal({ journal: { path: join(directory, "shared.sqlite") } });
 	const host = openCoordinator();
-	const leaseMs = 2_000;
+	const leaseMs = 60_000;
+	let localNow = 1_000;
+	const originalOpen = ShipShard.open.bind(ShipShard);
+	const openSpy = vi
+		.spyOn(ShipShard, "open")
+		.mockImplementation((path, root) => originalOpen(path, root, () => localNow));
 	try {
 		await journal.createRun({ runId: "root", name: "root", cwd: directory, createdAt: 0, status: "running" });
 		const acquired = await journal.acquire("root", "holder");
@@ -315,25 +320,20 @@ test("a shippable checkpoint whose local lease expired while the attempt still o
 		const claim = await worker.request({ kind: "claim" });
 		assert.equal(claim.error, undefined);
 		const held = claim.value as PoolWork;
-		const pinnedWallClock = Date.now();
-		await sleep(leaseMs + 200);
-		const dateSpy = vi.spyOn(Date, "now").mockReturnValue(pinnedWallClock);
-		try {
-			const c0 = await worker.request({
-				kind: "commit",
-				operation: "commit-c0",
-				mutation: { kind: "checkpoint", checkpoint: toolCheckpoint(held, child, "c0", 0) },
-			});
-			assert.equal(c0.error, undefined);
-			assert.equal((c0.value as { local?: boolean }).local, true);
-		} finally {
-			dateSpy.mockRestore();
-		}
+		localNow += leaseMs + 200;
+		const c0 = await worker.request({
+			kind: "commit",
+			operation: "commit-c0",
+			mutation: { kind: "checkpoint", checkpoint: toolCheckpoint(held, child, "c0", 0) },
+		});
+		assert.equal(c0.error, undefined);
+		assert.equal((c0.value as { local?: boolean }).local, true);
 		assert.equal(await journal.readKey("root", checkpointKey(toolCheckpoint(held, child, "c0", 0))), undefined);
 		const flushed = await worker.request({ kind: "controlled", revision: 0 });
 		assert.equal(flushed.error, undefined);
 		assert.ok(await journal.readKey("root", checkpointKey(toolCheckpoint(held, child, "c0", 0))));
 	} finally {
+		openSpy.mockRestore();
 		await host.command({ kind: "close" });
 		await host.coordinator.shutdown();
 		await journal.close();
