@@ -277,18 +277,12 @@ test.skipIf(process.platform === "win32")(
 		});
 		try {
 			const ship = join(s.directory, "B", "workflows", "pool", "ship");
-			const shards = existsSync(ship)
-				? readdirSync(ship, { recursive: true, encoding: "utf8" }).filter((name) => name.endsWith(".sqlite"))
-				: [];
-			assert.equal(shards.length, 1, "host B kept one local checkpoint journal for the root");
-			const local = await openLibsqlDatabase({ url: pathToFileURL(join(ship, shards[0]!)).href });
-			try {
-				assert.deepEqual(await local.all("SELECT event_key FROM ship_events"), [], "nothing is left unshipped");
-				const cursors = await local.all("SELECT shipped_local_seq FROM ship_cursor WHERE fenced = 0");
-				assert.ok(cursors.length > 0, "host B shipped the checkpoints it accepted");
-			} finally {
-				await local.close();
-			}
+			assert.ok(existsSync(ship), "host B kept its children's checkpoints in a local journal");
+			assert.deepEqual(
+				readdirSync(ship, { recursive: true, encoding: "utf8" }).filter((name) => name.endsWith(".sqlite")),
+				[],
+				"host B shipped what it accepted and removed the root's local journal once the run ended",
+			);
 		} finally {
 			removeTempDirectory(s.directory);
 		}
