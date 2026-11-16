@@ -1018,6 +1018,7 @@ class SessionSearcher {
 			if (entry.lineCount === 0) continue;
 			texts.push({ seq: entry.seq, parts: await entry.searchParts(this.search.budget) });
 		}
+		if (this.lastSeq <= 1 && texts.every((item) => item.parts.length <= 1)) return;
 		const extended = await this.search.budget
 			.race(
 				this.index!.extend(

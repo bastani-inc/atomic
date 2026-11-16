@@ -433,6 +433,45 @@ export class SqlSessionSearchIndex implements SessionSearchIndex {
 	): Promise<boolean> {
 		if (throughSeq >= SEQ_SPACE || throughSeq < afterSeq) return false;
 		const options = { retryTransientFailures: true };
+		const docs = docsOf(texts);
+		const totalChars = docs.reduce((sum, doc) => sum + doc.text.length, 0);
+		if (totalChars <= BATCH_CHARS) {
+			return this.database.transaction(async (tx) => {
+				if (!this.triggerInstalled) {
+					await tx.exec(this.dialect.renderTrigger(forgetTrigger(this.tables, this.sessionTables, this.engine)));
+					this.triggerInstalled = true;
+				}
+				const row = await tx.get<CoverageRow & { revision: string }>(
+					`SELECT s.last_seq, s.revision, st.sid, st.format, st.indexed_seq
+					FROM ${this.sessionTables.sessions} s LEFT JOIN ${this.tables.state} st ON st.session_id = s.id
+					WHERE s.id = ?`,
+					sessionId,
+				);
+				if (!row || Number(row.last_seq) < throughSeq) return false;
+				let sid: number;
+				if (row.sid !== null) {
+					if (Number(row.format) !== format || Number(row.indexed_seq) !== afterSeq) return false;
+					sid = Number(row.sid);
+				} else {
+					if (afterSeq !== 0) return false;
+					const created = await tx.get<SqliteRow & { sid: number | bigint }>(
+						`INSERT INTO ${this.tables.state} (session_id, format, indexed_seq, revision, entry_id) VALUES (?, ?, 0, '', '') RETURNING sid`,
+						sessionId,
+						format,
+					);
+					sid = Number(created!.sid);
+				}
+				if (sid > MAX_SID) return false;
+				if (docs.length > 0) await this.engine.insert(tx, this.tables, sid, docs);
+				await tx.run(
+					`UPDATE ${this.tables.state} SET indexed_seq = ?, revision = ? WHERE sid = ?`,
+					throughSeq,
+					row.revision,
+					sid,
+				);
+				return true;
+			}, options);
+		}
 		const sid = await this.database.transaction(async (tx) => {
 			if (!this.triggerInstalled) {
 				await tx.exec(this.dialect.renderTrigger(forgetTrigger(this.tables, this.sessionTables, this.engine)));
@@ -464,7 +503,6 @@ export class SqlSessionSearchIndex implements SessionSearchIndex {
 			);
 			return state !== undefined && Number(state.format) === format && Number(state.indexed_seq) === afterSeq;
 		};
-		const docs = docsOf(texts);
 		for (let start = 0; start < docs.length; ) {
 			let end = start + 1;
 			for (
