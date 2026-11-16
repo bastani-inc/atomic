@@ -172,9 +172,11 @@ InteractiveModeBase.prototype.showModelSelector = function (
 			this.settingsManager,
 			this.session.modelRuntime,
 			this.session.scopedModels,
-			async (model) => {
+			async (model, thinkingLevel) => {
 				try {
 					await this.session.setModel(model, { persist: true });
+					// A level chosen with ←→ in the picker applies on top of the level the switch would use.
+					if (thinkingLevel !== undefined) await this.session.setThinkingLevel(thinkingLevel, { persist: true });
 					await this.updateAvailableProviderCount();
 					this.footer.invalidate();
 					this.updateEditorBorderColor();

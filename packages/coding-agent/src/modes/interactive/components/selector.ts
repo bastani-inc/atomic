@@ -156,7 +156,7 @@ const DESCRIPTION_GAP = 2;
 
 /** Filtering, selection and checked state of a picker, without rendering. */
 export class SelectorState<T> {
-	readonly items: readonly SelectorItem<T>[];
+	items: readonly SelectorItem<T>[];
 	readonly mode: "single" | "multi";
 	readonly maxVisible: number;
 	private query = "";
@@ -209,15 +209,31 @@ export class SelectorState<T> {
 		return this.items.filter((item) => this.checked.has(item.id));
 	}
 
+	/**
+	 * Replace the rows, as after a catalog refresh or a row's text changing. The search is reapplied, and the row with
+	 * the same id stays selected (or `preferId`, when given and listed).
+	 */
+	setItems(items: readonly SelectorItem<T>[], preferId?: string): void {
+		const browsed = this.visible[this.selected]?.id;
+		const position = this.selected;
+		this.items = items;
+		this.visible = this.query ? this.filter(this.query) : [...this.items];
+		const find = (id: string | undefined) =>
+			id === undefined ? -1 : this.visible.findIndex((item) => item.id === id && !item.disabled);
+		const browsedIndex = find(browsed);
+		const preferIndex = find(preferId);
+		// The browsed row stays selected; if it is gone, the preferred row, else the same position.
+		const index = browsedIndex >= 0 ? browsedIndex : preferIndex;
+		this.selected =
+			index >= 0 ? index : this.firstEnabled(Math.max(0, Math.min(position, this.visible.length - 1)), 1);
+		this.scrollToSelected();
+	}
+
 	setQuery(query: string): void {
 		if (query === this.query) return;
 		const previous = this.visible[this.selected]?.id;
 		this.query = query;
-		this.visible = query
-			? fuzzyFilter([...this.items], query, (item) =>
-					[item.label, item.description ?? "", item.tag ?? "", item.searchText ?? ""].join(" "),
-				)
-			: [...this.items];
+		this.visible = query ? this.filter(query) : [...this.items];
 		const kept = previous === undefined ? -1 : this.visible.findIndex((item) => item.id === previous);
 		// A new query highlights its best match; clearing it returns to the row that was selected.
 		this.selected = query ? this.firstEnabled(0, 1) : kept >= 0 ? kept : this.firstEnabled(0, 1);
@@ -262,6 +278,12 @@ export class SelectorState<T> {
 	toggle(id: string): void {
 		if (this.checked.has(id)) this.checked.delete(id);
 		else this.checked.add(id);
+	}
+
+	private filter(query: string): SelectorItem<T>[] {
+		return fuzzyFilter([...this.items], query, (item) =>
+			[item.label, item.description ?? "", item.tag ?? "", item.searchText ?? ""].join(" "),
+		);
 	}
 
 	private firstEnabled(from: number, direction: 1 | -1): number {
@@ -362,6 +384,8 @@ export class Selector<T> implements Component, Focusable {
 	private readonly style: SelectorStyle;
 	private readonly input?: Input;
 	private showingHelp = false;
+	private title?: string;
+	private subtitle?: string;
 	private notice?: { text: string; tone: SelectorTone };
 	/** Rendered line index of each visible row, from the last render, for mouse hits. */
 	private rowLines = new Map<number, number>();
@@ -370,6 +394,8 @@ export class Selector<T> implements Component, Focusable {
 
 	constructor(options: SelectorOptions<T>) {
 		this.options = options;
+		this.title = options.title;
+		this.subtitle = options.subtitle;
 		this.style = options.style ?? themeSelectorStyle();
 		this.state = new SelectorState(options);
 		if (options.search) {
@@ -393,6 +419,15 @@ export class Selector<T> implements Component, Focusable {
 		if (this.input) this.input.focused = value;
 	}
 
+	setTitle(title: string | undefined): void {
+		this.title = title;
+	}
+
+	/** The dim line under the title; `undefined` removes it. */
+	setSubtitle(subtitle: string | undefined): void {
+		this.subtitle = subtitle;
+	}
+
 	/** A one-line message under the list, such as a refresh status or an error; `undefined` clears it. */
 	setNotice(notice: { text: string; tone: SelectorTone } | undefined): void {
 		this.notice = notice;
@@ -400,6 +435,11 @@ export class Selector<T> implements Component, Focusable {
 
 	getSelected(): SelectorItem<T> | undefined {
 		return this.state.getSelected();
+	}
+
+	/** Replace the rows, keeping the search and the selected row; see {@link SelectorState.setItems}. */
+	setItems(items: readonly SelectorItem<T>[], preferId?: string): void {
+		this.state.setItems(items, preferId);
 	}
 
 	/** Set the search text as if typed. */
@@ -488,7 +528,7 @@ export class Selector<T> implements Component, Focusable {
 
 	render(width: number): string[] {
 		if (this.showingHelp) {
-			const title = this.options.helpTitle ?? this.options.title ?? "keys";
+			const title = this.options.helpTitle ?? this.title ?? "keys";
 			return renderNavKeyOverlay(
 				title,
 				this.helpEntries(),
@@ -499,12 +539,10 @@ export class Selector<T> implements Component, Focusable {
 		}
 		const lines: string[] = [];
 		const inner = Math.max(1, width - 2);
-		if (this.options.title) {
-			lines.push(
-				`  ${this.style.bold(this.style.text(truncateToWidth(this.options.title, Math.max(1, inner - 1))))}`,
-			);
+		if (this.title) {
+			lines.push(`  ${this.style.bold(this.style.text(truncateToWidth(this.title, Math.max(1, inner - 1))))}`);
 		}
-		if (this.options.subtitle) lines.push(`  ${this.style.muted(truncateToWidth(this.options.subtitle, inner))}`);
+		if (this.subtitle) lines.push(`  ${this.style.muted(truncateToWidth(this.subtitle, inner))}`);
 		if (this.input) lines.push(...this.renderSearch(width));
 		if (lines.length > 0) lines.push("");
 		this.rowLines = new Map();
@@ -661,6 +699,45 @@ export class Selector<T> implements Component, Focusable {
 			return this.style.text(text);
 		};
 		return { lead: ` ${cursor}${number}${mark}`, label };
+	}
+}
+
+/**
+ * A {@link Selector} between the rules a picker that replaces the editor sits between, so it reads as one sheet. The
+ * picker classes that keep their own constructor signatures extend this.
+ */
+export class FramedSelector<T> implements Component, Focusable {
+	readonly capturesViewportInput = true;
+	readonly selector: Selector<T>;
+	private readonly rule: (width: number) => string;
+
+	constructor(options: SelectorOptions<T>) {
+		this.selector = new Selector(options);
+		const style = options.style ?? themeSelectorStyle();
+		this.rule = (width) => style.border("─".repeat(Math.max(1, width)));
+	}
+
+	get focused(): boolean {
+		return this.selector.focused;
+	}
+	set focused(value: boolean) {
+		this.selector.focused = value;
+	}
+
+	render(width: number): string[] {
+		return [this.rule(width), ...this.selector.render(width), this.rule(width)];
+	}
+
+	handleInput(data: string): void {
+		this.selector.handleInput(data);
+	}
+
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		return this.selector.handleMouse({ ...event, y: event.y - 1 });
+	}
+
+	invalidate(): void {
+		this.selector.invalidate();
 	}
 }
 
