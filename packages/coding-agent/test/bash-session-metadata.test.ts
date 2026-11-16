@@ -1,8 +1,9 @@
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getModel } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, expect, it } from "vitest";
+import { removeTestDirectory } from "../../../test/helpers/test-directory-removal.js";
 import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
@@ -69,14 +70,9 @@ async function createSession(options: { persisted?: boolean; stage?: string } = 
 }
 
 afterEach(() => {
-	// Retry, then give up: reclaiming an OS temp dir is never the assertion.
 	for (const root of roots.splice(0)) {
 		if (!existsSync(root)) continue;
-		try {
-			rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
-		} catch {
-			// Left for the OS to reclaim.
-		}
+		removeTestDirectory(root, { retries: 20, retryDelayMs: 50 });
 	}
 });
 

@@ -6,7 +6,7 @@
  */
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -16,6 +16,7 @@ import { getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
 import { formatAttachments } from "../../packages/intercom/intercom-utils.js";
 import type { Attachment, Message } from "../../packages/intercom/types.js";
 import { IntercomWireProxy, type WireFrame } from "../helpers/intercom-wire-proxy.js";
+import { removeTestDirectory } from "../helpers/test-directory-removal.js";
 
 vi.mock("../../packages/intercom/broker/spawn.js", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../../packages/intercom/broker/spawn.js")>()),
@@ -156,7 +157,7 @@ afterAll(async () => {
 	else process.env.ATOMIC_CODING_AGENT_DIR = originalAgentDir;
 	if (originalLegacyAgentDir !== undefined) process.env.PI_CODING_AGENT_DIR = originalLegacyAgentDir;
 	for (const dir of [brokerAgentDir, frontAgentDir, sessionDir]) {
-		rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
+		removeTestDirectory(dir, { retries: 20, retryDelayMs: 50 });
 	}
 });
 

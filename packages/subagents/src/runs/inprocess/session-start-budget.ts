@@ -97,9 +97,15 @@ export class SessionStartBudget {
 
 	private expire(): void {
 		const now = performance.now();
+		// The time since the last probe is a turn of its own once the probe was due in it, as when the thread was held
+		// past it. A shorter tail belongs to the turn that probe already counted, as when the deadline fires right after it
+		// in the same loop turn: counting it as one more turn would understate how long the loop's turns took.
+		const tailIsTurn = this.turns === 0 || now - this.lastTurnAt >= START_PROBE_INTERVAL_MS;
 		const eventLoop: SessionStartEventLoopSample = {
 			turns: this.turns,
-			meanTurnMs: Math.round((now - this.startedAt) / (this.turns + 1)),
+			meanTurnMs: Math.round(
+				tailIsTurn ? (now - this.startedAt) / (this.turns + 1) : (this.lastTurnAt - this.startedAt) / this.turns,
+			),
 			maxTurnMs: Math.round(Math.max(this.longestTurnMs, now - this.lastTurnAt)),
 		};
 		const stepElapsedMs = Math.round(now - this.stepStartedAt);

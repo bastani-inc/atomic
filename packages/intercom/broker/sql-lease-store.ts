@@ -21,6 +21,16 @@ import { ensureBrokerSchema } from "./sql-schema.js";
 /** Store-clock milliseconds since the lease was renewed, never negative. */
 const age = ({ greatest, nowMs }: StorageDialect) => greatest("0", `${nowMs} - renewed_at`);
 
+/**
+ * A read of the live leases of one kind, oldest first, that reads the clock once: PostgreSQL's moves on between two
+ * readings, and a lease it found within the stale bound would otherwise report an age past it.
+ */
+const liveLeases = (dialect: StorageDialect, table: string) =>
+	`WITH clock AS (SELECT ${dialect.nowMs} AS now)
+	SELECT kind, key, holder_id, fencing_token, subject_json, ${dialect.greatest("0", "(SELECT now FROM clock) - renewed_at")} AS age_ms
+	FROM ${table} WHERE kind = ? AND holder_id IS NOT NULL
+	AND ${dialect.greatest("0", "(SELECT now FROM clock) - renewed_at")} <= ? ORDER BY first_acquired_order`;
+
 type HolderRow = SqliteRow & {
 	holder_id: string | null;
 	fencing_token: number | bigint | null;
@@ -82,12 +92,7 @@ export async function readLiveBrokerNodes(
 	const dialect = dialectOf(database);
 	const exists = dialect.tableExists(table);
 	if ((await database.get(exists.sql, ...exists.params)) === undefined) return undefined;
-	const leaseAge = age(dialect);
-	const rows = await database.all<StateRow>(
-		`SELECT kind, key, holder_id, fencing_token, subject_json, ${leaseAge} AS age_ms FROM ${table}
-		WHERE kind = 'broker' AND holder_id IS NOT NULL AND ${leaseAge} <= ? ORDER BY first_acquired_order`,
-		staleAfterMs,
-	);
+	const rows = await database.all<StateRow>(liveLeases(dialect, table), "broker", staleAfterMs);
 	return rows.flatMap((row) => {
 		const { subject } = stateFromRow(row);
 		return subject.kind === "broker" ? [subject.nodeId] : [];
@@ -219,12 +224,7 @@ export async function openSqlBrokerLeaseStore(options: IntercomBrokerStateOption
 			return row === undefined ? { status: "missing" } : { status: "found", lease: stateFromRow(row) };
 		},
 		async listLive(kind, staleAfterMs) {
-			const rows = await database.all<StateRow>(
-				`SELECT kind, key, holder_id, fencing_token, subject_json, ${leaseAge} AS age_ms FROM ${table}
-				WHERE kind = ? AND holder_id IS NOT NULL AND ${leaseAge} <= ? ORDER BY first_acquired_order`,
-				kind,
-				staleAfterMs,
-			);
+			const rows = await database.all<StateRow>(liveLeases(dialect, table), kind, staleAfterMs);
 			return rows.map(stateFromRow);
 		},
 		async retireHolder(holderId) {

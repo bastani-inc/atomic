@@ -7,13 +7,27 @@ import type { ModelRuntime } from "./core/model-runtime.js";
 import type { CreateAgentSessionOptions } from "./core/sdk.ts";
 import type { SettingsManager } from "./core/settings-manager.ts";
 
+/**
+ * A model named with --model runs as named: it falls back only to the models
+ * --fallback-models names, never to the settings fallbackModels, user or project, as a subagent launched on a named
+ * model does (#4223). --no-fallback turns fallback off for any session. Child sessions inherit this chain.
+ */
+export function cliFallbackChain(parsed: Args): string[] | undefined {
+	if (parsed.noFallback) return [];
+	if (parsed.fallbackModels !== undefined) return [...parsed.fallbackModels];
+	if (parsed.model !== undefined) return [];
+	return undefined;
+}
+
 /** One warning per distinct fallback entry that names no model with configured credentials; the chain skips it. */
-function unresolvedFallbackDiagnostics(
-	entries: readonly string[],
-	source: string,
+export function unresolvedFallbackModelDiagnostics(
+	parsed: Args,
+	settingsManager: SettingsManager,
 	modelRuntime: ModelRuntime,
 	preferredProvider: string | undefined,
 ): AgentSessionRuntimeDiagnostic[] {
+	const entries = cliFallbackChain(parsed) ?? settingsManager.getFallbackModels();
+	const source = parsed.fallbackModels !== undefined ? "--fallback-models" : "fallbackModels setting";
 	return [...new Set(entries)]
 		.filter((entry) => !resolveFallbackModel(entry, modelRuntime, preferredProvider))
 		.map((entry) => ({
@@ -97,24 +111,10 @@ export function buildSessionOptions(
 		options.thinkingLevel = parsed.thinking;
 	}
 
-	// Fallback chain. A model named with --model runs as named: it falls back only to the models --fallback-models
-	// names, never to the settings fallbackModels, user or project, as a subagent launched on a named model does
-	// (#4223). --no-fallback turns fallback off for any session. Child sessions inherit this chain.
-	if (parsed.noFallback) {
-		options.fallbackModels = [];
-	} else if (parsed.fallbackModels !== undefined) {
-		options.fallbackModels = [...parsed.fallbackModels];
-	} else if (parsed.model !== undefined) {
-		options.fallbackModels = [];
+	const fallbackChain = cliFallbackChain(parsed);
+	if (fallbackChain !== undefined) {
+		options.fallbackModels = fallbackChain;
 	}
-	diagnostics.push(
-		...unresolvedFallbackDiagnostics(
-			options.fallbackModels ?? settingsManager.getFallbackModels(),
-			parsed.fallbackModels !== undefined ? "--fallback-models" : "fallbackModels setting",
-			modelRuntime,
-			options.model?.provider ?? settingsManager.getDefaultProvider(),
-		),
-	);
 
 	// Scoped models for CTRL+P cycling
 	// Keep thinking level undefined when not explicitly set in the model pattern.

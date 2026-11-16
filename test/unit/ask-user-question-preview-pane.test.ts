@@ -10,13 +10,14 @@
  * the border 11-13 columns early — on the active row alone. See TMUX-EVIDENCE.md.
  */
 import assert from "node:assert/strict";
-import { visibleWidth } from "@bastani/atomic-tui";
+import { truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import { test } from "vitest";
 import {
 	OVERLAY_ACTIVE_ROW_MARKER,
 	stripOverlayActiveRowMarker,
 } from "../../packages/coding-agent/src/core/extensions/ui-types.ts";
 import { buildItemsForQuestion } from "../../packages/coding-agent/src/core/tools/ask-user-question/ask-user-question.ts";
+import { QuestionnaireSession } from "../../packages/coding-agent/src/core/tools/ask-user-question/state/questionnaire-session.ts";
 import {
 	type FieldTone,
 	styleFieldTone,
@@ -26,11 +27,13 @@ import type {
 	QuestionParams,
 } from "../../packages/coding-agent/src/core/tools/ask-user-question/tool/types.ts";
 import { OptionListView } from "../../packages/coding-agent/src/core/tools/ask-user-question/view/components/option-list-view.ts";
+import { renderBorderedBox } from "../../packages/coding-agent/src/core/tools/ask-user-question/view/components/preview/preview-box-renderer.ts";
 import { crossTabLeftWidthWithDonation } from "../../packages/coding-agent/src/core/tools/ask-user-question/view/components/preview/preview-layout-decider.ts";
 import {
 	PreviewBlockRenderer,
 	PreviewPane,
 } from "../../packages/coding-agent/src/core/tools/ask-user-question/view/components/preview/preview-pane.js";
+import { TabBar } from "../../packages/coding-agent/src/core/tools/ask-user-question/view/components/tab-bar.ts";
 import type { WrappingSelectItem } from "../../packages/coding-agent/src/core/tools/ask-user-question/view/components/wrapping-select.ts";
 import { getMarkdownTheme, initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 
@@ -56,8 +59,8 @@ const BOX_CHARS = new Set(["╭", "╮", "╰", "╯", "│", "─", "┌", "┐
 const SIDE_BY_SIDE_TERMINAL_WIDTH = 140;
 const SIDE_BY_SIDE_PANE_WIDTH = 120;
 /** Below `PREVIEW_MIN_WIDTH`, so `decideLayout` falls back to stacked. */
-const STACKED_TERMINAL_WIDTH = 80;
-const STACKED_PANE_WIDTH = 70;
+const STACKED_TERMINAL_WIDTH = 60;
+const STACKED_PANE_WIDTH = 56;
 
 function previewQuestion(): QuestionData {
 	return {
@@ -124,6 +127,28 @@ function borderColumn(line: string): number {
 	}
 	return -1;
 }
+
+test("preview boxes retain padding and clipping for styled graphemes (#5244)", () => {
+	const samples = [
+		"",
+		"short",
+		"a long line that needs clipping",
+		"\x1b[31mstyled\x1b[39m",
+		"界面",
+		"e\u0301",
+		"👍🏽",
+		"👍\x1b[31m🏽\x1b[0m",
+		"👩\x1b[31m\u200d💻\x1b[0m",
+		"e\x1b[31m\u0301\x1b[0m",
+		"a\tb",
+	];
+	for (const width of [6, 8, 12, 40]) {
+		for (const sample of samples) {
+			const expected = `│ ${truncateToWidth(sample, width - 4, "", true)} │`;
+			assert.equal(renderBorderedBox([sample], width, (text) => text)[1], expected);
+		}
+	}
+});
 
 test("OVERLAY_ACTIVE_ROW_MARKER terminates its APC string with ST, not BEL", () => {
 	assert.equal(OVERLAY_ACTIVE_ROW_MARKER.startsWith("\u001B_"), true);
@@ -263,5 +288,87 @@ test("a preview pane's measured height covers its tallest preview at the rendere
 		const { pane, render } = makePane(previewQuestion(), terminalWidth);
 		const tallest = Math.max(render(0, paneWidth).length, render(1, paneWidth).length);
 		assert.equal(pane.maxNaturalHeight(paneWidth), tallest);
+	}
+});
+
+test("side-by-side preview, tab bar, and hint line stay within width for CJK, combining marks, and emoji (#5244)", () => {
+	initTheme("dark");
+	const tabBar = new TabBar(theme);
+	tabBar.setProps({
+		tabs: [
+			{ label: "ナビゲーション", answered: true, active: false },
+			{ label: "e\u0301clair 🧭", answered: false, active: true },
+			{ label: "Layout", answered: false, active: false },
+		],
+		submit: { active: false, allAnswered: false },
+	});
+	const [wideBar = ""] = tabBar.render(80);
+	assert.equal(visibleWidth(wideBar), 80);
+	assert.equal(wideBar.includes("…"), false);
+	assert.equal(wideBar.includes("ナビゲーション"), true);
+	assert.equal(wideBar.includes("e\u0301clair 🧭"), true);
+	assert.equal(wideBar.includes("2/3"), true);
+
+	const [narrowBar = ""] = tabBar.render(24);
+	assert.ok(visibleWidth(narrowBar) <= 24);
+	assert.equal(narrowBar.includes("…"), true);
+	assert.equal(narrowBar.includes("2/3"), true);
+
+	const [tinyBar = ""] = tabBar.render(8);
+	assert.ok(visibleWidth(tinyBar) <= 8);
+
+	const unicodeQuestion: QuestionData = {
+		question: "どの方針にしますか？ e\u0301clair 🧭",
+		header: "ナビ 🧭",
+		options: [
+			{
+				label: "構成A e\u0301clair 🧭",
+				description: "日本語の説明とアクセント付き文字 e\u0301clair と絵文字 🧭 を含む長い説明文",
+				preview: BOX_A,
+			},
+			{
+				label: "構成B シンプル",
+				description: "短い説明",
+				preview: BOX_B,
+			},
+		],
+	};
+	for (const paneWidth of [64, 80, 120]) {
+		const { render } = makePane(unicodeQuestion, Math.max(80, paneWidth + 4));
+		for (const selectedIndex of [0, 1]) {
+			const rows = stripOverlayActiveRowMarker(render(selectedIndex, paneWidth));
+			for (const row of rows) assert.ok(visibleWidth(row) <= paneWidth);
+			const columns = rows.map(borderColumn).filter((column) => column >= 0);
+			assert.equal(new Set(columns).size, 1);
+		}
+	}
+
+	const params: QuestionParams = {
+		questions: [
+			unicodeQuestion,
+			{
+				question: "パッケージ選択",
+				header: "パッケージ",
+				multiSelect: true,
+				options: [
+					{ label: "コア e\u0301clair", description: "基本パッケージ 🧭" },
+					{ label: "拡張モジュール", description: "追加機能" },
+				],
+			},
+		],
+	};
+	for (const width of [24, 40, 64, 80, 160]) {
+		const session = new QuestionnaireSession({
+			tui: { terminal: { columns: width }, requestRender() {} },
+			theme,
+			params,
+			itemsByTab: params.questions.map((question) => buildItemsForQuestion(question)),
+			done() {},
+		});
+		for (const key of ["", "\x1b[B", "\t", " ", "\t"]) {
+			if (key) session.component.handleInput(key);
+			const lines = session.component.render(width);
+			for (const line of lines) assert.ok(visibleWidth(line) <= width);
+		}
 	}
 });
