@@ -67,8 +67,7 @@ export const SESSION_ENTRY_CHUNK_BYTES = 1024 * 1024;
 /**
  * The most characters one read of entries or listing rows returns, by the stored text's `length()`. A character is at
  * most four bytes of UTF-8 and a JSON escape at most doubles a character on a server's wire, so a page stays under
- * sqld's 10 MB response limit; a single row longer than this, at most {@link SESSION_ENTRY_CHUNK_BYTES}, is a page
- * of its own (#4954).
+ * sqld's 10 MB response limit; a single row longer than this is a page of its own (#4954).
  */
 export const SESSION_READ_PAGE_CHARS = 1024 * 1024;
 /** Bound each write transaction while reusing the bytes already supplied to putBlob. */
@@ -107,7 +106,12 @@ type SummaryRow = ListingRow & { search_texts_json: string };
 /** A row's key and how many characters its stored text holds, for reading rows in pages. */
 type SizedRow = SqliteRow & { size: number | bigint | null };
 /** A row of a page: its position in store order, and how many rows the page's statement could have returned. */
-type PageRow = { ord: number | bigint; fetched: number | bigint };
+type FetchRow = {
+	fetched: number | bigint;
+	page_chars: number | bigint;
+	next_size: number | bigint | null;
+};
+type PageRow = FetchRow & { ord: number | bigint };
 
 /**
  * The rows one statement of a paged read fetches, by key after the previous page, before it keeps those that fit in
@@ -115,16 +119,26 @@ type PageRow = { ord: number | bigint; fetched: number | bigint };
  * session or listing is read in linear time. The batch grows while whole batches fit and shrinks to what a page held
  * when they do not, so large rows are not fetched far past the page.
  */
-export const SESSION_READ_FETCH = { first: 512, min: 1, max: 8192 } as const;
+export const SESSION_READ_FETCH = { first: 1024, min: 1, max: 8192 } as const;
 
-/** Where a paged read goes after a statement that fetched `fetched` rows of `limit` and kept `kept` of them. */
-function nextFetch(limit: number, kept: number, fetched: number): { readonly more: boolean; readonly limit: number } {
-	const more = kept > 0 && (kept < fetched || fetched === limit);
-	const next = Math.min(
-		SESSION_READ_FETCH.max,
-		kept < fetched ? Math.max(SESSION_READ_FETCH.min, kept * 2) : limit * 2,
-	);
-	return { more, limit: next };
+function nextFetch(limit: number, rows: readonly FetchRow[]): { readonly more: boolean; readonly limit: number } {
+	const kept = rows.length;
+	const fetched = Number(rows[0]?.fetched ?? 0);
+	const more = kept > 0 && kept < fetched;
+	const firstChars = Number(rows[0]?.page_chars ?? 0);
+	const pageChars = Number(rows.at(-1)?.page_chars ?? 0);
+	const nextSize = Number(rows.at(-1)?.next_size ?? 0);
+	const firstLarge = firstChars > SESSION_READ_PAGE_CHARS / 2;
+	const nextLarge = nextSize > SESSION_READ_PAGE_CHARS / 2;
+	const isolatedLarge =
+		firstLarge !== nextLarge || pageChars > SESSION_READ_PAGE_CHARS || nextSize > SESSION_READ_PAGE_CHARS;
+	const next =
+		kept === Math.min(limit, fetched)
+			? Math.max(SESSION_READ_FETCH.first * 2, limit * 2)
+			: isolatedLarge
+				? limit
+				: Math.max(SESSION_READ_FETCH.min, kept * 2);
+	return { more, limit: Math.min(SESSION_READ_FETCH.max, next) };
 }
 
 /** `rows` split into runs, in order, of at most {@link SESSION_READ_PAGE_CHARS}; a longer row is a run of its own. */
@@ -369,6 +383,14 @@ export class SqlSessionStore implements SessionStore {
 			if ((await tx.get(probe.sql, ...probe.params)) === undefined) {
 				await tx.exec(`ALTER TABLE ${tables.entries} ADD COLUMN chunks ${int} NOT NULL DEFAULT 0`);
 			}
+			await tx.run(
+				`DELETE FROM ${tables.entryChunks} WHERE NOT EXISTS (
+					SELECT 1 FROM ${tables.entries} AS e
+					WHERE e.session_id = ${tables.entryChunks}.session_id
+						AND e.seq = ${tables.entryChunks}.seq
+						AND e.chunks > 0
+				)`,
+			);
 		};
 		await applyStorageMigrations(
 			database,
@@ -788,22 +810,24 @@ export class SqlSessionStore implements SessionStore {
 		const rows: ListingRow[] = [];
 		for (let after = 0, limit: number = SESSION_READ_FETCH.first; ; ) {
 			const page = await this.database.all<ListingRow & PageRow>(
-				`SELECT ${LISTING_COLUMNS}, ord, fetched FROM (
+				`WITH sized AS MATERIALIZED (
+					SELECT ${LISTING_COLUMNS}, ${order} AS ord, ${LISTING_SIZE} AS size
+					FROM ${this.tables.sessions} WHERE (${where}) AND ${order} > ? ORDER BY ord LIMIT ?
+				) SELECT ${LISTING_COLUMNS}, ord, fetched, page_chars, next_size FROM (
 					SELECT ${LISTING_COLUMNS}, ord, count(*) OVER () AS fetched,
 						row_number() OVER (ORDER BY ord) AS page_row,
+						lead(size) OVER (ORDER BY ord) AS next_size,
 						sum(size) OVER (ORDER BY ord) AS page_chars
-					FROM (
-						SELECT ${LISTING_COLUMNS}, ${order} AS ord, ${LISTING_SIZE} AS size
-						FROM ${this.tables.sessions} WHERE (${where}) AND ${order} > ? ORDER BY ord LIMIT ?
-					) AS sized
-				) AS page WHERE page_chars <= ? OR page_row = 1 ORDER BY ord`,
+					FROM sized
+				) AS page WHERE (page_chars <= ? OR page_row = 1) AND page_row <= ? ORDER BY ord`,
 				...params,
 				after,
-				limit,
+				limit + 1,
 				SESSION_READ_PAGE_CHARS,
+				limit,
 			);
 			rows.push(...page);
-			const next = nextFetch(limit, page.length, Number(page[0]?.fetched ?? 0));
+			const next = nextFetch(limit, page);
 			if (!next.more) return rows;
 			after = Number(page.at(-1)!.ord);
 			limit = next.limit;
@@ -821,28 +845,30 @@ export class SqlSessionStore implements SessionStore {
 		for (let after = 0, limit: number = SESSION_READ_FETCH.first; ; ) {
 			// Combine encoded strings only at read time, preserving NUL and lone surrogates verbatim.
 			const page = await this.database.all<SummaryRow & PageRow & { search_texts_json: string | null }>(
-				`SELECT ${LISTING_COLUMNS}, ord, fetched, CASE WHEN search_size <= ? THEN (
+				`WITH keyed AS MATERIALIZED (
+					SELECT ${LISTING_COLUMNS}, ${order} AS ord, ${LISTING_SIZE} AS size
+					FROM ${this.tables.sessions} AS s WHERE (${where}) AND ${order} > ? ORDER BY ord LIMIT ?
+				), sized AS MATERIALIZED (
+					SELECT ${LISTING_COLUMNS}, ord, size,
+						(SELECT COALESCE(sum(length(text_json) + 1) + 1, 2) FROM ${this.tables.searchTexts} WHERE session_id = keyed.id) AS search_size
+					FROM keyed
+				) SELECT ${LISTING_COLUMNS}, ord, fetched, page_chars, next_size, CASE WHEN search_size <= ? THEN (
 					SELECT COALESCE('[' || ${this.dialect.orderedConcat("text_json", "','", "seq")} || ']', '[]')
 					FROM (SELECT text_json, seq FROM ${this.tables.searchTexts} WHERE session_id = page.id ORDER BY seq)
 				) END AS search_texts_json
 				FROM (
 					SELECT ${LISTING_COLUMNS}, ord, search_size, count(*) OVER () AS fetched,
 						row_number() OVER (ORDER BY ord) AS page_row,
+						lead(size + search_size) OVER (ORDER BY ord) AS next_size,
 						sum(size + search_size) OVER (ORDER BY ord) AS page_chars
-					FROM (
-						SELECT ${LISTING_COLUMNS}, ord, size,
-							(SELECT COALESCE(sum(length(text_json) + 1) + 1, 2) FROM ${this.tables.searchTexts} WHERE session_id = keyed.id) AS search_size
-						FROM (
-							SELECT ${LISTING_COLUMNS}, ${order} AS ord, ${LISTING_SIZE} AS size
-							FROM ${this.tables.sessions} AS s WHERE (${where}) AND ${order} > ? ORDER BY ord LIMIT ?
-						) AS keyed
-					) AS sized
-				) AS page WHERE page_chars <= ? OR page_row = 1 ORDER BY ord`,
-				SESSION_READ_PAGE_CHARS,
+					FROM sized
+				) AS page WHERE (page_chars <= ? OR page_row = 1) AND page_row <= ? ORDER BY ord`,
 				...params,
 				after,
-				limit,
+				limit + 1,
 				SESSION_READ_PAGE_CHARS,
+				SESSION_READ_PAGE_CHARS,
+				limit,
 			);
 			for (const row of page) {
 				const summaryRow =
@@ -850,7 +876,7 @@ export class SqlSessionStore implements SessionStore {
 				this.summaries.set(row.id, { version: listingVersion(summaryRow), summary: summaryFromRow(summaryRow) });
 				rows.push(summaryRow);
 			}
-			const next = nextFetch(limit, page.length, Number(page[0]?.fetched ?? 0));
+			const next = nextFetch(limit, page);
 			if (!next.more) return rows;
 			after = Number(page.at(-1)!.ord);
 			limit = next.limit;
@@ -905,29 +931,31 @@ export class SqlSessionStore implements SessionStore {
 		// cumulative text fits in a page, the first always; all of them run in this transaction.
 		const entries: SessionEntry[] = [];
 		for (let after = 0, limit: number = SESSION_READ_FETCH.first; ; ) {
-			const rows = await tx.all<
-				SqliteRow & { seq: number; entry_json: string; chunks: number; fetched: number | bigint }
-			>(
-				`SELECT seq, entry_json, chunks, fetched FROM (
-					SELECT seq, entry_json, chunks, count(*) OVER () AS fetched,
+			const rows = await tx.all<SqliteRow & FetchRow & { seq: number; entry_json: string; chunks: number }>(
+				`WITH sized AS MATERIALIZED (
+					SELECT seq, length(entry_json) AS size FROM ${this.tables.entries}
+					WHERE session_id = ? AND seq > ? ORDER BY seq LIMIT ?
+				) SELECT e.seq, e.entry_json, e.chunks, page.fetched, page.page_chars, page.next_size FROM (
+					SELECT seq, count(*) OVER () AS fetched,
 						row_number() OVER (ORDER BY seq) AS page_row,
-						sum(length(entry_json)) OVER (ORDER BY seq) AS page_chars
-					FROM (
-						SELECT seq, entry_json, chunks FROM ${this.tables.entries}
-						WHERE session_id = ? AND seq > ? ORDER BY seq LIMIT ?
-					) AS keyed
-				) AS page WHERE page_chars <= ? OR page_row = 1 ORDER BY seq`,
+						lead(size) OVER (ORDER BY seq) AS next_size,
+						sum(size) OVER (ORDER BY seq) AS page_chars
+					FROM sized
+				) AS page JOIN ${this.tables.entries} AS e ON e.session_id = ? AND e.seq = page.seq
+				WHERE (page.page_chars <= ? OR page.page_row = 1) AND page.page_row <= ? ORDER BY page.seq`,
 				sessionId,
 				after,
-				limit,
+				limit + 1,
+				sessionId,
 				SESSION_READ_PAGE_CHARS,
+				limit,
 			);
 			for (const entry of rows) {
 				const chunks = Number(entry.chunks);
 				const json = chunks === 0 ? entry.entry_json : await this.readEntryChunks(tx, sessionId, entry.seq, chunks);
 				entries.push(JSON.parse(json) as SessionEntry);
 			}
-			const next = nextFetch(limit, rows.length, Number(rows[0]?.fetched ?? 0));
+			const next = nextFetch(limit, rows);
 			if (!next.more) break;
 			after = Number(rows.at(-1)!.seq);
 			limit = next.limit;
@@ -1047,6 +1075,9 @@ export class SqlSessionStore implements SessionStore {
 				stored.json,
 				stored.chunks.length,
 			);
+			if (stored.chunks.length > 0) {
+				await tx.run(`DELETE FROM ${this.tables.entryChunks} WHERE session_id = ? AND seq = ?`, sessionId, seq);
+			}
 			for (const [chunk, data] of stored.chunks.entries()) {
 				await tx.run(
 					`INSERT INTO ${this.tables.entryChunks} (session_id, seq, idx, data) VALUES (?, ?, ?, ?)`,
