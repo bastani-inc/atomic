@@ -271,6 +271,7 @@ export const ALT_WHEEL_SCROLL_MULTIPLIER = 5;
 /** How long an `"auto"` scrollbar stays visible after the last scroll. */
 export const SCROLLBAR_HIDE_DELAY_MS = 1000;
 const OSC133_PROMPT_START = /^\x1b\]133;A(?:\x07|\x1b\\)/;
+const OSC133_ZONE_PREFIX = /^(?:\x1b\]133;[ABC](?:\x07|\x1b\\))+/;
 const SCROLLBAR_THUMB = "┃";
 const SCROLLBAR_TRACK = "│";
 const SCROLLBAR_CELL_RESET = "\x1b[0m\x1b]8;;\x07";
@@ -283,6 +284,8 @@ export interface ScrollableComponentViewportOptions {
 	readonly scrollbar?: () => ScrollViewScrollbar | undefined;
 	/** Painted in the last row while the viewport is scrolled away from its live end. */
 	readonly followIndicator?: Pick<Component, "render">;
+	/** Styles the pinned prompt row shown at the top while scrolled up; without it nothing is pinned. */
+	readonly pinnedPrompt?: (promptRow: string) => string;
 	/** Told on every frame whether the reader follows the live end and how many items the transcript holds. */
 	readonly newMessages?: Pick<NewMessageCounter, "observe">;
 	/** Asked to repaint when an `"auto"` scrollbar hides. */
@@ -539,11 +542,18 @@ export class ScrollableComponentViewport implements Component {
 			this.scrollFromBottom > 0 && this.visibleRows > 1
 				? (this.options.followIndicator?.render(width).slice(0, 1) ?? [])
 				: [];
-		const contentRows = this.visibleRows - indicator.length;
-		const visible = this.renderVisibleRows(componentRows, contentWidth, start, start + contentRows).map(
-			withoutTerminalControl,
-		);
-		while (visible.length < contentRows) visible.push(" ".repeat(contentWidth));
+		const pinned =
+			this.scrollFromBottom > 0 && start > 0 && this.visibleRows - indicator.length > 2
+				? this.pinnedPromptRow(componentRows, contentWidth, start)
+				: undefined;
+		// The pinned prompt takes its own row, so the transcript below it loses none.
+		const pin = pinned === undefined ? [] : [truncateToWidth(pinned, contentWidth, "")];
+		const contentRows = this.visibleRows - indicator.length - pin.length;
+		const visible = [
+			...pin,
+			...this.renderVisibleRows(componentRows, contentWidth, start, start + contentRows).map(withoutTerminalControl),
+		];
+		while (visible.length < contentRows + pin.length) visible.push(" ".repeat(contentWidth));
 		const painted = this.paintScrollbar(visible, width, scrollbar, { lineCount, start, maxScroll });
 		if (start < this.visibleRows) this.options.onNearTop?.();
 		return [...painted, ...indicator];
@@ -687,6 +697,19 @@ export class ScrollableComponentViewport implements Component {
 		});
 	}
 
+	/**
+	 * The prompt of the turn at the top of the viewport, styled by `pinnedPrompt`: the nearest OSC 133 `A` row above
+	 * the first visible row, while it has scrolled out of view.
+	 */
+	private pinnedPromptRow(componentRows: ComponentRows[], width: number, start: number): string | undefined {
+		const style = this.options.pinnedPrompt;
+		if (!style) return undefined;
+		const raw = this.renderVisibleRows(componentRows, width, 0, start + 1);
+		const rows = raw.map((row) => row.replace(OSC133_ZONE_PREFIX, ""));
+		const text = turnPromptAbove(raw, rows, start);
+		return text === undefined ? undefined : style(withoutTerminalControl(text));
+	}
+
 	/** Parks the nearest semantic prompt (an OSC 133 `A` mark) above or below the first visible row at the top. */
 	private scrollToPrompt(direction: -1 | 1): void {
 		if (this.lastWidth <= 0) return;
@@ -703,6 +726,22 @@ export class ScrollableComponentViewport implements Component {
 			return;
 		}
 	}
+}
+
+/**
+ * The first line of the prompt that started the turn shown from `top` on, when that line is above `top`: the nearest
+ * OSC 133 `A` mark at or above `top`, then its first non-blank row. Undefined while that line is in view.
+ */
+function turnPromptAbove(raw: readonly string[], rows: readonly string[], top: number): string | undefined {
+	for (let mark = Math.min(top, raw.length - 1); mark >= 0; mark--) {
+		if (!OSC133_PROMPT_START.test(raw[mark] ?? "")) continue;
+		for (let row = mark; row < top; row++) {
+			const text = rows[row] ?? "";
+			if (text.replace(/\x1b\[[0-9;]*m/g, "").trim()) return text;
+		}
+		return undefined;
+	}
+	return undefined;
 }
 
 /** One rendered frame's row layout, as the viewport measured it. */

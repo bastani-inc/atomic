@@ -185,6 +185,12 @@ export interface TuiAltScreenOptions {
 	 * primary scroll view while that view is scrolled away from its end.
 	 */
 	scrollToEndIndicator?: () => string;
+	/**
+	 * Render the turn's prompt pinned to the first row of a follow-end primary scroll view while it is scrolled away
+	 * from its end and the prompt that started the turn at its top (the nearest OSC 133 `A` row above it) has scrolled
+	 * out of view. Receives that prompt row without its OSC 133 marks.
+	 */
+	scrollPinnedPrompt?: (promptRow: string) => string;
 	/** Open an OSC 8 hyperlink activated with a primary-button click. */
 	openUrl?: (url: string) => void;
 	/** Handle an unmodified secondary-button press for clipboard paste. Currently enabled on Windows only. */
@@ -248,6 +254,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private readonly searchCurrentMatchStyle: (text: string) => string;
 	private readonly searchNavigationButtonStyle: (text: string, hovered: boolean) => string;
 	private readonly scrollToEndIndicator?: () => string;
+	private readonly scrollPinnedPrompt?: (promptRow: string) => string;
 	private readonly openUrl?: (url: string) => void;
 	private readonly onRightClickPaste?: () => void;
 	private copyOnSelect: boolean;
@@ -275,6 +282,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.searchCurrentMatchStyle = options.searchCurrentMatchStyle ?? ((text) => `\x1b[1;7m${text}\x1b[22;27m`);
 		this.searchNavigationButtonStyle = options.searchNavigationButtonStyle ?? ((text) => text);
 		this.scrollToEndIndicator = options.scrollToEndIndicator;
+		this.scrollPinnedPrompt = options.scrollPinnedPrompt;
 		this.openUrl = options.openUrl;
 		this.onRightClickPaste = options.onRightClickPaste;
 		this.copyOnSelect = options.copyOnSelect ?? true;
@@ -1690,6 +1698,49 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		return result;
 	}
 
+	/**
+	 * Pins the prompt of the turn at the top of the viewport over its first row. Only a row whose prompt lies above the
+	 * viewport is covered, and that row shows again one row further down, so no line stays hidden: at the very top
+	 * there is no prompt above, and following the end shows no pin.
+	 */
+	private compositeScrollPinnedPrompt(screen: string[], layout: LayoutFrame, width: number): string[] {
+		if (!this.scrollPinnedPrompt) return screen;
+		const scrollView = layout.primaryScrollView ?? this.implicitScrollView;
+		if (!scrollView.followEnd || scrollView.isFollowingEnd || scrollView.scrollTop <= 0) return screen;
+		const box = getScrollViewBox(layout, scrollView);
+		const clip = box?.clip;
+		const lines = box?.scrollContentLines;
+		if (!clip || !lines || clip.width <= 0 || clip.height < 2) return screen;
+		// The turn at the top starts at the nearest prompt mark at or above it; its first non-blank row is pinned only
+		// while that row is above the viewport.
+		let promptRow: string | undefined;
+		const top = scrollView.scrollTop;
+		for (let mark = Math.min(top, lines.length - 1); mark >= 0; mark--) {
+			if (!OSC133_PROMPT_START.test(lines[mark] ?? "")) continue;
+			for (let row = mark; row < top; row++) {
+				const text = (lines[row] ?? "").replace(OSC133_ZONE_PREFIX, "");
+				if (text.replace(/\x1b\[[0-9;]*m/g, "").trim()) {
+					promptRow = text;
+					break;
+				}
+			}
+			break;
+		}
+		if (promptRow === undefined) return screen;
+		const row = clip.y;
+		if (row >= screen.length || isImageLine(screen[row] ?? "")) return screen;
+		const scrollbarColumn = getScrollbarGeometry(box)?.column;
+		const rightEdge = scrollbarColumn ?? clip.x + clip.width;
+		const available = Math.max(0, rightEdge - clip.x);
+		const text = truncateToWidth(this.scrollPinnedPrompt(promptRow), available, "");
+		const textWidth = visibleWidth(text);
+		if (textWidth === 0) return screen;
+		const padded = text + " ".repeat(Math.max(0, available - textWidth));
+		const result = [...screen];
+		result[row] = compositeTuiLine(result[row] ?? "", padded, clip.x, available, width);
+		return result;
+	}
+
 	protected override doRender(): void {
 		if (this.stopped || !this.altScreenActive) return;
 		const width = Math.max(1, this.terminal.columns);
@@ -1703,6 +1754,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		let screen = this.resolveFakeCursors(nextLayout.lines.map((line) => line.replace(OSC133_ZONE_PREFIX, "")));
 		screen = this.applySearchHighlights(screen, nextLayout);
 		screen = this.compositeScrollToEndIndicator(screen, nextLayout, width);
+		screen = this.compositeScrollPinnedPrompt(screen, nextLayout, width);
 		screen = this.compositeOverlays(screen, width, height);
 		if (screen.length > height) screen = screen.slice(screen.length - height);
 		screen = this.applySelection(screen, nextLayout);

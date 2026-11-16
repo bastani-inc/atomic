@@ -169,6 +169,62 @@ describe("TuiAltScreen", () => {
 		tui.stop();
 	});
 
+	it("pins the prompt of the turn at the top while scrolled up, and never hides a line for good (#5224)", async () => {
+		const mark = "\x1b]133;A\x07";
+		const rows = [`${mark}› first prompt`, "a1", "a2", "a3", `${mark}› second prompt`, "b1", "b2", "b3", "b4", "b5"];
+		const terminal = new VirtualTerminal(30, 6);
+		const tui = new TuiAltScreen(terminal, undefined, undefined, {
+			scrollPinnedPrompt: (row) => `pinned: ${row}`,
+		});
+		const transcript = new ScrollView(new Text(rows.join("\n"), 0, 0), { follow: "end", primary: true });
+		tui.setLayoutRoot(
+			new VStack([
+				{ component: transcript, basis: 0, grow: 1, minSize: 1 },
+				{ component: new Text("editor\nfooter", 0, 0), basis: "auto", minSize: 1 },
+			]),
+		);
+		tui.start();
+		await terminal.waitForRender();
+		const view = () => terminal.getViewport().map((line) => line.trimEnd());
+		// Following the end: no pin.
+		assert.ok(!view().some((line) => line.startsWith("pinned:")), view().join("\n"));
+
+		// Scrolled up so the second prompt is above the top: it is pinned over the first row.
+		transcript.scrollTo(5);
+		tui.requestRender();
+		await terminal.waitForRender();
+		assert.deepStrictEqual(view().slice(0, 4), ["pinned: › second prompt", "b2", "b3", "b4"]);
+
+		// One row further up, the second prompt itself is the top row, so nothing is pinned and b1 shows again.
+		transcript.scrollTo(4);
+		tui.requestRender();
+		await terminal.waitForRender();
+		assert.deepStrictEqual(view().slice(0, 2), ["› second prompt", "b1"]);
+
+		// Inside the first turn its prompt is pinned, and the covered row shows one row further up.
+		transcript.scrollTo(2);
+		tui.requestRender();
+		await terminal.waitForRender();
+		assert.deepStrictEqual(view().slice(0, 2), ["pinned: › first prompt", "a3"]);
+		transcript.scrollTo(1);
+		tui.requestRender();
+		await terminal.waitForRender();
+		assert.deepStrictEqual(view().slice(0, 2), ["pinned: › first prompt", "a2"]);
+
+		// At the very top nothing lies above, so nothing is pinned and the first row is visible.
+		transcript.scrollTo(0);
+		tui.requestRender();
+		await terminal.waitForRender();
+		assert.strictEqual(view()[0], "› first prompt");
+
+		// Back at the end the pin disappears.
+		transcript.scrollToEnd();
+		tui.requestRender();
+		await terminal.waitForRender();
+		assert.ok(!view().some((line) => line.startsWith("pinned:")));
+		tui.stop();
+	});
+
 	it("keeps the jump-to-end indicator centered as the auto scrollbar hides and reappears", async () => {
 		// Regression test for #9136: auto scrollbar visibility must not move the indicator.
 		const terminal = new VirtualTerminal(80, 6);

@@ -18,7 +18,7 @@ import {
 	ScrollableComponentViewport,
 } from "./chat-transcript.js";
 import type { FooterComponent } from "./footer.ts";
-import { NewMessageCounter } from "./jump-to-latest.ts";
+import { NewMessageCounter, pinnedPromptLine } from "./jump-to-latest.ts";
 import { keyText } from "./keybinding-hints.js";
 import { TranscriptFollowIndicator } from "./transcript-follow-indicator.ts";
 import { WorkingRunMeter } from "./working-run-meter.ts";
@@ -128,6 +128,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 				newCount: () => this.newMessages.count,
 			}),
 			newMessages: this.newMessages,
+			pinnedPrompt: pinnedPromptLine,
 			requestRender: () => this.requestRender?.(),
 			onNearTop: () => opts.onNearTop?.(),
 		});

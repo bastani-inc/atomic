@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import type { AssistantMessage } from "@bastani/atomic-ai/compat";
 import { describe, it, vi } from "vitest";
+import { WorkingRunMeter } from "../../../src/modes/interactive/components/working-run-meter.ts";
 import { InteractiveMode } from "../../../src/modes/interactive/interactive-mode.ts";
 
 /**
@@ -52,6 +53,7 @@ function makeMode() {
 		chatContainer: { addChild: vi.fn() },
 		runtimeHost: { session: { settingsManager: { getShowCacheMissNotices: () => false } } },
 		pendingTools: new Map(),
+		workingRunMeter: new WorkingRunMeter(),
 		toolOutputExpanded: false,
 		streamingComponent: { updateContent },
 		streamingMessage: seedMessage(),

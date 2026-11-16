@@ -284,3 +284,34 @@ test("an auto scrollbar needs content that overflows, and hidden mode never pain
 	now += SCROLLBAR_HIDE_DELAY_MS;
 	assert.ok(overflowing.paint().every((line) => !GLYPH.test(line)));
 });
+
+test("a scrolled-up transcript pins its turn's prompt in a row of its own, and only while scrolled up (#5224)", () => {
+	const rows = [
+		`${PROMPT_MARK}first prompt`,
+		...numbered(20, "a"),
+		`${PROMPT_MARK}second prompt`,
+		...numbered(20, "b"),
+	];
+	const { view, paint } = viewport(rows, { pinnedPrompt: (row) => `PIN ${row}` }, 6);
+	// Following the end: nothing pinned.
+	assert.ok(!paint().some((line) => line.startsWith("PIN")));
+	// Scrolled into the second turn: its prompt is pinned above six rows' worth of transcript, which keeps all of them.
+	for (let i = 0; i < 10; i++) view.handleInput(WHEEL_UP);
+	const frame = paint();
+	assert.equal(frame[0], "PIN second prompt");
+	const firstBelow = Number(/b-(\d+)/.exec(frame[1] ?? "")?.[1]);
+	assert.ok(Number.isInteger(firstBelow), frame.join("\n"));
+	// The pin takes a row of its own: the five rows under it are consecutive transcript rows from the top row on.
+	assert.deepEqual(
+		frame.slice(1, 6),
+		Array.from({ length: 5 }, (_, i) => `b-${firstBelow + i}`),
+	);
+	// Into the first turn, the first prompt is pinned.
+	for (let i = 0; i < 20; i++) view.handleInput(WHEEL_UP);
+	assert.equal(paint()[0], "PIN first prompt");
+	// At the very top nothing lies above: the prompt row itself is visible and nothing is pinned.
+	view.handleInput(CTRL_HOME);
+	assert.equal(paint()[0], "first prompt");
+	view.handleInput(CTRL_END);
+	assert.ok(!paint().some((line) => line.startsWith("PIN")));
+});
