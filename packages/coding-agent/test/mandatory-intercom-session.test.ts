@@ -1,9 +1,10 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getModel } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { removeTestDirectory } from "../../../test/helpers/test-directory-removal.js";
 import { createAgentSessionFromServices, createAgentSessionServices } from "../src/core/agent-session-services.ts";
 import { getMandatoryBuiltinExtensionPaths } from "../src/core/builtin-packages.ts";
 import { createEventBus } from "../src/core/event-bus.ts";
@@ -98,22 +99,14 @@ describe("trusted ordinary Intercom sessions", () => {
 		for (const dir of tempDirs.splice(0)) {
 			stopBrokerAt(join(dir, "agent"));
 			if (!existsSync(dir)) continue;
-			try {
-				rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
-			} catch {
-				// Windows can keep a detached broker log handle briefly; the OS reclaims the temp dir.
-			}
+			removeTestDirectory(dir, { retries: 20, retryDelayMs: 50 });
 		}
 	});
 
 	afterAll(() => {
 		stopBrokerAt(isolatedBrokerAgentDir);
 		restoreAgentDirEnv();
-		try {
-			rmSync(isolatedBrokerAgentDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
-		} catch {
-			// Windows can keep a detached broker log handle briefly; the OS reclaims the temp dir.
-		}
+		removeTestDirectory(isolatedBrokerAgentDir, { retries: 20, retryDelayMs: 50 });
 	});
 
 	const BUILTIN_PACKAGE_STARTUP_TIMEOUT_MS = 90_000;

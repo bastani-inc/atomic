@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, test } from "vitest";
 import { sleep } from "../helpers/runtime.ts";
+import { removeTestDirectory } from "../helpers/test-directory-removal.js";
 
 const repoRoot = resolve(import.meta.dirname, "../..");
 const agentDir = mkdtempSync(join(tmpdir(), "intercom-resume-"));
@@ -152,7 +153,7 @@ afterAll(() => {
 	else process.env.ATOMIC_CODING_AGENT_DIR = previousAgentDir;
 	if (previousLegacyAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 	else process.env.PI_CODING_AGENT_DIR = previousLegacyAgentDir;
-	rmSync(agentDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
+	removeTestDirectory(agentDir, { retries: 20, retryDelayMs: 50 });
 });
 
 test(

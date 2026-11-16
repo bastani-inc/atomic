@@ -1,3 +1,4 @@
+import type { TuiMode } from "@bastani/atomic-tui";
 import type { CallbackActivity, CallbackActivityKind } from "../../core/callback-activity.ts";
 import { parseSerializedDecisionError, type SerializedDecisionError } from "../../core/decision/errors.js";
 import type { UIPromptEndEvent, UIPromptStartEvent } from "../../core/extensions/agent-events.ts";
@@ -187,6 +188,11 @@ export type InteractiveEngineCommand =
 			width: number;
 			rows: number;
 			renderSettings?: EngineHostRenderSettings;
+			/**
+			 * The host renderer's mode, which the component's engine TUI reports as `mode`. Optional: a host that
+			 * predates the field omits it, and the engine TUI keeps reporting "regular".
+			 */
+			hostMode?: TuiMode;
 	  }
 	| { type: "engine_custom_input"; componentId: string; requestId: number; data: string }
 	| { type: "engine_custom_copy_result"; componentId: string; requestId: number; error?: string }
@@ -742,6 +748,7 @@ export function parseInteractiveEngineCommand(line: string): InteractiveEngineCo
 		typeof value.rows === "number"
 	) {
 		const renderSettings = parseEngineHostRenderSettings(value.renderSettings);
+		const hostMode = value.hostMode === "fullscreen" || value.hostMode === "regular" ? value.hostMode : undefined;
 		return {
 			type: value.type,
 			componentId: value.componentId,
@@ -749,6 +756,7 @@ export function parseInteractiveEngineCommand(line: string): InteractiveEngineCo
 			width: value.width,
 			rows: value.rows,
 			...(renderSettings === undefined ? {} : { renderSettings }),
+			...(hostMode === undefined ? {} : { hostMode }),
 		};
 	}
 	if (value.type === "engine_custom_input" && typeof value.requestId === "number" && typeof value.data === "string")
