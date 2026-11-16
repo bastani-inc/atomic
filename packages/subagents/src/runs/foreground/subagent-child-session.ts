@@ -44,6 +44,7 @@ export async function reopenChildSession(
 				ctx.sessionManager.getSessionStore(),
 				record.childSessionId,
 				record.cwd,
+				{ history: "tail" },
 			),
 		};
 	} catch (error) {

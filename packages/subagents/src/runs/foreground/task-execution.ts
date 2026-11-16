@@ -340,6 +340,7 @@ function taskTranscriptSource(
 		getSessionId: () => session.getSessionId(),
 		getEntries: () => session.getEntries(),
 		...(session.loadHistory ? { loadHistory: session.loadHistory.bind(session) } : {}),
+		...(session.loadFullHistory ? { loadFullHistory: session.loadFullHistory.bind(session) } : {}),
 		...(session.subscribe ? { subscribe: session.subscribe.bind(session) } : {}),
 		...(session.getStreamingMessage ? { getStreamingMessage: session.getStreamingMessage.bind(session) } : {}),
 		...(session.getCompactionReason ? { getCompactionReason: session.getCompactionReason.bind(session) } : {}),

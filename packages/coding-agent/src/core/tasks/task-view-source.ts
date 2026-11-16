@@ -274,6 +274,9 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 							? transcriptView(session, taskId, history.entries, cursor)
 							: { ok: false, error: { message: history.unavailable } },
 					);
+			// A live session resumed from its latest compaction reads the rest of its history first (#5249).
+			if (session.loadFullHistory)
+				return session.loadFullHistory().then(() => transcriptView(session, taskId, session.getEntries(), cursor));
 			return transcriptView(session, taskId, session.getEntries(), cursor);
 		},
 		followTaskTranscript(id) {

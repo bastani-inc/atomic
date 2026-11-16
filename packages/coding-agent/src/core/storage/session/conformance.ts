@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import type { Usage } from "@bastani/atomic-ai/compat";
 import type { SessionEntry } from "../../session-manager-types.ts";
 import {
 	SessionConflictError,
@@ -12,7 +13,13 @@ import {
 	StoreClosedError,
 } from "./errors.js";
 import { SESSION_SUMMARY_TEXT_CHARS } from "./session-summary.js";
-import { SESSION_FORMAT_VERSION, type SessionRecordHeader, type SessionStore, type SessionSummary } from "./types.js";
+import {
+	SESSION_FORMAT_VERSION,
+	type SessionHistoryTotals,
+	type SessionRecordHeader,
+	type SessionStore,
+	type SessionSummary,
+} from "./types.js";
 
 export interface SessionStoreConformanceRunner {
 	describe(name: string, body: () => void): void;
@@ -82,6 +89,139 @@ function invalidText(
 		assert.equal(error.reason, reason);
 		return true;
 	};
+}
+
+/** Usage whose cost is a binary fraction, so totals add and subtract exactly. */
+function tailUsage(tokens: number): Usage {
+	return {
+		input: tokens,
+		output: 1,
+		cacheRead: 2,
+		cacheWrite: 3,
+		totalTokens: tokens + 6,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: tokens / 128 },
+	};
+}
+
+/** Entries as Atomic writes them, each the child of the one before unless it names its parent (#5249). */
+function chained(entries: readonly (Omit<SessionEntry, "parentId" | "timestamp"> & { parent?: string | null })[]) {
+	const result: SessionEntry[] = [];
+	for (const [index, { parent, ...entry }] of entries.entries()) {
+		const timestamp = new Date(Date.parse(createdAt) + index * 1000).toISOString();
+		const parentId = parent === undefined ? (result.at(-1)?.id ?? null) : parent;
+		const { type, id, customType, data, ...body } = entry as { type: string; id: string; [key: string]: unknown };
+		result.push(
+			(type === "custom"
+				? { type, customType, data, id, parentId, timestamp }
+				: { type, id, parentId, timestamp, ...body }) as unknown as SessionEntry,
+		);
+	}
+	return result;
+}
+
+const tailEntry = {
+	user: (id: string, text = id, parent?: string | null) => ({
+		type: "message" as const,
+		id,
+		...(parent === undefined ? {} : { parent }),
+		message: { role: "user" as const, content: text, timestamp: Date.parse(createdAt) },
+	}),
+	assistant: (id: string, tokens: number, parent?: string | null) => ({
+		type: "message" as const,
+		id,
+		...(parent === undefined ? {} : { parent }),
+		message: {
+			role: "assistant" as const,
+			content: [
+				{ type: "text" as const, text: id },
+				{ type: "toolCall" as const, id: `call-${id}`, name: "read", arguments: {} },
+			],
+			api: "anthropic-messages" as const,
+			provider: "test",
+			model: "model",
+			usage: tailUsage(tokens),
+			stopReason: "toolUse" as const,
+			timestamp: Date.parse(createdAt),
+		},
+	}),
+	model: (id: string, parent?: string | null) => ({
+		type: "model_change" as const,
+		id,
+		...(parent === undefined ? {} : { parent }),
+		provider: "test",
+		modelId: id,
+	}),
+	thinking: (id: string, parent?: string | null) => ({
+		type: "thinking_level_change" as const,
+		id,
+		...(parent === undefined ? {} : { parent }),
+		thinkingLevel: "high",
+	}),
+	label: (id: string, targetId: string) => ({ type: "label" as const, id, targetId, label: "mark" }),
+	name: (id: string, name: string) => ({ type: "session_info" as const, id, name }),
+	custom: (id: string, customType: string, data: unknown, parent?: string | null) => ({
+		type: "custom" as const,
+		customType,
+		data,
+		id,
+		...(parent === undefined ? {} : { parent }),
+	}),
+	compaction: (
+		id: string,
+		firstKeptEntryId: string | null,
+		options: { coveredThroughEntryId?: string; parent?: string | null; tokens?: number } = {},
+	) => ({
+		type: "compaction" as const,
+		id,
+		...(options.parent === undefined ? {} : { parent: options.parent }),
+		summary: `summary ${id}`,
+		firstKeptEntryId,
+		tokensBefore: 10,
+		...(options.coveredThroughEntryId === undefined ? {} : { coveredThroughEntryId: options.coveredThroughEntryId }),
+		details: { strategy: "verbatim-lines" },
+		usage: tailUsage(options.tokens ?? 64),
+	}),
+};
+
+/** A compacted session with state before and after its compaction (#5249). */
+function compactedSession(): SessionEntry[] {
+	return chained([
+		tailEntry.model("m1"),
+		tailEntry.thinking("t1"),
+		tailEntry.user("u1"),
+		tailEntry.assistant("a1", 128),
+		tailEntry.label("l1", "u1"),
+		tailEntry.name("n1", "first"),
+		tailEntry.custom("x1", "extension.state", { n: 1 }),
+		tailEntry.custom("i1", "task-completion-intent", { completionId: "settled" }),
+		tailEntry.custom("k1", "task-completion-ack", { completionId: "settled" }),
+		tailEntry.custom("i2", "task-completion-intent", { completionId: "open" }),
+		tailEntry.name("n2", "second"),
+		tailEntry.user("u2"),
+		tailEntry.assistant("a2", 256),
+		tailEntry.compaction("c1", "u2"),
+		tailEntry.user("u3"),
+		tailEntry.assistant("a3", 512),
+	]);
+}
+
+function usageTotals(...usages: Usage[]): SessionHistoryTotals["assistant"] {
+	return usages.reduce(
+		(totals, usage) => ({
+			input: totals.input + usage.input,
+			output: totals.output + usage.output,
+			cacheRead: totals.cacheRead + usage.cacheRead,
+			cacheWrite: totals.cacheWrite + usage.cacheWrite,
+			cost: totals.cost + usage.cost.total,
+		}),
+		{ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
+	);
+}
+
+/** Stores `entries` one append at a time, so a store's index is built as a session grows. */
+async function appendEach(store: SessionStore, entries: readonly SessionEntry[], id = "session"): Promise<void> {
+	await store.create(header(id), []);
+	for (const [index, entry] of entries.entries()) await store.append(id, [entry], { expectSeq: index });
 }
 
 export function registerSessionStoreConformance(
@@ -975,6 +1115,185 @@ export function registerSessionStoreConformance(
 				},
 			);
 
+			check("reads a session's tail with the state entries before it (#5249)", async (store, reload) => {
+				const entries = compactedSession();
+				await appendEach(store, entries);
+				store = await reload(store);
+				assert.ok(store.readTail && store.readRange && store.findLatestCompaction);
+				const tail = await store.readTail("session", 12);
+				assert.deepEqual(tail.header, header());
+				assert.equal(tail.fromSeq, 12);
+				assert.equal(tail.lastSeq, 16);
+				assert.deepEqual(tail.entries, entries.slice(11));
+				assert.deepEqual(
+					tail.state.map(({ seq, entry, onBranch }) => ({ seq, id: entry.id, onBranch })),
+					[1, 2, 5, 7, 10, 11].map((seq) => ({ seq, id: entries[seq - 1]!.id, onBranch: true })),
+				);
+				assert.deepEqual(tail.state[0]!.entry, entries[0]);
+				assert.deepEqual(tail.omitted, {
+					assistant: usageTotals(tailUsage(128)),
+					toolResult: usageTotals(),
+					summaries: usageTotals(),
+					userMessages: 1,
+					assistantMessages: 1,
+					toolResults: 0,
+					totalMessages: 2,
+					toolCalls: 1,
+				});
+				const whole = await store.readTail("session", 1);
+				assert.deepEqual(whole.entries, entries);
+				assert.deepEqual(whole.state, []);
+				assert.equal(whole.omitted.totalMessages, 0);
+				const none = await store.readTail("session", 17);
+				assert.deepEqual(none.entries, []);
+				assert.deepEqual(
+					none.state.map(({ seq }) => seq),
+					[1, 2, 5, 7, 10, 11],
+				);
+				assert.deepEqual(none.omitted, {
+					assistant: usageTotals(tailUsage(128), tailUsage(256), tailUsage(512)),
+					toolResult: usageTotals(),
+					summaries: usageTotals(tailUsage(64)),
+					userMessages: 3,
+					assistantMessages: 3,
+					toolResults: 0,
+					totalMessages: 6,
+					toolCalls: 3,
+					latestAssistantUsage: tailUsage(512),
+				});
+				assert.deepEqual(await store.append("session", [message("after", "after")], { expectSeq: 16 }), {
+					lastSeq: 17,
+				});
+				assert.deepEqual((await store.readTail("session", 17)).entries, [message("after", "after")]);
+				await assert.rejects(store.readTail("missing", 1), notFound("missing"));
+				await assert.rejects(store.readTail("bad\0id", 1), invalidText("sessionId", "nul-character"));
+			});
+
+			check("reads a range of a session's entries by seq (#5249)", async (store, reload) => {
+				const entries = compactedSession();
+				await store.create(header(), entries);
+				store = await reload(store);
+				assert.ok(store.readRange);
+				assert.deepEqual(await store.readRange("session", 3, 5), {
+					startSeq: 3,
+					entries: entries.slice(2, 5),
+					lastSeq: 16,
+				});
+				assert.deepEqual((await store.readRange("session", 7, 7)).entries, [entries[6]]);
+				assert.deepEqual((await store.readRange("session", 15, 40)).entries, entries.slice(14));
+				assert.deepEqual((await store.readRange("session", 5, 4)).entries, []);
+				assert.deepEqual(await store.readRange("session", 17, 20), { startSeq: 17, entries: [], lastSeq: 16 });
+				assert.deepEqual((await store.readRange("session", 1, 16)).entries, entries);
+				await assert.rejects(store.readRange("missing", 1, 1), notFound("missing"));
+				await store.create(header("empty"), []);
+				assert.deepEqual(await store.readRange("empty", 1, 1), { startSeq: 1, entries: [], lastSeq: 0 });
+			});
+
+			check("finds the latest compaction on the session's branch (#5249)", async (store, reload) => {
+				const entries = compactedSession();
+				await appendEach(store, entries);
+				await store.create(header("plain"), [message("only", "only")]);
+				await store.create(header("empty"), []);
+				store = await reload(store);
+				assert.ok(store.findLatestCompaction);
+				assert.deepEqual(await store.findLatestCompaction("session"), {
+					entry: entries[13],
+					seq: 14,
+					firstKeptSeq: 12,
+					retainedStartSeq: 12,
+					leafId: "a3",
+					lastSeq: 16,
+				});
+				assert.equal((await store.findLatestCompaction("session", "a2"))?.seq, undefined);
+				assert.equal(await store.findLatestCompaction("session", "missing"), undefined);
+				assert.equal(await store.findLatestCompaction("plain"), undefined);
+				assert.equal(await store.findLatestCompaction("empty"), undefined);
+				await assert.rejects(store.findLatestCompaction("missing"), notFound("missing"));
+			});
+
+			check("finds the retained start a background compaction leaves (#5249)", async (store, reload) => {
+				const entries = chained([
+					tailEntry.user("u1"),
+					tailEntry.assistant("a1", 128),
+					tailEntry.user("u2"),
+					tailEntry.assistant("a2", 128),
+					tailEntry.compaction("background", null, { coveredThroughEntryId: "u2" }),
+					tailEntry.user("u3"),
+					tailEntry.compaction("kept", "a1", { coveredThroughEntryId: "u2", parent: "u3" }),
+					tailEntry.user("u4"),
+					tailEntry.compaction("corrupt", "nowhere"),
+				]);
+				await appendEach(store, entries);
+				store = await reload(store);
+				assert.ok(store.findLatestCompaction);
+				const corrupt = await store.findLatestCompaction("session");
+				assert.deepEqual(
+					{ seq: corrupt?.seq, retainedStartSeq: corrupt?.retainedStartSeq, firstKept: corrupt?.firstKeptSeq },
+					{ seq: 9, retainedStartSeq: 9, firstKept: undefined },
+				);
+				const kept = await store.findLatestCompaction("session", "u4");
+				assert.deepEqual(
+					{ seq: kept?.seq, firstKept: kept?.firstKeptSeq, covered: kept?.coveredThroughSeq },
+					{ seq: 7, firstKept: 2, covered: 3 },
+				);
+				assert.equal(kept?.retainedStartSeq, 2);
+				const background = await store.findLatestCompaction("session", "background");
+				assert.deepEqual(
+					{
+						seq: background?.seq,
+						covered: background?.coveredThroughSeq,
+						retainedStartSeq: background?.retainedStartSeq,
+						leafId: background?.leafId,
+					},
+					{ seq: 5, covered: 3, retainedStartSeq: 4, leafId: "background" },
+				);
+			});
+
+			check("tells which state entries are on a branched session's branch (#5249)", async (store, reload) => {
+				const entries = chained([
+					tailEntry.user("r1"),
+					tailEntry.model("m0"),
+					tailEntry.assistant("b1", 128),
+					tailEntry.compaction("cA", null),
+					tailEntry.user("a1"),
+					tailEntry.model("mA"),
+					tailEntry.user("b2", "b2", "b1"),
+					tailEntry.thinking("tB"),
+					tailEntry.assistant("b3", 128),
+				]);
+				await appendEach(store, entries);
+				store = await reload(store);
+				assert.ok(store.readTail && store.findLatestCompaction);
+				assert.equal(await store.findLatestCompaction("session"), undefined);
+				const onA = await store.findLatestCompaction("session", "mA");
+				assert.deepEqual(
+					{ seq: onA?.seq, retainedStartSeq: onA?.retainedStartSeq, leafId: onA?.leafId },
+					{ seq: 4, retainedStartSeq: 4, leafId: "mA" },
+				);
+				const tail = await store.readTail("session", 7);
+				assert.deepEqual(
+					tail.state.map(({ seq, onBranch }) => ({ seq, onBranch })),
+					[
+						{ seq: 2, onBranch: true },
+						{ seq: 6, onBranch: false },
+					],
+				);
+				await store.append(
+					"session",
+					[{ type: "custom", customType: "atomic.leaf", id: "move", parentId: "mA", timestamp: createdAt }],
+					{ expectSeq: 9 },
+				);
+				const moved = await store.findLatestCompaction("session");
+				assert.deepEqual({ seq: moved?.seq, leafId: moved?.leafId }, { seq: 4, leafId: "mA" });
+				assert.deepEqual(
+					(await store.readTail("session", 7)).state.map(({ seq, onBranch }) => ({ seq, onBranch })),
+					[
+						{ seq: 2, onBranch: true },
+						{ seq: 6, onBranch: true },
+					],
+				);
+			});
+
 			check("rejects every operation after close, including repeated close", async (store, reload) => {
 				await store.create(header(), []);
 				store = await reload(store);
@@ -993,6 +1312,9 @@ export function registerSessionStoreConformance(
 				await assert.rejects(store.append("session", [], { expectSeq: 0 }), isClosed);
 				await assert.rejects(store.replace("session", header(), [], { expectSeq: 0 }), isClosed);
 				await assert.rejects(store.load("session"), isClosed);
+				await assert.rejects(store.readTail!("session", 1), isClosed);
+				await assert.rejects(store.readRange!("session", 1, 1), isClosed);
+				await assert.rejects(store.findLatestCompaction!("session"), isClosed);
 				await assert.rejects(store.readHeader("session"), isClosed);
 				await assert.rejects(store.delete("session"), isClosed);
 				await assert.rejects(store.findMostRecent({ cwd: "/project" }), isClosed);

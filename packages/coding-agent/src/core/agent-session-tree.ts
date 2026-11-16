@@ -52,6 +52,8 @@ export async function navigateTree(
 	if (targetId === oldLeafId) {
 		return { cancelled: false };
 	}
+	// The target and the abandoned branch may lie before the compaction the session was opened from (#5249).
+	await this.sessionManager.loadFullHistory();
 
 	// Model required for summarization
 	if (options.summarize && !this.model) {

@@ -10,15 +10,19 @@ import {
 	StorageUnavailableError,
 	StoreClosedError,
 } from "./errors.js";
+import { sessionCompactionOf, sessionRangeOf, sessionTailOf } from "./session-resume.js";
 import { summarizeSession } from "./session-summary.js";
 import type {
 	SessionBlob,
+	SessionCompactionPoint,
 	SessionCwdMatcher,
+	SessionEntryRange,
 	SessionListQuery,
 	SessionRecordHeader,
 	SessionSnapshot,
 	SessionStore,
 	SessionSummary,
+	SessionTail,
 	SessionWriteOptions,
 	StorageDescriptor,
 } from "./types.js";
@@ -256,6 +260,20 @@ export class MemorySessionStore implements SessionStore {
 		const record = this.stored(sessionId);
 		if (!record) throw new SessionNotFoundError(sessionId);
 		return (await this.decode(sessionId, record)) ?? this.load(sessionId);
+	}
+
+	async readTail(sessionId: string, fromSeq: number): Promise<SessionTail> {
+		const { header, entries } = await this.load(sessionId);
+		return sessionTailOf(header, entries, fromSeq);
+	}
+
+	async readRange(sessionId: string, startSeq: number, endSeq: number): Promise<SessionEntryRange> {
+		return sessionRangeOf((await this.load(sessionId)).entries, startSeq, endSeq);
+	}
+
+	async findLatestCompaction(sessionId: string, leafId?: string): Promise<SessionCompactionPoint | undefined> {
+		if (leafId !== undefined) validateSessionText("entry.id", leafId);
+		return sessionCompactionOf((await this.load(sessionId)).entries, leafId);
 	}
 
 	async readHeader(sessionId: string): Promise<SessionRecordHeader | undefined> {

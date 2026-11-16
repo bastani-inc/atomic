@@ -8,14 +8,18 @@ import { openNodeSqliteDatabase } from "../node-sqlite.js";
 import { SessionExistsError, SessionNotFoundError } from "./errors.js";
 import { type JsonlSessionFile, JsonlSessionStore } from "./jsonl-session-store.js";
 import { latestLegacyMessageTime, summarizeLegacySession } from "./legacy-session-summary.js";
+import { findSessionCompaction, readSessionRange, readSessionTail } from "./session-resume.js";
 import { summarizeSession } from "./session-summary.js";
 import type {
 	SessionBlob,
+	SessionCompactionPoint,
+	SessionEntryRange,
 	SessionListQuery,
 	SessionRecordHeader,
 	SessionSnapshot,
 	SessionStore,
 	SessionSummary,
+	SessionTail,
 	SessionWriteOptions,
 	StorageDescriptor,
 } from "./types.js";
@@ -95,6 +99,21 @@ export class LegacySessionStore implements SessionStore {
 	async load(sessionId: string): Promise<SessionSnapshot> {
 		await this.convert(sessionId);
 		return this.inner.load(sessionId);
+	}
+
+	async readTail(sessionId: string, fromSeq: number): Promise<SessionTail> {
+		await this.convert(sessionId);
+		return readSessionTail(this.inner, sessionId, fromSeq);
+	}
+
+	async readRange(sessionId: string, startSeq: number, endSeq: number): Promise<SessionEntryRange> {
+		await this.convert(sessionId);
+		return readSessionRange(this.inner, sessionId, startSeq, endSeq);
+	}
+
+	async findLatestCompaction(sessionId: string, leafId?: string): Promise<SessionCompactionPoint | undefined> {
+		await this.convert(sessionId);
+		return findSessionCompaction(this.inner, sessionId, leafId);
 	}
 
 	async readHeader(sessionId: string): Promise<SessionRecordHeader | undefined> {

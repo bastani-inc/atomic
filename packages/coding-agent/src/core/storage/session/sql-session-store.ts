@@ -17,6 +17,16 @@ import {
 } from "./errors.js";
 import { announceHistoryLoad, hasHistoryLoadObserver } from "./history-load-observer.ts";
 import {
+	foldSessionResume,
+	foreignResumeIds,
+	isSessionResumeIndex,
+	latestCompactionOf,
+	type SessionResumeIndex,
+	sessionTailFrom,
+	sessionTailOf,
+	stateSeqsBefore,
+} from "./session-resume.js";
+import {
 	applySessionSummaryEntries,
 	materializeSessionSummaryMetadata,
 	type SessionSummaryState,
@@ -24,7 +34,9 @@ import {
 } from "./session-summary.js";
 import type {
 	SessionBlob,
+	SessionCompactionPoint,
 	SessionCwdMatcher,
+	SessionEntryRange,
 	SessionListQuery,
 	SessionOpenMarker,
 	SessionOpenMarkerAge,
@@ -32,7 +44,9 @@ import type {
 	SessionRecordHeader,
 	SessionSnapshot,
 	SessionStore,
+	SessionStoredEntry,
 	SessionSummary,
+	SessionTail,
 	SessionWriteOptions,
 	StorageDescriptor,
 } from "./types.js";
@@ -90,6 +104,20 @@ export const SESSION_PRESENCE_TABLES = Object.freeze({ open: "open" });
 type Tables = Readonly<Record<keyof typeof SESSION_TABLES, string>>;
 type HeaderRow = SqliteRow & { header_json: string; last_seq: number };
 type SummaryStateRow = HeaderRow & { summary_state: string };
+type ResumeRow = SummaryStateRow & { revision: string };
+/** The summary state a store writes: the listing summary, and the resume index of sessions it indexed (#5249). */
+type StoredSummaryState = SessionSummaryState & { readonly resume?: SessionResumeIndex };
+/** A session's resume index and the read it came from. */
+interface ResumeSource {
+	readonly header: SessionRecordHeader;
+	readonly index: SessionResumeIndex;
+	/** The whole session, when it had no index and was read to build one. */
+	readonly entries?: readonly SessionEntry[];
+}
+/** How many seqs one statement of a read by seq binds. */
+const SEQ_BATCH = 500;
+/** How many sessions' indexes built by a whole read a store remembers while it cannot save them. */
+const REMEMBERED_INDEXES = 16;
 type ListingRow = HeaderRow & {
 	id: string;
 	cwd: string;
@@ -267,6 +295,11 @@ export class SqlSessionStore implements SessionStore {
 	 * pruning never drops summaries that another has fetched but not yet recorded under its scope.
 	 */
 	private listing: Promise<void> = Promise.resolve();
+	/** Resume indexes built from whole reads this store could not save, by session, with the revision they match. */
+	private readonly resumeIndexes = new Map<
+		string,
+		{ readonly revision: string; readonly index: SessionResumeIndex }
+	>();
 
 	private constructor(
 		database: SqliteDatabase,
@@ -455,11 +488,13 @@ export class SqlSessionStore implements SessionStore {
 				),
 			);
 			const lastSeq = previous.last_seq + entries.length;
+			const summaryState = JSON.parse(previous.summary_state) as StoredSummaryState;
 			const texts = await this.saveSummary(
 				tx,
 				sessionId,
 				{ header: JSON.parse(previous.header_json) as SessionRecordHeader, entries, lastSeq },
-				JSON.parse(previous.summary_state) as SessionSummaryState,
+				summaryState,
+				await this.appendedResume(tx, sessionId, summaryState.resume, previous.last_seq, entries),
 			);
 			await this.insertEntries(tx, sessionId, entries, previous.last_seq, texts);
 			return { lastSeq };
@@ -900,10 +935,26 @@ export class SqlSessionStore implements SessionStore {
 			sessionId,
 		);
 		if (!row) throw new SessionNotFoundError(sessionId);
-		// One statement for every entry would return the whole session at once, more than a libSQL server's response
-		// limit for a long one. Each statement fetches the next batch of entries by `seq` and returns those whose
-		// cumulative text fits in a page, the first always; all of them run in this transaction.
-		const entries: SessionEntry[] = [];
+		return {
+			header: JSON.parse(row.header_json) as SessionRecordHeader,
+			entries: (await this.readRows(tx, sessionId)).map(({ entry }) => entry),
+			lastSeq: row.last_seq,
+		};
+	}
+
+	/**
+	 * The session's entries that `filter` selects, in store order. One statement for every entry would return the whole
+	 * session at once, more than a libSQL server's response limit for a long one. Each statement fetches the next batch
+	 * of entries by `seq` and returns those whose cumulative text fits in a page, the first always; all of them run in
+	 * `tx`.
+	 */
+	private async readRows(
+		tx: SqliteExecutor,
+		sessionId: string,
+		filter = "",
+		params: readonly SqliteValue[] = [],
+	): Promise<SessionStoredEntry[]> {
+		const entries: SessionStoredEntry[] = [];
 		for (let after = 0, limit: number = SESSION_READ_FETCH.first; ; ) {
 			const rows = await tx.all<
 				SqliteRow & { seq: number; entry_json: string; chunks: number; fetched: number | bigint }
@@ -914,29 +965,156 @@ export class SqlSessionStore implements SessionStore {
 						sum(length(entry_json)) OVER (ORDER BY seq) AS page_chars
 					FROM (
 						SELECT seq, entry_json, chunks FROM ${this.tables.entries}
-						WHERE session_id = ? AND seq > ? ORDER BY seq LIMIT ?
+						WHERE session_id = ? AND seq > ?${filter === "" ? "" : ` AND ${filter}`} ORDER BY seq LIMIT ?
 					) AS keyed
 				) AS page WHERE page_chars <= ? OR page_row = 1 ORDER BY seq`,
 				sessionId,
 				after,
+				...params,
 				limit,
 				SESSION_READ_PAGE_CHARS,
 			);
 			for (const entry of rows) {
 				const chunks = Number(entry.chunks);
 				const json = chunks === 0 ? entry.entry_json : await this.readEntryChunks(tx, sessionId, entry.seq, chunks);
-				entries.push(JSON.parse(json) as SessionEntry);
+				entries.push({ seq: Number(entry.seq), entry: JSON.parse(json) as SessionEntry });
 			}
 			const next = nextFetch(limit, rows.length, Number(rows[0]?.fetched ?? 0));
-			if (!next.more) break;
+			if (!next.more) return entries;
 			after = Number(rows.at(-1)!.seq);
 			limit = next.limit;
 		}
-		return {
-			header: JSON.parse(row.header_json) as SessionRecordHeader,
-			entries,
-			lastSeq: row.last_seq,
-		};
+	}
+
+	/** The entries at `seqs`, which are in increasing order, a batch of seqs per statement. */
+	private async readSeqs(
+		tx: SqliteExecutor,
+		sessionId: string,
+		seqs: readonly number[],
+	): Promise<SessionStoredEntry[]> {
+		const entries: SessionStoredEntry[] = [];
+		for (let start = 0; start < seqs.length; start += SEQ_BATCH) {
+			const batch = seqs.slice(start, start + SEQ_BATCH);
+			entries.push(...(await this.readRows(tx, sessionId, `seq IN (${batch.map(() => "?").join(", ")})`, batch)));
+		}
+		return entries;
+	}
+
+	/**
+	 * The session's resume index (#5249): the one its summary state holds, else one this store built from an earlier
+	 * whole read and could not save, else one built now from a whole read of the session, which is returned with it.
+	 */
+	private async resumeSource(
+		tx: SqliteExecutor,
+		sessionId: string,
+	): Promise<ResumeSource & { readonly row: ResumeRow }> {
+		const row = await tx.get<ResumeRow>(
+			`SELECT header_json, last_seq, summary_state, revision FROM ${this.tables.sessions} WHERE id = ?`,
+			sessionId,
+		);
+		if (!row) throw new SessionNotFoundError(sessionId);
+		const header = JSON.parse(row.header_json) as SessionRecordHeader;
+		const lastSeq = Number(row.last_seq);
+		const stored = (JSON.parse(row.summary_state) as StoredSummaryState).resume;
+		if (isSessionResumeIndex(stored, lastSeq)) return { header, index: stored, row };
+		const remembered = this.resumeIndexes.get(sessionId);
+		if (remembered?.revision === row.revision && isSessionResumeIndex(remembered.index, lastSeq)) {
+			return { header, index: remembered.index, row };
+		}
+		if (hasHistoryLoadObserver()) announceHistoryLoad(lastSeq);
+		const entries = (await this.readRows(tx, sessionId)).map(({ entry }) => entry);
+		return { header, index: foldSessionResume(undefined, entries), entries, row };
+	}
+
+	/**
+	 * Saves an index `resumeSource` built from a whole read into the session's summary state, unless the session changed
+	 * since: later resumes then read only its tail (#5249). A store that cannot write, such as a read-only database,
+	 * remembers it instead while the session stays as it was.
+	 */
+	private async keepResume(sessionId: string, source: ResumeSource & { readonly row: ResumeRow }): Promise<void> {
+		if (source.entries === undefined) return;
+		const { row, index } = source;
+		const state = { ...(JSON.parse(row.summary_state) as StoredSummaryState), resume: index };
+		try {
+			const { changes } = await this.database.run(
+				`UPDATE ${this.tables.sessions} SET summary_state = ? WHERE id = ? AND revision = ? AND last_seq = ?`,
+				this.encode(state),
+				sessionId,
+				row.revision,
+				row.last_seq,
+			);
+			if (changes > 0) {
+				this.resumeIndexes.delete(sessionId);
+				return;
+			}
+		} catch {
+			// The index is an optimization: a session it cannot be saved for is read whole again next time.
+		}
+		this.resumeIndexes.delete(sessionId);
+		this.resumeIndexes.set(sessionId, { revision: row.revision, index });
+		for (const oldest of this.resumeIndexes.keys()) {
+			if (this.resumeIndexes.size <= REMEMBERED_INDEXES) break;
+			this.resumeIndexes.delete(oldest);
+		}
+	}
+
+	async readTail(sessionId: string, fromSeq: number): Promise<SessionTail> {
+		this.assertOpen();
+		validateSessionText("sessionId", sessionId);
+		const start = Math.max(1, fromSeq);
+		const { tail, source } = await this.transaction(async (tx) => {
+			const source = await this.resumeSource(tx, sessionId);
+			if (source.entries !== undefined) {
+				return { tail: sessionTailOf(source.header, source.entries, start, source.index), source };
+			}
+			const state = await this.readSeqs(tx, sessionId, stateSeqsBefore(source.index, start));
+			const entries = (await this.readRows(tx, sessionId, "seq >= ?", [start])).map(({ entry }) => entry);
+			return { tail: sessionTailFrom(source.index, source.header, start, state, entries), source };
+		}, SESSION_TRANSACTION);
+		await this.keepResume(sessionId, source);
+		return tail;
+	}
+
+	async readRange(sessionId: string, startSeq: number, endSeq: number): Promise<SessionEntryRange> {
+		this.assertOpen();
+		validateSessionText("sessionId", sessionId);
+		const start = Math.max(1, startSeq);
+		return this.transaction(async (tx) => {
+			const row = await tx.get<HeaderRow>(`SELECT last_seq FROM ${this.tables.sessions} WHERE id = ?`, sessionId);
+			if (!row) throw new SessionNotFoundError(sessionId);
+			const entries =
+				endSeq < start ? [] : await this.readRows(tx, sessionId, "seq >= ? AND seq <= ?", [start, endSeq]);
+			return { startSeq: start, entries: entries.map(({ entry }) => entry), lastSeq: Number(row.last_seq) };
+		}, SESSION_TRANSACTION);
+	}
+
+	async findLatestCompaction(sessionId: string, leafId?: string): Promise<SessionCompactionPoint | undefined> {
+		this.assertOpen();
+		validateSessionText("sessionId", sessionId);
+		if (leafId !== undefined) validateSessionText("entry.id", leafId);
+		const { point, source } = await this.transaction(async (tx) => {
+			const source = await this.resumeSource(tx, sessionId);
+			const { index } = source;
+			const leafSeq = leafId === undefined ? index.leafSeq : ((await this.seqOfEntry(tx, sessionId, leafId)) ?? -1);
+			const found = latestCompactionOf(index, leafSeq);
+			if (found === undefined) return { point: undefined, source };
+			const [boundary] = await this.readSeqs(tx, sessionId, [found.seq]);
+			const leaf = await tx.get<SqliteRow & { entry_id: string }>(
+				`SELECT entry_id FROM ${this.tables.entries} WHERE session_id = ? AND seq = ?`,
+				sessionId,
+				leafSeq,
+			);
+			if (boundary === undefined || leaf === undefined) return { point: undefined, source };
+			const point: SessionCompactionPoint = {
+				...found,
+				entry: boundary.entry as SessionCompactionPoint["entry"],
+				leafId: leaf.entry_id,
+				lastSeq: index.seq,
+			};
+			return { point, source };
+		}, SESSION_TRANSACTION);
+		await this.keepResume(sessionId, source);
+		return point;
 	}
 
 	/** The JSON of a long entry, from its chunks, one statement each. */
@@ -987,14 +1165,47 @@ export class SqlSessionStore implements SessionStore {
 		return row;
 	}
 
+	/**
+	 * The resume index after `entries` are appended (#5249), or undefined when the session has none to extend: it was
+	 * written by a build before indexes, or one that dropped it. Ids of earlier entries the new ones refer to are looked
+	 * up by a read from the newest entry back, which stops at the first match.
+	 */
+	private async appendedResume(
+		tx: SqliteExecutor,
+		sessionId: string,
+		previous: SessionResumeIndex | undefined,
+		lastSeq: number,
+		entries: readonly SessionEntry[],
+	): Promise<SessionResumeIndex | undefined> {
+		if (!isSessionResumeIndex(previous, lastSeq)) return undefined;
+		const seqs = new Map<string, number>();
+		for (const id of foreignResumeIds(previous, entries)) {
+			const seq = await this.seqOfEntry(tx, sessionId, id);
+			if (seq !== undefined) seqs.set(id, seq);
+		}
+		return foldSessionResume(previous, entries, (id) => seqs.get(id));
+	}
+
+	private async seqOfEntry(executor: SqliteExecutor, sessionId: string, entryId: string): Promise<number | undefined> {
+		const row = await executor.get<SqliteRow & { seq: number }>(
+			`SELECT seq FROM ${this.tables.entries} WHERE session_id = ? AND entry_id = ? ORDER BY seq DESC LIMIT 1`,
+			sessionId,
+			entryId,
+		);
+		return row === undefined ? undefined : Number(row.seq);
+	}
+
 	private async saveSummary(
 		tx: SqliteExecutor,
 		sessionId: string,
 		snapshot: SessionSnapshot,
 		previous?: SessionSummaryState,
+		appendedResume?: SessionResumeIndex,
 	): Promise<readonly SessionSummaryText[]> {
 		const { header, lastSeq } = snapshot;
-		const { state, texts } = applySessionSummaryEntries(previous, snapshot.entries);
+		const { state: listed, texts } = applySessionSummaryEntries(previous, snapshot.entries);
+		const resume = previous === undefined ? foldSessionResume(undefined, snapshot.entries) : appendedResume;
+		const state: StoredSummaryState = resume === undefined ? listed : { ...listed, resume };
 		const summary = materializeSessionSummaryMetadata(header, state);
 		await tx.run(
 			`INSERT INTO ${this.tables.sessions}
@@ -1076,7 +1287,7 @@ export class SqlSessionStore implements SessionStore {
 		}
 	}
 
-	private encode(value: SessionRecordHeader | SessionEntry | SessionSummaryState | string): string {
+	private encode(value: SessionRecordHeader | SessionEntry | StoredSummaryState | string): string {
 		try {
 			return JSON.stringify(value);
 		} catch (cause) {

@@ -24,16 +24,18 @@ import { CURRENT_SESSION_VERSION, getLatestCompactionBoundaryEntry, type Session
 import { inlineToolOutput, withoutInlineToolOutput } from "./session-tool-output.ts";
 import { inlineSnapshotBlobs, sessionSnapshotBlobs } from "./session-worktree-snapshots.ts";
 import { attachCleanupCause } from "./storage/cleanup.js";
-import { addUsageToTotals, createUsageTotals } from "./usage-totals.ts";
+import { addHistoryUsageToTotals, addUsageToTotals, createUsageTotals } from "./usage-totals.ts";
 
 export function getSessionStats(this: AgentSession): SessionStats {
-	let userMessages = 0;
-	let assistantMessages = 0;
-	let toolResults = 0;
-	let totalMessages = 0;
-	let toolCalls = 0;
+	const omitted = this.sessionManager.getOmittedHistoryTotals();
+	let userMessages = omitted?.userMessages ?? 0;
+	let assistantMessages = omitted?.assistantMessages ?? 0;
+	let toolResults = omitted?.toolResults ?? 0;
+	let totalMessages = omitted?.totalMessages ?? 0;
+	let toolCalls = omitted?.toolCalls ?? 0;
 	const totals = createUsageTotals();
-	let latestAssistantUsage: Usage | undefined;
+	addHistoryUsageToTotals(totals, omitted);
+	let latestAssistantUsage: Usage | undefined = omitted?.latestAssistantUsage;
 	for (const entry of this.sessionManager.getEntries()) {
 		if (
 			(entry.type === "usage" ||
@@ -157,6 +159,7 @@ export async function exportToHtml(
 		cwd: this.sessionManager.getCwd(),
 	});
 
+	await this.sessionManager.loadFullHistory();
 	return await exportSessionToHtml(this.sessionManager, this.state, {
 		outputPath,
 		themeName,
@@ -186,6 +189,7 @@ export async function exportToJsonl(
 		mkdirSync(dir, { recursive: true });
 	}
 
+	await this.sessionManager.loadFullHistory();
 	const sessionId = this.sessionManager.getSessionId();
 	const header: SessionHeader = {
 		type: "session",

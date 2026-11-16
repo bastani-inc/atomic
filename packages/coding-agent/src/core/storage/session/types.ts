@@ -1,4 +1,5 @@
-import type { SessionEntry, SessionWorkflowMetadata } from "../../session-manager-types.ts";
+import type { Usage } from "@bastani/atomic-ai/compat";
+import type { CompactionEntry, SessionEntry, SessionWorkflowMetadata } from "../../session-manager-types.ts";
 import type { SnapshotBlobStore } from "../../worktree-snapshot/types.ts";
 
 export const SESSION_FORMAT_VERSION = 4;
@@ -27,6 +28,91 @@ export interface SessionSnapshot {
 	readonly header: SessionRecordHeader;
 	/** Entries in append order; the last entry is the leaf on reopen. */
 	readonly entries: readonly SessionEntry[];
+	readonly lastSeq: number;
+}
+
+/** Token and cost totals, as the session's usage figures add them up. */
+export interface SessionUsageTotals {
+	readonly input: number;
+	readonly output: number;
+	readonly cacheRead: number;
+	readonly cacheWrite: number;
+	readonly cost: number;
+}
+
+/** What a set of a session's entries adds to its usage figures and message counts (#5249). */
+export interface SessionHistoryTotals {
+	/** Usage of assistant messages. */
+	readonly assistant: SessionUsageTotals;
+	/** Usage tool results report. */
+	readonly toolResult: SessionUsageTotals;
+	/** Usage of compaction, branch summary and session summary entries. */
+	readonly summaries: SessionUsageTotals;
+	readonly userMessages: number;
+	readonly assistantMessages: number;
+	readonly toolResults: number;
+	readonly totalMessages: number;
+	readonly toolCalls: number;
+	/** The usage of the last assistant message among the entries, in store order. */
+	readonly latestAssistantUsage?: Usage;
+}
+
+/** A session entry and its position in store order, 1 for the first entry (#5249). */
+export interface SessionStoredEntry {
+	readonly seq: number;
+	readonly entry: SessionEntry;
+}
+
+/** An entry before a session's tail that holds the session's state (#5249). */
+export interface SessionStateEntry extends SessionStoredEntry {
+	/** Whether the entry is on the branch the session continues from: its last entry, or the leaf a leaf move recorded. */
+	readonly onBranch: boolean;
+}
+
+/**
+ * What resuming a session reads instead of its whole history (#5249): the header, the entries from `fromSeq` on, and,
+ * before them, only the entries that hold the session's state, with what the entries left out add to its usage.
+ */
+export interface SessionTail {
+	readonly header: SessionRecordHeader;
+	readonly fromSeq: number;
+	/** Entries from `fromSeq` to the last, in store order; none when `fromSeq` is past the last entry. */
+	readonly entries: readonly SessionEntry[];
+	/**
+	 * Entries before `fromSeq`, in store order, that hold the session's state: every entry except messages other than
+	 * system messages, compactions, branch summaries and context edits, acknowledged task completions, background
+	 * compaction results, and session names and summaries a later one replaced. A store may return more.
+	 */
+	readonly state: readonly SessionStateEntry[];
+	/** What the entries before `fromSeq` that `state` leaves out add to the session's usage and message counts. */
+	readonly omitted: SessionHistoryTotals;
+	readonly lastSeq: number;
+}
+
+/** A session's entries from `startSeq` through an end seq, as far as the session goes (#5249). */
+export interface SessionEntryRange {
+	readonly startSeq: number;
+	/** Entries in store order; none when the range starts past the last entry or ends before it starts. */
+	readonly entries: readonly SessionEntry[];
+	readonly lastSeq: number;
+}
+
+/** The latest compaction boundary on a branch of a session, and where the context it starts holds (#5249). */
+export interface SessionCompactionPoint {
+	/** The latest compaction whose details say it is a verbatim-lines boundary, on the branch. */
+	readonly entry: CompactionEntry;
+	readonly seq: number;
+	/** The seq of the boundary's first kept entry, when that entry is on the branch before it. */
+	readonly firstKeptSeq?: number;
+	/** The seq of the last entry the boundary covers, when it names one on the branch before it. */
+	readonly coveredThroughSeq?: number;
+	/**
+	 * The first entry on the branch the session's context replays: the first kept entry, else the entry after the last
+	 * covered one, else the boundary itself.
+	 */
+	readonly retainedStartSeq: number;
+	/** The branch's leaf. */
+	readonly leafId: string;
 	readonly lastSeq: number;
 }
 
@@ -130,6 +216,23 @@ export interface SessionStore {
 		options: SessionWriteOptions,
 	): Promise<{ readonly lastSeq: number }>;
 	load(sessionId: string): Promise<SessionSnapshot>;
+	/**
+	 * The session's header, its entries from `fromSeq` (at least 1) on, and the entries before them that hold its state
+	 * (#5249). Rejects with `SessionNotFoundError` when the session does not exist. Absent on a store that only loads
+	 * whole sessions; resuming one then loads it whole.
+	 */
+	readTail?(sessionId: string, fromSeq: number): Promise<SessionTail>;
+	/**
+	 * The session's entries from `startSeq` (at least 1) through `endSeq`, as far as the session goes (#5249). Rejects
+	 * with `SessionNotFoundError` when the session does not exist. Absent with `readTail`.
+	 */
+	readRange?(sessionId: string, startSeq: number, endSeq: number): Promise<SessionEntryRange>;
+	/**
+	 * The latest compaction boundary on the branch to `leafId`, by default the branch the session continues from, or
+	 * undefined when the branch has none or `leafId` is not an entry of the session (#5249). Rejects with
+	 * `SessionNotFoundError` when the session does not exist. Absent with `readTail`.
+	 */
+	findLatestCompaction?(sessionId: string, leafId?: string): Promise<SessionCompactionPoint | undefined>;
 	readHeader(sessionId: string): Promise<SessionRecordHeader | undefined>;
 	delete(sessionId: string): Promise<void>;
 	list(query: SessionListQuery): AsyncIterable<SessionSummary>;

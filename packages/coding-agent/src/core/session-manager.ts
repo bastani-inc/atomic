@@ -48,6 +48,7 @@ export type {
 	SessionListProgress,
 	SessionMessageEntry,
 	SessionNameState,
+	SessionOpenOptions,
 	SessionProjection,
 	SessionSummaryEntry,
 	SessionTreeNode,

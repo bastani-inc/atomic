@@ -1224,6 +1224,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 					currentManager.getSessionStore(),
 					currentManager.getSessionId(),
 					currentManager.getCwd(),
+					{ history: "tail" },
 				)
 			: await this.openUnpersistedSessionView(currentManager);
 		Object.defineProperty(session, "sessionManager", { configurable: true, value: refreshed });

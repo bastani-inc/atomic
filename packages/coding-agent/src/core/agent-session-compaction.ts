@@ -39,17 +39,54 @@ import type {
 	SessionCompactFailedEvent,
 } from "./extensions/index.js";
 import { assertSessionOpen as assertCompactionOpen, trackSessionWork } from "./session-lifecycle-work.ts";
-import type { CompactionEntry, SessionEntry } from "./session-manager.ts";
+import type { CompactionEntry, SessionEntry, SessionManager } from "./session-manager.ts";
+import { readSessionRange } from "./storage/session/session-resume.js";
 import { createSummarizationRetryCallbacks } from "./summarization-retry.ts";
 import { createHistoryRouter, transcriptEntryLines } from "./tools/history-protocol.ts";
-import { renderHistoryTranscript } from "./tools/history-transcript.ts";
+import { historyEntryLineCount, renderHistoryTranscript } from "./tools/history-transcript.ts";
 
-/** This session's own history layout, or undefined when it has no history a `read` could open. */
-function historyLocation(session: AgentSession): CompactionBoundaryControl["history"] {
+/** How many entries one read of the history a session was opened without takes while counting its transcript lines. */
+const HISTORY_LINE_READ_ENTRIES = 4096;
+
+/** Transcript lines of the entries before each manager's held tail, counted once per tail it holds (#5249). */
+const earlierHistoryLines = new WeakMap<SessionManager, { readonly key: string; readonly lines: Promise<number> }>();
+
+/** The transcript lines the entries before `fromSeq` render to, read a page at a time and not kept. */
+async function countEarlierHistoryLines(manager: SessionManager, fromSeq: number): Promise<number> {
+	let lines = 0;
+	for (let start = 1; start < fromSeq; start += HISTORY_LINE_READ_ENTRIES) {
+		const end = Math.min(fromSeq - 1, start + HISTORY_LINE_READ_ENTRIES - 1);
+		const range = await readSessionRange(manager.getSessionStore(), manager.getSessionId(), start, end);
+		for (const entry of range.entries) lines += historyEntryLineCount(entry);
+	}
+	return lines;
+}
+
+/**
+ * This session's own history layout, or undefined when it has no history a `read` could open. A session opened from
+ * its latest compaction counts the lines of the history before it without holding that history (#5249).
+ */
+async function historyLocation(session: AgentSession): Promise<CompactionBoundaryControl["history"]> {
 	const manager = session.sessionManager;
 	const header = manager.getHeader();
 	if (!header || !manager.isPersisted()) return undefined;
-	const { entryRanges } = renderHistoryTranscript(header, manager.getEntries(), true);
+	const { fromSeq, entries } = manager.getHeldTail();
+	let earlier = 0;
+	if (fromSeq > 1) {
+		const key = `${manager.getSessionId()}\u0000${fromSeq}`;
+		let cached = earlierHistoryLines.get(manager);
+		if (cached?.key !== key) {
+			cached = { key, lines: countEarlierHistoryLines(manager, fromSeq) };
+			earlierHistoryLines.set(manager, cached);
+		}
+		try {
+			earlier = await cached.lines;
+		} catch (error) {
+			earlierHistoryLines.delete(manager);
+			throw error;
+		}
+	}
+	const { entryRanges } = renderHistoryTranscript(header, entries, true, earlier);
 	return { sessionId: manager.getSessionId(), entryRanges };
 }
 
@@ -206,7 +243,7 @@ export async function planVerbatimCompaction(
 			...(options.preserve_recent === undefined ? {} : { preserve_recent: options.preserve_recent }),
 			...(options.query === undefined ? {} : { query: options.query }),
 		},
-		{ allowSmallRegion, history: historyLocation(this) },
+		{ allowSmallRegion, history: await historyLocation(this) },
 	);
 	if (!preparation) {
 		// Mid-turn threshold preflight needs the load-bearing planner fallback if

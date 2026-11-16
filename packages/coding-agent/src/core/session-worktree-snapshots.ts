@@ -5,10 +5,10 @@ import type { AssistantMessage } from "@bastani/atomic-ai/compat";
 import { failureDebugFields, reportDebug } from "./debug.ts";
 import { timeCheckoutRestore } from "./resume/timings.ts";
 import type { SessionManager } from "./session-manager.ts";
-import { getBranchPath, getSessionLeafId } from "./session-manager-history.ts";
 import type { SessionEntry, WorktreeRestoreHostWarning } from "./session-manager-types.ts";
 import { isStorageError } from "./storage/errors.js";
-import type { SessionStore } from "./storage/session/types.js";
+import { readSessionTail } from "./storage/session/session-resume.js";
+import type { SessionRecordHeader, SessionStore } from "./storage/session/types.js";
 import {
 	type BestWorktreeRestore,
 	isRecoverableRestoreFailure,
@@ -1839,7 +1839,9 @@ export async function openResumedSession(
 }> {
 	const opened =
 		cwd !== sessionManager.getCwd()
-			? await sessionManager.openSessionById(sessionManager.getSessionId(), cwd, sessionDirectory)
+			? await sessionManager.openSessionById(sessionManager.getSessionId(), cwd, sessionDirectory, {
+					history: "tail",
+				})
 			: sessionManager;
 	const restoredHere = new Set(restored.map((mapping) => mapping.to));
 	const leftHere = new Set(unrestored.map((record) => `${record.snapshotId}\0${record.at}`));
@@ -1858,13 +1860,47 @@ export async function openResumedSession(
  * from `cwd` resumes it rather than forking it into another project.
  */
 export async function sessionContinuesIn(store: SessionStore, sessionId: string, cwd: string): Promise<boolean> {
-	const { header, entries } = await store.load(sessionId);
+	const stored = await storedSnapshotEntries(store, sessionId);
+	return snapshotsContinueIn(stored.header.cwd, stored.entries, cwd);
+}
+
+/** {@link sessionContinuesIn} for a session `sessionManager` holds, read from its latest compaction or whole (#5249). */
+export function sessionManagerContinuesIn(
+	sessionManager: Pick<SessionManager, "getHeader" | "getEntries">,
+	cwd: string,
+): boolean {
+	const header = sessionManager.getHeader();
+	return header !== null && snapshotsContinueIn(header.cwd, sessionManager.getEntries(), cwd);
+}
+
+function snapshotsContinueIn(recordedCwd: string, entries: readonly SessionEntry[], cwd: string): boolean {
 	const mappings = entries.flatMap((entry) =>
 		entry.type === "worktree_snapshot" && entry.restore ? [entry.restore] : [],
 	);
 	if (mappings.length === 0) return false;
-	const mapped = mapRestoredPath(header.cwd, mappings);
+	const mapped = mapRestoredPath(recordedCwd, mappings);
 	return canonicalizeWorktreePath(mapped) === canonicalizeWorktreePath(cwd);
+}
+
+/**
+ * A stored session's header and worktree snapshot entries, all of them and those on the branch it reopens on, read
+ * with the entries that hold its state rather than its whole history (#5249).
+ */
+async function storedSnapshotEntries(
+	store: SessionStore,
+	sessionId: string,
+): Promise<{
+	readonly header: SessionRecordHeader;
+	readonly entries: SessionEntry[];
+	readonly branch: SessionEntry[];
+}> {
+	const { header, state } = await readSessionTail(store, sessionId, Number.MAX_SAFE_INTEGER);
+	const snapshots = state.filter(({ entry }) => entry.type === "worktree_snapshot");
+	return {
+		header,
+		entries: snapshots.map(({ entry }) => entry),
+		branch: snapshots.filter(({ onBranch }) => onBranch).map(({ entry }) => entry),
+	};
 }
 
 /** The restores recorded on `branch`, oldest first. */
@@ -1872,19 +1908,18 @@ function restoreMappings(branch: readonly SessionEntry[]): WorktreeRootMapping[]
 	return branch.flatMap((entry) => (entry.type === "worktree_snapshot" && entry.restore ? [entry.restore] : []));
 }
 
-/** The restores and current snapshots of the branch of stored `entries` that ends at `leafId`, as resume finds them. */
+/** The restores and current snapshots of `branch`, given the session's `entries`, as resume finds them. */
 function storedBranchSnapshots(
 	entries: readonly SessionEntry[],
-	leafId: string | null,
+	branch: readonly SessionEntry[],
 ): { readonly mappings: WorktreeRootMapping[]; readonly current: Map<string, WorktreeSnapshot> } {
-	const branch = getBranchPath(leafId, new Map(entries.map((entry) => [entry.id, entry])));
 	const records = new Map<string, WorktreeSnapshot>();
 	for (const entry of entries) {
 		if (entry.type === "worktree_snapshot" && entry.snapshot) records.set(entry.snapshotId, entry.snapshot);
 	}
 	const mappings = restoreMappings(branch);
 	const current = currentWorktreeSnapshots({
-		getBranch: () => branch,
+		getBranch: () => [...branch],
 		getWorktreeRootMappings: () => mappings,
 		getWorktreeSnapshotRecords: () => records,
 	});
@@ -1898,8 +1933,27 @@ function storedBranchSnapshots(
  * forking it into the other directory.
  */
 export async function sessionRunsInRecordedCheckout(store: SessionStore, sessionId: string): Promise<boolean> {
-	const { header, entries } = await store.load(sessionId);
-	const { mappings, current } = storedBranchSnapshots(entries, getSessionLeafId(entries));
-	const cwd = mapRestoredPath(header.cwd, mappings);
+	const { header, entries, branch } = await storedSnapshotEntries(store, sessionId);
+	return snapshotsRunInRecordedCheckout(header.cwd, entries, branch);
+}
+
+/** {@link sessionRunsInRecordedCheckout} for a session `sessionManager` holds (#5249). */
+export function sessionManagerRunsInRecordedCheckout(
+	sessionManager: Pick<SessionManager, "getHeader" | "getEntries" | "getBranch">,
+): boolean {
+	const header = sessionManager.getHeader();
+	return (
+		header !== null &&
+		snapshotsRunInRecordedCheckout(header.cwd, sessionManager.getEntries(), sessionManager.getBranch())
+	);
+}
+
+function snapshotsRunInRecordedCheckout(
+	recordedCwd: string,
+	entries: readonly SessionEntry[],
+	branch: readonly SessionEntry[],
+): boolean {
+	const { mappings, current } = storedBranchSnapshots(entries, branch);
+	const cwd = mapRestoredPath(recordedCwd, mappings);
 	return [...current.keys()].some((root) => isInside(root, cwd));
 }

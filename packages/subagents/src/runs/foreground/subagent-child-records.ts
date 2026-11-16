@@ -612,7 +612,7 @@ export async function endWorkflowRunStageSubagentChildren(
 	for (const stageSessionId of new Set(stageSessionIds)) {
 		if (stageSessionsInProcess.has(stageSessionId)) continue;
 		try {
-			const stageSession = await SessionManager.open(store, stageSessionId);
+			const stageSession = await SessionManager.open(store, stageSessionId, undefined, { history: "tail" });
 			for (const record of readSubagentChildRecords(stageSession.getEntries(), stageSessionId).values()) {
 				if (!endsWithRun(record)) continue;
 				const ended: SubagentChildRecord = {

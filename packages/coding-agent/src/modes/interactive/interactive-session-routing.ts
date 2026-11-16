@@ -116,6 +116,7 @@ InteractiveModeBase.prototype.showTreeSelector = async function (
 	initialSelectedId?: string,
 ): Promise<void> {
 	await this.ensureDeferredStartupComplete();
+	await this.sessionManager.loadFullHistory();
 	const tree = this.sessionManager.getTree();
 	const realLeafId = this.sessionManager.getLeafId();
 	const initialFilterMode = this.settingsManager.getTreeFilterMode();
@@ -305,7 +306,9 @@ InteractiveModeBase.prototype.showSessionSelector = function (this: InteractiveM
 					) {
 						await this.session.setSessionName(next);
 					} else {
-						const mgr = await this.sessionManager.openSessionById(selected.id, undefined, directory);
+						const mgr = await this.sessionManager.openSessionById(selected.id, undefined, directory, {
+							history: "tail",
+						});
 						try {
 							await mgr.appendSessionInfo(next);
 						} finally {

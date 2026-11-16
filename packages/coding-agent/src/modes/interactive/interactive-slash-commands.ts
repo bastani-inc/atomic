@@ -449,7 +449,8 @@ InteractiveModeBase.prototype.handleSessionSnapshotCommand = async function (thi
 	this.ui.requestRender();
 };
 
-InteractiveModeBase.prototype.handleSessionCommand = function (this: InteractiveModeBase): void {
+InteractiveModeBase.prototype.handleSessionCommand = async function (this: InteractiveModeBase): Promise<void> {
+	await this.sessionManager.loadFullHistory();
 	const engineStats = getEngineSessionStats(this.session);
 	const stats = engineStats ?? this.session.getSessionStats();
 	const sessionName = this.session.sessionName;

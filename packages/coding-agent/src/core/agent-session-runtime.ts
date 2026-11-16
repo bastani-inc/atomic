@@ -689,7 +689,9 @@ export class AgentSessionRuntime {
 
 			const previousSessionId = this.session.sessionId;
 			const opened = await this.boundedSessionLookup(
-				this.session.sessionManager.openSessionById(sessionId, options?.cwdOverride, options?.sessionDirectory),
+				this.session.sessionManager.openSessionById(sessionId, options?.cwdOverride, options?.sessionDirectory, {
+					history: "tail",
+				}),
 				sessionId,
 			);
 			const { sessionManager, unrecorded } = await this.resumeWorktree(opened, options?.sessionDirectory);
@@ -761,6 +763,7 @@ export class AgentSessionRuntime {
 			let targetLeafId: string | null;
 			let selectedText: string | undefined;
 
+			if (!this.session.sessionManager.getEntry(entryId)) await this.session.sessionManager.loadFullHistory();
 			const selectedEntry = this.session.sessionManager.getEntry(entryId);
 			if (!selectedEntry) {
 				throw new SessionEntryError(entryId, "missing");
@@ -888,7 +891,10 @@ export class AgentSessionRuntime {
 			onNotices: (notices: readonly ResumeNotice[]) => this.queueResumeNotices(notices),
 		};
 		return continueSessionWhereItWorked(opened, options, (cwd) =>
-			this.boundedSessionLookup(opened.openSessionById(opened.getSessionId(), cwd), opened.getSessionId()),
+			this.boundedSessionLookup(
+				opened.openSessionById(opened.getSessionId(), cwd, undefined, { history: "tail" }),
+				opened.getSessionId(),
+			),
 		);
 	}
 
@@ -902,7 +908,10 @@ export class AgentSessionRuntime {
 				localOnly: isLocalOnlySessionStorage(storage),
 			});
 		}
-		const opened = await this.boundedSessionLookup(this.session.sessionManager.openSessionById(sessionId), sessionId);
+		const opened = await this.boundedSessionLookup(
+			this.session.sessionManager.openSessionById(sessionId, undefined, undefined, { history: "tail" }),
+			sessionId,
+		);
 		const sessionManager = await this.continueWhereItWorked(opened);
 		const cwd = sessionManager.getCwd();
 		const result = await sessionLifecycleCreation.run({ scope: {} }, () =>

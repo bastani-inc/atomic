@@ -102,6 +102,11 @@ function physicalLineCount(line: string): number {
 	return line.split("\n").length;
 }
 
+/** How many lines `entry` adds to the transcript `renderHistoryTranscript` renders. */
+export function historyEntryLineCount(entry: SessionEntry): number {
+	return entryLines(entry).reduce((sum, line) => sum + physicalLineCount(line), 0);
+}
+
 /**
  * The transcript `history://sessions/<id>` reads: a header, then each entry's lines. This is the only place the line
  * layout is defined, so a range computed from `entryRanges` addresses exactly the lines a `read` slices.
@@ -111,6 +116,7 @@ export function renderHistoryTranscript(
 	header: SessionRecordHeader,
 	entries: readonly SessionEntry[],
 	linkRun: boolean,
+	earlierLines = 0,
 ): HistoryTranscript {
 	const lines = [
 		`# session ${header.id}`,
@@ -122,7 +128,7 @@ export function renderHistoryTranscript(
 			: []),
 	];
 	const entryRanges = new Map<string, HistoryLineRange>();
-	let next = lines.reduce((count, line) => count + physicalLineCount(line), 1);
+	let next = lines.reduce((count, line) => count + physicalLineCount(line), 1 + earlierLines);
 	for (const entry of entries) {
 		const rendered = entryLines(entry);
 		if (rendered.length === 0) continue;

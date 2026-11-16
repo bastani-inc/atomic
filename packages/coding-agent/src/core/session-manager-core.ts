@@ -50,6 +50,7 @@ import type {
 	SessionInfo,
 	SessionListProgress,
 	SessionNameState,
+	SessionOpenOptions,
 	SessionProjection,
 	SessionTreeNode,
 	SessionWorkflowMetadata,
@@ -93,7 +94,15 @@ import {
 } from "./storage/session/errors.js";
 import { JsonlSessionStore } from "./storage/session/jsonl-session-store.js";
 import { MemorySessionStore, markPrivateMemorySessionStore } from "./storage/session/memory-session-store.js";
-import type { SessionBlob, SessionRecordHeader, SessionSnapshot, SessionStore } from "./storage/session/types.js";
+import { readSessionRange } from "./storage/session/session-resume.js";
+import type {
+	SessionBlob,
+	SessionHistoryTotals,
+	SessionRecordHeader,
+	SessionSnapshot,
+	SessionStore,
+	SessionTail,
+} from "./storage/session/types.js";
 import { WorkspaceConfigError } from "./worktree-snapshot/errors.ts";
 import type { WorktreeRootMapping, WorktreeSnapshot, WorktreeUnrestored } from "./worktree-snapshot/types.ts";
 
@@ -118,6 +127,39 @@ const MAX_APPEND_RECONCILES = 3;
 async function resolveSessionStore(cwd: string): Promise<SessionStore> {
 	// Selection loads settings and tools, which depend on the completed session module.
 	return (await import("./session-storage.js")).resolveSessionStore(cwd);
+}
+
+/** What opening a stored session read: the whole session, or its tail from the latest compaction (#5249). */
+type OpenedSession = { readonly snapshot: SessionSnapshot } | { readonly tail: SessionTail };
+
+/**
+ * Reads `sessionId` as `options` asks. A tail read starts at the retained start of the latest compaction boundary on
+ * the session's branch, or at the last entry that boundary covers when that comes first, so that the context the
+ * session replays is all held. A session that changed between the two reads is read whole.
+ */
+async function readStoredSession(
+	store: SessionStore,
+	sessionId: string,
+	options: SessionOpenOptions | undefined,
+): Promise<OpenedSession> {
+	if (
+		options?.history !== "tail" ||
+		store.readTail === undefined ||
+		store.readRange === undefined ||
+		store.findLatestCompaction === undefined
+	) {
+		return { snapshot: await store.load(sessionId) };
+	}
+	const point = await store.findLatestCompaction(sessionId);
+	const fromSeq =
+		point === undefined ? 1 : Math.min(point.retainedStartSeq, point.coveredThroughSeq ?? point.retainedStartSeq);
+	const tail = await store.readTail(sessionId, fromSeq);
+	if (point !== undefined && tail.lastSeq !== point.lastSeq) return { snapshot: await store.load(sessionId) };
+	return { tail };
+}
+
+function openedHeader(opened: OpenedSession): SessionRecordHeader {
+	return "snapshot" in opened ? opened.snapshot.header : opened.tail.header;
 }
 
 /** A custom entry written with a message, in the same store write (see `SessionManager.appendWithMessage`). */
@@ -152,6 +194,15 @@ export class SessionManager {
 	private labelTimestampsById: Map<string, string> = new Map();
 	private leafId: string | null = null;
 	private readonly historyIndex = new SessionHistoryIndex();
+	/** The first seq from which every entry is held; above 1 for a session read from its latest compaction (#5249). */
+	private historyStartSeq = 1;
+	/** How many entries before `historyStartSeq` are held, right after the header: those that hold session state. */
+	private heldStateEntries = 0;
+	/** What the entries before `historyStartSeq` that are not held add to the session's usage and message counts. */
+	private omittedTotals: SessionHistoryTotals | undefined;
+	/** For a held entry whose parent is not held, the held entry before it on the active branch. */
+	private branchLinks: ReadonlyMap<string, string> | undefined;
+	private historyLoad: Promise<void> | undefined;
 
 	private constructor(store: SessionStore, cwd: string, sessionDir: string, options?: NewSessionOptions) {
 		this.store = store;
@@ -175,15 +226,109 @@ export class SessionManager {
 	}
 
 	private restore(snapshot: SessionSnapshot, location?: string): void {
-		const header = snapshot.header;
-		this.fileEntries = [{ type: "session", ...header }, ...snapshot.entries];
+		this.restoreHistory(snapshot.header, snapshot.entries, snapshot.lastSeq, location);
+	}
+
+	private restoreOpened(opened: OpenedSession, location?: string): void {
+		if ("snapshot" in opened) {
+			this.restore(opened.snapshot, location);
+			return;
+		}
+		const { tail } = opened;
+		const onBranch = tail.state.filter((held) => held.onBranch).map((held) => held.entry);
+		const first = tail.entries[0];
+		const chain = first === undefined ? onBranch : [...onBranch, first];
+		this.restoreHistory(
+			tail.header,
+			[...tail.state.map((held) => held.entry), ...tail.entries],
+			tail.lastSeq,
+			location,
+			tail.fromSeq > 1
+				? {
+						fromSeq: tail.fromSeq,
+						heldState: tail.state.length,
+						omitted: tail.omitted,
+						links: new Map(chain.slice(1).map((entry, index) => [entry.id, chain[index]!.id])),
+					}
+				: undefined,
+		);
+	}
+
+	private restoreHistory(
+		header: SessionRecordHeader,
+		entries: readonly SessionEntry[],
+		lastSeq: number,
+		location: string | undefined,
+		partial?: {
+			readonly fromSeq: number;
+			readonly heldState: number;
+			readonly omitted: SessionHistoryTotals;
+			readonly links: ReadonlyMap<string, string>;
+		},
+	): void {
+		this.fileEntries = [{ type: "session", ...header }, ...entries];
 		this.sessionId = header.id;
-		this.lastSeq = snapshot.lastSeq;
+		this.lastSeq = lastSeq;
 		this.deletedFromStore = false;
+		this.historyStartSeq = partial?.fromSeq ?? 1;
+		this.heldStateEntries = partial?.heldState ?? 0;
+		this.omittedTotals = partial?.omitted;
+		this.branchLinks = partial?.links;
+		this.historyLoad = undefined;
 		this.sessionFile =
 			location ?? (this.store instanceof JsonlSessionStore ? this.store.locationFor(header) : undefined);
 		this._buildIndex();
 		this.syncOpenMarker();
+	}
+
+	/** Whether every entry of the session is held, rather than its tail from the latest compaction (#5249). */
+	hasFullHistory(): boolean {
+		return this.historyStartSeq <= 1;
+	}
+
+	/**
+	 * Reads the entries before the latest compaction a session was opened without, so that `getEntries()`, `getTree()`
+	 * and the rest see its whole history (#5249). Resolves at once when every entry is held.
+	 */
+	loadFullHistory(): Promise<void> {
+		if (this.historyStartSeq <= 1) return Promise.resolve();
+		this.historyLoad ??= this.readHistory().finally(() => {
+			this.historyLoad = undefined;
+		});
+		return this.historyLoad;
+	}
+
+	private async readHistory(): Promise<void> {
+		const { store, sessionId, historyStartSeq } = this;
+		const range = await readSessionRange(store, sessionId, 1, historyStartSeq - 1);
+		if (this.store !== store || this.sessionId !== sessionId || this.historyStartSeq !== historyStartSeq) return;
+		const leafId = this.leafId;
+		this.fileEntries = [this.fileEntries[0]!, ...range.entries, ...this.fileEntries.slice(1 + this.heldStateEntries)];
+		this.historyStartSeq = 1;
+		this.heldStateEntries = 0;
+		this.omittedTotals = undefined;
+		this.branchLinks = undefined;
+		this._buildIndex();
+		this.leafId = leafId;
+	}
+
+	/**
+	 * @internal The seq from which every entry is held, 1 when the whole session is, and the held entries from there on
+	 * in store order (#5249).
+	 */
+	getHeldTail(): { readonly fromSeq: number; readonly entries: readonly SessionEntry[] } {
+		return {
+			fromSeq: this.historyStartSeq,
+			entries: this.fileEntries.slice(1 + this.heldStateEntries) as SessionEntry[],
+		};
+	}
+
+	/**
+	 * What the entries a session was opened without add to its usage and message counts, or undefined when every entry
+	 * is held (#5249). Usage figures add it to what the held entries add.
+	 */
+	getOmittedHistoryTotals(): SessionHistoryTotals | undefined {
+		return this.omittedTotals;
 	}
 
 	/**
@@ -228,6 +373,10 @@ export class SessionManager {
 			),
 		];
 		this.lastSeq = 0;
+		this.historyStartSeq = 1;
+		this.heldStateEntries = 0;
+		this.omittedTotals = undefined;
+		this.branchLinks = undefined;
 		this._buildIndex();
 		this.sessionFile =
 			this.store instanceof JsonlSessionStore
@@ -305,6 +454,7 @@ export class SessionManager {
 			if (classifiedWorkflowMetadata(previous)) return;
 			const validWorkflow = validSessionWorkflowMetadata(workflow);
 			if (!validWorkflow) return;
+			await this.loadFullHistory();
 			const header: SessionHeader = { ...previous, internal: true, workflow: validWorkflow };
 			const result = await this.store.replace(this.sessionId, this.recordHeader(header), this.getEntries(), {
 				expectSeq: this.lastSeq,
@@ -368,6 +518,7 @@ export class SessionManager {
 	rebindStore(store: SessionStore, removeProvisionalRecord: boolean): Promise<void> {
 		return this.runMutation(async () => {
 			if (store === this.store) return;
+			await this.loadFullHistory();
 			const header = this.recordHeader();
 			const entries = this.getEntries();
 			const hashes = sessionBlobHashes(this.store, entries);
@@ -381,14 +532,19 @@ export class SessionManager {
 		});
 	}
 
-	async openSessionById(sessionId: string, cwdOverride?: string, sessionDirectory?: string): Promise<SessionManager> {
+	async openSessionById(
+		sessionId: string,
+		cwdOverride?: string,
+		sessionDirectory?: string,
+		options?: SessionOpenOptions,
+	): Promise<SessionManager> {
 		let store =
 			sessionDirectory === undefined
 				? this.store
 				: await JsonlSessionStore.open(sessionDirectory, { exactDirectory: true, scanExisting: false });
-		let snapshot: SessionSnapshot;
+		let opened: OpenedSession;
 		try {
-			snapshot = await store.load(sessionId);
+			opened = await readStoredSession(store, sessionId, options);
 		} catch (error) {
 			if (
 				!(error instanceof SessionNotFoundError) ||
@@ -397,16 +553,17 @@ export class SessionManager {
 			)
 				throw error;
 			store = await JsonlSessionStore.open(join(getAgentDir(), "sessions"), { scanExisting: false });
-			snapshot = await store.load(sessionId);
+			opened = await readStoredSession(store, sessionId, options);
 		}
 		const location = store instanceof JsonlSessionStore ? await store.findFile(sessionId) : undefined;
 		if (location !== undefined) {
 			store = await JsonlSessionStore.open(dirname(location), { exactDirectory: true, scanExisting: false });
-			snapshot = await store.load(sessionId);
+			opened = await readStoredSession(store, sessionId, options);
 		}
-		if (snapshot.header.id !== sessionId) throw new SessionIdMismatchError(sessionId, snapshot.header.id);
-		const manager = new SessionManager(store, cwdOverride ?? snapshot.header.cwd, this.sessionDir);
-		manager.restore(snapshot, location);
+		const header = openedHeader(opened);
+		if (header.id !== sessionId) throw new SessionIdMismatchError(sessionId, header.id);
+		const manager = new SessionManager(store, cwdOverride ?? header.cwd, this.sessionDir);
+		manager.restoreOpened(opened, location);
 		if (location !== undefined) manager.sessionDir = dirname(location);
 		return manager;
 	}
@@ -488,25 +645,26 @@ export class SessionManager {
 	): Promise<boolean> {
 		// Entries of an append that failed for certain are never in the store, so marking them too changes nothing.
 		for (const entry of entries) this.unconfirmed.add(entry.id);
-		let snapshot: SessionSnapshot;
+		let read: { readonly entries: readonly SessionEntry[]; readonly lastSeq: number };
 		try {
-			snapshot = await this.store.load(this.sessionId);
+			// From the last entry held, so a read shows whether the store's history still extends this manager's (#5249).
+			read = await readSessionRange(this.store, this.sessionId, Math.max(1, this.lastSeq), Number.MAX_SAFE_INTEGER);
 		} catch {
 			// Still unreadable: the next append, at the same `lastSeq`, finds out whether these entries were saved.
 			throw error;
 		}
-		const start = snapshot.entries.length - (snapshot.lastSeq - this.lastSeq);
+		const stored = this.lastSeq > 0 ? read.entries : [undefined, ...read.entries];
 		const lastHeld = this.fileEntries.length > 1 ? this.fileEntries.at(-1)!.id : undefined;
-		if (snapshot.entries[start - 1]?.id !== lastHeld) throw error;
+		if (stored[0]?.id !== lastHeld) throw error;
 		const own = new Map(entries.map((entry) => [entry.id, entry]));
-		const tail = snapshot.entries.slice(start).map((entry) => own.get(entry.id) ?? entry);
+		const tail = (stored.slice(1) as SessionEntry[]).map((entry) => own.get(entry.id) ?? entry);
 		const saved = tail.some((entry) => own.has(entry.id));
 		const foreign = tail.some((entry) => !this.unconfirmed.has(entry.id));
 		const leafId = saved ? entries.at(-1)!.id : this.leafId;
 		this.fileEntries = [...this.fileEntries, ...tail];
 		this._buildIndex();
 		this.leafId = leafId;
-		this.lastSeq = snapshot.lastSeq;
+		this.lastSeq = read.lastSeq;
 		if (saved) return true;
 		const conflict = error instanceof SessionConflictError;
 		if (foreign || (conflict && tail.length === 0)) {
@@ -622,10 +780,8 @@ export class SessionManager {
 	): Promise<string> {
 		return this.runMutation(async () => {
 			precondition?.();
-			if (firstKeptEntryId !== null && !this.byId.has(firstKeptEntryId))
-				throw new SessionEntryError(firstKeptEntryId, "missing");
-			if (coveredThroughEntryId !== undefined && !this.byId.has(coveredThroughEntryId))
-				throw new SessionEntryError(coveredThroughEntryId, "missing");
+			if (firstKeptEntryId !== null) await this.requireEntry(firstKeptEntryId);
+			if (coveredThroughEntryId !== undefined) await this.requireEntry(coveredThroughEntryId);
 			const entry = createCompactionEntry(
 				compactedText,
 				firstKeptEntryId,
@@ -647,6 +803,7 @@ export class SessionManager {
 	writeBackupSnapshot(label = "compact"): Promise<string | undefined> {
 		return this.runMutation(async () => {
 			if (!(this.store instanceof JsonlSessionStore) || !this.sessionFile) return undefined;
+			await this.loadFullHistory();
 			const path = `${this.sessionFile}.${new Date().toISOString().replace(/[:.]/g, "-")}.${label.replace(/[^a-z0-9_-]/gi, "-") || "backup"}.bak`;
 			try {
 				await writeFile(
@@ -671,8 +828,7 @@ export class SessionManager {
 			) {
 				throw new SessionEntryError(targetId, "invalid-replacement");
 			}
-			const target = this.byId.get(targetId);
-			if (!target) throw new SessionEntryError(targetId, "missing");
+			const target = await this.requireEntry(targetId);
 			if (!this.getBranch().some((entry) => entry.id === targetId)) {
 				throw new SessionEntryError(targetId, "inactive");
 			}
@@ -789,7 +945,7 @@ export class SessionManager {
 
 	/** Restores recorded on the active branch, oldest first: work recorded under `from` continues under `to`. */
 	getWorktreeRootMappings(): WorktreeRootMapping[] {
-		return this.historyIndex.worktreeRootMappings(this.leafId, this.byId);
+		return this.historyIndex.worktreeRootMappings(this.leafId, this.byId, this.branchLinks);
 	}
 
 	/** Every snapshot record in the session, by id. */
@@ -801,7 +957,11 @@ export class SessionManager {
 	getLatestWorktreeSnapshots(): Map<string, WorktreeSnapshot> {
 		const records = this.getWorktreeSnapshotRecords();
 		const latest = new Map<string, WorktreeSnapshot>();
-		for (const { root, snapshotId } of this.historyIndex.worktreeSnapshots(this.leafId, this.byId)) {
+		for (const { root, snapshotId } of this.historyIndex.worktreeSnapshots(
+			this.leafId,
+			this.byId,
+			this.branchLinks,
+		)) {
 			const snapshot = records.get(snapshotId);
 			if (snapshot) latest.set(root, snapshot);
 		}
@@ -820,7 +980,7 @@ export class SessionManager {
 	/** Append a generated resume summary anchored to the message it describes. Returns entry id. */
 	appendSessionSummary(summary: string, summarizedThroughId: string, usage?: Usage): Promise<string> {
 		return this.runMutation(async () => {
-			if (!this.byId.has(summarizedThroughId)) throw new SessionEntryError(summarizedThroughId, "missing");
+			await this.requireEntry(summarizedThroughId);
 			const entry = createSessionSummaryEntry(summary, summarizedThroughId, usage, this.byId, this.leafId);
 			await this._appendEntry(entry);
 			return entry.id;
@@ -868,6 +1028,17 @@ export class SessionManager {
 		});
 	}
 
+	/**
+	 * The entry `id`, read with the rest of the history first when the session was opened from its latest compaction
+	 * and does not hold it (#5249); a `SessionEntryError` when the session has no such entry.
+	 */
+	private async requireEntry(id: string): Promise<SessionEntry> {
+		if (!this.byId.has(id)) await this.loadFullHistory();
+		const entry = this.byId.get(id);
+		if (entry === undefined) throw new SessionEntryError(id, "missing");
+		return entry;
+	}
+
 	getLeafId(): string | null {
 		return this.leafId;
 	}
@@ -899,9 +1070,7 @@ export class SessionManager {
 	/** Set or clear a label on an entry. */
 	appendLabelChange(targetId: string, label: string | undefined): Promise<string> {
 		return this.runMutation(async () => {
-			if (!this.byId.has(targetId)) {
-				throw new SessionEntryError(targetId, "missing");
-			}
+			await this.requireEntry(targetId);
 			const entry = createLabelEntry(targetId, label, this.byId, this.leafId);
 			await this._appendEntry(entry);
 			if (label) {
@@ -919,8 +1088,8 @@ export class SessionManager {
 	getBranch(fromId?: string): SessionEntry[] {
 		const leafId = fromId ?? this.leafId;
 		return leafId === this.leafId
-			? this.historyIndex.branch(leafId, this.byId).slice()
-			: getBranchPath(leafId, this.byId);
+			? this.historyIndex.branch(leafId, this.byId, this.branchLinks).slice()
+			: getBranchPath(leafId, this.byId, this.branchLinks);
 	}
 
 	/** Return the active branch entries after applying the latest compaction boundary. */
@@ -936,7 +1105,7 @@ export class SessionManager {
 	/** The active branch when the leaf is an entry of this session; undefined lets a stale leaf fall back as before. */
 	private activeBranch(): readonly SessionEntry[] | undefined {
 		return this.leafId !== null && this.byId.has(this.leafId)
-			? this.historyIndex.branch(this.leafId, this.byId)
+			? this.historyIndex.branch(this.leafId, this.byId, this.branchLinks)
 			: undefined;
 	}
 
@@ -970,9 +1139,7 @@ export class SessionManager {
 	/** Start a new branch from an earlier entry. */
 	branch(branchFromId: string): Promise<void> {
 		return this.runMutation(async () => {
-			if (!this.byId.has(branchFromId)) {
-				throw new SessionEntryError(branchFromId, "missing");
-			}
+			await this.requireEntry(branchFromId);
 			this.leafId = branchFromId;
 		});
 	}
@@ -990,9 +1157,7 @@ export class SessionManager {
 	 */
 	recordBranch(branchFromId: string | null): Promise<void> {
 		return this.runMutation(async () => {
-			if (branchFromId !== null && !this.byId.has(branchFromId)) {
-				throw new SessionEntryError(branchFromId, "missing");
-			}
+			if (branchFromId !== null) await this.requireEntry(branchFromId);
 			await this._appendEntry(createCustomEntry(LEAF_MOVE_ENTRY_TYPE, undefined, this.byId, branchFromId));
 			this.leafId = branchFromId;
 		});
@@ -1008,9 +1173,7 @@ export class SessionManager {
 		fromId?: string,
 	): Promise<string> {
 		return this.runMutation(async () => {
-			if (branchFromId !== null && !this.byId.has(branchFromId)) {
-				throw new SessionEntryError(branchFromId, "missing");
-			}
+			if (branchFromId !== null) await this.requireEntry(branchFromId);
 			const entry: BranchSummaryEntry = createBranchSummaryEntry(
 				branchFromId,
 				fromId ?? this.leafId ?? "root",
@@ -1027,6 +1190,7 @@ export class SessionManager {
 
 	createBranchedSession(leafId: string): Promise<string | undefined> {
 		return this.runMutation(async () => {
+			await this.loadFullHistory();
 			const result = createBranchedSessionState({
 				leafId,
 				cwd: this.cwd,
@@ -1070,6 +1234,7 @@ export class SessionManager {
 				: (sessionDir ?? (await resolveSessionStore(cwd)));
 		const directory = store instanceof JsonlSessionStore ? store.descriptor.location : "";
 		return SessionManager.constructWithStore(store, store !== sessionDir, async () => {
+			await this.loadFullHistory();
 			const source = { store: this.store, sessionId: this.sessionId, entries: this.getEntries() };
 			const manager = new SessionManager(store, cwd, directory, { ...options, parentSession: source.sessionId });
 			const hashes = sessionBlobHashes(source.store, source.entries);
@@ -1154,22 +1319,29 @@ export class SessionManager {
 	}
 
 	static async open(path: string, sessionDir?: string, cwdOverride?: string): Promise<SessionManager>;
-	static async open(store: SessionStore, sessionId: string, cwdOverride?: string): Promise<SessionManager>;
+	static async open(
+		store: SessionStore,
+		sessionId: string,
+		cwdOverride?: string,
+		options?: SessionOpenOptions,
+	): Promise<SessionManager>;
 	static async open(
 		pathOrStore: string | SessionStore,
 		directoryOrId?: string,
 		cwdOverride?: string,
+		options?: SessionOpenOptions,
 	): Promise<SessionManager> {
 		if (typeof pathOrStore !== "string") {
-			const snapshot = await pathOrStore.load(directoryOrId!);
-			if (snapshot.header.id !== directoryOrId) throw new SessionIdMismatchError(directoryOrId!, snapshot.header.id);
+			const opened = await readStoredSession(pathOrStore, directoryOrId!, options);
+			const header = openedHeader(opened);
+			if (header.id !== directoryOrId) throw new SessionIdMismatchError(directoryOrId!, header.id);
 			const manager = new SessionManager(
 				pathOrStore,
-				cwdOverride ?? snapshot.header.cwd,
+				cwdOverride ?? header.cwd,
 				pathOrStore instanceof JsonlSessionStore ? pathOrStore.descriptor.location : "",
 			);
-			manager.restore(
-				snapshot,
+			manager.restoreOpened(
+				opened,
 				pathOrStore instanceof JsonlSessionStore ? await pathOrStore.findFile(directoryOrId!) : undefined,
 			);
 			if (manager.sessionFile) manager.sessionDir = dirname(manager.sessionFile);
@@ -1197,17 +1369,17 @@ export class SessionManager {
 	static async continueRecent(
 		cwd: string,
 		sessionDir?: string,
-		options?: { includeInternal?: boolean },
+		options?: { includeInternal?: boolean } & SessionOpenOptions,
 	): Promise<SessionManager>;
 	static async continueRecent(
 		store: SessionStore,
 		cwd: string,
-		options?: { includeInternal?: boolean },
+		options?: { includeInternal?: boolean } & SessionOpenOptions,
 	): Promise<SessionManager>;
 	static async continueRecent(
 		cwdOrStore: string | SessionStore,
 		directoryOrCwd?: string,
-		options?: { includeInternal?: boolean },
+		options?: { includeInternal?: boolean } & SessionOpenOptions,
 	): Promise<SessionManager> {
 		const cwd = typeof cwdOrStore === "string" ? cwdOrStore : directoryOrCwd!;
 		if (typeof cwdOrStore === "string" && directoryOrCwd === undefined) {
@@ -1227,10 +1399,22 @@ export class SessionManager {
 				includeInternal: options?.includeInternal,
 			});
 			const manager = new SessionManager(store, cwd, directory);
-			if (recent) manager.restore(await store.load(recent.id), recent.location);
+			if (recent) manager.restoreOpened(await readStoredSession(store, recent.id, options), recent.location);
 			else await manager.initialize();
 			return manager;
 		});
+	}
+
+	/**
+	 * @internal An unsaved session holding this one's header and active branch. A branch this manager reads from the
+	 * latest compaction keeps its links to the state entries held from before it (#5249).
+	 */
+	inMemoryBranch(cwd: string): SessionManager {
+		const header = this.getHeader();
+		if (!header) throw new Error("Session header is missing");
+		const manager = SessionManager.inMemory(cwd, undefined, [header, ...this.getBranch()]);
+		manager.branchLinks = this.branchLinks;
+		return manager;
 	}
 
 	static inMemory(cwd: string = process.cwd(), options?: NewSessionOptions, entries?: FileEntry[]): SessionManager {
