@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, it } from "vitest";
 import type { WorkflowRunDetail } from "../src/core/extensions/workflow-run-control.js";
 import type { SessionEntry } from "../src/core/session-manager-types.js";
@@ -1521,6 +1523,236 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 		await assert.rejects(search("hello", "history://sessions/s1:5-3"), /Invalid entry-range selector: 5-3/);
 		await assert.rejects(read("history://workflows/r1:0-2"), /Line selector 0 is invalid; lines are 1-indexed/);
 		await assert.rejects(search("hello", "history://workflows/r1:0-2"), /Invalid line-range selector: 0-2/);
+	});
+
+	it("lists cold JSONL sessions with oversized first messages or legacy headers without loading them whole (#5250)", async () => {
+		const jsonlDir = join(dir, "jsonl-cold");
+		const writer = await JsonlSessionStore.open(jsonlDir);
+		await writer.create(header("huge-first"), [
+			message("e1", "user", `huge-prompt-${"p".repeat(300_000)}`, BASE),
+			...numbered(50, (seq) => `later-${seq}`),
+		]);
+		await writer.close();
+
+		const v1Path = join(
+			jsonlDir,
+			`--${PROJECT.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`,
+			"2026-11-01T00-00-00-000Z_old-v1.jsonl",
+		);
+		writeFileSync(
+			v1Path,
+			`${JSON.stringify({ type: "session", version: 1, id: "old-v1", timestamp: new Date(BASE).toISOString(), cwd: PROJECT })}\n${JSON.stringify({ type: "message", timestamp: new Date(BASE + 1000).toISOString(), message: { role: "user", content: "v1 message", timestamp: BASE + 1000 } })}\n`,
+		);
+
+		const cold = await JsonlSessionStore.open(jsonlDir, { scanExisting: false });
+		try {
+			(cold as unknown as { readSnapshot: () => Promise<never> }).readSnapshot = async () => {
+				throw new Error("cold JSONL discovery must not load the whole session");
+			};
+			const { read } = historyOver(cold);
+			const listing = await read("history://sessions");
+			assert.match(listing, /history:\/\/sessions\/huge-first/);
+			assert.match(listing, /history:\/\/sessions\/old-v1/);
+		} finally {
+			await cold.close();
+		}
+	});
+
+	it("preserves the in-flight iterator item across discovery deadlines and resumes from cursor 0.0 (#5250)", async () => {
+		const summaries = ["s1", "s2", "s3"].map((id, i) =>
+			summarizeSession({
+				header: {
+					id,
+					version: SESSION_FORMAT_VERSION,
+					createdAt: new Date(BASE + i * 1000).toISOString(),
+					cwd: PROJECT,
+				},
+				entries: [message(`m-${id}`, "user", `msg ${id}`, BASE + i * 1000)],
+				lastSeq: 1,
+			}),
+		);
+		let listCalls = 0;
+		const slowListStore: SessionStore = {
+			descriptor: { adapter: "slow-list", location: "memory" },
+			create: async () => ({ lastSeq: 1 }),
+			append: async () => ({ lastSeq: 1 }),
+			replace: async () => ({ lastSeq: 1 }),
+			load: async () => {
+				throw new Error("unused");
+			},
+			readEntryRange: async () => ({ lastSeq: 1, entries: [], throughSeq: 0 }),
+			readHeader: async () => header("s1"),
+			delete: async () => {},
+			async *list(): AsyncIterable<SessionSummary> {
+				listCalls++;
+				await new Promise((r) => setTimeout(r, 120));
+				yield summaries[0]!;
+				await new Promise((r) => setTimeout(r, 120));
+				yield summaries[1]!;
+				yield summaries[2]!;
+			},
+			findMostRecent: async () => undefined,
+			close: async () => {},
+		};
+		const { read } = historyOver(slowListStore, { timeMs: 35 });
+		const first = await read("history://sessions");
+		assert.match(first, /continue with history:\/\/sessions\?cursor=0\.0/);
+		await new Promise((r) => setTimeout(r, 100));
+		const second = await read("history://sessions?cursor=0.0");
+		assert.match(second, /continue with history:\/\/sessions\?cursor=0\.1/);
+		await new Promise((r) => setTimeout(r, 120));
+		const third = await historyOver(slowListStore, { timeMs: 500 }).read("history://sessions?cursor=0.1");
+		assert.match(third, /# sessions 1-3 of 3/);
+		assert.ok(third.includes("history://sessions/s1"));
+		assert.ok(third.includes("history://sessions/s2"));
+		assert.ok(third.includes("history://sessions/s3"));
+		assert.equal(listCalls, 1, "resumed discovery must reuse the parked iterator");
+	});
+
+	it("resumes multi-line searches past the first slice under row, byte, +N more, and workflow stage cursors without repeating matches (#5250)", async () => {
+		const { store, close } = await openSql(dir);
+		try {
+			const padLines = Array.from({ length: 700 }, (_, i) => `pad-${i}-${"p".repeat(95)}`);
+			const hitLines = Array.from({ length: 16 }, (_, i) => `slice2-hit-${i + 1} ${"h".repeat(120)}`);
+			const entryText = [...padLines, ...hitLines].join("\n");
+			await store.create(header("ml-big"), [message("e1", "user", entryText, BASE)]);
+
+			const rowBounded = historyOver(store, { rows: 1 });
+			const fromMid =
+				(await rowBounded.router.search?.(
+					"history://sessions/ml-big?cursor=1.0.660",
+					rowBounded.request("(?m)^slice2-hit-\\d+"),
+				)) ?? "";
+			assert.match(fromMid, /^history:\/\/sessions\/ml-big:1: slice2-hit-1 /m);
+
+			const byteBounded = historyOver(store, { bytes: 950 });
+			const seenByteHits: string[] = [];
+			let url: string | undefined = "history://sessions/ml-big";
+			for (let calls = 0; url !== undefined && calls < 20; calls++) {
+				const out = (await byteBounded.router.search?.(url, byteBounded.request("(?m)^slice2-hit-\\d+"))) ?? "";
+				for (const match of out.matchAll(/^history:\/\/sessions\/ml-big:1: (slice2-hit-\d+) /gm)) {
+					seenByteHits.push(match[1]!);
+				}
+				url = continuation(out);
+			}
+			assert.equal(url, undefined);
+			assert.deepEqual(
+				seenByteHits,
+				Array.from({ length: 16 }, (_, i) => `slice2-hit-${i + 1}`),
+			);
+
+			const capBounded = historyOver(store);
+			const seenCapHits: string[] = [];
+			let capUrl: string | undefined = "history://sessions/ml-big";
+			for (let calls = 0; capUrl !== undefined && calls < 10; calls++) {
+				const out = (await capBounded.router.search?.(capUrl, capBounded.request("(?m)^slice2-hit-\\d+"))) ?? "";
+				for (const match of out.matchAll(/^history:\/\/sessions\/ml-big:1: (slice2-hit-\d+) /gm)) {
+					seenCapHits.push(match[1]!);
+				}
+				capUrl = /search (history:\/\/\S+) for them\]$/m.exec(out)?.[1];
+			}
+			assert.equal(capUrl, undefined);
+			assert.deepEqual(
+				seenCapHits,
+				Array.from({ length: 16 }, (_, i) => `slice2-hit-${i + 1}`),
+			);
+
+			await store.create(
+				{
+					...header("stage-ml"),
+					internal: true,
+					workflow: { runId: "run-ml", stageId: "s1", stageName: "build" },
+				},
+				[message("e1", "user", entryText, BASE)],
+			);
+			const workflows: WorkflowRunHistory = {
+				listRuns: async () => [
+					{
+						runId: "run-ml",
+						name: "ml-workflow",
+						status: "completed",
+						startedAt: BASE,
+						elapsedMs: 1,
+						activeStages: [],
+						awaitingInputCount: 0,
+						awaitingInput: [],
+					},
+				],
+				getRun: async () => ({
+					runId: "run-ml",
+					name: "ml-workflow",
+					status: "completed",
+					startedAt: BASE,
+					inputs: {},
+					stages: [{ id: "s1", name: "build", status: "completed", sessionId: "stage-ml" }],
+				}),
+			};
+			const wfRouter = createHistoryRouter({
+				cwd: PROJECT,
+				sessionStore: () => store,
+				workflows: () => workflows,
+				budget: { bytes: 950 },
+			});
+			const wfHits: string[] = [];
+			let wfUrl: string | undefined = "history://workflows/run-ml";
+			for (let calls = 0; wfUrl !== undefined && calls < 20; calls++) {
+				const out =
+					(await wfRouter.search?.(wfUrl, {
+						pattern: "(?m)^slice2-hit-\\d+",
+						ignoreCase: false,
+						literal: false,
+						contextBefore: 0,
+						contextAfter: 0,
+					})) ?? "";
+				for (const match of out.matchAll(/^history:\/\/sessions\/stage-ml:1: (slice2-hit-\d+) /gm)) {
+					wfHits.push(match[1]!);
+				}
+				wfUrl = continuation(out);
+			}
+			assert.equal(wfUrl, undefined);
+			assert.deepEqual(
+				wfHits,
+				Array.from({ length: 16 }, (_, i) => `slice2-hit-${i + 1}`),
+			);
+		} finally {
+			await close();
+		}
+	});
+
+	it("allows a process to exit on its own after using the history worker (#5250)", () => {
+		const workerModuleUrl = new URL("../src/core/tools/history-regex-worker.ts", import.meta.url).href;
+		const pkgRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
+		const child = spawnSync(
+			process.execPath,
+			[
+				"--import",
+				"jiti/register",
+				"-e",
+				`const mod = await import(${JSON.stringify(workerModuleUrl)}); const fn = mod.matchLinesInWorker ?? mod.default.matchLinesInWorker; const res = await fn(["alpha"], "alpha", "", false, false, 1000, undefined); if (res.matchedIndices[0] !== 0) process.exit(2);`,
+			],
+			{ cwd: pkgRoot, timeout: 4_000, encoding: "utf8" },
+		);
+		assert.equal(child.status, 0, `worker kept process alive or failed: ${child.stderr}`);
+	});
+
+	it("accepts native-only regex syntax and still supports JS lookaround (#5250)", async () => {
+		const store = new MemorySessionStore();
+		await store.create(header("dialect"), [message("e1", "user", "alpha one\nBETA two", BASE)]);
+		const { router, request } = historyOver(store);
+		const namedGroup = (await router.search?.("history://sessions/dialect", request("(?P<word>alpha) one"))) ?? "";
+		assert.match(namedGroup, /^history:\/\/sessions\/dialect:1: alpha one$/m);
+
+		const inlineFlag = (await router.search?.("history://sessions/dialect", request("(?i:beta) two"))) ?? "";
+		assert.match(inlineFlag, /^history:\/\/sessions\/dialect:1: BETA two$/m);
+
+		const multilineNative =
+			(await router.search?.("history://sessions/dialect", request("(?s)(?P<w>alpha).*BETA"))) ?? "";
+		assert.match(multilineNative, /^history:\/\/sessions\/dialect:1: alpha one$/m);
+
+		const lookbehind = (await router.search?.("history://sessions/dialect", request("(?<=alpha )one"))) ?? "";
+		assert.match(lookbehind, /^history:\/\/sessions\/dialect:1: alpha one$/m);
+
+		await assert.rejects(Promise.resolve(router.search?.("history://sessions/dialect", request("[unclosed"))));
 	});
 
 	it(

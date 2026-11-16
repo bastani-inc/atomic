@@ -33,6 +33,7 @@ import {
 	HistoryCallBudget,
 	isHistoryDeadlineError,
 	lineBytes,
+	matchMultilineNative,
 	mergeSeqRanges,
 	oneLine,
 	outlineSession,
@@ -43,6 +44,7 @@ import {
 	type SeqRange,
 	type SessionPlace,
 	searchSession,
+	selectRegexEngine,
 	stopText,
 } from "./history-session.ts";
 import { entryLines, textLines, timestamp, transcriptHeaderLines, wrapLine } from "./history-transcript.ts";
@@ -94,7 +96,7 @@ const QUERY_KEYS: Readonly<Record<"sessions" | "workflows" | "root", readonly st
 	workflows: ["limit", "offset", "cursor"],
 	root: ["limit", "offset", "project", "cursor"],
 };
-const CURSOR = /^(\d+)(?:\.(\d+))?(?:\.(\d+))?$/;
+const CURSOR = /^(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:\.(\d+))?$/;
 
 type Domain = "sessions" | "workflows";
 interface HistoryTarget {
@@ -104,12 +106,18 @@ interface HistoryTarget {
 	readonly offset: number;
 	/** `undefined` selects the current project, `"all"` every project, anything else is a project directory. */
 	readonly project?: string;
-	readonly cursor?: { readonly first: number; readonly second: number; readonly third: number };
+	readonly cursor?: {
+		readonly first: number;
+		readonly second: number;
+		readonly third: number;
+		readonly fourth: number;
+	};
 }
 
 interface ParkedDiscovery {
 	readonly iterator: AsyncIterator<SessionSummary>;
 	readonly items: { readonly summary: SessionSummary; readonly modifiedMs: number }[];
+	pending?: Promise<IteratorResult<SessionSummary>>;
 	updatedAt: number;
 }
 
@@ -158,7 +166,7 @@ function parseTarget(url: string): HistoryTarget {
 	const cursorMatch = cursorText === null ? undefined : CURSOR.exec(cursorText);
 	if (cursorText !== null && !cursorMatch)
 		throw new Error(
-			`history cursor must be N, N.M or N.M.K, as a read or search that stopped early gave it: ${cursorText}`,
+			`history cursor must be N, N.M, N.M.K or N.M.K.L, as a read or search that stopped early gave it: ${cursorText}`,
 		);
 	return {
 		domain,
@@ -172,6 +180,7 @@ function parseTarget(url: string): HistoryTarget {
 						first: Number(cursorMatch[1]),
 						second: Number(cursorMatch[2] ?? 0),
 						third: Number(cursorMatch[3] ?? 0),
+						fourth: Number(cursorMatch[4] ?? 0),
 					},
 				}
 			: {}),
@@ -338,63 +347,73 @@ async function searchLinesBounded(
 	budget: HistoryCallBudget,
 ): Promise<{ readonly rows: string[]; readonly timedOut: boolean }> {
 	const normalized = normalizeSearchPattern(request.pattern, request.ignoreCase);
-	if (!request.literal) new RegExp(normalized.pattern, normalized.flags);
 	const ignoreCase = normalized.flags.includes("i");
 	const multiline = isMultilineSearchPattern(request.pattern, request.ignoreCase, request.literal);
+	const engine = selectRegexEngine(normalized, request.literal, multiline);
 	const text = lines.join("\n");
 
-	if (!request.literal && !multiline && !text.includes("\0")) {
-		try {
-			const native = loadNativeSearchBinding()?.search?.(text, {
-				pattern: normalized.pattern,
-				ignoreCase,
-				multiline: false,
-				contextBefore: request.contextBefore,
-				contextAfter: request.contextAfter,
-			});
-			if (native && !native.error) {
-				const rows = native.matches.flatMap((match) => [
-					...(match.contextBefore ?? []).map((line) =>
-						formatSearchTextLine(label, line.lineNumber, line.line, false),
-					),
-					formatSearchTextLine(label, match.lineNumber, match.line, true),
-					...(match.contextAfter ?? []).map((line) =>
-						formatSearchTextLine(label, line.lineNumber, line.line, false),
-					),
-				]);
-				return {
-					rows:
-						request.ranges !== undefined
-							? filterSearchOutputByLineRange(
-									rows.join("\n"),
-									request.ranges,
-									request.contextBefore,
-									request.contextAfter,
-								)
-									.split("\n")
-									.filter((line) => line !== "" && line !== "No matches found")
-							: rows,
-					timedOut: false,
-				};
-			}
-		} catch {}
+	if (!request.literal && !multiline) {
+		const safeText = engine === "native-only" ? text.replaceAll("\0", "\ufffd") : text;
+		if (!safeText.includes("\0")) {
+			try {
+				const native = loadNativeSearchBinding()?.search?.(safeText, {
+					pattern: normalized.pattern,
+					ignoreCase,
+					multiline: false,
+					contextBefore: request.contextBefore,
+					contextAfter: request.contextAfter,
+				});
+				if (native && !native.error) {
+					const rows = native.matches.flatMap((match) => [
+						...(match.contextBefore ?? []).map((line) =>
+							formatSearchTextLine(label, line.lineNumber, line.line, false),
+						),
+						formatSearchTextLine(label, match.lineNumber, match.line, true),
+						...(match.contextAfter ?? []).map((line) =>
+							formatSearchTextLine(label, line.lineNumber, line.line, false),
+						),
+					]);
+					return {
+						rows:
+							request.ranges !== undefined
+								? filterSearchOutputByLineRange(
+										rows.join("\n"),
+										request.ranges,
+										request.contextBefore,
+										request.contextAfter,
+									)
+										.split("\n")
+										.filter((line) => line !== "" && line !== "No matches found")
+								: rows,
+						timedOut: false,
+					};
+				}
+			} catch {}
+		}
+		if (engine === "native-only") return { rows: [], timedOut: false };
 	}
 
 	const matchLines = new Set<number>();
 	const contextLines = new Set<number>();
 	if (multiline) {
-		const res = await matchMultilineInWorker(
-			text,
-			text.length + 1,
-			normalized.pattern,
-			normalized.flags,
-			ignoreCase,
-			request.literal,
-			budget.remainingMs(),
-			budget.signal,
-		);
-		if (res.timedOut) return { rows: [], timedOut: true };
-		for (const span of res.matches) {
+		const spans =
+			engine === "native-only"
+				? matchMultilineNative(text, text.length + 1, normalized, ignoreCase, lines.length + 1)
+				: await (async () => {
+						const res = await matchMultilineInWorker(
+							text,
+							text.length + 1,
+							normalized.pattern,
+							normalized.flags,
+							ignoreCase,
+							request.literal,
+							budget.remainingMs(),
+							budget.signal,
+						);
+						return res.timedOut ? ("timedOut" as const) : res.matches;
+					})();
+		if (spans === "timedOut") return { rows: [], timedOut: true };
+		for (const span of spans) {
 			matchLines.add(span.startLine + 1);
 			for (
 				let n = Math.max(1, span.startLine + 1 - request.contextBefore);
@@ -496,7 +515,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 				byScope.delete(key);
 			}
 		}
-		const isContinuation = target.cursor !== undefined && target.cursor.first === 0 && target.cursor.second > 0;
+		const isContinuation = target.cursor !== undefined && target.cursor.first === 0;
 		let parked = isContinuation ? byScope.get(scopeKey) : undefined;
 		if (!parked) {
 			const existing = byScope.get(scopeKey);
@@ -516,7 +535,9 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 					byScope.set(scopeKey, parked);
 					return { stopped: { reason, scanned: parked.items.length } };
 				}
-				const next = await budget.race(parked.iterator.next());
+				parked.pending ??= parked.iterator.next();
+				const next = await budget.race(parked.pending);
+				parked.pending = undefined;
 				progressed = true;
 				if (next.done) break;
 				const summary = next.value;
@@ -937,7 +958,9 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		runId: string,
 		request: InternalSearchRequest,
 		prefilter: LiteralQuery | undefined,
-		start: { readonly stage: number; readonly seq: number; readonly matchIndex: number } | undefined,
+		start:
+			| { readonly stage: number; readonly seq: number; readonly matchIndex: number; readonly lineOffset: number }
+			| undefined,
 		budget: HistoryCallBudget,
 	): Promise<{
 		readonly lines: string[];
@@ -991,6 +1014,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 				if (!(await budget.race(store.readHeader(stage.sessionId)))) continue;
 				const fromSeq = start !== undefined && stageNumber === start.stage ? Math.max(1, start.seq) : 1;
 				const fromMatchIndex = start !== undefined && stageNumber === start.stage ? start.matchIndex : 0;
+				const fromLineOffset = start !== undefined && stageNumber === start.stage ? start.lineOffset : 0;
 				const result = await searchSession({
 					place: placeOf(stage.sessionId, store, { limit: DEFAULT_LIMIT, offset: 0 }),
 					label: `history://sessions/${stage.sessionId}`,
@@ -998,16 +1022,13 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 					prefilter,
 					fromSeq,
 					fromMatchIndex,
+					fromLineOffset,
 					ranges: undefined,
 					budget,
 				});
 				lines.push(...result.lines);
 				if (result.stopped) {
-					const resume = result.stopped.resume;
-					const cursor =
-						resume.matchIndex > 0
-							? `${stageNumber}.${resume.seq}.${resume.matchIndex}`
-							: `${stageNumber}.${resume.seq}`;
+					const cursor = `${stageNumber}.${formatSearchCursor(result.stopped.resume)}`;
 					return {
 						lines,
 						unreadable,
@@ -1032,7 +1053,12 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		const start =
 			target.cursor === undefined
 				? undefined
-				: { stage: target.cursor.first, seq: target.cursor.second, matchIndex: target.cursor.third };
+				: {
+						stage: target.cursor.first,
+						seq: target.cursor.second,
+						matchIndex: target.cursor.third,
+						lineOffset: target.cursor.fourth,
+					};
 		if (target.id !== undefined) {
 			const runId = await authorizedRunId(target.id, budget);
 			const { lines, unreadable, stopped } = await searchRun(runId, request, prefilter, start, budget);
@@ -1137,13 +1163,9 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			const { url, request } = normalizeInlineSearchRequest(rawUrl, rawRequest);
 			const target = parseTarget(url);
 			const budget = newBudget(request.signal);
-			if (!request.literal) {
-				const normalized = normalizeSearchPattern(request.pattern, request.ignoreCase);
-				new RegExp(normalized.pattern, normalized.flags);
-			}
-			const prefilter = isMultilineSearchPattern(request.pattern, request.ignoreCase, request.literal)
-				? undefined
-				: indexLiterals(request.pattern, request.ignoreCase, request.literal);
+			const multiline = isMultilineSearchPattern(request.pattern, request.ignoreCase, request.literal);
+			selectRegexEngine(normalizeSearchPattern(request.pattern, request.ignoreCase), request.literal, multiline);
+			const prefilter = multiline ? undefined : indexLiterals(request.pattern, request.ignoreCase, request.literal);
 			try {
 				if (target.domain === "sessions")
 					return (await searchSessions(target, request, prefilter, budget)).join("\n");

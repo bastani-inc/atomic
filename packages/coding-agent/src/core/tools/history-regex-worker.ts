@@ -259,7 +259,6 @@ let nextRequestId = 1;
 function getWorker(): Worker {
 	if (!activeWorker) {
 		const worker = new Worker(WORKER_SCRIPT, { eval: true });
-		worker.unref();
 		worker.on("message", (message: { id?: number; error?: string }) => {
 			if (!activeTask || !message || message.id !== activeTask.id) return;
 			const task = activeTask;
@@ -278,6 +277,7 @@ function getWorker(): Worker {
 			task?.settle({ error });
 			pumpQueue();
 		});
+		worker.unref();
 		activeWorker = worker;
 	}
 	return activeWorker;

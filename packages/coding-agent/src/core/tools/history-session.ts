@@ -815,6 +815,75 @@ export interface SearchResume {
 	readonly lineOffset?: number;
 }
 
+export type RegexEngine = "literal" | "native-only" | "both";
+
+export function selectRegexEngine(
+	normalized: { readonly pattern: string; readonly flags: string },
+	literal: boolean,
+	multiline: boolean,
+): RegexEngine {
+	if (literal) return "literal";
+	let jsError: unknown;
+	try {
+		new RegExp(normalized.pattern, normalized.flags);
+		return "both";
+	} catch (error) {
+		jsError = error;
+	}
+	try {
+		const native = loadNativeSearchBinding()?.search?.("", {
+			pattern: normalized.flags.includes("s") ? `(?s)${normalized.pattern}` : normalized.pattern,
+			ignoreCase: normalized.flags.includes("i"),
+			multiline,
+			contextBefore: 0,
+			contextAfter: 0,
+		});
+		if (native && !native.error) return "native-only";
+	} catch {}
+	throw jsError;
+}
+
+function lineNumberAt(newlines: readonly number[], index: number): number {
+	let low = 0;
+	let high = newlines.length;
+	while (low < high) {
+		const mid = (low + high) >> 1;
+		if (newlines[mid]! < index) low = mid + 1;
+		else high = mid;
+	}
+	return low;
+}
+
+export function matchMultilineNative(
+	text: string,
+	firstEntryChars: number,
+	normalized: { readonly pattern: string; readonly flags: string },
+	ignoreCase: boolean,
+	maxCount: number,
+): MultilineSpan[] {
+	const newlines: number[] = [];
+	for (let i = text.indexOf("\n"); i !== -1; i = text.indexOf("\n", i + 1)) newlines.push(i);
+	const maxStartLine = lineNumberAt(newlines, Math.max(0, firstEntryChars - 1));
+	const native = loadNativeSearchBinding()?.search?.(text.replaceAll("\0", "\ufffd"), {
+		pattern: normalized.flags.includes("s") ? `(?s)${normalized.pattern}` : normalized.pattern,
+		ignoreCase,
+		multiline: true,
+		contextBefore: 0,
+		contextAfter: 0,
+		maxCount: Math.max(1, maxCount),
+	});
+	if (!native || native.error) return [];
+	const spans: MultilineSpan[] = [];
+	for (const match of native.matches) {
+		const startLine = match.lineNumber - 1;
+		if (startLine > maxStartLine) break;
+		let lineSpan = 0;
+		for (let i = match.line.indexOf("\n"); i !== -1; i = match.line.indexOf("\n", i + 1)) lineSpan++;
+		spans.push({ startLine, endLine: startLine + lineSpan });
+	}
+	return spans;
+}
+
 export interface SessionSearchResult {
 	readonly lines: string[];
 	readonly lastSeq: number;
@@ -852,6 +921,7 @@ class SessionSearcher {
 	private readonly normalized: { readonly pattern: string; readonly flags: string };
 	private readonly ignoreCase: boolean;
 	private readonly multiline: boolean;
+	private readonly engine: RegexEngine;
 	private coverage: { indexedSeq: number; lastSeq: number; generation?: string; revision?: string } | undefined;
 	private indexing = false;
 	private lastSeq = 0;
@@ -872,13 +942,13 @@ class SessionSearcher {
 		this.pager = entryPager(search.place.store, search.place.sessionId);
 		this.index = search.place.store.searchIndex;
 		this.normalized = normalizeSearchPattern(search.request.pattern, search.request.ignoreCase);
-		if (!search.request.literal) new RegExp(this.normalized.pattern, this.normalized.flags);
 		this.ignoreCase = this.normalized.flags.includes("i");
 		this.multiline = isMultilineSearchPattern(
 			search.request.pattern,
 			search.request.ignoreCase,
 			search.request.literal,
 		);
+		this.engine = selectRegexEngine(this.normalized, search.request.literal, this.multiline);
 	}
 
 	async run(): Promise<SessionSearchResult> {
@@ -1275,9 +1345,10 @@ class SessionSearcher {
 		const { request, budget } = this.search;
 		if (!request.literal) {
 			const joined = lines.join("\n");
-			if (!joined.includes("\0")) {
+			const safeText = this.engine === "native-only" ? joined.replaceAll("\0", "\ufffd") : joined;
+			if (!safeText.includes("\0")) {
 				try {
-					const native = loadNativeSearchBinding()?.search?.(joined, {
+					const native = loadNativeSearchBinding()?.search?.(safeText, {
 						pattern: this.normalized.pattern,
 						ignoreCase: this.ignoreCase,
 						multiline: false,
@@ -1289,6 +1360,7 @@ class SessionSearcher {
 					}
 				} catch {}
 			}
+			if (this.engine === "native-only") return [];
 		}
 		const workerResult = await matchLinesInWorker(
 			lines,
@@ -1308,19 +1380,19 @@ class SessionSearcher {
 	): Promise<{ readonly reason: BudgetStop; readonly resume: SearchResume } | undefined> {
 		const { request, budget } = this.search;
 		const isResumeEntry = entry.seq === this.search.fromSeq;
-		let sliceStart = isResumeEntry ? (this.search.fromLineOffset ?? 0) : 0;
-		const initialSkipUnits = isResumeEntry && sliceStart === 0 ? (this.search.fromMatchIndex ?? 0) : 0;
+		const startSlice = isResumeEntry ? (this.search.fromLineOffset ?? 0) : 0;
+		let sliceStart = startSlice;
+		let skipRemaining = isResumeEntry ? (this.search.fromMatchIndex ?? 0) : 0;
 		const seenStart = new Set<number>();
-		let cumulativeUnits = isResumeEntry && sliceStart > 0 ? (this.search.fromMatchIndex ?? 0) : 0;
 
 		while (sliceStart < entry.lineCount) {
 			const reason = budget.spent();
-			if (reason && (this.emittedAny || sliceStart > 0 || entry.seq > this.coveredFromSeq)) {
+			if (reason && (this.emittedAny || sliceStart > startSlice || entry.seq > this.coveredFromSeq)) {
 				return {
 					reason,
 					resume: {
 						seq: entry.seq,
-						matchIndex: cumulativeUnits,
+						matchIndex: skipRemaining,
 						...(sliceStart > 0 ? { lineOffset: sliceStart } : {}),
 					},
 				};
@@ -1365,7 +1437,7 @@ class SessionSearcher {
 						reason: "time",
 						resume: {
 							seq: entry.seq,
-							matchIndex: cumulativeUnits,
+							matchIndex: skipRemaining,
 							...(sliceStart > 0 ? { lineOffset: sliceStart } : {}),
 						},
 					};
@@ -1376,7 +1448,7 @@ class SessionSearcher {
 						reason: "time",
 						resume: {
 							seq: entry.seq,
-							matchIndex: cumulativeUnits,
+							matchIndex: skipRemaining,
 							...(sliceStart > 0 ? { lineOffset: sliceStart } : {}),
 						},
 					};
@@ -1400,29 +1472,41 @@ class SessionSearcher {
 			}
 
 			const windowText = windowParts.flatMap((part) => part.lines).join("\n");
-			const res = await matchMultilineInWorker(
-				windowText,
-				firstEntryChars,
-				this.normalized.pattern,
-				this.normalized.flags,
-				this.ignoreCase,
-				request.literal,
-				budget.remainingMs(),
-				budget.signal,
-			);
-			if (res.timedOut) {
-				if (!this.emittedAny && sliceStart === 0 && entry.seq === this.coveredFromSeq) {
-					const skipped = this.timeoutOnEntry(entry.seq);
-					if ("stop" in skipped) return skipped.stop;
+			let matchedSpans: readonly MultilineSpan[];
+			if (this.engine === "native-only") {
+				matchedSpans = matchMultilineNative(
+					windowText,
+					firstEntryChars,
+					this.normalized,
+					this.ignoreCase,
+					totalLines + 1,
+				);
+			} else {
+				const res = await matchMultilineInWorker(
+					windowText,
+					firstEntryChars,
+					this.normalized.pattern,
+					this.normalized.flags,
+					this.ignoreCase,
+					request.literal,
+					budget.remainingMs(),
+					budget.signal,
+				);
+				if (res.timedOut) {
+					if (!this.emittedAny && sliceStart === startSlice && entry.seq === this.coveredFromSeq) {
+						const skipped = this.timeoutOnEntry(entry.seq);
+						if ("stop" in skipped) return skipped.stop;
+					}
+					return {
+						reason: "time",
+						resume: {
+							seq: entry.seq,
+							matchIndex: skipRemaining,
+							...(sliceStart > 0 ? { lineOffset: sliceStart } : {}),
+						},
+					};
 				}
-				return {
-					reason: "time",
-					resume: {
-						seq: entry.seq,
-						matchIndex: cumulativeUnits,
-						...(sliceStart > 0 ? { lineOffset: sliceStart } : {}),
-					},
-				};
+				matchedSpans = res.matches;
 			}
 
 			const resolveGlobalLine = (globalLine: number): { seq: number; line: number } => {
@@ -1437,7 +1521,7 @@ class SessionSearcher {
 			};
 
 			const sliceUnits: EntryMatchUnit[] = [];
-			for (const span of res.matches as readonly MultilineSpan[]) {
+			for (const span of matchedSpans) {
 				const start = resolveGlobalLine(span.startLine);
 				if (start.seq !== entry.seq || seenStart.has(start.line)) continue;
 				seenStart.add(start.line);
@@ -1446,11 +1530,20 @@ class SessionSearcher {
 			}
 
 			if (sliceUnits.length > 0) {
-				const skipInSlice = sliceStart === 0 ? initialSkipUnits : 0;
-				const stop = await this.emitUnits(entry, sliceUnits, skipInSlice, cumulativeUnits);
-				if (stop !== undefined) return stop;
+				if (skipRemaining >= sliceUnits.length) {
+					skipRemaining -= sliceUnits.length;
+				} else {
+					const skipInSlice = skipRemaining;
+					skipRemaining = 0;
+					const nextSliceStart = sliceEnd + 1 < entry.lineCount ? sliceEnd + 1 : undefined;
+					const stop = await this.emitUnits(entry, sliceUnits, {
+						skipUnits: skipInSlice,
+						sliceLineOffset: sliceStart,
+						nextSliceStart,
+					});
+					if (stop !== undefined) return stop;
+				}
 			}
-			cumulativeUnits += sliceUnits.length;
 			sliceStart = sliceEnd + 1;
 			await budget.pace();
 		}
@@ -1460,32 +1553,43 @@ class SessionSearcher {
 	private async emitUnits(
 		entry: RenderedEntry,
 		units: readonly EntryMatchUnit[],
-		skipOverride?: number,
-		baseUnitIndex = 0,
+		sliceContext?: {
+			readonly skipUnits: number;
+			readonly sliceLineOffset: number;
+			readonly nextSliceStart: number | undefined;
+		},
 	): Promise<{ readonly reason: BudgetStop; readonly resume: SearchResume } | undefined> {
 		const { seq } = entry;
 		const { label, budget } = this.search;
 		const skipUnits =
-			skipOverride !== undefined
-				? skipOverride
+			sliceContext !== undefined
+				? sliceContext.skipUnits
 				: seq === this.search.fromSeq
 					? (this.search.fromMatchIndex ?? 0)
 					: 0;
+		const lineOffsetPart =
+			sliceContext !== undefined && sliceContext.sliceLineOffset > 0
+				? { lineOffset: sliceContext.sliceLineOffset }
+				: {};
+		const resumeAtUnit = (unitIndex: number): SearchResume => ({
+			seq,
+			matchIndex: unitIndex,
+			...lineOffsetPart,
+		});
 		const matchStartLinesInEntry = new Set(units.slice(skipUnits).map((u) => u.startLine));
 
 		for (let unitIdx = skipUnits; unitIdx < units.length; unitIdx++) {
 			const unit = units[unitIdx]!;
-			const globalUnitIdx = baseUnitIndex + unitIdx;
 			if (this.shown >= MAX_MATCHES_PER_SESSION) {
-				this.firstMore ??= { seq, matchIndex: globalUnitIdx };
+				this.firstMore ??= resumeAtUnit(unitIdx);
 				this.more++;
 				continue;
 			}
 			const beforeRows = await this.collectContextBefore(entry, unit.startLine, matchStartLinesInEntry);
-			if (beforeRows === "timedOut") return { reason: "time", resume: { seq, matchIndex: globalUnitIdx } };
+			if (beforeRows === "timedOut") return { reason: "time", resume: resumeAtUnit(unitIdx) };
 			const matchRow = formatSearchTextLine(label, seq, entry.lineAt(unit.startLine), true);
 			const spanRows = await this.collectSpanAndContextAfter(entry, unit, matchStartLinesInEntry);
-			if (spanRows === "timedOut") return { reason: "time", resume: { seq, matchIndex: globalUnitIdx } };
+			if (spanRows === "timedOut") return { reason: "time", resume: resumeAtUnit(unitIdx) };
 
 			const allRows = [...beforeRows, { seq, line: unit.startLine, text: matchRow }, ...spanRows];
 			const totalBytes = allRows.reduce((sum, r) => sum + lineBytes(r.text), 0);
@@ -1524,12 +1628,16 @@ class SessionSearcher {
 				this.advanceWatermark(seq, unit.startLine);
 				this.shown++;
 				this.emittedAny = true;
-				const nextResume =
-					unitIdx + 1 < units.length ? { seq, matchIndex: globalUnitIdx + 1 } : { seq: seq + 1, matchIndex: 0 };
+				const nextResume: SearchResume =
+					unitIdx + 1 < units.length
+						? resumeAtUnit(unitIdx + 1)
+						: sliceContext?.nextSliceStart !== undefined
+							? { seq, matchIndex: 0, lineOffset: sliceContext.nextSliceStart }
+							: { seq: seq + 1, matchIndex: 0 };
 				return { reason: "byte", resume: nextResume };
 			}
 
-			return { reason: "byte", resume: { seq, matchIndex: globalUnitIdx } };
+			return { reason: "byte", resume: resumeAtUnit(unitIdx) };
 		}
 		return undefined;
 	}

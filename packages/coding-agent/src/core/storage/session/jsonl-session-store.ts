@@ -614,12 +614,13 @@ export class JsonlSessionStore implements SessionStore {
 							if (!matchesSessionIdPrefix(header.id, query.idPrefix)) return undefined;
 							if (matchesCwd && !matchesCwd(header.cwd)) return undefined;
 							if (!query.includeInternal && header.internal) return undefined;
-							if (query.withoutSearchText && isCurrentSessionHeader(stored)) {
+							if (query.withoutSearchText) {
 								const stats = await stat(path, { bigint: true });
 								const summarized = await summarizeLegacySession(
 									{ location: path, header, read: () => this.readSnapshot(path, stored) },
 									Number(stats.size),
 									Number(stats.mtimeMs),
+									{ whole: false },
 								);
 								return { ...summarized, searchText: "", location: path };
 							}
