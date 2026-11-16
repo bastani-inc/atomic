@@ -194,9 +194,29 @@ describe("ask_user_question dialog (#5224)", () => {
 
 		const custom = open(THREE);
 		custom.press(DOWN, DOWN);
-		assert.equal(custom.hint(), "↑↓ select · enter choose · esc cancel");
+		assert.equal(custom.hint(), "↑↓ select · esc cancel");
 		custom.press(TAB);
 		assert.match(custom.inner()[0] ?? "", /1\/3$/);
+	});
+
+	test("custom-answer hints offer Enter only for a nonblank draft (#5244)", () => {
+		for (const draft of ["", " ", "  "]) {
+			const dialog = open(ONE);
+			dialog.press(DOWN, DOWN);
+			if (draft) dialog.press(`\x1b[200~${draft}\x1b[201~`);
+			assert.equal(dialog.hint(), "↑↓ select · esc cancel");
+			dialog.press(ENTER);
+			assert.equal(dialog.result(), undefined);
+			dialog.press("x");
+			assert.equal(dialog.hint(), "↑↓ select · enter choose · esc cancel");
+			dialog.press(ENTER);
+			assert.equal(dialog.result()?.answers[0]?.answer, `${draft}x`);
+		}
+		const chat = open(ONE);
+		chat.press("\x1b[A");
+		assert.equal(chat.hint(), "↑↓ select · enter choose · esc cancel");
+		chat.press(ENTER);
+		assert.equal(chat.result()?.answers[0]?.kind, "chat");
 	});
 
 	test("enter answers and moves on; esc cancels the whole dialog", () => {

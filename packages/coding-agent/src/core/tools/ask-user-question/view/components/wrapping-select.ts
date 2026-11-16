@@ -1,6 +1,6 @@
 import type { Component } from "@bastani/atomic-tui";
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@bastani/atomic-tui";
-import { terminalDisplayText } from "../../../../../utils/terminal-text.ts";
+import { terminalDisplayCursor, terminalDisplayText } from "../../../../../utils/terminal-text.ts";
 import { OVERLAY_ACTIVE_ROW_MARKER } from "../../../../extensions/ui-types.js";
 import { ROW_INTENT_META } from "../../state/row-intent.ts";
 import { type FieldTone, fieldTone, rowTone } from "../../state/selectors/field-tone.ts";
@@ -63,6 +63,8 @@ export class WrappingSelect implements Component {
 	private readonly maxVisible: number;
 	private readonly theme: WrappingSelectTheme;
 	private readonly inlineInputEnabled: boolean;
+	private readonly descriptions = new Map<string, string[]>();
+	private readonly labels = new Map<string, string[]>();
 	private numberStartOffset: number;
 	private totalItemsForNumbering: number;
 
@@ -133,7 +135,7 @@ export class WrappingSelect implements Component {
 			return;
 		}
 		this.confirmedIndex = Math.max(0, Math.min(index, this.items.length - 1));
-		this.confirmedLabelOverride = labelOverride === undefined ? undefined : terminalDisplayText(labelOverride);
+		this.confirmedLabelOverride = labelOverride;
 	}
 
 	setInputBuffer(text: string): void {
@@ -148,7 +150,10 @@ export class WrappingSelect implements Component {
 	/** Intentionally empty — input is routed at the container level. */
 	handleInput(_data: string): void {}
 
-	invalidate(): void {}
+	invalidate(): void {
+		this.descriptions.clear();
+		this.labels.clear();
+	}
 
 	render(width: number): string[] {
 		if (this.items.length === 0) return [];
@@ -195,8 +200,9 @@ export class WrappingSelect implements Component {
 		numberWidth: number,
 	): string[] {
 		const rowPrefix = this.buildRowPrefix(index, isActive, numberWidth);
-		const continuationPrefix = " ".repeat(visibleWidth(rowPrefix));
-		const contentWidth = Math.max(WrappingSelect.MIN_CONTENT_WIDTH, width - visibleWidth(rowPrefix));
+		const prefixWidth = visibleWidth(rowPrefix);
+		const continuationPrefix = " ".repeat(prefixWidth);
+		const contentWidth = Math.max(WrappingSelect.MIN_CONTENT_WIDTH, width - prefixWidth);
 
 		if (this.isInlineField(item)) {
 			if (isActive) return this.renderInlineInputRow(rowPrefix, continuationPrefix, contentWidth);
@@ -273,7 +279,10 @@ export class WrappingSelect implements Component {
 	private inputTextWithCursor(): string {
 		const rawCursor = this.clampInputCursor(this.inputCursor ?? this.inputBuffer.length);
 		const text = terminalDisplayText(this.inputBuffer);
-		const cursor = Math.min(terminalDisplayText(this.inputBuffer.slice(0, rawCursor)).length, text.length);
+		const cursor =
+			text === this.inputBuffer
+				? rawCursor
+				: Math.min(terminalDisplayCursor(this.inputBuffer, rawCursor), text.length);
 		const before = text.slice(0, cursor);
 		const after = text.slice(cursor);
 		const [at = ""] = Array.from(after);
@@ -296,12 +305,16 @@ export class WrappingSelect implements Component {
 		contentWidth: number,
 		tone: FieldTone | undefined,
 	): string[] {
-		const wrapped = wrapTextWithAnsi(label, contentWidth);
-		return wrapped.map((segment, index) => {
+		const key = `${contentWidth}\0${rowPrefix}\0${tone ?? ""}\0${label}`;
+		const cached = this.labels.get(key);
+		if (cached) return cached;
+		const lines = wrapTextWithAnsi(label, contentWidth).map((segment, index) => {
 			const prefix = index === 0 ? rowPrefix : continuationPrefix;
 			const line = `${prefix}${segment}`;
 			return tone ? this.theme.field(tone, line) : line;
 		});
+		this.labels.set(key, lines);
+		return lines;
 	}
 
 	private renderDescriptionBlock(
@@ -310,7 +323,13 @@ export class WrappingSelect implements Component {
 		contentWidth: number,
 	): string[] {
 		if (!description) return [];
-		const wrapped = wrapTextWithAnsi(description, contentWidth);
-		return wrapped.map((segment) => `${continuationPrefix}${this.theme.description(segment)}`);
+		const key = `${contentWidth}\0${continuationPrefix}\0${description}`;
+		const cached = this.descriptions.get(key);
+		if (cached) return cached;
+		const lines = wrapTextWithAnsi(description, contentWidth).map(
+			(segment) => `${continuationPrefix}${this.theme.description(segment)}`,
+		);
+		this.descriptions.set(key, lines);
+		return lines;
 	}
 }

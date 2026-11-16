@@ -46,7 +46,7 @@ export class MultiSelectView implements StatefulView<MultiSelectViewProps> {
 			...question,
 			options: question.options.map((option) => ({
 				...option,
-				label: terminalDisplayText(option.label),
+				label: terminalDisplayText(option.label).replace(/\s+/gu, " "),
 				description: terminalDisplayText(option.description),
 			})),
 		};

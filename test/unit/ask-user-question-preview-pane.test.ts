@@ -10,7 +10,7 @@
  * the border 11-13 columns early — on the active row alone. See TMUX-EVIDENCE.md.
  */
 import assert from "node:assert/strict";
-import { visibleWidth } from "@bastani/atomic-tui";
+import { truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import { test } from "vitest";
 import {
 	OVERLAY_ACTIVE_ROW_MARKER,
@@ -27,6 +27,7 @@ import type {
 	QuestionParams,
 } from "../../packages/coding-agent/src/core/tools/ask-user-question/tool/types.ts";
 import { OptionListView } from "../../packages/coding-agent/src/core/tools/ask-user-question/view/components/option-list-view.ts";
+import { renderBorderedBox } from "../../packages/coding-agent/src/core/tools/ask-user-question/view/components/preview/preview-box-renderer.ts";
 import { crossTabLeftWidthWithDonation } from "../../packages/coding-agent/src/core/tools/ask-user-question/view/components/preview/preview-layout-decider.ts";
 import {
 	PreviewBlockRenderer,
@@ -126,6 +127,28 @@ function borderColumn(line: string): number {
 	}
 	return -1;
 }
+
+test("preview boxes retain padding and clipping for styled graphemes (#5244)", () => {
+	const samples = [
+		"",
+		"short",
+		"a long line that needs clipping",
+		"\x1b[31mstyled\x1b[39m",
+		"界面",
+		"e\u0301",
+		"👍🏽",
+		"👍\x1b[31m🏽\x1b[0m",
+		"👩\x1b[31m\u200d💻\x1b[0m",
+		"e\x1b[31m\u0301\x1b[0m",
+		"a\tb",
+	];
+	for (const width of [6, 8, 12, 40]) {
+		for (const sample of samples) {
+			const expected = `│ ${truncateToWidth(sample, width - 4, "", true)} │`;
+			assert.equal(renderBorderedBox([sample], width, (text) => text)[1], expected);
+		}
+	}
+});
 
 test("OVERLAY_ACTIVE_ROW_MARKER terminates its APC string with ST, not BEL", () => {
 	assert.equal(OVERLAY_ACTIVE_ROW_MARKER.startsWith("\u001B_"), true);

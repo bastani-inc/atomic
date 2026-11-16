@@ -1,6 +1,6 @@
 import { type Component, Container, Input, Spacer, Text, truncateToWidth } from "@bastani/atomic-tui";
 import type { Theme } from "../../../../modes/interactive/theme/theme.js";
-import { terminalDisplayText } from "../../../../utils/terminal-text.ts";
+import { terminalDisplayCursor, terminalDisplayText } from "../../../../utils/terminal-text.ts";
 import { fieldTone, styleFieldTone } from "../state/selectors/field-tone.ts";
 import { formatAnswerScalar } from "../tool/format-answer.ts";
 import type { QuestionData } from "../tool/types.js";
@@ -67,6 +67,7 @@ export interface QuestionTabStrategyConfig {
 
 export class QuestionTabStrategy implements TabContentStrategy {
 	private readonly notesDisplayInput = new Input();
+	private readonly headings = new Map<number, Component[]>();
 	/** chatRow(1) inside the frame + the hint line (1) = 2 rendered rows. */
 	readonly footerRowCount = 2;
 
@@ -76,7 +77,13 @@ export class QuestionTabStrategy implements TabContentStrategy {
 		this.config = config;
 	}
 
+	invalidate(): void {
+		this.headings.clear();
+	}
+
 	headingRows(state: DialogState): Component[] {
+		const cached = this.headings.get(state.currentTab);
+		if (cached) return cached;
 		const out: Component[] = [];
 		const question = this.config.questions[state.currentTab];
 		// In multi-question mode the tab bar already shows the header; suppress the inline badge.
@@ -88,6 +95,7 @@ export class QuestionTabStrategy implements TabContentStrategy {
 			out.push(new Text(this.config.theme.bold(terminalDisplayText(question.question)), 0, 0));
 			out.push(new Spacer(1));
 		}
+		this.headings.set(state.currentTab, out);
 		return out;
 	}
 
@@ -112,7 +120,7 @@ export class QuestionTabStrategy implements TabContentStrategy {
 					display = this.notesDisplayInput;
 					display.setValue(safe);
 					display.focused = notesInput.focused;
-					const cursor = terminalDisplayText(raw.slice(0, notesInput.getCursor())).length;
+					const cursor = terminalDisplayCursor(raw, notesInput.getCursor());
 					Reflect.set(display, "cursor", Math.min(cursor, safe.length));
 				}
 				return display.render(width).map((line) => styleFieldTone(theme, tone, line));
@@ -219,10 +227,12 @@ export function buildHintText(question: QuestionData | undefined, isMulti: boole
 	// While the notes field is open, enter and esc both close it and keep the note.
 	if (state.notesVisible) return [HINT_PART_NOTES_TYPE, HINT_PART_NOTES_CLOSE].join(" · ");
 	const onOption = question !== undefined && !state.chatFocused && state.optionIndex < question.options.length;
-	const parts: string[] = [
-		HINT_PART_NAV,
-		question?.multiSelect === true && onOption ? HINT_PART_TOGGLE : HINT_PART_ENTER,
-	];
+	const parts: string[] = [HINT_PART_NAV];
+	const blankCustom =
+		state.inputMode &&
+		state.inlineInputOwner === "other" &&
+		!(state.customDraftByTab.get(state.currentTab) ?? "").trim();
+	if (!blankCustom) parts.push(question?.multiSelect === true && onOption ? HINT_PART_TOGGLE : HINT_PART_ENTER);
 	if (question && question.multiSelect !== true && onOption && !state.inputMode && state.focusedOptionHasPreview) {
 		parts.push(HINT_PART_NOTES);
 	}

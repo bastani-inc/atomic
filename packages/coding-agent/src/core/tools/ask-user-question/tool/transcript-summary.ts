@@ -2,11 +2,16 @@ import { terminalDisplayText } from "../../../../utils/terminal-text.ts";
 import { formatAnswerScalar } from "./format-answer.ts";
 import type { QuestionnaireResult, QuestionParams } from "./types.js";
 
-function questionLabel(params: QuestionParams, index: number): string {
-	const question = params.questions[index];
-	return summaryText(
-		question?.header && question.header.length > 0 ? question.header : (question?.question ?? `Q${index + 1}`),
-	);
+function questionsOf(params: QuestionParams | undefined): QuestionParams["questions"] {
+	return Array.isArray(params?.questions) ? params.questions : [];
+}
+
+function questionLabel(questions: QuestionParams["questions"], index: number): string {
+	const question = questions[index];
+	const header = typeof question?.header === "string" && question.header.length > 0 ? question.header : undefined;
+	const prompt =
+		typeof question?.question === "string" && question.question.length > 0 ? question.question : undefined;
+	return summaryText(header ?? prompt ?? `Q${index + 1}`);
 }
 
 function summaryText(text: string): string {
@@ -14,22 +19,24 @@ function summaryText(text: string): string {
 }
 
 export function summarizeQuestions(params: QuestionParams): string {
-	return ["Questions", ...params.questions.map((_, index) => questionLabel(params, index))].join(" · ");
+	const questions = questionsOf(params);
+	return ["Questions", ...questions.map((_, index) => questionLabel(questions, index))].join(" · ");
 }
 
 export function summarizeAnswers(params: QuestionParams, result: QuestionnaireResult): string[] {
+	const questions = questionsOf(params);
 	if (result.cancelled || result.answers.length === 0) {
-		return params.questions.map(
-			(question, index) =>
-				`Declined · ${questionLabel(params, index)} (${question.options.map((option) => summaryText(option.label)).join(" / ")})`,
-		);
+		return questions.map((question, index) => {
+			const options = Array.isArray(question?.options) ? question.options : [];
+			return `Declined · ${questionLabel(questions, index)} (${options.map((option) => summaryText(typeof option?.label === "string" ? option.label : "")).join(" / ")})`;
+		});
 	}
 	const lines: string[] = [];
-	for (let index = 0; index < params.questions.length; index++) {
+	for (let index = 0; index < questions.length; index++) {
 		const answer = result.answers.find((candidate) => candidate.questionIndex === index);
 		if (!answer) continue;
 		const notes = answer.notes && answer.notes.length > 0 ? ` · notes: ${summaryText(answer.notes)}` : "";
-		lines.push(`${questionLabel(params, index)} → ${summaryText(formatAnswerScalar(answer, "summary"))}${notes}`);
+		lines.push(`${questionLabel(questions, index)} → ${summaryText(formatAnswerScalar(answer, "summary"))}${notes}`);
 	}
 	return lines;
 }

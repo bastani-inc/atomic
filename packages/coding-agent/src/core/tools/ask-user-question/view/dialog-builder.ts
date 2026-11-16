@@ -90,10 +90,19 @@ export class DialogView implements StatefulView<DialogProps> {
 	private liveProps: DialogProps;
 	private frame: CachedFrame | undefined;
 	private readonly config: DialogConfig;
-	private readonly questionStrategy: TabContentStrategy;
+	private readonly questionStrategy: QuestionTabStrategy;
 	private readonly submitStrategy: TabContentStrategy | undefined;
 	private readonly maxFooterRowCount: number;
 	private headingMeasurement: { readonly width: number; readonly rows: number } | undefined;
+	private chrome:
+		| {
+				readonly width: number;
+				readonly top: string;
+				readonly bottom: string;
+				readonly side: string;
+				readonly rule: string;
+		  }
+		| undefined;
 
 	constructor(config: DialogConfig, initialProps: DialogProps) {
 		this.config = config;
@@ -128,6 +137,8 @@ export class DialogView implements StatefulView<DialogProps> {
 	invalidate(): void {
 		this.frame = undefined;
 		this.headingMeasurement = undefined;
+		this.chrome = undefined;
+		this.questionStrategy.invalidate();
 	}
 
 	render(width: number): string[] {
@@ -162,6 +173,16 @@ export class DialogView implements StatefulView<DialogProps> {
 		const state = this.liveProps.state;
 		// The frame takes `│ ` and ` │` from each side.
 		const innerWidth = Math.max(1, width - 4);
+		if (this.chrome?.width !== width) {
+			this.chrome = {
+				width,
+				top: theme.fg("accent", `╭${"─".repeat(Math.max(0, width - 2))}╮`),
+				bottom: theme.fg("accent", `╰${"─".repeat(Math.max(0, width - 2))}╯`),
+				side: theme.fg("accent", "│"),
+				rule: theme.fg("borderMuted", "─".repeat(innerWidth)),
+			};
+		}
+		const chrome = this.chrome;
 		// Rendered once; its row count is the current height the residual below is measured against.
 		const body = strategy.bodyComponent(state).render(innerWidth);
 
@@ -175,19 +196,18 @@ export class DialogView implements StatefulView<DialogProps> {
 		inner.addChild({ render: () => body, invalidate: () => {} });
 		inner.addChild(new Spacer(1));
 		for (const c of strategy.midRows(state)) inner.addChild(c);
-		inner.addChild({ render: (w) => [theme.fg("borderMuted", "─".repeat(Math.max(1, w)))], invalidate: () => {} });
+		inner.addChild({ render: () => [chrome.rule], invalidate: () => {} });
 		for (const c of strategy.footerRows(state)) inner.addChild(c);
 
-		const edge = (text: string) => theme.fg("accent", text);
-		const lines = [edge(`╭${"─".repeat(Math.max(0, width - 2))}╮`)];
-		const side = edge("│");
+		const lines = [chrome.top];
+		const side = chrome.side;
 		for (const line of inner.render(innerWidth)) {
 			const lineWidth = visibleWidth(line);
 			const fitted = lineWidth > innerWidth ? truncateToWidth(line, innerWidth, "") : line;
 			const fittedWidth = lineWidth > innerWidth ? visibleWidth(fitted) : lineWidth;
 			lines.push(`${side} ${fitted}${" ".repeat(Math.max(0, innerWidth - fittedWidth))} ${side}`);
 		}
-		lines.push(edge(`╰${"─".repeat(Math.max(0, width - 2))}╯`));
+		lines.push(chrome.bottom);
 		const hint = fitHintText(strategy.hintText(state), Math.max(1, width - 2));
 		const hintLine = `  ${theme.fg("dim", hint)}`;
 		lines.push(visibleWidth(hintLine) > width ? truncateToWidth(hintLine, width, "") : hintLine);

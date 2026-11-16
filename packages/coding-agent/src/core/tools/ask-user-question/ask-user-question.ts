@@ -137,7 +137,7 @@ Preview content is rendered as markdown in a monospace box. Multi-line text with
 				state.callComponent?.setText(summary ?? theme.fg("toolTitle", summarizeQuestions(params)));
 			};
 			if (!details || !Array.isArray(details.answers) || details.error || context.isError) {
-				setSummary(undefined);
+				if (state.summary !== undefined) setSummary(undefined);
 				const text = result.content
 					.map((part) => (part.type === "text" ? terminalDisplayText(part.text) : ""))
 					.filter(Boolean)
@@ -147,7 +147,7 @@ Preview content is rendered as markdown in a monospace box. Multi-line text with
 			}
 			const lines = summarizeAnswers(params, details);
 			const summary = lines.length === 1 ? lines[0] : undefined;
-			setSummary(summary);
+			if (summary !== state.summary) setSummary(summary);
 			if (summary === undefined)
 				for (const line of lines) container.addChild(new Text(theme.fg("muted", line), 0, 0));
 			return container;

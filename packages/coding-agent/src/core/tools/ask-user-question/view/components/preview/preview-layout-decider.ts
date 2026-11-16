@@ -1,4 +1,5 @@
 import { visibleWidth } from "@bastani/atomic-tui";
+import { terminalDisplayText } from "../../../../../../utils/terminal-text.ts";
 import type { QuestionData } from "../../../tool/types.js";
 import type { WrappingSelectItem } from "../wrapping-select.ts";
 import { BORDER_HORIZONTAL_OVERHEAD, BORDER_INNER_PADDING_HORIZONTAL } from "./preview-box-renderer.ts";
@@ -55,7 +56,7 @@ export function adaptiveLeftWidth(
 	const confirmedOverhead = CONFIRMED_OVERHEAD; // visibleWidth(" ✔") = 2 (space + ✔ codepoint)
 	let maxLabel = 0;
 	for (const item of items) {
-		const w = visibleWidth(item.label);
+		const w = visibleWidth(terminalDisplayText(item.label));
 		if (w > maxLabel) maxLabel = w;
 	}
 	const desired = maxLabel + prefixW + confirmedOverhead;
@@ -103,7 +104,7 @@ export function previewSourceWidth(question: QuestionData): number {
 	for (const option of question.options) {
 		const text = option.preview;
 		if (!text) continue;
-		for (const line of text.split("\n")) {
+		for (const line of terminalDisplayText(text).split("\n")) {
 			const w = visibleWidth(line);
 			if (w > max) max = w;
 		}
