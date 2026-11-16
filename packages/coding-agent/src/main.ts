@@ -568,7 +568,6 @@ export async function main(argv: string[], options?: MainOptions) {
 				stdinIsTTY: process.stdin.isTTY === true,
 				parsed,
 				sessionCwd,
-				projectTrustStore,
 				resolvedExtensionPathCount: resolvedExtensionPaths?.length ?? 0,
 				resolvedResourcePathCount:
 					(resolvedSkillPaths?.length ?? 0) +
@@ -585,10 +584,6 @@ export async function main(argv: string[], options?: MainOptions) {
 		projectTrusted: startupProjectTrusted,
 	});
 	time("runMigrations");
-	if (deprecationWarnings.length > 0) {
-		startupEarlyInputCapture?.consume();
-		startupEarlyInputCapture = undefined;
-	}
 
 	const startupSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: startupProjectTrusted });
 	setCapabilityOverrides(startupSettingsManager.getTerminalCapabilityOverrides());
@@ -699,13 +694,7 @@ export async function main(argv: string[], options?: MainOptions) {
 			claim: engineEnv.child !== "1",
 			progress: startupProgress,
 			chooseDirtyCheckout:
-				appMode === "interactive"
-					? (prompt) => {
-							startupEarlyInputCapture?.consume();
-							startupEarlyInputCapture = undefined;
-							return promptForDirtyCheckout(prompt, startupSettingsManager);
-						}
-					: undefined,
+				appMode === "interactive" ? (prompt) => promptForDirtyCheckout(prompt, startupSettingsManager) : undefined,
 		});
 		stopAnnouncingWaits?.();
 		if (opened === "cancelled") process.exit(0);
@@ -732,8 +721,6 @@ export async function main(argv: string[], options?: MainOptions) {
 	}
 	const missingSessionCwdIssue = findMissingSessionCwdIssue(sessionManager, cwd);
 	if (missingSessionCwdIssue) {
-		startupEarlyInputCapture?.consume();
-		startupEarlyInputCapture = undefined;
 		if (appMode === "interactive") {
 			const choice = await promptForMissingSessionCwd(missingSessionCwdIssue, startupSettingsManager);
 			sessionManager = await openSessionInCurrentCwdOrExit(sessionManager, missingSessionCwdIssue, choice);
@@ -779,6 +766,7 @@ export async function main(argv: string[], options?: MainOptions) {
 	let deferredExtensionLoad = false;
 	let deferredStartupThinkingLevel: ThinkingLevel | undefined;
 	let deferredSavedThinkingLevel: ThinkingLevel | undefined;
+	const eagerRetrySavedThinkingLevels = new WeakMap<SessionManager, ThinkingLevel | undefined>();
 	let forceEagerInteractiveEngineResources = false;
 	const createRuntime: CreateAgentSessionRuntimeFactory = async (options) => (await prepareRuntime(options))();
 	const prepareRuntime: NonNullable<CreateAgentSessionRuntimeFactory["prepareResume"]> = async ({
@@ -975,21 +963,25 @@ export async function main(argv: string[], options?: MainOptions) {
 			const sessionArgs = isolateInteractiveHost
 				? { ...parsed, provider: undefined, model: undefined, apiKey: undefined, models: undefined }
 				: parsed;
+			const sessionContext = sessionManager.buildSessionContext();
+			const continuingConversation = sessionContext.messages.length > 0;
 			const {
 				options: sessionOptions,
 				cliThinkingFromModel,
 				diagnostics: sessionOptionDiagnostics,
-			} = buildSessionOptions(
-				sessionArgs,
-				scopedModels,
-				sessionManager.buildSessionContext().messages.length > 0,
-				modelRuntime,
-				settingsManager,
-			);
+			} = buildSessionOptions(sessionArgs, scopedModels, continuingConversation, modelRuntime, settingsManager);
 			if (!deferStartupTrust) diagnostics.push(...sessionOptionDiagnostics);
-			const savedThinkingLevel = savedConversationThinkingLevel(sessionManager);
+			const retriedEagerly = eagerRetrySavedThinkingLevels.has(sessionManager);
+			const savedThinkingLevel = retriedEagerly
+				? eagerRetrySavedThinkingLevels.get(sessionManager)
+				: sessionStartEvent === undefined
+					? savedConversationThinkingLevel(sessionManager, sessionContext)
+					: undefined;
+			eagerRetrySavedThinkingLevels.delete(sessionManager);
 			if (sessionStartEvent === undefined) {
-				deferredStartupThinkingLevel = sessionOptions.thinkingLevel ?? savedThinkingLevel;
+				deferredStartupThinkingLevel =
+					(parsed.thinking !== undefined || cliThinkingFromModel ? sessionOptions.thinkingLevel : undefined) ??
+					savedThinkingLevel;
 				deferredSavedThinkingLevel = savedThinkingLevel;
 			}
 
@@ -1013,7 +1005,11 @@ export async function main(argv: string[], options?: MainOptions) {
 					sessionManager,
 					sessionStartEvent,
 					model: sessionOptions.model,
-					thinkingLevel: sessionOptions.thinkingLevel,
+					thinkingLevel:
+						sessionOptions.thinkingLevel ??
+						(retriedEagerly && continuingConversation && savedThinkingLevel === undefined
+							? (settingsManager.getDefaultThinkingLevel() ?? DEFAULT_THINKING_LEVEL)
+							: undefined),
 					scopedModels: sessionOptions.scopedModels,
 					fallbackModels: sessionOptions.fallbackModels,
 					tools: sessionOptions.tools,
@@ -1140,7 +1136,6 @@ export async function main(argv: string[], options?: MainOptions) {
 								finalServices.diagnostics.push({ type: "warning", message: finalFallbackMessage });
 							}
 						}
-						// Creation saved nothing while trust was pending; save what eager creation saves.
 						await recordStartupThinkingLevel(sessionManager, savedThinkingLevel, created.session.thinkingLevel);
 						await created.session.completeStartupResources(finalServices.resourceLoader);
 						if (appMode !== "interactive") {
@@ -1159,7 +1154,10 @@ export async function main(argv: string[], options?: MainOptions) {
 			if (
 				deferInteractiveEngineResources &&
 				!services.completeStartup &&
-				(!created.session.model || isUnknownModel(created.session.model))
+				(!created.session.model ||
+					isUnknownModel(created.session.model) ||
+					created.modelFallbackMessage !== undefined ||
+					(!continuingConversation && modelScopeDiagnostics.some((diagnostic) => diagnostic.code === "no-match")))
 			) {
 				const store = ownedSessionStores.get(created.session);
 				if (store) {
@@ -1168,7 +1166,11 @@ export async function main(argv: string[], options?: MainOptions) {
 				}
 				await created.session.dispose();
 				forceEagerInteractiveEngineResources = true;
+				eagerRetrySavedThinkingLevels.set(sessionManager, savedThinkingLevel);
 				return createRuntime({ cwd, agentDir, sessionManager, sessionStartEvent, projectTrustContext });
+			}
+			if (retriedEagerly && continuingConversation) {
+				await recordStartupThinkingLevel(sessionManager, savedThinkingLevel, created.session.thinkingLevel);
 			}
 			const cliThinkingOverride = parsed.thinking !== undefined || cliThinkingFromModel;
 			if (!isolateInteractiveHost && created.session.model && cliThinkingOverride) {
@@ -1295,20 +1297,20 @@ export async function main(argv: string[], options?: MainOptions) {
 			console.log(chalk.dim(`Model scope: ${formatScopedModelList(scopedModels)} ${chalk.gray("(ctrl+p cycle)")}`));
 		}
 
+		const startupTrustPromptPossible = computeStartupTrustPromptPossible({
+			projectTrustOverride: parsed.projectTrustOverride,
+			hasTrustInputs: hasProjectTrustInputs(sessionCwd),
+			storedProjectTrust: projectTrustStore.get(sessionCwd),
+			defaultProjectTrust: startupDefaultProjectTrust,
+		});
 		const interactiveMode = new InteractiveMode(runtime, {
 			migratedProviders,
 			startupDiagnostics,
 			resumeNotices: worktreeRestoreDiagnostics,
 			modelFallbackMessage,
 			autoTrustOnReloadCwd,
-			holdTuiForStartupTrust:
-				isolateInteractiveHost &&
-				computeStartupTrustPromptPossible({
-					projectTrustOverride: parsed.projectTrustOverride,
-					hasTrustInputs: hasProjectTrustInputs(sessionCwd),
-					storedProjectTrust: projectTrustStore.get(sessionCwd),
-					defaultProjectTrust: startupDefaultProjectTrust,
-				}),
+			holdTuiForStartupTrust: isolateInteractiveHost && startupTrustPromptPossible,
+			startupTrustPromptPossible,
 			initialMessage,
 			initialImages,
 			initialMessages: parsed.messages,

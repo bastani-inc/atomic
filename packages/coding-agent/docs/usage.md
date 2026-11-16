@@ -20,7 +20,7 @@ The interface has four main areas:
 - **Startup header** - shortcuts plus named lists of loaded context files, prompt templates, skills, and extensions; use the expand-tools shortcut (Ctrl+O by default) to switch those lists to source paths
 - **Messages** - user messages, assistant responses, tool calls, tool results, notifications, errors, and extension UI
 - **Editor** - where you type; border color indicates the current thinking level
-- **Footer** - token/cache usage, cost, and context usage above the editor; below it, the current model, reasoning level, working directory, Git branch, and session name while the agent is idle, or `esc to interrupt` while it works (a turn, compaction, automatic retry, or `!` command)
+- **Footer** - token/cache usage, cost, and context usage above the editor; below it, the current model, reasoning level, working directory, Git branch, and session name while the agent is idle, or the bound interrupt key while it works (a turn, compaction, automatic retry, or `!` command). Press `?` on an empty prompt for the main chat's key overview
 
 The editor can be replaced temporarily by built-in UI such as `/settings` or by custom extension UI.
 
@@ -30,7 +30,9 @@ The startup animation shows Atomic's identity. Press any key, including Ctrl+C, 
 
 Startup lists loaded context files, skills, prompts, and extensions by name. Custom themes are not listed; choose them in `/settings`. Duplicate local extension names include path information. Expand the startup disclosure to see source paths.
 
-While the agent works, `∀` pulses beside a working message. Retry, fallback, compaction, cancellation, and error messages take precedence; approval prompts hide ordinary activity. Set `ATOMIC_REDUCED_MOTION=1` for a static indicator or `NO_COLOR` for activity without foreground colors. Extensions can [customize the indicator](/tui#pattern-4b-working-indicator-customization).
+While the agent works, `∀` pulses beside a working message, followed by the current run's elapsed time and output tokens. A new run starts a fresh meter; steering keeps the current run's meter. Retry, fallback, compaction, cancellation, and error messages take precedence; approval prompts hide ordinary activity. Set `ATOMIC_REDUCED_MOTION=1` for a static indicator or `NO_COLOR` for activity without foreground colors. Elapsed time still updates once per second with reduced motion. Extensions can [customize the indicator](/tui#pattern-4b-working-indicator-customization).
+
+Compaction uses a still `∀` mark with elapsed time and the cancel key. Opening a chat during compaction shows the time since that compaction began. Afterwards, `∀ Context compacted` shows estimated message-token counts before and after; use the expand key, normally Ctrl+O, to read the summary and the context size before compaction, which can differ from the message-token estimate.
 
 ### Editor Features
 
@@ -52,13 +54,18 @@ On Windows, ALT+Z lends the terminal to an interactive PowerShell subshell. Type
 
 ## Startup typing
 
-On normal interactive TTY startup, Atomic captures raw keyboard input before deferred resources finish loading and until the TUI input handler mounts. It replays text typed before the prompt box is ready into the editor.
+In an interactive terminal, you can type while Atomic starts, before the prompt box is ready.
 
-- Enter-submitted ordinary prompts wait for the prompt loop to become ready.
-- Command-like submissions such as `/settings` or `!pwd` replay as standalone editor submissions through normal command routing.
-- Later submissions wait behind a captured command and replay in input order. Ordinary prompts cannot overtake commands, and commands are not merged with following prompts.
+When no startup screen needs an answer:
+- Enter-submitted ordinary prompts wait until the session is ready.
+- Command-like submissions such as `/settings` or `!pwd` run as separate editor submissions through normal command routing.
+- Later submissions wait behind an earlier command and run in input order. Ordinary prompts cannot overtake commands, and commands are not merged with following prompts.
 
-Startup work that can affect correctness stays synchronous and does not use this capture. This includes project trust prompts, resume/session selectors, cross-project session confirmations, explicit resource flags, metadata commands, non-TTY input, and explicit provider/model selection.
+When a startup screen appears, including project trust, first-time setup, the resume picker or a cross-project fork question, your earlier text waits in the prompt as a draft. Text typed into a screen that does not use text joins that draft, with line breaks between typed lines. Text left in a startup input that you cancel, or that times out, also joins the draft. Nothing is sent until you review the draft and press Enter after startup.
+
+Enter or a custom prompt-submit key ending an unfinished prompt does not answer the screen. Use ↑ or ↓ to choose in a selector; the resume picker and text input also accept Enter after you start typing into them. Answer a fork question with `y` or `n` explicitly if you were typing a prompt or an earlier line was kept as a draft.
+
+Startup typing does not apply to non-TTY input, print or RPC mode, or metadata commands such as `--help` and `--list-models`.
 
 ## Slash Commands
 

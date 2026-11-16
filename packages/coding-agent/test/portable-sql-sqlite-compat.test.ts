@@ -271,7 +271,14 @@ test("session rows, blobs and legacy deletions read and write as before (#4793)"
 	const rows = await database.all<SqliteRow & { revision: string }>("SELECT * FROM session_sessions ORDER BY id");
 	for (const row of rows) assert.match(row.revision, /^[0-9a-f]{32}$/);
 	assertGolden("sessions", {
-		sessions: rows.map(({ revision: _revision, ...row }) => row),
+		sessions: rows.map(({ revision: _revision, ...row }) => {
+			const {
+				resume: _resume,
+				epoch: _epoch,
+				...summary
+			} = JSON.parse(String(row.summary_state)) as Record<string, unknown>;
+			return { ...row, summary_state: JSON.stringify(summary) };
+		}),
 		blobs: await database.all("SELECT * FROM session_blobs"),
 		listed: (await Array.fromAsync(store.list({ includeInternal: true }))).map((summary) => summary.id).sort(),
 	});

@@ -572,6 +572,37 @@ export function inProcessChildResourceLoaderOptions(input: {
 }
 
 /**
+ * Resolves once the session has no turn running or starting and no interrupt delivery pending, or a stop fires.
+ * `subscribeDrained` is told each time the session's count of running turns returns to zero.
+ */
+export async function sessionDrained(
+	session: Pick<AgentSession, "subscribe" | "isStreaming" | "_activePromptCount" | "_pendingInterruptDeliveries">,
+	stops: readonly AbortSignal[],
+	subscribeDrained: (listener: () => void) => () => void,
+): Promise<void> {
+	// A session that does not count its turns has none running here.
+	const drained = () =>
+		(session._activePromptCount ?? 0) === 0 &&
+		(session._pendingInterruptDeliveries ?? 0) === 0 &&
+		!session.isStreaming;
+	while (!drained() && !stops.some((stop) => stop.aborted)) {
+		await new Promise<void>((resolve) => {
+			const unsubscribeDrained = subscribeDrained(() => done());
+			const unsubscribe = session.subscribe((event) => {
+				if (event.type === "agent_end" || event.type === "agent_settled") queueMicrotask(() => done());
+			});
+			function done(): void {
+				unsubscribeDrained();
+				unsubscribe();
+				for (const stop of stops) stop.removeEventListener("abort", done);
+				resolve();
+			}
+			for (const stop of stops) stop.addEventListener("abort", done, { once: true });
+		});
+	}
+}
+
+/**
  * Resolves once `session` has started another turn and become idle again, as a message delivered to an interrupted
  * child starts one, or once any of `stops` aborts. A child that is never messaged again waits here until it is stopped.
  */
@@ -883,8 +914,12 @@ function sessionCommands(session: AgentSession, cwd: string): TranscriptCommands
  * The entries of a child's own prompt and final answer, after the `inherited` entries its session opened with: what a
  * task view still shows of a finished child whose saved history is gone.
  */
-function promptAndAnswer(manager: SessionManager, inherited: number): SessionEntry[] {
-	const own = manager.getEntries().slice(inherited);
+function promptAndAnswer(manager: SessionManager, inheritedThroughId: string | null): SessionEntry[] {
+	const entries = manager.getEntries();
+	const own =
+		inheritedThroughId === null
+			? entries
+			: entries.slice(entries.findLastIndex((entry) => entry.id === inheritedThroughId) + 1);
 	const prompt = own.find((entry) => entry.type === "message" && entry.message.role === "user");
 	const answer = own.findLast(
 		(entry) =>
@@ -963,7 +998,7 @@ function withUnsavedAnswer(entries: SessionEntry[], unsaved: SessionEntry | unde
 function settledTranscript(
 	manager: SessionManager,
 	commands: TranscriptCommands | undefined,
-	inherited: number,
+	inherited: string | null,
 	unsavedAnswer: AssistantMessage | undefined,
 ): TranscriptSource {
 	const sessionId = manager.getSessionId();
@@ -1635,8 +1670,8 @@ export class SubagentControlRuntime {
 		let effectiveModelId = candidateModelId;
 		let effectiveThinking = initialThinkingForAttempt(candidateModelId, configuredThinking);
 		let transcriptManager: SessionManager | undefined;
-		// How many entries the child's session held when it opened: a forked child's inherited history, not its own.
-		let openedEntryCount = 0;
+
+		let openedThroughId: string | null = null;
 		let releasedAttempt = false;
 		let unsavedAnswer: AssistantMessage | undefined;
 		// Open while this attempt's session lives: a status a disposed session writes late is not the task's.
@@ -1735,6 +1770,8 @@ export class SubagentControlRuntime {
 
 		let termination: TerminationCauseName | undefined;
 		let interruptedTurnSettlement: Promise<void> | undefined;
+		// Until the session has its task, a turn that settles leaves message admission open for it (#5224).
+		let taskPending = true;
 		// The task and resume follow-ups the session has not been given yet; a stop before then keeps them for resume.
 		const unsent: UnsentInput = { task: admitted.spec.task, followUps: [...(admitted.spec.resumeFollowUps ?? [])] };
 		let terminating: Promise<void> | undefined;
@@ -1808,6 +1845,7 @@ export class SubagentControlRuntime {
 						admitted.sessionManager.getSessionStore(),
 						admitted.sessionManager.getSessionId(),
 						admitted.policy.cwd,
+						{ history: "tail" },
 					)
 				: SessionManager.create(
 						admitted.policy.cwd,
@@ -1907,7 +1945,7 @@ export class SubagentControlRuntime {
 			// #5210: a child resumed in this process continues after the final answer its last run could not save.
 			await beforeStartDeadline(restoreUnsavedAnswer(sessionManager));
 			transcriptManager = sessionManager;
-			openedEntryCount = sessionManager.getEntries().length;
+			openedThroughId = sessionManager.getEntries().at(-1)?.id ?? null;
 			taskHooks?.bindTranscript?.(sessionManager);
 			const childSession = {
 				sessionId: sessionManager.getSessionId(),
@@ -1962,6 +2000,7 @@ export class SubagentControlRuntime {
 							onTurnDrained: () => {
 								for (const listener of turnDrainedListeners) listener();
 							},
+							taskPending: () => taskPending,
 							...(!childAllowsIntercom(inherited) ? { intercom: undefined, intercomGroup: undefined } : {}),
 						},
 						settingsManager,
@@ -2021,6 +2060,7 @@ export class SubagentControlRuntime {
 			taskHooks?.bindTranscript?.({
 				getSessionId: () => sessionManager.getSessionId(),
 				getEntries: () => sessionManager.getEntries(),
+				loadFullHistory: () => sessionManager.loadFullHistory(),
 				subscribe: (listener) => transcriptSession.subscribe(listener),
 				getStreamingMessage: () => observedStreamingMessage,
 				getCompactionReason: compactionReasonReader(transcriptSession),
@@ -2043,6 +2083,7 @@ export class SubagentControlRuntime {
 				model: effectiveModelId === undefined ? undefined : splitKnownThinkingSuffix(effectiveModelId).baseModel,
 				thinking: effectiveThinking,
 				leafId: sessionManager.getLeafId(),
+				leafSeq: sessionManager.getLeafId() === null ? 0 : sessionManager.getEntrySeq(sessionManager.getLeafId()!),
 			};
 			taskHooks?.bindChildLaunch?.(childLaunch);
 			admitted.spec.onChildLaunch?.(childLaunch);
@@ -2164,8 +2205,10 @@ export class SubagentControlRuntime {
 			if (!termination && admitted.spec.resumeSession) await recoverChildSession(session, admitted.spec);
 			const redispatched =
 				!termination && admitted.spec.redispatchDetachedCalls ? session.redispatchDetachedToolCalls() : undefined;
-			if (redispatched !== undefined) unsent.task = unsent.followUps.shift();
-			else if (!termination && admitted.spec.resumeToolResults?.length) {
+			if (redispatched !== undefined) {
+				taskPending = false;
+				unsent.task = unsent.followUps.shift();
+			} else if (!termination && admitted.spec.resumeToolResults?.length) {
 				if (!admitted.spec.skipTaskPrompt) {
 					await session.followUp(
 						admitted.spec.task,
@@ -2181,6 +2224,7 @@ export class SubagentControlRuntime {
 				}
 				if (!termination) {
 					unsent.task = undefined;
+					taskPending = false;
 					// Reported as soon as they are saved: the turn they continue may never end in this process (#5012).
 					const reported = new Set<string>();
 					await session.resumeDetachedTurn(admitted.spec.resumeToolResults, (toolCallIds) => {
@@ -2203,8 +2247,10 @@ export class SubagentControlRuntime {
 				}
 				if (!termination) {
 					unsent.task = undefined;
-					if (admitted.spec.skipTaskPrompt) startBudget.end();
-					else {
+					if (admitted.spec.skipTaskPrompt) {
+						taskPending = false;
+						startBudget.end();
+					} else {
 						const prompting = session.prompt(
 							admitted.spec.task,
 							admitted.spec.resumeTaskLiteral ? LITERAL_TEXT : undefined,
@@ -2214,15 +2260,28 @@ export class SubagentControlRuntime {
 						void prompting.then(markTaskDispatched, markTaskDispatched);
 						await beforeStartDeadline(taskDispatched);
 						startBudget.end();
-						await prompting;
+						try {
+							await prompting;
+						} finally {
+							taskPending = false;
+						}
 					}
 				}
 			}
-			while (interruptedTurnSettlement !== undefined && termination === undefined) {
-				const settlement = interruptedTurnSettlement;
-				interruptedTurnSettlement = undefined;
-				await settlement;
-			}
+			do {
+				while (interruptedTurnSettlement !== undefined && termination === undefined) {
+					const settlement = interruptedTurnSettlement;
+					interruptedTurnSettlement = undefined;
+					await settlement;
+				}
+				// A turn that settled while the task was pending left message admission open: what it admitted since is
+				// answered before the execution ends and seals it.
+				if (prepared !== undefined && redispatched === undefined && termination === undefined)
+					await sessionDrained(session, [signals.abort, signals.interrupt], (listener) => {
+						turnDrainedListeners.add(listener);
+						return () => turnDrainedListeners.delete(listener);
+					});
+			} while (interruptedTurnSettlement !== undefined && termination === undefined);
 			await terminating;
 			const stats = statsFor(session, admitted.identity.path);
 			const sessionFile = session.sessionFile;
@@ -2408,7 +2467,7 @@ export class SubagentControlRuntime {
 				taskHooks?.bindTranscript?.(
 					releasedAttempt
 						? releasedTranscript(transcriptManager.getSessionId(), keptCommands)
-						: settledTranscript(transcriptManager, keptCommands, openedEntryCount, unsavedAnswer),
+						: settledTranscript(transcriptManager, keptCommands, openedThroughId, unsavedAnswer),
 				);
 			};
 			const disposal = (async (): Promise<SessionDisposal> => {

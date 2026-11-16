@@ -1487,7 +1487,9 @@ async function copySessions(
 				entries,
 			);
 			await copySessionBlobs(store, sessionId, destination.store, id, hashes);
-			const file = (await SessionManager.open(destination.store, id, request.cwd)).getSessionFile();
+			const file = (
+				await SessionManager.open(destination.store, id, request.cwd, { history: "tail" })
+			).getSessionFile();
 			ids.sessions.set(sessionId, { id, file });
 		}
 		await closeSourceSessions(sources, cleanup);

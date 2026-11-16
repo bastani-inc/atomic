@@ -326,8 +326,9 @@ test("ChatSessionHost refreshes successful compacted transcripts exactly once fo
 		assert.equal(
 			host
 				.renderBody(200, 20)
+				.map(stripAnsi)
 				.join("\n")
-				.match(/✻ Context compacted/g)?.length,
+				.match(/∀ Context compacted/g)?.length,
 			1,
 		);
 		assert.match(host.renderBody(200, 20).join("\n"), /extension host state/);
@@ -355,8 +356,9 @@ test("ChatSessionHost refreshes successful compacted transcripts exactly once fo
 		assert.equal(
 			host
 				.renderBody(200, 20)
+				.map(stripAnsi)
 				.join("\n")
-				.match(/✻ Context compacted/g)?.length,
+				.match(/∀ Context compacted/g)?.length,
 			1,
 		);
 		assert.match(host.renderBody(200, 20).join("\n"), /extension host state/);
@@ -404,8 +406,9 @@ test("ChatSessionHost renders a type-safe compaction boundary when the refreshed
 	assert.equal(
 		host
 			.renderBody(200, 20)
+			.map(stripAnsi)
 			.join("\n")
-			.match(/✻ Context compacted/g)?.length,
+			.match(/∀ Context compacted/g)?.length,
 		1,
 	);
 	assert.equal(

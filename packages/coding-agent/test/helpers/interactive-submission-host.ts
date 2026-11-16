@@ -1,5 +1,6 @@
 import { type Component, Container } from "@bastani/atomic-tui";
 import type { AgentSession } from "../../src/core/agent-session.ts";
+import { WorkingRunMeter } from "../../src/modes/interactive/components/working-run-meter.ts";
 import { InteractiveMode } from "../../src/modes/interactive/interactive-mode.ts";
 import type { InteractiveSubmission } from "../../src/modes/interactive/interactive-submission.ts";
 import { initTheme } from "../../src/modes/interactive/theme/theme.ts";
@@ -20,6 +21,7 @@ type Editor = {
 
 export interface InteractiveSubmissionHost {
 	session: AgentSession;
+	workingRunMeter: WorkingRunMeter;
 	runtimeHost: object;
 	ui: {
 		onDebug?: () => void;
@@ -126,6 +128,7 @@ export function createInteractiveSubmissionHost(session: AgentSession): Interact
 	};
 	const host: InteractiveSubmissionHost = {
 		session,
+		workingRunMeter: new WorkingRunMeter(),
 		runtimeHost: {},
 		ui: { addInputListener: () => () => {}, requestRender() {}, setFocus() {} },
 		keybindings: { matches: () => false },

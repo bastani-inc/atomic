@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import type { ForkOptions } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { openNodeSqliteDatabase } from "@bastani/atomic";
 import type { SqliteDatabase } from "@bastani/atomic/storage";
 import { afterEach, test, vi } from "vitest";
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
@@ -40,6 +41,7 @@ afterEach(() => {
 });
 
 const SHIPPING = { intervalMs: 2_000, maxBatch: 64, maxLagMs: 30_000 } as const;
+const EXTEND = SqlPoolQueue.prototype.extend;
 const LEASE = { id: "work-1", generation: 1, worker: "host/1", epoch: 1 } as const;
 
 function filesUnder(directory: string): string[] {
@@ -63,10 +65,12 @@ async function shipOnce(shard: ShipShard, key: string): Promise<void> {
 test("a retired local checkpoint journal whose checkpoints all shipped leaves no files behind (#4768)", async () => {
 	const directory = makeTempDirectory("ship-shard-retire-");
 	try {
-		for (let index = 0; index < 20; index++) {
+		// A few roots sharing the journal's directory, each with a few shipped checkpoints, show what one retire leaves.
+		// Each checkpoint is two synced commits, about 4 ms apiece on Windows: 20 roots of 50 took 10 to 48 s there.
+		for (let index = 0; index < 3; index++) {
 			const root = `root-${index}`;
 			const shard = await ShipShard.open(shipShardPath(directory, "journal", root), root);
-			for (let checkpoint = 0; checkpoint < 50; checkpoint++) await shipOnce(shard, `key-${checkpoint}`);
+			for (let checkpoint = 0; checkpoint < 3; checkpoint++) await shipOnce(shard, `key-${checkpoint}`);
 			await shard.close({ retire: true });
 		}
 		assert.deepEqual(
@@ -91,10 +95,13 @@ test("a local checkpoint journal is kept when it still holds a checkpoint, anoth
 
 		const sharedPath = shipShardPath(directory, "journal", "shared");
 		const first = await ShipShard.open(sharedPath, "shared");
-		const second = await ShipShard.open(sharedPath, "shared");
+		await assert.rejects(ShipShard.open(sharedPath, "shared"), /already open/);
+		const second = await openNodeSqliteDatabase(sharedPath);
 		await first.close({ retire: true });
 		assert.ok(existsSync(sharedPath), "a connection still open keeps the file");
-		await second.close({ retire: true });
+		await second.close();
+		const reopened = await ShipShard.open(sharedPath, "shared");
+		await reopened.close({ retire: true });
 		assert.ok(!existsSync(sharedPath), "the last connection removes it");
 
 		const keptPath = shipShardPath(directory, "journal", "kept");
@@ -348,4 +355,82 @@ test("a worker that exits while a request renews its overdue attempt reports its
 
 test("a worker that exits while it renews an attempt the journal refused reports its local journal failure once (#4768)", async () => {
 	assert.equal(await reportsAfterExit("refused renewal"), 1);
+}, 60_000);
+
+async function exitWithExtendInFlight(extendInFlight: boolean): Promise<number> {
+	const directory = makeTempDirectory("shipping-exit-extend-");
+	const stateDirectory = join(directory, "state");
+	mkdirSync(stateDirectory);
+	const { journal, host } = await prepareRoot(directory, stateDirectory);
+	let releaseExtend!: () => void;
+	const extendGate = new Promise<void>((resolve) => {
+		releaseExtend = resolve;
+	});
+	let extendWritten!: () => void;
+	const written = new Promise<void>((resolve) => {
+		extendWritten = resolve;
+	});
+	try {
+		const shipping = (host.coordinator as unknown as { shipping: CheckpointShipping }).shipping;
+		const database = (shipping as unknown as { shard: { database: SqliteDatabase } }).shard.database;
+		const transaction = database.transaction.bind(database);
+		let diskFull = false;
+		database.transaction = ((
+			callback: Parameters<typeof transaction>[0],
+			options?: Parameters<typeof transaction>[1],
+		) =>
+			diskFull
+				? Promise.reject(new Error("database or disk is full"))
+				: transaction(callback, options)) as typeof database.transaction;
+		const before = forked.length;
+		const starting = host.command({ kind: "start", sources: [SOURCE], cwd: directory, publish: false });
+		while (forked.length === before) await sleep(5);
+		const worker = forked[before]!;
+		await worker.request({ kind: "ready" });
+		await starting;
+		const { work, boundary } = poolWorkFixture();
+		await host.command({
+			kind: "enqueue",
+			descriptor: { ...work, definition: `${SOURCE.path}#${SOURCE.exportName}`, digest: SOURCE.digest },
+			boundary,
+		});
+		diskFull = true;
+		const claim = await worker.request({ kind: "claim" });
+		assert.equal(claim.error, undefined);
+		assert.ok(claim.value as PoolWork);
+		const realNow = Date.now.bind(Date);
+		vi.spyOn(Date, "now").mockImplementation(() => realNow() + 16_000);
+		vi.spyOn(SqlPoolQueue.prototype, "extend").mockImplementation(async function (
+			this: SqlPoolQueue,
+			...args: Parameters<SqlPoolQueue["extend"]>
+		) {
+			const result = await EXTEND.apply(this, args);
+			extendWritten();
+			await extendGate;
+			return result;
+		});
+		if (extendInFlight) {
+			worker.ask({ kind: "activity", runs: [] });
+			await written;
+		}
+		worker.exit(1);
+		await sleep(500);
+		releaseExtend();
+		await sleep(500);
+		return host.events.filter(
+			(event) => event.kind === "health" && /local journal failed for work/.test(event.message),
+		).length;
+	} finally {
+		releaseExtend();
+		vi.restoreAllMocks();
+		await host.command({ kind: "close" }).catch(() => {});
+		await host.coordinator.shutdown();
+		await journal.close();
+		removeTempDirectory(directory);
+	}
+}
+
+test("a worker that exits with its overdue lease extension in flight reports its attempt's local journal failure once (#4768)", async () => {
+	assert.equal(await exitWithExtendInFlight(false), 1);
+	assert.equal(await exitWithExtendInFlight(true), 1);
 }, 60_000);

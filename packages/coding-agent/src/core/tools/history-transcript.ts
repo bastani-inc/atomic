@@ -103,6 +103,16 @@ export function transcriptHeaderLines(header: SessionRecordHeader, linkRun: bool
 	];
 }
 
-export function historyEntryRanges(entries: readonly SessionEntry[]): ReadonlyMap<string, HistoryEntryRange> {
-	return new Map(entries.map((entry, index) => [entry.id, { start: index + 1, end: index + 1 }]));
+export interface HistoryEntrySeqs {
+	getEntries(): readonly SessionEntry[];
+	getEntrySeq(id: string): number | undefined;
+}
+
+export function historyEntryRanges(session: HistoryEntrySeqs): ReadonlyMap<string, HistoryEntryRange> {
+	const ranges = new Map<string, HistoryEntryRange>();
+	for (const entry of session.getEntries()) {
+		const seq = session.getEntrySeq(entry.id);
+		if (seq !== undefined) ranges.set(entry.id, { start: seq, end: seq });
+	}
+	return ranges;
 }

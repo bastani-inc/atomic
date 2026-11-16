@@ -1,12 +1,6 @@
 import type { QuestionData } from "../tool/types.js";
 import type { WrappingSelectItem } from "../view/components/wrapping-select.ts";
 
-/**
- * Row kind discriminator. Single source of truth — derived from the runtime
- * `WrappingSelectItem` union (`wrapping-select.ts:18-22`) so adding a new
- * variant there forces a `ROW_INTENT_META` entry here (compile-time
- * exhaustiveness via `Record<RowKind, …>`).
- */
 export type RowKind = WrappingSelectItem["kind"];
 
 /**
@@ -17,47 +11,6 @@ export type RowKind = WrappingSelectItem["kind"];
 export type SentinelKind = Exclude<RowKind, "option">;
 export const SENTINEL_KINDS: readonly SentinelKind[] = ["other", "chat", "next"];
 
-/**
- * Per-kind static metadata. Pure data — no closures, no per-kind handler
- * functions. Behavior-bearing branches (answer construction in
- * `key-router.ts:69-99`, the Next-row render block in `multi-select-view.ts`,
- * and the inline-Input render branch in `wrapping-select.ts`) keep their
- * exhaustive switches and READ flags from this table.
- *
- * Adding a new sentinel:
- *   1. Add the variant to `WrappingSelectItem` (`wrapping-select.ts:18-22`).
- *   2. Add an entry here. Compile fails until both edits are present.
- *   3. (If user-facing) author wherever the row is synthesized — typically
- *      `buildItemsForQuestion` for main-list residents, or the `chatList`
- *      construction site for non-main-list rows.
- *
- * Field semantics:
- * - `label` — user-facing string. For `option` it's an empty placeholder
- *   (per-instance labels come from `QuestionData.options[i].label`); every
- *   sentinel uses its META entry as the single source of truth.
- * - `reserved` — author-facing labels matching this string trigger
- *   `reserved_label` at validation time. `RESERVED_LABEL_SET` is derived.
- * - `livesInMainList` — true iff the row appears in `itemsByTab[i]`. Chat
- *   lives in its own `chatList` (`questionnaire-session.ts:95`) so its row
- *   never enters the main list.
- * - `numbered` — true iff the row contributes to the main-list numbering
- *   offset that `chatNumberingFor` reads. Multi-select Next is the only
- *   numberable=false row that lives in the list; chat is numbered=true but
- *   `livesInMainList=false` so the flag is moot for chat.
- * - `activatesInputMode` — true iff focusing the row should toggle
- *   `state.inputMode = true` and hydrate that row's shared inline-input
- *   owner. Read by `state-reducer.ts` `nav` / `focus_options` /
- *   `focus_chat` cases.
- * - `blocksMultiToggle` — in multiSelect mode, Space (and Enter-as-toggle)
- *   on this row is suppressed. The Next sentinel is the only true.
- * - `autoSubmitsInMulti` — in multiSelect mode, Enter on this row commits
- *   the question (emits `multi_confirm`). The Next sentinel is the only true.
- * - `autoAppendOnSingleSelectNoPreview` — `buildItemsForQuestion` appends
- *   this row when the question is single-select AND no option carries a
- *   `preview`. The "other" sentinel is the only true.
- * - `autoAppendOnMultiSelect` — `buildItemsForQuestion` appends this row
- *   when the question is multi-select. The Next sentinel is the only true.
- */
 export interface RowIntentMeta {
 	label: string;
 	reserved: boolean;
@@ -108,7 +61,7 @@ export const ROW_INTENT_META: Record<RowKind, RowIntentMeta> = {
 		label: "Next",
 		reserved: true,
 		livesInMainList: true,
-		numbered: false,
+		numbered: true,
 		activatesInputMode: false,
 		blocksMultiToggle: true,
 		autoSubmitsInMulti: true,

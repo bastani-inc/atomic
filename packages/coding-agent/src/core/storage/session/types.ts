@@ -1,4 +1,5 @@
-import type { SessionEntry, SessionWorkflowMetadata } from "../../session-manager-types.ts";
+import type { Usage } from "@bastani/atomic-ai/compat";
+import type { CompactionEntry, SessionEntry, SessionWorkflowMetadata } from "../../session-manager-types.ts";
 import type { SnapshotBlobStore } from "../../worktree-snapshot/types.ts";
 
 export const SESSION_FORMAT_VERSION = 4;
@@ -24,10 +25,103 @@ export interface SessionRecordHeader {
 }
 
 export interface SessionSnapshot {
+	readonly epoch?: string;
 	readonly header: SessionRecordHeader;
 	/** Entries in append order; the last entry is the leaf on reopen. */
 	readonly entries: readonly SessionEntry[];
 	readonly lastSeq: number;
+}
+
+export interface SessionUsageTotals {
+	readonly input: number;
+	readonly output: number;
+	readonly cacheRead: number;
+	readonly cacheWrite: number;
+	readonly cost: number;
+}
+
+export interface SessionHistoryTotals {
+	readonly auxiliary?: SessionUsageTotals;
+	readonly assistant: SessionUsageTotals;
+
+	readonly toolResult: SessionUsageTotals;
+
+	readonly summaries: SessionUsageTotals;
+	readonly userMessages: number;
+	readonly assistantMessages: number;
+	readonly toolResults: number;
+	readonly totalMessages: number;
+	readonly toolCalls: number;
+
+	readonly latestAssistantUsage?: Usage;
+	readonly latestAssistantSeq?: number;
+}
+
+export interface SessionStoredEntry {
+	readonly seq: number;
+	readonly entry: SessionEntry;
+}
+
+export interface SessionStateEntry extends SessionStoredEntry {
+	readonly onBranch: boolean;
+}
+
+export interface SessionTail {
+	readonly epoch?: string;
+	readonly seqs?: readonly number[];
+	readonly lastEntryId?: string | null;
+	readonly header: SessionRecordHeader;
+	readonly fromSeq: number;
+
+	readonly entries: readonly SessionEntry[];
+
+	readonly state: readonly SessionStateEntry[];
+
+	readonly omitted: SessionHistoryTotals;
+	readonly lastSeq: number;
+}
+
+export interface SessionEntryRange {
+	readonly epoch?: string;
+	readonly seqs?: readonly number[];
+	readonly lastEntryId?: string | null;
+	readonly startSeq: number;
+
+	readonly entries: readonly SessionEntry[];
+	readonly lastSeq: number;
+}
+
+export interface SessionCompactionPoint {
+	readonly entry: CompactionEntry;
+	readonly seq: number;
+
+	readonly firstKeptSeq?: number;
+
+	readonly coveredThroughSeq?: number;
+
+	readonly retainedStartSeq: number;
+
+	readonly leafId: string;
+	readonly lastSeq: number;
+}
+
+export interface SessionRecoveryState {
+	readonly admissionKeys: readonly string[];
+	readonly intercomDeliveredIds: readonly string[];
+	readonly deliveryOpIds?: readonly string[];
+}
+
+export interface SessionResume {
+	readonly header: SessionRecordHeader;
+	readonly lastSeq: number;
+	readonly lastEntryId: string | null;
+	readonly epoch: string;
+	readonly leafId: string | null;
+	readonly compaction?: SessionCompactionPoint;
+	readonly branch: readonly SessionStoredEntry[];
+	readonly state: readonly SessionStateEntry[];
+	readonly omitted: SessionHistoryTotals;
+	readonly recovery: SessionRecoveryState;
 }
 
 export interface SessionSummary {
@@ -62,7 +156,13 @@ export function matchesSessionIdPrefix(id: string, prefix: string | undefined): 
 }
 
 export interface SessionWriteOptions {
+	readonly epoch?: string;
 	readonly expectSeq: number;
+}
+
+export interface SessionWriteResult {
+	readonly lastSeq: number;
+	readonly epoch?: string;
 }
 
 /** A blob a session holds: the lowercase hex SHA-256 of its bytes, and how many bytes it has. */
@@ -179,7 +279,7 @@ export interface SessionStore {
 	putBlob?(sessionId: string, data: Uint8Array): Promise<SessionBlob>;
 	/** The bytes the session stored under `hash`, or `undefined` when it holds none. Absent with `putBlob`. */
 	getBlob?(sessionId: string, hash: string): Promise<Uint8Array | undefined>;
-	create(header: SessionRecordHeader, entries: readonly SessionEntry[]): Promise<{ readonly lastSeq: number }>;
+	create(header: SessionRecordHeader, entries: readonly SessionEntry[]): Promise<SessionWriteResult>;
 	append(
 		sessionId: string,
 		entries: readonly SessionEntry[],
@@ -190,10 +290,18 @@ export interface SessionStore {
 		header: SessionRecordHeader,
 		entries: readonly SessionEntry[],
 		options: SessionWriteOptions,
-	): Promise<{ readonly lastSeq: number }>;
+	): Promise<SessionWriteResult>;
 	load(sessionId: string): Promise<SessionSnapshot>;
 	readEntryRange?(sessionId: string, query: SessionEntriesQuery): Promise<SessionEntriesPage>;
 	readonly searchIndex?: SessionSearchIndex;
+
+	readTail?(sessionId: string, fromSeq: number): Promise<SessionTail>;
+
+	readRange?(sessionId: string, startSeq: number, endSeq: number): Promise<SessionEntryRange>;
+
+	findLatestCompaction?(sessionId: string, leafId?: string): Promise<SessionCompactionPoint | undefined>;
+	readResume?(sessionId: string, leafId?: string): Promise<SessionResume>;
+	findEntrySeq?(sessionId: string, entryId: string): Promise<number | undefined>;
 	readHeader(sessionId: string): Promise<SessionRecordHeader | undefined>;
 	delete(sessionId: string): Promise<void>;
 	list(query: SessionListQuery): AsyncIterable<SessionSummary>;

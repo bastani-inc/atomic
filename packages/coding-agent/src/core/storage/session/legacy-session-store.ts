@@ -8,18 +8,24 @@ import { openNodeSqliteDatabase } from "../node-sqlite.js";
 import { SessionExistsError, SessionNotFoundError } from "./errors.js";
 import { type JsonlSessionFile, JsonlSessionStore } from "./jsonl-session-store.js";
 import { latestLegacyMessageTime, summarizeLegacySession } from "./legacy-session-summary.js";
+import { findSessionCompaction, readSessionRange, readSessionTail, sessionResumeOf } from "./session-resume.js";
 import { summarizeSession } from "./session-summary.js";
 import type {
 	SessionBlob,
+	SessionCompactionPoint,
 	SessionEntriesPage,
 	SessionEntriesQuery,
+	SessionEntryRange,
 	SessionListQuery,
 	SessionRecordHeader,
+	SessionResume,
 	SessionSearchIndex,
 	SessionSnapshot,
 	SessionStore,
 	SessionSummary,
+	SessionTail,
 	SessionWriteOptions,
+	SessionWriteResult,
 	StorageDescriptor,
 } from "./types.js";
 import { matchesSessionIdPrefix } from "./types.js";
@@ -96,7 +102,7 @@ export class LegacySessionStore implements SessionStore {
 		return this.inner.snapshotBlobs;
 	}
 
-	create(header: SessionRecordHeader, entries: readonly SessionEntry[]): Promise<{ readonly lastSeq: number }> {
+	create(header: SessionRecordHeader, entries: readonly SessionEntry[]): Promise<SessionWriteResult> {
 		return this.inner.create(header, entries);
 	}
 
@@ -114,7 +120,7 @@ export class LegacySessionStore implements SessionStore {
 		header: SessionRecordHeader,
 		entries: readonly SessionEntry[],
 		options: SessionWriteOptions,
-	): Promise<{ readonly lastSeq: number }> {
+	): Promise<SessionWriteResult> {
 		await this.convert(sessionId);
 		return this.inner.replace(sessionId, header, entries, options);
 	}
@@ -122,6 +128,35 @@ export class LegacySessionStore implements SessionStore {
 	async load(sessionId: string): Promise<SessionSnapshot> {
 		await this.convert(sessionId);
 		return this.inner.load(sessionId);
+	}
+
+	async readTail(sessionId: string, fromSeq: number): Promise<SessionTail> {
+		await this.convert(sessionId);
+		return readSessionTail(this.inner, sessionId, fromSeq);
+	}
+
+	async readRange(sessionId: string, startSeq: number, endSeq: number): Promise<SessionEntryRange> {
+		await this.convert(sessionId);
+		return readSessionRange(this.inner, sessionId, startSeq, endSeq);
+	}
+
+	async findLatestCompaction(sessionId: string, leafId?: string): Promise<SessionCompactionPoint | undefined> {
+		await this.convert(sessionId);
+		return findSessionCompaction(this.inner, sessionId, leafId);
+	}
+
+	async readResume(sessionId: string, leafId?: string): Promise<SessionResume> {
+		await this.convert(sessionId);
+		if (this.inner.readResume) return this.inner.readResume(sessionId, leafId);
+		const snapshot = await this.inner.load(sessionId);
+		return sessionResumeOf(snapshot.header, snapshot.entries, leafId);
+	}
+	async findEntrySeq(sessionId: string, entryId: string): Promise<number | undefined> {
+		await this.convert(sessionId);
+		if (this.inner.findEntrySeq) return this.inner.findEntrySeq(sessionId, entryId);
+		const entries = (await this.inner.load(sessionId)).entries;
+		const index = entries.findLastIndex((e) => e.id === entryId);
+		return index < 0 ? undefined : index + 1;
 	}
 
 	async readHeader(sessionId: string): Promise<SessionRecordHeader | undefined> {

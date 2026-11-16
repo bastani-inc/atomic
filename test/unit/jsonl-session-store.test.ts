@@ -676,6 +676,26 @@ it("reads any range of entries as a whole load does, through appends, blank line
 	});
 });
 
+it("rebuilds its entry range index when the session file is rewritten in place (#5250)", async () => {
+	await withStore(async (store) => {
+		const named = (id: string) => ({ ...entry, id });
+		await store.create(
+			header,
+			Array.from({ length: 600 }, (_, index) => named(`e${index + 1}`)),
+		);
+		const path = await location(store);
+		assert.equal((await store.readEntryRange(header.id, { fromSeq: 550, toSeq: 550 })).entries[0]?.entry.id, "e550");
+		const [headerLine] = (await readFile(path, "utf8")).split("\n");
+		const rewritten = Array.from({ length: 600 }, (_, index) => JSON.stringify(named(`rewritten-${index + 1}`)));
+		await writeFile(path, `${headerLine}\n${rewritten.join("\n")}\n`);
+		const page = await store.readEntryRange(header.id, { fromSeq: 550, toSeq: 551 });
+		assert.deepEqual(
+			page.entries.map((at) => at.entry.id),
+			["rewritten-550", "rewritten-551"],
+		);
+	});
+});
+
 it("skips blank lines and reports nothing for a session without a torn line (#4993)", async () => {
 	await withStore(async (store, directory) => {
 		const path = join(directory, "blank.jsonl");
@@ -983,7 +1003,7 @@ for (const id of ["文".repeat(32), "x".repeat(200)]) {
 	it(`round-trips a permitted ${id.length}-character identity without filename limits`, async () => {
 		await withStore(async (store, directory) => {
 			const input = { ...header, id };
-			assert.deepEqual(await store.create(input, [entry]), { lastSeq: 1 });
+			assert.equal((await store.create(input, [entry])).lastSeq, 1);
 			const reopened = await JsonlSessionStore.open(directory);
 			try {
 				assert.deepEqual(await reopened.load(id), { header: input, entries: [entry], lastSeq: 1 });

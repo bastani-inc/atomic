@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import type { SqliteDatabase, StorageNotificationEvent, StorageNotifications } from "@bastani/atomic/storage";
+import type {
+	SqliteDatabase,
+	SqliteExecutor,
+	StorageNotificationEvent,
+	StorageNotifications,
+} from "@bastani/atomic/storage";
 import { test } from "vitest";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import {
@@ -143,6 +148,21 @@ test("failing an attempt and closing the pool notify, and closing a pool with no
 	}
 });
 
+test("resuming the pool notifies, so idle workers of other hosts claim at once; pausing and quitting do not (#5230)", async () => {
+	const f = await fixture();
+	try {
+		await f.notices();
+		await f.pool.setControl(f.lease, "paused");
+		assert.deepEqual(await f.notices(), [], "pause");
+		await f.pool.setControl(f.lease, "running");
+		assert.deepEqual(await f.notices(), ready, "resume");
+		await f.pool.setControl(f.lease, "quit");
+		assert.deepEqual(await f.notices(), [], "quit");
+	} finally {
+		await f.close();
+	}
+});
+
 test("a new incarnation's releases and reopenings notify, and none notifies with nothing to release (#5103)", async () => {
 	const f = await fixture();
 	try {
@@ -219,6 +239,120 @@ test("a journal whose database has no notifications sends none and has nothing t
 			undefined,
 		);
 		assert.equal(sqlPoolStorage(journal)!.notifications, undefined);
+	} finally {
+		await journal.close();
+		await database.close();
+		removeTempDirectory(directory);
+	}
+});
+
+test("resuming changes the ready mark even if no work changed while paused (#5230)", async () => {
+	const f = await fixture();
+	try {
+		await f.pool.enqueue(f.lease, work, boundary);
+		const before = await f.pool.readyMark("root");
+		assert.ok(before !== undefined);
+		await f.pool.setControl(f.lease, "paused");
+		await f.pool.setControl(f.lease, "running");
+		const resumed = await f.pool.readyMark("root");
+		assert.ok(resumed !== undefined);
+		assert.notEqual(resumed, before, "a host without notifications discovers the resume on its next ready probe");
+	} finally {
+		await f.close();
+	}
+});
+
+test.each(["exited", "unplaced"] as const)(
+	"releasing an %s claim changes the ready mark even when the ready time stays unchanged (#5230)",
+	async (kind) => {
+		const f = await fixture();
+		try {
+			await f.pool.enqueue(f.lease, work, boundary);
+			const before = await f.pool.readyMark("root");
+			assert.ok(before !== undefined);
+			const held = await f.pool.claim(f.lease, "worker", [work], 60_000);
+			assert.ok(held);
+			assert.equal(await f.pool.readyMark("root"), undefined);
+			assert.equal(
+				await (kind === "exited" ? f.pool.releaseExited(f.lease, held) : f.pool.releaseUnplaced(f.lease, held)),
+				true,
+			);
+			const released = await f.pool.readyMark("root");
+			assert.ok(released !== undefined);
+			assert.notEqual(released, before, "another host's next ready probe must discover the released child");
+			assert.ok(await f.pool.claim(f.lease, "replacement", [work], 60_000));
+		} finally {
+			await f.close();
+		}
+	},
+);
+
+test("a pool's ready mark shows claimable work, and changes as work becomes ready or is claimed (#5230)", async () => {
+	const f = await fixture();
+	try {
+		assert.equal(await f.pool.readyMark("root"), undefined, "nothing queued");
+		await f.pool.enqueue(f.lease, work, boundary);
+		const one = await f.pool.readyMark("root");
+		assert.ok(one !== undefined);
+		const other = poolWorkFixture("other");
+		await f.pool.enqueue(f.lease, other.work, other.boundary);
+		const two = await f.pool.readyMark("root");
+		assert.ok(two !== undefined && two !== one);
+		assert.ok(await f.pool.claim(f.lease, "worker", [work, other.work], 60_000));
+		const left = await f.pool.readyMark("root");
+		assert.ok(left !== undefined && left !== two);
+		assert.equal(await f.pool.readyMark("another root"), undefined);
+	} finally {
+		await f.close();
+	}
+});
+
+test("ready-producing writes advance readiness in the work table trigger and send only the notification in notifyReady (#5230)", async () => {
+	const directory = makeTempDirectory("pool-ready-pipelined-");
+	const database = await openNodeSqliteDatabase(join(directory, "journal.sqlite"));
+	await database.exec("CREATE TABLE notices(id INTEGER PRIMARY KEY, channel TEXT NOT NULL, payload TEXT NOT NULL)");
+	const recording = recordingNotifications();
+	let events: string[] = [];
+	const pipelined: SqliteDatabase = new Proxy(withNotifications(database, recording.notifications), {
+		get(target, key) {
+			if (key !== "transaction") return Reflect.get(target, key);
+			return <T>(body: (tx: SqliteExecutor) => Promise<T>) =>
+				target.transaction((tx) => {
+					const wrapped: SqliteExecutor = {
+						exec: (sql) => tx.exec(sql),
+						get: (sql, ...params) => tx.get(sql, ...params),
+						all: (sql, ...params) => tx.all(sql, ...params),
+						async run(sql, ...params) {
+							if (sql.includes("wf_runs_pool_ready")) events.push("client:ready");
+							if (sql.includes("INSERT INTO notices")) events.push("notice");
+							return tx.run(sql, ...params);
+						},
+					};
+					return body(wrapped);
+				});
+		},
+	});
+	const journal = await SqlRunJournal.open(pipelined);
+	try {
+		await journal.createRun(header);
+		const acquired = await journal.acquire("root", "coordinator");
+		assert.equal(acquired.status, "acquired");
+		const lease = (acquired as { lease: Lease }).lease;
+		const pool = await openSqlPoolQueue(journal);
+		await pool.initialize(lease, 60_000);
+		events = [];
+		await pool.enqueue(lease, work, boundary);
+		assert.deepEqual(events, ["notice"]);
+		assert.deepEqual(await database.get("SELECT revision FROM wf_runs_pool_ready WHERE root = 'root'"), {
+			revision: 1,
+		});
+		const held = (await pool.claim(lease, "worker", [work], 60_000))!;
+		events = [];
+		assert.equal(await pool.releaseExited(lease, held), true);
+		assert.deepEqual(events, ["notice"]);
+		assert.deepEqual(await database.get("SELECT revision FROM wf_runs_pool_ready WHERE root = 'root'"), {
+			revision: 2,
+		});
 	} finally {
 		await journal.close();
 		await database.close();

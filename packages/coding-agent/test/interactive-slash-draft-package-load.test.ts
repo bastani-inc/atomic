@@ -93,7 +93,6 @@ function fixturePackageCapture(projectTrustOverride: true | undefined): EarlyInp
 			session: undefined,
 		},
 		sessionCwd: startupCaptureCwd,
-		projectTrustStore: { get: () => null },
 		resolvedExtensionPathCount: fixturePackagePaths.length,
 		resolvedResourcePathCount: 0,
 		deprecationWarningCount: 0,

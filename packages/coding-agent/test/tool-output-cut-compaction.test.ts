@@ -513,7 +513,7 @@ describe("truncation markers locate the full output in session history (#4568)",
 	}
 
 	function historyOf(manager: SessionManager) {
-		return { history: { sessionId: manager.getSessionId(), entryRanges: historyEntryRanges(manager.getEntries()) } };
+		return { history: { sessionId: manager.getSessionId(), entryRanges: historyEntryRanges(manager) } };
 	}
 
 	it("uses the fallback marker when no session history is known (#4568)", async () => {

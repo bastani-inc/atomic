@@ -158,6 +158,7 @@ export interface SqlPoolStorage {
 	 * statements of one read may see different commits.
 	 */
 	read<T>(body: (executor: SqliteExecutor) => Promise<T>): Promise<T>;
+	readonly peek?: <T>(body: (executor: SqliteExecutor) => Promise<T>) => Promise<T>;
 	withAppendGuard<T>(guard: JournalAppendGuard, action: () => Promise<T>): Promise<T>;
 	readonly tables: Readonly<{
 		runs: string;

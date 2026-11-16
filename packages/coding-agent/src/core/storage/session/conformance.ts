@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import type { Usage } from "@bastani/atomic-ai/compat";
+import { buildSessionProjection, getSessionLeafId } from "../../session-manager-history.ts";
 import type { SessionEntry } from "../../session-manager-types.ts";
 import {
 	SessionConflictError,
@@ -12,7 +14,13 @@ import {
 	StoreClosedError,
 } from "./errors.js";
 import { SESSION_SUMMARY_TEXT_CHARS } from "./session-summary.js";
-import { SESSION_FORMAT_VERSION, type SessionRecordHeader, type SessionStore, type SessionSummary } from "./types.js";
+import {
+	SESSION_FORMAT_VERSION,
+	type SessionHistoryTotals,
+	type SessionRecordHeader,
+	type SessionStore,
+	type SessionSummary,
+} from "./types.js";
 
 export interface SessionStoreConformanceRunner {
 	describe(name: string, body: () => void): void;
@@ -84,6 +92,135 @@ function invalidText(
 	};
 }
 
+function tailUsage(tokens: number): Usage {
+	return {
+		input: tokens,
+		output: 1,
+		cacheRead: 2,
+		cacheWrite: 3,
+		totalTokens: tokens + 6,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: tokens / 128 },
+	};
+}
+
+function chained(entries: readonly (Omit<SessionEntry, "parentId" | "timestamp"> & { parent?: string | null })[]) {
+	const result: SessionEntry[] = [];
+	for (const [index, { parent, ...entry }] of entries.entries()) {
+		const timestamp = new Date(Date.parse(createdAt) + index * 1000).toISOString();
+		const parentId = parent === undefined ? (result.at(-1)?.id ?? null) : parent;
+		const { type, id, customType, data, ...body } = entry as { type: string; id: string; [key: string]: unknown };
+		result.push(
+			(type === "custom"
+				? { type, customType, data, id, parentId, timestamp }
+				: { type, id, parentId, timestamp, ...body }) as unknown as SessionEntry,
+		);
+	}
+	return result;
+}
+
+const tailEntry = {
+	user: (id: string, text = id, parent?: string | null) => ({
+		type: "message" as const,
+		id,
+		...(parent === undefined ? {} : { parent }),
+		message: { role: "user" as const, content: text, timestamp: Date.parse(createdAt) },
+	}),
+	assistant: (id: string, tokens: number, parent?: string | null) => ({
+		type: "message" as const,
+		id,
+		...(parent === undefined ? {} : { parent }),
+		message: {
+			role: "assistant" as const,
+			content: [
+				{ type: "text" as const, text: id },
+				{ type: "toolCall" as const, id: `call-${id}`, name: "read", arguments: {} },
+			],
+			api: "anthropic-messages" as const,
+			provider: "test",
+			model: "model",
+			usage: tailUsage(tokens),
+			stopReason: "toolUse" as const,
+			timestamp: Date.parse(createdAt),
+		},
+	}),
+	model: (id: string, parent?: string | null) => ({
+		type: "model_change" as const,
+		id,
+		...(parent === undefined ? {} : { parent }),
+		provider: "test",
+		modelId: id,
+	}),
+	thinking: (id: string, parent?: string | null) => ({
+		type: "thinking_level_change" as const,
+		id,
+		...(parent === undefined ? {} : { parent }),
+		thinkingLevel: "high",
+	}),
+	label: (id: string, targetId: string) => ({ type: "label" as const, id, targetId, label: "mark" }),
+	name: (id: string, name: string) => ({ type: "session_info" as const, id, name }),
+	custom: (id: string, customType: string, data: unknown, parent?: string | null) => ({
+		type: "custom" as const,
+		customType,
+		data,
+		id,
+		...(parent === undefined ? {} : { parent }),
+	}),
+	compaction: (
+		id: string,
+		firstKeptEntryId: string | null,
+		options: { coveredThroughEntryId?: string; parent?: string | null; tokens?: number } = {},
+	) => ({
+		type: "compaction" as const,
+		id,
+		...(options.parent === undefined ? {} : { parent: options.parent }),
+		summary: `summary ${id}`,
+		firstKeptEntryId,
+		tokensBefore: 10,
+		...(options.coveredThroughEntryId === undefined ? {} : { coveredThroughEntryId: options.coveredThroughEntryId }),
+		details: { strategy: "verbatim-lines" },
+		usage: tailUsage(options.tokens ?? 64),
+	}),
+};
+
+function compactedSession(): SessionEntry[] {
+	return chained([
+		tailEntry.model("m1"),
+		tailEntry.thinking("t1"),
+		tailEntry.user("u1"),
+		tailEntry.assistant("a1", 128),
+		tailEntry.label("l1", "u1"),
+		tailEntry.name("n1", "first"),
+		tailEntry.custom("x1", "workspace_binding", { kind: "bound-workspace", worktree: "/p" }),
+		tailEntry.custom("i1", "task-completion-intent", { completionId: "settled" }),
+		tailEntry.custom("k1", "task-completion-ack", { completionId: "settled" }),
+		tailEntry.custom("i2", "task-completion-intent", { completionId: "open" }),
+		tailEntry.name("n2", "second"),
+		tailEntry.user("u2"),
+		tailEntry.assistant("a2", 256),
+		tailEntry.compaction("c1", "u2"),
+		tailEntry.user("u3"),
+		tailEntry.assistant("a3", 512),
+	]);
+}
+
+function usageTotals(...usages: Usage[]): SessionHistoryTotals["assistant"] {
+	return usages.reduce(
+		(totals, usage) => ({
+			input: totals.input + usage.input,
+			output: totals.output + usage.output,
+			cacheRead: totals.cacheRead + usage.cacheRead,
+			cacheWrite: totals.cacheWrite + usage.cacheWrite,
+			cost: totals.cost + usage.cost.total,
+		}),
+		{ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
+	);
+}
+
+async function appendEach(store: SessionStore, entries: readonly SessionEntry[], id = "session"): Promise<void> {
+	await store.create(header(id), []);
+	for (const [index, entry] of entries.entries()) await store.append(id, [entry], { expectSeq: index });
+}
+
 export function registerSessionStoreConformance(
 	runner: SessionStoreConformanceRunner,
 	name: string,
@@ -110,7 +247,7 @@ export function registerSessionStoreConformance(
 
 			check("creates atomically and rejects duplicate sessions without changing data", async (store, reload) => {
 				const entries = [message("first", "hello")];
-				assert.deepEqual(await store.create(header(), entries), { lastSeq: 1 });
+				assert.equal((await store.create(header(), entries)).lastSeq, 1);
 				store = await reload(store);
 				await assert.rejects(store.create({ ...header(), cwd: "changed" }, []), (error: Error) => {
 					assert.ok(error instanceof SessionExistsError);
@@ -186,7 +323,7 @@ export function registerSessionStoreConformance(
 					workflow: { runId: "run", stageId: "stage", stageName: " Stage " },
 				};
 				const entries = [message("new", "new"), message("last", "last")];
-				assert.deepEqual(await store.replace("session", replacement, entries, { expectSeq: 1 }), { lastSeq: 2 });
+				assert.equal((await store.replace("session", replacement, entries, { expectSeq: 1 })).lastSeq, 2);
 				store = await reload(store);
 				assert.deepEqual(await store.readHeader("session"), replacement);
 				assert.deepEqual(await store.load("session"), { header: replacement, entries, lastSeq: 2 });
@@ -608,7 +745,7 @@ export function registerSessionStoreConformance(
 
 			check("preserves empty values, duplicate entries and absent optional fields", async (store, reload) => {
 				const emptyHeader = { ...header(""), cwd: "", createdAt: "2026-10-15T01:00+01:00" };
-				assert.deepEqual(await store.create(emptyHeader, []), { lastSeq: 0 });
+				assert.equal((await store.create(emptyHeader, [])).lastSeq, 0);
 				assert.deepEqual(await store.append("", [], { expectSeq: 0 }), { lastSeq: 0 });
 				store = await reload(store);
 				const [summary] = await collect(store, { cwd: "" });
@@ -624,7 +761,7 @@ export function registerSessionStoreConformance(
 				await store.append("", [entry, entry], { expectSeq: 0 });
 				store = await reload(store);
 				assert.deepEqual((await store.load("")).entries, [entry, entry]);
-				assert.deepEqual(await store.replace("", emptyHeader, [], { expectSeq: 2 }), { lastSeq: 0 });
+				assert.equal((await store.replace("", emptyHeader, [], { expectSeq: 2 })).lastSeq, 0);
 			});
 
 			check("rejects invalid structural text atomically with NUL precedence", async (store, reload) => {
@@ -905,7 +1042,7 @@ export function registerSessionStoreConformance(
 				await assert.rejects(store.load("session"), notFound("session"));
 				assert.equal(await store.readHeader("session"), undefined);
 				assert.deepEqual(await collect(store), []);
-				assert.deepEqual(await store.create(header(), []), { lastSeq: 0 });
+				assert.equal((await store.create(header(), [])).lastSeq, 0);
 			});
 
 			check("detaches input and returned records, headers and summaries", async (store, reload) => {
@@ -1021,6 +1158,336 @@ export function registerSessionStoreConformance(
 				await assert.rejects(store.readEntryRange!("missing", { fromSeq: 1, toSeq: 1 }), notFound("missing"));
 			});
 
+			check("reads a session's tail with the state entries before it (#5249)", async (store, reload) => {
+				const entries = compactedSession();
+				await appendEach(store, entries);
+				store = await reload(store);
+				assert.ok(store.readTail && store.readRange && store.findLatestCompaction);
+				const tail = await store.readTail("session", 12);
+				assert.deepEqual(tail.header, header());
+				assert.equal(tail.fromSeq, 12);
+				assert.equal(tail.lastSeq, 16);
+				assert.deepEqual(tail.entries, entries.slice(11));
+				assert.deepEqual(
+					tail.state.map(({ seq, entry, onBranch }) => ({ seq, id: entry.id, onBranch })),
+					[1, 2, 4, 5, 7, 10, 11].map((seq) => ({ seq, id: entries[seq - 1]!.id, onBranch: true })),
+				);
+				assert.deepEqual(tail.state[0]!.entry, entries[0]);
+				assert.deepEqual(tail.omitted, {
+					assistant: usageTotals(),
+					toolResult: usageTotals(),
+					summaries: usageTotals(),
+					userMessages: 1,
+					assistantMessages: 0,
+					toolResults: 0,
+					totalMessages: 1,
+					toolCalls: 0,
+				});
+				const whole = await store.readTail("session", 1);
+				assert.deepEqual(whole.entries, entries);
+				assert.deepEqual(whole.state, []);
+				assert.equal(whole.omitted.totalMessages, 0);
+				const none = await store.readTail("session", 17);
+				assert.deepEqual(none.entries, []);
+				assert.deepEqual(
+					none.state.map(({ seq }) => seq),
+					[1, 2, 4, 5, 7, 10, 11, 16],
+				);
+				assert.deepEqual(none.omitted, {
+					assistant: usageTotals(tailUsage(256)),
+					toolResult: usageTotals(),
+					summaries: usageTotals(tailUsage(64)),
+					userMessages: 3,
+					assistantMessages: 1,
+					toolResults: 0,
+					totalMessages: 4,
+					toolCalls: 1,
+				});
+				assert.deepEqual(await store.append("session", [message("after", "after")], { expectSeq: 16 }), {
+					lastSeq: 17,
+				});
+				assert.deepEqual((await store.readTail("session", 17)).entries, [message("after", "after")]);
+				await assert.rejects(store.readTail("missing", 1), notFound("missing"));
+				await assert.rejects(store.readTail("bad\0id", 1), invalidText("sessionId", "nul-character"));
+			});
+
+			check("reads a range of a session's entries by seq (#5249)", async (store, reload) => {
+				const entries = compactedSession();
+				await store.create(header(), entries);
+				store = await reload(store);
+				assert.ok(store.readRange);
+				const firstRange = await store.readRange("session", 3, 5);
+				assert.deepEqual(
+					{ startSeq: firstRange.startSeq, entries: firstRange.entries, lastSeq: firstRange.lastSeq },
+					{
+						startSeq: 3,
+						entries: entries.slice(2, 5),
+						lastSeq: 16,
+					},
+				);
+				assert.deepEqual((await store.readRange("session", 7, 7)).entries, [entries[6]]);
+				assert.deepEqual((await store.readRange("session", 15, 40)).entries, entries.slice(14));
+				assert.deepEqual((await store.readRange("session", 5, 4)).entries, []);
+				assert.deepEqual((await store.readRange("session", 17, 20)).entries, []);
+				assert.deepEqual((await store.readRange("session", 1, 16)).entries, entries);
+				await assert.rejects(store.readRange("missing", 1, 1), notFound("missing"));
+				await store.create(header("empty"), []);
+				assert.deepEqual((await store.readRange("empty", 1, 1)).entries, []);
+			});
+
+			check("finds the latest compaction on the session's branch (#5249)", async (store, reload) => {
+				const entries = compactedSession();
+				await appendEach(store, entries);
+				await store.create(header("plain"), [message("only", "only")]);
+				await store.create(header("empty"), []);
+				store = await reload(store);
+				assert.ok(store.findLatestCompaction);
+				assert.deepEqual(await store.findLatestCompaction("session"), {
+					entry: entries[13],
+					seq: 14,
+					firstKeptSeq: 12,
+					retainedStartSeq: 12,
+					leafId: "a3",
+					lastSeq: 16,
+				});
+				assert.equal((await store.findLatestCompaction("session", "a2"))?.seq, undefined);
+				assert.equal(await store.findLatestCompaction("session", "missing"), undefined);
+				assert.equal(await store.findLatestCompaction("plain"), undefined);
+				assert.equal(await store.findLatestCompaction("empty"), undefined);
+				await assert.rejects(store.findLatestCompaction("missing"), notFound("missing"));
+			});
+
+			check("finds the retained start a background compaction leaves (#5249)", async (store, reload) => {
+				const entries = chained([
+					tailEntry.user("u1"),
+					tailEntry.assistant("a1", 128),
+					tailEntry.user("u2"),
+					tailEntry.assistant("a2", 128),
+					tailEntry.compaction("background", null, { coveredThroughEntryId: "u2" }),
+					tailEntry.user("u3"),
+					tailEntry.compaction("kept", "a1", { coveredThroughEntryId: "u2", parent: "u3" }),
+					tailEntry.user("u4"),
+					tailEntry.compaction("corrupt", "nowhere"),
+				]);
+				await appendEach(store, entries);
+				store = await reload(store);
+				assert.ok(store.findLatestCompaction);
+				const corrupt = await store.findLatestCompaction("session");
+				assert.deepEqual(
+					{ seq: corrupt?.seq, retainedStartSeq: corrupt?.retainedStartSeq, firstKept: corrupt?.firstKeptSeq },
+					{ seq: 9, retainedStartSeq: 9, firstKept: undefined },
+				);
+				const kept = await store.findLatestCompaction("session", "u4");
+				assert.deepEqual(
+					{ seq: kept?.seq, firstKept: kept?.firstKeptSeq, covered: kept?.coveredThroughSeq },
+					{ seq: 7, firstKept: 2, covered: 3 },
+				);
+				assert.equal(kept?.retainedStartSeq, 2);
+				const background = await store.findLatestCompaction("session", "background");
+				assert.deepEqual(
+					{
+						seq: background?.seq,
+						covered: background?.coveredThroughSeq,
+						retainedStartSeq: background?.retainedStartSeq,
+						leafId: background?.leafId,
+					},
+					{ seq: 5, covered: 3, retainedStartSeq: 4, leafId: "background" },
+				);
+			});
+
+			check("tells which state entries are on a branched session's branch (#5249)", async (store, reload) => {
+				const entries = chained([
+					tailEntry.user("r1"),
+					tailEntry.model("m0"),
+					tailEntry.assistant("b1", 128),
+					tailEntry.compaction("cA", null),
+					tailEntry.user("a1"),
+					tailEntry.model("mA"),
+					tailEntry.user("b2", "b2", "b1"),
+					tailEntry.thinking("tB"),
+					tailEntry.assistant("b3", 128),
+				]);
+				await appendEach(store, entries);
+				store = await reload(store);
+				assert.ok(store.readTail && store.findLatestCompaction);
+				assert.equal(await store.findLatestCompaction("session"), undefined);
+				const onA = await store.findLatestCompaction("session", "mA");
+				assert.deepEqual(
+					{ seq: onA?.seq, retainedStartSeq: onA?.retainedStartSeq, leafId: onA?.leafId },
+					{ seq: 4, retainedStartSeq: 4, leafId: "mA" },
+				);
+				const tail = await store.readTail("session", 7);
+				assert.deepEqual(
+					tail.state.map(({ seq, onBranch }) => ({ seq, onBranch })),
+					[
+						{ seq: 2, onBranch: true },
+						{ seq: 3, onBranch: true },
+					],
+				);
+				await store.append(
+					"session",
+					[{ type: "custom", customType: "atomic.leaf", id: "move", parentId: "mA", timestamp: createdAt }],
+					{ expectSeq: 9 },
+				);
+				const moved = await store.findLatestCompaction("session");
+				assert.deepEqual({ seq: moved?.seq, leafId: moved?.leafId }, { seq: 4, leafId: "mA" });
+				assert.deepEqual(
+					(await store.readTail("session", 7)).state.map(({ seq, onBranch }) => ({ seq, onBranch })),
+					[
+						{ seq: 2, onBranch: true },
+						{ seq: 3, onBranch: true },
+						{ seq: 6, onBranch: true },
+					],
+				);
+			});
+
+			check(
+				"resumes one branch consistently and changes generation only on replacement (#5249)",
+				async (store, reload) => {
+					const entries = chained([
+						tailEntry.model("model"),
+						tailEntry.user("root"),
+						tailEntry.assistant("reply", 128),
+						tailEntry.user("kept"),
+						tailEntry.compaction("boundary", "kept"),
+						tailEntry.user("a"),
+						tailEntry.user("b", "other", "root"),
+						tailEntry.custom("move", "atomic.leaf", undefined, "a"),
+					]);
+					await store.create(header(), entries);
+					store = await reload(store);
+					assert.ok(store.readResume && store.readRange && store.findEntrySeq);
+					const resumed = await store.readResume("session");
+					assert.equal(resumed.leafId, "a");
+					assert.equal(resumed.lastEntryId, "move");
+					assert.equal(resumed.lastSeq, entries.length);
+					assert.equal(
+						resumed.branch.some(({ entry }) => entry.id === "b"),
+						false,
+					);
+					const held = [...resumed.state, ...resumed.branch].sort((a, b) => a.seq - b.seq);
+					const branch = held
+						.filter(
+							(item) =>
+								resumed.branch.some((other) => other.seq === item.seq) ||
+								resumed.state.some((other) => other.seq === item.seq && other.onBranch),
+						)
+						.map((item) => item.entry);
+					const expected = buildSessionProjection(entries, getSessionLeafId(entries));
+					const actual = buildSessionProjection(
+						held.map((item) => item.entry),
+						resumed.leafId,
+						undefined,
+						undefined,
+						branch,
+					);
+					assert.deepEqual(actual.messages, expected.messages);
+					assert.deepEqual(actual.model, expected.model);
+					assert.equal(actual.thinkingLevel, expected.thinkingLevel);
+					assert.equal(await store.findEntrySeq("session", "root"), 2);
+					assert.equal(await store.findEntrySeq("session", "missing"), undefined);
+					assert.equal((await store.readRange("session", 1, 2)).epoch, resumed.epoch);
+					await store.append("session", [{ ...message("later", "later"), parentId: "a" }], {
+						expectSeq: entries.length,
+					});
+					assert.equal((await store.readResume("session")).epoch, resumed.epoch);
+					await store.replace("session", header(), entries, { expectSeq: entries.length + 1 });
+					const replacement = await store.readResume("session");
+					assert.notEqual(replacement.epoch, resumed.epoch);
+					await store.delete("session");
+					await store.create(header(), entries);
+					assert.notEqual((await store.readResume("session")).epoch, replacement.epoch);
+				},
+			);
+
+			check(
+				"rejects an append or replace carrying a replaced generation's epoch at the same sequence count (#5249)",
+				async (store, reload) => {
+					const original = [message("first", "first"), { ...message("second", "second"), parentId: "first" }];
+					await store.create(header(), original);
+					store = await reload(store);
+					assert.ok(store.readRange);
+					const opened = (await store.readRange("session", 1, 0)).epoch;
+					assert.ok(opened);
+					const replaced = await store.replace(
+						"session",
+						header(),
+						[message("other", "other"), { ...message("next", "next"), parentId: "other" }],
+						{ expectSeq: 2 },
+					);
+					store = await reload(store);
+					const conflict = (error: Error) => error instanceof SessionConflictError;
+					await assert.rejects(
+						store.append("session", [{ ...message("late", "late"), parentId: "second" }], {
+							expectSeq: 2,
+							epoch: opened,
+						}),
+						conflict,
+					);
+					await assert.rejects(
+						store.replace("session", header(), original, { expectSeq: 2, epoch: opened }),
+						conflict,
+					);
+					assert.deepEqual(
+						(await store.load("session")).entries.map((entry) => entry.id),
+						["other", "next"],
+					);
+					assert.ok(replaced.epoch);
+					await store.append("session", [{ ...message("after", "after"), parentId: "next" }], {
+						expectSeq: 2,
+						epoch: replaced.epoch,
+					});
+					assert.equal((await store.load("session")).lastSeq, 3);
+				},
+			);
+
+			check("create and replace resolve the epoch later range reads report (#5249)", async (store, reload) => {
+				const created = await store.create(header(), [message("first", "first")]);
+				store = await reload(store);
+				assert.ok(store.readRange && created.epoch);
+				assert.equal((await store.readRange("session", 1, 1)).epoch, created.epoch);
+				await store.append("session", [{ ...message("second", "second"), parentId: "first" }], {
+					expectSeq: 1,
+					epoch: created.epoch,
+				});
+				const replaced = await store.replace("session", header(), [message("only", "only")], {
+					expectSeq: 2,
+					epoch: created.epoch,
+				});
+				assert.ok(replaced.epoch);
+				assert.notEqual(replaced.epoch, created.epoch);
+				store = await reload(store);
+				assert.equal((await store.readRange!("session", 1, 1)).epoch, replaced.epoch);
+				await store.append("session", [{ ...message("third", "third"), parentId: "only" }], {
+					expectSeq: 1,
+					epoch: replaced.epoch,
+				});
+				assert.equal((await store.readResume!("session")).epoch, replaced.epoch);
+			});
+
+			check(
+				"readResume reports pooled delivery receipt ids from before the compaction (#5249)",
+				async (store, reload) => {
+					const entries = chained([
+						tailEntry.user("root"),
+						tailEntry.custom("receipt", "atomic-pooled-delivery-op", { op: "delivered-op" }),
+						tailEntry.custom("ignored", "atomic-pooled-delivery-op", { op: 3 }),
+						tailEntry.user("kept"),
+						tailEntry.compaction("boundary", "kept"),
+						tailEntry.custom("later", "atomic-pooled-delivery-op", { op: "later-op" }),
+					]);
+					await store.create(header(), entries);
+					store = await reload(store);
+					assert.ok(store.readResume);
+					const resumed = await store.readResume("session");
+					assert.deepEqual(resumed.recovery.deliveryOpIds, ["delivered-op", "later-op"]);
+					assert.equal(
+						[...resumed.state, ...resumed.branch].some(({ entry }) => entry.id === "receipt"),
+						false,
+					);
+				},
+			);
+
 			check("rejects every operation after close, including repeated close", async (store, reload) => {
 				await store.create(header(), []);
 				store = await reload(store);
@@ -1041,6 +1508,9 @@ export function registerSessionStoreConformance(
 				await assert.rejects(store.load("session"), isClosed);
 				if (store.readEntryRange !== undefined)
 					await assert.rejects(store.readEntryRange("session", { fromSeq: 1, toSeq: 1 }), isClosed);
+				await assert.rejects(store.readTail!("session", 1), isClosed);
+				await assert.rejects(store.readRange!("session", 1, 1), isClosed);
+				await assert.rejects(store.findLatestCompaction!("session"), isClosed);
 				await assert.rejects(store.readHeader("session"), isClosed);
 				await assert.rejects(store.delete("session"), isClosed);
 				await assert.rejects(store.findMostRecent({ cwd: "/project" }), isClosed);

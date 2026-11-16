@@ -91,10 +91,22 @@ export async function resolveSessionTargetId(
   client: SessionListingClient,
   nameOrId: string,
 ): Promise<string | null> {
-  const sessions: Pick<SessionInfo, "id" | "name">[] = [...await client.listSessions()];
+  return resolveSessionTargetIdIn(await client.listSessions(), client.supervisorSessionId, nameOrId);
+}
+
+/**
+ * Resolve a target through a session list already fetched, as `resolveSessionTargetId` does through a fresh one. A
+ * pattern send resolves all its recipients from one list rather than fetching one per recipient.
+ */
+export function resolveSessionTargetIdIn(
+  listed: readonly Pick<SessionInfo, "id" | "name">[],
+  supervisorSessionId: string | null | undefined,
+  nameOrId: string,
+): string | null {
+  const sessions: Pick<SessionInfo, "id" | "name">[] = [...listed];
   // #2603: isolated children still know their broker-authorized supervisor ID.
-  if (client.supervisorSessionId && !sessions.some((session) => session.id === client.supervisorSessionId)) {
-    sessions.push({ id: client.supervisorSessionId });
+  if (supervisorSessionId && !sessions.some((session) => session.id === supervisorSessionId)) {
+    sessions.push({ id: supervisorSessionId });
   }
   const resolution = resolveSessionTarget(sessions, nameOrId);
   if (resolution.kind === "resolved") return resolution.session.id;

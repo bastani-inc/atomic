@@ -386,20 +386,16 @@ function historyDirectory(path: string): SessionHistoryDirectory {
 		async readRange(file, position, length) {
 			const handle = await open(fileAt(file), "r");
 			try {
-				const stats = await handle.stat();
-				const totalBytes = stats.size;
-				if (length <= 0 || position >= totalBytes) return { data: new Uint8Array(0), totalBytes };
-				const size = Math.min(length, totalBytes - position);
-				const data = new Uint8Array(size);
-				let read = 0;
-				while (read < size) {
-					const { bytesRead } = await handle.read(data, read, size - read, position + read);
-					if (bytesRead === 0) break;
+				const size = (await handle.stat()).size;
+				const bytes = new Uint8Array(Math.max(0, Math.min(length, size - position)));
+				for (let read = 0; read < bytes.byteLength; ) {
+					const { bytesRead } = await handle.read(bytes, read, bytes.byteLength - read, position + read);
+					if (bytesRead === 0) return { bytes: bytes.subarray(0, read), size };
 					read += bytesRead;
 				}
-				return { data: read === size ? data : data.subarray(0, read), totalBytes };
+				return { bytes, size };
 			} finally {
-				await handle.close().catch(() => undefined);
+				await handle.close();
 			}
 		},
 		async removeFile(file) {

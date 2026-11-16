@@ -9,11 +9,14 @@ import {
 	setCapabilities,
 	setKeybindings,
 	stripTerminalSequences,
+	TuiMainScreen,
 } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, beforeEach, test, vi } from "vitest";
+import { VirtualTerminal } from "../../tui/test/virtual-terminal.ts";
 import { KeybindingsManager } from "../src/core/keybindings.js";
+import { CustomEditor } from "../src/modes/interactive/components/custom-editor.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
-import { initTheme } from "../src/modes/interactive/theme/theme.js";
+import { getEditorTheme, initTheme } from "../src/modes/interactive/theme/theme.js";
 
 const startup = vi.hoisted(() => ({
 	trustSettled: vi.fn(async () => {}),
@@ -86,13 +89,29 @@ interface HeldMode {
 	trust: { granted: boolean };
 }
 
-function createMode(options: { holdTuiForStartupTrust: boolean }): HeldMode {
+function createMode(options: {
+	holdTuiForStartupTrust: boolean;
+	startupTrustPromptPossible?: boolean;
+	startupInputCapture?: { consume(): { text: string; submissions: string[]; heldForStartupDecision?: true } };
+}): HeldMode {
 	const start = vi.fn();
 	const editorContainer = new Container();
 	const chatContainer = new Container();
+	const startupNoticesContainer = new Container();
+	chatContainer.addChild(startupNoticesContainer);
 	const trust = { granted: false };
 	const keybindings = KeybindingsManager.create(projectDir);
-	const editor = { render: () => [], handleInput: vi.fn() };
+	const editor = {
+		text: "",
+		render: () => [],
+		handleInput: vi.fn(),
+		setText(text: string) {
+			this.text = text;
+		},
+		getText() {
+			return this.text;
+		},
+	};
 	const mode = {
 		init: InteractiveMode.prototype.init,
 		renderInitialMessages: InteractiveMode.prototype.renderInitialMessages,
@@ -125,7 +144,8 @@ function createMode(options: { holdTuiForStartupTrust: boolean }): HeldMode {
 		footerContainer: new Container(),
 		widgetContainerBelow: new Container(),
 		editor,
-		defaultEditor: {},
+		defaultEditor: editor,
+		startupNoticesContainer,
 		renderWidgets: vi.fn(),
 		mountInteractiveTui: vi.fn(),
 		setupKeyHandlers: vi.fn(),
@@ -139,14 +159,23 @@ function createMode(options: { holdTuiForStartupTrust: boolean }): HeldMode {
 			getQuietStartup: () => false,
 			isProjectTrusted: () => trust.granted,
 		},
-		sessionManager: { getEntries: () => [], getLeafId: () => null, getCwd: () => projectDir },
+		sessionManager: {
+			getSessionId: () => "session-1",
+			getEntries: () => [],
+			getLeafId: () => null,
+			getCwd: () => projectDir,
+		},
 		getStartupIdentityText: () => "Atomic v0.0.0",
 		shouldShowStartupHeader: () => true,
 		showFullscreenModelScopeNotice: () => {},
 		ensureManagedToolsReady: vi.fn(async () => {}),
 		attachStartupNoticesContainer: vi.fn(),
 		renderSessionEntries: vi.fn(),
-		options: { holdTuiForStartupTrust: options.holdTuiForStartupTrust },
+		options: {
+			holdTuiForStartupTrust: options.holdTuiForStartupTrust,
+			startupInputCapture: options.startupInputCapture,
+			startupTrustPromptPossible: options.startupTrustPromptPossible,
+		},
 	} as unknown as InteractiveMode;
 	return { mode, start, editorContainer, chatContainer, keybindings, trust };
 }
@@ -301,4 +330,127 @@ test("keeps the untrusted warning when the startup trust prompt is declined", as
 	await mode.init();
 
 	assert.equal(transcript(chatContainer).includes(TRUST_WARNING), true);
+});
+
+test("input typed before the startup trust prompt waits in the editor as a draft, with a notice", async () => {
+	const { mode, chatContainer } = createMode({
+		holdTuiForStartupTrust: true,
+		startupInputCapture: {
+			consume: () => ({ text: "", submissions: ["reply with PONG"], heldForStartupDecision: true }),
+		},
+	});
+
+	await mode.init();
+
+	const held = mode as unknown as { defaultEditor: { getText(): string }; pendingUserInputs: unknown[] };
+	assert.equal(held.defaultEditor.getText(), "reply with PONG");
+	assert.deepEqual(held.pendingUserInputs, []);
+	assert.equal(
+		transcript(chatContainer).includes("Your earlier input is in the prompt; press Enter to send it."),
+		true,
+	);
+});
+
+test("type-ahead waits as a draft when the project trust prompt may still come", async () => {
+	const { mode, chatContainer } = createMode({
+		holdTuiForStartupTrust: false,
+		startupTrustPromptPossible: true,
+		startupInputCapture: { consume: () => ({ text: " please", submissions: ["reply with PONG"] }) },
+	});
+
+	await mode.init();
+
+	const held = mode as unknown as { defaultEditor: { getText(): string }; pendingUserInputs: unknown[] };
+	assert.equal(held.defaultEditor.getText(), "reply with PONG\n please");
+	assert.deepEqual(held.pendingUserInputs, []);
+	assert.equal(
+		transcript(chatContainer).includes("Your earlier input is in the prompt; press Enter to send it."),
+		true,
+	);
+});
+
+test("type-ahead is still sent when no project trust prompt can come", async () => {
+	const { mode } = createMode({
+		holdTuiForStartupTrust: false,
+		startupInputCapture: { consume: () => ({ text: "", submissions: ["reply with PONG"] }) },
+	});
+
+	await mode.init();
+
+	const held = mode as unknown as { pendingUserInputs: Array<{ text: string }> };
+	assert.deepEqual(
+		held.pendingUserInputs.map((input) => input.text),
+		["reply with PONG"],
+	);
+});
+
+test("a trust prompt in the interface keeps typed text as a draft and its Enter grants nothing", async () => {
+	const { mode, editorContainer } = createMode({ holdTuiForStartupTrust: false });
+	await mode.init();
+
+	const answer = mode.showExtensionSelector(TRUST_PROMPT, TRUST_OPTIONS);
+	const dialog = editorContainer.children.at(-1) as { handleInput(data: string): void };
+	dialog.handleInput("reply with PONG");
+	dialog.handleInput("\r");
+	await flush();
+	let answered = false;
+	void answer.then(() => {
+		answered = true;
+	});
+	await flush();
+	assert.equal(answered, false, "Enter after typed text does not answer the trust prompt");
+
+	dialog.handleInput("\x1b[A");
+	dialog.handleInput("\r");
+	assert.equal(await answer, "Do not trust");
+	assert.equal((mode as unknown as { editor: { getText(): string } }).editor.getText(), "reply with PONG");
+});
+
+test("keeps earlier large pastes when trust-dialog text joins the editor draft (#5241)", async () => {
+	const { mode, editorContainer, keybindings } = createMode({ holdTuiForStartupTrust: false });
+	await mode.init();
+	const editor = new CustomEditor(new TuiMainScreen(new VirtualTerminal(100, 30)), getEditorTheme(), keybindings);
+	mode.editor = editor;
+	const earlierText = "a line of the earlier prompt\n".repeat(12);
+	editor.handleInput(`\x1b[200~${earlierText}\x1b[201~`);
+	assert.notEqual(editor.getText(), earlierText);
+	assert.equal(editor.getExpandedText(), earlierText);
+
+	const answer = mode.showExtensionSelector(TRUST_PROMPT, TRUST_OPTIONS);
+	const dialog = editorContainer.children.at(-1) as { handleInput(data: string): void };
+	dialog.handleInput("more prompt text");
+	dialog.handleInput("\x1b");
+	assert.equal(await answer, undefined);
+
+	assert.equal(editor.getExpandedText(), `${earlierText}\nmore prompt text`);
+});
+
+test("an unsent editor draft cannot answer a newly opened trust question (#5241)", async () => {
+	const { mode, editorContainer } = createMode({ holdTuiForStartupTrust: false });
+	await mode.init();
+	mode.editor.setText("hello");
+	const answer = mode.showExtensionSelector(TRUST_PROMPT, TRUST_OPTIONS);
+	const dialog = editorContainer.children.at(-1) as { handleInput(data: string): void };
+	let answered = false;
+	void answer.then(() => {
+		answered = true;
+	});
+	dialog.handleInput("\r");
+	await flush();
+	const answeredByDraft = answered;
+	dialog.handleInput("\x1b[A");
+	dialog.handleInput("\r");
+	await answer;
+	assert.equal(answeredByDraft, false);
+	assert.equal(mode.editor.getText(), "hello");
+});
+
+test("a trust prompt in the interface opens on the choice that trusts and saves nothing", async () => {
+	const { mode, editorContainer } = createMode({ holdTuiForStartupTrust: false });
+	await mode.init();
+
+	const answer = mode.showExtensionSelector(TRUST_PROMPT, TRUST_OPTIONS);
+	(editorContainer.children.at(-1) as { handleInput(data: string): void }).handleInput("\r");
+
+	assert.equal(await answer, "Do not trust (this session only)");
 });

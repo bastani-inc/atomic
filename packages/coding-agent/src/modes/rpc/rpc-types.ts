@@ -245,6 +245,7 @@ export interface RpcSessionState {
 	isStreaming: boolean;
 	isCompacting: boolean;
 	compactionReason?: CompactionReason;
+	compactionStartedAt?: number;
 	steeringMode: "all" | "one-at-a-time";
 	followUpMode: "all" | "one-at-a-time";
 	sessionLocation?: string;
@@ -584,6 +585,7 @@ export type RpcExtensionUIRequest =
 			timeout?: number;
 	  }
 	| { type: "extension_ui_request"; id: string; method: "editor"; title: string; prefill?: string }
+	| { type: "extension_ui_request"; id: string; method: "cancel" }
 	| {
 			type: "extension_ui_request";
 			id: string;

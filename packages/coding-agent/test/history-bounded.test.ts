@@ -11,7 +11,7 @@ import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteValue } from "../
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
 import { JsonlSessionStore } from "../src/core/storage/session/jsonl-session-store.js";
 import { LegacySessionStore } from "../src/core/storage/session/legacy-session-store.js";
-import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
+import { MemorySessionStore, SPILL_BLOCK_BYTES } from "../src/core/storage/session/memory-session-store.js";
 import { releasedHistoryFiles } from "../src/core/storage/session/released-history-files.js";
 import { summarizeSession } from "../src/core/storage/session/session-summary.js";
 import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.js";
@@ -913,7 +913,7 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 					},
 					async readRange(file, position, length) {
 						rangeBytesRead += length;
-						return created.readRange(file, position, length);
+						return created.readRange!(file, position, length);
 					},
 				};
 			},
@@ -921,10 +921,10 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 		try {
 			await store.create(
 				header("spilled"),
-				numbered(500, (seq) => `spilled-entry-${seq} ${"z".repeat(200)}`),
+				numbered(2000, (seq) => `spilled-entry-${seq} ${"z".repeat(200)}`),
 			);
 			await store.releaseSession("spilled");
-			await store.append("spilled", [message("e501", "user", "tail-501", BASE + 501_000)], { expectSeq: 500 });
+			await store.append("spilled", [message("e2001", "user", "tail-2001", BASE + 2_001_000)], { expectSeq: 2000 });
 			const { read } = historyOver(store);
 			assert.match(await read("history://sessions"), /history:\/\/sessions\/spilled/);
 			assert.equal(fullReads, 0, "listing without search text must not read the spill file");
@@ -932,7 +932,11 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 			assert.ok(slice.includes("spilled-entry-250"));
 			assert.ok(slice.includes("spilled-entry-251"));
 			assert.equal(fullReads, 0, "ranged read must not read the whole spill file");
-			assert.ok(rangeBytesRead > 0 && rangeBytesRead < 2_000, `read ${rangeBytesRead} spilled bytes`);
+			assert.ok(
+				rangeBytesRead > 0 && rangeBytesRead <= 2 * SPILL_BLOCK_BYTES,
+				`read ${rangeBytesRead} spilled bytes`,
+			);
+			assert.ok(store.historyBytes().onDisk > 4 * SPILL_BLOCK_BYTES);
 		} finally {
 			await store.close();
 		}

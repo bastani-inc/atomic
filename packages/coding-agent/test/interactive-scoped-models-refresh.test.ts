@@ -164,7 +164,7 @@ describe("scoped models cache-first refresh", () => {
 		await vi.waitFor(() => {
 			const rendered = stripAnsi(refresh.selector.render(100).join("\n"));
 			expect(rendered).toContain("Model catalogs refreshed.");
-			expect(rendered).toContain("✓ cached-provider/refreshed");
+			expect(rendered).toContain("[✓] cached-provider/refreshed");
 			expect(rendered).toContain("all enabled");
 		});
 		expect(refresh.setEnabledModels).toHaveBeenCalledExactlyOnceWith(undefined);
@@ -187,7 +187,7 @@ describe("scoped models cache-first refresh", () => {
 		refresh.complete([refreshed], { aborted: false, errors: new Map() });
 		await vi.waitFor(() => {
 			const rendered = stripAnsi(refresh.selector.render(100).join("\n"));
-			expect(rendered).toContain("cached-provider/cached [unavailable]");
+			expect(rendered).toMatch(/\[✓\] cached-provider\/cached +unavailable/);
 			expect(rendered).toContain("refreshed");
 		});
 

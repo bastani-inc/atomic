@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { Writable } from "node:stream";
 import { test } from "vitest";
+import { WorkingRunMeter } from "../../packages/coding-agent/src/modes/interactive/components/working-run-meter.ts";
 import { InteractiveModeBase } from "../../packages/coding-agent/src/modes/interactive/interactive-mode-base.ts";
 import {
 	isEngineSendFailure,
@@ -72,6 +73,7 @@ function makeStub(options: {
 		queued: options.queued ?? [],
 	};
 	const host = {
+		workingRunMeter: new WorkingRunMeter(),
 		promptTurnWorkingLoaderActive: false,
 		deferredStartupPending: false,
 		deferredStartupPromise: undefined,

@@ -1,8 +1,13 @@
 import assert from "node:assert/strict";
+import { DatabaseSync } from "node:sqlite";
 import { describe, test } from "vitest";
 import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.js";
-import type { SqliteDatabase, SqliteRow } from "../../packages/coding-agent/src/core/storage/database.js";
+import type { SqliteDatabase, SqliteRow, SqliteValue } from "../../packages/coding-agent/src/core/storage/database.js";
 import { StorageError, StorageSchemaVersionError } from "../../packages/coding-agent/src/core/storage/errors.js";
+import {
+	openNodeSqliteDatabase,
+	wrapNodeSqliteDatabase,
+} from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { assertStorageSchemaVersion } from "../../packages/coding-agent/src/core/storage/schema.js";
 import {
 	SESSION_SUMMARY_TEXT_CHARS,
@@ -187,7 +192,418 @@ describe("a session store under a libSQL server's size limits (#4954)", () => {
 			assert.deepEqual(limited.refused, []);
 		});
 	});
+
+	test("session pages do not include the entry that would cross the character bound (#4954)", async () => {
+		await withNodeSqliteDatabase(async ({ database }) => {
+			const limited = rowLimitedDatabase(database, { ...LIMITS, maxResponseBytes: MiB });
+			const store = await SqlSessionStore.open(limited.wrapped);
+			const entries = Array.from({ length: 5 }, (_, index) =>
+				message(`m-${index}`, index === 0 ? null : `m-${index - 1}`, "x".repeat(600_000), "assistant"),
+			);
+			await store.create(header(), entries);
+			assert.deepEqual((await store.load("session")).entries, entries);
+			assert.deepEqual(limited.refused, []);
+		});
+	});
+
+	test("listing pages do not include the session that would cross the character bound (#4954)", async () => {
+		await withNodeSqliteDatabase(async ({ database }) => {
+			const limited = rowLimitedDatabase(database, { ...LIMITS, maxResponseBytes: MiB });
+			const store = await SqlSessionStore.open(limited.wrapped);
+			const ids = ["third", "first", "second"];
+			for (const id of ids) {
+				await store.create(header(id), [
+					{
+						type: "session_info",
+						id: `${id}-name`,
+						parentId: null,
+						timestamp: createdAt,
+						name: "n".repeat(600_000),
+					},
+				]);
+			}
+			assert.deepEqual(
+				(await list(store)).map((summary) => summary.id),
+				ids,
+			);
+			await store.append("first", [message("m", "first-name", "changed")], { expectSeq: 1 });
+			assert.deepEqual(
+				(await list(store)).map((summary) => summary.id),
+				ids,
+			);
+			assert.deepEqual(limited.refused, []);
+		});
+	});
+
+	test("listing pages count text columns that duplicate header fields (#4954)", async () => {
+		await withNodeSqliteDatabase(async ({ database }) => {
+			const limited = rowLimitedDatabase(database, { ...LIMITS, maxResponseBytes: MiB });
+			const store = await SqlSessionStore.open(limited.wrapped);
+			const ids = ["first", "second", "third"];
+			for (const id of ids) await store.create({ ...header(id), cwd: `/${"x".repeat(300_000)}` }, []);
+			assert.deepEqual(
+				(await list(store)).map((summary) => summary.id),
+				ids,
+			);
+			assert.deepEqual(limited.refused, []);
+		});
+	});
+
+	test("listing pages count the separators between search texts (#4954)", async () => {
+		await withNodeSqliteDatabase(async ({ database }) => {
+			const limited = rowLimitedDatabase(database, { ...LIMITS, maxResponseBytes: MiB });
+			const store = await SqlSessionStore.open(limited.wrapped);
+			const ids = ["first", "second"];
+			for (const id of ids) {
+				await store.create(
+					header(id),
+					Array.from({ length: 1000 }, (_, index) => message(`${id}-${index}`, null, "x".repeat(521))),
+				);
+			}
+			const summaries = await list(store);
+			assert.deepEqual(
+				summaries.map((summary) => summary.id),
+				ids,
+			);
+			assert.ok(summaries.every((summary) => summary.searchText === Array(1000).fill("x".repeat(521)).join(" ")));
+			assert.deepEqual(limited.refused, []);
+		});
+	});
+
+	test.each([false, true])("read-only session stores open with orphan chunks present=%s (#4954)", async (orphan) => {
+		await withNodeSqliteDatabase(async (subject) => {
+			const database = subject.database;
+			const store = await SqlSessionStore.open(database);
+			const entries = [message("large", null, "x".repeat(2 * MiB))];
+			await store.create(header(), entries);
+			if (orphan) {
+				await database.run(
+					"INSERT INTO session_entry_chunks (session_id, seq, idx, data) VALUES (?, ?, ?, ?)",
+					"deleted-session",
+					1,
+					0,
+					new Uint8Array([1, 2, 3]),
+				);
+			}
+			const chunksBefore = await count(database, "SELECT count(*) AS n FROM session_entry_chunks");
+			const readOnly = await openNodeSqliteDatabase(database.descriptor.location, { readOnly: true });
+			try {
+				const reader = await SqlSessionStore.open(readOnly);
+				assert.deepEqual((await reader.load("session")).entries, entries);
+				assert.equal(await count(readOnly, "SELECT count(*) AS n FROM session_entry_chunks"), chunksBefore);
+			} finally {
+				await readOnly.close();
+			}
+			const writable = await subject.reopen();
+			const reopened = await SqlSessionStore.open(writable);
+			assert.deepEqual((await reopened.load("session")).entries, entries);
+			assert.equal(
+				await count(writable, "SELECT count(*) AS n FROM session_entry_chunks"),
+				chunksBefore - Number(orphan),
+			);
+		});
+	});
+
+	test.each([false, true])(
+		"session stores open on a wrapped read-only connection with orphan chunks present=%s (#4954)",
+		async (orphan) => {
+			await withNodeSqliteDatabase(async (subject) => {
+				const database = subject.database;
+				const store = await SqlSessionStore.open(database);
+				const entries = [message("large", null, "x".repeat(2 * MiB))];
+				await store.create(header(), entries);
+				if (orphan) {
+					await database.run(
+						"INSERT INTO session_entry_chunks (session_id, seq, idx, data) VALUES (?, ?, ?, ?)",
+						"deleted-session",
+						1,
+						0,
+						new Uint8Array([1, 2, 3]),
+					);
+				}
+				const chunksBefore = await count(database, "SELECT count(*) AS n FROM session_entry_chunks");
+				const connection = new DatabaseSync(database.descriptor.location, { readOnly: true });
+				try {
+					const readOnly = wrapNodeSqliteDatabase(connection);
+					const reader = await SqlSessionStore.open(readOnly);
+					assert.deepEqual((await reader.load("session")).entries, entries);
+					assert.equal(await count(readOnly, "SELECT count(*) AS n FROM session_entry_chunks"), chunksBefore);
+					await readOnly.close();
+				} finally {
+					connection.close();
+				}
+			});
+		},
+	);
+
+	test("opening a store leaves chunk rows alone once a newer build has upgraded the sessions schema (#5065)", async () => {
+		await withNodeSqliteDatabase(async ({ database }) => {
+			const store = await SqlSessionStore.open(database);
+			await store.create(header(), [message("large", null, "x".repeat(2 * MiB))]);
+			await database.run(
+				"INSERT INTO session_entry_chunks (session_id, seq, idx, data) VALUES (?, ?, ?, ?)",
+				"newer-build",
+				1,
+				0,
+				new Uint8Array([1, 2, 3]),
+			);
+			const get = database.get.bind(database);
+			database.get = (async (sql: string, ...params: SqliteValue[]) => {
+				const row = await get(sql, ...params);
+				if (sql.includes("AS orphaned")) await database.run("UPDATE session_meta SET schema_version = 3");
+				return row;
+			}) as typeof database.get;
+			try {
+				await SqlSessionStore.open(database).catch((error: Error) => {
+					assert.ok(error instanceof StorageSchemaVersionError, String(error));
+				});
+			} finally {
+				database.get = get;
+			}
+			assert.equal(
+				await count(database, "SELECT count(*) AS n FROM session_entry_chunks WHERE session_id = 'newer-build'"),
+				1,
+			);
+		});
+	});
+
+	test("sessions load on SQLite without octet_length, as on macOS 13 (#4954)", async () => {
+		const configured = new WeakSet<DatabaseSync>();
+		const prepare = DatabaseSync.prototype.prepare;
+		DatabaseSync.prototype.prepare = function (this: DatabaseSync, sql: string) {
+			if (!configured.has(this)) {
+				configured.add(this);
+				this.function("octet_length", (_value) => {
+					throw new Error("no such function: octet_length");
+				});
+			}
+			return prepare.call(this, sql);
+		} as typeof prepare;
+		try {
+			await withNodeSqliteDatabase(async ({ database }) => {
+				const store = await SqlSessionStore.open(database);
+				const entries = [
+					message("first", null, "short"),
+					message("large", "first", "😀".repeat(5000)),
+					message("last", "large", "short"),
+				];
+				await store.create(header(), entries);
+				assert.deepEqual((await store.load("session")).entries, entries);
+			});
+		} finally {
+			DatabaseSync.prototype.prepare = prepare;
+		}
+	});
+
+	test("history range reads work on SQLite without octet_length (#5250)", async () => {
+		const configured = new WeakSet<DatabaseSync>();
+		const prepare = DatabaseSync.prototype.prepare;
+		DatabaseSync.prototype.prepare = function (this: DatabaseSync, sql: string) {
+			if (!configured.has(this)) {
+				configured.add(this);
+				this.function("octet_length", (_value) => {
+					throw new Error("no such function: octet_length");
+				});
+			}
+			return prepare.call(this, sql);
+		} as typeof prepare;
+		try {
+			await withNodeSqliteDatabase(async ({ database }) => {
+				const store = await SqlSessionStore.open(database);
+				const entries = [
+					message("first", null, "short"),
+					message("large", "first", "😀".repeat(5000)),
+					message("last", "large", "short"),
+				];
+				await store.create(header(), entries);
+				const page = await store.readEntryRange("session", { fromSeq: 1, toSeq: 3 });
+				assert.deepEqual(
+					page.entries.map((at) => at.entry),
+					entries,
+				);
+				const capped = await store.readEntryRange("session", { fromSeq: 1, toSeq: 3, maxChars: 1 });
+				assert.equal(capped.throughSeq, 1);
+			});
+		} finally {
+			DatabaseSync.prototype.prepare = prepare;
+		}
+	});
+
+	test("open-session markers keep their heartbeat on SQLite without unixepoch subsec, as on macOS 13 (#4971)", async () => {
+		const configured = new WeakSet<DatabaseSync>();
+		const prepare = DatabaseSync.prototype.prepare;
+		DatabaseSync.prototype.prepare = function (this: DatabaseSync, sql: string) {
+			if (!configured.has(this)) {
+				configured.add(this);
+				this.function("unixepoch", { varargs: true }, (...args) =>
+					args.includes("subsec") ? null : Math.floor(Date.now() / 1000),
+				);
+			}
+			return prepare.call(this, sql);
+		} as typeof prepare;
+		try {
+			await withNodeSqliteDatabase(async ({ database }) => {
+				const store = await SqlSessionStore.open(database);
+				await store.create(header(), []);
+				await store.openMarkers.put("session", { token: "t", pid: 1, host: "h" });
+				const markers = await store.openMarkers.list("session");
+				assert.deepEqual(
+					markers.map((marker) => marker.token),
+					["t"],
+				);
+				assert.ok(markers[0]!.ageMs >= 0 && markers[0]!.ageMs < 60_000, `${markers[0]!.ageMs} ms old`);
+				await database.run("UPDATE session_open SET heartbeat_at = heartbeat_at - 120000");
+				const [stale] = await store.openMarkers.list("session");
+				assert.ok(stale!.ageMs >= 120_000 && stale!.ageMs < 180_000, `${stale!.ageMs} ms old`);
+			});
+		} finally {
+			DatabaseSync.prototype.prepare = prepare;
+		}
+	});
+
+	test("a long session loads in time linear in its entries, not one scan of the rest per page (#4954)", async () => {
+		await withNodeSqliteDatabase(async ({ database }) => {
+			const store = await SqlSessionStore.open(database);
+			const entries = Array.from({ length: 3000 }, (_, index) =>
+				message(`m-${index}`, index === 0 ? null : `m-${index - 1}`, `${index} `.repeat(2_000)),
+			);
+			await store.create(header(), entries);
+			const scanned = await countLongValuesMeasured(() => store.load("session"));
+			assert.deepEqual(scanned.result.entries, entries);
+			assert.ok(scanned.calls <= 8 * entries.length, `${scanned.calls} entry lengths measured`);
+		});
+	});
+
+	test("single-entry pages shrink their fetches instead of repeatedly measuring large batches (#4954)", async () => {
+		await withNodeSqliteDatabase(async ({ database }) => {
+			const store = await SqlSessionStore.open(database);
+			const entries = Array.from({ length: 40 }, (_, index) =>
+				message(`m-${index}`, index === 0 ? null : `m-${index - 1}`, "x".repeat(600_000)),
+			);
+			await store.create(header(), entries);
+			const scanned = await countLongValuesMeasured(() => store.load("session"));
+			assert.deepEqual(scanned.result.entries, entries);
+			assert.ok(scanned.calls <= 4 * entries.length, `${scanned.calls} entry lengths measured`);
+		});
+	});
+
+	test.each([
+		{ layout: "alternate with short entries", long: (index: number) => index % 2 === 0 },
+		{ layout: "follow one another", long: (_index: number) => true },
+	])(
+		"legacy entries longer than a page are measured a bounded number of times when they $layout (#4954)",
+		async ({ long }) => {
+			await withNodeSqliteDatabase(async ({ database }) => {
+				const store = await SqlSessionStore.open(database);
+				const entries = Array.from({ length: 40 }, (_, index) =>
+					message(
+						`m-${index}`,
+						index === 0 ? null : `m-${index - 1}`,
+						long(index) ? "x".repeat(1.3 * MiB) : "short",
+					),
+				);
+				await store.create(header(), entries);
+				for (const [index, entry] of entries.entries()) {
+					if (long(index)) {
+						await database.run(
+							"UPDATE session_entries SET entry_json = ?, chunks = 0 WHERE seq = ?",
+							JSON.stringify(entry),
+							index + 1,
+						);
+					}
+				}
+				await database.run("DELETE FROM session_entry_chunks");
+				const scanned = await countLongValuesMeasured(() => store.load("session"));
+				assert.deepEqual(scanned.result.entries, entries);
+				assert.ok(scanned.calls <= 4 * entries.length, `${scanned.calls} entry lengths measured`);
+			});
+		},
+	);
+
+	test.each([
+		{ entriesCount: 188, firstChars: 2.5 * MiB, maxStatements: 2 },
+		{ entriesCount: 1000, firstChars: 100, maxStatements: 1 },
+		{ entriesCount: 1024, firstChars: 100, maxStatements: 1 },
+	])(
+		"$entriesCount entries load without small fetch round trips (#4954)",
+		async ({ entriesCount, firstChars, maxStatements }) => {
+			await withNodeSqliteDatabase(async ({ database }) => {
+				const store = await SqlSessionStore.open(database);
+				const entries = Array.from({ length: entriesCount }, (_, index) =>
+					message(`m-${index}`, index === 0 ? null : `m-${index - 1}`, "x".repeat(index === 0 ? firstChars : 100)),
+				);
+				await store.create(header(), entries);
+				await database.run(
+					"UPDATE session_entries SET entry_json = ?, chunks = 0 WHERE seq = 1",
+					JSON.stringify(entries[0]),
+				);
+				let statements = 0;
+				const prepare = DatabaseSync.prototype.prepare;
+				DatabaseSync.prototype.prepare = function (this: DatabaseSync, sql: string) {
+					if (/SELECT[\s\S]*FROM session_entries[\s\S]*ORDER BY seq/.test(sql)) statements++;
+					return prepare.call(this, sql);
+				} as typeof prepare;
+				try {
+					assert.deepEqual((await store.load("session")).entries, entries);
+				} finally {
+					DatabaseSync.prototype.prepare = prepare;
+				}
+				assert.ok(statements <= maxStatements, `${statements} entry read statements`);
+			});
+		},
+	);
+
+	test("a long listing reads in time linear in its sessions, not one scan of the rest per page (#4954)", async () => {
+		await withNodeSqliteDatabase(async ({ database }) => {
+			const store = await SqlSessionStore.open(database);
+			const sessions = 600;
+			for (let index = 0; index < sessions; index++) {
+				const id = `s-${index}`;
+				await store.create(header(id), [message(`${id}-1`, null, "x".repeat(SESSION_SUMMARY_TEXT_CHARS))]);
+			}
+			const scanned = await countLongValuesMeasured(() => list(store));
+			assert.deepEqual(
+				scanned.result.map((summary) => summary.id),
+				Array.from({ length: sessions }, (_, index) => `s-${index}`),
+			);
+			assert.ok(scanned.calls <= 20 * sessions, `${scanned.calls} listing lengths measured`);
+		});
+	});
 });
+
+/** Values this long are rows' JSON rather than column names or keys, so their measurements count rows read. */
+const LONG_VALUE_CHARS = 10_000;
+
+/**
+ * Runs `body` with SQLite's `length()` replaced, on every connection, by one that counts the long values it measures:
+ * the session store measures each row it reads for paging, so the count is the rows `body`'s statements scanned.
+ */
+async function countLongValuesMeasured<T>(
+	body: () => Promise<T>,
+): Promise<{ readonly result: T; readonly calls: number }> {
+	let calls = 0;
+	const counting = new WeakSet<DatabaseSync>();
+	const prepare = DatabaseSync.prototype.prepare;
+	DatabaseSync.prototype.prepare = function (this: DatabaseSync, sql: string) {
+		if (!counting.has(this)) {
+			counting.add(this);
+			this.function("length", { deterministic: true }, (value) => {
+				if (value === null) return null;
+				if (typeof value === "string") {
+					if (value.length >= LONG_VALUE_CHARS) calls++;
+					return [...value].length;
+				}
+				return value instanceof Uint8Array ? value.byteLength : String(value).length;
+			});
+		}
+		return prepare.call(this, sql);
+	} as typeof prepare;
+	try {
+		return { result: await body(), calls };
+	} finally {
+		DatabaseSync.prototype.prepare = prepare;
+	}
+}
 
 describe("listing text is bounded the same way by every store (#4954)", () => {
 	const summary = (text: string) =>
@@ -320,8 +736,7 @@ describe("workflow journal reads under a libSQL server's size limits (#4954)", (
 describe("a database written with chunked entries is refused by older builds (#4954)", () => {
 	/**
 	 * What an older build checks when it opens the session tables of a SQLite or libSQL database: every row of the
-	 * sessions meta table must hold the one schema version it knows, 1. Postgres records the step in its migration
-	 * ledger, which older builds check instead.
+	 * sessions meta table must hold the one schema version it knows, 1. Builds before 2 check the same row on Postgres.
 	 */
 	async function openAsOlderBuild(database: SqliteDatabase): Promise<void> {
 		const rows = await database.all<SqliteRow & { schema_version: number }>(
@@ -396,17 +811,140 @@ describe("a database written with chunked entries is refused by older builds (#4
 		});
 	});
 
-	test("a database an older build created is upgraded and keeps its sessions (#4954)", async () => {
+	test("a database without chunked entries stays readable by older builds (#4954)", async () => {
+		await withNodeSqliteDatabase(async ({ database }) => {
+			const store = await SqlSessionStore.open(database);
+			await store.create(header(), [message("m", null, "x".repeat(SESSION_ENTRY_CHUNK_BYTES / 4))]);
+			await store.append("session", [message("n", "m", "more")], { expectSeq: 1 });
+			await openAsOlderBuild(database);
+			await SqlSessionStore.open(database);
+			await openAsOlderBuild(database);
+			assert.equal((await store.load("session")).entries.length, 2);
+		});
+	});
+
+	test("an older build's database keeps its version and sessions until a chunked entry is written (#4954)", async () => {
 		await withNodeSqliteDatabase(async ({ database }) => {
 			await SqlSessionStore.open(database);
 			await database.exec("UPDATE session_meta SET schema_version = 1");
 			const store = await SqlSessionStore.open(database);
+			await store.create(header(), [message("m", null, "kept")]);
+			await openAsOlderBuild(database);
+			await store.append("session", [message("big", "m", "x".repeat(2 * MiB))], { expectSeq: 1 });
 			assert.deepEqual(
 				(await database.all("SELECT schema_version FROM session_meta")).map((row) => Number(row.schema_version)),
 				[2],
 			);
-			await store.create(header(), [message("m", null, "kept")]);
-			assert.equal((await store.load("session")).entries.length, 1);
+			await assert.rejects(openAsOlderBuild(database), StorageSchemaVersionError);
+			assert.equal((await store.load("session")).entries.length, 2);
+		});
+	});
+
+	test("a failed first chunked write rolls back its schema bump and entries (#4954)", async () => {
+		await withNodeSqliteDatabase(async ({ database }) => {
+			const store = await SqlSessionStore.open(database);
+			const kept = message("m", null, "kept");
+			const large = message("large", "m", "x".repeat(2 * MiB));
+			await store.create(header(), [kept]);
+			await database.exec(`CREATE TRIGGER reject_search BEFORE INSERT ON session_search_texts
+				BEGIN SELECT RAISE(ABORT, 'rejected search text'); END`);
+			await assert.rejects(store.append("session", [large], { expectSeq: 1 }), /rejected search text/);
+			await openAsOlderBuild(database);
+			assert.deepEqual((await store.load("session")).entries, [kept]);
+			assert.equal(await count(database, "SELECT count(*) AS n FROM session_entry_chunks"), 0);
+			await database.exec("DROP TRIGGER reject_search");
+			await store.append("session", [large], { expectSeq: 1 });
+			await assert.rejects(openAsOlderBuild(database), StorageSchemaVersionError);
+			assert.deepEqual((await store.load("session")).entries, [kept, large]);
+			await store.delete("session");
+			await assert.rejects(openAsOlderBuild(database), StorageSchemaVersionError);
+		});
+	});
+
+	test("concurrent first chunked writers both commit with one schema upgrade (#4954)", async () => {
+		await withNodeSqliteDatabase(async ({ database }) => {
+			const first = await SqlSessionStore.open(database);
+			const otherDatabase = await openNodeSqliteDatabase(database.descriptor.location);
+			try {
+				const second = await SqlSessionStore.open(otherDatabase);
+				await openAsOlderBuild(database);
+				const firstEntry = message("a", null, "a".repeat(2 * MiB));
+				const secondEntry = message("b", null, "b".repeat(2 * MiB));
+				await Promise.all([
+					first.create(header("first"), [firstEntry]),
+					second.create(header("second"), [secondEntry]),
+				]);
+				await assert.rejects(openAsOlderBuild(database), StorageSchemaVersionError);
+				assert.deepEqual((await second.load("first")).entries, [firstEntry]);
+				assert.deepEqual((await first.load("second")).entries, [secondEntry]);
+			} finally {
+				await otherDatabase.close();
+			}
+		});
+	});
+
+	test("a store opened at version 1 keeps working after another store writes the first chunked entry (#4954)", async () => {
+		await withNodeSqliteDatabase(async ({ database }) => {
+			const first = await SqlSessionStore.open(database);
+			const second = await SqlSessionStore.open(database);
+			await second.create(header("big"), [message("b", null, "x".repeat(2 * MiB))]);
+			await first.create(header(), [message("m", null, "after")]);
+			assert.equal((await first.load("big")).entries.length, 1);
+			assert.equal((await Array.fromAsync(first.list({}))).length, 2);
+		});
+	});
+
+	test("chunked append and create replace leftover entry chunks at the written sequence (#4954)", async () => {
+		await withNodeSqliteDatabase(async ({ database }) => {
+			const store = await SqlSessionStore.open(database);
+			const kept = message("kept", null, "k".repeat(1.5 * MiB));
+			const replaced = message("replaced", "kept", "r".repeat(3 * MiB));
+			const appended = message("appended", "kept", "a".repeat(1.5 * MiB));
+			const recreated = message("recreated", null, "c".repeat(1.5 * MiB));
+			await store.create(header("session"), [kept, replaced]);
+			await store.create(header("deleted"), [replaced]);
+			await database.exec(`
+				DELETE FROM session_entries WHERE session_id = 'session' AND seq = 2;
+				DELETE FROM session_search_texts WHERE session_id = 'session' AND seq = 2;
+				UPDATE session_sessions SET last_seq = 1 WHERE id = 'session';
+				DELETE FROM session_entries WHERE session_id = 'deleted';
+				DELETE FROM session_search_texts WHERE session_id = 'deleted';
+				DELETE FROM session_sessions WHERE id = 'deleted';
+			`);
+
+			await store.append("session", [appended], { expectSeq: 1 });
+			await store.create(header("deleted"), [recreated]);
+
+			assert.deepEqual((await store.load("session")).entries, [kept, appended]);
+			assert.deepEqual((await store.load("deleted")).entries, [recreated]);
+			assert.equal(await count(database, "SELECT count(*) AS n FROM session_entry_chunks"), 6);
+		});
+	});
+
+	test("opening a store sweeps orphaned entry chunks and preserves live chunked entries (#4954)", async () => {
+		await withNodeSqliteDatabase(async ({ database }) => {
+			const store = await SqlSessionStore.open(database);
+			const live = message("live", null, "l".repeat(1.5 * MiB));
+			const small = message("small", "live", "small");
+			const orphaned = message("orphaned", "live", "o".repeat(2 * MiB));
+			await store.create(header("live"), [live, orphaned]);
+			await store.create(header("deleted"), [orphaned]);
+			await database.exec(`
+				DELETE FROM session_entries WHERE session_id = 'deleted';
+				DELETE FROM session_search_texts WHERE session_id = 'deleted';
+				DELETE FROM session_sessions WHERE id = 'deleted';
+			`);
+			await database.run(
+				"UPDATE session_entries SET entry_id = ?, entry_json = ?, chunks = 0 WHERE session_id = 'live' AND seq = 2",
+				small.id,
+				JSON.stringify(small),
+			);
+			assert.equal(await count(database, "SELECT count(*) AS n FROM session_entry_chunks"), 8);
+
+			const reopened = await SqlSessionStore.open(database);
+
+			assert.equal(await count(database, "SELECT count(*) AS n FROM session_entry_chunks"), 2);
+			assert.deepEqual((await reopened.load("live")).entries, [live, small]);
 		});
 	});
 });
