@@ -97,8 +97,9 @@ describe("/workflows (#5224)", () => {
 	it("openWorkflowRun passes the opener's way back to the graph", () => {
 		const t = harness();
 		const onReturn = () => {};
-		assert.equal(openWorkflowRun("run-1", t.ctx, { overlay: t.overlay }, { onReturn }), true);
+		openWorkflowRun("run-1", t.ctx, { overlay: t.overlay }, { onReturn });
 		assert.equal(t.opened[0].options.onReturn, onReturn);
-		assert.equal(openWorkflowRun("run-1", { ui: {} }, { overlay: t.overlay }), false);
+		openWorkflowRun("run-1", { ui: {} }, { overlay: t.overlay });
+		assert.equal(t.opened[1].surface, undefined, "without its own surface the session's is used");
 	});
 });
