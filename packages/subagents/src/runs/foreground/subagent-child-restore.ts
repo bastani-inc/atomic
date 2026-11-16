@@ -932,6 +932,11 @@ export async function restoreSubagentChild(
 		deps.config.worktreeSetupHook
 			? { hookPath: deps.config.worktreeSetupHook, timeoutMs: deps.config.worktreeSetupHookTimeoutMs }
 			: undefined,
+		{
+			onWaiting: (message) => {
+				if (ctx.hasUI) ctx.ui.setStatus(`subagent-worktree-${record.childId}`, message);
+			},
+		},
 	);
 	let releaseWorktree: (() => void) | undefined;
 	const restoration: Promise<SubagentChildRestoreOutcome> = (async () => {

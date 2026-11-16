@@ -8,6 +8,8 @@ import { createGitEnvironment } from "../../packages/coding-agent/src/utils/git-
 import { bunExecutable, moduleDir, readStreamText, sleep, spawnProcess, spawnSyncCollect } from "../helpers/runtime.js";
 
 const SLOW_CHECKOUT_PROCESS_TIMEOUT_MS = 120_000;
+const SLOW_CHECKOUT_MS = 35_000;
+const DISTINCT_CHECKOUT_COMPLETION_LIMIT_MS = SLOW_CHECKOUT_MS + 15_000;
 const CONCURRENT_GIT_PROCESS_TIMEOUT_MS = 60_000;
 const CHILD_HANG_GUARD_TIMEOUT_MS = 15_000;
 
@@ -118,7 +120,7 @@ test(
 		const keptPath = join(repo, ".atomic", "worktrees", "feat+kept");
 		git(repo, "worktree", "add", "-q", "-b", "feat/kept", keptPath);
 		git(repo, "worktree", "lock", "--reason", "on a removable drive", keptPath);
-		git(repo, "config", "filter.slow.smudge", "sleep 35; cat");
+		git(repo, "config", "filter.slow.smudge", `sleep ${SLOW_CHECKOUT_MS / 1000}; cat`);
 
 		const firstA = spawnWorktreeChild(repo, { branch: "feat/a" });
 		await waitForPath(join(repo, ".git", "worktrees", "feat+a", "index.lock"));
@@ -148,6 +150,10 @@ test(
 		assert.equal(outcomeDistinctB.ok, true, outcomeDistinctB.message);
 		assert.equal(outcomeDistinctB.path, expectedB);
 		assert.equal(outcomeDistinctB.slow, "payload\n");
+		assert.ok(
+			outcomeDistinctB.ms < DISTINCT_CHECKOUT_COMPLETION_LIMIT_MS,
+			`independent checkout queued behind another target: ${outcomeDistinctB.ms}ms`,
+		);
 
 		assert.equal(outcomeWaiterA.ok, true, outcomeWaiterA.message);
 		assert.equal(outcomeWaiterA.path, expectedA);

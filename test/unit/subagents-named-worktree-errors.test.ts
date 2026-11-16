@@ -121,7 +121,7 @@ test("reftable reference contention is retried before creating a named worktree 
 	const realRunGit = worktreeGit.runGit;
 	let attempts = 0;
 	vi.spyOn(worktreeGit, "runGit").mockImplementation((cwd, args, env) => {
-		if (args[0] === "worktree" && args[1] === "add" && ++attempts === 1)
+		if (args[0] === "worktree" && args[1] === "list" && ++attempts === 1)
 			return { status: 1, stdout: "", stderr: "fatal: cannot lock references\n" };
 		return realRunGit(cwd, args, env);
 	});

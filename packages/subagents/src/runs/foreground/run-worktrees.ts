@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { ensureNamedWorktree, type NamedWorktree } from "../shared/named-worktree.js";
+import { ensureNamedWorktree, type NamedWorktree, type NamedWorktreeOptions } from "../shared/named-worktree.js";
 import {
 	cleanupWorktrees,
 	diffWorktrees,
@@ -215,11 +215,16 @@ export async function resumeRunWorktree(
 		readonly worktree?: SubagentChildWorktree;
 	},
 	setupHook?: WorktreeSetupHookConfig,
+	namedOptions: NamedWorktreeOptions = {},
 ): Promise<() => void> {
 	// A named worktree is the caller's: put back where it was if it was removed, and never tracked for removal.
 	if (child.worktree?.named) {
 		try {
-			await ensureNamedWorktree(child.worktree.repo, { branch: child.worktree.branch, path: child.worktree.path });
+			await ensureNamedWorktree(
+				child.worktree.repo,
+				{ branch: child.worktree.branch, path: child.worktree.path },
+				namedOptions,
+			);
 		} catch {
 			// Left as it is: resume then reports a working directory that no longer exists.
 		}

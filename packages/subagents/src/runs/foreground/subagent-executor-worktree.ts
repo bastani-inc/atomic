@@ -3,7 +3,7 @@ import * as path from "node:path";
 import type { ResolvedStepBehavior } from "../../shared/settings.js";
 import type { ExtensionConfig, SubagentToolResult } from "../../shared/types.js";
 import { resolveChildCwd } from "../../shared/utils.js";
-import { ensureNamedWorktree, type NamedWorktree } from "../shared/named-worktree.js";
+import { ensureNamedWorktree, type NamedWorktree, type NamedWorktreeOptions } from "../shared/named-worktree.js";
 import { resolveSingleOutputPath } from "../shared/single-output.js";
 import {
 	createWorktrees,
@@ -134,6 +134,7 @@ function withNamedWorktree<T extends { cwd?: string; worktree?: SubagentParamsLi
 export async function prepareNamedWorktrees(
 	params: SubagentParamsLike,
 	runtimeCwd: string,
+	options: NamedWorktreeOptions = {},
 ): Promise<{ params: SubagentParamsLike; error?: undefined } | { params?: undefined; error: SubagentToolResult }> {
 	const callCwd = params.cwd ?? runtimeCwd;
 	const tasks = params.tasks ?? [];
@@ -150,14 +151,21 @@ export async function prepareNamedWorktrees(
 		};
 	try {
 		if (tasks.length === 0)
-			return { params: topLevel ? withNamedWorktree(params, await ensureNamedWorktree(callCwd, topLevel)) : params };
+			return {
+				params: topLevel
+					? withNamedWorktree(params, await ensureNamedWorktree(callCwd, topLevel, options))
+					: params,
+			};
 		const { worktree: _topLevel, ...rest } = params;
 		const preparedTasks: TaskParam[] = [];
 		for (const task of tasks) {
 			const request = task.worktree ?? topLevel;
 			preparedTasks.push(
 				request
-					? withNamedWorktree(task, await ensureNamedWorktree(resolveRequestedCwd(callCwd, task.cwd), request))
+					? withNamedWorktree(
+							task,
+							await ensureNamedWorktree(resolveRequestedCwd(callCwd, task.cwd), request, options),
+						)
 					: task,
 			);
 		}
