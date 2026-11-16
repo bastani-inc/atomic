@@ -101,11 +101,16 @@ test("cancelling tasks keep one monotone elapsed time across the panel and task 
 		assert.equal(taskMetricsText(record), "1m 6s");
 		assert.match(renderInspector(), /1m 6s/);
 
-		now = 62_000;
-		assert.equal(taskMetricsText(record), "1m 7s");
-		assert.match(renderInspector(), /1m 7s/);
+		for (let second = 62; second <= 70; second++) {
+			now = second * 1000;
+			assert.match(renderTranscript(), /worker · finish cleanup · 1m/);
+		}
+		now = 71_000;
+		assert.equal(panel.rows([{ ...row, state: "stopping" }])[0]?.elapsedMs, 76_000);
+		assert.equal(taskMetricsText(record), "1m 16s");
+		assert.match(renderInspector(), /1m 16s/);
 		inspector.handleInput(" ");
-		assert.match(renderInspector(), /1m 7s/);
+		assert.match(renderInspector(), /1m 16s/);
 
 		now = 116_000;
 		assert.match(renderTranscript(), /worker · finish cleanup · 2m/);
@@ -239,6 +244,84 @@ test("workflow and extension rows that finish or pause while the panel is hidden
 		assert.deepEqual(
 			agentPanelRows(session).map((row) => `${row.id}:${row.elapsedMs}`),
 			["run:hidden-pause:25000", "run:hidden-finish:20000"],
+		);
+	} finally {
+		dispose();
+		hub.dispose();
+		clock.mockRestore();
+	}
+});
+
+test("running extension rows published while the panel is hidden keep accurate elapsed time without over-counting read-time sources (#5224, #5239)", async () => {
+	let now = 0;
+	const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+	const hub = new AgentPanelSourceHub();
+	let notifyPublished = () => {};
+	let notifyReadTime = () => {};
+	let publishedItems: AgentPanelItem[] = [
+		{
+			id: "ext:publish-time",
+			kind: "agent",
+			state: "running",
+			name: "indexer",
+			task: "scan",
+			elapsedMs: 0,
+		},
+	];
+	hub.register({
+		items: () => publishedItems,
+		subscribe: (listener) => {
+			notifyPublished = listener;
+			return () => {};
+		},
+	});
+	hub.register({
+		items: () => [
+			{
+				id: "run:read-time",
+				kind: "workflow",
+				state: "running",
+				name: "deploy",
+				task: "stage build",
+				elapsedMs: now,
+			},
+		],
+		subscribe: (listener) => {
+			notifyReadTime = listener;
+			return () => {};
+		},
+	});
+	const session = { extensionRunner: { getAgentPanelSourceHub: () => hub } };
+	const dispose = bindAgentPanel(session, {
+		setWidget() {},
+		requestRender() {},
+	} as never);
+	try {
+		assert.deepEqual(
+			agentPanelRows(session).map((row) => `${row.id}:${row.elapsedMs}`),
+			["run:read-time:0", "ext:publish-time:0"],
+		);
+		now = 10_000;
+		setAgentPanelVisible(session, false);
+		now = 60_000;
+		publishedItems = [
+			{
+				id: "ext:publish-time",
+				kind: "agent",
+				state: "running",
+				name: "indexer",
+				task: "scan",
+				elapsedMs: 60_000,
+			},
+		];
+		notifyPublished();
+		notifyReadTime();
+		await Promise.resolve();
+		now = 120_000;
+		setAgentPanelVisible(session, true);
+		assert.deepEqual(
+			agentPanelRows(session).map((row) => `${row.id}:${row.elapsedMs}`),
+			["run:read-time:120000", "ext:publish-time:120000"],
 		);
 	} finally {
 		dispose();

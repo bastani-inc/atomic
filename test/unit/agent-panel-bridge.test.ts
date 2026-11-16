@@ -481,13 +481,15 @@ test("unfocused panel skips row recomputation while hidden and reuses cached ren
 		assert.equal(reads, 0, "unfocused render uses cached rows across frames and resizes");
 
 		setAgentPanelVisible(session, false);
-		assert.equal(reads, 0, "hiding the panel does not rescan sources");
+		assert.equal(reads, 0, "hiding the panel reuses cached source items");
 		for (const listener of listeners) listener();
 		await Promise.resolve();
-		assert.equal(reads, 0, "updates while hidden do not rescan sources");
+		assert.equal(reads, 1, "notifications while hidden sample updated sources at publish time");
+		assert.equal(widget, undefined);
 
 		setAgentPanelVisible(session, true);
-		assert.equal(reads, 1, "restoring visibility refreshes once");
+		assert.equal(reads, 1, "restoring visibility reuses the sampled source cache");
+		assert.notEqual(widget, undefined);
 	} finally {
 		dispose();
 		nowSpy.mockRestore();
@@ -883,7 +885,13 @@ test("in-process and RPC open_agent_panel catch handlers format null and hostile
 			const notifications: Array<{ message: string; type?: string }> = [];
 			const hub = new AgentPanelSourceHub();
 			hub.register({ items: () => [healthyRow], subscribe: () => () => {} });
+			let customCalls = 0;
+			let hostCalls = 0;
 			const brokenSession = {
+				getAgentTaskHost() {
+					hostCalls++;
+					throw hostile;
+				},
 				extensionRunner: {
 					getUIContext: () => ({
 						notify: (message: string, type?: string) => notifications.push({ message, type }),
@@ -898,7 +906,8 @@ test("in-process and RPC open_agent_panel catch handlers format null and hostile
 				output() {},
 				keybindings: new KeybindingsManager(),
 				taskInspectorUi: {
-					open() {
+					custom() {
+						customCalls++;
 						throw hostile;
 					},
 				} as never,
@@ -906,6 +915,8 @@ test("in-process and RPC open_agent_panel catch handlers format null and hostile
 			await handler({ id: "1", type: "open_agent_panel" });
 			await handler({ id: "2", type: "open_task_inspector" });
 			await new Promise<void>((resolve) => setImmediate(resolve));
+			assert.equal(customCalls, 1);
+			assert.equal(hostCalls, 1);
 			assert.equal(unhandled.length, 0);
 			assert.equal(notifications.length, 2);
 			for (const entry of notifications) {

@@ -260,6 +260,7 @@ export function bindAgentPanel(
 	const refresh = () => {
 		if (disposed) return;
 		if (!visible) {
+			agentPanelItems(session, state.onSourceError);
 			unmount();
 			return;
 		}

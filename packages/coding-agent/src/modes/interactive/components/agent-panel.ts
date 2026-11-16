@@ -77,7 +77,8 @@ function panelText(text: string): string {
 	if (!NON_PRINTABLE_ASCII.test(text)) return text;
 	return taskDisplayText(text)
 		.toWellFormed()
-		.replace(/\p{Default_Ignorable_Code_Point}/gu, "");
+		.replace(/\p{Default_Ignorable_Code_Point}/gu, "")
+		.replace(/(?:^|(?<=\s))\p{M}+/gu, "");
 }
 
 function cellWidth(text: string): number {
@@ -90,6 +91,15 @@ function fitToWidth(text: string, maxWidth: number): { readonly text: string; re
 	}
 	const truncated = truncateToWidth(text, maxWidth);
 	return { text: truncated, width: cellWidth(truncated) };
+}
+
+function clampLine(line: string, maxWidth: number): string {
+	if (maxWidth <= 0) return "";
+	let clamped = line;
+	for (let limit = maxWidth; visibleWidth(clamped) > maxWidth && limit > 0; limit--) {
+		clamped = truncateToWidth(line, limit);
+	}
+	return visibleWidth(clamped) <= maxWidth ? clamped : "";
 }
 
 /** `41m`, `1h 31m`, `9s`: elapsed time as the panel shows it. */
@@ -325,7 +335,7 @@ export function renderAgentPanelRows(
 		if (width < 40) {
 			const shortName = fitToWidth(name, Math.max(1, width - 5)).text;
 			const short = `${cursor}${glyphText} ${paint(shortName)}`;
-			return lines.push(truncateToWidth(short, width));
+			return lines.push(clampLine(short, width));
 		}
 		const fittedName =
 			knownNameWidth <= nameWidth ? { text: name, width: knownNameWidth } : fitToWidth(name, nameWidth);
@@ -343,7 +353,7 @@ export function renderAgentPanelRows(
 		const nameText = selected ? style.bold(style.text(head)) : paint(head);
 		const rightText = paint(right) + (queued === undefined ? "" : style.warning(queued));
 		const full = `${cursor}${glyphText} ${nameText}  ${paint(fittedTask.text)}${" ".repeat(pad)}${rightText}`;
-		lines.push(fixed + fittedTask.width + pad + rightWidth <= width ? full : truncateToWidth(full, width));
+		lines.push(clampLine(full, width));
 	};
 	if (focused) {
 		const selected = options.selectedId === AGENT_PANEL_MAIN_ID;

@@ -715,8 +715,8 @@ test("sources that notify synchronously inside items() or before throwing quiesc
 			["ext:self-notify"],
 		);
 		await new Promise<void>((resolve) => setTimeout(resolve, 0));
-		assert.equal(returningCalls, 1);
-		assert.equal(throwingCalls, 1);
+		assert.equal(returningCalls, 2);
+		assert.equal(throwingCalls, 2);
 		assert.equal(refreshes, 1);
 	} finally {
 		unsub();
@@ -1029,3 +1029,250 @@ test("async items and subscribe callbacks that return rejected promises are drai
 		process.off("unhandledRejection", onUnhandled);
 	}
 });
+
+test("a throwing iterable drains each yielded rejection before advancing (#5224)", async () => {
+	const { hub, session } = panelFixture();
+	const unhandled: unknown[] = [];
+	const onUnhandled = (reason: unknown) => unhandled.push(reason);
+	process.on("unhandledRejection", onUnhandled);
+	try {
+		hub.register({
+			items: (() => ({
+				*[Symbol.iterator]() {
+					yield { ...healthyItem, id: "run:before-throw" };
+					yield Promise.reject(new Error("yielded row rejected"));
+					throw new Error("iterator failed");
+				},
+			})) as unknown as () => readonly AgentPanelItem[],
+			subscribe: () => () => {},
+		});
+		const reports: string[] = [];
+		for (let read = 0; read < 2; read++) {
+			assert.deepEqual(
+				agentPanelItems(session, (error) => reports.push(error.message)).map((item) => item.id),
+				[healthyItem.id],
+			);
+		}
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.deepEqual(unhandled, []);
+		assert.deepEqual(reports, ["iterator failed"]);
+	} finally {
+		process.off("unhandledRejection", onUnhandled);
+	}
+});
+
+for (const location of ["item", "progress", "rows length"] as const) {
+	test(`a rejected ${location} getter is drained before another getter throws (#5224)`, async () => {
+		const { hub, session } = panelFixture();
+		const unhandled: unknown[] = [];
+		const onUnhandled = (reason: unknown) => unhandled.push(reason);
+		process.on("unhandledRejection", onUnhandled);
+		try {
+			hub.register({
+				items: () => {
+					const broken =
+						location === "item"
+							? {
+									get id() {
+										return Promise.reject(new Error("id rejected"));
+									},
+									get kind() {
+										throw new Error("kind failed");
+									},
+								}
+							: {
+									...healthyItem,
+									id: "run:broken",
+									progress: {
+										get done() {
+											return Promise.reject(new Error("done rejected"));
+										},
+										get total() {
+											throw new Error("total failed");
+										},
+									},
+								};
+					if (location === "rows length") {
+						return new Proxy([], {
+							get(target, key, receiver) {
+								return key === "length"
+									? Promise.reject(new Error("length rejected"))
+									: Reflect.get(target, key, receiver);
+							},
+						});
+					}
+					return [
+						{ ...healthyItem, id: "run:before" },
+						broken as unknown as AgentPanelItem,
+						{ ...healthyItem, id: "run:after" },
+					];
+				},
+				subscribe: () => () => {},
+			});
+			const reports: string[] = [];
+			const ids = agentPanelItems(session, (error) => reports.push(error.message)).map((item) => item.id);
+			assert.deepEqual(
+				ids,
+				location === "rows length" ? [healthyItem.id] : [healthyItem.id, "run:before", "run:after"],
+			);
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			assert.equal(reports.length, 1);
+			assert.deepEqual(unhandled, []);
+		} finally {
+			process.off("unhandledRejection", onUnhandled);
+		}
+	});
+}
+
+test("validated extension rows contain only supplied optional fields and no symbols (#5224)", () => {
+	const { session } = panelFixture();
+	const row = agentPanelItems(session)[0]!;
+	assert.deepEqual(Object.getOwnPropertySymbols(row), []);
+	assert.deepEqual(Object.keys(row).sort(), ["id", "kind", "name", "state", "task"]);
+});
+
+for (const field of ["tokens", "queued"] as const) {
+	test(`unsafe ${field} counts are rejected without losing safe neighbours (#5224)`, () => {
+		const { hub, session } = panelFixture();
+		hub.register({
+			items: () => [
+				{ ...healthyItem, id: "run:rounded", [field]: 999950000000000000 },
+				{ ...healthyItem, id: "run:exponential", [field]: 1e36 },
+				{ ...healthyItem, id: "run:safe", [field]: Number.MAX_SAFE_INTEGER },
+			],
+			subscribe: () => () => {},
+		});
+		const reports: string[] = [];
+		const items = agentPanelItems(session, (error) => reports.push(error.message));
+		assert.deepEqual(
+			items.map((item) => item.id),
+			[healthyItem.id, "run:safe"],
+		);
+		assert.equal(items[1]?.[field], Number.MAX_SAFE_INTEGER);
+		assert.equal(reports.length, 1);
+	});
+}
+
+test("oversized choices and source arrays cannot monopolize a panel read (#5224)", () => {
+	const { hub, session } = panelFixture();
+	let choiceReads = 0;
+	const choices = new Proxy(new Array<string>(2 ** 32 - 1), {
+		get(target, key, receiver) {
+			if (typeof key === "string" && /^\d+$/.test(key)) choiceReads++;
+			return Reflect.get(target, key, receiver);
+		},
+	});
+	hub.register({
+		items: () => [
+			{ ...healthyItem, id: "run:before" },
+			{ ...healthyItem, id: "run:oversized", choices },
+			{ ...healthyItem, id: "run:after" },
+		],
+		subscribe: () => () => {},
+	});
+	const reports: string[] = [];
+	const items = agentPanelItems(session, (error) => reports.push(error.message));
+	assert.deepEqual(
+		items.map((item) => item.id),
+		[healthyItem.id, "run:before", "run:after"],
+	);
+	assert.ok(choiceReads <= 128);
+	let rowReads = 0;
+	const rows = new Proxy(new Array<AgentPanelItem>(2 ** 32 - 1), {
+		get(target, key, receiver) {
+			if (typeof key === "string" && /^\d+$/.test(key)) {
+				rowReads++;
+				return { ...healthyItem, id: `run:bounded-${key}` };
+			}
+			return Reflect.get(target, key, receiver);
+		},
+	});
+	hub.register({ items: () => rows, subscribe: () => () => {} });
+	const bounded = agentPanelItems(session, (error) => reports.push(error.message));
+	assert.ok(rowReads <= 10_000);
+	assert.equal(bounded.length, items.length + 10_000);
+	assert.equal(reports.length, 2);
+});
+for (const method of ["subscribe", "items", "open", "stop", "answer"] as const) {
+	test(`rejected panel source ${method} getters cannot leak a rejection (#5224)`, async () => {
+		const { hub, session } = panelFixture();
+		const unhandled: unknown[] = [];
+		const onUnhandled = (reason: unknown) => unhandled.push(reason);
+		process.on("unhandledRejection", onUnhandled);
+		try {
+			const source = {
+				items: () => [{ ...healthyItem, id: "run:method" }],
+				subscribe: () => () => {},
+			};
+			Object.defineProperty(source, method, {
+				get: () => Promise.reject(new Error(`${method} getter rejected`)),
+			});
+			hub.register(source);
+			const warnings: string[] = [];
+			const rows = agentPanelItems(session, (error) => warnings.push(error.message));
+			if (method === "subscribe" || method === "items") {
+				assert.deepEqual(
+					rows.map((item) => item.id),
+					[healthyItem.id],
+				);
+			} else if (method === "open") {
+				assert.equal(openAgentPanelItem(session, "run:method"), false);
+			} else if (method === "stop") {
+				assert.equal((await stopAgentPanelItem(session, "run:method")).ok, false);
+			} else {
+				assert.equal((await answerAgentPanelItem(session, "run:method", "yes")).ok, false);
+			}
+			if (method === "items") assert.equal(warnings.length, 1);
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			assert.deepEqual(unhandled, []);
+		} finally {
+			process.off("unhandledRejection", onUnhandled);
+		}
+	});
+}
+for (const location of ["next", "step", "done"] as const) {
+	test(`rejected iterator ${location} values cannot leak from panel sources (#5224)`, async () => {
+		const { hub, session } = panelFixture();
+		const unhandled: unknown[] = [];
+		const onUnhandled = (reason: unknown) => unhandled.push(reason);
+		process.on("unhandledRejection", onUnhandled);
+		try {
+			hub.register({
+				items: (() => ({
+					[Symbol.iterator]() {
+						let calls = 0;
+						const iterator = {
+							next() {
+								if (calls++ > 0) return { done: true };
+								if (location === "step") return Promise.reject(new Error("step rejected"));
+								return {
+									get done() {
+										return Promise.reject(new Error("done rejected"));
+									},
+								};
+							},
+						};
+						if (location === "next") {
+							Object.defineProperty(iterator, "next", {
+								get: () => Promise.reject(new Error("next rejected")),
+							});
+						}
+						return iterator;
+					},
+				})) as unknown as () => readonly AgentPanelItem[],
+				subscribe: () => () => {},
+			});
+			const warnings: string[] = [];
+			const rows = agentPanelItems(session, (error) => warnings.push(error.message));
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			assert.deepEqual(
+				rows.map((item) => item.id),
+				[healthyItem.id],
+			);
+			assert.equal(warnings.length, 1);
+			assert.deepEqual(unhandled, []);
+		} finally {
+			process.off("unhandledRejection", onUnhandled);
+		}
+	});
+}

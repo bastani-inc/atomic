@@ -316,11 +316,79 @@ test("a stop confirmation keeps terminal controls in a source's name inert (#522
 	assert.match(hint, /changed-title/);
 });
 
+test("rows whose name, task or stage label starts with combining marks stay within terminal width (#5224)", () => {
+	initTheme("dark");
+	const previous = getGlobalTheme()!;
+	const style = themedAgentPanelStyle();
+	const rows: AgentPanelRow[] = [
+		{
+			id: "task:mark-task",
+			kind: "agent",
+			state: "running",
+			name: "worker",
+			task: "\u093E\u302E fix the build",
+			elapsedMs: 5_000,
+			tokens: 96_100,
+		},
+		{
+			id: "task:mark-both",
+			kind: "agent",
+			state: "running",
+			name: "\u093E\u302Edebugger",
+			task: "\u093E\u0301…",
+			elapsedMs: 18_000,
+			tokens: 87_400,
+		},
+		{
+			id: "run:mark-stage",
+			kind: "workflow",
+			state: "running",
+			name: "\u093E\u0301ralph",
+			task: "stage \u093E\u302Eimplement",
+			elapsedMs: 12_000,
+			progress: { done: 3, total: 5 },
+		},
+	];
+	try {
+		for (const themeName of ["dark", "light"] as const) {
+			initTheme(themeName);
+			for (const width of [40, 80, 120]) {
+				for (const selectedId of [undefined, AGENT_PANEL_MAIN_ID, ...rows.map((row) => row.id)]) {
+					const lines = renderAgentPanelRows(rows, width, style, {
+						...(selectedId === undefined ? {} : { selectedId }),
+						frame: 0,
+					});
+					for (const line of lines) {
+						assert.ok(
+							visibleWidth(line) <= width,
+							`width=${width} selected=${String(selectedId)} actual=${visibleWidth(line)}: ${JSON.stringify(stripVTControlCharacters(line))}`,
+						);
+						assert.doesNotMatch(stripVTControlCharacters(line), /\p{M}/u);
+					}
+					const firstTaskLine = stripVTControlCharacters(lines[selectedId === undefined ? 0 : 1]!);
+					assert.ok(firstTaskLine.endsWith(width >= 70 ? "5s · ↓ 96.1k tokens" : "5s"), firstTaskLine);
+				}
+				const markStyle: AgentPanelStyle = {
+					...style,
+					muted: (text) => style.muted(`\u093E\u302E${text}`),
+					text: (text) => style.text(`\u093E\u302E${text}`),
+				};
+				for (const line of renderAgentPanelRows(rows, width, markStyle)) {
+					assert.ok(visibleWidth(line) <= width);
+				}
+			}
+		}
+	} finally {
+		setThemeInstance(previous);
+	}
+});
+
 test("token units roll over after rounding (#5224, #5239)", () => {
 	assert.equal(formatPanelTokens(999_949), "999.9k");
 	assert.equal(formatPanelTokens(999_950), "1.0M");
 	assert.equal(formatPanelTokens(999_999), "1.0M");
 	assert.equal(formatPanelTokens(999_950_000), "1.0B");
+	assert.equal(formatPanelTokens(Number.MAX_SAFE_INTEGER), "9.0Q");
 });
 
 test("formatPanelTokens rounds fractional values and rejects malformed counts (#5224, #5239)", () => {
