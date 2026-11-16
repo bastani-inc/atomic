@@ -87,6 +87,35 @@ function worktreeAddInProgress(repo: string): boolean {
 	});
 }
 
+/**
+ * Run `create` holding this repository's named-worktree lock, so launches in it add worktrees one at a time: two
+ * `git worktree add`s of one path at once can each register it, and the one that fails then deletes the directory the
+ * other checked out. A lock older than an add can take is left by a launch that did not finish, and is taken over.
+ */
+function withAddLock<T>(repo: string, create: () => T): T {
+	const commonDir = path.resolve(repo, gitChecked(repo, ["rev-parse", "--git-common-dir"]).trim());
+	const lock = path.join(commonDir, "atomic-named-worktree.lock");
+	for (;;) {
+		try {
+			fs.writeFileSync(lock, `${process.pid}\n`, { flag: "wx" });
+			break;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+		}
+		try {
+			if (Date.now() - fs.statSync(lock).mtimeMs >= ADD_IN_PROGRESS_MAX_AGE_MS) fs.rmSync(lock, { force: true });
+		} catch {
+			/* released meanwhile */
+		}
+		sleepSync(CONCURRENT_ADD_POLL_MS);
+	}
+	try {
+		return create();
+	} finally {
+		fs.rmSync(lock, { force: true });
+	}
+}
+
 function comparablePath(value: string): string {
 	let resolved = path.resolve(value);
 	try {
@@ -185,33 +214,39 @@ export function ensureNamedWorktree(cwd: string, request: NamedWorktreeRequest):
 		branch,
 		baseCommit: retried(checkingOut, () => gitChecked(worktreePath, ["rev-parse", "HEAD"]).trim()),
 	});
-	let addFailure: string | undefined;
-	for (;;) {
-		const decision = retried(checkingOut, () => decideWorktree(repo, branch, worktreePath));
-		if (decision === "reuse") return ready();
-		if (decision === "wait") {
-			sleepSync(CONCURRENT_ADD_POLL_MS);
-			continue;
-		}
-		// Nothing changed since this launch's own add failed, and nothing suggests another launch caused it.
-		if (
-			addFailure !== undefined &&
-			(!(CONCURRENT_GIT_FAILURE.test(addFailure) || CONCURRENT_ADD_FAILURE.test(addFailure)) || !waiting())
-		)
-			throw failed(checkingOut, new GitFailure(addFailure));
-		if (defaultPath) retried(checkingOut, () => ensureWorktreeIgnore(repo));
-		const branchExists = runGit(repo, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]).status === 0;
-		const added = runGit(
-			repo,
-			branchExists
-				? ["worktree", "add", worktreePath, branch]
-				: ["worktree", "add", "--no-track", "-b", branch, worktreePath, request.base ?? defaultBase(cwd)],
-		);
-		if (added.status === 0) return ready();
-		// Another launch may be checking the branch out there meanwhile: decide again.
-		addFailure = added.stderr.trim() || added.stdout.trim() || "git worktree add failed";
-		if (!waiting()) throw failed(checkingOut, new GitFailure(addFailure));
-	}
+	// Reused, or refused, without waiting for other launches' adds; created one launch at a time.
+	if (retried(checkingOut, () => decideWorktree(repo, branch, worktreePath)) === "reuse") return ready();
+	return retried(checkingOut, () =>
+		withAddLock(repo, () => {
+			let addFailure: string | undefined;
+			for (;;) {
+				const decision = retried(checkingOut, () => decideWorktree(repo, branch, worktreePath));
+				if (decision === "reuse") return ready();
+				if (decision === "wait") {
+					sleepSync(CONCURRENT_ADD_POLL_MS);
+					continue;
+				}
+				// Nothing changed since this launch's own add failed, and nothing suggests another launch caused it.
+				if (
+					addFailure !== undefined &&
+					(!(CONCURRENT_GIT_FAILURE.test(addFailure) || CONCURRENT_ADD_FAILURE.test(addFailure)) || !waiting())
+				)
+					throw failed(checkingOut, new GitFailure(addFailure));
+				if (defaultPath) retried(checkingOut, () => ensureWorktreeIgnore(repo));
+				const branchExists = runGit(repo, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]).status === 0;
+				const added = runGit(
+					repo,
+					branchExists
+						? ["worktree", "add", worktreePath, branch]
+						: ["worktree", "add", "--no-track", "-b", branch, worktreePath, request.base ?? defaultBase(cwd)],
+				);
+				if (added.status === 0) return ready();
+				// A git outside Atomic may be checking the branch out there meanwhile: decide again.
+				addFailure = added.stderr.trim() || added.stdout.trim() || "git worktree add failed";
+				if (!waiting()) throw failed(checkingOut, new GitFailure(addFailure));
+			}
+		}),
+	);
 }
 
 /**
