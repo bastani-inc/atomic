@@ -126,7 +126,11 @@ export async function showTaskInspector(
 							queueMicrotask(() => done());
 						}
 					}
+					// Elapsed times and the stop notice's window advance while the view is shown.
+					const tick = setInterval(() => tui.requestRender(), 1000);
+					tick.unref?.();
 					return {
+						dispose: () => clearInterval(tick),
 						invalidate: () => inspector.invalidate(),
 						render: (width: number) => {
 							const height = Math.max(1, tui.terminal.rows);

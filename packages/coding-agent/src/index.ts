@@ -122,6 +122,7 @@ export {
 	watchOwnerTaskStoreBinding,
 } from "./core/tasks/owner-store.js";
 export { automaticWaitBudgetMs } from "./core/tasks/supervisor.js";
+export { bindTaskResumer, type TaskResumer } from "./core/tasks/task-resumer.ts";
 export {
 	ownerTaskViewSource,
 	type TaskCommandCatalog,

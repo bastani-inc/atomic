@@ -60,8 +60,8 @@ void [
 	waitForStagePendingPrompt,
 ];
 
-describe("buildGraphOverlayAdapter — Ctrl+X / h non-destructive hide", () => {
-	test("Ctrl+X without onHandle invokes factory done() and keeps the run alive", () => {
+describe("buildGraphOverlayAdapter — Esc / h non-destructive hide", () => {
+	test("Esc without onHandle invokes factory done() and keeps the run alive; Ctrl+X does nothing (#5224)", () => {
 		const runId = `ctrl-x-no-onhandle-${Date.now()}`;
 		const store = createStore();
 		store.recordRunStart({
@@ -97,15 +97,17 @@ describe("buildGraphOverlayAdapter — Ctrl+X / h non-destructive hide", () => {
 		assert.equal(typeof capturedComponent!.handleInput, "function");
 
 		capturedComponent!.handleInput!("\x18");
+		assert.equal(doneCalled, 0, "Ctrl+X no longer navigates");
+		capturedComponent!.handleInput!("\x1b");
 
-		assert.equal(doneCalled, 1, "Ctrl+X should invoke done(undefined) exactly once");
+		assert.equal(doneCalled, 1, "Esc should invoke done(undefined) exactly once");
 		const run = store.runs().find((r) => r.id === runId);
 		assert.ok(run, "run should still exist in the store");
 		assert.notEqual(run!.status, "killed", "Ctrl+X must not transition status to killed");
 		assert.equal(run!.endedAt, undefined, "Ctrl+X must not end the run");
 	});
 
-	test("Ctrl+X WITH onHandle hides via setHidden(true)+unfocus and keeps the run alive", () => {
+	test("Esc WITH onHandle hides via setHidden(true)+unfocus and keeps the run alive; Ctrl+X does nothing (#5224)", () => {
 		const runId = `ctrl-x-with-onhandle-${Date.now()}`;
 		const store = createStore();
 		store.recordRunStart({
@@ -153,10 +155,12 @@ describe("buildGraphOverlayAdapter — Ctrl+X / h non-destructive hide", () => {
 		adapter.open(runId);
 
 		capturedComponent!.handleInput!("\x18");
+		assert.deepEqual(setHiddenCalls, [], "Ctrl+X no longer navigates");
+		capturedComponent!.handleInput!("\x1b");
 
-		assert.deepEqual(setHiddenCalls, [true], "Ctrl+X should call setHidden(true) once");
-		assert.equal(unfocusCalls, 1, "Ctrl+X should release focus once");
-		assert.equal(doneCalled, 0, "Ctrl+X with onHandle must NOT invoke done()");
+		assert.deepEqual(setHiddenCalls, [true], "Esc should call setHidden(true) once");
+		assert.equal(unfocusCalls, 1, "Esc should release focus once");
+		assert.equal(doneCalled, 0, "Esc with onHandle must NOT invoke done()");
 		const run = store.runs().find((r) => r.id === runId);
 		assert.notEqual(run!.status, "killed");
 		assert.equal(run!.endedAt, undefined);

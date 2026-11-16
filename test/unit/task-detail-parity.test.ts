@@ -58,7 +58,7 @@ test("detail keeps status, zero metrics and the selected action pinned while con
 			});
 		fixture.store.drain();
 		await new Promise<void>((resolve) => setImmediate(resolve));
-		inspector.handleInput("\r");
+		inspector.handleInput(" ");
 		for (const key of ["", "\x1b[6~", "\x1b[6~", "\x1b[5~"]) {
 			if (key) inspector.handleInput(key);
 			const rows = inspector.renderViewport(64, 10);
@@ -119,7 +119,7 @@ test("earlier transcript pages remain selected when background activity arrives"
 		for (let i = 0; i < 120; i++)
 			await child.appendMessage({ role: "user", content: `entry-${String(i).padStart(3, "0")}`, timestamp: i });
 		fixture.runners[0].context.bindTranscript(child);
-		inspector.handleInput("\r");
+		inspector.handleInput(" ");
 		inspector.handleInput("\r");
 		fixture.runners[0].context.reportActivity({
 			reportId: "during-load",
@@ -166,9 +166,9 @@ for (const [binding, input] of [
 		);
 		try {
 			await fixture.start("Inspect selected");
+			// The open key goes straight to the task's chat from the list (#5224).
 			inspector.handleInput(input);
 			assert.equal(inspector.navigation.focus.kind, "detail");
-			inspector.handleInput(input);
 			await new Promise<void>((resolve) => setImmediate(resolve));
 			assert.match(plain(inspector.renderViewport(80, 24)), /Transcript unavailable/);
 		} finally {
@@ -235,7 +235,7 @@ test("transcript has stable chrome, bounded rows and top/latest navigation at na
 		for (let i = 0; i < 12; i++)
 			await child.appendMessage({ role: "user", content: `MESSAGE-${i} ${"界".repeat(40)}\u001b[2J`, timestamp: i });
 		fixture.runners[0].context.bindTranscript(child);
-		inspector.handleInput("\r");
+		inspector.handleInput(" ");
 		inspector.handleInput("\r");
 		await new Promise<void>((resolve) => setImmediate(resolve));
 		for (const width of [24, 48, 100]) {

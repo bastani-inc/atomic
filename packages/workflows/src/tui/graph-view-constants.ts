@@ -1,13 +1,13 @@
 /** The way back to main chat comes first, so width pressure never hides it. */
 export const HINT_KEYS: Array<{ key: string; label: string }> = [
-	{ key: "esc", label: "main chat" },
+	{ key: "esc", label: "back" },
 	{ key: "↵", label: "open stage chat" },
 	{ key: "↑↓←→", label: "move" },
 	{ key: "/", label: "stages" },
 ];
 
 export const COMPACT_HINT_KEYS: Array<{ key: string; label: string }> = [
-	{ key: "esc", label: "main chat" },
+	{ key: "esc", label: "back" },
 	{ key: "↵", label: "stage chat" },
 ];
 

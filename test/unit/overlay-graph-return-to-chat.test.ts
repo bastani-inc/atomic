@@ -1,6 +1,7 @@
 // @ts-nocheck
 
 import assert from "node:assert/strict";
+import { stripVTControlCharacters as stripAnsi } from "node:util";
 import { describe, it, vi } from "vitest";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import { makeFakeKeybindings as s5aKeybindings } from "../support/fake-keybindings.js";
@@ -24,7 +25,11 @@ describe("GraphView return to main chat", () => {
 		view.handleInput("\x1b[B");
 		view.handleInput("\x1b[C");
 		const sibling = view._focusedIndex;
+		const hint = () => stripAnsi(view.render(140).join("\n"));
+		assert.match(hint(), /esc back/, "with a sibling to the left, ← moves, so the hint does not offer it");
+		assert.doesNotMatch(hint(), /esc\/← back/);
 		view.handleInput("\x1b[D");
+		assert.match(hint(), /esc\/← back/, "with nothing to the left, ← leaves, and the hint says so");
 		assert.notEqual(view._focusedIndex, sibling, "← moves to the sibling on the left");
 		assert.equal(onDetach.mock.calls.length, 0);
 		view.handleInput("\x1b[D");
@@ -151,7 +156,7 @@ describe("GraphView return to main chat", () => {
 		assert.match(text, /move/);
 		assert.match(text, /↵ open stage chat/);
 		assert.match(text, /stages/);
-		assert.match(text, /esc\s+main chat/i);
+		assert.match(text, /esc(?:\/←)?\s+back/i);
 		assert.doesNotMatch(text, /ctrl\+x/i);
 		assert.doesNotMatch(text, /ctrl\+d|q\s+(?:quit|detach|return)/i);
 
@@ -159,7 +164,7 @@ describe("GraphView return to main chat", () => {
 		assert.match(mediumText, /↵ open stage chat/);
 
 		const compactText = visibleText(view.render(40));
-		assert.match(compactText, /esc\s+main chat/i);
+		assert.match(compactText, /esc(?:\/←)?\s+back/i);
 		view.dispose();
 	});
 });

@@ -16,6 +16,7 @@ import {
 	taskTranscriptSource,
 	watchTaskExtensionStatuses,
 } from "./supervisor.js";
+import { taskResumer } from "./task-resumer.ts";
 import { taskTranscriptPage } from "./transcript.js";
 
 export type TaskViewResult<T> =
@@ -101,6 +102,13 @@ export interface TaskViewSource {
 	 * message. Absent where a view cannot interrupt a task's turn.
 	 */
 	interruptTask?(id: TaskId): Promise<TaskViewResult<undefined>>;
+	/**
+	 * Why a finished agent task's chat is read-only (it was stopped for good or is no longer kept), or `undefined` when
+	 * a message resumes it. Absent where finished tasks cannot be resumed from a view.
+	 */
+	taskReadOnlyReason?(id: TaskId): string | undefined;
+	/** Whether a subagent was stopped resumably and a message would resume it. */
+	taskStopped?(id: TaskId): boolean;
 	/** What a chat of an agent task completes: its session's cwd and skill commands. Absent where unknown. */
 	taskCommands?(id: TaskId): TaskCommandCatalog | undefined | Promise<TaskCommandCatalog | undefined>;
 }
@@ -127,6 +135,8 @@ export function launchedTaskViewSource(source: TaskViewSource, launcher: TaskId)
 	const sendTaskMessage = root.sendTaskMessage;
 	const taskCommands = root.taskCommands;
 	const interruptTask = root.interruptTask;
+	const taskReadOnlyReason = root.taskReadOnlyReason;
+	const taskStopped = root.taskStopped;
 	const view: TaskViewSource = {
 		get tasks() {
 			return launched(root.tasks);
@@ -155,6 +165,10 @@ export function launchedTaskViewSource(source: TaskViewSource, launcher: TaskId)
 			: { sendTaskMessage: (id: TaskId, text: string) => sendTaskMessage.call(root, id, text) }),
 		...(taskCommands === undefined ? {} : { taskCommands: (id: TaskId) => taskCommands.call(root, id) }),
 		...(interruptTask === undefined ? {} : { interruptTask: (id: TaskId) => interruptTask.call(root, id) }),
+		...(taskStopped === undefined ? {} : { taskStopped: (id: TaskId) => taskStopped.call(root, id) }),
+		...(taskReadOnlyReason === undefined
+			? {}
+			: { taskReadOnlyReason: (id: TaskId) => taskReadOnlyReason.call(root, id) }),
 	};
 	views.set(launcher, view);
 	launchedViewRoots.set(view, root);
@@ -198,6 +212,12 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 				: { ok: false, error: { message: result.error.message } };
 		},
 		async cancelTask(id) {
+			// A subagent stops resumably: its chat then says "Stopped · send to resume" (#5224).
+			const resumable = taskResumer(store.supervisor)?.stop?.(id);
+			if (resumable !== undefined) {
+				const stopped = await resumable;
+				return stopped.ok ? { ok: true, value: undefined } : { ok: false, error: { message: stopped.reason } };
+			}
 			const task = lease(id);
 			if (!task.ok) return { ok: false, error: { message: task.error.message } };
 			const result = await store.supervisor.cancelTask(task.value, "user");
@@ -300,7 +320,28 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 				return { ok: false, error: { message: error instanceof Error ? error.message : String(error) } };
 			}
 		},
+		taskStopped(id) {
+			return taskResumer(store.supervisor)?.isStopped?.(id) === true;
+		},
+		taskReadOnlyReason(id) {
+			const record = store.tasks.find((candidate) => candidate.ref.taskId === id);
+			if (record === undefined) return "This task is no longer kept; its chat is read-only.";
+			if (record.kind !== "agent" || record.execution.kind !== "settled") return undefined;
+			const resumer = taskResumer(store.supervisor);
+			if (resumer === undefined) return "This subagent has finished; its chat is read-only.";
+			return resumer.readOnlyReason(id);
+		},
 		async sendTaskMessage(id, text) {
+			const record = store.tasks.find((candidate) => candidate.ref.taskId === id);
+			const resumer = taskResumer(store.supervisor);
+			// A finished subagent continues in its own session with the message, as `subagent resume` continues it.
+			if (record?.kind === "agent" && record.execution.kind === "settled" && resumer !== undefined) {
+				const reason = resumer.readOnlyReason(id);
+				if (reason !== undefined) throw new TaskMessageError("delivery-refused", { taskId: id, detail: reason });
+				const resumed = await resumer.resume(id, text);
+				if (!resumed.ok) throw new TaskMessageError("delivery-refused", { taskId: id, detail: resumed.reason });
+				return;
+			}
 			const task = lease(id);
 			if (!task.ok) throw new TaskMessageError("task-unavailable", { taskId: id });
 			const bound = taskTranscriptSource(task.value);

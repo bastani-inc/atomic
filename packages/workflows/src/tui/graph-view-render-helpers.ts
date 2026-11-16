@@ -45,6 +45,19 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 		return entries.map(([, value]) => value.trim()).join(" · ");
 	}
 
+	/** Whether the focused node has a sibling to its left, which ← moves to; otherwise ← leaves the graph. */
+	protected _hasSiblingBefore(): boolean {
+		// Rendered every frame: answered once per layout and focus, so a frame reads the layout only for what it shows.
+		const memo = this._siblingBeforeMemo;
+		const layout = this.lastBuiltSnapshotVersion ?? this.cachedLayout;
+		if (memo !== undefined && memo.layout === layout && memo.focusedIndex === this.focusedIndex) return memo.value;
+		const cur = this.cachedLayout[this.focusedIndex];
+		const value = cur !== undefined && this.cachedLayout.some((node) => node.col === cur.col && node.row < cur.row);
+		this._siblingBeforeMemo = { layout, focusedIndex: this.focusedIndex, value };
+		return value;
+	}
+	private _siblingBeforeMemo?: { layout: unknown; focusedIndex: number; value: boolean };
+
 	protected _renderStatusline(width: number): string[] {
 		const t = this.graphTheme;
 		const chromeBg = hexBg(t.backgroundPanel);
@@ -61,7 +74,11 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 		const leftEdgePad = 1;
 		const rightEdgePad = 2;
 		const hintsBudget = Math.max(0, width - leftEdgePad - pillW - rightEdgePad);
-		const fullHierarchyHint = "esc main chat";
+		// ← leaves too when the focused node has nothing to its left, and the hint says so only then.
+		const backKey = this._hasSiblingBefore() ? "esc" : "esc/←";
+		const withBack = (keys: ReadonlyArray<{ key: string; label: string }>) =>
+			keys.map((hint) => (hint.key === "esc" && hint.label === "back" ? { ...hint, key: backKey } : hint));
+		const fullHierarchyHint = `${backKey} back`;
 		// A focused tool node has no stage chat, but Enter now opens its read-only
 		// detail, so it keeps an activation hint of its own instead of losing the
 		// `↵` affordance entirely the way an unfocusable node does. Both lookups
@@ -102,7 +119,9 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 			this.toolDetail !== null
 				? toolDetailHintKeys.map(({ key, label }) => `${key} ${label}`).join("  ·  ")
 				: fullHierarchyHint;
-		const hintKeys = hintsBudget >= visibleWidth(fullHintWidth) ? availableHintKeys : availableCompactHintKeys;
+		const hintKeys = withBack(
+			hintsBudget >= visibleWidth(fullHintWidth) ? availableHintKeys : availableCompactHintKeys,
+		);
 		const statusText = this._externalStatusText();
 		const statusSegment = statusText ? [`${accent}${statusText}${RESET}${chromeBg}`] : [];
 		const hintSegments = hintKeys.map(

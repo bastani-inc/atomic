@@ -17,6 +17,8 @@ import {
 import { agentPanelHasRows, showAgentPanel } from "../rpc/agent-panel-bridge.ts";
 import { isRpcRequestAcceptedFailure } from "../rpc/rpc-transport-error.ts";
 import { showTaskInspector } from "../rpc/task-ui-bridge.js";
+import { LoginDialogComponent } from "./components/login-dialog.ts";
+import { ScopedModelsSelectorComponent } from "./components/scoped-models-selector.ts";
 import { StartupIdentityComponent } from "./components/startup-identity.ts";
 import { COMPACTION_ALREADY_IN_PROGRESS_WARNING } from "./interactive-bash-compact.ts";
 import { routeGlobalClearInput } from "./interactive-global-clear.ts";
@@ -66,13 +68,25 @@ InteractiveModeBase.prototype.setupKeyHandlers = async function (this: Interacti
 	this.addTuiInputListener(
 		createStopAllChord({
 			keybindings: this.keybindings,
-			editorOwnsInput: () => !this.ui.hasOverlay() && this.editorContainer.children.includes(this.editor),
+			chordAllowed: () => {
+				const focused = (this.ui as { getFocusedComponent?(): object | null }).getFocusedComponent?.();
+				return !(focused instanceof LoginDialogComponent || focused instanceof ScopedModelsSelectorComponent);
+			},
 			stopAll: () =>
 				this.runtimeHost instanceof IsolatedInteractiveRuntime
 					? this.runtimeHost.stopAllBackgroundWork()
 					: stopAllBackgroundWork(this.session),
 			showStatus: (message) => this.showStatus(message),
 			showWarning: (message) => this.showWarning(message),
+			clearStatus: () => {
+				const text = this.lastStatusText;
+				if (text === undefined) return;
+				this.chatContainer.removeChild(text);
+				if (this.lastStatusSpacer) this.chatContainer.removeChild(this.lastStatusSpacer);
+				this.lastStatusText = undefined;
+				this.lastStatusSpacer = undefined;
+				this.ui.requestRender();
+			},
 		}),
 	);
 	// ↓ on an empty prompt focuses the agent panel below it.

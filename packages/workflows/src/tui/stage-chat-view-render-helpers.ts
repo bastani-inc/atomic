@@ -145,5 +145,5 @@ export function renderHintsForPrompt(kind: PendingPrompt["kind"], theme: GraphTh
 	if (kind === "custom") {
 		return `${paint("ctrl+c", theme.textMuted, { bold: true })} Close`;
 	}
-	return `${paint("enter", theme.textMuted, { bold: true })} Select · ${paint("esc", theme.textMuted, { bold: true })} Graph · ${paint("ctrl+c", theme.textMuted, { bold: true })} Skip`;
+	return `${paint("enter", theme.textMuted, { bold: true })} Select · ${paint("esc", theme.textMuted, { bold: true })} Close · ${paint("ctrl+c", theme.textMuted, { bold: true })} Skip`;
 }

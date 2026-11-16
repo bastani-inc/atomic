@@ -132,12 +132,6 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 		return this._matchesNavAction(data, APP_ACTION.navBack) && !this._hasSiblingBefore();
 	}
 
-	private _hasSiblingBefore(): boolean {
-		const cur = this.cachedLayout[this.focusedIndex];
-		if (!cur) return false;
-		return this.cachedLayout.some((node) => node.col === cur.col && node.row < cur.row);
-	}
-
 	private _returnToMainChat(): void {
 		if (this.onDetach) this.onDetach();
 		else this.onHide?.();

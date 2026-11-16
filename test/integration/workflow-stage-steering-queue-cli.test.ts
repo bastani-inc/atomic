@@ -84,11 +84,12 @@ const QUEUED_BADGE = "✉ 2 queued";
 
 /** Footer hints that identify which of the overlay's two views is drawn. */
 const GRAPH_FOOTER = "↵ open stage chat";
-const CHAT_FOOTER = "ctrl+x return to graph";
+const CHAT_FOOTER = "← return to graph";
 
 const ENTER = "\r";
 const CTRL_F = "\x06";
-const CTRL_X = "\x18";
+/** ← on the empty prompt returns from a stage chat to its graph (#5224). */
+const LEFT = "\x1b[D";
 /** The terminfo `kf2` sequence, which is what a terminal sends for F2. */
 const F2 = "\x1bOQ";
 
@@ -435,7 +436,7 @@ async function runScenario(): Promise<Evidence> {
 		// 5. Leave the node. The queue is still live on the session, so the node
 		//    the user is now looking at has to say so.
 		const beforeDetach = (await cli.output()).length;
-		cli.send(CTRL_X);
+		cli.send(LEFT);
 		await cli.waitForOutput(
 			(output) => output.slice(beforeDetach).includes(QUEUED_BADGE),
 			"the detached stage node to badge its queued messages",

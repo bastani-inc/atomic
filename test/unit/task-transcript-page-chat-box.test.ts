@@ -36,6 +36,7 @@ import { makeTestTui } from "../support/fake-tui.js";
 const ESCAPE = "\x1b";
 const LEFT = "\x1b[D";
 const ENTER = "\r";
+const SPACE = " ";
 const OWNER = "owner-1" as OwnerId;
 
 const flush = async () => {
@@ -547,7 +548,7 @@ describe("/tasks in a subagent's chat (#4640)", () => {
 		assert.equal(rows.length, 24);
 		assert.deepEqual(labelRows(rows), [], "the composer is hidden while the list is open");
 		assert.equal(rows.at(-1), "Tasks  2 background tasks running · /tasks");
-		assert.match(rows.at(-2) ?? "", /esc close/);
+		assert.match(rows.at(-2) ?? "", /esc\/← back/);
 		const [only, ...rest] = plain(page.render(80, 1));
 		assert.deepEqual(rest, []);
 		assert.notEqual(only, "Tasks  2 background tasks running · /tasks", "one row goes to the list, not the footer");
@@ -570,7 +571,7 @@ describe("/tasks in a subagent's chat (#4640)", () => {
 			await flush();
 			const list = plain(page.render(80, 24));
 			assert.match(list.find((row) => row.includes("│ › ")) ?? "", new RegExp(`│ › ${selected} `));
-			page.handleInput(ENTER);
+			page.handleInput(SPACE);
 			await flush();
 			const detail = plain(page.render(80, 24));
 			assert.match(detail.join("\n"), new RegExp(`› ${selected}\\b`));
@@ -585,13 +586,13 @@ describe("/tasks in a subagent's chat (#4640)", () => {
 		await type(page, "/tasks");
 		page.handleInput(ENTER);
 		await flush();
-		page.handleInput(ENTER);
+		page.handleInput(SPACE);
 		await flush();
 		assert.match(text(page.render(80, 24)), /title-child-shell|title-grandchild/);
 		assert.doesNotMatch(text(page.render(80, 24)), /Background tasks/, "a task's detail page replaced the list");
 		page.handleInput(LEFT);
 		assert.match(text(page.render(80, 24)), /Background tasks/);
-		page.handleInput(ENTER);
+		page.handleInput(SPACE);
 		page.handleInput(ESCAPE);
 		assert.match(text(page.render(80, 24)), /Background tasks/);
 		page.handleInput(ESCAPE);

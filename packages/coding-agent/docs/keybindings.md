@@ -152,7 +152,7 @@ Inside tmux on macOS, `Ctrl+V` is the reliable image-paste shortcut; native `Cmd
 
 When the clipboard has both text and an image, behavior depends on the terminal: empty-paste terminals may insert the text on `Cmd+V`, while Kitty-protocol terminals that deliver `super+v` go through the image path (same preference as `Ctrl+V`). `Ctrl+V` always prefers the image. Apple Terminal may send nothing for image-only paste; use Ghostty/iTerm/Kitty or `Ctrl+V` in that case.
 
-Ctrl+X does not copy messages or selections, and it no longer moves between chats. In the main chat it starts the stop-all chord (see [Navigation](#navigation)); the scoped-model selector clears its local selection with it. `/copy` always copies the last assistant message.
+Ctrl+X does not copy messages or selections, and it no longer moves between chats. Followed by Ctrl+K it is the stop-all chord (see [Navigation](#navigation)); the scoped-model selector clears its local selection with Ctrl+X. `/copy` always copies the last assistant message.
 
 On OAuth sign-in screens, Ctrl+X copies the sign-in URL, including long URLs that wrap across lines. This also works in `/mcp login`. Customize this shortcut with `app.auth.copyUrl`; it does not change Ctrl+X behavior outside sign-in screens. Remote sessions use OSC 52 clipboard forwarding as described above.
 
@@ -211,11 +211,13 @@ Interactive model and thinking choices automatically become startup defaults. Th
 The same keys move between the main chat, subagent chats, workflow graphs, stage chats and lists everywhere:
 
 - **Esc** only interrupts the current turn, cancels, closes a dialog or deselects. It never moves you to another chat.
-- **←** on an empty prompt goes back exactly one level: a subagent's chat to the list you opened it from, a stage chat to its workflow graph. With text typed, ← moves the cursor.
-- A workflow graph has no prompt, so **Esc** returns from it to the main chat; **←** does too on a node with nothing to its left, and elsewhere moves between nodes. A choice or yes/no question in a stage chat also returns to the graph with Esc.
-- In a list, **↑↓** select, **Enter** or **→** open, **x** stops the selected item (press it again within 3 seconds to confirm; on a finished item it dismisses the row), **Esc** closes the list.
-- **Ctrl+X Ctrl+K** in the main chat stops every running background subagent and workflow run of the session. Press it twice within 3 seconds; the first press says what it will do. Shells keep running. Stopped workflow runs stay resumable.
-- **?** on an empty prompt, or in a list, shows the keys of the current screen. Esc or ? closes it. Each screen also shows one dim hint line with its keys.
+- **←** on an empty prompt goes back exactly one level, to the chat or list you came from, and the hint line names it (`← tasks`, `← main chat`). With text typed, ← moves the cursor; at the very start of the prompt it leaves too, and what you typed is kept for when you come back.
+- A workflow graph has no prompt, so **Esc** goes back from it; **←** does too on a node with nothing to its left, and elsewhere moves between nodes. The hint shows `esc/← back` only where ← would leave. In a stage chat, Esc on a choice or yes/no question closes it back to the chat's prompt: the question stays pending, a line above the prompt shows it, and Enter on the empty prompt reopens it.
+- In a list, **↑↓** select, **Enter** or **→** opens the item's chat (a workflow run's graph), **Space** peeks at its detail, **x** stops the selected item (press it again within 3 seconds to confirm; on a finished item one press dismisses the row), **Esc** or **←** closes the list. If an item finishes between the two presses of `x`, the stop is called off and the list says `<name> finished · x to dismiss`; the press that was meant as the second one is ignored, and only a later `x` dismisses the row.
+- **Ctrl+X Ctrl+K** stops every running background subagent, shell and workflow run of the session, from any view except a dialog that uses Ctrl+X itself (OAuth sign-in, the scoped-model selector). Press it twice within 3 seconds; the first press says what it will do, and any other key calls it off. Stopped subagents stay resumable: their chats read `Stopped · send to resume`, and only a message you send resumes them. Stopped workflow runs stay resumable.
+- **?** on an empty prompt, or in a list, shows the keys of the current screen; typed after text, `?` is just a character. Esc or ? closes it. Each screen also shows one dim hint line with exactly the keys that work there.
+- A finished subagent's chat stays open to messages: sending one resumes it in its own session. A subagent stopped for good, or one no longer kept, has a read-only chat with a one-line note; ← still goes back.
+- A shell's input prompt keeps Esc from clearing or leaving it; ← on its empty input returns to the list, and a draft is kept when you leave.
 
 | Keybinding id | Default | Description |
 |--------|---------|-------------|

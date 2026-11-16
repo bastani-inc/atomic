@@ -36,7 +36,7 @@ import {
 	sepRule,
 } from "./stage-chat-view-footer-status.js";
 import { handleStageChatInput } from "./stage-chat-view-input.js";
-import { blankLine, takeRows } from "./stage-chat-view-render-helpers.js";
+import { blankLine, paint, takeRows } from "./stage-chat-view-render-helpers.js";
 import {
 	currentStage,
 	disposeStageChatView,
@@ -46,6 +46,7 @@ import {
 	isPaused,
 	isReadOnlyArchive,
 	pooledStageWaitingNotice,
+	promptCardShown,
 	syncPromptState,
 	viewLineCount,
 } from "./stage-chat-view-state.js";
@@ -56,6 +57,7 @@ import {
 	type StageChatViewOpts,
 	type TranscriptDebugEntry,
 } from "./stage-chat-view-types.js";
+import { truncateToWidth } from "./text-helpers.js";
 
 export type {
 	StageChatDetachMetadata,
@@ -90,6 +92,7 @@ export class StageChatView implements Component, Focusable {
 	private mountedCustomUi!: StageChatViewContext["mountedCustomUi"];
 	private mountingRequestId!: StageChatViewContext["mountingRequestId"];
 	private promptState!: StageChatViewContext["promptState"];
+	private dismissedPromptId!: StageChatViewContext["dismissedPromptId"];
 	private promptEditor!: StageChatViewContext["promptEditor"];
 	private promptEditorPromptId!: StageChatViewContext["promptEditorPromptId"];
 	private promptEditorSubmitFromEnter!: StageChatViewContext["promptEditorSubmitFromEnter"];
@@ -126,7 +129,7 @@ export class StageChatView implements Component, Focusable {
 
 		const customUiActive = this.mountedCustomUi !== null;
 		syncPromptState(ctx, stage?.pendingPrompt);
-		const promptActive = !customUiActive && this.promptState !== null;
+		const promptActive = !customUiActive && promptCardShown(ctx);
 		const readOnlyArchive = isReadOnlyArchive(ctx, stage);
 		const chatChromeHidden = customUiActive || promptActive || readOnlyArchive || blocked;
 		this.chatHost.focused = this.focused;
@@ -134,7 +137,17 @@ export class StageChatView implements Component, Focusable {
 		const sepLines = [sepRule(ctx, w)];
 
 		const customUiLines = customUiActive ? renderCustomUi(ctx, w) : [];
-		const pendingLines = chatChromeHidden ? [] : this.chatHost.renderPendingMessages(w);
+		// A question closed with Esc waits above the chat's prompt until Enter reopens it.
+		const closedQuestion =
+			!chatChromeHidden && this.promptState !== null && this.promptState.prompt.id === this.dismissedPromptId
+				? [
+						truncateToWidth(
+							` ${paint("◆", ctx.theme.warning)} ${paint(`${this.promptState.prompt.message} · enter to answer`, ctx.theme.textMuted)}`,
+							w,
+						),
+					]
+				: [];
+		const pendingLines = chatChromeHidden ? [] : [...closedQuestion, ...this.chatHost.renderPendingMessages(w)];
 		const workingLines = chatChromeHidden ? [] : this.chatHost.renderWorkingStatus(w);
 		const usageLines = chatChromeHidden ? [] : this.chatHost.renderUsage(w);
 		const editorLines = chatChromeHidden
