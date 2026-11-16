@@ -62,7 +62,7 @@ export class SessionPickerHostController {
 				this.mounted.get(message.componentId)?.setRows(message.sessions.map(sessionInfoFromPickerRow));
 				break;
 			case "engine_session_picker_error":
-				this.mounted.get(message.componentId)?.showError(message.message);
+				this.mounted.get(message.componentId)?.showError(message.message, message.deletePath);
 				break;
 			case "engine_session_picker_close": {
 				const mount = this.mounted.get(message.componentId);

@@ -138,6 +138,7 @@ export class SessionList implements Component, Focusable {
 	private keybindings: KeybindingsManager;
 	private showPath = false;
 	private confirmingDeleteSession: SessionInfo | null = null;
+	private deletingSessionPath?: string;
 	private currentSession?: { id: string; directory?: string };
 	public onSelect?: (session: SessionInfo) => void;
 	public onCancel?: () => void;
@@ -147,6 +148,7 @@ export class SessionList implements Component, Focusable {
 	public onToggleNameFilter?: () => void;
 	public onTogglePath?: (showPath: boolean) => void;
 	public onDeleteConfirmationChange?: (path: string | null) => void;
+	public onDeletePendingChange?: () => void;
 	public onDeleteSession?: (sessionPath: string, session: SessionInfo) => Promise<void>;
 	public onRenameSession?: (session: SessionInfo) => void;
 	public onError?: (message: string) => void;
@@ -194,10 +196,7 @@ export class SessionList implements Component, Focusable {
 			placeholderStyle: (text) => theme.fg("dim", text),
 		});
 		input.focused = this._focused;
-		input.onSubmit = () => {
-			const selected = this.filteredSessions[this.selectedIndex];
-			if (selected) this.onSelect?.(selected.session);
-		};
+		input.onSubmit = () => this.selectSession();
 		return input;
 	}
 
@@ -265,9 +264,29 @@ export class SessionList implements Component, Focusable {
 		this.onDeleteConfirmationChange?.(session?.path ?? null);
 	}
 
+	private selectSession(): void {
+		const selected = this.filteredSessions[this.selectedIndex]?.session;
+		if (selected && selected.path !== this.deletingSessionPath) this.onSelect?.(selected);
+	}
+
+	private async deleteSession(session: SessionInfo): Promise<void> {
+		const onDelete = this.onDeleteSession;
+		if (!onDelete || this.deletingSessionPath) return;
+		this.deletingSessionPath = session.path;
+		this.onDeletePendingChange?.();
+		try {
+			await onDelete(session.path, session);
+		} catch (error) {
+			this.onError?.(`Failed to delete: ${error instanceof Error ? error.message : String(error)}`);
+		} finally {
+			this.deletingSessionPath = undefined;
+			this.onDeletePendingChange?.();
+		}
+	}
+
 	private startDeleteConfirmationForSelectedSession(): void {
 		const selected = this.filteredSessions[this.selectedIndex];
-		if (!selected || !this.canDelete) return;
+		if (!selected || !this.canDelete || this.deletingSessionPath) return;
 
 		// Prevent deleting current session
 		if (this.isCurrentSession(selected.session)) {
@@ -380,6 +399,7 @@ export class SessionList implements Component, Focusable {
 			const session = node.session;
 			const isSelected = i === this.selectedIndex;
 			const isConfirmingDelete = session === this.confirmingDeleteSession;
+			const isDeleting = session.path === this.deletingSessionPath;
 			const prefix = this.buildTreePrefix(node);
 			const continuation = this.buildTreeContinuation(node);
 			const cursor = isSelected ? theme.fg("accent", theme.bold("❯ ")) : "  ";
@@ -389,6 +409,7 @@ export class SessionList implements Component, Focusable {
 			const title = fitText(sessionRowTitle(session), titleRoom);
 			let color: "error" | "warning" | "accent" | "success" | null = null;
 			if (isConfirmingDelete) color = "error";
+			else if (isDeleting) color = "warning";
 			else if (this.isCurrentSession(session)) color = "accent";
 			else if (session.messageColor !== undefined) color = session.messageColor;
 			else if (session.name) color = "warning";
@@ -396,7 +417,7 @@ export class SessionList implements Component, Focusable {
 			if (isSelected) styledTitle = theme.bold(color ? styledTitle : theme.fg("accent", title));
 			lines.push(lead + theme.fg("dim", prefix) + styledTitle);
 			const detailRoom = Math.max(1, width - indent - visibleWidth(continuation) - 1);
-			const detail = this.rowDetail(session, detailRoom);
+			const detail = isDeleting ? "Deleting…" : this.rowDetail(session, detailRoom);
 			lines.push(
 				" ".repeat(indent) +
 					theme.fg("dim", continuation) +
@@ -454,8 +475,13 @@ export class SessionList implements Component, Focusable {
 		const end = border(`  ╰${"─".repeat(inner)}╯`);
 		const body: string[] = [];
 		const add = (text: string, style: (value: string) => string, maxLines: number) => {
-			const wrapped = wrapTextWithAnsi(cleanText(text), room).slice(0, maxLines);
-			for (const line of wrapped) {
+			const wrapped = wrapTextWithAnsi(cleanText(text), room);
+			const shown = wrapped.slice(0, maxLines);
+			if (wrapped.length > shown.length) {
+				const last = shown.length - 1;
+				shown[last] = `${truncateToWidth(shown[last]!, Math.max(0, room - 1), "")}…`;
+			}
+			for (const line of shown) {
 				const cell = truncateToWidth(line, room, "…");
 				body.push(
 					`  ${border("│")} ${style(cell)}${" ".repeat(Math.max(0, room - visibleWidth(cell)))} ${border("│")}`,
@@ -470,8 +496,12 @@ export class SessionList implements Component, Focusable {
 		facts.push(`Created ${selected.created.toLocaleString()} · updated ${ageText(selected.modified)}`);
 		if (selected.detail === undefined)
 			facts.push(`${selected.messageCount} ${selected.messageCount === 1 ? "message" : "messages"}`);
-		if (selected.cwd && this.variant !== "runs") facts.push(shortenPath(selected.cwd));
-		if (this.variant !== "runs") facts.push(shortenPath(selected.path));
+		const pathFact = (path: string): string => {
+			const text = cleanText(shortenPath(path));
+			return wrapTextWithAnsi(text, room).length > 2 ? truncatePathStart(text, room) : text;
+		};
+		if (selected.cwd && this.variant !== "runs") facts.push(pathFact(selected.cwd));
+		if (this.variant !== "runs") facts.push(pathFact(selected.path));
 		else facts.push(selected.id);
 		for (const fact of facts) add(fact, (text) => theme.fg("dim", text), 2);
 		return ["", rule, ...body, end];
@@ -497,7 +527,8 @@ export class SessionList implements Component, Focusable {
 			});
 		}
 		if (selected && !query) entries.push({ keys: "space", label: this.previewOpen ? "close preview" : "preview" });
-		if (selected) entries.push({ action: "tui.select.confirm", label: "resume" });
+		const selectedDeleting = selected?.session.path === this.deletingSessionPath;
+		if (selected && !selectedDeleting) entries.push({ action: "tui.select.confirm", label: "resume" });
 		if (this.variant === "sessions") {
 			entries.push({ action: "tui.input.tab", label: this.showCwd ? "this folder" : "all" });
 		}
@@ -509,8 +540,10 @@ export class SessionList implements Component, Focusable {
 			});
 			entries.push({ action: "app.session.togglePath", label: this.showPath ? "hide path" : "path" });
 		}
-		if (selected && this.canRename) entries.push({ action: "app.session.rename", label: "rename" });
-		if (selected && this.canDelete) entries.push({ action: "app.session.delete", label: "delete" });
+		if (selected && this.canRename && !selectedDeleting)
+			entries.push({ action: "app.session.rename", label: "rename" });
+		if (selected && this.canDelete && !this.deletingSessionPath)
+			entries.push({ action: "app.session.delete", label: "delete" });
 		entries.push({ keys: "type", label: "to search" });
 		const cancel = navActionText(kb, "tui.select.cancel").split("/")[0] || "esc";
 		entries.push({ keys: cancel, label: this.previewOpen ? "close" : query ? "clear" : "cancel" });
@@ -547,7 +580,7 @@ export class SessionList implements Component, Focusable {
 			if (kb.matches(keyData, "tui.select.confirm")) {
 				const session = this.confirmingDeleteSession;
 				this.setConfirmingDeleteSession(null);
-				void this.onDeleteSession?.(session.path, session);
+				void this.deleteSession(session);
 				return true;
 			}
 			if (kb.matches(keyData, "tui.select.cancel")) {
@@ -601,7 +634,7 @@ export class SessionList implements Component, Focusable {
 		// Rename selected session
 		if (kb.matches(keyData, "app.session.rename")) {
 			const selected = this.filteredSessions[this.selectedIndex];
-			if (selected) {
+			if (selected && selected.session.path !== this.deletingSessionPath) {
 				this.selectionTouched = true;
 				this.pendingSelectedPath = selected.session.path;
 				this.onRenameSession?.(selected.session);
@@ -647,10 +680,7 @@ export class SessionList implements Component, Focusable {
 			kb.matches(keyData, "tui.select.confirm") ||
 			(kb.matches(keyData, "app.list.open") && !this.searchInput.getValue())
 		) {
-			const selected = this.filteredSessions[this.selectedIndex];
-			if (selected && this.onSelect) {
-				this.onSelect(selected.session);
-			}
+			this.selectSession();
 		}
 		// Escape clears a search first, then cancels; ctrl+c always cancels.
 		else if (kb.matches(keyData, "tui.select.cancel")) {

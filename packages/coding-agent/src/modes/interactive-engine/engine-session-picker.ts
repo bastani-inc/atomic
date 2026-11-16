@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import type {
 	HostSessionPickerHandle,
 	HostSessionPickerRequest,
@@ -27,6 +28,7 @@ interface ActivePicker {
  */
 export class EngineSessionPickerService {
 	private readonly active = new Map<string, ActivePicker>();
+	private readonly deleteContext = new AsyncLocalStorage<{ componentId: string; path: string }>();
 	private nextId = 0;
 	private readonly write: (line: string) => void;
 
@@ -68,7 +70,13 @@ export class EngineSessionPickerService {
 			},
 			error: (message: string) => {
 				if (record.settled) return;
-				this.send({ type: "engine_session_picker_error", componentId, message });
+				const context = this.deleteContext.getStore();
+				this.send({
+					type: "engine_session_picker_error",
+					componentId,
+					message,
+					...(context?.componentId === componentId ? { deletePath: context.path } : {}),
+				});
 			},
 			close: () => {
 				if (record.settled) return;
@@ -96,18 +104,26 @@ export class EngineSessionPickerService {
 						type: "engine_session_picker_error",
 						componentId: command.componentId,
 						message: "Deletion is not supported for this picker",
+						deletePath: command.path,
 					});
 					break;
 				}
-				void Promise.resolve(record.onDelete(command.path)).catch((error: unknown) => {
-					if (record.settled) return;
-					const message = error instanceof Error ? error.message : String(error);
-					this.send({
-						type: "engine_session_picker_error",
-						componentId: command.componentId,
-						message: `Failed to delete: ${message}`,
+				void Promise.resolve()
+					.then(() =>
+						this.deleteContext.run({ componentId: command.componentId, path: command.path }, () =>
+							record.onDelete?.(command.path),
+						),
+					)
+					.catch((error: unknown) => {
+						if (record.settled) return;
+						const message = error instanceof Error ? error.message : String(error);
+						this.send({
+							type: "engine_session_picker_error",
+							componentId: command.componentId,
+							message: `Failed to delete: ${message}`,
+							deletePath: command.path,
+						});
 					});
-				});
 				break;
 		}
 		return true;
@@ -116,6 +132,7 @@ export class EngineSessionPickerService {
 	dispose(): void {
 		for (const record of [...this.active.values()]) record.resolve(undefined);
 		this.active.clear();
+		this.deleteContext.disable();
 	}
 
 	private send(message: InteractiveEngineMessage): void {

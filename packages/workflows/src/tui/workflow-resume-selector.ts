@@ -343,6 +343,7 @@ export function openWorkflowResumeSelector(
 
 	let currentLiveRuns = liveRuns;
 	let resolvedCatalog: WorkflowResumeCatalogRows = EMPTY_CATALOG;
+	const deletedWorkflowIds = new Set<string>();
 	const liveItems = workflowResumeSelectorItems(
 		currentLiveRuns,
 		[],
@@ -358,11 +359,17 @@ export function openWorkflowResumeSelector(
 	let debounceTimer: ReturnType<typeof setTimeout> | undefined;
 
 	const applyRows = (catalog: WorkflowResumeCatalogRows): void => {
-		resolvedCatalog = catalog;
+		resolvedCatalog =
+			deletedWorkflowIds.size === 0
+				? catalog
+				: {
+						durable: catalog.durable.filter((entry) => !deletedWorkflowIds.has(entry.workflowId)),
+						completed: catalog.completed.filter((entry) => !deletedWorkflowIds.has(entry.workflowId)),
+					};
 		const items = workflowResumeSelectorItems(
-			currentLiveRuns,
-			catalog.durable,
-			catalog.completed,
+			currentLiveRuns.filter((run) => !deletedWorkflowIds.has(run.id)),
+			resolvedCatalog.durable,
+			resolvedCatalog.completed,
 			options.sessionRuns?.(),
 			options.durableBackend?.(),
 		);
@@ -393,8 +400,8 @@ export function openWorkflowResumeSelector(
 				handle.error(outcome.message);
 				return;
 			}
-			resultByPath.delete(path);
-			sessions = sessions.filter((session) => session.path !== path);
+			deletedWorkflowIds.add(target.workflowId);
+			applyRows(resolvedCatalog);
 			handle.update(sessions.map(toPickerRow));
 		},
 	});

@@ -155,6 +155,12 @@ describe("engine_session_picker protocol", () => {
 			{ type: "engine_session_picker_open", componentId: "p1", sessions, showRenameHint: false },
 			{ type: "engine_session_picker_update", componentId: "p1", sessions },
 			{ type: "engine_session_picker_error", componentId: "p1", message: "boom" },
+			{
+				type: "engine_session_picker_error",
+				componentId: "p1",
+				message: "delete failed",
+				deletePath: "workflow-durable:a",
+			},
 			{ type: "engine_session_picker_close", componentId: "p1" },
 		] as const) {
 			const parsed = parseInteractiveEngineMessage(serializeInteractiveEngineFrame(message));
@@ -349,6 +355,40 @@ describe("host-native session picker (source-path)", () => {
 		assert.ok(afterUpdate.includes("beta-message"), "remaining row retained");
 		bridge.controller.dispose();
 	});
+
+	test.each(["throw", "reject", "report"])(
+		"delete failure unlocks only its row across the engine channel (%s) (#5256)",
+		async (failure) => {
+			const bridge = makeBridge();
+			const handle = bridge.child.open({
+				sessions: [row("alpha")],
+				onDelete: () => {
+					if (failure === "reject") return Promise.reject(new Error("Deletion denied"));
+					if (failure === "report") return Promise.resolve().then(() => handle.error("Deletion denied"));
+					throw new Error("Deletion denied");
+				},
+			});
+			await flush();
+			try {
+				const picker = bridge.mounts[0]!.component;
+				picker.handleInput(CTRL_D);
+				picker.handleInput(ENTER);
+				await flush();
+				assert.ok(
+					bridge.hostMessages.some(
+						(message) =>
+							message.type === "engine_session_picker_error" && message.deletePath === "workflow-durable:alpha",
+					),
+				);
+				assert.match(renderText(bridge), /Deletion denied/);
+				picker.handleInput(ENTER);
+				assert.equal(await handle.result, "workflow-durable:alpha");
+			} finally {
+				bridge.controller.dispose();
+				bridge.child.dispose();
+			}
+		},
+	);
 
 	test("child-initiated close disposes the host mount and resolves undefined", async () => {
 		const bridge = makeBridge();

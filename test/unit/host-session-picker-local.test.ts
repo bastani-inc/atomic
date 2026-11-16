@@ -184,6 +184,108 @@ describe("in-process host session picker (non-isolated)", () => {
 		assert.equal(await handle.result, undefined);
 	});
 
+	test("keeps a deleted row unselectable until the owner removes it or reports failure (#5256)", async () => {
+		const mount = makeLocalUi();
+		const deletes: string[] = [];
+		const rows = [row("alpha"), row("beta", 900)];
+		let rejectDeletion!: () => void;
+		const handle = openLocalHostSessionPicker(mount.ui, {
+			sessions: rows,
+			onDelete: (path) => {
+				deletes.push(path);
+				if (deletes.length === 1) {
+					return new Promise<void>((_resolve, reject) => {
+						rejectDeletion = () => reject(new Error("Deletion refused"));
+					});
+				}
+			},
+		});
+		await flush();
+		try {
+			mount.component().handleInput(CTRL_D);
+			mount.component().handleInput(ENTER);
+			mount.component().handleInput(ENTER);
+			assert.equal(mount.resolved(), false);
+			await flush();
+			handle.update(rows);
+			await flush();
+			mount.component().handleInput("\x1b[C");
+			assert.equal(mount.resolved(), false, "stale row updates must not acknowledge deletion");
+			assert.deepEqual(deletes, ["local:alpha"]);
+			handle.error("Background load failed");
+			await flush();
+			mount.component().handleInput(ENTER);
+			assert.equal(mount.resolved(), false, "unrelated errors must not acknowledge deletion");
+			rejectDeletion();
+			await flush();
+			mount.component().handleInput(CTRL_D);
+			mount.component().handleInput(ENTER);
+			await flush();
+			assert.deepEqual(deletes, ["local:alpha", "local:alpha"], "failed deletion can be retried");
+			handle.update([row("beta", 900)]);
+			await flush();
+			mount.component().handleInput(ENTER);
+			assert.equal(await handle.result, "local:beta");
+		} finally {
+			handle.close();
+		}
+	});
+
+	test("errors reported by an asynchronous delete callback release its row (#5256)", async () => {
+		const mount = makeLocalUi();
+		let release!: () => void;
+		const deletion = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const handle = openLocalHostSessionPicker(mount.ui, {
+			sessions: [row("alpha")],
+			onDelete: async () => {
+				await deletion;
+				handle.error("Deletion denied");
+			},
+		});
+		await flush();
+		try {
+			mount.component().handleInput(CTRL_D);
+			mount.component().handleInput(ENTER);
+			await flush();
+			release();
+			await flush();
+			assert.match(renderText(mount), /enter resume/);
+			mount.component().handleInput(ENTER);
+			assert.equal(await handle.result, "local:alpha");
+		} finally {
+			release();
+			handle.close();
+		}
+	});
+
+	test("other rows remain resumable while a row is being deleted (#5256)", async () => {
+		const mount = makeLocalUi();
+		const handle = openLocalHostSessionPicker(mount.ui, {
+			sessions: [row("alpha"), row("beta", 900)],
+			onDelete: () => {},
+		});
+		await flush();
+		mount.component().handleInput(CTRL_D);
+		mount.component().handleInput(ENTER);
+		mount.component().handleInput(DOWN);
+		mount.component().handleInput(ENTER);
+		assert.equal(await handle.result, "local:beta");
+	});
+
+	test.each([ESCAPE, "\x03"])("cancels while owner deletion remains pending (%j) (#5256)", async (key) => {
+		const mount = makeLocalUi();
+		const handle = openLocalHostSessionPicker(mount.ui, { sessions: [row("alpha")], onDelete: () => {} });
+		await flush();
+		mount.component().handleInput(CTRL_D);
+		mount.component().handleInput(ENTER);
+		await flush();
+		mount.component().handleInput(key);
+		assert.equal(await handle.result, undefined);
+		assert.equal(mount.resolved(), true);
+	});
+
 	test("a picker without an onDelete callback offers no delete: no hint, and ctrl+d does nothing (#5224)", async () => {
 		const mount = makeLocalUi();
 		const handle = openLocalHostSessionPicker(mount.ui, { sessions: [row("alpha")] });

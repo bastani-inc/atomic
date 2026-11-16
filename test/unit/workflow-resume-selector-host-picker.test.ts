@@ -305,6 +305,54 @@ describe("workflow resume selector host-picker path", () => {
 		assert.equal(outcome.catalog.durable.length, 1, "previous catalog retained");
 	});
 
+	test("a refresh started before deletion cannot restore the deleted workflow row (#5256)", async () => {
+		const picker = makeFakeHostPicker();
+		const catalog = { durable: [entry("a", "paused"), entry("b", "paused")], completed: [] };
+		let notify: (() => void) | undefined;
+		let releaseRefresh!: () => void;
+		let beginRefresh!: () => void;
+		const refreshStarted = new Promise<void>((resolve) => {
+			beginRefresh = resolve;
+		});
+		const refreshGate = new Promise<void>((resolve) => {
+			releaseRefresh = resolve;
+		});
+		const result = openWorkflowResumeSelector(
+			{ hostSessionPicker: picker.hostSessionPicker },
+			[],
+			async () => catalog,
+			{
+				deleteWorkflow: async () => ({ ok: true, message: "deleted" }),
+				watch: (listener) => {
+					notify = listener;
+					return () => {};
+				},
+				refreshIntervalMs: 0,
+				refresh: async () => {
+					beginRefresh();
+					await refreshGate;
+					return { liveRuns: [], catalog };
+				},
+			},
+		);
+		await flush();
+		notify?.();
+		await refreshStarted;
+		await picker.deleteRow("workflow-durable:a");
+		assert.deepEqual(
+			picker.updates.at(-1)?.map((row) => row.id),
+			["b"],
+		);
+		releaseRefresh();
+		await flush();
+		assert.deepEqual(
+			picker.updates.at(-1)?.map((row) => row.id),
+			["b"],
+		);
+		picker.cancel();
+		await result;
+	});
+
 	test("delete flow: live rows protected, durable delete waits for the child update", async () => {
 		const picker = makeFakeHostPicker();
 		const deleted: string[] = [];
@@ -526,6 +574,46 @@ describe("workflow resume selector host-picker end-to-end (real engine bridge)",
 		bridge.component().handleInput("\x1b");
 		await promise;
 		bridge.controller.dispose();
+	});
+
+	test("never resumes a workflow whose confirmed deletion is still in flight (#5256)", async () => {
+		const bridge = makeBridge();
+		let releaseDelete!: () => void;
+		const deletion = new Promise<void>((resolve) => {
+			releaseDelete = resolve;
+		});
+		const result = openWorkflowResumeSelector(
+			{ hostSessionPicker: (request) => bridge.child.open(request) },
+			[],
+			async () => ({ durable: [entry("a", "paused", 900), entry("b", "paused", 800)], completed: [] }),
+			{
+				deleteWorkflow: async () => {
+					await deletion;
+					return { ok: true, message: "deleted" };
+				},
+				refreshIntervalMs: 0,
+			},
+		);
+		await flush();
+		try {
+			bridge.component().handleInput("\x04");
+			bridge.component().handleInput("\r");
+			bridge.component().handleInput("\r");
+			bridge.component().handleInput("\x1b[C");
+			await flush();
+			assert.equal(
+				bridge.childCommands.some((command) => command.type === "engine_session_picker_select"),
+				false,
+			);
+			releaseDelete();
+			await flush();
+			bridge.component().handleInput("\r");
+			assert.deepEqual((await result).result, { kind: "durable", workflowId: "b" });
+		} finally {
+			releaseDelete();
+			bridge.controller.dispose();
+			bridge.child.dispose();
+		}
 	});
 
 	test("renders live, durable and completed workflow IDs with row details at common widths", async () => {

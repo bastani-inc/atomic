@@ -135,6 +135,53 @@ describe("session selector path/delete interactions", () => {
 			await store.close();
 		}
 	});
+	it.each([false, true])(
+		"never resumes or deletes a session again while deletion is pending (failure=%j) (#5256)",
+		async (fail) => {
+			let sessions = [makeSession({ id: "a" }), makeSession({ id: "b" })];
+			const gate = createDeferred<void>();
+			const resumed: string[] = [];
+			const deleting: string[] = [];
+			const selector = new SessionSelectorComponent(
+				async () => sessions,
+				async () => sessions,
+				(session) => resumed.push(session.id),
+				() => {},
+				() => {},
+				() => {},
+				{
+					keybindings,
+					initialSessions: sessions,
+					deleteSession: async (id) => {
+						deleting.push(id);
+						await gate.promise;
+						if (fail) throw new Error("Deletion refused");
+						sessions = sessions.filter((session) => session.id !== id);
+					},
+				},
+			);
+			await flushPromises();
+			try {
+				selector.handleInput(CTRL_D);
+				selector.handleInput("\r");
+				selector.handleInput("\r");
+				selector.handleInput("\x1b[C");
+				selector.handleInput(CTRL_D);
+				selector.handleInput("\r");
+				assert.deepEqual(deleting, ["a"]);
+				assert.deepEqual(resumed, []);
+				assert.match(stripAnsi(selector.render(100).join("\n")), /Deleting/);
+				gate.resolve();
+				await flushPromises();
+				selector.handleInput("\r");
+				assert.deepEqual(resumed, [fail ? "a" : "b"]);
+			} finally {
+				gate.resolve();
+				selector.dispose();
+			}
+		},
+	);
+
 	it("does not treat Ctrl+Backspace as delete when search query is non-empty", async () => {
 		const sessions = [makeSession({ id: "a" }), makeSession({ id: "b" })];
 

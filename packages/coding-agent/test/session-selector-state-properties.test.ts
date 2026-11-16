@@ -160,7 +160,10 @@ describe("resume picker: selection, search, preview and leaving stay consistent 
 		}
 	});
 
-	it("keeps a row selected after ↓ on an empty search result once the search matches again (#5224)", () => {
+	it.each([
+		{ name: "↓", key: DOWN },
+		{ name: "Page Down", key: PAGE_DOWN },
+	])("keeps a row selected after $name on an empty search result once the search matches again (#5224)", ({ key }) => {
 		const sessions = makeSessions(mulberry32(7), 3);
 		const picker = new SessionSelectorComponent(
 			async () => sessions,
@@ -174,8 +177,7 @@ describe("resume picker: selection, search, preview and leaving stay consistent 
 		const list = picker.getSessionList();
 		for (const char of "qqq") picker.handleInput(char);
 		assert.equal(list.getSelectedSessionPath(), undefined);
-		picker.handleInput(DOWN);
-		picker.handleInput(PAGE_DOWN);
+		picker.handleInput(key);
 		picker.handleInput(ESCAPE);
 		assert.ok(list.getSelectedSessionPath() !== undefined);
 	});

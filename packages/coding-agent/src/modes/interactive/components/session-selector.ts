@@ -179,6 +179,9 @@ export class SessionSelectorComponent extends Container implements Focusable {
 			this.header.setConfirmingDeletePath(path);
 			this.requestRender();
 		};
+		this.sessionList.onDeletePendingChange = () => {
+			if (!this.disposed) this.requestRender();
+		};
 		this.sessionList.onError = (msg) => {
 			this.header.setStatusMessage({ type: "error", message: msg }, 3000);
 			this.requestRender();

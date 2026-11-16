@@ -171,6 +171,34 @@ describe("resume picker: one two-line design for sessions and workflow runs (#52
 		assert.equal(cancelled, true);
 	});
 
+	it("preserves path tails and marks truncated text in previews (#5256)", () => {
+		const folder = `/srv/${"deep-project/".repeat(15)}app`;
+		const selector = mount([
+			makeSession({
+				id: "long-preview",
+				cwd: folder,
+				path: `${folder}/session-file-name.jsonl`,
+				firstMessage: "TITLE ".repeat(60),
+				summary: "SUMMARY ".repeat(80),
+			}),
+		]);
+		selector.handleInput(" ");
+		const preview = frame(selector, 60).filter((line) => line.startsWith("  │"));
+		assert.ok(
+			preview.some((line) => line.includes("session-file-name.jsonl")),
+			preview.join("\n"),
+		);
+		assert.ok(
+			preview.some((line) => /TITLE.*…\s*│/.test(line)),
+			preview.join("\n"),
+		);
+		assert.ok(
+			preview.some((line) => /SUMMARY.*…\s*│/.test(line)),
+			preview.join("\n"),
+		);
+		selector.dispose();
+	});
+
 	it("space types into a non-empty search instead of previewing", () => {
 		const selector = mount([makeSession({ id: "a", firstMessage: "fix the login bug" })]);
 		for (const ch of "fix") selector.handleInput(ch);

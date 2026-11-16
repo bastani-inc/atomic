@@ -131,7 +131,7 @@ export type InteractiveEngineMessage =
 			canDelete?: boolean;
 	  }
 	| { type: "engine_session_picker_update"; componentId: string; sessions: HostSessionPickerRow[] }
-	| { type: "engine_session_picker_error"; componentId: string; message: string }
+	| { type: "engine_session_picker_error"; componentId: string; message: string; deletePath?: string }
 	| { type: "engine_session_picker_close"; componentId: string }
 	| {
 			type: "engine_input_form_open";
@@ -700,7 +700,12 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 		}
 		case "engine_session_picker_error":
 			return typeof value.componentId === "string" && typeof value.message === "string"
-				? { type: value.type, componentId: value.componentId, message: value.message }
+				? {
+						type: value.type,
+						componentId: value.componentId,
+						message: value.message,
+						...(typeof value.deletePath === "string" ? { deletePath: value.deletePath } : {}),
+					}
 				: undefined;
 		case "engine_session_picker_close":
 		case "engine_input_form_close":

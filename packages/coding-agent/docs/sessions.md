@@ -161,7 +161,7 @@ In the picker you can:
 - rename with CTRL+R
 - delete with CTRL+D, then confirm with Enter (Esc keeps the session)
 
-JSONL stores use the `trash` CLI when available. Database stores delete the selected session record, not the database.
+JSONL stores use the `trash` CLI when available. Database stores delete the selected session record, not the database. While a confirmed deletion runs, its row shows `Deleting…` and cannot be resumed or renamed. You can still resume another row or close the picker. Closing the picker does not undo a confirmed deletion.
 
 ### Session summaries
 
