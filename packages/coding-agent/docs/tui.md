@@ -408,9 +408,53 @@ Moved to [TUI API reference](/tui/reference#when-this-matters).
 
 These patterns cover the most common UI needs in extensions. **Copy these patterns instead of building from scratch.**
 
-### Pattern 1: Selection Dialog (SelectList)
+### Pattern 1: Selection Dialog (Selector)
 
-For letting users pick from a list of options. Use `SelectList` from `@bastani/atomic-tui` with `DynamicBorder` for framing.
+For letting users pick from a list, use `Selector` from `@bastani/atomic`. It is the picker Atomic's own selectors use, so your dialog looks and behaves like `/model`, `/resume` and the rest: a title, an optional type-to-search box, one- or two-line rows with dim descriptions and right-aligned tags, `↑ N more` / `↓ N more` scroll indicators, an empty state, and one hint line that lists exactly the keys that work.
+
+```typescript
+import { DynamicBorder, Selector } from "@bastani/atomic";
+
+const choice = await ctx.ui.custom<string | null>((tui, _theme, _kb, done) => {
+  const selector = new Selector<string>({
+    title: "Pick a preset",
+    search: true,                         // typing filters; esc clears the search, then cancels
+    items: [
+      { id: "fast", value: "fast", label: "fast", description: "small model, low effort", mark: "on", tag: "current" },
+      { id: "deep", value: "deep", label: "deep", description: "large model, high effort", mark: "off" },
+    ],
+    onSelect: (item) => done(item.value),
+    onCancel: () => done(null),
+  });
+  const border = new DynamicBorder();
+  return {
+    render: (width) => [...border.render(width), ...selector.render(width)],
+    invalidate: () => selector.invalidate(),
+    handleInput: (data) => {
+      selector.handleInput(data);
+      tui.requestRender();
+    },
+  };
+});
+```
+
+Keys are the same in every picker: ↑↓ select (wrapping), pgup/pgdn page, enter or → choose, esc clears the search before it cancels, and ctrl+c always cancels. Options worth knowing:
+
+| Option | Effect |
+| --- | --- |
+| `layout: "two-line"` | Each description goes on the line under its label, for rows like sessions or runs. |
+| `mode: "multi"` | Checkboxes: space toggles, enter calls `onConfirm` with the checked rows. |
+| `numbered: true` | Rows are numbered; without a search box, digits choose a row directly. |
+| `onPreview` | Space previews the selected row; the hint shows `space preview`. |
+| `extraKeys` | Keys of your own, each with a hint and an `enabled(item)` check, so a key that does nothing for the selected row is not shown. |
+| `group` on items | Rows with the same group are listed under a section label (hidden while searching). |
+| `disabled` on items | Drawn dim and skipped by ↑↓. |
+
+Without a search box, `?` shows the picker's keys. `setNotice({ text, tone })` shows a one-line status, such as a refresh result, under the list.
+
+### Pattern 1b: Selection Dialog (SelectList)
+
+The lower-level `SelectList` from `@bastani/atomic-tui` is still available when you need a bare list inside your own layout, such as autocomplete rows. Frame it with `DynamicBorder`.
 
 ```typescript
 import type { ExtensionAPI } from "@bastani/atomic";
