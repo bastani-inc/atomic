@@ -214,6 +214,7 @@ export class CheckpointShipping {
 					await sleep(RELEASE_FLUSH_RETRY_MS * 2 ** (tries - 1));
 				}
 			}
+		if (this.attempts.get(workId) !== attempt) return;
 		this.attempts.delete(workId);
 		this.shard.release(workId);
 		this.syncOnly.delete(workId);

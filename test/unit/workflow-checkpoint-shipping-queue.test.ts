@@ -364,6 +364,38 @@ test("a delayed renewal cannot replace a newer attempt or discard its accepted c
 	assert.deepEqual(await recorded(), [1]);
 });
 
+test("releasing an old attempt cannot remove its replacement's accepted checkpoints while its shipment is pending (#4768)", async () => {
+	const { queue, lease, attempt, tool, recorded, work } = await claimedAttempt();
+	const delivering = Promise.withResolvers<void>();
+	const resume = Promise.withResolvers<void>();
+	const { shipping, shard } = await hostShipping(queue, lease, {
+		maxBatch: 10,
+		deliver: async (held, batch) => {
+			if (held.generation === attempt.generation) {
+				delivering.resolve();
+				await resume.promise;
+			}
+			await queue.shipBatch(lease, held, batch);
+		},
+	});
+	await shipping.hold(attempt, LEASE_MS);
+	await shipping.commit(attempt, { kind: "checkpoint", checkpoint: tool(1) }, noShared);
+	const releasing = shipping.release(attempt.id);
+	await delivering.promise;
+	await queue.releaseExited(lease, attempt);
+	const next = (await queue.claim(lease, "replacement", [work], LEASE_MS)) as PoolWork;
+	assert.equal(next.generation, attempt.generation + 1);
+	await shipping.hold(next, LEASE_MS);
+	await shipping.commit(next, { kind: "checkpoint", checkpoint: tool(2) }, noShared);
+	resume.resolve();
+	await releasing;
+	await shipping.flush(next);
+	assert.deepEqual(await recorded(), [2]);
+	assert.deepEqual(await shard.pending(next), []);
+	assert.equal(shipping.status().pending, 0);
+	assert.equal(shipping.lagging(), false);
+});
+
 /** One event of a batch, as a host seals it, for `checkpoint`. */
 function eventOf(localSeq: number, checkpoint: DurableToolCheckpoint) {
 	return {
