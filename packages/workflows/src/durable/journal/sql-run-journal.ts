@@ -35,6 +35,7 @@ import {
 	type JournalBatchAppend,
 	locksRows,
 	NON_SNAPSHOT_EVENT_TYPES,
+	nextReadBatch,
 	type RunSnapshotTail,
 	type RunVersion,
 	registerJournalKeyRangeRead,
@@ -112,10 +113,13 @@ function entryFromRow(row: EventRow): JournalEntry {
 }
 
 /**
- * One page of events: the rows of `pageRows`, a query of the events table that ends in `ORDER BY <order> LIMIT ?`,
- * cut after the row whose payload takes the page past {@link JOURNAL_READ_PAGE_CHARS}, so a page of large checkpoints
- * stays under a libSQL server's 10 MB response limit (#4954). One statement, as before; the first row always comes
- * back. `more` says whether rows may follow the page.
+ * One page of events: the rows of `pageRows`, a query of the events table that ends in `ORDER BY <order> LIMIT ?`
+ * and fetches the next `limit` of them, cut after the row whose payload takes the page past
+ * {@link JOURNAL_READ_PAGE_CHARS}, so a page of large checkpoints stays under a libSQL server's 10 MB response limit
+ * (#4954). One statement, as before; the first row always comes back. `more` says whether rows may follow the page,
+ * and `limit` how many rows the next page's statement fetches ({@link nextReadBatch}): the statement measures every
+ * row it fetches, and a fixed batch of {@link JOURNAL_READ_PAGE_SIZE} large events made each page of a few of them
+ * measure the payloads of up to 256.
  */
 async function readSizedPage(
 	database: SqliteDatabase,
@@ -124,7 +128,8 @@ async function readSizedPage(
 	pageRows: string,
 	order: string,
 	params: readonly SqliteValue[],
-): Promise<{ readonly page: JournalEntry[]; readonly more: boolean }> {
+	limit: number,
+): Promise<{ readonly page: JournalEntry[]; readonly more: boolean; readonly limit: number }> {
 	const rows = await database.all<EventRow & { fetched: number | bigint }>(
 		`SELECT *, (SELECT ${c.schemaVersion} FROM ${meta}) AS ${META_VERSION} FROM (
 			SELECT page.*, sum(length(page.${c.payload})) OVER (ORDER BY page.${order}) - length(page.${c.payload}) AS before_chars,
@@ -132,6 +137,7 @@ async function readSizedPage(
 			FROM (${pageRows}) AS page
 		) AS sized WHERE before_chars < ? ORDER BY ${order}`,
 		...params,
+		limit,
 		JOURNAL_READ_PAGE_CHARS,
 	);
 	const fetched = Number(rows[0]?.fetched ?? 0);
@@ -142,7 +148,8 @@ async function readSizedPage(
 	return {
 		// A payload stored in chunks has its stub's length in the page's size: its chunks are read one statement each.
 		page: (await withJournalPayloads(database, chunkTable, rows)).map(entryFromRow),
-		more: rows.length > 0 && (rows.length < fetched || fetched === JOURNAL_READ_PAGE_SIZE),
+		more: rows.length > 0 && (rows.length < fetched || fetched === limit),
+		limit: nextReadBatch(limit, fetched, rows.length, JOURNAL_READ_PAGE_SIZE),
 	};
 }
 
@@ -1149,13 +1156,14 @@ export class SqlRunJournal implements RunJournal {
 		this.assertOpen();
 		validateText("runId", runId);
 		let nextSeq = fromSeq;
+		let limit = JOURNAL_READ_PAGE_SIZE;
 		const legacy = this.legacy;
 		const readsLegacy = legacy !== undefined && (await this.operation(() => this.isUnconvertedLegacyRun(runId)));
 		for (;;) {
-			const { page, more } = await this.operation(async () => {
+			const { page, more, ...next } = await this.operation(async () => {
 				if (readsLegacy) {
 					const rows = (await legacy.events(this.database, runId, nextSeq, JOURNAL_READ_PAGE_SIZE)) as EventRow[];
-					return { page: rows.map(entryFromRow), more: rows.length === JOURNAL_READ_PAGE_SIZE };
+					return { page: rows.map(entryFromRow), more: rows.length === JOURNAL_READ_PAGE_SIZE, limit };
 				}
 				return readSizedPage(
 					this.database,
@@ -1163,7 +1171,8 @@ export class SqlRunJournal implements RunJournal {
 					this.tables.meta,
 					`SELECT * FROM ${this.tables.events} WHERE ${c.runId} = ? AND ${c.seq} >= ? ORDER BY ${c.seq} LIMIT ?`,
 					c.seq,
-					[runId, nextSeq, JOURNAL_READ_PAGE_SIZE],
+					[runId, nextSeq],
+					limit,
 				);
 			});
 			for (const entry of page) {
@@ -1174,6 +1183,7 @@ export class SqlRunJournal implements RunJournal {
 			const last = page.at(-1);
 			if (last === undefined || !more) return;
 			nextSeq = last.seq + 1;
+			limit = next.limit;
 		}
 	}
 
@@ -1220,15 +1230,17 @@ export class SqlRunJournal implements RunJournal {
 			return;
 		}
 		let after: string | undefined;
+		let limit = JOURNAL_READ_PAGE_SIZE;
 		for (;;) {
-			const { page, more } = await journal.operation(async () => {
+			const { page, more, ...next } = await journal.operation(async () => {
 				return readSizedPage(
 					journal.database,
 					journal.tables.eventChunks,
 					journal.tables.meta,
 					`SELECT * FROM ${journal.tables.events} WHERE ${c.runId} = ? AND ${c.key} ${after === undefined ? ">=" : ">"} ? AND ${c.key} < ? ORDER BY ${c.key} LIMIT ?`,
 					c.key,
-					[runId, after ?? fromKey, toKey, JOURNAL_READ_PAGE_SIZE],
+					[runId, after ?? fromKey, toKey],
+					limit,
 				);
 			});
 			for (const entry of page) {
@@ -1239,6 +1251,7 @@ export class SqlRunJournal implements RunJournal {
 			const last = page.at(-1);
 			if (last === undefined || !more) return;
 			after = last.key;
+			limit = next.limit;
 		}
 	}
 

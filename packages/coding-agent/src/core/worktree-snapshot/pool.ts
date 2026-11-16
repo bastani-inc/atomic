@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { link, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { link, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { failureDebugFields, reportDebug } from "../debug.ts";
+import { renameWithRetry } from "../rename-retry.ts";
 import { isWorkspaceRestoreError } from "./errors.ts";
 import { nulFields, runGit } from "./git.ts";
 import { canonicalizeWorktreePath } from "./paths.ts";
@@ -260,7 +261,7 @@ async function withSlotLock<T>(file: string, wait: boolean, action: (lock: SlotL
 	let named = false;
 	try {
 		await writeFile(`${lockTokenFile(file)}.${ownLease()}.tmp`, token, { mode: 0o600 });
-		await rename(`${lockTokenFile(file)}.${ownLease()}.tmp`, lockTokenFile(file));
+		await renameWithRetry(`${lockTokenFile(file)}.${ownLease()}.tmp`, lockTokenFile(file));
 		named = true;
 	} catch (error) {
 		reportDebug("storage", "worktree-pool-lock-token-failed", { file, ...failureDebugFields(error) });
@@ -285,7 +286,7 @@ async function withSlotLock<T>(file: string, wait: boolean, action: (lock: SlotL
 async function takeRecord(file: string, expected: PoolSlotRecord): Promise<string | undefined> {
 	const taken = `${file}.${ownLease()}.taken`;
 	try {
-		await rename(file, taken);
+		await renameWithRetry(file, taken);
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
 		throw error;
@@ -426,7 +427,7 @@ async function stillHolds(file: string, storeDir: string, held: HeldSlot): Promi
 async function writeRecord(file: string, record: PoolSlotRecord): Promise<void> {
 	const temporary = `${file}.${ownLease()}.tmp`;
 	await writeFile(temporary, JSON.stringify(record), { mode: 0o600 });
-	await rename(temporary, file);
+	await renameWithRetry(temporary, file);
 }
 
 function isOwner(value: unknown): value is PoolOwner {
@@ -856,13 +857,13 @@ async function removeSlot(
 	}
 	const removed = store === undefined ? undefined : `${current.path}.removed-${randomUUID().slice(0, 8)}`;
 	try {
-		if (removed !== undefined) await rename(current.path, removed);
+		if (removed !== undefined) await renameWithRetry(current.path, removed);
 	} catch (error) {
 		await giveBackRecord(file, taken);
 		throw error;
 	}
 	if ((await exists(file)) || !(await lock.held())) {
-		if (removed !== undefined) await rename(removed, current.path);
+		if (removed !== undefined) await renameWithRetry(removed, current.path);
 		await giveBackRecord(file, taken);
 		return false;
 	}
