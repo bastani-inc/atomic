@@ -37,6 +37,7 @@ import type { GraphTheme } from "./graph-theme.js";
 import { renderCompactBandHeader } from "./header.js";
 import type { InlineFormState } from "./inline-form-store.js";
 import { computeInvalid, invalidForField } from "./inputs-picker.js";
+import { parseBooleanInput } from "./inputs-picker-types.js";
 import { renderAskChoiceRows, renderSubmitControls } from "./submit-pane.js";
 import { truncateToWidth, visibleWidth, wrapPlainText } from "./text-helpers.js";
 
@@ -195,21 +196,19 @@ function renderAskStyleFieldBody(
 	}
 
 	if (field.type === "boolean") {
-		const normalized = raw.trim().toLowerCase();
-		const hasValue = normalized.length > 0;
-		const on = normalized === "true" || normalized === "1";
+		const parsed = parseBooleanInput(raw);
 		return [
 			...renderAskChoiceRows(
 				1,
-				focused || !hasValue || !on ? "on" : "✓ on",
-				focused && hasValue && on,
+				focused || parsed !== true ? "on" : "✓ on",
+				focused && parsed === true,
 				theme,
 				width,
 			),
 			...renderAskChoiceRows(
 				2,
-				focused || !hasValue || on ? "off" : "✓ off",
-				focused && hasValue && !on,
+				focused || parsed !== false ? "off" : "✓ off",
+				focused && parsed === false,
 				theme,
 				width,
 			),

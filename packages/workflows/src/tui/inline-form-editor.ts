@@ -48,6 +48,7 @@ import type { GraphTheme } from "./graph-theme.js";
 import type { InlineFormState } from "./inline-form-store.js";
 import { getForm, touch } from "./inline-form-store.js";
 import { computeInvalid } from "./inputs-picker.js";
+import { parseBooleanInput } from "./inputs-picker-types.js";
 import {
 	deleteRange,
 	isKeybindingsLike,
@@ -344,7 +345,7 @@ export class InlineFormEditor implements PiEditorComponent {
 			matchesAction(this.kb, data, TUI_ACTION.editorCursorLeft) ||
 			matchesAction(this.kb, data, TUI_ACTION.editorCursorRight)
 		) {
-			state.rawText[field.name] = state.rawText[field.name] === "true" ? "false" : "true";
+			state.rawText[field.name] = parseBooleanInput(state.rawText[field.name] ?? "") === true ? "false" : "true";
 			return true;
 		}
 		if (

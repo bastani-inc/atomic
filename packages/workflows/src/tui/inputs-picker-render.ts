@@ -4,7 +4,7 @@ import type { GraphTheme } from "./graph-theme.js";
 import { renderCompactBandHeader } from "./header.js";
 import { clampGraphemeOffset, headToWidth, layoutEditableText, tailToWidth } from "./inputs-picker-editing.js";
 import type { InputsPickerRenderOpts, InputsPickerState } from "./inputs-picker-types.js";
-import { computeInvalid, invalidForField } from "./inputs-picker-types.js";
+import { computeInvalid, invalidForField, parseBooleanInput } from "./inputs-picker-types.js";
 import { renderAskChoiceRows, renderSubmitControls } from "./submit-pane.js";
 import { graphemes, truncateToWidth, visibleWidth, wrapPlainText } from "./text-helpers.js";
 
@@ -141,21 +141,19 @@ function renderAskStyleInputBody(
 	}
 
 	if (field.type === "boolean") {
-		const normalized = raw.trim().toLowerCase();
-		const hasValue = normalized.length > 0;
-		const on = normalized === "true" || normalized === "1";
+		const parsed = parseBooleanInput(raw);
 		return [
 			...renderAskChoiceRows(
 				1,
-				focused || !hasValue || !on ? "on" : "✓ on",
-				focused && hasValue && on,
+				focused || parsed !== true ? "on" : "✓ on",
+				focused && parsed === true,
 				theme,
 				width,
 			),
 			...renderAskChoiceRows(
 				2,
-				focused || !hasValue || on ? "off" : "✓ off",
-				focused && hasValue && !on,
+				focused || parsed !== false ? "off" : "✓ off",
+				focused && parsed === false,
 				theme,
 				width,
 			),

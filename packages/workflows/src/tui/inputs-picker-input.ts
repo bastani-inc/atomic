@@ -11,6 +11,7 @@ import {
 	computeInvalid,
 	type InputsPickerAction,
 	type InputsPickerState,
+	parseBooleanInput,
 } from "./inputs-picker-types.js";
 import {
 	deleteRange,
@@ -292,7 +293,7 @@ function handleBooleanKey(
 		matchesAction(kb, key, TUI_ACTION.editorCursorLeft) ||
 		matchesAction(kb, key, TUI_ACTION.editorCursorRight)
 	) {
-		state.rawText[field.name] = state.rawText[field.name] === "true" ? "false" : "true";
+		state.rawText[field.name] = parseBooleanInput(state.rawText[field.name] ?? "") === true ? "false" : "true";
 		return { kind: "noop" };
 	}
 	if (matchesAction(kb, key, TUI_ACTION.selectConfirm) || matchesAction(kb, key, TUI_ACTION.inputSubmit)) {

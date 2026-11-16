@@ -10,9 +10,11 @@
  */
 
 import { Selector, type SelectorItem } from "@bastani/atomic";
+import { getKeybindings } from "@bastani/atomic-tui";
 import type { PiCustomComponent, PiCustomOverlayFactoryTui, PiCustomOverlayFunction } from "../extension/wiring.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import type { RunSnapshot } from "../shared/store-types.js";
+import { elapsedRunMs } from "../shared/timing.js";
 import type { WorkflowInputSchemaMap } from "../shared/types.js";
 import { panelItemsFromSnapshot } from "./panel-runs.js";
 import { summarizeFailureText } from "./run-outcome.js";
@@ -126,12 +128,6 @@ export function shortFailureReason(run: Pick<RunSnapshot, "error" | "exitReason"
 	return clean.length > 60 ? `${clean.slice(0, 59)}…` : clean || undefined;
 }
 
-function runElapsedMs(run: RunSnapshot, now: number): number {
-	if (run.durationMs !== undefined) return run.durationMs;
-	const end = run.endedAt ?? now;
-	return (run.accumulatedDurationMs ?? 0) + Math.max(0, end - run.startedAt - (run.pausedDurationMs ?? 0));
-}
-
 /** `stage 3/5 implement`: the stage a run is on (or stopped at), counting stages that have settled. */
 export function runStageText(run: RunSnapshot): string | undefined {
 	const total = run.stages.length;
@@ -163,7 +159,7 @@ export function runRowLabel(run: RunSnapshot): string {
  */
 export function runRowDescription(run: RunSnapshot, now: number, question?: string): string {
 	if (question !== undefined)
-		return ["needs input", question, listingDuration(runElapsedMs(run, now)), runCostText(run)]
+		return ["needs input", question, listingDuration(elapsedRunMs(run, now)), runCostText(run)]
 			.filter((part): part is string => part !== undefined && part !== "")
 			.join(" · ");
 	const status = RUN_STATUS_TEXT[run.status];
@@ -173,7 +169,7 @@ export function runRowDescription(run: RunSnapshot, now: number, question?: stri
 		status,
 		runStageText(run),
 		live || run.endedAt === undefined ? undefined : listingAgo(now - run.endedAt),
-		listingDuration(runElapsedMs(run, now)),
+		listingDuration(elapsedRunMs(run, now)),
 		runCostText(run),
 		reason ? `✗ ${reason}` : undefined,
 	];
@@ -296,6 +292,13 @@ export function openWorkflowsListing(
 		}
 		let settled = false;
 		let release: (() => void) | undefined;
+		const settle = (target: WorkflowsListingTarget | undefined): boolean => {
+			if (settled) return false;
+			settled = true;
+			release?.();
+			resolve(target);
+			return true;
+		};
 		const factory = (
 			tui: PiCustomOverlayFactoryTui,
 			_theme: unknown,
@@ -303,11 +306,7 @@ export function openWorkflowsListing(
 			done: (r: undefined) => void,
 		): PiCustomComponent => {
 			const finish = (target: WorkflowsListingTarget | undefined): void => {
-				if (settled) return;
-				settled = true;
-				release?.();
-				done(undefined);
-				resolve(target);
+				if (settle(target)) done(undefined);
 			};
 			const items = () =>
 				workflowsListingItems(source.runs(), source.definitions(), Date.now(), source.invalidDefinitions?.() ?? []);
@@ -323,17 +322,31 @@ export function openWorkflowsListing(
 				onSelect: (item) => finish(item.value),
 				onCancel: () => finish(undefined),
 			});
+			let paintedSelectionId: string | undefined;
+			let itemsStale = false;
+			const refreshItems = (): void => {
+				if (!itemsStale) return;
+				itemsStale = false;
+				selector.setItems(items());
+			};
 			release = source.subscribe?.(() => {
-				const updatable = selector as {
-					setItems?: (next: readonly SelectorItem<WorkflowsListingTarget>[]) => void;
-				};
-				updatable.setItems?.(items());
+				itemsStale = true;
 				tui.requestRender?.();
 			});
 			return {
-				render: (width: number) => selector.render(width),
+				render: (width: number) => {
+					refreshItems();
+					const lines = selector.render(width);
+					paintedSelectionId = selector.getSelected()?.id;
+					return lines;
+				},
 				handleInput: (data: string) => {
-					selector.handleInput(data);
+					refreshItems();
+					const keys = getKeybindings();
+					const confirms =
+						keys.matches(data, "tui.select.confirm") ||
+						(keys.matches(data, "app.list.open") && !selector.state.getQuery());
+					if (!confirms || selector.getSelected()?.id === paintedSelectionId) selector.handleInput(data);
 					tui.requestRender?.();
 					return true;
 				},
@@ -341,6 +354,15 @@ export function openWorkflowsListing(
 				dispose: () => finish(undefined),
 			};
 		};
-		void custom(factory as Parameters<PiCustomOverlayFunction>[0], { overlay: false });
+		try {
+			void Promise.resolve(
+				custom(factory as Parameters<PiCustomOverlayFunction>[0], { overlay: false, purpose: "navigation" }),
+			).then(
+				() => settle(undefined),
+				() => settle(undefined),
+			);
+		} catch {
+			settle(undefined);
+		}
 	});
 }

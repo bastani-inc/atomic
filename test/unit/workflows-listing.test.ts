@@ -1,14 +1,27 @@
 import assert from "node:assert/strict";
-import { test } from "vitest";
+import { stripVTControlCharacters } from "node:util";
+import { getKeybindings, setKeybindings } from "@bastani/atomic-tui";
+import { afterEach, beforeEach, test } from "vitest";
+import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
+import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
+import type { PiCustomComponent } from "../../packages/workflows/src/extension/wiring.js";
 import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import type { WorkflowInputSchemaMap } from "../../packages/workflows/src/shared/types.js";
 import {
 	inputsSummary,
+	openWorkflowsListing,
 	runRowDescription,
 	shortFailureReason,
 	type WorkflowsListingDefinition,
 	workflowsListingItems,
 } from "../../packages/workflows/src/tui/workflows-listing.js";
+
+let previousKeys: ReturnType<typeof getKeybindings>;
+beforeEach(() => {
+	previousKeys = getKeybindings();
+	setKeybindings(new KeybindingsManager());
+});
+afterEach(() => setKeybindings(previousKeys));
 
 const NOW = 10_000_000;
 
@@ -140,4 +153,301 @@ test("runs of one workflow are told apart by their first input, and a run waitin
 	assert.equal(second?.label, "approve-demo · rename a file");
 	assert.match(second?.description ?? "", /^needs input · Approve this plan\? · /);
 	assert.equal(second?.tag, "◆");
+});
+
+test("an open workflows sheet refreshes runs without losing its search or selection (#5245)", async () => {
+	initTheme("dark");
+	let runs = [
+		run({ id: "first", status: "running", startedAt: NOW }),
+		run({ id: "selected", status: "running", startedAt: NOW - 1 }),
+	];
+	let notify = () => {};
+	let released = 0;
+	let reads = 0;
+	let mounted: Promise<PiCustomComponent> | undefined;
+	const pending = openWorkflowsListing(
+		{
+			custom: (factory) =>
+				new Promise<undefined>((resolve) => {
+					mounted = Promise.resolve(
+						factory({ requestRender() {} }, undefined, undefined, () => resolve(undefined)),
+					);
+				}),
+		},
+		{
+			runs: () => {
+				reads++;
+				return runs;
+			},
+			definitions: () => [],
+			subscribe: (listener) => {
+				notify = listener;
+				return () => released++;
+			},
+		},
+	);
+	assert.ok(mounted);
+	const component = await mounted;
+	try {
+		for (const key of "ralph") component.handleInput?.(key);
+		component.handleInput?.("\x1b[B");
+		runs = [
+			run({ id: "new", status: "running", startedAt: NOW + 1 }),
+			runs[0]!,
+			{ ...runs[1]!, status: "failed", error: "gate refused", endedAt: NOW },
+		];
+		notify();
+		notify();
+		notify();
+		assert.equal(reads, 1, "store events defer the snapshot read until rendering");
+		const text = stripVTControlCharacters(component.render(160).join("\n"));
+		component.render(160);
+		assert.equal(reads, 2, "one snapshot read per changed frame, not per event or unchanged render");
+		assert.match(text, /gate refused/);
+		assert.match(text, /ralph · new/);
+		assert.match(text, /❯ ralph · selected/);
+		assert.doesNotMatch(text, / {2}Runs\n/);
+		component.handleInput?.("\r");
+		assert.deepEqual(await pending, { kind: "run", runId: "selected" });
+		assert.equal(released, 1);
+	} finally {
+		component.dispose?.();
+	}
+});
+
+test("/workflows excludes active pauses and clamps recorded elapsed time (#5245/#5224)", () => {
+	const paused = run({
+		id: "paused",
+		status: "paused",
+		startedAt: NOW - 70 * 60_000,
+		pausedAt: NOW - 60 * 60_000,
+		stages: stages(["completed"]),
+	});
+	assert.equal(runRowDescription(paused, NOW), "paused · stage 1/1 · 10m");
+	assert.equal(runRowDescription(paused, NOW + 60 * 60_000), "paused · stage 1/1 · 10m");
+	assert.equal(runRowDescription({ ...paused, durationMs: -1 }, NOW), "paused · stage 1/1 · 0s");
+});
+
+async function liveListing(initialRuns: RunSnapshot[], definitions: WorkflowsListingDefinition[] = []) {
+	initTheme("dark");
+	let runs = initialRuns;
+	let notify = () => {};
+	let closeCalls = 0;
+	let rendersRequested = 0;
+	let releases = 0;
+	let mounted: Promise<PiCustomComponent> | undefined;
+	const result = openWorkflowsListing(
+		{
+			custom: (factory) =>
+				new Promise<undefined>((resolve) => {
+					mounted = Promise.resolve(
+						factory({ requestRender: () => rendersRequested++ }, undefined, undefined, () => {
+							closeCalls++;
+							resolve(undefined);
+						}),
+					);
+				}),
+		},
+		{
+			runs: () => runs,
+			definitions: () => definitions,
+			subscribe: (listener) => {
+				notify = listener;
+				return () => releases++;
+			},
+		},
+	);
+	assert.ok(mounted);
+	return {
+		component: await mounted,
+		result,
+		update(next: RunSnapshot[]) {
+			runs = next;
+			notify();
+		},
+		get closeCalls() {
+			return closeCalls;
+		},
+		get rendersRequested() {
+			return rendersRequested;
+		},
+		get releases() {
+			return releases;
+		},
+	};
+}
+
+for (const key of ["\r", "\x1b[C"]) {
+	test(`/workflows paints a replacement before confirming it with ${JSON.stringify(key)} (#5245/#5224)`, async () => {
+		const fixture = await liveListing(
+			[
+				run({ id: "bbbbbbbb", status: "running", startedAt: NOW }),
+				run({ id: "aaaaaaaa", status: "running", startedAt: NOW - 1 }),
+			],
+			[definition("deploy", "Deploy without inputs")],
+		);
+		try {
+			assert.match(stripVTControlCharacters(fixture.component.render(120).join("\n")), /❯ ralph · bbbbbbbb/);
+			fixture.update([]);
+			fixture.component.handleInput?.(key);
+			fixture.component.handleInput?.(key);
+			assert.equal(fixture.closeCalls, 0, "neither key may start an unseen definition");
+			assert.ok(fixture.rendersRequested > 0);
+			assert.match(stripVTControlCharacters(fixture.component.render(120).join("\n")), /❯ deploy/);
+			fixture.component.handleInput?.(key);
+			assert.deepEqual(await fixture.result, { kind: "definition", name: "deploy" });
+			assert.equal(fixture.releases, 1);
+		} finally {
+			fixture.component.dispose?.();
+		}
+	});
+}
+
+test("/workflows does not confirm a search replacement before painting, even after cursor input (#5245/#5224)", async () => {
+	const selected = run({ id: "bbbbbbbb", status: "running", startedAt: NOW });
+	const other = run({ id: "aaaaaaaa", status: "running", startedAt: NOW - 1 });
+	const fixture = await liveListing([selected, other]);
+	try {
+		for (const key of "running") fixture.component.handleInput?.(key);
+		assert.match(stripVTControlCharacters(fixture.component.render(120).join("\n")), /❯ ralph · bbbbbbbb/);
+		fixture.update([{ ...selected, status: "completed", endedAt: NOW }, other]);
+		fixture.component.handleInput?.("\x1b[C");
+		assert.equal(fixture.closeCalls, 0, "right arrow edits the search instead of confirming");
+		fixture.component.handleInput?.("\r");
+		assert.equal(fixture.closeCalls, 0, "the preceding cursor key must not hide an unpainted refresh");
+		assert.match(stripVTControlCharacters(fixture.component.render(120).join("\n")), /❯ ralph · aaaaaaaa/);
+		fixture.component.handleInput?.("\r");
+		assert.deepEqual(await fixture.result, { kind: "run", runId: "aaaaaaaa" });
+	} finally {
+		fixture.component.dispose?.();
+	}
+});
+
+test("/workflows still confirms the painted row when other runs change (#5245/#5224)", async () => {
+	const selected = run({ id: "selected", status: "running" });
+	const fixture = await liveListing([selected]);
+	try {
+		fixture.component.render(120);
+		fixture.update([run({ id: "new", status: "running", startedAt: NOW + 1 }), selected]);
+		fixture.component.handleInput?.("\r");
+		assert.deepEqual(await fixture.result, { kind: "run", runId: "selected" });
+	} finally {
+		fixture.component.dispose?.();
+	}
+});
+
+test("/workflows settles when a custom UI host resolves without mounting (#5245/#5224)", async () => {
+	let settled = false;
+	let factoryCalled = false;
+	const pending = openWorkflowsListing(
+		{ custom: async () => undefined },
+		{
+			runs: () => {
+				factoryCalled = true;
+				return [];
+			},
+			definitions: () => [],
+		},
+	);
+	void pending.then(() => {
+		settled = true;
+	});
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	assert.equal(factoryCalled, false);
+	assert.equal(settled, true);
+	assert.equal(await pending, undefined);
+});
+
+test("/workflows mounts as navigation rather than an approval prompt (#5245/#5224)", async () => {
+	let purpose: string | undefined;
+	const pending = openWorkflowsListing(
+		{
+			custom: async (_factory, options) => {
+				purpose = options.purpose;
+			},
+		},
+		{ runs: () => [], definitions: () => [] },
+	);
+	assert.equal(purpose, "navigation");
+	assert.equal(await pending, undefined);
+});
+
+for (const mode of ["reject", "throw"] as const) {
+	test(`/workflows settles when its custom UI host fails before mounting with ${mode} (#5245/#5224)`, async () => {
+		const failure = new Error("host unavailable");
+		const pending = openWorkflowsListing(
+			{
+				custom: () => {
+					if (mode === "throw") throw failure;
+					return Promise.reject(failure);
+				},
+			},
+			{ runs: () => [], definitions: () => [] },
+		);
+		let settled = false;
+		void pending.then(() => {
+			settled = true;
+		});
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.equal(settled, true);
+		assert.equal(await pending, undefined);
+	});
+}
+
+for (const mode of ["resolve", "reject"] as const) {
+	test(`/workflows releases its subscription when the mounted host later ${mode}s (#5245/#5224)`, async () => {
+		initTheme("dark");
+		let mounted: PiCustomComponent | undefined;
+		let releases = 0;
+		const pending = openWorkflowsListing(
+			{
+				custom: async (factory) => {
+					mounted = await factory({ requestRender() {} }, undefined, undefined, () => {});
+					if (mode === "reject") throw new Error("mount aborted");
+				},
+			},
+			{ runs: () => [], definitions: () => [], subscribe: () => () => releases++ },
+		);
+		let settled = false;
+		void pending.then(() => {
+			settled = true;
+		});
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.equal(settled, true);
+		assert.equal(await pending, undefined);
+		assert.equal(releases, 1);
+		assert.ok(mounted);
+		mounted.dispose?.();
+		assert.equal(releases, 1);
+	});
+}
+
+test("/workflows keeps its chosen row when done synchronously disposes the mount (#5245/#5224)", async () => {
+	initTheme("dark");
+	let mounted: PiCustomComponent | undefined;
+	let closed = 0;
+	let releases = 0;
+	const pending = openWorkflowsListing(
+		{
+			custom: (factory) =>
+				new Promise<undefined>((resolve) => {
+					mounted = factory({ requestRender() {} }, undefined, undefined, () => {
+						closed++;
+						mounted?.dispose?.();
+						resolve(undefined);
+					}) as PiCustomComponent;
+				}),
+		},
+		{
+			runs: () => [run({ id: "chosen", status: "running" })],
+			definitions: () => [],
+			subscribe: () => () => releases++,
+		},
+	);
+	assert.ok(mounted);
+	mounted.render(120);
+	mounted.handleInput?.("\r");
+	assert.deepEqual(await pending, { kind: "run", runId: "chosen" });
+	assert.equal(closed, 1);
+	assert.equal(releases, 1);
 });

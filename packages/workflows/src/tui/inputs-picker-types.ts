@@ -96,8 +96,8 @@ export function coerceValues(fields: readonly WorkflowInputEntry[], raw: Record<
 				break;
 			}
 			case "boolean": {
-				const text = v.trim().toLowerCase();
-				out[f.name] = text === "true" || text === "1" || text === "on";
+				const parsed = parseBooleanInput(v);
+				if (parsed !== undefined) out[f.name] = parsed;
 				break;
 			}
 			case "select":
@@ -139,14 +139,18 @@ export function invalidForField(field: WorkflowInputEntry, value: string, _idx: 
 	}
 	if (empty) return null;
 	if (field.type === "select" && field.choices && !field.choices.includes(value)) return "not in choices";
-	if (field.type === "boolean" && !BOOLEAN_TEXT.has(value.trim().toLowerCase())) return "must be on or off";
+	if (field.type === "boolean" && parseBooleanInput(value) === undefined) return "must be on or off";
 	if (field.type === "integer" && !Number.isInteger(Number(value))) return "must be a whole number";
 	if (field.type === "number" && !Number.isFinite(Number(value))) return "must be a number";
 	return null;
 }
 
-/** What a boolean input accepts, typed or passed as `key=value`; anything else is refused, never read as off. */
-const BOOLEAN_TEXT = new Set(["true", "false", "1", "0", "on", "off"]);
+export function parseBooleanInput(value: string): boolean | undefined {
+	const text = value.trim().toLowerCase();
+	if (text === "true" || text === "1" || text === "on") return true;
+	if (text === "false" || text === "0" || text === "off") return false;
+	return undefined;
+}
 
 export function computeInvalid(fields: readonly WorkflowInputEntry[], raw: Record<string, string>): number[] {
 	const out: number[] = [];

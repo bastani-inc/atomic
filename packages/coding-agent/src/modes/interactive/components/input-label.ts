@@ -127,6 +127,22 @@ export interface AttachedComposerStyle {
 const HEAVY_RULE = "━";
 const PROMPT_GLYPH = "❯";
 
+function stripApplicationCommands(line: string): string {
+	const parts: string[] = [];
+	let copiedUntil = 0;
+	let start = line.indexOf("\x1b_");
+	while (start !== -1) {
+		const end = line.indexOf("\x07", start + 2);
+		if (end === -1) break;
+		parts.push(line.slice(copiedUntil, start));
+		copiedUntil = end + 1;
+		start = line.indexOf("\x1b_", copiedUntil);
+	}
+	if (copiedUntil === 0) return line;
+	parts.push(line.slice(copiedUntil));
+	return parts.join("");
+}
+
 /**
  * The composer of a chat attached to a subagent or a workflow stage, so it never reads as the main chat's: heavy accent
  * rules above and below the prompt, the top one ending in `label` (`debugger · #5220 spawn lock · 18m`), and, while
@@ -188,11 +204,11 @@ export function applyAttachedComposer(
 	if (placeholder !== undefined && bottomIndex === 2) {
 		const line = lines[1]!;
 		// The cursor and focus markers are application commands, not text.
-		const plain = stripAnsi(line.replace(/\x1b_[^\x07]*\x07/g, "")).trimEnd();
+		const plain = stripAnsi(stripApplicationCommands(line)).trimEnd();
 		if (plain === PROMPT_GLYPH || plain === `${PROMPT_GLYPH} `) {
 			const room = Math.max(0, width - visibleWidth(stripAnsi(line).trimEnd()) - 2);
 			const text = truncateToWidth(placeholder, room, "…");
-			const trimmed = line.replace(/ +(\x1b\[[0-9;]*m)*$/, "$1");
+			const trimmed = line.replace(/(?<! ) +(\x1b\[[0-9;]*m)*$/, "$1");
 			lines[1] = `${trimmed} ${style.dim(text)}`;
 		}
 	}
