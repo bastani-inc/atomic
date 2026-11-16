@@ -3,6 +3,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { bunExecutable } from "./runtime.js";
 
 const PROCESS_START_TOKEN_MODULE = fileURLToPath(
 	new URL("../../packages/coding-agent/src/core/process-start-token.ts", import.meta.url),
@@ -11,7 +12,7 @@ const PAST_ITS_START_TICK_MS = 50;
 
 export function exitedProcess(): { readonly pid: number; readonly started?: string } {
 	const exited = spawnSync(
-		"bun",
+		bunExecutable(),
 		[
 			"--eval",
 			`const { processStartToken } = await import(${JSON.stringify(PROCESS_START_TOKEN_MODULE)});
