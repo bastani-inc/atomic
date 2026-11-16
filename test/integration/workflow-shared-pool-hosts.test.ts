@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { openNodeSqliteDatabase } from "@bastani/atomic";
 import { test } from "vitest";
 import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
 import { REMOTE_QUESTION } from "../fixtures/shared-pool-child.js";
@@ -121,9 +122,14 @@ async function stopHost(host: BudgetedProcess): Promise<void> {
 
 /**
  * Two hosts run a fan-out on one shared journal, host A dies mid-run, and the root resumes on host B. `extra` is the
- * environment of every process: the root's checkpoint shipping, when set (#4768).
+ * environment of every process: the root's checkpoint shipping, when set (#4768). `midRun` runs while children of both
+ * hosts hold their sessions, before host A dies.
  */
-async function runsFanOutThroughHostDeath(label: string, extra: Record<string, string> = {}): Promise<Scenario> {
+async function runsFanOutThroughHostDeath(
+	label: string,
+	extra: Record<string, string> = {},
+	midRun?: (s: Scenario) => Promise<void>,
+): Promise<Scenario> {
 	const s = scenario(label, FANOUT_BUDGET.waitMs);
 
 	let hostB: BudgetedProcess | undefined;
@@ -168,6 +174,7 @@ async function runsFanOutThroughHostDeath(label: string, extra: Record<string, s
 		assert.ok(holdersOfBothHosts, "workers of both hosts asked the shared admission for sessions");
 		const arrived = new Set(markers(s.directory, "arrived-").map((name) => name.split("-")[1]));
 		assert.deepEqual([...arrived].sort(), ["A", "B"], "the fan-out ran children on both hosts");
+		await midRun?.(s);
 
 		// Host A dies: its root, coordinator and worker are killed together, mid-run.
 		process.kill(-rootA.process.pid!, "SIGKILL");
@@ -269,19 +276,53 @@ test.skipIf(process.platform === "win32")(
 	FANOUT_BUDGET.timeoutMs,
 );
 
+/** Host B's local checkpoint journal for the root: the attempts whose checkpoints it shipped so far, while it exists. */
+async function shippedFromLocalJournal(ship: string): Promise<{ work: string; generation: number }[]> {
+	const shards = existsSync(ship)
+		? readdirSync(ship, { recursive: true, encoding: "utf8" }).filter((name) => name.endsWith(".sqlite"))
+		: [];
+	assert.equal(shards.length, 1, "host B keeps one local checkpoint journal for the root while it runs");
+	const local = await openNodeSqliteDatabase(join(ship, shards[0]!), { readOnly: true });
+	try {
+		const rows = await local.all(
+			"SELECT work, generation FROM ship_cursor WHERE fenced = 0 AND shipped_local_seq > 0 ORDER BY work, generation",
+		);
+		return rows.map((row) => ({ work: String(row.work), generation: Number(row.generation) }));
+	} finally {
+		await local.close();
+	}
+}
+
 test.skipIf(process.platform === "win32")(
 	"the fan-out through a host's death runs the same with checkpoint shipping, and the surviving host shipped what it accepted (#4768)",
 	async () => {
-		const s = await runsFanOutThroughHostDeath("shared-pool-shipping", {
-			SHARED_POOL_CHECKPOINT_SHIPPING: JSON.stringify({ intervalMs: 100 }),
-		});
+		let shipped: { work: string; generation: number }[] = [];
+		const s = await runsFanOutThroughHostDeath(
+			"shared-pool-shipping",
+			{ SHARED_POOL_CHECKPOINT_SHIPPING: JSON.stringify({ intervalMs: 100 }) },
+			async (running) => {
+				shipped = await shippedFromLocalJournal(join(running.directory, "B", "workflows", "pool", "ship"));
+			},
+		);
 		try {
+			assert.ok(shipped.length > 0, "host B shipped the checkpoints it accepted through its local journal");
+			for (const { work, generation } of shipped) {
+				const recorded = await s.query(
+					`SELECT e.key FROM ${PREFIX}wf_runs_pool_operations o JOIN ${PREFIX}wf_events e ON e.run_id = ? AND e.seq = json_extract(o.receipt, '$.seq') WHERE o.work = ? AND o.generation = ?`,
+					s.root,
+					work,
+					generation,
+				);
+				assert.ok(
+					recorded.length > 0,
+					`the checkpoints host B shipped for ${work} generation ${generation} are in the shared journal`,
+				);
+			}
 			const ship = join(s.directory, "B", "workflows", "pool", "ship");
-			assert.ok(existsSync(ship), "host B kept its children's checkpoints in a local journal");
 			assert.deepEqual(
 				readdirSync(ship, { recursive: true, encoding: "utf8" }).filter((name) => name.endsWith(".sqlite")),
 				[],
-				"host B shipped what it accepted and removed the root's local journal once the run ended",
+				"host B removed the root's local journal once the run ended",
 			);
 		} finally {
 			removeTempDirectory(s.directory);
