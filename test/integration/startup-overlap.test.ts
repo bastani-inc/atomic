@@ -51,6 +51,10 @@ test(
 	"an interactive start paints without waiting for its engine, and a prompt typed at launch reaches the provider once, with the tools an RPC start sends",
 	async () => {
 		const root = mkdtempSync(join(tmpdir(), "atomic-startup-overlap-"));
+		// The native PTY starts Atomic with this process's environment underneath the sample's: the test runner's own
+		// Atomic variables must not reach it, and on Windows the command line cannot unset them.
+		const runnerVariables = Object.entries(process.env).filter(([name]) => /^(?:ATOMIC|PI)_/i.test(name));
+		for (const [name] of runnerVariables) delete process.env[name];
 		try {
 			const extension = join(root, "probe-extension.mjs");
 			writeFileSync(
@@ -123,6 +127,7 @@ if (process.argv.some((arg) => arg === "--internal-engine-prewarm" || arg === "-
 				`the host painted after its engine started: ${JSON.stringify(trace)}`,
 			);
 		} finally {
+			for (const [name, value] of runnerVariables) process.env[name] = value;
 			rmSync(root, { recursive: true, force: true });
 		}
 	},
