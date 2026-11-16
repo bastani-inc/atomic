@@ -132,8 +132,8 @@ async function crashedCluster() {
 			nodeId: NODE,
 			hostIdentity: HOST,
 			isProcessAlive: (pid) => pid !== DEAD_PID,
-			// No process start can be read here unless a test says what it is.
-			processStartedAt: () => undefined,
+			// This host reads no process starts unless a test says it does.
+			processStartedAt: () => null,
 			...options,
 			host: {
 				sessions: new Map(),
@@ -221,17 +221,13 @@ test("an earlier instance whose process id a process started after it now holds 
 	assert.equal(await holderOf(kept, "hosted-by-crashed"), "crashed");
 });
 
-test("an earlier instance whose pid a short-lived process held, gone before its start could be read, is retired (#5252)", async () => {
+test("an earlier instance whose pid's start cannot be read is not taken for it, as when a short-lived process held the pid (#5252)", async () => {
 	const { start } = await crashedCluster();
-	// The process the host gave the killed broker's pid exits while the restarted broker reads when it started.
-	let running = true;
+	// The process the host gave the killed broker's pid is gone before its start can be read.
 	const { leases } = await start({
 		instanceKey: SOCKET,
-		isProcessAlive: (pid) => pid !== DEAD_PID || running,
-		processStartedAt: () => {
-			running = false;
-			return undefined;
-		},
+		isProcessAlive: () => true,
+		processStartedAt: () => undefined,
 	});
 	assert.equal(await holderOf(leases, "hosted-by-crashed"), "missing");
 	assert.deepEqual(await leases.read({ kind: "broker", brokerId: "crashed" }), { status: "missing" });
@@ -244,13 +240,15 @@ test("a Windows process's start is read as its creation time, and a process of a
 			"-NoProfile",
 			"-NonInteractive",
 			"-Command",
-			`$p = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($p) { $p.StartTime.ToFileTimeUtc() }`,
+			`$p = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($p -and -not $p.HasExited) { $p.StartTime.ToFileTimeUtc() }`,
 		].join(" ");
 	// 2026-11-15T04:00:00.000Z as a Windows file time (100 ns since 1601).
 	const windows = fakeSources({ platform: "win32", commands: { [startOf(process.pid)]: "134391888000000000\r\n" } });
 	assert.equal(processStartedAt(process.pid, windows), Date.parse("2026-11-15T04:00:00.000Z"));
+	// One whose start PowerShell does not answer is unknown.
+	assert.equal(processStartedAt(process.pid, fakeSources({ platform: "win32", commands: {} })), undefined);
 	const linux = fakeSources({ platform: "linux" });
-	assert.equal(processStartedAt(process.pid, linux), undefined);
+	assert.equal(processStartedAt(process.pid, linux), null);
 	assert.deepEqual(linux.runs, []);
 });
 

@@ -233,8 +233,11 @@ export interface MultiNodeRouterOptions {
 	readonly pid?: number;
 	/** #5038: whether a process of this host still runs (`isProcessAlive`). */
 	readonly isProcessAlive?: (pid: number) => boolean;
-	/** #5252: when a process of this host started, in ms since the epoch, where that can be read (`processStartedAt`). */
-	readonly processStartedAt?: (pid: number) => number | undefined;
+	/**
+	 * #5252: when a process of this host started, in ms since the epoch; `undefined` when that cannot be read, `null` where
+	 * this host does not read it (`processStartedAt`).
+	 */
+	readonly processStartedAt?: (pid: number) => number | null | undefined;
 	/** #5154: how long a recipient whose end was lost stays gone before its asks fail; `lostRecipientBounds()`. */
 	readonly lostRecipientBounds?: LostRecipientBounds;
 }
@@ -475,7 +478,7 @@ export class MultiNodeRouter {
 	private readonly instanceKey: string;
 	private readonly pid: number;
 	private readonly isProcessAlive: (pid: number) => boolean;
-	private readonly processStartedAt: (pid: number) => number | undefined;
+	private readonly processStartedAt: (pid: number) => number | null | undefined;
 	private readonly lostBounds: LostRecipientBounds;
 	private membership: Lease | undefined;
 	private subscription: WakeUpSubscription | undefined;
@@ -2764,17 +2767,17 @@ export class MultiNodeRouter {
 	 * they go stale; retire them now. Its claimed rows are delivered again, once, by whoever claims them next.
 	 */
 	/**
-	 * #5038: whether the process an earlier instance recorded still runs. #5252: a process that started after that
-	 * instance recorded its own start is a later one the host gave its id to, not that instance; one whose start cannot
-	 * be read is that instance only while it still runs once the read is over, since a short-lived later process is
-	 * often gone by then.
+	 * #5038: whether the process an earlier instance recorded still runs. #5252: where the host reads process starts, a
+	 * process that started after that instance recorded its own start is a later one the host gave its id to, and one
+	 * whose start cannot be read is unknown, never taken for that instance (a short-lived later process is often gone
+	 * before its start is read).
 	 */
 	private stillRuns(pid: number, recordedStartedAt: number | undefined): boolean {
 		if (!this.isProcessAlive(pid)) return false;
 		if (recordedStartedAt === undefined) return true;
 		const startedAt = this.processStartedAt(pid);
-		if (startedAt === undefined) return this.isProcessAlive(pid);
-		return startedAt <= recordedStartedAt;
+		if (startedAt === null) return true;
+		return startedAt !== undefined && startedAt <= recordedStartedAt;
 	}
 
 	private async retirePreviousInstances(): Promise<void> {

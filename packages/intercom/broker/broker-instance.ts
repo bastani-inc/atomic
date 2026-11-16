@@ -149,23 +149,26 @@ const WINDOWS_FILE_TIME_EPOCH_MS = 11_644_473_600_000;
 
 /**
  * #5252: when process `pid` of this host started, in milliseconds since the epoch, so an earlier broker instance is told
- * apart from a later process the host gave its id; undefined where that cannot be read. Windows, which gives an exited
- * process's id to another within seconds when many start, is read with PowerShell. A process this one may not signal
- * belongs to another user, so it is no earlier instance of this user's broker: it counts as started now. Elsewhere ids
- * are handed out in sequence, and the start is not read.
+ * apart from a later process the host gave its id. Windows gives an exited process's id to another within seconds when
+ * many start, so there it is read, as `processStartToken` in the coding agent reads it: PowerShell's `Get-Process`
+ * creation time as a UTC file time, for a process that has not exited, bounded by the host command timeout. `undefined`
+ * when it cannot be read, which is unknown, never the same process. A process this one may not signal belongs to
+ * another user, so it is no instance of this user's broker: it counts as started now. `null` elsewhere: ids are handed
+ * out in sequence, the start is not read, and a running pid is taken for the instance.
  */
-export function processStartedAt(pid: number, sources: HostIdentitySources = systemSources()): number | undefined {
+export function processStartedAt(pid: number, sources: HostIdentitySources = systemSources()): number | null | undefined {
+	if (sources.platform !== "win32") return null;
 	try {
 		process.kill(pid, 0);
 	} catch (error) {
 		return (error as NodeJS.ErrnoException).code === "EPERM" ? Date.now() : undefined;
 	}
-	if (sources.platform !== "win32" || !Number.isSafeInteger(pid) || pid <= 0) return undefined;
+	if (!Number.isSafeInteger(pid) || pid <= 0) return undefined;
 	const output = hostCommandOutput(sources, "powershell", [
 		"-NoProfile",
 		"-NonInteractive",
 		"-Command",
-		`$p = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($p) { $p.StartTime.ToFileTimeUtc() }`,
+		`$p = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($p -and -not $p.HasExited) { $p.StartTime.ToFileTimeUtc() }`,
 	]);
 	if (output === undefined || !/^[1-9]\d*$/.test(output)) return undefined;
 	return Number(BigInt(output) / 10_000n) - WINDOWS_FILE_TIME_EPOCH_MS;
