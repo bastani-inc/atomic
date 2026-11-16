@@ -1,5 +1,8 @@
+import type { ThinkingLevel } from "@bastani/atomic-agent-core";
 import { modelsAreEqual } from "@bastani/atomic-ai/compat";
 import { failureDebugFields, reportDebug } from "../../core/debug.ts";
+import { DEFAULT_THINKING_LEVEL } from "../../core/defaults.ts";
+import { formatModelLabel } from "../../core/model-label.ts";
 import { deduplicateDiagnostics } from "../../core/settings-diagnostics.ts";
 import { loadAllHighlightLanguages } from "../../utils/syntax-highlight.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
@@ -167,11 +170,6 @@ export async function applyDeferredModelScope(mode: InteractiveModeBase): Promis
 	}
 }
 
-/**
- * Session-restored models and complete settings defaults may depend on an
- * extension provider. Re-evaluate them after deferred registration finishes,
- * then surface only the final warning state.
- */
 InteractiveModeBase.prototype.retryDeferredModelRestore = async function (
 	this: InteractiveModeBase,
 	targetContainer?: Container,
@@ -181,6 +179,7 @@ InteractiveModeBase.prototype.retryDeferredModelRestore = async function (
 
 	const sessionContext = this.sessionManager.buildSessionContext();
 	const savedModel = sessionContext.model;
+	let restoreFailure: string | undefined;
 	if (savedModel) {
 		const restoredModel = await resolveRestoredModelReference(
 			savedModel.provider,
@@ -191,37 +190,50 @@ InteractiveModeBase.prototype.retryDeferredModelRestore = async function (
 			await this.session.setModel(restoredModel);
 			return;
 		}
-		if (
-			sessionContext.messages.length > 0 ||
-			uncachedCopilotModelHint(savedModel.provider, savedModel.modelId, this.session.modelRuntime)
-		) {
-			this.showWarning(preliminaryFallbackMessage, targetContainer);
-			return;
+		if (sessionContext.messages.length > 0) {
+			if (uncachedCopilotModelHint(savedModel.provider, savedModel.modelId, this.session.modelRuntime)) {
+				this.showWarning(preliminaryFallbackMessage, targetContainer);
+				return;
+			}
+			restoreFailure = `Could not restore model ${formatModelLabel({ provider: savedModel.provider, id: savedModel.modelId })}`;
 		}
 	}
-	if (this.session.model && this.session.modelRuntime.hasConfiguredAuth(this.session.model.provider)) {
+	const currentModel = this.session.model;
+	if (currentModel && this.session.modelRuntime.hasConfiguredAuth(currentModel.provider)) {
+		if (restoreFailure) {
+			this.showWarning(`${restoreFailure}. Using ${currentModel.provider}/${currentModel.id}`, targetContainer);
+		}
 		return;
 	}
 
-	const defaultProvider = this.settingsManager.getDefaultProvider();
-	const defaultModelId = this.settingsManager.getDefaultModel();
-	if (defaultProvider && defaultModelId) {
-		const result = await findInitialModel({
-			scopedModels: [],
-			isContinuing: false,
-			defaultProvider,
-			defaultModelId,
-			defaultThinkingLevel: this.settingsManager.getDefaultThinkingLevel(),
-			modelRuntime: this.session.modelRuntime,
-		});
-		if (result.model) {
-			await this.session.setModel(result.model);
-			await this.session.setThinkingLevel(result.thinkingLevel);
-			return;
+	const result = await findInitialModel({
+		scopedModels: [],
+		isContinuing: false,
+		defaultProvider: this.settingsManager.getDefaultProvider(),
+		defaultModelId: this.settingsManager.getDefaultModel(),
+		defaultThinkingLevel: this.settingsManager.getDefaultThinkingLevel(),
+		modelThinkingLevels: this.settingsManager.getAllModelThinkingLevels(),
+		modelRuntime: this.session.modelRuntime,
+	});
+	if (result.model) {
+		await this.session.setModel(result.model);
+		await this.session.setThinkingLevel(
+			sessionContext.messages.length > 0
+				? this.sessionManager.getBranch().some((entry) => entry.type === "thinking_level_change")
+					? (sessionContext.thinkingLevel as ThinkingLevel)
+					: (this.settingsManager.getDefaultThinkingLevel() ?? DEFAULT_THINKING_LEVEL)
+				: (this.settingsManager.getModelThinkingLevel(result.model.provider, result.model.id) ??
+						this.settingsManager.getDefaultThinkingLevel() ??
+						DEFAULT_THINKING_LEVEL),
+		);
+		if (restoreFailure) {
+			this.showWarning(`${restoreFailure}. Using ${result.model.provider}/${result.model.id}`, targetContainer);
 		}
-		this.showWarning(result.fallbackMessage ?? formatNoModelsAvailableMessage(), targetContainer);
 		return;
 	}
-
-	this.showWarning(preliminaryFallbackMessage, targetContainer);
+	const unavailableMessage =
+		result.fallbackReason === "configured-provider-unsupported"
+			? result.fallbackMessage
+			: (restoreFailure ?? result.fallbackMessage);
+	this.showWarning(unavailableMessage ?? formatNoModelsAvailableMessage(), targetContainer);
 };

@@ -503,7 +503,7 @@ describe("retryDeferredModelRestore", () => {
 	it("suppresses stale no-model fallback warnings when deferred model scope selected a ready model", async () => {
 		const mode = {
 			options: { modelFallbackMessage: "No models available" },
-			sessionManager: { buildSessionContext: () => ({ model: undefined }) },
+			sessionManager: { buildSessionContext: () => ({ messages: [], model: undefined }) },
 			session: {
 				model: claudeModel,
 				modelRuntime: { hasConfiguredAuth: vi.fn(() => true) },
@@ -532,7 +532,7 @@ describe("retryDeferredModelRestore", () => {
 		const mode = {
 			options: { modelFallbackMessage: genericUnsupportedWarning },
 			settingsManager,
-			sessionManager: { buildSessionContext: () => ({ model: undefined }) },
+			sessionManager: { buildSessionContext: () => ({ messages: [], model: undefined }) },
 			session: { model: undefined, modelRuntime: getModelRuntime(registry), setModel, setThinkingLevel },
 			showWarning,
 		};
@@ -563,7 +563,7 @@ describe("retryDeferredModelRestore", () => {
 		const mode = {
 			options: { modelFallbackMessage: genericUnsupportedWarning },
 			settingsManager,
-			sessionManager: { buildSessionContext: () => ({ model: undefined }) },
+			sessionManager: { buildSessionContext: () => ({ messages: [], model: undefined }) },
 			session: { model: undefined, modelRuntime: getModelRuntime(registry), setModel, setThinkingLevel: vi.fn() },
 			showWarning,
 		};
@@ -588,7 +588,7 @@ describe("retryDeferredModelRestore", () => {
 		const mode = {
 			options: { modelFallbackMessage: genericUnsupportedWarning },
 			settingsManager,
-			sessionManager: { buildSessionContext: () => ({ model: undefined }) },
+			sessionManager: { buildSessionContext: () => ({ messages: [], model: undefined }) },
 			session: { model: undefined, modelRuntime: getModelRuntime(registry), setModel, setThinkingLevel: vi.fn() },
 			showWarning,
 		};
@@ -615,7 +615,7 @@ describe("retryDeferredModelRestore", () => {
 		const mode = {
 			options: { modelFallbackMessage: genericUnsupportedWarning },
 			settingsManager,
-			sessionManager: { buildSessionContext: () => ({ model: undefined }) },
+			sessionManager: { buildSessionContext: () => ({ messages: [], model: undefined }) },
 			session: {
 				model: undefined,
 				modelRuntime: getModelRuntime(registry),
@@ -653,7 +653,7 @@ describe("retryDeferredModelRestore", () => {
 				model: sameProviderTemplate,
 				modelRuntime: {
 					getModel: vi.fn(() => exactModel),
-					getAvailableSnapshot: vi.fn(() => [sameProviderTemplate]),
+					getAvailableSnapshot: vi.fn(() => []),
 					hasConfiguredAuth: vi.fn(() => false),
 				},
 				setModel,
@@ -663,9 +663,8 @@ describe("retryDeferredModelRestore", () => {
 
 		await InteractiveMode.prototype.retryDeferredModelRestore.call(mode as never);
 
-		expect(mode.session.modelRuntime.getAvailableSnapshot).not.toHaveBeenCalled();
 		expect(setModel).not.toHaveBeenCalled();
-		expect(showWarning).toHaveBeenCalledWith("Could not restore saved model", undefined);
+		expect(showWarning.mock.calls[0]?.[0]).toContain("No models available");
 	});
 
 	it("retries the configured default or keeps an already-selected model when a message-less session's saved model is gone (#5247)", async () => {
@@ -729,32 +728,133 @@ describe("retryDeferredModelRestore", () => {
 		expect(setModelReady).not.toHaveBeenCalled();
 		expect(warnReady).not.toHaveBeenCalled();
 
-		for (const context of [
-			{
-				messages: [{ role: "user", content: "hello", timestamp: 1 }],
-				model: { provider: "gone-provider", modelId: "old-model" },
-			},
-			{
-				messages: [],
-				model: { provider: "github-copilot", modelId: "uncached-copilot-fast" },
-			},
-		]) {
-			const setModelPreserved = vi.fn();
-			const warnPreserved = vi.fn();
+		for (const savedProvider of ["gone-provider", "github-copilot"]) {
+			const setModelRetried = vi.fn();
+			const warnRetried = vi.fn();
 			await InteractiveMode.prototype.retryDeferredModelRestore.call({
-				options: { modelFallbackMessage: "Could not restore saved model" },
+				options: { modelFallbackMessage: genericUnsupportedWarning },
 				settingsManager,
-				sessionManager: { buildSessionContext: () => context },
+				sessionManager: {
+					buildSessionContext: () => ({
+						messages: [],
+						model: { provider: savedProvider, modelId: "uncached-copilot-fast" },
+					}),
+				},
 				session: {
 					model: { ...claudeModel, provider: "unknown", id: "unknown", api: "unknown" },
 					modelRuntime,
-					setModel: setModelPreserved,
+					setModel: setModelRetried,
 					setThinkingLevel: vi.fn(),
 				},
-				showWarning: warnPreserved,
+				showWarning: warnRetried,
 			} as never);
-			expect(setModelPreserved).not.toHaveBeenCalled();
-			expect(warnPreserved).toHaveBeenCalledWith("Could not restore saved model", undefined);
+			expect(setModelRetried).toHaveBeenCalledWith(expectedDefault);
+			expect(warnRetried).not.toHaveBeenCalled();
 		}
 	});
+
+	for (const configuredDefault of [true, false]) {
+		for (const alreadySelected of [true, false]) {
+			it(`replaces a continued session's stale warning with its final model, default=${configuredDefault}, selected=${alreadySelected} (#5247)`, async () => {
+				const registry = await createInMemoryModelRegistry(AuthStorage.inMemory());
+				registerExtensionModel(registry, "deferred-extension", "deferred-model");
+				const modelRuntime = getModelRuntime(registry);
+				const expectedModel = registry.find("deferred-extension", "deferred-model");
+				assert.ok(expectedModel);
+				const settingsManager = SettingsManager.inMemory({
+					...(configuredDefault
+						? { defaultProvider: expectedModel.provider, defaultModel: expectedModel.id }
+						: {}),
+					defaultThinkingLevel: "high",
+				});
+				const setModel = vi.fn();
+				const setThinkingLevel = vi.fn();
+				const showWarning = vi.fn();
+				await InteractiveMode.prototype.retryDeferredModelRestore.call({
+					options: { modelFallbackMessage: genericUnsupportedWarning },
+					settingsManager,
+					sessionManager: {
+						buildSessionContext: () => ({
+							messages: [{ role: "user", content: "hello", timestamp: 1 }],
+							model: { provider: "gone-provider", modelId: "old-model" },
+							thinkingLevel: "low",
+						}),
+						getBranch: () => [{ type: "thinking_level_change", thinkingLevel: "low" }],
+					},
+					session: {
+						model: alreadySelected ? expectedModel : undefined,
+						modelRuntime,
+						setModel,
+						setThinkingLevel,
+					},
+					showWarning,
+				} as never);
+				expect(showWarning.mock.calls).toEqual([
+					["Could not restore model gone-provider/old-model. Using deferred-extension/deferred-model", undefined],
+				]);
+				expect(setModel).toHaveBeenCalledTimes(alreadySelected ? 0 : 1);
+				if (!alreadySelected) {
+					expect(setModel).toHaveBeenCalledWith(expectedModel);
+					expect(setThinkingLevel).toHaveBeenCalledWith("low");
+				}
+			});
+		}
+	}
+
+	it("keeps the uncached saved Copilot warning for a continued conversation (#5247)", async () => {
+		const registry = await createInMemoryModelRegistry(
+			AuthStorage.inMemory({
+				"github-copilot": { type: "api_key", key: "test-key" },
+			}),
+		);
+		registerExtensionModel(registry, "deferred-extension", "deferred-model");
+		const setModel = vi.fn();
+		const showWarning = vi.fn();
+		await InteractiveMode.prototype.retryDeferredModelRestore.call({
+			options: { modelFallbackMessage: "Could not restore uncached Copilot model" },
+			sessionManager: {
+				buildSessionContext: () => ({
+					messages: [{ role: "user", content: "hello", timestamp: 1 }],
+					model: { provider: "github-copilot", modelId: "uncached-copilot-fast" },
+				}),
+			},
+			session: { modelRuntime: getModelRuntime(registry), setModel },
+			showWarning,
+		} as never);
+		expect(setModel).not.toHaveBeenCalled();
+		expect(showWarning).toHaveBeenCalledWith("Could not restore uncached Copilot model", undefined);
+	});
+
+	for (const continued of [false, true]) {
+		for (const configuredDefault of [false, true]) {
+			it(`uses startup thinking settings after deferred selection, continued=${continued}, default=${configuredDefault} (#5247)`, async () => {
+				const registry = await createInMemoryModelRegistry(AuthStorage.inMemory());
+				registerExtensionModel(registry, "deferred-extension", "deferred-model");
+				const settingsManager = SettingsManager.inMemory({
+					...(configuredDefault ? { defaultProvider: "deferred-extension", defaultModel: "deferred-model" } : {}),
+					defaultThinkingLevel: "high",
+				});
+				settingsManager.setModelThinkingLevel("deferred-extension", "deferred-model", "low");
+				const setModel = vi.fn();
+				const setThinkingLevel = vi.fn();
+				const showWarning = vi.fn();
+				await InteractiveMode.prototype.retryDeferredModelRestore.call({
+					options: { modelFallbackMessage: "No models available" },
+					settingsManager,
+					sessionManager: {
+						buildSessionContext: () => ({
+							messages: continued ? [{ role: "user", content: "hello", timestamp: 1 }] : [],
+							thinkingLevel: "off",
+						}),
+						getBranch: () => [],
+					},
+					session: { modelRuntime: getModelRuntime(registry), setModel, setThinkingLevel },
+					showWarning,
+				} as never);
+				expect(setModel).toHaveBeenCalledWith(registry.find("deferred-extension", "deferred-model"));
+				expect(setThinkingLevel).toHaveBeenCalledWith(continued ? "high" : "low");
+				expect(showWarning).not.toHaveBeenCalled();
+			});
+		}
+	}
 });
