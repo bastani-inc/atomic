@@ -4,6 +4,7 @@ import { renderInputsSchema } from "../shared/render-inputs-schema.js";
 import { resolveRunIndicatorStatuses } from "../shared/run-indicator-status.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import { schemaIsRequired } from "../shared/schema-introspection.js";
+import { subscribeStoreInvalidation } from "../shared/store-observation.js";
 import type { WorkflowExecutionPolicy } from "../shared/types.js";
 import { emitChatSurface } from "../tui/chat-surface-message.js";
 import { deriveGraphTheme } from "../tui/graph-theme.js";
@@ -12,6 +13,7 @@ import { openInlineInputsForm } from "../tui/inline-form-overlay.js";
 import { openInputsPicker } from "../tui/inputs-overlay.js";
 import type { GraphOverlayPort } from "../tui/overlay-adapter.js";
 import { selectRunsForPicker } from "../tui/session-picker.js";
+import { openWorkflowsListing } from "../tui/workflows-listing.js";
 import type { ExtensionAPI, PiArgumentCompletionResult, PiCommandContext } from "./public-types.js";
 import type { WorkflowInputEntry, WorkflowToolResult } from "./render-result.js";
 import type { ExtensionRuntime } from "./runtime.js";
@@ -91,11 +93,38 @@ export function registerWorkflowSlashCommand(
 				const runs = topLevelWorkflowRuns(owner.store.runs());
 				const only = target.length === 0 && runs.length === 1 ? runs[0]?.id : undefined;
 				const run = target.length > 0 ? target : only;
-				return workflowSlashHandler(run === undefined ? "attach" : `attach ${run}`, ctx, pi, deps);
+				if (run !== undefined) return workflowSlashHandler(`attach ${run}`, ctx, pi, deps);
+				return openWorkflowsListingCommand(ctx, pi, deps);
 			},
 		},
 		workflowCommands,
 	);
+}
+
+/**
+ * `/workflows` with no run or several: the sheet listing the session's runs and the registered definitions. A run
+ * opens its graph; a definition starts, asking for its inputs first (#5224).
+ */
+async function openWorkflowsListingCommand(
+	ctx: PiCommandContext,
+	pi: ExtensionAPI,
+	deps: WorkflowSlashCommandDeps,
+): Promise<void> {
+	const owner = deps.owner ?? captureWorkflowOwnerResources();
+	try {
+		await deps.ensureWorkflowResourcesLoaded();
+	} catch (error) {
+		ctx.ui?.notify(formatWorkflowResourceLoadWarning(error), "warning");
+	}
+	if (typeof ctx.ui?.custom !== "function") return workflowSlashHandler("list", ctx, pi, deps);
+	const target = await openWorkflowsListing(ctx.ui, {
+		runs: () => owner.store.runs(),
+		definitions: () => deps.runtimeProxy.registry.all(),
+		subscribe: (listener) => subscribeStoreInvalidation(owner.store, listener),
+	});
+	if (target === undefined) return;
+	if (target.kind === "run") return workflowSlashHandler(`attach ${target.runId}`, ctx, pi, deps);
+	return workflowSlashHandler(target.name, ctx, pi, deps);
 }
 
 async function workflowSlashHandler(
