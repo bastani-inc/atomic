@@ -516,33 +516,49 @@ export class SqlSessionStore implements SessionStore {
 		const fromSeq = Math.max(1, query.fromSeq);
 		const toSeq = Math.min(query.toSeq, lastSeq);
 		if (fromSeq > toSeq) return { lastSeq, entries: [], throughSeq: Math.max(toSeq, fromSeq - 1) };
-		const skipped = (query.skipTypes ?? []).map((type) => `{"type":${JSON.stringify(type)},`);
+		const skippedSet = query.skipTypes === undefined ? undefined : new Set(query.skipTypes);
+		const skippedPrefixes = (query.skipTypes ?? []).map((type) => `{"type":${JSON.stringify(type)},`);
 		const largeBytes = query.largeEntryBytes ?? 0x7fffffff;
 		const rows = await this.database.all<
 			SqliteRow & {
 				seq: number | bigint;
 				entry_json: string | null;
+				entry_head: string;
 				chunks: number | bigint;
 				remaining: number | bigint;
 			}
 		>(
-			`SELECT seq, CASE WHEN chunks = 0 AND raw_bytes <= ? THEN entry_json END AS entry_json, chunks, remaining FROM (
-				SELECT seq, entry_json, chunks, octet_length(entry_json) AS raw_bytes, count(*) OVER () AS remaining,
-					sum(octet_length(entry_json) + chunks * ?) OVER (ORDER BY seq) - (octet_length(entry_json) + chunks * ?) AS before_chars
-				FROM ${this.tables.entries} WHERE session_id = ? AND seq >= ? AND seq <= ?${skipped.map(() => " AND substr(entry_json, 1, ?) <> ?").join("")}
-			) AS page WHERE before_chars < ? ORDER BY seq`,
-			largeBytes,
-			SESSION_ENTRY_CHUNK_BYTES,
+			`WITH sized AS (
+				SELECT seq, chunks, octet_length(entry_json) AS raw_bytes,
+					octet_length(entry_json) + chunks * ? AS bytes
+				FROM ${this.tables.entries}
+				WHERE session_id = ? AND seq >= ? AND seq <= ?
+			),
+			paged AS (
+				SELECT seq, chunks, raw_bytes, count(*) OVER () AS remaining,
+					sum(bytes) OVER (ORDER BY seq) - bytes AS before_chars
+				FROM sized
+			)
+			SELECT p.seq, CASE WHEN p.chunks = 0 AND p.raw_bytes <= ? THEN e.entry_json END AS entry_json,
+				substr(e.entry_json, 1, 64) AS entry_head, p.chunks, p.remaining
+			FROM paged p
+			JOIN ${this.tables.entries} e ON e.session_id = ? AND e.seq = p.seq
+			WHERE p.before_chars < ?
+			ORDER BY p.seq`,
 			SESSION_ENTRY_CHUNK_BYTES,
 			sessionId,
 			fromSeq,
 			toSeq,
-			...skipped.flatMap((prefix) => [prefix.length, prefix]),
+			largeBytes,
+			sessionId,
 			query.maxChars ?? Number.MAX_SAFE_INTEGER,
 		);
 		const entries: SessionEntryAt[] = [];
 		for (const row of rows) {
 			query.signal?.throwIfAborted();
+			if (skippedPrefixes.some((prefix) => row.entry_head.startsWith(prefix))) {
+				continue;
+			}
 			const seq = Number(row.seq);
 			const chunks = Number(row.chunks);
 			if (chunks > 0 && query.largeEntryBytes !== undefined) {
@@ -554,7 +570,8 @@ export class SqlSessionStore implements SessionStore {
 			} else {
 				const json =
 					chunks === 0 ? row.entry_json : await this.readEntryChunks(this.database, sessionId, seq, chunks);
-				entries.push({ seq, entry: JSON.parse(json) as SessionEntry });
+				const parsed = JSON.parse(json) as SessionEntry;
+				if (!skippedSet?.has(parsed.type)) entries.push({ seq, entry: parsed });
 			}
 		}
 		const last = rows.at(-1);

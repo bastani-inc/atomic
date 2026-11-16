@@ -31,6 +31,7 @@ import {
 	formatSearchCursor,
 	type HistoryBudget,
 	HistoryCallBudget,
+	isHistoryDeadlineError,
 	lineBytes,
 	mergeSeqRanges,
 	oneLine,
@@ -525,6 +526,11 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 				if (parked.items.length % 64 === 0) await budget.pace();
 			}
 		} catch (error) {
+			if (isHistoryDeadlineError(error)) {
+				parked.updatedAt = Date.now();
+				byScope.set(scopeKey, parked);
+				return { stopped: { reason: "time", scanned: parked.items.length } };
+			}
 			void parked.iterator.return?.();
 			byScope.delete(scopeKey);
 			throw error;
@@ -754,6 +760,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		prefilter: LiteralQuery | undefined,
 		fromSeq: number,
 		fromMatchIndex: number,
+		fromLineOffset: number,
 		budget: HistoryCallBudget,
 		store = requireStore(id),
 	) {
@@ -765,6 +772,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			prefilter,
 			fromSeq,
 			fromMatchIndex,
+			fromLineOffset,
 			ranges: request.ranges,
 			budget,
 		});
@@ -777,16 +785,45 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		budget: HistoryCallBudget,
 	): Promise<string[]> {
 		if (target.id !== undefined) {
-			const { id } = await authorizedSession(target, budget);
 			const fromSeq = Math.max(1, target.cursor?.first ?? 1);
 			const fromMatchIndex = target.cursor?.second ?? 0;
-			const result = await searchOneSession(id, target, request, prefilter, fromSeq, fromMatchIndex, budget);
+			const fromLineOffset = target.cursor?.third ?? 0;
+			let id: string;
+			try {
+				id = (await authorizedSession(target, budget)).id;
+			} catch (error) {
+				if (isHistoryDeadlineError(error)) {
+					const rawId = target.id;
+					const cursor = formatSearchCursor({
+						seq: fromSeq,
+						matchIndex: fromMatchIndex,
+						...(fromLineOffset > 0 ? { lineOffset: fromLineOffset } : {}),
+					});
+					const label = sessionUrl(rawId, target);
+					return [
+						`${label}:0: [the time budget ran out waiting for the store; continue with ${sessionUrl(rawId, target, target.cursor ? cursor : undefined, request.ranges)}]`,
+					];
+				}
+				throw error;
+			}
+			const result = await searchOneSession(
+				id,
+				target,
+				request,
+				prefilter,
+				fromSeq,
+				fromMatchIndex,
+				fromLineOffset,
+				budget,
+			);
 			if (!result.stopped) return result.lines;
 			const label = sessionUrl(id, target);
 			const resume = result.stopped.resume;
 			const coveredEnd = Math.max(
 				result.coveredFromSeq,
-				resume.matchIndex > 0 ? resume.seq : Math.min(result.lastSeq, resume.seq - 1),
+				resume.matchIndex > 0 || (resume.lineOffset ?? 0) > 0
+					? resume.seq
+					: Math.min(result.lastSeq || resume.seq, resume.seq - 1),
 			);
 			const remainingRanges =
 				request.ranges === undefined
@@ -795,12 +832,13 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 							.filter((range) => range.end >= resume.seq)
 							.map((range) => ({
 								start: Math.max(range.start, resume.seq),
-								end: Math.min(range.end, result.lastSeq),
+								end: result.lastSeq > 0 ? Math.min(range.end, result.lastSeq) : range.end,
 							}))
 							.filter((range) => range.start <= range.end);
 			const cursor = formatSearchCursor(resume);
+			const totalText = result.lastSeq > 0 ? ` of ${result.lastSeq}` : "";
 			return [
-				`${label}:0: [searched entries ${result.coveredFromSeq}-${coveredEnd} of ${result.lastSeq}; ${stopText(result.stopped.reason)}; continue with ${sessionUrl(id, target, cursor, remainingRanges)}]`,
+				`${label}:0: [searched entries ${result.coveredFromSeq}-${coveredEnd}${totalText}; ${stopText(result.stopped.reason)}; continue with ${sessionUrl(id, target, cursor, remainingRanges)}]`,
 				...result.lines,
 			];
 		}
@@ -835,6 +873,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 				];
 			const fromSeq = index === 0 && target.cursor && target.cursor.first > 0 ? target.cursor.first : 1;
 			const fromMatchIndex = index === 0 && target.cursor && target.cursor.first > 0 ? target.cursor.second : 0;
+			const fromLineOffset = index === 0 && target.cursor && target.cursor.first > 0 ? target.cursor.third : 0;
 			try {
 				const result = await searchOneSession(
 					summary.id,
@@ -843,12 +882,14 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 					prefilter,
 					fromSeq,
 					fromMatchIndex,
+					fromLineOffset,
 					budget,
 					store,
 				);
 				out.push(...result.lines);
 				if (result.stopped) {
 					const cursor = formatSearchCursor(result.stopped.resume);
+					const totalText = result.lastSeq > 0 ? ` of ${result.lastSeq}` : "";
 					return [
 						stoppedCoverage(
 							"sessions",
@@ -859,12 +900,28 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 							unreadable,
 							result.stopped.reason,
 							pageUrl("sessions", target, target.offset + index, cursor, request.ranges),
-							` at entry ${result.stopped.resume.seq} of ${result.lastSeq} in ${sessionUrl(summary.id, target)}`,
+							` at entry ${result.stopped.resume.seq}${totalText} in ${sessionUrl(summary.id, target)}`,
 						),
 						...out,
 					];
 				}
 			} catch (error) {
+				if (isHistoryDeadlineError(error)) {
+					return [
+						stoppedCoverage(
+							"sessions",
+							"sessions",
+							target,
+							candidates.length,
+							index + 1,
+							unreadable,
+							"time",
+							pageUrl("sessions", target, target.offset + index, String(fromSeq), request.ranges),
+							` in ${sessionUrl(summary.id, target)}`,
+						),
+						...out,
+					];
+				}
 				rethrowAbort(budget, error);
 				unreadable++;
 			}
@@ -1043,23 +1100,33 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		const target = parseTarget(url);
 		if (target.domain === undefined) return HISTORY_HELP;
 		const budget = newBudget(selection.signal);
-		if (target.domain === "sessions" && target.id !== undefined) return readSession(target, selection, budget);
-		if (target.domain === "sessions") {
-			const listed = await listSessions(target, budget);
-			if (listed.preselected) return listed.text;
+		try {
+			if (target.domain === "sessions" && target.id !== undefined)
+				return await readSession(target, selection, budget);
+			if (target.domain === "sessions") {
+				const listed = await listSessions(target, budget);
+				if (listed.preselected) return listed.text;
+				const lineCursor =
+					target.cursor && target.cursor.first > 0
+						? { line: target.cursor.first, char: target.cursor.second }
+						: undefined;
+				return selectLines(url, listed.text.split("\n"), selection, lineCursor, budget);
+			}
+			const text =
+				target.id === undefined
+					? await listWorkflows(target, budget)
+					: (await readRun(target.id, budget)).join("\n");
 			const lineCursor =
 				target.cursor && target.cursor.first > 0
 					? { line: target.cursor.first, char: target.cursor.second }
 					: undefined;
-			return selectLines(url, listed.text.split("\n"), selection, lineCursor, budget);
+			return selectLines(url, text.split("\n"), selection, lineCursor, budget);
+		} catch (error) {
+			if (isHistoryDeadlineError(error)) {
+				return `[the time budget ran out waiting for the store; continue with ${rawUrl}]`;
+			}
+			throw error;
 		}
-		const text =
-			target.id === undefined ? await listWorkflows(target, budget) : (await readRun(target.id, budget)).join("\n");
-		const lineCursor =
-			target.cursor && target.cursor.first > 0
-				? { line: target.cursor.first, char: target.cursor.second }
-				: undefined;
-		return selectLines(url, text.split("\n"), selection, lineCursor, budget);
 	}
 
 	return {
@@ -1077,9 +1144,17 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			const prefilter = isMultilineSearchPattern(request.pattern, request.ignoreCase, request.literal)
 				? undefined
 				: indexLiterals(request.pattern, request.ignoreCase, request.literal);
-			if (target.domain === "sessions") return (await searchSessions(target, request, prefilter, budget)).join("\n");
-			if (target.domain === "workflows")
-				return (await searchWorkflows(target, request, prefilter, budget)).join("\n");
+			try {
+				if (target.domain === "sessions")
+					return (await searchSessions(target, request, prefilter, budget)).join("\n");
+				if (target.domain === "workflows")
+					return (await searchWorkflows(target, request, prefilter, budget)).join("\n");
+			} catch (error) {
+				if (isHistoryDeadlineError(error)) {
+					return `${url}:0: [the time budget ran out waiting for the store; continue with ${rawUrl}]`;
+				}
+				throw error;
+			}
 			const [sessions, workflows] = await Promise.allSettled([
 				searchSessions(target, request, prefilter, budget),
 				searchWorkflows(target, request, prefilter, budget),

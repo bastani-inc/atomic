@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, it } from "vitest";
@@ -8,6 +8,7 @@ import type { SessionEntry } from "../src/core/session-manager-types.js";
 import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteValue } from "../src/core/storage/database.js";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
 import { JsonlSessionStore } from "../src/core/storage/session/jsonl-session-store.js";
+import { LegacySessionStore } from "../src/core/storage/session/legacy-session-store.js";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
 import { releasedHistoryFiles } from "../src/core/storage/session/released-history-files.js";
 import { summarizeSession } from "../src/core/storage/session/session-summary.js";
@@ -15,6 +16,7 @@ import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.j
 import {
 	SESSION_FORMAT_VERSION,
 	type SessionRecordHeader,
+	type SessionSearchIndex,
 	type SessionSnapshot,
 	type SessionStore,
 	type SessionSummary,
@@ -24,6 +26,8 @@ import {
 	type HistoryBudget,
 	type WorkflowRunHistory,
 } from "../src/core/tools/history-protocol.js";
+import { matchLinesInWorker, renderRawEntryInWorker } from "../src/core/tools/history-regex-worker.js";
+import { entryLines } from "../src/core/tools/history-transcript.js";
 import { createReadToolDefinition } from "../src/core/tools/read.js";
 import type { InternalResourceContext, InternalSearchRequest } from "../src/core/tools/resource-selectors.js";
 import { createSearchToolDefinition } from "../src/core/tools/search.js";
@@ -31,7 +35,7 @@ import { createSearchToolDefinition } from "../src/core/tools/search.js";
 const PROJECT = resolve("/projects/bounded");
 const BASE = Date.parse("2026-11-01T00:00:00.000Z");
 const READ_TOOL_LIMIT_CHARS = 50_000;
-const EVENT_LOOP_CPU_LIMIT_MS = 150;
+const EVENT_LOOP_CPU_LIMIT_MS = 80;
 const LARGE_SESSION_TIMEOUT_MS = 120_000;
 
 function header(id: string): SessionRecordHeader {
@@ -1019,6 +1023,504 @@ describe("history:// stays bounded on very large sessions (#5250)", () => {
 			gap();
 		}
 		assert.ok(longest < EVENT_LOOP_CPU_LIMIT_MS, `the event loop was busy for ${Math.round(longest)} ms`);
+	});
+
+	it("stops at the time budget when a store read or search index call stalls or never settles (#5250)", async () => {
+		const base = new MemorySessionStore();
+		await base.create(
+			header("stalled"),
+			numbered(10, (seq) => `stalled-entry-${seq}`),
+		);
+		let stallReads = false;
+		const stalledCall = () =>
+			new Promise<never>((_, reject) => setTimeout(() => reject(new Error("stalled store finally failed")), 2_000));
+		const stalledIndex: SessionSearchIndex = {
+			coverage: () => stalledCall(),
+			extend: () => stalledCall(),
+			candidates: () => stalledCall(),
+		};
+		const store: SessionStore = new Proxy(base, {
+			get(target, key) {
+				if (key === "readEntryRange") {
+					return (...args: Parameters<MemorySessionStore["readEntryRange"]>) =>
+						stallReads ? stalledCall() : target.readEntryRange(...args);
+				}
+				if (key === "searchIndex") return stallReads ? stalledIndex : undefined;
+				const value = Reflect.get(target, key, target);
+				return typeof value === "function" ? value.bind(target) : value;
+			},
+		});
+		const { router, read, request } = historyOver(store, { timeMs: 60 });
+		stallReads = true;
+		const t0 = performance.now();
+		const rangedOut = await read("history://sessions/stalled:1-3");
+		assert.ok(performance.now() - t0 < 1_000, "stalled ranged read stopped at the deadline");
+		assert.match(rangedOut, /time budget/);
+		assert.match(rangedOut, /continue with history:\/\/sessions\/stalled:1-3/);
+
+		const t1 = performance.now();
+		const searchOut = (await router.search?.("history://sessions/stalled:2-5", request("stalled-entry"))) ?? "";
+		assert.ok(performance.now() - t1 < 1_000, "stalled search stopped at the deadline");
+		assert.match(searchOut, /time budget/);
+		assert.match(searchOut, /continue with history:\/\/sessions\/stalled\?cursor=2:2-5/);
+	});
+
+	it("fences stale search index extensions across concurrent rewrites and sid reuse (#5250)", async () => {
+		const { store, close } = await openSql(dir);
+		try {
+			await store.create(header("s1"), [
+				message("e1", "user", "OLD_TEXT_MARKER", BASE),
+				message("e2", "assistant", "tail", BASE + 1000),
+			]);
+			const index = store.searchIndex!;
+			const cov = await index.coverage("s1", 2);
+			assert.ok(cov);
+
+			await store.replace(
+				"s1",
+				header("s1"),
+				[message("e1", "user", "NEW_MARKER_VALUE", BASE), message("e2", "assistant", "tail", BASE + 1000)],
+				{ expectSeq: 2 },
+			);
+			const staleCreated = await index.extend(
+				"s1",
+				2,
+				0,
+				2,
+				[
+					{ seq: 1, text: "OLD_TEXT_MARKER" },
+					{ seq: 2, text: "tail" },
+				],
+				{ generation: cov.generation, revision: cov.revision },
+			);
+			assert.equal(staleCreated, false, "stale revision before first extend must be rejected");
+
+			const freshCov = await index.coverage("s1", 2);
+			assert.ok(freshCov);
+			assert.equal(
+				await index.extend("s1", 2, 0, 1, [{ seq: 1, text: "NEW_MARKER_VALUE" }], {
+					generation: freshCov.generation,
+					revision: freshCov.revision,
+				}),
+				true,
+			);
+			const activeCov = await index.coverage("s1", 2);
+			assert.ok(activeCov?.generation);
+			await store.delete("s1");
+			await store.create(header("s1"), [
+				message("e1", "user", "SECOND_LIFE_MARKER", BASE),
+				message("e2", "assistant", "tail", BASE + 1000),
+			]);
+			const lifeCov = await index.coverage("s1", 2);
+			assert.equal(
+				await index.extend("s1", 2, 0, 1, [{ seq: 1, text: "SECOND_LIFE_MARKER" }], {
+					generation: lifeCov?.generation,
+					revision: lifeCov?.revision,
+				}),
+				true,
+			);
+			const staleExtend = await index.extend(
+				"s1",
+				2,
+				1,
+				2,
+				[{ seq: 2, text: `OLD_BATCH_TEXT ${"z".repeat(20_000)}` }],
+				{ generation: activeCov.generation },
+			);
+			assert.equal(staleExtend, false, "extend with a generation from before sid reuse must be rejected");
+			assert.deepEqual(await index.candidates("s1", [["OLD_BATCH_TEXT"]], 1, 2, 10), []);
+			assert.equal(await index.candidates("s1", [["SECOND_LIFE"]], 1, 2, 10, activeCov.generation), undefined);
+		} finally {
+			await close();
+		}
+	});
+
+	it("keeps oversized entries searchable through the index without truncating them (#5250)", async () => {
+		const { store, close } = await openSql(dir);
+		try {
+			await store.create(header("oversized"), [
+				message("e1", "user", "first entry", BASE),
+				message("e2", "assistant", "oversized-tail-needle-token", BASE + 1000),
+			]);
+			const index = store.searchIndex!;
+			const cov = await index.coverage("oversized", 2);
+			assert.equal(
+				await index.extend(
+					"oversized",
+					2,
+					0,
+					2,
+					[
+						{ seq: 1, text: "## 2026-11-01T00:00:00.000Z user\nfirst entry" },
+						{ seq: 2, oversized: true },
+					],
+					{ generation: cov?.generation, revision: cov?.revision },
+				),
+				true,
+			);
+			const { router, request } = historyOver(store);
+			const found = (await router.search?.("history://sessions/oversized", request("oversized-tail-needle"))) ?? "";
+			assert.match(found, /^history:\/\/sessions\/oversized:2: oversized-tail-needle-token$/m);
+		} finally {
+			await close();
+		}
+	});
+
+	it("stops index writes on abort and replaces partial FTS rows idempotently (#5250)", async () => {
+		const { store, close } = await openSql(dir);
+		try {
+			await store.create(header("abort-idx"), [message("e1", "user", "FINAL_CLEAN_NEEDLE", BASE)]);
+			const index = store.searchIndex!;
+			const controller = new AbortController();
+			const manyDocs = Array.from({ length: 30 }, (_, i) => ({
+				seq: i + 1,
+				text: `ABORTED_DOC_${i} ${"w".repeat(3_500)}`,
+			}));
+			setTimeout(() => controller.abort(new Error("stop indexing")), 1);
+			await assert.rejects(
+				index.extend("abort-idx", 2, 0, 1, manyDocs, { signal: controller.signal }),
+				/stop indexing|abort/i,
+			);
+			const cov = await index.coverage("abort-idx", 2);
+			assert.equal(cov?.indexedSeq, 0);
+			assert.equal(
+				await index.extend("abort-idx", 2, 0, 1, [{ seq: 1, text: "FINAL_CLEAN_NEEDLE" }], {
+					generation: cov?.generation,
+					revision: cov?.revision,
+				}),
+				true,
+			);
+			assert.deepEqual(await index.candidates("abort-idx", [["FINAL_CLEAN"]], 1, 1, 10), [1]);
+			assert.deepEqual(await index.candidates("abort-idx", [["ABORTED_DOC_0"]], 1, 1, 10), []);
+		} finally {
+			await close();
+		}
+	});
+
+	it("matches multi-line patterns past line 600 of an entry, across 11 small entries, and across slice boundaries once (#5250)", async () => {
+		const { store, close } = await openSql(dir);
+		try {
+			const deepLines = Array.from({ length: 700 }, (_, i) => (i === 650 ? "LATE_MATCH" : `line-${i}`)).join("\n");
+			await store.create(header("deep"), [message("e1", "user", deepLines, BASE)]);
+			const { router, request } = historyOver(store);
+			const late = (await router.search?.("history://sessions/deep", request("(?m)^LATE_MATCH$"))) ?? "";
+			assert.match(late, /^history:\/\/sessions\/deep:1: LATE_MATCH$/m);
+
+			const elevenEntries = Array.from({ length: 12 }, (_, i) =>
+				message(
+					`s${i + 1}`,
+					"user",
+					i === 0 ? "START_MATCH" : i === 11 ? "END_MATCH" : `mid-${i}`,
+					BASE + i * 1000,
+				),
+			);
+			await store.create(header("span11"), elevenEntries);
+			const spanned =
+				(await router.search?.("history://sessions/span11", request("(?s)START_MATCH.*END_MATCH"))) ?? "";
+			assert.match(spanned, /^history:\/\/sessions\/span11:1: START_MATCH$/m);
+			assert.match(spanned, /^history:\/\/sessions\/span11-12- END_MATCH$/m);
+
+			const boundaryLines = Array.from({ length: 660 }, (_, i) =>
+				i === 648 ? "SLICE_BOUNDARY_HEAD" : i === 649 ? "SLICE_BOUNDARY_TAIL" : `pad-${i}-${"p".repeat(90)}`,
+			).join("\n");
+			await store.create(header("straddle"), [message("b1", "user", boundaryLines, BASE)]);
+			const straddled =
+				(await router.search?.(
+					"history://sessions/straddle",
+					request("SLICE_BOUNDARY_HEAD\\nSLICE_BOUNDARY_TAIL"),
+				)) ?? "";
+			const hits = straddled
+				.split("\n")
+				.filter((line) => line.startsWith("history://sessions/straddle:1: SLICE_BOUNDARY_HEAD"));
+			assert.equal(hits.length, 1, straddled);
+
+			const resumed =
+				(await router.search?.("history://sessions/deep?cursor=1.0.600", request("(?m)^LATE_MATCH$"))) ?? "";
+			assert.match(resumed, /^history:\/\/sessions\/deep:1: LATE_MATCH$/m);
+		} finally {
+			await close();
+		}
+	});
+
+	it("streams only the requested range of a cached JSONL session and reads unconverted legacy sessions without converting them (#5250)", async () => {
+		const jsonlDir = join(dir, "jsonl-fast");
+		const jsonlStore = await JsonlSessionStore.open(jsonlDir);
+		try {
+			await jsonlStore.create(
+				header("j1"),
+				numbered(600, (seq) => `jsonl-entry-${seq} ${"k".repeat(200)}`),
+			);
+			const page = await jsonlStore.readEntryRange("j1", { fromSeq: 1, toSeq: 3 });
+			assert.equal(page.lastSeq, 600);
+			assert.deepEqual(
+				page.entries.map((e) => e.seq),
+				[1, 2, 3],
+			);
+		} finally {
+			await jsonlStore.close();
+		}
+
+		const legacyDir = join(dir, "legacy-files");
+		mkdirSync(legacyDir, { recursive: true });
+		const legacyHeader = {
+			type: "session",
+			version: 1,
+			id: "legacy-v1",
+			timestamp: new Date(BASE).toISOString(),
+			cwd: PROJECT,
+		};
+		const legacyLines = [
+			JSON.stringify(legacyHeader),
+			...Array.from({ length: 100 }, (_, i) =>
+				JSON.stringify({
+					type: "message",
+					timestamp: new Date(BASE + (i + 1) * 1000).toISOString(),
+					message: { role: "user", content: `legacy-line-${i + 1}`, timestamp: BASE + (i + 1) * 1000 },
+				}),
+			),
+		];
+		writeFileSync(join(legacyDir, "2026-11-01T00-00-00-000Z_legacy-v1.jsonl"), `${legacyLines.join("\n")}\n`);
+		const sqlDb = await openNodeSqliteDatabase(join(dir, "legacy-inner.sqlite"));
+		const inner = await SqlSessionStore.open(sqlDb);
+		const legacyStore = new LegacySessionStore(inner, {
+			legacyDirectory: legacyDir,
+			databasePath: join(dir, "legacy-inner.sqlite"),
+		});
+		try {
+			const { read } = historyOver(legacyStore);
+			const out = await read("history://sessions/legacy-v1:10-12");
+			assert.ok(out.includes("legacy-line-10"), out);
+			assert.ok(out.includes("legacy-line-12"), out);
+			assert.ok(!out.includes("legacy-line-13"), out);
+			assert.equal(
+				await inner.readHeader("legacy-v1"),
+				undefined,
+				"ranged read must not convert the legacy session",
+			);
+		} finally {
+			await legacyStore.close();
+			await sqlDb.close();
+		}
+	});
+
+	it("aborts or times out a queued worker request immediately while an active request runs, and renders all entry types identically (#5250)", async () => {
+		const slow = matchLinesInWorker([`${"a".repeat(26)}!`], "(?=a)(a+)+b", "", false, false, 300, undefined);
+		const controller = new AbortController();
+		const queuedAbort = matchLinesInWorker(["hello"], "hello", "", false, false, 5_000, controller.signal);
+		const queuedTimeout = matchLinesInWorker(["hello"], "hello", "", false, false, 15, undefined);
+		const abortStart = performance.now();
+		controller.abort(new Error("cancel queued"));
+		await assert.rejects(queuedAbort, /cancel queued/i);
+		assert.ok(performance.now() - abortStart < 100, "queued request rejected before active worker finished");
+		const timedResult = await queuedTimeout;
+		assert.equal(timedResult.timedOut, true);
+		await slow;
+		const after = await matchLinesInWorker(["hello world"], "world", "", false, false, 2_000, undefined);
+		assert.deepEqual(after.matchedIndices, [0]);
+
+		const fixtures = {
+			message: [
+				message("m-u", "user", `user text ${"u".repeat(4_100)} 😀`, BASE),
+				message("m-a", "assistant", "assistant reply", BASE + 1000),
+				{
+					type: "message",
+					id: "m-tr",
+					parentId: null,
+					timestamp: new Date(BASE).toISOString(),
+					message: {
+						role: "toolResult",
+						toolCallId: "c1",
+						toolName: "read",
+						content: [
+							{ type: "text", text: "tool output" },
+							{ type: "image", data: "x", mimeType: "image/png" },
+						],
+						isError: false,
+						timestamp: BASE,
+					},
+				} as unknown as SessionEntry,
+				{
+					type: "message",
+					id: "m-tc",
+					parentId: null,
+					timestamp: new Date(BASE).toISOString(),
+					message: {
+						role: "assistant",
+						content: [{ type: "toolCall", id: "c1", name: "bash", arguments: { command: "ls" } }],
+						timestamp: BASE,
+					},
+				} as unknown as SessionEntry,
+				{
+					type: "message",
+					id: "m-bash",
+					parentId: null,
+					timestamp: new Date(BASE).toISOString(),
+					message: {
+						role: "bashExecution",
+						command: "echo hi",
+						output: "hi",
+						exitCode: 0,
+						cancelled: false,
+						truncated: false,
+						timestamp: BASE,
+					},
+				} as unknown as SessionEntry,
+				{
+					type: "message",
+					id: "m-cust",
+					parentId: null,
+					timestamp: new Date(BASE).toISOString(),
+					message: {
+						role: "custom",
+						customType: "note",
+						content: "custom msg",
+						display: true,
+						timestamp: BASE,
+					},
+				} as unknown as SessionEntry,
+				{
+					type: "message",
+					id: "m-bs",
+					parentId: null,
+					timestamp: new Date(BASE).toISOString(),
+					message: {
+						role: "branchSummary",
+						summary: "branch summary msg",
+						fromId: "a",
+						timestamp: BASE,
+					},
+				} as unknown as SessionEntry,
+			],
+			thinking_level_change: [
+				{
+					type: "thinking_level_change",
+					id: "tl1",
+					parentId: null,
+					timestamp: new Date(BASE).toISOString(),
+					thinkingLevel: "high",
+				},
+			],
+			model_change: [
+				{
+					type: "model_change",
+					id: "mc1",
+					parentId: null,
+					timestamp: new Date(BASE).toISOString(),
+					provider: "anthropic",
+					modelId: "claude",
+				},
+			],
+			compaction: [compaction("c1", "compacted summary", BASE)],
+			branch_summary: [
+				{
+					type: "branch_summary",
+					id: "bs1",
+					parentId: null,
+					timestamp: new Date(BASE).toISOString(),
+					fromId: "a",
+					summary: "branch summary entry",
+				},
+			],
+			session_summary: [
+				{
+					type: "session_summary",
+					id: "ss1",
+					parentId: null,
+					timestamp: new Date(BASE).toISOString(),
+					summary: "session summary entry",
+					summarizedThroughId: "a",
+				},
+			],
+			custom: [custom("cu1", BASE)],
+			custom_message: [
+				{
+					type: "custom_message",
+					id: "cm1",
+					parentId: null,
+					timestamp: new Date(BASE).toISOString(),
+					customType: "hook",
+					content: "custom message entry",
+					display: true,
+				},
+			],
+			label: [
+				{
+					type: "label",
+					id: "l1",
+					parentId: null,
+					timestamp: new Date(BASE).toISOString(),
+					targetId: "a",
+					label: "bookmark",
+				},
+			],
+			session_info: [
+				{
+					type: "session_info",
+					id: "si1",
+					parentId: null,
+					timestamp: new Date(BASE).toISOString(),
+					name: "named session",
+				},
+			],
+			context_edit: [
+				{
+					type: "context_edit",
+					id: "ce1",
+					parentId: null,
+					timestamp: new Date(BASE).toISOString(),
+					targetId: "a",
+				} as SessionEntry,
+			],
+			worktree_snapshot: [
+				{
+					type: "worktree_snapshot",
+					id: "ws1",
+					parentId: null,
+					timestamp: new Date(BASE).toISOString(),
+					root: "/p",
+					snapshotId: "s",
+				} as SessionEntry,
+			],
+			usage: [
+				{
+					type: "usage",
+					id: "u1",
+					parentId: null,
+					timestamp: new Date(BASE).toISOString(),
+					source: "cache",
+					usage: {
+						input: 1,
+						output: 1,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 2,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+				} as SessionEntry,
+			],
+		} satisfies Record<SessionEntry["type"], SessionEntry[]>;
+
+		const decoder = new TextDecoder();
+		for (const list of Object.values(fixtures)) {
+			for (const item of list) {
+				const raw = new TextEncoder().encode(JSON.stringify(item));
+				const res = await renderRawEntryInWorker([raw], 72, 2_000, undefined);
+				assert.ok(!("timedOut" in res));
+				assert.equal(decoder.decode(res.renderedUtf8), entryLines(item).join("\n"));
+			}
+		}
+	});
+
+	it("reports entry-unit selector errors on session URLs and line-unit errors on workflows (#5250)", async () => {
+		const store = new MemorySessionStore();
+		await store.create(header("s1"), [message("e1", "user", "hello", BASE)]);
+		const { read, search } = historyOver(store);
+		await assert.rejects(read("history://sessions/s1:0-2"), /Entry selector 0 is invalid; entries are 1-indexed/);
+		await assert.rejects(read("history://sessions/s1:5-3"), /Invalid entry selector :5-3; end must be >= start/);
+		await assert.rejects(search("hello", "history://sessions/s1:0-2"), /Invalid entry-range selector: 0-2/);
+		await assert.rejects(search("hello", "history://sessions/s1:5-3"), /Invalid entry-range selector: 5-3/);
+		await assert.rejects(read("history://workflows/r1:0-2"), /Line selector 0 is invalid; lines are 1-indexed/);
+		await assert.rejects(search("hello", "history://workflows/r1:0-2"), /Invalid line-range selector: 0-2/);
 	});
 
 	it(

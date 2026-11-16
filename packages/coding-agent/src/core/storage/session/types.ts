@@ -123,11 +123,20 @@ export interface SessionSearchText {
 	readonly seq: number;
 	readonly text?: string;
 	readonly parts?: readonly string[];
+	readonly oversized?: boolean;
 }
 
 export interface SessionSearchCoverage {
 	readonly indexedSeq: number;
 	readonly lastSeq: number;
+	readonly generation?: string;
+	readonly revision?: string;
+}
+
+export interface SessionSearchExtendOptions {
+	readonly generation?: string;
+	readonly revision?: string;
+	readonly signal?: AbortSignal;
 }
 
 export interface SessionSearchIndex {
@@ -138,6 +147,7 @@ export interface SessionSearchIndex {
 		afterSeq: number,
 		throughSeq: number,
 		texts: readonly SessionSearchText[],
+		options?: SessionSearchExtendOptions,
 	): Promise<boolean>;
 	candidates(
 		sessionId: string,
@@ -145,7 +155,8 @@ export interface SessionSearchIndex {
 		fromSeq: number,
 		toSeq: number,
 		limit: number,
-	): Promise<readonly number[]>;
+		generation?: string,
+	): Promise<readonly number[] | undefined>;
 }
 
 export interface SessionStore {

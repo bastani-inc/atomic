@@ -36,6 +36,7 @@ import {
 	isCurrentSessionHeader,
 	type StoredSessionHeader,
 	upgradeLegacySessionEntries,
+	upgradeLegacySessionEntry,
 	upgradeLegacySessionHeader,
 } from "./legacy-format.js";
 import { summarizeLegacySession } from "./legacy-session-summary.js";
@@ -190,18 +191,6 @@ async function scanSessionLines(
 		if (onEntry(seq + 1, pieces, piecesBytes, false)) seq++;
 	}
 	return { offset: size, seq, header: false };
-}
-
-function entriesPage(entries: readonly SessionEntry[], query: SessionEntriesQuery): SessionEntriesPage {
-	const from = Math.max(1, query.fromSeq);
-	const through = Math.min(query.toSeq, entries.length);
-	return {
-		lastSeq: entries.length,
-		entries: entries
-			.slice(from - 1, Math.max(from - 1, through))
-			.map((entry, index) => ({ seq: from + index, entry })),
-		throughSeq: Math.max(through, from - 1),
-	};
 }
 
 /** Session files whose torn last line this process has already reported. */
@@ -446,17 +435,35 @@ export class JsonlSessionStore implements SessionStore {
 				query.signal?.throwIfAborted();
 				const located = await this.locate(sessionId);
 				if (!located) throw new SessionNotFoundError(sessionId);
-				if (!isCurrentSessionHeader(located.stored))
-					return entriesPage((await this.readPersisted(located.path, located.stored)).entries, query);
-				return this.readRangeOf(located.path, query);
+				return this.readRangeOf(located.path, query, located.stored, located.stats, located.state);
 			},
 			false,
 			query.signal,
 		);
 	}
 
-	private async readRangeOf(path: string, query: SessionEntriesQuery): Promise<SessionEntriesPage> {
-		const stats = await stat(path, { bigint: true });
+	readFileEntryRange(path: string, query: SessionEntriesQuery): Promise<SessionEntriesPage> {
+		return this.run(
+			async () => {
+				query.signal?.throwIfAborted();
+				const resolved = resolve(path);
+				const stored = await this.readFirstLine(resolved);
+				await this.readHeaderAt(resolved, stored);
+				return this.readRangeOf(resolved, query, stored);
+			},
+			false,
+			query.signal,
+		);
+	}
+
+	private async readRangeOf(
+		path: string,
+		query: SessionEntriesQuery,
+		stored?: StoredSessionHeader,
+		stats?: BigIntStats,
+		state?: SessionFileState,
+	): Promise<SessionEntriesPage> {
+		stats ??= await stat(path, { bigint: true });
 		const identity = `${stats.dev}:${stats.ino}`;
 		const size = Number(stats.size);
 		let index = this.rangeIndexes.get(path);
@@ -464,6 +471,16 @@ export class JsonlSessionStore implements SessionStore {
 			index = { identity, marks: [], completeEnd: 0, completeCount: 0 };
 			this.rangeIndexes.set(path, index);
 		}
+		const matchedState = state ?? this.fileStates.get(path);
+		if (
+			matchedState !== undefined &&
+			matchedState.stamp === this.stamp(stats) &&
+			index.completeCount < matchedState.lastSeq
+		) {
+			index.completeEnd = matchedState.size;
+			index.completeCount = matchedState.lastSeq;
+		}
+		const legacyHeader = stored !== undefined && !isCurrentSessionHeader(stored) ? stored : undefined;
 		const fromSeq = Math.max(1, query.fromSeq);
 		const entries: SessionEntryAt[] = [];
 		let chars = 0;
@@ -494,11 +511,17 @@ export class JsonlSessionStore implements SessionStore {
 					if (seq > query.toSeq) return true;
 					const head = parts[0]!.subarray(0, Math.min(parts[0]!.length, 64)).toString("utf8");
 					if (!isSkipped(head)) {
-						if (query.largeEntryBytes !== undefined && byteLength > query.largeEntryBytes) {
+						if (
+							legacyHeader === undefined &&
+							query.largeEntryBytes !== undefined &&
+							byteLength > query.largeEntryBytes
+						) {
 							entries.push({ seq, entry: STUB_ENTRY, rawChunks: parts });
 						} else {
 							const text = (parts.length === 1 ? parts[0]! : Buffer.concat(parts)).toString("utf8");
-							const parsed = JSON.parse(text) as SessionEntry;
+							const raw = JSON.parse(text) as SessionEntry;
+							const parsed =
+								legacyHeader === undefined ? raw : upgradeLegacySessionEntry(legacyHeader, raw, seq, path);
 							if (!(query.skipTypes ?? []).includes(parsed.type)) entries.push({ seq, entry: parsed });
 						}
 						chars += byteLength;

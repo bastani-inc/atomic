@@ -240,14 +240,44 @@ parentPort.on("message", (msg) => {
 });
 `;
 
+interface PendingTask {
+	readonly id: number;
+	readonly payload: Record<string, unknown>;
+	readonly deadline: number;
+	readonly settle: (
+		outcome: { readonly value: unknown } | { readonly timedOut: true } | { readonly error: unknown },
+	) => void;
+	dispatched: boolean;
+}
+
 let activeWorker: Worker | undefined;
+let activeTask: PendingTask | undefined;
+const waitingQueue: PendingTask[] = [];
 let nextRequestId = 1;
-let queue: Promise<void> = Promise.resolve();
 
 function getWorker(): Worker {
 	if (!activeWorker) {
-		activeWorker = new Worker(WORKER_SCRIPT, { eval: true });
-		activeWorker.unref();
+		const worker = new Worker(WORKER_SCRIPT, { eval: true });
+		worker.unref();
+		worker.on("message", (message: { id?: number; error?: string }) => {
+			if (!activeTask || !message || message.id !== activeTask.id) return;
+			const task = activeTask;
+			activeTask = undefined;
+			if (message.error !== undefined) {
+				task.settle({ error: new Error(message.error) });
+			} else {
+				task.settle({ value: message });
+			}
+			pumpQueue();
+		});
+		worker.on("error", (error: Error) => {
+			killActiveWorker();
+			const task = activeTask;
+			activeTask = undefined;
+			task?.settle({ error });
+			pumpQueue();
+		});
+		activeWorker = worker;
 	}
 	return activeWorker;
 }
@@ -258,62 +288,73 @@ function killActiveWorker(): void {
 	if (current) void current.terminate();
 }
 
+function pumpQueue(): void {
+	while (activeTask === undefined && waitingQueue.length > 0) {
+		const next = waitingQueue.shift()!;
+		if (performance.now() >= next.deadline) {
+			next.settle({ timedOut: true });
+			continue;
+		}
+		next.dispatched = true;
+		activeTask = next;
+		const worker = getWorker();
+		worker.postMessage({ ...next.payload, id: next.id });
+	}
+}
+
 function runWorkerTask<T>(
 	payload: Record<string, unknown>,
 	timeoutMs: number,
 	signal: AbortSignal | undefined,
 ): Promise<{ readonly value: T } | { readonly timedOut: true }> {
-	signal?.throwIfAborted();
-	const run = async (): Promise<{ readonly value: T } | { readonly timedOut: true }> => {
-		signal?.throwIfAborted();
-		const id = nextRequestId++;
-		const worker = getWorker();
-		return new Promise<{ readonly value: T } | { readonly timedOut: true }>((resolve, reject) => {
-			let settled = false;
-			const finish = (fn: () => void) => {
+	if (signal?.aborted) {
+		return Promise.reject(signal.reason ?? new Error("Operation aborted"));
+	}
+	const effectiveMs = Math.max(5, timeoutMs);
+	const deadline = performance.now() + effectiveMs;
+	const id = nextRequestId++;
+	return new Promise<{ readonly value: T } | { readonly timedOut: true }>((resolve, reject) => {
+		let settled = false;
+		const task: PendingTask = {
+			id,
+			payload,
+			deadline,
+			dispatched: false,
+			settle(outcome) {
 				if (settled) return;
 				settled = true;
 				clearTimeout(timer);
 				signal?.removeEventListener("abort", onAbort);
-				worker.off("message", onMessage);
-				worker.off("error", onError);
-				fn();
-			};
-			const onAbort = () => {
+				if ("error" in outcome) reject(outcome.error);
+				else if ("timedOut" in outcome) resolve(outcome);
+				else resolve({ value: outcome.value as T });
+			},
+		};
+		const removeOrCancel = (outcome: { readonly timedOut: true } | { readonly error: unknown }) => {
+			if (settled) return;
+			if (!task.dispatched) {
+				const index = waitingQueue.indexOf(task);
+				if (index >= 0) waitingQueue.splice(index, 1);
+				task.settle(outcome);
+				return;
+			}
+			if (activeTask === task) {
+				activeTask = undefined;
 				killActiveWorker();
-				finish(() => reject(signal?.reason ?? new Error("Operation aborted")));
-			};
-			const onError = (error: Error) => {
-				killActiveWorker();
-				finish(() => reject(error));
-			};
-			const onMessage = (message: { id?: number; error?: string } & T) => {
-				if (!message || message.id !== id) return;
-				if (message.error !== undefined) {
-					finish(() => reject(new Error(message.error)));
-					return;
-				}
-				finish(() => resolve({ value: message }));
-			};
-			const timer = setTimeout(
-				() => {
-					killActiveWorker();
-					finish(() => resolve({ timedOut: true }));
-				},
-				Math.max(5, timeoutMs),
-			);
-			signal?.addEventListener("abort", onAbort, { once: true });
-			worker.on("message", onMessage);
-			worker.on("error", onError);
-			worker.postMessage({ ...payload, id });
-		});
-	};
-	const result = queue.then(run, run);
-	queue = result.then(
-		() => {},
-		() => {},
-	);
-	return result;
+				task.settle(outcome);
+				pumpQueue();
+			}
+		};
+		const onAbort = () => {
+			removeOrCancel({ error: signal?.reason ?? new Error("Operation aborted") });
+		};
+		const timer = setTimeout(() => {
+			removeOrCancel({ timedOut: true });
+		}, effectiveMs);
+		signal?.addEventListener("abort", onAbort, { once: true });
+		waitingQueue.push(task);
+		pumpQueue();
+	});
 }
 
 export async function matchLinesInWorker(

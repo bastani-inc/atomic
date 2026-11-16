@@ -1,6 +1,7 @@
 import { setImmediate } from "node:timers";
 import type { SessionEntry } from "../session-manager-types.ts";
 import {
+	MAX_INDEXED_ENTRY_CHARS,
 	SEARCH_PART_CHARS,
 	SEARCH_PART_OVERLAP,
 	splitSearchTextParts,
@@ -8,8 +9,8 @@ import {
 import type {
 	SessionEntriesPage,
 	SessionEntryAt,
-	SessionSearchCoverage,
 	SessionSearchIndex,
+	SessionSearchText,
 	SessionStore,
 } from "../storage/session/types.js";
 import { isMultilineSearchPattern, type LiteralQuery } from "./history-literals.ts";
@@ -34,16 +35,16 @@ export const DEFAULT_HISTORY_BUDGET: HistoryBudget = { bytes: 40_000, rows: 250_
 export const HISTORY_TEXT_FORMAT = 2;
 export const MAX_MATCHES_PER_SESSION = 10;
 
-const SLICE_MS = 4;
+const SLICE_MS = 2;
 const NOTE_RESERVE_BYTES = 600;
 const PAGE_SEQS = 256;
 const OUTLINE_PAGE_SEQS = 32;
+const LOOKAHEAD_PAGE_SEQS = 32;
 const PAGE_CHARS = 64 * 1024;
-const LARGE_ENTRY_BYTES = 1024 * 1024;
+const LARGE_ENTRY_BYTES = 256 * 1024;
 const UTF8_SCAN_SLICE_BYTES = 256 * 1024;
 const REGEX_BATCH_CHARS = 64 * 1024;
 const MATCH_SPAN_CHARS = 16 * 1024;
-const MATCH_SPAN_SEQS = 8;
 const CONTEXT_SPAN_SEQS = 64;
 const CANDIDATE_PAGE = 64;
 const EXTRA_COUNT_SEQS = 500;
@@ -54,12 +55,24 @@ const utf8Decoder = new TextDecoder();
 
 export type BudgetStop = "byte" | "row" | "time";
 
+export class HistoryDeadlineError extends Error {
+	constructor() {
+		super("History call time budget exceeded");
+		this.name = "HistoryDeadlineError";
+	}
+}
+
+export function isHistoryDeadlineError(error: unknown): boolean {
+	return error instanceof HistoryDeadlineError;
+}
+
 export function yieldTurn(): Promise<void> {
 	return new Promise((resolve) => setImmediate(resolve));
 }
 
 export class HistoryCallBudget {
 	readonly signal: AbortSignal | undefined;
+	readonly storeSignal: AbortSignal;
 	private readonly deadline: number;
 	private bytesLeft: number;
 	private rowsLeft: number;
@@ -68,6 +81,8 @@ export class HistoryCallBudget {
 	constructor(budget: HistoryBudget, signal: AbortSignal | undefined) {
 		this.signal = signal;
 		this.deadline = performance.now() + budget.timeMs;
+		const deadlineSignal = AbortSignal.timeout(Math.max(15, budget.timeMs));
+		this.storeSignal = signal ? AbortSignal.any([signal, deadlineSignal]) : deadlineSignal;
 		const reserve = Math.min(NOTE_RESERVE_BYTES, Math.floor(budget.bytes * 0.25));
 		this.bytesLeft = Math.max(1, budget.bytes - reserve);
 		this.rowsLeft = budget.rows;
@@ -83,20 +98,34 @@ export class HistoryCallBudget {
 	}
 
 	race<T>(work: Promise<T>): Promise<T> {
-		const signal = this.signal;
-		if (!signal) return work;
-		if (signal.aborted) return Promise.reject(signal.reason ?? new Error("Operation aborted"));
+		work.catch(() => {});
+		if (this.signal?.aborted) {
+			return Promise.reject(this.signal.reason ?? new Error("Operation aborted"));
+		}
+		if (this.storeSignal.aborted) {
+			return Promise.reject(new HistoryDeadlineError());
+		}
 		return new Promise<T>((resolve, reject) => {
-			const onAbort = () => reject(signal.reason ?? new Error("Operation aborted"));
-			signal.addEventListener("abort", onAbort, { once: true });
+			const onAbort = () => {
+				if (this.signal?.aborted) {
+					reject(this.signal.reason ?? new Error("Operation aborted"));
+				} else {
+					reject(new HistoryDeadlineError());
+				}
+			};
+			this.storeSignal.addEventListener("abort", onAbort, { once: true });
 			work.then(
 				(value) => {
-					signal.removeEventListener("abort", onAbort);
+					this.storeSignal.removeEventListener("abort", onAbort);
 					resolve(value);
 				},
 				(error) => {
-					signal.removeEventListener("abort", onAbort);
-					reject(error);
+					this.storeSignal.removeEventListener("abort", onAbort);
+					if (!this.signal?.aborted && this.storeSignal.aborted) {
+						reject(new HistoryDeadlineError());
+					} else {
+						reject(error);
+					}
 				},
 			);
 		});
@@ -108,7 +137,7 @@ export class HistoryCallBudget {
 
 	spent(): BudgetStop | undefined {
 		if (this.rowsLeft <= 0) return "row";
-		if (performance.now() >= this.deadline) return "time";
+		if (performance.now() >= this.deadline || (!this.signal?.aborted && this.storeSignal.aborted)) return "time";
 		return undefined;
 	}
 
@@ -181,7 +210,7 @@ export function entryPager(store: SessionStore, sessionId: string): EntryPager {
 					maxChars,
 					largeEntryBytes: LARGE_ENTRY_BYTES,
 					skipTypes: SKIPPED_TYPES,
-					...(budget.signal === undefined ? {} : { signal: budget.signal }),
+					signal: budget.storeSignal,
 				}),
 			),
 	};
@@ -199,15 +228,18 @@ export function oneLine(text: string, limit: number): string {
 export interface RenderedEntry {
 	readonly seq: number;
 	readonly lineCount: number;
+	readonly oversized: boolean;
 	lineAt(index: number): string;
 	sliceLines(startLine: number, endLine: number): string[];
 	searchParts(budget: HistoryCallBudget): Promise<string[]>;
 }
 
 function smallRenderedEntry(seq: number, lines: readonly string[]): RenderedEntry {
+	const totalChars = lines.reduce((sum, line) => sum + line.length + 1, 0);
 	return {
 		seq,
 		lineCount: lines.length,
+		oversized: totalChars > MAX_INDEXED_ENTRY_CHARS,
 		lineAt: (index) => lines[index] ?? "",
 		sliceLines: (startLine, endLine) => lines.slice(startLine, endLine + 1),
 		searchParts: async () => (lines.length === 0 ? [] : splitSearchTextParts(lines.join("\n"))),
@@ -225,8 +257,9 @@ async function largeRenderedEntry(seq: number, utf8: Uint8Array, budget: History
 	const starts: number[] = [0];
 	for (let offset = 0; offset < utf8.byteLength; offset += UTF8_SCAN_SLICE_BYTES) {
 		const end = Math.min(utf8.byteLength, offset + UTF8_SCAN_SLICE_BYTES);
-		for (let i = offset; i < end; i++) {
-			if (utf8[i] === 10) starts.push(i + 1);
+		const sub = utf8.subarray(0, end);
+		for (let nl = sub.indexOf(10, offset); nl !== -1; nl = sub.indexOf(10, nl + 1)) {
+			starts.push(nl + 1);
 		}
 		await budget.pace();
 	}
@@ -240,6 +273,7 @@ async function largeRenderedEntry(seq: number, utf8: Uint8Array, budget: History
 	return {
 		seq,
 		lineCount: lineStarts.length,
+		oversized: utf8.byteLength > MAX_INDEXED_ENTRY_CHARS,
 		lineAt,
 		sliceLines(startLine, endLine) {
 			const clampedStart = Math.max(0, startLine);
@@ -375,11 +409,19 @@ class RangeReader {
 		for (let pos = range.start; pos <= Math.min(range.end, this.lastSeq); ) {
 			const reason = this.budget.spent();
 			if (reason && this.progressed) return this.stopAt({ seq: pos, line: 0, char: 0, reason }, index, range.end);
-			const page = await this.pager.page(
-				pos,
-				Math.min(range.end, pos + this.budget.rowAllowance(PAGE_SEQS) - 1),
-				this.budget,
-			);
+			let page: SessionEntriesPage;
+			try {
+				page = await this.pager.page(
+					pos,
+					Math.min(range.end, pos + this.budget.rowAllowance(PAGE_SEQS) - 1),
+					this.budget,
+				);
+			} catch (error) {
+				if (isHistoryDeadlineError(error)) {
+					return this.stopAt({ seq: pos, line: 0, char: 0, reason: "time" }, index, range.end);
+				}
+				throw error;
+			}
 			this.progressed = true;
 			this.lastSeq = page.lastSeq;
 			if (pos > this.lastSeq) return undefined;
@@ -446,10 +488,9 @@ class RangeReader {
 			.filter((range) => range.start <= range.end);
 		const cursor = formatReadCursor(stop.seq, stop.line, stop.char);
 		const url = `${this.place.urlWith(cursor === undefined ? {} : { cursor }, rest)}${this.raw ? ":raw" : ""}`;
-		const coveredSeq = Math.min(stop.seq, this.lastSeq);
-		this.out.push(
-			`[read up to entry ${coveredSeq} of ${this.lastSeq}; ${stopText(stop.reason)}; continue with ${url}]`,
-		);
+		const totalText = Number.isFinite(this.lastSeq) ? ` of ${this.lastSeq}` : "";
+		const coveredSeq = Number.isFinite(this.lastSeq) ? Math.min(stop.seq, this.lastSeq) : stop.seq;
+		this.out.push(`[read up to entry ${coveredSeq}${totalText}; ${stopText(stop.reason)}; continue with ${url}]`);
 		return this.out.join("\n");
 	}
 }
@@ -604,7 +645,16 @@ export async function outlineSession(
 			stopped = { reason, coveredSeq: pos - 1, resumeSeq: pos, usedCounts: counts };
 			break;
 		}
-		const page = await pager.page(pos, pos + budget.rowAllowance(OUTLINE_PAGE_SEQS) - 1, budget);
+		let page: SessionEntriesPage;
+		try {
+			page = await pager.page(pos, pos + budget.rowAllowance(OUTLINE_PAGE_SEQS) - 1, budget);
+		} catch (error) {
+			if (isHistoryDeadlineError(error)) {
+				stopped = { reason: "time", coveredSeq: Math.max(fromSeq, pos - 1), resumeSeq: pos, usedCounts: counts };
+				break;
+			}
+			throw error;
+		}
 		lastSeq = page.lastSeq;
 		if (pos > lastSeq) break;
 		let prevSeq = pos - 1;
@@ -669,20 +719,22 @@ export async function outlineSession(
 	}
 	const covered = stopped ? Math.max(fromSeq, stopped.coveredSeq) : pos - 1;
 	const activeCounts = stopped ? stopped.usedCounts : counts;
+	const totalText = Number.isFinite(lastSeq) ? `${lastSeq} entries, ` : "";
+	const ofTotal = Number.isFinite(lastSeq) ? ` of ${lastSeq}` : "";
 	const out = [
 		...(fromSeq === 1
 			? [
-					`# session ${place.sessionId}: ${lastSeq} entries, too long to read whole; open a part with its :N-M range`,
+					`# session ${place.sessionId}: ${totalText}too long to read whole; open a part with its :N-M range`,
 					...headerLines.slice(1),
 				]
-			: [`# session ${place.sessionId} outline from entry ${fromSeq} of ${lastSeq}`]),
+			: [`# session ${place.sessionId} outline from entry ${fromSeq}${ofTotal}`]),
 		formatCountsLine(fromSeq, covered, activeCounts),
 		...itemLines,
 	];
 	if (stopped !== undefined) {
 		const verb = stopped.reason === "byte" ? "lists" : "covers";
 		out.push(
-			`[outline ${verb} entries ${fromSeq}-${covered} of ${lastSeq}; ${stopText(stopped.reason)}; continue with ${place.urlWith({ cursor: String(stopped.resumeSeq) })}]`,
+			`[outline ${verb} entries ${fromSeq}-${covered}${ofTotal}; ${stopText(stopped.reason)}; continue with ${place.urlWith({ cursor: String(stopped.resumeSeq) })}]`,
 		);
 	}
 	budget.spend(out.reduce((sum, line) => sum + lineBytes(line), 0));
@@ -696,8 +748,19 @@ export async function readWholeOrOutline(
 	wholeLimitSeqs: number,
 ): Promise<string> {
 	const pager = entryPager(place.store, place.sessionId);
-	const probe = await pager.page(1, 0, budget);
-	const lastSeq = probe.lastSeq;
+	let lastSeq: number;
+	try {
+		const probe = await pager.page(1, 0, budget);
+		lastSeq = probe.lastSeq;
+	} catch (error) {
+		if (isHistoryDeadlineError(error)) {
+			return [
+				...headerLines,
+				`[read up to entry 1; ${stopText("time")}; continue with ${place.urlWith({ cursor: "1" })}]`,
+			].join("\n");
+		}
+		throw error;
+	}
 	if (lastSeq > wholeLimitSeqs) return outlineSession(place, headerLines, 1, budget);
 	const lines = [...headerLines];
 	let bytes = lines.reduce((sum, line) => sum + lineBytes(line), 0);
@@ -712,7 +775,19 @@ export async function readWholeOrOutline(
 			budget.spend(bytes);
 			return lines.join("\n");
 		}
-		const page = await pager.page(pos, Math.min(lastSeq, pos + budget.rowAllowance(PAGE_SEQS) - 1), budget);
+		let page: SessionEntriesPage;
+		try {
+			page = await pager.page(pos, Math.min(lastSeq, pos + budget.rowAllowance(PAGE_SEQS) - 1), budget);
+		} catch (error) {
+			if (isHistoryDeadlineError(error)) {
+				lines.push(
+					`[read up to entry ${pos} of ${lastSeq}; ${stopText("time")}; continue with ${place.urlWith({}, [{ start: pos, end: lastSeq }])}]`,
+				);
+				budget.spend(bytes);
+				return lines.join("\n");
+			}
+			throw error;
+		}
 		progressed = true;
 		for (const item of page.entries) {
 			if (item.rawChunks !== undefined) {
@@ -737,6 +812,7 @@ export async function readWholeOrOutline(
 export interface SearchResume {
 	readonly seq: number;
 	readonly matchIndex: number;
+	readonly lineOffset?: number;
 }
 
 export interface SessionSearchResult {
@@ -754,6 +830,7 @@ export interface SessionSearchRequest {
 	readonly prefilter: LiteralQuery | undefined;
 	readonly fromSeq: number;
 	readonly fromMatchIndex?: number;
+	readonly fromLineOffset?: number;
 	readonly ranges: readonly SeqRange[] | undefined;
 	readonly budget: HistoryCallBudget;
 }
@@ -775,9 +852,10 @@ class SessionSearcher {
 	private readonly normalized: { readonly pattern: string; readonly flags: string };
 	private readonly ignoreCase: boolean;
 	private readonly multiline: boolean;
-	private coverage: { indexedSeq: number; lastSeq: number } | undefined;
+	private coverage: { indexedSeq: number; lastSeq: number; generation?: string; revision?: string } | undefined;
 	private indexing = false;
 	private lastSeq = 0;
+	private startTimedOut = false;
 	private readonly lines: string[] = [];
 	private readonly entryCache = new Map<number, RenderedEntry | null>();
 	private shown = 0;
@@ -804,10 +882,20 @@ class SessionSearcher {
 	}
 
 	async run(): Promise<SessionSearchResult> {
-		await this.start();
-		const { budget } = this.search;
 		const segments = this.segments();
 		this.coveredFromSeq = segments[0]?.start ?? this.search.fromSeq;
+		await this.start();
+		if (this.startTimedOut) {
+			return this.finish({
+				reason: "time",
+				resume: {
+					seq: this.coveredFromSeq,
+					matchIndex: this.search.fromMatchIndex ?? 0,
+					...(this.search.fromLineOffset ? { lineOffset: this.search.fromLineOffset } : {}),
+				},
+			});
+		}
+		const { budget } = this.search;
 		let started = false;
 		for (const segment of segments) {
 			for (let pos = segment.start; pos <= Math.min(segment.end, this.lastSeq); ) {
@@ -828,16 +916,40 @@ class SessionSearcher {
 
 	private async start(): Promise<void> {
 		const { place, budget } = this.search;
-		if (this.index !== undefined)
-			this.coverage = await budget
-				.race(this.index.coverage(place.sessionId, HISTORY_TEXT_FORMAT))
-				.then((found: SessionSearchCoverage | undefined) => (found ? { ...found } : undefined))
-				.catch((error) => {
-					if (budget.signal?.aborted) throw error;
-					return undefined;
-				});
+		if (this.index !== undefined) {
+			try {
+				const found = await budget.race(this.index.coverage(place.sessionId, HISTORY_TEXT_FORMAT));
+				this.coverage = found
+					? {
+							indexedSeq: found.indexedSeq,
+							lastSeq: found.lastSeq,
+							generation: found.generation,
+							revision: found.revision,
+						}
+					: undefined;
+			} catch (error) {
+				if (isHistoryDeadlineError(error)) {
+					this.startTimedOut = true;
+					return;
+				}
+				if (budget.signal?.aborted) throw error;
+				this.coverage = undefined;
+			}
+		}
 		this.indexing = this.coverage !== undefined;
-		this.lastSeq = this.coverage?.lastSeq ?? (await this.pager.page(1, 0, budget)).lastSeq;
+		if (this.coverage !== undefined) {
+			this.lastSeq = this.coverage.lastSeq;
+			return;
+		}
+		try {
+			this.lastSeq = (await this.pager.page(1, 0, budget)).lastSeq;
+		} catch (error) {
+			if (isHistoryDeadlineError(error)) {
+				this.startTimedOut = true;
+				return;
+			}
+			throw error;
+		}
 	}
 
 	private segments(): SeqRange[] {
@@ -878,7 +990,13 @@ class SessionSearcher {
 	private async getRenderedEntry(seq: number): Promise<RenderedEntry | null | "timedOut"> {
 		if (seq < 1 || seq > this.lastSeq) return null;
 		if (this.entryCache.has(seq)) return this.entryCache.get(seq)!;
-		const page = await this.pager.page(seq, seq, this.search.budget);
+		let page: SessionEntriesPage;
+		try {
+			page = await this.pager.page(seq, seq, this.search.budget);
+		} catch (error) {
+			if (isHistoryDeadlineError(error)) return "timedOut";
+			throw error;
+		}
 		const item = page.entries[0];
 		if (item === undefined || item.seq !== seq) {
 			this.rememberEntry(seq, null);
@@ -891,17 +1009,55 @@ class SessionSearcher {
 		return entry;
 	}
 
+	private async cacheLookaheadPage(fromSeq: number): Promise<"ok" | "timedOut"> {
+		if (fromSeq < 1 || fromSeq > this.lastSeq || this.entryCache.has(fromSeq)) return "ok";
+		let page: SessionEntriesPage;
+		try {
+			page = await this.pager.page(
+				fromSeq,
+				Math.min(this.lastSeq, fromSeq + LOOKAHEAD_PAGE_SEQS - 1),
+				this.search.budget,
+			);
+		} catch (error) {
+			if (isHistoryDeadlineError(error)) return "timedOut";
+			throw error;
+		}
+		let prev = fromSeq - 1;
+		for (const item of page.entries) {
+			for (let s = prev + 1; s < item.seq; s++) this.rememberEntry(s, null);
+			prev = item.seq;
+			const materialized = await materializeEntry(item, this.search.budget);
+			if ("timedOut" in materialized) return "timedOut";
+			this.rememberEntry(item.seq, materialized.entry.lineCount > 0 ? materialized.entry : null);
+		}
+		for (let s = prev + 1; s <= page.throughSeq; s++) this.rememberEntry(s, null);
+		return "ok";
+	}
+
 	private async searchIndexed(pos: number, end: number): Promise<SearchStep> {
 		const { place, prefilter, budget } = this.search;
 		const capEnd = this.firstMore !== undefined ? Math.min(end, this.firstMore.seq + EXTRA_COUNT_SEQS) : end;
 		const through = Math.min(capEnd, this.coverage!.indexedSeq);
 		if (pos > through) return { next: Math.min(end, this.coverage!.indexedSeq) + 1 };
-		const seqs = await budget
-			.race(this.index!.candidates(place.sessionId, prefilter!, pos, through, CANDIDATE_PAGE))
-			.catch((error) => {
-				if (budget.signal?.aborted) throw error;
-				return undefined;
-			});
+		let seqs: readonly number[] | undefined;
+		try {
+			seqs = await budget.race(
+				this.index!.candidates(
+					place.sessionId,
+					prefilter!,
+					pos,
+					through,
+					CANDIDATE_PAGE,
+					this.coverage!.generation,
+				),
+			);
+		} catch (error) {
+			if (isHistoryDeadlineError(error)) {
+				return { stop: { reason: "time", resume: { seq: pos, matchIndex: 0 } } };
+			}
+			if (budget.signal?.aborted) throw error;
+			seqs = undefined;
+		}
 		budget.takeRows(1);
 		if (seqs === undefined) {
 			this.coverage = undefined;
@@ -955,7 +1111,15 @@ class SessionSearcher {
 		const { budget } = this.search;
 		const capEnd = this.firstMore !== undefined ? Math.min(end, this.firstMore.seq + EXTRA_COUNT_SEQS) : end;
 		if (pos > capEnd) return { next: end + 1 };
-		const page = await this.pager.page(pos, Math.min(capEnd, pos + budget.rowAllowance(PAGE_SEQS) - 1), budget);
+		let page: SessionEntriesPage;
+		try {
+			page = await this.pager.page(pos, Math.min(capEnd, pos + budget.rowAllowance(PAGE_SEQS) - 1), budget);
+		} catch (error) {
+			if (isHistoryDeadlineError(error)) {
+				return { stop: { reason: "time", resume: { seq: pos, matchIndex: 0 } } };
+			}
+			throw error;
+		}
 		this.lastSeq = page.lastSeq;
 		const rendered: RenderedEntry[] = [];
 		let prevSeq = pos - 1;
@@ -975,14 +1139,10 @@ class SessionSearcher {
 		if (this.multiline) {
 			for (const entry of rendered) {
 				const reason = budget.spent();
-				if (reason && this.coveredThroughSeq >= this.coveredFromSeq)
+				if (reason && (this.emittedAny || this.coveredThroughSeq >= this.coveredFromSeq))
 					return { stop: { reason, resume: { seq: entry.seq, matchIndex: 0 } } };
-				const units = await this.matchMultilineEntry(entry);
-				if (units === "timedOut") return this.timeoutOnEntry(entry.seq);
-				if (units.length > 0) {
-					const stop = await this.emitUnits(entry, units);
-					if (stop !== undefined) return { stop };
-				}
+				const step = await this.scanMultilineEntry(entry);
+				if (step !== undefined) return { stop: step };
 				this.coveredThroughSeq = entry.seq;
 				this.countedThrough = entry.seq;
 				await budget.pace();
@@ -1000,7 +1160,9 @@ class SessionSearcher {
 					const stop = await this.emitUnits(entry, units);
 					if (stop !== undefined) return { stop };
 				}
-				if (pageMatches.timedOutAtSeq === entry.seq) return this.timeoutOnEntry(entry.seq);
+				if (pageMatches.timedOutAtSeq === entry.seq) {
+					return this.timeoutOnEntry(entry.seq);
+				}
 				this.coveredThroughSeq = entry.seq;
 				this.countedThrough = entry.seq;
 			}
@@ -1013,12 +1175,16 @@ class SessionSearcher {
 
 	private async extendIndex(pos: number, throughSeq: number, rendered: readonly RenderedEntry[]): Promise<void> {
 		if (!this.indexing || this.coverage === undefined || pos !== this.coverage.indexedSeq + 1) return;
-		const texts = [];
+		const texts: SessionSearchText[] = [];
 		for (const entry of rendered) {
 			if (entry.lineCount === 0) continue;
-			texts.push({ seq: entry.seq, parts: await entry.searchParts(this.search.budget) });
+			if (entry.oversized) {
+				texts.push({ seq: entry.seq, oversized: true });
+			} else {
+				texts.push({ seq: entry.seq, parts: await entry.searchParts(this.search.budget) });
+			}
 		}
-		if (this.lastSeq <= 1 && texts.every((item) => item.parts.length <= 1)) return;
+		if (this.lastSeq <= 1 && texts.every((item) => !item.oversized && (item.parts?.length ?? 0) <= 1)) return;
 		const extended = await this.search.budget
 			.race(
 				this.index!.extend(
@@ -1027,6 +1193,11 @@ class SessionSearcher {
 					this.coverage.indexedSeq,
 					throughSeq,
 					texts,
+					{
+						generation: this.coverage.generation,
+						revision: this.coverage.revision,
+						signal: this.search.budget.storeSignal,
+					},
 				),
 			)
 			.catch((error) => {
@@ -1118,80 +1289,189 @@ class SessionSearcher {
 		return workerResult.matchedIndices;
 	}
 
-	private async matchMultilineEntry(entry: RenderedEntry): Promise<EntryMatchUnit[] | "timedOut"> {
+	private async scanMultilineEntry(
+		entry: RenderedEntry,
+	): Promise<{ readonly reason: BudgetStop; readonly resume: SearchResume } | undefined> {
 		const { request, budget } = this.search;
-		const windowEntries: { seq: number; lines: string[]; startGlobalLine: number }[] = [];
-		const firstLines = entry.sliceLines(0, Math.min(entry.lineCount - 1, 512));
-		const firstText = firstLines.join("\n");
-		const firstEntryChars = firstText.length + 1;
-		windowEntries.push({ seq: entry.seq, lines: firstLines, startGlobalLine: 0 });
-		let totalLines = firstLines.length;
-		let totalChars = firstText.length;
+		const isResumeEntry = entry.seq === this.search.fromSeq;
+		let sliceStart = isResumeEntry ? (this.search.fromLineOffset ?? 0) : 0;
+		const initialSkipUnits = isResumeEntry && sliceStart === 0 ? (this.search.fromMatchIndex ?? 0) : 0;
+		const seenStart = new Set<number>();
+		let cumulativeUnits = isResumeEntry && sliceStart > 0 ? (this.search.fromMatchIndex ?? 0) : 0;
 
-		for (let nextSeq = entry.seq + 1; nextSeq <= Math.min(this.lastSeq, entry.seq + MATCH_SPAN_SEQS); nextSeq++) {
-			if (totalChars >= MATCH_SPAN_CHARS) break;
-			const nextEntry = await this.getRenderedEntry(nextSeq);
-			if (nextEntry === "timedOut") return "timedOut";
-			if (nextEntry === null || nextEntry.lineCount === 0) continue;
-			const nextLines = nextEntry.sliceLines(0, Math.min(nextEntry.lineCount - 1, 256));
-			windowEntries.push({ seq: nextSeq, lines: nextLines, startGlobalLine: totalLines });
-			totalLines += nextLines.length;
-			totalChars += nextLines.reduce((sum, l) => sum + l.length + 1, 0);
-		}
-		const windowText = windowEntries.flatMap((w) => w.lines).join("\n");
-		const res = await matchMultilineInWorker(
-			windowText,
-			firstEntryChars,
-			this.normalized.pattern,
-			this.normalized.flags,
-			this.ignoreCase,
-			request.literal,
-			budget.remainingMs(),
-			budget.signal,
-		);
-		if (res.timedOut) return "timedOut";
-		const resolveGlobalLine = (globalLine: number): { seq: number; line: number } => {
-			for (let i = windowEntries.length - 1; i >= 0; i--) {
-				const w = windowEntries[i]!;
-				if (globalLine >= w.startGlobalLine) {
-					return { seq: w.seq, line: Math.min(w.lines.length - 1, globalLine - w.startGlobalLine) };
+		while (sliceStart < entry.lineCount) {
+			const reason = budget.spent();
+			if (reason && (this.emittedAny || sliceStart > 0 || entry.seq > this.coveredFromSeq)) {
+				return {
+					reason,
+					resume: {
+						seq: entry.seq,
+						matchIndex: cumulativeUnits,
+						...(sliceStart > 0 ? { lineOffset: sliceStart } : {}),
+					},
+				};
+			}
+
+			let sliceEnd = sliceStart;
+			let ownedChars = entry.lineAt(sliceStart).length + 1;
+			while (sliceEnd + 1 < entry.lineCount) {
+				const nextLen = entry.lineAt(sliceEnd + 1).length + 1;
+				if (ownedChars + nextLen > REGEX_BATCH_CHARS) break;
+				ownedChars += nextLen;
+				sliceEnd++;
+			}
+
+			const ownedLines = entry.sliceLines(sliceStart, sliceEnd);
+			const firstEntryChars = ownedLines.join("\n").length + 1;
+			const windowParts: { seq: number; lines: string[]; lineOffset: number; startGlobalLine: number }[] = [
+				{ seq: entry.seq, lines: ownedLines, lineOffset: sliceStart, startGlobalLine: 0 },
+			];
+			let totalLines = ownedLines.length;
+			let lookaheadChars = 0;
+
+			if (sliceEnd + 1 < entry.lineCount) {
+				let intraEnd = sliceEnd;
+				while (intraEnd + 1 < entry.lineCount && lookaheadChars < MATCH_SPAN_CHARS) {
+					intraEnd++;
+					lookaheadChars += entry.lineAt(intraEnd).length + 1;
+				}
+				const intraLines = entry.sliceLines(sliceEnd + 1, intraEnd);
+				windowParts.push({
+					seq: entry.seq,
+					lines: intraLines,
+					lineOffset: sliceEnd + 1,
+					startGlobalLine: totalLines,
+				});
+				totalLines += intraLines.length;
+			}
+
+			for (let nextSeq = entry.seq + 1; nextSeq <= this.lastSeq && lookaheadChars < MATCH_SPAN_CHARS; nextSeq++) {
+				if ((await this.cacheLookaheadPage(nextSeq)) === "timedOut") {
+					return {
+						reason: "time",
+						resume: {
+							seq: entry.seq,
+							matchIndex: cumulativeUnits,
+							...(sliceStart > 0 ? { lineOffset: sliceStart } : {}),
+						},
+					};
+				}
+				const nextEntry = await this.getRenderedEntry(nextSeq);
+				if (nextEntry === "timedOut") {
+					return {
+						reason: "time",
+						resume: {
+							seq: entry.seq,
+							matchIndex: cumulativeUnits,
+							...(sliceStart > 0 ? { lineOffset: sliceStart } : {}),
+						},
+					};
+				}
+				if (nextEntry === null || nextEntry.lineCount === 0) continue;
+				let nextEnd = -1;
+				while (nextEnd + 1 < nextEntry.lineCount && lookaheadChars < MATCH_SPAN_CHARS) {
+					nextEnd++;
+					lookaheadChars += nextEntry.lineAt(nextEnd).length + 1;
+				}
+				if (nextEnd >= 0) {
+					const nextLines = nextEntry.sliceLines(0, nextEnd);
+					windowParts.push({
+						seq: nextSeq,
+						lines: nextLines,
+						lineOffset: 0,
+						startGlobalLine: totalLines,
+					});
+					totalLines += nextLines.length;
 				}
 			}
-			return { seq: entry.seq, line: 0 };
-		};
-		const units: EntryMatchUnit[] = [];
-		const seenStart = new Set<number>();
-		for (const span of res.matches as readonly MultilineSpan[]) {
-			const start = resolveGlobalLine(span.startLine);
-			if (start.seq !== entry.seq || seenStart.has(start.line)) continue;
-			seenStart.add(start.line);
-			const end = resolveGlobalLine(span.endLine);
-			units.push({ startLine: start.line, endSeq: end.seq, endLine: end.line });
+
+			const windowText = windowParts.flatMap((part) => part.lines).join("\n");
+			const res = await matchMultilineInWorker(
+				windowText,
+				firstEntryChars,
+				this.normalized.pattern,
+				this.normalized.flags,
+				this.ignoreCase,
+				request.literal,
+				budget.remainingMs(),
+				budget.signal,
+			);
+			if (res.timedOut) {
+				if (!this.emittedAny && sliceStart === 0 && entry.seq === this.coveredFromSeq) {
+					const skipped = this.timeoutOnEntry(entry.seq);
+					if ("stop" in skipped) return skipped.stop;
+				}
+				return {
+					reason: "time",
+					resume: {
+						seq: entry.seq,
+						matchIndex: cumulativeUnits,
+						...(sliceStart > 0 ? { lineOffset: sliceStart } : {}),
+					},
+				};
+			}
+
+			const resolveGlobalLine = (globalLine: number): { seq: number; line: number } => {
+				for (let i = windowParts.length - 1; i >= 0; i--) {
+					const part = windowParts[i]!;
+					if (globalLine >= part.startGlobalLine) {
+						const localIdx = Math.min(part.lines.length - 1, globalLine - part.startGlobalLine);
+						return { seq: part.seq, line: part.lineOffset + localIdx };
+					}
+				}
+				return { seq: entry.seq, line: sliceStart };
+			};
+
+			const sliceUnits: EntryMatchUnit[] = [];
+			for (const span of res.matches as readonly MultilineSpan[]) {
+				const start = resolveGlobalLine(span.startLine);
+				if (start.seq !== entry.seq || seenStart.has(start.line)) continue;
+				seenStart.add(start.line);
+				const end = resolveGlobalLine(span.endLine);
+				sliceUnits.push({ startLine: start.line, endSeq: end.seq, endLine: end.line });
+			}
+
+			if (sliceUnits.length > 0) {
+				const skipInSlice = sliceStart === 0 ? initialSkipUnits : 0;
+				const stop = await this.emitUnits(entry, sliceUnits, skipInSlice, cumulativeUnits);
+				if (stop !== undefined) return stop;
+			}
+			cumulativeUnits += sliceUnits.length;
+			sliceStart = sliceEnd + 1;
+			await budget.pace();
 		}
-		return units;
+		return undefined;
 	}
 
 	private async emitUnits(
 		entry: RenderedEntry,
 		units: readonly EntryMatchUnit[],
+		skipOverride?: number,
+		baseUnitIndex = 0,
 	): Promise<{ readonly reason: BudgetStop; readonly resume: SearchResume } | undefined> {
 		const { seq } = entry;
 		const { label, budget } = this.search;
-		const skipUnits = seq === this.search.fromSeq ? (this.search.fromMatchIndex ?? 0) : 0;
+		const skipUnits =
+			skipOverride !== undefined
+				? skipOverride
+				: seq === this.search.fromSeq
+					? (this.search.fromMatchIndex ?? 0)
+					: 0;
 		const matchStartLinesInEntry = new Set(units.slice(skipUnits).map((u) => u.startLine));
 
 		for (let unitIdx = skipUnits; unitIdx < units.length; unitIdx++) {
 			const unit = units[unitIdx]!;
+			const globalUnitIdx = baseUnitIndex + unitIdx;
 			if (this.shown >= MAX_MATCHES_PER_SESSION) {
-				this.firstMore ??= { seq, matchIndex: unitIdx };
+				this.firstMore ??= { seq, matchIndex: globalUnitIdx };
 				this.more++;
 				continue;
 			}
 			const beforeRows = await this.collectContextBefore(entry, unit.startLine, matchStartLinesInEntry);
-			if (beforeRows === "timedOut") return { reason: "time", resume: { seq, matchIndex: unitIdx } };
+			if (beforeRows === "timedOut") return { reason: "time", resume: { seq, matchIndex: globalUnitIdx } };
 			const matchRow = formatSearchTextLine(label, seq, entry.lineAt(unit.startLine), true);
 			const spanRows = await this.collectSpanAndContextAfter(entry, unit, matchStartLinesInEntry);
-			if (spanRows === "timedOut") return { reason: "time", resume: { seq, matchIndex: unitIdx } };
+			if (spanRows === "timedOut") return { reason: "time", resume: { seq, matchIndex: globalUnitIdx } };
 
 			const allRows = [...beforeRows, { seq, line: unit.startLine, text: matchRow }, ...spanRows];
 			const totalBytes = allRows.reduce((sum, r) => sum + lineBytes(r.text), 0);
@@ -1231,11 +1511,11 @@ class SessionSearcher {
 				this.shown++;
 				this.emittedAny = true;
 				const nextResume =
-					unitIdx + 1 < units.length ? { seq, matchIndex: unitIdx + 1 } : { seq: seq + 1, matchIndex: 0 };
+					unitIdx + 1 < units.length ? { seq, matchIndex: globalUnitIdx + 1 } : { seq: seq + 1, matchIndex: 0 };
 				return { reason: "byte", resume: nextResume };
 			}
 
-			return { reason: "byte", resume: { seq, matchIndex: unitIdx } };
+			return { reason: "byte", resume: { seq, matchIndex: globalUnitIdx } };
 		}
 		return undefined;
 	}
@@ -1365,10 +1645,7 @@ class SessionSearcher {
 		if (this.more > 0 && this.firstMore !== undefined) {
 			const isComplete = stopped === undefined && complete;
 			const where = isComplete ? "" : ` in entries ${this.firstMore.seq}-${this.countedThrough}, maybe more after`;
-			const cursor =
-				this.firstMore.matchIndex > 0
-					? `${this.firstMore.seq}.${this.firstMore.matchIndex}`
-					: String(this.firstMore.seq);
+			const cursor = formatSearchCursor(this.firstMore);
 			const remainingRanges = this.remainingRangesFrom(this.firstMore.seq);
 			this.lines.push(
 				`${this.search.label}-0- [+${this.more} more in this session${where}; search ${this.search.place.urlWith({ cursor }, remainingRanges)} for them]`,
@@ -1385,6 +1662,9 @@ class SessionSearcher {
 }
 
 export function formatSearchCursor(resume: SearchResume): string {
+	if (resume.lineOffset !== undefined && resume.lineOffset > 0) {
+		return `${resume.seq}.${resume.matchIndex}.${resume.lineOffset}`;
+	}
 	return resume.matchIndex > 0 ? `${resume.seq}.${resume.matchIndex}` : String(resume.seq);
 }
 

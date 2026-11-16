@@ -66,7 +66,22 @@ export class LegacySessionStore implements SessionStore {
 		const { readEntryRange, searchIndex } = inner;
 		if (readEntryRange !== undefined)
 			this.readEntryRange = async (sessionId, query) => {
-				await this.convert(sessionId);
+				query.signal?.throwIfAborted();
+				if ((await inner.readHeader(sessionId)) !== undefined) {
+					return readEntryRange.call(inner, sessionId, query);
+				}
+				if (!(await this.isDeleted(sessionId))) {
+					const legacy = await this.legacyStore();
+					if (legacy !== undefined) {
+						for (const file of (await this.legacyIndex()).get(sessionId) ?? []) {
+							try {
+								return await legacy.readFileEntryRange(file.location, query);
+							} catch (error) {
+								if (query.signal?.aborted) throw error;
+							}
+						}
+					}
+				}
 				return readEntryRange.call(inner, sessionId, query);
 			};
 		if (searchIndex !== undefined) this.searchIndex = searchIndex;

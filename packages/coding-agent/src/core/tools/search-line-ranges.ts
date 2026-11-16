@@ -31,9 +31,13 @@ export function parseLineRangeSpec(spec: string): SearchLineRange[] | undefined 
 export function splitLineRangeSelector(value: string): { path: string; lineRanges?: SearchLineRange[] } {
 	const match = value.match(/^(.*):(\d+(?:(?:-|\.\.|\+)\d*)?(?:,\d+(?:(?:-|\.\.|\+)\d*)?)*)$/);
 	if (!match) return { path: value };
+	const path = match[1] ?? value;
 	const ranges = parseLineRangeSpec(match[2] ?? "");
-	if (!ranges) throw new Error(`Invalid line-range selector: ${match[2] ?? ""}`);
-	return { path: match[1] ?? value, lineRanges: ranges };
+	if (!ranges) {
+		const kind = /^history:\/\/sessions(?:\/|$|\?)/.test(path) ? "entry-range" : "line-range";
+		throw new Error(`Invalid ${kind} selector: ${match[2] ?? ""}`);
+	}
+	return { path, lineRanges: ranges };
 }
 
 function rowLineNumber(line: string): { lineNumber: number; isMatch: boolean } | undefined {

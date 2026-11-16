@@ -2,7 +2,12 @@ import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteValue } from "../
 import { dialectOf, type StorageDialect, type StorageTrigger } from "../dialect.js";
 import { applyStorageMigrations } from "../migrations.js";
 import { renderStorageIdentifiers, storageMigrationTable } from "../prefix.js";
-import type { SessionSearchCoverage, SessionSearchIndex, SessionSearchText } from "./types.js";
+import type {
+	SessionSearchCoverage,
+	SessionSearchExtendOptions,
+	SessionSearchIndex,
+	SessionSearchText,
+} from "./types.js";
 
 export const SESSION_SEARCH_DOMAIN = "session-search";
 export const SESSION_SEARCH_TABLES = Object.freeze({
@@ -15,6 +20,7 @@ export const SESSION_SEARCH_TABLES = Object.freeze({
 
 export const SEARCH_PART_CHARS = 4_096;
 export const SEARCH_PART_OVERLAP = 512;
+export const MAX_INDEXED_ENTRY_CHARS = 8 * 1024 * 1024;
 
 type SearchTables = Readonly<Record<keyof typeof SESSION_SEARCH_TABLES, string>>;
 interface SessionTables {
@@ -31,9 +37,9 @@ const SEQ_MASK = SEQ_SPACE - 1;
 const MAX_SID = 8_388_607;
 const MAX_LITERALS_PER_SET = 8;
 const MAX_TERMS_PER_SET = 24;
-const INSERT_ROWS_PER_STATEMENT = 64;
+const INSERT_ROWS_PER_STATEMENT = 32;
 const MAX_LITERAL_CHARS = 200;
-const BATCH_CHARS = 32_768;
+const BATCH_CHARS = 12_288;
 const CANDIDATE_ROWS = 256;
 const SEQ_WINDOW = 4_096;
 
@@ -50,13 +56,46 @@ export function yieldTurn(): Promise<void> {
 	});
 }
 
+function newGeneration(): string {
+	const bytes = crypto.getRandomValues(new Uint8Array(16));
+	return `g:${Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+}
+
+function withCoverageMeta(
+	base: { readonly indexedSeq: number; readonly lastSeq: number },
+	generation: string,
+	revision: string,
+): SessionSearchCoverage {
+	const target: SessionSearchCoverage = { indexedSeq: base.indexedSeq, lastSeq: base.lastSeq };
+	Object.defineProperties(target, {
+		generation: { value: generation, enumerable: false },
+		revision: { value: revision, enumerable: false },
+	});
+	return target;
+}
+
+function parseWholeSeqs(raw: string | null | undefined): number[] {
+	if (!raw) return [];
+	return raw
+		.split(",")
+		.map((part) => Number.parseInt(part, 10))
+		.filter((seq) => Number.isInteger(seq) && seq >= 1);
+}
+
+function mergeWholeSeqs(existing: string | null | undefined, added: readonly number[]): string {
+	if (added.length === 0) return existing ?? "";
+	const merged = new Set<number>(parseWholeSeqs(existing));
+	for (const seq of added) if (seq >= 1) merged.add(seq);
+	return [...merged].sort((a, b) => a - b).join(",");
+}
+
 function isHighSurrogate(code: number): boolean {
 	return code >= 0xd800 && code <= 0xdbff;
 }
 
 export function splitSearchTextParts(text: string): string[] {
 	if (text.length <= SEARCH_PART_CHARS + SEARCH_PART_OVERLAP) return [text];
-	const step = Math.max(SEARCH_PART_CHARS, Math.ceil((text.length - SEARCH_PART_OVERLAP) / MAX_PARTS));
+	const step = SEARCH_PART_CHARS;
 	const parts: string[] = [];
 	for (let start = 0; ; ) {
 		let end = Math.min(text.length, start + step + SEARCH_PART_OVERLAP);
@@ -68,23 +107,42 @@ export function splitSearchTextParts(text: string): string[] {
 	}
 }
 
-function docsOf(texts: readonly SessionSearchText[]): SearchDoc[] {
-	return texts.flatMap(({ seq, text, parts }) => {
+function prepareDocs(texts: readonly SessionSearchText[]): {
+	readonly docs: SearchDoc[];
+	readonly oversizedSeqs: number[];
+} {
+	const docs: SearchDoc[] = [];
+	const oversizedSeqs: number[] = [];
+	for (const { seq, text, parts, oversized } of texts) {
+		if (oversized === true || (text !== undefined && text.length > MAX_INDEXED_ENTRY_CHARS)) {
+			oversizedSeqs.push(seq);
+			continue;
+		}
 		const slices =
 			parts !== undefined
 				? parts.flatMap(splitSearchTextParts)
 				: text === undefined || text.length === 0
 					? []
 					: splitSearchTextParts(text);
-		return slices.slice(0, MAX_PARTS).map((slice, index) => ({ seq, part: index, text: slice }));
-	});
+		if (slices.length > MAX_PARTS) {
+			oversizedSeqs.push(seq);
+			continue;
+		}
+		for (const [index, slice] of slices.entries()) {
+			docs.push({ seq, part: index, text: slice });
+		}
+	}
+	return { docs, oversizedSeqs };
 }
 
 type CoverageRow = SqliteRow & {
 	last_seq: number | bigint;
+	session_revision: string;
 	sid: number | bigint | null;
 	format: number | bigint | null;
 	indexed_seq: number | bigint | null;
+	generation: string | null;
+	whole_seqs: string | null;
 };
 
 interface TrigramEngine {
@@ -95,7 +153,13 @@ interface TrigramEngine {
 		sessionTables: SessionTables,
 	): Promise<void>;
 	forgetInTrigger(tables: SearchTables): string;
-	insert(tx: SqliteExecutor, tables: SearchTables, sid: number, docs: readonly SearchDoc[]): Promise<void>;
+	insert(
+		tx: SqliteExecutor,
+		tables: SearchTables,
+		sid: number,
+		docs: readonly SearchDoc[],
+		signal?: AbortSignal,
+	): Promise<void>;
 	forget(tx: SqliteExecutor, tables: SearchTables, sessionId: string): Promise<void>;
 	candidates(
 		database: SqliteDatabase,
@@ -175,15 +239,18 @@ const sqliteFts: TrigramEngine = {
 	forgetInTrigger(tables) {
 		return `DELETE FROM ${tables.fts} WHERE rowid BETWEEN (SELECT sid << 40 FROM ${tables.state} WHERE session_id = OLD.session_id) AND (SELECT (sid << 40) + 1099511627775 FROM ${tables.state} WHERE session_id = OLD.session_id)`;
 	},
-	async insert(tx, tables, sid, docs) {
-		for (const { seq, part, text } of docs)
+	async insert(tx, tables, sid, docs, signal) {
+		for (const [index, { seq, part, text }] of docs.entries()) {
+			signal?.throwIfAborted();
 			await tx.run(
-				`INSERT INTO ${tables.fts} (rowid, body) VALUES ((? << 40) + (? << ${PART_BITS}) + ?, ?)`,
+				`INSERT OR REPLACE INTO ${tables.fts} (rowid, body) VALUES ((? << 40) + (? << ${PART_BITS}) + ?, ?)`,
 				sid,
 				seq,
 				part,
 				text,
 			);
+			if (index + 1 < docs.length) await yieldTurn();
+		}
 	},
 	async forget(tx, tables, sessionId) {
 		await tx.run(
@@ -272,20 +339,25 @@ const postgresTrigrams: TrigramEngine = {
 	forgetInTrigger(tables) {
 		return `DELETE FROM ${tables.entries} WHERE sid IN (SELECT sid FROM ${tables.state} WHERE session_id = OLD.session_id)`;
 	},
-	async insert(tx, tables, sid, docs) {
+	async insert(tx, tables, sid, docs, signal) {
 		for (let start = 0; start < docs.length; start += INSERT_ROWS_PER_STATEMENT) {
+			signal?.throwIfAborted();
 			const batch = docs.slice(start, start + INSERT_ROWS_PER_STATEMENT);
 			await tx.run(
 				`INSERT INTO ${tables.entries} (sid, seq, part, body) VALUES ${batch.map(() => "(?, ?, ?, ?)").join(", ")} ON CONFLICT (sid, seq, part) DO UPDATE SET body = excluded.body`,
 				...batch.flatMap(({ seq, part, text }) => [sid, seq, part, foldForLike(text)]),
 			);
+			if (start + INSERT_ROWS_PER_STATEMENT < docs.length) await yieldTurn();
 		}
 	},
 	async forget(tx, tables, sessionId) {
-		await tx.run(
-			`DELETE FROM ${tables.entries} WHERE sid IN (SELECT sid FROM ${tables.state} WHERE session_id = ?)`,
+		const deleted = await tx.all<SqliteRow & { sid: number | bigint }>(
+			`DELETE FROM ${tables.state} WHERE session_id = ? RETURNING sid`,
 			sessionId,
 		);
+		for (const row of deleted) {
+			await tx.run(`DELETE FROM ${tables.entries} WHERE sid = ?`, Number(row.sid));
+		}
 	},
 	async candidates(database, tables, sid, anyOf, fromSeq, toSeq, limit) {
 		const sets = normalizeSets(anyOf);
@@ -342,6 +414,15 @@ const postgresTrigrams: TrigramEngine = {
 
 function engineFor(dialect: StorageDialect): TrigramEngine {
 	return dialect.name === "postgres" ? postgresTrigrams : sqliteFts;
+}
+
+function mergeCandidateSeqs(
+	engineSeqs: readonly number[],
+	wholeSeqs: readonly number[],
+	limit: number,
+): readonly number[] {
+	if (wholeSeqs.length === 0) return engineSeqs;
+	return [...new Set([...engineSeqs, ...wholeSeqs])].sort((a, b) => a - b).slice(0, limit);
 }
 
 export class SqlSessionSearchIndex implements SessionSearchIndex {
@@ -409,7 +490,7 @@ export class SqlSessionSearchIndex implements SessionSearchIndex {
 
 	async coverage(sessionId: string, format: number): Promise<SessionSearchCoverage | undefined> {
 		const row = await this.database.get<CoverageRow>(
-			`SELECT s.last_seq, st.sid, st.format, st.indexed_seq
+			`SELECT s.last_seq, s.revision AS session_revision, st.sid, st.format, st.indexed_seq, st.revision AS generation
 			FROM ${this.sessionTables.sessions} s
 			LEFT JOIN ${this.tables.state} st ON st.session_id = s.id
 			WHERE s.id = ?`,
@@ -417,11 +498,16 @@ export class SqlSessionSearchIndex implements SessionSearchIndex {
 		);
 		if (!row) return undefined;
 		const lastSeq = Number(row.last_seq);
-		if (row.sid === null) return { indexedSeq: 0, lastSeq };
+		if (row.sid === null) {
+			return withCoverageMeta({ indexedSeq: 0, lastSeq }, newGeneration(), row.session_revision);
+		}
 		const indexedSeq = Number(row.indexed_seq);
-		if (Number(row.format) === format && indexedSeq <= lastSeq) return { indexedSeq, lastSeq };
+		const generation = row.generation ?? "";
+		if (Number(row.format) === format && indexedSeq <= lastSeq && generation.startsWith("g:")) {
+			return withCoverageMeta({ indexedSeq, lastSeq }, generation, row.session_revision);
+		}
 		await this.database.transaction((tx) => this.forget(tx, sessionId), { retryTransientFailures: true });
-		return { indexedSeq: 0, lastSeq };
+		return withCoverageMeta({ indexedSeq: 0, lastSeq }, newGeneration(), row.session_revision);
 	}
 
 	async extend(
@@ -430,80 +516,108 @@ export class SqlSessionSearchIndex implements SessionSearchIndex {
 		afterSeq: number,
 		throughSeq: number,
 		texts: readonly SessionSearchText[],
+		options?: SessionSearchExtendOptions,
 	): Promise<boolean> {
 		if (throughSeq >= SEQ_SPACE || throughSeq < afterSeq) return false;
-		const options = { retryTransientFailures: true };
-		const docs = docsOf(texts);
+		options?.signal?.throwIfAborted();
+		const txOptions = { retryTransientFailures: true };
+		const { docs, oversizedSeqs } = prepareDocs(texts);
 		const totalChars = docs.reduce((sum, doc) => sum + doc.text.length, 0);
 		if (totalChars <= BATCH_CHARS) {
 			return this.database.transaction(async (tx) => {
+				options?.signal?.throwIfAborted();
 				if (!this.triggerInstalled) {
 					await tx.exec(this.dialect.renderTrigger(forgetTrigger(this.tables, this.sessionTables, this.engine)));
 					this.triggerInstalled = true;
 				}
-				const row = await tx.get<CoverageRow & { revision: string }>(
-					`SELECT s.last_seq, s.revision, st.sid, st.format, st.indexed_seq
+				const row = await tx.get<CoverageRow>(
+					`SELECT s.last_seq, s.revision AS session_revision, st.sid, st.format, st.indexed_seq, st.revision AS generation, st.entry_id AS whole_seqs
 					FROM ${this.sessionTables.sessions} s LEFT JOIN ${this.tables.state} st ON st.session_id = s.id
 					WHERE s.id = ?`,
 					sessionId,
 				);
 				if (!row || Number(row.last_seq) < throughSeq) return false;
 				let sid: number;
+				let activeGen: string;
 				if (row.sid !== null) {
 					if (Number(row.format) !== format || Number(row.indexed_seq) !== afterSeq) return false;
+					if (options?.generation !== undefined && row.generation !== options.generation) return false;
 					sid = Number(row.sid);
+					activeGen = row.generation!;
 				} else {
 					if (afterSeq !== 0) return false;
+					if (options?.revision !== undefined && row.session_revision !== options.revision) return false;
+					activeGen = options?.generation ?? newGeneration();
 					const created = await tx.get<SqliteRow & { sid: number | bigint }>(
-						`INSERT INTO ${this.tables.state} (session_id, format, indexed_seq, revision, entry_id) VALUES (?, ?, 0, '', '') RETURNING sid`,
+						`INSERT INTO ${this.tables.state} (session_id, format, indexed_seq, revision, entry_id) VALUES (?, ?, 0, ?, '') RETURNING sid`,
 						sessionId,
 						format,
+						activeGen,
 					);
 					sid = Number(created!.sid);
 				}
 				if (sid > MAX_SID) return false;
-				if (docs.length > 0) await this.engine.insert(tx, this.tables, sid, docs);
-				await tx.run(
-					`UPDATE ${this.tables.state} SET indexed_seq = ?, revision = ? WHERE sid = ?`,
+				if (docs.length > 0) await this.engine.insert(tx, this.tables, sid, docs, options?.signal);
+				const nextWhole = mergeWholeSeqs(row.whole_seqs, oversizedSeqs);
+				const updated = await tx.run(
+					`UPDATE ${this.tables.state} SET indexed_seq = ?, entry_id = ? WHERE sid = ? AND session_id = ? AND format = ? AND indexed_seq = ? AND revision = ?`,
 					throughSeq,
-					row.revision,
+					nextWhole,
 					sid,
+					sessionId,
+					format,
+					afterSeq,
+					activeGen,
 				);
-				return true;
-			}, options);
+				return updated.changes === 1;
+			}, txOptions);
 		}
-		const sid = await this.database.transaction(async (tx) => {
+		const started = await this.database.transaction(async (tx) => {
+			options?.signal?.throwIfAborted();
 			if (!this.triggerInstalled) {
 				await tx.exec(this.dialect.renderTrigger(forgetTrigger(this.tables, this.sessionTables, this.engine)));
 				this.triggerInstalled = true;
 			}
 			const row = await tx.get<CoverageRow>(
-				`SELECT s.last_seq, st.sid, st.format, st.indexed_seq
+				`SELECT s.last_seq, s.revision AS session_revision, st.sid, st.format, st.indexed_seq, st.revision AS generation, st.entry_id AS whole_seqs
 				FROM ${this.sessionTables.sessions} s LEFT JOIN ${this.tables.state} st ON st.session_id = s.id
 				WHERE s.id = ?`,
 				sessionId,
 			);
 			if (!row || Number(row.last_seq) < throughSeq) return undefined;
-			if (row.sid !== null)
-				return Number(row.format) === format && Number(row.indexed_seq) === afterSeq ? Number(row.sid) : undefined;
+			if (row.sid !== null) {
+				if (Number(row.format) !== format || Number(row.indexed_seq) !== afterSeq) return undefined;
+				if (options?.generation !== undefined && row.generation !== options.generation) return undefined;
+				return { sid: Number(row.sid), generation: row.generation!, wholeSeqs: row.whole_seqs ?? "" };
+			}
 			if (afterSeq !== 0) return undefined;
+			if (options?.revision !== undefined && row.session_revision !== options.revision) return undefined;
+			const generation = options?.generation ?? newGeneration();
 			const created = await tx.get<SqliteRow & { sid: number | bigint }>(
-				`INSERT INTO ${this.tables.state} (session_id, format, indexed_seq, revision, entry_id) VALUES (?, ?, 0, '', '') RETURNING sid`,
+				`INSERT INTO ${this.tables.state} (session_id, format, indexed_seq, revision, entry_id) VALUES (?, ?, 0, ?, '') RETURNING sid`,
 				sessionId,
 				format,
+				generation,
 			);
-			return Number(created!.sid);
-		}, options);
-		if (sid === undefined || sid > MAX_SID) return false;
-		const unchanged = async (tx: SqliteExecutor) => {
-			const state = await tx.get<SqliteRow & { format: number | bigint; indexed_seq: number | bigint }>(
-				`SELECT format, indexed_seq FROM ${this.tables.state} WHERE sid = ? AND session_id = ?`,
+			return { sid: Number(created!.sid), generation, wholeSeqs: "" };
+		}, txOptions);
+		if (started === undefined || started.sid > MAX_SID) return false;
+		const { sid, generation: activeGen, wholeSeqs } = started;
+		await yieldTurn();
+		const lockAndCheck = async (tx: SqliteExecutor): Promise<boolean> => {
+			options?.signal?.throwIfAborted();
+			const locked = await tx.run(
+				`UPDATE ${this.tables.state} SET indexed_seq = indexed_seq WHERE sid = ? AND session_id = ? AND format = ? AND indexed_seq = ? AND revision = ?`,
 				sid,
 				sessionId,
+				format,
+				afterSeq,
+				activeGen,
 			);
-			return state !== undefined && Number(state.format) === format && Number(state.indexed_seq) === afterSeq;
+			return locked.changes === 1;
 		};
 		for (let start = 0; start < docs.length; ) {
+			options?.signal?.throwIfAborted();
 			let end = start + 1;
 			for (
 				let chars = docs[start]!.text.length;
@@ -513,29 +627,35 @@ export class SqlSessionSearchIndex implements SessionSearchIndex {
 				chars += docs[end]!.text.length;
 			const batch = docs.slice(start, end);
 			const written = await this.database.transaction(async (tx) => {
-				if (!(await unchanged(tx))) return false;
-				await this.engine.insert(tx, this.tables, sid, batch);
+				if (!(await lockAndCheck(tx))) return false;
+				await this.engine.insert(tx, this.tables, sid, batch, options?.signal);
 				return true;
-			}, options);
+			}, txOptions);
 			if (!written) return false;
 			start = end;
 			await yieldTurn();
 		}
+		options?.signal?.throwIfAborted();
+		const nextWhole = mergeWholeSeqs(wholeSeqs, oversizedSeqs);
 		return this.database.transaction(async (tx) => {
-			if (!(await unchanged(tx))) return false;
-			const session = await tx.get<SqliteRow & { last_seq: number | bigint; revision: string }>(
-				`SELECT last_seq, revision FROM ${this.sessionTables.sessions} WHERE id = ?`,
+			options?.signal?.throwIfAborted();
+			const session = await tx.get<SqliteRow & { last_seq: number | bigint }>(
+				`SELECT last_seq FROM ${this.sessionTables.sessions} WHERE id = ?`,
 				sessionId,
 			);
 			if (!session || Number(session.last_seq) < throughSeq) return false;
-			await tx.run(
-				`UPDATE ${this.tables.state} SET indexed_seq = ?, revision = ? WHERE sid = ?`,
+			const published = await tx.run(
+				`UPDATE ${this.tables.state} SET indexed_seq = ?, entry_id = ? WHERE sid = ? AND session_id = ? AND format = ? AND indexed_seq = ? AND revision = ?`,
 				throughSeq,
-				session.revision,
+				nextWhole,
 				sid,
+				sessionId,
+				format,
+				afterSeq,
+				activeGen,
 			);
-			return true;
-		}, options);
+			return published.changes === 1;
+		}, txOptions);
 	}
 
 	async candidates(
@@ -544,15 +664,37 @@ export class SqlSessionSearchIndex implements SessionSearchIndex {
 		fromSeq: number,
 		toSeq: number,
 		limit: number,
-	): Promise<readonly number[]> {
+		generation?: string,
+	): Promise<readonly number[] | undefined> {
 		if (anyOf.length === 0 || fromSeq > toSeq) return [];
-		const state = await this.database.get<SqliteRow & { sid: number | bigint; indexed_seq: number | bigint }>(
-			`SELECT sid, indexed_seq FROM ${this.tables.state} WHERE session_id = ?`,
+		const state = await this.database.get<
+			SqliteRow & {
+				sid: number | bigint;
+				indexed_seq: number | bigint;
+				generation: string;
+				whole_seqs: string;
+			}
+		>(
+			`SELECT sid, indexed_seq, revision AS generation, entry_id AS whole_seqs FROM ${this.tables.state} WHERE session_id = ?`,
 			sessionId,
 		);
-		if (!state) return [];
-		const through = Math.min(toSeq, Number(state.indexed_seq), SEQ_SPACE - 1);
+		if (!state) return generation !== undefined ? undefined : [];
+		const indexedSeq = Number(state.indexed_seq);
+		if (generation !== undefined && (state.generation !== generation || indexedSeq < toSeq)) {
+			return undefined;
+		}
+		const through = Math.min(toSeq, indexedSeq, SEQ_SPACE - 1);
 		if (fromSeq > through) return [];
-		return this.engine.candidates(this.database, this.tables, Number(state.sid), anyOf, fromSeq, through, limit);
+		const engineSeqs = await this.engine.candidates(
+			this.database,
+			this.tables,
+			Number(state.sid),
+			anyOf,
+			fromSeq,
+			through,
+			limit,
+		);
+		const wholeSeqs = parseWholeSeqs(state.whole_seqs).filter((seq) => seq >= fromSeq && seq <= through);
+		return mergeCandidateSeqs(engineSeqs, wholeSeqs, limit);
 	}
 }

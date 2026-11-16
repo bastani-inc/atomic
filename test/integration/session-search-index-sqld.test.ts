@@ -112,7 +112,15 @@ for (const backend of storageBackends) {
 				await store.delete("s");
 				assert.equal(await index.coverage("s", FORMAT), undefined);
 				await store.create(header("s"), entries.slice(0, 1));
-				assert.deepEqual(await index.coverage("s", FORMAT), { indexedSeq: 0, lastSeq: 1 });
+				const fresh = await index.coverage("s", FORMAT);
+				assert.deepEqual(fresh, { indexedSeq: 0, lastSeq: 1 });
+				assert.equal(
+					await index.extend("s", FORMAT, 0, 1, texts.slice(0, 1), {
+						generation: fresh?.generation,
+						revision: "stale-revision",
+					}),
+					false,
+				);
 				assert.deepEqual(await index.candidates("s", [["needle"]], 1, 5, 10), []);
 			} finally {
 				await scope.close();

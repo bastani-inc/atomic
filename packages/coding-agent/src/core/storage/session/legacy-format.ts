@@ -1,5 +1,4 @@
 import type { CompactionEntry, SessionEntry, SessionHeader, SessionMessageEntry } from "../../session-manager-types.ts";
-import { generateId } from "../../session-manager-validation.ts";
 import { SessionFormatVersionError, type SessionJsonValue } from "./errors.js";
 import { SESSION_FORMAT_VERSION } from "./types.js";
 
@@ -56,26 +55,45 @@ export function upgradeLegacySessionEntries(
 	return { header, entries: upgraded };
 }
 
+function v1EntryId(seq: number): string {
+	return seq.toString(16).padStart(8, "0");
+}
+
+export function upgradeLegacySessionEntry(
+	stored: StoredSessionHeader,
+	entry: SessionEntry,
+	seq: number,
+	path: string,
+): SessionEntry {
+	const version = legacyVersion(stored, path);
+	let upgraded = entry;
+	if (version < 2) {
+		const id = v1EntryId(seq);
+		const parentId = seq > 1 ? v1EntryId(seq - 1) : null;
+		const withIds: SessionEntry = { ...upgraded, id, parentId };
+		if (withIds.type === "compaction") {
+			const { firstKeptEntryIndex, ...compaction } = withIds as LegacyCompactionEntry;
+			if (typeof firstKeptEntryIndex === "number") {
+				if (!Number.isInteger(firstKeptEntryIndex) || firstKeptEntryIndex < 0 || firstKeptEntryIndex > seq)
+					throw new SessionFormatVersionError(path, stored.version);
+				const firstKeptEntryId =
+					firstKeptEntryIndex >= 1 && firstKeptEntryIndex < seq ? v1EntryId(firstKeptEntryIndex) : null;
+				upgraded = { ...compaction, firstKeptEntryId };
+			} else {
+				upgraded = withIds;
+			}
+		} else {
+			upgraded = withIds;
+		}
+	}
+	if (version < 3) upgraded = renameHookMessage(upgraded);
+	return upgraded;
+}
+
 function migrateV1ToV2(entries: readonly SessionEntry[], stored: StoredSessionHeader, path: string): SessionEntry[] {
-	const ids = new Set<string>();
-	let parentId: string | null = null;
-	const upgraded = entries.map((entry) => {
-		const id = generateId(ids);
-		ids.add(id);
-		const next: SessionEntry = { ...entry, id, parentId };
-		parentId = id;
-		return next;
-	});
-	return upgraded.map((entry, position) => {
-		if (entry.type !== "compaction") return entry;
-		const { firstKeptEntryIndex, ...compaction } = entry as LegacyCompactionEntry;
-		if (typeof firstKeptEntryIndex !== "number") return entry;
-		if (!Number.isInteger(firstKeptEntryIndex) || firstKeptEntryIndex < 0 || firstKeptEntryIndex > position + 1)
-			throw new SessionFormatVersionError(path, stored.version);
-		const kept =
-			firstKeptEntryIndex >= 1 && firstKeptEntryIndex <= position ? upgraded[firstKeptEntryIndex - 1] : undefined;
-		return { ...compaction, firstKeptEntryId: kept?.id ?? null };
-	});
+	return entries.map((entry, position) =>
+		upgradeLegacySessionEntry({ ...stored, version: 1 }, entry, position + 1, path),
+	);
 }
 
 function migrateV2ToV3(entries: readonly SessionEntry[]): SessionEntry[] {
