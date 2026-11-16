@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, type Stats } from "node:fs";
-import { lstat, mkdir, open, readdir, readFile, realpath, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, readFile, realpath, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { releaseLock } from "../lock-release.ts";
 import { takeTakeoverMutex } from "../lock-takeover.ts";
+import { renameWithRetry } from "../rename-retry.ts";
 import { deferRestorePhase, noteRestoreFetch, timeRestorePhase } from "../resume/timings.ts";
 import {
 	locateCheckout,
@@ -610,7 +611,7 @@ async function ensureObjectStore(store: string, signal?: AbortSignal): Promise<v
 		await runGit(["init", "-q", "--bare", fresh], { cwd: repositories, signal });
 		await enableLongPaths(fresh, signal);
 		try {
-			await rename(fresh, store);
+			await renameWithRetry(fresh, store, { signal });
 		} catch {
 			await runGit(["init", "-q", "--bare", store], { cwd: repositories, signal });
 		}
