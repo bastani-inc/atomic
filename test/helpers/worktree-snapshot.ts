@@ -65,6 +65,14 @@ export function assertCaptureUnreadable(result: WorktreeSnapshotCapture, path: s
 }
 
 /**
+ * Windows can keep a restored worktree busy for seconds after the processes that worked in it ended, while the search
+ * indexer, an antivirus scan or a terminated build step's handles still hold it. Node waits 50 ms longer before each
+ * try, so a sandbox removal retries for about 20 seconds before it fails with EBUSY.
+ */
+const SANDBOX_REMOVAL_RETRIES = 28;
+const SANDBOX_REMOVAL_RETRY_DELAY_MS = 50;
+
+/**
  * Disposable Git repositories whose commands all go through the snapshot runner with an isolated global config, so
  * the developer's signing, hooks and filter settings never reach a fixture.
  */
@@ -126,6 +134,11 @@ export class GitSandbox {
 
 	dispose(): void {
 		this.restoreResolver();
-		rmSync(this.root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+		rmSync(this.root, {
+			recursive: true,
+			force: true,
+			maxRetries: SANDBOX_REMOVAL_RETRIES,
+			retryDelay: SANDBOX_REMOVAL_RETRY_DELAY_MS,
+		});
 	}
 }
