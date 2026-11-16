@@ -717,9 +717,9 @@ function alreadyRunningResult(name: string, workflowId: string, store: RunOpts["
 	return {
 		ok: false,
 		reason: "not_resumable",
-		message: `Workflow "${name}" (${workflowId}) is already running${
-			here ? " in this session" : " in another session"
-		}. See agents working and chat with or steer each stage using \`/workflows ${workflowId}\`; use \`/workflow quit ${workflowId}\` to pause the run for later resume.`,
+		message: here
+			? `Workflow "${name}" (${workflowId}) is already running in this session. See agents working and chat with or steer each stage using \`/workflows ${workflowId}\`; use \`/workflow quit ${workflowId}\` to pause the run for later resume.`
+			: `Workflow "${name}" (${workflowId}) is already running in another session. Open it with \`/workflows ${workflowId}\` in the session that runs it, or use \`/workflow quit ${workflowId}\` there to pause the run for later resume.`,
 	};
 }
 

@@ -503,10 +503,47 @@ describe("resumeDurableWorkflow", () => {
 		assert.equal(result.ok, false);
 		if (!result.ok) {
 			assert.equal(result.reason, "not_resumable");
-			assert.match(result.message, /already running/);
+			assert.match(result.message, /already running in this session/);
 			assert.match(result.message, /\/workflows/);
 			assert.match(result.message, /\/workflow quit/);
 			assert.doesNotMatch(result.message, /\/workflow kill/);
+		}
+		store.removeRun(workflowId);
+	});
+
+	test("already-running refusal for another session qualifies /workflows and /workflow quit with the owning session (#5224)", async () => {
+		const workflowId = testRunId("wf-active-other-session");
+		await backend.commitWorkflowRegistration({
+			workflowId,
+			name: "resumable-pipeline",
+			inputs: { topic: "data" },
+			createdAt: 1,
+			status: "running",
+			completedCheckpoints: 1,
+		});
+		store.recordRunStart({
+			id: workflowId,
+			name: "resumable-pipeline",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [],
+			startedAt: 1,
+		});
+		const originalRun = store.run.bind(store);
+		let reads = 0;
+		vi.spyOn(store, "run").mockImplementation((id) => (++reads <= 3 ? originalRun(id) : undefined));
+
+		const result = await resumeDurableWorkflow(workflowId, deps());
+		assert.equal(result.ok, false);
+		if (!result.ok) {
+			assert.equal(result.reason, "not_resumable");
+			assert.match(result.message, /already running in another session/);
+			assert.match(
+				result.message,
+				new RegExp(`Open it with \`/workflows ${workflowId}\` in the session that runs it`),
+			);
+			assert.match(result.message, new RegExp(`use \`/workflow quit ${workflowId}\` there`));
 		}
 		store.removeRun(workflowId);
 	});

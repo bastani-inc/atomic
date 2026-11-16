@@ -40,9 +40,37 @@ test("bundled fallback completes /workflows as a separate run browser (#5224)", 
 });
 
 test("bundled workflow fallback retains inspection, resume and run controls (#5224)", async () => {
+	const rootSuggestions = await suggest("/workflow ");
+	assert.ok(rootSuggestions);
+	assert.deepEqual(
+		rootSuggestions.items
+			.filter((item) => !item.description?.startsWith("Run workflow:"))
+			.map((item) => ({ value: item.value, label: item.label, description: item.description })),
+		[
+			{ value: "list ", label: "list", description: "List registered workflows" },
+			{ value: "status ", label: "status", description: "List current-session active and retained terminal runs" },
+			{ value: "pause ", label: "pause", description: "Pause a run" },
+			{ value: "quit ", label: "quit", description: "Quit a run and keep it resumable" },
+			{ value: "resume ", label: "resume", description: "Re-open overlay for a run" },
+			{ value: "fork ", label: "fork", description: "Fork a run into a new run, optionally --from a stage" },
+			{ value: "inputs ", label: "inputs", description: "Show a workflow's input schema" },
+			{ value: "reload ", label: "reload", description: "Reload workflow resources" },
+		],
+	);
+
+	const commands = await suggest("/workfl");
+	const workflow = commands?.items.find((item) => item.value === "workflow");
+	assert.ok(workflow);
+	assert.equal(
+		workflow.description,
+		"Run or inspect Atomic workflows. Usage: /workflow <name> [key=value…] | /workflow [list|status|quit|pause|resume|inputs|reload] [args] | /workflow fork <run> [--from <stage>]",
+	);
+
 	for (const [prefix, expected] of [
 		["sta", ["status "]],
 		["res", ["resume "]],
+		["for", ["fork "]],
+		["fork -", ["fork --from "]],
 		["pause -", ["pause --all ", "pause --yes ", "pause -y "]],
 		["quit -", ["quit --all "]],
 		["inputs fan", ["inputs fan-out-and-synthesize "]],

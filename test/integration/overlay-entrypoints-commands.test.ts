@@ -617,7 +617,7 @@ describe("/workflows and the removed /workflow connect and /workflow attach — 
 		assert.equal(realCustomCalls[0]!.options.overlay, false);
 		const text = visibleText(realCustomCalls[0]!.component.render(80));
 		assert.match(text, /Resume Session/);
-		assert.doesNotMatch(text, /Connect to workflow run/);
+		assert.doesNotMatch(text, /Open workflow run/);
 	});
 
 	// cross-ref: issue #1498 — dismissing the shared selector must NOT open a second picker.

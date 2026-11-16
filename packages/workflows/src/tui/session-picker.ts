@@ -213,7 +213,7 @@ function renderHintsRow(width: number, theme: GraphTheme, state: SessionPickerSt
 		? [hint(keyText("tui.select.confirm"), "Submit"), hint(keyText("tui.select.cancel"), "Exit Filter")]
 		: [
 				hint(`${keyText("tui.select.up")}/${keyText("tui.select.down")}`, "Navigate"),
-				hint(keyText("tui.select.confirm"), "Connect"),
+				hint(keyText("tui.select.confirm"), "Open"),
 				hint("a", state.includeAll ? "Active Only" : "All"),
 				hint("/", "Filter"),
 				hint(keyText("tui.select.cancel"), "Close"),

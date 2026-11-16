@@ -15,6 +15,8 @@ import type { ExtensionAPI, PiArgumentCompletionResult, PiCommandContext } from 
 import type { WorkflowInputEntry, WorkflowToolResult } from "./render-result.js";
 import type { ExtensionRuntime } from "./runtime.js";
 import {
+	completeToken,
+	runIdItems,
 	workflowArgumentCompletions,
 	workflowArgumentCompletionsNeedWorkflowResources,
 } from "./workflow-command-completions.js";
@@ -90,6 +92,7 @@ export function registerWorkflowSlashCommand(
 				const reporter = createWorkflowCommandReporter(ctx, workflowPolicyFromContext(ctx), pi);
 				await handleWorkflowsCommand(args, ctx, reporter, { overlay: deps.runControl.overlay, store: owner.store });
 			},
+			getArgumentCompletions: (partial) => completeToken(partial, runIdItems(owner.store)),
 		},
 		workflowCommands,
 	);

@@ -229,6 +229,9 @@ test("Open workflow run picker opens the selected run on Enter (#5224)", () => {
 	];
 	const lines = renderSessionPicker({ width: 80, theme: deriveGraphTheme({}), rows, state });
 	assert.match(lines[0]!, /Open workflow run/);
+	const hints = lines.at(-1)!;
+	assert.match(hints, /Open/);
+	assert.doesNotMatch(hints, /Connect/);
 	const action = handleSessionPickerInput("\r", state, rows);
 	assert.deepEqual(action, { kind: "connect", runId: "id-1" });
 });
@@ -358,7 +361,8 @@ test("renderSessionPicker emits header, sections, and footer hints", () => {
 	assert.match(joined, /aaaa1111-0000-0000-0000-000000000000/);
 	assert.match(joined, /tournament/);
 	assert.match(joined, /Navigate/);
-	assert.match(joined, /Connect/);
+	assert.match(joined, /Open/);
+	assert.doesNotMatch(joined, /Connect/);
 	assert.doesNotMatch(joined, /Kill/);
 });
 

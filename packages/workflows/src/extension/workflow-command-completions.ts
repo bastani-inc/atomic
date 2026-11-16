@@ -4,7 +4,7 @@ import { type Store, store } from "../shared/store.js";
 import type { PiArgumentCompletion, PiArgumentCompletionResult } from "./public-types.js";
 import type { ExtensionRuntime } from "./runtime.js";
 
-function completeToken(argumentText: string, candidates: PiArgumentCompletion[]): PiArgumentCompletionResult {
+export function completeToken(argumentText: string, candidates: PiArgumentCompletion[]): PiArgumentCompletionResult {
 	const tokenStart = /\s$/.test(argumentText)
 		? argumentText.length
 		: Math.max(argumentText.lastIndexOf(" "), argumentText.lastIndexOf("\t")) + 1;
@@ -38,7 +38,7 @@ function workflowNameItems(runtime: ExtensionRuntime): PiArgumentCompletion[] {
 	}));
 }
 
-function runIdItems(activeStore: Store): PiArgumentCompletion[] {
+export function runIdItems(activeStore: Store): PiArgumentCompletion[] {
 	return topLevelWorkflowRuns(activeStore.runs()).map((run) => ({
 		value: `${run.id} `,
 		label: run.id,

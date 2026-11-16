@@ -205,7 +205,7 @@ Common controls:
 
 Surface behavior:
 
-- **Graph vs. stage chat** - `/workflows` opens the graph (or ↓ to the run in the agent panel). Press Enter on a stage to open its chat. `/workflow connect` and `/workflow attach` were removed; typing either shows a one-line pointer to `/workflows`.
+- **Graph vs. stage chat** - `/workflows` opens the graph (or ↓ to the run in the agent panel). Press Enter on a stage to open its chat. On a failed stage, Enter opens its failure detail; press `t` there for its chat. `/workflow connect` and `/workflow attach` were removed; typing either shows a one-line pointer to `/workflows`.
 - **Run state** - The graph header puts the run's state before its stage counts and colors the ORCHESTRATOR pill to match: `↑ blocked`, followed by the exit reason when the workflow gave one and shortened to fit; `❚❚ paused`; or `○ quit`. A running run shows no state, including one you resumed. `↑ N` counts blocked stages. The stage switcher (`/`), `/workflow status`, and the `/workflows` picker show the same state.
 - **Going back** - In an attached stage chat, `←` on an empty prompt returns to the graph. A choice or yes/no question moves with `←`, so there `esc` returns to the graph; the question stays waiting. The graph has no prompt: `esc` goes back one level (it closes a stage's failure detail, a tool detail or the `?` overlay first), and at the top it returns to where you opened the graph from, such as main chat or the `/workflows` list. `←` does the same on a node with nothing to its left, and otherwise moves to that sibling. A custom question widget owns every key; `ctrl+c` closes the workflow view from it. `ctrl+x` does not navigate. See [Keybindings](/keybindings#navigation).
 - **Graph keys** - The hint line under the graph lists exactly the keys that work on the focused node, and `?` lists them all. `↑↓←→` move, `enter` opens the focused node (a stage's chat, a tool's detail, or a failed stage's failure detail), `/` finds a stage, and `f` cycles a status filter (all, running, completed, failed) that dims the nodes it doesn't match without moving anything. On a running or waiting stage, `x` then `x` again within 3 seconds stops it so it can be resumed from its stage chat. A stopped stage or run shows `◼` in a muted colour; a failed one shows a red `✗`.
@@ -472,7 +472,7 @@ Human input is runtime-only: call `ctx.ui.input`, `ctx.ui.confirm`, `ctx.ui.sele
 
 Human-in-the-loop prompts from `ctx.ui.input`, `ctx.ui.confirm`, `ctx.ui.select`, `ctx.ui.editor`, and `ctx.ui.custom<T>` appear as awaiting-input nodes in the workflow UI/graph viewer, not as ordinary chat modals. Workflow definitions do not declare HIL; runtime `ctx.ui.*` calls create prompt nodes. If the prompt lives inside an imported child workflow, it still appears in the same expanded parent graph so the user can focus and answer it without switching to a separate child status entry. When the attached stage has a pending prompt, its attribution banner is headed `AWAITING INPUT` and shows the full run id in a two-row identity block; the question and its options continue through the existing prompt UI below the banner.
 
-When the below-editor `BACKGROUND` panel can prove exactly one displayable pending question for a visible root, it also shows that question as a one-line preview with `/workflows <full-run-id>`. Multiple or unavailable questions keep the existing needs-attention guidance. Answer in the connected graph, attached stage chat, or with `workflow answer`; the panel itself does not answer, restrict, or remove any of those paths.
+When the below-editor `BACKGROUND` panel can prove exactly one displayable pending question for a visible root, it also shows that question as a one-line preview with `/workflows <full-run-id>`. Multiple or unavailable questions keep the existing needs-attention guidance. Answer in the graph opened with `/workflows <run-id>`, its stage chat, or with `workflow answer`; the panel itself does not answer, restrict, or remove any of those paths.
 
 Use `/workflows <run-id>` (or F2), then press Enter on the focused node or click a graph node to focus and open or attach it for local answers. Custom widget prompts mount inside the attached stage chat and must be completed interactively with the widget's `done(value)` callback.
 
@@ -670,8 +670,6 @@ Fresh completed inspection does not currently persist the workflow's declared ro
 ```text
 /workflow resume                          # Mixed picker: resumable + completed
 /workflow resume <full-workflow-uuid> # Resume unfinished work or open completed detail/chat
-/workflows                               # Alias for the same mixed picker
-/workflows <full-workflow-uuid>        # Alias for targeted resume/open
 ```
 
 Targets resolve across top-level live, resumable durable, and completed entries as one namespace using full UUIDs or unique 8-hex prefixes. Exact loadable paused live targets retain direct in-session precedence. Prefixes require successful catalog discovery and reject collisions. A root appearing in both resumable and read-only history remains resumable. Nested child runs remain excluded from this top-level resume namespace.

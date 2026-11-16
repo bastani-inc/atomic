@@ -52,6 +52,7 @@ const WORKFLOW_ADMIN_COMPLETIONS: AutocompleteItem[] = [
 	{ value: "pause ", label: "pause", description: "Pause a run" },
 	{ value: "quit ", label: "quit", description: "Quit a run and keep it resumable" },
 	{ value: "resume ", label: "resume", description: "Re-open overlay for a run" },
+	{ value: "fork ", label: "fork", description: "Fork a run into a new run, optionally --from a stage" },
 	{ value: "inputs ", label: "inputs", description: "Show a workflow's input schema" },
 	{ value: "reload ", label: "reload", description: "Reload workflow resources" },
 ];
@@ -291,6 +292,11 @@ export function getBundledWorkflowArgumentCompletions(argumentPrefix: string): A
 			{ value: "-y ", label: "-y", description: "Skip confirmation" },
 		]);
 	}
+	if (subcommand === "fork") {
+		return completeWorkflowToken(argumentPrefix, [
+			{ value: "--from ", label: "--from", description: "Dot path of the stage the fork re-runs from" },
+		]);
+	}
 	if (subcommand === "quit") {
 		return completeWorkflowToken(argumentPrefix, [
 			{ value: "--all ", label: "--all", description: "Quit and keep all in-flight runs resumable" },
@@ -365,7 +371,7 @@ export const BUNDLED_EXTENSION_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand
 	{
 		name: "workflow",
 		description:
-			"Run or inspect Atomic workflows. Usage: /workflow <name> [key=value…] | /workflow [list|status|quit|pause|resume|inputs|reload] [args]",
+			"Run or inspect Atomic workflows. Usage: /workflow <name> [key=value…] | /workflow [list|status|quit|pause|resume|inputs|reload] [args] | /workflow fork <run> [--from <stage>]",
 		getArgumentCompletions: getBundledWorkflowArgumentCompletions,
 	},
 	{ name: "workflows", description: "Browse workflow runs. Usage: /workflows [run-id]" },
