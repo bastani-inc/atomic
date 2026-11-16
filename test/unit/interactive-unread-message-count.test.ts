@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
-import { getKeybindings, ScrollView, setKeybindings, type TuiAltScreen } from "@bastani/atomic-tui";
+import { type Component, getKeybindings, ScrollView, setKeybindings, type TuiAltScreen } from "@bastani/atomic-tui";
 import { test } from "vitest";
 import type { AgentSessionRuntime } from "../../packages/coding-agent/src/core/agent-session-runtime.ts";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.ts";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.ts";
+import { messageComponents } from "../../packages/coding-agent/src/modes/interactive/chat-message-count.ts";
 import { NewMessageCounter } from "../../packages/coding-agent/src/modes/interactive/components/jump-to-latest.ts";
 import type { TreeSelectorComponent } from "../../packages/coding-agent/src/modes/interactive/components/tree-selector.ts";
 import { InteractiveMode } from "../../packages/coding-agent/src/modes/interactive/interactive-mode.ts";
@@ -340,7 +341,6 @@ interface ScrolledChat {
 	pill(): string;
 }
 
-/** A real fullscreen InteractiveMode with twelve prompts in its session, painted while following the end. */
 async function withFullscreenChat(
 	run: (chat: ScrolledChat) => Promise<void>,
 	runtimeHost: AgentSessionRuntime = createTestRuntimeHost(),
@@ -562,6 +562,149 @@ test("an empty rewrite that replaces a read echo leaves the count unchanged (#52
 	});
 });
 
+async function addNotice(mode: InteractiveMode): Promise<void> {
+	const notice = { role: "user" as const, content: "Background job finished", timestamp: 100 };
+	await mode.sessionManager.appendMessage(notice);
+	mode.addMessageToChat(notice);
+}
+
+test("a failed prompt whose unpainted echo a compaction re-rendered while following keeps a later notice counted (#5243)", async () => {
+	await withFullscreenChat(async ({ mode, paint, scrollUp, pill }) => {
+		mode.renderDeferredUserInput("Prompt that will fail");
+		await compactFirstEight(mode);
+		scrollUp();
+		await addNotice(mode);
+		paint();
+		assert.equal(pill(), "↓ 1 new message · ctrl+end");
+
+		mode.discardDeferredRenderedUserInput("Prompt that will fail");
+		paint();
+		assert.equal(pill(), "↓ 1 new message · ctrl+end");
+	});
+});
+
+test("a failed prompt whose unpainted echo a same-session render showed while following keeps a later notice counted (#5243)", async () => {
+	await withFullscreenChat(async ({ mode, paint, scrollUp, pill }) => {
+		mode.renderDeferredUserInput("Prompt that will fail");
+		mode.renderCurrentSessionState();
+		scrollUp();
+		await addNotice(mode);
+		paint();
+		assert.equal(pill(), "↓ 1 new message · ctrl+end");
+
+		mode.discardDeferredRenderedUserInput("Prompt that will fail");
+		paint();
+		assert.equal(pill(), "↓ 1 new message · ctrl+end");
+	});
+});
+
+test("a failed prompt whose unpainted echo a rewritten prompt's swap kept while following keeps a later notice counted (#5243)", async () => {
+	await withFullscreenChat(async ({ mode, paint, scrollUp, pill }) => {
+		mode.renderDeferredUserInput("Original prompt");
+		mode.renderDeferredUserInput("Prompt that will fail");
+		mode.expectStartedUserInput("Original prompt", mode.userMessagesShownBySession);
+		mode.showSessionUserMessage({ role: "user", content: "Rewritten prompt", timestamp: 70 });
+		scrollUp();
+		await addNotice(mode);
+		paint();
+		assert.equal(pill(), "↓ 1 new message · ctrl+end");
+
+		mode.discardDeferredRenderedUserInput("Prompt that will fail");
+		paint();
+		assert.equal(pill(), "↓ 1 new message · ctrl+end");
+	});
+});
+
+test("a rewritten prompt that replaces a read echo keeps a notice that was not painted yet counted (#5243)", async () => {
+	await withFullscreenChat(async ({ mode, paint, scrollUp, pill }) => {
+		mode.renderDeferredUserInput("Original prompt");
+		paint();
+		scrollUp();
+		await addNotice(mode);
+
+		mode.expectStartedUserInput("Original prompt", mode.userMessagesShownBySession);
+		mode.showSessionUserMessage({ role: "user", content: "Rewritten prompt", timestamp: 70 });
+		paint();
+		assert.equal(pill(), "↓ 1 new message · ctrl+end");
+	});
+});
+
+test("discarding a read echo keeps a notice that was not painted yet counted (#5243)", async () => {
+	await withFullscreenChat(async ({ mode, paint, scrollUp, pill }) => {
+		mode.renderDeferredUserInput("Prompt that will fail");
+		paint();
+		scrollUp();
+		await addNotice(mode);
+
+		mode.discardDeferredRenderedUserInput("Prompt that will fail");
+		paint();
+		assert.equal(pill(), "↓ 1 new message · ctrl+end");
+	});
+});
+
+test("a re-render keeps each of two identical echoes as read or unread as it was (#5243)", async () => {
+	await withFullscreenChat(async ({ mode, paint, scrollUp, pill }) => {
+		mode.renderDeferredUserInput("Same prompt");
+		paint();
+		scrollUp();
+		mode.renderDeferredUserInput("Same prompt");
+		paint();
+		assert.equal(pill(), "↓ 1 new message · ctrl+end");
+
+		await compactFirstEight(mode);
+		paint();
+		assert.equal(pill(), "↓ 1 new message · ctrl+end");
+
+		mode.discardDeferredRenderedUserInput("Same prompt");
+		mode.discardDeferredRenderedUserInput("Same prompt");
+		paint();
+		assert.equal(pill(), "↓ jump to bottom · ctrl+end");
+	});
+});
+
+test("an empty rewrite that replaces a read echo still counts a later notice (#5243)", async () => {
+	await withFullscreenChat(async ({ mode, paint, scrollUp, pill }) => {
+		mode.renderDeferredUserInput("Original prompt");
+		paint();
+		scrollUp();
+
+		mode.expectStartedUserInput("Original prompt", mode.userMessagesShownBySession);
+		mode.showSessionUserMessage({ role: "user", content: "", timestamp: 70 });
+		await addNotice(mode);
+		paint();
+		assert.equal(pill(), "↓ 1 new message · ctrl+end");
+	});
+});
+
+test("a frame counts new messages without classifying every chat child again (#5243)", async () => {
+	await withFullscreenChat(async ({ mode, paint, scrollUp, pill }) => {
+		for (let index = 1; index <= 200; index += 1) {
+			mode.addMessageToChat({ role: "user", content: `Earlier message ${index}`, timestamp: 300 + index });
+		}
+		paint();
+		scrollUp();
+		const has = messageComponents.has;
+		let classified = 0;
+		messageComponents.has = function (this: WeakSet<Component>, child: Component): boolean {
+			classified += 1;
+			return has.call(this, child);
+		};
+		try {
+			paint();
+			paint();
+			assert.equal(classified, 0);
+
+			const childrenBefore = mode.chatContainer.children.length;
+			await addNotice(mode);
+			paint();
+			assert.equal(classified, mode.chatContainer.children.length - childrenBefore);
+		} finally {
+			messageComponents.has = has;
+		}
+		assert.equal(pill(), "↓ 1 new message · ctrl+end");
+	});
+});
+
 test("a growing rebuild while scrolled up does not count history as new (#5243)", async () => {
 	await withFullscreenChat(async ({ mode, paint, scrollUp, pill }) => {
 		scrollUp();
@@ -637,7 +780,6 @@ test("an extension's navigateTree keeps an arrival that was not painted yet coun
 	});
 	await withFullscreenChat(async (chat) => {
 		const target = chat.mode.sessionManager.getEntries()[5]!.id;
-		// Only the command actions matter here; the binding's autocomplete, shortcut and resource steps need a full session.
 		Object.assign(chat.mode, {
 			setupAutocompleteProvider: () => {},
 			setupExtensionShortcuts: () => {},
