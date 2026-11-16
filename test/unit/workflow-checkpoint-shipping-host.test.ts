@@ -36,7 +36,7 @@ function fileIdentity(path: string): string {
 	return `${stats.ino}:${stats.birthtimeNs}`;
 }
 
-test(
+test.skipIf(process.platform === "win32")(
 	"a worker host keeps a root's local checkpoint journal while the root runs on elsewhere, and removes it once the root's run ended (#4768)",
 	async () => {
 		const directory = makeLibsqlDirectory();
