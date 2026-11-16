@@ -463,7 +463,7 @@ describe("/workflow resume — paused vs non-paused branching", () => {
 	});
 });
 
-describe("/workflows and the removed /workflows — top-level commands", () => {
+describe("/workflows and the removed /workflow connect and /workflow attach — top-level commands", () => {
 	// Hermetic durable backend: without this, tests that fall back to durable
 	// discovery scan the real ~/.atomic/workflow-durable directory, which can
 	// hold tens of thousands of files on dev machines and blow the 5s timeout.
@@ -502,7 +502,7 @@ describe("/workflows and the removed /workflows — top-level commands", () => {
 		assert.equal(customCalls.length, 0);
 	});
 
-	test("the removed /workflows and /workflows point to /workflows and open nothing (#5224)", async () => {
+	test("the removed /workflow attach and /workflow connect point to /workflows and open nothing (#5224)", async () => {
 		singletonStore.clear();
 		const runId = testRunId(`test-removed-${Date.now()}`);
 		singletonStore.recordRunStart({

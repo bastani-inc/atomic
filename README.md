@@ -419,7 +419,7 @@ Explore the rest of Atomic’s real recorded capabilities, with public docs and 
 <tr>
 <td width="42%" valign="top">
 <h4>Inspect and control workflows</h4>
-<p>List definitions, inspect input contracts, check live status, and connect to a run graph from the same <code>/workflow</code> surface.</p>
+<p>List definitions, inspect input contracts, check live status, and open a run graph with <code>/workflows</code>.</p>
 <p><a href="https://docs.bastani.ai/workflows"><sub>Atomic docs · Workflows</sub></a></p>
 <p><a href="https://github.com/bastani-inc/atomic-crash-course#61-touring-the-builtins"><sub>Crash course · W.3 Inspect and control workflows</sub></a></p>
 </td>
@@ -427,7 +427,7 @@ Explore the rest of Atomic’s real recorded capabilities, with public docs and 
 <a href="https://github.com/bastani-inc/atomic-crash-course#61-touring-the-builtins">
 <picture>
 <source srcset="assets/feature-wall/30-inspect-control-workflows.gif" type="image/gif">
-<img src="assets/feature-wall/30-inspect-control-workflows.jpg" alt="Atomic using workflow list, inputs, status, and connect commands before opening the live control-demo graph" width="100%">
+<img src="assets/feature-wall/30-inspect-control-workflows.jpg" alt="An earlier Atomic session listing workflows, inspecting inputs and status, and opening the live control-demo graph" width="100%">
 </picture>
 </a>
 </td>

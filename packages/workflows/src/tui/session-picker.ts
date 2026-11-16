@@ -1,7 +1,4 @@
 /**
- * Workflow session picker — a centred overlay listing runs the user can
- * connect to (open the orchestrator pane).
- *
  * Visual contract (DESIGN.md §5 Picker Rows + pi-subagents/src/tui/render-helpers.ts):
  *  - Rounded `╭─ Title ─╮` chrome in `border` colour with title in `accent`.
  *  - Section header rows use a simple two-space label indent (matches GraphView).
@@ -98,8 +95,7 @@ export function createSessionPickerResumeCandidateCache(
 const RECENT_WINDOW_MS = 60 * 60 * 1000;
 /**
  * Slice runs into picker rows. Active = `endedAt === undefined`. Terminal =
- * retained terminal runs. Resume intent uses the shared resumability predicate;
- * connect/attach and the status list retain their broader listing.
+ * retained terminal runs. Resume intent uses the shared resumability predicate.
  * With `includeAll` false, terminal rows are limited to the recent-ended window.
  */
 export function selectRunsForPicker(
@@ -177,7 +173,7 @@ export interface SessionPickerRenderOpts {
 	allRuns?: readonly RunSnapshot[];
 }
 
-const TITLE = "Connect to workflow run";
+const TITLE = "Open workflow run";
 
 function renderHeader(width: number, theme: GraphTheme): string {
 	const inner = Math.max(4, width - 2);

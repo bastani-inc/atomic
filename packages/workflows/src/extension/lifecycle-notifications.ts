@@ -310,8 +310,6 @@ export function installWorkflowLifecycleNotifications(options: WorkflowLifecycle
 		if (state.deliveredInputPrompts.has(key)) return;
 
 		state.deliveredInputPrompts.add(key);
-		// See stage-level awaiting-input handling above: prompt state remains visible
-		// through workflow status/connect surfaces instead of the main chat context.
 	};
 
 	const emitBudgetWarningOnce = (run: RunSnapshot): void => {

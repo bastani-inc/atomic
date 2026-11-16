@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Breaking Changes
 
-- Removed `/workflow connect` and `/workflow attach`. `/workflows` opens the session's only run in its graph, or lists the runs, and `/workflows <run-id>` opens that run; Enter on a stage in the graph opens its chat. Launch, status and notice text now point to `/workflows`. Typing either removed command shows a one-line pointer and runs nothing. **Migration:** use `/workflows <run-id>` (or ↓ to the run in the agent panel) where you used `/workflow connect <run-id>`, and open a stage with Enter in that graph where you used `/workflow attach <run-id> <stage>` ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- Removed `/workflow connect` and `/workflow attach`. `/workflows` opens the session's only run in its graph, or lists the runs, and `/workflows <run-id>` opens that run; Enter on a stage in the graph opens its chat. Launch, status and notice text now point to `/workflows`. Autocomplete offers `/workflows` and omits both removed subcommands, including before workflow discovery finishes or when live completion is unavailable. Typing either removed command shows a one-line pointer and runs nothing. **Migration:** use `/workflows <run-id>` (or ↓ to the run in the agent panel) where you used `/workflow connect <run-id>`, and open a stage with Enter in that graph where you used `/workflow attach <run-id> <stage>` ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 
 ### Added
 

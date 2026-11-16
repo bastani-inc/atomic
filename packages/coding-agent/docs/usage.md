@@ -70,7 +70,7 @@ Type `/` in the editor to open command completion. Extensions can register custo
 | `/model` | Switch models and automatically save the startup default |
 | `/thinking` | Switch thinking level and automatically save the startup default |
 | `/scoped-models` | Enable/disable models for CTRL+P cycling |
-| `/workflow` | List/run workflows; manage runs (connect/inspect/pause/quit/resume); reload workflow resources |
+| `/workflow` | List/run workflows; inspect, pause, quit, or resume runs; reload workflow resources |
 | `/settings` | Theme, message delivery, transport, and other preferences |
 | `/resume` | Pick from previous sessions |
 | `/new` | Start a new session |

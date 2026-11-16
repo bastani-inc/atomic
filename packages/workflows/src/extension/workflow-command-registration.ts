@@ -139,7 +139,6 @@ async function workflowSlashHandler(
 	const parts = tokenizeWorkflowArgs(args);
 	const subcommand = parts[0] ?? "";
 	if (subcommand === "connect" || subcommand === "attach") {
-		// Removed (#5224): runs and their stages open from `/workflows`, the agent panel and `/tasks`.
 		reporter.info(removedWorkflowSubcommandNotice(subcommand));
 		return;
 	}
@@ -359,7 +358,6 @@ export function parseWorkflowForkArgs(
 	return { runId: positional[0]!, ...(fromStage === undefined ? {} : { fromStage }) };
 }
 
-/** The one-line notice a removed `/workflow connect` or `/workflow attach` shows instead of running anything. */
 export function removedWorkflowSubcommandNotice(subcommand: "connect" | "attach"): string {
 	return `\`/workflow ${subcommand}\` was removed: use \`/workflows\`, or \u2193 to the agent panel.`;
 }

@@ -328,7 +328,7 @@ Control behavior:
 - Killing a run, or aborting the `signal` passed to `run()`, ends its stages still in flight, and those of its nested child runs, as `failed` with the error `workflow killed`, and cancels its running `ctx.tool` calls. A run cancelled by its parent's exit ends them as `skipped`. Status then lists no active stage for the run. Pause and quit leave stages resumable.
 - `reload` refreshes discovered workflow resources in-process; the optional `reason` is echoed in the result.
 
-Use slash commands for graph connect and stage attach because those are interactive TUI surfaces. When a run needs user input or attention, tell the user instead of polling silently.
+Use `/workflows <run-id>` to open the interactive graph, then select a stage to open its chat. When a run needs user input or attention, tell the user instead of polling silently.
 
 ### Suspended stages
 
@@ -448,7 +448,7 @@ Treat blocked runs as continuable by default: resume, answer a pending prompt, s
 
 Lifecycle notices appear once in main chat without interrupting current streaming text. Atomic also queues a model update so later responses can correct stale progress claims. Notices waiting for delivery survive recoverable delivery failures; session replacement does not send them to an unrelated chat.
 
-An awaiting-input workflow remains visible in status and connect views without waking the main model. Connect to the run to answer its question.
+An awaiting-input workflow remains visible in status and graph views without waking the main model. Open `/workflows <run-id>` and select the waiting node to answer its question.
 
 Resume of a recoverable block continues the same workflow ID and reuses completed checkpoints. It does not reroute, allocate a replacement instance or replay completed effects. Concurrent admission is refused while another executor or resume owns the instance. A fail-closed topology mismatch preserves the prior resumable snapshot and prompt answers for inspection and a corrected retry.
 
@@ -633,7 +633,7 @@ Changing `iteration` makes each loop pass a distinct durable call. Reusing the s
 
 ### `/workflow resume` — cross-session resume selector
 
-The `/workflow resume` command mirrors `/resume` ergonomics and `/workflows` is its alias. With no ID, it builds a newest-first picker from eligible live runs and journal records. Selected records are revalidated before resume or inspection. Runs with live leases are excluded; expired running leases appear as `crashed`.
+The `/workflow resume` command mirrors `/resume` ergonomics for cross-session workflow history. With no ID, it builds a newest-first picker from eligible live runs and journal records. Selected records are revalidated before resume or inspection. Runs with live leases are excluded; expired running leases appear as `crashed`.
 
 Picker rows use the run label when set, otherwise a one-line objective or prompt input, falling back to the workflow ID. When a generated progress summary is available, it has its own column; status and workflow name precede the identity in the other column. Live rows also show completed/total stages. Without a generated summary, the adjacent column shows those status details instead. Search matches the identity, summary, and full run ID.
 
@@ -643,7 +643,7 @@ Resuming through the picker, `/workflow resume <id>`, or the workflow tool adds 
 
 If resume reports a checkpoint decoding error or an unavailable serializer, retain the full run ID and original diagnostic when reporting the problem. Do not delete saved progress or launch a fresh copy just to bypass the error: that can repeat completed side effects.
 
-Only runs with usable durable checkpoints or pending prompts can resume. Deleted durable entries and missing artifacts are not offered. Status and connect/attach still expose eligible terminal runs for inspection.
+Only runs with usable durable checkpoints or pending prompts can resume. Deleted durable entries and missing artifacts are not offered. `/workflow status` and `/workflows` still expose eligible terminal runs for inspection.
 
 Rows carry semantic colors — completed green, paused yellow, failed/blocked/crashed red. The open picker live-updates on local run changes plus a bounded cross-session poll, so state transitions appear (and freshly running workflows disappear) without reopening it.
 

@@ -63,7 +63,8 @@ For authored graphs, design elapsed time using [runtime-aware scheduling and est
 
 | User need | Use |
 |-----------|-----|
-| Run, inspect, open the graph of, pause, quit, resume, or check status for an existing workflow | `/workflow ...` or `workflow({ action: ... })` |
+| Run, inspect, pause, quit, resume, or check status for an existing workflow | `/workflow ...` or `workflow({ action: ... })` |
+| Open a run's graph and stage chats | `/workflows [run-id]` |
 | Run repository-wide research | Compose `fan-out-and-synthesize` with repository-focused branches, artifact outputs, and a synthesis barrier, or author a smaller task-specific research workflow. |
 | Run an implementation/review loop | Author a task-specific worker → fresh verifier → reducer loop with explicit evidence, repair bounds, and stop conditions. |
 | Create or edit reusable automation | A TypeScript workflow definition exported from `workflow({...})` |
