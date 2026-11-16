@@ -527,7 +527,7 @@ describe("a broker behind a launcher that hides it", () => {
 		}
 	});
 
-	test("an announcement that is another spawn's is ignored, so the wait is the ordinary start-up budget (#2208)", async () => {
+	test("an announcement that is another spawn's is ignored, so the wait is the ordinary start-up budget", async () => {
 		const announced = {
 			path: pathsModule.getBrokerStartAnnouncementPath(),
 			token: `mine-${process.pid}-${Date.now()}`,
@@ -544,7 +544,7 @@ describe("a broker behind a launcher that hides it", () => {
 		removePathSync(announced.path, { force: true });
 	});
 
-	test("a broker that yielded to a live one, which answers, is a success (#2208)", async () => {
+	test("a broker that yielded to a live one, which answers, is a success", async () => {
 		const dead = await keptExitedPid();
 		onTestFinished(() => dead.release());
 		assert.throws(() => process.kill(dead.pid, 0), { code: "ESRCH" });
