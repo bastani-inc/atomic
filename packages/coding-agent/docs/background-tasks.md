@@ -150,8 +150,8 @@ Completion creates a shaded notification card in the owning chat without dependi
 
 ```text
 ✓ Subagent codebase-analyzer completed: Trace the authentication flow.
-  Authentication starts in …
-/tasks to inspect
+⎿ Authentication starts in …
+(ctrl+o for the full result) · /tasks to inspect
 ```
 
 The parent model also receives the result context. Delivery retries do not relaunch the child. Workflow completions stay in their owning stage chat, not the main conversation.
@@ -165,6 +165,8 @@ A subagent stopped with `subagent({ action: "pause" | "quit", id })`, or by its 
 Repeated stop requests or late child results do not duplicate the notice or overwrite the recorded outcome. A task that finished before cancellation keeps its actual result. Closing the owning session or workflow stage still suppresses late notices.
 
 Restored completions may have only an outcome and task identity if the original live task or transcript is unavailable. Atomic does not invent missing output. Excerpts are bounded; inspect retained history for more detail.
+
+A collapsed subagent notice shows the first wrapped line of its result; a shell notice shows the last three wrapped lines of retained output. Use the expand-tools key, normally Ctrl+O, for more of the retained preview, or `/tasks` to inspect. Missing model metadata does not change a subagent notice's layout.
 
 Long titles and previews are truncated or wrapped within the card width. Its background covers the ellipsis, expand hint, and trailing padding on every row.
 
@@ -243,13 +245,13 @@ The cadence is fixed when the task starts, and a running task's `/tasks` detail 
 | Message the agent | Type in the transcript's prompt and press Enter to send the text to the agent through Intercom. A finished subagent resumes in its own session with the message; one stopped for good shows a read-only chat with a one-line note. Up/Down, Home/End and Left/Right edit the prompt. |
 | Subagent chat | A subagent's chat has the chat box of a workflow stage chat with an **attached composer**: heavy accent rules above and below the prompt, the top one naming the subagent, its task and its state, for example `debugger · #5220 spawn lock · 18m` (`needs input` while it waits on a question). The empty prompt reads `Message debugger…` (`Answer debugger…` while it waits), and what you type goes to the subagent. Terminals narrower than 40 columns show the rules without the label. Opened from the agent panel, the chat has no title row and its hint reads `← agents · ↓ agents`; both keys return to the panel. A subagent you stopped with `x x` or Ctrl+X Ctrl+K reads `Stopped · send to resume`; sending a message resumes it. While the subagent runs in this session, its usage meter appears above the prompt, along with the working line and any queued messages; below the prompt, the model line shows once the subagent is idle; while it works there is no status line. Below the footer, the subagent's own running agents and shells are listed in the agent panel's row format. |
 | Subagent's tasks | Type `/tasks` in a subagent's transcript to list that subagent's own tasks: the shells it ran and the subagents it launched, not the parent's. In a nested subagent's transcript, `/tasks` lists that subagent's tasks. Escape or Left on that list returns to the subagent's chat. |
-| Go back | Left on an empty prompt, or at the start of a typed one, goes back one level, to the list or detail page you opened the chat from; the hint line names it, and a typed draft comes back when you return. Escape or Left returns from detail to the list. In a subagent's transcript, Escape only interrupts the subagent's current turn: the subagent keeps running, waits for your next message in the same session, and the footer shows `esc interrupt` only while it works. While a subagent's own task list is open, Escape and Left go back within that list first. |
+| Go back | Left on an empty prompt, or at the start of a typed one, goes back one level, to the list or detail page you opened the chat from; the hint line names it, and a typed draft comes back when you return. Escape or Left returns from detail to the list. In a subagent's transcript, Escape only interrupts the subagent's current turn: the subagent keeps running, waits for your next message or its own background work to wake it in the same session, and the footer shows `esc interrupt` only while it works. While a subagent's own task list is open, Escape and Left go back within that list first. |
 | Stop | In the list or on a task's detail page, `x` asks for a second press; pressing `x` again within 3 seconds stops the task, and any other key keeps it running. A stopped subagent stays resumable: its chat reads `Stopped · send to resume`, and sending a message resumes it in its own session. Ctrl+X Ctrl+K stops every background subagent, shell and workflow run at once, after the same second press. Remap the key with `app.list.stop`. |
 | Shell input | Select Input when offered; Enter sends the text plus a newline; Escape leaves input mode. |
 
 Configured task bindings take precedence over the default Left, page, and `x` shortcuts. A transcript's prompt and input mode receive ordinary typing, including `x`, without stopping the task. The footer shows the applicable controls.
 
-Scrolling settings apply to transcripts as they do to the chat: `fullscreenWheelScrollLines` sets the wheel step and `fullscreenScrollbar` shows the scrollbar. When you scroll away from the latest message, the last row offers **↓ Jump to latest message**; click it or press Ctrl+End to follow the output again.
+Scrolling settings apply to transcripts as they do to the chat: `fullscreenWheelScrollLines` sets the wheel step and `fullscreenScrollbar` shows the scrollbar. When you scroll away from the latest message, the last row shows a pill: **↓ jump to bottom**, or **↓ N new messages** once new output arrives. Status updates and loading earlier history do not add to the count. Click it, press Ctrl+End or page down to the bottom to follow the output again; typing doesn't.
 
 The list groups **Agents** and **Shells**, with counts and status symbols. Detail views pin identity, state, available metrics, and the selected action while their body scrolls. Missing metrics are omitted rather than displayed as zero. Recorded zero values remain visible.
 

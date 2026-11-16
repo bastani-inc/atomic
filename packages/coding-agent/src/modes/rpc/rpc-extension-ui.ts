@@ -67,17 +67,18 @@ function createDialogPromise<T>({
 			pendingExtensionRequests.delete(id);
 		};
 
-		const onAbort = () => {
+		const cancel = () => {
+			if (!pendingExtensionRequests.has(id)) return;
 			cleanup();
+			output({ type: "extension_ui_request", id, method: "cancel" });
 			resolve(defaultValue);
 		};
+
+		const onAbort = () => cancel();
 		dialogOptions?.signal?.addEventListener("abort", onAbort, { once: true });
 
 		if (dialogOptions?.timeout) {
-			timeoutId = setTimeout(() => {
-				cleanup();
-				resolve(defaultValue);
-			}, dialogOptions.timeout);
+			timeoutId = setTimeout(cancel, dialogOptions.timeout);
 		}
 
 		pendingExtensionRequests.set(id, {
@@ -301,24 +302,20 @@ export function createRpcExtensionUIContext({
 			return "";
 		},
 
-		async editor(title: string, prefill?: string): Promise<string | undefined> {
-			const id = crypto.randomUUID();
-			return new Promise((resolve, reject) => {
-				pendingExtensionRequests.set(id, {
-					resolve: (response: RpcExtensionUIResponse) => {
-						if ("cancelled" in response && response.cancelled) {
-							resolve(undefined);
-						} else if ("value" in response) {
-							resolve(response.value);
-						} else {
-							resolve(undefined);
-						}
-					},
-					reject,
-				});
-				output({ type: "extension_ui_request", id, method: "editor", title, prefill } as RpcExtensionUIRequest);
-			});
-		},
+		editor: (title, prefill, opts) =>
+			createDialogPromise({
+				output,
+				pendingExtensionRequests,
+				dialogOptions: opts,
+				defaultValue: undefined,
+				request: { method: "editor", title, prefill },
+				parseResponse: (response) =>
+					"cancelled" in response && response.cancelled
+						? undefined
+						: "value" in response
+							? response.value
+							: undefined,
+			}),
 
 		addAutocompleteProvider(): void {
 			warnUnsupported("ctx.ui.addAutocompleteProvider");

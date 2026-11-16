@@ -60,11 +60,11 @@ test("#4625: reopening a /tasks transcript mid-compaction shows its reason and c
 	] as const) {
 		const reader = new TaskTranscriptReader(reason);
 		const first = await reader.open();
-		assert.match(first.text(), new RegExp(`${label.replaceAll(".", "\\.")} \\(esc Cancel\\)`));
+		assert.match(first.text(), new RegExp(`${label.replaceAll(".", "\\.")} \\(\\d+s · esc to cancel\\)`));
 		first.close();
 
 		const reopened = await reader.open();
-		assert.match(reopened.text(), new RegExp(`${label.replaceAll(".", "\\.")} \\(esc Cancel\\)`), reason);
+		assert.match(reopened.text(), new RegExp(`${label.replaceAll(".", "\\.")} \\(\\d+s · esc to cancel\\)`), reason);
 		reopened.close();
 	}
 });

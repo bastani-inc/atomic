@@ -2,6 +2,7 @@ import { Container } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { BashExecutionComponent } from "../src/modes/interactive/components/bash-execution.ts";
+import { WorkingRunMeter } from "../src/modes/interactive/components/working-run-meter.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { renderAll } from "./interactive-mode-status-helpers.ts";
@@ -29,6 +30,7 @@ function createContext(pendingBashComponents: PendingBashComponent[], options: {
 	for (const component of pendingBashComponents) pendingMessagesContainer.addChild(component);
 	const fakeThis: any = {
 		isInitialized: true,
+		workingRunMeter: new WorkingRunMeter(),
 		toolOutputExpanded: false,
 		chatContainer: new Container(),
 		pendingMessagesContainer,

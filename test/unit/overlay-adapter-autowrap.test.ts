@@ -12,7 +12,7 @@ async function registerIsolatedTests(): Promise<void> {
 	// Only ever reached inside the `bun test` child spawned below, where
 	// `bun:test`'s module registry is the real one. vitest has no equivalent.
 	const { mock } = await import("bun:test");
-	const { stripTerminalSequences } = await import("@bastani/atomic-tui/dist/utils.js");
+	const { replaceControlCharacters, stripTerminalSequences } = await import("@bastani/atomic-tui/dist/utils.js");
 	class TestComponent {}
 	const [{ ScrollView }, { VStack }, { Input }] = await Promise.all([
 		import("@bastani/atomic-tui/dist/components/scroll-view.js"),
@@ -41,6 +41,7 @@ async function registerIsolatedTests(): Promise<void> {
 		},
 		decodeKittyPrintable: () => undefined,
 		matchesKey: (data: string, key: string) => data === key,
+		replaceControlCharacters,
 		stripTerminalSequences,
 		truncateToWidth: (text: string, width: number) => text.slice(0, width),
 		visibleWidth: (text: string) => text.length,
@@ -62,7 +63,10 @@ async function registerIsolatedTests(): Promise<void> {
 	} = await import("../../packages/coding-agent/src/modes/interactive/components/input-label.js");
 	// Pending-input labels cut long prompts with the shared surrogate-safe slice (#5097).
 	const { sliceHead } = await import("../../packages/coding-agent/src/core/tools/truncate.js");
+
+	const navKeys = await import("../../packages/coding-agent/src/modes/interactive/components/nav-keys.js");
 	mock.module("@bastani/atomic", () => ({
+		...navKeys,
 		sliceHead,
 		ChatSessionHost: TestComponent,
 		formatModelLabel,
@@ -158,7 +162,10 @@ async function registerIsolatedTests(): Promise<void> {
 		remoteAutowrap: boolean[];
 	}
 
-	function buildRemoteHarness(platform: NodeJS.Platform = "win32"): RemoteHarness {
+	function buildRemoteHarness(
+		platform: NodeJS.Platform = "win32",
+		mode: "regular" | "fullscreen" = "regular",
+	): RemoteHarness {
 		const localWrites: string[] = [];
 		const remoteAutowrap: boolean[] = [];
 		let hidden = false;
@@ -186,6 +193,7 @@ async function registerIsolatedTests(): Promise<void> {
 					// Isolated host: the factory TUI terminal exposes the remote-control
 					// capability instead of a writable local process.stdout.
 					const tui: PiCustomOverlayFactoryTui = {
+						mode,
 						requestRender: () => undefined,
 						terminal: {
 							rows: 24,
@@ -229,6 +237,18 @@ async function registerIsolatedTests(): Promise<void> {
 
 			assert.deepEqual(localWrites, []);
 			assert.deepEqual(remoteAutowrap, [false, true], "autowrap restored on close");
+		});
+
+		test("routes autowrap through the host capability when the isolated host is fullscreen", () => {
+			// The engine reports the host's mode; the host, not the overlay, decides whether fullscreen holds it.
+			const { adapter, localWrites, remoteAutowrap } = buildRemoteHarness("win32", "fullscreen");
+
+			adapter.open(null);
+			adapter.toggle(null);
+			adapter.close();
+
+			assert.deepEqual(localWrites, []);
+			assert.deepEqual(remoteAutowrap, [false, true]);
 		});
 
 		test("skips autowrap on non-Windows hosts", () => {

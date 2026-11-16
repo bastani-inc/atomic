@@ -1,6 +1,7 @@
 import type { Component, Container, TUI } from "@bastani/atomic-tui";
 import type { TaskId } from "../../core/tasks/contracts.js";
 import { getOwnerTaskStore, type OwnerTaskStore, watchOwnerTaskStoreBinding } from "../../core/tasks/owner-store.js";
+import { messageComponents } from "./chat-message-count.ts";
 import { TaskRow } from "./components/task-row.js";
 
 type InteractiveTaskHost = {
@@ -57,6 +58,7 @@ export function refreshInteractiveTasks(mode: InteractiveTaskHost): void {
 				},
 			};
 			mounted.set(task.ref.taskId, component);
+			messageComponents.add(component);
 			mode.chatContainer.addChild(component);
 		}
 		mode.ui.requestRender();

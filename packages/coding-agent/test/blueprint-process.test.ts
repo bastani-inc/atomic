@@ -7,6 +7,7 @@ import {
 	mkdtempSync,
 	readFileSync,
 	realpathSync,
+	renameSync,
 	rmSync,
 	statSync,
 	writeFileSync,
@@ -183,6 +184,42 @@ describe("running a logged process (#4588)", () => {
 			if (isAlive(grandchildPid)) process.kill(grandchildPid, "SIGKILL");
 		}
 	});
+
+	test.skipIf(process.platform !== "win32")(
+		"aborting a bash step rejects only once every process it started has ended, even one whose shell ended first",
+		async () => {
+			const { shell, args, commandTransport } = getShellConfig();
+			const work = path("work");
+			mkdirSync(work);
+			const script = "(sleep 30 3>held.txt & cat /proc/$!/winpid > sleep.pid); sleep 30";
+			const controller = new AbortController();
+			const reason = new Error("resume cancelled");
+			const pending = execute(
+				{
+					command: shell,
+					args: commandTransport === "stdin" ? args : [...args, script],
+					cwd: work,
+					env: { ...process.env },
+					...(commandTransport === "stdin" ? { stdin: script } : {}),
+				},
+				{ timeoutMs: STEADY_TIMEOUT_MS, signal: controller.signal },
+			);
+			const pidFile = join(work, "sleep.pid");
+			await waitFor(
+				() => existsSync(pidFile) && readFileSync(pidFile, "utf8").trim() !== "",
+				"the background sleep starting",
+			);
+			const sleeper = Number(readFileSync(pidFile, "utf8").trim());
+			try {
+				controller.abort(reason);
+				await assert.rejects(pending, (error: unknown) => error === reason);
+				assert.equal(isAlive(sleeper), false, "the sleep holding a file in the step's directory has ended");
+				renameSync(work, path("work-moved"));
+			} finally {
+				if (isAlive(sleeper)) process.kill(sleeper, "SIGKILL");
+			}
+		},
+	);
 
 	test("an abort that arrives before the command's spawn error rejects instead of reporting the failure (#4588)", async () => {
 		const controller = new AbortController();

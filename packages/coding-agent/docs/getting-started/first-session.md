@@ -85,13 +85,12 @@ For natural-language launches, Atomic decides between inline work and a workflow
 
 ### Monitor and steer a run
 
-Named workflow runs execute in the background. After launch you get the full run id; user-facing workflow surfaces show that complete UUID. You can still type the full id or a unique short prefix to inspect, connect, pause, quit, or resume a run. Ambiguous prefixes are reported rather than selecting a run arbitrarily.
+Named workflow runs execute in the background. After launch you get the full run id; user-facing workflow surfaces show that complete UUID. You can still type the full id or a unique short prefix to inspect, open (`/workflows <id>`), pause, quit, or resume a run. Ambiguous prefixes are reported rather than selecting a run arbitrarily.
 
 ```text
 /workflow status <run-id>         # inspect one run's progress
 /workflow status                  # list this session's active and terminal runs
-/workflow connect <run-id>        # see agents working; chat with or steer each stage (F2 also opens latest)
-/workflow attach <run-id> <stage> # chat with one stage
+/workflows <run-id>                # see agents working; chat with or steer each stage (F2 also opens latest)
 /workflow pause <run-id>          # pause resumably
 /workflow resume <run-id> "go"    # send a steer message and resume
 /workflow quit <run-id>           # pause gracefully and keep the run resumable

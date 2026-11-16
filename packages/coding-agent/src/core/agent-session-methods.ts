@@ -152,6 +152,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	readonly retryAttempt: number;
 	readonly isCompacting: boolean;
 	readonly compactionReason?: import("./agent-session-types.js").CompactionReason;
+	readonly compactionStartedAt?: number;
 	readonly messages: AgentMessage[];
 	readonly steeringMode: "all" | "one-at-a-time";
 	readonly followUpMode: "all" | "one-at-a-time";
@@ -263,7 +264,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 		customStarter?: CustomMessage,
 	): Promise<void>;
 	_runAgentContinue(): Promise<void>;
-	_runAgentContinuation(beforeContinue: () => Promise<void>): Promise<void>;
+	_runAgentContinuation(beforeContinue: () => Promise<void>, mode?: "continue" | "recovery" | "settle"): Promise<void>;
 	_continueQueuedAgentMessages(): Promise<void>;
 	_tryExecuteExtensionCommand(text: string): Promise<boolean>;
 	_expandSkillCommand(text: string): string;
@@ -495,6 +496,7 @@ export interface AgentSessionPublicSurface
 		| "retryAttempt"
 		| "isCompacting"
 		| "compactionReason"
+		| "compactionStartedAt"
 		| "messages"
 		| "steeringMode"
 		| "followUpMode"
@@ -619,6 +621,10 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_stopAfterTurnBlockedContinuation: boolean;
 	/** The current turn was ended by {@link interruptTurn}: a child's message admission stays open after it. */
 	_turnInterruptedByUser: boolean;
+	_abortPreparedRunAtStart: boolean;
+	_startAbortedForInterrupt: boolean;
+	_awaitingStartAfterInterrupt: boolean;
+	_undeliveredAgentStarts: number;
 	/** A child whose turn the user interrupted waits here: the next message it receives starts its next turn. */
 	_awaitingMessageAfterInterrupt: boolean;
 	_pendingInterruptDeliveries: number;
@@ -647,6 +653,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_autoCompactionAbortController: AbortController | undefined;
 	_autoCompactionCompletion: Promise<void> | undefined;
 	_compactionReason: import("./agent-session-types.js").CompactionReason | undefined;
+	_compactionStartedAt: number | undefined;
 	_overflowRecoveryAttempted: boolean;
 	_recoverableLengthRecoveryAttempted: boolean;
 	_contextOverflowUnresolved: boolean;

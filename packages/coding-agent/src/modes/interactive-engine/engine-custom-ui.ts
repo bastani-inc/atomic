@@ -6,6 +6,7 @@ import {
 	type Terminal,
 	type TUI,
 	TuiMainScreen,
+	type TuiMode,
 } from "@bastani/atomic-tui";
 import { getAgentDir } from "../../config.js";
 import { runCallback, runSynchronousCallback } from "../../core/callback-activity.ts";
@@ -54,6 +55,8 @@ interface ActiveComponent {
 	tui: TUI;
 	widgetKey?: string;
 	lastRequestId?: number;
+	/** The host renderer's mode from this component's latest frame request, which its TUI reports as `mode`. */
+	hostMode?: TuiMode;
 	/**
 	 * Overlay visibility as last driven through the remote OverlayHandle.
 	 * Hidden components are skipped by the extension-level `requestRender()`
@@ -182,6 +185,8 @@ export class EngineCustomUiService {
 	/** Widget renders and repaint checks; keyboard input and custom UI frames never wait in it. */
 	private readonly backgroundRenders = new BackgroundRenderLane();
 	private hostRenderSettings: EngineHostRenderSettings | undefined;
+	/** The host renderer's mode from the latest frame request of any component. */
+	private latestHostMode: TuiMode | undefined;
 
 	/** The host chat settings the latest render request carried; undefined before the host sent any. */
 	getHostRenderSettings(): EngineHostRenderSettings | undefined {
@@ -206,6 +211,7 @@ export class EngineCustomUiService {
 		const tui = new BackgroundRenderTui(terminal, this.backgroundRenders, `check:${componentId}`, (error) =>
 			this.sendComponentRenderFailure(componentId, error),
 		);
+		this.followHostMode(tui, componentId);
 		ensurePngTranscoder(() => {
 			tui.invalidate();
 			tui.requestRender();
@@ -281,6 +287,7 @@ export class EngineCustomUiService {
 			(requestId, text) => this.send({ type: "engine_custom_copy", componentId, requestId, text }),
 		);
 		const tui = new RemoteCustomTui(terminal, (error) => this.sendComponentRenderFailure(componentId, error));
+		this.followHostMode(tui, componentId);
 		ensurePngTranscoder(() => {
 			tui.invalidate();
 			tui.requestRender();
@@ -379,6 +386,13 @@ export class EngineCustomUiService {
 				break;
 			case "engine_custom_render": {
 				if (command.renderSettings !== undefined) this.hostRenderSettings = command.renderSettings;
+				if (command.hostMode !== undefined) {
+					const laidOutFor = record.tui.mode;
+					record.hostMode = command.hostMode;
+					this.latestHostMode = command.hostMode;
+					// A component that caches its lines by width alone would keep the old mode's layout.
+					if (laidOutFor !== command.hostMode) record.tui.invalidate();
+				}
 				record.terminal.columns = Math.max(1, command.width);
 				record.terminal.rows = Math.max(1, command.rows);
 				const { componentId, requestId } = command;
@@ -432,6 +446,21 @@ export class EngineCustomUiService {
 	dispose(): void {
 		for (const componentId of [...this.active.keys()]) this.disposeComponent(componentId, true, false);
 	}
+
+	/**
+	 * Make an engine TUI report the host renderer's mode as its own `mode`. The engine paints every component into a
+	 * headless main-screen TUI, whose class constant is "regular" whether the host is fullscreen or not. A component
+	 * gets the mode of its latest frame request; before its first request it gets the mode of the latest request
+	 * of any component, and "regular" when no host request has carried a mode.
+	 */
+	private followHostMode(tui: TUI, componentId: string): void {
+		Object.defineProperty(tui, "mode", {
+			configurable: true,
+			enumerable: true,
+			get: (): TuiMode => this.active.get(componentId)?.hostMode ?? this.latestHostMode ?? "regular",
+		});
+	}
+
 	private disposeComponent(componentId: string, resolve: boolean, notifyWidgetRelease = true): void {
 		const record = this.active.get(componentId);
 		if (!record) return;

@@ -482,6 +482,40 @@ test("joinHosts says a drain is over only once no host on the instance is regist
 	);
 });
 
+test("joinHosts says an instance drained for its boot timeout is drained once no host on it is live or draining (#5072)", () => {
+	const listed = ["vm-a", "vm-b", "vm-c", "vm-d"].map((id) => ({ id, state: "running" as const, since: 0 }));
+	const joined = joinHosts(listed, {
+		roots: [],
+		hosts: [
+			// The worker on vm-a died before its boot timeout.
+			{ host: "ha", providerId: "vm-a", live: false, leased: 0 },
+			// The host on vm-b read the drain, then stopped reporting in the middle of it.
+			{ host: "hb", providerId: "vm-b", live: false, leased: 0, draining: true },
+			// The host on vm-c reports.
+			{ host: "hc", providerId: "vm-c", live: true, leased: 0 },
+			// The host on vm-d was drained while idle, then stopped reporting.
+			{ host: "hd", providerId: "vm-d", live: false, leased: 0 },
+		],
+		drains: [
+			{ host: "boot-timeout:vm-a", providerId: "vm-a", agoMs: 0 },
+			{ host: "ha", providerId: "vm-a", agoMs: 0 },
+			{ host: "boot-timeout:vm-b", providerId: "vm-b", agoMs: 0 },
+			{ host: "boot-timeout:vm-c", providerId: "vm-c", agoMs: 0 },
+			{ host: "hd", providerId: "vm-d", agoMs: 0 },
+		],
+		leased: new Map(),
+	});
+	assert.deepEqual(
+		joined.map((entry) => [entry.view.id, entry.view.drained]),
+		[
+			["vm-a", true],
+			["vm-b", false],
+			["vm-c", false],
+			["vm-d", false],
+		],
+	);
+});
+
 test("an instance whose worker died after registering is removed for its boot timeout and replaced (#5072)", async () => {
 	const f = await fixture();
 	try {
@@ -517,6 +551,91 @@ test("an instance whose worker died after registering is removed for its boot ti
 		});
 		assert.deepEqual(removed, ["vm-1"]);
 	} finally {
+		await f.close();
+	}
+});
+
+/**
+ * Blocks the event loop past the controller's lease once, right after the first boot-timeout removal wrote its drain and
+ * found the instance free: the removal's provider call is then cut off, as a loaded machine or a long pause cuts it off.
+ */
+function stallAfterFirstBootDrain() {
+	const bootHold = SqlFleetStore.prototype.bootHold;
+	let stalled = false;
+	const spy = vi.spyOn(SqlFleetStore.prototype, "bootHold").mockImplementation(async function (
+		this: SqlFleetStore,
+		...args: Parameters<typeof bootHold>
+	) {
+		const hold = await bootHold.apply(this, args);
+		if (!stalled) {
+			stalled = true;
+			const until = Date.now() + 3 * TICK_MS;
+			while (Date.now() < until) {
+				// the event loop is blocked: no renewal runs
+			}
+		}
+		return hold;
+	});
+	return { spy, stalled: () => stalled };
+}
+
+/** One instance, vm-1, whose worker h1 registered once and died: its row stays, and it never reports again. */
+async function deadWorkerInstance(f: Awaited<ReturnType<typeof fixture>>) {
+	await f.report("h1", "vm-1");
+	await f.sql(`UPDATE ${PREFIX}wf_runs_pool_hosts SET heartbeat_at = heartbeat_at - 3600000 WHERE host = 'h1'`);
+	const removed: string[] = [];
+	const provisioner: WorkerHostProvisioner = {
+		kind: "fake",
+		async list() {
+			return removed.includes("vm-1") ? [] : [{ id: "vm-1", state: "running", since: 0 }];
+		},
+		async scaleTo() {},
+		async drain(id) {
+			removed.push(id);
+		},
+	};
+	return { removed, provisioner };
+}
+
+test("a boot-timeout removal cut off after its drain was written is finished by the next tick, not after the drain timeout (#5072)", async () => {
+	const f = await fixture();
+	const stall = stallAfterFirstBootDrain();
+	try {
+		const { removed, provisioner } = await deadWorkerInstance(f);
+		f.controller(provisioner, [], { bootTimeoutMs: 1, minHosts: 0 });
+		await vi.waitFor(
+			() => assert.ok(stall.stalled(), "the removal's drain was written and the controller stalled"),
+			TICKS_WAIT,
+		);
+		await vi.waitFor(
+			() => assert.deepEqual(removed, ["vm-1"], "the instance is removed once the controller renewed its lease"),
+			TICKS_WAIT,
+		);
+	} finally {
+		stall.spy.mockRestore();
+		await f.close();
+	}
+});
+
+test("a controller that takes over finishes a boot-timeout removal its predecessor was cut off from after writing the drain (#5072)", async () => {
+	const f = await fixture();
+	const stall = stallAfterFirstBootDrain();
+	try {
+		const { removed, provisioner } = await deadWorkerInstance(f);
+		const first = f.controller(provisioner, [], { bootTimeoutMs: 1, minHosts: 0 });
+		await vi.waitFor(
+			() => assert.ok(stall.stalled(), "the removal's drain was written and the controller stalled"),
+			TICKS_WAIT,
+		);
+		await first.stop();
+		assert.deepEqual(removed, [], "the stalled controller made no provider call");
+		f.controller(provisioner, [], { bootTimeoutMs: 1, minHosts: 0 });
+		await vi.waitFor(
+			() => assert.deepEqual(removed, ["vm-1"], "the controller that took over removes the instance"),
+			TICKS_WAIT,
+		);
+	} finally {
+		stall.spy.mockRestore();
 		await f.close();
 	}
 });

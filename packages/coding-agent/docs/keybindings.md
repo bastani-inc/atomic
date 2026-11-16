@@ -88,7 +88,7 @@ Local copy operations require a working native clipboard or platform command. On
 
 ### TUI Fullscreen Viewport
 
-Interactive sessions use a fullscreen transcript. The wheel scrolls the region under the pointer; over the fixed editor, status, or footer it scrolls the transcript. When scrolled up, click "Jump to latest message" or use `tui.altScreen.bottom` to return to live output. Attached workflow chats and `/tasks` transcripts show the same jump row in their own view; other OSC 8 links open in the default handler.
+Interactive sessions use a fullscreen transcript. The wheel scrolls the region under the pointer; over the fixed editor, status, or footer it scrolls the transcript. When scrolled up, a pill above the composer reads "↓ jump to bottom", or "↓ N new messages" once new output arrives; click it or use `tui.altScreen.bottom` to return to live output. While scrolled up, the first line of the prompt that started the turn you are reading stays pinned at the top, marked `↑`. Attached workflow chats and `/tasks` transcripts show the same jump row in their own view; other OSC 8 links open in the default handler.
 
 Attached workflow stage chats and `/tasks` transcripts scroll the same way as the main transcript: the wheel follows `fullscreenWheelScrollLines`, Alt+wheel scrolls five times as far, `fullscreenScrollbar` controls their scrollbar, and `tui.altScreen.top`, `tui.altScreen.bottom`, `tui.altScreen.previousPrompt`, `tui.altScreen.nextPrompt`, `tui.altScreen.halfPageUp`, and `tui.altScreen.halfPageDown` act on them. In those views `pageUp` and `pageDown` always page the view, `tui.altScreen.lineUp` and `tui.altScreen.lineDown` do nothing, and the scrollbar shows the position but cannot be dragged.
 
@@ -113,6 +113,8 @@ A focused custom component may consume viewport keys and mouse input before the 
 The blocking `ask_user_question` dialog is a bottom-pinned overlay. Opening it does not shrink the transcript viewport or change the page step. `pageUp`, `pageDown`, `ctrl+home`, `ctrl+end`, and the wheel still reach every scrollback line, including the newest ones, in the visible strip above the dialog.
 
 These transcript actions also work while Notes is open. Notes keeps ordinary text and edit actions, including the default `home` and `end`. A key moves the transcript instead only when configured for a `tui.altScreen.*` action.
+
+Inside the dialog, ↑↓ move between options, `enter` chooses one (in a multi-select question, `enter` or `space` toggles a box and `enter` on **Next** moves on), typing on **Type something.** writes your own answer, `n` adds a note to an option with a preview, `tab` or ←→ move to the next or previous question when there are several, and `esc` cancels the whole dialog. The hint line under the dialog lists the keys of the current step. A custom answer must contain non-whitespace text; its Enter hint appears when it can be submitted. In narrow terminals its descriptions shorten so the selection, notes, question-switching and cancellation keys stay visible. The step line at the top shows every question and **Review**, with the current question counted, such as `2/3`.
 
 On short terminals, the dialog is bounded to preserve that visible strip. The active questionnaire row stays visible as you move through single-select and multi-select choices, Next, Submit, Cancel, and inline inputs. The dialog keeps its own arrow, `enter`, `tab`, `space`, `esc`, click, and selection input.
 
@@ -212,7 +214,7 @@ The same keys move between the main chat, subagent chats, workflow graphs, stage
 
 - **Esc** only interrupts the current turn, cancels, closes a dialog or deselects. It never moves you to another chat.
 - **←** on an empty prompt goes back exactly one level, to the chat or list you came from, and the hint line names it (`← tasks`, `← main chat`). With text typed, ← moves the cursor; at the very start of the prompt it leaves too, and what you typed is kept for when you come back.
-- A workflow graph has no prompt, so **Esc** goes back from it; **←** does too on a node with nothing to its left, and elsewhere moves between nodes. The hint shows `esc/← back` only where ← would leave. In a stage chat, Esc on a choice or yes/no question closes it back to the chat's prompt: the question stays pending, a line above the prompt shows it, and Enter on the empty prompt reopens it.
+- In a workflow graph, **Esc** is the only back key. **←** moves to the previous sibling and does nothing at the leftmost node. In tool and failure details, **←** does nothing and **Esc** returns to the graph. In a stage chat, Esc on a choice or yes/no question closes it back to the chat's prompt: the question stays pending, a line above the prompt shows it, and Enter on the empty prompt reopens it.
 - In a list, **↑↓** select, **Enter** or **→** opens the item's chat (a workflow run's graph), **Space** peeks at its detail, **x** stops the selected item (press it again within 3 seconds to confirm; on a finished item one press dismisses the row), **Esc** or **←** closes the list. If an item finishes between the two presses of `x`, the stop is called off and the list says `<name> finished · x to dismiss`; the press that was meant as the second one is ignored, and only a later `x` dismisses the row.
 - **Ctrl+X Ctrl+K** stops every running background subagent, shell and workflow run of the session, from any view except a dialog that uses Ctrl+X itself (OAuth sign-in, the scoped-model selector). Press it twice within 3 seconds; the first press says what it will do, and any other key calls it off. Stopped subagents stay resumable: their chats read `Stopped · send to resume`, and only a message you send resumes them. Stopped workflow runs stay resumable.
 - **?** on an empty prompt, or in a list, shows the keys of the current screen; typed after text, `?` is just a character. Esc or ? closes it. Each screen also shows one dim hint line with exactly the keys that work there.
@@ -256,7 +258,7 @@ or task detail before leaving task focus. Unbound actions have no key hint.
 
 ### Scoped Models Selector
 
-Used inside the scoped models selector (opened via `/scoped-models`). Changes are saved automatically.
+Used inside the scoped models selector (opened via `/scoped-models`). Enter switches the selected model on or off, typing filters, and Esc clears the search before it closes the selector. Changes are saved automatically.
 
 | Keybinding id | Default | Description |
 |--------|---------|-------------|

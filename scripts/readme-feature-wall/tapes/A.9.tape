@@ -19,9 +19,8 @@ Type "/workflow research-and-verify topic='how the session store works'"
 Sleep 1s
 Enter
 Sleep 18s
-Type "/workflow connect"
+Type "/workflows"
 Sleep 1s
 Enter
 Sleep 4s
-Enter
 Sleep 90s

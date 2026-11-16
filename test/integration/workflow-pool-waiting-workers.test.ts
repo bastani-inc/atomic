@@ -20,6 +20,7 @@ import { run } from "../../packages/workflows/src/engine/run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
+import { IDLE_CLAIM_FALLBACK_MS } from "../../packages/workflows/src/workers/pool-wake-ups.js";
 import { poolTestBudgetMs } from "../helpers/pool-budget.js";
 import { makeTempDirectory, readTextSync, removeTempDirectory, sleep } from "../helpers/runtime.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
@@ -33,6 +34,7 @@ const BUDGET = poolTestBudgetMs(1);
 const STEP_DEADLINE_MS = 20_000;
 /** How long a test watches for a worker the pool should not start, after the step that would start one. */
 const NO_MORE_WORKERS_WINDOW_MS = 2_000;
+const RETIRE_BOUND_MS = 500;
 
 interface Step {
 	readonly event:
@@ -45,6 +47,7 @@ interface Step {
 		| "retired";
 	readonly pid: number;
 	readonly index?: number;
+	readonly at: number;
 }
 
 type PooledChild = Awaited<ReturnType<typeof loadWorkerDefinition>>;
@@ -203,6 +206,7 @@ test.skipIf(process.platform === "win32")(
 				seen.othersFirst = await p.until(
 					(steps) => completed(steps, 1) && completed(steps, 2) && !completed(steps, 0),
 				);
+				await sleep(IDLE_CLAIM_FALLBACK_MS * 2);
 				gate.open();
 				for (const outcome of await Promise.all([waiting, ...others]))
 					assert.equal(outcome.status, "completed", JSON.stringify(outcome));
@@ -244,6 +248,13 @@ test.skipIf(process.platform === "win32")(
 			);
 			assert.equal(seen.retired, true, `the pool ended one worker it no longer needed: ${JSON.stringify(steps)}`);
 			assert.equal(count(steps, "retired"), 1);
+			const retiredAfter =
+				steps.find((step) => step.event === "retired")!.at -
+				steps.find((step) => step.event === "completing" && step.index === 0)!.at;
+			assert.ok(
+				retiredAfter < RETIRE_BOUND_MS,
+				`retired ${retiredAfter} ms after the waiting child ended, not at the end of its idle pause (#5230)`,
+			);
 			assert.equal(seen.logsAfterRetire.length, 1, "the ended worker's log went with it");
 			assert.equal(seen.replaced, false, "nothing replaced the worker the pool ended");
 			assert.deepEqual(p.workers.health, []);

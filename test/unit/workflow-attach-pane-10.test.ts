@@ -1,17 +1,4 @@
 // @ts-nocheck
-/**
- * Unit tests for `WorkflowAttachPane`.
- *
- * Verifies:
- *  - Mounts in graph mode by default.
- *  - Pressing Enter on a graph node swaps the interior to stage chat
- *    without remounting the popup.
- *  - Ctrl+X in chat mode swaps back to graph with the same focused
- *    stage id preserved.
- *
- * cross-ref: src/tui/workflow-attach-pane.ts
- */
-
 import assert from "node:assert/strict";
 import { type AgentSession, TRANSCRIPT_JUMP_TO_END_URL } from "@bastani/atomic";
 import { Key } from "@bastani/atomic-tui";
@@ -196,6 +183,35 @@ describe("WorkflowAttachPane", () => {
 		assert.equal(pane._lastAttachedStageId, "stage-b");
 		assert.equal(pane._hasChatView, true);
 		pane.dispose();
+	});
+
+	test("retarget preserves each stage chat's unsent composer draft (#5234)", () => {
+		const store = createStore();
+		setupRun(store, "run-1", [{ id: "stage-a", name: "A" }]);
+		setupRun(store, "run-2", [{ id: "stage-b", name: "B" }]);
+		const registry = createStageControlRegistry();
+		registry.register(makeHandle("run-1", "stage-a"));
+		registry.register(makeHandle("run-2", "stage-b"));
+		const pane = new WorkflowAttachPane({
+			store,
+			graphTheme: deriveGraphTheme({}),
+			runId: "run-1",
+			stageControlRegistry: registry,
+			onClose: () => {},
+		});
+		try {
+			pane.handleInput(Key.enter);
+			for (const ch of "unsent-first-run") pane.handleInput(ch);
+			pane.retarget("run-2", "stage-b");
+			assert.ok(!pane.render(120).join("\n").includes("unsent-first-run"));
+			for (const ch of "unsent-second-run") pane.handleInput(ch);
+			pane.retarget("run-1", "stage-a");
+			assert.ok(pane.render(120).join("\n").includes("unsent-first-run"));
+			pane.retarget("run-2", "stage-b");
+			assert.ok(pane.render(120).join("\n").includes("unsent-second-run"));
+		} finally {
+			pane.dispose();
+		}
 	});
 
 	test("uses host terminal rows in graph mode", () => {

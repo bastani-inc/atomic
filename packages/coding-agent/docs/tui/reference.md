@@ -127,6 +127,10 @@ handleInput(data: string): boolean {
 - With modifiers: `Key.ctrl("c")`, `Key.shift("tab")`, `Key.alt("left")`, `Key.ctrlShift("p")`
 - String format also works: `"enter"`, `"ctrl+c"`, `"shift+tab"`, `"ctrl+shift+p"`
 
+For custom text inputs, use `decodePrintableKey(data)` from `@bastani/atomic-tui` to decode printable Kitty CSI-u and modifyOtherKeys sequences. It returns `undefined` for plain text and non-text keys, so handle ordinary printable text separately.
+
+For bracketed paste, remove the paste markers and pass the content to `normalizePastedText(content)` from the same package. It restores tmux-encoded control bytes, normalizes CRLF and CR to newlines, expands tabs to four spaces, and removes C0 control bytes other than newlines.
+
 ## Line Width
 
 **Critical:** Each line from `render()` must not exceed the `width` parameter.
@@ -301,6 +305,10 @@ await ctx.ui.custom((tui, theme, keybindings, done) => {
 ```
 
 Only autowrap control is exposed. Atomic restores the mode when the component hides, closes, or is disposed, and after an engine crash or restart. Fullscreen mode retains its baseline mouse and autowrap behavior. On non-isolated hosts the setter may be absent; only write escape sequences directly when your component owns the real terminal.
+
+### Renderer mode in an isolated component
+
+`tui.mode` is `"fullscreen"` when Atomic paints on the alternate screen and `"regular"` on the main-screen fallback, which Atomic uses under `TERM=dumb`, in CI, and without a TTY. In isolated mode a `ctx.ui.custom()` component or component-factory widget runs in the engine child, and `tui.mode` reports the host's renderer: each frame the host asks for carries its mode, and Atomic invalidates the component when the mode changes. Before the host has asked the engine for any frame, `tui.mode` is `"regular"`, so read it in `render()` rather than only in the factory.
 
 ### Host-native session picker
 

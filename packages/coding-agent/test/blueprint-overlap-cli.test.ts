@@ -6,13 +6,14 @@
 import assert from "node:assert/strict";
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
+import { renameWithRetry } from "../src/core/rename-retry.ts";
 import { buildLockPath } from "../src/core/resume/blueprint/build-lock.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.ts";
@@ -145,7 +146,7 @@ async function recordedSession(afterGate = ""): Promise<{ sessionId: string; sto
 	const sessionId = manager.getSessionId();
 	await store.close();
 	await database.close();
-	renameSync(clone, sandbox.path("node-a-gone"));
+	await renameWithRetry(clone, sandbox.path("node-a-gone"));
 	return { sessionId, storePath };
 }
 

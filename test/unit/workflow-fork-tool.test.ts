@@ -508,7 +508,10 @@ test("the workflow tool schema accepts the fork action and its options (#4321)",
 		inputs?.description ?? "",
 		/replacement inputs for action 'fork' \(omitted or empty: the source run's inputs\)/,
 	);
-	assert.match(fromStage?.description ?? "", /^Fork-only: dot path of the completed stage the fork re-runs from/);
+	assert.match(
+		fromStage?.description ?? "",
+		/^Fork-only: dot path of the stage the fork re-runs from.*a failed, blocked or stopped one, which then reruns from scratch/,
+	);
 	assert.match(carryMessages?.description ?? "", /^Fork-only: .*\('before', default\) or all of them \('all'\)/);
 });
 
@@ -602,7 +605,7 @@ test("/workflow fork completes the subcommand, --from and run ids, and nothing e
 });
 
 test("completing a run-targeting subcommand never loads workflow resources, and a workflow name does (#4321)", () => {
-	for (const subcommand of ["status", "connect", "resume", "attach", "pause", "quit", "reload", "fork"]) {
+	for (const subcommand of ["status", "resume", "pause", "quit", "reload", "fork"]) {
 		assert.equal(workflowArgumentCompletionsNeedWorkflowResources(`${subcommand} `), false, subcommand);
 		assert.equal(workflowArgumentCompletionsNeedWorkflowResources(`${subcommand} abc`), false, subcommand);
 		assert.equal(

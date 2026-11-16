@@ -171,10 +171,24 @@ function secondsPass(prefix: string): void {
 	}
 }
 
-function exitedPid(): number {
-	return Number(
-		spawnSync("bun", ["--eval", "process.stdout.write(String(process.pid))"], { encoding: "utf8" }).stdout,
+/**
+ * A claim left by a process that exited, naming it as a claim names its holder: by its pid and, where that can be read,
+ * when it started, which it reads itself while it runs. Windows soon gives an exited process's pid to another process,
+ * and only the start tells that process from the holder; a claim naming the pid alone would be that process's.
+ */
+function deadClaim(): string {
+	const exited = spawnSync(
+		"bun",
+		[
+			"--eval",
+			`const { processStartToken } = await import(${JSON.stringify(MODULE("process-start-token.ts"))});
+			process.stdout.write(JSON.stringify({ pid: process.pid, started: processStartToken(process.pid) }));`,
+		],
+		{ encoding: "utf8" },
 	);
+	assert.equal(exited.status, 0, exited.stderr);
+	const { pid, started } = JSON.parse(exited.stdout) as { pid: number; started?: string };
+	return JSON.stringify({ token: "dead", pid, host: hostname(), ...(started === undefined ? {} : { started }) });
 }
 
 describe("takeovers under an OS advisory lock (#5193)", () => {
@@ -242,7 +256,7 @@ describe("takeovers under an OS advisory lock (#5193)", () => {
 			const sessionId = `race-${randomUUID()}`;
 			const claimFile = join(agentDir, "session-claims", `${sessionId}.json`);
 			mkdirSync(dirname(claimFile), { recursive: true });
-			writeFileSync(claimFile, JSON.stringify({ token: "dead", pid: exitedPid(), host: hostname() }));
+			writeFileSync(claimFile, deadClaim());
 			const body = `
 				const { claimSession } = await import(${JSON.stringify(MODULE("session-claims.ts"))});
 				claimSession(${JSON.stringify(sessionId)}, { agentDir: ${JSON.stringify(agentDir)} });
@@ -331,7 +345,7 @@ describe("takeovers under an OS advisory lock (#5193)", () => {
 		const sessionId = `race-${randomUUID()}`;
 		const claimFile = join(agentDir, "session-claims", `${sessionId}.json`);
 		mkdirSync(dirname(claimFile), { recursive: true });
-		writeFileSync(claimFile, JSON.stringify({ token: "dead", pid: exitedPid(), host: hostname() }));
+		writeFileSync(claimFile, deadClaim());
 		const taker = startTaker(
 			`
 				const { claimSession } = await import(${JSON.stringify(MODULE("session-claims.ts"))});

@@ -36,7 +36,8 @@ export function assertValidSessionId(id: string): void {
 }
 
 /** Generate a unique short ID (8 hex chars, collision-checked) */
-export function generateId(byId: { has(id: string): boolean }): string {
+export function generateId(byId: { has(id: string): boolean; preferFullIds?: boolean }): string {
+	if (byId.preferFullIds) return randomUUID();
 	for (let i = 0; i < 100; i++) {
 		const id = randomUUID().slice(0, 8);
 		if (!byId.has(id)) return id;

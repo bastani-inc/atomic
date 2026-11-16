@@ -57,6 +57,8 @@ export async function openSqlKnownSessionStore({
 	const bindings = `${validateStoragePrefix(prefix, dialectOf(database).name)}intercom_session_bindings`;
 	const { types, nowMs, greatest } = dialectOf(database);
 	const age = greatest("0", `${nowMs} - recorded_at`);
+	/** `age` at the statement's one reading of the clock, from `WITH clock`. */
+	const clockAge = greatest("0", "(SELECT now FROM clock) - recorded_at");
 	await ensureBrokerSchema(database, prefix, "known-sessions", (tx) =>
 		tx.exec(`
 			CREATE TABLE IF NOT EXISTS ${table}(
@@ -125,11 +127,13 @@ export async function openSqlKnownSessionStore({
 		async lookup(target, retentionMs): Promise<KnownSessionLookupResult> {
 			if (target.length === 0) return { status: "invalid", reason: "empty-target" };
 			const rows = await database.all<KnownRow>(
-				`SELECT target_identity, intercom_session_id, name_json, atomic_session_id, group_name, groups_json,
-					recipient_purpose, reply_capability, ${age} AS age_ms
+				// One reading of the clock, so a session found within the retention reports an age within it too.
+				`WITH clock AS (SELECT ${nowMs} AS now)
+				SELECT target_identity, intercom_session_id, name_json, atomic_session_id, group_name, groups_json,
+					recipient_purpose, reply_capability, ${clockAge} AS age_ms
 				 FROM ${table}
 				 WHERE (intercom_session_id = ? OR atomic_session_id = ? OR name_key = ?)
-					AND ${age} <= ?
+					AND ${clockAge} <= ?
 				 ORDER BY record_order`,
 				target,
 				target,

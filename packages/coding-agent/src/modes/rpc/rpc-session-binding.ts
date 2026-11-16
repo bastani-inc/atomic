@@ -176,7 +176,7 @@ export class RpcSessionBinding {
 						return { cancelled: result.cancelled };
 					},
 					switchSession: async (sessionPath, options) => {
-						return this.runtimeHost.switchSession(sessionPath, options);
+						return this.runtimeHost.switchSession(sessionPath, { ...options, history: "tail" });
 					},
 					reload: async () => {
 						const steeringMode = this.session.steeringMode;

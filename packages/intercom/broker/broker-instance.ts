@@ -9,6 +9,12 @@ import { getIntercomDirPath } from "./paths.js";
  * a few seconds to start; the broker reads this once, as it starts.
  */
 const HOST_COMMAND_TIMEOUT_MS = 10_000;
+/**
+ * #5252: how many times a host command that failed to answer is run before the host is left without that fact. A
+ * loaded host can keep PowerShell from answering once; a broker that misses its host's identity has another instance key
+ * than the instance before it, and cannot supersede it after that instance was killed.
+ */
+export const HOST_COMMAND_ATTEMPTS = 3;
 /** Windows' boot time, to the microsecond, as WMI records it. */
 export const WINDOWS_BOOT_TIME_COMMAND = [
 	"powershell",
@@ -25,6 +31,22 @@ const orUndefined = (read: () => string | undefined): string | undefined => {
 		return undefined;
 	}
 };
+
+/**
+ * A host command's output, run up to `HOST_COMMAND_ATTEMPTS` times while it fails to answer; undefined once it never
+ * did. A command that is not installed is not run again.
+ */
+function hostCommandOutput(sources: HostIdentitySources, command: string, args: readonly string[]): string | undefined {
+	for (let attempt = 1; attempt <= HOST_COMMAND_ATTEMPTS; attempt++) {
+		try {
+			const output = sources.run(command, args).trim();
+			if (output !== "") return output;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+		}
+	}
+	return undefined;
+}
 
 /** What the identity sources read from the host; tests pass fakes. */
 export interface HostIdentitySources {
@@ -60,13 +82,16 @@ export const systemSources = (configDir: string = getIntercomDirPath()): HostIde
 /** The OS's own id of this machine: the registry's MachineGuid on Windows, the IOPlatformUUID on macOS. */
 export function osMachineId(sources: HostIdentitySources): string | undefined {
 	if (sources.platform === "win32") {
-		const output = orUndefined(() =>
-			sources.run("reg", ["query", "HKLM\\SOFTWARE\\Microsoft\\Cryptography", "/v", "MachineGuid"]),
-		);
+		const output = hostCommandOutput(sources, "reg", [
+			"query",
+			"HKLM\\SOFTWARE\\Microsoft\\Cryptography",
+			"/v",
+			"MachineGuid",
+		]);
 		return output?.match(/MachineGuid\s+REG_SZ\s+(\S+)/)?.[1];
 	}
 	if (sources.platform === "darwin") {
-		const output = orUndefined(() => sources.run("ioreg", ["-rd1", "-c", "IOPlatformExpertDevice"]));
+		const output = hostCommandOutput(sources, "ioreg", ["-rd1", "-c", "IOPlatformExpertDevice"]);
 		return output?.match(/"IOPlatformUUID"\s*=\s*"([^"]+)"/)?.[1];
 	}
 	return undefined;
@@ -90,12 +115,12 @@ export function persistedMachineId(sources: HostIdentitySources): string | undef
  */
 export function bootSession(sources: HostIdentitySources): string | undefined {
 	if (sources.platform === "darwin") {
-		const session = orUndefined(() => sources.run("sysctl", ["-n", "kern.bootsessionuuid"]));
+		const session = hostCommandOutput(sources, "sysctl", ["-n", "kern.bootsessionuuid"]);
 		return session === undefined ? undefined : `session-${session}`;
 	}
 	if (sources.platform === "win32") {
 		const [command, ...args] = WINDOWS_BOOT_TIME_COMMAND;
-		const bootTime = orUndefined(() => sources.run(command, args));
+		const bootTime = hostCommandOutput(sources, command, args);
 		return bootTime === undefined ? undefined : `boot-${bootTime}`;
 	}
 	return undefined;
@@ -117,6 +142,36 @@ export function brokerHostIdentity(sources: HostIdentitySources = systemSources(
 	const session = bootSession(sources);
 	const machineId = session === undefined ? undefined : (osMachineId(sources) ?? persistedMachineId(sources));
 	return machineId === undefined ? undefined : `${machineId}/${session}`;
+}
+
+/** Milliseconds between the Windows file-time epoch (1601) and the Unix epoch. */
+const WINDOWS_FILE_TIME_EPOCH_MS = 11_644_473_600_000;
+
+/**
+ * #5252: when process `pid` of this host started, in milliseconds since the epoch, so an earlier broker instance is told
+ * apart from a later process the host gave its id. Windows gives an exited process's id to another within seconds when
+ * many start, so there it is read, as `processStartToken` in the coding agent reads it: PowerShell's `Get-Process`
+ * creation time as a UTC file time, for a process that has not exited, bounded by the host command timeout. `undefined`
+ * when it cannot be read, which is unknown, never the same process. A process this one may not signal belongs to
+ * another user, so it is no instance of this user's broker: it counts as started now. `null` elsewhere: ids are handed
+ * out in sequence, the start is not read, and a running pid is taken for the instance.
+ */
+export function processStartedAt(pid: number, sources: HostIdentitySources = systemSources()): number | null | undefined {
+	if (sources.platform !== "win32") return null;
+	try {
+		process.kill(pid, 0);
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "EPERM" ? Date.now() : undefined;
+	}
+	if (!Number.isSafeInteger(pid) || pid <= 0) return undefined;
+	const output = hostCommandOutput(sources, "powershell", [
+		"-NoProfile",
+		"-NonInteractive",
+		"-Command",
+		`$p = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($p -and -not $p.HasExited) { $p.StartTime.ToFileTimeUtc() }`,
+	]);
+	if (output === undefined || !/^[1-9]\d*$/.test(output)) return undefined;
+	return Number(BigInt(output) / 10_000n) - WINDOWS_FILE_TIME_EPOCH_MS;
 }
 
 /** Whether a process with this id runs here; one this process may not signal still runs. */

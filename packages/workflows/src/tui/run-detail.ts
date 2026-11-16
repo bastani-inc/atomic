@@ -28,6 +28,7 @@ import { describeStagePredictions } from "../shared/possible-stage-prediction.js
 import { pooledStageStartingStep, stageDisplayStatus } from "../shared/stage-display-status.js";
 import type { StageSnapshot, ToolNodeSnapshot, ToolNodeStatus } from "../shared/store-types.js";
 import { elapsedRunMs, elapsedStageMs } from "../shared/timing.js";
+import { boundedToolText, boundedToolTitleText } from "../shared/tool-payload-bounds.js";
 import type { FlatBandBadge } from "./chat-surface.js";
 import { renderRoundedBox } from "./chat-surface.js";
 import { BOLD, hexToAnsi, RESET } from "./color-utils.js";
@@ -81,7 +82,7 @@ function renderPlain(
 	out.push(...renderIdentifierRows(detail.runId, width - 2));
 	out.push("");
 
-	for (const [k, v] of summaryRows(detail, now)) {
+	for (const [k, v] of summaryRows(detail, now, width)) {
 		if (v === undefined) continue;
 		const value = truncateToWidth(v, Math.max(1, width - 4 - KEY_COL), "…");
 		out.push(` ${pad(k, KEY_COL)}${value} `);
@@ -114,7 +115,7 @@ function renderPlain(
 		out.push("");
 	}
 
-	const artifactRows = artifactRowsFor(detail);
+	const artifactRows = artifactRowsFor(detail, width);
 	if (artifactRows.length > 0) {
 		out.push(" ARTIFACTS ");
 		for (const [k, v] of artifactRows) {
@@ -126,7 +127,7 @@ function renderPlain(
 	out.push(...renderDetailHintRows(detail, width - 2));
 
 	return renderRoundedBox({
-		title: `RUN ${detail.name}  ${stateBadge}`,
+		title: `RUN ${boundedToolTitleText(detail.name, width * 4)}  ${stateBadge}`,
 		bodyLines: out,
 		width,
 	});
@@ -154,7 +155,7 @@ function renderThemed(
 
 	const badges = stateBadges(detail, theme);
 
-	for (const [k, v] of summaryRows(detail, now)) {
+	for (const [k, v] of summaryRows(detail, now, width)) {
 		if (v === undefined) continue;
 		const value = truncateToWidth(v, Math.max(1, width - 4 - KEY_COL), "…");
 		out.push(` ${muted}${pad(k, KEY_COL)}${RESET}${text}${value}${RESET} `);
@@ -188,7 +189,7 @@ function renderThemed(
 		out.push("");
 	}
 
-	const artifactRows = artifactRowsFor(detail);
+	const artifactRows = artifactRowsFor(detail, width);
 	if (artifactRows.length > 0) {
 		out.push(` ${muted}${BOLD}ARTIFACTS${RESET} `);
 		for (const [k, v] of artifactRows) {
@@ -203,7 +204,7 @@ function renderThemed(
 
 	const badgeText = badges.length > 0 ? `  ${badges.map((b) => b.text).join("  ")}` : "";
 	return renderRoundedBox({
-		title: `RUN ${detail.name}${badgeText}`,
+		title: `RUN ${boundedToolTitleText(detail.name, width * 4)}${badgeText}`,
 		bodyLines: out,
 		accent: theme.accent,
 		theme,
@@ -215,11 +216,12 @@ function renderThemed(
 // Shared row builders
 // ---------------------------------------------------------------------------
 
-function summaryRows(detail: RunDetail, now: number): Array<[string, string | undefined]> {
+function summaryRows(detail: RunDetail, now: number, width: number): Array<[string, string | undefined]> {
 	const duration = elapsedRunMs(detail, now);
+	const limit = width * 4;
 
 	const rows: Array<[string, string | undefined]> = [
-		["workflow", detail.name],
+		["workflow", boundedToolTitleText(detail.name, limit)],
 		["state", statePlain(detail)],
 		["mode", detail.mode === "chain" ? `chain · ${detail.stages.length} stages` : "single"],
 		["started", formatTime(detail.startedAt)],
@@ -227,13 +229,15 @@ function summaryRows(detail: RunDetail, now: number): Array<[string, string | un
 	if (detail.forkedFrom !== undefined)
 		rows.push([
 			"forked from",
-			`${detail.forkedFrom.runId}${detail.forkedFrom.stagePath === undefined ? "" : ` at ${detail.forkedFrom.stagePath}`}`,
+			`${detail.forkedFrom.runId}${detail.forkedFrom.stagePath === undefined ? "" : ` at ${boundedToolTitleText(detail.forkedFrom.stagePath, limit)}`}`,
 		]);
 	if (detail.phase !== undefined) rows.push(["phase", `${detail.phase} (${detail.phaseAgeMs ?? 0}ms)`]);
 	if (detail.lastProgressAt !== undefined) rows.push(["last progress", formatTime(detail.lastProgressAt)]);
-	if (detail.dependencyError !== undefined) rows.push(["dependency", detail.dependencyError]);
-	for (const notice of detail.worktreeRestore ?? []) rows.push(["checkout", notice]);
-	if (detail.intercomDeliveryIssue !== undefined) rows.push(["intercom", detail.intercomDeliveryIssue]);
+	if (detail.dependencyError !== undefined)
+		rows.push(["dependency", boundedToolTitleText(detail.dependencyError, limit)]);
+	for (const notice of detail.worktreeRestore ?? []) rows.push(["checkout", boundedToolTitleText(notice, limit)]);
+	if (detail.intercomDeliveryIssue !== undefined)
+		rows.push(["intercom", boundedToolTitleText(detail.intercomDeliveryIssue, limit)]);
 	if (detail.controlPersistence !== undefined) {
 		rows.push(["control", `${detail.controlRequestedStatus} (${detail.controlPersistence})`]);
 	}
@@ -244,23 +248,27 @@ function summaryRows(detail: RunDetail, now: number): Array<[string, string | un
 		rows.push(["elapsed", fmtDuration(duration)]);
 	}
 	if (detail.exitReason) {
-		rows.push(["reason", detail.exitReason]);
+		rows.push(["reason", boundedToolTitleText(detail.exitReason, limit)]);
 	}
 	if (detail.error) {
-		rows.push(["error", detail.error.split("\n")[0] ?? ""]);
+		rows.push(["error", errorDisplayLine(detail.error, width)]);
 	}
-	if (detail.resumeGuidance) rows.push(["guidance", detail.resumeGuidance]);
+	if (detail.resumeGuidance) rows.push(["guidance", boundedToolTitleText(detail.resumeGuidance, limit)]);
 	const { predicted, unavailable } = describeStagePredictions(detail.stagePredictions);
-	rows.push(["predictions", predicted], ["predictions", unavailable]);
+	rows.push(
+		["predictions", predicted === undefined ? undefined : boundedToolTitleText(predicted, limit)],
+		["predictions", unavailable === undefined ? undefined : boundedToolTitleText(unavailable, limit)],
+	);
 	return rows;
 }
 
-function artifactRowsFor(detail: RunDetail): Array<[string, string]> {
+function artifactRowsFor(detail: RunDetail, width: number): Array<[string, string]> {
+	const limit = width * 4;
 	const rows: Array<[string, string]> = [];
 	if (detail.result !== undefined && Object.keys(detail.result).length > 0) {
-		rows.push(["result", JSON.stringify(detail.result)]);
+		rows.push(["result", boundedToolTitleText(JSON.stringify(detail.result), limit)]);
 	}
-	const inputKeys = Object.keys(detail.inputs);
+	const inputKeys = Object.keys(detail.inputs).map((key) => boundedToolTitleText(key, limit));
 	if (inputKeys.length > 0) {
 		rows.push(["inputs", inputKeys.join(", ")]);
 	}
@@ -272,7 +280,11 @@ function stageLinePlain(stage: StageSnapshot, now: number, width: number): strin
 	const icon = statusIcon(status);
 	const dur = stageDurationString(stage, now);
 	const activity = pooledStageStartingStep(stage) ?? stageActivityString(stage, now);
-	const name = truncateToWidth(`${icon} ${stage.name}`, STAGE_NAME_COL + 2, "…");
+	const name = truncateToWidth(
+		`${icon} ${boundedToolTitleText(stage.name, STAGE_NAME_COL * 4)}`,
+		STAGE_NAME_COL + 2,
+		"…",
+	);
 	const activityText = activity ? truncateToWidth(activity, 16, "…") : undefined;
 	const parts = [pad(name, STAGE_NAME_COL + 2), pad(status, 10)];
 	if (activityText) parts.push(pad(activityText, 16));
@@ -293,7 +305,7 @@ function stageLineThemed(stage: StageSnapshot, now: number, theme: GraphTheme, w
 	const activity = pooledStageStartingStep(stage) ?? stageActivityString(stage, now);
 	const dur = stageDurationString(stage, now);
 
-	const nameText = truncateToWidth(stage.name, STAGE_NAME_COL, "…");
+	const nameText = truncateToWidth(boundedToolTitleText(stage.name, STAGE_NAME_COL * 4), STAGE_NAME_COL, "…");
 	const namePad = pad(nameText, STAGE_NAME_COL);
 	const statePad = pad(status, 10);
 	const activityText = activity ? truncateToWidth(activity, 16, "…") : undefined;
@@ -363,7 +375,7 @@ function renderStageRowsPlain(
 		),
 	];
 	if (stage.error) {
-		rows.push(`   error  ${truncateToWidth(stage.error.split("\n")[0] ?? "", Math.max(1, width - 10), "…")} `);
+		rows.push(`   error  ${truncateToWidth(errorDisplayLine(stage.error, width), Math.max(1, width - 10), "…")} `);
 	}
 	if (stage.readinessDecision) {
 		rows.push(
@@ -400,7 +412,7 @@ function renderStageRowsThemed(
 	if (stage.error) {
 		const errFg = hexToAnsi(theme.error);
 		rows.push(
-			`   ${hexToAnsi(theme.textMuted)}error${RESET}  ${errFg}${truncateToWidth(stage.error.split("\n")[0] ?? "", Math.max(1, width - 12), "…")}${RESET} `,
+			`   ${hexToAnsi(theme.textMuted)}error${RESET}  ${errFg}${truncateToWidth(errorDisplayLine(stage.error, width), Math.max(1, width - 12), "…")}${RESET} `,
 		);
 	}
 	if (stage.readinessDecision) {
@@ -410,6 +422,11 @@ function renderStageRowsThemed(
 	}
 	return rows;
 }
+function errorDisplayLine(value: string, width: number): string {
+	const head = boundedToolText(value, width * 4).split(/\r?\n/, 1)[0] ?? "";
+	return boundedToolTitleText(head, width * 4);
+}
+
 function toolDisplayStatus(status: ToolNodeStatus): "pending" | "running" | "completed" | "failed" | "cancelled" {
 	return status === "cached" ? "completed" : status;
 }
@@ -422,10 +439,10 @@ function toolDurationString(tool: ToolNodeSnapshot, now: number): string | undef
 function renderToolRowsPlain(tool: ToolNodeSnapshot, now: number, width: number): string[] {
 	const icon = statusIcon(toolDisplayStatus(tool.status));
 	const duration = toolDurationString(tool, now);
-	const line = ` ${pad(`${icon} ${tool.name}`, STAGE_NAME_COL + 2)}${pad(tool.status, 10)}${duration ?? ""} `;
+	const line = ` ${pad(`${icon} ${boundedToolTitleText(tool.name, width * 4)}`, STAGE_NAME_COL + 2)}${pad(tool.status, 10)}${duration ?? ""} `;
 	const rows = [truncateToWidth(line, width, "…")];
 	if (tool.error)
-		rows.push(`   error  ${truncateToWidth(tool.error.split("\n")[0] ?? "", Math.max(1, width - 10), "…")} `);
+		rows.push(`   error  ${truncateToWidth(errorDisplayLine(tool.error, width), Math.max(1, width - 10), "…")} `);
 	return rows;
 }
 
@@ -435,11 +452,11 @@ function renderToolRowsThemed(tool: ToolNodeSnapshot, now: number, theme: GraphT
 	const text = hexToAnsi(theme.text);
 	const dim = hexToAnsi(theme.dim);
 	const duration = toolDurationString(tool, now);
-	const line = ` ${stateFg}${statusIcon(displayStatus)}${RESET} ${text}${pad(tool.name, STAGE_NAME_COL)}${RESET}  ${stateFg}${pad(tool.status, 10)}${RESET}${duration ? `${dim}${duration}${RESET}` : ""} `;
+	const line = ` ${stateFg}${statusIcon(displayStatus)}${RESET} ${text}${pad(boundedToolTitleText(tool.name, width * 4), STAGE_NAME_COL)}${RESET}  ${stateFg}${pad(tool.status, 10)}${RESET}${duration ? `${dim}${duration}${RESET}` : ""} `;
 	const rows = [truncateToWidth(line, width, "…")];
 	if (tool.error)
 		rows.push(
-			`   ${hexToAnsi(theme.textMuted)}error${RESET}  ${hexToAnsi(theme.error)}${truncateToWidth(tool.error.split("\n")[0] ?? "", Math.max(1, width - 12), "…")}${RESET} `,
+			`   ${hexToAnsi(theme.textMuted)}error${RESET}  ${hexToAnsi(theme.error)}${truncateToWidth(errorDisplayLine(tool.error, width), Math.max(1, width - 12), "…")}${RESET} `,
 		);
 	return rows;
 }
@@ -459,13 +476,14 @@ function stageActivityString(stage: StageSnapshot, now: number): string | undefi
 	if (stage.status !== "running") return undefined;
 	const last = stage.toolEvents.at(-1);
 	if (!last) return undefined;
+	const name = boundedToolTitleText(last.name, STAGE_NAME_COL * 4);
 	if (last.endedAt !== undefined && last.startedAt !== undefined) {
-		return `${last.name} · ${fmtDuration(last.endedAt - last.startedAt)}`;
+		return `${name} · ${fmtDuration(last.endedAt - last.startedAt)}`;
 	}
 	if (last.startedAt !== undefined) {
-		return `${last.name} · ${fmtDuration(now - last.startedAt)}`;
+		return `${name} · ${fmtDuration(now - last.startedAt)}`;
 	}
-	return last.name;
+	return name;
 }
 
 // ---------------------------------------------------------------------------
@@ -485,13 +503,13 @@ function stateBadges(detail: RunDetail, theme: GraphTheme): FlatBandBadge[] {
 		case "skipped":
 			return [{ text: "⊘ skipped", fg: theme.dim }];
 		case "cancelled":
-			return [{ text: "⊘ cancelled", fg: theme.dim }];
+			return [{ text: "◼ cancelled", fg: theme.textMuted }];
 		case "blocked":
 			return [{ text: "↑ blocked", fg: theme.dim }];
 		case "failed":
 			return [{ text: "✗ failed", fg: theme.error }];
 		case "killed":
-			return [{ text: "⊘ killed", fg: theme.dim }];
+			return [{ text: "◼ killed", fg: theme.textMuted }];
 		default:
 			return [{ text: "○ pending", fg: theme.dim }];
 	}
@@ -510,13 +528,13 @@ function stateLabel(detail: RunDetail): string {
 		case "skipped":
 			return "⊘ skipped";
 		case "cancelled":
-			return "⊘ cancelled";
+			return "◼ cancelled";
 		case "blocked":
 			return "↑ blocked";
 		case "failed":
 			return "✗ failed";
 		case "killed":
-			return "⊘ killed";
+			return "◼ killed";
 		default:
 			return "○ pending";
 	}

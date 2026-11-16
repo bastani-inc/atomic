@@ -23,6 +23,7 @@ type AssistantUsage = {
 
 function createSession(options: {
 	sessionName: string;
+	cwd?: string;
 	modelId?: string;
 	provider?: string;
 	reasoning?: boolean;
@@ -90,7 +91,7 @@ function createSession(options: {
 			getSessionId: () => "test",
 			getLeafId: () => "leaf",
 			getSessionName: () => options.sessionName,
-			getCwd: () => "/tmp/project",
+			getCwd: () => options.cwd ?? "/tmp/project",
 		},
 		getContextUsage: () => ({
 			contextWindow: options.contextWindow ?? 200_000,
@@ -185,6 +186,95 @@ describe("FooterComponent model label", () => {
 			statusLine(2, { ...sonnet, modelId: "gpt-4o", provider: "openai", reasoning: false }),
 			/^openai\/gpt-4o • /,
 		);
+	});
+});
+describe("FooterComponent composer hints (#5224)", () => {
+	beforeAll(() => {
+		initTheme(undefined, false);
+	});
+	const session = () =>
+		createSession({ sessionName: "shipping fix-first", provider: "anthropic", modelId: "claude-sonnet-4-5" });
+
+	it("the main composer's keys follow the model line, and its session title moves to the prompt's rule", () => {
+		const footer = new FooterComponent(session(), createFooterData(1), undefined, undefined, undefined, () => [
+			"? keys",
+		]);
+		const line = stripAnsi(footer.render(200)[0] ?? "");
+		assert.match(line, / · \? keys$/);
+		assert.doesNotMatch(line, /shipping fix-first/);
+	});
+
+	it("the composer's keys stay whole on a narrow terminal while the directory shortens", () => {
+		const footer = new FooterComponent(session(), createFooterData(1), undefined, undefined, undefined, () => [
+			"? keys",
+		]);
+		const line = stripAnsi(footer.render(36)[0] ?? "");
+		assert.ok(visibleWidth(line) <= 36, line);
+		assert.match(line, /\.\.\. · \? keys$/);
+	});
+
+	it("a chat without composer hints still names its session in the footer", () => {
+		const line = stripAnsi(new FooterComponent(session(), createFooterData(1)).render(200)[0] ?? "");
+		assert.match(line, /shipping fix-first/);
+	});
+
+	it("sanitizes newlines and terminal escape sequences in the footer session name, working directory and model label (#5243)", () => {
+		for (const [raw, expected] of [
+			["my\nsession", "my session"],
+			["a\x1b]52;c;SGVsbG8=\x07b", "a ]52;c;SGVsbG8= b"],
+			["x\x1b]0;PWNED\x07y", "x ]0;PWNED y"],
+			["\x1b[2J\x1b[Hboom", "[2J [Hboom"],
+		] as const) {
+			const s = createSession({ sessionName: raw, provider: "anthropic", modelId: "claude-sonnet-4-5" });
+			const rawLine = new FooterComponent(s, createFooterData(1)).render(200)[0] ?? "";
+			assert.doesNotMatch(rawLine, /[\r\n\t\x07]|\x1b\]|\x1b\[2J|\x1b\[H/);
+			assert.ok(stripAnsi(rawLine).endsWith(` • ${expected}`), stripAnsi(rawLine));
+		}
+		for (const [rawCwd, expectedPwd] of [
+			["/tmp/a\x1b]52;c;SGVsbG8=\x07b", "/tmp/a ]52;c;SGVsbG8= b (main)"],
+			["/tmp/x\ny", "/tmp/x y (main)"],
+		] as const) {
+			const s = createSession({ sessionName: "", cwd: rawCwd, provider: "anthropic", modelId: "claude-sonnet-4-5" });
+			const rawLine = new FooterComponent(s, createFooterData(1)).render(200)[0] ?? "";
+			assert.doesNotMatch(rawLine, /[\r\n\t\x07]|\x1b\]|\x1b\[2J|\x1b\[H/);
+			assert.ok(stripAnsi(rawLine).endsWith(` • ${expectedPwd}`), stripAnsi(rawLine));
+		}
+		for (const [rawModelId, expectedModel] of [
+			["m\x1b]0;PWNED\x07x", "m ]0;PWNED x"],
+			["m\x1b[2J\x1b[Hx", "m [2J [Hx"],
+			["m\nx", "m x"],
+		] as const) {
+			const s = createSession({ sessionName: "", provider: "anthropic", modelId: rawModelId });
+			const rawLine = new FooterComponent(s, createFooterData(1)).render(200)[0] ?? "";
+			assert.doesNotMatch(rawLine, /[\r\n\t\x07]|\x1b\]|\x1b\[2J|\x1b\[H/);
+			assert.ok(stripAnsi(rawLine).startsWith(`${expectedModel} • `), stripAnsi(rawLine));
+		}
+	});
+
+	it("sanitizes the provider shown when several providers are configured (#5243)", () => {
+		for (const [rawProvider, expectedLabel] of [
+			["anthropic", "anthropic/claude-sonnet-4-5"],
+			["evil\x1b]0;PWNED\x07co", "evil ]0;PWNED co/claude-sonnet-4-5"],
+			["evil\x1b]52;c;SGVsbG8=\x1b\\\nco", "evil ]52;c;SGVsbG8= \\ co/claude-sonnet-4-5"],
+		] as const) {
+			const s = createSession({ sessionName: "", provider: rawProvider, modelId: "claude-sonnet-4-5" });
+			const rawLine = new FooterComponent(s, createFooterData(2)).render(200)[0] ?? "";
+			assert.doesNotMatch(rawLine, /[\r\n\t\x07]|\x1b\]|\x1b\\/);
+			assert.ok(stripAnsi(rawLine).startsWith(`${expectedLabel} • `), stripAnsi(rawLine));
+		}
+	});
+
+	it("sanitizes the thinking level shown for a reasoning model (#5243)", () => {
+		const s = createSession({
+			sessionName: "",
+			provider: "anthropic",
+			modelId: "claude-sonnet-4-5",
+			reasoning: true,
+			thinkingLevel: "high\x1b]0;PWNED\x07\n",
+		});
+		const rawLine = new FooterComponent(s, createFooterData(1)).render(200)[0] ?? "";
+		assert.doesNotMatch(rawLine, /[\r\n\t\x07]|\x1b\]/);
+		assert.ok(stripAnsi(rawLine).startsWith("claude-sonnet-4-5  high ]0;PWNED • "), stripAnsi(rawLine));
 	});
 });
 describe("FooterComponent width handling", () => {

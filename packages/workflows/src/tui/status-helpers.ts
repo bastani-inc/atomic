@@ -23,13 +23,13 @@ export function statusColor(status: StageDisplayStatus | RunStatus, theme: Graph
 		case "failed":
 			return theme.error;
 		case "killed":
-			return theme.error;
+			return theme.textMuted;
 		case "blocked":
 			return theme.dim;
 		case "skipped":
 			return theme.dim;
 		case "cancelled":
-			return theme.dim;
+			return theme.textMuted;
 		default:
 			return theme.dim;
 	}
@@ -52,7 +52,7 @@ export function statusIcon(status: StageDisplayStatus | RunStatus): string {
 		case "skipped":
 			return "⊘";
 		case "cancelled":
-			return "⊘";
+			return "◼";
 		case "running":
 			return "●";
 		case "paused":
@@ -62,7 +62,7 @@ export function statusIcon(status: StageDisplayStatus | RunStatus): string {
 		case "failed":
 			return "✗";
 		case "killed":
-			return "⊘";
+			return "◼";
 		default:
 			return "○";
 	}

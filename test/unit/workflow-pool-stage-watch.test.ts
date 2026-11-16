@@ -8,6 +8,9 @@ import {
 	createSyntheticSourceInfo,
 } from "@bastani/atomic";
 import { test } from "vitest";
+import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
+import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.js";
+import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import {
 	type AgentSessionEventListener,
 	createStageControlRegistry,
@@ -1957,4 +1960,60 @@ test("an Intercom message from the stage's input queue reaches the sink its sess
 	finished.registry.register(done.handle);
 	done.finish();
 	assert.equal((await finished.serve({ op: "intercom", sessionId: "s1", id: "m5" })).refusal, "StageNotLive");
+});
+
+test("a tail-resumed stage does not redeliver an op it already received (#5249)", async () => {
+	const timestamp = "2026-11-16T00:00:00.000Z";
+	const user = (id: string, parentId: string | null): SessionEntry => ({
+		type: "message",
+		id,
+		parentId,
+		timestamp,
+		message: { role: "user", content: id, timestamp: 1 },
+	});
+	const store = new MemorySessionStore();
+	await store.create({ id: "session-agent", version: 4, createdAt: timestamp, cwd: "/project" }, [
+		user("root", null),
+		{
+			type: "custom",
+			customType: "atomic-pooled-delivery-op",
+			id: "receipt",
+			parentId: "root",
+			timestamp,
+			data: { op: "op-before-compaction" },
+		},
+		user("kept", "receipt"),
+		{
+			type: "compaction",
+			id: "boundary",
+			parentId: "kept",
+			timestamp,
+			summary: "summary",
+			tokensBefore: 10,
+			firstKeptEntryId: "kept",
+			details: { strategy: "verbatim-lines" },
+		},
+	]);
+	const manager = await SessionManager.open(store, "session-agent", undefined, { history: "tail" });
+	assert.equal(
+		manager.getEntries().some((entry) => entry.id === "receipt"),
+		false,
+	);
+	const { registry, sent, watches } = airlock();
+	const stage = deliverableStage(true);
+	registry.register({
+		...stage.handle,
+		get status() {
+			return stage.handle.status;
+		},
+		agentSession: { sessionManager: manager } as never,
+	});
+	openWatch(watches);
+	await untilSent(sent, "stage-command-result");
+	const opened = sent[0];
+	assert.ok(opened?.kind === "stage-command-result");
+	assert.deepEqual(opened.snapshot?.deliveredOps, ["op-before-compaction"]);
+	const again = await deliver(sent, watches, 2, "op-before-compaction", "steer");
+	assert.deepEqual(again, { action: "handled", refusal: undefined });
+	assert.deepEqual(stage.admitted, []);
 });

@@ -31,9 +31,10 @@ import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import type { RunIndicatorStatus } from "../shared/run-indicator-status.js";
 import { createRunIndicatorStatusResolver, runIndicatorStatus } from "../shared/run-indicator-status.js";
 import { sortRunsByStatus } from "../shared/run-order.js";
-import type { RunSnapshot, StageSnapshot, StageStatus } from "../shared/store-types.js";
+import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
 import { elapsedRunMs, elapsedStageMs } from "../shared/timing.js";
-import type { FlatBandBadge } from "./chat-surface.js";
+import { boundedToolTitleText } from "../shared/tool-payload-bounds.js";
+import type { FlatBandBadge, ProgressCell } from "./chat-surface.js";
 import { chatWidth, ELLIPSIS, progressStrip, renderRoundedBox } from "./chat-surface.js";
 import { BOLD, hexToAnsi, RESET } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
@@ -115,7 +116,10 @@ export function renderStatusList(runs: readonly RunSnapshot[], opts: RenderStatu
 		body.push("");
 		body.push(...renderStatusHintRows(sorted[0]!.id, opts.theme, width).map((line) => ` ${line} `));
 	}
-	const badgeText = badges && badges.length > 0 ? `  ${badges.map((b) => b.text).join("  ")}` : "";
+	const badgeText =
+		badges && badges.length > 0
+			? `  ${badges.map((badge) => (opts.theme && badge.fg ? `${hexToAnsi(badge.fg)}${badge.text}${RESET}` : badge.text)).join("  ")}`
+			: "";
 	return renderRoundedBox({
 		title: `BACKGROUND  ${subtitle}${badgeText}`,
 		bodyLines: body,
@@ -162,7 +166,7 @@ function renderRunEntry(
 	const trailing = runTrailing(run, theme);
 	const trailingText = truncateToWidth(trailing?.text ?? "", Math.max(0, interior - 1), ELLIPSIS);
 	const nameBudget = Math.max(1, interior - 3 - visibleWidth(trailingText) - (trailingText ? 2 : 0));
-	const name = truncateToWidth(run.name, nameBudget, ELLIPSIS);
+	const name = truncateToWidth(boundedToolTitleText(run.name, nameBudget * 4), nameBudget, ELLIPSIS);
 	const nameSeg = theme ? `${text}${BOLD}${name}${RESET}` : name;
 	const trailingSeg =
 		theme && trailingText ? `${hexToAnsi(trailing?.fg ?? theme.dim)}${trailingText}${RESET}` : trailingText;
@@ -204,7 +208,8 @@ function pendingStageIdentityLines(
 	width: number,
 	suffix = "",
 ): string[] {
-	const full = `   pending: ${stage.name} (${stage.stageId})${suffix}`;
+	const safeName = boundedToolTitleText(stage.name, Math.max(1, width * 4));
+	const full = `   pending: ${safeName} (${stage.stageId})${suffix}`;
 	if (visibleWidth(full) <= width) return [full];
 
 	// At narrow widths, drop the display-name decoration before wrapping the
@@ -231,8 +236,9 @@ function pendingStageLines(
 	resolveBoundarySegments?: WorkflowBoundarySegmentsResolver,
 ): string[] {
 	const stages = pendingWorkflowStageStatuses(run, resolveOwningRunStatus, resolveBoundarySegments);
+	const limit = Math.max(1, width * 4);
 	const visible = stages.slice(0, MAX_PENDING_STAGE_ROWS).flatMap((stage) => {
-		const prefix = `   pending: ${stage.name} (${stage.stageId})`;
+		const prefix = `   pending: ${boundedToolTitleText(stage.name, limit)} (${stage.stageId})`;
 		if (stage.target === undefined) {
 			const unavailable = `${prefix} · delivery unavailable`;
 			if (visibleWidth(unavailable) <= width) return [pendingStageLine(unavailable, width, theme)];
@@ -284,11 +290,11 @@ function runTrailing(run: RunSnapshot, theme?: GraphTheme): { text: string; fg?:
 		case "skipped":
 			return { text: "⊘ skipped", fg: theme?.dim };
 		case "cancelled":
-			return { text: "⊘ cancelled", fg: theme?.dim };
+			return { text: "◼ cancelled", fg: theme?.textMuted };
 		case "failed":
 			return { text: "✗ failed", fg: theme?.error };
 		case "killed":
-			return { text: "⊘ killed", fg: theme?.error };
+			return { text: "◼ killed", fg: theme?.textMuted };
 		default:
 			return { text: "○ pending", fg: theme?.dim };
 	}
@@ -332,11 +338,12 @@ function runCardMeta(run: RunSnapshot, now: number): string {
 	}
 
 	if (effectiveRunStatus(run) === "failed" || effectiveRunStatus(run) === "killed") {
-		if (run.exitReason !== undefined && run.exitReason.length > 0 && run.exited === true) parts.push(run.exitReason);
+		if (run.exitReason !== undefined && run.exitReason.length > 0 && run.exited === true)
+			parts.push(boundedToolTitleText(run.exitReason));
 		const failed = run.stages.find((s) => s.status === "failed");
-		if (failed && isChain) parts.push(`failed at ${failed.name}`);
-		else if (failed) parts.push(failed.name);
-		else if (!isChain && run.stages[0]) parts.push(run.stages[0].name);
+		if (failed && isChain) parts.push(`failed at ${boundedToolTitleText(failed.name)}`);
+		else if (failed) parts.push(boundedToolTitleText(failed.name));
+		else if (!isChain && run.stages[0]) parts.push(boundedToolTitleText(run.stages[0].name));
 		const dur = lastStageDuration(run, now);
 		if (dur && parts.length < 2) parts.push(dur);
 		if (ago) parts.push(ago);
@@ -344,8 +351,8 @@ function runCardMeta(run: RunSnapshot, now: number): string {
 	}
 
 	if (["completed", "skipped", "cancelled", "blocked"].includes(effectiveRunStatus(run))) {
-		if (run.exitReason !== undefined && run.exitReason.length > 0) parts.push(run.exitReason);
-		if (!isChain && run.stages[0]) parts.push(run.stages[0].name);
+		if (run.exitReason !== undefined && run.exitReason.length > 0) parts.push(boundedToolTitleText(run.exitReason));
+		if (!isChain && run.stages[0]) parts.push(boundedToolTitleText(run.stages[0].name));
 		const dur = lastStageDuration(run, now);
 		if (dur) parts.push(dur);
 		if (ago) parts.push(ago);
@@ -358,14 +365,18 @@ function runCardMeta(run: RunSnapshot, now: number): string {
 }
 
 function runningStageLabels(run: RunSnapshot): string | undefined {
-	const running = run.stages.filter((s) => s.status === "running").map((s) => s.name);
+	const running = run.stages
+		.filter((s) => s.status === "running")
+		.map((s) => boundedToolTitleText(s.name, STAGE_LABEL_BUDGET * 4));
 	if (running.length === 0) return undefined;
 	const joined = running.join(", ");
 	return truncateToWidth(joined, STAGE_LABEL_BUDGET, ELLIPSIS);
 }
 
 function pausedStageLabels(run: RunSnapshot): string | undefined {
-	const paused = run.stages.filter((s) => s.status === "paused").map((s) => s.name);
+	const paused = run.stages
+		.filter((s) => s.status === "paused")
+		.map((s) => boundedToolTitleText(s.name, STAGE_LABEL_BUDGET * 4));
 	if (paused.length === 0) return undefined;
 	const joined = paused.join(", ");
 	return truncateToWidth(joined, STAGE_LABEL_BUDGET, ELLIPSIS);
@@ -388,36 +399,11 @@ function stageDurationString(stage: StageSnapshot, now: number): string | undefi
 	return elapsed === undefined ? undefined : fmtDuration(elapsed);
 }
 
-function stageCells(run: RunSnapshot): Array<{ status: StageStatus }> {
-	// Single-stage runs render a single cell mirroring run status. Chain
-	// runs render one cell per stage.
+function stageCells(run: RunSnapshot): ProgressCell[] {
 	if (run.stages.length === 0) {
-		return [{ status: stageStatusFromRun(run) }];
+		return [{ status: effectiveRunStatus(run) }];
 	}
 	return run.stages.map((s) => ({ status: s.status }));
-}
-
-function stageStatusFromRun(run: RunSnapshot): StageStatus {
-	switch (effectiveRunStatus(run)) {
-		case "completed":
-			return "completed";
-		case "skipped":
-			return "skipped";
-		case "cancelled":
-			return "skipped";
-		case "blocked":
-			return "blocked";
-		case "running":
-			return "running";
-		case "paused":
-			return "paused";
-		case "failed":
-			return "failed";
-		case "killed":
-			return "failed";
-		default:
-			return "pending";
-	}
 }
 
 /**
@@ -440,14 +426,16 @@ interface Counts {
 	completed: number;
 	blocked: number;
 	failed: number;
+	stopped: number;
 	pending: number;
 }
 
 function countBuckets(runs: readonly RunSnapshot[]): Counts {
-	const c: Counts = { active: 0, paused: 0, quit: 0, completed: 0, blocked: 0, failed: 0, pending: 0 };
+	const c: Counts = { active: 0, paused: 0, quit: 0, completed: 0, blocked: 0, failed: 0, stopped: 0, pending: 0 };
 	for (const r of runs) {
 		const status = effectiveRunStatus(r);
 		if (isQuitRun(r)) c.quit++;
+		else if (status === "killed" || status === "cancelled") c.stopped++;
 		else if (r.endedAt === undefined) {
 			if (status === "pending") c.pending++;
 			else if (status === "paused") c.paused++;
@@ -457,7 +445,7 @@ function countBuckets(runs: readonly RunSnapshot[]): Counts {
 			else c.failed++;
 		} else if (status === "completed") c.completed++;
 		else if (status === "blocked") c.blocked++;
-		else if (status === "skipped" || status === "cancelled") c.completed++;
+		else if (status === "skipped") c.completed++;
 		else c.failed++;
 	}
 	return c;
@@ -473,7 +461,8 @@ function themedBadges(c: Counts, theme: GraphTheme): FlatBandBadge[] {
 	if (c.paused > 0) out.push({ text: `❚❚ ${c.paused} paused`, fg: theme.warning });
 	if (c.quit > 0) out.push({ text: `${c.quit} quit`, fg: theme.warning });
 	if (c.pending > 0) out.push({ text: `○ ${c.pending}`, fg: theme.dim });
-	if (c.failed > 0) out.push({ text: `⊘ ${c.failed}`, fg: theme.error });
+	if (c.stopped > 0) out.push({ text: `◼ ${c.stopped}`, fg: theme.textMuted });
+	if (c.failed > 0) out.push({ text: `✗ ${c.failed}`, fg: theme.error });
 	return out;
 }
 
@@ -487,7 +476,8 @@ function plainBadges(c: Counts): FlatBandBadge[] {
 	if (c.paused > 0) out.push({ text: `❚❚ ${c.paused} paused` });
 	if (c.quit > 0) out.push({ text: `${c.quit} quit` });
 	if (c.pending > 0) out.push({ text: `○ ${c.pending}` });
-	if (c.failed > 0) out.push({ text: `⊘ ${c.failed}` });
+	if (c.stopped > 0) out.push({ text: `◼ ${c.stopped}` });
+	if (c.failed > 0) out.push({ text: `✗ ${c.failed}` });
 	return out;
 }
 

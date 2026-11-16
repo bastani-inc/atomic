@@ -1,5 +1,5 @@
 /**
- * The `/workflow connect` picker and the `/workflow status` list order runs the
+ * The `/workflows` picker and the `/workflow status` list order runs the
  * way `/tasks` does: status rank first, newest first within a status.
  */
 import assert from "node:assert/strict";

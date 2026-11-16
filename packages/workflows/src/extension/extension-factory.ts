@@ -27,6 +27,7 @@ import { type RunEndPayload, type RunStartPayload, renderRunBanner, renderRunSum
 import { buildRuntimeAdapters } from "./wiring.js";
 import { registerWorkflowSlashCommand } from "./workflow-command-registration.js";
 import { installInputInterceptor, type WorkflowCommandHandler } from "./workflow-command-utils.js";
+import { createGraphStageActions, type GraphStageActionDeps } from "./workflow-graph-stage-actions.js";
 import { createWorkflowObservation } from "./workflow-observation.js";
 import { captureWorkflowOwnerResources, type WorkflowOwnerResources } from "./workflow-owner-resources.js";
 import { workflowPanelSource } from "./workflow-panel-source.js";
@@ -53,12 +54,14 @@ function buildWorkflowOverlay(
 	owner: WorkflowOwnerResources,
 	resolvePostMortemHandle: (runId: string, stageId: string) => PostMortemHandleResolution,
 	resolveSessionStore: () => import("@bastani/atomic").SessionStore | undefined,
+	stageActionDeps: Omit<GraphStageActionDeps, "owner">,
 ): GraphOverlayPort {
 	return buildGraphOverlayAdapter(pi, owner.store, {
 		resolvePostMortemHandle,
 		resolveSessionStore,
 		stageControlRegistry: owner.stageControlRegistry,
 		stageUiBroker: owner.stageUiBroker,
+		stageActions: createGraphStageActions({ owner, ...stageActionDeps }),
 	});
 }
 
@@ -168,7 +171,11 @@ function factory(pi: ExtensionAPI): void {
 		registerExtensionContextRetirementEffect(ctx, dormantRuns.dispose);
 		registerExtensionContextRetirementEffect(ctx, disposeReleasedRoutes);
 	});
-	const overlay = buildWorkflowOverlay(pi, owner, postMortemHandleResolver, () => adapters.sessionStore);
+	const overlay = buildWorkflowOverlay(pi, owner, postMortemHandleResolver, () => adapters.sessionStore, {
+		runtime: () => (sessionContext === undefined ? undefined : runtimeState.runtimeForContext(sessionContext)),
+		context: () => sessionContext,
+		ensureWorkflowResourcesLoaded: runtimeState.ensureWorkflowResourcesLoaded,
+	});
 	const workflowCommands = new Map<string, WorkflowCommandHandler>();
 	const intercomControlRef: { current: (() => void) | null } = { current: null };
 	const executeWorkflowTool = makeExecuteWorkflowTool(

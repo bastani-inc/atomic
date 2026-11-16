@@ -17,7 +17,7 @@
  *   - close() releases the OverlayHandle (`hide`) and disposes the view.
  *   - F2 shortcut registration in extension factory calls
  *     overlay.open(activeRunId).
- *   - /workflow resume + /workflow attach + /workflow pause routing.
+ *   - /workflow resume + /workflow pause routing.
  *   - Graph-mode Ctrl+X / `h` never changes the run lifecycle.
  *   - `q` does not navigate, cancel, or pause the active run.
  */

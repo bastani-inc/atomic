@@ -76,7 +76,7 @@ test("attached chat paints post-tool compaction status from the start event, not
 		host.applyAgentEvent({ type: "compaction_start", reason: "threshold", midTurn: true } as never);
 
 		assert.equal(renders(), beforeStart + 1, "compaction_start requests its own immediate paint");
-		assert.equal(workingLine(host), " ∀ Auto-compacting... (esc Cancel)");
+		assert.match(workingLine(host), /^ ∀ Auto-compacting\.\.\. \(\d+s · esc to cancel\)$/);
 	} finally {
 		host.dispose();
 		timers.restore();
@@ -94,7 +94,7 @@ test("attached chat keeps compaction precedence through the interposed turn_star
 		host.applyAgentEvent({ type: "compaction_start", reason: "threshold", midTurn: true } as never);
 
 		host.applyAgentEvent({ type: "turn_start" } as never);
-		assert.equal(workingLine(host), " ∀ Auto-compacting... (esc Cancel)");
+		assert.match(workingLine(host), /^ ∀ Auto-compacting\.\.\. \(\d+s · esc to cancel\)$/);
 
 		const beforeEnd = renders();
 		host.applyAgentEvent(midTurnEnd({ result: compactionResult }) as never);

@@ -21,7 +21,7 @@ import { visibleWidth } from "./text-helpers.js";
 export interface PendingInputAffordance {
 	/** Concrete ownership tuple: owner run, stage (or null), and prompt id. */
 	readonly identity: readonly [ownerRunId: string, stageId: string | null, promptId: string];
-	/** Visible top-level run targeted by `/workflow connect`. */
+	/** Visible top-level run opened with `/workflows`. */
 	readonly visibleRunId: string;
 	/** Control-stripped, whitespace-normalized, non-empty single-line prompt text. */
 	readonly message: string;

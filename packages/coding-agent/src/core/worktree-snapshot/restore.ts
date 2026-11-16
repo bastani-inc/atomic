@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, type Stats } from "node:fs";
-import { lstat, mkdir, open, readdir, readFile, realpath, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, readFile, realpath, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { releaseLock } from "../lock-release.ts";
+import { takeTakeoverMutex } from "../lock-takeover.ts";
+import { renameWithRetry } from "../rename-retry.ts";
 import { deferRestorePhase, noteRestoreFetch, timeRestorePhase } from "../resume/timings.ts";
 import {
 	locateCheckout,
@@ -212,12 +214,23 @@ async function withProcessRepositoryLock<T>(store: string, action: () => Promise
 const REPOSITORY_LOCK_STALE_MS = 30_000;
 const REPOSITORY_LOCK_UPDATE_MS = 10_000;
 const REPOSITORY_LOCK_POLL_MS = 50;
+/** How long, on Windows, the repository lock is tried again while its directory is refused with EPERM. */
+export const REPOSITORY_LOCK_REFUSED_MS = 10_000;
+
+/**
+ * Whether creating the lock directory failed only for a moment: Windows refuses with EPERM to create a directory
+ * another process has just removed while a third still has it open, as other waiters' checks of the lock do.
+ */
+function refusedForAMoment(error: unknown): boolean {
+	return (error as NodeJS.ErrnoException).code === "EPERM" && process.platform === "win32";
+}
 
 /**
  * Serializes work on one shared object store, in this process and across processes (#4951): creating the store,
  * configuring its remotes, fetching into it and updating its refs. Git's own locks fail rather than wait, so two
  * processes doing either at once would fail one of them. Waiters in this process queue behind each other; across
- * processes, the store's lock file `<store>.lock` is polled until it is free or its holder stopped refreshing it.
+ * processes, the store's lock file `<store>.lock` is polled until it is free or its holder stopped refreshing it. On
+ * Windows a lock directory refused with EPERM is polled too, for up to {@link REPOSITORY_LOCK_REFUSED_MS} on end.
  */
 function withRepositoryLock<T>(
 	store: string,
@@ -244,6 +257,7 @@ async function lockRepository(
 ): Promise<() => Promise<void>> {
 	const repositories = dirname(store);
 	await writing(repositories, snapshotId, () => mkdir(repositories, { recursive: true }));
+	let refusedSince: number | undefined;
 	for (;;) {
 		signal?.throwIfAborted();
 		try {
@@ -256,8 +270,16 @@ async function lockRepository(
 				onCompromised: () => {},
 			});
 		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== "ELOCKED")
+			if (refusedForAMoment(error)) {
+				refusedSince ??= Date.now();
+				// A refusal that lasts is a directory this process may not write to.
+				if (Date.now() - refusedSince >= REPOSITORY_LOCK_REFUSED_MS)
+					throw unwritablePathError(`${store}.lock`, snapshotId, error);
+			} else if ((error as NodeJS.ErrnoException).code === "ELOCKED") {
+				refusedSince = undefined;
+			} else {
 				throw unwritablePathError(`${store}.lock`, snapshotId, error);
+			}
 		}
 		await sleep(REPOSITORY_LOCK_POLL_MS);
 	}
@@ -609,7 +631,7 @@ async function ensureObjectStore(store: string, signal?: AbortSignal): Promise<v
 		await runGit(["init", "-q", "--bare", fresh], { cwd: repositories, signal });
 		await enableLongPaths(fresh, signal);
 		try {
-			await rename(fresh, store);
+			await renameWithRetry(fresh, store, { signal });
 		} catch {
 			await runGit(["init", "-q", "--bare", store], { cwd: repositories, signal });
 		}
@@ -1096,16 +1118,31 @@ async function markLfsPending(worktree: GitRunOptions, pending: PendingLfs, snap
 	await writing(marker, snapshotId, () => writeFile(marker, JSON.stringify(pending)));
 }
 
+/**
+ * Replaces the mark of a worktree that other processes may read at once: written beside it and renamed over it, so a
+ * reader finds the old mark or the new one, never one a write has truncated, which reads as unusable and is removed.
+ */
+async function rewritePendingMark(marker: string, pending: PendingLfs): Promise<void> {
+	const partial = `${marker}.${randomUUID()}.partial`;
+	try {
+		await writeFile(partial, JSON.stringify(pending));
+		await renameWithRetry(partial, marker);
+	} catch (error) {
+		await rm(partial, { force: true });
+		throw error;
+	}
+}
+
 /** {@link pullLfsObjects} into a worktree marked pending, clearing the mark once no LFS file holds a pointer. */
 async function pullPendingLfs(worktree: GitRunOptions, pending: PendingLfs): Promise<string[]> {
 	const marker = await pendingLfsPath(worktree);
 	const waiting: PendingLfs = { head: pending.head, tree: pending.tree, remotes: pending.remotes };
 	pullingHere.add(marker);
 	try {
-		await writeFile(marker, JSON.stringify({ ...waiting, holder: thisProcess() }));
+		await rewritePendingMark(marker, { ...waiting, holder: thisProcess() });
 		const pointers = await pullLfsObjects(worktree, pending.head, pending.tree, pending.remotes);
 		if (pointers.length === 0) await rm(marker, { force: true });
-		else await writeFile(marker, JSON.stringify(waiting));
+		else await rewritePendingMark(marker, waiting);
 		return pointers;
 	} finally {
 		pullingHere.delete(marker);
@@ -1122,8 +1159,13 @@ async function lfsHolderRuns(marker: string, pending: PendingLfs): Promise<boole
 	if (holder === undefined) return false;
 	// This process, when it is not downloading into the worktree, stopped the download that names it.
 	if (holder.host === thisProcess().host && holder.pid === process.pid) return false;
-	const age = Date.now() - (await stat(marker)).mtimeMs;
-	return holderRuns(holder, age, UNSTARTED_LFS_HOLDER_LIMIT_MS);
+	try {
+		const age = Date.now() - (await stat(marker)).mtimeMs;
+		return holderRuns(holder, age, UNSTARTED_LFS_HOLDER_LIMIT_MS);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+		throw error;
+	}
 }
 
 function isPendingLfs(value: unknown): value is PendingLfs {
@@ -1181,22 +1223,64 @@ async function finishPendingLfs(git: GitRunOptions, marker: string): Promise<str
 		// Its process finished the download: every LFS file has its content.
 		if (text === undefined) return [];
 		const pending = parsePendingLfs(text);
-		if (pending === undefined || !(await lfsHolderRuns(marker, pending)))
-			return takeOverPendingLfs(git, marker, pending);
+		if (pending === undefined || !(await lfsHolderRuns(marker, pending))) {
+			const claim = await claimPendingLfs(git, marker);
+			if (claim.kind === "finished") return [];
+			if (claim.kind === "claimed") {
+				try {
+					return await takeOverPendingLfs(git, marker, claim.pending);
+				} finally {
+					pullingHere.delete(marker);
+				}
+			}
+		}
 		if (Date.now() - waitingSince >= LFS_HOLDER_WAIT_MS) return remainingPointers(git.cwd, await lfsPaths(git));
 		await sleep(LFS_HOLDER_POLL_MS, undefined, { signal: git.signal });
 	}
 }
 
+/** How a {@link claimPendingLfs} went: the download is done, another process runs it, or this process now holds it. */
+type LfsClaim =
+	| { readonly kind: "finished" }
+	| { readonly kind: "running" }
+	| { readonly kind: "claimed"; readonly pending: PendingLfs | undefined };
+
+/**
+ * Makes this process the holder of the download pending in the worktree, when its process stopped or it names none,
+ * one process at a time: under the takeover mutex of its mark, an advisory lock the kernel releases when its holder
+ * dies (#5193), the mark is read again, the locks a stopped download's Git steps left are removed, and the mark names
+ * this process before the mutex is released. Another process that judged the same download stopped then finds this
+ * one running it and waits, rather than removing the locks this one's Git holds, or downloading beside it.
+ */
+async function claimPendingLfs(git: GitRunOptions, marker: string): Promise<LfsClaim> {
+	const locks = await Promise.all(["HEAD.lock", "index.lock"].map((name) => worktreeGitPath(git, name)));
+	const mutex = takeTakeoverMutex(marker, 0);
+	if (mutex === undefined) return { kind: "running" };
+	try {
+		const text = await readPendingMark(marker);
+		if (text === undefined) return { kind: "finished" };
+		const pending = parsePendingLfs(text);
+		if ((pending !== undefined && (await lfsHolderRuns(marker, pending))) || !mutex.owned())
+			return { kind: "running" };
+		// A download killed during its Git steps leaves their locks; nothing else takes them in a worktree with a mark.
+		if (pending?.holder !== undefined) for (const lock of locks) await rm(lock, { force: true });
+		if (pending !== undefined) {
+			const { head, tree, remotes } = pending;
+			await rewritePendingMark(marker, { head, tree, remotes, holder: thisProcess() });
+			pullingHere.add(marker);
+		}
+		return { kind: "claimed", pending };
+	} finally {
+		mutex.release();
+	}
+}
+
+/** Finishes the download pending in the worktree once this process holds it ({@link claimPendingLfs}). */
 async function takeOverPendingLfs(
 	git: GitRunOptions,
 	marker: string,
 	pending: PendingLfs | undefined,
 ): Promise<string[]> {
-	// A download killed during its Git steps leaves their locks; nothing else takes them in a worktree with a mark.
-	if (pending?.holder !== undefined) {
-		for (const lock of ["HEAD.lock", "index.lock"]) await rm(await worktreeGitPath(git, lock), { force: true });
-	}
 	const head = await gitText(["rev-parse", "-q", "--verify", "HEAD^{commit}"], { ...git, allowExitCodes: [1] });
 	// A download cut off mid-pull leaves HEAD at the snapshot's commit, which it names while it runs.
 	if (
@@ -1991,9 +2075,11 @@ async function publishWorktree(publish: PublishWorktree): Promise<string> {
 		await timeRestorePhase("publish", () => moveIntoPlace(publish, staging, createdTarget, snapshotId));
 		assertActive();
 		if (pending !== undefined && deferred !== undefined) {
+			const worktree: GitRunOptions = { cwd: path, signal };
+			// Taken as any other process takes the download over, so it never runs beside one that took it first.
 			deferred(
 				path,
-				deferRestorePhase("lfs", () => pullPendingLfs({ cwd: path, signal }, pending)),
+				deferRestorePhase("lfs", async () => finishPendingLfs(worktree, await pendingLfsPath(worktree))),
 			);
 		}
 	});

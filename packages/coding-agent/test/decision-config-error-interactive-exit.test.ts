@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, test, vi } from "vitest";
 import { DecisionConfigError } from "../src/core/decision/errors.js";
+import { WorkingRunMeter } from "../src/modes/interactive/components/working-run-meter.js";
 import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.js";
 import type { ActivityWatchdogDiagnostic } from "../src/modes/interactive-engine/activity-watchdog.js";
 import "../src/modes/interactive/interactive-deferred-startup.js";
@@ -77,6 +78,7 @@ test("deferred startup stops on a project setting refused when the project is tr
 test("an engine diagnostic carrying a refused decision setting stops Atomic; failures are shown and a successful restart is silent", () => {
 	const { exit } = exitSpies();
 	const mode = {
+		workingRunMeter: new WorkingRunMeter(),
 		stop: vi.fn(),
 		stopWorkingLoader: vi.fn(),
 		showStatus: vi.fn(),

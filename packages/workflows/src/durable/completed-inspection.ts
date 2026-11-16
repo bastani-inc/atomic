@@ -75,7 +75,7 @@ export async function openCompletedDurableWorkflow(
 	if (existing !== undefined && existing.status !== "completed") {
 		return failure(
 			"active",
-			`Workflow ${resolved.snapshot.id} is already active in this session; attach with /workflow connect ${resolved.snapshot.id} instead.`,
+			`Workflow ${resolved.snapshot.id} is already active in this session; open it with /workflows ${resolved.snapshot.id} instead.`,
 		);
 	}
 	const snapshots = await completedWorkflowRunSnapshots(deps.durableBackend, resolved.entry, selectedStore);
