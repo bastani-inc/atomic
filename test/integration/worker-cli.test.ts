@@ -335,13 +335,15 @@ test.skipIf(process.platform === "win32")(
 				SHARED_POOL_LEASE_MS: String(TAKEOVER_LEASE_MS),
 				SHARED_POOL_CHECKPOINT_SHIPPING: JSON.stringify({ intervalMs: 60_000, maxBatch: 1_000 }),
 			});
-			nodeC = startNode(s, "C", 2);
 			await until(
 				"node B to work on a child",
 				s,
 				() => readdirSync(s.directory).some((name) => name.startsWith("working-B-")),
-				[nodeB.process, nodeC.process, root],
+				[nodeB.process, root],
 			);
+			// Node C joins once node B works on a child, so the children it takes cannot leave node B none to work on: a
+			// host that hears of ready work first claims as many children as it has idle slots (#5230).
+			nodeC = startNode(s, "C", 2);
 			killGroup(nodeB.process);
 			await nodeB.process.process.exited;
 			await expectExitedCleanly(root);

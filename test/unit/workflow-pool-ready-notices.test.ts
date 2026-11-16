@@ -240,3 +240,23 @@ test("a journal whose database has no notifications sends none and has nothing t
 		removeTempDirectory(directory);
 	}
 });
+
+test("a pool's ready mark shows claimable work, and changes as work becomes ready or is claimed (#5230)", async () => {
+	const f = await fixture();
+	try {
+		assert.equal(await f.pool.readyMark("root"), undefined, "nothing queued");
+		await f.pool.enqueue(f.lease, work, boundary);
+		const one = await f.pool.readyMark("root");
+		assert.ok(one !== undefined);
+		const other = poolWorkFixture("other");
+		await f.pool.enqueue(f.lease, other.work, other.boundary);
+		const two = await f.pool.readyMark("root");
+		assert.ok(two !== undefined && two !== one);
+		assert.ok(await f.pool.claim(f.lease, "worker", [work, other.work], 60_000));
+		const left = await f.pool.readyMark("root");
+		assert.ok(left !== undefined && left !== two);
+		assert.equal(await f.pool.readyMark("another root"), undefined);
+	} finally {
+		await f.close();
+	}
+});

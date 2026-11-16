@@ -11,7 +11,7 @@ export const IDLE_CLAIM_FIRST_PAUSE_MS = 25;
  * so it bounds how late a ready child is claimed when every wake-up is lost: on a store without notifications (SQLite,
  * sqld, Postgres through a transaction pooler) and while a dropped listening connection reconnects.
  */
-export const IDLE_CLAIM_FALLBACK_MS = 1_000;
+export const IDLE_CLAIM_FALLBACK_MS = 2_000;
 
 /**
  * One idle worker's pauses (#5230): each pause while nothing is ready doubles, from {@link IDLE_CLAIM_FIRST_PAUSE_MS}
@@ -155,7 +155,7 @@ export class IdleClaimWaits {
  * on such a store (SQLite, sqld, Postgres through a transaction pooler or while its listening connection is down) claims
  * a child that became ready on another host.
  */
-export const IDLE_READY_PROBE_MS = 100;
+export const IDLE_READY_PROBE_MS = 250;
 
 /** What an {@link IdleReadyProbe} reads and wakes. */
 export interface IdleReadyProbeTarget {

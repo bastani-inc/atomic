@@ -210,7 +210,7 @@ function idlePool(workers: number) {
 test("an idle worker's pauses grow from 25-50 ms to the fallback bound, and reset (#5230)", () => {
 	const backoff = new IdleClaimBackoff(() => 0);
 	const pauses = Array.from({ length: 8 }, () => backoff.next());
-	assert.deepEqual(pauses, [25, 50, 100, 200, 400, 800, IDLE_CLAIM_FALLBACK_MS, IDLE_CLAIM_FALLBACK_MS]);
+	assert.deepEqual(pauses, [25, 50, 100, 200, 400, 800, 1_600, IDLE_CLAIM_FALLBACK_MS]);
 	backoff.reset();
 	assert.equal(backoff.next(), IDLE_CLAIM_FIRST_PAUSE_MS);
 	const jittered = new IdleClaimBackoff(() => 0.999);
@@ -262,7 +262,7 @@ test("a wake-up that arrives while a claim checks the store, before it pauses, i
 	waits.wake("root", "root");
 	checked();
 	await vi.advanceTimersByTimeAsync(0);
-	assert.equal(ended, true, "the claim asks again at once rather than after its 1 s pause");
+	assert.equal(ended, true, "the claim asks again at once rather than after its long pause");
 });
 
 test("with every wake-up lost, a child queued after a long idle spell is claimed within the fallback bound (#5230)", async () => {
@@ -276,16 +276,16 @@ test("with every wake-up lost, a child queued after a long idle spell is claimed
 		[1, 2],
 	);
 	for (const { at } of pool.claimed) assert.ok(at - queuedAt <= IDLE_CLAIM_FALLBACK_MS);
-	// Idle at the bound, four workers ask at most once a second each, rather than every 25-50 ms.
+	// Idle at the bound, the workers left ask once per fallback bound each, rather than every 25-50 ms.
 	const checks = pool.checks();
-	await vi.advanceTimersByTimeAsync(10_000);
-	assert.ok(pool.checks() - checks <= 4 * 11, `${pool.checks() - checks} checks in 10 s`);
+	await vi.advanceTimersByTimeAsync(10 * IDLE_CLAIM_FALLBACK_MS);
+	assert.ok(pool.checks() - checks <= 4 * 11, `${pool.checks() - checks} checks in 10 bounds`);
 	await pool.stop();
 });
 
 test("one wake-up for several ready children reaches as many idle workers, each passing it on (#5230)", async () => {
 	const pool = idlePool(3);
-	// Half way through the workers' 1 s pauses, so none ends on its own now.
+	// Part way through the workers' longest pauses, so none ends on its own now.
 	await vi.advanceTimersByTimeAsync(60_500);
 	const queuedAt = Date.now();
 	pool.ready([1, 2, 3], true);
@@ -414,9 +414,9 @@ test("a ready mark that does not change, as for work this host cannot take, wake
 	})();
 	const probe = new IdleReadyProbe({ waits, notified: async () => false, mark: async () => "1:5" });
 	const timer = setInterval(() => void probe.tick(), IDLE_READY_PROBE_MS);
-	await vi.advanceTimersByTimeAsync(10_000);
-	// Its own pauses (7 to reach the bound, then one a second) and the one wake-up of the first read.
-	assert.ok(checks <= 7 + 10 + 2, `${checks} checks`);
+	await vi.advanceTimersByTimeAsync(10 * IDLE_CLAIM_FALLBACK_MS);
+	// Its own pauses (8 to reach the bound, then one per bound) and the one wake-up of the first read.
+	assert.ok(checks <= 8 + 10 + 2, `${checks} checks`);
 	clearInterval(timer);
 	running = false;
 	waits.wakeAll();
