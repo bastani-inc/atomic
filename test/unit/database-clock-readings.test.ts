@@ -26,11 +26,14 @@ vi.mock("node:sqlite", async (importOriginal) => {
 	class MovingClockDatabase extends actual.DatabaseSync {
 		constructor(...args: ConstructorParameters<typeof actual.DatabaseSync>) {
 			super(...args);
-			this.function("unixepoch", { varargs: true }, () => {
+			const read = (): number => {
 				const at = clock.now;
 				clock.now += clock.step;
-				return at / 1_000;
-			});
+				return at;
+			};
+			// SQLite's millisecond clock reads julianday(), its second clock unixepoch().
+			this.function("unixepoch", { varargs: true }, () => read() / 1_000);
+			this.function("julianday", { varargs: true }, () => read() / 86_400_000 + 2_440_587.5);
 		}
 	}
 	return { ...actual, DatabaseSync: MovingClockDatabase };

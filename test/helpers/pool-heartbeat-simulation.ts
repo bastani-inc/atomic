@@ -1,6 +1,6 @@
 /**
  * Hundreds of simulated pool workers heartbeating against one real SQLite pool journal, on a virtual clock: the
- * journal's `unixepoch()` and the workers' timers both follow vitest's fake `Date`, so a two-minute window runs in
+ * journal's clock and the workers' timers both follow vitest's fake `Date`, so a two-minute window runs in
  * seconds. Each worker holds a distinct claimed attempt. Every transaction the pool submits while a window is measured
  * is counted; the root's lease renewals and the test's own inspections are not. Pool reads run as read transactions on
  * a read-only connection the journal opens itself (#4314), which this module does not clock: a test whose reads check
@@ -128,6 +128,7 @@ export async function simulatedPool(workers: number, leaseMs: number): Promise<S
 	const connection = new DatabaseSync(join(directory, "journal.sqlite"));
 	const state = { measuring: false, transactions: 0, skewMs: 0 };
 	connection.function("unixepoch", { varargs: true }, () => (Date.now() + state.skewMs) / 1_000);
+	connection.function("julianday", { varargs: true }, () => (Date.now() + state.skewMs) / 86_400_000 + 2_440_587.5);
 	const database = wrapNodeSqliteDatabase(connection);
 	// Durability is not under test: counts are of submitted transactions, whatever each costs to sync.
 	connection.exec("PRAGMA synchronous=OFF");
