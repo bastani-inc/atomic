@@ -94,6 +94,7 @@ export async function interruptTurn(this: AgentSession): Promise<void> {
 	this._awaitingMessageAfterInterrupt = false;
 	this._extensionRunner.cancelHostInput();
 	this.abortRetry();
+	if (this._isPreparingRun === "custom" && !this.agent.state.isStreaming) this._abortPreparedRunAtStart = true;
 	this.agent.abort();
 	await this.agent.waitForIdle();
 	await this._agentEventQueue;

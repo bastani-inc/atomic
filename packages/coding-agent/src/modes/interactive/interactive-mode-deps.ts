@@ -90,6 +90,7 @@ export {
 	resolveModelScopeFromModels,
 	resolveModelScopeWithDiagnostics,
 	resolveRestoredModelReference,
+	uncachedCopilotModelHint,
 } from "../../core/model-resolver.ts";
 export { DefaultPackageManager } from "../../core/package-manager.ts";
 export { BUILT_IN_PROVIDER_DISPLAY_NAMES } from "../../core/provider-display-names.ts";

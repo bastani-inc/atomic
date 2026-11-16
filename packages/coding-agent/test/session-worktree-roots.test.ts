@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync } from "node:fs";
+import { chmodSync, existsSync, readdirSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "vitest";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
+import { renameWithRetry } from "../src/core/rename-retry.ts";
 import { SessionManager, type WorktreeSnapshotEntry } from "../src/core/session-manager.ts";
 import {
 	compareWorktreeSnapshot,
@@ -84,8 +85,8 @@ test("a session in a parent directory restores both missing recorded repositorie
 	const manager = await SessionManager.create(store, sandbox.root);
 	await record(manager, a.clone);
 	await record(manager, b.clone);
-	renameSync(a.clone, sandbox.path("a-away"));
-	renameSync(b.clone, sandbox.path("b-away"));
+	await renameWithRetry(a.clone, sandbox.path("a-away"));
+	await renameWithRetry(b.clone, sandbox.path("b-away"));
 	const opened = await openSessionInWorktree(manager, options());
 	const mappings = manager.getWorktreeRootMappings();
 	assert.equal(mappings.length, 2);
@@ -108,7 +109,7 @@ test("the newest snapshot under a restored root supersedes its original location
 	sandbox.write(join(clone, "file.txt"), "first\n");
 	const manager = await SessionManager.create(store, clone);
 	await record(manager, clone);
-	renameSync(clone, sandbox.path("original-away"));
+	await renameWithRetry(clone, sandbox.path("original-away"));
 	const first = await resumeSessionWorktree(manager, options());
 	assert.equal(first.status, "restored");
 	if (first.status !== "restored") return;
@@ -154,8 +155,8 @@ test("a second repository whose unpushed history is denied is restored at its cl
 	const manager = await SessionManager.create(store, a.clone);
 	await record(manager, a.clone);
 	await record(manager, b.clone);
-	renameSync(a.clone, sandbox.path("a-away"));
-	renameSync(b.clone, sandbox.path("b-away"));
+	await renameWithRetry(a.clone, sandbox.path("a-away"));
+	await renameWithRetry(b.clone, sandbox.path("b-away"));
 	const result = await resumeSessionWorktree(manager, options());
 	assert.equal(result.status, "restored");
 	if (result.status !== "restored") return;
@@ -177,8 +178,8 @@ test("a retry heals a mapping persisted before a later mapping append failed (#4
 	const manager = await SessionManager.create(store, a.clone);
 	await record(manager, a.clone);
 	await record(manager, b.clone);
-	renameSync(a.clone, sandbox.path("a-away"));
-	renameSync(b.clone, sandbox.path("b-away"));
+	await renameWithRetry(a.clone, sandbox.path("a-away"));
+	await renameWithRetry(b.clone, sandbox.path("b-away"));
 	const originalAppend = store.append.bind(store);
 	const failure = new Error("second mapping could not be persisted");
 	let count = 0;
@@ -209,8 +210,8 @@ test("cancellation while publishing mappings propagates its reason and removes b
 	const manager = await SessionManager.create(store, a.clone);
 	await record(manager, a.clone);
 	await record(manager, b.clone);
-	renameSync(a.clone, sandbox.path("a-away"));
-	renameSync(b.clone, sandbox.path("b-away"));
+	await renameWithRetry(a.clone, sandbox.path("a-away"));
+	await renameWithRetry(b.clone, sandbox.path("b-away"));
 	const controller = new AbortController();
 	const reason = new Error("stop publishing mappings");
 	const originalAppend = store.append.bind(store);
@@ -312,7 +313,7 @@ test("a missing latest snapshot record fails before any repository is restored (
 	const { lastSeq } = await store.load(manager.getSessionId());
 	await store.append(manager.getSessionId(), [ghost], { expectSeq: lastSeq });
 	const reopened = await SessionManager.open(store, manager.getSessionId());
-	renameSync(a.clone, sandbox.path("a-away"));
+	await renameWithRetry(a.clone, sandbox.path("a-away"));
 	let calls = 0;
 	setWorktreeSnapshotGit(async () => {
 		calls++;

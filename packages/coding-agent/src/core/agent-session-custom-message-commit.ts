@@ -36,6 +36,7 @@ async function commitPriorityMessage(session: AgentSession, message: CustomMessa
 		session._workflowStageAdmission?.trackAdmittedWork(turn);
 		void turn.catch(() => {});
 	}
+	startTurnAfterInterrupt(session, message);
 }
 
 /**
@@ -262,6 +263,7 @@ export async function commitAdmittedCustomMessages<T>(
 			} else {
 				for (const item of appMessages) self._queueAgentMessage(item, delivery);
 			}
+			startTurnAfterInterrupt(self, appMessages[0]!);
 		} else if (self.isStreaming || self._isPreparingRun) {
 			self._pendingCustomMessages.push(...appMessages);
 		} else {

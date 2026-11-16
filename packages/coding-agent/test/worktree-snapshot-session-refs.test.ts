@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, renameSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { withDebugLog } from "../../../test/helpers/debug-mode.js";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
+import { renameWithRetry } from "../src/core/rename-retry.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SessionWorktreeSnapshotRecorder } from "../src/core/session-worktree-snapshots.ts";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.ts";
@@ -129,9 +130,9 @@ describe("snapshot commits survive git gc (#4923)", () => {
 
 	test("a session that works in a worktree restored from its checkout releases the checkout's ref (#4923)", async () => {
 		const { clone, manager } = await sessionThatEdited();
-		renameSync(clone, sandbox.path("away"));
+		await renameWithRetry(clone, sandbox.path("away"));
 		const prepared = await prepareSessionResume(manager, options());
-		renameSync(sandbox.path("away"), clone);
+		await renameWithRetry(sandbox.path("away"), clone);
 		const worktree = manager.getWorktreeRootMappings().at(-1)!.to;
 		assert.equal(cwdOf(prepared), worktree);
 		assert.equal((await atomicRefs(clone)).length, 1);
@@ -153,11 +154,11 @@ describe("snapshot commits survive git gc (#4923)", () => {
 		sandbox.write(join(sibling, "README.md"), "the session's sibling edit\n");
 		await recorder.recordTurn(writeTurn(join(sibling, "README.md")));
 		assert.equal((await atomicRefs(sibling)).length, 1);
-		renameSync(clone, sandbox.path("away"));
-		renameSync(sibling, sandbox.path("sibling-away"));
+		await renameWithRetry(clone, sandbox.path("away"));
+		await renameWithRetry(sibling, sandbox.path("sibling-away"));
 		const prepared = await prepareSessionResume(manager, options());
-		renameSync(sandbox.path("away"), clone);
-		renameSync(sandbox.path("sibling-away"), sibling);
+		await renameWithRetry(sandbox.path("away"), clone);
+		await renameWithRetry(sandbox.path("sibling-away"), sibling);
 		const moved = prepared.status === "ready" ? prepared.sessionManager : manager;
 		const worktree = moved.getWorktreeRootMappings().find((mapping) => mapping.from === clone)!.to;
 
@@ -170,7 +171,7 @@ describe("snapshot commits survive git gc (#4923)", () => {
 
 	test("deleting a session whose checkout is gone still deletes it, and the debug log says which ref stayed (#4923)", async () => {
 		const { clone, store, manager } = await sessionThatEdited();
-		renameSync(clone, sandbox.path("away"));
+		await renameWithRetry(clone, sandbox.path("away"));
 		await withDebugLog("ATOMIC_DEBUG", async (log) => {
 			await (await SessionManager.create(store, sandbox.root)).deleteSession(manager.getSessionId());
 
@@ -294,7 +295,7 @@ describe("snapshot commits survive git gc (#4923)", () => {
 		const { remote, clone, manager } = await sessionThatEdited();
 		await sandbox.git(sandbox.root, "clone", "-q", remote, sandbox.path("elsewhere"));
 		rmSync(clone, { recursive: true, force: true });
-		renameSync(sandbox.path("elsewhere"), clone);
+		await renameWithRetry(sandbox.path("elsewhere"), clone);
 		sandbox.write(join(clone, "README.md"), "another clone's own change\n");
 
 		const prepared = await prepareSessionResume(
