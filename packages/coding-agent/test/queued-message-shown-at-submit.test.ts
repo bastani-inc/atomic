@@ -66,9 +66,17 @@ describe.each(["local", "isolated"] as const)("a message sent while the agent wo
 			fauxAssistantMessage("answered"),
 			fauxAssistantMessage("answered again"),
 		]);
+		const turnSeen = new Promise<void>((resolve) => {
+			const unsubscribe = rig.host.session.subscribe((event) => {
+				if (event.type === "message_end") {
+					unsubscribe();
+					resolve();
+				}
+			});
+		});
 		await rig.host.defaultEditor.onSubmit?.("first");
 		await toolHold.entered.promise;
-		await waitFor("the host to see the running turn", () => rig.host.session.isStreaming);
+		await turnSeen;
 		return { rig, finishTurn: () => toolHold.release.resolve() };
 	}
 
@@ -112,8 +120,7 @@ describe.each(["local", "isolated"] as const)("a message sent while the agent wo
 
 	test("lists a confirmed message once while the session's answer is still on its way (#4696)", async () => {
 		const { rig, finishTurn } = await startBusyTurn();
-		// The engine's queue_update reaches the host on its own, ahead of the answer to the prompt.
-		rig.pair?.holdHostTrafficFrom((record) => record.type === "response");
+		rig.pair?.holdHostTrafficFrom((record) => record.type === "response" && record.command === "prompt");
 
 		const submitted = rig.host.defaultEditor.onSubmit?.("typed while busy");
 		await waitFor("the host to hear the session queued it", () =>

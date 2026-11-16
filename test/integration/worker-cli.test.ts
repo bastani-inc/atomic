@@ -425,7 +425,7 @@ test.skipIf(process.platform === "win32")(
 	"a node that loses the database reports degraded, retries with backoff, recovers, and its running child still completes there (#4768)",
 	async () => {
 		const s = scenario("worker-cli-outage", SERVE_BUDGET.waitMs);
-		const database = await startFakeLibsqlServer({ streamTtlMs: 60_000 });
+		const database = await startFakeLibsqlServer({ streamTtlMs: 5_000 });
 		const proxy = await startOutageProxy(new URL(database.url));
 		let node: Node | undefined;
 		let root: BudgetedProcess | undefined;

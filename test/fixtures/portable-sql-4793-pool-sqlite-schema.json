@@ -187,6 +187,12 @@
 	},
 	{
 		"type": "table",
+		"name": "team_wf_runs_pool_ready",
+		"tbl_name": "team_wf_runs_pool_ready",
+		"sql": "CREATE TABLE team_wf_runs_pool_ready(\n\t\t\t\t\troot TEXT PRIMARY KEY REFERENCES team_wf_runs_pool(root) ON DELETE CASCADE,\n\t\t\t\t\trevision INTEGER NOT NULL DEFAULT 0\n\t\t\t\t)"
+	},
+	{
+		"type": "table",
 		"name": "team_wf_runs_pool_restore_backoffs",
 		"tbl_name": "team_wf_runs_pool_restore_backoffs",
 		"sql": "CREATE TABLE team_wf_runs_pool_restore_backoffs(\n\t\t\t\t\thost TEXT NOT NULL, binding TEXT NOT NULL, until INTEGER NOT NULL, failure TEXT NOT NULL,\n\t\t\t\t\trecorded_at INTEGER NOT NULL, PRIMARY KEY(host, binding)\n\t\t\t\t)"
@@ -361,6 +367,12 @@
 	},
 	{
 		"type": "table",
+		"name": "wf_runs_pool_ready",
+		"tbl_name": "wf_runs_pool_ready",
+		"sql": "CREATE TABLE wf_runs_pool_ready(\n\t\t\t\t\troot TEXT PRIMARY KEY REFERENCES wf_runs_pool(root) ON DELETE CASCADE,\n\t\t\t\t\trevision INTEGER NOT NULL DEFAULT 0\n\t\t\t\t)"
+	},
+	{
+		"type": "table",
 		"name": "wf_runs_pool_restore_backoffs",
 		"tbl_name": "wf_runs_pool_restore_backoffs",
 		"sql": "CREATE TABLE wf_runs_pool_restore_backoffs(\n\t\t\t\t\thost TEXT NOT NULL, binding TEXT NOT NULL, until INTEGER NOT NULL, failure TEXT NOT NULL,\n\t\t\t\t\trecorded_at INTEGER NOT NULL, PRIMARY KEY(host, binding)\n\t\t\t\t)"
@@ -475,6 +487,18 @@
 	},
 	{
 		"type": "trigger",
+		"name": "team_wf_runs_pool_ready_insert",
+		"tbl_name": "team_wf_runs_work",
+		"sql": "CREATE TRIGGER team_wf_runs_pool_ready_insert AFTER INSERT ON team_wf_runs_work WHEN NEW.state = 'ready' BEGIN INSERT INTO team_wf_runs_pool_ready(root, revision) VALUES (NEW.root, 1) ON CONFLICT(root) DO UPDATE SET revision = revision + 1 END"
+	},
+	{
+		"type": "trigger",
+		"name": "team_wf_runs_pool_ready_update",
+		"tbl_name": "team_wf_runs_work",
+		"sql": "CREATE TRIGGER team_wf_runs_pool_ready_update AFTER UPDATE ON team_wf_runs_work WHEN NEW.state = 'ready' BEGIN INSERT INTO team_wf_runs_pool_ready(root, revision) VALUES (NEW.root, 1) ON CONFLICT(root) DO UPDATE SET revision = revision + 1 END"
+	},
+	{
+		"type": "trigger",
 		"name": "team_wf_runs_pool_usage_totals_delete",
 		"tbl_name": "team_wf_runs_pool_usage",
 		"sql": "CREATE TRIGGER team_wf_runs_pool_usage_totals_delete AFTER DELETE ON team_wf_runs_pool_usage BEGIN DELETE FROM team_wf_runs_pool_usage_totals WHERE root = (SELECT root FROM team_wf_runs_work WHERE id = OLD.work) END"
@@ -502,6 +526,18 @@
 		"name": "wf_runs_pool_fence_abort",
 		"tbl_name": "wf_runs_pool_fence",
 		"sql": "CREATE TRIGGER wf_runs_pool_fence_abort BEFORE INSERT ON wf_runs_pool_fence BEGIN SELECT RAISE(ABORT, 'atomic-pool-fence') END"
+	},
+	{
+		"type": "trigger",
+		"name": "wf_runs_pool_ready_insert",
+		"tbl_name": "wf_runs_work",
+		"sql": "CREATE TRIGGER wf_runs_pool_ready_insert AFTER INSERT ON wf_runs_work WHEN NEW.state = 'ready' BEGIN INSERT INTO wf_runs_pool_ready(root, revision) VALUES (NEW.root, 1) ON CONFLICT(root) DO UPDATE SET revision = revision + 1 END"
+	},
+	{
+		"type": "trigger",
+		"name": "wf_runs_pool_ready_update",
+		"tbl_name": "wf_runs_work",
+		"sql": "CREATE TRIGGER wf_runs_pool_ready_update AFTER UPDATE ON wf_runs_work WHEN NEW.state = 'ready' BEGIN INSERT INTO wf_runs_pool_ready(root, revision) VALUES (NEW.root, 1) ON CONFLICT(root) DO UPDATE SET revision = revision + 1 END"
 	},
 	{
 		"type": "trigger",

@@ -21,6 +21,13 @@ const progressFile = process.env.ELASTIC_PROGRESS_FILE;
 mkdirSync(env("ATOMIC_CODING_AGENT_DIR"), { recursive: true });
 const child = await loadWorkerWorkflow(childPath, "benchChild");
 const outcomes = [];
+const idleProbe = Number(env("ELASTIC_IDLE_PROBE", "0"));
+const idleSettleMs = Number(env("ELASTIC_IDLE_SETTLE_MS", "10000"));
+const phaseFile = process.env.ELASTIC_PHASE_FILE;
+const phase = (name) => {
+	if (phaseFile) appendFileSync(phaseFile, `${name} ${Date.now()}\n`);
+};
+const probes = [];
 const root = workflow({
 	name: "elastic-bench-root",
 	description: "Fans out pooled children that commit checkpoints",
@@ -55,6 +62,25 @@ const root = workflow({
 							})(),
 						},
 			);
+		if (idleProbe > 0) {
+			phase("main-done");
+			await new Promise((resolve) => setTimeout(resolve, idleSettleMs));
+			phase("probe-start");
+			for (let index = 0; index < idleProbe; index++) {
+				await new Promise((resolve) => setTimeout(resolve, 300 + Math.random() * 700));
+				const enqueuedAt = Date.now();
+				const value = await ctx.workflow(child, {
+					inputs: { index: 1_000_000 + index, steps: 1, payloadBytes, workMs: 0, stageMs: 0 },
+				});
+				probes.push({
+					enqueuedAt,
+					startedAt: value.outputs?.startedAt ?? null,
+					host: value.outputs?.host ?? null,
+					status: value.status,
+				});
+			}
+			phase("probe-done");
+		}
 		return {};
 	},
 });
@@ -90,7 +116,7 @@ const result = await run(
 	},
 );
 const ended = Date.now();
-const output = { status: result.status, runId: result.runId ?? null, began, ended, wallMs: ended - began, children, steps, payloadBytes, workMs, stageMs, model: model ?? null, outcomes };
+const output = { status: result.status, runId: result.runId ?? null, began, ended, wallMs: ended - began, children, steps, payloadBytes, workMs, stageMs, model: model ?? null, outcomes, probes, error: result.error === undefined ? null : String(result.error?.stack ?? result.error?.message ?? result.error) };
 writeFileSync(env("ELASTIC_RESULT_FILE", "result.json"), JSON.stringify(output));
 process.stderr.write(`root ${result.status} in ${output.wallMs} ms\n`);
 process.exit(0);

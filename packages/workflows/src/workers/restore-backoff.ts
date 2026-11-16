@@ -16,8 +16,12 @@ export class RestoreBackoff {
 
 	/** Whether the binding with affinity `key` waits out a backoff now. */
 	waiting(key: string): boolean {
-		const failing = this.failing.get(key);
-		return failing !== undefined && this.now() < failing.until;
+		return this.remaining(key) > 0;
+	}
+
+	remaining(key: string): number {
+		const until = this.failing.get(key)?.until;
+		return until === undefined ? 0 : Math.max(0, until - this.now());
 	}
 
 	/** Records a failed restore of the binding with affinity `key`; returns how long it now waits. */
