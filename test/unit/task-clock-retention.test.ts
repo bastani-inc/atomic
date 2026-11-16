@@ -13,10 +13,12 @@ test("shared task clocks keep live owners and pooled sources across GC but relea
 	const script = `
 		import assert from "node:assert/strict";
 		import { stripVTControlCharacters } from "node:util";
-		const clocks = await import(${JSON.stringify(clocksUrl)});
-		const { TaskInspector } = await import(${JSON.stringify(inspectorUrl)});
-		const { initTheme } = await import(${JSON.stringify(themeUrl)});
-		const { taskRecord } = await import(${JSON.stringify(recordUrl)});
+		import { createJiti } from "jiti";
+		const jiti = createJiti(import.meta.url, { tryNative: false });
+		const clocks = await jiti.import(${JSON.stringify(clocksUrl)});
+		const { TaskInspector } = await jiti.import(${JSON.stringify(inspectorUrl)});
+		const { initTheme } = await jiti.import(${JSON.stringify(themeUrl)});
+		const { taskRecord } = await jiti.import(${JSON.stringify(recordUrl)});
 		initTheme("dark");
 		async function collect() {
 			for (let index = 0; index < 8; index++) {
@@ -85,13 +87,6 @@ test("shared task clocks keep live owners and pooled sources across GC but relea
 		assert.equal(clocks.taskClocksFor(pooledSource).elapsedMs("pooled-agent", undefined, false, now), undefined);
 		assert.equal(clocks.taskClocksFor(pooledSource).elapsedMs("pooled-shell", undefined, false, now), undefined);
 	`;
-	const result = spawnSyncCollect([
-		process.execPath,
-		"--expose-gc",
-		"--experimental-strip-types",
-		"--input-type=module",
-		"-e",
-		script,
-	]);
+	const result = spawnSyncCollect([process.execPath, "--expose-gc", "--input-type=module", "-e", script]);
 	assert.equal(result.exitCode, 0, `${result.stdout}\n${result.stderr}`);
 });

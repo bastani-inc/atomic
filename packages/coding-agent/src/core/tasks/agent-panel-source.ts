@@ -166,7 +166,7 @@ function taskState(task: TaskRecord): AgentPanelState {
 
 const cachedTaskItems = new WeakMap<
 	TaskRecord,
-	{ readonly clocks: TaskElapsedClocks | undefined; readonly item: AgentPanelItem }
+	{ readonly taskId: string; readonly clocks: TaskElapsedClocks | undefined; readonly item: AgentPanelItem }
 >();
 
 /**
@@ -185,24 +185,42 @@ export function taskPanelItems(
 		.map((task): AgentPanelItem => {
 			const clocks = sourceClocks ?? taskClockOf(task);
 			const cached = cachedTaskItems.get(task);
-			if (cached !== undefined && cached.clocks === clocks) return cached.item;
 			const state = taskState(task);
-			const question = task.attention.kind === "input-needed" ? task.attention.prompt : undefined;
+			const question = task.attention.kind === "input-needed" ? task.attention.prompt || undefined : undefined;
+			const kind = task.kind === "agent" ? "agent" : "shell";
+			const name = task.kind === "agent" ? (task.agentName ?? "agent") : "shell";
+			const title = task.title || "";
+			const reason =
+				state === "failed" && task.execution.kind === "settled" && task.execution.result.kind === "failed"
+					? (task.execution.result.message.split("\n")[0] ?? "")
+					: undefined;
+			if (
+				cached !== undefined &&
+				cached.clocks === clocks &&
+				cached.taskId === task.ref.taskId &&
+				cached.item.kind === kind &&
+				cached.item.state === state &&
+				cached.item.name === name &&
+				cached.item.task === title &&
+				cached.item.elapsedMs === task.metrics?.elapsedMs &&
+				cached.item.tokens === task.metrics?.tokenCount &&
+				cached.item.question === question &&
+				cached.item.reason === reason
+			)
+				return cached.item;
 			const item: AgentPanelItem = {
 				id: `${taskPrefix}${task.ref.taskId}`,
-				kind: task.kind === "agent" ? "agent" : "shell",
+				kind,
 				state,
-				name: task.kind === "agent" ? (task.agentName ?? "agent") : "shell",
-				task: task.title || "",
+				name,
+				task: title,
 				...(task.metrics?.elapsedMs === undefined ? {} : { elapsedMs: task.metrics.elapsedMs }),
 				...(task.metrics?.tokenCount === undefined ? {} : { tokens: task.metrics.tokenCount }),
 				...(question ? { question } : {}),
-				...(state === "failed" && task.execution.kind === "settled" && task.execution.result.kind === "failed"
-					? { reason: task.execution.result.message.split("\n")[0] ?? "" }
-					: {}),
+				...(reason === undefined ? {} : { reason }),
 			};
 			if (clocks !== undefined) bindTaskClock(item, clocks);
-			cachedTaskItems.set(task, { clocks, item });
+			cachedTaskItems.set(task, { taskId: task.ref.taskId, clocks, item });
 			return item;
 		});
 }
