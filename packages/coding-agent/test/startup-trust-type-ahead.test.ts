@@ -6,6 +6,7 @@ import type { Component } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import type { SettingsManager } from "../src/core/settings-manager.ts";
 import { getProjectTrustOptions } from "../src/core/trust-manager.ts";
+import { safeTrustChoiceIndex } from "../src/modes/interactive/components/trust-decision-selector.ts";
 
 const screens = vi.hoisted(() => ({
 	created: [] as Array<{ running: boolean; setFocus: (component: unknown) => void }>,
@@ -239,9 +240,11 @@ test("the startup trust prompt starts on a choice that trusts nothing", async ()
 });
 
 test("arrow keys and Enter still answer the startup trust prompt", async () => {
-	const answer = showStartupSelector(settingsManager, TRUST_PROMPT, trustOptions());
+	const options = trustOptions();
+	const labels = options.map((option) => option.label);
+	const answer = showStartupSelector(settingsManager, TRUST_PROMPT, options);
 
-	press(UP, UP, UP, UP, UP, ENTER);
+	press(...Array<string>(safeTrustChoiceIndex(labels) - labels.indexOf("Trust")).fill(UP), ENTER);
 
 	assert.equal((await answer)?.label, "Trust");
 	assert.deepEqual(consumeStartupInput(undefined), { text: "", submissions: [] });
