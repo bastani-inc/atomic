@@ -129,3 +129,43 @@ test("reftable reference contention is retried before creating a named worktree 
 	assert.equal(attempts, 2);
 	assert.equal(git(result.path, "branch", "--show-current"), "feat/reftable");
 });
+
+test("named-worktree reuse resolves each repository's common directory once and refreshes a missing cached directory (#5202)", async () => {
+	const repo = makeRepo();
+	const firstCommon = join(repo, ".git", "cached-common");
+	mkdirSync(firstCommon);
+	let common = firstCommon;
+	let resolutions = 0;
+	const realRunGit = worktreeGit.runGit;
+	vi.spyOn(worktreeGit, "runGit").mockImplementation((cwd, args, env) => {
+		if (args[0] === "rev-parse" && args[1] === "--git-common-dir") {
+			resolutions++;
+			return { status: 0, stdout: `${common}\n`, stderr: "" };
+		}
+		return realRunGit(cwd, args, env);
+	});
+	const request = { branch: "feat/common-cache" };
+	const created = await ensureNamedWorktree(repo, request);
+	assert.equal((await ensureNamedWorktree(repo, request)).baseCommit, created.baseCommit);
+	assert.equal((await ensureNamedWorktree(repo, request)).path, created.path);
+	assert.equal(resolutions, 1, "reuse has no extra common-directory Git process");
+	rmSync(firstCommon, { recursive: true });
+	common = join(repo, ".git");
+	assert.equal((await ensureNamedWorktree(repo, request)).path, created.path);
+	assert.equal(resolutions, 2, "a missing cached path is resolved again");
+});
+
+test("an occupied path copying another worktree's gitfile is refused without waiting for that worktree's index lock (#5202)", async () => {
+	const repo = makeRepo();
+	const sibling = await ensureNamedWorktree(repo, { branch: "feat/sibling" });
+	const occupied = join(repo, "occupied");
+	mkdirSync(occupied);
+	writeFileSync(join(occupied, ".git"), readFileSync(join(sibling.path, ".git")));
+	writeFileSync(join(repo, ".git", "worktrees", "feat+sibling", "index.lock"), "foreign checkout");
+	let now = performance.now();
+	vi.spyOn(performance, "now").mockImplementation(() => (now += 60_000));
+	await assert.rejects(
+		ensureNamedWorktree(repo, { branch: "feat/refused-copy", path: occupied }),
+		/already exists and is not the worktree of branch "feat\/refused-copy"/,
+	);
+});

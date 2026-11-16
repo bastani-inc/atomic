@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { tryAdvisoryLock } from "@bastani/atomic-natives";
 import { addNamedWorktree } from "./named-worktree-git.js";
-import { ensureWorktreeIgnore, resolveRepoCwdRelative, runGit } from "./worktree.js";
+import { ensureWorktreeIgnore, runGit } from "./worktree.js";
 import { findCanonicalGitRoot } from "./worktree-root.js";
 
 export interface NamedWorktreeRequest {
@@ -34,6 +34,7 @@ interface ListedWorktree {
 const CONCURRENT_ADD_WAIT_MS = 30_000;
 const CONCURRENT_ADD_POLL_MS = 100;
 const INHERITED_LOCKS_ENV = "ATOMIC_NAMED_WORKTREE_LOCKS";
+const commonDirectories = new Map<string, string>();
 const CONCURRENT_GIT_FAILURE =
 	/failed to read ['"].*[/\\]locked['"]|\.lock['"]?: File exists|another git process|cannot lock references/i;
 const CONCURRENT_ADD_FAILURE = /already exists|already checked out|already used by worktree|is a missing but/i;
@@ -90,6 +91,15 @@ function comparablePath(value: string): string {
 	return process.platform === "win32" ? canonical.toLowerCase() : canonical;
 }
 
+function commonGitDirectory(repo: string): string {
+	const key = comparablePath(repo);
+	const cached = commonDirectories.get(key);
+	if (cached !== undefined && fs.existsSync(cached)) return cached;
+	const commonDir = path.resolve(repo, gitChecked(repo, ["rev-parse", "--git-common-dir"]).trim());
+	commonDirectories.set(key, commonDir);
+	return commonDir;
+}
+
 function checkoutBlocker(gitDir: string): string | null | undefined {
 	const indexLock = path.join(gitDir, "index.lock");
 	if (fs.existsSync(indexLock)) return indexLock;
@@ -98,24 +108,19 @@ function checkoutBlocker(gitDir: string): string | null | undefined {
 }
 
 function targetCheckoutBlocker(commonDir: string, worktreePath: string): string | null | undefined {
-	if (comparablePath(path.join(worktreePath, ".git")) === comparablePath(commonDir)) return checkoutBlocker(commonDir);
-	let ids: string[];
-	const admin = path.join(commonDir, "worktrees");
+	const gitFile = path.join(worktreePath, ".git");
+	if (comparablePath(gitFile) === comparablePath(commonDir)) return checkoutBlocker(commonDir);
 	try {
-		ids = fs.readdirSync(admin);
+		const pointer = fs.readFileSync(gitFile, "utf8");
+		if (!pointer.startsWith("gitdir:")) return undefined;
+		const entry = path.resolve(worktreePath, pointer.slice("gitdir:".length).trim());
+		if (comparablePath(path.dirname(entry)) !== comparablePath(path.join(commonDir, "worktrees"))) return undefined;
+		const back = fs.readFileSync(path.join(entry, "gitdir"), "utf8").trim();
+		if (comparablePath(path.resolve(entry, back)) !== comparablePath(gitFile)) return undefined;
+		return checkoutBlocker(entry);
 	} catch {
 		return undefined;
 	}
-	const target = comparablePath(path.join(worktreePath, ".git"));
-	for (const id of ids) {
-		const entry = path.join(admin, id);
-		try {
-			const gitdir = fs.readFileSync(path.join(entry, "gitdir"), "utf8").trim();
-			if (comparablePath(path.resolve(entry, gitdir)) !== target) continue;
-			return checkoutBlocker(entry);
-		} catch {}
-	}
-	return undefined;
 }
 
 function lockPaths(commonDir: string, branch: string, worktreePath: string): string[] {
@@ -157,8 +162,6 @@ async function withTargetLocks<T>(
 	try {
 		for (const lockPath of paths) {
 			options.signal?.throwIfAborted();
-			fs.closeSync(fs.openSync(lockPath, "a", 0o600));
-			if (process.platform !== "win32") fs.chmodSync(lockPath, 0o600);
 			let lock = tryAdvisoryLock(lockPath, 0);
 			while (lock === null) {
 				notifyWaiting();
@@ -232,11 +235,11 @@ export async function ensureNamedWorktree(
 		}
 	};
 	const { cwdRelative, repo, commonDir } = await retried(`could not find the repository of ${cwd}`, () => {
-		const cwdRelative = resolveRepoCwdRelative(cwd);
 		const toplevel = path.resolve(gitChecked(cwd, ["rev-parse", "--show-toplevel"]).trim());
+		const cwdRelative = path.relative(fs.realpathSync(toplevel), fs.realpathSync(cwd));
 		const repo = findCanonicalGitRoot(toplevel);
 		if (repo === undefined) throw new Error(`unable to resolve canonical main Git repository root from ${toplevel}`);
-		const commonDir = path.resolve(repo, gitChecked(repo, ["rev-parse", "--git-common-dir"]).trim());
+		const commonDir = commonGitDirectory(repo);
 		return { cwdRelative, repo, commonDir };
 	});
 	const defaultPath = request.path === undefined;

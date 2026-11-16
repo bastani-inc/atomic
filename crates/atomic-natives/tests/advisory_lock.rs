@@ -36,6 +36,11 @@ fn acquires_a_lock_and_creates_its_file_5193() {
 	let held = try_lock_file(&path, Duration::ZERO).unwrap();
 	assert!(held.is_some(), "a free lock is taken at once");
 	assert!(path.is_file());
+	#[cfg(unix)]
+	{
+		use std::os::unix::fs::PermissionsExt;
+		assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+	}
 	drop(held);
 	fs::remove_dir_all(dir).unwrap();
 }
