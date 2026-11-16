@@ -42,7 +42,8 @@ const PERMIT_POLL_MS = 50;
 const ECHOED = "turn-admission-echo";
 /**
  * The cards the chat is shown whose hidden turn it must read: the workflow's lifecycle notices, and the completion of
- * its own bash when that notice's arrival moved the command to the background.
+ * its own bash if that command outlived its foreground budget and moved to the background. A foreground command that
+ * returns its result has no completion card: the notice's arrival does not move it to the background.
  */
 const READ_CARD_TYPES = new Set(["workflows:lifecycle-notice", "task-completion"]);
 
