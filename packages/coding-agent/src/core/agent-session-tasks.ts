@@ -75,7 +75,6 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 				.find((item) => item.ref.ownerId === envelope.ownerId && settledWithCompletion(host, envelope));
 			// Foreground shell results already return through their tool call. Do not
 			// create a second model turn or background card for that same execution.
-			if (!restored && !task) return;
 			if (task?.kind === "command" && !task.wasBackground) return;
 			const lease = task ? host?.resolveTask(envelope.taskId) : undefined;
 			const source = lease?.ok ? taskTranscriptSource(lease.value) : undefined;
@@ -134,7 +133,7 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 				}).completion;
 			}
 			// A restored notice admitted mid-turn waits in memory for the turn to end; it is acknowledged once saved (#5047).
-			const saved = restored ? pendingCustomMessageSaved(this, envelope.completionId) : undefined;
+			const saved = restored || !task ? pendingCustomMessageSaved(this, envelope.completionId) : undefined;
 			return saved === undefined ? undefined : { saved };
 		},
 		// Each notice holds its task's record until it is delivered, so a burst of finishes cannot evict what the

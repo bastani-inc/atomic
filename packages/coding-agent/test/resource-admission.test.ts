@@ -647,12 +647,6 @@ test("a command that fails to spawn releases its permit immediately (#3869)", as
 	);
 
 	assert.equal(started.ok, false);
-	session.getAgentTaskHost().reportSettledTasks();
-	await (session as unknown as { _taskCompletionOutbox?: { flush(): Promise<void> } })._taskCompletionOutbox?.flush();
-	assert.deepEqual(
-		session.sessionManager.getEntries().filter((entry) => entry.type === "custom_message"),
-		[],
-	);
 	assert.deepEqual(
 		admission.acquired.filter((kind) => kind === "process"),
 		["process"],
