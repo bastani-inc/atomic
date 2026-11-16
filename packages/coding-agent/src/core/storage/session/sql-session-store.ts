@@ -105,19 +105,19 @@ type ListingRow = HeaderRow & {
 type SummaryRow = ListingRow & { search_texts_json: string };
 /** A row's key and how many characters its stored text holds, for reading rows in pages. */
 type SizedRow = SqliteRow & { size: number | bigint | null };
-/** A row of a page: its position in store order, and how many rows the page's statement could have returned. */
+/** A returned row's cumulative text, its batch's text, and the batch's row count including lookahead. */
 type FetchRow = {
 	fetched: number | bigint;
+	batch_chars: number | bigint | null;
 	page_chars: number | bigint;
-	next_size: number | bigint | null;
 };
 type PageRow = FetchRow & { ord: number | bigint };
 
 /**
  * The rows one statement of a paged read fetches, by key after the previous page, before it keeps those that fit in
  * {@link SESSION_READ_PAGE_CHARS}: each statement reads a bounded batch rather than every remaining row, so a long
- * session or listing is read in linear time. The batch grows while whole batches fit and shrinks to what a page held
- * when they do not, so large rows are not fetched far past the page.
+ * session or listing is read in linear time. A full batch quadruples the next fetch. A clipped batch keeps its fetch
+ * size when its unreturned text is at most four pages; otherwise the next fetch shrinks to twice the returned rows.
  */
 export const SESSION_READ_FETCH = { first: 1024, min: 1, max: 8192 } as const;
 const SESSION_READ_INLINE_BYTES = 4096;
@@ -126,17 +126,12 @@ function nextFetch(limit: number, rows: readonly FetchRow[]): { readonly more: b
 	const kept = rows.length;
 	const fetched = Number(rows[0]?.fetched ?? 0);
 	const more = kept > 0 && kept < fetched;
-	const firstChars = Number(rows[0]?.page_chars ?? 0);
+	const batchChars = Number(rows[0]?.batch_chars ?? 0);
 	const pageChars = Number(rows.at(-1)?.page_chars ?? 0);
-	const nextSize = Number(rows.at(-1)?.next_size ?? 0);
-	const firstLarge = firstChars > SESSION_READ_PAGE_CHARS / 2;
-	const nextLarge = nextSize > SESSION_READ_PAGE_CHARS / 2;
-	const isolatedLarge =
-		firstLarge !== nextLarge || pageChars > SESSION_READ_PAGE_CHARS || nextSize > SESSION_READ_PAGE_CHARS;
 	const next =
 		kept === Math.min(limit, fetched)
-			? Math.max(SESSION_READ_FETCH.first * 2, limit * 2)
-			: isolatedLarge
+			? limit * 4
+			: batchChars - pageChars <= SESSION_READ_PAGE_CHARS * 4
 				? limit
 				: Math.max(SESSION_READ_FETCH.min, kept * 2);
 	return { more, limit: Math.min(SESSION_READ_FETCH.max, next) };
@@ -385,11 +380,13 @@ export class SqlSessionStore implements SessionStore {
 				await tx.exec(`ALTER TABLE ${tables.entries} ADD COLUMN chunks ${int} NOT NULL DEFAULT 0`);
 			}
 			await tx.run(
-				`DELETE FROM ${tables.entryChunks} WHERE NOT EXISTS (
-					SELECT 1 FROM ${tables.entries} AS e
-					WHERE e.session_id = ${tables.entryChunks}.session_id
-						AND e.seq = ${tables.entryChunks}.seq
-						AND e.chunks > 0
+				`DELETE FROM ${tables.entryChunks} WHERE (session_id, seq) IN (
+					SELECT k.session_id, k.seq
+					FROM (SELECT DISTINCT session_id, seq FROM ${tables.entryChunks}) AS k
+					WHERE NOT EXISTS (
+						SELECT 1 FROM ${tables.entries} AS e
+						WHERE e.session_id = k.session_id AND e.seq = k.seq AND e.chunks > 0
+					)
 				)`,
 			);
 		};
@@ -814,10 +811,10 @@ export class SqlSessionStore implements SessionStore {
 				`WITH sized AS MATERIALIZED (
 					SELECT ${LISTING_COLUMNS}, ${order} AS ord, ${LISTING_SIZE} AS size
 					FROM ${this.tables.sessions} WHERE (${where}) AND ${order} > ? ORDER BY ord LIMIT ?
-				) SELECT ${LISTING_COLUMNS}, ord, fetched, page_chars, next_size FROM (
+				) SELECT ${LISTING_COLUMNS}, ord, fetched, batch_chars, page_chars FROM (
 					SELECT ${LISTING_COLUMNS}, ord, count(*) OVER () AS fetched,
 						row_number() OVER (ORDER BY ord) AS page_row,
-						lead(size) OVER (ORDER BY ord) AS next_size,
+						sum(size) OVER () AS batch_chars,
 						sum(size) OVER (ORDER BY ord) AS page_chars
 					FROM sized
 				) AS page WHERE (page_chars <= ? OR page_row = 1) AND page_row <= ? ORDER BY ord`,
@@ -853,14 +850,14 @@ export class SqlSessionStore implements SessionStore {
 					SELECT ${LISTING_COLUMNS}, ord, size,
 						(SELECT COALESCE(sum(length(text_json) + 1) + 1, 2) FROM ${this.tables.searchTexts} WHERE session_id = keyed.id) AS search_size
 					FROM keyed
-				) SELECT ${LISTING_COLUMNS}, ord, fetched, page_chars, next_size, CASE WHEN search_size <= ? THEN (
+				) SELECT ${LISTING_COLUMNS}, ord, fetched, batch_chars, page_chars, CASE WHEN search_size <= ? THEN (
 					SELECT COALESCE('[' || ${this.dialect.orderedConcat("text_json", "','", "seq")} || ']', '[]')
 					FROM (SELECT text_json, seq FROM ${this.tables.searchTexts} WHERE session_id = page.id ORDER BY seq)
 				) END AS search_texts_json
 				FROM (
 					SELECT ${LISTING_COLUMNS}, ord, search_size, count(*) OVER () AS fetched,
 						row_number() OVER (ORDER BY ord) AS page_row,
-						lead(size + search_size) OVER (ORDER BY ord) AS next_size,
+						sum(size + search_size) OVER () AS batch_chars,
 						sum(size + search_size) OVER (ORDER BY ord) AS page_chars
 					FROM sized
 				) AS page WHERE (page_chars <= ? OR page_row = 1) AND page_row <= ? ORDER BY ord`,
@@ -935,24 +932,24 @@ export class SqlSessionStore implements SessionStore {
 			const rows = await tx.all<SqliteRow & FetchRow & { seq: number; entry_json: string; chunks: number }>(
 				`WITH sized AS MATERIALIZED (
 					SELECT seq, chunks, length(entry_json) AS size,
-						CASE WHEN octet_length(entry_json) <= ? THEN entry_json END AS inline_json
+						CASE WHEN ${this.dialect.textByteLength("entry_json")} <= ? THEN entry_json END AS inline_json
 					FROM ${this.tables.entries} WHERE session_id = ? AND seq > ? ORDER BY seq LIMIT ?
 				), batch AS MATERIALIZED (
 					SELECT count(*) AS fetched, COALESCE(sum(size), 0) AS chars FROM sized
 				), page AS (
-					SELECT seq, chunks, inline_json, fetched, 0 AS page_chars, NULL AS next_size
+					SELECT seq, chunks, inline_json, fetched, chars AS batch_chars, 0 AS page_chars
 					FROM (SELECT seq, chunks, inline_json FROM sized ORDER BY seq LIMIT ?) AS fitting CROSS JOIN batch
 					WHERE batch.chars <= ?
 					UNION ALL
-					SELECT seq, chunks, inline_json, fetched, page_chars, next_size FROM (
-						SELECT seq, chunks, inline_json, batch.fetched, row_number() OVER (ORDER BY seq) AS page_row,
-							lead(size) OVER (ORDER BY seq) AS next_size,
+					SELECT seq, chunks, inline_json, fetched, batch_chars, page_chars FROM (
+						SELECT seq, chunks, inline_json, batch.fetched, batch.chars AS batch_chars,
+							row_number() OVER (ORDER BY seq) AS page_row,
 							sum(size) OVER (ORDER BY seq) AS page_chars
 						FROM sized CROSS JOIN batch WHERE batch.chars > ?
 					) AS windowed WHERE (page_chars <= ? OR page_row = 1) AND page_row <= ?
 				) SELECT seq, COALESCE(inline_json, (
 					SELECT e.entry_json FROM ${this.tables.entries} AS e WHERE e.session_id = ? AND e.seq = page.seq
-				)) AS entry_json, chunks, fetched, page_chars, next_size FROM page ORDER BY seq`,
+				)) AS entry_json, chunks, fetched, batch_chars, page_chars FROM page ORDER BY seq`,
 				SESSION_READ_INLINE_BYTES,
 				sessionId,
 				after,

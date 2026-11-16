@@ -267,6 +267,34 @@ describe("a session store under a libSQL server's size limits (#4954)", () => {
 		});
 	});
 
+	test("sessions load on SQLite without octet_length, as on macOS 13 (#4954)", async () => {
+		const configured = new WeakSet<DatabaseSync>();
+		const prepare = DatabaseSync.prototype.prepare;
+		DatabaseSync.prototype.prepare = function (this: DatabaseSync, sql: string) {
+			if (!configured.has(this)) {
+				configured.add(this);
+				this.function("octet_length", (_value) => {
+					throw new Error("no such function: octet_length");
+				});
+			}
+			return prepare.call(this, sql);
+		} as typeof prepare;
+		try {
+			await withNodeSqliteDatabase(async ({ database }) => {
+				const store = await SqlSessionStore.open(database);
+				const entries = [
+					message("first", null, "short"),
+					message("large", "first", "😀".repeat(5000)),
+					message("last", "large", "short"),
+				];
+				await store.create(header(), entries);
+				assert.deepEqual((await store.load("session")).entries, entries);
+			});
+		} finally {
+			DatabaseSync.prototype.prepare = prepare;
+		}
+	});
+
 	test("a long session loads in time linear in its entries, not one scan of the rest per page (#4954)", async () => {
 		await withNodeSqliteDatabase(async ({ database }) => {
 			const store = await SqlSessionStore.open(database);
@@ -292,6 +320,39 @@ describe("a session store under a libSQL server's size limits (#4954)", () => {
 			assert.ok(scanned.calls <= 4 * entries.length, `${scanned.calls} entry lengths measured`);
 		});
 	});
+
+	test.each([
+		{ layout: "alternate with short entries", long: (index: number) => index % 2 === 0 },
+		{ layout: "follow one another", long: (_index: number) => true },
+	])(
+		"legacy entries longer than a page are measured a bounded number of times when they $layout (#4954)",
+		async ({ long }) => {
+			await withNodeSqliteDatabase(async ({ database }) => {
+				const store = await SqlSessionStore.open(database);
+				const entries = Array.from({ length: 40 }, (_, index) =>
+					message(
+						`m-${index}`,
+						index === 0 ? null : `m-${index - 1}`,
+						long(index) ? "x".repeat(1.3 * MiB) : "short",
+					),
+				);
+				await store.create(header(), entries);
+				for (const [index, entry] of entries.entries()) {
+					if (long(index)) {
+						await database.run(
+							"UPDATE session_entries SET entry_json = ?, chunks = 0 WHERE seq = ?",
+							JSON.stringify(entry),
+							index + 1,
+						);
+					}
+				}
+				await database.run("DELETE FROM session_entry_chunks");
+				const scanned = await countLongValuesMeasured(() => store.load("session"));
+				assert.deepEqual(scanned.result.entries, entries);
+				assert.ok(scanned.calls <= 4 * entries.length, `${scanned.calls} entry lengths measured`);
+			});
+		},
+	);
 
 	test.each([
 		{ entriesCount: 188, firstChars: 2.5 * MiB, maxStatements: 2 },
