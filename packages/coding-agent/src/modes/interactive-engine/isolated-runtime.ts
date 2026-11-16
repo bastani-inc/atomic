@@ -89,7 +89,7 @@ function applyPersistedModelDefault(
 ): void {
 	session.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
 	if (alreadyInScope || session.scopedModels.length === 0) return;
-	const enabledModels = session.settingsManager.getEnabledModels();
+	const enabledModels = session.settingsManager.getGlobalSettings().enabledModels;
 	if (!enabledModels?.length) return;
 	const modelReference = `${model.provider}/${model.id}`;
 	if (enabledModels.some((pattern) => pattern.toLowerCase() === modelReference.toLowerCase())) return;

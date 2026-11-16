@@ -173,12 +173,15 @@ describe("shared selector (#5224)", () => {
 		assert.deepEqual(events, ["cancel"]);
 	});
 
-	test("ctrl+c cancels even with search text", () => {
-		const { selector, events } = picker({ search: true, items: items(2) });
-		selector.handleInput("i");
-		selector.handleInput(CTRL_C);
-		assert.deepEqual(events, ["cancel"]);
-	});
+	test.each([CTRL_C, "\x1b[99;5u", "\x1b[1089::99;5u", "\x1b[27;5;99~"])(
+		"ctrl+c encoding %j cancels even with search text (#5237)",
+		(key) => {
+			const { selector, events } = picker({ search: true, items: items(2) });
+			selector.handleInput("i");
+			selector.handleInput(key);
+			assert.deepEqual(events, ["cancel"]);
+		},
+	);
 
 	test("a search with no match shows the empty state and no choose key", () => {
 		const { selector, text } = picker({ search: true, items: items(2) });

@@ -223,6 +223,12 @@ describe("/model ←→ reasoning level (#5224)", () => {
 		await vi.waitFor(() => assert.equal(picker.isClosed(), true));
 
 		assert.deepEqual(picker.errors, []);
+		const command = pair.commandsReceived.find(
+			(command) => command.type === "set_model" && command.modelId === "other-model",
+		);
+		assert.ok(command?.type === "set_model");
+		assert.equal(command.thinkingLevel, "medium");
+		assert.equal(command.persist, true);
 		assert.equal(pair.runtime.session.model?.id, "other-model");
 		assert.equal(pair.runtime.session.thinkingLevel, "medium");
 		assert.equal(pair.engine.session.model?.id, "other-model");

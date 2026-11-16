@@ -218,11 +218,15 @@ export async function createEngineHostPair(
 		engineRuntimeHost?: Partial<Pick<AgentSessionRuntime, "switchSession" | "importFromJsonl">>;
 		/** The host's own view of the session. Default: a private in-memory session, as with `--no-session`. */
 		hostSessionManager?: SessionManager;
+		hostSettingsManager?: HarnessOptions["settingsManager"];
 	},
 ): Promise<EngineHostPair> {
 	const lag = { toEngineMs: 0, toHostMs: 0 };
 	const engine = await createHarness({ ...options, extensionFactories: options.engineExtensions });
-	const hostHarness = await createHarness({ sessionManager: options.hostSessionManager });
+	const hostHarness = await createHarness({
+		sessionManager: options.hostSessionManager,
+		settingsManager: options.hostSettingsManager,
+	});
 	const client = new InProcessEngineClient({ toEngineMs: () => lag.toEngineMs, toHostMs: () => lag.toHostMs });
 	const engineRuntimeHost = new AgentSessionRuntime(
 		engine.session,

@@ -1,5 +1,5 @@
 import type { Api, Model } from "@bastani/atomic-ai/compat";
-import { getKeybindings, type Input } from "@bastani/atomic-tui";
+import { getKeybindings, type Input, matchesKey } from "@bastani/atomic-tui";
 import { formatModelLabel } from "../../../core/model-label.ts";
 import { getDistinctModelName, getModelSearchText } from "../model-search.ts";
 import { theme } from "../theme/theme.js";
@@ -211,7 +211,7 @@ export class ScopedModelsSelectorComponent extends FramedSelector<string> implem
 	}
 
 	override handleInput(data: string): void {
-		if (data === "\x03" && this.selector.state.getQuery()) {
+		if (matchesKey(data, "ctrl+c") && this.selector.state.getQuery()) {
 			this.selector.clearSearch();
 			return;
 		}

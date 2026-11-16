@@ -4,7 +4,7 @@
 
 ### Added
 
-- Added `AgentSession.setModel(model, { thinkingLevel })` to set a model and its reasoning level in one call. Unsupported levels clamp to a supported level, and `persist: true` saves both. RPC `set_model` also accepts `thinkingLevel` and clamps it to a level the model supports; an unrecognized value returns an error without switching the model. `RpcClient.setModel(provider, modelId, { thinkingLevel })` sends the option. Persisted `set_model` and `cycle_model` responses include `persistedDefaults` to distinguish saved startup preferences from session-only changes ([#5237](https://github.com/bastani-inc/atomic/pull/5237))
+- Added `AgentSession.setModel(model, { thinkingLevel })` to set a model and its reasoning level in one call. Unsupported levels clamp to a supported level, and `persist: true` saves both. RPC `set_model` also accepts `thinkingLevel` and rejects unrecognized values without switching the model. `RpcClient.setModel(provider, modelId, { thinkingLevel })` sends the option. Persisted `set_model` and `cycle_model` responses include `persistedDefaults` to distinguish saved startup preferences from session-only changes ([#5237](https://github.com/bastani-inc/atomic/pull/5237))
 
 ### Changed
 
@@ -13,8 +13,8 @@
 
 ### Fixed
 
-- Pickers ignore a repeated Enter or click instead of answering twice, and an extension dialog shown again after another dialog repaints in the current theme ([#5237](https://github.com/bastani-inc/atomic/pull/5237))
-- Isolated interactive mode keeps model and reasoning changes made by extensions during `/model` or Ctrl+P, without saving a session-only reasoning change as the startup default ([#5237](https://github.com/bastani-inc/atomic/pull/5237))
+- Pickers ignore a repeated Enter or click instead of answering twice, and an extension dialog shown again after another dialog repaints in the current theme. Ctrl+C cancels a filtered picker with Kitty and modifyOtherKeys keyboard protocols too; `/scoped-models` keeps its clear-search-first behavior ([#5237](https://github.com/bastani-inc/atomic/pull/5237))
+- Isolated interactive mode applies the reasoning level chosen in `/model` and keeps model and reasoning changes made by extensions during `/model` or Ctrl+P without saving session-only changes. Saving a model choice no longer copies project model defaults or scoped-model lists into global settings ([#5237](https://github.com/bastani-inc/atomic/pull/5237))
 - In `/resume`, pressing ↓ or Page Down while a search matched nothing left no session selected once the search matched again, so Enter did nothing until you moved the selection ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 - Ctrl+C cancels the resume picker while searching or previewing on terminals using Kitty or modifyOtherKeys input, instead of only clearing the search or closing the preview ([#5256](https://github.com/bastani-inc/atomic/pull/5256)).
 - `/resume`, `/tree` and `atomic config` keep their headers, search boxes and scroll hints within the terminal width after a narrow resize, avoiding oversized-line errors ([#5256](https://github.com/bastani-inc/atomic/pull/5256)).

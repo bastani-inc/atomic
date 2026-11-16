@@ -461,7 +461,6 @@ Without a search box, `?` shows the picker's keys and `j`/`k` move like ↓/↑.
 
 A picker stops taking keys and mouse input once it calls `onCancel`, once it calls `onConfirm`, and once it calls `onSelect` unless `closeOnSelect` is `false`. Repeated enter presses and clicks therefore reach your callback once, and a picker you keep on screen after that ignores every key, esc and ctrl+c included. If your callback can fail, for example while it saves the choice, call `selector.retrySelection()` when it does: the picker takes input again, so the user can choose again or press esc. Pair it with `setNotice()` to show the error.
 
-
 Use `setItems()` to replace row data. When external data used by a custom `style` or an extra key's `enabled` callback changes, call `selector.invalidate()` before requesting a render. A row's `labelStyle` still runs on each render, so animated labels can update without replacing the rows.
 
 ### Pattern 1b: Selection Dialog (SelectList)
