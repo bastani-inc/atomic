@@ -57,6 +57,14 @@ export function workflowArgumentCompletionsNeedWorkflowResources(partial: string
 	return true;
 }
 
+function hasPositionalRunArgument(argumentText: string): boolean {
+	return argumentText
+		.trimStart()
+		.split(/\s+/)
+		.slice(1, -1)
+		.some((token) => !token.startsWith("-"));
+}
+
 export function workflowArgumentCompletions(
 	partial: string,
 	runtime: ExtensionRuntime,
@@ -69,10 +77,12 @@ export function workflowArgumentCompletions(
 		return completeToken(partial, [...adminCompletions(), ...workflows()]);
 	}
 	if (subcommand === "inputs") return completeToken(partial, workflows());
-	if (["status", "resume"].includes(subcommand)) {
+	if (subcommand === "status" || subcommand === "resume") {
+		if (subcommand === "resume" && hasPositionalRunArgument(partial)) return null;
 		return completeToken(partial, runIdItems(activeStore));
 	}
 	if (subcommand === "pause") {
+		if (hasPositionalRunArgument(partial)) return null;
 		return completeToken(partial, [
 			{ value: "--all ", label: "--all", description: "Pause all in-flight runs" },
 			{ value: "--yes ", label: "--yes", description: "Skip confirmation" },
@@ -81,9 +91,10 @@ export function workflowArgumentCompletions(
 		]);
 	}
 	if (subcommand === "fork") {
+		if (parts.slice(1).some((token) => token === "--from" || token.startsWith("--from="))) return null;
 		return completeToken(partial, [
 			{ value: "--from ", label: "--from", description: "Dot path of the stage the fork re-runs from" },
-			...runIdItems(activeStore),
+			...(hasPositionalRunArgument(partial) ? [] : runIdItems(activeStore)),
 		]);
 	}
 	if (subcommand === "quit") {

@@ -83,3 +83,39 @@ test("bundled workflow fallback retains inspection, resume and run controls (#52
 	assert.equal(await suggest("/workflow status "), null);
 	assert.equal(await suggest("/workflow resume "), null);
 });
+
+test("bundled workflow fallback offers fork --from once before --from is present (#5224)", async () => {
+	const runPrefix = "a1b2c3d4";
+	assert.deepEqual(
+		(await suggest(`/workflow fork ${runPrefix} `))?.items.map((item) => item.value),
+		[`fork ${runPrefix} --from `],
+	);
+	assert.deepEqual(
+		(await suggest(`/workflow fork ${runPrefix} --f`))?.items.map((item) => item.value),
+		[`fork ${runPrefix} --from `],
+	);
+	assert.equal(await suggest(`/workflow fork ${runPrefix} --from=s1`), null);
+});
+
+test.each([
+	"/workflow fork --from ",
+	"/workflow fork a1b2c3d4 --from ",
+	"/workflow fork a1b2c3d4 --from -",
+	"/workflow fork a1b2c3d4 --from s1 ",
+	"/workflow fork a1b2c3d4 --from s1 --f",
+	"/workflow fork a1b2c3d4 --from=s1 ",
+	"/workflow fork a1b2c3d4 --from=s1 --f",
+])("bundled workflow fallback omits duplicate fork --from for %s (#5224)", async (line) => {
+	assert.equal(await suggest(line), null);
+});
+
+test.each(["/workflow pause a1b2c3d4 ", "/workflow pause a1b2c3d4 -", "/workflow pause --yes a1b2c3d4 "])(
+	"bundled workflow fallback omits pause flags after positional run in %s (#5224)",
+	async (line) => {
+		assert.deepEqual(
+			(await suggest("/workflow pause --yes -"))?.items.map((item) => item.value),
+			["pause --yes --all ", "pause --yes --yes ", "pause --yes -y "],
+		);
+		assert.equal(await suggest(line), null);
+	},
+);

@@ -277,6 +277,14 @@ function bundledWorkflowNameItems(): AutocompleteItem[] {
 	}));
 }
 
+function hasPositionalRunArgument(argumentText: string): boolean {
+	return argumentText
+		.trimStart()
+		.split(/\s+/)
+		.slice(1, -1)
+		.some((token) => !token.startsWith("-"));
+}
+
 export function getBundledWorkflowArgumentCompletions(argumentPrefix: string): AutocompleteItem[] | null {
 	const parts = argumentPrefix.trim().split(/\s+/).filter(Boolean);
 	const subcommand = parts[0] ?? "";
@@ -286,6 +294,7 @@ export function getBundledWorkflowArgumentCompletions(argumentPrefix: string): A
 	}
 	if (subcommand === "inputs") return completeWorkflowToken(argumentPrefix, workflowItems);
 	if (subcommand === "pause") {
+		if (hasPositionalRunArgument(argumentPrefix)) return null;
 		return completeWorkflowToken(argumentPrefix, [
 			{ value: "--all ", label: "--all", description: "Pause all in-flight runs" },
 			{ value: "--yes ", label: "--yes", description: "Skip confirmation" },
@@ -293,6 +302,7 @@ export function getBundledWorkflowArgumentCompletions(argumentPrefix: string): A
 		]);
 	}
 	if (subcommand === "fork") {
+		if (parts.slice(1).some((token) => token === "--from" || token.startsWith("--from="))) return null;
 		return completeWorkflowToken(argumentPrefix, [
 			{ value: "--from ", label: "--from", description: "Dot path of the stage the fork re-runs from" },
 		]);

@@ -92,7 +92,8 @@ export function registerWorkflowSlashCommand(
 				const reporter = createWorkflowCommandReporter(ctx, workflowPolicyFromContext(ctx), pi);
 				await handleWorkflowsCommand(args, ctx, reporter, { overlay: deps.runControl.overlay, store: owner.store });
 			},
-			getArgumentCompletions: (partial) => completeToken(partial, runIdItems(owner.store)),
+			getArgumentCompletions: (partial) =>
+				/\s/.test(partial.trimStart()) ? null : completeToken(partial, runIdItems(owner.store)),
 		},
 		workflowCommands,
 	);

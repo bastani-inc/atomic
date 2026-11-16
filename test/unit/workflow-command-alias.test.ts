@@ -160,6 +160,12 @@ test("/workflows completes current-session run IDs (#5224)", async () => {
 			},
 		]);
 		assert.equal(await workflowsCommand.getArgumentCompletions("no-such-run"), null);
+		assert.equal(await workflowsCommand.getArgumentCompletions(`${runId} `), null);
+		assert.equal(await workflowsCommand.getArgumentCompletions(`${runId} ${runId.slice(0, 2)}`), null);
+		assert.equal(await workflowsCommand.getArgumentCompletions(`  ${runId}\t`), null);
+		assert.deepEqual(await workflowsCommand.getArgumentCompletions(`  ${runId.slice(0, 8)}`), [
+			{ value: `  ${runId} `, label: runId, description: "demo — running" },
+		]);
 	} finally {
 		store.removeRun(runId);
 		setDurableBackend(undefined);
