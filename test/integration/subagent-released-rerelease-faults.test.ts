@@ -138,9 +138,10 @@ class OwnerProcess {
 		return new Promise((resolveWhen, rejectWhen) => {
 			const timer = setTimeout(() => {
 				this.listeners.delete(check);
+				const exited = this.process.exitCode === null ? "running" : `exited ${this.process.exitCode}`;
 				rejectWhen(
 					new Error(
-						`${label}: ${JSON.stringify({ records: this.records, runs: this.runs, received: this.received, read: this.read })}\n${this.stderr}`,
+						`${label} within ${timeoutMs} ms (${exited}): ${JSON.stringify({ records: this.records, runs: this.runs, received: this.received, read: this.read })}\n${this.stderr}`,
 					),
 				);
 			}, timeoutMs);

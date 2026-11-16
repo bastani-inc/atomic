@@ -46,6 +46,11 @@ import { reopenChildSession } from "../../packages/subagents/src/runs/foreground
 import { runAgentTask } from "../../packages/subagents/src/runs/foreground/task-execution.js";
 import type { RunSyncOptions, SingleResult } from "../../packages/subagents/src/shared/types.js";
 
+/** Where its start-up got to, on stderr: a test that times out waiting for `READY` reports it. */
+const startedAt = performance.now();
+const progress = (step: string) => process.stderr.write(`owner ${Math.round(performance.now() - startedAt)} ms: ${step}\n`);
+progress("sources loaded");
+
 const [phase, dir, childName] = process.argv.slice(2);
 if ((phase !== "launch" && phase !== "recover") || !dir || !childName)
 	throw new Error("usage: released-subagent-owner <launch|recover> <dir> <child-name>");
@@ -125,6 +130,7 @@ const topUp = () => {
 };
 topUp();
 
+progress("model runtime ready");
 const store = await SqlSessionStore.open(await openNodeSqliteDatabase(join(dir, "owner.sqlite")));
 const ownerFile = join(dir, "owner.json");
 const sessionManager = existsSync(ownerFile)
@@ -149,6 +155,7 @@ const appendEntry = async (customType: string, data?: unknown) => {
 };
 let ownerIntercomId: string | undefined;
 events.on("intercom:connected", (payload) => {
+	progress("Intercom connected");
 	ownerIntercomId = (payload as { readonly sessionId: string }).sessionId;
 });
 const handlers = new Map<string, Handler[]>();
@@ -197,8 +204,10 @@ const ctx = {
 	modelRegistry: { getAvailable: () => [], getAll: () => [], find: () => undefined },
 	ui: { confirm: async () => true, notify() {} },
 } as unknown as ExtensionContext;
+progress("session opened; starting its extensions");
 for (const handler of handlers.get("session_start") ?? [])
 	await handler({ type: "session_start", reason: phase === "launch" ? "startup" : "resume" }, ctx);
+progress("extensions started");
 
 let runs = 0;
 const runtime = {
