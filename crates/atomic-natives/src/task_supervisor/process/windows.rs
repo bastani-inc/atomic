@@ -147,6 +147,25 @@ impl WindowsProcess {
 			Ok(())
 		}
 	}
+	fn wait(&self, timeout: Duration) {
+		let _ = unsafe { WaitForSingleObject(raw(&self.process), timeout.as_millis() as u32) };
+	}
+	fn disarm_kill_on_close(&self) -> io::Result<()> {
+		let limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+		if unsafe {
+			SetInformationJobObject(
+				raw(&self.job),
+				JobObjectExtendedLimitInformation,
+				(&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+				std::mem::size_of_val(&limits) as u32,
+			)
+		} == 0
+		{
+			Err(io::Error::last_os_error())
+		} else {
+			Ok(())
+		}
+	}
 	fn exit_code(&self) -> io::Result<u32> {
 		let mut code = 0;
 		if unsafe { GetExitCodeProcess(raw(&self.process), &mut code) } == 0 {
@@ -394,7 +413,9 @@ impl Actor {
 			let mut stdin = Some(stdin);
 			while !stopped.load(Ordering::Acquire) {
 				input_command.input.lock().unwrap().drain(&mut stdin);
-				std::thread::sleep(PROCESS_POLL);
+				if !stopped.load(Ordering::Acquire) {
+					std::thread::park_timeout(PROCESS_POLL);
+				}
 			}
 			input_command.input.lock().unwrap().close();
 		});
@@ -462,6 +483,7 @@ impl Actor {
 		let mut stdout_eof = false;
 		let mut stderr_eof = false;
 		let mut failure = None;
+		let mut preserved_background = false;
 		loop {
 			if let Some(pty) = &mut resource.pty {
 				if stopping.is_none()
@@ -508,18 +530,61 @@ impl Actor {
 					false
 				},
 			};
+			if stopping.is_none()
+				&& command.options.keep_background_on_exit == Some(true)
+				&& exited
+				&& !cancelling
+				&& failure.is_none()
+			{
+				for _ in 0..16 {
+					let before = command.output.lock().unwrap().byte_count;
+					for result in [
+						drain_pipe(&mut stdout, command, &mut stdout_eof),
+						drain_pipe(&mut stderr, command, &mut stderr_eof),
+					] {
+						if let Err(error) = result {
+							failure = Some(error.to_string());
+						}
+					}
+					if failure.is_some()
+						|| (stdout_eof && stderr_eof)
+						|| command.output.lock().unwrap().byte_count == before
+					{
+						break;
+					}
+				}
+				if failure.is_none() {
+					if let Err(error) = resource.disarm_kill_on_close() {
+						failure = Some(error.to_string());
+					} else {
+						preserved_background = true;
+						break;
+					}
+				}
+			}
 			if stopping.is_none() && (cancelling || exited || failure.is_some()) {
 				let _ = self.acknowledge_cleanup(runner, Cleanup::Draining {});
 				if let Err(error) = resource.kill() {
 					failure = Some(error.to_string());
 				}
 				stop_input.store(true, Ordering::Release);
+				writer.thread().unpark();
 				if let Some(pty) = &mut resource.pty {
 					pty.begin_close();
 				}
 				stopping = Some(Instant::now());
 			}
 			if let Some(stopped) = stopping {
+				if !stdout_eof || !stderr_eof {
+					for result in [
+						drain_pipe(&mut stdout, command, &mut stdout_eof),
+						drain_pipe(&mut stderr, command, &mut stderr_eof),
+					] {
+						if let Err(error) = result {
+							failure = Some(error.to_string());
+						}
+					}
+				}
 				match resource.active() {
 					Ok(0)
 						if exited
@@ -538,11 +603,17 @@ impl Actor {
 					break;
 				}
 			}
-			std::thread::sleep(PROCESS_POLL);
+			if stopping.is_none() && !exited {
+				resource.wait(PROCESS_POLL);
+			} else {
+				std::thread::sleep(PROCESS_POLL);
+			}
 		}
-		// Job termination closes every inherited read end before a blocked stdin worker is joined.
-		let _ = resource.kill();
+		if !preserved_background {
+			let _ = resource.kill();
+		}
 		stop_input.store(true, Ordering::Release);
+		writer.thread().unpark();
 		let input_deadline = Instant::now() + PROCESS_DRAIN_GRACE;
 		while !writer.is_finished() && Instant::now() < input_deadline {
 			std::thread::sleep(PROCESS_POLL);

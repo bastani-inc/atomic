@@ -280,7 +280,7 @@ setTimeout(() => {
 );
 
 test(
-	"killing the host session with SIGKILL during a slow smudge filter terminates git and reports a busy worktree while index.lock remains, then succeeds once cleared (#5202)",
+	"killing the host session during a smudge filter refuses the incomplete checkout until the worktree is repaired (#5202)",
 	async () => {
 		const { root, repo } = makeRepo();
 		const smudgePidFile = join(root, "smudge.pid");
@@ -326,11 +326,14 @@ process.stdin.on("end", () => {
 		assert.equal(existsSync(indexLockPath), true, "killed git checkout leaves index.lock intact");
 		const busyOutcome = await collectHostOutcome(startHostProcess(repo, { branch: "feat/smudge-sigkill" }));
 		assert.equal(busyOutcome.ok, false, "launch must refuse while killed git's index.lock remains");
-		assert.match(busyOutcome.message ?? "", /another git process seems to be running/i);
+		assert.match(busyOutcome.message ?? "", /interrupted named-worktree checkout/i);
+		assert.match(busyOutcome.message ?? "", /git worktree remove --force --force/);
 		assert.match(busyOutcome.message ?? "", /index\.lock/);
 
 		rmSync(indexLockPath, { force: true });
-		git(repo, "-C", join(repo, ".atomic", "worktrees", "feat+smudge-sigkill"), "reset", "--hard", "HEAD");
+		const stillIncomplete = await collectHostOutcome(startHostProcess(repo, { branch: "feat/smudge-sigkill" }));
+		assert.equal(stillIncomplete.ok, false, "removing only index.lock does not complete the checkout");
+		git(repo, "worktree", "remove", "--force", "--force", join(repo, ".atomic", "worktrees", "feat+smudge-sigkill"));
 
 		const recoveredOutcome = await collectHostOutcome(startHostProcess(repo, { branch: "feat/smudge-sigkill" }));
 		assert.equal(recoveredOutcome.ok, true, recoveredOutcome.message);

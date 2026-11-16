@@ -50,15 +50,27 @@ const modulePath = pathToFileURL(
 ).href;
 const REAL_GIT_PROCESS_BUDGET_MS = 60_000;
 
-test("classified worktree commands use a stable locale even with German ambient settings (#5202)", () => {
+test("classified worktree commands use a stable locale while runGit preserves ambient locale (#5202)", async () => {
 	const repo = makeRepo();
 	vi.stubEnv("LANGUAGE", "de");
 	vi.stubEnv("LANG", "de_DE.UTF-8");
 	vi.stubEnv("LC_ALL", "de_DE.UTF-8");
 	git(repo, "config", "alias.atomic-locale", '!printf \'%s/%s\' "$LC_ALL" "$LANGUAGE"');
-	const result = worktreeGit.runGit(repo, ["atomic-locale"]);
-	assert.equal(result.status, 0, result.stderr);
-	assert.equal(result.stdout, "C/C");
+	const ambient = worktreeGit.runGit(repo, ["atomic-locale"]);
+	assert.equal(ambient.status, 0, ambient.stderr);
+	assert.equal(ambient.stdout, "de_DE.UTF-8/de");
+	const classified = worktreeGit.runGit(repo, ["atomic-locale"], { LC_ALL: "C", LANGUAGE: "C" });
+	assert.equal(classified.status, 0, classified.stderr);
+	assert.equal(classified.stdout, "C/C");
+	const seen: Array<{ args: string[]; env: NodeJS.ProcessEnv | undefined }> = [];
+	const realRunGit = worktreeGit.runGit;
+	vi.spyOn(worktreeGit, "runGit").mockImplementation((cwd, args, env) => {
+		seen.push({ args, env });
+		return realRunGit(cwd, args, env);
+	});
+	await ensureNamedWorktree(repo, { branch: "feat/classified-locale" });
+	const listCall = seen.find(({ args }) => args[0] === "worktree" && args[1] === "list");
+	assert.deepEqual(listCall?.env, { LC_ALL: "C", LANGUAGE: "C" });
 });
 
 test.skipIf(process.platform === "win32")(

@@ -167,7 +167,7 @@ test(
 );
 
 test(
-	"a --no-checkout --lock worktree with reason initializing is reused promptly and never delays occupied-path refusal or unrelated creation (#5202)",
+	"a --no-checkout --lock worktree with a user reason is reused promptly and never delays occupied-path refusal or unrelated creation (#5202)",
 	async () => {
 		const repo = makeSlowRepo();
 		const noCheckoutInitPath = join(repo, ".atomic", "worktrees", "feat+no-checkout-init");
@@ -180,7 +180,7 @@ test(
 			"--no-checkout",
 			"--lock",
 			"--reason",
-			"initializing",
+			"kept for later",
 			"-b",
 			"feat/no-checkout-init",
 			noCheckoutInitPath,

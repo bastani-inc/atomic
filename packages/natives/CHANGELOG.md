@@ -5,11 +5,8 @@
 ### Added
 
 - Added `tryAdvisoryLock(path, waitMs)`: takes the exclusive operating-system advisory lock of a file (`flock` on Unix, `LockFileEx` on Windows), created when missing and never removed, waiting up to `waitMs` while another holder keeps it, and returns an `AdvisoryLock` whose `release()` gives it up, or `null`. The kernel releases it when its holder dies. On Unix, new lock files are readable and writable only by their owner. Added `renameNoReplace(from, to)`, a rename that returns `false` and moves nothing when anything is at `to` ([#5193](https://github.com/bastani-inc/atomic/issues/5193)).
+- Added `CommandResourceOptions.keepBackgroundOnExit`: when `true`, `TaskSupervisor.startCommandTask` leaves backgrounded descendant processes running when the command leader exits on its own; cancellation, owner close, or host exit still terminates the tree while the leader is running. Added `retainRecordOnStart` to keep a command's record and output available until `releaseTaskRecord`, including when many commands finish before the caller can read their results ([#5202](https://github.com/bastani-inc/atomic/issues/5202)).
 - Added `processCreationTime(pid)`: on Windows, the creation time of a running process, as the decimal count of 100-nanosecond intervals since 1601 UTC; `null` for a process that is gone or cannot be queried, and on other platforms ([#5141](https://github.com/bastani-inc/atomic/issues/5141)).
-
-### Fixed
-
-- Filesystem errors returned by `tryAdvisoryLock` and `renameNoReplace` no longer repeat the operating-system error code.
 
 ## [0.9.72] - 2026-11-08
 

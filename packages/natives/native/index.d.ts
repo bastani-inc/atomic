@@ -254,6 +254,8 @@ export interface CommandResourceOptions {
    * Ignored on Windows, whose Job containment terminates immediately rather than sending TERM.
    */
   terminationGraceMs?: number
+  keepBackgroundOnExit?: boolean
+  retainRecordOnStart?: boolean
 }
 
 /** Execute this program directly, appending command as one final argument. */

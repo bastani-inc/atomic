@@ -1,10 +1,30 @@
-import { randomUUID } from "node:crypto";
 import { createChildProcessEnvironment, createGitEnvironment, resolveGitSync } from "@bastani/atomic";
-import { type OutputPage, TaskSupervisor } from "@bastani/atomic-natives";
+import { type OutputPage, type OwnerLease, TaskSupervisor } from "@bastani/atomic-natives";
+
+interface SupervisedOwner {
+	readonly supervisor: TaskSupervisor;
+	readonly owner: OwnerLease;
+}
+
+let sharedOwner: SupervisedOwner | undefined;
+let nextOwnerGeneration = 0;
+let nextOperationId = 0;
 
 function accepted<T>(result: { ok: true; value: T } | { ok: false; error: { code: string; message: string } }): T {
 	if (!result.ok) throw new Error(`${result.error.code}: ${result.error.message}`);
 	return result.value;
+}
+
+function getSupervisedOwner(): SupervisedOwner {
+	if (sharedOwner !== undefined) return sharedOwner;
+	const supervisor = new TaskSupervisor();
+	const scope = {
+		kind: "session" as const,
+		sessionId: `named-worktree-${process.pid}-${++nextOwnerGeneration}`,
+	};
+	const owner = accepted(supervisor.openTaskOwner(supervisor.bindHostSession(scope), scope));
+	sharedOwner = { supervisor, owner };
+	return sharedOwner;
 }
 
 export async function addNamedWorktree(
@@ -15,33 +35,30 @@ export async function addNamedWorktree(
 ): Promise<{ status: number; stdout: string; stderr: string }> {
 	signal?.throwIfAborted();
 	const git = resolveGitSync();
-	const supervisor = new TaskSupervisor();
-	const scope = { kind: "session" as const, sessionId: `named-worktree-${randomUUID()}` };
-	const owner = accepted(supervisor.openTaskOwner(supervisor.bindHostSession(scope), scope));
+	let { supervisor, owner } = getSupervisedOwner();
+	const environment: Record<string, string> = {};
+	for (const [key, value] of Object.entries(
+		createGitEnvironment({ ...env, LANGUAGE: "C" }, createChildProcessEnvironment(undefined, git.env)),
+	))
+		if (value !== undefined) environment[key] = value;
+	const intent = {
+		kind: "command" as const,
+		command: args.at(-1)!,
+		shell: { program: git.path, args: ["-C", repo, ...args.slice(0, -1)] },
+		cwd: repo,
+		env: environment,
+		inheritEnv: false,
+		terminal: { kind: "pipe" as const },
+	};
+	const options = { keepBackgroundOnExit: true, retainRecordOnStart: true };
+	let started = await supervisor.startCommandTask(owner, intent, `checkout-${++nextOperationId}`, options);
+	if (!started.ok && started.error.code === "OwnerClosing") {
+		sharedOwner = undefined;
+		({ supervisor, owner } = getSupervisedOwner());
+		started = await supervisor.startCommandTask(owner, intent, `checkout-${++nextOperationId}`, options);
+	}
+	const task = accepted(started);
 	try {
-		const environment: Record<string, string> = {};
-		for (const [key, value] of Object.entries(
-			createGitEnvironment(
-				{ ...env, LC_ALL: "C", LANGUAGE: "C" },
-				createChildProcessEnvironment(undefined, git.env),
-			),
-		))
-			if (value !== undefined) environment[key] = value;
-		const task = accepted(
-			await supervisor.startCommandTask(
-				owner,
-				{
-					kind: "command",
-					command: args.at(-1)!,
-					shell: { program: git.path, args: ["-C", repo, ...args.slice(0, -1)] },
-					cwd: repo,
-					env: environment,
-					inheritEnv: false,
-					terminal: { kind: "pipe" },
-				},
-				"checkout",
-			),
-		);
 		const cancel = (): void => {
 			supervisor.cancelTask(task, "user");
 		};
@@ -75,7 +92,6 @@ export async function addNamedWorktree(
 			supervisor.disposeTaskWait(wait);
 		}
 	} finally {
-		accepted(await supervisor.closeTaskOwner(owner, "session-close"));
-		supervisor.trimClosedTaskOwner(owner);
+		supervisor.releaseTaskRecord(task);
 	}
 }
