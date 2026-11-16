@@ -168,6 +168,13 @@ export class SelectorState<T> {
 	private selected = 0;
 	private top = 0;
 	private readonly checked = new Set<string>();
+	private revision = 0;
+	private searchTexts = new WeakMap<SelectorItem<T>, string>();
+	private visibleStats?: {
+		items: readonly SelectorItem<T>[];
+		enabledCount: number;
+		hasRadioMarks: boolean;
+	};
 
 	constructor(options: Pick<SelectorOptions<T>, "items" | "mode" | "maxVisible" | "initialId" | "initialChecked">) {
 		this.items = options.items;
@@ -182,6 +189,10 @@ export class SelectorState<T> {
 		this.scrollToSelected();
 	}
 
+	getRevision(): number {
+		return this.revision;
+	}
+
 	getQuery(): string {
 		return this.query;
 	}
@@ -189,6 +200,18 @@ export class SelectorState<T> {
 	/** Rows that match the search, in list order (best match first while searching). */
 	getVisible(): readonly SelectorItem<T>[] {
 		return this.visible;
+	}
+
+	getVisibleStats(): { enabledCount: number; hasRadioMarks: boolean } {
+		if (this.visibleStats?.items === this.visible) return this.visibleStats;
+		let enabledCount = 0;
+		let hasRadioMarks = false;
+		for (const item of this.visible) {
+			if (!item.disabled) enabledCount++;
+			if (item.mark === "on" || item.mark === "off") hasRadioMarks = true;
+		}
+		this.visibleStats = { items: this.visible, enabledCount, hasRadioMarks };
+		return this.visibleStats;
 	}
 
 	getSelectedIndex(): number {
@@ -218,6 +241,8 @@ export class SelectorState<T> {
 	 * the same id stays selected (or `preferId`, when given and listed).
 	 */
 	setItems(items: readonly SelectorItem<T>[], preferId?: string): void {
+		this.revision++;
+		this.searchTexts = new WeakMap();
 		const browsed = this.visible[this.selected]?.id;
 		const position = this.selected;
 		this.items = items;
@@ -235,6 +260,7 @@ export class SelectorState<T> {
 
 	setQuery(query: string): void {
 		if (query === this.query) return;
+		this.revision++;
 		const previous = this.visible[this.selected]?.id;
 		this.query = query;
 		this.visible = query ? this.filter(query) : [...this.items];
@@ -249,6 +275,7 @@ export class SelectorState<T> {
 	move(delta: number): void {
 		const count = this.visible.length;
 		if (count === 0) return;
+		this.revision++;
 		let index = this.selected;
 		for (let step = 0; step < count; step++) {
 			index = (index + Math.sign(delta) + count) % count;
@@ -261,6 +288,7 @@ export class SelectorState<T> {
 	/** Move a page up or down, clamped to the ends. */
 	page(direction: -1 | 1): void {
 		if (this.visible.length === 0) return;
+		this.revision++;
 		const target = Math.max(0, Math.min(this.visible.length - 1, this.selected + direction * this.maxVisible));
 		this.selected = this.firstEnabled(target, direction === 1 ? -1 : 1);
 		this.scrollToSelected();
@@ -269,25 +297,33 @@ export class SelectorState<T> {
 	/** Jump to the first or last enabled row. */
 	edge(end: "first" | "last"): void {
 		if (this.visible.length === 0) return;
+		this.revision++;
 		this.selected = end === "first" ? this.firstEnabled(0, 1) : this.firstEnabled(this.visible.length - 1, -1);
 		this.scrollToSelected();
 	}
 
 	select(index: number): void {
 		if (index < 0 || index >= this.visible.length || this.visible[index]?.disabled) return;
+		this.revision++;
 		this.selected = index;
 		this.scrollToSelected();
 	}
 
 	toggle(id: string): void {
+		this.revision++;
 		if (this.checked.has(id)) this.checked.delete(id);
 		else this.checked.add(id);
 	}
 
 	private filter(query: string): SelectorItem<T>[] {
-		return fuzzyFilter([...this.items], query, (item) =>
-			[item.label, item.description ?? "", item.tag ?? "", item.searchText ?? ""].join(" "),
-		);
+		return fuzzyFilter([...this.items], query, (item) => {
+			let text = this.searchTexts.get(item);
+			if (text === undefined) {
+				text = [item.label, item.description ?? "", item.tag ?? "", item.searchText ?? ""].join(" ");
+				this.searchTexts.set(item, text);
+			}
+			return text;
+		});
 	}
 
 	private firstEnabled(from: number, direction: 1 | -1): number {
@@ -321,7 +357,7 @@ export function selectorHintEntries<T>(
 ): NavKey[] {
 	const keybindings = options.keybindings ?? getKeybindings();
 	const selected = state.getSelected();
-	const enabledCount = state.getVisible().filter((item) => !item.disabled).length;
+	const { enabledCount } = state.getVisibleStats();
 	const multi = state.mode === "multi";
 	const entries: NavKey[] = [];
 	if (enabledCount > 1) {
@@ -402,6 +438,16 @@ export class Selector<T> implements Component, Focusable {
 	private rowLines = new Map<number, number>();
 	private mousePressed?: number;
 	private _focused = false;
+	private cachedRender?: {
+		width: number;
+		revision: number;
+		keybindings: NavKeybindings;
+		bindingKeys: string;
+		inputValue?: string;
+		inputCursor?: number;
+		inputFocused?: boolean;
+		lines: string[];
+	};
 
 	constructor(options: SelectorOptions<T>) {
 		this.options = options;
@@ -422,6 +468,7 @@ export class Selector<T> implements Component, Focusable {
 		return this._focused;
 	}
 	set focused(value: boolean) {
+		if (value !== this._focused) this.cachedRender = undefined;
 		this._focused = value;
 		if (this.input) this.input.focused = value;
 	}
@@ -444,22 +491,26 @@ export class Selector<T> implements Component, Focusable {
 	/** Empty the search with a fresh search box, so its undo and kill history cannot bring the old text back. */
 	clearSearch(): void {
 		if (!this.input) return;
+		this.cachedRender = undefined;
 		this.input = this.createInput();
 		this.state.setQuery("");
 		this.options.onSelectionChange?.(this.state.getSelected());
 	}
 
 	setTitle(title: string | undefined): void {
+		this.cachedRender = undefined;
 		this.title = title;
 	}
 
 	/** The dim line under the title; `undefined` removes it. */
 	setSubtitle(subtitle: string | undefined): void {
+		this.cachedRender = undefined;
 		this.subtitle = subtitle;
 	}
 
 	/** A one-line message under the list, such as a refresh status or an error; `undefined` clears it. */
 	setNotice(notice: { text: string; tone: SelectorTone } | undefined): void {
+		this.cachedRender = undefined;
 		this.notice = notice;
 	}
 
@@ -474,23 +525,25 @@ export class Selector<T> implements Component, Focusable {
 
 	/** Set the search text as if typed. */
 	setQuery(query: string): void {
+		this.cachedRender = undefined;
 		this.input?.setValue(query);
 		this.state.setQuery(query);
 		this.options.onSelectionChange?.(this.state.getSelected());
 	}
 
 	invalidate(): void {
+		this.cachedRender = undefined;
 		this.input?.invalidate();
 	}
 
 	handleInput(data: string): void {
+		this.cachedRender = undefined;
 		const kb = this.options.keybindings ?? getKeybindings();
 		if (this.showingHelp) {
 			if (kb.matches(data, "tui.select.cancel") || kb.matches(data, "app.keys.help")) this.showingHelp = false;
 			return;
 		}
 		const selected = this.state.getSelected();
-		const before = this.state.getSelectedIndex();
 		if (kb.matches(data, "tui.select.up") || (!this.input && data === "k")) this.state.move(-1);
 		else if (kb.matches(data, "tui.select.down") || (!this.input && data === "j")) this.state.move(1);
 		else if (kb.matches(data, "tui.select.pageUp")) this.state.page(-1);
@@ -518,6 +571,7 @@ export class Selector<T> implements Component, Focusable {
 			return;
 		} else if (!this.input && kb.matches(data, "app.keys.help")) {
 			this.showingHelp = true;
+			this.mousePressed = undefined;
 			return;
 		} else if (!this.input && this.options.numbered && /^[1-9]$/.test(data)) {
 			this.pickNumber(Number(data) - 1);
@@ -526,10 +580,11 @@ export class Selector<T> implements Component, Focusable {
 			this.input.handleInput(data);
 			this.state.setQuery(this.input.getValue());
 		} else return;
-		if (this.state.getSelectedIndex() !== before) this.options.onSelectionChange?.(this.state.getSelected());
+		if (this.state.getSelected()?.id !== selected?.id) this.options.onSelectionChange?.(this.state.getSelected());
 	}
 
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		if (this.showingHelp) return { handled: true };
 		if (event.type === "wheel" && event.wheelDelta) {
 			const before = this.state.getSelectedIndex();
 			this.state.move(event.wheelDelta < 0 ? -1 : 1);
@@ -540,6 +595,11 @@ export class Selector<T> implements Component, Focusable {
 		if (event.button !== "left" || (event.type !== "press" && event.type !== "click")) return undefined;
 		const index = [...this.rowLines.entries()].find(([, line]) => line === event.y)?.[0];
 		if (index === undefined) return undefined;
+		const item = this.state.getVisible()[index];
+		if (!item || item.disabled) {
+			this.mousePressed = undefined;
+			return { handled: true };
+		}
 		if (event.type === "press") {
 			this.mousePressed = index;
 			this.state.select(index);
@@ -557,7 +617,39 @@ export class Selector<T> implements Component, Focusable {
 	}
 
 	render(width: number): string[] {
+		const keybindings = this.options.keybindings ?? getKeybindings();
+		const revision = this.state.getRevision();
+		const inputValue = this.input?.getValue();
+		const inputCursor = this.input?.getCursor();
+		const inputFocused = this.input?.focused;
+		const bindingKeys = [
+			"tui.select.up",
+			"tui.select.down",
+			"tui.select.confirm",
+			"tui.select.cancel",
+			"app.keys.help",
+			...(this.options.extraKeys ?? []).flatMap((extra) => (extra.hint.action ? [extra.hint.action] : [])),
+		]
+			.map((action) => keybindings.getKeys?.(action)?.join(",") ?? "")
+			.join("\0");
+		const visible = this.state.getVisible();
+		const hasCustomLabels = visible
+			.slice(this.state.getTop(), this.state.getTop() + this.state.maxVisible)
+			.some((item) => item.labelStyle !== undefined);
+		const cached = hasCustomLabels ? undefined : this.cachedRender;
+		if (
+			cached?.width === width &&
+			cached.revision === revision &&
+			cached.keybindings === keybindings &&
+			cached.bindingKeys === bindingKeys &&
+			cached.inputValue === inputValue &&
+			cached.inputCursor === inputCursor &&
+			cached.inputFocused === inputFocused
+		) {
+			return cached.lines;
+		}
 		if (this.showingHelp) {
+			this.rowLines.clear();
 			const title = this.options.helpTitle ?? this.title ?? "keys";
 			return renderNavKeyOverlay(
 				title,
@@ -585,7 +677,6 @@ export class Selector<T> implements Component, Focusable {
 			lines.push(`  ${this.style.tone(this.notice.tone, truncateToWidth(this.notice.text, inner))}`);
 		}
 		lines.push("");
-		const keybindings = this.options.keybindings ?? getKeybindings();
 		lines.push(
 			renderNavHintLine(
 				fitHintEntries(selectorHintEntries(this.state, this.options), width - 2, keybindings),
@@ -594,7 +685,18 @@ export class Selector<T> implements Component, Focusable {
 				keybindings,
 			),
 		);
-		return lines.map((line) => truncateToWidth(line, width));
+		const rendered = lines.map((line) => (visibleWidth(line) > width ? truncateToWidth(line, width) : line));
+		this.cachedRender = {
+			width,
+			revision,
+			keybindings,
+			bindingKeys,
+			inputValue,
+			inputCursor,
+			inputFocused,
+			lines: rendered,
+		};
+		return rendered;
 	}
 
 	private helpEntries(): NavKey[] {
@@ -632,11 +734,9 @@ export class Selector<T> implements Component, Focusable {
 	}
 
 	private renderSearch(width: number): string[] {
-		const input = this.input;
-		if (!input) return [];
 		const boxWidth = Math.max(8, width - 2);
 		const field = Math.max(1, boxWidth - 4);
-		const content = input.render(field)[0] ?? "";
+		const content = this.input?.render(field)[0] ?? "";
 		const pad = " ".repeat(Math.max(0, field - visibleWidth(content)));
 		const border = this.state.getQuery() ? this.style.muted : this.style.border;
 		return [
@@ -660,7 +760,7 @@ export class Selector<T> implements Component, Focusable {
 		if (top > 0) lines.push(`  ${this.style.dim(`↑ ${top} more`)}`);
 		const numbered = this.options.numbered === true;
 		const numberWidth = numbered ? String(visible.length).length + 2 : 0;
-		const hasMarks = visible.some((item) => item.mark === "on" || item.mark === "off");
+		const hasMarks = this.state.getVisibleStats().hasRadioMarks;
 		const multi = this.state.mode === "multi";
 		const labelWidth = Math.max(...visible.slice(top, end).map((item) => visibleWidth(item.label)));
 		const twoLine = this.options.layout === "two-line";
@@ -680,7 +780,7 @@ export class Selector<T> implements Component, Focusable {
 			const tag = item.tag ? this.style.tone(item.tagTone ?? "muted", item.tag) : "";
 			const tagWidth = item.tag ? visibleWidth(item.tag) + 2 : 0;
 			const room = Math.max(1, width - indent - tagWidth - 1);
-			const label = truncateToWidth(item.label, room);
+			const label = visibleWidth(item.label) > room ? truncateToWidth(item.label, room) : item.label;
 			let line = parts.lead + parts.label(label);
 			let used = indent + visibleWidth(label);
 			if (item.description && !twoLine) {
@@ -688,7 +788,8 @@ export class Selector<T> implements Component, Focusable {
 				const gap = column - visibleWidth(label) + DESCRIPTION_GAP;
 				const descRoom = width - used - gap - tagWidth - 1;
 				if (descRoom >= MIN_DESCRIPTION_WIDTH) {
-					const description = truncateToWidth(item.description.replace(/\s+/g, " "), descRoom);
+					const text = item.description.replace(/\s+/g, " ");
+					const description = visibleWidth(text) > descRoom ? truncateToWidth(text, descRoom) : text;
 					line += " ".repeat(gap) + this.style.muted(description);
 					used += gap + visibleWidth(description);
 				}

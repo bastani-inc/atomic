@@ -446,14 +446,17 @@ Keys are the same in every picker: ↑↓ select (wrapping), pgup/pgdn page, ent
 | `mode: "multi"` | Checkboxes: space toggles, enter calls `onConfirm` with the checked rows. |
 | `numbered: true` | Rows are numbered; without a search box, digits choose a row directly. |
 | `onPreview` | Space previews the selected row; the hint shows `space preview`. |
+| `onSelectionChange` | Reports the selected row when navigation or filtering changes its identity, or `undefined` when no enabled row matches. |
 | `extraKeys` | Keys of your own, each with a hint and an `enabled(item)` check, so a key that does nothing for the selected row is not shown. |
 | `group` on items | Rows with the same group are listed under a section label (hidden while searching). |
-| `disabled` on items | Drawn dim and skipped by ↑↓. |
+| `disabled` on items | Drawn dim, skipped by ↑↓ and never chosen by enter or a mouse click. |
 | `mark` on items | `"on"`/`"off"` draw `●`/`○` for the current value; `"checked"`/`"unchecked"` draw `[✓]`/`[ ]` for a row enter switches on and off. |
 | `labelStyle` on items | Paints the label yourself, told whether the row is selected. |
 | `subtitle` | Dim text under the title; each `\n` starts a line and long lines wrap. |
 
-Without a search box, `?` shows the picker's keys and `j`/`k` move like ↓/↑. `setNotice({ text, tone })` shows a one-line status, such as a refresh result, under the list.
+Without a search box, `?` shows the picker's keys and `j`/`k` move like ↓/↑. Mouse input does not change or choose a row while this help is open. `setNotice({ text, tone })` shows a one-line status, such as a refresh result, under the list.
+
+Use `setItems()` to replace row data. When external data used by a custom `style` or an extra key's `enabled` callback changes, call `selector.invalidate()` before requesting a render. A row's `labelStyle` still runs on each render, so animated labels can update without replacing the rows.
 
 ### Pattern 1b: Selection Dialog (SelectList)
 
