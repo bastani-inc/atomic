@@ -129,12 +129,14 @@ export function selectSessionStorage(
 		return selection;
 	}
 	const agentDir = options.agentDir ?? getAgentDir();
-	const processChoice = selectProcessStorage("sessions", agentDir, cwd, options.settings);
+	let loadedSettings = options.settings;
+	const getSettings = (): Settings => (loadedSettings ??= SettingsManager.create(cwd, agentDir).getSettings());
+	const processChoice = selectProcessStorage("sessions", agentDir, cwd, options.settings ?? getSettings);
 	if (processChoice !== undefined) {
 		sources.set(processChoice.selection, { source: processChoice.source, field: processChoice.field });
 		return processChoice.selection;
 	}
-	const settings = options.settings ?? SettingsManager.create(cwd, agentDir).getSettings();
+	const settings = getSettings();
 	if (
 		settings.sessions !== undefined &&
 		(settings.sessions === null || typeof settings.sessions !== "object" || Array.isArray(settings.sessions))

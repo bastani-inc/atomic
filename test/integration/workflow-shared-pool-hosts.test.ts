@@ -232,7 +232,7 @@ async function runsFanOutThroughHostDeath(
 		for (const table of ["work", "pool", "resource_permits", "stage_workspaces", "stage_inputs", "pool_hosts"])
 			assert.ok(tables.includes(`${PREFIX}wf_runs_${table}`), table);
 		for (const host of ["A", "B"]) {
-			const state = join(s.directory, host, "workflows", "pool");
+			const state = join(s.directory, host, "agent", "workflows", "pool");
 			const databases = existsSync(state) ? readdirSync(state).filter((name) => name.endsWith(".sqlite")) : [];
 			assert.deepEqual(databases, [], `host ${host} kept no coordination database`);
 		}
@@ -301,7 +301,7 @@ test.skipIf(process.platform === "win32")(
 			"shared-pool-shipping",
 			{ SHARED_POOL_CHECKPOINT_SHIPPING: JSON.stringify({ intervalMs: 100 }) },
 			async (running) => {
-				shipped = await shippedFromLocalJournal(join(running.directory, "B", "workflows", "pool", "ship"));
+				shipped = await shippedFromLocalJournal(join(running.directory, "B", "agent", "workflows", "pool", "ship"));
 			},
 		);
 		try {
@@ -318,7 +318,7 @@ test.skipIf(process.platform === "win32")(
 					`the checkpoints host B shipped for ${work} generation ${generation} are in the shared journal`,
 				);
 			}
-			const ship = join(s.directory, "B", "workflows", "pool", "ship");
+			const ship = join(s.directory, "B", "agent", "workflows", "pool", "ship");
 			assert.deepEqual(
 				readdirSync(ship, { recursive: true, encoding: "utf8" }).filter((name) => name.endsWith(".sqlite")),
 				[],

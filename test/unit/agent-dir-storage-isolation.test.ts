@@ -1072,3 +1072,210 @@ test("relative storage target classification matches untrimmed resolvePath rules
 		await store2.close();
 	}
 });
+
+test("process-level domain selection without explicit options.settings loads merged project settings before settling adoption (#5242)", async () => {
+	const parent1 = join(root, "lazy-merged-1");
+	const a1 = join(parent1, "a1");
+	const a2 = join(parent1, "a2");
+	const trustedProj1 = join(root, "lazy-proj-1");
+	mkdirSync(a1, { recursive: true });
+	mkdirSync(a2, { recursive: true });
+	mkdirSync(join(trustedProj1, ".atomic"), { recursive: true });
+	writeFileSync(
+		join(trustedProj1, ".atomic", "settings.json"),
+		JSON.stringify({ workflows: { journal: { path: "team.sqlite" } } }),
+	);
+	new ProjectTrustStore(a1).set(trustedProj1, true);
+	new ProjectTrustStore(a2).set(trustedProj1, true);
+
+	const seededJournal = await resolveRunJournal({
+		agentDir: a1,
+		journal: { path: join(parent1, "team.sqlite") },
+	});
+	try {
+		assert.equal(
+			await seededJournal.createRun({
+				runId: "run-lazy-1",
+				name: "wf",
+				cwd: trustedProj1,
+				createdAt: 1,
+				status: "running",
+			}),
+			"created",
+		);
+	} finally {
+		await seededJournal.close();
+	}
+	resetStorageHomeCacheForTests();
+
+	vi.stubEnv("ATOMIC_SESSIONS_STORAGE", "{}");
+	const a1Sessions = await resolveSessionStore(trustedProj1, { agentDir: a1 });
+	await a1Sessions.close();
+	const a1Journal = await resolveRunJournal({
+		agentDir: a1,
+		settings: SettingsManager.create(trustedProj1, a1).getSettings(),
+	});
+	const a2Journal = await resolveRunJournal({
+		agentDir: a2,
+		settings: SettingsManager.create(trustedProj1, a2).getSettings(),
+	});
+	try {
+		assert.deepEqual(
+			(await a1Journal.listRuns()).map((run) => run.runId),
+			["run-lazy-1"],
+		);
+		assert.deepEqual(await a2Journal.listRuns(), []);
+	} finally {
+		await a1Journal.close();
+		await a2Journal.close();
+		vi.stubEnv("ATOMIC_SESSIONS_STORAGE", "");
+	}
+
+	const parent2 = join(root, "lazy-merged-2");
+	const b1 = join(parent2, "b1");
+	const trustedProj2 = join(root, "lazy-proj-2");
+	mkdirSync(b1, { recursive: true });
+	mkdirSync(join(trustedProj2, ".atomic"), { recursive: true });
+	writeFileSync(
+		join(trustedProj2, ".atomic", "settings.json"),
+		JSON.stringify({ sessions: { storage: { path: "team.sqlite" } } }),
+	);
+	new ProjectTrustStore(b1).set(trustedProj2, true);
+	writeFileSync(join(parent2, "team.sqlite"), "");
+	resetStorageHomeCacheForTests();
+
+	const originalCwd = process.cwd();
+	try {
+		process.chdir(trustedProj2);
+		vi.stubEnv("ATOMIC_WORKFLOWS_JOURNAL", "{}");
+		assert.deepEqual(selectRunJournal({ agentDir: b1 }), {
+			kind: "sharded",
+			dir: join(parent2, "workflows", "journal"),
+		});
+		assert.deepEqual(selectSessionStorage(trustedProj2, { agentDir: b1 }), {
+			kind: "sqlite",
+			path: join(parent2, "team.sqlite"),
+		});
+	} finally {
+		vi.stubEnv("ATOMIC_WORKFLOWS_JOURNAL", "");
+		process.chdir(originalCwd);
+	}
+});
+
+test("user workflow resource discovery preserves nested runs, pool, and journal files before an unclaimed parent store is adopted (#5242)", async () => {
+	const parent1 = join(root, "preadopt-resource-1");
+	const a1 = join(parent1, "a1");
+	const topFlow = join(a1, "workflows", "top.ts");
+	const nestedFlow = join(a1, "workflows", "runs", "my-user-flow.ts");
+	mkdirSync(join(parent1, "workflows"), { recursive: true });
+	writeFileSync(join(parent1, "workflows", "journal.sqlite"), "");
+	mkdirSync(join(a1, "workflows", "runs"), { recursive: true });
+	writeFileSync(topFlow, "export default {};\n");
+	writeFileSync(nestedFlow, "export default {};\n");
+
+	vi.stubEnv("ATOMIC_CODING_AGENT_DIR", a1);
+	const manager1 = new DefaultPackageManager({
+		cwd: project,
+		agentDir: a1,
+		settingsManager: SettingsManager.create(project, a1),
+	});
+	const resolved1 = await manager1.resolve();
+	const paths1 = resolved1.workflows.map((entry) => entry.path);
+	assert.equal(paths1.includes(topFlow), true);
+	assert.equal(paths1.includes(nestedFlow), true);
+	assert.equal(existsSync(join(parent1, "workflows", ".adopted-by")), false);
+
+	const parent2 = join(root, "preadopt-resource-2");
+	const b1 = join(parent2, "b1");
+	const projFlow = join(b1, "workflows", "runs", "proj-user-flow.ts");
+	const trustedProj = join(root, "preadopt-proj");
+	mkdirSync(join(b1, "workflows", "runs"), { recursive: true });
+	writeFileSync(projFlow, "export default {};\n");
+	writeFileSync(join(parent2, "team.sqlite"), "");
+	mkdirSync(join(trustedProj, ".atomic"), { recursive: true });
+	writeFileSync(join(trustedProj, ".atomic", "settings.json"), JSON.stringify({ storage: { path: "team.sqlite" } }));
+	new ProjectTrustStore(b1).set(trustedProj, true);
+
+	vi.stubEnv("ATOMIC_CODING_AGENT_DIR", b1);
+	const manager2 = new DefaultPackageManager({
+		cwd: trustedProj,
+		agentDir: b1,
+		settingsManager: SettingsManager.create(trustedProj, b1),
+	});
+	const resolved2 = await manager2.resolve();
+	assert.equal(
+		resolved2.workflows.some((entry) => entry.path === projFlow),
+		true,
+	);
+	assert.equal(existsSync(join(parent2, "workflows", ".adopted-by")), false);
+});
+
+test("a nonexistent or empty sibling directory never claims an existing parent store ahead of a sibling with prior agent-directory state, while a sole nonexistent directory still adopts (#5242)", async () => {
+	const parent = join(root, "prior-use-parent");
+	const oldProfile = join(parent, "old");
+	const emptyNew = join(parent, "empty-new");
+	const nonexistentNew = join(parent, "brand-new");
+	mkdirSync(oldProfile, { recursive: true });
+	mkdirSync(emptyNew, { recursive: true });
+
+	const seeded = await resolveSessionStore(project, {
+		agentDir: oldProfile,
+		sessionStore: { kind: "sqlite", path: join(parent, "workflows", "journal.sqlite") },
+	});
+	try {
+		await seeded.create(
+			{
+				id: "dddddddd-4444-4444-8444-444444444444",
+				version: 4,
+				createdAt: "2026-11-16T00:00:00.000Z",
+				cwd: project,
+			},
+			[],
+		);
+	} finally {
+		await seeded.close();
+	}
+	writeFileSync(join(oldProfile, "settings.json"), "{}\n");
+	rmSync(join(parent, "workflows", ".adopted-by"), { force: true });
+	resetStorageHomeCacheForTests();
+
+	const brandNewStatus = await collectStorageStatus({ cwd: project, agentDir: nonexistentNew, probe: false });
+	assert.equal(
+		brandNewStatus.domains.find((entry) => entry.domain === "sessions")?.selection,
+		`SQLite ${join(nonexistentNew, "workflows", "journal.sqlite")}`,
+	);
+	assert.deepEqual(brandNewStatus.notes, []);
+	assert.equal(existsSync(nonexistentNew), false);
+	assert.equal(existsSync(join(parent, "workflows", ".adopted-by")), false);
+
+	const emptyNewStatus = await collectStorageStatus({ cwd: project, agentDir: emptyNew, probe: false });
+	assert.equal(
+		emptyNewStatus.domains.find((entry) => entry.domain === "sessions")?.selection,
+		`SQLite ${join(emptyNew, "workflows", "journal.sqlite")}`,
+	);
+	assert.deepEqual(emptyNewStatus.notes, []);
+	assert.equal(existsSync(join(parent, "workflows", ".adopted-by")), false);
+
+	const oldStatus = await collectStorageStatus({ cwd: project, agentDir: oldProfile, probe: true });
+	assert.equal(
+		oldStatus.domains.find((entry) => entry.domain === "sessions")?.selection,
+		`SQLite ${join(parent, "workflows", "journal.sqlite")}`,
+	);
+	assert.ok(oldStatus.notes.some((note) => /Adopted existing storage/.test(note)));
+
+	const oldStore = await resolveSessionStore(project, { agentDir: oldProfile, settings: {} });
+	try {
+		assert.equal(
+			(await oldStore.readHeader("dddddddd-4444-4444-8444-444444444444"))?.id,
+			"dddddddd-4444-4444-8444-444444444444",
+		);
+	} finally {
+		await oldStore.close();
+	}
+
+	const soleParent = join(root, "sole-nonexistent-parent");
+	const soleNonexistent = join(soleParent, "nonexistent");
+	mkdirSync(join(soleParent, "workflows"), { recursive: true });
+	writeFileSync(join(soleParent, "workflows", "journal.sqlite"), "");
+	assert.equal(storageHomeDir(soleNonexistent), soleParent);
+});

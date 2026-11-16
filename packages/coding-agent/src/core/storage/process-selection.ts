@@ -156,15 +156,24 @@ export function selectProcessStorage(
 	domain: StorageDomain,
 	agentDir: string,
 	cwd = process.cwd(),
-	settings?: StorageHomeSettings,
+	settings?: StorageHomeSettings | (() => StorageHomeSettings | undefined),
 ): ProcessStorageChoice | undefined {
 	const legacyField = domain === "sessions" ? ENV_SESSION_DIR : WORKFLOW_JOURNAL_PATH_ENV;
 	const legacy = environmentValue(legacyField);
 	const validated = environmentChoices(agentDir, false);
-	const baseDir = () => storageHomeDir(agentDir, settings);
-	const domainDefault = () => defaultSessionDatabasePath(agentDir, settings);
-	const sharedDefault = () => defaultSharedStoragePath(agentDir, settings);
-	const journalDefault = () => defaultJournalStoreDirectory(agentDir, settings);
+	let resolvedSettings: StorageHomeSettings | undefined;
+	let hasResolvedSettings = typeof settings !== "function";
+	const getSettings = (): StorageHomeSettings | undefined => {
+		if (!hasResolvedSettings) {
+			resolvedSettings = (settings as () => StorageHomeSettings | undefined)();
+			hasResolvedSettings = true;
+		}
+		return typeof settings === "function" ? resolvedSettings : settings;
+	};
+	const baseDir = () => storageHomeDir(agentDir, getSettings());
+	const domainDefault = () => defaultSessionDatabasePath(agentDir, getSettings());
+	const sharedDefault = () => defaultSharedStoragePath(agentDir, getSettings());
+	const journalDefault = () => defaultJournalStoreDirectory(agentDir, getSettings());
 	const resolveEnv = (
 		field: string,
 		schema: typeof SessionStorageSelectionSchema | typeof StorageSelectionSchema,

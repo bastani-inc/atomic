@@ -230,7 +230,8 @@ export async function addAutoDiscoveredResources(
 			await collectResourceFiles(
 				join(configDir, "workflows"),
 				"workflows",
-				metadata.configurationOrigin === "atomic" && coLocatesWorkflowStore(configDir)
+				metadata.configurationOrigin === "atomic" &&
+					coLocatesWorkflowStore(configDir, context.settingsManager.getSettings())
 					? USER_WORKFLOW_STORE_DIRS
 					: undefined,
 			),

@@ -1,5 +1,5 @@
 import { isAbsolute, join } from "node:path";
-import { getAgentDir, selectProcessStorage } from "@bastani/atomic";
+import { getAgentDir, SettingsManager, selectProcessStorage } from "@bastani/atomic";
 import {
 	defaultJournalStoreDirectory,
 	defaultSessionDatabasePath,
@@ -97,7 +97,12 @@ export function selectRunJournal(options: RunJournalResolutionOptions = {}): Sto
 			defaultSessionDatabasePath(agentDir, options.settings),
 		);
 	}
-	const processChoice = selectProcessStorage("journal", agentDir, undefined, options.settings);
+	const processChoice = selectProcessStorage(
+		"journal",
+		agentDir,
+		undefined,
+		options.settings ?? (() => SettingsManager.create(process.cwd(), agentDir).getSettings()),
+	);
 	if (processChoice !== undefined) {
 		origins.set(processChoice.selection, { source: processChoice.source, field: processChoice.field });
 		return processChoice.selection;
