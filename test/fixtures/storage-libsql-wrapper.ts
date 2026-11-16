@@ -1,3 +1,4 @@
+import { createRequire } from "node:module";
 import type { Client, Transaction } from "@libsql/client";
 import {
 	createSqliteDatabase,
@@ -35,6 +36,46 @@ function urlCredentials(url: string): string[] {
 	return secrets;
 }
 
+const closesOnce = Symbol.for("@bastani/atomic-storage-libsql.closesOnce");
+
+interface LibsqlConnection {
+	open: boolean;
+	close(): void;
+	prepare(sql: string): object;
+}
+
+interface LibsqlConnectionClass {
+	prototype: LibsqlConnection & { [closesOnce]?: true };
+}
+
+const statementsHeldWhileClosing = new Set<object>();
+
+function statementHoldingConnection(connection: LibsqlConnection): object | undefined {
+	if (!connection.open) return undefined;
+	try {
+		return connection.prepare("SELECT 1");
+	} catch {
+		return undefined;
+	}
+}
+
+function closeEachConnectionOnce(): void {
+	const client = createRequire(import.meta.url).resolve("@libsql/client");
+	const Connection = createRequire(client)("libsql") as LibsqlConnectionClass;
+	if (Connection.prototype[closesOnce]) return;
+	const close = Connection.prototype.close;
+	Connection.prototype.close = function (this: LibsqlConnection) {
+		const statement = statementHoldingConnection(this);
+		if (statement) statementsHeldWhileClosing.add(statement);
+		try {
+			close.call(this);
+		} finally {
+			if (statement) statementsHeldWhileClosing.delete(statement);
+		}
+	};
+	Connection.prototype[closesOnce] = true;
+}
+
 function statements(connection: () => Client | Transaction): SqliteDriverExecutor {
 	return {
 		async execute(sql, params) {
@@ -49,6 +90,7 @@ export async function openLibsqlDatabase({ url, authToken }: LibsqlDatabaseOptio
 	let createClient: typeof import("@libsql/client").createClient;
 	try {
 		({ createClient } = await import("@libsql/client"));
+		closeEachConnectionOnce();
 	} catch (cause) {
 		throw new StorageAdapterLoadError("@libsql/client", cause as StorageFailureCause);
 	}
