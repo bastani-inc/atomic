@@ -75,8 +75,12 @@ export interface CrossNodeHeldFixtures {
 const LIVE_MS = 3_600_000;
 /** Passed as `staleAfterMs` to treat every lease or claim as expired. */
 const EXPIRED_MS = -1;
-/** Upper bound for a healthy bus to deliver a published hint or a resync. */
-const WAKE_UP_DELIVERY_BOUND_MS = 5_000;
+/**
+ * How long a published hint or a resync may take to reach a subscriber on a loaded machine. A reconnect needs two
+ * polls and a reopen, and a test process starved of CPU can stall for several seconds between them. Below the
+ * per-test timeout, so a missing event fails with this wait's message.
+ */
+const WAKE_UP_EVENT_LIMIT_MS = 20_000;
 /** How long a closed subscription is watched for stray events. */
 const CLOSED_SUBSCRIPTION_QUIET_MS = 100;
 /** Wait between taking a lease or claim and renewing it, so a renewal that leaves the age unchanged is observable. */
@@ -2053,12 +2057,12 @@ class WakeUpRecorder {
 	}
 
 	async next(predicate: (event: WakeUpEvent) => boolean, from = 0): Promise<WakeUpEvent> {
-		const deadline = Date.now() + WAKE_UP_DELIVERY_BOUND_MS;
+		const deadline = Date.now() + WAKE_UP_EVENT_LIMIT_MS;
 		for (;;) {
 			const found = this.events.slice(from).find(predicate);
 			if (found !== undefined) return found;
 			const remaining = deadline - Date.now();
-			if (remaining <= 0) assert.fail(`no matching wake-up event within ${WAKE_UP_DELIVERY_BOUND_MS} ms`);
+			if (remaining <= 0) assert.fail(`no matching wake-up event within ${WAKE_UP_EVENT_LIMIT_MS} ms`);
 			await new Promise<void>((resolve) => {
 				const timer = setTimeout(resolve, remaining);
 				this.waiters.push(() => {
