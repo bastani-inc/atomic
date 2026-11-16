@@ -53,6 +53,28 @@ struct WindowsLaunch {
 pub(super) fn raw(handle: &impl AsRawHandle) -> HANDLE {
 	handle.as_raw_handle()
 }
+fn finish_stdin_writer(
+	stop_input: &AtomicBool,
+	writer: std::thread::JoinHandle<()>,
+	writer_done: &std::sync::mpsc::Receiver<()>,
+	timeout: Duration,
+) -> (Option<std::thread::JoinHandle<()>>, Option<String>) {
+	let deadline = Instant::now() + timeout;
+	stop_input.store(true, Ordering::Release);
+	writer.thread().unpark();
+	let _ = writer_done.recv_timeout(deadline.saturating_duration_since(Instant::now()));
+	while !writer.is_finished() && Instant::now() < deadline {
+		std::thread::yield_now();
+	}
+	let mut writer = Some(writer);
+	if writer.as_ref().unwrap().is_finished() {
+		let failure =
+			writer.take().unwrap().join().err().map(|_| "Windows stdin worker panicked".into());
+		(None, failure)
+	} else {
+		(writer, Some("Windows stdin worker stop was not confirmed".into()))
+	}
+}
 struct RetainedWindows {
 	resource: WindowsProcess,
 	writer: Option<std::thread::JoinHandle<()>>,
@@ -409,7 +431,9 @@ impl Actor {
 		let stop_input = Arc::new(AtomicBool::new(false));
 		let stopped = stop_input.clone();
 		let input_command = command.clone();
+		let (writer_done_tx, writer_done_rx) = std::sync::mpsc::channel();
 		let writer = std::thread::Builder::new().name("task-stdin".into()).spawn(move || {
+			let writer_done = writer_done_tx;
 			let mut stdin = Some(stdin);
 			while !stopped.load(Ordering::Acquire) {
 				input_command.input.lock().unwrap().drain(&mut stdin);
@@ -418,6 +442,8 @@ impl Actor {
 				}
 			}
 			input_command.input.lock().unwrap().close();
+			drop(stdin);
+			let _ = writer_done.send(());
 		});
 		let writer = match writer {
 			Ok(writer) => writer,
@@ -536,6 +562,8 @@ impl Actor {
 				&& !cancelling
 				&& failure.is_none()
 			{
+				stop_input.store(true, Ordering::Release);
+				writer.thread().unpark();
 				for _ in 0..16 {
 					let before = command.output.lock().unwrap().byte_count;
 					for result in [
@@ -612,19 +640,10 @@ impl Actor {
 		if !preserved_background {
 			let _ = resource.kill();
 		}
-		stop_input.store(true, Ordering::Release);
-		writer.thread().unpark();
-		let input_deadline = Instant::now() + PROCESS_DRAIN_GRACE;
-		while !writer.is_finished() && Instant::now() < input_deadline {
-			std::thread::sleep(PROCESS_POLL);
-		}
-		let mut writer = Some(writer);
-		if writer.as_ref().unwrap().is_finished() {
-			if writer.take().unwrap().join().is_err() {
-				failure = Some("Windows stdin worker panicked".into());
-			}
-		} else {
-			failure = Some("Windows stdin worker stop was not confirmed".into());
+		let (writer, writer_failure) =
+			finish_stdin_writer(&stop_input, writer, &writer_done_rx, PROCESS_DRAIN_GRACE);
+		if let Some(error) = writer_failure {
+			failure = Some(error);
 		}
 		// A reader can finish during the final reaped() probe; preserve its error too.
 		if let Some(pty) = &mut resource.pty
@@ -761,6 +780,88 @@ mod tests {
 		assert_eq!(actor.cancel(&task, CancelCause::User).unwrap().cleanup, Cleanup::Reaped {});
 		actor.shutdown();
 		std::fs::remove_file(identities).unwrap();
+	}
+	#[test]
+	fn stdin_writer_completion_notifies_without_poll_delay_and_bounds_blocked_worker_5202() {
+		let mut durations = Vec::new();
+		for _ in 0..5 {
+			let stop_input = Arc::new(AtomicBool::new(false));
+			let stopped = stop_input.clone();
+			let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+			let (done_tx, done_rx) = std::sync::mpsc::channel();
+			let writer = std::thread::spawn(move || {
+				ready_tx.send(()).unwrap();
+				while !stopped.load(Ordering::Acquire) {
+					std::thread::park_timeout(Duration::from_secs(5));
+				}
+				let _ = done_tx.send(());
+			});
+			ready_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+			let started = Instant::now();
+			let (retained, failure) =
+				finish_stdin_writer(&stop_input, writer, &done_rx, PROCESS_DRAIN_GRACE);
+			assert!(retained.is_none());
+			assert!(failure.is_none());
+			durations.push(started.elapsed());
+		}
+		durations.sort();
+		assert!(
+			durations[2] < PROCESS_POLL,
+			"median writer completion {:?} >= {:?}",
+			durations[2],
+			PROCESS_POLL
+		);
+
+		let stop_panic = Arc::new(AtomicBool::new(false));
+		let (panic_done_tx, panic_done_rx) = std::sync::mpsc::channel();
+		let panic_writer = std::thread::spawn(move || {
+			let _done = panic_done_tx;
+			panic!("stdin fixture panic");
+		});
+		let (retained, failure) =
+			finish_stdin_writer(&stop_panic, panic_writer, &panic_done_rx, PROCESS_DRAIN_GRACE);
+		assert!(retained.is_none());
+		assert_eq!(failure.as_deref(), Some("Windows stdin worker panicked"));
+
+		let stop_blocked = Arc::new(AtomicBool::new(false));
+		let (release_tx, release_rx) = std::sync::mpsc::channel();
+		let (blocked_done_tx, blocked_done_rx) = std::sync::mpsc::channel();
+		let blocked_writer = std::thread::spawn(move || {
+			let _done = blocked_done_tx;
+			let _ = release_rx.recv_timeout(Duration::from_secs(1));
+		});
+		let started = Instant::now();
+		let (retained, failure) = finish_stdin_writer(
+			&stop_blocked,
+			blocked_writer,
+			&blocked_done_rx,
+			Duration::from_millis(10),
+		);
+		assert!(started.elapsed() < Duration::from_millis(500));
+		assert!(retained.is_some());
+		assert_eq!(failure.as_deref(), Some("Windows stdin worker stop was not confirmed"));
+		release_tx.send(()).unwrap();
+		retained.unwrap().join().unwrap();
+
+		let stop_stalled = Arc::new(AtomicBool::new(false));
+		let (stall_release_tx, stall_release_rx) = std::sync::mpsc::channel();
+		let (stall_done_tx, stall_done_rx) = std::sync::mpsc::channel();
+		let stalled_writer = std::thread::spawn(move || {
+			drop(stall_done_tx);
+			let _ = stall_release_rx.recv_timeout(Duration::from_secs(1));
+		});
+		let started = Instant::now();
+		let (retained, failure) = finish_stdin_writer(
+			&stop_stalled,
+			stalled_writer,
+			&stall_done_rx,
+			Duration::from_millis(10),
+		);
+		assert!(started.elapsed() < Duration::from_millis(500));
+		assert!(retained.is_some());
+		assert_eq!(failure.as_deref(), Some("Windows stdin worker stop was not confirmed"));
+		stall_release_tx.send(()).unwrap();
+		retained.unwrap().join().unwrap();
 	}
 }
 

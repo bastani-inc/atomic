@@ -38,6 +38,10 @@ const INHERITED_LOCKS_ENV = "ATOMIC_NAMED_WORKTREE_LOCKS";
 const commonDirectories = new Map<string, string>();
 const CONCURRENT_GIT_FAILURE =
 	/(?:^|\n)(?:(?:fatal|error): )?(?:failed to read ['"][^\n]*[/\\]locked['"]|(?:Unable to create|cannot lock ref)[^\n]*\.lock['"]?: File exists|another git process seems to be running|cannot lock references)/i;
+const SIBLING_REGISTRATION_FAILURE =
+	/^fatal: failed to read ['"]?([^\r\n]+?[/\\]worktrees[/\\][^/\\\r\n]+[/\\]commondir)['"]?: (?:No such file or directory|No error)\r?$/m;
+const SIBLING_REGISTRATION_ATTEMPTS = 5;
+const SIBLING_REGISTRATION_WAIT_MS = 1_000;
 const CONCURRENT_ADD_FAILURE = /already exists|already checked out|already used by worktree|is a missing but/i;
 
 class GitFailure extends Error {}
@@ -409,6 +413,42 @@ function withAgentCwd(worktreePath: string, cwdRelative: string): string {
 	return fs.existsSync(nested) ? nested : worktreePath;
 }
 
+function siblingRegistrationEntry(
+	repo: string,
+	commonDir: string,
+	worktreePath: string,
+	message: string,
+): string | undefined {
+	const metadata = message.match(SIBLING_REGISTRATION_FAILURE)?.[1];
+	if (metadata === undefined) return undefined;
+	const entry = path.dirname(path.resolve(repo, metadata));
+	if (comparablePath(path.dirname(entry)) !== comparablePath(path.join(commonDir, "worktrees"))) return undefined;
+	const name = path.basename(comparablePath(entry));
+	if (name === path.basename(comparablePath(worktreePath))) return undefined;
+	return path.basename(entry);
+}
+
+function addWasCleanedUp(commonDir: string, worktreePath: string, siblingEntry: string): boolean {
+	if (fs.existsSync(worktreePath) && !isEmptyDirectory(worktreePath)) return false;
+	const entriesDir = path.join(commonDir, "worktrees");
+	if (!fs.existsSync(entriesDir)) return true;
+	const target = comparablePath(path.join(worktreePath, ".git"));
+	try {
+		for (const name of fs.readdirSync(entriesDir)) {
+			const entry = path.join(entriesDir, name);
+			try {
+				const gitFile = fs.readFileSync(path.join(entry, "gitdir"), "utf8").trim();
+				if (comparablePath(path.resolve(entry, gitFile)) === target) return false;
+			} catch {
+				if (name !== siblingEntry) return false;
+			}
+		}
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 export async function ensureNamedWorktree(
 	cwd: string,
 	request: NamedWorktreeRequest,
@@ -475,8 +515,18 @@ export async function ensureNamedWorktree(
 					gitChecked(worktreePath, ["rev-parse", "--verify", "HEAD^{commit}"]).trim(),
 				),
 			});
-			let addFailure: { message: string; diagnostic: string; branchExisted: boolean } | undefined;
-			let baseCommit: string | undefined;
+			let addFailure:
+				| {
+						message: string;
+						diagnostic: string;
+						branchExisted: boolean;
+						retrySibling?: boolean;
+						siblingEntry?: string;
+				  }
+				| undefined;
+			let startPoint: string | undefined;
+			let siblingFailures = 0;
+			let siblingDeadline = Number.POSITIVE_INFINITY;
 			for (;;) {
 				options.signal?.throwIfAborted();
 				if (fs.existsSync(addingMarker)) {
@@ -484,6 +534,11 @@ export async function ensureNamedWorktree(
 					if (incomplete !== undefined) throw new WorktreeBusyError(worktreePath, incomplete, true);
 					fs.rmSync(addingMarker, { force: true });
 				}
+				if (
+					addFailure?.retrySibling === false ||
+					(addFailure?.retrySibling === true && performance.now() >= siblingDeadline)
+				)
+					throw failed(checkingOut, new GitFailure(addFailure.message));
 				let decision = await retried(checkingOut, () => decideWorktree(repo, commonDir, branch, worktreePath));
 				if (decision.kind === "wait" && !waiting())
 					decision = await retried(checkingOut, () => decideWorktree(repo, commonDir, branch, worktreePath));
@@ -497,19 +552,33 @@ export async function ensureNamedWorktree(
 				const branchExists = runGit(repo, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]).status === 0;
 				if (
 					addFailure !== undefined &&
+					addFailure.retrySibling !== true &&
 					(!waiting() ||
 						(!CONCURRENT_GIT_FAILURE.test(addFailure.diagnostic) &&
 							(branchExists === addFailure.branchExisted ||
 								!CONCURRENT_ADD_FAILURE.test(addFailure.diagnostic))))
 				)
 					throw failed(checkingOut, new GitFailure(addFailure.message));
-				if (!branchExists && baseCommit === undefined) {
-					const base = request.base ?? defaultBase(cwd);
-					baseCommit = await retried(`${checkingOut}: invalid reference: ${base}`, () =>
-						gitChecked(repo, ["rev-parse", "--verify", "--end-of-options", `${base}^{commit}`]).trim(),
-					);
+				if (!branchExists && startPoint === undefined) {
+					startPoint =
+						request.base === undefined
+							? defaultBase(cwd)
+							: await retried(`${checkingOut}: invalid reference: ${request.base}`, () =>
+									gitChecked(repo, [
+										"rev-parse",
+										"--verify",
+										"--end-of-options",
+										`${request.base}^{commit}`,
+									]).trim(),
+								);
 				}
 				if (defaultPath) await retried(checkingOut, () => ensureWorktreeIgnore(repo));
+				if (
+					addFailure?.retrySibling === true &&
+					(performance.now() >= siblingDeadline ||
+						!addWasCleanedUp(commonDir, worktreePath, addFailure.siblingEntry ?? ""))
+				)
+					throw failed(checkingOut, new GitFailure(addFailure.message));
 				fs.writeFileSync(addingMarker, "", { mode: 0o600 });
 				let added: Awaited<ReturnType<typeof addNamedWorktree>>;
 				try {
@@ -517,7 +586,7 @@ export async function ensureNamedWorktree(
 						repo,
 						branchExists
 							? ["worktree", "add", worktreePath, branch]
-							: ["worktree", "add", "--no-track", "-b", branch, worktreePath, baseCommit!],
+							: ["worktree", "add", "--no-track", "-b", branch, worktreePath, startPoint!],
 						env,
 						options.signal,
 					);
@@ -534,9 +603,22 @@ export async function ensureNamedWorktree(
 					(text, operand) => text.replaceAll(operand.replaceAll("\\", "/"), "<path>"),
 					message.replaceAll("\\", "/"),
 				);
-				addFailure = { message, diagnostic, branchExisted: branchExists };
-				if (CONCURRENT_GIT_FAILURE.test(diagnostic) || CONCURRENT_ADD_FAILURE.test(diagnostic))
-					await sleep(CONCURRENT_ADD_POLL_MS, options.signal);
+				const siblingEntry = siblingRegistrationEntry(repo, commonDir, worktreePath, message);
+				if (siblingEntry !== undefined) {
+					if (siblingFailures === 0) siblingDeadline = performance.now() + SIBLING_REGISTRATION_WAIT_MS;
+					siblingFailures++;
+					const backoff = Math.min(20 * 2 ** (siblingFailures - 1), 200);
+					const retrySibling =
+						siblingFailures < SIBLING_REGISTRATION_ATTEMPTS &&
+						performance.now() + backoff < siblingDeadline &&
+						addWasCleanedUp(commonDir, worktreePath, siblingEntry);
+					addFailure = { message, diagnostic, branchExisted: branchExists, retrySibling, siblingEntry };
+					if (retrySibling) await sleep(backoff, options.signal);
+				} else {
+					addFailure = { message, diagnostic, branchExisted: branchExists };
+					if (CONCURRENT_GIT_FAILURE.test(diagnostic) || CONCURRENT_ADD_FAILURE.test(diagnostic))
+						await sleep(CONCURRENT_ADD_POLL_MS, options.signal);
+				}
 			}
 		});
 	} catch (error) {

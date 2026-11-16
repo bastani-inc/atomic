@@ -8,6 +8,10 @@
 - Added `CommandResourceOptions.keepBackgroundOnExit`: when `true`, `TaskSupervisor.startCommandTask` leaves backgrounded descendant processes running when the command leader exits on its own; cancellation, owner close, or host exit still terminates the tree while the leader is running. Added `retainRecordOnStart` to keep a command's record and output available until `releaseTaskRecord`, including when many commands finish before the caller can read their results ([#5202](https://github.com/bastani-inc/atomic/issues/5202)).
 - Added `processCreationTime(pid)`: on Windows, the creation time of a running process, as the decimal count of 100-nanosecond intervals since 1601 UTC; `null` for a process that is gone or cannot be queried, and on other platforms ([#5141](https://github.com/bastani-inc/atomic/issues/5141)).
 
+### Fixed
+
+- Supervised commands on Windows no longer wait for a polling interval after their input worker finishes; stalled workers still have a bounded cleanup wait ([#5202](https://github.com/bastani-inc/atomic/issues/5202)).
+
 ## [0.9.72] - 2026-11-08
 
 ### Added

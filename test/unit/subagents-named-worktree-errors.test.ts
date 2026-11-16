@@ -15,6 +15,7 @@ import { pathToFileURL } from "node:url";
 import { afterEach, test, vi } from "vitest";
 import { createGitEnvironment } from "../../packages/coding-agent/src/utils/git-env.js";
 import { ensureNamedWorktree } from "../../packages/subagents/src/runs/shared/named-worktree.js";
+import * as namedWorktreeGit from "../../packages/subagents/src/runs/shared/named-worktree-git.js";
 import * as worktreeGit from "../../packages/subagents/src/runs/shared/worktree.js";
 import { bunExecutable, moduleDir, spawnSyncCollect } from "../helpers/runtime.js";
 
@@ -140,6 +141,92 @@ test("reftable reference contention is retried before creating a named worktree 
 	const result = await ensureNamedWorktree(repo, { branch: "feat/reftable" });
 	assert.equal(attempts, 2);
 	assert.equal(git(result.path, "branch", "--show-current"), "feat/reftable");
+});
+
+for (const missingDetail of ["No error", "No such file or directory"]) {
+	test(`an add retries another worktree's missing commondir (${missingDetail}) without recreating that worktree (#5202)`, async () => {
+		const repo = makeRepo();
+		const realAdd = namedWorktreeGit.addNamedWorktree;
+		let attempts = 0;
+		vi.spyOn(namedWorktreeGit, "addNamedWorktree").mockImplementation((cwd, args, env, signal) => {
+			if (++attempts === 1)
+				return Promise.resolve({
+					status: 128,
+					stdout: "",
+					stderr: `fatal: failed to read .git/worktrees/another-target/commondir: ${missingDetail}\n`,
+				});
+			return realAdd(cwd, args, env, signal);
+		});
+		const created = await ensureNamedWorktree(repo, { branch: "feat/commondir-race" });
+		assert.equal(attempts, 2);
+		assert.equal(git(created.path, "branch", "--show-current"), "feat/commondir-race");
+		assert.equal(git(created.path, "status", "--porcelain"), "");
+	});
+}
+
+test("a persistent sibling commondir error stops within five adds and never retries a populated target (#5202)", async () => {
+	const repo = makeRepo();
+	let attempts = 0;
+	const errorText = "fatal: failed to read .git/worktrees/another-target/commondir: No error\n";
+	const add = vi.spyOn(namedWorktreeGit, "addNamedWorktree").mockImplementation(async () => {
+		attempts++;
+		return { status: 128, stdout: "", stderr: errorText };
+	});
+	await assert.rejects(ensureNamedWorktree(repo, { branch: "feat/persistent-commondir" }), /failed to read/);
+	assert.ok(attempts >= 1 && attempts <= 5, `expected at most five adds, got ${attempts}`);
+
+	attempts = 0;
+	const target = join(repo, "partial-checkout");
+	add.mockImplementation(async () => {
+		attempts++;
+		mkdirSync(target);
+		writeFileSync(join(target, "keep.txt"), "not yet checked out\n");
+		return { status: 128, stdout: "", stderr: errorText };
+	});
+	await assert.rejects(
+		ensureNamedWorktree(repo, { branch: "feat/partial-commondir", path: target }),
+		/failed to read/,
+	);
+	assert.equal(attempts, 1);
+	assert.equal(readFileSync(join(target, "keep.txt"), "utf8"), "not yet checked out\n");
+});
+
+test("an add does not retry if Git left its own admin entry behind even when the target is absent (#5202)", async () => {
+	const repo = makeRepo();
+	const target = join(repo, "unregistered-target");
+	const entry = join(repo, ".git", "worktrees", "own-still-registered");
+	let attempts = 0;
+	vi.spyOn(namedWorktreeGit, "addNamedWorktree").mockImplementation(async () => {
+		attempts++;
+		mkdirSync(entry, { recursive: true });
+		writeFileSync(join(entry, "gitdir"), `${join(target, ".git")}\n`);
+		return {
+			status: 128,
+			stdout: "",
+			stderr: "fatal: failed to read .git/worktrees/another-target/commondir: No error\n",
+		};
+	});
+	await assert.rejects(ensureNamedWorktree(repo, { branch: "feat/retained-admin", path: target }), /failed to read/);
+	assert.equal(attempts, 1);
+	assert.equal(existsSync(target), false);
+	assert.equal(readFileSync(join(entry, "gitdir"), "utf8").trim(), join(target, ".git"));
+});
+
+test("commondir errors for our own entry or a different repository are not retried (#5202)", async () => {
+	const repo = makeRepo();
+	for (const metadata of [
+		".git/worktrees/feat+our-commondir/commondir",
+		join(repo, "..", "unrelated.git", "worktrees", "another-target", "commondir"),
+	]) {
+		let attempts = 0;
+		vi.spyOn(namedWorktreeGit, "addNamedWorktree").mockImplementation(async () => {
+			attempts++;
+			return { status: 128, stdout: "", stderr: `fatal: failed to read ${metadata}: No error\n` };
+		});
+		await assert.rejects(ensureNamedWorktree(repo, { branch: "feat/our-commondir" }), /failed to read/);
+		assert.equal(attempts, 1);
+		vi.restoreAllMocks();
+	}
 });
 
 test("named-worktree reuse resolves each repository's common directory once and refreshes a missing cached directory (#5202)", async () => {
