@@ -33,6 +33,7 @@ import { runIndicatorStatus } from "../shared/run-indicator-status.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import type { RunSnapshot, StageSnapshot, StoreSnapshot } from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
+import { boundedToolTitleText, TOOL_PAYLOAD_VALUE_LIMIT } from "../shared/tool-payload-bounds.js";
 import type { FlatBandBadge } from "./chat-surface.js";
 import { ELLIPSIS, renderRoundedBoxLines } from "./chat-surface.js";
 import { hexToAnsi, RESET } from "./color-utils.js";
@@ -222,10 +223,11 @@ function activeToolNodes(run: RunSnapshot): NonNullable<RunSnapshot["toolNodes"]
 	return run.toolNodes.filter((node) => node.status === "pending" || node.status === "running");
 }
 
-function activeToolLabel(run: RunSnapshot): string | undefined {
+function activeToolLabel(run: RunSnapshot, width: number): string | undefined {
 	const nodes = activeToolNodes(run);
 	if (nodes.length === 0) return undefined;
-	const details = nodes.map((node) => `${node.name} · ${node.status}`).join(", ");
+	const limit = Number.isFinite(width) ? width * 4 : TOOL_PAYLOAD_VALUE_LIMIT;
+	const details = nodes.map((node) => `${boundedToolTitleText(node.name, limit)} · ${node.status}`).join(", ");
 	return nodes.length === 1 ? details : `${nodes.length} tools · ${details}`;
 }
 const MAX_PENDING_WIDGET_ITEMS = 2;
@@ -239,14 +241,16 @@ function pendingStageLabel(
 	if (stages.length === 0) return undefined;
 	const maxItems = Math.min(MAX_PENDING_WIDGET_ITEMS, stages.length);
 
+	const limit = Number.isFinite(width) ? Math.max(1, width * 4) : TOOL_PAYLOAD_VALUE_LIMIT;
 	for (let count = maxItems; count >= 1; count--) {
 		let combinations: string[][] = [[]];
 		for (const stage of stages.slice(0, count)) {
+			const stageName = boundedToolTitleText(stage.name, limit);
 			const exact =
 				stage.target === undefined
-					? `${stage.name} (${stage.stageId}) · unavailable`
-					: `${stage.name} (${stage.stageId}) → ${stage.target}`;
-			const variants = stage.target === undefined ? [exact] : [exact, `${stage.name} · stage ${stage.stageId}`];
+					? `${stageName} (${stage.stageId}) · unavailable`
+					: `${stageName} (${stage.stageId}) → ${stage.target}`;
+			const variants = stage.target === undefined ? [exact] : [exact, `${stageName} · stage ${stage.stageId}`];
 			combinations = combinations.flatMap((labels) => variants.map((variant) => [...labels, variant]));
 		}
 
@@ -280,7 +284,7 @@ function metaLine(
 	const prog = progressLabel(stages);
 	if (prog) prefix.push(prog);
 	const suffix: string[] = [];
-	const tools = activeToolLabel(run);
+	const tools = activeToolLabel(run, width);
 	if (tools) suffix.push(tools);
 	const elapsed = elapsedLabel(run, now);
 	if (elapsed) suffix.push(elapsed);
@@ -313,7 +317,7 @@ function countBadges(counts: RunCounts, theme: GraphTheme): FlatBandBadge[] {
 	// question-mark status glyph, then keep ↵ as the attach/respond action hint.
 	if (counts.awaiting > 0) {
 		badges.push({
-			text: `${statusIcon("awaiting_input")} ↵ ${counts.awaiting} needs attention (attach to workflow with \`/workflow connect\`)`,
+			text: `${statusIcon("awaiting_input")} ↵ ${counts.awaiting} needs attention (open with \`/workflows\`)`,
 			fg: theme.info,
 		});
 	}
@@ -341,9 +345,14 @@ function formatTitleBadges(badges: readonly FlatBandBadge[], theme: GraphTheme, 
 // Themed rendering (ANSI + Catppuccin)
 // ---------------------------------------------------------------------------
 
+function safeRunName(name: string, width: number): string {
+	const limit = Number.isFinite(width) ? Math.max(1, width * 4) : TOOL_PAYLOAD_VALUE_LIMIT;
+	return boundedToolTitleText(name, limit);
+}
+
 function runMetaWidth(run: RunSnapshot, width: number): number {
 	const inner = Math.max(2, Math.max(32, width) - 2);
-	return Math.max(0, inner - visibleWidth(`     ${run.name} · `));
+	return Math.max(0, inner - visibleWidth(`     ${safeRunName(run.name, width)} · `));
 }
 
 function themedRunLines(
@@ -362,7 +371,7 @@ function themedRunLines(
 	const metaColor = effectiveRunStatus(run) === "running" ? theme.textMuted : theme.dim;
 	return renderRunIdentityRows({
 		runId: run.id,
-		name: run.name,
+		name: safeRunName(run.name, width),
 		meta,
 		glyph: statusGlyph(run, allRuns),
 		glyphColor: statusFg(run, theme, allRuns),
@@ -382,7 +391,7 @@ function plainRunLines(
 		workflowBoundarySegments(allRuns, runId);
 	return renderRunIdentityRows({
 		runId: run.id,
-		name: run.name,
+		name: safeRunName(run.name, width),
 		meta: metaLine(run, expandGraph, now, runMetaWidth(run, width), resolveBoundarySegments),
 		glyph: statusGlyph(run, allRuns),
 	});
@@ -402,7 +411,7 @@ function renderAwaitingPromptLine(message: string, bodyWidth: number, theme: Gra
 }
 
 function renderAwaitingActionLines(visibleRunId: string, bodyWidth: number, theme: GraphTheme | undefined): string[] {
-	const prefix = "     Answer: /workflow connect ";
+	const prefix = "     Answer: /workflows ";
 	const rows = wrapIdentifierLines(visibleRunId, bodyWidth, prefix, "      ");
 	return rows.map((row) => {
 		const text = `${row.prefix}${row.chunk}`;
@@ -424,7 +433,7 @@ function awaitingRunLines(
 	const meta = metaLine(run, expandGraph, now, runMetaWidth(run, bodyWidth + 2), resolveBoundarySegments);
 	const identity = renderRunIdentityRows({
 		runId: run.id,
-		name: run.name,
+		name: safeRunName(run.name, bodyWidth + 2),
 		meta,
 		glyph: statusGlyph(run, allRuns),
 		...(theme

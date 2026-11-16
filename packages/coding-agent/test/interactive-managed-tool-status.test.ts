@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { type Component, Container, type Spacer, Text } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { WorkingRunMeter } from "../src/modes/interactive/components/working-run-meter.js";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
 import type { ToolStatus } from "../src/utils/tools-manager.js";
@@ -21,6 +22,8 @@ vi.mock("../src/utils/tools-manager.js", () => ({ ensureTool: toolMocks.ensureTo
  */
 
 type ManagedToolsThis = {
+	workingRunMeter: WorkingRunMeter;
+	session: { isStreaming: boolean };
 	fdPath: string | undefined;
 	managedToolStatusStarted: boolean;
 	managedToolStatusGeneration: number;
@@ -38,7 +41,11 @@ type ManagedToolsThis = {
 	renderInitialMessages: ReturnType<typeof vi.fn>;
 	attachStartupNoticesContainer: ReturnType<typeof vi.fn>;
 	renderSessionEntries: ReturnType<typeof vi.fn>;
-	sessionManager: { getEntries: ReturnType<typeof vi.fn>; getLeafId: ReturnType<typeof vi.fn> };
+	sessionManager: {
+		getSessionId: ReturnType<typeof vi.fn>;
+		getEntries: ReturnType<typeof vi.fn>;
+		getLeafId: ReturnType<typeof vi.fn>;
+	};
 };
 
 const prototype = InteractiveMode.prototype as unknown as {
@@ -50,6 +57,8 @@ const prototype = InteractiveMode.prototype as unknown as {
 
 function createMode(): ManagedToolsThis {
 	const mode: ManagedToolsThis = {
+		workingRunMeter: new WorkingRunMeter(),
+		session: { isStreaming: false },
 		fdPath: undefined,
 		managedToolStatusStarted: false,
 		managedToolStatusGeneration: 0,
@@ -67,7 +76,11 @@ function createMode(): ManagedToolsThis {
 		renderInitialMessages: vi.fn(),
 		attachStartupNoticesContainer: vi.fn(),
 		renderSessionEntries: vi.fn(),
-		sessionManager: { getEntries: vi.fn(() => []), getLeafId: vi.fn(() => null) },
+		sessionManager: {
+			getSessionId: vi.fn(() => "session-1"),
+			getEntries: vi.fn(() => []),
+			getLeafId: vi.fn(() => null),
+		},
 	};
 	mode.showManagedToolStatus = (status) => prototype.showManagedToolStatus.call(mode, status);
 	return mode;

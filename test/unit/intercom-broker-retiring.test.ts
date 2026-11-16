@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionContext } from "@bastani/atomic";
 import { afterAll, afterEach, beforeEach, describe, test, vi } from "vitest";
+import { removeTestDirectory } from "../helpers/test-directory-removal.js";
 
 /**
  * A broker that retires can end a connection that is still registering. These tests pin what a client does about it:
@@ -87,7 +88,7 @@ afterAll(() => {
 	else process.env.ATOMIC_CODING_AGENT_DIR = previousAgentDir;
 	if (previousLegacyAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 	else process.env.PI_CODING_AGENT_DIR = previousLegacyAgentDir;
-	rmSync(agentDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
+	removeTestDirectory(agentDir, { retries: 20, retryDelayMs: 50 });
 });
 
 type Frame = { type?: string; requestId?: string };

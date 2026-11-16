@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { openNodeSqliteDatabase } from "@bastani/atomic";
 import { test } from "vitest";
 import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
 import { REMOTE_QUESTION } from "../fixtures/shared-pool-child.js";
@@ -119,141 +120,214 @@ async function stopHost(host: BudgetedProcess): Promise<void> {
 	await expectExitedCleanly(host);
 }
 
+/**
+ * Two hosts run a fan-out on one shared journal, host A dies mid-run, and the root resumes on host B. `extra` is the
+ * environment of every process: the root's checkpoint shipping, when set (#4768). `midRun` runs while children of both
+ * hosts hold their sessions, before host A dies.
+ */
+async function runsFanOutThroughHostDeath(
+	label: string,
+	extra: Record<string, string> = {},
+	midRun?: (s: Scenario) => Promise<void>,
+): Promise<Scenario> {
+	const s = scenario(label, FANOUT_BUDGET.waitMs);
+
+	let hostB: BudgetedProcess | undefined;
+	let rootA: BudgetedProcess | undefined;
+	try {
+		hostB = startHost(s, "B", 2, extra);
+		await until("host B", s.deadline, () => existsSync(join(s.directory, "host-ready-B")), [hostB]);
+		// Host A runs the root, in a process group of its own with its coordinator and its worker.
+		rootA = spawnWithinBudget(
+			[process.execPath, rootFixture, "start", s.directory, String(CHILDREN), "1"],
+			{
+				cwd: s.directory,
+				stdout: "ignore",
+				env: s.env("A", { SHARED_POOL_SESSIONS: String(SESSIONS), ...extra }),
+				detached: true,
+			},
+			s.deadline,
+		);
+		// Admission counts across hosts: sampled while both hosts' workers want sessions.
+		let mostGranted = 0;
+		let fullWithWaiters = false;
+		let holdersOfBothHosts = false;
+		await until(
+			"both hosts' children to hold their sessions",
+			s.deadline,
+			async () => {
+				const permits = await s
+					.query(
+						`SELECT holder, state FROM ${PREFIX}wf_runs_resource_permits WHERE kind = 'session' AND state != 'released'`,
+					)
+					.catch(() => [] as Row[]);
+				const granted = permits.filter((permit) => permit.state === "granted").length;
+				mostGranted = Math.max(mostGranted, granted);
+				const hosts = new Set(permits.map((permit) => String(permit.holder).split("/")[0]));
+				if (granted === SESSIONS && permits.some((permit) => permit.state === "waiting")) fullWithWaiters = true;
+				if (hosts.size >= 2) holdersOfBothHosts = true;
+				return markers(s.directory, "started-").length >= SESSIONS && fullWithWaiters;
+			},
+			[hostB, rootA],
+		);
+		assert.ok(mostGranted <= SESSIONS, `at most ${SESSIONS} sessions were granted across hosts, saw ${mostGranted}`);
+		assert.ok(holdersOfBothHosts, "workers of both hosts asked the shared admission for sessions");
+		const arrived = new Set(markers(s.directory, "arrived-").map((name) => name.split("-")[1]));
+		assert.deepEqual([...arrived].sort(), ["A", "B"], "the fan-out ran children on both hosts");
+		await midRun?.(s);
+
+		// Host A dies: its root, coordinator and worker are killed together, mid-run.
+		process.kill(-rootA.process.pid!, "SIGKILL");
+		await rootA.process.exited;
+		writeFileSync(join(s.directory, "release"), "");
+
+		// The root resumes on host B, whose worker host keeps serving it; nothing of host A's survives.
+		const resumed = spawnWithinBudget(
+			[process.execPath, rootFixture, "resume", s.directory, String(CHILDREN), "1"],
+			{ cwd: s.directory, stdout: "ignore", env: s.env("B", { SHARED_POOL_SESSIONS: String(SESSIONS), ...extra }) },
+			s.deadline,
+		);
+		await expectExitedCleanly(resumed);
+		const outcome = await readJson<{
+			status: string;
+			children: {
+				status: string;
+				firstHost: string;
+				firstInstance: string;
+				finalHost: string;
+				finalInstance: string;
+			}[];
+		}>(join(s.directory, "outcome-resume.json"));
+		assert.equal(outcome.status, "completed", JSON.stringify(outcome));
+		assert.equal(outcome.children.length, CHILDREN);
+		for (const child of outcome.children) {
+			assert.equal(child.status, "completed", JSON.stringify(child));
+			assert.equal(child.finalHost, "B", "every child finished on the surviving host");
+		}
+		assert.ok(
+			outcome.children.some((child) => child.firstHost === "A"),
+			"a child whose first step ran on the dead host finished from that step's checkpoint",
+		);
+
+		// Every checkpoint was recorded once: replayed, never repeated.
+		assert.deepEqual(
+			await s.query(
+				`SELECT key, COUNT(*) AS n FROM ${PREFIX}wf_events WHERE run_id = ? AND key IS NOT NULL GROUP BY key HAVING COUNT(*) > 1`,
+				s.root,
+			),
+			[],
+		);
+		const firsts = await s.query(
+			// A resumed attempt's replay of a step is recorded under its own id (#4874); this counts the steps' live records.
+			`SELECT payload FROM ${PREFIX}wf_events WHERE run_id = ? AND json_extract(payload, '$.name') = 'first' AND json_extract(payload, '$.checkpointId') NOT LIKE '%tool-replay-meta:%'`,
+			s.root,
+		);
+		assert.equal(firsts.length, CHILDREN, "each child's first step is in the journal once");
+
+		// The pool's queue, leases, admission and stage records live in the shared journal, under its prefix; no host
+		// kept a pool database of its own.
+		const tables = (await s.query("SELECT name FROM sqlite_master WHERE type = 'table'")).map((row) =>
+			String(row.name),
+		);
+		for (const table of ["work", "pool", "resource_permits", "stage_workspaces", "stage_inputs", "pool_hosts"])
+			assert.ok(tables.includes(`${PREFIX}wf_runs_${table}`), table);
+		for (const host of ["A", "B"]) {
+			const state = join(s.directory, host, "workflows", "pool");
+			const databases = existsSync(state) ? readdirSync(state).filter((name) => name.endsWith(".sqlite")) : [];
+			assert.deepEqual(databases, [], `host ${host} kept no coordination database`);
+		}
+		const work = await s.query(`SELECT state, worker FROM ${PREFIX}wf_runs_work WHERE root = ?`, s.root);
+		assert.deepEqual(
+			work.map((row) => row.state),
+			Array(CHILDREN).fill("completed"),
+		);
+		// Each stage that ran recorded where it ran: its host and working directory, with no binding.
+		const stages = await s.query(
+			`SELECT host, worktree, binding FROM ${PREFIX}wf_runs_stage_workspaces WHERE root = ?`,
+			s.root,
+		);
+		assert.equal(stages.length, CHILDREN);
+		for (const stage of stages) {
+			assert.ok([s.hostId("A"), s.hostId("B"), "B"].includes(String(stage.host)), String(stage.host));
+			assert.equal(stage.worktree, s.directory);
+			assert.equal(stage.binding, null);
+		}
+		const stats = await readJson<{ hostId: string; git: string; maxWorkers: number }>(
+			join(s.directory, "host-stats-B.json"),
+		);
+		assert.deepEqual([stats.hostId, stats.maxWorkers], ["B", 2]);
+		await stopHost(hostB);
+		hostB = undefined;
+		return s;
+	} catch (error) {
+		removeTempDirectory(s.directory);
+		throw error;
+	} finally {
+		if (rootA?.process.exitCode === null) process.kill(-rootA.process.pid!, "SIGKILL");
+		hostB?.process.kill("SIGKILL");
+	}
+}
+
 test.skipIf(process.platform === "win32")(
 	"two hosts on one shared libSQL journal run a fan-out; killing one host mid-run and resuming the root on the other finishes it from its checkpoints (#4310)",
 	async () => {
-		const s = scenario("shared-pool-hosts", FANOUT_BUDGET.waitMs);
-		let hostB: BudgetedProcess | undefined;
-		let rootA: BudgetedProcess | undefined;
+		removeTempDirectory((await runsFanOutThroughHostDeath("shared-pool-hosts")).directory);
+	},
+	FANOUT_BUDGET.timeoutMs,
+);
+
+/** Host B's local checkpoint journal for the root: the attempts whose checkpoints it shipped so far, while it exists. */
+async function shippedFromLocalJournal(ship: string): Promise<{ work: string; generation: number }[]> {
+	const shards = existsSync(ship)
+		? readdirSync(ship, { recursive: true, encoding: "utf8" }).filter((name) => name.endsWith(".sqlite"))
+		: [];
+	assert.equal(shards.length, 1, "host B keeps one local checkpoint journal for the root while it runs");
+	const local = await openNodeSqliteDatabase(join(ship, shards[0]!), { readOnly: true });
+	try {
+		const rows = await local.all(
+			"SELECT work, generation FROM ship_cursor WHERE fenced = 0 AND shipped_local_seq > 0 ORDER BY work, generation",
+		);
+		return rows.map((row) => ({ work: String(row.work), generation: Number(row.generation) }));
+	} finally {
+		await local.close();
+	}
+}
+
+test.skipIf(process.platform === "win32")(
+	"the fan-out through a host's death runs the same with checkpoint shipping, and the surviving host shipped what it accepted (#4768)",
+	async () => {
+		let shipped: { work: string; generation: number }[] = [];
+		const s = await runsFanOutThroughHostDeath(
+			"shared-pool-shipping",
+			{ SHARED_POOL_CHECKPOINT_SHIPPING: JSON.stringify({ intervalMs: 100 }) },
+			async (running) => {
+				shipped = await shippedFromLocalJournal(join(running.directory, "B", "workflows", "pool", "ship"));
+			},
+		);
 		try {
-			hostB = startHost(s, "B", 2);
-			await until("host B", s.deadline, () => existsSync(join(s.directory, "host-ready-B")), [hostB]);
-			// Host A runs the root, in a process group of its own with its coordinator and its worker.
-			rootA = spawnWithinBudget(
-				[process.execPath, rootFixture, "start", s.directory, String(CHILDREN), "1"],
-				{
-					cwd: s.directory,
-					stdout: "ignore",
-					env: s.env("A", { SHARED_POOL_SESSIONS: String(SESSIONS) }),
-					detached: true,
-				},
-				s.deadline,
-			);
-			// Admission counts across hosts: sampled while both hosts' workers want sessions.
-			let mostGranted = 0;
-			let fullWithWaiters = false;
-			let holdersOfBothHosts = false;
-			await until(
-				"both hosts' children to hold their sessions",
-				s.deadline,
-				async () => {
-					const permits = await s
-						.query(
-							`SELECT holder, state FROM ${PREFIX}wf_runs_resource_permits WHERE kind = 'session' AND state != 'released'`,
-						)
-						.catch(() => [] as Row[]);
-					const granted = permits.filter((permit) => permit.state === "granted").length;
-					mostGranted = Math.max(mostGranted, granted);
-					const hosts = new Set(permits.map((permit) => String(permit.holder).split("/")[0]));
-					if (granted === SESSIONS && permits.some((permit) => permit.state === "waiting")) fullWithWaiters = true;
-					if (hosts.size >= 2) holdersOfBothHosts = true;
-					return markers(s.directory, "started-").length >= SESSIONS && fullWithWaiters;
-				},
-				[hostB, rootA],
-			);
-			assert.ok(
-				mostGranted <= SESSIONS,
-				`at most ${SESSIONS} sessions were granted across hosts, saw ${mostGranted}`,
-			);
-			assert.ok(holdersOfBothHosts, "workers of both hosts asked the shared admission for sessions");
-			const arrived = new Set(markers(s.directory, "arrived-").map((name) => name.split("-")[1]));
-			assert.deepEqual([...arrived].sort(), ["A", "B"], "the fan-out ran children on both hosts");
-
-			// Host A dies: its root, coordinator and worker are killed together, mid-run.
-			process.kill(-rootA.process.pid!, "SIGKILL");
-			await rootA.process.exited;
-			writeFileSync(join(s.directory, "release"), "");
-
-			// The root resumes on host B, whose worker host keeps serving it; nothing of host A's survives.
-			const resumed = spawnWithinBudget(
-				[process.execPath, rootFixture, "resume", s.directory, String(CHILDREN), "1"],
-				{ cwd: s.directory, stdout: "ignore", env: s.env("B", { SHARED_POOL_SESSIONS: String(SESSIONS) }) },
-				s.deadline,
-			);
-			await expectExitedCleanly(resumed);
-			const outcome = await readJson<{
-				status: string;
-				children: {
-					status: string;
-					firstHost: string;
-					firstInstance: string;
-					finalHost: string;
-					finalInstance: string;
-				}[];
-			}>(join(s.directory, "outcome-resume.json"));
-			assert.equal(outcome.status, "completed", JSON.stringify(outcome));
-			assert.equal(outcome.children.length, CHILDREN);
-			for (const child of outcome.children) {
-				assert.equal(child.status, "completed", JSON.stringify(child));
-				assert.equal(child.finalHost, "B", "every child finished on the surviving host");
-			}
-			assert.ok(
-				outcome.children.some((child) => child.firstHost === "A"),
-				"a child whose first step ran on the dead host finished from that step's checkpoint",
-			);
-
-			// Every checkpoint was recorded once: replayed, never repeated.
-			assert.deepEqual(
-				await s.query(
-					`SELECT key, COUNT(*) AS n FROM ${PREFIX}wf_events WHERE run_id = ? AND key IS NOT NULL GROUP BY key HAVING COUNT(*) > 1`,
+			assert.ok(shipped.length > 0, "host B shipped the checkpoints it accepted through its local journal");
+			for (const { work, generation } of shipped) {
+				const recorded = await s.query(
+					`SELECT e.key FROM ${PREFIX}wf_runs_pool_operations o JOIN ${PREFIX}wf_events e ON e.run_id = ? AND e.seq = json_extract(o.receipt, '$.seq') WHERE o.work = ? AND o.generation = ?`,
 					s.root,
-				),
-				[],
-			);
-			const firsts = await s.query(
-				// A resumed attempt's replay of a step is recorded under its own id (#4874); this counts the steps' live records.
-				`SELECT payload FROM ${PREFIX}wf_events WHERE run_id = ? AND json_extract(payload, '$.name') = 'first' AND json_extract(payload, '$.checkpointId') NOT LIKE '%tool-replay-meta:%'`,
-				s.root,
-			);
-			assert.equal(firsts.length, CHILDREN, "each child's first step is in the journal once");
-
-			// The pool's queue, leases, admission and stage records live in the shared journal, under its prefix; no host
-			// kept a pool database of its own.
-			const tables = (await s.query("SELECT name FROM sqlite_master WHERE type = 'table'")).map((row) =>
-				String(row.name),
-			);
-			for (const table of ["work", "pool", "resource_permits", "stage_workspaces", "stage_inputs", "pool_hosts"])
-				assert.ok(tables.includes(`${PREFIX}wf_runs_${table}`), table);
-			for (const host of ["A", "B"]) {
-				const state = join(s.directory, host, "workflows", "pool");
-				const databases = existsSync(state) ? readdirSync(state).filter((name) => name.endsWith(".sqlite")) : [];
-				assert.deepEqual(databases, [], `host ${host} kept no coordination database`);
+					work,
+					generation,
+				);
+				assert.ok(
+					recorded.length > 0,
+					`the checkpoints host B shipped for ${work} generation ${generation} are in the shared journal`,
+				);
 			}
-			const work = await s.query(`SELECT state, worker FROM ${PREFIX}wf_runs_work WHERE root = ?`, s.root);
+			const ship = join(s.directory, "B", "workflows", "pool", "ship");
 			assert.deepEqual(
-				work.map((row) => row.state),
-				Array(CHILDREN).fill("completed"),
+				readdirSync(ship, { recursive: true, encoding: "utf8" }).filter((name) => name.endsWith(".sqlite")),
+				[],
+				"host B removed the root's local journal once the run ended",
 			);
-			// Each stage that ran recorded where it ran: its host and working directory, with no binding.
-			const stages = await s.query(
-				`SELECT host, worktree, binding FROM ${PREFIX}wf_runs_stage_workspaces WHERE root = ?`,
-				s.root,
-			);
-			assert.equal(stages.length, CHILDREN);
-			for (const stage of stages) {
-				assert.ok([s.hostId("A"), s.hostId("B"), "B"].includes(String(stage.host)), String(stage.host));
-				assert.equal(stage.worktree, s.directory);
-				assert.equal(stage.binding, null);
-			}
-			const stats = await readJson<{ hostId: string; git: string; maxWorkers: number }>(
-				join(s.directory, "host-stats-B.json"),
-			);
-			assert.deepEqual([stats.hostId, stats.maxWorkers], ["B", 2]);
-			await stopHost(hostB);
-			hostB = undefined;
+			const batches = await s.query(`SELECT host, events FROM ${PREFIX}wf_runs_ship_batches`);
+			assert.ok(batches.length > 0, "the shared journal's ledger records the shipped batches");
+			assert.ok(batches.every((batch) => Number(batch.events) >= 1));
 		} finally {
-			if (rootA?.process.exitCode === null) process.kill(-rootA.process.pid!, "SIGKILL");
-			hostB?.process.kill("SIGKILL");
 			removeTempDirectory(s.directory);
 		}
 	},

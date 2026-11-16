@@ -36,9 +36,7 @@ send "/workflow reload" Enter
 wait_for "Reloaded workflow resources" 30
 send "/workflow release-gate-demo" Enter
 wait_for "started in background" 30
-send "/workflow connect" Enter
-wait_for "Connect to workflow run" 30
-send Enter
+send "/workflows" Enter
 wait_for "awaiting input" 30
 send Enter
 wait_for "How risky does this change set look?" 30

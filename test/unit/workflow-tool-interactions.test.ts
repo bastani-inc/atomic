@@ -151,7 +151,7 @@ describe("non-attachable tool interactions", () => {
 		view.dispose();
 	});
 
-	test("terminal controls reject textual tool targeting", async () => {
+	test("terminal controls reject textual tool targeting after attach removal (#5224)", async () => {
 		recordToolOnly(store, "completed");
 		for (const target of ["tool:publish", "publish-api"]) {
 			const resolved = resolveStageTarget(testRunId("tool-interaction-run"), target);
@@ -165,27 +165,29 @@ describe("non-attachable tool interactions", () => {
 		});
 		let overlayOpens = 0;
 		const commandErrors: string[] = [];
-		await handleRunControlCommand(
-			"attach",
-			[testRunId("tool-interaction-run"), "tool:publish"],
-			{},
-			{
-				info() {},
-				error(message) {
-					commandErrors.push(message);
-				},
-			},
-			{
-				pi: {},
-				overlay: {
-					open() {
-						overlayOpens += 1;
+		for (const target of ["tool:publish", "publish-api"]) {
+			await handleRunControlCommand(
+				"pause",
+				[testRunId("tool-interaction-run"), target],
+				{},
+				{
+					info() {},
+					error(message) {
+						commandErrors.push(message);
 					},
 				},
-				runtimeForContext: () => ({ prepareDurableResumable: async () => [] }),
-				ensureWorkflowResourcesLoaded() {},
-			},
-		);
+				{
+					pi: {},
+					overlay: {
+						open() {
+							overlayOpens += 1;
+						},
+					},
+					runtimeForContext: () => ({ prepareDurableResumable: async () => [] }),
+					ensureWorkflowResourcesLoaded() {},
+				},
+			);
+		}
 
 		assert.equal(paused.status, "noop");
 		assert.match(paused.message, /Tool node tool:publish is not running/);
@@ -198,7 +200,12 @@ describe("non-attachable tool interactions", () => {
 			},
 		);
 		assert.equal(resumed.status, "noop");
-		assert.match(commandErrors.join("\n"), /Stage not found/);
+		assert.deepEqual(
+			commandErrors,
+			["tool:publish", "publish-api"].map(
+				(target) => `Stage not found in run ${testRunId("tool-interaction-run")}: ${target}`,
+			),
+		);
 		assert.equal(overlayOpens, 0);
 		assert.deepEqual(stageControlRegistry.forRun(testRunId("tool-interaction-run")), []);
 	});

@@ -17,6 +17,8 @@ vi.mock("@bastani/atomic-tui", async (importOriginal) => ({
 	ProcessTerminal: class {},
 	TuiMainScreen: class {
 		setClearOnShrink() {}
+		clear() {}
+		requestRender() {}
 		addChild() {}
 		setFocus() {}
 		start() {}

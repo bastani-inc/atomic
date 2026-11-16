@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdtempSync } from "node:fs";
-import net from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { AgentTool } from "@bastani/atomic-agent-core";
@@ -30,6 +29,8 @@ const { getJitiCliPath } = await import("../../packages/intercom/broker/spawn.js
 const { IntercomClient } = await import("../../packages/intercom/broker/client.js");
 const { default: intercomHeavy } = await import("../../packages/intercom/index-heavy.js");
 const { createHarness } = await import("../../packages/coding-agent/test/suite/harness.js");
+const BROKER_START_WAIT_MS = 90_000;
+const BROKER_START_HOOK_TIMEOUT_MS = BROKER_START_WAIT_MS + 5_000;
 const brokerReceipts: string[] = [];
 
 beforeAll(async () => {
@@ -56,23 +57,8 @@ beforeAll(async () => {
 		}
 	});
 	broker.stderr!.on("data", (chunk: Buffer) => console.error(chunk.toString()));
-	await vi.waitFor(
-		async () => {
-			brokerFixture.assertRunning();
-			assert.ok(
-				await new Promise<boolean>((done) => {
-					const socket = net.createConnection(getBrokerSocketPath(process.platform, brokerFixture.agentDir));
-					socket.once("connect", () => {
-						socket.destroy();
-						done(true);
-					});
-					socket.once("error", () => done(false));
-				}),
-			);
-		},
-		{ timeout: 10_000, interval: 20 },
-	);
-});
+	await brokerFixture.holdSession(getBrokerSocketPath(process.platform, brokerFixture.agentDir), BROKER_START_WAIT_MS);
+}, BROKER_START_HOOK_TIMEOUT_MS);
 afterAll(() => brokerFixture.cleanup());
 
 // #3039: these are instrumented schedules, not attribution of the historical incident.

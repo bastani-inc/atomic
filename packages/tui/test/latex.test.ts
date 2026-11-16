@@ -2,6 +2,11 @@ import assert from "node:assert";
 import { describe, it } from "node:test";
 import { renderLatex } from "../src/index.ts";
 
+/** Escaped spaces in one script: a script normalized in quadratic time takes many seconds over this many. */
+const LONG_SPACE_RUN = 100_000;
+/** How long rendering that script may take: linear normalization takes milliseconds, quadratic about ten seconds. */
+const LINEAR_RENDER_BUDGET_MS = 2_000;
+
 type LatexCase = readonly [source: string, expected: string];
 
 function defineCases(cases: readonly LatexCase[]): void {
@@ -504,6 +509,21 @@ R\left(\frac{\pi}{4}\right)
 
 	it("returns undefined for unsupported commands", () => {
 		assert.strictEqual(renderLatex(String.raw`x + \unknown{y}`), undefined);
+	});
+
+	it("drops the spaces next to =, + and - in a script and keeps the others", () => {
+		assert.strictEqual(renderLatex(String.raw`x^{a\ \ +\ \ b}`), "xᵃ⁺ᵇ");
+		assert.strictEqual(renderLatex(String.raw`x_{i\ =\ 0}`), "xᵢ₌₀");
+		assert.strictEqual(renderLatex(String.raw`x^{a\ b\ +c}`), "x^(a b+c)");
+	});
+
+	it("renders a script holding a long run of spaces in linear time", () => {
+		const source = `x^{a${"\\ ".repeat(LONG_SPACE_RUN)}b}`;
+		const started = performance.now();
+		const rendered = renderLatex(source);
+		const elapsed = performance.now() - started;
+		assert.strictEqual(rendered, "x^(a b)");
+		assert.ok(elapsed < LINEAR_RENDER_BUDGET_MS, `rendering took ${Math.round(elapsed)} ms`);
 	});
 
 	it("returns undefined for malformed groups and environments", () => {

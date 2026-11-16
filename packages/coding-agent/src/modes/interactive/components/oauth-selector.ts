@@ -23,7 +23,6 @@ export function formatAuthSelectorProviderType(
 
 const MAX_VISIBLE = 8;
 
-/** The status shown right of a provider: how it is configured, or that it is not. */
 function formatStatus(
 	provider: AuthSelectorProvider,
 	status: AuthStatus,
@@ -94,7 +93,6 @@ export class OAuthSelectorComponent extends FramedSelector<AuthSelectorProvider>
 				searchText: `${provider.id} ${provider.authType}`,
 				labelStyle: (text, selected) => {
 					const color = selected ? "accent" : "text";
-					// A label cut short by a narrow terminal keeps one colour.
 					if (text !== label) return theme.fg(color, text);
 					const brandStyle = selected && animation.live ? getProviderBrandStyle(provider.id) : undefined;
 					const name = brandStyle
@@ -127,7 +125,6 @@ export class OAuthSelectorComponent extends FramedSelector<AuthSelectorProvider>
 		}
 	}
 
-	/** Stops the brand animation. */
 	dispose(): void {
 		this.stopAnimation?.();
 		this.stopAnimation = undefined;

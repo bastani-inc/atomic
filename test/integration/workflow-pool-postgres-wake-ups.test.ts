@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { SqliteDatabase, SqliteExecutor } from "@bastani/atomic/storage";
 import { describe, test } from "vitest";
 import { listenPoolReady } from "../../packages/workflows/src/durable/journal/internal.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
@@ -39,7 +40,26 @@ const definition = { definition: work.definition, digest: work.digest };
 
 /** A root holding its lease with its pool initialized, and a host's journal on another connection listening for wake-ups. */
 async function rootAndHost(scope: PostgresScope) {
-	const journal = await SqlRunJournal.open(await scope.open(), { prefix: PREFIX });
+	const statements: string[] = [];
+	const database: SqliteDatabase = new Proxy(await scope.open(), {
+		get(target, key) {
+			if (key !== "transaction") return Reflect.get(target, key);
+			const transaction: SqliteDatabase["transaction"] = (body, options) =>
+				target.transaction((tx) => {
+					const run: SqliteExecutor["run"] = (sql, ...params) => {
+						statements.push(sql);
+						return tx.run(sql, ...params);
+					};
+					return body(
+						new Proxy(tx, {
+							get: (executor, property) => (property === "run" ? run : Reflect.get(executor, property)),
+						}),
+					);
+				}, options);
+			return transaction;
+		},
+	});
+	const journal = await SqlRunJournal.open(database, { prefix: PREFIX });
 	const backend = await JournalDurableBackend.open(journal, { ownsJournal: false });
 	await backend.commitWorkflowRegistration({
 		workflowId: "root",
@@ -61,6 +81,7 @@ async function rootAndHost(scope: PostgresScope) {
 		pool,
 		lease,
 		woken,
+		statements,
 		/** Waits for the wake-up after `since`, and returns how long after `since` it arrived. */
 		async wakeAfter(since: number): Promise<number> {
 			const deadline = performance.now() + POOL_WAKE_BOUND_MS;
@@ -98,6 +119,45 @@ async function listening(scope: PostgresScope): Promise<void> {
 }
 
 describe.skipIf(postgresSkipReason !== undefined)("worker pool wake-ups on Postgres (#5103)", () => {
+	test("ready-work wake-ups create no readiness table and write no separate readiness rows on PostgreSQL (#5230)", async () => {
+		await withPostgresDatabase(async (scope) => {
+			const f = await rootAndHost(scope);
+			try {
+				const reader = await scope.open();
+				assert.equal(
+					await reader.get(
+						"SELECT c.relname AS name FROM pg_catalog.pg_class c WHERE c.relnamespace = current_schema()::regnamespace AND c.relname = ?",
+						`${PREFIX}wf_runs_pool_ready`,
+					),
+					undefined,
+				);
+				await listening(scope);
+				const assertNoticeWithoutReadyWrite = () => {
+					assert.equal(f.statements.filter((sql) => sql.includes(`${PREFIX}wf_runs_pool_ready`)).length, 0);
+					assert.equal(f.statements.filter((sql) => sql.includes("pg_notify")).length, 1);
+				};
+				f.statements.length = 0;
+				let since = performance.now();
+				await f.pool.enqueue(f.lease, work, boundary);
+				assertNoticeWithoutReadyWrite();
+				await f.wakeAfter(since);
+				const before = await f.pool.readyMark("root");
+				const held = await f.pool.claim(f.lease, "worker", [definition], 60_000);
+				assert.ok(held);
+				f.statements.length = 0;
+				since = performance.now();
+				assert.equal(await f.pool.releaseUnplaced(f.lease, held), true);
+				assertNoticeWithoutReadyWrite();
+				await f.wakeAfter(since);
+				const returned = await f.pool.readyMark("root");
+				assert.notEqual(returned, before, "a generation rewind still changes the ready-row identity");
+				assert.equal(await f.pool.releaseUnplaced(f.lease, held), false);
+				assert.equal(await f.pool.readyMark("root"), returned, "a stale refusal leaves ready identities unchanged");
+			} finally {
+				await f.close();
+			}
+		});
+	});
 	test("enqueue, release and complete each wake a listening host promptly with the root, and a claim sends none (#5103)", async () => {
 		await withPostgresDatabase(async (scope) => {
 			const f = await rootAndHost(scope);

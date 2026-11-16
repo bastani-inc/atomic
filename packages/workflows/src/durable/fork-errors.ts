@@ -183,7 +183,6 @@ function listedPaths(paths: readonly string[], total: number): string {
 	return more > 0 ? `${paths.join(", ")} (and ${more} more)` : paths.join(", ");
 }
 
-/** `fromStage` names no completed stage of the source run. Nothing was written. */
 export class ForkTargetNotFoundError extends ForkError {
 	declare readonly name: "ForkTargetNotFoundError";
 	declare readonly code: "target-not-found";
@@ -210,8 +209,8 @@ export class ForkTargetNotFoundError extends ForkError {
 			subject: `stage "${input.fromStage}" in run ${input.runId}`,
 			hint:
 				validStagePaths.length === 0
-					? `The run has no completed stage to fork from yet; listForkPoints("${input.runId}") lists stages once they complete.`
-					: `Pass one of: ${listedPaths(validStagePaths, totalValidStagePaths)}; listForkPoints("${input.runId}") lists them all.`,
+					? `The run has no eligible stage to fork from yet; listForkPoints("${input.runId}") lists completed stages.`
+					: `Pass one of: ${listedPaths(validStagePaths, totalValidStagePaths)}; listForkPoints("${input.runId}") lists completed stages.`,
 			retryable: false,
 			fields: { runId: input.runId, fromStage: input.fromStage, validStagePaths, totalValidStagePaths },
 		});

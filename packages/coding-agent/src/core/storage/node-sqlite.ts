@@ -24,6 +24,7 @@ import type {
 	SqliteValue,
 	StorageDescriptor,
 } from "./database.js";
+import { sqliteDialect } from "./dialect.js";
 import {
 	payloadTooLargeKind,
 	SQLITE_PAYLOAD_LIMITS,
@@ -75,7 +76,7 @@ const TICKET_REMOVE_AFTER_MS = 10 * TICKET_STALE_MS;
 const TICKET_REFRESH_MS = TICKET_STALE_MS / 4;
 const TICKET_TIME = /^(\d{15})-/;
 /** Now on the database's clock, in milliseconds: the clock tickets are stamped and aged on (see `SqliteWriteQueue`). */
-const DATABASE_NOW = "SELECT CAST(unixepoch('subsec') * 1000 AS INTEGER) AS now";
+const DATABASE_NOW = `SELECT ${sqliteDialect.nowMs} AS now`;
 
 /** An in-memory connection of the process's own, which the database clock is read through. */
 let clockConnection: DatabaseSync | undefined;
@@ -1479,6 +1480,7 @@ export async function openNodeSqliteDatabase(
 		const location = connection.location();
 		const identity = location === null ? connection : await realpath(location);
 		const database = new NodeSqliteDatabase(connection, descriptor, true, identity, lockWaitMs, holdMs);
+		Object.defineProperty(database, "readOnly", { value: readOnly });
 		if (!readOnly) await database.openHolderRecord();
 		return database;
 	} catch (cause) {

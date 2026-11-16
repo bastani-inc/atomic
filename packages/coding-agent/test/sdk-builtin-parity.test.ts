@@ -1051,7 +1051,7 @@ test("SDK dialogs preserve raw arguments and reject malformed host replies", asy
 });
 
 // #3105: caller cancellation, timeout, rejection, withdrawal and generations cannot approve.
-test("SDK pending host requests settle at each cancellation boundary", async () => {
+test("SDK pending host requests settle at each cancellation boundary (#5241)", async () => {
 	const fixture = await hostSession();
 	try {
 		await assert.rejects(fixture.contexts[0].ui.input(""), { code: "HumanInputUnavailable" });
@@ -1074,13 +1074,16 @@ test("SDK pending host requests settle at each cancellation boundary", async () 
 				signal: controller.signal,
 				...(boundary === "timeout" ? { timeout: 0 } : {}),
 			});
-			const rejected = assert.rejects(pending, { code: "HumanInputCancelled" });
+			const settled =
+				boundary === "signal" || boundary === "timeout"
+					? pending.then((value) => assert.equal(value, false))
+					: assert.rejects(pending, { code: "HumanInputCancelled" });
 			await Promise.resolve();
 			if (boundary === "signal") controller.abort();
 			if (boundary === "withdraw") await fixture.session.bindExtensions({ humanInput: null });
 			if (boundary === "reload") await fixture.session.reload();
 			if (boundary === "dispose") await fixture.session.dispose();
-			await rejected;
+			await settled;
 			assert.equal(identity.signal.aborted, true);
 			answer(true);
 			if (boundary === "reload") {

@@ -1402,3 +1402,57 @@ test("a reply that fails to reach its asker after its recipient ended fails the 
 	settle?.(false);
 	assert.deepEqual(lost, ["ended:question-write-fails"]);
 });
+
+test("a reply that reaches the broker before the write of its ask is confirmed waits for that confirmation, then is delivered (#5252)", () => {
+	const asker = session("asker-unconfirmed", "asker", {} as net.Socket);
+	const target = session("target-unconfirmed", "target", {} as net.Socket);
+	const sessions = new Map([asker, target].map((peer) => [peer.info.id, peer]));
+	const pending = new PendingQuestionIndex();
+	const cache = new DeliveredMessageCache();
+	const writes: Array<{ socket: net.Socket; frame: BrokerMessage }> = [];
+	const unconfirmed: Array<(written: boolean) => void> = [];
+	// The broker's socket writes confirm on a later turn; a loaded host can read the recipient's reply first.
+	const writeConfirmed: ConfirmedMessageWriter = (socket, frame, onSettled) => {
+		writes.push({ socket, frame });
+		unconfirmed.push(onSettled);
+	};
+	const send = (from: BrokerConnectedSession, to: string, outgoing: Message, requirePendingReply = false) =>
+		handleBrokerSend(
+			from.socket,
+			{ type: "send", to, message: outgoing, ...(requirePendingReply ? { requirePendingReply: true } : {}) },
+			from.info.id,
+			sessions,
+			cache,
+			(socket, frame) => {
+				writes.push({ socket, frame });
+				return true;
+			},
+			new SupervisorChannelCache(),
+			pending,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			writeConfirmed,
+		);
+	send(asker, target.info.id, { ...message("question-unconfirmed"), expectsReply: true });
+	assert.equal(writes.at(-1)?.frame.type, "message", "the ask is written to its recipient");
+
+	// The recipient answers the ask it received before the broker sees that write confirmed.
+	send(target, asker.info.id, { ...message("reply-unconfirmed"), replyTo: "question-unconfirmed" }, true);
+	assert.deepEqual(
+		writes.filter(({ frame }) => frame.type === "delivery_failed"),
+		[],
+		"the reply is not refused while its ask's write is unconfirmed",
+	);
+
+	unconfirmed.shift()?.(true);
+	assert.deepEqual(
+		writes.filter(({ socket, frame }) => socket === target.socket && frame.type === "delivery_failed"),
+		[],
+	);
+	assert.ok(
+		writes.some(({ socket, frame }) => socket === asker.socket && frame.type === "message"),
+		"the reply reaches its asker",
+	);
+});

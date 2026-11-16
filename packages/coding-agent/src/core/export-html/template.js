@@ -1141,10 +1141,10 @@
             break;
           }
           default: {
-            // Check for pre-rendered custom tool HTML
             const rendered = renderedTools?.[call.id];
-            if (rendered?.callHtml || rendered?.resultHtmlCollapsed || rendered?.resultHtmlExpanded) {
-              // Custom tool with pre-rendered HTML from TUI renderer
+            const hasCustomResult =
+              rendered?.resultHtmlCollapsed !== undefined || rendered?.resultHtmlExpanded !== undefined;
+            if (rendered?.callHtml !== undefined || hasCustomResult) {
               if (rendered.callHtml) {
                 html += `<div class="tool-header ansi-rendered">${rendered.callHtml}</div>`;
               } else {
@@ -1152,16 +1152,15 @@
               }
 
               if (rendered.resultHtmlCollapsed && rendered.resultHtmlExpanded && rendered.resultHtmlCollapsed !== rendered.resultHtmlExpanded) {
-                // Both collapsed and expanded differ - render expandable section
                 html += `<div class="tool-output expandable ansi-rendered" onclick="if(window.getSelection().toString()||event.target.closest('a'))return;this.classList.toggle('expanded')">
                   <div class="output-preview">${rendered.resultHtmlCollapsed}</div>
                   <div class="output-full">${rendered.resultHtmlExpanded}</div>
                 </div>`;
               } else if (rendered.resultHtmlExpanded) {
-                // Only expanded exists (or collapsed is identical) - show directly
                 html += `<div class="tool-output ansi-rendered">${rendered.resultHtmlExpanded}</div>`;
-              } else if (result) {
-                // No pre-rendered result HTML - fallback to JSON
+              } else if (rendered.resultHtmlCollapsed) {
+                html += `<div class="tool-output ansi-rendered">${rendered.resultHtmlCollapsed}</div>`;
+              } else if (!hasCustomResult && result) {
                 const output = getResultText();
                 if (output) html += formatExpandableOutput(output, 10);
               }

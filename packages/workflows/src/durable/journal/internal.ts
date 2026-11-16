@@ -32,6 +32,16 @@ export const JOURNAL_READ_PAGE_SIZE = 256;
 export const JOURNAL_READ_PAGE_CHARS = 1024 * 1024;
 
 /**
+ * The rows the next statement of a paged read fetches, after one that fetched `fetched` rows of a batch of `limit`
+ * and kept `kept` of them in its page. A statement measures every row of its batch to cut its page, so the batch
+ * follows what the pages hold and a page costs about what it returns: it doubles, up to `max`, while whole batches
+ * fit, and shrinks to twice what the page held when large rows ended it early (#4954, #4768).
+ */
+export function nextReadBatch(limit: number, fetched: number, kept: number, max: number): number {
+	return kept >= fetched ? Math.min(max, limit * 2) : Math.max(1, Math.min(max, kept * 2));
+}
+
+/**
  * How every journal write transaction waits for the write lock: up to 10 minutes of no commit anywhere, far past the
  * 30 s a connection waits by default. A process stalled holding the lock (starved of CPU, paused for garbage
  * collection, stopped by a signal) commits or rolls back once it runs again, and failing the waiting write would only
@@ -148,6 +158,7 @@ export interface SqlPoolStorage {
 	 * statements of one read may see different commits.
 	 */
 	read<T>(body: (executor: SqliteExecutor) => Promise<T>): Promise<T>;
+	readonly peek?: <T>(body: (executor: SqliteExecutor) => Promise<T>) => Promise<T>;
 	withAppendGuard<T>(guard: JournalAppendGuard, action: () => Promise<T>): Promise<T>;
 	readonly tables: Readonly<{
 		runs: string;

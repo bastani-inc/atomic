@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import type { SessionEntry } from "@bastani/atomic";
-import type { SqliteDatabase, SqliteValue } from "@bastani/atomic/storage";
+import { dialectOf, type SqliteDatabase, type SqliteRow, type SqliteValue } from "@bastani/atomic/storage";
 import { describe } from "vitest";
 import { sqlPoolStorage } from "../../packages/workflows/src/durable/journal/internal.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
@@ -138,20 +138,28 @@ async function rootFixture(scope: PoolStoreScope) {
 }
 
 export function registerPoolStoreConformance(run_: Runner, name: string, openScope: () => Promise<PoolStoreScope>) {
-	const test = (title: string, body: (f: Awaited<ReturnType<typeof rootFixture>>) => Promise<void>) =>
-		run_(title, async () => {
-			const scope = await openScope();
-			try {
-				const f = await rootFixture(scope);
+	const test = (
+		title: string,
+		body: (f: Awaited<ReturnType<typeof rootFixture>>) => Promise<void>,
+		timeoutMs?: number,
+	) =>
+		run_(
+			title,
+			async () => {
+				const scope = await openScope();
 				try {
-					await body(f);
+					const f = await rootFixture(scope);
+					try {
+						await body(f);
+					} finally {
+						await f.close();
+					}
 				} finally {
-					await f.close();
+					await scope.close();
 				}
-			} finally {
-				await scope.close();
-			}
-		});
+			},
+			timeoutMs,
+		);
 
 	describe(name, () => {
 		test("control revisions survive reopening and close admission without deleting work", async (f) => {
@@ -177,6 +185,32 @@ export function registerPoolStoreConformance(run_: Runner, name: string, openSco
 			);
 			assert.equal((await recovered.setControl(f.lease, "quit")).revision, 3);
 			assert.equal((await recovered.inspect("root"))[0]?.id, queued.id);
+		});
+
+		test("another host discovers exited and unplaced releases without notifications (#5230)", async (f) => {
+			await f.pool.enqueue(f.lease, work, boundary);
+			const peer = await openSqlPoolQueue(await f.peer());
+			const marks = new Set<string>();
+			const first = await peer.readyMark("root");
+			assert.ok(first !== undefined);
+			marks.add(first);
+			for (const kind of ["exited", "unplaced", "exited", "unplaced"] as const) {
+				const claim = await f.pool.claim(f.lease, "worker", [definition], 60_000);
+				assert.ok(claim);
+				assert.equal(await peer.readyMark("root"), undefined);
+				assert.equal(
+					await (kind === "exited"
+						? f.pool.releaseExited(f.lease, claim)
+						: f.pool.releaseUnplaced(f.lease, claim)),
+					true,
+				);
+				const released = await peer.readyMark("root");
+				assert.ok(released !== undefined);
+				assert.equal(marks.has(released), false, `${kind} release must change the other host's ready mark`);
+				marks.add(released);
+				assert.equal(await peer.readyMark("root"), released);
+			}
+			assert.deepEqual(await peer.control(f.lease), { state: "running", revision: 0 });
 		});
 
 		test("work is enqueued once, by boundary, scope or child, and a conflicting identity is refused", async (f) => {
@@ -284,6 +318,83 @@ export function registerPoolStoreConformance(run_: Runner, name: string, openSco
 				await projection.close();
 			}
 		});
+
+		for (const size of [3, 1_000])
+			test(`a host's shipped batch of ${size} records each checkpoint once, a retried batch nothing, and a replaced attempt's batch is fenced (#4768)`, async (f) => {
+				await f.pool.enqueue(f.lease, work, boundary);
+				const attempt = await f.pool.claim(f.lease, "worker", [definition], 60_000);
+				assert.ok(attempt);
+				const item = { work, boundary };
+				const events = Array.from({ length: size }, (_, index) => {
+					const shipped = toolCheckpointOf(item, index + 1);
+					return {
+						localSeq: index + 1,
+						key: JSON.stringify([RUN_EVENT_TYPES.checkpointRecorded, "tool", shipped.checkpointId]),
+						payload: JSON.stringify(shipped),
+					};
+				});
+				const batch = { id: "batch-1", host: "host-A", events };
+				const journal = await f.peer();
+				const host = await openSqlPoolQueue(journal);
+				await host.shipBatch(f.lease, attempt, batch);
+				await f.pool.shipBatch(f.lease, attempt, batch);
+				await assertDenseEvents(f, size + 1);
+				const ledger = await f.database.all<{ events: number }>(
+					`SELECT events FROM ${f.table("wf_runs_ship_batches")}`,
+				);
+				assert.deepEqual(
+					ledger.map((row) => Number(row.events)),
+					[size],
+				);
+				await host.releaseExited(f.lease, attempt);
+				const next = await host.claim(f.lease, "replacement-worker", [definition], 60_000);
+				assert.ok(next);
+				const late = toolCheckpointOf(item, size + 1);
+				await assert.rejects(
+					f.pool.shipBatch(f.lease, attempt, {
+						id: "batch-late",
+						host: "host-A",
+						events: [
+							{
+								localSeq: size + 1,
+								key: JSON.stringify([RUN_EVENT_TYPES.checkpointRecorded, "tool", late.checkpointId]),
+								payload: JSON.stringify(late),
+							},
+						],
+					}),
+					staleWorkLease({ workId: attempt.id, generation: attempt.generation }),
+				);
+				await assertDenseEvents(f, size + 1);
+			});
+		test("1000 commits of 256 KiB checkpoints, one after another, all commit and read back intact", async (f) => {
+			await f.pool.enqueue(f.lease, work, boundary);
+			const attempt = await f.pool.claim(f.lease, "worker", [definition], 60_000);
+			assert.ok(attempt);
+			// Each commit past the 64 a queue keeps of its own reads the root's checkpoints since its watermark, 16 MiB
+			// of them here: no value, row or response of that read may pass a libSQL server's limits.
+			const sized = (step: number) => ({ ...toolCheckpointOf({ work, boundary }, step), output: largeOutput(step) });
+			const seqs: number[] = [];
+			for (let step = 0; step < 1000; step++) {
+				const receipt = await f.pool
+					.commit(f.lease, attempt, `step-${step}`, { kind: "checkpoint", checkpoint: sized(step) })
+					.catch((error: Error) => assert.fail(`commit ${step + 1} of 1000 failed: ${error.message}`));
+				seqs.push(receipt.seq!);
+			}
+			assert.deepEqual(
+				seqs,
+				seqs.map((_, index) => seqs[0]! + index),
+				"each commit recorded the next event",
+			);
+			let read = 0;
+			for await (const entry of (await f.peer()).read("root")) {
+				// The child's boundary start, which queueing it recorded, comes first.
+				if (entry.event.type !== RUN_EVENT_TYPES.checkpointRecorded || entry.event.payload.kind !== "tool")
+					continue;
+				assert.deepEqual(entry.event.payload, sized(read), `checkpoint ${read} reads back intact`);
+				read++;
+			}
+			assert.equal(read, 1000);
+		}, 600_000);
 
 		test("a completed child keeps its result and fences later writes", async (f) => {
 			await f.pool.enqueue(f.lease, work, boundary);
@@ -435,15 +546,30 @@ export function registerPoolStoreConformance(run_: Runner, name: string, openSco
 		test("a 429 cooldown one host shares holds every host's acquires and reaches their polls (#4768)", async (f) => {
 			const one = await SqlRateBuckets.open(f.journal);
 			const other = await SqlRateBuckets.open(await f.peer());
+			// The cooldown runs on the database's clock: what is left of it is measured against the time that clock says
+			// passed since it was recorded, however slowly a loaded server answers.
+			const recorded = await databaseNow(f.database);
 			await one.cooldown("anthropic/opus", 30_000);
 			// A bucket shaped after its cooldown was recorded keeps that cooldown.
 			const held = await other.acquire("anthropic/opus", 1, { intervalMs: 10, burst: 10 });
-			assert.ok("cooldownMs" in held && held.cooldownMs > 29_000 && held.cooldownMs <= 30_000, JSON.stringify(held));
+			const acquired = await databaseNow(f.database);
+			assert.ok(
+				"cooldownMs" in held && held.cooldownMs >= 30_000 - (acquired - recorded) && held.cooldownMs <= 30_000,
+				JSON.stringify({ held, elapsedMs: acquired - recorded }),
+			);
+			// A shorter cooldown never shortens it.
 			await other.cooldown("anthropic/opus", 5);
 			const { cooldowns } = await other.poll();
-			assert.equal(cooldowns.length, 1);
-			assert.equal(cooldowns[0]?.scope, "anthropic/opus");
-			assert.ok(cooldowns[0]!.remainingMs > 29_000, String(cooldowns[0]?.remainingMs));
+			const polled = await databaseNow(f.database);
+			assert.deepEqual(
+				cooldowns.map((cooldown) => cooldown.scope),
+				["anthropic/opus"],
+			);
+			const { remainingMs } = cooldowns[0]!;
+			assert.ok(
+				remainingMs >= 30_000 - (polled - recorded) && remainingMs <= held.cooldownMs,
+				JSON.stringify({ remainingMs, elapsedMs: polled - recorded, held }),
+			);
 		});
 
 		test("many hosts claim, commit and complete concurrently: no double claim, no lost settle (#5102)", async (f) => {
@@ -616,6 +742,12 @@ function toolCheckpointOf(item: ReturnType<typeof poolWorkFixture>, step: number
 	};
 }
 
+/** A tool output of about 256 KiB, its text distinct for each `step`. */
+function largeOutput(step: number): { readonly step: number; readonly text: string } {
+	const unit = `${step}:"quoted" \\ é;`;
+	return { step, text: unit.repeat(Math.ceil((256 * 1024) / unit.length)).slice(0, 256 * 1024) };
+}
+
 /** The root's events: one per key, numbered 1 to their count, with `count` checkpoints when given. */
 async function assertDenseEvents(f: { database: SqliteDatabase; table: (name: string) => string }, count?: number) {
 	const events = await f.database.all<{ seq: number; key: string | null }>(
@@ -639,4 +771,10 @@ async function assertDenseEvents(f: { database: SqliteDatabase; table: (name: st
 
 function delay(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Now on `database`'s own clock, in milliseconds: the clock its stores record and measure shared times on. */
+async function databaseNow(database: SqliteDatabase): Promise<number> {
+	const row = await database.get<SqliteRow & { now: number | string }>(`SELECT ${dialectOf(database).nowMs} AS now`);
+	return Number(row!.now);
 }

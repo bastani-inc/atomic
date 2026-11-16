@@ -476,7 +476,7 @@ Await `create`, `open`, `continueRecent`, `forkFrom`, and all session mutations.
 
 - `SessionManager.create(cwd, sessionDir?, options?)` - New session in configured storage, or explicit JSONL when a directory is supplied.
 - `SessionManager.create(store, cwd, options?)` - New session in a supplied `SessionStore`. Workflow-owned sessions require the pair `internal: true` and `workflow: { runId, stageId, stageName }`.
-- `SessionManager.open(store, sessionId, cwdOverride?)` - Open an existing session by exact ID in that store. A missing ID raises `SessionNotFoundError`; it does not create a session.
+- `SessionManager.open(store, sessionId, cwdOverride?, options?)` - Open an existing session by exact ID in that store. A missing ID raises `SessionNotFoundError`; it does not create a session. Pass `{ history: "tail" }` to read a compacted session from its latest compaction: the manager then holds the entries that keep the session's state and the branch from the compaction's kept messages on, and `loadFullHistory()` reads the rest. The default, `{ history: "full" }`, reads every entry. `openSessionById(id, cwd?, sessionDir?, options?)` and `continueRecent(store, cwd, options?)` take the same option.
 - `SessionManager.open(path, sessionDir?, cwdOverride?)` - Open a JSONL file directly, creating it if missing. This is a file API, not the CLI session selector.
 - `SessionManager.continueRecent(cwd, sessionDir?, options?)` or `continueRecent(store, cwd, options?)` - Continue the most recent regular session or create one. Pass `{ includeInternal: true }` only to include workflow sessions.
 - `SessionManager.inMemory(cwd?, options?, entries?)` - Explicit memory storage.
@@ -536,7 +536,15 @@ for (const stage of stages.filter((session) => session.internal)) {
 - `buildSessionContext()` - Get messages, thinkingLevel, and model for LLM
 - `buildContextEntries()` - Active branch entries after the latest compaction boundary
 - `appendContextEdit(targetId, replacement)` - Append a branch-local context edit (`null` omits the target; `{ content }` replaces only its content)
-- `getEntries()` - All entries (excluding header)
+- `getEntries()` - All entries (excluding header). A manager opened with `{ history: "tail" }` holds the entries that keep the session's state and the branch from its latest compaction on until `loadFullHistory()` reads the rest
+- `hasFullHistory()` - Whether every entry is held
+- `loadFullHistory()` - Read missing sequence ranges and merge them in store order; resolves at once when every entry is held. Rejects with `SessionConflictError` if the session was replaced or recreated after it was opened
+- `getOmittedHistoryTotals()` - Usage and message counts of the entries a `{ history: "tail" }` open left out, or `undefined` when every entry is held
+- `getLastSeq()` - The session's last stored sequence, including entries not in memory
+- `getEntrySeq(id)` - A held entry's sequence, or `undefined` when it is not held
+- `findEntrySeq(id)` - Look up an entry's sequence in the store without loading the earlier transcript
+- `forEachStoredEntry(fromSeq, visit)` - Visit every stored entry from `fromSeq` on in store order, reading the ones a `{ history: "tail" }` manager does not hold in pages and keeping none of them. Resolves with the last sequence visited
+- `getSessionRecoveryState()` - Persisted admission keys, delivered Intercom message ids and pooled workflow delivery ids (`deliveryOpIds`) used to prevent duplicate deliveries after resume
 - `getHeader()` - Session header metadata
 - `getSessionName()` - Get display name from latest session_info entry (`undefined` when cleared or never named)
 - `getSessionNameState()` - Get the name state: `{ hasName: false }` when never named, `{ hasName: true }` when the latest entry cleared it, `{ hasName: true, name }` when currently named

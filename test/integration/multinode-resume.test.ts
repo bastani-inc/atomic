@@ -10,13 +10,13 @@ import {
 	readdirSync,
 	readFileSync,
 	realpathSync,
-	renameSync,
 	symlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { basename, dirname, join, relative } from "node:path";
 import { afterAll, beforeAll, describe, test } from "vitest";
+import { renameWithRetry } from "../../packages/coding-agent/src/core/rename-retry.ts";
 import { bunExecutable, makeTempDirectory, moduleDir, removeTempDirectory } from "../helpers/runtime.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 
@@ -257,7 +257,7 @@ describe.skipIf(process.platform === "win32")("multi-node resume, reduced to pro
 			nodeA.child.kill("SIGKILL");
 			assert.equal((await nodeA.run).signal, "SIGKILL");
 			offlineClone = join(root, "node-a-offline", "home", "repo");
-			renameSync(join(root, "node-a"), join(root, "node-a-offline"));
+			await renameWithRetry(join(root, "node-a"), join(root, "node-a-offline"));
 
 			const nodeCPath = join(root, "node-c", "bin");
 			mkdirSync(nodeCPath, { recursive: true });
@@ -385,7 +385,7 @@ describe.skipIf(process.platform === "win32")("multi-node resume, reduced to pro
 			});
 			nodeA.child.kill("SIGKILL");
 			await nodeA.run;
-			renameSync(fleetPath, join(root, "fleet", "node-a-repo"));
+			await renameWithRetry(fleetPath, join(root, "fleet", "node-a-repo"));
 			git(root, "clone", "-q", join(root, "remote.git"), fleetPath);
 			writeFileSync(join(fleetPath, "README.md"), "node B's own checkout\n");
 
@@ -447,7 +447,7 @@ describe.skipIf(process.platform === "win32")("multi-node resume, reduced to pro
 			});
 			nodeA.child.kill("SIGKILL");
 			await nodeA.run;
-			renameSync(join(root, "two-repos-node-a"), join(root, "two-repos-node-a-offline"));
+			await renameWithRetry(join(root, "two-repos-node-a"), join(root, "two-repos-node-a-offline"));
 			const setupMarker = join(root, "two-repos-node-b", "setup-ran");
 			mkdirSync(dirname(setupMarker), { recursive: true });
 
@@ -494,7 +494,7 @@ describe.skipIf(process.platform === "win32")("multi-node resume, reduced to pro
 			nodeA.child.kill("SIGKILL");
 			await nodeA.run;
 			const offline = join(root, "prov-node-a-gone");
-			renameSync(join(root, "prov-node-a"), offline);
+			await renameWithRetry(join(root, "prov-node-a"), offline);
 			const portable = portableGitArchive();
 			const gitless = (extra: NodeJS.ProcessEnv = {}) =>
 				nodeEnv("prov-node-d", {

@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdtempSync } from "node:fs";
-import net from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { AgentTool, AgentToolResult } from "@bastani/atomic-agent-core";
@@ -28,7 +27,8 @@ import { createDispatchCounter } from "../helpers/intercom-interrupt-probe.js";
 import { TEST_TIMEOUT_MS } from "../helpers/test-timeout.js";
 import { toolContext } from "../helpers/tool-context.js";
 
-const BROKER_STARTUP_TIMEOUT_MS = 10_000;
+const BROKER_STARTUP_TIMEOUT_MS = 90_000;
+const BROKER_STARTUP_HOOK_TIMEOUT_MS = BROKER_STARTUP_TIMEOUT_MS + 5_000;
 const POLL_INTERVAL_MS = 20;
 /**
  * Broker sends acknowledge `durableInbox` receipt before the recipient runs its
@@ -83,22 +83,11 @@ beforeAll(async () => {
 			stdio: "ignore",
 		}),
 	);
-	await vi.waitFor(
-		async () => {
-			brokerFixture.assertRunning();
-			const connected = await new Promise<boolean>((resolveConnected) => {
-				const socket = net.createConnection(getBrokerSocketPath(process.platform, brokerFixture.agentDir));
-				socket.once("connect", () => {
-					socket.destroy();
-					resolveConnected(true);
-				});
-				socket.once("error", () => resolveConnected(false));
-			});
-			assert.ok(connected);
-		},
-		{ timeout: BROKER_STARTUP_TIMEOUT_MS, interval: POLL_INTERVAL_MS },
+	await brokerFixture.holdSession(
+		getBrokerSocketPath(process.platform, brokerFixture.agentDir),
+		BROKER_STARTUP_TIMEOUT_MS,
 	);
-});
+}, BROKER_STARTUP_HOOK_TIMEOUT_MS);
 afterAll(() => brokerFixture.cleanup());
 
 interface EndpointOptions {

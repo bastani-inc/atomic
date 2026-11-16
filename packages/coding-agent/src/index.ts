@@ -32,6 +32,7 @@ export type {
 	ToolRenderers,
 	ToolScriptAccess,
 } from "./core/extensions/tool-types.ts";
+export { type TakeoverMutex, takeTakeoverMutex } from "./core/lock-takeover.ts";
 export { resolveRestoredModelReference } from "./core/model-resolver-initial.ts";
 export * from "./core/resume/index.ts";
 export type { UsageEntry } from "./core/session-manager.ts";
@@ -156,6 +157,17 @@ export {
 } from "./extensions/codemode/tool.js";
 export { createToolSearchExtension } from "./extensions/tool-search/index.js";
 export { createToolSearchToolDefinition, type ToolSearchToolOptions } from "./extensions/tool-search/tool.js";
+export {
+	isNavHelpKey,
+	NAV_CONFIRM_WINDOW_MS,
+	type NavKey,
+	type NavKeybindings,
+	type NavKeyStyle,
+	navEntryKeys,
+	renderNavHintLine,
+	renderNavKeyOverlay,
+	TwoPressConfirm,
+} from "./modes/interactive/components/nav-keys.ts";
 export { renderTaskFooter, TaskList, taskListSections } from "./modes/interactive/components/task-list.js";
 export { TaskRow } from "./modes/interactive/components/task-row.js";
 export {
@@ -758,12 +770,14 @@ export {
 	type SessionEntryBase,
 	SessionEntryError,
 	type SessionHeader,
+	SessionHistoryNotLoadedError,
 	SessionIdError,
 	type SessionInfo,
 	type SessionInfoEntry,
 	SessionManager,
 	type SessionMessageEntry,
 	type SessionNameState,
+	type SessionOpenOptions,
 	type SessionProjection,
 	type SessionSummaryEntry,
 	type SessionTreeNode,

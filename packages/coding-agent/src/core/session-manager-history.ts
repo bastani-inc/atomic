@@ -373,12 +373,15 @@ export function getSessionLeafId(entries: readonly SessionEntry[]): string | nul
 export function getBranchPath(
 	fromId: string | null | undefined,
 	byId: ReadonlyMap<string, SessionEntry>,
+	links?: ReadonlyMap<string, string>,
 ): SessionEntry[] {
 	const path: SessionEntry[] = [];
 	let current = fromId ? byId.get(fromId) : undefined;
 	while (current) {
 		path.push(current);
-		current = current.parentId ? byId.get(current.parentId) : undefined;
+		const parent = current.parentId ? byId.get(current.parentId) : undefined;
+		const linked = parent === undefined ? links?.get(current.id) : undefined;
+		current = parent ?? (linked === undefined ? undefined : byId.get(linked));
 	}
 	path.reverse();
 	return path;

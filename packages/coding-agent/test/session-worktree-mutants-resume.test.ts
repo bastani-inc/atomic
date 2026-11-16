@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { chmodSync, readdirSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, readdirSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
+import { renameWithRetry } from "../src/core/rename-retry.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import {
 	compareWorktreeSnapshot,
@@ -185,8 +186,8 @@ describe.skipIf(process.platform === "win32")("rolling back restores whose remov
 		const manager = await SessionManager.create(store, a.clone);
 		await record(manager, a.clone);
 		await recordUnsafe(manager, denied);
-		renameSync(a.clone, sandbox.path("a-away"));
-		renameSync(denied, sandbox.path("b-away"));
+		await renameWithRetry(a.clone, sandbox.path("a-away"));
+		await renameWithRetry(denied, sandbox.path("b-away"));
 		await assert.rejects(resumeSessionWorktree(manager, options()), (error: unknown) => {
 			assertRefusedRecord(error);
 			assert.equal(Object.hasOwn(error, "cleanupCause"), false);
@@ -201,8 +202,8 @@ describe.skipIf(process.platform === "win32")("rolling back restores whose remov
 		const manager = await SessionManager.create(store, a.clone);
 		const restorable = await record(manager, a.clone);
 		await recordUnsafe(manager, denied);
-		renameSync(a.clone, sandbox.path("a-away"));
-		renameSync(denied, sandbox.path("b-away"));
+		await renameWithRetry(a.clone, sandbox.path("a-away"));
+		await renameWithRetry(denied, sandbox.path("b-away"));
 		failWorktreeRemoval();
 		await assert.rejects(resumeSessionWorktree(manager, options()), (error: unknown) => {
 			assertRefusedRecord(error);
@@ -223,7 +224,8 @@ describe.skipIf(process.platform === "win32")("rolling back restores whose remov
 		const first = await record(manager, a.clone);
 		const second = await record(manager, b.clone);
 		await recordUnsafe(manager, denied);
-		for (const clone of [a.clone, b.clone, denied]) renameSync(clone, sandbox.path(`${basename(clone)}-away`));
+		for (const clone of [a.clone, b.clone, denied])
+			await renameWithRetry(clone, sandbox.path(`${basename(clone)}-away`));
 		failWorktreeRemoval();
 		await assert.rejects(resumeSessionWorktree(manager, options()), (error: unknown) => {
 			assertRefusedRecord(error);
@@ -244,8 +246,8 @@ describe.skipIf(process.platform === "win32")("rolling back restores whose remov
 		const manager = await SessionManager.create(store, a.clone);
 		await record(manager, a.clone);
 		await record(manager, b.clone);
-		renameSync(a.clone, sandbox.path("a-away"));
-		renameSync(b.clone, sandbox.path("b-away"));
+		await renameWithRetry(a.clone, sandbox.path("a-away"));
+		await renameWithRetry(b.clone, sandbox.path("b-away"));
 		const failure = Object.freeze(new Error("mapping could not be persisted"));
 		const originalAppend = store.append.bind(store);
 		let count = 0;

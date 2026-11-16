@@ -1,7 +1,3 @@
-/**
- * Generic selector component for extensions: a list of string options in the shared selector look.
- */
-
 import type { TUI } from "@bastani/atomic-tui";
 import { CountdownTimer } from "./countdown-timer.ts";
 import { FramedSelector, type SelectorExtraKey } from "./selector.ts";
@@ -10,6 +6,8 @@ export interface ExtensionSelectorOptions {
 	tui?: TUI;
 	timeout?: number;
 	onToggleToolsExpanded?: () => void;
+	numbered?: boolean;
+	initialIndex?: number;
 }
 
 /**
@@ -31,11 +29,15 @@ export class ExtensionSelectorComponent extends FramedSelector<string> {
 		const extraKeys: SelectorExtraKey<string>[] = toggleTools
 			? [{ hint: { action: "app.tools.expand", label: "tool output" }, run: () => toggleTools() }]
 			: [];
+		const initialIndex =
+			opts?.initialIndex === undefined ? undefined : Math.max(0, Math.min(options.length - 1, opts.initialIndex));
 		super({
 			title: heading,
 			subtitle: details.length > 0 ? details.join("\n") : undefined,
 			items: options.map((option, index) => ({ id: String(index), value: option, label: option })),
 			extraKeys,
+			numbered: opts?.numbered,
+			initialId: initialIndex === undefined ? undefined : String(initialIndex),
 			onSelect: (item) => onSelect(item.value),
 			onCancel,
 		});

@@ -1,8 +1,9 @@
 import type { AssistantMessage, Usage } from "@bastani/atomic-ai/compat";
+import type { TUI } from "@bastani/atomic-tui";
 import { CONFIG_DIR_NAME } from "../../config.js";
 import { collectCacheMisses, createCacheMissModelSource, formatCacheMissNotice } from "../../core/cache-stats.ts";
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
-import { stripVerbatimCompactionPrefix } from "../../core/messages.ts";
+import { isVerbatimCompactionMessage, stripVerbatimCompactionPrefix } from "../../core/messages.ts";
 import { serviceTierWarnings } from "../../core/service-tier-warnings.ts";
 import type { CustomEntry } from "../../core/session-manager.ts";
 import { buildContextEntries, type SessionEntry, sessionEntryToContextMessages } from "../../core/session-manager.ts";
@@ -10,12 +11,14 @@ import { yieldToEventLoop } from "../../utils/event-loop.ts";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
 import { RemoteCustomMessageComponent, RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
 import { appendBoundedStderr } from "../rpc/rpc-client-process.js";
+import { messageComponents, statusComponents } from "./chat-message-count.ts";
 import { CustomEntryComponent } from "./components/custom-entry.ts";
+import type { NewMessageCounter } from "./components/jump-to-latest.ts";
 import { createMarkdownTransform } from "./components/markdown-transform.ts";
 import { createMermaidMarkdownTransformer } from "./components/mermaid.ts";
 import { ThemedText } from "./components/themed-text.js";
 import { appendNewChildrenBeforeAttachedChild } from "./interactive-child-ordering.ts";
-import { InteractiveModeBase } from "./interactive-mode-base.ts";
+import { countChatMessages, InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
 	type AgentMessage,
 	APP_NAME,
@@ -115,6 +118,7 @@ InteractiveModeBase.prototype.showStatus = function (
 	if (persist) message = appendBoundedStderr("", message);
 	const spacer = new Spacer(1);
 	const text = new Text(theme.fg("dim", message), 1, 0);
+	statusComponents.add(text);
 	this.chatContainer.addChild(spacer);
 	this.chatContainer.addChild(text);
 	this.lastStatusSpacer = persist ? undefined : spacer;
@@ -137,11 +141,15 @@ InteractiveModeBase.prototype.showStatus = function (
 	this.ui.requestRender();
 };
 
+const echoReadEpochs = new WeakMap<Component[], number>();
+
 InteractiveModeBase.prototype.renderDeferredUserInput = function (this: InteractiveModeBase, text: string): void {
 	this.deferredRenderedUserInputs.push(text);
 	const startIndex = this.chatContainer.children.length;
 	this.addMessageToChat({ role: "user", content: text } as AgentMessage);
 	const renderedComponents = this.chatContainer.children.slice(startIndex);
+	const epoch = (this.ui as AltScreenMessageCounterHost).newMessages?.epoch;
+	if (epoch !== undefined) echoReadEpochs.set(renderedComponents, epoch);
 	const trackedComponents = this.deferredRenderedUserInputComponents.get(text) ?? [];
 	trackedComponents.push(renderedComponents);
 	this.deferredRenderedUserInputComponents.set(text, trackedComponents);
@@ -165,24 +173,62 @@ InteractiveModeBase.prototype.consumeDeferredRenderedUserInput = function (
 	return true;
 };
 
+function forgetDeferredEcho(mode: InteractiveModeBase, text: string): Component[] | undefined {
+	const index = mode.deferredRenderedUserInputs.indexOf(text);
+	if (index !== -1) {
+		mode.deferredRenderedUserInputs.splice(index, 1);
+		if (mode.startedDeferredUserInput === text) mode.startedDeferredUserInput = undefined;
+	}
+	const trackedComponents = mode.deferredRenderedUserInputComponents.get(text);
+	const components = trackedComponents?.shift();
+	if (trackedComponents && trackedComponents.length === 0) {
+		mode.deferredRenderedUserInputComponents.delete(text);
+	}
+	return components;
+}
+
+function takeDeferredEchoes(mode: InteractiveModeBase): Array<{ text: string; epoch: number | undefined }> {
+	const occurrences = new Map<string, number>();
+	const echoes = mode.deferredRenderedUserInputs.map((text) => {
+		const occurrence = occurrences.get(text) ?? 0;
+		occurrences.set(text, occurrence + 1);
+		const components = mode.deferredRenderedUserInputComponents.get(text)?.[occurrence];
+		return { text, epoch: components ? echoReadEpochs.get(components) : undefined };
+	});
+	mode.deferredRenderedUserInputs = [];
+	mode.deferredRenderedUserInputComponents.clear();
+	return echoes;
+}
+
+function restoreDeferredEchoes(
+	mode: InteractiveModeBase,
+	echoes: ReadonlyArray<{ text: string; epoch: number | undefined }>,
+): void {
+	for (const { text, epoch } of echoes) {
+		mode.renderDeferredUserInput(text);
+		const tracked = mode.deferredRenderedUserInputComponents.get(text);
+		const components = tracked?.[tracked.length - 1];
+		if (components && epoch !== undefined) echoReadEpochs.set(components, epoch);
+	}
+}
+
 InteractiveModeBase.prototype.discardDeferredRenderedUserInput = function (
 	this: InteractiveModeBase,
 	text: string,
 ): void {
-	const index = this.deferredRenderedUserInputs.indexOf(text);
-	if (index !== -1) {
-		this.deferredRenderedUserInputs.splice(index, 1);
-		if (this.startedDeferredUserInput === text) this.startedDeferredUserInput = undefined;
-	}
-	const trackedComponents = this.deferredRenderedUserInputComponents.get(text);
-	const componentsToRemove = trackedComponents?.shift();
-	if (trackedComponents && trackedComponents.length === 0) {
-		this.deferredRenderedUserInputComponents.delete(text);
-	}
+	const componentsToRemove = forgetDeferredEcho(this, text);
 	if (!componentsToRemove) return;
-	for (const component of componentsToRemove) {
-		this.chatContainer.removeChild(component);
+	const renderer = this.ui as AltScreenMessageCounterHost;
+	const following = renderer.isFollowingOutput !== false;
+	const countedBefore = countChatMessages(this.chatContainer);
+	if (!following) renderer.newMessages?.observe(false, countedBefore);
+	for (const component of componentsToRemove) this.chatContainer.removeChild(component);
+	const counted = countChatMessages(this.chatContainer);
+	const counter = renderer.newMessages;
+	if (!following && counter && echoReadEpochs.get(componentsToRemove) === counter.epoch) {
+		counter.retract(countedBefore - counted);
 	}
+	counter?.observe(following, counted);
 	this.updatePendingMessagesDisplay();
 	this.ui.requestRender();
 };
@@ -210,9 +256,21 @@ InteractiveModeBase.prototype.showSessionUserMessage = function (this: Interacti
 	if (this.consumeDeferredRenderedUserInput(this.getUserMessageText(message))) return;
 	const started = this.startedDeferredUserInput;
 	if (started !== undefined) {
-		const echo = this.deferredRenderedUserInputComponents.get(started)?.[0];
+		const renderer = this.ui as AltScreenMessageCounterHost;
+		const following = renderer.isFollowingOutput !== false;
+		const countedBefore = countChatMessages(this.chatContainer);
+		renderer.newMessages?.observe(following, countedBefore);
+		const echo = forgetDeferredEcho(this, started);
 		appendNewChildrenBeforeAttachedChild(this.chatContainer, echo?.[0], () => this.addMessageToChat(message));
-		this.discardDeferredRenderedUserInput(started);
+		for (const component of echo ?? []) this.chatContainer.removeChild(component);
+		const counted = countChatMessages(this.chatContainer);
+		const counter = renderer.newMessages;
+		if (!following && counter && echo && echoReadEpochs.get(echo) === counter.epoch) {
+			counter.retract(countedBefore - counted);
+		}
+		counter?.replaced(counted);
+		this.updatePendingMessagesDisplay();
+		this.ui.requestRender();
 		return;
 	}
 	this.userMessagesShownBySession += 1;
@@ -310,6 +368,9 @@ InteractiveModeBase.prototype.addRenderedChatEntry = function (
 	entry: ChatMessageEntry,
 ): Component {
 	const component = renderChatMessageEntry(entry, this.chatMessageRenderOptions());
+	if (entry.kind !== "system" && !(entry.kind === "custom" && isVerbatimCompactionMessage(entry.message))) {
+		messageComponents.add(component);
+	}
 	addChatTranscriptEntry(this.chatContainer, component, entry.role);
 	return component;
 };
@@ -350,9 +411,15 @@ InteractiveModeBase.prototype.addCustomEntryToChat = function (this: Interactive
 	);
 	component.setExpanded(this.toolOutputExpanded);
 	if (!component.hasContent()) return;
+	messageComponents.add(component);
 	const streamingIndex = this.streamingComponent ? this.chatContainer.children.indexOf(this.streamingComponent) : -1;
 	if (streamingIndex >= 0) this.chatContainer.children.splice(streamingIndex, 0, component);
 	else this.chatContainer.addChild(component);
+};
+
+type AltScreenMessageCounterHost = TUI & {
+	isFollowingOutput?: boolean;
+	newMessages?: NewMessageCounter;
 };
 
 InteractiveModeBase.prototype.addMessageToChat = function (
@@ -378,6 +445,7 @@ InteractiveModeBase.prototype.addMessageToChat = function (
 				message.truncated ? ({ truncated: true } as TruncationResult) : undefined,
 				message.fullOutputPath,
 			);
+			messageComponents.add(component);
 			this.chatContainer.addChild(component);
 			break;
 		}
@@ -400,6 +468,7 @@ InteractiveModeBase.prototype.addMessageToChat = function (
 								markdownTransformers,
 							);
 				component.setExpanded(this.toolOutputExpanded);
+				messageComponents.add(component);
 				this.chatContainer.addChild(component);
 			}
 			break;
@@ -414,6 +483,7 @@ InteractiveModeBase.prototype.addMessageToChat = function (
 				markdownTransformers,
 			);
 			component.setExpanded(this.toolOutputExpanded);
+			messageComponents.add(component);
 			this.chatContainer.addChild(component);
 			break;
 		}
@@ -434,6 +504,7 @@ InteractiveModeBase.prototype.addMessageToChat = function (
 						markdownTransformers,
 					);
 					component.setExpanded(this.toolOutputExpanded);
+					if (!skillBlock.userMessage) messageComponents.add(component);
 					this.chatContainer.addChild(component);
 					// Render user message separately if present
 					if (skillBlock.userMessage) {
@@ -444,6 +515,7 @@ InteractiveModeBase.prototype.addMessageToChat = function (
 							markdownTransformers,
 							this.settingsManager.getLatexRenderingEnabled(),
 						);
+						messageComponents.add(userComponent);
 						this.chatContainer.addChild(userComponent);
 					}
 				} else {
@@ -454,6 +526,7 @@ InteractiveModeBase.prototype.addMessageToChat = function (
 						markdownTransformers,
 						this.settingsManager.getLatexRenderingEnabled(),
 					);
+					messageComponents.add(userComponent);
 					this.chatContainer.addChild(userComponent);
 				}
 				if (options?.populateHistory) {
@@ -473,6 +546,7 @@ InteractiveModeBase.prototype.addMessageToChat = function (
 				false,
 				this.settingsManager.getLatexRenderingEnabled(),
 			);
+			messageComponents.add(assistantComponent);
 			this.chatContainer.addChild(assistantComponent);
 			break;
 		}
@@ -491,9 +565,7 @@ InteractiveModeBase.prototype.renderSessionContext = function (
 	options: { updateFooter?: boolean; populateHistory?: boolean } = {},
 ): void {
 	this.pendingTools.clear();
-	const pendingDeferredInputs = [...this.deferredRenderedUserInputs];
-	this.deferredRenderedUserInputs = [];
-	this.deferredRenderedUserInputComponents.clear();
+	const pendingEchoes = takeDeferredEchoes(this);
 
 	if (options.updateFooter) {
 		this.footer.invalidate();
@@ -511,9 +583,7 @@ InteractiveModeBase.prototype.renderSessionContext = function (
 		}
 	}
 
-	for (const input of pendingDeferredInputs) {
-		this.renderDeferredUserInput(input);
-	}
+	restoreDeferredEchoes(this, pendingEchoes);
 
 	this.ui.requestRender();
 };
@@ -529,9 +599,7 @@ InteractiveModeBase.prototype.renderSessionEntries = function (
 ): void {
 	this.resetTranscriptSelection();
 	this.pendingTools.clear();
-	const deferredInputs = [...this.deferredRenderedUserInputs];
-	this.deferredRenderedUserInputs = [];
-	this.deferredRenderedUserInputComponents.clear();
+	const pendingEchoes = takeDeferredEchoes(this);
 	if (options.updateFooter) {
 		this.footer.invalidate();
 		this.updateEditorBorderColor();
@@ -588,7 +656,7 @@ InteractiveModeBase.prototype.renderSessionEntries = function (
 			this.chatContainer.addChild(new Text(theme.fg("warning", formatCacheMissNotice(miss)), 1, 0));
 		}
 	}
-	for (const input of deferredInputs) this.renderDeferredUserInput(input);
+	restoreDeferredEchoes(this, pendingEchoes);
 	this.ui.requestRender();
 };
 
@@ -610,12 +678,30 @@ InteractiveModeBase.prototype.attachStartupNoticesContainer = function (
 	}
 };
 
+const renderedSessionIds = new WeakMap<InteractiveModeBase, string>();
+
+export function clearChatForRerender(mode: InteractiveModeBase): void {
+	const renderer = mode.ui as AltScreenMessageCounterHost;
+	if (mode.chatContainer.children.length > 0) {
+		renderer.newMessages?.observe(renderer.isFollowingOutput !== false, countChatMessages(mode.chatContainer));
+	}
+	mode.chatContainer.clear();
+}
+
 InteractiveModeBase.prototype.renderInitialMessages = function (this: InteractiveModeBase): void {
+	const sessionId = this.sessionManager.getSessionId();
+	const previousSessionId = renderedSessionIds.get(this);
+	renderedSessionIds.set(this, sessionId);
+	const renderer = this.ui as AltScreenMessageCounterHost;
+	if (previousSessionId !== sessionId) renderer.newMessages?.reset();
 	this.attachStartupNoticesContainer({ resetDetached: true });
 	const entries = buildContextEntries(this.sessionManager.getEntries(), this.sessionManager.getLeafId());
 	this.renderSessionEntries(entries, { updateFooter: true, populateHistory: true });
 	renderProjectTrustWarningIfNeeded(this);
 	refreshInteractiveTasks(this);
+	if (previousSessionId === sessionId) {
+		renderer.newMessages?.replaced(countChatMessages(this.chatContainer));
+	}
 };
 
 function renderProjectTrustWarningIfNeeded(mode: InteractiveModeBase): void {
@@ -691,14 +777,16 @@ InteractiveModeBase.prototype.rebuildChatFromMessages = function (
 	// Generic rebuilds keep the same session: pending fd/rg callbacks still own
 	// this transcript. Full session replacements invalidate their generation in
 	// renderCurrentSessionState() before rebuilding the replacement transcript.
+	const renderer = this.ui as AltScreenMessageCounterHost;
 	this.managedToolStatusStarted = false;
 	this.lastStatusSpacer = undefined;
 	this.lastStatusText = undefined;
-	this.chatContainer.clear();
+	clearChatForRerender(this);
 	if (options.resetStartupDisclosure) this.resourceDisclosureContainer.clear();
 	this.attachStartupNoticesContainer();
 	const entries = buildContextEntries(this.sessionManager.getEntries(), this.sessionManager.getLeafId());
 	this.renderSessionEntries(entries, { suppressCompactionBoundary: options.suppressCompactionBoundary });
+	renderer.newMessages?.replaced(countChatMessages(this.chatContainer));
 };
 
 function isSynthesizedCompactionBoundary(message: AgentMessage | undefined, result: VerbatimCompactionResult): boolean {

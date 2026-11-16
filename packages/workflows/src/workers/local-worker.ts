@@ -47,6 +47,7 @@ import { loadWorkerDefinition } from "./definitions.js";
 import { fleetRateGate } from "./fleet-rate-limits.js";
 import { OUTAGE_HANDOFF_MS, retryWithinLease } from "./lease-outage.js";
 import { poolWorkerCommit } from "./pool-commit.js";
+import { IDLE_CLAIM_FALLBACK_MS } from "./pool-wake-ups.js";
 import { POOLED_CUSTOM_PROMPT_UNAVAILABLE } from "./pooled-prompt-limits.js";
 import { completedAttemptResult, remoteStageInbox, workerStageAdapter } from "./pooled-stage-delivery.js";
 import { configurePooledWatchTrace } from "./pooled-watch-trace.js";
@@ -390,6 +391,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 			})) as unknown as PoolCommitReceipt;
 		},
 		catchUp: () => reader.catchUpWorkflow(start.root),
+		noteLocal: (checkpoint) => reader.noteRecordedCheckpoint(checkpoint),
 	});
 	const reads = new Set([
 		"getToolOutput",
@@ -504,25 +506,36 @@ async function runWorker(start: WorkerStart): Promise<void> {
 				inbox: () => remoteInbox,
 			},
 		);
+		let controlChanged: (() => void) | undefined;
 		/** Applies control a heartbeat reply or a push carried; a failure ends the attempt it would have controlled. */
 		const offerControl = (next: PoolControl) =>
-			void control.offer(next).catch((error: Error) => {
-				if (activeController) activeController.abort(error);
-				else controlFailure ??= error;
-			});
+			void control
+				.offer(next)
+				.catch((error: Error) => {
+					if (activeController) activeController.abort(error);
+					else controlFailure ??= error;
+				})
+				.finally(() => controlChanged?.());
 		receiveControl = offerControl;
 		const observeControl = async () => control.offer((await request({ kind: "control" })) as PoolControl);
+		const controlPushed = start.shared === undefined || start.shared.routes;
 		await request({ kind: "ready" });
 		for (;;) {
 			if (controlFailure) throw controlFailure;
 			let work: PoolWork | undefined;
 			try {
-				await observeControl();
-				if (control.state !== "running") {
-					await delay(25);
-					continue;
+				if (controlPushed && control.state !== "running") {
+					const waited = await new Promise<boolean>((resolve) => {
+						const timer = setTimeout(() => resolve(true), IDLE_CLAIM_FALLBACK_MS);
+						controlChanged = () => {
+							clearTimeout(timer);
+							resolve(false);
+						};
+					});
+					controlChanged = undefined;
+					if (!waited) continue;
+					await observeControl();
 				}
-				await reader.catchUpWorkflow(start.root);
 				work = (await request({ kind: "claim" })) as PoolWork | undefined;
 			} catch (error) {
 				// An idle worker waits out an outage of the journal instead of exiting (#4768). A claim the outage hid the
@@ -536,7 +549,6 @@ async function runWorker(start: WorkerStart): Promise<void> {
 			leaseRenewedAt = performance.now();
 			if (!work) {
 				if (replies.retired) break;
-				await delay(25 + Math.random() * 25);
 				continue;
 			}
 			const index = start.definitions.findIndex(

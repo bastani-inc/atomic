@@ -245,7 +245,6 @@ describe("scoped models selector", () => {
 		expect(lines().at(-2)?.trim()).toBe(
 			`↑↓ select · enter toggle · ctrl+a all · ctrl+x clear · ctrl+p provider · ${reorder} reorder · type to search · esc cancel`,
 		);
-		// Reordering applies only to enabled models; on a disabled row the key does nothing and is not hinted.
 		selector.handleInput("\x1b[B");
 		expect(lines().at(-2)).not.toContain("reorder");
 		for (const width of [40, 80, 160]) {

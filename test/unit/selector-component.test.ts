@@ -51,12 +51,10 @@ function picker(options: Partial<SelectorOptions<number>> & { items: SelectorIte
 	return { selector, events, text };
 }
 
-/** Visible text: no colour and no cursor marker. */
 function plain(line: string): string {
 	return stripVTControlCharacters(line.replace(/\x1b_[^\x07]*\x07/g, ""));
 }
 
-/** The hint line is always the last rendered line. */
 function hint(lines: string[]): string {
 	return (lines.at(-1) ?? "").trim();
 }
@@ -235,7 +233,7 @@ describe("shared selector (#5224)", () => {
 	test("numbered rows: digits choose directly when there is no search box", () => {
 		const { selector, events, text } = picker({ numbered: true, items: items(3) });
 		assert.ok(text().includes(" ❯ 1. item 0"));
-		assert.equal(hint(text()), "↑↓ select · enter choose · 1-9 pick · esc cancel · ? keys");
+		assert.equal(hint(text()), "↑↓ select · enter choose · 1-3 pick · esc cancel · ? keys");
 		selector.handleInput("3");
 		assert.deepEqual(events, ["select:id-2"]);
 	});
@@ -307,8 +305,6 @@ describe("shared selector (#5224)", () => {
 	});
 
 	test("every hinted key does something and every key that does something is hinted", () => {
-		// Each hint entry names a key; pressing it changes state or reports an event, and a key outside the hint
-		// (here: space without a preview, a digit without numbering) does nothing.
 		const { selector, events } = picker({ items: items(3) });
 		const entries = selectorHintEntries(selector.state, { keybindings: getKeybindings() });
 		assert.deepEqual(
@@ -518,5 +514,11 @@ describe("shared selector (#5224)", () => {
 			],
 		});
 		assert.equal(hint(text(50)), "enter toggle · ctrl+a all · esc cancel");
+	});
+
+	test("the digit hint names the digits that choose a row", () => {
+		assert.match(hint(picker({ items: items(2), numbered: true }).text()), /1-2 pick/);
+		assert.match(hint(picker({ items: items(12), numbered: true }).text()), /1-9 pick/);
+		assert.match(hint(picker({ items: items(1), numbered: true }).text()), /1 pick/);
 	});
 });

@@ -26,7 +26,7 @@ import {
 import { uniquifyToolCallIds } from "./context-tool-pairing.js";
 import type { AgentActivityOutcome, BoundaryContextPreview, SessionBoundaryDraft } from "./extensions/index.js";
 import { convertToLlm, deferMessagesInterleavedWithToolBatch, repairOrphanToolResults } from "./messages.ts";
-import { type SessionEntry, SessionManager } from "./session-manager.ts";
+import type { SessionEntry, SessionManager } from "./session-manager.ts";
 
 type BoundaryKind = "turn_end" | "agent_before_settle";
 
@@ -266,9 +266,7 @@ export async function _createBoundaryPreviewManager(
 	this: AgentSession,
 	drafts: SessionBoundaryDraft[],
 ): Promise<SessionManager> {
-	const header = this.sessionManager.getHeader();
-	if (!header) throw new Error("Session header is missing");
-	const manager = SessionManager.inMemory(this._cwd, undefined, [header, ...this.sessionManager.getBranch()]);
+	const manager = this.sessionManager.inMemoryBranch(this._cwd);
 	await this._applyBoundaryDrafts(manager, drafts);
 	return manager;
 }

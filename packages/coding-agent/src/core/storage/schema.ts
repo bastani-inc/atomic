@@ -1,8 +1,18 @@
 import type { SqliteExecutor, SqliteValue } from "./database.js";
 import { StorageSchemaVersionError } from "./errors.js";
 
-export function assertStorageSchemaVersion(domain: string, found: SqliteValue, supported: number): void {
-	if (found !== supported) throw new StorageSchemaVersionError(domain, found, supported);
+/**
+ * Throws `StorageSchemaVersionError` unless `found` is a version from `oldest` to `supported`: a build reads every
+ * version in that range, and `supported` is the newest it knows.
+ */
+export function assertStorageSchemaVersion(
+	domain: string,
+	found: SqliteValue,
+	supported: number,
+	oldest = supported,
+): void {
+	if (typeof found !== "number" || !Number.isInteger(found) || found < oldest || found > supported)
+		throw new StorageSchemaVersionError(domain, found, supported);
 }
 
 /**
@@ -17,7 +27,8 @@ export async function assertStoredSchemaVersion(
 	domain: string,
 	supported: number,
 	column = "schema_version",
+	oldest = supported,
 ): Promise<void> {
 	const row = await executor.get(statement.sql, ...(statement.params ?? []));
-	assertStorageSchemaVersion(domain, row?.[column] ?? null, supported);
+	assertStorageSchemaVersion(domain, row?.[column] ?? null, supported, oldest);
 }
