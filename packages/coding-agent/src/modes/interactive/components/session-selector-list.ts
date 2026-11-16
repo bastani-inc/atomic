@@ -74,16 +74,22 @@ const RESUME_HINT_DROP_ORDER = [
 ];
 
 function fitResumeHint(entries: readonly NavKey[], room: number, keybindings: NavKeybindings): NavKey[] {
-	const kept = [...entries];
-	const text = (entry: NavKey) =>
-		`${entry.action !== undefined ? navActionText(keybindings, entry.action) : (entry.keys ?? "")} ${entry.label}`;
-	const width = () => visibleWidth(kept.map(text).join(" · "));
+	const separator = visibleWidth(" · ");
+	const widths = entries.map((entry) =>
+		visibleWidth(
+			`${entry.action !== undefined ? navActionText(keybindings, entry.action) : (entry.keys ?? "")} ${entry.label}`,
+		),
+	);
+	const kept = entries.map((_, index) => index);
+	let total = widths.reduce((sum, width) => sum + width, 0) + separator * Math.max(0, entries.length - 1);
 	for (const label of RESUME_HINT_DROP_ORDER) {
-		if (width() <= room) break;
-		const index = kept.findIndex((entry) => entry.label === label);
-		if (index >= 0) kept.splice(index, 1);
+		if (total <= room) break;
+		const at = kept.findIndex((index) => entries[index]!.label === label);
+		if (at < 0) continue;
+		total -= widths[kept[at]!]! + (kept.length > 1 ? separator : 0);
+		kept.splice(at, 1);
 	}
-	return kept;
+	return kept.map((index) => entries[index]!);
 }
 
 /**

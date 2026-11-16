@@ -1,0 +1,80 @@
+import assert from "node:assert/strict";
+import * as fs from "node:fs";
+import { setKeybindings } from "@bastani/atomic-tui";
+import { beforeAll, beforeEach, describe, it, vi } from "vitest";
+import { KeybindingsManager } from "../src/core/keybindings.ts";
+import type { SessionInfo } from "../src/core/session-manager.ts";
+import { SessionSelectorComponent } from "../src/modes/interactive/components/session-selector.ts";
+import { buildSessionTree, flattenSessionTree } from "../src/modes/interactive/components/session-selector-tree.ts";
+import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+
+vi.mock("node:fs", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs")>();
+	return { ...actual, realpathSync: vi.fn(actual.realpathSync) };
+});
+
+const HOUR = 3_600_000;
+const BACKSPACE = "\x7f";
+
+function sessions(count: number, parentOf: (index: number) => string | undefined): SessionInfo[] {
+	return Array.from({ length: count }, (_, index) => ({
+		path: `/tmp/resume-cost/s-${index}.jsonl`,
+		id: `s-${index}`,
+		cwd: "/work/project",
+		created: new Date(Date.now() - (index + 2) * HOUR),
+		modified: new Date(Date.now() - (index + 1) * HOUR),
+		messageCount: 3,
+		firstMessage: `message ${index}`,
+		allMessagesText: `message ${index}`,
+		...(parentOf(index) !== undefined ? { parentSessionPath: parentOf(index) } : {}),
+	})) as SessionInfo[];
+}
+
+function realpathCalls(): number {
+	return vi.mocked(fs.realpathSync).mock.calls.length;
+}
+
+describe("resume picker cost follows what changed, not how many sessions there are (#5224)", () => {
+	beforeAll(() => {
+		initTheme("dark");
+	});
+	beforeEach(() => {
+		setKeybindings(new KeybindingsManager());
+		vi.mocked(fs.realpathSync).mockClear();
+	});
+
+	it("threads 1,000 sessions whose parents are named exactly without touching the disk", () => {
+		const rows = sessions(1000, (index) => (index % 10 === 9 ? `/tmp/resume-cost/s-${index - 1}.jsonl` : undefined));
+		const flat = flattenSessionTree(buildSessionTree(rows));
+		assert.equal(flat.length, 1000);
+		assert.equal(flat.filter((node) => node.depth === 1).length, 100);
+		assert.equal(realpathCalls(), 0);
+	});
+
+	it("resolves another spelling of a parent once per session, and a rebuild only resolves the parent again", () => {
+		const rows = sessions(1000, (index) => (index === 5 ? "/tmp/resume-cost/./s-4.jsonl" : undefined));
+		buildSessionTree(rows);
+		assert.ok(realpathCalls() <= 1001, `${realpathCalls()} canonicalizations`);
+		vi.mocked(fs.realpathSync).mockClear();
+		buildSessionTree(rows);
+		assert.equal(realpathCalls(), 1);
+	});
+
+	it("opens and clears a search over 1,000 sessions without touching the disk", () => {
+		const rows = sessions(1000, () => undefined);
+		const picker = new SessionSelectorComponent(
+			async () => rows,
+			async () => rows,
+			() => {},
+			() => {},
+			() => {},
+			() => {},
+			{ keybindings: new KeybindingsManager(), initialSessions: rows },
+		);
+		picker.render(120);
+		for (const char of "message 9") picker.handleInput(char);
+		for (let index = 0; index < "message 9".length; index++) picker.handleInput(BACKSPACE);
+		picker.render(120);
+		assert.equal(realpathCalls(), 0);
+	});
+});
