@@ -262,4 +262,37 @@ describe("workflow run outcome and diagnostics (#5224)", () => {
 			"no theme, no escape codes",
 		);
 	});
+	it("every string in the outcome is inert: escape sequences removed, controls and bidi overrides shown (#5224)", () => {
+		const evil = "a\x1b]52;c;aGk=\x07b\x1b[2Jc\u202ed\x07e";
+		const outcome = buildRunOutcome(
+			run(
+				"failed",
+				[
+					stage(`s${evil}`, "failed", {
+						error: `boom ${evil}`,
+						artifacts: [{ kind: "output", path: `/repo/${evil}.md`, captureError: `no ${evil}` }],
+						pendingPrompt: undefined,
+					}),
+				],
+				{
+					name: `wf ${evil}`,
+					error: `boom ${evil}`,
+					exitReason: `exit ${evil}`,
+					result: { [`k${evil}`]: `v ${evil}` },
+				},
+			),
+		);
+		const strings = JSON.stringify(outcome);
+		assert.doesNotMatch(strings, /\\u001b/, "no escape character survives anywhere in the outcome");
+		assert.doesNotMatch(strings, /\u202e/, "no bidi override survives");
+		assert.match(outcome.name, /<U\+202E>/);
+	});
+
+	it("a value longer than three wrapped lines ends with an ellipsis instead of being cut silently (#5224)", () => {
+		const outcome = buildRunOutcome(run("completed", [], { endedAt: 5_000, result: { notes: "word ".repeat(200) } }));
+		const lines = renderRunOutcomeLines(outcome, { width: 60, logs: false, selected: 0 });
+		const notes = lines.filter((line) => /notes|word/.test(line));
+		assert.equal(notes.length, 3);
+		assert.match(notes.at(-1), /…$/);
+	});
 });

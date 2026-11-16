@@ -68,7 +68,7 @@ describe("workflow completion card: outputs and diagnostics (#5224)", () => {
 		assert.match(text, /outputs\s+summary: Fixed the benchmark · prNumber: 5236/);
 		assert.match(text, /artifacts\s+diff \/repo\/\.atomic\/impl\.patch · 3 files · \+40 −2/);
 		assert.match(text, /\+1 more/);
-		assert.match(text, /\/workflows, then o: run details/);
+		assert.match(text, /\/workflows run-ok, then o: run details/);
 		for (const line of card(notice, 80)) assert.ok(visibleWidth(line) <= 80, line);
 	});
 
@@ -84,8 +84,39 @@ describe("workflow completion card: outputs and diagnostics (#5224)", () => {
 		const text = card(notice).join("\n");
 		assert.match(text, /error\s+verify gate failed: 2 jobs/);
 		assert.doesNotMatch(text, /at verifyStage/);
-		assert.match(text, /full log: \/workflows, then o and l/);
+		assert.match(text, /full log: \/workflows run-bad, then o and l/);
 		// What the model reads keeps the full error: only the card shortens it.
 		assert.match(formatWorkflowLifecycleNoticeText(notice.details), /verify gate failed: 2 jobs/);
+	});
+	test("names, outputs and reasons on the card are inert, never live escape sequences (#5224)", async () => {
+		const { store, sent } = setup();
+		const evil = "a\x1b]52;c;aGk=\x07b\x1b[2Jc\u202ed";
+		store.recordRunStart({
+			id: "run-evil",
+			name: `wf ${evil}`,
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [],
+			startedAt: 1,
+		});
+		store.recordRunEnd("run-evil", "completed", { [`k${evil}`]: `v ${evil}` });
+		await Promise.resolve();
+		const notice = sent.find((message) => message.details?.kind === "completed");
+		assert.ok(notice);
+		let renderer: ((payload: unknown) => { render(width: number): string[] }) | undefined;
+		registerLifecycleNoticeRenderer({
+			rendererHost: {},
+			registerMessageRenderer(_event, r) {
+				renderer = r;
+			},
+		});
+		for (const width of [80, 160]) {
+			for (const line of renderer!({ details: notice.details }).render(width)) {
+				assert.doesNotMatch(line, /\x1b\]/);
+				assert.doesNotMatch(line, /\x1b\[2J/);
+				assert.doesNotMatch(line, /\u202e/);
+			}
+		}
 	});
 });

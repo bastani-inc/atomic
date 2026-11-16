@@ -5,8 +5,14 @@ import { stripVTControlCharacters as stripAnsi } from "node:util";
 import { describe, it } from "vitest";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { renderResult } from "../../packages/workflows/src/extension/render-result.js";
-import { handleWorkflowsCommand } from "../../packages/workflows/src/extension/workflow-open-run.js";
-import { invalidDefinitionsFromDiagnostics } from "../../packages/workflows/src/tui/workflows-listing.js";
+import {
+	formatInvalidDefinitionDetails,
+	handleWorkflowsCommand,
+} from "../../packages/workflows/src/extension/workflow-open-run.js";
+import {
+	invalidDefinitionsFromDiagnostics,
+	workflowsListingItems,
+} from "../../packages/workflows/src/tui/workflows-listing.js";
 import * as h from "./overlay-graph-helpers.js";
 
 const PARSE_ERROR = [
@@ -118,5 +124,31 @@ describe("workflow definition errors before launch (#5224)", () => {
 		assert.match(card, /Workflow file failed to import: Unexpected token '\)' \(12:4\)/);
 		assert.doesNotMatch(card, /at importWorkflow/);
 		assert.match(card, /2 stack frames hidden/);
+	});
+	it("a broken definition's name, reason and details are inert, never live escape sequences (#5224)", () => {
+		const evil = "a\x1b]52;c;aGk=\x07b\x1b[2Jc\u202ed";
+		const [definition] = invalidDefinitionsFromDiagnostics([
+			{
+				level: "error",
+				code: "IMPORT_FAILED",
+				source: `/repo/${evil}.ts`,
+				message: `Error: bad ${evil}\nmore ${evil}`,
+			},
+		]);
+		const shown = [definition.name, definition.reason, formatInvalidDefinitionDetails(definition)].join("\n");
+		assert.doesNotMatch(shown, /\x1b/);
+		assert.doesNotMatch(shown, /\u202e/);
+		assert.match(shown, /<U\+202E>/);
+	});
+
+	it("a broken definition's row keeps its id when other diagnostics come and go (#5224)", () => {
+		const greet = DIAGNOSTICS[0];
+		const deploy = DIAGNOSTICS[1];
+		const idOf = (diagnostics, name) =>
+			workflowsListingItems([], [], 0, invalidDefinitionsFromDiagnostics(diagnostics)).find(
+				(item) => item.label === name,
+			)?.id;
+		assert.equal(idOf([greet, deploy], "deploy"), idOf([deploy], "deploy"));
+		assert.equal(idOf([deploy, greet], "greet"), idOf([greet], "greet"));
 	});
 });

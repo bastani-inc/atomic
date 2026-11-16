@@ -66,7 +66,8 @@ describe("workflow graph run details: outputs and diagnostics (#5224)", () => {
 		assert.match(shown, /✓ Test Run · completed in 8s/);
 		assert.match(shown, /summary\s+Shipped it/);
 		assert.match(shown, /output\s+\/repo\/out\/report\.md/);
-		assert.match(hint(graph), /esc\/← back to graph/);
+		assert.match(hint(graph), /esc back to graph/);
+		assert.doesNotMatch(hint(graph), /←/, "← is not a back key in the run details");
 		assert.equal(graph.handleInput(ESC), true);
 		assert.doesNotMatch(screen(graph), /summary\s+Shipped it/);
 		assert.match(hint(graph), /o run details/);
@@ -111,7 +112,9 @@ describe("workflow graph run details: outputs and diagnostics (#5224)", () => {
 		assert.match(screen(graph), /at verifyStage \(\/repo\/ralph\.ts:41:11\)/);
 		assert.match(hint(graph), /l summary/);
 		graph.handleInput(LEFT);
-		assert.match(hint(graph), /o run details/, "← goes back to the graph too");
+		assert.match(hint(graph), /l summary/, "← does nothing in the run details");
+		graph.handleInput(ESC);
+		assert.match(hint(graph), /o run details/, "esc goes back to the graph");
 	});
 
 	it("enter on a failed blocker opens that stage's failure detail; esc from there returns to the graph", () => {
@@ -145,7 +148,7 @@ describe("workflow graph run details: outputs and diagnostics (#5224)", () => {
 		graph.handleInput(ENTER);
 		assert.match(screen(graph), /✗ verify · failed/);
 		graph.handleInput(ESC);
-		assert.match(hint(graph), /esc\/← back to graph/);
+		assert.match(hint(graph), /esc back to graph/);
 		assert.match(screen(graph), /Blockers · 1/, "back at the run details");
 		graph.handleInput(ESC);
 		assert.match(hint(graph), /o run details/, "then the graph");
@@ -184,5 +187,124 @@ describe("workflow graph run details: outputs and diagnostics (#5224)", () => {
 		const help = screen(graph);
 		assert.match(help, /keys · run details/);
 		for (const label of ["back to graph", "open", "logs", "scroll"]) assert.match(help, new RegExp(label));
+	});
+	it("← never leaves the run details or the graph from them; only esc goes back (#5224)", () => {
+		const graph = view([stage("verify", "failed", { error: "boom" })], { status: "failed", error: "boom" });
+		graph.handleInput("o");
+		for (let press = 0; press < 3; press++) assert.equal(graph.handleInput(LEFT), true);
+		assert.match(screen(graph), /Blockers · 1/, "still on the run details");
+		assert.match(hint(graph), /esc back to graph/);
+		graph.handleInput(ESC);
+		assert.match(hint(graph), /o run details/);
+	});
+
+	it("names, outputs, reasons, artifacts and log lines are shown inert, never as live escape sequences (#5224)", () => {
+		const evil = "a\x1b]52;c;aGk=\x07b\x1b[2Jc\u202ed";
+		const graph = view(
+			[
+				stage(`s${evil}`, "failed", {
+					error: `boom ${evil}`,
+					artifacts: [{ kind: "output", path: `/repo/${evil}.md`, captureError: `no ${evil}` }],
+				}),
+			],
+			{ name: `wf ${evil}`, status: "failed", error: `boom ${evil}`, result: { [`k${evil}`]: `v ${evil}` } },
+		);
+		graph.handleInput("o");
+		const check = (lines) => {
+			for (const line of lines) {
+				assert.doesNotMatch(line, /\x1b\]/, "no OSC sequence reaches the terminal");
+				assert.doesNotMatch(line, /\x1b\[2J/, "no screen clear reaches the terminal");
+				assert.doesNotMatch(line, /\u202e/, "no bidirectional override reaches the terminal");
+			}
+		};
+		check(graph.render(160));
+		assert.match(screen(graph), /<U\+202E>/, "the bidi override is shown, not obeyed");
+		graph.handleInput("l");
+		check(graph.render(160));
+	});
+
+	it("a run that returned a blocked or failed status reads as blocked or failed, with its own words as the reason (#5224)", () => {
+		const blocked = view([stage("plan", "completed")], {
+			status: "completed",
+			endedAt: 9_000,
+			result: { status: "needs_human", summary: "Waiting on a design decision" },
+		});
+		blocked.handleInput("o");
+		assert.match(screen(blocked), /↑ Test Run · blocked/);
+		assert.match(screen(blocked), /Reason\s+Waiting on a design decision/);
+		const failed = view([stage("plan", "completed")], {
+			status: "completed",
+			endedAt: 9_000,
+			result: { status: "failed", summary: "Tests still red" },
+		});
+		failed.handleInput("o");
+		assert.match(screen(failed), /✗ Test Run · failed/);
+		assert.match(screen(failed), /Reason\s+Tests still red/);
+	});
+
+	it("an open run details view builds the run's outcome once per snapshot, not once per frame or key (#5224)", () => {
+		const marker = { counted: true };
+		const stringify = JSON.stringify;
+		let builds = 0;
+		JSON.stringify = function (value, ...rest) {
+			if (value === marker) builds++;
+			return stringify.call(this, value, ...rest);
+		};
+		try {
+			const graph = view(
+				[stage("verify", "failed", { error: "boom" }), stage("check", "failed", { error: "bang" })],
+				{ status: "failed", error: "boom", result: { data: marker } },
+			);
+			graph.handleInput("o");
+			for (let frame = 0; frame < 30; frame++) graph.render(frame % 2 === 0 ? 80 : 160);
+			for (let press = 0; press < 10; press++) graph.handleInput(press % 2 === 0 ? DOWN : "\x1b[A");
+			for (let frame = 0; frame < 10; frame++) graph.render(120);
+			assert.ok(builds <= 1, `the outcome was built ${builds} times for one snapshot`);
+		} finally {
+			JSON.stringify = stringify;
+		}
+	});
+
+	it("keeps the selected blocker by identity when the blocker list changes under it (#5224)", () => {
+		const attached = [];
+		const run = {
+			...h.makeSnap([
+				stage("approve", "awaiting_input", {
+					pendingPrompt: { id: "p1", kind: "confirm", message: "Approve?", createdAt: 1 },
+				}),
+				stage("verify", "running"),
+			]).runs[0],
+			status: "running",
+		};
+		const snap = { runs: [run], notices: [], version: 1 };
+		const listeners = [];
+		const store = {
+			...makeStore(snap),
+			subscribeInvalidation: (listener) => {
+				listeners.push(listener);
+				return () => {};
+			},
+		};
+		const graph = new GraphView({
+			piKeybindings: makeFakeKeybindings(),
+			mode: "overlay",
+			runId: run.id,
+			store,
+			graphTheme: defaultTheme,
+			piTui: h.makeTestTui(40),
+			onStageAttach: (_runId, stageId) => attached.push(stageId),
+		});
+		graph.handleInput("o");
+		assert.match(screen(graph), /❯ ◆ approve/);
+		const next = {
+			...run,
+			stages: [stage("verify", "failed", { error: "boom" }), ...run.stages.filter((s) => s.id !== "verify")],
+		};
+		snap.runs = [next];
+		snap.version = 2;
+		for (const listener of listeners) listener();
+		assert.match(screen(graph), /❯ ◆ approve/, "the selection stays on approve, not the new first blocker");
+		graph.handleInput(ENTER);
+		assert.deepEqual(attached, ["approve"]);
 	});
 });
