@@ -3094,14 +3094,19 @@ export class PoolCoordinator {
 		let chosen: Awaited<ReturnType<typeof choosePlacement>>;
 		let work: PoolWork | undefined;
 		let refused: { readonly id: string; readonly generation: number } | undefined;
+		const attempted = new Map<string, number>();
 		for (let remaining = PLACEMENT_CANDIDATES; remaining > 0; remaining--) {
-			const candidates = await queue.readyCandidates(lease, definitions, PLACEMENT_CANDIDATES);
+			const ready = await queue.readyCandidates(lease, definitions, PLACEMENT_CANDIDATES);
 			const previous = refused;
 			if (
 				previous !== undefined &&
-				candidates.some((candidate) => candidate.id === previous.id && candidate.generation === previous.generation)
-			)
-				return undefined;
+				ready.some((candidate) => candidate.id === previous.id && candidate.generation === previous.generation)
+			) {
+				if (!(await queue.acceptsClaim(lease, { id: satellite.host, providerId: satellite.providerId })))
+					return undefined;
+				slot.idle.reset();
+			}
+			const candidates = ready.filter((candidate) => attempted.get(candidate.id) !== candidate.generation);
 			chosen = await choosePlacement(
 				candidates,
 				(binding) => this.warmWorktree(satellite, binding, slot.exited.signal),
@@ -3125,6 +3130,7 @@ export class PoolCoordinator {
 			});
 			if (work !== undefined) break;
 			refused = chosen.candidate;
+			attempted.set(refused.id, refused.generation);
 		}
 		if (work === undefined || chosen === undefined) return undefined;
 		found();

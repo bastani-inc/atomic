@@ -144,9 +144,13 @@ async function idleSatellite(workers: number, children: number, restore: (path: 
 	}
 }
 
-test.each([false, true])(
-	"a listening satellite claims both ready children before either workspace restore ends, including a placement race: %s (#5230)",
-	async (race) => {
+test.each([
+	{ name: "one notice", race: false, busy: false },
+	{ name: "a placement race", race: true, busy: false },
+	{ name: "a temporarily locked candidate", race: false, busy: true },
+])(
+	"a listening satellite claims both ready children before either restore ends with $name (#5230)",
+	async ({ race, busy }) => {
 		let release!: () => void;
 		const restoring = new Promise<void>((resolve) => {
 			release = resolve;
@@ -163,6 +167,17 @@ test.each([false, true])(
 		});
 		try {
 			await f.ready();
+			if (busy) {
+				const claim = SqlPoolQueue.prototype.claim;
+				let refused = false;
+				vi.spyOn(SqlPoolQueue.prototype, "claim").mockImplementation(async function (this: SqlPoolQueue, ...args) {
+					if (args[4]?.kind === "work" && !refused) {
+						refused = true;
+						return undefined;
+					}
+					return claim.call(this, ...args);
+				});
+			}
 			if (race) {
 				const readyCandidates = SqlPoolQueue.prototype.readyCandidates;
 				let reads = 0;

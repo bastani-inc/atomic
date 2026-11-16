@@ -1529,6 +1529,38 @@ export class SqlPoolQueue {
 			...(row.workspace === null ? {} : { workspace: JSON.parse(String(row.workspace)) as WorkspaceBinding }),
 		}));
 	}
+	async acceptsClaim(lease: Lease, host: { readonly id: string; readonly providerId?: string }): Promise<boolean> {
+		lease = snapshotLease(lease);
+		const requested = { ...host };
+		await this.remote?.fresh(lease);
+		return this.storage.read(async (read) => {
+			const available = this.dialect.flag(
+				`NOT EXISTS (SELECT 1 FROM ${this.journal.runs}_fleet_drains WHERE host = CAST(? AS TEXT) OR provider_id = CAST(? AS TEXT))`,
+			);
+			const row = await read.get<
+				NonNullable<Awaited<ReturnType<SqlPoolQueue["leaseRow"]>>> & {
+					control: string | null;
+					host_available: number | bigint;
+				}
+			>(
+				`SELECT l.*, r.status, p.timeout, ${this.now} AS now,
+				(SELECT state FROM ${this.roots}_control WHERE root = l.run_id) AS control,
+				${available} AS host_available
+				FROM ${this.journal.leases} l JOIN ${this.journal.runs} r ON r.run_id = l.run_id
+				LEFT JOIN ${this.roots} p ON p.root = l.run_id WHERE l.run_id = ?`,
+				requested.id,
+				requested.providerId ?? null,
+				lease.runId,
+			);
+			const { status } = this.authorityOf(row, lease);
+			return (
+				status === "running" &&
+				(row!.control === null || row!.control === "running") &&
+				Number(row!.host_available) === 1
+			);
+		});
+	}
+
 	async readyMark(root: string): Promise<string | undefined> {
 		const readiness = this.rowLocks
 			? "bit_xor(hash_record_extended(ROW(xmin, ctid), 0))"
