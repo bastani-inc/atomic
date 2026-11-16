@@ -851,7 +851,8 @@ export class SqlRunJournal implements RunJournal {
 					params: [owned.runId, owned.holderId, owned.epoch, JOURNAL_SCHEMA_VERSION],
 				},
 			],
-			JOURNAL_WRITE_TRANSACTION,
+			// A renewal keeps the root's lease alive, so it never waits behind this process's other writes to the server.
+			{ ...JOURNAL_WRITE_TRANSACTION, priority: true },
 		);
 		// The renewal wrote nothing when the journal is at another version: its condition checks it.
 		assertRowVersion(rows[0]![0]);

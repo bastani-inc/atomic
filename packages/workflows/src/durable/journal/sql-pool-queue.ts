@@ -65,6 +65,7 @@ import {
 	isSameCheckpointValue,
 	type PoolRemoteJournal,
 } from "./pool-remote-journal.js";
+import { poolSchemaPresent } from "./pool-schema-probe.js";
 import {
 	poolCheckpointUsage,
 	poolUsageSchema,
@@ -577,28 +578,15 @@ export class SqlPoolQueue {
 	 */
 	private async openedWithoutLock(schema: PoolSchemaStatements): Promise<boolean> {
 		const { dialect } = this;
-		if (this.storage.batch === undefined || dialect.versionedMigrations) return false;
 		const statements = [schema.meta, ...schema.tables, schema.chunks, ...(this.remote ? [schema.outbox] : [])];
-		const names = statements.flatMap((sql) =>
-			[
-				...sql.matchAll(/CREATE\s+(?:UNIQUE\s+)?(?:TABLE|INDEX|TRIGGER)\s+IF\s+NOT\s+EXISTS\s+([A-Za-z0-9_]+)/gi),
-			].map((match) => match[1]!),
-		);
+		const columns = [
+			[this.work, "inputs_chunks"],
+			[`${this.work}_results`, "chunks"],
+		] as const;
+		if (!(await poolSchemaPresent(this.storage, statements, columns))) return false;
 		return this.storage.read(async (read) => {
 			const foreignKeys = dialect.foreignKeysCheck;
 			if (Number((await read.get(foreignKeys.sql, ...foreignKeys.params))?.foreign_keys) !== 1) return false;
-			const objects = dialect.schemaObjects(names);
-			const found = new Set(
-				(await read.all<SqliteRow & { name: string }>(objects.sql, ...objects.params)).map((row) => row.name),
-			);
-			if (!names.every((name) => found.has(name))) return false;
-			for (const [table, column] of [
-				[this.work, "inputs_chunks"],
-				[`${this.work}_results`, "chunks"],
-			] as const) {
-				const probe = dialect.columnExists(table, column);
-				if ((await read.get(probe.sql, ...probe.params)) === undefined) return false;
-			}
 			const versions = await read.all(`SELECT version FROM ${this.meta}`);
 			if (versions.length !== 1 || versions[0]!.version !== POOL_SCHEMA_VERSION) return false;
 			if (this.remote)
@@ -606,6 +594,7 @@ export class SqlPoolQueue {
 			return true;
 		});
 	}
+
 	/**
 	 * Large inputs and results in chunks (#4965): each table's chunk count column, 0 for every row written before it, the
 	 * chunk tables, deleted with their work or result, and the pool meta at version 3. Idempotent.

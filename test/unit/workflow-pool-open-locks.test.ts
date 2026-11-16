@@ -4,7 +4,10 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, test } from "vitest";
 import { observeSqlPoolTransactions, sqlPoolStorage } from "../../packages/workflows/src/durable/journal/internal.js";
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
+import { SqlFleetStore } from "../../packages/workflows/src/durable/journal/sql-fleet.js";
 import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
+import { SqlRateBuckets } from "../../packages/workflows/src/durable/journal/sql-rate-buckets.js";
+import { SqlSharedPool } from "../../packages/workflows/src/durable/journal/sql-shared-pool.js";
 import type { RunJournal } from "../../packages/workflows/src/durable/journal/types.js";
 import { openPoolSessions } from "../../packages/workflows/src/workers/pool-session-store.js";
 import { makeLibsqlDirectory, removeLibsqlDirectory } from "../helpers/libsql-cleanup.js";
@@ -68,4 +71,19 @@ test("a worker opens the pool's queue without a write transaction once its table
 	const again = await openSqlPoolQueue(journal);
 	assert.equal(await again.initialized("no-such-root"), false, "the queue reads its tables");
 	assert.equal(writes(), 0, "opening and reading the queue took the write lock");
+});
+
+test("a host opens the shared pool's registry, fleet and rate buckets without a write transaction once their tables exist (#4768)", async () => {
+	const journal = await sharedJournal();
+	const queue = await openSqlPoolQueue(journal);
+	// The first opens create the tables, under the write lock.
+	await SqlSharedPool.open(journal, queue);
+	await SqlFleetStore.open(journal);
+	await SqlRateBuckets.open(journal);
+
+	const writes = countWrites(journal);
+	await SqlSharedPool.open(journal, await openSqlPoolQueue(journal));
+	await SqlFleetStore.open(journal);
+	await SqlRateBuckets.open(journal);
+	assert.equal(writes(), 0, "opening a store whose tables exist took the write lock");
 });
