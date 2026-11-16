@@ -5,7 +5,7 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { openNodeSqliteDatabase } from "@bastani/atomic/storage";
-import { afterAll, beforeAll, describe, test, vi } from "vitest";
+import { afterAll, beforeAll, describe, onTestFinished, test, vi } from "vitest";
 import {
 	expectedBrokerStorage,
 	queryIntercomBroker,
@@ -19,6 +19,7 @@ import { registerIntercomTool } from "../../packages/intercom/intercom-tool.js";
 import { ReplyTracker } from "../../packages/intercom/reply-tracker.js";
 import { ReplyWaiterRegistry } from "../../packages/intercom/reply-waiter.js";
 import type { BrokerMultiNodeStatus } from "../../packages/intercom/types.js";
+import { keptExitedPid } from "../helpers/exited-process.js";
 import { IntercomBrokerFixture } from "../helpers/intercom-broker-fixture.js";
 
 /**
@@ -330,9 +331,11 @@ test(
 
 test("a stale legacy endpoint with a dead PID is stopped, not a restarted broker (#3857)", async () => {
 	const agentDir = agentDirectory("stale-legacy");
-	const child = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
-	await exited(child);
-	writeFileSync(getBrokerPidPath(agentDir), String(child.pid));
+	// The pid file names the broker by its pid alone, and a later process given that pid would be taken for it, so none
+	// is given it until the test ends.
+	const dead = await keptExitedPid();
+	onTestFinished(() => dead.release());
+	writeFileSync(getBrokerPidPath(agentDir), String(dead.pid));
 	const server = net.createServer((socket) => socket.on("data", () => socket.destroy()));
 	await new Promise<void>((resolveListening) =>
 		server.listen(getBrokerSocketPath(process.platform, agentDir), resolveListening),

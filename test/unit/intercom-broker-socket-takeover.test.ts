@@ -4,11 +4,12 @@ import { statSync } from "node:fs";
 import net from "node:net";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterAll, afterEach, beforeAll, describe, test } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, onTestFinished, test } from "vitest";
 import { isSocketAnswering } from "../../packages/intercom/broker/socket-liveness.js";
 import { acquireSocketReplacementLock } from "../../packages/intercom/broker/socket-replacement-lock.js";
 import * as staleLockFile from "../../packages/intercom/broker/stale-lock-file.js";
 import type { Message, SessionInfo } from "../../packages/intercom/types.js";
+import { keptExitedPid } from "../helpers/exited-process.js";
 import {
 	type ByteStream,
 	decodeStream,
@@ -482,11 +483,14 @@ describe("spawn lock staleness (#3505)", () => {
 		return path;
 	}
 
+	/**
+	 * The pid of a process that exited. A lock names its holder by pid alone, and a later process given that pid would
+	 * hold it, so none is given it until the test ends.
+	 */
 	async function deadPid(): Promise<number> {
-		const child = spawnProcess([process.execPath, "-e", ""], { stdout: "ignore" });
-		await child.exited;
-		assert.ok(child.pid !== undefined);
-		return child.pid;
+		const exited = await keptExitedPid();
+		onTestFinished(() => exited.release());
+		return exited.pid;
 	}
 
 	test("without a recorded broker the lock lasts as long as its spawner", async () => {
@@ -539,11 +543,14 @@ describe("socket replacement lock (#3505)", () => {
 	let lockCount = 0;
 	const lockPath = () => join(agentDir, `replace-lock-${lockCount++}`);
 
+	/**
+	 * The pid of a process that exited. A lock names its holder by pid alone, and a later process given that pid would
+	 * hold it, so none is given it until the test ends.
+	 */
 	async function deadPid(): Promise<number> {
-		const child = spawnProcess([process.execPath, "-e", ""], { stdout: "ignore" });
-		await child.exited;
-		assert.ok(child.pid !== undefined);
-		return child.pid;
+		const exited = await keptExitedPid();
+		onTestFinished(() => exited.release());
+		return exited.pid;
 	}
 
 	test("a live holder's lock is never taken, however long it is held", async () => {

@@ -19,7 +19,8 @@ import { hostname, tmpdir } from "node:os";
 import { basename, delimiter, dirname, join, relative } from "node:path";
 import type { SpawnSyncReturns } from "child_process";
 import lockfile from "proper-lockfile";
-import { afterEach, beforeEach, describe, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, it, onTestFinished, vi } from "vitest";
+import { keptExitedPid } from "../../../test/helpers/exited-process.js";
 import { ENV_AGENT_DIR, ENV_OFFLINE, VERSION } from "../src/config.js";
 import { isPathInside } from "../src/utils/path-inside.js";
 import { getPiUserAgent } from "../src/utils/pi-user-agent.js";
@@ -2757,8 +2758,11 @@ describe("git install command on this machine (#4322)", () => {
 		tools.resetGitProvisionStateForTest();
 		assert.equal(tools.resolveGitSync().version, "2.57.0");
 
-		const exitedPid = runProcess(process.execPath, ["-e", ""]).pid;
-		const leftover = join(agentDir, "bin", `.git-staging-${hostTag()}-${exitedPid}-1`);
+		// A staging directory names its installer by pid alone, so a later process given that pid would keep it: none is
+		// given it until the test ends.
+		const exited = await keptExitedPid();
+		onTestFinished(() => exited.release());
+		const leftover = join(agentDir, "bin", `.git-staging-${hostTag()}-${exited.pid}-1`);
 		mkdirSync(leftover, { recursive: true });
 		await tools.resolveGit();
 		assert.equal(existsSync(leftover), false);
