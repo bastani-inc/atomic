@@ -33,10 +33,9 @@ export function renderComposerRule(width: number, options: ComposerRuleOptions):
 	const label = typeof options.label === "string" ? { plain: options.label, styled: options.label } : options.label;
 	const plain = label?.plain.trim() ?? "";
 	if (!label || plain.length === 0 || columns < INPUT_LABEL_MIN_COLUMNS) return options.color(glyph.repeat(columns));
-	// Two glyphs at least before the label, a space on each side, one glyph after it.
 	const room = columns - 5;
 	const fits = visibleWidth(label.plain) <= room;
-	const shown = fits ? label.styled : truncateToWidth(label.plain, room, "…");
+	const shown = fits ? label.styled : truncateToWidth(label.styled, room, "…");
 	const shownWidth = fits ? visibleWidth(label.plain) : visibleWidth(shown);
 	const before = columns - shownWidth - 3;
 	return `${options.color(`${glyph.repeat(before)} `)}${shown}${options.color(` ${glyph}`)}`;

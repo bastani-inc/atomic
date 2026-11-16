@@ -1,7 +1,7 @@
 import { getKeybindings, type KeybindingsManager, matchesKey, Text } from "@bastani/atomic-tui";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
 import type { TaskId } from "../../../core/tasks/contracts.js";
-import { TaskElapsedClocks, taskClockRunning } from "../../../core/tasks/live-elapsed.ts";
+import { type TaskElapsedClocks, taskClockRunning, taskClocksFor } from "../../../core/tasks/live-elapsed.ts";
 import { TaskMessageError } from "../../../core/tasks/message-error.js";
 import type { TaskTranscriptSource } from "../../../core/tasks/supervisor.js";
 import {
@@ -126,7 +126,7 @@ async function settled<T>(read: T | Promise<T>): Promise<T> {
  * the task through its Intercom target.
  */
 export class TaskAgentTranscriptPage implements TaskTranscriptPage {
-	private readonly elapsedClocks = new TaskElapsedClocks();
+	private readonly elapsedClocks: TaskElapsedClocks;
 	readonly chat: ChatSessionHost;
 	private loadStatus = "Loading transcript…";
 	/** Loading and failure notes, then why the chat is read-only when it is. */
@@ -165,6 +165,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		reportLate: (reason: string) => void = (reason) => env.notify?.(reason),
 	) {
 		this.source = source;
+		this.elapsedClocks = taskClocksFor(source);
 		this.taskId = taskId;
 		this.env = env;
 		this.requestRender = requestRender;
@@ -370,7 +371,6 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		this.unsubscribe?.();
 		this.unsubscribe = undefined;
 		this.chat.dispose();
-		this.elapsedClocks.clear();
 	}
 
 	hasDraft(): boolean {

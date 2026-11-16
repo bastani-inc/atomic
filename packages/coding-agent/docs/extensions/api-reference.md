@@ -900,7 +900,7 @@ pi.registerShortcut("ctrl+shift+p", {
 });
 ```
 
-Set `preferEditor: true` to skip a shortcut when another resolved editor binding uses that key. Omitting it preserves the usual extension conflict policy. Optional `keybinding` selects the keys for an existing named action from `keybindings.json` instead of the literal registration key; an empty action binding disables it. The builtin workflow extension uses `app.workflows.scrollUp` and `app.workflows.scrollDown` with `preferEditor: true`, so custom Vim editor bindings take precedence.
+Set `preferEditor: true` to skip a shortcut when another resolved editor binding uses that key. Omitting it preserves the usual extension conflict policy. Optional `keybinding` selects the keys for an existing named action from `keybindings.json` instead of the literal registration key; an empty action binding disables it.
 
 ### pi.registerFlag(name, options)
 
@@ -918,6 +918,69 @@ if (pi.getFlag("plan")) {
   // Plan mode enabled
 }
 ```
+
+### pi.registerAgentPanelSource(source)
+
+Add rows to the [agent panel](/background-tasks#the-agent-panel) below the main chat's prompt and to `/tasks`, as the builtin workflows extension adds its runs. The registration is released with the extension generation, and `/reload` re-registers it.
+
+```typescript
+import type { AgentPanelItem, ExtensionAPI } from "@bastani/atomic";
+
+declare function showDeploy(id: string, options: { onBack: () => void }): void;
+
+export default function (pi: ExtensionAPI) {
+  const listeners = new Set<() => void>();
+  let items: AgentPanelItem[] = [
+    { id: "deploys:42", kind: "workflow", state: "running", name: "deploy", task: "stage build", progress: { done: 1, total: 3 } },
+  ];
+  const changed = () => { for (const listener of listeners) listener(); };
+
+  pi.registerAgentPanelSource({
+    items: () => items,
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    open(id, options) {
+      showDeploy(id, { onBack: () => options?.onReturn?.() });
+      return true;
+    },
+    async stop(id) {
+      items = items.map((item) => (item.id === id ? { ...item, state: "stopped", endedAt: Date.now() } : item));
+      changed();
+      return { ok: true };
+    },
+  });
+}
+```
+
+Here `showDeploy` stands for your extension's own view of an item. `items()` returns the source's current `AgentPanelItem`s. Call the `subscribe` listener whenever they may have changed; the host reads `items()` again and repaints. Keep `items()` cheap, because the panel and `/tasks` call it on every change. Each item has:
+
+| Field | Meaning |
+| --- | --- |
+| `id` | Unique in the session. Prefix it with your source's name, for example `deploys:42`; `task:` is reserved for the session's own tasks. |
+| `kind` | `"agent"`, `"shell"` or `"workflow"`. It decides the row's layout. |
+| `state` | `running`, `queued`, `input` (waits for an answer), `paused`, `stopping`, `done`, `failed` or `stopped`. It decides the glyph, the state word, the `/tasks` group and whether `x` stops or dismisses. |
+| `name`, `task` | The name and what it works on, for example `stage build`. |
+| `elapsedMs`, `tokens` | Shown on the right. Between your updates, the panel advances the time of a running or paused agent or shell item. |
+| `progress` | `{ done, total }` stages, drawn as a bar. |
+| `question`, `choices` | What an `input` item asks, and its numbered choices. |
+| `reason` | A failed item's one-line reason. |
+| `queued` | Messages typed to it that it has not taken yet. |
+| `endedAt` | When a finished item finished. |
+| `viewed` | For a finished `workflow` item, whether the user has opened it. A finished workflow row stays in the panel until it is viewed: opening it from the panel or `/tasks` counts, and a source sets `viewed: true` when the user opens the item another way. Finished `agent` and `shell` rows always fade and leave after three minutes. |
+
+Atomic strips terminal control sequences from the text fields before drawing them. An item with invalid fields is skipped, and `items()` or `subscribe` throwing is reported as an extension error. The source's other items, and the other sources, are still shown.
+
+The actions are optional:
+
+- `open(id, options)` runs on Enter or → on the row. Return `false` (or throw) when the item cannot be opened. `/tasks` then stays open and shows `Could not open <name>`, and a throw is also reported as an extension error. When the view you opened goes back one level, call `options.onReturn()`, so the panel or `/tasks` the user came from shows again.
+- `stop(id)` runs on the second `x` for an unfinished item. A finished item is dismissed by the host instead, with no call to your source.
+- `answer(id, text)` sends the reply typed in an `input` item's `/tasks` peek card. Offer `question` and `answer` only for questions that typed text can answer.
+
+`stop` and `answer` resolve to `{ ok: true }`, or to `{ ok: false, reason }` to show `reason` to the user.
+
+The types are exported from `@bastani/atomic`: `AgentPanelSource`, `AgentPanelItem`, `AgentPanelState`, `AgentPanelActionResult`, `AgentPanelOpenOptions`, `AgentPanelSourceRegistration` and `AgentPanelSession`. The same rows are available outside extensions. `agentPanelItems(session)` returns the session's tasks and every source's items, `subscribeAgentPanel(session, listener)` notifies on any change, including after a reload, and `openAgentPanelItem`, `stopAgentPanelItem` and `answerAgentPanelItem` run the actions by item id. `dismissedAgentPanelItems(session)` is the session's set of dismissed ids, and `agentPanelTaskId(id)` returns the task id of a `task:` item.
 
 ### pi.getWorkflowHostModules()
 

@@ -9,7 +9,7 @@ import type {
 	WaitError,
 	WatchError,
 } from "./contracts.js";
-import { TaskElapsedClocks, taskClockRunning } from "./live-elapsed.js";
+import { bindTaskClock, createManagedTaskClocks, taskClockRunning } from "./live-elapsed.ts";
 import type { OwnerLease, TaskLease, TaskSubscription, TaskSupervisor } from "./supervisor.js";
 
 /** Activity previews are bounded independently of authoritative session history. */
@@ -38,7 +38,7 @@ export class OwnerTaskStore {
 	private omittedActivity = new Set<TaskId>();
 	private backgroundIds = new Set<TaskId>();
 	private settlements = new Map<TaskId, bigint>();
-	private readonly elapsedClocks = new TaskElapsedClocks();
+	private readonly elapsedClocks = createManagedTaskClocks(this);
 	readonly anchors = new Map<TaskId, TaskAnchor>();
 	private current?: OwnerSnapshot;
 	readonly supervisor: TaskSupervisor;
@@ -122,7 +122,8 @@ export class OwnerTaskStore {
 			if (
 				previous?.execution.kind !== "settled" &&
 				task.execution.kind !== "queued" &&
-				previous?.execution.kind !== task.execution.kind
+				(previous?.execution.kind !== task.execution.kind ||
+					previous?.metrics?.elapsedMs !== task.metrics?.elapsedMs)
 			) {
 				if (task.execution.kind === "settled" && previous !== undefined)
 					this.elapsedClocks.settle(task.ref.taskId, task.metrics?.elapsedMs);
@@ -136,10 +137,12 @@ export class OwnerTaskStore {
 			if (isBackground(task.observation) || isBackground(previous?.observation))
 				this.backgroundIds.add(task.ref.taskId);
 			// Native settlement is immutable, even when recovering a view from a snapshot.
-			this.records.set(
-				task.ref.taskId,
-				previous?.execution.kind === "settled" ? { ...task, execution: previous.execution } : task,
-			);
+			const record =
+				previous?.execution.kind === "settled" && task.execution !== previous.execution
+					? { ...task, execution: previous.execution }
+					: task;
+			if (record !== previous) bindTaskClock(record, this.elapsedClocks);
+			this.records.set(task.ref.taskId, record);
 			if (task.execution.kind === "settled" && !this.settlements.has(task.ref.taskId))
 				this.settlements.set(task.ref.taskId, BigInt(snapshot.cursor.sequence));
 			if (!this.anchors.has(task.ref.taskId))

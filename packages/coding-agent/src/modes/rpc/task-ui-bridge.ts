@@ -15,6 +15,7 @@ import type { TaskId } from "../../core/tasks/contracts.js";
 import { getOwnerTaskStore, type OwnerTaskStore } from "../../core/tasks/owner-store.js";
 import { ChatSessionHost } from "../interactive/components/chat-session-host.ts";
 import { type TaskBoardSource, TaskInspector } from "../interactive/components/task-inspector.js";
+import { taskDisplayText } from "../interactive/components/task-row.js";
 import { type TaskTranscriptEnvironment, themedChatHostStyle } from "../interactive/components/task-transcript-page.ts";
 import { isPhysicalCtrlC } from "../interactive/interactive-key-identity.ts";
 import { getEditorTheme } from "../interactive/theme/theme.js";
@@ -58,19 +59,21 @@ export function engineTaskInspectorUi(
 	};
 }
 
+const boardSessions = new WeakMap<TaskBoardSource, object>();
+
 export function agentPanelBoardSource(session: AgentPanelSession & object): TaskBoardSource {
-	return {
+	const board: TaskBoardSource = {
 		items: () => agentPanelExtensionItems(session).filter((item) => agentPanelTaskId(item.id) === undefined),
 		subscribe: (listener) => subscribeAgentPanelExtensions(session, listener),
-		open: (id, options) => {
-			openAgentPanelItem(session, id, options);
-		},
+		open: (id, options) => openAgentPanelItem(session, id, options),
 		stop: (id) => stopAgentPanelItem(session, id),
 		answer: (id, text) => answerAgentPanelItem(session, id, text),
 		dismiss: (id) => {
 			dismissedAgentPanelItems(session).add(id);
 		},
 	};
+	boardSessions.set(board, session);
+	return board;
 }
 
 export async function showEngineTaskInspector(
@@ -81,13 +84,7 @@ export async function showEngineTaskInspector(
 	session.getAgentTaskHost();
 	const store = getOwnerTaskStore(session);
 	if (!store) throw new Error("Task owner is unavailable");
-	// The agent panel lists the same tasks; it steps aside while the inspector owns the prompt's place.
-	setAgentPanelVisible(session, false);
-	try {
-		await showTaskInspector(ui, store, taskId, { board: agentPanelBoardSource(session) });
-	} finally {
-		setAgentPanelVisible(session, true);
-	}
+	await showTaskInspector(ui, store, taskId, { board: agentPanelBoardSource(session) });
 }
 
 /** Main CLI mount, shared by the local host and its isolated engine. */
@@ -120,12 +117,20 @@ export async function showTaskInspector(
 		inspector.setBoardSource(options.board);
 		// Back from a view a row opened, such as a run's graph, comes to /tasks again on that row.
 		const reopenOptions = { board: options.board };
-		inspector.setReopen((id) => void showTaskInspector(ui, store, id, reopenOptions));
+		inspector.setReopen((id) => {
+			void showTaskInspector(ui, store, id, reopenOptions).catch((error: unknown) => {
+				try {
+					ui.notify?.(taskDisplayText(error instanceof Error ? error.message : String(error)), "error");
+				} catch {}
+			});
+		});
 	}
 	if (options.chat && taskId !== undefined) {
 		// The chat needs its environment, which the first mount below creates; open it once the mount exists.
 		pendingChat = taskId as TaskId;
 	} else inspector.open(taskId as TaskId | undefined);
+	const panelTarget = (options.board ? boardSessions.get(options.board) : undefined) ?? store;
+	setAgentPanelVisible(panelTarget, false);
 	try {
 		while (!closed) {
 			fullscreen = inspector.fullscreen || pendingChat !== undefined;
@@ -204,6 +209,7 @@ export async function showTaskInspector(
 		}
 	} finally {
 		inspector?.dispose();
+		setAgentPanelVisible(panelTarget, true);
 	}
 	return inspector?.closedByBack === true ? "back" : "closed";
 }

@@ -1,8 +1,9 @@
 import type { Component } from "@bastani/atomic-tui";
-import { taskPanelItems } from "../../../core/tasks/agent-panel-source.ts";
+import { agentPanelTaskId, taskPanelItems } from "../../../core/tasks/agent-panel-source.ts";
 import type { TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
+import { TaskElapsedClocks, taskClockOf, taskClockRunning } from "../../../core/tasks/live-elapsed.ts";
 import { theme } from "../theme/theme.js";
-import { renderAgentPanelRows } from "./agent-panel.ts";
+import { AGENT_PANEL_IDLE_ROWS, renderAgentPanelRows } from "./agent-panel.ts";
 import { TaskRow, taskLabel, taskTitle } from "./task-row.js";
 
 /** Complete projection; viewport owners, not this list, decide how much to mount. */
@@ -60,25 +61,55 @@ export function taskListSections(
 export function isActiveBackgroundTask(task: TaskRecord): boolean {
 	return task.observation.kind === "background" && task.execution.kind !== "settled";
 }
+const defaultFooterClocks = new TaskElapsedClocks();
+
 /**
  * The rows of a chat's active background agents and shells, as the agent panel draws them: a stage or subagent chat
  * shows its own tasks this way below its prompt. Finished tasks leave at once; `/tasks` keeps them.
  */
-export function renderTaskFooter(tasks: readonly TaskRecord[], width: number): string[] {
-	const active = tasks.filter(isActiveBackgroundTask);
-	return renderAgentPanelRows(
-		taskPanelItems({ backgroundTasks: active }, new Set(), { topLevelOnly: false }).reverse(),
-		width,
-		{
-			dim: (text) => theme.fg("dim", text),
-			text: (text) => theme.fg("text", text),
-			muted: (text) => theme.fg("muted", text),
-			border: (text) => theme.fg("borderMuted", text),
-			bold: (text) => theme.bold(text),
-			accent: (text) => theme.fg("accent", text),
-			success: (text) => theme.fg("success", text),
-			error: (text) => theme.fg("error", text),
-			warning: (text) => theme.fg("warning", text),
-		},
-	);
+export function renderTaskFooter(tasks: readonly TaskRecord[], width: number, clocks?: TaskElapsedClocks): string[] {
+	const input: TaskRecord[] = [];
+	const running: TaskRecord[] = [];
+	const other: TaskRecord[] = [];
+	for (let index = tasks.length - 1; index >= 0; index--) {
+		const task = tasks[index]!;
+		if (!isActiveBackgroundTask(task)) continue;
+		if (task.execution.kind === "running") {
+			if (task.attention.kind === "none") running.push(task);
+			else input.push(task);
+		} else {
+			other.push(task);
+		}
+	}
+	const ordered = [...input, ...running, ...other];
+	if (ordered.length === 0) {
+		if (clocks === undefined) defaultFooterClocks.prune(new Set());
+		return [];
+	}
+	const now = Date.now();
+	const localIds = new Set<string>();
+	const fallback = clocks ?? defaultFooterClocks;
+	const items = taskPanelItems({ backgroundTasks: ordered }, new Set(), { topLevelOnly: false }).map((row, index) => {
+		if (row.state === "queued") return row;
+		const taskId = agentPanelTaskId(row.id) ?? row.id;
+		const sourceClocks = taskClockOf(row);
+		if (sourceClocks === undefined && clocks === undefined) localIds.add(taskId);
+		if (sourceClocks !== undefined && index >= AGENT_PANEL_IDLE_ROWS) return row;
+		const elapsedMs = (sourceClocks ?? fallback).elapsedMs(taskId, row.elapsedMs, taskClockRunning(row.state), now);
+		return elapsedMs === undefined || elapsedMs === row.elapsedMs || (row.elapsedMs === undefined && elapsedMs < 1000)
+			? row
+			: { ...row, elapsedMs };
+	});
+	if (clocks === undefined) defaultFooterClocks.prune(localIds);
+	return renderAgentPanelRows(items, width, {
+		dim: (text) => theme.fg("dim", text),
+		text: (text) => theme.fg("text", text),
+		muted: (text) => theme.fg("muted", text),
+		border: (text) => theme.fg("borderMuted", text),
+		bold: (text) => theme.bold(text),
+		accent: (text) => theme.fg("accent", text),
+		success: (text) => theme.fg("success", text),
+		error: (text) => theme.fg("error", text),
+		warning: (text) => theme.fg("warning", text),
+	});
 }

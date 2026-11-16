@@ -21,7 +21,7 @@ Below the main chat's prompt, the **agent panel** lists the session's running an
 - **Each row shows** the status, the agent's name (a workflow's name for a run, `shell` for a shell), what it works on, and how long it has run. Agents also show the tokens they have used. A workflow run shows its stage progress and current stage.
 - **Status glyphs:**
   - `∀` running
-  - `◆` needs input, showing the question
+  - `◆` needs input, with its question when it waits on one
   - `‖` paused
   - `○` queued
   - `✓` done
@@ -48,7 +48,7 @@ Run `/tasks` to inspect work without stopping it:
 
 - The list opens in the editor slot, with the conversation visible above it. It lists the subagents and shells that chat owns and the session's workflow runs, running and finished.
 - Its header counts them, for example `Tasks  1 needs input · 3 working · 2 done`, and the rows are grouped **Needs input**, **Working** and **Done**. Each row shows its status mark, its name and task, and on the right how long it has waited, run or took, with its tokens. A failed workflow run adds a short reason. The selected subagent also shows its model and what it is doing now.
-- Space on a workflow run opens a peek card under the row. A waiting run shows its question, visible numbered choices and a reply box. A number fills in the corresponding visible choice; Enter sends the reply. Escape closes the card and keeps an unsent draft. While the reply is sending, keys wait until it finishes. Space on a subagent or shell opens its detail page; a waiting subagent's **Open question** action takes you to its question.
+- Space on a workflow run opens a peek card under the row. A run waiting on one question shows the question, its visible numbered choices and a reply box. A run waiting on several questions or on a custom prompt has no reply box; open its graph to answer. A number fills in the corresponding visible choice; Enter sends the reply. Escape closes the card and keeps an unsent draft. While the reply is sending, the card shows `Sending…` and other keys are ignored until it finishes. If the send fails, a notice says why and your reply is kept. Space on a subagent or shell opens its detail page; a waiting subagent's **Open question** action takes you to its question.
 - `/` filters the list by name or task; Enter keeps the filter and Escape clears it.
 - Detail, transcript, input, and cancellation-confirmation pages use the full screen.
 - Escape returns to the picker with your selection preserved, then to chat.

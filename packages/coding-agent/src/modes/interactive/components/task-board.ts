@@ -124,7 +124,8 @@ export function stateGlyph(state: TaskBoardState): Glyph {
 export function compactTokens(tokens: number): string {
 	if (tokens < 1000) return String(tokens);
 	if (tokens < 999_950) return `${(tokens / 1000).toFixed(1)}k`;
-	return `${(tokens / 1_000_000).toFixed(1)}M`;
+	if (tokens < 999_950_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
+	return `${(tokens / 1_000_000_000).toFixed(1)}B`;
 }
 
 function rowElapsed(row: TaskBoardRow): number | undefined {
@@ -164,7 +165,7 @@ export function renderBoardRow(row: TaskBoardRow, selected: boolean, width: numb
 		row.kind === "item" && row.item.progress && state !== "input"
 			? `${row.item.kind === "workflow" ? "stage " : ""}${row.item.progress.done}/${row.item.progress.total}`
 			: "";
-	const reason = row.kind === "item" && state === "failed" && row.item.reason ? row.item.reason : "";
+	const reason = row.kind === "item" && state === "failed" && row.item.reason ? taskDisplayText(row.item.reason) : "";
 	const task = [rowTask(row), progress, reason].filter(Boolean).join(" · ");
 	const meta = width < 40 ? "" : rowMeta(row);
 	const fixed = 2 + 2 + nameColumn + (meta ? 2 + visibleWidth(meta) : 0);

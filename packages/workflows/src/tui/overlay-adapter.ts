@@ -42,6 +42,7 @@ import type { StoreSnapshot } from "../shared/store-types.js";
 import { deriveGraphThemeFromPiTheme } from "./graph-theme.js";
 import type { OverlayTerminalOutput } from "./overlay-terminal-modes.js";
 import { remoteTerminalControlFrom, setTerminalAutowrap } from "./overlay-terminal-modes.js";
+import { markWorkflowRunViewed } from "./panel-runs.js";
 import { WorkflowAttachPane } from "./workflow-attach-pane.js";
 import type { PostMortemHandleResolution } from "./workflow-attach-pane-types.js";
 import { WORKFLOW_STATUS_KEY } from "./workflow-status.js";
@@ -321,6 +322,12 @@ export function buildGraphOverlayAdapter(
 		stageRunId?: string,
 		openOptions?: GraphOverlayOpenOptions,
 	): void {
+		const targetRunId = runId ?? store.activeRunId() ?? store.runs().at(-1)?.id ?? null;
+		if (targetRunId) {
+			markWorkflowRunViewed(targetRunId, store);
+			const rootRunId = store.run(targetRunId)?.rootRunId;
+			if (rootRunId) markWorkflowRunViewed(rootRunId, store);
+		}
 		pendingReturn = openOptions?.onReturn;
 		const ui = surface?.ui ?? pi.ui;
 		observeHostCustomUi(ui);

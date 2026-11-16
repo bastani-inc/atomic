@@ -5,6 +5,7 @@ import { sessionEntryToContextMessages } from "../session-manager-history.ts";
 import { expandSkillCommand, type SkillCatalogCommand } from "../skill-catalog.ts";
 import { taskOutputText } from "./command-output.js";
 import type { OperationId, TaskId, TaskRecord } from "./contracts.js";
+import { bindTaskClockSource } from "./live-elapsed.ts";
 import { TaskMessageError, TaskMessageTimeoutError } from "./message-error.js";
 import type { OwnerTaskStore, TaskActivity } from "./owner-store.js";
 import {
@@ -172,6 +173,7 @@ export function launchedTaskViewSource(source: TaskViewSource, launcher: TaskId)
 	};
 	views.set(launcher, view);
 	launchedViewRoots.set(view, root);
+	bindTaskClockSource(view, root);
 	return view;
 }
 
@@ -374,6 +376,7 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 		},
 	};
 	sources.set(store, source);
+	bindTaskClockSource(source, store);
 	return source;
 }
 

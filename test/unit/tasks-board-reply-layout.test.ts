@@ -151,6 +151,7 @@ test("Esc, arrows, wheel and ? while a reply is sending are ignored, and the sen
 		);
 		inspector.setBoardSource(source);
 		inspector.handleInput(SPACE);
+		inspector.renderViewport(100, 24);
 		inspector.handleInput("1");
 		inspector.handleInput(ENTER);
 		inspector.handleInput(ESC);
@@ -209,10 +210,12 @@ test("a source refresh during an in-flight reply cleans up the sent row's draft 
 		inspector.setBoardSource(source);
 		inspector.handleInput(DOWN);
 		inspector.handleInput(SPACE);
+		inspector.renderViewport(100, 24);
 		inspector.handleInput("2");
 		inspector.handleInput(ESC);
 		inspector.handleInput(UP);
 		inspector.handleInput(SPACE);
+		inspector.renderViewport(100, 24);
 		inspector.handleInput("1");
 		inspector.handleInput(ENTER);
 		currentItems = [second];
@@ -456,6 +459,7 @@ test("a rejected boardSource.answer shows a failure notice, preserves the typed 
 		);
 		inspector.setBoardSource(source);
 		inspector.handleInput(SPACE);
+		inspector.renderViewport(100, 24);
 		inspector.handleInput("1");
 		inspector.handleInput(ENTER);
 		rejectFirst(new Error("transport disconnected"));

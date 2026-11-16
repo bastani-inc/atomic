@@ -4,8 +4,10 @@
  * items, as the workflows extension adds runs, with `pi.registerAgentPanelSource()`.
  */
 
-import type { ExtensionError } from "../extensions/runtime-types.js";
+import { sanitizeTerminalText } from "../../utils/terminal-text.ts";
+import type { ExtensionError } from "../extensions/runtime-types.ts";
 import type { TaskId, TaskRecord } from "./contracts.js";
+import { bindTaskClock, type TaskElapsedClocks, taskClockOf } from "./live-elapsed.ts";
 import { getOwnerTaskStore, watchOwnerTaskStoreBinding } from "./owner-store.js";
 import { ownerTaskViewSource, type TaskViewSource } from "./task-view-source.js";
 
@@ -36,6 +38,7 @@ export interface AgentPanelItem {
 	readonly queued?: number;
 	/** When it finished, for finished items. */
 	readonly endedAt?: number;
+	readonly viewed?: boolean;
 }
 
 export interface AgentPanelOpenOptions {
@@ -53,7 +56,9 @@ export interface AgentPanelSource {
 	 * Opens an item in the interactive UI, as Enter on its row does (a workflow run's graph). `onReturn` is called when
 	 * the opened view goes back one level, so the view it was opened from (the agent panel, `/tasks`) shows again.
 	 */
-	open?(id: string, options?: AgentPanelOpenOptions): void;
+	open?:
+		| ((id: string, options?: AgentPanelOpenOptions) => boolean)
+		| ((id: string, options?: AgentPanelOpenOptions) => void);
 	/** Stops a running item, after the second `x`. */
 	stop?(id: string): Promise<AgentPanelActionResult>;
 	/** Answers a waiting item's question with `text`. */
@@ -65,17 +70,24 @@ export interface AgentPanelSourceRegistration {
 	dispose(): void;
 }
 
+const subscribeErrors = new WeakMap<AgentPanelSource, Error>();
+
 export class AgentPanelSourceHub {
 	private readonly sources = new Map<AgentPanelSource, () => void>();
 	private readonly listeners = new Set<() => void>();
+	private readonly errorReporters = new Set<(source: AgentPanelSource, error: Error) => void>();
 	register(source: AgentPanelSource): AgentPanelSourceRegistration {
-		let unsubscribe: () => void;
+		let unsubscribe: () => void = () => {};
 		try {
-			unsubscribe = source.subscribe(() => {
+			const sub = source.subscribe(() => {
 				if (this.sources.has(source)) this.notify();
 			});
-		} catch {
-			return { dispose() {} };
+			if (typeof sub === "function") unsubscribe = sub;
+			else throw new Error("Invalid agent panel source subscription.");
+		} catch (error) {
+			const err = sourceError(error);
+			subscribeErrors.set(source, err);
+			for (const report of [...this.errorReporters]) safelyCall(() => report(source, err));
 		}
 		const cleanup = () => safelyCall(unsubscribe);
 		this.sources.get(source)?.();
@@ -93,9 +105,19 @@ export class AgentPanelSourceHub {
 	all(): readonly AgentPanelSource[] {
 		return [...this.sources.keys()];
 	}
-	subscribe(listener: () => void): () => void {
+	subscribe(listener: () => void, onError?: (source: AgentPanelSource, error: Error) => void): () => void {
 		this.listeners.add(listener);
-		return () => this.listeners.delete(listener);
+		if (onError !== undefined) {
+			this.errorReporters.add(onError);
+			for (const source of this.sources.keys()) {
+				const err = subscribeErrors.get(source);
+				if (err !== undefined) safelyCall(() => onError(source, err));
+			}
+		}
+		return () => {
+			this.listeners.delete(listener);
+			if (onError !== undefined) this.errorReporters.delete(onError);
+		};
 	}
 	dispose(): void {
 		const cleanups = [...this.sources.values()];
@@ -103,6 +125,7 @@ export class AgentPanelSourceHub {
 		for (const cleanup of cleanups) cleanup();
 		this.notify();
 		this.listeners.clear();
+		this.errorReporters.clear();
 	}
 	private notify(): void {
 		for (const listener of [...this.listeners]) safelyCall(listener);
@@ -141,6 +164,11 @@ function taskState(task: TaskRecord): AgentPanelState {
 	return "running";
 }
 
+const cachedTaskItems = new WeakMap<
+	TaskRecord,
+	{ readonly clocks: TaskElapsedClocks | undefined; readonly item: AgentPanelItem }
+>();
+
 /**
  * One panel item per background task of `source` that is not in `dismissed`, in admission order. The main chat's panel
  * lists only top-level tasks; a subagent's chat lists the tasks of that subagent, which all have a parent.
@@ -151,12 +179,16 @@ export function taskPanelItems(
 	options: { readonly topLevelOnly?: boolean } = {},
 ) {
 	const topLevelOnly = options.topLevelOnly ?? true;
+	const sourceClocks = taskClockOf(source);
 	return source.backgroundTasks
 		.filter((task) => !dismissed.has(task.ref.taskId) && (!topLevelOnly || task.parentTaskId === undefined))
 		.map((task): AgentPanelItem => {
+			const clocks = sourceClocks ?? taskClockOf(task);
+			const cached = cachedTaskItems.get(task);
+			if (cached !== undefined && cached.clocks === clocks) return cached.item;
 			const state = taskState(task);
 			const question = task.attention.kind === "input-needed" ? task.attention.prompt : undefined;
-			return {
+			const item: AgentPanelItem = {
 				id: `${taskPrefix}${task.ref.taskId}`,
 				kind: task.kind === "agent" ? "agent" : "shell",
 				state,
@@ -169,21 +201,31 @@ export function taskPanelItems(
 					? { reason: task.execution.result.message.split("\n")[0] ?? "" }
 					: {}),
 			};
+			if (clocks !== undefined) bindTaskClock(item, clocks);
+			cachedTaskItems.set(task, { clocks, item });
+			return item;
 		});
 }
 
 const reportedSources = new WeakSet<AgentPanelSource>();
 
+function cleanReasonText(text: string): string {
+	if (!/[\x00-\x1f\x7f-\x9f\p{Default_Ignorable_Code_Point}\u2028\u2029]/u.test(text)) return text;
+	return sanitizeTerminalText(text)
+		.replace(/\p{Default_Ignorable_Code_Point}/gu, "")
+		.replace(/[\x00-\x1f\x7f-\x9f\u2028\u2029]/g, " ");
+}
+
 function sourceError(error: unknown): Error {
 	try {
-		return new Error(error instanceof Error ? String(error.message) : String(error));
+		return new Error(cleanReasonText(error instanceof Error ? String(error.message) : String(error)));
 	} catch {
 		return new Error("Agent panel source failed.");
 	}
 }
 
 function reasonText(reason: unknown): string {
-	return typeof reason === "string" ? reason : sourceError(reason).message;
+	return typeof reason === "string" ? cleanReasonText(reason) : sourceError(reason).message;
 }
 
 function safelyCall(callback: () => void | PromiseLike<void>): boolean {
@@ -209,6 +251,7 @@ const PANEL_STATES: ReadonlySet<unknown> = new Set([
 ]);
 const optionalNumber = (v: unknown) => v === undefined || (typeof v === "number" && Number.isFinite(v) && v >= 0);
 const optionalString = (v: unknown) => v === undefined || typeof v === "string";
+const optionalBoolean = (v: unknown) => v === undefined || typeof v === "boolean";
 
 function isPanelItem(item: AgentPanelItem): boolean {
 	const p = item.progress;
@@ -222,6 +265,7 @@ function isPanelItem(item: AgentPanelItem): boolean {
 		optionalNumber(item.tokens) &&
 		optionalNumber(item.queued) &&
 		optionalNumber(item.endedAt) &&
+		optionalBoolean(item.viewed) &&
 		optionalString(item.question) &&
 		optionalString(item.reason) &&
 		(item.choices === undefined || item.choices.every((choice) => typeof choice === "string")) &&
@@ -235,6 +279,8 @@ function sourceItems(source: AgentPanelSource, onError?: (error: Error) => void)
 		reportedSources.add(source);
 		safelyCall(() => onError(sourceError(error)));
 	};
+	const subscribeError = subscribeErrors.get(source);
+	if (subscribeError !== undefined) report(subscribeError);
 	const items: AgentPanelItem[] = [];
 	try {
 		for (const item of source.items()) {
@@ -257,6 +303,7 @@ function sourceItems(source: AgentPanelSource, onError?: (error: Error) => void)
 					reason: item.reason,
 					queued: item.queued,
 					endedAt: item.endedAt,
+					...(item.viewed === undefined ? {} : { viewed: item.viewed }),
 				};
 				if (isPanelItem(copy)) items.push(copy);
 				else report(new Error("Invalid agent panel item."));
@@ -275,6 +322,8 @@ export function agentPanelTaskId(id: string): TaskId | undefined {
 }
 
 const dismissedBySession = new WeakMap<object, Set<string>>();
+const viewedBySession = new WeakMap<object, Set<string>>();
+const hubBindingListeners = new WeakMap<object, Set<() => void>>();
 
 export function dismissedAgentPanelItems(session: object): Set<string> {
 	let dismissed = dismissedBySession.get(session);
@@ -283,6 +332,31 @@ export function dismissedAgentPanelItems(session: object): Set<string> {
 		dismissedBySession.set(session, dismissed);
 	}
 	return dismissed;
+}
+
+export function viewedAgentPanelItems(session: object): Set<string> {
+	let viewed = viewedBySession.get(session);
+	if (viewed === undefined) {
+		viewed = new Set();
+		viewedBySession.set(session, viewed);
+	}
+	return viewed;
+}
+
+export function notifyAgentPanelSourceHubRebound(session: object): void {
+	for (const listener of [...(hubBindingListeners.get(session) ?? [])]) safelyCall(listener);
+}
+
+export function watchAgentPanelSourceHubBinding(session: object, listener: () => void): () => void {
+	let listeners = hubBindingListeners.get(session);
+	if (listeners === undefined) {
+		listeners = new Set();
+		hubBindingListeners.set(session, listeners);
+	}
+	listeners.add(listener);
+	return () => {
+		listeners.delete(listener);
+	};
 }
 
 function dismissedTaskIds(session: object): Set<TaskId> {
@@ -294,21 +368,31 @@ function dismissedTaskIds(session: object): Set<TaskId> {
 	return ids;
 }
 
+function sourceErrorReporter(session: AgentPanelSession): ((error: Error) => void) | undefined {
+	const report = session.extensionRunner?.emitError;
+	if (report === undefined) return undefined;
+	return (error: Error) =>
+		safelyCall(() =>
+			report.call(session.extensionRunner, {
+				extensionPath: "agent panel source",
+				event: "agent_panel",
+				error: error.message,
+			}),
+		);
+}
+
 export function agentPanelExtensionItems(session: AgentPanelSession & object): AgentPanelItem[] {
 	const dismissed = dismissedAgentPanelItems(session);
-	const report = session.extensionRunner?.emitError;
-	const onSourceError =
-		report === undefined
-			? undefined
-			: (error: Error) =>
-					report.call(session.extensionRunner, {
-						extensionPath: "agent panel source",
-						event: "agent_panel",
-						error: error.message,
-					});
-	return (hubOf(session)?.all() ?? []).flatMap((source) =>
-		sourceItems(source, onSourceError).filter((item) => !dismissed.has(item.id)),
-	);
+	const viewed = viewedBySession.get(session);
+	const onSourceError = sourceErrorReporter(session);
+	const all = (hubOf(session)?.all() ?? []).flatMap((source) => sourceItems(source, onSourceError));
+	if (viewed !== undefined && viewed.size > 0) {
+		const liveIds = new Set(all.map((item) => item.id));
+		for (const id of [...viewed]) {
+			if (!liveIds.has(id)) viewed.delete(id);
+		}
+	}
+	return all.filter((item) => !dismissed.has(item.id));
 }
 
 export function agentPanelItems(session: AgentPanelSession & object): AgentPanelItem[] {
@@ -318,7 +402,36 @@ export function agentPanelItems(session: AgentPanelSession & object): AgentPanel
 }
 
 export function subscribeAgentPanelExtensions(session: AgentPanelSession, listener: () => void): () => void {
-	return hubOf(session)?.subscribe(listener) ?? (() => {});
+	let currentHub: AgentPanelSourceHub | undefined;
+	let unsubscribeHub = () => {};
+	const bind = (): void => {
+		const nextHub = hubOf(session);
+		if (nextHub === currentHub) return;
+		unsubscribeHub();
+		currentHub = nextHub;
+		const onSourceError = sourceErrorReporter(session);
+		const onHubSourceError =
+			onSourceError === undefined
+				? undefined
+				: (source: AgentPanelSource, error: Error) => {
+						if (reportedSources.has(source)) return;
+						reportedSources.add(source);
+						onSourceError(error);
+					};
+		unsubscribeHub = currentHub?.subscribe(listener, onHubSourceError) ?? (() => {});
+	};
+	bind();
+	const unwatch =
+		typeof session === "object" && session !== null
+			? watchAgentPanelSourceHubBinding(session, () => {
+					bind();
+					listener();
+				})
+			: () => {};
+	return () => {
+		unwatch();
+		unsubscribeHub();
+	};
 }
 
 export function subscribeAgentPanel(session: AgentPanelSession & object, listener: () => void): () => void {
@@ -343,11 +456,19 @@ function sourceOf(session: AgentPanelSession, id: string): AgentPanelSource | un
 }
 
 export function openAgentPanelItem(session: AgentPanelSession, id: string, options?: AgentPanelOpenOptions): boolean {
+	const reportError = sourceErrorReporter(session);
 	try {
 		const source = sourceOf(session, id);
 		if (source?.open === undefined) return false;
-		return safelyCall(() => source.open?.(id, options));
-	} catch {
+		const result = source.open(id, options);
+		void Promise.resolve(result).catch((error) => reportError?.(sourceError(error)));
+		if (result === false) return false;
+		if (typeof session === "object" && session !== null) {
+			viewedAgentPanelItems(session).add(id);
+		}
+		return true;
+	} catch (error) {
+		reportError?.(sourceError(error));
 		return false;
 	}
 }
@@ -362,7 +483,7 @@ export async function stopAgentPanelItem(
 			const store = getOwnerTaskStore(session);
 			if (store === undefined) return { ok: false, reason: "This task is no longer kept." };
 			const result = await ownerTaskViewSource(store).cancelTask(taskId);
-			return result.ok ? { ok: true } : { ok: false, reason: result.error.message };
+			return result.ok ? { ok: true } : { ok: false, reason: cleanReasonText(result.error.message) };
 		}
 		const source = sourceOf(session, id);
 		if (source?.stop === undefined) return { ok: false, reason: "This item cannot be stopped from here." };

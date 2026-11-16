@@ -4,6 +4,7 @@ import { repairOrphanToolResults } from "../../../core/messages.ts";
 import { SessionManager } from "../../../core/session-manager.ts";
 import type { SessionStore } from "../../../core/storage/session/types.js";
 import type { TaskId } from "../../../core/tasks/contracts.js";
+import { TaskElapsedClocks, taskClocksFor } from "../../../core/tasks/live-elapsed.ts";
 import { getOwnerTaskStore, type OwnerTaskStore, watchOwnerTaskStoreBinding } from "../../../core/tasks/owner-store.js";
 import { ownerTaskViewSource, type TaskViewSource } from "../../../core/tasks/task-view-source.js";
 import {
@@ -69,6 +70,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	private taskStore?: OwnerTaskStore;
 	/** What `/tasks` and the task footer show: the session's task store, or the host's own task source. */
 	private taskSource?: TaskViewSource;
+	private readonly footerClocks = new TaskElapsedClocks();
 	private readonly taskRowsInChat: boolean;
 	private unsubscribeTasks?: () => void;
 	private taskSession?: object;
@@ -236,6 +238,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		if (store === this.taskStore && source === this.taskSource) return;
 		this.closeTasks();
 		this.unsubscribeTasks?.();
+		this.footerClocks.clear();
 		this.taskStore = store;
 		this.taskSource = source;
 		this.unsubscribeTasks = undefined;
@@ -356,11 +359,12 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	}
 
 	renderTaskFooter(width: number): string[] {
-		return renderTaskFooter(this.taskSource?.backgroundTasks ?? [], width);
+		const clocks = this.taskSource === undefined ? this.footerClocks : taskClocksFor(this.taskSource);
+		return renderTaskFooter(this.taskSource?.backgroundTasks ?? [], width, clocks);
 	}
 	renderFooter(width: number): string[] {
 		const footer = renderChatSessionFooter(this.state, width, this.hasTaskInspector && !this.taskInspectorFullscreen);
-		return footer.length ? footer : renderTaskFooter(this.taskSource?.backgroundTasks ?? [], width);
+		return footer.length ? footer : this.renderTaskFooter(width);
 	}
 
 	handleScrollInput(data: string): boolean {
@@ -484,6 +488,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		this.taskInspector?.dispose();
 		this.unsubscribeTasks?.();
 		this.unsubscribeTaskBinding?.();
+		this.footerClocks.clear();
 		disposeChatSession(this.state);
 	}
 

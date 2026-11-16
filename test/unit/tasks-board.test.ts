@@ -51,6 +51,7 @@ function runSource(items: AgentPanelItem[]) {
 		open: (id, options) => {
 			calls.opened.push(id);
 			if (options?.onReturn) calls.returns.push(options.onReturn);
+			return true;
 		},
 		stop: async (id) => {
 			calls.stopped.push(id);
@@ -284,6 +285,7 @@ test("a finished run with no current stage reads its stage count, the filter box
 		assert.match(h.text(), /✓ approve-demo +stage 1\/1 +done · 10s/);
 		assert.doesNotMatch(h.text(), /approve-demo +·/, "no separator before an empty task");
 		h.inspector.handleInput(SPACE);
+		h.text();
 		h.inspector.handleInput("1");
 		h.inspector.handleInput(ENTER);
 		await flush();
@@ -302,9 +304,9 @@ test("/tasks opens on its first row, a waiting run above a working subagent, and
 	try {
 		await fixture.start("Spawn lock fix");
 		const runs = runSource([waitingRun]);
-		const { liveElapsedMs } = await import("../../packages/coding-agent/src/core/tasks/live-elapsed.js");
+		const { taskClocksFor } = await import("../../packages/coding-agent/src/core/tasks/live-elapsed.js");
 		const taskId = fixture.store.tasks[0]?.ref.taskId ?? "";
-		const seenEarlier = liveElapsedMs(taskId, 0, true, Date.now() - 60_000);
+		const seenEarlier = taskClocksFor(fixture.store).elapsedMs(taskId, 0, true, Date.now() - 60_000);
 		assert.equal(seenEarlier, 0);
 		const inspector = new TaskInspector(
 			ownerTaskViewSource(fixture.store),
@@ -531,6 +533,7 @@ test("Enter while a reply is being sent sends it once and never reaches the list
 	};
 	try {
 		h.inspector.handleInput(SPACE);
+		h.text();
 		h.inspector.handleInput("1");
 		h.inspector.handleInput(ENTER);
 		h.inspector.handleInput(ENTER);
@@ -550,6 +553,7 @@ test("an Enter just after a reply is sent is swallowed, so a double Enter never 
 	const h = await harness([waitingRun]);
 	try {
 		h.inspector.handleInput(SPACE);
+		h.text();
 		h.inspector.handleInput("1");
 		h.inspector.handleInput(ENTER);
 		await flush();

@@ -10,7 +10,13 @@ import { deriveGraphTheme } from "../tui/graph-theme.js";
 import { registerInlineFormRenderer } from "../tui/inline-form-overlay.js";
 import type { GraphOverlayPort } from "../tui/overlay-adapter.js";
 import { buildGraphOverlayAdapter } from "../tui/overlay-adapter.js";
-import { panelItemsFromSnapshot, panelRunId } from "../tui/panel-runs.js";
+import {
+	answerPanelRun,
+	markWorkflowRunViewed,
+	panelItemsFromSnapshot,
+	panelRunId,
+	viewedWorkflowRuns,
+} from "../tui/panel-runs.js";
 import { installToolExecutionHooks } from "../tui/tool-execution-hooks.js";
 import type { PostMortemHandleResolution } from "../tui/workflow-attach-pane-types.js";
 import { adoptWorkflowSessionRunState } from "./adopt-session-run-state.js";
@@ -34,7 +40,6 @@ import { workflowPolicyFromContext } from "./workflow-policy.js";
 import { createSessionRunControl } from "./workflow-session-run-control.js";
 import { overlaySurfaceFromContext } from "./workflow-targets.js";
 import { makeExecuteWorkflowTool } from "./workflow-tool.js";
-import { workflowAnswerAction } from "./workflow-tool-answer.js";
 import { registerWorkflowTool } from "./workflow-tool-registration.js";
 
 function registerWorkflowMessageRenderers(pi: ExtensionAPI): void {
@@ -197,12 +202,14 @@ function factory(pi: ExtensionAPI): void {
 		},
 	});
 	pi.registerWorkflowRunControl?.(sessionRunControl);
+	const viewedRuns = viewedWorkflowRuns(owner.store);
 	pi.registerAgentPanelSource?.({
-		items: () => panelItemsFromSnapshot(owner.store.graphSnapshot().runs),
+		items: () => panelItemsFromSnapshot(owner.store.graphSnapshot().runs, Date.now(), viewedRuns),
 		subscribe: (listener) => owner.store.subscribeInvalidation(listener),
 		open: (id, options) => {
 			const runId = panelRunId(id);
 			if (runId === undefined) return;
+			markWorkflowRunViewed(runId, owner.store);
 			overlay.open(runId, overlaySurfaceFromContext(sessionContext), undefined, undefined, {
 				...(options?.onReturn === undefined ? {} : { onReturn: options.onReturn }),
 			});
@@ -220,12 +227,7 @@ function factory(pi: ExtensionAPI): void {
 				return { ok: false, reason: error instanceof Error ? error.message : String(error) };
 			}
 		},
-		answer: async (id, text) => {
-			const runId = panelRunId(id);
-			if (runId === undefined) return { ok: false, reason: "not a workflow run" };
-			const result = await workflowAnswerAction({ action: "answer", runId, text }, owner);
-			return result.status === "ok" ? { ok: true } : { ok: false, reason: result.message ?? result.status };
-		},
+		answer: async (id, text) => answerPanelRun(id, text, owner),
 	});
 	const executeWorkflowToolWithAutoAttach: typeof executeWorkflowTool = async (args, ctx, signal, onRunAccepted) => {
 		const result = await executeWorkflowTool(args, ctx, signal, onRunAccepted);

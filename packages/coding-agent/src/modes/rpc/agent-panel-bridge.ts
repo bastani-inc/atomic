@@ -1,12 +1,14 @@
 import { matchesKey, truncateToWidth } from "@bastani/atomic-tui";
 import type { ExtensionUIContext } from "../../core/extensions/index.js";
 import {
+	type AgentPanelItem,
 	type AgentPanelSession,
 	agentPanelItems,
 	dismissedAgentPanelItems,
 	openAgentPanelItem,
 	stopAgentPanelItem,
 	subscribeAgentPanel,
+	viewedAgentPanelItems,
 } from "../../core/tasks/agent-panel-source.ts";
 import { getOwnerTaskStore } from "../../core/tasks/owner-store.js";
 import { ownerTaskViewSource } from "../../core/tasks/task-view-source.js";
@@ -23,6 +25,7 @@ import {
 import { atomicWorkingFrame } from "../interactive/components/atomic-working-status.ts";
 import { renderNavKeyOverlay } from "../interactive/components/nav-keys.ts";
 import { dismissedTasks } from "../interactive/components/task-dismissal.ts";
+import { taskDisplayText } from "../interactive/components/task-row.js";
 import { isPhysicalCtrlC } from "../interactive/interactive-key-identity.ts";
 import { theme } from "../interactive/theme/theme.js";
 import { showTaskInspector, type TaskInspectorUi } from "./task-ui-bridge.js";
@@ -32,18 +35,34 @@ interface PanelState {
 	readonly model: AgentPanelModel;
 	/** Workflow-run rows opened at least once: a finished run stays until it has been viewed. */
 	readonly viewed: Set<string>;
+	hideCount: number;
 	/** Hides the unfocused panel while the focused one owns the same rows. */
 	setVisible?: (visible: boolean) => void;
 }
 
 const states = new WeakMap<object, PanelState>();
+const boundSessions = new Set<AgentPanelSession & object>();
 
-function panelState(session: object): PanelState {
-	let state = states.get(session);
+function panelState(target: object): PanelState {
+	let state = states.get(target);
 	if (state === undefined) {
-		state = { model: new AgentPanelModel(), viewed: new Set() };
-		states.set(session, state);
+		const store = getOwnerTaskStore(target);
+		if (store !== undefined) state = states.get(store);
 	}
+	if (state === undefined) {
+		for (const session of boundSessions) {
+			if (getOwnerTaskStore(session) === target) {
+				state = states.get(session);
+				break;
+			}
+		}
+	}
+	if (state === undefined) {
+		state = { model: new AgentPanelModel(), viewed: new Set(), hideCount: 0 };
+	}
+	states.set(target, state);
+	const store = getOwnerTaskStore(target);
+	if (store !== undefined) states.set(store, state);
 	return state;
 }
 
@@ -65,11 +84,27 @@ export function themedAgentPanelStyle(): AgentPanelStyle {
 /** The rows the panel shows now: workflow runs, then subagents and shells, newest first, with finished rows aging out. */
 export function agentPanelRows(session: AgentPanelSession & object): AgentPanelRow[] {
 	const state = panelState(session);
+	const sharedViewed = viewedAgentPanelItems(session);
 	const items = agentPanelItems(session);
-	const runs = items.filter((item) => item.kind === "workflow").reverse();
-	const tasks = items.filter((item) => item.kind !== "workflow").reverse();
+	const runs: AgentPanelItem[] = [];
+	const tasks: AgentPanelItem[] = [];
+	const liveWorkflowIds = new Set<string>();
+	for (let i = items.length - 1; i >= 0; i--) {
+		const item = items[i]!;
+		if (item.kind === "workflow") {
+			runs.push(item);
+			liveWorkflowIds.add(item.id);
+		} else {
+			tasks.push(item);
+		}
+	}
+	for (const id of state.viewed) if (!liveWorkflowIds.has(id)) state.viewed.delete(id);
+	for (const id of sharedViewed) if (!liveWorkflowIds.has(id)) sharedViewed.delete(id);
 	// A finished run stays until it has been viewed; a finished task ages out.
-	return state.model.rows([...runs, ...tasks], (row) => row.kind === "workflow" && !state.viewed.has(row.id));
+	return state.model.rows(
+		[...runs, ...tasks],
+		(row) => row.kind === "workflow" && row.viewed !== true && !state.viewed.has(row.id) && !sharedViewed.has(row.id),
+	);
 }
 
 const WIDGET_KEY = "atomic.agent-panel";
@@ -81,16 +116,13 @@ export const AGENT_PANEL_REFRESH_BURST = 4;
 function budgetedPanelListener(listener: () => void): { listener: () => void; dispose(): void } {
 	let windowStart = Number.NEGATIVE_INFINITY;
 	let spent = 0;
-	let refreshes = 0;
 	let deferred: ReturnType<typeof setTimeout> | undefined;
 	const refresh = (): void => {
 		const began = performance.now();
 		if (began - windowStart >= AGENT_PANEL_REFRESH_WINDOW_MS) {
 			windowStart = began;
 			spent = 0;
-			refreshes = 0;
 		}
-		refreshes++;
 		try {
 			listener();
 		} finally {
@@ -101,11 +133,7 @@ function budgetedPanelListener(listener: () => void): { listener: () => void; di
 		listener: () => {
 			if (deferred !== undefined) return;
 			const now = performance.now();
-			if (
-				now - windowStart >= AGENT_PANEL_REFRESH_WINDOW_MS ||
-				refreshes < AGENT_PANEL_REFRESH_BURST ||
-				spent < AGENT_PANEL_REFRESH_BUDGET_MS
-			) {
+			if (now - windowStart >= AGENT_PANEL_REFRESH_WINDOW_MS || spent < AGENT_PANEL_REFRESH_BUDGET_MS) {
 				refresh();
 				return;
 			}
@@ -131,10 +159,12 @@ export function bindAgentPanel(
 	session: AgentPanelSession & object,
 	ui: Pick<ExtensionUIContext, "setWidget" | "requestRender"> & Partial<Pick<ExtensionUIContext, "onWidgetRelease">>,
 ): () => void {
+	boundSessions.add(session);
 	const state = panelState(session);
 	let mounted = false;
-	let visible = true;
+	let visible = state.hideCount === 0;
 	let disposed = false;
+	let currentRows: AgentPanelRow[] = [];
 	let timer: ReturnType<typeof setInterval> | undefined;
 
 	const stopTimer = () => {
@@ -144,12 +174,14 @@ export function bindAgentPanel(
 	const update = () => {
 		if (disposed) return;
 		if (!visible) {
+			currentRows = [];
 			if (mounted) ui.setWidget(WIDGET_KEY, undefined);
 			mounted = false;
 			stopTimer();
 			return;
 		}
 		const rows = agentPanelRows(session);
+		currentRows = rows;
 		if (rows.length === 0) {
 			if (mounted) ui.setWidget(WIDGET_KEY, undefined);
 			mounted = false;
@@ -163,8 +195,8 @@ export function bindAgentPanel(
 				() => ({
 					invalidate() {},
 					render(width: number) {
-						const current = agentPanelRows(session);
-						return renderAgentPanelRows(current, width, themedAgentPanelStyle(), {
+						if (!visible) return [];
+						return renderAgentPanelRows(currentRows, width, themedAgentPanelStyle(), {
 							frame: atomicWorkingFrame(),
 							faded: (row) => state.model.faded(row),
 						});
@@ -183,6 +215,7 @@ export function bindAgentPanel(
 		mounted = false;
 	});
 	state.setVisible = (value) => {
+		if (visible === value) return;
 		visible = value;
 		if (!value) budgeted.dispose();
 		update();
@@ -190,6 +223,7 @@ export function bindAgentPanel(
 	update();
 	return () => {
 		disposed = true;
+		boundSessions.delete(session);
 		stopTimer();
 		budgeted.dispose();
 		state.setVisible = undefined;
@@ -210,11 +244,13 @@ export async function showAgentPanel(
 	selectId?: string,
 ): Promise<void> {
 	const state = panelState(session);
+	const sharedViewed = viewedAgentPanelItems(session);
 	const store = getOwnerTaskStore(session);
 	const style = themedAgentPanelStyle();
-	if (agentPanelRows(session).length === 0) return;
+	let currentRows = agentPanelRows(session);
+	if (currentRows.length === 0) return;
 	let next: (() => Promise<void>) | undefined;
-	state.setVisible?.(false);
+	setAgentPanelVisible(session, false);
 	try {
 		await ui.custom<void>(
 			(tui, _theme, keybindings, done) => {
@@ -236,17 +272,38 @@ export async function showAgentPanel(
 							};
 						else {
 							state.viewed.add(row.id);
+							sharedViewed.add(row.id);
 							next = async () => {
-								openAgentPanelItem(session, row.id, { onReturn: () => void back() });
+								openAgentPanelItem(session, row.id, {
+									onReturn: () => {
+										void back().catch((error: unknown) => {
+											const message = error instanceof Error ? error.message : String(error);
+											ui.notify?.(taskDisplayText(message), "warning");
+										});
+									},
+								});
 							};
 						}
 						finish();
 					},
 					stop(row) {
-						void stopAgentPanelItem(session, row.id).then((result) => {
-							if (!result.ok) ui.notify?.(`Could not stop ${row.name}: ${result.reason}`, "warning");
-							tui.requestRender();
-						});
+						void stopAgentPanelItem(session, row.id)
+							.then((result) => {
+								if (!result.ok)
+									ui.notify?.(
+										`Could not stop ${taskDisplayText(row.name)}: ${taskDisplayText(result.reason)}`,
+										"warning",
+									);
+								tui.requestRender();
+							})
+							.catch((error: unknown) => {
+								const reason = error instanceof Error ? error.message : String(error);
+								ui.notify?.(
+									`Could not stop ${taskDisplayText(row.name)}: ${taskDisplayText(reason)}`,
+									"warning",
+								);
+								tui.requestRender();
+							});
 						tui.requestRender();
 					},
 					dismiss(row) {
@@ -255,25 +312,27 @@ export async function showAgentPanel(
 						// /tasks hides a dismissed task too.
 						if (taskId !== undefined && store !== undefined)
 							dismissedTasks(ownerTaskViewSource(store)).add(taskId);
-						focus.update(agentPanelRows(session));
-						if (agentPanelRows(session).length === 0) finish();
+						currentRows = agentPanelRows(session);
+						focus.update(currentRows);
+						if (currentRows.length === 0) finish();
 						tui.requestRender();
 					},
 					close: finish,
 				});
-				focus.update(agentPanelRows(session));
+				focus.update(currentRows);
 				focus.enter(selectId);
-				const unsubscribe = subscribeAgentPanel(session, () => {
-					focus.update(agentPanelRows(session));
+				const refreshFocus = () => {
+					currentRows = agentPanelRows(session);
+					focus.update(currentRows);
 					tui.requestRender();
-				});
-				const tick = setInterval(() => tui.requestRender(), TICK_MS);
+				};
+				const budgetedFocus = budgetedPanelListener(refreshFocus);
+				const unsubscribe = subscribeAgentPanel(session, budgetedFocus.listener);
+				const tick = setInterval(refreshFocus, TICK_MS);
 				tick.unref?.();
 				return {
 					invalidate() {},
 					render(width: number) {
-						const rows = agentPanelRows(session);
-						focus.update(rows);
 						if (focus.helpOpen)
 							return renderNavKeyOverlay(
 								"keys · agents",
@@ -286,7 +345,7 @@ export async function showAgentPanel(
 								keys,
 							);
 						return [
-							...renderAgentPanelRows(rows, width, style, {
+							...renderAgentPanelRows(currentRows, width, style, {
 								selectedId: focus.selectedId,
 								frame: atomicWorkingFrame(),
 								faded: (row) => state.model.faded(row),
@@ -306,6 +365,7 @@ export async function showAgentPanel(
 					},
 					dispose() {
 						clearInterval(tick);
+						budgetedFocus.dispose();
 						unsubscribe();
 					},
 				};
@@ -313,14 +373,16 @@ export async function showAgentPanel(
 			{ overlay: false, purpose: "navigation", handlesCtrlC: true, deferInlineCustomUiFocus: true },
 		);
 	} finally {
-		state.setVisible?.(true);
+		setAgentPanelVisible(session, true);
 	}
 	await next?.();
 }
 
 /** Shows or hides the unfocused panel, as a view that owns the prompt's place (such as `/tasks`) needs. */
 export function setAgentPanelVisible(session: object, visible: boolean): void {
-	states.get(session)?.setVisible?.(visible);
+	const state = panelState(session);
+	state.hideCount = visible ? Math.max(0, state.hideCount - 1) : state.hideCount + 1;
+	state.setVisible?.(state.hideCount === 0);
 }
 
 /** Whether the session has anything for ↓ to focus. */
