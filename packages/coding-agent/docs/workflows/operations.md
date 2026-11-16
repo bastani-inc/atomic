@@ -153,7 +153,7 @@ Withdrawing an SDK adapter cancels its current presentation, not the durable app
 
 <p align="center"><img src="../images/workflow-input-picker.png" alt="Workflow Input Picker" width="600" /></p>
 
-Graph node cards show each model stage's effective model and thinking level above its status, including after fallback and durable resume. Long model names are truncated first, preserving the complete thinking level and a canonical `-fast` model suffix. This suffix is model identity, not a separate fast-mode switch or proof of service tier. Thinking `off` is omitted; stages without a model show no model placeholder. Tool nodes retain their `durable tool` body. The agent panel shows the session's runs below the prompt; `/tasks` lists them beside subagents and shells.
+Graph node cards show each model stage's effective model and thinking level above its status, including after fallback and durable resume. Long model names are truncated first, preserving the complete thinking level and a canonical `-fast` model suffix. This suffix is model identity, not a separate fast-mode switch, and does not indicate the service tier. Thinking `off` is omitted; stages without a model show no model placeholder. Tool nodes retain their `durable tool` body. The agent panel shows the session's runs below the prompt; `/tasks` lists them beside subagents and shells.
 
 
 ## Workflow Commands

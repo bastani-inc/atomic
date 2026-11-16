@@ -235,7 +235,8 @@
 - Questionnaire dialogs and transcripts remove terminal control sequences from questions, options, previews, answers and notes instead of executing them. Pasting text with controls keeps the caret aligned, and custom-answer, chat and notes carets highlight whole characters, including emoji and combining accents, so the dialog's frame stays intact. Step headers, multi-select labels and the Review step's unanswered-question list stay on one line. HTML exports no longer repeat a folded answer or declined question as raw response text, and moving between questions redraws faster ([#5244](https://github.com/bastani-inc/atomic/pull/5244))
 
 - Fixed the host input form (`ctx.ui.hostInputForm`) writing terminal control sequences from field names, descriptions, choices, placeholders and prefilled values to the terminal, and drawing lines wider than a narrow terminal. Control characters now show escaped, and every line fits the width ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
-- Fixed `ctx.ui.hostInputForm` never settling under the isolated interactive engine when the host could not read the form's fields, such as a non-string `description`. The call now rejects ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- Fixed `ctx.ui.hostInputForm` never settling under the isolated interactive engine when the host could not read the form's fields, such as a non-string `description`. The call now rejects, and requests that cannot be sent release their pending form and abort listener ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
+- Fixed long host-form text fields pausing on Up and Down, and vertical or page navigation following the raw text instead of the displayed rows when values contain escaped controls or tabs ([#5224](https://github.com/bastani-inc/atomic/issues/5224))
 
 ### Removed
 

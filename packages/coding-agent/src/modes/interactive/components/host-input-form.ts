@@ -152,13 +152,38 @@ function schemaConstraintReason(field: HostInputFormField, value: number | strin
 function rawColumn(line: string, displayColumn: number): number {
 	let column = 0;
 	let shown = 0;
+	let stop = 0;
 	for (const char of line) {
-		const next = sanitizeSingleLine(line.slice(0, column + char.length)).length;
+		const code = char.codePointAt(0) ?? 0;
+		let width = char.length;
+		let advance = 1;
+		if (char === "\n") {
+			advance = -stop;
+		} else if (char === "\t") {
+			width = 4 - (stop % 4);
+			advance = width;
+		} else if (code < 0x20 || code === 0x7f || (code >= 0x80 && code <= 0x9f)) {
+			width = 4;
+			advance = 4;
+		}
+		const next = shown + width;
 		if (next > displayColumn) return displayColumn - shown <= next - displayColumn ? column : column + char.length;
 		column += char.length;
 		shown = next;
+		stop += advance;
 	}
 	return column;
+}
+
+function stepRawColumn(line: string, column: number, direction: 1 | -1): number {
+	if (direction > 0) {
+		const code = line.codePointAt(column);
+		return code === undefined ? column : column + (code > 0xffff ? 2 : 1);
+	}
+	if (column <= 0) return 0;
+	const low = line.charCodeAt(column - 1);
+	const high = column >= 2 ? line.charCodeAt(column - 2) : 0;
+	return low >= 0xdc00 && low <= 0xdfff && high >= 0xd800 && high <= 0xdbff ? column - 2 : column - 1;
 }
 
 function withDisplayLines<T>(editor: Editor, action: () => T, keepCursor: boolean): T {
@@ -170,14 +195,20 @@ function withDisplayLines<T>(editor: Editor, action: () => T, keepCursor: boolea
 	const clampedCol = Math.max(0, Math.min(savedCol, currentLineText.length));
 	state.lines = savedLines.map((line) => sanitizeSingleLine(line));
 	state.cursorCol = sanitizeSingleLine(currentLineText.slice(0, clampedCol)).length;
+	const startCol = state.cursorCol;
 	try {
 		return action();
 	} finally {
 		const movedLine = state.cursorLine;
 		const movedCol = state.cursorCol;
+		const movedText = savedLines[movedLine] ?? "";
+		let column = keepCursor ? rawColumn(movedText, movedCol) : savedCol;
+		if (keepCursor && movedLine === savedLine && movedCol !== startCol && column === savedCol) {
+			column = stepRawColumn(movedText, savedCol, movedCol > startCol ? 1 : -1);
+		}
 		state.lines = savedLines;
 		state.cursorLine = keepCursor ? movedLine : savedLine;
-		state.cursorCol = keepCursor ? rawColumn(savedLines[movedLine] ?? "", movedCol) : savedCol;
+		state.cursorCol = column;
 	}
 }
 
@@ -395,6 +426,15 @@ export class HostInputFormComponent implements Component, Focusable {
 			withDisplayLines(editor, () => editor.handleInput(data), true);
 			const after = editor.getCursor();
 			if (after.line === before.line && after.col === before.col) this.moveFocus(verticalDirection);
+			return;
+		}
+		if (
+			field.type === "text" &&
+			editor instanceof Editor &&
+			(this.keybindings.matches(data, "tui.editor.pageUp") || this.keybindings.matches(data, "tui.editor.pageDown"))
+		) {
+			withDisplayLines(editor, () => editor.handleInput(data), true);
+			this.values[fieldIndex] = editor.getExpandedText();
 			return;
 		}
 		const continues =
