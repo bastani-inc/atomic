@@ -26,17 +26,29 @@ const ADOPTION_CLAIM_FILE = ".adopted-by";
 const ADOPTION_NOTICE_SUFFIX = ".notified";
 const CLI_SELECTION = Symbol.for("@bastani/atomic/storage/cli-selection");
 const STORAGE_ENV_NAMES = ["ATOMIC_STORAGE", "ATOMIC_SESSIONS_STORAGE", "ATOMIC_WORKFLOWS_JOURNAL"] as const;
+const ATOMIC_SETTING_KEYS: ReadonlySet<string> = new Set([
+	"defaultProvider",
+	"defaultModel",
+	"defaultThinkingLevel",
+	"enabledModels",
+	"thinkingBudgets",
+	"branchSummary",
+	"sessionSummary",
+	"modelRouting",
+	"enableSkillCommands",
+	"showHardwareCursor",
+	"doubleEscapeAction",
+	"storage",
+	"sessions",
+	"workflows",
+]);
 const AGENT_DIR_STATE_ENTRIES: ReadonlySet<string> = new Set([
-	"settings.json",
 	"auth.json",
 	"models.json",
 	"trust.json",
-	"oauth.json",
-	"keybindings.json",
 	"pool-host-id",
 	"atomic-debug.log",
 	"pi-debug.log",
-	"sessions",
 	"intercom",
 	"worktree-snapshots",
 	"released-history",
@@ -296,12 +308,35 @@ function hasRelativeTargetEntries(
 	return false;
 }
 
-function hasExclusiveOwnTargetEntries(agentPath: string, parent: string, relativeTargets: readonly string[]): boolean {
+function hasTargetContents(path: string): boolean {
+	let dir: ReturnType<typeof opendirSync> | undefined;
+	try {
+		const stat = statSync(path);
+		if (!stat.isDirectory()) return stat.isFile() && stat.size > 0;
+		dir = opendirSync(path);
+		return dir.readSync() !== null;
+	} catch {
+		return false;
+	} finally {
+		try {
+			dir?.closeSync();
+		} catch {}
+	}
+}
+
+function hasOwnTargetEntries(agentPath: string, parent: string, relativeTargets: readonly string[]): boolean {
 	for (const target of relativeTargets) {
 		const own = resolve(agentPath, target);
 		if (pathsEqual(own, agentPath) || !existsSync(own)) continue;
 		const legacy = resolve(parent, target);
-		if (!pathsEqual(legacy, agentPath) && !pathsEqual(legacy, parent) && existsSync(legacy)) continue;
+		if (
+			!pathsEqual(legacy, agentPath) &&
+			!pathsEqual(legacy, parent) &&
+			existsSync(legacy) &&
+			!hasTargetContents(own)
+		) {
+			continue;
+		}
 		return true;
 	}
 	return false;
@@ -311,7 +346,7 @@ function hasOwnStoreEntries(agentPath: string, parent: string, relativeTargets: 
 	for (const entry of ATOMIC_STORE_FILES) {
 		if (existsSync(join(agentPath, entry))) return true;
 	}
-	return hasExclusiveOwnTargetEntries(agentPath, parent, relativeTargets);
+	return hasOwnTargetEntries(agentPath, parent, relativeTargets);
 }
 
 function hasParentStoreEntries(parent: string, agentPath: string, relativeTargets: readonly string[]): boolean {
@@ -319,6 +354,21 @@ function hasParentStoreEntries(parent: string, agentPath: string, relativeTarget
 		if (existsSync(join(parent, entry))) return true;
 	}
 	return hasRelativeTargetEntries(parent, agentPath, relativeTargets, true);
+}
+
+function hasAtomicSettings(path: string): boolean {
+	try {
+		const raw = readFileSync(path, "utf8");
+		const settings: object | null = JSON.parse(raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw);
+		return (
+			settings !== null &&
+			typeof settings === "object" &&
+			!Array.isArray(settings) &&
+			Object.keys(settings).some((key) => ATOMIC_SETTING_KEYS.has(key))
+		);
+	} catch {
+		return false;
+	}
 }
 
 function agentDirectoryPriorUseTier(dirPath: string): 0 | 1 | 2 {
@@ -329,7 +379,11 @@ function agentDirectoryPriorUseTier(dirPath: string): 0 | 1 | 2 {
 		for (let count = 0; count < 256; count++) {
 			const entry = dir.readSync();
 			if (entry === null) break;
-			if (AGENT_DIR_STATE_ENTRIES.has(entry.name) || entry.name.startsWith("storage-token.")) {
+			if (
+				AGENT_DIR_STATE_ENTRIES.has(entry.name) ||
+				entry.name.startsWith("storage-token.") ||
+				(entry.name === "settings.json" && hasAtomicSettings(join(dirPath, entry.name)))
+			) {
 				return 2;
 			}
 		}
@@ -411,7 +465,7 @@ function resolveStorageHomeEntry(agentDir?: string, settings?: StorageHomeSettin
 		const targetList = [...settingsTargets];
 		const parent = dirname(agentPath);
 		if (
-			hasExclusiveOwnTargetEntries(agentPath, parent, targetList) ||
+			hasOwnTargetEntries(agentPath, parent, targetList) ||
 			!hasRelativeTargetEntries(parent, agentPath, targetList, true)
 		) {
 			const finalized = createStorageHomeEntry(cached.home, cached.adoptedClaim, false);

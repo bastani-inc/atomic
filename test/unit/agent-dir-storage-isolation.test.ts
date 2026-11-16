@@ -175,7 +175,7 @@ test("two sibling agent directories under one parent keep separate session, jour
 	assert.equal(existsSync(join(root, "workflows")), false);
 });
 
-test("default ~/.atomic/agent keeps its store at ~/.atomic/workflows (#5242)", async () => {
+test("default ~/.atomic/agent keeps reading its existing ~/.atomic/workflows store (#5242)", async () => {
 	const home = join(root, "home");
 	const atomicHome = join(home, ".atomic");
 	const defaultAgent = join(atomicHome, "agent");
@@ -183,13 +183,30 @@ test("default ~/.atomic/agent keeps its store at ~/.atomic/workflows (#5242)", a
 	vi.stubEnv("HOME", home);
 	vi.stubEnv("USERPROFILE", home);
 	vi.stubEnv(ENV_WORKFLOW_ARTIFACT_DIR, "");
+	const sessionId = "56565656-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+	const seeded = await resolveSessionStore(project, {
+		agentDir: defaultAgent,
+		sessionStore: { kind: "sqlite", path: join(atomicHome, "workflows", "journal.sqlite") },
+	});
+	try {
+		await seeded.create({ id: sessionId, version: 4, createdAt: "2026-11-16T00:00:00.000Z", cwd: project }, []);
+	} finally {
+		await seeded.close();
+	}
 
 	for (const configured of [undefined, defaultAgent]) {
+		resetStorageHomeCacheForTests();
 		if (configured === undefined) {
 			delete process.env.ATOMIC_CODING_AGENT_DIR;
 			delete process.env.PI_CODING_AGENT_DIR;
 		} else {
 			vi.stubEnv("ATOMIC_CODING_AGENT_DIR", configured);
+		}
+		const store = await resolveSessionStore(project, { agentDir: defaultAgent, settings: {} });
+		try {
+			assert.equal((await store.readHeader(sessionId))?.id, sessionId);
+		} finally {
+			await store.close();
 		}
 		assert.deepEqual(selectSessionStorage(project, { agentDir: defaultAgent, settings: {} }), {
 			kind: "sqlite",
@@ -1235,7 +1252,7 @@ test("a nonexistent or empty sibling directory never claims an existing parent s
 	} finally {
 		await seeded.close();
 	}
-	writeFileSync(join(oldProfile, "settings.json"), "{}\n");
+	writeFileSync(join(oldProfile, "settings.json"), JSON.stringify({ defaultProvider: "anthropic" }));
 	rmSync(join(parent, "workflows", ".adopted-by"), { force: true });
 	resetStorageHomeCacheForTests();
 
@@ -1303,7 +1320,7 @@ test("a hidden dot-prefixed sibling profile with prior Atomic state keeps parent
 	} finally {
 		await seeded.close();
 	}
-	writeFileSync(join(hiddenOld, "settings.json"), "{}\n");
+	writeFileSync(join(hiddenOld, "settings.json"), JSON.stringify({ defaultModel: "claude-sonnet-4-5" }));
 	resetStorageHomeCacheForTests();
 
 	const newStatus = await collectStorageStatus({ cwd: project, agentDir: newSibling, probe: false });
@@ -1331,7 +1348,7 @@ test("an agent directory named workflows adopts its existing parent store in pla
 	const sibling = join(parent, "a2");
 	mkdirSync(workflowsAgent, { recursive: true });
 	mkdirSync(sibling, { recursive: true });
-	writeFileSync(join(workflowsAgent, "settings.json"), "{}\n");
+	writeFileSync(join(workflowsAgent, "settings.json"), JSON.stringify({ sessions: { storage: {} } }));
 
 	const seeded = await resolveSessionStore(project, {
 		agentDir: join(root, "seed-helper-b"),
@@ -1373,6 +1390,92 @@ test("an agent directory named workflows adopts its existing parent store in pla
 		dir: join(sibling, "workflows", "journal"),
 	});
 	assert.equal(existsSync(join(workflowsAgent, "workflows", "journal.sqlite")), false);
+});
+
+test("unrelated sibling settings do not hide an extension-only agent directory's legacy sessions (#5242)", async () => {
+	const home = join(root, "unrelated-sibling-home");
+	const agentDir = join(home, "myagent");
+	mkdirSync(join(agentDir, "extensions"), { recursive: true });
+	mkdirSync(join(home, ".claude"), { recursive: true });
+	writeFileSync(join(home, ".claude", "settings.json"), JSON.stringify({ permissions: { allow: [] } }));
+	mkdirSync(join(home, ".editor"), { recursive: true });
+	writeFileSync(join(home, ".editor", "settings.json"), JSON.stringify({ theme: "dark" }));
+	vi.stubEnv("HOME", home);
+	vi.stubEnv("USERPROFILE", home);
+
+	const sessionId = "45454545-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+	const seeded = await resolveSessionStore(project, {
+		agentDir: join(root, "unrelated-sibling-seed"),
+		sessionStore: { kind: "sqlite", path: join(home, "workflows", "journal.sqlite") },
+	});
+	try {
+		await seeded.create({ id: sessionId, version: 4, createdAt: "2026-11-16T00:00:00.000Z", cwd: project }, []);
+	} finally {
+		await seeded.close();
+	}
+	resetStorageHomeCacheForTests();
+
+	const store = await resolveSessionStore(project, { agentDir, settings: {} });
+	try {
+		assert.equal((await store.readHeader(sessionId))?.id, sessionId);
+	} finally {
+		await store.close();
+	}
+	assert.equal(readClaimFile(join(home, "workflows", ".adopted-by")), agentDir);
+	const status = await collectStorageStatus({ cwd: project, agentDir, probe: false });
+	assert.ok(status.notes.some((note) => /Adopted existing storage/.test(note)));
+	assert.deepEqual((await collectStorageStatus({ cwd: project, agentDir, probe: false })).notes, []);
+});
+
+test("a populated relative session store remains visible after a parent target appears and the process restarts (#5242)", async () => {
+	const selections: readonly ({ readonly dir: string } | { readonly path: string })[] = [
+		{ dir: "sessions" },
+		{ path: "history.sqlite" },
+	];
+	for (const selection of selections) {
+		const parent = join(root, "dir" in selection ? "populated-jsonl" : "populated-sqlite");
+		const agentDir = join(parent, "a1");
+		const sibling = join(parent, "a2");
+		const settings = { sessions: { storage: selection } };
+		mkdirSync(agentDir, { recursive: true });
+		mkdirSync(sibling, { recursive: true });
+		writeFileSync(join(agentDir, "settings.json"), JSON.stringify(settings));
+		const ownId = "23232323-8888-4888-8888-888888888888";
+		const foreignId = "34343434-9999-4999-8999-999999999999";
+		const header = { version: 4, createdAt: "2026-11-16T00:00:00.000Z", cwd: project } as const;
+		const own = await resolveSessionStore(project, { agentDir, settings });
+		try {
+			await own.create({ ...header, id: ownId }, []);
+		} finally {
+			await own.close();
+		}
+		assert.equal(storageHomeDir(agentDir, settings), agentDir);
+
+		const legacy = await resolveSessionStore(project, {
+			agentDir: join(root, "relative-store-seed"),
+			sessionStore:
+				"dir" in selection
+					? { kind: "jsonl", dir: join(parent, selection.dir) }
+					: { kind: "sqlite", path: join(parent, selection.path) },
+		});
+		try {
+			await legacy.create({ ...header, id: foreignId }, []);
+		} finally {
+			await legacy.close();
+		}
+		resetStorageHomeCacheForTests();
+
+		const reopened = await resolveSessionStore(project, { agentDir, settings });
+		try {
+			assert.equal((await reopened.readHeader(ownId))?.id, ownId);
+			assert.equal(await reopened.readHeader(foreignId), undefined);
+		} finally {
+			await reopened.close();
+		}
+		assert.equal(storageHomeDir(agentDir, settings), agentDir);
+		assert.equal(existsSync(join(parent, "workflows", ".adopted-by")), false);
+		assert.equal(storageHomeDir(sibling, settings), parent);
+	}
 });
 
 test("an empty <agentDir>/sessions directory does not block adoption of a populated <parent>/sessions store and parent workflow journal (#5242)", async () => {
