@@ -51,7 +51,7 @@ From the main editor, use **Alt+K** to scroll up and **Alt+J** down one row. On 
 
 Mouse scrolling requires Atomic's fullscreen renderer and terminal mouse reporting. On macOS, enable your terminal's Option-as-Alt or Option-as-Meta setting for these shortcuts. If the terminal emits a character instead, reserves a shortcut, or does not forward wheel events, use the Page aliases or remap the actions to keys your terminal sends. Linux and Windows terminals also vary; terminal and multiplexer settings can intercept input. Plain typing, arrows, and unmodified PageUp/PageDown retain their editor behavior.
 
-Below 80 columns, the widget collapses to one count line, truncated to fit. It omits run IDs, stage identities, targets, tool names, prompt text, and connect commands. Widen the terminal to scroll cards, or use `/workflows` to inspect runs at narrow widths.
+Below 80 columns, the widget collapses to one count line, truncated to fit. It omits run IDs, stage identities, targets, tool names, prompt text, and graph commands. Widen the terminal to scroll cards, or use `/workflows` to inspect runs at narrow widths.
 
 Stage progress includes nested child workflows and updates as stages appear:
 
@@ -64,7 +64,7 @@ Stage progress includes nested child workflows and updates as stages appear:
 
 ### Pending questions and exact identities
 
-The `BACKGROUND` panel sits below the editor. When a visible root has exactly one displayable pending question, its card shows a quoted one-line preview and `Answer: /workflows <full-visible-root-UUID>`. Use the full UUID on that row. The preview strips terminal controls and fits within its cell budget. Nested prompts retain their real run, stage, and prompt owner, even though the connect command targets the visible root.
+The `BACKGROUND` panel sits below the editor. When a visible root has exactly one displayable pending question, its card shows a quoted one-line preview and `Answer: /workflows <full-visible-root-UUID>`. Use the full UUID on that row. The preview strips terminal controls and fits within its cell budget. Nested prompts retain their real run, stage, and prompt owner, even though `/workflows` targets the visible root.
 
 Atomic keeps general needs-attention guidance instead when a root has multiple questions, missing descriptors, empty sanitized text, a multi-question questionnaire, or unproven nested ownership. Eligibility is per root, so one card can show a preview while another shows general guidance.
 
@@ -88,7 +88,7 @@ The rendered card shape at the 80-column breakpoint is:
 │   ？  8f3a1c20-5b64-4d8e-a791-2c3f0e6b9d44                                   │
 │     review-and-merge · single · 0/1 · 12m                                    │
 │     "Approve the generated migration before deployment?"                     │
-│     Answer: /workflows 8f3a1c20-5b64-4d8e-a791-2c3f0e6b9d44           │
+│     Answer: /workflows 8f3a1c20-5b64-4d8e-a791-2c3f0e6b9d44                  │
 ```
 
 Below the breakpoint the same run set is represented by the collapsed count line, for example ` ▾  4 background · 2 ● · 1 quit`; a tool-only run adds its live count, for example ` ▾  1 background · 1 ● · 1 tool`.
@@ -226,7 +226,7 @@ Surface behavior:
 - **Status listing** - `/workflow status` lists all retained active and terminal top-level runs by default; implementation-owned nested child runs are flattened into their parent workflow rather than listed separately. `/workflow status --all` is retained as a compatibility alias.
 - **Status times** - `/workflow status <run-id>` displays `started` and `ended` in the system local timezone as `HH:mm:ss`. If they differ from your expected clock, check the timezone of the machine or container running Atomic and any inherited `TZ` environment setting. Elapsed durations and raw timestamps in structured results are unchanged.
 
-`/workflows` is the retained-run history alias for `/workflow resume`: with no id it opens the same mixed picker, but the resumable section lists only runs that the resume path can actually accept and the completed section is read-only inspection. A run with no durable checkpoint, missing/pruned artifacts, or explicit deletion is omitted from the resume picker; an explicit `/workflow resume <id>` still returns an explanatory error. It is intentionally different from `/workflow list`, which lists installed workflow definitions. See [`/workflow resume` — cross-session resume selector](#/workflow-resume-—-cross-session-resume-selector) for the full picker semantics.
+`/workflows` browses runs already in this session: it opens the only run's graph directly, lists several runs, or reports that there are none. Use `/workflow resume` for the cross-session durable picker; its resumable section lists only runs the resume path can accept, and its completed section opens read-only inspection. A run with no durable checkpoint, missing/pruned artifacts, or explicit deletion is omitted from the resume picker; an explicit `/workflow resume <id>` still returns an explanatory error. It is intentionally different from `/workflow list`, which lists installed workflow definitions. See [`/workflow resume` — cross-session resume selector](#/workflow-resume-—-cross-session-resume-selector) for the full picker semantics.
 
 At the supported 40-column terminal minimum, attached stage chats keep the `← return to graph` hint. The TUI may truncate provider/model context to make room, but it keeps that context separate from the hierarchy hint so the controls stay readable.
 

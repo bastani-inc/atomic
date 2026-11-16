@@ -323,7 +323,7 @@
       "interactions": [
         "/workflow inputs ralph",
         "/workflow ralph prompt='Add input validation to demo-app/server.js and prove it with a test' max_loops=1",
-        "/workflow connect"
+        "/workflows"
       ],
       "privacy_notes": "Dynamic statusline and provider/model fields masked. create_pr is not enabled; the run stays inside the clean clone.",
       "media": {
@@ -353,16 +353,16 @@
       "lesson": "W.3 Inspect and control workflows",
       "anchor": "#61-touring-the-builtins",
       "title": "Inspect and control workflows",
-      "blurb": "List definitions, inspect input contracts, check live status, and connect to a run graph from the same <code>/workflow</code> surface.",
-      "alt": "Atomic using workflow list, inputs, status, and connect commands before opening the live control-demo graph",
+      "blurb": "List definitions, inspect input contracts, check live status, and open a run graph with <code>/workflows</code>.",
+      "alt": "Atomic using workflow list, inputs, status, and workflows commands to open the live control-demo graph",
       "interactions": [
         "/workflow list",
         "/workflow inputs control-demo",
         "/workflow control-demo subject=src-client.ts",
         "/workflow status",
-        "/workflow connect"
+        "/workflows"
       ],
-      "privacy_notes": "Dynamic statusline and provider/model fields masked. The connect picker contains only the throwaway lesson runs.",
+      "privacy_notes": "Dynamic statusline and provider/model fields masked. The graph contains only the throwaway lesson run.",
       "media": {
         "gif": "assets/feature-wall/30-inspect-control-workflows.gif",
         "jpg": "assets/feature-wall/30-inspect-control-workflows.jpg"
@@ -467,7 +467,7 @@
         "!!sed -n '1,160p' .atomic/workflows/research-and-verify.ts",
         "/workflow reload",
         "/workflow research-and-verify topic='how the session store works'",
-        "/workflow connect"
+        "/workflows"
       ],
       "privacy_notes": "The selected window stays inside the graph viewer, where no chat statusline is present; moving private text would still be found and painted by the OCR pass.",
       "media": {

@@ -16,9 +16,8 @@ Type "/workflow ralph prompt='Add input validation to demo-app/server.js and pro
 Sleep 1s
 Enter
 Sleep 18s
-Type "/workflow connect"
+Type "/workflows"
 Sleep 1s
 Enter
 Sleep 4s
-Enter
 Sleep 100s
