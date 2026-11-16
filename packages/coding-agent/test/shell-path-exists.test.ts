@@ -52,7 +52,7 @@ describe("Windows Store shell aliases", () => {
 
 	it.each(["bash.exe", "pwsh.exe"])("accepts %s found on PATH", (executable) => {
 		const alias = `${aliasesDir}\\${executable}`;
-		spawnSyncMock.mockReturnValue({ status: 0, stdout: `${alias}\r\n` });
+		vi.stubEnv("PATH", aliasesDir);
 
 		const config = executable === "pwsh.exe" ? shell.getPowerShellConfig() : shell.getShellConfig();
 
@@ -67,11 +67,9 @@ describe("Windows Store shell aliases", () => {
 
 	it("still rejects PATH results that fail the existence check", () => {
 		const windowsPowerShell = "D:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
-		spawnSyncMock
-			.mockReturnValueOnce({ status: 0, stdout: `${aliasesDir}\\pwsh.exe` })
-			.mockReturnValueOnce({ status: 0, stdout: windowsPowerShell });
-		accessSyncMock.mockImplementationOnce(() => {
-			throw Object.assign(new Error("not found"), { code: "ENOENT" });
+		vi.stubEnv("PATH", `${aliasesDir};D:\\Windows\\System32\\WindowsPowerShell\\v1.0`);
+		accessSyncMock.mockImplementation((path: string) => {
+			if (path !== windowsPowerShell) throw Object.assign(new Error("not found"), { code: "ENOENT" });
 		});
 
 		assert.equal(shell.getPowerShellConfig().shell, windowsPowerShell);

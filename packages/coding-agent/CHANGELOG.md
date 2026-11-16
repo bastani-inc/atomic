@@ -5,6 +5,7 @@
 ### Fixed
 
 - Fixed Atomic on Windows pausing for seconds, and on a busy machine for half a minute or more, while it started PowerShell to check that a private temp directory belonged to you. This happened about 10 seconds after a session started, and when the first subagent launched from a session without a session file. The owner and permissions are now read directly, without starting PowerShell. Where the native module is missing, PowerShell is still used, and a check that times out is no longer retried with the same PowerShell program ([#5324](https://github.com/bastani-inc/atomic/issues/5324))
+- Fixed Atomic on Windows pausing, for up to several seconds on a busy machine, each time a session or subagent started while it looked for PowerShell with `where`. PowerShell and bash are now found by searching `PATH` directly. A `pwsh.exe`, `powershell.exe` or `bash.exe` in the current directory is no longer used unless that directory is on `PATH` ([#5324](https://github.com/bastani-inc/atomic/issues/5324))
 
 ## [0.9.88] - 2026-11-16
 
