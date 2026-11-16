@@ -99,6 +99,25 @@ describe.skipIf(postgresSkipReason !== undefined)("atomic storage join against P
 	);
 
 	test(
+		"--auth azure without @azure/identity fails as auth-unavailable naming the install command, not as a connection failure (#5218)",
+		async () => {
+			await withPostgresDatabase(async ({ url }) =>
+				inMachine(async ({ agentDir, storage }) => {
+					const before = readFileSync(join(agentDir, "settings.json"), "utf8");
+					const joined = await storage(["join", url, "--auth", "azure"]);
+					assert.equal(joined.code, 1);
+					assert.match(joined.err, /Could not sign in to the shared database/);
+					assert.match(joined.err, /auth-unavailable/);
+					assert.match(joined.err, /atomic install npm:@azure\/identity/);
+					assert.doesNotMatch(joined.err, /connection-failed|team database/);
+					assert.equal(readFileSync(join(agentDir, "settings.json"), "utf8"), before);
+				}),
+			);
+		},
+		POSTGRES_CLI_TIMEOUT_MS,
+	);
+
+	test(
 		"a refused password changes nothing and is not printed (#4793)",
 		async () => {
 			await withPostgresDatabase(async ({ url }) =>

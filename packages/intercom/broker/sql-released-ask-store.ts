@@ -17,6 +17,7 @@ import type {
 	ReleasedAskSupersede,
 	StateStoreInvalidReason,
 } from "./multinode-state-store.js";
+import { ensureBrokerSchema } from "./sql-schema.js";
 
 interface ReleasedAskRow extends SqliteRow {
 	readonly question_id: string;
@@ -71,7 +72,7 @@ function toRecord(row: ReleasedAskRow): ReleasedAskRecord {
 export async function openSqlReleasedAskStore({ database, prefix }: IntercomBrokerStateOptions): Promise<ReleasedAskStore> {
 	const table = `${validateStoragePrefix(prefix, dialectOf(database).name)}intercom_released_asks`;
 	const { types, nowMs, greatest } = dialectOf(database);
-	await database.transaction((tx) =>
+	await ensureBrokerSchema(database, prefix, "released-asks", (tx) =>
 		tx.exec(`
 			CREATE TABLE IF NOT EXISTS ${table}(
 				"order" ${types.serialKey},

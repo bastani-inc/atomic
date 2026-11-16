@@ -521,7 +521,7 @@ describe("atomic team join, status and leave (#4320)", () => {
 				assert.ok(Number.isFinite(failure.elapsedMs) && failure.elapsedMs >= 0, `elapsed ${failure.elapsedMs} ms`);
 				assert.equal(
 					failure.message,
-					`The team database did not answer in time: ${url} (connection-timeout): no answer within 300 ms (connect). Nothing was changed. Check that the database is reachable from this machine, then run the command again.`,
+					`The shared database did not answer in time: ${url} (connection-timeout): no answer within 300 ms (connect). Nothing was changed. Check that the database is reachable from this machine, then run the command again.`,
 				);
 				assert.equal(settingsText(), before);
 				assert.deepEqual(tokenFiles(), []);

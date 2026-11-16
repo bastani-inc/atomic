@@ -3,8 +3,8 @@ import { realpath } from "node:fs/promises";
 import { cpus, freemem, loadavg } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import type { ResourcePermit, ResourceProcessIdentity } from "@bastani/atomic";
-import type { SqliteExecutor, SqliteRow, StorageDialect } from "@bastani/atomic/storage";
-import { type SqlPoolStorage, sqlPoolStorage } from "../durable/journal/internal.js";
+import { ensureStorageSchema, type SqliteExecutor, type SqliteRow, type StorageDialect } from "@bastani/atomic/storage";
+import { poolSchemaLedger, type SqlPoolStorage, sqlPoolStorage } from "../durable/journal/internal.js";
 import { openSqlPoolQueue } from "../durable/journal/sql-pool-queue.js";
 import { SqlRunJournal } from "../durable/journal/sql-run-journal.js";
 import type { RunJournal } from "../durable/journal/types.js";
@@ -234,24 +234,28 @@ export class SqlResourceAdmission {
 			const probe = dialect.columnExists(table, column);
 			return (await tx.get(probe.sql, ...probe.params)) !== undefined;
 		};
+		// A current schema runs no DDL, so a role with only DML privileges opens it (#5218).
+		const schema = { ledger: poolSchemaLedger(storage), domain: "resource-admission", revision: 1 };
 		await storage.transaction(async (tx) => {
-			await tx.exec(`CREATE TABLE IF NOT EXISTS ${admission.configuration}(scope TEXT PRIMARY KEY, config TEXT NOT NULL);
+			await ensureStorageSchema(tx, dialect, schema, async () => {
+				await tx.exec(`CREATE TABLE IF NOT EXISTS ${admission.configuration}(scope TEXT PRIMARY KEY, config TEXT NOT NULL);
 				CREATE TABLE IF NOT EXISTS ${admission.permits}(ticket ${serialKey}, operation TEXT UNIQUE NOT NULL,
 				root TEXT NOT NULL, holder TEXT NOT NULL, kind TEXT NOT NULL, state TEXT NOT NULL, reason TEXT, owner TEXT, attempt TEXT, process_identity TEXT);
 				CREATE INDEX IF NOT EXISTS ${admission.permits}_active ON ${admission.permits}(kind, state, root);
 				CREATE TABLE IF NOT EXISTS ${admission.owners}(id TEXT PRIMARY KEY, host TEXT NOT NULL, pid ${int} NOT NULL, expires_at ${int} NOT NULL, boot TEXT);`);
-			for (const column of ["owner", "attempt", "process_identity"])
-				if (!(await hasColumn(tx, admission.permits, column)))
-					await tx.exec(`ALTER TABLE ${admission.permits} ADD COLUMN ${column} TEXT`);
-			for (const column of ["root_epoch", "granted_at"])
-				if (!(await hasColumn(tx, admission.permits, column)))
-					await tx.exec(`ALTER TABLE ${admission.permits} ADD COLUMN ${column} ${int}`);
-			// Reconciliation fences permits owner by owner and finds live permits by state. Without these indexes each
-			// statement reads every permit ever issued, which held the shared journal's write lock for seconds (#3978).
-			await tx.exec(`CREATE INDEX IF NOT EXISTS ${admission.permits}_owner ON ${admission.permits}(owner, state);
+				for (const column of ["owner", "attempt", "process_identity"])
+					if (!(await hasColumn(tx, admission.permits, column)))
+						await tx.exec(`ALTER TABLE ${admission.permits} ADD COLUMN ${column} TEXT`);
+				for (const column of ["root_epoch", "granted_at"])
+					if (!(await hasColumn(tx, admission.permits, column)))
+						await tx.exec(`ALTER TABLE ${admission.permits} ADD COLUMN ${column} ${int}`);
+				// Reconciliation fences permits owner by owner and finds live permits by state. Without these indexes each
+				// statement reads every permit ever issued, which held the shared journal's write lock for seconds (#3978).
+				await tx.exec(`CREATE INDEX IF NOT EXISTS ${admission.permits}_owner ON ${admission.permits}(owner, state);
 				CREATE INDEX IF NOT EXISTS ${admission.permits}_state ON ${admission.permits}(state)`);
-			if (!(await hasColumn(tx, admission.owners, "boot")))
-				await tx.exec(`ALTER TABLE ${admission.owners} ADD COLUMN boot TEXT`);
+				if (!(await hasColumn(tx, admission.owners, "boot")))
+					await tx.exec(`ALTER TABLE ${admission.owners} ADD COLUMN boot TEXT`);
+			});
 			await tx.run(
 				`INSERT INTO ${admission.owners}(id, host, pid, expires_at, boot) VALUES (?, ?, ?, ${admission.now} + ?, ?)`,
 				admission.owner,

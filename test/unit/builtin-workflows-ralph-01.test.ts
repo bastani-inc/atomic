@@ -191,6 +191,11 @@ describe("ralph", () => {
 			"ask_user_question",
 		]);
 
+		assert.match(
+			ctx.calls.prompts["orchestrator-1"]?.[0] ?? "",
+			/never a reason to end your turn or defer work to a fresh run/,
+		);
+
 		const stagePrompts = [
 			promptEngineerPrompt,
 			researchPrompt,

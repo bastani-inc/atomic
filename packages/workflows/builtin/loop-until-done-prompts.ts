@@ -1,3 +1,5 @@
+import { CONTEXT_SIZE_CONTINUATION_RULE } from "./shared-prompts.js";
+
 type PromptSection = readonly [tag: string, content: string];
 
 const GROUNDED_REPORTING = "Before reporting progress, audit each claim against a tool result from this session. Report only work you can point to evidence for; say so explicitly when something is unverified.";
@@ -28,7 +30,7 @@ export function renderIterationPrompt(options: {
       "Report exactly what changed, evidence gathered, failures encountered, and what remains.",
       GROUNDED_REPORTING,
     ].join("\n")],
-    ["stop_rules", "End this iteration after delivering measurable progress, or after evidence shows the objective is complete."],
+    ["stop_rules", `End this iteration after delivering measurable progress, or after evidence shows the objective is complete. ${CONTEXT_SIZE_CONTINUATION_RULE}`],
     ["output_format", `Markdown with Work performed, Changes, Validation evidence, New findings, Failures, and Remaining work. ${READABLE_REPORT}`],
     ["objective", options.task],
   ]);

@@ -66,6 +66,10 @@ export const REVIEWER_CALIBRATION_RULES = [
   'Agent declarations of success ("done", "all tests pass") are ZERO evidence on their own.',
 ].join("\n");
 
+/** Long-running stages otherwise end early, handing work to "a fresh run", once their transcript feels large. */
+export const CONTEXT_SIZE_CONTINUATION_RULE =
+  "A long conversation is never a reason to end your turn or defer work to a fresh run; Atomic compacts context automatically.";
+
 export const WORKER_PREFLIGHT_CONTRACT = [
   "Before implementation delegation, infer the checkout's language, framework, build system, and setup requirements from repository evidence rather than ecosystem assumptions.",
   "Inspect source layout, setup docs, manifests, lockfiles, toolchain and codegen files, CI/workflow configuration, scripts, and generated-artifact conventions for missing dependencies, generated files, toolchains, submodules, or other initialization artifacts.",

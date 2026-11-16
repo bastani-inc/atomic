@@ -10,12 +10,14 @@ import {
 	restoreRunWorktree,
 } from "@bastani/atomic";
 import { isPostgresUrl, type StorageNotificationSubscription, type StorageSelection } from "@bastani/atomic/storage";
-import { listenPoolReady } from "../durable/journal/internal.js";
+import { listenPoolReady, sqlPoolStorage } from "../durable/journal/internal.js";
 import { openSelectedRunJournal } from "../durable/journal/resolution.js";
 import type { SharedPoolFleet } from "../durable/journal/shared-pool-types.js";
 import { classifySharedStoreHealth, withinStatusBudget } from "../durable/journal/shared-store-health.js";
-import { readFleetDemand } from "../durable/journal/sql-fleet.js";
+import { readFleetDemand, SqlFleetStore } from "../durable/journal/sql-fleet.js";
 import { openSqlPoolQueue, type PoolWork } from "../durable/journal/sql-pool-queue.js";
+import { openSqlPoolUsage } from "../durable/journal/sql-pool-usage.js";
+import { SqlRateBuckets } from "../durable/journal/sql-rate-buckets.js";
 import {
 	readSharedPoolFleet,
 	type SharedPoolRoot,
@@ -40,8 +42,10 @@ import {
 } from "./placement-errors.js";
 import { PoolCoordinator } from "./pool-coordinator.js";
 import { poolDurableJournal, poolHostId, poolStateDirectory } from "./pool-journal.js";
+import { openPoolSessions } from "./pool-session-store.js";
 import { hostWakeUps } from "./pool-wake-ups.js";
 import { processContainmentAvailable } from "./public-pool.js";
+import { SqlResourceAdmission } from "./resource-admission.js";
 import { RestoreBackoff } from "./restore-backoff.js";
 import { sharedJournalSelection, sharedSelectionProblems } from "./shared-setup.js";
 import { snapshotRestore } from "./snapshot-restore.js";
@@ -775,6 +779,38 @@ export async function startWorkflowWorkerHost(options: WorkflowWorkerHostOptions
 		await journal.close().catch((closing) => cleanup.push(closing));
 		throw withCleanupFailures(error, cleanup);
 	}
+}
+
+/**
+ * Sets up or upgrades the tables of the shared journal `journal` selects and of every worker pool store beside it: the
+ * queue, usage, shared placement, fleet, rate limits, resource admission and pooled-stage sessions (#5218). Run as the
+ * database's owner role (`atomic storage migrate`), it leaves a schema on which a runtime role with only DML privileges
+ * runs worker hosts and roots without DDL. Running it again on a current schema changes nothing.
+ */
+export async function migrateWorkflowStorage(
+	options: { readonly journal?: SharedJournalSelection; readonly agentDir?: string } = {},
+): Promise<void> {
+	const agentDir = options.agentDir ?? getAgentDir();
+	const selection = sharedJournalSelection(options.journal, { agentDir });
+	const [first, ...rest] = await sharedSelectionProblems(selection, agentDir);
+	if (first !== undefined) throw new SharedPoolSetupError("worker-host", [first, ...rest]);
+	const adapterSelection = selection as Extract<StorageSelection, { kind: "adapter" }>;
+	const journal = await openSelectedRunJournal(adapterSelection, agentDir);
+	try {
+		const storage = sqlPoolStorage(journal);
+		if (storage === undefined) return;
+		const queue = await openSqlPoolQueue(journal);
+		await openSqlPoolUsage(journal);
+		await SqlSharedPool.open(journal, queue);
+		await SqlFleetStore.open(journal);
+		await SqlRateBuckets.open(journal);
+		await SqlResourceAdmission.open(journal, { root: "atomic-storage-migrate", holder: "atomic-storage-migrate" });
+		await (await openPoolSessions(storage)).close();
+	} finally {
+		await journal.close();
+	}
+	// The snapshot index covers the pool's tables once they exist, as the next journal to open finds them.
+	await (await openSelectedRunJournal(adapterSelection, agentDir)).close();
 }
 
 /**
