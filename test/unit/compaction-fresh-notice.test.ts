@@ -28,16 +28,16 @@ function render(rung: "planned" | "extension" | "fresh"): string {
 
 test("a planned boundary keeps the ordinary success copy", () => {
 	const rendered = render("planned");
-	assert.ok(rendered.includes("✻ Context compacted"));
+	assert.ok(rendered.includes("∀ Context compacted"));
 	assert.ok(!rendered.includes("compaction degraded"));
 });
 
 test("an extension boundary keeps the ordinary success copy", () => {
-	assert.ok(render("extension").includes("✻ Context compacted"));
+	assert.ok(render("extension").includes("∀ Context compacted"));
 });
 
 test("a fresh boundary says the context was cleared and compaction degraded", () => {
 	const rendered = render("fresh");
-	assert.ok(rendered.includes("✻ Context cleared (compaction degraded)"));
-	assert.ok(!rendered.includes("✻ Context compacted"));
+	assert.ok(rendered.includes("∀ Context cleared (compaction degraded)"));
+	assert.ok(!rendered.includes("∀ Context compacted"));
 });

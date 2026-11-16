@@ -1,4 +1,5 @@
 import { AtomicWorkingLoader } from "./components/atomic-working-status.ts";
+import { compactionMeta } from "./components/working-run-meter.ts";
 import type { InteractiveModeBase } from "./interactive-mode-base.ts";
 import type { AgentSessionEvent } from "./interactive-mode-deps.ts";
 import { CountdownTimer, keyText, theme } from "./interactive-mode-deps.ts";
@@ -37,19 +38,21 @@ export function handleSummarizationRetryEvent(mode: InteractiveModeBase, event: 
 		mode.retryLoader?.stop();
 		mode.retryLoader = undefined;
 		mode.statusContainer.clear();
-		const cancelHint = `(${keyText("app.interrupt")} Cancel)`;
 		const message =
 			event.source === "branchSummary"
 				? "Summarizing branch..."
 				: event.reason === "manual"
-					? `Compacting context... ${cancelHint}`
-					: `Auto-compacting... ${cancelHint}`;
+					? "Compacting context..."
+					: "Auto-compacting...";
 		mode.autoCompactionLoader = new AtomicWorkingLoader(
 			mode.ui,
 			undefined,
 			(text) => theme.fg("muted", text),
 			message,
 		);
+		const compactionStartedAt = mode.session.compactionStartedAt ?? Date.now();
+		if (event.source !== "branchSummary") mode.autoCompactionLoader.setLogo(true);
+		mode.autoCompactionLoader.setMeta(() => compactionMeta(compactionStartedAt, keyText("app.interrupt")));
 		mode.statusContainer.addChild(mode.autoCompactionLoader);
 	} else {
 		mode.retryCountdown?.dispose();

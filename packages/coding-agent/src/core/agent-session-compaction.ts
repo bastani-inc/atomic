@@ -562,7 +562,10 @@ export async function emitSessionCompactFailed(
 function clearOwnedManualCompactionState(this: AgentSession, controller: AbortController): void {
 	if (this._compactionAbortController !== controller) return;
 	this._compactionAbortController = undefined;
-	if (this._compactionReason === "manual") this._compactionReason = undefined;
+	if (this._compactionReason === "manual") {
+		this._compactionReason = undefined;
+		this._compactionStartedAt = undefined;
+	}
 	// Lifecycle listeners run synchronously. Once the manual end event is
 	// emitted, a new /compact must own a new run rather than join the settled one.
 	this._manualCompactionPromise = undefined;
@@ -600,6 +603,7 @@ async function runOwnedManualCompaction(
 	controller: AbortController,
 	options: SessionCompactOptions,
 ): Promise<VerbatimCompactionResult> {
+	this._compactionStartedAt = Date.now();
 	this._emit({ type: "compaction_start", reason: "manual" });
 	let fromExtension = false;
 	try {
@@ -674,6 +678,7 @@ export function compact(this: AgentSession, options: SessionCompactOptions = {})
 	const controller = new AbortController();
 	this._compactionAbortController = controller;
 	this._compactionReason = "manual";
+	this._compactionStartedAt ??= Date.now();
 	// Handle rejection now so a failing event drain cannot become unhandled
 	// while an automatic run finishes.
 	void abortBoundary.catch(() => {});

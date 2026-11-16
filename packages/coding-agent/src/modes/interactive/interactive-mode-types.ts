@@ -52,12 +52,7 @@ export interface InteractiveModeOptions {
 	deferredExtensionLoad?: boolean;
 	/** Model scope patterns resolved again after deferred extension load registers providers. */
 	deferredModelScopePatterns?: string[];
-	/**
-	 * The thinking level startup applies before model defaults, for a model selected after deferred extension
-	 * providers register: the level the command line selected, else a continued conversation's saved level.
-	 */
 	deferredStartupThinkingLevel?: ThinkingLevel;
-	/** A continued conversation's saved thinking level, which stays its latest entry as eager startup leaves it. */
 	deferredSavedThinkingLevel?: ThinkingLevel;
 	deferredFallbackModelCheck?: (
 		session: Pick<AgentSession, "settingsManager" | "modelRuntime" | "model">,

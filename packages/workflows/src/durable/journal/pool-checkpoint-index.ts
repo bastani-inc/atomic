@@ -104,6 +104,33 @@ export interface PoolCheckpointSource {
 	read(tx: SqliteExecutor, events: string): Promise<PoolCheckpointView>;
 }
 
+/**
+ * `source` with `recorded` added after what it holds, as if they were already recorded in that order: what a batch of
+ * checkpoints validates each of its checkpoints against, with the ones before it in the batch (#4768). UI checkpoints are
+ * never consulted, so they are not added.
+ */
+export function withRecorded(
+	source: PoolCheckpointSource,
+	recorded: readonly { readonly seq: number; readonly key: string; readonly checkpoint: DurableCheckpoint }[],
+): PoolCheckpointSource {
+	const added = new Partitions();
+	for (const entry of recorded)
+		if (entry.checkpoint.kind !== "ui")
+			added.add({ seq: entry.seq, order: Buffer.from(entry.key, "utf8"), checkpoint: entry.checkpoint });
+	return {
+		async read(tx, events) {
+			const view = await source.read(tx, events);
+			return {
+				entries: <N extends PartitionName>(partition: N, key: string) =>
+					[
+						...(view.entries(partition, key) as readonly IndexedEntry[]),
+						...((added[partition].get(key) ?? []) as readonly IndexedEntry[]),
+					] as PartitionEntries<N>,
+			} as PoolCheckpointView;
+		},
+	};
+}
+
 /** One transaction's read of a root's checkpoints; {@link commit} it only once that transaction has committed. */
 export class PoolCheckpointRead implements PoolCheckpointSource {
 	private pending?: () => void;

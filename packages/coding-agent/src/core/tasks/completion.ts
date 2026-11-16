@@ -1,6 +1,7 @@
 import { splitFallbackModel } from "../fallback-models.ts";
 import { formatModelLabel, formatModelReferenceLabel } from "../model-label.ts";
 import type { SessionManager } from "../session-manager.ts";
+import { sliceTail } from "../tools/truncate.ts";
 import { cancelReasonText, formatTimeoutSeconds, longerRunAdvice } from "./cancel-reason.js";
 import { taskOutcomeStatus } from "./command-output.js";
 import type { OwnerId, Sequence, SettlementReceipt, TaskId, TaskRecord, TaskResult } from "./contracts.js";
@@ -47,6 +48,7 @@ export type TaskCompletionNotice = {
 	preview: string;
 	status: "completed" | "failed" | "cancelled";
 	taskId: string;
+	taskKind?: TaskRecord["kind"];
 	model?: string;
 	thinking?: string;
 	/** The model the launch asked for, when the task records one. */
@@ -77,15 +79,16 @@ export function taskCompletionNotice(
 ): TaskCompletionNotice {
 	const exitCode =
 		task?.kind === "command" && envelope.result.kind !== "cancelled" ? envelope.result.exitCode : undefined;
+	const preview = [envelope.result.kind === "failed" ? envelope.result.message : "", output ?? ""]
+		.filter(Boolean)
+		.join("\n");
 	return {
 		title:
 			formatTaskCompletion(envelope, task).split("\n")[0] + (exitCode === undefined ? "" : ` · exit ${exitCode}`),
-		preview: [envelope.result.kind === "failed" ? envelope.result.message : "", output ?? ""]
-			.filter(Boolean)
-			.join("\n")
-			.slice(0, 8000),
+		preview: (task?.kind ?? envelope.taskKind) === "command" ? sliceTail(preview, 8000) : preview.slice(0, 8000),
 		status: taskOutcomeStatus(envelope.result, task?.kind),
 		taskId: envelope.taskId,
+		...((task?.kind ?? envelope.taskKind) === undefined ? {} : { taskKind: task?.kind ?? envelope.taskKind }),
 		...(task?.kind === "agent" && task.model !== undefined ? { model: task.model } : {}),
 		...(task?.kind === "agent" && task.thinking !== undefined ? { thinking: task.thinking } : {}),
 		...(task?.kind === "agent" && task.requestedModel !== undefined ? { requestedModel: task.requestedModel } : {}),

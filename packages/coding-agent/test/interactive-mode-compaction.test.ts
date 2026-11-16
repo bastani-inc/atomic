@@ -21,6 +21,7 @@ import {
 	CompactionBoundaryMessageComponent,
 	compactionBoundaryFromMessage,
 } from "../src/modes/interactive/components/compaction-boundary-message.js";
+import { WorkingRunMeter } from "../src/modes/interactive/components/working-run-meter.js";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
 import { getMarkdownTheme, initTheme, theme } from "../src/modes/interactive/theme/theme.js";
 import { createHarness, getUserTexts } from "./suite/harness.js";
@@ -134,6 +135,7 @@ function makeMode(messages: AgentMessage[] = persistedContextMessages, showCache
 		resourceDisclosureContainer,
 		startupNoticesContainer,
 		pendingTools: new Map(),
+		workingRunMeter: new WorkingRunMeter(),
 		compactionQueuedMessages: [] as Array<{ text: string; mode: "steer" | "followUp" }>,
 		manualCompactionTakeoverPending: false,
 		get compactionActive() {
@@ -367,7 +369,7 @@ describe("InteractiveMode compaction events", () => {
 			expect(mode.addCompactionBoundaryToChat).toHaveBeenCalledWith(result);
 
 			expect(visibleBoundaries(chatContainer)).toHaveLength(1);
-			expect(renderedText(chatContainer).match(/✻ Context compacted/g)).toHaveLength(1);
+			expect(renderedText(chatContainer).match(/∀ Context compacted/g)).toHaveLength(1);
 			expect(renderedText(chatContainer)).toContain("startup notice");
 			expect(renderedText(chatContainer)).toContain("retained context message");
 		});
@@ -390,7 +392,7 @@ describe("InteractiveMode compaction events", () => {
 
 		const text = renderedText(chatContainer);
 		expect(visibleBoundaries(chatContainer)).toHaveLength(1);
-		expect(text.match(/✻ Context compacted/g)).toHaveLength(1);
+		expect(text.match(/∀ Context compacted/g)).toHaveLength(1);
 		expect(text.match(/Compaction: 1,234 tokens billed/g)).toHaveLength(1);
 		expect(text.match(/Prompt cache miss expected after background compaction/g)).toHaveLength(1);
 	});
@@ -408,7 +410,7 @@ describe("InteractiveMode compaction events", () => {
 
 		const text = renderedText(chatContainer);
 		expect(text).toContain("Compaction: 1,234 tokens billed (~$0.02)");
-		expect(text.indexOf("✻ Context compacted")).toBeLessThan(text.indexOf("Compaction: 1,234 tokens billed"));
+		expect(text.indexOf("∀ Context compacted")).toBeLessThan(text.indexOf("Compaction: 1,234 tokens billed"));
 	});
 
 	for (const showCacheMissNotices of [true, false]) {
@@ -430,7 +432,7 @@ describe("InteractiveMode compaction events", () => {
 				"Prompt cache miss expected after background compaction: 41,000 tokens re-billed ($0.137, $0.123 more than a cache hit)";
 			if (showCacheMissNotices) {
 				assert.ok(text.includes(notice));
-				assert.ok(text.indexOf("✻ Context compacted") < text.indexOf(notice));
+				assert.ok(text.indexOf("∀ Context compacted") < text.indexOf(notice));
 			} else assert.ok(!text.includes("Prompt cache miss"));
 		});
 	}
@@ -546,7 +548,7 @@ describe("InteractiveMode compaction events", () => {
 		await emit(mode, { type: "compaction_start", reason: "threshold" });
 
 		const status = renderedText(mode.statusContainer);
-		expect(status).toContain("∀ Auto-compacting... (esc Cancel)");
+		expect(status).toMatch(/∀ Auto-compacting\.\.\. \(\d+s · esc to cancel\)/);
 		expect(status).not.toMatch(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/);
 
 		await emit(mode, {
@@ -592,7 +594,7 @@ describe("InteractiveMode compaction events", () => {
 		await emit(mode, { type: "compaction_end", reason: "manual", result, aborted: true, willRetry: false });
 		expect(visibleBoundaries(chatContainer)).toHaveLength(0);
 		expect(mode.addCompactionBoundaryToChat).not.toHaveBeenCalled();
-		expect(renderedText(chatContainer)).not.toContain("✻ Context compacted");
+		expect(renderedText(chatContainer)).not.toContain("∀ Context compacted");
 	});
 
 	it("renders a committed boundary together with a later failure (#4977)", async () => {
@@ -691,6 +693,41 @@ describe("InteractiveMode compaction events", () => {
 		expect(mode.showError).toHaveBeenCalledWith("Post-compaction continuation failed: provider failed");
 	});
 
+	it("keeps the session compaction start clock across summarization retry attempts (#5243)", async () => {
+		vi.useFakeTimers();
+		try {
+			vi.setSystemTime(4_000);
+			const { mode } = makeMode([]);
+			Object.assign(mode.session, { compactionStartedAt: 4_000 });
+
+			vi.setSystemTime(6_000);
+			await emit(mode, { type: "compaction_start", reason: "threshold" });
+			expect(renderedText(mode.statusContainer)).toContain("Auto-compacting... (2s · esc to cancel)");
+
+			await emit(mode, {
+				type: "summarization_retry_scheduled",
+				source: "compaction",
+				attempt: 1,
+				maxAttempts: 3,
+				delayMs: 3_000,
+				errorMessage: "rate limited",
+			} as never);
+			vi.setSystemTime(9_000);
+			await emit(mode, {
+				type: "summarization_retry_attempt_start",
+				source: "compaction",
+				reason: "threshold",
+				attempt: 1,
+				maxAttempts: 3,
+			} as never);
+			expect(renderedText(mode.statusContainer)).toContain("Auto-compacting... (5s · esc to cancel)");
+			mode.autoCompactionLoader?.stop();
+			mode.retryCountdown?.dispose();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("does not restore the working spinner when mid-turn compaction cannot continue", async () => {
 		for (const event of [
 			{ type: "compaction_end", reason: "threshold", aborted: true, willRetry: false, midTurn: true },
@@ -734,7 +771,7 @@ describe("InteractiveMode compaction events", () => {
 
 		expect(mode.renderSessionEntries).toHaveBeenCalledWith(entries, { suppressCompactionBoundary: result });
 		expect(visibleBoundaries(chatContainer)).toHaveLength(1);
-		expect(renderedText(chatContainer).match(/✻ Context compacted/g)).toHaveLength(1);
+		expect(renderedText(chatContainer).match(/∀ Context compacted/g)).toHaveLength(1);
 		expect(renderedText(chatContainer)).toContain("extension-owned state");
 	});
 
@@ -748,7 +785,7 @@ describe("InteractiveMode compaction events", () => {
 		expect(chatContainer.children[0]).toBe(mode.resourceDisclosureContainer);
 		expect(chatContainer.children[1]).toBe(mode.startupNoticesContainer);
 		expect(visibleBoundaries(chatContainer)).toHaveLength(1);
-		expect(renderedText(chatContainer).match(/✻ Context compacted/g)).toHaveLength(1);
+		expect(renderedText(chatContainer).match(/∀ Context compacted/g)).toHaveLength(1);
 	});
 
 	it("keeps terminal progress active when the same run resumes after compaction", async () => {
@@ -1015,10 +1052,9 @@ describe("compaction boundary component", () => {
 		const component = new CompactionBoundaryMessageComponent(result);
 		const collapsedRaw = component.render(200).join("\n");
 		const collapsed = stripVTControlCharacters(collapsedRaw);
-		expect(collapsedRaw).toContain(theme.fg("customMessageLabel", theme.bold("✻ Context compacted")));
-		expect(collapsed).toContain("✻ Context compacted");
-		expect(collapsed).toContain("Compacted from 100 tokens (");
-		expect(collapsed).toContain(" to expand)");
+		expect(collapsedRaw).toContain(theme.fg("customMessageLabel", theme.bold("Context compacted")));
+		expect(collapsed).toMatch(/∀ Context compacted · 100 → \S+ tokens · ctrl\+o for summary/);
+		expect(collapsed).not.toContain("Context before compaction");
 		expect(collapsed).not.toContain("retained");
 		expect(collapsed).not.toContain("planned");
 
@@ -1028,8 +1064,8 @@ describe("compaction boundary component", () => {
 			.split("\n")
 			.map((line) => line.trimEnd())
 			.join("\n");
-		expect(expanded).toContain("✻ Context compacted");
-		expect(expanded).toContain("Compacted from 100 tokens");
+		expect(expanded).toContain("∀ Context compacted");
+		expect(expanded).toContain("Context before compaction: 100 tokens");
 		expect(expanded).toContain("[User]: retained\n (filtered 1 lines)");
 		expect(expandedRaw).toContain(theme.fg("dim", "(filtered 1 lines)"));
 	});
@@ -1043,8 +1079,47 @@ describe("compaction boundary component", () => {
 		const component = new CompactionBoundaryMessageComponent(divergent);
 		component.setExpanded(true);
 		const text = stripVTControlCharacters(component.render(200).join("\n"));
-		expect(text).toContain("Compacted from 1,200 tokens");
-		expect(text).not.toContain("Compacted from 480 tokens");
+		expect(text).toContain("Context before compaction: 1,200 tokens");
+		expect(text).not.toContain("Context before compaction: 480 tokens");
+	});
+
+	it("shows the message-token reduction in the header and labels the expanded context count neutrally (#5243)", () => {
+		const divergent: VerbatimCompactionResult = {
+			...result,
+			tokensBefore: 1_200,
+			stats: { ...result.stats, tokensBefore: 480, tokensAfter: 240, percentReduction: 50 },
+		};
+		const component = new CompactionBoundaryMessageComponent(divergent);
+		const collapsed = stripVTControlCharacters(component.render(200).join("\n"));
+		expect(collapsed).toContain("480 → 240 tokens");
+		expect(collapsed).not.toContain("1.2k → 240 tokens");
+		component.setExpanded(true);
+		const text = stripVTControlCharacters(component.render(200).join("\n"));
+		expect(text).toContain("480 → 240 tokens");
+		expect(text).toContain("Context before compaction: 1,200 tokens");
+		expect(text).not.toContain("system prompt");
+		expect(text).not.toContain("Context before compaction: 480 tokens");
+	});
+
+	it("does not claim a count without provider usage includes the system prompt and tools (#5243)", () => {
+		const estimated = createCustomMessage(
+			"compaction",
+			`${VERBATIM_COMPACTION_PREFIX}[User]: retained\n(filtered 1 lines)`,
+			true,
+			{
+				strategy: "verbatim-lines",
+				parameters: result.parameters,
+				promptVersion: result.promptVersion,
+				rung: result.rung,
+				stats: result.stats,
+			},
+			new Date(1).toISOString(),
+		) as unknown as AgentMessage;
+		const component = compactionBoundaryFromMessage(estimated, true);
+		const text = stripVTControlCharacters(component.render(200).join("\n"));
+		expect(text).toContain("Context before compaction: 100 tokens");
+		expect(text).not.toContain("system prompt");
+		expect(text).not.toContain("tools");
 	});
 
 	it("projects the authoritative count onto a persisted boundary whose details only carry stats (#2052)", () => {
@@ -1061,7 +1136,7 @@ describe("compaction boundary component", () => {
 		expect("tokensBefore" in details).toBe(false);
 		const component = compactionBoundaryFromMessage(message, true);
 		const text = stripVTControlCharacters(component.render(200).join("\n"));
-		expect(text).toContain("Compacted from 1,200 tokens");
+		expect(text).toContain("Context before compaction: 1,200 tokens");
 	});
 
 	it.each([
@@ -1089,8 +1164,8 @@ describe("compaction boundary component", () => {
 			expect((message.details as { tokensBefore?: number }).tokensBefore).toBe(existing);
 			const component = compactionBoundaryFromMessage(message, true);
 			const text = stripVTControlCharacters(component.render(200).join("\n"));
-			expect(text).toContain(`Compacted from ${rendered} tokens`);
-			expect(text).not.toContain("Compacted from 1,200 tokens");
+			expect(text).toContain(`Context before compaction: ${rendered} tokens`);
+			expect(text).not.toContain("Context before compaction: 1,200 tokens");
 		},
 	);
 
@@ -1110,7 +1185,7 @@ describe("compaction boundary component", () => {
 		) as unknown as AgentMessage;
 		const component = compactionBoundaryFromMessage(legacy, true);
 		const text = stripVTControlCharacters(component.render(200).join("\n"));
-		expect(text).toContain("Compacted from 100 tokens");
+		expect(text).toContain("Context before compaction: 100 tokens");
 	});
 });
 
@@ -1163,8 +1238,8 @@ describe("compaction boundary JSONL reopen (#2052)", () => {
 		expect(boundary).toBeDefined();
 		const component = compactionBoundaryFromMessage(boundary!, true);
 		const text = stripVTControlCharacters(component.render(200).join("\n"));
-		expect(text).toContain("Compacted from 1,200 tokens");
-		expect(text).not.toContain("Compacted from 480 tokens");
+		expect(text).toContain("Context before compaction: 1,200 tokens");
+		expect(text).not.toContain("Context before compaction: 480 tokens");
 		expect(text).toContain("retained");
 	});
 });

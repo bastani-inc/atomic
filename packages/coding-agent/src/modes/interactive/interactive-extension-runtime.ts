@@ -103,13 +103,15 @@ InteractiveModeBase.prototype.getWorkingLoaderMessage = function (this: Interact
 };
 
 InteractiveModeBase.prototype.createWorkingLoader = function (this: InteractiveModeBase): AtomicWorkingLoader {
-	return new AtomicWorkingLoader(
+	const loader = new AtomicWorkingLoader(
 		this.ui,
 		undefined,
 		(text) => theme.fg("muted", text),
 		this.getWorkingLoaderMessage(),
 		this.workingIndicatorOptions,
 	);
+	loader.setMeta(() => this.workingRunMeter.snapshot());
+	return loader;
 };
 
 InteractiveModeBase.prototype.clearWorkingLoader = function (this: InteractiveModeBase): void {

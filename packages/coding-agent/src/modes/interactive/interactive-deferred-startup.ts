@@ -152,17 +152,16 @@ export async function applyDeferredModelScope(mode: InteractiveModeBase): Promis
 		return;
 	}
 
-	const currentModel = mode.session.model;
-	if (currentModel && scopedModels.some((scoped) => modelsAreEqual(scoped.model, currentModel))) {
-		return;
-	}
-
 	const savedProvider = mode.settingsManager.getDefaultProvider();
 	const savedModelId = mode.settingsManager.getDefaultModel();
 	const savedModel =
 		savedProvider && savedModelId ? mode.session.modelRuntime.getModel(savedProvider, savedModelId) : undefined;
 	const preferred = savedModel ? scopedModels.find((scoped) => modelsAreEqual(scoped.model, savedModel)) : undefined;
 	const nextScopedModel = preferred ?? scopedModels[0];
+	const currentModel = mode.session.model;
+	if (currentModel && modelsAreEqual(currentModel, nextScopedModel.model)) {
+		return;
+	}
 	if (mode.session.modelRuntime.hasConfiguredAuth(nextScopedModel.model.provider)) {
 		await mode.session.setModel(nextScopedModel.model);
 		await mode.session.setThinkingLevel(
@@ -171,11 +170,6 @@ export async function applyDeferredModelScope(mode: InteractiveModeBase): Promis
 	}
 }
 
-/**
- * The level eager startup gives a model that became available only after deferred extension loading: the level the
- * command line or the continued conversation set, else the model scope's suffix, else the model's own level for a
- * new conversation, else the default level.
- */
 function startupThinkingLevel(
 	mode: InteractiveModeBase,
 	model: Model<Api>,
@@ -191,7 +185,6 @@ function startupThinkingLevel(
 	);
 }
 
-/** Selects a model for a startup that loaded extensions late, leaving the thinking level eager startup leaves. */
 async function selectStartupModel(mode: InteractiveModeBase, model: Model<Api>, continued: boolean): Promise<void> {
 	await mode.session.setModel(model);
 	await mode.session.setThinkingLevel(startupThinkingLevel(mode, model, continued));
@@ -219,7 +212,6 @@ InteractiveModeBase.prototype.retryDeferredModelRestore = async function (
 			this.session.modelRuntime,
 		);
 		if (restoredModel && this.session.modelRuntime.hasConfiguredAuth(restoredModel.provider)) {
-			// Trust completion or the deferred model scope may already have selected it, with its startup level.
 			const selectedModel = this.session.model;
 			if (!selectedModel || !modelsAreEqual(selectedModel, restoredModel)) {
 				await selectStartupModel(this, restoredModel, continued);

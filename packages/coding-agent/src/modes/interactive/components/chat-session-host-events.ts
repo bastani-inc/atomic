@@ -20,7 +20,7 @@ import {
 	startChatSessionWorkingLifecycle,
 	stopChatSessionWorkingLifecycle,
 } from "./chat-session-host-runtime.ts";
-import type { ChatSessionHostState } from "./chat-session-host-state.ts";
+import { type ChatSessionHostState, countableTranscriptLength } from "./chat-session-host-state.ts";
 import {
 	extractMessageText,
 	isMessageLike,
@@ -132,14 +132,22 @@ function refreshCompactedTranscript<TExtraEntry extends ChatTranscriptEntryLike>
 ): void {
 	const compactedMessages = state.getAgentSession?.()?.messages;
 	if (compactedMessages && hasVerbatimCompactionMessage(compactedMessages)) {
+		if (state.bodyViewport.getScrollFromBottom() > 0) {
+			state.newMessages.observe(false, countableTranscriptLength(state));
+		}
 		state.liveChat.replaceMessages(compactedMessages, state.extraEntries);
+		state.newMessages.compactionRefreshed(countableTranscriptLength(state));
 		return;
 	}
 	// A session in another process sent its compacted messages as plain data, so its boundary is
 	// recognised by its custom type rather than by identity.
 	const remoteMessages = state.getAgentSession?.() === undefined ? state.getSessionMessages?.() : undefined;
 	if (remoteMessages?.some((message) => message.role === "custom" && message.customType === "compaction") === true) {
+		if (state.bodyViewport.getScrollFromBottom() > 0) {
+			state.newMessages.observe(false, countableTranscriptLength(state));
+		}
 		state.liveChat.replaceMessages(remoteMessages, state.extraEntries);
+		state.newMessages.compactionRefreshed(countableTranscriptLength(state));
 		return;
 	}
 	if (transcriptHasBoundaryForResult(state.transcript, result)) return;
@@ -164,6 +172,14 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 			}
 		}
 	}
+	if (type === "message_update" || type === "message_end") {
+		const message = (event as { message?: unknown }).message;
+		if (typeof message === "object" && message !== null && "role" in message) {
+			const metered = message as { role: string };
+			if (type === "message_update") state.workingRunMeter.streaming(metered);
+			else state.workingRunMeter.settled(metered);
+		}
+	}
 	if (isSharedLiveChatEvent(type)) {
 		const changed = state.liveChat.applyEvent(event);
 		const toolCallEvent = assistantToolCallEvent(event);
@@ -174,6 +190,7 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 	let changed = false;
 	switch (type) {
 		case "agent_start":
+			state.workingRunMeter.start();
 			state.sdkBusy = true;
 			state.workingMessage = undefined;
 			startChatSessionWorkingLifecycle(state);
@@ -183,9 +200,11 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 			state.compactionPromptStarted?.();
 			break;
 		case "agent_end": {
+			state.workingRunMeter.stop();
 			const manualTakeoverPending = state.manualCompactionTakeoverPending;
 			state.sdkBusy = manualTakeoverPending;
 			state.compacting = manualTakeoverPending;
+			if (!manualTakeoverPending) state.compactionStartedAt = undefined;
 			state.workingMessage = undefined;
 			state.liveChat.clearPendingTools();
 			if (!manualTakeoverPending) state.statusMessage = "";
@@ -204,6 +223,7 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 			break;
 		case "turn_end":
 			state.compacting = state.manualCompactionTakeoverPending;
+			if (!state.manualCompactionTakeoverPending) state.compactionStartedAt = undefined;
 			state.workingMessage = undefined;
 			stopChatSessionWorkingLifecycle(state);
 			changed = true;
@@ -236,6 +256,10 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 		case "compaction_start": {
 			const compaction = event as Extract<AgentSessionEvent, { type: "compaction_start" }>;
 			state.compacting = true;
+			state.compactionStartedAt =
+				state.getAgentSession?.()?.compactionStartedAt ??
+				state.getChatBoxSession?.()?.compactionStartedAt ??
+				Date.now();
 			state.sdkBusy = true;
 			state.statusMessage = compactionStatusMessage(compaction.reason);
 			// The animation timer this event starts would otherwise swallow the
@@ -255,6 +279,12 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 				state.manualCompactionTakeoverPending = false;
 			}
 			state.compacting = manualTakeoverPending;
+			state.compactionStartedAt = manualTakeoverPending
+				? (state.compactionStartedAt ??
+					state.getAgentSession?.()?.compactionStartedAt ??
+					state.getChatBoxSession?.()?.compactionStartedAt ??
+					Date.now())
+				: undefined;
 			state.sdkBusy = manualTakeoverPending || compaction.midTurn === true;
 			if (!manualTakeoverPending) state.statusMessage = compaction.errorMessage ?? "";
 			if (compaction.midTurn !== true || compaction.aborted || compaction.errorMessage) {
@@ -316,8 +346,10 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 			state.statusMessage = fallback.success ? "" : (fallback.finalError ?? "model fallback failed");
 			state.workingMessage = undefined;
 			if (!fallback.success) {
+				state.workingRunMeter.stop();
 				state.sdkBusy = false;
 				state.compacting = false;
+				state.compactionStartedAt = undefined;
 			}
 			stopChatSessionWorkingLifecycle(state);
 			changed = true;
@@ -328,8 +360,10 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 			state.statusMessage = "";
 			state.workingMessage = undefined;
 			if (!retry.success) {
+				state.workingRunMeter.stop();
 				state.sdkBusy = false;
 				state.compacting = false;
+				state.compactionStartedAt = undefined;
 			}
 			stopChatSessionWorkingLifecycle(state);
 			changed = true;
@@ -337,8 +371,10 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 		}
 		case "agent_continue_error": {
 			const continueError = event as Extract<AgentSessionEvent, { type: "agent_continue_error" }>;
+			state.workingRunMeter.stop();
 			state.sdkBusy = false;
 			state.compacting = false;
+			state.compactionStartedAt = undefined;
 			state.statusMessage = continueError.errorMessage;
 			state.workingMessage = undefined;
 			stopChatSessionWorkingLifecycle(state);

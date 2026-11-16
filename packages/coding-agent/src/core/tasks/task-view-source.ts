@@ -37,6 +37,7 @@ export interface TaskTranscriptView {
 	readonly nextCursor?: string;
 	/** On the latest page: why the task's session is compacting at the time of the read. */
 	readonly compactionReason?: CompactionReason;
+	readonly compactionStartedAt?: number;
 }
 
 /** How an open transcript of a task follows it: through its live session, or by reading it again. */
@@ -427,12 +428,14 @@ function transcriptView(
 		return message.role === "user" || message.role === "toolResult" ? [message] : [];
 	});
 	const compactionReason = cursor === undefined ? session.getCompactionReason?.() : undefined;
+	const compactionStartedAt = compactionReason === undefined ? undefined : session.chatSession?.compactionStartedAt;
 	return {
 		ok: true,
 		value: {
 			messages,
 			...(page.ok && page.value.nextCursor !== undefined ? { nextCursor: page.value.nextCursor } : {}),
 			...(compactionReason === undefined ? {} : { compactionReason }),
+			...(compactionStartedAt === undefined ? {} : { compactionStartedAt }),
 		},
 	};
 }

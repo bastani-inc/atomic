@@ -170,6 +170,7 @@ class AgentSessionBase {
 	}> = [];
 	protected _compactionAbortController: AbortController | undefined = undefined;
 	protected _compactionReason: import("./agent-session-types.js").CompactionReason | undefined = undefined;
+	protected _compactionStartedAt: number | undefined = undefined;
 	protected _manualCompactionPromise: Promise<VerbatimCompactionResult> | undefined = undefined;
 	protected _autoCompactionAbortController: AbortController | undefined = undefined;
 	/** Resolves when the current automatic compaction has settled. */

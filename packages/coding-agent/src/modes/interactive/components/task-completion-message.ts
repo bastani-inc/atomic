@@ -24,13 +24,15 @@ export function completionNoticeFromDetails(details: unknown): TaskCompletionNot
 		title: notice.title,
 		preview: notice.preview,
 		taskId: notice.taskId,
+		...("taskKind" in notice && (notice.taskKind === "agent" || notice.taskKind === "command")
+			? { taskKind: notice.taskKind }
+			: {}),
 		status: notice.status,
 		...("model" in notice && typeof notice.model === "string" ? { model: notice.model } : {}),
 		...("thinking" in notice && typeof notice.thinking === "string" ? { thinking: notice.thinking } : {}),
 	};
 }
 
-/** Same persisted completion message in main and workflow chats; no model reply required. */
 export class TaskCompletionMessage implements Component {
 	private readonly notice: TaskCompletionNotice;
 	private readonly expanded: boolean;
@@ -54,8 +56,18 @@ export class TaskCompletionMessage implements Component {
 			this.notice.status === "completed" ? "success" : this.notice.status === "failed" ? "error" : "warning";
 		const icon = this.notice.status === "completed" ? "✓" : "✗";
 		const preview = wrapTextWithAnsi(clean(this.notice.preview), Math.max(1, width - 2));
-		const limit = this.expanded ? 20 : 3;
-		const expand = !this.expanded && preview.length > limit ? keyHintIfBound("app.tools.expand", "Expand") : "";
+		const agent =
+			this.notice.taskKind === "agent" ||
+			(this.notice.taskKind === undefined &&
+				(this.notice.model !== undefined ||
+					this.notice.thinking !== undefined ||
+					this.notice.title.startsWith("Subagent ")));
+		const limit = this.expanded ? 20 : agent ? 1 : 3;
+		const shownPreview = agent ? preview.slice(0, limit) : preview.slice(-limit);
+		const expand =
+			!this.expanded && preview.length > limit
+				? keyHintIfBound("app.tools.expand", agent ? "for the full result" : "Expand")
+				: "";
 		return [
 			theme.fg(color, theme.bold(`${icon} ${clean(this.notice.title).replace(/\n/g, " ")}`)),
 			...(this.notice.model !== undefined || this.notice.thinking !== undefined
@@ -67,7 +79,9 @@ export class TaskCompletionMessage implements Component {
 						Math.max(1, width),
 					)
 				: []),
-			...(this.notice.preview ? preview.slice(0, limit).map((line) => theme.fg("muted", `  ${line}`)) : []),
+			...(this.notice.preview
+				? shownPreview.map((line, index) => theme.fg("muted", `${index === 0 ? "⎿ " : "  "}${line}`))
+				: []),
 			theme.fg(
 				"dim",
 				`${expand ? `(${expand}) · ` : ""}/tasks to inspect${this.expanded ? ` · ${this.notice.taskId}` : ""}`,

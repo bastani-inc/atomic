@@ -22,6 +22,7 @@ import {
 } from "./interactive-mode-deps.ts";
 import type { MissingCwdForkSource } from "./interactive-mode-surface.ts";
 import { showQueueRestoreFailure } from "./interactive-queueing.ts";
+import { clearChatForRerender } from "./interactive-render-chat.ts";
 import { showSessionNotices } from "./session-notices.ts";
 
 InteractiveModeBase.prototype.handleCloneCommand = async function (this: InteractiveModeBase): Promise<void> {
@@ -230,7 +231,7 @@ InteractiveModeBase.prototype.showTreeSelector = async function (
 					}
 
 					// Update UI
-					this.chatContainer.clear();
+					clearChatForRerender(this);
 					this.renderInitialMessages();
 					if (result.editorText && !this.editor.getText().trim()) {
 						this.editor.setText(result.editorText);
