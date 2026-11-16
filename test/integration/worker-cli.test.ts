@@ -153,12 +153,17 @@ function startRoot(
 	);
 }
 
-async function until(what: string, s: Scenario, check: () => boolean, watched: readonly BudgetedProcess[]) {
-	while (!check()) {
+async function until(
+	what: string,
+	s: Scenario,
+	check: () => boolean | Promise<boolean>,
+	watched: readonly BudgetedProcess[],
+) {
+	while (!(await check())) {
 		for (const watchedProcess of watched)
 			if (watchedProcess.process.exitCode !== null)
 				assert.fail(
-					`a process ended (${watchedProcess.process.exitCode}) while waiting for ${what}:\n${await watchedProcess.stderr}`,
+					`process ${watchedProcess.process.pid} ended (${watchedProcess.process.exitCode}, signal=${watchedProcess.process.signalCode}, budgetExpired=${watchedProcess.budgetExpired}) while waiting for ${what}:\n${await watchedProcess.stderr}`,
 				);
 		if (Date.now() >= s.deadline) assert.fail(`timed out waiting for ${what}`);
 		await sleep(50);
@@ -346,7 +351,7 @@ test.skipIf(process.platform === "win32")(
 			root = startRoot(s, 3, 20_000, {
 				...markers,
 				SHARED_POOL_LEASE_MS: String(TAKEOVER_LEASE_MS),
-				SHARED_POOL_CHECKPOINT_SHIPPING: JSON.stringify({ intervalMs: 60_000, maxBatch: 1_000, maxLagMs: 600_000 }),
+				SHARED_POOL_CHECKPOINT_SHIPPING: JSON.stringify({ intervalMs: 100, maxBatch: 1_000, maxLagMs: 600_000 }),
 			});
 			await until(
 				"node B to ship its stage and wait before its local-only checkpoint",
@@ -365,16 +370,29 @@ test.skipIf(process.platform === "win32")(
 				.find((name) => name.startsWith("ready-B-"))!
 				.split("-")
 				.at(-1)!;
-			// From here until node B dies, the shared journal refuses node B's checkpoint batches, so the step it accepts next
-			// stays in its local journal wherever its shipping interval falls. Only those batches: holding the journal's write
-			// lock instead also stops node B's heartbeats renewing its attempt's lease, and node B renews a lease that is
-			// running out before it acknowledges a step, so it waited on the test while the test waited on it.
 			const beforeKill = await openLibsqlDatabase({ url: s.url });
 			try {
 				await beforeKill.run(
 					`CREATE TRIGGER worker_cli_ships_nothing_from_b BEFORE INSERT ON ${PREFIX}wf_runs_ship_batches WHEN NEW.host = 'B'
 					BEGIN SELECT RAISE(ABORT, 'node B ships nothing until it is killed'); END`,
 				);
+				const held = await beforeKill.get<{ id: string; renewed_at: number }>(
+					`SELECT id, renewed_at FROM ${PREFIX}wf_runs_work WHERE root = ? AND worker LIKE 'B/%'`,
+					s.root,
+				);
+				assert.ok(held);
+				const renews = async () => {
+					const current = await beforeKill.get<{ renewed_at: number }>(
+						`SELECT renewed_at FROM ${PREFIX}wf_runs_work WHERE id = ? AND worker LIKE 'B/%'`,
+						held.id,
+					);
+					return current !== undefined && current.renewed_at > held.renewed_at;
+				};
+				await until("node B to renew its lease while shipping is blocked", s, renews, [
+					nodeB.process,
+					nodeC.process,
+					root,
+				]);
 				writeFileSync(join(s.directory, `accept-B-${index}`), "");
 				await until(
 					"node B to acknowledge its local-only checkpoint",
@@ -383,8 +401,27 @@ test.skipIf(process.platform === "win32")(
 					[nodeB.process, nodeC.process, root],
 				);
 				assert.ok(readdirSync(s.directory).includes(`unshipped-B-${index}`));
+				const accepted = await beforeKill.get<{ renewed_at: number }>(
+					`SELECT renewed_at FROM ${PREFIX}wf_runs_work WHERE id = ? AND worker LIKE 'B/%'`,
+					held.id,
+				);
+				assert.ok(accepted);
+				await until(
+					"node B to renew its lease after accepting its local-only checkpoint",
+					s,
+					async () => {
+						const current = await beforeKill.get<{ renewed_at: number }>(
+							`SELECT renewed_at FROM ${PREFIX}wf_runs_work WHERE id = ? AND worker LIKE 'B/%'`,
+							held.id,
+						);
+						return current !== undefined && current.renewed_at > accepted.renewed_at;
+					},
+					[nodeB.process, nodeC.process, root],
+				);
 				killGroup(nodeB.process);
 				await nodeB.process.process.exited;
+				assert.equal(nodeB.process.process.signalCode, "SIGKILL");
+				assert.equal(nodeB.process.budgetExpired, false);
 				assert.deepEqual(
 					await beforeKill.all(
 						`SELECT key FROM ${PREFIX}wf_events WHERE json_extract(payload, '$.name') = 'unshipped' AND json_extract(payload, '$.output') = 'B'`,
