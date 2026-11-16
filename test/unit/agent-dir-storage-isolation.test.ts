@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
 	defaultJournalStoreDirectory,
@@ -9,6 +9,7 @@ import {
 	sameDirectory,
 	secretFilePath,
 	storageHomeDir,
+	workflowsStorageDir,
 } from "@bastani/atomic/storage";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { DefaultPackageManager } from "../../packages/coding-agent/src/core/package-manager.js";
@@ -35,7 +36,7 @@ import {
 	workflowArtifactRunsRoot,
 } from "../../packages/workflows/src/shared/workflow-artifacts.js";
 import { poolHostId, poolStateDirectory } from "../../packages/workflows/src/workers/pool-journal.js";
-import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
+import { bunExecutable, makeTempDirectory, removeTempDirectory, spawnSyncCollect } from "../helpers/runtime.js";
 
 const STORAGE_ENV_KEYS = [
 	"ATOMIC_STORAGE",
@@ -404,6 +405,7 @@ test("storage home stays stable across an in-flight asynchronous session-store o
 	const child = join(parent, "a1");
 	mkdirSync(child, { recursive: true });
 
+	const opening = resolveSessionStore(project, { agentDir: child, settings: {} });
 	const initialSessionPath = defaultSessionDatabasePath(child);
 	assert.equal(initialSessionPath, join(child, "workflows", "journal.sqlite"));
 	mkdirSync(join(parent, "workflows"), { recursive: true });
@@ -415,7 +417,7 @@ test("storage home stays stable across an in-flight asynchronous session-store o
 		dir: join(child, "workflows", "journal"),
 	});
 
-	const store = await resolveSessionStore(project, { agentDir: child, settings: {} });
+	const store = await opening;
 	try {
 		await store.create(
 			{
@@ -518,8 +520,8 @@ test("custom agent directories directly under os.tmpdir() or ~/.atomic/agent ado
 	vi.stubEnv("TEMP", customTmp);
 	vi.stubEnv("TMP", customTmp);
 
-	assert.equal(storageHomeDir(tmpFirst), customTmp);
-	assert.equal(storageHomeDir(tmpSecond), tmpSecond);
+	assert.equal(storageHomeDir(tmpFirst, {}), customTmp);
+	assert.equal(storageHomeDir(tmpSecond, {}), tmpSecond);
 
 	const home = join(root, "nested-home");
 	const defaultAgent = join(home, ".atomic", "agent");
@@ -532,8 +534,8 @@ test("custom agent directories directly under os.tmpdir() or ~/.atomic/agent ado
 	vi.stubEnv("HOME", home);
 	vi.stubEnv("USERPROFILE", home);
 
-	assert.equal(storageHomeDir(nestedFirst), defaultAgent);
-	assert.equal(storageHomeDir(nestedSecond), nestedSecond);
+	assert.equal(storageHomeDir(nestedFirst, {}), defaultAgent);
+	assert.equal(storageHomeDir(nestedSecond, {}), nestedSecond);
 });
 
 test.skipIf(process.platform === "win32")(
@@ -595,6 +597,7 @@ test("workspace shared repository stores and worktrees follow the isolated stora
 	mkdirSync(legacyA1, { recursive: true });
 	mkdirSync(legacyA2, { recursive: true });
 
+	assert.equal(storageHomeDir(legacyA1, {}), legacyParent);
 	vi.stubEnv("ATOMIC_CODING_AGENT_DIR", legacyA1);
 	assert.equal(atomicHome(), legacyParent);
 	vi.stubEnv("ATOMIC_CODING_AGENT_DIR", legacyA2);
@@ -1641,7 +1644,7 @@ test.skipIf(process.platform === "win32")(
 		mkdirSync(claimant, { recursive: true });
 		writeFileSync(join(claimant, "settings.json"), JSON.stringify({ defaultModel: "example" }));
 
-		assert.equal(storageHomeDir(claimant), parent);
+		assert.equal(storageHomeDir(claimant, {}), parent);
 		assert.equal(readClaimFile(join(parent, "workflows", ".adopted-by")), claimant);
 
 		mkdirSync(sibling, { recursive: true });
@@ -1728,4 +1731,144 @@ test("an agent directory beside non-Atomic tool directories adopts the legacy st
 		resetStorageHomeCacheForTests();
 		assert.equal(storageHomeDir(agent), parent, label);
 	}
+});
+
+test("a second process of one agent directory keeps its storage home when a parent store appears after the first process settled (#5242)", () => {
+	const parent = join(root, "same-dir-processes");
+	const agent = join(parent, "a1");
+	mkdirSync(agent, { recursive: true });
+	writeFileSync(join(agent, "settings.json"), JSON.stringify({ defaultModel: "example" }));
+	const settings = {};
+
+	const firstProcess = storageHomeDir(agent, settings);
+	assert.equal(firstProcess, agent);
+
+	mkdirSync(join(parent, "workflows"), { recursive: true });
+	writeFileSync(join(parent, "workflows", "journal.sqlite"), "");
+	resetStorageHomeCacheForTests();
+	const secondProcess = storageHomeDir(agent, settings);
+	assert.equal(secondProcess, firstProcess);
+
+	mkdirSync(join(firstProcess, "workflows"), { recursive: true });
+	writeFileSync(join(firstProcess, "workflows", "journal.sqlite"), "");
+	resetStorageHomeCacheForTests();
+	assert.equal(storageHomeDir(agent, settings), firstProcess);
+	assert.equal(existsSync(join(parent, "workflows", ".adopted-by")), false);
+});
+
+const PROCESS_TIMEOUT_MS = 60_000;
+
+test(
+	"runs that two processes of one agent directory record stay visible to its next process when a parent store appears between their starts (#5242)",
+	async () => {
+		const parent = join(root, "process-race");
+		const agent = join(parent, "a1");
+		const settings = { sessions: { storage: { path: join(root, "elsewhere", "sessions.sqlite") } } };
+		mkdirSync(agent, { recursive: true });
+		writeFileSync(join(agent, "settings.json"), JSON.stringify(settings));
+		const child = (mode: "write" | "read", runId: string) =>
+			spawnSyncCollect(
+				[
+					bunExecutable(),
+					resolve("test/fixtures/agent-dir-storage-process-child.ts"),
+					agent,
+					JSON.stringify(settings),
+					mode,
+					runId,
+				],
+				{ timeout: PROCESS_TIMEOUT_MS },
+			);
+
+		assert.equal(workflowsStorageDir(agent), join(agent, "workflows"));
+
+		const olderBuild = await resolveRunJournal({
+			agentDir: join(root, "older-build"),
+			journal: { path: join(parent, "workflows", "journal.sqlite") },
+		});
+		try {
+			await olderBuild.createRun({
+				runId: "older-build-run",
+				name: "wf",
+				cwd: project,
+				createdAt: 1,
+				status: "running",
+			});
+		} finally {
+			await olderBuild.close();
+		}
+
+		const second = child("write", "run-from-second-process");
+		assert.equal(second.exitCode, 0, second.stderr.toString());
+
+		const first = await resolveRunJournal({ agentDir: agent, settings });
+		try {
+			await first.createRun({
+				runId: "run-from-first-process",
+				name: "wf",
+				cwd: project,
+				createdAt: 2,
+				status: "running",
+			});
+		} finally {
+			await first.close();
+		}
+
+		const third = child("read", "");
+		assert.equal(third.exitCode, 0, third.stderr.toString());
+		const seen = JSON.parse(third.stdout.toString()) as string[];
+		assert.ok(seen.includes("run-from-first-process"), JSON.stringify(seen));
+		assert.ok(seen.includes("run-from-second-process"), JSON.stringify(seen));
+	},
+	PROCESS_TIMEOUT_MS * 3,
+);
+
+test("sibling directories keep separate external parent-relative session stores (#5242)", () => {
+	const parent = join(root, "external-relative-sibling-targets");
+	for (const name of ["a1", "a2"]) {
+		const agent = join(parent, name);
+		const settings = { sessions: { storage: { dir: `${name}-sessions` } } };
+		mkdirSync(agent, { recursive: true });
+		mkdirSync(join(parent, `${name}-sessions`), { recursive: true });
+		writeFileSync(join(parent, `${name}-sessions`, "history.jsonl"), "{}\n");
+		writeFileSync(join(agent, "settings.json"), JSON.stringify(settings));
+	}
+	for (const name of ["a1", "a2"]) {
+		const agent = join(parent, name);
+		const settings = { sessions: { storage: { dir: `${name}-sessions` } } };
+		assert.deepEqual(selectSessionStorage(project, { agentDir: agent, settings }), {
+			kind: "jsonl",
+			dir: join(parent, `${name}-sessions`),
+		});
+	}
+});
+
+test("storage status does not create a nonexistent agent directory named workflows while preserving a legacy relative target (#5242)", async () => {
+	const parent = join(root, "missing-workflows-agent");
+	const agent = join(parent, "workflows");
+	mkdirSync(parent, { recursive: true });
+	writeFileSync(join(parent, "history.sqlite"), "");
+	vi.stubEnv("ATOMIC_SESSIONS_STORAGE", JSON.stringify({ path: "history.sqlite" }));
+	const status = await collectStorageStatus({ cwd: project, agentDir: agent, probe: false });
+	assert.equal(
+		status.domains.find((entry) => entry.domain === "sessions")?.selection,
+		`SQLite ${join(parent, "history.sqlite")}`,
+	);
+	assert.equal(existsSync(agent), false);
+	assert.equal(status.notes.filter((note) => /Adopted existing storage/.test(note)).length, 1);
+	mkdirSync(agent);
+	resetStorageHomeCacheForTests();
+	assert.deepEqual((await collectStorageStatus({ cwd: project, agentDir: agent, probe: false })).notes, []);
+});
+
+test("a settings-blind parent lookup remains provisional until merged SDK settings select an existing local target (#5242)", () => {
+	const parent = join(root, "provisional-parent-lookup");
+	const agent = join(parent, "a1");
+	mkdirSync(join(parent, "workflows"), { recursive: true });
+	writeFileSync(join(parent, "workflows", "journal.sqlite"), "");
+	mkdirSync(join(agent, "local-sessions"), { recursive: true });
+	writeFileSync(join(agent, "local-sessions", "history.jsonl"), "{}\n");
+	assert.equal(storageHomeDir(agent), parent);
+	assert.equal(storageHomeDir(agent, { sessions: { storage: { dir: "local-sessions" } } }), agent);
+	assert.equal(existsSync(join(parent, "workflows", ".adopted-by")), false);
+	assert.equal(storageHomeDir(join(parent, "a2"), {}), parent);
 });

@@ -67,6 +67,9 @@ export interface RunJournalResolutionOptions {
 
 export function selectRunJournal(options: RunJournalResolutionOptions = {}): StorageSelection | RunJournal {
 	const agentDir = options.agentDir ?? getAgentDir();
+	let loadedSettings = options.settings;
+	const getSettings = (): RunJournalSettings =>
+		(loadedSettings ??= SettingsManager.create(process.cwd(), agentDir).getSettings());
 	if (options.journal !== undefined) {
 		if (options.journal !== null && typeof options.journal === "object" && "createRun" in options.journal) {
 			const journal = options.journal;
@@ -94,33 +97,29 @@ export function selectRunJournal(options: RunJournalResolutionOptions = {}): Sto
 			return journal;
 		}
 		return selectStorage(options.journal, "sdk", "journal", () =>
-			defaultSessionDatabasePath(agentDir, options.settings),
+			defaultSessionDatabasePath(agentDir, getSettings()),
 		);
 	}
-	const processChoice = selectProcessStorage(
-		"journal",
-		agentDir,
-		undefined,
-		options.settings ?? (() => SettingsManager.create(process.cwd(), agentDir).getSettings()),
-	);
+	const processChoice = selectProcessStorage("journal", agentDir, undefined, getSettings);
 	if (processChoice !== undefined) {
 		origins.set(processChoice.selection, { source: processChoice.source, field: processChoice.field });
 		return processChoice.selection;
 	}
-	const workflows = options.settings?.workflows;
+	const settings = getSettings();
+	const workflows = settings.workflows;
 	const journal = Array.isArray(workflows) ? undefined : workflows?.journal;
-	const value = journal !== undefined ? journal : options.settings?.storage;
+	const value = journal !== undefined ? journal : settings.storage;
 	if (value === undefined || selectsDefaultJournalStore(journal)) {
-		return { kind: "sharded", dir: defaultJournalStoreDirectory(agentDir, options.settings) };
+		return { kind: "sharded", dir: defaultJournalStoreDirectory(agentDir, settings) };
 	}
 	const selection = selectStorage(value, "settings", journal !== undefined ? "workflows.journal" : "storage", () =>
 		journal !== undefined
-			? defaultSessionDatabasePath(agentDir, options.settings)
-			: defaultSharedStoragePath(agentDir, options.settings),
+			? defaultSessionDatabasePath(agentDir, settings)
+			: defaultSharedStoragePath(agentDir, settings),
 	);
 	const resolved =
 		selection.kind === "sqlite" && !isAbsolute(selection.path)
-			? { ...selection, path: join(storagePathBaseDir(selection.path, agentDir, options.settings), selection.path) }
+			? { ...selection, path: join(storagePathBaseDir(selection.path, agentDir, settings), selection.path) }
 			: selection;
 	origins.set(resolved, { source: "settings" });
 	return resolved;

@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
 	existsSync,
 	linkSync,
@@ -23,6 +23,7 @@ const ATOMIC_STORE_FILES = [
 	join("workflows", "pool", "host-id"),
 ] as const;
 const ADOPTION_CLAIM_FILE = ".adopted-by";
+const PARENT_CLAIM_FILE = ".atomic-storage-parent-owner";
 const ADOPTION_NOTICE_SUFFIX = ".notified";
 const CLI_SELECTION = Symbol.for("@bastani/atomic/storage/cli-selection");
 const STORAGE_ENV_NAMES = ["ATOMIC_STORAGE", "ATOMIC_SESSIONS_STORAGE", "ATOMIC_WORKFLOWS_JOURNAL"] as const;
@@ -266,15 +267,22 @@ function pushSettingsTargets(
 	}
 }
 
-function configuredRelativeTargets(agentPath: string, home: string, settings?: StorageHomeSettings): readonly string[] {
+function configuredRelativeTargets(
+	agentPath: string,
+	home: string,
+	settings?: StorageHomeSettings,
+	includeProcessSelections = true,
+): readonly string[] {
 	const targets = new Set<string>();
-	const cli = (globalThis as Record<symbol, { readonly value?: unknown } | undefined>)[CLI_SELECTION];
-	if (cli !== undefined) pushSelectionTargets(targets, cli.value, home, true);
-	for (const envName of STORAGE_ENV_NAMES) {
+	const cli = includeProcessSelections
+		? (globalThis as Record<symbol, { readonly value?: unknown } | undefined>)[CLI_SELECTION]
+		: undefined;
+	const environment: Partial<Record<(typeof STORAGE_ENV_NAMES)[number], object>> = {};
+	for (const envName of includeProcessSelections ? STORAGE_ENV_NAMES : []) {
 		const raw = process.env[envName];
 		if (raw === undefined || raw === "") continue;
 		try {
-			pushSelectionTargets(targets, JSON.parse(raw), home, envName === "ATOMIC_STORAGE");
+			environment[envName] = JSON.parse(raw) as object;
 		} catch {}
 	}
 	let fileSettings: StorageHomeSettings | undefined;
@@ -286,17 +294,37 @@ function configuredRelativeTargets(agentPath: string, home: string, settings?: S
 			if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) fileSettings = parsed;
 		} catch {}
 	}
-	pushSettingsTargets(
-		targets,
-		settings === undefined
-			? fileSettings
-			: {
-					storage: settings.storage === undefined ? fileSettings?.storage : settings.storage,
-					sessions: settings.sessions === undefined ? fileSettings?.sessions : settings.sessions,
-					workflows: settings.workflows === undefined ? fileSettings?.workflows : settings.workflows,
-				},
-		home,
-	);
+	const effective = {
+		storage: settings?.storage === undefined ? fileSettings?.storage : settings.storage,
+		sessions: settings?.sessions === undefined ? fileSettings?.sessions : settings.sessions,
+		workflows: settings?.workflows === undefined ? fileSettings?.workflows : settings.workflows,
+	};
+	const shared = cli?.value ?? environment.ATOMIC_STORAGE ?? effective.storage;
+	pushSelectionTargets(targets, shared, home, true);
+	const sessions = cli?.value ?? environment.ATOMIC_SESSIONS_STORAGE ?? environment.ATOMIC_STORAGE;
+	if (sessions !== undefined) {
+		pushSelectionTargets(targets, sessions, home, sessions === shared);
+	} else if (!includeProcessSelections || !process.env.ATOMIC_CODING_AGENT_SESSION_DIR) {
+		pushSettingsTargets(
+			targets,
+			{
+				sessions: effective.sessions,
+				storage: effective.sessions?.storage === undefined ? effective.storage : undefined,
+			},
+			home,
+		);
+	}
+	const workflows = cli?.value ?? environment.ATOMIC_WORKFLOWS_JOURNAL ?? environment.ATOMIC_STORAGE;
+	if (workflows !== undefined) {
+		pushSelectionTargets(targets, workflows, home, workflows === shared);
+	} else if (!includeProcessSelections || !process.env.ATOMIC_WORKFLOW_JOURNAL_PATH) {
+		const journal = Array.isArray(effective.workflows) ? undefined : effective.workflows?.journal;
+		pushSettingsTargets(
+			targets,
+			{ workflows: effective.workflows, storage: journal === undefined ? effective.storage : undefined },
+			home,
+		);
+	}
 	return [...targets];
 }
 
@@ -454,11 +482,13 @@ function canClaimParentStore(parent: string, agentPath: string, defaultAgent: st
 			const siblingPath = join(parent, name);
 			if (!(entry.isDirectory() || (entry.isSymbolicLink() && isDirectory(siblingPath)))) continue;
 			if (sameDirectory(siblingPath, agentPath)) continue;
+			const siblingDecision = readStorageHomeDecision(storageHomeDecisionFile(siblingPath));
+			if (siblingDecision !== undefined && siblingDecision.parentOwner === undefined) continue;
 			const siblingTier = agentDirectoryPriorUseTier(siblingPath);
 			if (name === "workflows" && siblingTier < 2) continue;
 			if (
 				siblingTier > selfTier &&
-				!hasOwnStoreEntries(siblingPath, parent, configuredRelativeTargets(siblingPath, rawHome))
+				!hasOwnStoreEntries(siblingPath, parent, configuredRelativeTargets(siblingPath, rawHome, undefined, false))
 			) {
 				return false;
 			}
@@ -477,6 +507,77 @@ function recordSettledStorageHome(fastKey: string, cacheKey: string, settled: Se
 	settledStorageHomes.set(cacheKey, settled);
 	fastStorageHomes.set(fastKey, settled);
 	return settled;
+}
+
+interface StorageHomeDecision {
+	readonly home: string;
+	readonly parentOwner?: string;
+	readonly targets?: readonly string[];
+}
+
+function canonicalPath(path: string): string {
+	try {
+		return realpathSync.native(path);
+	} catch {
+		const parent = dirname(path);
+		return parent === path ? path : join(canonicalPath(parent), relative(parent, path));
+	}
+}
+
+function storageHomeDecisionFile(agentPath: string): string {
+	const canonical = canonicalPath(agentPath);
+	const key = createHash("sha256").update(getPathComparisonKey(canonical)).digest("hex");
+	return join(dirname(canonical), `.atomic-storage-home-${key}`);
+}
+
+function readStorageHomeDecision(file: string): StorageHomeDecision | undefined {
+	const raw = readClaimFile(file);
+	if (raw === undefined) {
+		if (existsSync(file)) throw new Error(`Cannot read storage home decision at ${file}`);
+		return undefined;
+	}
+	const decision = JSON.parse(raw) as StorageHomeDecision;
+	if (
+		decision === null ||
+		typeof decision !== "object" ||
+		typeof decision.home !== "string" ||
+		!isAbsolute(decision.home) ||
+		(decision.parentOwner !== undefined &&
+			(typeof decision.parentOwner !== "string" || !isAbsolute(decision.parentOwner))) ||
+		(decision.targets !== undefined &&
+			(!Array.isArray(decision.targets) || decision.targets.some((target) => typeof target !== "string")))
+	) {
+		throw new Error(`Invalid storage home decision at ${file}`);
+	}
+	return decision;
+}
+
+function parentStorageOwner(parent: string): string | undefined {
+	return (
+		readClaimFile(join(parent, PARENT_CLAIM_FILE)) ?? readClaimFile(join(parent, "workflows", ADOPTION_CLAIM_FILE))
+	);
+}
+
+function applyStorageHomeDecision(decision: StorageHomeDecision, agentPath: string): SettledStorageHome {
+	if (decision.parentOwner === undefined) return createStorageHomeEntry(decision.home);
+	const workflows = join(decision.home, "workflows");
+	const claim = join(decision.home, PARENT_CLAIM_FILE);
+	const preferred = parentStorageOwner(decision.home) ?? decision.parentOwner;
+	claimFileAtomically(claim, `${preferred}\n`);
+	const winner = readClaimFile(claim);
+	if (winner === undefined) throw new Error(`Cannot claim storage home at ${claim}`);
+	if (isDirectory(workflows) || !pathsEqual(canonicalPath(workflows), canonicalPath(agentPath))) {
+		mkdirSync(workflows, { recursive: true });
+		const legacyClaim = join(workflows, ADOPTION_CLAIM_FILE);
+		claimFileAtomically(legacyClaim, `${winner}\n`);
+		const legacyOwner = readClaimFile(legacyClaim);
+		if (legacyOwner === undefined || !sameDirectory(legacyOwner, winner)) {
+			throw new Error(`Conflicting storage home ownership at ${legacyClaim}`);
+		}
+	}
+	return sameDirectory(winner, agentPath)
+		? createStorageHomeEntry(decision.home, claim)
+		: createStorageHomeEntry(agentPath);
 }
 
 function resolveStorageHomeEntry(agentDir?: string, settings?: StorageHomeSettings): SettledStorageHome {
@@ -508,26 +609,9 @@ function resolveStorageHomeEntry(agentDir?: string, settings?: StorageHomeSettin
 	const defaultAgent = join(defaultHome, "agent");
 	const cacheKey = `${getPathComparisonKey(defaultHome)}\0${getPathComparisonKey(agentPath)}`;
 	const cached = settledStorageHomes.get(cacheKey);
-	if (cached !== undefined) {
-		if (!cached.provisionalWithoutSettings || settings === undefined) {
-			fastStorageHomes.set(fastKey, cached);
-			return cached;
-		}
-		const settingsTargets = new Set<string>();
-		pushSettingsTargets(settingsTargets, settings, rawHome);
-		if (settingsTargets.size === 0) {
-			const finalized = createStorageHomeEntry(cached.home, cached.adoptedClaim, false);
-			return recordSettledStorageHome(fastKey, cacheKey, finalized);
-		}
-		const targetList = [...settingsTargets];
-		const parent = dirname(agentPath);
-		if (
-			hasOwnTargetEntries(agentPath, parent, targetList) ||
-			!hasRelativeTargetEntries(parent, agentPath, targetList, true)
-		) {
-			const finalized = createStorageHomeEntry(cached.home, cached.adoptedClaim, false);
-			return recordSettledStorageHome(fastKey, cacheKey, finalized);
-		}
+	if (cached !== undefined && (!cached.provisionalWithoutSettings || settings === undefined)) {
+		fastStorageHomes.set(fastKey, cached);
+		return cached;
 	}
 
 	if (sameDirectory(agentPath, defaultAgent)) {
@@ -540,56 +624,43 @@ function resolveStorageHomeEntry(agentDir?: string, settings?: StorageHomeSettin
 		return recordSettledStorageHome(fastKey, cacheKey, createStorageHomeEntry(agentPath));
 	}
 
-	const relativeTargets = configuredRelativeTargets(agentPath, rawHome, settings);
-	if (hasOwnStoreEntries(agentPath, parent, relativeTargets)) {
-		return recordSettledStorageHome(fastKey, cacheKey, createStorageHomeEntry(agentPath));
+	const decisionFile = storageHomeDecisionFile(agentPath);
+	const existingDecision = readStorageHomeDecision(decisionFile);
+	if (existingDecision !== undefined) {
+		return recordSettledStorageHome(fastKey, cacheKey, applyStorageHomeDecision(existingDecision, agentPath));
 	}
-
+	const relativeTargets = configuredRelativeTargets(agentPath, rawHome, settings);
 	const parentWorkflows = join(parent, "workflows");
-	const parentWorkflowsIsDir = isDirectory(parentWorkflows);
-	const claim = join(parentWorkflows, ADOPTION_CLAIM_FILE);
-	if (parentWorkflowsIsDir) {
-		const existingOwner = readClaimFile(claim);
+	const existingOwner = parentStorageOwner(parent);
+	let decision: StorageHomeDecision = { home: agentPath };
+	if (!hasOwnStoreEntries(agentPath, parent, relativeTargets)) {
 		if (existingOwner !== undefined) {
-			return recordSettledStorageHome(
-				fastKey,
-				cacheKey,
-				sameDirectory(existingOwner, agentPath)
-					? createStorageHomeEntry(parent, claim)
-					: createStorageHomeEntry(agentPath),
-			);
+			if (sameDirectory(existingOwner, agentPath)) decision = { home: parent, parentOwner: existingOwner };
+		} else if (hasParentStoreEntries(parent, agentPath, relativeTargets)) {
+			const hostIdOwner = readClaimFile(join(parentWorkflows, "pool", "host-id.adopted-by"));
+			const validHostIdOwner =
+				hostIdOwner !== undefined &&
+				isDirectory(hostIdOwner) &&
+				!hasOwnStoreEntries(hostIdOwner, dirname(hostIdOwner), configuredRelativeTargets(hostIdOwner, rawHome))
+					? hostIdOwner
+					: undefined;
+			if (validHostIdOwner !== undefined || canClaimParentStore(parent, agentPath, defaultAgent, rawHome)) {
+				decision = { home: parent, parentOwner: validHostIdOwner ?? resolve(agentPath) };
+			}
 		}
 	}
-
-	if (!hasParentStoreEntries(parent, agentPath, relativeTargets)) {
-		return recordSettledStorageHome(
-			fastKey,
-			cacheKey,
-			createStorageHomeEntry(agentPath, undefined, settings === undefined),
-		);
+	if (settings === undefined) {
+		const provisionalHome =
+			decision.parentOwner === undefined || sameDirectory(decision.parentOwner, agentPath)
+				? decision.home
+				: agentPath;
+		return recordSettledStorageHome(fastKey, cacheKey, createStorageHomeEntry(provisionalHome, undefined, true));
 	}
-
-	const hostIdOwner = parentWorkflowsIsDir
-		? readClaimFile(join(parentWorkflows, "pool", "host-id.adopted-by"))
-		: undefined;
-	const validHostIdOwner =
-		hostIdOwner !== undefined &&
-		isDirectory(hostIdOwner) &&
-		!hasOwnStoreEntries(hostIdOwner, dirname(hostIdOwner), configuredRelativeTargets(hostIdOwner, rawHome))
-			? hostIdOwner
-			: undefined;
-	if (validHostIdOwner === undefined && !canClaimParentStore(parent, agentPath, defaultAgent, rawHome)) {
-		return recordSettledStorageHome(fastKey, cacheKey, createStorageHomeEntry(agentPath));
-	}
-	const preferredOwner = validHostIdOwner ?? resolve(agentPath);
-
-	if (!parentWorkflowsIsDir) mkdirSync(parentWorkflows, { recursive: true });
-	claimFileAtomically(claim, `${preferredOwner}\n`);
-	const winner = readClaimFile(claim);
-	if (winner !== undefined && sameDirectory(winner, agentPath)) {
-		return recordSettledStorageHome(fastKey, cacheKey, createStorageHomeEntry(parent, claim));
-	}
-	return recordSettledStorageHome(fastKey, cacheKey, createStorageHomeEntry(agentPath));
+	mkdirSync(dirname(decisionFile), { recursive: true });
+	claimFileAtomically(decisionFile, `${JSON.stringify({ ...decision, targets: relativeTargets })}\n`);
+	const winner = readStorageHomeDecision(decisionFile);
+	if (winner === undefined) throw new Error(`Cannot settle storage home at ${decisionFile}`);
+	return recordSettledStorageHome(fastKey, cacheKey, applyStorageHomeDecision(winner, agentPath));
 }
 
 export function coLocatesWorkflowStore(agentDir: string, settings?: StorageHomeSettings): boolean {
@@ -603,16 +674,20 @@ export function coLocatesWorkflowStore(agentDir: string, settings?: StorageHomeS
 		return pathsEqual(cached.home, agentPath);
 	}
 	if (sameDirectory(agentPath, defaultAgent)) return false;
+	const decision = readStorageHomeDecision(storageHomeDecisionFile(agentPath));
+	if (decision !== undefined) {
+		if (decision.parentOwner === undefined) return sameDirectory(decision.home, agentPath);
+		const owner = parentStorageOwner(decision.home);
+		return !sameDirectory(owner ?? decision.parentOwner, agentPath);
+	}
 	const parent = dirname(agentPath);
 	if (pathsEqual(parent, agentPath) || sameDirectory(parent, defaultHome)) return true;
 	const relativeTargets = configuredRelativeTargets(agentPath, rawHome, settings);
 	if (hasOwnStoreEntries(agentPath, parent, relativeTargets)) return true;
 	const parentWorkflows = join(parent, "workflows");
 	const parentWorkflowsIsDir = isDirectory(parentWorkflows);
-	if (parentWorkflowsIsDir) {
-		const existingOwner = readClaimFile(join(parentWorkflows, ADOPTION_CLAIM_FILE));
-		if (existingOwner !== undefined) return !sameDirectory(existingOwner, agentPath);
-	}
+	const existingOwner = parentStorageOwner(parent);
+	if (existingOwner !== undefined) return !sameDirectory(existingOwner, agentPath);
 	if (!hasParentStoreEntries(parent, agentPath, relativeTargets)) return true;
 	const hostIdOwner = parentWorkflowsIsDir
 		? readClaimFile(join(parentWorkflows, "pool", "host-id.adopted-by"))
@@ -631,19 +706,95 @@ export function storageHomeDir(agentDir?: string, settings?: StorageHomeSettings
 	return resolveStorageHomeEntry(agentDir, settings).home;
 }
 
+function containsPath(directory: string, target: string): boolean {
+	const inside = relative(directory, target);
+	return inside !== ".." && !inside.startsWith(`..${sep}`) && !isAbsolute(inside);
+}
+
+function targetClaimFiles(agentPath: string, target: string): readonly string[] {
+	const identities = [getPathComparisonKey(canonicalPath(target))];
+	try {
+		const stat = statSync(target, { bigint: true });
+		if (stat.ino !== 0n) identities.push(`file:${stat.dev}:${stat.ino}:${stat.birthtimeNs}`);
+	} catch {}
+	return identities.map((identity) => {
+		const key = createHash("sha256").update(identity).digest("hex");
+		return join(canonicalPath(dirname(agentPath)), `.atomic-storage-target-${key}`);
+	});
+}
+
+function preferredTargetOwner(agentPath: string, target: string): string {
+	const parent = dirname(agentPath);
+	const physical = canonicalPath(target);
+	const parentOwner = parentStorageOwner(parent);
+	if (parentOwner !== undefined && !sameDirectory(parentOwner, agentPath)) {
+		if (
+			containsPath(canonicalPath(join(parent, "workflows")), physical) ||
+			pathsEqual(canonicalPath(join(parent, "storage.sqlite")), physical)
+		)
+			return parentOwner;
+		const decision = readStorageHomeDecision(storageHomeDecisionFile(parentOwner));
+		const targets = decision?.targets ?? configuredRelativeTargets(parentOwner, getHomeDir(), undefined, false);
+		if (targets.some((entry) => pathsEqual(canonicalPath(resolve(parent, entry)), physical))) return parentOwner;
+	}
+	const physicalParent = canonicalPath(parent);
+	const segment = relative(physicalParent, physical).split(sep)[0];
+	if (segment !== undefined && segment !== "" && segment !== "..") {
+		const sibling = join(physicalParent, segment);
+		if (
+			!sameDirectory(sibling, agentPath) &&
+			!pathsEqual(sibling, physical) &&
+			agentDirectoryPriorUseTier(sibling) === 2
+		)
+			return sibling;
+	}
+	return canonicalPath(agentPath);
+}
+
 export function storagePathBaseDir(path: string, agentDir: string, settings?: StorageHomeSettings): string {
 	const home = storageHomeDir(agentDir, settings);
 	const target = normalizeRelativeTarget(path, getHomeDir());
 	if (target === undefined) return home;
 	const agentPath = normalizeAgentDirPath(agentDir);
 	const parent = dirname(agentPath);
-	if (pathsEqual(home, parent) || existsSync(resolve(home, target))) return home;
-	const legacy = resolve(parent, target);
-	try {
-		const inside = relative(realpathSync.native(agentPath), realpathSync.native(legacy));
-		if (inside !== "" && inside !== ".." && !inside.startsWith(`..${sep}`) && !isAbsolute(inside)) return parent;
-	} catch {}
-	return home;
+	const key = createHash("sha256")
+		.update(getPathComparisonKey(resolve(canonicalPath(agentPath), target)))
+		.digest("hex");
+	const decisionFile = `${storageHomeDecisionFile(agentPath)}.target-${key}`;
+	let decision = readStorageHomeDecision(decisionFile);
+	if (decision === undefined) {
+		const base =
+			pathsEqual(home, parent) || existsSync(resolve(home, target)) || !existsSync(resolve(parent, target))
+				? home
+				: parent;
+		const selected = resolve(base, target);
+		decision = containsPath(canonicalPath(agentPath), canonicalPath(selected))
+			? { home: base }
+			: { home: base, parentOwner: preferredTargetOwner(agentPath, selected) };
+		if (settings !== undefined) {
+			mkdirSync(dirname(decisionFile), { recursive: true });
+			claimFileAtomically(decisionFile, `${JSON.stringify(decision)}\n`);
+			decision = readStorageHomeDecision(decisionFile);
+			if (decision === undefined) throw new Error(`Cannot settle storage target at ${decisionFile}`);
+		}
+	}
+	if (decision.parentOwner === undefined) return decision.home;
+	const selected = resolve(decision.home, target);
+	for (const claim of targetClaimFiles(agentPath, selected)) {
+		if (settings !== undefined) {
+			mkdirSync(dirname(claim), { recursive: true });
+			claimFileAtomically(claim, `${decision.parentOwner}\n`);
+		}
+		const owner = readClaimFile(claim) ?? (settings === undefined ? decision.parentOwner : undefined);
+		if (owner === undefined) throw new Error(`Cannot claim storage target at ${claim}`);
+		if (sameDirectory(owner, agentPath)) continue;
+		const fallback = resolve(agentPath, target);
+		if (pathsEqual(canonicalPath(fallback), canonicalPath(selected)) || isSameFile(fallback, selected)) {
+			throw new Error(`Relative storage target ${path} is owned by another agent directory`);
+		}
+		return agentPath;
+	}
+	return decision.home;
 }
 
 export function workflowsStorageDir(agentDir?: string, settings?: StorageHomeSettings): string {
@@ -668,7 +819,11 @@ export function takeStorageAdoptionNotice(agentDir?: string, settings?: StorageH
 	const entry = resolveStorageHomeEntry(targetAgentDir, settings);
 	if (entry.adoptedClaim === undefined) return undefined;
 	const noticeFile = `${entry.adoptedClaim}${ADOPTION_NOTICE_SUFFIX}`;
-	if (existsSync(noticeFile)) return undefined;
+	if (
+		existsSync(noticeFile) ||
+		existsSync(join(entry.workflowsDir, `${ADOPTION_CLAIM_FILE}${ADOPTION_NOTICE_SUFFIX}`))
+	)
+		return undefined;
 	if (!claimFileAtomically(noticeFile, `${resolve(targetAgentDir)}\n`)) return undefined;
 	return `Adopted existing storage at ${entry.workflowsDir} for agent directory ${resolve(targetAgentDir)}. Sibling agent directories use their own <agentDir>/workflows store.`;
 }
