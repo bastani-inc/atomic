@@ -127,7 +127,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 				keyLabel: () => followIndicatorKeyLabel(opts.keybindings),
 				newCount: () => this.newMessages.count,
 			}),
-			newMessages: this.newMessages,
+			observeFollowing: (following) => this.newMessages.observe(following, this.transcript.length),
 			pinnedPrompt: pinnedPromptLine,
 			requestRender: () => this.requestRender?.(),
 			onNearTop: () => opts.onNearTop?.(),

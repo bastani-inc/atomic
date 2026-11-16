@@ -152,7 +152,9 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 
 	/** Earlier history, shown above every entry while a reader scrolled away from the end keeps their place. */
 	prependMessages(messages: readonly AgentSnapshotMessage[]): void {
+		const previousCount = this.state.transcript.length;
 		this.state.liveChat.prependMessages(messages);
+		this.state.newMessages.historyPrepended(this.state.transcript.length - previousCount);
 		this.state.requestRender?.();
 	}
 

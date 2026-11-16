@@ -147,6 +147,50 @@ test("the jump-to-latest row names the host's own bottom key, or the global one 
 	}
 });
 
+test("a scrolled chat counts new transcript entries instead of status components (#5243)", () => {
+	initTheme("dark");
+	const host = new ChatSessionHost(hostOptions());
+	try {
+		host.replaceMessages(longConversation);
+		host.renderBody(80, 10);
+		host.handleInput(PAGE_UP);
+		assert.match(text(host.renderBody(80, 10).slice(-1)), /jump to bottom/);
+		host.showWarning("A temporary status");
+		assert.match(text(host.renderBody(80, 10).slice(-1)), /jump to bottom/);
+		host.appendMessages([{ role: "user", content: "NEW-ARRIVAL", timestamp: 100 }]);
+		assert.match(text(host.renderBody(80, 10).slice(-1)), /1 new message ·/);
+		host.handleInput("\x1b[1;5F");
+		host.renderBody(80, 10);
+		host.handleInput(PAGE_UP);
+		assert.match(text(host.renderBody(80, 10).slice(-1)), /jump to bottom/);
+	} finally {
+		host.dispose();
+	}
+});
+
+test("loading earlier history preserves only actual unread arrivals (#5243)", () => {
+	initTheme("dark");
+	const host = new ChatSessionHost(hostOptions());
+	try {
+		host.replaceMessages(longConversation);
+		host.renderBody(80, 10);
+		host.handleInput(PAGE_UP);
+		host.renderBody(80, 10);
+		host.prependMessages([{ role: "user", content: "EARLIER-HISTORY", timestamp: -1 }]);
+		assert.match(text(host.renderBody(80, 10).slice(-1)), /jump to bottom/);
+		host.appendMessages([{ role: "user", content: "NEW-ARRIVAL", timestamp: 100 }]);
+		assert.match(text(host.renderBody(80, 10).slice(-1)), /1 new message ·/);
+		host.prependMessages([{ role: "user", content: "EVEN-EARLIER-HISTORY", timestamp: -2 }]);
+		assert.match(text(host.renderBody(80, 10).slice(-1)), /1 new message ·/);
+		host.replaceMessages(longConversation);
+		assert.doesNotMatch(text(host.renderBody(80, 10)), /new message/);
+		host.handleInput(PAGE_UP);
+		assert.match(text(host.renderBody(80, 10).slice(-1)), /jump to bottom/);
+	} finally {
+		host.dispose();
+	}
+});
+
 test("an auto scrollbar hides again through the host's repaint hook (#4521)", () => {
 	vi.useFakeTimers();
 	initTheme("dark");

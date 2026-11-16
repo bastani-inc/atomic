@@ -285,6 +285,51 @@ test("an auto scrollbar needs content that overflows, and hidden mode never pain
 	assert.ok(overflowing.paint().every((line) => !GLYPH.test(line)));
 });
 
+test("a pinned prompt does not materialize earlier turns of a windowed transcript (#5243)", () => {
+	const rows = numbered(20_000);
+	rows[19_900] = "\x1b]133;A;atomic=user\x07current prompt";
+	let requestedRows = 0;
+	const view = new ScrollableComponentViewport(undefined, { pinnedPrompt: (row) => `PIN ${row}` });
+	const component = {
+		supportsRowWindow: true,
+		rowCount: () => rows.length,
+		renderRows: (_width: number, start: number, end: number) => {
+			requestedRows += end - start;
+			return rows.slice(start, end);
+		},
+		render: () => rows,
+		invalidate() {},
+	};
+	view.setComponents([component]);
+	view.setVisibleRows(10);
+	view.render(40);
+	view.scrollTo(19_950);
+	requestedRows = 0;
+	const frame = plain(view.render(40));
+	assert.equal(frame[0], "PIN current prompt");
+	assert.equal(frame[1], "row-19950");
+	assert.ok(requestedRows <= 100, `requested ${requestedRows} rows for a prompt 50 rows above the view`);
+});
+
+test("a pinned prompt finds its first nonblank line across scan windows (#5243)", () => {
+	const rows = numbered(200);
+	rows[50] = "\x1b]133;A;atomic=user\x07";
+	rows[51] = " ";
+	rows[52] = "\x1b[31m\x1b[0m";
+	rows[53] = "\x1b[31mwrapped prompt\x1b[0m";
+	const { view, paint } = viewport(rows, { pinnedPrompt: (row) => `PIN ${row}` });
+	view.scrollTo(119);
+	assert.equal(paint()[0], "PIN wrapped prompt");
+	view.scrollTo(53);
+	assert.equal(paint()[0], "wrapped prompt");
+	view.scrollTo(50);
+	assert.ok(!paint().some((row) => row.startsWith("PIN")));
+	rows[100] = "\x1b]133;A;atomic=user\x07";
+	rows[101] = "next prompt";
+	view.scrollTo(119);
+	assert.equal(paint()[0], "PIN next prompt");
+});
+
 test("a scrolled-up transcript pins its turn's prompt in a row of its own, and only while scrolled up (#5224)", () => {
 	const USER_MARK = "\x1b]133;A;atomic=user\x07";
 	// An answer is a zone too (`PROMPT_MARK`); only a user prompt is pinned.

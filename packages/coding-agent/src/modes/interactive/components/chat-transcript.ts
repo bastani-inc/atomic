@@ -6,12 +6,12 @@ import {
 	matchesKey,
 	type ScrollViewScrollbar,
 	Spacer,
+	stripTerminalSequences,
 	truncateToWidth,
-	turnPromptAbove,
 	visibleWidth,
 	type WheelScrollLines,
 } from "@bastani/atomic-tui";
-import { isUserPromptRow, type NewMessageCounter } from "./jump-to-latest.ts";
+import { isUserPromptRow } from "./jump-to-latest.ts";
 import { WheelScrollAccelerator } from "./wheel-scroll-accelerator.ts";
 
 /**
@@ -275,6 +275,7 @@ const OSC133_PROMPT_START = /^\x1b\]133;A(?:;[^\x07\x1b]*)?(?:\x07|\x1b\\)/;
 const SCROLLBAR_THUMB = "┃";
 const SCROLLBAR_TRACK = "│";
 const SCROLLBAR_CELL_RESET = "\x1b[0m\x1b]8;;\x07";
+const PINNED_PROMPT_SCAN_ROWS = 64;
 
 /** Settings and hooks of a {@link ScrollableComponentViewport}; every member is optional. */
 export interface ScrollableComponentViewportOptions {
@@ -286,8 +287,7 @@ export interface ScrollableComponentViewportOptions {
 	readonly followIndicator?: Pick<Component, "render">;
 	/** Styles the pinned prompt row shown at the top while scrolled up; without it nothing is pinned. */
 	readonly pinnedPrompt?: (promptRow: string) => string;
-	/** Told on every frame whether the reader follows the live end and how many items the transcript holds. */
-	readonly newMessages?: Pick<NewMessageCounter, "observe">;
+	readonly observeFollowing?: (following: boolean) => void;
 	/** Asked to repaint when an `"auto"` scrollbar hides. */
 	readonly requestRender?: () => void;
 	/** Called after a render whose first row lies within one viewport of the top. */
@@ -536,7 +536,7 @@ export class ScrollableComponentViewport implements Component {
 		this.maxScroll = maxScroll;
 		this.clampScroll();
 
-		this.options.newMessages?.observe(this.scrollFromBottom === 0, componentRows.length);
+		this.options.observeFollowing?.(this.scrollFromBottom === 0);
 		const start = Math.max(0, maxScroll - this.scrollFromBottom);
 		const indicator =
 			this.scrollFromBottom > 0 && this.visibleRows > 1
@@ -704,9 +704,21 @@ export class ScrollableComponentViewport implements Component {
 	private pinnedPromptRow(componentRows: ComponentRows[], width: number, start: number): string | undefined {
 		const style = this.options.pinnedPrompt;
 		if (!style) return undefined;
-		const rows = this.renderVisibleRows(componentRows, width, 0, start + 1);
-		const text = turnPromptAbove(rows, start, isUserPromptRow);
-		return text === undefined ? undefined : style(withoutTerminalControl(text));
+		let promptText: string | undefined;
+		for (let end = start + 1; end > 0; ) {
+			const begin = Math.max(0, end - PINNED_PROMPT_SCAN_ROWS);
+			const rows = this.renderVisibleRows(componentRows, width, begin, end);
+			for (let index = rows.length - 1; index >= 0; index--) {
+				const row = rows[index] ?? "";
+				if (begin + index < start) {
+					const text = stripTerminalSequences(row);
+					if (text.trim()) promptText = text;
+				}
+				if (isUserPromptRow(row)) return promptText === undefined ? undefined : style(promptText);
+			}
+			end = begin;
+		}
+		return undefined;
 	}
 
 	/** Parks the nearest semantic prompt (an OSC 133 `A` mark) above or below the first visible row at the top. */

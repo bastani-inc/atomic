@@ -15,6 +15,11 @@ export class NewMessageCounter {
 		if (following || this.baseline === undefined || count < this.baseline) this.baseline = count;
 	}
 
+	historyPrepended(count: number): void {
+		this.latest += count;
+		if (this.baseline !== undefined) this.baseline += count;
+	}
+
 	/** Messages that arrived since the reader stopped following; 0 while they follow. */
 	get count(): number {
 		return this.baseline === undefined ? 0 : Math.max(0, this.latest - this.baseline);

@@ -9,6 +9,7 @@ import {
 	taskCompletionNotice,
 } from "../../packages/coding-agent/src/core/tasks/completion.js";
 import { TaskList } from "../../packages/coding-agent/src/modes/interactive/components/task-list.js";
+import { WorkingRunMeter } from "../../packages/coding-agent/src/modes/interactive/components/working-run-meter.js";
 import {
 	disposeInteractiveTasks,
 	refreshInteractiveTasks,
@@ -328,6 +329,7 @@ test("main lifecycle handler filters the full completion envelope before compone
 	const mode = {
 		session: harness.session,
 		chatContainer: new Container(),
+		workingRunMeter: new WorkingRunMeter(),
 		toolOutputExpanded: false,
 		ui: { requestRender() {} },
 		isInitialized: true,
