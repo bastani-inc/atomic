@@ -120,6 +120,7 @@ type PageRow = FetchRow & { ord: number | bigint };
  * when they do not, so large rows are not fetched far past the page.
  */
 export const SESSION_READ_FETCH = { first: 1024, min: 1, max: 8192 } as const;
+const SESSION_READ_INLINE_BYTES = 4096;
 
 function nextFetch(limit: number, rows: readonly FetchRow[]): { readonly more: boolean; readonly limit: number } {
 	const kept = rows.length;
@@ -933,22 +934,35 @@ export class SqlSessionStore implements SessionStore {
 		for (let after = 0, limit: number = SESSION_READ_FETCH.first; ; ) {
 			const rows = await tx.all<SqliteRow & FetchRow & { seq: number; entry_json: string; chunks: number }>(
 				`WITH sized AS MATERIALIZED (
-					SELECT seq, length(entry_json) AS size FROM ${this.tables.entries}
-					WHERE session_id = ? AND seq > ? ORDER BY seq LIMIT ?
-				) SELECT e.seq, e.entry_json, e.chunks, page.fetched, page.page_chars, page.next_size FROM (
-					SELECT seq, count(*) OVER () AS fetched,
-						row_number() OVER (ORDER BY seq) AS page_row,
-						lead(size) OVER (ORDER BY seq) AS next_size,
-						sum(size) OVER (ORDER BY seq) AS page_chars
-					FROM sized
-				) AS page JOIN ${this.tables.entries} AS e ON e.session_id = ? AND e.seq = page.seq
-				WHERE (page.page_chars <= ? OR page.page_row = 1) AND page.page_row <= ? ORDER BY page.seq`,
+					SELECT seq, chunks, length(entry_json) AS size,
+						CASE WHEN octet_length(entry_json) <= ? THEN entry_json END AS inline_json
+					FROM ${this.tables.entries} WHERE session_id = ? AND seq > ? ORDER BY seq LIMIT ?
+				), batch AS MATERIALIZED (
+					SELECT count(*) AS fetched, COALESCE(sum(size), 0) AS chars FROM sized
+				), page AS (
+					SELECT seq, chunks, inline_json, fetched, 0 AS page_chars, NULL AS next_size
+					FROM (SELECT seq, chunks, inline_json FROM sized ORDER BY seq LIMIT ?) AS fitting CROSS JOIN batch
+					WHERE batch.chars <= ?
+					UNION ALL
+					SELECT seq, chunks, inline_json, fetched, page_chars, next_size FROM (
+						SELECT seq, chunks, inline_json, batch.fetched, row_number() OVER (ORDER BY seq) AS page_row,
+							lead(size) OVER (ORDER BY seq) AS next_size,
+							sum(size) OVER (ORDER BY seq) AS page_chars
+						FROM sized CROSS JOIN batch WHERE batch.chars > ?
+					) AS windowed WHERE (page_chars <= ? OR page_row = 1) AND page_row <= ?
+				) SELECT seq, COALESCE(inline_json, (
+					SELECT e.entry_json FROM ${this.tables.entries} AS e WHERE e.session_id = ? AND e.seq = page.seq
+				)) AS entry_json, chunks, fetched, page_chars, next_size FROM page ORDER BY seq`,
+				SESSION_READ_INLINE_BYTES,
 				sessionId,
 				after,
 				limit + 1,
-				sessionId,
+				limit,
+				SESSION_READ_PAGE_CHARS,
+				SESSION_READ_PAGE_CHARS,
 				SESSION_READ_PAGE_CHARS,
 				limit,
+				sessionId,
 			);
 			for (const entry of rows) {
 				const chunks = Number(entry.chunks);
