@@ -98,6 +98,72 @@ test("graph action resource failures always resolve to an error result (#5234)",
 	}
 });
 
+test("graph retry, fork and forkTarget await ensureWorkflowResourcesLoaded before reading runtime and warn on discovery failure (#5234)", async () => {
+	const order: string[] = [];
+	const warnings: Array<{ message: string; type?: string }> = [];
+	let releaseLoad!: () => void;
+	const loadGate = new Promise<void>((resolve) => {
+		releaseLoad = resolve;
+	});
+	let loaded = false;
+	const actions = createGraphStageActions({
+		owner: captureWorkflowOwnerResources(),
+		ensureWorkflowResourcesLoaded: async () => {
+			order.push("ensure:start");
+			await loadGate;
+			loaded = true;
+			order.push("ensure:end");
+		},
+		runtime: () => {
+			order.push(`runtime:${loaded}`);
+			return loaded
+				? ({
+						resumeFailedRun: async () => ({ ok: true as const, runId: "run-1", message: "resumed" }),
+					} as never)
+				: undefined;
+		},
+		context: () => ({
+			hasUI: true,
+			ui: {
+				notify: (message, type) => {
+					warnings.push({ message, type });
+				},
+			},
+		}),
+	});
+	const pendingRetry = actions.retry!("run-1", "stage-1");
+	await settle();
+	assert.deepEqual(order, ["ensure:start"]);
+	releaseLoad();
+	const retryResult = await pendingRetry;
+	assert.deepEqual(retryResult, { ok: true, runId: "run-1", message: "resumed" });
+	assert.deepEqual(order, ["ensure:start", "ensure:end", "runtime:true"]);
+
+	const failingActions = createGraphStageActions({
+		owner: captureWorkflowOwnerResources(),
+		ensureWorkflowResourcesLoaded: async () => {
+			throw new Error("broken workflow file");
+		},
+		runtime: () => undefined,
+		context: () => ({
+			hasUI: true,
+			ui: {
+				notify: (message, type) => {
+					warnings.push({ message, type });
+				},
+			},
+		}),
+	});
+	const forkOutcome = await failingActions.fork!("run-1", "stage-1");
+	const targetOutcome = await failingActions.forkTarget!("run-1", "stage-1");
+	assert.equal(forkOutcome.ok, false);
+	assert.equal(targetOutcome.ok, false);
+	assert.equal(warnings.length, 2);
+	assert.equal(warnings[0]?.type, "warning");
+	assert.match(warnings[0]?.message ?? "", /broken workflow file/);
+	assert.equal(warnings[1]?.type, "warning");
+});
+
 test.each([
 	{ name: "null prototype", error: () => Object.create(null) },
 	{

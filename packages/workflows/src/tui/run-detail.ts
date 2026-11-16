@@ -82,7 +82,7 @@ function renderPlain(
 	out.push(...renderIdentifierRows(detail.runId, width - 2));
 	out.push("");
 
-	for (const [k, v] of summaryRows(detail, now)) {
+	for (const [k, v] of summaryRows(detail, now, width)) {
 		if (v === undefined) continue;
 		const value = truncateToWidth(v, Math.max(1, width - 4 - KEY_COL), "…");
 		out.push(` ${pad(k, KEY_COL)}${value} `);
@@ -115,7 +115,7 @@ function renderPlain(
 		out.push("");
 	}
 
-	const artifactRows = artifactRowsFor(detail);
+	const artifactRows = artifactRowsFor(detail, width);
 	if (artifactRows.length > 0) {
 		out.push(" ARTIFACTS ");
 		for (const [k, v] of artifactRows) {
@@ -127,7 +127,7 @@ function renderPlain(
 	out.push(...renderDetailHintRows(detail, width - 2));
 
 	return renderRoundedBox({
-		title: `RUN ${detail.name}  ${stateBadge}`,
+		title: `RUN ${boundedToolTitleText(detail.name, width * 4)}  ${stateBadge}`,
 		bodyLines: out,
 		width,
 	});
@@ -155,7 +155,7 @@ function renderThemed(
 
 	const badges = stateBadges(detail, theme);
 
-	for (const [k, v] of summaryRows(detail, now)) {
+	for (const [k, v] of summaryRows(detail, now, width)) {
 		if (v === undefined) continue;
 		const value = truncateToWidth(v, Math.max(1, width - 4 - KEY_COL), "…");
 		out.push(` ${muted}${pad(k, KEY_COL)}${RESET}${text}${value}${RESET} `);
@@ -189,7 +189,7 @@ function renderThemed(
 		out.push("");
 	}
 
-	const artifactRows = artifactRowsFor(detail);
+	const artifactRows = artifactRowsFor(detail, width);
 	if (artifactRows.length > 0) {
 		out.push(` ${muted}${BOLD}ARTIFACTS${RESET} `);
 		for (const [k, v] of artifactRows) {
@@ -204,7 +204,7 @@ function renderThemed(
 
 	const badgeText = badges.length > 0 ? `  ${badges.map((b) => b.text).join("  ")}` : "";
 	return renderRoundedBox({
-		title: `RUN ${detail.name}${badgeText}`,
+		title: `RUN ${boundedToolTitleText(detail.name, width * 4)}${badgeText}`,
 		bodyLines: out,
 		accent: theme.accent,
 		theme,
@@ -216,11 +216,12 @@ function renderThemed(
 // Shared row builders
 // ---------------------------------------------------------------------------
 
-function summaryRows(detail: RunDetail, now: number): Array<[string, string | undefined]> {
+function summaryRows(detail: RunDetail, now: number, width: number): Array<[string, string | undefined]> {
 	const duration = elapsedRunMs(detail, now);
+	const limit = width * 4;
 
 	const rows: Array<[string, string | undefined]> = [
-		["workflow", detail.name],
+		["workflow", boundedToolTitleText(detail.name, limit)],
 		["state", statePlain(detail)],
 		["mode", detail.mode === "chain" ? `chain · ${detail.stages.length} stages` : "single"],
 		["started", formatTime(detail.startedAt)],
@@ -228,13 +229,15 @@ function summaryRows(detail: RunDetail, now: number): Array<[string, string | un
 	if (detail.forkedFrom !== undefined)
 		rows.push([
 			"forked from",
-			`${detail.forkedFrom.runId}${detail.forkedFrom.stagePath === undefined ? "" : ` at ${detail.forkedFrom.stagePath}`}`,
+			`${detail.forkedFrom.runId}${detail.forkedFrom.stagePath === undefined ? "" : ` at ${boundedToolTitleText(detail.forkedFrom.stagePath, limit)}`}`,
 		]);
 	if (detail.phase !== undefined) rows.push(["phase", `${detail.phase} (${detail.phaseAgeMs ?? 0}ms)`]);
 	if (detail.lastProgressAt !== undefined) rows.push(["last progress", formatTime(detail.lastProgressAt)]);
-	if (detail.dependencyError !== undefined) rows.push(["dependency", detail.dependencyError]);
-	for (const notice of detail.worktreeRestore ?? []) rows.push(["checkout", notice]);
-	if (detail.intercomDeliveryIssue !== undefined) rows.push(["intercom", detail.intercomDeliveryIssue]);
+	if (detail.dependencyError !== undefined)
+		rows.push(["dependency", boundedToolTitleText(detail.dependencyError, limit)]);
+	for (const notice of detail.worktreeRestore ?? []) rows.push(["checkout", boundedToolTitleText(notice, limit)]);
+	if (detail.intercomDeliveryIssue !== undefined)
+		rows.push(["intercom", boundedToolTitleText(detail.intercomDeliveryIssue, limit)]);
 	if (detail.controlPersistence !== undefined) {
 		rows.push(["control", `${detail.controlRequestedStatus} (${detail.controlPersistence})`]);
 	}
@@ -245,23 +248,27 @@ function summaryRows(detail: RunDetail, now: number): Array<[string, string | un
 		rows.push(["elapsed", fmtDuration(duration)]);
 	}
 	if (detail.exitReason) {
-		rows.push(["reason", detail.exitReason]);
+		rows.push(["reason", boundedToolTitleText(detail.exitReason, limit)]);
 	}
 	if (detail.error) {
-		rows.push(["error", detail.error.split("\n")[0] ?? ""]);
+		rows.push(["error", errorDisplayLine(detail.error, width)]);
 	}
-	if (detail.resumeGuidance) rows.push(["guidance", detail.resumeGuidance]);
+	if (detail.resumeGuidance) rows.push(["guidance", boundedToolTitleText(detail.resumeGuidance, limit)]);
 	const { predicted, unavailable } = describeStagePredictions(detail.stagePredictions);
-	rows.push(["predictions", predicted], ["predictions", unavailable]);
+	rows.push(
+		["predictions", predicted === undefined ? undefined : boundedToolTitleText(predicted, limit)],
+		["predictions", unavailable === undefined ? undefined : boundedToolTitleText(unavailable, limit)],
+	);
 	return rows;
 }
 
-function artifactRowsFor(detail: RunDetail): Array<[string, string]> {
+function artifactRowsFor(detail: RunDetail, width: number): Array<[string, string]> {
+	const limit = width * 4;
 	const rows: Array<[string, string]> = [];
 	if (detail.result !== undefined && Object.keys(detail.result).length > 0) {
-		rows.push(["result", JSON.stringify(detail.result)]);
+		rows.push(["result", boundedToolTitleText(JSON.stringify(detail.result), limit)]);
 	}
-	const inputKeys = Object.keys(detail.inputs);
+	const inputKeys = Object.keys(detail.inputs).map((key) => boundedToolTitleText(key, limit));
 	if (inputKeys.length > 0) {
 		rows.push(["inputs", inputKeys.join(", ")]);
 	}
@@ -469,13 +476,14 @@ function stageActivityString(stage: StageSnapshot, now: number): string | undefi
 	if (stage.status !== "running") return undefined;
 	const last = stage.toolEvents.at(-1);
 	if (!last) return undefined;
+	const name = boundedToolTitleText(last.name, STAGE_NAME_COL * 4);
 	if (last.endedAt !== undefined && last.startedAt !== undefined) {
-		return `${last.name} · ${fmtDuration(last.endedAt - last.startedAt)}`;
+		return `${name} · ${fmtDuration(last.endedAt - last.startedAt)}`;
 	}
 	if (last.startedAt !== undefined) {
-		return `${last.name} · ${fmtDuration(now - last.startedAt)}`;
+		return `${name} · ${fmtDuration(now - last.startedAt)}`;
 	}
-	return last.name;
+	return name;
 }
 
 // ---------------------------------------------------------------------------

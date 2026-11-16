@@ -82,7 +82,7 @@ export function registerWorkflowSlashCommand(
 		pi,
 		"workflows",
 		{
-			description: "Browse workflow runs and definitions. Usage: /workflows [run-id]",
+			description: "Open this session's workflow runs. Usage: /workflows [run-id]",
 			handler: async (args, ctx) => {
 				const owner = deps.owner ?? captureWorkflowOwnerResources();
 				const reporter = createWorkflowCommandReporter(ctx, workflowPolicyFromContext(ctx), pi);

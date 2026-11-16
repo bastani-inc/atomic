@@ -11,9 +11,9 @@ import {
 } from "../tui/workflows-empty-sheet.js";
 import type { PiCommandContext } from "./public-types.js";
 import type { PiCustomComponent, PiCustomOverlayFactoryTui, PiCustomOverlayFunction } from "./wiring.js";
-import type { WorkflowCommandReporter } from "./workflow-command-utils.js";
+import { tokenizeWorkflowArgs, type WorkflowCommandReporter } from "./workflow-command-utils.js";
 import { workflowPolicyFromContext } from "./workflow-policy.js";
-import { overlaySurfaceFromContext, resolveRunId } from "./workflow-targets.js";
+import { overlaySurfaceFromContext, resolveRunId, resolveStageTarget } from "./workflow-targets.js";
 
 export interface OpenWorkflowRunOptions {
 	readonly onReturn?: () => void;
@@ -53,7 +53,9 @@ export async function handleWorkflowsCommand(
 	const { store } = deps;
 	const theme = deriveGraphTheme({});
 	const interactive = workflowPolicyFromContext(ctx).allowInputPicker;
-	const target = args.trim();
+	const tokens = tokenizeWorkflowArgs(args);
+	const target = tokens[0] ?? "";
+	const stageTarget = tokens[1];
 	if (target.length > 0) {
 		const resolved = resolveRunId(target, store);
 		if (resolved.kind === "malformed" || resolved.kind === "ambiguous") return reporter.error(resolved.message);
@@ -61,8 +63,17 @@ export async function handleWorkflowsCommand(
 			return reporter.error(
 				`Run not found: ${target}\n\n${renderSessionList(store.runs(), { theme, includeAll: true })}`,
 			);
+		const resolvedStage = resolveStageTarget(resolved.runId, stageTarget, store);
+		if (!resolvedStage.ok) return reporter.error(resolvedStage.message);
 		if (!interactive) return reporter.info(renderSessionList(store.runs(), { theme, includeAll: true }));
-		openWorkflowRun(resolved.runId, ctx, deps);
+		openWorkflowRun(
+			resolved.runId,
+			ctx,
+			deps,
+			resolvedStage.stageId === undefined
+				? {}
+				: { stageId: resolvedStage.stageId, stageRunId: resolvedStage.runId ?? resolved.runId },
+		);
 		return;
 	}
 	const runs = topLevelWorkflowRuns(store.runs());

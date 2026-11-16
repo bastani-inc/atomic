@@ -6,6 +6,7 @@ import { pauseRun } from "../runs/background/status.js";
 import { unknownErrorMessage } from "../runs/foreground/executor-abort.js";
 import type { GraphStageActions } from "../tui/graph-view-types.js";
 import type { ExtensionRuntime } from "./runtime.js";
+import { formatWorkflowResourceLoadWarning } from "./workflow-command-surfaces.js";
 import type { WorkflowOwnerResources } from "./workflow-owner-resources.js";
 import { workflowPolicyFromContext } from "./workflow-policy.js";
 import { workflowForkAction } from "./workflow-tool-fork.js";
@@ -15,7 +16,15 @@ export interface GraphStageActionDeps {
 
 	readonly runtime: () => ExtensionRuntime | undefined;
 
-	readonly context: () => { readonly hasUI?: boolean; readonly hasHumanInput?: boolean } | undefined;
+	readonly context: () =>
+		| {
+				readonly hasUI?: boolean;
+				readonly hasHumanInput?: boolean;
+				readonly ui?: { readonly notify?: (message: string, type?: "info" | "warning" | "error") => void };
+		  }
+		| undefined;
+
+	readonly ensureWorkflowResourcesLoaded?: () => Promise<void> | void;
 }
 
 const PAUSE_REFUSALS: Record<string, string> = {
@@ -36,6 +45,13 @@ function failure(error: unknown): { readonly ok: false; readonly message: string
 
 export function createGraphStageActions(deps: GraphStageActionDeps): GraphStageActions {
 	const { owner } = deps;
+	const ensureWorkflowResourcesVisible = async (): Promise<void> => {
+		try {
+			await deps.ensureWorkflowResourcesLoaded?.();
+		} catch (error) {
+			deps.context()?.ui?.notify?.(formatWorkflowResourceLoadWarning(error), "warning");
+		}
+	};
 	return {
 		async stop(runId, stageId) {
 			try {
@@ -51,6 +67,7 @@ export function createGraphStageActions(deps: GraphStageActionDeps): GraphStageA
 		},
 		async retry(runId, stageId) {
 			try {
+				await ensureWorkflowResourcesVisible();
 				const runtime = deps.runtime();
 				if (runtime === undefined) return { ok: false, message: "Workflows are not ready in this session yet." };
 				const policy = workflowPolicyFromContext(deps.context());
@@ -64,6 +81,7 @@ export function createGraphStageActions(deps: GraphStageActionDeps): GraphStageA
 		},
 		async forkTarget(rootRunId, stageId) {
 			try {
+				await ensureWorkflowResourcesVisible();
 				const backend = availableStoreDurableBackend(owner.store, rootRunId);
 				if (backend === undefined) return { ok: false, message: "This run keeps no durable record to fork from." };
 				const target = await durableForkTarget(backend, rootRunId, stageId);
@@ -81,6 +99,7 @@ export function createGraphStageActions(deps: GraphStageActionDeps): GraphStageA
 		},
 		async fork(rootRunId, stageId) {
 			try {
+				await ensureWorkflowResourcesVisible();
 				const runtime = deps.runtime();
 				if (runtime === undefined) return { ok: false, message: "Workflows are not ready in this session yet." };
 				if (hasActiveLiveRun(owner.store, rootRunId)) {

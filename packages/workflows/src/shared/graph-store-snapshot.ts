@@ -322,8 +322,8 @@ export class GraphStoreSnapshotBuilder {
 		this.full = options.fullPayloads ?? false;
 	}
 
-	/** By run id; an unscoped change drops them all, so a removed run's payloads do not outlive it. */
 	private projected = new Map<string, ProjectedRun>();
+	private recheckSettledStages = false;
 	private readonly changedRuns = new Set<string>();
 	private readonly changedStages = new Map<string, Set<string>>();
 	private readonly changedToolNodes = new Map<string, Set<string>>();
@@ -331,6 +331,10 @@ export class GraphStoreSnapshotBuilder {
 	/** Records a store change; `change` scopes it to one run, or one stage or tool node of it. */
 	markChanged(change?: { readonly runId: string; readonly stageId?: string; readonly toolNodeId?: string }): void {
 		if (change === undefined) {
+			if (this.full) {
+				this.recheckSettledStages = true;
+				return;
+			}
 			this.projected.clear();
 			this.changedRuns.clear();
 			this.changedStages.clear();
@@ -345,6 +349,17 @@ export class GraphStoreSnapshotBuilder {
 		if (change.toolNodeId !== undefined) addScoped(this.changedToolNodes, change.runId, change.toolNodeId);
 	}
 
+	hasRun(run: RunSnapshot): boolean {
+		return this.projected.get(run.id)?.source === run;
+	}
+
+	removeRun(runId: string): void {
+		this.projected.delete(runId);
+		this.changedRuns.delete(runId);
+		this.changedStages.delete(runId);
+		this.changedToolNodes.delete(runId);
+	}
+
 	build(runs: readonly RunSnapshot[], notices: readonly WorkflowNotice[], version: number): StoreSnapshot {
 		const previous = this.projected;
 		const next = new Map<string, ProjectedRun>();
@@ -355,6 +370,7 @@ export class GraphStoreSnapshotBuilder {
 			compactRuns.push(projected.compact);
 		}
 		this.projected = next;
+		this.recheckSettledStages = false;
 		this.changedRuns.clear();
 		this.changedStages.clear();
 		this.changedToolNodes.clear();
@@ -426,7 +442,8 @@ export class GraphStoreSnapshotBuilder {
 				if (position !== undefined) changed.add(position);
 			}
 		}
-		for (const position of projected.unsettled)
+		const positions = this.recheckSettledStages ? sources.keys() : projected.unsettled;
+		for (const position of positions)
 			if (!changed.has(position) && !stageUnchanged(sources[position]!, projected.stages[position]!))
 				changed.add(position);
 		if (changed.size === 0 && run.stages.length === sources.length) return projected;

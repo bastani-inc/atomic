@@ -241,14 +241,16 @@ function pendingStageLabel(
 	if (stages.length === 0) return undefined;
 	const maxItems = Math.min(MAX_PENDING_WIDGET_ITEMS, stages.length);
 
+	const limit = Number.isFinite(width) ? Math.max(1, width * 4) : TOOL_PAYLOAD_VALUE_LIMIT;
 	for (let count = maxItems; count >= 1; count--) {
 		let combinations: string[][] = [[]];
 		for (const stage of stages.slice(0, count)) {
+			const stageName = boundedToolTitleText(stage.name, limit);
 			const exact =
 				stage.target === undefined
-					? `${stage.name} (${stage.stageId}) · unavailable`
-					: `${stage.name} (${stage.stageId}) → ${stage.target}`;
-			const variants = stage.target === undefined ? [exact] : [exact, `${stage.name} · stage ${stage.stageId}`];
+					? `${stageName} (${stage.stageId}) · unavailable`
+					: `${stageName} (${stage.stageId}) → ${stage.target}`;
+			const variants = stage.target === undefined ? [exact] : [exact, `${stageName} · stage ${stage.stageId}`];
 			combinations = combinations.flatMap((labels) => variants.map((variant) => [...labels, variant]));
 		}
 
@@ -343,9 +345,14 @@ function formatTitleBadges(badges: readonly FlatBandBadge[], theme: GraphTheme, 
 // Themed rendering (ANSI + Catppuccin)
 // ---------------------------------------------------------------------------
 
+function safeRunName(name: string, width: number): string {
+	const limit = Number.isFinite(width) ? Math.max(1, width * 4) : TOOL_PAYLOAD_VALUE_LIMIT;
+	return boundedToolTitleText(name, limit);
+}
+
 function runMetaWidth(run: RunSnapshot, width: number): number {
 	const inner = Math.max(2, Math.max(32, width) - 2);
-	return Math.max(0, inner - visibleWidth(`     ${run.name} · `));
+	return Math.max(0, inner - visibleWidth(`     ${safeRunName(run.name, width)} · `));
 }
 
 function themedRunLines(
@@ -364,7 +371,7 @@ function themedRunLines(
 	const metaColor = effectiveRunStatus(run) === "running" ? theme.textMuted : theme.dim;
 	return renderRunIdentityRows({
 		runId: run.id,
-		name: run.name,
+		name: safeRunName(run.name, width),
 		meta,
 		glyph: statusGlyph(run, allRuns),
 		glyphColor: statusFg(run, theme, allRuns),
@@ -384,7 +391,7 @@ function plainRunLines(
 		workflowBoundarySegments(allRuns, runId);
 	return renderRunIdentityRows({
 		runId: run.id,
-		name: run.name,
+		name: safeRunName(run.name, width),
 		meta: metaLine(run, expandGraph, now, runMetaWidth(run, width), resolveBoundarySegments),
 		glyph: statusGlyph(run, allRuns),
 	});
@@ -426,7 +433,7 @@ function awaitingRunLines(
 	const meta = metaLine(run, expandGraph, now, runMetaWidth(run, bodyWidth + 2), resolveBoundarySegments);
 	const identity = renderRunIdentityRows({
 		runId: run.id,
-		name: run.name,
+		name: safeRunName(run.name, bodyWidth + 2),
 		meta,
 		glyph: statusGlyph(run, allRuns),
 		...(theme

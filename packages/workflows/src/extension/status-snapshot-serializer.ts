@@ -1,73 +1,49 @@
-import { Worker } from "node:worker_threads";
-import type { StoreSnapshot } from "../shared/store-types.js";
+import type { RunSnapshot, StoreSnapshot } from "../shared/store-types.js";
 
-const SERIALIZE_SOURCE = `
-const { parentPort } = require("node:worker_threads");
-parentPort.on("message", (snapshot) => {
-	try {
-		parentPort.postMessage({ text: JSON.stringify(snapshot, null, 2) });
-	} catch (error) {
-		parentPort.postMessage({ error: error instanceof Error ? error.message : String(error) });
-	}
-});
-`;
+const COLD_SERIALIZE_CHUNK_SIZE = 25;
+const realSetTimeout = setTimeout;
 
-interface SerializeReply {
-	readonly text?: string;
-	readonly error?: string;
+function yieldToEventLoop(): Promise<void> {
+	return new Promise((resolve) => {
+		realSetTimeout(resolve, 0);
+	});
 }
 
 export class StatusSnapshotSerializer {
-	private worker: Worker | undefined;
-	private pending: { resolve(text: string): void; reject(error: Error): void } | undefined;
+	private readonly runCache = new WeakMap<RunSnapshot, string>();
 
-	serialize(snapshot: StoreSnapshot): Promise<string> {
-		const worker = this.worker ?? this.open();
-		worker.ref();
-		return new Promise<string>((resolve, reject) => {
-			this.pending = { resolve, reject };
-			try {
-				worker.postMessage(snapshot);
-			} catch (error) {
-				this.pending = undefined;
-				worker.unref();
-				reject(error instanceof Error ? error : new Error(String(error)));
+	async serialize(snapshot: StoreSnapshot): Promise<string[]> {
+		await yieldToEventLoop();
+		const chunks = ["{\n"];
+		if (snapshot.runs.length === 0) chunks.push('  "runs": [],\n');
+		if (snapshot.runs.length > 0) {
+			chunks.push('  "runs": [\n');
+			let uncachedSinceYield = 0;
+			for (let index = 0; index < snapshot.runs.length; index++) {
+				const run = snapshot.runs[index]!;
+				const canCache = Object.isFrozen(run);
+				let serialized = canCache ? this.runCache.get(run) : undefined;
+				if (serialized === undefined) {
+					if (uncachedSinceYield >= COLD_SERIALIZE_CHUNK_SIZE) {
+						uncachedSinceYield = 0;
+						await yieldToEventLoop();
+					}
+					serialized = `    ${JSON.stringify(run, null, 2).replaceAll("\n", "\n    ")}`;
+					if (canCache) {
+						this.runCache.set(run, serialized);
+					}
+					uncachedSinceYield++;
+				}
+				if (index > 0) chunks.push(",\n");
+				chunks.push(serialized);
 			}
-		});
+			chunks.push("\n  ],\n");
+		}
+		const noticesBlock = `  "notices": ${JSON.stringify(snapshot.notices, null, 2).replaceAll("\n", "\n  ")},\n`;
+		const versionBlock = `  "version": ${JSON.stringify(snapshot.version)}\n`;
+		chunks.push(noticesBlock, versionBlock, "}");
+		return chunks;
 	}
 
-	close(): void {
-		const worker = this.worker;
-		this.worker = undefined;
-		this.pending?.reject(new Error("Status serialization stopped"));
-		this.pending = undefined;
-		void worker?.terminate().catch(() => {});
-	}
-
-	private open(): Worker {
-		const worker = new Worker(SERIALIZE_SOURCE, { eval: true });
-		this.worker = worker;
-		worker.unref();
-		worker.on("message", (reply: SerializeReply) => {
-			if (this.worker !== worker) return;
-			const pending = this.pending;
-			this.pending = undefined;
-			worker.unref();
-			if (reply.text !== undefined) pending?.resolve(reply.text);
-			else pending?.reject(new Error(reply.error ?? "Status serializer returned no content"));
-		});
-		worker.on("error", (error: Error) => {
-			if (this.worker !== worker) return;
-			this.worker = undefined;
-			this.pending?.reject(error);
-			this.pending = undefined;
-		});
-		worker.on("exit", (code) => {
-			if (this.worker !== worker) return;
-			this.worker = undefined;
-			this.pending?.reject(new Error(`Status serializer exited with code ${code}`));
-			this.pending = undefined;
-		});
-		return worker;
-	}
+	close(): void {}
 }

@@ -406,6 +406,7 @@ export class WorkflowAttachPane implements Component {
 				: 0;
 	}
 	retarget(runId: string | null, stageId?: string, stageRunId?: string): void {
+		this.composerDrafts.capture(this.attachedRunId, this.lastAttachedStageId, this.chatView?._inputBuffer);
 		this._flushStoreUpdate();
 		this.attachmentGeneration += 1;
 		if (this.chatView && this.attachedRunId && this.lastAttachedStageId) {

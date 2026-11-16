@@ -200,16 +200,119 @@ describe("createStatusWriter — statusFile:true", () => {
 			await writer.flush();
 			assert.equal(snapshots.mock.calls.length, 0);
 			assert.equal(inspectionReads.mock.calls.length, 1, "one full view serves the whole burst");
-			assert.equal(serializations.mock.calls.length, 0, "serialization runs outside the main thread");
 			const content = JSON.parse(await readFile(filePath, "utf8"));
 			assert.equal(content.runs.length, 50);
 			assert.deepEqual(content.runs[0].inputs, { raw: "input" });
+			serializations.mockClear();
+			store.recordRunEnd("run-0", "completed", { ok: true });
+			await writer.flush();
+			const runSerializations = serializations.mock.calls.filter(
+				([value]) => value !== null && typeof value === "object" && !Array.isArray(value) && "stages" in value,
+			);
+			assert.equal(runSerializations.length, 1, "unchanged frozen runs reuse their cached JSON text");
+			const updated = JSON.parse(await readFile(filePath, "utf8"));
+			assert.equal(updated.runs[0].status, "completed");
 		} finally {
 			await writer.flush();
 			writer.unsubscribe();
 			snapshots.mockRestore();
 			serializations.mockRestore();
 		}
+	});
+
+	test("throttles 5ms-spaced status updates and serializes only changed runs (#5234)", async () => {
+		const filePath = join(tmpDir, "throttled.json");
+		const store = createStore();
+		for (let i = 0; i < 10; i++) {
+			store.recordRunStart({
+				id: `history-${i}`,
+				name: "wf",
+				inputs: { index: i },
+				status: "completed",
+				startedAt: 1,
+				endedAt: 2,
+				toolNodes: [],
+				stages: [],
+			});
+		}
+		store.recordRunStart({
+			id: "live-run",
+			name: "wf",
+			inputs: {},
+			status: "running",
+			startedAt: 10,
+			toolNodes: [],
+			stages: [],
+		});
+		const inspectionReads = vi.fn(() => store.inspectionSnapshot!());
+		const writer = createStatusWriter(
+			{ ...store, inspectionSnapshot: inspectionReads },
+			makeConfig({ statusFilePath: filePath }),
+		);
+		await writer.flush();
+		inspectionReads.mockClear();
+		const serializations = vi.spyOn(JSON, "stringify");
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+		try {
+			const steps = 60;
+			const stepMs = 5;
+			for (let step = 0; step < steps; step++) {
+				store.recordRunSummary!("live-run", `step-${step}`, step);
+				await vi.advanceTimersByTimeAsync(stepMs);
+				for (let turn = 0; turn < 4; turn++) {
+					await new Promise<void>((resolve) => setImmediate(resolve));
+				}
+			}
+			const maxReadsDuringWindow = Math.ceil((steps * stepMs) / 250);
+			assert.ok(
+				inspectionReads.mock.calls.length <= maxReadsDuringWindow,
+				`expected at most ${maxReadsDuringWindow} inspection reads across ${steps * stepMs}ms, got ${inspectionReads.mock.calls.length}`,
+			);
+			await writer.flush();
+			assert.ok(
+				inspectionReads.mock.calls.length <= maxReadsDuringWindow + 1,
+				`expected at most ${maxReadsDuringWindow + 1} total inspection reads after flush, got ${inspectionReads.mock.calls.length}`,
+			);
+			const runSerializations = serializations.mock.calls.filter(
+				([value]) => value !== null && typeof value === "object" && !Array.isArray(value) && "stages" in value,
+			);
+			assert.equal(
+				runSerializations.length,
+				inspectionReads.mock.calls.length,
+				"each status write serializes only the single changed run",
+			);
+			const written = JSON.parse(await readFile(filePath, "utf8"));
+			assert.equal(written.runs.at(-1)?.summary, `step-${steps - 1}`);
+		} finally {
+			writer.unsubscribe();
+			vi.useRealTimers();
+			serializations.mockRestore();
+		}
+	});
+
+	test("preserves the final pending update when replaced (#5234)", async () => {
+		const filePath = join(tmpDir, "replaced.json");
+		const store = createStore();
+		const writer = createStatusWriter(store, makeConfig({ statusFilePath: filePath }));
+		store.recordRunStart({
+			id: "run-final",
+			name: "wf",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [],
+			startedAt: 1,
+		});
+		await writer.flush();
+		store.recordRunEnd("run-final", "completed", { done: true });
+		writer.unsubscribe();
+		const replacement = createStatusWriter(store, makeConfig({ statusFilePath: filePath }));
+		await replacement.flush();
+		replacement.unsubscribe();
+		const fromReplacement = JSON.parse(await readFile(filePath, "utf8")) as {
+			runs: Array<{ id: string; status: string }>;
+		};
+		assert.equal(fromReplacement.runs[0]?.status, "completed");
 	});
 
 	test("creates status file on store update", async () => {
@@ -315,7 +418,7 @@ describe("createStatusWriter — statusFile:true", () => {
 			startedAt: Date.now(),
 		});
 
-		await sleep(100);
+		await writer.flush();
 		writer.unsubscribe();
 
 		const notices = s.notices();

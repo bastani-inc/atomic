@@ -68,6 +68,10 @@ export interface OverlayPiSurface {
 	ui?: OverlayUISurface;
 }
 
+export interface GraphOverlayOpenOptions {
+	readonly onReturn?: () => void;
+}
+
 /**
  * Port exposed to the extension factory.
  * `open(runId)`  — bring the pane to front (creating it if needed).
@@ -78,11 +82,6 @@ export interface OverlayPiSurface {
  * that exact stage-chat node — used by `/workflow attach <runId> <stageId>`
  * and the picker overlay's connect-to-stage flow.
  */
-
-export interface GraphOverlayOpenOptions {
-	readonly onReturn?: () => void;
-}
-
 export interface GraphOverlayPort {
 	open(
 		runId: string | null,
@@ -295,13 +294,14 @@ export function buildGraphOverlayAdapter(
 			// terminal writes that flickered main chat and could snap native
 			// scrollback to the bottom.
 			view.invalidate();
-			if (currentHandle?.isHidden() === true || pendingStoreFrame !== null) return;
+			if (currentHandle?.isHidden() === true) return;
+			if (currentHandle !== null && !currentHandle.isFocused()) {
+				refocusVisibleOverlayForAwaitingInput(readGraphStoreSnapshot(store));
+			}
+			if (pendingStoreFrame !== null) return;
 			pendingStoreFrame = setTimeout(() => {
 				pendingStoreFrame = null;
 				if (currentView !== view || currentHandle?.isHidden() === true) return;
-				if (currentHandle !== null && !currentHandle.isFocused()) {
-					refocusVisibleOverlayForAwaitingInput(readGraphStoreSnapshot(store));
-				}
 				tui.requestRender?.();
 			}, STORE_RENDER_FRAME_MS);
 		};

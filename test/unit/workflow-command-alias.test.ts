@@ -19,9 +19,11 @@ test("registers /workflows as the durable run-history alias", async () => {
 	try {
 		const handlers = new Map<string, WorkflowCommandHandler>();
 		const registered: string[] = [];
+		const descriptions = new Map<string, string>();
 		const pi: ExtensionAPI = {
-			registerCommand(name) {
+			registerCommand(name, options) {
 				registered.push(name);
+				descriptions.set(name, options.description);
 			},
 		};
 		const runtime = createExtensionRuntime();
@@ -46,6 +48,7 @@ test("registers /workflows as the durable run-history alias", async () => {
 			registered.filter((name) => name.startsWith("workflow")),
 			["workflow", "workflows"],
 		);
+		assert.equal(descriptions.get("workflows"), "Open this session's workflow runs. Usage: /workflows [run-id]");
 	} finally {
 		setDurableBackend(undefined);
 	}

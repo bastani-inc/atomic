@@ -33,6 +33,7 @@ import { createRunIndicatorStatusResolver, runIndicatorStatus } from "../shared/
 import { sortRunsByStatus } from "../shared/run-order.js";
 import type { RunSnapshot, StageSnapshot, StageStatus } from "../shared/store-types.js";
 import { elapsedRunMs, elapsedStageMs } from "../shared/timing.js";
+import { boundedToolTitleText } from "../shared/tool-payload-bounds.js";
 import type { FlatBandBadge } from "./chat-surface.js";
 import { chatWidth, ELLIPSIS, progressStrip, renderRoundedBox } from "./chat-surface.js";
 import { BOLD, hexToAnsi, RESET } from "./color-utils.js";
@@ -162,7 +163,7 @@ function renderRunEntry(
 	const trailing = runTrailing(run, theme);
 	const trailingText = truncateToWidth(trailing?.text ?? "", Math.max(0, interior - 1), ELLIPSIS);
 	const nameBudget = Math.max(1, interior - 3 - visibleWidth(trailingText) - (trailingText ? 2 : 0));
-	const name = truncateToWidth(run.name, nameBudget, ELLIPSIS);
+	const name = truncateToWidth(boundedToolTitleText(run.name, nameBudget * 4), nameBudget, ELLIPSIS);
 	const nameSeg = theme ? `${text}${BOLD}${name}${RESET}` : name;
 	const trailingSeg =
 		theme && trailingText ? `${hexToAnsi(trailing?.fg ?? theme.dim)}${trailingText}${RESET}` : trailingText;
@@ -204,7 +205,8 @@ function pendingStageIdentityLines(
 	width: number,
 	suffix = "",
 ): string[] {
-	const full = `   pending: ${stage.name} (${stage.stageId})${suffix}`;
+	const safeName = boundedToolTitleText(stage.name, Math.max(1, width * 4));
+	const full = `   pending: ${safeName} (${stage.stageId})${suffix}`;
 	if (visibleWidth(full) <= width) return [full];
 
 	// At narrow widths, drop the display-name decoration before wrapping the
@@ -231,8 +233,9 @@ function pendingStageLines(
 	resolveBoundarySegments?: WorkflowBoundarySegmentsResolver,
 ): string[] {
 	const stages = pendingWorkflowStageStatuses(run, resolveOwningRunStatus, resolveBoundarySegments);
+	const limit = Math.max(1, width * 4);
 	const visible = stages.slice(0, MAX_PENDING_STAGE_ROWS).flatMap((stage) => {
-		const prefix = `   pending: ${stage.name} (${stage.stageId})`;
+		const prefix = `   pending: ${boundedToolTitleText(stage.name, limit)} (${stage.stageId})`;
 		if (stage.target === undefined) {
 			const unavailable = `${prefix} · delivery unavailable`;
 			if (visibleWidth(unavailable) <= width) return [pendingStageLine(unavailable, width, theme)];
@@ -332,11 +335,12 @@ function runCardMeta(run: RunSnapshot, now: number): string {
 	}
 
 	if (effectiveRunStatus(run) === "failed" || effectiveRunStatus(run) === "killed") {
-		if (run.exitReason !== undefined && run.exitReason.length > 0 && run.exited === true) parts.push(run.exitReason);
+		if (run.exitReason !== undefined && run.exitReason.length > 0 && run.exited === true)
+			parts.push(boundedToolTitleText(run.exitReason));
 		const failed = run.stages.find((s) => s.status === "failed");
-		if (failed && isChain) parts.push(`failed at ${failed.name}`);
-		else if (failed) parts.push(failed.name);
-		else if (!isChain && run.stages[0]) parts.push(run.stages[0].name);
+		if (failed && isChain) parts.push(`failed at ${boundedToolTitleText(failed.name)}`);
+		else if (failed) parts.push(boundedToolTitleText(failed.name));
+		else if (!isChain && run.stages[0]) parts.push(boundedToolTitleText(run.stages[0].name));
 		const dur = lastStageDuration(run, now);
 		if (dur && parts.length < 2) parts.push(dur);
 		if (ago) parts.push(ago);
@@ -344,8 +348,8 @@ function runCardMeta(run: RunSnapshot, now: number): string {
 	}
 
 	if (["completed", "skipped", "cancelled", "blocked"].includes(effectiveRunStatus(run))) {
-		if (run.exitReason !== undefined && run.exitReason.length > 0) parts.push(run.exitReason);
-		if (!isChain && run.stages[0]) parts.push(run.stages[0].name);
+		if (run.exitReason !== undefined && run.exitReason.length > 0) parts.push(boundedToolTitleText(run.exitReason));
+		if (!isChain && run.stages[0]) parts.push(boundedToolTitleText(run.stages[0].name));
 		const dur = lastStageDuration(run, now);
 		if (dur) parts.push(dur);
 		if (ago) parts.push(ago);
@@ -358,14 +362,18 @@ function runCardMeta(run: RunSnapshot, now: number): string {
 }
 
 function runningStageLabels(run: RunSnapshot): string | undefined {
-	const running = run.stages.filter((s) => s.status === "running").map((s) => s.name);
+	const running = run.stages
+		.filter((s) => s.status === "running")
+		.map((s) => boundedToolTitleText(s.name, STAGE_LABEL_BUDGET * 4));
 	if (running.length === 0) return undefined;
 	const joined = running.join(", ");
 	return truncateToWidth(joined, STAGE_LABEL_BUDGET, ELLIPSIS);
 }
 
 function pausedStageLabels(run: RunSnapshot): string | undefined {
-	const paused = run.stages.filter((s) => s.status === "paused").map((s) => s.name);
+	const paused = run.stages
+		.filter((s) => s.status === "paused")
+		.map((s) => boundedToolTitleText(s.name, STAGE_LABEL_BUDGET * 4));
 	if (paused.length === 0) return undefined;
 	const joined = paused.join(", ");
 	return truncateToWidth(joined, STAGE_LABEL_BUDGET, ELLIPSIS);

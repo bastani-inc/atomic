@@ -7,8 +7,14 @@ import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import type { GraphViewOpts } from "../../packages/workflows/src/tui/graph-view-types.js";
 import { renderNodeCard } from "../../packages/workflows/src/tui/node-card.js";
 import { renderRunDetail } from "../../packages/workflows/src/tui/run-detail.js";
+import {
+	renderStageFailureDetailLines,
+	stageFailureLogLines,
+	stageFailureReason,
+} from "../../packages/workflows/src/tui/stage-failure-detail.js";
+import { renderStatusList } from "../../packages/workflows/src/tui/status-list.js";
 import { renderToolDetail } from "../../packages/workflows/src/tui/tool-detail.js";
-import { renderWidgetLines } from "../../packages/workflows/src/tui/widget.js";
+import { buildThemedWidgetLines, renderWidgetLines } from "../../packages/workflows/src/tui/widget.js";
 import { makeFakeKeybindings } from "../support/fake-keybindings.js";
 import { defaultTheme, makeSnap, makeStage, makeStore } from "./overlay-graph-helpers.js";
 
@@ -220,3 +226,158 @@ test("failure summary and logs render control-bearing fields as printable data w
 		graph.dispose();
 	}
 });
+
+test("a 2 MB stage error is bounded before splitting and caps the summary reason at 3 rows (#5234)", () => {
+	const error = "E".repeat(2_000_000);
+	const stage: StageSnapshot = {
+		...makeStage("verify"),
+		status: "failed",
+		error,
+		failureMessage: error,
+		startedAt: 1,
+		endedAt: 2,
+	};
+	const bounded = vi.spyOn(toolPayloadBounds, "boundedToolText");
+	const titleSanitized = vi.spyOn(toolPayloadBounds, "sanitizeToolTitleText");
+	const displaySanitized = vi.spyOn(toolPayloadBounds, "sanitizeToolDisplayText");
+	try {
+		const summary = renderStageFailureDetailLines(stage, { theme: defaultTheme, width: 120, logs: false });
+		const reasonRows = summary.slice(2);
+		assert.equal(reasonRows.length, 3);
+		assert.ok(reasonRows[2]?.includes("…"), "capped reason ends with an ellipsis");
+		assert.ok(bounded.mock.calls.length > 0);
+		assert.ok(
+			titleSanitized.mock.calls.every(([input]) => input.length <= 120 * 4),
+			"summary sanitizes only the sliced reason head and title",
+		);
+
+		const logLines = stageFailureLogLines(stage);
+		assert.equal(logLines.length, 1);
+		assert.ok(logLines[0]!.length <= toolPayloadBounds.TOOL_PAYLOAD_VALUE_LIMIT);
+
+		const logs = renderStageFailureDetailLines(stage, { theme: defaultTheme, width: 120, logs: true });
+		assert.ok(logs.length <= 160, `expected bounded log rows, got ${logs.length}`);
+		assert.ok(
+			displaySanitized.mock.calls.every(([input]) => input.length <= toolPayloadBounds.TOOL_PAYLOAD_VALUE_LIMIT),
+		);
+		assert.ok(stageFailureReason(stage).length <= toolPayloadBounds.TOOL_PAYLOAD_VALUE_LIMIT);
+
+		const deepErrors = Array.from({ length: 200 }, (_, index) => ({
+			name: `MemberError${index}`,
+			message: "M".repeat(5_000),
+			hint: "H".repeat(5_000),
+			fields: {},
+		}));
+		const withTree: StageSnapshot = {
+			...stage,
+			error: Array.from({ length: 100_000 }, (_, index) => `at frame ${index} (file.ts:${index}:1)`).join("\n"),
+			failureMessage: undefined,
+			failureDetail: {
+				name: "AggregateFailure",
+				message: "A".repeat(20_000),
+				fields: {},
+				errors: deepErrors,
+			},
+		};
+		const treeLogs = renderStageFailureDetailLines(withTree, { theme: defaultTheme, width: 120, logs: true });
+		assert.ok(treeLogs.length <= 600, `expected bounded tree log rows, got ${treeLogs.length}`);
+	} finally {
+		bounded.mockRestore();
+		titleSanitized.mockRestore();
+		displaySanitized.mockRestore();
+	}
+});
+
+test("failure detail visits a bounded number of repeated error entries (#5234)", () => {
+	let entriesRead = 0;
+	const member = { name: "Error", message: "duplicate", fields: {} };
+	const errors = new Proxy(
+		Array.from({ length: 10_000 }, () => member),
+		{
+			get(target, property, receiver) {
+				if (typeof property === "string" && /^\d+$/.test(property)) entriesRead++;
+				return Reflect.get(target, property, receiver);
+			},
+		},
+	);
+	const lines = stageFailureLogLines({
+		failureDetail: { name: "AggregateError", message: "failure", fields: {}, errors },
+	});
+	assert.ok(lines.some((line) => line.includes("duplicate")));
+	assert.ok(entriesRead <= 32, `visited ${entriesRead} repeated entries`);
+});
+
+test.each([
+	["OSC 52", "osc\u001b]52;c;Yg==\u0007\rname"],
+	["C1 CSI", "c1\u009b2J\nname"],
+])(
+	"%s sequences in run names, pending stages, run metadata, input keys and tool events stay escaped (#5234)",
+	(_label, payload) => {
+		const activeStage: StageSnapshot = {
+			...makeStage("active"),
+			name: `active-${payload}`,
+			status: "running",
+			startedAt: 1,
+			toolEvents: [{ name: `tool-${payload}`, startedAt: 1 }],
+		};
+		const pendingStage: StageSnapshot = {
+			...makeStage("pending-stage", ["active"]),
+			name: `pending-${payload}`,
+			status: "pending",
+			pendingStageDeliveryAvailable: true,
+		};
+		const failedStage: StageSnapshot = {
+			...makeStage("failed-stage", ["active"]),
+			name: `failed-${payload}`,
+			status: "failed",
+			error: `stage-err-${payload}`,
+		};
+		const baseSnap = makeSnap([activeStage, pendingStage, failedStage]);
+		const run = {
+			...baseSnap.runs[0]!,
+			name: `run-${payload}`,
+			inputs: { [`input-${payload}`]: "value" },
+			error: `run-err-${payload}\nsecond-line`,
+			exitReason: `exit-${payload}`,
+			exited: true,
+		};
+		const snap = { ...baseSnap, runs: [run] };
+
+		const store = makeStore(snap);
+		const detail = inspectRun("run-1", { store, now: 2_000 });
+		assert.ok(detail.ok);
+		const richDetail = {
+			...detail.detail,
+			exitReason: `exit-${payload}`,
+			error: `run-err-${payload}\nsecond-line`,
+			resumeGuidance: `guidance-${payload}`,
+		};
+
+		for (const theme of [undefined, defaultTheme]) {
+			const detailRows = renderRunDetail(richDetail, { theme, width: 160, now: 2_000 }).split("\n");
+			assertSafeRows(detailRows);
+			const detailText = detailRows.join("\n");
+			assert.ok(detailText.includes("run-"), "run name is rendered");
+			assert.ok(detailText.includes("exit-"), "exitReason is rendered");
+			assert.ok(detailText.includes("run-err-"), "run error is rendered");
+			assert.ok(detailText.includes("guidance-"), "resumeGuidance is rendered");
+			assert.ok(detailText.includes("input-"), "input key is rendered");
+			assert.ok(detailText.includes("tool-"), "last tool event name is rendered");
+		}
+
+		for (const piTheme of [undefined, {} as never]) {
+			const widgetRows = buildThemedWidgetLines(snap, piTheme, 200, 2_000);
+			assertSafeRows(widgetRows);
+			assert.ok(widgetRows.join("\n").includes("pending-"), "widget pending stage name is rendered");
+		}
+		assertSafeRows(renderWidgetLines(snap, 200));
+
+		for (const status of ["running", "failed", "paused", "completed"] as const) {
+			const statusRun = { ...run, status };
+			for (const theme of [undefined, defaultTheme]) {
+				const listRows = renderStatusList([statusRun], { theme, width: 160, now: 2_000 }).split("\n");
+				assertSafeRows(listRows);
+			}
+		}
+	},
+);

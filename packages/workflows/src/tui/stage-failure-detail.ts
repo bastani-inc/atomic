@@ -1,11 +1,22 @@
+import { sliceHead } from "@bastani/atomic";
 import type { SerializedError } from "../shared/error-codec.js";
 import type { StageSnapshot } from "../shared/store-types.js";
 import { elapsedStageMs } from "../shared/timing.js";
-import { boundedToolTitleText, sanitizeToolDisplayText, sanitizeToolTitleText } from "../shared/tool-payload-bounds.js";
+import {
+	boundedToolText,
+	boundedToolTitleText,
+	sanitizeToolDisplayText,
+	sanitizeToolTitleText,
+	TOOL_PAYLOAD_VALUE_LIMIT,
+} from "../shared/tool-payload-bounds.js";
 import { BOLD, hexToAnsi, RESET } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { fmtDuration } from "./status-helpers.js";
-import { truncateToWidth, wrapPlainText } from "./text-helpers.js";
+import { truncateToWidth, visibleWidth, wrapPlainText } from "./text-helpers.js";
+
+const MAX_FAILURE_REASON_ROWS = 3;
+const MAX_SERIALIZED_ERROR_DEPTH = 6;
+const MAX_SERIALIZED_ERROR_NODES = 32;
 
 export interface StageFailureDetailOpts {
 	theme: GraphTheme;
@@ -15,7 +26,7 @@ export interface StageFailureDetailOpts {
 }
 
 export function stageFailureReason(stage: Pick<StageSnapshot, "error" | "failureMessage">): string {
-	const text = stage.error ?? stage.failureMessage ?? "";
+	const text = boundedToolText(stage.error ?? stage.failureMessage ?? "", TOOL_PAYLOAD_VALUE_LIMIT);
 	const line = text
 		.split(/\r?\n/)
 		.map((part) => part.trim())
@@ -23,17 +34,56 @@ export function stageFailureReason(stage: Pick<StageSnapshot, "error" | "failure
 	return line ?? "No reason was recorded.";
 }
 
-function serializedErrorLines(error: SerializedError, depth: number): string[] {
+interface SerializedErrorFormatState {
+	nodesRemaining: number;
+	charsRemaining: number;
+	seen: Set<object>;
+	lines: string[];
+}
+
+function pushBoundedErrorLine(state: SerializedErrorFormatState, line: string): void {
+	if (state.charsRemaining <= 0) return;
+	const bounded = boundedToolText(line, state.charsRemaining);
+	state.lines.push(bounded);
+	state.charsRemaining -= bounded.length + 1;
+}
+
+function visitSerializedError(error: SerializedError, depth: number, state: SerializedErrorFormatState): void {
+	if (state.nodesRemaining <= 0 || state.charsRemaining <= 0) return;
+	state.nodesRemaining -= 1;
+	if (depth > MAX_SERIALIZED_ERROR_DEPTH || state.seen.has(error)) return;
+	state.seen.add(error);
 	const indent = "  ".repeat(depth);
-	const name = sanitizeToolTitleText(error.name);
-	const code = error.code ? sanitizeToolTitleText(error.code) : undefined;
-	const lines = [`${indent}${name}${code ? ` (${code})` : ""}: ${error.message}`];
-	if (error.hint) lines.push(`${indent}hint: ${error.hint}`);
-	if (error.cause) lines.push(`${indent}caused by:`, ...serializedErrorLines(error.cause, depth + 1));
-	if (error.cleanupCause)
-		lines.push(`${indent}during cleanup:`, ...serializedErrorLines(error.cleanupCause, depth + 1));
-	for (const member of error.errors ?? []) lines.push(...serializedErrorLines(member, depth + 1));
-	return lines;
+	const name = boundedToolTitleText(error.name, 240);
+	const code = error.code ? boundedToolTitleText(error.code, 240) : undefined;
+	const message = boundedToolText(error.message, Math.max(1, state.charsRemaining));
+	pushBoundedErrorLine(state, `${indent}${name}${code ? ` (${code})` : ""}: ${message}`);
+	if (error.hint && state.charsRemaining > 0) {
+		pushBoundedErrorLine(state, `${indent}hint: ${boundedToolText(error.hint, Math.max(1, state.charsRemaining))}`);
+	}
+	if (error.cause && state.nodesRemaining > 0 && state.charsRemaining > 0) {
+		pushBoundedErrorLine(state, `${indent}caused by:`);
+		visitSerializedError(error.cause, depth + 1, state);
+	}
+	if (error.cleanupCause && state.nodesRemaining > 0 && state.charsRemaining > 0) {
+		pushBoundedErrorLine(state, `${indent}during cleanup:`);
+		visitSerializedError(error.cleanupCause, depth + 1, state);
+	}
+	for (const member of error.errors ?? []) {
+		if (state.nodesRemaining <= 0 || state.charsRemaining <= 0) break;
+		visitSerializedError(member, depth + 1, state);
+	}
+}
+
+function serializedErrorLines(error: SerializedError): string[] {
+	const state: SerializedErrorFormatState = {
+		nodesRemaining: MAX_SERIALIZED_ERROR_NODES,
+		charsRemaining: TOOL_PAYLOAD_VALUE_LIMIT,
+		seen: new Set<object>(),
+		lines: [],
+	};
+	visitSerializedError(error, 0, state);
+	return state.lines;
 }
 
 export function stageFailureLogLines(
@@ -41,8 +91,8 @@ export function stageFailureLogLines(
 ): string[] {
 	const lines: string[] = [];
 	const message = stage.failureMessage ?? stage.error;
-	if (message) lines.push(...message.split(/\r?\n/));
-	if (stage.failureDetail) lines.push("", ...serializedErrorLines(stage.failureDetail, 0));
+	if (message) lines.push(...boundedToolText(message, TOOL_PAYLOAD_VALUE_LIMIT).split(/\r?\n/));
+	if (stage.failureDetail) lines.push("", ...serializedErrorLines(stage.failureDetail));
 	if (lines.length === 0) lines.push("No log was recorded for this stage.");
 	return lines;
 }
@@ -59,11 +109,20 @@ export function renderStageFailureDetailLines(stage: StageSnapshot, opts: StageF
 	const room = Math.max(1, width - indent.length);
 	const title = `${indent}${error}${BOLD}✗ ${boundedToolTitleText(stage.name, width * 4)}${RESET}${muted} · failed${after}${RESET}`;
 	if (opts.logs) {
-		const body = stageFailureLogLines(stage).flatMap((line) =>
-			line
-				.split(/\r?\n/)
-				.flatMap((part) => (part.length === 0 ? [""] : wrapPlainText(sanitizeToolDisplayText(part), room))),
-		);
+		const boundedLogs = boundedToolText(stageFailureLogLines(stage).join("\n"), TOOL_PAYLOAD_VALUE_LIMIT);
+		const body = boundedLogs
+			.split(/\r?\n/)
+			.flatMap((part) =>
+				part.length === 0
+					? [""]
+					: wrapPlainText(
+							boundedToolText(
+								sanitizeToolDisplayText(boundedToolText(part, TOOL_PAYLOAD_VALUE_LIMIT)),
+								TOOL_PAYLOAD_VALUE_LIMIT,
+							),
+							room,
+						),
+			);
 		return [
 			truncateToWidth(title, width),
 			"",
@@ -73,7 +132,21 @@ export function renderStageFailureDetailLines(stage: StageSnapshot, opts: StageF
 	}
 	const label = "Reason";
 	const reasonRoom = Math.max(1, room - label.length - 3);
-	const reason = wrapPlainText(sanitizeToolTitleText(stageFailureReason(stage)), reasonRoom);
+	const firstLine = stageFailureReason(stage);
+	const slicedReason = sliceHead(firstLine, room * 3);
+	const wrappedReason = wrapPlainText(sanitizeToolTitleText(slicedReason), reasonRoom);
+	const truncatedReason = slicedReason.length < firstLine.length || wrappedReason.length > MAX_FAILURE_REASON_ROWS;
+	const reason = wrappedReason.slice(0, MAX_FAILURE_REASON_ROWS);
+	if (truncatedReason && reason.length > 0) {
+		const lastIndex = reason.length - 1;
+		const lastLine = reason[lastIndex]!;
+		reason[lastIndex] =
+			reasonRoom <= 1
+				? "…"
+				: visibleWidth(lastLine) < reasonRoom
+					? `${lastLine}…`
+					: `${truncateToWidth(lastLine, reasonRoom - 1, "")}…`;
+	}
 	return [
 		truncateToWidth(title, width),
 		"",

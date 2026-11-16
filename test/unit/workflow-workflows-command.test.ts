@@ -129,6 +129,24 @@ describe("/workflows (#5224)", () => {
 		assert.match(t.messages.error[0], /Run not found: 33333333/);
 	});
 
+	it("opens a named stage's chat when a second token names a stage, and refuses an unknown stage", async () => {
+		const t = harness();
+		const runId = "11111111-1111-4111-8111-111111111111";
+		const store = storeWith([runId]);
+		await handleWorkflowsCommand(`${runId} A`, t.ctx, t.reporter, { overlay: t.overlay, store });
+		await handleWorkflowsCommand(`${runId.slice(0, 8)}\tA`, t.ctx, t.reporter, { overlay: t.overlay, store });
+		assert.deepEqual(t.messages.error, []);
+		assert.deepEqual(
+			t.opened.map(({ runId: id, stageId, stageRunId }) => ({ runId: id, stageId, stageRunId })),
+			[
+				{ runId, stageId: "A", stageRunId: runId },
+				{ runId, stageId: "A", stageRunId: runId },
+			],
+		);
+		await handleWorkflowsCommand(`${runId} missing`, t.ctx, t.reporter, { overlay: t.overlay, store });
+		assert.match(t.messages.error[0], /Stage not found in run/);
+	});
+
 	it("without an interactive surface prints the list instead of opening anything", async () => {
 		const t = harness();
 		await handleWorkflowsCommand("", { hasUI: false, ui: {} }, t.reporter, {

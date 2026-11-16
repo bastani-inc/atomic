@@ -73,6 +73,7 @@ export interface StoreContext {
 	snapshot(): StoreSnapshot;
 	graphSnapshot(): StoreSnapshot;
 	inspectionSnapshot(runId?: string): StoreSnapshot;
+	prepareInspectionSnapshot(): Promise<void>;
 	graphRun(runId: string): RunSnapshot | undefined;
 	/** `change` scopes observation to one run or node; pass it only when nothing outside it changed. */
 	notify(change?: WorkflowObservationChange): void;
@@ -249,6 +250,24 @@ export function createStoreContext(state: StoreState = createStoreState()): Stor
 		) as StoreSnapshot;
 	}
 
+	async function prepareInspectionSnapshot(): Promise<void> {
+		inspectionBuilder ??= new GraphStoreSnapshotBuilder({ fullPayloads: true });
+		const builder = inspectionBuilder;
+		const runs = state.runs.slice();
+		let prepared = 0;
+		for (const run of runs) {
+			if (builder.hasRun(run)) continue;
+			if (prepared % 16 === 0) {
+				await new Promise<void>((resolve) => setTimeout(resolve, 0));
+				if (inspectionBuilder !== builder) return;
+			}
+			if (findRun(run.id) === run) {
+				builder.buildRun(run);
+				prepared++;
+			}
+		}
+	}
+
 	function inspectionSnapshot(runId?: string): StoreSnapshot {
 		if (inspectionView !== undefined && inspectionVersion === state.version) return inspectionView;
 		inspectionBuilder ??= new GraphStoreSnapshotBuilder({ fullPayloads: true });
@@ -297,12 +316,6 @@ export function createStoreContext(state: StoreState = createStoreState()): Stor
 	function notify(change?: WorkflowObservationChange): void {
 		graphBuilder.markChanged(change);
 		inspectionBuilder?.markChanged(change);
-		if (change === undefined) {
-			inspectionBuilder = undefined;
-			inspectionTargets = new WeakMap();
-			inspectionView = undefined;
-			inspectionVersion = -1;
-		}
 		if (batchDepth > 0) {
 			batchedNotification = true;
 			if (change === undefined) batchedChanges = undefined;
@@ -377,12 +390,19 @@ export function createStoreContext(state: StoreState = createStoreState()): Stor
 		const [removed] = state.runs.splice(position, 1);
 		if (removed === undefined) return;
 		state.runPositions.delete(removed.id);
+		inspectionBuilder?.removeRun(removed.id);
+		inspectionView = undefined;
+		inspectionTargets = new WeakMap();
 		unindexChildRun(state, removed.id);
 		for (let index = position; index < state.runs.length; index++)
 			state.runPositions.set(state.runs[index]!.id, index);
 	}
 
 	function clearRuns(): void {
+		inspectionBuilder = undefined;
+		inspectionTargets = new WeakMap();
+		inspectionView = undefined;
+		inspectionVersion = -1;
 		state.runs.length = 0;
 		state.runPositions.clear();
 		state.childRunIds.clear();
@@ -468,6 +488,7 @@ export function createStoreContext(state: StoreState = createStoreState()): Stor
 		snapshot,
 		graphSnapshot,
 		inspectionSnapshot,
+		prepareInspectionSnapshot,
 		graphRun,
 		notify,
 		batch,

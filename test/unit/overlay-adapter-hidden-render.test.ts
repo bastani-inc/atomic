@@ -1,17 +1,3 @@
-/**
- * Hidden-overlay render gating (#1856).
- *
- * While the workflow graph/stage overlay is hidden (Ctrl+X back to main
- * chat), background store updates must NOT ask the host TUI to render:
- * every such request became terminal writes that flickered the main-chat
- * tail and could snap native terminal scrollback back to the live bottom.
- * The retained view is still invalidated so the hidden→visible flip
- * repaints from the current snapshot.
- *
- * Runs in a subprocess because it uses `mock.module` for pi-tui seams,
- * mirroring overlay-adapter-autowrap.test.ts.
- */
-
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -27,7 +13,7 @@ const ISOLATED_PROCESS_ENV = "ATOMIC_OVERLAY_HIDDEN_RENDER_ISOLATED";
 async function registerIsolatedTests(): Promise<void> {
 	// Only ever reached inside the `bun test` child spawned below, where
 	// `bun:test`'s module registry is the real one. vitest has no equivalent.
-	const { mock } = await import("bun:test");
+	const { mock, spyOn } = await import("bun:test");
 	const { stripTerminalSequences } = await import("@bastani/atomic-tui/dist/utils.js");
 	class TestComponent {}
 	const [{ ScrollView }, { VStack }, { Input }] = await Promise.all([
@@ -174,13 +160,17 @@ async function registerIsolatedTests(): Promise<void> {
 		test("visible overlay coalesces a status burst into one frame (#5234)", async () => {
 			const { adapter, store, renderRequests } = buildHarness();
 			adapter.open(null);
+			const graphSnapshotSpy = spyOn(store, "graphSnapshot");
 			try {
 				const before = renderRequests.count;
 				for (let update = 0; update < 50; update++) store.recordRunStart(makeRun(`r${update}`));
+				assert.equal(graphSnapshotSpy.mock.calls.length, 0, "focused burst performs zero graphSnapshot reads");
 				assert.equal(renderRequests.count, before, "status events schedule a frame without painting inline");
 				await sleep(32);
+				assert.equal(graphSnapshotSpy.mock.calls.length, 0, "coalesced frame performs zero graphSnapshot reads");
 				assert.equal(renderRequests.count - before, 1, "one frame paints the entire burst");
 			} finally {
+				graphSnapshotSpy.mockRestore();
 				adapter.close();
 			}
 		});
