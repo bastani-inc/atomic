@@ -1,5 +1,13 @@
 import assert from "node:assert/strict";
-import { CURSOR_MARKER, getKeybindings, setKeybindings } from "@bastani/atomic-tui";
+import {
+	CURSOR_MARKER,
+	getKeybindings,
+	renderFakeCursor,
+	setKeybindings,
+	type Terminal,
+	TuiMainScreen,
+} from "@bastani/atomic-tui";
+import { Terminal as XtermTerminal } from "@xterm/headless";
 import { afterAll, beforeAll, describe, test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import { buildItemsForQuestion } from "../../packages/coding-agent/src/core/tools/ask-user-question/ask-user-question.ts";
@@ -25,6 +33,45 @@ const ALLOWED_ANSI = /\x1b\[[0-9;:]*m|\x1b_(?:pi:(?:c|\/?fc)|atomic:active)(?:\x
 const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
 const stripAllowedAnsi = (text: string): string => text.replace(ALLOWED_ANSI, "");
 const sanitizedPrefix = (raw: string): string => escapeBidiControls(new TerminalTextSanitizer().write(raw));
+const [FAKE_CURSOR_START, FAKE_CURSOR_END] = renderFakeCursor("\0").split("\0") as [string, string];
+
+/** Draw one frame through the main-screen TUI into an xterm and return the screen's non-empty rows. */
+async function screenRows(render: (width: number) => string[], columns: number, rows: number): Promise<string[]> {
+	const xterm = new XtermTerminal({ cols: columns, rows, allowProposedApi: true });
+	const terminal: Terminal = {
+		columns,
+		rows,
+		kittyProtocolActive: true,
+		start() {},
+		stop() {},
+		async drainInput() {},
+		write: (data) => xterm.write(data),
+		moveBy: (lines) => {
+			if (lines !== 0) xterm.write(lines > 0 ? `\x1b[${lines}B` : `\x1b[${-lines}A`);
+		},
+		hideCursor: () => xterm.write("\x1b[?25l"),
+		showCursor: () => xterm.write("\x1b[?25h"),
+		clearLine: () => xterm.write("\x1b[K"),
+		clearFromCursor: () => xterm.write("\x1b[J"),
+		clearScreen: () => xterm.write("\x1b[2J\x1b[H"),
+		setTitle() {},
+		setProgress() {},
+		setProgramStatus() {},
+	};
+	const tui = new TuiMainScreen(terminal);
+	tui.addChild({ render, invalidate() {} });
+	try {
+		tui.start();
+		tui.renderNow();
+		await new Promise<void>((resolve) => xterm.write("", resolve));
+		const screen: string[] = [];
+		for (let y = 0; y < rows; y++) screen.push(xterm.buffer.active.getLine(y)?.translateToString(true) ?? "");
+		return screen.filter((row) => row.length > 0);
+	} finally {
+		tui.stop();
+		xterm.dispose();
+	}
+}
 
 let previousKeybindings: ReturnType<typeof getKeybindings>;
 
@@ -323,5 +370,86 @@ describe("ask_user_question sanitizer and editor caret regressions (#5244)", () 
 				);
 			}
 		}
+	});
+
+	test("notes caret inverts full grapheme clusters, including clusters joined by removed controls, and keeps the frame border (#5224)", async () => {
+		const params: QuestionParams = {
+			questions: [
+				{
+					question: "Pick?",
+					header: "Nav",
+					options: [
+						{ label: "A", description: "a", preview: "preview A" },
+						{ label: "B", description: "b" },
+					],
+				},
+			],
+		};
+		const width = 80;
+		const openNotes = (): QuestionnaireSession => {
+			const session = new QuestionnaireSession({
+				tui: { terminal: { columns: width }, requestRender() {} },
+				theme,
+				params,
+				itemsByTab: params.questions.map(buildItemsForQuestion),
+				done: () => {},
+			});
+			session.component.render(width);
+			session.component.handleInput("n");
+			return session;
+		};
+		const assertCaret = async (session: QuestionnaireSession, before: string, at: string, label: string) => {
+			const lines = session.component.render(width);
+			const line = lines.find((candidate) => candidate.includes(`${CURSOR_MARKER}${FAKE_CURSOR_START}`));
+			assert.ok(line, `${label}: expected the notes caret`);
+			const marker = line.indexOf(CURSOR_MARKER);
+			const spanStart = marker + CURSOR_MARKER.length + FAKE_CURSOR_START.length;
+			const span = line.slice(spanStart, line.indexOf(FAKE_CURSOR_END, spanStart));
+			const shownBefore = stripAllowedAnsi(line.slice(0, marker));
+			assert.deepEqual(
+				{ before: shownBefore.slice(shownBefore.indexOf("> ") + 2), at: span },
+				{ before, at },
+				`${label}: ${JSON.stringify(line)}`,
+			);
+
+			const rows = await screenRows((w) => session.component.render(w), width, 40);
+			const top = rows.findIndex((row) => row.startsWith("╭"));
+			const bottom = rows.findIndex((row) => row.startsWith("╰"));
+			assert.ok(top >= 0 && bottom > top, `${label}: expected a framed dialog in ${JSON.stringify(rows)}`);
+			for (const row of rows.slice(top + 1, bottom)) {
+				assert.ok(
+					row.startsWith("│") && row.endsWith("│"),
+					`${label}: frame row lost its border: ${JSON.stringify(row)}`,
+				);
+			}
+		};
+
+		const segmenter = new Intl.Segmenter();
+		const joined = [
+			{ pasted: "e\x1b[0m\u0301x", cluster: "e\u0301" },
+			{ pasted: "👍\x1b[0m🏽x", cluster: "👍🏽" },
+			{ pasted: "🇺\x1b[31m🇸x", cluster: "🇺🇸" },
+			{ pasted: "👩\x1b[1m\u200d💻x", cluster: "👩\u200d💻" },
+		] as const;
+		for (const { pasted, cluster } of joined) {
+			const session = openNotes();
+			session.component.handleInput(paste(pasted));
+			await assertCaret(session, `${cluster}x`, " ", `${JSON.stringify(pasted)} at end`);
+			session.component.handleInput(LEFT);
+			await assertCaret(session, cluster, "x", `${JSON.stringify(pasted)} on x`);
+			// Walk every raw position inside the joined cluster, then once more at the start of the text.
+			const rawGraphemes = [...segmenter.segment(pasted)].length;
+			for (let lefts = 2; lefts <= rawGraphemes + 1; lefts++) {
+				session.component.handleInput(LEFT);
+				await assertCaret(session, "", cluster, `${JSON.stringify(pasted)} lefts=${lefts}`);
+			}
+		}
+
+		// No control is removed here: typing the base letter in front of a pasted accent leaves the caret inside "é".
+		const session = openNotes();
+		session.component.handleInput(paste("\u0301x"));
+		session.component.handleInput(HOME);
+		session.component.handleInput("e");
+		await assertCaret(session, "", "e\u0301", "typed base before a pasted accent");
 	});
 });

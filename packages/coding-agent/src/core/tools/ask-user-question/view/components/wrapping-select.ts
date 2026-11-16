@@ -1,6 +1,6 @@
 import type { Component } from "@bastani/atomic-tui";
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@bastani/atomic-tui";
-import { terminalDisplayCursor, terminalDisplayText } from "../../../../../utils/terminal-text.ts";
+import { graphemeAt, terminalDisplayCursor, terminalDisplayText } from "../../../../../utils/terminal-text.ts";
 import { OVERLAY_ACTIVE_ROW_MARKER } from "../../../../extensions/ui-types.js";
 import { ROW_INTENT_META } from "../../state/row-intent.ts";
 import { type FieldTone, fieldTone, rowTone } from "../../state/selectors/field-tone.ts";
@@ -58,7 +58,6 @@ export class WrappingSelect implements Component {
 	private static readonly CURSOR_INVERSE_END = "\x1b[27m";
 	private static readonly CONFIRMED_MARK = " ✔";
 	private static readonly MIN_CONTENT_WIDTH = 1;
-	private static readonly GRAPHEME_SEGMENTER = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
 	private readonly items: readonly WrappingSelectItem[];
 	private readonly maxVisible: number;
@@ -287,7 +286,7 @@ export class WrappingSelect implements Component {
 		if (cursor >= text.length) {
 			return `${text}${WrappingSelect.CURSOR_INVERSE_START} ${WrappingSelect.CURSOR_INVERSE_END}`;
 		}
-		const cluster = WrappingSelect.GRAPHEME_SEGMENTER.segment(text).containing(cursor);
+		const cluster = graphemeAt(text, cursor);
 		if (!cluster) {
 			return `${text}${WrappingSelect.CURSOR_INVERSE_START} ${WrappingSelect.CURSOR_INVERSE_END}`;
 		}

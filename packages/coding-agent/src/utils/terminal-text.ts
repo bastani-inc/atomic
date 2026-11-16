@@ -185,3 +185,14 @@ export function singleLineDisplayText(text: string): string {
 export function terminalDisplayCursor(text: string, cursor: number): number {
 	return escapeBidiControls(new TerminalTextSanitizer().write(text.slice(0, Math.max(0, cursor)))).length;
 }
+
+const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+/**
+ * The grapheme cluster of `text` that contains the UTF-16 offset `cursor`, or undefined when `cursor` is outside the
+ * text. An editor caret highlights this whole cluster, so it never shows part of an emoji or a letter's accent.
+ */
+export function graphemeAt(text: string, cursor: number): { index: number; segment: string } | undefined {
+	const cluster = graphemeSegmenter.segment(text).containing(cursor);
+	return cluster && { index: cluster.index, segment: cluster.segment };
+}

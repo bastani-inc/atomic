@@ -1,6 +1,11 @@
 import { type Component, Container, Input, Spacer, Text, truncateToWidth } from "@bastani/atomic-tui";
 import type { Theme } from "../../../../modes/interactive/theme/theme.js";
-import { singleLineDisplayText, terminalDisplayCursor, terminalDisplayText } from "../../../../utils/terminal-text.ts";
+import {
+	graphemeAt,
+	singleLineDisplayText,
+	terminalDisplayCursor,
+	terminalDisplayText,
+} from "../../../../utils/terminal-text.ts";
 import { fieldTone, styleFieldTone } from "../state/selectors/field-tone.ts";
 import { formatAnswerScalar } from "../tool/format-answer.ts";
 import type { QuestionData } from "../tool/types.js";
@@ -115,13 +120,17 @@ export class QuestionTabStrategy implements TabContentStrategy {
 			render: (width) => {
 				const raw = notesInput.getValue();
 				const safe = terminalDisplayText(raw);
+				const rawCursor = notesInput.getCursor();
+				let cursor = safe === raw ? rawCursor : Math.min(terminalDisplayCursor(raw, rawCursor), safe.length);
+				// Removed controls can join characters around the caret, and a paste can leave it inside a cluster: start the
+				// caret at the cluster so it covers the whole character.
+				if (cursor < safe.length) cursor = graphemeAt(safe, cursor)?.index ?? cursor;
 				let display = notesInput;
-				if (safe !== raw) {
+				if (safe !== raw || cursor !== rawCursor) {
 					display = this.notesDisplayInput;
 					display.setValue(safe);
 					display.focused = notesInput.focused;
-					const cursor = terminalDisplayCursor(raw, notesInput.getCursor());
-					Reflect.set(display, "cursor", Math.min(cursor, safe.length));
+					Reflect.set(display, "cursor", cursor);
 				}
 				return display.render(width).map((line) => styleFieldTone(theme, tone, line));
 			},
