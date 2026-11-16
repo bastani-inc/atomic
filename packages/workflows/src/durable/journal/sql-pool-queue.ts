@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { SnapshotBlobStore, WorktreeSnapshot } from "@bastani/atomic";
 import {
 	assertStorageSchemaVersion,
+	ensureStorageSchema,
 	fencedPath,
 	readStoredJsonChunks,
 	renderStorageIdentifiers,
@@ -38,7 +39,14 @@ import {
 	type DurableCheckpoint,
 	type DurableStageCheckpoint,
 } from "../types.js";
-import { locksRows, poolReadyChannel, poolSessionPrefix, type SqlPoolStorage, sqlPoolStorage } from "./internal.js";
+import {
+	locksRows,
+	poolReadyChannel,
+	poolSchemaLedger,
+	poolSessionPrefix,
+	type SqlPoolStorage,
+	sqlPoolStorage,
+} from "./internal.js";
 import { isWorkflowLeaseExpired } from "./lease-expiry.js";
 import { PoolCheckpointIndex, type PoolCheckpointRead, type PoolCheckpointSource } from "./pool-checkpoint-index.js";
 import { guardedPoolWrite, poolFenceSchema, poolWriteBatch } from "./pool-guarded-write.js";
@@ -90,6 +98,11 @@ const MAX_WORKER_CLOCK_SKEW_MS = 1_000;
 const POOL_SCHEMA_VERSION = 3;
 /** The pool schema before chunked inputs and results; this build upgrades it when it opens the pool. */
 const POOL_SCHEMA_VERSION_UNCHUNKED = 2;
+/**
+ * The revision of the pool queue's tables, indexes and triggers, recorded once they are set up (#5218): raise it with
+ * every change to what {@link SqlPoolQueue.open} creates, so a schema an earlier build set up is set up again.
+ */
+const POOL_SCHEMA_REVISION = 1;
 /** Work whose inputs a work row holds only as a stub, by the work this queue read: how many chunks hold them. */
 const chunkedInputs = new WeakMap<PoolWork, number>();
 /**
@@ -439,14 +452,23 @@ export class SqlPoolQueue {
 			const foreignKeys = dialect.foreignKeysCheck;
 			if (Number((await tx.get(foreignKeys.sql, ...foreignKeys.params))?.foreign_keys) !== 1)
 				throw new Error("Pool requires SQLite foreign keys");
-			await tx.exec(`CREATE TABLE IF NOT EXISTS ${pool.meta}(version ${int} NOT NULL)`);
-			const versions = await tx.all(`SELECT version FROM ${pool.meta}`);
-			if (versions.length > 1) throw new Error("Corrupt pool schema metadata");
-			const version = versions[0]?.version;
-			if (version === undefined) await tx.run(`INSERT INTO ${pool.meta} VALUES (?)`, POOL_SCHEMA_VERSION);
-			else if (version !== 1 && version !== POOL_SCHEMA_VERSION_UNCHUNKED)
-				assertStorageSchemaVersion("journal", version, POOL_SCHEMA_VERSION);
-			await tx.exec(`
+			const ledger = poolSchemaLedger(storage);
+			let setUp = false;
+			// A current schema runs no DDL, so a role with only DML privileges opens the pool (#5218).
+			await ensureStorageSchema(
+				tx,
+				dialect,
+				{ ledger, domain: "pool-queue", revision: POOL_SCHEMA_REVISION },
+				async () => {
+					setUp = true;
+					await tx.exec(`CREATE TABLE IF NOT EXISTS ${pool.meta}(version ${int} NOT NULL)`);
+					const versions = await tx.all(`SELECT version FROM ${pool.meta}`);
+					if (versions.length > 1) throw new Error("Corrupt pool schema metadata");
+					const version = versions[0]?.version;
+					if (version === undefined) await tx.run(`INSERT INTO ${pool.meta} VALUES (?)`, POOL_SCHEMA_VERSION);
+					else if (version !== 1 && version !== POOL_SCHEMA_VERSION_UNCHUNKED)
+						assertStorageSchemaVersion("journal", version, POOL_SCHEMA_VERSION);
+					await tx.exec(`
 				CREATE TABLE IF NOT EXISTS ${pool.roots}(root TEXT PRIMARY KEY REFERENCES ${journal.runs}(run_id) ON DELETE CASCADE, timeout ${int} NOT NULL);
 				CREATE TABLE IF NOT EXISTS ${pool.work}(
 					id TEXT PRIMARY KEY, root TEXT NOT NULL REFERENCES ${pool.roots}(root) ON DELETE CASCADE,
@@ -471,29 +493,40 @@ export class SqlPoolQueue {
 					work TEXT PRIMARY KEY REFERENCES ${pool.work}(id) ON DELETE CASCADE, result TEXT NOT NULL
 				);
 			`);
-			await tx.exec(`CREATE TABLE IF NOT EXISTS ${pool.roots}_control(
+					await tx.exec(`CREATE TABLE IF NOT EXISTS ${pool.roots}_control(
 				root TEXT PRIMARY KEY REFERENCES ${pool.roots}(root) ON DELETE CASCADE,
 				state TEXT NOT NULL DEFAULT 'running', revision ${int} NOT NULL DEFAULT 0
 			)`);
-			await tx.exec(poolUsageSchema(journal.runs, dialect));
-			await tx.exec(poolFenceSchema(journal.runs, dialect));
-			// A worker host's claims check the drains a fleet controller asked for (#5072).
-			await tx.exec(fleetDrainsSchema(journal.runs, dialect));
-			// Keyed by the run, not the pool row: a root records its binding's snapshot before it queues anything.
-			await tx.exec(`CREATE TABLE IF NOT EXISTS ${pool.rootSnapshots}(
+					await tx.exec(poolUsageSchema(journal.runs, dialect));
+					await tx.exec(poolFenceSchema(journal.runs, dialect));
+					// A worker host's claims check the drains a fleet controller asked for (#5072).
+					await tx.exec(fleetDrainsSchema(journal.runs, dialect));
+					// Keyed by the run, not the pool row: a root records its binding's snapshot before it queues anything.
+					await tx.exec(`CREATE TABLE IF NOT EXISTS ${pool.rootSnapshots}(
 				root TEXT PRIMARY KEY REFERENCES ${journal.runs}(run_id) ON DELETE CASCADE,
 				epoch ${int} NOT NULL, snapshot TEXT NOT NULL${dialect.rowOrderColumn}
 			)`);
-			if (remote)
-				await tx.exec(`CREATE TABLE IF NOT EXISTS ${pool.outbox}(
+					if (version === 1) await pool.migrateFromVersion1(tx);
+					await pool.addChunks(tx);
+				},
+			);
+			// Set up by an earlier open: the version is read all the same, so a newer schema is refused (#4965).
+			if (!setUp) {
+				const versions = await tx.all(`SELECT version FROM ${pool.meta}`);
+				if (versions.length !== 1) throw new Error("Corrupt pool schema metadata");
+				assertStorageSchemaVersion("journal", versions[0]!.version!, POOL_SCHEMA_VERSION);
+			}
+			if (remote) {
+				await ensureStorageSchema(tx, dialect, { ledger, domain: "pool-outbox", revision: 1 }, () =>
+					tx.exec(`CREATE TABLE IF NOT EXISTS ${pool.outbox}(
 					work TEXT NOT NULL REFERENCES ${pool.work}(id) ON DELETE CASCADE,
 					generation ${int} NOT NULL, operation TEXT NOT NULL, request TEXT NOT NULL,
 					event_key TEXT NOT NULL, payload TEXT NOT NULL, last_seq ${int},
 					PRIMARY KEY(work, generation, operation)${dialect.rowOrderColumn}
-				)`);
-			if (remote) pool.outboxPending = (await tx.get(`SELECT 1 AS held FROM ${pool.outbox} LIMIT 1`)) !== undefined;
-			if (version === 1) await pool.migrateFromVersion1(tx);
-			await pool.addChunks(tx);
+				)`),
+				);
+				pool.outboxPending = (await tx.get(`SELECT 1 AS held FROM ${pool.outbox} LIMIT 1`)) !== undefined;
+			}
 		});
 		return pool;
 	}
