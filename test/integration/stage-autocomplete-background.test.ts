@@ -50,9 +50,7 @@ test.each(
 			}
 			const suggestions = (lines: string[]) =>
 				lines.filter(
-					(line) =>
-						match.test(stripVTControlCharacters(line)) &&
-						!stripVTControlCharacters(line).trimStart().startsWith("❯"),
+					(line) => match.test(stripVTControlCharacters(line)) && !stripVTControlCharacters(line).startsWith("❯"),
 				);
 			await vi.waitFor(() => {
 				assert.equal(
@@ -69,7 +67,7 @@ test.each(
 					.slice(1)
 					.match(/../g)!
 					.map((part) => parseInt(part, 16))
-					.join(";")}m→\x1b[0m`;
+					.join(";")}m❯\x1b[0m`;
 				const rows = [reference, ...mainRows, ...stageRows];
 				const terminal = new Terminal({ cols: width, rows: rows.length, allowProposedApi: true });
 				try {
@@ -84,7 +82,7 @@ test.each(
 								`${name}, selection ${selection}, row ${row}, column ${column}: autocomplete uses terminal default background`,
 							);
 						}
-						const selectedColumn = line.translateToString().indexOf("→");
+						const selectedColumn = line.translateToString().indexOf("❯");
 						if (selectedColumn >= 0 && row > mainRows.length) {
 							const selected = line.getCell(selectedColumn)!;
 							assert.equal(
