@@ -5,7 +5,7 @@
  * The child is a real session on a scripted model: it starts a shell task in the background and waits on it, so it is
  * released, and a woken child waits on it again. Its release delay is short, so one test can wake it many times.
  *
- * Usage: <jiti> released-subagent-owner.ts <launch|recover> <dir> <child-name>
+ * Usage: <jiti> released-subagent-owner.ts <launch|recover> <dir> <child-name>, or `compile` to only load the sources
  * Prints `READY <group>` once it is bound, with the Intercom group the child is launched in; `RUN start|end <n>` around
  * each run of the child; `RECORD <json>` when the child's record changes; `RECEIVED <json>` when the Intercom messages
  * its session holds change; `READ <json>` when the messages it read from cards a delivery saved while it was busy
@@ -50,6 +50,8 @@ import type { RunSyncOptions, SingleResult } from "../../packages/subagents/src/
 const startedAt = performance.now();
 const progress = (step: string) => process.stderr.write(`owner ${Math.round(performance.now() - startedAt)} ms: ${step}\n`);
 progress("sources loaded");
+// `compile`: only load the sources, so a test fills their compile cache before an owner starts.
+if (process.argv[2] === "compile") process.exit(0);
 
 const [phase, dir, childName] = process.argv.slice(2);
 if ((phase !== "launch" && phase !== "recover") || !dir || !childName)

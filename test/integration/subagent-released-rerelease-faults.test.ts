@@ -12,7 +12,7 @@ import {
 	type TwoBrokerClient,
 	TwoBrokerHarness,
 } from "../helpers/intercom-two-broker-harness.js";
-import { decodeStream, moduleDir, type SpawnedProcess, spawnProcess } from "../helpers/runtime.js";
+import { decodeStream, moduleDir, readStreamText, type SpawnedProcess, spawnProcess } from "../helpers/runtime.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 
 useTemporaryAgentDir();
@@ -27,8 +27,16 @@ const SOURCE_ALIASES = JSON.stringify({
 /** Spawning two real broker processes (and restarting one) is the structural cost of this suite. */
 const REAL_BROKERS_HOOK_TIMEOUT_MS = TWO_BROKER_HARNESS_START_TIMEOUT_MS;
 /**
+ * Structural: the first process to load the owner's sources compiles hundreds of subagent, Intercom and session files
+ * through jiti into the run's compile cache. Six loaded runs on one Windows host took longer than two minutes for it
+ * (#5252), so it is done once before the scenario, while the brokers start, and every owner loads from that cache.
+ */
+const OWNER_SOURCES_COMPILE_ALLOWANCE_MS = 300_000;
+/** The brokers and the owner's sources are made ready together. */
+const SUITE_SETUP_TIMEOUT_MS = Math.max(REAL_BROKERS_HOOK_TIMEOUT_MS, OWNER_SOURCES_COMPILE_ALLOWANCE_MS) + 30_000;
+/**
  * A start-up allowance for the first owner process, not a product timing: it loads the subagent, Intercom and session
- * sources through jiti before it binds, which took close to a minute in a loaded Windows integration shard.
+ * sources from the compile cache the setup filled, then binds.
  */
 const OWNER_START_ALLOWANCE_MS = 120_000;
 /** The launched child starts its shell, waits on it and is released, measured from when its owner bound. */
@@ -51,7 +59,33 @@ const FAULTS_TEST_TIMEOUT_MS =
 let harness: TwoBrokerHarness;
 const owners: OwnerProcess[] = [];
 
+/** Loads the owner's sources once in a process of its own, so their compile cache is filled before an owner starts. */
+async function compileOwnerSources(): Promise<void> {
+	const compiling = spawnProcess([process.execPath, "--import", "jiti/register", OWNER_FIXTURE, "compile"], {
+		cwd: ROOT,
+		env: { ...process.env, JITI_ALIAS: SOURCE_ALIASES },
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	const timer = setTimeout(() => compiling.kill("SIGKILL"), OWNER_SOURCES_COMPILE_ALLOWANCE_MS);
+	try {
+		const [exitCode, stdout, stderr] = await Promise.all([
+			compiling.exited,
+			readStreamText(compiling.stdout),
+			readStreamText(compiling.stderr),
+		]);
+		assert.equal(
+			exitCode,
+			0,
+			`the owner's sources did not load within ${OWNER_SOURCES_COMPILE_ALLOWANCE_MS} ms: ${stdout}\n${stderr}`,
+		);
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
 beforeAll(async () => {
+	const compiled = compileOwnerSources();
 	harness = await TwoBrokerHarness.start();
 	// The owner's Intercom reconnects to the harness's broker; it never starts one of its own on node b.
 	mkdirSync(join(harness.agentDir("b"), "intercom"), { recursive: true });
@@ -59,7 +93,8 @@ beforeAll(async () => {
 		join(harness.agentDir("b"), "intercom", "config.json"),
 		JSON.stringify({ brokerCommand: process.execPath, brokerArgs: ["-e", "process.exit(1)"] }),
 	);
-}, REAL_BROKERS_HOOK_TIMEOUT_MS);
+	await compiled;
+}, SUITE_SETUP_TIMEOUT_MS);
 afterAll(async () => {
 	for (const owner of owners) owner.kill();
 	await Promise.all(owners.map((owner) => owner.process.exited));
