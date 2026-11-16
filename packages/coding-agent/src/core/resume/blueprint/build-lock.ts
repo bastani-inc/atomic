@@ -121,10 +121,12 @@ function identity(recorded: LockedProcess): "same" | "gone" | "unknown" {
  * On Windows, the processes left behind by `steps` whose step process itself has ended: Git for Windows' `bash.exe`
  * starts the shell as a child and may end without it, and nothing then ties that shell to a process tree. They are
  * found as processes whose parent has a step's id, started after the step and before any later process given that id;
- * stopping each stops its own children. Only steps whose start was recorded are followed. Each is returned with its
- * start, so the wait for it to end follows that process, not a later one given its id.
+ * stopping each stops its own children. Only steps whose start was recorded are followed, and without one the host's
+ * processes are not listed. Each is returned with its start, so the wait for it to end follows that process, not a
+ * later one given its id.
  */
 function orphanedChildren(steps: readonly LockedProcess[]): LockedProcess[] {
+	if (!steps.some((step) => step.start !== undefined && step.at !== undefined)) return [];
 	const script =
 		"Get-CimInstance Win32_Process | ForEach-Object { '{0} {1} {2}' -f $_.ProcessId, $_.ParentProcessId, ([DateTimeOffset]$_.CreationDate).ToUnixTimeMilliseconds() }";
 	const shell = join(

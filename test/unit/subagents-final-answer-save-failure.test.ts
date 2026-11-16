@@ -49,6 +49,13 @@ class FullOnFinalAnswerStore extends MemorySessionStore {
 		}
 		return super.load(sessionId);
 	}
+	override readRange(sessionId: string, startSeq: number, endSeq: number) {
+		if (this.unreadable) {
+			this.unreadable = false;
+			return Promise.reject(new Error("EIO: i/o error, read"));
+		}
+		return super.readRange(sessionId, startSeq, endSeq);
+	}
 	override append(sessionId: string, entries: readonly SessionEntry[], options: SessionWriteOptions) {
 		if (
 			this.full &&
@@ -283,6 +290,14 @@ async function fullFileSession(root: string, lands: boolean): Promise<SessionMan
 		if (!unreadable) return load(sessionId);
 		unreadable = false;
 		return Promise.reject(new Error("EIO: i/o error, read"));
+	};
+	const readRange = store.readRange!.bind(store);
+	store.readRange = (id, start, end) => {
+		if (unreadable) {
+			unreadable = false;
+			return Promise.reject(new Error("EIO: i/o error, read"));
+		}
+		return readRange(id, start, end);
 	};
 	store.append = async (sessionId, entries, options) => {
 		if (!JSON.stringify(entries).includes(FINAL_ANSWER)) return append(sessionId, entries, options);

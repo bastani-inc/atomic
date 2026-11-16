@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentSession, DetachedToolCall, DetachedToolResult, ExtensionContext } from "@bastani/atomic";
-import { afterEach, test } from "vitest";
+import { afterEach, test, vi } from "vitest";
 import {
 	AgentWakeDispatcher,
 	agentWakeDispatcher,
@@ -1784,14 +1784,14 @@ async function restoreStartedChild(
 	runId: string,
 	options: Partial<RunSyncOptions>,
 	launchAgent?: AgentConfig,
-	beforeRestore?: () => void,
+	beforeRestore?: () => void | Promise<void>,
 ): Promise<{ task: string; options: RunSyncOptions; agent: AgentConfig | undefined; taskId: string }> {
 	await h.admit(runId, undefined, options, launchAgent);
 	const record = await h.waitForLatest(`${runId}:0`, (candidate) => candidate.launchLeafId !== undefined);
 	await h.closeOwnerAndReopen("session-close");
 	await sleep(50);
 	assert.equal(h.latest(record.childId)?.state, "running", "closing its owner records nothing terminal");
-	beforeRestore?.();
+	await beforeRestore?.();
 	const [outcome] = await restoreSubagentChildren(h.deps, h.ctx);
 	assert.ok(outcome?.kind === "restored", JSON.stringify(outcome));
 	const restarted = h.runs.at(-1);
@@ -1894,7 +1894,9 @@ function startedOn(h: Harness, childId: string, taskId: string): { model?: strin
 		.getEntries()
 		.filter(isSubagentChildRecord)
 		.map((entry) => entry.data as SubagentChildRecord)
-		.find((record) => record.childId === childId && record.taskId === taskId && record.launchLeafId !== undefined);
+		.findLast(
+			(record) => record.childId === childId && record.taskId === taskId && record.launchLeafId !== undefined,
+		);
 	assert.ok(started, `the launch of ${childId} as ${taskId} never recorded what it started on`);
 	return {
 		...(started.launchModel ? { model: started.launchModel } : {}),
@@ -2000,6 +2002,107 @@ test("a started child restored after a restart keeps its own model and thinking 
 		thinking: "high",
 	});
 	assert.equal(restarted.options.currentModel, "anthropic/claude-sonnet");
+});
+
+test("restoring a compacted forked child keeps launch-relative model changes without loading its transcript (#5249)", async () => {
+	const h = harness();
+	usableModels(h, [sonnet, haiku]);
+	await h.sessionManager.appendModelChange(sonnet.provider, sonnet.id);
+	await h.sessionManager.appendThinkingLevelChange("high");
+	const forked = await forkFromParentConversation(h);
+	let childId: string | undefined;
+	const original = SessionManager.prototype.loadFullHistory;
+	const hydrate = vi.spyOn(SessionManager.prototype, "loadFullHistory").mockImplementation(function (
+		this: SessionManager,
+	) {
+		if (this.getSessionId() === childId) throw new Error("compacted child history must stay unloaded");
+		return original.call(this);
+	});
+	try {
+		const restarted = await restoreStartedChild(
+			h,
+			"compacted-model",
+			{ ...admittedOnSonnetHigh, sessionManager: forked },
+			undefined,
+			async () => {
+				const record = h.latest("compacted-model:0");
+				assert.ok(record?.childSessionId);
+				assert.equal(record.launchLeafId, forked.getLeafId());
+				const source = record.childSessionFile
+					? await SessionManager.open(record.childSessionFile, undefined, record.cwd)
+					: await SessionManager.open(h.sessionManager.getSessionStore(), record.childSessionId, record.cwd);
+				await source.appendMessage({ role: "user", content: "old turn", timestamp: 1 });
+				await source.appendModelChange(haiku.provider, haiku.id);
+				await source.appendThinkingLevelChange("low");
+				await source.appendCompaction("summary", null, 100, {
+					strategy: "verbatim-lines",
+					promptVersion: 6,
+					parameters: { compression_ratio: 0.5, preserve_recent: 0, query: "" },
+					stats: {
+						linesBefore: 1,
+						linesDeleted: 1,
+						linesKept: 0,
+						rangeCount: 1,
+						tokensBefore: 100,
+						tokensAfter: 10,
+						percentReduction: 90,
+					},
+					rung: "planned",
+				});
+				childId = source.getSessionId();
+			},
+		);
+		assert.deepEqual(startedOn(h, "compacted-model:0", restarted.taskId), {
+			model: `${haiku.provider}/${haiku.id}`,
+			thinking: "low",
+		});
+
+		await h.sessionManager.appendModelChange(haiku.provider, haiku.id);
+		await h.sessionManager.appendThinkingLevelChange("low");
+		const inheritedFork = await forkFromParentConversation(h);
+		const inheritedRestarted = await restoreStartedChild(
+			h,
+			"compacted-inherited-model",
+			{ ...admittedOnSonnetHigh, sessionManager: inheritedFork },
+			undefined,
+			async () => {
+				const record = h.latest("compacted-inherited-model:0");
+				assert.ok(record?.childSessionId);
+				const { launchLeafSeq: _seq, ...legacyRecord } = record;
+				await h.sessionManager.appendCustomEntry(SUBAGENT_CHILD_RECORD_TYPE, {
+					...legacyRecord,
+					launchModel: `${sonnet.provider}/${sonnet.id}`,
+					launchThinkingLevel: "high",
+				});
+				const source = record.childSessionFile
+					? await SessionManager.open(record.childSessionFile, undefined, record.cwd)
+					: await SessionManager.open(h.sessionManager.getSessionStore(), record.childSessionId, record.cwd);
+				await source.appendMessage({ role: "user", content: "old turn", timestamp: 1 });
+				await source.appendCompaction("summary", null, 100, {
+					strategy: "verbatim-lines",
+					promptVersion: 6,
+					parameters: { compression_ratio: 0.5, preserve_recent: 0, query: "" },
+					stats: {
+						linesBefore: 1,
+						linesDeleted: 1,
+						linesKept: 0,
+						rangeCount: 1,
+						tokensBefore: 100,
+						tokensAfter: 10,
+						percentReduction: 90,
+					},
+					rung: "planned",
+				});
+				childId = source.getSessionId();
+			},
+		);
+		assert.deepEqual(startedOn(h, "compacted-inherited-model:0", inheritedRestarted.taskId), {
+			model: `${sonnet.provider}/${sonnet.id}`,
+			thinking: "high",
+		});
+	} finally {
+		hydrate.mockRestore();
+	}
 });
 
 test("a never-started queued child admitted outside any Intercom group stays out of the group its parent joined later (#3784)", async () => {

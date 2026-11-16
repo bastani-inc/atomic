@@ -97,6 +97,7 @@ import {
 import { registerTerminalOrderingBarrier } from "./terminal-ordering-barrier.js";
 import { resolveSessionTargetId } from "./session-target.js";
 import { InboundMessageAdmission } from "./inbound-message-admission.js";
+import { BroadcastCopies } from "./broadcast-copies.js";
 import { registerLateStageMessageRouter } from "./late-stage-message-router.js";
 import { retryStableDelivery } from "./stable-delivery-retry.js";
 import type { IntercomExtensionTestOverrides } from "./intercom-test-seams.js";
@@ -316,6 +317,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     appendHandled: (messageId) => pi.appendEntry(INTERCOM_INBOX_HANDLED_ENTRY, { messageId }),
   });
   const inboundDeliveries = new InboundMessageAdmission();
+  const broadcastCopies = new BroadcastCopies();
   // #4751: the asks this session sent; their replies arrive as messages on this session's own thread.
   const outboundAsks = new OutboundAsks({
     entries: sessionBranch,
@@ -357,6 +359,8 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     createClient: (returnAddress) => new IntercomClient(returnAddress),
     cwd: () => getLiveContext()?.cwd ?? process.cwd(),
     relay: (from, message, channel) => {
+      // A released stage's copy of a broadcast this session already has, its own or another stage's, is not relayed.
+      if (!broadcastCopies.claim(from, message)) return;
       inArrivalOrder(message, (bounded) => {
         const liveContext = getLiveContext();
         if (liveContext) handleIncomingMessage(liveContext, from, bounded, channel);
@@ -716,6 +720,8 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   /** #3761: save an arriving message, confirm it to the broker, then handle it; a copy already saved is only confirmed. */
   function receiveIncomingMessage(receiver: IntercomClient, from: SessionInfo, message: Message, channel?: "supervisor"): void {
     const generation = runtimeGeneration;
+    // Claimed on arrival, so the released stages this session hosts do not relay their copies of it meanwhile.
+    const shown = broadcastCopies.claim(from, message);
     // #3983: a save that waits (a pooled stage's journal commit behind other writers) keeps its sender waiting.
     const saving = setInterval(() => receiver.reportSaving(message.id), RECIPIENT_SAVING_REPORT_INTERVAL_MS);
     saving.unref?.();
@@ -728,6 +734,11 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       void saved.finally(() => clearInterval(saving)).catch(() => {});
       void saved.then((arrival) => {
         if (arrival !== "fresh") return;
+        // A copy of a broadcast that a released stage this session hosts relayed first is saved and confirmed, not shown.
+        if (!shown) {
+          void durableInbox.handledWithoutCard(message.id);
+          return;
+        }
         const liveContext = getLiveContext(runtimeContext, generation);
         if (liveContext) void handleIncomingMessage(liveContext, from, bounded, channel);
       });
@@ -1980,7 +1991,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
           if (!isProjectGroupError(error)) throw error;
           sessionHomeGroup = null;
         }
-        inboundDeliveries.restore(value.sessionManager.getBranch());
+        inboundDeliveries.restore(value.sessionManager.getBranch(),value.sessionManager.getSessionRecoveryState?.().admissionKeys.filter(key=>key.startsWith("intercom:")).map(key=>key.slice("intercom:".length)));
       }
       runtimeContext = value;
     },
@@ -2034,11 +2045,11 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     let startupDrained = false;
     let redrainRequested = false;
     const deliverPending = async (started = false): Promise<void> => {
-      const receivedMessageIds = ctx.sessionManager.getBranch().flatMap((entry) => {
+      const receivedMessageIds = [...(ctx.sessionManager.getSessionRecoveryState?.().intercomDeliveredIds ?? []),...ctx.sessionManager.getBranch().flatMap((entry) => {
         if (entry.type !== "custom_message" || entry.customType !== "intercom_message") return [];
         const id = (entry.details as { message?: { id?: string } } | undefined)?.message?.id;
         return typeof id === "string" ? [id] : [];
-      });
+      })];
       await pendingStageDelivery.deliverPending(
         // Only a message handed over while the stage is still starting is pre-start context. A drain can outlive
         // the startup (a pooled stage's root drain finishes in the background): what it hands over afterwards

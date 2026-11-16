@@ -86,10 +86,11 @@ const DEFAULT_WORKTREE_SETUP_HOOK_TIMEOUT_MS = 30000;
  */
 const GIT_OUTPUT_MAX_BUFFER = 512 * 1024 * 1024;
 const HOOK_OUTPUT_MAX_BUFFER = 64 * 1024 * 1024;
-export function runGit(cwd: string, args: string[]): GitResult {
+const C_GIT_LOCALE_ENV: NodeJS.ProcessEnv = { LC_ALL: "C", LANGUAGE: "C" };
+export function runGit(cwd: string, args: string[], env: NodeJS.ProcessEnv = {}): GitResult {
 	const result = spawnSync("git", ["-C", cwd, ...args], {
 		encoding: "utf-8",
-		env: createGitEnvironment({}, createChildProcessEnvironment()),
+		env: createGitEnvironment(env, createChildProcessEnvironment()),
 		maxBuffer: GIT_OUTPUT_MAX_BUFFER,
 	});
 	return {
@@ -98,8 +99,8 @@ export function runGit(cwd: string, args: string[]): GitResult {
 		status: result.status,
 	};
 }
-export function runGitChecked(cwd: string, args: string[]): string {
-	const result = runGit(cwd, args);
+export function runGitChecked(cwd: string, args: string[], env: NodeJS.ProcessEnv = {}): string {
+	const result = runGit(cwd, args, env);
 	if (result.status !== 0) {
 		const command = `git -C ${cwd} ${args.join(" ")}`;
 		const message = result.stderr.trim() || result.stdout.trim() || `${command} failed`;
@@ -108,19 +109,19 @@ export function runGitChecked(cwd: string, args: string[]): string {
 	return result.stdout;
 }
 function originDefaultBranch(mainRoot: string): string | undefined {
-	const symbolic = runGit(mainRoot, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]);
+	const symbolic = runGit(mainRoot, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], C_GIT_LOCALE_ENV);
 	let branch =
 		symbolic.status === 0 && symbolic.stdout.trim().startsWith("origin/")
 			? symbolic.stdout.trim().slice("origin/".length)
 			: undefined;
 	if (!branch) {
-		const remote = runGit(mainRoot, ["remote", "show", "origin"]);
+		const remote = runGit(mainRoot, ["remote", "show", "origin"], C_GIT_LOCALE_ENV);
 		branch = remote.status === 0 ? remote.stdout.match(/^\s*HEAD branch:\s*(\S+)\s*$/m)?.[1] : undefined;
 	}
 	if (!branch || branch === "(unknown)") return undefined;
 	const remoteRef = `refs/remotes/origin/${branch}`;
 	if (
-		runGit(mainRoot, ["show-ref", "--verify", "--quiet", remoteRef]).status !== 0 &&
+		runGit(mainRoot, ["show-ref", "--verify", "--quiet", remoteRef], C_GIT_LOCALE_ENV).status !== 0 &&
 		runGit(mainRoot, ["fetch", "origin", `${branch}:${remoteRef}`]).status !== 0
 	)
 		return undefined;
@@ -128,14 +129,14 @@ function originDefaultBranch(mainRoot: string): string | undefined {
 }
 function resolveRepoState(cwd: string): RepoState {
 	const cwdRelative = resolveRepoCwdRelative(cwd);
-	const toplevel = path.resolve(runGitChecked(cwd, ["rev-parse", "--show-toplevel"]).trim());
+	const toplevel = path.resolve(runGitChecked(cwd, ["rev-parse", "--show-toplevel"], C_GIT_LOCALE_ENV).trim());
 	const mainRoot = findCanonicalGitRoot(toplevel);
 	if (mainRoot === undefined) throw new Error(`unable to resolve canonical main Git repository root from ${toplevel}`);
 	const status = runGitChecked(toplevel, ["status", "--porcelain", "--untracked-files=no"]);
 	if (status.trim().length > 0)
 		throw new Error("worktree isolation requires a clean git working tree. Commit or stash changes first.");
 	const baseRef = originDefaultBranch(mainRoot) || "HEAD";
-	const baseCommit = runGitChecked(mainRoot, ["rev-parse", baseRef]).trim();
+	const baseCommit = runGitChecked(mainRoot, ["rev-parse", baseRef], C_GIT_LOCALE_ENV).trim();
 	return { mainRoot, cwdRelative, baseCommit, baseRef };
 }
 function normalizeComparableCwd(cwd: string): string {
@@ -192,7 +193,7 @@ export function nextWorktreePatchPath(diffsDir: string, index: number, agent: st
  */
 export function restoreWorktreePatch(setup: WorktreeSetup, worktree: WorktreeInfo, patchPath: string): void {
 	if (!fs.readFileSync(patchPath, "utf-8").trim()) return;
-	if (runGitChecked(worktree.path, ["rev-parse", "HEAD"]).trim() !== setup.baseCommit) return;
+	if (runGitChecked(worktree.path, ["rev-parse", "HEAD"], C_GIT_LOCALE_ENV).trim() !== setup.baseCommit) return;
 	const applied = runGit(worktree.path, ["apply", "--whitespace=nowarn", patchPath]);
 	if (applied.status === 0) return;
 	cleanupSingleWorktree(setup.cwd, worktree);
@@ -213,17 +214,17 @@ export function ensureWorktreeIgnore(mainRoot: string): void {
 	fs.writeFileSync(path.join(root, ".gitignore"), "*\n", "utf8");
 }
 export function resolveRepoCwdRelative(cwd: string): string {
-	const repoCheck = runGit(cwd, ["rev-parse", "--is-inside-work-tree"]);
+	const repoCheck = runGit(cwd, ["rev-parse", "--is-inside-work-tree"], C_GIT_LOCALE_ENV);
 	if (repoCheck.status !== 0 || repoCheck.stdout.trim() !== "true") {
 		throw new Error("worktree isolation requires a git repository");
 	}
-	const rawPrefix = runGitChecked(cwd, ["rev-parse", "--show-prefix"]).trim();
+	const rawPrefix = runGitChecked(cwd, ["rev-parse", "--show-prefix"], C_GIT_LOCALE_ENV).trim();
 	const normalizedPrefix = rawPrefix ? path.normalize(rawPrefix.replace(/[\\/]+$/, "")) : "";
 	return normalizedPrefix === "." ? "" : normalizedPrefix;
 }
 export function resolveExpectedWorktreeAgentCwd(cwd: string, runId: string, index: number): string {
 	const cwdRelative = resolveRepoCwdRelative(cwd);
-	const toplevel = path.resolve(runGitChecked(cwd, ["rev-parse", "--show-toplevel"]).trim());
+	const toplevel = path.resolve(runGitChecked(cwd, ["rev-parse", "--show-toplevel"], C_GIT_LOCALE_ENV).trim());
 	const mainRoot = findCanonicalGitRoot(toplevel);
 	if (mainRoot === undefined) throw new Error(`unable to resolve canonical main Git repository root from ${toplevel}`);
 	const worktreePath = buildWorktreePath(mainRoot, runId, index);
@@ -280,7 +281,7 @@ function normalizeSyntheticPath(worktreePath: string, rawPath: string): string {
 	return path.normalize(relative);
 }
 function hasTrackedEntries(worktreePath: string, relativePath: string): boolean {
-	const result = runGit(worktreePath, ["ls-files", "--", relativePath]);
+	const result = runGit(worktreePath, ["ls-files", "--", relativePath], C_GIT_LOCALE_ENV);
 	return result.status === 0 && result.stdout.trim().length > 0;
 }
 function parseWorktreeSetupHookOutput(rawStdout: string): WorktreeSetupHookOutput {
@@ -500,7 +501,8 @@ export function recreateWorktree(
 	}
 	runGit(setup.cwd, ["worktree", "prune"]);
 	const branchExists =
-		runGit(setup.cwd, ["show-ref", "--verify", "--quiet", `refs/heads/${worktree.branch}`]).status === 0;
+		runGit(setup.cwd, ["show-ref", "--verify", "--quiet", `refs/heads/${worktree.branch}`], C_GIT_LOCALE_ENV)
+			.status === 0;
 	runGitChecked(
 		setup.cwd,
 		branchExists
@@ -553,7 +555,7 @@ export function worktreeHasUnsavedWork(setup: WorktreeSetup, worktree: WorktreeI
 			(changedPath) => !synthetic.some((entry) => changedPath === entry || changedPath.startsWith(`${entry}/`)),
 		);
 	if (changed.length > 0) return true;
-	const ahead = runGit(worktree.path, ["rev-list", "--count", `${setup.baseCommit}..HEAD`]);
+	const ahead = runGit(worktree.path, ["rev-list", "--count", `${setup.baseCommit}..HEAD`], C_GIT_LOCALE_ENV);
 	return ahead.status !== 0 || ahead.stdout.trim() !== "0";
 }
 function removeSyntheticPath(worktree: WorktreeInfo, syntheticPath: string): void {

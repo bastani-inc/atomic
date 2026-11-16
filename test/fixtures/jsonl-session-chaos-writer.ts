@@ -23,6 +23,10 @@ function isDiskFull(error: unknown): boolean {
 let written = 0;
 try {
 	while (written < limit) {
+		if (written + 1 === limit) {
+			for await (const _ of process.stdin) {
+			}
+		}
 		const manager = await SessionManager.create(cwd, directory);
 		await manager.appendStartState({ provider: "chaos", modelId: tag }, "high");
 		for (let index = 0; index < 3; index++) {

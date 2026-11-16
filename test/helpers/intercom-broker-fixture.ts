@@ -1,9 +1,11 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import net from "node:net";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createMessageReader, writeMessage } from "../../packages/intercom/broker/framing.js";
+import { stopDetachedBroker } from "./detached-broker.js";
+import { removeTestDirectory } from "./test-directory-removal.js";
 
 const BROKER_TERMINATE_GRACE_MS = 1_000;
 const BROKER_CLEANUP_TIMEOUT_MS = 5_000;
@@ -36,10 +38,14 @@ export class IntercomBrokerFixture {
 
 	overrideAgentDir(): void {
 		const original = process.env.ATOMIC_CODING_AGENT_DIR;
+		const originalLegacy = process.env.PI_CODING_AGENT_DIR;
 		process.env.ATOMIC_CODING_AGENT_DIR = this.agentDir;
+		delete process.env.PI_CODING_AGENT_DIR;
 		this.restoreEnvironment = () => {
 			if (original === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
 			else process.env.ATOMIC_CODING_AGENT_DIR = original;
+			if (originalLegacy === undefined) delete process.env.PI_CODING_AGENT_DIR;
+			else process.env.PI_CODING_AGENT_DIR = originalLegacy;
 		};
 	}
 
@@ -176,6 +182,14 @@ export class IntercomBrokerFixture {
 		}
 	}
 
+	private async stopSuccessorBroker(): Promise<void> {
+		const pidPath = join(this.agentDir, "intercom", "broker.pid");
+		if (!existsSync(pidPath)) return;
+		const pid = Number.parseInt(readFileSync(pidPath, "utf8").trim(), 10);
+		if (!Number.isFinite(pid) || pid <= 0 || pid === this.broker?.pid) return;
+		await stopDetachedBroker(this.agentDir);
+	}
+
 	async cleanup(): Promise<void> {
 		try {
 			try {
@@ -185,8 +199,9 @@ export class IntercomBrokerFixture {
 				);
 			} finally {
 				await this.stopBroker();
+				await this.stopSuccessorBroker();
 			}
-			rmSync(this.agentDir, { recursive: true, force: true });
+			removeTestDirectory(this.agentDir, { retries: 20, retryDelayMs: 50 });
 		} finally {
 			this.restoreEnvironment?.();
 			this.restoreEnvironment = undefined;

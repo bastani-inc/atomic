@@ -169,6 +169,105 @@ describe("TuiAltScreen", () => {
 		tui.stop();
 	});
 
+	it("pins the prompt of the turn at the top while scrolled up, and never hides a line for good (#5224)", async () => {
+		const mark = "\x1b]133;A\x07";
+		const rows = [`${mark}› first prompt`, "a1", "a2", "a3", `${mark}› second prompt`, "b1", "b2", "b3", "b4", "b5"];
+		const terminal = new VirtualTerminal(30, 6);
+		const tui = new TuiAltScreen(terminal, undefined, undefined, {
+			scrollPinnedPrompt: { isPrompt: (row) => row.startsWith(mark), render: (row) => `pinned: ${row}` },
+		});
+		const transcript = new ScrollView(new Text(rows.join("\n"), 0, 0), { follow: "end", primary: true });
+		tui.setLayoutRoot(
+			new VStack([
+				{ component: transcript, basis: 0, grow: 1, minSize: 1 },
+				{ component: new Text("editor\nfooter", 0, 0), basis: "auto", minSize: 1 },
+			]),
+		);
+		tui.start();
+		await terminal.waitForRender();
+		const view = () => terminal.getViewport().map((line) => line.trimEnd());
+		assert.ok(!view().some((line) => line.startsWith("pinned:")), view().join("\n"));
+
+		transcript.scrollTo(5);
+		tui.requestRender();
+		await terminal.waitForRender();
+		assert.deepStrictEqual(view().slice(0, 4), ["pinned: › second prompt", "b2", "b3", "b4"]);
+
+		transcript.scrollTo(4);
+		tui.requestRender();
+		await terminal.waitForRender();
+		assert.deepStrictEqual(view().slice(0, 2), ["› second prompt", "b1"]);
+
+		transcript.scrollTo(2);
+		tui.requestRender();
+		await terminal.waitForRender();
+		assert.deepStrictEqual(view().slice(0, 2), ["pinned: › first prompt", "a3"]);
+		transcript.scrollTo(1);
+		tui.requestRender();
+		await terminal.waitForRender();
+		assert.deepStrictEqual(view().slice(0, 2), ["pinned: › first prompt", "a2"]);
+
+		transcript.scrollTo(0);
+		tui.requestRender();
+		await terminal.waitForRender();
+		assert.strictEqual(view()[0], "› first prompt");
+
+		transcript.scrollToEnd();
+		tui.requestRender();
+		await terminal.waitForRender();
+		assert.ok(!view().some((line) => line.startsWith("pinned:")));
+		tui.stop();
+	});
+
+	it("reveals a transcript search match that would otherwise be hidden under the pinned prompt (#5243)", async () => {
+		const mark = "\x1b]133;A\x07";
+		const rows = [
+			`${mark}› fix the parser`,
+			"needle on row one",
+			"line 2",
+			"line 3",
+			"second target row",
+			"line 5",
+			"line 6",
+			"line 7",
+		];
+		const terminal = new VirtualTerminal(60, 6);
+		const tui = new TuiAltScreen(terminal, undefined, undefined, {
+			scrollPinnedPrompt: { isPrompt: (row) => row.startsWith(mark), render: (row) => `↑ ${row}` },
+		});
+		const transcript = new ScrollView(new Text(rows.join("\n"), 0, 0), { follow: "end", primary: true });
+		tui.setLayoutRoot(
+			new VStack([
+				{ component: transcript, basis: 0, grow: 1, minSize: 1 },
+				{ component: new Text("editor\nfooter", 0, 0), basis: "auto", minSize: 1 },
+			]),
+		);
+		tui.start();
+		await terminal.waitForRender();
+
+		transcript.scrollTo(1);
+		tui.requestRender();
+		await terminal.waitForRender();
+		assert.ok(terminal.getViewport()[0]?.startsWith("↑ › fix the parser"));
+
+		terminal.sendInput("\x1b[102;6u");
+		terminal.sendInput("needle");
+		await terminal.waitForRender();
+		assert.ok(terminal.getViewport().some((line) => line.includes("1/1")));
+		assert.ok(terminal.getViewport()[0]?.includes("needle on row one"));
+
+		transcript.scrollTo(2);
+		tui.requestRender();
+		await terminal.waitForRender();
+		assert.ok(terminal.getViewport()[0]?.startsWith("↑ › fix the parser"));
+
+		transcript.scrollTo(1);
+		tui.requestRender();
+		await terminal.waitForRender();
+		assert.ok(terminal.getViewport()[0]?.includes("needle on row one"));
+		tui.stop();
+	});
+
 	it("keeps the jump-to-end indicator centered as the auto scrollbar hides and reappears", async () => {
 		// Regression test for #9136: auto scrollbar visibility must not move the indicator.
 		const terminal = new VirtualTerminal(80, 6);
