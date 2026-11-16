@@ -15,6 +15,7 @@
 
 - A prompt typed while Atomic starts is no longer sent twice on Windows: a stray cursor report reached the startup input as F3, left a "C" in the editor and sent it with the next prompt. F1–F5 and Page Up/Down sent as `ESC [ [ …` no longer type a letter into the startup input
 - Keys typed while Atomic started are no longer lost when a startup dialog (project trust, dirty checkout, first-run setup) takes the terminal: they are captured as the draft, and keys typed once the dialog holds the terminal reach the dialog
+- A fast foreground shell command no longer delivers a stray `Background shell completed` notice after its own result when the command exits before Atomic has finished starting it. The model was shown the command's result a second time, as a background shell's, in chats and workflow stages alike ([#5333](https://github.com/bastani-inc/atomic/pull/5333))
 
 ## [0.9.88] - 2026-11-16
 
