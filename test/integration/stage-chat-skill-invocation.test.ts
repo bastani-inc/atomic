@@ -334,9 +334,7 @@ test("blocked and archived stage composers cannot submit a skill and tasks remai
 	try {
 		const view = fixture.mount();
 		submitStageSkillText(view, "/tasks");
-		await vi.waitFor(() =>
-			assert.match(view.render(120).map(stripVTControlCharacters).join("\n"), /^ Tasks\b/m),
-		);
+		await vi.waitFor(() => assert.match(view.render(120).map(stripVTControlCharacters).join("\n"), /^ Tasks\b/m));
 		view.handleInput("\x1b");
 		assert.equal(fixture.userTexts().length, 1);
 		view.dispose();
