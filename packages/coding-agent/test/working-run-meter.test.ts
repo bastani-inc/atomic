@@ -342,3 +342,84 @@ describe("working line time and tokens (#5224)", () => {
 		}
 	});
 });
+
+describe("working run meter estimate cache (#5243)", () => {
+	function countedMessage(text: string) {
+		const block = { type: "text", text };
+		const reads = { content: 0 };
+		const message = new Proxy(
+			{ role: "assistant", content: [block] as readonly unknown[] },
+			{
+				get(target, property, receiver) {
+					if (property === "content") reads.content += 1;
+					return Reflect.get(target, property, receiver);
+				},
+			},
+		);
+		return { message, block, reads };
+	}
+
+	test("a second snapshot of the same streaming message reads no content (#5243)", () => {
+		const meter = new WorkingRunMeter(() => 0);
+		meter.start();
+		const { message, reads } = countedMessage("x".repeat(400));
+		meter.streaming(message);
+		assert.equal(meter.snapshot()?.outputTokens, 100);
+		assert.ok(reads.content > 0, "the first snapshot estimates the streaming message");
+		reads.content = 0;
+		assert.equal(meter.snapshot()?.outputTokens, 100);
+		assert.equal(meter.snapshot()?.outputTokens, 100);
+		assert.equal(reads.content, 0, "later snapshots reuse the estimate");
+	});
+
+	test("a streaming update re-estimates the message (#5243)", () => {
+		const meter = new WorkingRunMeter(() => 0);
+		meter.start();
+		const { message, block, reads } = countedMessage("x".repeat(400));
+		meter.streaming(message);
+		assert.equal(meter.snapshot()?.outputTokens, 100);
+		block.text = "x".repeat(800);
+		meter.streaming(message);
+		reads.content = 0;
+		assert.equal(meter.snapshot()?.outputTokens, 200);
+		assert.ok(reads.content > 0);
+	});
+
+	test("a settled message replaces the streaming estimate with its usage (#5243)", () => {
+		const meter = new WorkingRunMeter(() => 0);
+		meter.start();
+		const { message, reads } = countedMessage("x".repeat(400));
+		meter.streaming(message);
+		assert.equal(meter.snapshot()?.outputTokens, 100);
+		meter.settled({ role: "assistant", usage: { output: 30 }, content: [] });
+		reads.content = 0;
+		assert.equal(meter.snapshot()?.outputTokens, 30);
+		assert.equal(reads.content, 0, "a settled run no longer reads the old streaming message");
+	});
+
+	test("starting a run drops the previous run's streaming estimate (#5243)", () => {
+		const meter = new WorkingRunMeter(() => 0);
+		meter.start();
+		const { message, reads } = countedMessage("x".repeat(400));
+		meter.streaming(message);
+		assert.equal(meter.snapshot()?.outputTokens, 100);
+		meter.start();
+		reads.content = 0;
+		assert.equal(meter.snapshot()?.outputTokens, 0);
+		assert.equal(reads.content, 0);
+	});
+
+	test("stopping a run drops its streaming estimate (#5243)", () => {
+		const meter = new WorkingRunMeter(() => 0);
+		meter.start();
+		const { message, reads } = countedMessage("x".repeat(400));
+		meter.streaming(message);
+		assert.equal(meter.snapshot()?.outputTokens, 100);
+		meter.stop();
+		reads.content = 0;
+		assert.equal(meter.snapshot(), undefined);
+		meter.start();
+		assert.equal(meter.snapshot()?.outputTokens, 0);
+		assert.equal(reads.content, 0);
+	});
+});
