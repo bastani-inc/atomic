@@ -1559,7 +1559,7 @@ export class SqlPoolQueue {
 					// re-enqueued since resuming, so an earlier incarnation's released work waits for its enqueue (#3979).
 					reads: [
 						{
-							sql: `UPDATE ${this.work} SET state = 'leased', generation = generation + 1, worker = ?, epoch = ?, expires_at = ${this.now} + ?, renewed_at = ${this.now}
+							sql: `WITH clock AS (SELECT ${this.now} AS now) UPDATE ${this.work} SET state = 'leased', generation = generation + 1, worker = ?, epoch = ?, expires_at = (SELECT now FROM clock) + ?, renewed_at = (SELECT now FROM clock)
 						WHERE id = (SELECT id FROM ${this.work} WHERE root = ? AND state = 'ready' AND epoch = ? AND ready_at <= ${this.now} AND (${compatible}) ${placed.clause} ORDER BY ready_at, ${this.dialect.rowOrder()} LIMIT 1${this.dialect.lockClause("update-skip-locked")})
 						RETURNING *`,
 							params: [
@@ -2648,7 +2648,7 @@ export class SqlPoolQueue {
 			fences: [this.rootFence(lease), this.attemptFence(lease, token, unexpired)],
 			writes: [
 				{
-					sql: `UPDATE ${this.work} SET expires_at = ${this.dialect.greatest("expires_at", `${this.now} + ?`)}, renewed_at = ${this.now} WHERE id = ?`,
+					sql: `WITH clock AS (SELECT ${this.now} AS now) UPDATE ${this.work} SET expires_at = ${this.dialect.greatest("expires_at", "(SELECT now FROM clock) + ?")}, renewed_at = (SELECT now FROM clock) WHERE id = ?`,
 					params: [durationMs, token.id],
 				},
 			],
