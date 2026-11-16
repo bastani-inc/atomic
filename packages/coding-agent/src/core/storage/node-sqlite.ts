@@ -1479,6 +1479,7 @@ export async function openNodeSqliteDatabase(
 		const location = connection.location();
 		const identity = location === null ? connection : await realpath(location);
 		const database = new NodeSqliteDatabase(connection, descriptor, true, identity, lockWaitMs, holdMs);
+		Object.defineProperty(database, "readOnly", { value: readOnly });
 		if (!readOnly) await database.openHolderRecord();
 		return database;
 	} catch (cause) {

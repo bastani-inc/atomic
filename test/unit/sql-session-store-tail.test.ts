@@ -88,6 +88,7 @@ function countingRows(database: SqliteDatabase): { database: SqliteDatabase; row
 			counted(await executor.all<T>(sql, ...params)),
 	});
 	const wrapped: SqliteDatabase = {
+		readOnly: database.readOnly,
 		...wrap(database),
 		get descriptor() {
 			return database.descriptor;

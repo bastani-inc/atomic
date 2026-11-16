@@ -413,15 +413,12 @@ export class SqlSessionStore implements SessionStore {
 			if ((await tx.get(probe.sql, ...probe.params)) === undefined) {
 				await tx.exec(`ALTER TABLE ${tables.entries} ADD COLUMN chunks ${int} NOT NULL DEFAULT 0`);
 			}
+			if (database.readOnly === true) return;
 			await tx.run(
 				`DELETE FROM ${tables.entryChunks} WHERE (session_id, seq) IN (
-					SELECT k.session_id, k.seq
-					FROM (SELECT DISTINCT session_id, seq FROM ${tables.entryChunks}) AS k
-					WHERE NOT EXISTS (
-						SELECT 1 FROM ${tables.entries} AS e
-						WHERE e.session_id = k.session_id AND e.seq = k.seq AND e.chunks > 0
-					)
-				)`,
+     SELECT k.session_id,k.seq FROM (SELECT DISTINCT session_id,seq FROM ${tables.entryChunks}) AS k
+     WHERE NOT EXISTS (SELECT 1 FROM ${tables.entries} AS e WHERE e.session_id=k.session_id AND e.seq=k.seq AND e.chunks>0)
+    )`,
 			);
 		};
 		await applyStorageMigrations(
