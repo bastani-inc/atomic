@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fauxAssistantMessage, fauxToolCall, registerFauxProvider } from "@bastani/atomic-ai/compat";
+import { fauxAssistantMessage, fauxToolCall, getApiProvider, registerFauxProvider } from "@bastani/atomic-ai/compat";
 import { test, vi } from "vitest";
 import type { AgentSession } from "../../packages/coding-agent/src/core/agent-session.js";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
@@ -38,10 +38,14 @@ test(
 			join(cwd, ".atomic", "agents", "reload-worker.md"),
 			"---\nname: reload-worker\ndescription: reload worker\ntools: read\ninheritProjectContext: false\ninheritSkills: false\n---\nReply briefly.\n",
 		);
+		vi.stubEnv("NODE_ENV", "production");
+		vi.stubEnv("NODE_TEST_CONTEXT", undefined);
 		vi.stubEnv("ATOMIC_CODING_AGENT_DIR", agentDir);
 		vi.stubEnv("PI_CODING_AGENT_DIR", agentDir);
 		const faux = registerFauxProvider();
 		const model = faux.getModel();
+		const fauxApi = getApiProvider(faux.api);
+		assert.ok(fauxApi);
 		const authStorage = AuthStorage.inMemory();
 		await authStorage.modify(model.provider, async () => ({ type: "api_key", key: "faux-key" }));
 		const modelRuntime = await ModelRuntime.create({
@@ -54,6 +58,7 @@ test(
 			api: model.api,
 			apiKey: "faux-key",
 			models: faux.models,
+			streamSimple: fauxApi.streamSimple,
 		});
 		const settingsManager = SettingsManager.inMemory({
 			retry: { enabled: false },
@@ -163,6 +168,10 @@ test(
 				.taskRecords()
 				.find((task) => task.ref.taskId !== child.ref.taskId && task.kind === "agent");
 			assert.ok(resumed);
+			assert.equal(resumed.execution.kind, "settled");
+			if (resumed.execution.kind === "settled") {
+				assert.equal(resumed.execution.result.kind, "completed", JSON.stringify(resumed.execution.result));
+			}
 			assert.equal((await taskSource().taskDetailText(resumed.ref.taskId)).output, "the resumed child answered");
 		} finally {
 			await session?.dispose();
