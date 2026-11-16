@@ -157,6 +157,7 @@ describe("interactive resume recovery (#3760)", () => {
 			chatContainer: new Container(),
 			startupNoticesContainer: new Container(),
 			ui: { requestRender() {} },
+			options: {},
 			bindCurrentSessionExtensions: async () => {
 				throw new Error("extension load failed");
 			},

@@ -1,8 +1,11 @@
+import { stripTerminalSequences } from "@bastani/atomic-tui";
 import type { RunSnapshot } from "../shared/store-types.js";
 import { DEFAULT_BG, hexToAnsi, RESET } from "./color-utils.js";
 import { GraphCanvas } from "./graph-canvas.js";
+import { visibleGraphEdges } from "./graph-edge-index.js";
 import { PULSE_PERIOD_MS } from "./graph-view-constants.js";
 import { GraphViewRenderHelpers } from "./graph-view-render-helpers.js";
+import { stageMatchesStatusFilter } from "./graph-view-state.js";
 import { NODE_H, NODE_W } from "./layout.js";
 import { renderNodeCard } from "./node-card.js";
 
@@ -39,7 +42,7 @@ export abstract class GraphViewGraphRenderer extends GraphViewRenderHelpers {
 		}
 
 		const graphInner = Math.max(1, width - 4);
-		const { canvasWidth, totalRows, bands, edges } = this.cachedRenderGeometry;
+		const { canvasWidth, totalRows, bands, edgeIndex } = this.cachedRenderGeometry;
 		const leftMargin = Math.max(2, canvasWidth <= graphInner ? Math.floor((graphInner - canvasWidth) / 2) : 2);
 		const viewportWidth = Math.max(1, width - leftMargin);
 		const fullCanvasWidth = Math.max(canvasWidth, viewportWidth);
@@ -62,15 +65,8 @@ export abstract class GraphViewGraphRenderer extends GraphViewRenderHelpers {
 			right: viewportRight,
 		});
 		const edgeColor = this.graphTheme.borderDim;
-		for (const edge of edges) {
-			if (
-				edge.bottom <= safeTop ||
-				edge.top >= viewportBottom ||
-				edge.right <= viewportLeft ||
-				edge.left >= viewportRight
-			) {
-				continue;
-			}
+		const dimFg = hexToAnsi(this.graphTheme.dim);
+		for (const edge of visibleGraphEdges(edgeIndex, safeTop, viewportBottom, viewportLeft, viewportRight)) {
 			this._plotEdge(edgeCanvas, edge.parentX, edge.parentY, edge.childX, edge.childY, edgeColor, edge.parentHeight);
 		}
 		const edgeLines = edgeCanvas.toLines();
@@ -78,10 +74,10 @@ export abstract class GraphViewGraphRenderer extends GraphViewRenderHelpers {
 		for (let bandIndex = this._firstVisibleLayoutBand(safeTop); bandIndex < bands.length; bandIndex++) {
 			const band = bands[bandIndex]!;
 			if (band.top >= viewportBottom) break;
-			for (const ni of band.nodeIndices) {
+			for (const ni of this._visibleBandNodeIndices(band, viewportLeft, viewportRight)) {
 				const node = this.cachedLayout[ni]!;
 				if (node.x + NODE_W <= viewportLeft || node.x >= viewportRight) continue;
-				const cardLines = renderNodeCard(node.stage, {
+				const rawCardLines = renderNodeCard(node.stage, {
 					width: NODE_W,
 					height: node.height ?? NODE_H,
 					focused: ni === this.focusedIndex,
@@ -90,6 +86,11 @@ export abstract class GraphViewGraphRenderer extends GraphViewRenderHelpers {
 					stages: this.cachedDisplayStages,
 					queuedMessageCount: this._stageQueuedMessageCount(node.stage),
 				});
+
+				const cardLines =
+					ni === this.focusedIndex || stageMatchesStatusFilter(node.stage, this.statusFilter)
+						? rawCardLines
+						: rawCardLines.map((line) => `${dimFg}${stripTerminalSequences(line)}${RESET}`);
 				const visibleLeft = Math.max(node.x, viewportLeft);
 				const visibleRight = Math.min(node.x + NODE_W, viewportRight);
 				for (let li = 0; li < cardLines.length; li++) {
@@ -138,7 +139,11 @@ export abstract class GraphViewGraphRenderer extends GraphViewRenderHelpers {
 		for (let bandIndex = this._firstVisibleLayoutBand(viewportTop); bandIndex < bands.length; bandIndex++) {
 			const band = bands[bandIndex]!;
 			if (band.top >= viewportBottom) break;
-			for (const index of band.nodeIndices) {
+			for (const index of this._visibleBandNodeIndices(
+				band,
+				this.graphScrollColOffset,
+				this.graphScrollColOffset + viewport.viewportWidth,
+			)) {
 				const node = this.cachedLayout[index]!;
 				const top = graphStartRow + node.y - viewportTop;
 				const bottom = top + (node.height ?? NODE_H);

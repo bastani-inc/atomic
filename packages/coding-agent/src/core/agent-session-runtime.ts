@@ -678,6 +678,7 @@ export class AgentSessionRuntime {
 			sessionDirectory?: string;
 			withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
 			projectTrustContextFactory?: (cwd: string) => ProjectTrustContext;
+			history?: "tail" | "full";
 		},
 	): Promise<{ cancelled: boolean }> {
 		return this.replace(async () => {
@@ -689,7 +690,9 @@ export class AgentSessionRuntime {
 
 			const previousSessionId = this.session.sessionId;
 			const opened = await this.boundedSessionLookup(
-				this.session.sessionManager.openSessionById(sessionId, options?.cwdOverride, options?.sessionDirectory),
+				this.session.sessionManager.openSessionById(sessionId, options?.cwdOverride, options?.sessionDirectory, {
+					history: options?.history ?? "full",
+				}),
 				sessionId,
 			);
 			const { sessionManager, unrecorded } = await this.resumeWorktree(opened, options?.sessionDirectory);
@@ -761,6 +764,7 @@ export class AgentSessionRuntime {
 			let targetLeafId: string | null;
 			let selectedText: string | undefined;
 
+			if (!this.session.sessionManager.getEntry(entryId)) await this.session.sessionManager.loadFullHistory();
 			const selectedEntry = this.session.sessionManager.getEntry(entryId);
 			if (!selectedEntry) {
 				throw new SessionEntryError(entryId, "missing");
@@ -863,7 +867,7 @@ export class AgentSessionRuntime {
 	 * when another node released it, has its checkouts prepared first, as `/resume` prepares them, and continues where
 	 * they were restored. Lookups in shared storage are bounded as `/resume`'s are.
 	 */
-	rehydrate(sessionId: string): Promise<AgentSession> {
+	rehydrate(sessionId: string, options?: { readonly history?: "tail" | "full" }): Promise<AgentSession> {
 		return this.admit(async () => {
 			const current = this.session as unknown as AgentSessionInternalSurface;
 			if (this.session.sessionId === sessionId && !current._disposed) return this.session;
@@ -871,7 +875,7 @@ export class AgentSessionRuntime {
 			if (live !== undefined && !(live as unknown as AgentSessionInternalSurface)._disposed) return live;
 			const pending = this.rehydrating.get(sessionId);
 			if (pending !== undefined) return pending;
-			const rehydration = this.rehydrateFromStore(sessionId);
+			const rehydration = this.rehydrateFromStore(sessionId, options?.history ?? "full");
 			this.rehydrating.set(sessionId, rehydration);
 			try {
 				return await rehydration;
@@ -882,17 +886,20 @@ export class AgentSessionRuntime {
 	}
 
 	/** Where a rehydrated session continues, decided checkout by checkout; see {@link continueSessionWhereItWorked}. */
-	private continueWhereItWorked(opened: SessionManager): Promise<SessionManager> {
+	private continueWhereItWorked(opened: SessionManager, history: "tail" | "full"): Promise<SessionManager> {
 		const options = {
 			...this.resumeOptions("rehydrate"),
 			onNotices: (notices: readonly ResumeNotice[]) => this.queueResumeNotices(notices),
 		};
 		return continueSessionWhereItWorked(opened, options, (cwd) =>
-			this.boundedSessionLookup(opened.openSessionById(opened.getSessionId(), cwd), opened.getSessionId()),
+			this.boundedSessionLookup(
+				opened.openSessionById(opened.getSessionId(), cwd, undefined, { history }),
+				opened.getSessionId(),
+			),
 		);
 	}
 
-	private async rehydrateFromStore(sessionId: string): Promise<AgentSession> {
+	private async rehydrateFromStore(sessionId: string, history: "tail" | "full"): Promise<AgentSession> {
 		const store = this.session.sessionManager.getSessionStore();
 		if ((await this.boundedSessionLookup(store.readHeader(sessionId), sessionId)) === undefined) {
 			const storage = store.descriptor.adapter;
@@ -902,8 +909,11 @@ export class AgentSessionRuntime {
 				localOnly: isLocalOnlySessionStorage(storage),
 			});
 		}
-		const opened = await this.boundedSessionLookup(this.session.sessionManager.openSessionById(sessionId), sessionId);
-		const sessionManager = await this.continueWhereItWorked(opened);
+		const opened = await this.boundedSessionLookup(
+			this.session.sessionManager.openSessionById(sessionId, undefined, undefined, { history }),
+			sessionId,
+		);
+		const sessionManager = await this.continueWhereItWorked(opened, history);
 		const cwd = sessionManager.getCwd();
 		const result = await sessionLifecycleCreation.run({ scope: {} }, () =>
 			this.sessionFactory({

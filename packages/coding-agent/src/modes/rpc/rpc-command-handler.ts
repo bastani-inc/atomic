@@ -259,6 +259,9 @@ export function createRpcCommandHandler({
 					isStreaming: session.isStreaming,
 					isCompacting: session.isCompacting,
 					compactionReason: session.compactionReason,
+					...(session.compactionStartedAt === undefined
+						? {}
+						: { compactionStartedAt: session.compactionStartedAt }),
 					steeringMode: session.steeringMode,
 					followUpMode: session.followUpMode,
 					...(session.sessionFile ? { sessionLocation: session.sessionFile } : {}),
@@ -564,6 +567,7 @@ export function createRpcCommandHandler({
 				const result = await runtimeHost.switchSession(command.sessionId, {
 					cwdOverride: command.cwdOverride,
 					sessionDirectory: command.sessionDirectory,
+					history: "tail",
 				});
 				if (!result.cancelled) {
 					await rebindSession();
@@ -604,12 +608,14 @@ export function createRpcCommandHandler({
 			}
 
 			case "get_fork_messages": {
+				await session.sessionManager.loadFullHistory?.();
 				const messages = session.getUserMessagesForForking();
 				return createRpcSuccessResponse(id, "get_fork_messages", { messages });
 			}
 
 			case "get_entries": {
 				const sessionManager = session.sessionManager;
+				await sessionManager.loadFullHistory?.();
 				let entries = sessionManager.getEntries();
 				if (command.since !== undefined) {
 					const sinceIndex = entries.findIndex((e) => e.id === command.since);
@@ -623,6 +629,7 @@ export function createRpcCommandHandler({
 
 			case "get_tree": {
 				const sessionManager = session.sessionManager;
+				await sessionManager.loadFullHistory?.();
 				return createRpcSuccessResponse(id, "get_tree", {
 					tree: sessionManager.getTree(),
 					leafId: sessionManager.getLeafId(),

@@ -17,23 +17,6 @@ import { TestSqliteDatabase } from "./helpers/sqlite.js";
 
 const prompt = vi.hoisted(() => ({ answer: "n", questions: [] as string[] }));
 
-vi.mock("node:readline", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("node:readline")>();
-	return {
-		...actual,
-		createInterface: (options: Parameters<typeof actual.createInterface>[0]) => {
-			if (options.output === undefined) return actual.createInterface(options);
-			return {
-				question: (question: string, answered: (answer: string) => void) => {
-					prompt.questions.push(question);
-					answered(prompt.answer);
-				},
-				close: () => {},
-			};
-		},
-	};
-});
-
 class ExitError extends Error {
 	constructor(readonly code: number | string | null | undefined) {
 		super(`process.exit(${code})`);
@@ -66,6 +49,24 @@ describe("resolving --session and --fork against a large legacy session director
 		prompt.answer = "n";
 		prompt.questions = [];
 		errors = [];
+		const originalStdoutWrite = process.stdout.write.bind(process.stdout);
+		vi.spyOn(process.stdout, "write").mockImplementation(((
+			chunk: string | Uint8Array,
+			encodingOrCallback?: BufferEncoding | ((error?: Error | null) => void),
+			callback?: (error?: Error | null) => void,
+		) => {
+			const text = typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
+			if (text.endsWith("[y/N] ")) {
+				prompt.questions.push(text);
+				queueMicrotask(() => {
+					process.stdin.emit("data", `${prompt.answer}\n`);
+				});
+				return true;
+			}
+			return typeof encodingOrCallback === "string"
+				? originalStdoutWrite(chunk, encodingOrCallback, callback)
+				: originalStdoutWrite(chunk, encodingOrCallback);
+		}) as typeof process.stdout.write);
 		vi.spyOn(console, "log").mockImplementation(() => {});
 		vi.spyOn(console, "error").mockImplementation((message: string) => {
 			errors.push(message);

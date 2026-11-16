@@ -261,6 +261,7 @@ async function admittedPrompt(this: AgentSession, text: string, options?: Prompt
 		}
 	} finally {
 		this._activePromptCount -= 1;
+		if (this._activePromptCount === 0) this._subagentPolicy?.onTurnDrained?.();
 	}
 }
 
@@ -783,7 +784,7 @@ async function holdForDetachedResults(session: AgentSession, message: AgentMessa
 	);
 }
 
-async function settleAgentRun(session: AgentSession): Promise<void> {
+async function settleAgentRun(session: AgentSession, keepMessageAdmissionOpen = false): Promise<void> {
 	session._cacheWarmer?.onAgentSettled();
 	try {
 		await session._agentEventQueue;
@@ -792,11 +793,11 @@ async function settleAgentRun(session: AgentSession): Promise<void> {
 	} finally {
 		// A failed event or flush must still close and settle the run; otherwise the open-run
 		// marker and active prompt count leak and later interactive messages stay queued forever.
-		await finishAgentRun(session);
+		await finishAgentRun(session, keepMessageAdmissionOpen);
 	}
 }
 
-async function finishAgentRun(session: AgentSession): Promise<void> {
+async function finishAgentRun(session: AgentSession, keepMessageAdmissionOpen = false): Promise<void> {
 	closeRun(session);
 	try {
 		session._isEmittingAgentSettled = true;
@@ -809,13 +810,18 @@ async function finishAgentRun(session: AgentSession): Promise<void> {
 		} finally {
 			session._isEmittingAgentSettled = false;
 		}
-		if (session._subagentMessageAdmission) await settleSubagentMessages(session);
+		if (session._subagentMessageAdmission) await settleSubagentMessages(session, keepMessageAdmissionOpen);
 	} finally {
+		session._abortPreparedRunAtStart = false;
 		session._activePromptCount -= 1;
 		// Runs deferred by agent_settled handlers start only after every settled handler completed.
 		// Guarded because prompt-handshake suites drive this function on a synthetic session.
 		const deferred = session._deferredSettledActions?.splice(0) ?? [];
-		for (const action of deferred) await action();
+		try {
+			for (const action of deferred) await action();
+		} finally {
+			if (session._activePromptCount === 0) session._subagentPolicy?.onTurnDrained?.();
+		}
 	}
 }
 
@@ -842,7 +848,7 @@ async function runBeforeSettleContinuations(session: AgentSession): Promise<void
 	}
 }
 
-async function settleSubagentMessages(session: AgentSession): Promise<void> {
+async function settleSubagentMessages(session: AgentSession, keepMessageAdmissionOpen = false): Promise<void> {
 	const admission = session._subagentMessageAdmission!;
 	// A host-requested stop is terminal for a child, like cancellation. Retain
 	// protected input for persistence without restarting work or spinning on it.
@@ -860,12 +866,15 @@ async function settleSubagentMessages(session: AgentSession): Promise<void> {
 	);
 	// #5224: a turn the user interrupted from the child's chat is not the child's end. Its admission stays open for the
 	// next message, which starts a turn; the child's execution ending seals it.
-	if (session._turnInterruptedByUser) {
+	if (session._turnInterruptedByUser || session._awaitingStartAfterInterrupt) {
 		session._turnInterruptedByUser = false;
+		session._awaitingStartAfterInterrupt = true;
 		session._awaitingMessageAfterInterrupt = true;
 		return;
 	}
-	admission.seal();
+	// A turn that settles before the child's execution gave it its task, such as one an extension's interrupt started
+	// while the task was still being sent, leaves admission open for that task.
+	if (!keepMessageAdmissionOpen && session._subagentPolicy?.taskPending?.() !== true) admission.seal();
 }
 
 export async function _runAgentContinue(this: AgentSession): Promise<void> {
@@ -886,20 +895,27 @@ function sessionClosedForDetachedTurn(session: AgentSession): ToolDetachmentErro
  * results of detached tool calls), then the loop continues without a new user message, with the same queue drains
  * and settlement as a prompt. The caller has already refused a closed session, so nothing is recorded on one.
  */
-export async function _runAgentContinuation(this: AgentSession, beforeContinue: () => Promise<void>): Promise<void> {
+export async function _runAgentContinuation(
+	this: AgentSession,
+	beforeContinue: () => Promise<void>,
+	mode: "continue" | "recovery" | "settle" = "continue",
+): Promise<void> {
 	const lifetime = sessionLifetime(this);
 	return trackSessionWork(this, async () => {
-		this._workflowStageAwaitingFirstPrompt = false;
-		this._agentRunAbortRequested = false;
-		this._persistenceFailure = undefined;
-		this._stopAfterTurnBlockedContinuation = false;
+		if (mode !== "settle") {
+			this._workflowStageAwaitingFirstPrompt = false;
+			this._agentRunAbortRequested = false;
+			this._persistenceFailure = undefined;
+			this._stopAfterTurnBlockedContinuation = false;
+		}
 		this._activePromptCount += 1;
 		openRun(this);
 		try {
 			await beforeContinue();
 			if (this._disposed || lifetime.aborted || sessionGenerationClosing.has(this))
 				throw sessionClosedForDetachedTurn(this);
-			await this.agent.continue();
+			if (mode === "recovery") await this._continueQueuedAgentMessages();
+			else if (mode === "continue") await this.agent.continue();
 			await this.waitForRetry();
 			if (lifetime.aborted || sessionGenerationClosing.has(this)) return;
 			await this._continueQueuedAgentMessages();
@@ -908,7 +924,7 @@ export async function _runAgentContinuation(this: AgentSession, beforeContinue: 
 			await runBeforeSettleContinuations(this);
 		} finally {
 			this._runSystemPromptOptions = undefined;
-			await settleAgentRun(this);
+			await settleAgentRun(this, mode === "recovery");
 		}
 	});
 }
@@ -925,6 +941,7 @@ function preparePriorityContinuation(session: AgentSession): Promise<void> | und
 	const restore = (): void => {
 		if (!session._priorityInterruptPending) return;
 		session._priorityInterruptPending = false;
+		session._abortPreparedRunAtStart = false;
 		session._restoreAndClearActiveInterruptQueueHold();
 	};
 	// Keep the idle prompt start synchronous unless a producer commit is still in flight.

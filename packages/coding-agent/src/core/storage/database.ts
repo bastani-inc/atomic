@@ -124,6 +124,12 @@ export interface StorageNotifications {
 }
 
 export interface SqliteDatabase extends SqliteExecutor {
+	/**
+	 * True when the connection refuses writes, as `openNodeSqliteDatabase(path, { readOnly: true })` sets it, so opening a
+	 * session store skips a cleanup write that would fail. Optional: a read-only connection that leaves it unset still
+	 * opens a session store, whose failed cleanup is ignored.
+	 */
+	readonly readOnly?: boolean;
 	readonly descriptor: StorageDescriptor;
 	/** The SQL dialect the database speaks; absent means SQLite. Read it through `dialectOf(database)`. */
 	readonly dialect?: StorageDialect;

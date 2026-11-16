@@ -163,7 +163,7 @@ export const WorkflowParametersSchema = Type.Object(
 		fromStage: Type.Optional(
 			Type.String({
 				description:
-					"Fork-only: dot path of the completed stage the fork re-runs from, for example 'implement-api.review-2' for a stage inside a nested workflow. An unknown path fails with the run's valid stage paths. Omit to fork the whole run.",
+					"Fork-only: dot path of the stage the fork re-runs from, for example 'implement-api.review-2' for a stage inside a nested workflow: a completed stage, or a failed, blocked or stopped one, which then reruns from scratch along with any tool calls completed after it started. An unknown path fails with the run's valid stage paths. Omit to fork the whole run.",
 			}),
 		),
 		carryMessages: Type.Optional(

@@ -20,6 +20,7 @@ import { childHoldKey, holdChildTargets, parkPausedChildHold, releasePausedChild
 import {
 	currentWakeFailure,
 	findSubagentChildRecord,
+	isSubagentChildRecord,
 	readSubagentChildRecords,
 	recordSubagentChildStatus,
 	recordSubagentChildStop,
@@ -124,14 +125,31 @@ function ownedRecords(ctx: ExtensionContext): Map<string, SubagentChildRecord> {
 }
 
 /**
- * The child this session launched as task `taskId`, and why it cannot be resumed, if it cannot: its chat uses this to
- * send a message that resumes it, or to turn read-only.
+ * The child an earlier record of this session gave task `taskId`: a resumed child runs as a new task, and its record
+ * keeps only the latest task id, while the earlier task's chat still continues it.
+ */
+function childIdOfEarlierTask(ctx: ExtensionContext, taskId: string): string | undefined {
+	const owner = subagentChildOwner(ctx).sessionId;
+	for (const entry of ctx.sessionManager.getEntries()) {
+		if (!isSubagentChildRecord(entry)) continue;
+		const data = entry.data as SubagentChildRecord;
+		if (data.owner?.sessionId === owner && data.taskId === taskId) return data.childId;
+	}
+	return undefined;
+}
+
+/**
+ * The child this session launched as task `taskId`, or resumed from it, and why it cannot be resumed, if it cannot:
+ * its chat uses this to send a message that resumes it, or to turn read-only.
  */
 export function subagentChildOfTask(
 	ctx: ExtensionContext,
 	taskId: string,
 ): { readonly childId: string; readonly readOnlyReason?: string } | undefined {
-	const record = [...ownedRecords(ctx).values()].find((candidate) => candidate.taskId === taskId);
+	const records = [...ownedRecords(ctx).values()];
+	const current = records.find((candidate) => candidate.taskId === taskId);
+	const earlier = current === undefined ? childIdOfEarlierTask(ctx, taskId) : undefined;
+	const record = current ?? records.find((candidate) => candidate.childId === earlier);
 	if (record === undefined) return undefined;
 	const terminal = record.state === "terminal" ? NON_RESUMABLE_STATUSES.get(record.terminalStatus ?? "") : undefined;
 	return terminal === undefined

@@ -61,7 +61,6 @@ describe("Pi 0.83.0 direct coding-agent parity", () => {
 	});
 
 	it("f1ea6c0d: moves the model selector to the top row when a filter query is applied", () => {
-		// The model picker filters through the shared selector's state.
 		const state = new SelectorState({
 			items: ["alpha", "beta", "gamma"].map((id) => ({ id, value: id, label: `p/${id}` })),
 		});
@@ -71,7 +70,6 @@ describe("Pi 0.83.0 direct coding-agent parity", () => {
 		expect(state.getSelectedIndex()).toBe(0);
 		expect(state.getSelected()?.id).toBe("beta");
 
-		// Clearing the query restores the full list and keeps the row the filter selected.
 		state.setQuery("");
 		expect(state.getVisible()).toHaveLength(3);
 		expect(state.getSelected()?.id).toBe("beta");

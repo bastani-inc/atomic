@@ -127,9 +127,6 @@ describe("issue #3217 scoped model ordering", () => {
 			expect(stripAnsi(rendered)).toMatch(
 				new RegExp(`${unavailableId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} +unavailable`),
 			);
-			// Upstream pi #8900 replaced the trailing " ✗" on unavailable scoped models with a
-			// strikethrough on the id. Atomic never carried upstream's `6949-unavailable-scoped-model`
-			// baseline, so that presentation assertion is folded in here instead.
 			expect(rendered).toContain(theme.strikethrough(unavailableId));
 			selector.handleInput("\r");
 			expect(changes.at(-1)).toEqual([availableId]);

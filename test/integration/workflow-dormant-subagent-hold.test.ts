@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync } from "node:fs";
-import net from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, test, vi } from "vitest";
@@ -11,6 +10,10 @@ import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
 import registerSubagentExtension from "../../packages/subagents/src/extension/index.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
+import {
+	WORKFLOW_DORMANT_RUN_SUBAGENT_HOLD_EVENT,
+	type WorkflowDormantRunSubagentHoldRequest,
+} from "../../packages/subagents/src/runs/foreground/subagent-child-hold.js";
 import {
 	createSubagentChildRecordSink,
 	readSubagentChildRecords,
@@ -40,11 +43,20 @@ const { default: intercomLightweight } = await import("../../packages/intercom/i
 type Client = InstanceType<typeof IntercomClient>;
 
 const REAL_BROKER_TEST_TIMEOUT_MS = 90_000;
-const RECORD_WAIT_MS = 5_000;
+/**
+ * Structural: the broker child compiles its TypeScript through jiti before it answers, which took longer than 10 s on a
+ * loaded Windows host (#5252).
+ */
+const BROKER_START_WAIT_MS = 90_000;
+/** Starting the broker waits for it, then has room to fail with its own message. */
+const BROKER_START_HOOK_TIMEOUT_MS = BROKER_START_WAIT_MS + 5_000;
+/** Waits for a condition the test caused (a record saved, a hold handed over, a revocation answered): load only slows them. */
+const CONDITION_WAIT_MS = REAL_BROKER_TEST_TIMEOUT_MS / 3;
+const RECORD_WAIT_MS = CONDITION_WAIT_MS;
 const SETTLE_MS = 400;
 const HELD_PROBE_MS = 150;
-const HOLD_IN_PLACE_MS = 10_000;
-const REVOKE_WAIT_MS = 10_000;
+const HOLD_IN_PLACE_MS = CONDITION_WAIT_MS;
+const REVOKE_WAIT_MS = CONDITION_WAIT_MS;
 
 function taskHost(owner: string): AgentTaskHost {
 	return new AgentTaskHost({
@@ -231,9 +243,17 @@ async function restartedLauncher(run: InterruptedRun) {
 		],
 		intercom: intercomLightweight,
 	});
+	// The workflows extension asks the subagents extension to hold the run's subagents; each answer says when its holds
+	// are in place at the broker. Read once the run was examined: the subagents extension answers as the request is made.
+	const holdRequests: WorkflowDormantRunSubagentHoldRequest[] = [];
+	launcher.events.on(WORKFLOW_DORMANT_RUN_SUBAGENT_HOLD_EVENT, (payload) => {
+		holdRequests.push(payload as WorkflowDormantRunSubagentHoldRequest);
+	});
 	await launcher.start();
 	assert.ok(dormant);
 	await dormant.settled();
+	// Wait for the broker to hold the subagents, however long a loaded host takes, instead of probing against a deadline.
+	await Promise.all(holdRequests.map(async (request) => (await request.completion)?.ready));
 	return {
 		launcher,
 		async stop() {
@@ -339,22 +359,10 @@ beforeAll(async () => {
 		stdio: "ignore",
 	});
 	brokerFixture.trackBroker(broker);
-	await vi.waitFor(
-		async () => {
-			brokerFixture.assertRunning();
-			const connected = await new Promise<boolean>((resolveConnected) => {
-				const socket = net.createConnection(getBrokerSocketPath(process.platform, brokerFixture.agentDir));
-				socket.once("connect", () => {
-					socket.destroy();
-					resolveConnected(true);
-				});
-				socket.once("error", () => resolveConnected(false));
-			});
-			assert.ok(connected);
-		},
-		{ timeout: 10_000, interval: 20 },
-	);
-});
+	// A broker retires once no session has been connected for 5 s since it listened. Each test spends longer than that on
+	// a loaded host before its first client registers, so the fixture holds a session for this broker until cleanup.
+	await brokerFixture.holdSession(getBrokerSocketPath(process.platform, brokerFixture.agentDir), BROKER_START_WAIT_MS);
+}, BROKER_START_HOOK_TIMEOUT_MS);
 afterAll(() => brokerFixture.cleanup());
 
 test(

@@ -72,7 +72,8 @@ export interface FleetHostView {
 	readonly draining: boolean;
 	/**
 	 * Its drain is over (#5072): every host on it confirmed the drain by leaving the registry, or the drain timed out
-	 * while it held no lease. A host that only stopped reporting has not drained.
+	 * while it held no lease, or it was drained for its boot timeout and no host on it is live or draining. A host that
+	 * only stopped reporting has not drained.
 	 */
 	readonly drained: boolean;
 }
@@ -163,7 +164,8 @@ export function fleetTarget(policy: FleetPolicy, roots: readonly FleetRootDemand
  * - A host that registered since the last tick clears the failures before it. The failures seen in the same tick are
  *   counted after that, whatever order the provider lists its hosts in: the tick sees them at `now`, no earlier than
  *   the registration.
- * - A draining host is removed once it has `drained`: it left the registry, or its drain timed out with no lease held.
+ * - A draining host is removed once it has `drained`: it left the registry, its drain timed out with no lease held, or
+ *   it was drained for its boot timeout and no host on it is live or draining.
  * - A host that holds a child is never drained or removed, whatever its state.
  */
 export function planFleet(policy: FleetPolicy, observation: FleetObservation, state: FleetPolicyState): FleetPlan {

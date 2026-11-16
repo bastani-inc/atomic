@@ -298,6 +298,8 @@ describe("tool graph inspection", () => {
 			assert.doesNotMatch(expanded, new RegExp(hidden));
 		assert.equal(enterView.handleInput("\x0f"), true);
 		assert.doesNotMatch(visibleText(enterView.render(120)), /\bTIMING\b/);
+		assert.equal(enterView.handleInput("\x1b[D"), true);
+		assert.ok(enterView._toolDetail, "Left does not close the tool detail (#5234)");
 		assert.equal(enterView.handleInput("\x1b"), true);
 		assert.equal(enterView._toolDetail, null);
 		enterView.dispose();
@@ -511,7 +513,7 @@ describe("tool graph inspection", () => {
 		for (const [status, marker] of [
 			["failed", "✗"],
 			["cached", "↻"],
-			["cancelled", "⊘"],
+			["cancelled", "◼"],
 			["pending", "○"],
 		] as const) {
 			const rendered = renderToolDetail(tool({ status, args: undefined }), { width: 80 });

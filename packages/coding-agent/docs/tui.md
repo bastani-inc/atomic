@@ -410,7 +410,7 @@ These patterns cover the most common UI needs in extensions. **Copy these patter
 
 ### Pattern 1: Selection Dialog (Selector)
 
-For letting users pick from a list, use `Selector` from `@bastani/atomic`. It is the picker Atomic's own selectors use, so your dialog looks and behaves like `/model`, `/resume` and the rest: a title, an optional type-to-search box, one- or two-line rows with dim descriptions and right-aligned tags, `↑ N more` / `↓ N more` scroll indicators, an empty state, and one hint line that lists exactly the keys that work.
+For letting users pick from a list, use `Selector` from `@bastani/atomic`. It is the picker behind `/model`, `/login`, `/logout`, `/thinking`, `/trust`, `/scoped-models` and extension `select` and `confirm` dialogs, so your dialog looks and behaves like them: a title, an optional type-to-search box, one- or two-line rows with dim descriptions and right-aligned tags, `↑ N more` / `↓ N more` scroll indicators, an empty state, and one hint line that lists exactly the keys that work.
 
 ```typescript
 import { DynamicBorder, Selector } from "@bastani/atomic";
@@ -438,14 +438,14 @@ const choice = await ctx.ui.custom<string | null>((tui, _theme, _kb, done) => {
 });
 ```
 
-Keys are the same in every picker: ↑↓ select (wrapping), pgup/pgdn page, enter or → choose, esc clears the search before it cancels, and ctrl+c always cancels. Options worth knowing:
+Selector uses ↑↓ to select (wrapping) and pgup/pgdn to page. Enter chooses, and → chooses when the search is empty. Esc clears the search before it cancels, and ctrl+c always cancels. Options worth knowing:
 
 | Option | Effect |
 | --- | --- |
 | `layout: "two-line"` | Each description goes on the line under its label, for rows like sessions or runs. |
 | `mode: "multi"` | Checkboxes: space toggles, enter calls `onConfirm` with the checked rows. Confirming always stops the picker, whatever `closeOnSelect` says. |
 | `closeOnSelect: false` | Single-select only. Choosing a row calls `onSelect` and leaves the picker live, so enter or a click can choose again, for a picker that applies each choice and stays open. Default `true`. |
-| `numbered: true` | Rows are numbered; without a search box, digits choose a row directly. |
+| `numbered: true` | Rows are numbered; without a search box, digits 1–9 choose a row directly, or toggle it with `mode: "multi"`. |
 | `onPreview` | Space previews the selected row; the hint shows `space preview`. |
 | `onSelectionChange` | Reports the selected row when navigation or filtering changes its identity, or `undefined` when no enabled row matches. |
 | `extraKeys` | Keys of your own, each with a hint and an `enabled(item)` check, so a key that does nothing for the selected row is not shown. |
@@ -460,6 +460,7 @@ Keys are the same in every picker: ↑↓ select (wrapping), pgup/pgdn page, ent
 Without a search box, `?` shows the picker's keys and `j`/`k` move like ↓/↑. Mouse input does not change or choose a row while this help is open. `setNotice({ text, tone })` shows a one-line status, such as a refresh result, under the list.
 
 A picker stops taking keys and mouse input once it calls `onCancel`, once it calls `onConfirm`, and once it calls `onSelect` unless `closeOnSelect` is `false`. Repeated enter presses and clicks therefore reach your callback once, and a picker you keep on screen after that ignores every key, esc and ctrl+c included. If your callback can fail, for example while it saves the choice, call `selector.retrySelection()` when it does: the picker takes input again, so the user can choose again or press esc. Pair it with `setNotice()` to show the error.
+
 
 Use `setItems()` to replace row data. When external data used by a custom `style` or an extra key's `enabled` callback changes, call `selector.invalidate()` before requesting a render. A row's `labelStyle` still runs on each render, so animated labels can update without replacing the rows.
 

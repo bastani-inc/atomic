@@ -2,6 +2,7 @@ import { replaceControlCharacters, ScrollView, VStack } from "@bastani/atomic-tu
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { formatModelLabel } from "../../core/model-label.ts";
 import { isOfflineModeEnabled } from "../../core/package-manager-env.ts";
+import { consumeStartupInput } from "../../main-early-input.ts";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { ensurePngTranscoder } from "../../utils/image-convert.ts";
 import { setMarkitDiagnosticSink } from "../../utils/markit.js";
@@ -210,6 +211,8 @@ export function attachInteractiveEngineResourceExtensionRefresh(mode: Interactiv
 	});
 }
 
+export const STARTUP_DRAFT_HELD_NOTICE = "Your earlier input is in the prompt; press Enter to send it.";
+
 InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase): Promise<void> {
 	if (this.isInitialized) return;
 
@@ -268,10 +271,13 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 		this.ui.requestRender();
 	});
 
+	const startupInput = consumeStartupInput(this.options.startupInputCapture, {
+		startupDecisionPending: this.options.startupTrustPromptPossible,
+	});
 	seedStartupInput(
 		this.pendingUserInputs,
 		this.defaultEditor,
-		this.options.startupInputCapture?.consume(),
+		startupInput,
 		this.startupReplayInputs,
 		(text) => {
 			this.startupDraftText = text;
@@ -313,6 +319,10 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 		this.headerContainer.addChild(this.builtInHeader);
 	}
 	this.showFullscreenModelScopeNotice();
+	if (startupInput.heldForStartupDecision && startupInput.text.length > 0) {
+		this.startupNoticesContainer.addChild(new Spacer(1));
+		this.startupNoticesContainer.addChild(new Text(theme.fg("dim", STARTUP_DRAFT_HELD_NOTICE), 1, 0));
+	}
 	markLifecycleTiming("header-mounted");
 	this.ui.requestRender();
 	// This legacy mark now means the first requested identity frame. The settled

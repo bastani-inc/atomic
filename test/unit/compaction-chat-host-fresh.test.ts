@@ -128,7 +128,7 @@ test("the appended fresh boundary renders the degraded notice", () => {
 			.render(200)
 			.join("\n"),
 	);
-	assert.ok(rendered.includes("✻ Context cleared (compaction degraded)"), rendered);
+	assert.ok(rendered.includes("∀ Context cleared (compaction degraded)"), rendered);
 });
 
 test("planned and extension boundaries still reach the event-only path", () => {
@@ -176,7 +176,7 @@ test("a fresh boundary is not swallowed by an identical-text planned boundary", 
 			.render(200)
 			.join("\n"),
 	);
-	assert.ok(rendered.includes("✻ Context cleared (compaction degraded)"), rendered);
+	assert.ok(rendered.includes("∀ Context cleared (compaction degraded)"), rendered);
 });
 
 test("a repeated same-rung, same-text result is still deduplicated", () => {
@@ -214,7 +214,7 @@ test("a committed fresh boundary stays visible when the final gate also errors",
 			.render(200)
 			.join("\n"),
 	);
-	assert.ok(rendered.includes("✻ Context cleared (compaction degraded)"), rendered);
+	assert.ok(rendered.includes("∀ Context cleared (compaction degraded)"), rendered);
 });
 
 test("a failure with no result still appends no boundary", () => {

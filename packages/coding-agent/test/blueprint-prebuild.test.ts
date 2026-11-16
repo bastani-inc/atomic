@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import {
 	appendFileSync,
 	chmodSync,
+	closeSync,
 	cpSync,
 	existsSync,
 	mkdirSync,
+	openSync,
 	readdirSync,
 	readFileSync,
 	readlinkSync,
@@ -15,9 +17,11 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
+import { sleep } from "../../../test/helpers/runtime.js";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
 import { runBlueprintCommand } from "../src/cli/blueprint-command.js";
+import { renameWithRetry } from "../src/core/rename-retry.ts";
 import { blueprintCacheKeys } from "../src/core/resume/blueprint/cache.js";
 import { type PrebuildOutcome, prebuildRepository } from "../src/core/resume/blueprint/prebuild.js";
 import {
@@ -208,7 +212,7 @@ async function editedSession(clone: string): Promise<{ manager: SessionManager; 
 	sandbox.write(join(clone, "README.md"), "edited\n");
 	const snapshot = await capture(clone);
 	const manager = await sessionOf(clone, snapshot);
-	renameSync(clone, sandbox.path("repo-away"));
+	await renameWithRetry(clone, sandbox.path("repo-away"), { budgetMs: 2_000 });
 	return { manager, snapshot };
 }
 
@@ -433,6 +437,56 @@ describe("atomic blueprint prebuild (#4748)", () => {
 			assert.equal(readFileSync(join(outside, "build", "keep.txt"), "utf8"), "outside\n");
 			assert.equal(existsSync(join(seeds, "linked")), false);
 			assert.equal(existsSync(join(seeds, "below")), false);
+		},
+		PREBUILD_TEST_TIMEOUT_MS,
+	);
+
+	test.skipIf(process.platform !== "win32")(
+		"on Windows, parking build output retries when a handle briefly holds the built directory (#4748)",
+		async () => {
+			const { clone, remote } = await checkout("maintenance: mkdir -p build/sub && echo out > build/sub/out.txt\n", [
+				"build/sub",
+			]);
+			const worktreeOut = join(slot([remote], 0), "build", "sub", "out.txt");
+			const seedsParent = join(storeDir(), "seeds");
+			let stopped = false;
+			let fd: number | undefined;
+			const holdBriefly = (async () => {
+				for (let waited = 0; !stopped && waited < 30_000; waited += 5) {
+					if (existsSync(worktreeOut)) {
+						fd = openSync(worktreeOut, "r+");
+						break;
+					}
+					await sleep(5);
+				}
+				for (let waited = 0; !stopped && waited < 30_000; waited += 5) {
+					const parking =
+						existsSync(seedsParent) && readdirSync(seedsParent).find((name) => name.startsWith(".parking-"));
+					if (parking && existsSync(join(seedsParent, parking, "build"))) break;
+					await sleep(5);
+				}
+				if (!stopped) await sleep(150);
+				if (fd !== undefined) {
+					closeSync(fd);
+					fd = undefined;
+				}
+			})();
+			try {
+				const outcome = await prebuild(clone, true);
+				await holdBriefly;
+				assert.equal(outcome.status, "built");
+				assert.deepEqual(outcome.parked, ["build/sub"]);
+				const seeds = seedDirectory(storeDir(), repositoryIdOf([remote]));
+				assert.equal(readFileSync(join(seeds, "build", "sub", "out.txt"), "utf8"), "out\n");
+			} finally {
+				stopped = true;
+				if (fd !== undefined) {
+					try {
+						closeSync(fd);
+					} catch {}
+				}
+				await holdBriefly.catch(() => {});
+			}
 		},
 		PREBUILD_TEST_TIMEOUT_MS,
 	);
@@ -700,7 +754,7 @@ describe("repository identity across remote spellings (#4748)", () => {
 			assert.deepEqual(overHttps.remotes, [HTTPS]);
 			const x = await sessionOf(fixture.clone, overSsh);
 			const y = await sessionOf(fixture.clone, overHttps);
-			renameSync(fixture.clone, sandbox.path("repo-away"));
+			await renameWithRetry(fixture.clone, sandbox.path("repo-away"), { budgetMs: 2_000 });
 
 			const first = await resume(x);
 			assert.equal(first.sessionManager.getCwd(), slot([SSH], 0));
@@ -729,7 +783,7 @@ describe("repository identity across remote spellings (#4748)", () => {
 			const b = await capture(fixture.clone);
 			const x = await sessionOf(fixture.clone, a);
 			const y = await sessionOf(fixture.clone, b);
-			renameSync(fixture.clone, sandbox.path("repo-away"));
+			await renameWithRetry(fixture.clone, sandbox.path("repo-away"), { budgetMs: 2_000 });
 			// An earlier version's store: named after the remote as spelled, so the restore uses it.
 			const legacyId = legacyRepositoryIdOf([SSH]) as RepositoryId;
 			const legacyStore = join(storeDir(), "repositories", `${legacyId}.git`);

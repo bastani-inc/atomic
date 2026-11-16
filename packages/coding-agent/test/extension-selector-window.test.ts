@@ -21,7 +21,6 @@ function visibleOptions(output: string): string[] {
 		.map((line) => line.trim().replace(/^❯ /, ""));
 }
 
-/** The hint is the last line inside the sheet's closing rule. */
 function hint(selector: ExtensionSelectorComponent, width = 80): string {
 	return lines(selector, width).at(-2)?.trim() ?? "";
 }
@@ -144,5 +143,15 @@ describe("extension selector", () => {
 		vi.advanceTimersByTime(1000);
 		assert.equal(onCancel.mock.calls.length, 1);
 		selector.dispose();
+	});
+
+	it("numbers the options of a permission prompt so a digit answers it (#5224)", () => {
+		const { selector, onSelect } = choose(["Yes", "No"], { numbered: true });
+		const out = lines(selector);
+		assert.ok(out.includes(" ❯ 1. Yes"), out.join("\n"));
+		assert.ok(out.includes("   2. No"), out.join("\n"));
+		assert.equal(hint(selector), "↑↓ select · enter choose · 1-2 pick · esc cancel · ? keys");
+		selector.handleInput("2");
+		assert.deepEqual(onSelect.mock.calls, [["No"]]);
 	});
 });

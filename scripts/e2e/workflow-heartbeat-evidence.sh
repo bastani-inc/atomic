@@ -109,7 +109,7 @@ save "cli-started"
 # 2. Launch the parked run. This is the last thing typed in this scenario.
 type_command "/workflow $WORKFLOW_NAME"
 await "started in background" "the run to be dispatched" 120
-RUN_ID="$(capture | grep -oE '/workflow connect [0-9a-f]{8}' | tail -1 | awk '{print $3}')"
+RUN_ID="$(capture | grep -oE '/workflows [0-9a-f]{8}' | tail -1 | awk '{print $2}')"
 if [[ -z "$RUN_ID" ]]; then
 	echo "heartbeat evidence: the CLI rendered no dispatched run id" >&2
 	capture >"$ARTIFACTS/failure-no-run-id.txt"

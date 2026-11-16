@@ -1,3 +1,4 @@
+import { renderNavKeyOverlay } from "@bastani/atomic";
 import type { RunSnapshot } from "../shared/store-types.js";
 import { fillBackground, hexBg, hexToAnsi, RESET } from "./color-utils.js";
 import { GraphViewGraphRenderer } from "./graph-view-graph-render.js";
@@ -8,6 +9,7 @@ import { renderHeader, renderOutlinePill } from "./header.js";
 import { isKeybindingsLike } from "./keybindings-adapter.js";
 import { NODE_H } from "./layout.js";
 import { runStateColor, runStateIndicator } from "./run-state-indicator.js";
+import { renderStageFailureDetailLines } from "./stage-failure-detail.js";
 import { renderSwitcher } from "./switcher.js";
 import { truncateToWidth, visibleWidth } from "./text-helpers.js";
 import { renderToolDetailLines } from "./tool-detail.js";
@@ -48,6 +50,8 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 	private hasReportedViewportRows = false;
 	private renderRun: RunSnapshot | null | undefined;
 	private detailFrame: ToolDetailFrame | null = null;
+
+	private stageDetailFrame: { frame: ToolDetailFrame; stage: object; logs: boolean } | null = null;
 	constructor(opts: GraphViewOpts) {
 		super(opts);
 		this.graphLayout = new GraphViewLayout({
@@ -121,13 +125,14 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 			const bodyStart = layoutFrame.bodyBox?.rect.y ?? layoutFrame.topMarginRows + GRAPH_HEADER_ROWS;
 			const bodyRows = layoutFrame.bodyBox?.rect.height ?? this.graphLayout.viewportRows;
 			if (run) {
-				if (this.toolDetail !== null) {
+				if (this._detailOpen()) {
 					this.graphNodeHitRects = [];
 					this.lastGraphViewport = null;
 				} else {
 					this._recordGraphNodeHitRects(bodyStart + this.lastGraphTopPad, this.lastGraphVisibleRows);
 					this._renderSwitcherOverlay(lines, run, frameWidth, bodyStart, bodyRows);
 				}
+				this._renderKeysHelpOverlay(lines, frameWidth, bodyStart, bodyRows);
 			} else {
 				this.graphNodeHitRects = [];
 				this.lastGraphViewport = null;
@@ -190,11 +195,39 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 		return frame;
 	}
 
+	private _openDetailFrame(width: number): ToolDetailFrame | null {
+		if (this.toolDetail !== null) return this._toolDetailFrame(this.toolDetail, width);
+		const stage = this._stageDetailStage();
+		if (this.stageDetail === null || stage === undefined) return null;
+		const safeWidth = Math.max(1, Math.floor(width));
+		const cached = this.stageDetailFrame;
+		if (
+			cached !== null &&
+			cached.frame.width === safeWidth &&
+			cached.stage === stage &&
+			cached.logs === this.stageDetail.logs
+		)
+			return cached.frame;
+		const frame: ToolDetailFrame = {
+			width: safeWidth,
+			blockWidth: safeWidth,
+			leftPad: 0,
+			lines: renderStageFailureDetailLines(stage, {
+				theme: this.graphTheme,
+				width: safeWidth,
+				logs: this.stageDetail.logs,
+			}),
+		};
+		this.stageDetailFrame = { frame, stage, logs: this.stageDetail.logs };
+		return frame;
+	}
+
 	private _graphBodyContentHeight(width: number, viewportRows: number): number {
 		const rows = Math.max(0, Math.floor(viewportRows));
-		if (this.toolDetail !== null) {
+		const detail = this._openDetailFrame(width);
+		if (detail !== null) {
 			const pad = toolDetailViewportPad(rows);
-			return Math.max(rows, this._toolDetailFrame(this.toolDetail, width).lines.length + pad * 2);
+			return Math.max(rows, detail.lines.length + pad * 2);
 		}
 		if (!this._currentRenderRun() || this.cachedRenderGeometry.totalRows <= 0) return rows;
 		return Math.max(rows, this.cachedRenderGeometry.totalRows);
@@ -208,7 +241,7 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 	): void {
 		const run = this._currentRenderRun();
 		if (viewportRows <= 0) return;
-		if (this.toolDetail !== null) {
+		if (this._detailOpen()) {
 			if (this.pendingEnsureFocusedVisible) scrollView.scrollToStart();
 			this.pendingEnsureFocusedVisible = false;
 			return;
@@ -261,8 +294,8 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 	}
 
 	private _renderBody(width: number, top: number, rows: number, _contentRows: number): string[] {
-		if (this.toolDetail !== null) {
-			const detail = this._toolDetailFrame(this.toolDetail, width);
+		const detail = this._openDetailFrame(width);
+		if (detail !== null) {
 			const pad = toolDetailViewportPad(rows);
 			const inner = Math.max(0, rows - pad * 2);
 			const painted = detail.lines
@@ -336,6 +369,32 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 				lines[lineIndex] ?? this._blankRow(frameWidth),
 				switcherLines[index]!,
 				switcherLeft,
+				frameWidth,
+			);
+		}
+	}
+
+	private _renderKeysHelpOverlay(lines: string[], frameWidth: number, bodyStart: number, bodyRows: number): void {
+		if (!this.keysHelpOpen) return;
+		const boxWidth = Math.min(56, Math.max(24, frameWidth - 8));
+		const help = renderNavKeyOverlay(
+			this._detailOpen() ? "keys \u00b7 stage detail" : "keys \u00b7 workflow graph",
+			this._graphKeys(),
+			boxWidth,
+			this._navKeyStyle(),
+			this._navKeybindings(),
+		);
+		const bodyEnd = bodyStart + bodyRows;
+		const insertAt = Math.max(bodyStart, bodyStart + Math.floor((bodyRows - help.length) / 2));
+		const left = Math.max(2, Math.floor((frameWidth - boxWidth) / 2));
+
+		for (let index = 0; index < help.length; index++) {
+			const lineIndex = insertAt + index;
+			if (lineIndex >= bodyEnd) break;
+			lines[lineIndex] = this._overlayCard(
+				lines[lineIndex] ?? this._blankRow(frameWidth),
+				help[index]!,
+				left,
 				frameWidth,
 			);
 		}

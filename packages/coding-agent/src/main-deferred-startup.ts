@@ -4,8 +4,6 @@ import { findInitialModel, resolveRestoredModelReference, uncachedCopilotModelHi
 import type { ScopedModel } from "./core/model-resolver-types.ts";
 import type { ModelRuntime } from "./core/model-runtime.js";
 import type { DefaultProjectTrust, SettingsManager } from "./core/settings-manager.ts";
-import type { ProjectTrustStore } from "./core/trust-manager.ts";
-import { hasProjectTrustInputs } from "./core/trust-manager.ts";
 import type { AppMode } from "./main-app-mode.ts";
 
 export interface ComputeDeferExtensionsInput {
@@ -52,7 +50,6 @@ export interface ComputeStartupInputCaptureInput {
 		| "session"
 	>;
 	sessionCwd: string;
-	projectTrustStore: Pick<ProjectTrustStore, "get">;
 	resolvedExtensionPathCount: number;
 	resolvedResourcePathCount: number;
 	deprecationWarningCount: number;
@@ -60,17 +57,8 @@ export interface ComputeStartupInputCaptureInput {
 }
 
 export function computeStartupInputCaptureEnabled(input: ComputeStartupInputCaptureInput): boolean {
-	if (!input.sessionSelectionComplete && (input.parsed.resume || input.parsed.session !== undefined)) return false;
-	const hasTrustInputs = hasProjectTrustInputs(input.sessionCwd);
 	return (
-		input.appMode === "interactive" &&
-		input.stdinIsTTY &&
-		!input.parsed.help &&
-		input.parsed.listModels === undefined &&
-		input.deprecationWarningCount === 0 &&
-		(input.parsed.projectTrustOverride !== undefined ||
-			!hasTrustInputs ||
-			input.projectTrustStore.get(input.sessionCwd) !== null)
+		input.appMode === "interactive" && input.stdinIsTTY && !input.parsed.help && input.parsed.listModels === undefined
 	);
 }
 

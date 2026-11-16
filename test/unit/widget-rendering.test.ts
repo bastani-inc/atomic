@@ -687,14 +687,14 @@ describe("renderWidgetLines — standard form", () => {
 		// raises the "needs attention" badge so the HiL prompt is discoverable.
 		assert.ok(header.includes("1 run"), `expected "1 run" subtitle, got: ${header}`);
 		assert.ok(
-			header.includes("↵ 1 needs attention (attach to workflow with `/workflow connect`)"),
+			header.includes("↵ 1 needs attention (open with `/workflows`)"),
 			`expected nested HiL to surface a needs-attention badge, got: ${header}`,
 		);
 		assert.ok(joined.includes(statusIcon("awaiting_input")));
 		assert.ok(!joined.includes("contract-hil-nested-child"), "nested child stays hidden");
 		assert.ok(!joined.includes("child333"));
 		assert.ok(!joined.includes('"Answer in the child workflow?"'));
-		assert.ok(!joined.includes("/workflow connect child333"));
+		assert.ok(!joined.includes("/workflows child333"));
 	});
 
 	test("BACKGROUND needs-attention agrees with runIndicatorStatus for nested owner shapes", () => {
@@ -766,20 +766,14 @@ describe("renderWidgetLines — standard form", () => {
 			);
 			if (shape.preview) {
 				assert.ok(joined.includes('"Answer the nested prompt?"'), `${shape.name}: linked preview`);
-				assert.ok(
-					joined.includes(`Answer: /workflow connect ${rootId}`),
-					`${shape.name}: connect the visible root`,
-				);
+				assert.ok(joined.includes(`Answer: /workflows ${rootId}`), `${shape.name}: connect the visible root`);
 			} else {
 				assert.ok(
-					lines[0]!.includes("(attach to workflow with `/workflow connect`)"),
+					lines[0]!.includes("(open with `/workflows`)"),
 					`${shape.name}: unproven ownership keeps the header connect hint`,
 				);
 				assert.ok(!joined.includes('"Answer the nested prompt?"'), `${shape.name}: no preview`);
-				assert.ok(
-					!joined.includes(`Answer: /workflow connect ${rootId}`),
-					`${shape.name}: no selected connect row`,
-				);
+				assert.ok(!joined.includes(`Answer: /workflows ${rootId}`), `${shape.name}: no selected connect row`);
 			}
 		}
 	});
@@ -839,7 +833,7 @@ describe("renderWidgetLines — standard form", () => {
 			`expected nested HiL to surface a needs-attention badge, got: ${header}`,
 		);
 		assert.ok(joined.includes('"Answer in the child workflow?"'));
-		assert.ok(joined.includes(`/workflow connect ${root.id}`));
+		assert.ok(joined.includes(`/workflows ${root.id}`));
 		assert.ok(!joined.includes("contract-hil-nested-child"), "nested child stays hidden");
 		assert.ok(!joined.includes(child.id), "the hidden owner id is not the connect target");
 	});
@@ -850,7 +844,7 @@ describe("renderWidgetLines — standard form", () => {
 		const header = lines[0]!;
 		assert.ok(header.includes("● 1 running"), "run remains active");
 		assert.ok(
-			header.includes("？ ↵ 1 needs attention (attach to workflow with `/workflow connect`)"),
+			header.includes("？ ↵ 1 needs attention (open with `/workflows`)"),
 			"awaiting-input badge is labeled with status and attach action",
 		);
 	});
@@ -1066,7 +1060,7 @@ describe("buildThemedWidgetLines — themed path", () => {
 			"awaiting-input badge should be styled with the graph info blue",
 		);
 		assert.ok(
-			stripAnsi(joined).includes("？ ↵ 1 needs attention (attach to workflow with `/workflow connect`)"),
+			stripAnsi(joined).includes("？ ↵ 1 needs attention (open with `/workflows`)"),
 			"awaiting-input badge should keep the status/question mark and attach copy",
 		);
 	});
@@ -1309,7 +1303,7 @@ describe("renderWidgetLines — awaiting-input affordances", () => {
 			const joined = lines.join("\n");
 			assert.equal(lines.length, 6, "waiting cards add exactly two rows to the ordinary card");
 			assert.ok(joined.includes(`"${message}"`));
-			assert.ok(joined.includes(`Answer: /workflow connect ${run.id}`));
+			assert.ok(joined.includes(`Answer: /workflows ${run.id}`));
 			assert.doesNotMatch(joined, /F2 answer/);
 			assert.ok(joined.includes(statusIcon("awaiting_input")));
 			assert.ok(joined.includes(run.name));
@@ -1333,9 +1327,9 @@ describe("renderWidgetLines — awaiting-input affordances", () => {
 		]);
 		const lines = renderWidgetLines(makeSnap([unique, form]), 180).map(stripAnsi);
 		const joined = lines.join("\n");
-		assert.ok(lines[0]!.includes("？ ↵ 2 needs attention (attach to workflow with `/workflow connect`)"));
-		assert.ok(joined.includes(`Answer: /workflow connect ${unique.id}`));
-		assert.ok(!joined.includes(`Answer: /workflow connect ${form.id}`));
+		assert.ok(lines[0]!.includes("？ ↵ 2 needs attention (open with `/workflows`)"));
+		assert.ok(joined.includes(`Answer: /workflows ${unique.id}`));
+		assert.ok(!joined.includes(`Answer: /workflows ${form.id}`));
 		assert.ok(!joined.includes("First field?"));
 	});
 
@@ -1362,7 +1356,7 @@ describe("renderWidgetLines — awaiting-input affordances", () => {
 		assert.ok(joined.includes(statusIcon("awaiting_input")));
 		assert.ok(!joined.includes("APPROVE"));
 		assert.ok(!joined.includes("REJECT"));
-		assert.ok(!joined.includes(`Answer: /workflow connect ${run.id}`));
+		assert.ok(!joined.includes(`Answer: /workflows ${run.id}`));
 	});
 
 	test("unpaired surrogates render as well-formed rows of the requested width", () => {
@@ -1415,10 +1409,10 @@ describe("renderWidgetLines — awaiting-input affordances", () => {
 			if (width < 80) {
 				assert.equal(lines.length, 1);
 				assert.ok(!lines.join("\n").includes("Approve this generated migration"));
-				assert.ok(!lines.join("\n").includes("/workflow connect"));
+				assert.ok(!lines.join("\n").includes("/workflows"));
 			} else {
 				for (const line of lines) assert.equal(visibleWidth(line), width, `line must fill width ${width}`);
-				assert.ok(lines.join("\n").includes(`/workflow connect ${runId}`));
+				assert.ok(lines.join("\n").includes(`/workflows ${runId}`));
 			}
 		}
 
@@ -1493,7 +1487,7 @@ describe("renderWidgetLines — awaiting-input affordances", () => {
 			assert.ok(joined.includes(statusIcon("awaiting_input")));
 			assert.ok(joined.includes("needs attention"));
 			assert.doesNotMatch(joined, /"/);
-			assert.doesNotMatch(joined, /Answer: \/workflow connect/);
+			assert.doesNotMatch(joined, /Answer: \/workflows/);
 			for (const line of lines) {
 				const plain = stripAnsi(line);
 				assert.equal(visibleWidth(plain), 120);
@@ -1530,7 +1524,7 @@ describe("renderWidgetLines — awaiting-input affordances", () => {
 		assert.equal(waitingLines.length, 6);
 		assert.equal(waitingLines[2], runningLines[2]);
 		assert.ok(waitingLines[3]?.includes('"Approve metadata parity?"'));
-		assert.ok(waitingLines[4]?.includes(`Answer: /workflow connect ${id}`));
+		assert.ok(waitingLines[4]?.includes(`Answer: /workflows ${id}`));
 	});
 
 	test("completed retained cards drop stale prompt actions while quit cards suppress them until resume", () => {
@@ -1565,7 +1559,7 @@ describe("renderWidgetLines — awaiting-input affordances", () => {
 		assert.equal(completedLines.length, 4);
 		assert.equal(completedJoined.includes(completedId), true);
 		assert.doesNotMatch(completedJoined, /"Answer the stale prompt\?"/);
-		assert.doesNotMatch(completedJoined, /Answer: \/workflow connect/);
+		assert.doesNotMatch(completedJoined, /Answer: \/workflows/);
 
 		const quitStore = createStore();
 		const quitId = "00000000-0000-4000-8000-0000000000e2";
@@ -1598,12 +1592,12 @@ describe("renderWidgetLines — awaiting-input affordances", () => {
 		assert.equal(quitJoined.includes(quitId), true);
 		assert.match(quitJoined, /quit · resumable via \/workflow resume/);
 		assert.doesNotMatch(quitJoined, /"Answer the stale prompt\?"/);
-		assert.doesNotMatch(quitJoined, /Answer: \/workflow connect/);
+		assert.doesNotMatch(quitJoined, /Answer: \/workflows/);
 
 		assert.equal(quitStore.recordRunResumed(quitId), true);
 		const resumedJoined = renderWidgetLines(quitStore.snapshot(), 120).map(stripAnsi).join("\n");
 		assert.match(resumedJoined, /"Answer the stale prompt\?"/);
-		assert.match(resumedJoined, new RegExp(`Answer: /workflow connect ${quitId}`));
+		assert.match(resumedJoined, new RegExp(`Answer: /workflows ${quitId}`));
 	});
 
 	test("nested and boundary prompts in one root keep general guidance without a preview", () => {
@@ -1670,7 +1664,7 @@ describe("renderWidgetLines — awaiting-input affordances", () => {
 				assert.ok(joined.includes(rootId));
 				assert.doesNotMatch(joined, /"Root question\?"/);
 				assert.doesNotMatch(joined, /"Child question\?"/);
-				assert.doesNotMatch(joined, /Answer: \/workflow connect/);
+				assert.doesNotMatch(joined, /Answer: \/workflows/);
 				if (width === 120) assert.equal(lines.length, 4);
 				for (const line of lines) assert.equal(visibleWidth(line), width);
 			}
@@ -1681,7 +1675,7 @@ describe("renderWidgetLines — awaiting-input affordances", () => {
 		const uniqueJoined = uniqueLines.join("\n");
 		assert.equal(uniqueLines.length, 6);
 		assert.match(uniqueJoined, /"Child question\?"/);
-		assert.match(uniqueJoined, new RegExp(`Answer: /workflow connect ${rootId}`));
+		assert.match(uniqueJoined, new RegExp(`Answer: /workflows ${rootId}`));
 	});
 
 	// #2529 / #3027: a truncated preview must stay plain in the unthemed entry point.

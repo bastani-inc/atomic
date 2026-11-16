@@ -34,6 +34,8 @@ import {
 	OUTBOX_BACKUP_POLL_INTERVAL_MS,
 	OUTBOX_CLAIM_STALE_AFTER_MS,
 	type OutboxClaim,
+	type OutboxEnqueueRequest,
+	type OutboxEnqueueResult,
 	type OutboxRow,
 	type PendingAsk,
 	type BrokerMembershipSubject,
@@ -44,6 +46,7 @@ import {
 	type RestoringReservationLease,
 	reservationKeyFor,
 	returnAddressOf,
+	type SentMessageReservation,
 } from "./multinode-state-store.js";
 import type { PendingQuestion, PendingQuestionIndex } from "./pending-question-index.js";
 import { ROUTE_UNAVAILABLE_REASON } from "./delivery-failure-reason.js";
@@ -79,7 +82,7 @@ import {
 	senderGroupIdentity,
 } from "./send-handler.js";
 import { deliverHeldToAsker } from "./ask-failures.js";
-import { brokerHostIdentity, isProcessAlive } from "./broker-instance.js";
+import { brokerHostIdentity, isProcessAlive, processStartedAt } from "./broker-instance.js";
 import { type LostRecipientBounds, lostRecipientBounds, lostRecipientReason } from "./lost-recipients.js";
 import type { BrokerOutboundFrame } from "./socket-writes.js";
 import type { SupervisorChannelCache } from "./supervisor-channel.js";
@@ -233,6 +236,11 @@ export interface MultiNodeRouterOptions {
 	readonly pid?: number;
 	/** #5038: whether a process of this host still runs (`isProcessAlive`). */
 	readonly isProcessAlive?: (pid: number) => boolean;
+	/**
+	 * #5252: when a process of this host started, in ms since the epoch; `undefined` when that cannot be read, `null` where
+	 * this host does not read it (`processStartedAt`).
+	 */
+	readonly processStartedAt?: (pid: number) => number | null | undefined;
 	/** #5154: how long a recipient whose end was lost stays gone before its asks fail; `lostRecipientBounds()`. */
 	readonly lostRecipientBounds?: LostRecipientBounds;
 }
@@ -473,6 +481,7 @@ export class MultiNodeRouter {
 	private readonly instanceKey: string;
 	private readonly pid: number;
 	private readonly isProcessAlive: (pid: number) => boolean;
+	private readonly processStartedAt: (pid: number) => number | null | undefined;
 	private readonly lostBounds: LostRecipientBounds;
 	private membership: Lease | undefined;
 	private subscription: WakeUpSubscription | undefined;
@@ -508,6 +517,7 @@ export class MultiNodeRouter {
 				: `${this.nodeId}:${hostIdentity}:${options.instanceKey}`;
 		this.pid = options.pid ?? process.pid;
 		this.isProcessAlive = options.isProcessAlive ?? isProcessAlive;
+		this.processStartedAt = options.processStartedAt ?? ((pid) => processStartedAt(pid));
 		this.lostBounds = options.lostRecipientBounds ?? lostRecipientBounds();
 	}
 
@@ -1990,27 +2000,20 @@ export class MultiNodeRouter {
 			this.fail(request, TERMINAL_CHILD_ASK_REFUSAL);
 			return;
 		}
-		const reserved = await this.state.sentMessages.reserve({
-			messageId: message.id,
-			digest,
-			targetIdentity: target.identity,
-			...(message.expectsReply === true
-				? { questionRoute: { targetSessionId: target.sessionId, senderGroupIdentity: senderGroupIdentity(from) } }
-				: {}),
-		});
-		if (reserved.status === "conflict") {
-			this.failConflict(request);
-			return;
-		}
 		const frame: IntercomDeliveryFrame = request.supervisorSend
 			? { type: "message", from: from.info, message, channel: "supervisor" }
 			: { type: "message", from: from.info, message };
-		const enqueued = await this.state.outbox.enqueue({
-			targetIdentity: target.identity,
-			originBrokerId: this.brokerId,
-			digest,
-			frame,
-		});
+		const enqueued = await this.reserveAndEnqueue(
+			{
+				messageId: message.id,
+				digest,
+				targetIdentity: target.identity,
+				...(message.expectsReply === true
+					? { questionRoute: { targetSessionId: target.sessionId, senderGroupIdentity: senderGroupIdentity(from) } }
+					: {}),
+			},
+			{ targetIdentity: target.identity, originBrokerId: this.brokerId, digest, frame },
+		);
 		if (enqueued.status === "conflict") {
 			this.failConflict(request);
 			return;
@@ -2020,7 +2023,6 @@ export class MultiNodeRouter {
 			return;
 		}
 		if (enqueued.status === "full") {
-			await this.state.sentMessages.forget({ messageId: message.id, digest });
 			this.fail(request, outboxFullReason(enqueued));
 			return;
 		}
@@ -2033,6 +2035,24 @@ export class MultiNodeRouter {
 			});
 		}
 		await this.answerExistingRow(request, target, digest, enqueued.row);
+	}
+
+	/**
+	 * Reserve the send and enqueue its row: in one write where the store offers it, otherwise in two, forgetting the
+	 * reservation of a send the full queue refused. A conflicting reservation is answered `conflict`.
+	 */
+	private async reserveAndEnqueue(
+		reservation: SentMessageReservation,
+		request: OutboxEnqueueRequest,
+	): Promise<OutboxEnqueueResult> {
+		if (this.state.reserveAndEnqueue !== undefined) return this.state.reserveAndEnqueue(reservation, request);
+		const reserved = await this.state.sentMessages.reserve(reservation);
+		if (reserved.status === "conflict") return { status: "conflict", messageId: reservation.messageId };
+		const enqueued = await this.state.outbox.enqueue(request);
+		if (enqueued.status === "full") {
+			await this.state.sentMessages.forget({ messageId: reservation.messageId, digest: reservation.digest });
+		}
+		return enqueued;
 	}
 
 	/**
@@ -2759,10 +2779,26 @@ export class MultiNodeRouter {
 	 * that re-register here from taking their presence, and its outbox claims would hold its recipients' queues, until
 	 * they go stale; retire them now. Its claimed rows are delivered again, once, by whoever claims them next.
 	 */
+	/**
+	 * #5038: whether the process an earlier instance recorded still runs. #5252: where the host reads process starts, a
+	 * process that started after that instance recorded its own start is a later one the host gave its id to, and one
+	 * whose start cannot be read is unknown, never taken for that instance (a short-lived later process is often gone
+	 * before its start is read).
+	 */
+	private stillRuns(pid: number, recordedStartedAt: number | undefined): boolean {
+		if (!this.isProcessAlive(pid)) return false;
+		if (recordedStartedAt === undefined) return true;
+		const startedAt = this.processStartedAt(pid);
+		if (startedAt === null) return true;
+		return startedAt !== undefined && startedAt <= recordedStartedAt;
+	}
+
 	private async retirePreviousInstances(): Promise<void> {
-		for (const lease of await this.state.leases.listLive("broker", BROKER_LEASE_STALE_AFTER_MS)) {
-			const { instanceKey, pid } = lease.subject as Partial<BrokerMembershipSubject>;
-			if (instanceKey !== this.instanceKey || pid === undefined || this.isProcessAlive(pid)) continue;
+		// #5252: also once its leases went stale, as when a loaded host delays this start past the stale window: they are
+		// still held, and its recipients count as lost only once it is retired here.
+		for (const lease of await this.state.leases.listLive("broker", Number.MAX_SAFE_INTEGER)) {
+			const { instanceKey, pid, startedAt } = lease.subject as Partial<BrokerMembershipSubject>;
+			if (instanceKey !== this.instanceKey || pid === undefined || this.stillRuns(pid, startedAt)) continue;
 			// #5154: the sessions it had present may have ended with it unrecorded: they are lost until they register again.
 			const present = (await this.state.leases.listLive("presence", Number.MAX_SAFE_INTEGER)).filter(
 				(presence) => presence.holderId === lease.holderId,

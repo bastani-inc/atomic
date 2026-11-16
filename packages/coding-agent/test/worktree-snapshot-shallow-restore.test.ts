@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { chmodSync, existsSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox, loseSnapshotBlobs } from "../../../test/helpers/worktree-snapshot.js";
+import { renameWithRetry } from "../src/core/rename-retry.ts";
 import { prepareSessionResume } from "../src/core/resume/session-resume.js";
 import { latestResumeTimings } from "../src/core/resume/timings.js";
 import { SessionManager } from "../src/core/session-manager.js";
@@ -359,7 +360,7 @@ describe("ancestry across a shallow store's boundary (#4748)", () => {
 			actualTree: tree,
 			snapshotId: null,
 		});
-		renameSync(remote, sandbox.path("remote-gone.git"));
+		await renameWithRetry(remote, sandbox.path("remote-gone.git"));
 
 		assert.equal(await isHeadOnlyAdvance(drift), false);
 		assert.equal(await inStore(storeOf(storeDir), "rev-parse", "--is-shallow-repository"), "true");
@@ -474,8 +475,8 @@ describe("optional checkouts restore concurrently (#4748)", () => {
 			const { clone: second } = await sandbox.remoteWithClone("second");
 			const { clone: third } = await sandbox.remoteWithClone("third");
 			const manager = await sessionWithOptionalCheckouts(first, [second, third]);
-			renameSync(second, sandbox.path("second-gone"));
-			renameSync(third, sandbox.path("third-gone"));
+			await renameWithRetry(second, sandbox.path("second-gone"));
+			await renameWithRetry(third, sandbox.path("third-gone"));
 			const log = sandbox.path("fetches.log");
 			const git = gitLoggingFetches(log);
 			setWorktreeSnapshotGit(async () => git);
@@ -510,8 +511,8 @@ describe("optional checkouts restore concurrently (#4748)", () => {
 			const { clone: second } = await sandbox.remoteWithClone("second");
 			const { clone: third } = await sandbox.remoteWithClone("third");
 			const manager = await sessionWithOptionalCheckouts(first, [second, third]);
-			renameSync(second, sandbox.path("second-gone"));
-			renameSync(third, sandbox.path("third-gone"));
+			await renameWithRetry(second, sandbox.path("second-gone"));
+			await renameWithRetry(third, sandbox.path("third-gone"));
 			const log = sandbox.path("fetches.log");
 			const git = gitLoggingFetches(log);
 			setWorktreeSnapshotGit(async () => git);
@@ -545,8 +546,8 @@ describe("optional checkouts restore concurrently (#4748)", () => {
 			const { clone: first } = await sandbox.remoteWithClone("first");
 			const { clone: second } = await sandbox.remoteWithClone("second");
 			const manager = await sessionWithOptionalCheckouts(first, [second]);
-			renameSync(first, sandbox.path("first-gone"));
-			renameSync(second, sandbox.path("second-gone"));
+			await renameWithRetry(first, sandbox.path("first-gone"));
+			await renameWithRetry(second, sandbox.path("second-gone"));
 			const refusing = gitRefusingDepth();
 			// The second checkout's restore runs after the first: from then on Git refuses depth-1 fetches.
 			setWorktreeSnapshotGit(async () =>
@@ -582,8 +583,8 @@ describe("optional checkouts restore concurrently (#4748)", () => {
 		await loseSnapshotBlobs(manager.getSessionStore().snapshotBlobs as SqlSnapshotBlobStore, [
 			broken.chain.at(-1)!.patch!,
 		]);
-		renameSync(second, sandbox.path("second-gone"));
-		renameSync(third, sandbox.path("third-gone"));
+		await renameWithRetry(second, sandbox.path("second-gone"));
+		await renameWithRetry(third, sandbox.path("third-gone"));
 
 		const prepared = await prepareSessionResume(manager, {
 			entryPoint: "cli",

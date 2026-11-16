@@ -256,6 +256,11 @@ export interface Message {
   replyError?: string;
   /** #5154: with `replyError`: the recipient may only be away, so asking again later may reach it. */
   retryLater?: true;
+  /**
+   * Shared by every copy of one pattern send (`subagent-*`, `subagents:*`), each of which has its own `id`. A session
+   * that several copies reach, its own and those relayed by the released workflow stages it hosts, shows it once.
+   */
+  broadcastId?: string;
   source?: {
     subagentRunId: string;
     subagentAgent?: string;

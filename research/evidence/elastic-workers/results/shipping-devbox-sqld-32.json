@@ -1,0 +1,197 @@
+{
+  "store": "sqld",
+  "slots": 4,
+  "children": 256,
+  "steps": 20,
+  "killAfterMs": null,
+  "trials": [
+    {
+      "store": "sqld",
+      "hosts": 32,
+      "slots": 4,
+      "shipping": "sync",
+      "killedHostAtMs": null,
+      "status": "completed",
+      "children": 256,
+      "completed": 256,
+      "failed": 0,
+      "failureSamples": [],
+      "checkpoints": 5120,
+      "wallMs": 84283,
+      "activeMs": 59135,
+      "checkpointsPerSec": 86.6,
+      "latencyMs": {
+        "p50": 484.08,
+        "p90": 878.82,
+        "p99": 1435.62,
+        "max": 2801.39
+      },
+      "stageMs": null,
+      "perHost": {
+        "h5": 8,
+        "root": 3,
+        "h26": 9,
+        "h11": 8,
+        "h8": 9,
+        "h14": 8,
+        "h13": 9,
+        "h27": 8,
+        "h16": 8,
+        "h15": 10,
+        "h31": 9,
+        "h12": 8,
+        "h6": 9,
+        "h22": 8,
+        "h29": 7,
+        "h9": 8,
+        "h20": 9,
+        "h18": 9,
+        "h0": 9,
+        "h7": 6,
+        "h3": 9,
+        "h21": 5,
+        "h2": 8,
+        "h25": 5,
+        "h17": 7,
+        "h23": 7,
+        "h10": 6,
+        "h28": 10,
+        "h24": 8,
+        "h1": 9,
+        "h30": 7,
+        "h4": 8,
+        "h19": 5
+      },
+      "journal": {
+        "checkpoints": 5122,
+        "spanMs": 59553,
+        "checkpointsPerSec": 86
+      },
+      "sharedStoreCpuMs": 153737,
+      "shippingLagMs": {
+        "n": 5122,
+        "p50": 203,
+        "p90": 503,
+        "p99": 1051,
+        "max": 2686
+      },
+      "batches": {
+        "count": 0,
+        "events": {
+          "n": 0,
+          "p50": null,
+          "p90": null,
+          "p99": null,
+          "max": null
+        }
+      },
+      "replayed": {
+        "steps": 0,
+        "children": 0,
+        "perChild": {
+          "n": 0,
+          "p50": null,
+          "p90": null,
+          "p99": null,
+          "max": null
+        }
+      }
+    },
+    {
+      "store": "sqld",
+      "hosts": 32,
+      "slots": 4,
+      "shipping": {
+        "intervalMs": 2000,
+        "maxBatch": 64,
+        "maxLagMs": 30000
+      },
+      "killedHostAtMs": null,
+      "status": "completed",
+      "children": 256,
+      "completed": 256,
+      "failed": 0,
+      "failureSamples": [],
+      "checkpoints": 5120,
+      "wallMs": 76392,
+      "activeMs": 44162,
+      "checkpointsPerSec": 115.9,
+      "latencyMs": {
+        "p50": 17.33,
+        "p90": 213.33,
+        "p99": 515.92,
+        "max": 784.69
+      },
+      "stageMs": null,
+      "perHost": {
+        "h25": 9,
+        "h21": 10,
+        "h24": 12,
+        "h0": 4,
+        "root": 2,
+        "h7": 10,
+        "h29": 7,
+        "h14": 4,
+        "h26": 8,
+        "h10": 9,
+        "h8": 5,
+        "h4": 11,
+        "h17": 11,
+        "h2": 10,
+        "h9": 11,
+        "h16": 5,
+        "h1": 5,
+        "h12": 10,
+        "h23": 11,
+        "h13": 7,
+        "h6": 9,
+        "h18": 5,
+        "h11": 7,
+        "h30": 8,
+        "h31": 7,
+        "h20": 10,
+        "h15": 9,
+        "h22": 11,
+        "h27": 10,
+        "h28": 2,
+        "h3": 8,
+        "h5": 3,
+        "h19": 6
+      },
+      "journal": {
+        "checkpoints": 5122,
+        "spanMs": 47862,
+        "checkpointsPerSec": 107
+      },
+      "sharedStoreCpuMs": 185481,
+      "shippingLagMs": {
+        "n": 5122,
+        "p50": 2612,
+        "p90": 5202,
+        "p99": 6924,
+        "max": 9377
+      },
+      "batches": {
+        "count": 372,
+        "events": {
+          "n": 372,
+          "p50": 17,
+          "p90": 20,
+          "p99": 20,
+          "max": 20
+        }
+      },
+      "replayed": {
+        "steps": 0,
+        "children": 0,
+        "perChild": {
+          "n": 0,
+          "p50": null,
+          "p90": null,
+          "p99": null,
+          "max": null
+        }
+      }
+    }
+  ]
+}

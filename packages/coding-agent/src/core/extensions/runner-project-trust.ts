@@ -1,11 +1,39 @@
 import { snapshotEventHandlers } from "./runner-events.ts";
 import type {
 	ExtensionError,
+	ExtensionUIDialogOptions,
 	LoadExtensionsResult,
 	ProjectTrustContext,
 	ProjectTrustEvent,
 	ProjectTrustEventResult,
 } from "./types.ts";
+
+function withHandlerSignal(opts: ExtensionUIDialogOptions | undefined, signal: AbortSignal): ExtensionUIDialogOptions {
+	return {
+		...opts,
+		signal: opts?.signal ? AbortSignal.any([opts.signal, signal]) : signal,
+	};
+}
+
+function guardUnhandled<T>(promise: Promise<T>): Promise<T> {
+	promise.catch(() => {});
+	return promise;
+}
+
+function scopeProjectTrustContext(ctx: ProjectTrustContext, signal: AbortSignal): ProjectTrustContext {
+	return {
+		...ctx,
+		ui: {
+			...ctx.ui,
+			select: (title, options, opts) =>
+				guardUnhandled(ctx.ui.select(title, options, withHandlerSignal(opts, signal))),
+			confirm: (title, message, opts) =>
+				guardUnhandled(ctx.ui.confirm(title, message, withHandlerSignal(opts, signal))),
+			input: (title, placeholder, opts) =>
+				guardUnhandled(ctx.ui.input(title, placeholder, withHandlerSignal(opts, signal))),
+		},
+	};
+}
 
 export async function emitProjectTrustEvent(
 	extensionsResult: LoadExtensionsResult,
@@ -15,8 +43,12 @@ export async function emitProjectTrustEvent(
 	const errors: ExtensionError[] = [];
 	for (const { ext, handlers } of snapshotEventHandlers(extensionsResult.extensions, "project_trust")) {
 		for (const handler of handlers) {
+			const abort = new AbortController();
 			try {
-				const handlerResult = (await handler(event, ctx)) as ProjectTrustEventResult;
+				const handlerResult = (await handler(
+					event,
+					scopeProjectTrustContext(ctx, abort.signal),
+				)) as ProjectTrustEventResult;
 				if (handlerResult.trusted === "undecided") {
 					continue;
 				}
@@ -28,6 +60,8 @@ export async function emitProjectTrustEvent(
 					error: error instanceof Error ? error.message : String(error),
 					stack: error instanceof Error ? error.stack : undefined,
 				});
+			} finally {
+				abort.abort();
 			}
 		}
 	}

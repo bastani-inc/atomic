@@ -1,0 +1,165 @@
+{
+  "store": "sqld",
+  "slots": 4,
+  "children": 256,
+  "steps": 20,
+  "killAfterMs": null,
+  "trials": [
+    {
+      "store": "sqld",
+      "hosts": 16,
+      "slots": 4,
+      "shipping": "sync",
+      "killedHostAtMs": null,
+      "status": "completed",
+      "children": 256,
+      "completed": 256,
+      "failed": 0,
+      "failureSamples": [],
+      "checkpoints": 5120,
+      "wallMs": 66460,
+      "activeMs": 58286,
+      "checkpointsPerSec": 87.8,
+      "latencyMs": {
+        "p50": 417.81,
+        "p90": 624.3,
+        "p99": 1030.43,
+        "max": 2101.25
+      },
+      "stageMs": null,
+      "perHost": {
+        "root": 9,
+        "h2": 17,
+        "h5": 15,
+        "h15": 15,
+        "h14": 15,
+        "h4": 15,
+        "h13": 15,
+        "h12": 15,
+        "h9": 15,
+        "h10": 15,
+        "h11": 16,
+        "h3": 16,
+        "h8": 16,
+        "h0": 16,
+        "h1": 15,
+        "h6": 16,
+        "h7": 15
+      },
+      "journal": {
+        "checkpoints": 5122,
+        "spanMs": 57941,
+        "checkpointsPerSec": 88.4
+      },
+      "sharedStoreCpuMs": 148348,
+      "shippingLagMs": {
+        "n": 5122,
+        "p50": 195,
+        "p90": 390,
+        "p99": 841,
+        "max": 1953
+      },
+      "batches": {
+        "count": 0,
+        "events": {
+          "n": 0,
+          "p50": null,
+          "p90": null,
+          "p99": null,
+          "max": null
+        }
+      },
+      "replayed": {
+        "steps": 0,
+        "children": 0,
+        "perChild": {
+          "n": 0,
+          "p50": null,
+          "p90": null,
+          "p99": null,
+          "max": null
+        }
+      }
+    },
+    {
+      "store": "sqld",
+      "hosts": 16,
+      "slots": 4,
+      "shipping": {
+        "intervalMs": 2000,
+        "maxBatch": 64,
+        "maxLagMs": 30000
+      },
+      "killedHostAtMs": null,
+      "status": "completed",
+      "children": 256,
+      "completed": 256,
+      "failed": 0,
+      "failureSamples": [],
+      "checkpoints": 5120,
+      "wallMs": 51574,
+      "activeMs": 37913,
+      "checkpointsPerSec": 135,
+      "latencyMs": {
+        "p50": 38.21,
+        "p90": 202.9,
+        "p99": 440.99,
+        "max": 913.56
+      },
+      "stageMs": null,
+      "perHost": {
+        "root": 3,
+        "h5": 18,
+        "h6": 16,
+        "h15": 19,
+        "h12": 18,
+        "h2": 14,
+        "h10": 16,
+        "h0": 14,
+        "h13": 16,
+        "h3": 17,
+        "h11": 15,
+        "h8": 14,
+        "h14": 17,
+        "h1": 16,
+        "h4": 13,
+        "h7": 15,
+        "h9": 15
+      },
+      "journal": {
+        "checkpoints": 5122,
+        "spanMs": 38108,
+        "checkpointsPerSec": 134.4
+      },
+      "sharedStoreCpuMs": 132241,
+      "shippingLagMs": {
+        "n": 5122,
+        "p50": 2943,
+        "p90": 5810,
+        "p99": 8908,
+        "max": 9403
+      },
+      "batches": {
+        "count": 368,
+        "events": {
+          "n": 368,
+          "p50": 16,
+          "p90": 20,
+          "p99": 20,
+          "max": 20
+        }
+      },
+      "replayed": {
+        "steps": 0,
+        "children": 0,
+        "perChild": {
+          "n": 0,
+          "p50": null,
+          "p90": null,
+          "p99": null,
+          "max": null
+        }
+      }
+    }
+  ]
+}

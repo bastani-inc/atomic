@@ -50,6 +50,10 @@ export interface NewSessionOptions {
 	workflow?: SessionWorkflowMetadata;
 }
 
+export interface SessionOpenOptions {
+	readonly history?: "full" | "tail";
+}
+
 export interface SessionEntryBase {
 	type: string;
 	id: string;
@@ -391,4 +395,11 @@ export type ReadonlySessionManager = Pick<
 	| "getSessionName"
 	| "getSessionNameState"
 	| "getWorktreeRootMappings"
+	| "hasFullHistory"
+	| "loadFullHistory"
+	| "getOmittedHistoryTotals"
+	| "getEntrySeq"
+	| "findEntrySeq"
+	| "getLastSeq"
+	| "getSessionRecoveryState"
 >;

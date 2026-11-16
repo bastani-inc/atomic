@@ -68,6 +68,10 @@ export interface OverlayPiSurface {
 	ui?: OverlayUISurface;
 }
 
+export interface GraphOverlayOpenOptions {
+	readonly onReturn?: () => void;
+}
+
 /**
  * Port exposed to the extension factory.
  * `open(runId)`  — bring the pane to front (creating it if needed).
@@ -75,11 +79,17 @@ export interface OverlayPiSurface {
  * `close()`      — permanently dismiss.
  *
  * Optional `stageId` and owning `stageRunId` (on `open`) open directly on
- * that exact stage-chat node — used by `/workflow attach <runId> <stageId>`
+ * that exact stage-chat node — used to open a stage chat directly
  * and the picker overlay's connect-to-stage flow.
  */
 export interface GraphOverlayPort {
-	open(runId: string | null, surface?: OverlayPiSurface, stageId?: string, stageRunId?: string): void;
+	open(
+		runId: string | null,
+		surface?: OverlayPiSurface,
+		stageId?: string,
+		stageRunId?: string,
+		openOptions?: GraphOverlayOpenOptions,
+	): void;
 	toggle(runId: string | null, surface?: OverlayPiSurface): void;
 	close(): void;
 }
@@ -95,6 +105,7 @@ const FULLSCREEN_OVERLAY_OPTIONS: PiOverlayOptions = {
 	margin: 0,
 };
 
+const STORE_RENDER_FRAME_MS = 16;
 const MAIN_CHAT_INPUT_STATUS_KEY = `${WORKFLOW_STATUS_KEY}:main-chat-input`;
 const MAIN_CHAT_INPUT_STATUS = "Main chat needs input — exit graph to answer.";
 
@@ -117,6 +128,8 @@ export interface BuildGraphOverlayAdapterOpts {
 	stageUiBroker?: StageUiBroker;
 	/** Optional clock injection for deterministic attach-pane transition tests. */
 	now?: () => number;
+
+	stageActions?: import("./graph-view-types.js").GraphStageActions;
 	/** Terminal output seam used to test raw overlay control sequences. */
 	terminalOutput?: OverlayTerminalOutput;
 }
@@ -149,6 +162,14 @@ export function buildGraphOverlayAdapter(
 	// the chat scrollback, producing visible duplicates.
 	let currentHandle: PiOverlayHandle | null = null;
 	let mounted = false;
+
+	let returnTo: (() => void) | undefined;
+	const goBack = (): void => {
+		const back = returnTo;
+		returnTo = undefined;
+		hideMounted();
+		back?.();
+	};
 	let finishMounted: (() => void) | null = null;
 	// Repaints the mounted overlay through its factory TUI. Needed on the
 	// hidden→visible flip: store updates while hidden intentionally skip
@@ -265,8 +286,8 @@ export function buildGraphOverlayAdapter(
 
 	function makeComponent(view: WorkflowAttachPane, tui: PiCustomOverlayFactoryTui): PiCustomComponent {
 		requestMountedRender = () => tui.requestRender?.();
+		let pendingStoreFrame: ReturnType<typeof setTimeout> | null = null;
 		const onStoreUpdate = (): void => {
-			const snapshot = readGraphStoreSnapshot(store);
 			// Always invalidate retained view state so a later reopen renders the
 			// current snapshot — but while the overlay is hidden, never ask the
 			// host to render (#1856): each hidden-overlay render request became
@@ -274,8 +295,15 @@ export function buildGraphOverlayAdapter(
 			// scrollback to the bottom.
 			view.invalidate();
 			if (currentHandle?.isHidden() === true) return;
-			refocusVisibleOverlayForAwaitingInput(snapshot);
-			tui.requestRender?.();
+			if (currentHandle !== null && !currentHandle.isFocused()) {
+				refocusVisibleOverlayForAwaitingInput(readGraphStoreSnapshot(store));
+			}
+			if (pendingStoreFrame !== null) return;
+			pendingStoreFrame = setTimeout(() => {
+				pendingStoreFrame = null;
+				if (currentView !== view || currentHandle?.isHidden() === true) return;
+				tui.requestRender?.();
+			}, STORE_RENDER_FRAME_MS);
 		};
 		const unsubscribe = subscribeStoreInvalidation(store, onStoreUpdate);
 		return {
@@ -291,13 +319,22 @@ export function buildGraphOverlayAdapter(
 				if (currentView === view) clearHostCustomUiObservation();
 				remoteTerminalControl = null;
 				requestMountedRender = null;
+				if (pendingStoreFrame !== null) clearTimeout(pendingStoreFrame);
+				pendingStoreFrame = null;
 				unsubscribe();
 				view.dispose();
 			},
 		};
 	}
 
-	function open(runId: string | null, surface?: OverlayPiSurface, stageId?: string, stageRunId?: string): void {
+	function open(
+		runId: string | null,
+		surface?: OverlayPiSurface,
+		stageId?: string,
+		stageRunId?: string,
+		openOptions?: GraphOverlayOpenOptions,
+	): void {
+		returnTo = openOptions?.onReturn;
 		const ui = surface?.ui ?? pi.ui;
 		observeHostCustomUi(ui);
 
@@ -370,6 +407,8 @@ export function buildGraphOverlayAdapter(
 				stageUiBroker,
 				onClose: finish,
 				onHide: hideMounted,
+				onBack: goBack,
+				stageActions: buildOpts.stageActions,
 				initialAttachStageId: stageId,
 				initialAttachRunId: stageRunId,
 				piTui: tui,
