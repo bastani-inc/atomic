@@ -68,8 +68,12 @@ export interface ShippingStatus {
 
 interface Attempt {
 	lease: AttemptLease;
-	/** When each unshipped checkpoint was accepted, oldest first, by the monotonic clock. */
-	accepted: number[];
+	/**
+	 * Each unshipped checkpoint, oldest first: its local sequence and when it was accepted, by the monotonic clock. An
+	 * entry goes only once the shared journal holds its checkpoint, or the attempt is fenced, so a read of the local
+	 * journal that raced an accept never drops one (#4768).
+	 */
+	accepted: { readonly localSeq: number; readonly at: number }[];
 	/** The attempt's shipping, one batch at a time. */
 	chain: Promise<void>;
 	/** Why the attempt can ship no more: the shared journal refused it, so its next commit is refused too. */
@@ -184,14 +188,14 @@ export class CheckpointShipping {
 		const checkpoint = mutation.checkpoint;
 		await this.catchUp(lease);
 		try {
-			const { accepted } = await this.shard.accept(
+			const { localSeq, accepted } = await this.shard.accept(
 				this.shard.root,
 				lease,
 				checkpointKey(checkpoint),
 				serializeJson(payloadOf(checkpoint)),
 				checkpoint.completedAt,
 			);
-			if (accepted) this.noteAccepted(lease);
+			if (accepted) this.noteAccepted(lease, localSeq);
 		} catch (error) {
 			if (error instanceof StaleWorkLeaseError || error instanceof ShipIdentityConflictError) throw error;
 			this.fallBack(lease.id, error as Error);
@@ -213,10 +217,7 @@ export class CheckpointShipping {
 		if (attempt === undefined || attempt.lease.generation !== lease.generation) return;
 		for (;;) {
 			if (attempt.fenced !== undefined) throw attempt.fenced;
-			if ((await this.shard.pendingCount(attempt.lease)) === 0) {
-				attempt.accepted = [];
-				return;
-			}
+			if ((await this.shard.pendingCount(attempt.lease)) === 0) return;
 			await this.ship(attempt);
 		}
 	}
@@ -229,7 +230,7 @@ export class CheckpointShipping {
 	private async catchUp(lease: AttemptLease): Promise<void> {
 		for (let tries = 0; ; tries++) {
 			const attempt = this.attempts.get(lease.id);
-			const oldest = attempt?.accepted[0];
+			const oldest = attempt?.accepted[0]?.at;
 			if (attempt === undefined || oldest === undefined || this.now() - oldest < this.backpressureMs()) return;
 			if (attempt.fenced !== undefined) throw attempt.fenced;
 			if (this.closed) throw new Error("Checkpoint shipping stopped");
@@ -262,7 +263,7 @@ export class CheckpointShipping {
 		let lagMs = 0;
 		for (const attempt of this.attempts.values()) {
 			pending += attempt.accepted.length;
-			const oldest = attempt.accepted[0];
+			const oldest = attempt.accepted[0]?.at;
 			if (oldest !== undefined) lagMs = Math.max(lagMs, now - oldest);
 		}
 		return { pending, lagMs, ...(this.lastError === undefined ? {} : { error: this.lastError }) };
@@ -336,13 +337,14 @@ export class CheckpointShipping {
 		}
 		this.lastError = undefined;
 		await this.shard.shipped(lease, sealed.events.at(-1)!.localSeq);
-		attempt.accepted.splice(0, sealed.events.length);
+		const last = sealed.events.at(-1)!.localSeq;
+		attempt.accepted = attempt.accepted.filter((entry) => entry.localSeq > last);
 	}
 
-	private noteAccepted(lease: AttemptLease): void {
+	private noteAccepted(lease: AttemptLease, localSeq: number): void {
 		const attempt = this.attempts.get(lease.id);
 		if (attempt === undefined) return;
-		attempt.accepted.push(this.now());
+		attempt.accepted.push({ localSeq, at: this.now() });
 	}
 
 	private now(): number {
