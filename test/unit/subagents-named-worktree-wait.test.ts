@@ -45,7 +45,7 @@ function makeRepo(): string {
 }
 
 function locks(repo: string, branch: string): { dir: string; pathLock: string; branchLock: string; target: string } {
-	const dir = join(repo, ".git", "worktrees", ".atomic-named-worktree-locks");
+	const dir = join(repo, ".git", "objects", "info", "atomic-named-worktree-locks");
 	mkdirSync(dir, { recursive: true });
 	const target = join(repo, ".atomic", "worktrees", branch.replaceAll("/", "+"));
 	const comparable = process.platform === "win32" ? target.toLowerCase() : target;
@@ -100,17 +100,31 @@ test("a queued named-worktree launch reports progress and aborts without retaini
 	}
 });
 
-test("named-worktree ownership files survive Git pruning without appearing as worktrees and stay private (#5202)", async () => {
+test("named-worktree ownership files survive Git maintenance without appearing as worktrees and stay private (#5202)", async () => {
 	const repo = makeRepo();
 	const { path: target } = await ensureNamedWorktree(repo, { branch: "feat/pruned" });
-	const dir = join(repo, ".git", "worktrees", ".atomic-named-worktree-locks");
+	const dir = join(repo, ".git", "objects", "info", "atomic-named-worktree-locks");
 	const before = readdirSync(dir).sort();
-	assert.equal(before.filter((file) => file.endsWith(".lock")).length, 2);
-	assert.ok(before.includes("locked"));
+	assert.equal(before.length, 2);
+	const identities = (): Array<{ ino: number; mtimeMs: number; size: number }> =>
+		before.map((file) => {
+			const { ino, mtimeMs, size } = statSync(join(dir, file));
+			return { ino, mtimeMs, size };
+		});
+	const original = identities();
 	git(repo, "worktree", "remove", target);
-	git(repo, "worktree", "prune", "--expire", "now");
-	assert.deepEqual(readdirSync(dir).sort(), before);
-	assert.doesNotMatch(git(repo, "worktree", "list", "--porcelain"), /atomic-named-worktree-locks/);
+	for (const args of [
+		["worktree", "prune", "--expire", "now"],
+		["gc", "--prune=now", "--aggressive"],
+		["repack", "-a", "-d"],
+		["prune"],
+		["maintenance", "run", "--task=gc", "--task=loose-objects", "--task=incremental-repack"],
+	]) {
+		git(repo, ...args);
+		assert.deepEqual(readdirSync(dir).sort(), before);
+		assert.deepEqual(identities(), original, args.join(" "));
+		assert.doesNotMatch(git(repo, "worktree", "list", "--porcelain"), /atomic-named-worktree-locks/);
+	}
 	if (process.platform !== "win32") {
 		assert.equal(statSync(dir).mode & 0o777, 0o700);
 		for (const file of before) assert.equal(statSync(join(dir, file)).mode & 0o777, 0o600);

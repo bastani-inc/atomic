@@ -118,23 +118,13 @@ function targetCheckoutBlocker(commonDir: string, worktreePath: string): string 
 	return undefined;
 }
 
-function protectLockDirectory(directory: string): void {
-	const marker = path.join(directory, "locked");
-	fs.closeSync(fs.openSync(marker, "a", 0o600));
-	if (process.platform !== "win32") {
-		fs.chmodSync(directory, 0o700);
-		fs.chmodSync(marker, 0o600);
-	}
-}
-
 function lockPaths(commonDir: string, branch: string, worktreePath: string): string[] {
-	const admin = path.join(comparablePath(commonDir), "worktrees");
-	const lockDir = path.join(admin, ".atomic-named-worktree-locks");
-	fs.mkdirSync(admin, { recursive: true });
+	const info = path.join(comparablePath(commonDir), "objects", "info");
+	const lockDir = path.join(info, "atomic-named-worktree-locks");
+	fs.mkdirSync(info, { recursive: true });
 	if (!fs.existsSync(lockDir)) {
-		const temporary = fs.mkdtempSync(path.join(admin, ".atomic-named-worktree-locks-"));
+		const temporary = fs.mkdtempSync(path.join(info, "atomic-named-worktree-locks-"));
 		try {
-			protectLockDirectory(temporary);
 			try {
 				fs.renameSync(temporary, lockDir);
 			} catch (error) {
@@ -144,7 +134,7 @@ function lockPaths(commonDir: string, branch: string, worktreePath: string): str
 			fs.rmSync(temporary, { recursive: true, force: true });
 		}
 	}
-	protectLockDirectory(lockDir);
+	if (process.platform !== "win32") fs.chmodSync(lockDir, 0o700);
 	const key = (kind: string, value: string): string =>
 		path.join(lockDir, `${kind}-${createHash("sha256").update(value).digest("hex")}.lock`);
 	return [

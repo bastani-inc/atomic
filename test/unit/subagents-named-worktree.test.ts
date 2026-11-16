@@ -62,7 +62,7 @@ function makeRepo(): string {
 }
 
 function namedWorktreePathLock(repo: string, branch: string): string {
-	const dir = join(repo, ".git", "worktrees", ".atomic-named-worktree-locks");
+	const dir = join(repo, ".git", "objects", "info", "atomic-named-worktree-locks");
 	mkdirSync(dir, { recursive: true });
 	const target = join(repo, ".atomic", "worktrees", branch.replaceAll("/", "+"));
 	const key = process.platform === "win32" ? target.toLowerCase() : target;
