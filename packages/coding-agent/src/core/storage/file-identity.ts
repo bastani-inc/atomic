@@ -861,14 +861,15 @@ function preferredTargetOwner(agentPath: string, target: string): string {
 		parentStorageOwner(parent) ?? (isDefaultStorageHome(parent, defaultHome) ? join(parent, "agent") : undefined);
 	if (parentOwner !== undefined && !sameDirectory(parentOwner, agentPath)) {
 		if (containsPath(canonicalPath(parentOwner), physical)) return parentOwner;
+		const decision = readStorageHomeDecision(storageHomeDecisionFile(parentOwner));
+		const ownerHome = decision?.home ?? parent;
 		if (
-			containsPath(canonicalPath(join(parent, "workflows")), physical) ||
-			pathsEqual(canonicalPath(join(parent, "storage.sqlite")), physical)
+			containsPath(canonicalPath(join(ownerHome, "workflows")), physical) ||
+			pathsEqual(canonicalPath(join(ownerHome, "storage.sqlite")), physical)
 		)
 			return parentOwner;
-		const decision = readStorageHomeDecision(storageHomeDecisionFile(parentOwner));
 		const targets = decision?.targets ?? configuredRelativeTargets(parentOwner, getHomeDir(), undefined, false);
-		if (targets.some((entry) => pathsEqual(canonicalPath(resolve(parent, entry)), physical))) return parentOwner;
+		if (targets.some((entry) => pathsEqual(canonicalPath(resolve(ownerHome, entry)), physical))) return parentOwner;
 	}
 	const physicalParent = canonicalPath(parent);
 	const segment = relative(physicalParent, physical).split(sep)[0];
@@ -913,7 +914,11 @@ export function storagePathBaseDir(path: string, agentDir: string, settings?: St
 		if (owner === undefined) throw new Error(`Cannot claim storage target at ${claim}`);
 		if (sameDirectory(currentStorageOwnerPath(owner), agentPath)) continue;
 		const fallback = resolve(agentPath, target);
-		if (pathsEqual(canonicalPath(fallback), canonicalPath(selected)) || isSameFile(fallback, selected)) {
+		if (
+			!containsPath(canonicalPath(agentPath), canonicalPath(fallback)) ||
+			pathsEqual(canonicalPath(fallback), canonicalPath(selected)) ||
+			isSameFile(fallback, selected)
+		) {
 			throw new Error(`Relative storage target ${path} is owned by another agent directory`);
 		}
 		return agentPath;

@@ -2046,3 +2046,28 @@ test("agent resources retain legacy-store eligibility beside a credentials-only 
 		assert.equal(storageHomeDir(sibling, {}), sibling, resource);
 	}
 });
+
+test("relative parent traversal cannot expose an adopted default store to custom siblings (#5242)", () => {
+	const home = join(root, "adopted-default-traversal");
+	const canonical = join(home, ".atomic", "agent");
+	const alias = join(home, "link-agent");
+	mkdirSync(canonical, { recursive: true });
+	mkdirSync(join(home, "workflows"));
+	writeFileSync(join(home, "workflows", "journal.sqlite"), "");
+	symlinkSync(canonical, alias, "junction");
+	vi.stubEnv("HOME", home);
+	vi.stubEnv("USERPROFILE", home);
+	assert.equal(defaultSessionDatabasePath(alias, {}), join(home, "workflows", "journal.sqlite"));
+	for (const name of ["a1", "a2"]) {
+		const agent = join(home, ".atomic", name);
+		mkdirSync(agent);
+		assert.throws(
+			() =>
+				selectSessionStorage(project, {
+					agentDir: agent,
+					settings: { sessions: { storage: { path: "../workflows/journal.sqlite" } } },
+				}),
+			/owned by another agent directory/,
+		);
+	}
+});
