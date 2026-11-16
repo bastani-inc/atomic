@@ -1,3 +1,4 @@
+import { mkdirSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { getAgentDir, SettingsManager, selectProcessStorage } from "@bastani/atomic";
 import {
@@ -126,7 +127,18 @@ export function selectRunJournal(options: RunJournalResolutionOptions = {}): Sto
 }
 
 export async function resolveRunJournal(options: RunJournalResolutionOptions = {}): Promise<RunJournal> {
-	return openSelectedRunJournal(selectRunJournal(options), options.agentDir);
+	let selection = selectRunJournal(options);
+	const usesDefaultHome =
+		options.journal === undefined || !("path" in options.journal) || (options.journal.path ?? "") === "";
+	if (
+		!("createRun" in selection) &&
+		(selection.kind === "sharded" || selection.kind === "sqlite") &&
+		usesDefaultHome
+	) {
+		mkdirSync(options.agentDir ?? getAgentDir(), { recursive: true });
+		selection = selectRunJournal(options);
+	}
+	return openSelectedRunJournal(selection, options.agentDir);
 }
 
 /** The storage selection a journal was opened from, so another process can open the same journal. */

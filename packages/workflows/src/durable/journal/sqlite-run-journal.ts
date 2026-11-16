@@ -1,3 +1,4 @@
+import { mkdirSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import {
 	defaultSessionDatabasePath,
@@ -24,6 +25,7 @@ export async function openSqlRunJournal(
 	options: { readonly prefix?: string } = {},
 ): Promise<SqlRunJournal> {
 	validateStoragePrefix(options.prefix);
+	if (source === undefined) mkdirSync(getAgentDir(), { recursive: true });
 	const selected = source ?? workflowJournalPath(SettingsManager.create(process.cwd(), getAgentDir()).getSettings());
 	const database =
 		typeof selected === "string" ? await openNodeSqliteDatabase(selected) : wrapNodeSqliteDatabase(selected);

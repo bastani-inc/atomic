@@ -1,3 +1,4 @@
+import { mkdirSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { Value } from "typebox/value";
 import { getAgentDir } from "../config.js";
@@ -214,9 +215,18 @@ function isDefaultDatabase(
 }
 
 export async function resolveSessionStore(cwd: string, options: SessionStorageOptions = {}): Promise<SessionStore> {
-	const selection = selectSessionStorage(cwd, options);
+	let selection = selectSessionStorage(cwd, options);
 	if (selection !== null && typeof selection === "object" && "load" in selection) return selection;
 	const agentDir = options.agentDir ?? getAgentDir();
+	if (
+		(selection.kind === "sqlite" || selection.kind === "jsonl") &&
+		options.sessionStore === undefined &&
+		options.sessionStorePath === undefined &&
+		options.sessionDir === undefined
+	) {
+		mkdirSync(agentDir, { recursive: true });
+		selection = selectSessionStorage(cwd, options) as StorageSelection;
+	}
 	// Released sessions' history that a killed process left in this agent directory goes, once per process (#4502).
 	void import("./storage/session/released-history-files.js").then(
 		({ sweepReleasedHistoryOnce }) => sweepReleasedHistoryOnce(agentDir),

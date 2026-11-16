@@ -22,6 +22,7 @@ export * from "./dialect.js";
 export * from "./errors.js";
 export * from "./fenced-paths.js";
 export {
+	claimFileAtomically,
 	defaultSessionDatabasePath,
 	defaultSharedStoragePath,
 	readClaimFile,

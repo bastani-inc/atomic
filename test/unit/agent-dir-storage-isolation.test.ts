@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
@@ -1854,9 +1854,11 @@ test("storage status does not create a nonexistent agent directory named workflo
 		`SQLite ${join(parent, "history.sqlite")}`,
 	);
 	assert.equal(existsSync(agent), false);
-	assert.equal(status.notes.filter((note) => /Adopted existing storage/.test(note)).length, 1);
+	assert.deepEqual(status.notes, []);
 	mkdirSync(agent);
 	resetStorageHomeCacheForTests();
+	const adopted = await collectStorageStatus({ cwd: project, agentDir: agent, probe: false });
+	assert.equal(adopted.notes.filter((note) => /Adopted existing storage/.test(note)).length, 1);
 	assert.deepEqual((await collectStorageStatus({ cwd: project, agentDir: agent, probe: false })).notes, []);
 });
 
@@ -1928,4 +1930,51 @@ test("a custom profile directly under the default home cannot claim the default 
 		kind: "jsonl",
 		dir: join(atomic, "sessions"),
 	});
+});
+
+test("renaming an adopting agent directory in its parent keeps its session history (#5242)", () => {
+	const parent = join(root, "renamed-owner");
+	const original = join(parent, "a1");
+	const renamed = join(parent, "main-profile");
+	mkdirSync(original, { recursive: true });
+	mkdirSync(join(parent, "workflows"), { recursive: true });
+	writeFileSync(join(parent, "workflows", "journal.sqlite"), "");
+	assert.equal(defaultSessionDatabasePath(original, {}), join(parent, "workflows", "journal.sqlite"));
+	renameSync(original, renamed);
+	resetStorageHomeCacheForTests();
+	assert.equal(defaultSessionDatabasePath(renamed, {}), join(parent, "workflows", "journal.sqlite"));
+	mkdirSync(original);
+	resetStorageHomeCacheForTests();
+	assert.equal(defaultSessionDatabasePath(original, {}), join(original, "workflows", "journal.sqlite"));
+	assert.equal(defaultSessionDatabasePath(renamed, {}), join(parent, "workflows", "journal.sqlite"));
+});
+
+test("a never-created SDK agent directory beside ordinary source directories retains its parent history (#5242)", () => {
+	const parent = join(root, "stateless-sdk");
+	const agent = join(parent, "sdk-agent");
+	for (const name of ["src", "docs", "workflows"]) mkdirSync(join(parent, name), { recursive: true });
+	writeFileSync(join(parent, "workflows", "journal.sqlite"), "");
+	assert.equal(defaultSessionDatabasePath(agent, {}), join(parent, "workflows", "journal.sqlite"));
+	assert.equal(existsSync(agent), false);
+});
+
+test("changing HOME cannot make a custom profile share the original default agent's store (#5242)", () => {
+	const originalHome = join(root, "original-home");
+	const atomic = join(originalHome, ".atomic");
+	const original = join(atomic, "agent");
+	const custom = join(atomic, "work");
+	mkdirSync(original, { recursive: true });
+	mkdirSync(custom, { recursive: true });
+	writeFileSync(join(custom, "settings.json"), JSON.stringify({ defaultModel: "example" }));
+	vi.stubEnv("HOME", originalHome);
+	vi.stubEnv("USERPROFILE", originalHome);
+	const originalStore = defaultSessionDatabasePath(original, {});
+	mkdirSync(join(atomic, "workflows"));
+	writeFileSync(originalStore, "");
+	assert.equal(storageHomeDir(custom, {}), custom);
+	resetStorageHomeCacheForTests();
+	vi.stubEnv("HOME", join(root, "different-home"));
+	vi.stubEnv("USERPROFILE", join(root, "different-home"));
+	assert.equal(defaultSessionDatabasePath(custom, {}), join(custom, "workflows", "journal.sqlite"));
+	assert.equal(defaultSessionDatabasePath(original, {}), originalStore);
 });

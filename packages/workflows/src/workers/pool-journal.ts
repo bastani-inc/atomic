@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, linkSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { createChildProcessEnvironment } from "@bastani/atomic";
 import {
 	type AdapterOptions,
+	claimFileAtomically,
 	readClaimFile,
 	type StorageSelection,
 	sameDirectory,
@@ -250,16 +251,7 @@ function adoptedHostId(agentDir: string): string | undefined {
 	if (!sameDirectory(storageHomeDir(agentDir), dirname(agentDir))) return undefined;
 	const claim = `${legacy}.adopted-by`;
 	const self = resolve(agentDir);
-	// Written whole beside the claim and linked into place, so the claim is never seen, or left by a crash, empty: a
-	// link fails when the claim exists, so one directory claims it.
-	const staged = `${claim}.${randomUUID()}`;
-	try {
-		writeFileSync(staged, `${self}\n`, { flag: "wx" });
-		linkSync(staged, claim);
-	} catch {
-	} finally {
-		rmSync(staged, { force: true });
-	}
+	claimFileAtomically(claim, `${self}\n`);
 	const owner = readClaimFile(claim);
 	return owner !== undefined && sameDirectory(owner, self) ? id : undefined;
 }

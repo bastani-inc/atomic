@@ -115,11 +115,11 @@ export function setCliStorageSelection(argument: StorageFlagArgument | undefined
 }
 
 /** Every set storage variable, parsed and checked even when another selection outranks it. */
-function environmentChoices(agentDir: string, settleStorageHome = true) {
-	const baseDir = (path: string) => (settleStorageHome ? storagePathBaseDir(path, agentDir) : agentDir);
-	const domainDefault = () => (settleStorageHome ? defaultSessionDatabasePath(agentDir) : agentDir);
-	const sharedDefault = () => (settleStorageHome ? defaultSharedStoragePath(agentDir) : agentDir);
-	const journalDefault = () => (settleStorageHome ? defaultJournalStoreDirectory(agentDir) : agentDir);
+function environmentChoices(agentDir: string) {
+	const baseDir = () => agentDir;
+	const domainDefault = () => agentDir;
+	const sharedDefault = domainDefault;
+	const journalDefault = domainDefault;
 	const read = (
 		field: string,
 		schema: typeof SessionStorageSelectionSchema | typeof StorageSelectionSchema,
@@ -144,7 +144,7 @@ function environmentChoices(agentDir: string, settleStorageHome = true) {
 
 /** Check every set storage variable, whether or not any selection uses it. */
 export function validateProcessStorage(agentDir: string): void {
-	environmentChoices(agentDir, false);
+	environmentChoices(agentDir);
 }
 
 /**
@@ -161,7 +161,7 @@ export function selectProcessStorage(
 ): ProcessStorageChoice | undefined {
 	const legacyField = domain === "sessions" ? ENV_SESSION_DIR : WORKFLOW_JOURNAL_PATH_ENV;
 	const legacy = environmentValue(legacyField);
-	const validated = environmentChoices(agentDir, false);
+	const validated = environmentChoices(agentDir);
 	let resolvedSettings: StorageHomeSettings | undefined;
 	let hasResolvedSettings = typeof settings !== "function";
 	const getSettings = (): StorageHomeSettings | undefined => {
