@@ -268,11 +268,14 @@ test("a shippable checkpoint whose local lease expired while the attempt still o
 		const claim = await worker.request({ kind: "claim" });
 		assert.equal(claim.error, undefined);
 		const held = claim.value as PoolWork;
-		const pinnedWallClock = Date.now();
-		// Past the local lease and through a pass of the pool's recovery, which runs at least once a second.
-		await sleep(leaseMs + 1_200);
-		const dateSpy = vi.spyOn(Date, "now").mockReturnValue(pinnedWallClock);
+		// The wall clock, which the shared journal's work lease follows, stays at the claim, so the attempt owns its work
+		// throughout, while its local lease, on the monotonic clock, lapses. It is pinned before the wait: a work lease that
+		// expired while this worker, which sends no heartbeat, is silent past its lease would have a recovery pass rightly
+		// take the worker for dead, stop it and release its attempt.
+		const dateSpy = vi.spyOn(Date, "now").mockReturnValue(Date.now());
 		try {
+			// Past the local lease and through a pass of the pool's recovery, which runs at least once a second.
+			await sleep(leaseMs + 1_200);
 			const c0 = await worker.request({
 				kind: "commit",
 				operation: "commit-c0",
