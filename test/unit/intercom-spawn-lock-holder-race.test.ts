@@ -7,8 +7,8 @@
  */
 
 import assert from "node:assert/strict";
-import { closeSync, openSync, utimesSync, writeSync } from "node:fs";
-import { join } from "node:path";
+import { closeSync, openSync, readdirSync, utimesSync, writeSync } from "node:fs";
+import { basename, join } from "node:path";
 import { afterAll, afterEach, describe, test, vi } from "vitest";
 import { makeTempDirectory, readTextSync, removeTempDirectory, writeTextSync } from "../helpers/runtime.js";
 
@@ -380,6 +380,25 @@ describe("a spawn lock on a file system without hard links (#5220)", () => {
 		assert.ok(
 			warnings.some((warning) => warning.includes(path) && warning.includes("earlier version")),
 			`the refusal names the likely cause: ${warnings.join(" | ")}`,
+		);
+	});
+
+	test("a live lock moved aside by a stale judgment is put back where no hard link can be made (#5220)", () => {
+		const path = join(tempDir, `broker.spawn.lock-${lockCount++}`);
+		const live = `${process.pid}\n${Date.now()}\n`;
+		writeTextSync(path, live);
+		race.lockPath = path;
+		race.linkError = "EPERM";
+		const removeFileIfUnchanged = staleLockFile.removeFileIfUnchanged as (path: string, inspected: string) => boolean;
+
+		// A judge that read a stale lock moves aside what is there now: a live lock, which it must not keep.
+		assert.equal(removeFileIfUnchanged(path, "2147483646\n17\n"), false);
+		assert.equal(readTextSync(path, "utf8"), live, "the live lock is back in place");
+		assert.equal(acquireSpawnLock(path), undefined, "and still held");
+		assert.deepEqual(
+			readdirSync(tempDir).filter((name) => name.startsWith(`${basename(path)}.`)),
+			[],
+			"nothing is left parked",
 		);
 	});
 });

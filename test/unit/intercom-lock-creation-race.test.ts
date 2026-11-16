@@ -47,7 +47,19 @@ vi.mock("fs", async (importOriginal) => {
 		actual.linkSync(existing, path);
 		pauseMaking(path);
 	}) as typeof actual.linkSync;
-	return { ...actual, default: { ...actual, writeFileSync, linkSync }, writeFileSync, linkSync };
+	// Where no hard link can be made (FAT), a lock is created and then written: the pause falls between the two.
+	const openSync = ((path: import("fs").PathLike, flags?: import("fs").OpenMode, mode?: import("fs").Mode | null) => {
+		const fd = (actual.openSync as (...args: unknown[]) => number)(path, flags, mode);
+		if (flags === "wx") pauseMaking(path);
+		return fd;
+	}) as typeof actual.openSync;
+	return {
+		...actual,
+		default: { ...actual, writeFileSync, linkSync, openSync },
+		writeFileSync,
+		linkSync,
+		openSync,
+	};
 });
 
 const { acquireSpawnLock } = await import("../../packages/intercom/broker/spawn.js");
