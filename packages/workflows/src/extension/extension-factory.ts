@@ -213,7 +213,10 @@ function factory(pi: ExtensionAPI): void {
 			if (runId === undefined) return { ok: false, reason: "not a workflow run" };
 			try {
 				const outcome = await sessionRunControl.quit(runId);
-				return outcome.status === "ok" ? { ok: true } : { ok: false, reason: outcome.message };
+				// A quit run is paused and resumable: that is the stop the panel asked for. Only a partial quit failed.
+				return outcome.status === "partial" || outcome.status === "running"
+					? { ok: false, reason: outcome.message }
+					: { ok: true };
 			} catch (error) {
 				return { ok: false, reason: error instanceof Error ? error.message : String(error) };
 			}

@@ -10,6 +10,7 @@ import {
 } from "@bastani/atomic-tui";
 import type { KeybindingsManager } from "../../../core/keybindings.ts";
 import type { PromptRoute, TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
+import { liveElapsedMs } from "../../../core/tasks/live-elapsed.ts";
 import { OwnerTaskStore } from "../../../core/tasks/owner-store.js";
 import { ownerTaskViewSource, type TaskViewSource } from "../../../core/tasks/task-view-source.js";
 import { theme } from "../theme/theme.js";
@@ -120,8 +121,6 @@ export class TaskInspector implements Component {
 	private callerLabel = "back";
 	/** Typed shell input per task, kept when the reader leaves the input and restored when they return. */
 	private readonly inputDrafts = new Map<TaskId, string>();
-	/** When each running task was first seen, so elapsed times advance between the task's own reports. */
-	private readonly liveSince = new Map<TaskId, number>();
 	/** The open transcript of the selected task, on the shared chat stack. */
 	private transcript?: TaskTranscriptPage;
 	private status = "";
@@ -501,16 +500,11 @@ export class TaskInspector implements Component {
 		return this.navigation.focus.kind === "detail" || this.navigation.focus.kind === "stdin";
 	}
 	/** The waiting first press of `x`, as the line under the list shows it. */
-	/** A running task's elapsed time advances between its own reports, from when this view first saw it running. */
+	/** A running task's elapsed time advances between its own reports, on the clock every view shares. */
 	private withLiveElapsed(task: TaskRecord): TaskRecord {
-		if (task.execution.kind !== "running") {
-			this.liveSince.delete(task.ref.taskId);
-			return task;
-		}
-		const now = Date.now();
-		const since = this.liveSince.get(task.ref.taskId) ?? now - (task.metrics?.elapsedMs ?? 0);
-		this.liveSince.set(task.ref.taskId, since);
-		return { ...task, metrics: { ...task.metrics, elapsedMs: Math.max(task.metrics?.elapsedMs ?? 0, now - since) } };
+		const elapsedMs = liveElapsedMs(task.ref.taskId, task.metrics?.elapsedMs, task.execution.kind === "running");
+		if (task.execution.kind !== "running" || elapsedMs === undefined) return task;
+		return { ...task, metrics: { ...task.metrics, elapsedMs } };
 	}
 	private stopNotice(): string {
 		const finished = this.navigation.finishedWhileArmed;
