@@ -9,6 +9,7 @@ import {
 	describeWorktreeSnapshot,
 	worktreeRestoreNotices,
 } from "../../core/session-worktree-snapshots.ts";
+import { parseSlashCommand } from "../../core/slash-commands.js";
 import { formatToolStatus, type ToolStatusReport } from "../../core/tool-status.js";
 import { getUsageCostBreakdown } from "../../core/usage-totals.ts";
 import { isGitUnavailableError, isWorkspaceError } from "../../core/worktree-snapshot/errors.ts";
@@ -141,14 +142,12 @@ InteractiveModeBase.prototype.getPathCommandArgument = function (
 	text: string,
 	command: "/export" | "/import",
 ): string | undefined {
-	if (text === command) {
-		return undefined;
-	}
-	if (!text.startsWith(`${command} `)) {
+	const { name, args } = parseSlashCommand(text);
+	if (`/${name}` !== command) {
 		return undefined;
 	}
 
-	const argsString = text.slice(command.length + 1).trimStart();
+	const argsString = args.trimStart();
 	if (!argsString) {
 		return undefined;
 	}

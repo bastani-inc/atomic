@@ -75,8 +75,12 @@ export interface CrossNodeHeldFixtures {
 const LIVE_MS = 3_600_000;
 /** Passed as `staleAfterMs` to treat every lease or claim as expired. */
 const EXPIRED_MS = -1;
-/** Upper bound for a healthy bus to deliver a published hint or a resync. */
-const WAKE_UP_DELIVERY_BOUND_MS = 5_000;
+/**
+ * How long a published hint or a resync may take to reach a subscriber on a loaded machine. A reconnect needs two
+ * polls and a reopen, and a test process starved of CPU can stall for several seconds between them. Below the
+ * per-test timeout, so a missing event fails with this wait's message.
+ */
+const WAKE_UP_EVENT_LIMIT_MS = 20_000;
 /** How long a closed subscription is watched for stray events. */
 const CLOSED_SUBSCRIPTION_QUIET_MS = 100;
 /** Wait between taking a lease or claim and renewing it, so a renewal that leaves the age unchanged is observable. */
@@ -1723,6 +1727,7 @@ export function registerReleasedAskStoreConformance(
 				ask: heldBy("abandoned"),
 			});
 			await sleep(RENEWAL_GAP_MS);
+			const newClaimStarted = Date.now();
 			assert.deepEqual(await b.supersede(over("new", "abandoned", RENEWAL_GAP_MS / 2)), {
 				status: "claimed",
 				ask: heldBy("new"),
@@ -1731,7 +1736,9 @@ export function registerReleasedAskStoreConformance(
 				status: "taken",
 				ask: heldBy("new"),
 			});
-			assert.deepEqual(await a.supersede(over("newer", "new", RENEWAL_GAP_MS / 2)), {
+			// Younger than the elapsed time since it was made, by a margin no older claim could pass.
+			const freshWindow = Date.now() - newClaimStarted + RENEWAL_GAP_MS / 2;
+			assert.deepEqual(await a.supersede(over("newer", "new", freshWindow)), {
 				status: "taken",
 				ask: heldBy("new"),
 			});
@@ -1763,9 +1770,12 @@ export function registerReleasedAskStoreConformance(
 		await a.claim(by("q1", "first"));
 		await sleep(RENEWAL_GAP_MS);
 		assert.deepEqual(await b.reopen(by("q1", "first")), { status: "settled" });
+		const secondClaimStarted = Date.now();
 		await b.claim(by("q1", "second"));
+		// The first claim's age, carried over, would exceed this window by at least RENEWAL_GAP_MS / 2.
+		const freshWindow = Date.now() - secondClaimStarted + RENEWAL_GAP_MS / 2;
 		assert.deepEqual(
-			await a.supersede({ ...by("q1", "third"), staleReplyMessageId: "second", staleAfterMs: RENEWAL_GAP_MS / 2 }),
+			await a.supersede({ ...by("q1", "third"), staleReplyMessageId: "second", staleAfterMs: freshWindow }),
 			{ status: "taken", ask: { ...asked("q1"), state: "claimed", replyMessageId: "second" } },
 		);
 	});
@@ -2053,12 +2063,12 @@ class WakeUpRecorder {
 	}
 
 	async next(predicate: (event: WakeUpEvent) => boolean, from = 0): Promise<WakeUpEvent> {
-		const deadline = Date.now() + WAKE_UP_DELIVERY_BOUND_MS;
+		const deadline = Date.now() + WAKE_UP_EVENT_LIMIT_MS;
 		for (;;) {
 			const found = this.events.slice(from).find(predicate);
 			if (found !== undefined) return found;
 			const remaining = deadline - Date.now();
-			if (remaining <= 0) assert.fail(`no matching wake-up event within ${WAKE_UP_DELIVERY_BOUND_MS} ms`);
+			if (remaining <= 0) assert.fail(`no matching wake-up event within ${WAKE_UP_EVENT_LIMIT_MS} ms`);
 			await new Promise<void>((resolve) => {
 				const timer = setTimeout(resolve, remaining);
 				this.waiters.push(() => {

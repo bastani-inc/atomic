@@ -571,7 +571,7 @@ export type {
 export { DEFAULT_PLACEMENT_CLAIM_WINDOW_MS } from "./workers/public-options.js";
 export { workflowWorkerFleetLines } from "./workers/shared-pool-status-lines.js";
 export type { PooledStageInputKind } from "./workers/stage-input-kind.js";
-export { readWorkflowWorkerFleet, startWorkflowWorkerHost } from "./workers/worker-host.js";
+export { migrateWorkflowStorage, readWorkflowWorkerFleet, startWorkflowWorkerHost } from "./workers/worker-host.js";
 export type {
 	SharedJournalSelection,
 	WorkerHostFailure,

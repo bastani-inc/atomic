@@ -19,6 +19,7 @@ import type {
 } from "./multinode-state-store.js";
 import { SETTLED_ASK_RETENTION_MS } from "./multinode-state-store.js";
 import { addMissingColumns } from "./sql-add-column.js";
+import { ensureBrokerSchema } from "./sql-schema.js";
 
 type AskRow = SqliteRow & { sender_session_id: string; target_session_id: string; message_id: string };
 
@@ -54,7 +55,7 @@ export async function openSqlPendingAskStore({
 }: IntercomBrokerStateOptions): Promise<PendingAskStore> {
 	const table = `${validateStoragePrefix(prefix, dialectOf(database).name)}intercom_pending_asks`;
 	const { types, nowMs, greatest } = dialectOf(database);
-	await database.transaction((tx) =>
+	await ensureBrokerSchema(database, prefix, "pending-asks", (tx) =>
 		tx.exec(`
 			CREATE TABLE IF NOT EXISTS ${table}(
 				"order" ${types.serialKey},
@@ -77,7 +78,7 @@ export async function openSqlPendingAskStore({
 	});
 	// #4997: asks answered or failed, remembered so a stopped broker's copy of one is not recorded again.
 	const settled = `${validateStoragePrefix(prefix)}intercom_settled_asks`;
-	await database.transaction((tx) =>
+	await ensureBrokerSchema(database, prefix, "settled-asks", (tx) =>
 		tx.exec(`
 			CREATE TABLE IF NOT EXISTS ${settled}(
 				sender_session_id TEXT NOT NULL,

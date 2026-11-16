@@ -23,6 +23,7 @@ import {
 	type StateStoreInvalidReason,
 } from "./multinode-state-store.js";
 import { addMissingColumns } from "./sql-add-column.js";
+import { ensureBrokerSchema } from "./sql-schema.js";
 
 const UNDELIVERED = "state IN ('queued', 'claimed')";
 
@@ -94,7 +95,7 @@ export async function openSqlOutboxStore(options: IntercomBrokerStateOptions): P
 		);
 		CREATE INDEX IF NOT EXISTS ${table}_target ON ${table}(target_identity, state, sequence);
 	`;
-	await database.transaction((tx) => tx.exec(schema));
+	await ensureBrokerSchema(database, options.prefix, "outbox", (tx) => tx.exec(schema));
 	// #3983: added later; a table from an older broker gets the column, and an older broker ignores it.
 	await addMissingColumns(database, table, { saving_at: types.int });
 	// #4896: when the row was queued and the size of its frame; rows an older broker wrote have neither.

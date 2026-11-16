@@ -6,10 +6,11 @@ import {
   renderReceiptHistory,
   taggedPrompt,
 } from "./goal-prompts.js";
-import { WORKER_PREFLIGHT_CONTRACT } from "./shared-prompts.js";
+import { CONTEXT_SIZE_CONTINUATION_RULE, WORKER_PREFLIGHT_CONTRACT } from "./shared-prompts.js";
 
 export const GOAL_ORCHESTRATOR_RECEIPT_CONTRACT = [
   "Complete the objective before claiming readiness. Leave work only at a true blocker or impossibility; do not redefine success around a partial state.",
+  CONTEXT_SIZE_CONTINUATION_RULE,
   "Map every explicit requirement, artifact, command, test, gate, invariant, and deliverable to authoritative current evidence whose scope matches the claim.",
   "Unless the objective/criteria forbid committing, have an implementation agent commit in this checkout with a descriptive message, confirm a clean tree with `git status --porcelain`, and include the commit identifier. Do not defer committing.",
   "Return delegations, files changed, commands and outcomes, evidence, blockers, residual risks, readiness, and verification remaining.",

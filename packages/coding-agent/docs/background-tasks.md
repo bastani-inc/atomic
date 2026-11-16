@@ -57,7 +57,7 @@ Run `/tasks` to inspect work without stopping it:
 
 Results and failures remain in completion cards and `/tasks` after leaving the agent panel. The command appears in workflow-stage slash suggestions even when skill commands are disabled.
 
-Main and workflow-stage pickers share the same layout. Their footers show the chat's resolved model and reasoning level, current folder and Git branch while the chat is idle, and MCP status throughout. While the chat's agent works, the model line shows `working` instead, because Escape closes the picker rather than interrupting.
+Main and workflow-stage pickers share the same layout. Their footers show the chat's resolved model and reasoning level, current folder and Git branch while the chat is idle, and MCP status throughout. While the chat's agent works, the model line is hidden and no status line takes its place, because Escape closes the picker rather than interrupting.
 
 Opening `/tasks` is navigation, not approval. It does not mark the agent blocked in Herdr or produce a "Main chat needs input" notice. A genuine question waiting behind the workflow graph still shows that notice until answered or the graph is hidden or closed.
 
