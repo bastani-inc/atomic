@@ -21,6 +21,8 @@ import { SqlSharedPool } from "../../packages/workflows/src/durable/journal/sql-
 import { StaleLeaseError } from "../../packages/workflows/src/durable/journal/types.js";
 import type { DurableToolCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import { StaleWorkLeaseError } from "../../packages/workflows/src/shared/worker-pool-errors.js";
+import { CheckpointShipping } from "../../packages/workflows/src/workers/checkpoint-shipping.js";
+import { ShipShard } from "../../packages/workflows/src/workers/ship-shard.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
@@ -460,6 +462,65 @@ for (const batched of [true, false])
 			await f.close();
 		}
 	});
+
+test("urgent shipping expands a default-sized batch to 1000 checkpoints and records the backlog in order (#4768)", async () => {
+	const f = await fixture();
+	const directory = makeTempDirectory("urgent-shipping-");
+	const clock = { now: 0 };
+	const local = await ShipShard.open(join(directory, "shard.sqlite"), "root", () => clock.now);
+	let release!: () => void;
+	let entered!: () => void;
+	const gate = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const started = new Promise<void>((resolve) => {
+		entered = resolve;
+	});
+	const sizes: number[] = [];
+	const shipping = new CheckpointShipping(local, {
+		host: "host",
+		intervalMs: 2_000,
+		maxBatch: 64,
+		maxLagMs: 1_000,
+		now: () => clock.now,
+		deliver: async (attempt, batch) => {
+			sizes.push(batch.events.length);
+			if (sizes.length === 1) {
+				entered();
+				await gate;
+			}
+			await f.pool.shipBatch(f.lease, attempt, batch);
+		},
+	});
+	try {
+		const attempt = await f.pool.claim(f.lease, "host/w1", [work], 60_000);
+		assert.ok(attempt);
+		await shipping.hold(attempt, 60_000);
+		const indexes = Array.from({ length: 1_064 }, (_, index) => index + 1);
+		for (const index of indexes) {
+			await shipping.commit(attempt, { kind: "checkpoint", checkpoint: tool(index) }, async () =>
+				assert.fail("a plain checkpoint ships"),
+			);
+			if (index === 64) await started;
+		}
+		clock.now = 500;
+		const flushing = shipping.flush(attempt);
+		release();
+		await flushing;
+		await shipping.flush(attempt);
+		assert.deepEqual(sizes, [64, 1_000]);
+		assert.deepEqual(
+			(await recordedTools(f)).map((entry) => entry.index),
+			indexes,
+		);
+		assert.equal(shipping.status().pending, 0);
+	} finally {
+		release();
+		await shipping.close();
+		await f.close();
+		removeTempDirectory(directory);
+	}
+});
 
 test("a batch planned from a read reads as much for many checkpoints as for one, and writes in one request (#4768)", async () => {
 	const f = await fixture();

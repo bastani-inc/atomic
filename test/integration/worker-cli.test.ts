@@ -329,7 +329,7 @@ test.skipIf(process.platform === "win32")(
 		let nodeC: Node | undefined;
 		let root: BudgetedProcess | undefined;
 		try {
-			nodeB = startNode(s, "B", 1, markers);
+			nodeB = startNode(s, "B", 1, { ...markers, SHARED_POOL_REPLAY_GATE: s.directory });
 			await until("node B to be ready", s, () => nodeB!.stdout.length > 0, [nodeB.process]);
 			root = startRoot(s, 3, 20_000, {
 				...markers,
@@ -337,30 +337,40 @@ test.skipIf(process.platform === "win32")(
 				SHARED_POOL_CHECKPOINT_SHIPPING: JSON.stringify({ intervalMs: 60_000, maxBatch: 1_000, maxLagMs: 600_000 }),
 			});
 			await until(
-				"node B to work on a child",
+				"node B to ship its stage and wait before its local-only checkpoint",
 				s,
-				() => readdirSync(s.directory).some((name) => name.startsWith("working-B-")),
+				() => readdirSync(s.directory).some((name) => name.startsWith("ready-B-")),
 				[nodeB.process, root],
 			);
+			nodeC = startNode(s, "C", 2, markers);
 			const index = readdirSync(s.directory)
-				.find((name) => name.startsWith("working-B-"))!
+				.find((name) => name.startsWith("ready-B-"))!
 				.split("-")
 				.at(-1)!;
-			assert.ok(readdirSync(s.directory).includes(`unshipped-B-${index}`));
 			const beforeKill = await openLibsqlDatabase({ url: s.url });
 			try {
-				assert.deepEqual(
-					await beforeKill.all(
-						`SELECT key FROM ${PREFIX}wf_events WHERE json_extract(payload, '$.name') = 'unshipped' AND json_extract(payload, '$.output') = 'B'`,
-					),
-					[],
-				);
+				await beforeKill.transaction(async (tx) => {
+					await tx.run(`UPDATE ${PREFIX}wf_runs_ship_batches SET host = host WHERE host = ?`, "B");
+					writeFileSync(join(s.directory, `accept-B-${index}`), "");
+					await until(
+						"node B to acknowledge its local-only checkpoint",
+						s,
+						() => readdirSync(s.directory).includes(`working-B-${index}`),
+						[nodeB!.process, nodeC!.process, root!],
+					);
+					assert.ok(readdirSync(s.directory).includes(`unshipped-B-${index}`));
+					killGroup(nodeB!.process);
+					await nodeB!.process.process.exited;
+					assert.deepEqual(
+						await tx.all(
+							`SELECT key FROM ${PREFIX}wf_events WHERE json_extract(payload, '$.name') = 'unshipped' AND json_extract(payload, '$.output') = 'B'`,
+						),
+						[],
+					);
+				});
 			} finally {
 				await beforeKill.close();
 			}
-			nodeC = startNode(s, "C", 2, markers);
-			killGroup(nodeB.process);
-			await nodeB.process.process.exited;
 			await expectExitedCleanly(root);
 			const executions = readdirSync(s.directory).filter(
 				(name) => name.startsWith("unshipped-") && name.endsWith(`-${index}`),

@@ -165,7 +165,13 @@ export class CheckpointShipping {
 
 	/** The attempt holds its work's lease as of now: at its claim and at each renewal. */
 	async hold(lease: AttemptLease, leaseMs: number): Promise<void> {
-		if (this.recoveryScan !== undefined) await this.recoveryScan;
+		let recoveryFailure: Error | undefined;
+		if (this.recoveryScan !== undefined)
+			try {
+				await this.recoveryScan;
+			} catch (error) {
+				recoveryFailure = error as Error;
+			}
 		if (this.closed) return;
 		const known = this.attempts.get(lease.id);
 		if (known !== undefined && known.lease.generation > lease.generation)
@@ -178,6 +184,7 @@ export class CheckpointShipping {
 		if (known === undefined || known.lease.generation !== lease.generation)
 			this.attempts.set(lease.id, { lease: { ...lease }, accepted: [], chain: Promise.resolve() });
 		else known.lease = { ...lease };
+		if (recoveryFailure !== undefined) this.fallBack(lease.id, recoveryFailure);
 		try {
 			await this.shard.hold(lease, leaseMs);
 		} catch (error) {
@@ -207,6 +214,7 @@ export class CheckpointShipping {
 					await sleep(RELEASE_FLUSH_RETRY_MS * 2 ** (tries - 1));
 				}
 			}
+		if (this.attempts.get(workId) !== attempt) return;
 		this.attempts.delete(workId);
 		this.shard.release(workId);
 		this.syncOnly.delete(workId);
