@@ -275,7 +275,7 @@ export function createSubagentExecutor(rawDeps: ExecutorDeps): {
 		const childRefusal = refuseSubagentChildDelegation(ctx, inferExecutionMode(params));
 		if (childRefusal) return childRefusal;
 
-		const named = prepareNamedWorktrees(paramsWithResolvedCwd, ctx.cwd);
+		const named = await prepareNamedWorktrees(paramsWithResolvedCwd, ctx.cwd);
 		if (named.error) return named.error;
 		const built = prepareExecutionContext({ params: named.params, ctx, signal, onUpdate, deps });
 		if (built.error) return built.error;

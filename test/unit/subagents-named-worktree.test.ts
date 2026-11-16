@@ -1,8 +1,18 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	realpathSync,
+	renameSync,
+	rmSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { tryAdvisoryLock } from "@bastani/atomic-natives";
 import { Value } from "typebox/value";
 import { afterEach, test } from "vitest";
 import type { ExtensionContext } from "../../packages/coding-agent/src/index.js";
@@ -21,7 +31,7 @@ import type {
 	SubagentParamsLike,
 } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
 import type { SingleResult, SubagentToolResult } from "../../packages/subagents/src/shared/types.js";
-import { bunExecutable, moduleDir, readStreamText, spawnProcess, spawnSyncCollect } from "../helpers/runtime.js";
+import { bunExecutable, moduleDir, readStreamText, sleep, spawnProcess, spawnSyncCollect } from "../helpers/runtime.js";
 
 const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
 const cleanups: Array<() => void> = [];
@@ -391,7 +401,7 @@ test("resuming a child in a removed named worktree checks its branch out there a
 	const head = git(path, "rev-parse", "HEAD");
 	git(repo, "worktree", "remove", path);
 
-	const release = resumeRunWorktree({
+	const release = await resumeRunWorktree({
 		runId: "run",
 		index: 0,
 		cwd: path,
@@ -484,6 +494,161 @@ setTimeout(() => {
 	assert.equal(git(expected, "rev-parse", "--abbrev-ref", "HEAD"), "feat/half");
 });
 
+test("permanent named-worktree git failures do not retry because a branch contains locked (#5202)", () => {
+	const repo = makeRepo();
+	git(repo, "branch", "feat/parent");
+	const modulePath = pathToFileURL(
+		join(moduleDir(import.meta.url), "../../packages/subagents/src/runs/shared/named-worktree.ts"),
+	).href;
+	const PERMANENT_FAILURE_PROCESS_TIMEOUT_MS = 20_000;
+	const result = spawnSyncCollect(
+		[
+			bunExecutable(),
+			"-e",
+			`const [modulePath, repo] = process.argv.slice(1);
+const { ensureNamedWorktree } = await import(modulePath);
+for (const request of [{ branch: "locked", base: "missing-base" }, { branch: "feat/parent/child" }]) {
+	try {
+		await ensureNamedWorktree(repo, request);
+		process.exit(1);
+	} catch (error) {
+		console.log(error.message);
+	}
+}
+const fs = require("node:fs"), path = require("node:path");
+fs.rmSync(path.join(repo, ".atomic"), { recursive: true, force: true });
+fs.writeFileSync(path.join(repo, ".atomic"), "not a directory");
+try {
+	await ensureNamedWorktree(repo, { branch: "locked-fs" });
+	process.exit(1);
+} catch (error) {
+	console.log(error.message);
+}`,
+			modulePath,
+			repo,
+		],
+		{ cwd: repo, env: createGitEnvironment(), timeout: PERMANENT_FAILURE_PROCESS_TIMEOUT_MS },
+	);
+	assert.equal(result.exitCode, 0, `${result.stdout}\n${result.stderr}`);
+	assert.match(result.stdout.toString(), /invalid reference: missing-base/);
+	assert.match(result.stdout.toString(), /exists; cannot create/);
+	assert.match(result.stdout.toString(), /ENOTDIR|EEXIST|ENOENT/);
+});
+
+test("a live named-worktree creation lock is not stolen when its file is old (#5202)", async () => {
+	const repo = makeRepo();
+	const lockPath = join(repo, ".git", "atomic-named-worktree.lock");
+	const lock = tryAdvisoryLock(lockPath, 0);
+	assert.ok(lock);
+	const old = new Date(Date.now() - 11 * 60_000);
+	utimesSync(lockPath, old, old);
+	const modulePath = pathToFileURL(
+		join(moduleDir(import.meta.url), "../../packages/subagents/src/runs/shared/named-worktree.ts"),
+	).href;
+	const launch = spawnProcess(
+		[
+			bunExecutable(),
+			"-e",
+			`const [modulePath, repo] = process.argv.slice(1);
+const { ensureNamedWorktree } = await import(modulePath);
+console.log("ready");
+console.log(JSON.stringify(await ensureNamedWorktree(repo, { branch: "feat/held" })));`,
+			modulePath,
+			repo,
+		],
+		{ cwd: repo, stdout: "pipe", stderr: "pipe", env: createGitEnvironment() },
+	);
+	assert.ok(launch.stdout);
+	const reader = launch.stdout.getReader();
+	let createdWhileHeld = false;
+	try {
+		const ready = await reader.read();
+		assert.match(new TextDecoder().decode(ready.value), /ready/);
+		await sleep(500);
+		createdWhileHeld = existsSync(join(repo, ".atomic", "worktrees", "feat+held"));
+	} finally {
+		lock.release();
+		reader.releaseLock();
+	}
+	const [stderr, exitCode] = await Promise.all([readStreamText(launch.stderr), launch.exited]);
+	assert.equal(exitCode, 0, stderr);
+	assert.equal(createdWhileHeld, false, "a live holder keeps exclusive creation rights regardless of file age");
+	assert.equal(git(join(repo, ".atomic", "worktrees", "feat+held"), "branch", "--show-current"), "feat/held");
+	assert.ok(existsSync(lockPath), "the advisory lock file is never unlinked");
+});
+
+test("waiting for named-worktree creation lets the session event loop release the holder (#5202)", async () => {
+	const repo = makeRepo();
+	const holder = spawnProcess(
+		[
+			bunExecutable(),
+			join(moduleDir(import.meta.url), "../fixtures/named-worktree-lock-holder.ts"),
+			join(repo, ".git", "atomic-named-worktree.lock"),
+		],
+		{ cwd: repo, stdin: "pipe", stdout: "pipe", stderr: "pipe", env: createGitEnvironment() },
+	);
+	assert.ok(holder.stdout);
+	assert.ok(holder.stdin);
+	const reader = holder.stdout.getReader();
+	try {
+		const ready = await reader.read();
+		assert.match(new TextDecoder().decode(ready.value), /ready/);
+	} finally {
+		reader.releaseLock();
+	}
+	const input = holder.stdin;
+	let timerRan = false;
+	const release = sleep(100).then(() => {
+		timerRan = true;
+		input.write("release\n");
+	});
+	const result = await makeHarness(repo).execute({ agent: "worker", task: "t", worktree: { branch: "responsive" } });
+	const responsive = timerRan;
+	await release;
+	const [stderr, exitCode] = await Promise.all([readStreamText(holder.stderr), holder.exited]);
+	assert.equal(exitCode, 0, stderr);
+	assert.equal(responsive, true, "lock contention does not block the parent's timer");
+	assert.equal(result.isError, undefined, text(result));
+});
+
+test("a named-worktree creation lock times out without stealing its holder (#5202)", () => {
+	const repo = makeRepo();
+	const lockPath = join(repo, ".git", "atomic-named-worktree.lock");
+	const lock = tryAdvisoryLock(lockPath, 0);
+	assert.ok(lock);
+	try {
+		const modulePath = pathToFileURL(
+			join(moduleDir(import.meta.url), "../../packages/subagents/src/runs/shared/named-worktree.ts"),
+		).href;
+		const LOCK_TIMEOUT_PROCESS_BUDGET_MS = 20_000;
+		const result = spawnSyncCollect(
+			[
+				bunExecutable(),
+				"-e",
+				`const [modulePath, repo] = process.argv.slice(1);
+const { ensureNamedWorktree } = await import(modulePath);
+let now = 0;
+Object.defineProperty(performance, "now", { value: () => now += 60_000 });
+try {
+	await ensureNamedWorktree(repo, { branch: "timeout" });
+	process.exit(1);
+} catch (error) {
+	console.log(error.message);
+}`,
+				modulePath,
+				repo,
+			],
+			{ cwd: repo, env: createGitEnvironment(), timeout: LOCK_TIMEOUT_PROCESS_BUDGET_MS },
+		);
+		assert.equal(result.exitCode, 0, `${result.stdout}\n${result.stderr}`);
+		assert.match(result.stdout.toString(), /^worktree: timed out waiting for named-worktree creation/);
+		assert.equal(existsSync(join(repo, ".atomic", "worktrees", "timeout")), false);
+		assert.equal(tryAdvisoryLock(lockPath, 0), null, "the original holder keeps ownership after a timeout");
+	} finally {
+		lock.release();
+	}
+});
+
 /** Several processes, each checking out the same new branches at once; spawning a process is the structural cost. */
 const CONCURRENT_LAUNCHES_TIMEOUT_MS = 120_000;
 const RACE_ROUNDS = 8;
@@ -506,7 +671,7 @@ for (let round = 0; round < Number(rounds); round++) {
 	const at = Number(startAt) + round * Number(gap);
 	while (Date.now() < at) {}
 	try {
-		outcomes.push({ ok: true, path: ensureNamedWorktree(repo, { branch: "feat/race-" + round }).path });
+		outcomes.push({ ok: true, path: (await ensureNamedWorktree(repo, { branch: "feat/race-" + round })).path });
 	} catch (error) {
 		outcomes.push({ ok: false, message: error instanceof Error ? error.message : String(error) });
 	}

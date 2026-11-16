@@ -131,10 +131,10 @@ function withNamedWorktree<T extends { cwd?: string; worktree?: SubagentParamsLi
  * (#5202), setting the child's cwd to it. A top-level named worktree applies to the single child, or to each task
  * that names none of its own. `worktree: true` is left as it is.
  */
-export function prepareNamedWorktrees(
+export async function prepareNamedWorktrees(
 	params: SubagentParamsLike,
 	runtimeCwd: string,
-): { params: SubagentParamsLike; error?: undefined } | { params?: undefined; error: SubagentToolResult } {
+): Promise<{ params: SubagentParamsLike; error?: undefined } | { params?: undefined; error: SubagentToolResult }> {
 	const callCwd = params.cwd ?? runtimeCwd;
 	const tasks = params.tasks ?? [];
 	const cwds = [callCwd, ...tasks.map((task) => resolveRequestedCwd(callCwd, task.cwd))];
@@ -150,17 +150,22 @@ export function prepareNamedWorktrees(
 		};
 	try {
 		if (tasks.length === 0)
-			return { params: topLevel ? withNamedWorktree(params, ensureNamedWorktree(callCwd, topLevel)) : params };
+			return { params: topLevel ? withNamedWorktree(params, await ensureNamedWorktree(callCwd, topLevel)) : params };
 		const { worktree: _topLevel, ...rest } = params;
+		const preparedTasks: TaskParam[] = [];
+		for (const task of tasks) {
+			const request = task.worktree ?? topLevel;
+			preparedTasks.push(
+				request
+					? withNamedWorktree(task, await ensureNamedWorktree(resolveRequestedCwd(callCwd, task.cwd), request))
+					: task,
+			);
+		}
 		return {
 			params: {
 				...rest,
 				...(topLevel ? {} : { worktree: params.worktree }),
-				tasks: tasks.map((task) => {
-					const request = task.worktree ?? topLevel;
-					if (!request) return task;
-					return withNamedWorktree(task, ensureNamedWorktree(resolveRequestedCwd(callCwd, task.cwd), request));
-				}),
+				tasks: preparedTasks,
 			},
 		};
 	} catch (error) {

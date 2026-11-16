@@ -206,7 +206,7 @@ export function runWorktreeRecord(runId: string, index: number): SubagentChildWo
  * until its new execution starts ({@link claimRunWorktree}), so a resume that fails keeps its unsaved work. Returns the
  * release of the resume hold.
  */
-export function resumeRunWorktree(
+export async function resumeRunWorktree(
 	child: {
 		readonly runId: string;
 		readonly index: number;
@@ -215,11 +215,11 @@ export function resumeRunWorktree(
 		readonly worktree?: SubagentChildWorktree;
 	},
 	setupHook?: WorktreeSetupHookConfig,
-): () => void {
+): Promise<() => void> {
 	// A named worktree is the caller's: put back where it was if it was removed, and never tracked for removal.
 	if (child.worktree?.named) {
 		try {
-			ensureNamedWorktree(child.worktree.repo, { branch: child.worktree.branch, path: child.worktree.path });
+			await ensureNamedWorktree(child.worktree.repo, { branch: child.worktree.branch, path: child.worktree.path });
 		} catch {
 			// Left as it is: resume then reports a working directory that no longer exists.
 		}

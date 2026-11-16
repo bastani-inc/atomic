@@ -927,14 +927,14 @@ export async function restoreSubagentChild(
 		// Every sender, not only this session, is told the child is gone, for as long as this session is connected.
 		await hold?.gone(reason);
 	};
-	// Hold the child's worktree until its new execution holds it, recreating it from the run's base if it was removed.
-	const releaseWorktree = resumeRunWorktree(
-		record,
-		deps.config.worktreeSetupHook
-			? { hookPath: deps.config.worktreeSetupHook, timeoutMs: deps.config.worktreeSetupHookTimeoutMs }
-			: undefined,
-	);
+	let releaseWorktree: (() => void) | undefined;
 	const restoration: Promise<SubagentChildRestoreOutcome> = (async () => {
+		releaseWorktree = await resumeRunWorktree(
+			record,
+			deps.config.worktreeSetupHook
+				? { hookPath: deps.config.worktreeSetupHook, timeoutMs: deps.config.worktreeSetupHookTimeoutMs }
+				: undefined,
+		);
 		// Hold sends to the child before anything can fail, so no sender is told `Session not found` meanwhile.
 		// When the session already holds them since it started, that hold carries on under the same capability:
 		// what it holds stays held, and no moment passes without a hold.
@@ -960,14 +960,14 @@ export async function restoreSubagentChild(
 				registered.settled = outcome;
 				registered.knownPreviousIntercomId = knownPreviousIntercomId;
 			}
-			releaseWorktree();
+			releaseWorktree?.();
 			if (outcome.kind === "unrestorable") await markGone(outcome.reason);
 			else if (outcome.kind !== "restored") release();
 			return outcome;
 		},
 		async (error: Error) => {
 			previousIntercomId.resolve(undefined);
-			releaseWorktree();
+			releaseWorktree?.();
 			// A failure that passes, such as a read of its history that ran out of file descriptors (#4502), leaves the
 			// child as it was, for a later wake or resume; only a lasting one makes it gone.
 			if (isRetryableStorageError(error)) {
