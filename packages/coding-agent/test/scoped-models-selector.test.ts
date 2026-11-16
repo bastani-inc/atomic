@@ -166,6 +166,29 @@ describe("scoped models selector", () => {
 		},
 	);
 
+	it.each(["\x1b[99;5u", "\x1b[1089::99;5u", "\x1b[27;5;99~"])(
+		"Ctrl+C encoding %j clears scoped search before cancelling (#5237)",
+		async (key) => {
+			harness = await createHarness({ models: [{ id: "model-a", name: "Model A" }] });
+			let cancellations = 0;
+			const selector = new ScopedModelsSelectorComponent(
+				{ allModels: harness.models, enabledModelIds: null },
+				{
+					onChange: () => {},
+					onCancel: () => {
+						cancellations++;
+					},
+				},
+			);
+			selector.handleInput("model");
+			selector.handleInput(key);
+			assert.equal(selector.getSearchInput().getValue(), "");
+			assert.equal(cancellations, 0);
+			selector.handleInput(key);
+			assert.equal(cancellations, 1);
+		},
+	);
+
 	it("marks every model after enabling all", async () => {
 		const models = [
 			{ id: "model-a", name: "Model A", enabled: true },

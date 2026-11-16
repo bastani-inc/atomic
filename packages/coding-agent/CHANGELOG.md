@@ -8,7 +8,7 @@
 
 ### Fixed
 
-- Pickers ignore a repeated Enter or click instead of answering twice, and an extension dialog shown again after another dialog repaints in the current theme ([#5237](https://github.com/bastani-inc/atomic/pull/5237))
+- Pickers ignore a repeated Enter or click instead of answering twice, and an extension dialog shown again after another dialog repaints in the current theme. Ctrl+C cancels a filtered picker with Kitty and modifyOtherKeys keyboard protocols too; `/scoped-models` keeps its clear-search-first behavior ([#5237](https://github.com/bastani-inc/atomic/pull/5237))
 - Isolated interactive mode applies the reasoning level chosen in `/model` and keeps model and reasoning changes made by extensions during `/model` or Ctrl+P without saving session-only changes. Saving a model choice no longer copies project model defaults or scoped-model lists into global settings ([#5237](https://github.com/bastani-inc/atomic/pull/5237))
 
 ## [0.9.88] - 2026-11-16

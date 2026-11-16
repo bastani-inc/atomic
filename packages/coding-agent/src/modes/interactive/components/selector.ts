@@ -4,6 +4,7 @@ import {
 	fuzzyFilter,
 	getKeybindings,
 	Input,
+	matchesKey,
 	sliceByColumn,
 	type TuiMouseEvent,
 	type TuiMouseEventResult,
@@ -595,7 +596,7 @@ export class Selector<T> implements Component, Focusable {
 		else if (!this.input && data === "\x1b[H") this.state.edge("first");
 		else if (!this.input && data === "\x1b[F") this.state.edge("last");
 		else if (kb.matches(data, "tui.select.cancel")) {
-			if (this.state.getQuery() && !isCtrlC(data)) this.clearSearch();
+			if (this.state.getQuery() && !matchesKey(data, "ctrl+c")) this.clearSearch();
 			else {
 				this.closed = true;
 				this.mousePressed = undefined;
@@ -958,8 +959,4 @@ export class FramedSelector<T> implements Component, Focusable {
 	invalidate(): void {
 		this.selector.invalidate();
 	}
-}
-
-function isCtrlC(data: string): boolean {
-	return data === "\x03";
 }
