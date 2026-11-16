@@ -64,10 +64,12 @@ async function shipOnce(shard: ShipShard, key: string): Promise<void> {
 test("a retired local checkpoint journal whose checkpoints all shipped leaves no files behind (#4768)", async () => {
 	const directory = makeTempDirectory("ship-shard-retire-");
 	try {
-		for (let index = 0; index < 20; index++) {
+		// A few roots sharing the journal's directory, each with a few shipped checkpoints, show what one retire leaves.
+		// Each checkpoint is two synced commits, about 4 ms apiece on Windows: 20 roots of 50 took 10 to 48 s there.
+		for (let index = 0; index < 3; index++) {
 			const root = `root-${index}`;
 			const shard = await ShipShard.open(shipShardPath(directory, "journal", root), root);
-			for (let checkpoint = 0; checkpoint < 50; checkpoint++) await shipOnce(shard, `key-${checkpoint}`);
+			for (let checkpoint = 0; checkpoint < 3; checkpoint++) await shipOnce(shard, `key-${checkpoint}`);
 			await shard.close({ retire: true });
 		}
 		assert.deepEqual(
