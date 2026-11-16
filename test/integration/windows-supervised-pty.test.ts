@@ -185,8 +185,8 @@ test.runIf(process.platform === "win32")(
 				assert.equal(invalid.ok, false, "invalid COORD must not be queued or kill the task");
 			}
 			value(supervisor.resizeTaskTerminal(task, 101, 37));
-			await sleep(50);
-			value(await supervisor.writeTaskInput(input, randomUUID(), { kind: "bytes", bytes: Buffer.from("size\r") }));
+			// The child learns of the resize when libuv reports it, from its own watcher thread, some time after the pseudo
+			// console resized: wait for the size it then reports, not for a fixed delay.
 			await eventuallyOutput(supervisor, task, /SIZE:101x37/);
 			value(await supervisor.writeTaskInput(input, randomUUID(), { kind: "bytes", bytes: Buffer.from("done\r") }));
 			const outcome = await settled(supervisor, task);
