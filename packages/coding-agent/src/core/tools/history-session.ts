@@ -1,6 +1,11 @@
 import { setImmediate } from "node:timers";
 import type { SessionEntry } from "../session-manager-types.ts";
-import type { SessionEntriesPage, SessionSearchCoverage, SessionStore } from "../storage/session/types.js";
+import type {
+	SessionEntriesPage,
+	SessionSearchCoverage,
+	SessionSearchIndex,
+	SessionStore,
+} from "../storage/session/types.js";
 import type { LiteralQuery } from "./history-literals.ts";
 import { entryLines, timestamp } from "./history-transcript.ts";
 import { formatSearchTextLine, type InternalSearchRequest, searchTextLines } from "./resource-selectors.ts";
@@ -161,70 +166,112 @@ export function mergeSeqRanges(ranges: readonly SeqRange[]): SeqRange[] {
 	return merged;
 }
 
-export async function readSessionRanges(
+class RangeReader {
+	private readonly place: SessionPlace;
+	private readonly raw: boolean;
+	private readonly cursor: SeqCursor | undefined;
+	private readonly budget: HistoryCallBudget;
+	private readonly pager: EntryPager;
+	private readonly ranges: SeqRange[];
+	private readonly out: string[] = [];
+	private lastSeq = Number.POSITIVE_INFINITY;
+	private emitted = false;
+	private progressed = false;
+
+	constructor(
+		place: SessionPlace,
+		requested: readonly SeqRange[],
+		raw: boolean,
+		cursor: SeqCursor | undefined,
+		budget: HistoryCallBudget,
+	) {
+		this.place = place;
+		this.raw = raw;
+		this.cursor = cursor;
+		this.budget = budget;
+		this.pager = entryPager(place.store, place.sessionId);
+		this.ranges = mergeSeqRanges(requested)
+			.map((range) => ({ start: Math.max(range.start, cursor?.seq ?? 1), end: range.end }))
+			.filter((range) => range.start <= range.end);
+	}
+
+	async run(): Promise<string> {
+		for (const [index, range] of this.ranges.entries()) {
+			const stopped = await this.readRange(index, range);
+			if (stopped !== undefined) return stopped;
+		}
+		const first = this.ranges[0];
+		if (first !== undefined && first.start > this.lastSeq)
+			return `Requested entry ${first.start} is beyond end of session (${this.lastSeq} entries total).`;
+		return this.out.join("\n");
+	}
+
+	private async readRange(index: number, range: SeqRange): Promise<string | undefined> {
+		let headed = false;
+		for (let pos = range.start; pos <= Math.min(range.end, this.lastSeq); ) {
+			const reason = this.budget.spent();
+			if (reason && this.progressed) return this.stopAt(pos, 0, index, range.end, reason);
+			const page = await this.pager.page(
+				pos,
+				Math.min(range.end, pos + Math.min(PAGE_SEQS, this.budget.rowAllowance()) - 1),
+				this.budget.signal,
+			);
+			this.progressed = true;
+			this.lastSeq = page.lastSeq;
+			if (pos > this.lastSeq) return undefined;
+			if (!this.raw && !headed) {
+				this.write(
+					`# session ${this.place.sessionId} entries ${range.start}-${Math.min(range.end, this.lastSeq)} of ${this.lastSeq}`,
+				);
+				headed = true;
+			}
+			for (const { seq, entry } of page.entries) {
+				const stoppedLine = await this.writeEntry(seq, entry);
+				if (stoppedLine !== undefined) return this.stopAt(seq, stoppedLine, index, range.end, "byte");
+			}
+			this.budget.takeRows(page.throughSeq - pos + 1);
+			pos = page.throughSeq + 1;
+		}
+		return undefined;
+	}
+
+	private async writeEntry(seq: number, entry: SessionEntry): Promise<number | undefined> {
+		const lines = renderedLines(entry);
+		const skip = this.cursor !== undefined && seq === this.cursor.seq ? this.cursor.line : 0;
+		for (let line = skip; line < lines.length; line++) {
+			if (!this.budget.fits(lineBytes(lines[line]!)) && this.emitted) return line;
+			this.write(lines[line]!);
+			this.emitted = true;
+			if (line % 256 === 255) await this.budget.pace();
+		}
+		await this.budget.pace();
+		return undefined;
+	}
+
+	private write(line: string): void {
+		this.out.push(line);
+		this.budget.spend(lineBytes(line));
+	}
+
+	private stopAt(seq: number, line: number, index: number, end: number, reason: BudgetStop): string {
+		const rest = [{ start: seq, end }, ...this.ranges.slice(index + 1)].map((range) => ({
+			start: range.start,
+			end: Math.min(range.end, this.lastSeq),
+		}));
+		const url = this.place.urlWith(line > 0 ? { cursor: `${seq}.${line}` } : {}, rest);
+		this.out.push(`[read up to entry ${seq} of ${this.lastSeq}; ${stopText(reason)}; continue with ${url}]`);
+		return this.out.join("\n");
+	}
+}
+
+export function readSessionRanges(
 	place: SessionPlace,
 	requested: readonly SeqRange[],
 	raw: boolean,
 	cursor: SeqCursor | undefined,
 	budget: HistoryCallBudget,
 ): Promise<string> {
-	const pager = entryPager(place.store, place.sessionId);
-	const out: string[] = [];
-	let lastSeq = Number.POSITIVE_INFINITY;
-	let emitted = false;
-	let progressed = false;
-	const ranges = mergeSeqRanges(requested)
-		.map((range) => ({ start: Math.max(range.start, cursor?.seq ?? 1), end: range.end }))
-		.filter((range) => range.start <= range.end);
-	const stopAt = (seq: number, line: number, index: number, end: number, reason: BudgetStop): string => {
-		const rest = [{ start: seq, end }, ...ranges.slice(index + 1)].map((range) => ({
-			start: range.start,
-			end: Math.min(range.end, lastSeq),
-		}));
-		const url = place.urlWith(line > 0 ? { cursor: `${seq}.${line}` } : {}, rest);
-		out.push(`[read up to entry ${seq} of ${lastSeq}; ${stopText(reason)}; continue with ${url}]`);
-		return out.join("\n");
-	};
-	for (const [index, range] of ranges.entries()) {
-		let pos = range.start;
-		let headed = false;
-		while (pos <= Math.min(range.end, lastSeq)) {
-			const reason = budget.spent();
-			if (reason && progressed) return stopAt(pos, 0, index, range.end, reason);
-			const page = await pager.page(
-				pos,
-				Math.min(range.end, pos + Math.min(PAGE_SEQS, budget.rowAllowance()) - 1),
-				budget.signal,
-			);
-			progressed = true;
-			lastSeq = page.lastSeq;
-			if (pos > lastSeq) break;
-			if (!raw && !headed) {
-				const header = `# session ${place.sessionId} entries ${range.start}-${Math.min(range.end, lastSeq)} of ${lastSeq}`;
-				out.push(header);
-				budget.spend(lineBytes(header));
-				headed = true;
-			}
-			for (const { seq, entry } of page.entries) {
-				const lines = renderedLines(entry);
-				const skip = cursor !== undefined && seq === cursor.seq ? cursor.line : 0;
-				for (let line = skip; line < lines.length; line++) {
-					const size = lineBytes(lines[line]!);
-					if (!budget.fits(size) && emitted) return stopAt(seq, line, index, range.end, "byte");
-					out.push(lines[line]!);
-					budget.spend(size);
-					emitted = true;
-					if (line % 256 === 255) await budget.pace();
-				}
-				await budget.pace();
-			}
-			budget.takeRows(page.throughSeq - pos + 1);
-			pos = page.throughSeq + 1;
-		}
-	}
-	if (ranges.length > 0 && ranges[0]!.start > lastSeq)
-		return `Requested entry ${ranges[0]!.start} is beyond end of session (${lastSeq} entries total).`;
-	return out.join("\n");
+	return new RangeReader(place, requested, raw, cursor, budget).run();
 }
 
 type OutlineKind = "user" | "compaction" | "branch summary";
@@ -450,130 +497,188 @@ export interface SessionSearchRequest {
 	readonly budget: HistoryCallBudget;
 }
 
-export async function searchSession(search: SessionSearchRequest): Promise<SessionSearchResult> {
-	const { place, label, request, prefilter, budget } = search;
-	const pager = entryPager(place.store, place.sessionId);
-	const index = place.store.searchIndex;
-	let coverage: { indexedSeq: number; lastSeq: number } | undefined;
-	if (index !== undefined)
-		coverage = await index
-			.coverage(place.sessionId, HISTORY_TEXT_FORMAT)
-			.then((found: SessionSearchCoverage | undefined) => (found ? { ...found } : undefined))
-			.catch(() => undefined);
-	let indexing = coverage !== undefined;
-	let lastSeq = coverage?.lastSeq ?? (await pager.page(1, 0, budget.signal)).lastSeq;
-	const lines: string[] = [];
-	let shown = 0;
-	let more = 0;
-	let firstMore: number | undefined;
-	let countedThrough = 0;
-	let sinceCap = 0;
-	const capLine = (complete: boolean) =>
-		`${label}-0- [+${more} more in this session${complete ? "" : ` in entries ${firstMore}-${countedThrough}, maybe more after`}; search ${place.urlWith({ cursor: String(firstMore) })} for them]`;
-	const emit = (seq: number, entryLines: readonly string[], matched: readonly number[]): boolean => {
-		const visible = matched.slice(0, Math.max(0, MAX_MATCHES_PER_SESSION - shown));
+type SearchStep =
+	| { readonly next: number }
+	| { readonly stop: { readonly reason: BudgetStop; readonly resumeSeq: number } };
+
+class SessionSearcher {
+	private readonly search: SessionSearchRequest;
+	private readonly pager: EntryPager;
+	private readonly index: SessionSearchIndex | undefined;
+	private coverage: { indexedSeq: number; lastSeq: number } | undefined;
+	private indexing = false;
+	private lastSeq = 0;
+	private readonly lines: string[] = [];
+	private shown = 0;
+	private more = 0;
+	private firstMore: number | undefined;
+	private countedThrough = 0;
+	private sinceCap = 0;
+
+	constructor(search: SessionSearchRequest) {
+		this.search = search;
+		this.pager = entryPager(search.place.store, search.place.sessionId);
+		this.index = search.place.store.searchIndex;
+	}
+
+	async run(): Promise<SessionSearchResult> {
+		await this.start();
+		const { budget } = this.search;
+		let started = false;
+		for (const segment of this.segments()) {
+			for (let pos = segment.start; pos <= Math.min(segment.end, this.lastSeq); ) {
+				const reason = budget.spent();
+				if (reason && started) return this.finish({ reason, resumeSeq: pos });
+				if (this.firstMore !== undefined && this.sinceCap >= EXTRA_COUNT_ROWS) return this.finish();
+				started = true;
+				const step = this.indexCovers(pos)
+					? await this.searchIndexed(pos, segment.end)
+					: await this.scanPage(pos, segment.end);
+				if ("stop" in step) return this.finish(step.stop);
+				pos = step.next;
+			}
+		}
+		return this.finish();
+	}
+
+	private async start(): Promise<void> {
+		const { place, budget } = this.search;
+		if (this.index !== undefined)
+			this.coverage = await this.index
+				.coverage(place.sessionId, HISTORY_TEXT_FORMAT)
+				.then((found: SessionSearchCoverage | undefined) => (found ? { ...found } : undefined))
+				.catch(() => undefined);
+		this.indexing = this.coverage !== undefined;
+		this.lastSeq = this.coverage?.lastSeq ?? (await this.pager.page(1, 0, budget.signal)).lastSeq;
+	}
+
+	private segments(): SeqRange[] {
+		return mergeSeqRanges(
+			(this.search.ranges ?? [{ start: 1, end: Number.MAX_SAFE_INTEGER }])
+				.map((range) => ({ start: Math.max(range.start, this.search.fromSeq), end: range.end }))
+				.filter((range) => range.start <= range.end),
+		);
+	}
+
+	private indexCovers(pos: number): boolean {
+		return this.search.prefilter !== undefined && this.coverage !== undefined && pos <= this.coverage.indexedSeq;
+	}
+
+	private async searchIndexed(pos: number, end: number): Promise<SearchStep> {
+		const { place, prefilter, budget } = this.search;
+		const through = Math.min(end, this.coverage!.indexedSeq);
+		const seqs = await this.index!.candidates(place.sessionId, prefilter!, pos, through, CANDIDATE_PAGE).catch(
+			() => undefined,
+		);
+		budget.takeRows(1);
+		if (seqs === undefined) {
+			this.coverage = undefined;
+			this.indexing = false;
+			return { next: pos };
+		}
+		for (const seq of seqs) {
+			const reason = budget.spent();
+			if (reason) return { stop: { reason, resumeSeq: seq } };
+			if (!(await this.searchCandidate(seq))) return { stop: { reason: "byte", resumeSeq: seq } };
+		}
+		return { next: seqs.length < CANDIDATE_PAGE ? through + 1 : seqs.at(-1)! + 1 };
+	}
+
+	private async searchCandidate(seq: number): Promise<boolean> {
+		const { request, budget } = this.search;
+		const entry = (await this.pager.page(seq, seq, budget.signal)).entries[0];
+		budget.takeRows(1);
+		this.countedThrough = seq;
+		if (this.firstMore !== undefined) this.sinceCap++;
+		if (entry !== undefined) {
+			const rendered = { seq, lines: renderedLines(entry.entry) };
+			const matched = matchesIn([rendered], request).get(seq);
+			if (matched && !this.emit(seq, rendered.lines, matched)) return false;
+		}
+		await budget.pace();
+		return true;
+	}
+
+	private async scanPage(pos: number, end: number): Promise<SearchStep> {
+		const { request, budget } = this.search;
+		const page = await this.pager.page(
+			pos,
+			Math.min(end, pos + Math.min(PAGE_SEQS, budget.rowAllowance()) - 1),
+			budget.signal,
+		);
+		this.lastSeq = page.lastSeq;
+		const rendered: RenderedEntry[] = [];
+		for (const { seq, entry } of page.entries) {
+			rendered.push({ seq, lines: renderedLines(entry) });
+			await budget.pace();
+		}
+		await this.extendIndex(pos, page.throughSeq, rendered);
+		const matches = matchesIn(rendered, request);
+		for (const entry of rendered) {
+			const matched = matches.get(entry.seq);
+			if (matched && !this.emit(entry.seq, entry.lines, matched))
+				return { stop: { reason: "byte", resumeSeq: entry.seq } };
+		}
+		const span = page.throughSeq - pos + 1;
+		budget.takeRows(span);
+		this.countedThrough = page.throughSeq;
+		if (this.firstMore !== undefined) this.sinceCap += span;
+		await budget.pace();
+		return { next: page.throughSeq + 1 };
+	}
+
+	private async extendIndex(pos: number, throughSeq: number, rendered: readonly RenderedEntry[]): Promise<void> {
+		if (!this.indexing || this.coverage === undefined || pos !== this.coverage.indexedSeq + 1) return;
+		const texts = rendered.flatMap((entry) =>
+			entry.lines.length === 0 ? [] : [{ seq: entry.seq, text: entry.lines.join("\n") }],
+		);
+		const extended = await this.index!.extend(
+			this.search.place.sessionId,
+			HISTORY_TEXT_FORMAT,
+			this.coverage.indexedSeq,
+			throughSeq,
+			texts,
+		).catch(() => false);
+		if (extended) this.coverage.indexedSeq = throughSeq;
+		else this.indexing = false;
+	}
+
+	private emit(seq: number, entryLines: readonly string[], matched: readonly number[]): boolean {
+		const { label, request, budget } = this.search;
+		const visible = matched.slice(0, Math.max(0, MAX_MATCHES_PER_SESSION - this.shown));
 		const shownLines = new Set(visible);
 		const wanted = new Set<number>();
-		for (const line of visible)
-			for (
-				let context = Math.max(0, line - request.contextBefore);
-				context <= Math.min(entryLines.length - 1, line + request.contextAfter);
-				context++
-			)
-				wanted.add(context);
+		for (const line of visible) {
+			const last = Math.min(entryLines.length - 1, line + request.contextAfter);
+			for (let context = Math.max(0, line - request.contextBefore); context <= last; context++) wanted.add(context);
+		}
 		const rows = [...wanted]
 			.sort((a, b) => a - b)
 			.map((line) => formatSearchTextLine(label, seq, entryLines[line]!, shownLines.has(line)));
 		const size = rows.reduce((sum, row) => sum + lineBytes(row), 0);
 		if (rows.length > 0 && !budget.fits(size)) return false;
-		lines.push(...rows);
+		this.lines.push(...rows);
 		budget.spend(size);
-		shown += visible.length;
+		this.shown += visible.length;
 		if (matched.length > visible.length) {
-			more += matched.length - visible.length;
-			firstMore ??= seq;
+			this.more += matched.length - visible.length;
+			this.firstMore ??= seq;
 		}
 		return true;
-	};
-	const segments = (search.ranges ?? [{ start: 1, end: Number.MAX_SAFE_INTEGER }])
-		.map((range) => ({ start: Math.max(range.start, search.fromSeq), end: range.end }))
-		.filter((range) => range.start <= range.end);
-	const finish = (stopped?: { reason: BudgetStop; resumeSeq: number }): SessionSearchResult => {
-		if (more > 0) lines.push(capLine(stopped === undefined && sinceCap < EXTRA_COUNT_ROWS));
-		return { lines, lastSeq, ...(stopped ? { stopped } : {}) };
-	};
-	let started = false;
-	for (const segment of mergeSeqRanges(segments)) {
-		let pos = segment.start;
-		while (pos <= Math.min(segment.end, lastSeq)) {
-			const reason = budget.spent();
-			if (reason && started) return finish({ reason, resumeSeq: pos });
-			if (firstMore !== undefined && sinceCap >= EXTRA_COUNT_ROWS) return finish();
-			started = true;
-			if (prefilter !== undefined && coverage !== undefined && pos <= coverage.indexedSeq) {
-				const through = Math.min(segment.end, coverage.indexedSeq);
-				const seqs = await index!
-					.candidates(place.sessionId, prefilter, pos, through, CANDIDATE_PAGE)
-					.catch(() => undefined);
-				budget.takeRows(1);
-				if (seqs === undefined) {
-					coverage = undefined;
-					indexing = false;
-					continue;
-				}
-				for (const seq of seqs) {
-					const spent = budget.spent();
-					if (spent) return finish({ reason: spent, resumeSeq: seq });
-					const page = await pager.page(seq, seq, budget.signal);
-					const entry = page.entries[0];
-					budget.takeRows(1);
-					countedThrough = seq;
-					if (firstMore !== undefined) sinceCap++;
-					if (entry !== undefined) {
-						const rendered = { seq, lines: renderedLines(entry.entry) };
-						const matched = matchesIn([rendered], request).get(seq);
-						if (matched && !emit(seq, rendered.lines, matched)) return finish({ reason: "byte", resumeSeq: seq });
-					}
-					pos = seq + 1;
-					await budget.pace();
-				}
-				if (seqs.length < CANDIDATE_PAGE) pos = through + 1;
-				continue;
-			}
-			const page = await pager.page(
-				pos,
-				Math.min(segment.end, pos + Math.min(PAGE_SEQS, budget.rowAllowance()) - 1),
-				budget.signal,
-			);
-			lastSeq = page.lastSeq;
-			const rendered: RenderedEntry[] = [];
-			for (const { seq, entry } of page.entries) {
-				rendered.push({ seq, lines: renderedLines(entry) });
-				await budget.pace();
-			}
-			if (indexing && coverage !== undefined && pos === coverage.indexedSeq + 1) {
-				const texts = rendered.flatMap((entry) =>
-					entry.lines.length === 0 ? [] : [{ seq: entry.seq, text: entry.lines.join("\n") }],
-				);
-				const extended = await index!
-					.extend(place.sessionId, HISTORY_TEXT_FORMAT, coverage.indexedSeq, page.throughSeq, texts)
-					.catch(() => false);
-				if (extended) coverage.indexedSeq = page.throughSeq;
-				else indexing = false;
-			}
-			const matches = matchesIn(rendered, request);
-			for (const entry of rendered) {
-				const matched = matches.get(entry.seq);
-				if (matched && !emit(entry.seq, entry.lines, matched))
-					return finish({ reason: "byte", resumeSeq: entry.seq });
-			}
-			const span = page.throughSeq - pos + 1;
-			budget.takeRows(span);
-			countedThrough = page.throughSeq;
-			if (firstMore !== undefined) sinceCap += span;
-			pos = page.throughSeq + 1;
-			await budget.pace();
-		}
 	}
-	return finish();
+
+	private finish(stopped?: { readonly reason: BudgetStop; readonly resumeSeq: number }): SessionSearchResult {
+		if (this.more > 0) {
+			const complete = stopped === undefined && this.sinceCap < EXTRA_COUNT_ROWS;
+			const where = complete ? "" : ` in entries ${this.firstMore}-${this.countedThrough}, maybe more after`;
+			this.lines.push(
+				`${this.search.label}-0- [+${this.more} more in this session${where}; search ${this.search.place.urlWith({ cursor: String(this.firstMore) })} for them]`,
+			);
+		}
+		return { lines: this.lines, lastSeq: this.lastSeq, ...(stopped ? { stopped } : {}) };
+	}
+}
+
+export function searchSession(search: SessionSearchRequest): Promise<SessionSearchResult> {
+	return new SessionSearcher(search).run();
 }
