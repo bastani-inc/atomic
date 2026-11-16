@@ -1,5 +1,5 @@
 import type { Component } from "@bastani/atomic-tui";
-import { TuiMainScreen } from "@bastani/atomic-tui";
+import { Text, TuiMainScreen } from "@bastani/atomic-tui";
 import { expect, test } from "vitest";
 import {
 	createProductionFullscreenContext,
@@ -11,7 +11,7 @@ type StackLike = {
 	children: Component[];
 };
 
-test("InteractiveMode.init builds the fullscreen dock and preserves flat mount order", async () => {
+test("InteractiveMode.init builds the fullscreen dock and shares navigation-aware pending previews with flat mounts (#5245)", async () => {
 	const { context, terminal, tui, initPromise, resolveTheme, restoreOffline } = createProductionFullscreenContext();
 
 	try {
@@ -28,8 +28,17 @@ test("InteractiveMode.init builds the fullscreen dock and preserves flat mount o
 			throw new Error("InteractiveMode.init did not mount the transcript and dock");
 		}
 
+		const pendingPreview = dock.children[0];
+		if (!pendingPreview) throw new Error("pending preview was not mounted");
+		context.pendingMessagesContainer.addChild(new Text("pending preview", 0, 0));
+		expect(pendingPreview.render(terminal.columns).map((line) => line.trimEnd())).toEqual(["pending preview"]);
+		context.navigationInlineCustomUiDepth = 1;
+		expect(pendingPreview.render(terminal.columns)).toEqual([]);
+		context.navigationInlineCustomUiDepth = 0;
+		expect(pendingPreview.render(terminal.columns).map((line) => line.trimEnd())).toEqual(["pending preview"]);
+		context.pendingMessagesContainer.clear();
 		const dockChildren = [
-			context.pendingMessagesContainer,
+			pendingPreview,
 			context.statusContainer,
 			context.widgetContainerAbove,
 			context.usageMeter,
@@ -39,7 +48,7 @@ test("InteractiveMode.init builds the fullscreen dock and preserves flat mount o
 		];
 		const flatMountOrder = [
 			context.documentContainer,
-			context.pendingMessagesContainer,
+			pendingPreview,
 			context.statusContainer,
 			context.widgetContainerAbove,
 			context.usageMeter,
