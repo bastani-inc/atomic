@@ -216,6 +216,7 @@ describe("goal", () => {
 		assert.match(prompt, /fall back to the tmux skill or native Windows psmux/);
 		assert.match(prompt, /explicit-request and HERDR_ENV=1 requirements/);
 		assert.match(prompt, /same blocker must repeat for at least 3 controller observations/);
+		assert.match(prompt, /never a reason to end your turn or defer work to a fresh run/);
 	});
 
 	test("sanitizes reviewer comparison base branch input", async () => {

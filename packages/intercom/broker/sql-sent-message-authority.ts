@@ -11,6 +11,7 @@ import type {
 	SentMessageState,
 	SentQuestionRoute,
 } from "./multinode-state-store.js";
+import { ensureBrokerSchema } from "./sql-schema.js";
 
 type SentRow = SqliteRow & {
 	digest: string;
@@ -37,7 +38,7 @@ export async function openSqlSentMessageAuthority({
 }: IntercomBrokerStateOptions): Promise<SentMessageAuthority> {
 	const table = `${validateStoragePrefix(prefix, dialectOf(database).name)}intercom_sent_messages`;
 	const { types, nowMs } = dialectOf(database);
-	await database.transaction((tx) =>
+	await ensureBrokerSchema(database, prefix, "sent-messages", (tx) =>
 		tx.exec(`
 			CREATE TABLE IF NOT EXISTS ${table}(
 				message_id TEXT PRIMARY KEY,

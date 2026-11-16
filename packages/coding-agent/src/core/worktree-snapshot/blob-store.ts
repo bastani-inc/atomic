@@ -8,7 +8,7 @@ import type {
 } from "../storage/database.js";
 import { dialectOf, type StorageDialect, type StorageJsonSource, type StorageTrigger } from "../storage/dialect.js";
 import { StorageWriteLockTimeoutError } from "../storage/errors.js";
-import { applyStorageMigrations } from "../storage/migrations.js";
+import { applyStorageMigrations, withShortSchemaLockWaits } from "../storage/migrations.js";
 import { renderStorageIdentifiers, storageMigrationTable, validateStoragePrefix } from "../storage/prefix.js";
 import { RUN_JOURNAL_SCHEMA_VERSION, RUN_JOURNAL_SCHEMA_VERSION_UNCHUNKED } from "../storage/run-journal.js";
 import type { WorkspaceCollectionError } from "./errors.ts";
@@ -1013,7 +1013,12 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		upgrade: (transaction: SqliteExecutor, prefix: string, dialect: StorageDialect) => Promise<void>,
 	): Promise<void> {
 		const meta = this.journalMeta;
-		await transaction.exec(`CREATE TABLE IF NOT EXISTS ${meta}(schema_version ${this.dialect.types.int} NOT NULL)`);
+		// Probed first, so a role with only DML privileges writes chunked blobs into a journal that has its meta (#5218).
+		const exists = this.dialect.tableExists(meta);
+		if ((await transaction.get(exists.sql, ...exists.params)) === undefined)
+			await transaction.exec(
+				`CREATE TABLE IF NOT EXISTS ${meta}(schema_version ${this.dialect.types.int} NOT NULL)`,
+			);
 		const versions = await transaction.all<SqliteRow & { schema_version: SqliteValue }>(
 			`SELECT schema_version FROM ${meta}`,
 		);
@@ -1129,7 +1134,10 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			await this.write(pace, async (transaction) => {
 				const [current] = await readSourceStates(transaction, this.dialect, this.tables, [source]);
 				if (current === undefined || current.installed || (current.deferred && !includeDeferred)) return;
-				await installSource(transaction, this.dialect, this.tables, source);
+				// Its triggers lock the table: under short lock waits, so a stalled transaction never queues writers (#5218).
+				await withShortSchemaLockWaits(transaction, this.dialect, () =>
+					installSource(transaction, this.dialect, this.tables, source),
+				);
 			});
 		}
 		return missing.length === 0 ? states : readSourceStates(this.database, this.dialect, this.tables, this.sources);

@@ -331,7 +331,7 @@ test("a chat that does not own its running session never offers to interrupt it,
 	const borrowed = new ChatSessionHost(hostOptions({ footerData: FOOTER_DATA, getChatBoxSession: () => session }));
 	const owned = new ChatSessionHost(hostOptions({ footerData: FOOTER_DATA, getAgentSession: () => session as never }));
 	try {
-		assert.deepEqual(text(borrowed.renderFooter(80)).split("\n"), ["working"]);
+		assert.deepEqual(borrowed.renderFooter(80), []);
 		assert.match(text(owned.renderFooter(80)), /esc to interrupt/);
 		session = boxSession("busy-model");
 		assert.deepEqual(text(borrowed.renderFooter(80)).split("\n"), [`busy-model • ${BOX_FOOTER_CWD}`]);
