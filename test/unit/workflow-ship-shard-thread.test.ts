@@ -231,7 +231,7 @@ test("a file that cannot open fails the open with SQLite's reason and stops its 
 		(error: unknown) => error,
 	);
 	assert.ok(failure instanceof StorageUnavailableError);
-	assert.equal((failure.cause as { errcode?: number }).errcode, SQLITE_CANTOPEN);
+	assert.equal(((failure.cause as { errcode?: number }).errcode ?? 0) & 0xff, SQLITE_CANTOPEN);
 	assert.equal(threads.started.length, 1);
 	assert.equal(threads.started[0]!.threadId, -1);
 });
