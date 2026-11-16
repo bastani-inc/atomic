@@ -505,25 +505,40 @@ async function runWorker(start: WorkerStart): Promise<void> {
 				inbox: () => remoteInbox,
 			},
 		);
+		/** Ends the idle wait for new control, once control a push or reply carried is applied or refused. */
+		let controlChanged: (() => void) | undefined;
 		/** Applies control a heartbeat reply or a push carried; a failure ends the attempt it would have controlled. */
 		const offerControl = (next: PoolControl) =>
-			void control.offer(next).catch((error: Error) => {
-				if (activeController) activeController.abort(error);
-				else controlFailure ??= error;
-			});
+			void control
+				.offer(next)
+				.catch((error: Error) => {
+					if (activeController) activeController.abort(error);
+					else controlFailure ??= error;
+				})
+				.finally(() => controlChanged?.());
 		receiveControl = offerControl;
 		const observeControl = async () => control.offer((await request({ kind: "control" })) as PoolControl);
+		/**
+		 * Whether this worker's coordinator pushes it every change of pool control: the root's own host does. A worker on
+		 * another host learns control only from its claims, which the pool refuses while it is not running (#5230).
+		 */
+		const controlPushed = start.shared === undefined || start.shared.routes;
 		await request({ kind: "ready" });
 		for (;;) {
 			if (controlFailure) throw controlFailure;
 			let work: PoolWork | undefined;
 			try {
-				await observeControl();
-				if (control.state !== "running") {
-					await delay(25);
+				// An idle worker only asks for work (#5230): the claim is fenced by pool control in the store, and its answer
+				// waits out the worker's idle pause in the coordinator, which wake-ups end early. Neither control nor the
+				// journal is read before it: control arrives pushed or with the claim's attempt, and the journal is caught up
+				// once the claim found work. A paused or quit worker of the root's host waits for the push that changes it.
+				if (controlPushed && control.state !== "running") {
+					await new Promise<void>((resolve) => {
+						controlChanged = resolve;
+					});
+					controlChanged = undefined;
 					continue;
 				}
-				await reader.catchUpWorkflow(start.root);
 				work = (await request({ kind: "claim" })) as PoolWork | undefined;
 			} catch (error) {
 				// An idle worker waits out an outage of the journal instead of exiting (#4768). A claim the outage hid the
@@ -537,7 +552,6 @@ async function runWorker(start: WorkerStart): Promise<void> {
 			leaseRenewedAt = performance.now();
 			if (!work) {
 				if (replies.retired) break;
-				await delay(25 + Math.random() * 25);
 				continue;
 			}
 			const index = start.definitions.findIndex(

@@ -980,6 +980,8 @@ export class SqlPoolQueue {
 				state,
 			);
 			const row = (await tx.get(`SELECT revision FROM ${this.roots}_control WHERE root = ?`, lease.runId))!;
+			// A resume makes the root's ready work claimable again: idle workers of every host ask for it at once (#5230).
+			if (state === "running") await this.notifyReady(tx, lease.runId);
 			return { state, revision: Number(row.revision) };
 		});
 	}
@@ -1482,6 +1484,20 @@ export class SqlPoolQueue {
 			generation: Number(row.generation),
 			...(row.workspace === null ? {} : { workspace: JSON.parse(String(row.workspace)) as WorkspaceBinding }),
 		}));
+	}
+	/**
+	 * How much of `root`'s work is claimable now, as a mark that changes when work becomes ready or is claimed: the count
+	 * of ready rows past their ready time and the latest of those times, read through the ready index. A host whose store
+	 * sends no wake-ups reads it while its workers are idle, instead of each worker asking for work (#5230).
+	 */
+	async readyMark(root: string): Promise<string | undefined> {
+		const row = await this.storage.read((executor) =>
+			executor.get<SqliteRow & { ready: number | bigint; latest: number | bigint | null }>(
+				`SELECT COUNT(*) AS ready, MAX(ready_at) AS latest FROM ${this.work} WHERE root = ? AND state = 'ready' AND ready_at <= ${this.now}`,
+				root,
+			),
+		);
+		return row === undefined || Number(row.ready) === 0 ? undefined : `${row.ready}:${row.latest}`;
 	}
 	/**
 	 * Fails ready work of this root incarnation that no worker may take, as bound work no capable host claimed within

@@ -16,6 +16,7 @@ import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-
 import { serializeError } from "../../packages/workflows/src/shared/error-codec.js";
 import { StaleWorkLeaseError } from "../../packages/workflows/src/shared/worker-pool-errors.js";
 import { definitionDigest } from "../../packages/workflows/src/workers/definitions.js";
+import { IDLE_CLAIM_FALLBACK_MS } from "../../packages/workflows/src/workers/pool-wake-ups.js";
 import type { WorkerReply, WorkerRequest } from "../../packages/workflows/src/workers/protocol.js";
 import { fileExists, makeTempDirectory, sleep, writeTextSync } from "../helpers/runtime.js";
 import {
@@ -45,6 +46,8 @@ interface WorkerScenario {
 	readonly heartbeatMs: number;
 	/** Whether the child may finish as soon as it starts. */
 	readonly released?: boolean;
+	/** Every claim finds no work, and its answer waits out this long idle pause, as the coordinator's does (#5230). */
+	readonly idlePauseMs?: number;
 	/** The test's answer to a request, now or later; undefined answers as a plain coordinator would. */
 	readonly answer?: (request: WorkerRequest, requests: readonly WorkerRequest[]) => Answer | Promise<Answer>;
 }
@@ -133,7 +136,11 @@ async function realWorker(scenario: WorkerScenario, workerEntry: string, directo
 	worker.on("message", (message: WorkerRequest) => {
 		requests.push(message);
 		if (message.id === 0) return;
-		void Promise.resolve(scenario.answer?.(message, requests)).then((answer) => {
+		const answered =
+			scenario.idlePauseMs !== undefined && message.kind === "claim"
+				? sleep(scenario.idlePauseMs).then((): Answer => ({}))
+				: Promise.resolve(scenario.answer?.(message, requests));
+		void answered.then((answer) => {
 			if (!worker.connected) return;
 			worker.send(
 				answer === undefined ? { id: message.id, value: plainAnswer(message) } : { id: message.id, ...answer },
@@ -152,6 +159,9 @@ async function realWorker(scenario: WorkerScenario, workerEntry: string, directo
 		requests,
 		count,
 		exited,
+		/** Hides the root's journal events, so any catch-up the worker makes fails it. */
+		alive: () => worker.exitCode === null && worker.signalCode === null,
+		hideEvents: () => database.exec("ALTER TABLE wf_events RENAME TO wf_events_hidden"),
 		stderr: () => stderr,
 		release: () => writeTextSync(releasePath, ""),
 		send: (message: unknown) => worker.send(message as Parameters<ChildProcess["send"]>[0]),
@@ -243,6 +253,54 @@ test(
 				const [code] = await f.exited;
 				assert.notEqual(code, 0, "a control the worker could not acknowledge ends it, and the pool replaces it");
 				assert.ok(f.stderr().includes("acknowledgement refused"), `it ends on that refusal: ${f.stderr()}`);
+			},
+		);
+	},
+	REAL_WORKER_TEST_TIMEOUT_MS,
+);
+
+/** How long a control pushed to an idle worker may take to be acknowledged, while its claim waits in its coordinator. */
+const IDLE_CONTROL_BOUND_MS = 500;
+
+test(
+	"an idle worker only asks for work: it reads neither pool control nor the root's journal between claims (#5230)",
+	async () => {
+		await withRealWorker({ child: "pool-heartbeat-child", heartbeatMs: 600_000, idlePauseMs: 50 }, async (f) => {
+			await f.until(() => f.count("claim") > 0, "the worker asks for work");
+			await f.hideEvents();
+			const claims = f.count("claim");
+			await f.until(() => f.count("claim") >= claims + 10, "it keeps asking");
+			assert.equal(f.count("control"), 0, "no control read");
+			assert.ok(f.alive(), `no catch-up failed it: ${f.stderr()}`);
+			assert.deepEqual(new Set(f.requests.map((request) => request.kind)), new Set(["ready", "claim"]));
+		});
+	},
+	REAL_WORKER_TEST_TIMEOUT_MS,
+);
+
+test(
+	"a pause and a stop pushed to an idle worker whose claim waits out its pause are acknowledged within the bound (#5230)",
+	async () => {
+		await withRealWorker(
+			{ child: "pool-heartbeat-child", heartbeatMs: 600_000, idlePauseMs: IDLE_CLAIM_FALLBACK_MS },
+			async (f) => {
+				await f.until(() => f.count("claim") > 0, "the worker asks for work");
+				for (const [revision, state] of [
+					[1, "paused"],
+					[2, "quit"],
+				] as const) {
+					const pushedAt = performance.now();
+					f.push({ state, revision });
+					await f.until(() => f.acknowledged().includes(revision), `the idle worker acknowledges ${state}`);
+					const elapsed = performance.now() - pushedAt;
+					assert.ok(elapsed < IDLE_CONTROL_BOUND_MS, `${state} acknowledged after ${elapsed} ms`);
+				}
+				const claims = f.count("claim");
+				await sleep(QUIET_WINDOW_MS);
+				assert.ok(
+					f.count("claim") <= claims + 1,
+					"a stopped worker asks for no more work than its claim in flight",
+				);
 			},
 		);
 	},

@@ -143,6 +143,21 @@ test("failing an attempt and closing the pool notify, and closing a pool with no
 	}
 });
 
+test("resuming the pool notifies, so idle workers of other hosts claim at once; pausing and quitting do not (#5230)", async () => {
+	const f = await fixture();
+	try {
+		await f.notices();
+		await f.pool.setControl(f.lease, "paused");
+		assert.deepEqual(await f.notices(), [], "pause");
+		await f.pool.setControl(f.lease, "running");
+		assert.deepEqual(await f.notices(), ready, "resume");
+		await f.pool.setControl(f.lease, "quit");
+		assert.deepEqual(await f.notices(), [], "quit");
+	} finally {
+		await f.close();
+	}
+});
+
 test("a new incarnation's releases and reopenings notify, and none notifies with nothing to release (#5103)", async () => {
 	const f = await fixture();
 	try {

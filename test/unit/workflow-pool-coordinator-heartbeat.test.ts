@@ -130,6 +130,15 @@ test("pool control is pushed to ready workers once per revision and reconciled i
 	const f = await coordinatorFixture();
 	try {
 		const [holder, idle] = f.workers as [FakeWorker, FakeWorker];
+		const committed = { kind: "pool-control", control: { state: "running", revision: 1 } };
+		for (const worker of [holder, idle])
+			assert.deepEqual(
+				worker.pushed,
+				[committed],
+				"a worker is pushed the committed control as it becomes ready (#5230)",
+			);
+		holder.pushed.length = 0;
+		idle.pushed.length = 0;
 		await holder.request({ kind: "claim" });
 		const pausing = f.command({ kind: "control", state: "paused" });
 		while (holder.pushed.length === 0 || idle.pushed.length === 0) await delay(5);
@@ -151,12 +160,11 @@ test("pool control is pushed to ready workers once per revision and reconciled i
 		while (idle.killedWith === undefined) await delay(5);
 		assert.equal(idle.killedWith, "SIGKILL", "a worker the push cannot reach is stopped and replaced");
 		while (forked.length < 3) await delay(5);
-		// The replacement reads pool control before it claims, as a starting worker does, and acknowledges it.
+		// The replacement, which no longer reads pool control before it claims, is pushed it as it becomes ready (#5230).
 		const replacement = forked[2]!;
 		await replacement.request({ kind: "ready" });
-		assert.deepEqual((await replacement.request({ kind: "control" })).value, { state: "running", revision: 3 });
+		assert.deepEqual(replacement.pushed, [{ kind: "pool-control", control: { state: "running", revision: 3 } }]);
 		await replacement.request({ kind: "controlled", revision: 3 });
-		assert.deepEqual(replacement.pushed, [], "a worker that was not ready when control changed was not pushed it");
 		await holder.request({ kind: "controlled", revision: 3 });
 		assert.equal(await resuming, 0);
 	} finally {
@@ -191,14 +199,23 @@ test("a worker that is not ready yet is not pushed control, and a pause committe
 		const pausing = f.command({ kind: "control", state: "paused" });
 		await ready.request({ kind: "controlled", revision: 1 });
 		assert.equal(await pausing, 0, "only the ready worker is waited for");
-		assert.deepEqual(ready.pushed, [], "the pause committed while preparing is not pushed a second time");
+		assert.deepEqual(
+			ready.pushed,
+			[{ kind: "pool-control", control: { state: "paused", revision: 1 } }],
+			"the pause committed while preparing is pushed once, as the worker became ready (#5230), and not a second time",
+		);
 		const resuming = f.command({ kind: "control", state: "running" });
-		while (ready.pushed.length === 0) await delay(5);
-		assert.deepEqual(ready.pushed, [{ kind: "pool-control", control: { state: "running", revision: 2 } }]);
+		while (ready.pushed.length < 2) await delay(5);
+		assert.deepEqual(ready.pushed[1], { kind: "pool-control", control: { state: "running", revision: 2 } });
 		await ready.request({ kind: "controlled", revision: 2 });
 		await resuming;
-		assert.deepEqual(starting.pushed, [], "a starting worker reads control itself before it claims");
+		assert.deepEqual(starting.pushed, [], "a worker that is not ready yet is pushed nothing");
 		await starting.request({ kind: "ready" });
+		assert.deepEqual(
+			starting.pushed,
+			[{ kind: "pool-control", control: { state: "running", revision: 2 } }],
+			"it is pushed the committed control as it becomes ready (#5230)",
+		);
 	} finally {
 		await f.close();
 	}
@@ -212,6 +229,33 @@ test("a budget notice holds claims until the root lifts it (#4313)", async () =>
 		assert.equal((await worker.request({ kind: "claim" })).value, undefined, "an exhausted budget claims nothing");
 		f.notice({ kind: "budget", blocked: false });
 		assert.notEqual((await worker.request({ kind: "claim" })).value, undefined, "the queued child is claimed after");
+	} finally {
+		await f.close();
+	}
+});
+
+/** How soon after its gate opens a claim that waits out its idle pause answers, so that its worker asks again. */
+const GATE_WAKE_BOUND_MS = 250;
+
+test("a claim the budget held back answers as soon as the budget lifts, not at the end of its idle pause (#5230)", async () => {
+	const f = await coordinatorFixture({ workers: 1 });
+	try {
+		const [worker] = f.workers as [FakeWorker];
+		f.notice({ kind: "budget", blocked: true });
+		// Held back again and again, the worker's pauses grow toward IDLE_CLAIM_FALLBACK_MS.
+		for (let index = 0; index < 6; index++) assert.equal((await worker.request({ kind: "claim" })).value, undefined);
+		const held = worker.request({ kind: "claim" });
+		await delay(50);
+		const liftedAt = performance.now();
+		f.notice({ kind: "budget", blocked: false });
+		assert.equal((await held).value, undefined);
+		const answeredAfter = performance.now() - liftedAt;
+		assert.ok(answeredAfter < GATE_WAKE_BOUND_MS, `answered ${answeredAfter} ms after the budget lifted`);
+		assert.notEqual(
+			(await worker.request({ kind: "claim" })).value,
+			undefined,
+			"the queued child is claimed at once",
+		);
 	} finally {
 		await f.close();
 	}
