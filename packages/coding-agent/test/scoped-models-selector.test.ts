@@ -253,6 +253,42 @@ describe("scoped models selector", () => {
 		}
 	});
 
+	it("reuses model metadata while toggling and refreshes it with the catalog (#5237)", async () => {
+		harness = await createHarness({ models: [{ id: "model-a", reasoning: true }] });
+		let name = "Original custom title";
+		let nameReads = 0;
+		let level = "low";
+		const model = {
+			...harness.models[0],
+			get name() {
+				nameReads++;
+				return name;
+			},
+		};
+		const selector = new ScopedModelsSelectorComponent(
+			{ allModels: [model], enabledModelIds: null, thinkingLevelFor: () => level },
+			{ onChange: () => {}, onCancel: () => {} },
+		);
+		assert.ok(stripAnsi(selector.render(160).join("\n")).includes(name));
+		nameReads = 0;
+		level = "high";
+
+		selector.handleInput("\r");
+
+		const toggled = stripAnsi(selector.render(160).join("\n"));
+		assert.equal(nameReads, 0);
+		assert.ok(toggled.includes(`[ ] ${model.provider}/${model.id}  high`), toggled);
+		assert.ok(toggled.includes(name), toggled);
+
+		name = "Refreshed custom title";
+		selector.updateModels([model]);
+		selector.handleInput("Refreshed");
+		const refreshed = stripAnsi(selector.render(160).join("\n"));
+		assert.ok(nameReads > 0);
+		assert.ok(refreshed.includes(name), refreshed);
+		assert.ok(!refreshed.includes("Original custom title"), refreshed);
+	});
+
 	it("clears the search before esc closes it", async () => {
 		let cancellations = 0;
 		harness = await createHarness({ models: [{ id: "model-a", name: "Model A" }] });
