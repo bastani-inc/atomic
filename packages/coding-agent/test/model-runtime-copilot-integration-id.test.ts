@@ -7,6 +7,7 @@ import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
+import { linkSharedTranspileCache } from "./helpers/shared-transpile-cache.ts";
 
 const RAW_TOKEN = "github_pat_runtime_test_token";
 const EXCHANGED_TOKEN = "tid=test;exp=9999999999;proxy-ep=proxy.individual.githubcopilot.com";
@@ -57,6 +58,7 @@ async function captureRequestHeaders(
 	const agentDir = join(sessionRoot, "agent");
 	mkdirSync(cwd, { recursive: true });
 	mkdirSync(agentDir, { recursive: true });
+	linkSharedTranspileCache(agentDir);
 	const { session } = await createAgentSession({
 		cwd,
 		agentDir,

@@ -4,7 +4,7 @@
  * Generalizes the safe detached-handle pattern introduced by completed
  * durable-workflow inspection (#1758) so any eligible terminal agent stage
  * with a valid retained Atomic session can be reopened as an interactive
- * post-mortem chat — from generic `/workflow attach` / `/workflow connect`,
+ * post-mortem chat — from the graph opened with `/workflows`,
  * restored/replayed durable snapshots — not only the
  * dedicated completed-inspection path.
  *

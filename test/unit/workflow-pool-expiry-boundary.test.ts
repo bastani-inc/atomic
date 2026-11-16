@@ -124,6 +124,43 @@ test("an attempt is current, renewable, and may commit, report usage and complet
 	}
 });
 
+test("a claim and every renewal record an expiry one whole lease after the renewal they record, on a clock that moves while they write", async () => {
+	const directory = makeTempDirectory("pool-lease-length-");
+	let now = NOW;
+	vi.spyOn(Date, "now").mockImplementation(() => now++);
+	const connection = new DatabaseSync(join(directory, "journal.sqlite"));
+	const f = await claimed(connection);
+	try {
+		const ledger = await openSqlPoolUsage(f.journal);
+		const recorded = async () => {
+			const { renewedAt, expiresAt } = (await f.pool.inspect("root"))[0]!;
+			return expiresAt - renewedAt;
+		};
+		const claim = await recorded();
+		await f.pool.renew(f.lease, f.attempt, 60_000);
+		const renew = await recorded();
+		await f.pool.extend(f.lease, f.attempt, 60_000);
+		const extend = await recorded();
+		await f.pool.heartbeat(
+			f.lease,
+			f.attempt,
+			60_000,
+			ledger.recording(f.lease, f.attempt, [{ key: "stage", usage }]),
+		);
+		const heartbeat = await recorded();
+		assert.deepEqual(
+			{ claim, renew, extend, heartbeat },
+			{ claim: 60_000, renew: 60_000, extend: 60_000, heartbeat: 60_000 },
+		);
+	} finally {
+		vi.restoreAllMocks();
+		await f.backend.close();
+		await f.journal.close();
+		if (connection.isOpen) connection.close();
+		removeTempDirectory(directory);
+	}
+});
+
 test("a remote checkpoint commit is accepted at its attempt's expiry and refused after it (#4327)", async () => {
 	const directory = makeTempDirectory("pool-expiry-boundary-remote-");
 	const durable = new MemoryRunJournal({ adapter: "remote", location: "memory" });

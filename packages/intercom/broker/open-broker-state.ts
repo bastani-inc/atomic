@@ -148,6 +148,22 @@ export async function openIntercomBrokerState(
 			releasedAsks,
 			sentMessages,
 			knownSessions,
+			reserveAndEnqueue(reservation, request) {
+				return database.transaction(async (tx) => {
+					const key = { messageId: reservation.messageId, digest: reservation.digest };
+					const earlier = await sentMessages.lookupIn(tx, key);
+					if (earlier.status === "conflict") return { status: "conflict", messageId: reservation.messageId } as const;
+					const enqueued = await outbox.enqueueIn(tx, request);
+					if (enqueued.status === "full") {
+						// Refused before anything was written, so the transaction has no commit to sync.
+						if (earlier.status === "match") await sentMessages.forgetIn(tx, key);
+						return enqueued;
+					}
+					// Its answer is not needed: the outbox's unique message id is the authority for a row it holds (spec §5.5).
+					await sentMessages.reserveIn(tx, reservation);
+					return enqueued;
+				});
+			},
 			close() {
 				closing ??= database.close();
 				return closing;

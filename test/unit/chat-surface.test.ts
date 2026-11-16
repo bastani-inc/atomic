@@ -220,7 +220,7 @@ describe("renderHintRows", () => {
 		const theme = deriveGraphTheme({});
 		const out = renderHintRows(
 			[
-				{ command: "/workflow connect 0391c9c1", hint: "see agents working · chat with and steer each stage" },
+				{ command: "/workflows 0391c9c1", hint: "see agents working · chat with and steer each stage" },
 				{ command: "/workflow status", hint: "list retained runs" },
 			],
 			theme,
@@ -229,7 +229,7 @@ describe("renderHintRows", () => {
 		assert.equal(lines.length, 2);
 		for (const line of lines) {
 			const plain = stripAnsi(line);
-			assert.match(plain, /^ +▸ \/workflow /);
+			assert.match(plain, /^ +▸ \/workflows? /);
 		}
 		assert.match(out, /\x1b\[/);
 	});

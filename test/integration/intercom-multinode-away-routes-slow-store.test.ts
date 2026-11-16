@@ -6,7 +6,12 @@ import {
 	BROKER_LEASE_STALE_AFTER_MS,
 	OUTBOX_BACKUP_POLL_INTERVAL_MS,
 } from "../../packages/intercom/broker/multinode-state-store.js";
-import { type TwoBrokerClient, TwoBrokerHarness } from "../helpers/intercom-two-broker-harness.js";
+import {
+	type TwoBrokerClient,
+	TwoBrokerHarness,
+	type TwoBrokerHarnessOptions,
+	twoBrokerHarnessStartTimeoutMs,
+} from "../helpers/intercom-two-broker-harness.js";
 
 /**
  * #4997: with multi-node routing, an ask between two sessions on one broker moves to the shared state when one of them
@@ -14,11 +19,13 @@ import { type TwoBrokerClient, TwoBrokerHarness } from "../helpers/intercom-two-
  * while it is under way still gets exactly one outcome.
  */
 
-/** Spawning two real broker processes is the structural cost of this suite. */
-const REAL_BROKERS_HOOK_TIMEOUT_MS = 60_000;
-const REAL_BROKERS_TEST_TIMEOUT_MS = 90_000;
 /** Every shared database call waits this long, as a remote database would, so the move is still under way. */
 const DATABASE_CALL_DELAY_MS = 250;
+const HARNESS_OPTIONS: TwoBrokerHarnessOptions = { databaseCallDelayMs: DATABASE_CALL_DELAY_MS };
+/** Spawning two real broker processes is the structural cost of this suite. */
+const REAL_BROKERS_HOOK_TIMEOUT_MS = twoBrokerHarnessStartTimeoutMs(HARNESS_OPTIONS);
+/** A restart of broker b on the slow database, then the scenario's own moves, sends and waits. */
+const REAL_BROKERS_TEST_TIMEOUT_MS = twoBrokerHarnessStartTimeoutMs({ ...HARNESS_OPTIONS, nodes: ["b"] }) + 60_000;
 const WAIT = { timeout: 30_000, interval: 25 };
 /** How long an outcome that must not arrive, or must not arrive twice, is given to show up. */
 const SETTLE_MS = 2_000;
@@ -26,7 +33,7 @@ const SETTLE_MS = 2_000;
 let harness: TwoBrokerHarness;
 
 beforeAll(async () => {
-	harness = await TwoBrokerHarness.start({ databaseCallDelayMs: DATABASE_CALL_DELAY_MS });
+	harness = await TwoBrokerHarness.start(HARNESS_OPTIONS);
 }, REAL_BROKERS_HOOK_TIMEOUT_MS);
 afterAll(() => harness?.cleanup(), REAL_BROKERS_HOOK_TIMEOUT_MS);
 beforeEach(() => harness.ensureBrokersRunning(), REAL_BROKERS_HOOK_TIMEOUT_MS);

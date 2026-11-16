@@ -1,15 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import {
-	existsSync,
-	mkdirSync,
-	readdirSync,
-	readFileSync,
-	renameSync,
-	statSync,
-	utimesSync,
-	writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -18,6 +9,7 @@ import { afterEach, beforeEach, test, vi } from "vitest";
 import { bunExecutable } from "../../../test/helpers/runtime.js";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
+import { renameWithRetry } from "../src/core/rename-retry.ts";
 import { SessionManager } from "../src/core/session-manager.js";
 import { releaseSessionWorktrees, resumeSessionWorktree } from "../src/core/session-worktree-snapshots.js";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
@@ -190,7 +182,7 @@ async function releasedSlot(): Promise<{ snapshot: WorktreeSnapshot; s1: Session
 	const capture = await captureWorktreeSnapshot(clone, { settings, blobs: store.snapshotBlobs });
 	if (capture.status !== "captured") throw new Error(`capture ${capture.status}`);
 	const snapshot = capture.snapshot;
-	renameSync(clone, sandbox.path(`away-${Date.now()}`));
+	await renameWithRetry(clone, sandbox.path(`away-${Date.now()}`));
 	const session = async () => {
 		const manager = await SessionManager.create(store, clone);
 		await manager.appendWorktreeSnapshot(clone, snapshot.id, snapshot);
