@@ -3,8 +3,8 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { openNodeSqliteDatabase } from "@bastani/atomic";
 import { test, vi } from "vitest";
-import { StaleWorkLeaseError } from "../../packages/workflows/src/shared/worker-pool-errors.js";
 import { ShipShard, shipShardPath } from "../../packages/workflows/src/workers/ship-shard.js";
 import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
 
@@ -60,26 +60,39 @@ test("a local checkpoint journal opened while another connection retires it is n
 			const accepted = await late.accept(ROOT, LEASE_1, "key-1", "{}", 1);
 			assert.equal(accepted.accepted, true);
 
-			const next = await ShipShard.open(path, ROOT);
+			await assert.rejects(ShipShard.open(path, ROOT), /already open/, "the late opener owns the root's journal");
+			const reader = await openNodeSqliteDatabase(path);
 			try {
 				assert.deepEqual(
-					(await next.pending(LEASE_1)).map((event) => event.key),
+					(await reader.all<{ event_key: string }>("SELECT event_key FROM ship_events")).map(
+						(row) => row.event_key,
+					),
 					["key-1"],
 					"the late opener's checkpoint is in the file at the journal's path",
 				);
-				await next.hold(LEASE_2, 60_000);
-				await assert.rejects(
-					late.accept(ROOT, LEASE_1, "key-2", "{}", 1),
-					(error: unknown) => error instanceof StaleWorkLeaseError && error.reason === "generation-mismatch",
-					"the generation another connection holds through the path fences the late opener",
-				);
 			} finally {
-				await next.close();
+				await reader.close();
 			}
 		} finally {
 			await late.close();
 		}
 		assert.ok(existsSync(path));
+		const next = await ShipShard.open(path, ROOT);
+		try {
+			assert.deepEqual(
+				(await next.pending(LEASE_1)).map((event) => event.key),
+				["key-1"],
+				"the next opener recovers the late opener's checkpoint",
+			);
+			await next.hold(LEASE_2, 60_000);
+			assert.deepEqual(
+				await next.pending(LEASE_1),
+				[],
+				"a replacement generation drops the displaced one's checkpoint",
+			);
+		} finally {
+			await next.close();
+		}
 	} finally {
 		removals.before = undefined;
 		removeTempDirectory(directory);
