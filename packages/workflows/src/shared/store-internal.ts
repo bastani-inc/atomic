@@ -1,4 +1,5 @@
 import type { DurableWorkflowBackend } from "../durable/backend.js";
+import { expandWorkflowGraph } from "./expanded-workflow-graph.js";
 import { GraphStoreSnapshotBuilder } from "./graph-store-snapshot.js";
 import type { PromptAnswerRecord, RunEndMetadata, StoreInvalidationListener } from "./store-public-types.js";
 import type {
@@ -71,7 +72,7 @@ export interface StoreContext {
 	readonly observation: WorkflowObservationRuntime;
 	snapshot(): StoreSnapshot;
 	graphSnapshot(): StoreSnapshot;
-	inspectionSnapshot(): StoreSnapshot;
+	inspectionSnapshot(runId?: string): StoreSnapshot;
 	graphRun(runId: string): RunSnapshot | undefined;
 	/** `change` scopes observation to one run or node; pass it only when nothing outside it changed. */
 	notify(change?: WorkflowObservationChange): void;
@@ -236,6 +237,7 @@ export function createStoreContext(state: StoreState = createStoreState()): Stor
 	let inspectionBuilder: GraphStoreSnapshotBuilder | undefined;
 	let inspectionVersion = -1;
 	let inspectionView: StoreSnapshot | undefined;
+	let inspectionTargets = new WeakMap<StoreSnapshot, Map<string, StoreSnapshot>>();
 	const observation = new WorkflowObservationRuntime(
 		{ all: () => state.runs, find: findRun, position: (runId) => runPosition(state, runId) },
 		bumpAndNotify,
@@ -247,13 +249,29 @@ export function createStoreContext(state: StoreState = createStoreState()): Stor
 		) as StoreSnapshot;
 	}
 
-	function inspectionSnapshot(): StoreSnapshot {
-		if (inspectionView === undefined || inspectionVersion !== state.version) {
-			inspectionBuilder ??= new GraphStoreSnapshotBuilder({ fullPayloads: true });
-			inspectionView = inspectionBuilder.build(state.runs, state.notices, state.version);
+	function inspectionSnapshot(runId?: string): StoreSnapshot {
+		if (inspectionView !== undefined && inspectionVersion === state.version) return inspectionView;
+		inspectionBuilder ??= new GraphStoreSnapshotBuilder({ fullPayloads: true });
+		const builder = inspectionBuilder;
+		if (runId === undefined) {
+			inspectionView = builder.build(state.runs, state.notices, state.version);
 			inspectionVersion = state.version;
+			return inspectionView;
 		}
-		return inspectionView;
+		const compact = graphSnapshot();
+		let targets = inspectionTargets.get(compact);
+		const known = targets?.get(runId);
+		if (known !== undefined) return known;
+		const graph = expandWorkflowGraph(compact, runId);
+		const fullRunIds = new Set([runId, ...Array.from(graph.targets.values(), (target) => target.runId)]);
+		const runs = compact.runs.map((run) => (fullRunIds.has(run.id) ? builder.buildRun(findRun(run.id)!) : run));
+		const view = builder.publish(runs, compact.notices, state.version);
+		if (targets === undefined) {
+			targets = new Map();
+			inspectionTargets.set(compact, targets);
+		}
+		targets.set(runId, view);
+		return view;
 	}
 
 	function graphSnapshot(): StoreSnapshot {
@@ -281,6 +299,7 @@ export function createStoreContext(state: StoreState = createStoreState()): Stor
 		inspectionBuilder?.markChanged(change);
 		if (change === undefined) {
 			inspectionBuilder = undefined;
+			inspectionTargets = new WeakMap();
 			inspectionView = undefined;
 			inspectionVersion = -1;
 		}

@@ -5,8 +5,8 @@ import { findSnapshotRun } from "./workflow-run-ownership.js";
 
 const expandedRuns = new WeakMap<StoreSnapshot, Map<string, RunSnapshot>>();
 
-export function readInspectionStoreSnapshot(store: Store): StoreSnapshot {
-	return store.inspectionSnapshot?.() ?? store.snapshot();
+export function readInspectionStoreSnapshot(store: Store, runId?: string): StoreSnapshot {
+	return store.inspectionSnapshot?.(runId) ?? store.snapshot();
 }
 
 export function expandedInspectionRun(snapshot: StoreSnapshot, runId: string): RunSnapshot | undefined {

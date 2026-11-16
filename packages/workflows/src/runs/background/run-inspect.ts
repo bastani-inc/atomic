@@ -119,7 +119,7 @@ export function inspectRun(
 		return { ok: false, runId, reason: "not_found" };
 	}
 
-	const snapshot = readInspectionStoreSnapshot(activeStore);
+	const snapshot = readInspectionStoreSnapshot(activeStore, runId);
 	const copy = findSnapshotRun(snapshot.runs, candidate.id)!;
 	const expanded = expandedInspectionRun(snapshot, copy.id)!;
 	const expandedStages = expanded.stages;

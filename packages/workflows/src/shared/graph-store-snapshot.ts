@@ -360,11 +360,11 @@ export class GraphStoreSnapshotBuilder {
 		this.changedToolNodes.clear();
 		const compactNotices = notices.map((notice) => ({ ...notice }));
 		deepFreezeGraphValue(compactNotices);
-		const snapshot: StoreSnapshot = Object.freeze({
-			runs: Object.freeze(compactRuns),
-			notices: compactNotices,
-			version,
-		});
+		return this.publish(compactRuns, compactNotices, version);
+	}
+
+	publish(runs: RunSnapshot[], notices: readonly WorkflowNotice[], version: number): StoreSnapshot {
+		const snapshot: StoreSnapshot = Object.freeze({ runs: Object.freeze(runs), notices, version });
 		snapshotLineages.set(snapshot, this);
 		return snapshot;
 	}

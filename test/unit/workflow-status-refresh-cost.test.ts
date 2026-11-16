@@ -45,32 +45,39 @@ function views(store: ReturnType<typeof createStore>) {
 	return { listing: topLevelExpandedSnapshots(store), detail: inspectRun("run-1", { store, now: 2 }) };
 }
 
-test("clearing a store releases full payloads retained by status expansion (#5234)", () => {
-	const storePath = fileURLToPath(new URL("../../packages/workflows/src/shared/store.ts", import.meta.url));
-	const targetsPath = fileURLToPath(
-		new URL("../../packages/workflows/src/extension/workflow-targets.ts", import.meta.url),
-	);
-	const MEMORY_RELEASE_CHILD_TIMEOUT_MS = 20_000;
-	const child = spawnSyncCollect(
-		[
-			bunExecutable(),
-			"-e",
-			`
+test.each(["list", "single"])(
+	"clearing a store releases full payloads retained by %s status expansion (#5234)",
+	(mode) => {
+		const storePath = fileURLToPath(new URL("../../packages/workflows/src/shared/store.ts", import.meta.url));
+		const targetsPath = fileURLToPath(
+			new URL("../../packages/workflows/src/extension/workflow-targets.ts", import.meta.url),
+		);
+		const inspectPath = fileURLToPath(
+			new URL("../../packages/workflows/src/runs/background/run-inspect.ts", import.meta.url),
+		);
+		const MEMORY_RELEASE_CHILD_TIMEOUT_MS = 20_000;
+		const child = spawnSyncCollect(
+			[
+				bunExecutable(),
+				"-e",
+				`
 		import { createStore } from ${JSON.stringify(storePath)};
 		import { topLevelExpandedSnapshots } from ${JSON.stringify(targetsPath)};
+		import { inspectRun } from ${JSON.stringify(inspectPath)};
 		const store = createStore();
 		store.recordRunStart({ id: "run", name: "cost", inputs: {}, status: "running", startedAt: 1, toolNodes: [], stages: [{ id: "stage", name: "stage", status: "running", parentIds: [], toolEvents: [], structured: { payload: "x".repeat(1_000_000) } }] });
-		const ref = (() => new WeakRef(topLevelExpandedSnapshots(store)[0].stages[0].structured))();
+		const ref = (() => new WeakRef(${mode === "list" ? "topLevelExpandedSnapshots(store)[0].stages[0].structured" : 'inspectRun("run", { store }).detail.stages[0].structured'}))();
 		store.clear();
 		if (topLevelExpandedSnapshots(store).length !== 0) throw new Error("Store did not clear");
 		for (let cycle = 0; cycle < 5; cycle++) { await Bun.sleep(0); Bun.gc(true); }
 		if (ref.deref() !== undefined) throw new Error("Cleared status payload is still retained");
 	`,
-		],
-		{ timeout: MEMORY_RELEASE_CHILD_TIMEOUT_MS },
-	);
-	assert.equal(child.exitCode, 0, child.stderr.toString());
-});
+			],
+			{ timeout: MEMORY_RELEASE_CHILD_TIMEOUT_MS },
+		);
+		assert.equal(child.exitCode, 0, child.stderr.toString());
+	},
+);
 
 test("status refresh reuses full raw views without whole-store snapshots or repeated deep clones (#5234)", () => {
 	const { store, work } = fixture();
@@ -92,6 +99,29 @@ test("status refresh reuses full raw views without whole-store snapshots or repe
 		snapshots.mockRestore();
 		clones.mockRestore();
 	}
+});
+
+test("a cold single-run inspection never materializes unrelated run payloads (#5234)", () => {
+	const { store } = fixture();
+	let unrelatedReads = 0;
+	store.recordRunStart({
+		...makeRun([
+			{
+				...makeStage("unrelated-stage"),
+				structured: {
+					get payload() {
+						unrelatedReads++;
+						return "unrelated";
+					},
+				},
+			},
+		]),
+		id: "unrelated",
+	});
+	const detail = inspectRun("run-1", { store, now: 2 });
+	assert.equal(detail.ok, true);
+	assert.equal(unrelatedReads, 0);
+	if (detail.ok) assert.equal(detail.detail.stages[0]!.result, "result-0".repeat(1_000));
 });
 
 test("a status refresh clones only the changed stage and preserves every raw stage field (#5234)", () => {

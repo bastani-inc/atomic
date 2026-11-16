@@ -390,8 +390,8 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 			return context.graphSnapshot();
 		},
 
-		inspectionSnapshot(): StoreSnapshot {
-			return context.inspectionSnapshot();
+		inspectionSnapshot(runId?: string): StoreSnapshot {
+			return context.inspectionSnapshot(runId);
 		},
 
 		graphRun(runId: string): RunSnapshot | undefined {
