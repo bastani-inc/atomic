@@ -80,8 +80,8 @@ describe("workflow graph navigation and stage actions (#5224)", () => {
 		graph.dispose();
 	});
 
-	it.each([{ bindings: ["z"] }, { bindings: ["escape", "z"] }])(
-		"stop confirmation names the pressed binding from $bindings (#5234)",
+	it.each([{ bindings: ["z"] }, { bindings: ["escape", "z"] }, { bindings: ["o", "z"] }])(
+		"stop confirmation names the pressed binding from $bindings (#5234, #5255)",
 		async ({ bindings }) => {
 			const stop = vi.fn(async () => ({ ok: true, message: "stopped" }));
 			const graph = view([stage("A", "running")], {
@@ -96,8 +96,8 @@ describe("workflow graph navigation and stage actions (#5224)", () => {
 				assert.match(hint(graph), /Press z again within 3s to stop A/);
 				assert.doesNotMatch(
 					hint(graph).split("\n")[1],
-					/esc\/z stop/,
-					"Esc is never advertised as a stage stop key",
+					/(?:esc|o)\/z stop/,
+					"keys reserved for graph navigation are not advertised as stage stop keys",
 				);
 				assert.equal(stop.mock.calls.length, 0);
 				graph.handleInput("z");

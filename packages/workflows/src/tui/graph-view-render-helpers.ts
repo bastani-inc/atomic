@@ -26,6 +26,7 @@ const GRAPH_STOP_PRIORITY_KEYS = new Set([
 	"g",
 	"/",
 	"f",
+	"o",
 ]);
 
 function displayedBinding(key: string): string {
