@@ -2,6 +2,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ENV_WORKFLOW_ARTIFACT_DIR } from "../packages/workflows/src/shared/workflow-artifact-env.js";
+import { removeLeftoverTestDirectories } from "./helpers/test-directory-removal.js";
+
+const LEFTOVER_REMOVAL_RETRIES = { retries: 28, retryDelayMs: 50 };
 
 /**
  * One workflow-artifact directory per vitest run, owned by the orchestrator.
@@ -22,12 +25,15 @@ import { ENV_WORKFLOW_ARTIFACT_DIR } from "../packages/workflows/src/shared/work
  * with several projects in one invocation only the first project's setup
  * creates the directory while the rest see it already present.
  */
-export default function setup(): (() => void) | undefined {
+export default function setup(): (() => Promise<void>) | undefined {
 	if (process.env[ENV_WORKFLOW_ARTIFACT_DIR] !== undefined) return undefined;
 	const artifactDir = mkdtempSync(join(tmpdir(), "atomic-test-workflow-artifacts-"));
 	process.env[ENV_WORKFLOW_ARTIFACT_DIR] = artifactDir;
-	return () => {
+	return async () => {
 		delete process.env[ENV_WORKFLOW_ARTIFACT_DIR];
+		const kept = await removeLeftoverTestDirectories(artifactDir, LEFTOVER_REMOVAL_RETRIES);
+		if (kept.length > 0)
+			console.warn(`Could not remove ${kept.length} test directories Windows still holds: ${kept.join(", ")}`);
 		try {
 			rmSync(artifactDir, { recursive: true, force: true });
 		} catch {
