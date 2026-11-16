@@ -147,17 +147,43 @@ test(
 	REAL_BROKER_IDLE_RETIREMENT_TIMEOUT_MS,
 );
 
+function assertOnlyReleasedMarker(agentDir: string): void {
+	const intercomDir = join(agentDir, "intercom");
+	const left = readdirSync(intercomDir);
+	assert.equal(left.length, 1, `only the released marker is left: ${left.join(",")}`);
+	const [marker] = left as [string];
+	assert.match(marker, /^broker\.sock\.replace\.lock\.gen\d+$/);
+	assert.deepEqual(readdirSync(join(intercomDir, marker)), ["owner"], "the marker holds only its record");
+	assert.equal(readFileSync(join(intercomDir, marker, "owner"), "utf8"), "released\n");
+}
+
+const IDLE_OUT_CYCLES = 5;
+
 test(
-	"a broker that served no session leaves nothing in the agent directory when it idles out (#4727)",
+	"a broker that served no session leaves only the socket lock's released marker when it idles out (#4727, #5220)",
 	async () => {
 		const agentDir = mkdtempSync(join(tmpdir(), "intercom-idle-clean-"));
 		const broker = spawnBroker(agentDir);
 		await waitForBrokerPid(agentDir, broker);
 
 		assert.equal(await waitForExit(broker, BROKER_IDLE_SHUTDOWN_WINDOW_MS), 0);
-		assert.deepEqual(readdirSync(join(agentDir, "intercom")), []);
+		assertOnlyReleasedMarker(agentDir);
 	},
 	REAL_BROKER_IDLE_RETIREMENT_TIMEOUT_MS,
+);
+
+test(
+	"brokers idling out one after another leave one released marker, never more (#5220)",
+	async () => {
+		const agentDir = mkdtempSync(join(tmpdir(), "intercom-idle-cycles-"));
+		for (let cycle = 0; cycle < IDLE_OUT_CYCLES; cycle++) {
+			const broker = spawnBroker(agentDir);
+			await waitForBrokerPid(agentDir, broker);
+			assert.equal(await waitForExit(broker, BROKER_IDLE_SHUTDOWN_WINDOW_MS), 0);
+			assertOnlyReleasedMarker(agentDir);
+		}
+	},
+	IDLE_OUT_CYCLES * REAL_BROKER_IDLE_RETIREMENT_TIMEOUT_MS,
 );
 
 // #2765
