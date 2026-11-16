@@ -142,7 +142,7 @@ test("agent transcript footer offers messaging only when the source supports it 
 			h.fixture.runners[0].context.bindTranscript(session);
 			await peek(h.inspector);
 			await enter(h.inspector);
-			assert.equal(h.lines(110, 30).at(-2), "─".repeat(110));
+			assert.equal(h.lines(110, 30).at(-2), "━".repeat(110), "an attached composer has heavy rules (#5224)");
 			const footer = h.lines(110, 30).at(-1) ?? "";
 			assert.equal(footer, "  ← task · pgup/pgdn scroll · ctrl+o expand · ? keys");
 			assert.doesNotMatch(footer, / · {2}· /);
@@ -274,7 +274,7 @@ test("physical Ctrl+C closes the mounted inspector and is consumed (#4521)", asy
 		const message = parseInteractiveEngineMessage(line);
 		if (message) messages.push(message);
 	}, keys);
-	let completion: Promise<void> | undefined;
+	let completion: Promise<unknown> | undefined;
 	try {
 		await fixture.start("Close inspector");
 		completion = showTaskInspector({ custom: service.custom.bind(service) }, fixture.store);
@@ -328,7 +328,7 @@ test("mounted transcript tolerates host settings callbacks being withdrawn (#452
 		getToolsExpanded: () => false,
 		setToolsExpanded: () => {},
 	};
-	let completion: Promise<void> | undefined;
+	let completion: Promise<unknown> | undefined;
 	try {
 		await fixture.start("Changing host settings");
 		completion = showTaskInspector(ui, fixture.store);
@@ -432,7 +432,7 @@ test("Ctrl+C during a picker-to-detail transition closes instead of reopening it
 		const message = parseInteractiveEngineMessage(line);
 		if (message) messages.push(message);
 	}, keys);
-	let completion: Promise<void> | undefined;
+	let completion: Promise<unknown> | undefined;
 	let finished = false;
 	try {
 		await fixture.start("Transition close");

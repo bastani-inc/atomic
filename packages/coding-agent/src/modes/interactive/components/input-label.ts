@@ -187,7 +187,8 @@ export function applyAttachedComposer(
 	if (isRule(bottom)) lines[bottomIndex] = style.accent(HEAVY_RULE.repeat(visibleWidth(stripAnsi(bottom))));
 	if (placeholder !== undefined && bottomIndex === 2) {
 		const line = lines[1]!;
-		const plain = stripAnsi(line).trimEnd();
+		// The cursor and focus markers are application commands, not text.
+		const plain = stripAnsi(line.replace(/\x1b_[^\x07]*\x07/g, "")).trimEnd();
 		if (plain === PROMPT_GLYPH || plain === `${PROMPT_GLYPH} `) {
 			const room = Math.max(0, width - visibleWidth(stripAnsi(line).trimEnd()) - 2);
 			const text = truncateToWidth(placeholder, room, "…");

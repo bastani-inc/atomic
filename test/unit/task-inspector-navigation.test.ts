@@ -312,3 +312,21 @@ test("x x stops a subagent resumably: its chat says 'Stopped · send to resume' 
 		await h.dispose();
 	}
 });
+
+test("a chat opened from the agent panel goes back there with ← or ↓, and its hint names it (#5224)", async () => {
+	for (const key of [LEFT, "\x1b[B"]) {
+		const h = await harness();
+		try {
+			await withTranscript(h, "Panel task");
+			const id = h.fixture.store.tasks[0]!.ref.taskId;
+			h.inspector.openChat(id, "agents");
+			await flush();
+			assert.equal(h.text().split("\n").at(-1), "  ← agents · ↓ agents · pgup/pgdn scroll · ctrl+o expand · ? keys");
+			h.inspector.handleInput(key);
+			assert.equal(h.closed(), 1, `${JSON.stringify(key)} goes back to the panel`);
+			assert.equal(h.inspector.closedByBack, true);
+		} finally {
+			await h.dispose();
+		}
+	}
+});
