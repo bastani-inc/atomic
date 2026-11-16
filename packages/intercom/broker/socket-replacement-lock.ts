@@ -1,6 +1,7 @@
 import { randomUUID } from "crypto";
-import { mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, readdirSync, rmSync, writeFileSync } from "fs";
 import { basename, dirname, join } from "path";
+import { renameWithRetry } from "./rename-retry.js";
 import {
   createLockFile,
   type HolderState,
@@ -71,7 +72,7 @@ function createGeneration(lockPath: string, generation: number, record: string):
   try {
     mkdirSync(staging);
     writeFileSync(join(staging, "owner"), record);
-    renameSync(staging, generationPath(lockPath, generation));
+    renameWithRetry(staging, generationPath(lockPath, generation));
     return true;
   } catch {
     removeDirectory(staging);
@@ -92,14 +93,14 @@ function trashPrefix(lockPath: string): string {
 function removeGeneration(lockPath: string, generation: number): void {
   const trash = join(dirname(lockPath), `${trashPrefix(lockPath)}${randomUUID()}`);
   try {
-    renameSync(generationPath(lockPath, generation), trash);
+    renameWithRetry(generationPath(lockPath, generation), trash);
   } catch {
     return;
   }
   removeDirectory(trash);
 }
 
-function generationState(path: string, record: string): HolderState {
+function generationState(path: string, record: string | undefined): HolderState {
   return record === RELEASED ? "abandoned" : holderState(path, record);
 }
 
@@ -125,10 +126,13 @@ function takeoverTokens(lockPath: string): string[] {
     .map((name) => join(dirname(lockPath), name));
 }
 
-function liveTakeoverToken(lockPath: string): readonly [string, string, HolderState] | undefined {
+function liveTakeoverToken(lockPath: string, own: string): readonly [string, string | undefined, HolderState] | undefined {
   for (const token of takeoverTokens(lockPath)) {
     const content = readFileOrUndefined(token);
-    if (content === undefined) continue;
+    if (content === own) {
+      removeFileIfUnchanged(token, own);
+      continue;
+    }
     const state = holderState(token, content);
     if (state !== "abandoned") return [token, content, state];
   }
@@ -143,11 +147,13 @@ function replaceAbandonedLegacy(lockPath: string, holder: string, record: string
   const token = takeoverTokenPath(lockPath, holder);
   if (!createLockFile(token, record)) {
     const tokenHolder = readFileOrUndefined(token);
-    if (tokenHolder !== undefined && isAbandoned(token, tokenHolder)) {
-      removeDeadWritingMarkers(token);
-      return removeFileIfUnchanged(token, tokenHolder);
+    if (tokenHolder !== record) {
+      if (tokenHolder !== undefined && isAbandoned(token, tokenHolder)) {
+        removeDeadWritingMarkers(token);
+        return removeFileIfUnchanged(token, tokenHolder);
+      }
+      return false;
     }
-    return false;
   }
   try {
     if (readFileOrUndefined(token) !== record || readFileOrUndefined(lockPath) !== holder) return false;
@@ -159,12 +165,6 @@ function replaceAbandonedLegacy(lockPath: string, holder: string, record: string
   }
 }
 
-/**
- * Serializes stale-socket replacement across brokers, so a broker that probed the socket as stale cannot unlink a
- * socket another broker bound in the meantime: the holder re-probes before it unlinks. A live holder's lock is never
- * taken; an abandoned one is. Resolves with the release function, which removes the lock only while this process
- * holds it.
- */
 export async function acquireSocketReplacementLock(
   lockPath: string,
   { onWait }: SocketReplacementLockOptions = {},
@@ -183,12 +183,13 @@ export async function acquireSocketReplacementLock(
     const latest = generations(lockPath)[0];
     if (latest !== undefined) {
       const content = generationRecord(lockPath, latest);
-      if (content === undefined) {
+      const owner =
+        content === undefined ? generationPath(lockPath, latest) : join(generationPath(lockPath, latest), "owner");
+      const state = generationState(owner, content);
+      if (content === undefined && state === "held") {
         await sleep(SOCKET_REPLACEMENT_LOCK_POLL_MS);
         continue;
       }
-      const owner = join(generationPath(lockPath, latest), "owner");
-      const state = generationState(owner, content);
       if (state !== "abandoned") {
         if (state === "unknown" && unknownHolderWaitedOut(owner, content)) refuse(owner);
         await waiting();
@@ -213,16 +214,16 @@ export async function acquireSocketReplacementLock(
     removeLeftoverParkedFiles(lockPath);
   } catch {}
   const held = () =>
-    holdsGeneration() && readFileOrUndefined(lockPath) === record && liveTakeoverToken(lockPath) === undefined;
+    holdsGeneration() && readFileOrUndefined(lockPath) === record && liveTakeoverToken(lockPath, record) === undefined;
   for (;;) {
     if (readFileOrUndefined(lockPath) !== record && !createLockFile(lockPath, record)) {
       const holder = readFileOrUndefined(lockPath);
-      const state = holder === undefined ? "held" : holderState(lockPath, holder);
+      const state = holderState(lockPath, holder);
       if (holder !== undefined && state === "abandoned") {
         if (replaceAbandonedLegacy(lockPath, holder, record)) continue;
         const token = takeoverTokenPath(lockPath, holder);
         const tokenHolder = readFileOrUndefined(token);
-        const tokenState = tokenHolder === undefined ? "held" : holderState(token, tokenHolder);
+        const tokenState = holderState(token, tokenHolder);
         if (tokenState === "unknown" && unknownHolderWaitedOut(token, tokenHolder)) refuse(token);
         await waiting();
         continue;
@@ -232,7 +233,7 @@ export async function acquireSocketReplacementLock(
       continue;
     }
     if (held()) break;
-    const token = liveTakeoverToken(lockPath);
+    const token = liveTakeoverToken(lockPath, record);
     if (token?.[2] === "unknown" && unknownHolderWaitedOut(token[0], token[1])) refuse(token[0]);
     await waiting();
   }

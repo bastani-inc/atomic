@@ -7,7 +7,6 @@ import {
   readdirSync,
   readFileSync,
   readlinkSync,
-  renameSync,
   statSync,
   unlinkSync,
   writeFileSync,
@@ -15,6 +14,7 @@ import {
 } from "fs";
 import { hostname } from "os";
 import { basename, dirname, join } from "path";
+import { renameWithRetry } from "./rename-retry.js";
 
 /**
  * A parked file is renamed, read and removed at once, so one parked longer than this was left by a process that
@@ -71,7 +71,7 @@ function createExclusively(path: string, content: string): boolean {
   try {
     const stats = fstatSync(fd, { bigint: true });
     bound = `${marker}.${stats.ino}-${stats.birthtimeNs}`;
-    renameSync(marker, bound);
+    renameWithRetry(marker, bound);
     writeSync(fd, content);
   } finally {
     closeSync(fd);
@@ -154,13 +154,14 @@ const warnedParked = new Set<string>();
 export function removeFileIfUnchanged(path: string, inspected: string | undefined): boolean {
   const parked = `${path}.${Date.now()}.${randomUUID()}.stale`;
   try {
-    renameSync(path, parked);
+    renameWithRetry(path, parked);
   } catch {
     return false;
   }
   const moved = readFileOrUndefined(parked);
   if (moved === inspected) {
     removeFile(parked);
+    unknownSince.delete(path);
     return true;
   }
   if (putBack(parked, path, moved)) {
@@ -261,15 +262,25 @@ function pendingWritingMarkers(path: string, written: string | undefined, file: 
   );
 }
 
+function isAbsent(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === "ENOENT" || code === "ENOTDIR";
+}
+
 export function writerState(path: string, written: string | undefined): HolderState | undefined {
-  const file = fileIdentity(path);
-  if (written === undefined || file === undefined) return "held";
+  let file: string;
+  try {
+    const stats = statSync(path, { bigint: true });
+    file = `${stats.ino}-${stats.birthtimeNs}`;
+  } catch (error) {
+    return isAbsent(error) ? "held" : "unknown";
+  }
+  if (written === undefined) return "unknown";
   let markers: WritingMarker[];
   try {
     markers = pendingWritingMarkers(path, written, file);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "held";
-    throw error;
+    return isAbsent(error) ? "held" : "unknown";
   }
   if (markers.length === 0) return undefined;
   if (markers.some((marker) => marker.state === "held")) return "held";
@@ -282,10 +293,6 @@ export function writerState(path: string, written: string | undefined): HolderSt
   return "abandoned";
 }
 
-export function writerGone(path: string, written: string | undefined): boolean {
-  return writerState(path, written) === "abandoned";
-}
-
 let unknownHolderWaitMs = 30_000;
 
 export function setUnknownHolderWaitForTesting(ms: number | undefined): void {
@@ -293,23 +300,43 @@ export function setUnknownHolderWaitForTesting(ms: number | undefined): void {
   unknownSince.clear();
 }
 
-const unknownSince = new Map<string, number>();
+interface UnknownHolderWait {
+  readonly written: string | undefined;
+  readonly identity: string | undefined;
+  readonly since: number;
+}
+
+const unknownSince = new Map<string, UnknownHolderWait>();
+
+function isDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
 
 export function unknownHolderAdvice(path: string): string {
   const file = fileIdentity(path);
   const written = readFileOrUndefined(path);
-  const markers = pendingWritingMarkers(path, written, file);
+  let markers: WritingMarker[] = [];
+  try {
+    markers = pendingWritingMarkers(path, written, file);
+  } catch {}
   const blockingMarkers = markers.filter((marker) => marker.state === "unknown");
   const recoveryFiles = [...blockingMarkers.map((marker) => marker.path), path];
   const recoveryPaths = recoveryFiles.join(" and ");
   const ownershipPaths = recoveryFiles.map((name) => JSON.stringify(name)).join(" ");
+  const chownCommand = isDirectory(path) ? "sudo chown -R $USER" : "sudo chown $USER";
   const why =
-    blockingMarkers.length > 0 || recordsForeignHolder(path)
-      ? "it names a process on another host or in another container sharing this agent directory, which cannot be checked from here"
-      : markers.some((marker) => marker.state === "abandoned")
-        ? "it may have been left empty by a process killed before recording its holder"
-        : "it was left empty or part-written by an earlier version of Atomic, which does not record its writer";
-  return `The lock ${path} is held by a process this one cannot check: ${why} (#5220). If no such process is using it, remove ${recoveryPaths}, or, if another user (as \`sudo atomic\`) left it, give it to your user (for example \`sudo chown $USER ${ownershipPaths}\`).`;
+    written === undefined
+      ? "this user cannot read it, as when another user (for example `sudo atomic`) created it"
+      : blockingMarkers.length > 0 || recordsForeignHolder(path)
+        ? "it names a process on another host or in another container sharing this agent directory, which cannot be checked from here"
+        : markers.some((marker) => marker.state === "abandoned")
+          ? "it may have been left empty by a process killed before recording its holder"
+          : "it was left empty or part-written by an earlier version of Atomic, which does not record its writer";
+  return `The lock ${path} is held by a process this one cannot check: ${why} (#5220). If no such process is using it, remove ${recoveryPaths}, or, if another user (as \`sudo atomic\`) left it, give it to your user (for example \`${chownCommand} ${ownershipPaths}\`).`;
 }
 
 function recordsForeignHolder(path: string): boolean {
@@ -318,13 +345,13 @@ function recordsForeignHolder(path: string): boolean {
 }
 
 export function unknownHolderWaitedOut(path: string, written: string | undefined): boolean {
-  const key = `${path}\0${written ?? ""}`;
-  const since = unknownSince.get(key);
-  if (since === undefined) {
-    unknownSince.set(key, Date.now());
+  const identity = fileIdentity(path);
+  const current = unknownSince.get(path);
+  if (current === undefined || current.written !== written || current.identity !== identity) {
+    unknownSince.set(path, { written, identity, since: Date.now() });
     return false;
   }
-  return Date.now() - since >= unknownHolderWaitMs;
+  return Date.now() - current.since >= unknownHolderWaitMs;
 }
 
 export function removeLeftoverParkedFiles(lockPath: string): void {

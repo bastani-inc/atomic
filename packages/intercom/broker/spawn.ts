@@ -1,10 +1,11 @@
 import { spawn } from "child_process";
 import { randomUUID } from "crypto";
-import { appendFileSync, chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, unlinkSync, writeFileSync } from "fs";
+import { appendFileSync, chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, statSync, unlinkSync, writeFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { createRequire } from "module";
 import { isSocketAnswering } from "./socket-liveness.js";
+import { renameWithRetry } from "./rename-retry.js";
 import {
   completeLines,
   createLockFile,
@@ -754,11 +755,6 @@ function underSpawnLockMutex<T>(lockPath: string, busy: T, act: () => T): T {
 /** How old a spawn lock held across a long wait may grow before it is written again; it is stale past {@link BROKER_SPAWN_LOCK_MAX_AGE_MS}. */
 const SPAWN_LOCK_RENEW_AFTER_MS = 10_000;
 
-/**
- * Write the held spawn lock again with the current time, so a long wait never makes it look stale; returns the header
- * that now proves ownership. A write that fails, as when another process is reading the lock on Windows, is tried
- * again on the next call.
- */
 export function renewSpawnLock(
   owner: string,
   nowMs: number = Date.now(),
@@ -774,9 +770,12 @@ export function renewSpawnLock(
     const staged = `${lockPath}.${process.pid}.renew`;
     try {
       writeFileSync(staged, renewed);
-      renameSync(staged, lockPath);
+      renameWithRetry(staged, lockPath);
       return renewed;
     } catch {
+      try {
+        unlinkSync(staged);
+      } catch {}
       return owner;
     }
   });
@@ -803,6 +802,7 @@ export function acquireSpawnLock(lockPath: string = getBrokerSpawnLockPath()): s
         const renewed = renewSpawnLock(owner, nowMs, lockPath);
         if (renewed !== undefined && renewed !== owner) return renewed;
       }
+      releaseSpawnLock(owner, lockPath);
       continue;
     }
     const inspected = readFileOrUndefined(lockPath);
@@ -828,11 +828,6 @@ function warnUnknownSpawnLockHolder(lockPath: string): void {
   process.emitWarning(unknownHolderAdvice(lockPath));
 }
 
-/**
- * Removes the spawn lock a spawner read as `inspected` and judged stale, so the next `wx` attempt can take it. Two
- * spawners that saw the same stale lock never both replace it: the lock is removed only while it is still the inspected
- * one (#5132). `inspected` is undefined when the lock could not be read.
- */
 export function replaceStaleSpawnLock(inspected: string | undefined, lockPath: string = getBrokerSpawnLockPath()): void {
   takeOverStaleLock(
     lockPath,
@@ -859,7 +854,6 @@ export function isSpawnLockStale(lockPath: string = getBrokerSpawnLockPath(), no
   if (!existsSync(lockPath)) {
     return false;
   }
-  // Unreadable lock contents are treated as stale so a new broker can start.
   return isSpawnLockContentStale(readFileOrUndefined(lockPath) ?? "", nowMs);
 }
 

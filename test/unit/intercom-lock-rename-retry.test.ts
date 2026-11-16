@@ -1,0 +1,114 @@
+import assert from "node:assert/strict";
+import fsModule from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+import { join } from "node:path";
+import { afterAll, test } from "vitest";
+import { renameWithRetry } from "../../packages/intercom/broker/rename-retry.js";
+import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
+
+const tempDir = makeTempDirectory("ic5220-rename-");
+afterAll(() => removeTempDirectory(tempDir));
+
+function withRename<T>(rename: typeof fsModule.renameSync, run: () => T): T {
+	const original = fsModule.renameSync;
+	fsModule.renameSync = rename;
+	syncBuiltinESMExports();
+	try {
+		return run();
+	} finally {
+		fsModule.renameSync = original;
+		syncBuiltinESMExports();
+	}
+}
+
+for (const code of ["EACCES", "EPERM", "EBUSY"]) {
+	test(`a transient Windows ${code} does not prevent a lock rename (#5220)`, () => {
+		let attempts = 0;
+		withRename(
+			() => {
+				if (++attempts === 1) throw Object.assign(new Error("scan in progress"), { code });
+			},
+			() => renameWithRetry(join(tempDir, "from"), join(tempDir, "to"), { platform: "win32" }),
+		);
+		assert.equal(attempts, 2);
+	});
+}
+
+test("non-Windows and non-transient lock rename failures are not retried (#5220)", () => {
+	for (const [platform, code] of [
+		["linux", "EBUSY"],
+		["win32", "ENOENT"],
+	] as const) {
+		let attempts = 0;
+		const failure = Object.assign(new Error("rename failed"), { code });
+		withRename(
+			() => {
+				attempts++;
+				throw failure;
+			},
+			() =>
+				assert.throws(
+					() => renameWithRetry("from", "to", { platform }),
+					(error) => error === failure,
+				),
+		);
+		assert.equal(attempts, 1);
+	}
+});
+
+test("lock rename retries stop when their time budget is spent (#5220)", () => {
+	let attempts = 0;
+	const failure = Object.assign(new Error("scan in progress"), { code: "EBUSY" });
+	withRename(
+		() => {
+			attempts++;
+			throw failure;
+		},
+		() =>
+			assert.throws(
+				() => renameWithRetry("from", "to", { platform: "win32", budgetMs: 0 }),
+				(error) => error === failure,
+			),
+	);
+	assert.equal(attempts, 1);
+});
+
+test("an abort stops a transient lock rename without another attempt (#5220)", () => {
+	let attempts = 0;
+	const controller = new AbortController();
+	const reason = new Error("cancelled lock rename");
+	withRename(
+		() => {
+			attempts++;
+			controller.abort(reason);
+			throw Object.assign(new Error("scan in progress"), { code: "EBUSY" });
+		},
+		() =>
+			assert.throws(
+				() => renameWithRetry("from", "to", { platform: "win32", signal: controller.signal }),
+				(error) => error === reason,
+			),
+	);
+	assert.equal(attempts, 1);
+});
+
+test("an occupied generation directory is not retried (#5220)", () => {
+	const from = join(tempDir, "occupied-from");
+	const to = join(tempDir, "occupied-to");
+	fsModule.mkdirSync(from);
+	fsModule.mkdirSync(to);
+	let attempts = 0;
+	const failure = Object.assign(new Error("directory exists"), { code: "EPERM" });
+	withRename(
+		() => {
+			attempts++;
+			throw failure;
+		},
+		() =>
+			assert.throws(
+				() => renameWithRetry(from, to, { platform: "win32" }),
+				(error) => error === failure,
+			),
+	);
+	assert.equal(attempts, 1);
+});

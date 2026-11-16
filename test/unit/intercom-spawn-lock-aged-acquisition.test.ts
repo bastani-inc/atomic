@@ -7,6 +7,7 @@ import {
 	acquireSpawnLock,
 	isSpawnLockStale,
 	releaseSpawnLock,
+	renewSpawnLock,
 	replaceStaleSpawnLock,
 } from "../../packages/intercom/broker/spawn.js";
 import {
@@ -29,14 +30,22 @@ function nextLockPath(): string {
 	return join(tempDir, `broker.spawn.lock-${lockCounter++}`);
 }
 
-function withFirstNowAged<T>(run: () => T): T {
+const ACQUISITION_FRESHNESS_MS = 10_000;
+
+function assertFreshOwner(lockPath: string, owner: string | undefined): asserts owner is string {
+	assert.ok(owner !== undefined);
+	assert.ok(Date.now() - Number(owner.split("\n")[1]) < ACQUISITION_FRESHNESS_MS);
+	assert.equal(readTextSync(lockPath, "utf8"), owner);
+}
+
+function withFirstNowAged<T>(run: () => T, ageMs = AGED_HEADER_OFFSET_MS): T {
 	const realNow = Date.now;
 	let firstCall = true;
 	Date.now = () => {
 		const now = realNow.call(Date);
 		if (firstCall) {
 			firstCall = false;
-			return now - AGED_HEADER_OFFSET_MS;
+			return now - ageMs;
 		}
 		return now;
 	};
@@ -48,6 +57,101 @@ function withFirstNowAged<T>(run: () => T): T {
 }
 
 describe("aged spawn lock acquisition (#5220)", () => {
+	test("a failed first read-back does not strand a spawner's newly created lock (#5220)", () => {
+		const lockPath = nextLockPath();
+		const realReadFileSync = fsModule.readFileSync;
+		let failedReadBack = false;
+		fsModule.readFileSync = ((...args: Parameters<typeof fsModule.readFileSync>) => {
+			if (args[0] === lockPath && !failedReadBack) {
+				failedReadBack = true;
+				throw Object.assign(new Error("lock is being scanned"), { code: "EBUSY" });
+			}
+			return realReadFileSync(...args);
+		}) as typeof fsModule.readFileSync;
+		syncBuiltinESMExports();
+		try {
+			const owner = acquireSpawnLock(lockPath);
+			assert.equal(failedReadBack, true);
+			assertFreshOwner(lockPath, owner);
+			releaseSpawnLock(owner, lockPath);
+			assert.equal(fileExistsSync(lockPath), false);
+		} finally {
+			fsModule.readFileSync = realReadFileSync;
+			syncBuiltinESMExports();
+		}
+	});
+
+	test("a mismatched first read-back does not strand a spawner's newly created lock (#5220)", () => {
+		const lockPath = nextLockPath();
+		const realReadFileSync = fsModule.readFileSync;
+		let changedReadBack = false;
+		fsModule.readFileSync = ((...args: Parameters<typeof fsModule.readFileSync>) => {
+			const result = realReadFileSync(...args);
+			if (args[0] === lockPath && !changedReadBack) {
+				changedReadBack = true;
+				return "another owner's header\n";
+			}
+			return result;
+		}) as typeof fsModule.readFileSync;
+		syncBuiltinESMExports();
+		try {
+			const owner = acquireSpawnLock(lockPath);
+			assert.equal(changedReadBack, true);
+			assertFreshOwner(lockPath, owner);
+			releaseSpawnLock(owner, lockPath);
+			assert.equal(fileExistsSync(lockPath), false);
+		} finally {
+			fsModule.readFileSync = realReadFileSync;
+			syncBuiltinESMExports();
+		}
+	});
+
+	test("a deferred renewal of a not-yet-stale acquisition releases its old lease before retrying (#5220)", () => {
+		const lockPath = nextLockPath();
+		const realRenameSync = fsModule.renameSync;
+		fsModule.renameSync = ((from: fsModule.PathLike, to: fsModule.PathLike) => {
+			if (String(from).endsWith(".renew") && to === lockPath) {
+				throw Object.assign(new Error("lock is being scanned"), { code: "EBUSY" });
+			}
+			realRenameSync(from, to);
+		}) as typeof fsModule.renameSync;
+		syncBuiltinESMExports();
+		try {
+			const owner = withFirstNowAged(() => acquireSpawnLock(lockPath), 30_000);
+			assertFreshOwner(lockPath, owner);
+			releaseSpawnLock(owner, lockPath);
+			assert.equal(fileExistsSync(lockPath), false);
+		} finally {
+			fsModule.renameSync = realRenameSync;
+			syncBuiltinESMExports();
+		}
+	});
+
+	test("a failed renewal removes its staged file and preserves the held lock (#5220)", () => {
+		const lockPath = nextLockPath();
+		const owner = `${process.pid}\n${Date.now() - 30_000}\n`;
+		writeTextSync(lockPath, owner);
+		const staged = `${lockPath}.${process.pid}.renew`;
+		const realRenameSync = fsModule.renameSync;
+		fsModule.renameSync = ((from: fsModule.PathLike, to: fsModule.PathLike) => {
+			if (from === staged && to === lockPath) {
+				throw Object.assign(new Error("lock is being scanned"), { code: "EBUSY" });
+			}
+			realRenameSync(from, to);
+		}) as typeof fsModule.renameSync;
+		syncBuiltinESMExports();
+		try {
+			assert.equal(renewSpawnLock(owner, Date.now(), lockPath), owner);
+			assert.equal(readTextSync(lockPath, "utf8"), owner);
+			assert.equal(fileExistsSync(staged), false);
+			releaseSpawnLock(owner, lockPath);
+			assert.equal(fileExistsSync(lockPath), false);
+		} finally {
+			fsModule.renameSync = realRenameSync;
+			syncBuiltinESMExports();
+		}
+	});
+
 	test("a spawner whose initial timestamp aged before read-back renews the lock so a second spawner cannot also take it (#5220)", () => {
 		const lockPath = nextLockPath();
 		const firstOwner = withFirstNowAged(() => acquireSpawnLock(lockPath));
@@ -136,7 +240,8 @@ describe("aged spawn lock acquisition (#5220)", () => {
 
 		try {
 			const acquired = withFirstNowAged(() => acquireSpawnLock(busyLockPath));
-			assert.equal(acquired, undefined);
+			assertFreshOwner(busyLockPath, acquired);
+			releaseSpawnLock(acquired, busyLockPath);
 		} finally {
 			fsModule.renameSync = realRenameSync;
 			syncBuiltinESMExports();
