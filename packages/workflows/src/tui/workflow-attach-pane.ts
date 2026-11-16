@@ -49,6 +49,13 @@ export class WorkflowAttachPane implements Component {
 	private onHide?: () => void;
 	private onBack?: () => void;
 	private stageActions?: WorkflowAttachPaneOpts["stageActions"];
+	/** The message and focus a graph that showed another run hands to the graph built for it. */
+	private pendingGraphCarry: import("./graph-view-types.js").GraphViewCarry | undefined;
+	private _takeGraphCarry(): import("./graph-view-types.js").GraphViewCarry | undefined {
+		const carry = this.pendingGraphCarry;
+		this.pendingGraphCarry = undefined;
+		return carry;
+	}
 	private hostRequestRender?: () => void;
 	private hostRequestFocus?: () => void;
 	private piTui?: TUI;
@@ -131,6 +138,7 @@ export class WorkflowAttachPane implements Component {
 		}
 	}
 	private _buildGraphView(initialFocusedStageId?: string, initialFocusedRunId?: string): GraphView {
+		const generation = this.attachmentGeneration;
 		return new GraphView({
 			mode: "overlay",
 			runId: this.runId,
@@ -148,14 +156,21 @@ export class WorkflowAttachPane implements Component {
 			},
 			stageActions: this.stageActions,
 			// A retry or fork shows its new run here; the graph that asked is replaced, so wait for its handler to end.
-			onShowRun: (runId) => queueMicrotask(() => this.retarget(runId)),
+			onShowRun: (runId, carry) =>
+				queueMicrotask(() => {
+					if (generation !== this.attachmentGeneration || this.mode !== "graph" || !this.visible) return;
+					this.pendingGraphCarry = carry;
+					this.retarget(runId);
+				}),
+			carry: this._takeGraphCarry(),
 			initialFocusedStageId,
 			initialFocusedRunId,
 			piTui: this.piTui,
 			piKeybindings: this.piKeybindings,
 			footerData: this.footerData,
-			getStageQueuedMessageCount: (runId, stageId) => this._stageQueuedMessageCount(runId, stageId),
-			getQueuedStageSignature: () => this._queuedStageSignature(),
+			getStageQueuedMessageCount: (runId, stageId, snapshotCount) =>
+				this._stageQueuedMessageCount(runId, stageId, snapshotCount),
+			getQueuedStageSignature: (snapshot) => this._queuedStageSignature(snapshot),
 			requestRender: () => {
 				if (this.mode !== "graph") return;
 				this.hostRequestRender?.();
@@ -169,24 +184,24 @@ export class WorkflowAttachPane implements Component {
 	 * `AgentSession`, so an adapter-backed stage is counted too. `peek`
 	 * deliberately does not claim a provisional detached handle.
 	 */
-	private _stageQueuedMessageCount(runId: string, stageId: string): number {
+	private _stageQueuedMessageCount(runId: string, stageId: string, snapshotCount: number): number {
 		const handle = this.registry?.peek(runId, stageId);
 		const count = stageQueuedUserMessageCount(handle?.queuedUserMessages?.());
 		// A stage on a local worker has no handle here, or one that sees its queue only while it
 		// watches the stage; its worker publishes the count with its activity (#3996).
 		if (handle?.queuedUserMessages === undefined || (handle.placement?.kind === "local-worker" && count === 0))
-			return this._stageSnapshot(runId, stageId)?.queuedUserMessageCount ?? 0;
+			return snapshotCount;
 		return count;
 	}
 	/**
 	 * What every live handle's queue holds right now; its cost follows the handles held, not the stages of a run. Run
 	 * and stage ids are author text that may hold any separator, so the signature is a JSON list of id and count tuples.
 	 */
-	private _queuedStageSignature(): string {
+	private _queuedStageSignature(snapshot: StoreSnapshot | null): string {
 		const registry = this.registry;
 		if (registry === undefined) return "";
 		const queued: (readonly [runId: string, stageId: string, count: number])[] = [];
-		for (const run of readGraphStoreSnapshot(this.store).runs) {
+		for (const run of snapshot?.runs ?? []) {
 			for (const handle of registry.forRun(run.id)) {
 				const count = stageQueuedUserMessageCount(handle.queuedUserMessages?.());
 				if (count > 0) queued.push([run.id, handle.stageId, count]);

@@ -204,16 +204,16 @@ Common controls:
 /workflow resume <run-id> --accept-entry-changes  # resume after editing a local worker definition's entry module
 /workflow quit <run-id>                # pause gracefully and keep the run resumable
 /workflow fork <run-id> --from <stage> # retry from a stage in a new run; the source run is unchanged
-/workflows [run-id]                    # retained alias for /workflow resume (history picker)
+/workflows [run-id]                    # open a session run's graph, or choose from its runs
 ```
 
 Surface behavior:
 
 - **Graph vs. stage chat** - Use `connect` for the workflow graph. Use `attach` when you want a chat pane for a specific stage.
 - **Run state** - The graph header puts the run's state before its stage counts and colors the ORCHESTRATOR pill to match: `↑ blocked`, followed by the exit reason when the workflow gave one and shortened to fit; `❚❚ paused`; or `○ quit`. A running run shows no state, including one you resumed. `↑ N` counts blocked stages. The stage switcher (`/`), `/workflow status`, and the `/workflow connect` picker show the same state.
-- **Going back** - In an attached stage chat, `←` on an empty prompt returns to the graph. A choice or yes/no question moves with `←`, so there `esc` returns to the graph; the question stays waiting. The graph has no prompt: `esc` goes back one level (it closes a stage's failure detail, a tool detail or the `?` overlay first), and at the top it returns to where you opened the graph from, such as main chat or the `/workflows` list. `←` does the same on a node with nothing to its left, and otherwise moves to that sibling. A custom question widget owns every key; `ctrl+c` closes the workflow view from it. `ctrl+x` does not navigate. See [Keybindings](/keybindings#navigation).
-- **Graph keys** - The hint line under the graph lists exactly the keys that work on the focused node, and `?` lists them all. `↑↓←→` move, `enter` opens the focused node (a stage's chat, a tool's detail, or a failed stage's failure detail), `/` finds a stage, and `f` cycles a status filter (all, running, completed, failed) that dims the nodes it doesn't match without moving anything. On a running or waiting stage, `x` then `x` again within 3 seconds stops it so it can be resumed from its stage chat. A stopped stage or run shows `◼` in a muted colour; a failed one shows a red `✗`.
-- **Failed stages** - `enter` on a failed stage opens its failure detail: the stage, how long it ran, and a one-line reason. `r` retries the failed stage, keeping the completed ones; `f` forks the run into a new run, leaving the original unchanged; `t` opens the stage's transcript; `l` switches between the summary and the full log, including the error's code, hint and causes. A retry or fork shows its new run in the graph.
+- **Going back** - In an attached stage chat, `←` on an empty prompt returns to the graph. A choice or yes/no question uses `←` to move between answers; `esc` closes that question back to the stage's prompt and leaves it waiting. The graph has no prompt: `esc` goes back one level (it closes a stage's failure detail, a tool detail or the `?` overlay first), and at the top it returns to where you opened the graph from, such as main chat or the `/workflows` list. `←` only moves to a previous sibling. It does nothing at the leftmost node or inside a detail; only Esc goes back. A custom question widget owns every key; `ctrl+c` closes the workflow view from it. `ctrl+x` does not navigate. See [Keybindings](/keybindings#navigation).
+- **Graph keys** - The hint line under the graph lists exactly the keys that work on the focused node, and `?` lists them all. `↑↓←→` move, `enter` opens the focused node (a stage's chat, a tool's detail, or a failed stage's failure detail), `/` finds a stage, and `f` cycles a status filter (all, running, stopped, completed, failed) that dims the nodes it doesn't match without moving anything. On a running stage, `x` then `x` again within 3 seconds stops it so it can be resumed from its stage chat. A stopped stage or run shows `◼` in a muted colour; a failed one shows a red `✗`.
+- **Failed stages** - `enter` on a failed stage opens its failure detail with the stage, elapsed time and a one-line reason. `r` retries in place, keeping completed work. `f` asks for confirmation, then forks from that stage into a new run. The confirmation names completed tool steps that will run again and warns if the source must first stop resumably. Enter confirms; Esc cancels. `t` opens the transcript; `l` toggles the full log, including error codes, hints and causes. Retry keeps focus on the same stage and reports another failure. Fork opens the new run.
 - **Stage input label** - Attached stage chats show `[stage: name]` on the composer top rule, a mounted question's top rule, and awaiting-input prompt borders so you can tell which stage owns the input. Long names truncate with `…`. A subagent's transcript opened from `/tasks` labels its prompt `[subagent: name]` the same way.
 - **Draft preservation** - Leaving a stage preserves unsent composer and prompt drafts and keeps pending custom questions unresolved so they reappear when you attach again.
 - **Queued-message survival** - Detaching preserves queued steering and follow-up text. Reattach to see the pending messages; the graph shows their count as `✉ N queued`. Queues also survive model fallback and eligible post-mortem reopening. Custom session adapters must publish `queue_update` snapshots and expose pre-attachment queues as described in [authoring](/workflows/authoring#stage-follow-on-user-messages).
@@ -230,7 +230,7 @@ Surface behavior:
 - **Status listing** - `/workflow status` lists all retained active and terminal top-level runs by default; implementation-owned nested child runs are flattened into their parent workflow rather than listed separately. `/workflow status --all` is retained as a compatibility alias.
 - **Status times** - `/workflow status <run-id>` displays `started` and `ended` in the system local timezone as `HH:mm:ss`. If they differ from your expected clock, check the timezone of the machine or container running Atomic and any inherited `TZ` environment setting. Elapsed durations and raw timestamps in structured results are unchanged.
 
-`/workflows` is the retained-run history alias for `/workflow resume`: with no id it opens the same mixed picker, but the resumable section lists only runs that the resume path can actually accept and the completed section is read-only inspection. A run with no durable checkpoint, missing/pruned artifacts, or explicit deletion is omitted from the resume picker; an explicit `/workflow resume <id>` still returns an explanatory error. It is intentionally different from `/workflow list`, which lists installed workflow definitions. See [`/workflow resume` — cross-session resume selector](#/workflow-resume-—-cross-session-resume-selector) for the full picker semantics.
+`/workflows` opens this session's only workflow run directly, or its run list when there are several. Returning from a graph restores the selected row. With no runs, it shows "No workflows in this session." in a sheet that Esc closes. `/workflows <id>` opens that session run's graph without resuming execution. Use `/workflow resume` for the cross-session history picker and `/workflow list` for installed workflow definitions.
 
 At the supported 40-column terminal minimum, attached stage chats keep the `← return to graph` hint. The TUI may truncate provider/model context to make room, but it keeps that context separate from the hierarchy hint so the controls stay readable.
 
@@ -567,7 +567,7 @@ Focus a tool node and press Enter, click it, or select it from the switcher to o
 
 The card starts collapsed, showing the last visual rows. Press `app.tools.expand`, normally Ctrl+O, to see the full bounded result and available callback source. Inspection never executes the callback or reads a source file.
 
-The statusline shows the resolved key with `expand` or `collapse`, including remapped keys, alongside return and scroll hints. It omits that hint when expansion is unbound. Scroll with `↑`/`↓`, `PageUp`/`PageDown`, `Home`/`End`, the wheel, or the scrollbar. Escape or `←` returns to the graph. This view offers no chat attachment, steering, pause, or resume.
+The statusline shows the resolved key with `expand` or `collapse`, including remapped keys, alongside return and scroll hints. It omits that hint when expansion is unbound. Scroll with `↑`/`↓`, `PageUp`/`PageDown`, `Home`/`End`, the wheel, or the scrollbar. Escape returns to the graph; `←` does nothing in this detail. This view offers no chat attachment, steering, pause, or resume.
 
 The footer shows `Took` or `Elapsed`; cached results are labelled. Truncation is marked with `… [truncated]`. Unrenderable values show placeholders rather than a complete result. Durable checkpoints retain the actual output.
 
@@ -638,7 +638,7 @@ Changing `iteration` makes each loop pass a distinct durable call. Reusing the s
 
 ### `/workflow resume` — cross-session resume selector
 
-The `/workflow resume` command mirrors `/resume` ergonomics and `/workflows` is its alias. With no ID, it builds a newest-first picker from eligible live runs and journal records. Selected records are revalidated before resume or inspection. Runs with live leases are excluded; expired running leases appear as `crashed`.
+The `/workflow resume` command mirrors `/resume` ergonomics. With no ID, it builds a newest-first picker from eligible live runs and journal records. Selected records are revalidated before resume or inspection. Runs with live leases are excluded; expired running leases appear as `crashed`.
 
 Picker rows use the run label when set, otherwise a one-line objective or prompt input, falling back to the workflow ID. When a generated progress summary is available, it has its own column; status and workflow name precede the identity in the other column. Live rows also show completed/total stages. Without a generated summary, the adjacent column shows those status details instead. Search matches the identity, summary, and full run ID.
 
@@ -675,8 +675,8 @@ Fresh completed inspection does not currently persist the workflow's declared ro
 ```text
 /workflow resume                          # Mixed picker: resumable + completed
 /workflow resume <full-workflow-uuid> # Resume unfinished work or open completed detail/chat
-/workflows                               # Alias for the same mixed picker
-/workflows <full-workflow-uuid>        # Alias for targeted resume/open
+/workflows                               # Open this session's run list or only run's graph
+/workflows <full-workflow-uuid>        # Open a session run's graph without resuming it
 ```
 
 Targets resolve across top-level live, resumable durable, and completed entries as one namespace using full UUIDs or unique 8-hex prefixes. Exact loadable paused live targets retain direct in-session precedence. Prefixes require successful catalog discovery and reject collisions. A root appearing in both resumable and read-only history remains resumable. Nested child runs remain excluded from this top-level resume namespace.

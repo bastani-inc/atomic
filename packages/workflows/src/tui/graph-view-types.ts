@@ -1,9 +1,29 @@
 import type { ReadonlyFooterDataProvider } from "@bastani/atomic";
 import type { TUI } from "@bastani/atomic-tui";
 import type { Store } from "../shared/store.js";
+import type { StoreSnapshot } from "../shared/store-types.js";
 import type { GraphTheme } from "./graph-theme.js";
 
 export type GraphViewMode = "overlay" | "widget";
+
+/** Where a fork from a stage starts, or why it can't. */
+export type GraphForkTargetResult =
+	| {
+			readonly ok: true;
+			readonly stagePath: string;
+			/** Completed tool steps at or after the stage that the fork runs again. */
+			readonly rerunToolSteps: number;
+			/** Whether the source is still live in this session, so forking stops it first. */
+			readonly live: boolean;
+	  }
+	| { readonly ok: false; readonly message: string };
+
+/** What a graph that shows another run in its place hands to the new one. */
+export interface GraphViewCarry {
+	readonly notice?: { readonly text: string; readonly tone: "info" | "error" };
+	/** Graph node id to focus, when the new run has it. */
+	readonly focusStageId?: string;
+}
 
 /** What a graph action on a stage reports back: shown on the hint line for a moment. */
 export interface GraphStageActionResult {
@@ -22,8 +42,12 @@ export interface GraphStageActions {
 	stop?(runId: string, stageId: string): Promise<GraphStageActionResult>;
 	/** Continue a failed run from this failed stage: completed stages are kept and the stage runs again (`r`). */
 	retry?(runId: string, stageId: string): Promise<GraphStageActionResult>;
-	/** Fork the run into a new run that keeps its completed stages; the source run is never changed (`f`). */
-	fork?(runId: string, stageId: string): Promise<GraphStageActionResult>;
+	/**
+	 * Where a fork from this stage of root run `rootRunId` would start, and what it reruns: asked before `f` forks, so
+	 * the user confirms (#5224).
+	 */
+	forkTarget?(rootRunId: string, stageId: string): Promise<GraphForkTargetResult>;
+	fork?(rootRunId: string, stageId: string): Promise<GraphStageActionResult>;
 }
 /**
  * Terminal geometry exposed to GraphView. The renderer reads only `rows`;
@@ -51,15 +75,14 @@ export interface GraphViewOpts {
 	 * pane. When unset, Enter is a no-op (preserves graph mode).
 	 */
 	onStageAttach?: (runId: string, stageId: string) => void;
-	/**
-	 * Invoked when Esc (or ← with nothing to the left) pops the graph itself: back to where it was opened from, main
-	 * chat unless the opener said otherwise. Falls back to `onHide` when unset.
-	 */
+
 	onDetach?: () => void;
 	/** Stop, retry and fork controls for a focused stage. */
 	stageActions?: GraphStageActions;
-	/** Show another run in this graph, such as the run a retry or fork started. */
-	onShowRun?: (runId: string) => void;
+	/** Show another run in this graph, such as the run a fork started, carrying the message and focus across. */
+	onShowRun?: (runId: string, carry?: GraphViewCarry) => void;
+	/** A message and focus carried over from the graph this one replaced. */
+	carry?: GraphViewCarry;
 	/**
 	 * When provided, GraphView restores focus to this stage on construction.
 	 * `initialFocusedRunId` disambiguates identical local stage IDs in nested runs.
@@ -93,11 +116,11 @@ export interface GraphViewOpts {
 	 * repaint so a message queued from the stage chat stays visible after the
 	 * user detaches. Runtime-only: queue state never enters a store snapshot.
 	 */
-	getStageQueuedMessageCount?: (runId: string, stageId: string) => number;
+	getStageQueuedMessageCount?: (runId: string, stageId: string, snapshotCount: number) => number;
 	/**
 	 * A value that differs whenever any stage's live queue count differs, read on every repaint in time proportional
 	 * to the stages the host holds live, never to the stages of the run (#4642). A change re-reads every count and
 	 * sizes the cards again; counts are otherwise read when the layout is built.
 	 */
-	getQueuedStageSignature?: () => string;
+	getQueuedStageSignature?: (snapshot: StoreSnapshot | null) => string;
 }

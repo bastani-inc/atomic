@@ -36,7 +36,7 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 		}
 		if (this.toolDetail !== null) return this._handleToolDetailInput(data);
 		if (this.stageDetail !== null) return this._handleStageDetailInput(data);
-		if (this._isGraphBackInput(data)) {
+		if (matchesKey(data, Key.escape)) {
 			this._leaveGraph();
 			return true;
 		}
@@ -61,8 +61,7 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 			this.pendingEnsureFocusedVisible = true;
 			return true;
 		}
-		// Esc closes the detail view; the back key, one level up, returns to the graph too.
-		if (matchesKey(data, Key.escape) || this._matchesNavAction(data, APP_ACTION.navBack)) {
+		if (matchesKey(data, Key.escape)) {
 			this._closeToolDetail();
 			return true;
 		}
@@ -128,6 +127,24 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 	private _handleStageDetailInput(data: string): boolean {
 		const detail = this.stageDetail;
 		if (detail === null) return false;
+		const confirm = this.forkConfirm;
+		if (confirm !== null) {
+			// The one-line fork confirmation owns the keys until it is answered.
+			if (matchesKey(data, Key.enter) && this.stageActions?.fork) {
+				this.forkConfirm = null;
+				this._runStageAction(
+					this.stageActions.fork(confirm.rootRunId, confirm.stageId),
+					`Forking from ${confirm.name}\u2026`,
+					{
+						nodeId: confirm.nodeId,
+					},
+				);
+			} else if (matchesKey(data, Key.escape)) {
+				this.forkConfirm = null;
+				this.graphNotice = null;
+			} else if (matchesKey(data, Key.ctrl("c"))) this.onClose?.();
+			return true;
+		}
 		if (this.graphLayout.handleScrollbarInput(data)) {
 			this.pendingEnsureFocusedVisible = false;
 			return true;
@@ -137,7 +154,7 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 			if (wheelDelta.rows !== 0) this._scrollGraphVertically(wheelDelta.rows);
 			return true;
 		}
-		if (matchesKey(data, Key.escape) || this._matchesNavAction(data, APP_ACTION.navBack)) {
+		if (matchesKey(data, Key.escape)) {
 			this._closeStageDetail();
 			return true;
 		}
@@ -145,13 +162,23 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 			this.onClose?.();
 			return true;
 		}
-		const name = this._stageDetailStage()?.name ?? detail.stageId;
+		const stage = this._stageDetailStage();
+		const name = stage?.name ?? detail.stageId;
+		// One action at a time: a second `r` or `f` while the first is in flight does nothing.
+		if ((matchesKey(data, "r") || matchesKey(data, "f")) && this.stageActionInFlight) return true;
 		if (matchesKey(data, "r") && this.stageActions?.retry) {
-			this._runStageAction(this.stageActions.retry(detail.runId, detail.stageId), `Retrying ${name}\u2026`);
+			const failedAt = stage?.endedAt;
+			this._runStageAction(this.stageActions.retry(detail.runId, detail.stageId), `Retrying ${name}\u2026`, {
+				nodeId: detail.nodeId,
+				onSameRun: () => {
+					// Stay on the stage and say if it fails again.
+					this.retryWatch = { nodeId: detail.nodeId, failedAt, sawRetry: false };
+				},
+			});
 			return true;
 		}
-		if (matchesKey(data, "f") && this.stageActions?.fork) {
-			this._runStageAction(this.stageActions.fork(detail.runId, detail.stageId), `Forking the run\u2026`);
+		if (matchesKey(data, "f") && this._forkAvailable()) {
+			this._askForkConfirmation(detail.stageId, detail.nodeId, name);
 			return true;
 		}
 		if (matchesKey(data, "t") && this.onStageAttach) {
@@ -172,22 +199,32 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 	}
 
 	/** Show an action's progress, then its result, on the hint line; a new run the action started is shown. */
-	private _runStageAction(result: Promise<GraphStageActionResult>, progress: string): void {
+	private _runStageAction(
+		result: Promise<GraphStageActionResult>,
+		progress: string,
+		options: { readonly nodeId?: string; readonly onSameRun?: () => void } = {},
+	): void {
 		this.graphNotice = { text: progress, tone: "info", until: Date.now() + 60_000 };
+		this.stageActionInFlight = true;
+		this.requestRender?.();
 		void result.then(
 			(outcome) => {
-				this.graphNotice = {
-					text: outcome.message,
-					tone: outcome.ok ? "info" : "error",
-					until: Date.now() + GRAPH_NOTICE_MS,
-				};
-				if (outcome.ok && outcome.runId !== undefined) {
+				if (this.disposed) return;
+				this.stageActionInFlight = false;
+				const notice = { text: outcome.message, tone: outcome.ok ? ("info" as const) : ("error" as const) };
+				this.graphNotice = { ...notice, until: Date.now() + GRAPH_NOTICE_MS };
+				if (outcome.ok && outcome.runId !== undefined && outcome.runId !== this.runId) {
+					// Another run (a fork) is shown in its place, keeping the message and the stage in focus.
 					this._closeStageDetail();
-					this.onShowRun?.(outcome.runId);
+					this.onShowRun?.(outcome.runId, { notice, focusStageId: options.nodeId });
+				} else if (outcome.ok) {
+					options.onSameRun?.();
 				}
 				this.requestRender?.();
 			},
 			(error: unknown) => {
+				if (this.disposed) return;
+				this.stageActionInFlight = false;
 				this.graphNotice = {
 					text: error instanceof Error ? error.message : String(error),
 					tone: "error",
@@ -198,8 +235,73 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 		);
 	}
 
+	private stageActionInFlight = false;
+
+	/** Whether `f` can fork: the host forks, and the graph knows its root run. */
+	private _forkAvailable(): boolean {
+		return this.stageActions?.fork !== undefined && this.stageActions.forkTarget !== undefined && this.runId !== null;
+	}
+
+	/** Look up where a fork from the stage starts, then ask, on one line, before forking. */
+	private _askForkConfirmation(stageId: string, nodeId: string, name: string): void {
+		const rootRunId = this.runId;
+		const detail = this.stageDetail;
+		const lookup = this.stageActions?.forkTarget;
+		if (rootRunId === null || lookup === undefined) return;
+		this.stageActionInFlight = true;
+		const notice = {
+			text: `Checking where a fork from ${name} starts\u2026`,
+			tone: "info" as const,
+			until: Date.now() + 60_000,
+		};
+		this.graphNotice = notice;
+		this.requestRender?.();
+		void lookup(rootRunId, stageId).then(
+			(target) => {
+				if (this.disposed) return;
+				this.stageActionInFlight = false;
+				if (this.stageDetail !== detail) {
+					if (this.graphNotice === notice) this.graphNotice = null;
+					this.requestRender?.();
+					return;
+				}
+				if (!target.ok) {
+					this.graphNotice = { text: target.message, tone: "error", until: Date.now() + GRAPH_NOTICE_MS };
+				} else {
+					const tools =
+						target.rerunToolSteps === 0
+							? ""
+							: ` and ${target.rerunToolSteps} completed tool step${target.rerunToolSteps === 1 ? "" : "s"}`;
+					const stop = target.live ? " Stops this run first, resumably." : "";
+					this.forkConfirm = { rootRunId, stageId, nodeId, name };
+					this.graphNotice = {
+						text: `Fork from ${name}: reruns it${tools} in a new run.${stop}`,
+						tone: "info",
+						until: Number.POSITIVE_INFINITY,
+					};
+				}
+				this.requestRender?.();
+			},
+			(error: unknown) => {
+				if (this.disposed) return;
+				this.stageActionInFlight = false;
+				if (this.stageDetail !== detail) {
+					if (this.graphNotice === notice) this.graphNotice = null;
+				} else {
+					this.graphNotice = {
+						text: error instanceof Error ? error.message : String(error),
+						tone: "error",
+						until: Date.now() + GRAPH_NOTICE_MS,
+					};
+				}
+				this.requestRender?.();
+			},
+		);
+	}
+
 	/** `x x` on a working stage stops it so it can be resumed; the first press only says what the second will do. */
 	private _handleStopInput(): boolean {
+		if (this.stageActionInFlight) return true;
 		const stage = this.cachedLayout[this.focusedIndex]?.stage;
 		const target = this._stageChatTarget(stage);
 		if (!this._focusedStageStoppable() || stage === undefined || target === undefined) return true;
@@ -209,6 +311,7 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 				text: `Press x again within 3s to stop ${stage.name}`,
 				tone: "info",
 				until: Date.now() + 3000,
+				arm: true,
 			};
 			return true;
 		}
@@ -219,6 +322,12 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 	}
 
 	private readonly stopConfirm = new TwoPressConfirm();
+
+	/** Call off a first `x`, and the prompt it showed, once the stage it named is no longer the focused one. */
+	private _disarmStop(): void {
+		this.stopConfirm.reset();
+		if (this.graphNotice?.arm === true) this.graphNotice = null;
+	}
 
 	/** One page is the visible body, less a row of overlap for continuity. */
 	private _toolDetailPageRows(): number {
@@ -240,17 +349,8 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 		return matchesNavAction(this._promptKeybindings(), data, action);
 	}
 
-	/**
-	 * The graph has no prompt, so Esc pops it one level: back to where it was opened from. The back key does the same
-	 * on a node with nothing to its left; elsewhere it moves between nodes.
-	 */
-	private _isGraphBackInput(data: string): boolean {
-		if (matchesKey(data, Key.escape)) return true;
-		return this._matchesNavAction(data, APP_ACTION.navBack) && !this._hasSiblingBefore();
-	}
-
 	private _leaveGraph(): void {
-		this.stopConfirm.reset();
+		this._disarmStop();
 		if (this.onDetach) this.onDetach();
 		else this.onHide?.();
 	}
@@ -385,47 +485,17 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 		return true;
 	}
 
-	/**
-	 * Move focus to the nearest node `step` depth-levels away (↑/↓).
-	 * Picks the sibling with the closest `row` to the current node so
-	 * navigation feels spatially continuous in the vertical layout.
-	 */
 	private _moveByDepth(step: number): boolean {
-		const cur = this.cachedLayout[this.focusedIndex];
-		if (!cur) return true;
-		const targetCol = cur.col + step;
-		const candidates = this.cachedLayout.map((n, i) => ({ n, i })).filter(({ n }) => n.col === targetCol);
-		if (candidates.length === 0) return true;
-		let best = candidates[0]!;
-		let bestDist = Math.abs(best.n.row - cur.row);
-		for (const c of candidates) {
-			const d = Math.abs(c.n.row - cur.row);
-			if (d < bestDist) {
-				best = c;
-				bestDist = d;
-			}
-		}
-		this._setFocusedIndex(best.i);
+		const navigation = this.cachedNavigation[this.focusedIndex];
+		const next = step < 0 ? navigation?.up : navigation?.down;
+		if (next !== undefined) this._setFocusedIndex(next);
 		return true;
 	}
 
-	/**
-	 * Move focus to the next sibling at the same depth (←/→). Clamps
-	 * at the band edges — no wrap, so the user always knows when they
-	 * hit a boundary.
-	 */
 	private _moveBySibling(step: number): boolean {
-		const cur = this.cachedLayout[this.focusedIndex];
-		if (!cur) return true;
-		const siblings = this.cachedLayout
-			.map((n, i) => ({ n, i }))
-			.filter(({ n }) => n.col === cur.col)
-			.sort((a, b) => a.n.row - b.n.row);
-		const pos = siblings.findIndex(({ i }) => i === this.focusedIndex);
-		if (pos === -1) return true;
-		const next = siblings[pos + step];
-		if (!next) return true;
-		this._setFocusedIndex(next.i);
+		const navigation = this.cachedNavigation[this.focusedIndex];
+		const next = step < 0 ? navigation?.left : navigation?.right;
+		if (next !== undefined) this._setFocusedIndex(next);
 		return true;
 	}
 
@@ -450,7 +520,7 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 		const max = Math.max(0, this.cachedLayout.length - 1);
 		const next = Math.max(0, Math.min(index, max));
 		if (next === this.focusedIndex) return;
-		this.stopConfirm.reset();
+		this._disarmStop();
 		this.focusedIndex = next;
 		this.pendingEnsureFocusedVisible = true;
 	}

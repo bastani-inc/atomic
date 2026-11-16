@@ -3,6 +3,10 @@
  * can be resumed, `r` continues a failed run from its failed stage, and `f` forks the run into a new one.
  */
 
+import { durableForkTarget } from "../durable/fork-run.js";
+import { hasActiveLiveRun } from "../durable/run-claims.js";
+import { availableStoreDurableBackend } from "../durable/store-backend.js";
+import { type QuitRunResult, quitRun } from "../runs/background/quit.js";
 import { pauseRun } from "../runs/background/status.js";
 import type { GraphStageActionResult, GraphStageActions } from "../tui/graph-view-types.js";
 import type { ExtensionRuntime } from "./runtime.js";
@@ -25,6 +29,10 @@ const PAUSE_REFUSALS: Record<string, string> = {
 	no_active_stages: "That stage is not running.",
 	stage_not_found: "That stage is gone.",
 };
+
+function quitRefusal(result: Extract<QuitRunResult, { ok: false }>): string {
+	return "message" in result && typeof result.message === "string" ? result.message : result.reason;
+}
 
 function failure(error: unknown): GraphStageActionResult {
 	return { ok: false, message: error instanceof Error ? error.message : String(error) };
@@ -58,13 +66,44 @@ export function createGraphStageActions(deps: GraphStageActionDeps): GraphStageA
 				return failure(error);
 			}
 		},
-		async fork(runId) {
+		async forkTarget(rootRunId, stageId) {
+			const backend = availableStoreDurableBackend(owner.store, rootRunId);
+			if (backend === undefined) return { ok: false, message: "This run keeps no durable record to fork from." };
+			try {
+				const target = await durableForkTarget(backend, rootRunId, stageId);
+				if (target === undefined)
+					return { ok: false, message: "A fork can't start at this stage: it is still running or never ran." };
+				return {
+					ok: true,
+					stagePath: target.stagePath,
+					rerunToolSteps: target.rerunToolSteps,
+					live: hasActiveLiveRun(owner.store, rootRunId),
+				};
+			} catch (error) {
+				return { ok: false, message: error instanceof Error ? error.message : String(error) };
+			}
+		},
+		async fork(rootRunId, stageId) {
 			const runtime = deps.runtime();
 			if (runtime === undefined) return { ok: false, message: "Workflows are not ready in this session yet." };
 			try {
+				// A run still live in this session holds its records; stop it, resumably, before copying them.
+				if (hasActiveLiveRun(owner.store, rootRunId)) {
+					const quit = await quitRun(rootRunId, { ...owner, awaitSettlement: true, actor: "user" });
+					if (!quit.ok) return { ok: false, message: `Could not stop the run to fork it: ${quitRefusal(quit)}` };
+				}
+				const backend = availableStoreDurableBackend(owner.store, rootRunId);
+				if (backend === undefined) return { ok: false, message: "This run keeps no durable record to fork from." };
+				const target = await durableForkTarget(backend, rootRunId, stageId);
+				if (target === undefined) return { ok: false, message: "The selected stage is no longer a fork target." };
 				const result = await workflowForkAction(
-					{ runId },
-					{ getRuntime: () => runtime, policy: workflowPolicyFromContext(deps.context()), source: "cli" },
+					{ runId: rootRunId, fromStage: target.stagePath },
+					{
+						getRuntime: () => runtime,
+						policy: workflowPolicyFromContext(deps.context()),
+						source: "cli",
+						expectedStageId: stageId,
+					},
 				);
 				return result.status === "failed"
 					? { ok: false, message: result.message }

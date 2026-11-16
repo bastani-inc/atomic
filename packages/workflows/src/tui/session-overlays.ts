@@ -63,6 +63,8 @@ export function openSessionPicker(
 	store: Store,
 	theme: GraphTheme,
 	intent: SessionPickerIntent = "connect",
+	/** The run to select when the picker opens, such as the one a returning view was opened from. */
+	initialRunId?: string,
 ): Promise<SessionPickerResult> {
 	function toResult(action: { kind: "connect"; runId: string }): SessionPickerResult {
 		// Enter action arrives as `connect` from the picker; remap based on
@@ -82,6 +84,7 @@ export function openSessionPicker(
 		}
 
 		const state = createSessionPickerState();
+		if (initialRunId !== undefined) state.selectedRunId = initialRunId;
 		let settled = false;
 		let unsubscribe: (() => void) | null = null;
 		let pickerRevision = 0;

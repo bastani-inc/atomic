@@ -20,7 +20,7 @@ import type { PiCustomOverlayFactoryTui, PiOverlayHandle } from "../../packages/
 import type { Store } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import type { GraphOverlayPort, OverlayPiSurface } from "../../packages/workflows/src/tui/overlay-adapter.js";
-import { bunExecutable } from "../helpers/runtime.js";
+import { bunExecutable, sleep } from "../helpers/runtime.js";
 
 const ISOLATED_PROCESS_ENV = "ATOMIC_OVERLAY_HIDDEN_RENDER_ISOLATED";
 
@@ -171,14 +171,18 @@ async function registerIsolatedTests(): Promise<void> {
 	}
 
 	describe("workflow overlay hidden render gating (#1856)", () => {
-		test("visible overlay requests a host render on store updates", () => {
+		test("visible overlay coalesces a status burst into one frame (#5234)", async () => {
 			const { adapter, store, renderRequests } = buildHarness();
 			adapter.open(null);
-
-			const before = renderRequests.count;
-			store.recordRunStart(makeRun("r1"));
-
-			assert.ok(renderRequests.count > before, "a visible overlay must repaint on store updates");
+			try {
+				const before = renderRequests.count;
+				for (let update = 0; update < 50; update++) store.recordRunStart(makeRun(`r${update}`));
+				assert.equal(renderRequests.count, before, "status events schedule a frame without painting inline");
+				await sleep(32);
+				assert.equal(renderRequests.count - before, 1, "one frame paints the entire burst");
+			} finally {
+				adapter.close();
+			}
 		});
 
 		test("hidden overlay store updates never call host requestRender", () => {

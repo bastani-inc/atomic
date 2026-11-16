@@ -6,21 +6,22 @@ import {
 	type ExpandedWorkflowTool,
 	expandedStageTarget,
 	expandWorkflowGraph,
-	refreshExpandedWorkflowGraph,
-	sameExpandedWorkflowTopology,
 } from "../shared/expanded-workflow-graph.js";
 import type { Store } from "../shared/store.js";
 import { readGraphStoreSnapshot, subscribeStoreInvalidation } from "../shared/store-observation.js";
 import type { RunSnapshot, StageSnapshot, StoreSnapshot } from "../shared/store-types.js";
+import { buildGraphEdgeIndex, type GraphEdgeIndex, type GraphRenderEdge } from "./graph-edge-index.js";
+import { buildGraphNavigation, type GraphNodeNavigation } from "./graph-navigation.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { ANIMATION_TICK_MS } from "./graph-view-constants.js";
 import type { GraphStageActions, GraphViewMode, GraphViewOpts } from "./graph-view-types.js";
 import { computeLayout, type LayoutNode, NODE_H, NODE_W } from "./layout.js";
 import { nodeCardHeight } from "./node-card.js";
+import { stageFailureReason } from "./stage-failure-detail.js";
 import type { SwitcherState } from "./switcher.js";
 
 /** The `f` status filter, in the order `f` cycles it. */
-export const GRAPH_STATUS_FILTERS = ["all", "running", "completed", "failed"] as const;
+export const GRAPH_STATUS_FILTERS = ["all", "running", "stopped", "completed", "failed"] as const;
 export type GraphStatusFilter = (typeof GRAPH_STATUS_FILTERS)[number];
 
 /** Whether a stage matches the status filter; a non-matching node is dimmed, never hidden or moved. */
@@ -30,11 +31,23 @@ export function stageMatchesStatusFilter(stage: StageSnapshot, filter: GraphStat
 			return true;
 		case "running":
 			return stage.status === "running" || stage.status === "awaiting_input" || stage.status === "blocked";
+		case "stopped":
+			// A paused or suspended stage can be resumed; a cancelled tool was stopped for good.
+			return stage.status === "paused" || stage.status === "suspended" || stage.toolStatus === "cancelled";
 		case "completed":
 			return stage.status === "completed";
 		case "failed":
 			return stage.status === "failed";
 	}
+}
+
+/** A one-line message on the notice row above the hint line, until `until`. */
+export interface GraphNotice {
+	readonly text: string;
+	readonly tone: "info" | "error";
+	readonly until: number;
+	/** The first `x` press's prompt, which goes away when focus moves off its stage. */
+	readonly arm?: boolean;
 }
 
 /** A stage whose detail shows its failure, with retry, fork, transcript and log actions. */
@@ -76,18 +89,7 @@ interface GraphLayoutBand {
 	top: number;
 	bottom: number;
 	nodeIndices: number[];
-}
-
-interface GraphRenderEdge {
-	parentX: number;
-	parentY: number;
-	parentHeight: number;
-	childX: number;
-	childY: number;
-	top: number;
-	bottom: number;
-	left: number;
-	right: number;
+	nodeLefts: number[];
 }
 
 interface GraphRenderGeometry {
@@ -95,10 +97,12 @@ interface GraphRenderGeometry {
 	totalRows: number;
 	bands: GraphLayoutBand[];
 	edges: GraphRenderEdge[];
+	edgeIndex: GraphEdgeIndex;
 }
 
 /** Expansion, focus, prompt, and store-backed layout state for GraphView. */
 export abstract class GraphViewState {
+	protected disposed = false;
 	protected mode: GraphViewMode;
 	protected runId: string | null;
 	protected store: Store;
@@ -108,15 +112,19 @@ export abstract class GraphViewState {
 	protected onStageAttach?: (runId: string, stageId: string) => void;
 	protected onDetach?: () => void;
 	protected stageActions?: GraphStageActions;
-	protected onShowRun?: (runId: string) => void;
+	protected onShowRun?: GraphViewOpts["onShowRun"];
+	/** A fork from the open failure detail's stage, waiting for Enter or Esc. */
+	protected forkConfirm: { rootRunId: string; stageId: string; nodeId: string; name: string } | null = null;
+	/** A retried stage, watched so its failing again is said on the notice row. */
+	protected retryWatch: { nodeId: string; failedAt: number | undefined; sawRetry: boolean } | null = null;
 	protected initialFocusedStageId?: string;
 	protected initialFocusedRunId?: string;
 	protected piTui?: GraphViewOpts["piTui"];
 	protected requestRender?: () => void;
 	protected piKeybindings?: unknown;
 	protected footerData?: ReadonlyFooterDataProvider;
-	protected getStageQueuedMessageCount?: (runId: string, stageId: string) => number;
-	private getQueuedStageSignature?: () => string;
+	protected getStageQueuedMessageCount?: (runId: string, stageId: string, snapshotCount: number) => number;
+	private getQueuedStageSignature?: GraphViewOpts["getQueuedStageSignature"];
 	private queuedSignature: string | undefined;
 
 	protected focusedIndex = 0;
@@ -124,6 +132,7 @@ export abstract class GraphViewState {
 	protected switcherState: SwitcherState = { query: "", selectedIndex: 0 };
 	protected detailsExpanded = true;
 	protected cachedLayout: LayoutNode[] = [];
+	protected cachedNavigation: readonly GraphNodeNavigation[] = [];
 	/** Stages mirrored from `cachedLayout` — shared across card renders. */
 	protected cachedDisplayStages: StageSnapshot[] = [];
 	protected expandedGraph: ExpandedWorkflowGraph = {
@@ -145,7 +154,7 @@ export abstract class GraphViewState {
 	/** Whether the `?` key overlay is open. */
 	protected keysHelpOpen = false;
 	/** A one-line message on the hint line (the first `x` press, an action result), until `until`. */
-	protected graphNotice: { text: string; tone: "info" | "error"; until: number } | null = null;
+	protected graphNotice: GraphNotice | null = null;
 	protected abstract _graphScrollTop(): number;
 	protected graphScrollColOffset = 0;
 	protected graphNodeHitRects: GraphNodeHitRect[] = [];
@@ -155,9 +164,14 @@ export abstract class GraphViewState {
 	protected pendingEnsureFocusedVisible = true;
 	protected lastAutoFocusedAwaitingInputKey: string | null = null;
 	protected lastBuiltSnapshotVersion: number | null = null;
-	protected topologySnapshot: StoreSnapshot | null = null;
 	protected hasAnimatingStages = false;
-	protected cachedRenderGeometry: GraphRenderGeometry = { canvasWidth: 0, totalRows: 0, bands: [], edges: [] };
+	protected cachedRenderGeometry: GraphRenderGeometry = {
+		canvasWidth: 0,
+		totalRows: 0,
+		bands: [],
+		edges: [],
+		edgeIndex: { bands: [] },
+	};
 
 	protected _intervalId: ReturnType<typeof setInterval> | null = null;
 	protected _lastGTime: number | null = null;
@@ -178,7 +192,8 @@ export abstract class GraphViewState {
 		this.onDetach = opts.onDetach;
 		this.stageActions = opts.stageActions;
 		this.onShowRun = opts.onShowRun;
-		this.initialFocusedStageId = opts.initialFocusedStageId;
+		if (opts.carry?.notice) this.graphNotice = { ...opts.carry.notice, until: Date.now() + 4000 };
+		this.initialFocusedStageId = opts.initialFocusedStageId ?? opts.carry?.focusStageId;
 		this.initialFocusedRunId = opts.initialFocusedRunId;
 		this.piTui = opts.piTui;
 		this.requestRender = opts.requestRender;
@@ -220,7 +235,7 @@ export abstract class GraphViewState {
 	protected _needsAnimationTick(): boolean {
 		this._syncLayout();
 		// A hint-line notice must also disappear on time, even over an idle graph.
-		return this.hasAnimatingStages || this.graphNotice !== null;
+		return this.hasAnimatingStages || (this.graphNotice !== null && Date.now() > this.graphNotice.until);
 	}
 
 	/**
@@ -249,7 +264,7 @@ export abstract class GraphViewState {
 	}
 
 	protected _refreshQueuedNodeHeights(): void {
-		const signature = this.getQueuedStageSignature?.();
+		const signature = this.getQueuedStageSignature?.(this.currentSnapshot);
 		if (signature === undefined || signature === this.queuedSignature) return;
 		this.lastBuiltSnapshotVersion = null;
 		this._rebuildLayout();
@@ -264,12 +279,13 @@ export abstract class GraphViewState {
 			return;
 		}
 
-		this.queuedSignature = this.getQueuedStageSignature?.();
+		this.queuedSignature = this.getQueuedStageSignature?.(this.currentSnapshot);
 		const run = this._getCurrentRun();
 		if (!run) {
 			this.cachedLayout = [];
+			this.cachedNavigation = [];
 			this.cachedDisplayStages = [];
-			this.cachedRenderGeometry = { canvasWidth: 0, totalRows: 0, bands: [], edges: [] };
+			this.cachedRenderGeometry = { canvasWidth: 0, totalRows: 0, bands: [], edges: [], edgeIndex: { bands: [] } };
 			this.expandedGraph = { stages: [], renderStages: [], tools: [], nodes: [], targets: new Map() };
 			this.focusedIndex = 0;
 			this.graphScrollColOffset = 0;
@@ -277,7 +293,6 @@ export abstract class GraphViewState {
 			this.lastGraphViewport = null;
 			this.pendingEnsureFocusedVisible = true;
 			this.toolDetail = null;
-			this.topologySnapshot = this.currentSnapshot;
 			this.hasAnimatingStages = false;
 			this.lastBuiltSnapshotVersion = version;
 			return;
@@ -315,6 +330,7 @@ export abstract class GraphViewState {
 			nodeHeight: (stage) => this._nodeHeight(stage),
 		});
 		this.cachedLayout = nextLayout;
+		this.cachedNavigation = buildGraphNavigation(nextLayout);
 		this.cachedDisplayStages = nextLayout.map((node) => node.stage);
 		this.cachedRenderGeometry = this._buildRenderGeometry(nextLayout);
 		this.hasAnimatingStages = graphStages.some(
@@ -342,7 +358,7 @@ export abstract class GraphViewState {
 			if (band) {
 				band.nodeIndices.push(index);
 				band.bottom = Math.max(band.bottom, bottom);
-			} else bandsByTop.set(node.y, { top: node.y, bottom, nodeIndices: [index] });
+			} else bandsByTop.set(node.y, { top: node.y, bottom, nodeIndices: [index], nodeLefts: [] });
 		}
 
 		const edges: GraphRenderEdge[] = [];
@@ -368,9 +384,29 @@ export abstract class GraphViewState {
 		return {
 			canvasWidth,
 			totalRows,
-			bands: [...bandsByTop.values()].sort((left, right) => left.top - right.top),
+			bands: [...bandsByTop.values()]
+				.sort((left, right) => left.top - right.top)
+				.map((band) => {
+					band.nodeIndices.sort((a, b) => layout[a]!.x - layout[b]!.x);
+					band.nodeLefts = band.nodeIndices.map((index) => layout[index]!.x);
+					return band;
+				}),
 			edges,
+			edgeIndex: buildGraphEdgeIndex(edges),
 		};
+	}
+
+	protected *_visibleBandNodeIndices(band: GraphLayoutBand, left: number, right: number): Generator<number> {
+		let low = 0;
+		let high = band.nodeLefts.length;
+		while (low < high) {
+			const middle = (low + high) >>> 1;
+			if (band.nodeLefts[middle]! + NODE_W <= left) low = middle + 1;
+			else high = middle;
+		}
+		for (let index = low; index < band.nodeIndices.length && band.nodeLefts[index]! < right; index++) {
+			yield band.nodeIndices[index]!;
+		}
 	}
 
 	protected _firstVisibleLayoutBand(viewportTop: number): number {
@@ -482,11 +518,7 @@ export abstract class GraphViewState {
 	protected _graphStages(run: RunSnapshot): ExpandedWorkflowStage[] {
 		const snapshot = this.currentSnapshot;
 		if (!snapshot) return [];
-		const canRefresh =
-			this.topologySnapshot !== null && sameExpandedWorkflowTopology(this.topologySnapshot, snapshot);
-		const refreshed = canRefresh ? refreshExpandedWorkflowGraph(this.expandedGraph, snapshot) : undefined;
-		this.expandedGraph = refreshed ?? expandWorkflowGraph(snapshot, run.id);
-		this.topologySnapshot = snapshot;
+		this.expandedGraph = expandWorkflowGraph(snapshot, run.id);
 		const stages = [...this.expandedGraph.renderStages];
 		const hasStagePrompt = stages.some(
 			(stage) =>
@@ -535,7 +567,8 @@ export abstract class GraphViewState {
 
 	private _syncToolDetail(): void {
 		// A failure detail follows its stage; once the stage is gone or no longer failed it closes back to the graph.
-		if (this.stageDetail !== null && this._stageDetailStage()?.status !== "failed") this.stageDetail = null;
+		if (this.stageDetail !== null && this._stageDetailStage()?.status !== "failed") this._closeStageDetail();
+		this._syncRetryWatch();
 		if (this.toolDetail === null) return;
 		this.toolDetail = this.expandedGraph.tools.find((tool) => tool.id === this.toolDetail?.id) ?? null;
 	}
@@ -553,6 +586,10 @@ export abstract class GraphViewState {
 
 	protected _closeStageDetail(): boolean {
 		if (this.stageDetail === null) return false;
+		if (this.forkConfirm !== null) {
+			this.forkConfirm = null;
+			this.graphNotice = null;
+		}
 		this.stageDetail = null;
 		this.graphLayoutInvalidateForDetail();
 		return true;
@@ -568,6 +605,28 @@ export abstract class GraphViewState {
 	/** Whether a read-only detail (a tool's, or a failed stage's) replaces the graph body. */
 	protected _detailOpen(): boolean {
 		return this.toolDetail !== null || this.stageDetail !== null;
+	}
+
+	/** Say when a retried stage fails again; stop watching once it completes or is gone. */
+	private _syncRetryWatch(): void {
+		const watch = this.retryWatch;
+		if (watch === null) return;
+		const stage = this.cachedLayout.find((node) => node.stage.id === watch.nodeId)?.stage;
+		if (stage === undefined || stage.status === "completed") {
+			this.retryWatch = null;
+			return;
+		}
+		if (stage.status !== "failed") {
+			watch.sawRetry = true;
+			return;
+		}
+		if (!watch.sawRetry && stage.endedAt === watch.failedAt) return;
+		this.retryWatch = null;
+		this.graphNotice = {
+			text: `retry failed again: ${stageFailureReason(stage)}`,
+			tone: "error",
+			until: Date.now() + 8000,
+		};
 	}
 
 	/** Let the renderer discard any cached body frame after a detail transition. */
@@ -587,7 +646,7 @@ export abstract class GraphViewState {
 		if (!read) return 0;
 		const target = this._stageChatTarget(stage);
 		if (!target) return 0;
-		const count = read(target.runId, target.stageId);
+		const count = read(target.runId, target.stageId, stage?.queuedUserMessageCount ?? 0);
 		if (typeof count !== "number" || !Number.isFinite(count)) return 0;
 		return Math.max(0, Math.trunc(count));
 	}
@@ -631,6 +690,7 @@ export abstract class GraphViewState {
 	}
 
 	dispose(): void {
+		this.disposed = true;
 		if (this._intervalId != null) {
 			clearInterval(this._intervalId);
 			this._intervalId = null;

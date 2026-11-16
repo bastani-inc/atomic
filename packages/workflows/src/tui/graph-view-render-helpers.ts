@@ -40,18 +40,9 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 		return entries.map(([, value]) => value.trim()).join(" · ");
 	}
 
-	/** Whether the focused node has a sibling to its left, which ← moves to; otherwise ← leaves the graph. */
-	protected _hasSiblingBefore(): boolean {
-		// Rendered every frame: answered once per layout and focus, so a frame reads the layout only for what it shows.
-		const memo = this._siblingBeforeMemo;
-		const layout = this.lastBuiltSnapshotVersion ?? this.cachedLayout;
-		if (memo !== undefined && memo.layout === layout && memo.focusedIndex === this.focusedIndex) return memo.value;
-		const cur = this.cachedLayout[this.focusedIndex];
-		const value = cur !== undefined && this.cachedLayout.some((node) => node.col === cur.col && node.row < cur.row);
-		this._siblingBeforeMemo = { layout, focusedIndex: this.focusedIndex, value };
-		return value;
+	protected _movableArrows(): string {
+		return this.cachedNavigation[this.focusedIndex]?.arrows ?? "";
 	}
-	private _siblingBeforeMemo?: { layout: unknown; focusedIndex: number; value: boolean };
 
 	/** Keybindings manager the hint line and `?` overlay resolve action keys through. */
 	protected _navKeybindings(): NavKeybindings | undefined {
@@ -83,24 +74,19 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 		if (this.stageActions?.stop === undefined) return false;
 		const stage = this.cachedLayout[this.focusedIndex]?.stage;
 		if (stage === undefined || this._stageChatTarget(stage) === undefined) return false;
-		return (
-			stage.status === "running" ||
-			stage.status === "awaiting_input" ||
-			stage.status === "blocked" ||
-			stage.status === "suspended"
-		);
+		return stage.status === "running";
 	}
 
 	/**
 	 * Every key the graph's current state answers to, in the order the hint line keeps them under width pressure: the
 	 * way back first. The `?` overlay lists all of them; the hint line drops entries from the end until it fits.
 	 */
-	protected _graphKeys(): NavKey[] {
+	protected _graphKeys(compact = false): NavKey[] {
 		const help = this._actionKey(APP_ACTION.keysHelp, "?", "keys");
 		if (this.toolDetail !== null) {
 			const expandKey = toolExpandKey(this.piKeybindings);
 			return [
-				{ keys: "esc/\u2190", label: "back to graph" },
+				{ keys: "esc", label: "back to graph" },
 				{ keys: "\u2191\u2193 pgup/pgdn", label: "scroll" },
 				...(expandKey.length > 0
 					? [{ keys: expandKey, label: this.toolDetailExpanded ? "collapse" : "expand" }]
@@ -108,12 +94,19 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 				help,
 			];
 		}
+		if (this.stageDetail !== null && this.forkConfirm !== null) {
+			return [
+				{ keys: "enter", label: "fork" },
+				{ keys: "esc", label: "cancel" },
+			];
+		}
 		if (this.stageDetail !== null) {
 			const actions = this.stageActions;
+			const canFork = actions?.fork !== undefined && actions.forkTarget !== undefined && this.runId !== null;
 			return [
-				{ keys: "esc/\u2190", label: "back to graph" },
-				...(actions?.retry ? [{ keys: "r", label: "retry stage" }] : []),
-				...(actions?.fork ? [{ keys: "f", label: "fork run" }] : []),
+				{ keys: "esc", label: "back to graph" },
+				...(actions?.retry ? [{ keys: "r", label: compact ? "retry" : "retry in place" }] : []),
+				...(canFork ? [{ keys: "f", label: compact ? "fork from here" : "fork from this stage (reruns it)" }] : []),
 				...(this.onStageAttach ? [{ keys: "t", label: "transcript" }] : []),
 				{ keys: "l", label: this.stageDetail.logs ? "summary" : "logs" },
 				...(this.stageDetail.logs ? [{ keys: "\u2191\u2193 pgup/pgdn", label: "scroll" }] : []),
@@ -121,6 +114,9 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 			];
 		}
 		const focused = this.cachedLayout[this.focusedIndex]?.stage;
+		const moveKeys = this._movableArrows();
+		const filter: NavKey = { keys: "f", label: `filter: ${this.statusFilter}` };
+		const filtered = this.statusFilter !== "all";
 		const openLabel =
 			focused?.nodeKind === "tool"
 				? "open tool detail"
@@ -129,13 +125,20 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 					: this._focusedStageChatTarget() !== undefined
 						? "open stage chat"
 						: undefined;
+		const back: NavKey = { keys: "esc", label: "back" };
+		const open: NavKey[] = openLabel ? [{ keys: "\u21b5", label: compact ? "open" : openLabel }] : [];
+		const move: NavKey[] = moveKeys ? [{ keys: moveKeys, label: "move" }] : [];
+		// What the focused stage and the view's state make possible comes before the always-available keys, so a
+		// narrow hint line drops `/ stages` and `h hide` first; compact, it also comes ahead of opening and moving.
+		const stop = this._focusedStageStoppable()
+			? [this._actionKey(APP_ACTION.listStop, "x", compact ? "stop" : "stop stage")]
+			: [];
+		const stateful = [...stop, ...(filtered ? [filter] : [])];
 		return [
-			{ keys: this._hasSiblingBefore() ? "esc" : "esc/\u2190", label: "back" },
-			...(openLabel ? [{ keys: "\u21b5", label: openLabel }] : []),
-			{ keys: "\u2191\u2193\u2190\u2192", label: "move" },
+			back,
+			...(compact ? [...stateful, ...open, ...move] : [...open, ...move, ...stateful]),
 			{ keys: "/", label: "stages" },
-			{ keys: "f", label: `filter: ${this.statusFilter}` },
-			...(this._focusedStageStoppable() ? [this._actionKey(APP_ACTION.listStop, "x", "stop stage")] : []),
+			...(filtered ? [] : [filter]),
 			help,
 			...(this.onHide ? [{ keys: "h", label: "hide" }] : []),
 		];
@@ -169,8 +172,24 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
 		const hintsBudget = Math.max(0, width - leftEdgePad - pillW - rightEdgePad);
 		const keybindings = this._navKeybindings();
 		const taken = new Set<string>();
+		// Full labels while the keys that never drop (all but `/ stages`, `f filter: all` and `h hide`) fit; compact ones
+		// otherwise, so the keys for this stage stay on screen.
+		const fits = (entries: readonly NavKey[]): boolean => {
+			const taken = new Set<string>();
+			const kept = entries.filter(
+				(entry) =>
+					entry.keys !== "/" && entry.keys !== "h" && !(entry.keys === "f" && entry.label === "filter: all"),
+			);
+			const texts = kept.flatMap((entry) => {
+				const keys = navEntryKeys(keybindings, entry, taken);
+				return keys ? [`${keys} ${entry.label}`] : [];
+			});
+			return visibleWidth(texts.join("  \u00b7  ")) <= hintsBudget;
+		};
+		const full = this._graphKeys();
+		const entries = fits(full) ? full : this._graphKeys(true);
 		let helpSegment: string | undefined;
-		const segments = this._graphKeys().flatMap((entry) => {
+		const segments = entries.flatMap((entry) => {
 			const keys = navEntryKeys(keybindings, entry, taken);
 			if (!keys) return [];
 			const segment = `${text}${BOLD}${keys}${RESET}${chromeBg} ${muted}${entry.label}${RESET}${chromeBg}`;
