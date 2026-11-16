@@ -1122,8 +1122,13 @@ async function lfsHolderRuns(marker: string, pending: PendingLfs): Promise<boole
 	if (holder === undefined) return false;
 	// This process, when it is not downloading into the worktree, stopped the download that names it.
 	if (holder.host === thisProcess().host && holder.pid === process.pid) return false;
-	const age = Date.now() - (await stat(marker)).mtimeMs;
-	return holderRuns(holder, age, UNSTARTED_LFS_HOLDER_LIMIT_MS);
+	try {
+		const age = Date.now() - (await stat(marker)).mtimeMs;
+		return holderRuns(holder, age, UNSTARTED_LFS_HOLDER_LIMIT_MS);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+		throw error;
+	}
 }
 
 function isPendingLfs(value: unknown): value is PendingLfs {
