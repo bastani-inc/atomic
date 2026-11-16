@@ -23,6 +23,7 @@ import { delimiter, join, resolve } from "node:path";
 import { afterAll, test } from "vitest";
 import { withoutSqliteExperimentalWarning } from "../fixtures/sdk-host-fixture-support.mjs";
 import { bunExecutable, moduleDir, readStreamText, spawnProcess, spawnSyncCollect } from "../helpers/runtime.js";
+import { removeTestDirectory } from "../helpers/test-directory-removal.js";
 
 const repoRoot = resolve(moduleDir(import.meta.url), "../..");
 const repoNodeModules = join(repoRoot, "node_modules");
@@ -90,9 +91,9 @@ let packedRoot: string | undefined;
 const LAYOUT_CLEANUP_TIMEOUT_MS = 120_000;
 
 afterAll(() => {
-	if (tmpRoot) fs.rmSync(tmpRoot, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
+	if (tmpRoot) removeTestDirectory(tmpRoot, { retries: 20, retryDelayMs: 50 });
 	if (!packedRoot) return;
-	fs.rmSync(packedRoot, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
+	removeTestDirectory(packedRoot, { retries: 20, retryDelayMs: 50 });
 }, LAYOUT_CLEANUP_TIMEOUT_MS);
 
 /** Symlink (junction on Windows, so no elevation is needed) a real directory. */

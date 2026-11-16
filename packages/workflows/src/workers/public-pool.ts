@@ -36,9 +36,12 @@ import {
 	registerSharedPoolRoot,
 } from "./pool-journal.js";
 import {
+	CHECKPOINT_SHIPPING_LIMITS,
 	DEFAULT_PLACEMENT_CLAIM_WINDOW_MS,
 	DEFAULT_POOLED_STAGE_START_MAX_LOAD_PER_CPU,
 	type RecordedWorkerPlacement,
+	type ResolvedCheckpointShipping,
+	resolveCheckpointShipping,
 	type WorkflowExecutionResources,
 	type WorkflowWorkerPlacementOptions,
 } from "./public-options.js";
@@ -91,7 +94,10 @@ function settingChanges(path: string, saved: unknown, current: unknown, changes:
 		path,
 		description: `${path} changed from ${shown(saved)} to ${shown(current)}`,
 		resumable:
-			RESUMABLE_SETTINGS.has(path) || path.startsWith("workers.rateLimits") || path === "workers.shareCooldowns",
+			RESUMABLE_SETTINGS.has(path) ||
+			path.startsWith("workers.rateLimits") ||
+			path === "workers.shareCooldowns" ||
+			path.startsWith("workers.checkpointShipping"),
 		option: path.startsWith("admission") ? "admission" : path.startsWith("workers") ? "workers" : "localWorkers",
 	});
 }
@@ -318,6 +324,7 @@ function sharedPlacement(options: RunOpts): WorkflowWorkerPlacementOptions | und
 			"invalid-option",
 			"must be a positive integer of milliseconds",
 		);
+	checkCheckpointShipping(workers.checkpointShipping);
 	if (workers.provisioner !== undefined) checkFleetOptions(workers.provisioner);
 	const rateProblem = workers.rateLimits === undefined ? undefined : fleetRateLimitsProblem(workers.rateLimits);
 	if (rateProblem !== undefined)
@@ -333,6 +340,39 @@ function sharedPlacement(options: RunOpts): WorkflowWorkerPlacementOptions | und
 			"user limits count only on one machine's journal file",
 		);
 	return workers;
+}
+
+/** `workers.checkpointShipping`, refused with the option it names when it is neither "sync" nor valid limits (#4768). */
+function checkCheckpointShipping(option: unknown): void {
+	if (option === undefined || option === "sync") return;
+	if (!isPlainRecord(option))
+		throw new WorkerPlacementConfigError(
+			"sdk",
+			"workers.checkpointShipping",
+			"invalid-option",
+			'must be "sync" or { intervalMs?, maxBatch?, maxLagMs? }',
+		);
+	for (const key of Object.keys(option))
+		if (!Object.hasOwn(CHECKPOINT_SHIPPING_LIMITS, key))
+			throw new WorkerPlacementConfigError(
+				"sdk",
+				`workers.checkpointShipping.${key}`,
+				"invalid-option",
+				"is not an option; use intervalMs, maxBatch or maxLagMs",
+			);
+	for (const [key, limits] of Object.entries(CHECKPOINT_SHIPPING_LIMITS)) {
+		const value = option[key];
+		if (
+			value !== undefined &&
+			(!Number.isSafeInteger(value) || (value as number) < limits.min || (value as number) > limits.max)
+		)
+			throw new WorkerPlacementConfigError(
+				"sdk",
+				`workers.checkpointShipping.${key}`,
+				"invalid-option",
+				`must be an integer from ${limits.min} to ${limits.max}`,
+			);
+	}
 }
 
 /**
@@ -357,6 +397,13 @@ export async function recordedPlacement(
 	};
 }
 
+function shippingOf(option: RecordedWorkerPlacement["checkpointShipping"]): {
+	readonly checkpointShipping?: ResolvedCheckpointShipping;
+} {
+	const resolved = resolveCheckpointShipping(option);
+	return resolved === undefined ? {} : { checkpointShipping: resolved };
+}
+
 /**
  * How a root's pool runs with shared placement on this host: its local state, host id, claim window and binding, and
  * the binding's `worktree` on this host when it has one.
@@ -375,6 +422,7 @@ export function sharedPoolPlacement(
 			stateDirectory: poolStateDirectory(shared.agentDir),
 			host: poolHostId(shared.agentDir),
 			claimWindowMs: placement.claimWindowMs ?? DEFAULT_PLACEMENT_CLAIM_WINDOW_MS,
+			...shippingOf(placement.checkpointShipping),
 			...(placement.rateLimits === undefined ? {} : { rateLimits: placement.rateLimits }),
 			...(placement.shareCooldowns === true ? { shareCooldowns: true } : {}),
 		},

@@ -90,12 +90,15 @@ export class SqlRateBuckets {
 	 */
 	async acquire(scope: string, count: number, shape?: RateBucketShape): Promise<RateAcquireOutcome> {
 		const d = this.storage.dialect;
-		const next = `${d.greatest("tat", this.now)} + ? * interval_ms`;
+		// One reading of the clock: PostgreSQL's moves on between two, and a check reading it twice fits more than the burst.
+		const now = "(SELECT now FROM clock)";
+		const next = `${d.greatest("tat", now)} + ? * interval_ms`;
 		const statements: SqliteStatement[] = [
 			...(shape === undefined ? [] : [this.shape(scope, shape)]),
 			{
-				sql: `UPDATE ${this.table} SET tat = CAST(${next} AS ${d.types.int}), updated_at = ${this.now}
-					WHERE scope = ? AND ${next} - ${this.now} <= burst * interval_ms AND cooldown_until <= ${this.now}
+				sql: `WITH clock AS (SELECT ${this.now} AS now)
+					UPDATE ${this.table} SET tat = CAST(${next} AS ${d.types.int}), updated_at = ${now}
+					WHERE scope = ? AND ${next} - ${now} <= burst * interval_ms AND cooldown_until <= ${now}
 					RETURNING tat`,
 				params: [count, scope, count],
 			},
@@ -136,8 +139,11 @@ export class SqlRateBuckets {
 	/** The shared cooldowns still running, and the worker hosts that reported within the fleet's live window. */
 	poll(): Promise<RateBucketPoll> {
 		return this.storage.read(async (executor) => {
+			// One reading of the clock, so a cooldown it finds running has time left at that reading.
 			const rows = await executor.all<SqliteRow & { scope: string; remaining: number }>(
-				`SELECT scope, cooldown_until - ${this.now} AS remaining FROM ${this.table} WHERE cooldown_until > ${this.now}`,
+				`WITH clock AS (SELECT ${this.now} AS now)
+				SELECT scope, cooldown_until - (SELECT now FROM clock) AS remaining FROM ${this.table}
+				WHERE cooldown_until > (SELECT now FROM clock)`,
 			);
 			const probe = this.storage.dialect.tableExists(this.hosts);
 			// A journal whose shared pool never opened has no host registry yet.

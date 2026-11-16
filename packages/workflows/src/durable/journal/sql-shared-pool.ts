@@ -8,6 +8,7 @@ import {
 } from "@bastani/atomic/storage";
 import type { SerializedError } from "../../shared/error-codec.js";
 import { StaleStageLeaseError } from "../../workers/placement-errors.js";
+import type { ResolvedCheckpointShipping } from "../../workers/public-options.js";
 import type { WorkspaceBinding } from "../../workers/workspace-binding.js";
 import { poolSchemaLedger, type SqlPoolStorage, sqlPoolStorage, sqlPoolWrites } from "./internal.js";
 import { guardedPoolWrite } from "./pool-guarded-write.js";
@@ -68,6 +69,7 @@ export interface SharedPoolConfig {
 	readonly stageStartMaxLoadPerCpu?: number;
 	readonly maxWorkerRssBytes?: number;
 	readonly claimWindowMs: number;
+	readonly checkpointShipping?: ResolvedCheckpointShipping;
 	/** Children raise `ctx.ui` prompts for the root to answer, on whichever host runs them. */
 	readonly promptNodes?: boolean;
 	/** Fleet-wide model rate limits by provider or `provider/model` (#4768). */
@@ -1062,8 +1064,10 @@ async function poolStats(
 					expires: number;
 				}
 			>(
-				`SELECT id, ${storage.dialect.jsonText("descriptor", "childRunId")} AS child, worker, generation,
-				${storage.dialect.nowMs} - renewed_at AS renewed, expires_at - ${storage.dialect.nowMs} AS expires
+				// One reading of the clock, so how long ago a lease was renewed and how soon it expires add up to its length.
+				`WITH clock AS (SELECT ${storage.dialect.nowMs} AS now)
+				SELECT id, ${storage.dialect.jsonText("descriptor", "childRunId")} AS child, worker, generation,
+				(SELECT now FROM clock) - renewed_at AS renewed, expires_at - (SELECT now FROM clock) AS expires
 				FROM ${storage.tables.runs}_work WHERE root = ? AND state = 'leased' ORDER BY ready_at, ${storage.dialect.rowOrder()}`,
 				root,
 			),

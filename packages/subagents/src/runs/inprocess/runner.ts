@@ -613,6 +613,7 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 	let aborted = false;
 	let streaming = false;
 	let settlePromptAbort: (() => void) | undefined;
+	let activeTurn: Promise<void> | undefined;
 	const messages: Array<{
 		role: string;
 		content: Array<{ type: "text"; text: string } | { type: "thinking"; thinking: string }>;
@@ -678,6 +679,9 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 		};
 		for (const listener of listeners) listener({ type: "agent_start" } as AgentSessionEvent);
 		if (aborted) throw new Error("aborted");
+		const turn = Promise.withResolvers<void>();
+		const previousTurn = activeTurn;
+		activeTurn = turn.promise;
 		streaming = true;
 		try {
 			await saveInput();
@@ -727,6 +731,8 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 			// A turn that can be interrupted alone ends as a real session's does, so a waiting viewer sees it end.
 			if (testOptions.abortEndsTurnOnly)
 				for (const listener of listeners) listener({ type: "agent_end", messages: [] } as AgentSessionEvent);
+			turn.resolve();
+			if (activeTurn === turn.promise) activeTurn = previousTurn;
 		}
 	};
 	const session = {
@@ -747,6 +753,7 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 		interruptTurn: async () => {
 			aborted = true;
 			settlePromptAbort?.();
+			await activeTurn;
 		},
 		subscribe(listener: AgentSessionEventListener) {
 			listeners.add(listener);
