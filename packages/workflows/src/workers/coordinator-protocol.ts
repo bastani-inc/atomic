@@ -10,6 +10,7 @@ import type { WorkerDefinitionSource } from "./definitions.js";
 import type { FleetRateLimits } from "./fleet-rate-types.js";
 import type { PoolDurableJournal } from "./pool-journal.js";
 import type { WorkerDeliver, WorkerRecipient } from "./protocol.js";
+import type { ResolvedCheckpointShipping } from "./public-options.js";
 import type { AdmissionConfiguration } from "./resource-admission.js";
 import type { PublishedRun } from "./run-changes.js";
 import type {
@@ -68,6 +69,7 @@ export interface SharedPoolCoordination {
 	readonly host: string;
 	/** Bound work that no capable live host claims within this window fails, typed (the root's coordinator only). */
 	readonly claimWindowMs: number;
+	readonly checkpointShipping?: ResolvedCheckpointShipping;
 	/** The root's fleet-wide model rate limits (`workers.rateLimits`, #4768). */
 	readonly rateLimits?: FleetRateLimits;
 	/** Whether 429 cooldowns go to every host through the journal (`workers.shareCooldowns`, #4768). */

@@ -1,5 +1,6 @@
 import { type MarkdownTheme, truncateToWidth } from "@bastani/atomic-tui";
 import type { Theme } from "../../../../../../modes/interactive/theme/theme.js";
+import { terminalDisplayText } from "../../../../../../utils/terminal-text.ts";
 import { fieldTone, styleFieldTone } from "../../../state/selectors/field-tone.ts";
 import type { QuestionData } from "../../../tool/types.js";
 import {
@@ -110,7 +111,7 @@ export class PreviewBlockRenderer {
 	private renderNotesAffordance(width: number, notes: string): string {
 		const tone = fieldTone(false, notes);
 		if (tone === "placeholder") return styleFieldTone(this.theme, tone, NOTES_AFFORDANCE_TEXT);
-		const line = `${this.theme.fg("muted", NOTES_LABEL)}${styleFieldTone(this.theme, tone, notes)}`;
+		const line = `${this.theme.fg("muted", NOTES_LABEL)}${styleFieldTone(this.theme, tone, terminalDisplayText(notes))}`;
 		return truncateToWidth(line, width, "…");
 	}
 }

@@ -16,6 +16,8 @@ import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
 import { createTestResourceLoader } from "./utilities.js";
 
+const NO_BUILTINS = { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false } as const;
+
 /** The planner's own time limit in these tests; real defaults are minutes. */
 const PLANNING_TIME_LIMIT_MS = 300;
 /** Generous bound for the whole turn; without a planning limit it never settles. */
@@ -217,9 +219,10 @@ async function sessionAgainst(baseUrl: string): Promise<AgentSession> {
 		credentials: AuthStorage.inMemory({ anthropic: { type: "api_key", key: "test-key" } }),
 		modelsPath: null,
 	});
-	const { session } = await createAgentSession({
+	const { session, extensionsResult } = await createAgentSession({
 		cwd,
 		agentDir: cwd,
+		builtins: NO_BUILTINS,
 		model,
 		thinkingLevel: "high",
 		modelRuntime,
@@ -253,6 +256,10 @@ async function sessionAgainst(baseUrl: string): Promise<AgentSession> {
 		await session.abort();
 		session.dispose();
 	});
+	assert.deepEqual(
+		extensionsResult.extensions.map((extension) => extension.path),
+		[],
+	);
 	return session;
 }
 

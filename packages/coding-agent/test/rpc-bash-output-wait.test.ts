@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, onTestFinished, vi } from "vitest";
+import { removeTestDirectory } from "../../../test/helpers/test-directory-removal.js";
 import {
 	RPC_OUTPUT_AFTER_READY_TIMEOUT_MS,
 	RPC_OUTPUT_POLL_INTERVAL_MS,
@@ -187,7 +188,7 @@ describe("waitForRpcBashOutput", () => {
 		);
 		onTestFinished(() => {
 			child.kill();
-			rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
+			removeTestDirectory(dir, { retries: 20, retryDelayMs: 50 });
 		});
 		let observed = "";
 		child.stdout.setEncoding("utf8");

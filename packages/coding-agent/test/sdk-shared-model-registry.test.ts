@@ -4,6 +4,7 @@
  * so credentials survive fallback-candidate session creation without another
  * contended auth.json read (issue #1431).
  */
+import assert from "node:assert/strict";
 import { mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,6 +16,8 @@ import type { ResourceLoader } from "../src/core/resource-loader.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
+
+const NO_BUILTINS = { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false } as const;
 
 function emptyResourceLoader(): ResourceLoader {
 	return {
@@ -54,14 +57,19 @@ describe("createAgentSession shared ModelRuntime (#1431)", () => {
 		const createSpy = vi.spyOn(AuthStorage, "create");
 		const model = getModel("anthropic", "claude-sonnet-4-5");
 
-		const { session } = await createAgentSession({
+		const { session, extensionsResult } = await createAgentSession({
 			cwd: tempDir,
 			agentDir: tempDir,
 			model,
 			modelRuntime,
 			sessionManager: SessionManager.inMemory(),
 			resourceLoader: emptyResourceLoader(),
+			builtins: NO_BUILTINS,
 		});
+		assert.deepEqual(
+			extensionsResult.extensions.map((extension) => extension.path),
+			[],
+		);
 
 		// Supplying the runtime must avoid another credential-store construction.
 		expect(createSpy).not.toHaveBeenCalled();

@@ -22,7 +22,13 @@ import {
 import * as layoutDecider from "../../packages/coding-agent/src/core/tools/ask-user-question/view/components/preview/preview-layout-decider.ts";
 import { TabBar } from "../../packages/coding-agent/src/core/tools/ask-user-question/view/components/tab-bar.ts";
 import { WrappingSelect } from "../../packages/coding-agent/src/core/tools/ask-user-question/view/components/wrapping-select.ts";
-import { getMarkdownTheme, initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
+import { QuestionTabStrategy } from "../../packages/coding-agent/src/core/tools/ask-user-question/view/tab-content-strategy.ts";
+import {
+	getMarkdownTheme,
+	initTheme,
+	Theme,
+	theme,
+} from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import { benchmarkQuestionnaire, KEY_CYCLE } from "../../scripts/perf/ask-user-question-load/fixture.ts";
 
 vi.mock(
@@ -39,7 +45,7 @@ vi.mock(
 /** Wide enough for the side-by-side preview layout. */
 const WIDE = 120;
 /** Below `PREVIEW_MIN_WIDTH`, so previews stack under the options. */
-const NARROW = 80;
+const NARROW = 60;
 
 beforeAll(() => {
 	initTheme("dark");
@@ -109,6 +115,147 @@ test("a keystroke builds one frame and renders each component in it at most once
 		assert.equal(seen.markdown, 0, `key ${index} re-wrapped ${seen.markdown} previews`);
 		assert.equal(repainted, painted, "a repaint with no change returns the frame already built");
 	}
+});
+
+test("keystrokes reuse heading measurements until the width changes or the dialog is invalidated (#5244)", () => {
+	const session = openDialog();
+	const headings = vi.spyOn(QuestionTabStrategy.prototype, "headingRows");
+	session.component.render(WIDE);
+	headings.mockClear();
+	session.component.handleInput("\x1b[B");
+	session.component.render(WIDE);
+	assert.equal(headings.mock.calls.length, 1, "only the active heading is rebuilt after a keystroke");
+
+	headings.mockClear();
+	session.component.render(NARROW);
+	assert.ok(headings.mock.calls.length > 1, "resizing measures the headings at the new width");
+	headings.mockClear();
+	session.component.handleInput("\x1b[A");
+	session.component.render(NARROW);
+	assert.equal(headings.mock.calls.length, 1, "keystrokes reuse the resized heading measurements");
+
+	headings.mockClear();
+	session.component.invalidate();
+	session.component.render(NARROW);
+	assert.ok(headings.mock.calls.length > 1, "invalidation refreshes the heading measurements");
+});
+
+test("moving between options reuses styled descriptions until resize or invalidation (#5244)", () => {
+	let style = "first";
+	const description = vi.fn((text: string) => `${style}:${text}`);
+	const list = new WrappingSelect(
+		[
+			{ kind: "option", label: "A", description: "A description that wraps at narrow widths" },
+			{ kind: "option", label: "B", description: "Another description" },
+		],
+		2,
+		{ field: (_tone, text) => text, description, scrollInfo: (text) => text },
+	);
+	const first = list.render(40);
+	const initialCalls = description.mock.calls.length;
+	assert.ok(initialCalls > 0);
+	list.setSelectedIndex(1);
+	list.render(40);
+	assert.equal(description.mock.calls.length, initialCalls, "selection does not restyle descriptions");
+	list.render(20);
+	assert.ok(description.mock.calls.length > initialCalls, "a new width wraps descriptions again");
+	description.mockClear();
+	list.render(40);
+	assert.equal(description.mock.calls.length, 0, "returning to a width reuses its descriptions");
+	style = "second";
+	list.invalidate();
+	const restyled = list.render(40);
+	assert.ok(description.mock.calls.length > 0);
+	assert.ok(restyled.some((line) => line.includes("second:")));
+	assert.ok(first.some((line) => line.includes("first:")));
+	list.setNumbering(9, 11);
+	assert.ok(
+		list.render(40).some((line) => line.startsWith("      second:")),
+		"numbering changes indentation",
+	);
+});
+
+test("revisiting option focus reuses styled labels until invalidation (#5244)", () => {
+	let color = 31;
+	const field = vi.fn((_tone: string, text: string) => `\x1b[${color}m${text}\x1b[39m`);
+	const list = new WrappingSelect(
+		[
+			{ kind: "option", label: "界面 with a long wrapped label" },
+			{ kind: "option", label: "B" },
+		],
+		2,
+		{ field, description: (text) => text, scrollInfo: (text) => text },
+	);
+	const first = list.render(20);
+	list.setSelectedIndex(1);
+	list.render(20);
+	field.mockClear();
+	list.setSelectedIndex(0);
+	assert.deepEqual(list.render(20), first);
+	assert.equal(field.mock.calls.length, 0, "revisiting focus does not wrap and style the same labels again");
+	color = 32;
+	list.invalidate();
+	const changed = list.render(20);
+	assert.ok(field.mock.calls.length > 0);
+	assert.equal(changed.filter((line) => line.includes("\x1b[32m")).length, field.mock.calls.length);
+	assert.ok(!changed.some((line) => line.includes("\x1b[31m")));
+});
+
+test("question headings reuse styled components and refresh them after a theme change (#5244)", () => {
+	let color = 31;
+	const bold = vi.spyOn(Theme.prototype, "bold").mockImplementation((text) => `\x1b[${color}m${text}\x1b[39m`);
+	const params: QuestionParams = {
+		questions: [
+			previewQuestionnaire(),
+			{ ...previewQuestionnaire(), header: "Workflow", question: "Which workflow?" },
+		],
+	};
+	const session = new QuestionnaireSession({
+		tui: { terminal: { columns: WIDE }, requestRender() {} },
+		theme,
+		params,
+		itemsByTab: params.questions.map((question) => buildItemsForQuestion(question)),
+		done() {},
+	});
+	const first = session.component.render(WIDE);
+	assert.ok(first.some((line) => line.includes("\x1b[31mWhich layout?")));
+	bold.mockClear();
+	session.component.handleInput("\x1b[B");
+	session.component.render(WIDE);
+	assert.equal(bold.mock.calls.filter(([text]) => text === "Which layout?").length, 0);
+	color = 32;
+	session.component.invalidate();
+	const changed = session.component.render(WIDE);
+	assert.ok(changed.some((line) => line.includes("\x1b[32mWhich layout?")));
+	assert.ok(!changed.some((line) => line.includes("\x1b[31mWhich layout?")));
+	assert.ok(bold.mock.calls.some(([text]) => text === "Which layout?"));
+	session.component.handleInput("\t");
+	const next = session.component.render(WIDE);
+	assert.ok(next.some((line) => line.includes("\x1b[32mWhich workflow?")));
+	assert.ok(!next.some((line) => line.includes("\x1b[31mWhich workflow?")));
+});
+
+test("keystrokes reuse frame borders until the width or theme changes (#5244)", () => {
+	let color = 31;
+	const fg = vi.spyOn(Theme.prototype, "fg").mockImplementation((_token, text) => `\x1b[${color}m${text}\x1b[39m`);
+	const session = openDialog();
+	const topBorder = (width: number) => `╭${"─".repeat(width - 2)}╮`;
+	const first = session.component.render(WIDE);
+	assert.ok(first.some((line) => line.includes(`\x1b[31m${topBorder(WIDE)}`)));
+	fg.mockClear();
+	session.component.handleInput("\x1b[B");
+	session.component.render(WIDE);
+	assert.equal(fg.mock.calls.filter(([, text]) => text === topBorder(WIDE)).length, 0);
+
+	session.component.render(NARROW);
+	assert.ok(fg.mock.calls.some(([, text]) => text === topBorder(NARROW)));
+	fg.mockClear();
+	color = 32;
+	session.component.invalidate();
+	const changed = session.component.render(NARROW);
+	assert.ok(changed.some((line) => line.includes(`\x1b[32m${topBorder(NARROW)}`)));
+	assert.ok(!changed.some((line) => line.includes(`\x1b[31m${topBorder(NARROW)}`)));
+	assert.ok(fg.mock.calls.some(([, text]) => text === topBorder(NARROW)));
 });
 
 test("repaints that follow no change to the dialog reuse its frame (#4333)", () => {

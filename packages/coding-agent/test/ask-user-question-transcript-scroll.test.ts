@@ -1571,7 +1571,8 @@ describe("ask_user_question transcript scrolling (#2378)", () => {
 			const expectDraft = (draft: string): void => {
 				expect(cleanFrame().join("\n")).toContain(draft);
 			};
-			const notesHeaderVisible = (): boolean => cleanFrame().some((line) => line.trim() === "Notes:");
+			const notesHeaderVisible = (): boolean =>
+				cleanFrame().some((line) => line.replace(/^│|│$/g, "").trim() === "Notes:");
 
 			terminal.input("n");
 			terminal.input("draft");

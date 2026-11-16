@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
@@ -25,6 +25,7 @@ vi.mock("node:child_process", async (importOriginal) => {
 });
 
 import { failingCommand } from "../../../test/helpers/worktree-snapshot-faults.js";
+import { renameWithRetry } from "../src/core/rename-retry.ts";
 import { awaitBlueprintReady } from "../src/core/resume/blueprint/barrier.ts";
 import { resumeStoreDir } from "../src/core/resume/session-resume.ts";
 import { latestResumeTimings } from "../src/core/resume/timings.ts";
@@ -187,8 +188,8 @@ async function recordedTwoRepositories(): Promise<SessionManager> {
 		if (capture.status !== "captured") throw new Error(`the snapshot of ${clone} was not captured`);
 		await manager.appendWorktreeSnapshot(clone, capture.snapshot.id, capture.snapshot);
 	}
-	renameSync(a.clone, sandbox.path("node-a-gone-a"));
-	renameSync(b.clone, sandbox.path("node-a-gone-b"));
+	await renameWithRetry(a.clone, sandbox.path("node-a-gone-a"));
+	await renameWithRetry(b.clone, sandbox.path("node-a-gone-b"));
 	return manager;
 }
 
