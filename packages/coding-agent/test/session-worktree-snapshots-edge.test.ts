@@ -1,21 +1,13 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import {
-	existsSync,
-	mkdirSync,
-	readdirSync,
-	readFileSync,
-	realpathSync,
-	renameSync,
-	rmSync,
-	writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { GitSandbox, gitConfigPath, lfsPointer, loseSnapshotBlobs } from "../../../test/helpers/worktree-snapshot.js";
 import type { ExtensionFactory } from "../src/core/extensions/index.js";
+import { renameWithRetry } from "../src/core/rename-retry.ts";
 import type { SessionEntry, WorktreeSnapshotEntry } from "../src/core/session-manager.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import {
@@ -372,7 +364,7 @@ describe("choosing the checkout a resumed session belongs to", () => {
 		if (capture.status !== "captured") return;
 		const manager = await SessionManager.create(store, clone);
 		await manager.appendWorktreeSnapshot(clone, capture.snapshot.id, capture.snapshot);
-		renameSync(clone, sandbox.path("original-away"));
+		await renameWithRetry(clone, sandbox.path("original-away"));
 		const excludes = sandbox.path("excludes");
 		writeFileSync(excludes, "*.log\n");
 		writeFileSync(
@@ -398,7 +390,7 @@ describe("choosing the checkout a resumed session belongs to", () => {
 		};
 		const manager = await SessionManager.create(store, join(clone, "src"));
 		await manager.appendWorktreeSnapshot(clone, capture.snapshot.id, capture.snapshot);
-		renameSync(clone, sandbox.path("moved-away"));
+		await renameWithRetry(clone, sandbox.path("moved-away"));
 		const resume = await resumeSessionWorktree(manager, { settings, storeDir: sandbox.path("host") });
 		assert.equal(resume.status, "restored");
 		if (resume.status !== "restored") return;
