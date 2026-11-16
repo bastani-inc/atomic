@@ -161,6 +161,17 @@ describe("ask_user_question dialog (#5224)", () => {
 		assert.equal(open(ONE).hint(), "↑↓ select · enter choose · esc cancel");
 	});
 
+	test("narrow hint lines keep cancellation and every question key visible (#5244)", () => {
+		const dialog = open(THREE, 60);
+		dialog.press(TAB);
+		assert.equal(dialog.hint(), "↑↓ · enter/space · tab · esc cancel");
+		dialog.press(TAB);
+		assert.equal(dialog.hint(), "↑↓ · enter · n notes · tab · esc cancel");
+		assert.equal(dialog.hint(40), "↑↓ · enter · n · tab · esc");
+		dialog.press("n");
+		assert.equal(dialog.hint(), "type a note · enter/esc close notes");
+	});
+
 	test("enter answers and moves on; esc cancels the whole dialog", () => {
 		const dialog = open(THREE);
 		dialog.press(ENTER);

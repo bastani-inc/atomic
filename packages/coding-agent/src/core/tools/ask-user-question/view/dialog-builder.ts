@@ -22,6 +22,23 @@ export const REVIEW_HEADING = "Review your answers";
 export const READY_PROMPT = "Ready to submit your answers?";
 export const INCOMPLETE_WARNING_PREFIX = "⚠ Answer remaining questions before submitting:";
 
+function fitHintText(hint: string, width: number): string {
+	if (visibleWidth(hint) <= width) return hint;
+	const compact = hint
+		.replace(HINT_PART_NAV, "↑↓")
+		.replace(HINT_PART_ENTER, "enter")
+		.replace(HINT_PART_TOGGLE, "enter/space")
+		.replace(HINT_PART_NOTES, "n notes")
+		.replace(HINT_PART_TAB, "tab")
+		.replace(HINT_PART_REVIEW_TAB, "tab");
+	if (visibleWidth(compact) <= width) return compact;
+	return compact
+		.replace("n notes", "n")
+		.replace(HINT_PART_CANCEL, "esc")
+		.replace(HINT_PART_NOTES_TYPE, "type")
+		.replace(HINT_PART_NOTES_CLOSE, "enter/esc");
+}
+
 export type DialogState = QuestionnaireState;
 
 /** Per-tick projection of dialog state. Written by the adapter; read by the strategy thunk. */
@@ -171,7 +188,8 @@ export class DialogView implements StatefulView<DialogProps> {
 			lines.push(`${side} ${fitted}${" ".repeat(Math.max(0, innerWidth - fittedWidth))} ${side}`);
 		}
 		lines.push(edge(`╰${"─".repeat(Math.max(0, width - 2))}╯`));
-		lines.push(truncateToWidth(`  ${theme.fg("dim", strategy.hintText(state))}`, width, ""));
+		const hint = fitHintText(strategy.hintText(state), Math.max(1, width - 2));
+		lines.push(truncateToWidth(`  ${theme.fg("dim", hint)}`, width, ""));
 
 		// Residual rows equalize total height across tabs and strategies; rendered AFTER the hint line. Headings count
 		// too: a question that wraps onto more lines than another must not change the dialog's height.
