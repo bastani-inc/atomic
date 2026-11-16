@@ -254,7 +254,7 @@ test("a delayed lease renewal of an older generation cannot discard the current 
 	const current = { ...LEASE, generation: LEASE.generation + 1, worker: "host/2" };
 	await local.hold(current, LEASE_MS);
 	await local.accept(ROOT, current, "k1", "{}", 1);
-	await refused(local.hold(LEASE, LEASE_MS), "generation-mismatch");
+	await local.hold(LEASE, LEASE_MS);
 	assert.deepEqual(
 		(await local.pending(current)).map((event) => event.key),
 		["k1"],

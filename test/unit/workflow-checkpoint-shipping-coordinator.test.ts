@@ -176,8 +176,9 @@ test("closing while the checkpoint shard opens releases its ownership before the
 		});
 		const settled = Promise.allSettled([preparing]);
 		await opened.promise;
-		await host.command({ kind: "close" });
+		const closing = host.command({ kind: "close" });
 		release.resolve();
+		await closing;
 		await settled;
 		assert.ok(shardPath !== undefined);
 		const replacement = await open(shardPath, "root");

@@ -1289,10 +1289,6 @@ export class PoolCoordinator {
 			await shard.close().catch(() => {});
 			return undefined;
 		}
-		if (this.closed) {
-			await shard.close();
-			return undefined;
-		}
 		const shipping = new CheckpointShipping(shard, {
 			...shared.checkpointShipping,
 			host: shared.host,
