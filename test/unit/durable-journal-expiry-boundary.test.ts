@@ -45,6 +45,7 @@ for (const storage of ["memory", "sqlite"] as const) {
 			const directory = makeTempDirectory("journal-expiry-boundary-");
 			const connection = storage === "sqlite" ? new DatabaseSync(join(directory, "runs.sqlite")) : undefined;
 			connection?.function("unixepoch", { varargs: true }, () => Date.now() / 1000);
+			connection?.function("julianday", { varargs: true }, () => Date.now() / 86_400_000 + 2_440_587.5);
 			const journal = storage === "memory" ? new MemoryRunJournal() : await openSqlRunJournal(connection!);
 			const contract = access === "sync" ? journal : asyncJournal(journal);
 			const backends: JournalDurableBackend[] = [];

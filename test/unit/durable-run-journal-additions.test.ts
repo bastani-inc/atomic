@@ -13,6 +13,7 @@ for (const storage of ["memory", "sqlite"] as const) {
 		let now = 1_000;
 		const connection = storage === "sqlite" ? new DatabaseSync(join(directory, "runs.sqlite")) : undefined;
 		connection?.function("unixepoch", { varargs: true }, () => now / 1000);
+		connection?.function("julianday", { varargs: true }, () => now / 86_400_000 + 2_440_587.5);
 		vi.useFakeTimers({ toFake: ["Date"] });
 		vi.setSystemTime(1_000);
 		const journal = storage === "memory" ? new MemoryRunJournal() : await openSqlRunJournal(connection!);

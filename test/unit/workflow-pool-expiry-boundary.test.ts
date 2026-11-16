@@ -17,7 +17,7 @@ import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 /**
  * A work lease is current through the millisecond it expires at and stale from the next one (#4327). Every database
- * connection's clock (`unixepoch`) is pinned to the test's, so an attempt's operations run exactly at its expiry.
+ * connection's clock is pinned to the test's, so an attempt's operations run exactly at its expiry.
  */
 
 const NOW = 1_800_000_000_000;
@@ -45,6 +45,7 @@ vi.mock("node:sqlite", async (importOriginal) => {
 		constructor(...args: ConstructorParameters<typeof actual.DatabaseSync>) {
 			super(...args);
 			this.function("unixepoch", { varargs: true }, () => Date.now() / 1_000);
+			this.function("julianday", { varargs: true }, () => Date.now() / 86_400_000 + 2_440_587.5);
 		}
 	}
 	return { ...actual, DatabaseSync: DateClockedDatabase };

@@ -65,6 +65,7 @@ for (const operation of ["inspection", "recovery"] as const) {
 		const directory = makeTempDirectory("async-sqlite-recovery-");
 		const connection = new DatabaseSync(join(directory, "journal.sqlite"));
 		connection.function("unixepoch", { varargs: true }, () => Date.now() / 1000);
+		connection.function("julianday", { varargs: true }, () => Date.now() / 86_400_000 + 2_440_587.5);
 		const sqlite = await openSqlRunJournal(connection);
 		const journal = asyncJournal(sqlite);
 		const writer = await JournalDurableBackend.open(journal, { ownsJournal: false });

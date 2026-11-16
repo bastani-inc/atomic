@@ -45,6 +45,7 @@ vi.mock("node:sqlite", async (importOriginal) => {
 		constructor(...args: ConstructorParameters<typeof actual.DatabaseSync>) {
 			super(...args);
 			this.function("unixepoch", { varargs: true }, () => Date.now() / 1_000);
+			this.function("julianday", { varargs: true }, () => Date.now() / 86_400_000 + 2_440_587.5);
 		}
 	}
 	return { ...actual, DatabaseSync: DateClockedDatabase };
@@ -217,7 +218,6 @@ test("a budget notice holds claims until the root lifts it (#4313)", async () =>
 	}
 });
 
-/** A whole second, which SQLite's `unixepoch('subsec')` reads back exactly, for tests that fake `Date`. */
 const CLOCK_START_MS = Date.UTC(2026, 0, 1);
 
 test("a request of an attempt renews its lease once half of it is spent, and not before (#4313)", async () => {
