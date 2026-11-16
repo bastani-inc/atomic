@@ -124,6 +124,7 @@ interface Attempt {
 	accepted: { readonly localSeq: number; readonly at: number }[];
 	/** The attempt's shipping, one batch at a time. */
 	chain: Promise<void>;
+	recovered?: boolean;
 	/** Why the attempt can ship no more: the shared journal refused it, so its next commit is refused too. */
 	fenced?: Error;
 	/** How many shipments of the attempt are queued or running. */
@@ -210,7 +211,6 @@ export class CheckpointShipping {
 			this.syncOnly.delete(lease.id);
 		}
 		const known = this.attempts.get(lease.id);
-		if (known !== undefined && known.lease.generation > lease.generation) return;
 		if (known === undefined || known.lease.generation !== lease.generation)
 			this.attempts.set(lease.id, {
 				lease: { ...lease },
@@ -218,12 +218,14 @@ export class CheckpointShipping {
 				accepted: [],
 				chain: Promise.resolve(),
 			});
-		else known.lease = { ...lease };
+		else {
+			known.lease = { ...lease };
+			known.recovered = undefined;
+		}
 		if (recoveryFailure !== undefined) this.fallBack(lease, recoveryFailure);
 		try {
 			await this.shard.hold(lease, leaseMs);
 		} catch (error) {
-			if (error instanceof StaleWorkLeaseError) throw error;
 			this.fallBack(lease, error as Error);
 		}
 	}
@@ -303,8 +305,15 @@ export class CheckpointShipping {
 		if (attempt === undefined || attempt.lease.generation !== lease.generation) return;
 		for (;;) {
 			if (this.closed) throw new Error("Checkpoint shipping stopped");
-			if (attempt.fenced !== undefined) throw attempt.fenced;
-			if ((await this.shard.pendingCount(attempt.lease)) === 0) return;
+			if (attempt.fenced !== undefined) {
+				await this.retireRecovered(attempt);
+				throw attempt.fenced;
+			}
+			if (this.attempts.get(lease.id) !== attempt) return;
+			if ((await this.shard.pendingCount(attempt.lease)) === 0) {
+				await this.retireRecovered(attempt);
+				return;
+			}
 			await this.ship(attempt, cap);
 		}
 	}
@@ -422,7 +431,7 @@ export class CheckpointShipping {
 		return false;
 	}
 
-	async close(options: { readonly retire?: boolean } = {}): Promise<void> {
+	async close(): Promise<void> {
 		if (this.closed) return;
 		this.closed = true;
 		clearInterval(this.timer);
@@ -434,7 +443,7 @@ export class CheckpointShipping {
 		this.attempts.clear();
 		this.syncOnly.clear();
 		this.generations.clear();
-		await this.shard.close(options);
+		await this.shard.close();
 	}
 
 	/** Takes up the attempts a stopped host left checkpoints of, so they ship (see {@link start}). */
@@ -472,6 +481,7 @@ export class CheckpointShipping {
 				shippedThrough: 0,
 				accepted: held.map((localSeq) => ({ localSeq, at: now })),
 				chain: Promise.resolve(),
+				recovered: true,
 			});
 			recovered.push(lease);
 		}
@@ -501,11 +511,35 @@ export class CheckpointShipping {
 		const next = attempt.chain
 			.catch(() => {})
 			.then(() => this.shipOne(attempt, cap))
-			.finally(() => {
+			.finally(async () => {
 				attempt.shipping = (attempt.shipping ?? 1) - 1;
+				await this.retireRecovered(attempt);
 			});
 		attempt.chain = next;
 		return next;
+	}
+
+	private async retireRecovered(attempt: Attempt): Promise<void> {
+		if (!attempt.recovered || this.closed || (attempt.shipping ?? 0) > 0) return;
+		if (this.attempts.get(attempt.lease.id) !== attempt) return;
+		if (attempt.fenced === undefined) {
+			if (attempt.accepted.length > 0) return;
+			try {
+				if ((await this.shard.pendingCount(attempt.lease)) > 0) return;
+			} catch {
+				return;
+			}
+		}
+		if (
+			!attempt.recovered ||
+			this.closed ||
+			(attempt.shipping ?? 0) > 0 ||
+			this.attempts.get(attempt.lease.id) !== attempt ||
+			(attempt.fenced === undefined && attempt.accepted.length > 0)
+		)
+			return;
+		this.attempts.delete(attempt.lease.id);
+		this.shard.release(attempt.lease);
 	}
 
 	private async shipOne(attempt: Attempt, cap: number): Promise<void> {

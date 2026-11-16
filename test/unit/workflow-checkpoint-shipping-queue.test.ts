@@ -886,3 +886,72 @@ test("a local journal failure from an older generation after replacement does no
 	assert.equal(await shard.pendingCount(gen2), 0);
 	assert.deepEqual(fallbacks, []);
 });
+
+test("restart recovery retires leftover attempts once they ship or are fenced, while keeping expired leftovers retriable (#4768)", async () => {
+	const { queue, lease, attempt, tool, recorded, database } = await claimedAttempt();
+	const childTool = (fixture: ReturnType<typeof poolWorkFixture>, index: number): DurableToolCheckpoint => ({
+		...tool(index),
+		checkpointId: `${fixture.work.scope}:tool:${index}`,
+		argsHash: `${fixture.work.scope}:args:${index}`,
+		topology: {
+			...tool(index).topology!,
+			run: { ...fixture.boundary.topology!.boundary!.child },
+		},
+	});
+	const moved = poolWorkFixture("moved");
+	await queue.enqueue(lease, moved.work, moved.boundary);
+	const movedAttempt = (await queue.claim(lease, "worker-moved", [moved.work], LEASE_MS)) as PoolWork;
+	assert.ok(movedAttempt);
+
+	const path = join(directory, "retire-recovered.sqlite");
+	const before = await hostShipping(queue, lease, { path, maxBatch: 10 });
+	await before.shipping.hold(attempt, LEASE_MS);
+	for (const index of [1, 2]) {
+		await before.shipping.commit(attempt, { kind: "checkpoint", checkpoint: tool(index) }, noShared);
+	}
+	await before.shipping.hold(movedAttempt, LEASE_MS);
+	await before.shipping.commit(movedAttempt, { kind: "checkpoint", checkpoint: childTool(moved, 3) }, noShared);
+	await before.shipping.close();
+
+	await queue.releaseExited(lease, movedAttempt);
+	assert.ok(await queue.claim(lease, "other", [moved.work], LEASE_MS));
+
+	const after = await hostShipping(queue, lease, { path, maxBatch: 10 });
+	await after.shipping.recover();
+	assert.deepEqual(await recorded(), [1, 2]);
+	assert.deepEqual(await after.shard.pending(attempt), []);
+	assert.deepEqual(await after.shard.pending(movedAttempt), []);
+	const attempts = (after.shipping as unknown as { readonly attempts: ReadonlyMap<string, unknown> }).attempts;
+	assert.equal(attempts.size, 0);
+
+	let pendingCountQueries = 0;
+	const pendingCount = after.shard.pendingCount.bind(after.shard);
+	after.shard.pendingCount = async (...args) => {
+		pendingCountQueries += 1;
+		return pendingCount(...args);
+	};
+	await after.shipping.flushAll();
+	assert.equal(pendingCountQueries, 0);
+
+	const expired = poolWorkFixture("expired");
+	await queue.enqueue(lease, expired.work, expired.boundary);
+	const expiredAttempt = (await queue.claim(lease, "worker-expired", [expired.work], LEASE_MS)) as PoolWork;
+	assert.ok(expiredAttempt);
+	await after.shipping.hold(expiredAttempt, LEASE_MS);
+	await after.shipping.commit(expiredAttempt, { kind: "checkpoint", checkpoint: childTool(expired, 4) }, noShared);
+	await after.shipping.close();
+
+	await database.run("UPDATE wf_runs_work SET expires_at = 0 WHERE id = ?", expiredAttempt.id);
+	const retried = await hostShipping(queue, lease, { path, maxBatch: 10 });
+	await retried.shipping.recover();
+	const retriedAttempts = (retried.shipping as unknown as { readonly attempts: ReadonlyMap<string, unknown> })
+		.attempts;
+	assert.equal(retriedAttempts.size, 1);
+	assert.equal(retried.shipping.status().pending, 1);
+	assert.deepEqual(await recorded(), [1, 2]);
+
+	await queue.extend(lease, expiredAttempt, LEASE_MS);
+	await retried.shipping.flushAll();
+	assert.deepEqual(await recorded(), [1, 2, 4]);
+	assert.equal(retriedAttempts.size, 0);
+});

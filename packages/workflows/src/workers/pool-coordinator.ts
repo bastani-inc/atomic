@@ -760,7 +760,6 @@ export class PoolCoordinator {
 	private recycleLimitReported = false;
 	/** Set once the root's lease is gone: workers then end without counting as crashes, and none is replaced. */
 	private rootLeaseLost = false;
-	private rootEnded = false;
 	/** Settles once a late root renewal lands (true) or the root's lease is lost or the pool closes (false). */
 	private lateRoot?: Promise<boolean>;
 	/** Generation of each work item when this root incarnation enqueued it: attempts count from here (#3979). */
@@ -1510,8 +1509,7 @@ export class PoolCoordinator {
 	}
 
 	/** Closes a satellite at once: its workers stop, and the work they held goes back to the queue. */
-	stopSatellite(options: { readonly rootEnded?: boolean } = {}): Promise<void> {
-		if (options.rootEnded === true) this.rootEnded = true;
+	stopSatellite(): Promise<void> {
 		this.closing ??= this.close();
 		return this.closing;
 	}
@@ -3574,7 +3572,7 @@ export class PoolCoordinator {
 			const shipping = this.shipping ?? opened;
 			this.shipping = undefined;
 			await shipping?.flushAll().catch(() => {});
-			await shipping?.close({ retire: this.runEnded() }).catch(() => {});
+			await shipping?.close().catch(() => {});
 			// A worker still running after SIGKILL is retired: the pool closes without it and reports it.
 			stopping.forEach(({ child }, index) => {
 				if (!confirmed[index]) this.retireUnconfirmed(child);
@@ -3619,11 +3617,6 @@ export class PoolCoordinator {
 		for (const pending of this.requests.values()) pending.reject(new Error("Local worker pool is closed"));
 		this.requests.clear();
 		if (failure !== undefined) throw failure;
-	}
-
-	private runEnded(): boolean {
-		if (this.satellite !== undefined) return this.rootEnded;
-		return !this.rootLeaseLost && (this.desiredControl === undefined || this.desiredControl === "running");
 	}
 
 	/**

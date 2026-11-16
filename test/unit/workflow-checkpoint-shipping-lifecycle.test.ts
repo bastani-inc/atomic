@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import type { ForkOptions } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { openNodeSqliteDatabase } from "@bastani/atomic";
 import type { SqliteDatabase } from "@bastani/atomic/storage";
 import { afterEach, test, vi } from "vitest";
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
@@ -41,7 +42,7 @@ const LEASE = { id: "work-1", generation: 1, worker: "host/1", epoch: 1 } as con
 function filesUnder(directory: string): string[] {
 	if (!existsSync(directory)) return [];
 	return readdirSync(directory, { recursive: true, withFileTypes: true })
-		.filter((entry) => !entry.isDirectory())
+		.filter((entry) => !entry.isDirectory() && entry.name !== ".lock")
 		.map((entry) => join(entry.parentPath, entry.name));
 }
 
@@ -58,7 +59,7 @@ test("a retired local checkpoint journal whose checkpoints all shipped leaves no
 			const root = `root-${index}`;
 			const shard = await ShipShard.open(shipShardPath(directory, "journal", root), root);
 			for (let checkpoint = 0; checkpoint < 50; checkpoint++) await shipOnce(shard, `key-${checkpoint}`);
-			await shard.close({ retire: true });
+			await shard.close();
 		}
 		assert.deepEqual(filesUnder(join(directory, "ship")), []);
 	} finally {
@@ -66,29 +67,26 @@ test("a retired local checkpoint journal whose checkpoints all shipped leaves no
 	}
 });
 
-test("a local checkpoint journal is kept when it still holds a checkpoint, another connection uses it, or it is not retired (#4768)", async () => {
+test("a local checkpoint journal is kept when it still holds a checkpoint or another connection uses it (#4768)", async () => {
 	const directory = makeTempDirectory("ship-shard-keep-");
 	try {
 		const unshippedPath = shipShardPath(directory, "journal", "unshipped");
 		const unshipped = await ShipShard.open(unshippedPath, "unshipped");
 		await unshipped.hold(LEASE, 60_000);
 		await unshipped.accept("unshipped", LEASE, "pending", "{}", 1);
-		await unshipped.close({ retire: true });
+		await unshipped.close();
 		assert.ok(existsSync(unshippedPath));
 
 		const sharedPath = shipShardPath(directory, "journal", "shared");
 		const first = await ShipShard.open(sharedPath, "shared");
-		const second = await ShipShard.open(sharedPath, "shared");
-		await first.close({ retire: true });
+		await assert.rejects(ShipShard.open(sharedPath, "shared"), /already open/);
+		const second = await openNodeSqliteDatabase(sharedPath);
+		await first.close();
 		assert.ok(existsSync(sharedPath), "a connection still open keeps the file");
-		await second.close({ retire: true });
+		await second.close();
+		const reopened = await ShipShard.open(sharedPath, "shared");
+		await reopened.close();
 		assert.ok(!existsSync(sharedPath), "the last connection removes it");
-
-		const keptPath = shipShardPath(directory, "journal", "kept");
-		const kept = await ShipShard.open(keptPath, "kept");
-		await shipOnce(kept, "key");
-		await kept.close();
-		assert.ok(existsSync(keptPath));
 	} finally {
 		removeTempDirectory(directory);
 	}
@@ -133,45 +131,43 @@ test("a root pool that closes after its run ends removes its local checkpoint jo
 	}
 });
 
-test("a worker host removes its local checkpoint journal only when its root's run ended (#4768)", async () => {
+test("a worker host removes its local checkpoint journal when it stops with nothing left to ship (#4768)", async () => {
 	const directory = makeTempDirectory("shipping-satellite-retire-");
 	const journal = await resolveRunJournal({ journal: { path: join(directory, "shared.sqlite") } });
 	try {
 		await journal.createRun({ runId: "root", name: "root", cwd: directory, createdAt: 0, status: "running" });
 		const acquired = await journal.acquire("root", "holder");
 		if (acquired.status !== "acquired") assert.fail("root lease was not acquired");
-		for (const rootEnded of [false, true]) {
-			const stateDirectory = join(directory, `state-${rootEnded}`);
-			mkdirSync(stateDirectory);
-			const host = openCoordinator();
-			const before = forked.length;
-			const attaching = host.coordinator.attachSatellite({
-				root: "root",
-				lease: acquired.lease,
-				journal,
-				config: {
-					definitions: [SOURCE],
-					leaseMs: 60_000,
-					heartbeatMs: 15_000,
-					startupTimeoutMs: 30_000,
-					claimWindowMs: 60_000,
-					checkpointShipping: SHIPPING,
-				},
-				sources: [SOURCE],
-				workers: 1,
-				durable: poolDurableJournal(journal),
-				stateDirectory,
-				workerEntry: "fake-worker",
-				placement: { host: "host-b", detached: () => {}, placementFailed: () => {} },
-			});
-			while (forked.length === before) await sleep(5);
-			await forked[before]!.request({ kind: "ready" });
-			await attaching;
-			assert.equal(filesUnder(join(stateDirectory, "ship")).length > 0, true);
-			await host.coordinator.stopSatellite({ rootEnded });
-			await host.coordinator.shutdown();
-			assert.equal(filesUnder(join(stateDirectory, "ship")).length === 0, rootEnded);
-		}
+		const stateDirectory = join(directory, "state");
+		mkdirSync(stateDirectory);
+		const host = openCoordinator();
+		const before = forked.length;
+		const attaching = host.coordinator.attachSatellite({
+			root: "root",
+			lease: acquired.lease,
+			journal,
+			config: {
+				definitions: [SOURCE],
+				leaseMs: 60_000,
+				heartbeatMs: 15_000,
+				startupTimeoutMs: 30_000,
+				claimWindowMs: 60_000,
+				checkpointShipping: SHIPPING,
+			},
+			sources: [SOURCE],
+			workers: 1,
+			durable: poolDurableJournal(journal),
+			stateDirectory,
+			workerEntry: "fake-worker",
+			placement: { host: "host-b", detached: () => {}, placementFailed: () => {} },
+		});
+		while (forked.length === before) await sleep(5);
+		await forked[before]!.request({ kind: "ready" });
+		await attaching;
+		assert.equal(filesUnder(join(stateDirectory, "ship")).length > 0, true);
+		await host.coordinator.stopSatellite();
+		await host.coordinator.shutdown();
+		assert.deepEqual(filesUnder(join(stateDirectory, "ship")), []);
 	} finally {
 		await journal.close();
 		removeTempDirectory(directory);
